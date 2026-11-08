@@ -336,27 +336,6 @@ function openedNode(submitted: GraphNode, jobId: string): GraphNode {
   return { ...submitted, options: openPasswordOption(stripEngineControls(submitted.options), jobId) } as GraphNode;
 }
 
-/**
- * Runs the job of a graph node unless the scheduler says the node may not run: a job whose graph has ended or whose node has ended
- * (its cancel never reached the queue, the process that would have sent it died, or it was delivered again after the node
- * completed) does nothing. No input is read, no unit held and no output written for a graph nobody waits for. The answer is the
- * store's, so it holds in a process that did not cancel the job and after one that crashed. Otherwise the node is active in the
- * scheduler, and a retry of the job finds it so. The queue's processor calls this and not `processGraphNodeJob`, which runs the
- * node without asking.
- */
-export async function processGraphNodeJobIfAlive(
-  job: Job<ConversionJobData, ConversionJobResult>,
-  engine?: ConversionEnginePort,
-  storage?: IStorageBackend
-): Promise<ConversionJobResult> {
-  const { graphId, graphNodeId: nodeId } = job.data;
-  if (!(await graphScheduler.onNodeStarted(graphId!, nodeId!))) {
-    await job.log(`Graph node "${nodeId}" of graph ${graphId} was not run: the graph or the node has already ended`);
-    return { jobId: job.id, status: 'completed', resultKey: '', downloadUrl: '', filename: '', mimeType: '', size: 0, durationMs: 0 };
-  }
-  return processGraphNodeJob(job, engine, storage);
-}
-
 export async function processGraphNodeJob(
   job: Job<ConversionJobData, ConversionJobResult>,
   engine?: ConversionEnginePort,
@@ -381,6 +360,7 @@ export async function processGraphNodeJob(
     const effectiveEngine: ConversionEnginePort = deadlineBoundEngine(engine || dispatchEngine, job);
     await job.log(`Executing graph node "${nodeId}" (op: ${node.op}) in graph ${graphId}`);
     await job.updateProgress(10);
+    await graphScheduler.onNodeStarted(graphId, nodeId);
     attemptSignal.throwIfAborted();
     const inputArtifacts = await resolveInputArtifacts(graphId, node, job.data.inputArtifacts);
     await holdUnitsForInputs(graphId, nodeId, node, inputArtifacts.length);

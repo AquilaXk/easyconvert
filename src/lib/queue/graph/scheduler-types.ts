@@ -89,12 +89,7 @@ export type SealedJobGraph = JobGraph & { readonly [sealedGraph]: true };
 
 export interface IGraphScheduler {
   initGraph(graphId: string, graph: SealedJobGraph, meta?: GraphMetadata): Promise<GraphExecutionState>;
-  /**
-   * Marks the node active as a worker takes its job, and answers whether the worker may run it: the graph is still running and
-   * the node has not ended. False for a node job that outlived its graph or its node (a cancel that could not reach the queue, a
-   * job redelivered after the node completed), which the worker then leaves alone.
-   */
-  onNodeStarted(graphId: string, nodeId: NodeId): Promise<boolean>;
+  onNodeStarted(graphId: string, nodeId: NodeId): Promise<void>;
   onNodeCompleted(
     graphId: string,
     nodeId: NodeId,

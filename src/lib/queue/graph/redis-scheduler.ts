@@ -210,9 +210,9 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
     return ready.length;
   }
 
-  async onNodeStarted(graphId: string, nodeId: NodeId): Promise<boolean> {
+  async onNodeStarted(graphId: string, nodeId: NodeId): Promise<void> {
     const k = this.graphKeys(graphId);
-    return Number(await this.redisClient.eval(NODE_STARTED_LUA_SCRIPT, 2, k.graph, k.nodes, nodeId, String(Date.now()))) === 1;
+    await this.redisClient.eval(NODE_STARTED_LUA_SCRIPT, 2, k.graph, k.nodes, nodeId, String(Date.now()));
   }
 
   async onNodeCompleted(

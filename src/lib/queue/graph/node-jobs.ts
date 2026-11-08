@@ -247,18 +247,9 @@ export async function cancelGraphNodeJob(
   return getQueueForResourceClass(resolveNodeResourceClass(node)).cancelJob(graphNodeJobId(graphId, nodeId), reason);
 }
 
-/** Tries of the cancel of one node job; the wait before a retry is GRAPH_NODE_CANCEL_RETRY_DELAY_MS times the try. */
-export const GRAPH_NODE_CANCEL_ATTEMPTS = 3;
-const GRAPH_NODE_CANCEL_RETRY_DELAY_MS = 100;
-
 /**
- * Cancels the queue job of node `nodeId` with `cancel`, trying again after a wait while the cancel throws (a connection that
- * dropped for a moment), and logs a cancel that fails every try, so one node job that cannot be cancelled never leaves the
- * others of its graph running. Answers false when every try failed.
- *
- * A job left in the queue by a cancel that never landed (or by a process that died before it ran) is not run: the graph is
- * ended in the scheduler before its jobs are cancelled, and a worker asks the scheduler whether the node may run before it
- * does anything (`IGraphScheduler.onNodeStarted`), so the retry only spares the job a trip through the queue.
+ * Cancels the queue job of node `nodeId` with `cancel`, and logs a cancel that fails, so one node job that cannot be
+ * cancelled never leaves the others of its graph running. Answers false when the cancel failed.
  */
 export async function cancelGraphNodeJobOrLog(
   graphId: string,
@@ -267,16 +258,13 @@ export async function cancelGraphNodeJobOrLog(
   reason: string,
   cancel: typeof cancelGraphNodeJob = cancelGraphNodeJob
 ): Promise<boolean> {
-  for (let attempt = 1; attempt <= GRAPH_NODE_CANCEL_ATTEMPTS; attempt++) {
-    try {
-      await cancel(graphId, nodeId, node, reason);
-      return true;
-    } catch (err) {
-      console.error(`[GraphScheduler] The job of node ${nodeId} of graph ${graphId} could not be cancelled (try ${attempt} of ${GRAPH_NODE_CANCEL_ATTEMPTS}):`, err);
-      if (attempt < GRAPH_NODE_CANCEL_ATTEMPTS) await sleep(GRAPH_NODE_CANCEL_RETRY_DELAY_MS * attempt);
-    }
+  try {
+    await cancel(graphId, nodeId, node, reason);
+    return true;
+  } catch (err) {
+    console.error(`[GraphScheduler] The job of node ${nodeId} of graph ${graphId} could not be cancelled:`, err);
+    return false;
   }
-  return false;
 }
 
 async function graphDeadlineOwner(meta: GraphNodeJobMetadata): Promise<{ tier: string; notAfter?: number }> {

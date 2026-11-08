@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PdfDocument, PdfStructureError } from '../src/lib/conversions/pdf-document';
-import { EncryptedOfficeDocumentError } from '../src/lib/types';
+import { PdfStructureError } from '../src/lib/conversions/pdf-document';
 import { InlinePictureCollector, planPictureDecoding } from '../src/lib/conversions/pdf-picture-guard';
 import { assertPdfStreamsWithinLimits } from '../src/lib/conversions/pdf-stream-guard';
 import { expectNoHang } from './helpers/timing';
@@ -470,9 +469,7 @@ describe('an /Encrypt dictionary inside an object stream', () => {
     const task = pdfjs.getDocument({ data: new Uint8Array(pdf), isEvalSupported: false, useSystemFonts: false, disableFontFace: true, verbosity: 0 });
     await expect(task.promise).rejects.toMatchObject({ name: 'PasswordException' });
     await task.destroy();
-    expect(new PdfDocument(pdf, undefined, true).encrypted).toBe(true);
-    // Its streams are ciphertext to the check, so the file is refused for the password, not passed unread.
-    expect(() => assertPdfStreamsWithinLimits(pdf, () => {})).toThrow(EncryptedOfficeDocumentError);
+    expect(assertPdfStreamsWithinLimits(pdf, () => {}).encrypted).toBe(true);
   });
 });
 

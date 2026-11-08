@@ -198,7 +198,7 @@ describe('the end of a graph, in this process', () => {
     }
   });
 
-  it('cancels every node job of a failed graph, trying a cancel that failed again', async () => {
+  it('cancels every other node job of a failed graph when cancelling one of them fails', async () => {
     const cancelled: string[] = [];
     const spies = allConversionQueues.map((queue) =>
       vi.spyOn(queue, 'cancelJob').mockImplementation(async (jobId: string) => {
@@ -214,12 +214,10 @@ describe('the end of a graph, in this process', () => {
 
       const failure = await scheduler.onNodeFailed(graphId, 'left', 'left failed');
 
-      // The refused cancel is tried again (it threw once and landed on the second try), and the other jobs are cancelled once each.
-      const [refused, retried, ...carriedOut] = cancelled;
-      expect(retried).toBe(refused);
-      expect([...new Set(cancelled)].sort()).toEqual([`${graphId}:leftJson`, `${graphId}:right`, `${graphId}:rightJson`]);
-      expect(failure.cancelledJobIds).toContain(refused);
-      expect([...failure.cancelledJobIds].sort()).toEqual([refused, ...carriedOut].sort());
+      const [refused, ...carriedOut] = cancelled;
+      expect([...cancelled].sort()).toEqual([`${graphId}:leftJson`, `${graphId}:right`, `${graphId}:rightJson`]);
+      expect(failure.cancelledJobIds).not.toContain(refused);
+      expect([...failure.cancelledJobIds].sort()).toEqual(carriedOut.sort());
     } finally {
       spies.forEach((spy) => spy.mockRestore());
     }

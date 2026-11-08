@@ -38,12 +38,6 @@ import {
 } from './pdf-values';
 export { MAX_PDF_PARSE_DEPTH, PdfStructureError, parseValue, skipWhite } from './pdf-values';
 export type { PdfArray, PdfDict, PdfName, PdfOpaque, PdfRef, PdfValue } from './pdf-values';
-export { MAX_PDF_DRAWS, MAX_PDF_DRAWS_PER_PAGE } from './pdf-draw-count';
-export type { CompositeFontDictionary, SimpleFontDictionary } from './pdf-font-dictionaries';
-export { MAX_PDF_OBJSTM_ENTRY_BYTES } from './pdf-object-stream';
-import { DrawLedger, MAX_PDF_DRAWS, MAX_PDF_DRAWS_PER_PAGE, type PageDraws, inlineImageCount } from './pdf-draw-count';
-import type { CompositeFontDictionary, SimpleFontDictionary } from './pdf-font-dictionaries';
-import { MAX_PDF_OBJSTM_ENTRY_BYTES, type ObjectStreamContents, leadingInteger, memberSpans, readObjectStreamHeader } from './pdf-object-stream';
 import { type PageTreeSource, PageFault, recoversByScanning } from './pdf-page-recovery';
 import { type XrefEntry, XrefFormatError, headerOffset, lastStartXref, objectHeaderAt, readXrefStreamRows, readXrefTable } from './pdf-xref';
 
@@ -88,6 +82,8 @@ export const MAX_PDF_REFERENCE_CHAIN = 16;
 /** Largest non-stream object the structure parser reads; a bigger one cannot be a page tree node of a real file. */
 export const MAX_PDF_STRUCTURE_OBJECT_BYTES = 16 * 1024 * 1024;
 
+/** Bytes one object stored in an object stream may span, whatever the offsets that follow it say. */
+export const MAX_PDF_OBJSTM_ENTRY_BYTES = 4 * 1024 * 1024;
 /** Largest object looked at when searching a file for catalog or page objects; real ones are far smaller. */
 export const MAX_PDF_CLASSIFIED_OBJECT_BYTES = 1024 * 1024;
 /** Bytes of non-stream objects the structure parser reads over a whole document, counting every parse. */
@@ -98,6 +94,7 @@ export const MAX_PDF_STRUCTURE_PARSE_BYTES = 128 * 1024 * 1024;
  */
 const OBJSTM_HEADER_BYTES_PER_ENTRY = 32;
 const OBJSTM_HEADER_SLACK_BYTES = 256;
+const MAX_LENGTH_DIGITS = 12;
 const DEFAULT_BITS_PER_COMPONENT = 8;
 /** Colour components a predictor row may carry (section 7.4.4.4 sets no bound; DeviceN allows 32). */
 const MAX_PREDICTOR_COLORS = 32;
@@ -147,6 +144,49 @@ interface PdfObjectEntry {
   /** Position of the definition in the file; the later definition of an object number wins (section 7.5.6). */
   seq: number;
   stream?: StreamSpan;
+}
+
+/** A Type0 font dictionary (section 9.7.6) as the file defines it, with what a text reader needs of its descendant CIDFont. */
+export interface CompositeFontDictionary {
+  objectNumber: number;
+  generation: number;
+  /** The text of the dictionary (`<< ... >>`) as the file, or the object stream that holds it, writes it. */
+  text: string;
+  hasToUnicode: boolean;
+  /** The /Encoding name (Identity-H or a predefined CMap), or null for an embedded CMap stream. */
+  encoding: string | null;
+  /** /Subtype of the descendant CIDFont (CIDFontType0 or CIDFontType2). */
+  descendant: string | null;
+  /** /BaseFont of the descendant CIDFont as written, a subset tag included. */
+  descendantName: string | null;
+  /** The program the font descriptor embeds: a /FontFile2, a /FontFile3 of subtype CIDFontType0C, or null for none or another. */
+  program: 'truetype' | 'cid-cff' | null;
+  /** /Registry and /Ordering of the descendant's /CIDSystemInfo, as written (a hex string keeps its digits). */
+  registry: string | null;
+  ordering: string | null;
+  /** The descendant's /CIDToGIDMap: `identity` when absent or /Identity, the decoded stream, or null when unreadable. */
+  cidToGidMap(): 'identity' | Buffer | null;
+  /** The decoded /FontFile2 of the descendant's font descriptor, or null when there is none or it cannot be decoded. */
+  trueTypeProgram(): Buffer | null;
+  /** The decoded /FontFile3 of subtype CIDFontType0C of the descendant's font descriptor, or null when there is none or it cannot be decoded. */
+  cffProgram(): Buffer | null;
+  /** The decoded /ToUnicode stream, or null when the font has none, names a predefined CMap instead, or the stream cannot be decoded. */
+  toUnicodeData(): Buffer | null;
+  /** The widths the descendant's /W gives the CIDs from `first` to `last` (section 9.7.4.3), read as pdfjs reads them and on the step budget of the call that gave the font; none once it is spent. */
+  cidWidths(first: number, last: number): Map<number, number>;
+}
+
+/** A simple font dictionary (section 9.6: Type1, MMType1, TrueType or Type3) as the file defines it, with its encoding differences. */
+export interface SimpleFontDictionary {
+  objectNumber: number;
+  generation: number;
+  /** The text of the dictionary (`<< ... >>`) as the file, or the object stream that holds it, writes it. */
+  text: string;
+  hasToUnicode: boolean;
+  /** /BaseFont as written, a subset tag included. */
+  baseFont: string | null;
+  /** The items of the /Differences array of an /Encoding dictionary (section 9.6.5.1): integer codes and glyph names, null for any other item; null when there is no array. */
+  differences: ReadonlyArray<number | string | null> | null;
 }
 
 /** What an incremental update of the file (section 7.5.6) refers back to. */
@@ -199,13 +239,6 @@ export function filterStages(filters: PdfValue, parms: PdfValue, resolve: (value
   return names.map((name, index) => ({ name, parms: parmsOf(index) }));
 }
 
-/** What the read of one page's drawing hands to its forms: where their content goes, the pictures painted so far, and the page's draws. */
-interface PageDrawing {
-  visit: (content: string) => void;
-  painted: Set<number>;
-  draws: PageDraws;
-}
-
 interface PageNode {
   dict: PdfDict;
   resources: PdfValue;
@@ -214,6 +247,65 @@ interface PageNode {
 
 const SIMPLE_FONT_SUBTYPES = new Set(['Type1', 'MMType1', 'TrueType', 'Type3']);
 
+
+/** Integer at the start of an object's body, or null when the body is not a plain non-negative integer. */
+function leadingInteger(src: string, from: number): number | null {
+  const start = skipWhite(src, from);
+  let end = start;
+  while (isDigit(src.charCodeAt(end)) && end - start < MAX_LENGTH_DIGITS) end++;
+  if (end === start || isRegular(src.charCodeAt(end))) return null;
+  return Number(src.slice(start, end));
+}
+
+/** Reads up to `count` "<object number> <offset>" pairs from the first `first` characters of an object stream. */
+function readObjectStreamHeader(decoded: string, first: number, count: number): Array<{ num: number; offset: number }> {
+  const members: Array<{ num: number; offset: number }> = [];
+  let pos = 0;
+  const nextInteger = (): number | null => {
+    pos = skipWhite(decoded, pos);
+    if (pos >= first) return null;
+    const start = pos;
+    while (isDigit(decoded.charCodeAt(pos)) && pos - start < MAX_OBJECT_NUMBER_DIGITS) pos++;
+    if (pos === start || isRegular(decoded.charCodeAt(pos))) return null;
+    return Number(decoded.slice(start, pos));
+  };
+  while (members.length < count) {
+    const num = nextInteger();
+    const offset = num === null ? null : nextInteger();
+    if (num === null || offset === null) break;
+    members.push({ num, offset });
+  }
+  return members;
+}
+
+/** An object stream read: its decoded text, /First, the "number offset" pairs of its header, and the span of each object. */
+interface ObjectStreamContents {
+  decoded: string;
+  first: number;
+  members: Array<{ num: number; offset: number }>;
+  spans: Map<number, MemberSpan>;
+}
+
+/** Where an object stored in an object stream begins and ends in the decoded text of the stream. */
+interface MemberSpan {
+  start: number;
+  end: number;
+}
+
+/**
+ * The span of the object stored at each of `offsets` (distinct, ascending, inside `decoded`). An object ends where the next
+ * higher offset begins, so spans never overlap and one pass covers them all, and it begins at its first token: the white
+ * space and comments in front of it are skipped as the lexer of pdf.js (`Lexer.getObj`) and the tokenizers of qpdf and PDFBox
+ * skip them, inside the span only, so that a comment with no line end ends with its object.
+ */
+function memberSpans(decoded: string, offsets: number[]): Map<number, MemberSpan> {
+  const spans = new Map<number, MemberSpan>();
+  offsets.forEach((offset, index) => {
+    const end = Math.min(offsets[index + 1] ?? decoded.length, offset + MAX_PDF_OBJSTM_ENTRY_BYTES);
+    spans.set(offset, { start: skipWhite(decoded, offset, end), end });
+  });
+  return spans;
+}
 
 /** The offset after the file's last `startxref` keyword. */
 const STARTXREF = /^startxref\s+(\d{1,15})/;
@@ -265,10 +357,6 @@ export class PdfDocument {
   private formInvocations = 0;
   /** Image XObjects each page draws, by object number, recorded while its content streams are read. */
   private paintedImages: Array<Set<number>> = [];
-  /** Draws each page makes (see MAX_PDF_DRAWS_PER_PAGE), recorded while its content streams are read. */
-  private draws = new DrawLedger();
-  /** Inline images of each form XObject's content, by object number, so that a form drawn many times is tokenised once. */
-  private readonly formInlineImages = new Map<number, number>();
 
   /**
    * @param skipUndecodable leave streams alone that use a filter or predictor this reader does not decode, instead of
@@ -970,14 +1058,13 @@ export class PdfDocument {
     }
     const dict = this.resolveDict(node);
     if (dict) {
-      const treeResources = dict.entries.has('Resources') ? (dict.entries.get('Resources') as PdfValue) : inherited;
+      const resources = dict.entries.has('Resources') ? (dict.entries.get('Resources') as PdfValue) : inherited;
       const kids = this.resolve(dict.entries.get('Kids'));
       if (isArray(kids)) {
-        for (const kid of kids.items) this.collectPages(kid, treeResources, depth + 1, out, active, seen);
+        for (const kid of kids.items) this.collectPages(kid, resources, depth + 1, out, active, seen);
       } else {
         if (out.length >= MAX_PDF_PAGES) throw new PdfStructureError(`PDF lists more than ${MAX_PDF_PAGES} pages.`);
-        // pdf.js reads a page's resources up the page's own /Parent chain, which a file can make differ from the /Kids path.
-        out.push({ dict, resources: this.inheritedEntry(dict, 'Resources') ?? treeResources });
+        out.push({ dict, resources });
       }
     }
     if (num !== null) active.delete(num);
@@ -1048,7 +1135,6 @@ export class PdfDocument {
 
   private visitPageStreams(visit: ContentVisitor, withPageContent: boolean): void {
     this.paintedImages = [];
-    this.draws = new DrawLedger();
     if (this.encrypted) return;
     const pages = this.pages();
     if (pages === null) {
@@ -1058,31 +1144,22 @@ export class PdfDocument {
     const activeForms = new Set<number>();
     pages.forEach((page, pageIndex) => {
       const painted = new Set<number>();
-      const draws = this.draws.startPage();
       this.paintedImages.push(painted);
       const visitPage = (content: string): void => visit(content, pageIndex);
-      const drawing: PageDrawing = { visit: visitPage, painted, draws };
       for (const entry of withPageContent ? this.pageContentEntries(page.dict) : []) {
         this.countContentStream();
         const content = this.decodeStream(entry);
         if (content === null) continue;
         visitPage(content);
-        draws.add(inlineImageCount(content));
-        this.drawForms(content, page.resources, 0, activeForms, drawing);
+        this.drawForms(content, page.resources, 0, activeForms, visitPage, painted);
       }
       for (const entry of this.annotationAppearanceEntries(page.dict)) {
         const content = this.appearanceContent(entry);
         if (content === null) continue;
         visitPage(content);
-        draws.add(inlineImageCount(content));
-        this.drawForms(content, (entry.stream as StreamSpan).dict.entries.get('Resources') ?? null, 0, activeForms, drawing);
+        this.drawForms(content, (entry.stream as StreamSpan).dict.entries.get('Resources') ?? null, 0, activeForms, visitPage, painted);
       }
     });
-  }
-
-  /** Draws each page made in the last read of the content streams, in page order; empty for an encrypted file or one without page structure. */
-  drawsPerPage(): readonly number[] {
-    return this.draws.perPage();
   }
 
   /**
@@ -1145,26 +1222,16 @@ export class PdfDocument {
   }
 
   /**
-   * /Annots as pdf.js reads it (`Page.annotations` through `getInheritableProperty`): see `inheritedEntry`.
+   * /Annots as pdf.js reads it (`Page.annotations` through `getInheritableProperty`): the page's own, else that of the
+   * nearest node up its /Parent chain, which stops where it would visit a node again.
    * @throws PdfStructureError when the chain is longer than a page tree may be deep.
    */
   private pageAnnotations(page: PdfDict): PdfValue | undefined {
-    return this.inheritedEntry(page, 'Annots');
-  }
-
-  /**
-   * An inheritable page attribute (ISO 32000-1 section 7.7.3.4: /Resources, /MediaBox, /CropBox, /Rotate) as pdf.js reads it
-   * (`getInheritableProperty`): the page's own, else that of the nearest node up its /Parent chain, which stops where it would
-   * visit a node again. The chain is the page's own /Parent links and not the /Kids path the tree was walked by: the two can
-   * differ in a file, and pdf.js follows /Parent.
-   * @throws PdfStructureError when the chain is longer than a page tree may be deep.
-   */
-  private inheritedEntry(page: PdfDict, key: string): PdfValue | undefined {
     const visited = new Set<number>();
     let node: PdfDict | null = page;
     for (let depth = 0; node !== null; depth++) {
-      const value = node.entries.get(key);
-      if (value !== undefined) return value;
+      const annotations = node.entries.get('Annots');
+      if (annotations !== undefined) return annotations;
       const parent = node.entries.get('Parent');
       if (isRef(parent)) {
         if (visited.has(parent.num)) return undefined;
@@ -1196,7 +1263,8 @@ export class PdfDocument {
     resources: PdfValue,
     depth: number,
     active: Set<number>,
-    page: PageDrawing
+    visit: (content: string) => void,
+    painted: Set<number>
   ): void {
     if (!content.includes('Do')) return;
     const xobjects = this.resolveDict(this.resolveDict(resources)?.entries.get('XObject'));
@@ -1208,11 +1276,8 @@ export class PdfDocument {
       const reference = xobjects.entries.get(decodeNameEscapes(match[1]));
       const entry = this.entryOf(reference);
       if (!entry || !isRef(reference)) continue;
-      const isImage = this.isImage(entry);
-      if (isImage) page.painted.add(entry.num);
-      const isForm = !isImage && this.hasSubtype(entry.stream?.dict, 'Form');
-      if (isImage || isForm) page.draws.add(1);
-      if (!isForm) continue;
+      if (this.isImage(entry)) painted.add(entry.num);
+      if (!this.hasSubtype(entry.stream?.dict, 'Form')) continue;
 
       this.formInvocations++;
       if (this.formInvocations > MAX_PDF_FORM_INVOCATIONS) {
@@ -1223,22 +1288,12 @@ export class PdfDocument {
 
       const formText = this.formContent(entry);
       if (formText === null) continue;
-      page.visit(formText);
-      page.draws.add(this.formInlineImageCount(entry.num, formText));
+      visit(formText);
       const formResources = (entry.stream as StreamSpan).dict.entries.get('Resources');
       active.add(entry.num);
-      this.drawForms(formText, formResources === undefined ? resources : formResources, depth + 1, active, page);
+      this.drawForms(formText, formResources === undefined ? resources : formResources, depth + 1, active, visit, painted);
       active.delete(entry.num);
     }
-  }
-
-  private formInlineImageCount(num: number, content: string): number {
-    let count = this.formInlineImages.get(num);
-    if (count === undefined) {
-      count = inlineImageCount(content);
-      this.formInlineImages.set(num, count);
-    }
-    return count;
   }
 
   /** Decoded form XObject, decoded once; every later drawing still counts its bytes against the budget. */
