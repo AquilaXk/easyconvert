@@ -48,11 +48,17 @@ function convertRequest(key: string): NextRequest {
   return new NextRequest('http://localhost/api/v1/convert', { method: 'POST', headers: { 'Idempotency-Key': key, ...cookie }, body: form });
 }
 
-/** Spends the conversions of the day, and returns what gives them back. */
-async function spendTheDay(): Promise<() => void> {
-  const { remaining } = await redisKeyStore.getQuotaUsage(userId);
-  expect((await redisKeyStore.deductQuota(userId, remaining)).allowed).toBe(true);
-  return () => redisKeyStore.resetStore();
+/** Makes the quota store report no conversion left, and returns what gives them back. */
+function spendTheDay(): () => void {
+  let spent = true;
+  const real = redisKeyStore.getQuotaUsage.bind(redisKeyStore);
+  vi.spyOn(redisKeyStore, 'getQuotaUsage').mockImplementation(async (id) => {
+    const quota = await real(id);
+    return spent ? { ...quota, remaining: 0 } : quota;
+  });
+  return () => {
+    spent = false;
+  };
 }
 
 describe('POST /api/v1/jobs under an Idempotency-Key', () => {
@@ -78,7 +84,7 @@ describe('POST /api/v1/jobs under an Idempotency-Key', () => {
     const storageKey = `uploads/idem-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.csv`;
     await storageProvider.saveObject(storageKey, CSV, 'text/csv', 'scores.csv');
     try {
-      const giveBack = await spendTheDay();
+      const giveBack = spendTheDay();
       const refused = await v1JobsPost(jobRequest(key, storageKey));
       expect(refused.status).toBe(429);
       giveBack();
@@ -128,7 +134,7 @@ describe('POST /api/v1/jobs under an Idempotency-Key', () => {
 describe('POST /api/v1/convert under an Idempotency-Key', () => {
   it('does not keep the 429 of a spent quota, so the same request succeeds once there is a conversion left', async () => {
     const key = `convert-${crypto.randomUUID()}`;
-    const giveBack = await spendTheDay();
+    const giveBack = spendTheDay();
     const refused = await v1ConvertPost(convertRequest(key));
     expect(refused.status).toBe(429);
     giveBack();
