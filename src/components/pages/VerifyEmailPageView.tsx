@@ -10,7 +10,7 @@ import { CONTROL_HEIGHT } from '@/components/auth/AuthForms';
 import { useFragmentToken } from '@/components/auth/useFragmentToken';
 import { useAuthErrorWording } from '@/components/i18n/error-wording';
 
-const LINK_CLASS = 'font-medium text-accent-ink hover:underline rounded-xs';
+const LINK_CLASS = 'inline-flex min-h-6 items-center font-medium text-accent-ink hover:underline rounded-xs';
 
 export default function VerifyEmailPageView() {
   const t = useTranslations('auth.verify');

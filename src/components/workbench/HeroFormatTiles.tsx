@@ -36,11 +36,11 @@ function TileConnector({ joiner }: Readonly<{ joiner: string }>) {
   return (
     <div className="flex flex-col items-center gap-2">
       <div aria-hidden="true" className="flex items-center">
-        <span className="h-px w-5 sm:w-7 bg-gradient-to-r from-rule to-accent/70" />
+        <span className="h-px w-5 max-[359px]:w-3 sm:w-7 bg-gradient-to-r from-rule to-accent/70" />
         <span className="mx-1 flex size-10 items-center justify-center rounded-full border border-accent/40 bg-accent/15 text-accent-ink">
           <RefreshCw className="size-4" />
         </span>
-        <span className="h-px w-5 sm:w-7 bg-gradient-to-l from-rule to-accent/70" />
+        <span className="h-px w-5 max-[359px]:w-3 sm:w-7 bg-gradient-to-l from-rule to-accent/70" />
       </div>
       <span className="text-[10.4px] font-medium uppercase tracking-[0.25em] text-ink-3 [:lang(ko)_&]:sr-only">{joiner}</span>
     </div>

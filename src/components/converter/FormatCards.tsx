@@ -35,7 +35,7 @@ export function FormatCards({ ids }: Readonly<{ ids: readonly [string] | readonl
               {linked && (
                 <Link
                   href={`/${id}-converter`}
-                  className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-accent-ink hover:underline"
+                  className="mt-3 inline-flex min-h-6 items-center gap-1.5 text-sm font-medium text-accent-ink hover:underline"
                 >
                   <span>{t('formatConverter', { format: name })}</span>
                   <ArrowRight aria-hidden="true" className="size-3.5" />

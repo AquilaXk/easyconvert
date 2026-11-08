@@ -10,8 +10,8 @@ import { CONTROL_HEIGHT, validateRegistrationInput } from '@/components/auth/Aut
 import { useFragmentToken } from '@/components/auth/useFragmentToken';
 import { useAuthErrorWording } from '@/components/i18n/error-wording';
 
-const LINK_CLASS = 'font-medium text-accent-ink hover:underline rounded-xs';
-const INPUT_CLASS = `${CONTROL_HEIGHT} w-full px-2.5 rounded-xs border border-rule bg-sunken text-ink text-base transition-colors`;
+const LINK_CLASS = 'inline-flex min-h-6 items-center font-medium text-accent-ink hover:underline rounded-xs';
+const INPUT_CLASS = `${CONTROL_HEIGHT} w-full px-2.5 rounded-xs border border-rule-strong bg-sunken text-ink text-base transition-colors`;
 const LABEL_CLASS = 'block text-sm font-medium text-ink-2 mb-1';
 
 export default function ResetPasswordPageView() {

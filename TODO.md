@@ -20,9 +20,9 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Product and API
 - Dashboard: render the first view on the server (2.3 s spinner today); the key form's terms checkbox stays (policy 146), drop it only with a policy change.
-- Finish WCAG 2.1 AA in a real browser: contrast, target size, focus order, 200% zoom.
 
 ## Operations and security
+- Cache the public HTML pages at the Cloudflare edge (a cache rule for the page routes; `cf-cache-status` is `DYNAMIC` on `/ko` today although the page sends `s-maxage`): QA sets it in the dashboard later, or puts a scoped API token in `.env`.
 - Record the final outputs of a finished graph in the history of converted files (`recordJobResultInHistory` skips graph nodes, so only plain queue jobs and synchronous conversions are listed there today).
 - Hide the `/proc` entries of other runs from a sandboxed program: it cannot signal them any more, but still reads their command line and status (no `/proc` mount is allowed in the container).
 - Install the Redis backup timer on the host on or after 2026-12-08 (30-day notice of the new privacy text).

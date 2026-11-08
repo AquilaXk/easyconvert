@@ -139,7 +139,7 @@ export function AuthCredentialsForm({
 }: Readonly<AuthCredentialsFormProps>) {
   const t = useTranslations('auth.form');
   const inputClass =
-    `${CONTROL_HEIGHT} w-full px-2.5 rounded-xs border border-rule bg-sunken text-ink text-base transition-colors`;
+    `${CONTROL_HEIGHT} w-full px-2.5 rounded-xs border border-rule-strong bg-sunken text-ink text-base transition-colors`;
   const labelClass = 'block text-sm font-medium text-ink-2 mb-1';
 
   return (

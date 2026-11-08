@@ -104,7 +104,7 @@ export function RestApiWorkflowCard({ origin }: Readonly<{ origin: string }>) {
       <h2 className="text-lg sm:text-xl text-ink">{t('heading')}</h2>
       <p className="mt-3 max-w-xl text-sm leading-relaxed text-ink-3">
         {t.rich('intro', CODE_TAG)}{' '}
-        <Link href="/api-docs" className="inline-flex items-center gap-1 font-medium text-accent-ink hover:underline">
+        <Link href="/api-docs" className="inline-flex min-h-6 items-center gap-1 font-medium text-accent-ink hover:underline">
           <span>{t('explore')}</span>
           <ArrowRight aria-hidden="true" className="size-3.5" />
         </Link>

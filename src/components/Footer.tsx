@@ -28,7 +28,7 @@ export default function Footer() {
         </div>
 
         <div className="mt-8 flex items-center justify-center lg:mt-0 lg:order-2">
-          <nav aria-label={t('navLabel')} className="grid grid-cols-2 gap-8 md:grid-flow-col md:auto-cols-auto">
+          <nav aria-label={t('navLabel')} className="grid w-full grid-cols-2 gap-8 md:w-auto md:grid-flow-col md:auto-cols-auto">
             {FOOTER_COLUMNS.map((column) => (
               <div key={column.key}>
                 <h2 className="text-sm font-semibold">{t(`columns.${column.key}`)}</h2>
@@ -37,7 +37,7 @@ export default function Footer() {
                     <li key={link.key}>
                       <Link
                         href={link.href}
-                        className="inline-flex items-center rounded-xs text-sm font-medium text-accent-ink hover:underline transition-colors"
+                        className="inline-flex min-h-6 items-center rounded-xs text-sm font-medium text-accent-ink hover:underline transition-colors"
                       >
                         {tLinks(link.key)}
                       </Link>

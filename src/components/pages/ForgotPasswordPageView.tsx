@@ -9,7 +9,7 @@ import { AuthErrorNotice, AuthSuccessNotice } from '@/components/auth/AuthNotice
 import { CONTROL_HEIGHT } from '@/components/auth/AuthForms';
 import { useAuthErrorWording } from '@/components/i18n/error-wording';
 
-const LINK_CLASS = 'font-medium text-accent-ink hover:underline rounded-xs';
+const LINK_CLASS = 'inline-flex min-h-6 items-center font-medium text-accent-ink hover:underline rounded-xs';
 
 export default function ForgotPasswordPageView() {
   const t = useTranslations('auth.forgot');
@@ -61,7 +61,7 @@ export default function ForgotPasswordPageView() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder={tForm('emailPlaceholder')}
-              className={`${CONTROL_HEIGHT} w-full px-2.5 rounded-xs border border-rule bg-sunken text-ink text-base transition-colors`}
+              className={`${CONTROL_HEIGHT} w-full px-2.5 rounded-xs border border-rule-strong bg-sunken text-ink text-base transition-colors`}
             />
           </div>
           <button
