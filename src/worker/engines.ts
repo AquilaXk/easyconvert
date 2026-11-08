@@ -22,7 +22,7 @@ import {
 import { convertFile, convertImage } from '../lib/conversions';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertDrawingPackage, assertOfficeEmbeddedImagesWithinLimit, officeInputWithoutMacros } from './office-input-checks';
-import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertBridgedTarget, convertMarkupPageImages, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withEmbeddedWorkbookRetry, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageChainLimits, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { BIFF8_TARGET, asUnreadableDocument, convertBridgedTarget, convertMarkupPageImages, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withEmbeddedWorkbookRetry, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageChainLimits, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { writeEpsPages } from './postscript-page-limit';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { reportConversionWarning, withConversionWarnings } from '../lib/conversions/conversion-warnings';
@@ -84,7 +84,7 @@ import { convertSubtitle, isSubtitlePair } from './subtitle-route';
 import { renderSvgAsPdf } from './svg-render';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
-import { createConversionResult, getMimeType, handOffOutput, inProcessOutputPath, internalFallbackResult, preserveOutput, resolveInputContext, withPageNumbers, withSandboxDir, writeOutputSegments, readRawInputBuffer } from './worker-output';
+import { createConversionResult, findOfficeOutput, getMimeType, handOffOutput, inProcessOutputPath, internalFallbackResult, preserveOutput, resolveInputContext, resolveOfficeInputContext, withPageNumbers, withSandboxDir, writeOutputSegments, readRawInputBuffer } from './worker-output';
 import { DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { InputPixelLimitError } from '../lib/conversions/image-input-limits';
@@ -376,6 +376,8 @@ async function runHeadlessOffice(
     return null;
   }
 
+  // Every run of the office suite, whichever route asks for it, opens the package without its macros.
+  input = await officeInputWithoutMacros(input);
   await assertOfficeEmbeddedImagesWithinLimit(input);
   libreOfficePool.setSofficePath(sofficeBin);
 
@@ -403,7 +405,7 @@ async function runHeadlessOffice(
 
   try {
     return await withSandboxDir('easyconvert-office-', async (tempDir) => {
-      const { inputPath } = resolveInputContext(input, src, tempDir);
+      const { inputPath } = resolveOfficeInputContext(input, src, tempDir);
       const timeout = Math.min(stageTimeoutMs(options, 45000), 120000);
       const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
 
@@ -431,12 +433,11 @@ async function runHeadlessOffice(
         }
       );
 
-      const matches = fs.readdirSync(tempDir).filter((f) => f.startsWith('input.') && !f.endsWith(`.${src}`));
-      if (matches.length === 0) {
+      const tempOutputPath = findOfficeOutput(tempDir);
+      if (tempOutputPath === undefined) {
         throw new Error(`LibreOffice execution completed without producing expected output file for target format "${tgt}"`);
       }
 
-      const tempOutputPath = path.join(tempDir, matches[0]);
       const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
       const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
 
@@ -2232,7 +2233,6 @@ async function convertWithinImageSession(
 
   // 1. Native Headless Office
   await assertDrawingPackage(input, src);
-  if (OFFICE_NATIVE_SOURCES.has(src)) input = await officeInputWithoutMacros(input, src);
   const isOfficeResave = src === tgt && OFFICE_NATIVE_RESAVE_FORMATS.has(src);
   if (isNativeTextPdf || isRecalculate || isOfficeResave || officeSuiteReadsInputAndWrites(src, tgt, input)) {
     try {

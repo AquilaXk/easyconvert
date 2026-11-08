@@ -9,11 +9,11 @@ import { isEncryptedWordDocument } from '../lib/conversions/office/doc-reader';
 import { maxDocumentMediaBytes } from '../lib/conversions/office/media-limits';
 import { CFBF_MAX_FILE_BYTES } from '../lib/compound-file-kind';
 import { officeReadingFormat } from '../lib/conversions/office/office-suite-sources';
-import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
 import { stripOfficeMacros } from '../lib/conversions/office-macro-strip';
 import { ZIP_LOCAL_HEADER_SIGNATURE, startsWithBytes } from '../lib/conversions/package-access';
 import { MAX_ZIP_MEDIA_BYTES, readZipEntryBytes } from '../lib/conversions/zip-entry-reader';
 import { getMaxInMemoryBytes } from '../lib/storage/errors';
+import { PayloadLimitError } from '../lib/types';
 import type { WorkerVfsPayload } from './worker-types';
 
 /**
@@ -53,20 +53,33 @@ function isZipPackage(input: Buffer | WorkerVfsPayload): boolean {
 }
 
 /**
- * The package the office suite is handed: the document without the macros it holds, whatever its format is called. A package is
- * searched by content (`stripOfficeMacros`): a `.docx` with a `vbaProject.bin` and an `.odt` with a Basic library lose them as a `.docm`
- * does. A macro-enabled variant is also written as the plain package of its family. Inputs that are not in memory are handed over as
- * they are, and so is a package without macros (the very buffer, not a copy).
+ * The bytes of the ZIP package the office suite is about to open, or undefined when the input is no ZIP package (a legacy binary document,
+ * text, a file that is not there), which holds none of what is searched for. A package is read whole to be searched, so one larger than a
+ * job holds in memory is refused as a payload past a limit (HTTP 413): handing it over unread would skip the removal of its macros and the
+ * pixel limit of its pictures.
  */
-export async function officeInputWithoutMacros(input: Buffer | WorkerVfsPayload, src: string): Promise<Buffer | WorkerVfsPayload> {
-  // Only a ZIP package can hold the macros searched for, so a file of another kind (a legacy binary document, text) is not read for this.
-  if (!isZipPackage(input) && OOXML_VARIANT_FAMILY[src] === undefined) return input;
-  const buffer = inputAsBuffer(input);
+function zipPackageBytes(input: Buffer | WorkerVfsPayload): Buffer | undefined {
+  if (isMissingFile(input) || !isZipPackage(input)) return undefined;
+  const limit = getMaxInMemoryBytes();
+  const buffer = boundedInput(input, limit);
+  if (buffer === undefined) {
+    throw new PayloadLimitError(`The document is a package larger than the ${limit} bytes that are checked for macros and oversized pictures before the office suite opens it.`);
+  }
+  return buffer;
+}
+
+/**
+ * The input the office suite is handed: the document without the macros it holds, whatever its format is called. A package is searched by
+ * content (`stripOfficeMacros`): a `.docx` with a `vbaProject.bin` and an `.odt` with a Basic library lose them as a `.docm` does, and a
+ * macro-enabled main part becomes the plain one of its own kind (a template stays a template). What is handed over is the very input when
+ * there is nothing to remove; otherwise the package in memory, in the form of the input (a payload keeps its output path).
+ */
+export async function officeInputWithoutMacros(input: Buffer | WorkerVfsPayload): Promise<Buffer | WorkerVfsPayload> {
+  const buffer = zipPackageBytes(input);
   if (buffer === undefined) return input;
-  const family = OOXML_VARIANT_FAMILY[src];
-  const plain = family === undefined ? undefined : await ooxmlVariantAsPlainPackage(buffer, src, family);
-  const stripped = await stripOfficeMacros(plain?.droppedMacros ? plain.buffer : buffer);
-  return plain?.droppedMacros || stripped.buffer !== buffer ? stripped.buffer : input;
+  const stripped = await stripOfficeMacros(buffer);
+  if (stripped.buffer === buffer) return input;
+  return Buffer.isBuffer(input) ? stripped.buffer : { ...input, inputPath: undefined, inputBuffer: stripped.buffer };
 }
 /**
  * The input as a buffer when it is held in memory, or is a file of at most `maxBytes` that exists; undefined for a larger or missing file,
@@ -103,8 +116,8 @@ export async function assertDrawingPackage(input: Buffer | WorkerVfsPayload, src
 }
 
 export async function assertOfficeEmbeddedImagesWithinLimit(input: Buffer | WorkerVfsPayload): Promise<void> {
-  const buffer = inputAsBuffer(input);
-  if (!buffer || !startsWithBytes(buffer, ZIP_LOCAL_HEADER_SIGNATURE)) return;
+  const buffer = zipPackageBytes(input);
+  if (!buffer) return;
   let zip: JSZip;
   try {
     zip = await JSZip.loadAsync(buffer);

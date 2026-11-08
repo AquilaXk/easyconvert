@@ -7,7 +7,7 @@ import {
   type PdfOptimizeOptions,
   type PdfOptimizeProfile,
 } from '../../types';
-import { SandboxedBufferLimitError, SandboxedProcessError, SandboxedTimeoutError } from '../../security/process-sandbox';
+import { SandboxedBufferLimitError, SandboxedProcessError, SandboxedTimeoutError, rethrowSandboxUnavailable } from '../../security/process-sandbox';
 import { launchSandboxedBinary } from '../../security/sandbox-launcher';
 import { executeSandboxedBinary } from '../../../worker/sandbox';
 import { pdfFromHeader } from '../../format-signatures';
@@ -15,7 +15,7 @@ import { assertPdfHeader } from '../pdf-text-document';
 import { openPdfForEditing, type PdfAccess } from '../pdf-access';
 import { getGhostscriptBinaryPath } from './gs-path';
 import { qpdfListsPages, repairPageTree } from './page-tree';
-import { QPDF_RUN_TIMEOUT_MS, runQpdfToBuffer, withQpdfInputFile, withQpdfWorkspace, type QpdfRunLimits } from './qpdf-run';
+import { QPDF_MEMORY_LIMIT_MB, QPDF_RUN_TIMEOUT_MS, runQpdfToBuffer, withQpdfInputFile, withQpdfWorkspace, type QpdfRunLimits } from './qpdf-run';
 
 /**
  * PDF compression with named profiles. The result is never larger than the input: when a profile gains nothing the
@@ -198,11 +198,14 @@ async function isCleanPdf(pdf: Buffer, limits: QpdfRunLimits): Promise<boolean> 
         cwd: workspace.dir,
         timeoutMs: limits.timeoutMs ?? QPDF_RUN_TIMEOUT_MS,
         maxBuffer: GHOSTSCRIPT_MAX_DIAGNOSTIC_BYTES,
+        memoryLimitMb: QPDF_MEMORY_LIMIT_MB,
         networkIsolated: true,
         signal: limits.signal,
       });
       return true;
     } catch (error) {
+      // A host that cannot confine its programs refuses the request; it is not a damaged document.
+      rethrowSandboxUnavailable(error);
       // A check that was stopped, or ran out of the time left to the job, says nothing about the document.
       if (limits.signal?.aborted) throw limits.signal.reason ?? error;
       if (error instanceof SandboxedTimeoutError) throw new PdfPostprocessError('Compression failed: it took longer than the time allowed.');
