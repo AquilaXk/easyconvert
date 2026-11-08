@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SandboxedExecutionOptions } from '../src/lib/security/process-sandbox';
-import { PdfPostprocessError } from '../src/lib/types';
+import { PdfPostprocessError, SandboxUnavailableError } from '../src/lib/types';
+import { QPDF_MEMORY_LIMIT_MB } from '../src/lib/conversions/pdf-postprocess/qpdf-run';
 
 /**
  * Every qpdf the compression starts runs under the signal of the job and inside the time left to its deadline: the check that decides
@@ -118,6 +119,22 @@ describe('the qpdf steps of the PDF compression', () => {
     ghostscript.length = 0;
     await expect(compressWith({ remainingMs: 0 })).rejects.toBeInstanceOf(PdfPostprocessError);
     expect([...launched, ...executed, ...ghostscript]).toEqual([]);
+  });
+
+  it('runs the check under the memory limit of the other qpdf runs, not the default of the sandbox', async () => {
+    await compressWith({ remainingMs: DEADLINE_MS });
+    expect(executed.map((run) => run.options.memoryLimitMb)).toEqual([QPDF_MEMORY_LIMIT_MB]);
+    expect(launched.map((run) => run.options.memoryLimitMb)).toEqual(launched.map(() => QPDF_MEMORY_LIMIT_MB));
+  });
+
+  it('does not take a sandbox that cannot be made for a damaged input: the check fails closed', async () => {
+    const process = await import('../src/lib/security/process-sandbox');
+    vi.mocked(process.executeSandboxedBinary).mockImplementationOnce(async () => {
+      throw new SandboxUnavailableError('no namespace for the check');
+    });
+    await expect(compressWith({ remainingMs: DEADLINE_MS })).rejects.toBeInstanceOf(SandboxUnavailableError);
+    // The lossless rewrite a damaged input gets is not started on a host that cannot confine its programs.
+    expect(launched.filter((run) => run.args.includes('--compress-streams=y'))).toEqual([]);
   });
 
   it('does not take a check that ended because the job was cancelled for a damaged input', async () => {

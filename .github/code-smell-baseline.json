@@ -2318,14 +2318,14 @@
     "rule": "complexity",
     "function": "convertWithinImageSession",
     "count": 1,
-    "maxValue": 126
+    "maxValue": 125
   },
   {
     "file": "src/worker/engines.ts",
     "rule": "max-lines-per-function",
     "function": "convertWithinImageSession",
     "count": 1,
-    "maxValue": 295
+    "maxValue": 294
   },
   {
     "file": "src/worker/engines.ts",

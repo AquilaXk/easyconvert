@@ -92,6 +92,37 @@ export function resolveInputContext(
   throw new Error('Worker conversion received invalid input payload: neither inputPath nor inputBuffer provided');
 }
 
+/** The folder of a run's directory that holds the input of the office suite; the suite writes its output beside it, in the run's directory itself. */
+const OFFICE_INPUT_FOLDER = 'source';
+const OFFICE_FILE_STEM = 'input';
+
+/**
+ * The input of an office suite run as a file called `input.<ext>` in a folder of its own under `dir`, which is not the folder the suite writes its
+ * output to. The suite names its output after the file it is given, so a file of the store (`<digest>.bin`, `<uuid>.staged`) is linked under
+ * the name the output is looked for by (`findOfficeOutput`), and its extension is the one the suite picks its import filter by. The stored file is
+ * linked, not copied, and the suite's lock file lands in the folder of the run instead of the store. An output of the format of the source
+ * (`input.odd` of `input.odd`) does not replace the input.
+ */
+export function resolveOfficeInputContext(input: Buffer | WorkerVfsPayload, ext: string, dir: string): { inputPath: string } {
+  const folder = path.join(dir, OFFICE_INPUT_FOLDER);
+  fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+  const inputPath = path.join(folder, `${OFFICE_FILE_STEM}.${ext}`);
+  if (!Buffer.isBuffer(input) && input.inputPath && fs.existsSync(input.inputPath)) {
+    fs.symlinkSync(path.resolve(input.inputPath), inputPath);
+    return { inputPath };
+  }
+  const bytes = Buffer.isBuffer(input) ? input : input.inputBuffer;
+  if (!bytes) throw new Error('Worker conversion received invalid input payload: neither inputPath nor inputBuffer provided');
+  fs.writeFileSync(inputPath, bytes);
+  return { inputPath };
+}
+
+/** The file the office suite wrote for `resolveOfficeInputContext`'s input to the run's directory `dir`, or undefined when it wrote none. */
+export function findOfficeOutput(dir: string): string | undefined {
+  const written = fs.readdirSync(dir).find((name) => name.startsWith(`${OFFICE_FILE_STEM}.`));
+  return written === undefined ? undefined : path.join(dir, written);
+}
+
 /**
  * Persists an output file to target VFS destination outside ephemeral sandbox before cleanup.
  */

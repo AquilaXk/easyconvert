@@ -2,6 +2,8 @@ import { ConversionFailedError } from '../types';
 import type { ConversionResult } from '../types';
 import { openPackage } from './package-access';
 import { InflateBudget } from './bounded-inflate';
+import { stripOfficeMacros } from './office-macro-strip';
+import { safeExtractXmlElements } from './safe-xml-scanner';
 import { readZipEntryText } from './zip-entry-reader';
 
 /** The Office Open XML package families, each read by the reader of its plain format. */
@@ -29,8 +31,6 @@ interface FamilyFacts {
   mainPart: string;
   mainContentType: string;
   mimeType: string;
-  /** The main part's relationships, where a macro project is attached. */
-  mainRelationships: string;
 }
 
 const FAMILY_FACTS: Readonly<Record<OoxmlFamily, FamilyFacts>> = {
@@ -38,38 +38,28 @@ const FAMILY_FACTS: Readonly<Record<OoxmlFamily, FamilyFacts>> = {
     mainPart: '/word/document.xml',
     mainContentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml',
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    mainRelationships: 'word/_rels/document.xml.rels',
   },
   xlsx: {
     mainPart: '/xl/workbook.xml',
     mainContentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml',
     mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    mainRelationships: 'xl/_rels/workbook.xml.rels',
   },
   pptx: {
     mainPart: '/ppt/presentation.xml',
     mainContentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml',
     mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    mainRelationships: 'ppt/_rels/presentation.xml.rels',
   },
 };
 
 const CONTENT_TYPES_PART = '[Content_Types].xml';
-const MACRO_RELATIONSHIP_TYPE = /\/(vbaProject|vbaProjectSignature)$/;
-const MACRO_CONTENT_TYPE = /^application\/vnd\.ms-office\.vba/;
-const XML_ELEMENT = /<(Override|Default|Relationship)\b[^>]*?\/>/g;
-
-function attribute(element: string, name: string): string | undefined {
-  return new RegExp(`\\b${name}="([^"]*)"`).exec(element)?.[1];
-}
-
-function withMainContentType(element: string, contentType: string): string {
-  return element.replace(/\bContentType="[^"]*"/, `ContentType="${contentType}"`);
-}
+/** Most `Default` and `Override` elements a content types part may list, as in the macro removal. */
+const MAX_TYPE_ELEMENTS = 100_000;
 
 /**
- * The variant package as the plain format of its family: the main part carries the plain content type and the macro
- * project, with the relationships and content types that point at it, is left out. `droppedMacros` says whether one was.
+ * The variant package as the plain format of its family: the macros are removed with everything the office suite's own removal takes out
+ * (`stripOfficeMacros`: parts found by content type, name or relationship, in any spelling of the markup) and the main part carries the
+ * plain content type of the family, so that a template or slide show is a document, workbook or presentation. `droppedMacros` says
+ * whether a macro part was removed.
  */
 export async function ooxmlVariantAsPlainPackage(
   inputBuffer: Buffer,
@@ -79,36 +69,20 @@ export async function ooxmlVariantAsPlainPackage(
   const label = variant.toUpperCase();
   const facts = FAMILY_FACTS[family];
   const zip = await openPackage(inputBuffer, label);
-  const budget = new InflateBudget();
   const typesEntry = zip.file(CONTENT_TYPES_PART);
   if (!typesEntry) throw new ConversionFailedError(`The ${label} package has no ${CONTENT_TYPES_PART} part.`);
   if (!zip.file(facts.mainPart.slice(1))) {
     throw new ConversionFailedError(`The ${label} package has no ${facts.mainPart.slice(1)} part.`);
   }
 
-  const macroParts = new Set<string>();
-  const relationshipsEntry = zip.file(facts.mainRelationships);
-  let relationships = relationshipsEntry ? await readZipEntryText(relationshipsEntry, { budget }) : '';
-  relationships = relationships.replace(XML_ELEMENT, (element) => {
-    const type = attribute(element, 'Type');
-    const target = attribute(element, 'Target');
-    if (type === undefined || target === undefined || !MACRO_RELATIONSHIP_TYPE.test(type)) return element;
-    macroParts.add(`${facts.mainRelationships.split('/_rels/')[0]}/${target}`);
-    return '';
-  });
-
-  const types = (await readZipEntryText(typesEntry, { budget })).replace(XML_ELEMENT, (element) => {
-    const contentType = attribute(element, 'ContentType');
-    if (contentType === undefined) return element;
-    if (MACRO_CONTENT_TYPE.test(contentType)) return '';
-    return attribute(element, 'PartName') === facts.mainPart ? withMainContentType(element, facts.mainContentType) : element;
-  });
-
-  zip.file(CONTENT_TYPES_PART, types);
-  if (relationshipsEntry) zip.file(facts.mainRelationships, relationships);
-  for (const part of macroParts) zip.remove(part);
-  const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
-  return { buffer, droppedMacros: macroParts.size > 0 };
+  const stripped = await stripOfficeMacros(inputBuffer);
+  const plain = stripped.buffer === inputBuffer ? zip : await openPackage(stripped.buffer, label);
+  const typesPart = plain.file(CONTENT_TYPES_PART)!;
+  const types = await readZipEntryText(typesPart, { budget: new InflateBudget() });
+  const main = safeExtractXmlElements(types, 'Override', { maxElements: MAX_TYPE_ELEMENTS }).find((element) => element.attrs.PartName === facts.mainPart);
+  if (main === undefined || main.attrs.ContentType === facts.mainContentType) return { buffer: stripped.buffer, droppedMacros: stripped.droppedMacros };
+  plain.file(CONTENT_TYPES_PART, types.slice(0, main.startIndex) + main.raw.replace(/\bContentType\s*=\s*(["'])[^"']*\1/, `ContentType="${facts.mainContentType}"`) + types.slice(main.endIndex));
+  return { buffer: await plain.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }), droppedMacros: stripped.droppedMacros };
 }
 
 /** The plain-format package of a variant, as the result of converting the variant to its own family. */
