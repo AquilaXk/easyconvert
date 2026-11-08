@@ -212,7 +212,8 @@ describe.skipIf(!haveReader)('drawings of the other releases and of several prog
           const score = scoreInk(readRaster(ffmpeg as string, picture), truth);
           expect(score.recall).toBeGreaterThanOrEqual(MIN_RECALL);
           expect(score.precision).toBeGreaterThanOrEqual(MIN_PRECISION);
-        });
+          // Two DWG conversions, the reference reader and a render: 5.0 to 5.7 s on the CI runners, past the 5 s default.
+        }, 30_000);
       }
     }
   });
