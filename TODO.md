@@ -10,13 +10,15 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Fix PDF/A-1b veraPDF rule 6.7.3-1 by syncing XMP create and modify dates in `pdfa.ts`.
 - Review the PDF-to-text refusals (77 `PdfTextUnmappedError`, 25 `CorruptStreamError`) and convert the wrong ones.
 - Read composite fonts without a ToUnicode map through a `cmap` reader; 2.2% of glyphs are still missing.
-- Add JPEG XL input through `djxl` (in progress).
+- Close the noisy-picture JPEG gap (`jxl-noise->jpg` BD-rate PSNR +5.2%; the same pixels from a PNG give the same result).
 
 ## Speed
 - Bring `3fr->gif`, `x3f-quattro->gif`, `3fr->avif` and `mos->gif` under a fifth of a conformance part on CI, then record the durations.
 - Cut the `arw` GIF time: 16-to-8-bit RGBA conversion (119 ms) and LZW (52 ms).
 - Lift `screenshot.png->svg` from 0.85 to 0.90 of the reference on arm64.
 - Lift `silesia-xml.xz->tar` from 0.876 to the reference speed.
+- Give the 8-bit PNG writer adaptive filtering: level 6 gives 1,000,922 against 1,523,900 bytes on `jxl-bicycles` in 43 against 29 ms; it affects every PNG output, so measure the speed rows first.
+- Lift `jxl->avif` throughput from 0.87 (sandbox start plus the intermediate PNG).
 - Size thread and process counts from cgroup `cpu.max`, not `os.availableParallelism()`.
 
 ## Product and API

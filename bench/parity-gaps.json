@@ -1,5 +1,60 @@
 {
   "schemaVersion": 1,
-  "gaps": [],
+  "gaps": [
+    {
+      "id": "image/jxl-bicycles.jxl->png/bytes",
+      "issue": 641,
+      "ratio": null,
+      "note": "the 8-bit PNG writer has no adaptive row filter, so the file is larger than ImageMagick's at its defaults; the same on every PNG output (TODO.md)",
+      "recorded": 1523900,
+      "reference": 973150
+    },
+    {
+      "id": "image/jxl-delta-palette.jxl->png/bytes",
+      "issue": 641,
+      "ratio": null,
+      "note": "the 8-bit PNG writer has no adaptive row filter, so the file is larger than ImageMagick's at its defaults; the same on every PNG output (TODO.md)",
+      "recorded": 1058400,
+      "reference": 523480
+    },
+    {
+      "id": "image/jxl-noise.jxl->png/bytes",
+      "issue": 641,
+      "ratio": null,
+      "note": "the 8-bit PNG writer has no adaptive row filter, so the file is larger than ImageMagick's at its defaults; the same on every PNG output (TODO.md)",
+      "recorded": 857370,
+      "reference": 815970
+    },
+    {
+      "id": "image/jxl-noise.jxl->jpg/bd_rate_psnr",
+      "issue": 641,
+      "ratio": null,
+      "note": "JPEG encoder on a noisy picture: +5.24% bits at equal PSNR (SSIM BD-rate is 4.06% better); the same pixels from a PNG give the same bytes, so it is not the JXL path",
+      "recorded": 5.2391,
+      "reference": 0
+    },
+    {
+      "id": "image/jxl-noise.jxl->jpg/psnr",
+      "issue": 641,
+      "ratio": null,
+      "note": "point of the curve above: judged with bd_rate_psnr because the sizes differ, so it follows that row",
+      "recorded": 28.241,
+      "reference": 29.94
+    },
+    {
+      "id": "image/jxl-noise.jxl->jpg/ssim",
+      "issue": 641,
+      "ratio": null,
+      "note": "point of the curve above: judged with bd_rate_psnr because the sizes differ, so it follows that row",
+      "recorded": 0.90566,
+      "reference": 0.91896
+    },
+    {
+      "id": "image/jxl-bicycles.jxl->avif/throughput",
+      "issue": 641,
+      "ratio": 0.869,
+      "note": "speed ratio 0.869 on the arm64 Lima VM: ours adds the sandbox start and the intermediate PNG to the djxl and avifenc the reference runs"
+    }
+  ],
   "acceptedSlowdowns": []
 }
