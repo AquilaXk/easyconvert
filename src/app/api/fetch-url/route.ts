@@ -174,6 +174,16 @@ async function readBody(res: Response, meter: LinkImportMeter, importer: ImportC
   return { buffer: Buffer.concat(chunks) };
 }
 
+/** A name from a `Content-Disposition` header, percent-decoded; one that is not valid percent-encoding (`100%.pdf`) is the name as written. */
+function decodedFilename(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch (error: unknown) {
+    if (error instanceof URIError) return raw;
+    throw error;
+  }
+}
+
 /** The imported file: its bytes, with the name the remote gave it or the last segment of its address. */
 function importedFile(res: Response, finalUrl: URL, buffer: Buffer): NextResponse {
   // Determine filename
@@ -182,7 +192,7 @@ function importedFile(res: Response, finalUrl: URL, buffer: Buffer): NextRespons
   if (contentDisposition) {
     const match = /filename\*?=['"]?(?:UTF-\d['"]*)?([^;\r\n"']*)['"]?/i.exec(contentDisposition);
     if (match && match[1]) {
-      filename = decodeURIComponent(match[1]);
+      filename = decodedFilename(match[1]);
     }
   }
 
