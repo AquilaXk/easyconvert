@@ -66,7 +66,8 @@ export class RedisUserFileHistory {
 
   /** Keeps `file` until it expires. Recording the same id again replaces the record. */
   async record(file: UserConversionFile, now: number = Date.now()): Promise<void> {
-    const ttlMs = Math.max(1, file.expiresAt - now);
+    // PX and PEXPIRE take whole milliseconds; a fractional retention would make Redis refuse the write.
+    const ttlMs = Math.max(1, Math.ceil(file.expiresAt - now));
     await this.redis.eval(
       RECORD_FILE_LUA_SCRIPT,
       2,
@@ -75,7 +76,7 @@ export class RedisUserFileHistory {
       file.id,
       JSON.stringify(file),
       String(ttlMs),
-      String(file.expiresAt),
+      String(Math.ceil(file.expiresAt)),
       String(now),
       String(this.cap),
       this.recordKeyPrefix(file.userId)

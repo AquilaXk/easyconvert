@@ -899,7 +899,9 @@ export class RedisKeyStore extends KeyStore {
   public override async listUserFiles(userId: string): Promise<UserConversionFile[]> {
     const local = await super.listUserFiles(userId);
     const shared = (await this.fileHistory()?.list(userId)) ?? [];
-    return [...shared, ...local].sort((a, b) => b.createdAt - a.createdAt);
+    // One id can be in both (kept here during an outage, recorded again into Redis): the record of Redis stands for it.
+    const sharedIds = new Set(shared.map((file) => file.id));
+    return [...shared, ...local.filter((file) => !sharedIds.has(file.id))].sort((a, b) => b.createdAt - a.createdAt);
   }
 
   public override async findUserFile(userId: string, fileId: string): Promise<UserConversionFile | undefined> {
@@ -907,8 +909,10 @@ export class RedisKeyStore extends KeyStore {
   }
 
   public override async deleteUserFile(userId: string, fileId: string): Promise<boolean> {
-    if (await super.deleteUserFile(userId, fileId)) return true;
-    return (await this.fileHistory()?.remove(userId, fileId)) ?? false;
+    // Both stores are cleared, as the record can be in both; the delete holds if either had it.
+    const here = await super.deleteUserFile(userId, fileId);
+    const shared = (await this.fileHistory()?.remove(userId, fileId)) ?? false;
+    return here || shared;
   }
 
   /**

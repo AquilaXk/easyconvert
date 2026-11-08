@@ -146,4 +146,33 @@ describe.skipIf(!REDIS_URL)('the history of converted files in Redis', () => {
     expect((await store.listUserFiles(userId)).map((entry) => entry.id)).toEqual([record.id]);
     expect(await store.deleteUserFile(userId, record.id)).toBe(true);
   });
+
+  it('lists a record once and deletes it from both stores when the same id is in this process and in Redis', async () => {
+    const store = processStore();
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // The outage: the record stays in this process; the same job then completes again into Redis under the same id.
+    vi.spyOn(RedisUserFileHistory.prototype, 'record').mockRejectedValueOnce(new Error('connection lost'));
+    await store.recordUserFile(file(userId, 'twice.json', { id: 'job_twice' }));
+    await store.recordUserFile(file(userId, 'twice.json', { id: 'job_twice' }));
+
+    expect((await store.listUserFiles(userId)).map((entry) => entry.id)).toEqual(['job_twice']);
+    expect(await store.deleteUserFile(userId, 'job_twice')).toBe(true);
+
+    expect(await store.listUserFiles(userId)).toEqual([]);
+    expect(await store.findUserFile(userId, 'job_twice')).toBeUndefined();
+    expect(await processStore().listUserFiles(userId)).toEqual([]);
+  });
+
+  it('gives Redis an integer expiry when the retention comes out fractional', async () => {
+    const store = processStore();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const record = await store.recordUserFile(file(userId, 'fraction.json', { ttlMs: 1500.5 }));
+
+    expect(warn).not.toHaveBeenCalled();
+    const ttl = await admin.pttl(`${keyPrefix}user_file:{${userId}}:${record.id}`);
+    expect(ttl).toBeGreaterThan(1000);
+    expect(ttl).toBeLessThanOrEqual(1501);
+    expect((await processStore().listUserFiles(userId)).map((entry) => entry.id)).toEqual([record.id]);
+  });
 });

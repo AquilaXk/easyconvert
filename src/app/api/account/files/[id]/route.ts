@@ -26,6 +26,10 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
   // A synchronous conversion is stored under its owner's name; a queue job's result under its job id, and its record, made by the
   // job's completion, is the owner's.
   const stored = record.storageKey ? classifyStorageKey(record.storageKey) : undefined;
+  // A job's record is made under the job id, so its result is the one under `results/<record id>/`; any other key is not deleted.
+  if (stored?.namespace === 'job-result' && stored.jobId !== record.id) {
+    return notFoundRefusal('File record not found or not owned by user.');
+  }
   const ownsStored = stored?.namespace === 'job-result' || (stored?.namespace === 'user-conversion' && stored.userId === caller.user.id);
   if (record.storageKey && ownsStored) {
     try {

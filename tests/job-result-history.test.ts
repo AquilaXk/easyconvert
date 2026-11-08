@@ -132,4 +132,20 @@ describe('the history of converted files', () => {
     expect(await redisKeyStore.listUserFiles(user.id)).toEqual([]);
     await expect(Promise.resolve(storageProvider.getObject(result.resultKey))).resolves.toBeFalsy();
   }, WAIT_MS);
+
+  it('refuses to delete a stored result that is not the one of the job the record names', async () => {
+    const job = await runToCompletion(jobData());
+    await vi.waitFor(async () => expect(await redisKeyStore.listUserFiles(user.id)).toHaveLength(1), { timeout: WAIT_MS });
+    const otherKey = `results/other_job_${crypto.randomBytes(4).toString('hex')}/result.json`;
+    await storageProvider.saveObject(otherKey, Buffer.from('{}'), 'application/json', 'result.json');
+    await redisKeyStore.recordUserFile({ id: job.id, userId: user.id, fileName: 'result.json', fromFormat: 'csv', toFormat: 'json', size: 2, downloadUrl: '/x', storageKey: otherKey });
+    const cookie = { Cookie: `easyconvert_session=${createSessionToken(user)}` };
+
+    const res = await deleteFileRoute(new NextRequest(`http://localhost/api/account/files/${job.id}`, { method: 'DELETE', headers: cookie }), { params: Promise.resolve({ id: job.id }) });
+
+    expect(res.status).toBe(404);
+    expect(await storageProvider.getObject(otherKey)).toBeTruthy();
+    expect(await redisKeyStore.findUserFile(user.id, job.id)).toBeDefined();
+    await storageProvider.deleteObject(otherKey);
+  }, WAIT_MS);
 });
