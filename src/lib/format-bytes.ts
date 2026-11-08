@@ -1,4 +1,4 @@
-/** Binary multiples, so they carry the IEC names: a 1 GiB limit reads "1 GiB", never "1 GB". */
+/** Binary multiples. The API, logs and OpenAPI carry the IEC names (a 1 GiB limit reads "1 GiB"); web pages show them as KB, MB and GB (QA 2026-11-08). */
 const BYTE_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB'] as const;
 const UNIT_BASE = 1024;
 
@@ -11,7 +11,20 @@ export function byteMagnitude(bytes: number): { value: number; unit: ByteUnit } 
   return { value: Number.parseFloat((bytes / Math.pow(UNIT_BASE, index)).toFixed(1)), unit: BYTE_UNITS[index] };
 }
 
+const DISPLAY_UNITS: Record<ByteUnit, string> = { B: 'B', KiB: 'KB', MiB: 'MB', GiB: 'GB', TiB: 'TB' };
+
+/** The unit a web page shows for a binary unit; the value stays a multiple of 1024. */
+export function displayByteUnit(unit: ByteUnit): string {
+  return DISPLAY_UNITS[unit];
+}
+
 export function formatBytes(bytes: number): string {
   const { value, unit } = byteMagnitude(bytes);
   return `${value} ${unit}`;
+}
+
+/** `formatBytes` for a web page: the same 1024 multiples, written as KB, MB and GB. */
+export function formatBytesForDisplay(bytes: number): string {
+  const { value, unit } = byteMagnitude(bytes);
+  return `${value} ${displayByteUnit(unit)}`;
 }

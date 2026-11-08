@@ -53,9 +53,9 @@ const alertOf = (row: DomElement) => allElements(row).filter((element) => attrOf
 
 describe('a file row that cannot start', () => {
   it.each([
-    ['a file over the limit', 'en', { size: PLAN_MAX_FILE_BYTES.anonymous + 1 }, /exceeds the 1 GiB limit/, /, can't convert$/],
+    ['a file over the limit', 'en', { size: PLAN_MAX_FILE_BYTES.anonymous + 1 }, /exceeds the 1 GB limit/, /, can't convert$/],
     ['a password the target cannot take', 'en', { name: 'notes.pdf', sourceFormat: 'pdf', targetFormat: 'zip', options: { password: '비밀번호' } }, /password/i, /, can't convert$/],
-    ['a file over the limit', 'ko', { size: PLAN_MAX_FILE_BYTES.anonymous + 1 }, /1 GiB/, /, 변환할 수 없음$/],
+    ['a file over the limit', 'ko', { size: PLAN_MAX_FILE_BYTES.anonymous + 1 }, /1 GB/, /, 변환할 수 없음$/],
   ] as const)('reads %s in %s as one that cannot convert, names what blocks it, and shows no failure or retry', (_case, locale, item, reason, state) => {
     const row = rowOf(item as Partial<ConversionQueueItem>, locale);
     const select = buttonNames(row).find((name) => name.includes(locale === 'en' ? ': convert ' : ' 형식으로 변환'));

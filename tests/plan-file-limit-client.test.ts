@@ -169,15 +169,15 @@ describe('the drop zone states the limit of the plan', () => {
 
   // The copy is written out by hand, as the viewer reads it: an oracle independent of src/lib/plan-limits.ts.
   it.each([
-    ['anonymous', 'Up to 1 GiB per file · 7 conversions a day · Files deleted automatically'],
-    ['free', 'Up to 1 GiB per file · 10 conversions a day · Files deleted automatically'],
-    ['pro', 'Up to 5 GiB per file · 500 conversions a day · Files deleted automatically'],
-    ['enterprise', 'Up to 10 GiB per file · 10,000 conversions a day · Files deleted automatically'],
+    ['anonymous', 'Up to 1 GB per file · 7 conversions a day · Files deleted automatically'],
+    ['free', 'Up to 1 GB per file · 10 conversions a day · Files deleted automatically'],
+    ['pro', 'Up to 5 GB per file · 500 conversions a day · Files deleted automatically'],
+    ['enterprise', 'Up to 10 GB per file · 10,000 conversions a day · Files deleted automatically'],
   ] as const)('shows "%s" viewers "%s", the allowance of their own plan', (plan, copy) => {
     shownPlan.current = plan;
     const text = dropzoneText();
     expect(text).toContain(copy);
-    expect(text).not.toMatch(/2 GB|100 MB|OPFS|\bGB\b/);
+    expect(text).not.toMatch(/2 GB|100 MB|OPFS/);
   });
 });
 
@@ -212,10 +212,10 @@ describe('a file over the limit', () => {
   }
 
   it.each([
-    ['anonymous', GIB + 1, 'File size 1,073,741,825 bytes exceeds the 1 GiB limit for anonymous use.'],
-    ['free', 3 * GIB, 'File size 3 GiB exceeds the 1 GiB limit for the free plan.'],
-    ['pro', 6 * GIB, 'File size 6 GiB exceeds the 5 GiB limit for the Pro plan.'],
-    ['enterprise', 11 * GIB, 'File size 11 GiB exceeds the 10 GiB limit for the Enterprise plan.'],
+    ['anonymous', GIB + 1, 'File size 1,073,741,825 bytes exceeds the 1 GB limit for anonymous use.'],
+    ['free', 3 * GIB, 'File size 3 GB exceeds the 1 GB limit for the free plan.'],
+    ['pro', 6 * GIB, 'File size 6 GB exceeds the 5 GB limit for the Pro plan.'],
+    ['enterprise', 11 * GIB, 'File size 11 GB exceeds the 10 GB limit for the Enterprise plan.'],
   ] as const)('shows the %s viewer the size and the limit on the row and offers no plan', (plan, size, message) => {
     shownPlan.current = plan;
     const dom = rowFor(size);
@@ -239,7 +239,7 @@ describe('a file over the limit', () => {
   it('reads the limit at render, so a row dropped before the session answered follows the plan it names', () => {
     const size = 2 * GIB;
     const anonymous = rowFor(size);
-    expect(alertOf(anonymous)).toBe('File size 2 GiB exceeds the 1 GiB limit for anonymous use.');
+    expect(alertOf(anonymous)).toBe('File size 2 GB exceeds the 1 GB limit for anonymous use.');
     expect(formatButtonDisabled(anonymous)).toBe('');
 
     shownPlan.current = 'pro';
@@ -251,7 +251,7 @@ describe('a file over the limit', () => {
   it('is ready at the limit itself and refused one byte past it', () => {
     shownPlan.current = 'pro';
     expect(alertOf(rowFor(PLAN_MAX_FILE_BYTES.pro))).toBeNull();
-    expect(alertOf(rowFor(PLAN_MAX_FILE_BYTES.pro + 1))).toBe('File size 5,368,709,121 bytes exceeds the 5 GiB limit for the Pro plan.');
+    expect(alertOf(rowFor(PLAN_MAX_FILE_BYTES.pro + 1))).toBe('File size 5,368,709,121 bytes exceeds the 5 GB limit for the Pro plan.');
   });
 
   it('lets the viewer cancel a file on its way to the server and names the step', () => {
