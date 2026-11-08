@@ -190,7 +190,6 @@ export function AuthCredentialsForm({
             required
             value={password}
             onChange={(e) => onPasswordChange(e.target.value)}
-            placeholder="••••••••"
             className={`${inputClass} pr-9 [@media(pointer:coarse)]:pr-11`}
           />
           <button
@@ -217,7 +216,6 @@ export function AuthCredentialsForm({
             required
             value={confirmPassword}
             onChange={(e) => onConfirmPasswordChange(e.target.value)}
-            placeholder="••••••••"
             className={inputClass}
           />
         </div>

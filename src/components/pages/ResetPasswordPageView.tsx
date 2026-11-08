@@ -97,7 +97,6 @@ export default function ResetPasswordPageView() {
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
               className={`${INPUT_CLASS} pr-9 [@media(pointer:coarse)]:pr-11`}
             />
             <button
@@ -121,7 +120,6 @@ export default function ResetPasswordPageView() {
             required
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
-            placeholder="••••••••"
             className={INPUT_CLASS}
           />
         </div>
