@@ -15,6 +15,7 @@ const STREAM_DECODER = /\b(?:createGunzip|createInflate|createInflateRaw|createU
 /** Files that decode a stream and stop it at a cap of their own, each covered by a bomb test. */
 const STREAM_DECODER_FILES = new Set([
   'lib/conversions/archive.ts', // gunzipStreamingWithLimits: 500 MiB and 100:1
+  'lib/conversions/archive-gunzip.ts', // gunzipWithLimits, moved out of archive.ts: the caller's limits and ratio
   'lib/conversions/png-scanlines.ts', // scanRows: stops the decoder after the image's last row
   'lib/conversions/bounded-inflate.ts', // inflateRawSalvage: stream cap and document budget
   'lib/edge/workers/opfs-archive.ts', // createGunzipTarTransformer: maxOutputBytes

@@ -1,5 +1,4 @@
 import type { PIPELINE_OPERATIONS } from './api/contracts/enums';
-import type { ConversionFailure } from './conversion-failure';
 import { refusalCodeOf, type ConversionRefusalCode } from './refusal-codes';
 import type { VectorizeOptions } from './conversions/raster-vectorize-options';
 import type {
@@ -287,31 +286,7 @@ export interface ConversionOptions {
   optimize?: PdfOptimizeOptions;
 }
 
-export type QueueItemStatus =
-  | 'ready'
-  | 'uploading'
-  | 'converting'
-  | 'completed'
-  | 'error';
-
-export interface ConversionQueueItem {
-  id: string;
-  file: File;
-  name: string;
-  size: number;
-  sourceFormat: string;
-  targetFormat: string;
-  status: QueueItemStatus;
-  /** Percent done as a stage measured it; absent while the running stage has no measure (one request to the server). */
-  progress?: number;
-  resultUrl?: string;
-  resultSize?: number;
-  error?: ConversionFailure;
-  options: ConversionOptions;
-  edgeProcessed?: boolean;
-  edgeTier?: string;
-  unchanged?: boolean; // the result is the input itself: compressing did not make it smaller
-}
+export type { QueueItemStatus, ConversionQueueItem } from './queue-item-types';
 
 /** What a stream a conversion left out was. `chapters` is the chapter list, which has no stream index. */
 export type DroppedStreamKind = 'video' | 'audio' | 'subtitle' | 'attachment' | 'data' | 'attached_picture' | 'chapters';

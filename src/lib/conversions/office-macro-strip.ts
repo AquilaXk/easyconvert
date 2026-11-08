@@ -4,7 +4,7 @@ import { startsWithBytes, ZIP_LOCAL_HEADER_SIGNATURE } from './package-access';
 import { newRelationshipAllowance, forEachRelationship } from './office/opc-parts';
 import { resolveZipPath } from './office/zip-path';
 import { safeExtractXmlElements, type SafeXmlElement } from './safe-xml-scanner';
-import { readZipEntryText } from './zip-entry-reader';
+import { readZipEntryBytes, readZipEntryText } from './zip-entry-reader';
 import { ConversionFailedError } from '../types';
 
 /**
@@ -252,7 +252,7 @@ async function stripOpenDocumentMacros(zip: JSZip, budget: InflateBudget): Promi
   for (const name of macroEntries) zip.remove(name);
   // The first entry of an OpenDocument package is its mimetype, stored: a reader finds the type by the bytes after the header.
   const mimetype = zip.file(ODF_MIMETYPE_PART);
-  if (mimetype) zip.file(ODF_MIMETYPE_PART, await mimetype.async('nodebuffer'), { compression: 'STORE' });
+  if (mimetype) zip.file(ODF_MIMETYPE_PART, await readZipEntryBytes(mimetype, { budget }), { compression: 'STORE' });
   return 'dropped';
 }
 
