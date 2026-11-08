@@ -11,6 +11,7 @@ import { jsonRecords, runBytes, zipfText } from './helpers/archive-corpus';
 import { oracleTest } from './helpers/oracle-test';
 import { buildTarWithEntries } from './helpers/hostile-archives';
 import { createSevenZipSpy, type SevenZipSpy } from './helpers/seven-zip-spy';
+import { isProcessRunning as isRunning } from './helpers/process-state';
 
 /**
  * Converting a compressed tar (or a compressed single file) to tar is stream decompression. A payload that is a tar is
@@ -90,9 +91,9 @@ function tarNames(tar: Buffer, label: string): string[] {
   return execFileSync('tar', ['-tf', file], { encoding: 'utf8' }).split('\n').filter((line) => line !== '');
 }
 
-/** Returns when the wrapper processes of the spy are gone; it waits on that fact, not on a fixed delay. */
-async function waitUntilWrappersGone(): Promise<void> {
-  await vi.waitFor(() => expect(spy.runningWrappers(), 'a wrapper process is still running').toEqual([]), { timeout: 30_000, interval: 25 });
+/** Returns when the process no longer exists; it waits on that fact, not on a fixed delay. */
+async function waitUntilGone(pid: number): Promise<void> {
+  await vi.waitFor(() => expect(isRunning(pid), `process ${pid} is still running`).toBe(false), { timeout: 30_000, interval: 25 });
 }
 
 beforeAll(() => {
@@ -241,7 +242,7 @@ describe('native route: limits apply to the stream while it flows', () => {
       // The wrapper writes its exit status when the real 7-Zip returns. 7-Zip is cut off by the bound of its output (the
       // kernel ends it, or the sandbox kills the group before it returns), so it never returns with a status of success.
       // Once the wrapper process is gone nothing more can be written, so that is the moment the record is final.
-      await waitUntilWrappersGone();
+      await waitUntilGone(spy.pids()[0]);
       expect(spy.exitStatuses().filter((status) => status === 0)).toEqual([]);
     },
     TEST_TIMEOUT_MS
@@ -253,7 +254,7 @@ describe('native route: limits apply to the stream while it flows', () => {
     async () => {
       const result = await convertWithNative7z(COMPRESSORS[0].compress(zipfText(20_000, 24)), 'xz', 'tar', {}, 'fine.xz');
       if (result === null) throw new Error('the native 7-Zip engine declined the conversion');
-      await waitUntilWrappersGone();
+      await waitUntilGone(spy.pids()[0]);
       expect(spy.completedCalls()).toBe(1);
     },
     TEST_TIMEOUT_MS

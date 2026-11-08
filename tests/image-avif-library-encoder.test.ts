@@ -13,7 +13,7 @@ import { injectExifOrientation } from './helpers/exif-orientation';
 import { lineArt16, interface16 } from './helpers/graphic-parity';
 import { runConvert } from './helpers/imagemagick';
 import { oracleTest } from './helpers/oracle-test';
-import { uniqueSleepInterval, waitUntilNoProcessWithArgument, waitUntilProcessWithArgument } from './helpers/process-state';
+import { isProcessRunning as isRunning } from './helpers/process-state';
 
 /**
  * AVIF through the reference AVIF library's command-line encoder. Oracles: `avifdec --info` (bit depth, chroma
@@ -148,9 +148,14 @@ async function waitFor(condition: () => boolean, timeoutMs = 10_000): Promise<vo
   }
 }
 
-/** True once no process has `interval` as an argument (polled for up to `graceMs`): the sleeper is found by it, since the id it reads for itself is a namespace id. */
-async function isGone(interval: string, graceMs = 5000): Promise<boolean> {
-  return waitUntilNoProcessWithArgument(interval, graceMs, 50);
+/** True once no process has `pid` (polled for up to `graceMs`). */
+async function isGone(pid: number, graceMs = 5000): Promise<boolean> {
+  const deadline = Date.now() + graceMs;
+  for (;;) {
+    if (!isRunning(pid)) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 function failingTool(name: string, body: string): { script: string; marker: string } {
@@ -616,32 +621,30 @@ describe('encoder run lifecycle', () => {
 
   it('kills a tool that outlives the timeout and removes the working directory', async () => {
     await withPrivateTmpdir(async (tmp) => {
-      const pidFile = path.join(workDir, 'timeout.started');
-      const interval = uniqueSleepInterval();
-      const tool = failingTool('lifecycle-sleeps', `echo started > '${pidFile}'\nexec sleep ${interval}`);
+      const pidFile = path.join(workDir, 'timeout.pid');
+      const tool = failingTool('lifecycle-sleeps', `echo $$ > '${pidFile}'\nexec sleep 60`);
       const failure = await rejection(async () => encodeAvifWithCli(tool.script, await request(), { timeoutMs: 400 }));
       expect(failure).toBeInstanceOf(ConversionFailedError);
       expect((failure as Error).message).toMatch(/did not finish within 400 ms/);
-      expect(existsSync(pidFile), 'the tool started').toBe(true);
-      expect(await isGone(interval)).toBe(true);
+      expect(await isGone(Number(readFileSync(pidFile, 'utf-8')))).toBe(true);
       expect(jobDirs(tmp)).toEqual([]);
     });
   }, 60_000);
 
   it('stops the tool and removes the working directory when the conversion is aborted', async () => {
     await withPrivateTmpdir(async (tmp) => {
-      const pidFile = path.join(workDir, 'abort.started');
-      const interval = uniqueSleepInterval();
-      const tool = failingTool('abort-sleeps', `echo started > '${pidFile}'\nexec sleep ${interval}`);
+      const pidFile = path.join(workDir, 'abort.pid');
+      const tool = failingTool('abort-sleeps', `echo $$ > '${pidFile}'\nexec sleep 60`);
       process.env.AVIFENC_PATH = tool.script;
       const controller = new AbortController();
       const source = await grey8Graphic();
       const running = rejection(() => convertImage(source, 'avif', { signal: controller.signal }, 'g.png', 'png'));
       await waitFor(() => existsSync(pidFile));
-      expect(await waitUntilProcessWithArgument(interval, 5000), 'the tool is running before the abort').toBe(true);
+      const pid = Number(readFileSync(pidFile, 'utf-8'));
+      expect(await isGone(pid, 0)).toBe(false);
       controller.abort(new Error('stopped by the test'));
       expect(await running).toBeInstanceOf(Error);
-      expect(await isGone(interval)).toBe(true);
+      expect(await isGone(pid)).toBe(true);
       expect(jobDirs(tmp)).toEqual([]);
     });
   }, 60_000);

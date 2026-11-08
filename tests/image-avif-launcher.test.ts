@@ -7,7 +7,6 @@ import { sandboxLauncherState, startSandboxLauncher, stopSandboxLauncher } from 
 import { ConversionFailedError } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { interface16 } from './helpers/graphic-parity';
-import { ancestorsOf, processesWithArgument, waitUntilProcessWithArgument } from './helpers/process-state';
 import { skipWithoutTools } from './helpers/strict-skip';
 
 /**
@@ -20,9 +19,6 @@ import { skipWithoutTools } from './helpers/strict-skip';
 const LARGE_WORKER_BYTES = 1024 * 1024 * 1024;
 const SCRIPT_MODE = 0o755;
 const CONVERSION_TIMEOUT_MS = 60_000;
-/** The wrapper gives up waiting for its release after this many polls of 50 ms (20 s), whatever the test does. */
-const WRAPPER_WAIT_POLLS = 400;
-const WRAPPER_START_HANG_GUARD_MS = 20_000;
 const toolsMissing = skipWithoutTools('avifenc');
 
 let workDir: string;
@@ -54,7 +50,7 @@ function restore(name: string, value: string | undefined): void {
   else process.env[name] = value;
 }
 
-/** A stand-in for the encoder that leaves its parent process id and its working directory on record, then runs the real encoder. */
+/** A stand-in for the encoder that leaves its working directory and the program's parent process id on record, then runs the real encoder. */
 function recordingWrapper(name: string, tail = ''): { script: string; record: string } {
   const script = path.join(workDir, name);
   const record = path.join(workDir, `${name}.record`);
@@ -72,22 +68,15 @@ const launchedPrograms = (): number => sandboxLauncherState().launched;
 describe.skipIf(toolsMissing)('the AVIF encoder through the launcher helper', () => {
   it('is started by the helper, and writes the file it writes when the process starts it itself', async () => {
     const source = await interface16();
-    // The wrapper waits for a file while this test looks at its place in the process tree: the sandbox may put the program in a PID namespace, where the
-    // parent it reads for itself is not the helper, so the parent is read from the host's view of the running wrapper.
-    const release = path.join(workDir, 'records-parent.release');
-    const wrapper = recordingWrapper('records-parent', `n=0\nwhile [ ! -e '${release}' ] && [ $n -lt ${WRAPPER_WAIT_POLLS} ]; do sleep 0.05; n=$((n+1)); done`);
+    const wrapper = recordingWrapper('records-parent');
     process.env.AVIFENC_PATH = wrapper.script;
 
     const before = launchedPrograms();
-    const converting = convertImage(source, 'avif', { quality: 60 }, 'ui.png', 'png');
-    expect(await waitUntilProcessWithArgument(wrapper.script, WRAPPER_START_HANG_GUARD_MS), 'the encoder started').toBe(true);
-    const helper = sandboxLauncherState().pid;
-    const [encoder] = processesWithArgument(wrapper.script);
-    const firstOwner = ancestorsOf(encoder).find((pid) => pid === helper || pid === process.pid);
-    writeFileSync(release, '');
-    const viaHelper = await converting;
+    const viaHelper = await convertImage(source, 'avif', { quality: 60 }, 'ui.png', 'png');
     expect(launchedPrograms() - before, 'the encoder was started by the helper').toBe(1);
-    expect(firstOwner, 'it stands below the helper, not directly below this process').toBe(helper);
+
+    const [parent] = readFileSync(wrapper.record, 'utf-8').trim().split(' ');
+    expect(Number(parent), 'its parent is the helper, not this process').toBe(sandboxLauncherState().pid);
 
     process.env.SANDBOX_LAUNCHER = 'off';
     const direct = await convertImage(source, 'avif', { quality: 60 }, 'ui.png', 'png');

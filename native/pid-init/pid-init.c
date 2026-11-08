@@ -16,10 +16,8 @@
 //   - PID 1, which forks the program, reaps every process that is left without a parent in the namespace, and writes the wait status of
 //     the program into a pipe when the program has ended (the namespace, with whatever the program left running, ends with it);
 //   - the program.
-// PID 1 dies with this process (PR_SET_PDEATHSIG), so killing this process, or its process group, ends the program too. The signal is
-// asked for after the fork, so a process killed in between would leave PID 1 and the program running unwatched: this process holds the
-// write end of a pipe for as long as it lives, and PID 1 looks at the other end once the signal is set (a closed end means this process is
-// already gone). A report that never arrives means PID 1 was killed, and this process kills itself the same way.
+// PID 1 dies with this process (PR_SET_PDEATHSIG), so killing this process, or its process group, ends the program too. A report that
+// never arrives means PID 1 was killed, and this process kills itself the same way.
 //
 // Exit status: that of the program; 127 when it is not found and 126 when it cannot be run (as a shell and `unshare` say); 125 when the
 // namespace cannot be made.
@@ -27,7 +25,6 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdio.h>
@@ -61,14 +58,9 @@ static void end_like(int wstatus) {
 }
 
 /* PID 1 of the namespace. Never returns. */
-static void run_init(char *const *argv, int report_fd, int unused_fd, int watch_fd, int parent_end_fd) {
+static void run_init(char *const *argv, int report_fd, int unused_fd) {
   close(unused_fd);
-  close(parent_end_fd);
   prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0);
-  /* The parent held its end of the pipe open when it forked us; a hang-up here means it died before the signal above was asked for. */
-  struct pollfd parent_alive = {.fd = watch_fd, .events = 0};
-  if (poll(&parent_alive, 1, 0) > 0 && (parent_alive.revents & POLLHUP)) _exit(EXIT_NAMESPACE);
-  close(watch_fd);
   pid_t program = fork();
   if (program < 0) _exit(EXIT_NAMESPACE);
   if (program == 0) {
@@ -102,13 +94,10 @@ int main(int argc, char **argv) {
   }
   int report[2];
   if (pipe2(report, O_CLOEXEC) != 0) return EXIT_NAMESPACE;
-  int alive[2];
-  if (pipe2(alive, O_CLOEXEC) != 0) return EXIT_NAMESPACE;
   pid_t init = fork();
   if (init < 0) return EXIT_NAMESPACE;
-  if (init == 0) run_init(argv + 2, report[1], report[0], alive[0], alive[1]);
+  if (init == 0) run_init(argv + 2, report[1], report[0]);
   close(report[1]);
-  close(alive[0]);
   int wstatus = 0;
   ssize_t got;
   do {
