@@ -23,9 +23,12 @@ const notFound = (path) => ({ path, status: 404, noindex: true, title: messages[
 const badRequest = (path) => ({ path, status: 400 });
 const page = (path, status = 200) => ({ path, status, noindex: false });
 
-/** The routes of the app that are pages of their own, and the status each answers (the account page redirects to the dashboard). */
+/**
+ * The routes of the app that are pages of their own, and the status each answers: the account page redirects to the dashboard, and
+ * the dashboard sends a visitor without a session to the login page (src/lib/auth/session-gate.ts).
+ */
 const ROUTES = [
-  ['/dashboard/api-keys', 200],
+  ['/dashboard/api-keys', 307],
   ['/api-docs', 200],
   ['/pricing', 200],
   ['/auth', 200],
