@@ -4,8 +4,7 @@ import path from 'node:path';
 import { type RdPoint, tryBdRate } from '../bd-rate';
 import { REPO_ROOT } from '../config';
 import { convertWithProject } from '../convert';
-import { resolveNativeBinary } from '../../src/worker/engines';
-import { isHighEfficiencyNef } from '../../src/worker/raw-nef-compression';
+import { importProduct } from '../product';
 import type { FamilyContext, FamilyRunner } from '../context';
 import { MissingToolError, OutputIntegrityError, ToolRunError } from '../errors';
 import { decodeImageToPng, fileSize, pictureQuality, type ImageKind } from '../measure';
@@ -204,7 +203,9 @@ async function measureSample(ctx: FamilyContext, subject: Subject, file: string,
   const { name, format, sample } = subject;
   const input = fs.readFileSync(file);
   /** A Nikon NEF with High Efficiency compression is developed by the pinned LibRaw snapshot the product runs for it (docs/policy-decisions.md, entry 195); where that build is absent the reference cannot develop it, as no released LibRaw can. */
-  const referenceDecoder = (format === 'nef' && isHighEfficiencyNef(file) ? resolveNativeBinary('dcrawEmuHe') : null) ?? tools.dcraw_emu;
+  const { rawDecoderFor } = await importProduct<typeof import('../../src/worker/raw-decode-settings')>('worker/raw-decode-settings');
+  const { resolveNativeBinary } = await importProduct<typeof import('../../src/worker/engines')>('worker/engines');
+  const referenceDecoder = rawDecoderFor(format, file, tools.dcraw_emu, () => resolveNativeBinary('dcrawEmuHe'));
   const developed = (label: string): string => {
     const tiff = ctx.scratch(`${name}-${label}.tiff`);
     runTool(referenceDecoder, [...DEVELOP_FLAGS, '-Z', tiff, file]);

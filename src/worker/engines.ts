@@ -98,7 +98,9 @@ import {
   readDecodedRawImage, readDecodedTiffLayout,
 } from './raw-decoded-tiff';
 import { dataCorruptedWarning, decoderStderrDetail, decoderWarningOffset } from './raw-decoder-report';
-import { isHighEfficiencyNef } from './raw-nef-compression';
+import {
+  RAW_DECODE_DEFAULT_TIMEOUT_MS, RAW_DECODE_FLAGS, RAW_DECODE_MAX_TIMEOUT_MS, RAW_DECODE_MEMORY_LIMIT_MB, RAW_DECODE_UNRECOGNIZED_PATTERN, rawDecoderFor,
+} from './raw-decode-settings';
 import { SEVEN_ZIP_BINARY_CANDIDATES } from '../lib/conversions/archive';
 import { sanitizeLeafFilename } from '../lib/conversions/archive-extraction-safety';
 import { withExtractionNotes } from '../lib/conversions/archive-alternate-streams';
@@ -203,11 +205,7 @@ const BINARY_PATHS: Record<string, string[]> = {
     '/usr/local/bin/dcraw_emu',
     '/opt/homebrew/bin/dcraw_emu',
   ],
-  dcrawEmuHe: [
-    ...(process.env.DCRAW_EMU_HE_PATH ? [process.env.DCRAW_EMU_HE_PATH] : []),
-    '/usr/local/bin/dcraw_emu_he',
-    '/opt/libraw-he/bin/dcraw_emu',
-  ],
+  dcrawEmuHe: [...(process.env.DCRAW_EMU_HE_PATH ? [process.env.DCRAW_EMU_HE_PATH] : []), '/usr/local/bin/dcraw_emu_he', '/opt/libraw-he/bin/dcraw_emu'],
   ps2pdf: [
     ...(process.env.PS2PDF_PATH ? [process.env.PS2PDF_PATH] : []),
     '/usr/bin/ps2pdf',
@@ -1754,24 +1752,6 @@ export async function convertPdfPagesWithNativeTools(
 
 /** Targets that package the original camera file instead of rendering its pixels. */
 const RAW_PACKAGING_TARGETS: ReadonlySet<string> = new Set(['zip']);
-const RAW_DECODE_DEFAULT_TIMEOUT_MS = 120_000;
-const RAW_DECODE_MAX_TIMEOUT_MS = 600_000;
-/** Address-space ceiling for the decoder: room for the largest sensor plus LibRaw's working buffers. */
-const RAW_DECODE_MEMORY_LIMIT_MB = 4096;
-const RAW_DECODE_UNRECOGNIZED_PATTERN = /unsupported file format|not raw file/i;
-/** dcraw_emu: write a TIFF (-T) with 16-bit samples (-6), camera white balance (-w) in sRGB (-o 1). */
-const RAW_DECODE_FLAGS: readonly string[] = ['-T', '-6', '-w', '-o', '1'];
-
-/**
- * The `dcraw_emu` that decodes `inputPath`: the distribution's, except for a Nikon NEF whose maker note says High Efficiency or High
- * Efficiency*, which only the pinned LibRaw snapshot of `scripts/install-libraw-he.sh` reads. Where that program is not installed the
- * distribution's runs as before and refuses the file with its own words.
- */
-function rawDecoderFor(src: string, inputPath: string, distributionDecoder: string): string {
-  if (src !== 'nef' || !isHighEfficiencyNef(inputPath)) return distributionDecoder;
-  return resolveBinary(BINARY_PATHS.dcrawEmuHe, process.env.DCRAW_EMU_HE_PATH) ?? distributionDecoder;
-}
-
 /**
  * Decodes camera RAW sensor data natively with LibRaw (`dcraw_emu`) into a 16-bit sRGB TIFF, then
  * encodes the requested target from it with the in-process image pipeline.
@@ -1801,7 +1781,7 @@ export async function convertWithNativeRaw(
   return withConversionWarnings(() => withSandboxDir('easyconvert-raw-', async (tempDir) => {
     const { inputPath } = resolveInputContext(input, src, tempDir);
     assertRawSensorPixels(inputPath);
-    const decoder = rawDecoderFor(src, inputPath, dcrawBin);
+    const decoder = rawDecoderFor(src, inputPath, dcrawBin, () => resolveBinary(BINARY_PATHS.dcrawEmuHe, process.env.DCRAW_EMU_HE_PATH));
     const decodedPath = path.join(tempDir, 'decoded.tiff');
     let decoderStderr = '';
     try {
