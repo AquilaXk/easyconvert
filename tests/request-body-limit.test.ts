@@ -184,16 +184,19 @@ describe('the body each upload and job call takes, by what the call is', () => {
     expect(requestBodyVerdict(target, NO_LENGTH)).toMatchObject({ countUpTo: SMALL_REQUEST_BODY_MAX_BYTES, status: 413 });
   });
 
-  it.each(['/api/v1/jobs', '/api/queue/jobs'])('takes a JSON call to %s as small and its multipart form as a file', (route) => {
-    expect(verdict(route, TOO_BIG_FOR_JSON, 'application/json')?.status).toBe(413);
-    expect(verdict(route, TOO_BIG_FOR_JSON)?.status).toBe(413);
-    expect(verdict(route, String(SMALL_REQUEST_BODY_MAX_BYTES), 'application/json')).toBeNull();
+  it.each(['/api/v1/jobs', '/api/queue/jobs'])('takes a JSON call to %s without a length, up to one request, and its multipart form as a file', (route) => {
+    // A job may carry its file inline (base64, up to INLINE_JOB_PAYLOAD_MAX_BYTES), so its JSON is not held to 1 MiB.
+    expect(verdict(route, String(SINGLE_REQUEST_BODY_MAX_BYTES), 'application/json')).toBeNull();
+    expect(verdict(route, String(SINGLE_REQUEST_BODY_MAX_BYTES + 1), 'application/json')?.status).toBe(413);
     expect(verdict(route, String(SINGLE_REQUEST_BODY_MAX_BYTES), MULTIPART)).toBeNull();
     expect(verdict(route, String(SINGLE_REQUEST_BODY_MAX_BYTES + 1), MULTIPART)?.status).toBe(413);
     const json = new Headers({ 'content-type': 'application/json' });
     const form = new Headers({ 'content-type': 'Multipart/Form-Data; boundary=x' });
     const target = new URL(`http://localhost:3000${route}`);
-    expect(requestBodyVerdict(target, json)).toMatchObject({ countUpTo: SMALL_REQUEST_BODY_MAX_BYTES, status: 413 });
+    const counted = requestBodyVerdict(target, json);
+    expect(counted).toMatchObject({ countUpTo: SINGLE_REQUEST_BODY_MAX_BYTES, status: 413 });
+    expect((counted as { detail: string }).detail).toContain('This request carries more than the 64 MiB one request may carry.');
+    expect(requestBodyVerdict(target, NO_LENGTH)).toMatchObject({ countUpTo: SINGLE_REQUEST_BODY_MAX_BYTES, status: 413 });
     expect(requestBodyVerdict(target, form)).toEqual(LENGTH_REQUIRED);
   });
 
@@ -224,13 +227,23 @@ describe('the body each upload and job call takes, by what the call is', () => {
 });
 
 describe('the edge middleware refuses a body before any route buffers it', () => {
-  it('lets a JSON call to an upload or job route through without a Content-Length, and refuses it past 1 MiB', async () => {
+  it('lets a JSON call to an upload route through without a Content-Length, and refuses it past 1 MiB', async () => {
     const middleware = await loadMiddleware();
-    for (const call of ['/api/v1/uploads?action=initiate', '/api/v1/uploads/direct', '/api/v1/uploads/direct/complete', '/api/v1/jobs', '/api/queue/jobs']) {
+    for (const call of ['/api/v1/uploads?action=initiate', '/api/v1/uploads/direct', '/api/v1/uploads/direct/complete']) {
       const within = await middleware(chunked(call, 512, { 'transfer-encoding': 'chunked', 'content-type': 'application/json' }));
       expect(within.headers.get('x-middleware-next'), call).toBe('1');
       const over = await middleware(chunked(call, SMALL_REQUEST_BODY_MAX_BYTES + 1, { 'transfer-encoding': 'chunked', 'content-type': 'application/json' }));
       expect(over.status, call).toBe(413);
+    }
+  });
+
+  it('lets a JSON job call through without a Content-Length, also past 1 MiB, since a job may carry its file inline', async () => {
+    const middleware = await loadMiddleware();
+    for (const call of ['/api/v1/jobs', '/api/queue/jobs']) {
+      const small = await middleware(chunked(call, 512, { 'transfer-encoding': 'chunked', 'content-type': 'application/json' }));
+      expect(small.headers.get('x-middleware-next'), call).toBe('1');
+      const inline = await middleware(chunked(call, 3 * 1024 * 1024, { 'content-type': 'application/json' }));
+      expect(inline.headers.get('x-middleware-next'), call).toBe('1');
     }
   });
 

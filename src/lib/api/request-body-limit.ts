@@ -54,6 +54,8 @@ function isFileRoute({ pathname, searchParams }: RequestTarget): boolean {
 type BodyKind =
   /** A JSON or form of a few fields: 1 MiB, counted as it arrives when it has no length. */
   | 'small'
+  /** A JSON that may carry a file inline (a job's `inputBufferBase64`): one request, counted as it arrives when it has no length. */
+  | 'inline'
   /** A file in one request (or a tus chunk): one request, and a length declared. */
   | 'single'
   /** One part of a file sent in parts: the largest part, and a length declared. */
@@ -76,8 +78,9 @@ function isMultipartForm(headers: HeaderSource): boolean {
 /**
  * What the body of a request to `target` is. The upload routes carry more than files: the control calls of an upload
  * (`?action=initiate|complete|abort`, `direct`, `direct/complete`) are small JSON, a part is held to the largest part, and
- * only a tus creation or chunk is a file of one request. The job routes take a file only in a multipart form; their JSON
- * calls are small. Any other route that takes files is `single`, and every route else is `small`.
+ * only a tus creation or chunk is a file of one request. The job routes take a file in a multipart form, which must declare
+ * its length, or inline in a JSON body (up to INLINE_JOB_PAYLOAD_MAX_BYTES of file, base64 encoded), which may come without
+ * one. Any other route that takes files is `single`, and every route else is `small`.
  */
 function bodyKindOf(target: RequestTarget, headers: HeaderSource): BodyKind {
   const { pathname, searchParams } = target;
@@ -88,7 +91,7 @@ function bodyKindOf(target: RequestTarget, headers: HeaderSource): BodyKind {
     if (!action) return 'single';
     return action === 'part' ? 'part' : 'small';
   }
-  if (FORM_OR_JSON_ROUTES.some((route) => isUnder(pathname, route))) return isMultipartForm(headers) ? 'single' : 'small';
+  if (FORM_OR_JSON_ROUTES.some((route) => isUnder(pathname, route))) return isMultipartForm(headers) ? 'single' : 'inline';
   return isFileRoute(target) ? 'single' : 'small';
 }
 
@@ -114,11 +117,12 @@ function partsFlowOf(pathname: string): { upload: string; job: string } {
     : { upload: 'POST /api/storage/multipart', job: 'POST /api/queue/jobs' };
 }
 
-/** What a route that takes a file says to a body over one request: the way to send it in parts. */
-function singleRequestOverflowDetail(declaredBytes: number, pathname: string): string {
+/** What a route that takes a file says to a body over one request: the way to send it in parts. A body counted as it arrived has no declared length. */
+function singleRequestOverflowDetail(declaredBytes: number | undefined, pathname: string): string {
   const flow = partsFlowOf(pathname);
+  const carries = declaredBytes === undefined ? 'more than' : `${exactBytes(declaredBytes)}, over`;
   return (
-    `This request carries ${exactBytes(declaredBytes)}, over the ${formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES)} one request may carry. ` +
+    `This request carries ${carries} the ${formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES)} one request may carry. ` +
     `Send a larger file in parts of at most ${formatBytes(UPLOAD_PART_MAX_BYTES)}: open an upload with ${flow.upload}, send the parts, ` +
     `then start the conversion with ${flow.job} on the stored file.`
   );
@@ -158,17 +162,19 @@ export type RequestBodyCheck = NonNullable<BodyLengthVerdict> | CountedBody | nu
 
 /**
  * The check of the body of a request to `target`, by what the call is (`bodyKindOf`). A body without a declared length is
- * counted: a file or a part takes none of it (411 at its first byte, which an empty body never reaches), and a small body
- * takes the small limit.
+ * counted: a file or a part takes none of it (411 at its first byte, which an empty body never reaches), a small body takes
+ * the small limit, and a JSON that may carry a file takes one request.
  */
 export function requestBodyVerdict(target: RequestTarget, headers: HeaderSource): RequestBodyCheck {
   const kind = bodyKindOf(target, headers);
   if (headers.get('content-length') === null) {
-    return kind === 'small'
-      ? { countUpTo: SMALL_REQUEST_BODY_MAX_BYTES, status: 413, detail: COUNTED_OVERFLOW_DETAIL }
-      : { countUpTo: 0, status: 411, detail: LENGTH_REQUIRED_DETAIL };
+    if (kind === 'small') return { countUpTo: SMALL_REQUEST_BODY_MAX_BYTES, status: 413, detail: COUNTED_OVERFLOW_DETAIL };
+    if (kind === 'inline') {
+      return { countUpTo: SINGLE_REQUEST_BODY_MAX_BYTES, status: 413, detail: singleRequestOverflowDetail(undefined, target.pathname) };
+    }
+    return { countUpTo: 0, status: 411, detail: LENGTH_REQUIRED_DETAIL };
   }
-  if (kind === 'single') return singleRequestVerdict(target.pathname, headers);
+  if (kind === 'single' || kind === 'inline') return singleRequestVerdict(target.pathname, headers);
   if (kind === 'part') return partBodyVerdict(headers);
   return verdictFor(headers, SMALL_REQUEST_BODY_MAX_BYTES, smallRequestOverflowDetail);
 }
