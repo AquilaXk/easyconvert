@@ -60,10 +60,26 @@ export function assertNotSubtitlePair(sourceFormat: string, targetFormat: string
   }
 }
 
+/**
+ * What FFmpeg is asked to read at most. The largest real subtitle files have a few thousand cues (a film's SubRip about 1,500 to
+ * 3,000, a typeset ASS file with karaoke effects up to some tens of thousands), so these limits are far above any real file and
+ * only stop a crafted one: the time FFmpeg takes, and the size of what it writes, grow with the cues and with the line breaks
+ * (an ASS file of 2 MB made of `\N` takes it 15 s).
+ */
+export const MAX_SUBTITLE_CUES = 100_000;
+/** Line breaks written inside cue text: the `\\N` and `\\n` of SubStation Alpha and the `|` of MicroDVD. */
+export const MAX_SUBTITLE_LINE_BREAKS = 100_000;
+/** Lines of the file: 100,000 cues of four lines each is 400,000. */
+export const MAX_SUBTITLE_LINES = 500_000;
+/** The largest frame number of a MicroDVD file: about 11 days at 100 frames per second, and well inside what FFmpeg reads as an integer. */
+const MAX_MICRODVD_FRAME = 100_000_000;
+
 /** The frame rate FFmpeg assumes for a MicroDVD file that sets none (`{1}{1}25.000` or `{0}{}25.000` on its first line). */
 const MICRODVD_DEFAULT_FPS = 23.976;
 const MICRODVD_RATE_LINE = /^\s*\{[01]\}\{[01]?\}\s*(\d+(?:\.\d+)?)/;
-const MICRODVD_OPEN_CUE = /^(\s*\{(\d+)\})\{\}(.*)$/;
+/** `[^]*` and not `.*`: a line of a CRLF file still holds its `\r`, which `.` does not match. */
+const MICRODVD_OPEN_CUE = /^(\s*\{(\d+)\})\{\}([^]*)$/;
+const MICRODVD_FRAMES = /^\s*\{(\d+)\}\{(\d*)\}/;
 /** How long the last MicroDVD cue lasts when the file names no end for it, in seconds. */
 export const MICRODVD_OPEN_CUE_SECONDS = 5;
 
@@ -95,10 +111,22 @@ function decodeSubtitleBytes(input: Buffer, source: SubtitleFormat): string {
  */
 function closeOpenMicroDvdCues(text: string): { text: string; closed: number } {
   const all = text.split('\n');
-  const starts = all.map((line) => (MICRODVD_RATE_LINE.test(line) ? null : /^\s*\{(\d+)\}\{\d*\}/.exec(line)?.[1])).filter((start): start is string => start != null).map(Number);
-  const last = Math.max(...starts);
-  const fps = Number(all.map((line) => MICRODVD_RATE_LINE.exec(line)).find((found) => found !== null)?.[1] ?? MICRODVD_DEFAULT_FPS);
-  const frames = Math.round(fps * MICRODVD_OPEN_CUE_SECONDS);
+  let last = -1;
+  let rate: number | undefined;
+  for (const line of all) {
+    const rateLine = MICRODVD_RATE_LINE.exec(line);
+    if (rateLine !== null) {
+      rate ??= Number(rateLine[1]);
+      continue;
+    }
+    const frames = MICRODVD_FRAMES.exec(line);
+    if (frames === null) continue;
+    if (Number(frames[1]) > MAX_MICRODVD_FRAME || Number(frames[2]) > MAX_MICRODVD_FRAME) {
+      throw refusal('wrong-structure', `A frame number of the MicroDVD file is above ${MAX_MICRODVD_FRAME}.`);
+    }
+    last = Math.max(last, Number(frames[1]));
+  }
+  const frames = Math.round((rate ?? MICRODVD_DEFAULT_FPS) * MICRODVD_OPEN_CUE_SECONDS);
   let closed = 0;
   const rewritten = all.map((line) => {
     const open = MICRODVD_OPEN_CUE.exec(line);
@@ -107,6 +135,12 @@ function closeOpenMicroDvdCues(text: string): { text: string; closed: number } {
     return `${open[1]}{${last + frames}}${open[3]}`;
   });
   return { text: rewritten.join('\n'), closed };
+}
+
+/** How many line breaks the cue text holds: the `\N` and `\n` of SubStation Alpha text and the `|` of MicroDVD. */
+function countTextLineBreaks(text: string, source: SubtitleFormat): number {
+  if (source === 'ass' || source === 'ssa') return text.match(/\\[Nn]/g)?.length ?? 0;
+  return source === 'sub' ? (text.match(/\|/g)?.length ?? 0) : 0;
 }
 
 export interface PreparedSubtitle {
@@ -134,6 +168,13 @@ export function prepareSubtitleInput(input: Buffer, source: SubtitleFormat): Pre
     throw refusal('wrong-structure', `The file does not read as a .${source} subtitle file: ${expectedStructure(source)}.`);
   }
   const cues = countSubtitleCues(source, text);
+  if (cues > MAX_SUBTITLE_CUES) throw new PayloadLimitError(`A .${source} subtitle file holds at most ${MAX_SUBTITLE_CUES} cues; this one has ${cues}.`);
+  const lines = text.split('\n').length;
+  if (lines > MAX_SUBTITLE_LINES) throw new PayloadLimitError(`A .${source} subtitle file holds at most ${MAX_SUBTITLE_LINES} lines; this one has ${lines}.`);
+  const lineBreaks = countTextLineBreaks(text, source);
+  if (lineBreaks > MAX_SUBTITLE_LINE_BREAKS) {
+    throw new PayloadLimitError(`A .${source} subtitle file holds at most ${MAX_SUBTITLE_LINE_BREAKS} line breaks inside its cues; this one has ${lineBreaks}.`);
+  }
   if (cues === 0) throw refusal('no-cues', `The .${source} subtitle file holds no cue, so there is nothing to convert.`);
   if (source === 'sub' && !MICRODVD_RATE_LINE.test(text)) {
     reportConversionWarning(`The MicroDVD file sets no frame rate; its frame numbers were read at ${MICRODVD_DEFAULT_FPS} frames per second.`);
@@ -171,15 +212,56 @@ export function subtitleFfmpegArguments(inputArgs: readonly string[], outputPath
 
 const CUE_TIMING = /^\s*(?:\d+:)?\d{1,2}:\d{2}[.,]\d{3}[ \t]*-->/;
 
-/** Whether the lines from `from` are the end of a cue: the file ends, a timing line follows, or a cue identifier or number and then a timing line. */
-function cueEndsBefore(all: readonly string[], from: number): boolean {
-  const next = all.findIndex((line, at) => at >= from && line.trim() !== '');
-  return next < 0 || CUE_TIMING.test(all[next]) || (next + 1 < all.length && CUE_TIMING.test(all[next + 1]));
+/** For each line, the index of the first line from it on that holds something other than white space (the number of lines when none does). */
+function nextNonBlankLines(all: readonly string[]): number[] {
+  const next = new Array<number>(all.length + 1);
+  next[all.length] = all.length;
+  for (let at = all.length - 1; at >= 0; at--) next[at] = all[at].trim() === '' ? next[at + 1] : at;
+  return next;
+}
+
+/** Whether the lines from `next` on are the end of a cue: the file ends, a timing line follows, or a cue identifier or number and then a timing line. */
+function cueEndsAt(all: readonly string[], next: number): boolean {
+  return next >= all.length || CUE_TIMING.test(all[next]) || (next + 1 < all.length && CUE_TIMING.test(all[next + 1]));
+}
+
+/**
+ * `line` with each block in braces replaced by `replacement(inner)`, in one pass: the leftmost block that closes, as the pattern
+ * `\{[^}]*\}` finds it, and with `allowBackslash` false the pattern `\{[^}\\]*\}`. A brace that closes nowhere ends the search, and
+ * the position of the next closing brace and of the next backslash are kept between blocks, so a line of 200,000 open braces costs one pass.
+ */
+function replaceBraceBlocks(line: string, allowBackslash: boolean, replacement: (inner: string) => string): string {
+  let out = '';
+  let copied = 0;
+  let from = 0;
+  let close = -1;
+  let backslash = -1;
+  for (;;) {
+    const open = line.indexOf('{', from);
+    if (open < 0) break;
+    if (close <= open) {
+      close = line.indexOf('}', open + 1);
+      if (close < 0) break;
+    }
+    if (!allowBackslash) {
+      if (backslash <= open) {
+        const found = line.indexOf('\\', open + 1);
+        backslash = found < 0 ? line.length : found;
+      }
+      if (backslash < close) {
+        from = backslash + 1;
+        continue;
+      }
+    }
+    out += line.slice(copied, open) + replacement(line.slice(open + 1, close));
+    copied = close + 1;
+    from = copied;
+  }
+  return out + line.slice(copied);
 }
 
 /** The columns of a `Dialogue:` line up to its text: the text is everything after the ninth comma (Layer, Start, End, Style, Name, three margins, Effect). */
 const DIALOGUE_TEXT_COLUMN = 9;
-const BRACES_WITHOUT_OVERRIDE = /\{([^}\\\n]*)\}/g;
 
 /**
  * SubRip and MicroDVD text has braces of its own (`{braces}`), and FFmpeg copies them into the ASS text, where a block in braces
@@ -193,7 +275,7 @@ function escapeCommentBlocks(text: string, source: string): string {
     .map((line) => {
       if (!line.startsWith('Dialogue:')) return line;
       const parts = line.split(',');
-      const words = parts.slice(DIALOGUE_TEXT_COLUMN).join(',').replace(BRACES_WITHOUT_OVERRIDE, '\\{$1}');
+      const words = replaceBraceBlocks(parts.slice(DIALOGUE_TEXT_COLUMN).join(','), false, (inner) => `\\{${inner}}`);
       return [...parts.slice(0, DIALOGUE_TEXT_COLUMN), words].join(',');
     })
     .join('\n');
@@ -222,16 +304,17 @@ export function repairSubtitleOutput(text: string, target: string, source: strin
     // The escapes of a brace (`\{`, and `\}` in FFmpeg before 8) are kept by FFmpeg as they are; they are set aside before the blocks go.
     body = body.replace(/\\\{/g, LITERAL_BRACE_PLACEHOLDER).replace(/\\\}/g, LITERAL_CLOSING_BRACE_PLACEHOLDER);
   }
-  if (SUBSTATION_SOURCES.has(source)) body = body.replace(/\{[^}\n]*\}/g, '');
+  if (SUBSTATION_SOURCES.has(source)) body = body.split('\n').map((line) => replaceBraceBlocks(line, true, () => '')).join('\n');
   if (source === 'vtt') body = body.replace(/\\h/g, '\u00A0');
   const all = body.replace(/\u0001/g, '{').replace(/\u0002/g, '}').split('\n');
+  const next = nextNonBlankLines(all);
   const kept: string[] = [];
   let inCue = false;
   for (let at = 0; at < all.length; at++) {
     const line = all[at];
     if (CUE_TIMING.test(line)) inCue = true;
     else if (inCue && line.trim() === '') {
-      if (!cueEndsBefore(all, at)) continue;
+      if (!cueEndsAt(all, next[at])) continue;
       inCue = false;
     }
     kept.push(line);

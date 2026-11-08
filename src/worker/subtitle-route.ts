@@ -26,7 +26,6 @@ const TEMP_PREFIX = 'easyconvert-subtitle-';
 const DEFAULT_TIMEOUT_MS = 60_000;
 /** FFmpeg prints a line per problem at the `error` level; the output is a file. */
 const MAX_STDERR_BYTES = 1024 * 1024;
-const MAX_STDERR_CHARS = 300;
 
 export interface SubtitleRequest {
   input: Buffer | WorkerVfsPayload;
@@ -43,10 +42,12 @@ function assertInputSizeWithinLimit(input: Buffer | WorkerVfsPayload, src: strin
   if (size > MAX_SUBTITLE_BYTES) throw new PayloadLimitError(`A .${src} subtitle file is at most ${MAX_SUBTITLE_BYTES} bytes; this one has ${size}.`);
 }
 
-/** FFmpeg's complaint about a file it could not read, in one line. */
-function readerFailure(error: SandboxedProcessError, src: string): InvalidSubtitleInputError {
-  const detail = error.stderr.trim().split('\n').find((line) => line.trim() !== '') ?? 'it could not be read';
-  return new InvalidSubtitleInputError('wrong-structure', `The .${src} subtitle file could not be read: ${detail.slice(0, MAX_STDERR_CHARS)}`);
+/**
+ * The refusal for a file FFmpeg exited on. FFmpeg's own line names the job's temporary path and memory addresses, so it is not put
+ * into the answer; a fixed sentence is.
+ */
+function readerFailure(src: string): InvalidSubtitleInputError {
+  return new InvalidSubtitleInputError('wrong-structure', `The .${src} subtitle file could not be read: the subtitle reader stopped on it.`);
 }
 
 async function runSubtitleFfmpeg(ffmpegBin: string, args: string[], tempDir: string, request: SubtitleRequest): Promise<void> {
@@ -59,7 +60,7 @@ async function runSubtitleFfmpeg(ffmpegBin: string, args: string[], tempDir: str
     });
   } catch (error) {
     rethrowSandboxUnavailable(error);
-    if (error instanceof SandboxedProcessError && error.exitCode !== null && error.signal === null) throw readerFailure(error, request.src);
+    if (error instanceof SandboxedProcessError && error.exitCode !== null && error.signal === null) throw readerFailure(request.src);
     throw error;
   }
 }

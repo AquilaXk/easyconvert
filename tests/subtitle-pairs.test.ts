@@ -1,15 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import iconv from 'iconv-lite';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
-import { MAX_SUBTITLE_BYTES, repairSubtitleOutput } from '../src/lib/conversions/subtitle';
+import { MAX_SUBTITLE_BYTES, MAX_SUBTITLE_CUES, MAX_SUBTITLE_LINE_BREAKS, MAX_SUBTITLE_LINES, prepareSubtitleInput, repairSubtitleOutput } from '../src/lib/conversions/subtitle';
 import { FORMAT_REGISTRY, getFormatByExtension, isFormatCompatibleWithMagicBytes } from '../src/lib/registry';
 import { countSubtitleCues, SUBTITLE_FORMATS, type SubtitleFormat } from '../src/lib/subtitle-structure';
 import { EngineUnavailableError, FileExtensionSpoofError, InvalidSubtitleInputError, PayloadLimitError } from '../src/lib/types';
 import { compareCues, readSubtitle, toleranceFor, type SubtitleKind } from '../bench/subtitle-reader';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipWithoutTools } from './helpers/strict-skip';
+import { expectNoHang } from './helpers/timing';
 
 /**
  * Subtitle conversions (docs/policy-decisions.md, entry 188). FFmpeg reads and writes the files in the sandbox of the media path;
@@ -214,6 +216,86 @@ describe('what is repaired in the text FFmpeg writes', () => {
     const srt = '1\n00:00:01,000 --> 00:00:02,000\n{Translator note}{2c&H5D8FC3&\\c&H75BADB&}Words \\{{}kept} here\n';
     expect(repairSubtitleOutput(srt, 'srt', 'ass')).toBe('1\n00:00:01,000 --> 00:00:02,000\nWords {kept} here\n');
     expect(repairSubtitleOutput(srt, 'srt', 'vtt')).toBe('1\n00:00:01,000 --> 00:00:02,000\n{Translator note}{2c&H5D8FC3&\\c&H75BADB&}Words {kept} here\n');
+  });
+});
+
+describe('crafted files cost time in proportion to their size', () => {
+  // Each of these took 16 to 19 s on a file of about 200 KB before the passes were linear, and takes milliseconds now; the guard is a hang guard.
+  const TIMING = '1\n00:00:01,000 --> 00:00:02,000\n';
+  const DIALOGUE = 'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,';
+
+  it('repairs a cue followed by 100,000 empty lines in one pass', async () => {
+    const written = `${TIMING}a${'\n'.repeat(100_000)}b\n`;
+    expect(await expectNoHang('empty lines', () => repairSubtitleOutput(written, 'srt', 'ass'))).toBe(`${TIMING}a\nb\n`);
+  });
+
+  it('removes and escapes blocks in braces in one pass on a line of 200,000 open braces', async () => {
+    const open = '{'.repeat(200_000);
+    expect(await expectNoHang('removed blocks', () => repairSubtitleOutput(`${TIMING}${open}\n`, 'srt', 'ass'))).toBe(`${TIMING}${open}\n`);
+    expect(await expectNoHang('escaped blocks', () => repairSubtitleOutput(`${DIALOGUE}${open}`, 'ass', 'srt'))).toBe(`${DIALOGUE}${open}`);
+  });
+
+  it('finds the blocks a pass should and leaves the rest, as the pattern does', () => {
+    expect(repairSubtitleOutput(`${TIMING}{{a}b{c}{d\n`, 'srt', 'ass')).toBe(`${TIMING}b{d\n`);
+    expect(repairSubtitleOutput(`${DIALOGUE}{x\\y}{z}{u`, 'ass', 'srt')).toBe(`${DIALOGUE}{x\\y}\\{z}{u`);
+  });
+
+  it('refuses a file over the cue, line and line-break limits with the 413 of the other limits, before FFmpeg', async () => {
+    const microdvd = Array.from({ length: 150_000 }, (_, at) => `{${at * 10}}{${at * 10 + 5}}x`).join('\n');
+    const outcome = await expectNoHang('150,000 cues', () => {
+      try {
+        return prepareSubtitleInput(Buffer.from(microdvd), 'sub');
+      } catch (error) {
+        return error;
+      }
+    });
+    expect(outcome).toMatchObject({ name: 'PayloadLimitError', status: 413, message: expect.stringContaining(`at most ${MAX_SUBTITLE_CUES} cues`) });
+    const header = '[Script Info]\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n';
+    const breaks = `${header}${DIALOGUE}a${'\\N'.repeat(MAX_SUBTITLE_LINE_BREAKS + 1)}b\n`;
+    expect(() => prepareSubtitleInput(Buffer.from(breaks), 'ass')).toThrow(new RegExp(`at most ${MAX_SUBTITLE_LINE_BREAKS} line breaks`));
+    const lines = `${TIMING}a${'\n'.repeat(MAX_SUBTITLE_LINES + 1)}b\n`;
+    expect(() => prepareSubtitleInput(Buffer.from(lines), 'srt')).toThrow(new RegExp(`at most ${MAX_SUBTITLE_LINES} lines`));
+  });
+
+  it('refuses a MicroDVD frame number that would print in exponent form', () => {
+    const huge = '{1}{5}a\n{99999999999999999999}{}b\n';
+    expect(() => prepareSubtitleInput(Buffer.from(huge), 'sub')).toThrow(/frame number of the MicroDVD file is above/);
+  });
+
+  it('closes the last open MicroDVD cue of a file with CRLF line ends', () => {
+    const prepared = prepareSubtitleInput(Buffer.from('{1}{}a\r\n{5}{}b\r\n'), 'sub');
+    expect(prepared.utf8.toString('utf-8')).toBe('{1}{}a\r\n{5}{125}b\r\n');
+  });
+});
+
+describe.skipIf(ffmpegMissing)('crafted files through the dispatcher', () => {
+  it('writes the end of a CRLF MicroDVD file\'s last cue as five seconds after its start, not as 1193 hours', async () => {
+    const { text } = await convert(Buffer.from('{1}{}a\r\n{240}{}b\r\n'), 'sub', 'vtt');
+    expect(readSubtitle('vtt', text).map((cue) => [cue.startMs, cue.endMs])).toEqual([[42, 10_010], [10_010, 15_015]]);
+  });
+
+  it('converts an ASS cue of 99,000 line breaks with the empty lines removed', async () => {
+    const header = '[Script Info]\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n';
+    const input = Buffer.from(`${header}Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,a${'\\N'.repeat(99_000)}b\n`);
+    const { text } = await expectNoHang('99,000 line breaks', () => convert(input, 'ass', 'srt'));
+    expect(readSubtitle('srt', text).map((cue) => cue.text)).toEqual(['a b']);
+    expect(text.split('\n').filter((line) => line.trim() === '').length).toBeLessThan(4);
+  });
+
+  it('answers a reader failure with a fixed sentence that names no path and no address', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-ffmpeg-'));
+    const fake = path.join(dir, 'ffmpeg');
+    fs.writeFileSync(fake, '#!/bin/sh\necho "[srt @ 0x7f12345678] Invalid data found in /var/data/easyconvert-subtitle-abc123/input.srt" >&2\nexit 1\n', { mode: 0o755 });
+    const before = process.env.FFMPEG_PATH;
+    process.env.FFMPEG_PATH = fake;
+    try {
+      const outcome = await dispatchConversion(authored('srt'), 'srt', 'vtt', {}, 'a.srt').catch((error: unknown) => error);
+      expect(outcome).toMatchObject({ name: 'InvalidSubtitleInputError', status: 422, message: 'The .srt subtitle file could not be read: the subtitle reader stopped on it.' });
+    } finally {
+      if (before === undefined) delete process.env.FFMPEG_PATH;
+      else process.env.FFMPEG_PATH = before;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
