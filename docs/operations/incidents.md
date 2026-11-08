@@ -54,6 +54,6 @@ Within 3 days, as a note in the pull request or issue that fixes it (an issue on
 - what users saw;
 - the cause, with the evidence (log lines, metric readings), not a guess;
 - what was done and what was lost (for a restore: the backup used and the hours of data lost);
-- what changes so it does not repeat, as rows on an existing epic checklist; and the runbook line that was missing or wrong, fixed here.
+- what changes so it does not repeat, as rows in `TODO.md`; and the runbook line that was missing or wrong, fixed here.
 
 The error budget of [slo.md](../slo.md) is read after the incident: an outage of a family that used most of its 28-day budget is a reason to stop deploying until the cause is fixed.

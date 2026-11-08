@@ -43,7 +43,7 @@
     },
     {
       "families": ["video"],
-      "match": "^bench/families/video\\.ts$"
+      "match": "^bench/families/video(-[^/]*)?\\.ts$|^bench/subtitle-reader\\.ts$|^src/lib/conversions/subtitle\\.ts$|^src/worker/subtitle-route\\.ts$"
     },
     {
       "families": ["audio"],

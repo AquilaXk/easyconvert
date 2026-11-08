@@ -1,18 +1,17 @@
 name: CI
 
-# A pull request runs once per commit: a newer push to the same pull request cancels the run in progress, and the
-# pushes to `main` queue instead (a merge must not be cancelled by the one after it). `push` is limited to `main`,
-# so a pull request commit is never built twice.
+# One maintainer commits to `main`, and CI runs on every push to it. A push is compared with the commit it replaces
+# (`github.event.before`), so a docs-only push skips the heavy jobs and a push that changes a conversion family measures
+# that family. The `pull_request` trigger is kept for a branch someone proposes; it is compared with its base. A newer
+# push to a pull request cancels the run in progress, and the pushes to `main` queue instead.
 #
 # Wall time is set by the slowest job, so the work is split into jobs of about the same length:
 #   - the unit/integration files by recorded duration (scripts/ci-test-shards.mjs, .github/ci/test-durations.json),
 #   - the registry conformance pairs by recorded duration, in as many parts as keep each part near the tests.
 # Timing-ratio suites (*.perf.test.ts) do not run here: they need a quiet machine and run nightly (nightly.yml).
 #
-# Reference parity: parity-quality measures the quality rows of the families a pull request changes, on every push. Speed
-# parity is not a pull request check: the nightly run measures every family on main against its recorded history, and a
-# failing night names the commits since the last good one (report-failure.yml). No label starts this workflow, so it runs
-# once per head commit; parity-quality reads the `security` label when it runs.
+# Reference parity: parity-quality measures the quality rows of the families a push changes. Speed parity is not
+# measured here: the nightly run measures every family on main against its recorded history.
 on:
   push:
     branches: [main]
@@ -28,14 +27,14 @@ permissions:
   contents: read
 
 jobs:
-  # Decides whether the pull request changes anything but documentation. The heavy jobs wait for it and run only
+  # Decides whether the push or pull request changes anything but documentation. The heavy jobs wait for it and run only
   # when `code` is true; `verify` accepts their being skipped only when this job said so.
   changes:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       code: ${{ steps.filter.outputs.code }}
-      # Benchmark families the pull request changes (comma list), the conversion families it changes that have no
+      # Benchmark families the push or pull request changes (comma list), the conversion families it changes that have no
       # reference-compared bench rows yet, and whether either is non-empty (see bench/family-map.json).
       bench_families: ${{ steps.families.outputs.families }}
       bench_unmapped: ${{ steps.families.outputs.unmapped }}
@@ -66,11 +65,14 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
-          # Fail open: anything but a comparable pull request runs the full suite.
+          # Fail open: anything but a comparable push or pull request runs the full suite.
+          zero_sha=0000000000000000000000000000000000000000
           code=true
-          if [ "$EVENT_NAME" = pull_request ] && [ -n "$PR_BASE_SHA" ] && git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"; then
-            changed="$(git diff --name-only "$PR_BASE_SHA" HEAD)"
+          if [ "$EVENT_NAME" = pull_request ]; then base="$PR_BASE_SHA"; else base="$PUSH_BEFORE_SHA"; fi
+          if [ -n "$base" ] && [ "$base" != "$zero_sha" ] && git fetch --no-tags --depth=1 origin "$base"; then
+            changed="$(git diff --name-only "$base" HEAD)"
             printf 'changed files:\n%s\n' "$changed"
             if [ -n "$changed" ]; then
               code=false
@@ -86,32 +88,36 @@ jobs:
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "code changed: $code"
 
-      # Which benchmark families the quality job must measure. Only a pull request has them; the map is
-      # bench/family-map.json and the mapper needs no installed dependencies. The base is the first parent of the merge
-      # commit under test: the event's base sha can be another commit of main, and a diff against it counts the commits
-      # between the two as changes of this pull request.
+      # Which benchmark families the quality job must measure; the map is bench/family-map.json and the mapper needs no
+      # installed dependencies. The base is the commit a push replaces; for a pull request, the first parent of the merge
+      # commit under test, since the event's base sha can be another commit of main and a diff against it counts the
+      # commits between the two as changes of this pull request.
       - name: Map changed paths to benchmark families
         id: families
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
           ALL_BENCH_FAMILIES: image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font,cad,raw,vector
         run: |
           families=""
           unmapped=""
+          zero_sha=0000000000000000000000000000000000000000
           if [ "$EVENT_NAME" = pull_request ]; then
             parent="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -1)"
             base="${parent:-$PR_BASE_SHA}"
-            if [ -n "$base" ] && git fetch --no-tags --depth=1 origin "$base"; then
-              mapped="$(git diff --name-only "$base" HEAD | PR_BASE_SHA="$base" node scripts/ci-parity-families.mjs)"
-              printf '%s\n' "$mapped"
-              families="$(printf '%s\n' "$mapped" | sed -n 's/^families=//p')"
-              unmapped="$(printf '%s\n' "$mapped" | sed -n 's/^unmapped=//p')"
-            else
-              # Fail open: without a comparable base, measure every family.
-              families="$ALL_BENCH_FAMILIES"
-            fi
+          else
+            base="$PUSH_BEFORE_SHA"
+          fi
+          if [ -n "$base" ] && [ "$base" != "$zero_sha" ] && git fetch --no-tags --depth=1 origin "$base"; then
+            mapped="$(git diff --name-only "$base" HEAD | PR_BASE_SHA="$base" node scripts/ci-parity-families.mjs)"
+            printf '%s\n' "$mapped"
+            families="$(printf '%s\n' "$mapped" | sed -n 's/^families=//p')"
+            unmapped="$(printf '%s\n' "$mapped" | sed -n 's/^unmapped=//p')"
+          else
+            # Fail open: without a comparable base, measure every family.
+            families="$ALL_BENCH_FAMILIES"
           fi
           changed=false
           if [ -n "$families" ] || [ -n "$unmapped" ]; then changed=true; fi
@@ -150,17 +156,25 @@ jobs:
         run: npm run guard:code-smells
 
       # --update --allow-growth in a change would pass the step above, so the baseline is also compared with the base
-      # branch's copy per file and rule (a rename passes). A push to main is skipped: its baseline was checked in the PR.
-      # The base is the first parent of the merge commit this job tested, not the branch as it is now: a pull request
-      # merged in between can lower the base baseline, and the older merge would then be judged against it.
+      # branch's copy per file and rule (a rename passes). The base is the commit a push replaces, or the first parent of
+      # the merge commit a pull request tested, not the branch as it is now. A push without a comparable base is skipped.
       - name: Check the code-smell baseline does not grow against the base branch
-        if: github.event_name == 'pull_request'
         env:
+          EVENT_NAME: ${{ github.event_name }}
           EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
-          parent="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -1)"
-          parent="${parent:-$EVENT_BASE_SHA}"
-          git fetch --no-tags --depth=1 origin "$parent"
+          zero_sha=0000000000000000000000000000000000000000
+          if [ "$EVENT_NAME" = pull_request ]; then
+            parent="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -1)"
+            parent="${parent:-$EVENT_BASE_SHA}"
+          else
+            parent="$PUSH_BEFORE_SHA"
+          fi
+          if [ -z "$parent" ] || [ "$parent" = "$zero_sha" ] || ! git fetch --no-tags --depth=1 origin "$parent"; then
+            echo "skipped: no comparable base commit"
+            exit 0
+          fi
           git show "$parent:.github/code-smell-baseline.json" > "$RUNNER_TEMP/base-code-smell-baseline.json" 2>/dev/null || rm -f "$RUNNER_TEMP/base-code-smell-baseline.json"
           npm run guard:code-smells -- --check-base "$RUNNER_TEMP/base-code-smell-baseline.json"
 
@@ -597,8 +611,7 @@ jobs:
   # Reference parity, quality half: the changed families' quality rows (BD-rate, CER, F1, size, SSIM/PSNR) against the
   # reference tools, on the quick subset of each family (QUICK_SUBSET in bench/config.ts). The reference side is
   # deterministic for fixed tool versions, so it is read from the cache the nightly run keeps; ours is measured here.
-  # Runs only when a conversion family changed. A `security` label with a linked issue excuses the parity verdict and
-  # nothing else (scripts/ci-parity-policy.mjs).
+  # Runs only when a conversion family changed; no label excuses the verdict (scripts/ci-parity-policy.mjs).
   parity-quality:
     name: parity quality
     needs: [changes, sharp-libvips]
@@ -607,8 +620,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-      issues: write
-      pull-requests: write
 
     env:
       ORACLE_STRICT_MODE: "1"
@@ -670,10 +681,19 @@ jobs:
       - name: Read the gap file and the baseline of the base
         id: base
         env:
+          EVENT_NAME: ${{ github.event_name }}
           EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
-          parent="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -1)"
-          parent="${parent:-$EVENT_BASE_SHA}"
+          zero_sha=0000000000000000000000000000000000000000
+          if [ "$EVENT_NAME" = pull_request ]; then
+            parent="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -1)"
+            parent="${parent:-$EVENT_BASE_SHA}"
+          else
+            parent="$PUSH_BEFORE_SHA"
+          fi
+          # A push with no comparable base (a new branch) is judged against its own parent.
+          if [ -z "$parent" ] || [ "$parent" = "$zero_sha" ]; then parent="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -1)"; fi
           git fetch --no-tags --depth=1 origin "$parent"
           mkdir -p ab-base-files
           git show "$parent:bench/parity-gaps.json" > ab-base-files/parity-gaps.json
@@ -708,18 +728,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Apply the parity verdict and the security exemption
+      - name: Apply the parity verdict
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
             const policy = await import(`${process.env.GITHUB_WORKSPACE}/scripts/ci-parity-policy.mjs`);
-            await policy.applyParityVerdict({
-              github,
-              context,
+            policy.applyParityVerdict({
               core,
               fs: require('node:fs'),
               runFilePath: 'bench-results/parity-verdict.json',
-              scope: 'quality',
             });
 
   # The libvips the worker image ships, built when its cache key is not in the cache (.github/workflows/sharp-libvips.yml). It
@@ -737,7 +754,6 @@ jobs:
     steps:
       - name: Require every job to pass, or to be skipped for a documentation-only change
         env:
-          EVENT_NAME: ${{ github.event_name }}
           CODE_CHANGED: ${{ needs.changes.outputs.code }}
           BENCH_CHANGED: ${{ needs.changes.outputs.bench_changed }}
           CHANGES_RESULT: ${{ needs.changes.result }}
@@ -762,9 +778,9 @@ jobs:
           for result in "$CHECKS_RESULT" "$TESTS_RESULT" "$CONFORMANCE_RESULT" "$INTEGRATION_RESULT"; do
             if [ "$result" != "$expected" ]; then failed=1; fi
           done
-          # Parity quality runs on a pull request that changes a conversion family, and on nothing else.
+          # Parity quality runs when the push or pull request changes a conversion family, and on nothing else.
           quality_expected=skipped
-          if [ "$EVENT_NAME" = pull_request ] && [ "$BENCH_CHANGED" = true ]; then quality_expected=success; fi
+          if [ "$BENCH_CHANGED" = true ]; then quality_expected=success; fi
           if [ "$PARITY_QUALITY_RESULT" != "$quality_expected" ]; then failed=1; fi
           if [ "$failed" != 0 ]; then
             echo "::error::a required job did not finish as expected"

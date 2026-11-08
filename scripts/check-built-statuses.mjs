@@ -27,6 +27,7 @@ const page = (path, status = 200) => ({ path, status, noindex: false });
 const ROUTES = [
   ['/dashboard/api-keys', 200],
   ['/api-docs', 200],
+  ['/pricing', 200],
   ['/auth', 200],
   ['/account', 307],
 ];

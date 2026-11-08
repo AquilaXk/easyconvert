@@ -33,7 +33,7 @@ The document family reads its inputs from `tests/fixtures/document` and `tests/f
 | Family | Cases | Metrics | Reference |
 |---|---|---|---|
 | image | jpg/png to webp, avif, jpg at quality 40/55/70/85 | SSIM, PSNR, bytes at quality 70; BD-rate over the four points (PSNR and SSIM-in-dB); ssimulacra2 when installed | `cwebp`, `avifenc`, ImageMagick |
-| video | mp4 to h264, hevc, vp9 at four CRFs | SSIM, PSNR, bitrate, BD-rate, VMAF when libvmaf is present | ffmpeg `libx264`, `libx265`, `libvpx-vp9` |
+| video | mp4 to h264, hevc, vp9 at four CRFs; the eleven subtitle pairs (SubRip, WebVTT, ASS, SSA and MicroDVD to SubRip, WebVTT and ASS) on five files authored for the purpose (`tests/fixtures/subtitle`) | SSIM, PSNR, bitrate, BD-rate, VMAF when libvmaf is present; for subtitles the cues whose count, start or end (1 ms; 5 and 10 ms into ASS, whose times are hundredths of a second) or words differ from the source's, after the output is read back by `bench/subtitle-reader.ts` (a reader of the formats written from their descriptions, not FFmpeg) | ffmpeg `libx264`, `libx265`, `libvpx-vp9`; for subtitles no converter has a fixed contract, so the source is the bar and each count is compared with zero (no speed row) |
 | audio | wav to opus and aac at four bit rates; wav to flac | SNR (ffmpeg `asdr` after alignment), loudness and true-peak drift (`ebur128`), bit rate, BD-rate; FLAC bit-exact decode and size | ffmpeg `libopus`, `aac`, `flac` |
 | ocr | scanned png to searchable pdf | CER and word F1 of the pdftotext text layer against ground truth | `tesseract` |
 | document | docx to pdf (`report.docx`); an authored DOCX with nested lists, merged table cells, pictures and notes to html, odt, epub and pdf; an EPUB to docx; an HWP 5.0 file to html and txt | word F1 and CER of the text against the authored text; per structure category (headings, list items with level, table cells with spans, pictures by hash, notes) precision and recall against the structure written by hand; EPUBCheck error count; end-to-end time per document | `soffice` for the DOCX cases. It cannot open EPUB or HWP, so those rows use the hand-written structure or an independent OLE2 reader (`tests/fixtures/hwp/reference-extract.py`) as the reference, and the HWP time is compared with that reader |
@@ -542,15 +542,14 @@ continuous benchmarking (`bench/speed-history.ts`):
 The report has separate sections: failing rows, tracked rows (with issue, ratio and interval), rows now at parity, then
 the rows at or above the reference and the rows not evaluated.
 
-**The `security` exemption** (`scripts/ci-parity-policy.mjs`): a pull request labelled `security` that links an issue
-(`Closes #N`, `Refs #N`, ...) is excused from the parity verdict only. Tests, the guard, lint, build, the container and
-conformance still run, and a metric worse than our own baseline still fails. The job then posts one comment listing the
-rows below the reference and their gap issue, and opens or updates one `parity-gap` issue per family.
+**No exemption** (`scripts/ci-parity-policy.mjs`): a row below the reference, a metric worse than our own baseline, a
+run without strict mode or a failed benchmark fails the job. The job opens no issue and posts no comment; the rows are in
+the job summary.
 
-`ci.yml` wires this into `verify`: `parity-quality` runs on every push to a pull request that changes a conversion
-family. Speed parity is not a pull request check (docs/policy-decisions.md, entry 123): the nightly workflow runs the
-full parity benchmark on every family and case on `main`, and a failing night lists the commits since the last good one
-in the `nightly-regression` issue.
+`ci.yml` wires this into `verify`: `parity-quality` runs on every push to `main` that changes a conversion family, compared
+with the commit the push replaces. Speed parity is not measured there (docs/policy-decisions.md, entry 123): the nightly
+workflow runs the full parity benchmark on every family and case on `main`, and a failing night is a failed run in
+Actions, which GitHub emails to the owner.
 
 ## Refreshing recorded numbers from CI
 
@@ -649,8 +648,7 @@ npx tsx scripts/regression-corpus-manifest.ts index|profile|select --work DIR
   the seventh chosen by the date (the hash of the id modulo 7 against the days since 1970-01-01 modulo 7), so seven nights cover the
   corpus once. Every night also runs the canary: one file of every format and producer class, and every file listed in
   `bench/realworld/regression/failed-before.json`. `merge --record-failures` adds the files that failed in a run to that list; it is
-  a reviewed commit. A failed run opens the `nightly-regression` issue or comments on the open one, through the same reusable
-  workflow as the nightly run (`.github/workflows/report-failure.yml`).
+  a reviewed commit. A failed run is a failed run in Actions; the run summary lists each file by verdict.
 - **Verdicts and gate:** as for the real-world corpus (crash, hang, bad output, refusal), and also against the last full run on
   `main`: the merge job downloads its result set (the `regression-baseline` artifact, kept 90 days) and any job that was `ok`
   there and is not now is listed under "Converted before, not now" and fails the run, even when no reference tool can open the file.

@@ -16,10 +16,11 @@ import { runRaw } from './raw';
 import { runVector } from './vector';
 import { runVectorize } from './vectorize';
 import { runVideo } from './video';
+import { runVideoSubtitles } from './video-subtitles';
 
 export const FAMILY_RUNNERS: Record<Family, FamilyRunner> = {
   image: runImage,
-  video: runVideo,
+  video: async (ctx) => [...(await runVideo(ctx)), ...(await runVideoSubtitles(ctx))],
   audio: runAudio,
   ocr: runOcr,
   document: async (ctx) => [...(await runDocument(ctx)), ...(await runDocumentPublic(ctx))],

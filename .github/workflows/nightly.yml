@@ -1,8 +1,8 @@
 name: Nightly
 
-# Checks that need a quiet machine or a long time, kept out of the pull request gate (ci.yml): the timing-ratio
+# Checks that need a quiet machine or a long time, kept out of the push gate (ci.yml): the timing-ratio
 # suites (*.perf.test.ts), the quality benchmark, the real-world corpus run and the dependency licence gate. A failure
-# opens one issue labelled `nightly-regression`, or adds a comment to the one that is already open.
+# shows as a failed run in Actions (GitHub emails the owner); the job summaries and artifacts hold the detail.
 on:
   schedule:
     # 02:37 UTC every day, off the busy top of the hour.
@@ -144,8 +144,8 @@ jobs:
   # two nights, and the public sample sets (#780) add to that. The heavy families (image, video, RAW, documents,
   # compression) run alone and the light ones share a runner; the groups cover every benchmark family once
   # (tests/ci-parity-workflow.test.ts checks it). Each shard saves the reference measurements
-  # under a key of its own group, which the pull request job reads back with ./.github/actions/bench-ref-cache; the
-  # report of a shard is uploaded under the name of its group. The `report` job below sees a failed shard as a failed
+  # under a key of its own group, which the push job reads back with ./.github/actions/bench-ref-cache; the
+  # report of a shard is uploaded under the name of its group. A failed shard fails
   # bench-parity-quality.
   bench-parity-quality:
     name: bench-parity-quality (${{ matrix.group }})
@@ -615,14 +615,3 @@ jobs:
           path: realworld-results/
           if-no-files-found: ignore
           retention-days: 30
-
-  # Opens one issue for the failing night, or comments on the open one, so a streak of failures stays in one place
-  # (.github/workflows/report-failure.yml, shared with the regression corpus run).
-  report:
-    needs: [sharp-libvips, perf, bench, bench-parity-quality, bench-parity-speed, licenses, realworld, realworld-gate]
-    if: always() && contains(needs.*.result, 'failure')
-    permissions:
-      actions: read
-      contents: read
-      issues: write
-    uses: ./.github/workflows/report-failure.yml

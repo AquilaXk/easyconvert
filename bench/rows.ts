@@ -59,6 +59,12 @@ export const SPEC = {
   tableMismatches: { metric: 'font_table_mismatches', unit: 'tables', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
   fontValidationFailures: { metric: 'font_validation_failures', unit: 'count', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
   outlineMismatches: { metric: 'glyph_outline_mismatches', unit: 'glyphs', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
+  /** Subtitle conversions, read back by an independent reader (bench/subtitle-reader.ts): 1 when the number of cues differs from the source's. */
+  cueCountMismatch: { metric: 'cue_count_mismatch', unit: 'bool', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
+  /** Cues whose start or end is further from the source's than the format's time unit allows. */
+  cueTimingMismatches: { metric: 'cue_timing_mismatches', unit: 'cues', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
+  /** Cues whose words differ from the source's. */
+  cueTextMismatches: { metric: 'cue_text_mismatches', unit: 'cues', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
   throughput: THROUGHPUT_SPEC,
 } as const satisfies Record<string, MetricSpec>;
 

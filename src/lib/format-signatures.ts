@@ -9,6 +9,7 @@
  */
 
 import { compoundFileVerdict, isNonOfficeCompoundFile } from './compound-file-kind';
+import { isSubtitleHead, type SubtitleFormat } from './subtitle-structure';
 
 /**
  * How many leading bytes of a file the spoof check reads (and the storage layer hands it): enough for every rule here. A
@@ -681,8 +682,18 @@ const NON_CFBF_MIME_EXTENSIONS: Readonly<Record<string, ReadonlySet<string>>> = 
   'font/ttf': new Set(['otf', 'ttf']),
 };
 
+/** A subtitle file is text of its own format: the header window of the file, read as text, opens like the format named. */
+function subtitleCheck(format: SubtitleFormat): (buf: Uint8Array) => boolean {
+  return (buf) => isSubtitleHead(format, buf.subarray(0, HEADER_WINDOW_BYTES));
+}
+
 const OWN_SIGNATURE_CHECKS: Readonly<Record<string, (buf: Uint8Array) => boolean>> = {
   jxl: isJxl,
+  srt: subtitleCheck('srt'),
+  vtt: subtitleCheck('vtt'),
+  ass: subtitleCheck('ass'),
+  ssa: subtitleCheck('ssa'),
+  sub: subtitleCheck('sub'),
   djvu: isDjvu,
   djv: isDjvu,
   emf: isEmf,

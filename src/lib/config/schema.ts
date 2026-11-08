@@ -1,6 +1,6 @@
 import { BlockList, isIP } from 'node:net';
 import path from 'node:path';
-import { ANONYMOUS_DAILY_CONVERSIONS } from '../plan-limits';
+import { ANONYMOUS_DAILY_CONVERSIONS, DELIVERED_FILE_RETENTION_MINUTES, FREE_PROCESSING_MINUTES } from '../plan-limits';
 
 /**
  * The configuration schema: every environment variable the application reads, with its parser, default,
@@ -884,7 +884,7 @@ const SCHEMA_ENTRIES = [
     description:
       'Seconds a conversion result stays downloadable after its first complete delivery (one response, or ranges that together cover the whole file), so a second click or a resumed download still works. After that it is deleted and its download answers 410 Gone. A download that stops early does not count as a delivery.',
     kind: { type: 'integer', min: 1, max: 3600 },
-    default: 600,
+    default: DELIVERED_FILE_RETENTION_MINUTES * 60,
     requiredInProduction: false,
     secret: false,
     roles: BOTH,
@@ -1293,7 +1293,7 @@ const SCHEMA_ENTRIES = [
     'JOB_DEADLINE_MAX_MS_FREE',
     'Most wall-clock milliseconds a conversion job of the free tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
     JOB_DEADLINE_CEILING_MS,
-    300_000
+    FREE_PROCESSING_MINUTES * 60_000
   ),
   intLimit(
     'JOB_DEADLINE_MAX_MS_PRO',

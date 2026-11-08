@@ -124,6 +124,7 @@ const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
   CorruptStreamError: 'malformed_input',
   DataEncodingError: 'malformed_input',
   DataParseError: 'malformed_input',
+  InvalidSubtitleInputError: 'malformed_input',
   MediaProbeError: 'malformed_input',
   SevenZipStructureError: 'malformed_input',
   UnopenableArchiveError: 'malformed_input',

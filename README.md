@@ -2,7 +2,7 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-EasyConvert is a file conversion platform built with Next.js 15 (App Router) and TypeScript. It converts files across **303 file formats** and **2,755 conversion pairs** in **12 categories**.
+EasyConvert is a file conversion platform built with Next.js 15 (App Router) and TypeScript. It converts files across **308 file formats** and **2,766 conversion pairs** in **12 categories**.
 
 EasyConvert combines in-memory TypeScript binary engines, sandboxed native tools, a Redis-backed queue with Lua scripts, and S3 or OCI multipart object storage. It fails closed on malformed or spoofed input and deletes stored files on a fixed schedule: a result 10 minutes after its first complete download or 1 hour after conversion, and an upload 10 minutes after the last job that reads it (policy decision 125).
 
@@ -10,7 +10,7 @@ EasyConvert combines in-memory TypeScript binary engines, sandboxed native tools
 
 ## Key Highlights
 
-- **303 Formats Across 12 Categories**: Supports Images, Documents, Archives, Video, Audio, Ebooks, Spreadsheets, Presentations, Data & Tables, Vector, Fonts, and CAD & 3D (`2,755` source-to-target pairs).
+- **308 Formats Across 12 Categories**: Supports Images, Documents, Archives, Video, Audio, Ebooks, Spreadsheets, Presentations, Data & Tables, Vector, Fonts, and CAD & 3D (`2,766` source-to-target pairs).
 - **Binary Conversion Engines**:
   - **HWP 5.0 CFBF**: Compound File Binary Format (OLE2) parser and builder with paragraph and table extraction.
   - **Cox-de Boor Curves**: B-spline basis evaluator and Bézier flattening for CAD and vector paths.
@@ -32,7 +32,7 @@ EasyConvert combines in-memory TypeScript binary engines, sandboxed native tools
 | Category | Format Count | Supported Extensions |
 | :--- | ---: | :--- |
 | **Images** (`image`) | 50 | 3FR, AI, ARW, AVIF, BMP, CR2, CR3, CRW, CUR, DCR, DDS, DNG, EPS, ERF, EXR, GIF, HEIC, HEIF, ICNS, ICO, J2K, JFIF, JP2, JPEG, JPG, JXL, MOS, MRW, NEF, ORF, PBM, PCX, PEF, PGM, PNG, PNM, PPM, PSB, PSD, RAF, RAW, RW2, TGA, TIF, TIFF, WBMP, WEBP, X3F, XCF |
-| **Documents** (`document`) | 43 | ABW, DJVU, DOC, DOCM, DOCX, DOT, DOTX, EML, FODT, HOCR, HTM, HTML, HWP, HWPX, LATEX, LOG, LWP, MAN, MD, MSG, ODD, ODG, ODT, OTT, OXPS, PAGES, PDB, PDF, PDFA, PUB, RST, RTF, SDW, SXW, TEX, TEXT, TXT, WPD, WPS, XHTML, XML, XPS, ZABW |
+| **Documents** (`document`) | 48 | ABW, ASS, DJVU, DOC, DOCM, DOCX, DOT, DOTX, EML, FODT, HOCR, HTM, HTML, HWP, HWPX, LATEX, LOG, LWP, MAN, MD, MSG, ODD, ODG, ODT, OTT, OXPS, PAGES, PDB, PDF, PDFA, PUB, RST, RTF, SDW, SRT, SSA, SUB, SXW, TEX, TEXT, TXT, VTT, WPD, WPS, XHTML, XML, XPS, ZABW |
 | **Archives** (`archive`) | 44 | 7Z, ACE, ALZ, ARC, ARJ, BZ, BZ2, CAB, CPIO, DEB, DMG, EAR, GZ, IMG, ISO, JAR, LHA, LZ, LZMA, LZO, RAR, RPM, RZ, TAR, TAR.7Z, TAR.BZ, TAR.BZ2, TAR.GZ, TAR.LZO, TAR.XZ, TAR.Z, TAR.ZST, TBZ, TBZ2, TGZ, TXZ, TZ, TZO, WAR, XZ, Z, ZIP, ZST, ZSTD |
 | **Video** (`video`) | 37 | 3G2, 3GP, 3GPP, ASF, AV1, AVI, CAVS, DIVX, DV, DVR, F4V, FLV, H264, H265, HEVC, M2TS, M2V, M4V, MKV, MOD, MOV, MP4, MPEG, MPG, MTS, MXF, OGV, RM, RMVB, SWF, TS, VOB, WEBM, WEBP, WMV, WTV, XVID |
 | **Audio** (`audio`) | 29 | AAC, AC3, AIF, AIFC, AIFF, ALAC, AMR, APE, AU, CAF, DSS, DTS, FLAC, M4A, M4B, MID, MIDI, MKA, MP3, MPC, OGA, OGG, OPUS, RA, SPX, VOC, WAV, WEBA, WMA |
@@ -95,7 +95,7 @@ easyconvert/
 │       │   ├── bullmq-engine.ts     # Redis Lua queue adapter & in-memory engine
 │       │   └── conversion-queue.ts  # Queue manager & job lifecycle coordinator
 │       ├── storage/                 # Local, S3, and OCI object storage backends
-│       ├── registry.ts              # 303 canonical format definitions & options
+│       ├── registry.ts              # 308 canonical format definitions & options
 │       ├── registry-stats.ts        # Computed format, category, and pair statistics
 │       ├── slug-parser.ts           # Dynamic route slug parser ([source]-to-[target])
 │       └── types.ts                 # TypeScript schemas & queue contracts
@@ -223,7 +223,7 @@ Existing violations are recorded in `.github/code-smell-baseline.json`, keyed by
 - `NEW` or `GREW` lines name the file, function, rule, and measured value of a smell above the baseline. Fix the code; do not raise the baseline.
 - `GONE` or improved lines mean you removed a smell. Run `npm run guard:code-smells -- --update` and commit the smaller baseline in the same change. `--update` refuses to raise any entry.
 - A hot codec loop that must stay may keep its entry; add an optional `reason` field to that baseline entry. `--update` preserves it.
-- On pull requests CI also runs `npm run guard:code-smells -- --check-base <base baseline file>`: the baseline may not exceed the base branch's, summed per file and rule (a rename passes). Pushes to main skip this comparison.
+- CI also runs `npm run guard:code-smells -- --check-base <base baseline file>` against the commit a push replaces (or the base of a pull request): the baseline may not exceed it, summed per file and rule (a rename passes).
 
 - **Deterministic Test Suite**: Vitest unit, integration, and drift tests verify RFC compliance, mathematical basis functions, OLE2 CFBF structures, OpenAPI contracts, and memory safety.
 - **Fail-Closed Principle**: Zero-byte files, unknown extensions, and corrupt binary headers trigger HTTP 400 or 422 responses.
@@ -234,7 +234,11 @@ Existing violations are recorded in `.github/code-smell-baseline.json`, keyed by
 
 ## Policy decisions
 
-Conversion and product policies, such as output defaults, limits, engines, and the quality gate, are recorded with their rationale and trade-offs in [docs/policy-decisions.md](docs/policy-decisions.md). Update it in the same pull request that changes a policy.
+Conversion and product policies, such as output defaults, limits, engines, and the quality gate, are recorded with their rationale and trade-offs in [docs/policy-decisions.md](docs/policy-decisions.md). Update it in the same commit that changes a policy.
+
+## Maintenance
+
+One maintainer. Changes go straight to `main` and CI runs on every push. Remaining work is listed in `TODO.md`. A release is tagged per deploy with a short hand-written note (see `docs/deploy-oci.md`, "Releases").
 
 ## Licensing
 

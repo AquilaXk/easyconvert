@@ -68,12 +68,12 @@ describe('planOfCaller', () => {
 });
 
 describe('copy', () => {
-  it('states the limit of the plan under the drop zone in binary units with their own names', () => {
-    expect(fileLimitLine('anonymous', 'en')).toBe('Up to 1 GiB per file');
-    expect(fileLimitLine('free', 'en')).toBe('Up to 1 GiB per file');
-    expect(fileLimitLine('pro', 'en')).toBe('Up to 5 GiB per file');
-    expect(fileLimitLine('enterprise', 'en')).toBe('Up to 10 GiB per file');
-    expect(fileLimitLine('pro', 'ko')).toMatch(/^[^A-Za-z]*5 GiB[^A-Za-z]*$/);
+  it('states the limit of the plan under the drop zone in KB, MB and GB', () => {
+    expect(fileLimitLine('anonymous', 'en')).toBe('Up to 1 GB per file');
+    expect(fileLimitLine('free', 'en')).toBe('Up to 1 GB per file');
+    expect(fileLimitLine('pro', 'en')).toBe('Up to 5 GB per file');
+    expect(fileLimitLine('enterprise', 'en')).toBe('Up to 10 GB per file');
+    expect(fileLimitLine('pro', 'ko')).toMatch(/^[^A-Za-z]*5 GB[^A-Za-z]*$/);
   });
 
   it('names the size and the limit, and offers no plan while none can be bought', () => {

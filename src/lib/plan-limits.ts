@@ -31,6 +31,12 @@ export const FREE_DAILY_CONVERSIONS = 10;
 
 export const DEFAULT_FREE_CONCURRENCY = 5;
 
+/** Minutes of wall-clock time one conversion of the free plan may run: the default of `JOB_DEADLINE_MAX_MS_FREE`. */
+export const FREE_PROCESSING_MINUTES = 5;
+
+/** Minutes a converted file stays downloadable after its first complete download: the default of `RESULT_DELIVERED_GRACE_SECONDS`. */
+export const DELIVERED_FILE_RETENTION_MINUTES = 10;
+
 export const API_KEY_BURST_LIMITS: Readonly<Record<UserTier, { capacity: number; refillRate: number }>> = {
   free: { capacity: 20, refillRate: 2 },
   pro: { capacity: 100, refillRate: 20 },

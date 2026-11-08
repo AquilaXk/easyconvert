@@ -24,7 +24,14 @@ export const TOOL_ROUTES = [
 export const PRIMARY_LINKS = [
   { key: 'formats', href: { pathname: '/', hash: 'format-catalog' } },
   { key: 'apiDocs', href: '/api-docs' },
+  { key: 'pricing', href: '/pricing' },
   { key: 'dashboard', href: '/dashboard' },
+] as const satisfies readonly SiteLink[];
+
+/** What the mobile menu's collapsed API group holds. */
+export const API_LINKS = [
+  { key: 'apiDocs', href: '/api-docs' },
+  { key: 'apiKeys', href: '/dashboard/api-keys' },
 ] as const satisfies readonly SiteLink[];
 
 export interface FooterColumn {
@@ -46,6 +53,7 @@ export const FOOTER_COLUMNS = [
     links: [
       { key: 'formats', href: { pathname: '/', hash: 'format-catalog' } },
       { key: 'apiDocs', href: '/api-docs' },
+      { key: 'pricing', href: '/pricing' },
     ],
   },
   {

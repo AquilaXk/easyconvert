@@ -91,6 +91,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
       { text: 'EasyConvert', href: '/' },
       { text: 'Formats', href: '/#format-catalog' },
       { text: 'API Docs', href: '/api-docs' },
+      { text: 'Pricing', href: '/pricing' },
       { text: 'Dashboard', href: '/dashboard' },
       { text: 'English', href: '/' },
       { text: '한국어', href: '/ko' },
@@ -124,8 +125,9 @@ describe('Redesign & Free Static Architecture Verification', () => {
 
     expect(missingFrom(hrefs, ['/#format-catalog'])).toEqual([]);
     expect(presentIn(hrefs, ['#format-catalog'])).toEqual([]);
-    // Obsolete pricing and api links should not exist
-    expect(hrefs.filter((href) => href.includes('/pricing') || href.includes('/api/v2'))).toEqual([]);
+    // The pricing page lists the free plan's limits; the retired api links should not exist
+    expect(missingFrom(hrefs, ['/pricing'])).toEqual([]);
+    expect(hrefs.filter((href) => href.includes('/api/v2'))).toEqual([]);
 
     // Four columns of links, and no directory of conversions
     expect(headings(footer)).toEqual(FOOTER_SECTION_HEADINGS);
@@ -203,10 +205,11 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(select(hero, 'button', 'aria-haspopup', 'menu').map((b) => attrOf(b, 'aria-label'))).toEqual(['More file sources']);
     expect(phrasesMissing(text, ['Select your file to convert', 'or drop your files here'])).toEqual([]);
 
-    // The home page holds no row of trust claims and no format chips in the upload card, and no source and target tiles.
+    // The home page holds no row of trust claims and no format chips in the upload card, and no tiles that name a pair.
     expect(phrasesPresent(text, ['Encrypted transfers', 'No sign-up needed', 'What do you want to convert?'])).toEqual([]);
     expect(select(hero, 'button').filter((b) => attrOf(b, 'aria-label')?.endsWith(', choose a target') ?? false)).toHaveLength(0);
-    expect(select(hero, 'button', 'data-testid', 'hero-source-format-btn')).toHaveLength(0);
+    // The home page's tiles name no format yet: they choose the pair whose page opens.
+    expect(select(hero, 'button', 'data-testid', 'hero-source-format-btn').map((b) => attrOf(b, 'aria-label'))).toEqual(['Source format ANY']);
 
     const pairPage = renderSlug('png-to-jpg');
     expect(select(pairPage, 'button', 'data-testid', 'hero-source-format-btn').map((b) => attrOf(b, 'aria-label'))).toEqual(['Source format PNG']);
@@ -249,7 +252,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(phrasesPresent(visibleText(main), ['Three steps', 'How to Convert', 'Specification', 'MIME', 'Frequently Asked', 'Pick a target format', 'Pick a source format', 'Choose an output format'])).toEqual([]);
   });
 
-  it('verifies the home page holds the title, the upload card, the format directory, the security card and the API card, and no steps, questions or link to them', () => {
+  it('verifies the home page holds the title, the upload card, the format directory, the security card, the API card and the quality card, and no steps, questions or link to them', () => {
     const home = renderDom(createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS, apiOrigin: 'https://convert.example.test' }));
     const main = select(home, 'main')[0];
 
@@ -260,6 +263,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
       'Supported Format Directory',
       'Security & Data Handling',
       'REST API & Batch Workflows',
+      'High-Quality Conversions',
     ]);
     const text = visibleText(main);
     expect(phrasesPresent(text, ['How Conversion Works', 'Frequently Asked', 'Add source files', 'Select an extension'])).toEqual([]);
@@ -411,7 +415,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect([...classTokens(page)].filter((token) => token.startsWith('rating-star-'))).toEqual([]);
 
     // The real limits are stated once, under the upload card, and no separate coloured strip repeats them
-    expect(phrasesMissing(text, ['Up to 1 GiB per file', '10 conversions a day', 'Files deleted automatically'])).toEqual([]);
+    expect(phrasesMissing(text, ['Up to 1 GB per file', '10 conversions a day', 'Files deleted automatically'])).toEqual([]);
     expect(phrasesPresent(text, ['Free, 10 server conversions a day', 'Encrypted Ephemeral Processing', 'Browser Edge & Isolated Worker Pipeline'])).toEqual([]);
   });
 

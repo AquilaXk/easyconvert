@@ -404,9 +404,9 @@ describe('the backup schedule and the retention promise', () => {
     }
   });
 
-  it('installs the timer only after QA settled the open privacy question, and checks the set-aside copy is deleted the same day', () => {
-    expect(doc).toContain('install the timer only after QA has settled the privacy wording question recorded as "Open for QA"');
-    expect(policy.slice(policy.indexOf('## 186. '))).toContain('the timer is installed only after QA settles it');
+  it('installs the timer only after the privacy wording and its 30 days of notice, and checks the set-aside copy is deleted the same day', () => {
+    expect(doc).toContain('install the timer on or after 2026-12-08');
+    expect(policy.slice(policy.indexOf('## 186. '))).toContain('the timer is installed on or after 2026-12-08');
     const lines = doc.split('\n');
     const remove = lines.findIndex((line) => line.startsWith('9. '));
     expect(lines.slice(remove, remove + 8).join('\n')).toMatch(/Check that it is gone:.*must not list `pre-restore`/);

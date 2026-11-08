@@ -767,7 +767,8 @@ export function isUnprocessableInputError(error: unknown): error is ConversionFa
     error instanceof UnprocessableCadInputError ||
     error instanceof UnprocessableFontInputError ||
     error instanceof EmptyAudioInputError ||
-    error instanceof RefusedMediaInputError
+    error instanceof RefusedMediaInputError ||
+    error instanceof InvalidSubtitleInputError
   );
 }
 
@@ -1236,6 +1237,24 @@ export class RefusedMediaInputError extends UnprocessableMediaInputError {
     super(message);
     this.name = 'RefusedMediaInputError';
     this.kind = kind;
+  }
+}
+
+/**
+ * A subtitle upload that is not a readable file of the format it is named after: bytes that are not text, text that does not
+ * have the structure of its format (a MicroDVD file named `.srt`, a VobSub `.sub`), a file with no cue, or one over the size
+ * a subtitle file has. The file is intact and the request understood, so the routes answer 422 (through `status`); another
+ * worker would refuse it too.
+ */
+export class InvalidSubtitleInputError extends UnprocessableMediaInputError {
+  readonly refusalCode: ConversionRefusalCode = 'malformed_input';
+  readonly status = 422;
+  /** Why the file was refused: `not-text`, `wrong-structure`, `no-cues` or `too-large`. */
+  readonly reason: string;
+  constructor(reason: string, message: string) {
+    super(message);
+    this.name = 'InvalidSubtitleInputError';
+    this.reason = reason;
   }
 }
 

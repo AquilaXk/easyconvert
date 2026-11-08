@@ -8,7 +8,7 @@ import type { FormatCategory } from '@/lib/types';
 import { formatChipLabel } from '@/lib/format-full-names';
 import { CategoryRegistryStat, REGISTRY_STATS } from '@/lib/registry-stats';
 import { categoryIcon } from './workbench/FormatIcon';
-import { RestApiWorkflowCard, SecurityDataHandlingCard } from './workbench/HomeEditorialSections';
+import { HighQualityCard, RestApiWorkflowCard, SecurityDataHandlingCard } from './workbench/HomeEditorialSections';
 
 /** A common pair of a category; its one-line summary is `features.pairs.<from>-<to>` in the messages. */
 interface PopularPair {
@@ -194,6 +194,7 @@ export default function Features({ apiOrigin }: Readonly<{ apiOrigin: string }>)
       <div className="lg:col-span-2 min-w-0">
         <RestApiWorkflowCard origin={apiOrigin} />
       </div>
+      <HighQualityCard />
     </div>
   );
 }
