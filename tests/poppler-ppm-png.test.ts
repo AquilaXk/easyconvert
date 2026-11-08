@@ -133,12 +133,13 @@ async function withOverlapShim<T>(run: (observed: () => { mostAtOnce: number; ca
       'here="$(dirname "$0")"',
       'mkdir -p "$here/alive"',
       'echo "$*" >> "$here/calls.log"',
-      'touch "$here/alive/$$"',
+      // A file of its own for each run: the id of the shell is an id of the PID namespace the sandbox puts it in, the same for every run.
+      'slot="$(mktemp "$here/alive/run.XXXXXX")"',
       'ls "$here/alive" | wc -l | tr -d " " >> "$here/alive.log"',
       `sleep ${PAUSE_SECONDS}`,
       `'${real}' "$@"`,
       'status=$?',
-      'rm -f "$here/alive/$$"',
+      'rm -f "$slot"',
       'exit $status',
     ],
     (dir) =>

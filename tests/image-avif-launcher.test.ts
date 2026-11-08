@@ -7,7 +7,7 @@ import { sandboxLauncherState, startSandboxLauncher, stopSandboxLauncher } from 
 import { ConversionFailedError } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { interface16 } from './helpers/graphic-parity';
-import { ancestorsOf, processesWithArgument, waitUntilProcessWithArgument } from './helpers/process-state';
+import { ancestorsOf, processesWithArgument } from './helpers/process-state';
 import { skipWithoutTools } from './helpers/strict-skip';
 
 /**
@@ -23,6 +23,7 @@ const CONVERSION_TIMEOUT_MS = 60_000;
 /** The wrapper gives up waiting for its release after this many polls of 50 ms (20 s), whatever the test does. */
 const WRAPPER_WAIT_POLLS = 400;
 const WRAPPER_START_HANG_GUARD_MS = 20_000;
+const WRAPPER_POLL_MS = 25;
 const toolsMissing = skipWithoutTools('avifenc');
 
 let workDir: string;
@@ -80,14 +81,18 @@ describe.skipIf(toolsMissing)('the AVIF encoder through the launcher helper', ()
 
     const before = launchedPrograms();
     const converting = convertImage(source, 'avif', { quality: 60 }, 'ui.png', 'png');
-    expect(await waitUntilProcessWithArgument(wrapper.script, WRAPPER_START_HANG_GUARD_MS), 'the encoder started').toBe(true);
+    // The wrapper writes its record after the version probe, which the worker itself runs first (and which has the wrapper's path in its command line too).
+    const recordDeadline = Date.now() + WRAPPER_START_HANG_GUARD_MS;
+    while (!existsSync(wrapper.record) && Date.now() < recordDeadline) await new Promise((resolve) => setTimeout(resolve, WRAPPER_POLL_MS));
+    expect(existsSync(wrapper.record), 'the encoder started').toBe(true);
     const helper = sandboxLauncherState().pid;
-    const [encoder] = processesWithArgument(wrapper.script);
-    const firstOwner = ancestorsOf(encoder).find((pid) => pid === helper || pid === process.pid);
+    const encoders = processesWithArgument(wrapper.script);
+    expect(encoders, 'the encoder is running').not.toEqual([]);
+    const owners = encoders.map((encoder) => ancestorsOf(encoder).find((pid) => pid === helper || pid === process.pid));
     writeFileSync(release, '');
     const viaHelper = await converting;
     expect(launchedPrograms() - before, 'the encoder was started by the helper').toBe(1);
-    expect(firstOwner, 'it stands below the helper, not directly below this process').toBe(helper);
+    expect(owners, 'every process of the run stands below the helper, not directly below this process').toEqual(encoders.map(() => helper));
 
     process.env.SANDBOX_LAUNCHER = 'off';
     const direct = await convertImage(source, 'avif', { quality: 60 }, 'ui.png', 'png');

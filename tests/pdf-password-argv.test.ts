@@ -15,7 +15,7 @@ import { BITMAP_FONT_TEXT, bitmapFontPdf } from './helpers/bitmap-font-pdf';
 import { readDxf } from './helpers/dxf-reader';
 import { oracleTest } from './helpers/oracle-test';
 import { skipUnless } from './helpers/strict-skip';
-import { isProcessRunning as isAlive } from './helpers/process-state';
+import { processesWithArgument, uniqueSleepInterval, waitUntilNoProcessWithArgument, waitUntilProcessWithArgument } from './helpers/process-state';
 
 /**
  * Issue #450: a PDF password must never appear in the argument vector of any spawned process,
@@ -665,7 +665,6 @@ describe('PDF password is never passed on the command line (issue #450)', () => 
     const STUB_START_DEADLINE_MS = 10_000;
     const PROCESS_EXIT_DEADLINE_MS = 5_000;
     const STUB_TIMEOUT_MS = 1_000;
-    const STUB_SLEEP_SECONDS = 60;
     const OVERSIZE_WRITE_MIB = 8;
     const STUB_MODE = 0o755;
     const HAS_STUB_TOOLS = fs.existsSync('/bin/sh') && fs.existsSync('/usr/bin/prlimit');
@@ -673,39 +672,32 @@ describe('PDF password is never passed on the command line (issue #450)', () => 
     interface SlowQpdf {
       jobDir: string;
       inputPath: string;
-      pidFile: string;
+      startedFile: string;
+      /** The sleep interval of the stub: the stub is found by it, since the id it reads for itself belongs to the PID namespace of the sandbox. */
+      interval: string;
       stubPath: string;
     }
 
-    /** Builds a stub qpdf that records its pid and then sleeps; the caller points QPDF_PATH at it. */
+    /** Builds a stub qpdf that says it started and then sleeps; the caller points QPDF_PATH at it. */
     function createSlowQpdf(): SlowQpdf {
       const dir = makeWorkDir('easyconvert-pdfpw-stub-');
-      const pidFile = path.join(dir, 'stub.pid');
+      const startedFile = path.join(dir, 'stub.started');
+      const interval = uniqueSleepInterval();
       const stubPath = path.join(dir, 'qpdf-stub.sh');
-      fs.writeFileSync(stubPath, `#!/bin/sh\necho $$ > '${pidFile}'\nexec sleep ${STUB_SLEEP_SECONDS}\n`, { mode: STUB_MODE });
+      fs.writeFileSync(stubPath, `#!/bin/sh\necho started > '${startedFile}'\nexec sleep ${interval}\n`, { mode: STUB_MODE });
       const inputPath = path.join(dir, 'input.pdf');
       fs.writeFileSync(inputPath, '%PDF-1.7\n');
-      return { jobDir: makeWorkDir('easyconvert-pdfpw-stubjob-'), inputPath, pidFile, stubPath };
+      return { jobDir: makeWorkDir('easyconvert-pdfpw-stubjob-'), inputPath, startedFile, interval, stubPath };
     }
 
-    async function waitForPid(pidFile: string): Promise<number> {
-      const deadline = Date.now() + STUB_START_DEADLINE_MS;
-      while (Date.now() < deadline) {
-        if (fs.existsSync(pidFile)) {
-          const pid = Number.parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
-          if (Number.isInteger(pid)) return pid;
-        }
-        await new Promise((resolve) => setTimeout(resolve, STUB_POLL_MS));
-      }
-      throw new Error('stub qpdf never started');
+    /** Returns once the stub has started and is sleeping. */
+    async function waitForStub(stub: SlowQpdf): Promise<void> {
+      expect(await waitUntilProcessWithArgument(stub.interval, STUB_START_DEADLINE_MS), 'stub qpdf never started').toBe(true);
     }
 
-    async function expectProcessGone(pid: number): Promise<void> {
-      const deadline = Date.now() + PROCESS_EXIT_DEADLINE_MS;
-      while (isAlive(pid) && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, STUB_POLL_MS));
-      }
-      expect(isAlive(pid)).toBe(false);
+    async function expectProcessGone(stub: SlowQpdf): Promise<void> {
+      await waitUntilNoProcessWithArgument(stub.interval, PROCESS_EXIT_DEADLINE_MS, STUB_POLL_MS);
+      expect(processesWithArgument(stub.interval)).toEqual([]);
     }
 
     it.skipIf(skipUnless('/bin/sh and prlimit', HAS_STUB_TOOLS))('aborting during qpdf kills it and leaves no password file, decrypted copy or process', async () => {
@@ -721,7 +713,7 @@ describe('PDF password is never passed on the command line (issue #450)', () => 
           () => 'resolved',
           (e: unknown) => e
         );
-        const pid = await waitForPid(stub.pidFile);
+        await waitForStub(stub);
         // While qpdf runs the credential exists only as an owner-only file in the job directory.
         const during = fs.readdirSync(stub.jobDir).filter((f) => f.startsWith('qpdf-password-'));
         expect(during).toHaveLength(1);
@@ -730,7 +722,7 @@ describe('PDF password is never passed on the command line (issue #450)', () => 
         controller.abort(reason);
         expect(await settled).toBe(reason);
         expect(fs.readdirSync(stub.jobDir)).toEqual([]);
-        await expectProcessGone(pid);
+        await expectProcessGone(stub);
       });
     }, TEST_TIMEOUT_MS);
 
@@ -745,13 +737,13 @@ describe('PDF password is never passed on the command line (issue #450)', () => 
           () => 'resolved',
           (e: unknown) => e
         );
-        const pid = await waitForPid(stub.pidFile);
+        await waitForStub(stub);
         const error = await settled;
 
         expect(error).toBeInstanceOf(SandboxedTimeoutError);
         expect((error as SandboxedTimeoutError).timeoutMs).toBe(STUB_TIMEOUT_MS);
         expect(fs.readdirSync(stub.jobDir)).toEqual([]);
-        await expectProcessGone(pid);
+        await expectProcessGone(stub);
       });
     }, TEST_TIMEOUT_MS);
 

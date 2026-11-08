@@ -15,7 +15,7 @@ import { requireOracleTool } from './helpers/differential-oracle';
 import { interface16, lineArt16 } from './helpers/graphic-parity';
 import { oracleTest } from './helpers/oracle-test';
 import { withChunksAfterHeader } from './helpers/png-chunks';
-import { isProcessRunning as isRunning } from './helpers/process-state';
+import { processesWithArgument, uniqueSleepInterval } from './helpers/process-state';
 
 /**
  * A plain 16-bit or grey PNG goes to the AVIF encoder as the file it arrived in, while the picture is still being decoded
@@ -557,9 +557,10 @@ describe('the encoder reads the source file', () => {
       const savedTmp = process.env.TMPDIR;
       process.env.TMPDIR = tmp;
       try {
-        const pidFile = path.join(workDir, 'sleeper.pid');
+        const pidFile = path.join(workDir, 'sleeper.started');
+        const interval = uniqueSleepInterval();
         const sleeper = path.join(workDir, 'sleeper');
-        writeFileSync(sleeper, `#!/bin/sh\n[ "$1" = "--version" ] && { echo 'Version: 1.4.2 (fake)'; exit 0; }\necho $$ > '${pidFile}'\nexec sleep 60\n`);
+        writeFileSync(sleeper, `#!/bin/sh\n[ "$1" = "--version" ] && { echo 'Version: 1.4.2 (fake)'; exit 0; }\necho started > '${pidFile}'\nexec sleep ${interval}\n`);
         chmodSync(sleeper, SCRIPT_MODE);
         process.env.AVIFENC_PATH = sleeper;
         const good = await interface16();
@@ -573,11 +574,10 @@ describe('the encoder reads the source file', () => {
         );
         expect(failure).toBeInstanceOf(Error);
         if (existsSync(pidFile)) {
-          const pid = Number(readFileSync(pidFile, 'utf-8'));
           const deadline = Date.now() + 5000;
           let alive = true;
           while (alive && Date.now() < deadline) {
-            alive = isRunning(pid);
+            alive = isRunning(interval);
             if (alive) await new Promise((resolve) => setTimeout(resolve, 50));
           }
           expect(alive).toBe(false);
@@ -593,6 +593,11 @@ describe('the encoder reads the source file', () => {
   );
 });
 
+/** Whether a process started with `interval` as the interval of its `sleep` runs. It is found by that argument: the id a tool reads for itself belongs to the PID namespace of the sandbox. */
+function isRunning(interval: string): boolean {
+  return processesWithArgument(interval).length > 0;
+}
+
 function writeOut(name: string, bytes: Buffer): string {
   mkdirSync(workDir, { recursive: true });
   const file = path.join(workDir, name);
@@ -604,12 +609,13 @@ function writeOut(name: string, bytes: Buffer): string {
 describe('the run in a slot', () => {
   const OPTIONS = { quality: 60 };
 
-  function sleepingTool(name: string): { script: string; pidFile: string } {
-    const pidFile = path.join(workDir, `${name}.pid`);
+  function sleepingTool(name: string): { script: string; pidFile: string; interval: string } {
+    const pidFile = path.join(workDir, `${name}.started`);
+    const interval = uniqueSleepInterval();
     const script = path.join(workDir, name);
-    writeFileSync(script, `#!/bin/sh\n[ "$1" = "--version" ] && { echo 'Version: 1.4.2 (fake)'; exit 0; }\necho $$ > '${pidFile}'\nexec sleep 60\n`);
+    writeFileSync(script, `#!/bin/sh\n[ "$1" = "--version" ] && { echo 'Version: 1.4.2 (fake)'; exit 0; }\necho started > '${pidFile}'\nexec sleep ${interval}\n`);
     chmodSync(script, SCRIPT_MODE);
-    return { script, pidFile };
+    return { script, pidFile, interval };
   }
 
   async function waitFor(condition: () => boolean): Promise<void> {
@@ -629,11 +635,11 @@ describe('the run in a slot', () => {
     const slot = new DirectAvifSlot();
     slot.set(direct);
     await waitFor(() => existsSync(tool.pidFile));
-    const pid = Number(readFileSync(tool.pidFile, 'utf-8'));
+    await waitFor(() => isRunning(tool.interval));
     await expect(slot.finish(Promise.reject(new Error('the class could not be found')))).rejects.toThrow('the class could not be found');
-    expect(isRunning(pid)).toBe(true);
+    expect(isRunning(tool.interval)).toBe(true);
     await slot.abandon();
-    await waitFor(() => !isRunning(pid));
+    await waitFor(() => !isRunning(tool.interval));
   }, 30_000);
 
   oracleTest(
@@ -689,9 +695,9 @@ describe('the run in a slot', () => {
     const direct = await DirectAvif.start(graphic, await sharp(graphic).metadata(), OPTIONS);
     expect(direct).not.toBeNull();
     await waitFor(() => existsSync(tool.pidFile));
-    const pid = Number(readFileSync(tool.pidFile, 'utf-8'));
+    await waitFor(() => isRunning(tool.interval));
     expect(await direct?.finish('photo')).toBeNull();
-    await waitFor(() => !isRunning(pid));
+    await waitFor(() => !isRunning(tool.interval));
   }, 30_000);
 
   it('starts a run for a picture at the pixel budget of the command-line encoder and for none above it', async () => {
@@ -733,9 +739,10 @@ describe('startAvifWithCli', () => {
     const savedTmp = process.env.TMPDIR;
     process.env.TMPDIR = tmp;
     try {
-      const pidFile = path.join(workDir, 'cancel.pid');
+      const pidFile = path.join(workDir, 'cancel.started');
+      const interval = uniqueSleepInterval();
       const tool = path.join(workDir, 'cancel-sleeper');
-      writeFileSync(tool, `#!/bin/sh\necho $$ > '${pidFile}'\nexec sleep 60\n`);
+      writeFileSync(tool, `#!/bin/sh\necho started > '${pidFile}'\nexec sleep ${interval}\n`);
       chmodSync(tool, SCRIPT_MODE);
       const run = startAvifWithCli(tool, { png: await lineArt16(), width: 256, height: 256, quality: 60, effort: 3, bitdepth: 12, layout: '4:0:0' });
       const result = run.result.then(
@@ -744,14 +751,15 @@ describe('startAvifWithCli', () => {
       );
       const deadline = Date.now() + 10_000;
       while (!existsSync(pidFile) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
-      const pid = Number(readFileSync(pidFile, 'utf-8'));
+      while (!isRunning(interval) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(isRunning(interval), 'the tool is running before the cancel').toBe(true);
       await run.cancel();
       expect(await result).toBeInstanceOf(Error);
       expect(readdirSync(tmp)).toEqual([]);
       const gone = Date.now() + 5000;
       let alive = true;
       while (alive && Date.now() < gone) {
-        alive = isRunning(pid);
+        alive = isRunning(interval);
         if (alive) await new Promise((resolve) => setTimeout(resolve, 50));
       }
       expect(alive).toBe(false);
