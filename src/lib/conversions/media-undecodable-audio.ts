@@ -1,4 +1,4 @@
-import { type MediaInput, runFfprobe } from './media-process';
+import { type MediaInput, runFfprobe, runFfprobeAsync } from './media-process';
 
 /**
  * Finds the audio streams of a file that cannot be decoded at all. ffprobe reports a stream's sample rate from the first
@@ -15,18 +15,36 @@ const PROBE_TIMEOUT_MS = 10_000;
 /** One `pts` per line for at most UNDECODABLE_PROBE_PACKETS frames. */
 const PROBE_MAX_BYTES = 64 * 1024;
 
+const PROBE_ARGS = (index: number): string[] => [
+  '-v',
+  'quiet',
+  '-select_streams',
+  String(index),
+  '-show_entries',
+  'frame=pts',
+  '-of',
+  'csv=p=0',
+  '-read_intervals',
+  `%+#${UNDECODABLE_PROBE_PACKETS}`,
+];
+
 /** True when ffprobe ran and decoded no frame from the first packets of stream `index`. */
 function decodesNothing(ffprobe: string, input: MediaInput, index: number): boolean {
-  const run = runFfprobe(
-    ffprobe,
-    ['-v', 'quiet', '-select_streams', String(index), '-show_entries', 'frame=pts', '-of', 'csv=p=0', '-read_intervals', `%+#${UNDECODABLE_PROBE_PACKETS}`],
-    input,
-    { timeoutMs: PROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BYTES }
-  );
+  const run = runFfprobe(ffprobe, PROBE_ARGS(index), input, { timeoutMs: PROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BYTES });
   return run.ok && run.stdout.trim() === '';
 }
 
 /** The indexes among `suspects` (absolute stream indexes of audio streams without a sample rate) that decode nothing. */
 export function findUndecodableAudio(ffprobe: string, input: MediaInput, suspects: readonly number[]): Set<number> {
   return new Set(suspects.slice(0, MAX_SUSPECTS_TRIED).filter((index) => decodesNothing(ffprobe, input, index)));
+}
+
+/** `findUndecodableAudio` without holding the event loop; the signal of the job stops it. */
+export async function findUndecodableAudioAsync(ffprobe: string, input: MediaInput, suspects: readonly number[], signal?: AbortSignal): Promise<Set<number>> {
+  const found = new Set<number>();
+  for (const index of suspects.slice(0, MAX_SUSPECTS_TRIED)) {
+    const run = await runFfprobeAsync(ffprobe, PROBE_ARGS(index), input, { timeoutMs: PROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BYTES, signal }); // NOSONAR S9382 one at a time: a hostile file gets one process
+    if (run.ok && run.stdout.trim() === '') found.add(index);
+  }
+  return found;
 }

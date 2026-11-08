@@ -26,7 +26,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Add alerts on SLO burn, queue age and worker restarts, linked to `docs/operations/alerts.md`.
 - Pass the declared `--infilter` for the legacy binary Office formats (`doc`, `xls`, `ppt`, their templates, `wps`, `pdb`): the suite has one filter per generation behind each extension, so a fixed name fails on older files.
 - Bound multipart bodies before `req.formData()` in the convert and batch routes.
-- Run ffprobe through the process sandbox with rlimits, asynchronously.
+- Make the remaining ffprobe runs asynchronous: the audio channel, sample rate and stream count probes of the argument builders (`probeScalar`), the HDR and empty-output probes, and the run that explains a failed probe; they run in the sandbox with limits but hold the event loop.
 - Make the PDF guard walk `/Parent` resources, count draws, and cover encrypted PDFs.
 - Restore the link-import charge that a failed write loses (up to 4 MiB).
 - Fix graph start recovery so queued node jobs are cancelled even when the cancel fails.

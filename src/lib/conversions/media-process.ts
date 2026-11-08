@@ -6,10 +6,13 @@ import {
   executeSandboxedBinary,
   getSanitizedEnvironment,
   resolveSandboxedCommand,
+  SandboxedProcessError,
+  SandboxedTimeoutError,
   type SandboxedExecutionOptions,
   type SandboxedExecutionResult,
+  type SandboxedRlimitsOptions,
 } from '../security/process-sandbox';
-import { EngineUnavailableError, RefusedMediaInputError } from '../types';
+import { EngineUnavailableError, RefusedMediaInputError, SandboxUnavailableError } from '../types';
 
 /**
  * The one place that starts ffmpeg and ffprobe. Every process runs in the namespace sandbox, and every input it opens gets
@@ -312,8 +315,8 @@ export type ToolRun = { ok: true; stdout: string; stderr: string } | { ok: false
  * Runs a tool synchronously in the sandbox. The sandbox is resolved before the spawn, so SandboxUnavailableError is thrown and
  * no process starts; every other failure is a value.
  */
-function runSandboxedSync(binary: string, args: readonly string[], limits: ToolLimits): ToolRun {
-  const command = resolveSandboxedCommand(binary, [...args], { networkIsolated: true });
+function runSandboxedSync(binary: string, args: readonly string[], limits: ToolLimits, rlimits?: SandboxedRlimitsOptions): ToolRun {
+  const command = resolveSandboxedCommand(binary, [...args], { networkIsolated: true, rlimits });
   const run = spawnSync(command.binary, command.args, {
     encoding: 'utf-8',
     env: getSanitizedEnvironment({}, true),
@@ -335,11 +338,62 @@ export function runFfmpegSync(ffmpegBin: string, args: readonly string[], limits
   return runSandboxedSync(ffmpegBin, args, limits);
 }
 
+/** Address space of an ffprobe run: it reads headers and a bounded number of packets, so a run past this is a hostile file, not a large one. */
+const FFPROBE_ADDRESS_SPACE_BYTES = 2 * 1024 * 1024 * 1024;
+/** ffprobe writes nothing to disk; a file it tries to grow past this is cut off. */
+const FFPROBE_MAX_FILE_BYTES = 1024 * 1024;
+/** CPU seconds past the wall-clock limit, so the time limit is what normally ends a run and the CPU limit only a run that spins past it. */
+const FFPROBE_CPU_SLACK_SECONDS = 2;
+
+/** The limits of an ffprobe run besides its time and output: address space, file size, CPU time, and no core file. */
+function ffprobeRlimits(timeoutMs: number): SandboxedRlimitsOptions {
+  return {
+    asBytes: FFPROBE_ADDRESS_SPACE_BYTES,
+    fsizeBytes: FFPROBE_MAX_FILE_BYTES,
+    cpuSeconds: Math.ceil(timeoutMs / 1000) + FFPROBE_CPU_SLACK_SECONDS,
+    coreBytes: 0,
+  };
+}
+
 /** Runs ffprobe over `input` in the sandbox, with `args` before the input and the input opened as mediaInputArgs opens it. */
 export function runFfprobe(ffprobe: string, args: readonly string[], input: MediaInput, limits: ToolLimits): ToolRun {
   const probeArgs = [...args, ...mediaInputArgs(input)];
   assertGuardedInputs(probeArgs);
-  return runSandboxedSync(ffprobe, probeArgs, limits);
+  return runSandboxedSync(ffprobe, probeArgs, limits, ffprobeRlimits(limits.timeoutMs));
+}
+
+/** The limits of an asynchronous ffprobe run: those of a synchronous one, and the signal of the job. */
+export interface AsyncToolLimits extends ToolLimits {
+  signal?: AbortSignal;
+}
+
+/**
+ * Runs ffprobe over `input` like `runFfprobe`, without holding the event loop for the length of the run: the same sandbox, the same
+ * limits, and the signal of the job stops it. As there, a sandbox that cannot be had is thrown (SandboxUnavailableError) before
+ * a process starts, a stop is thrown as its reason, and every other failure is a value.
+ */
+export async function runFfprobeAsync(ffprobe: string, args: readonly string[], input: MediaInput, limits: AsyncToolLimits): Promise<ToolRun> {
+  const probeArgs = [...args, ...mediaInputArgs(input)];
+  assertGuardedInputs(probeArgs);
+  try {
+    const run = await executeSandboxedBinary(ffprobe, probeArgs, {
+      networkIsolated: true,
+      timeoutMs: limits.timeoutMs,
+      maxBuffer: limits.maxBuffer,
+      rlimits: ffprobeRlimits(limits.timeoutMs),
+      signal: limits.signal,
+    });
+    return { ok: true, stdout: run.stdout.toString('utf-8'), stderr: run.stderr.toString('utf-8') };
+  } catch (error) {
+    if (error instanceof SandboxUnavailableError || limits.signal?.aborted) throw error;
+    if (error instanceof SandboxedProcessError) {
+      const stderr = error.stderr;
+      const failure = error.signal !== null ? `killed by ${error.signal}` : `exited with status ${error.exitCode}`;
+      return { ok: false, stdout: error.stdout, stderr, failure: stderr.trim() || failure };
+    }
+    if (error instanceof SandboxedTimeoutError) return { ok: false, stdout: '', stderr: '', failure: `timed out after ${limits.timeoutMs} ms` };
+    return { ok: false, stdout: '', stderr: '', failure: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 const FFMPEG_VERSION_TIMEOUT_MS = 3000;

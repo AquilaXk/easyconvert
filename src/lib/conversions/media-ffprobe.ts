@@ -4,14 +4,15 @@ import {
   ConversionFailedError,
   EngineUnavailableError,
   MediaProbeError,
+  SandboxUnavailableError,
   NoVideoStreamError,
   TooManyMediaStreamsError,
   UnprocessableMediaInputError,
 } from '../types';
 import { explainProbeFailure } from './media-decode-failures';
 import { assertInputPixels } from './image-input-limits';
-import { type MediaInput, runFfprobe } from './media-process';
-import { findUndecodableAudio } from './media-undecodable-audio';
+import { type MediaInput, type ToolRun, runFfprobe, runFfprobeAsync } from './media-process';
+import { findUndecodableAudio, findUndecodableAudioAsync } from './media-undecodable-audio';
 import { type LayoutStream, readMp4Layout } from './mp4-layout';
 import { readWavPcmInfo } from './wav-header';
 
@@ -261,13 +262,26 @@ function toInputStream(raw: RawStream): InputStream {
  * Sets `undecodable` on the audio streams of `streams` that state no sample rate (ffprobe reads it from the first decoded frame
  * and found none while it analysed the start of the file) and of which no packet decodes when the first ones are tried.
  */
-function markUndecodableAudio(ffprobe: FfprobePath, input: MediaInput, streams: InputStream[], raw: readonly RawStream[]): void {
-  const suspects = streams.filter((stream, position) => stream.type === 'audio' && !(Number(raw[position].sample_rate) > 0));
-  if (suspects.length === 0) return;
-  const undecodable = findUndecodableAudio(ffprobe, input, suspects.map((stream) => stream.index));
+function undecodableSuspects(streams: readonly InputStream[], raw: readonly RawStream[]): InputStream[] {
+  return streams.filter((stream, position) => stream.type === 'audio' && !(Number(raw[position].sample_rate) > 0));
+}
+
+function markUndecodable(suspects: readonly InputStream[], undecodable: ReadonlySet<number>): void {
   for (const stream of suspects) {
     if (undecodable.has(stream.index)) stream.undecodable = true;
   }
+}
+
+function markUndecodableAudio(ffprobe: FfprobePath, input: MediaInput, streams: InputStream[], raw: readonly RawStream[]): void {
+  const suspects = undecodableSuspects(streams, raw);
+  if (suspects.length === 0) return;
+  markUndecodable(suspects, findUndecodableAudio(ffprobe, input, suspects.map((stream) => stream.index)));
+}
+
+async function markUndecodableAudioAsync(ffprobe: FfprobePath, input: MediaInput, streams: InputStream[], raw: readonly RawStream[], signal?: AbortSignal): Promise<void> {
+  const suspects = undecodableSuspects(streams, raw);
+  if (suspects.length === 0) return;
+  markUndecodable(suspects, await findUndecodableAudioAsync(ffprobe, input, suspects.map((stream) => stream.index), signal));
 }
 
 export interface InputTimeline {
@@ -304,6 +318,7 @@ function inputIdentity(input: MediaInput): string | undefined {
 /** Forgets every remembered probe (tests that rewrite a file in place). */
 export function resetInputProbeCache(): void {
   probeCache.clear();
+  primedFailures.clear();
 }
 
 /**
@@ -322,8 +337,58 @@ export function probeInput(input: MediaInput, ffprobe: FfprobePath): InputProbe 
   const identity = inputIdentity(input);
   const remembered = identity === undefined ? undefined : probeCache.get(identity);
   if (remembered) return remembered;
+  rethrowPrimedFailure(identity);
 
   const run = runFfprobe(ffprobe, INPUT_PROBE_ARGS, input, { timeoutMs: FFPROBE_TIMEOUT_MS, maxBuffer: MAX_FFPROBE_JSON_BYTES });
+  const { probe, raw } = parseInputProbe(ffprobe, input, run);
+  markUndecodableAudio(ffprobe, input, probe.streams, raw);
+  return remember(identity, probe);
+}
+
+/**
+ * `probeInput` without holding the event loop for the length of the runs: the same probe, in the same sandbox and with the same limits, remembered
+ * the same way, and the signal of the job stops it. A conversion calls this once before it builds its arguments, so the `probeInput` calls the
+ * builders make find the answer. A probe that fails is remembered for the one `probeInput` call that follows, which throws the same error
+ * instead of running the failed probe again in the thread of the event loop.
+ */
+export async function probeInputAsync(input: MediaInput, ffprobe: FfprobePath, signal?: AbortSignal): Promise<InputProbe> {
+  const identity = inputIdentity(input);
+  const remembered = identity === undefined ? undefined : probeCache.get(identity);
+  if (remembered) return remembered;
+  try {
+    const run = await runFfprobeAsync(ffprobe, INPUT_PROBE_ARGS, input, { timeoutMs: FFPROBE_TIMEOUT_MS, maxBuffer: MAX_FFPROBE_JSON_BYTES, signal });
+    const { probe, raw } = parseInputProbe(ffprobe, input, run);
+    await markUndecodableAudioAsync(ffprobe, input, probe.streams, raw, signal);
+    return remember(identity, probe);
+  } catch (error) {
+    if (identity !== undefined && !signal?.aborted && !(error instanceof SandboxUnavailableError)) primedFailures.set(identity, { error, at: Date.now() });
+    throw error;
+  }
+}
+
+/** Failures of `probeInputAsync`, by input, each thrown once by the next `probeInput` of the same input if that comes within `PRIMED_FAILURE_TTL_MS`. */
+const primedFailures = new Map<string, { error: unknown; at: number }>();
+const PRIMED_FAILURE_TTL_MS = 10_000;
+
+function rethrowPrimedFailure(identity: string | undefined): void {
+  if (identity === undefined) return;
+  const failure = primedFailures.get(identity);
+  if (failure === undefined) return;
+  primedFailures.delete(identity);
+  if (Date.now() - failure.at <= PRIMED_FAILURE_TTL_MS) throw failure.error;
+}
+
+function remember(identity: string | undefined, probe: InputProbe): InputProbe {
+  if (identity !== undefined) {
+    primedFailures.delete(identity);
+    if (probeCache.size >= PROBE_CACHE_ENTRIES) probeCache.delete(probeCache.keys().next().value as string);
+    probeCache.set(identity, probe);
+  }
+  return probe;
+}
+
+/** The probe of ffprobe's report `run`; `raw` are its streams as ffprobe states them, which the check for undecodable audio reads. */
+function parseInputProbe(ffprobe: FfprobePath, input: MediaInput, run: ToolRun): { probe: InputProbe; raw: RawStream[] } {
   if (!run.ok) throw probeFailure(ffprobe, input, run.failure);
   let parsed: { streams?: unknown; format?: { start_time?: unknown; duration?: unknown }; chapters?: unknown };
   try {
@@ -346,20 +411,17 @@ export function probeInput(input: MediaInput, ffprobe: FfprobePath): InputProbe 
   for (const stream of streams) {
     if (stream.width !== undefined && stream.height !== undefined) assertInputPixels(stream.width, stream.height);
   }
-  markUndecodableAudio(ffprobe, input, streams, raw);
-  const probe: InputProbe = {
-    streams,
-    timeline: {
-      startTimeSec: Number.isFinite(start) ? start : 0,
-      chapterCount: Array.isArray(parsed.chapters) ? parsed.chapters.length : 0,
+  return {
+    raw,
+    probe: {
+      streams,
+      timeline: {
+        startTimeSec: Number.isFinite(start) ? start : 0,
+        chapterCount: Array.isArray(parsed.chapters) ? parsed.chapters.length : 0,
+      },
+      durationSec: Number.isFinite(duration) && duration > 0 ? duration : undefined,
     },
-    durationSec: Number.isFinite(duration) && duration > 0 ? duration : undefined,
   };
-  if (identity !== undefined) {
-    if (probeCache.size >= PROBE_CACHE_ENTRIES) probeCache.delete(probeCache.keys().next().value as string);
-    probeCache.set(identity, probe);
-  }
-  return probe;
 }
 
 /** The stream facts and the chapter list a conversion plans its mapping from. */
