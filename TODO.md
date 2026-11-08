@@ -3,7 +3,7 @@
 One maintainer, one list. Add a line when work is found, delete it when it lands.
 
 ## Conversions and quality
-- Read Nikon HE/HE* NEF (Nikon Z f sample): only the LibRaw development branch (snapshot 202611) has a decoder; decide between waiting for a release and a pinned source build in the worker image and CI (entry 191).
+- Drop `scripts/install-libraw-he.sh` and the `librawhe` stage when the distribution's LibRaw (0.23 or later) reads Nikon HE/HE* NEF (entry 195).
 - Hand the developed RAW picture to the encoder from its file, not a 75 MB buffer, to cut the DNG to PDF peak further (entry 191).
 - Review the PDF-to-text refusals (77 `PdfTextUnmappedError`, 25 `CorruptStreamError`) and convert the wrong ones.
 - Read composite fonts without a ToUnicode map through a `cmap` reader; 2.2% of glyphs are still missing.

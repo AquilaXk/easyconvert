@@ -137,6 +137,8 @@ Every sample has a `converts` row beside its quality rows (1 when the product co
 reference, not a stopped run. A sample the reference cannot convert states that in the same row. The per-class rows (`class-<class><target>`)
 are the mean over the samples of the class (a pooled ratio for sizes), and exist only when every sample of the class was measured.
 
+The reference of the `raw` family is the distribution's `dcraw_emu`, except for a Nikon NEF with High Efficiency compression, which no released LibRaw reads: the reference decodes it with the pinned snapshot build the product runs for it (`DCRAW_EMU_HE_PATH`, `scripts/install-libraw-he.sh`, entry 195). Without that build the sample is a `converts` row against a reference that cannot develop it.
+
 These families use the sample system described above: the one manifest `bench/corpus/remote-manifest.json` (its samples carry the
 family they belong to, and a sample may list companion files such as the reference picture of an SVG test), the one fetcher
 `bench/corpora.ts` with its redirect and size guards, the one class-row pool `bench/class-rows.ts`, and the one quick list and speed list

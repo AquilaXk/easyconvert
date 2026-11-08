@@ -4,6 +4,8 @@ import path from 'node:path';
 import { type RdPoint, tryBdRate } from '../bd-rate';
 import { REPO_ROOT } from '../config';
 import { convertWithProject } from '../convert';
+import { resolveNativeBinary } from '../../src/worker/engines';
+import { isHighEfficiencyNef } from '../../src/worker/raw-nef-compression';
 import type { FamilyContext, FamilyRunner } from '../context';
 import { MissingToolError, OutputIntegrityError, ToolRunError } from '../errors';
 import { decodeImageToPng, fileSize, pictureQuality, type ImageKind } from '../measure';
@@ -182,9 +184,11 @@ export const runRaw: FamilyRunner = async (ctx) => {
 async function runSample(ctx: FamilyContext, subject: Subject, file: string, tools: Readonly<Record<string, string>>, classRows: ClassRows): Promise<BenchRow[]> {
   const { name, format, sample } = subject;
   const input = fs.readFileSync(file);
+  /** A Nikon NEF with High Efficiency compression is developed by the pinned LibRaw snapshot the product runs for it (docs/policy-decisions.md, entry 195); where that build is absent the reference cannot develop it, as no released LibRaw can. */
+  const referenceDecoder = (format === 'nef' && isHighEfficiencyNef(file) ? resolveNativeBinary('dcrawEmuHe') : null) ?? tools.dcraw_emu;
   const developed = (label: string): string => {
     const tiff = ctx.scratch(`${name}-${label}.tiff`);
-    runTool(tools.dcraw_emu, [...DEVELOP_FLAGS, '-Z', tiff, file]);
+    runTool(referenceDecoder, [...DEVELOP_FLAGS, '-Z', tiff, file]);
     return tiff;
   };
   /** The reference encode of a developed TIFF: take the pixels to sRGB, then encode with the standard encoder. */
