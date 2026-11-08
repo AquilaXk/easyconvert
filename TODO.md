@@ -27,15 +27,11 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Give sandboxed jobs their own PID namespace or a distinct uid; `kill(sibling, 0)` succeeds today.
 - Run the office suite with a fixed profile: macros off, link updates off, `file:` reads restricted.
 - Pass the declared `--infilter` for every office input, and strip macros by content, not extension.
-- Bound multipart bodies before `req.formData()` in the convert and batch routes.
 - Run ffprobe through the process sandbox with rlimits, asynchronously.
 - Make the qpdf steps in `compress.ts` honour the job abort signal and deadline.
 - Make the PDF guard walk `/Parent` resources, count draws, and cover encrypted PDFs.
 - Restore the link-import charge that a failed write loses (up to 4 MiB).
 - Fix graph start recovery so queued node jobs are cancelled even when the cancel fails.
-- Key loopback rate limits by something callers cannot write; `X-Forwarded-For` rotates today.
-- Pin `actions/checkout` by SHA in three workflows.
-- Fix Dependabot alert #57 (moderate).
 
 ## Tests and CI
 - Stabilise the `lzma-decoder` timing and `ocr-pdf-concurrency` guards; both fail every nightly.
