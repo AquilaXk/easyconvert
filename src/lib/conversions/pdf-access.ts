@@ -2,6 +2,7 @@ import { EncryptedPDFError, PDFDocument } from 'pdf-lib';
 import { decryptPdfToBuffer, pdfPageTreeLoops, readPdfAccess } from '../../worker/pdf-decrypt';
 import { PdfPasswordRequiredError, PdfPermissionDeniedError } from '../types';
 import { PdfStructureError } from './pdf-document';
+import { type CheckedPdfRasterBudget, checkPdfRasterPageBudget } from './pdf-page-geometry';
 import { withQpdfInputFile } from './pdf-postprocess/qpdf-run';
 import { inspectPdfEncryption } from './pdf-encryption';
 
@@ -231,4 +232,19 @@ function isEncrypted(pdf: Buffer): boolean {
     if (error instanceof PdfStructureError) return false;
     throw error;
   }
+}
+
+/**
+ * `checkPdfRasterPageBudget` on the file as a reader opens it. An encrypted file is decrypted with the empty password first (what
+ * Poppler tries): pdf-lib cannot open it, and its page tree may sit in an encrypted object stream that the fallback scan of the raw
+ * bytes cannot see, which let such a file past the page limit. A caller that holds a password hands over the decrypted bytes.
+ * This lives here and not in pdf-page-geometry.ts, which the browser OCR bundle reaches and which must not import the qpdf runner.
+ * @throws PdfPasswordRequiredError (422) when the file needs a password the empty one is not.
+ */
+export async function checkOpenedPdfRasterPageBudget(
+  pdf: Buffer,
+  selectPageNumbers: (pageCount: number) => readonly number[],
+  dpi: number
+): Promise<CheckedPdfRasterBudget | undefined> {
+  return checkPdfRasterPageBudget(await openPdfForReading(pdf), selectPageNumbers, dpi);
 }

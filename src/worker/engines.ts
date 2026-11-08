@@ -88,8 +88,7 @@ import { createConversionResult, findOfficeOutput, getMimeType, handOffOutput, i
 import { DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { InputPixelLimitError } from '../lib/conversions/image-input-limits';
-import { openPdfForReading } from '../lib/conversions/pdf-access';
-import { checkPdfRasterPageBudget } from '../lib/conversions/pdf-page-geometry';
+import { checkOpenedPdfRasterPageBudget } from '../lib/conversions/pdf-access';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
 import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
@@ -1342,8 +1341,7 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
           const inputBuffer = options.password ? undefined : loadPdfInputBuffer(input);
           const pdfBytes = inputBuffer ?? (rasterDpi === undefined ? undefined : fs.readFileSync(readablePath));
           if (rasterDpi !== undefined && pdfBytes !== undefined) {
-            // An encrypted file is checked decrypted with the empty password that Poppler tries (a password was applied by `withDecryptedPdf`).
-            await checkPdfRasterPageBudget(await openPdfForReading(pdfBytes), (count) => pagesOfIntervals(resolveRequestedPages(options, count, !singleFile)), rasterDpi);
+            await checkOpenedPdfRasterPageBudget(pdfBytes, (count) => pagesOfIntervals(resolveRequestedPages(options, count, !singleFile)), rasterDpi);
           }
           const early = startEarly ? startEarly(tempDir, readablePath) : null;
           // An early run that fails is reported where the render would have reported it, below.
