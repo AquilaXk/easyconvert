@@ -80,6 +80,8 @@ describe('Subpages & Routes Verification', () => {
     it('correctly parses merge and compress utility slugs', () => {
       expect(slugPageCopy('merge-pdf').title).toBe('Merge PDF');
       expect(slugPageCopy('compress-pdf').title).toBe('Compress PDF');
+      expect(slugPageCopy('compress-png').title).toBe('Compress PNG');
+      expect(slugPageCopy('compress-jpg').title).toBe('Compress JPG');
     });
 
     it('correctly parses website capture tools', () => {

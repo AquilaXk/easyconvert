@@ -16,6 +16,7 @@ import { streamConvertWithOpfs } from './edge/pipelines/opfs-streaming-pipeline'
 import { executeServerlessCloudFallback } from './edge/pipelines/fallback-pipeline';
 import { executeResumableCloudConversion, type ResumableStage } from './edge/pipelines/resumable-cloud-pipeline';
 import { needsUploadInParts } from './plan-limits';
+import { serverOptionsFor } from './image-compression';
 import {
   executeWebGpuCompute,
   isWebGpuComputeSupported,
@@ -621,13 +622,14 @@ export async function executeItemConversion(
   try {
     // One request sends the file and waits for the result: its conversion stage starts at once and has no measure of progress.
     if (!inParts) callbacks.onStage?.('converting');
+    const serverOptions = serverOptionsFor(item.sourceFormat, item.targetFormat, item.options);
     const cloudRes = inParts
-      ? await executeResumableCloudConversion(item.file, item.targetFormat, item.options, {
+      ? await executeResumableCloudConversion(item.file, item.targetFormat, serverOptions, {
           onProgress: callbacks.onProgress,
           onStage: callbacks.onStage,
           signal,
         })
-      : await executeServerlessCloudFallback(item.file, item.targetFormat, item.options, signal);
+      : await executeServerlessCloudFallback(item.file, item.targetFormat, serverOptions, signal);
     callbacks.onSuccess(cloudRes.url, cloudRes.size, false, inParts ? CLOUD_PARTS_TIER_NAME : CLOUD_TIER_NAME, escalation);
   } catch (err: unknown) {
     if (signal?.aborted) return;

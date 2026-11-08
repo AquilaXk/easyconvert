@@ -190,6 +190,7 @@ Delivery
 194. [The web container's health check asks a liveness route that touches no dependency; `/api/health` stays the readiness probe](#194-the-web-containers-health-check-asks-a-liveness-route-that-touches-no-dependency-apihealth-stays-the-readiness-probe)
 195. [A Nikon NEF with High Efficiency compression is developed by a pinned LibRaw development snapshot run as a separate program, and every other camera file keeps the distribution's LibRaw](#195-a-nikon-nef-with-high-efficiency-compression-is-developed-by-a-pinned-libraw-development-snapshot-run-as-a-separate-program-and-every-other-camera-file-keeps-the-distributions-libraw)
 196. [Subtitle formats are a catalogue category of their own, and the home format tiles start on DOCX to PDF](#196-subtitle-formats-are-a-catalogue-category-of-their-own-and-the-home-format-tiles-start-on-docx-to-pdf)
+198. [PNG and JPG have compress pages that re-encode the file in its own format, and the Tools menu lists them with PDF/A](#198-png-and-jpg-have-compress-pages-that-re-encode-the-file-in-its-own-format-and-the-tools-menu-lists-them-with-pdfa)
 
 Quality evidence
 
@@ -6840,3 +6841,15 @@ Security
 - **Trade-offs**: The format count per category moves (Documents loses five formats, Subtitles has five), and a Prometheus series for the new `family` value appears. A person who searched Documents for subtitles now finds them one tab over.
 - **Verified by**: `tests/home-format-picker.test.ts`, the registry, catalogue and message tests, and `tests/job-deadline-*.test.ts`.
 - **Revisit when**: more subtitle formats arrive (SubViewer, SAMI, LRC), or a category page for subtitles is wanted for search.
+
+## 198. PNG and JPG have compress pages that re-encode the file in its own format, and the Tools menu lists them with PDF/A
+
+- **Status**: Implemented, decided 2026-11-08 (QA approved adding the tool pages the two reference converters have and the server already supports). It replaces the 404 that entries 139 and 145 gave `/compress-png` and `/compress-jpg`.
+- **Decision**:
+  - **`/compress-png` and `/compress-jpg` are pages**, the compress page of `/compress-pdf` for two more formats (`COMPRESSED_IMAGE_FORMATS` in `src/lib/image-compression.ts`, read by `parseUtilitySlug`). Each names itself as its canonical, in both languages. `/compress-gif`, `/compress-webp` and the rest stay 404.
+  - **The page converts the file to its own format on the server encoders.** JPG to JPG re-encodes at the quality of the slider (85 by default). PNG has no quality, so the quality of a PNG compression becomes the size of its palette (`paletteColorsForQuality`): 256 colours from quality 80 up, then 256 times the square of quality over 80, at least 2 (40 gives 64, 20 gives 16). The request carries `palette: true` and `colors`, which the image engine already honours. The tier router sends a same-format PNG or JPG to the server when no filter is asked for, since the browser canvas cannot shrink a PNG.
+  - **The Tools menu** lists Compress PNG, Compress JPG and Convert to PDF/A. PDF/A is the existing `/pdfa-converter`; no `/pdf-a` page is added, so one URL holds that content.
+- **Why**: The reference converters have both pages and the engine already writes smaller PNG and JPG files; only the pages and the PNG palette request were missing. The 256-colour default is the lossy palette the reference tools of this kind use for PNG.
+- **Trade-offs**: A PNG compressed at the default quality is lossy (256 colours), and a JPG that was already saved at a lower quality than the slider can come out larger, as the conversion has no "keep the original if smaller" step. Archive create and extract, PDF split and rotate are not pages yet: their operations run only as job graph nodes, which need a signed-in session or an API key, and the web pages convert one file at a time.
+- **Verified by**: `tests/image-compression.test.ts`, `tests/unknown-path-404.test.ts`, `tests/internal-links.test.ts`, `tests/site-review-copy.test.ts`, `tests/subpages-routes.test.ts`, `tests/i18n-routing.test.ts`.
+- **Revisit when**: the compress pages should keep the original when the result is not smaller, or the job graph is open to visitors without an account.

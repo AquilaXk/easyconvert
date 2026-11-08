@@ -18,7 +18,10 @@ export const TOOL_ROUTES = [
   { key: 'spreadsheetConverter', href: '/spreadsheet-converter' },
   { key: 'pdfOcr', href: '/pdf-ocr' },
   { key: 'compressPdf', href: '/compress-pdf' },
+  { key: 'compressPng', href: '/compress-png' },
+  { key: 'compressJpg', href: '/compress-jpg' },
   { key: 'mergePdf', href: '/merge-pdf' },
+  { key: 'convertToPdfA', href: '/pdfa-converter' },
 ] as const satisfies readonly SiteLink[];
 
 export const PRIMARY_LINKS = [

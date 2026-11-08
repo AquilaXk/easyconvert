@@ -81,6 +81,8 @@ describe('the pages that do not convert say what they do', () => {
   it.each([
     ['merge-pdf', 'Select the files to combine', 'Select Files'],
     ['compress-pdf', 'Select your file to compress', 'Select File'],
+    ['compress-png', 'Select your file to compress', 'Select File'],
+    ['compress-jpg', 'Select your file to compress', 'Select File'],
     ['pdf-ocr', 'Select your file to read its text', 'Select File'],
   ])('words the upload card of /%s', (slug, heading, button) => {
     const page = slugPage(slug);

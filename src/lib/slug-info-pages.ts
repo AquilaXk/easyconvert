@@ -1,5 +1,6 @@
 import { MERGE_FORMATS } from './jobs/graph-operations';
 import { OPTIMIZABLE_FORMATS } from './jobs/optimize-formats';
+import { COMPRESSED_IMAGE_FORMATS } from './image-compression';
 import { isCategoryWord, type CategoryWord } from './category-words';
 import { FORMAT_REGISTRY } from './registry';
 
@@ -93,7 +94,7 @@ const selfConvertible = (formats: Iterable<string>): ReadonlySet<string> => new 
 
 const UTILITY_FORMATS = {
   merge: selfConvertible(MERGE_FORMATS),
-  compress: selfConvertible(OPTIMIZABLE_FORMATS),
+  compress: selfConvertible([...OPTIMIZABLE_FORMATS, ...COMPRESSED_IMAGE_FORMATS]),
 } as const satisfies Record<'merge' | 'compress', ReadonlySet<string>>;
 
 export function parseUtilitySlug(cleanSlug: string): SlugPage | null {
