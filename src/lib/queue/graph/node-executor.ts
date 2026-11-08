@@ -11,7 +11,7 @@ import type { ConversionEnginePort } from '../engine-port';
 import { dispatchEngine } from '../dispatch-engine';
 import { graphScheduler } from './scheduler';
 import { isFinalFailure } from '../job-failure';
-import { safeFetch } from '../../security/safe-fetch';
+import { assertPublicOutboundUrl, safeFetch } from '../../security/safe-fetch';
 import { maskFailure } from '../../security/server-paths';
 import { graphNodeJobId, nodeOutputKey, sanitizeNodeOutputFilename } from './node-jobs';
 import { openUrlNodeSecrets } from './sealed-nodes';
@@ -852,8 +852,12 @@ function withoutFramingHeaders(headers: Record<string, string> | undefined): Rec
   return Object.fromEntries(Object.entries(headers ?? {}).filter(([name]) => !EXPORT_FRAMING_HEADERS.has(name.toLowerCase())));
 }
 
-/** Streams one stored artifact to the destination URL and fails unless it answers 2xx. */
-async function exportArtifactToUrl(
+/**
+ * Streams one stored artifact to the destination URL and fails unless it answers 2xx. The destination is checked before
+ * the artifact is opened, and the artifact is closed whatever the request does. A redirect is not followed: the body is
+ * a stream that cannot be sent again, so `safeFetch` refuses it with `OutboundRequestBlockedError`.
+ */
+export async function exportArtifactToUrl(
   storage: IStorageBackend,
   inputKey: string,
   url: string,
@@ -862,27 +866,37 @@ async function exportArtifactToUrl(
   signal: AbortSignal
 ): Promise<void> {
   const stat = await storage.stat(inputKey);
-  const stream = stat ? await storage.openReadStream(inputKey) : null;
-  if (!stat || !stream) {
+  if (!stat) {
     throw new GraphExportError(`Input artifact "${inputKey}" not found in storage`);
   }
-  const response = await safeFetch(url, {
-    method,
-    body: Readable.from(stream),
-    duplex: 'half',
-    headers: {
-      ...withoutFramingHeaders(customerHeaders),
-      'Content-Type': stat.mimeType || 'application/octet-stream',
-      'Content-Length': String(stat.size),
-    },
-    signal,
-  });
-  await response.body?.cancel?.().catch(() => undefined);
-  if (!response.ok) {
-    throw new GraphExportError(
-      `Export of "${inputKey}" failed: destination answered HTTP ${response.status}`,
-      response.status
-    );
+  await assertPublicOutboundUrl(url);
+  const stream = await storage.openReadStream(inputKey);
+  if (!stream) {
+    throw new GraphExportError(`Input artifact "${inputKey}" not found in storage`);
+  }
+  const body = Readable.from(stream);
+  try {
+    const response = await safeFetch(url, {
+      method,
+      body,
+      duplex: 'half',
+      headers: {
+        ...withoutFramingHeaders(customerHeaders),
+        'Content-Type': stat.mimeType || 'application/octet-stream',
+        'Content-Length': String(stat.size),
+      },
+      signal,
+    });
+    await response.body?.cancel?.().catch(() => undefined);
+    if (!response.ok) {
+      throw new GraphExportError(
+        `Export of "${inputKey}" failed: destination answered HTTP ${response.status}`,
+        response.status
+      );
+    }
+  } finally {
+    body.destroy();
+    (stream as { destroy?: () => void }).destroy?.();
   }
 }
 
