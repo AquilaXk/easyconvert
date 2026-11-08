@@ -122,6 +122,8 @@ describe.skipIf(toolsMissing)('a queued watermark, merge or unlock node on an en
   async function failedJob(graphNode: Record<string, unknown>, inputArtifacts: string[]): Promise<Record<string, unknown>> {
     const { headers, userId } = await apiKeyHeaders();
     const { jobId, data } = nodeJob(graphNode, inputArtifacts, userId);
+    // The graph of these node jobs is not stored: the scheduler is told the node may run.
+    vi.spyOn(graphScheduler, 'onNodeStarted').mockResolvedValue(true);
     vi.spyOn(graphScheduler, 'onNodeFailed').mockResolvedValue(undefined as never);
     const worker = new Worker(conversionQueue, processConversionJob, { concurrency: 1 });
     const failed = new Promise<void>((resolve) => worker.on('failed', () => resolve()));
@@ -264,6 +266,8 @@ describe.skipIf(toolsMissing)('a pdf.protect node on an encrypted PDF', () => {
     const { headers, userId } = await apiKeyHeaders();
     counter += 1;
     const graphId = `g_enc571_prot_${Date.now()}_${counter}`;
+    // The graph of these node jobs is not stored: the scheduler is told the node may run.
+    vi.spyOn(graphScheduler, 'onNodeStarted').mockResolvedValue(true);
     vi.spyOn(graphScheduler, 'onNodeFailed').mockResolvedValue(undefined as never);
     const worker = new Worker(conversionQueue, processConversionJob, { concurrency: 1 });
     const failed = new Promise<void>((resolve) => worker.on('failed', () => resolve()));

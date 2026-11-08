@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import JSZip from 'jszip';
@@ -9,6 +9,7 @@ import { POST as convertPost } from '../src/app/api/convert/route';
 import { POST as batchPost } from '../src/app/api/convert/batch/route';
 import { processGraphNodeJob } from '../src/lib/queue/graph/node-executor';
 import { processConversionJob } from '../src/lib/queue/conversion-queue';
+import { graphScheduler } from '../src/lib/queue/graph';
 import type { Job } from '../src/lib/queue/bullmq-engine';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
@@ -192,10 +193,13 @@ describe('entry points fail with 503 when the native engine a pair needs is miss
   });
 
   it('a graph convert node on the in-process queue rejects with EngineUnavailableError', async () => {
+    // The graph of this node job is not stored: the scheduler is told the node may run.
+    const started = vi.spyOn(graphScheduler, 'onNodeStarted').mockResolvedValue(true);
     const run = withMissingBinary('SOFFICE_PATH', () => processConversionJob(convertNodeJob(seedXlsx())));
     await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
     await expect(run).rejects.toMatchObject({ engineName: 'soffice' });
     await expect(run).rejects.toThrow(/^Engine 'soffice' is unavailable: Spreadsheet formula recalculation requires /);
+    started.mockRestore();
   });
 });
 

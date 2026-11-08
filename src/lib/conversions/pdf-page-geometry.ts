@@ -3,7 +3,6 @@ import { ConversionFailedError, PayloadLimitError } from '../types';
 import { DEFAULT_MAX_INPUT_PIXELS, InputPixelLimitError, maxInputPixels } from './image-input-limit-config';
 import { mapBoxToSource, normaliseLeafPageCatalogWithLib, type OcrGeometry, type OcrQuarterTurn } from './ocr-geometry';
 import type { OcrBBox } from './ocr-pdf-combiner';
-import { openPdfForReading } from './pdf-access';
 
 /**
  * How a rendered PDF page relates to the PDF page it was rendered from, so that boxes the recognizer reports in
@@ -405,18 +404,15 @@ export function assertPdfRasterPageBudget(frames: readonly PdfPageFrame[], pageN
 /**
  * Checks the pages the request selects against the page and pixel limits, from the page tree and the page boxes.
  *
- * An encrypted document is read decrypted with the empty password (pdf-lib cannot open it, and its page tree may sit in an
- * encrypted object stream that the fallback scan of the raw bytes cannot see, which let such a document through unchecked);
- * a caller that holds a password hands over the decrypted bytes, as every converter does.
- * @throws PdfPasswordRequiredError (422) when the document needs a password the empty one is not.
- * @throws EngineUnavailableError when the document is encrypted and qpdf is not installed.
+ * `pdf` is a file pdf-lib can open. An encrypted file is not: its page tree may sit in an encrypted object stream that the
+ * fallback scan of the raw bytes cannot see, so the caller hands over the decrypted bytes (`openPdfForReading`; this module is
+ * reachable from the browser OCR bundle and must not import the qpdf runner).
  */
 export async function checkPdfRasterPageBudget(
-  input: Buffer | Uint8Array,
+  pdf: Buffer | Uint8Array,
   selectPageNumbers: (pageCount: number) => readonly number[],
   dpi: number
 ): Promise<CheckedPdfRasterBudget | undefined> {
-  const pdf = await openPdfForReading(Buffer.isBuffer(input) ? input : Buffer.from(input.buffer, input.byteOffset, input.byteLength));
   let doc: PDFDocument;
   try {
     doc = await PDFDocument.load(pdf, { updateMetadata: false, throwOnInvalidObject: true });

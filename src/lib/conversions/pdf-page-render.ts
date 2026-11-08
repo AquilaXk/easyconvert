@@ -13,6 +13,7 @@ import {
 } from '../security/process-sandbox';
 import { assertInputPixels } from './image-input-limits';
 import { OCR_DEFAULT_DPI, OCR_MAX_DPI, OCR_MIN_RENDER_DPI } from './ocr-dpi';
+import { openPdfForReading } from './pdf-access';
 import { assertPdfJbig2WithinLimits } from './pdf-jbig2-guard';
 import {
   assertPdfRasterPageBudget,
@@ -166,7 +167,8 @@ function selectOcrPageNumbers(pages: ReadonlySet<number> | undefined, pageCount:
 export async function planPageRender(pdf: Buffer, pages: ReadonlySet<number> | undefined, requestedDpi: number | undefined): Promise<RenderPlan> {
   const dpi = resolveRenderDpi(requestedDpi);
   assertPdfImagesWithinLimit(pdf);
-  const checked = await checkPdfRasterPageBudget(pdf, (pageCount) => selectOcrPageNumbers(pages, pageCount), dpi);
+  // An encrypted file is checked decrypted with the empty password that pdftoppm tries; its page tree may be in an encrypted object stream.
+  const checked = await checkPdfRasterPageBudget(await openPdfForReading(pdf), (pageCount) => selectOcrPageNumbers(pages, pageCount), dpi);
   if (checked) {
     return { pageNumbers: checked.pageNumbers, frames: checked.frames, dpi };
   }

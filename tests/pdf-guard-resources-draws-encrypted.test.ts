@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_PDF_DRAWS, MAX_PDF_DRAWS_PER_PAGE, PdfDocument, PdfStructureError } from '../src/lib/conversions/pdf-document';
-import { assertPageImageCount } from '../src/lib/conversions/page-range';
-import { checkPdfRasterPageBudget } from '../src/lib/conversions/pdf-page-geometry';
+import { planPageRender } from '../src/lib/conversions/pdf-page-render';
 import { pdfjsReadableBytes } from '../src/lib/conversions/pdf-reader-input';
 import { runPdfTextJob } from '../src/lib/conversions/pdf-text-geometry';
 import { type CraftObject, buildPdf, flate } from './helpers/pdf-craft';
@@ -221,11 +220,7 @@ describe.skipIf(qpdfMissing)('an encrypted PDF is checked after it is decrypted,
       ownerPassword: 'owner-secret',
       structure: 'objstm',
     });
-    const select = (count: number): number[] => {
-      assertPageImageCount(count);
-      return Array.from({ length: count }, (_, i) => i + 1);
-    };
-    const error = await captureError(() => checkPdfRasterPageBudget(locked, select, 72));
+    const error = await captureError(() => planPageRender(locked, undefined, 72));
     expect(error).toMatchObject({ name: 'PayloadLimitError', status: 413 });
   }, 60_000);
 });
