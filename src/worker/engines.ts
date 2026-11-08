@@ -416,7 +416,7 @@ async function runHeadlessOffice(
           '--norestore',
           '--nofirststartwizard',
           '--nologo',
-          ...standaloneProfileArguments(tempDir, options, src),
+          ...standaloneProfileArguments(tempDir, options, src, inputPath),
           '--convert-to',
           filterSpec,
           '--outdir',

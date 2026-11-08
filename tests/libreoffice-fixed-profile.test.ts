@@ -60,13 +60,14 @@ describe('the fixed office profile', () => {
 
   it('is written for the standalone run of every source, with the import filter of a declared format and none for a detected one', () => {
     const word = scratch();
-    expect(standaloneProfileArguments(word, {}, 'docx')).toEqual([`-env:UserInstallation=file://${word}/user`, '--infilter=MS Word 2007 XML']);
+    expect(standaloneProfileArguments(word, {}, 'docx', `${word}/input.docx`)).toEqual([`-env:UserInstallation=file://${word}/user`, '--infilter=MS Word 2007 XML']);
     expectFixedSettings(registry(`${word}/user`));
     const html = scratch();
-    expect(standaloneProfileArguments(html, {}, 'html')).toEqual([`-env:UserInstallation=file://${html}/user`]);
+    expect(standaloneProfileArguments(html, {}, 'html', `${html}/input.html`)).toEqual([`-env:UserInstallation=file://${html}/user`]);
     expectFixedSettings(registry(`${html}/user`));
     const keep = scratch();
-    standaloneProfileArguments(keep, { keepEmbeddedExcelObjects: true }, 'ppt');
+    fs.writeFileSync(`${keep}/input.ppt`, 'not a compound file');
+    standaloneProfileArguments(keep, { keepEmbeddedExcelObjects: true }, 'ppt', `${keep}/input.ppt`);
     expect(registry(`${keep}/user`)).toContain('ExcelToCalc');
   });
 

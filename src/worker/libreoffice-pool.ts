@@ -21,7 +21,8 @@ import {
   assertAllowedLibreOfficeFilter,
   buildPdfExportFilterData,
 } from '../lib/conversions/pdf-export-options';
-import { officeImportFilterArgs, officeSuiteApplication, type OfficeSuiteApplication } from '../lib/conversions/office/office-suite-sources';
+import { officeInputFilterArgs } from '../lib/conversions/office/legacy-import-filter';
+import { officeSuiteApplication, type OfficeSuiteApplication } from '../lib/conversions/office/office-suite-sources';
 import { writeOfficeProfile } from './libreoffice-profile';
 import type { WorkerEngineOptions, WorkerConversionResult } from './engines';
 
@@ -183,14 +184,14 @@ export function resolveLibreOfficeFilter(
 
 /**
  * The `-env:UserInstallation` argument of a run in the temporary directory `tempDir`, followed by the import filter of the declared source
- * format (none for a format the suite detects itself), with the profile written first: the settings of every
+ * format and generation (none for a format the suite detects itself), with the profile written first: the settings of every
  * run, and for a run that keeps embedded Excel objects that setting too (such a run is never a run of the pool, whose profiles other jobs share). The
  * run's temporary files go into the same directory (`TMPDIR`, where the run is started), which is removed with it, so a run that is killed
  * leaves nothing in the shared temporary directory.
  */
-export function standaloneProfileArguments(tempDir: string, options: WorkerEngineOptions, sourceFormat: string): string[] {
+export function standaloneProfileArguments(tempDir: string, options: WorkerEngineOptions, sourceFormat: string, inputPath: string): string[] {
   writeOfficeProfile(`${tempDir}/user`, { keepEmbeddedExcelObjects: options.keepEmbeddedExcelObjects });
-  return [`-env:UserInstallation=file://${tempDir}/user`, ...officeImportFilterArgs(sourceFormat)];
+  return [`-env:UserInstallation=file://${tempDir}/user`, ...officeInputFilterArgs(sourceFormat, inputPath)];
 }
 
 /**
@@ -716,7 +717,7 @@ export class LibreOfficePoolManager {
         '--nofirststartwizard',
         '--nologo',
         `-env:UserInstallation=file://${worker.userProfileDir}`,
-        ...officeImportFilterArgs(src),
+        ...officeInputFilterArgs(src, inputPath),
         '--convert-to',
         filterSpec,
         '--outdir',
