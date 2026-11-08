@@ -261,6 +261,12 @@ async function stripOpenDocumentMacros(zip: JSZip, budget: InflateBudget): Promi
  * returned as it is: the office suite refuses it, and says so. A package with more entries or elements than the limits is refused
  * (a typed 400 error).
  */
+/** The outcome that says more: a dropped part over a retyped package over no change. */
+function strongerOutcome(a: StripOutcome, b: StripOutcome): StripOutcome {
+  const rank: Record<StripOutcome, number> = { unchanged: 0, retyped: 1, dropped: 2 };
+  return rank[a] >= rank[b] ? a : b;
+}
+
 export async function stripOfficeMacros(buffer: Buffer): Promise<MacroStripResult> {
   const unchanged: MacroStripResult = { buffer, droppedMacros: false };
   if (!startsWithBytes(buffer, ZIP_LOCAL_HEADER_SIGNATURE)) return unchanged;
@@ -271,8 +277,10 @@ export async function stripOfficeMacros(buffer: Buffer): Promise<MacroStripResul
     return unchanged;
   }
   const budget = new InflateBudget();
-  let outcome = await stripOoxmlMacros(zip, budget);
-  if (outcome === 'unchanged') outcome = await stripOpenDocumentMacros(zip, budget);
+  // Both passes run: a package can carry the parts of both (a polyglot), and the second pass must not be skipped because the first found something.
+  const ooxml = await stripOoxmlMacros(zip, budget);
+  const odf = await stripOpenDocumentMacros(zip, budget);
+  const outcome = strongerOutcome(ooxml, odf);
   if (outcome === 'unchanged') return unchanged;
   return { buffer: await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }), droppedMacros: outcome === 'dropped' };
 }

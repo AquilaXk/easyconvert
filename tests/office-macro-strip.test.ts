@@ -252,3 +252,16 @@ describe('officeInputWithoutMacros', () => {
     expect(await officeInputWithoutMacros(missing)).toBe(missing);
   });
 });
+
+describe('a package that carries the macro parts of both families', () => {
+  it('loses the OpenDocument Basic library as well as the VBA project', async () => {
+    const zip = await JSZip.loadAsync(await wordWithMacro());
+    zip.file('META-INF/manifest.xml', '<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"/>');
+    zip.file('Basic/Standard/Module1.xml', 'Sub Main\nEnd Sub');
+    const result = await stripOfficeMacros(await zip.generateAsync({ type: 'nodebuffer' }));
+    const left = names(await JSZip.loadAsync(result.buffer));
+    expect(result.droppedMacros).toBe(true);
+    expect(left.filter((name) => name.startsWith('Basic/') || name.endsWith('vbaProject.bin'))).toEqual([]);
+  });
+});
+
