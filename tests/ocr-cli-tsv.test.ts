@@ -17,7 +17,7 @@ import { Semaphore } from '../src/lib/workers/semaphore';
 import { oracleTest } from './helpers/oracle-test';
 import { getOracleToolPath, OracleToolMissingError } from './helpers/differential-oracle';
 import { characterErrorRatePercent } from './helpers/ocr-cer';
-import { isProcessRunning } from './helpers/process-state';
+import { processesWithArgument, uniqueSleepInterval, waitUntilNoProcessWithArgument } from './helpers/process-state';
 
 const FIXTURE_DIR = path.join(__dirname, 'fixtures', 'ocr');
 const GROUND_TRUTH = fs.readFileSync(path.join(FIXTURE_DIR, 'twocol.gt.txt'), 'utf-8');
@@ -33,7 +33,8 @@ const NS_PER_MS = 1e6;
 const HISTOGRAM_RESOLUTION_MS = 10;
 const TEST_TIMEOUT_MS = 120_000;
 const SHORT_CLI_TIMEOUT_MS = 400;
-const PROCESS_REAP_WAIT_MS = 200;
+/** Hang guard of the wait for a killed process to be gone: it is gone within milliseconds, this only ends a wait that never would. */
+const PROCESS_REAP_HANG_GUARD_MS = 10_000;
 const CONCURRENT_RUNS_PER_CPU = 3;
 const LOG_PREFIX_ALLOWANCE = 100;
 const PROC_STAT_PROBE = '/proc/self/stat';
@@ -264,17 +265,18 @@ describe('recognizeWithCli', () => {
     // Zombie detection reads /proc, which only Linux provides.
     // skip-ok: platform capability: the process-group check reads /proc, which exists on Linux only.
     it.skipIf(!fs.existsSync(PROC_STAT_PROBE))('kills the whole process group when the timeout expires', async () => {
-      const pidFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-cli-pid-')), 'child.pid');
-      const cliPath = writeScript(`sleep 300 &\necho $! > "${pidFile}"\nwait`);
+      const startedFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-cli-pid-')), 'child.started');
+      // The grandchild is found by its interval: the id the script reads for it is an id of the PID namespace of the sandbox, not of the host.
+      const interval = uniqueSleepInterval();
+      const cliPath = writeScript(`sleep ${interval} &\necho started > "${startedFile}"\nwait`);
       const started = performance.now();
       await expect(
         recognizeWithCli({ ...common, cliPath, timeoutMs: SHORT_CLI_TIMEOUT_MS })
       ).rejects.toThrow(OcrEngineUnavailableError);
       expect(performance.now() - started).toBeLessThan(SHORT_CLI_TIMEOUT_MS * 10);
-      const grandchild = Number.parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
-      expect(Number.isInteger(grandchild)).toBe(true);
-      await new Promise((resolve) => setTimeout(resolve, PROCESS_REAP_WAIT_MS));
-      expect(isProcessRunning(grandchild)).toBe(false);
+      expect(fs.existsSync(startedFile), 'the script started its grandchild').toBe(true);
+      await waitUntilNoProcessWithArgument(interval, PROCESS_REAP_HANG_GUARD_MS);
+      expect(processesWithArgument(interval)).toEqual([]);
     });
 
     it('reports a failing exit status without echoing CLI diagnostics to the client', async () => {
@@ -374,7 +376,7 @@ describe('recognizeWithCli', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-cli-conc-'));
       // The stand-in prints one word, so the empty-result single-block retry does not run twice.
       const cliPath = writeScript(
-        `touch "${dir}/$$"\nls "${dir}" | wc -l >> "${dir}.log"\nsleep 0.3\nrm "${dir}/$$"\n` +
+        `slot=$(mktemp "${dir}/run.XXXXXX")\nls "${dir}" | wc -l >> "${dir}.log"\nsleep 0.3\nrm "$slot"\n` +
           `printf '${TSV_HEADER.replace(/\t/g, '\\t')}\\n1\\t1\\t0\\t0\\t0\\t0\\t0\\t0\\t5\\t5\\t-1\\t\\n5\\t1\\t1\\t1\\t1\\t1\\t0\\t0\\t5\\t5\\t90\\tw\\n' > "$4.tsv"\n` +
           `echo w > "$4.txt"`
       );

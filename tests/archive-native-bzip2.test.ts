@@ -11,7 +11,7 @@ import { getOracleToolPath } from './helpers/differential-oracle';
 import { buildManyEntriesTar, buildTarWithEntries, createHostileWorkspace, type HostileWorkspace } from './helpers/hostile-archives';
 import { oracleTest } from './helpers/oracle-test';
 import { createSevenZipSpy, type SevenZipSpy } from './helpers/seven-zip-spy';
-import { isProcessRunning } from './helpers/process-state';
+import { processesWithArgument, uniqueSleepInterval, waitUntilNoProcessWithArgument, waitUntilProcessWithArgument } from './helpers/process-state';
 
 /**
  * tar to tar.bz2 is written by `lbzip2` run as one sandboxed process on the vetted tar, not by 7-Zip. The outputs are read
@@ -317,8 +317,10 @@ describe('tar to tar.bz2 by lbzip2', () => {
     'stops the lbzip2 process when the request is aborted',
     [...TOOLS],
     async () => {
-      const pidFile = path.join(workDir, 'sleeper.pid');
-      const sleeper = writeTool('lbzip2-sleeps.sh', `echo $$ > '${pidFile}'\nexec sleep 60`);
+      const pidFile = path.join(workDir, 'sleeper.started');
+      // Found by its interval, not by the id it reads for itself: in the PID namespace of the sandbox that id is 2 (a thread of the kernel on the host).
+      const interval = uniqueSleepInterval();
+      const sleeper = writeTool('lbzip2-sleeps.sh', `echo started > '${pidFile}'\nexec sleep ${interval}`);
       const controller = new AbortController();
       const tar = tarOf('abort.tar', MEMBERS);
       const pending = withLbzip2(sleeper, () => bz2Of(tar, { signal: controller.signal })).then(
@@ -328,17 +330,14 @@ describe('tar to tar.bz2 by lbzip2', () => {
       const startDeadline = Date.now() + PROCESS_START_WAIT_MS;
       while (!fs.existsSync(pidFile) && Date.now() < startDeadline) await new Promise((resolve) => setTimeout(resolve, POLL_MS));
       expect(fs.existsSync(pidFile), 'the lbzip2 process never started').toBe(true);
+      expect(await waitUntilProcessWithArgument(interval, PROCESS_START_WAIT_MS), 'the sleeper is not running before the abort').toBe(true);
       const aborted = Date.now();
       controller.abort();
       const error = await pending;
       expect(error).toBeInstanceOf(Error);
       expect(Date.now() - aborted).toBeLessThan(PROCESS_EXIT_WAIT_MS);
-      const pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
-      const deadline = Date.now() + PROCESS_EXIT_WAIT_MS;
-      while (isProcessRunning(pid) && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-      }
-      expect(isProcessRunning(pid), 'the lbzip2 process was left running').toBe(false);
+      await waitUntilNoProcessWithArgument(interval, PROCESS_EXIT_WAIT_MS);
+      expect(processesWithArgument(interval), 'the lbzip2 process was left running').toEqual([]);
     },
     TEST_TIMEOUT_MS
   );

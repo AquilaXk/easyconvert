@@ -22,7 +22,9 @@ import {
   UnsupportedTargetError,
 } from '../src/lib/types';
 import type { WorkerConversionResult } from '../src/worker/worker-types';
+import { executeSandboxedBinary, getUnshareCapability, SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { withMissingBinary } from './helpers/native-tools';
+import { skipUnless } from './helpers/strict-skip';
 import { resolveLocalStagingDir } from '../src/lib/storage/storage-config';
 
 /**
@@ -418,4 +420,28 @@ setInterval(() => undefined, 1000);
     expect(pids).toHaveLength(2);
     for (const pid of pids) expect(await endsWithin(pid, PROCESS_END_WAIT_MS), `pid ${pid} has ended`).toBe(true);
   }, 30_000);
+});
+
+/**
+ * The launcher of calibre's release build reads `/proc/<its own id>/exe` and stops with "Failed to read exe path" when it cannot. In a PID namespace
+ * its own id is one of the namespace, and /proc (the sandbox cannot remount it: `mount` is denied) names the host's process of that number, so the read
+ * fails. The stand-in does the same read; calibre is the one program the sandbox runs outside the PID namespace (docs/policy-decisions.md, entry 203).
+ */
+// skip-ok: pid-init (native/pid-init) is built by the image and the CI setup; skipUnless fails the run under ORACLE_STRICT_MODE=1 without it.
+describe.skipIf(skipUnless('pid-init (the PID namespace of every run)', getUnshareCapability().pidInitPath !== ''))('the calibre route runs calibre outside the PID namespace', () => {
+  const READS_OWN_EXE = `fs.readlinkSync('/proc/' + process.pid + '/exe');`;
+
+  it('control: a program that reads /proc/<its id>/exe fails in the PID namespace every other run gets', async () => {
+    const program = fakeProgram(READS_OWN_EXE);
+    const failure = await executeSandboxedBinary(program, ['in', 'out'], { timeoutMs: 15_000 }).catch((caught: unknown) => caught);
+    expect(failure).toBeInstanceOf(SandboxedProcessError);
+    expect((failure as SandboxedProcessError).stderr).toMatch(/ENOENT|EACCES|ESRCH/);
+  });
+
+  it('runs a program that reads /proc/<its id>/exe, so that calibre can read its path', async () => {
+    const program = fakeProgram(`${READS_OWN_EXE}\n${validOutput()}`);
+    const result = await convertWithCalibre(deps(), request('txt', 'mobi'), program);
+    expect(result.engineUsed).toBe('native-calibre');
+    expect(runsOf()).toHaveLength(1);
+  });
 });

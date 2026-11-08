@@ -28,7 +28,7 @@ beforeEach(() => {
   Object.defineProperty(process, 'platform', { value: 'linux' });
   vi.spyOn(fs, 'existsSync').mockImplementation((candidate) => candidate === '/usr/bin/unshare' || candidate === PID_INIT);
   vi.stubEnv('PID_INIT_PATH', PID_INIT);
-  vi.stubEnv('SANDBOX_PID_NAMESPACE', 'true');
+  vi.stubEnv('SANDBOX_PID_NAMESPACE', undefined);
   vi.useFakeTimers({ toFake: ['Date'] });
   probe.pidInitWorks = false;
   probe.calls = [];
@@ -81,5 +81,17 @@ describe('the PID namespace probe', () => {
     vi.stubEnv('PID_INIT_PATH', '/opt/test/not-there');
     expect(getUnshareCapability().pidInitPath).toBe('');
     expect(warn.mock.calls[0][0]).toContain('no pid-init program was found');
+  });
+
+  it('is on unless SANDBOX_PID_NAMESPACE is false, and then neither probes nor says anything', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    probe.pidInitWorks = true;
+    expect(getUnshareCapability().pidInitPath).toBe(PID_INIT);
+    resetUnshareCapabilityCache();
+    probe.calls = [];
+    vi.stubEnv('SANDBOX_PID_NAMESPACE', 'false');
+    expect(getUnshareCapability()).toMatchObject({ available: true, pidInitPath: '' });
+    expect(probe.calls.filter((call) => call.some((arg) => arg.endsWith('/pid-init-stand-in')))).toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
   });
 });
