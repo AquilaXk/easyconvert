@@ -1,12 +1,12 @@
 import crypto from 'node:crypto';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { GET as queueJobsGet } from '../src/app/api/queue/jobs/route';
 import { GET as v1JobsGet } from '../src/app/api/v1/jobs/route';
 import { createSessionToken } from '../src/lib/auth/session';
 import { userStore } from '../src/lib/auth/user-store';
 import type { User } from '../src/lib/auth/types';
-import { conversionQueue } from '../src/lib/queue/conversion-queue';
+import { conversionQueue, resourceQueues } from '../src/lib/queue/conversion-queue';
 import { enqueueConversionJob } from '../src/lib/queue/enqueue';
 import { enqueueGraphNodeJob } from '../src/lib/queue/graph/node-jobs';
 import { listVisibleJobs } from '../src/lib/queue/user-jobs';
@@ -59,5 +59,22 @@ describe('the jobs a caller lists', () => {
     const listed = await listVisibleJobs(user.id, ['waiting', 'active', 'completed', 'failed', 'cancelled'], 2);
 
     expect(listed.map((job) => job.id).sort()).toEqual(older.map((job) => job.id).sort());
+  });
+
+  it('reads each queue once per list request, however small the page and however many nodes come first', async () => {
+    await ownJob('only.csv');
+    const graphId = `graph_calls_${Date.now()}`;
+    for (const node of ['a', 'b', 'c', 'd', 'e']) await graphNode(graphId, node);
+    const reads = Object.values(resourceQueues).map((queue) => vi.spyOn(queue, 'getJobsByUser'));
+    const merged = vi.spyOn(conversionQueue, 'getJobsByUser');
+
+    const listed = await listVisibleJobs(user.id, ['waiting', 'active', 'completed', 'failed', 'cancelled'], 1);
+    await queueJobsGet(new NextRequest('http://localhost/api/queue/jobs', { headers: cookie }));
+    await v1JobsGet(new NextRequest('http://localhost/api/v1/jobs?limit=1', { headers: cookie }));
+
+    expect(listed).toHaveLength(1);
+    expect(merged).toHaveBeenCalledTimes(3);
+    for (const read of reads) expect(read).toHaveBeenCalledTimes(3);
+    vi.restoreAllMocks();
   });
 });
