@@ -10,7 +10,7 @@ import { SeededRandom, jsonRecords, sha256Hex, zipfText } from './helpers/archiv
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { createSevenZipSpy, type SevenZipSpy } from './helpers/seven-zip-spy';
-import { isProcessRunning } from './helpers/process-state';
+import { processesWithArgument, uniqueSleepInterval, waitUntilNoProcessWithArgument, waitUntilProcessWithArgument } from './helpers/process-state';
 
 /**
  * tar to ZIP and tar to gzip past the in-process deflate bound are encoded by `libdeflate-gzip` run as one process per large
@@ -255,8 +255,10 @@ describe('tar to ZIP past the in-process bound', () => {
     'stops the libdeflate process when the request is aborted',
     [...TOOLS],
     async () => {
-      const pidFile = path.join(workDir, 'sleeper.pid');
-      const sleeper = writeTool('libdeflate-sleeps.sh', `echo $$ > '${pidFile}'\nexec sleep 60`);
+      const pidFile = path.join(workDir, 'sleeper.started');
+      // Found by its interval, not by the id it reads for itself: in the PID namespace of the sandbox that id is 2 (a thread of the kernel on the host).
+      const interval = uniqueSleepInterval();
+      const sleeper = writeTool('libdeflate-sleeps.sh', `echo started > '${pidFile}'\nexec sleep ${interval}`);
       const controller = new AbortController();
       const tar = tarOf('abort.tar', [{ name: 'big.bin', data: mixedPayload(121) }]);
       const pending = withLibdeflate(sleeper, async () => zipOf(tar, { signal: controller.signal })).then(
@@ -266,17 +268,14 @@ describe('tar to ZIP past the in-process bound', () => {
       const startDeadline = Date.now() + PROCESS_START_WAIT_MS;
       while (!fs.existsSync(pidFile) && Date.now() < startDeadline) await new Promise((resolve) => setTimeout(resolve, POLL_MS));
       expect(fs.existsSync(pidFile), 'the libdeflate process never started').toBe(true);
+      expect(await waitUntilProcessWithArgument(interval, PROCESS_START_WAIT_MS), 'the sleeper is not running before the abort').toBe(true);
       const aborted = Date.now();
       controller.abort();
       const error = await pending;
       expect(error).toBeInstanceOf(Error);
       expect(Date.now() - aborted).toBeLessThan(PROCESS_EXIT_WAIT_MS);
-      const pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
-      const deadline = Date.now() + PROCESS_EXIT_WAIT_MS;
-      while (isProcessRunning(pid) && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-      }
-      expect(isProcessRunning(pid), 'the libdeflate process was left running').toBe(false);
+      await waitUntilNoProcessWithArgument(interval, PROCESS_EXIT_WAIT_MS);
+      expect(processesWithArgument(interval), 'the libdeflate process was left running').toEqual([]);
     },
     TEST_TIMEOUT_MS
   );

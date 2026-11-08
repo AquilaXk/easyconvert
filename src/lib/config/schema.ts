@@ -543,9 +543,9 @@ const SCHEMA_ENTRIES = [
   {
     name: 'SANDBOX_PID_NAMESPACE',
     area: 'security',
-    description: 'Set to `true` to start every sandboxed program in a PID namespace of its own through `pid-init`. Off by default until aborting a run and calibre work under it.',
+    description: 'Set to `false` to start sandboxed programs without the PID namespace of their own that `pid-init` gives them (on by default). calibre always runs outside it: its launcher reads /proc/<its own id>/exe, which names another process in a namespace whose /proc the sandbox cannot remount.',
     kind: { type: 'boolean' },
-    default: false,
+    default: true,
     requiredInProduction: false,
     secret: false,
     roles: BOTH,

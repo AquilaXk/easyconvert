@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getOracleToolPath } from './differential-oracle';
+import { processesWithArgument } from './process-state';
 
 /**
  * A stand-in 7-Zip that records every call it receives and then runs the real one with the same arguments, so what a
@@ -15,8 +16,11 @@ export interface SevenZipSpy {
   completedCalls(): number;
   /** The exit status of every call whose real 7-Zip process returned to the wrapper, in the order they ended. */
   exitStatuses(): number[];
-  /** The process id of the wrapper shell of every call so far, in call order. */
-  pids(): number[];
+  /**
+   * The wrapper shells that are still running, found by the path of the wrapper script in their command line: the id a wrapper reads for
+   * itself (`$$`) is an id of the PID namespace the sandbox puts it in, which the host knows as another process.
+   */
+  runningWrappers(): number[];
   /**
    * Shell commands the wrapper runs just before the real 7-Zip starts, on every call until `reset`. A test uses them
    * to change a file between the moment the code under test read it and the moment 7-Zip opens it.
@@ -35,14 +39,12 @@ export function createSevenZipSpy(workDir: string): SevenZipSpy {
   if (real === null) throw new Error('7z is required');
   const callLog = path.join(workDir, 'spy-calls.log');
   const doneLog = path.join(workDir, 'spy-done.log');
-  const pidLog = path.join(workDir, 'spy-pids.log');
   const script = path.join(workDir, 'spy-7z.sh');
   const hookFile = path.join(workDir, 'spy-before-run.sh');
   fs.writeFileSync(
     script,
     [
       '#!/bin/sh',
-      `echo $$ >> '${pidLog}'`,
       `{ for a in "$@"; do printf '%s\\n' "$a"; done; echo '${ARGUMENT_SEPARATOR}'; } >> '${callLog}'`,
       `[ -f '${hookFile}' ] && sh '${hookFile}'`,
       `'${real}' "$@"`,
@@ -70,8 +72,8 @@ export function createSevenZipSpy(workDir: string): SevenZipSpy {
       }
       return calls;
     },
-    pids() {
-      return fs.existsSync(pidLog) ? fs.readFileSync(pidLog, 'utf8').split('\n').filter((line) => line !== '').map(Number) : [];
+    runningWrappers() {
+      return processesWithArgument(script);
     },
     completedCalls() {
       return fs.existsSync(doneLog) ? fs.readFileSync(doneLog, 'utf8').split('\n').filter((line) => line !== '').length : 0;
@@ -86,7 +88,6 @@ export function createSevenZipSpy(workDir: string): SevenZipSpy {
       fs.rmSync(hookFile, { force: true });
       fs.rmSync(callLog, { force: true });
       fs.rmSync(doneLog, { force: true });
-      fs.rmSync(pidLog, { force: true });
     },
     install() {
       previous = process.env.P7ZIP_PATH;
