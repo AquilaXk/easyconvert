@@ -22,7 +22,8 @@ import { redactText } from '@/lib/security/redact';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { createProblemDetailsResponse, serverFault } from '@/lib/api/problem-details';
 import { fileSizeLimitProblem, withinSingleRequest } from '@/lib/api/file-size-limit';
-import { listVisibleJobs } from '@/lib/queue/user-jobs';
+import { graphJobState, graphProcessedOn, listVisibleWork } from '@/lib/queue/user-jobs';
+import { graphProgress } from '@/lib/queue/graph/graph-progress';
 import { respondOnce } from '@/lib/api/with-idempotency';
 import type { User } from '@/lib/auth/types';
 import { INLINE_JOB_PAYLOAD_MAX_BYTES } from '@/lib/plan-limits';
@@ -373,21 +374,42 @@ async function listOwnJobs(req: NextRequest) {
     states = [statusFilter];
   }
 
-  const ownJobs = await listVisibleJobs(callerId, states, MAX_LISTED_JOBS);
-  const jobSummaries = ownJobs.map((j) => ({
-    id: j.id,
-    name: j.name,
-    state: j.state,
-    progress: j.progress,
-    originalFilename: j.data.originalFilename,
-    targetFormat: j.data.targetFormat,
-    timestamp: j.timestamp,
-    durationMs: j.finishedOn && j.processedOn ? j.finishedOn - j.processedOn : undefined,
-    returnvalue: j.returnvalue,
-    failedReason: j.failedReason === undefined ? undefined : redactText(j.failedReason),
-    failedCode: j.failedCode,
-    failedStatus: j.failedStatus,
-  }));
+  const ownWork = await listVisibleWork(callerId, states, MAX_LISTED_JOBS);
+  const jobSummaries = ownWork.map((work) => {
+    if (work.kind === 'graph') {
+      const g = work.graph;
+      const processedOn = graphProcessedOn(g);
+      return {
+        id: g.graphId,
+        name: 'graph',
+        state: graphJobState(g.status),
+        progress: graphProgress(g),
+        originalFilename: g.originalFilename,
+        targetFormat: g.targetFormat,
+        timestamp: g.createdAt,
+        durationMs: g.finishedAt && processedOn ? g.finishedAt - processedOn : undefined,
+        returnvalue: undefined,
+        failedReason: g.failedReason === undefined ? undefined : redactText(g.failedReason),
+        failedCode: undefined,
+        failedStatus: undefined,
+      };
+    }
+    const j = work.job;
+    return {
+      id: j.id,
+      name: j.name,
+      state: j.state,
+      progress: j.progress,
+      originalFilename: j.data.originalFilename,
+      targetFormat: j.data.targetFormat,
+      timestamp: j.timestamp,
+      durationMs: j.finishedOn && j.processedOn ? j.finishedOn - j.processedOn : undefined,
+      returnvalue: j.returnvalue,
+      failedReason: j.failedReason === undefined ? undefined : redactText(j.failedReason),
+      failedCode: j.failedCode,
+      failedStatus: j.failedStatus,
+    };
+  });
 
   return NextResponse.json({
     success: true,

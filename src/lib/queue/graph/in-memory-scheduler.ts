@@ -307,6 +307,15 @@ export class InMemoryGraphScheduler implements IGraphScheduler, StartingGraphSch
     );
   }
 
+  listGraphsOfUser(userId: string, limit: number, statuses?: readonly GraphStatus[]): Promise<GraphExecutionState[]> {
+    const owned = [...this.graphs.values()]
+      .map((data) => data.state)
+      .filter((state) => state.ownerUserId === userId && (!statuses || statuses.includes(state.status)))
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, Math.max(0, limit));
+    return Promise.resolve(JSON.parse(JSON.stringify(owned)) as GraphExecutionState[]);
+  }
+
   deleteGraph(graphId: string): Promise<boolean> {
     return Promise.resolve(this.graphs.delete(graphId));
   }

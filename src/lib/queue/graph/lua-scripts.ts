@@ -234,3 +234,20 @@ for _, key in ipairs(KEYS) do
 end
 return 1
 `;
+
+export const INDEX_USER_GRAPH_LUA_SCRIPT = `
+-- KEYS[1]: the sorted set of the graphs of one user, scored by creation time (the {userId} tag keeps it in one slot)
+-- ARGV[1]: gid  ARGV[2]: createdAt ms  ARGV[3]: now ms  ARGV[4]: ms a graph's state can live  ARGV[5]: most graphs kept
+-- Adds the graph (a repeat keeps its first score), drops the graphs whose state has expired and those beyond the cap, and keeps
+-- the set as long as the graph just added can live. Returns the number of graphs in the set.
+redis.call('ZADD', KEYS[1], 'NX', ARGV[2], ARGV[1])
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', '(' .. (tonumber(ARGV[3]) - tonumber(ARGV[4])))
+local over = redis.call('ZCARD', KEYS[1]) - tonumber(ARGV[5])
+if over > 0 then
+  redis.call('ZREMRANGEBYRANK', KEYS[1], 0, over - 1)
+end
+if redis.call('PTTL', KEYS[1]) < tonumber(ARGV[4]) then
+  redis.call('PEXPIRE', KEYS[1], ARGV[4])
+end
+return redis.call('ZCARD', KEYS[1])
+`;

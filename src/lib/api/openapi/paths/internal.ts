@@ -781,7 +781,7 @@ export const internalPaths = {
         },
       ],
       responses: {
-        '200': createJsonResponse('Up to 50 jobs.', {
+        '200': createJsonResponse('Up to 50 jobs and job graphs of the caller, newest first. A graph is listed once under its own id, named `graph`, and a running graph is `active`; its node jobs are not listed.', {
           success: { type: 'boolean' },
           total: { type: 'integer' },
           jobs: { type: 'array', items: { type: 'object' } },

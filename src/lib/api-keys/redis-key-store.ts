@@ -12,9 +12,11 @@ import type {
   ApiKeyRotateResult,
   ApiKeyUpdateOptions,
   UserConversionFile,
+  UserConversionFileInput,
 } from './types';
 import type { User } from '../auth/types';
 import { decryptSecret } from './secret-encryption';
+import { RedisUserFileHistory } from './user-file-history';
 import { isIpInCidr, isIpAllowed } from './ip-utils';
 import { resolveRetentionPolicy } from '../storage/result-retention';
 import { readyGatedRedis } from '../redis/when-ready';
@@ -100,6 +102,8 @@ export class RedisKeyStore extends KeyStore {
   private redisLedger: { client: Redis; ledger: RedisReservationLedger } | undefined;
   private readonly keyPrefix: string;
   private redisClient: Redis | null = null;
+  /** The history of converted files in Redis, made once for the client it was made with. */
+  private fileHistoryOf: { client: Redis; history: RedisUserFileHistory } | undefined;
 
   constructor(
     keyPrefixOrOptions: string | RedisKeyStoreOptions = 'easyconvert:',
@@ -144,6 +148,14 @@ export class RedisKeyStore extends KeyStore {
 
   public getPrefix(): string {
     return this.keyPrefix;
+  }
+
+  /** The history of converted files: in Redis when the store has it, else none (the files kept in this process are the history). */
+  private fileHistory(): RedisUserFileHistory | undefined {
+    const client = this.redisClient;
+    if (!client) return undefined;
+    if (this.fileHistoryOf?.client !== client) this.fileHistoryOf = { client, history: new RedisUserFileHistory(client, this.keyPrefix) };
+    return this.fileHistoryOf.history;
   }
 
   /** The ledger of the reservations: in Redis when the store has it, else in this process. */
@@ -835,14 +847,15 @@ export class RedisKeyStore extends KeyStore {
     return { allowed: true, remaining: res.remaining };
   }
 
-  public override forgetUsage(userId: string): number {
+  public override async forgetUsage(userId: string): Promise<number> {
     this.memoryLedger.forgetOwner(userId);
     for (const key of this.tokenBuckets.keys()) {
       if (key === userId || key.startsWith(`${userId}:`) || key.endsWith(`:${userId}`)) {
         this.tokenBuckets.delete(key);
       }
     }
-    return super.forgetUsage(userId);
+    const removedHere = await super.forgetUsage(userId);
+    return removedHere + ((await this.fileHistory()?.forget(userId))?.length ?? 0);
   }
 
   public override resetStore() {
@@ -851,21 +864,16 @@ export class RedisKeyStore extends KeyStore {
     super.resetStore();
   }
 
-  public override async recordUserFile(data: {
-    userId: string;
-    fileName: string;
-    fromFormat: string;
-    toFormat: string;
-    size: number;
-    downloadUrl: string;
-    storageKey?: string;
-    ttlMs?: number;
-  }): Promise<UserConversionFile> {
-    this.ensureInitialized();
+  /**
+   * Keeps the record in Redis, where every process of the service sees it and it expires with the result. A Redis that does not
+   * answer leaves it in this process (and `user-files.json`), as before: the conversion it records has already succeeded.
+   */
+  public override async recordUserFile(data: UserConversionFileInput): Promise<UserConversionFile> {
+    const history = this.fileHistory();
+    if (!history) return super.recordUserFile(data);
     const now = Date.now();
-    const ttl = data.ttlMs ?? resolveRetentionPolicy().undeliveredTtlMs;
     const file: UserConversionFile = {
-      id: crypto.randomUUID(),
+      id: data.id ?? crypto.randomUUID(),
       userId: data.userId,
       fileName: data.fileName,
       fromFormat: data.fromFormat,
@@ -874,12 +882,37 @@ export class RedisKeyStore extends KeyStore {
       downloadUrl: data.downloadUrl,
       storageKey: data.storageKey,
       createdAt: now,
-      expiresAt: now + ttl,
+      expiresAt: now + (data.ttlMs ?? resolveRetentionPolicy().undeliveredTtlMs),
     };
-
-    this.userFiles.set(file.id, file);
-    this.persist();
+    try {
+      await history.record(file, now);
+    } catch (err) {
+      console.warn('[RedisKeyStore] Redis recordUserFile failed, keeping the record in local memory:', err);
+      this.ensureInitialized();
+      this.userFiles.set(file.id, file);
+      this.persist();
+    }
     return file;
+  }
+
+  /** The records of Redis and those this process holds (a record written while Redis did not answer, or kept in `user-files.json` before the history moved), newest first. */
+  public override async listUserFiles(userId: string): Promise<UserConversionFile[]> {
+    const local = await super.listUserFiles(userId);
+    const shared = (await this.fileHistory()?.list(userId)) ?? [];
+    // One id can be in both (kept here during an outage, recorded again into Redis): the record of Redis stands for it.
+    const sharedIds = new Set(shared.map((file) => file.id));
+    return [...shared, ...local.filter((file) => !sharedIds.has(file.id))].sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  public override async findUserFile(userId: string, fileId: string): Promise<UserConversionFile | undefined> {
+    return (await super.findUserFile(userId, fileId)) ?? (await this.fileHistory()?.find(userId, fileId));
+  }
+
+  public override async deleteUserFile(userId: string, fileId: string): Promise<boolean> {
+    // Both stores are cleared, as the record can be in both; the delete holds if either had it.
+    const here = await super.deleteUserFile(userId, fileId);
+    const shared = (await this.fileHistory()?.remove(userId, fileId)) ?? false;
+    return here || shared;
   }
 
   /**

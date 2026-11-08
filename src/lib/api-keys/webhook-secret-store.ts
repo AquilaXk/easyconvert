@@ -48,6 +48,11 @@ export function requireWebhookTargetId(...candidates: Array<string | undefined>)
 export interface WebhookSecretStore {
   getSecretRecord(ownerUserId: string, targetId: string): Promise<WebhookSecretRecord | null>;
   setPrimarySecret(ownerUserId: string, targetId: string, secret: string): Promise<void>;
+  /**
+   * Stores `secret` as the primary secret of the target when it has no record yet, and answers whether it did. A record that
+   * exists is never replaced, so a rotation that wrote one in the meantime keeps it.
+   */
+  seedPrimarySecretIfAbsent(ownerUserId: string, targetId: string, secret: string): Promise<boolean>;
   rotateSecret(
     ownerUserId: string,
     targetId: string,
@@ -182,6 +187,13 @@ export class InMemoryWebhookSecretStore implements WebhookSecretStore {
     });
   }
 
+  public async seedPrimarySecretIfAbsent(ownerUserId: string, targetId: string, secret: string): Promise<boolean> {
+    const key = buildSecretStorageKey(ownerUserId, targetId);
+    if (this.store.has(key)) return false;
+    this.store.set(key, { primaryEncrypted: encryptWebhookSecret(secret), createdAt: this.clock() });
+    return true;
+  }
+
   public async rotateSecret(
     ownerUserId: string,
     targetId: string,
@@ -283,6 +295,11 @@ export class RedisWebhookSecretStore implements WebhookSecretStore {
     };
 
     await this.redis.set(key, JSON.stringify(record));
+  }
+
+  public async seedPrimarySecretIfAbsent(ownerUserId: string, targetId: string, secret: string): Promise<boolean> {
+    const record: StoredWebhookSecretRecord = { primaryEncrypted: encryptWebhookSecret(secret), createdAt: this.clock() };
+    return (await this.redis.set(buildSecretStorageKey(ownerUserId, targetId), JSON.stringify(record), 'NX')) === 'OK';
   }
 
   public async rotateSecret(

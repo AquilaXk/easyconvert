@@ -41,7 +41,8 @@ import { validatePageRangeSyntax } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { INLINE_JOB_PAYLOAD_MAX_BYTES, fileTooLargeMessage, maxFileBytes, planOfCaller, type Plan, type PlanCaller } from '@/lib/plan-limits';
 import { withinSingleRequest } from '@/lib/api/file-size-limit';
-import { listVisibleJobs } from '@/lib/queue/user-jobs';
+import { graphJobState, graphProcessedOn, listVisibleWork } from '@/lib/queue/user-jobs';
+import { graphProgress } from '@/lib/queue/graph/graph-progress';
 import { describeStorageError } from '@/lib/api/storage-error-response';
 import { QUEUE_UNAVAILABLE_DETAIL, queueRetryAfterHeaders, withQueueErrors } from '@/lib/api/queue-error-response';
 import {
@@ -900,28 +901,46 @@ async function listJobs(req: NextRequest) {
     ? (statusParam.split(',').map((s) => s.trim()) as JobStatus[]).filter((s) => validStates.includes(s))
     : validStates;
 
-  // Query indexed jobs strictly belonging to the authenticated user (Tenant Boundary Isolation)
-  const userJobs = await listVisibleJobs(auth.user.id, requestedStates.length > 0 ? requestedStates : validStates, limit);
+  // Query indexed jobs and graphs strictly belonging to the authenticated user (Tenant Boundary Isolation)
+  const userWork = await listVisibleWork(auth.user.id, requestedStates.length > 0 ? requestedStates : validStates, limit);
 
   return NextResponse.json({
     success: true,
-    total: userJobs.length,
-    jobs: userJobs.map((j) => ({
-      jobId: j.id,
-      status: j.state,
-      progress: j.progress,
-      sourceFormat: j.data?.sourceFormat,
-      targetFormat: j.data?.targetFormat,
-      originalFilename: j.data?.originalFilename,
-      fileSize: j.data?.fileSize,
-      createdAt: j.timestamp,
-      processedOn: j.processedOn,
-      finishedOn: j.finishedOn,
-      failedReason: j.failedReason === undefined ? undefined : redactText(j.failedReason),
-      failedCode: j.failedCode,
-      failedStatus: j.failedStatus,
-      result: j.returnvalue,
-    })),
+    total: userWork.length,
+    jobs: userWork.map((work) => {
+      if (work.kind === 'graph') {
+        const g = work.graph;
+        return {
+          jobId: g.graphId,
+          status: graphJobState(g.status),
+          progress: graphProgress(g),
+          sourceFormat: g.sourceFormat,
+          targetFormat: g.targetFormat,
+          originalFilename: g.originalFilename,
+          createdAt: g.createdAt,
+          processedOn: graphProcessedOn(g),
+          finishedOn: g.finishedAt,
+          failedReason: g.failedReason === undefined ? undefined : redactText(g.failedReason),
+        };
+      }
+      const j = work.job;
+      return {
+        jobId: j.id,
+        status: j.state,
+        progress: j.progress,
+        sourceFormat: j.data?.sourceFormat,
+        targetFormat: j.data?.targetFormat,
+        originalFilename: j.data?.originalFilename,
+        fileSize: j.data?.fileSize,
+        createdAt: j.timestamp,
+        processedOn: j.processedOn,
+        finishedOn: j.finishedOn,
+        failedReason: j.failedReason === undefined ? undefined : redactText(j.failedReason),
+        failedCode: j.failedCode,
+        failedStatus: j.failedStatus,
+        result: j.returnvalue,
+      };
+    }),
   });
 }
 

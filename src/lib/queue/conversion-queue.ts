@@ -6,6 +6,7 @@ import { redisKeyStore } from '../api-keys/redis-key-store';
 import { leaseToHandedOffWork } from '../api-keys/hand-off';
 import { MISSING_WEBHOOK_SECRET_REASON, webhookDispatcher } from '../api-keys/webhook-dispatcher';
 import { processNodeJob } from './node-processor';
+import { recordJobResultInHistory } from './job-history';
 import { isFinalFailure } from './job-failure';
 import { dispatchEngine } from './dispatch-engine';
 import { resolveResourceClass } from './resource-class';
@@ -69,6 +70,10 @@ export function attachJobLifecycleListeners(
   // The worker emits `completed` and `failed` once per job, at its end, so each counts one job (src/lib/metrics, docs/slo.md).
   worker.on('completed', (job: Job<ConversionJobData, ConversionJobResult>) => recordJobCompleted(job));
   worker.on('failed', (job: Job<ConversionJobData, ConversionJobResult>, err: unknown) => recordJobFailed(job, err));
+  // The result joins its owner's history on a listener of its own, so a webhook that is slow to answer does not delay it.
+  worker.on('completed', (job: Job<ConversionJobData, ConversionJobResult>, result: ConversionJobResult) => {
+    void recordJobResultInHistory(job, result);
+  });
 
   // A worker that takes a job renews its reservation to the lease of handed-off work, so a job whose request could not tell
   // that it was stored is still charged however long it runs, when a worker takes it within the provisional lease.

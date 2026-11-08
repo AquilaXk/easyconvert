@@ -108,6 +108,7 @@ export const components = {
     },
     JobSummary: {
       type: 'object',
+      description: 'A queue job, or a job graph (listed by its own id; a running graph is `active`, and has no `fileSize` or `result`: its nodes hold the outputs, read through `GET /api/v1/jobs/{id}`).',
       properties: {
         jobId: { type: 'string' },
         status: { type: 'string', enum: ['waiting', 'active', 'completed', 'failed', 'delayed', 'cancelled'] },

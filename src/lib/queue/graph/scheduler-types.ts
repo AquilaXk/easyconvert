@@ -3,6 +3,9 @@ import type { Recovery } from '../../api-keys/hand-off';
 
 export type GraphStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
+/** Most graphs of one user the per-user index keeps; the oldest leave it first. */
+export const MAX_INDEXED_GRAPHS_PER_USER = 1000;
+
 export type NodeExecutionStatus =
   | 'pending'
   | 'waiting'
@@ -107,6 +110,12 @@ export interface IGraphScheduler {
   getNodeOutputs(graphId: string, nodeIds: NodeId | NodeId[]): Promise<string[]>;
   /** The ids of the graphs `userId` owns. */
   graphsOfUser(userId: string): Promise<string[]>;
+  /**
+   * The newest `limit` graphs `userId` owns whose status is one of `statuses` (any when omitted), newest first, for a list the
+   * client asks for. The Redis scheduler reads the per-user index once (at most `MAX_INDEXED_GRAPHS_PER_USER` graphs, the ones
+   * created within the retention of graph state) and then a graph at a time until the page is full, never scanning the keys.
+   */
+  listGraphsOfUser(userId: string, limit: number, statuses?: readonly GraphStatus[]): Promise<GraphExecutionState[]>;
   /** Removes every stored record of `graphId`. */
   deleteGraph(graphId: string): Promise<boolean>;
 }
