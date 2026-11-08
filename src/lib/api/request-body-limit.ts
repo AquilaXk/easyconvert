@@ -50,6 +50,48 @@ function isFileRoute({ pathname, searchParams }: RequestTarget): boolean {
   );
 }
 
+/** What a request body is, which decides what it may hold and whether it must declare its length. */
+type BodyKind =
+  /** A JSON or form of a few fields: 1 MiB, counted as it arrives when it has no length. */
+  | 'small'
+  /** A file in one request (or a tus chunk): one request, and a length declared. */
+  | 'single'
+  /** One part of a file sent in parts: the largest part, and a length declared. */
+  | 'part';
+
+const UPLOADS_ROUTE = /^\/api\/v1\/uploads(?:\/tus)?\/?$/;
+const DIRECT_UPLOADS_ROUTE = '/api/v1/uploads/direct';
+const DIRECT_PART_ROUTE = '/api/v1/uploads/direct/part';
+/** Routes whose body is a multipart form when it carries a file and JSON otherwise. */
+const FORM_OR_JSON_ROUTES: readonly string[] = ['/api/queue/jobs', '/api/v1/jobs'];
+
+function isUnder(pathname: string, route: string): boolean {
+  return pathname === route || pathname.startsWith(`${route}/`);
+}
+
+function isMultipartForm(headers: HeaderSource): boolean {
+  return (headers.get('content-type') ?? '').toLowerCase().includes('multipart/form-data');
+}
+
+/**
+ * What the body of a request to `target` is. The upload routes carry more than files: the control calls of an upload
+ * (`?action=initiate|complete|abort`, `direct`, `direct/complete`) are small JSON, a part is held to the largest part, and
+ * only a tus creation or chunk is a file of one request. The job routes take a file only in a multipart form; their JSON
+ * calls are small. Any other route that takes files is `single`, and every route else is `small`.
+ */
+function bodyKindOf(target: RequestTarget, headers: HeaderSource): BodyKind {
+  const { pathname, searchParams } = target;
+  if (pathname === DIRECT_PART_ROUTE) return 'part';
+  if (isUnder(pathname, DIRECT_UPLOADS_ROUTE)) return 'small';
+  if (UPLOADS_ROUTE.test(pathname)) {
+    const action = searchParams.get('action');
+    if (!action) return 'single';
+    return action === 'part' ? 'part' : 'small';
+  }
+  if (FORM_OR_JSON_ROUTES.some((route) => isUnder(pathname, route))) return isMultipartForm(headers) ? 'single' : 'small';
+  return isFileRoute(target) ? 'single' : 'small';
+}
+
 export type DeclaredLength = { kind: 'absent' } | { kind: 'malformed' } | { kind: 'bytes'; bytes: number };
 
 /** A `Content-Length` value: one or more digits (RFC 9110, section 8.6) that fit an exact integer. */
@@ -115,17 +157,20 @@ export interface CountedBody {
 export type RequestBodyCheck = NonNullable<BodyLengthVerdict> | CountedBody | null;
 
 /**
- * The check of the body of a request to `target`. A body without a declared length is counted: a route that takes a file
- * takes none of it (411 at its first byte, which an empty body never reaches), and every other route takes the small limit.
+ * The check of the body of a request to `target`, by what the call is (`bodyKindOf`). A body without a declared length is
+ * counted: a file or a part takes none of it (411 at its first byte, which an empty body never reaches), and a small body
+ * takes the small limit.
  */
 export function requestBodyVerdict(target: RequestTarget, headers: HeaderSource): RequestBodyCheck {
-  const fileRoute = isFileRoute(target);
+  const kind = bodyKindOf(target, headers);
   if (headers.get('content-length') === null) {
-    return fileRoute
-      ? { countUpTo: 0, status: 411, detail: LENGTH_REQUIRED_DETAIL }
-      : { countUpTo: SMALL_REQUEST_BODY_MAX_BYTES, status: 413, detail: COUNTED_OVERFLOW_DETAIL };
+    return kind === 'small'
+      ? { countUpTo: SMALL_REQUEST_BODY_MAX_BYTES, status: 413, detail: COUNTED_OVERFLOW_DETAIL }
+      : { countUpTo: 0, status: 411, detail: LENGTH_REQUIRED_DETAIL };
   }
-  return fileRoute ? singleRequestVerdict(target.pathname, headers) : verdictFor(headers, SMALL_REQUEST_BODY_MAX_BYTES, smallRequestOverflowDetail);
+  if (kind === 'single') return singleRequestVerdict(target.pathname, headers);
+  if (kind === 'part') return partBodyVerdict(headers);
+  return verdictFor(headers, SMALL_REQUEST_BODY_MAX_BYTES, smallRequestOverflowDetail);
 }
 
 /** The refusal of a request to `pathname`, a route that takes a file whole, by its declared length, or null when it may be read. */
