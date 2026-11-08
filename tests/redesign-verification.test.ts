@@ -442,7 +442,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
   it('verifies Dynamic Converter Page maintains clean dual-theme scaffold regardless of queue state', () => {
     for (const slug of ['pdf-to-docx', 'contact', 'about']) {
       const page = renderSlug(slug);
-      const root = select(page, 'body')[0].childNodes.find((n): n is DomElement => 'tagName' in n);
+      // React hoists a preload <link> for each image of the page ahead of the root; the root is the first element that is not one.
+      const root = select(page, 'body')[0].childNodes.find((n): n is DomElement => 'tagName' in n && n.tagName !== 'link');
       // The body paints the canvas colour of both themes, so the page root carries layout only and never covers it.
       expect(classAttr(root), slug).toBe('flex flex-col min-h-screen');
     }

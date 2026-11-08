@@ -21,7 +21,7 @@ const TILE_CLASS =
 function TileFace({ format, display }: Readonly<{ format: string; display: string }>) {
   return (
     <>
-      <FormatIcon format={format} className="size-6 sm:size-8 text-ink-2" />
+      <FormatIcon format={format} className="size-[29px] sm:size-[38px] text-ink-2" />
       <span className="text-sm font-bold uppercase">{display}</span>
       <ChevronDown
         aria-hidden="true"
