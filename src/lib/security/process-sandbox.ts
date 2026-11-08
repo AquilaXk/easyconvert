@@ -381,7 +381,7 @@ export interface UnshareCapability {
 }
 
 export const PID_INIT_PATH_ENV = 'PID_INIT_PATH';
-/** Set to `true` to start every sandboxed program in a PID namespace of its own through `pid-init`; off by default. */
+/** Set to `false` to start sandboxed programs without the PID namespace of their own that `pid-init` gives them; on by default. */
 export const SANDBOX_PID_NAMESPACE_ENV = 'SANDBOX_PID_NAMESPACE';
 const PID_INIT_CANDIDATES = ['/usr/local/bin/pid-init', '/usr/bin/pid-init'];
 
@@ -416,9 +416,8 @@ function sayPidInitDegraded(reason: string): void {
 /** The `pid-init` program that runs a program here with the namespaces of `base` around it, or '' (and a warning) when none does. */
 function probePidInit(base: Pick<UnshareCapability, 'path' | 'args'>): string {
   pidInitTriedAt = Date.now();
-  // Off until the abort and calibre paths work under it (CI 2026-11-08: an aborted run left its program running, and calibre could not
-  // read its own executable path); `SANDBOX_PID_NAMESPACE=true` turns it on.
-  if (process.env[SANDBOX_PID_NAMESPACE_ENV] !== 'true') return '';
+  // Read as the config schema reads a boolean (trimmed, any case), so `FALSE` turns it off as the startup check accepted.
+  if (process.env[SANDBOX_PID_NAMESPACE_ENV]?.trim().toLowerCase() === 'false') return '';
   const pidInit = findPidInit();
   if (pidInit === null) {
     sayPidInitDegraded(`no pid-init program was found (${PID_INIT_PATH_ENV}, ${PID_INIT_CANDIDATES.join(', ')})`);

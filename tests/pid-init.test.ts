@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { isProcessRunning } from './helpers/process-state';
+import { isProcessRunning, processesWithArgument, uniqueSleepInterval, waitUntilNoProcessWithArgument } from './helpers/process-state';
 import { skipUnless } from './helpers/strict-skip';
 
 /**
@@ -20,6 +20,11 @@ const namespacesMissing = skipUnless(
 );
 const SIGNAL_NAME: Record<number, NodeJS.Signals> = { 9: 'SIGKILL', 11: 'SIGSEGV', 25: 'SIGXFSZ' };
 const POLL_MS = 25;
+/** Starts that are killed at a random moment of their first milliseconds; the window the test aims at is a few microseconds, and a start takes about a millisecond. */
+const EARLY_KILL_STARTS = 400;
+const EARLY_KILL_MAX_DELAY_MS = 6;
+/** Hang guard of the wait for a killed start to leave nothing behind: it is gone within milliseconds, this only ends a wait that never would. */
+const LEFTOVER_HANG_GUARD_MS = 10_000;
 
 let scratch = '';
 let pidInit = '';
@@ -106,4 +111,21 @@ describe.skipIf(compilerMissing || namespacesMissing)('pid-init', () => {
     while ((alive(init) || alive(program)) && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     expect({ init: alive(init), program: alive(program) }).toEqual({ init: false, program: false });
   });
+
+  it('leaves nothing running when the process outside is killed at any moment of the start', async () => {
+    // PID 1 asks for its signal of the death of its parent after the fork. A parent that died in between would leave PID 1 and the program running with nobody
+    // to report to; PID 1 sees the closed pipe and ends. Killing at random moments in the first milliseconds reaches that window now and then.
+    const interval = uniqueSleepInterval();
+    try {
+      for (let start = 0; start < EARLY_KILL_STARTS; start++) {
+        const child = spawn('unshare', ['-r', '-n', '--', pidInit, '--', 'sleep', interval], { stdio: 'ignore' });
+        const ended = new Promise((resolve) => child.once('exit', resolve));
+        setTimeout(() => child.kill('SIGKILL'), Math.random() * EARLY_KILL_MAX_DELAY_MS);
+        await ended;
+      }
+      expect(await waitUntilNoProcessWithArgument(interval, LEFTOVER_HANG_GUARD_MS)).toBe(true);
+    } finally {
+      for (const pid of processesWithArgument(interval)) process.kill(pid, 'SIGKILL');
+    }
+  }, 60_000);
 });

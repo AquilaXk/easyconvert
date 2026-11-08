@@ -49,3 +49,86 @@ export async function waitUntilStopped(pid: number, limitMs: number, pollMs = 25
   }
   return true;
 }
+
+/**
+ * A sleep interval no other test uses, for a stand-in tool that ends in `exec sleep <interval>`: the interval is then an argument of the
+ * process that only this test started, which `processesWithArgument` finds. (The id a tool reads for itself with `$$` cannot name it when the
+ * sandbox puts the tool in a PID namespace: there it is 2, which on the host is a kernel thread or another run's program.) The value is
+ * far above any test's own limit, so the process lives until it is killed.
+ */
+export function uniqueSleepInterval(): string {
+  return `${3000 + Math.floor(Math.random() * 600)}.${String(Math.floor(Math.random() * 1e9)).padStart(9, '0')}`;
+}
+
+/**
+ * The ids, on this host, of the running processes (a zombie is not running, as for `isProcessRunning`) that have `argument` as one whole
+ * argument of their command line, other than this process. A program the sandbox started in a PID namespace of its own is found by what
+ * it was started with, never by the id it knows itself by.
+ */
+export function processesWithArgument(argument: string): number[] {
+  if (fs.existsSync('/proc/self/stat')) {
+    const found: number[] = [];
+    for (const entry of fs.readdirSync('/proc')) {
+      if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue;
+      let words: string[];
+      try {
+        words = fs.readFileSync(`/proc/${entry}/cmdline`, 'utf-8').split('\0');
+      } catch {
+        continue;
+      }
+      if (words.includes(argument) && isRunningOnProc(Number(entry))) found.push(Number(entry));
+    }
+    return found;
+  }
+  const listing = execFileSync(PS_BINARY, ['-axo', 'pid=,stat=,command='], { encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 });
+  return listing
+    .split('\n')
+    .map((line) => line.trim().split(/\s+/))
+    .filter(([pid, stat, ...command]) => Number(pid) !== process.pid && !stat?.startsWith('Z') && command.includes(argument))
+    .map(([pid]) => Number(pid));
+}
+
+/** Waits until a running process has `argument` as an argument; false when `limitMs` passed first. */
+export async function waitUntilProcessWithArgument(argument: string, limitMs: number, pollMs = 25): Promise<boolean> {
+  const deadline = Date.now() + limitMs;
+  while (processesWithArgument(argument).length === 0) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  return true;
+}
+
+/** Waits until no running process has `argument` as an argument; false when `limitMs` passed first. */
+export async function waitUntilNoProcessWithArgument(argument: string, limitMs: number, pollMs = 25): Promise<boolean> {
+  const deadline = Date.now() + limitMs;
+  while (processesWithArgument(argument).length > 0) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  return true;
+}
+
+/** The parent chain of a process on this host, nearest first (from /proc/<pid>/stat on Linux, from `ps` elsewhere). */
+export function ancestorsOf(pid: number): number[] {
+  const chain: number[] = [];
+  let current = pid;
+  for (;;) {
+    const parent = parentOf(current);
+    if (parent === null || parent <= 0 || chain.includes(parent)) return chain;
+    chain.push(parent);
+    current = parent;
+  }
+}
+
+function parentOf(pid: number): number | null {
+  try {
+    if (fs.existsSync('/proc/self/stat')) {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf-8');
+      return Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
+    }
+    const parent = Number(execFileSync(PS_BINARY, ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf-8' }).trim());
+    return Number.isInteger(parent) ? parent : null;
+  } catch {
+    return null;
+  }
+}
