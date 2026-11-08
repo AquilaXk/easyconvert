@@ -733,7 +733,8 @@ describe('the jobs that convert pictures', () => {
     expect(ci.jobs['sharp-libvips'].uses).toBe('./.github/workflows/sharp-libvips.yml');
     expect(nightly.jobs['sharp-libvips'].uses).toBe('./.github/workflows/sharp-libvips.yml');
     expect(ci.jobs.verify.needs).toContain('sharp-libvips');
-    expect(nightly.jobs.report.needs).toContain('sharp-libvips');
+    // The nightly has no report job any more: a failed sharp-libvips job fails the run itself, and every picture job waits on it.
+    for (const job of ['perf', 'bench', 'bench-parity-quality', 'bench-parity-speed', 'realworld']) expect(nightly.jobs[job].needs).toContain('sharp-libvips');
     expect(Object.keys(reusable.on)).toEqual(['workflow_call']);
   });
 });
