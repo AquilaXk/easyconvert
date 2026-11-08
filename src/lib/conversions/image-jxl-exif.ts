@@ -19,10 +19,31 @@ const ZLIB_METHOD = 0;
 /** The inflated text of a profile: the hexadecimal form of an EXIF block, which JPEG limits to 64 KiB; JPEG XL boxes can be larger, a megabyte is far more than any camera writes. */
 const MAX_PROFILE_TEXT_BYTES = 2 * 1024 * 1024;
 const EXIF_PREFIX = 'Exif\0\0';
-const MIN_EXIF_BYTES = 8;
+/** The offset field in front of the TIFF header in the payload of the Exif box. */
+const TIFF_OFFSET_FIELD_BYTES = 4;
+const TIFF_HEADER_BYTES = 8;
+const TIFF_MAGIC = 42;
+const MIN_EXIF_BYTES = TIFF_HEADER_BYTES;
 /** `\n<name>\n<length in decimal, padded>\n<hexadecimal bytes in lines>\n`. */
 const RAW_PROFILE = /^\nexif\n\s*(\d+)\n([0-9a-fA-F\s]*)$/;
 const HEX_DIGITS_PER_BYTE = 2;
+
+/** Whether a TIFF header (byte order mark `II` or `MM`, then 42) starts at `at`. */
+function hasTiffHeaderAt(bytes: Buffer, at: number): boolean {
+  if (at + TIFF_HEADER_BYTES > bytes.length) return false;
+  const order = bytes.toString('latin1', at, at + 2);
+  if (order !== 'II' && order !== 'MM') return false;
+  return (order === 'II' ? bytes.readUInt16LE(at + 2) : bytes.readUInt16BE(at + 2)) === TIFF_MAGIC;
+}
+
+/** The TIFF block inside the profile's bytes: after the `Exif\0\0` prefix, after the offset field of the Exif box, or the bytes themselves; null when none is there. */
+function tiffBlockOf(bytes: Buffer): Buffer | null {
+  if (bytes.toString('latin1', 0, EXIF_PREFIX.length) === EXIF_PREFIX) return hasTiffHeaderAt(bytes, EXIF_PREFIX.length) ? bytes.subarray(EXIF_PREFIX.length) : null;
+  if (hasTiffHeaderAt(bytes, 0)) return bytes;
+  if (bytes.length < TIFF_OFFSET_FIELD_BYTES) return null;
+  const start = TIFF_OFFSET_FIELD_BYTES + bytes.readUInt32BE(0);
+  return hasTiffHeaderAt(bytes, start) ? bytes.subarray(start) : null;
+}
 
 /** The EXIF block that a `Raw profile type exif` chunk holds, or null when its data is not a well-formed profile. */
 function exifOfRawProfile(chunk: Buffer): Buffer | null {
@@ -39,7 +60,7 @@ function exifOfRawProfile(chunk: Buffer): Buffer | null {
   const hex = profile[2].replace(/\s+/g, '');
   const bytes = Buffer.from(hex, 'hex');
   if (hex.length !== bytes.length * HEX_DIGITS_PER_BYTE || bytes.length !== Number(profile[1]) || bytes.length < MIN_EXIF_BYTES) return null;
-  return bytes.toString('latin1', 0, EXIF_PREFIX.length) === EXIF_PREFIX ? bytes.subarray(EXIF_PREFIX.length) : bytes;
+  return tiffBlockOf(bytes);
 }
 
 function exifChunk(exif: Buffer): Buffer {

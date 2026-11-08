@@ -80,6 +80,8 @@ describe('the EXIF block of a decoded picture', () => {
     ['a little-endian block', tiffWithOrientation(6, 'II')],
     ['a big-endian block', tiffWithOrientation(5, 'MM')],
     ['a block that starts with the Exif prefix of a newer djxl', Buffer.concat([Buffer.from('Exif\0\0', 'latin1'), tiffWithOrientation(8)])],
+    ['a block behind the zero offset field of the Exif box, as libjxl 0.7 writes it', Buffer.concat([Buffer.alloc(4), tiffWithOrientation(5, 'MM')])],
+    ['a block behind an offset field that skips four bytes', Buffer.concat([Buffer.from([0, 0, 0, 4]), Buffer.from('skip'), tiffWithOrientation(6)])],
   ])('is stored as an eXIf chunk before the picture data, with Orientation 1: %s', async (_label, exif) => {
     const out = withExifChunk(await pngWith(textChunk('Raw profile type exif', rawProfile(exif))));
     expect(typeOf(out, 0)).toEqual(['IHDR', 'zTXt', 'pHYs', 'eXIf', 'IDAT', 'IEND']);
@@ -110,6 +112,8 @@ describe('the EXIF block of a decoded picture', () => {
     ['a length that is not the length of the bytes', `\nexif\n${String(99).padStart(8)}\n${tiffWithOrientation(6).toString('hex')}\n`],
     ['an odd number of digits', `\nexif\n${String(21).padStart(8)}\n${tiffWithOrientation(6).toString('hex')}0\n`],
     ['a character that is no digit', `\nexif\n${String(22).padStart(8)}\n${tiffWithOrientation(6).toString('hex').replace(/^../, 'zz')}\n`],
+    ['an offset that leads to no TIFF header', `\nexif\n${String(22).padStart(8)}\n00000040${tiffWithOrientation(6).toString('hex')}\n`],
+    ['bytes of a prefix and no TIFF header', `\nexif\n${String(14).padStart(8)}\n${Buffer.from('Exif\0\0notatiff').toString('hex')}\n`],
     ['bytes too few for a TIFF header', `\nexif\n${String(4).padStart(8)}\n49492a00\n`],
     ['another profile name', `\nxmp\n${String(22).padStart(8)}\n${tiffWithOrientation(6).toString('hex')}\n`],
     ['no profile at all', 'text'],
