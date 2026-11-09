@@ -2088,17 +2088,10 @@
   },
   {
     "file": "src/lib/queue/bullmq-engine.ts",
-    "rule": "max-depth",
-    "function": "getJobs",
-    "count": 3,
-    "maxValue": 7
-  },
-  {
-    "file": "src/lib/queue/bullmq-engine.ts",
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2355
+    "maxValue": 2345
   },
   {
     "file": "src/lib/queue/conversion-queue.ts",
@@ -2219,13 +2212,6 @@
     "rule": "no-nested-ternary",
     "function": "getProcessRssMb",
     "count": 1
-  },
-  {
-    "file": "src/lib/security/ssrf.ts",
-    "rule": "complexity",
-    "function": "isBlockedIpv4",
-    "count": 1,
-    "maxValue": 32
   },
   {
     "file": "src/lib/storage/adapters/azure-blob.ts",
