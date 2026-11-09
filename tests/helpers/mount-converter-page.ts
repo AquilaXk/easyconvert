@@ -45,7 +45,7 @@ export async function mountElement(element: ReactNode, ready: string, locale: Te
   const host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
-  root.render(createElement(NextIntlClientProvider, { locale, messages: testMessages(locale), timeZone: 'UTC' }, element));
+  root.render(createElement(NextIntlClientProvider, { locale, messages: testMessages(locale), timeZone: 'UTC' } as never, element));
   await vi.waitFor(() => expect(host.querySelector(ready)).not.toBeNull());
   return host;
 }
