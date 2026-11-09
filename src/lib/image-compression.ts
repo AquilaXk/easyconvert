@@ -1,20 +1,27 @@
+import { canonicalFormat } from './format-aliases';
 import type { ConversionOptions } from './types';
 
 /** The images a compress page makes smaller by converting them to their own format: JPG by quality, PNG by palette. */
 export const COMPRESSED_IMAGE_FORMATS: readonly string[] = ['png', 'jpg'];
 
-/** Whether a conversion is the compression of an image: PNG to PNG or JPG to JPG. */
+/**
+ * Whether a conversion is the compression of an image: PNG to PNG or JPG to JPG. A file named `.jpeg` or `.jfif` is a JPG
+ * (`/compress-jpg` takes it too), so the names a format goes by count as the format.
+ */
 export function isImageCompression(sourceFormat: string, targetFormat: string): boolean {
-  const format = sourceFormat.toLowerCase();
-  return format === targetFormat.toLowerCase() && COMPRESSED_IMAGE_FORMATS.includes(format);
+  const format = canonicalFormat(sourceFormat.toLowerCase());
+  return format === canonicalFormat(targetFormat.toLowerCase()) && COMPRESSED_IMAGE_FORMATS.includes(format);
 }
 
-/** The quality at and above which a PNG keeps the full 256-colour palette. */
-const FULL_PALETTE_QUALITY = 80;
+/**
+ * The quality at and above which a PNG keeps the full 256-colour palette: the 85 % the options dialog shows for a PNG until the
+ * person moves the slider, so that every step below the default takes colours away.
+ */
+export const FULL_PALETTE_QUALITY = 85;
 const FULL_PALETTE_COLORS = 256;
 const MIN_PALETTE_COLORS = 2;
 
-/** The palette size a PNG quality asks for: 256 colours from quality 80 up, then in proportion to the square of the quality. */
+/** The palette size a PNG quality asks for: 256 colours from the default quality up, then in proportion to the square of the quality. */
 export function paletteColorsForQuality(quality: number): number {
   if (quality >= FULL_PALETTE_QUALITY) return FULL_PALETTE_COLORS;
   const scaled = Math.round(FULL_PALETTE_COLORS * (quality / FULL_PALETTE_QUALITY) ** 2);
