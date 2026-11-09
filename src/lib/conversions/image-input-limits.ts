@@ -1,5 +1,5 @@
 import sharp, { type Metadata, type Sharp, type SharpOptions } from 'sharp';
-import { ConversionFailedError } from '../types';
+import { ConversionFailedError, PayloadLimitError } from '../types';
 import {
   DEFAULT_MAX_INPUT_PIXELS,
   INPUT_PIXEL_LIMIT_HTTP_STATUS,
@@ -174,4 +174,21 @@ export function asInputPixelLimitError(error: unknown): unknown {
 export function rethrowInputPixelLimit(error: unknown): void {
   const mapped = asInputPixelLimitError(error);
   if (mapped instanceof InputPixelLimitError) throw mapped;
+}
+
+/** The longest side of a vector canvas the image library draws (libvips refuses an SVG with a side past this). */
+const RASTER_CANVAS_MAX_SIDE = 32_767;
+
+/**
+ * The canvas a document is drawn on as a picture, once it is known to be one the image library can draw and within the pixel budget of an
+ * input picture; else the 413 of the other size limits, before the SVG of the document is built.
+ */
+export function checkedRasterCanvas(width: number, height: number, what: string): { width: number; height: number } {
+  const pixelBudget = maxInputPixels();
+  if (width > RASTER_CANVAS_MAX_SIDE || height > RASTER_CANVAS_MAX_SIDE || width * height > pixelBudget) {
+    throw new PayloadLimitError(
+      `The ${what} would be drawn as a picture of ${width} x ${height} pixels; at most ${RASTER_CANVAS_MAX_SIDE} pixels a side and ${pixelBudget} pixels in all are drawn. Convert it to a document format instead.`
+    );
+  }
+  return { width, height };
 }

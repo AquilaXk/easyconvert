@@ -1,7 +1,7 @@
 import sharp from 'sharp';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { convertFile } from '../src/lib/conversions';
-import { pngQualityAsPalette } from '../src/lib/conversions/png-quality-palette';
+import { pngQualityAsPalette } from '../src/lib/conversions/image-encoder-defaults';
 
 /**
  * A PNG has no quality of its own: the quality of a PNG to PNG conversion is the size of the palette the picture is written with
@@ -14,7 +14,7 @@ const SIDE = 192;
 let noisy: Buffer;
 
 beforeAll(async () => {
-  const { data, info } = await sharp({ create: { width: SIDE, height: SIDE, channels: 3, noise: { type: 'gaussian', mean: 128, sigma: 70 } } })
+  const { data, info } = await sharp({ create: { width: SIDE, height: SIDE, channels: 3, background: { r: 128, g: 128, b: 128 }, noise: { type: 'gaussian', mean: 128, sigma: 70 } } })
     .raw()
     .toBuffer({ resolveWithObject: true });
   noisy = await sharp(data, { raw: info }).png().toBuffer();

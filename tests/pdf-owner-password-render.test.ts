@@ -8,6 +8,7 @@ import { convertPdfPagesWithNativeTools } from '../src/worker/engines';
 import { withDecryptedPdf } from '../src/worker/pdf-decrypt';
 import { captureError } from './helpers/capture-error';
 import { AES_256, plainPdf, qpdfEncrypt, RC4_128 } from './helpers/encrypted-pdf-fixtures';
+import type { ExternalOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { type CraftObject, buildPdf } from './helpers/pdf-craft';
 
@@ -19,7 +20,7 @@ import { type CraftObject, buildPdf } from './helpers/pdf-craft';
  * Oracle: qpdf writes the encrypted files; the JBIG2 header bytes are those of the pdf.js file `bomb_giant.pdf` (T.88 section 7.4.8).
  */
 
-const TOOLS = ['qpdf', 'pdftoppm', 'pdfinfo'];
+const TOOLS: ExternalOracleTool[] = ['qpdf', 'pdftoppm', 'pdfinfo'];
 const TEST_TIMEOUT_MS = 120_000;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 /** Segment 0, type 48 (page information), page 1, 19 data bytes, 100000 x 100000 pixels. */

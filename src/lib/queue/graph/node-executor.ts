@@ -73,6 +73,13 @@ import { JOB_DEADLINE_AT, remainingJobMs, stripEngineControls } from '../../conv
 
 const INTERMEDIATE_TTL_MS = 24 * 60 * 60 * 1000;
 const gzipAsync = promisify(zlib.gzip);
+
+/** A tar written as .tar.gz at the compression level of the node's options, without holding the event loop; stopped if the attempt ended. */
+async function gzipArchive(tar: Buffer, compressionLevel: unknown, attemptSignal: AbortSignal): Promise<Buffer> {
+  const gzipped = await gzipAsync(tar, { level: resolveArchiveCompressionLevel(compressionLevel) });
+  attemptSignal.throwIfAborted();
+  return gzipped;
+}
 /** A node without any output artifact has no bytes to describe: the generic binary type with size 0. */
 const NO_OUTPUT_MIME_TYPE = 'application/octet-stream';
 /** Registry ids made of two dot-separated parts (`tar.gz`) are tried before the last extension alone. */
@@ -644,8 +651,7 @@ export async function processGraphNodeJob(
           const pdfBuffers = inputs.map((stored) => stored.buffer);
           const mergedBuf = await mergePdfBuffers(pdfBuffers, {
             passwords: await mergePasswordsFor(graphId, node, inputArtifacts),
-            confirmEditRights: node.options?.confirmEditRights,
-            signal: attemptSignal,
+            confirmEditRights: node.options?.confirmEditRights, signal: attemptSignal,
           });
           const outFilename = 'merged.pdf';
           const outKey = nodeOutputKey('intermediate', graphId, nodeId, 0, outFilename);
@@ -715,8 +721,7 @@ export async function processGraphNodeJob(
           archiveBuf = zipRes.buffer;
         } else if (targetFmt === 'tar' || targetFmt === 'tar.gz') {
           const tarRes = createTarArchive(filesToArchive, node.options || {}, `bundle.tar`);
-          archiveBuf = targetFmt === 'tar.gz' ? await gzipAsync(tarRes.buffer, { level: resolveArchiveCompressionLevel(node.options?.compressionLevel) }) : tarRes.buffer;
-          attemptSignal.throwIfAborted();
+          archiveBuf = targetFmt === 'tar.gz' ? await gzipArchive(tarRes.buffer, node.options?.compressionLevel, attemptSignal) : tarRes.buffer;
         } else if (targetFmt === '7z') {
           const sevenZipRes = await create7zArchiveAsync(filesToArchive, node.options || {}, `bundle.7z`, { signal: attemptSignal });
           archiveBuf = sevenZipRes.buffer;

@@ -10,7 +10,7 @@ import JSZip from 'jszip';
 import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
 import sharp, { type Sharp } from 'sharp';
-import { assertEmbeddableImageWithinLimit, maxInputPixels, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
+import { assertEmbeddableImageWithinLimit, checkedRasterCanvas, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
 import { ConversionOptions, ConversionResult, ConversionFailedError, DataParseError, DecompressionLimitError, EngineUnavailableError, InvalidSheetIndexError, PayloadLimitError, UnsupportedTargetError } from '../types';
 import { assertWellFormedXml } from './xml-wellformed';
 import { unconvertibleOfficeTarget } from './native-engine-pairs';
@@ -9289,22 +9289,6 @@ async function rasterizePipeline(
   }
 }
 
-/** The longest side of a vector canvas the image library draws (libvips refuses an SVG with a side past this). */
-const RASTER_CANVAS_MAX_SIDE = 32_767;
-
-/**
- * Refuses a canvas the image library cannot draw, or one past the pixel budget of an input picture, with the 413 of the other size
- * limits, before the SVG of the document is built.
- */
-function assertRasterCanvas(width: number, height: number, what: string): void {
-  const pixelBudget = maxInputPixels();
-  if (width > RASTER_CANVAS_MAX_SIDE || height > RASTER_CANVAS_MAX_SIDE || width * height > pixelBudget) {
-    throw new PayloadLimitError(
-      `The ${what} would be drawn as a picture of ${width} x ${height} pixels; at most ${RASTER_CANVAS_MAX_SIDE} pixels a side and ${pixelBudget} pixels in all are drawn. Convert it to a document format instead.`
-    );
-  }
-}
-
 async function renderTableToRaster(
   rows: string[][],
   tgt: string,
@@ -9312,11 +9296,8 @@ async function renderTableToRaster(
 ): Promise<{ buffer: Buffer; mimeType: string }> {
   const rowHeight = 26;
   const colWidth = 140;
-  let numCols = 1;
-  for (const row of rows) if (row.length > numCols) numCols = row.length;
-  const width = Math.max(640, numCols * colWidth + 40);
-  const height = Math.max(200, rows.length * rowHeight + 80);
-  assertRasterCanvas(width, height, 'table');
+  const numCols = rows.reduce((widest, row) => Math.max(widest, row.length), 1);
+  const { width, height } = checkedRasterCanvas(Math.max(640, numCols * colWidth + 40), Math.max(200, rows.length * rowHeight + 80), 'table');
 
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
     <rect width="${width}" height="${height}" fill="#ffffff" />
@@ -9347,9 +9328,7 @@ async function renderTextToRaster(
   baseName: string
 ): Promise<{ buffer: Buffer; mimeType: string }> {
   const lines = text.split(/\r?\n/);
-  const width = 800;
-  const height = Math.max(240, lines.length * 24 + 80);
-  assertRasterCanvas(width, height, 'text');
+  const { width, height } = checkedRasterCanvas(800, Math.max(240, lines.length * 24 + 80), 'text');
 
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
     <rect width="${width}" height="${height}" fill="#ffffff" />

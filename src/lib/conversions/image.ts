@@ -9,7 +9,6 @@ import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground }
 import { buildTiffOptions } from './image-tiff-options';
 import { encodePsd, PSD_MAX_SIDE, type PsdChannels } from './psd-writer';
 import { decodeBmp } from './bmp';
-import { pngQualityAsPalette } from './png-quality-palette';
 import { buildJpegPdf, planJpegPassthrough } from './pdf-jpeg-passthrough';
 import { classifyContent, classifyRaster, type ContentClass, type Raster } from './image-content';
 import {
@@ -18,7 +17,7 @@ import {
   FALLBACK_QUALITY,
   type AvifEncoder,
   clampQuality,
-  jpegOptionsFor,
+  jpegOptionsFor, pngQualityAsPalette,
   webpOptionsFor,
 } from './image-encoder-defaults';
 import {
@@ -1811,7 +1810,7 @@ async function convertImageReleasingEncoder(
 ): Promise<ConversionResult> {
   const directAvif = new DirectAvifSlot();
   try {
-    return await convertImage(inputBuffer, targetFormat, options, originalFilename, sourceFormat, directAvif);
+    return await convertImage(inputBuffer, targetFormat, pngQualityAsPalette(sourceFormat ?? '', targetFormat, options), originalFilename, sourceFormat, directAvif);
   } finally {
     await directAvif.abandon();
   }
@@ -1822,12 +1821,11 @@ export { convertImageReleasingEncoder as convertImage };
 async function convertImage(
   inputBuffer: Buffer,
   targetFormat: string,
-  requestOptions: ConversionOptions,
+  options: ConversionOptions,
   originalFilename: string,
   sourceFormat: string | undefined,
   directAvif: DirectAvifSlot
 ): Promise<ConversionResult> {
-  const options = pngQualityAsPalette(sourceFormat ?? '', targetFormat, requestOptions);
   const baseName = (originalFilename || 'image.png').replace(/\.[^/.]+$/, '');
   const fmt = targetFormat.toLowerCase();
   const src = (sourceFormat || '').toLowerCase();
