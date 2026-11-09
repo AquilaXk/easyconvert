@@ -8,7 +8,7 @@ import { resolveRetentionPolicy } from '../storage/result-retention';
  * Puts the result of a queue job that completed in the history of converted files of its owner (`/api/account/files`), as the
  * synchronous conversion does. The record is made under the job id, so a completion reported twice records it once, and it is
  * kept as long as the result is (RESULT_UNDELIVERED_TTL_SECONDS from the end). Not recorded: a job of a visitor without an
- * account, whose result is reached by its link alone, and a node of a graph, which the graph answers for. A history that cannot
+ * account, whose result is reached by its link alone, and a node of a graph, whose final outputs the graph records when it completes (`recordGraphOutputsInHistory`). A history that cannot
  * be written is logged and never fails the job, whose result is stored.
  */
 export async function recordJobResultInHistory(

@@ -640,6 +640,7 @@ export class KeyStore {
       size: data.size,
       downloadUrl,
       storageKey,
+      graphId: data.graphId,
       createdAt: now,
       expiresAt: now + (data.ttlMs ?? resolveRetentionPolicy().undeliveredTtlMs),
     };

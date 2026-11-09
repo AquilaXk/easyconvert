@@ -1,6 +1,7 @@
 import { redisKeyStore } from '../../api-keys/redis-key-store';
 import { webhookDispatcher, type WebhookDispatchResult } from '../../api-keys/webhook-dispatcher';
 import { storageProvider } from '../../storage';
+import { recordGraphOutputsInHistory } from './graph-history';
 import { releaseInputHolds } from './input-cleanup';
 import type { GraphExecutionState } from './scheduler-types';
 
@@ -120,7 +121,8 @@ async function readEndedState(graph: EndedGraph): Promise<GraphExecutionState | 
 /**
  * The end of `graph`, run once by the one call that recorded it (the Lua transition in Redis, `recordEnd` in the process).
  * The reservation is ended first, so no later step can leave it open; then the state is read once (`readEndedState`) and
- * handed to `between` (cancelling the other node jobs, draining the outbox); then the webhook is told, when the state was
+ * handed to `between` (cancelling the other node jobs, draining the outbox); then, for a completed graph, its final outputs are
+ * put in the history of its owner's files; then the webhook is told, when the state was
  * read, the holds on the input files and the intermediate files are removed, which needs no state, and the state is set to
  * expire without its webhook secret (`forget`). A failure of
  * `between` is logged and never stops what follows, and nothing here throws. Answers what `between` returned, or undefined
@@ -134,6 +136,7 @@ export async function finishGraph<T>(
   await endGraphReservation(graph.graphId, graph.reservationId, end.reservation);
   const state = await readEndedState(graph);
   const result = between && (await orLogged(graph.graphId, 'a step between its settle and its announcement failed', () => between(state)));
+  if (state && end.outcome.status === 'completed') await orLogged(graph.graphId, 'its outputs could not be recorded in the file history', () => recordGraphOutputsInHistory(state));
   if (state) await notifyWebhook(state, end.outcome);
   await removeGraphFiles(graph.graphId, graph.inputKeys);
   await orLogged(graph.graphId, 'its state could not be set to expire', graph.forget);
