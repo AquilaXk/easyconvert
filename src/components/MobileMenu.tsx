@@ -96,7 +96,9 @@ export default function MobileMenu({ onClose }: Readonly<{ onClose: () => void }
       className="!m-0 h-dvh !max-h-none w-dvw !max-w-none overflow-y-auto rounded-none border-0 p-0 bg-canvas text-ink"
     >
       <div className="flex items-center justify-between px-4 h-[var(--header-height)] border-b border-rule">
-        <BrandLogo size="md" />
+        <Link href="/" onClick={onClose} aria-label={t('homeLabel')} className="min-h-[44px] inline-flex items-center shrink-0 rounded-sm">
+          <BrandLogo size="md" />
+        </Link>
         <div className="flex items-center gap-1.5">
           <button
             type="button"

@@ -21,6 +21,7 @@ export default function Header() {
   const [isToolsOpen, setIsToolsOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const toolsContainerRef = useRef<HTMLDivElement>(null);
+  const toolsButtonRef = useRef<HTMLButtonElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
 
   const menuWasOpen = useRef(false);
@@ -39,14 +40,25 @@ export default function Header() {
         setIsToolsOpen(false);
       }
     };
+    // Tab out of the last tool, or any other move of focus out of the menu, closes it as a click outside does.
+    const handleFocusIn = (event: FocusEvent) => {
+      if (toolsContainerRef.current && !toolsContainerRef.current.contains(event.target as Node)) {
+        setIsToolsOpen(false);
+      }
+    };
+    // Escape from inside the menu gives focus back to the button that opened it, since the item that had it is gone.
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setIsToolsOpen(false);
+      if (event.key !== 'Escape') return;
+      if (toolsContainerRef.current?.contains(document.activeElement)) toolsButtonRef.current?.focus();
+      setIsToolsOpen(false);
     };
 
     document.addEventListener('mousedown', handleOutsideClick);
+    document.addEventListener('focusin', handleFocusIn);
     window.addEventListener('keydown', handleKeyDown);
     return () => {
       document.removeEventListener('mousedown', handleOutsideClick);
+      document.removeEventListener('focusin', handleFocusIn);
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [isToolsOpen]);
@@ -66,6 +78,7 @@ export default function Header() {
           <nav aria-label={t('primaryNavLabel')} className="hidden lg:flex items-center gap-1 whitespace-nowrap">
             <div className="relative" ref={toolsContainerRef}>
               <button
+                ref={toolsButtonRef}
                 type="button"
                 onClick={() => setIsToolsOpen((open) => !open)}
                 aria-haspopup="true"
