@@ -3,6 +3,7 @@ import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import type { User } from '@/lib/auth/types';
 import type { ApiKey, ApiKeyScope, QuotaUsage } from '@/lib/api-keys/types';
+import type { DashboardSnapshot } from '@/lib/dashboard/snapshot-types';
 import type { ApiKeysPanelActions, ApiKeysPanelState } from './ApiKeysPanel';
 import {
   resolveExpiryTimestamp,
@@ -80,14 +81,15 @@ function useClipboardCopyStatus() {
 
 export function useApiKeysController(
   enabled: boolean,
-  onReportError: (error: string | null) => void
+  onReportError: (error: string | null) => void,
+  initial?: Pick<DashboardSnapshot, 'keys' | 'quota'>
 ) {
   const t = useTranslations('dashboard.errors');
   const tKeys = useTranslations('dashboard.keys');
   const problemWording = useDashboardErrorWording();
   const readWording = useDashboardErrorWording({ untypedRefusal: 'action' });
-  const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
-  const [quota, setQuota] = useState<QuotaUsage | null>(null);
+  const [apiKeys, setApiKeys] = useState<ApiKey[]>((initial?.keys as ApiKey[] | undefined) ?? []);
+  const [quota, setQuota] = useState<QuotaUsage | null>(initial?.quota ?? null);
   const [newKeyName, setNewKeyName] = useState('');
   const [generatedSecret, setGeneratedSecret] = useState<string | null>(null);
   const [isGeneratingKey, setIsGeneratingKey] = useState(false);
@@ -127,9 +129,11 @@ export function useApiKeysController(
   // The read runs when the dashboard is enabled, not again when the zone switch after hydration renews the wording.
   const fetchKeysAndQuotaRef = useRef(fetchKeysAndQuota);
   fetchKeysAndQuotaRef.current = fetchKeysAndQuota;
+  // The server rendered the keys and the usage when it had them; the read then waits for the first tab opening or return.
+  const seeded = initial?.keys !== undefined && initial.quota !== undefined;
   useEffect(() => {
-    if (enabled) void fetchKeysAndQuotaRef.current();
-  }, [enabled]);
+    if (enabled && !seeded) void fetchKeysAndQuotaRef.current();
+  }, [enabled, seeded]);
 
   const handleGenerateKey = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -216,12 +220,12 @@ export function useApiKeysController(
   return { state, actions, copyToClipboard, refresh: fetchKeysAndQuota };
 }
 
-export function useDashboardController() {
+export function useDashboardController(initial?: DashboardSnapshot) {
   const t = useTranslations('dashboard.errors');
   const router = useRouter();
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(initial?.user ?? null);
   const [activeTab, setActiveTab] = useState<DashboardTab>('api');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!initial);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const reportError = useCallback((error: string | null) => setActionError(error), []);
@@ -244,9 +248,11 @@ export function useDashboardController() {
     }
   }, [router]);
 
+  // The server read the session for the first paint; only a page it could not read for asks for it here.
+  const hasInitialUser = initial !== undefined;
   useEffect(() => {
-    void fetchProfile();
-  }, [fetchProfile]);
+    if (!hasInitialUser) void fetchProfile();
+  }, [fetchProfile, hasInitialUser]);
 
   const handleLogout = async () => {
     try {
@@ -261,8 +267,8 @@ export function useDashboardController() {
     router.refresh();
   };
 
-  const keys = useApiKeysController(Boolean(user), reportError);
-  const filesAndDlq = useFilesAndDlqController(Boolean(user), reportError);
+  const keys = useApiKeysController(Boolean(user), reportError, initial);
+  const filesAndDlq = useFilesAndDlqController(Boolean(user), reportError, initial);
 
   // A conversion made through the API changes the usage, the files and the failed webhooks without this page knowing,
   // so a tab reads its data again when it opens, and the summary and the badges when the person comes back to the page.

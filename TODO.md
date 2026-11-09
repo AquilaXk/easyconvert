@@ -19,7 +19,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Size thread and process counts from cgroup `cpu.max`, not `os.availableParallelism()`.
 
 ## Product and API
-- Dashboard: render the first view on the server (2.3 s spinner today); the key form's terms checkbox stays (policy 146), drop it only with a policy change.
 
 ## Operations and security
 - Cache the public HTML pages at the Cloudflare edge (a cache rule for the page routes; `cf-cache-status` is `DYNAMIC` on `/ko` today although the page sends `s-maxage`): QA sets it in the dashboard later, or puts a scoped API token in `.env`.

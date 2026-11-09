@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import type { WebhookDlqEntry } from '@/lib/api-keys/types';
+import type { DashboardSnapshot } from '@/lib/dashboard/snapshot-types';
 import type { FileWithRemaining } from './dashboard-types';
 import { warnBrowserFailure } from '@/lib/browser-failure';
 import { useDashboardErrorWording } from '../i18n/error-wording';
@@ -9,14 +10,15 @@ import { useRecordDelete } from './useRecordDelete';
 
 export function useFilesAndDlqController(
   enabled: boolean,
-  onReportError: (error: string | null) => void
+  onReportError: (error: string | null) => void,
+  initial?: Pick<DashboardSnapshot, 'files' | 'dlqEntries'>
 ) {
   const t = useTranslations('dashboard.errors');
   const problemWording = useDashboardErrorWording();
   const readWording = useDashboardErrorWording({ untypedRefusal: 'action' });
-  const [userFiles, setUserFiles] = useState<FileWithRemaining[]>([]);
+  const [userFiles, setUserFiles] = useState<FileWithRemaining[]>(initial?.files ?? []);
   const [filesLoading, setFilesLoading] = useState(false);
-  const [dlqEntries, setDlqEntries] = useState<WebhookDlqEntry[]>([]);
+  const [dlqEntries, setDlqEntries] = useState<WebhookDlqEntry[]>((initial?.dlqEntries as WebhookDlqEntry[] | undefined) ?? []);
   const [dlqLoading, setDlqLoading] = useState(false);
   const [inspectingDlq, setInspectingDlq] = useState<WebhookDlqEntry | null>(null);
   const [replayingDlqId, setReplayingDlqId] = useState<string | null>(null);
@@ -71,11 +73,14 @@ export function useFilesAndDlqController(
   // The read runs when the dashboard is enabled, not again when the zone switch after hydration renews the wording.
   const readersRef = useRef({ fetchUserFiles, fetchDlqEntries });
   readersRef.current = { fetchUserFiles, fetchDlqEntries };
+  // A list the server rendered is not read again at mount.
+  const filesSeeded = initial?.files !== undefined;
+  const dlqSeeded = initial?.dlqEntries !== undefined;
   useEffect(() => {
     if (!enabled) return;
-    void readersRef.current.fetchUserFiles();
-    void readersRef.current.fetchDlqEntries();
-  }, [enabled]);
+    if (!filesSeeded) void readersRef.current.fetchUserFiles();
+    if (!dlqSeeded) void readersRef.current.fetchDlqEntries();
+  }, [enabled, filesSeeded, dlqSeeded]);
 
   const hasActiveFiles = userFiles.length > 0;
 
