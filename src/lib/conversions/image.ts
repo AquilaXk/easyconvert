@@ -9,6 +9,7 @@ import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground }
 import { buildTiffOptions } from './image-tiff-options';
 import { encodePsd, PSD_MAX_SIDE, type PsdChannels } from './psd-writer';
 import { decodeBmp } from './bmp';
+import { pngQualityAsPalette } from './png-quality-palette';
 import { buildJpegPdf, planJpegPassthrough } from './pdf-jpeg-passthrough';
 import { classifyContent, classifyRaster, type ContentClass, type Raster } from './image-content';
 import {
@@ -1821,11 +1822,12 @@ export { convertImageReleasingEncoder as convertImage };
 async function convertImage(
   inputBuffer: Buffer,
   targetFormat: string,
-  options: ConversionOptions,
+  requestOptions: ConversionOptions,
   originalFilename: string,
   sourceFormat: string | undefined,
   directAvif: DirectAvifSlot
 ): Promise<ConversionResult> {
+  const options = pngQualityAsPalette(sourceFormat ?? '', targetFormat, requestOptions);
   const baseName = (originalFilename || 'image.png').replace(/\.[^/.]+$/, '');
   const fmt = targetFormat.toLowerCase();
   const src = (sourceFormat || '').toLowerCase();
