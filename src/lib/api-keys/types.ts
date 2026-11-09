@@ -89,6 +89,8 @@ export interface UserConversionFile {
   downloadUrl: string;
   /** The storage key of the file, which the retention rule tracks; absent on records made before it was kept. */
   storageKey?: string;
+  /** The graph that made the file, for a final output of a graph: the storage key is under `results/<graphId>/`, not under the record id. */
+  graphId?: string;
   createdAt: number;
   expiresAt: number;
 }
@@ -104,6 +106,8 @@ export interface UserConversionFileInput {
   size: number;
   downloadUrl: string;
   storageKey?: string;
+  /** The graph whose final output the file is; absent for a job's result and a synchronous conversion. */
+  graphId?: string;
   /** How long the record is kept; the time an undelivered result is kept when absent. */
   ttlMs?: number;
 }
