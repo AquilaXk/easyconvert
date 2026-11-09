@@ -17,6 +17,7 @@
 #   8. qpdf-runner (the qpdf jobs of the PDF operations) runs a job in a user and network namespace of its own under this container's seccomp profile
 #   9. xz (the .xz encoder and decoder of the archive conversions) is installed and round-trips inside the sandbox, also under the worker's own address-space caps
 #  10. pid-init runs a program as PID 2 of a PID namespace of its own, under this container's seccomp profile, and the program cannot see or signal a sibling process
+#      nor read its command line and status in /proc (the Landlock ruleset of pid-init)
 #
 # The sandbox is entered with the same `unshare -r -n` and `prlimit --as` the worker uses
 # (src/lib/security/process-sandbox.ts); this script does not load the worker's own code.
@@ -423,6 +424,25 @@ else
       pass "pid-init ran a program as PID 2 of a PID namespace that does not hold its siblings"
     else
       fail "pid-init did not give the program a PID namespace of its own: $(printf '%s' "$pid_output" | tr '\n' ' ' | head -c 300)"
+    fi
+    # The namespace hides nothing in /proc (it cannot be mounted again here), so the program is also started under a Landlock ruleset that refuses
+    # the files of every process but its own. The program reads the command line of the sibling (the control, with --keep-proc) and then fails to.
+    kept_output="$(unshare -r -n -- pid-init --keep-proc -- sh -c "( : < /proc/$sibling_pid/cmdline ) 2>/dev/null && echo cmdline-readable || echo cmdline-hidden" 2>&1)"
+    hidden_output="$(unshare -r -n -- pid-init -- sh -c "( : < /proc/$sibling_pid/cmdline ) 2>/dev/null && echo cmdline-readable || echo cmdline-hidden; read -r own < /proc/self/status && echo own-readable" 2>&1)"
+    if [ "$kept_output" != "cmdline-readable" ]; then
+      fail "the control of the /proc check did not read the command line of the sibling: $(printf '%s' "$kept_output" | tr '\n' ' ' | head -c 300)"
+    elif [ "$hidden_output" = "$(printf 'cmdline-hidden\nown-readable')" ]; then
+      pass "pid-init hid the command line of the sibling in /proc from the program and left it its own entries"
+      # A ruleset that did not handle moves between directories would refuse every link and rename between two directories with EXDEV.
+      link_dir="$(mktemp -d)"
+      if unshare -r -n -- pid-init -- sh -c "mkdir \"$link_dir/a\" \"$link_dir/b\" && : > \"$link_dir/a/f\" && ln \"$link_dir/a/f\" \"$link_dir/b/f\"" >/dev/null 2>&1; then
+        pass "pid-init left the program the links between directories"
+      else
+        fail "the program could not link a file between directories under the pid-init ruleset (EXDEV)"
+      fi
+      rm -rf "$link_dir"
+    else
+      fail "pid-init did not hide /proc from the program (Landlock is off in the kernel, or the seccomp profile denies landlock_create_ruleset): $(printf '%s' "$hidden_output" | tr '\n' ' ' | head -c 300)"
     fi
   fi
   kill "$sibling_pid" 2>/dev/null

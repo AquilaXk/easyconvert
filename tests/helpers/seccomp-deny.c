@@ -24,10 +24,13 @@
 
 int main(int argc, char **argv) {
   if (argc < 3) {
-    fputs("usage: seccomp-deny <unshare|mincore> <program> [arguments...]\n", stderr);
+    fputs("usage: seccomp-deny <unshare|mincore|landlock_create_ruleset> <program> [arguments...]\n", stderr);
     return 2;
   }
-  int number = strcmp(argv[1], "unshare") == 0 ? SYS_unshare : strcmp(argv[1], "mincore") == 0 ? SYS_mincore : -1;
+  int number = strcmp(argv[1], "unshare") == 0 ? SYS_unshare
+               : strcmp(argv[1], "mincore") == 0 ? SYS_mincore
+               : strcmp(argv[1], "landlock_create_ruleset") == 0 ? SYS_landlock_create_ruleset
+                                                                : -1;
   if (number < 0) {
     fputs("seccomp-deny: unknown syscall\n", stderr);
     return 2;

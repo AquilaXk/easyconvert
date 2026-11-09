@@ -257,8 +257,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY native/qpdf-runner/ /src/qpdf-runner/
 RUN /src/qpdf-runner/build.sh /usr/local/bin/qpdf-runner
-# pid-init (native/pid-init, about 120 lines of C) starts every sandboxed program in a PID namespace of its own, with the program as PID 2, so one
-# run cannot see or signal another. It needs the same C compiler and nothing else, so it is built here.
+# pid-init (native/pid-init, about 220 lines of C) starts every sandboxed program in a PID namespace of its own, with the program as PID 2, so one
+# run cannot see or signal another, and under a Landlock ruleset that refuses it the /proc entries of the other runs. It needs the same C compiler and nothing else, so it is built here.
 COPY native/pid-init/ /src/pid-init/
 RUN /src/pid-init/build.sh /usr/local/bin/pid-init
 

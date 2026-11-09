@@ -2,6 +2,7 @@
 //
 //   qpdf-runner [--lib <soname or path>]     serve jobs on standard input and output (see the frame format below)
 //   qpdf-runner --check [--lib <name>]       load the library, print its version and exit 0
+//   qpdf-runner --keep-proc ...              leave the /proc entries of other processes readable to the jobs (see hide_other_processes)
 //   qpdf-runner --self-test [--lib <name>]   run one job (qpdf --version) in a child of its own, in the namespaces and under the limits
 //                                            a real job gets, and print `self-test ok`; exit 1 when the job cannot be run isolated
 //
@@ -16,7 +17,8 @@
 //     sees a byte of the document (the equivalent of `unshare -r -n -p`), so a job cannot see or signal another; a child that cannot
 //     make them runs nothing and says so (kind SETUP), and the caller falls back to starting the program the way it always has.
 //     The job is PID 2 of its namespace (see enter_job_process), because the kernel does not deliver to PID 1 a signal it has no
-//     handler for, and the limits a job is judged by are signals;
+//     handler for, and the limits a job is judged by are signals; the job also cannot read the command line or the status of another
+//     process in /proc (a Landlock ruleset, see hide_other_processes), which the PID namespace does not hide;
 //   - the seccomp filter, the capabilities and the limits of this process, which the child inherits, plus no_new_privs, no core
 //     dump, and the address-space, file-size and CPU limits of the request;
 //   - its own session and process group, the environment of the request only, standard input from the request, standard output
@@ -47,6 +49,7 @@
 // first process has), and is killed with its group at the latest when the job ends.
 
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -364,6 +367,151 @@ static bool write_text_file(const char *path, const char *text) {
   return w == (ssize_t)n;
 }
 
+/* ---------------------------------------------------------------------------------------------------------------------------
+ * The /proc entries of the other jobs
+ * ------------------------------------------------------------------------------------------------------------------------ */
+
+/* A PID namespace hides nothing in /proc: it is the container's own mount, which shows every process by its number outside the namespace, and
+   it cannot be mounted again here (the worker's seccomp profile has no mount call, and a container's /proc has masked paths). So a job is put
+   under a Landlock ruleset that handles reading and writing files and allows both below every entry of / but /proc and below every entry of
+   /proc but the numbered directories, /proc/self (the job itself) among them: the command line, the status and the OOM score of any other
+   process, the runner and the other jobs included, are refused with EACCES. The same code is in native/pid-init/pid-init.c (see the notes at its
+   head). A host that cannot make the ruleset runs the job without it and says so on the standard error of the job, with a line that starts
+   `pid-init: /proc not hidden:` (the worker takes it off again and logs it). The directory of the job in /proc stays open in the job for as
+   long as it runs, because /proc makes a new inode for an entry that was dropped from the cache and a rule would not match it. */
+/* The Landlock interface (Linux 5.13), declared here so that the build does not depend on the version of the kernel headers. */
+#ifndef __NR_landlock_create_ruleset
+#define __NR_landlock_create_ruleset 444
+#define __NR_landlock_add_rule 445
+#define __NR_landlock_restrict_self 446
+#endif
+#define LANDLOCK_CREATE_RULESET_VERSION (1U << 0)
+#define LANDLOCK_ACCESS_FS_WRITE_FILE (1ULL << 1)
+#define LANDLOCK_ACCESS_FS_READ_FILE (1ULL << 2)
+#define LANDLOCK_ACCESS_FS_REFER (1ULL << 13)
+#define LANDLOCK_RULE_PATH_BENEATH 1
+/* The first descriptor number the kept /proc entries take when they stay in the program (--no-pid-namespace). */
+#define PIN_FD_FLOOR 200
+/* How many /proc entries may be kept open, and how many descriptors go in one message to PID 1 (the kernel takes 253). */
+#define PIN_MAX 1024
+#define PIN_BATCH 128
+/* What is said on the standard error of the program when /proc is not hidden; the worker looks for it at the start of the output. */
+#define NOT_HIDDEN_NOTICE "pid-init: /proc not hidden: "
+
+/* Why the last attempt to hide /proc failed, for the notice. */
+static const char *hide_failure = "";
+static int refer_handled = 0;
+/* The /proc entries the ruleset names, open: a rule belongs to an inode that /proc makes again once the entry is dropped from the cache. */
+static int pinned[PIN_MAX];
+static int pinned_count = 0;
+
+struct landlock_ruleset_attr_v1 {
+  uint64_t handled_access_fs;
+};
+struct landlock_path_beneath_attr_v1 {
+  uint64_t allowed_access;
+  int32_t parent_fd;
+} __attribute__((packed));
+
+/* Allows reading and writing files below `path` (and moving them between directories where the kernel has that right). An entry that is not
+   there (a dangling link, a process that ended) or that this process may not look at adds nothing; any other failure (out of descriptors, a
+   refused rule) returns -1, because a rule that is missing takes a whole directory away from the program and the ruleset must not be put in
+   force then. With `keep` the entry stays open (see pinned). */
+static int allow_below(int ruleset, const char *path, int keep) {
+  int fd = open(path, O_PATH | O_CLOEXEC);
+  if (fd < 0) return errno == ENOENT || errno == EACCES || errno == ELOOP || errno == ENOTDIR || errno == ENXIO ? 0 : -1;
+  struct landlock_path_beneath_attr_v1 rule = {.allowed_access = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE, .parent_fd = fd};
+  struct stat st;
+  /* The right to move is one of directories; a rule on a file that names it is refused. */
+  if (refer_handled && fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) rule.allowed_access |= LANDLOCK_ACCESS_FS_REFER;
+  int added = (int)syscall(__NR_landlock_add_rule, ruleset, LANDLOCK_RULE_PATH_BENEATH, &rule, 0);
+  if (added == 0 && keep && pinned_count < PIN_MAX) {
+    pinned[pinned_count++] = fd;
+    return 0;
+  }
+  close(fd);
+  return added == 0 && keep ? -1 : added;
+}
+
+static int is_number(const char *name) {
+  if (*name == '\0') return 0;
+  for (; *name; name++) {
+    if (*name < '0' || *name > '9') return 0;
+  }
+  return 1;
+}
+
+/* Allows every entry of `parent`: all but "proc" for the root directory, and all but the process numbers (kept open) for /proc. */
+static int allow_entries(int ruleset, const char *parent, int proc_entries) {
+  DIR *directory = opendir(parent);
+  if (directory == NULL) return -1;
+  int result = 0;
+  struct dirent *entry;
+  while ((entry = readdir(directory)) != NULL) {
+    const char *name = entry->d_name;
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+    if (proc_entries ? is_number(name) : strcmp(name, "proc") == 0) continue;
+    char path[512];
+    if (snprintf(path, sizeof path, "%s/%s", strcmp(parent, "/") == 0 ? "" : parent, name) >= (int)sizeof path) continue;
+    if (allow_below(ruleset, path, proc_entries) != 0) {
+      result = -1;
+      break;
+    }
+  }
+  closedir(directory);
+  return result;
+}
+
+static void release_pinned(void) {
+  while (pinned_count > 0) close(pinned[--pinned_count]);
+}
+
+/* Makes the ruleset: reading and writing files below every entry of / but /proc, and below every entry of /proc but the process numbers.
+   "self" is a link to the directory of this process, so the entries of /proc that are not numbers include its own. Returns its descriptor, or
+   -1 (with hide_failure set) when it cannot be made: no Landlock, or the first version, which refuses every move between directories. */
+static int make_ruleset(void) {
+  hide_failure = "";
+  long abi = syscall(__NR_landlock_create_ruleset, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
+  if (abi < 1) {
+    hide_failure = "the kernel has no Landlock";
+    return -1;
+  }
+  if (abi < 2) {
+    hide_failure = "Landlock version 1 refuses every move between directories";
+    return -1;
+  }
+  refer_handled = 1;
+  struct landlock_ruleset_attr_v1 handled = {.handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REFER};
+  int ruleset = (int)syscall(__NR_landlock_create_ruleset, &handled, sizeof handled, 0);
+  if (ruleset < 0) {
+    hide_failure = "landlock_create_ruleset was refused";
+    return -1;
+  }
+  if (allow_entries(ruleset, "/", 0) != 0 || allow_entries(ruleset, "/proc", 1) != 0) {
+    hide_failure = "a rule could not be added";
+    close(ruleset);
+    release_pinned();
+    return -1;
+  }
+  return ruleset;
+}
+
+/* Puts the ruleset in force on this process and closes it. Returns 0 when it is. */
+static int enforce_ruleset(int ruleset) {
+  int result = (int)syscall(__NR_landlock_restrict_self, ruleset, 0);
+  if (result != 0 && errno == EPERM && prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) == 0) {
+    /* Without the capability to administer its user namespace a process must give up the ability to gain privileges first. */
+    prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+    result = (int)syscall(__NR_landlock_restrict_self, ruleset, 0);
+  }
+  if (result != 0) hide_failure = "landlock_restrict_self was refused";
+  close(ruleset);
+  return result;
+}
+
+/* Set by --keep-proc: the jobs keep the /proc entries of the other processes readable. */
+static bool keep_proc = false;
+
 /* The equivalent of `unshare -r -n -p`: a user namespace that maps the user to root inside it, an empty network namespace, and a PID
    namespace that holds the children of this process from now on (this process stays in the one it was in). */
 static bool enter_namespaces(void) {
@@ -507,6 +655,16 @@ static void run_child(const Request *r, int in_fd, int out_fd, int err_fd, int s
   /* The maps are written; from here no process of the same user can read this one or the processes it makes through /proc/<pid>/mem. */
   prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
   enter_job_process();
+  if (!keep_proc) {
+    /* The /proc entries the ruleset names stay open in the job for as long as it runs. */
+    int ruleset = make_ruleset();
+    if (ruleset >= 0 && enforce_ruleset(ruleset) != 0) release_pinned();
+    if (*hide_failure != '\0') {
+      (void)!write(STDERR_FILENO, NOT_HIDDEN_NOTICE, sizeof NOT_HIDDEN_NOTICE - 1);
+      (void)!write(STDERR_FILENO, hide_failure, strlen(hide_failure));
+      (void)!write(STDERR_FILENO, "\n", 1);
+    }
+  }
   if (!apply_limits(r)) child_fail(SETUP_LIMITS);
   if (chdir(r->cwd) != 0) child_fail(SETUP_CHDIR);
   clearenv();
@@ -977,9 +1135,10 @@ int main(int argc, char **argv) {
     if (strcmp(argv[i], "--lib") == 0 && i + 1 < argc) library = argv[++i];
     else if (strcmp(argv[i], "--check") == 0) check_only = true;
     else if (strcmp(argv[i], "--self-test") == 0) self_testing = true;
+    else if (strcmp(argv[i], "--keep-proc") == 0) keep_proc = true;
     else if (strcmp(argv[i], "--stdin-pipe-bytes") == 0 && i + 1 < argc) stdin_pipe_bytes = atoi(argv[++i]);
     else {
-      fputs("usage: qpdf-runner [--check | --self-test] [--lib <soname or path>] [--stdin-pipe-bytes <n>]\n", stderr);
+      fputs("usage: qpdf-runner [--check | --self-test] [--keep-proc] [--lib <soname or path>] [--stdin-pipe-bytes <n>]\n", stderr);
       return 2;
     }
   }

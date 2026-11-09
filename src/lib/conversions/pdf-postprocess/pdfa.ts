@@ -201,6 +201,7 @@ async function runVerapdf(
       networkIsolated: true,
       // No PID namespace of its own, like calibre (entry 203): the JVM reads /proc/self for its container and thread setup, and /proc (which the
       // sandbox cannot remount) shows the host's processes; on the CI runners veraPDF then answered with something other than its JSON report.
+      // pid-init still hides the /proc entries of the other runs from it (entry 208).
       sandboxOptions: { pidNamespace: false },
     });
     return result.stdout.toString('utf-8');

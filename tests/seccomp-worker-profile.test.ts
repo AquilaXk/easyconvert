@@ -81,6 +81,13 @@ describe('docker/seccomp-worker.json', () => {
     }
   });
 
+  it('allows the Landlock calls with which pid-init hides the /proc entries of the other runs from a program', () => {
+    for (const name of ['landlock_create_ruleset', 'landlock_add_rule', 'landlock_restrict_self']) {
+      expect(ALLOWED.has(name), name).toBe(true);
+      expect(rulesFor(name), name).toEqual([]);
+    }
+  });
+
   it('keeps every call that needs a capability, or reaches other processes and the kernel, out of the allow list', () => {
     const denied = [
       'mount', 'umount2', 'pivot_root', 'chroot', 'ptrace', 'process_vm_readv', 'process_vm_writev', 'bpf', 'keyctl', 'add_key',

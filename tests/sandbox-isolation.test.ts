@@ -63,6 +63,27 @@ for (const [name, signal] of [['probe', 0], ['term', 'SIGTERM']]) {
 console.log(JSON.stringify(result));
 `;
 
+/** What a run reports about the /proc entries of a sibling run (read, or the error code) and about its own and the system-wide ones. */
+const PROC_SCRIPT = `
+const fs = require('node:fs');
+const target = process.argv[1];
+const attempt = (action) => { try { action(); return 'ok'; } catch (err) { return err.code; } };
+console.log(JSON.stringify({
+  siblingCmdline: attempt(() => fs.readFileSync('/proc/' + target + '/cmdline')),
+  siblingStatus: attempt(() => fs.readFileSync('/proc/' + target + '/status')),
+  siblingOomWrite: attempt(() => fs.writeFileSync('/proc/' + target + '/oom_score_adj', '1000')),
+  ownStatus: attempt(() => fs.readFileSync('/proc/self/status')),
+  ownThread: attempt(() => fs.readFileSync('/proc/thread-self/status')),
+  ownTasks: attempt(() => fs.readdirSync('/proc/self/task')),
+  system: attempt(() => fs.readFileSync('/proc/meminfo')),
+  sysctl: attempt(() => fs.readFileSync('/proc/sys/kernel/pid_max')),
+}));
+`;
+const PROC_VISIBLE = { siblingCmdline: 'ok', siblingStatus: 'ok', siblingOomWrite: 'ok', ownStatus: 'ok', ownThread: 'ok', ownTasks: 'ok', system: 'ok', sysctl: 'ok' };
+const PROC_HIDDEN = { ...PROC_VISIBLE, siblingCmdline: 'EACCES', siblingStatus: 'EACCES', siblingOomWrite: 'EACCES' };
+/** Hang guard of the wait for the /proc reads of a run that is already running; they take milliseconds. */
+const PROC_READ_HANG_GUARD_MS = 15_000;
+
 /** Host PIDs of the processes whose command line starts with `program` and holds the marker (by default the node of a sibling run, not the wrappers around it). */
 function findMarkedPids(marker = SIBLING_MARKER, program = process.execPath): number[] {
   const found: number[] = [];
@@ -225,6 +246,44 @@ describe.skipIf(skipUnless('unprivileged user, network and PID namespaces (unsha
         },
         TEST_TIMEOUT_MS
       );
+      it(
+        'control: outside the sandbox the child reads the command line and the status of the sibling and writes its OOM score',
+        async () => {
+          const siblingPid = await startSibling();
+          expect(JSON.parse(await runUnsandboxed(PROC_SCRIPT, String(siblingPid)))).toEqual(PROC_VISIBLE);
+        },
+        TEST_TIMEOUT_MS
+      );
+
+      it(
+        'control: a run that opts out of the hiding with hideProc: false reads the command line and the status of the sibling',
+        async () => {
+          const siblingPid = await startSibling();
+          const run = await executeSandboxedBinary(process.execPath, ['-e', PROC_SCRIPT, String(siblingPid)], {
+            timeoutMs: PROC_READ_HANG_GUARD_MS,
+            sandboxOptions: { hideProc: false },
+          });
+          expect(JSON.parse(run.stdout.toString('utf-8'))).toEqual(PROC_VISIBLE);
+        },
+        TEST_TIMEOUT_MS
+      );
+
+      it.each([
+        ['in a PID namespace of its own', {}],
+        ['without a PID namespace (the programs that read /proc/self)', { pidNamespace: false }],
+      ])(
+        'a sandboxed run %s cannot read the command line or the status of the sibling or write its OOM score, and still reads its own and the system-wide entries',
+        async (_name, sandboxOptions) => {
+          const siblingPid = await startSibling();
+          const run = await executeSandboxedBinary(process.execPath, ['-e', PROC_SCRIPT, String(siblingPid)], {
+            timeoutMs: PROC_READ_HANG_GUARD_MS,
+            sandboxOptions,
+          });
+          expect(JSON.parse(run.stdout.toString('utf-8'))).toEqual(PROC_HIDDEN);
+        },
+        TEST_TIMEOUT_MS
+      );
+
       it(
         'reads the memory of the program, not of the processes it was started through',
         async () => {

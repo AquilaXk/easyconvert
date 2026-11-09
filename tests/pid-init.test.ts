@@ -26,12 +26,22 @@ const EARLY_KILL_MAX_DELAY_MS = 6;
 /** Hang guard of the wait for a killed start to leave nothing behind: it is gone within milliseconds, this only ends a wait that never would. */
 const LEFTOVER_HANG_GUARD_MS = 10_000;
 
+/** Hang guard of one run of a program that takes milliseconds: it only ends a run that would never end. */
+const RUN_HANG_GUARD_MS = 20_000;
+
+/** Whether the kernel's caches can be dropped by this test: it runs as root, or sudo asks for no password. */
+function canDropCaches(): boolean {
+  if (process.platform !== 'linux') return false;
+  return spawnSync('sudo', ['-n', 'true'], { stdio: 'ignore' }).status === 0;
+}
+
 let scratch = '';
 let pidInit = '';
+let denyBinary = '';
 
-/** `unshare -r -n -- pid-init -- <command>`, the way the sandbox starts a program. */
-function inNamespace(command: string[], input?: string) {
-  return spawnSync('unshare', ['-r', '-n', '--', pidInit, '--', ...command], { encoding: 'utf8', input, timeout: 20_000 });
+/** `unshare -r -n -- pid-init [options] -- <command>`, the way the sandbox starts a program. */
+function inNamespace(command: string[], input?: string, options: string[] = [], prefix: string[] = []) {
+  return spawnSync('unshare', ['-r', '-n', '--', ...prefix, pidInit, ...options, '--', ...command], { encoding: 'utf8', input, timeout: RUN_HANG_GUARD_MS });
 }
 
 describe.skipIf(compilerMissing || namespacesMissing)('pid-init', () => {
@@ -40,6 +50,9 @@ describe.skipIf(compilerMissing || namespacesMissing)('pid-init', () => {
     pidInit = path.join(scratch, 'pid-init');
     const build = spawnSync(path.join(process.cwd(), 'native', 'pid-init', 'build.sh'), [pidInit], { encoding: 'utf8' });
     expect({ status: build.status, output: build.stderr + build.stdout }).toEqual({ status: 0, output: '' });
+    denyBinary = path.join(scratch, 'seccomp-deny');
+    const deny = spawnSync(C_COMPILER, ['-O2', '-o', denyBinary, path.join(process.cwd(), 'tests', 'helpers', 'seccomp-deny.c')], { encoding: 'utf8' });
+    expect({ status: deny.status, output: deny.stderr }).toEqual({ status: 0, output: '' });
   });
 
   afterAll(() => {
@@ -128,4 +141,146 @@ describe.skipIf(compilerMissing || namespacesMissing)('pid-init', () => {
       for (const pid of processesWithArgument(interval)) process.kill(pid, 'SIGKILL');
     }
   }, 60_000);
+  describe('the /proc entries of other processes', () => {
+    /** A process outside the namespace that stands for another run: it is not the program's own, and its command line holds a marker. */
+    let sibling: ReturnType<typeof spawn> | undefined;
+
+    beforeAll(() => {
+      sibling = spawn('sleep', [uniqueSleepInterval()], { stdio: 'ignore' });
+    });
+
+    afterAll(() => {
+      sibling?.kill('SIGKILL');
+    });
+
+    /** What a program reports about a sibling and about itself: the first line of each file, or the error. */
+    const REPORT = [
+      'for file in "/proc/$0/cmdline" "/proc/$0/status"; do',
+      '  if ( : < "$file" ) 2>/dev/null; then echo "read $file"; else echo "denied $file"; fi',
+      'done',
+      'if echo 1000 > "/proc/$0/oom_score_adj" 2>/dev/null; then echo "wrote oom_score_adj"; else echo "denied oom_score_adj"; fi',
+      'read -r own < /proc/self/status && echo "own status"',
+      'read -r total < /proc/meminfo && echo "meminfo"',
+      ': < /proc/sys/kernel/pid_max && echo "sysctl"',
+      'ls /proc/self/task > /dev/null && echo "own tasks"',
+      'kill -CONT "$0" 2>/dev/null && echo "can signal" || echo "cannot signal"',
+    ].join('\n');
+
+    const report = (options: string[], prefix: string[] = []) => {
+      const run = inNamespace(['sh', '-c', REPORT, String(sibling!.pid)], undefined, options, prefix);
+      return { status: run.status, lines: run.stdout.trim().split('\n') };
+    };
+    const target = () => String(sibling!.pid);
+
+    it('control: with --keep-proc the program reads the command line and the status of another process and writes its OOM score', () => {
+      expect(report(['--keep-proc'])).toEqual({
+        status: 0,
+        lines: [`read /proc/${target()}/cmdline`, `read /proc/${target()}/status`, 'wrote oom_score_adj', 'own status', 'meminfo', 'sysctl', 'own tasks', 'cannot signal'],
+      });
+    });
+
+    it('refuses the command line, the status and the OOM score of another process, and leaves the program its own and the system-wide entries', () => {
+      expect(report([])).toEqual({
+        status: 0,
+        lines: [`denied /proc/${target()}/cmdline`, `denied /proc/${target()}/status`, 'denied oom_score_adj', 'own status', 'meminfo', 'sysctl', 'own tasks', 'cannot signal'],
+      });
+    });
+
+    it('hides them without a PID namespace too (--no-pid-namespace), and runs the program in place', () => {
+      const hidden = report(['--no-pid-namespace']);
+      expect(hidden.lines).toEqual([`denied /proc/${target()}/cmdline`, `denied /proc/${target()}/status`, 'denied oom_score_adj', 'own status', 'meminfo', 'sysctl', 'own tasks', 'can signal']);
+      // In place: no PID 1 stands between, so the parent of the program is the `unshare` it was started through, in the namespace of the caller.
+      const parent = inNamespace(['sh', '-c', 'echo "$PPID"'], undefined, ['--no-pid-namespace']);
+      expect(Number(parent.stdout.trim())).toBeGreaterThan(1);
+    });
+
+    it('keeps /proc/self for the program, which the PID namespace names by the number outside it', () => {
+      const run = inNamespace(['sh', '-c', 'read -r name < /proc/self/status && echo "$name" && read -r stat < /proc/self/stat && echo stat']);
+      expect({ status: run.status, out: run.stdout.trim().split('\n') }).toEqual({ status: 0, out: ['Name:\tsh', 'stat'] });
+    });
+
+    it('--check exits 0 when the ruleset can be made and 3 when the kernel call is refused', () => {
+      expect(spawnSync('unshare', ['-r', '-n', '--', pidInit, '--check'], { encoding: 'utf8', timeout: RUN_HANG_GUARD_MS }).status).toBe(0);
+      const refused = spawnSync(denyBinary, ['landlock_create_ruleset', '/usr/bin/unshare', '-r', '-n', '--', pidInit, '--check'], { encoding: 'utf8', timeout: RUN_HANG_GUARD_MS });
+      expect(refused.status).toBe(3);
+    });
+
+    it('runs the program without the ruleset where the kernel call is refused', () => {
+      const refused = spawnSync(
+        denyBinary,
+        ['landlock_create_ruleset', '/usr/bin/unshare', '-r', '-n', '--', pidInit, '--', 'sh', '-c', REPORT, String(sibling!.pid)],
+        { encoding: 'utf8', timeout: RUN_HANG_GUARD_MS }
+      );
+      expect({ status: refused.status, lines: refused.stdout.trim().split('\n').slice(0, 3) }).toEqual({
+        status: 0,
+        lines: [`read /proc/${target()}/cmdline`, `read /proc/${target()}/status`, 'wrote oom_score_adj'],
+      });
+      // It says so, on the first line of the standard error of the program, which the worker takes off and logs.
+      expect(refused.stderr.split('\n')[0]).toBe('pid-init: /proc not hidden: the kernel has no Landlock');
+    });
+
+    it('says nothing on the standard error when the ruleset is in force or --keep-proc leaves /proc alone', () => {
+      expect(inNamespace(['sh', '-c', 'echo "$0" >&2', 'program-stderr']).stderr).toBe('program-stderr\n');
+      expect(inNamespace(['sh', '-c', 'echo "$0" >&2', 'program-stderr'], undefined, ['--keep-proc']).stderr).toBe('program-stderr\n');
+    });
+
+    /** Moves a file and links one between two directories with the calls themselves (a shell's mv falls back to copying on EXDEV). */
+    const MOVE_SCRIPT = [
+      "const fs = require('node:fs'), path = require('node:path');",
+      'const [a, b] = [process.argv[1], process.argv[2]];',
+      "fs.mkdirSync(a); fs.mkdirSync(b); fs.writeFileSync(path.join(a, 'f'), 'x');",
+      "fs.linkSync(path.join(a, 'f'), path.join(b, 'link'));",
+      "fs.renameSync(path.join(a, 'f'), path.join(b, 'f'));",
+      "console.log(fs.readFileSync(path.join(b, 'f'), 'utf8') + fs.readFileSync(path.join(b, 'link'), 'utf8'));",
+    ].join('\n');
+
+    it.each([
+      ['in a PID namespace', []],
+      ['without one', ['--no-pid-namespace']],
+    ])('lets the program rename and link files between directories %s (a ruleset that did not handle moves would refuse them with EXDEV)', (_name, options) => {
+      const dir = fs.mkdtempSync(path.join(scratch, 'move-'));
+      const run = inNamespace([process.execPath, '-e', MOVE_SCRIPT, path.join(dir, 'from'), path.join(dir, 'to')], undefined, options);
+      expect({ status: run.status, out: run.stdout.trim(), err: run.stderr }).toEqual({ status: 0, out: 'xx', err: '' });
+    });
+
+    it('keeps the /proc entries of the ruleset open: in PID 1 of the namespace, and in the program itself when it has none', () => {
+      /** The descriptors a program lists for itself (`ls` is the program), as [number, target], without the directory `ls` is reading. */
+      const held = (options: string[]): Array<[number, string]> =>
+        [...inNamespace(['ls', '-l', '/proc/self/fd'], undefined, options).stdout.matchAll(/ (\d+) -> (\S+)$/gm)]
+          .map((match): [number, string] => [Number(match[1]), match[2]])
+          .filter(([, target]) => target.startsWith('/proc/') && !target.endsWith('/fd'));
+      const alone = held(['--no-pid-namespace']);
+      expect(alone.length).toBeGreaterThan(10);
+      expect(alone.every(([fd]) => fd >= 200)).toBe(true);
+      // In a PID namespace PID 1 holds them and the program carries none.
+      expect(held([])).toEqual([]);
+    });
+
+    // skip-ok: forcing the kernel to drop its cached /proc entries needs root (drop_caches); CI has passwordless sudo, and skipUnless fails the run under ORACLE_STRICT_MODE=1 without it.
+    describe.skipIf(skipUnless('root or passwordless sudo for drop_caches', canDropCaches()))('after the kernel dropped its cached /proc entries', () => {
+      it.each([
+        ['in a PID namespace', []],
+        ['without one', ['--no-pid-namespace']],
+      ])('the program still reads its own and the system-wide /proc entries %s', async (_name, options) => {
+        const script = [
+          'check() { if read -r line < "$1"; then echo "$1 ok"; else echo "$1 denied"; fi; }',
+          'echo ready',
+          'read go',
+          'for file in /proc/self/status /proc/thread-self/stat /proc/meminfo /proc/cpuinfo /proc/net/dev /proc/mounts /proc/uptime; do check "$file"; done',
+        ].join('\n');
+        const child = spawn('unshare', ['-r', '-n', '--', pidInit, ...options, '--', 'sh', '-c', script], { stdio: ['pipe', 'pipe', 'pipe'] });
+        let out = '';
+        child.stdout.on('data', (chunk: Buffer) => (out += chunk.toString()));
+        const ended = new Promise<number | null>((resolve) => child.once('exit', (code) => resolve(code)));
+        const deadline = Date.now() + RUN_HANG_GUARD_MS;
+        while (!out.includes('ready') && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+        // Twice, as one pass leaves some entries behind.
+        for (let pass = 0; pass < 2; pass++) execFileSync('sudo', ['-n', 'sh', '-c', 'echo 3 > /proc/sys/vm/drop_caches']);
+        child.stdin.end('go\n');
+        expect(await ended).toBe(0);
+        const lines = out.trim().split('\n').slice(1);
+        expect(lines).toEqual(['/proc/self/status ok', '/proc/thread-self/stat ok', '/proc/meminfo ok', '/proc/cpuinfo ok', '/proc/net/dev ok', '/proc/mounts ok', '/proc/uptime ok']);
+      }, 40_000);
+    });
+  });
 });
