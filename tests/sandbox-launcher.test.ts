@@ -217,7 +217,9 @@ describe('sandbox launcher', () => {
   });
 
   // The interfaces of the network namespace of the process that reads /proc/net/dev (not /sys/class/net, which shows the namespace sysfs was mounted in).
-  const INTERFACES_SCRIPT = "tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' '";
+  // Shell built-ins only: /proc/net is a link into /proc/self, and under the /proc rule of policy 208 a forked child
+  // (tail, cut) cannot read its own /proc entries, so the shell that the sandbox started reads the file itself.
+  const INTERFACES_SCRIPT = '{ read -r _; read -r _; while read -r line; do set -- $line; echo "${1%%:*}"; done; } < /proc/net/dev';
 
   it('keeps the isolation of the network: an empty namespace where the host can make one, the typed refusal under strict isolation where it cannot', async () => {
     const hostInterfaces = spawnSync(SH, shell(INTERFACES_SCRIPT), { encoding: 'utf8' }).stdout.split('\n').filter(Boolean);

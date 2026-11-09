@@ -362,6 +362,8 @@
   "tests/graph-inline-input.test.ts": 1.1,
   "tests/graph-node-charge.test.ts": 0,
   "tests/graph-node-result-truth.test.ts": 0.1,
+  "tests/graph-output-history.test.ts": 1.5,
+  "tests/graph-output-history-redis.test.ts": 0,
   "tests/graph-optimize-fail-closed.test.ts": 0.6,
   "tests/graph-scheduler-corrupt-state.test.ts": 0,
   "tests/graph-scheduler.test.ts": 0.8,

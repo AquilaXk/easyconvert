@@ -881,6 +881,7 @@ export class RedisKeyStore extends KeyStore {
       size: data.size,
       downloadUrl: data.downloadUrl,
       storageKey: data.storageKey,
+      graphId: data.graphId,
       createdAt: now,
       expiresAt: now + (data.ttlMs ?? resolveRetentionPolicy().undeliveredTtlMs),
     };
