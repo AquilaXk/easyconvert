@@ -90,10 +90,11 @@ async function probeFailure(ffprobe: FfprobePath, input: MediaInput, detail: str
   return (await explainProbeFailure(ffprobe, input)) ?? new ConversionFailedError(`ffprobe could not inspect the input media: ${detail}`);
 }
 
-async function probeScalar(ffprobe: FfprobePath, input: MediaInput, args: string[]): Promise<string> {
+async function probeScalar(ffprobe: FfprobePath, input: MediaInput, args: string[], signal?: AbortSignal): Promise<string> {
   const run = await runFfprobeAsync(ffprobe, ['-v', 'error', ...args, '-of', 'default=noprint_wrappers=1:nokey=1'], input, {
     timeoutMs: FFPROBE_TIMEOUT_MS,
     maxBuffer: MAX_FFPROBE_SCALAR_BYTES,
+    signal,
   });
   if (!run.ok) throw await probeFailure(ffprobe, input, run.failure);
   return run.stdout.trim();
@@ -104,10 +105,20 @@ async function probeScalar(ffprobe: FfprobePath, input: MediaInput, args: string
  * Throws when ffprobe cannot read the file instead of reporting a silent input. A WAVE file with uncompressed
  * samples answers from its header, without a process.
  */
-export async function probeAudioChannels(input: MediaInput, ffprobe: FfprobePath, streamIndex = 0): Promise<number> {
+export async function probeAudioChannels(
+  input: MediaInput,
+  ffprobe: FfprobePath,
+  streamIndex = 0,
+  signal?: AbortSignal
+): Promise<number> {
   const wav = readWavPcmInfo(input.path);
   if (wav !== null) return streamIndex === 0 ? wav.channels : 0;
-  const out = await probeScalar(ffprobe, input, ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=channels']);
+  const out = await probeScalar(
+    ffprobe,
+    input,
+    ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=channels'],
+    signal
+  );
   if (out === '') {
     return 0;
   }
@@ -119,10 +130,14 @@ export async function probeAudioChannels(input: MediaInput, ffprobe: FfprobePath
 }
 
 /** Number of audio streams in the file; 0 when it has none. Throws when ffprobe cannot read the file. */
-export async function probeAudioStreamCount(input: MediaInput, ffprobe: FfprobePath): Promise<number> {
+export async function probeAudioStreamCount(
+  input: MediaInput,
+  ffprobe: FfprobePath,
+  signal?: AbortSignal
+): Promise<number> {
   // A WAVE file with uncompressed samples has exactly one audio stream; its header says so without a process.
   if (readWavPcmInfo(input.path) !== null) return 1;
-  const out = await probeScalar(ffprobe, input, ['-select_streams', 'a', '-show_entries', 'stream=index']);
+  const out = await probeScalar(ffprobe, input, ['-select_streams', 'a', '-show_entries', 'stream=index'], signal);
   return out === '' ? 0 : out.split('\n').length;
 }
 
@@ -130,10 +145,20 @@ export async function probeAudioStreamCount(input: MediaInput, ffprobe: FfprobeP
  * Sample rate in Hz of the selected audio stream (the first by default), or 0 when it has none. A WAVE file with
  * uncompressed samples answers from its header, without a process.
  */
-export async function probeAudioSampleRate(input: MediaInput, ffprobe: FfprobePath, streamIndex = 0): Promise<number> {
+export async function probeAudioSampleRate(
+  input: MediaInput,
+  ffprobe: FfprobePath,
+  streamIndex = 0,
+  signal?: AbortSignal
+): Promise<number> {
   const wav = readWavPcmInfo(input.path);
   if (wav !== null) return streamIndex === 0 ? wav.sampleRate : 0;
-  const out = await probeScalar(ffprobe, input, ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=sample_rate']);
+  const out = await probeScalar(
+    ffprobe,
+    input,
+    ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=sample_rate'],
+    signal
+  );
   if (out === '') {
     return 0;
   }
@@ -394,7 +419,7 @@ export interface StreamLayout {
  * without a process; every other input, and every MP4 the header reader cannot describe exactly, is probed with
  * ffprobe once (the probe is remembered for the file, so the rest of the conversion reads it again at no cost).
  */
-export async function probeStreamLayout(input: MediaInput, ffprobe: FfprobePath): Promise<StreamLayout> {
+export async function probeStreamLayout(input: MediaInput, ffprobe: FfprobePath, signal?: AbortSignal): Promise<StreamLayout> {
   const identity = inputIdentity(input);
   if (identity === undefined || !probeCache.has(identity)) {
     const header = readMp4Layout(input.path);
@@ -405,7 +430,7 @@ export async function probeStreamLayout(input: MediaInput, ffprobe: FfprobePath)
       return { streams: header.streams, durationSec: header.durationSec };
     }
   }
-  const probe = await probeInput(input, ffprobe);
+  const probe = await probeInput(input, ffprobe, signal);
   const { chapterCount, startTimeSec } = probe.timeline;
   const layout: StreamLayout = { streams: probe.streams, durationSec: probe.durationSec };
   return chapterCount > 0 ? { ...layout, chapters: { count: chapterCount, startTimeSec } } : layout;
@@ -417,18 +442,18 @@ export function layoutColorTransfer(layout: StreamLayout): string {
 }
 
 /** Every stream of the input, in index order. */
-export async function probeInputStreams(input: MediaInput, ffprobe: FfprobePath): Promise<InputStream[]> {
-  return (await probeInput(input, ffprobe)).streams;
+export async function probeInputStreams(input: MediaInput, ffprobe: FfprobePath, signal?: AbortSignal): Promise<InputStream[]> {
+  return (await probeInput(input, ffprobe, signal)).streams;
 }
 
 /** Start time and chapter count of the input. */
-export async function probeInputTimeline(input: MediaInput, ffprobe: FfprobePath): Promise<InputTimeline> {
-  return (await probeInput(input, ffprobe)).timeline;
+export async function probeInputTimeline(input: MediaInput, ffprobe: FfprobePath, signal?: AbortSignal): Promise<InputTimeline> {
+  return (await probeInput(input, ffprobe, signal)).timeline;
 }
 
 /** Transfer characteristic of the first video stream (e.g. `bt709`, `smpte2084`), or '' when it states none. */
-export async function probeVideoColorTransfer(input: MediaInput, ffprobe: FfprobePath): Promise<string> {
-  return (await probeInput(input, ffprobe)).streams.find((stream) => stream.type === 'video')?.colorTransfer ?? '';
+export async function probeVideoColorTransfer(input: MediaInput, ffprobe: FfprobePath, signal?: AbortSignal): Promise<string> {
+  return (await probeInput(input, ffprobe, signal)).streams.find((stream) => stream.type === 'video')?.colorTransfer ?? '';
 }
 
 /** The first video stream that is a real video track, not cover art; undefined when the input has none. */
@@ -469,8 +494,8 @@ function planningFrameRate(stream: InputStream): { num: number; den: number } | 
 }
 
 /** Duration of the input container in seconds, from ffprobe; throws when it cannot be read. */
-export async function probeInputDuration(input: MediaInput, ffprobe: FfprobePath): Promise<number> {
-  const out = await probeScalar(ffprobe, input, ['-show_entries', 'format=duration']);
+export async function probeInputDuration(input: MediaInput, ffprobe: FfprobePath, signal?: AbortSignal): Promise<number> {
+  const out = await probeScalar(ffprobe, input, ['-show_entries', 'format=duration'], signal);
   const parsed = Number.parseFloat(out);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new MediaProbeError(`ffprobe reported an invalid duration: "${out}"`);
@@ -482,8 +507,9 @@ export async function probeInputDuration(input: MediaInput, ffprobe: FfprobePath
  * Frame rate (exact rational), displayed size and duration of the first video stream. A file without a
  * video track throws NoVideoStreamError; a stream whose rate or size cannot be read throws MediaProbeError.
  */
-export async function probeVideoGeometry(input: MediaInput, ffprobe: FfprobePath): Promise<VideoGeometry> {
-  const stream = firstVideoStream(await probeInputStreams(input, ffprobe));
+export async function probeVideoGeometry(input: MediaInput, ffprobe: FfprobePath, signal?: AbortSignal): Promise<VideoGeometry> {
+  const probe = await probeInput(input, ffprobe, signal);
+  const stream = firstVideoStream(probe.streams);
   if (!stream) {
     throw new NoVideoStreamError('The input has no video stream, so it cannot be packaged for streaming.');
   }
@@ -497,7 +523,7 @@ export async function probeVideoGeometry(input: MediaInput, ffprobe: FfprobePath
     fpsDen: rate.den,
     width: size.width,
     height: size.height,
-    durationSec: await probeInputDuration(input, ffprobe),
+    durationSec: probe.durationSec ?? (await probeInputDuration(input, ffprobe, signal)),
     bitrateK: stream.bitRateK,
   };
 }

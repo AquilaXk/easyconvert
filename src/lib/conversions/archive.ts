@@ -479,19 +479,17 @@ const EXTRACTED_DIRECTORY_MODE = 0o700;
 const EXTRACTED_FILE_MODE = 0o600;
 
 /**
- * Gives the owner access to everything an extraction wrote. An archive may store any mode, down to
- * no permission bits; unrar applies it, so a worker that is not root could neither read the entries
- * nor delete the directory. Walks iteratively and stops at the archive file-count limit.
+ * Gives the owner access to everything an extraction wrote (unrar restores stored Unix modes) and stops at maxEntries.
  */
-function makeExtractedTreeAccessible(root: string): void {
+function makeExtractedTreeAccessible(root: string, maxEntries = ARCHIVE_SECURITY_LIMITS.MAX_FILES): void {
   const pending = [root];
   let visited = 0;
   for (let dir = pending.pop(); dir !== undefined; dir = pending.pop()) {
     fs.chmodSync(dir, EXTRACTED_DIRECTORY_MODE);
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       visited += 1;
-      if (visited > ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-        throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+      if (visited > maxEntries) {
+        throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${maxEntries}`);
       }
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) pending.push(fullPath);
@@ -1811,7 +1809,9 @@ export function extractRarArchive(
         for (const entry of entries) {
           const fullPath = path.join(dir, entry.name);
           const relPath = base ? `${base}/${entry.name}` : entry.name;
-          if (entry.isDirectory()) {
+          if (entry.isSymbolicLink()) {
+            throw new ConversionFailedError('Archive contains symbolic links, which are not permitted for security reasons');
+          } else if (entry.isDirectory()) {
             walkDir(fullPath, relPath);
           } else if (entry.isFile()) {
             filesOnDisk += 1;
@@ -1834,7 +1834,7 @@ export function extractRarArchive(
         }
       }
 
-      makeExtractedTreeAccessible(extractDir);
+      makeExtractedTreeAccessible(extractDir, limits.MAX_FILES);
       walkDir(extractDir, '');
       return extracted;
     } catch (err) {
@@ -1850,7 +1850,7 @@ export function extractRarArchive(
         if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
         if (fs.existsSync(extractDir)) {
           try {
-            makeExtractedTreeAccessible(extractDir);
+            makeExtractedTreeAccessible(extractDir, limits.MAX_FILES);
           } catch {
             // Best effort: the removal below runs either way.
           }

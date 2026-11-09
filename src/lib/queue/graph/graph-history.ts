@@ -22,18 +22,58 @@ export interface RecordGraphOutputsOptions {
   timeoutMs?: number;
 }
 
+const COMPOUND_ARCHIVE_EXT = /\.(tar\.(?:gz|bz2|xz|zst))$/i;
+
+export function formatOfFilename(fileName: string): string {
+  const compound = COMPOUND_ARCHIVE_EXT.exec(fileName);
+  if (compound) return compound[1].toLowerCase();
+  return path.extname(fileName).slice(1).toLowerCase();
+}
+
+export function sourceFormatForExport(state: GraphExecutionState, exportNodeId: string, toFormat: string): string {
+  const visited = new Set<string>();
+  let currentId: string | undefined = exportNodeId;
+  while (currentId && !visited.has(currentId)) {
+    visited.add(currentId);
+    const node = state.graph.nodes[currentId];
+    if (!node) break;
+    if (node.op === 'import.upload') {
+      const fromKey = formatOfFilename(node.storageKey || state.nodes[currentId]?.outputs?.[0] || '');
+      if (fromKey) return fromKey;
+      break;
+    }
+    if (node.op === 'import.url') {
+      const fromOut = formatOfFilename(state.nodes[currentId]?.outputs?.[0] || '');
+      if (fromOut) return fromOut;
+      if (node.url) {
+        try {
+          const fromUrl = formatOfFilename(new URL(node.url).pathname);
+          if (fromUrl) return fromUrl;
+        } catch {
+          // ignore invalid url
+        }
+      }
+      break;
+    }
+    const nextInput = 'input' in node ? node.input : undefined;
+    currentId = Array.isArray(nextInput) ? nextInput[0] : nextInput;
+  }
+  return state.sourceFormat || toFormat;
+}
+
 async function recordOutput(state: GraphExecutionState, ownerUserId: string, nodeId: string, index: number, storageKey: string, ttlMs: number): Promise<void> {
   const { graphId } = state;
   try {
     const stat = await storageProvider.stat(storageKey);
     if (!stat) return;
     const fileName = stat.filename || path.basename(storageKey);
+    const toFormat = formatOfFilename(fileName);
     await redisKeyStore.recordUserFile({
       id: outputRecordId(graphId, nodeId, index),
       userId: ownerUserId,
       fileName,
-      fromFormat: state.sourceFormat ?? '',
-      toFormat: path.extname(fileName).slice(1).toLowerCase(),
+      fromFormat: sourceFormatForExport(state, nodeId, toFormat),
+      toFormat,
       size: stat.size,
       downloadUrl: `/api/storage/file/${encodeURIComponent(storageKey)}`,
       storageKey,

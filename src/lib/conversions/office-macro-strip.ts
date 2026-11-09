@@ -32,26 +32,26 @@ import { ConversionFailedError } from '../types';
  */
 
 const CONTENT_TYPES_PART = '[Content_Types].xml';
-const ODF_MANIFEST_PART = /(^|\/)META-INF\/manifest\.xml$/;
+const ODF_MANIFEST_PART = /(^|\/)META-INF\/manifest\.xml$/i;
 const ODF_MIMETYPE_PART = 'mimetype';
 const ODF_MANIFEST_ROOT = 'META-INF/manifest.xml';
 /** A macro library directory of an OpenDocument package, at its root or in an embedded object or sub-document (`Object 1/Basic/`, `subdoc/Basic/`). */
-const ODF_MACRO_PATH = /(^|\/)(Basic|Dialogs|Scripts)(\/|$)/;
+const ODF_MACRO_PATH = /(^|\/)(Basic|Dialogs|Scripts)(\/|$)/i;
 const OOXML_MACRO_CONTENT_TYPE = /^application\/vnd\.ms-(office\.vba|word\.vbaData|excel\.(intl)?macrosheet)/i;
 const OOXML_MACRO_PART_NAME = /(^|\/)(vbaProject(Signature)?\.bin|vbaData\.xml)$/i;
 const OOXML_MACRO_RELATIONSHIP_TYPE = /\/(vbaProject|vbaProjectSignature|wordVbaData|xlMacrosheet|xlIntlMacrosheet)$/i;
 /** Most entries a package may hold for this check, and most elements a content types part may list (a document holds hundreds). */
 export const MACRO_STRIP_MAX_ENTRIES = 100_000;
 export const MACRO_STRIP_MAX_TYPE_ELEMENTS = 100_000;
-/** The content types of the main parts of the macro-enabled formats, and the plain content types they are opened as. */
+/** The content types of the main parts of the macro-enabled formats (lowercased for case-insensitive lookup), and the plain content types they are opened as. */
 const MACRO_ENABLED_MAIN_TYPES: ReadonlyMap<string, string> = new Map([
-  ['application/vnd.ms-word.document.macroEnabled.main+xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'],
-  ['application/vnd.ms-word.template.macroEnabledTemplate.main+xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml'],
-  ['application/vnd.ms-excel.sheet.macroEnabled.main+xml', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml'],
-  ['application/vnd.ms-excel.template.macroEnabled.main+xml', 'application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml'],
-  ['application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml', 'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml'],
-  ['application/vnd.ms-powerpoint.slideshow.macroEnabled.main+xml', 'application/vnd.openxmlformats-officedocument.presentationml.slideshow.main+xml'],
-  ['application/vnd.ms-powerpoint.template.macroEnabled.main+xml', 'application/vnd.openxmlformats-officedocument.presentationml.template.main+xml'],
+  ['application/vnd.ms-word.document.macroenabled.main+xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'],
+  ['application/vnd.ms-word.template.macroenabledtemplate.main+xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml'],
+  ['application/vnd.ms-excel.sheet.macroenabled.main+xml', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml'],
+  ['application/vnd.ms-excel.template.macroenabled.main+xml', 'application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml'],
+  ['application/vnd.ms-powerpoint.presentation.macroenabled.main+xml', 'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml'],
+  ['application/vnd.ms-powerpoint.slideshow.macroenabled.main+xml', 'application/vnd.openxmlformats-officedocument.presentationml.slideshow.main+xml'],
+  ['application/vnd.ms-powerpoint.template.macroenabled.main+xml', 'application/vnd.openxmlformats-officedocument.presentationml.template.main+xml'],
 ]);
 
 export interface MacroStripResult {
@@ -85,6 +85,17 @@ function partNames(zip: JSZip): string[] {
   return names;
 }
 
+/** Finds a non-directory entry in `zip` matching `path` case-insensitively (ECMA-376 Part 2 §6.2.2.4). */
+function findEntry(zip: JSZip, path: string): JSZip.JSZipObject | null {
+  const exact = zip.file(path);
+  if (exact) return exact;
+  const lower = path.toLowerCase();
+  for (const entry of Object.values(zip.files)) {
+    if (!entry.dir && entry.name.toLowerCase() === lower) return entry;
+  }
+  return null;
+}
+
 function refuseTooMany(what: string, count: number, limit: number): never {
   throw new ConversionFailedError(`The package lists ${count} ${what}, more than the ${limit} an office file may.`);
 }
@@ -103,25 +114,25 @@ function elementsWithin(xml: string, tagName: string | string[], limit: number, 
 
 /** The directory of the part a relationships part belongs to: `word/_rels/document.xml.rels` belongs to `word/document.xml`. */
 function sourceOf(relationshipsPart: string): string {
-  return relationshipsPart.replace(/(^|\/)_rels\/(.*)\.rels$/, '$1$2');
+  return relationshipsPart.replace(/(^|\/)_rels\/(.*)\.rels$/i, '$1$2');
 }
 
 /** What was done to a package: nothing, its macro-enabled main content type made the plain one (no macro part), or its macro parts removed. */
 type StripOutcome = 'unchanged' | 'retyped' | 'dropped';
 
-/** The macro parts that the content types name (by `Override`, and by `Default` extension) and those whose name says so, in one pass over the entries. */
+/** The macro parts that the content types name (by `Override`, and by `Default` extension) and those whose name says so, in one pass over the entries (lowercased). */
 function macroPartsOf(typeElements: readonly SafeXmlElement[], names: readonly string[]): Set<string> {
   const macroParts = new Set<string>();
   const macroExtensions = new Set<string>();
   for (const element of typeElements) {
     const { ContentType: contentType, PartName: partName, Extension: extension } = element.attrs;
     if (contentType === undefined || !OOXML_MACRO_CONTENT_TYPE.test(contentType)) continue;
-    if (partName !== undefined) macroParts.add(partName.replace(/^\//, ''));
+    if (partName !== undefined) macroParts.add(partName.replace(/^\//, '').toLowerCase());
     if (extension !== undefined) macroExtensions.add(extension.toLowerCase());
   }
   for (const name of names) {
     const dot = name.lastIndexOf('.');
-    if (OOXML_MACRO_PART_NAME.test(name) || (dot >= 0 && macroExtensions.has(name.slice(dot + 1).toLowerCase()))) macroParts.add(name);
+    if (OOXML_MACRO_PART_NAME.test(name) || (dot >= 0 && macroExtensions.has(name.slice(dot + 1).toLowerCase()))) macroParts.add(name.toLowerCase());
   }
   return macroParts;
 }
@@ -140,7 +151,7 @@ function withoutMacroRelationships(relationshipsPart: string, xml: string, macro
   forEachRelationship(xml, allowance, (relationship) => {
     const { Type: type, Target: target, TargetMode: mode, Id: id } = relationship.attrs;
     if (type === undefined || target === undefined) return;
-    const resolved = mode === 'External' ? undefined : resolveZipPath(directory, target);
+    const resolved = mode === 'External' ? undefined : resolveZipPath(directory, target)?.toLowerCase();
     if (!OOXML_MACRO_RELATIONSHIP_TYPE.test(type) && !(resolved !== undefined && macroParts.has(resolved))) return;
     if (resolved !== undefined) macroParts.add(resolved);
     if (id !== undefined) removedIds.push(id);
@@ -177,18 +188,18 @@ function withoutRemovedSheets(workbook: string, removedIds: ReadonlySet<string>)
 }
 
 async function stripOoxmlMacros(zip: JSZip, budget: InflateBudget): Promise<StripOutcome> {
-  const typesEntry = zip.file(CONTENT_TYPES_PART);
+  const typesEntry = findEntry(zip, CONTENT_TYPES_PART);
   if (!typesEntry) return 'unchanged';
   assertEntryCount(zip);
   const names = partNames(zip);
   const types = await readZipEntryText(typesEntry, { budget });
   const typeElements = elementsWithin(types, ['Default', 'Override'], MACRO_STRIP_MAX_TYPE_ELEMENTS, 'content types');
   const macroParts = macroPartsOf(typeElements, names);
-  const enabledMain = typeElements.some((element) => MACRO_ENABLED_MAIN_TYPES.has(element.attrs.ContentType ?? ''));
+  const enabledMain = typeElements.some((element) => MACRO_ENABLED_MAIN_TYPES.has((element.attrs.ContentType ?? '').toLowerCase()));
 
   // Relationships to a macro part, by their type or by their target, in any part. A target found through a relationship of a macro type is a
   // macro part for every relationship, so the parts are read twice: the first round collects the targets, the second one rewrites.
-  const relationshipParts = names.filter((name) => name.endsWith('.rels'));
+  const relationshipParts = names.filter((name) => /\.rels$/i.test(name));
   for (const name of relationshipParts) {
     withoutMacroRelationships(name, await readZipEntryText(zip.file(name)!, { budget }), macroParts, newRelationshipAllowance());
   }
@@ -209,30 +220,32 @@ async function stripOoxmlMacros(zip: JSZip, budget: InflateBudget): Promise<Stri
     const { ContentType: contentType, PartName: partName, Extension: extension } = element.attrs;
     if (contentType === undefined) continue;
     const macroDefault = extension !== undefined && OOXML_MACRO_CONTENT_TYPE.test(contentType);
-    if (OOXML_MACRO_CONTENT_TYPE.test(contentType) || macroDefault || (partName !== undefined && macroParts.has(partName.replace(/^\//, '')))) {
+    if (OOXML_MACRO_CONTENT_TYPE.test(contentType) || macroDefault || (partName !== undefined && macroParts.has(partName.replace(/^\//, '').toLowerCase()))) {
       edits.push({ start: element.startIndex, end: element.endIndex, replacement: '' });
       continue;
     }
-    const plain = MACRO_ENABLED_MAIN_TYPES.get(contentType);
+    const plain = MACRO_ENABLED_MAIN_TYPES.get(contentType.toLowerCase());
     if (plain !== undefined) edits.push({ start: element.startIndex, end: element.endIndex, replacement: element.raw.replace(contentType, plain) });
   }
-  zip.file(CONTENT_TYPES_PART, applyEdits(types, edits));
+  zip.file(typesEntry.name, applyEdits(types, edits));
   for (const [name, text] of rewritten) zip.file(name, text);
   for (const [source, ids] of removedByPart) {
-    const part = zip.file(source);
-    if (part && /(^|\/)workbook\.xml$/.test(source) && ids.length > 0) {
-      zip.file(source, withoutRemovedSheets(await readZipEntryText(part, { budget }), new Set(ids)));
+    const part = findEntry(zip, source);
+    if (part && /(^|\/)workbook\.xml$/i.test(source) && ids.length > 0) {
+      zip.file(part.name, withoutRemovedSheets(await readZipEntryText(part, { budget }), new Set(ids)));
     }
   }
-  for (const name of macroParts) zip.remove(name);
+  for (const name of names) {
+    if (macroParts.has(name.toLowerCase())) zip.remove(name);
+  }
   // The relationships of a removed part go with it.
-  for (const name of relationshipParts) if (macroParts.has(sourceOf(name))) zip.remove(name);
+  for (const name of relationshipParts) if (macroParts.has(sourceOf(name).toLowerCase())) zip.remove(name);
   return macroParts.size > 0 ? 'dropped' : 'retyped';
 }
 
 async function stripOpenDocumentMacros(zip: JSZip, budget: InflateBudget): Promise<StripOutcome> {
   // The manifest is what makes a package an OpenDocument one for the office suite, which loads a package without a `mimetype` entry as well.
-  if (!zip.file(ODF_MANIFEST_ROOT)) return 'unchanged';
+  if (!findEntry(zip, ODF_MANIFEST_ROOT)) return 'unchanged';
   assertEntryCount(zip);
   const macroEntries: string[] = [];
   const manifests: string[] = [];
@@ -243,7 +256,7 @@ async function stripOpenDocumentMacros(zip: JSZip, budget: InflateBudget): Promi
   if (macroEntries.length === 0) return 'unchanged';
   for (const name of manifests) {
     const text = await readZipEntryText(zip.file(name)!, { budget });
-    const prefix = name.replace(/META-INF\/manifest\.xml$/, '');
+    const prefix = name.replace(/META-INF\/manifest\.xml$/i, '');
     const edits = elementsWithin(text, 'file-entry', MACRO_STRIP_MAX_TYPE_ELEMENTS, 'manifest entries')
       .filter((entry) => ODF_MACRO_PATH.test(`${prefix}${entry.attrs['manifest:full-path'] ?? ''}`.replace(/^\//, '')))
       .map((entry): Edit => ({ start: entry.startIndex, end: entry.endIndex, replacement: '' }));
@@ -251,8 +264,8 @@ async function stripOpenDocumentMacros(zip: JSZip, budget: InflateBudget): Promi
   }
   for (const name of macroEntries) zip.remove(name);
   // The first entry of an OpenDocument package is its mimetype, stored: a reader finds the type by the bytes after the header.
-  const mimetype = zip.file(ODF_MIMETYPE_PART);
-  if (mimetype) zip.file(ODF_MIMETYPE_PART, await readZipEntryBytes(mimetype, { budget }), { compression: 'STORE' });
+  const mimetype = findEntry(zip, ODF_MIMETYPE_PART);
+  if (mimetype) zip.file(mimetype.name, await readZipEntryBytes(mimetype, { budget }), { compression: 'STORE' });
   return 'dropped';
 }
 

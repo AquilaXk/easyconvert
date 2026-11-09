@@ -534,6 +534,7 @@ async function executeFfmpegThumbnails(
       await runFfmpeg(ffmpegBin, args, {
         timeoutMs: 30000,
         maxBuffer: 50 * 1024 * 1024,
+        signal: options.signal,
       });
 
       if (!fs.existsSync(outputPath)) {
@@ -600,7 +601,7 @@ export async function packageHlsDashMedia(
   try {
     const input = openMediaInput(inputPath, src);
     await probeMediaDuration(input, options, ffmpegBin, options.signal);
-    const source = await probePackagingSource(input, ffmpegBin);
+    const source = await probePackagingSource(input, ffmpegBin, options.signal);
     const args = await buildHlsDashArguments(input, outputDir, packaging, ffmpegBin, source);
     await runFfmpeg(ffmpegBin, args, {
       cwd: outputDir,

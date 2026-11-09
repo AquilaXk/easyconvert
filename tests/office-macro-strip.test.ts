@@ -265,3 +265,47 @@ describe('a package that carries the macro parts of both families', () => {
   });
 });
 
+describe('case-insensitive OOXML and OpenDocument part names', () => {
+  it('strips OOXML macros when [content_types].xml, .RELS, PartName and entry paths differ in case', async () => {
+    const zip = new JSZip();
+    zip.file(
+      '[content_types].xml',
+      `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="${TYPES_NS}"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="${WORD_MACRO_MAIN.toUpperCase()}"/><Override PartName="/WORD/vbaProject.bin" ContentType="application/vnd.ms-office.vbaProject"/></Types>`
+    );
+    zip.file('word/document.xml', '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>');
+    zip.file('word/vbaproject.bin', Buffer.from('macro payload'));
+    zip.file('word/_rels/vbaproject.bin.RELS', `<Relationships xmlns="${PACKAGE_REL_NS}"/>`);
+    zip.file(
+      'word/_rels/document.xml.RELS',
+      `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="${PACKAGE_REL_NS}"><Relationship Id="rId9" Type="${VBA_RELATIONSHIP}" Target="vbaProject.bin"/></Relationships>`
+    );
+    const result = await stripOfficeMacros(await zip.generateAsync({ type: 'nodebuffer' }));
+    expect(result.droppedMacros).toBe(true);
+    const out = await JSZip.loadAsync(result.buffer);
+    expect(names(out).sort()).toEqual(['[content_types].xml', 'word/_rels/document.xml.RELS', 'word/document.xml']);
+    const types = await out.file('[content_types].xml')!.async('string');
+    expect(types).toContain(`ContentType="${WORD_MAIN}"`);
+    expect(types.toLowerCase()).not.toContain('vbaproject');
+    expect(await out.file('word/_rels/document.xml.RELS')!.async('string')).not.toContain('vbaProject');
+  });
+
+  it('strips OpenDocument macros when meta-inf/manifest.xml and basic/ or scripts/ are lowercase', async () => {
+    const zip = new JSZip();
+    zip.file('MIMETYPE', 'application/vnd.oasis.opendocument.text', { compression: 'STORE' });
+    zip.file(
+      'meta-inf/manifest.xml',
+      ODF_MANIFEST('<manifest:file-entry manifest:full-path="basic/Standard/Module1.xml" manifest:media-type="text/xml"/><manifest:file-entry manifest:full-path="scripts/python/run.py" manifest:media-type=""/>')
+    );
+    zip.file('content.xml', '<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"/>');
+    zip.file('basic/Standard/Module1.xml', '<script:module/>');
+    zip.file('scripts/python/run.py', 'print("never")');
+    const result = await stripOfficeMacros(await zip.generateAsync({ type: 'nodebuffer' }));
+    expect(result.droppedMacros).toBe(true);
+    const out = await JSZip.loadAsync(result.buffer);
+    expect(names(out).sort()).toEqual(['MIMETYPE', 'content.xml', 'meta-inf/manifest.xml']);
+    const manifest = await out.file('meta-inf/manifest.xml')!.async('string');
+    expect(manifest.toLowerCase()).not.toMatch(/basic|scripts/);
+  });
+});
+
+

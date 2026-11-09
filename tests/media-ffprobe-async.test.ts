@@ -116,4 +116,28 @@ describe('probeInput', () => {
     writeProbe(`echo '${PROBE_JSON}'`);
     expect((await probeInput(media(), ffprobe)).durationSec).toBe(3.5);
   });
+
+  it('probeVideoGeometry runs ffprobe once when container duration is in probeInput and forwards AbortSignal', async () => {
+    const { probeVideoGeometry, probeAudioChannels } = await import('../src/lib/conversions/media-ffprobe');
+    const videoJson =
+      '{"streams":[{"index":0,"codec_type":"video","codec_name":"h264","width":1280,"height":720,"r_frame_rate":"30/1","avg_frame_rate":"30/1","bit_rate":"2000000"}],"format":{"start_time":"0.0","duration":"12.5"}}';
+    writeProbe(`echo '${videoJson}'`);
+    const controller = new AbortController();
+    const geometry = await probeVideoGeometry(media(), ffprobe, controller.signal);
+    expect(geometry).toEqual({
+      fpsNum: 30,
+      fpsDen: 1,
+      width: 1280,
+      height: 720,
+      durationSec: 12.5,
+      bitrateK: 2000,
+    });
+    expect(starts()).toBe(1);
+    expect(vi.mocked(sandbox.executeSandboxedBinary).mock.calls[0][2]?.signal).toBe(controller.signal);
+
+    writeProbe('echo 2');
+    expect(await probeAudioChannels(media(), ffprobe, 0, controller.signal)).toBe(2);
+    expect(vi.mocked(sandbox.executeSandboxedBinary).mock.calls[1][2]?.signal).toBe(controller.signal);
+  });
 });
+

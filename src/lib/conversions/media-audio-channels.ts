@@ -48,7 +48,7 @@ async function channelsToWrite(options: ConversionOptions, input: MediaInput, ff
   const requested = requestedChannelCount(options);
   if (requested !== undefined || !fs.existsSync(input.path)) return requested;
   const track = typeof options.audio?.track === 'number' ? options.audio.track : 0;
-  return probeAudioChannels(input, resolveFfprobeBinary(ffmpegBin), track);
+  return probeAudioChannels(input, resolveFfprobeBinary(ffmpegBin), track, options.signal);
 }
 
 async function assertMaxChannels(

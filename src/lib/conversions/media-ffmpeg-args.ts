@@ -361,7 +361,7 @@ async function resolveOutputDuration(options: ConversionOptions, input: MediaInp
     throw new InvalidMediaOptionError(`Invalid duration ${String(duration)}. Must be more than 0 and at most ${MAX_OUTPUT_DURATION_SEC} seconds.`);
   }
   if (fs.existsSync(input.path)) {
-    const sourceDuration = await probeInputDuration(input, resolveFfprobeBinary(ffmpegBin));
+    const sourceDuration = await probeInputDuration(input, resolveFfprobeBinary(ffmpegBin), options.signal);
     if (duration > sourceDuration + DURATION_EPSILON_SEC) {
       throw new InvalidMediaOptionError(`Invalid duration ${duration}: the input lasts ${sourceDuration.toFixed(3)} seconds.`);
     }
@@ -622,7 +622,7 @@ async function audioOnlyStreamArgs(
     throw new InvalidMediaOptionError('Audio track index must be a non-negative integer.');
   }
   if (fs.existsSync(input.path)) {
-    const available = await probeAudioStreamCount(input, resolveFfprobeBinary(ffmpegBin));
+    const available = await probeAudioStreamCount(input, resolveFfprobeBinary(ffmpegBin), options.signal);
     if (available === 0) {
       throw new NoAudioStreamError(`The input has no audio stream, so it cannot be converted to '${tgt}'.`);
     }
@@ -827,7 +827,7 @@ export async function buildFfmpegArguments(
   // A missing input file (argument-only callers) keeps the earlier selection rules.
   const inputLayout =
     !audioSpec && isVideo && fs.existsSync(input.path)
-      ? await probeStreamLayout(input, resolveFfprobeBinary(ffmpegBin))
+      ? await probeStreamLayout(input, resolveFfprobeBinary(ffmpegBin), options.signal)
       : undefined;
   const inputStreams = inputLayout?.streams;
   const burnRequested = options.subtitles?.mode === 'burn';
@@ -1021,7 +1021,7 @@ export async function buildFfmpegArguments(
           );
         }
         assertZscaleAvailable(ffmpegBin);
-        hdrToSdr = planVideoToneMap(transfer, toneMapMode, await probeVideoMaxLightLevel(input, resolveFfprobeBinary(ffmpegBin)));
+        hdrToSdr = planVideoToneMap(transfer, toneMapMode, await probeVideoMaxLightLevel(input, resolveFfprobeBinary(ffmpegBin), options.signal));
       }
     }
 
@@ -1379,7 +1379,7 @@ export async function buildFfmpegArguments(
     // The caller set no rate: an input the encoder codes natively keeps its rate (a forced rate makes libopus
     // code a band the signal does not have), and one it cannot code is brought into its supported set.
     const track = typeof options.audio?.track === 'number' ? options.audio.track : 0;
-    const resampleRate = resampleRateFor(audioSpec, await probeAudioSampleRate(input, resolveFfprobeBinary(ffmpegBin), track));
+    const resampleRate = resampleRateFor(audioSpec, await probeAudioSampleRate(input, resolveFfprobeBinary(ffmpegBin), track, options.signal));
     if (resampleRate !== undefined) {
       audioFormatArgs.push('-ar', String(resampleRate));
     }
@@ -1500,11 +1500,11 @@ export interface PackagingSource {
 }
 
 /** Probes the first video stream (exact frame rate, displayed size, duration) and whether the input has audio. */
-export async function probePackagingSource(input: MediaInput, ffmpegBin?: string | null): Promise<PackagingSource> {
+export async function probePackagingSource(input: MediaInput, ffmpegBin?: string | null, signal?: AbortSignal): Promise<PackagingSource> {
   const ffprobe = resolveFfprobeBinary(ffmpegBin);
   return {
-    geometry: await probeVideoGeometry(input, ffprobe),
-    hasAudio: (await probeAudioChannels(input, ffprobe)) > 0,
+    geometry: await probeVideoGeometry(input, ffprobe, signal),
+    hasAudio: (await probeAudioChannels(input, ffprobe, 0, signal)) > 0,
   };
 }
 

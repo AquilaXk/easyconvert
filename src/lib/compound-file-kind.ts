@@ -71,9 +71,12 @@ const RIGHT_SIBLING_OFFSET = 72;
 const CHILD_OFFSET = 76;
 const CLASS_ID_OFFSET = 80;
 const CLASS_ID_BYTES = 16;
+const START_SECTOR_OFFSET = 116;
+const STREAM_SIZE_OFFSET = 120;
 /** The longest name a directory entry holds: 32 UTF-16 code units with the terminator ([MS-CFB] 2.6.1). */
 const MAX_NAME_BYTES = 64;
 const TERMINATOR_BYTES = 2;
+const STREAM_OBJECT = 2;
 const ROOT_STORAGE = 5;
 const NO_ENTRY = 0xffffffff;
 
@@ -141,6 +144,10 @@ export type CompoundFileRoot =
       classId: string | undefined;
       /** The upper case names of the entries under the root. */
       names: ReadonlySet<string>;
+      /** The starting sector and low-32-bit size of each stream under the root, keyed by upper case name. */
+      streams: ReadonlyMap<string, { startSector: number; size: number }>;
+      /** The sector size in bytes (512 or 4096). */
+      sectorBytes: number;
       /** False when the bytes end before the directory does, so names may be missing. */
       complete: boolean;
     }
@@ -158,6 +165,8 @@ interface DirectoryEntry {
   left: number;
   right: number;
   child: number;
+  startSector: number;
+  size: number;
 }
 
 /** Upper case GUID text of 16 bytes in the in-file layout (three little-endian fields, then 8 bytes), or undefined for the all-zero GUID. */
@@ -177,6 +186,8 @@ function decodeEntry(buf: Uint8Array, view: DataView, at: number): DirectoryEntr
     left: view.getUint32(at + LEFT_SIBLING_OFFSET, true),
     right: view.getUint32(at + RIGHT_SIBLING_OFFSET, true),
     child: view.getUint32(at + CHILD_OFFSET, true),
+    startSector: view.getUint32(at + START_SECTOR_OFFSET, true),
+    size: view.getUint32(at + STREAM_SIZE_OFFSET, true),
   };
 }
 
@@ -272,8 +283,13 @@ function* readDirectoryChain(
 }
 
 /** The upper case names of the entries under the root, following the child link and the sibling links of the red-black tree; undefined when the tree reaches an entry twice. */
-function rootNames(entries: readonly DirectoryEntry[]): { names: Set<string>; allReached: boolean } | undefined {
+function rootNames(entries: readonly DirectoryEntry[]): {
+  names: Set<string>;
+  streams: Map<string, { startSector: number; size: number }>;
+  allReached: boolean;
+} | undefined {
   const names = new Set<string>();
+  const streams = new Map<string, { startSector: number; size: number }>();
   const reached = new Set<number>();
   const pending = [entries[0].child];
   let allReached = true;
@@ -286,10 +302,14 @@ function rootNames(entries: readonly DirectoryEntry[]): { names: Set<string>; al
     }
     if (reached.has(id)) return undefined;
     reached.add(id);
-    names.add(upperCaseAscii(entries[id].name));
+    const upper = upperCaseAscii(entries[id].name);
+    names.add(upper);
+    if (entries[id].type === STREAM_OBJECT) {
+      streams.set(upper, { startSector: entries[id].startSector, size: entries[id].size });
+    }
     pending.push(entries[id].left, entries[id].right);
   }
-  return { names, allReached };
+  return { names, streams, allReached };
 }
 
 /** Upper case for the letters a to z only: the office suite compares names in ASCII, so `ſ` (long s) and `ı` (dotless i) stay what they are. */
@@ -312,7 +332,14 @@ function* readRoot(): Walk<CompoundFileRoot> {
 
   const tree = rootNames(chain.entries);
   if (tree === undefined) return MALFORMED;
-  return { status: 'read', classId: chain.classId, names: tree.names, complete: chain.chainEnded && tree.allReached };
+  return {
+    status: 'read',
+    classId: chain.classId,
+    names: tree.names,
+    streams: tree.streams,
+    sectorBytes,
+    complete: chain.chainEnded && tree.allReached,
+  };
 }
 
 function* readRootWalk(): Walk<CompoundFileRoot> {

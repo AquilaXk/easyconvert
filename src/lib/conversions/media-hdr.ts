@@ -63,12 +63,12 @@ export function resetZscaleCache(): void {
  * Maximum content light level in cd/m2 from the first video stream's side data (MP4 `clli`, Matroska
  * MaxCLL), or undefined when the stream states none.
  */
-export async function probeVideoMaxLightLevel(input: MediaInput, ffprobe: FfprobePath): Promise<number | undefined> {
+export async function probeVideoMaxLightLevel(input: MediaInput, ffprobe: FfprobePath, signal?: AbortSignal): Promise<number | undefined> {
   const run = await runFfprobeAsync(
     ffprobe,
     ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream_side_data=max_content', '-of', 'default=nw=1:nk=1'],
     input,
-    { timeoutMs: PROBE_TIMEOUT_MS, maxBuffer: MAX_LIGHT_LEVEL_OUTPUT_BYTES }
+    { timeoutMs: PROBE_TIMEOUT_MS, maxBuffer: MAX_LIGHT_LEVEL_OUTPUT_BYTES, signal }
   );
   if (!run.ok) return undefined;
   for (const line of run.stdout.split('\n')) {

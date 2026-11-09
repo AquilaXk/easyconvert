@@ -26,7 +26,7 @@ export async function describeDroppedStreams(
   const mapsStreams =
     VIDEO_CONTAINER_TARGETS.has(tgt) && !options.thumbnail && options.subtitles?.mode !== 'extract' && fs.existsSync(input.path);
   if (!mapsStreams) return {};
-  const layout = await probeStreamLayout(input, resolveFfprobeBinary(ffmpegBin));
+  const layout = await probeStreamLayout(input, resolveFfprobeBinary(ffmpegBin), options.signal);
   const plan = planStreamMapping({
     streams: layout.streams,
     container: tgt as VideoContainer,

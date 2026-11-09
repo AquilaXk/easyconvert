@@ -531,7 +531,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
 
     if (graph && !targetFormat) {
-      targetFormat = graphTargetFormat(graph);
+      targetFormat = graphTargetFormat(graph, sourceFormatParam, originalFilename);
     }
 
     if (!storageKey && graph && !inputBufferBase64 && !uploadedBuffer) {
@@ -735,16 +735,66 @@ function withInlineInputStored(nodes: ReturnType<typeof normalizeGraphNodes>, st
   );
 }
 
+const PDF_GRAPH_NODE_OPS = new Set([
+  'ocr',
+  'pdf.watermark',
+  'pdf.protect',
+  'pdf.unlock',
+  'pdf.extract-pages',
+  'pdf.delete-pages',
+  'pdf.reorder-pages',
+  'pdf.rotate-pages',
+]);
+
+function resolveGraphFallbackFormat(
+  nodes: ReturnType<typeof normalizeGraphNodes>[string][],
+  sourceFormat?: string,
+  filename = ''
+): string {
+  if (sourceFormat) return sourceFormat;
+  const fromName = detectFormatFromFilename(filename)?.id;
+  if (fromName) return fromName;
+  for (const node of nodes) {
+    if (node.op === 'import.upload' && typeof node.storageKey === 'string') {
+      const detected = detectFormatFromFilename(node.storageKey)?.id;
+      if (detected) return detected;
+    } else if (node.op === 'import.url' && typeof node.url === 'string') {
+      try {
+        const detected = detectFormatFromFilename(new URL(node.url).pathname)?.id;
+        if (detected) return detected;
+      } catch {
+        // ignore invalid url
+      }
+    }
+  }
+  return '';
+}
+
+function fixedNodeTargetFormat(nodes: ReturnType<typeof normalizeGraphNodes>[string][]): string {
+  const convertNodes = nodes.filter((n) => n.op === 'convert');
+  const lastConvert = convertNodes[convertNodes.length - 1]?.targetFormat;
+  if (lastConvert) return lastConvert;
+  const direct = nodes.find((n) => n.op === 'archive.create' || n.op === 'merge')?.targetFormat;
+  if (direct) return direct;
+  const thumb = nodes.find((n) => n.op === 'thumbnail');
+  if (thumb) return thumb.targetFormat ?? thumb.options?.thumbnail?.format ?? 'jpg';
+  if (nodes.some((n) => n.op === 'pdf.split-pages' || n.op === 'media.package')) return 'zip';
+  if (nodes.some((n) => PDF_GRAPH_NODE_OPS.has(n.op))) return 'pdf';
+  return '';
+}
+
 /**
  * The output format of a graph that names none at the top level: the format of its last convert node, else that of its
- * first archive.create node, else none ('').
+ * archive.create, merge, thumbnail, PDF/packaging, optimize/watermark, or archive.extract node, else none ('').
  */
-function graphTargetFormat(graph: JobGraph): string {
+function graphTargetFormat(graph: JobGraph, fallbackFormat?: string, filename = ''): string {
   const nodes = Object.values(normalizeGraphNodes(graph));
-  const convertNodes = nodes.filter((n) => n.op === 'convert');
-  const lastConvertFormat = convertNodes[convertNodes.length - 1]?.targetFormat;
-  if (lastConvertFormat) return lastConvertFormat;
-  return nodes.find((n) => n.op === 'archive.create')?.targetFormat ?? '';
+  const fixed = fixedNodeTargetFormat(nodes);
+  if (fixed) return fixed;
+  const fallback = resolveGraphFallbackFormat(nodes, fallbackFormat, filename);
+  if (nodes.some((n) => n.op === 'optimize' || n.op === 'watermark')) return fallback;
+  if (nodes.some((n) => n.op === 'archive.extract')) return fallback || 'zip';
+  return '';
 }
 
 /** The graph the scheduler runs; the request's graph is the same document under the job-graph type. */

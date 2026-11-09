@@ -22,6 +22,13 @@ beforeAll(() => {
   fs.writeFileSync(
     script,
     `#!/bin/sh
+if [ -f "${workDir}/symlink-mode" ]; then
+  case "$1" in
+    lb) printf 'wanted.txt\\nlink.txt\\n' ;;
+    x) echo wanted > wanted.txt; ln -s /etc/passwd link.txt ;;
+  esac
+  exit 0
+fi
 case "$1" in
   lb) printf 'wanted.txt\\nother.txt\\n' ;;
   x) i=0; while [ $i -lt ${FILES_ON_DISK} ]; do echo "file $i" > "f$i.txt"; i=$((i+1)); done; echo wanted > wanted.txt ;;
@@ -51,4 +58,17 @@ describe('the file count of an RAR extraction', () => {
     const files = extractRarArchive(rar, { limits: { ...CALLER_LIMITS, MAX_FILES: 2_000 }, entries: ['wanted.txt'] });
     expect(files.map((file) => file.filename)).toEqual(['wanted.txt']);
   });
+
+  it('refuses an archive whose extraction writes a symbolic link', () => {
+    const marker = path.join(workDir, 'symlink-mode');
+    fs.writeFileSync(marker, '1');
+    try {
+      expect(() => extractRarArchive(rar, { limits: CALLER_LIMITS })).toThrow(
+        'Archive contains symbolic links, which are not permitted for security reasons'
+      );
+    } finally {
+      fs.rmSync(marker, { force: true });
+    }
+  });
 });
+

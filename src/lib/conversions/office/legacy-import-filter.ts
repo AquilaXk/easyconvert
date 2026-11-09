@@ -1,5 +1,10 @@
 import fs from 'node:fs';
-import { readCompoundFileRootFrom, type ByteSource } from '../../compound-file-kind';
+import {
+  CFBF_FIRST_RESERVED_SECTOR,
+  readCompoundFileRootFrom,
+  type ByteSource,
+  type CompoundFileRoot,
+} from '../../compound-file-kind';
 import { officeImportFilterArgs } from './office-suite-sources';
 import { readCfbStreams } from './cfb-streams';
 import { LegacyOfficeFormatError } from './legacy-office-errors';
@@ -19,8 +24,11 @@ const WORD_95_NFIB = 104;
 const WORD_6_NFIB = 101;
 /** The `nFib` field of the `FIB` that starts the `WordDocument` stream, after the 2-byte `wIdent`. */
 const NFIB_OFFSET = 2;
+const FIB_HEADER_BYTES = NFIB_OFFSET + 2;
 const WORD_IDENT = 0xa5ec;
 const WORD_DOCUMENT_STREAM = 'WordDocument';
+/** [MS-CFB] 2.1 / [MS-DOC] 2.1: streams of at least 4,096 bytes live in regular sectors starting at `startSector`. */
+const MINI_STREAM_CUTOFF = 4096;
 
 /** Offsets of the Palm database header ([PalmOS File Formats] `PDB`): database type and creator, 8 bytes at 60. */
 const PDB_TYPE_OFFSET = 60;
@@ -39,16 +47,24 @@ interface Generations {
 
 const WORD_97: Generations = { document: 'MS Word 97', template: 'MS Word 97 Vorlage' };
 const WORD_95: Generations = { document: 'MS Word 95', template: 'MS Word 95 Vorlage' };
-const WORD_6: Generations = { document: 'MS WinWord 6.0' };
+const WORD_6: Generations = { document: 'MS WinWord 6.0', template: 'MS WinWord 6.0' };
 const EXCEL_97: Generations = { document: 'MS Excel 97', template: 'MS Excel 97 Vorlage/Template' };
 const EXCEL_5_95: Generations = { document: 'MS Excel 5.0/95', template: 'MS Excel 5.0/95 Vorlage/Template' };
 const POWERPOINT_97: Generations = { document: 'MS PowerPoint 97', template: 'MS PowerPoint 97 Vorlage', slideShow: 'MS PowerPoint 97 AutoPlay' };
 
 /** Every filter name this module can choose, for the check against the registry of the installed suite. */
-export const LEGACY_IMPORT_FILTER_NAMES: readonly string[] = [
-  ...[WORD_97, WORD_95, WORD_6, EXCEL_97, EXCEL_5_95, POWERPOINT_97].flatMap((generations) => [generations.document, generations.template, generations.slideShow]),
-  ...Object.values(PDB_FILTER_BY_TYPE_CREATOR),
-].filter((name): name is string => name !== undefined);
+export const LEGACY_IMPORT_FILTER_NAMES: readonly string[] = Array.from(
+  new Set(
+    [
+      ...[WORD_97, WORD_95, WORD_6, EXCEL_97, EXCEL_5_95, POWERPOINT_97].flatMap((generations) => [
+        generations.document,
+        generations.template,
+        generations.slideShow,
+      ]),
+      ...Object.values(PDB_FILTER_BY_TYPE_CREATOR),
+    ].filter((name): name is string => name !== undefined)
+  )
+);
 
 /** The filter of a generation for the extension of the file: the template and slide show filters belong to the extensions of those files. */
 function filterOf(generations: Generations, format: string): string | undefined {
@@ -67,11 +83,28 @@ function wordDocumentStream(inputPath: string): Buffer | undefined {
   }
 }
 
-function wordGeneration(classId: string | undefined, inputPath: string): Generations | undefined {
-  if (classId === WORD_97_CLASS_ID) return WORD_97;
+function wordDocumentHeader(
+  root: Extract<CompoundFileRoot, { status: 'read' }>,
+  source: ByteSource,
+  inputPath: string
+): Buffer | undefined {
+  const entry = root.streams.get('WORDDOCUMENT');
+  if (entry && entry.size >= MINI_STREAM_CUTOFF && entry.startSector < CFBF_FIRST_RESERVED_SECTOR) {
+    const header = Buffer.from(source((entry.startSector + 1) * root.sectorBytes, FIB_HEADER_BYTES));
+    if (header.length === FIB_HEADER_BYTES) return header;
+  }
+  return wordDocumentStream(inputPath);
+}
+
+function wordGeneration(
+  root: Extract<CompoundFileRoot, { status: 'read' }>,
+  source: ByteSource,
+  inputPath: string
+): Generations | undefined {
+  if (root.classId === WORD_97_CLASS_ID) return WORD_97;
   // The class ID of a Word 6.0 or 95 file is the same, so the version is the `nFib` of the document stream.
-  const stream = wordDocumentStream(inputPath);
-  if (stream === undefined || stream.length < NFIB_OFFSET + 2 || stream.readUInt16LE(0) !== WORD_IDENT) return undefined;
+  const stream = wordDocumentHeader(root, source, inputPath);
+  if (stream === undefined || stream.length < FIB_HEADER_BYTES || stream.readUInt16LE(0) !== WORD_IDENT) return undefined;
   const nFib = stream.readUInt16LE(NFIB_OFFSET);
   if (nFib >= WORD_97_FIRST_NFIB) return WORD_97;
   if (nFib === WORD_95_NFIB) return WORD_95;
@@ -84,7 +117,7 @@ function compoundGeneration(format: string, source: ByteSource, inputPath: strin
   switch (format) {
     case 'doc':
     case 'dot':
-      return root.names.has('WORDDOCUMENT') ? wordGeneration(root.classId, inputPath) : undefined;
+      return root.names.has('WORDDOCUMENT') ? wordGeneration(root, source, inputPath) : undefined;
     case 'xls':
     case 'xlt':
       // Excel 97 and later keep the workbook in `Workbook`, Excel 5.0 and 95 in `Book`.

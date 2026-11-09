@@ -49,12 +49,25 @@ function palmDatabase(typeAndCreator: string): Buffer {
 
 describe('the import filter of a legacy binary file', () => {
   it('is the filter of the Word generation found in the document stream', () => {
-    expect(officeInputFilterArgs('doc', file('a.doc', wordDocument(0x0101)))).toEqual(['--infilter=MS Word 97']);
-    expect(officeInputFilterArgs('doc', file('b.doc', wordDocument(104)))).toEqual(['--infilter=MS Word 95']);
-    expect(officeInputFilterArgs('doc', file('c.doc', wordDocument(101)))).toEqual(['--infilter=MS WinWord 6.0']);
-    expect(officeInputFilterArgs('dot', file('d.dot', wordDocument(104)))).toEqual(['--infilter=MS Word 95 Vorlage']);
-    expect(officeInputFilterArgs('dot', file('e.dot', wordDocument(0x0101)))).toEqual(['--infilter=MS Word 97 Vorlage']);
-    expect(officeInputFilterArgs('wps', file('f.wps', wordDocument(0x0101)))).toEqual(['--infilter=MS Word 97']);
+    const readFileSpy = fs.readFileSync;
+    let fullFileReads = 0;
+    fs.readFileSync = ((...args: Parameters<typeof fs.readFileSync>) => {
+      fullFileReads += 1;
+      return readFileSpy(...args);
+    }) as typeof fs.readFileSync;
+    try {
+      expect(officeInputFilterArgs('doc', file('a.doc', wordDocument(0x0101)))).toEqual(['--infilter=MS Word 97']);
+      expect(officeInputFilterArgs('doc', file('b.doc', wordDocument(104)))).toEqual(['--infilter=MS Word 95']);
+      expect(officeInputFilterArgs('doc', file('c.doc', wordDocument(101)))).toEqual(['--infilter=MS WinWord 6.0']);
+      expect(officeInputFilterArgs('dot', file('w6.dot', wordDocument(101)))).toEqual(['--infilter=MS WinWord 6.0']);
+      expect(officeInputFilterArgs('dot', file('d.dot', wordDocument(104)))).toEqual(['--infilter=MS Word 95 Vorlage']);
+      expect(officeInputFilterArgs('dot', file('e.dot', wordDocument(0x0101)))).toEqual(['--infilter=MS Word 97 Vorlage']);
+      expect(officeInputFilterArgs('wps', file('f.wps', wordDocument(0x0101)))).toEqual(['--infilter=MS Word 97']);
+      expect(fullFileReads).toBe(0);
+    } finally {
+      fs.readFileSync = readFileSpy;
+    }
+    expect(new Set(LEGACY_IMPORT_FILTER_NAMES).size).toBe(LEGACY_IMPORT_FILTER_NAMES.length);
   });
 
   it('is the filter of the Excel generation found in the stream names, and of its template', () => {
