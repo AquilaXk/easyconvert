@@ -255,6 +255,9 @@ export function decodeBcj2(streams: Bcj2Streams, outputSize: number): Buffer {
   let rangePosition = RANGE_INIT_BYTES;
   const probabilities = new Uint16Array(BCJ2_PROBABILITY_COUNT).fill(RANGE_INITIAL_PROBABILITY);
 
+  const callView = new DataView(call.buffer, call.byteOffset, call.byteLength);
+  const jumpView = new DataView(jump.buffer, jump.byteOffset, jump.byteLength);
+  const outputView = new DataView(output.buffer, output.byteOffset, output.byteLength);
   let mainPosition = 0;
   let callPosition = 0;
   let jumpPosition = 0;
@@ -294,17 +297,17 @@ export function decodeBcj2(streams: Bcj2Streams, outputSize: number): Buffer {
     let target: number;
     if (byte === 0xe8) {
       if (callPosition + BCJ2_ADDRESS_BYTES > call.length) throw bcj2Corrupt('call stream ends early');
-      target = Buffer.from(call.buffer, call.byteOffset + callPosition, BCJ2_ADDRESS_BYTES).readUInt32BE(0);
+      target = callView.getUint32(callPosition, false);
       callPosition += BCJ2_ADDRESS_BYTES;
     } else {
       if (jumpPosition + BCJ2_ADDRESS_BYTES > jump.length) throw bcj2Corrupt('jump stream ends early');
-      target = Buffer.from(jump.buffer, jump.byteOffset + jumpPosition, BCJ2_ADDRESS_BYTES).readUInt32BE(0);
+      target = jumpView.getUint32(jumpPosition, false);
       jumpPosition += BCJ2_ADDRESS_BYTES;
     }
     const displacement = wrap32(target - wrap32(outputPosition + BCJ2_ADDRESS_BYTES));
     const remaining = outputSize - outputPosition;
     if (remaining < BCJ2_ADDRESS_BYTES) throw bcj2Corrupt('operand runs past the declared size');
-    output.writeUInt32LE(displacement, outputPosition);
+    outputView.setUint32(outputPosition, displacement, true);
     outputPosition += BCJ2_ADDRESS_BYTES;
     previous = displacement >>> 24;
   }

@@ -85,8 +85,38 @@ function isRedisConfigured(): boolean {
   return Boolean(process.env.REDIS_URL || process.env.REDIS_HOST);
 }
 
+let cachedRedisClient: { key: string; client: Redis } | null = null;
+
+function disconnectCachedRedis(): void {
+  if (cachedRedisClient !== null) {
+    cachedRedisClient.client.disconnect();
+    cachedRedisClient = null;
+  }
+}
+
 async function probeRedis(): Promise<ProbeResult> {
-  if (!isRedisConfigured()) return { status: 'not_configured' };
+  if (!isRedisConfigured()) {
+    disconnectCachedRedis();
+    return { status: 'not_configured' };
+  }
+  const url = process.env.REDIS_URL;
+  const host = process.env.REDIS_HOST;
+  const port = process.env.REDIS_PORT ? Number.parseInt(process.env.REDIS_PORT, 10) : DEFAULT_REDIS_PORT;
+  const key = url ? `url:${url}` : `host:${host ?? ''}:${port}`;
+
+  if (cachedRedisClient !== null && cachedRedisClient.key === key && cachedRedisClient.client.status === 'ready') {
+    try {
+      if ((await cachedRedisClient.client.ping()) === REDIS_PONG) {
+        return { status: 'ok' };
+      }
+    } catch {
+      // Reconnect on a fresh socket below if the cached connection was reset.
+    }
+    disconnectCachedRedis();
+  } else if (cachedRedisClient !== null) {
+    disconnectCachedRedis();
+  }
+
   const options = {
     lazyConnect: true,
     enableOfflineQueue: false,
@@ -96,22 +126,18 @@ async function probeRedis(): Promise<ProbeResult> {
     commandTimeout: HEALTH_PROBE_TIMEOUT_MS,
     retryStrategy: () => null,
   };
-  const url = process.env.REDIS_URL;
-  const client = url
-    ? new Redis(url, options)
-    : new Redis({
-        ...options,
-        host: process.env.REDIS_HOST,
-        port: process.env.REDIS_PORT ? Number.parseInt(process.env.REDIS_PORT, 10) : DEFAULT_REDIS_PORT,
-      });
+  const client = url ? new Redis(url, options) : new Redis({ ...options, host, port });
   // A refused or reset connection is reported through the rejected command, not through an unhandled event.
   client.on('error', () => undefined);
   try {
     await client.connect();
     if ((await client.ping()) !== REDIS_PONG) throw new HealthProbeFailure('unreachable');
+    (client as unknown as { connector?: { stream?: { unref?: () => void } } }).connector?.stream?.unref?.();
+    cachedRedisClient = { key, client };
     return { status: 'ok' };
-  } finally {
+  } catch (error) {
     client.disconnect();
+    throw error;
   }
 }
 
@@ -219,5 +245,8 @@ const healthVerdict = memoizeVerdict<HealthReport>(HEALTH_CACHE_TTL_MS, () => ({
 /** The current health verdict: probed at most once per HEALTH_CACHE_TTL_MS, and once at a time. */
 export const getHealthReport = healthVerdict.get;
 
-/** Drops the cached verdict; for tests. */
-export const resetHealthCache = healthVerdict.reset;
+/** Drops the cached verdict and any pooled Redis probe connection; for tests. */
+export const resetHealthCache = (): void => {
+  disconnectCachedRedis();
+  healthVerdict.reset();
+};

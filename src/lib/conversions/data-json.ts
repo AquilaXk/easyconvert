@@ -395,11 +395,24 @@ function containersNeedingLosslessWrite(root: DataValue): Set<object> {
 
 class LosslessJsonWriter {
   private readonly out: string[] = [];
+  private readonly encodedKeys = new Map<string, string>();
+  private readonly keySep: string;
 
   constructor(
     private readonly indent: string,
     private readonly lossless: Set<object>
-  ) {}
+  ) {
+    this.keySep = indent ? ': ' : ':';
+  }
+
+  private encodeKeyPrefix(key: string): string {
+    let cached = this.encodedKeys.get(key);
+    if (cached === undefined) {
+      cached = JSON.stringify(key) + this.keySep;
+      this.encodedKeys.set(key, cached);
+    }
+    return cached;
+  }
 
   write(value: DataValue, prefix: string): void {
     if (value === null || typeof value !== 'object') {
@@ -412,25 +425,39 @@ class LosslessJsonWriter {
       this.out.push(this.indent && prefix ? text.replace(/\n/g, `\n${prefix}`) : text);
       return;
     }
-    const keys = Array.isArray(value) ? null : dataObjectKeys(value);
-    const items: DataValue[] = Array.isArray(value)
-      ? value
-      : (keys as string[]).map((key) => (value as DataObject)[key]);
-    const [open, close] = keys ? ['{', '}'] : ['[', ']'];
-    if (items.length === 0) {
-      this.out.push(open, close);
+    if (Array.isArray(value)) {
+      if (value.length === 0) {
+        this.out.push('[', ']');
+        return;
+      }
+      const inner = prefix + this.indent;
+      this.out.push('[');
+      for (let index = 0; index < value.length; index++) {
+        if (index > 0) this.out.push(',');
+        if (this.indent) this.out.push('\n', inner);
+        this.write(value[index], inner);
+      }
+      if (this.indent) this.out.push('\n', prefix);
+      this.out.push(']');
+      return;
+    }
+    const keys = dataObjectKeys(value);
+    if (keys.length === 0) {
+      this.out.push('{', '}');
       return;
     }
     const inner = prefix + this.indent;
-    this.out.push(open);
-    items.forEach((item, index) => {
+    const obj = value as DataObject;
+    this.out.push('{');
+    for (let index = 0; index < keys.length; index++) {
       if (index > 0) this.out.push(',');
       if (this.indent) this.out.push('\n', inner);
-      if (keys) this.out.push(JSON.stringify(keys[index]), this.indent ? ': ' : ':');
-      this.write(item, inner);
-    });
+      const key = keys[index];
+      this.out.push(this.encodeKeyPrefix(key));
+      this.write(obj[key], inner);
+    }
     if (this.indent) this.out.push('\n', prefix);
-    this.out.push(close);
+    this.out.push('}');
   }
 
   private scalar(value: DataValue): string {

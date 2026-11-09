@@ -1107,6 +1107,8 @@ export interface UnicodeFontInfo {
   encodeText: (text: string) => string;
 }
 
+let cachedMinimalTrueTypeFont: Buffer | null = null;
+
 /**
  * Generates an ISO 32000-1 / OpenType compliant minimal TrueType (SFNT) binary font.
  * Includes all 10 mandatory standard tables (OS/2, cmap, glyf, head, hhea, hmtx, loca, maxp, name, post)
@@ -1114,12 +1116,11 @@ export interface UnicodeFontInfo {
  * to parse embedded /FontFile2 CIDFontType2 glyph streams without missing font errors.
  */
 export function buildMinimalTrueTypeFont(): Buffer {
+  if (cachedMinimalTrueTypeFont !== null) return Buffer.from(cachedMinimalTrueTypeFont);
   const calcTableChecksum = (buf: Buffer): number => {
     let sum = 0;
     const n = Math.floor(buf.length / 4);
-    for (let i = 0; i < n; i++) {
-      sum = (sum + buf.readUInt32BE(i * 4)) >>> 0;
-    }
+    for (let i = 0; i < n; i++) sum = (sum + buf.readUInt32BE(i * 4)) >>> 0;
     return sum;
   };
 
@@ -1297,20 +1298,13 @@ export function buildMinimalTrueTypeFont(): Buffer {
   const tables = rawTables.map((t) => {
     const pad = (4 - (t.buf.length % 4)) % 4;
     const paddedBuf = pad === 0 ? t.buf : Buffer.concat([t.buf, Buffer.alloc(pad)]);
-    return {
-      tag: t.tag,
-      origLength: t.buf.length,
-      paddedBuf,
-      checksum: calcTableChecksum(paddedBuf),
-    };
+    return { tag: t.tag, origLength: t.buf.length, paddedBuf, checksum: calcTableChecksum(paddedBuf) };
   });
 
   const numTables = tables.length;
   const headerSize = 12 + numTables * 16;
   let totalSize = headerSize;
-  for (const t of tables) {
-    totalSize += t.paddedBuf.length;
-  }
+  for (const t of tables) totalSize += t.paddedBuf.length;
 
   const fontFile = Buffer.alloc(totalSize);
   fontFile.writeUInt32BE(0x00010000, 0); // sfntVersion (TrueType)
@@ -1342,7 +1336,8 @@ export function buildMinimalTrueTypeFont(): Buffer {
   const checkSumAdjustment = (0xb1b0afba - fullFontChecksum) >>> 0;
   fontFile.writeUInt32BE(checkSumAdjustment, headTableOffset + 8);
 
-  return fontFile;
+  cachedMinimalTrueTypeFont = fontFile;
+  return Buffer.from(fontFile);
 }
 
 const TEXT_LAYER_FONT_RESOURCE_BASE = 'ECToUnicodeFont';

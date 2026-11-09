@@ -220,9 +220,10 @@ function scoreLegacyCandidate(bytes: Uint8Array, candidate: LegacyEncodingCandid
   let nonAscii = 0;
   let inStandard = 0;
   let inCore = 0;
-  for (const char of text) {
-    const codePoint = char.codePointAt(0) ?? 0;
-    if (codePoint < ASCII_LIMIT) continue;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < ASCII_LIMIT) continue;
+    const codePoint = code >= 0xd800 && code <= 0xdbff ? (text.codePointAt(i++) ?? code) : code;
     nonAscii++;
     if (standard.has(codePoint)) inStandard++;
     if (core.has(codePoint)) inCore++;
@@ -235,8 +236,12 @@ function decodeSingleByteFallback(bytes: Uint8Array): LegacyGuess | null {
   const text = decodeWithTable(bytes, SINGLE_BYTE_FALLBACK_TABLE);
   if (text === null || SINGLE_BYTE_CONTROL.test(text)) return null;
   let nonAscii = 0;
-  for (const char of text) {
-    if ((char.codePointAt(0) ?? 0) >= ASCII_LIMIT) nonAscii++;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= ASCII_LIMIT) {
+      if (code >= 0xd800 && code <= 0xdbff) i++;
+      nonAscii++;
+    }
   }
   return { text, nonAscii, standardShare: 1, coreShare: 1 };
 }
@@ -306,7 +311,10 @@ function detectLegacyText(bytes: Uint8Array): string {
       !best ||
       guess.standardShare > best.standardShare ||
       (guess.standardShare === best.standardShare && guess.coreShare > best.coreShare);
-    if (better) best = guess;
+    if (better) {
+      best = guess;
+      if (best.standardShare === 1 && best.coreShare === 1) break;
+    }
   }
   const guess = best ?? decodeSingleByteFallback(bytes);
   if (!guess) {

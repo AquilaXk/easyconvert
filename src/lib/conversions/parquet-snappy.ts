@@ -355,10 +355,15 @@ class SnappyElementDecoder {
     if (this.outPos + copyLen > out.length) {
       throw new ParquetFormatError('Snappy decompression error: copy length exceeds uncompressed size');
     }
-    // Byte-wise on purpose: overlapping copies (offset < length) replicate a pattern.
+    // Non-overlapping copies use native memmove (copyWithin); overlapping copies (offset < length) replicate a pattern byte-wise.
     let writePos = this.outPos;
     let srcPos = writePos - copyOffset;
     const endPos = writePos + copyLen;
+    if (copyOffset >= copyLen && copyLen > SNAPPY_SHORT_LITERAL_BYTES) {
+      out.copyWithin(writePos, srcPos, srcPos + copyLen);
+      this.outPos = endPos;
+      return;
+    }
     while (writePos < endPos) out[writePos++] = out[srcPos++];
     this.outPos = writePos;
   }

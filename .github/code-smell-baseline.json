@@ -582,7 +582,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3450
+    "maxValue": 3448
   },
   {
     "file": "src/lib/conversions/hwp-reader.ts",
@@ -902,7 +902,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 1703
+    "maxValue": 1698
   },
   {
     "file": "src/lib/conversions/ocr-sauvola.ts",

@@ -31,36 +31,48 @@ export interface BSplineCurve {
 
 /**
  * Evaluates the i-th B-spline basis function of degree p at parameter u: N_{i,p}(u).
- * Uses the Cox-de Boor recurrence relation with exact handling of boundary knots.
+ * Uses the iterative triangular Cox-de Boor table (O(p^2)) with exact handling of boundary knots.
  */
 export function coxDeBoorBasis(i: number, p: number, u: number, knots: number[]): number {
-  if (i < 0 || i + p + 1 >= knots.length) return 0.0;
-  if (p === 0) {
-    const uStart = knots[i];
-    const uEnd = knots[i + 1];
-    const uMax = knots.at(-1) ?? knots[0];
+  if (i < 0 || p < 0 || i + p + 1 >= knots.length) return 0.0;
+  const uMax = knots.at(-1) ?? knots[0];
 
-    // Boundary condition: include right endpoint for the last active knot interval
+  const table = new Float64Array(p + 1);
+  let anyNonZero = false;
+  for (let k = 0; k <= p; k++) {
+    const uStart = knots[i + k];
+    const uEnd = knots[i + k + 1];
     if (u >= uStart && (u < uEnd || (u === uMax && u <= uEnd && uStart < uEnd))) {
-      return 1.0;
+      table[k] = 1.0;
+      anyNonZero = true;
     }
-    return 0.0;
+  }
+  if (!anyNonZero) return 0.0;
+
+  for (let d = 1; d <= p; d++) {
+    for (let k = 0; k <= p - d; k++) {
+      const idx = i + k;
+      let left = 0.0;
+      const nokLeft = table[k];
+      if (nokLeft !== 0.0) {
+        const denomLeft = knots[idx + d] - knots[idx];
+        if (denomLeft > 1e-12) {
+          left = ((u - knots[idx]) / denomLeft) * nokLeft;
+        }
+      }
+      let right = 0.0;
+      const nokRight = table[k + 1];
+      if (nokRight !== 0.0) {
+        const denomRight = knots[idx + d + 1] - knots[idx + 1];
+        if (denomRight > 1e-12) {
+          right = ((knots[idx + d + 1] - u) / denomRight) * nokRight;
+        }
+      }
+      table[k] = left + right;
+    }
   }
 
-  let left = 0.0;
-  let right = 0.0;
-
-  const denomLeft = knots[i + p] - knots[i];
-  if (denomLeft > 1e-12) {
-    left = ((u - knots[i]) / denomLeft) * coxDeBoorBasis(i, p - 1, u, knots);
-  }
-
-  const denomRight = knots[i + p + 1] - knots[i + 1];
-  if (denomRight > 1e-12) {
-    right = ((knots[i + p + 1] - u) / denomRight) * coxDeBoorBasis(i + 1, p - 1, u, knots);
-  }
-
-  return left + right;
+  return table[0];
 }
 
 /**
@@ -86,12 +98,31 @@ export function coxDeBoorBasisDerivative(i: number, p: number, u: number, knots:
 }
 
 /**
+ * Finds the active degree-0 knot span s in [0, maxSpan] where N_{s,0}(u) = 1, or -1 if outside the knot domain.
+ */
+function findActiveKnotSpan(maxSpan: number, u: number, knots: number[]): number {
+  const uMax = knots.at(-1) ?? knots[0];
+  for (let s = 0; s <= maxSpan && s + 1 < knots.length; s++) {
+    const uStart = knots[s];
+    const uEnd = knots[s + 1];
+    if (u >= uStart && (u < uEnd || (u === uMax && u <= uEnd && uStart < uEnd))) {
+      return s;
+    }
+  }
+  return -1;
+}
+
+/**
  * Computes all non-zero B-spline basis functions of degree p at parameter u.
  * Returns an array of size (n + 1).
  */
 export function evaluateAllBasis(n: number, p: number, u: number, knots: number[]): number[] {
   const basis = new Array<number>(n + 1).fill(0);
-  for (let i = 0; i <= n; i++) {
+  const span = findActiveKnotSpan(n + p, u, knots);
+  if (span < 0) return basis;
+  const first = Math.max(0, span - p);
+  const last = Math.min(n, span);
+  for (let i = first; i <= last; i++) {
     basis[i] = coxDeBoorBasis(i, p, u, knots);
   }
   return basis;
@@ -103,7 +134,11 @@ export function evaluateAllBasis(n: number, p: number, u: number, knots: number[
  */
 export function evaluateAllBasisDerivatives(n: number, p: number, u: number, knots: number[]): number[] {
   const derivs = new Array<number>(n + 1).fill(0);
-  for (let i = 0; i <= n; i++) {
+  const span = findActiveKnotSpan(n + p, u, knots);
+  if (span < 0) return derivs;
+  const first = Math.max(0, span - p);
+  const last = Math.min(n, span);
+  for (let i = first; i <= last; i++) {
     derivs[i] = coxDeBoorBasisDerivative(i, p, u, knots);
   }
   return derivs;
@@ -152,12 +187,17 @@ export function evaluateBSplineCurve(curve: BSplineCurve, u: number): Point3D {
   const n = controlPoints.length - 1;
   assertValidKnotVector('curve', '', knots, controlPoints.length, degree);
 
+  const span = findActiveKnotSpan(n + degree, u, knots);
+  if (span < 0) return { x: 0, y: 0, z: 0 };
+
   let x = 0;
   let y = 0;
   let z = 0;
   let wSum = 0;
 
-  for (let i = 0; i <= n; i++) {
+  const first = Math.max(0, span - degree);
+  const last = Math.min(n, span);
+  for (let i = first; i <= last; i++) {
     const basisVal = coxDeBoorBasis(i, degree, u, knots);
     if (basisVal === 0) continue;
     const w = weights ? weights[i] : 1.0;
@@ -501,8 +541,16 @@ export class HalfEdgeMesh {
   }
 
   private buildTopology(): void {
-    const directedEdgeMap = new Map<string, number>();
-    const undirectedEdgeMap = new Map<string, number>();
+    let stride = Math.max(1, this.vertices.length);
+    for (let fIdx = 0; fIdx < this.faces.length; fIdx++) {
+      const [v0, v1, v2] = this.faces[fIdx];
+      if (v0 >= stride) stride = v0 + 1;
+      if (v1 >= stride) stride = v1 + 1;
+      if (v2 >= stride) stride = v2 + 1;
+    }
+
+    const directedEdgeMap = new Map<number, number>();
+    const undirectedEdgeMap = new Map<number, number>();
     let nextEdgeIndex = 0;
 
     for (let fIdx = 0; fIdx < this.faces.length; fIdx++) {
@@ -516,7 +564,7 @@ export class HalfEdgeMesh {
         const nextIdx = baseHeIdx + ((i + 1) % 3);
         const prevIdx = baseHeIdx + ((i + 2) % 3);
 
-        const uKey = vFrom < vTo ? `${vFrom}-${vTo}` : `${vTo}-${vFrom}`;
+        const uKey = vFrom < vTo ? vFrom * stride + vTo : vTo * stride + vFrom;
         let edgeId = undirectedEdgeMap.get(uKey);
         if (edgeId === undefined) {
           edgeId = nextEdgeIndex++;
@@ -534,7 +582,7 @@ export class HalfEdgeMesh {
         };
 
         this.halfEdges.push(he);
-        directedEdgeMap.set(`${vFrom}->${vTo}`, heIdx);
+        directedEdgeMap.set(vFrom * stride + vTo, heIdx);
       }
     }
 
@@ -545,7 +593,7 @@ export class HalfEdgeMesh {
       if (he.twin !== -1) continue;
       const vFrom = he.origin;
       const vTo = this.halfEdges[he.next].origin;
-      const twinKey = `${vTo}->${vFrom}`;
+      const twinKey = vTo * stride + vFrom;
       const twinIdx = directedEdgeMap.get(twinKey);
       if (twinIdx !== undefined && twinIdx !== he.index) {
         he.twin = twinIdx;
@@ -585,8 +633,8 @@ export function verifyWatertightManifoldMesh(
     };
   }
 
-  const directedEdges = new Map<string, number>();
-  const undirectedEdges = new Map<string, number>();
+  const directedEdges = new Map<number, number>();
+  const undirectedEdges = new Map<number, number>();
   let hasDegenerateFace = false;
 
   for (const [v0, v1, v2] of faces) {
@@ -613,8 +661,8 @@ export function verifyWatertightManifoldMesh(
       [v2, v0],
     ];
     for (const [a, b] of pairs) {
-      const dirKey = `${a}->${b}`;
-      const uKey = a < b ? `${a}-${b}` : `${b}-${a}`;
+      const dirKey = a * V + b;
+      const uKey = a < b ? a * V + b : b * V + a;
 
       directedEdges.set(dirKey, (directedEdges.get(dirKey) || 0) + 1);
       undirectedEdges.set(uKey, (undirectedEdges.get(uKey) || 0) + 1);
@@ -630,9 +678,10 @@ export function verifyWatertightManifoldMesh(
       nonManifoldEdges++;
     } else {
       // count === 2: check if directed edges are properly opposite
-      const [vA, vB] = uKey.split('-').map(Number);
-      const dir1 = directedEdges.get(`${vA}->${vB}`) || 0;
-      const dir2 = directedEdges.get(`${vB}->${vA}`) || 0;
+      const vA = Math.floor(uKey / V);
+      const vB = uKey - vA * V;
+      const dir1 = directedEdges.get(vA * V + vB) || 0;
+      const dir2 = directedEdges.get(vB * V + vA) || 0;
       if (dir1 > 1 || dir2 > 1) {
         nonManifoldEdges++;
       }
@@ -677,8 +726,8 @@ export function verifyWatertightManifoldMesh(
       fanComponents++;
       const queue = [fIdx];
       visitedF.add(fIdx);
-      while (queue.length > 0) {
-        const curr = queue.shift()!;
+      for (let qIdx = 0; qIdx < queue.length; qIdx++) {
+        const curr = queue[qIdx];
         const f = faces[curr];
         for (const other of f) {
           if (other !== v) {

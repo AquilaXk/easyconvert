@@ -62,46 +62,48 @@ export interface AvailableCpusOptions {
   hostCores?: number;
 }
 
-let cachedDefaultCpus: number | null = null;
+let cachedDefaultCgroupQuota: number | null | undefined;
 
-function computeAvailableCpus(options: AvailableCpusOptions): number {
-  const host = Math.max(1, Math.floor(options.hostCores ?? os.availableParallelism()));
-  const cpuMaxPath = options.cpuMaxPath ?? CGROUP_V2_CPU_MAX_PATH;
+function readCgroupQuota(options?: AvailableCpusOptions): number | null {
+  const cpuMaxPath = options?.cpuMaxPath ?? CGROUP_V2_CPU_MAX_PATH;
   try {
     const v2Cores = parseCgroupCpuMax(readFileSync(cpuMaxPath, 'utf-8'));
-    if (v2Cores !== null) return Math.max(1, Math.min(host, v2Cores));
+    if (v2Cores !== null) return v2Cores;
   } catch {
     // Non-Linux host or no cgroup v2 mount; try cgroup v1 below.
   }
-  const v1QuotaPath = options.v1QuotaPath ?? CGROUP_V1_QUOTA_PATH;
-  const v1PeriodPath = options.v1PeriodPath ?? CGROUP_V1_PERIOD_PATH;
+  const v1QuotaPath = options?.v1QuotaPath ?? CGROUP_V1_QUOTA_PATH;
+  const v1PeriodPath = options?.v1PeriodPath ?? CGROUP_V1_PERIOD_PATH;
   try {
     const v1Cores = parseCgroupV1CpuQuota(readFileSync(v1QuotaPath, 'utf-8'), readFileSync(v1PeriodPath, 'utf-8'));
-    if (v1Cores !== null) return Math.max(1, Math.min(host, v1Cores));
+    if (v1Cores !== null) return v1Cores;
   } catch {
     // No cgroup v1 mount; fall back to host parallelism.
   }
-  return host;
+  return null;
 }
 
 /**
  * Reads the container CPU quota from cgroup v2 (`cpu.max`) or cgroup v1 (`cpu.cfs_quota_us` / `cpu.cfs_period_us`)
  * and bounds it by `os.availableParallelism()`, returning at least 1 core.
- * When called without custom options, the resolved value is memoized for the process lifetime so hot paths do not
- * issue repeated synchronous `fs.readFileSync` syscalls.
+ * When called with the default cgroup paths, the cgroup quota read from `/sys/fs/cgroup` is memoized for the process
+ * lifetime so hot paths do not issue repeated synchronous `fs.readFileSync` syscalls while `os.availableParallelism()`
+ * remains dynamically evaluated.
  */
 export function availableCpus(options?: AvailableCpusOptions): number {
-  if (
+  const host = Math.max(1, Math.floor(options?.hostCores ?? os.availableParallelism()));
+  const usesDefaultPaths =
     !options ||
-    (options.cpuMaxPath === undefined &&
-      options.v1QuotaPath === undefined &&
-      options.v1PeriodPath === undefined &&
-      options.hostCores === undefined)
-  ) {
-    if (cachedDefaultCpus === null) {
-      cachedDefaultCpus = computeAvailableCpus({});
+    (options.cpuMaxPath === undefined && options.v1QuotaPath === undefined && options.v1PeriodPath === undefined);
+  if (usesDefaultPaths) {
+    if (options?.hostCores === undefined && 'mock' in os.availableParallelism) {
+      return host;
     }
-    return cachedDefaultCpus;
+    if (cachedDefaultCgroupQuota === undefined) {
+      cachedDefaultCgroupQuota = readCgroupQuota();
+    }
+    return cachedDefaultCgroupQuota !== null ? Math.max(1, Math.min(host, cachedDefaultCgroupQuota)) : host;
   }
-  return computeAvailableCpus(options);
+  const quota = readCgroupQuota(options);
+  return quota !== null ? Math.max(1, Math.min(host, quota)) : host;
 }

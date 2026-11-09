@@ -72,7 +72,7 @@ function assertImage(gray: Uint8Array, width: number, height: number): void {
 /** The integral rows a window can reach, kept in a ring indexed by row number. */
 interface IntegralRing {
   sum: Uint32Array;
-  sumSquares: Float64Array;
+  sumSquares: Uint32Array;
   /** Cells per integral row: one more than the image width, for the zero column. */
   stride: number;
   /** Integral rows in the ring. */
@@ -93,10 +93,10 @@ function integrateRow(gray: Uint8Array, width: number, ring: IntegralRing, index
   let rowSquares = 0;
   for (let x = 0; x < width; x++) {
     const value = gray[source + x];
-    rowSum += value;
-    rowSquares += value * value;
-    sum[slot + x + 1] = sum[above + x + 1] + rowSum;
-    sumSquares[slot + x + 1] = sumSquares[above + x + 1] + rowSquares;
+    rowSum = (rowSum + value) >>> 0;
+    rowSquares = (rowSquares + value * value) >>> 0;
+    sum[slot + x + 1] = (sum[above + x + 1] + rowSum) >>> 0;
+    sumSquares[slot + x + 1] = (sumSquares[above + x + 1] + rowSquares) >>> 0;
   }
 }
 
@@ -125,19 +125,23 @@ function thresholdRow(
   const bottomSlot = (bottom % ring.rows) * stride;
   const rows = bottom - top;
   const base = y * width;
+  const invDynamicRange = 1 / dynamicRange;
+  const oneMinusK = 1 - k;
+  const kOverDynamicRange = k * invDynamicRange;
   for (let x = 0; x < width; x++) {
     const x0 = left[x];
     const x1 = right[x];
-    const area = rows * (x1 - x0);
-    // Cumulative sums wrap modulo 2^32 on pages over 16.8 million pixels; a window sum is far
-    // below that, so reducing the four-term difference modulo 2^32 recovers it exactly.
+    const invArea = 1 / (rows * (x1 - x0));
+    // Cumulative sums and squared sums wrap modulo 2^32 on large pages; the largest 255x255 window
+    // sum of squares is 255 * 255 * 255^2 = 4,228,250,625 < 2^32, so reducing the four-term
+    // difference modulo 2^32 (>>> 0) recovers both exact window sums in 32-bit unsigned lanes.
     const total = (sum[bottomSlot + x1] - sum[topSlot + x1] - sum[bottomSlot + x0] + sum[topSlot + x0]) >>> 0;
     const squares =
-      sumSquares[bottomSlot + x1] - sumSquares[topSlot + x1] - sumSquares[bottomSlot + x0] + sumSquares[topSlot + x0];
-    const mean = total / area;
-    const variance = squares / area - mean * mean;
+      (sumSquares[bottomSlot + x1] - sumSquares[topSlot + x1] - sumSquares[bottomSlot + x0] + sumSquares[topSlot + x0]) >>> 0;
+    const mean = total * invArea;
+    const variance = squares * invArea - mean * mean;
     const deviation = variance > 0 ? Math.sqrt(variance) : 0;
-    const threshold = mean * (1 + k * (deviation / dynamicRange - 1));
+    const threshold = mean * (oneMinusK + kOverDynamicRange * deviation);
     out[base + x] = gray[base + x] <= threshold ? SAUVOLA_INK : SAUVOLA_PAPER;
   }
 }
@@ -166,7 +170,7 @@ export async function sauvolaBinarize(
   const ringRows = 2 * half + 2;
   const ring: IntegralRing = {
     sum: new Uint32Array(ringRows * stride),
-    sumSquares: new Float64Array(ringRows * stride),
+    sumSquares: new Uint32Array(ringRows * stride),
     stride,
     rows: ringRows,
   };

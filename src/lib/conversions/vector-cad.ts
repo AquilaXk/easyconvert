@@ -722,40 +722,43 @@ export function svgToDxf(svgContent: string): string {
  * 3D mesh parser (STL, OBJ). STEP and IGES are read by the Open CASCADE program (cad-occt.ts), not here.
  */
 function parse3dCad(buffer: Buffer, format: string, defaultName: string): CadMesh3D {
-  const text = buffer.toString('utf-8');
+  const headerPrefix = buffer.subarray(0, Math.min(6, buffer.length)).toString('ascii').toLowerCase();
+  const isHeaderSolid = headerPrefix.startsWith('solid');
 
-  // 1. Binary or ASCII STL Parser
-  if (format === 'stl' || format === 'stlb' || text.startsWith('solid')) {
-    // Check if binary STL: length >= 84 and either byte size matches 84 + numTriangles * 50 or header doesn't start with "solid "
-    if (buffer.length >= 84) {
-      const numTriangles = buffer.readUInt32LE(80);
-      const isHeaderSolid = text.slice(0, 6).toLowerCase().startsWith('solid');
-      const isSizeExact = buffer.length === 84 + numTriangles * 50;
-      if ((isSizeExact || (!isHeaderSolid && numTriangles > 0)) && numTriangles > 0 && numTriangles <= 1000000) {
-        const vertices: [number, number, number][] = [];
-        const faces: [number, number, number][] = [];
-        const normals: [number, number, number][] = [];
+  // 1. Binary STL fast path: check header and triangle count before decoding the full buffer as UTF-8 text.
+  if ((format === 'stl' || format === 'stlb' || isHeaderSolid) && buffer.length >= 84) {
+    const numTriangles = buffer.readUInt32LE(80);
+    const isSizeExact = buffer.length === 84 + numTriangles * 50;
+    if ((isSizeExact || (!isHeaderSolid && numTriangles > 0)) && numTriangles > 0 && numTriangles <= 1000000) {
+      const vertices: [number, number, number][] = [];
+      const faces: [number, number, number][] = [];
+      const normals: [number, number, number][] = [];
 
-        for (let i = 0; i < numTriangles; i++) {
-          const off = 84 + i * 50;
-          if (off + 48 > buffer.length) break;
-          const nx = buffer.readFloatLE(off);
-          const ny = buffer.readFloatLE(off + 4);
-          const nz = buffer.readFloatLE(off + 8);
-          normals.push([nx, ny, nz]);
+      for (let i = 0; i < numTriangles; i++) {
+        const off = 84 + i * 50;
+        if (off + 48 > buffer.length) break;
+        const nx = buffer.readFloatLE(off);
+        const ny = buffer.readFloatLE(off + 4);
+        const nz = buffer.readFloatLE(off + 8);
+        normals.push([nx, ny, nz]);
 
-          const vStart = vertices.length;
-          vertices.push([buffer.readFloatLE(off + 12), buffer.readFloatLE(off + 16), buffer.readFloatLE(off + 20)]);
-          vertices.push([buffer.readFloatLE(off + 24), buffer.readFloatLE(off + 28), buffer.readFloatLE(off + 32)]);
-          vertices.push([buffer.readFloatLE(off + 36), buffer.readFloatLE(off + 40), buffer.readFloatLE(off + 44)]);
-          faces.push([vStart, vStart + 1, vStart + 2]);
-        }
+        const vStart = vertices.length;
+        vertices.push([buffer.readFloatLE(off + 12), buffer.readFloatLE(off + 16), buffer.readFloatLE(off + 20)]);
+        vertices.push([buffer.readFloatLE(off + 24), buffer.readFloatLE(off + 28), buffer.readFloatLE(off + 32)]);
+        vertices.push([buffer.readFloatLE(off + 36), buffer.readFloatLE(off + 40), buffer.readFloatLE(off + 44)]);
+        faces.push([vStart, vStart + 1, vStart + 2]);
+      }
 
-        if (vertices.length > 0) {
-          return { name: defaultName, vertices, faces, normals };
-        }
+      if (vertices.length > 0) {
+        return { name: defaultName, vertices, faces, normals };
       }
     }
+  }
+
+  const text = buffer.toString('utf-8');
+
+  // 2. ASCII STL Parser
+  if (format === 'stl' || format === 'stlb' || text.startsWith('solid')) {
 
     // ASCII STL
     const vertices: [number, number, number][] = [];

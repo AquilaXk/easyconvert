@@ -316,7 +316,10 @@ export function decodeSfnt(buffer: Buffer, defaultName: string): ParsedFont {
  * bytes as written ('OS/2' before 'cmap'), not by locale collation.
  */
 function compareSfntTags(a: { tag: string }, b: { tag: string }): number {
-  return Buffer.compare(Buffer.from(formatSfntTag(a.tag), 'latin1'), Buffer.from(formatSfntTag(b.tag), 'latin1'));
+  const tagA = formatSfntTag(a.tag);
+  const tagB = formatSfntTag(b.tag);
+  if (tagA < tagB) return -1;
+  return tagA > tagB ? 1 : 0;
 }
 
 /**
@@ -327,11 +330,7 @@ export function encodeSfnt(font: ParsedFont, overrideVersion?: number): Buffer {
   return assembleSfnt(prepareSfntTables(font, version), version);
 }
 
-interface PreparedTable {
-  tag: string;
-  data: Buffer;
-  checkSum: number;
-}
+interface PreparedTable { tag: string; data: Buffer; checkSum: number }
 
 const DEFAULT_SFNT_VERSION = 0x00010000;
 /** The whole font's uint32 sum, with checkSumAdjustment in place, must equal this (OpenType 'head'). */
@@ -344,6 +343,31 @@ const TABLE_ALIGNMENT = 4;
 
 function isHeadTable(tbl: { tag: string; data: Buffer }): boolean {
   return formatSfntTag(tbl.tag) === 'head' && tbl.data.length >= HEAD_CHECKSUM_MIN_BYTES;
+}
+
+function buildSfntDirectory(tableEntries: PreparedTable[], version: number): { directory: Buffer; totalSize: number } {
+  const numTables = tableEntries.length;
+  const searchRange = numTables > 0 ? Math.pow(2, Math.floor(Math.log2(numTables))) * SFNT_DIRECTORY_ENTRY_BYTES : 0;
+  const entrySelector = numTables > 0 ? Math.floor(Math.log2(numTables)) : 0;
+  const rangeShift = numTables > 0 ? numTables * SFNT_DIRECTORY_ENTRY_BYTES - searchRange : 0;
+  const headerSize = SFNT_DIRECTORY_HEADER_BYTES + numTables * SFNT_DIRECTORY_ENTRY_BYTES;
+  let currentOffset = headerSize;
+  const directory = Buffer.alloc(headerSize);
+  directory.writeUInt32BE(version, 0);
+  directory.writeUInt16BE(numTables, 4);
+  directory.writeUInt16BE(searchRange, 6);
+  directory.writeUInt16BE(entrySelector, 8);
+  directory.writeUInt16BE(rangeShift, 10);
+  for (let idx = 0; idx < numTables; idx++) {
+    const tbl = tableEntries[idx];
+    const entryOffset = SFNT_DIRECTORY_HEADER_BYTES + idx * SFNT_DIRECTORY_ENTRY_BYTES;
+    directory.write(formatSfntTag(tbl.tag), entryOffset, 4, 'ascii');
+    directory.writeUInt32BE(tbl.checkSum, entryOffset + 4);
+    directory.writeUInt32BE(currentOffset, entryOffset + 8);
+    directory.writeUInt32BE(tbl.data.length, entryOffset + 12);
+    currentOffset += tbl.data.length + ((TABLE_ALIGNMENT - (tbl.data.length % TABLE_ALIGNMENT)) % TABLE_ALIGNMENT);
+  }
+  return { directory, totalSize: currentOffset };
 }
 
 /**
@@ -362,44 +386,27 @@ function prepareSfntTables(font: ParsedFont, version: number): PreparedTable[] {
     });
   const head = prepared.find(isHeadTable);
   if (head) {
-    const adjustment = (SFNT_CHECKSUM_MAGIC - calculateTableChecksum(assembleSfnt(prepared, version))) >>> 0;
-    head.data.writeUInt32BE(adjustment, HEAD_CHECKSUM_ADJUSTMENT_OFFSET);
+    // Each table starts on a 4-byte boundary and is zero-padded to a 4-byte multiple, so the whole-font
+    // checksum equals the directory checksum plus the sum of the individual table checksums (mod 2^32).
+    const { directory } = buildSfntDirectory(prepared, version);
+    let totalChecksum = calculateTableChecksum(directory);
+    for (let i = 0; i < prepared.length; i++) totalChecksum = (totalChecksum + prepared[i].checkSum) >>> 0;
+    head.data.writeUInt32BE((SFNT_CHECKSUM_MAGIC - totalChecksum) >>> 0, HEAD_CHECKSUM_ADJUSTMENT_OFFSET);
   }
   return prepared;
 }
 
 function assembleSfnt(tableEntries: PreparedTable[], version: number): Buffer {
-  const numTables = tableEntries.length;
-
-  const searchRange = numTables > 0 ? Math.pow(2, Math.floor(Math.log2(numTables))) * SFNT_DIRECTORY_ENTRY_BYTES : 0;
-  const entrySelector = numTables > 0 ? Math.floor(Math.log2(numTables)) : 0;
-  const rangeShift = numTables > 0 ? numTables * SFNT_DIRECTORY_ENTRY_BYTES - searchRange : 0;
-
-  const headerSize = SFNT_DIRECTORY_HEADER_BYTES + numTables * SFNT_DIRECTORY_ENTRY_BYTES;
-  const chunks: Buffer[] = [];
-  let currentOffset = headerSize;
-
-  const directory = Buffer.alloc(headerSize);
-  directory.writeUInt32BE(version, 0);
-  directory.writeUInt16BE(numTables, 4);
-  directory.writeUInt16BE(searchRange, 6);
-  directory.writeUInt16BE(entrySelector, 8);
-  directory.writeUInt16BE(rangeShift, 10);
-
-  tableEntries.forEach((tbl, idx) => {
-    const entryOffset = SFNT_DIRECTORY_HEADER_BYTES + idx * SFNT_DIRECTORY_ENTRY_BYTES;
-    directory.write(formatSfntTag(tbl.tag), entryOffset, 4, 'ascii');
-    directory.writeUInt32BE(tbl.checkSum, entryOffset + 4);
-    directory.writeUInt32BE(currentOffset, entryOffset + 8);
-    directory.writeUInt32BE(tbl.data.length, entryOffset + 12);
-
-    chunks.push(tbl.data);
-    const pad = (TABLE_ALIGNMENT - (tbl.data.length % TABLE_ALIGNMENT)) % TABLE_ALIGNMENT;
-    if (pad > 0) chunks.push(Buffer.alloc(pad));
-    currentOffset += tbl.data.length + pad;
-  });
-
-  return Buffer.concat([directory, ...chunks]);
+  const { directory, totalSize } = buildSfntDirectory(tableEntries, version);
+  const out = Buffer.alloc(totalSize);
+  directory.copy(out, 0);
+  let currentOffset = directory.length;
+  for (let idx = 0; idx < tableEntries.length; idx++) {
+    const data = tableEntries[idx].data;
+    data.copy(out, currentOffset);
+    currentOffset += data.length + ((TABLE_ALIGNMENT - (data.length % TABLE_ALIGNMENT)) % TABLE_ALIGNMENT);
+  }
+  return out;
 }
 
 /**
@@ -440,30 +447,18 @@ export function encodeWoff(font: ParsedFont): Buffer {
     tableDataChunks.push(compData);
 
     const pad = (4 - (compLength % 4)) % 4;
-    if (pad > 0) {
-      tableDataChunks.push(Buffer.alloc(pad));
-      currentOffset += compLength + pad;
-    } else {
-      currentOffset += compLength;
-    }
+    if (pad > 0) tableDataChunks.push(Buffer.alloc(pad));
+    currentOffset += compLength + pad;
   });
 
   const totalWoffLength = currentOffset;
-
   const header = Buffer.alloc(44);
   header.write('wOFF', 0, 4, 'ascii'); // Signature
   header.writeUInt32BE(flavor, 4); // Flavor
   header.writeUInt32BE(totalWoffLength, 8); // Total WOFF Length
   header.writeUInt16BE(numTables, 12); // Num Tables
-  header.writeUInt16BE(0, 14); // Reserved
   header.writeUInt32BE(totalSfntSize, 16); // Total SFNT Size
-  header.writeUInt16BE(1, 20); // Major Version
-  header.writeUInt16BE(0, 22); // Minor Version
-  header.writeUInt32BE(0, 24); // Meta Offset
-  header.writeUInt32BE(0, 28); // Meta Length
-  header.writeUInt32BE(0, 32); // Meta Orig Length
-  header.writeUInt32BE(0, 36); // Priv Offset
-  header.writeUInt32BE(0, 40); // Priv Length
+  header.writeUInt16BE(1, 20); // Major Version 1.0 (remaining header fields are zero-initialized)
 
   return Buffer.concat([header, dirBuf, ...tableDataChunks]);
 }
@@ -2659,16 +2654,19 @@ export function buildCffTable(
 
   let bbox = options.fontBBox;
   if (bbox === undefined) {
-    const points = glyphData.flatMap((glyph) => glyph.contours.flat());
-    bbox =
-      points.length === 0
-        ? [0, 0, 0, 0]
-        : [
-            Math.floor(Math.min(...points.map((p) => p.x))),
-            Math.floor(Math.min(...points.map((p) => p.y))),
-            Math.ceil(Math.max(...points.map((p) => p.x))),
-            Math.ceil(Math.max(...points.map((p) => p.y))),
-          ];
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, hasPoint = false;
+    for (const glyph of glyphData) {
+      for (const contour of glyph.contours) {
+        for (const pt of contour) {
+          hasPoint = true;
+          if (pt.x < minX) minX = pt.x;
+          if (pt.y < minY) minY = pt.y;
+          if (pt.x > maxX) maxX = pt.x;
+          if (pt.y > maxY) maxY = pt.y;
+        }
+      }
+    }
+    bbox = hasPoint ? [Math.floor(minX), Math.floor(minY), Math.ceil(maxX), Math.ceil(maxY)] : [0, 0, 0, 0];
   }
 
   const privateDict = Buffer.from([

@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { availableCpus, parseCgroupCpuMax, parseCgroupV1CpuQuota } from '../src/lib/workers/available-cpus';
 
 describe('parseCgroupCpuMax', () => {
@@ -73,10 +73,21 @@ describe('availableCpus', () => {
     expect(availableCpus({ cpuMaxPath: missing, v1QuotaPath: missing, v1PeriodPath: missing, hostCores: 6 })).toBe(6);
   });
 
-  it('memoizes the default host/cgroup core count when called without custom options', () => {
+  it('memoizes the default cgroup quota while remaining reactive to os.availableParallelism spies', () => {
     const first = availableCpus();
     const second = availableCpus();
     expect(first).toBeGreaterThanOrEqual(1);
     expect(second).toBe(first);
+
+    const spy = vi.spyOn(os, 'availableParallelism');
+    try {
+      spy.mockReturnValue(1);
+      expect(availableCpus()).toBe(1);
+      spy.mockReturnValue(12);
+      expect(availableCpus()).toBe(12);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(availableCpus()).toBe(first);
   });
 });

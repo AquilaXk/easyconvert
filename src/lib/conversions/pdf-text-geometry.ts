@@ -475,7 +475,17 @@ const NUMBER_TERMINATORS = /[\p{Sc}%#\u00b0\u00b1\u2030\u2032\u2033]/u;
 /** Bidirectional classes of Unicode Annex 9 that matter here; N stands for every neutral. */
 type BidiType = 'L' | 'R' | 'AL' | 'EN' | 'AN' | 'ES' | 'ET' | 'CS' | 'N' | 'M';
 
+function asciiBidiType(code: number): BidiType {
+  if (code >= 0x30 && code <= 0x39) return 'EN';
+  if ((code | 32) >= 0x61 && (code | 32) <= 0x7a) return 'L';
+  if (code === 0x2c || code === 0x2e || code === 0x2f || code === 0x3a) return 'CS';
+  if (code === 0x2b || code === 0x2d) return 'ES';
+  return code >= 0x23 && code <= 0x25 ? 'ET' : 'N';
+}
+
 function bidiType(unit: string): BidiType {
+  const code = unit.charCodeAt(0);
+  if (code <= 0x7f) return asciiBidiType(code);
   if (ARABIC_NUMBER.test(unit)) return 'AN';
   if (EUROPEAN_NUMBER.test(unit)) return 'EN';
   if (COMBINING_MARK.test(unit)) return 'M';
@@ -688,10 +698,7 @@ export function placeItem(item: Pick<TextItem, 'str' | 'dir'>, cursor: Cursor, v
   return { advance: weights.advance, cross: weights.cross, toVisual, rightToLeft: true };
 }
 
-interface WordBudget {
-  left: number;
-  pageNumber: number;
-}
+interface WordBudget { left: number; pageNumber: number }
 
 function toViewport(viewport: Viewport, x: number, y: number): Point {
   const [vx, vy] = viewport.convertToViewportPoint(x, y);
@@ -699,10 +706,7 @@ function toViewport(viewport: Viewport, x: number, y: number): Point {
 }
 
 function boxOf(points: Point[]): Box {
-  let x0 = Infinity;
-  let y0 = Infinity;
-  let x1 = -Infinity;
-  let y1 = -Infinity;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const point of points) {
     if (point.x < x0) x0 = point.x;
     if (point.y < y0) y0 = point.y;
@@ -730,20 +734,9 @@ interface TextFrame {
 }
 
 /** Distances along the item's advance direction. */
-interface Span {
-  d0: number;
-  d1: number;
-}
-
-interface WordSpan {
-  start: number;
-  end: number;
-}
-
-interface FontMetrics {
-  ascent: number;
-  descent: number;
-}
+interface Span { d0: number; d1: number }
+interface WordSpan { start: number; end: number }
+interface FontMetrics { ascent: number; descent: number }
 
 function fontMetrics(style: FontStyle | undefined): FontMetrics {
   const ascent = typeof style?.ascent === 'number' && Number.isFinite(style.ascent) ? style.ascent : FALLBACK_ASCENT_EM;
@@ -999,13 +992,18 @@ function baselineAt(baseline: OcrBaseline, x: number): number {
 
 /** How many letters of the units' words are right-to-left and how many are other letters. */
 function countLetters(units: Unit[]): { rightToLeft: number; leftToRight: number } {
-  let rightToLeft = 0;
-  let leftToRight = 0;
+  let rightToLeft = 0, leftToRight = 0;
   for (const unit of units) {
-    for (const word of unit.words) {
-      for (const character of word.text) {
-        if (RIGHT_TO_LEFT_LETTER.test(character)) rightToLeft++;
-        else if (ANY_LETTER.test(character)) leftToRight++;
+    for (const { text } of unit.words) {
+      for (let i = 0; i < text.length; i++) {
+        const code = text.charCodeAt(i);
+        if (code <= 0x7f) {
+          if ((code | 32) >= 0x61 && (code | 32) <= 0x7a) leftToRight++;
+        } else {
+          const ch = code >= 0xd800 && code <= 0xdbff ? text.slice(i, ++i + 1) : text[i];
+          if (RIGHT_TO_LEFT_LETTER.test(ch)) rightToLeft++;
+          else if (ANY_LETTER.test(ch)) leftToRight++;
+        }
       }
     }
   }
