@@ -259,6 +259,15 @@ export class CredentialsVault {
     if (!credentials?.type) {
       throw new Error('[CredentialsVault] Invalid credentials payload: missing provider type');
     }
+    if (
+      options?.ttlSeconds !== undefined &&
+      (typeof options.ttlSeconds !== 'number' ||
+        !Number.isInteger(options.ttlSeconds) ||
+        options.ttlSeconds < 60 ||
+        options.ttlSeconds > 90 * 86400)
+    ) {
+      throw new Error('[CredentialsVault] Invalid ttlSeconds: must be an integer between 60 and 7776000');
+    }
 
     const id = `cred_${crypto.randomBytes(16).toString('hex')}`;
     const plainText = JSON.stringify(credentials);
@@ -436,7 +445,11 @@ export class CredentialsVault {
       ? await this.readEnvelope(this.redisClient, credentialRef)
       : this.inMemoryStore.get(credentialRef);
 
-    if (envelope && userId && envelope.userId !== userId) {
+    if (!envelope) {
+      return false;
+    }
+
+    if (userId && envelope.userId !== userId) {
       return false;
     }
 
@@ -464,10 +477,15 @@ export class CredentialsVault {
     const now = Date.now();
 
     if (this.redisClient) {
+      const redis = this.redisClient;
       try {
-        const keys = await this.redisClient.keys(`${VAULT_PREFIX}*`);
-        for (const k of keys) {
-          const raw = await this.redisClient.get(k);
+        const keys = await redis.keys(`${VAULT_PREFIX}*`);
+        if (keys.length === 0) return results;
+        const raws =
+          typeof redis.mget === 'function'
+            ? await redis.mget(...keys)
+            : await Promise.all(keys.map((k) => redis.get(k)));
+        for (const raw of raws) {
           if (raw) {
             const envelope = JSON.parse(raw) as StoredCredentialEnvelope;
             if (envelope.userId === userId && (!envelope.expiresAt || now <= envelope.expiresAt)) {
@@ -528,11 +546,16 @@ export class CredentialsVault {
       let cursor = '0';
       do {
         const [next, keys] = await redis.scan(cursor, 'MATCH', `${VAULT_PREFIX}*`, 'COUNT', 500);
-        for (const key of keys) {
-          const raw = await redis.get(key);
-          if (!raw) continue;
-          const envelope = JSON.parse(raw) as StoredCredentialEnvelope;
-          if (envelope.userId === userId) ids.add(envelope.id);
+        if (keys.length > 0) {
+          const raws =
+            typeof redis.mget === 'function'
+              ? await redis.mget(...keys)
+              : await Promise.all(keys.map((key) => redis.get(key)));
+          for (const raw of raws) {
+            if (!raw) continue;
+            const envelope = JSON.parse(raw) as StoredCredentialEnvelope;
+            if (envelope.userId === userId) ids.add(envelope.id);
+          }
         }
         cursor = next;
       } while (cursor !== '0');

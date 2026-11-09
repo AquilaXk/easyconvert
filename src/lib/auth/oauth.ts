@@ -91,8 +91,10 @@ export async function createOAuthSession(options?: {
     try {
       const key = `${redisUserStore.getKeyPrefix()}oauth_state:${state}`;
       await redis.setex(key, OAUTH_STATE_TTL_SECONDS, JSON.stringify(sessionState));
+      return sessionState;
     } catch {
-      // Fallback
+      activeStates.set(state, sessionState);
+      return sessionState;
     }
   }
 

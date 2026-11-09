@@ -20,11 +20,16 @@ function redirectTo(origin: string, locale: AppLocale, pathname: string, search 
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
+  const oauthError = searchParams.get('error');
   const code = searchParams.get('code');
   const state = searchParams.get('state');
 
   const origin = getAppOrigin();
   const redirectUri = `${origin}/api/auth/google/callback`;
+
+  if (oauthError) {
+    return redirectTo(origin, routing.defaultLocale, '/auth', '?error=oauth_denied');
+  }
 
   // Until the state is consumed the language of the sign-in is unknown, so these answers use the default language.
   // 1. Validate state parameter exists
@@ -99,9 +104,8 @@ export async function GET(req: NextRequest) {
     redirectResponse.headers.append('Set-Cookie', clearStateCookie);
 
     return redirectResponse;
-  } catch (err: unknown) {
-    const errorMsg = encodeURIComponent(err instanceof Error ? err.message : 'oauth_exchange_failed');
-    return redirectTo(origin, locale, '/auth', `?error=${errorMsg}`);
+  } catch {
+    return redirectTo(origin, locale, '/auth', '?error=oauth_exchange_failed');
   }
 }
 

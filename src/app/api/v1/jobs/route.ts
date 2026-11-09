@@ -70,18 +70,24 @@ async function storedInputRefusal(
   caller: PlanCaller & { id: string }
 ): Promise<{ status: number; message: string; title: string } | undefined> {
   const graphKeys = graph ? graphInputKeys(normalizeGraphNodes(graph)) : [];
-  const keys = new Set(graphKeys);
-  if (storageKey) keys.add(storageKey);
-  for (const key of keys) {
-    if (!isInlineInputKey(key) && !(await mayUseStorageKeyAsJobInput(key, caller.id))) {
+  const keys = Array.from(new Set(storageKey ? [...graphKeys, storageKey] : graphKeys)).filter(
+    (key) => !isInlineInputKey(key)
+  );
+  if (keys.length > 0) {
+    const allowed = await Promise.all(keys.map((key) => mayUseStorageKeyAsJobInput(key, caller.id)));
+    if (allowed.some((ok) => !ok)) {
       return { status: 404, message: STORAGE_OBJECT_NOT_FOUND, title: 'Not Found' };
     }
   }
-  const plan = planOfCaller(caller);
-  for (const key of graphKeys) {
-    const info = isInlineInputKey(key) ? undefined : await s3Storage.stat(key);
-    if (info && info.size > maxFileBytes(plan)) {
-      return { status: 413, message: fileTooLargeMessage(plan, info.size), title: 'Payload Too Large' };
+  const uniqueGraphKeys = Array.from(new Set(graphKeys)).filter((key) => !isInlineInputKey(key));
+  if (uniqueGraphKeys.length > 0) {
+    const plan = planOfCaller(caller);
+    const limit = maxFileBytes(plan);
+    const infos = await Promise.all(uniqueGraphKeys.map((key) => s3Storage.stat(key)));
+    for (const info of infos) {
+      if (info && info.size > limit) {
+        return { status: 413, message: fileTooLargeMessage(plan, info.size), title: 'Payload Too Large' };
+      }
     }
   }
   return undefined;
@@ -608,12 +614,12 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         hasInlineBytes: Boolean(uploadedBuffer || inputBufferBase64),
       });
 
-      for (const check of storedChecks) {
-        const result = await verifyStoredInput(check, callerPlan);
+      const results = await Promise.all(storedChecks.map((check) => verifyStoredInput(check, callerPlan)));
+      for (const [i, result] of results.entries()) {
         if ('refusal' in result) {
           return await fail(result.refusal.status, result.refusal.message, result.refusal.title);
         }
-        if (check.primary && !fileSize) {
+        if (storedChecks[i].primary && !fileSize) {
           fileSize = result.size;
         }
       }

@@ -17,6 +17,7 @@ import { codedRefusal, createProblemDetailsResponse } from '@/lib/api/problem-de
 import type { User } from '@/lib/auth/types';
 import {
   assertToolInput,
+  assertToolUploadMetadata,
   parseToolOptions,
   runWebTool,
   WebToolRefusal,
@@ -82,6 +83,7 @@ async function runTool(req: NextRequest, caller: User, tool: WebTool, unit: Rese
       const oversize = fileSizeLimitProblem(caller, upload.size, instanceUri);
       if (oversize) return oversize;
     }
+    assertToolUploadMetadata(tool, uploads);
     const options = parseToolOptions(tool, formText(body.form, 'options'));
     trace.keepPrivate(uploads.map((upload) => upload.name), {});
     const files: WebToolFile[] = await Promise.all(

@@ -1,4 +1,4 @@
-import { signJwt, verifyJwt } from './jwt';
+import { DEFAULT_JWT_AUDIENCE, DEFAULT_JWT_ISSUER, signJwt, verifyJwt } from './jwt';
 import { redisUserStore } from './redis-user-store';
 import type { SessionPayload, User } from './types';
 
@@ -130,7 +130,10 @@ export async function getSessionFromRequest(request: Request): Promise<User | nu
  * account's session version, or the account is gone. A request's cookie and a server-rendered page's cookie both end here.
  */
 export async function getSessionFromToken(token: string): Promise<User | null> {
-  const payload = verifyJwt<SessionPayload>(token);
+  const payload = verifyJwt<SessionPayload>(token, {
+    issuer: DEFAULT_JWT_ISSUER,
+    audience: DEFAULT_JWT_AUDIENCE,
+  });
   if (!payload?.sub) {
     return null;
   }

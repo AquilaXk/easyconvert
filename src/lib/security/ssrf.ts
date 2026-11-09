@@ -1,6 +1,7 @@
 import dns, { type LookupAddress } from 'node:dns';
 import net from 'node:net';
 import { Agent } from 'undici';
+import { isPublicAddress } from '../conversions/public-address';
 
 export const MAX_REDIRECTS = 5;
 
@@ -71,112 +72,25 @@ export function parseIpv6ToWords(ip: string): number[] | null {
 }
 
 export function isBlockedIpv4(ip: string): boolean {
-  const parts = ip.split('.').map(Number);
-  if (parts.length !== 4 || parts.some((p) => isNaN(p) || p < 0 || p > 255)) {
+  const clean = ip.trim();
+  if (net.isIP(clean) !== 4) {
     return true;
   }
-  const [a, b, c] = parts;
-  // 0.0.0.0/8
-  if (a === 0) return true;
-  // 10.0.0.0/8
-  if (a === 10) return true;
-  // 100.64.0.0/10
-  if (a === 100 && b >= 64 && b <= 127) return true;
-  // 127.0.0.0/8 (Loopback)
-  if (a === 127) return true;
-  // 169.254.0.0/16 (Link-local & AWS/GCP Metadata 169.254.169.254)
-  if (a === 169 && b === 254) return true;
-  // 172.16.0.0/12
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  // 192.0.0.0/24
-  if (a === 192 && b === 0 && c === 0) return true;
-  // 192.0.2.0/24
-  if (a === 192 && b === 0 && c === 2) return true;
-  // 192.168.0.0/16
-  if (a === 192 && b === 168) return true;
-  // 198.18.0.0/15
-  if (a === 198 && (b === 18 || b === 19)) return true;
-  // 198.51.100.0/24
-  if (a === 198 && b === 51 && c === 100) return true;
-  // 203.0.113.0/24
-  if (a === 203 && b === 0 && c === 113) return true;
-  // 224.0.0.0/4 (Multicast/Reserved)
-  if (a >= 224) return true;
-
-  return false;
+  return !isPublicAddress(clean);
 }
 
 export function isBlockedIpv6(ip: string): boolean {
   const clean = ip.replace(/^\[|\]$/g, '').trim().toLowerCase();
-  const words = parseIpv6ToWords(clean);
-  if (!words) {
-    const mappedIpv4 = parseIpv4MappedIpv6(clean);
-    if (mappedIpv4) {
-      return isBlockedIpv4(mappedIpv4);
-    }
-    return clean.includes(':');
+  const zone = clean.indexOf('%');
+  const unzoned = zone < 0 ? clean : clean.slice(0, zone);
+  if (net.isIP(unzoned) === 6) {
+    return !isPublicAddress(clean);
   }
-
-  // Unspecified (::)
-  if (words.every((w) => w === 0)) return true;
-
-  // Loopback (::1)
-  if (words.slice(0, 7).every((w) => w === 0) && words[7] === 1) return true;
-
-  // IPv4-compatible (::x.x.x.x) or IPv4-mapped (::ffff:x.x.x.x)
-  const isCompatible = words.slice(0, 6).every((w) => w === 0);
-  const isMapped = words.slice(0, 5).every((w) => w === 0) && words[5] === 0xffff;
-  if (isCompatible || isMapped) {
-    const v4 = [
-      (words[6] >> 8) & 0xff,
-      words[6] & 0xff,
-      (words[7] >> 8) & 0xff,
-      words[7] & 0xff,
-    ].join('.');
-    return isBlockedIpv4(v4);
+  const mappedIpv4 = parseIpv4MappedIpv6(clean);
+  if (mappedIpv4) {
+    return isBlockedIpv4(mappedIpv4);
   }
-
-  // IPv4-translated (64:ff9b::/96)
-  if (words[0] === 0x0064 && words[1] === 0xff9b && words.slice(2, 6).every((w) => w === 0)) {
-    const v4 = [
-      (words[6] >> 8) & 0xff,
-      words[6] & 0xff,
-      (words[7] >> 8) & 0xff,
-      words[7] & 0xff,
-    ].join('.');
-    return isBlockedIpv4(v4);
-  }
-
-  // 6to4 encapsulation (2002::/16)
-  if (words[0] === 0x2002) {
-    const v4 = [
-      (words[1] >> 8) & 0xff,
-      words[1] & 0xff,
-      (words[2] >> 8) & 0xff,
-      words[2] & 0xff,
-    ].join('.');
-    if (isBlockedIpv4(v4)) return true;
-  }
-
-  // Unique local address (fc00::/7)
-  if ((words[0] & 0xfe00) === 0xfc00) return true;
-
-  // Link-local unicast (fe80::/10)
-  if ((words[0] & 0xffc0) === 0xfe80) return true;
-
-  // Site-local (fec0::/10, deprecated)
-  if ((words[0] & 0xffc0) === 0xfec0) return true;
-
-  // Multicast (ff00::/8)
-  if ((words[0] & 0xff00) === 0xff00) return true;
-
-  // Documentation (2001:db8::/32)
-  if (words[0] === 0x2001 && words[1] === 0x0db8) return true;
-
-  // Discard prefix (0100::/64)
-  if (words[0] === 0x0100 && words.slice(1, 4).every((w) => w === 0)) return true;
-
-  return false;
+  return clean.includes(':');
 }
 
 export function isBlockedIp(ip: string): boolean {

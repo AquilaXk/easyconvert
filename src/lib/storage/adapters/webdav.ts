@@ -3,6 +3,7 @@ import { request } from 'undici';
 import type { WebDavCredentials } from '../credentials-vault';
 import {
   IStorageAdapter,
+  StorageAdapterError,
   StorageAdapterMetadata,
   StorageNotFoundError,
   StorageAuthenticationError,
@@ -28,6 +29,18 @@ function stripLeadingSlashes(s: string): string {
 
 function stripSlashes(s: string): string {
   return stripTrailingSlashes(stripLeadingSlashes(s));
+}
+
+function encodeSafePathSegments(remotePath: string, provider: string): string {
+  if (!remotePath || remotePath.includes('\\') || remotePath.includes('\0')) {
+    throw new StorageAdapterError(`Invalid remote path "${remotePath}"`, provider);
+  }
+  const cleanPath = stripLeadingSlashes(remotePath);
+  const segments = cleanPath.split('/');
+  if (segments.length === 0 || segments.some((seg) => !seg || seg === '.' || seg === '..')) {
+    throw new StorageAdapterError(`Path traversal or empty segment rejected in "${remotePath}"`, provider);
+  }
+  return segments.map((seg) => encodeURIComponent(seg)).join('/');
 }
 
 export class WebDavStorageAdapter implements IStorageAdapter {
@@ -60,8 +73,8 @@ export class WebDavStorageAdapter implements IStorageAdapter {
   }
 
   private buildUrl(remotePath: string): string {
-    const cleanPath = stripLeadingSlashes(remotePath);
-    return `${this.baseUrl}/${encodeURI(cleanPath)}`;
+    const encodedPath = encodeSafePathSegments(remotePath, this.providerName);
+    return `${this.baseUrl}/${encodedPath}`;
   }
 
   private getHeaders(extra?: Record<string, string>): Record<string, string> {
@@ -76,24 +89,40 @@ export class WebDavStorageAdapter implements IStorageAdapter {
     const url = this.buildUrl(remotePath);
     await this.assertSsrfSafe(url);
 
-    const res = await request(url, {
-      method: 'GET',
-      headers: this.getHeaders(),
-      dispatcher: createSsrfSafeAgent(),
-    });
+    const dispatcher = createSsrfSafeAgent();
+    let streaming = false;
+    try {
+      const res = await request(url, {
+        method: 'GET',
+        headers: this.getHeaders(),
+        dispatcher,
+      });
 
-    if (res.statusCode === 404) {
-      throw new StorageNotFoundError(remotePath, this.providerName);
-    }
-    if (res.statusCode === 401 || res.statusCode === 403) {
-      throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
-    }
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      const errText = await res.body.text();
-      throw new Error(`[WebDavAdapter] Download failed (${res.statusCode}): ${errText}`);
-    }
+      if (res.statusCode === 404) {
+        throw new StorageNotFoundError(remotePath, this.providerName);
+      }
+      if (res.statusCode === 401 || res.statusCode === 403) {
+        throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
+      }
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        const errText = await res.body.text();
+        throw new Error(`[WebDavAdapter] Download failed (${res.statusCode}): ${errText}`);
+      }
 
-    return res.body as unknown as NodeJS.ReadableStream;
+      const bodyStream = res.body as unknown as NodeJS.ReadableStream;
+      streaming = true;
+      const closeDispatcher = () => {
+        void dispatcher.close().catch(() => {});
+      };
+      bodyStream.once('close', closeDispatcher);
+      bodyStream.once('end', closeDispatcher);
+      bodyStream.once('error', closeDispatcher);
+      return bodyStream;
+    } finally {
+      if (!streaming) {
+        await dispatcher.close().catch(() => {});
+      }
+    }
   }
 
   async uploadStream(
@@ -118,69 +147,84 @@ export class WebDavStorageAdapter implements IStorageAdapter {
       nodeStream = stream;
     }
 
-    const res = await request(url, {
-      method: 'PUT',
-      headers,
-      body: nodeStream as any,
-      dispatcher: createSsrfSafeAgent(),
-    });
+    const dispatcher = createSsrfSafeAgent();
+    try {
+      const res = await request(url, {
+        method: 'PUT',
+        headers,
+        body: nodeStream as any,
+        dispatcher,
+      });
 
-    if (res.statusCode === 401 || res.statusCode === 403) {
-      throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
+      if (res.statusCode === 401 || res.statusCode === 403) {
+        throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
+      }
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        const errText = await res.body.text();
+        throw new Error(`[WebDavAdapter] Upload failed (${res.statusCode}): ${errText}`);
+      }
+
+      const etag = (res.headers.etag as string | undefined)?.replace(/"/g, '');
+      const lastModifiedHeader = res.headers['last-modified'] as string | undefined;
+
+      return {
+        size: options?.size || 0,
+        etag,
+        contentType: options?.contentType,
+        lastModified: lastModifiedHeader ? new Date(lastModifiedHeader) : new Date(),
+      };
+    } finally {
+      await dispatcher.close().catch(() => {});
     }
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      const errText = await res.body.text();
-      throw new Error(`[WebDavAdapter] Upload failed (${res.statusCode}): ${errText}`);
-    }
-
-    const etag = (res.headers.etag as string | undefined)?.replace(/"/g, '');
-    const lastModifiedHeader = res.headers['last-modified'] as string | undefined;
-
-    return {
-      size: options?.size || 0,
-      etag,
-      contentType: options?.contentType,
-      lastModified: lastModifiedHeader ? new Date(lastModifiedHeader) : new Date(),
-    };
   }
 
   async head(remotePath: string): Promise<StorageAdapterMetadata | null> {
     const url = this.buildUrl(remotePath);
     await this.assertSsrfSafe(url);
 
-    const res = await request(url, {
-      method: 'HEAD',
-      headers: this.getHeaders(),
-      dispatcher: createSsrfSafeAgent(),
-    });
+    const dispatcher = createSsrfSafeAgent();
+    try {
+      const res = await request(url, {
+        method: 'HEAD',
+        headers: this.getHeaders(),
+        dispatcher,
+      });
 
-    if (res.statusCode === 404) return null;
-    if (res.statusCode < 200 || res.statusCode >= 300) return null;
+      if (res.statusCode === 404) return null;
+      if (res.statusCode < 200 || res.statusCode >= 300) return null;
 
-    const lenStr = res.headers['content-length'] as string | undefined;
-    const size = lenStr ? Number.parseInt(lenStr, 10) : 0;
-    const etag = (res.headers.etag as string | undefined)?.replace(/"/g, '');
-    const contentType = res.headers['content-type'] as string | undefined;
-    const lastModified = res.headers['last-modified'] as string | undefined;
+      const lenStr = res.headers['content-length'] as string | undefined;
+      const size = lenStr ? Number.parseInt(lenStr, 10) : 0;
+      const etag = (res.headers.etag as string | undefined)?.replace(/"/g, '');
+      const contentType = res.headers['content-type'] as string | undefined;
+      const lastModified = res.headers['last-modified'] as string | undefined;
 
-    return {
-      size,
-      etag,
-      contentType,
-      lastModified: lastModified ? new Date(lastModified) : undefined,
-    };
+      return {
+        size,
+        etag,
+        contentType,
+        lastModified: lastModified ? new Date(lastModified) : undefined,
+      };
+    } finally {
+      await dispatcher.close().catch(() => {});
+    }
   }
 
   async delete(remotePath: string): Promise<boolean> {
     const url = this.buildUrl(remotePath);
     await this.assertSsrfSafe(url);
 
-    const res = await request(url, {
-      method: 'DELETE',
-      headers: this.getHeaders(),
-      dispatcher: createSsrfSafeAgent(),
-    });
+    const dispatcher = createSsrfSafeAgent();
+    try {
+      const res = await request(url, {
+        method: 'DELETE',
+        headers: this.getHeaders(),
+        dispatcher,
+      });
 
-    return res.statusCode === 204 || res.statusCode === 200;
+      return res.statusCode === 204 || res.statusCode === 200;
+    } finally {
+      await dispatcher.close().catch(() => {});
+    }
   }
 }

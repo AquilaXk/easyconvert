@@ -52,6 +52,17 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  if (
+    ttlSeconds !== undefined &&
+    (typeof ttlSeconds !== 'number' || !Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 90 * 86400)
+  ) {
+    return createProblemDetailsResponse(
+      400,
+      'Invalid "ttlSeconds": must be an integer between 60 and 7776000 (90 days).',
+      instanceUri
+    );
+  }
+
   const unavailable = refuseUnavailableStorageProvider(providerType, instanceUri);
   if (unavailable) {
     return unavailable;

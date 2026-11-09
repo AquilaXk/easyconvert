@@ -82,27 +82,32 @@ export class GcsStorageAdapter implements IStorageAdapter {
       const tokenUrl = 'https://oauth2.googleapis.com/token';
       await this.assertSsrfSafe(tokenUrl);
 
-      const res = await request(tokenUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: new URLSearchParams({
-          grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-          assertion: jwt,
-        }).toString(),
-        dispatcher: createSsrfSafeAgent(),
-      });
+      const dispatcher = createSsrfSafeAgent();
+      try {
+        const res = await request(tokenUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: new URLSearchParams({
+            grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+            assertion: jwt,
+          }).toString(),
+          dispatcher,
+        });
 
-      if (res.statusCode !== 200) {
-        const errBody = await res.body.text();
-        throw new StorageAuthenticationError(`Token exchange failed (${res.statusCode}): ${errBody}`, this.providerName);
+        if (res.statusCode !== 200) {
+          const errBody = await res.body.text();
+          throw new StorageAuthenticationError(`Token exchange failed (${res.statusCode}): ${errBody}`, this.providerName);
+        }
+
+        const tokenData = (await res.body.json()) as { access_token: string; expires_in: number };
+        this.cachedToken = tokenData.access_token;
+        this.tokenExpiresAt = Date.now() + tokenData.expires_in * 1000;
+        return this.cachedToken;
+      } finally {
+        await dispatcher.close().catch(() => {});
       }
-
-      const tokenData = (await res.body.json()) as { access_token: string; expires_in: number };
-      this.cachedToken = tokenData.access_token;
-      this.tokenExpiresAt = Date.now() + tokenData.expires_in * 1000;
-      return this.cachedToken;
     } catch (err) {
       if (err instanceof StorageAdapterError) throw err;
       throw new StorageAuthenticationError(err instanceof Error ? err.message : String(err), this.providerName);
@@ -124,24 +129,40 @@ export class GcsStorageAdapter implements IStorageAdapter {
     await this.assertSsrfSafe(url);
 
     const headers = await this.getAuthHeaders();
-    const res = await request(url, {
-      method: 'GET',
-      headers,
-      dispatcher: createSsrfSafeAgent(),
-    });
+    const dispatcher = createSsrfSafeAgent();
+    let streaming = false;
+    try {
+      const res = await request(url, {
+        method: 'GET',
+        headers,
+        dispatcher,
+      });
 
-    if (res.statusCode === 404) {
-      throw new StorageNotFoundError(remotePath, this.providerName);
-    }
-    if (res.statusCode === 401 || res.statusCode === 403) {
-      throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
-    }
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      const errText = await res.body.text();
-      throw new Error(`[GcsAdapter] Download failed (${res.statusCode}): ${errText}`);
-    }
+      if (res.statusCode === 404) {
+        throw new StorageNotFoundError(remotePath, this.providerName);
+      }
+      if (res.statusCode === 401 || res.statusCode === 403) {
+        throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
+      }
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        const errText = await res.body.text();
+        throw new Error(`[GcsAdapter] Download failed (${res.statusCode}): ${errText}`);
+      }
 
-    return res.body as unknown as NodeJS.ReadableStream;
+      const bodyStream = res.body as unknown as NodeJS.ReadableStream;
+      streaming = true;
+      const closeDispatcher = () => {
+        void dispatcher.close().catch(() => {});
+      };
+      bodyStream.once('close', closeDispatcher);
+      bodyStream.once('end', closeDispatcher);
+      bodyStream.once('error', closeDispatcher);
+      return bodyStream;
+    } finally {
+      if (!streaming) {
+        await dispatcher.close().catch(() => {});
+      }
+    }
   }
 
   async uploadStream(
@@ -169,26 +190,31 @@ export class GcsStorageAdapter implements IStorageAdapter {
       nodeStream = stream;
     }
 
-    const res = await request(url, {
-      method: 'POST',
-      headers,
-      body: nodeStream as any,
-      dispatcher: createSsrfSafeAgent(),
-    });
+    const dispatcher = createSsrfSafeAgent();
+    try {
+      const res = await request(url, {
+        method: 'POST',
+        headers,
+        body: nodeStream as any,
+        dispatcher,
+      });
 
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      const errText = await res.body.text();
-      throw new Error(`[GcsAdapter] Upload failed (${res.statusCode}): ${errText}`);
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        const errText = await res.body.text();
+        throw new Error(`[GcsAdapter] Upload failed (${res.statusCode}): ${errText}`);
+      }
+
+      const data = (await res.body.json()) as { size?: string; etag?: string; contentType?: string; updated?: string };
+      const size = data.size ? Number.parseInt(data.size, 10) : options?.size || 0;
+      return {
+        size,
+        etag: data.etag,
+        contentType: data.contentType || options?.contentType,
+        lastModified: data.updated ? new Date(data.updated) : new Date(),
+      };
+    } finally {
+      await dispatcher.close().catch(() => {});
     }
-
-    const data = (await res.body.json()) as { size?: string; etag?: string; contentType?: string; updated?: string };
-    const size = data.size ? Number.parseInt(data.size, 10) : options?.size || 0;
-    return {
-      size,
-      etag: data.etag,
-      contentType: data.contentType || options?.contentType,
-      lastModified: data.updated ? new Date(data.updated) : new Date(),
-    };
   }
 
   async head(remotePath: string): Promise<StorageAdapterMetadata | null> {
@@ -197,26 +223,31 @@ export class GcsStorageAdapter implements IStorageAdapter {
     await this.assertSsrfSafe(url);
 
     const headers = await this.getAuthHeaders();
-    const res = await request(url, {
-      method: 'GET',
-      headers,
-      dispatcher: createSsrfSafeAgent(),
-    });
+    const dispatcher = createSsrfSafeAgent();
+    try {
+      const res = await request(url, {
+        method: 'GET',
+        headers,
+        dispatcher,
+      });
 
-    if (res.statusCode === 404) {
-      return null;
-    }
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      return null;
-    }
+      if (res.statusCode === 404) {
+        return null;
+      }
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        return null;
+      }
 
-    const data = (await res.body.json()) as { size?: string; etag?: string; contentType?: string; updated?: string };
-    return {
-      size: data.size ? Number.parseInt(data.size, 10) : 0,
-      etag: data.etag,
-      contentType: data.contentType,
-      lastModified: data.updated ? new Date(data.updated) : undefined,
-    };
+      const data = (await res.body.json()) as { size?: string; etag?: string; contentType?: string; updated?: string };
+      return {
+        size: data.size ? Number.parseInt(data.size, 10) : 0,
+        etag: data.etag,
+        contentType: data.contentType,
+        lastModified: data.updated ? new Date(data.updated) : undefined,
+      };
+    } finally {
+      await dispatcher.close().catch(() => {});
+    }
   }
 
   async delete(remotePath: string): Promise<boolean> {
@@ -225,12 +256,17 @@ export class GcsStorageAdapter implements IStorageAdapter {
     await this.assertSsrfSafe(url);
 
     const headers = await this.getAuthHeaders();
-    const res = await request(url, {
-      method: 'DELETE',
-      headers,
-      dispatcher: createSsrfSafeAgent(),
-    });
+    const dispatcher = createSsrfSafeAgent();
+    try {
+      const res = await request(url, {
+        method: 'DELETE',
+        headers,
+        dispatcher,
+      });
 
-    return res.statusCode === 204 || res.statusCode === 200;
+      return res.statusCode === 204 || res.statusCode === 200;
+    } finally {
+      await dispatcher.close().catch(() => {});
+    }
   }
 }

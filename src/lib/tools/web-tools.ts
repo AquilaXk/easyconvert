@@ -69,7 +69,26 @@ export type WebToolOutput =
   | { kind: 'file'; filename: string; mimeType: string; buffer: Buffer }
   | { kind: 'entries'; entries: ExtractedEntry[] };
 
-const ARCHIVE_INPUT_EXTENSIONS = ['zip', '7z', 'rar', 'tar', 'tar.gz', 'tgz'] as const;
+const ARCHIVE_INPUT_EXTENSIONS = [
+  'zip',
+  '7z',
+  'rar',
+  'tar',
+  'tar.gz',
+  'tgz',
+  'tar.bz2',
+  'tbz2',
+  'tbz',
+  'tar.xz',
+  'txz',
+  'tar.zst',
+  'tzst',
+  'bz2',
+  'xz',
+  'zst',
+  'gz',
+] as const;
+const COMPOUND_ARCHIVE_EXTENSIONS = ['.tar.gz', '.tar.bz2', '.tar.xz', '.tar.zst'] as const;
 const PDF_EXTENSION = 'pdf';
 const OPAQUE_MIME_TYPE = 'application/octet-stream';
 const DEFAULT_ARCHIVE_FORMAT = 'zip';
@@ -79,7 +98,12 @@ const SINGLE_FILE_TOOLS: ReadonlySet<WebTool> = new Set<WebTool>(['archive-extra
 
 function extensionOfName(name: string): string {
   const lower = name.toLowerCase();
-  return lower.endsWith('.tar.gz') ? 'tar.gz' : path.extname(lower).replace(/^\./, '');
+  for (const compound of COMPOUND_ARCHIVE_EXTENSIONS) {
+    if (lower.endsWith(compound)) {
+      return compound.slice(1);
+    }
+  }
+  return path.extname(lower).replace(/^\./, '');
 }
 
 /** The archive extension or format id a tool reads a file as; `tgz` is read as `tar.gz`. */
@@ -119,6 +143,27 @@ function refuseUnreadableInput(tool: WebTool, file: WebToolFile): void {
     assertNotSpoofedFile(file.buffer, extension, file.name);
   } catch (error) {
     throw new WebToolRefusal(HTTP_BAD_REQUEST, 'spoofed_file', error instanceof Error ? error.message : 'The file does not match its extension.');
+  }
+}
+
+/** Refuses an upload list whose file count, aggregate byte size, or filenames violate tool limits before allocating file buffers. */
+export function assertToolUploadMetadata(tool: WebTool, uploads: readonly { name: string; size: number }[]): void {
+  refuseFileCount(tool, uploads.length);
+  const total = uploads.reduce((sum, file) => sum + file.size, 0);
+  if (total > SINGLE_REQUEST_FILE_MAX_BYTES) {
+    throw new WebToolRefusal(HTTP_PAYLOAD_TOO_LARGE, 'input_over_limit', 'The files together are larger than one request takes.');
+  }
+  for (const file of uploads) {
+    if (file.size === 0) {
+      throw new WebToolRefusal(HTTP_BAD_REQUEST, 'empty_file', `The file "${file.name}" is empty.`);
+    }
+    if (tool === 'archive-create') continue;
+    const isExtract = tool === 'archive-extract';
+    const extension = isExtract ? archiveExtensionOf(file.name) : pdfExtensionOf(file.name);
+    if (extension === undefined) {
+      const kind = isExtract ? 'an archive (ZIP, 7Z, RAR, TAR or TAR.GZ)' : 'a PDF';
+      throw new WebToolRefusal(HTTP_BAD_REQUEST, 'unsupported_input', `The file "${file.name}" is not ${kind}.`);
+    }
   }
 }
 
@@ -215,9 +260,9 @@ function tooLargeToList(): WebToolRefusal {
 }
 
 /** The files of an archive, unpacked under the caps of the answer; a TAR that passes them is a 413 as the other formats are. */
-async function unpacked(archive: WebToolFile): Promise<{ filename: string; buffer: Buffer }[]> {
+async function unpacked(archive: WebToolFile, signal?: AbortSignal): Promise<{ filename: string; buffer: Buffer }[]> {
   try {
-    return await extractGraphArchiveEntries(archive.name, archive.buffer, undefined, WEB_EXTRACTION_LIMITS);
+    return await extractGraphArchiveEntries(archive.name, archive.buffer, undefined, WEB_EXTRACTION_LIMITS, { signal });
   } catch (error) {
     if (error instanceof ConversionFailedError && error.message.startsWith('Archive bomb detected')) throw tooLargeToList();
     throw error;
@@ -263,7 +308,7 @@ export async function runWebTool(tool: WebTool, files: readonly WebToolFile[], o
     case 'archive-create':
       return createArchive(files, options.format ?? DEFAULT_ARCHIVE_FORMAT, signal);
     case 'archive-extract':
-      return { kind: 'entries', entries: listedEntries(await unpacked(first)) };
+      return { kind: 'entries', entries: listedEntries(await unpacked(first, signal)) };
     case 'split':
       return fileOutput(`${base}-split.zip`, 'application/zip', await splitPdfPages(first.buffer, options.split, {}, base, signal));
     case 'rotate':
