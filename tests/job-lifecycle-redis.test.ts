@@ -100,7 +100,7 @@ describe.skipIf(!REDIS_URL)('Job lifecycle safety on a real Redis server', () =>
   async function getWaitingIds(queueName: string): Promise<string[]> {
     const key = keyOf(queueName, 'waiting');
     const t = await admin.type(key);
-    return t === 'zset' ? admin.zrange(key, 0, -1) : admin.lrange(key, 0, -1);
+    return t === 'zset' ? admin.zrange(key, '0', '-1') : admin.lrange(key, 0, -1);
   }
 
   beforeEach(() => {

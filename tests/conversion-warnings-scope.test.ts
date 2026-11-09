@@ -64,8 +64,9 @@ describe('warnings raised inside a conversion', () => {
       for (let i = 0; i < 150; i++) reportConversionWarning(`reported-${i}`);
       return result(existing);
     });
-    expect(converted.metadata?.warnings).toHaveLength(200);
-    expect(converted.metadata?.warnings?.slice(0, 120)).toEqual(existing);
-    expect(converted.metadata?.warnings?.slice(120)).toEqual(Array.from({ length: 80 }, (_, i) => `reported-${i}`));
+    const warnings = converted.metadata?.warnings as string[] | undefined;
+    expect(warnings).toHaveLength(200);
+    expect(warnings?.slice(0, 120)).toEqual(existing);
+    expect(warnings?.slice(120)).toEqual(Array.from({ length: 80 }, (_, i) => `reported-${i}`));
   });
 });

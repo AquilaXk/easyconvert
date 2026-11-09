@@ -505,7 +505,7 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
 
         // woff2_decompress rebuilds an sfnt from the encoder's output; it holds the tables that went in.
         const font = synthesizeVariableFontCorpus();
-        const woff2 = encodeWoff2(font.parsedFont);
+        const woff2 = encodeWoff2(font.parsedFont as unknown as Parameters<typeof encodeWoff2>[0]);
         assertFormatIntegrity(woff2, 'woff2');
         const decoded = withTempDir((dir) => {
           fs.writeFileSync(path.join(dir, 'font.woff2'), woff2);
@@ -950,7 +950,7 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
 
     it('5.9 converts variable font OTF to WOFF2 with valid WOFF2 header signature', () => {
       const corpus = synthesizeVariableFontCorpus();
-      const woff2Buffer = encodeWoff2(corpus.parsedFont);
+      const woff2Buffer = encodeWoff2(corpus.parsedFont as unknown as Parameters<typeof encodeWoff2>[0]);
 
       expect(woff2Buffer.length).toBeGreaterThan(100);
       // WOFF2 magic 'wOF2' (0x77 0x4F 0x46 0x32)
@@ -966,7 +966,7 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
         compressed: false,
       });
 
-      const result = await convertFile(hwpBuffer, 'hwp', 'txt');
+      const result = await convertFile(hwpBuffer, 'hwp', 'txt', {}, 'sample.hwp');
       expect(result.mimeType).toBe('text/plain');
 
       const txt = result.buffer.toString('utf-8');

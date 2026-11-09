@@ -117,7 +117,7 @@ describe('OCR CJK text layer composite font', () => {
     const descriptor = cidFont.lookup(PDFName.of('FontDescriptor'), PDFDict);
     expect(descriptor.get(PDFName.of('Type'))?.toString()).toBe('/FontDescriptor');
 
-    const toUnicode = type0.lookup(PDFName.of('ToUnicode'), PDFRawStream);
+    const toUnicode = type0.lookup(PDFName.of('ToUnicode')) as PDFRawStream;
     const cmap = Buffer.from(decodePDFRawStream(toUnicode).decode()).toString('latin1');
     expect(cmap).toMatch(/begincodespacerange\s*<0000>\s*<FFFF>\s*endcodespacerange/);
   });

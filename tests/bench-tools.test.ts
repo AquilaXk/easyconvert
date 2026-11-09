@@ -48,7 +48,7 @@ describe('the reference avifenc is the worker\'s encoder when it is installed', 
     return file;
   };
   const resolveIn = (...dirs: string[]): string | null =>
-    defaultResolver({ BENCH_TOOL_DIRS: dirs.map((dir) => path.join(work, dir)).join(path.delimiter) })('avifenc');
+    defaultResolver({ BENCH_TOOL_DIRS: dirs.map((dir) => path.join(work, dir)).join(path.delimiter) } as unknown as NodeJS.ProcessEnv)('avifenc');
 
   beforeAll(() => {
     work = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-avifenc-pinned-'));

@@ -282,7 +282,7 @@ describe('PDF/A-1b /Info and XMP date normalisation (rule 6.7.3-1)', () => {
     });
     const inspected = await inspectPdfDatesAndMetadata(await normalisePdfADates(raw));
     // veraPDF 6.7.3-1 and 6.7.3-8: a date present in /Info equals its XMP property, the instant and not the text.
-    if (spec.infoCreationDate !== undefined) {
+    if ('infoCreationDate' in spec && spec.infoCreationDate !== undefined) {
       expect(decodeTestXmpDate(inspected.xmpCreateDate!)).toEqual(decodeTestPdfDate(inspected.infoCreationDate!));
     }
     if (inspected.infoModDate !== undefined) {

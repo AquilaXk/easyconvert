@@ -67,7 +67,7 @@ describe('a persisted worker output that disappeared', () => {
   oracleTest('fails a real ffmpeg result with WorkerOutputMissingError instead of a 0-byte buffer', ['ffmpeg'], async () => {
     const outputPath = path.join(tempDir(), 'tone.mp3');
     // The engine function itself: the aggregate executeWorkerConversion spreads the result, which reads the file at once.
-    const result = await convertWithNativeFfmpeg(silentWav(), 'wav', 'mp3', { outputPath, throwOnUnavailable: true }, 'tone.wav');
+    const result = await convertWithNativeFfmpeg({ inputBuffer: silentWav(), outputPath }, 'wav', 'mp3', { throwOnUnavailable: true }, 'tone.wav');
     expect(result).not.toBeNull();
 
     expect(result!.engineUsed).toBe('native-ffmpeg');

@@ -1,6 +1,6 @@
 import { Readable } from 'node:stream';
-import os from 'node:os';
 import { executeSandboxedBinary, rethrowSandboxUnavailable } from '../security/process-sandbox';
+import { availableCpus } from '../workers/available-cpus';
 import { CPU_POOL_TASK_TIMEOUT_MS } from '../workers/cpu-pool';
 import { resolveBinaryPath } from './pdf-postprocess/utils';
 
@@ -91,7 +91,7 @@ export async function bzip2WithLbzip2(segments: readonly Uint8Array[], inputByte
   const blockUnits = bzip2BlockUnitsOfLevel(productLevel);
   let stream: Buffer;
   try {
-    const run = await executeSandboxedBinary(binary, ['-c', `-${blockUnits}`, '-n', String(os.availableParallelism())], {
+    const run = await executeSandboxedBinary(binary, ['-c', `-${blockUnits}`, '-n', String(availableCpus())], {
       stdin: Readable.from(segments, { objectMode: false }),
       maxBuffer: worstCaseOutputBytes(inputBytes),
       timeoutMs: runtime.timeoutMs ?? CPU_POOL_TASK_TIMEOUT_MS,

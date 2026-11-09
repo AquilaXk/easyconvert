@@ -325,13 +325,13 @@ describe('Parquet to delimited text and JSON, direct routes', () => {
       expect(direct).not.toBeNull();
       expect((direct as Buffer).equals(await generalTable(parquetBytes, target))).toBe(true);
     }
-    expect(parquetToJson(parquetBytes).toString('utf8')).toBe(stringifyJsonLossless(decodeParquet(parquetBytes) as never, 2));
+    expect(parquetToJson(parquetBytes)!.toString('utf8')).toBe(stringifyJsonLossless(decodeParquet(parquetBytes) as never, 2));
   });
 
   it('writes a string that needs a JSON escape and holds a non-ASCII letter', () => {
     const records = [{ s: 'ctl\u001d\u06fc "q" \\ é' }, { s: 'pair 😀 and \ttab' }, { s: 'plain' }];
     const parquetBytes = encodeParquet(records);
-    expect(parquetToJson(parquetBytes).toString('utf8')).toBe(stringifyJsonLossless(decodeParquet(parquetBytes) as never, 2));
+    expect(parquetToJson(parquetBytes)!.toString('utf8')).toBe(stringifyJsonLossless(decodeParquet(parquetBytes) as never, 2));
   });
 
   oracleTest('reads pages that end at different rows in each column, as the general route does', ['python3'], async () => {

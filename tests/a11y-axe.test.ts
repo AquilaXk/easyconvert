@@ -42,9 +42,11 @@ interface PageCase {
   page: () => ReactNode;
 }
 
+const API_ORIGIN = 'https://convert.aquilaxk.site';
+
 const PAGES: PageCase[] = [
-  { name: 'home', locale: 'en', page: () => createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
-  { name: 'home in Korean', locale: 'ko', page: () => createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
+  { name: 'home', locale: 'en', page: () => createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS, apiOrigin: API_ORIGIN }) },
+  { name: 'home in Korean', locale: 'ko', page: () => createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS, apiOrigin: API_ORIGIN }) },
   { name: 'converter pair /pdf-to-docx', locale: 'en', page: () => createElement(ConverterPageView, { parsed: parsedSlug('pdf-to-docx'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
   { name: 'format page /pdf-converter', locale: 'en', page: () => createElement(ConverterPageView, { parsed: parsedSlug('pdf-converter'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
   { name: 'pricing', locale: 'en', page: () => createElement(PricingPageView, { anonymousDaily: ANONYMOUS_DAILY_CONVERSIONS }) },
@@ -151,12 +153,12 @@ describe('keyboard and target-size guards that jsdom can see', () => {
     document.body.append(host);
     root = createRoot(host);
     await act(async () => {
-      root?.render(createElement(NextIntlClientProvider, { locale, messages: testMessages(locale), timeZone: 'UTC' }, page()));
+      root?.render(createElement(NextIntlClientProvider, { locale, messages: testMessages(locale), timeZone: 'UTC', children: page() }));
     });
   };
 
   it('keeps the visually hidden file input out of the Tab order, so no focus stop is invisible', async () => {
-    await mount('ko', () => createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }));
+    await mount('ko', () => createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS, apiOrigin: API_ORIGIN }));
     expect(document.querySelector<HTMLInputElement>('input[type="file"]')?.tabIndex).toBe(-1);
   });
 
@@ -175,7 +177,7 @@ describe('keyboard and target-size guards that jsdom can see', () => {
     await mount('en', () => queue(converting, true));
     expect(document.activeElement).toBe(document.body);
     await act(async () => {
-      root?.render(createElement(NextIntlClientProvider, { locale: 'en', messages: testMessages('en'), timeZone: 'UTC' }, queue(done, false)));
+      root?.render(createElement(NextIntlClientProvider, { locale: 'en', messages: testMessages('en'), timeZone: 'UTC', children: queue(done, false) }));
     });
     expect(document.activeElement?.matches('a[download]')).toBe(true);
   });

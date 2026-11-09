@@ -1,10 +1,10 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import sharp from 'sharp';
 import { ConversionFailedError, UnsupportedOptionError } from '../lib/types';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
+import { availableCpus } from '../lib/workers/available-cpus';
 import { SandboxedBufferLimitError, type SandboxedExecutionResult } from './sandbox';
 
 /**
@@ -60,7 +60,7 @@ export interface PageBatch {
 }
 
 /** Processes one request may draw pages with: the cores this process may use, at most `PAGE_RENDER_MAX_PROCESSES`. */
-export function pageRenderProcesses(cores: number = os.availableParallelism()): number {
+export function pageRenderProcesses(cores: number = availableCpus()): number {
   return Math.max(1, Math.min(cores, PAGE_RENDER_MAX_PROCESSES));
 }
 

@@ -752,7 +752,9 @@ describe.skipIf(toolsMissing)('a WMF file that is a picture and nothing else, wr
     'tika-testwmf.wmf: the picture is left out with a warning when the page holds a rectangle too, and a page of only a picture is refused with its reason',
     async (ctx) => {
       const { bytes } = await requireRealworldSample(ctx, 'tika-testwmf.wmf');
-      const outcome = await dispatchConversion(bytes, 'wmf', 'dxf', {}, 'tika-testwmf.wmf').catch((error: unknown) => error);
+      const outcome = await dispatchConversion(bytes, 'wmf', 'dxf', {}, 'tika-testwmf.wmf').catch(
+        (error: unknown): Error => (error instanceof Error ? error : new Error(String(error)))
+      );
       if (outcome instanceof Error) {
         expect(outcome).toBeInstanceOf(ConversionFailedError);
         expect(outcome.message).toBe('The page draws no vector geometry, so there is nothing to write as DXF.');

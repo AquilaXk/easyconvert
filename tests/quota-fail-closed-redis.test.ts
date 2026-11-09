@@ -219,7 +219,7 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
   });
 
   describe('CSRF Protection Middleware (src/middleware.ts)', () => {
-    it('blocks cookie-authenticated mutation when Origin and Referer are missing', () => {
+    it('blocks cookie-authenticated mutation when Origin and Referer are missing', async () => {
       const req = new NextRequest('http://localhost:3000/api/keys', {
         method: 'POST',
         headers: {
@@ -227,7 +227,7 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
         },
       });
 
-      const res = middleware(req);
+      const res = await middleware(req);
       expect(res.status).toBe(403);
       expect(res.headers.get('content-type')).toBe('application/problem+json');
     });
@@ -241,14 +241,14 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
         },
       });
 
-      const res = middleware(req);
+      const res = await middleware(req);
       expect(res.status).toBe(403);
       const json = await res.json();
       expect(json.status).toBe(403);
       expect(json.detail).toMatch(/Cross-site request forgery detected: untrusted origin/i);
     });
 
-    it('allows cookie-authenticated mutation when Origin matches Host/NextUrl origin', () => {
+    it('allows cookie-authenticated mutation when Origin matches Host/NextUrl origin', async () => {
       const req = new NextRequest('http://localhost:3000/api/keys', {
         method: 'POST',
         headers: {
@@ -258,12 +258,12 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
         },
       });
 
-      const res = middleware(req);
+      const res = await middleware(req);
       // Middleware returns 200 via NextResponse.next()
       expect(res.status).toBe(200);
     });
 
-    it('allows programmatic API key mutations without Origin header', () => {
+    it('allows programmatic API key mutations without Origin header', async () => {
       const req = new NextRequest('http://localhost:3000/api/v1/jobs', {
         method: 'POST',
         headers: {
@@ -271,11 +271,11 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
         },
       });
 
-      const res = middleware(req);
+      const res = await middleware(req);
       expect(res.status).toBe(200);
     });
 
-    it('allows safe HTTP GET requests without Origin check', () => {
+    it('allows safe HTTP GET requests without Origin check', async () => {
       const req = new NextRequest('http://localhost:3000/api/queue/jobs', {
         method: 'GET',
         headers: {
@@ -283,7 +283,7 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
         },
       });
 
-      const res = middleware(req);
+      const res = await middleware(req);
       expect(res.status).toBe(200);
     });
   });
@@ -296,7 +296,6 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
       testUser = await redisUserStore.createUser({
         email: 'tier@test.com',
         name: 'Tier Test User',
-        password: 'Password123!',
         tier: 'free',
       });
     });

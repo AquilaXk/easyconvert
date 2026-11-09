@@ -23,6 +23,7 @@ import {
 } from '../lib/conversions/pdf-export-options';
 import { officeInputFilterArgs } from '../lib/conversions/office/legacy-import-filter';
 import { officeSuiteApplication, type OfficeSuiteApplication } from '../lib/conversions/office/office-suite-sources';
+import { availableCpus } from '../lib/workers/available-cpus';
 import { writeOfficeProfile } from './libreoffice-profile';
 import type { WorkerEngineOptions, WorkerConversionResult } from './engines';
 
@@ -222,7 +223,7 @@ export class LibreOfficePoolManager {
   private spawningWorkers = 0;
 
   constructor(options: LibreOfficePoolOptions = {}) {
-    const cpus = os.cpus()?.length || 2;
+    const cpus = availableCpus();
     this.maxWorkers = options.maxWorkers ?? Math.max(1, Math.min(4, cpus));
     this.minWorkers = options.minWorkers ?? Math.min(1, this.maxWorkers);
     this.maxJobsPerWorker = options.maxJobsPerWorker ?? 150;

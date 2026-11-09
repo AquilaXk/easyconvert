@@ -1,0 +1,64 @@
+groups:
+  - name: easyconvert
+    interval: 1m
+    rules:
+      - alert: EasyConvertErrorBudgetBurn
+        expr: |
+          (
+            (
+              sum by (family) (increase(easyconvert_http_requests_total{outcome=~"failed|timed_out"}[1h]))
+              + sum by (family) (increase(easyconvert_jobs_total{outcome=~"failed|timed_out"}[1h]))
+            )
+            /
+            clamp_min(
+              sum by (family) (increase(easyconvert_http_requests_total{outcome=~"ok|failed|timed_out"}[1h]))
+              + sum by (family) (increase(easyconvert_jobs_total{outcome=~"ok|failed|timed_out"}[1h])),
+              1
+            ) > 0.072
+            and
+            (
+              sum by (family) (increase(easyconvert_http_requests_total{outcome=~"ok|failed|timed_out"}[1h]))
+              + sum by (family) (increase(easyconvert_jobs_total{outcome=~"ok|failed|timed_out"}[1h]))
+            ) >= 20
+            and
+            (
+              sum by (family) (increase(easyconvert_http_requests_total{outcome=~"failed|timed_out"}[6h]))
+              + sum by (family) (increase(easyconvert_jobs_total{outcome=~"failed|timed_out"}[6h]))
+            )
+            /
+            clamp_min(
+              sum by (family) (increase(easyconvert_http_requests_total{outcome=~"ok|failed|timed_out"}[6h]))
+              + sum by (family) (increase(easyconvert_jobs_total{outcome=~"ok|failed|timed_out"}[6h])),
+              1
+            ) > 0.072
+          )
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "EasyConvert error budget burn for family {{ $labels.family }}"
+          description: "Family {{ $labels.family }} is burning its 28-day 99.5% availability error budget at more than 14.4x (> 7.2% failure share over both 1h and 6h with at least 20 eligible conversions in 1h)."
+          runbook: docs/operations/alerts.md#alert-error-budget-burn
+
+      - alert: EasyConvertQueueAgeHigh
+        expr: |
+          max by (queue) (easyconvert_queue_oldest_waiting_age_seconds) > 300
+          or max(up{job="easyconvert-worker"}) == 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "EasyConvert queue waiting age above 5 minutes or no worker scraped"
+          description: "The oldest waiting job in a queue has waited more than 300 seconds, or no easyconvert-worker target is up."
+          runbook: docs/operations/alerts.md#alert-queue-age
+
+      - alert: EasyConvertWorkerRestarts
+        expr: |
+          changes(process_start_time_seconds{job="easyconvert-worker"}[15m]) >= 3
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "EasyConvert worker restarted 3 or more times in 15 minutes"
+          description: "A worker process restarted at least 3 times within 15 minutes (process_start_time_seconds changes >= 3)."
+          runbook: docs/operations/alerts.md#alert-worker-restarts

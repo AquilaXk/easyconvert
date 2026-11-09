@@ -20,6 +20,8 @@ const VIEWS: Record<Exclude<ClientMessagesPage, 'layout'>, string> = {
   auth: 'src/components/pages/AuthPageView.tsx',
   dashboard: 'src/components/pages/DashboardPageView.tsx',
   apiDocs: 'src/components/pages/ApiDocsPageView.tsx',
+  pricing: 'src/components/pages/PricingPageView.tsx',
+  legal: 'src/components/legal/LegalDocumentPage.tsx',
   notFound: 'src/components/pages/NotFoundPageView.tsx',
 };
 

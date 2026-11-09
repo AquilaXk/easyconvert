@@ -415,7 +415,7 @@ describe('Phase 3-A: Queue Engine Hardening (Priority ZSET, Atomic Lua Add, Pub/
       await adapter.add('trigger', { val: 1 });
 
       expect(await admin.type(waitingKey)).toBe('zset');
-      const zsetItems = await admin.zrange(waitingKey, 0, -1);
+      const zsetItems = await admin.zrange(waitingKey, '0', '-1');
       // Verify sequence is preserved: zzz-seq, mmm-seq, aaa-seq (followed by trigger)
       expect(zsetItems.slice(0, 3)).toEqual(['zzz-seq', 'mmm-seq', 'aaa-seq']);
     });

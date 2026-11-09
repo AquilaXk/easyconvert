@@ -70,7 +70,7 @@ function zipClaiming(entry: { data: Buffer; crc: number }, claimedBytes: number)
 
 function extract(ip: string, name: string, content: Buffer) {
   const form = new FormData();
-  form.append('files', new File([content], name));
+  form.append('files', new File([new Uint8Array(content)], name));
   return extractRoute(new NextRequest('http://localhost/api/tools/archive-extract', { method: 'POST', headers: { 'x-forwarded-for': ip }, body: form }));
 }
 

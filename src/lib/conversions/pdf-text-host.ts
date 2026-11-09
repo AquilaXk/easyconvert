@@ -1,10 +1,10 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { setFlagsFromString } from 'node:v8';
 import { createRequire } from 'node:module';
 import { Worker } from 'node:worker_threads';
 import { EngineUnavailableError } from '../types';
+import { availableCpus } from '../workers/available-cpus';
 import { olderThanSource } from '../workers/compiled-worker';
 import {
   PDF_TEXT_DEADLINE_ENV,
@@ -123,7 +123,7 @@ export function pdfTextDeadlineMs(): number {
 }
 
 function poolLimit(): number {
-  return Math.max(1, Math.min(MAX_POOL, os.availableParallelism()));
+  return Math.max(1, Math.min(MAX_POOL, availableCpus()));
 }
 
 function resolveWorkerEntry(): WorkerEntry {

@@ -31,6 +31,8 @@ import {
   renderSafePdfText,
   renderSinglePdfShape,
   renderPdfChart,
+  type DrawingMlShape,
+  type OpenXmlChartData,
 } from '../src/lib/conversions/office';
 
 describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & CJK Fonts', () => {

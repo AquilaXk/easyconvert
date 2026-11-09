@@ -17,7 +17,7 @@ describe('Phase 1-D: Storage Secrets Hardening & Namespace Cleanup', () => {
 
   describe('S3 Storage Service Security Hardening', () => {
     it('fails closed in production when signing secret is missing', () => {
-      process.env.NODE_ENV = 'production';
+      (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
       delete process.env.S3_SIGNING_SECRET;
       delete process.env.STORAGE_SIGNING_SECRET;
       delete process.env.OCI_SIGNING_SECRET;
@@ -30,7 +30,7 @@ describe('Phase 1-D: Storage Secrets Hardening & Namespace Cleanup', () => {
     it('refuses to sign in non-production when no secret is configured instead of generating a per-process one', () => {
       delete process.env.S3_SIGNING_SECRET;
       delete process.env.STORAGE_SIGNING_SECRET;
-      process.env.NODE_ENV = 'development';
+      (process.env as Record<string, string | undefined>).NODE_ENV = 'development';
 
       const service = new S3ObjectStorageService();
       try {
@@ -43,7 +43,7 @@ describe('Phase 1-D: Storage Secrets Hardening & Namespace Cleanup', () => {
     });
 
     it('fails closed in production when APP_URL is missing during local presigned URL generation', () => {
-      process.env.NODE_ENV = 'production';
+      (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
       process.env.S3_SIGNING_SECRET = 'prod-signing-secret-minimum-32-bytes-long';
       delete process.env.APP_URL;
 
@@ -120,7 +120,7 @@ describe('Phase 1-D: Storage Secrets Hardening & Namespace Cleanup', () => {
 
   describe('OCI Storage Service Security Hardening', () => {
     it('fails closed in production when OCI namespace is missing', () => {
-      process.env.NODE_ENV = 'production';
+      (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
       delete process.env.OCI_NAMESPACE;
       process.env.STORAGE_SIGNING_SECRET = 'valid-storage-secret-for-oci-prod';
 
@@ -130,7 +130,7 @@ describe('Phase 1-D: Storage Secrets Hardening & Namespace Cleanup', () => {
     });
 
     it('fails closed in production when OCI signing secret is missing', () => {
-      process.env.NODE_ENV = 'production';
+      (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
       process.env.OCI_NAMESPACE = 'tenant-oci-namespace';
       delete process.env.STORAGE_SIGNING_SECRET;
       delete process.env.S3_SIGNING_SECRET;

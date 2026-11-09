@@ -190,7 +190,7 @@ describe('output paths never throw on oversized structures', () => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const res = await getJob(
         new NextRequest(`${BASE_URL}/api/v1/jobs/${graphId}`, { headers: { Authorization: `Bearer ${secretKey}` } }),
-        { params: { id: graphId } }
+        { params: Promise.resolve({ id: graphId }) }
       );
       const text = await res.text();
       expect(res.status, text).toBe(200);

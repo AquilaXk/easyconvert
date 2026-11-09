@@ -67,7 +67,7 @@ afterEach(() => {
 
 function convertRequest(): NextRequest {
   const form = new FormData();
-  form.append('file', new File([png], 'pixel.png'));
+  form.append('file', new File([new Uint8Array(png)], 'pixel.png'));
   form.append('targetFormat', 'jpg');
   return new NextRequest('http://localhost:3000/api/convert', { method: 'POST', body: form });
 }
@@ -100,7 +100,7 @@ async function spawnFailure(): Promise<Error> {
 }
 
 function renderedRow(failure: ConversionFailure) {
-  const file = new File([png], 'pixel.png');
+  const file = new File([new Uint8Array(png)], 'pixel.png');
   const item: ConversionQueueItem = {
     id: 'row-1', file, name: 'pixel.png', size: file.size, sourceFormat: 'png', targetFormat: 'jpg', status: 'error', progress: 0, options: {}, error: failure,
   };
@@ -259,7 +259,7 @@ describe('a failure the server did not classify keeps its text in the server log
     vi.mocked(dispatchConversion).mockRejectedValueOnce(error);
     vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => convertRoute(new NextRequest(new URL(url, 'http://localhost:3000'), init as never))));
     const onError = vi.fn<(failure: ConversionFailure) => void>();
-    const file = new File([png], 'pixel.png');
+    const file = new File([new Uint8Array(png)], 'pixel.png');
     await executeItemConversion(
       { id: 'row-1', file, name: 'pixel.png', size: file.size, sourceFormat: 'png', targetFormat: 'jpg', status: 'ready', progress: 0, options: {} },
       { onProgress: noop, onSuccess: noop, onError }

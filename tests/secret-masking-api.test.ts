@@ -103,7 +103,7 @@ describe('job API responses', () => {
     expect(json.graph.nodes.out).toEqual({ id: 'out', op: 'export.url', input: 'conv', method: 'PUT', sealed: '***' });
 
     const res = await getJob(new NextRequest(`${BASE_URL}/api/v1/jobs/${json.jobId}`, { headers: authHeaders }), {
-      params: { id: json.jobId },
+      params: Promise.resolve({ id: json.jobId }),
     });
     const fetched = await res.text();
     expect(res.status).toBe(200);
@@ -121,7 +121,7 @@ describe('job API responses', () => {
     expectNoSecrets('POST with tasks', text);
 
     const res = await getJob(new NextRequest(`${BASE_URL}/api/v1/jobs/${json.jobId}`, { headers: authHeaders }), {
-      params: { id: json.jobId },
+      params: Promise.resolve({ id: json.jobId }),
     });
     const body = await res.json();
     expect(body.tasks[1]).toEqual({
@@ -163,7 +163,7 @@ describe('job API responses', () => {
     };
 
     const res = await getJob(new NextRequest(`${BASE_URL}/api/v1/jobs/${job.id}`, { headers: authHeaders }), {
-      params: { id: job.id },
+      params: Promise.resolve({ id: job.id }),
     });
     const text = await res.text();
     expect(res.status).toBe(200);
@@ -181,7 +181,7 @@ describe('job API responses', () => {
     expectNoSecrets('GET /api/v1/jobs', listText);
 
     const legacy = await getQueueJob(new NextRequest(`${BASE_URL}/api/queue/jobs/${job.id}`, { headers: authHeaders }), {
-      params: { id: job.id },
+      params: Promise.resolve({ id: job.id }),
     });
     const legacyText = await legacy.text();
     expect(legacy.status).toBe(200);
@@ -270,7 +270,7 @@ describe('webhook payloads and dead-letter entries', () => {
     expect(JSON.parse(listText).entries[0].targetUrl).toBe(`${WEBHOOK_URL}?***`);
 
     const oneRes = await getDlqEntry(sessionRequest(`/api/webhooks/dlq/dlq_${failed.id}`), {
-      params: { id: `dlq_${failed.id}` },
+      params: Promise.resolve({ id: `dlq_${failed.id}` }),
     });
     const oneText = await oneRes.text();
     expectNoSecrets('GET /api/webhooks/dlq/:id', oneText);
@@ -278,7 +278,7 @@ describe('webhook payloads and dead-letter entries', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response('ok', { status: 200 }));
     const replayRes = await replayDlq(sessionRequest(`/api/webhooks/dlq/dlq_${failed.id}/replay`, 'POST'), {
-      params: { id: `dlq_${failed.id}` },
+      params: Promise.resolve({ id: `dlq_${failed.id}` }),
     });
     const replayText = await replayRes.text();
     expect(replayRes.status).toBe(200);

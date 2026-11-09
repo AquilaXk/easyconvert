@@ -2,7 +2,7 @@
 
 This page says what the service measures about itself, how an operator reads it, and the objectives (availability and latency per family) that those measures are held against. The choices behind it are entry 179 of [policy-decisions.md](policy-decisions.md).
 
-**Phase 1 (this page) is the metrics and the objectives.** The alerts on them (burn of the error budget, the age of the queue, the restarts of the worker) and the runbook entry each one links to come in phase 2 (issue #899). Until then nothing pages anyone; the scheduled readiness probe (`.github/workflows/uptime.yml`, entry 173) is the only alarm.
+The Prometheus alert rules on these metrics live in [`deploy/oci/prometheus-alerts.yml`](../deploy/oci/prometheus-alerts.yml) and link each alert to its runbook entry in [`docs/operations/alerts.md`](operations/alerts.md): [`EasyConvertErrorBudgetBurn`](operations/alerts.md#alert-error-budget-burn), [`EasyConvertQueueAgeHigh`](operations/alerts.md#alert-queue-age), and [`EasyConvertWorkerRestarts`](operations/alerts.md#alert-worker-restarts). Alongside them, the scheduled readiness probe (`.github/workflows/uptime.yml`, entry 173) checks public reachability from outside the host.
 
 ## The metrics
 
@@ -91,6 +91,12 @@ For a graph, `histogram_quantile(0.95, sum by (le) (rate(easyconvert_http_reques
 - **Availability.** The same corpus run had no crash, no hang and no output that failed its check: 18,294 conversions answered, 500 files refused (4xx), none failed. A fault of the engines is not what is expected to cost availability; the host is: a single machine, restarted for each deployment, with no second replica. 99.5 percent leaves about 3 hours 22 minutes in 28 days for that, which the 15-minute readiness probe can see. The same value is given to every family because the corpus shows no difference between them; a family that costs more than its share of the budget gets its own value at the first review.
 - **Limits that bound the figures.** A synchronous conversion is cut at 120 s (`SYNC_DEADLINE_MAX_MS`, `src/lib/queue/job-deadline.ts`), and the CDN in front of the origin closes a request that waits more than 100 s for its first byte, so no latency target is above 60 s. A conversion that needs longer is a job (`POST /api/v1/jobs`).
 
-## What is not here yet
+## Alert rules and runbook
 
-Phase 2 of issue #899 adds the alert rules (burn of the error budget of the figures above, the age of the queue, the restart rate of the worker), the scraper that evaluates them, and the runbook entry each alert links to. The runbook entries are written already, one for each of the three alerts, in [operations/alerts.md](operations/alerts.md), so that the rules can link to them. Structured JSON logs with a request or job id are not part of phase 1: the outcome lines of the convert routes already carry a request id and redact file names and passwords, and the job logs are unchanged.
+The Prometheus alert rules live in [`deploy/oci/prometheus-alerts.yml`](../deploy/oci/prometheus-alerts.yml) (rule group `easyconvert`) and link each alert to its runbook entry in [`docs/operations/alerts.md`](operations/alerts.md):
+
+- `EasyConvertErrorBudgetBurn` ([`docs/operations/alerts.md#alert-error-budget-burn`](operations/alerts.md#alert-error-budget-burn)): 14.4x multi-window (`1h` and `6h`) burn rate on the 99.5% availability objective (`> 0.072` failure share with at least 20 eligible completions in `1h`), grouped by `family`, for `5m`.
+- `EasyConvertQueueAgeHigh` ([`docs/operations/alerts.md#alert-queue-age`](operations/alerts.md#alert-queue-age)): oldest waiting job in any queue above 300 seconds (`max by (queue) (easyconvert_queue_oldest_waiting_age_seconds) > 300`) or no worker scraped (`max(up{job="easyconvert-worker"}) == 0`), for `5m`.
+- `EasyConvertWorkerRestarts` ([`docs/operations/alerts.md#alert-worker-restarts`](operations/alerts.md#alert-worker-restarts)): three or more worker restarts in 15 minutes (`changes(process_start_time_seconds{job="easyconvert-worker"}[15m]) >= 3`), for `0m`.
+
+Structured JSON logs with a request or job id are not part of phase 1: the outcome lines of the convert routes already carry a request id and redact file names and passwords, and the job logs are unchanged.

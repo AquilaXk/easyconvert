@@ -250,7 +250,7 @@ describe('the memory maximum of the decoder modules', () => {
 
   it('lets a decoder grow to the maximum and no further', async () => {
     const pages = PDF_WASM_DECODER_MAX_BYTES / (64 * 1024);
-    const compiled = await WebAssembly.compile(withMemoryMaximum(decoder, pages));
+    const compiled = await WebAssembly.compile(new Uint8Array(withMemoryMaximum(decoder, pages)));
     const { exports } = await WebAssembly.instantiate(compiled, stubImports(compiled));
     const memory = Object.values(exports).find((value): value is WebAssembly.Memory => value instanceof WebAssembly.Memory);
     expect(memory).toBeDefined();

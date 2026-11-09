@@ -51,7 +51,7 @@ describe.skipIf(!REDIS_URL)('the per-user index of graphs in Redis', () => {
     const now = Date.now();
     const graphId = await start(userId, now - 5);
 
-    expect(await client.zrange(index(), 0, -1, 'WITHSCORES')).toEqual([graphId, String(now - 5)]);
+    expect(await client.zrange(index(), '0', '-1', 'WITHSCORES')).toEqual([graphId, String(now - 5)]);
   });
 
   it('lists the newest graphs of the user first, never those of another user, and reads the index once', async () => {
@@ -91,7 +91,7 @@ describe.skipIf(!REDIS_URL)('the per-user index of graphs in Redis', () => {
     await client.del(...(await client.keys(`${keyPrefix}graph:{${expired}}*`)));
 
     expect((await scheduler.listGraphsOfUser(userId, 10)).map((graph) => graph.graphId)).toEqual([kept]);
-    expect(await client.zrange(index(), 0, -1)).toEqual([kept]);
+    expect(await client.zrange(index(), '0', '-1')).toEqual([kept]);
   });
 
   it('keeps the index as long as a graph state can live, and removes the graphs older than that when a graph is added', async () => {
@@ -100,7 +100,7 @@ describe.skipIf(!REDIS_URL)('the per-user index of graphs in Redis', () => {
     const stale = await start(userId, now - lifetime - 60_000);
     const fresh = await start(userId, now);
 
-    expect(await client.zrange(index(), 0, -1)).toEqual([fresh]);
+    expect(await client.zrange(index(), '0', '-1')).toEqual([fresh]);
     expect(stale).not.toBe(fresh);
     const ttl = await client.pttl(index());
     expect(ttl).toBeGreaterThan(lifetime - 5_000);
@@ -115,7 +115,7 @@ describe.skipIf(!REDIS_URL)('the per-user index of graphs in Redis', () => {
     for (const [n, graphId] of ['g1', 'g2', 'g3', 'g4'].entries()) await add(graphId, now - 10 + n);
     await add('g2', now + 99);
 
-    expect(await client.zrange(index(), 0, -1)).toEqual(['g2', 'g3', 'g4']);
+    expect(await client.zrange(index(), '0', '-1')).toEqual(['g2', 'g3', 'g4']);
     expect(await client.zscore(index(), 'g2')).toBe(String(now - 9));
     expect(MAX_INDEXED_GRAPHS_PER_USER).toBe(1000);
   });
@@ -134,6 +134,6 @@ describe.skipIf(!REDIS_URL)('the per-user index of graphs in Redis', () => {
 
     await scheduler.recoverStart(graphId);
 
-    expect(await client.zrange(index(), 0, -1)).toEqual([graphId]);
+    expect(await client.zrange(index(), '0', '-1')).toEqual([graphId]);
   });
 });

@@ -466,6 +466,7 @@ describe('the record of an object the local driver stores', () => {
         uploadedAt: Date.now(),
         expiresAt: Date.now() + 60_000,
         filePath: privateFile,
+        buffer: Buffer.alloc(0),
       })
     ).toThrow(/only this process/);
     expect(fs.existsSync(globalSharedObjects.objectPath(KEY))).toBe(false);

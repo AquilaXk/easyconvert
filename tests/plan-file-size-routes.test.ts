@@ -151,7 +151,7 @@ describe('/api/storage/multipart sizes an upload by the plan limit', () => {
     cleanups.push(async () => {
       await s3Storage.abortMultipartUpload(uploadId);
     });
-    vi.spyOn(s3Storage, 'getUploadedParts').mockReturnValue([{ partNumber: 1, etag: 'e', size: 1014 }]);
+    vi.spyOn(s3Storage, 'getUploadedParts').mockResolvedValue([{ partNumber: 1, etag: 'e', size: 1014 }]);
 
     const part = await multipartPost(
       new NextRequest(`${BASE_URL}/api/storage/multipart?action=chunk`, {
@@ -213,7 +213,9 @@ describe('/api/v1/uploads (multipart sessions and resumable uploads) size an upl
     expect(created.status).toBe(201);
     const sessionId = created.headers.get('location')?.split('/').pop();
     expect(sessionId).toBeTruthy();
-    cleanups.push(() => tusEngine.terminateSession(sessionId!));
+    cleanups.push(async () => {
+      await tusEngine.terminateSession(sessionId!);
+    });
   });
 
   it('advertises the largest plan limit as the ceiling of a resumable upload', () => {
@@ -225,7 +227,7 @@ describe('/api/v1/uploads (multipart sessions and resumable uploads) size an upl
 describe('job routes size a stored input by the plan limit', () => {
   async function storeFor(user: User): Promise<string> {
     const key = `uploads/plan-size_${crypto.randomBytes(6).toString('hex')}.csv`;
-    storageProvider.saveObject(key, Buffer.from('a,b\n1,2\n'), 'text/csv', 'a.csv', 60_000, user.id);
+    storageProvider.saveObject(key, Buffer.from('a,b\n1,2\n'), 'text/csv', 'a.csv', 60_000);
     cleanups.push(() => {
       storageProvider.deleteObject(key);
     });

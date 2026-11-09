@@ -23,7 +23,7 @@ const HANGUL = /[가-힣]/;
 const noop = () => undefined;
 
 function queueItem(name: string, bytes: Uint8Array, sourceFormat: string, targetFormat: string, options: ConversionQueueItem['options'] = {}): ConversionQueueItem {
-  const file = new File([bytes], name);
+  const file = new File([new Uint8Array(bytes)], name);
   return { id: 'row-1', file, name, size: file.size, sourceFormat, targetFormat, status: 'ready', progress: 0, options };
 }
 

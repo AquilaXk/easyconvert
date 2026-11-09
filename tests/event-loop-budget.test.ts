@@ -36,7 +36,7 @@ interface LoopStats {
 }
 
 function threadCpuMs(): number {
-  const { user, system } = process.threadCpuUsage();
+  const { user, system } = (process as unknown as { threadCpuUsage: () => NodeJS.CpuUsage }).threadCpuUsage();
   return (user + system) / US_PER_MS;
 }
 

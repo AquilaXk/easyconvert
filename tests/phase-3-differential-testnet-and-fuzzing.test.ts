@@ -493,7 +493,7 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
           expect(() => parseCfbf(buf)).toThrow();
 
           // 3. WOFF2 decoder
-          expect(() => decodeWoff2(buf)).toThrow();
+          expect(() => decodeWoff2(buf, 'corrupted')).toThrow();
 
           // 4. Archive extractor
           await expect(
@@ -609,8 +609,8 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
         malformedWoff2.writeUInt32BE(10000, 8); // Claim length 10000 bytes (file is only 64 bytes)
         malformedWoff2.writeUInt16LE(10, 12); // Table count 10
 
-        expect(() => decodeWoff2(malformedWoff2)).toThrow(Woff2FormatError);
-        expect(() => decodeWoff2(malformedWoff2)).toThrow(/Invalid WOFF2: the header declares 10000 bytes but the file has 64/);
+        expect(() => decodeWoff2(malformedWoff2, 'malformed')).toThrow(Woff2FormatError);
+        expect(() => decodeWoff2(malformedWoff2, 'malformed')).toThrow(/Invalid WOFF2: the header declares 10000 bytes but the file has 64/);
       });
     });
   });

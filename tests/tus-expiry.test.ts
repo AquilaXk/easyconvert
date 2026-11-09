@@ -91,7 +91,7 @@ describe('TUS expiration extension', () => {
           },
           body: new Uint8Array(body),
           duplex: 'half',
-        } as RequestInit & { duplex: 'half' }),
+        } as ConstructorParameters<typeof NextRequest>[1]),
         { params: Promise.resolve({ id: [id] }) }
       );
     const head = () =>

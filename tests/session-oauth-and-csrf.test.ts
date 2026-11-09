@@ -59,14 +59,14 @@ describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
       const originalEnv = process.env.NODE_ENV;
       const originalSecret = process.env.JWT_SECRET;
       try {
-        process.env.NODE_ENV = 'production';
+        (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
         delete process.env.JWT_SECRET;
 
         expect(() => {
           signJwt({ sub: 'user-fail-closed' });
         }).toThrow(/JWT_SECRET environment variable is required in production/i);
       } finally {
-        process.env.NODE_ENV = originalEnv;
+        (process.env as Record<string, string | undefined>).NODE_ENV = originalEnv;
         if (originalSecret) {
           process.env.JWT_SECRET = originalSecret;
         }

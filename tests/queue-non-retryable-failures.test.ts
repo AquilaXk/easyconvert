@@ -143,7 +143,7 @@ describe('job status responses carry the typed failure', () => {
 
   it('GET /api/v1/jobs/{id} exposes failedStatus and failedCode next to failedReason', async () => {
     const { jobId, headers } = await failedJob();
-    const res = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${jobId}`, { headers }), { params: { id: jobId } });
+    const res = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${jobId}`, { headers }), { params: Promise.resolve({ id: jobId }) });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toMatchObject({ status: 'failed', failedStatus: HTTP_PAYLOAD_TOO_LARGE, failedCode: 'InputPixelLimitError' });
@@ -152,7 +152,7 @@ describe('job status responses carry the typed failure', () => {
 
   it('GET /api/queue/jobs/{id} exposes the same fields', async () => {
     const { jobId, headers } = await failedJob();
-    const res = await getQueueJobRoute(new NextRequest(`${BASE_URL}/api/queue/jobs/${jobId}`, { headers }), { params: { id: jobId } });
+    const res = await getQueueJobRoute(new NextRequest(`${BASE_URL}/api/queue/jobs/${jobId}`, { headers }), { params: Promise.resolve({ id: jobId }) });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ failedStatus: HTTP_PAYLOAD_TOO_LARGE, failedCode: 'InputPixelLimitError' });
   });
@@ -184,7 +184,7 @@ describe('job status responses carry the typed failure', () => {
     await failed;
     await worker.close();
 
-    const res = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${job.id}`, { headers }), { params: { id: job.id } });
+    const res = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${job.id}`, { headers }), { params: Promise.resolve({ id: job.id }) });
     const body = await res.json();
     expect(body).toMatchObject({ status: 'failed', attemptsMade: 1, failedStatus: HTTP_PAYLOAD_TOO_LARGE, failedCode: 'InputPixelLimitError' });
     expect(body.failedReason).toContain(`over the input limit of ${INPUT_LIMIT} pixels`);

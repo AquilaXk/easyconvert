@@ -42,6 +42,7 @@ interface ComposeService {
   environment?: Record<string, string | null>;
   depends_on?: Record<string, { condition: string; required?: boolean }>;
   devices?: string[];
+  healthcheck?: { test: string[] };
 }
 interface Compose {
   name: string;
@@ -104,7 +105,7 @@ describe('docker-compose.prod.yml network exposure', () => {
     expect(command).toContain('exit 1;');
     expect(command.indexOf('exit 1;')).toBeLessThan(command.indexOf('> /tmp/redis.conf'));
     expect(String(redis.tmpfs)).toContain('/tmp:size=16m,noexec,nosuid,nodev,uid=999,gid=1000,mode=0700');
-    expect(redis.healthcheck.test.join(' ')).toContain('REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping');
+    expect(redis.healthcheck!.test.join(' ')).toContain('REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping');
     expect(command).toContain('--maxmemory 256mb');
     expect(command).toContain('--maxmemory-policy noeviction');
     expect(command).toContain('--appendonly yes');
@@ -1316,7 +1317,7 @@ exit 0`
    * still running when the signal arrives sleeps for 20 seconds, so a script that waits for it to end cannot finish in time.
    */
   async function cancelWhile(args: string[], env: Record<string, string>, ready: () => boolean) {
-    const proc = spawn('bash', [SCRIPT, ...args], { env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...env }, stdio: ['ignore', 'ignore', 'pipe'] });
+    const proc = spawn('bash', [SCRIPT, ...args], { env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...env } as unknown as NodeJS.ProcessEnv, stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
     proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
     const exited = new Promise<number | null>((resolve) => proc.on('exit', (code) => resolve(code)));
@@ -1641,7 +1642,7 @@ exit 0`
   it.skipIf(!hasFlock)('leaves no holder of the lock when deploy.sh is killed with SIGKILL while a command runs', async () => {
     unlinkSync(path.join(bin, 'flock'));
     const env = hostEnv({ STUB_HANG_UP: ref('f') });
-    const proc = spawn('bash', [SCRIPT, 'deploy', ref('f')], { env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...env }, stdio: 'ignore' });
+    const proc = spawn('bash', [SCRIPT, 'deploy', ref('f')], { env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...env } as unknown as NodeJS.ProcessEnv, stdio: 'ignore' });
     const exited = new Promise<void>((resolve) => proc.on('exit', () => resolve()));
     try {
       const deadline = Date.now() + 10_000;

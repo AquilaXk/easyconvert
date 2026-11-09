@@ -784,7 +784,7 @@ describe('Workbench media, document, and tabular capability model', () => {
     const noop = () => undefined;
     const queueNoops = {
       onRemoveItem: noop, onClearAll: noop, onUpdateTargetFormat: noop, onUpdateOptions: noop,
-      onConvertAll: noop, onAddMoreFiles: noop, onDownloadAllZip: noop, isConverting: false,
+      onConvertAll: noop, onAddMoreFiles: noop, onImportFile: noop, onDownloadAllZip: noop, isConverting: false,
     };
     const parquetFailedQueue = renderDom(
       createElement(ConversionQueue, {

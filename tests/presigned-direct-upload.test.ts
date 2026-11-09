@@ -345,7 +345,7 @@ describe('Presigned Direct Multipart Upload (WP-22)', () => {
 
       const initRes = await directPostHandler(initReq);
       const initData = await initRes.json();
-      const session = await s3Storage.getUploadSession(initData.uploadId)!;
+      const session = (await s3Storage.getUploadSession(initData.uploadId))!;
 
       // Create an expired presigned URL (1 second expiry in the past)
       const expiredPastDate = new Date(Date.now() - 3600 * 1000);
@@ -435,7 +435,7 @@ describe('Presigned Direct Multipart Upload (WP-22)', () => {
 
       const initRes = await directPostHandler(initReq);
       const initData = await initRes.json();
-      const session = await s3Storage.getUploadSession(initData.uploadId)!;
+      const session = (await s3Storage.getUploadSession(initData.uploadId))!;
 
       // Presigned timestamp 2 hours in the future
       const futureDate = new Date(Date.now() + 7200 * 1000);
@@ -489,7 +489,7 @@ describe('Presigned Direct Multipart Upload (WP-22)', () => {
 
       const initRes = await directPostHandler(initReq);
       const initData = await initRes.json();
-      const session = await s3Storage.getUploadSession(initData.uploadId)!;
+      const session = (await s3Storage.getUploadSession(initData.uploadId))!;
 
       // Presigned URL that signs both host and x-custom-token
       const presigned = presignSigV4QueryUrl({

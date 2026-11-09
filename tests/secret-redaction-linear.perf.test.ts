@@ -99,7 +99,7 @@ describe('a large free-text option does not stall the API', () => {
       );
       const created = await post.json();
       const got = await getJob(new NextRequest(`https://easyconvert.app/api/v1/jobs/${created.jobId}`, { headers }), {
-        params: { id: created.jobId },
+        params: Promise.resolve({ id: created.jobId }),
       });
       await got.text();
       await graphScheduler.cancelGraph(created.jobId, 'test cleanup');

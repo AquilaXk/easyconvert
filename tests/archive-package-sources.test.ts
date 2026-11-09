@@ -536,7 +536,7 @@ describe('the bytes a package holds at once, not the bytes it ever wrote', () =>
   function layeredPackage(payloadBytes: number): Buffer {
     let seed = 1;
     // Printable bytes, so the tar's UTF-8 body is exactly as long as asked.
-    const noise = Buffer.alloc(payloadBytes, 0).map(() => (((seed = (seed * 1103515245 + 12345) >>> 0) >>> 16) & 0x3f) + 0x30);
+    const noise = Buffer.from(Buffer.alloc(payloadBytes, 0).map(() => (((seed = (seed * 1103515245 + 12345) >>> 0) >>> 16) & 0x3f) + 0x30));
     return buildDeb('data.tar.gz', storedGzip(storedGzip(tarOf([{ name: 'opt/noise.bin' }, noise.toString('latin1')]))));
   }
 

@@ -267,7 +267,7 @@ describe('scoreInk', () => {
   it('scores a truth with nothing to register as nothing drawn, instead of failing', () => {
     const page = draw(SAME);
     const nothing = { precision: 0, recall: 0, extentError: 1 };
-    for (const strokes of [[], [[[5, 5], [5, 5]]], [[[0, 0], [100, 0]], [[0, 0], [50, 0]]], [[[0, 0], [0, 60]]]] as CadTruth['strokes']) {
+    for (const strokes of [[], [[[5, 5], [5, 5]]], [[[0, 0], [100, 0]], [[0, 0], [50, 0]]], [[[0, 0], [0, 60]]]] as CadTruth['strokes'][]) {
       expect(scoreInk(page, { strokes, textBoxes: [], words: [] })).toEqual(nothing);
     }
   });

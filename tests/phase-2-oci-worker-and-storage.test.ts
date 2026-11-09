@@ -130,9 +130,12 @@ describe('Phase 2: OCI Storage Backend & Container Worker Integration (#109)', (
       ociStorage.saveObject(storageKey, inputBuffer, 'text/csv', 'data.csv', 3600000);
 
       const job = await queue.add('convert-csv-to-json', {
+        jobId: 'job_oci_1',
         sourceFormat: 'csv',
         targetFormat: 'json',
         originalFilename: 'data.csv',
+        fileSize: inputBuffer.length,
+        options: {},
         storageKey,
       });
 
@@ -159,13 +162,13 @@ describe('Phase 2: OCI Storage Backend & Container Worker Integration (#109)', (
 
       const jobResult: ConversionJobResult = {
         jobId: job.id,
+        status: 'completed',
         filename: convRes.filename,
         size: convRes.size,
         mimeType: convRes.mimeType,
         downloadUrl,
-        storageKey: resultKey,
-        convertedAt: new Date().toISOString(),
-        processingTimeMs: 15,
+        resultKey,
+        durationMs: 15,
       };
 
       expect(jobResult.size).toBeGreaterThan(0);

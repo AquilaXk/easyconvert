@@ -77,7 +77,7 @@ describe('CONV-4: Multi-timestamp video thumbnail extraction fail-closed behavio
         expect(partial!.parts![0].filename).toBe('short_thumb_2.png');
         // PNG signature check (89 50 4E 47)
         expect(partial!.parts![0].buffer.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]))).toBe(true);
-        const primaryBuf = partial!.buffer ?? fs.readFileSync(partial!.outputPath!);
+        const primaryBuf = partial!.buffer ?? fs.readFileSync(partial!.filePath!);
         expect(primaryBuf.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]))).toBe(true);
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });

@@ -1,4 +1,4 @@
-import os from 'node:os';
+import { availableCpus } from '../workers/available-cpus';
 
 /**
  * Threads of the software H.264 and H.265 encoders.
@@ -56,7 +56,7 @@ function x264OwnThreads(cores: number, height: number): number {
 export function softwareEncoderThreads(
   codec: string,
   picture: PictureSize | undefined,
-  cores: number = os.availableParallelism()
+  cores: number = availableCpus()
 ): number | undefined {
   if (codec === 'h264') {
     if (picture === undefined) return undefined;

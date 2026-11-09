@@ -405,16 +405,18 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
     it('executes graceful drain on shutdown signal and waits for active jobs or aborts on timeout', async () => {
       expect(isDraining).toBe(false);
 
-      const fakeQueue = new Queue('test-drain-queue');
-      const fakeJob = new Job(
+      const fakeQueue = new Queue<any, any>('test-drain-queue');
+      const fakeJob = new Job<any, any>(
         'test_job_1',
         'test_conversion',
         {
           jobId: 'test_job_1',
+          originalFilename: 'test.txt',
           sourceFormat: 'txt',
           targetFormat: 'pdf',
-          inputKey: 'uploads/test.txt',
-          outputKey: 'outputs/test.pdf',
+          fileSize: 16,
+          options: {},
+          storageKey: 'uploads/test.txt',
         },
         {},
         fakeQueue

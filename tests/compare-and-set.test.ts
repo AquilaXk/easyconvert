@@ -15,7 +15,7 @@ function attemptsWith<T>(conflicts: number, value: T): () => Promise<CompareAndS
 describe('the compare-and-set loop', () => {
   it('writes on the first attempt that meets no other writer, and answers what it wrote', async () => {
     const attempt = vi.fn(attemptsWith(2, 'third'));
-    vi.spyOn(crypto, 'randomInt').mockReturnValue(0);
+    vi.spyOn(crypto, 'randomInt').mockReturnValue(0 as never);
 
     await expect(compareAndSetWithRetry(attempt, { maxAttempts: 4, subject: 'The record' })).resolves.toBe('third');
     expect(attempt).toHaveBeenCalledTimes(3);
@@ -35,7 +35,7 @@ describe('the compare-and-set loop', () => {
 
   it('gives up after the most attempts and names what kept changing', async () => {
     const attempt = vi.fn(attemptsWith(Number.POSITIVE_INFINITY, 'never'));
-    vi.spyOn(crypto, 'randomInt').mockReturnValue(0);
+    vi.spyOn(crypto, 'randomInt').mockReturnValue(0 as never);
 
     await expect(compareAndSetWithRetry(attempt, { maxAttempts: 3, subject: 'The record' })).rejects.toThrow(
       'The record changed 3 times while it was being updated'
@@ -79,7 +79,7 @@ describe('the budget store in Redis', () => {
       raced = true;
       values.set(KEY, JSON.stringify(record(100)));
     });
-    vi.spyOn(crypto, 'randomInt').mockReturnValue(0);
+    vi.spyOn(crypto, 'randomInt').mockReturnValue(0 as never);
     const store = new RedisBudgetStore(redis as never, 'ec:');
 
     await store.update('anon:203.0.113.0', (current) => record((current?.bytes ?? 0) + 5));
@@ -105,7 +105,7 @@ describe('the budget store in Redis', () => {
 
   it('gives up after eight writers in a row, so a request does not wait forever', async () => {
     const redis = fakeRedis((values) => values.set(KEY, String(Math.random())));
-    vi.spyOn(crypto, 'randomInt').mockReturnValue(0);
+    vi.spyOn(crypto, 'randomInt').mockReturnValue(0 as never);
     const store = new RedisBudgetStore(redis as never, 'ec:');
 
     await expect(store.update('anon:203.0.113.0', () => record(1))).rejects.toThrow('The upload budget of a bucket changed 8 times');

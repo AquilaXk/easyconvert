@@ -124,7 +124,9 @@ describe('an encrypted document fails a job once, with status 422', () => {
     await failed;
     await worker.close();
 
-    const res = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${job.id}`, { headers: readHeaders }), { params: { id: job.id } });
+    const res = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${job.id}`, { headers: readHeaders }), {
+      params: Promise.resolve({ id: job.id }),
+    });
     const body = await res.json();
     expect(body).toMatchObject({ status: 'failed', attemptsMade: 1, failedStatus: HTTP_UNPROCESSABLE, failedCode: 'EncryptedOfficeDocumentError' });
   });

@@ -215,7 +215,7 @@ describe('Credentials vault persistence (#483)', () => {
       await expectUnavailable(
         await credentialDelete(
           new NextRequest(`http://localhost:3000/api/v1/storage/credentials/${ref}`, { method: 'DELETE', headers: authHeaders }),
-          { params: { id: ref } }
+          { params: Promise.resolve({ id: ref }) }
         )
       );
     });

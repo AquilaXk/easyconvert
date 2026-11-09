@@ -39,7 +39,7 @@ beforeEach(async () => {
   resetInstalledTraineddata();
   const user = await userStore.createUser({ email: 'ocr-languages@example.com', name: 'OCR Languages' });
   ({ secretKey: readKey } = await redisKeyStore.generateApiKey(user.id, 'Reader', { scopes: ['convert:read'] }));
-  ({ secretKey: usageOnlyKey } = await redisKeyStore.generateApiKey(user.id, 'Usage only', { scopes: ['read:usage'] }));
+  ({ secretKey: usageOnlyKey } = await redisKeyStore.generateApiKey(user.id, 'Usage only', { scopes: ['read:usage' as never] }));
 });
 
 const request = (key?: string): NextRequest =>

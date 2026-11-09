@@ -7,6 +7,7 @@ import { afterAll, beforeAll, expect } from 'vitest';
 import { PAGE_IMAGE_MAX_PAGES } from '../src/lib/conversions/page-range';
 import { convertPdfPagesWithNativeTools } from '../src/worker/engines';
 import { captureError } from './helpers/capture-error';
+import { type ExternalOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 
 /**
@@ -15,7 +16,7 @@ import { oracleTest } from './helpers/oracle-test';
  * Oracle: qpdf writes the encrypted file, pdf-lib the long one with a known page count.
  */
 
-const TOOLS = ['pdftoppm', 'pdfinfo', 'qpdf'];
+const TOOLS: ExternalOracleTool[] = ['pdftoppm', 'pdfinfo', 'qpdf'];
 const TEST_TIMEOUT_MS = 120_000;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 

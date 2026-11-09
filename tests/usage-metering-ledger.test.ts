@@ -58,7 +58,7 @@ describe('WP-13 Usage Metering Ledger & Standard RateLimit Headers', () => {
     });
 
     const keyResult = await redisKeyStore.generateApiKey(testUser.id, 'Ledger Test Key', {
-      scopes: ['convert:write', 'read:usage', 'read'],
+      scopes: ['convert:write', 'convert:read', '*'],
     });
     testApiKey = { key: keyResult.secretKey, id: keyResult.key.id };
   });

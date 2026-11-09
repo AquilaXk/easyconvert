@@ -10,9 +10,15 @@ import {
   SandboxedTimeoutError,
 } from '../security/process-sandbox';
 import { Semaphore, type SemaphoreQueue } from '../workers/semaphore';
+import { availableCpus } from '../workers/available-cpus';
 import { parseTesseractBlocks, type OcrResult } from './ocr-pdf-combiner';
 import { groupAtBoundaries, wordBoundariesAfter, type OcrWordMerge } from './ocr-word-merge';
 import { fallbackReadsMore, ocrFallbackPageSegMode, ocrSegmentationFor } from './ocr-config';
+import {
+  assessKoreanLayoutCoherence,
+  includesKoreanLanguage,
+  scoreKoreanNeuralCandidate,
+} from './ocr-neural';
 
 /** Wall-clock limit for one native Tesseract run. */
 export const OCR_CLI_TIMEOUT_MS = 15_000;
@@ -23,7 +29,7 @@ export const OCR_CLI_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 /** Most TSV data rows parsed from one run; a dense page has a few thousand. */
 export const OCR_CLI_MAX_TSV_ROWS = 100_000;
 /** Native runs allowed at once; each holds a decoded page, so more only adds memory pressure. */
-export const OCR_CLI_MAX_CONCURRENCY = Math.max(1, os.availableParallelism());
+export const OCR_CLI_MAX_CONCURRENCY = Math.max(1, availableCpus());
 /** Runs allowed to wait for a slot before further requests are rejected. */
 export const OCR_CLI_MAX_QUEUED = 64;
 /** Resident memory limit for one native run; the sandbox kills the process group above it. */
@@ -345,9 +351,16 @@ export async function recognizeWithCli(request: CliOcrRequest): Promise<OcrResul
   }
   const first = await runCli(request);
   const fallbackMode = ocrFallbackPageSegMode(request.tesseractLang);
-  if (!fallbackMode || first.wordCount > 0 || request.pageSegMode) return first;
-  // Automatic segmentation finds no text block in very small images; read them as one block.
+  if (!fallbackMode || request.pageSegMode) return first;
+  const koreanFragmented =
+    includesKoreanLanguage(request.tesseractLang) &&
+    assessKoreanLayoutCoherence(first).fragmented;
+  if (first.wordCount > 0 && !koreanFragmented) return first;
+  // Automatic segmentation finds no text block in very small images, or fragments Korean paragraphs into Compatibility Jamo columns; read them as one block.
   const retry = await runCli({ ...request, pageSegMode: fallbackMode });
+  if (koreanFragmented) {
+    return scoreKoreanNeuralCandidate(retry, 'cli') > scoreKoreanNeuralCandidate(first, 'cli') ? retry : first;
+  }
   return fallbackReadsMore(first.wordCount, retry.wordCount) ? retry : first;
 }
 

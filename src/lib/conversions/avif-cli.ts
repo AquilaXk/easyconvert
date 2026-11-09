@@ -11,6 +11,7 @@ import {
 } from '../security/process-sandbox';
 import { launchSandboxedBinary } from '../security/sandbox-launcher';
 import { ConversionFailedError, EngineUnavailableError, PayloadLimitError, SERVER_FAULT_STATUS } from '../types';
+import { availableCpus } from '../workers/available-cpus';
 import { isAvif } from './avif-colour';
 import { avifSpeedFor, type AvifBitdepth, type AvifEncoder, type AvifPlaneLayout } from './image-encoder-defaults';
 
@@ -244,7 +245,7 @@ export async function findAvifenc(env: NodeJS.ProcessEnv = process.env, probeTim
 
 /** Threads for one run: the cores this process may use, at most `AVIFENC_MAX_THREADS`; tiles bound what a small picture can use. */
 function encoderThreads(): number {
-  return Math.max(1, Math.min(os.availableParallelism(), AVIFENC_MAX_THREADS));
+  return Math.max(1, Math.min(availableCpus(), AVIFENC_MAX_THREADS));
 }
 
 /**

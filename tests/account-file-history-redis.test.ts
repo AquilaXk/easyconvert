@@ -99,7 +99,7 @@ describe.skipIf(!REDIS_URL)('the history of converted files in Redis', () => {
     expect((await store.listUserFiles(userId)).map((entry) => entry.id)).toEqual([longer.id]);
     expect(await store.findUserFile(userId, record.id)).toBeUndefined();
     const newest = await store.recordUserFile(file(userId, 'next.json', { ttlMs: 60_000 }));
-    expect(new Set(await admin.zrange(`${keyPrefix}user_files:{${userId}}`, 0, -1))).toEqual(new Set([longer.id, newest.id]));
+    expect(new Set(await admin.zrange(`${keyPrefix}user_files:{${userId}}`, '0', '-1'))).toEqual(new Set([longer.id, newest.id]));
   });
 
   it('records a job result once whatever the number of times it is recorded', async () => {

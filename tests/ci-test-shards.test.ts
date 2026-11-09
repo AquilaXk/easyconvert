@@ -24,7 +24,7 @@ const ROOT = path.resolve(__dirname, '..');
 const PLANNER = path.join(ROOT, 'scripts', 'ci-test-shards.mjs');
 const CI_SHARDS = 6;
 const FILES = listShardedTests();
-const DURATIONS = loadDurations();
+const DURATIONS: Record<string, number> = loadDurations();
 const ci = readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf-8');
 /** The files that read the S3 test server: they run in the one job that starts it, not in a shard. */
 const S3_SERVER_FILES = ['tests/s3-minio-integration.test.ts', 'tests/s3-object-client.test.ts'];

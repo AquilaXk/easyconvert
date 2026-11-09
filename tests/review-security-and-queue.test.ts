@@ -57,9 +57,9 @@ describe('Security, Queue, Graph, Storage & Auth Regression Suite', () => {
         tasks: {
           u1: { operation: 'import/upload', storageKey: 'a.pdf' },
           u2: { operation: 'import/upload', storageKey: 'b.pdf' },
-          m1: { operation: 'merge', inputs: ['u1', 'u2'], targetFormat: 'pdf' } as any,
-          c1: { operation: 'convert', dependencies: ['m1'], targetFormat: 'png' } as any,
-        },
+          m1: { operation: 'merge', inputs: ['u1', 'u2'], targetFormat: 'pdf' },
+          c1: { operation: 'convert', dependencies: ['m1'], targetFormat: 'png' },
+        } as any,
       });
 
       expect(normalized.m1.input).toEqual(['u1', 'u2']);

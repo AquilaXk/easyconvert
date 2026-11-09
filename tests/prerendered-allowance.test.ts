@@ -15,7 +15,8 @@ import ConverterPage from '../src/app/[locale]/[slug]/page';
  * is `next build`; the image passes ANONYMOUS_DAILY_LIMIT to the build for that reason (Dockerfile.web).
  */
 
-const english = (params: Record<string, string> = {}) => Promise.resolve({ locale: 'en', ...params });
+const english = <T extends Record<string, string> = Record<string, never>>(params = {} as T): Promise<{ locale: string } & T> =>
+  Promise.resolve({ locale: 'en', ...params });
 
 const PAGES: Array<[string, () => Promise<ReactElement>]> = [
   ['the home page', () => HomePage({ params: english() })],

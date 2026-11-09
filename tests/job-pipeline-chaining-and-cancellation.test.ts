@@ -20,7 +20,6 @@ async function createTestUserWithKey(opts: {
 } = {}) {
   const userId = opts.userId || `user_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const user = await redisUserStore.createUser({
-    id: userId,
     email: `${userId}@example.com`,
     name: `Test User ${userId}`,
     tier: opts.tier || 'pro',
@@ -100,6 +99,7 @@ describe('Phase 3: Job Pipeline Chaining, Cancellation, and API DX', () => {
       const queue = new Queue<ConversionJobData, ConversionJobResult>('test-edge-queue');
       const job = await queue.add('convert', {
         jobId: 'job_completed_123',
+        originalFilename: 'data.csv',
         sourceFormat: 'csv',
         targetFormat: 'json',
         fileSize: 50,
@@ -167,6 +167,7 @@ describe('Phase 3: Job Pipeline Chaining, Cancellation, and API DX', () => {
       const job = await conversionQueue.add('convert', {
         jobId: 'job_tenant_a_1',
         userId: 'tenant_a',
+        originalFilename: 'data.csv',
         sourceFormat: 'csv',
         targetFormat: 'json',
         fileSize: 100,
@@ -200,6 +201,7 @@ describe('Phase 3: Job Pipeline Chaining, Cancellation, and API DX', () => {
         jobId: 'job_cancel_refund_test',
         userId: user.id,
         reservationId: reservation.reservationId,
+        originalFilename: 'data.csv',
         sourceFormat: 'csv',
         targetFormat: 'json',
         fileSize: 100,
@@ -234,6 +236,7 @@ describe('Phase 3: Job Pipeline Chaining, Cancellation, and API DX', () => {
       const job = await conversionQueue.add('convert', {
         jobId: 'job_already_done',
         userId: user.id,
+        originalFilename: 'data.csv',
         sourceFormat: 'csv',
         targetFormat: 'json',
         fileSize: 100,

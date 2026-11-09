@@ -108,7 +108,7 @@ describe('the warning for alternate streams is added to the warnings a result al
   });
 
   it('starts the list when there is none, and changes nothing when no stream was left out', () => {
-    expect(withExtractionNotes({}, { skippedLinks: [], alternateStreams: 1 }).metadata).toEqual({
+    expect(withExtractionNotes<{ metadata?: Record<string, unknown> }>({}, { skippedLinks: [], alternateStreams: 1 }).metadata).toEqual({
       warnings: ['1 alternate stream (extended attributes and resource forks of the files) was left out.'],
     });
     const untouched = { metadata: { warnings: ['kept'] } };

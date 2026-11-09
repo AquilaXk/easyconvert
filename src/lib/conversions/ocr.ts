@@ -1,8 +1,8 @@
 import { remainingJobMs } from './job-time';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
+import { availableCpus } from '../workers/available-cpus';
 import { assertEncodedImageWithinLimit, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
 import {
   ConversionOptions,
@@ -63,6 +63,15 @@ import {
   confidenceWeightedCharacters,
   type OcrEnginePath,
 } from './ocr-calibration';
+import {
+  includesKoreanLanguage,
+  KOREAN_ALTERNATIVE_TRIGGER_QUALITY,
+  postCorrectKoreanOcrResult,
+  resolveKoreanPageSegMode,
+  resolveOcrEnginePath,
+  scoreKoreanNeuralCandidate,
+  shouldEvaluateKoreanNeuralAlternative,
+} from './ocr-neural';
 import { mapWithConcurrency, ocrPageConcurrency } from './ocr-page-batch';
 import {
   OCR_PREPROCESS_STEPS,
@@ -409,25 +418,52 @@ interface RecognitionAttempt {
  */
 async function recognizeAttempt(attempt: RecognitionAttempt): Promise<RecognizedPage> {
   const { steps, signal } = attempt;
+  const koreanNeural =
+    includesKoreanLanguage(attempt.tesseractLang) &&
+    (attempt.enginePath === 'neural' || attempt.enginePath === undefined);
   const plain = await readPreparedPage(attempt, { ...steps, binarize: false });
+  const koreanAlternativeNeeded =
+    koreanNeural &&
+    shouldEvaluateKoreanNeuralAlternative(
+      plain.page.result,
+      plain.page.enginePath,
+      plain.prepared.geometry.outputWidth
+    );
+  const qualityTrigger = koreanNeural ? KOREAN_ALTERNATIVE_TRIGGER_QUALITY : OCR_ALTERNATIVE_TRIGGER_QUALITY;
   const needed =
-    plain.prepared.unevenBackground >= OCR_UNEVEN_BACKGROUND_RATIO || readingQuality(plain.page.result) < OCR_ALTERNATIVE_TRIGGER_QUALITY;
-  if (!needed) return plain.page;
+    koreanAlternativeNeeded ||
+    plain.prepared.unevenBackground >= OCR_UNEVEN_BACKGROUND_RATIO ||
+    readingQuality(plain.page.result) < qualityTrigger;
+  if (!needed) {
+    return koreanNeural
+      ? { ...plain.page, result: postCorrectKoreanOcrResult(plain.page.result) }
+      : plain.page;
+  }
   const alternatives: OcrPreprocessSteps[] = [];
   if (plain.prepared.applied.rescale) alternatives.push({ ...steps, rescale: false, binarize: false });
   if (steps.binarize && plain.prepared.binarizable) alternatives.push(steps);
   let best = plain;
-  let bestEvidence = readingEvidence(plain.page.result);
+  const scorePage = (entry: { page: RecognizedPage; prepared: OcrPreprocessResult }): number =>
+    koreanNeural
+      ? scoreKoreanNeuralCandidate(
+          entry.page.result,
+          entry.page.enginePath,
+          entry.prepared.geometry.outputWidth
+        )
+      : readingEvidence(entry.page.result);
+  let bestEvidence = scorePage(plain);
   for (const alternative of alternatives) {
     signal?.throwIfAborted();
     const candidate = await readPreparedPage(attempt, alternative);
-    const evidence = readingEvidence(candidate.page.result);
+    const evidence = scorePage(candidate);
     if (evidence >= bestEvidence * OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN) {
       best = candidate;
       bestEvidence = evidence;
     }
   }
-  return best.page;
+  return koreanNeural
+    ? { ...best.page, result: postCorrectKoreanOcrResult(best.page.result) }
+    : best.page;
 }
 
 /** How much of a page was read, and how well: confident characters recognized (see confidenceWeightedCharacters). */
@@ -479,7 +515,8 @@ async function readPreparedPage(
         parameters: { tessedit_pageseg_mode: pageSegMode },
       };
       const pool = getSharedOcrWorkerPool();
-      const imageMode = ocrSegmentationFor(tesseractLang, inputHeight, inputTextRows).pageSegMode;
+      const baseImageMode = ocrSegmentationFor(tesseractLang, inputHeight, inputTextRows).pageSegMode;
+      const imageMode = resolveKoreanPageSegMode(tesseractLang, baseImageMode, enginePath, prepared.applied);
       // A page of plain text lines is read in bands by as many idle workers as there are, instead of by one.
       const bands =
         attempt.parallelBands === false ||
@@ -536,7 +573,15 @@ async function readPreparedPage(
           },
           prepared.geometry
         ));
-        return { page: withPreparation({ result, enginePath: 'wasm' }, prepared, localLangPath, bandsRead), prepared };
+        return {
+          page: withPreparation(
+            { result, enginePath: resolveOcrEnginePath(enginePath, 'wasm') },
+            prepared,
+            localLangPath,
+            bandsRead
+          ),
+          prepared,
+        };
       }
     } catch (err: unknown) {
       if (signal?.aborted || err instanceof OcrEngineUnavailableError) {
@@ -569,7 +614,12 @@ async function readPreparedPage(
         prepared.geometry
       )
     );
-    const page = withPreparation({ result, enginePath: 'cli' }, prepared, localLangPath, 1);
+    const page = withPreparation(
+      { result, enginePath: resolveOcrEnginePath(enginePath, 'cli') },
+      prepared,
+      localLangPath,
+      1
+    );
     return { page: fallback ? { ...page, result: { ...page.result, engineFallback: fallback } } : page, prepared };
   }
 
@@ -599,7 +649,7 @@ function withPreparation(
 function planPageBands(pool: OcrWorkerPool, spec: OcrWorkerSpec, prepared: OcrPreprocessResult): OcrBand[] | null {
   if (!prepared.ink) return null;
   const { profile, lineHeightPx } = prepared.ink;
-  const wanted = Math.min(OCR_BAND_MAX_BANDS, os.availableParallelism(), OCR_POOL_MAX_WORKERS_PER_KEY, ocrPageConcurrency());
+  const wanted = Math.min(OCR_BAND_MAX_BANDS, availableCpus(), OCR_POOL_MAX_WORKERS_PER_KEY, ocrPageConcurrency());
   if (wanted < 2 || planBands(profile, lineHeightPx, wanted) === null) return null;
   const idle = pool.idleWorkers(spec);
   if (idle < 2) {

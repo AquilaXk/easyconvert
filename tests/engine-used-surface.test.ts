@@ -81,7 +81,7 @@ async function jobView(): Promise<Record<string, any>> {
   await worker.close();
   const res = await getV1JobRoute(
     new NextRequest(`${BASE_URL}/api/v1/jobs/${job.id}`, { headers: { Authorization: `Bearer ${secretKey}` } }),
-    { params: { id: job.id } }
+    { params: Promise.resolve({ id: job.id }) }
   );
   expect(res.status).toBe(HTTP_OK);
   return res.json();

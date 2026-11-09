@@ -8,7 +8,7 @@ import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { ARCHIVE_SECURITY_LIMITS } from '../src/lib/conversions/archive';
 import { readRpmPackage, rpmFilePath, MAX_RPM_HEADER_DATA_BYTES, MAX_RPM_HEADER_ENTRIES } from '../src/lib/conversions/rpm-header';
 import { strippedPayloadToCpio } from '../src/lib/conversions/rpm-stripped-payload';
-import { requireOracleTool } from './helpers/differential-oracle';
+import { requireOracleTool, type ExternalOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { fileDigests, readArchiveTree, unpackWith, type ArchiveTree } from './helpers/archive-output-tree';
 import { requireRealworldSample } from './helpers/realworld-sample';
@@ -30,7 +30,7 @@ import { buildStrippedPayload, buildStrippedRpm, S_DIR, S_LNK, S_REG, trailer, t
 const ENGINE_TIMEOUT_MS = 120_000;
 const MIB = 1024 * 1024;
 const TARGETS = ['zip', 'tar', 'tar.gz', '7z'] as const;
-const RPM_TOOLS = ['7z', 'tar', 'rpm2archive'] as const;
+const RPM_TOOLS: readonly ExternalOracleTool[] = ['7z', 'tar', 'rpm2archive' as ExternalOracleTool];
 
 const SAMPLE_FILES: Readonly<Record<string, Buffer>> = {
   'dir/a-hardlink': Buffer.from('shared\n'),
@@ -44,7 +44,7 @@ const digestsOf = (files: Readonly<Record<string, Buffer>>): Record<string, stri
 
 /** The files and links rpm's own unpacker (`rpm2archive`, read by `tar`) writes for the package. */
 function unpackedByRpm(rpm: Buffer): ArchiveTree {
-  const archive = execFileSync(requireOracleTool('rpm2archive'), ['-'], { input: rpm, maxBuffer: 256 * MIB });
+  const archive = execFileSync(requireOracleTool('rpm2archive' as ExternalOracleTool), ['-'], { input: rpm, maxBuffer: 256 * MIB });
   return unpackWith((outDir) => {
     execFileSync(requireOracleTool('tar'), ['-xzf', '-', '-C', outDir], { input: archive });
   });

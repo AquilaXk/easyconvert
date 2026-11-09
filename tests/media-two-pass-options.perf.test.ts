@@ -491,7 +491,9 @@ describe('duration, fast start and aspect ratio (decoded output)', () => {
         );
         const out = path.join(dir, 'padded.mp4');
         fs.writeFileSync(out, result.buffer);
-        const video = probeFile(ffprobe(), out).streams.find((s) => s.codec_type === 'video');
+        const video = probeFile(ffprobe(), out).streams.find((s) => s.codec_type === 'video') as
+          | { display_aspect_ratio?: string; width?: number; height?: number }
+          | undefined;
         expect(video?.display_aspect_ratio ?? `${video?.width}:${video?.height}`).toBe('4:3');
         expect({ width: video?.width, height: video?.height }).toEqual({ width: WIDTH, height: 240 });
         expect(Number(video?.width) % 2).toBe(0);
@@ -541,7 +543,9 @@ describe('duration, fast start and aspect ratio (decoded output)', () => {
         const dar = await convertMedia(fs.readFileSync(source), 'mp4', 'mp4', { aspectRatio: '4:3' }, 'clip.mp4');
         const darFile = path.join(dir, 'dar.mp4');
         fs.writeFileSync(darFile, dar.buffer);
-        const darVideo = probeFile(ffprobe(), darFile).streams.find((s) => s.codec_type === 'video');
+        const darVideo = probeFile(ffprobe(), darFile).streams.find((s) => s.codec_type === 'video') as
+          | { display_aspect_ratio?: string; width?: number; height?: number }
+          | undefined;
         expect(darVideo?.display_aspect_ratio).toBe('4:3');
         expect({ width: darVideo?.width, height: darVideo?.height }).toEqual({ width: WIDTH, height: HEIGHT });
         expect(measureSsimPsnr(ffmpeg(), darFile, source).ssim).toBeGreaterThanOrEqual(VIDEO_MIN_SSIM);

@@ -132,7 +132,7 @@ describe('the frames of a PDF whose catalog has no page tree', () => {
         [
           { id: CATALOG_ID, dict: `/Type /Catalog /Pages ${PAGES_ID} 0 R` },
           { id: PAGES_ID, dict: `/Type /Page /MediaBox [0 0 612 792] /Contents 3 0 R /Resources << /Font << /F1 4 0 R >> >>` },
-          { id: 3, stream: Buffer.from(textContent('Single page leaf catalog', 72, 700, 24), 'latin1') },
+          { id: 3, stream: Buffer.from(textContent('Single page leaf catalog', 72), 'latin1') },
           { id: 4, raw: HELVETICA_FONT },
         ],
         CATALOG_ID

@@ -143,7 +143,7 @@ describe('Word 97-2003 symbol-font characters from the character formatting runs
     let text = '';
     const result = await withConversionWarnings(async () => {
       text = extractTextFromDoc(doc, (character) => character !== '\u2713');
-      return { buffer: Buffer.alloc(0), mimeType: 'text/plain', filename: 'x.txt', size: 0 };
+      return { buffer: Buffer.alloc(0), mimeType: 'text/plain', filename: 'x.txt', size: 0, metadata: undefined as { warnings?: string[] } | undefined };
     });
     expect(text).toBe('a\uFFFD\u2022b');
     expect(result.metadata?.warnings).toEqual(['Replaced U+F0FC of the font "Wingdings" with U+FFFD: its character U+2713 has no glyph in the installed fonts.']);

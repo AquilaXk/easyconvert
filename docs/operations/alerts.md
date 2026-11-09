@@ -1,9 +1,10 @@
 # Alert runbook
 
-One entry for each alert that [slo.md](../slo.md) names: the burn of the error budget, the age of the queue, the restarts of the worker. The alert rules and the scraper that evaluates them are phase 2 of #899; each alert will link to the anchor of its entry below, and until then nothing pages anyone, so the entries are also what to follow when you see the same symptom by hand. The thresholds (how fast a burn, how many seconds of age, how many restarts) are set with the rules, not here; every entry starts from "the alert fired" or "you saw this".
+One entry for each alert rule in [`deploy/oci/prometheus-alerts.yml`](../../deploy/oci/prometheus-alerts.yml) that [slo.md](../slo.md) names: the burn of the error budget ([`EasyConvertErrorBudgetBurn`](#alert-error-budget-burn)), the age of the queue ([`EasyConvertQueueAgeHigh`](#alert-queue-age)), and the restarts of the worker ([`EasyConvertWorkerRestarts`](#alert-worker-restarts)). Each rule in `deploy/oci/prometheus-alerts.yml` links to the anchor of its entry below, and the entries are also what to follow when you see the same symptom by hand. The thresholds (how fast a burn, how many seconds of age, how many restarts) are set with the rules in `deploy/oci/prometheus-alerts.yml`, not here; every entry starts from "the alert fired" or "you saw this".
 
 Commands use the shell function `C` of the [README](README.md#your-shell-on-the-host). Each entry ends with how to know it is over. For the incident levels and who is told, see [incidents.md](incidents.md).
 
+<a id="alert-error-budget-burn"></a>
 ## Alert: error budget burn
 
 **Anchor for the alert:** `docs/operations/alerts.md#alert-error-budget-burn`.
@@ -32,6 +33,7 @@ Commands use the shell function `C` of the [README](README.md#your-shell-on-the-
 
 **Over when.** The failing family answers 200 again (convert a small file of it through the public site), the burn rate the alert reads is back below its threshold, and the Uptime workflow is green. Write the incident note if it was SEV1, or SEV2 for more than an hour.
 
+<a id="alert-queue-age"></a>
 ## Alert: queue age
 
 **Anchor for the alert:** `docs/operations/alerts.md#alert-queue-age`.
@@ -58,6 +60,7 @@ Do not delete jobs from Redis by hand: the steps the worker takes when a job end
 
 **Over when.** `easyconvert_queue_oldest_waiting_age_seconds` is 0 or falling for every queue, and a job submitted through the public API (a small PNG to JPG) completes.
 
+<a id="alert-worker-restarts"></a>
 ## Alert: worker restarts
 
 **Anchor for the alert:** `docs/operations/alerts.md#alert-worker-restarts`.

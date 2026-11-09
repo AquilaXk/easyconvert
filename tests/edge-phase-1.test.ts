@@ -197,14 +197,14 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
         faces: [[0, 1, 2, 3]],
       };
 
-      const stl = encodeStl(quadMesh);
+      const stl = encodeStl(quadMesh as unknown as Parameters<typeof encodeStl>[0]);
       expect(stl).toContain('solid My Model Name');
       expect(stl).not.toContain('\nModel');
       // Quad should be triangulated into 2 facets
       const facetCount = (stl.match(/facet normal/g) || []).length;
       expect(facetCount).toBe(2);
 
-      const obj = encodeObj(quadMesh);
+      const obj = encodeObj(quadMesh as unknown as Parameters<typeof encodeObj>[0]);
       expect(obj).toContain('o My Model Name');
       expect(obj).toContain('f 1 2 3 4');
     });

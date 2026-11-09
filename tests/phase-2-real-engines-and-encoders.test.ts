@@ -84,10 +84,10 @@ describe('Phase 2 Real Engines & Encoders Verification Testnet', () => {
 
       const quads = cubicToQuadraticBezier(p0, c1, c2, p3, 2.0);
       expect(quads.length).toBeGreaterThanOrEqual(1);
-      expect(quads[0].p0.x).toBe(0);
-      expect(quads[0].p0.y).toBe(0);
-      expect(quads[quads.length - 1].p2.x).toBe(100);
-      expect(quads[quads.length - 1].p2.y).toBe(0);
+      expect(quads[0].p0!.x).toBe(0);
+      expect(quads[0].p0!.y).toBe(0);
+      expect(quads[quads.length - 1].p2!.x).toBe(100);
+      expect(quads[quads.length - 1].p2!.y).toBe(0);
     });
 
     it('transcodes OpenType CFF (OTF) to TrueType (TTF) with glyf and loca tables', () => {
@@ -375,7 +375,12 @@ describe('Phase 2 Real Engines & Encoders Verification Testnet', () => {
         pcmBuffer.writeInt16LE(val, i * 4 + 2);
       }
 
-      const webmBuffer = encodeWebmContainer(pcmBuffer, 48000, 2, 16);
+      const webmBuffer = encodeWebmContainer(
+        new Int16Array(pcmBuffer.buffer, pcmBuffer.byteOffset, pcmBuffer.byteLength / 2),
+        48000,
+        2,
+        {}
+      );
 
       // 1. EBML Header (0x1A 0x45 0xDF 0xA3)
       expect(webmBuffer.readUInt32BE(0)).toBe(0x1a45dfa3);

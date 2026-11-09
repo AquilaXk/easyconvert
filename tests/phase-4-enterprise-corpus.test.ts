@@ -120,7 +120,7 @@ describe('Phase 4: Universal Golden Corpus Synthesizer & Enterprise Testnet', ()
       const shapes = parseDrawingMlShapes(corpus.drawingMlXml);
 
       expect(shapes.length).toBeGreaterThanOrEqual(2);
-      const roundRectShape = shapes.find((s) => s.type.toLowerCase() === 'roundrect');
+      const roundRectShape = shapes.find((s) => s.type?.toLowerCase() === 'roundrect');
       expect(roundRectShape).toBeDefined();
       expect(roundRectShape?.fillColor).toBe('#5C6BC0');
 

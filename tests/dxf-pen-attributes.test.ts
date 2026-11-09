@@ -309,7 +309,7 @@ describe('pictures', () => {
   const conversion = async (body: string): Promise<{ dxf: DxfDocument; warnings: unknown }> => {
     const result = await withConversionWarnings(async () => {
       const buffer = encodeSvgPageToDxf(Buffer.from(page(body)));
-      return { buffer, mimeType: 'application/dxf', filename: 'page.dxf', size: buffer.length };
+      return { buffer, mimeType: 'application/dxf', filename: 'page.dxf', size: buffer.length, metadata: undefined as { warnings?: string[] } | undefined };
     });
     return { dxf: readDxf(result.buffer.toString('utf-8')), warnings: result.metadata?.warnings };
   };

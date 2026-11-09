@@ -148,7 +148,7 @@ describe.skipIf(toolsMissing)('the PDF password never reaches logs, job records 
 
     const { output } = await captureOutput(() => runWorkerUntilSettled(jobId));
 
-    const status = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${jobId}`, { headers }), { params: { id: jobId } });
+    const status = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${jobId}`, { headers }), { params: Promise.resolve({ id: jobId }) });
     const body = await status.json();
     expect(body).toMatchObject({ status: 'completed' });
     const finished = await conversionQueue.getJob(jobId);
@@ -176,7 +176,7 @@ describe.skipIf(toolsMissing)('the PDF password never reaches logs, job records 
 
     await runWorkerUntilSettled(jobId);
 
-    const status = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${jobId}`, { headers }), { params: { id: jobId } });
+    const status = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${jobId}`, { headers }), { params: Promise.resolve({ id: jobId }) });
     const body = await status.json();
     expect(body).toMatchObject({ status: 'failed', failedStatus: 422, failedCode: 'PdfPasswordRequiredError', attemptsMade: 1 });
     const failed = await conversionQueue.getJob(jobId);
@@ -234,7 +234,7 @@ describe.skipIf(toolsMissing)('the passwords a PDF is protected with are never s
     const { output } = await captureOutput(() => runWorkerUntilSettled(jobId));
     const finished = await conversionQueue.getJob(jobId);
     expect(finished?.state).toBe('completed');
-    const status = JSON.stringify(await (await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${jobId}`, { headers }), { params: { id: jobId } })).json());
+    const status = JSON.stringify(await (await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${jobId}`, { headers }), { params: Promise.resolve({ id: jobId }) })).json());
     const surfaces = [status, output, JSON.stringify(finished?.logs ?? []), JSON.stringify({ data: finished?.data, returnvalue: finished?.returnvalue })];
     for (const secret of PROTECT_SECRETS) for (const surface of surfaces) expect(surface).not.toContain(secret);
 
@@ -278,7 +278,7 @@ describe.skipIf(toolsMissing)('the passwords a PDF is protected with are never s
       const persisted = JSON.stringify({ data: queued?.data, opts: queued?.opts });
       for (const secret of PROTECT_SECRETS) expect(persisted).not.toContain(secret);
     }
-    const status = JSON.stringify(await (await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${jobId}`, { headers }), { params: { id: jobId } })).json());
+    const status = JSON.stringify(await (await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${jobId}`, { headers }), { params: Promise.resolve({ id: jobId }) })).json());
     for (const secret of PROTECT_SECRETS) expect(status).not.toContain(secret);
   });
 });
@@ -323,7 +323,7 @@ describe('the password of a graph node is sealed in the stored graph and in the 
       expect(JSON.stringify({ data: queued?.data, opts: queued?.opts })).not.toContain(MERGE_CANARY);
     }
 
-    const status = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${jobId}`, { headers }), { params: { id: jobId } });
+    const status = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${jobId}`, { headers }), { params: Promise.resolve({ id: jobId }) });
     const body = JSON.stringify(await status.json());
     for (const secret of [NODE_CANARY, MERGE_CANARY]) expect(body).not.toContain(secret);
   });

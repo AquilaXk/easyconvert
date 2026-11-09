@@ -164,7 +164,7 @@ describe('Phase 1-A: API Key Scope Integrity, Redis Revocation Sync & Rotation',
   describe('2. Fail-Closed Production Requirement for KEY_HASH_PEPPER', () => {
     it('throws fatal error in NODE_ENV=production when KEY_HASH_PEPPER is missing', () => {
       delete process.env.KEY_HASH_PEPPER;
-      process.env.NODE_ENV = 'production';
+      (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
 
       expect(() => {
         hashApiKeySecret('any_secret_key');
@@ -173,7 +173,7 @@ describe('Phase 1-A: API Key Scope Integrity, Redis Revocation Sync & Rotation',
 
     it('operates normally when KEY_HASH_PEPPER is provided in production', () => {
       process.env.KEY_HASH_PEPPER = 'secure-production-pepper-0123456789abcdef';
-      process.env.NODE_ENV = 'production';
+      (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
 
       const hash = hashApiKeySecret('ec_live_test_secret_value');
       expect(hash).toBeDefined();

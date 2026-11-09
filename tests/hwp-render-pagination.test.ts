@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
-import { convertHwpDocument, type HwpDocument } from '../src/lib/conversions/hwp';
+import { convertHwpDocument, legacyHwpModel, type HwpDocument } from '../src/lib/conversions/hwp';
 import { renderHwpToSvg } from '../src/lib/conversions/hwp-render';
 import { MAX_RENDER_PIXELS } from '../src/lib/conversions/image-limits';
 import { PayloadLimitError } from '../src/lib/types';
@@ -28,13 +28,16 @@ const INK_BAND = 9;
 const INK_LEVEL = 100;
 
 function documentOf(paragraphs: string[], rows: string[][] = []): HwpDocument {
+  const hwpParagraphs = paragraphs.map((text, i) => ({ text, isHeading: i % 20 === 0, isBold: false, isItalic: false }));
+  const hwpTables = rows.length > 0 ? [{ rowCount: rows.length, colCount: rows[0].length, rows }] : [];
   return {
     version: '5.0.3.0',
     isCompressed: false,
     isEncrypted: false,
     isDistributed: false,
-    paragraphs: paragraphs.map((text, i) => ({ text, isHeading: i % 20 === 0, isBold: false, isItalic: false })),
-    tables: rows.length > 0 ? [{ rowCount: rows.length, colCount: rows[0].length, rows }] : [],
+    paragraphs: hwpParagraphs,
+    tables: hwpTables,
+    model: legacyHwpModel(hwpParagraphs, hwpTables),
     metadata: {},
   };
 }

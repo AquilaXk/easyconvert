@@ -212,7 +212,9 @@ describe.each(ROUTES)('$name', (route) => {
     expect(res.status).toBe(HTTP_BAD_REQUEST);
   });
 
-  it.each(route.textFields)('answers %s sent as a file part with 400 and converts nothing', async (field, code) => {
+  it.each([...route.textFields] as Array<readonly [string, string | undefined]>)(
+    'answers %s sent as a file part with 400 and converts nothing',
+    async (field, code) => {
     const form = pdfForm();
     const protect = JSON.stringify({ protect: { userPassword: 'user-secret', ownerPassword: 'owner-secret' } });
     form.append(field, new File([field === 'options' ? protect : 'value'], `${field}.txt`));

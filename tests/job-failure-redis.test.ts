@@ -162,7 +162,7 @@ describe.skipIf(!REDIS_URL)('typed job failures on a real Redis server', () => {
 
     const stored = await api.getJob(job.id);
     expect(stored?.failedReason).toBe('spawn *** ENOENT');
-    expect(events.find((event) => event.event === 'failed')?.data.error).toBe(stored?.failedReason);
+    expect((events.find((event) => event.event === 'failed')?.data as { error?: string } | undefined)?.error).toBe(stored?.failedReason);
   });
 
   it('stores and reads back the masked reason of a failed graph node', async () => {

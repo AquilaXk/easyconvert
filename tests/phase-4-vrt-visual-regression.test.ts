@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
 import { compareImages, computeSsim, pixelmatch } from './helpers/vrt-engine';
 import { renderDrawingMlToSvg } from '../src/lib/conversions/office';
-import { applyFloydSteinbergDither, ColorRgb } from '../src/lib/conversions/quantize';
+import { applyFloydSteinbergDither, type RgbColor as ColorRgb } from '../src/lib/conversions/quantize';
 
 /** Side of the tiles whose average colour is compared. */
 const DITHER_BLOCK = 8;
@@ -133,6 +133,7 @@ describe('Phase 4: Visual Regression Testing (VRT) CI Gate', () => {
     it('verifies deterministic pixel consistency for rendered DrawingML vector graphics', async () => {
       const shapes = [
         {
+          geomType: 'preset' as const,
           type: 'roundrect',
           x: 20,
           y: 20,
@@ -143,6 +144,7 @@ describe('Phase 4: Visual Regression Testing (VRT) CI Gate', () => {
           strokeWidth: 3,
         },
         {
+          geomType: 'preset' as const,
           type: 'ellipse',
           x: 240,
           y: 30,
@@ -170,6 +172,7 @@ describe('Phase 4: Visual Regression Testing (VRT) CI Gate', () => {
     it('detects vector geometry shift when shape dimensions or stroke change', async () => {
       const shapesOriginal = [
         {
+          geomType: 'preset' as const,
           type: 'roundrect',
           x: 20,
           y: 20,
@@ -183,6 +186,7 @@ describe('Phase 4: Visual Regression Testing (VRT) CI Gate', () => {
 
       const shapesMutated = [
         {
+          geomType: 'preset' as const,
           type: 'roundrect',
           x: 20,
           y: 20,

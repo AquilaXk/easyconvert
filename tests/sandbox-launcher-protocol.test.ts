@@ -21,6 +21,7 @@ describe('launcher frames', () => {
       const frames = [];
       for (let at = 0; at < wire.length; at += size) frames.push(...reader.push(wire.subarray(at, at + size)));
       expect(frames).toHaveLength(1);
+      if (isBadFrame(frames[0])) throw new Error('unexpected bad frame');
       expect(frames[0].header).toEqual(request);
       expect(frames[0].payload.equals(payload)).toBe(true);
     }
@@ -29,7 +30,7 @@ describe('launcher frames', () => {
   it('reads several frames that arrive in one chunk, and a frame without payload', () => {
     const reply: LauncherReply = { type: 'ready' };
     const wire = Buffer.concat([...encodeFrame(reply), ...encodeFrame(request, Buffer.from('abc')), ...encodeFrame(reply)]);
-    const frames = new FrameReader<LauncherRequest | LauncherReply>().push(wire);
+    const frames = new FrameReader<LauncherRequest | LauncherReply>().push(wire).flatMap((f) => (isBadFrame(f) ? [] : [f]));
     expect(frames.map((frame) => frame.header)).toEqual([reply, request, reply]);
     expect(frames.map((frame) => frame.payload.toString('utf8'))).toEqual(['', 'abc', '']);
   });
@@ -37,6 +38,7 @@ describe('launcher frames', () => {
   it('joins payload given as several buffers without changing a byte', () => {
     const parts = [Buffer.from('out-'), Buffer.alloc(0), Buffer.from('err')];
     const frames = new FrameReader<LauncherReply>().push(Buffer.concat(encodeFrame({ type: 'ready' }, ...parts)));
+    if (isBadFrame(frames[0])) throw new Error('unexpected bad frame');
     expect(frames[0].payload.toString('utf8')).toBe('out-err');
   });
 

@@ -17,6 +17,7 @@ import {
 } from '../types';
 import { Woff2LimitError } from '../conversions/font-woff2-primitives';
 import { CONVERSION_REFUSAL_CODES, isCodeOf, type ConversionRefusalCode } from '../refusal-codes';
+import { availableCpus } from './available-cpus';
 import { olderThanSource } from './compiled-worker';
 
 /**
@@ -163,7 +164,7 @@ export function spawnCpuWorker(entry: WorkerEntry = resolveCpuWorkerEntry()): Wo
 }
 
 function defaultPoolSize(): number {
-  return Math.max(1, Math.min(os.availableParallelism() - 1, CPU_POOL_MAX));
+  return Math.max(1, Math.min(availableCpus() - 1, CPU_POOL_MAX));
 }
 
 export class CpuPool {

@@ -54,7 +54,10 @@ interface Upload { name: string; content: Buffer | string }
 
 function run(client: Visitor, tool: string, uploads: Upload[], options?: object) {
   const form = new FormData();
-  for (const upload of uploads) form.append('files', new File([upload.content], upload.name));
+  for (const upload of uploads) {
+    const part = typeof upload.content === 'string' ? upload.content : new Uint8Array(upload.content);
+    form.append('files', new File([part], upload.name));
+  }
   if (options) form.append('options', JSON.stringify(options));
   const request = new NextRequest(`http://localhost/api/tools/${tool}`, { method: 'POST', headers: client.headers, body: form });
   return ROUTES[tool](request);
@@ -63,7 +66,10 @@ function run(client: Visitor, tool: string, uploads: Upload[], options?: object)
 /** A run whose `options` field is sent as written, to hold the route to what it reads of it. */
 function runRaw(client: Visitor, tool: string, uploads: Upload[], options: string) {
   const form = new FormData();
-  for (const upload of uploads) form.append('files', new File([upload.content], upload.name));
+  for (const upload of uploads) {
+    const part = typeof upload.content === 'string' ? upload.content : new Uint8Array(upload.content);
+    form.append('files', new File([part], upload.name));
+  }
   form.append('options', options);
   const request = new NextRequest(`http://localhost/api/tools/${tool}`, { method: 'POST', headers: client.headers, body: form });
   return ROUTES[tool](request);

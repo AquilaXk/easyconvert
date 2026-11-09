@@ -28,6 +28,6 @@ describe.skipIf(toolsMissing)('a PDF without pages converted to text with a pass
     const withoutPassword = await dispatchConversion(pdf, 'pdf', 'txt', {}, 'no-pages.pdf');
     const withPassword = await dispatchConversion(pdf, 'pdf', 'txt', { password: 'x' }, 'no-pages.pdf');
     expect(withPassword.buffer.toString('utf8')).toBe(withoutPassword.buffer.toString('utf8'));
-    expect(withPassword.engine).toBe(withoutPassword.engine);
+    expect(withPassword.engineUsed).toBe(withoutPassword.engineUsed);
   });
 });

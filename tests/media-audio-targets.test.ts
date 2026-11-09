@@ -170,6 +170,7 @@ interface ProbedStream {
   codec_name: string;
   sample_rate?: string;
   channels?: number;
+  channel_layout?: string;
 }
 
 function ffprobeStreams(file: string): ProbedStream[] {

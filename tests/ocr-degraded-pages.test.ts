@@ -137,16 +137,15 @@ function mean(values: number[]): number {
 
 /**
  * Korean and Japanese pages per degradation (the Japanese 3 degree skew is asserted above). Bounds
- * sit above the measured error rates with room for engine build differences. Korean is the least
- * stable: the WebAssembly engine's automatic page segmentation reads clean Korean pages anywhere
- * from 0% to 100% depending on the text and on small changes in the input, so the Korean skew bound
- * is only below what the unprepared page scores (16%).
+ * sit above the measured error rates with room for engine build differences. On skewed and binarized
+ * Korean pages, single-block neural segmentation avoids the bogus column splits of automatic page
+ * segmentation and keeps every variant within 2% CER.
  */
 const CJK_BOUNDS: Array<{ page: string; variant: string; maxCerPercent: number }> = [
-  { page: 'ko_a', variant: 'shade', maxCerPercent: 5 },
-  { page: 'ko_a', variant: 'dpi72', maxCerPercent: 5 },
-  { page: 'ko_a', variant: 'noise', maxCerPercent: 5 },
-  { page: 'ko_a', variant: 'skew3', maxCerPercent: 12 },
+  { page: 'ko_a', variant: 'shade', maxCerPercent: 2 },
+  { page: 'ko_a', variant: 'dpi72', maxCerPercent: 2 },
+  { page: 'ko_a', variant: 'noise', maxCerPercent: 2 },
+  { page: 'ko_a', variant: 'skew3', maxCerPercent: 2 },
   { page: 'ja_a', variant: 'shade', maxCerPercent: 2 },
   { page: 'ja_a', variant: 'dpi72', maxCerPercent: 5 },
   { page: 'ja_a', variant: 'noise', maxCerPercent: 2 },

@@ -135,7 +135,9 @@ describe.skipIf(toolsMissing)('a queued watermark, merge or unlock node on an en
     await failed;
     await worker.close();
     vi.restoreAllMocks();
-    const res = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${job.id}`, { headers }), { params: { id: job.id } });
+    const res = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${job.id}`, { headers }), {
+      params: Promise.resolve({ id: job.id }),
+    });
     return res.json();
   }
 
@@ -282,7 +284,9 @@ describe.skipIf(toolsMissing)('a pdf.protect node on an encrypted PDF', () => {
     await failed;
     await worker.close();
     vi.restoreAllMocks();
-    const res = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${job.id}`, { headers }), { params: { id: job.id } });
+    const res = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${job.id}`, { headers }), {
+      params: Promise.resolve({ id: job.id }),
+    });
     return res.json();
   }
 

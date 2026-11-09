@@ -20,7 +20,6 @@ async function createTestUserWithKey(opts: {
 } = {}) {
   const userId = opts.userId || `user_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const user = await redisUserStore.createUser({
-    id: userId,
     email: `${userId}@example.com`,
     name: `Test User ${userId}`,
     tier: opts.tier || 'pro',

@@ -213,7 +213,14 @@ describe.skipIf(sandboxMissing)('a verdict that failed', () => {
 });
 
 describe('a smoke conversion that does not stop at its deadline', () => {
-  const canned = { buffer: Buffer.from('png'), mimeType: 'image/png', filename: 'smoke.png', size: 3, engineUsed: 'stub' } as Awaited<ReturnType<typeof dispatchConversion>>;
+  const canned: Awaited<ReturnType<typeof dispatchConversion>> = {
+    buffer: Buffer.from('png'),
+    mimeType: 'image/png',
+    filename: 'smoke.png',
+    size: 3,
+    engineUsed: 'internal-fallback',
+    executionTimeMs: 1,
+  };
 
   it('is aborted at the deadline, and keeps its place until it ends: no second conversion starts on top of it', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });

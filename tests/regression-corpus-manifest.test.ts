@@ -202,8 +202,8 @@ describe('regression manifest file', () => {
     const reason = 'The one page has a 0-byte /Contents stream and only a /Subtype /3D annotation with an empty appearance.';
     const previous = [
       files[0],
-      { ...files[1], emptyInput: true, emptyInputReason: reason },
-      { ...files[2], emptyInput: true, emptyInputReason: reason },
+      { ...files[1], emptyInput: true as const, emptyInputReason: reason },
+      { ...files[2], emptyInput: true as const, emptyInputReason: reason },
     ];
     const next = [
       files[0],

@@ -54,10 +54,11 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       const item: ConversionQueueItem = {
         id: 'test-cascade-1',
         file,
+        name: file.name,
         sourceFormat: 'mp4',
         targetFormat: 'webm',
         size: file.size,
-        status: 'pending',
+        status: 'ready',
         progress: 0,
         options: { clientEdgeMode: undefined },
       };
@@ -84,10 +85,11 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       const item: ConversionQueueItem = {
         id: 'test-cascade-cloud',
         file,
+        name: file.name,
         sourceFormat: 'mp4',
         targetFormat: 'webm',
         size: file.size,
-        status: 'pending',
+        status: 'ready',
         progress: 0,
         options: { clientEdgeMode: undefined },
       };
@@ -346,9 +348,9 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
         const key2 = 'exp2';
         const keyActive = 'active';
 
-        const s1 = storage.saveObject(key1, buf1, 'text/plain');
-        const s2 = storage.saveObject(key2, buf2, 'text/plain');
-        storage.saveObject(keyActive, bufActive, 'text/plain');
+        const s1 = storage.saveObject(key1, buf1, 'text/plain', 'exp1.txt');
+        const s2 = storage.saveObject(key2, buf2, 'text/plain', 'exp2.txt');
+        storage.saveObject(keyActive, bufActive, 'text/plain', 'active.txt');
 
         // Fast-forward expiration for 1 and 2
         s1.expiresAt = Date.now() - 5000;
@@ -371,8 +373,8 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
     it('accurately counts distinct stored objects in getObjectsCount', () => {
       const storage = new OciObjectStorageService();
       try {
-        storage.saveObject('test-item-1', Buffer.from('data1'), 'text/plain');
-        storage.saveObject('test-item-2', Buffer.from('data2'), 'text/plain');
+        storage.saveObject('test-item-1', Buffer.from('data1'), 'text/plain', 'test-item-1.txt');
+        storage.saveObject('test-item-2', Buffer.from('data2'), 'text/plain', 'test-item-2.txt');
         expect(storage.getObjectsCount()).toBe(2);
       } finally {
         storage.stopGc();
@@ -384,7 +386,7 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       try {
         const key = 'retry-test-input.txt';
         const buffer = Buffer.from('Important payload');
-        storage.saveObject(key, buffer, 'text/plain');
+        storage.saveObject(key, buffer, 'text/plain', key);
 
         // Simulate attempt 1 (failed, attemptsMade: 1, attempts: 2)
         const jobSim = {
@@ -624,6 +626,7 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       const item: ConversionQueueItem = {
         id: 'test-docx-adaptive',
         file,
+        name: file.name,
         sourceFormat: 'docx',
         targetFormat: 'pdf',
         size: file.size,
@@ -672,6 +675,7 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       const item: ConversionQueueItem = {
         id: 'test-hwp-fail-closed',
         file,
+        name: file.name,
         sourceFormat: 'hwp',
         targetFormat: 'pdf',
         size: file.size,

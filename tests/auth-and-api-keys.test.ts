@@ -399,7 +399,7 @@ describe('Auth & API Key Infrastructure', () => {
       expect(meData.user.email).toBe('fullstack@example.com');
 
       // 6. Test logout
-      const logoutRes = await logoutHandler();
+      const logoutRes = await logoutHandler(new NextRequest('http://localhost:3000/api/auth/logout', { method: 'POST' }));
       expect(logoutRes.status).toBe(200);
       expect(logoutRes.headers.get('set-cookie')).toContain('Max-Age=0');
     });
@@ -665,25 +665,27 @@ describe('Auth & API Key Infrastructure', () => {
     });
 
     it('OAuth exchange rejects mock codes when NODE_ENV is production', async () => {
-      const originalEnv = process.env.NODE_ENV;
+      const env = process.env as Record<string, string | undefined>;
+      const originalEnv = env.NODE_ENV;
       try {
-        process.env.NODE_ENV = 'production';
+        env.NODE_ENV = 'production';
         await expect(exchangeGoogleCode('mock_code_attacker', 'http://localhost/callback')).rejects.toThrow(
           /mock codes are not permitted in production/i
         );
       } finally {
-        process.env.NODE_ENV = originalEnv;
+        env.NODE_ENV = originalEnv;
       }
     });
 
     it('clearSessionCookie includes Secure flag in production environment', () => {
-      const originalEnv = process.env.NODE_ENV;
+      const env = process.env as Record<string, string | undefined>;
+      const originalEnv = env.NODE_ENV;
       try {
-        process.env.NODE_ENV = 'production';
+        env.NODE_ENV = 'production';
         const cleared = parseSetCookie(clearSessionCookie());
         expect(cleared.attributes).toEqual({ Path: '/', 'Max-Age': '0', HttpOnly: true, SameSite: 'Lax', Secure: true });
       } finally {
-        process.env.NODE_ENV = originalEnv;
+        env.NODE_ENV = originalEnv;
       }
     });
 
@@ -845,11 +847,12 @@ describe('Auth & API Key Infrastructure', () => {
     });
 
     it('enforces fail-closed behavior for OAuth URL generation in production without credentials', async () => {
-      const originalEnv = process.env.NODE_ENV;
-      const originalClientId = process.env.GOOGLE_CLIENT_ID;
+      const env = process.env as Record<string, string | undefined>;
+      const originalEnv = env.NODE_ENV;
+      const originalClientId = env.GOOGLE_CLIENT_ID;
       try {
-        process.env.NODE_ENV = 'production';
-        delete process.env.GOOGLE_CLIENT_ID;
+        env.NODE_ENV = 'production';
+        delete env.GOOGLE_CLIENT_ID;
 
         expect(() => getGoogleOAuthUrl('http://localhost:3000/api/auth/google/callback')).toThrow(
           /GOOGLE_CLIENT_ID is not configured in production/i
@@ -861,9 +864,9 @@ describe('Auth & API Key Infrastructure', () => {
         const data = await res.json();
         expect(data.success).toBe(false);
       } finally {
-        process.env.NODE_ENV = originalEnv;
+        env.NODE_ENV = originalEnv;
         if (originalClientId) {
-          process.env.GOOGLE_CLIENT_ID = originalClientId;
+          env.GOOGLE_CLIENT_ID = originalClientId;
         }
       }
     });

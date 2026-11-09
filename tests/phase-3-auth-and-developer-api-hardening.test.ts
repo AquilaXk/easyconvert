@@ -283,10 +283,7 @@ describe('Phase 3: Auth & Developer API Enterprise Hardening', () => {
     });
 
     it('skips dispatching if event does not match subscribed events', async () => {
-      const dispatcher = new WebhookDispatcher({
-        timeoutMs: 1000,
-        maxRetries: 1,
-      });
+      const dispatcher = new WebhookDispatcher();
 
       const result = await dispatcher.dispatch(
         'https://example.com/webhook',

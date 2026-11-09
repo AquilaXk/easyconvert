@@ -75,7 +75,8 @@ afterEach(() => {
   error.mockRestore();
 });
 
-const linesOf = (spy: ReturnType<typeof vi.spyOn>, prefix: string): string[] => spy.mock.calls.map((call) => String(call[0])).filter((line) => line.startsWith(prefix));
+const linesOf = (spy: { mock: { calls: unknown[][] } }, prefix: string): string[] =>
+  spy.mock.calls.map((call: unknown[]) => String(call[0])).filter((line: string) => line.startsWith(prefix));
 
 async function rejection(run: () => Promise<unknown>): Promise<unknown> {
   try {

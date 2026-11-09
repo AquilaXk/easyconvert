@@ -211,13 +211,13 @@ describe('Phase 2 SOTA Precision & Standards Testnet', () => {
     });
 
     it('handles divide by zero safely returning #DIV/0!', () => {
-      const evaluator = new SpreadsheetFormulaEvaluator();
+      const evaluator = new SpreadsheetFormulaEvaluator(() => 0);
       const result = evaluator.evaluate('=100 / 0');
       expect(result).toBe('#DIV/0!');
     });
 
     it('evaluates IFERROR without crashing and catches #DIV/0!', () => {
-      const evaluator = new SpreadsheetFormulaEvaluator();
+      const evaluator = new SpreadsheetFormulaEvaluator(() => 0);
       const fallback = evaluator.evaluate('=IFERROR(10 / 0, "RecoveredValue")');
       expect(fallback).toBe('RecoveredValue');
 
@@ -268,7 +268,7 @@ describe('Phase 2 SOTA Precision & Standards Testnet', () => {
     });
 
     it('evaluates math and string functions (DATE, ROUND, CONCAT, LEFT, RIGHT, MID)', () => {
-      const evaluator = new SpreadsheetFormulaEvaluator();
+      const evaluator = new SpreadsheetFormulaEvaluator(() => 0);
       expect(evaluator.evaluate('=ROUND(3.14159, 2)')).toBe(3.14);
       expect(evaluator.evaluate('=CONCAT("Hello", " ", "World")')).toBe('Hello World');
       expect(evaluator.evaluate('=LEFT("Antigravity", 4)')).toBe('Anti');

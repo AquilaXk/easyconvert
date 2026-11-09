@@ -3,8 +3,8 @@
  * compute the tiles, and the public entry points. The tile engines live in raw-demosaic-tiles.ts (see the description
  * there); the thread hand-off lives in raw-demosaic-threads.ts.
  */
-import os from 'node:os';
 import { EngineUnavailableError, InvalidRawSensorError } from '../types';
+import { availableCpus } from '../workers/available-cpus';
 import { RAW_DECODE_MAX_PIXELS } from './raw-formats';
 import {
   applyIec61966SrgbGamma,
@@ -108,7 +108,7 @@ function checkThreads(options?: DemosaicOptions): number | undefined {
 function planThreads(requested: number | undefined, pixels: number, tileRows: number): number {
   if (requested !== undefined) return Math.min(requested, tileRows);
   if (pixels < DEMOSAIC_PARALLEL_MIN_PIXELS) return 1;
-  return Math.max(1, Math.min(os.availableParallelism(), DEMOSAIC_THREADS_MAX, tileRows));
+  return Math.max(1, Math.min(availableCpus(), DEMOSAIC_THREADS_MAX, tileRows));
 }
 
 let gammaTables: GammaTables | null = null;

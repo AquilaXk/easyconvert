@@ -231,8 +231,9 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
 
       // Stream retrieval with range request
       const stream = s3Storage.getObjectStream(complete.key, { start: 0, end: 5 });
+      expect(stream).not.toBeNull();
       const chunks: Buffer[] = [];
-      for await (const chunk of stream) {
+      for await (const chunk of stream!) {
         chunks.push(chunk);
       }
       const rangeSlice = Buffer.concat(chunks).toString('utf-8');

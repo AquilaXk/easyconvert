@@ -4,11 +4,11 @@
  * never poisons the jobs after it.
  */
 import { fork, type ChildProcess } from 'node:child_process';
-import os from 'node:os';
 import path from 'node:path';
 import type { JobReply, JobRequest } from './child';
 import { OCR_MAX_INFLIGHT_PAGES, OCR_PAGE_CONCURRENCY_ENV } from '../../src/lib/conversions/ocr-page-batch';
 import { OCR_PAGE_BUDGET_ENV, ocrPageBudgetMs } from '../../src/lib/conversions/ocr-work-budget';
+import { availableCpus } from '../../src/lib/workers/available-cpus';
 import { crashDetail, isTypedRefusal, type Verdict } from './verdict';
 
 const CHILD_SCRIPT = path.join(__dirname, 'child.ts');
@@ -45,7 +45,7 @@ export function scaledDeadlineMs(baseMs: number, pages: number, pageBudgetMs: nu
   return Math.max(baseMs, Math.min(MAX_JOB_DEADLINE_MS, baseMs + pages * pageBudgetMs));
 }
 
-export function childOcrPageConcurrency(workers: number, cpus: number = os.availableParallelism()): number {
+export function childOcrPageConcurrency(workers: number, cpus: number = availableCpus()): number {
   return Math.max(1, Math.floor(cpus / Math.max(1, workers)));
 }
 
@@ -56,7 +56,7 @@ export function childOcrPageConcurrency(workers: number, cpus: number = os.avail
  * about the pace of a production worker and not about the document. The budget grows by the parallelism the server gives up, so a
  * file is refused only where it would be on a worker that has the cores.
  */
-export function childOcrPageBudgetMs(workers: number, cpus: number = os.availableParallelism(), baseMs: number = ocrPageBudgetMs()): number {
+export function childOcrPageBudgetMs(workers: number, cpus: number = availableCpus(), baseMs: number = ocrPageBudgetMs()): number {
   return baseMs * Math.ceil(OCR_MAX_INFLIGHT_PAGES / childOcrPageConcurrency(workers, cpus));
 }
 

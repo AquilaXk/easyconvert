@@ -1,5 +1,8 @@
 import os from 'node:os';
 import sharp from 'sharp';
+import { availableCpus, parseCgroupCpuMax, parseCgroupV1CpuQuota } from '../workers/available-cpus';
+
+export { availableCpus, parseCgroupCpuMax, parseCgroupV1CpuQuota };
 
 /**
  * Threads for the AV1 encoder inside the image library. Left alone, the library on glibc Linux without a replacement
@@ -107,7 +110,7 @@ let leasedThreads = 0;
  * so concurrent encodes share it: a lease that asks for more raises it for all, the last to end puts the base count back, whether they
  * end or fail.
  */
-export async function withImageThreads<T>(encode: () => Promise<T>, threads: number = imageThreadsFor(os.availableParallelism(), memoryLimitBytes())): Promise<T> {
+export async function withImageThreads<T>(encode: () => Promise<T>, threads: number = imageThreadsFor(availableCpus(), memoryLimitBytes())): Promise<T> {
   if (threads > leasedThreads) {
     sharp.concurrency(threads);
     leasedThreads = threads;
@@ -126,5 +129,5 @@ export async function withImageThreads<T>(encode: () => Promise<T>, threads: num
 
 /** `withImageThreads` for the pipeline of a JPEG encode. */
 export function withPipelineThreads<T>(encode: () => Promise<T>): Promise<T> {
-  return withImageThreads(encode, pipelineThreadsFor(os.availableParallelism(), memoryLimitBytes()));
+  return withImageThreads(encode, pipelineThreadsFor(availableCpus(), memoryLimitBytes()));
 }

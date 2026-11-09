@@ -62,8 +62,8 @@ describe('a run stopped before its work ends', () => {
 
     const abort = new AbortController();
     const form = new FormData();
-    form.append('files', new File([await pdf()], 'a.pdf'));
-    form.append('files', new File([await pdf()], 'b.pdf'));
+    form.append('files', new File([new Uint8Array(await pdf())], 'a.pdf'));
+    form.append('files', new File([new Uint8Array(await pdf())], 'b.pdf'));
     const answer = mergeRoute(new NextRequest('http://localhost/api/tools/merge', { method: 'POST', headers: { 'x-forwarded-for': ip }, body: form, signal: abort.signal }));
     await running;
     abort.abort();

@@ -147,7 +147,7 @@ describe('Phase 2: Zero-Heap VFS Streaming Pipeline for 2GB+ Payloads', () => {
         return originalStatSync(target, options);
       };
 
-      fs.statSync = statSpy as any;
+      (fs as unknown as Record<string, unknown>).statSync = statSpy;
 
       try {
         const result = createConversionResult(
@@ -165,7 +165,7 @@ describe('Phase 2: Zero-Heap VFS Streaming Pipeline for 2GB+ Payloads', () => {
         expect(() => result.buffer).toThrowError(RangeError);
         expect(() => result.buffer).toThrowError(/exceeds 2GB V8 buffer limit/);
       } finally {
-        fs.statSync = originalStatSync;
+        (fs as unknown as Record<string, unknown>).statSync = originalStatSync;
       }
     });
   });

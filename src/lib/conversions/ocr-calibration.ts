@@ -2,8 +2,10 @@ import { OcrEngineUnavailableError } from '../types';
 import type { OcrLineBlock, OcrResult, OcrWord } from './ocr-pdf-combiner';
 import engWasm from './ocr-calibration/eng.wasm.json';
 import engCli from './ocr-calibration/eng.cli.json';
+import engNeural from './ocr-calibration/eng.neural.json';
 import korWasm from './ocr-calibration/kor.wasm.json';
 import korCli from './ocr-calibration/kor.cli.json';
+import korNeural from './ocr-calibration/kor.neural.json';
 
 /**
  * The engine's word confidence is a raw score, not a probability: a page can read perfectly at a
@@ -13,8 +15,8 @@ import korCli from './ocr-calibration/kor.cli.json';
  * pages whose text is known. A language without a table keeps the raw score and says so.
  */
 
-/** The recognizers that produce word scores: the WebAssembly engine and the native command line tool. */
-export type OcrEnginePath = 'wasm' | 'cli';
+/** The recognizers that produce word scores: the WebAssembly engine, the native command line tool, and the Korean-first CPU neural pipeline. */
+export type OcrEnginePath = 'wasm' | 'cli' | 'neural';
 
 export interface CalibrationProvenance {
   /** What the table was fitted on: how the pages were made and where the labels come from. */
@@ -43,8 +45,10 @@ const MAX_TABLE_KNOTS = 256;
 const TABLES: ReadonlyArray<CalibrationTable> = [
   engWasm as CalibrationTable,
   engCli as CalibrationTable,
+  engNeural as CalibrationTable,
   korWasm as CalibrationTable,
   korCli as CalibrationTable,
+  korNeural as CalibrationTable,
 ];
 
 function invalidTable(table: CalibrationTable, why: string): OcrEngineUnavailableError {
