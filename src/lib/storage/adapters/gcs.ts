@@ -106,7 +106,9 @@ export class GcsStorageAdapter implements IStorageAdapter {
         this.tokenExpiresAt = Date.now() + tokenData.expires_in * 1000;
         return this.cachedToken;
       } finally {
-        await dispatcher.close().catch(() => {});
+        try {
+          await dispatcher.close?.();
+        } catch {}
       }
     } catch (err) {
       if (err instanceof StorageAdapterError) throw err;
@@ -152,7 +154,9 @@ export class GcsStorageAdapter implements IStorageAdapter {
       const bodyStream = res.body as unknown as NodeJS.ReadableStream;
       streaming = true;
       const closeDispatcher = () => {
-        void dispatcher.close().catch(() => {});
+        try {
+          void Promise.resolve(dispatcher.close?.()).catch(() => {});
+        } catch {}
       };
       bodyStream.once('close', closeDispatcher);
       bodyStream.once('end', closeDispatcher);
@@ -160,7 +164,9 @@ export class GcsStorageAdapter implements IStorageAdapter {
       return bodyStream;
     } finally {
       if (!streaming) {
-        await dispatcher.close().catch(() => {});
+        try {
+          await dispatcher.close?.();
+        } catch {}
       }
     }
   }
@@ -213,7 +219,9 @@ export class GcsStorageAdapter implements IStorageAdapter {
         lastModified: data.updated ? new Date(data.updated) : new Date(),
       };
     } finally {
-      await dispatcher.close().catch(() => {});
+      try {
+        await dispatcher.close?.();
+      } catch {}
     }
   }
 
@@ -246,7 +254,9 @@ export class GcsStorageAdapter implements IStorageAdapter {
         lastModified: data.updated ? new Date(data.updated) : undefined,
       };
     } finally {
-      await dispatcher.close().catch(() => {});
+      try {
+        await dispatcher.close?.();
+      } catch {}
     }
   }
 
@@ -266,7 +276,9 @@ export class GcsStorageAdapter implements IStorageAdapter {
 
       return res.statusCode === 204 || res.statusCode === 200;
     } finally {
-      await dispatcher.close().catch(() => {});
+      try {
+        await dispatcher.close?.();
+      } catch {}
     }
   }
 }

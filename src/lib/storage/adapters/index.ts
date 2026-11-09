@@ -26,19 +26,28 @@ export const UNAVAILABLE_STORAGE_PROVIDERS: ReadonlySet<string> = new Set<string
 
 const GCS_BUCKET_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,220}[a-z0-9])?$/i;
 
-function validateExternalEndpointUrl(rawUrl: string, provider: string): void {
+function validateHttpEndpointSyntax(rawUrl: string, provider: string, invalidMessage?: string): URL {
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
   } catch (err) {
-    throw new StorageAdapterError(`Invalid ${provider} endpoint URL: "${rawUrl}"`, provider, err);
+    throw new StorageAdapterError(invalidMessage ?? `Invalid ${provider} endpoint URL: "${rawUrl}"`, provider, err);
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new StorageSsrfError(rawUrl, provider);
   }
+  return parsed;
+}
+
+function validateExternalEndpointUrl(rawUrl: string, provider: string): void {
+  const parsed = validateHttpEndpointSyntax(rawUrl, provider);
   if (isPrivateOrRestrictedHost(parsed.hostname)) {
     throw new StorageSsrfError(rawUrl, provider);
   }
+}
+
+function isSimpleContainerIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && !value.includes('..') && !value.includes('/') && !value.includes('\\');
 }
 
 export function validateCredentials(credentials: CustomerStorageCredentials): void {
@@ -48,29 +57,13 @@ export function validateCredentials(credentials: CustomerStorageCredentials): vo
   switch (credentials.type) {
     case 's3': {
       if (credentials.endpoint) {
-        let parsed: URL;
-        try {
-          parsed = new URL(credentials.endpoint);
-        } catch (err) {
-          throw new StorageAdapterError('S3 endpoint does not form a valid URL', 's3', err);
-        }
-        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-          throw new StorageSsrfError(credentials.endpoint, 's3');
-        }
+        validateHttpEndpointSyntax(credentials.endpoint, 's3', 'S3 endpoint does not form a valid URL');
       }
       break;
     }
     case 'gcs': {
-      const bucket = credentials.bucket;
-      if (
-        typeof bucket !== 'string' ||
-        !bucket ||
-        bucket.includes('..') ||
-        bucket.includes('/') ||
-        bucket.includes('\\') ||
-        !GCS_BUCKET_PATTERN.test(bucket)
-      ) {
-        throw new StorageAdapterError(`Invalid GCS bucket name: "${bucket}"`, 'gcs');
+      if (!isSimpleContainerIdentifier(credentials.bucket) || !GCS_BUCKET_PATTERN.test(credentials.bucket)) {
+        throw new StorageAdapterError(`Invalid GCS bucket name: "${credentials.bucket}"`, 'gcs');
       }
       if (credentials.endpoint) {
         validateExternalEndpointUrl(credentials.endpoint, 'gcs');
@@ -78,13 +71,7 @@ export function validateCredentials(credentials: CustomerStorageCredentials): vo
       break;
     }
     case 'azure-blob': {
-      if (
-        !credentials.storageAccount ||
-        !credentials.containerName ||
-        credentials.containerName.includes('..') ||
-        credentials.containerName.includes('/') ||
-        credentials.containerName.includes('\\')
-      ) {
+      if (!credentials.storageAccount || !isSimpleContainerIdentifier(credentials.containerName)) {
         throw new StorageAdapterError('Invalid Azure Blob storageAccount or containerName', 'azure-blob');
       }
       if (credentials.customEndpoint) {
@@ -96,7 +83,7 @@ export function validateCredentials(credentials: CustomerStorageCredentials): vo
       if (!credentials.url) {
         throw new StorageAdapterError('WebDAV url is required', 'webdav');
       }
-      validateExternalEndpointUrl(credentials.url, 'webdav');
+      validateHttpEndpointSyntax(credentials.url, 'webdav');
       break;
     }
     case 'sftp': {
@@ -116,6 +103,9 @@ export function validateCredentials(credentials: CustomerStorageCredentials): vo
  */
 export async function validateStorageCredentials(credentials: CustomerStorageCredentials): Promise<void> {
   validateCredentials(credentials);
+  if (credentials.type === 'webdav') {
+    validateExternalEndpointUrl(credentials.url, 'webdav');
+  }
   if (credentials.type === 's3') {
     await new S3StorageAdapter(credentials).verifyEndpoint();
   }

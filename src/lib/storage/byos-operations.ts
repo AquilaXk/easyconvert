@@ -154,7 +154,9 @@ async function executeUrlImport(
       etag: stored.etag,
     };
   } finally {
-    await dispatcher.close().catch(() => {});
+    try {
+      await dispatcher.close?.();
+    } catch {}
   }
 }
 
@@ -304,7 +306,9 @@ async function uploadToUrl(
       success: true,
     };
   } finally {
-    await dispatcher.close().catch(() => {});
+    try {
+      await dispatcher.close?.();
+    } catch {}
   }
 }
 

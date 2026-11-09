@@ -160,7 +160,9 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
       const bodyStream = res.body as unknown as NodeJS.ReadableStream;
       streaming = true;
       const closeDispatcher = () => {
-        void dispatcher.close().catch(() => {});
+        try {
+          void Promise.resolve(dispatcher.close?.()).catch(() => {});
+        } catch {}
       };
       bodyStream.once('close', closeDispatcher);
       bodyStream.once('end', closeDispatcher);
@@ -168,7 +170,9 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
       return bodyStream;
     } finally {
       if (!streaming) {
-        await dispatcher.close().catch(() => {});
+        try {
+          await dispatcher.close?.();
+        } catch {}
       }
     }
   }
@@ -228,7 +232,9 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
         lastModified: lastModifiedHeader ? new Date(lastModifiedHeader) : new Date(),
       };
     } finally {
-      await dispatcher.close().catch(() => {});
+      try {
+        await dispatcher.close?.();
+      } catch {}
     }
   }
 
@@ -269,7 +275,9 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
         lastModified: lastModified ? new Date(lastModified) : undefined,
       };
     } finally {
-      await dispatcher.close().catch(() => {});
+      try {
+        await dispatcher.close?.();
+      } catch {}
     }
   }
 
@@ -296,7 +304,9 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
 
       return res.statusCode === 202 || res.statusCode === 200 || res.statusCode === 204;
     } finally {
-      await dispatcher.close().catch(() => {});
+      try {
+        await dispatcher.close?.();
+      } catch {}
     }
   }
 }

@@ -39,7 +39,7 @@ describe.each(CASES)('%s', (name, make) => {
   it('answers 422 on POST /api/convert/batch', async () => {
     vi.mocked(dispatchConversion).mockRejectedValue(make());
     const body = new FormData();
-    body.append('files', new File([new Uint8Array([1, 2, 3, 4])], 'a.zip'));
+    body.append('files', new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'a.zip'));
     body.append('targetFormats', JSON.stringify({ default: 'tar' }));
     const res = await batchPost(new NextRequest('http://localhost:3000/api/convert/batch', { method: 'POST', body }));
     expect(res.status).toBe(422);
