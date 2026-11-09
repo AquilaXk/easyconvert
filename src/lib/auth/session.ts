@@ -122,6 +122,14 @@ export async function getSessionFromRequest(request: Request): Promise<User | nu
     return null;
   }
 
+  return getSessionFromToken(token);
+}
+
+/**
+ * The signed-in user a session token stands for, or null when the token is invalid, expired, revoked, older than the
+ * account's session version, or the account is gone. A request's cookie and a server-rendered page's cookie both end here.
+ */
+export async function getSessionFromToken(token: string): Promise<User | null> {
   const payload = verifyJwt<SessionPayload>(token);
   if (!payload?.sub) {
     return null;

@@ -1,14 +1,25 @@
 import { cookies } from 'next/headers';
 import { redirect } from '@/i18n/navigation';
 import type { AppLocale } from '@/i18n/routing';
-import { SESSION_COOKIE_NAME } from './session';
+import { getSessionFromToken, SESSION_COOKIE_NAME } from './session';
+import type { User } from './types';
 
 /**
- * Sends a visitor who carries no session cookie to the login page before the page renders, so the dashboard never flashes
- * its loading state for them. The cookie is only checked for being there: a stale one still gets the page and the client
- * read of the session redirects it.
+ * The person the dashboard renders for, read on the server from the session cookie, so the page's first paint carries their
+ * data and never shows the loading state. A visitor without a cookie, or with a cookie that stands for no session (expired,
+ * revoked, signed out elsewhere), is sent to the login page before the page renders. When the session store cannot answer
+ * the page renders without the person (null), and the browser reads the session itself as it did before.
  */
-export async function redirectWithoutSessionCookie(locale: AppLocale): Promise<void> {
-  const jar = await cookies();
-  if (!jar.has(SESSION_COOKIE_NAME)) redirect({ href: '/auth', locale });
+export async function readDashboardSession(locale: AppLocale): Promise<User | null> {
+  const token = (await cookies()).get(SESSION_COOKIE_NAME)?.value;
+  if (!token) return redirect({ href: '/auth', locale });
+  let user: User | null;
+  try {
+    user = await getSessionFromToken(token);
+  } catch (error) {
+    console.error('[dashboard] Reading the session on the server failed', error);
+    return null;
+  }
+  if (!user) return redirect({ href: '/auth', locale });
+  return user;
 }
