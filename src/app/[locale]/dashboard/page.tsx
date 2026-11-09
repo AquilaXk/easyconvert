@@ -1,5 +1,6 @@
 import DashboardPageView from '@/components/pages/DashboardPageView';
-import { redirectWithoutSessionCookie } from '@/lib/auth/session-gate';
+import { readDashboardSession } from '@/lib/auth/session-gate';
+import { loadDashboardSnapshot } from '@/lib/dashboard/snapshot';
 import PageMessages from '@/i18n/PageMessages';
 import { localizedPageMetadata, resolvePageLocale, type LocaleParams } from '@/i18n/page';
 
@@ -8,10 +9,11 @@ export function generateMetadata({ params }: { params: LocaleParams }) {
 }
 
 export default async function DashboardPage({ params }: Readonly<{ params: LocaleParams }>) {
-  await redirectWithoutSessionCookie(await resolvePageLocale(params));
+  const user = await readDashboardSession(await resolvePageLocale(params));
+  const snapshot = user ? await loadDashboardSnapshot(user) : undefined;
   return (
     <PageMessages page="dashboard">
-      <DashboardPageView />
+      <DashboardPageView initial={snapshot} />
     </PageMessages>
   );
 }

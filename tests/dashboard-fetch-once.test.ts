@@ -129,6 +129,42 @@ describe('the dashboard reads each resource once per visit', () => {
   });
 });
 
+describe('the dashboard the server rendered', () => {
+  const USER = { id: 'user-1', email: 'reader@dashboard.test', name: 'Reader', tier: 'free' as const, provider: 'email' as const, createdAt: 1, updatedAt: 1 };
+  const QUOTA = { tier: 'free' as const, dailyLimit: 10, usedToday: 0, remaining: 10, resetAt: 0 };
+
+  it('reads nothing at mount when the server handed it everything', async () => {
+    mount(function Dashboard() {
+      const { loading, user } = useDashboardController({ user: USER, keys: [], quota: QUOTA, files: [], dlqEntries: [] });
+      expect([loading, user?.id]).toEqual([false, 'user-1']);
+      return null;
+    });
+    await expectReadOnce({});
+  });
+
+  it('reads only the part the server could not read', async () => {
+    mount(function Dashboard() {
+      useDashboardController({ user: USER, keys: [], quota: QUOTA, dlqEntries: [] });
+      return null;
+    });
+    await expectReadOnce({ '/api/account/files': 1 });
+  });
+
+  it('reads the session and every resource when the server could not read the person', async () => {
+    mount(function Dashboard() {
+      useDashboardController(undefined);
+      return null;
+    });
+    await expectReadOnce({
+      '/api/auth/me': 1,
+      '/api/keys': 1,
+      '/api/keys/usage': 1,
+      '/api/account/files': 1,
+      '/api/webhooks/dlq': 1,
+    });
+  });
+});
+
 describe('the wording and formatting hooks keep their identity across renders', () => {
   it('returns the same function from each hook while the language and the zone stay', async () => {
     const seen = new Map<string, Set<unknown>>();

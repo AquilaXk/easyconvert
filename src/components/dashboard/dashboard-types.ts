@@ -1,4 +1,4 @@
-import type { UserConversionFile } from '@/lib/api-keys/types';
+import type { AccountFile } from '@/lib/dashboard/snapshot-types';
 
 export type DashboardTab = 'api' | 'files' | 'dlq' | 'usage';
 
@@ -33,6 +33,4 @@ export function resolveExpiryTimestamp(expiry: KeyExpiryOption, nowMs: number): 
   return nowMs + EXPIRY_DAYS_BY_OPTION[expiry] * 86400 * 1000;
 }
 
-export interface FileWithRemaining extends UserConversionFile {
-  remainingSeconds: number;
-}
+export type FileWithRemaining = AccountFile;
