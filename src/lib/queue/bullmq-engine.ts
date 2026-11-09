@@ -1660,56 +1660,46 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     return this.memoryFallback.getJob(id);
   }
 
-  async getJobs(types: JobState[]): Promise<Job<T, R>[]> {
+  async getJobs(types: JobState[], start = 0, end = -1): Promise<Job<T, R>[]> {
     if (this.redisClient) {
       await this.assertRedisConnected();
       try {
-        const ids: string[] = [];
-        for (const type of types) {
-          if (type === 'waiting') {
-            let list: string[] = [];
-            if (typeof this.redisClient.zrange === 'function') {
-              try {
-                list = await this.redisClient.zrange(this.waitingKey, 0, -1 as any);
-              } catch (err) {
-                rethrowUnlessWrongType(err);
-              }
-            }
-            if ((!list || list.length === 0) && typeof this.redisClient.lrange === 'function') {
-              try {
-                const legacyList = await this.redisClient.lrange(this.waitingKey, 0, -1);
-                if (legacyList && legacyList.length > 0) {
-                  list = legacyList;
+        const redis = this.redisClient;
+        const lists = await Promise.all(
+          types.map(async (type): Promise<string[]> => {
+            if (type === 'waiting') {
+              let list: string[] = [];
+              if (typeof redis.zrange === 'function') {
+                try {
+                  list = await redis.zrange(this.waitingKey, 0, -1 as any);
+                } catch (err) {
+                  rethrowUnlessWrongType(err);
                 }
-              } catch (err) {
-                rethrowUnlessWrongType(err);
               }
+              if ((!list || list.length === 0) && typeof redis.lrange === 'function') {
+                try {
+                  const legacyList = await redis.lrange(this.waitingKey, 0, -1);
+                  if (legacyList && legacyList.length > 0) list = legacyList;
+                } catch (err) {
+                  rethrowUnlessWrongType(err);
+                }
+              }
+              return list || [];
             }
-            ids.push(...(list || []));
-          } else if (type === 'delayed') {
-            const list = await this.redisClient.zrange(this.delayedKey, 0, -1 as any);
-            ids.push(...list);
-          } else if (type === 'active') {
-            const set = await this.redisClient.smembers(this.activeKey);
-            ids.push(...set);
-          } else if (type === 'completed') {
-            const set = await this.redisClient.smembers(this.completedKey);
-            ids.push(...set);
-          } else if (type === 'failed') {
-            const set = await this.redisClient.smembers(this.failedKey);
-            ids.push(...set);
-          } else if (type === 'cancelled') {
-            const set = await this.redisClient.smembers(this.cancelledKey);
-            ids.push(...set);
-          }
-        }
-        const uniqueIds = Array.from(new Set(ids));
-        const jobs: Job<T, R>[] = [];
-        for (const id of uniqueIds) {
-          const j = await this.getJob(id);
-          if (j) jobs.push(j);
-        }
-        return jobs;
+            if (type === 'delayed') return await redis.zrange(this.delayedKey, 0, -1 as any);
+            if (type === 'active') return await redis.smembers(this.activeKey);
+            if (type === 'completed') return await redis.smembers(this.completedKey);
+            if (type === 'failed') return await redis.smembers(this.failedKey);
+            if (type === 'cancelled') return await redis.smembers(this.cancelledKey);
+            return [];
+          })
+        );
+        const uniqueIds = Array.from(new Set(lists.flat()));
+        let slicedIds = uniqueIds;
+        if (end >= 0) slicedIds = uniqueIds.slice(start, end + 1);
+        else if (start > 0) slicedIds = uniqueIds.slice(start);
+        const fetched = await Promise.all(slicedIds.map((id) => this.getJob(id)));
+        return fetched.filter((j): j is Job<T, R> => j !== null);
       } catch (err) {
         throw this.toQueueUnavailable(err);
       }

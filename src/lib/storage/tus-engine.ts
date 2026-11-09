@@ -478,6 +478,7 @@ export class TusEngine {
   }
 
   private lastSweepAt = 0;
+  private inFlightSweep: Promise<number> | null = null;
 
   /** Starts `sweepExpired` unless one ran in the last ten minutes; its failure never fails the upload being created. */
   private sweepExpiredOften(): void {
@@ -521,9 +522,23 @@ export class TusEngine {
    * look here. Returns how many uploads it removed.
    */
   async sweepExpired(now: number = Date.now()): Promise<number> {
+    while (this.inFlightSweep) {
+      await this.inFlightSweep.catch(() => 0);
+    }
+    let currentSweep: Promise<number>;
+    currentSweep = this.performSweepExpired(now).finally(() => {
+      if (this.inFlightSweep === currentSweep) {
+        this.inFlightSweep = null;
+      }
+    });
+    this.inFlightSweep = currentSweep;
+    return currentSweep;
+  }
+
+  private async performSweepExpired(now: number): Promise<number> {
     let names: string[];
     try {
-      names = await fs.promises.readdir(this.tusDir);
+      names = fs.readdirSync(this.tusDir);
     } catch {
       return 0;
     }

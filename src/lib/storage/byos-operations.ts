@@ -126,31 +126,36 @@ async function executeUrlImport(
     }
   }
 
-  const res = await request(params.url, {
-    method: 'GET',
-    headers,
-    dispatcher: createSsrfSafeAgent(),
-  });
+  const dispatcher = createSsrfSafeAgent();
+  try {
+    const res = await request(params.url, {
+      method: 'GET',
+      headers,
+      dispatcher,
+    });
 
-  if (res.statusCode < 200 || res.statusCode >= 300) {
-    throw new Error(`[BYOS] Remote URL fetch failed with HTTP ${res.statusCode}`);
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw new Error(`[BYOS] Remote URL fetch failed with HTTP ${res.statusCode}`);
+    }
+
+    const contentType = (res.headers['content-type'] as string) || 'application/octet-stream';
+    const stored = await objectStorage.putStream(targetKey, res.body as unknown as NodeJS.ReadableStream, {
+      filename,
+      contentType,
+    });
+
+    registerSharedObject(targetKey, stored);
+
+    return {
+      key: stored.key,
+      size: stored.size,
+      filename: stored.filename,
+      mimeType: stored.mimeType,
+      etag: stored.etag,
+    };
+  } finally {
+    await dispatcher.close().catch(() => {});
   }
-
-  const contentType = (res.headers['content-type'] as string) || 'application/octet-stream';
-  const stored = await objectStorage.putStream(targetKey, res.body as unknown as NodeJS.ReadableStream, {
-    filename,
-    contentType,
-  });
-
-  registerSharedObject(targetKey, stored);
-
-  return {
-    key: stored.key,
-    size: stored.size,
-    filename: stored.filename,
-    mimeType: stored.mimeType,
-    etag: stored.etag,
-  };
 }
 
 async function executeAdapterImport(
@@ -280,22 +285,27 @@ async function uploadToUrl(
     ...destination.headers,
   };
 
-  const res = await request(destination.url, {
-    method: 'POST',
-    headers,
-    body: source.stream as any,
-    dispatcher: createSsrfSafeAgent(),
-  });
+  const dispatcher = createSsrfSafeAgent();
+  try {
+    const res = await request(destination.url, {
+      method: 'POST',
+      headers,
+      body: source.stream as any,
+      dispatcher,
+    });
 
-  if (res.statusCode < 200 || res.statusCode >= 300) {
-    throw new Error(`[BYOS] Remote webhook/URL export failed with HTTP ${res.statusCode}`);
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw new Error(`[BYOS] Remote webhook/URL export failed with HTTP ${res.statusCode}`);
+    }
+
+    return {
+      destination: redactUrl(destination.url),
+      size: source.metadata.size,
+      success: true,
+    };
+  } finally {
+    await dispatcher.close().catch(() => {});
   }
-
-  return {
-    destination: redactUrl(destination.url),
-    size: source.metadata.size,
-    success: true,
-  };
 }
 
 async function uploadToAdapter(

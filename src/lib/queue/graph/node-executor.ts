@@ -20,7 +20,6 @@ import {
   createTarArchive,
   extractTarArchive,
   create7zArchiveAsync,
-  extract7zArchive,
   createZipArchive,
   extractZipArchive,
   extractRarArchive,
@@ -37,13 +36,24 @@ import {
   rotatePdfPages,
 } from '../../conversions';
 import type { PdfAccess } from '../../conversions/pdf-access';
-import type { ArchiveExtractionLimits } from '../../conversions/archive-extraction-safety';
+import {
+  type ArchiveExtractionLimits,
+  exceedsArchiveRatio,
+} from '../../conversions/archive-extraction-safety';
+import { isWrapperSource, unpackWrapperSource } from '../../conversions/archive-wrapper-sources';
+import { decompressZstdNative } from '../../conversions/zstd-native';
 import { openPasswordOption } from '../option-secrets';
 import { OPTIMIZERS, getOptimizer, type OptimizerRegistry } from '../../conversions/optimizers';
-import { gunzipStreamingWithLimits } from '../../conversions/archive';
+import {
+  ARCHIVE_SECURITY_LIMITS,
+  decompressXz,
+  extract7zArchiveAsync,
+  gunzipStreamingWithLimits,
+} from '../../conversions/archive';
 import { resolveArchiveCompressionLevel } from '../../conversions/archive-compression-level';
 import {
   ConversionFailedError,
+  DecompressionLimitError,
   GraphExportError,
   InvalidPageRangeError,
   JobTimeoutError,
@@ -285,9 +295,17 @@ const DEFAULT_THUMBNAIL_EDGE_PX = 256;
 /** Packaging format of a media.package node that names none. */
 const DEFAULT_PACKAGING_FORMAT = 'hls';
 
+const COMPOUND_ARCHIVE_EXTENSIONS = ['.tar.gz', '.tar.bz2', '.tar.xz', '.tar.zst', '.tar.bz', '.tar.7z', '.tar.lzo'] as const;
+
 /** Extension of a stored artifact; artifacts without one cannot be routed to a converter. */
 function artifactExtension(filename: string | undefined, key: string): string {
-  const ext = path.extname(filename || key).replace(/^\./, '').toLowerCase();
+  const candidate = (filename || key).toLowerCase();
+  for (const compound of COMPOUND_ARCHIVE_EXTENSIONS) {
+    if (candidate.endsWith(compound)) {
+      return compound.slice(1);
+    }
+  }
+  const ext = path.extname(candidate).replace(/^\./, '');
   if (!ext) {
     throw new ConversionFailedError(`Artifact "${key}" has no file extension, so its format is unknown`);
   }
@@ -325,9 +343,17 @@ async function mergePasswordsFor(
     );
   }
   const produced = await Promise.all(inputs.map((inputId) => graphScheduler.getNodeOutputs(graphId, inputId)));
+  const ownerByKey = new Map<string, number>();
+  for (let i = 0; i < produced.length; i++) {
+    for (const outputKey of produced[i]) {
+      if (!ownerByKey.has(outputKey)) {
+        ownerByKey.set(outputKey, i);
+      }
+    }
+  }
   return artifacts.map((key) => {
-    const owner = produced.findIndex((outputs) => outputs.includes(key));
-    if (owner === -1) throw new PdfPasswordListError('A merged PDF is not an output of any input node, so its password cannot be matched.');
+    const owner = ownerByKey.get(key);
+    if (owner === undefined) throw new PdfPasswordListError('A merged PDF is not an output of any input node, so its password cannot be matched.');
     return passwords[owner] as string | null;
   });
 }
@@ -769,7 +795,7 @@ export async function processGraphNodeJob(
           archiveBuffer = stored.buffer;
         }
 
-        const extracted = await extractGraphArchiveEntries(effectiveFilename, archiveBuffer, node.entries);
+        const extracted = await extractGraphArchiveEntries(effectiveFilename, archiveBuffer, node.entries, undefined, archiveExtractOptionsOf(node, attemptSignal));
 
         for (const [index, f] of extracted.entries()) {
           const entryName = sanitizeNodeOutputFilename(f.filename, `extracted_${index}.bin`);
@@ -940,25 +966,93 @@ async function resolveInputArtifacts(graphId: string, node: GraphNode, providedA
   return graphScheduler.getNodeOutputs(graphId, node.input);
 }
 
+export interface GraphArchiveExtractOptions {
+  password?: string;
+  skipLinks?: boolean;
+  collisionPolicy?: 'error' | 'overwrite' | 'rename';
+  entries?: string[];
+  signal?: AbortSignal;
+}
+
+function archiveExtractOptionsOf(
+  node: { entries?: string[]; options?: GraphArchiveExtractOptions },
+  signal: AbortSignal
+): GraphArchiveExtractOptions {
+  return {
+    ...node.options,
+    entries: node.entries ?? node.options?.entries,
+    signal,
+  };
+}
+
+function finalizeDecompressedArchive(
+  uncompressed: Buffer,
+  compressedSize: number,
+  effectiveLimits: ArchiveExtractionLimits,
+  target: { forceTar: boolean; effectiveFilename: string; suffixPattern: RegExp },
+  resolvedOptions: GraphArchiveExtractOptions & { limits?: ArchiveExtractionLimits }
+): Promise<{ filename: string; buffer: Buffer }[]> | { filename: string; buffer: Buffer }[] {
+  if (uncompressed.length > effectiveLimits.MAX_UNCOMPRESSED_SIZE) {
+    throw new DecompressionLimitError(
+      `Archive bomb detected: uncompressed size exceeds limit of ${effectiveLimits.MAX_UNCOMPRESSED_SIZE} bytes`
+    );
+  }
+  if (exceedsArchiveRatio(uncompressed.length, compressedSize, effectiveLimits.MAX_RATIO)) {
+    throw new DecompressionLimitError(
+      `Archive bomb detected: compression ratio exceeds ${effectiveLimits.MAX_RATIO}:1 limit`
+    );
+  }
+  if (target.forceTar || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
+    return extractTarArchive(uncompressed, resolvedOptions);
+  }
+  const stem = path.basename(target.effectiveFilename).replace(target.suffixPattern, '') || 'decompressed.bin';
+  return [{ filename: stem, buffer: uncompressed }];
+}
+
 export async function extractGraphArchiveEntries(
   effectiveFilename: string,
   archiveBuffer: Buffer,
-  entries?: string[],
-  limits?: ArchiveExtractionLimits
+  entriesOrOptions?: string[] | GraphArchiveExtractOptions,
+  limits?: ArchiveExtractionLimits,
+  options?: GraphArchiveExtractOptions
 ): Promise<{ filename: string; buffer: Buffer }[]> {
-  const lowerFilename = effectiveFilename.toLowerCase();
-  const ext = lowerFilename.endsWith('.tar.gz')
-    ? 'tar.gz'
-    : path.extname(lowerFilename).replace(/^\./, '');
-  if (ext === 'tar' || ext === 'tar.gz' || ext === 'tgz') {
-    const uncompressed = (ext === 'tar.gz' || ext === 'tgz') ? await gunzipStreamingWithLimits(archiveBuffer, limits) : archiveBuffer;
-    return extractTarArchive(uncompressed, { entries, limits });
+  const inlineOptions = entriesOrOptions && !Array.isArray(entriesOrOptions) ? entriesOrOptions : options;
+  const entries = Array.isArray(entriesOrOptions) ? entriesOrOptions : inlineOptions?.entries;
+  const resolvedOptions = { ...inlineOptions, entries, limits };
+  const effectiveLimits = limits ?? ARCHIVE_SECURITY_LIMITS;
+  const ext = artifactExtension(effectiveFilename, effectiveFilename);
+  if (ext === 'tar' || ext === 'tar.gz' || ext === 'tgz' || ext === 'gz') {
+    const uncompressed = ext === 'tar' ? archiveBuffer : await gunzipStreamingWithLimits(archiveBuffer, limits);
+    if (ext === 'gz' && uncompressed.subarray(257, 262).toString('ascii') !== 'ustar') {
+      const stem = path.basename(effectiveFilename).replace(/\.gz$/i, '') || 'decompressed.bin';
+      return [{ filename: stem, buffer: uncompressed }];
+    }
+    return extractTarArchive(uncompressed, resolvedOptions);
   }
-  if (ext === '7z') {
-    return extract7zArchive(archiveBuffer, { entries, limits });
+  if (isWrapperSource(ext)) {
+    const unpacked = unpackWrapperSource(ext, archiveBuffer, effectiveLimits);
+    if (unpacked.isTar) return extractTarArchive(unpacked.payload, resolvedOptions);
+    const stem = path.basename(effectiveFilename).replace(/\.(?:bz2|bz|lz|lzo)$/i, '') || 'decompressed.bin';
+    return [{ filename: stem, buffer: unpacked.payload }];
   }
-  if (ext === 'rar') {
-    return extractRarArchive(archiveBuffer, { entries, limits });
+  if (ext === 'tar.xz' || ext === 'txz' || ext === 'xz') {
+    const uncompressed = await decompressXz(archiveBuffer, resolvedOptions);
+    return finalizeDecompressedArchive(uncompressed, archiveBuffer.length, effectiveLimits, { forceTar: ext !== 'xz', effectiveFilename, suffixPattern: /\.xz$/i }, resolvedOptions);
   }
-  return extractZipArchive(archiveBuffer, { entries, limits });
+  if (ext === 'tar.zst' || ext === 'tzst' || ext === 'zst' || ext === 'zstd') {
+    const uncompressed = await decompressZstdNative(archiveBuffer, {
+      signal: resolvedOptions.signal,
+      maxOutputBytes: effectiveLimits.MAX_UNCOMPRESSED_SIZE,
+    });
+    return finalizeDecompressedArchive(uncompressed, archiveBuffer.length, effectiveLimits, { forceTar: ext === 'tar.zst' || ext === 'tzst', effectiveFilename, suffixPattern: /\.(?:zst|zstd)$/i }, resolvedOptions);
+  }
+  if (ext === '7z' || ext === 'tar.7z') {
+    const extracted = await extract7zArchiveAsync(archiveBuffer, resolvedOptions);
+    if (ext === 'tar.7z' && extracted.length === 1 && extracted[0].buffer.subarray(257, 262).toString('ascii') === 'ustar') {
+      return extractTarArchive(extracted[0].buffer, resolvedOptions);
+    }
+    return extracted;
+  }
+  if (ext === 'rar') return extractRarArchive(archiveBuffer, resolvedOptions);
+  return extractZipArchive(archiveBuffer, resolvedOptions);
 }

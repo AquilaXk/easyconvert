@@ -147,7 +147,33 @@ function uploadNodeFormat(storageKey: string | undefined, options: GraphValidati
 function normalizeNodeEntry(id: string, raw: any): TaskNode {
   const { operation, ...rest } = raw;
   const named = raw.op ?? operation;
-  return { ...rest, id, op: canonicalGraphOperation(named) ?? named };
+  let input = raw.input;
+  if (input === undefined && raw.inputs !== undefined) {
+    if (Array.isArray(raw.inputs)) {
+      const normalizedInputs = raw.inputs.filter((inp: unknown): inp is string => typeof inp === 'string');
+      input = normalizedInputs.length === 1 ? normalizedInputs[0] : normalizedInputs;
+    } else if (typeof raw.inputs === 'string') {
+      input = raw.inputs;
+    }
+  } else if (input === undefined && Array.isArray(raw.dependencies)) {
+    const normalizedDeps: string[] = [];
+    for (const d of raw.dependencies) {
+      if (typeof d === 'string') {
+        normalizedDeps.push(d);
+      } else if (d && typeof d === 'object' && typeof d.taskId === 'string') {
+        normalizedDeps.push(d.taskId);
+      }
+    }
+    if (normalizedDeps.length > 0) {
+      input = normalizedDeps.length === 1 ? normalizedDeps[0] : normalizedDeps;
+    }
+  }
+  return {
+    ...rest,
+    ...(input !== undefined ? { input } : {}),
+    id,
+    op: canonicalGraphOperation(named) ?? named,
+  };
 }
 
 /** Raw node objects keyed by id, from either `nodes`/`tasks` maps or a `tasks` array. */
@@ -220,6 +246,8 @@ export function getTaskDependencies(node: TaskNode): string[] {
 
   return deps;
 }
+
+export const getNodeDependencies = getTaskDependencies;
 
 /**
  * Traces a cycle path in a directed graph using DFS on cyclic candidate vertices.
@@ -627,11 +655,11 @@ export function validateJobGraph(
       }
       case 'convert': {
         inferredFormats[nodeId] = target ?? UNKNOWN_FORMAT;
-        checkConvertNode(nodeId, node, getTaskDependencies(node)[0], firstInputFormat(node), target, errors);
+        checkConvertNode(nodeId, node, getTaskDependencies(node), inferredFormats, target, errors);
         break;
       }
       case 'ocr': {
-        inferredFormats[nodeId] = checkOcrNode(nodeId, node, errors);
+        inferredFormats[nodeId] = checkOcrNode(nodeId, node, getTaskDependencies(node), inferredFormats, errors);
         break;
       }
       case 'metadata': {
@@ -643,6 +671,7 @@ export function validateJobGraph(
         break;
       }
       case 'pdf.split-pages': {
+        checkPdfRequiredInputs(nodeId, op, getTaskDependencies(node), inferredFormats, errors);
         inferredFormats[nodeId] = FIXED_OUTPUT_FORMATS['pdf.split-pages'] as string;
         break;
       }
@@ -653,37 +682,68 @@ export function validateJobGraph(
         break;
       }
       case 'optimize': {
-        const inputId = getTaskDependencies(node)[0];
         const srcFmt = firstInputFormat(node);
-        checkOptimizeNode(nodeId, inputId, srcFmt, errors);
+        checkOptimizeNode(nodeId, getTaskDependencies(node), inferredFormats, srcFmt, errors);
         inferredFormats[nodeId] = srcFmt;
         break;
       }
       case 'pdf.protect': {
-        checkPdfProtectNode(nodeId, node, errors);
+        checkPdfProtectNode(nodeId, node, getTaskDependencies(node), inferredFormats, errors);
         inferredFormats[nodeId] = firstInputFormat(node);
         break;
       }
       default: {
         // Pass-through operations (watermark, protect, export) keep their input format.
+        checkPdfRequiredInputs(nodeId, op, getTaskDependencies(node), inferredFormats, errors);
         inferredFormats[nodeId] = firstInputFormat(node);
         break;
       }
     }
   }
 
-  const valid = errors.length === 0;
   return {
-    valid,
+    valid: errors.length === 0,
     errors,
-    topologicalOrder: valid ? topologicalOrder : undefined,
+    topologicalOrder: errors.length === 0 ? topologicalOrder : undefined,
     depth: computedMaxDepth,
     inferredOutputFormats: inferredFormats,
-    normalizedNodes: valid ? nodes : undefined,
+    normalizedNodes: errors.length === 0 ? nodes : undefined,
   };
 }
 
-function checkOptimizeNode(
+const PDF_INPUT_REQUIRED_OPS: ReadonlySet<GraphOperation> = new Set<GraphOperation>([
+  'watermark',
+  'pdf.watermark',
+  'pdf.protect',
+  'pdf.unlock',
+  'pdf.split-pages',
+  'pdf.extract-pages',
+  'pdf.delete-pages',
+  'pdf.reorder-pages',
+  'pdf.rotate-pages',
+]);
+
+function checkPdfRequiredInputs(
+  nodeId: string,
+  op: GraphOperation,
+  deps: readonly string[],
+  inferredFormats: Record<string, string>,
+  errors: GraphValidationErrorDetail[]
+): void {
+  if (!PDF_INPUT_REQUIRED_OPS.has(op)) return;
+  for (const depId of deps) {
+    const depFmt = inferredFormats[depId] || UNKNOWN_FORMAT;
+    if (depFmt !== UNKNOWN_FORMAT && depFmt !== DYNAMIC_FORMAT && depFmt !== 'pdf') {
+      errors.push({
+        path: `nodes.${nodeId}.input`,
+        message: `Operation "${op}" in node "${nodeId}" requires PDF input, but input "${depId}" produces "${depFmt}".`,
+        code: 'INCOMPATIBLE_FORMAT_CONVERSION',
+      });
+    }
+  }
+}
+
+function checkOptimizeSingleInput(
   nodeId: string,
   inputId: string | undefined,
   srcFmt: string,
@@ -712,11 +772,30 @@ function checkOptimizeNode(
   }
 }
 
+function checkOptimizeNode(
+  nodeId: string,
+  deps: readonly string[],
+  inferredFormats: Record<string, string>,
+  srcFmt: string,
+  errors: GraphValidationErrorDetail[]
+): void {
+  if (deps.length === 0) {
+    checkOptimizeSingleInput(nodeId, undefined, srcFmt, errors);
+    return;
+  }
+  for (const depId of deps) {
+    checkOptimizeSingleInput(nodeId, depId, inferredFormats[depId] || UNKNOWN_FORMAT, errors);
+  }
+}
+
 function checkPdfProtectNode(
   nodeId: string,
   node: { options?: { protect?: unknown } & Record<string, unknown> },
+  deps: readonly string[],
+  inferredFormats: Record<string, string>,
   errors: GraphValidationErrorDetail[]
 ): void {
+  checkPdfRequiredInputs(nodeId, 'pdf.protect', deps, inferredFormats, errors);
   const rawProtect = node.options?.protect ?? node.options ?? {};
   try {
     validatePdfProtectOptions(rawProtect);
@@ -732,13 +811,19 @@ function checkPdfProtectNode(
 function checkConvertNode(
   nodeId: string,
   node: { options?: { protect?: unknown; libreOfficeFilter?: unknown } & Record<string, unknown> },
-  inputId: string | undefined,
-  sourceFmt: string,
+  deps: readonly string[],
+  inferredFormats: Record<string, string>,
   target: string | undefined,
   errors: GraphValidationErrorDetail[]
 ): void {
   if (target) {
-    checkConversion(nodeId, inputId, sourceFmt, target, errors);
+    if (deps.length === 0) {
+      checkConversion(nodeId, undefined, UNKNOWN_FORMAT, target, errors);
+    } else {
+      for (const depId of deps) {
+        checkConversion(nodeId, depId, inferredFormats[depId] || UNKNOWN_FORMAT, target, errors);
+      }
+    }
   }
   checkPdfAndOfficeNodeOptions(nodeId, node, target, errors);
 }
@@ -746,6 +831,8 @@ function checkConvertNode(
 function checkOcrNode(
   nodeId: string,
   node: { options?: { ocrFormat?: unknown; protect?: unknown; libreOfficeFilter?: unknown } & Record<string, unknown> },
+  deps: readonly string[],
+  inferredFormats: Record<string, string>,
   errors: GraphValidationErrorDetail[]
 ): string {
   const fixed = FIXED_OUTPUT_FORMATS.ocr as string;
@@ -756,6 +843,12 @@ function checkOcrNode(
       message: `OCR node "${nodeId}" produces "${fixed}"; ocrFormat "${requested}" is not supported.`,
       code: 'UNSUPPORTED_OUTPUT_FORMAT',
     });
+  }
+  for (const depId of deps) {
+    const depFmt = inferredFormats[depId] || UNKNOWN_FORMAT;
+    if (depFmt !== UNKNOWN_FORMAT && depFmt !== DYNAMIC_FORMAT) {
+      checkConversion(nodeId, depId, depFmt, fixed, errors);
+    }
   }
   checkPdfAndOfficeNodeOptions(nodeId, node, fixed, errors);
   return fixed;

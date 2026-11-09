@@ -25,7 +25,7 @@ import {
 import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError, resolveDeclaredFormat } from '@/lib/storage/declared-format';
 import type { UploadSessionInfo } from '@/lib/storage/oci-storage';
 import { readObjectHeader } from '@/lib/storage/object-header';
-import { assertNotSpoofedFile } from '@/lib/security/file-guard';
+import { assertNotSpoofedObject } from '@/lib/security/file-guard';
 import { recordCompletedUpload } from '@/lib/api/completed-upload';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { fileSizeLimitProblem, partBodyProblem } from '@/lib/api/file-size-limit';
@@ -281,14 +281,18 @@ async function handleInitiateUpload(
  * The refusal of an assembled object-store upload whose first bytes do not match the format its name and type declare (the
  * check the local store and the direct upload route make), which is deleted; undefined when it matches.
  */
-async function refuseSpoofedRemoteUpload(key: string, session: Pick<UploadSessionInfo, 'filename' | 'mimeType'>, instanceUri: string): Promise<Response | undefined> {
+async function refuseSpoofedRemoteUpload(
+  key: string,
+  session: Pick<UploadSessionInfo, 'filename' | 'mimeType' | 'totalSize'>,
+  instanceUri: string
+): Promise<Response | undefined> {
   const header = await readObjectHeader(storageProvider, key);
   if (!header) {
     await storageProvider.deleteObject(key);
     return createProblemDetailsResponse(500, 'Assembled file not found in storage. Operation failed closed.', instanceUri);
   }
   try {
-    assertNotSpoofedFile(header, resolveDeclaredFormat(session.filename, session.mimeType), session.filename);
+    await assertNotSpoofedObject(storageProvider, key, session.totalSize, header, resolveDeclaredFormat(session.filename, session.mimeType), session.filename);
     return undefined;
   } catch (error: unknown) {
     await storageProvider.deleteObject(key);

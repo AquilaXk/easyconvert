@@ -181,30 +181,65 @@ function signatureMatchesAnyKey(
   });
 }
 
+function resolveVerifyJwtConfig(
+  secretOrOptions?: string | VerifyJwtOptions,
+  extraOptions?: VerifyJwtOptions
+): { secret?: string; options?: VerifyJwtOptions } {
+  if (typeof secretOrOptions === 'string') {
+    return { secret: secretOrOptions, options: extraOptions };
+  }
+  if (secretOrOptions && typeof secretOrOptions === 'object') {
+    return {
+      secret: secretOrOptions.secret,
+      options: extraOptions ? { ...secretOrOptions, ...extraOptions } : secretOrOptions,
+    };
+  }
+  return { options: extraOptions };
+}
+
+function validateJwtClaims(payload: Record<string, unknown>, options?: VerifyJwtOptions): boolean {
+  const now = Math.floor(Date.now() / 1000);
+  if (typeof payload.exp !== 'number' || !Number.isFinite(payload.exp) || payload.exp < now) {
+    return false;
+  }
+  if (options?.issuer) {
+    const allowed = Array.isArray(options.issuer) ? options.issuer : [options.issuer];
+    if (typeof payload.iss !== 'string' || !allowed.includes(payload.iss)) {
+      return false;
+    }
+  }
+  if (options?.audience) {
+    const allowed = Array.isArray(options.audience) ? options.audience : [options.audience];
+    if (typeof payload.aud !== 'string' || !allowed.includes(payload.aud)) {
+      return false;
+    }
+  }
+  if (
+    typeof options?.expectedSessionVersion === 'number' &&
+    typeof payload.sessionVersion === 'number' &&
+    payload.sessionVersion < options.expectedSessionVersion
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export function verifyJwt<T = SessionPayload>(
   token: string,
-  secretOrOptions?: string | VerifyJwtOptions
+  secretOrOptions?: string | VerifyJwtOptions,
+  extraOptions?: VerifyJwtOptions
 ): T | null {
   if (!token || typeof token !== 'string') {
     return null;
   }
 
-  let secret: string | undefined;
-  let options: VerifyJwtOptions | undefined;
-  if (typeof secretOrOptions === 'string') {
-    secret = secretOrOptions;
-  } else if (secretOrOptions && typeof secretOrOptions === 'object') {
-    secret = secretOrOptions.secret;
-    options = secretOrOptions;
-  }
-
+  const { secret, options } = resolveVerifyJwtConfig(secretOrOptions, extraOptions);
   const parts = token.split('.');
   if (parts.length !== 3) {
     return null;
   }
 
   const [encodedHeader, encodedPayload, signature] = parts;
-
   const header = parseJwtHeader(encodedHeader);
   if (!header) {
     return null;
@@ -225,32 +260,9 @@ export function verifyJwt<T = SessionPayload>(
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       return null;
     }
-
-    const now = Math.floor(Date.now() / 1000);
-    if (typeof payload.exp === 'number' && payload.exp < now) {
+    if (!validateJwtClaims(payload as Record<string, unknown>, options)) {
       return null;
     }
-
-    if (options?.issuer) {
-      const allowed = Array.isArray(options.issuer) ? options.issuer : [options.issuer];
-      if (typeof payload.iss !== 'string' || !allowed.includes(payload.iss)) {
-        return null;
-      }
-    }
-
-    if (options?.audience) {
-      const allowed = Array.isArray(options.audience) ? options.audience : [options.audience];
-      if (typeof payload.aud !== 'string' || !allowed.includes(payload.aud)) {
-        return null;
-      }
-    }
-
-    if (typeof options?.expectedSessionVersion === 'number') {
-      if (typeof payload.sessionVersion === 'number' && payload.sessionVersion < options.expectedSessionVersion) {
-        return null;
-      }
-    }
-
     return payload as T;
   } catch {
     return null;

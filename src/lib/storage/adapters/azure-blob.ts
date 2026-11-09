@@ -4,6 +4,7 @@ import { request } from 'undici';
 import type { AzureBlobCredentials } from '../credentials-vault';
 import {
   IStorageAdapter,
+  StorageAdapterError,
   StorageAdapterMetadata,
   StorageNotFoundError,
   StorageAuthenticationError,
@@ -27,6 +28,18 @@ function stripLeadingSlashes(pathStr: string): string {
     start++;
   }
   return pathStr.slice(start);
+}
+
+function encodeSafePathSegments(remotePath: string, provider: string): string {
+  if (!remotePath || remotePath.includes('\\') || remotePath.includes('\0')) {
+    throw new StorageAdapterError(`Invalid remote path "${remotePath}"`, provider);
+  }
+  const cleanPath = stripLeadingSlashes(remotePath);
+  const segments = cleanPath.split('/');
+  if (segments.length === 0 || segments.some((seg) => !seg || seg === '.' || seg === '..')) {
+    throw new StorageAdapterError(`Path traversal or empty segment rejected in "${remotePath}"`, provider);
+  }
+  return segments.map((seg) => encodeURIComponent(seg)).join('/');
 }
 
 export class AzureBlobStorageAdapter implements IStorageAdapter {
@@ -59,8 +72,8 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
   }
 
   private buildUrl(remotePath: string): string {
-    const cleanPath = stripLeadingSlashes(remotePath);
-    let url = `${this.baseUrl}/${encodeURIComponent(this.containerName)}/${encodeURI(cleanPath)}`;
+    const encodedPath = encodeSafePathSegments(remotePath, this.providerName);
+    let url = `${this.baseUrl}/${encodeURIComponent(this.containerName)}/${encodedPath}`;
     if (this.sasToken) {
       url += `?${this.sasToken}`;
     }
@@ -75,8 +88,8 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
   ): void {
     if (!this.accountKey) return;
 
-    const cleanPath = stripLeadingSlashes(remotePath);
-    const canonicalizedResource = `/${this.storageAccount}/${this.containerName}/${cleanPath}`;
+    const encodedPath = encodeSafePathSegments(remotePath, this.providerName);
+    const canonicalizedResource = `/${this.storageAccount}/${encodeURIComponent(this.containerName)}/${encodedPath}`;
 
     // Canonicalize x-ms-* headers in lexicographical order
     const msHeaders = Object.keys(headers)
@@ -124,24 +137,40 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
       this.signSharedKey('GET', remotePath, headers);
     }
 
-    const res = await request(url, {
-      method: 'GET',
-      headers,
-      dispatcher: createSsrfSafeAgent(),
-    });
+    const dispatcher = createSsrfSafeAgent();
+    let streaming = false;
+    try {
+      const res = await request(url, {
+        method: 'GET',
+        headers,
+        dispatcher,
+      });
 
-    if (res.statusCode === 404) {
-      throw new StorageNotFoundError(remotePath, this.providerName);
-    }
-    if (res.statusCode === 401 || res.statusCode === 403) {
-      throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
-    }
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      const errText = await res.body.text();
-      throw new Error(`[AzureBlobAdapter] Download failed (${res.statusCode}): ${errText}`);
-    }
+      if (res.statusCode === 404) {
+        throw new StorageNotFoundError(remotePath, this.providerName);
+      }
+      if (res.statusCode === 401 || res.statusCode === 403) {
+        throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
+      }
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        const errText = await res.body.text();
+        throw new Error(`[AzureBlobAdapter] Download failed (${res.statusCode}): ${errText}`);
+      }
 
-    return res.body as unknown as NodeJS.ReadableStream;
+      const bodyStream = res.body as unknown as NodeJS.ReadableStream;
+      streaming = true;
+      const closeDispatcher = () => {
+        void dispatcher.close().catch(() => {});
+      };
+      bodyStream.once('close', closeDispatcher);
+      bodyStream.once('end', closeDispatcher);
+      bodyStream.once('error', closeDispatcher);
+      return bodyStream;
+    } finally {
+      if (!streaming) {
+        await dispatcher.close().catch(() => {});
+      }
+    }
   }
 
   async uploadStream(
@@ -175,27 +204,32 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
       nodeStream = stream;
     }
 
-    const res = await request(url, {
-      method: 'PUT',
-      headers,
-      body: nodeStream as any,
-      dispatcher: createSsrfSafeAgent(),
-    });
+    const dispatcher = createSsrfSafeAgent();
+    try {
+      const res = await request(url, {
+        method: 'PUT',
+        headers,
+        body: nodeStream as any,
+        dispatcher,
+      });
 
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      const errText = await res.body.text();
-      throw new Error(`[AzureBlobAdapter] Upload failed (${res.statusCode}): ${errText}`);
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        const errText = await res.body.text();
+        throw new Error(`[AzureBlobAdapter] Upload failed (${res.statusCode}): ${errText}`);
+      }
+
+      const etag = (res.headers.etag as string | undefined)?.replace(/"/g, '');
+      const lastModifiedHeader = res.headers['last-modified'] as string | undefined;
+
+      return {
+        size: options?.size || 0,
+        etag,
+        contentType: options?.contentType,
+        lastModified: lastModifiedHeader ? new Date(lastModifiedHeader) : new Date(),
+      };
+    } finally {
+      await dispatcher.close().catch(() => {});
     }
-
-    const etag = (res.headers.etag as string | undefined)?.replace(/"/g, '');
-    const lastModifiedHeader = res.headers['last-modified'] as string | undefined;
-
-    return {
-      size: options?.size || 0,
-      etag,
-      contentType: options?.contentType,
-      lastModified: lastModifiedHeader ? new Date(lastModifiedHeader) : new Date(),
-    };
   }
 
   async head(remotePath: string): Promise<StorageAdapterMetadata | null> {
@@ -211,27 +245,32 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
       this.signSharedKey('HEAD', remotePath, headers);
     }
 
-    const res = await request(url, {
-      method: 'HEAD',
-      headers,
-      dispatcher: createSsrfSafeAgent(),
-    });
+    const dispatcher = createSsrfSafeAgent();
+    try {
+      const res = await request(url, {
+        method: 'HEAD',
+        headers,
+        dispatcher,
+      });
 
-    if (res.statusCode === 404) return null;
-    if (res.statusCode < 200 || res.statusCode >= 300) return null;
+      if (res.statusCode === 404) return null;
+      if (res.statusCode < 200 || res.statusCode >= 300) return null;
 
-    const lenStr = res.headers['content-length'] as string | undefined;
-    const size = lenStr ? Number.parseInt(lenStr, 10) : 0;
-    const etag = (res.headers.etag as string | undefined)?.replace(/"/g, '');
-    const contentType = res.headers['content-type'] as string | undefined;
-    const lastModified = res.headers['last-modified'] as string | undefined;
+      const lenStr = res.headers['content-length'] as string | undefined;
+      const size = lenStr ? Number.parseInt(lenStr, 10) : 0;
+      const etag = (res.headers.etag as string | undefined)?.replace(/"/g, '');
+      const contentType = res.headers['content-type'] as string | undefined;
+      const lastModified = res.headers['last-modified'] as string | undefined;
 
-    return {
-      size,
-      etag,
-      contentType,
-      lastModified: lastModified ? new Date(lastModified) : undefined,
-    };
+      return {
+        size,
+        etag,
+        contentType,
+        lastModified: lastModified ? new Date(lastModified) : undefined,
+      };
+    } finally {
+      await dispatcher.close().catch(() => {});
+    }
   }
 
   async delete(remotePath: string): Promise<boolean> {
@@ -247,12 +286,17 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
       this.signSharedKey('DELETE', remotePath, headers);
     }
 
-    const res = await request(url, {
-      method: 'DELETE',
-      headers,
-      dispatcher: createSsrfSafeAgent(),
-    });
+    const dispatcher = createSsrfSafeAgent();
+    try {
+      const res = await request(url, {
+        method: 'DELETE',
+        headers,
+        dispatcher,
+      });
 
-    return res.statusCode === 202 || res.statusCode === 200 || res.statusCode === 204;
+      return res.statusCode === 202 || res.statusCode === 200 || res.statusCode === 204;
+    } finally {
+      await dispatcher.close().catch(() => {});
+    }
   }
 }

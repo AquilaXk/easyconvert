@@ -6,7 +6,7 @@ import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { storageProvider } from '@/lib/storage';
 import { readObjectHeader } from '@/lib/storage/object-header';
 import { forgetUploadParts } from '@/lib/storage/part-admission';
-import { assertNotSpoofedFile } from '@/lib/security/file-guard';
+import { assertNotSpoofedObject } from '@/lib/security/file-guard';
 import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError, resolveDeclaredFormat } from '@/lib/storage/declared-format';
 
 export const dynamic = 'force-dynamic';
@@ -151,7 +151,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const declaredFormat = resolveDeclaredFormat(sessionFilename, sessionMimeType);
-    assertNotSpoofedFile(header, declaredFormat, sessionFilename);
+    await assertNotSpoofedObject(storageProvider, completedObject.key, session.totalSize, header, declaredFormat, sessionFilename);
   } catch (err: unknown) {
     // Purge the assembled object immediately: it matches no declared format
     const purged = await purgeAssembled(completedObject.key, instanceUri);

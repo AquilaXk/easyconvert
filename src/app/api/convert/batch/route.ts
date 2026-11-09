@@ -7,8 +7,10 @@ import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurren
 import { bindJobLimits } from '@/lib/conversions/job-time';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
-import { withinSingleRequest } from '@/lib/api/file-size-limit';
+import { fileSizeLimitProblem, withinSingleRequest } from '@/lib/api/file-size-limit';
 import { detectFormatFromFilename } from '@/lib/registry';
+import { assertNotSpoofedFile, spoofCheckRefusal } from '@/lib/security/file-guard';
+import { refusalCodeOf } from '@/lib/refusal-codes';
 import {
   ConversionOptions,
   ArchiveEntryCollisionError,
@@ -72,6 +74,7 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('conve
   const instanceUri = req.nextUrl?.pathname || '/api/convert/batch';
   // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
   let releaseSlot: (() => void) | undefined;
+  let running: Promise<unknown> = Promise.resolve();
 
   try {
     // 1. Guard check: Authenticate API key/session or enforce the anonymous IP rate limit BEFORE reading the multipart body.
@@ -100,7 +103,12 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('conve
     if (!slot.granted) {
       return concurrencyLimitResponse(slot.limit, instanceUri);
     }
-    releaseSlot = slot.release;
+    let slotReleased = false;
+    releaseSlot = () => {
+      if (slotReleased) return;
+      slotReleased = true;
+      slot.release();
+    };
 
     const form = await readBatchForm(req, instanceUri);
     if ('refusal' in form) {
@@ -115,6 +123,10 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('conve
           { success: false, error: `Batch payload contains empty file "${f.name}". File buffer has 0 bytes.` },
           { status: 400 }
         );
+      }
+      const oversize = fileSizeLimitProblem(auth.user, f.size, instanceUri);
+      if (oversize) {
+        return oversize;
       }
     }
 
@@ -146,34 +158,62 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('conve
       planned.push({ file, extension: detected.extension, targetFormat });
     }
 
+    if (planned.length === 0) {
+      return NextResponse.json(
+        { success: false, error: 'No convertible files matched the target format.' },
+        { status: 400 }
+      );
+    }
+
     const unit = await reserveConversionUnit(auth.user, planned.length);
     if (!unit.reserved) return conversionRefusalResponse(unit.refusal, instanceUri);
     const caller = auth.user;
-    return await withReservedUnit(unit.reservationId, (reserved) => convertPlanned(req, caller, planned, defaultOptions, reserved));
+    return await withReservedUnit(unit.reservationId, (reserved) =>
+      convertPlanned(req, caller, planned, defaultOptions, reserved, (work) => {
+        running = work.catch(() => undefined);
+      })
+    );
   } catch (error: unknown) {
     trace.cause = error;
-    const deadlineProblem = deadlineErrorResponse(error, instanceUri);
-    if (deadlineProblem) return deadlineProblem;
-    if (error instanceof PdfPostprocessError) {
-      return createPdfPostprocessResponse(error, instanceUri);
-    }
-    if (error instanceof ArchiveEntryCollisionError) {
-      return createProblemDetailsResponse(error.status, error.message, instanceUri, 'Archive Entry Collision', undefined, undefined, undefined, { code: error.refusalCode });
-    }
-    const limitStatus = payloadLimitStatus(error);
-    if (limitStatus !== null) {
-      // A stream decodes past a size limit, an image declares more pixels than allowed, or a WOFF2 passes the codec limits: 413.
-      return createProblemDetailsResponse(limitStatus, error instanceof Error ? error.message : String(error), instanceUri);
-    }
-    if (error instanceof WorkerOutputMissingError) {
-      // A server fault, not a verdict on the input: answer 500 without the worker's file name; the outcome line carries the error.
-      return createProblemDetailsResponse(error.status, WORKER_OUTPUT_MISSING_DETAIL, instanceUri, 'Internal Server Error');
-    }
-    return typedFailureProblem(error, instanceUri);
+    return batchErrorResponse(error, instanceUri);
   } finally {
-    releaseSlot?.();
+    if (releaseSlot) {
+      void running.then(releaseSlot, releaseSlot);
+    }
   }
 })));
+
+function batchErrorResponse(error: unknown, instanceUri: string): NextResponse {
+  const deadlineProblem = deadlineErrorResponse(error, instanceUri);
+  if (deadlineProblem) return deadlineProblem;
+  const spoofRefusal = spoofCheckRefusal(error);
+  if (spoofRefusal) {
+    return createProblemDetailsResponse(
+      spoofRefusal.status,
+      error instanceof Error ? error.message : String(error),
+      instanceUri,
+      spoofRefusal.title,
+      undefined,
+      undefined,
+      undefined,
+      { code: refusalCodeOf(error) ?? 'spoofed_file' }
+    );
+  }
+  if (error instanceof PdfPostprocessError) {
+    return createPdfPostprocessResponse(error, instanceUri);
+  }
+  if (error instanceof ArchiveEntryCollisionError) {
+    return createProblemDetailsResponse(error.status, error.message, instanceUri, 'Archive Entry Collision', undefined, undefined, undefined, { code: error.refusalCode });
+  }
+  const limitStatus = payloadLimitStatus(error);
+  if (limitStatus !== null) {
+    return createProblemDetailsResponse(limitStatus, error instanceof Error ? error.message : String(error), instanceUri);
+  }
+  if (error instanceof WorkerOutputMissingError) {
+    return createProblemDetailsResponse(error.status, WORKER_OUTPUT_MISSING_DETAIL, instanceUri, 'Internal Server Error');
+  }
+  return typedFailureProblem(error, instanceUri);
+}
 
 interface PlannedFile {
   file: File;
@@ -190,7 +230,8 @@ async function convertPlanned(
   caller: User,
   planned: PlannedFile[],
   defaultOptions: ConversionOptions,
-  unit: ReservedUnit
+  unit: ReservedUnit,
+  onRunningWork?: (work: Promise<unknown>) => void
 ): Promise<NextResponse> {
   // One deadline for the whole batch: the files' deadlines added up, never above the maximum of the tier.
   const batchDeadlineMs = syncDeadlineMs(Math.min(
@@ -213,34 +254,40 @@ async function convertPlanned(
 
   // Nothing to convert needs no deadline, and the route answers it below.
   await runUnderDeadline(req, Math.max(batchDeadlineMs, 1), async (limits) => {
-    for (const { file, extension, targetFormat } of planned) {
-      limits.signal.throwIfAborted();
-      const arrayBuffer = await file.arrayBuffer();
-      const inputBuffer = Buffer.from(arrayBuffer);
+    const work = (async () => {
+      for (const { file, extension, targetFormat } of planned) {
+        limits.signal.throwIfAborted();
+        const arrayBuffer = await file.arrayBuffer();
+        const inputBuffer = Buffer.from(arrayBuffer);
 
-      const result = await dispatchConversion(
-        inputBuffer,
-        extension,
-        targetFormat,
-        bindJobLimits(defaultOptions, limits),
-        file.name
-      );
+        assertNotSpoofedFile(inputBuffer, extension, file.name);
 
-      let finalName = result.filename;
-      let counter = 1;
-      while (usedNames.has(finalName)) {
-        const ext = finalName.includes('.') ? `.${finalName.split('.').pop()}` : '';
-        const nameWithoutExt = finalName.replace(/\.[^/.]+$/, '');
-        finalName = `${nameWithoutExt} (${counter})${ext}`;
-        counter++;
+        const result = await dispatchConversion(
+          inputBuffer,
+          extension,
+          targetFormat,
+          bindJobLimits(defaultOptions, limits),
+          file.name
+        );
+
+        let finalName = result.filename;
+        let counter = 1;
+        while (usedNames.has(finalName)) {
+          const ext = finalName.includes('.') ? `.${finalName.split('.').pop()}` : '';
+          const nameWithoutExt = finalName.replace(/\.[^/.]+$/, '');
+          finalName = `${nameWithoutExt} (${counter})${ext}`;
+          counter++;
+        }
+        usedNames.add(finalName);
+
+        convertedFiles.push({
+          filename: finalName,
+          buffer: result.buffer,
+        });
       }
-      usedNames.add(finalName);
-
-      convertedFiles.push({
-        filename: finalName,
-        buffer: result.buffer,
-      });
-    }
+    })();
+    onRunningWork?.(work);
+    await work;
   });
 
   if (convertedFiles.length === 0) {
