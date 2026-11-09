@@ -4,6 +4,7 @@ import React from 'react';
 import { useTranslations } from 'next-intl';
 import { ChevronDown, RefreshCw } from 'lucide-react';
 import { getAvailableTargetFormats } from '@/lib/registry';
+import { isSameFormat } from '@/lib/format-aliases';
 import FormatPickerButton from './FormatPickerButton';
 import { FormatIcon } from './FormatIcon';
 
@@ -12,6 +13,8 @@ interface HeroFormatTilesProps {
   targetFormat: string;
   onSourceChange: (nextSource: string) => void;
   onTargetChange: (nextTarget: string) => void;
+  /** Whether the target picker offers the source's own format (PDF to PDF): the pages that compress or recognise text do, the home page's pair does not. */
+  offerSameFormat?: boolean;
 }
 
 const TILE_CLASS =
@@ -53,6 +56,7 @@ export default function HeroFormatTiles({
   targetFormat,
   onSourceChange,
   onTargetChange,
+  offerSameFormat = true,
 }: Readonly<HeroFormatTilesProps>) {
   const t = useTranslations('hero.tiles');
 
@@ -82,7 +86,7 @@ export default function HeroFormatTiles({
         testId="hero-target-format-btn"
         ariaLabel={t('targetLabel', { format: targetDisplay })}
         className={TILE_CLASS}
-        availableFormats={isAnySource ? undefined : getAvailableTargetFormats(normalizedSource)}
+        availableFormats={isAnySource ? undefined : getAvailableTargetFormats(normalizedSource).filter((format) => offerSameFormat || !isSameFormat(format.id, normalizedSource))}
         sourceFormat={isAnySource ? undefined : normalizedSource}
         selectedFormatId={normalizedTarget}
         onSelect={onTargetChange}

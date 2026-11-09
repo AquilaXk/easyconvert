@@ -8,7 +8,7 @@ import { defaultToolOptions, type WebTool, type WebToolOptions } from '@/lib/too
 import { INPUT_CLASS, LABEL_CLASS, SELECT_CLASS } from '../workbench/options/section-primitives';
 
 /** Each archive format and the key of its label: a key cannot hold a dot. */
-const ARCHIVE_FORMATS = [['zip', 'zip'], ['7z', '7z'], ['tar.gz', 'tarGz']] as const;
+const ARCHIVE_FORMATS = [['zip', 'zip'], ['7z', '7z'], ['tar', 'tar'], ['tar.gz', 'tarGz']] as const;
 const ROTATIONS = [90, 180, 270] as const;
 const RADIO_ROW = 'flex items-center gap-3 min-h-[44px] text-sm text-ink cursor-pointer';
 

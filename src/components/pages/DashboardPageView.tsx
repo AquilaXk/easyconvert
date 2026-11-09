@@ -30,7 +30,7 @@ export default function DashboardPageView({ initial }: Readonly<{ initial?: Dash
 
   return (
     <div className="min-h-screen flex flex-col">
-      <Header />
+      <Header initialUser={initial?.user} />
 
       <main
         id="main-content"
@@ -67,7 +67,7 @@ export default function DashboardPageView({ initial }: Readonly<{ initial?: Dash
               }}
             />
 
-            <EmailVerificationNotice />
+            <EmailVerificationNotice initial={initial?.emailVerification} />
 
             {actionError && (
               <div className="mb-6 pl-4 pr-2 py-2.5 rounded-md bg-danger-soft border border-danger-edge/30 text-danger text-sm flex items-center justify-between gap-3">

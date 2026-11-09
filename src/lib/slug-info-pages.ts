@@ -56,6 +56,7 @@ export type SlugName =
 export type SlugCopy =
   | { kind: 'info'; page: SlugInfoType }
   | { kind: 'ocr' }
+  | { kind: 'pdfa' }
   | { kind: 'pair'; src: string; tgt: string }
   | { kind: 'format'; name: SlugName }
   | { kind: 'merge'; format: string }
@@ -85,6 +86,8 @@ export function canonicalPathOf(copy: SlugCopy): string {
       return `/${copy.page}`;
     case 'ocr':
       return '/pdf-ocr';
+    case 'pdfa':
+      return '/pdfa-converter';
     case 'pair':
       return `/${copy.src}-to-${copy.tgt}`;
     case 'format':

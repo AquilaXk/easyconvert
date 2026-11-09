@@ -80,3 +80,24 @@ describe('the home page format picker', () => {
     for (const target of targets) expect(parseConverterSlug(`pdf-to-${target}`), `pdf-to-${target}`).not.toBeNull();
   });
 });
+
+describe('the home page pair when the source is changed to the format of the target', () => {
+  const label = (host: HTMLElement, side: 'source' | 'target') => host.querySelector(`[data-testid=hero-${side}-format-btn]`)?.getAttribute('aria-label');
+
+  it('goes back to any format, and opens no page', async () => {
+    const host = await mount();
+    await choose(host.querySelector('[data-testid=hero-source-format-btn]')!, 'pdf');
+    await vi.waitFor(() => expect(label(host, 'source')).toBe('Source format PDF'));
+    expect(label(host, 'target')).toBe('Target format ANY');
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it('does not offer the source format as its own target, so PDF to PDF is never opened', async () => {
+    const host = await mount();
+    await choose(host.querySelector('[data-testid=hero-source-format-btn]')!, 'pdf');
+    await vi.waitFor(() => expect(label(host, 'source')).toBe('Source format PDF'));
+    host.querySelector<HTMLElement>('[data-testid=hero-target-format-btn]')!.click();
+    await vi.waitFor(() => expect(document.querySelector('[data-format=docx]')).not.toBeNull());
+    expect(document.querySelector('[data-format=pdf]')).toBeNull();
+  });
+});

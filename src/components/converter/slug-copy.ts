@@ -106,6 +106,8 @@ export function localizeSlugCopy(t: SlugCopyTranslator, parsed: ParsedSlug, loca
       return { title: t(`info.${copy.page}.title`), description: t(`info.${copy.page}.description`) };
     case 'ocr':
       return { title: t('ocr.title'), description: t('ocr.description') };
+    case 'pdfa':
+      return { title: t('pdfa.title'), description: t('pdfa.description') };
     case 'pair': {
       const [src, tgt] = [copy.src.toUpperCase(), copy.tgt.toUpperCase()];
       const names = { src: t('files.format', { name: src }), tgt, tgtFiles: t('files.format', { name: tgt }) };

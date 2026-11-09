@@ -792,6 +792,11 @@
         "heading": "글자를 읽을 파일을 선택해 주세요",
         "selectFile": "파일 선택"
       },
+      "pdfa": {
+        "fileInputLabel": "PDF/A로 바꿀 파일 선택",
+        "heading": "PDF/A로 바꿀 파일을 선택해 주세요",
+        "selectFile": "파일 선택"
+      },
       "archiveCreate": {
         "fileInputLabel": "묶을 파일 선택",
         "heading": "묶을 파일을 선택해 주세요",
@@ -1232,12 +1237,18 @@
       "rotate": "돌리기"
     },
     "running": "처리하는 중이에요",
+    "cancel": "취소",
     "status": {
       "ready": "파일 {count}개가 준비됐어요",
       "needTwo": "PDF를 두 개 이상 올려 주세요",
       "done": "완료했어요",
       "skipped": "{count}개는 이 도구에서 쓸 수 없는 형식이라 제외했어요",
-      "oversize": "올릴 수 없는 파일이 있어요"
+      "surplus": "이 도구는 파일을 하나씩만 처리해서 {count}개는 제외했어요",
+      "oversize": "올릴 수 없는 파일이 있어요",
+      "needRanges": "나눌 페이지 범위를 입력해 주세요",
+      "empty": "내용이 없는 파일이 있어요",
+      "tooMany": "한 번에 파일 {max}개까지 처리할 수 있어요",
+      "tooLarge": "한 번에 합쳐서 {size}까지 처리할 수 있어요"
     },
     "row": {
       "moveUp": "{name} 위로 옮기기",
@@ -1257,6 +1268,7 @@
         "label": "압축 형식",
         "zip": "ZIP",
         "7z": "7Z",
+        "tar": "TAR",
         "tarGz": "TAR.GZ"
       },
       "split": {
@@ -1331,6 +1343,10 @@
     "ocr": {
       "title": "PDF OCR 변환기",
       "description": "스캔한 PDF와 이미지의 글자를 인식해 검색하고 선택할 수 있는 PDF로 만들어요. 인식할 언어는 옵션에서 고를 수 있어요."
+    },
+    "pdfa": {
+      "title": "PDF/A 변환기",
+      "description": "PDF와 문서를 오래 보관하기 좋은 PDF/A로 바꿔요. 변환한 파일은 PDF/A 표준에 맞는지 확인해서 드려요."
     },
     "pair": {
       "title": "{src} → {tgt} 변환기",

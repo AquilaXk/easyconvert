@@ -35,7 +35,7 @@ export function sourceFormatForExport(state: GraphExecutionState, exportNodeId: 
   let currentId: string | undefined = exportNodeId;
   while (currentId && !visited.has(currentId)) {
     visited.add(currentId);
-    const node = state.graph.nodes[currentId];
+    const node: GraphExecutionState['graph']['nodes'][string] | undefined = state.graph.nodes[currentId];
     if (!node) break;
     if (node.op === 'import.upload') {
       const fromKey = formatOfFilename(node.storageKey || state.nodes[currentId]?.outputs?.[0] || '');
@@ -55,7 +55,7 @@ export function sourceFormatForExport(state: GraphExecutionState, exportNodeId: 
       }
       break;
     }
-    const nextInput = 'input' in node ? node.input : undefined;
+    const nextInput: string | string[] | undefined = 'input' in node ? node.input : undefined;
     currentId = Array.isArray(nextInput) ? nextInput[0] : nextInput;
   }
   return state.sourceFormat || toFormat;

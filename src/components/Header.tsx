@@ -11,16 +11,18 @@ import MobileMenu from './MobileMenu';
 import LanguageSwitcher from './LanguageSwitcher';
 import { primaryLinksFor, TOOL_ROUTES } from './site-links';
 import { useViewerAccount } from '@/hooks/useViewerPlan';
+import type { SessionUser } from '@/lib/viewer-plan';
 
-export default function Header() {
+export default function Header({ initialUser }: Readonly<{ initialUser?: SessionUser }> = {}) {
   const t = useTranslations('header');
   const tLinks = useTranslations('siteLinks');
   const tTheme = useTranslations('theme');
   const { isDark, toggleDarkMode } = useThemeToggle();
-  const signedIn = useViewerAccount() !== null;
+  const signedIn = useViewerAccount(initialUser) !== null;
   const [isToolsOpen, setIsToolsOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const toolsContainerRef = useRef<HTMLDivElement>(null);
+  const toolsButtonRef = useRef<HTMLButtonElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
 
   const menuWasOpen = useRef(false);
@@ -39,14 +41,25 @@ export default function Header() {
         setIsToolsOpen(false);
       }
     };
+    // Tab out of the last tool, or any other move of focus out of the menu, closes it as a click outside does.
+    const handleFocusIn = (event: FocusEvent) => {
+      if (toolsContainerRef.current && !toolsContainerRef.current.contains(event.target as Node)) {
+        setIsToolsOpen(false);
+      }
+    };
+    // Escape from inside the menu gives focus back to the button that opened it, since the item that had it is gone.
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setIsToolsOpen(false);
+      if (event.key !== 'Escape') return;
+      if (toolsContainerRef.current?.contains(document.activeElement)) toolsButtonRef.current?.focus();
+      setIsToolsOpen(false);
     };
 
     document.addEventListener('mousedown', handleOutsideClick);
+    document.addEventListener('focusin', handleFocusIn);
     window.addEventListener('keydown', handleKeyDown);
     return () => {
       document.removeEventListener('mousedown', handleOutsideClick);
+      document.removeEventListener('focusin', handleFocusIn);
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [isToolsOpen]);
@@ -66,6 +79,7 @@ export default function Header() {
           <nav aria-label={t('primaryNavLabel')} className="hidden lg:flex items-center gap-1 whitespace-nowrap">
             <div className="relative" ref={toolsContainerRef}>
               <button
+                ref={toolsButtonRef}
                 type="button"
                 onClick={() => setIsToolsOpen((open) => !open)}
                 aria-haspopup="true"
@@ -129,7 +143,7 @@ export default function Header() {
           </button>
 
           <div className="hidden lg:flex items-center gap-1.5 whitespace-nowrap">
-            <UserNav />
+            <UserNav initialUser={initialUser} />
           </div>
 
           <button
@@ -145,7 +159,7 @@ export default function Header() {
         </div>
       </div>
 
-      {isMobileMenuOpen && <MobileMenu onClose={() => setIsMobileMenuOpen(false)} />}
+      {isMobileMenuOpen && <MobileMenu onClose={() => setIsMobileMenuOpen(false)} initialUser={initialUser} />}
     </header>
   );
 }

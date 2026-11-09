@@ -4,17 +4,19 @@ import React from 'react';
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useViewerAccount } from '@/hooks/useViewerPlan';
+import type { SessionUser } from '@/lib/viewer-plan';
 import { useTierLabel } from './i18n/format';
 
 interface UserNavProps {
   mobile?: boolean;
   onItemClick?: () => void;
+  initialUser?: SessionUser;
 }
 
-export default function UserNav({ mobile = false, onItemClick }: Readonly<UserNavProps>) {
+export default function UserNav({ mobile = false, onItemClick, initialUser }: Readonly<UserNavProps>) {
   const t = useTranslations('userNav');
   const tierLabel = useTierLabel();
-  const user = useViewerAccount();
+  const user = useViewerAccount(initialUser);
 
   if (mobile) {
     if (user) {

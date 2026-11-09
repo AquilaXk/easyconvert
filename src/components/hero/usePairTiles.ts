@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { getAvailableTargetFormats } from '@/lib/registry';
+import { isSameFormat } from '@/lib/format-aliases';
 
 const ANY_FORMAT = 'any';
 
@@ -30,7 +31,8 @@ function startingTiles(sourceFormat: string, targetFormat: string): TileState {
 /**
  * The pair the format tiles of a converter page name. The page holds it rather than the hero, so the choice outlives the
  * swap of the hero for the queue: files added over the queue take it, and it is still there when the queue empties. A new
- * source drops a target it cannot convert to.
+ * source drops a target it cannot convert to, and a source that is the format of the target drops it too: DOCX to PDF
+ * with the source changed to PDF reads any format, not PDF to PDF.
  */
 export function usePairTiles(sourceFormat: string, targetFormat: string): PairTiles {
   const [stored, setTiles] = useState(() => startingTiles(sourceFormat, targetFormat));
@@ -42,7 +44,8 @@ export function usePairTiles(sourceFormat: string, targetFormat: string): PairTi
     setTiles((current) => {
       const source = next.toLowerCase();
       const keepsTarget = getAvailableTargetFormats(source).some((format) => format.id === current.target);
-      const dropsTarget = source !== ANY_FORMAT && current.target !== ANY_FORMAT && !keepsTarget;
+      const becomesTarget = !isSameFormat(source, current.source) && isSameFormat(source, current.target);
+      const dropsTarget = source !== ANY_FORMAT && current.target !== ANY_FORMAT && (!keepsTarget || becomesTarget);
       return { ...current, source, target: dropsTarget ? ANY_FORMAT : current.target, changed: true };
     });
   const changeTarget = (next: string) => setTiles((current) => ({ ...current, target: next.toLowerCase(), changed: true }));

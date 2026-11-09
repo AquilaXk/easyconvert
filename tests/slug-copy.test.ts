@@ -69,7 +69,8 @@ describe('the intro of a converter page', () => {
   });
 
   it('names each format in capitals and never calls a font or a drawing a document', () => {
-    const misnamed = formatPages.filter((slug) => !categoryPages.includes(slug)).filter((slug) => {
+    // /pdfa-converter is the page that makes PDF/A files, not the page of the format `pdfa`.
+    const misnamed = formatPages.filter((slug) => !categoryPages.includes(slug) && slug !== 'pdfa-converter').filter((slug) => {
       const id = slug.replace(/-converter$/, '');
       const lead = firstSentence(slugPageCopy(slug, 'en').description);
       const ownNoun = ['font', 'cad'].includes(FORMAT_REGISTRY[id].category);

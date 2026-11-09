@@ -7,6 +7,7 @@ import { Link } from '@/i18n/navigation';
 import { useModalDialog } from '@/hooks/useModalDialog';
 import { useThemeToggle } from '@/hooks/useThemeToggle';
 import { useViewerAccount } from '@/hooks/useViewerPlan';
+import type { SessionUser } from '@/lib/viewer-plan';
 import BrandLogo from './BrandLogo';
 import UserNav from './UserNav';
 import LanguageSwitcher from './LanguageSwitcher';
@@ -75,12 +76,15 @@ function CollapsibleLinks({
 }
 
 /** The full-screen sheet of the mobile menu: a modal dialog that traps focus and closes on Escape. */
-export default function MobileMenu({ onClose }: Readonly<{ onClose: () => void }>) {
+export default function MobileMenu({
+  onClose,
+  initialUser,
+}: Readonly<{ onClose: () => void; initialUser?: SessionUser }>) {
   const t = useTranslations('header');
   const tLinks = useTranslations('siteLinks');
   const tTheme = useTranslations('theme');
   const { isDark, toggleDarkMode } = useThemeToggle();
-  const signedIn = useViewerAccount() !== null;
+  const signedIn = useViewerAccount(initialUser) !== null;
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   useModalDialog(dialogRef, true, onClose);
@@ -96,7 +100,9 @@ export default function MobileMenu({ onClose }: Readonly<{ onClose: () => void }
       className="!m-0 h-dvh !max-h-none w-dvw !max-w-none overflow-y-auto rounded-none border-0 p-0 bg-canvas text-ink"
     >
       <div className="flex items-center justify-between px-4 h-[var(--header-height)] border-b border-rule">
-        <BrandLogo size="md" />
+        <Link href="/" onClick={onClose} aria-label={t('homeLabel')} className="min-h-[44px] inline-flex items-center shrink-0 rounded-sm">
+          <BrandLogo size="md" />
+        </Link>
         <div className="flex items-center gap-1.5">
           <button
             type="button"
@@ -124,7 +130,7 @@ export default function MobileMenu({ onClose }: Readonly<{ onClose: () => void }
         </nav>
 
         <div className="pt-4 border-t border-rule">
-          <UserNav mobile onItemClick={onClose} />
+          <UserNav mobile onItemClick={onClose} initialUser={initialUser} />
         </div>
 
         <div className="pt-4 border-t border-rule">

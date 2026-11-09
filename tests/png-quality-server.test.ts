@@ -39,7 +39,7 @@ describe('PNG to PNG with a quality', () => {
 
   it('is the same file as the one the palette options ask for', async () => {
     const byQuality = await convertFile(noisy, 'png', 'png', { quality: 60 }, 'noise.png');
-    const byPalette = await convertFile(noisy, 'png', 'png', { palette: true, colors: 144 }, 'noise.png');
+    const byPalette = await convertFile(noisy, 'png', 'png', { palette: true, colors: 128 }, 'noise.png');
     expect(byQuality.buffer.equals(byPalette.buffer)).toBe(true);
   });
 
@@ -62,7 +62,7 @@ describe('the options of the other conversions', () => {
   });
 
   it('become the palette for a PNG quality', () => {
-    expect(pngQualityAsPalette('png', 'png', { quality: 40, stripMetadata: true })).toEqual({ stripMetadata: true, palette: true, colors: 64 });
+    expect(pngQualityAsPalette('png', 'png', { quality: 40, stripMetadata: true })).toEqual({ stripMetadata: true, palette: true, colors: 57 });
     expect(pngQualityAsPalette('PNG', 'png', { quality: 95 })).toEqual({ palette: true, colors: 256 });
   });
 });

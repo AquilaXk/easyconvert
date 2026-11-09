@@ -10,6 +10,8 @@ export interface ViewerAccount {
 
 let viewerPlan: Plan = 'anonymous';
 let viewerAccount: ViewerAccount | null = null;
+let sessionKnown = false;
+let seededAccount: ViewerAccount | null = null;
 /** The newest read of the session that has not ended, which overlapping callers share. */
 let reading: Promise<void> | undefined;
 let latestRead = 0;
@@ -19,19 +21,31 @@ export function getViewerPlan(): Plan {
   return viewerPlan;
 }
 
+/** Whether the session store has been populated by `/api/auth/me` or `applySessionChange`. */
+export function hasViewerSessionState(): boolean {
+  return sessionKnown;
+}
+
 function sameAccount(a: ViewerAccount | null, b: ViewerAccount | null): boolean {
   return a === b || (a !== null && b !== null && a.name === b.name && a.tier === b.tier);
 }
 
-function setViewer(plan: Plan, account: ViewerAccount | null): void {
-  if (plan === viewerPlan && sameAccount(account, viewerAccount)) return;
+function setViewer(plan: Plan, account: ViewerAccount | null, markKnown = true): void {
+  const changed = (markKnown && !sessionKnown) || plan !== viewerPlan || !sameAccount(account, viewerAccount);
+  if (markKnown) sessionKnown = true;
+  if (!changed) return;
   viewerPlan = plan;
   viewerAccount = account;
   for (const listener of listeners) listener();
 }
 
 export function setViewerPlan(next: Plan): void {
-  setViewer(next, next === 'anonymous' ? null : viewerAccount);
+  if (next === 'anonymous') {
+    sessionKnown = false;
+    setViewer('anonymous', null, false);
+    return;
+  }
+  setViewer(next, viewerAccount);
 }
 
 /** The signed-in person, or null for a visitor without a session (and until the session endpoint answers). */
@@ -69,8 +83,21 @@ export interface SessionUser {
   tier?: string;
 }
 
+/** Stable `ViewerAccount` projection of `user` for SSR and client hydration snapshots. */
+export function viewerAccountOf(user: SessionUser): ViewerAccount {
+  const name = user.name ?? '';
+  const tier = user.tier ?? '';
+  if (viewerAccount && viewerAccount.name === name && viewerAccount.tier === tier) {
+    return viewerAccount;
+  }
+  if (!seededAccount || seededAccount.name !== name || seededAccount.tier !== tier) {
+    seededAccount = { name, tier };
+  }
+  return seededAccount;
+}
+
 function viewerOf(user: SessionUser): Viewer {
-  return { plan: planOfCaller(user), account: { name: user.name ?? '', tier: user.tier ?? '' } };
+  return { plan: planOfCaller(user), account: viewerAccountOf(user) };
 }
 
 /**

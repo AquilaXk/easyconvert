@@ -1,6 +1,8 @@
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { toPublicApiKey, toPublicDlqEntry } from '@/lib/api-keys/public-views';
 import { webhookDispatcher } from '@/lib/api-keys/webhook-dispatcher';
+import { isEmailVerified } from '@/lib/auth/account-mail';
+import { isAuthMailEnabled } from '@/lib/auth/mail-config';
 import type { User } from '@/lib/auth/types';
 import { listAccountFiles } from './account-files';
 import type { DashboardSnapshot } from './snapshot-types';
@@ -23,5 +25,6 @@ export async function loadDashboardSnapshot(user: User): Promise<DashboardSnapsh
     ...(quota.status === 'fulfilled' && { quota: quota.value }),
     ...(files.status === 'fulfilled' && { files: files.value }),
     ...(dlqEntries.status === 'fulfilled' && { dlqEntries: dlqEntries.value.map(toPublicDlqEntry) }),
+    emailVerification: { enabled: isAuthMailEnabled(), verified: isEmailVerified(user) },
   };
 }

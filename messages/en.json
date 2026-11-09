@@ -792,6 +792,11 @@
         "heading": "Select your file to read its text",
         "selectFile": "Select File"
       },
+      "pdfa": {
+        "fileInputLabel": "Select files to convert to PDF/A",
+        "heading": "Select your file to convert to PDF/A",
+        "selectFile": "Select File"
+      },
       "archiveCreate": {
         "fileInputLabel": "Select files to pack",
         "heading": "Select the files to pack",
@@ -1232,12 +1237,18 @@
       "rotate": "Rotate"
     },
     "running": "Working on it",
+    "cancel": "Cancel",
     "status": {
       "ready": "{count, plural, one {# file is ready} other {# files are ready}}",
       "needTwo": "Add at least two PDFs",
       "done": "Done",
       "skipped": "{count, plural, one {# file was left out because this tool cannot use its format} other {# files were left out because this tool cannot use their formats}}",
-      "oversize": "Some files are too large to add"
+      "surplus": "{count, plural, one {# more file was left out because this tool takes one file at a time} other {# more files were left out because this tool takes one file at a time}}",
+      "oversize": "Some files are too large to add",
+      "needRanges": "Enter the page ranges to split by",
+      "empty": "Some files are empty",
+      "tooMany": "A run takes up to {max} files",
+      "tooLarge": "A run takes up to {size} in total"
     },
     "row": {
       "moveUp": "Move {name} up",
@@ -1257,6 +1268,7 @@
         "label": "Archive format",
         "zip": "ZIP",
         "7z": "7Z",
+        "tar": "TAR",
         "tarGz": "TAR.GZ"
       },
       "split": {
@@ -1331,6 +1343,10 @@
     "ocr": {
       "title": "PDF OCR Converter",
       "description": "Recognize the text of scanned PDFs and images, and get a PDF whose text you can search and select. You can choose the recognition language in the options."
+    },
+    "pdfa": {
+      "title": "PDF/A Converter",
+      "description": "Turn PDFs and documents into PDF/A files that are made to be kept for the long term. Each result is checked against the PDF/A standard."
     },
     "pair": {
       "title": "{src} to {tgt} Converter",

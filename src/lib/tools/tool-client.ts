@@ -1,6 +1,7 @@
 import { ConversionFailedError } from '../types';
 import { serverRefusal } from '../conversion-failure';
-import type { WebTool, WebToolOptions } from './tool-names';
+import { SINGLE_REQUEST_FILE_MAX_BYTES } from '../plan-limits';
+import { MAX_TOOL_FILES, type WebTool, type WebToolOptions } from './tool-names';
 
 /** A file of a tool's answer, ready to download from `url`. */
 export interface ToolResultFile {
@@ -20,6 +21,21 @@ interface ListedEntry {
 }
 
 const DEFAULT_ARCHIVE_FORMAT = 'zip';
+
+/** Why the server would refuse the files of a run, found before they are sent. */
+export type ToolInputProblem = 'tooMany' | 'tooLarge' | 'empty';
+
+/**
+ * What the server's checks (`assertToolInput`) would refuse about files on the page, so that a run is not uploaded to be turned
+ * away: more files than a run takes, files together over one request, and a file with nothing in it. The tools that take one
+ * file get that file alone from the page, so their count is never over.
+ */
+export function toolInputProblem(files: readonly { size: number }[]): ToolInputProblem | null {
+  if (files.length > MAX_TOOL_FILES) return 'tooMany';
+  if (files.reduce((total, file) => total + file.size, 0) > SINGLE_REQUEST_FILE_MAX_BYTES) return 'tooLarge';
+  if (files.some((file) => file.size === 0)) return 'empty';
+  return null;
+}
 
 /** The name the downloaded file of a run carries, as the server names it. */
 export function resultNameOf(tool: WebTool, firstFileName: string, options: WebToolOptions): string {

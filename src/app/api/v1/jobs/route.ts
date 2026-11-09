@@ -779,7 +779,7 @@ function fixedNodeTargetFormat(nodes: ReturnType<typeof normalizeGraphNodes>[str
   const thumb = nodes.find((n) => n.op === 'thumbnail');
   if (thumb) return thumb.targetFormat ?? thumb.options?.thumbnail?.format ?? 'jpg';
   if (nodes.some((n) => n.op === 'pdf.split-pages' || n.op === 'media.package')) return 'zip';
-  if (nodes.some((n) => PDF_GRAPH_NODE_OPS.has(n.op))) return 'pdf';
+  if (nodes.some((n) => typeof n.op === 'string' && PDF_GRAPH_NODE_OPS.has(n.op))) return 'pdf';
   return '';
 }
 
