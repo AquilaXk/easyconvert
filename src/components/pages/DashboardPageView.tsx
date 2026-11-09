@@ -12,8 +12,9 @@ import { WebhooksPanel } from '@/components/dashboard/WebhooksPanel';
 import { AccountQuotaPanel } from '@/components/dashboard/AccountQuotaPanel';
 import { EmailVerificationNotice } from '@/components/dashboard/EmailVerificationNotice';
 import { useDashboardController } from '@/components/dashboard/useDashboardController';
+import type { DashboardSnapshot } from '@/lib/dashboard/snapshot-types';
 
-export default function DashboardPageView() {
+export default function DashboardPageView({ initial }: Readonly<{ initial?: DashboardSnapshot }>) {
   const t = useTranslations('dashboard');
   const {
     user,
@@ -25,7 +26,7 @@ export default function DashboardPageView() {
     handleLogout,
     keys,
     filesAndDlq,
-  } = useDashboardController();
+  } = useDashboardController(initial);
 
   return (
     <div className="min-h-screen flex flex-col">

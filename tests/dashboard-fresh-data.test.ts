@@ -3,16 +3,37 @@ import { createElement, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { renderToString } from 'react-dom/server';
 import { NextIntlClientProvider } from 'next-intl';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { NextRequest } from 'next/server';
 import { useDashboardController } from '../src/components/dashboard/useDashboardController';
 import { AccountQuotaPanel } from '../src/components/dashboard/AccountQuotaPanel';
 import { integrationSnippets } from '../src/components/dashboard/IntegrationGuide';
+import { GET as listFiles } from '../src/app/api/account/files/route';
+import { GET as listDlq } from '../src/app/api/webhooks/dlq/route';
+import { GET as listKeys } from '../src/app/api/keys/route';
+import { GET as keyUsage } from '../src/app/api/keys/usage/route';
+import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
+import { createSessionToken } from '../src/lib/auth/session';
+import { userStore } from '../src/lib/auth/user-store';
+import type { User } from '../src/lib/auth/types';
+import { loadDashboardSnapshot } from '../src/lib/dashboard/snapshot';
 import { testMessages } from './helpers/intl-messages';
 
 vi.mock('../src/i18n/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), refresh: vi.fn(), replace: vi.fn() }),
+  usePathname: () => '/dashboard',
+  getPathname: ({ href }: { href: string }) => href,
   Link: 'a',
 }));
+vi.mock('next/navigation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('next/navigation')>()),
+  useRouter: () => ({ push: vi.fn(), refresh: vi.fn(), replace: vi.fn(), prefetch: vi.fn() }),
+  usePathname: () => '/dashboard',
+  useSearchParams: () => new URLSearchParams(),
+}));
+
+const { default: DashboardPageView } = await import('../src/components/pages/DashboardPageView');
 
 /** `content` under the English messages, with dates in `timeZone`. */
 function inProvider(timeZone: string, content: ReactElement) {
@@ -114,5 +135,124 @@ describe('the code samples of the integration guide', () => {
       expect(snippet).toMatch(/https:\/\/convert\.example\.org\/api\/v1\/convert\b/);
       expect(snippet).not.toContain('api.easyconvert.com');
     }
+  });
+});
+
+const BASE_URL = 'http://localhost:3000';
+
+async function createUser(label: string): Promise<User> {
+  const email = `${label}_${Date.now()}_${Math.random().toString(16).slice(2)}@ssr.test`;
+  return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'free' }));
+}
+
+const asUser = (user: User) => ({ headers: { Cookie: `easyconvert_session=${createSessionToken(user)}` } });
+
+/** Gives `user` a key, a converted file and a failed webhook, all carrying `label` so another person's page can be searched for it. */
+async function populate(user: User, label: string): Promise<void> {
+  await redisKeyStore.generateApiKey(user.id, `${label}-key`, { scopes: ['convert:read'], webhookUrl: `https://hooks.example.com/${label}`, webhookSecret: `${label}-signing-secret` });
+  await redisKeyStore.recordUserFile({
+    userId: user.id,
+    fileName: `${label}-report.pdf`,
+    fromFormat: 'docx',
+    toFormat: 'pdf',
+    size: 1234,
+    downloadUrl: `/api/storage/file/${label}`,
+  });
+  await webhookDispatcher.saveToDlq({
+    id: `dlq_${label}`,
+    originalDeliveryId: `wh_${label}`,
+    targetUrl: `https://hooks.example.com/${label}`,
+    event: 'job.failed',
+    payload: { error: 'Timeout' },
+    secret: `${label}-dlq-secret`,
+    failedAt: Date.now(),
+    retryCount: 3,
+    status: 'failed',
+    ownerUserId: user.id,
+  });
+}
+
+/** The page as the server renders it, read back as a document. */
+function renderDashboard(initial: Awaited<ReturnType<typeof loadDashboardSnapshot>> | undefined): Document {
+  const html = renderToString(inProvider('UTC', createElement(DashboardPageView, { initial })));
+  return new DOMParser().parseFromString(html, 'text/html');
+}
+
+const text = (node: Element | null | undefined) => node?.textContent?.replaceAll(/\s+/g, ' ').trim();
+
+describe('the dashboard snapshot the server renders from', () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it('holds what the dashboard routes answer the same person', async () => {
+    const user = await createUser('same');
+    await populate(user, 'same');
+    const snapshot = await loadDashboardSnapshot(user);
+    const read = async (route: (req: NextRequest) => Promise<Response>, path: string) =>
+      (await route(new NextRequest(`${BASE_URL}${path}`, asUser(user)))).json();
+
+    const [keys, usage, files, dlq] = await Promise.all([
+      read(listKeys, '/api/keys'),
+      read(keyUsage, '/api/keys/usage'),
+      read(listFiles, '/api/account/files'),
+      read(listDlq, '/api/webhooks/dlq'),
+    ]);
+    const viaJson = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+    expect(snapshot.keys).toHaveLength(1);
+    expect(viaJson(snapshot.keys)).toEqual(keys.keys);
+    expect(viaJson(snapshot.quota)).toEqual(usage.usage);
+    expect(viaJson(snapshot.dlqEntries)).toEqual(dlq.entries);
+    expect(snapshot.files).toHaveLength(1);
+    // The countdown moves between the two reads; everything else is the same record.
+    const withoutCountdown = (list: Array<{ remainingSeconds: number }>) => list.map(({ remainingSeconds: _s, ...rest }) => rest);
+    expect(withoutCountdown(viaJson(snapshot.files!))).toEqual(withoutCountdown(files.files));
+  });
+
+  it('holds nothing of another person, and no key hash or signing secret', async () => {
+    const mine = await createUser('mine');
+    const theirs = await createUser('theirs');
+    await populate(mine, 'mine');
+    await populate(theirs, 'theirs');
+
+    const serialized = JSON.stringify(await loadDashboardSnapshot(mine));
+    expect(serialized).toContain('mine-key');
+    expect(serialized).toContain('mine-report.pdf');
+    expect(serialized).not.toContain('theirs');
+    expect(serialized).not.toContain('keyHash');
+    expect(serialized).not.toContain('mine-signing-secret');
+    expect(serialized).not.toContain('mine-dlq-secret');
+    expect(serialized).not.toContain(theirs.email);
+  });
+
+  it('leaves out a part that cannot be read and keeps the others', async () => {
+    const user = await createUser('partial');
+    await populate(user, 'partial');
+    vi.spyOn(redisKeyStore, 'listApiKeys').mockRejectedValueOnce(new Error('store down'));
+    const snapshot = await loadDashboardSnapshot(user);
+    expect(snapshot).not.toHaveProperty('keys');
+    expect(snapshot.quota).toBeDefined();
+    expect(snapshot.files).toHaveLength(1);
+    expect(snapshot.dlqEntries).toHaveLength(1);
+  });
+});
+
+describe('the dashboard page rendered on the server', () => {
+  it('has the person, the keys and the badges in its markup, and no loading state', async () => {
+    const user = await createUser('Reader');
+    await populate(user, 'first');
+    const doc = renderDashboard(await loadDashboardSnapshot(user));
+
+    expect(text(doc.querySelector('main h1'))).toBe('Developer Dashboard');
+    expect(text(doc.querySelector('main'))?.includes(`Reader (${user.email})`)).toBe(true);
+    const tabs = doc.querySelector('main [role=tablist]')!.querySelectorAll('[role=tab]');
+    expect([...tabs].map(text)).toEqual(['Developer API Keys', 'My Converted Files1', 'Failed webhooks1', 'Usage & Rate Limits']);
+    expect(doc.querySelectorAll('main tbody tr').length).toBe(1);
+    expect(text(doc.querySelector('main tbody tr'))?.startsWith('first-key')).toBe(true);
+    expect(doc.querySelectorAll('main output .animate-spin').length).toBe(0);
+  });
+
+  it('keeps the loading state for a page the server could not read the person for', () => {
+    const doc = renderDashboard(undefined);
+    expect(text(doc.querySelector('main output'))).toBe('Loading account session...');
+    expect(doc.querySelectorAll('main [role=tab]').length).toBe(0);
   });
 });
