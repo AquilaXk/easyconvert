@@ -72,6 +72,17 @@ export class TusInvalidMetadataError extends Error {
 
 /** Exactly the ids createSession generates: `tus_<epoch ms>_<16 hex digits>`. */
 const TUS_ID_PATTERN = /^tus_\d{1,15}_[0-9a-f]{16}$/;
+/** A file of the staging directory: the id of its session, then `info` (the record) or `bin` (the staged bytes). */
+const TUS_FILE_PATTERN = /^(tus_\d{1,15}_[0-9a-f]{16})\.(info|bin)$/;
+/** How long after a session's time is over a staged file with no record is left, for a request that is still writing it. */
+const ORPHAN_GRACE_MS = 3_600_000;
+/** The sweep of the staging directory runs at most this often, when an upload is created. */
+const SWEEP_INTERVAL_MS = 10 * 60_000;
+
+/** The time (epoch ms) a session id was made at. */
+function tusIdTime(id: string): number {
+  return Number(id.split('_')[1]);
+}
 
 function isTusId(id: string): boolean {
   return TUS_ID_PATTERN.test(id);
@@ -466,6 +477,16 @@ export class TusEngine {
     return getTusSessionStore();
   }
 
+  private lastSweepAt = 0;
+
+  /** Starts `sweepExpired` unless one ran in the last ten minutes; its failure never fails the upload being created. */
+  private sweepExpiredOften(): void {
+    const now = Date.now();
+    if (now - this.lastSweepAt < SWEEP_INTERVAL_MS) return;
+    this.lastSweepAt = now;
+    this.sweepExpired(now).catch((error) => console.warn('[tus] Could not sweep the staging directory:', error));
+  }
+
   private ensureDirectory(): void {
     try {
       if (!fs.existsSync(this.tusDir)) {
@@ -494,8 +515,37 @@ export class TusEngine {
     return Readable.fromWeb(stream as any);
   }
 
+  /**
+   * Removes the files of the sessions that expired, and the staged files that no record belongs to (a removal that stopped
+   * between the two) once their id says they are older than a session lives. The sweep of the storage directory does not
+   * look here. Returns how many uploads it removed.
+   */
+  async sweepExpired(now: number = Date.now()): Promise<number> {
+    let names: string[];
+    try {
+      names = await fs.promises.readdir(this.tusDir);
+    } catch {
+      return 0;
+    }
+    const files = new Set(names);
+    let removed = 0;
+    for (const name of names) {
+      const match = TUS_FILE_PATTERN.exec(name);
+      if (!match || !isTusId(match[1])) continue;
+      const [, id, extension] = match;
+      if (extension === 'info') {
+        const expiresAt = await fs.promises.readFile(path.join(this.tusDir, name), 'utf-8').then((raw) => (JSON.parse(raw) as TusSession).expiresAt, () => undefined);
+        if (typeof expiresAt === 'number' && now > expiresAt && (await this.terminateSession(id))) removed++;
+      } else if (!files.has(`${id}.info`) && now - tusIdTime(id) > this.defaultTtlSeconds * 1000 + ORPHAN_GRACE_MS) {
+        if (await this.terminateSession(id)) removed++;
+      }
+    }
+    return removed;
+  }
+
   async createSession(params: CreateTusSessionParams): Promise<TusSession> {
     this.ensureDirectory();
+    this.sweepExpiredOften();
     if (params.uploadLength > this.maxUploadSize) {
       throw new Error(`Upload length ${params.uploadLength} exceeds maximum allowed size ${this.maxUploadSize}`);
     }
@@ -684,8 +734,8 @@ export class TusEngine {
         try {
           await finalizeTusSession(session, binPath);
           await recordTusUpload(session.key);
-          // The object store holds the upload and its record now; the staged copy would only occupy local disk.
-          if (storageProvider.kind === 'remote') await fs.promises.rm(binPath, { force: true });
+          // The upload is stored and recorded now, wherever the store is; the staged copy would only occupy the local disk a second time.
+          await fs.promises.rm(binPath, { force: true });
         } catch (err) {
           // The upload was not taken: rewind the last chunk so the client can resend it.
           session.completed = false;
