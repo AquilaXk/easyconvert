@@ -170,14 +170,16 @@ describe('recognized text of the golden pages', () => {
   // handed to the engines as a PNG. The text must not change when the page travels as a PNM. The en_a dpi72
   // entry was re-recorded when binarization became a measured choice: that page reads well without it
   // (confidence 0.95), so it is no longer binarized and reads as the bare engine reads it (one character
-  // differs from the binarized reading, 0.77% against 0.52% CER).
+  // differs from the binarized reading, 0.77% against 0.52% CER). The ko_a skew3 entry was re-recorded when
+  // deskewed Korean pages moved to single-block segmentation (PSM 6), eliminating the bogus column split that
+  // previously dropped the 8th line (lowering CER from 7.31% to 0.00%).
   const PNG_HANDOVER_TEXT_HASHES: Array<[string, string, string, string]> = [
     ['en_a', 'clean300', 'eng', '1dc50af9af33fbfd'],
     ['en_a', 'dpi72', 'eng', '5ee4b18e7c83fd77'],
     ['en_a', 'skew3', 'eng', '1dc50af9af33fbfd'],
     ['en_b', 'clean300', 'eng', '952a7f2b0cd9ff09'],
     ['ko_a', 'clean300', 'kor', '00d65dac2ecaba38'],
-    ['ko_a', 'skew3', 'kor', '20e1df428c3c1860'],
+    ['ko_a', 'skew3', 'kor', '050eb25238695a4f'],
   ];
 
   for (const [page, variant, lang, hash] of PNG_HANDOVER_TEXT_HASHES) {

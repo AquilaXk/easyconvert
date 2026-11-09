@@ -64,6 +64,7 @@ import {
   type OcrEnginePath,
 } from './ocr-calibration';
 import {
+  assessKoreanLayoutCoherence,
   includesKoreanLanguage,
   KOREAN_ALTERNATIVE_TRIGGER_QUALITY,
   postCorrectKoreanOcrResult,
@@ -330,10 +331,15 @@ export async function recognizePage(
   if (detectOrientation === true) assertOrientationDetectable();
   // What the page declares about its size, for the searchable PDF; undeclared is recorded as assumed.
   const imageDpi = resolveImageDpi(imageBuffer);
-  const finish = (page: RecognizedPage, orientation: OcrOrientation): RecognizedPage => ({
-    ...page,
-    result: { ...page.result, orientation, imageDpi },
-  });
+  const finish = (page: RecognizedPage, orientation: OcrOrientation): RecognizedPage => {
+    const corrected = includesKoreanLanguage(page.result.language)
+      ? postCorrectKoreanOcrResult(page.result)
+      : page.result;
+    return {
+      ...page,
+      result: { ...corrected, orientation, imageDpi },
+    };
+  };
 
   const attempt = (quarterTurn: OcrQuarterTurn, tesseractLang: string, languageData: LanguageData) =>
     recognizeAttempt({ imageBuffer, steps, quarterTurn, tesseractLang, languageData, enginePath, language, parallelBands, signal });
@@ -381,7 +387,8 @@ function readingQuality(result: OcrResult): number {
 
 /** Whether a first reading is poor enough that the page may be turned or in another script. */
 function looksMisread(result: OcrResult): boolean {
-  return readingQuality(result) < OSD_SUSPECT_QUALITY;
+  if (readingQuality(result) < OSD_SUSPECT_QUALITY) return true;
+  return includesKoreanLanguage(result.language) && assessKoreanLayoutCoherence(result).fragmented;
 }
 
 /** Detection demanded for every page needs its data now, not after the first page was read. */
@@ -435,9 +442,7 @@ async function recognizeAttempt(attempt: RecognitionAttempt): Promise<Recognized
     plain.prepared.unevenBackground >= OCR_UNEVEN_BACKGROUND_RATIO ||
     readingQuality(plain.page.result) < qualityTrigger;
   if (!needed) {
-    return koreanNeural
-      ? { ...plain.page, result: postCorrectKoreanOcrResult(plain.page.result) }
-      : plain.page;
+    return plain.page;
   }
   const alternatives: OcrPreprocessSteps[] = [];
   if (plain.prepared.applied.rescale) alternatives.push({ ...steps, rescale: false, binarize: false });
@@ -461,9 +466,7 @@ async function recognizeAttempt(attempt: RecognitionAttempt): Promise<Recognized
       bestEvidence = evidence;
     }
   }
-  return koreanNeural
-    ? { ...best.page, result: postCorrectKoreanOcrResult(best.page.result) }
-    : best.page;
+  return best.page;
 }
 
 /** How much of a page was read, and how well: confident characters recognized (see confidenceWeightedCharacters). */

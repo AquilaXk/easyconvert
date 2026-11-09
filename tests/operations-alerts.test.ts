@@ -57,30 +57,34 @@ describe('deploy/oci/prometheus-alerts.yml and runbook links', () => {
     expect(rule?.annotations.runbook).toBe('docs/operations/alerts.md#alert-error-budget-burn');
     expect(normalizePromql(rule?.expr ?? '')).toBe(
       normalizePromql(`(
-        (
-          sum by (family) (increase(easyconvert_http_requests_total{outcome=~"failed|timed_out"}[1h]))
-          + sum by (family) (increase(easyconvert_jobs_total{outcome=~"failed|timed_out"}[1h]))
+        sum by (family) (
+          increase(easyconvert_http_requests_total{outcome=~"failed|timed_out"}[1h])
+          or increase(easyconvert_jobs_total{outcome=~"failed|timed_out"}[1h])
         )
         /
         clamp_min(
-          sum by (family) (increase(easyconvert_http_requests_total{outcome=~"ok|failed|timed_out"}[1h]))
-          + sum by (family) (increase(easyconvert_jobs_total{outcome=~"ok|failed|timed_out"}[1h])),
+          sum by (family) (
+            increase(easyconvert_http_requests_total{outcome=~"ok|failed|timed_out"}[1h])
+            or increase(easyconvert_jobs_total{outcome=~"ok|failed|timed_out"}[1h])
+          ),
           1
         ) > 0.072
         and
-        (
-          sum by (family) (increase(easyconvert_http_requests_total{outcome=~"ok|failed|timed_out"}[1h]))
-          + sum by (family) (increase(easyconvert_jobs_total{outcome=~"ok|failed|timed_out"}[1h]))
+        sum by (family) (
+          increase(easyconvert_http_requests_total{outcome=~"ok|failed|timed_out"}[1h])
+          or increase(easyconvert_jobs_total{outcome=~"ok|failed|timed_out"}[1h])
         ) >= 20
         and
-        (
-          sum by (family) (increase(easyconvert_http_requests_total{outcome=~"failed|timed_out"}[6h]))
-          + sum by (family) (increase(easyconvert_jobs_total{outcome=~"failed|timed_out"}[6h]))
+        sum by (family) (
+          increase(easyconvert_http_requests_total{outcome=~"failed|timed_out"}[6h])
+          or increase(easyconvert_jobs_total{outcome=~"failed|timed_out"}[6h])
         )
         /
         clamp_min(
-          sum by (family) (increase(easyconvert_http_requests_total{outcome=~"ok|failed|timed_out"}[6h]))
-          + sum by (family) (increase(easyconvert_jobs_total{outcome=~"ok|failed|timed_out"}[6h])),
+          sum by (family) (
+            increase(easyconvert_http_requests_total{outcome=~"ok|failed|timed_out"}[6h])
+            or increase(easyconvert_jobs_total{outcome=~"ok|failed|timed_out"}[6h])
+          ),
           1
         ) > 0.072
       )`)

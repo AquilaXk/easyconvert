@@ -1,4 +1,5 @@
 import {
+  characterWeightedConfidence,
   confidenceWeightedCharacters,
   type OcrEnginePath,
 } from './ocr-calibration';
@@ -25,6 +26,9 @@ const HANGUL_JUNG_JONG = HANGUL_JUNGSEONG_COUNT * HANGUL_JONGSEONG_COUNT; // 588
 
 const COMPAT_JAMO_FIRST = 0x3131;
 const COMPAT_JAMO_LAST = 0x3163;
+const CONJOINING_JAMO_FIRST = 0x1100;
+const CONJOINING_JAMO_LAST = 0x11ff;
+const FROM_CHAR_CODE_CHUNK = 4096;
 
 /**
  * Compatibility Jamo (`U+3131..U+314E`) to Choseong index (`0..18`), or `-1` when not a modern Choseong.
@@ -58,16 +62,19 @@ export function isHangulSyllableCode(codePoint: number): boolean {
 
 /** True when `codePoint` is a compatibility Hangul Jamo (`U+3131..U+318E`) or conjoining Jamo (`U+1100..U+11FF`). */
 export function isCompatOrConjoiningJamoCode(codePoint: number): boolean {
-  return (codePoint >= 0x3131 && codePoint <= 0x318e) || (codePoint >= 0x1100 && codePoint <= 0x11ff);
+  return (
+    (codePoint >= 0x3131 && codePoint <= 0x318e) ||
+    (codePoint >= CONJOINING_JAMO_FIRST && codePoint <= CONJOINING_JAMO_LAST)
+  );
 }
 
 /** Decomposes a precomposed Hangul syllable (`U+AC00..U+D7A3`) into `{ l, v, t }` indices in O(1). */
 export function decomposeHangulSyllable(codePoint: number): HangulJamoTriple | null {
   if (!isHangulSyllableCode(codePoint)) return null;
   const offset = codePoint - HANGUL_SYLLABLE_BASE;
-  const l = Math.floor(offset / HANGUL_JUNG_JONG);
+  const l = (offset / HANGUL_JUNG_JONG) | 0;
   const rem = offset % HANGUL_JUNG_JONG;
-  const v = Math.floor(rem / HANGUL_JONGSEONG_COUNT);
+  const v = (rem / HANGUL_JONGSEONG_COUNT) | 0;
   const t = rem % HANGUL_JONGSEONG_COUNT;
   return { l, v, t };
 }
@@ -102,59 +109,88 @@ function compatJongseongIndex(code: number): number {
   return COMPAT_TO_JONGSEONG[code - COMPAT_JAMO_FIRST];
 }
 
+function codesToString(codes: readonly number[]): string {
+  if (codes.length <= FROM_CHAR_CODE_CHUNK) {
+    return String.fromCharCode(...codes);
+  }
+  const chunks: string[] = [];
+  for (let offset = 0; offset < codes.length; offset += FROM_CHAR_CODE_CHUNK) {
+    chunks.push(String.fromCharCode(...codes.slice(offset, offset + FROM_CHAR_CODE_CHUNK)));
+  }
+  return chunks.join('');
+}
+
 /**
- * Composes detached compatibility Jamo sequences (`U+3131..U+3163`) into canonical NFC Hangul
- * syllables (`U+AC00..U+D7A3`). For example, `ㄱ` + `ㅏ` -> `가`, `ㄱ` + `ㅏ` + `ㅇ` -> `강`,
- * while leaving `ㄱ` + `ㅏ` + `나다` as `가나다` (when the consonant after a vowel is followed by
- * another vowel, it starts the next syllable rather than acting as Jongseong).
+ * Composes detached compatibility Jamo sequences (`U+3131..U+3163`) and conjoining Jamo (`U+1100..U+11FF`)
+ * into canonical NFC Hangul syllables (`U+AC00..U+D7A3`). Also merges a trailing compatibility Jongseong
+ * onto a preceding open Hangul syllable (`t === 0`, e.g. `하` + `ㄴ` -> `한`) when not followed by a vowel.
  */
 export function composeDetachedHangulJamo(text: string): string {
   if (!text) return text;
   let hasCompat = false;
+  let hasConjoining = false;
   for (let i = 0; i < text.length; i++) {
     const code = text.charCodeAt(i);
     if (code >= COMPAT_JAMO_FIRST && code <= COMPAT_JAMO_LAST) {
       hasCompat = true;
-      break;
+    } else if (code >= CONJOINING_JAMO_FIRST && code <= CONJOINING_JAMO_LAST) {
+      hasConjoining = true;
     }
   }
-  if (!hasCompat) return text;
+  const source = hasConjoining ? text.normalize('NFC') : text;
+  if (!hasCompat) return source;
 
   const out: number[] = [];
-  const len = text.length;
+  const len = source.length;
   let i = 0;
+  let changed = false;
   while (i < len) {
-    const c0 = text.charCodeAt(i);
+    const c0 = source.charCodeAt(i);
     const l = compatChoseongIndex(c0);
     if (l >= 0 && i + 1 < len) {
-      const v = compatJungseongIndex(text.charCodeAt(i + 1));
+      const v = compatJungseongIndex(source.charCodeAt(i + 1));
       if (v >= 0) {
         let t = 0;
         let advance = 2;
         if (i + 2 < len) {
-          const candT = compatJongseongIndex(text.charCodeAt(i + 2));
-          const nextV = i + 3 < len ? compatJungseongIndex(text.charCodeAt(i + 3)) : -1;
+          const candT = compatJongseongIndex(source.charCodeAt(i + 2));
+          const nextV = i + 3 < len ? compatJungseongIndex(source.charCodeAt(i + 3)) : -1;
           if (candT > 0 && nextV < 0) {
             t = candT;
             advance = 3;
           }
         }
         out.push(composeHangulSyllable(l, v, t));
+        changed = true;
         i += advance;
+        continue;
+      }
+    }
+    if (
+      isHangulSyllableCode(c0) &&
+      (c0 - HANGUL_SYLLABLE_BASE) % HANGUL_JONGSEONG_COUNT === 0 &&
+      i + 1 < len
+    ) {
+      const candT = compatJongseongIndex(source.charCodeAt(i + 1));
+      const nextV = i + 2 < len ? compatJungseongIndex(source.charCodeAt(i + 2)) : -1;
+      if (candT > 0 && nextV < 0) {
+        out.push(c0 + candT);
+        changed = true;
+        i += 2;
         continue;
       }
     }
     out.push(c0);
     i++;
   }
-  return String.fromCharCode(...out);
+  return changed ? codesToString(out) : source;
 }
 
 /**
  * Visually confusable Jamo pairs in degraded/low-DPI Korean scans:
  * - Choseong: ㄱ(0)/ㅋ(15)/ㄲ(1), ㄷ(3)/ㅌ(16)/ㄸ(4)/ㄹ(5), ㅂ(7)/ㅍ(17)/ㅃ(8), ㅅ(9)/ㅈ(12)/ㅊ(14)/ㅆ(10), ㅇ(11)/ㅎ(18), ㄴ(2)/ㄹ(5), ㅁ(6)/ㅂ(7)
  * - Jungseong: ㅏ(0)/ㅑ(2)/ㅓ(4)/ㅕ(6), ㅗ(8)/ㅜ(13)/ㅡ(18)/ㅛ(12)/ㅠ(17), ㅐ(1)/ㅔ(5)/ㅒ(3)/ㅖ(7), ㅚ(11)/ㅙ(10)/ㅞ(15)
- * - Jongseong: ㄱ(1)/ㅋ(24)/ㄲ(2), ㄴ(4)/ㄹ(8)/ㅁ(16)/ㅇ(21), ㄷ(7)/ㅅ(19)/ㅈ(22)/ㅊ(23)/ㅌ(25), ㅂ(17)/ㅍ(26)
+ * - Jongseong: ㄴ(4)/ㄹ(8)/ㅁ(16)/ㅇ(21), ㄱ(1)/ㅋ(24)/ㄲ(2)/ㅂ(17)/ㅍ(26), ㄷ(7)/ㅅ(19)/ㅆ(20)/ㅈ(22)/ㅊ(23)/ㅌ(25)
  */
 const CHOSEONG_CONFUSION_GROUPS: ReadonlyArray<readonly number[]> = [
   [0, 1, 15],
@@ -173,7 +209,7 @@ const JUNGSEONG_CONFUSION_GROUPS: ReadonlyArray<readonly number[]> = [
 ];
 
 const JONGSEONG_CONFUSION_GROUPS: ReadonlyArray<readonly number[]> = [
-  [0, 4, 8, 16, 21],
+  [4, 8, 16, 21],
   [1, 2, 17, 24, 26],
   [7, 19, 20, 22, 23, 25],
 ];
@@ -211,23 +247,57 @@ export function jamoVisualDistance(a: string, b: string): number {
     const codeA = a.charCodeAt(i);
     const codeB = b.charCodeAt(i);
     if (codeA === codeB) continue;
-    const decA = decomposeHangulSyllable(codeA);
-    const decB = decomposeHangulSyllable(codeB);
-    if (!decA || !decB) {
+    if (!isHangulSyllableCode(codeA) || !isHangulSyllableCode(codeB)) {
       distance += 3;
       continue;
     }
-    if (decA.l !== decB.l) {
-      distance += CHOSEONG_CONFUSABLE[decA.l * HANGUL_CHOSEONG_COUNT + decB.l] ? VISUAL_CONFUSION_COST : 1;
+    const offsetA = codeA - HANGUL_SYLLABLE_BASE;
+    const lA = (offsetA / HANGUL_JUNG_JONG) | 0;
+    const remA = offsetA % HANGUL_JUNG_JONG;
+    const vA = (remA / HANGUL_JONGSEONG_COUNT) | 0;
+    const tA = remA % HANGUL_JONGSEONG_COUNT;
+
+    const offsetB = codeB - HANGUL_SYLLABLE_BASE;
+    const lB = (offsetB / HANGUL_JUNG_JONG) | 0;
+    const remB = offsetB % HANGUL_JUNG_JONG;
+    const vB = (remB / HANGUL_JONGSEONG_COUNT) | 0;
+    const tB = remB % HANGUL_JONGSEONG_COUNT;
+
+    if (lA !== lB) {
+      distance += CHOSEONG_CONFUSABLE[lA * HANGUL_CHOSEONG_COUNT + lB] ? VISUAL_CONFUSION_COST : 1;
     }
-    if (decA.v !== decB.v) {
-      distance += JUNGSEONG_CONFUSABLE[decA.v * HANGUL_JUNGSEONG_COUNT + decB.v] ? VISUAL_CONFUSION_COST : 1;
+    if (vA !== vB) {
+      distance += JUNGSEONG_CONFUSABLE[vA * HANGUL_JUNGSEONG_COUNT + vB] ? VISUAL_CONFUSION_COST : 1;
     }
-    if (decA.t !== decB.t) {
-      distance += JONGSEONG_CONFUSABLE[decA.t * HANGUL_JONGSEONG_COUNT + decB.t] ? VISUAL_CONFUSION_COST : 1;
+    if (tA !== tB) {
+      distance += JONGSEONG_CONFUSABLE[tA * HANGUL_JONGSEONG_COUNT + tB] ? VISUAL_CONFUSION_COST : 1;
     }
   }
   return distance;
+}
+
+interface CompactLineStats {
+  readonly nonSpaceLength: number;
+  readonly hasCompatJamo: boolean;
+  readonly allNoiseJamoOrFiller: boolean;
+}
+
+function inspectCompactLine(text: string): CompactLineStats {
+  let nonSpaceLength = 0;
+  let hasCompatJamo = false;
+  let allNoiseJamoOrFiller = true;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code <= 0x20 || code === 0x00a0) continue;
+    nonSpaceLength++;
+    const isJamo = isCompatOrConjoiningJamoCode(code);
+    if (isJamo) hasCompatJamo = true;
+    // '으' (0xc73c) and '르' (0xb974) are common single-glyph border/deskew artifacts under PSM 3.
+    if (!isJamo && code !== 0xc73c && code !== 0xb974) {
+      allNoiseJamoOrFiller = false;
+    }
+  }
+  return { nonSpaceLength, hasCompatJamo, allNoiseJamoOrFiller };
 }
 
 export interface KoreanLayoutCoherence {
@@ -251,9 +321,9 @@ export function assessKoreanLayoutCoherence(result: OcrResult, pageWidth = 0): K
   let validChars = 0;
   let compatJamoCount = 0;
 
-  for (const ch of result.text) {
-    const code = ch.codePointAt(0) ?? 0;
-    if (code <= 0x20) continue;
+  for (let i = 0; i < result.text.length; i++) {
+    const code = result.text.charCodeAt(i);
+    if (code <= 0x20 || code === 0x00a0) continue;
     totalChars++;
     if (isCompatOrConjoiningJamoCode(code)) {
       compatJamoCount++;
@@ -267,17 +337,19 @@ export function assessKoreanLayoutCoherence(result: OcrResult, pageWidth = 0): K
     }
   }
 
-  const gutters = blocks.length >= 4 && pageWidth > 0 ? detectColumnGutters(blocks, pageWidth) : [];
+  const effectiveWidth = pageWidth > 0 ? pageWidth : (result.imageWidth ?? 0);
+  const minColGap = effectiveWidth > 0 ? Math.max(12, Math.min(36, Math.round(effectiveWidth * 0.025))) : 15;
+  const gutters = blocks.length >= 4 ? detectColumnGutters(blocks, minColGap) : [];
   let fragmentLineCount = 0;
   if (blocks.length >= 3 && gutters.length === 0) {
     const widths = blocks.map((b) => b.bbox.width).filter((w) => w > 0).sort((a, b) => a - b);
-    const medianWidth = widths.length > 0 ? widths[Math.floor(widths.length / 2)] : 0;
+    const medianWidth = widths.length > 0 ? widths[widths.length >> 1] : 0;
     for (const block of blocks) {
-      const compact = block.text.replace(/\s+/g, '');
-      if (compact.length === 0) continue;
-      const hasCompat = Array.from(compact).some((c) => isCompatOrConjoiningJamoCode(c.codePointAt(0) ?? 0));
-      const narrowFragment = medianWidth > 0 && block.bbox.width < medianWidth * 0.22 && compact.length <= 2;
-      if (hasCompat || (compact.length <= 2 && narrowFragment)) {
+      const stats = inspectCompactLine(block.text);
+      if (stats.nonSpaceLength === 0) continue;
+      const narrowFragment =
+        medianWidth > 0 && block.bbox.width < medianWidth * 0.22 && stats.nonSpaceLength <= 2;
+      if (stats.hasCompatJamo || (stats.nonSpaceLength <= 2 && narrowFragment)) {
         fragmentLineCount++;
       }
     }
@@ -323,10 +395,11 @@ export function includesKoreanLanguage(language: string | undefined): boolean {
 
 /**
  * Conservative Korean post-correction:
- * 1. Prunes standalone 1-character compatibility-Jamo noise lines (e.g. `으`, `ㅡ`, `ㅣ` from deskew/border artifacts)
+ * 1. Composes detached compatibility Jamo sequences (`ㄱ` + `ㅏ` -> `가`, `하` + `ㄴ` -> `한`) inside words and lines first.
+ * 2. Prunes standalone 1-2 character compatibility-Jamo / border-artifact noise lines (e.g. `으`, `르 르`, `ㅡ`)
  *    when the page has real multi-word Korean text lines.
- * 2. Composes detached compatibility Jamo sequences (`ㄱ` + `ㅏ` -> `가`) inside words and lines.
- * 3. Never invents text on blank inputs and preserves all word/line bounding boxes.
+ * 3. Preserves the original `OcrResult` (including `\n\n` paragraph breaks) when nothing was pruned or composed,
+ *    and recalculates `confidence` from `finalBlocks` when noise lines are pruned.
  */
 export function postCorrectKoreanOcrResult(result: OcrResult): OcrResult {
   if (!result.text || !includesKoreanLanguage(result.language)) return result;
@@ -341,23 +414,18 @@ export function postCorrectKoreanOcrResult(result: OcrResult): OcrResult {
     };
   }
 
-  const realLines = blocks.filter((b) => b.text.replace(/\s+/g, '').length >= 4);
-  const filteredBlocks: OcrLineBlock[] = [];
+  let realLineCount = 0;
   for (const block of blocks) {
-    const compact = block.text.replace(/\s+/g, '');
-    if (
-      realLines.length >= 2 &&
-      compact.length > 0 &&
-      compact.length <= 2 &&
-      Array.from(compact).every((ch) => {
-        const code = ch.codePointAt(0) ?? 0;
-        return isCompatOrConjoiningJamoCode(code) || ch === '으' || ch === '르';
-      }) &&
-      block.words.every((w) => (w.confidence ?? 0) < 0.78)
-    ) {
-      continue;
+    if (inspectCompactLine(block.text).nonSpaceLength >= 4) {
+      realLineCount++;
     }
+  }
 
+  const filteredBlocks: OcrLineBlock[] = [];
+  let pruned = false;
+  let anyBlockChanged = false;
+
+  for (const block of blocks) {
     let anyWordChanged = false;
     const correctedWords: OcrWord[] = block.words.map((word) => {
       const composed = composeDetachedHangulJamo(word.text);
@@ -365,15 +433,33 @@ export function postCorrectKoreanOcrResult(result: OcrResult): OcrResult {
       return composed === word.text ? word : { ...word, text: composed };
     });
     const lineText = composeDetachedHangulJamo(block.text);
-    filteredBlocks.push(
-      !anyWordChanged && lineText === block.text
-        ? block
-        : {
-            ...block,
-            text: lineText,
-            words: correctedWords,
-          }
-    );
+    const stats = inspectCompactLine(lineText);
+
+    if (
+      realLineCount >= 2 &&
+      stats.nonSpaceLength > 0 &&
+      stats.nonSpaceLength <= 2 &&
+      stats.allNoiseJamoOrFiller &&
+      block.words.every((w) => (w.confidence ?? 0) < 0.78)
+    ) {
+      pruned = true;
+      continue;
+    }
+
+    if (anyWordChanged || lineText !== block.text) {
+      anyBlockChanged = true;
+      filteredBlocks.push({
+        ...block,
+        text: lineText,
+        words: correctedWords,
+      });
+    } else {
+      filteredBlocks.push(block);
+    }
+  }
+
+  if (!pruned && !anyBlockChanged) {
+    return result;
   }
 
   const finalBlocks = filteredBlocks.length > 0 ? filteredBlocks : blocks;
@@ -383,6 +469,7 @@ export function postCorrectKoreanOcrResult(result: OcrResult): OcrResult {
   return {
     ...result,
     text,
+    confidence: characterWeightedConfidence(finalBlocks),
     lines,
     wordCount,
     lineBlocks: finalBlocks,
@@ -400,7 +487,8 @@ export const KOREAN_ALTERNATIVE_TRIGGER_QUALITY = 0.89;
 /**
  * Resolves the effective Tesseract page segmentation mode for Korean (`kor`) pages:
  * switches automatic multi-column `PSM 3` (`'3'`) to single-block `PSM 6` (`'6'`) when
- * running on the neural path or when deskew / adaptive binarization was applied.
+ * deskew or adaptive binarization was applied, while keeping `PSM 3` on unbinarized,
+ * un-deskewed pages so multi-column Korean pages preserve their column reading order.
  */
 export function resolveKoreanPageSegMode(
   tesseractLang: string,
@@ -411,7 +499,8 @@ export function resolveKoreanPageSegMode(
   if (
     includesKoreanLanguage(tesseractLang) &&
     basePageSegMode === '3' &&
-    (enginePath === 'neural' || (enginePath === undefined && (applied.deskew || applied.binarize)))
+    (enginePath === 'neural' || enginePath === undefined) &&
+    (applied.deskew || applied.binarize)
   ) {
     return '6';
   }

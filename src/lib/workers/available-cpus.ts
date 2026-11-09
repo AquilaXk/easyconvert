@@ -62,11 +62,9 @@ export interface AvailableCpusOptions {
   hostCores?: number;
 }
 
-/**
- * Reads the container CPU quota from cgroup v2 (`cpu.max`) or cgroup v1 (`cpu.cfs_quota_us` / `cpu.cfs_period_us`)
- * and bounds it by `os.availableParallelism()`, returning at least 1 core.
- */
-export function availableCpus(options: AvailableCpusOptions = {}): number {
+let cachedDefaultCpus: number | null = null;
+
+function computeAvailableCpus(options: AvailableCpusOptions): number {
   const host = Math.max(1, Math.floor(options.hostCores ?? os.availableParallelism()));
   const cpuMaxPath = options.cpuMaxPath ?? CGROUP_V2_CPU_MAX_PATH;
   try {
@@ -84,4 +82,26 @@ export function availableCpus(options: AvailableCpusOptions = {}): number {
     // No cgroup v1 mount; fall back to host parallelism.
   }
   return host;
+}
+
+/**
+ * Reads the container CPU quota from cgroup v2 (`cpu.max`) or cgroup v1 (`cpu.cfs_quota_us` / `cpu.cfs_period_us`)
+ * and bounds it by `os.availableParallelism()`, returning at least 1 core.
+ * When called without custom options, the resolved value is memoized for the process lifetime so hot paths do not
+ * issue repeated synchronous `fs.readFileSync` syscalls.
+ */
+export function availableCpus(options?: AvailableCpusOptions): number {
+  if (
+    !options ||
+    (options.cpuMaxPath === undefined &&
+      options.v1QuotaPath === undefined &&
+      options.v1PeriodPath === undefined &&
+      options.hostCores === undefined)
+  ) {
+    if (cachedDefaultCpus === null) {
+      cachedDefaultCpus = computeAvailableCpus({});
+    }
+    return cachedDefaultCpus;
+  }
+  return computeAvailableCpus(options);
 }

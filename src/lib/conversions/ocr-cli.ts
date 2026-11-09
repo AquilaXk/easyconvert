@@ -354,12 +354,15 @@ export async function recognizeWithCli(request: CliOcrRequest): Promise<OcrResul
   if (!fallbackMode || request.pageSegMode) return first;
   const koreanFragmented =
     includesKoreanLanguage(request.tesseractLang) &&
-    assessKoreanLayoutCoherence(first).fragmented;
+    assessKoreanLayoutCoherence(first, first.imageWidth).fragmented;
   if (first.wordCount > 0 && !koreanFragmented) return first;
   // Automatic segmentation finds no text block in very small images, or fragments Korean paragraphs into Compatibility Jamo columns; read them as one block.
   const retry = await runCli({ ...request, pageSegMode: fallbackMode });
   if (koreanFragmented) {
-    return scoreKoreanNeuralCandidate(retry, 'cli') > scoreKoreanNeuralCandidate(first, 'cli') ? retry : first;
+    return scoreKoreanNeuralCandidate(retry, 'cli', retry.imageWidth) >
+      scoreKoreanNeuralCandidate(first, 'cli', first.imageWidth)
+      ? retry
+      : first;
   }
   return fallbackReadsMore(first.wordCount, retry.wordCount) ? retry : first;
 }

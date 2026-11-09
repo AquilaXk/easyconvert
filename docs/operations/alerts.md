@@ -65,7 +65,7 @@ Do not delete jobs from Redis by hand: the steps the worker takes when a job end
 
 **Anchor for the alert:** `docs/operations/alerts.md#alert-worker-restarts`.
 
-**Means.** A worker process started again more often than expected (`changes(process_start_time_seconds[1h])` of the worker job). Some restarts are by design: the worker drains and exits when it has handled its number of jobs or its memory (`WORKER_MAX_RSS_MB`, 4096) is over the line, and when a job ignored its abort; the container restarts it (`restart: unless-stopped`). A rate above that, or restarts that do not stop, are a crash loop. Jobs of a killed worker are found by the stalled sweep (it runs every 15 seconds and acts once the job's heartbeat has expired) and retried or failed. Level: SEV2; SEV1 when the worker never stays up.
+**Means.** A worker process started again more often than expected (`changes(process_start_time_seconds{job="easyconvert-worker"}[15m])` of the worker job). Some restarts are by design: the worker drains and exits when it has handled its number of jobs or its memory (`WORKER_MAX_RSS_MB`, 4096) is over the line, and when a job ignored its abort; the container restarts it (`restart: unless-stopped`). A rate above that, or restarts that do not stop, are a crash loop. Jobs of a killed worker are found by the stalled sweep (it runs every 15 seconds and acts once the job's heartbeat has expired) and retried or failed. Level: SEV2; SEV1 when the worker never stays up.
 
 **Check.**
 

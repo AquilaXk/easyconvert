@@ -72,4 +72,11 @@ describe('availableCpus', () => {
     const missing = path.join(dir, 'does-not-exist');
     expect(availableCpus({ cpuMaxPath: missing, v1QuotaPath: missing, v1PeriodPath: missing, hostCores: 6 })).toBe(6);
   });
+
+  it('memoizes the default host/cgroup core count when called without custom options', () => {
+    const first = availableCpus();
+    const second = availableCpus();
+    expect(first).toBeGreaterThanOrEqual(1);
+    expect(second).toBe(first);
+  });
 });
