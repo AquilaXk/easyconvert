@@ -792,6 +792,11 @@
         "heading": "Select your file to read its text",
         "selectFile": "Select File"
       },
+      "pdfa": {
+        "fileInputLabel": "Select files to convert to PDF/A",
+        "heading": "Select your file to convert to PDF/A",
+        "selectFile": "Select File"
+      },
       "archiveCreate": {
         "fileInputLabel": "Select files to pack",
         "heading": "Select the files to pack",
@@ -1331,6 +1336,10 @@
     "ocr": {
       "title": "PDF OCR Converter",
       "description": "Recognize the text of scanned PDFs and images, and get a PDF whose text you can search and select. You can choose the recognition language in the options."
+    },
+    "pdfa": {
+      "title": "PDF/A Converter",
+      "description": "Turn PDFs and documents into PDF/A files that are made to be kept for the long term. Each result is checked against the PDF/A standard."
     },
     "pair": {
       "title": "{src} to {tgt} Converter",

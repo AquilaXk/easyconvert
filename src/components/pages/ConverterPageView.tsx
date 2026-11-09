@@ -24,7 +24,7 @@ import { ConverterInfoPage } from '@/components/converter/ConverterInfoPage';
 
 /** The operation a page does instead of converting, whose upload card is worded for it. */
 function operationOf(kind: ParsedSlug['copy']['kind']): HeroOperation | undefined {
-  return kind === 'merge' || kind === 'compress' || kind === 'ocr' || Object.hasOwn(PAGE_TOOL_SLUGS, kind) ? (kind as HeroOperation) : undefined;
+  return kind === 'merge' || kind === 'compress' || kind === 'ocr' || kind === 'pdfa' || Object.hasOwn(PAGE_TOOL_SLUGS, kind) ? (kind as HeroOperation) : undefined;
 }
 
 /** The tool a page runs on the server in one request, with the files it takes; a page that converts file by file has none. */
@@ -61,6 +61,7 @@ function ConversionPageView({ parsed, dailyLimit }: Readonly<{ parsed: ParsedSlu
   const totalFormatCount = REGISTRY_STATS.formatCount;
 
   const bundlePrefix = `easyconvert_${parsed.sourceFormat}_to_${parsed.targetFormat || 'files'}`;
+  const operation = operationOf(parsed.copy.kind);
 
   const {
     queue,
@@ -75,7 +76,7 @@ function ConversionPageView({ parsed, dailyLimit }: Readonly<{ parsed: ParsedSlu
     handleUpdateOptions,
     handleConvertAll,
     handleDownloadAllZip,
-  } = useClientQueue({ bundlePrefix });
+  } = useClientQueue({ bundlePrefix, operation });
   const tiles = usePairTiles(parsed.sourceFormat, parsed.targetFormat);
   const queueTarget = tiles.chosenTarget ?? queue[0]?.targetFormat;
 
@@ -120,7 +121,7 @@ function ConversionPageView({ parsed, dailyLimit }: Readonly<{ parsed: ParsedSlu
             tiles={tiles}
             title={copy.title}
             description={visibleIntro}
-            operation={operationOf(parsed.copy.kind)}
+            operation={operation}
           />
         )}
 

@@ -245,6 +245,10 @@ function applySanitizedOcrOptions(
   }
 }
 
+function applySanitizedPdfaOptions(next: ConversionOptions, options: ConversionOptions, visible: VisibleOptionsSections): void {
+  if (options.pdfa && visible.tgt === 'pdf') next.pdfa = options.pdfa;
+}
+
 function applySanitizedDocumentOptions(
   next: ConversionOptions,
   options: ConversionOptions,
@@ -260,6 +264,7 @@ function applySanitizedDocumentOptions(
     next.orientation = options.orientation;
   }
   applySanitizedOcrOptions(next, options, visible);
+  applySanitizedPdfaOptions(next, options, visible);
 }
 
 function hasForbiddenPasswordChars(value: string): boolean {
@@ -414,6 +419,19 @@ function applySanitizedDataOptions(
     next.sheetIndex = options.sheetIndex;
     next.sheetMode = 'index';
   }
+}
+
+/**
+ * The options a file starts with on a page that does one operation with its files: text recognition for `/pdf-ocr` (an image
+ * is read too, and a PDF is not just compressed), a PDF/A export for `/pdfa-converter`. A target the operation does not
+ * apply to drops the option, as it does when the target changes; a file with no target yet keeps it until one is chosen.
+ */
+export function startingOptionsFor(operation: string | undefined, sourceFormat: string, targetFormat: string): ConversionOptions {
+  let wanted: ConversionOptions = {};
+  if (operation === 'ocr') wanted = { ocrEnabled: true };
+  else if (operation === 'pdfa') wanted = { pdfa: {} };
+  if (!targetFormat) return { ...DEFAULT_OPTIONS, ...wanted };
+  return sanitizeOptionsForPair({ ...DEFAULT_OPTIONS, ...wanted }, sourceFormat, targetFormat);
 }
 
 export function sanitizeOptionsForPair(

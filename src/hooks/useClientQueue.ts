@@ -7,11 +7,12 @@ import { detectFormatFromFilename, FORMAT_REGISTRY, getAvailableTargetFormats } 
 import { executeItemConversion } from '@/lib/client-converter';
 import { warnBrowserFailure } from '@/lib/browser-failure';
 import { getViewerMaxFileBytes } from '@/lib/viewer-plan';
+import type { HeroOperation } from '@/components/hero/useHeroUpload';
 import { useRefreshViewerPlan, useViewerPlan } from './useViewerPlan';
 import {
-  DEFAULT_OPTIONS,
   getPasswordValidationError,
   sanitizeOptionsForPair,
+  startingOptionsFor,
 } from '@/components/workbench/options/options-capabilities';
 
 declare global {
@@ -22,6 +23,8 @@ declare global {
 
 interface UseClientQueueOptions {
   bundlePrefix?: string;
+  /** What the page does with its files instead of converting them; the files start with the options that operation needs. */
+  operation?: HeroOperation;
 }
 
 const ZIP_REVOKE_DELAY_MS = 60_000;
@@ -119,20 +122,21 @@ function buildUniqueArchiveName(itemName: string, targetFormat: string, used: Se
 }
 
 /** A queue item for a dropped file. Whether it is over the viewer's limit is read when the row renders, since the plan can still change. */
-export function buildQueuedFileItem(file: File, effectiveDefault?: string): ConversionQueueItem {
+export function buildQueuedFileItem(file: File, effectiveDefault?: string, operation?: HeroOperation): ConversionQueueItem {
   const detected = detectFormatFromFilename(file.name);
   const ext = detected?.extension ?? (file.name.split('.').pop() || 'bin');
   const sourceFormat = ext.toLowerCase();
+  const targetFormat = resolveInitialTargetFormat(sourceFormat, effectiveDefault);
   return {
     id: createQueueItemId(file.name),
     file,
     name: file.name,
     size: file.size,
     sourceFormat,
-    targetFormat: resolveInitialTargetFormat(sourceFormat, effectiveDefault),
+    targetFormat,
     status: 'ready',
     progress: 0,
-    options: { ...DEFAULT_OPTIONS },
+    options: startingOptionsFor(operation, sourceFormat, targetFormat),
   };
 }
 
@@ -511,7 +515,7 @@ export function useClientQueue(options?: UseClientQueueOptions) {
   const isItemBusy = (i: ConversionQueueItem) =>
     isRunning(i) || inFlightIdsRef.current.has(i.id);
   const handleFilesSelected = (files: File[], target?: string) => {
-    updateQueue((prev) => [...prev, ...files.map((f) => buildQueuedFileItem(f, target))]);
+    updateQueue((prev) => [...prev, ...files.map((f) => buildQueuedFileItem(f, target, options?.operation))]);
   };
   const handleFilesSelectedRef = useRef(handleFilesSelected);
   useQueueLifecycleEffects(mountedRef, blobUrlsRef, timersRef, abortersRef, handleFilesSelectedRef, handleFilesSelected);

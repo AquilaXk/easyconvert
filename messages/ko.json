@@ -792,6 +792,11 @@
         "heading": "글자를 읽을 파일을 선택해 주세요",
         "selectFile": "파일 선택"
       },
+      "pdfa": {
+        "fileInputLabel": "PDF/A로 바꿀 파일 선택",
+        "heading": "PDF/A로 바꿀 파일을 선택해 주세요",
+        "selectFile": "파일 선택"
+      },
       "archiveCreate": {
         "fileInputLabel": "묶을 파일 선택",
         "heading": "묶을 파일을 선택해 주세요",
@@ -1331,6 +1336,10 @@
     "ocr": {
       "title": "PDF OCR 변환기",
       "description": "스캔한 PDF와 이미지의 글자를 인식해 검색하고 선택할 수 있는 PDF로 만들어요. 인식할 언어는 옵션에서 고를 수 있어요."
+    },
+    "pdfa": {
+      "title": "PDF/A 변환기",
+      "description": "PDF와 문서를 오래 보관하기 좋은 PDF/A로 바꿔요. 변환한 파일은 PDF/A 표준에 맞는지 확인해서 드려요."
     },
     "pair": {
       "title": "{src} → {tgt} 변환기",

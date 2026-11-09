@@ -15,6 +15,8 @@ import {
 export { isSelfConvertible, offersConversion, type ParsedSlug, type SlugCopy, type SlugName } from './slug-info-pages';
 
 const OCR_SLUG = 'pdf-ocr';
+/** The page that makes PDF/A files; the converter of the registry's `pdfa` format is this page too, since a PDF/A file is a PDF and no file carries the extension `.pdfa`. */
+const PDFA_SLUG = 'pdfa-converter';
 const CONVERTER_SUFFIX = '-converter';
 const PAIR_SEPARATOR = '-to-';
 
@@ -44,6 +46,7 @@ const lowercaseAscii = (slug: string): string => slug.replace(/[A-Z]+/g, (letter
 
 function parseCleanSlug(cleanSlug: string): SlugPage | null {
   if (cleanSlug === OCR_SLUG) return { isInfoPage: false, sourceFormat: 'pdf', targetFormat: 'pdf', copy: { kind: 'ocr' } };
+  if (cleanSlug === PDFA_SLUG) return { isInfoPage: false, sourceFormat: 'pdf', targetFormat: 'pdf', copy: { kind: 'pdfa' } };
   if (Object.hasOwn(INFO_PAGE_MAP, cleanSlug)) return INFO_PAGE_MAP[cleanSlug];
   if (cleanSlug.includes(PAIR_SEPARATOR)) return parsePairSlug(cleanSlug);
   if (cleanSlug.endsWith(CONVERTER_SUFFIX)) return parseFormatConverterSlug(cleanSlug);
