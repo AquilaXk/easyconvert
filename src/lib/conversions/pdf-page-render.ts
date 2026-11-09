@@ -13,7 +13,7 @@ import {
 } from '../security/process-sandbox';
 import { assertInputPixels } from './image-input-limits';
 import { OCR_DEFAULT_DPI, OCR_MAX_DPI, OCR_MIN_RENDER_DPI } from './ocr-dpi';
-import { checkOpenedPdfRasterPageBudget } from './pdf-access';
+import { checkOpenedPdfRasterPageBudget, openPdfForReading } from './pdf-access';
 import { assertPdfJbig2WithinLimits } from './pdf-jbig2-guard';
 import {
   assertPdfRasterPageBudget,
@@ -211,8 +211,10 @@ export async function openPdfPageRenderer(
   pages: ReadonlySet<number> | undefined,
   requestedDpi: number | undefined
 ): Promise<PdfPageRenderer> {
-  assertPdfJbig2WithinLimits(pdf);
-  const plan = await planPageRender(pdf, pages, requestedDpi);
+  // A file that opens with the empty password is checked, and drawn, as the plain document: its JBIG2 pages are declared in streams that are ciphertext in the input.
+  const opened = await openPdfForReading(pdf);
+  assertPdfJbig2WithinLimits(opened);
+  const plan = await planPageRender(opened, pages, requestedDpi);
   const pdftoppm = findPdftoppm();
   if (!pdftoppm) {
     throw new OcrEngineUnavailableError('Rendering PDF pages for OCR needs Poppler pdftoppm, which is not installed on this server.');
@@ -220,7 +222,7 @@ export async function openPdfPageRenderer(
   const jobDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), RENDER_JOB_DIR_PREFIX));
   const inputPath = path.join(jobDir, RENDER_INPUT_NAME);
   try {
-    await fs.promises.writeFile(inputPath, pdf, { mode: 0o600 });
+    await fs.promises.writeFile(inputPath, opened, { mode: 0o600 });
   } catch (err) {
     await fs.promises.rm(jobDir, { recursive: true, force: true });
     throw err;

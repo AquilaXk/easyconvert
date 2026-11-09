@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ConversionFailedError, EngineUnavailableError, PayloadLimitError, PdfPasswordRequiredError } from '../lib/types';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
+import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
 import { assertPdfJbig2WithinLimits } from '../lib/conversions/pdf-jbig2-guard';
 import { reportsPageTreeLoop } from '../lib/conversions/pdf-postprocess/page-tree-loop';
 import { getQpdfBinaryPath } from '../lib/conversions/pdf-postprocess/qpdf-path';
@@ -54,7 +55,7 @@ export interface PdfDecryptRequest {
   inputPath: string;
   /** Private per-job directory that receives the password file and the decrypted copy. */
   tempDir: string;
-  /** User or owner password. When absent or empty the PDF is handed over untouched. */
+  /** User or owner password. When absent or empty, a PDF that is not encrypted is handed over untouched and one that opens with the empty password is decrypted with it. */
   password?: string;
   timeoutMs: number;
   signal?: AbortSignal;
@@ -350,26 +351,40 @@ function parseAccessVerdict(json: string): PdfAccessVerdict {
  * Runs `operation` with a path Poppler can read without a password, once the PDF is known not to hold a stream that
  * Poppler would decode to more than a stream may (a JBIG2 page of 100,000 x 100,000 pixels, see pdf-jbig2-guard.ts).
  *
- * Without a password that is the input itself. With a password it is a decrypted copy in
- * `tempDir`, created through qpdf; the copy and the password file are removed when the operation
- * settles, whether it succeeds, fails, or the job is aborted.
+ * A PDF that is not encrypted is the input itself. An encrypted one is a decrypted copy in `tempDir`, created through
+ * qpdf with the password, or with the empty one when the request has none: a file that restricts what a reader may do and
+ * asks for no password to open is read by Poppler as it is, but its streams are ciphertext in the input, where the size of a
+ * JBIG2 page cannot be read. The copy and the password file are removed when the operation settles, whether it succeeds,
+ * fails, or the job is aborted.
  *
  * @throws ConversionFailedError when the password is wrong, unsafe, or the PDF cannot be decrypted.
- * @throws EngineUnavailableError when a password is supplied but qpdf is not installed.
+ * @throws PdfPasswordRequiredError when the PDF needs a password and the request has none.
+ * @throws EngineUnavailableError when the PDF is encrypted and qpdf is not installed.
  * @throws DecompressionLimitError (413) when a JBIG2 stream of the readable PDF declares a page past the limit.
  */
 export async function withDecryptedPdf<T>(
   request: PdfDecryptRequest,
   operation: (readablePdfPath: string) => Promise<T>
 ): Promise<T> {
-  const guarded = (readablePdfPath: string): Promise<T> => {
-    assertPdfJbig2WithinLimits(fs.readFileSync(readablePdfPath));
+  const guarded = (readablePdfPath: string, bytes: Buffer = fs.readFileSync(readablePdfPath)): Promise<T> => {
+    assertPdfJbig2WithinLimits(bytes);
     return operation(readablePdfPath);
   };
-  if (!request.password) {
-    return guarded(request.inputPath);
+  if (request.password) {
+    return withQpdfDecryptedPdf({ ...request, password: request.password }, (readablePath) => guarded(readablePath));
   }
-  return withQpdfDecryptedPdf({ ...request, password: request.password }, guarded);
+  const input = fs.readFileSync(request.inputPath);
+  return isEncrypted(input) ? withQpdfDecryptedPdf({ ...request, password: '' }, (readablePath) => guarded(readablePath)) : guarded(request.inputPath, input);
+}
+
+/** Whether `pdf` is encrypted; a file whose structure cannot be read is left to the tools, which repair what they can. */
+function isEncrypted(pdf: Buffer): boolean {
+  try {
+    return inspectPdfEncryption(pdf).encrypted;
+  } catch (error) {
+    if (error instanceof PdfStructureError) return false;
+    throw error;
+  }
 }
 
 /**

@@ -1041,7 +1041,7 @@ export async function getPdfPageCount(
   password?: string
 ): Promise<number> {
   return withDecryptedPdf({ inputPath, tempDir, password, timeoutMs, signal }, (readablePath) =>
-    countPagesOfReadablePdf(readablePath, tempDir, timeoutMs, signal, password ? undefined : inputBuffer)
+    countPagesOfReadablePdf(readablePath, tempDir, timeoutMs, signal, readablePath === inputPath ? inputBuffer : undefined)
   );
 }
 
@@ -1337,8 +1337,8 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
       return withDecryptedPdf(
         { inputPath, tempDir, password: options.password, timeoutMs: timeout, signal: options.signal },
         async (readablePath) => {
-          // With a password the fallback parser must read the decrypted copy, not the encrypted input.
-          const inputBuffer = options.password ? undefined : loadPdfInputBuffer(input);
+          // An encrypted input is read through its decrypted copy (the fallback parser and the page budget never see the ciphertext).
+          const inputBuffer = readablePath === inputPath ? loadPdfInputBuffer(input) : undefined;
           const pdfBytes = inputBuffer ?? (rasterDpi === undefined ? undefined : fs.readFileSync(readablePath));
           if (rasterDpi !== undefined && pdfBytes !== undefined) {
             await checkOpenedPdfRasterPageBudget(pdfBytes, (count) => pagesOfIntervals(resolveRequestedPages(options, count, !singleFile)), rasterDpi);
