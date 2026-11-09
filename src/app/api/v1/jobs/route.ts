@@ -828,9 +828,11 @@ async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit)
     );
   }
 
-  // Resolve resource class and scheduling priority
-  const resClass = resolveResourceClass(sourceDef.id, targetDef.id, fileSize, options);
+  // Resolve resource class and scheduling priority from the size of the input as the server knows it: the `fileSize` of a JSON body is
+  // the client's own figure (absent, or any number), and only stands in when the input cannot be sized.
   const inputBytes = await trustedInputBytes({ storageKey, inputBufferBase64 }, s3Storage);
+  const routedBytes = inputBytes ?? fileSize;
+  const resClass = resolveResourceClass(sourceDef.id, targetDef.id, routedBytes, options);
   // Enqueue conversion job to the appropriate resource-class queue
   const job = await handOffConversionJob(
     unit,
@@ -840,7 +842,7 @@ async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit)
       originalFilename,
       sourceFormat: sourceDef.id,
       targetFormat: targetDef.id,
-      fileSize,
+      fileSize: routedBytes,
       storageKey,
       inputBufferBase64,
       options: stripEngineControls(options),

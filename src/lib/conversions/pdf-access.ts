@@ -76,6 +76,8 @@ export interface PdfAccess {
   password?: string;
   /** True when the caller states that they may edit the document, which lifts the owner's restrictions. Only `true` counts. */
   confirmEditRights?: boolean;
+  /** Stops the qpdf runs that open the PDF when the job that asked for the edit ends (cancelled, or past its deadline). */
+  signal?: AbortSignal;
 }
 
 /** The rights the edit needs, as groups of which at least one right must be allowed. */
@@ -113,7 +115,7 @@ interface DecryptedPdf {
 
 async function decryptWithAccessCheck(pdf: Buffer, operation: PdfEditOperation, access: PdfAccess, askPageTree = false): Promise<DecryptedPdf> {
   return withQpdfInputFile(pdf, async ({ inputPath, dir }) => {
-    const request = { inputPath, tempDir: dir, password: access.password ?? '', timeoutMs: PDF_ACCESS_TIMEOUT_MS };
+    const request = { inputPath, tempDir: dir, password: access.password ?? '', timeoutMs: PDF_ACCESS_TIMEOUT_MS, signal: access.signal };
 
     // The plain bytes are printed by qpdf on standard output, so no decrypted copy is written to disk. A confirmed
     // edit needs no verdict: the confirmation lifts every restriction, and a wrong password still fails the
@@ -121,8 +123,9 @@ async function decryptWithAccessCheck(pdf: Buffer, operation: PdfEditOperation, 
     // decryption: the two read the same file, so the check costs no wall time. The question whether the page tree
     // loops is asked beside them for the same reason, and never delays or fails them.
     const stop = new AbortController();
-    const decrypting = decryptPdfToBuffer({ ...request, signal: stop.signal });
-    const looping = askPageTree ? pdfPageTreeLoops({ ...request, signal: stop.signal }) : Promise.resolve(false);
+    const stopped = access.signal ? AbortSignal.any([access.signal, stop.signal]) : stop.signal;
+    const decrypting = decryptPdfToBuffer({ ...request, signal: stopped });
+    const looping = askPageTree ? pdfPageTreeLoops({ ...request, signal: stopped }) : Promise.resolve(false);
     // A decryption that fails while the verdict is awaited must not surface as an unhandled rejection.
     decrypting.catch(() => undefined);
     try {

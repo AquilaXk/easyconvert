@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { promisify } from 'node:util';
 import zlib from 'node:zlib';
 import { Readable } from 'node:stream';
 import JSZip from 'jszip';
@@ -40,6 +41,7 @@ import type { ArchiveExtractionLimits } from '../../conversions/archive-extracti
 import { openPasswordOption } from '../option-secrets';
 import { OPTIMIZERS, getOptimizer, type OptimizerRegistry } from '../../conversions/optimizers';
 import { gunzipStreamingWithLimits } from '../../conversions/archive';
+import { resolveArchiveCompressionLevel } from '../../conversions/archive-compression-level';
 import {
   ConversionFailedError,
   GraphExportError,
@@ -70,6 +72,7 @@ import { deadlineBoundEngine, jobDeadlineAt } from '../job-deadline';
 import { JOB_DEADLINE_AT, remainingJobMs, stripEngineControls } from '../../conversions/job-time';
 
 const INTERMEDIATE_TTL_MS = 24 * 60 * 60 * 1000;
+const gzipAsync = promisify(zlib.gzip);
 /** A node without any output artifact has no bytes to describe: the generic binary type with size 0. */
 const NO_OUTPUT_MIME_TYPE = 'application/octet-stream';
 /** Registry ids made of two dot-separated parts (`tar.gz`) are tried before the last extension alone. */
@@ -323,8 +326,8 @@ async function mergePasswordsFor(
 }
 
 /** The password and the rights confirmation a PDF node's options carry. */
-function pdfAccessOf(options: { password?: string; confirmEditRights?: boolean } | undefined): PdfAccess {
-  return { password: options?.password, confirmEditRights: options?.confirmEditRights };
+function pdfAccessOf(options: { password?: string; confirmEditRights?: boolean } | undefined, signal: AbortSignal): PdfAccess {
+  return { password: options?.password, confirmEditRights: options?.confirmEditRights, signal };
 }
 
 /**
@@ -521,7 +524,7 @@ export async function processGraphNodeJob(
           inputArtifacts,
           effectiveStorage,
           attemptSignal,
-          (buf) => applyPdfWatermark(buf, watermarkOpts, pdfAccessOf(node.options))
+          (buf) => applyPdfWatermark(buf, watermarkOpts, pdfAccessOf(node.options, attemptSignal))
         );
         outputKeys.push(...processedKeys);
         await job.log(`Node "${nodeId}" applied watermark to ${inputArtifacts.length} artifact(s)`);
@@ -539,7 +542,7 @@ export async function processGraphNodeJob(
           inputArtifacts,
           effectiveStorage,
           attemptSignal,
-          (buf) => protectPdf(buf, protectOpts, pdfAccessOf(node.options))
+          (buf) => protectPdf(buf, protectOpts, pdfAccessOf(node.options, attemptSignal))
         );
         outputKeys.push(...processedKeys);
         await job.log(`Node "${nodeId}" applied protection to ${inputArtifacts.length} artifact(s)`);
@@ -556,7 +559,7 @@ export async function processGraphNodeJob(
           inputArtifacts,
           effectiveStorage,
           attemptSignal,
-          (buf) => unlockPdf(buf, pdfAccessOf(node.options))
+          (buf) => unlockPdf(buf, pdfAccessOf(node.options, attemptSignal))
         );
         outputKeys.push(...processedKeys);
         await job.log(`Node "${nodeId}" unlocked ${inputArtifacts.length} artifact(s)`);
@@ -576,7 +579,7 @@ export async function processGraphNodeJob(
           async (buf, inputFilename) => {
             const baseName = path.basename(inputFilename, path.extname(inputFilename));
             return {
-              buffer: await splitPdfPages(buf, node.options?.split, pdfAccessOf(node.options), baseName),
+              buffer: await splitPdfPages(buf, node.options?.split, pdfAccessOf(node.options, attemptSignal), baseName),
               filename: `${baseName}-split.${PDF_SPLIT_OUTPUT_FORMAT}`,
               formatId: PDF_SPLIT_OUTPUT_FORMAT,
             };
@@ -594,7 +597,7 @@ export async function processGraphNodeJob(
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
-        const access = pdfAccessOf(node.options);
+        const access = pdfAccessOf(node.options, attemptSignal);
         const options = node.options;
         const edit = (buf: Buffer): Promise<Buffer> => {
           switch (node.op) {
@@ -642,6 +645,7 @@ export async function processGraphNodeJob(
           const mergedBuf = await mergePdfBuffers(pdfBuffers, {
             passwords: await mergePasswordsFor(graphId, node, inputArtifacts),
             confirmEditRights: node.options?.confirmEditRights,
+            signal: attemptSignal,
           });
           const outFilename = 'merged.pdf';
           const outKey = nodeOutputKey('intermediate', graphId, nodeId, 0, outFilename);
@@ -711,9 +715,10 @@ export async function processGraphNodeJob(
           archiveBuf = zipRes.buffer;
         } else if (targetFmt === 'tar' || targetFmt === 'tar.gz') {
           const tarRes = createTarArchive(filesToArchive, node.options || {}, `bundle.tar`);
-          archiveBuf = targetFmt === 'tar.gz' ? zlib.gzipSync(tarRes.buffer) : tarRes.buffer;
+          archiveBuf = targetFmt === 'tar.gz' ? await gzipAsync(tarRes.buffer, { level: resolveArchiveCompressionLevel(node.options?.compressionLevel) }) : tarRes.buffer;
+          attemptSignal.throwIfAborted();
         } else if (targetFmt === '7z') {
-          const sevenZipRes = await create7zArchiveAsync(filesToArchive, node.options || {}, `bundle.7z`);
+          const sevenZipRes = await create7zArchiveAsync(filesToArchive, node.options || {}, `bundle.7z`, { signal: attemptSignal });
           archiveBuf = sevenZipRes.buffer;
         } else {
           throw new ConversionFailedError(

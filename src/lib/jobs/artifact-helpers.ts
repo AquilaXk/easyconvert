@@ -78,6 +78,7 @@ export async function mergePdfBuffers(buffers: Buffer[], access: PdfMergeAccess 
     const plain = await openPdfForEditing(buf, 'merge', {
       password: access.passwords?.[index] ?? undefined,
       confirmEditRights: access.confirmEditRights,
+      signal: access.signal,
     });
     // A page tree that loops overflows the parser's stack; the input is read again from the mended tree.
     const doc = await withMendedPageTree(plain, readMergeInput, PARSER_LOOP_REFUSAL);
