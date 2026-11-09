@@ -412,7 +412,8 @@ function writeDelimited(fields: string[], rows: readonly (readonly unknown[])[],
   const delimiter = tgt === 'tsv' ? '\t' : ',';
   const escapeFormulas = options.escapeFormulas ?? true;
   const withBom = options.bom ?? writesBomByDefault(tgt);
-  const data = rows.map((row) => row.map((cell) => cell ?? ''));
+  // Papa.unparse turns null/undefined into '' except that its quotes callback is skipped on null; only a 1-column empty cell needs quoting.
+  const data = (fields.length === 1 ? rows.map((row) => (row[0] == null ? [''] : row)) : rows) as unknown[][];
   const text = Papa.unparse(
     { fields, data },
     {

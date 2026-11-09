@@ -661,6 +661,9 @@ export async function compressBzip2Async(input: Buffer, options: { signal?: Abor
 // Decoder
 // ---------------------------------------------------------------------------------------------
 
+const BZ_FAST_BITS = 10;
+const BZ_FAST_SIZE = 1 << BZ_FAST_BITS;
+
 interface HuffmanDecodeTable {
   minLen: number;
   maxLen: number;
@@ -668,6 +671,7 @@ interface HuffmanDecodeTable {
   limit: Int32Array;
   base: Int32Array;
   perm: Uint16Array;
+  fast: Uint16Array;
 }
 
 function buildDecodeTable(lengths: Uint8Array, alphaSize: number): HuffmanDecodeTable {
@@ -680,6 +684,7 @@ function buildDecodeTable(lengths: Uint8Array, alphaSize: number): HuffmanDecode
   const limit = new Int32Array(BZ_DECODE_MAX_CODE_LEN + 2);
   const base = new Int32Array(BZ_DECODE_MAX_CODE_LEN + 2);
   const perm = new Uint16Array(BZ_MAX_ALPHA_SIZE);
+  const fast = new Uint16Array(BZ_FAST_SIZE);
   const count = new Int32Array(BZ_DECODE_MAX_CODE_LEN + 2);
   for (let i = 0; i < alphaSize; i++) count[lengths[i]]++;
 
@@ -692,13 +697,26 @@ function buildDecodeTable(lengths: Uint8Array, alphaSize: number): HuffmanDecode
   let code = 0;
   let firstIndex = 0;
   for (let len = minLen; len <= maxLen; len++) {
+    const cnt = count[len];
     base[len] = code - firstIndex; // symbol index = code - base
-    code += count[len];
-    firstIndex += count[len];
+    if (len <= BZ_FAST_BITS && cnt > 0) {
+      const shift = BZ_FAST_BITS - len;
+      const span = 1 << shift;
+      for (let i = 0; i < cnt; i++) {
+        const sym = perm[firstIndex + i];
+        const entry = (len << 9) | sym;
+        const start = (code + i) << shift;
+        if (start < BZ_FAST_SIZE) {
+          fast.fill(entry, start, Math.min(BZ_FAST_SIZE, start + span));
+        }
+      }
+    }
+    code += cnt;
+    firstIndex += cnt;
     limit[len] = code - 1;
     code <<= 1;
   }
-  return { minLen, maxLen, alphaSize, limit, base, perm };
+  return { minLen, maxLen, alphaSize, limit, base, perm, fast };
 }
 
 class OutputSink {
@@ -728,6 +746,11 @@ class OutputSink {
 
 function decodeSymbol(reader: BitReader, table: HuffmanDecodeTable): number {
   const window = reader.peek(BZ_PEEK_BITS);
+  const fastEntry = table.fast[window >>> (BZ_PEEK_BITS - BZ_FAST_BITS)];
+  if (fastEntry !== 0) {
+    reader.consume(fastEntry >>> 9);
+    return fastEntry & 0x1ff;
+  }
   let len = table.minLen;
   let code = window >>> (BZ_PEEK_BITS - len);
   while (code > table.limit[len]) {

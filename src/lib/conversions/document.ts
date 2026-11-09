@@ -648,7 +648,7 @@ export async function convertDocument(
     // A PDF draws with installed fonts: a symbol-font character none of them covers shows as U+FFFD and is reported.
     if (tgt === 'pdf') await loadFontCoverageIndex();
     textContent = extractTextFromDoc(inputBuffer, tgt === 'pdf' ? canDrawInPdf : undefined);
-  } else if (src === 'tex') {
+  } else if (TEX_SOURCE_FORMATS.has(src)) {
     textContent = extractTextFromTex(inputBuffer.toString('utf-8'));
   } else if (HTML_SOURCE_FORMATS.has(src)) {
     // HTML declares its own encoding (or none): the standard's sniffing reads it, and no byte refuses the document.
@@ -771,28 +771,88 @@ ${body}</body>
 </html>`;
 }
 
-function htmlToMarkdown(html: string): string {
-  return html
-    .replace(/<h1[^>]*>(.*?)<\/h1>/gi, '# $1\n\n')
-    .replace(/<h2[^>]*>(.*?)<\/h2>/gi, '## $1\n\n')
-    .replace(/<h3[^>]*>(.*?)<\/h3>/gi, '### $1\n\n')
-    .replace(/<strong[^>]*>(.*?)<\/strong>/gi, '**$1**')
-    .replace(/<b[^>]*>(.*?)<\/b>/gi, '**$1**')
-    .replace(/<em[^>]*>(.*?)<\/em>/gi, '*$1*')
-    .replace(/<i[^>]*>(.*?)<\/i>/gi, '*$1*')
-    .replace(/<code[^>]*>(.*?)<\/code>/gi, '`$1`')
-    .replace(/<br\s*[\/]?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<p[^>]*>/gi, '')
-    .replace(/<[^>]+>/g, '')
-    .trim();
+function withoutHtmlRawElement(html: string, tagName: string): string {
+  const lower = html.toLowerCase();
+  const openPrefix = `<${tagName}`;
+  if (!lower.includes(openPrefix)) return html;
+  const closeTag = `</${tagName}`;
+  const out: string[] = [];
+  let pos = 0;
+  while (pos < html.length) {
+    const idx = lower.indexOf(openPrefix, pos);
+    if (idx === -1) {
+      out.push(html.slice(pos));
+      break;
+    }
+    const nextIdx = idx + openPrefix.length;
+    if (nextIdx < html.length) {
+      const ch = lower.charCodeAt(nextIdx);
+      if (ch !== 0x3e && ch !== 0x2f && ch !== 0x20 && ch !== 0x09 && ch !== 0x0a && ch !== 0x0d) {
+        out.push(html.slice(pos, nextIdx));
+        pos = nextIdx;
+        continue;
+      }
+    }
+    out.push(html.slice(pos, idx));
+    const openEnd = lower.indexOf('>', nextIdx);
+    if (openEnd === -1) break;
+    if (lower.charCodeAt(openEnd - 1) === 0x2f) {
+      pos = openEnd + 1;
+      continue;
+    }
+    const closeIdx = lower.indexOf(closeTag, openEnd + 1);
+    if (closeIdx === -1) break;
+    const closeEnd = lower.indexOf('>', closeIdx + closeTag.length);
+    pos = closeEnd === -1 ? html.length : closeEnd + 1;
+  }
+  return out.join('');
 }
 
-function stripHtmlTags(html: string): string {
-  return html
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-    .replace(/<[^>]+>/g, '')
+function stripAngleTags(html: string): string {
+  if (!html.includes('<')) return html;
+  const out: string[] = [];
+  let pos = 0;
+  while (pos < html.length) {
+    const lt = html.indexOf('<', pos);
+    if (lt === -1) {
+      out.push(html.slice(pos));
+      break;
+    }
+    const gt = html.indexOf('>', lt + 1);
+    if (gt === -1) {
+      out.push(html.slice(pos));
+      break;
+    }
+    if (gt === lt + 1) {
+      out.push(html.slice(pos, gt + 1));
+      pos = gt + 1;
+      continue;
+    }
+    out.push(html.slice(pos, lt));
+    pos = gt + 1;
+  }
+  return out.join('');
+}
+
+function htmlToMarkdown(html: string): string {
+  const cleaned = withoutHtmlRawElement(withoutHtmlRawElement(html, 'script'), 'style')
+    .replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, '# $1\n\n')
+    .replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, '## $1\n\n')
+    .replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, '### $1\n\n')
+    .replace(/<strong[^>]*>([\s\S]*?)<\/strong>/gi, '**$1**')
+    .replace(/<b[^>]*>([\s\S]*?)<\/b>/gi, '**$1**')
+    .replace(/<em[^>]*>([\s\S]*?)<\/em>/gi, '*$1*')
+    .replace(/<i[^>]*>([\s\S]*?)<\/i>/gi, '*$1*')
+    .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, '`$1`')
+    .replace(/<br\s*[\/]?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<p[^>]*>/gi, '');
+  return stripAngleTags(cleaned).trim();
+}
+
+export function stripHtmlTags(html: string): string {
+  const withoutScripts = withoutHtmlRawElement(withoutHtmlRawElement(html, 'script'), 'style');
+  return stripAngleTags(withoutScripts)
     .replace(/&nbsp;/g, ' ')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
@@ -818,6 +878,7 @@ function escapeHtml(str: string): string {
 const STRICT_TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md']);
 /** Source formats parsed as HTML when rendered to PDF. */
 const HTML_SOURCE_FORMATS: ReadonlySet<string> = new Set(['html', 'htm']);
+const TEX_SOURCE_FORMATS: ReadonlySet<string> = new Set(['tex', 'latex']);
 const MARKDOWN_SOURCE_FORMAT = 'md';
 const FORM_FEED = '\f';
 

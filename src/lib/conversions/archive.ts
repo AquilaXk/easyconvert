@@ -266,40 +266,36 @@ function renameDuplicateArchiveEntries<T extends { filename: string }>(files: T[
   return result;
 }
 
-/**
- * Evaluates whether an archive entry path matches any of the provided glob patterns.
- * Supports exact paths, *, **, ?, and directory prefixes.
- */
+const ARCHIVE_GLOB_CACHE_MAX = 512;
+const archiveGlobRegexCache = new Map<string, RegExp | null>();
+
+function getCachedArchiveGlobRegex(normPattern: string): RegExp | null {
+  const cached = archiveGlobRegexCache.get(normPattern);
+  if (cached !== undefined) return cached;
+  const regexStr = `^${normPattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '___GLOB_STAR_STAR___').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]').replace(/___GLOB_STAR_STAR___/g, '.*')}$`;
+  let compiled: RegExp | null = null;
+  try { compiled = new RegExp(regexStr); } catch {}
+  if (archiveGlobRegexCache.size >= ARCHIVE_GLOB_CACHE_MAX) {
+    const oldest = archiveGlobRegexCache.keys().next().value;
+    if (oldest !== undefined) archiveGlobRegexCache.delete(oldest);
+  }
+  archiveGlobRegexCache.set(normPattern, compiled);
+  return compiled;
+}
+
+/** Evaluates whether an archive entry path matches any of the provided glob patterns. */
 export function matchArchiveGlob(filePath: string, patterns?: string[]): boolean {
   if (!patterns || patterns.length === 0) return true;
   const normalizedPath = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
   const baseName = path.basename(normalizedPath);
-
   for (const pattern of patterns) {
     if (!pattern) continue;
     const normPattern = pattern.replace(/\\/g, '/').replace(/^\/+/, '');
-
-    if (normalizedPath === normPattern || baseName === normPattern) {
-      return true;
-    }
-
+    if (normalizedPath === normPattern || baseName === normPattern) return true;
     const target = normPattern.includes('/') ? normalizedPath : baseName;
-
-    const regexStr = '^' + normPattern
-      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-      .replace(/\*\*/g, '___GLOB_STAR_STAR___')
-      .replace(/\*/g, '[^/]*')
-      .replace(/\?/g, '[^/]')
-      .replace(/___GLOB_STAR_STAR___/g, '.*') + '$';
-
-    try {
-      const regex = new RegExp(regexStr);
-      if (regex.test(target) || regex.test(normalizedPath)) {
-        return true;
-      }
-    } catch {}
+    const regex = getCachedArchiveGlobRegex(normPattern);
+    if (regex && (regex.test(target) || regex.test(normalizedPath))) return true;
   }
-
   return false;
 }
 
@@ -3015,52 +3011,48 @@ export async function repairZipArchive(
   };
   let pos = 0;
   while (pos + 30 <= zipBuffer.length) {
-    if (
-      zipBuffer[pos] === 0x50 &&
-      zipBuffer[pos + 1] === 0x4b &&
-      zipBuffer[pos + 2] === 0x03 &&
-      zipBuffer[pos + 3] === 0x04
-    ) {
-      try {
-        const compMethod = zipBuffer.readUInt16LE(pos + 8);
-        const compSize = zipBuffer.readUInt32LE(pos + 18);
-        const uncompSize = zipBuffer.readUInt32LE(pos + 22);
-        const nameLen = zipBuffer.readUInt16LE(pos + 26);
-        const extraLen = zipBuffer.readUInt16LE(pos + 28);
+    const nextPos = zipBuffer.indexOf(PK_LOCAL_HEADER_MAGIC, pos);
+    if (nextPos === -1 || nextPos + 30 > zipBuffer.length) break;
+    pos = nextPos;
+    try {
+      const compMethod = zipBuffer.readUInt16LE(pos + 8);
+      const compSize = zipBuffer.readUInt32LE(pos + 18);
+      const uncompSize = zipBuffer.readUInt32LE(pos + 22);
+      const nameLen = zipBuffer.readUInt16LE(pos + 26);
+      const extraLen = zipBuffer.readUInt16LE(pos + 28);
 
-        const dataStart = pos + 30 + nameLen + extraLen;
-        if (pos + 30 + nameLen <= zipBuffer.length && dataStart <= zipBuffer.length) {
-          const rawName = zipBuffer.toString('utf-8', pos + 30, pos + 30 + nameLen);
-          const cleanName = salvagedRecordName(rawName);
+      const dataStart = pos + 30 + nameLen + extraLen;
+      if (pos + 30 + nameLen <= zipBuffer.length && dataStart <= zipBuffer.length) {
+        const rawName = zipBuffer.toString('utf-8', pos + 30, pos + 30 + nameLen);
+        const cleanName = salvagedRecordName(rawName);
 
-          let rawChunk: Buffer | null = null;
-          if (compSize > 0 && dataStart + compSize <= zipBuffer.length) {
-            rawChunk = zipBuffer.subarray(dataStart, dataStart + compSize);
-          } else {
-            const nextPk = zipBuffer.indexOf(Buffer.from([0x50, 0x4b]), dataStart);
-            const endSlice = nextPk !== -1 ? nextPk : zipBuffer.length;
-            rawChunk = zipBuffer.subarray(dataStart, endSlice);
+        let rawChunk: Buffer | null = null;
+        if (compSize > 0 && dataStart + compSize <= zipBuffer.length) {
+          rawChunk = zipBuffer.subarray(dataStart, dataStart + compSize);
+        } else {
+          const nextPk = zipBuffer.indexOf(PK_ANY_HEADER_MAGIC, dataStart);
+          const endSlice = nextPk !== -1 ? nextPk : zipBuffer.length;
+          rawChunk = zipBuffer.subarray(dataStart, endSlice);
+        }
+
+        if (cleanName && rawChunk && rawChunk.length > 0) {
+          let uncompressed: Buffer | null = null;
+          if (compMethod === 0) {
+            uncompressed = Buffer.from(rawChunk);
+          } else if (compMethod === 8) {
+            uncompressed = await salvageDeflate(rawChunk, cleanName);
           }
-
-          if (cleanName && rawChunk && rawChunk.length > 0) {
-            let uncompressed: Buffer | null = null;
-            if (compMethod === 0) {
-              uncompressed = Buffer.from(rawChunk);
-            } else if (compMethod === 8) {
-              uncompressed = await salvageDeflate(rawChunk, cleanName);
-            }
-            if (uncompressed && (uncompSize === 0 || uncompressed.length === uncompSize || compSize === 0)) {
-              salvagedFiles.push({ filename: cleanName, buffer: uncompressed });
-              pos = dataStart + (compSize > 0 ? compSize : rawChunk.length);
-              continue;
-            }
+          if (uncompressed && (uncompSize === 0 || uncompressed.length === uncompSize || compSize === 0)) {
+            salvagedFiles.push({ filename: cleanName, buffer: uncompressed });
+            pos = dataStart + (compSize > 0 ? compSize : rawChunk.length);
+            continue;
           }
         }
-      } catch (err) {
-        if (isRefusal(err)) throw err;
       }
+    } catch (err) {
+      if (isRefusal(err)) throw err;
     }
-    pos++;
+    pos += 4;
   }
 
   if (salvagedFiles.length === 0) {
@@ -3070,6 +3062,8 @@ export async function repairZipArchive(
   return await createZipBuffer(zipEntriesWithFolders(salvagedFiles, ZIP_DEFAULT_LEVEL));
 }
 
+const PK_LOCAL_HEADER_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+const PK_ANY_HEADER_MAGIC = Buffer.from([0x50, 0x4b]);
 const UNIX_FILE_TYPE_MASK = 0o170000;
 const UNIX_SYMLINK_TYPE = 0o120000;
 const ZIP_UNIX_HOST = 3;
@@ -3200,33 +3194,27 @@ function inspectZipBuffer(buffer: Buffer): InspectionBody {
   } else {
     let pos = 0;
     while (pos + 30 <= buffer.length) {
-      if (
-        buffer[pos] === 0x50 &&
-        buffer[pos + 1] === 0x4b &&
-        buffer[pos + 2] === 0x03 &&
-        buffer[pos + 3] === 0x04
-      ) {
-        const flags = buffer.readUInt16LE(pos + 6);
-        const isEncrypted = (flags & 1) !== 0;
-        if (isEncrypted) isEncryptedArchive = true;
-        const crc = buffer.readUInt32LE(pos + 14);
-        const compSize = buffer.readUInt32LE(pos + 18);
-        const uncompSize = buffer.readUInt32LE(pos + 22);
-        const nameLen = buffer.readUInt16LE(pos + 26);
-        const extraLen = buffer.readUInt16LE(pos + 28);
-        const name = pos + 30 + nameLen <= buffer.length ? buffer.toString('utf-8', pos + 30, pos + 30 + nameLen) : 'unknown';
-        entries.push({
-          name,
-          uncompressedSize: uncompSize,
-          compressedSize: compSize,
-          isEncrypted,
-          isDirectory: name.endsWith('/'),
-          crc32: crc.toString(16).padStart(8, '0'),
-        });
-        pos += 30 + nameLen + extraLen + compSize;
-      } else {
-        pos++;
-      }
+      const nextPos = buffer.indexOf(PK_LOCAL_HEADER_MAGIC, pos);
+      if (nextPos === -1 || nextPos + 30 > buffer.length) break;
+      pos = nextPos;
+      const flags = buffer.readUInt16LE(pos + 6);
+      const isEncrypted = (flags & 1) !== 0;
+      if (isEncrypted) isEncryptedArchive = true;
+      const crc = buffer.readUInt32LE(pos + 14);
+      const compSize = buffer.readUInt32LE(pos + 18);
+      const uncompSize = buffer.readUInt32LE(pos + 22);
+      const nameLen = buffer.readUInt16LE(pos + 26);
+      const extraLen = buffer.readUInt16LE(pos + 28);
+      const name = pos + 30 + nameLen <= buffer.length ? buffer.toString('utf-8', pos + 30, pos + 30 + nameLen) : 'unknown';
+      entries.push({
+        name,
+        uncompressedSize: uncompSize,
+        compressedSize: compSize,
+        isEncrypted,
+        isDirectory: name.endsWith('/'),
+        crc32: crc.toString(16).padStart(8, '0'),
+      });
+      pos += Math.max(4, 30 + nameLen + extraLen + compSize);
     }
   }
 

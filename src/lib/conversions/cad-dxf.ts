@@ -298,12 +298,23 @@ function sampleEllipse(centre: Point, major: Point, ratio: number, start: number
   return points;
 }
 
-/** Index of the knot span of `t`: the largest k in [degree, count - 1] with knots[k] <= t. */
-function knotSpan(knots: number[], degree: number, count: number, t: number): number {
+/** Index of the knot span of `t`: the largest k in [degree, count - 1] with knots[k] <= t (The NURBS Book, A2.1). */
+export function knotSpan(knots: number[], degree: number, count: number, t: number): number {
   if (t >= knots[count]) return count - 1;
-  let k = degree;
-  while (k < count - 1 && t >= knots[k + 1]) k++;
-  return k;
+  if (t < knots[degree + 1]) return degree;
+  let low = degree;
+  let high = count - 1;
+  while (low <= high) {
+    const mid = (low + high) >>> 1;
+    if (t < knots[mid]) {
+      high = mid - 1;
+    } else if (t >= knots[mid + 1]) {
+      low = mid + 1;
+    } else {
+      return mid;
+    }
+  }
+  return degree;
 }
 
 /** A point of a NURBS curve (The NURBS Book, A4.1 over the basis of A2.2). */
@@ -337,23 +348,42 @@ function nurbsPoint(degree: number, knots: number[], control: Point[], weights: 
 }
 
 function sampleSpline(record: GroupRecord): Point[] {
-  const degree = Math.trunc(num(record, 71, 3));
+  let rawDegree: string | undefined;
+  const knots: number[] = [];
+  const xs: number[] = [];
+  const ys: number[] = [];
+  const fitX: number[] = [];
+  const fitY: number[] = [];
+  const stated: number[] = [];
+  const { codes, values } = record;
+  for (let i = 0; i < codes.length; i++) {
+    const c = codes[i];
+    if (c === 71) {
+      if (rawDegree === undefined) rawDegree = values[i];
+    } else if (c === 40) {
+      knots.push(finite(values[i], 40));
+    } else if (c === 10) {
+      xs.push(finite(values[i], 10));
+    } else if (c === 20) {
+      ys.push(finite(values[i], 20));
+    } else if (c === 11) {
+      fitX.push(finite(values[i], 11));
+    } else if (c === 21) {
+      fitY.push(finite(values[i], 21));
+    } else if (c === 41) {
+      stated.push(finite(values[i], 41));
+    }
+  }
+  const degree = Math.trunc(rawDegree === undefined ? 3 : finite(rawDegree, 71));
   if (degree < 1 || degree > MAX_SPLINE_DEGREE) throw new CadGeometryError(`The DXF has a SPLINE of degree ${degree}; degrees 1 to ${MAX_SPLINE_DEGREE} are read`);
-  const knots = all(record, 40);
-  const xs = all(record, 10);
-  const ys = all(record, 20);
   const control: Point[] = xs.map((x, i) => [x, ys[i] ?? 0] as Point);
-  const fitX = all(record, 11);
-  const fitY = all(record, 21);
-  const fit: Point[] = fitX.map((x, i) => [x, fitY[i] ?? 0] as Point);
-  if (control.length === 0) return fit;
+  if (control.length === 0) return fitX.map((x, i) => [x, fitY[i] ?? 0] as Point);
   if (control.length <= degree) throw new CadGeometryError(`The DXF has a SPLINE of degree ${degree} with ${control.length} control points, which needs at least ${degree + 1}`);
   if (knots.length !== control.length + degree + 1) throw new CadGeometryError(`The DXF has a SPLINE with ${knots.length} knots, but ${control.length} control points of degree ${degree} need ${control.length + degree + 1}`);
   for (let i = 1; i < knots.length; i++) {
     if (knots[i] < knots[i - 1]) throw new CadGeometryError('The DXF has a SPLINE whose knots decrease');
   }
   if (!(knots[control.length] > knots[degree])) throw new CadGeometryError('The DXF has a SPLINE with an empty parameter range');
-  const stated = all(record, 41);
   const weights = control.map((_, i) => (stated.length === control.length && stated[i] > 0 ? stated[i] : 1));
   const spans = control.length - degree;
   const steps = Math.min(MAX_SAMPLED_POINTS_PER_CURVE, spans * SPLINE_SAMPLES_PER_SPAN);

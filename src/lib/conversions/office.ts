@@ -467,7 +467,7 @@ export async function extractTextContentForOffice(
     return extractTextFromDoc(inputBuffer);
   }
 
-  if (src === 'tex') {
+  if (src === 'tex' || src === 'latex') {
     return extractTextFromTexString(inputBuffer.toString('utf-8'));
   }
 
@@ -677,6 +677,8 @@ async function loadDocxChartMap(zip: JSZip, budget: InflateBudget): Promise<Map<
       const rId = rEl.attrs.Id;
       const target = rEl.attrs.Target;
       if (!rId || !target) continue;
+      const type = rEl.attrs.Type || '';
+      if (!type.endsWith('/chart') && !/chart\d*\.xml$/i.test(target)) continue;
       const stripped = target.startsWith('/') ? target.slice(1) : target;
       const chartPath = stripped.startsWith('word/') ? stripped : `word/${stripped}`;
       const cFile = zip.file(chartPath) || zip.file(target);
@@ -1635,7 +1637,14 @@ export function renderChartToSvg(
  * Parses <p:spTree>, <w:drawing>, <a:xfrm>, <a:prstGeom>, and <a:custGeom>
  * into clean, standards-compliant SVG vector paths.
  */
-export function parseDrawingMlShapes(xml: string, parentMatrix: Matrix2D = identityMatrix()): DrawingMlShape[] {
+const MAX_DRAWINGML_GROUP_DEPTH = 16;
+
+export function parseDrawingMlShapes(
+  xml: string,
+  parentMatrix: Matrix2D = identityMatrix(),
+  depth: number = 0
+): DrawingMlShape[] {
+  if (depth >= MAX_DRAWINGML_GROUP_DEPTH) return [];
   const shapes: DrawingMlShape[] = [];
 
   // 1. Discover top-level DrawingML group shapes (<p:grpSp>, <wpg:wgp>)
@@ -1658,40 +1667,29 @@ export function parseDrawingMlShapes(xml: string, parentMatrix: Matrix2D = ident
   );
 
   type TopLevelItem =
-    | { kind: 'group'; el: SafeXmlElement }
+    | { kind: 'group'; el: SafeXmlElement; startIndex: number }
     | { kind: 'shape'; xml: string; startIndex: number };
 
-  const items: TopLevelItem[] = [];
-  for (const g of topGroups) {
-    items.push({ kind: 'group', el: g });
-  }
-  for (const s of topShapes) {
-    items.push({ kind: 'shape', xml: s.raw, startIndex: s.startIndex });
-  }
+  const items: TopLevelItem[] = [
+    ...topGroups.map((g): TopLevelItem => ({ kind: 'group', el: g, startIndex: g.startIndex })),
+    ...topShapes.map((s): TopLevelItem => ({ kind: 'shape', xml: s.raw, startIndex: s.startIndex })),
+  ];
 
   if (
     items.length === 0 &&
-    (xml.includes('<a:prstGeom') ||
-      xml.includes('<a:custGeom') ||
-      xml.includes('<a:spPr') ||
-      xml.includes('<c:chart') ||
-      xml.includes('<c:plotArea'))
+    (xml.includes('<a:prstGeom') || xml.includes('<a:custGeom') || xml.includes('<a:spPr') || xml.includes('<c:chart') || xml.includes('<c:plotArea'))
   ) {
     items.push({ kind: 'shape', xml, startIndex: 0 });
   }
 
-  items.sort((a, b) => {
-    const posA = a.kind === 'group' ? a.el.startIndex : a.startIndex;
-    const posB = b.kind === 'group' ? b.el.startIndex : b.startIndex;
-    return posA - posB;
-  });
+  items.sort((a, b) => a.startIndex - b.startIndex);
 
   for (const item of items) {
     if (item.kind === 'group') {
       const grpXml = item.el.content;
       const { matrix: mGrp } = parseGroupTransform(grpXml, 100, 60);
       const mAccum = multiplyMatrix(parentMatrix, mGrp);
-      const childShapes = parseDrawingMlShapes(grpXml, mAccum);
+      const childShapes = parseDrawingMlShapes(grpXml, mAccum, depth + 1);
       shapes.push(...childShapes);
       continue;
     }
@@ -2280,35 +2278,7 @@ function safeExtractXmlTags(xml: string, tagName: string): string[] {
 }
 
 function safeExtractDocxBlocks(bodyXml: string): string[] {
-  const blocks: string[] = [];
-  let pos = 0;
-  while (pos < bodyXml.length) {
-    const nextTbl = bodyXml.indexOf('<w:tbl', pos);
-    const nextP = bodyXml.indexOf('<w:p', pos);
-    const nextDrawing = bodyXml.indexOf('<w:drawing', pos);
-
-    const candidates = [
-      { tag: 'w:tbl', idx: nextTbl },
-      { tag: 'w:p', idx: nextP },
-      { tag: 'w:drawing', idx: nextDrawing },
-    ]
-      .filter((c) => c.idx !== -1)
-      .sort((a, b) => a.idx - b.idx);
-
-    if (candidates.length === 0) break;
-    const startIdx = candidates[0].idx;
-    const tag = candidates[0].tag;
-
-    const el = safeExtractFirstXmlElement(bodyXml.slice(startIdx), tag);
-    if (!el) {
-      pos = startIdx + tag.length + 1;
-      continue;
-    }
-
-    blocks.push(el.raw);
-    pos = startIdx + el.endIndex;
-  }
-  return blocks;
+  return safeExtractXmlElements(bodyXml, ['w:tbl', 'w:p', 'w:drawing']).map((el) => el.raw);
 }
 
 function parseDrawingBlockElement(
@@ -2609,12 +2579,11 @@ function parseSingleDocxTable(
 
   if (rows.length === 0) return null;
 
-  const gridColCount = Math.max(
-    ...structuredRows.map((sr) =>
-      sr.reduce((sum, c) => sum + Math.max(1, c.colSpan || 1), 0)
-    ),
-    ...rows.map((r) => r.length)
+  const maxStructuredCols = structuredRows.reduce(
+    (max, sr) => Math.max(max, sr.reduce((sum, c) => sum + Math.max(1, c.colSpan || 1), 0)),
+    0
   );
+  const gridColCount = rows.reduce((max, r) => Math.max(max, r.length), maxStructuredCols);
   const maxCols = colWidths && colWidths.length > 0 ? Math.max(colWidths.length, gridColCount) : gridColCount;
 
   return {
@@ -2626,6 +2595,8 @@ function parseSingleDocxTable(
     tblBorders,
   };
 }
+
+const ALLOWED_JC: ReadonlySet<string> = new Set(['left', 'center', 'right', 'both', 'justify', 'start', 'end']);
 
 export function parseDocxXml(
   xml: string,
@@ -2675,7 +2646,7 @@ export function parseDocxXml(
     const headingLevel = isHeading1 ? 1 : isHeading2 ? 2 : isHeading3 ? 3 : isHeading ? 2 : 0;
 
     const jcMatch = chunk.match(/<w:jc\s+[^>]*w:val="([^"]+)"/);
-    const alignment = jcMatch ? (jcMatch[1] as any) : undefined;
+    const alignment = jcMatch && ALLOWED_JC.has(jcMatch[1]) ? (jcMatch[1] as any) : undefined;
     const isBullet = /<w:numPr(\/|>)/.test(chunk);
 
     // Extract runs (<w:r>)
@@ -4622,135 +4593,57 @@ export class SpreadsheetDagEngine {
       }
     }
 
-    // Build dependency graph among formula cells
-    const deps = new Map<string, Set<string>>();
+    // Build dependency graph among formula cells and compute in-degrees for Kahn's algorithm
+    const inDegree = new Map<string, number>();
     const reverseDeps = new Map<string, Set<string>>(); // who depends on me
     for (const [ref, fc] of formulaMap.entries()) {
       const referenced = SpreadsheetDagEngine.extractDependencies(fc.formula);
-      const formulaReferenced = new Set<string>();
+      let deg = 0;
       for (const r of referenced) {
         if (formulaMap.has(r)) {
-          formulaReferenced.add(r);
-        }
-      }
-      deps.set(ref, formulaReferenced);
-
-      for (const parent of formulaReferenced) {
-        if (!reverseDeps.has(parent)) reverseDeps.set(parent, new Set());
-        reverseDeps.get(parent)!.add(ref);
-      }
-    }
-
-    // Detect cycles using 3-color DFS
-    const UNVISITED = 0,
-      VISITING = 1,
-      VISITED = 2;
-    const state = new Map<string, number>();
-    const cyclicCells = new Set<string>();
-    const stack: string[] = [];
-
-    const dfs = (u: string) => {
-      state.set(u, VISITING);
-      stack.push(u);
-
-      const neighbors = deps.get(u) || new Set();
-      for (const v of neighbors) {
-        if (v === u) {
-          // Self-cycle
-          cyclicCells.add(u);
-          continue;
-        }
-        const vState = state.get(v) || UNVISITED;
-        if (vState === VISITING) {
-          // Cycle detected!
-          const cycleStart = stack.indexOf(v);
-          if (cycleStart !== -1) {
-            for (let i = cycleStart; i < stack.length; i++) {
-              cyclicCells.add(stack[i]);
-            }
-          } else {
-            cyclicCells.add(v);
-            cyclicCells.add(u);
+          deg++;
+          let rev = reverseDeps.get(r);
+          if (!rev) {
+            rev = new Set();
+            reverseDeps.set(r, rev);
           }
-        } else if (vState === UNVISITED) {
-          dfs(v);
+          rev.add(ref);
         }
       }
-
-      stack.pop();
-      state.set(u, VISITED);
-    };
-
-    for (const node of formulaMap.keys()) {
-      if ((state.get(node) || UNVISITED) === UNVISITED) {
-        dfs(node);
-      }
-    }
-
-    // Propagate cyclic status to all downstream dependent cells
-    const queue = Array.from(cyclicCells);
-    while (queue.length > 0) {
-      const curr = queue.shift()!;
-      const dependents = reverseDeps.get(curr) || new Set();
-      for (const dep of dependents) {
-        if (!cyclicCells.has(dep)) {
-          cyclicCells.add(dep);
-          queue.push(dep);
-        }
-      }
-    }
-
-    // Assign #CYCLE! error code to all cyclic cells
-    for (const cRef of cyclicCells) {
-      this.cellMap[cRef] = '#CYCLE!';
-      const fc = formulaMap.get(cRef);
-      if (fc && rows && fc.rowIdx !== undefined && fc.colIdx !== undefined && rows[fc.rowIdx]) {
-        rows[fc.rowIdx][fc.colIdx] = '#CYCLE!';
-      }
-    }
-
-    // Topological Sort on non-cyclic cells (Kahn's algorithm)
-    const inDegree = new Map<string, number>();
-    const nonCyclicNodes: string[] = [];
-    for (const node of formulaMap.keys()) {
-      if (!cyclicCells.has(node)) {
-        nonCyclicNodes.push(node);
-        let deg = 0;
-        for (const dep of deps.get(node) || []) {
-          if (!cyclicCells.has(dep)) deg++;
-        }
-        inDegree.set(node, deg);
-      }
-    }
-
-    const topoQueue: string[] = [];
-    for (const node of nonCyclicNodes) {
-      if ((inDegree.get(node) || 0) === 0) {
-        topoQueue.push(node);
-      }
+      inDegree.set(ref, deg);
     }
 
     const topoOrder: string[] = [];
-    while (topoQueue.length > 0) {
-      const curr = topoQueue.shift()!;
-      topoOrder.push(curr);
+    for (const [node, deg] of inDegree.entries()) {
+      if (deg === 0) {
+        topoOrder.push(node);
+      }
+    }
 
-      const dependents = reverseDeps.get(curr) || new Set();
+    let qHead = 0;
+    while (qHead < topoOrder.length) {
+      const curr = topoOrder[qHead++]!;
+      const dependents = reverseDeps.get(curr);
+      if (!dependents) continue;
       for (const dep of dependents) {
-        if (!cyclicCells.has(dep)) {
-          const newDeg = (inDegree.get(dep) || 1) - 1;
-          inDegree.set(dep, newDeg);
-          if (newDeg === 0) {
-            topoQueue.push(dep);
-          }
+        const newDeg = (inDegree.get(dep) || 1) - 1;
+        inDegree.set(dep, newDeg);
+        if (newDeg === 0) {
+          topoOrder.push(dep);
         }
       }
     }
 
-    // Any remaining non-cyclic nodes without degree 0 (safeguard)
-    for (const node of nonCyclicNodes) {
-      if (!topoOrder.includes(node)) {
-        topoOrder.push(node);
+    // Any node whose in-degree did not reach 0 is part of or downstream of a cycle
+    const cyclicCells: string[] = [];
+    for (const [cRef, deg] of inDegree.entries()) {
+      if (deg > 0) {
+        cyclicCells.push(cRef);
+        this.cellMap[cRef] = '#CYCLE!';
+        const fc = formulaMap.get(cRef);
+        if (fc && rows && fc.rowIdx !== undefined && fc.colIdx !== undefined && rows[fc.rowIdx]) {
+          rows[fc.rowIdx][fc.colIdx] = '#CYCLE!';
+        }
       }
     }
 
@@ -4782,7 +4675,7 @@ export class SpreadsheetDagEngine {
 
     return {
       evaluated: this.cellMap,
-      cycles: Array.from(cyclicCells),
+      cycles: cyclicCells,
     };
   }
 }

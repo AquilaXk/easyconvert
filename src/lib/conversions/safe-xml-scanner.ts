@@ -345,23 +345,36 @@ export function safeExtractXmlElements(
   return results;
 }
 
+const XML_ENTITY_RE = /&(?:amp|lt|gt|quot|apos|#(\d+)|#x([0-9a-fA-F]+));/g;
+
 /**
- * Linearly decodes standard XML entities and strips tags safely in O(N) time.
+ * Linearly decodes standard XML entities in a single pass (W3C XML 1.0 §4.6).
  */
 export function safeDecodeXmlEntities(str: string): string {
-  if (!str) return '';
-  return str
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, dec) => {
-      const code = parseInt(dec, 10);
-      return code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : _;
-    })
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
-      const code = parseInt(hex, 16);
-      return code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : _;
-    });
+  if (!str || !str.includes('&')) return str || '';
+  return str.replace(XML_ENTITY_RE, (match, dec: string | undefined, hex: string | undefined) => {
+    if (dec !== undefined) {
+      const cp = parseInt(dec, 10);
+      return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : match;
+    }
+    if (hex !== undefined) {
+      const cp = parseInt(hex, 16);
+      return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : match;
+    }
+    switch (match) {
+      case '&amp;':
+        return '&';
+      case '&lt;':
+        return '<';
+      case '&gt;':
+        return '>';
+      case '&quot;':
+        return '"';
+      case '&apos;':
+        return "'";
+      default:
+        return match;
+    }
+  });
 }
+

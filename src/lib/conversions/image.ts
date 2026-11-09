@@ -627,53 +627,67 @@ export function mirrorBayerCoord(v: number, max: number): number {
   return v;
 }
 
+function median25(a: Float32Array): number {
+  let left = 0, right = 24;
+  while (left < right) {
+    const pivot = a[(left + right) >> 1];
+    let i = left, j = right;
+    do {
+      while (a[i] < pivot) i++;
+      while (pivot < a[j]) j--;
+      if (i <= j) {
+        const tmp = a[i]; a[i] = a[j]; a[j] = tmp;
+        i++; j--;
+      }
+    } while (i <= j);
+    if (j < 12) left = i;
+    if (12 < i) right = j;
+  }
+  return a[12];
+}
+
+function runFalseColorPass(
+  currR: Float32Array, currB: Float32Array, width: number, height: number
+): { nextR: Float32Array; nextB: Float32Array } {
+  const nextR = new Float32Array(width * height), nextB = new Float32Array(width * height);
+  const winR = new Float32Array(25), winB = new Float32Array(25);
+  for (let y = 0; y < height; y++) {
+    const yInterior = y >= 2 && y < height - 2;
+    for (let x = 0; x < width; x++) {
+      const interior = yInterior && x >= 2 && x < width - 2;
+      let count = 0;
+      for (let dy = -2; dy <= 2; dy++) {
+        const rowOffset = (interior ? y + dy : mirrorBayerCoord(y + dy, height)) * width;
+        for (let dx = -2; dx <= 2; dx++) {
+          const nIdx = rowOffset + (interior ? x + dx : mirrorBayerCoord(x + dx, width));
+          winR[count] = currR[nIdx];
+          winB[count] = currB[nIdx];
+          count++;
+        }
+      }
+      const outIdx = y * width + x;
+      nextR[outIdx] = median25(winR);
+      nextB[outIdx] = median25(winB);
+    }
+  }
+  return { nextR, nextB };
+}
+
 /**
  * Applies 5x5 adaptive median filtering on chrominance difference planes (R - G and B - G)
  * to suppress false color artifacts, chromatic moiré, and high-ISO zipper overshoots
  * while strictly preserving luminance edge transitions.
  */
 export function applyFalseColorSuppression(
-  redDiff: Float32Array,
-  blueDiff: Float32Array,
-  width: number,
-  height: number,
-  passes: number = 1
+  redDiff: Float32Array, blueDiff: Float32Array, width: number, height: number, passes: number = 1
 ): { filteredRedDiff: Float32Array; filteredBlueDiff: Float32Array } {
-  let currR = redDiff;
-  let currB = blueDiff;
+  let currR = redDiff, currB = blueDiff;
   const numPasses = Math.max(1, Math.min(5, Math.round(passes)));
-
-  const winR = new Float32Array(25);
-  const winB = new Float32Array(25);
-
   for (let p = 0; p < numPasses; p++) {
-    const nextR = new Float32Array(width * height);
-    const nextB = new Float32Array(width * height);
-
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        let count = 0;
-        for (let dy = -2; dy <= 2; dy++) {
-          const ny = mirrorBayerCoord(y + dy, height);
-          for (let dx = -2; dx <= 2; dx++) {
-            const nx = mirrorBayerCoord(x + dx, width);
-            const nIdx = ny * width + nx;
-            winR[count] = currR[nIdx];
-            winB[count] = currB[nIdx];
-            count++;
-          }
-        }
-        winR.sort();
-        winB.sort();
-        // 25 elements: index 12 is the exact median
-        nextR[y * width + x] = winR[12];
-        nextB[y * width + x] = winB[12];
-      }
-    }
+    const { nextR, nextB } = runFalseColorPass(currR, currB, width, height);
     currR = nextR;
     currB = nextB;
   }
-
   return { filteredRedDiff: currR, filteredBlueDiff: currB };
 }
 
@@ -683,23 +697,13 @@ export function applyFalseColorSuppression(
  * eliminating color fringing artifacts and zipper effects on sharp boundaries.
  */
 export function demosaicBayerCfa(sensor: BayerSensorData): {
-  data: Buffer;
-  floatData?: Float32Array;
-  width: number;
-  height: number;
+  data: Buffer; floatData?: Float32Array; width: number; height: number;
 } {
-  if (sensor.demosaicMethod === 'ahd') {
-    return demosaicAhdBayerCfa(sensor);
-  }
-  if (sensor.demosaicMethod === 'rcd') {
-    return demosaicRcdBayerCfa(sensor);
-  }
+  if (sensor.demosaicMethod === 'ahd') return demosaicAhdBayerCfa(sensor);
+  if (sensor.demosaicMethod === 'rcd') return demosaicRcdBayerCfa(sensor);
   return demosaicAmazeBayerCfa(sensor);
 }
 
-/**
- * Decodes Lossless JPEG (ISO/IEC 10918-1 / ITU-T T.81 / LJ92) camera RAW sensor strips.
- */
 /** Refuses a lossless JPEG frame over the input limit, the RAW sensor budget, or the strip or tile that holds it. */
 function assertLosslessFrameFits(width: number, height: number, expected?: { width: number; height: number }): void {
   assertInputPixels(width, height);
@@ -711,6 +715,23 @@ function assertLosslessFrameFits(width: number, height: number, expected?: { wid
   }
 }
 
+function buildLosslessHuffmanLut(huffmanCounts: number[], huffmanSymbols: number[]): Int32Array {
+  const huffLut = new Int32Array(65536).fill(-1);
+  let symbolIdx = 0, currentCode = 0;
+  for (let len = 1; len <= 16; len++) {
+    const count = huffmanCounts[len - 1] || 0;
+    const shift = 16 - len, span = 1 << shift;
+    for (let c = 0; c < count; c++) {
+      const entry = (len << 8) | ((huffmanSymbols[symbolIdx++] ?? 0) & 0xff);
+      const baseIdx = (currentCode << shift) & 0xffff;
+      huffLut.fill(entry, baseIdx, Math.min(65536, baseIdx + span));
+      currentCode++;
+    }
+    currentCode <<= 1;
+  }
+  return huffLut;
+}
+
 /**
  * Decodes a single-component lossless JPEG (ITU-T T.81 SOF3) sensor strip. The frame header is untrusted: its
  * size is checked against the input limit and the RAW sensor budget, and, when the container says how large the
@@ -719,164 +740,87 @@ function assertLosslessFrameFits(width: number, height: number, expected?: { wid
 export function decodeLosslessJpegStrip(
   strip: Buffer | Uint8Array,
   expected?: { width: number; height: number }
-): {
-  width: number;
-  height: number;
-  data: Uint16Array;
-  bpp: number;
-} | null {
+): { width: number; height: number; data: Uint16Array; bpp: number } | null {
   if (strip.length < 16) return null;
   const buf = Buffer.isBuffer(strip) ? strip : Buffer.from(strip);
+  if (buf[0] !== 0xff || buf[1] !== 0xd8) return null;
 
-  // Must begin with SOI (0xFF, 0xD8)
-  if (buf[0] !== 0xff || buf[1] !== 0xd8) {
-    return null;
-  }
-
-  let pos = 2;
-  let width = 0;
-  let height = 0;
-  let bpp = 16;
-  let predictor = 1;
-  let pointTransform = 0;
-  let huffmanCounts: number[] = [];
-  let huffmanSymbols: number[] = [];
-  let scanStart = -1;
+  let pos = 2, width = 0, height = 0, bpp = 16, predictor = 1, pointTransform = 0, scanStart = -1;
+  let huffmanCounts: number[] = [], huffmanSymbols: number[] = [];
 
   while (pos < buf.length - 2) {
-    if (buf[pos] !== 0xff) {
-      pos++;
-      continue;
-    }
+    if (buf[pos] !== 0xff) { pos++; continue; }
     const marker = buf[pos + 1];
     pos += 2;
-
-    if (marker === 0xd8) continue; // SOI
-    if (marker === 0xd9) break;    // EOI
+    if (marker === 0xd8) continue;
+    if (marker === 0xd9) break;
 
     const segLen = buf.readUInt16BE(pos);
     const segDataStart = pos + 2;
-
     if (marker === 0xc3) {
-      // SOF3 (Lossless Sequential Huffman)
       bpp = buf[segDataStart];
       height = buf.readUInt16BE(segDataStart + 1);
       width = buf.readUInt16BE(segDataStart + 3);
     } else if (marker === 0xc4) {
-      // DHT (Define Huffman Table)
-      let dhtPos = segDataStart + 1; // skip table class/id
+      const dhtPos = segDataStart + 1;
       huffmanCounts = Array.from(buf.subarray(dhtPos, dhtPos + 16));
-      dhtPos += 16;
       const totalSymbols = huffmanCounts.reduce((a, b) => a + b, 0);
-      huffmanSymbols = Array.from(buf.subarray(dhtPos, dhtPos + totalSymbols));
+      huffmanSymbols = Array.from(buf.subarray(dhtPos + 16, dhtPos + 16 + totalSymbols));
     } else if (marker === 0xda) {
-      // SOS (Start of Scan)
-      const compCount = buf[segDataStart];
-      const predPos = segDataStart + 1 + compCount * 2;
+      const predPos = segDataStart + 1 + buf[segDataStart] * 2;
       predictor = buf[predPos];
       pointTransform = buf[predPos + 1] || 0;
       scanStart = pos + segLen;
       break;
     }
-
     pos += segLen;
   }
 
-  if (width <= 0 || height <= 0 || scanStart < 0 || scanStart >= buf.length) {
-    return null;
-  }
+  if (width <= 0 || height <= 0 || scanStart < 0 || scanStart >= buf.length) return null;
   assertLosslessFrameFits(width, height, expected);
 
-  // Build canonical Huffman decoding tree
-  interface HuffmanNode {
-    symbol?: number;
-    children?: [HuffmanNode?, HuffmanNode?];
-  }
+  const huffLut = buildLosslessHuffmanLut(huffmanCounts, huffmanSymbols);
+  let bitBuf = 0, bitCnt = 0, bytePtr = scanStart;
+  const bufLen = buf.length;
 
-  const root: HuffmanNode = { children: [] };
-  let symbolIdx = 0;
-  let currentCode = 0;
-
-  for (let len = 1; len <= 16; len++) {
-    const count = huffmanCounts[len - 1] || 0;
-    for (let c = 0; c < count; c++) {
-      const sym = huffmanSymbols[symbolIdx++];
-      let node = root;
-      for (let bitIdx = len - 1; bitIdx >= 0; bitIdx--) {
-        const bit = (currentCode >> bitIdx) & 1;
-        if (!node.children) node.children = [];
-        if (!node.children[bit]) {
-          node.children[bit] = { children: [] };
-        }
-        node = node.children[bit]!;
+  const ensureBits = (): void => {
+    bitBuf &= (1 << bitCnt) - 1;
+    while (bitCnt <= 16) {
+      let b = 0;
+      if (bytePtr < bufLen) {
+        b = buf[bytePtr++];
+        if (b === 0xff && bytePtr < bufLen && buf[bytePtr] === 0x00) bytePtr++;
       }
-      node.symbol = sym;
-      currentCode++;
+      bitBuf = (bitBuf << 8) | b;
+      bitCnt += 8;
     }
-    currentCode <<= 1;
-  }
-
-  // Bit reader handling 0xFF00 byte stuffing
-  let bitBuffer = 0;
-  let bitsCount = 0;
-  let bytePtr = scanStart;
-
-  const readBit = (): number => {
-    if (bitsCount === 0) {
-      if (bytePtr >= buf.length) return 0;
-      let b = buf[bytePtr++];
-      if (b === 0xff && bytePtr < buf.length && buf[bytePtr] === 0x00) {
-        bytePtr++; // Skip stuffed zero
-      }
-      bitBuffer = b;
-      bitsCount = 8;
-    }
-    bitsCount--;
-    return (bitBuffer >> bitsCount) & 1;
   };
 
-  const readBits = (num: number): number => {
-    let res = 0;
-    for (let i = 0; i < num; i++) {
-      res = (res << 1) | readBit();
-    }
-    return res;
-  };
-
-  const decodeSymbol = (): number => {
-    let node = root;
-    while (node && node.symbol === undefined) {
-      const bit = readBit();
-      node = node.children ? node.children[bit]! : undefined!;
-    }
-    return node?.symbol ?? 0;
-  };
-
-  const totalPixels = width * height;
-  const outputData = new Uint16Array(totalPixels);
+  const outputData = new Uint16Array(width * height);
   const maxVal = (1 << bpp) - 1;
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      const cat = decodeSymbol();
+      if (bitCnt < 16) ensureBits();
+      const entry = huffLut[(bitBuf >>> (bitCnt - 16)) & 0xffff];
+      const cat = entry >= 0 ? (bitCnt -= entry >>> 8, entry & 0xff) : (bitCnt -= 1, 0);
+
       let diff = 0;
       if (cat > 0) {
-        const rawBits = readBits(cat);
+        if (bitCnt < cat) ensureBits();
+        const rawBits = (bitBuf >>> (bitCnt - cat)) & ((1 << cat) - 1);
+        bitCnt -= cat;
         diff = rawBits < 1 << (cat - 1) ? rawBits - ((1 << cat) - 1) : rawBits;
       }
 
       let predVal = 0;
-      if (x === 0 && y === 0) {
-        predVal = 1 << (bpp - 1 - pointTransform);
-      } else if (y === 0) {
-        predVal = outputData[x - 1];
-      } else if (x === 0) {
-        predVal = outputData[(y - 1) * width];
-      } else {
+      if (x === 0 && y === 0) predVal = 1 << (bpp - 1 - pointTransform);
+      else if (y === 0) predVal = outputData[x - 1];
+      else if (x === 0) predVal = outputData[(y - 1) * width];
+      else {
         const a = outputData[y * width + (x - 1)];
         const b = outputData[(y - 1) * width + x];
         const c = outputData[(y - 1) * width + (x - 1)];
-
         if (predictor === 1) predVal = a;
         else if (predictor === 2) predVal = b;
         else if (predictor === 3) predVal = c;
@@ -887,8 +831,7 @@ export function decodeLosslessJpegStrip(
         else predVal = a;
       }
 
-      const sample = (predVal + diff) & maxVal;
-      outputData[y * width + x] = sample;
+      outputData[y * width + x] = (predVal + diff) & maxVal;
     }
   }
 

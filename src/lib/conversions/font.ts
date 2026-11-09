@@ -1401,17 +1401,23 @@ function buildPostTableWithNames(names: string[]): Buffer {
     unnamed.writeUInt32BE(POST_VERSION_3, 0);
     return unnamed;
   }
-  const header = Buffer.alloc(POST_HEADER_BYTES + 2 + names.length * 2);
-  header.writeUInt32BE(POST_VERSION_2, 0);
-  header.writeUInt16BE(names.length, POST_HEADER_BYTES);
-  const strings: Buffer[] = [];
-  names.forEach((name, g) => {
-    if (g === 0) return; // index 0 is the standard .notdef name
-    header.writeUInt16BE(POST_STANDARD_GLYPH_COUNT + strings.length, POST_HEADER_BYTES + 2 + g * 2);
-    const bytes = Buffer.from(name, 'ascii');
-    strings.push(Buffer.concat([Buffer.from([bytes.length]), bytes]));
-  });
-  return Buffer.concat([header, ...strings]);
+  const numGlyphs = names.length;
+  let totalPascalBytes = 0;
+  for (let g = 1; g < numGlyphs; g++) totalPascalBytes += 1 + Buffer.byteLength(names[g], 'ascii');
+  const indexBase = POST_HEADER_BYTES + 2;
+  const stringBase = indexBase + numGlyphs * 2;
+  const out = Buffer.alloc(stringBase + totalPascalBytes);
+  out.writeUInt32BE(POST_VERSION_2, 0);
+  out.writeUInt16BE(numGlyphs, POST_HEADER_BYTES);
+  let strOffset = stringBase;
+  for (let g = 1; g < numGlyphs; g++) {
+    out.writeUInt16BE(POST_STANDARD_GLYPH_COUNT + (g - 1), indexBase + g * 2);
+    const len = Buffer.byteLength(names[g], 'ascii');
+    out[strOffset++] = len;
+    out.write(names[g], strOffset, len, 'ascii');
+    strOffset += len;
+  }
+  return out;
 }
 
 function int16Metric(value: number, name: string): number {
@@ -2723,71 +2729,56 @@ function glyfDelta(value: number, axis: string): number {
   return value;
 }
 
-function glyfExtents(points: GlyphPoint[]): Pick<EncodedGlyph, 'xMin' | 'yMin' | 'xMax' | 'yMax'> {
-  const extents = { xMin: INT16_MAX, yMin: INT16_MAX, xMax: INT16_MIN, yMax: INT16_MIN };
-  for (const pt of points) {
-    extents.xMin = Math.min(extents.xMin, pt.x);
-    extents.yMin = Math.min(extents.yMin, pt.y);
-    extents.xMax = Math.max(extents.xMax, pt.x);
-    extents.yMax = Math.max(extents.yMax, pt.y);
-  }
-  return extents;
-}
-
 /**
  * Encodes contours as one simple glyf record (no instructions, 16-bit deltas). Returns null for a
  * glyph without contours. Coordinates and deltas outside the 16-bit range, and glyphs with more
  * than 65,535 points, throw a ConversionFailedError.
  */
 export function encodeGlyfGlyph(contours: GlyphPoint[][]): EncodedGlyph | null {
-  if (contours.length === 0) return null;
-  if (contours.some((contour) => contour.length === 0)) {
-    throw new ConversionFailedError('Cannot write a glyf outline: a contour has no points.');
+  const numContours = contours.length;
+  if (numContours === 0) return null;
+  let totalPts = 0, xMin = INT16_MAX, yMin = INT16_MAX, xMax = INT16_MIN, yMax = INT16_MIN;
+  for (let c = 0; c < numContours; c++) {
+    const contour = contours[c];
+    if (contour.length === 0) throw new ConversionFailedError('Cannot write a glyf outline: a contour has no points.');
+    totalPts += contour.length;
+    for (let p = 0; p < contour.length; p++) {
+      const pt = contour[p];
+      if (pt.x < xMin) xMin = pt.x;
+      if (pt.y < yMin) yMin = pt.y;
+      if (pt.x > xMax) xMax = pt.x;
+      if (pt.y > yMax) yMax = pt.y;
+    }
   }
-  const points = contours.flat();
-  if (points.length > TRUETYPE_MAX_POINTS_PER_GLYPH) {
-    throw new ConversionFailedError(
-      `Cannot write a glyf outline: ${points.length} points exceed the limit of ${TRUETYPE_MAX_POINTS_PER_GLYPH}.`
-    );
+  if (totalPts > TRUETYPE_MAX_POINTS_PER_GLYPH) {
+    throw new ConversionFailedError(`Cannot write a glyf outline: ${totalPts} points exceed the limit of ${TRUETYPE_MAX_POINTS_PER_GLYPH}.`);
   }
-  const extents = glyfExtents(points);
-
-  const header = Buffer.alloc(GLYF_HEADER_BYTES);
-  header.writeInt16BE(contours.length, 0);
-  header.writeInt16BE(glyfDelta(extents.xMin, 'x'), 2);
-  header.writeInt16BE(glyfDelta(extents.yMin, 'y'), 4);
-  header.writeInt16BE(glyfDelta(extents.xMax, 'x'), 6);
-  header.writeInt16BE(glyfDelta(extents.yMax, 'y'), 8);
-
-  const endPoints = Buffer.alloc(contours.length * GLYF_COORDINATE_BYTES);
-  let lastPoint = -1;
-  contours.forEach((contour, i) => {
+  const flagsOffset = GLYF_HEADER_BYTES + numContours * GLYF_COORDINATE_BYTES + GLYF_INSTRUCTION_LENGTH_BYTES;
+  const xOffset = flagsOffset + totalPts;
+  const yOffset = xOffset + totalPts * GLYF_COORDINATE_BYTES;
+  const bodyLen = yOffset + totalPts * GLYF_COORDINATE_BYTES;
+  const out = Buffer.alloc(bodyLen + (bodyLen % GLYF_ALIGNMENT));
+  out.writeInt16BE(numContours, 0);
+  out.writeInt16BE(glyfDelta(xMin, 'x'), 2);
+  out.writeInt16BE(glyfDelta(yMin, 'y'), 4);
+  out.writeInt16BE(glyfDelta(xMax, 'x'), 6);
+  out.writeInt16BE(glyfDelta(yMax, 'y'), 8);
+  let lastPoint = -1, ptIdx = 0, lastX = 0, lastY = 0;
+  for (let c = 0; c < numContours; c++) {
+    const contour = contours[c];
     lastPoint += contour.length;
-    endPoints.writeUInt16BE(lastPoint, i * GLYF_COORDINATE_BYTES);
-  });
-
-  const flags = Buffer.alloc(points.length);
-  const xBuf = Buffer.alloc(points.length * GLYF_COORDINATE_BYTES);
-  const yBuf = Buffer.alloc(points.length * GLYF_COORDINATE_BYTES);
-  let lastX = 0;
-  let lastY = 0;
-  points.forEach((pt, i) => {
-    flags[i] = pt.onCurve ? GLYF_FLAG_ON_CURVE : 0;
-    xBuf.writeInt16BE(glyfDelta(pt.x - lastX, 'x'), i * GLYF_COORDINATE_BYTES);
-    yBuf.writeInt16BE(glyfDelta(pt.y - lastY, 'y'), i * GLYF_COORDINATE_BYTES);
-    lastX = pt.x;
-    lastY = pt.y;
-  });
-
-  const instructionLength = Buffer.alloc(GLYF_INSTRUCTION_LENGTH_BYTES);
-  const body = Buffer.concat([header, endPoints, instructionLength, flags, xBuf, yBuf]);
-  const padding = Buffer.alloc(body.length % GLYF_ALIGNMENT);
-  return {
-    data: Buffer.concat([body, padding]),
-    numPoints: points.length,
-    numContours: contours.length,
-    ...extents,
-  };
+    out.writeUInt16BE(lastPoint, GLYF_HEADER_BYTES + c * GLYF_COORDINATE_BYTES);
+    for (let p = 0; p < contour.length; p++) {
+      const pt = contour[p];
+      out[flagsOffset + ptIdx] = pt.onCurve ? GLYF_FLAG_ON_CURVE : 0;
+      out.writeInt16BE(glyfDelta(pt.x - lastX, 'x'), xOffset + ptIdx * GLYF_COORDINATE_BYTES);
+      out.writeInt16BE(glyfDelta(pt.y - lastY, 'y'), yOffset + ptIdx * GLYF_COORDINATE_BYTES);
+      lastX = pt.x;
+      lastY = pt.y;
+      ptIdx++;
+    }
+  }
+  return { data: out, numPoints: totalPts, numContours, xMin, yMin, xMax, yMax };
 }
 
 /** Accumulates glyf records one glyph at a time and finishes with glyf, loca (long format) and maxp. */

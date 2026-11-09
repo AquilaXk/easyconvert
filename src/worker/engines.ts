@@ -495,36 +495,24 @@ export async function convertWithNativeFfmpeg(
       const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
       if (options.thumbnail?.at && options.thumbnail.at.length > 1) {
         const parts: { filename: string; buffer: Buffer }[] = [];
+        let firstValidOutputPath: string | undefined;
         for (let i = 0; i < options.thumbnail.at.length; i++) {
           const ts = options.thumbnail.at[i];
           const partOut = path.join(tempDir, `output_${i}.${tgt}`);
           const partArgs = await buildFfmpegArguments(media, partOut, tgt, options, ffmpegBin, ts);
-          await runFfmpeg(ffmpegBin, partArgs, {
-            cwd: tempDir,
-            timeoutMs: timeout,
-            maxBuffer,
-            signal: options.signal,
-          });
-          if (fs.existsSync(partOut)) {
-            parts.push({
-              filename: `${baseName}_thumb_${i + 1}.${tgt}`,
-              buffer: fs.readFileSync(partOut),
-            });
+          await runFfmpeg(ffmpegBin, partArgs, { cwd: tempDir, timeoutMs: timeout, maxBuffer, signal: options.signal });
+          if (fs.existsSync(partOut) && fs.statSync(partOut).size > 0) {
+            firstValidOutputPath ??= partOut;
+            parts.push({ filename: `${baseName}_thumb_${i + 1}.${tgt}`, buffer: fs.readFileSync(partOut) });
           }
         }
-        if (parts.length > 0) {
-          const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-          const firstPersisted = preserveOutput(path.join(tempDir, `output_0.${tgt}`), tgt, options, vfsPayload);
-          const res = createConversionResult(
-            firstPersisted,
-            tgt,
-            baseName,
-            'native-ffmpeg',
-            Date.now() - startTime
-          );
-          res.parts = parts;
-          return res;
+        if (parts.length === 0 || !firstValidOutputPath) {
+          throw new ConversionFailedError('FFmpeg thumbnail extraction produced no frames for the requested timestamps.');
         }
+        const firstPersisted = preserveOutput(firstValidOutputPath, tgt, options, Buffer.isBuffer(input) ? undefined : input);
+        const res = createConversionResult(firstPersisted, tgt, baseName, 'native-ffmpeg', Date.now() - startTime);
+        res.parts = parts;
+        return res;
       }
 
       const isPackaging = Boolean(options.packaging) || tgt === 'hls' || tgt === 'dash';
@@ -630,7 +618,7 @@ export async function convertWithNativeFfmpeg(
       return transcoded;
     });
   } catch (err) {
-    if (err instanceof InputPixelLimitError || options.throwOnUnavailable) {
+    if (err instanceof InputPixelLimitError || err instanceof ConversionFailedError || options.throwOnUnavailable) {
       throw err;
     }
     // A missing sandbox is not a missing tool: it is never reported as "nothing converted".

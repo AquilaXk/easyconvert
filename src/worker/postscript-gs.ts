@@ -58,6 +58,7 @@ export function ghostscriptPdfArguments(cropToBoundingBox: boolean, inputPath: s
     '-sDEVICE=pdfwrite',
     '-sstdout=%stderr',
     `-sOutputFile=${outputPath}`,
+    '--',
     inputPath,
   ];
 }
@@ -78,6 +79,7 @@ export function ghostscriptRasterArguments(cropToBoundingBox: boolean, dpi: numb
     `-r${dpi}`,
     '-sstdout=%stderr',
     `-sOutputFile=${output}`,
+    '--',
     inputPath,
   ];
 }

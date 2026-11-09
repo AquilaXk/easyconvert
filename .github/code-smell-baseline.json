@@ -265,14 +265,7 @@
     "rule": "complexity",
     "function": "inspectZipBuffer",
     "count": 1,
-    "maxValue": 46
-  },
-  {
-    "file": "src/lib/conversions/archive.ts",
-    "rule": "complexity",
-    "function": "repairZipArchive",
-    "count": 1,
-    "maxValue": 31
+    "maxValue": 44
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -285,7 +278,7 @@
     "file": "src/lib/conversions/archive.ts",
     "rule": "max-depth",
     "function": "repairZipArchive",
-    "count": 2,
+    "count": 1,
     "maxValue": 6
   },
   {
@@ -300,7 +293,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 4060
+    "maxValue": 4048
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -589,7 +582,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3459
+    "maxValue": 3450
   },
   {
     "file": "src/lib/conversions/hwp-reader.ts",
@@ -636,7 +629,7 @@
     "rule": "complexity",
     "function": "decodeLosslessJpegStrip",
     "count": 1,
-    "maxValue": 38
+    "maxValue": 35
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -685,7 +678,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2692
+    "maxValue": 2635
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -1100,7 +1093,7 @@
     "rule": "complexity",
     "function": "evaluateWithDag",
     "count": 1,
-    "maxValue": 50
+    "maxValue": 34
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1128,7 +1121,7 @@
     "rule": "complexity",
     "function": "parseDrawingMlShapes",
     "count": 1,
-    "maxValue": 82
+    "maxValue": 81
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1240,7 +1233,7 @@
     "rule": "max-lines-per-function",
     "function": "parseDrawingMlShapes",
     "count": 1,
-    "maxValue": 281
+    "maxValue": 275
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1261,7 +1254,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 9348
+    "maxValue": 9241
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -2325,7 +2318,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2533
+    "maxValue": 2521
   },
   {
     "file": "src/worker/engines.ts",
