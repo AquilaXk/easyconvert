@@ -1803,6 +1803,8 @@ export function extractRarArchive(
 
       const extracted: { filename: string; buffer: Buffer }[] = [];
       let totalUncompressedSize = 0;
+      // Every file unrar left on disk counts, selected or not: the request picks what is returned, not what the directory holds.
+      let filesOnDisk = 0;
 
       function walkDir(dir: string, base: string) {
         const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -1812,15 +1814,12 @@ export function extractRarArchive(
           if (entry.isDirectory()) {
             walkDir(fullPath, relPath);
           } else if (entry.isFile()) {
-            if (extracted.length >= limits.MAX_FILES) {
+            filesOnDisk += 1;
+            if (filesOnDisk > limits.MAX_FILES) {
               throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${limits.MAX_FILES}`);
             }
             // The size is read from the file system first, so that a file past the cap is never read into memory.
             totalUncompressedSize += fs.statSync(fullPath).size;
-            if (totalUncompressedSize > limits.MAX_UNCOMPRESSED_SIZE) {
-              throw new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${limits.MAX_UNCOMPRESSED_SIZE} bytes (${Math.round(limits.MAX_UNCOMPRESSED_SIZE / (1024 * 1024))}MB)`);
-            }
-            const buf = fs.readFileSync(fullPath);
             if (totalUncompressedSize > limits.MAX_UNCOMPRESSED_SIZE) {
               throw new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${limits.MAX_UNCOMPRESSED_SIZE} bytes (${Math.round(limits.MAX_UNCOMPRESSED_SIZE / (1024 * 1024))}MB)`);
             }
@@ -1829,7 +1828,7 @@ export function extractRarArchive(
             }
             const sanitized = canonicalEntryPath(relPath);
             if (sanitized && matchArchiveGlob(sanitized, options.entries)) {
-              extracted.push({ filename: sanitized, buffer: buf });
+              extracted.push({ filename: sanitized, buffer: fs.readFileSync(fullPath) });
             }
           }
         }
