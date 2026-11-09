@@ -11,13 +11,14 @@ import MobileMenu from './MobileMenu';
 import LanguageSwitcher from './LanguageSwitcher';
 import { primaryLinksFor, TOOL_ROUTES } from './site-links';
 import { useViewerAccount } from '@/hooks/useViewerPlan';
+import type { SessionUser } from '@/lib/viewer-plan';
 
-export default function Header() {
+export default function Header({ initialUser }: Readonly<{ initialUser?: SessionUser }> = {}) {
   const t = useTranslations('header');
   const tLinks = useTranslations('siteLinks');
   const tTheme = useTranslations('theme');
   const { isDark, toggleDarkMode } = useThemeToggle();
-  const signedIn = useViewerAccount() !== null;
+  const signedIn = useViewerAccount(initialUser) !== null;
   const [isToolsOpen, setIsToolsOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const toolsContainerRef = useRef<HTMLDivElement>(null);
@@ -142,7 +143,7 @@ export default function Header() {
           </button>
 
           <div className="hidden lg:flex items-center gap-1.5 whitespace-nowrap">
-            <UserNav />
+            <UserNav initialUser={initialUser} />
           </div>
 
           <button
@@ -158,7 +159,7 @@ export default function Header() {
         </div>
       </div>
 
-      {isMobileMenuOpen && <MobileMenu onClose={() => setIsMobileMenuOpen(false)} />}
+      {isMobileMenuOpen && <MobileMenu onClose={() => setIsMobileMenuOpen(false)} initialUser={initialUser} />}
     </header>
   );
 }

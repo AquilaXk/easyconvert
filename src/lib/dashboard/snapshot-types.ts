@@ -17,4 +17,5 @@ export interface DashboardSnapshot {
   quota?: QuotaUsage;
   files?: AccountFile[];
   dlqEntries?: PublicWebhookDlqEntry[];
+  emailVerification?: { enabled: boolean; verified: boolean };
 }

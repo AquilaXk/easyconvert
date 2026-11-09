@@ -1,5 +1,5 @@
 import React from 'react';
-import { useFormatter, useTranslations } from 'next-intl';
+import { useFormatter, useNow, useTranslations } from 'next-intl';
 import { Key } from 'lucide-react';
 import type { ApiKey } from '@/lib/api-keys/types';
 
@@ -8,10 +8,10 @@ const DATE_FORMAT = { dateStyle: 'medium' } as const;
 function KeyExpirationBadge({ expiresAt }: Readonly<{ expiresAt?: number }>) {
   const t = useTranslations('dashboard.keys.table');
   const format = useFormatter();
+  const now = useNow().getTime();
   if (!expiresAt) {
     return <span className="text-ink-3">{t('noExpiry')}</span>;
   }
-  const now = Date.now();
   if (now > expiresAt) {
     return (
       <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold bg-danger-soft text-danger border border-danger-edge">

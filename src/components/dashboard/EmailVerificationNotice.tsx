@@ -9,15 +9,20 @@ import { useAuthErrorWording } from '../i18n/error-wording';
  * Tells a signed-in account whose email address is not confirmed that password reset mails do not reach it yet, with a link
  * that sends the confirmation mail again. It shows nothing when mail is not configured or the address is confirmed.
  */
-export function EmailVerificationNotice() {
+export function EmailVerificationNotice({
+  initial,
+}: Readonly<{ initial?: { enabled: boolean; verified: boolean } }> = {}) {
   const t = useTranslations('dashboard.emailNotice');
   const locale = useLocale();
   const authErrorWording = useAuthErrorWording();
-  const [unverified, setUnverified] = useState(false);
+  const [unverified, setUnverified] = useState(
+    initial ? initial.enabled && !initial.verified : false
+  );
   const [sending, setSending] = useState(false);
   const [message, setMessage] = useState<{ kind: 'sent' | 'error'; text: string } | null>(null);
 
   useEffect(() => {
+    if (initial !== undefined) return;
     let cancelled = false;
     fetch('/api/auth/email-verification')
       .then((res) => (res.ok ? res.json() : null))
@@ -28,7 +33,7 @@ export function EmailVerificationNotice() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [initial]);
 
   if (!unverified) return null;
 

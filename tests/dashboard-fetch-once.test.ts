@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { createElement, useState } from 'react';
+import { createElement, useState, type ReactElement } from 'react';
 import { hydrateRoot, type Root } from 'react-dom/client';
 import { renderToString } from 'react-dom/server';
 import { NextIntlClientProvider, useTimeZone } from 'next-intl';
@@ -15,6 +15,7 @@ import {
 } from '../src/components/i18n/error-wording';
 import { useFileLimitCopy, useFileTooLargeMessage, useFormatBytes, useTierLabel } from '../src/components/i18n/format';
 import ViewerTimeZone, { browserTimeZone } from '../src/i18n/ViewerTimeZone';
+import { setViewerPlan } from '../src/lib/viewer-plan';
 import { testMessages } from './helpers/intl-messages';
 
 /**
@@ -28,7 +29,14 @@ import { testMessages } from './helpers/intl-messages';
  */
 
 const ROUTER = { push: vi.fn(), refresh: vi.fn(), replace: vi.fn(), back: vi.fn(), forward: vi.fn(), prefetch: vi.fn() };
-vi.mock('../src/i18n/navigation', () => ({ useRouter: () => ROUTER }));
+vi.mock('../src/i18n/navigation', () => ({
+  useRouter: () => ROUTER,
+  usePathname: () => '/dashboard',
+  getPathname: ({ href }: { href: string }) => href,
+  Link: 'a',
+}));
+
+const { default: DashboardPageView } = await import('../src/components/pages/DashboardPageView');
 
 const SETTLE_MS = 400;
 /** A zone other than the browser's, so hydration is followed by the switch to the browser's zone. */
@@ -50,6 +58,7 @@ let root: Root | undefined;
 beforeEach(() => {
   requests = [];
   zones = [];
+  setViewerPlan('anonymous');
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', false);
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     requests.push(url);
@@ -60,6 +69,7 @@ beforeEach(() => {
 afterEach(() => {
   root?.unmount();
   root = undefined;
+  setViewerPlan('anonymous');
   vi.unstubAllGlobals();
 });
 
@@ -68,7 +78,7 @@ function ZoneProbe() {
   return null;
 }
 
-function page(component: () => null) {
+function page(component: () => ReactElement | null) {
   return createElement(NextIntlClientProvider, {
     locale: 'en',
     messages: testMessages('en'),
@@ -78,7 +88,7 @@ function page(component: () => null) {
 }
 
 /** Renders `component` to markup as the server does, then hydrates that markup in the DOM. */
-function mount(component: () => null): void {
+function mount(component: () => ReactElement | null): void {
   const container = document.createElement('div');
   container.innerHTML = renderToString(page(component));
   document.body.append(container);
@@ -138,6 +148,22 @@ describe('the dashboard the server rendered', () => {
       const { loading, user } = useDashboardController({ user: USER, keys: [], quota: QUOTA, files: [], dlqEntries: [] });
       expect([loading, user?.id]).toEqual([false, 'user-1']);
       return null;
+    });
+    await expectReadOnce({});
+  });
+
+  it('reads nothing at mount for the whole page when the server handed it the full snapshot', async () => {
+    mount(function FullDashboardPage() {
+      return createElement(DashboardPageView, {
+        initial: {
+          user: USER,
+          keys: [],
+          quota: QUOTA,
+          files: [],
+          dlqEntries: [],
+          emailVerification: { enabled: true, verified: false },
+        },
+      });
     });
     await expectReadOnce({});
   });

@@ -7,6 +7,7 @@ import { Link } from '@/i18n/navigation';
 import { useModalDialog } from '@/hooks/useModalDialog';
 import { useThemeToggle } from '@/hooks/useThemeToggle';
 import { useViewerAccount } from '@/hooks/useViewerPlan';
+import type { SessionUser } from '@/lib/viewer-plan';
 import BrandLogo from './BrandLogo';
 import UserNav from './UserNav';
 import LanguageSwitcher from './LanguageSwitcher';
@@ -75,12 +76,15 @@ function CollapsibleLinks({
 }
 
 /** The full-screen sheet of the mobile menu: a modal dialog that traps focus and closes on Escape. */
-export default function MobileMenu({ onClose }: Readonly<{ onClose: () => void }>) {
+export default function MobileMenu({
+  onClose,
+  initialUser,
+}: Readonly<{ onClose: () => void; initialUser?: SessionUser }>) {
   const t = useTranslations('header');
   const tLinks = useTranslations('siteLinks');
   const tTheme = useTranslations('theme');
   const { isDark, toggleDarkMode } = useThemeToggle();
-  const signedIn = useViewerAccount() !== null;
+  const signedIn = useViewerAccount(initialUser) !== null;
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   useModalDialog(dialogRef, true, onClose);
@@ -126,7 +130,7 @@ export default function MobileMenu({ onClose }: Readonly<{ onClose: () => void }
         </nav>
 
         <div className="pt-4 border-t border-rule">
-          <UserNav mobile onItemClick={onClose} />
+          <UserNav mobile onItemClick={onClose} initialUser={initialUser} />
         </div>
 
         <div className="pt-4 border-t border-rule">

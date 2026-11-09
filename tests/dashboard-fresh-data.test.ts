@@ -46,6 +46,7 @@ afterEach(() => {
   root?.unmount();
   root = undefined;
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 const ANSWERS: Record<string, unknown> = {
@@ -241,6 +242,8 @@ describe('the dashboard page rendered on the server', () => {
     await populate(user, 'first');
     const doc = renderDashboard(await loadDashboardSnapshot(user));
 
+    expect(text(doc.querySelector('header'))).toContain('Reader');
+    expect(doc.querySelectorAll('header a[href="/auth"]')).toHaveLength(0);
     expect(text(doc.querySelector('main h1'))).toBe('Developer Dashboard');
     expect(text(doc.querySelector('main'))?.includes(`Reader (${user.email})`)).toBe(true);
     const tabs = doc.querySelector('main [role=tablist]')!.querySelectorAll('[role=tab]');
@@ -248,6 +251,21 @@ describe('the dashboard page rendered on the server', () => {
     expect(doc.querySelectorAll('main tbody tr').length).toBe(1);
     expect(text(doc.querySelector('main tbody tr'))?.startsWith('first-key')).toBe(true);
     expect(doc.querySelectorAll('main output .animate-spin').length).toBe(0);
+  });
+
+  it('includes the email verification notice on the server when mail is configured and the address is not verified', async () => {
+    vi.stubEnv('SMTP_HOST', 'smtp.example.test');
+    vi.stubEnv('SMTP_USER', 'mailer');
+    vi.stubEnv('SMTP_PASSWORD', 'secret');
+    vi.stubEnv('APP_ORIGIN', 'https://convert.example.test');
+    const unverifiedUser = await createUser('Unverified');
+    const noticeCopy = testMessages('en').dashboard.emailNotice.text;
+
+    const unverifiedDoc = renderDashboard(await loadDashboardSnapshot(unverifiedUser));
+    expect(text(unverifiedDoc.querySelector('main'))).toContain(noticeCopy);
+
+    const verifiedDoc = renderDashboard(await loadDashboardSnapshot({ ...unverifiedUser, emailVerified: true }));
+    expect(text(verifiedDoc.querySelector('main'))).not.toContain(noticeCopy);
   });
 
   it('keeps the loading state for a page the server could not read the person for', () => {
