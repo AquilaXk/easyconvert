@@ -24,7 +24,9 @@ function isTextField(target: EventTarget | null): boolean {
 export function useHeroUpload(
   onFilesSelected: (files: File[], target?: string) => void,
   target: string | undefined,
-  operation?: HeroOperation
+  operation?: HeroOperation,
+  /** Whether the file dialog takes several files; a page of a tool that works on one file says no. */
+  multiple = true
 ) {
   const t = useTranslations('hero');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -49,7 +51,7 @@ export function useHeroUpload(
     id: MAIN_FILE_INPUT_ID,
     ref: fileInputRef,
     type: 'file',
-    multiple: true,
+    multiple,
     className: 'sr-only',
     tabIndex: -1,
     'aria-label': operation ? t(`operations.${operation}.fileInputLabel`) : t('fileInputLabel'),

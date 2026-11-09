@@ -39,8 +39,15 @@ export function useToolRun(tool: WebTool) {
   const [result, setResult] = useState<ToolResult | null>(null);
   const [failure, setFailure] = useState<ConversionFailure | null>(null);
   const [skipped, setSkipped] = useState(0);
+  const [surplus, setSurplus] = useState(0);
   const controller = useRef<AbortController | null>(null);
   const shown = useRef<ToolResult | null>(null);
+
+  /** Ends the run in flight: its request is aborted, so its answer can no longer replace what the page shows. */
+  const stop = () => {
+    controller.current?.abort();
+    controller.current = null;
+  };
 
   const forget = () => {
     if (shown.current) releaseToolResult(shown.current);
@@ -57,18 +64,23 @@ export function useToolRun(tool: WebTool) {
 
   const add = (files: File[]) => {
     const accepted = files.filter((file) => toolAccepts(tool, file.name));
+    const taken = isSingleFileTool(tool) ? accepted.slice(0, 1) : accepted;
     setSkipped(files.length - accepted.length);
-    if (accepted.length === 0) return;
+    setSurplus(accepted.length - taken.length);
+    if (taken.length === 0) return;
+    stop();
     forget();
-    setItems((current) => (isSingleFileTool(tool) ? [newItem(accepted[0])] : [...current, ...accepted.map(newItem)]));
+    setItems((current) => (isSingleFileTool(tool) ? taken.map(newItem) : [...current, ...taken.map(newItem)]));
   };
 
   const remove = (id: string) => {
+    stop();
     forget();
     setItems((current) => current.filter((item) => item.id !== id));
   };
 
   const move = (id: string, delta: -1 | 1) => {
+    stop();
     forget();
     setItems((current) => {
       const from = current.findIndex((item) => item.id === id);
@@ -81,18 +93,29 @@ export function useToolRun(tool: WebTool) {
   };
 
   const clear = () => {
-    controller.current?.abort();
+    stop();
     forget();
     setItems([]);
     setSkipped(0);
+    setSurplus(0);
   };
 
+  /** Applies the options of the dialog; the result of the options before them is dropped only when these differ. */
   const changeOptions = (next: WebToolOptions) => {
+    if (JSON.stringify(next) === JSON.stringify(options)) return;
+    stop();
     forget();
     setOptions(next);
   };
 
+  /** Stops the run and leaves the files and the options as they are, ready to run again. */
+  const cancel = () => {
+    stop();
+    forget();
+  };
+
   const run = async () => {
+    stop();
     const abort = new AbortController();
     controller.current = abort;
     forget();
@@ -113,5 +136,5 @@ export function useToolRun(tool: WebTool) {
     }
   };
 
-  return { items, options, phase, result, failure, skipped, add, remove, move, clear, setOptions: changeOptions, run };
+  return { items, options, phase, result, failure, skipped, surplus, add, remove, move, clear, cancel, setOptions: changeOptions, run };
 }

@@ -15,14 +15,18 @@ import { useFileTooLargeMessage, useFormatBytes } from '@/components/i18n/format
 import { useConversionFailureWording } from '@/components/i18n/error-wording';
 import { isSingleFileTool, useToolRun, type ToolFileItem } from '@/hooks/useToolRun';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
-import { maxFileBytes } from '@/lib/plan-limits';
-import type { ToolResult, ToolResultFile } from '@/lib/tools/tool-client';
-import { MIN_MERGE_FILES, TOOLS_WITH_OPTIONS, type WebTool } from '@/lib/tools/tool-names';
+import { warnBrowserFailure } from '@/lib/browser-failure';
+import { downloadBlob } from '@/lib/download-blob';
+import { maxFileBytes, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
+import { toolInputProblem, type ToolResult, type ToolResultFile } from '@/lib/tools/tool-client';
+import { MAX_TOOL_FILES, MIN_MERGE_FILES, TOOLS_WITH_OPTIONS, type WebTool } from '@/lib/tools/tool-names';
 import ToolOptionsModal from './ToolOptionsModal';
 
 const ROW_CLASS = 'rounded-xs border border-rule bg-surface px-4 py-3.5 sm:px-6 flex items-center gap-4 min-w-0';
 const ICON_BUTTON_CLASS =
   'inline-flex items-center justify-center min-w-[44px] min-h-[44px] md:min-w-9 md:min-h-9 rounded-xs text-ink-3 hover:text-ink hover:bg-sunken transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed';
+const SECONDARY_BUTTON_CLASS =
+  'transition-colors min-h-[44px] md:min-h-[40px] px-3.5 rounded-xs border border-rule bg-canvas text-sm font-medium text-ink hover:border-rule-strong cursor-pointer';
 const DOWNLOAD_CLASS = 'btn-primary inline-flex items-center justify-center gap-1.5 min-h-[44px] md:min-h-9 px-4 rounded-xs text-sm font-medium';
 
 const extensionOf = (name: string): string => (/\.tar\.gz$/i.test(name) ? 'tar.gz' : (name.split('.').pop() ?? '').toLowerCase());
@@ -136,38 +140,57 @@ interface ToolBarProps {
   onImport: (file: File) => void;
   onOptions: () => void;
   onRun: () => void;
+  onCancel: () => void;
   onStartOver: () => void;
 }
 
 /** The bar pinned to the bottom of the viewport while files are on screen, as the converter's queue has it. */
-function ToolBar({ summary, failure, busy, done, canRun, actionLabel, addMore, hasOptions, entries, onAdd, onImport, onOptions, onRun, onStartOver }: Readonly<ToolBarProps>) {
+function ToolBar({ summary, failure, busy, done, canRun, actionLabel, addMore, hasOptions, entries, onAdd, onImport, onOptions, onRun, onCancel, onStartOver }: Readonly<ToolBarProps>) {
   const t = useTranslations('queue');
   const tTool = useTranslations('tools');
   const tRow = useTranslations('queue.row');
+  const zipFailed = useTranslations('errors.queue')('zipFailed');
   const barRef = useRef<HTMLDivElement>(null);
+  const [bundleFailed, setBundleFailed] = useState(false);
   usePublishedHeight(barRef, '--queue-bar-height');
   const downloadAll = async () => {
     if (!entries) return;
-    const url = URL.createObjectURL(await zipOfEntries(entries));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'files.zip';
-    link.click();
-    URL.revokeObjectURL(url);
+    setBundleFailed(false);
+    try {
+      downloadBlob(await zipOfEntries(entries), 'files.zip');
+    } catch (error: unknown) {
+      warnBrowserFailure('Bundling the unpacked files into a ZIP failed', error);
+      setBundleFailed(true);
+    }
   };
+  // One button holds the place of the run, the cancel and the start over, so keyboard focus stays on it as the run goes by.
+  const primaryClass = busy || done
+    ? SECONDARY_BUTTON_CLASS
+    : 'btn-primary min-h-[48px] px-6 rounded-xs text-lg font-medium inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
+  let primaryAction = onRun;
+  let primaryLabel = actionLabel;
+  if (busy) {
+    primaryAction = onCancel;
+    primaryLabel = tTool('cancel');
+  } else if (done) {
+    primaryAction = onStartOver;
+    primaryLabel = tTool('result.startOver');
+  }
   return (
     <div ref={barRef} data-queue-bar className="sticky bottom-0 z-30 border-t border-rule bg-surface">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-col md:flex-row md:items-center gap-3">
         <div className="min-w-0 md:flex-1 flex flex-col items-center md:items-start">
           <p className="flex items-center gap-2 text-sm text-ink-3">
             {done && <CircleCheck aria-hidden="true" className="size-4 shrink-0" />}
+            {busy && <Loader2 aria-hidden="true" className="size-4 shrink-0 animate-spin" />}
             <output aria-live="polite">{summary}</output>
           </p>
           {failure && <p role="alert" className="mt-1 text-xs text-danger">{failure}</p>}
+          {bundleFailed && <p role="alert" className="mt-1 text-xs text-danger">{zipFailed}</p>}
         </div>
         <div className="flex flex-col md:flex-row md:items-center gap-2.5">
-          {addMore && !done && <FileSourceButton variant="secondary" label={t('addMore')} disabled={busy} onPickDevice={onAdd} onImportFile={onImport} />}
-          {hasOptions && !done && (
+          {addMore && <FileSourceButton variant="secondary" label={t('addMore')} disabled={busy} onPickDevice={onAdd} onImportFile={onImport} />}
+          {hasOptions && (
             <button
               type="button" disabled={busy} onClick={onOptions}
               className="transition-colors inline-flex items-center justify-center gap-2 min-h-[44px] md:min-h-[40px] px-3.5 rounded-xs border border-rule bg-canvas text-sm font-medium text-ink hover:border-rule-strong cursor-pointer disabled:opacity-50"
@@ -183,18 +206,9 @@ function ToolBar({ summary, failure, busy, done, canRun, actionLabel, addMore, h
               <Package aria-hidden="true" className="size-4" /><span>{tTool('result.downloadAll')}</span>
             </button>
           )}
-          {done ? (
-            <button type="button" onClick={onStartOver} className="transition-colors min-h-[44px] md:min-h-[40px] px-3.5 rounded-xs border border-rule bg-canvas text-sm font-medium text-ink hover:border-rule-strong cursor-pointer">
-              {tTool('result.startOver')}
-            </button>
-          ) : (
-            <button
-              type="button" disabled={!canRun} onClick={onRun}
-              className="btn-primary min-h-[48px] px-6 rounded-xs text-lg font-medium inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-            >
-              {busy ? <><Loader2 aria-hidden="true" className="size-4 animate-spin" /><span>{tTool('running')}</span></> : <span>{actionLabel}</span>}
-            </button>
-          )}
+          <button type="button" disabled={!busy && !done && !canRun} onClick={primaryAction} className={primaryClass}>
+            {primaryLabel}
+          </button>
         </div>
       </div>
     </div>
@@ -205,8 +219,9 @@ function ToolBar({ summary, failure, busy, done, canRun, actionLabel, addMore, h
 export default function ToolPageView({ tool, operation, title, description, dailyLimit }: Readonly<ToolPageViewProps>) {
   const t = useTranslations('tools');
   const run = useToolRun(tool);
-  const upload = useHeroUpload((files) => run.add(files), undefined, operation);
+  const upload = useHeroUpload((files) => run.add(files), undefined, operation, !isSingleFileTool(tool));
   const plan = useViewerPlan();
+  const formatBytes = useFormatBytes();
   const fileTooLarge = useFileTooLargeMessage();
   const failureWording = useConversionFailureWording();
   const [optionsOpen, setOptionsOpen] = useState(false);
@@ -217,14 +232,24 @@ export default function ToolPageView({ tool, operation, title, description, dail
   const oversize = run.items.some((item) => item.file.size > limit);
   const needsMore = tool === 'merge' && run.items.length < MIN_MERGE_FILES;
   const emptyRanges = tool === 'split' && run.options.split?.ranges !== undefined && run.options.split.ranges.trim() === '';
-  const canRun = run.items.length > 0 && !running && !done && !oversize && !needsMore && !emptyRanges;
+  const problem = toolInputProblem(run.items.map((item) => item.file));
+  const canRun = run.items.length > 0 && !running && !done && !oversize && !needsMore && !emptyRanges && problem === null;
+
+  const problemWording = {
+    tooMany: () => t('status.tooMany', { max: MAX_TOOL_FILES }),
+    tooLarge: () => t('status.tooLarge', { size: formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES) }),
+    empty: () => t('status.empty'),
+  } as const;
+  const leftOut = [run.skipped > 0 ? t('status.skipped', { count: run.skipped }) : null, run.surplus > 0 ? t('status.surplus', { count: run.surplus }) : null].filter(Boolean).join(' ');
 
   let summary = t('status.ready', { count: run.items.length });
   if (running) summary = t('running');
   else if (done) summary = t('status.done');
   else if (needsMore) summary = t('status.needTwo');
   else if (oversize) summary = t('status.oversize');
-  else if (run.skipped > 0) summary = t('status.skipped', { count: run.skipped });
+  else if (problem) summary = problemWording[problem]();
+  else if (emptyRanges) summary = t('status.needRanges');
+  else if (leftOut) summary = leftOut;
 
   return (
     <div className="flex flex-col min-h-screen">
@@ -271,7 +296,7 @@ export default function ToolPageView({ tool, operation, title, description, dail
               actionLabel={t(`actions.${tool}`)} addMore={!isSingleFileTool(tool)} hasOptions={TOOLS_WITH_OPTIONS.has(tool)}
               entries={run.result?.kind === 'entries' ? run.result.entries : null}
               onAdd={() => document.getElementById(MAIN_FILE_INPUT_ID)?.click()} onImport={(file) => run.add([file])}
-              onOptions={() => setOptionsOpen(true)} onRun={() => void run.run()} onStartOver={run.clear}
+              onOptions={() => setOptionsOpen(true)} onRun={() => void run.run()} onCancel={run.cancel} onStartOver={run.clear}
             />
             {optionsOpen && <ToolOptionsModal tool={tool} toolName={title} initialOptions={run.options} onSave={run.setOptions} onClose={() => setOptionsOpen(false)} />}
           </section>
