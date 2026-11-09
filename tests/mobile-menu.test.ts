@@ -104,3 +104,47 @@ describe('the mobile menu', () => {
     expect(document.activeElement).toBe(button);
   });
 });
+
+describe('the logo of the mobile menu', () => {
+  it('links home, as the logo of the header does', async () => {
+    const { sheet } = await openMenu();
+    const home = sheet.querySelector<HTMLAnchorElement>('a[aria-label="EasyConvert Home"]');
+    expect(home).not.toBeNull();
+    expect(home!.getAttribute('href')).toBe(document.querySelector('header > div a[aria-label="EasyConvert Home"]')!.getAttribute('href'));
+  });
+});
+
+describe('the Tools menu of the header', () => {
+  const toolsButton = () => document.querySelector<HTMLButtonElement>('button[aria-haspopup=true]')!;
+  const toolLinks = () => [...document.querySelectorAll<HTMLAnchorElement>('nav[aria-label] .grid a')];
+
+  async function openTools() {
+    await mountHeader();
+    await act(async () => toolsButton().click());
+    expect(toolLinks().length).toBeGreaterThan(0);
+  }
+
+  it('closes when Tab leaves its last item', async () => {
+    await openTools();
+    await act(async () => toolLinks().at(-1)!.focus());
+    expect(toolsButton().getAttribute('aria-expanded')).toBe('true');
+    // The next stop after the menu is the first link beside it.
+    await act(async () => document.querySelector<HTMLAnchorElement>('nav[aria-label] > a')!.focus());
+    expect(toolsButton().getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('stays open while focus moves between its items', async () => {
+    await openTools();
+    await act(async () => toolLinks()[0].focus());
+    await act(async () => toolLinks()[1].focus());
+    expect(toolsButton().getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('gives focus back to its button when Escape closes it from an item', async () => {
+    await openTools();
+    await act(async () => toolLinks()[2].focus());
+    await press(toolLinks()[2], 'Escape');
+    expect(toolsButton().getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(toolsButton());
+  });
+});
