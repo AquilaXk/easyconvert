@@ -77,11 +77,15 @@ describe('the import filter of a legacy binary file', () => {
     expect(officeInputFilterArgs('xlt', file('d.xlt', compound('Book')))).toEqual(['--infilter=MS Excel 5.0/95 Vorlage/Template']);
   });
 
-  it('is the filter of PowerPoint 97 for a presentation, a slide show and a template', () => {
+  it('is the filter of PowerPoint 97 for a presentation, a slide show and a template, and PowerPoint 3 for PowerPoint 4.0/95', () => {
     const presentation = compound('PowerPoint Document');
     expect(officeInputFilterArgs('ppt', file('a.ppt', presentation))).toEqual(['--infilter=MS PowerPoint 97']);
     expect(officeInputFilterArgs('pps', file('b.pps', presentation))).toEqual(['--infilter=MS PowerPoint 97 AutoPlay']);
     expect(officeInputFilterArgs('pot', file('c.pot', presentation))).toEqual(['--infilter=MS PowerPoint 97 Vorlage']);
+    expect(officeInputFilterArgs('ppt', file('ppt95.ppt', compound('PowerPoint Document', 'PersistentStorage Directory')))).toEqual([
+      '--infilter=PowerPoint 3',
+    ]);
+    expect(officeInputFilterArgs('ppt', file('ppt40.ppt', compound('PP40')))).toEqual(['--infilter=PowerPoint 3']);
   });
 
   it('is the filter of the Palm database type: text and Plucker', () => {

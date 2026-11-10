@@ -51,12 +51,13 @@ const WORD_6: Generations = { document: 'MS WinWord 6.0', template: 'MS WinWord 
 const EXCEL_97: Generations = { document: 'MS Excel 97', template: 'MS Excel 97 Vorlage/Template' };
 const EXCEL_5_95: Generations = { document: 'MS Excel 5.0/95', template: 'MS Excel 5.0/95 Vorlage/Template' };
 const POWERPOINT_97: Generations = { document: 'MS PowerPoint 97', template: 'MS PowerPoint 97 Vorlage', slideShow: 'MS PowerPoint 97 AutoPlay' };
+const POWERPOINT_3: Generations = { document: 'PowerPoint 3', template: 'PowerPoint 3', slideShow: 'PowerPoint 3' };
 
 /** Every filter name this module can choose, for the check against the registry of the installed suite. */
 export const LEGACY_IMPORT_FILTER_NAMES: readonly string[] = Array.from(
   new Set(
     [
-      ...[WORD_97, WORD_95, WORD_6, EXCEL_97, EXCEL_5_95, POWERPOINT_97].flatMap((generations) => [
+      ...[WORD_97, WORD_95, WORD_6, EXCEL_97, EXCEL_5_95, POWERPOINT_97, POWERPOINT_3].flatMap((generations) => [
         generations.document,
         generations.template,
         generations.slideShow,
@@ -126,6 +127,9 @@ function compoundGeneration(format: string, source: ByteSource, inputPath: strin
     case 'ppt':
     case 'pps':
     case 'pot':
+      // PowerPoint 95 keeps its object directory in `PersistentStorage Directory` and PowerPoint 4.0 its presentation in `PP40`;
+      // PowerPoint 97 and later keep `PersistDirectoryAtom` inside `PowerPoint Document` ([MS-PPT] 2.1.1).
+      if (root.names.has('PERSISTENTSTORAGE DIRECTORY') || root.names.has('PP40')) return POWERPOINT_3;
       return root.names.has('POWERPOINT DOCUMENT') ? POWERPOINT_97 : undefined;
     default:
       return undefined;

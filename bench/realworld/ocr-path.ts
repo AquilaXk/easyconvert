@@ -7,14 +7,28 @@ import { evaluatePageOcrDecisions, inspectPdfPagesTextDensity } from '../../src/
 
 /** The density threshold document.ts uses when the request gives none. */
 const DEFAULT_DENSITY_THRESHOLD = 15;
+const ALWAYS_OCR_TARGETS: ReadonlySet<string> = new Set(['hocr', 'alto']);
 
-/** Pages the converter would recognize in `pdf` with default options; 0 when the PDF has text or cannot be read. */
-export async function ocrPageCount(pdf: Buffer): Promise<number> {
+export interface PdfOcrPageCounts {
+  /** Pages recognized for ordinary targets (0 when any page has text). */
+  scannedPages: number;
+  /** Pages recognized for hOCR and ALTO targets (every page below the text density threshold). */
+  markupPages: number;
+}
+
+export async function ocrPageCounts(pdf: Buffer): Promise<PdfOcrPageCounts> {
   try {
     const analyses = await inspectPdfPagesTextDensity(pdf, DEFAULT_DENSITY_THRESHOLD);
-    if (analyses.some((page) => page.text.trim() !== '')) return 0;
-    return evaluatePageOcrDecisions(analyses, 'skip_text').pagesNeedingOcr.length;
+    const markupPages = evaluatePageOcrDecisions(analyses, 'skip_text').pagesNeedingOcr.length;
+    const scannedPages = analyses.some((page) => page.text.trim() !== '') ? 0 : markupPages;
+    return { scannedPages, markupPages };
   } catch {
-    return 0;
+    return { scannedPages: 0, markupPages: 0 };
   }
+}
+
+/** Pages the converter would recognize in `pdf` with default options; 0 when the PDF has text (unless `target` is hOCR or ALTO) or cannot be read. */
+export async function ocrPageCount(pdf: Buffer, target?: string): Promise<number> {
+  const counts = await ocrPageCounts(pdf);
+  return target !== undefined && ALWAYS_OCR_TARGETS.has(target) ? counts.markupPages : counts.scannedPages;
 }

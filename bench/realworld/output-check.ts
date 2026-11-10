@@ -146,6 +146,8 @@ async function objArchiveProblem(buffer: Buffer): Promise<string | null> {
  * out (the read-back of oebText in tests/helpers/calibre-books.ts). For an input the corpus marks as empty, no text is the right answer: the
  * content documents must hold none, so a book that carries words the input does not have is a bad output.
  */
+const OEB_IMAGE_EXTENSIONS: ReadonlySet<string> = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg']);
+
 async function oebArchiveProblem(buffer: Buffer, emptyInput: boolean): Promise<string | null> {
   const archive = await archiveEntries(buffer, 'oeb archive');
   if ('problem' in archive) return archive.problem;
@@ -155,8 +157,9 @@ async function oebArchiveProblem(buffer: Buffer, emptyInput: boolean): Promise<s
   if (pages.length === 0) return 'oeb archive has no XHTML content document';
   const markup = (await Promise.all(pages.map((page) => page.async('string')))).join(' ');
   const hasText = wordsOfMarkup(markup) !== '';
+  const hasImages = /<img\b/i.test(markup) && entries.some((entry) => OEB_IMAGE_EXTENSIONS.has(entry.name.split('.').pop()?.toLowerCase() ?? ''));
   if (emptyInput) return hasText ? 'oeb archive content documents hold text, but the input has none' : null;
-  return hasText ? null : 'oeb archive content documents hold no text';
+  return hasText || hasImages ? null : 'oeb archive content documents hold no text';
 }
 
 /** Why the output is not a readable file of the target type, or null when it is. */

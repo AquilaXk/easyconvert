@@ -22,13 +22,21 @@ export async function writeEpsPages(
   pages: readonly number[],
   tempDir: string,
   inputPath: string,
-  run: (tempDir: string, args: string[]) => Promise<unknown>
+  run: (tempDir: string, args: string[]) => Promise<unknown>,
+  concurrency = 1
 ): Promise<void> {
   let writtenBytes = 0;
-  for (const page of pages) {
-    const pagePath = path.join(tempDir, `page-${page}.eps`);
-    await run(tempDir, ['-eps', '-f', String(page), '-l', String(page), inputPath, pagePath]);
-    writtenBytes += fs.statSync(pagePath).size;
-    assertPostScriptPagesWithinLimit(writtenBytes);
-  }
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, pages.length));
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextIndex < pages.length) {
+      const page = pages[nextIndex];
+      nextIndex += 1;
+      const pagePath = path.join(tempDir, `page-${page}.eps`);
+      await run(tempDir, ['-eps', '-f', String(page), '-l', String(page), inputPath, pagePath]);
+      writtenBytes += fs.statSync(pagePath).size;
+      assertPostScriptPagesWithinLimit(writtenBytes);
+    }
+  });
+  await Promise.all(workers);
 }

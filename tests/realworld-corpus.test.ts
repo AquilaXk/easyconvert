@@ -535,9 +535,11 @@ describe('job deadline by size', () => {
       expect(await ocrPageCount(await pdfOf(['picture', 'picture', 'picture']))).toBe(3);
     });
 
-    it('counts none of a PDF that has text, which the converter reads without OCR, even when some pages are pictures', async () => {
+    it('counts none of a PDF that has text, which the converter reads without OCR, even when some pages are pictures, unless the target is hOCR or ALTO', async () => {
       expect(await ocrPageCount(await pdfOf(['text', 'text']))).toBe(0);
       expect(await ocrPageCount(await pdfOf(['text', 'picture', 'picture']))).toBe(0);
+      expect(await ocrPageCount(await pdfOf(['text', 'picture', 'picture']), 'alto')).toBe(2);
+      expect(await ocrPageCount(await pdfOf(['text', 'picture', 'picture']), 'hocr')).toBe(2);
     });
 
     it('counts none of a file the PDF reader cannot open', async () => {
@@ -668,7 +670,7 @@ describe('output check', () => {
     /** Two 8 x 8 pages, red and blue, written by ImageMagick. */
     const twoPageTiff = (): Buffer => runConvert(['(', '-size', '8x8', 'xc:red', ')', '(', '-size', '8x8', 'xc:blue', ')', 'tif:-']);
 
-    oracleTest('names every target a multi-page TIFF is split into a ZIP of pages for', ['identify'], async () => {
+    oracleTest('names every target a multi-page TIFF is split into a ZIP of pages for', ['identify', 'vtracer'], async () => {
       const source = twoPageTiff();
       const split: string[] = [];
       for (const { id } of getAvailableTargetFormats('tiff')) {
@@ -744,11 +746,12 @@ describe('empty inputs in the manifest', () => {
     expect(() => parseManifest(file({ emptyInputReason: 'x' }))).toThrow(ManifestError);
   });
 
-  it('marks exactly the 52 corpus files that hold no content, each with the reason read from the file', () => {
+  it('marks exactly the 55 corpus files that hold no content, each with the reason read from the file', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'realworld', 'manifest.json'), 'utf8')) as CorpusManifest;
     const marked = manifest.files.filter((f) => f.emptyInput === true).map((f) => f.id).sort();
     expect(marked).toEqual([
       'govdocs1-000058.html',
+      'govdocs1-000798.html',
       'govdocs1-001421.html',
       'govdocs1-001422.html',
       'govdocs1-001721.html',
@@ -760,6 +763,8 @@ describe('empty inputs in the manifest', () => {
       'office-document-emptydocumentwithheaderfooter.docx',
       'office-document-issue_51265_1.docx',
       'office-document-issue_51265_3.docx',
+      'office-document-tika-3388.docx',
+      'office-document-zero-length.docx',
       'office-slideshow-bug55732.ppt',
       'office-slideshow-empty.ppt',
       'office-slideshow-missing-blip-fill.pptx',

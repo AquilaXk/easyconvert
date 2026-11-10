@@ -415,7 +415,8 @@ class PartWriter {
   }
 
   blockPieces(blocks: readonly Block[], quoted = false): Piece[] {
-    return blocks.flatMap((block, index) => this.pieces(block, quoted, blocks[index + 1]?.type === 'table', index === blocks.length - 1));
+    const flat = unwrapOuterLayoutTables(blocks);
+    return flat.flatMap((block, index) => this.pieces(block, quoted, flat[index + 1]?.type === 'table', index === flat.length - 1));
   }
 
   blocksXml(blocks: readonly Block[]): string {
@@ -423,6 +424,36 @@ class PartWriter {
       .map((piece) => piece.render())
       .join('');
   }
+}
+
+/** Whether `block` holds a table at any depth (a quote around a table, or a table itself). */
+function blockHoldsTable(block: Block): boolean {
+  if (block.type === 'table') return true;
+  if (block.type === 'quote') return block.blocks.some(blockHoldsTable);
+  return false;
+}
+
+/**
+ * Unwraps outer layout tables (tables whose cells hold nested tables) into the blocks of their cells in row-major order,
+ * leaving innermost data tables intact. LibreOffice Writer's table pagination (`SwTabFrm::Split`) stalls when a multi-page
+ * `<w:tbl>` is nested inside a `<w:tc>`.
+ */
+function unwrapOuterLayoutTables(blocks: readonly Block[]): Block[] {
+  const flat: Block[] = [];
+  for (const block of blocks) {
+    if (block.type === 'table' && block.rows.some((row) => row.some((cell) => !cell.continuation && cellBlocks(cell).some(blockHoldsTable)))) {
+      for (const row of block.rows) {
+        for (const cell of row) {
+          if (!cell.continuation) flat.push(...unwrapOuterLayoutTables(cellBlocks(cell)));
+        }
+      }
+    } else if (block.type === 'quote') {
+      flat.push({ ...block, blocks: unwrapOuterLayoutTables(block.blocks) });
+    } else {
+      flat.push(block);
+    }
+  }
+  return flat;
 }
 
 const TABLE_BORDERS = ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']

@@ -7,7 +7,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { dispatchConversion } from '../../src/lib/conversions/dispatch';
+import { JOB_DEADLINE_AT } from '../../src/lib/conversions/job-time';
 import { ConversionFailedError } from '../../src/lib/types';
+import type { WorkerEngineOptions } from '../../src/worker/worker-types';
 import { outputProblem } from './output-check';
 import { exitSummary, type ErrorFacts } from './verdict';
 
@@ -19,6 +21,8 @@ export interface JobRequest {
   target: string;
   /** The corpus manifest marks the file as having no content, so zero bytes are its right output. */
   emptyInput?: boolean;
+  /** Wall-clock deadline for the job in milliseconds, passed to the conversion budget. */
+  deadlineMs?: number;
 }
 
 export type JobReply =
@@ -39,7 +43,8 @@ async function runJob(job: JobRequest): Promise<JobReply> {
   const started = performance.now();
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-'));
   try {
-    const result = await dispatchConversion(fs.readFileSync(job.path), job.format, job.target, {}, job.name);
+    const options: WorkerEngineOptions = job.deadlineMs === undefined ? {} : ({ [JOB_DEADLINE_AT]: Date.now() + job.deadlineMs } as WorkerEngineOptions);
+    const result = await dispatchConversion(fs.readFileSync(job.path), job.format, job.target, options, job.name);
     const ms = performance.now() - started;
     const problem = await outputProblem(result.buffer, job.target, workDir, { mimeType: result.mimeType, pdfinfo: PDFINFO, identify: IDENTIFY, emptyInput: job.emptyInput === true });
     if (problem !== null) return { id: job.id, kind: 'bad-output', bytes: result.buffer.length, ms, reason: problem };

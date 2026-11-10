@@ -2,6 +2,7 @@ import { ConversionFailedError, type ConversionOptions } from '../types';
 import { documentToEpub } from './document-model/epub';
 import type { DocumentModel } from './document-model/model';
 import { plainTextModel } from './document-model/plain';
+import { remainingJobMs } from './job-time';
 import { evaluatePageOcrDecisions, recognizeRenderedPdfPages } from './ocr';
 import type { OcrResult } from './ocr-pdf-combiner';
 import { openPdfForReading } from './pdf-access';
@@ -62,6 +63,8 @@ export async function readPdfContentForOffice(source: Buffer, options: Conversio
     dpi: options.dpi,
     language: options.ocrLanguage,
     detectOrientation: options.ocrDetectOrientation,
+    jobDeadlineMs: remainingJobMs(options),
+    signal: options.signal,
   });
   // A page OCR read as empty is not a recognized page: it keeps its own text layer, and so its tables.
   const readByOcr = readPagesOf(recognized);

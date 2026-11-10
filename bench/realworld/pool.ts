@@ -179,7 +179,7 @@ export class JobPool {
       }, deadlineMs);
       slot.child.on('message', onMessage);
       slot.child.once('exit', onExit);
-      slot.child.send({ ...request, id });
+      slot.child.send({ ...request, deadlineMs, id });
     });
   }
 

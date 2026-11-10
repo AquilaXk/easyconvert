@@ -369,7 +369,12 @@ export async function convertThroughInterchange(deps: OfficeSuiteRouteDeps, requ
   if (writesTarget) return written;
   try {
     const next: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? written.buffer : { inputBuffer: written.buffer, outputPath: requestedOutput };
-    return await deps.convert(next, interchange, tgt, { ...options, inProcessFallback: undefined }, originalFilename);
+    const result = await deps.convert(next, interchange, tgt, { ...options, inProcessFallback: undefined }, originalFilename);
+    if (interchange === PDF_INTERCHANGE && tgt === MARKDOWN_TARGET && result.buffer.toString('utf-8').trim() === '') {
+      deps.discardOutput(result.filePath, input, options);
+      throw new ConversionFailedError('The rendered pages hold no text, so there is nothing to write as Markdown.');
+    }
+    return result;
   } finally {
     deps.discardOutput(written.filePath, input, options);
   }

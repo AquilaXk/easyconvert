@@ -73,6 +73,7 @@ import {
   executeSandboxedBinary,
   rethrowSandboxUnavailable,
   SandboxedMemoryLimitError,
+  SandboxedTimeoutError,
   SandboxedProcessError,
   SandboxedBufferLimitError,
 } from './sandbox';
@@ -1456,14 +1457,17 @@ async function renderPdfToSvgWithPoppler(
     filterOutputFile: (f) => f.endsWith('.svg'),
     missingOutputError: 'pdftocairo execution completed without producing any output SVG files',
     renderPages: async (tempDir, inputPath, intervals) => {
+      const deadline = Date.now() + timeout;
       let step: Promise<any> = Promise.resolve();
       for (const p of pagesOfIntervals(intervals)) {
         step = step.then(() => {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) throw new SandboxedTimeoutError(timeout);
           const pageSvgPath = path.join(tempDir, `page-${p}.svg`);
           const args = ['-svg', '-f', String(p), '-l', String(p), inputPath, pageSvgPath];
           return executeSandboxedBinary(pdftocairoBin, args, {
             cwd: tempDir,
-            timeoutMs: timeout,
+            timeoutMs: remaining,
             maxBuffer,
             networkIsolated: true,
             signal: options.signal,
@@ -1575,12 +1579,14 @@ async function reencodeRenderedPages(
   rendered: WorkerConversionResult,
   renderedExtension: string,
   targetExtension: string,
-  encode: (page: Buffer, entryName: string) => Promise<Buffer>,
+  encode: (page: Buffer, entryName: string, remainingMs: number) => Promise<Buffer>,
   context: ChainOutputContext
 ): Promise<WorkerConversionResult> {
+  const timeout = Math.min(stageTimeoutMs(context.options, POPPLER_DEFAULT_TIMEOUT_MS), POPPLER_MAX_TIMEOUT_MS);
+  const deadline = Date.now() + timeout;
   try {
     if (!rendered.filename.endsWith('.zip')) {
-      return await persistChainOutput(await encode(rendered.buffer, rendered.filename), targetExtension, context);
+      return await persistChainOutput(await encode(rendered.buffer, rendered.filename, timeout), targetExtension, context);
     }
     const pages = await JSZip.loadAsync(rendered.buffer);
     const entryNames = Object.keys(pages.files)
@@ -1589,9 +1595,13 @@ async function reencodeRenderedPages(
     const encoded: ZipFile[] = [];
     const renderedSuffix = `.${renderedExtension}`;
     for (const entryName of entryNames) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new SandboxedTimeoutError(timeout);
+      }
       const stem = entryName.endsWith(renderedSuffix) ? entryName.slice(0, -renderedSuffix.length) : entryName;
       const page = await pages.files[entryName].async('nodebuffer');
-      encoded.push({ name: `${stem}.${targetExtension}`, data: await encode(page, entryName) });
+      encoded.push({ name: `${stem}.${targetExtension}`, data: await encode(page, entryName, remaining) });
     }
     return await persistChainFile('zip', context, (outputPath) => writeDeflatedZipFile(outputPath, encoded));
   } finally {
@@ -1625,7 +1635,7 @@ async function convertPdfToEncodedRaster(
     rendered,
     PNG_FORMAT,
     tgt,
-    async (page, entryName) => (await convertImage(page, tgt, pageOptions, entryName, PNG_FORMAT)).buffer,
+    async (page, entryName, remainingMs) => (await convertImage(page, tgt, { ...pageOptions, timeoutMs: remainingMs }, entryName, PNG_FORMAT)).buffer,
     context
   );
 }
@@ -1668,8 +1678,12 @@ async function convertPdfToPostScript(
   const timeout = Math.min(stageTimeoutMs(options, POPPLER_DEFAULT_TIMEOUT_MS), POPPLER_MAX_TIMEOUT_MS);
   const maxBuffer = Math.min(options.maxBufferBytes || POPPLER_DEFAULT_MAX_BUFFER_BYTES, POPPLER_MAX_BUFFER_BYTES);
   const isEps = tgt === EPS_TARGET;
-  const run = (tempDir: string, args: string[]) =>
-    executeSandboxedBinary(pdftopsBin, args, { cwd: tempDir, timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal });
+  const deadline = Date.now() + timeout;
+  const run = (tempDir: string, args: string[]) => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new SandboxedTimeoutError(timeout);
+    return executeSandboxedBinary(pdftopsBin, args, { cwd: tempDir, timeoutMs: remaining, maxBuffer, networkIsolated: true, signal: options.signal });
+  };
 
   return executePopplerRender({
     sandboxPrefix: 'easyconvert-poppler-ps-',
@@ -1684,7 +1698,7 @@ async function convertPdfToPostScript(
     missingOutputError: `pdftops execution completed without producing any .${tgt} output`,
     renderPages: async (tempDir, inputPath, intervals) => {
       if (isEps) {
-        await writeEpsPages(pagesOfIntervals(intervals), tempDir, inputPath, run);
+        await writeEpsPages(pagesOfIntervals(intervals), tempDir, inputPath, run, pageRenderProcesses());
         return;
       }
       if (intervals.length !== 1) {

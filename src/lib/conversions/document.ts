@@ -341,7 +341,7 @@ export async function convertDocument(
         // pages; the text stays as extracted. A requested OCR, or a target that is OCR output, never is.
         // A page tree that cannot be walked leaves nothing to render either, so it is treated the same way.
         const optional = !options.ocrEnabled && tgt !== 'hocr' && tgt !== 'alto';
-        const cannotRender = (err instanceof OcrEngineUnavailableError && !(err instanceof OcrLanguageUnavailableError)) || err instanceof PdfPageFrameError;
+        const cannotRender = (err instanceof OcrEngineUnavailableError && !(err instanceof OcrLanguageUnavailableError)) || (!isScanned && err instanceof PdfPageFrameError);
         if (!(optional && cannotRender)) {
           if (err instanceof ConversionFailedError) throw err;
           const rawMsg = err instanceof Error ? err.message : String(err);

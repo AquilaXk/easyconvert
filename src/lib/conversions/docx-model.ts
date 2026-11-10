@@ -291,19 +291,29 @@ class DocxReader {
     const gridColumns = childElements(firstChild(tbl, 'tblGrid') ?? tbl, 'gridCol');
     let columnCount = gridColumns.length;
 
+    const collectElements = (parent: XmlElement, targetLocal: string, into: XmlElement[]): void => {
+      for (const child of parent.children) {
+        if (typeof child === 'string') continue;
+        if (child.local === targetLocal) {
+          into.push(child);
+        } else if (child.local === 'sdt') {
+          const content = firstChild(child, 'sdtContent');
+          if (content) collectElements(content, targetLocal, into);
+        } else if (child.local === 'ins' || child.local === 'moveTo' || child.local === 'customXml' || child.local === 'smartTag') {
+          collectElements(child, targetLocal, into);
+        } else if (child.local === 'AlternateContent') {
+          const choice = firstChild(child, 'Choice') ?? firstChild(child, 'Fallback');
+          if (choice) collectElements(choice, targetLocal, into);
+        }
+      }
+    };
+
     const readRow = (tr: XmlElement): void => {
       const trPr = firstChild(tr, 'trPr');
       const cells: TableDraftCell[] = [];
       let column = readInt(trPr ? firstChild(trPr, 'gridBefore') : undefined, 'val') ?? 0;
       const cellElements: XmlElement[] = [];
-      for (const child of tr.children) {
-        if (typeof child === 'string') continue;
-        if (child.local === 'tc') cellElements.push(child);
-        else if (child.local === 'sdt') {
-          const content = firstChild(child, 'sdtContent');
-          if (content) cellElements.push(...childElements(content, 'tc'));
-        }
-      }
+      collectElements(tr, 'tc', cellElements);
       for (const tc of cellElements) {
         const tcPr = firstChild(tc, 'tcPr');
         const span = Math.max(1, readInt(tcPr ? firstChild(tcPr, 'gridSpan') : undefined, 'val') ?? 1);
@@ -342,9 +352,9 @@ class DocxReader {
       rows.push(cells);
     };
 
-    for (const child of tbl.children) {
-      if (typeof child !== 'string' && child.local === 'tr') readRow(child);
-    }
+    const rowElements: XmlElement[] = [];
+    collectElements(tbl, 'tr', rowElements);
+    for (const tr of rowElements) readRow(tr);
     // Column widths are the grid's when it covers every column; otherwise the table spreads over the text width.
     const widths = gridColumns.map((gridCol) => (readInt(gridCol, 'w') ?? 0) / TWIPS_PER_POINT);
     const columnWidthsPt = widths.length === columnCount && widths.every((width) => width > 0) ? widths : undefined;

@@ -12,6 +12,7 @@ import {
   UnsupportedTargetError,
 } from '../types';
 import { SandboxedTimeoutError } from '../security/process-sandbox';
+import { isCalibreEbookTarget } from './calibre-ebook-targets';
 import { requiresNativeEngine } from './native-engine-pairs';
 import { OFFICE_SUITE_SOURCE_FORMATS } from './office/office-suite-sources';
 import { checkConversionOutput } from './output-check';
@@ -26,9 +27,9 @@ import {
 } from '../../worker/engines';
 
 const PDF_FORMAT = 'pdf';
-/** Sources of the office suite, PDF, PostScript, XPS and DjVu tools, whose time-limit failures are typed. */
+/** Sources of the office suite, PDF, PostScript, XPS, DjVu, plain-document and Calibre tools, whose time-limit failures are typed. */
 const TIMEOUT_TYPED_SOURCES: ReadonlySet<string> = new Set([
-  'pdf', 'ps', 'xps', 'oxps', 'djvu', 'djv', 'doc', 'docx', 'docm', 'dotx', 'dotm', 'rtf', 'odt', 'xls', 'xlsx', 'xlsm', 'xltx', 'xltm', 'ods', 'ppt', 'pptx', 'pptm', 'potx', 'potm', 'ppsx', 'ppsm', 'odp',
+  'pdf', 'ps', 'eps', 'svg', 'ai', 'xps', 'oxps', 'djvu', 'djv', 'doc', 'docx', 'docm', 'dotx', 'dotm', 'rtf', 'odt', 'xls', 'xlsx', 'xlsm', 'xltx', 'xltm', 'ods', 'ppt', 'pptx', 'pptm', 'potx', 'potm', 'ppsx', 'ppsm', 'odp', 'txt', 'html', 'htm', 'md', 'rst', 'csv', 'tsv', 'json', 'parquet', 'hwp', 'hwpx',
   ...OFFICE_SUITE_SOURCE_FORMATS,
 ]);
 const IN_PROCESS_ENGINE: WorkerConversionResult['engineUsed'] = 'internal-fallback';
@@ -71,7 +72,7 @@ function assertAdvertised(src: string, tgt: string, options: WorkerEngineOptions
  */
 function toEngineUnavailable(err: unknown, src: string, tgt: string): unknown {
   // A render of a document or PDF that outruns its tool's limit is deterministic: a typed refusal, not a retried crash.
-  if (err instanceof SandboxedTimeoutError && TIMEOUT_TYPED_SOURCES.has(src)) {
+  if (err instanceof SandboxedTimeoutError && (TIMEOUT_TYPED_SOURCES.has(src) || isCalibreEbookTarget(tgt))) {
     return new CpuTaskTimeoutError(`.${src} to .${tgt} conversion`, err.timeoutMs);
   }
   if (err instanceof ComplexScriptRequiresNativeEngineError) {

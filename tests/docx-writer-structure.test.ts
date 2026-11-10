@@ -156,6 +156,34 @@ describe('DOCX round trip through the model', () => {
     expect([sha256(await zipEntryBytes(zip, 'word/media/image1.jpeg')), sha256(await zipEntryBytes(zip, 'word/media/image2.png'))]).toEqual([hashes.jpeg, hashes.png]);
   });
 
+  it('reads table rows wrapped in structured document tags (w:sdt -> w:sdtContent -> w:tr)', async () => {
+    const zip = new JSZip();
+    zip.file(
+      'word/document.xml',
+      '<?xml version="1.0" encoding="UTF-8"?>' +
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' +
+        '<w:tbl><w:sdt><w:sdtContent><w:tr><w:sdt><w:sdtContent><w:tc><w:p><w:r><w:t>Wrapped cell</w:t></w:r></w:p></w:tc></w:sdtContent></w:sdt></w:tr></w:sdtContent></w:sdt></w:tbl>' +
+        '</w:body></w:document>'
+    );
+    const { model } = await readDocxModel(zip);
+    const table = model.sections[0]?.blocks.find((block) => block.type === 'table');
+    expect(table?.type).toBe('table');
+    if (table?.type === 'table') {
+      expect(table.rows).toHaveLength(1);
+      expect(table.rows[0]?.[0]?.blocks?.[0]).toMatchObject({ type: 'paragraph', runs: [{ text: 'Wrapped cell' }] });
+    }
+  });
+
+  it('unwraps outer layout tables that wrap inner data tables so no w:tbl is nested inside w:tc', async () => {
+    const html = '<html><body><table><tr><td><p>Heading</p><table><tr><td>A</td><td>B</td></tr></table></td></tr></table></body></html>';
+    const docx = (await convertFile(Buffer.from(html), 'html', 'docx', {}, 'layout.html')).buffer;
+    const zip = await JSZip.loadAsync(docx);
+    const document = await partXml(zip, 'word/document.xml');
+    expect(xpathCount(document, `//${w('tbl')}`)).toBe(1);
+    expect(xpathCount(document, `//${w('tc')}//${w('tbl')}`)).toBe(0);
+    expect(xpathString(document, `string(//${w('p')}[1])`)).toBe('Heading');
+  });
+
   oracleTest('LibreOffice reads the written rich-structure document with every heading, list item, table cell, picture and note', ['soffice'], async () => {
     const { model } = await readDocxModel(await JSZip.loadAsync(fixtureBytes('rich-structure.docx')));
     const written = await documentToDocx(model, { title: 'rich-structure' });

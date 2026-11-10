@@ -675,6 +675,15 @@ describe('an OEB book delivered as a ZIP', () => {
     expect(await oebProblem(await zipOf({ 'content.opf': OPF, 'index.xhtml': page }))).toBe('oeb archive content documents hold no text');
   });
 
+  it('is accepted when the content documents hold an image and the archive includes the image file', async () => {
+    const archive = await zipOf({
+      'content.opf': OPF,
+      'index.xhtml': '<html><body><div><img src="page-1.jpg" alt="page 1"/></div></body></html>',
+      'page-1.jpg': Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    expect(await oebProblem(archive)).toBeNull();
+  });
+
   it('is refused when the content documents hold no text, unless the corpus marks the input as empty', async () => {
     const archive = await zipOf({ 'content.opf': OPF, 'index.xhtml': '<html><body><p> </p></body></html>' });
     expect(await oebProblem(archive)).toBe('oeb archive content documents hold no text');

@@ -8,13 +8,14 @@
 import fs from 'node:fs';
 import { ensureCached, mapLimit } from './fetch';
 import type { CorpusFile } from './manifest';
-import { ocrPageCount } from './ocr-path';
+import { ocrPageCounts, type PdfOcrPageCounts } from './ocr-path';
 import type { Job } from './plan';
 import { JobPool, scaledDeadlineMs } from './pool';
 import type { JobRecord } from './report';
 
 const FETCH_CONCURRENCY = 8;
 const PROGRESS_EVERY = 100;
+const MARKUP_OCR_TARGETS: ReadonlySet<string> = new Set(['hocr', 'alto']);
 
 export interface JudgeOptions {
   cacheDir: string;
@@ -73,9 +74,11 @@ function startFetch(batch: readonly CorpusFile[] | undefined, options: JudgeOpti
   return fetching;
 }
 
-async function pageCounts(batch: readonly CorpusFile[], paths: ReadonlyMap<string, string>): Promise<Map<string, number>> {
-  const pages = new Map<string, number>();
-  for (const file of batch.filter((candidate) => candidate.format === 'pdf' && paths.has(candidate.id))) pages.set(file.id, await ocrPageCount(fs.readFileSync(paths.get(file.id)!)));
+async function pageCounts(batch: readonly CorpusFile[], paths: ReadonlyMap<string, string>): Promise<Map<string, PdfOcrPageCounts>> {
+  const pages = new Map<string, PdfOcrPageCounts>();
+  for (const file of batch.filter((candidate) => candidate.format === 'pdf' && paths.has(candidate.id))) {
+    pages.set(file.id, await ocrPageCounts(fs.readFileSync(paths.get(file.id)!)));
+  }
   return pages;
 }
 
@@ -108,14 +111,18 @@ export async function judgeJobs(jobs: readonly Job[], options: JudgeOptions): Pr
       const members = new Set(batches[index].map((file) => file.id));
       const batchJobs = jobs.filter((job) => members.has(job.file.id) && fetched.paths.has(job.file.id));
       const outcomes = await pool.runAll(
-        batchJobs.map((job) => ({
-          path: fetched.paths.get(job.file.id)!,
-          name: job.file.id,
-          format: job.file.format,
-          target: job.target,
-          emptyInput: job.file.emptyInput === true,
-          deadlineMs: scaledDeadlineMs(options.deadlineMs, pages.get(job.file.id) ?? 0, pool.ocrPageBudgetMs),
-        })),
+        batchJobs.map((job) => {
+          const counts = pages.get(job.file.id);
+          const ocrPages = counts === undefined ? 0 : MARKUP_OCR_TARGETS.has(job.target) ? counts.markupPages : counts.scannedPages;
+          return {
+            path: fetched.paths.get(job.file.id)!,
+            name: job.file.id,
+            format: job.file.format,
+            target: job.target,
+            emptyInput: job.file.emptyInput === true,
+            deadlineMs: scaledDeadlineMs(options.deadlineMs, ocrPages, pool.ocrPageBudgetMs),
+          };
+        }),
         () => {
           done++;
           if (done % PROGRESS_EVERY === 0) console.log(`  ${done}/${jobs.length}`);
