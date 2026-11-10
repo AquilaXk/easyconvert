@@ -216,6 +216,7 @@ Delivery
 220. [Korean-first CPU neural OCR engine with Hangul Jamo decomposition, layout-coherence scoring, single-block segmentation on deskewed or binarized Korean scans, and Compatibility Jamo post-correction](#220-korean-first-cpu-neural-ocr-engine-with-hangul-jamo-decomposition-layout-coherence-scoring-single-block-segmentation-on-deskewed-or-binarized-korean-scans-and-compatibility-jamo-post-correction)
 221. [Thread, worker, and process pool sizing reads Linux cgroup v2 cpu.max and cgroup v1 CFS quotas before os.availableParallelism()](#221-thread-worker-and-process-pool-sizing-reads-linux-cgroup-v2-cpumax-and-cgroup-v1-cfs-quotas-before-osavailableparallelism)
 222. [Prometheus alerting rules on SLO burn, queue age, and worker restarts, and full TypeScript type-checking across tests/](#222-prometheus-alerting-rules-on-slo-burn-queue-age-and-worker-restarts-and-full-typescript-type-checking-across-tests)
+223. [PowerPoint 4.0/95 import filter selection, outer layout table unwrapping in DOCX writer, structured document tag unwrapping in DOCX table rows, stage-deadline enforcement on Poppler multi-page chains, and OCR job deadline propagation in the corpus runner](#223-powerpoint-4095-import-filter-selection-outer-layout-table-unwrapping-in-docx-writer-structured-document-tag-unwrapping-in-docx-table-rows-stage-deadline-enforcement-on-poppler-multi-page-chains-and-ocr-job-deadline-propagation-in-the-corpus-runner)
 
 Quality evidence
 
