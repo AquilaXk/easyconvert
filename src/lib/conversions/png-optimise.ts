@@ -40,8 +40,13 @@ const MEMORY_BASE_MB = 256;
 /** Resident memory measured at -o2 is about 7 times the decoded picture; the limit leaves room above that. */
 const MEMORY_PER_RAW_MB = 10;
 const MEMORY_LIMIT_MAX_MB = 3072;
-/** Decoded pictures larger than this are not optimised: the trials would cost seconds for a few percent. */
-export const OXIPNG_MAX_RAW_BYTES = 128 * 1024 * 1024;
+/**
+ * Decoded pictures larger than this are not optimised: the trials cost seconds for a few percent (Linux arm64, two threads: a 24-megapixel
+ * palette picture, 72 MB decoded, 3.3 s at -o1 and 5.7 s at -o2; a 12-megapixel full-colour one, 37 MB, 5.2 s at -o1; a 24-megapixel one,
+ * 72 MB, 10.7 s). A palette picture is a byte a pixel, so its limit is a larger picture than a full-colour one's.
+ */
+export const OXIPNG_MAX_PALETTE_RAW_BYTES = 80 * 1024 * 1024;
+export const OXIPNG_MAX_FULL_COLOUR_RAW_BYTES = 24 * 1024 * 1024;
 const BYTES_PER_MB = 1024 * 1024;
 const BIT_DEPTH_OFFSET = 24;
 const COLOUR_TYPE_OFFSET = 25;
@@ -75,7 +80,7 @@ export async function optimisePng(png: Buffer, options: OptimiseOptions = {}): P
   const program = findOxipng();
   if (program === null) return png;
   const header = readPngHeader(png);
-  if (header === null || header.decodedBytes > OXIPNG_MAX_RAW_BYTES) return png;
+  if (header === null || header.decodedBytes > (header.palette ? OXIPNG_MAX_PALETTE_RAW_BYTES : OXIPNG_MAX_FULL_COLOUR_RAW_BYTES)) return png;
   const raw = header.decodedBytes;
   try {
     const result = await executeSandboxedBinary(
