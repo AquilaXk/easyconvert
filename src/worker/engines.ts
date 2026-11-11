@@ -372,7 +372,7 @@ async function runHeadlessOffice(
 
   // Every run of the office suite, whichever route asks for it, opens the package without its macros.
   input = await officeInputWithoutMacros(input);
-  await assertOfficeEmbeddedImagesWithinLimit(input);
+  await assertOfficeEmbeddedImagesWithinLimit(input).catch((err: unknown) => { throw asUnreadableDocument(err, src); });
   libreOfficePool.setSofficePath(sofficeBin);
 
   if (libreOfficePool.isEnabled() && !options.keepEmbeddedExcelObjects) {

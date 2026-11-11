@@ -155,15 +155,28 @@ async function headOf(entry: JSZip.JSZipObject): Promise<Buffer> {
  * the suite opens what this reader cannot, so a package left unread would reach it unchecked.
  * @throws InputPixelLimitError and PayloadLimitError (413) for a picture past a limit, ConversionFailedError (400) for a package that cannot be read.
  */
+/** An office package the picture check cannot read; the office route answers it as the damaged document it is. */
+export class OfficePackageUnreadableError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OfficePackageUnreadableError';
+  }
+}
+
 export async function assertOfficeEmbeddedImagesWithinLimit(input: Buffer | WorkerVfsPayload): Promise<void> {
   const buffer = zipPackageBytes(input);
   if (!buffer) return;
-  assertPackageEntryCount(buffer, 'office document', 'office package');
+  try {
+    assertPackageEntryCount(buffer, 'office document', 'office package');
+  } catch (err) {
+    if (err instanceof ConversionFailedError && !(err instanceof PayloadLimitError)) throw new OfficePackageUnreadableError(err.message);
+    throw err;
+  }
   let zip: JSZip;
   try {
     zip = await JSZip.loadAsync(buffer);
   } catch {
-    throw new ConversionFailedError('The office document is not a valid package, so its pictures cannot be checked before the office suite opens it.');
+    throw new OfficePackageUnreadableError('The office document is not a valid package, so its pictures cannot be checked before the office suite opens it.');
   }
   const budget = new InflateBudget(maxDocumentMediaBytes());
   for (const [name, entry] of Object.entries(zip.files)) {
