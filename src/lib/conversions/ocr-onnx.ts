@@ -561,11 +561,12 @@ export function groupRows<T extends { box: RotatedBox }>(items: T[]): T[][] {
 }
 
 /**
- * The detector's boxes are the text region enlarged by the reference's unclip rule, which lands a box at about one text height (a 13 point
- * line at 300 dpi, 54 pixels, gives a box of 57; measured on the golden page), with a margin of a twentieth of its height on each side.
+ * The detector's box is the text region enlarged by the reference's unclip rule: a box is about one text height high (a 13 point line at
+ * 300 dpi, 54 pixels, gives a box of 57; measured on the golden page), and the same enlargement puts a margin of 0.3 of that height on
+ * each end of a line, so the text of a line is its box less 0.6 of the box height.
  */
 const BOX_HEIGHTS_PER_TEXT_HEIGHT = 1.05;
-const BOX_MARGIN_SHARE = 0.05;
+const BOX_MARGIN_SHARE = 0.3;
 /** A line this many text heights long (about as many syllables) is a line of running text; the cells of a table and labels are shorter. */
 const PROSE_LINE_EMS = 14;
 /** Fewest lines of running text on each side of a gutter for the page to count as set in columns. */

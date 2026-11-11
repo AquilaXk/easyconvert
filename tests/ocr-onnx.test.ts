@@ -38,7 +38,7 @@ function rotatedRectPoints(cx: number, cy: number, width: number, height: number
 /** A box of a text line of 42 pixel text (a box height of 46, as the detector's boxes measure on a page) whose text runs from `x0` to `x1`. */
 function lineBox(x0: number, x1: number, y: number, angle = 0): RotatedBox {
   const height = 46;
-  const width = x1 - x0 + 2 * 0.05 * height;
+  const width = x1 - x0 + 2 * 0.3 * height;
   const cx = (x0 + x1) / 2;
   return { cx: cx - y * Math.sin(angle), cy: y + cx * Math.sin(angle), width, height, angle, score: 0.9 };
 }
