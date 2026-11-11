@@ -104,6 +104,8 @@ export async function deflateRawWithLibdeflate(data: Uint8Array, productLevel: n
       maxBuffer: worstCaseOutputBytes(data.length),
       timeoutMs: runtime.timeoutMs ?? CPU_POOL_TASK_TIMEOUT_MS,
       networkIsolated: true,
+      // A filter on standard input and output: it touches no file.
+      workDir: null,
       signal: runtime.signal,
     });
     member = run.stdout;

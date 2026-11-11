@@ -18,6 +18,10 @@ import { withMissingBinary } from './helpers/native-tools';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 import { expectWithinHangGuard } from './helpers/timing';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * DjVu documents drawn by `ddjvu` of djvulibre. The oracles are djvulibre's own programs run on the same file and the PDF tools

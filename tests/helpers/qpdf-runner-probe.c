@@ -159,6 +159,29 @@ int qpdfjob_run_from_argv(const char *const argv[]) {
     }
     return 0;
   }
+  if (strcmp(probe, "files") == 0) {
+    /* files <file of another job> <own directory>: what the job can do to a file of another job, in its own directory, and in the system. */
+    const char *other = argv[2] != NULL ? argv[2] : "/nonexistent";
+    const char *own = argv[3] != NULL ? argv[3] : "/nonexistent";
+    char path[4096];
+    int fd = open(other, O_RDONLY);
+    printf("read other: %s\n", fd >= 0 ? "ok" : strerror(errno));
+    if (fd >= 0) close(fd);
+    fd = open(other, O_WRONLY);
+    printf("write other: %s\n", fd >= 0 ? "ok" : strerror(errno));
+    if (fd >= 0) close(fd);
+    printf("truncate other: %s\n", truncate(other, 0) == 0 ? "ok" : strerror(errno));
+    snprintf(path, sizeof path, "%s/created", own);
+    fd = open(path, O_WRONLY | O_CREAT, 0600);
+    printf("create own: %s\n", fd >= 0 ? "ok" : strerror(errno));
+    if (fd >= 0) close(fd);
+    printf("truncate own: %s\n", truncate(path, 0) == 0 ? "ok" : strerror(errno));
+    printf("remove own: %s\n", unlink(path) == 0 ? "ok" : strerror(errno));
+    fd = open("/etc/passwd", O_RDONLY);
+    printf("read system: %s\n", fd >= 0 ? "ok" : strerror(errno));
+    if (fd >= 0) close(fd);
+    return 0;
+  }
   if (strcmp(probe, "echo-stdin") == 0) {
     char buf[65536];
     ssize_t n;

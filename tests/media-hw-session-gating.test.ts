@@ -12,6 +12,10 @@ import {
   resetHardwareAccelerationCache,
 } from '../src/lib/conversions/media-ffmpeg-args';
 import { openMediaInput } from '../src/lib/conversions/media-process';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * A host whose ffmpeg lists NVENC or VAAPI encoders but cannot open a hardware session (no GPU,

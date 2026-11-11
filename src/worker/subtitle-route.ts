@@ -54,6 +54,7 @@ async function runSubtitleFfmpeg(ffmpegBin: string, args: string[], tempDir: str
   try {
     await runFfmpeg(ffmpegBin, args, {
       cwd: tempDir,
+      workDir: tempDir,
       timeoutMs: stageTimeoutMs(request.options, DEFAULT_TIMEOUT_MS),
       maxBuffer: MAX_STDERR_BYTES,
       signal: request.options.signal,

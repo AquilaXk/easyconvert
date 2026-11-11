@@ -30,6 +30,10 @@ import { getUnshareCapability, resetUnshareCapabilityCache } from '../src/lib/se
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { skipUnless } from './helpers/strict-skip';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 const HTTP_SERVICE_UNAVAILABLE = 503;
 const CONVERT_TIMEOUT_MS = 60_000;

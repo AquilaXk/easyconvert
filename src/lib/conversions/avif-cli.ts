@@ -192,7 +192,7 @@ export const AVIFENC_PROBE_RETRY_MS = 60_000;
 
 async function probeVersion(avifenc: string, key: string, state: ProbeState, timeoutMs: number): Promise<boolean> {
   try {
-    const result = await executeSandboxedBinary(avifenc, ['--version'], { timeoutMs, maxBuffer: AVIFENC_PROBE_MAX_BYTES, networkIsolated: true });
+    const result = await executeSandboxedBinary(avifenc, ['--version'], { timeoutMs, maxBuffer: AVIFENC_PROBE_MAX_BYTES, networkIsolated: true, workDir: null });
     const version = parseAvifencVersion(result.stdout.toString('utf-8'));
     state.verdict = version !== null && isAtLeast(version, AVIFENC_MIN_VERSION);
     if (!state.verdict) {
@@ -472,6 +472,7 @@ export async function encodeAvifWithCli(avifenc: string, request: AvifCliRequest
       await launchSandboxedBinary(avifenc, args, {
         expectedOutputBytes: AVIFENC_EXPECTED_STDOUT_BYTES,
         cwd: jobDir,
+        workDir: jobDir,
         timeoutMs,
         maxBuffer: AVIFENC_MAX_DIAGNOSTIC_BYTES,
         maxFileSize: maxOutputBytes,

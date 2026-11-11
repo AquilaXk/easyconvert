@@ -18,6 +18,10 @@ import { extractTextWithExternalPdftotext, requireOracleTool } from './helpers/d
 import { oracleTest } from './helpers/oracle-test';
 import { buildStoredRar4 } from './helpers/rar4-stored';
 import { normalizeWhitespace, sofficeConvert } from './helpers/soffice-office';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * The e-book pairs the registry offers from EPUB, FB2, MOBI, AZW, AZW3, PRC, CBZ and CBR (docs/policy-decisions.md,

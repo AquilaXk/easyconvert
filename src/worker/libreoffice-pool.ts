@@ -9,6 +9,7 @@ import { stagedOutputPath } from '../lib/storage/temp-file';
 import { findOfficeOutput, getMimeType, resolveOfficeInputContext } from './worker-output';
 import {
   executeSandboxedBinary,
+  OFFICE_PIPE_DIR,
   rethrowSandboxUnavailable,
   SandboxedExecutionOptions,
   SandboxedExecutionResult,
@@ -332,6 +333,9 @@ export class LibreOfficePoolManager {
           warmArgs,
           {
             cwd: workDir,
+            workDir,
+            writeDirs: [userProfileDir],
+            socketDirs: [OFFICE_PIPE_DIR],
             timeoutMs: 15000,
             env: { HOME: workDir, SAL_USE_VCLPLUGIN: 'svp' },
             networkIsolated: true,
@@ -423,6 +427,9 @@ export class LibreOfficePoolManager {
       try {
         await this.executor(sofficePath, args, {
           cwd: workDir,
+          workDir,
+          writeDirs: [profileDir],
+          socketDirs: [OFFICE_PIPE_DIR],
           timeoutMs,
           env: { HOME: workDir, SAL_USE_VCLPLUGIN: 'svp' },
           networkIsolated: true,
@@ -731,6 +738,12 @@ export class LibreOfficePoolManager {
         convertArgs,
         {
           cwd: jobSubdir,
+          // The directory of this job alone, and the profile of the slot: the other jobs of the slot keep theirs.
+          workDir: jobSubdir,
+          writeDirs: [worker.userProfileDir],
+          // The input of a file of the store is a link to it, which the ruleset reads through to the file.
+          readDirs: [fs.realpathSync(inputPath)],
+          socketDirs: [OFFICE_PIPE_DIR],
           timeoutMs: timeout,
           maxBuffer,
           env: { HOME: jobSubdir, TMPDIR: jobSubdir, SAL_USE_VCLPLUGIN: 'svp' },

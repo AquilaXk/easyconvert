@@ -1,8 +1,8 @@
 // pid-init: runs a program in a PID namespace of its own, with the program as PID 2 and this code as PID 1.
 //
-//   pid-init [--keep-proc] -- <program> [argument...]
-//   pid-init --no-pid-namespace [--keep-proc] -- <program> [argument...]
-//   pid-init --check
+//   pid-init [--keep-proc] [--confine [--require] [--write <dir>]... [--read <dir>]... [--sockets <dir>]...] -- <program> [argument...]
+//   pid-init --no-pid-namespace [--keep-proc] [--confine ...] -- <program> [argument...]
+//   pid-init --check [--confine]
 //
 // It is started inside a user namespace (`unshare -r -n -- pid-init -- ...`), where it holds the capability to make a PID namespace.
 //
@@ -44,8 +44,22 @@
 // rename and link between directories with EXDEV. On the first Landlock version (Linux 5.13 to 5.18) that cannot be avoided, so the
 // ruleset is not made there.
 //
+// `--confine` puts the program under a second kind of ruleset, which is about the files of the host and not about /proc alone. The program
+// then reads the system (the program files, libraries, fonts and settings under /usr, /bin, /sbin, /lib*, /etc, /opt, /sys, /var/cache and
+// /var/lib, read-only), uses /dev and its own /proc entries as before, and may read, write, create, remove and truncate files only below
+// the directories named with `--write` (the directory of its job, and the directories of its own that it keeps beside it, such as a
+// profile). `--read` adds directories it may read and execute. Everything else is refused: the stored files of the other people the worker
+// serves, the directories of the other jobs, the application's own files. The ruleset handles every file right of Landlock version 3
+// (Linux 6.2: executing, reading, listing, writing, truncating, making and removing entries, moving between directories), because a
+// ruleset that handled the reading and writing of file contents alone would leave the other files of the same user free to be created,
+// removed and truncated (truncate(2) is not an open for writing). An older kernel cannot confine the files that way: with `--require` the
+// program is not started (125, and `pid-init: cannot confine: <reason>` on the standard error), without it the program runs under the
+// /proc ruleset above, after a line that starts `pid-init: files not confined:`. `--check --confine` exits 0 when this host can make and
+// enforce that ruleset and 3 when it cannot. `--sockets <dir>` (repeatable) also lets the program make and remove sockets below <dir> (and remove the
+// files there, which no right can tell from sockets), for a program that binds a socket at a place it cannot choose.
+//
 // Exit status: that of the program; 127 when it is not found and 126 when it cannot be run (as a shell and `unshare` say); 125 when the
-// namespace cannot be made.
+// namespace cannot be made or, with `--require`, the files cannot be confined.
 
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -78,9 +92,25 @@
 #define __NR_landlock_restrict_self 446
 #endif
 #define LANDLOCK_CREATE_RULESET_VERSION (1U << 0)
+#define LANDLOCK_ACCESS_FS_EXECUTE (1ULL << 0)
 #define LANDLOCK_ACCESS_FS_WRITE_FILE (1ULL << 1)
 #define LANDLOCK_ACCESS_FS_READ_FILE (1ULL << 2)
+#define LANDLOCK_ACCESS_FS_READ_DIR (1ULL << 3)
+#define LANDLOCK_ACCESS_FS_REMOVE_FILE (1ULL << 5)
+#define LANDLOCK_ACCESS_FS_MAKE_SOCK (1ULL << 9)
 #define LANDLOCK_ACCESS_FS_REFER (1ULL << 13)
+#define LANDLOCK_ACCESS_FS_TRUNCATE (1ULL << 14)
+/* Every file right of Landlock version 3 (bits 0 to 14: execute, write, read, list, remove, make, refer, truncate). */
+#define LANDLOCK_ACCESS_FS_ALL_V3 ((1ULL << 15) - 1)
+/* The rights that a rule on something that is not a directory may name. */
+#define LANDLOCK_ACCESS_FS_FILE_RIGHTS (LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_TRUNCATE)
+/* What a confined program gets of the system, of /dev, and of its own /proc entries. */
+#define CONFINE_READ_ACCESS (LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR)
+/* What `--sockets` adds below a directory, for a program that must bind a socket at a place it cannot choose (LibreOffice binds its single-instance
+   pipe at /tmp/OSL_PIPE_<uid>_<name>, whatever TMPDIR says, and removes it when it ends; a second run with the same profile fails without the removal).
+   Rights cannot be limited to a name, so the program may also remove other files below the directory; it can neither read nor write them. */
+#define SOCKET_ACCESS (LANDLOCK_ACCESS_FS_MAKE_SOCK | LANDLOCK_ACCESS_FS_REMOVE_FILE)
+#define CONFINE_DEVICE_ACCESS (LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_READ_DIR | LANDLOCK_ACCESS_FS_TRUNCATE)
 #define LANDLOCK_RULE_PATH_BENEATH 1
 /* The first descriptor number the kept /proc entries take when they stay in the program (--no-pid-namespace). */
 #define PIN_FD_FLOOR 200
@@ -89,10 +119,27 @@
 #define PIN_BATCH 128
 /* What is said on the standard error of the program when /proc is not hidden; the worker looks for it at the start of the output. */
 #define NOT_HIDDEN_NOTICE "pid-init: /proc not hidden: "
+/* The same for the files of the host: said when the program runs without being confined (no --require), and as the reason a program that must be confined is not started (--require). */
+#define NOT_CONFINED_NOTICE "pid-init: files not confined: "
+#define CANNOT_CONFINE_REFUSAL "pid-init: cannot confine: "
+/* How many directories --write and --read take each. */
+#define CONFINE_DIRS_MAX 16
 
 /* Why the last attempt to hide /proc failed, for the notice. */
 static const char *hide_failure = "";
-static int refer_handled = 0;
+/* The directories a confined program may use (see --confine). */
+struct confinement {
+  int enabled;
+  int required;
+  const char *write_dirs[CONFINE_DIRS_MAX];
+  int write_count;
+  const char *read_dirs[CONFINE_DIRS_MAX];
+  int read_count;
+  const char *socket_dirs[CONFINE_DIRS_MAX];
+  int socket_count;
+};
+/* The parts of the system a confined program reads and runs from. Anything not listed is not the program's: /shared, /tmp, /home, /app, /root, /srv, /mnt. */
+static const char *const CONFINE_SYSTEM_PATHS[] = {"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/opt", "/sys", "/var/cache", "/var/lib", "/var/spool"};
 /* The /proc entries the ruleset names, open: a rule belongs to an inode that /proc makes again once the entry is dropped from the cache. */
 static int pinned[PIN_MAX];
 static int pinned_count = 0;
@@ -105,17 +152,17 @@ struct landlock_path_beneath_attr_v1 {
   int32_t parent_fd;
 } __attribute__((packed));
 
-/* Allows reading and writing files below `path` (and moving them between directories where the kernel has that right). An entry that is not
+/* Allows `access` below `path`: the rights of a rule on a file are cut to the ones a file has. An entry that is not
    there (a dangling link, a process that ended) or that this process may not look at adds nothing; any other failure (out of descriptors, a
    refused rule) returns -1, because a rule that is missing takes a whole directory away from the program and the ruleset must not be put in
    force then. With `keep` the entry stays open (see pinned). */
-static int allow_below(int ruleset, const char *path, int keep) {
+static int allow_below(int ruleset, const char *path, int keep, uint64_t access) {
   int fd = open(path, O_PATH | O_CLOEXEC);
   if (fd < 0) return errno == ENOENT || errno == EACCES || errno == ELOOP || errno == ENOTDIR || errno == ENXIO ? 0 : -1;
-  struct landlock_path_beneath_attr_v1 rule = {.allowed_access = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE, .parent_fd = fd};
+  struct landlock_path_beneath_attr_v1 rule = {.allowed_access = access, .parent_fd = fd};
   struct stat st;
-  /* The right to move is one of directories; a rule on a file that names it is refused. */
-  if (refer_handled && fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) rule.allowed_access |= LANDLOCK_ACCESS_FS_REFER;
+  /* The right to move, to list and to make entries are rights of directories; a rule on a file that names one is refused. */
+  if (fstat(fd, &st) != 0 || !S_ISDIR(st.st_mode)) rule.allowed_access &= LANDLOCK_ACCESS_FS_FILE_RIGHTS;
   int added = (int)syscall(__NR_landlock_add_rule, ruleset, LANDLOCK_RULE_PATH_BENEATH, &rule, 0);
   if (added == 0 && keep && pinned_count < PIN_MAX) {
     pinned[pinned_count++] = fd;
@@ -134,7 +181,7 @@ static int is_number(const char *name) {
 }
 
 /* Allows every entry of `parent`: all but "proc" for the root directory, and all but the process numbers (kept open) for /proc. */
-static int allow_entries(int ruleset, const char *parent, int proc_entries) {
+static int allow_entries(int ruleset, const char *parent, int proc_entries, uint64_t access) {
   DIR *directory = opendir(parent);
   if (directory == NULL) return -1;
   int result = 0;
@@ -145,7 +192,7 @@ static int allow_entries(int ruleset, const char *parent, int proc_entries) {
     if (proc_entries ? is_number(name) : strcmp(name, "proc") == 0) continue;
     char path[512];
     if (snprintf(path, sizeof path, "%s/%s", strcmp(parent, "/") == 0 ? "" : parent, name) >= (int)sizeof path) continue;
-    if (allow_below(ruleset, path, proc_entries) != 0) {
+    if (allow_below(ruleset, path, proc_entries, access) != 0) {
       result = -1;
       break;
     }
@@ -158,10 +205,13 @@ static void release_pinned(void) {
   while (pinned_count > 0) close(pinned[--pinned_count]);
 }
 
-/* Makes the ruleset: reading and writing files below every entry of / but /proc, and below every entry of /proc but the process numbers.
-   "self" is a link to the directory of this process, so the entries of /proc that are not numbers include its own. Returns its descriptor, or
-   -1 (with hide_failure set) when it cannot be made: no Landlock, or the first version, which refuses every move between directories. */
-static int make_ruleset(void) {
+/* Makes the ruleset. Without `confine` it hides /proc from the program and nothing else: reading and writing files below every entry of /
+   but /proc, and below every entry of /proc but the process numbers. With it (see --confine) it confines the files: the parts of the system
+   read-only, /dev and the entries of /proc that are not process numbers (everything below /proc with `keep_proc`) as the program had them,
+   and every right below the directories of `confine`. "self" is a link to the directory of this process, so the entries of /proc that are
+   not numbers include its own. Returns its descriptor, or -1 (with hide_failure set) when it cannot be made: no Landlock, or a version
+   that is too old (the first refuses every move between directories, the first two cannot refuse a truncate). */
+static int make_ruleset(const struct confinement *confine, int keep_proc) {
   hide_failure = "";
   long abi = syscall(__NR_landlock_create_ruleset, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
   if (abi < 1) {
@@ -172,14 +222,32 @@ static int make_ruleset(void) {
     hide_failure = "Landlock version 1 refuses every move between directories";
     return -1;
   }
-  refer_handled = 1;
-  struct landlock_ruleset_attr_v1 handled = {.handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REFER};
+  if (confine != NULL && abi < 3) {
+    hide_failure = "Landlock version 2 cannot refuse a truncate (Linux 6.2 has version 3)";
+    return -1;
+  }
+  uint64_t everything = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REFER;
+  if (confine != NULL) everything = LANDLOCK_ACCESS_FS_ALL_V3;
+  struct landlock_ruleset_attr_v1 handled = {.handled_access_fs = everything};
   int ruleset = (int)syscall(__NR_landlock_create_ruleset, &handled, sizeof handled, 0);
   if (ruleset < 0) {
     hide_failure = "landlock_create_ruleset was refused";
     return -1;
   }
-  if (allow_entries(ruleset, "/", 0) != 0 || allow_entries(ruleset, "/proc", 1) != 0) {
+  int failed = 0;
+  if (confine == NULL) {
+    failed = allow_entries(ruleset, "/", 0, LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REFER) != 0 ||
+             allow_entries(ruleset, "/proc", 1, LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REFER) != 0;
+  } else {
+    for (size_t i = 0; !failed && i < sizeof CONFINE_SYSTEM_PATHS / sizeof CONFINE_SYSTEM_PATHS[0]; i++)
+      failed = allow_below(ruleset, CONFINE_SYSTEM_PATHS[i], 0, CONFINE_READ_ACCESS) != 0;
+    failed = failed || allow_below(ruleset, "/dev", 0, CONFINE_DEVICE_ACCESS) != 0;
+    failed = failed || (keep_proc ? allow_below(ruleset, "/proc", 0, CONFINE_DEVICE_ACCESS) != 0 : allow_entries(ruleset, "/proc", 1, CONFINE_DEVICE_ACCESS) != 0);
+    for (int i = 0; !failed && i < confine->read_count; i++) failed = allow_below(ruleset, confine->read_dirs[i], 0, CONFINE_READ_ACCESS) != 0;
+    for (int i = 0; !failed && i < confine->socket_count; i++) failed = allow_below(ruleset, confine->socket_dirs[i], 0, SOCKET_ACCESS) != 0;
+    for (int i = 0; !failed && i < confine->write_count; i++) failed = allow_below(ruleset, confine->write_dirs[i], 0, LANDLOCK_ACCESS_FS_ALL_V3) != 0;
+  }
+  if (failed) {
     hide_failure = "a rule could not be added";
     close(ruleset);
     release_pinned();
@@ -274,27 +342,49 @@ static int move_pinned_up(void) {
   return 0;
 }
 
-/* Hides the other processes from this one (unless told to keep /proc), then becomes the program. Never returns. `keeper` is the end of the
-   socket to PID 1 that takes the open /proc entries of the ruleset, or -1 when the program stays alone (--no-pid-namespace): they then stay
-   open in the program itself, at numbers of 200 and up. Nothing is put in force unless the entries are kept first. */
-static void exec_program(char *const *argv, int keep_proc, int keeper) {
-  if (!keep_proc) {
-    int ruleset = make_ruleset();
-    if (ruleset >= 0) {
-      int kept = keeper >= 0 ? send_pinned(keeper) : move_pinned_up();
-      if (kept != 0) {
-        hide_failure = "the open /proc entries could not be kept";
-        close(ruleset);
-        release_pinned();
-      } else if (enforce_ruleset(ruleset) != 0) {
-        release_pinned();
-      }
-    }
-    if (*hide_failure != '\0') fprintf(stderr, NOT_HIDDEN_NOTICE "%s\n", hide_failure);
-    /* What PID 1 holds is closed here; the program does not carry it. */
-    if (keeper >= 0) release_pinned();
+/* Makes the ruleset, keeps the open /proc entries it names (with PID 1, or in this process when there is no PID 1) and puts it in force on
+   this process. Returns 0 when it is in force and -1, with hide_failure set, when it is not; nothing is put in force unless the entries are
+   kept first. */
+static int put_ruleset_in_force(const struct confinement *confine, int keep_proc, int keeper) {
+  int ruleset = make_ruleset(confine, keep_proc);
+  if (ruleset < 0) return -1;
+  int kept = keeper >= 0 ? send_pinned(keeper) : move_pinned_up();
+  if (kept != 0) {
+    hide_failure = "the open /proc entries could not be kept";
+    close(ruleset);
+    release_pinned();
+    return -1;
   }
-  if (keeper >= 0) close(keeper);
+  if (enforce_ruleset(ruleset) != 0) {
+    release_pinned();
+    return -1;
+  }
+  return 0;
+}
+
+/* Puts the program under its rulesets (the files, when asked to confine them, and /proc unless told to keep it), then becomes the program.
+   Never returns. `keeper` is the end of the socket to PID 1 that takes the open /proc entries of the ruleset, or -1 when the program stays
+   alone (--no-pid-namespace): they then stay open in the program itself, at numbers of 200 and up. A program that must be confined and
+   cannot be is not started. */
+static void exec_program(char *const *argv, int keep_proc, int keeper, const struct confinement *confine) {
+  int confined = 0;
+  if (confine->enabled) {
+    if (put_ruleset_in_force(confine, keep_proc, keeper) == 0) {
+      confined = 1;
+    } else if (confine->required) {
+      fprintf(stderr, CANNOT_CONFINE_REFUSAL "%s\n", hide_failure);
+      _exit(EXIT_NAMESPACE);
+    } else {
+      fprintf(stderr, NOT_CONFINED_NOTICE "%s\n", hide_failure);
+    }
+  }
+  /* The ruleset that confines the files hides /proc as well; the one that only hides it is what a host without the first has left. */
+  if (!confined && !keep_proc && put_ruleset_in_force(NULL, 0, keeper) != 0) fprintf(stderr, NOT_HIDDEN_NOTICE "%s\n", hide_failure);
+  /* What PID 1 holds is closed here; the program does not carry it. */
+  if (keeper >= 0) {
+    release_pinned();
+    close(keeper);
+  }
   execvp(argv[0], argv);
   /* Said the way `unshare` says it, because the callers read the message of a program that cannot be started. */
   fprintf(stderr, "pid-init: failed to execute %s: %s\n", argv[0], strerror(errno));
@@ -302,7 +392,7 @@ static void exec_program(char *const *argv, int keep_proc, int keeper) {
 }
 
 /* PID 1 of the namespace. Never returns. */
-static void run_init(char *const *argv, int keep_proc, int report_fd, int unused_fd, int watch_fd, int parent_end_fd) {
+static void run_init(char *const *argv, int keep_proc, const struct confinement *confine, int report_fd, int unused_fd, int watch_fd, int parent_end_fd) {
   close(unused_fd);
   close(parent_end_fd);
   prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0);
@@ -317,7 +407,7 @@ static void run_init(char *const *argv, int keep_proc, int report_fd, int unused
   if (program == 0) {
     close(report_fd);
     close(keeper[0]);
-    exec_program(argv, keep_proc, keeper[1]);
+    exec_program(argv, keep_proc, keeper[1], confine);
   }
   close(keeper[1]);
   /* The program sends the /proc entries the ruleset names before it executes, or closes its end (exec does) when there are none; this process
@@ -340,24 +430,36 @@ static void run_init(char *const *argv, int keep_proc, int report_fd, int unused
 int main(int argc, char **argv) {
   int keep_proc = 0;
   int own_namespace = 1;
+  int check = 0;
+  struct confinement confine = {0};
   int first = 1;
   for (; first < argc; first++) {
     if (strcmp(argv[first], "--keep-proc") == 0) keep_proc = 1;
     else if (strcmp(argv[first], "--no-pid-namespace") == 0) own_namespace = 0;
-    else if (strcmp(argv[first], "--check") == 0 && argc == 2) {
-      int ruleset = make_ruleset();
-      if (ruleset >= 0 && enforce_ruleset(ruleset) == 0) return 0;
-      fprintf(stderr, NOT_HIDDEN_NOTICE "%s\n", hide_failure);
-      return EXIT_NO_LANDLOCK;
-    }
+    else if (strcmp(argv[first], "--confine") == 0) confine.enabled = 1;
+    else if (strcmp(argv[first], "--require") == 0) confine.required = 1;
+    else if (strcmp(argv[first], "--check") == 0) check = 1;
+    else if (strcmp(argv[first], "--write") == 0 && first + 1 < argc && confine.write_count < CONFINE_DIRS_MAX) confine.write_dirs[confine.write_count++] = argv[++first];
+    else if (strcmp(argv[first], "--sockets") == 0 && first + 1 < argc && confine.socket_count < CONFINE_DIRS_MAX) confine.socket_dirs[confine.socket_count++] = argv[++first];
+    else if (strcmp(argv[first], "--read") == 0 && first + 1 < argc && confine.read_count < CONFINE_DIRS_MAX) confine.read_dirs[confine.read_count++] = argv[++first];
     else break;
   }
+  if (check) {
+    if (first != argc) {
+      fprintf(stderr, "usage: pid-init --check [--confine]\n");
+      return 2;
+    }
+    int ruleset = make_ruleset(confine.enabled ? &confine : NULL, 0);
+    if (ruleset >= 0 && enforce_ruleset(ruleset) == 0) return 0;
+    fprintf(stderr, "%s%s\n", confine.enabled ? NOT_CONFINED_NOTICE : NOT_HIDDEN_NOTICE, hide_failure);
+    return EXIT_NO_LANDLOCK;
+  }
   if (first + 1 >= argc || strcmp(argv[first], "--") != 0) {
-    fprintf(stderr, "usage: pid-init [--keep-proc] -- program [argument...]\n");
+    fprintf(stderr, "usage: pid-init [--keep-proc] [--confine [--require] [--write <dir>]... [--read <dir>]...] -- program [argument...]\n");
     return 2;
   }
   char *const *program_argv = argv + first + 1;
-  if (!own_namespace) exec_program(program_argv, keep_proc, -1);
+  if (!own_namespace) exec_program(program_argv, keep_proc, -1, &confine);
   if (unshare(CLONE_NEWPID) != 0) {
     fprintf(stderr, "pid-init: cannot make a PID namespace: %s\n", strerror(errno));
     return EXIT_NAMESPACE;
@@ -368,7 +470,7 @@ int main(int argc, char **argv) {
   if (pipe2(alive, O_CLOEXEC) != 0) return EXIT_NAMESPACE;
   pid_t init = fork();
   if (init < 0) return EXIT_NAMESPACE;
-  if (init == 0) run_init(program_argv, keep_proc, report[1], report[0], alive[0], alive[1]);
+  if (init == 0) run_init(program_argv, keep_proc, &confine, report[1], report[0], alive[0], alive[1]);
   close(report[1]);
   close(alive[0]);
   int wstatus = 0;

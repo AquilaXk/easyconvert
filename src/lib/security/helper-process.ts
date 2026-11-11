@@ -1,6 +1,15 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import os from 'node:os';
-import { getSanitizedEnvironment, killProcessGroup, SandboxedTimeoutError, type SandboxedExecutionResult } from './process-sandbox';
+import {
+  getSanitizedEnvironment,
+  killProcessGroup,
+  PID_INIT_PATH_ENV,
+  SANDBOX_CONFINE_FILES_ENV,
+  SANDBOX_HIDE_PROC_ENV,
+  SANDBOX_PID_NAMESPACE_ENV,
+  SandboxedTimeoutError,
+  type SandboxedExecutionResult,
+} from './process-sandbox';
 
 /**
  * What the helper processes of this process have in common: the sandbox launcher (sandbox-launcher.ts) and the qpdf runner
@@ -81,7 +90,7 @@ export abstract class HelperHost<Extra extends object = object> {
     // Directly, without a shell, in its own process group, with the standard streams and the sanitized environment only.
     this.process = spawn(command.binary, command.args, {
       cwd: os.tmpdir(),
-      env: getSanitizedEnvironment({}, false),
+      env: getSanitizedEnvironment(sandboxSettingsOf(process.env), false),
       stdio: ['pipe', 'pipe', 'ignore'],
       shell: false,
       detached: true,
@@ -279,4 +288,10 @@ export class HelperSlot<Host extends HelperHost<object>> {
   get current(): Host | null {
     return this.host;
   }
+}
+
+/** The settings of the sandbox the worker was started with, which the helper needs to find pid-init and to confine its runs as the worker does. */
+function sandboxSettingsOf(env: NodeJS.ProcessEnv): Record<string, string> {
+  const names = [PID_INIT_PATH_ENV, SANDBOX_PID_NAMESPACE_ENV, SANDBOX_HIDE_PROC_ENV, SANDBOX_CONFINE_FILES_ENV];
+  return Object.fromEntries(names.flatMap((name) => (env[name] === undefined ? [] : [[name, env[name]]])));
 }

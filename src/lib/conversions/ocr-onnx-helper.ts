@@ -235,6 +235,9 @@ class OnnxHelper {
       networkIsolated: true,
       // The address space is not the resident memory (that is watched below): the runtime reserves far more than it uses.
       rlimits: { asBytes: ONNX_HELPER_ADDRESS_SPACE_MB * 1024 * 1024, cpuSeconds, fsizeBytes: 1024 * 1024, coreBytes: 0 },
+      // It writes no file. It reads its models and the application it runs from (the bundle and the runtime's native module below the working directory of the worker).
+      workDir: null,
+      readDirs: process.cwd() === path.parse(process.cwd()).root ? [modelDir] : [modelDir, process.cwd()],
     });
     this.levelsAboveProgram = command.levelsAboveProgram;
     // Directly, without a shell, in its own process group, with the three standard streams and the sanitized environment only.

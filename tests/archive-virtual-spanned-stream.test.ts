@@ -666,6 +666,7 @@ describe('Archive Domain: Virtual Spanned Readable Stream (VFS Pipeline) (#173)'
       await expect(
         executeSandboxedBinary(catBin, [], {
           stdin: failingStream,
+          workDir: null,
           timeoutMs: 2000,
         })
       ).rejects.toThrow('Simulated upstream stream network failure');

@@ -133,6 +133,7 @@ async function rewriteWithGhostscript(pdf: Buffer, preset: string, clock: Compre
     try {
       await launchSandboxedBinary(gs, [...GHOSTSCRIPT_FIXED_ARGS, `-dPDFSETTINGS=${preset}`, `-sOutputFile=${outputPath}`, workspace.inputPath], {
         cwd: workspace.dir,
+        workDir: workspace.dir,
         timeoutMs,
         maxBuffer: GHOSTSCRIPT_MAX_DIAGNOSTIC_BYTES,
         maxFileSize: GHOSTSCRIPT_MAX_OUTPUT_BYTES,
@@ -196,6 +197,7 @@ async function isCleanPdf(pdf: Buffer, limits: QpdfRunLimits): Promise<boolean> 
     try {
       await executeSandboxedBinary(workspace.qpdf, ['--check', workspace.inputPath], {
         cwd: workspace.dir,
+        ...workspace.files,
         timeoutMs: limits.timeoutMs ?? QPDF_RUN_TIMEOUT_MS,
         maxBuffer: GHOSTSCRIPT_MAX_DIAGNOSTIC_BYTES,
         memoryLimitMb: QPDF_MEMORY_LIMIT_MB,

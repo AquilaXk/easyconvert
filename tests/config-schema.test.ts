@@ -683,6 +683,15 @@ describe('loadConfig', () => {
     expect(failures({ NODE_ENV: 'test', STRICT_SANDBOX: 'yes' })).toEqual([{ variable: 'STRICT_SANDBOX', rule: 'must be true or false' }]);
   });
 
+  it('refuses to start a strict sandbox with the switches that let a program run without the PID namespace or without the confinement of its files', () => {
+    const rule = (variable: string) => ({ variable, rule: expect.stringContaining('must not be false while STRICT_SANDBOX is true') });
+    expect(failures({ NODE_ENV: 'development', STRICT_SANDBOX: 'true', SANDBOX_CONFINE_FILES: 'false' })).toEqual([rule('SANDBOX_CONFINE_FILES')]);
+    expect(failures({ NODE_ENV: 'development', STRICT_SANDBOX: 'true', SANDBOX_PID_NAMESPACE: 'false' })).toEqual([rule('SANDBOX_PID_NAMESPACE')]);
+    // Each switch alone is the operator's choice outside the strict sandbox, and `true` is the default of both.
+    expect(failures({ NODE_ENV: 'development', SANDBOX_CONFINE_FILES: 'false', SANDBOX_PID_NAMESPACE: 'false' })).toEqual([]);
+    expect(failures({ NODE_ENV: 'development', STRICT_SANDBOX: 'true', SANDBOX_CONFINE_FILES: 'true', SANDBOX_PID_NAMESPACE: 'true' })).toEqual([]);
+  });
+
   it('collects every failing variable into one error', () => {
     const list = failures({ NODE_ENV: 'development', WORKER_CONCURRENCY: '0', APP_URL: 'nope', TRUSTED_PROXIES: '10.0.0.0/33' });
     expect(list.map((f) => f.variable).sort()).toEqual(['APP_URL', 'TRUSTED_PROXIES', 'WORKER_CONCURRENCY']);

@@ -262,6 +262,7 @@ async function launchInRun(
     networkIsolated: true,
     signal: run.job.options.signal,
     cwd: run.tempDir,
+    workDir: run.tempDir,
     timeoutMs: slice.timeoutMs,
     ...limits,
   };

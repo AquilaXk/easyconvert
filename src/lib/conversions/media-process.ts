@@ -6,6 +6,7 @@ import {
   executeSandboxedBinary,
   getSanitizedEnvironment,
   resolveSandboxedCommand,
+  rethrowConfinementRefusal,
   SandboxedProcessError,
   SandboxedTimeoutError,
   type SandboxedExecutionOptions,
@@ -294,6 +295,11 @@ function assertGuardedInputs(args: readonly string[]): void {
   });
 }
 
+/** The files an ffmpeg run reads beyond its work directory: the input, and the subtitle file a request names to burn in or carry (a second input). */
+export function mediaReadDirs(inputPath: string, options: { subtitles?: { input?: string } }): string[] {
+  return options.subtitles?.input === undefined ? [inputPath] : [inputPath, options.subtitles.input];
+}
+
 /** The options of an ffmpeg run; the network namespace is not one, because every run gets it. */
 export type FfmpegRunOptions = Omit<SandboxedExecutionOptions, 'networkIsolated'>;
 
@@ -316,7 +322,8 @@ export type ToolRun = { ok: true; stdout: string; stderr: string } | { ok: false
  * no process starts; every other failure is a value.
  */
 function runSandboxedSync(binary: string, args: readonly string[], limits: ToolLimits, rlimits?: SandboxedRlimitsOptions): ToolRun {
-  const command = resolveSandboxedCommand(binary, [...args], { networkIsolated: true, rlimits });
+  // The questions about the build (version, encoders, filters, a test encode to nothing) touch no file.
+  const command = resolveSandboxedCommand(binary, [...args], { networkIsolated: true, rlimits, workDir: null });
   const run = spawnSync(command.binary, command.args, {
     encoding: 'utf-8',
     env: getSanitizedEnvironment({}, true),
@@ -327,6 +334,7 @@ function runSandboxedSync(binary: string, args: readonly string[], limits: ToolL
   });
   const stdout = run.stdout ?? '';
   const stderr = run.stderr ?? '';
+  rethrowConfinementRefusal(run);
   if (run.error === undefined && run.status === 0) return { ok: true, stdout, stderr };
   const failure = run.error?.message ?? (run.signal !== null ? `killed by ${run.signal}` : `exited with status ${run.status}`);
   return { ok: false, stdout, stderr, failure: stderr.trim() || failure };
@@ -371,6 +379,9 @@ export async function runFfprobeAsync(ffprobe: string, args: readonly string[], 
   try {
     const run = await executeSandboxedBinary(ffprobe, probeArgs, {
       networkIsolated: true,
+      // It reads the one file it is given and writes none.
+      workDir: null,
+      readDirs: [input.path],
       timeoutMs: limits.timeoutMs,
       maxBuffer: limits.maxBuffer,
       rlimits: ffprobeRlimits(limits.timeoutMs),

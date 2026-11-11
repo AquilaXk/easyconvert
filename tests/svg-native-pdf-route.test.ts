@@ -9,6 +9,10 @@ import { decodeRgba } from './helpers/imagemagick';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { withMissingBinary } from './helpers/native-tools';
 import { oracleTest } from './helpers/oracle-test';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * An SVG written as PDF stays a vector page: librsvg draws the paths and the text, instead of a raster picture inside a PDF.

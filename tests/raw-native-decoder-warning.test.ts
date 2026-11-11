@@ -10,6 +10,10 @@ import { requireOracleTool } from './helpers/differential-oracle';
 import { PHOTOMETRIC, RAW_SIZE, TAG, TYPE, buildTiff, dngVersionEntry, imageEntries, minimalDng, withIfd0Values } from './helpers/dng-builder';
 import { withBinaryAt } from './helpers/native-tools';
 import { rawSamplePath, skipWithoutRawSamples, skipWithoutTools } from './helpers/strict-skip';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * LibRaw prints `<file>: data corrupted at <offset>` when a decoded sample lies outside the bit depth the file states (derror() in

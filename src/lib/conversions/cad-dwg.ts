@@ -288,6 +288,7 @@ export async function convertDwgToDxf(input: Buffer, options: DwgReaderOptions =
     try {
       await executeSandboxedBinary(binary, ['-y', '-o', outputPath, inputPath], {
         cwd: sandboxDir,
+        workDir: sandboxDir,
         timeoutMs,
         maxBuffer: READER_MAX_DIAGNOSTIC_BYTES,
         maxFileSize: READER_MAX_OUTPUT_BYTES,
