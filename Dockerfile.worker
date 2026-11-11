@@ -147,6 +147,22 @@ COPY scripts/avifenc/SOURCE /tmp/avifenc/SOURCE
 RUN /tmp/install-avifenc.sh /opt/avifenc
 
 # ==============================================================================
+# Stage 3b-3: Pinned cjpegli (JPEG encoder)
+# ==============================================================================
+# Every JPEG of a photograph the worker writes. cjpegli is the command-line encoder of jpegli (BSD-3-Clause), the libjpeg-compatible encoder of
+# the JPEG XL project. It is built here from the commit of its repository and the commits of highway and skcms that its tree names (plus the headers
+# of the libjpeg API it implements), each archive pinned by SHA-256 in scripts/install-cjpegli.sh, as one static program that the worker runs
+# sandboxed; nothing links it into the application. A worker without it encodes JPEG with the image library. Every licence text goes with the program.
+FROM ${NODE_IMAGE} AS cjpegli
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl gcc g++ make libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/install-cjpegli.sh /tmp/install-cjpegli.sh
+COPY scripts/cjpegli/SOURCE /tmp/cjpegli/SOURCE
+RUN /tmp/install-cjpegli.sh /opt/cjpegli
+
+# ==============================================================================
 # Stage 3c: Pinned FFmpeg (ffmpeg, ffprobe)
 # ==============================================================================
 # Every audio and video conversion. FFmpeg is built here from its release archive and one patch (scripts/ffmpeg-patches), both
@@ -464,6 +480,16 @@ RUN dir="$(mktemp -d)" \
     && head -c 12 "$dir/out.avif" | grep -q 'ftypavif' \
     && rm -rf "$dir"
 
+# JPEG encoder (the cjpegli stage): the pinned build the worker finds, beside the image library's own encoder, which it falls back to. Its licence
+# texts go to /usr/share/doc/cjpegli, which the notices step below collects into /licenses; the SOURCE file names the archives and their digests. The
+# build fails unless the program writes a JPEG file for an 8 x 8 black picture, written here as bytes.
+COPY --from=cjpegli /opt/cjpegli/bin/cjpegli /usr/local/bin/cjpegli-pinned
+COPY --from=cjpegli /opt/cjpegli/share/doc/cjpegli /usr/share/doc/cjpegli
+RUN dir="$(mktemp -d)" \
+    && { printf 'P6\n8 8\n255\n'; head -c 192 /dev/zero; } | cjpegli-pinned - "$dir/out.jpg" -q 70 --quiet \
+    && head -c 3 "$dir/out.jpg" | od -An -tx1 | grep -q 'ff d8 ff' \
+    && rm -rf "$dir"
+
 # DjVu renderer (the patched djvulibre built in the djvulibre stage, GPL-2.0-or-later, started as a separate program like the other GPL
 # tools above). The worker finds it as /usr/local/bin/ddjvu with djvused beside it; the distribution's package is not installed, so no
 # /usr/bin/ddjvu comes first. Its licence text goes to /usr/share/doc/djvulibre/copyright, which the notices step below collects into
@@ -595,6 +621,7 @@ RUN cp /usr/share/doc/vtracer-pixels/SOURCE /licenses/vtracer-pixels.SOURCE
 RUN cp /usr/share/doc/vtracer-pixels/THIRD-PARTY-NOTICES /licenses/vtracer-pixels.THIRD-PARTY-NOTICES
 RUN cp /usr/share/doc/vtracer-pixels/NOTICE-mimalloc /licenses/vtracer-pixels.NOTICE-mimalloc
 RUN cd /usr/share/doc/avifenc && for f in SOURCE LICENSE.libaom PATENTS.libaom LICENSE.libyuv PATENTS.libyuv LICENSE.libpng LICENSE.zlib-ng LICENSE.libjpeg-turbo README.ijg; do cp "$f" "/licenses/avifenc.$f" || exit 1; done
+RUN cd /usr/share/doc/cjpegli && for f in SOURCE PATENTS LICENSE.highway LICENSE.skcms LICENSE.libjpeg-turbo README.ijg; do cp "$f" "/licenses/cjpegli.$f" || exit 1; done
 RUN cp /usr/share/doc/ffmpeg/SOURCE /licenses/ffmpeg.SOURCE
 RUN cp /usr/share/doc/djvulibre/SOURCE /licenses/djvulibre.SOURCE
 # The licence texts of the pdf.js decoders (JBIG2, OpenJPEG) sit in a subfolder of the package, which the notices file does not embed.

@@ -1,0 +1,14 @@
+cjpegli: the command-line JPEG encoder of jpegli, built here from the pinned sources by scripts/install-cjpegli.sh, unmodified.
+
+jpegli      https://github.com/google/jpegli (BSD-3-Clause, ./copyright; the patent grant is ./PATENTS), commit 031a0077f5799a6041004267fc12b956c1f52a20
+            (main branch, 2026-06-01; the repository has no releases, its sources are those of libjxl 0.11 with the tools' fixes since), archive SHA-256 269b3a75d6b2da2351f7fb2d642043f60f9b6d1bd5839f20c0d7c569be073367
+highway     https://github.com/google/highway (Apache-2.0 or BSD-3-Clause at the licensee's choice, ./LICENSE.highway), commit 271a9a0ed9de1232d9117f1572c3fe28f8542ec1,
+            archive SHA-256 c42bcfe44d100223ea0043acb3da6de703103ca44bfb1d46b577c90939177f5f
+skcms       https://github.com/google/skcms (BSD-3-Clause, ./LICENSE.skcms), commit 96d9171c94b937a1b5f0293de7309ac16311b722,
+            archive SHA-256 9bb4b5bba0b7c04f6c2bce9ff713d61e23c9a20c4945161ae16290498ad74627
+libjpeg-turbo https://github.com/libjpeg-turbo/libjpeg-turbo (IJG, BSD-3-Clause and zlib licences, ./LICENSE.libjpeg-turbo and ./README.ijg), commit 8ecba3647edb6dd940463fedf38ca33a8e2a73d1 (2.1.5.1),
+            archive SHA-256 ed729127097af5000bfeddc6b3e679c4363bb1618ebfc07efb6b47f576471b4b; only its API headers, which jpegli implements: no code of it is built
+CMake       https://cmake.org (BSD-3-Clause), release 3.31.12, archives SHA-256 83f8fd91d2038a56556e1400390fcfe42f79602940c494f6c6f1cdae7f9e7f40 (aarch64) and
+            0dc2e9a6860f06bf10bd8fadc03e35d9eeb4df46e33763a7e480e987758f385c (x86-64); only the build tool: nothing of it is in the program
+
+The program is one file that links all of these statically, with libstdc++ and libgcc. PNG, GIF, JPEG, EXR and sjpeg input and the libjpeg drop-in library are not built: the program reads the PNM family.

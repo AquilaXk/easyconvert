@@ -221,6 +221,25 @@ export function jpegOptionsFor(requestedQuality: number | undefined, content: Co
   return { ...graphic, progressive: true, optimiseScans: true };
 }
 
+/**
+ * What the jpegli encoder (`cjpegli`, entry 231) is asked for a photograph. It replaces the image library's JPEG encoder for continuous-tone
+ * pictures when the program is installed; the quality number, the chroma rule (`jpegChromaFor`) and the grey rule are the ones of
+ * `jpegOptionsFor`, and the scan is the encoder's own progressive script (level 2): 2.4% fewer bytes at equal quality than the sequential
+ * scan with optimised tables (level 0), for about 2 ms more on a 0.4 megapixel picture. A graphic keeps `jpegOptionsFor`.
+ */
+export interface JpegliPolicy {
+  quality: number;
+  chroma: ChromaSubsampling;
+  progressive: 0 | 1 | 2;
+}
+
+export const JPEGLI_PROGRESSIVE_LEVEL = 2;
+
+export function jpegliPolicyFor(requestedQuality: number | undefined): JpegliPolicy {
+  const quality = clampQuality(requestedQuality, DEFAULT_QUALITY_BY_CODEC.jpeg);
+  return { quality, chroma: jpegChromaFor(quality), progressive: JPEGLI_PROGRESSIVE_LEVEL };
+}
+
 export function webpOptionsFor(requestedQuality: number | undefined): WebpOptions {
   const quality = clampQuality(requestedQuality, DEFAULT_QUALITY_BY_CODEC.webp);
   // The encoder's own chroma conversion. Sharp YUV (smartSubsample) kept coloured edges crisper on interfaces (about

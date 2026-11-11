@@ -22,6 +22,9 @@ const HEIGHT = 128;
 const BYTE_MAX = 255;
 const NOISE_MULTIPLIER = 2654435761;
 const SIZE_MATCH_TOLERANCE = 0.03;
+// These tests read the choices of the image library's JPEG encoder (entry 2); a machine that has the jpegli program writes photographs with that (entry 231), so the program is pointed at a file that is not there.
+process.env.CJPEGLI_PATH = '/nonexistent/cjpegli';
+
 const SSIM_SLACK = 0.003;
 const MEGAPIXEL = 1_000_000;
 

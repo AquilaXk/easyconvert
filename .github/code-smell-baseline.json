@@ -658,7 +658,7 @@
     "rule": "max-lines-per-function",
     "function": "convertImage",
     "count": 1,
-    "maxValue": 646
+    "maxValue": 645
   },
   {
     "file": "src/lib/conversions/image.ts",

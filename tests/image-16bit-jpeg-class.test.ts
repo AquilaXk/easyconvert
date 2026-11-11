@@ -65,6 +65,9 @@ function png8(samples: Uint16Array, channels: 3 | 4): Promise<Buffer> {
 }
 
 const QUALITY = 70;
+// These tests read the choices of the image library's JPEG encoder (entry 2); a machine that has the jpegli program writes photographs with that (entry 231), so the program is pointed at a file that is not there.
+process.env.CJPEGLI_PATH = '/nonexistent/cjpegli';
+
 const COMMON = { quality: QUALITY, chromaSubsampling: '4:2:0', optimiseCoding: true, overshootDeringing: true, trellisQuantisation: false, progressive: false } as const;
 const PHOTOGRAPH = { ...COMMON, quantisationTable: 3 } as const;
 const GRAPHIC = { ...COMMON, quantisationTable: 2 } as const;
