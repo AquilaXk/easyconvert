@@ -1,4 +1,4 @@
-import { Agent, type Dispatcher } from 'undici';
+import { Agent, request, type Dispatcher } from 'undici';
 import { StorageAdapterError, StorageSsrfError, StorageTimeoutError } from './adapter-interface';
 import { ssrfSafeLookup, validateUrlForSsrf } from '../../security/ssrf';
 import { ADAPTER_BODY_CAP_BYTES, ADAPTER_HEADERS_TIMEOUT_MS, ADAPTER_RESPONSE_TIMEOUT_MS } from './http-limits';
@@ -72,6 +72,16 @@ export async function releaseDispatcher(dispatcher: Dispatcher): Promise<void> {
   } catch {
     // an agent that cannot be destroyed holds nothing past the request
   }
+}
+
+/**
+ * `request`, with a listener on the body for the error an unread body gets when its agent is destroyed
+ * (`ClientDestroyedError`): nobody reads that body, and without a listener the error would end the process.
+ */
+export async function guardedRequest(...args: Parameters<typeof request>): Promise<Awaited<ReturnType<typeof request>>> {
+  const res = await request(...args);
+  res.body.on('error', () => {});
+  return res;
 }
 
 export interface BoundedBody {

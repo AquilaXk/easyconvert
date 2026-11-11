@@ -162,6 +162,27 @@ describe('HTTP BYOS adapters', () => {
       }
     });
 
+    it('does not echo the userinfo or the query of an endpoint that is not a URL', () => {
+      const raw = 'https://user:PW-SECRET@exa mple.com/?sv=SAS-SECRET';
+      for (const entry of [
+        { type: 'gcs', bucket: 'bkt', endpoint: raw },
+        { type: 'azure-blob', storageAccount: 'acc', containerName: 'c', customEndpoint: raw },
+        { type: 'webdav', url: raw },
+      ] as const) {
+        const error = (() => {
+          try {
+            createStorageAdapter(entry);
+          } catch (err) {
+            return err as Error;
+          }
+          return undefined;
+        })();
+        expect(error).toBeInstanceOf(StorageAdapterError);
+        expect(error?.message).not.toMatch(/PW-SECRET|SAS-SECRET/);
+        expect(JSON.stringify({ message: error?.message, cause: (error as StorageAdapterError).cause })).not.toMatch(/PW-SECRET|SAS-SECRET/);
+      }
+    });
+
     it('accepts a TLS endpoint', () => {
       expect(createStorageAdapter({ type: 'webdav', url: 'https://dav.example.com/files' }).providerName).toBe('webdav');
       expect(createStorageAdapter({ type: 'gcs', bucket: 'bkt', endpoint: 'https://storage.example.com' }).providerName).toBe('gcs');

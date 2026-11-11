@@ -1,6 +1,5 @@
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
-import { request } from 'undici';
 import type { AzureBlobCredentials } from '../credentials-vault';
 import {
   IStorageAdapter,
@@ -9,7 +8,7 @@ import {
   StorageNotFoundError,
   StorageAuthenticationError,
 } from './adapter-interface';
-import { adapterDispatcher, assertAdapterUrlSafe, readErrorText, releaseDispatcher } from './http-guard';
+import { adapterDispatcher, guardedRequest, assertAdapterUrlSafe, readErrorText, releaseDispatcher } from './http-guard';
 
 const AZURE_REST_VERSION = '2023-11-03';
 
@@ -141,7 +140,7 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
     const dispatcher = adapterDispatcher(url);
     let streaming = false;
     try {
-      const res = await request(url, {
+      const res = await guardedRequest(url, {
         method: 'GET',
         headers,
         dispatcher,
@@ -209,7 +208,7 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
 
     const dispatcher = adapterDispatcher(url);
     try {
-      const res = await request(url, {
+      const res = await guardedRequest(url, {
         method: 'PUT',
         headers,
         body: nodeStream as any,
@@ -250,7 +249,7 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
 
     const dispatcher = adapterDispatcher(url);
     try {
-      const res = await request(url, {
+      const res = await guardedRequest(url, {
         method: 'HEAD',
         headers,
         dispatcher,
@@ -291,7 +290,7 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
 
     const dispatcher = adapterDispatcher(url);
     try {
-      const res = await request(url, {
+      const res = await guardedRequest(url, {
         method: 'DELETE',
         headers,
         dispatcher,

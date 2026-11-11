@@ -31,8 +31,9 @@ function validateHttpEndpointSyntax(rawUrl: string, provider: string, invalidMes
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
-  } catch (err) {
-    throw new StorageAdapterError(invalidMessage ?? `Invalid ${provider} endpoint URL: "${rawUrl}"`, provider, err);
+  } catch {
+    // neither the text nor the parse error (which keeps its input) is echoed: the URL may carry userinfo or a SAS token
+    throw new StorageAdapterError(invalidMessage ?? `Invalid ${provider} endpoint URL`, provider);
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new StorageSsrfError(rawUrl, provider);

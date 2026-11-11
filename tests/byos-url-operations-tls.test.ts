@@ -14,6 +14,8 @@ import { BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST_ENV } from '../src/lib/storage/adapter
 
 const PUBLIC_ADDRESS = [{ address: '93.184.216.34', family: 4 }];
 const BEARER = 'bt-0c1d2e3f4a5b6c7d';
+/** A call held by the body of an answer it does not read never ends; this is far above the time it takes. */
+const UNREAD_BODY_HANG_GUARD_MS = 10_000;
 
 interface Hit {
   method: string;
@@ -137,5 +139,33 @@ describe('BYOS URL operations and credentials over plain HTTP', () => {
       await executeExportTask({ operation: 'export/url', sourceKey, url: `${origin}/out`, credentialRef, userId: 'tls-user' });
       expect(hits.map((hit) => hit.authorization)).toEqual([`Bearer ${BEARER}`, `Bearer ${BEARER}`]);
     });
+  });
+
+  describe('a failed answer with an endless body', () => {
+    function endlessAnswer(status: number): void {
+      server.removeAllListeners('request');
+      server.on('request', (req, res) => {
+        req.resume();
+        res.writeHead(status, { 'Content-Type': 'text/plain' });
+        const piece = Buffer.alloc(64 * 1024, 0x78);
+        const pump = () => {
+          while (res.write(piece)) {
+            // keep the socket busy until the client hangs up
+          }
+          res.once('drain', pump);
+        };
+        res.on('close', () => res.removeAllListeners('drain'));
+        pump();
+      });
+    }
+
+    it('does not hold import/url or export/url once the status is known', async () => {
+      allowLocalServer();
+      endlessAnswer(500);
+      const started = Date.now();
+      await expect(executeImportTask({ operation: 'import/url', url: `${origin}/in.csv` })).rejects.toThrow(/HTTP 500/);
+      await expect(executeExportTask({ operation: 'export/url', sourceKey, url: `${origin}/out` })).rejects.toThrow(/HTTP 500/);
+      expect(Date.now() - started).toBeLessThan(UNREAD_BODY_HANG_GUARD_MS);
+    }, 3 * UNREAD_BODY_HANG_GUARD_MS);
   });
 });

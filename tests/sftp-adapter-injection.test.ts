@@ -40,6 +40,7 @@ type ChildBehavior =
   | 'flood-stdout'
   | 'flood-stderr'
   | 'spool-grows'
+  | 'hangs'
   | 'spool-grows-slow-exit'
   | 'spool-grows-ignores-sigterm';
 
@@ -137,6 +138,8 @@ vi.mock('node:child_process', async (importOriginal) => {
           else if (behavior === 'download') {
             fs.writeFileSync(nodePath.resolve(quotedArgs()[1].replace(/\\(.)/g, '$1')), 'payload');
             finish(0);
+          } else if (behavior === 'hangs') {
+            // the client never answers and never exits until it is signalled
           } else if (behavior === 'flood-stdout') flood(child.stdout);
           else if (behavior === 'flood-stderr') flood(child.stderr);
           else if (behavior === 'spool-grows' || behavior === 'spool-grows-slow-exit' || behavior === 'spool-grows-ignores-sigterm') {
@@ -611,6 +614,25 @@ describe('SFTP adapter: the boundary between caller data and the sftp client', (
       expect(leftoverWorkDirs()).toEqual(before);
     }, 15_000);
 
+    it('stops a client that outlives the command timeout through its process group, and removes the key after it exits', async () => {
+      mocks.behavior.current = 'hangs';
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const result = adapter().head('f').catch((err: unknown) => err);
+        while (mocks.calls.length === 0) await new Promise((resolve) => setImmediate(resolve));
+        expect(mocks.calls[0].killed).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(15 * 60_000);
+        const error = await result;
+        expect(error).toBeInstanceOf(StorageAdapterError);
+        expect((error as Error).message).toMatch(/ran longer than 900 s/);
+        expect(mocks.calls[0].signals).toEqual(['SIGTERM']);
+        expect(mocks.calls[0].atExit).toEqual({ keyDir: true, spool: false });
+        expect(leftoverWorkDirs()).toEqual(before);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it.each(['flood-stdout', 'flood-stderr'] as const)('removes nothing before the client that %s has exited', async (behavior) => {
       mocks.behavior.current = behavior;
       await expect(adapter().head('f')).rejects.toThrow(/passed \d+ bytes/);
@@ -628,7 +650,8 @@ describe('SFTP adapter: the boundary between caller data and the sftp client', (
       const { options, args } = mocks.calls[0];
       expect(options.shell).toBe(false);
       expect(options.detached).toBe(true);
-      expect(options.timeout).toBeGreaterThan(0);
+      // the lifetime is bounded by a timer of the adapter that signals the process group, not by spawn's own `timeout`
+      expect(options.timeout).toBeUndefined();
       expect(Object.keys(options.env).sort()).toEqual(['HOME', 'LANG', 'PATH']);
       expect(JSON.stringify(options.env)).not.toMatch(/server-secret|postgres:|aws-secret|agent\.sock/);
       expect(options.env.HOME).toBe(path.dirname(args[args.indexOf('-i') + 1]));

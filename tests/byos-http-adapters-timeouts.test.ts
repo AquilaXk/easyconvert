@@ -2,6 +2,7 @@ import dns from 'node:dns';
 import http from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { executeExportTask, executeImportTask, localFsStorage } from '../src/lib/storage';
 import { AzureBlobStorageAdapter, GcsStorageAdapter, WebDavStorageAdapter } from '../src/lib/storage/adapters';
 import { StorageTimeoutError } from '../src/lib/storage/adapters/adapter-interface';
 import { BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST_ENV } from '../src/lib/storage/adapters/http-guard';
@@ -11,6 +12,8 @@ vi.mock('../src/lib/storage/adapters/http-limits', () => ({
   ADAPTER_BODY_CAP_BYTES: 64 * 1024,
   ADAPTER_RESPONSE_TIMEOUT_MS: 300,
   ADAPTER_HEADERS_TIMEOUT_MS: 300,
+  URL_OPERATION_HEADERS_TIMEOUT_MS: 300,
+  URL_OPERATION_BODY_TIMEOUT_MS: 300,
 }));
 
 /** The shortened deadlines are 300 ms; a call that ends in under this far larger time was given up, not held. */
@@ -93,4 +96,13 @@ describe('HTTP BYOS adapters against an endpoint that stalls', () => {
     await expect(new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', endpoint: origin }).head('a.bin')).rejects.toThrow(StorageTimeoutError);
     expect(Date.now() - started).toBeLessThan(STALL_HANG_GUARD_MS);
   });
+
+  it('import/url and export/url give up an endpoint that sends no answer, and a body that stops', async () => {
+    const stored = await localFsStorage.putBuffer(`url-stall-${Date.now()}.txt`, Buffer.from('payload'), { contentType: 'text/plain' });
+    mode = 'silent';
+    const started = Date.now();
+    await expect(executeImportTask({ operation: 'import/url', url: `${origin}/in.csv` })).rejects.toThrow();
+    await expect(executeExportTask({ operation: 'export/url', sourceKey: stored.key, url: `${origin}/out` })).rejects.toThrow();
+    expect(Date.now() - started).toBeLessThan(STALL_HANG_GUARD_MS);
+  }, 2 * STALL_HANG_GUARD_MS);
 });

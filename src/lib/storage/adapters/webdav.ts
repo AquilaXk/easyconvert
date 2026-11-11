@@ -1,5 +1,4 @@
 import { Readable } from 'node:stream';
-import { request } from 'undici';
 import type { WebDavCredentials } from '../credentials-vault';
 import {
   IStorageAdapter,
@@ -8,7 +7,7 @@ import {
   StorageNotFoundError,
   StorageAuthenticationError,
 } from './adapter-interface';
-import { adapterDispatcher, assertAdapterUrlSafe, readErrorText, releaseDispatcher } from './http-guard';
+import { adapterDispatcher, guardedRequest, assertAdapterUrlSafe, readErrorText, releaseDispatcher } from './http-guard';
 
 function stripTrailingSlashes(s: string): string {
   let end = s.length;
@@ -87,7 +86,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
     const dispatcher = adapterDispatcher(url);
     let streaming = false;
     try {
-      const res = await request(url, {
+      const res = await guardedRequest(url, {
         method: 'GET',
         headers: this.getHeaders(),
         dispatcher,
@@ -146,7 +145,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
 
     const dispatcher = adapterDispatcher(url);
     try {
-      const res = await request(url, {
+      const res = await guardedRequest(url, {
         method: 'PUT',
         headers,
         body: nodeStream as any,
@@ -181,7 +180,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
 
     const dispatcher = adapterDispatcher(url);
     try {
-      const res = await request(url, {
+      const res = await guardedRequest(url, {
         method: 'HEAD',
         headers: this.getHeaders(),
         dispatcher,
@@ -213,7 +212,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
 
     const dispatcher = adapterDispatcher(url);
     try {
-      const res = await request(url, {
+      const res = await guardedRequest(url, {
         method: 'DELETE',
         headers: this.getHeaders(),
         dispatcher,

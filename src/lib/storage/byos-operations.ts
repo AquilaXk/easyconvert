@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { Agent, request, type Dispatcher } from 'undici';
+import { Agent, type Dispatcher } from 'undici';
 import { LocalFsStorage } from './local-fs-storage';
 import { objectStorage } from './selected-storage';
 import { globalSharedObjects } from './shared-store';
@@ -14,7 +14,8 @@ import {
 } from './adapters/adapter-interface';
 import { createSsrfSafeAgent, validateUrlForSsrf } from '../security/ssrf';
 import { redactUrl } from '../security/redact';
-import { assertTlsEndpoint, isDevAllowlistedEndpoint } from './adapters/http-guard';
+import { assertTlsEndpoint, guardedRequest, isDevAllowlistedEndpoint, releaseDispatcher } from './adapters/http-guard';
+import { URL_OPERATION_BODY_TIMEOUT_MS, URL_OPERATION_HEADERS_TIMEOUT_MS } from './adapters/http-limits';
 import type { ObjectReadStream, StoredObjectMetadata } from './object-storage';
 
 export type ImportOperationType =
@@ -157,10 +158,12 @@ async function executeUrlImport(
 
   const dispatcher = urlOperationDispatcher(params.url);
   try {
-    const res = await request(params.url, {
+    const res = await guardedRequest(params.url, {
       method: 'GET',
       headers,
       dispatcher,
+      headersTimeout: URL_OPERATION_HEADERS_TIMEOUT_MS,
+      bodyTimeout: URL_OPERATION_BODY_TIMEOUT_MS,
     });
 
     if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -183,9 +186,7 @@ async function executeUrlImport(
       etag: stored.etag,
     };
   } finally {
-    try {
-      await dispatcher.close?.();
-    } catch {}
+    await releaseDispatcher(dispatcher);
   }
 }
 
@@ -316,11 +317,13 @@ async function uploadToUrl(
 
   const dispatcher = urlOperationDispatcher(destination.url);
   try {
-    const res = await request(destination.url, {
+    const res = await guardedRequest(destination.url, {
       method: 'POST',
       headers,
       body: source.stream as any,
       dispatcher,
+      headersTimeout: URL_OPERATION_HEADERS_TIMEOUT_MS,
+      bodyTimeout: URL_OPERATION_BODY_TIMEOUT_MS,
     });
 
     if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -333,9 +336,7 @@ async function uploadToUrl(
       success: true,
     };
   } finally {
-    try {
-      await dispatcher.close?.();
-    } catch {}
+    await releaseDispatcher(dispatcher);
   }
 }
 

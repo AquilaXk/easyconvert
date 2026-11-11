@@ -219,7 +219,7 @@ export class SftpStorageAdapter implements IStorageAdapter {
   /**
    * Runs one sftp session. The private key, the pinned host key and the child's HOME live in a directory of this
    * call (mkdtemp makes it 0700) that is removed on every way out: success, a failed exit, a spawn failure and
-   * a kill by the timeout.
+   * a stop by the timeout.
    */
   private async runSftpBatch(address: string, commands: string, spool?: Spool): Promise<string> {
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert-sftp-run-'));
@@ -278,11 +278,11 @@ export class SftpStorageAdapter implements IStorageAdapter {
         detached: true,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: sftpChildEnv(workDir),
-        timeout: SFTP_COMMAND_TIMEOUT_MS,
       });
 
       let spoolTimer: NodeJS.Timeout | undefined;
       let killTimer: NodeJS.Timeout | undefined;
+      let commandTimer: NodeJS.Timeout | undefined;
       let settled = false;
       let stoppedFor: string | undefined;
       const settle = (outcome: () => void) => {
@@ -290,6 +290,7 @@ export class SftpStorageAdapter implements IStorageAdapter {
         settled = true;
         clearInterval(spoolTimer);
         clearTimeout(killTimer);
+        clearTimeout(commandTimer);
         outcome();
       };
       /**
@@ -303,6 +304,9 @@ export class SftpStorageAdapter implements IStorageAdapter {
         signalProcessGroup(child, 'SIGTERM');
         killTimer = setTimeout(() => signalProcessGroup(child, 'SIGKILL'), SFTP_KILL_GRACE_MS);
       };
+
+      // spawn's own `timeout` would signal the client alone; this one stops the whole group, as every other stop does
+      commandTimer = setTimeout(() => stop(`SFTP command ran longer than ${SFTP_COMMAND_TIMEOUT_MS / 1000} s`), SFTP_COMMAND_TIMEOUT_MS);
 
       const readStdout = collectBounded(child.stdout, () => stop(`SFTP output passed ${SFTP_MAX_OUTPUT_BYTES} bytes`));
       const readStderr = collectBounded(child.stderr, () => stop(`SFTP error output passed ${SFTP_MAX_OUTPUT_BYTES} bytes`));

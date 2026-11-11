@@ -1,6 +1,5 @@
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
-import { request } from 'undici';
 import type { GcsCredentials } from '../credentials-vault';
 import {
   IStorageAdapter,
@@ -11,7 +10,7 @@ import {
   StorageInvalidKeyError,
 } from './adapter-interface';
 import { assertValidObjectKey } from '../s3-sigv4';
-import { adapterDispatcher, assertAdapterUrlSafe, readErrorText, releaseDispatcher, readJsonBody } from './http-guard';
+import { adapterDispatcher, guardedRequest, assertAdapterUrlSafe, readErrorText, releaseDispatcher, readJsonBody } from './http-guard';
 
 /** The object name of a remote path: dot segments are refused, as the other adapters and the S3 client do. */
 function toObjectName(remotePath: string): string {
@@ -92,7 +91,7 @@ export class GcsStorageAdapter implements IStorageAdapter {
 
       const dispatcher = adapterDispatcher(tokenUrl);
       try {
-        const res = await request(tokenUrl, {
+        const res = await guardedRequest(tokenUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
@@ -140,7 +139,7 @@ export class GcsStorageAdapter implements IStorageAdapter {
     const dispatcher = adapterDispatcher(url);
     let streaming = false;
     try {
-      const res = await request(url, {
+      const res = await guardedRequest(url, {
         method: 'GET',
         headers,
         dispatcher,
@@ -202,7 +201,7 @@ export class GcsStorageAdapter implements IStorageAdapter {
 
     const dispatcher = adapterDispatcher(url);
     try {
-      const res = await request(url, {
+      const res = await guardedRequest(url, {
         method: 'POST',
         headers,
         body: nodeStream as any,
@@ -235,7 +234,7 @@ export class GcsStorageAdapter implements IStorageAdapter {
     const headers = await this.getAuthHeaders();
     const dispatcher = adapterDispatcher(url);
     try {
-      const res = await request(url, {
+      const res = await guardedRequest(url, {
         method: 'GET',
         headers,
         dispatcher,
@@ -268,7 +267,7 @@ export class GcsStorageAdapter implements IStorageAdapter {
     const headers = await this.getAuthHeaders();
     const dispatcher = adapterDispatcher(url);
     try {
-      const res = await request(url, {
+      const res = await guardedRequest(url, {
         method: 'DELETE',
         headers,
         dispatcher,
