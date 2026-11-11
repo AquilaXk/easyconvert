@@ -1,9 +1,10 @@
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { redisUserStore } from '../auth/redis-user-store';
+import { failClosed } from '../auth/store-unavailable';
 import { isAnonymousUserId } from '../auth/anonymous-identity';
 import type { UserTier } from '../auth/types';
-import { KeyStore, TIER_LIMITS, getAnonymousDailyLimit, getUtcDateKey, getNextMidnightUtc, apiKeyHashCandidates } from './key-store';
+import { KeyStore, type ApiKeyVerification, TIER_LIMITS, getAnonymousDailyLimit, getUtcDateKey, getNextMidnightUtc, apiKeyHashCandidates } from './key-store';
 import type {
   ApiKey,
   ApiKeyCreateOptions,
@@ -140,6 +141,15 @@ export class RedisKeyStore extends KeyStore {
 
   public getRedisClient(): Redis | null {
     return this.redisClient;
+  }
+
+  /**
+   * With a Redis client, Redis is the only store of keys and usage: the files of `.easyconvert` are neither read nor written, and
+   * a Redis step that fails is refused (AuthStoreUnavailableError, `serviceUnavailable` on a verification), never answered from the
+   * memory or the file of this process, which would still hold a key that was deleted or revoked elsewhere.
+   */
+  protected override mirrorsToDisk(): boolean {
+    return this.redisClient === null;
   }
 
   public setRedisClient(client: Redis | null): void {
@@ -289,10 +299,10 @@ export class RedisKeyStore extends KeyStore {
     }
     this.ensureInitialized();
 
-    const dailyLimit = await this.dailyLimitOf(userId);
     // One day for the whole reservation: its count, its id and its record never straddle midnight.
     const day = getUtcDateKey();
     try {
+      const dailyLimit = await this.dailyLimitOf(userId);
       if (units === 0) {
         const remaining = Math.max(0, dailyLimit - (await this.ledger().used(userId, day)));
         return { allowed: remaining > 0, remaining };
@@ -411,7 +421,10 @@ export class RedisKeyStore extends KeyStore {
         await this.redisClient.hset(`${keyPrefix}apikey_hashes`, key.keyHash, key.id);
         await this.redisClient.sadd(`${keyPrefix}user_keys:${userId}`, key.id);
       } catch (err) {
-        console.warn('[RedisKeyStore] Failed to write key to Redis:', err);
+        // A key that only this process knows would verify here and nowhere else: it is not issued.
+        this.keys.delete(result.key.id);
+        this.keyHashIndex.delete(result.key.keyHash);
+        return failClosed('RedisKeyStore', 'generateApiKey', err);
       }
     }
     return result;
@@ -598,7 +611,7 @@ export class RedisKeyStore extends KeyStore {
   private async verifyWithRedis(
     secretKey: string,
     clientIp?: string
-  ): Promise<{ valid: boolean; key?: ApiKey; user?: User; error?: string }> {
+  ): Promise<ApiKeyVerification> {
     if (!secretKey || typeof secretKey !== 'string') {
       return { valid: false, error: 'Missing or invalid API key' };
     }
@@ -617,41 +630,15 @@ export class RedisKeyStore extends KeyStore {
     return { valid: false, error: 'Invalid or non-existent API key' };
   }
 
-  private async checkRemoteRevocationOnFallback(localKey: ApiKey): Promise<boolean> {
-    if (!this.redisClient) return false;
-    try {
-      const remoteStatus = await this.redisClient.hget(`${this.keyPrefix}apikeys:${localKey.id}`, 'status');
-      if (remoteStatus !== 'revoked') return false;
-      localKey.status = 'revoked';
-      const cached = this.keys.get(localKey.id);
-      if (cached && cached.status !== 'revoked') {
-        cached.status = 'revoked';
-        this.persist();
-      }
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  public override async verifyApiKey(
-    secretKey: string,
-    clientIp?: string
-  ): Promise<{ valid: boolean; key?: ApiKey; user?: User; error?: string }> {
+  public override async verifyApiKey(secretKey: string, clientIp?: string): Promise<ApiKeyVerification> {
     this.ensureInitialized();
-    if (this.redisClient) {
-      try {
-        return await this.verifyWithRedis(secretKey, clientIp);
-      } catch (err) {
-        console.warn('[RedisKeyStore] Redis verifyApiKey failed, falling back to local memory:', err);
-      }
+    if (!this.redisClient) return super.verifyApiKey(secretKey, clientIp);
+    try {
+      return await this.verifyWithRedis(secretKey, clientIp);
+    } catch (err) {
+      console.error('[RedisKeyStore] Redis verifyApiKey failed; the key is neither accepted nor refused as unknown:', err);
+      return { valid: false, error: 'Service Unavailable: the key store is temporarily unavailable', serviceUnavailable: true };
     }
-
-    const localResult = await super.verifyApiKey(secretKey, clientIp);
-    if (localResult.valid && localResult.key && (await this.checkRemoteRevocationOnFallback(localResult.key))) {
-      return { valid: false, error: 'API key has been revoked' };
-    }
-    return localResult;
   }
 
   public override async revokeApiKey(userId: string, keyId: string): Promise<boolean> {
@@ -667,7 +654,7 @@ export class RedisKeyStore extends KeyStore {
           await this.redisClient.hset(`${this.keyPrefix}apikeys:${keyId}`, 'status', 'revoked');
         }
       } catch (err) {
-        console.warn('[RedisKeyStore] Redis revokeApiKey failed:', err);
+        return failClosed('RedisKeyStore', 'revokeApiKey', err);
       }
     }
     return super.revokeApiKey(userId, keyId);
@@ -724,7 +711,7 @@ export class RedisKeyStore extends KeyStore {
           await this.redisClient.hdel(`${this.keyPrefix}apikey_hashes`, outgoingPreviousHash);
         }
       } catch (err) {
-        console.warn('[RedisKeyStore] Redis rotateApiKey sync failed:', err);
+        return failClosed('RedisKeyStore', 'rotateApiKey', err);
       }
     }
     return result;
@@ -742,7 +729,7 @@ export class RedisKeyStore extends KeyStore {
         const storedKey = this.keys.get(keyId) ?? updated;
         await this.redisClient.hset(`${this.keyPrefix}apikeys:${keyId}`, 'data', JSON.stringify(storedKey));
       } catch (err) {
-        console.warn('[RedisKeyStore] Redis updateApiKey sync failed:', err);
+        return failClosed('RedisKeyStore', 'updateApiKey', err);
       }
     }
     return updated;
@@ -773,7 +760,7 @@ export class RedisKeyStore extends KeyStore {
         this.tokenBuckets.delete(`apikey:${keyId}`);
         deletedInRedis = Boolean(keyData.userId);
       } catch (err) {
-        console.warn('[RedisKeyStore] Redis deleteApiKey failed:', err);
+        return failClosed('RedisKeyStore', 'deleteApiKey', err);
       }
     }
     const deletedLocal = await super.deleteApiKey(userId, keyId);
@@ -781,37 +768,29 @@ export class RedisKeyStore extends KeyStore {
   }
 
   public override async listApiKeys(userId: string): Promise<ApiKey[]> {
-    if (this.redisClient) {
-      try {
-        const keyIds = await this.redisClient.smembers(`${this.keyPrefix}user_keys:${userId}`);
-        if (keyIds.length > 0) {
-          const pipeline = this.redisClient.pipeline();
-          for (const id of keyIds) {
-            pipeline.hgetall(`${this.keyPrefix}apikeys:${id}`);
-          }
-          const results = await pipeline.exec();
-          if (results) {
-            const keys: ApiKey[] = [];
-            for (const [err, data] of results) {
-              if (!err && data && typeof data === 'object' && 'data' in data) {
-                const parsed = JSON.parse((data as Record<string, string>).data) as ApiKey;
-                parsed.status = ((data as Record<string, string>).status as 'active' | 'revoked') || parsed.status;
-                keys.push({
-                  ...parsed,
-                  webhookSecret: decryptSecret(parsed.webhookSecret),
-                });
-              }
-            }
-            if (keys.length > 0) {
-              return keys.sort((a, b) => b.createdAt - a.createdAt);
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('[RedisKeyStore] Redis listApiKeys failed, falling back to local memory:', err);
+    if (!this.redisClient) return super.listApiKeys(userId);
+    try {
+      const keyIds = await this.redisClient.smembers(`${this.keyPrefix}user_keys:${userId}`);
+      if (keyIds.length === 0) return [];
+      const pipeline = this.redisClient.pipeline();
+      for (const id of keyIds) {
+        pipeline.hgetall(`${this.keyPrefix}apikeys:${id}`);
       }
+      const results = (await pipeline.exec()) ?? [];
+      const keys: ApiKey[] = [];
+      for (const [err, data] of results) {
+        if (err) throw err;
+        if (data && typeof data === 'object' && 'data' in data) {
+          const record = data as Record<string, string>;
+          const parsed = JSON.parse(record.data) as ApiKey;
+          parsed.status = (record.status as 'active' | 'revoked') || parsed.status;
+          keys.push({ ...parsed, webhookSecret: decryptSecret(parsed.webhookSecret) });
+        }
+      }
+      return keys.sort((a, b) => b.createdAt - a.createdAt);
+    } catch (err) {
+      return failClosed('RedisKeyStore', 'listApiKeys', err);
     }
-    return super.listApiKeys(userId);
   }
 
   public override markKeyExpiryNotified(keyId: string, timestamp: number): void {

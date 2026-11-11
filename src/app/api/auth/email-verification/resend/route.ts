@@ -6,7 +6,7 @@ import { authRateLimitRefusal, consumeMailLinkRateLimit, resolveAuthClientIp } f
 import { isAuthMailEnabled, mailLocale } from '@/lib/auth/mail-config';
 import { holdUntil } from '@/lib/auth/opaque-response';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
-import { getSessionFromRequest } from '@/lib/auth/session';
+import { readSessionOrRefusal } from '@/lib/auth/session-refusal';
 import type { AuthErrorCode } from '@/lib/refusal-codes';
 
 export const dynamic = 'force-dynamic';
@@ -18,7 +18,9 @@ export async function POST(req: NextRequest) {
   if (!isAuthMailEnabled()) return refusal(404, 'mail_unavailable', 'Email verification is not available.');
   const startedAt = performance.now();
 
-  const user = await getSessionFromRequest(req);
+  const session = await readSessionOrRefusal(req);
+  if ('refused' in session) return session.refused;
+  const { user } = session;
   if (!user) return refusal(401, undefined, 'Unauthorized: No active session found.');
 
   const resolvedIp = resolveAuthClientIp(req);

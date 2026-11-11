@@ -1,7 +1,7 @@
 import type { NextRequest, NextResponse } from 'next/server';
 import { authErrorHeaders, extractApiKeySecret, validateApiAccess } from '@/lib/api-keys/guard';
 import type { ApiKeyScope } from '@/lib/api-keys/types';
-import { getSessionFromRequest } from '@/lib/auth/session';
+import { readSessionOrRefusal } from '@/lib/auth/session-refusal';
 import type { User } from '@/lib/auth/types';
 import type { DashboardRefusalCode } from '@/lib/refusal-codes';
 import { codedRefusal } from './problem-details';
@@ -35,8 +35,9 @@ export async function resolveDashboardCaller(
   req: NextRequest,
   { action, adminKey = false, scope }: DashboardAccess
 ): Promise<{ user: User } | { refused: NextResponse }> {
-  const sessionUser = extractApiKeySecret(req) ? null : await getSessionFromRequest(req);
-  if (sessionUser) return { user: sessionUser };
+  const session = extractApiKeySecret(req) ? { user: null } : await readSessionOrRefusal(req);
+  if ('refused' in session) return { refused: session.refused };
+  if (session.user) return { user: session.user };
 
   const auth = await validateApiAccess(req, 0, scope);
   if (!auth.authorized || !auth.user) {

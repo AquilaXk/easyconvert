@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { clearSessionCookie, SESSION_COOKIE_NAME, revokeSession } from '@/lib/auth/session';
 import { verifyJwt } from '@/lib/auth/jwt';
 import type { SessionPayload } from '@/lib/auth/types';
+import { AuthStoreUnavailableError } from '@/lib/auth/store-unavailable';
+import { authStoreUnavailableRefusal } from '@/lib/api/problem-details';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,7 +34,13 @@ export async function POST(req: Request) {
     if (payload?.jti) {
       const now = Math.floor(Date.now() / 1000);
       const remainingSeconds = payload.exp ? Math.max(1, payload.exp - now) : 7 * 86400;
-      await revokeSession(payload.jti, remainingSeconds);
+      try {
+        await revokeSession(payload.jti, remainingSeconds);
+      } catch (error) {
+        // The session is still valid when its revocation was not stored: say so, and keep the cookie so the sign-out is tried again.
+        if (error instanceof AuthStoreUnavailableError) return authStoreUnavailableRefusal(error);
+        throw error;
+      }
     }
   }
 

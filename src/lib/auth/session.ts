@@ -127,7 +127,10 @@ export async function getSessionFromRequest(request: Request): Promise<User | nu
 
 /**
  * The signed-in user a session token stands for, or null when the token is invalid, expired, revoked, older than the
- * account's session version, or the account is gone. A request's cookie and a server-rendered page's cookie both end here.
+ * account's session version (or carries none), or the account is gone. A request's cookie and a server-rendered page's cookie
+ * both end here.
+ *
+ * @throws AuthStoreUnavailableError when the session store cannot answer: a session is never accepted without its check.
  */
 export async function getSessionFromToken(token: string): Promise<User | null> {
   const payload = verifyJwt<SessionPayload>(token, {
@@ -148,12 +151,10 @@ export async function getSessionFromToken(token: string): Promise<User | null> {
     return null;
   }
 
-  // Check user session version (reject if token sessionVersion is older than current)
-  if (
-    payload.sessionVersion !== undefined &&
-    userRecord.sessionVersion !== undefined &&
-    payload.sessionVersion < userRecord.sessionVersion
-  ) {
+  // A token older than the account's session version is a revoked session. A token without the claim is older than any
+  // version (every token this server issues carries it), so it is refused instead of skipping the check.
+  const currentVersion = userRecord.sessionVersion ?? 1;
+  if ((payload.sessionVersion ?? 0) < currentVersion) {
     return null;
   }
 
