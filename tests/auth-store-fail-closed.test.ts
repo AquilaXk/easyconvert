@@ -254,7 +254,7 @@ describe('the typed refusal reaches the routes as a 503', () => {
   });
 
   it('answers a conversion route whose account store failed past the guard with 503 instead of letting the error escape', async () => {
-    const route = loggingOutcomes('test/convert', async () => {
+    const route = loggingOutcomes('test/convert', async (): Promise<Response> => {
       throw new AuthStoreUnavailableError();
     });
 
