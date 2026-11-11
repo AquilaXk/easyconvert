@@ -4,6 +4,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  blankBeyondRules,
   buildLineBlock,
   cropLine,
   decodeCtc,
@@ -16,7 +17,9 @@ import {
   recoverSpaces,
   setInColumns,
   releaseOnnxOcr,
+  ONNX_LINE_END_MARGIN_SHARE,
   unclipBox,
+  widenLineEnds,
   wordSpans,
   type OnnxRuntime,
   type RotatedBox,
@@ -138,6 +141,78 @@ describe('ONNX OCR geometry', () => {
     // every value stays in [-1, 1]
     expect(Math.min(...crop.data)).toBeGreaterThanOrEqual(-1);
     expect(Math.max(...crop.data)).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('ONNX OCR line end margin', () => {
+  it('lengthens a box at both ends by a share of its height and leaves its centre, height, angle and score alone', () => {
+    const box: RotatedBox = { cx: 400, cy: 200, width: 600, height: 50, angle: 0.02, score: 0.9 };
+    const wide = widenLineEnds(box);
+    expect(wide.width).toBeCloseTo(600 + 2 * ONNX_LINE_END_MARGIN_SHARE * 50, 9);
+    expect({ ...wide, width: 0 }).toEqual({ ...box, width: 0 });
+  });
+
+  it('gives the strip the recognizer reads room after the last mark of the line, where a full stop sits', () => {
+    // The detector's box ends where the text region ends, which is at or before the full stop of a line; a strip cut there has no
+    // ink after the last syllable and the recognizer emits no full stop (the periods production dropped, entry 246).
+    const box: RotatedBox = { cx: 100, cy: 30, width: 160, height: 40, angle: 0, score: 0.9 };
+    const page = new Uint8Array(400 * 60 * 3).fill(255);
+    const bare = cropLine(page, 400, 60, box);
+    const wide = cropLine(page, 400, 60, widenLineEnds(box));
+    expect(wide.width - bare.width).toBeGreaterThanOrEqual(Math.floor(2 * ONNX_LINE_END_MARGIN_SHARE * 48));
+  });
+});
+
+describe('ONNX OCR line block of a widened strip', () => {
+  it('takes the box, baseline and row height of the detector\'s box and the words from the strip it was read from', () => {
+    const detected: RotatedBox = { cx: 300, cy: 100, width: 400, height: 50, angle: 0.01, score: 0.9 };
+    const strip = widenLineEnds(detected);
+    const line = { text: '가나', confidence: 0.9, chars: [{ char: '가', step: 10, probability: 0.9 }, { char: '나', step: 20, probability: 0.9 }], steps: 60 };
+    const widened = buildLineBlock(strip, line, 1000, 400)!;
+    const own = buildLineBlock(detected, line, 1000, 400)!;
+    const laid = buildLineBlock(strip, line, 1000, 400, detected)!;
+    expect(laid.bbox).toEqual(own.bbox);
+    expect(laid.baseline).toEqual(own.baseline);
+    expect(laid.rowHeight).toBe(detected.height);
+    expect(laid.angleDegrees).toBe(own.angleDegrees);
+    expect(laid.words).toEqual(widened.words);
+    expect(widened.bbox.width).toBeGreaterThan(own.bbox.width);
+  });
+});
+
+describe('ONNX OCR rules in the line end margin', () => {
+  const HEIGHT = 48;
+  const WIDTH = 240;
+  const margin = Math.round(ONNX_LINE_END_MARGIN_SHARE * HEIGHT);
+  /** A planar strip of paper (1) with the given ink (-1) pixels set: `[x, y]` pairs. */
+  function strip(ink: [number, number][]): Float32Array {
+    const plane = HEIGHT * WIDTH;
+    const data = new Float32Array(3 * plane).fill(1);
+    for (const [x, y] of ink) for (let c = 0; c < 3; c++) data[c * plane + y * WIDTH + x] = -1;
+    return data;
+  }
+  const inkAt = (data: Float32Array, x: number, y: number): boolean => data[y * WIDTH + x] < 0;
+  const column = (x: number): [number, number][] => Array.from({ length: HEIGHT }, (_, y) => [x, y]);
+
+  it('blanks a table border in the margin and everything beyond it, at either end', () => {
+    const data = strip([...column(4), ...column(WIDTH - 7), [WIDTH - 3, 20], [100, 24], [100, 25]]);
+    blankBeyondRules(data, WIDTH);
+    expect([...Array(WIDTH).keys()].some((x) => inkAt(data, x, 10))).toBe(false);
+    expect(inkAt(data, WIDTH - 3, 20)).toBe(false);
+    expect(inkAt(data, 100, 24)).toBe(true);
+  });
+
+  it('keeps a full stop in the margin, which is a few pixels of ink and not a rule', () => {
+    const stop: [number, number][] = [[WIDTH - margin + 3, 40], [WIDTH - margin + 4, 40], [WIDTH - margin + 3, 41], [WIDTH - margin + 4, 41]];
+    const data = strip(stop);
+    blankBeyondRules(data, WIDTH);
+    expect(inkAt(data, WIDTH - margin + 3, 40)).toBe(true);
+  });
+
+  it('leaves a tall stroke of the text itself alone: only the end margins are looked at', () => {
+    const data = strip(column(WIDTH / 2));
+    blankBeyondRules(data, WIDTH);
+    expect(inkAt(data, WIDTH / 2, 10)).toBe(true);
   });
 });
 
@@ -303,6 +378,7 @@ describe('ONNX OCR pipeline with stand-in models', () => {
       readonly dims: number[]
     ) {}
   }
+  const recognizerWidths: number[] = [];
   const runtime: OnnxRuntime = {
     Tensor: Tensor as unknown as OnnxRuntime['Tensor'],
     InferenceSession: {
@@ -319,6 +395,7 @@ describe('ONNX OCR pipeline with stand-in models', () => {
               return { out: new Tensor('float32', map, [1, 1, h, w]) };
             }
             const [n, , , w] = dims;
+            recognizerWidths.push(w);
             const steps = Math.ceil(w / 8);
             const classes = 4;
             const out = new Float32Array(n * steps * classes).fill(0.02);
@@ -349,6 +426,17 @@ describe('ONNX OCR pipeline with stand-in models', () => {
     expect(line.words[0].bbox.y).toBeGreaterThanOrEqual(12);
     expect(line.words[0].bbox.y + line.words[0].bbox.height).toBeLessThanOrEqual(52);
     expect(line.words[0].bbox.x + line.words[0].bbox.width).toBeLessThanOrEqual(128);
+  });
+
+  it('hands the recognizer the detected line with the margin at its ends, not the bare box', async () => {
+    const page = await sharp({ create: { width: 128, height: 64, channels: 3, background: '#fff' } }).png().toBuffer();
+    const map = new Float32Array(64 * 128);
+    for (let y = 24; y < 40; y++) for (let x = 8; x < 100; x++) map[y * 128 + x] = 0.9;
+    const [box] = extractTextBoxes(map, 128, 64);
+    recognizerWidths.length = 0;
+    await recognizePageOnnx(page, { modelDir: dir, runtime, threads: 1, detectorMinSide: 32, detectorMaxSide: 128 });
+    expect(recognizerWidths).toEqual([cropLine(new Uint8Array(128 * 64 * 3), 128, 64, widenLineEnds(box)).width]);
+    expect(recognizerWidths[0]).toBeGreaterThan(Math.ceil((48 * box.width) / box.height));
   });
 
   it('stops before the first stage when the signal is already aborted', async () => {
