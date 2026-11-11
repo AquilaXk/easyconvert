@@ -355,6 +355,23 @@ describe('PDF page rasterization pixel budgets', () => {
     expect((error as Error).message).toContain('PDF page 21');
   });
 
+  it('gives a page whose tree carries no MediaBox the US Letter box pdf.js gives it, and keeps a CropBox that stands alone', async () => {
+    const page = (dict: string): Buffer =>
+      buildPdf(
+        [
+          { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+          { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 1' },
+          { id: 3, dict: `/Type /Page /Parent 2 0 R ${dict}` },
+        ],
+        1
+      ).buffer;
+    const [letter] = await readPdfPageFrames(page(''));
+    expect(letter.cropBox).toEqual({ x0: 0, y0: 0, x1: 612, y1: 792 });
+    await expect(checkPdfRasterPageBudget(page(''), (count) => Array.from({ length: count }, (_, i) => i + 1), 300)).resolves.not.toThrow();
+    const [cropped] = await readPdfPageFrames(page('/CropBox [0 0 300 400]'));
+    expect(cropped.cropBox).toEqual({ x0: 0, y0: 0, x1: 300, y1: 400 });
+  });
+
   it('reads the CropBox of a page of a damaged file, not the MediaBox it is cut from, as pdftoppm draws it with -cropbox', async () => {
     const scanned = corruptPdfXref(
       buildPdf(
