@@ -191,7 +191,7 @@
     },
     {
       "families": ["image", "raw"],
-      "match": "^src/lib/conversions/(avif-cli|avif-colour|blue-noise-mask|ccitt-g4|cicp|color-quantizer|colour-primaries|gif-writer|icc-(reader|srgb)|ico|kd-tree|png-photo-bands|png16|pnm|psd-writer|quantize|sdr-linear|still-cicp)\\.ts$"
+      "match": "^src/lib/conversions/(avif-cli|avif-colour|blue-noise-mask|ccitt-g4|cicp|color-quantizer|colour-primaries|gif-writer|icc-(reader|srgb)|ico|kd-tree|png-optimise|png-photo-bands|png16|pnm|psd-writer|quantize|sdr-linear|still-cicp)\\.ts$"
     },
     {
       "families": ["hdr-image"],
