@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanupWorkerSandboxDir, createWorkerSandboxDir } from '../src/worker/sandbox';
 import {
+  SANDBOX_FIRST_SWEEP_DELAY_MS,
   SANDBOX_STALE_AFTER_MS,
   startWorkerSandboxSweep,
   stopWorkerSandboxSweep,
@@ -124,24 +125,40 @@ describe('sweepWorkerSandboxDirs', () => {
 });
 
 describe('startWorkerSandboxSweep', () => {
-  it('sweeps at once at start-up, which is what removes the leftovers of the worker that was killed', () => {
-    const leftover = foreignDir('libreoffice_profile_worker-1a2b3c4d_', 2 * HOUR);
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    startWorkerSandboxSweep(60_000);
-    expect(fs.existsSync(leftover)).toBe(false);
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('Removed 1 sandbox directory'));
+  const DELAY = 5000;
+  const INTERVAL = 1000;
+  const startFaked = (): void => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    vi.setSystemTime(Date.now());
+  };
+
+  it('does not sweep at start: the leftovers of a worker are removed only after the first sweep delay, and then at the next tick', () => {
+    startFaked();
+    try {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const leftover = foreignDir('libreoffice_profile_worker-1a2b3c4d_', 2 * HOUR);
+      startWorkerSandboxSweep(INTERVAL, DELAY);
+      expect(fs.existsSync(leftover)).toBe(true);
+      vi.advanceTimersByTime(DELAY - INTERVAL);
+      expect(fs.existsSync(leftover)).toBe(true);
+      vi.advanceTimersByTime(INTERVAL);
+      expect(fs.existsSync(leftover)).toBe(false);
+      expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('Removed 1 sandbox directory'));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('refreshes the time of the directories of this process each interval, so that a replica that shares the directory does not sweep them', () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  it('refreshes the directories of this process at once and every interval, before any sweep, so a draining old worker and a replica never lose theirs', () => {
+    startFaked();
     try {
       const own = createWorkerSandboxDir();
       const old = new Date(Date.now() - HOUR);
       fs.utimesSync(own, old, old);
-      startWorkerSandboxSweep(1000);
+      startWorkerSandboxSweep(INTERVAL, DELAY);
       expect(fs.statSync(own).mtimeMs).toBeGreaterThan(old.getTime() + HOUR / 2);
       fs.utimesSync(own, old, old);
-      vi.advanceTimersByTime(1000);
+      vi.advanceTimersByTime(INTERVAL);
       expect(fs.statSync(own).mtimeMs).toBeGreaterThan(old.getTime() + HOUR / 2);
       cleanupWorkerSandboxDir(own);
     } finally {
@@ -149,16 +166,37 @@ describe('startWorkerSandboxSweep', () => {
     }
   });
 
-  it('sweeps again each interval, and stops when it is stopped', () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  it('keeps the directories of a worker that is draining while the new one starts, which never refreshes them, until the delay has passed', () => {
+    startFaked();
     try {
-      startWorkerSandboxSweep(1000);
+      // a draining old worker's directory, last written 3 minutes ago by an image that does not refresh: not yet stale at the stale age
+      const draining = foreignDir('libreoffice_work_worker-1a2b3c4d_', 3 * 60_000);
+      startWorkerSandboxSweep(60_000, SANDBOX_FIRST_SWEEP_DELAY_MS);
+      vi.advanceTimersByTime(2 * 60_000);
+      expect(fs.existsSync(draining)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waits longer than twice the stop grace period of the production worker, which is how long an old container may keep draining', () => {
+    const compose = fs.readFileSync(path.join(__dirname, '..', 'docker-compose.prod.yml'), 'utf-8');
+    const grace = /x-worker: &worker[\s\S]*?stop_grace_period: (\d+)s/.exec(compose)?.[1];
+    expect(Number(grace)).toBeGreaterThanOrEqual(120);
+    expect(SANDBOX_FIRST_SWEEP_DELAY_MS).toBeGreaterThan(2 * Number(grace) * 1000);
+  });
+
+  it('sweeps again each interval after the delay, and stops when it is stopped', () => {
+    startFaked();
+    try {
+      startWorkerSandboxSweep(INTERVAL, DELAY);
+      vi.advanceTimersByTime(DELAY);
       const late = foreignDir('easyconvert_worker_sandbox_', 2 * HOUR);
-      vi.advanceTimersByTime(1000);
+      vi.advanceTimersByTime(INTERVAL);
       expect(fs.existsSync(late)).toBe(false);
       stopWorkerSandboxSweep();
       const after = foreignDir('easyconvert_worker_sandbox_', 2 * HOUR);
-      vi.advanceTimersByTime(5000);
+      vi.advanceTimersByTime(5 * INTERVAL);
       expect(fs.existsSync(after)).toBe(true);
     } finally {
       vi.useRealTimers();

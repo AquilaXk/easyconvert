@@ -11,7 +11,8 @@ import { isOwnedWorkerSandboxDir, touchOwnedWorkerSandboxDirs } from './sandbox'
  *
  * Who is alive is not told by a process id: the replicas of a service share one temporary directory from separate process id
  * namespaces, where an id means another process or none. Every process refreshes the modification time of the directories it owns
- * each interval; a directory that nobody has refreshed for the stale age has no live owner and is removed, by whichever worker sweeps.
+ * each interval; a directory that nobody has refreshed for the stale age has no live owner and is removed, by whichever worker sweeps,
+ * once the first sweep delay after its own start has passed (SANDBOX_FIRST_SWEEP_DELAY_MS).
  */
 
 /** How often a worker refreshes its own directories and sweeps the others. */
@@ -21,6 +22,14 @@ export const SANDBOX_SWEEP_INTERVAL_MS = 60_000;
  * stuck (a stuck worker recycles itself first, JOB_STUCK_RECYCLE_MS).
  */
 export const SANDBOX_STALE_AFTER_MS = 10 * SANDBOX_SWEEP_INTERVAL_MS;
+
+/**
+ * The first sweep waits this long after the worker starts. A rollout recreates every worker service at once while the old containers
+ * drain for up to their `stop_grace_period` (120 s, docker-compose.prod.yml) in the same temporary directory, and an image from before
+ * this sweep never refreshes the modification time of its directories: a sweep at start would remove the profile and work directories
+ * of a draining worker's running jobs. Two and a half grace periods; the refresh of this process's own directories starts at once.
+ */
+export const SANDBOX_FIRST_SWEEP_DELAY_MS = 5 * 60_000;
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 /**
@@ -67,11 +76,16 @@ export function sweepWorkerSandboxDirs(options: SandboxSweepOptions = {}): strin
 
 let sweepTimer: NodeJS.Timeout | null = null;
 
-/** Refreshes the directories of this process and sweeps the stale ones now, then every interval, until stopWorkerSandboxSweep. */
-export function startWorkerSandboxSweep(intervalMs: number = SANDBOX_SWEEP_INTERVAL_MS): NodeJS.Timeout {
+/**
+ * Refreshes the directories of this process at once and every interval, and sweeps the stale ones of others every interval from
+ * `firstSweepDelayMs` after the start, until stopWorkerSandboxSweep.
+ */
+export function startWorkerSandboxSweep(intervalMs: number = SANDBOX_SWEEP_INTERVAL_MS, firstSweepDelayMs: number = SANDBOX_FIRST_SWEEP_DELAY_MS): NodeJS.Timeout {
   if (sweepTimer) return sweepTimer;
+  const sweepFrom = Date.now() + firstSweepDelayMs;
   const tick = (): void => {
     touchOwnedWorkerSandboxDirs();
+    if (Date.now() < sweepFrom) return;
     const removed = sweepWorkerSandboxDirs();
     if (removed.length > 0) {
       console.warn(`[EasyConvert OCI Worker] Removed ${removed.length} sandbox director${removed.length === 1 ? 'y' : 'ies'} left by a worker that did not exit cleanly.`);
