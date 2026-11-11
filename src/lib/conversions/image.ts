@@ -37,7 +37,7 @@ import { decodeLinearBt709 } from './sdr-linear';
 import { readStillCicp } from './still-cicp';
 import { pipelineFromBitmap, pipelineFromIcon } from './bitmap-pipeline';
 import { buildOpenXpsPackage, withPngDensity96 } from './openxps';
-import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, type PixelBudget, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, asInputPixelLimitError, openInputImage, openLimitedSharp, resizedDimensions, rethrowInputPixelLimit } from './image-input-limits';
+import { GIF_PHOTO_PIXEL_BUDGET, HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, type PixelBudget, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, asInputPixelLimitError, openInputImage, openLimitedSharp, resizedDimensions, rethrowInputPixelLimit } from './image-input-limits';
 import {
   quantizeMedianCut,
   quantizeNeuQuant,
@@ -1586,10 +1586,10 @@ function assertAnimatableOptions(options: ConversionOptions): void {
 }
 
 /** The dither the request names for the Oklab palette quantizer; error diffusion in linear light by default. */
-/** Whether the picture of a pipeline is small enough for the Oklab quantizer (its size before any resize bounds its size after). */
+/** Whether the picture of a pipeline is small enough for the in-process GIF palette of a photograph (its size before any resize bounds its size after). */
 async function withinQuantizerBudget(pipeline: Sharp): Promise<boolean> {
   const { width = 0, height = 0 } = await pipeline.clone().metadata();
-  return width * height <= QUANTIZER_PIXEL_BUDGET.maxPixels;
+  return width * height <= GIF_PHOTO_PIXEL_BUDGET.maxPixels;
 }
 
 function ditherKindOf(options: ConversionOptions): DitherKind {

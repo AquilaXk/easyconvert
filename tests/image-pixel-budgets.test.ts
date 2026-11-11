@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import sharp from 'sharp';
 import { convertImage } from '../src/lib/conversions/image';
 import {
+  GIF_PHOTO_PIXEL_BUDGET,
   HDR_FLOAT_PIXEL_BUDGET,
   InputPixelLimitError,
   QUANTIZER_PIXEL_BUDGET,
@@ -18,6 +19,8 @@ const HTTP_PAYLOAD_TOO_LARGE = 413;
 /** Written out from the measurements in the issue thread, not read back from the module under test. */
 const EXPECTED_QUANTIZER_LIMIT = 16_000_000;
 const EXPECTED_SENSOR_LIMIT = 64_000_000;
+/** The default input limit: every photograph the product takes by default is written to GIF in process. */
+const EXPECTED_GIF_PHOTO_LIMIT = 100_000_000;
 
 /** 5000 x 5000 = 25 megapixels: over the quantizer budget, well under the 100 MP input limit. */
 const QUANTIZER_BOMB_SIDE = 5_000;
@@ -47,6 +50,7 @@ describe('budgets of the in-process per-pixel paths', () => {
     expect(QUANTIZER_PIXEL_BUDGET.maxPixels).toBe(EXPECTED_QUANTIZER_LIMIT);
     expect(RAW_SENSOR_PIXEL_BUDGET.maxPixels).toBe(EXPECTED_SENSOR_LIMIT);
     expect(HDR_FLOAT_PIXEL_BUDGET.maxPixels).toBe(EXPECTED_SENSOR_LIMIT);
+    expect(GIF_PHOTO_PIXEL_BUDGET.maxPixels).toBe(EXPECTED_GIF_PHOTO_LIMIT);
   });
 
   it('accepts exactly the budget and refuses one pixel more, naming the limit and the path', () => {
@@ -54,6 +58,11 @@ describe('budgets of the in-process per-pixel paths', () => {
     const run = (): void => assertPixelBudget(4_000, 4_001, QUANTIZER_PIXEL_BUDGET);
     expect(run).toThrow(InputPixelLimitError);
     expect(run).toThrow(`over the limit of ${EXPECTED_QUANTIZER_LIMIT} pixels for Oklab and Riemersma palette quantization`);
+  });
+
+  it('draws the in-process GIF photograph boundary at exactly the budget', () => {
+    expect(() => assertPixelBudget(10_000, 10_000, GIF_PHOTO_PIXEL_BUDGET)).not.toThrow();
+    expect(() => assertPixelBudget(10_000, 10_001, GIF_PHOTO_PIXEL_BUDGET)).toThrow(InputPixelLimitError);
   });
 });
 
