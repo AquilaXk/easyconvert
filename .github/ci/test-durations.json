@@ -941,6 +941,7 @@
   "tests/psd-encoder.test.ts": 0.1,
   "tests/public-address.test.ts": 0,
   "tests/pure-data-parity.test.ts": 0,
+  "tests/quantizer-cpu-pool.test.ts": 5,
   "tests/qpdf-runner-image.test.ts": 0,
   "tests/qpdf-runner-qpdf.test.ts": 19.5,
   "tests/qpdf-runner.test.ts": 8,

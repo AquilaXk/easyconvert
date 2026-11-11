@@ -51,7 +51,8 @@ import {
 } from './quantize';
 import {
   applyOklabQuantizationAndDither,
-  quantizeImage,
+  applyOklabQuantizationAndDitherAsync,
+  quantizeImageAsync,
   quantizePaletteOklab,
   riemersmaDither,
   deltaEOk,
@@ -1598,10 +1599,10 @@ function ditherKindOf(options: ConversionOptions): DitherKind {
  * keeps its own alpha). The raster is refused from its size, before the per-pixel work, when it is over the
  * quantizer budget.
  */
-function oklabPaletteRaster(data: Buffer, width: number, height: number, colours: number, options: ConversionOptions) {
+async function oklabPaletteRaster(data: Buffer, width: number, height: number, colours: number, options: ConversionOptions) {
   assertPixelBudget(width, height, QUANTIZER_PIXEL_BUDGET);
   const kind = ditherKindOf(options);
-  const result = applyOklabQuantizationAndDither({ data, width, height }, colours, kind !== 'none', kind === 'none' ? 'floyd-steinberg' : kind);
+  const result = await applyOklabQuantizationAndDitherAsync({ data, width, height }, colours, kind !== 'none', kind === 'none' ? 'floyd-steinberg' : kind, options.signal);
   return { palette: result.palette, indexed: result.indexed, rgba: Buffer.from(result.rgba.buffer, result.rgba.byteOffset, result.rgba.byteLength) };
 }
 
@@ -2169,7 +2170,7 @@ async function convertImage(
             await assertPixelBudgetBeforeDecode(pipeline, options, QUANTIZER_PIXEL_BUDGET);
             const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
 
-            const rgbaBuffer = oklabPaletteRaster(data, info.width, info.height, colours, options).rgba;
+            const rgbaBuffer = (await oklabPaletteRaster(data, info.width, info.height, colours, options)).rgba;
             // The raster already holds only the palette's colours: the encoder must not dither or re-quantize it.
             outputBuffer = await sharp(rgbaBuffer, {
               raw: { width: info.width, height: info.height, channels: 4 },
@@ -2336,10 +2337,7 @@ async function convertImage(
           await assertPixelBudgetBeforeDecode(pipeline, options, QUANTIZER_PIXEL_BUDGET);
           const { data, info } = await rgbaRaster(pipeline);
           // The quantizer's palette goes into the GIF as it is: the image library is not asked to quantize again.
-          const indexed = quantizeImage(data, info.width, info.height, colours, {
-            dither: ditherKindOf(options),
-            transparency: 'threshold',
-          });
+          const indexed = await quantizeImageAsync(data, info.width, info.height, colours, { dither: ditherKindOf(options), transparency: 'threshold', signal: options.signal });
           outputBuffer = encodeGif({ width: info.width, height: info.height, ...indexed });
         } else if (
           content === 'photo' &&
@@ -2351,7 +2349,7 @@ async function convertImage(
           // nearest colour. Error diffusion is noise to LZW (25 percent more bytes on the camera samples of the benchmark) and
           // does not raise SSIM or PSNR there; the image library's palette quantizer spends the same bytes on both.
           const { data, info } = await rgbaRaster(pipeline);
-          const indexed = quantizeImage(data, info.width, info.height, colours, { dither: 'none', transparency: 'threshold', runTolerance: GIF_PHOTO_RUN_TOLERANCE });
+          const indexed = await quantizeImageAsync(data, info.width, info.height, colours, { dither: 'none', transparency: 'threshold', runTolerance: GIF_PHOTO_RUN_TOLERANCE, signal: options.signal });
           outputBuffer = encodeGif({ width: info.width, height: info.height, ...indexed });
         } else {
           outputBuffer = await pipeline.gif({ colours, dither: options.dither !== false ? 1.0 : 0.0 }).toBuffer();
@@ -2367,7 +2365,7 @@ async function convertImage(
           assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
           const colours = Math.min(256, Math.max(2, options.colors || 256));
           if (options.quantizer === 'oklab' || options.ditherMethod === 'riemersma' || options.ditherMethod === 'blue-noise') {
-            const res = oklabPaletteRaster(data, info.width, info.height, colours, options);
+            const res = await oklabPaletteRaster(data, info.width, info.height, colours, options);
             outputBuffer = encodeBmp8(res.indexed, res.palette, info.width, info.height);
           } else {
             const quant = quantizeNeuQuant(data, info.width, info.height, 4, 10, options.dither !== false);
@@ -2402,7 +2400,7 @@ async function convertImage(
             .raw()
             .toBuffer({ resolveWithObject: true });
           const colours = Math.min(256, Math.max(2, options.colors || 256));
-          const rgbaBuffer = oklabPaletteRaster(data, info.width, info.height, colours, options).rgba;
+          const rgbaBuffer = (await oklabPaletteRaster(data, info.width, info.height, colours, options)).rgba;
           const pngBuf = await sharp(rgbaBuffer, {
             raw: { width: info.width, height: info.height, channels: 4 },
           })

@@ -8,6 +8,7 @@ import { encodePngBand, type PngBandPayload } from '../conversions/png-photo-ban
 import { assemblePng16, filterPng16Scanlines, PNG16_DEFAULT_LEVEL } from '../conversions/png16';
 import { runDemosaicTiles, type DemosaicTilesPayload } from '../conversions/raw-demosaic-tiles';
 import { deriveSevenZipKey, SEVENZIP_KDF_TASK, type AesKeyRequest } from '../conversions/archive-sevenzip-aes';
+import { quantizeTaskTransfer, runQuantizeTask, type QuantizeTaskPayload } from '../conversions/color-quantizer';
 import zlib from 'node:zlib';
 
 /**
@@ -98,6 +99,11 @@ export const CPU_TASK_HANDLERS: Record<string, CpuTaskHandler> = {
   demosaicTiles: (raw): HandlerResult => {
     runDemosaicTiles(raw as DemosaicTilesPayload);
     return { result: null, silent: true };
+  },
+
+  quantize: (raw): HandlerResult => {
+    const result = runQuantizeTask(raw as QuantizeTaskPayload);
+    return { result, transfer: quantizeTaskTransfer(result) };
   },
 
   flac: (raw): HandlerResult => {

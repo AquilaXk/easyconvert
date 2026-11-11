@@ -21,6 +21,7 @@ import { BLUE_NOISE_SIDE, blueNoiseCentred } from './blue-noise-mask';
 import { COLOUR_MEMO_LAB_STRIDE, ColourMemo } from './image-colour-memo';
 import { GIF_PHOTO_PIXEL_BUDGET, QUANTIZER_PIXEL_BUDGET, assertPixelBudget } from './image-input-limits';
 import { KdTree3 } from './kd-tree';
+import { runCpuTask } from '../workers/cpu-pool';
 
 export interface RgbColor {
   r: number;
@@ -796,6 +797,79 @@ export function quantizeImage(
 }
 
 /**
+ * Pixels from which the quantizers leave the calling thread: a 16 MP Riemersma run holds the event loop for seconds, and a
+ * pool task (the raster is handed over, not copied) costs a few milliseconds.
+ */
+export const QUANTIZER_POOL_MIN_PIXELS = 500_000;
+
+/** What the `quantize` pool task is asked to do; `pixels` is the RGBA raster handed over with the task. */
+export interface QuantizeTaskPayload {
+  pixels: Uint8Array;
+  width: number;
+  height: number;
+  maxColors: number;
+  options: QuantizeOptions;
+  /** Also rebuild the raster from the palette and indices (each pixel keeps its own alpha). */
+  withRaster: boolean;
+}
+
+export interface QuantizeTaskResult {
+  image: IndexedImage;
+  rgba?: Uint8ClampedArray;
+}
+
+/** The work of the `quantize` pool task, run on the pool thread (or in-line by the tests that compare both). */
+export function runQuantizeTask(payload: QuantizeTaskPayload): QuantizeTaskResult {
+  const image = quantizeImage(payload.pixels, payload.width, payload.height, payload.maxColors, payload.options);
+  return { image, rgba: payload.withRaster ? rgbaOf(payload.pixels, image.indices, image.palette, payload.width * payload.height) : undefined };
+}
+
+/** The buffers of a task result, each exclusively owned by its array, to hand back without a copy. */
+export function quantizeTaskTransfer(result: QuantizeTaskResult): ArrayBuffer[] {
+  return [result.image.palette.buffer, result.image.indices.buffer, ...(result.rgba ? [result.rgba.buffer] : [])] as ArrayBuffer[];
+}
+
+/**
+ * The pixels as a buffer the task can take over. A buffer that owns its whole ArrayBuffer moves without a copy; the buffers of the
+ * image library live in memory it owns and cannot be transferred, and a view onto part of a buffer would take its neighbours along:
+ * both are copied once.
+ */
+function handedOverPixels(pixels: Uint8Array): Uint8Array {
+  const exclusive = pixels.byteOffset === 0 && pixels.byteLength === pixels.buffer.byteLength && pixels.buffer instanceof ArrayBuffer;
+  if (!exclusive) return Uint8Array.prototype.slice.call(pixels);
+  try {
+    return new Uint8Array(structuredClone(pixels.buffer, { transfer: [pixels.buffer] }));
+  } catch (error) {
+    if ((error as { name?: string }).name !== 'DataCloneError') throw error;
+    return Uint8Array.prototype.slice.call(pixels);
+  }
+}
+
+function quantizeOnPool(payload: QuantizeTaskPayload, signal?: AbortSignal): Promise<QuantizeTaskResult> {
+  const pixels = handedOverPixels(payload.pixels);
+  return runCpuTask<QuantizeTaskResult>('quantize', { ...payload, pixels }, { signal, transfer: [pixels.buffer as ArrayBuffer] });
+}
+
+/**
+ * `quantizeImage` that leaves the calling thread for a raster of `QUANTIZER_POOL_MIN_PIXELS` or more: the pixels' ArrayBuffer is
+ * transferred to the pool thread (the caller must not read `pixels` afterwards) and the result's buffers are transferred back.
+ * The result is byte-identical to `quantizeImage`.
+ */
+export async function quantizeImageAsync(
+  pixels: Uint8Array,
+  width: number,
+  height: number,
+  maxColors: number = QUANT_MAX_COLORS,
+  options: QuantizeOptions & { signal?: AbortSignal } = {}
+): Promise<IndexedImage> {
+  const { signal, ...quantizeOptions } = options;
+  if (width * height < QUANTIZER_POOL_MIN_PIXELS) return quantizeImage(pixels, width, height, maxColors, quantizeOptions);
+  assertRaster(pixels, width, height);
+  assertPixelBudget(width, height, (quantizeOptions.dither ?? 'none') === 'none' ? GIF_PHOTO_PIXEL_BUDGET : QUANTIZER_PIXEL_BUDGET);
+  return (await quantizeOnPool({ pixels, width, height, maxColors, options: quantizeOptions, withRaster: false }, signal)).image;
+}
+
+/**
  * Maps every pixel of an RGBA raster to the nearest colour of a given palette (r, g, b triples, `paletteSize`
  * of them) in Oklab, dithered as asked. With `transparentIndex` set, pixels below `QUANT_ALPHA_THRESHOLD` alpha
  * take that index and take no part in the dither.
@@ -898,4 +972,20 @@ export function applyOklabQuantizationAndDither(
     indexed: image.indices,
     rgba: rgbaOf(data, image.indices, image.palette, width * height),
   };
+}
+
+/** `applyOklabQuantizationAndDither` on the pool for a large raster; `imageData.data` is handed over like the pixels of `quantizeImageAsync`. */
+export async function applyOklabQuantizationAndDitherAsync(
+  imageData: { data: Uint8Array; width: number; height: number },
+  maxColors: number = QUANT_MAX_COLORS,
+  dither: boolean = true,
+  method: Exclude<DitherKind, 'none'> = 'floyd-steinberg',
+  signal?: AbortSignal
+): Promise<{ palette: RgbColor[]; indexed: Uint8Array; rgba: Uint8ClampedArray }> {
+  const { data, width, height } = imageData;
+  if (width * height < QUANTIZER_POOL_MIN_PIXELS) return applyOklabQuantizationAndDither(imageData, maxColors, dither, method);
+  assertRaster(data, width, height);
+  assertPixelBudget(width, height, dither ? QUANTIZER_PIXEL_BUDGET : GIF_PHOTO_PIXEL_BUDGET);
+  const { image, rgba } = await quantizeOnPool({ pixels: data, width, height, maxColors, options: { dither: dither ? method : 'none' }, withRaster: true }, signal);
+  return { palette: paletteColours(image), indexed: image.indices, rgba: rgba! };
 }
