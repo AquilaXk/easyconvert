@@ -162,6 +162,14 @@ export function parseConfig(env: Env, options: LoadConfigOptions = {}): Config {
     }
   }
 
+  // A strict sandbox refuses a program it cannot confine, so a switch that lets programs run without the PID namespace or without the confinement
+  // of their files would either be ignored or reopen the fail-open that STRICT_SANDBOX is there to close: the process does not start.
+  if (values.get('STRICT_SANDBOX') === true) {
+    for (const name of ['SANDBOX_CONFINE_FILES', 'SANDBOX_PID_NAMESPACE']) {
+      if (values.get(name) === false) failures.push({ variable: name, rule: 'must not be false while STRICT_SANDBOX is true: a strict sandbox does not run a program without it' });
+    }
+  }
+
   if (failures.length > 0) throw new ConfigurationError(failures);
   return Object.freeze(Object.fromEntries(values)) as Config;
 }

@@ -1,4 +1,4 @@
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFileSync, type ExecFileSyncOptions } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -427,7 +427,7 @@ export const PID_INIT_PATH_ENV = 'PID_INIT_PATH';
 export const SANDBOX_PID_NAMESPACE_ENV = 'SANDBOX_PID_NAMESPACE';
 /** Set to `false` to start sandboxed programs without the Landlock ruleset that refuses them the /proc entries of the other runs (pid-init `--keep-proc`); the PID namespace stays. On by default. */
 export const SANDBOX_HIDE_PROC_ENV = 'SANDBOX_HIDE_PROC';
-/** Set to `false` to start sandboxed programs without confining their files to their work directory (see SandboxFileScope); the /proc hiding and the PID namespace stay. On by default; STRICT_SANDBOX does not override an explicit `false`. */
+/** Set to `false` to start sandboxed programs without confining their files to their work directory (see SandboxFileScope); the /proc hiding and the PID namespace stay. On by default; with STRICT_SANDBOX=true the configuration refuses to load while it is `false`. */
 export const SANDBOX_CONFINE_FILES_ENV = 'SANDBOX_CONFINE_FILES';
 /** What pid-init and qpdf-runner print at the start of the standard error of a program they could not hide /proc from. */
 export const PROC_NOT_HIDDEN_NOTICE = 'pid-init: /proc not hidden: ';
@@ -752,12 +752,13 @@ function pidIsolationOf(
 
 /** A directory a run is confined to, as pid-init takes it: absolute, normalized, and never one that holds the files of other jobs. */
 export function confinedDirectory(directory: string, what: string): string {
+  // A directory the ruleset cannot be made from is the refusal of the run (503, retried elsewhere), not a failure of the program.
   if (typeof directory !== 'string' || !path.isAbsolute(directory) || directory.includes('\0')) {
-    throw new Error(`The ${what} of a sandboxed run must be an absolute path without NUL (got ${JSON.stringify(directory)}).`);
+    throw sandboxUnavailable(`The ${what} of a sandboxed run must be an absolute path without NUL (got ${JSON.stringify(directory)}); the program is not started.`);
   }
   const resolved = path.resolve(directory);
   if (resolved === path.parse(resolved).root || resolved === path.resolve(os.tmpdir())) {
-    throw new Error(`The ${what} of a sandboxed run is the directory of one job, not ${resolved}: the confinement would allow the files of every other job.`);
+    throw sandboxUnavailable(`The ${what} of a sandboxed run is the directory of one job, not ${resolved}: the confinement would allow the files of every other job; the program is not started.`);
   }
   return resolved;
 }
@@ -776,7 +777,12 @@ function confinementOf(
   options: UnshareIsolationOptions,
   program: string
 ): string[] {
-  if (!isolationArgs || fileConfinementDisabled() || scope.fileConfinementOff) return [];
+  if (!isolationArgs) return [];
+  // Whatever the switch for the files says: under STRICT_SANDBOX a program that would run without a PID namespace of its own is not started.
+  if (strict && !options.pidNamespace && !unshare?.pidInitPath) {
+    throw sandboxUnavailable(`Strict sandbox: this host has no pid-init to start the program in a PID namespace of its own (${PID_INIT_PATH_ENV}, ${SANDBOX_PID_NAMESPACE_ENV}); the program is not started.`);
+  }
+  if (fileConfinementDisabled() || scope.fileConfinementOff) return [];
   if (scope.workDir === undefined) {
     if (strict) throw sandboxUnavailable('Strict sandbox: the run does not name the directory of its job (workDir), so its files cannot be confined to it; the program is not started.');
     return [];
@@ -892,6 +898,27 @@ export function confinementRefusal(exitCode: number | null, stderr: Buffer): str
   if (exitCode !== PID_INIT_REFUSED_STATUS || stderr.length < CANNOT_CONFINE_REFUSAL.length || stderr.toString('utf-8', 0, CANNOT_CONFINE_REFUSAL.length) !== CANNOT_CONFINE_REFUSAL) return null;
   const end = stderr.indexOf(0x0a);
   return `Strict sandbox: the files of the program could not be confined to its directory, so it was not started (${stderr.toString('utf-8', CANNOT_CONFINE_REFUSAL.length, end === -1 ? stderr.length : end).trim().slice(0, 200)}).`;
+}
+
+/**
+ * execFileSync for a command that resolveSandboxedCommand made: a run that pid-init refused to start (status 125 and its `cannot confine` line)
+ * is the typed SandboxUnavailableError, as the asynchronous executor makes it, and not a failed program (500).
+ */
+export function execFileSyncConfined(file: string, args: readonly string[], options: ExecFileSyncOptions): Buffer {
+  try {
+    return execFileSync(file, args, options) as Buffer;
+  } catch (error) {
+    rethrowConfinementRefusal(error);
+    throw error;
+  }
+}
+
+/** Throws SandboxUnavailableError when `error` is a synchronous run that pid-init refused to start (see confinementRefusal); returns otherwise. */
+export function rethrowConfinementRefusal(error: unknown): void {
+  const { status, stderr } = (error ?? {}) as { status?: number | null; stderr?: Buffer | string | null };
+  if (stderr === undefined || stderr === null) return;
+  const reason = confinementRefusal(status ?? null, Buffer.isBuffer(stderr) ? stderr : Buffer.from(stderr));
+  if (reason !== null) throw sandboxUnavailable(reason);
 }
 
 /** The refusal of a host that cannot confine a program, counted for the metrics. */

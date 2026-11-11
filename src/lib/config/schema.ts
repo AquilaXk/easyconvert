@@ -560,7 +560,7 @@ const SCHEMA_ENTRIES = [
     secret: false,
     roles: BOTH,
   },
-  { name: 'SANDBOX_CONFINE_FILES', area: 'security', description: 'Set to `false` to start sandboxed programs without the Landlock ruleset that confines their files to the directory of their job (on by default; `pid-init --confine`). Without it a program can read and write every file its user can, such as the stored files of other people. STRICT_SANDBOX does not override an explicit `false`; the PID namespace and the /proc hiding stay.', kind: { type: 'boolean' }, default: true, requiredInProduction: false, secret: false, roles: BOTH },
+  { name: 'SANDBOX_CONFINE_FILES', area: 'security', description: 'Set to `false` to start sandboxed programs without the Landlock ruleset that confines their files to the directory of their job (on by default; `pid-init --confine`). Without it a program can read and write every file its user can, such as the stored files of other people. With `STRICT_SANDBOX=true` the process does not start while this is `false` (as with `SANDBOX_PID_NAMESPACE=false`). The PID namespace and the /proc hiding stay.', kind: { type: 'boolean' }, default: true, requiredInProduction: false, secret: false, roles: BOTH },
   autoOffSetting(
     'SANDBOX_LAUNCHER',
     'security',

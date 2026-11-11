@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -21,6 +22,7 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, default: { ...actual, execFileSync }, execFileSync };
 });
 
+import { SandboxUnavailableError } from '../src/lib/types';
 import { fileConfinementDisabled, getUnshareCapability, PID_INIT_REPROBE_MS, PID_INIT_STRICT_REPROBE_MS, resetUnshareCapabilityCache, resolveSandboxedCommand, withoutProcHideNotice } from '../src/lib/security/process-sandbox';
 
 const PID_INIT = '/opt/test/pid-init-stand-in';
@@ -179,6 +181,28 @@ describe('the PID namespace probe', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     expect(wrapperOf({ networkIsolated: true, workDir: '/jobs/one' })).toEqual([PID_INIT, '--']);
     expect(() => wrapperOf({ networkIsolated: true, workDir: '/jobs/one', strictIsolation: true })).toThrow(/cannot confine the files/);
+  });
+
+  it('refuses a program under STRICT_SANDBOX when the host has no pid-init, whatever the switch for the files says', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const start = () => resolveSandboxedCommand('/usr/bin/tool', [], { networkIsolated: true, workDir: '/jobs/one', strictIsolation: true });
+    // No pid-init program, the PID namespace turned off, and the confinement turned off on top: the program is never started in none of them.
+    vi.stubEnv('PID_INIT_PATH', '');
+    vi.stubEnv('SANDBOX_CONFINE_FILES', 'false');
+    resetUnshareCapabilityCache();
+    expect(start).toThrow(/no pid-init/);
+    vi.stubEnv('PID_INIT_PATH', PID_INIT);
+    vi.stubEnv('SANDBOX_PID_NAMESPACE', 'false');
+    resetUnshareCapabilityCache();
+    expect(start).toThrow(/no pid-init/);
+    expect(() => resolveSandboxedCommand('/usr/bin/tool', [], { networkIsolated: true, workDir: '/jobs/one', strictIsolation: false })).not.toThrow();
+  });
+
+  it('refuses a directory it cannot confine to with the typed 503 error, not a plain one', () => {
+    probe.pidInitWorks = true;
+    for (const workDir of ['relative/dir', '/', os.tmpdir()]) {
+      expect(() => resolveSandboxedCommand('/usr/bin/tool', [], { networkIsolated: true, workDir })).toThrow(SandboxUnavailableError);
+    }
   });
 
   it('starts a program that opts out of the PID namespace through pid-init, which hides /proc and becomes the program in place', () => {

@@ -104,7 +104,7 @@ import {
 import {
   executeSandboxedBinary,
   resolveSandboxedCommand,
-  rethrowSandboxUnavailable,
+  rethrowSandboxUnavailable, execFileSyncConfined,
   getSanitizedEnvironment,
 } from '../security/process-sandbox';
 import { compressWithNativeXz, decompressWithNativeXz } from './xz-native';
@@ -1786,7 +1786,7 @@ export function extractRarArchive(
         try {
           return options.password
             ? execFileSyncWithPasswordStdin(resolved.binary, resolved.args, { ...unrarOptions, input: Buffer.from(`${options.password}\n`, 'utf-8') })
-            : execFileSync(resolved.binary, resolved.args, unrarOptions);
+            : execFileSyncConfined(resolved.binary, resolved.args, unrarOptions);
         } catch (err) {
           throw archivePasswordError(err, { password: options.password, label: 'RAR archive', tool: 'unrar' }) ?? err;
         }
@@ -2221,28 +2221,28 @@ export function convertWithNative7z(
     if (tgt === 'tar.gz' || tgt === 'tgz') {
       const tarPath = path.join(workDir, 'archive.tar');
       const rTar = resolveSandboxedCommand(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { networkIsolated: true, workDir });
-      execFileSync(rTar.binary, rTar.args, { cwd: extractDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 });
+      execFileSyncConfined(rTar.binary, rTar.args, { cwd: extractDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 });
       const rGz = resolveSandboxedCommand(p7zBin, ['a', '-y', '-tgzip', outputPath, tarPath], { networkIsolated: true, workDir });
-      execFileSync(rGz.binary, rGz.args, { cwd: workDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 });
+      execFileSyncConfined(rGz.binary, rGz.args, { cwd: workDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 });
     } else if (tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz') {
       const tarPath = path.join(workDir, 'archive.tar');
       const rTar = resolveSandboxedCommand(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { networkIsolated: true, workDir });
-      execFileSync(rTar.binary, rTar.args, { cwd: extractDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 });
+      execFileSyncConfined(rTar.binary, rTar.args, { cwd: extractDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 });
       const rBz = resolveSandboxedCommand(p7zBin, ['a', '-y', '-tbzip2', outputPath, tarPath], { networkIsolated: true, workDir });
-      execFileSync(rBz.binary, rBz.args, { cwd: workDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 });
+      execFileSyncConfined(rBz.binary, rBz.args, { cwd: workDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 });
     } else if (tgt === 'tar.xz' || tgt === 'txz') {
       const tarPath = path.join(workDir, 'archive.tar');
       const rTar = resolveSandboxedCommand(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { networkIsolated: true, workDir });
-      execFileSync(rTar.binary, rTar.args, { cwd: extractDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 });
+      execFileSyncConfined(rTar.binary, rTar.args, { cwd: extractDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 });
       const rXz = resolveSandboxedCommand(p7zBin, ['a', '-y', '-txz', outputPath, tarPath], { networkIsolated: true, workDir });
-      execFileSync(rXz.binary, rXz.args, { cwd: workDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 });
+      execFileSyncConfined(rXz.binary, rXz.args, { cwd: workDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 });
     } else if (tgt === '7z' || tgt === 'zip' || tgt === 'tar') {
       const rCreate = resolveSandboxedCommand(p7zBin, ['a', '-y', `-t${tgt}`, ...pwCreateArgs, outputPath, '.'], { networkIsolated: true, workDir });
       const createOptions = { cwd: extractDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 };
       if (pwCreateInput) {
         execFileSyncWithPasswordStdin(rCreate.binary, rCreate.args, { ...createOptions, input: pwCreateInput });
       } else {
-        execFileSync(rCreate.binary, rCreate.args, createOptions);
+        execFileSyncConfined(rCreate.binary, rCreate.args, createOptions);
       }
       if (options.password && (tgt === 'zip' || tgt === '7z')) {
         assertCreatedArchiveEncrypted(p7zBin, outputPath, tgt, workDir);
@@ -2975,7 +2975,7 @@ export async function repairZipArchive(
         networkIsolated: true, workDir,
       });
       try {
-        const out = execFileSync(resolved.binary, resolved.args, {
+        const out = execFileSyncConfined(resolved.binary, resolved.args, {
           cwd: workDir,
           env: getSanitizedEnvironment({}, true, workDir),
           timeout: 60000,

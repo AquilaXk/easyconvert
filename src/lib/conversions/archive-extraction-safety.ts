@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -13,6 +12,7 @@ import {
 import type { ConversionRefusalCode } from '../refusal-codes';
 import {
   executeSandboxedBinary,
+  execFileSyncConfined,
   getSanitizedEnvironment,
   resolveSandboxedCommand,
   SandboxedBufferLimitError,
@@ -1221,7 +1221,7 @@ function runSevenZipSync(
 ): Buffer {
   const { input, ...rest } = options;
   if (input) return execFileSyncWithPasswordStdin(binary, args, { ...rest, input });
-  return execFileSync(binary, args, { ...rest, stdio: ['pipe', 'pipe', 'pipe'] });
+  return execFileSyncConfined(binary, args, { ...rest, stdio: ['pipe', 'pipe', 'pipe'] });
 }
 
 function listArchiveSync(request: ContainedExtractionRequest, target: ListTarget, exclude: string[]): ArchiveListing {

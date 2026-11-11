@@ -6,6 +6,7 @@ import {
   executeSandboxedBinary,
   getSanitizedEnvironment,
   resolveSandboxedCommand,
+  rethrowConfinementRefusal,
   SandboxedProcessError,
   SandboxedTimeoutError,
   type SandboxedExecutionOptions,
@@ -333,6 +334,7 @@ function runSandboxedSync(binary: string, args: readonly string[], limits: ToolL
   });
   const stdout = run.stdout ?? '';
   const stderr = run.stderr ?? '';
+  rethrowConfinementRefusal(run);
   if (run.error === undefined && run.status === 0) return { ok: true, stdout, stderr };
   const failure = run.error?.message ?? (run.signal !== null ? `killed by ${run.signal}` : `exited with status ${run.status}`);
   return { ok: false, stdout, stderr, failure: stderr.trim() || failure };
