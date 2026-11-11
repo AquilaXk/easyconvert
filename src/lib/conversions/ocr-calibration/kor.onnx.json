@@ -1,0 +1,44 @@
+{
+  "language": "kor",
+  "enginePath": "onnx",
+  "x": [
+    0.882927,
+    0.992521,
+    0.999702,
+    0.999868,
+    0.99996
+  ],
+  "y": [
+    0.867647,
+    0.981778,
+    0.984615,
+    0.994382,
+    1
+  ],
+  "provenance": {
+    "method": "Isotonic regression (pool-adjacent-violators) of word correctness on the raw word score; words are labelled by Levenshtein alignment to the drawn text.",
+    "engine": "onnxruntime-node 1.31.1, PP-OCRv5 mobile detector and Korean mobile recognizer",
+    "languageData": "rec.onnx sha256:cd6e2ea50f6943ca",
+    "fittedOn": {
+      "pages": [
+        "ko_a",
+        "ko_b",
+        "ko_c"
+      ],
+      "degradations": [
+        "clean300",
+        "dpi60",
+        "blur",
+        "noise-1",
+        "noise-2",
+        "heavy-noise-1",
+        "heavy-noise-2",
+        "faded",
+        "dpi100noise"
+      ],
+      "words": 1791,
+      "correctWords": 1754
+    },
+    "generator": "tests/helpers/fit-ocr-calibration.mts"
+  }
+}

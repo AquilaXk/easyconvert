@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
-import { performOcr, shutdownOcrWorkerPool } from '../src/lib/conversions/ocr';
+import { performOcr, recognizePage, shutdownOcrWorkerPool } from '../src/lib/conversions/ocr';
 import { recognizeWithCli } from '../src/lib/conversions/ocr-cli';
 import { getSharedOcrWorkerPool } from '../src/lib/conversions/ocr-worker-pool';
 import { oracleTest } from './helpers/oracle-test';
@@ -79,7 +79,8 @@ describe('small crops', () => {
       await shutdownOcrWorkerPool();
       const createSpy = vi.spyOn(getSharedOcrWorkerPool(), 'createWorker');
       const retries = countSegmentationRetries();
-      const result = await performOcr(await textImage('한글', 120, 40, 20, 'monospace'), 'ko');
+      // The Tesseract path (the shared worker is what is counted); the ONNX engine reads this label too, below.
+      const { result } = await recognizePage(await textImage('한글', 120, 40, 20, 'monospace'), 'ko', { enginePath: 'neural' });
       expect(result.text).toContain('한글');
       expect(retries()).toBe(1);
       expect([result.imageWidth, result.imageHeight]).toEqual([120, 40]);

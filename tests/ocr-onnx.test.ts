@@ -14,13 +14,14 @@ import {
   onnxOcrAvailable,
   planDetectorSize,
   recoverSpaces,
-  recognizePageOnnx,
+  setInColumns,
   releaseOnnxOcr,
   unclipBox,
   wordSpans,
   type OnnxRuntime,
   type RotatedBox,
 } from '../src/lib/conversions/ocr-onnx';
+import { recognizePageOnnx } from '../src/lib/conversions/ocr-onnx-input';
 import { OcrEngineUnavailableError } from '../src/lib/types';
 
 function rotatedRectPoints(cx: number, cy: number, width: number, height: number, angle: number): [number, number][] {
@@ -33,6 +34,44 @@ function rotatedRectPoints(cx: number, cy: number, width: number, height: number
   }
   return points;
 }
+
+/** A box of a text line of 42 pixel text (a box height of 46, as the detector's boxes measure on a page) whose text runs from `x0` to `x1`. */
+function lineBox(x0: number, x1: number, y: number, angle = 0): RotatedBox {
+  const height = 46;
+  const width = x1 - x0 + 2 * 0.3 * height;
+  const cx = (x0 + x1) / 2;
+  return { cx: cx - y * Math.sin(angle), cy: y + cx * Math.sin(angle), width, height, angle, score: 0.9 };
+}
+
+describe('pages set in columns', () => {
+  const rows = (count: number) => Array.from({ length: count }, (_, i) => 200 + i * 70);
+
+  it('recognizes two columns of running text with a gutter between them', () => {
+    const boxes = rows(10).flatMap((y) => [lineBox(140, 1150, y), lineBox(1240, 2340, y)]);
+    expect(setInColumns(boxes, 2480)).toBe(true);
+  });
+
+  it('recognizes columns on a page turned by 3 degrees and with a title across them', () => {
+    const angle = (3 * Math.PI) / 180;
+    const boxes = [lineBox(140, 2340, 100, angle), ...rows(10).flatMap((y) => [lineBox(140, 1150, y, angle), lineBox(1240, 2340, y, angle)])];
+    expect(setInColumns(boxes, 2480)).toBe(true);
+  });
+
+  it('does not take the cells of a table for columns', () => {
+    const cells = rows(8).flatMap((y) => [lineBox(140, 330, y), lineBox(600, 1000, y), lineBox(1400, 1900, y), lineBox(2100, 2300, y)]);
+    expect(setInColumns(cells, 2480)).toBe(false);
+  });
+
+  it('does not take one column of text, or a few lines, for columns', () => {
+    expect(setInColumns(rows(14).map((y) => lineBox(140, 2340, y)), 2480)).toBe(false);
+    expect(setInColumns(rows(3).flatMap((y) => [lineBox(140, 1150, y), lineBox(1240, 2340, y)]), 2480)).toBe(false);
+  });
+
+  it('needs a gutter, not just two columns that touch', () => {
+    const touching = rows(10).flatMap((y) => [lineBox(140, 1190, y), lineBox(1200, 2340, y)]);
+    expect(setInColumns(touching, 2480)).toBe(false);
+  });
+});
 
 describe('ONNX OCR geometry', () => {
   it('scales the detector input into the side range and rounds each side to 32', () => {
@@ -128,6 +167,16 @@ describe('ONNX OCR decoding', () => {
     expect(spans[0].start).toBeGreaterThanOrEqual(0);
     expect(spans[0].end).toBeLessThanOrEqual(spans[1].start + 0.2);
     expect(spans[1].end).toBeLessThanOrEqual(1);
+  });
+
+  it('keeps a gap between two words, also after a narrow character such as a full stop', () => {
+    const at = (char: string, step: number) => ({ char, step, probability: 0.9 });
+    // "다." then "북부": characters ten steps apart, and the first character of the second word 13 steps after the full stop
+    const decoded = { text: '다. 북부', confidence: 0.9, steps: 40, chars: [at('다', 0), at('.', 10), at(' ', 16), at('북', 23), at('부', 33)] };
+    const [first, second] = wordSpans(decoded);
+    // Each word reaches 35% of 13 steps toward the other (4.55), not half a pitch (5): the gap is 3.9 steps, where half pitches left 3.
+    expect((second.start - first.end) * 40).toBeCloseTo(23.5 - 4.55 - (10.5 + 4.55), 6);
+    expect(first.end * 40).toBeCloseTo(10.5 + 4.55, 6);
   });
 
   it('builds a line block with word boxes on the line and a baseline along its lower edge', () => {
@@ -314,28 +363,4 @@ describe('ONNX OCR pipeline with stand-in models', () => {
   });
 });
 
-// The real models are not part of the repository or the image. Point the variable at a directory with det.onnx, rec.onnx
-// and dict.txt (and have onnxruntime-node installed) to run this against them.
-const realModels = process.env[ONNX_OCR_MODEL_DIR_ENV];
-// skip-ok: the engine is optional and off by default; its models are not in the repository or the image, so CI cannot have them.
-describe.skipIf(!realModels)('ONNX OCR with the real models', () => {
-  it('reads the Korean golden page with a character error rate under 3 percent', async () => {
-    const fixture = path.join(__dirname, 'fixtures/ocr');
-    const truth = fs.readFileSync(path.join(fixture, 'ko_a.gt.txt'), 'utf8').replace(/\s+/g, '');
-    const result = await recognizePageOnnx(fs.readFileSync(path.join(fixture, 'ko_a__clean300.png')));
-    const read = result.text.replace(/\s+/g, '');
-    const edits = levenshtein([...truth], [...read]);
-    expect(edits / [...truth].length).toBeLessThan(0.03);
-    expect(result.lineBlocks!.every((b) => b.words.length > 0 && b.baseline)).toBe(true);
-  }, 120_000);
-});
-
-function levenshtein(a: string[], b: string[]): number {
-  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
-  for (let i = 1; i <= a.length; i++) {
-    const cur = [i];
-    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
-    prev = cur;
-  }
-  return prev[b.length];
-}
+// The real models are read by tests/ocr-onnx-real.test.ts, through the helper process.

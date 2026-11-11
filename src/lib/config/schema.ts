@@ -572,6 +572,12 @@ const SCHEMA_ENTRIES = [
     'Whether the qpdf jobs of the PDF operations run in a child of `qpdf-runner` (native/qpdf-runner) that has libqpdf loaded already, each in a user and network namespace of its own, instead of starting the `qpdf` program. `auto` (the default) uses the runner when it is installed and starts, and starts the program otherwise (and for any job the runner declines or cannot isolate). `off` always starts the program.',
     BOTH
   ),
+  autoOffSetting(
+    'EASYCONVERT_OCR_ONNX',
+    'tools',
+    'Whether Korean pages (`kor`, `kor+eng`) are read by the ONNX OCR engine (PP-OCRv5 models in a sandboxed helper process, `src/lib/conversions/ocr-onnx-helper.ts`). `auto` (the default) uses it when the models, the `onnxruntime-node` package and the helper program are present, and reads Korean with Tesseract otherwise (the result carries `engineFallback`). `off` always reads Korean with Tesseract.',
+    BOTH
+  ),
   {
     name: 'HTML_IMAGE_FETCH',
     area: 'security',
@@ -1457,7 +1463,7 @@ const SCHEMA_ENTRIES = [
   toolPath('RSVG_CONVERT_PATH', 'Path of the librsvg `rsvg-convert` executable that writes an SVG as a vector PDF.', BOTH),
   toolPath('TESSERACT_PATH', 'Path of the `tesseract` executable.', BOTH),
   toolResourcePath('TESSDATA_PREFIX', 'Directory of the Tesseract language data.', BOTH),
-  toolResourcePath('EASYCONVERT_OCR_ONNX_DIR', 'Directory of the optional ONNX Korean OCR models (`det.onnx`, `rec.onnx`, `dict.txt`, entry 230). Off by default: when unset the ONNX engine is unavailable and Korean OCR uses Tesseract.', BOTH),
+  toolResourcePath('EASYCONVERT_OCR_ONNX_DIR', 'Directory of the ONNX Korean OCR models (`det.onnx`, `rec.onnx`, `dict.txt`); `/opt/ocr-onnx` (the worker image) when unset. Installed by `scripts/install-onnx-ocr-models.sh`.', BOTH),
   toolPath('VERAPDF_PATH', 'Path of the `verapdf` executable that validates PDF/A output.', BOTH),
   toolPath('QPDF_PATH', 'Path of the `qpdf` executable that encrypts PDF output.', BOTH),
   toolPath('FC_LIST_PATH', 'Path of the fontconfig `fc-list` executable.', BOTH),

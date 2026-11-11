@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 156 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 157 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -295,6 +295,7 @@ Generate a secret with `openssl rand -hex 32`.
 | Variable | Type and rule | Default | Required in production | Process |
 | --- | --- | --- | --- | --- |
 | `QPDF_RUNNER` | one of `auto`, `off` (any case) | `auto` | no | web, worker |
+| `EASYCONVERT_OCR_ONNX` | one of `auto`, `off` (any case) | `auto` | no | web, worker |
 | `FFMPEG_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `FFPROBE_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `FLUIDSYNTH_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
@@ -343,6 +344,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `JAVA_HOME` | file or directory path | none | no | web, worker |
 
 - `QPDF_RUNNER`: Whether the qpdf jobs of the PDF operations run in a child of `qpdf-runner` (native/qpdf-runner) that has libqpdf loaded already, each in a user and network namespace of its own, instead of starting the `qpdf` program. `auto` (the default) uses the runner when it is installed and starts, and starts the program otherwise (and for any job the runner declines or cannot isolate). `off` always starts the program.
+- `EASYCONVERT_OCR_ONNX`: Whether Korean pages (`kor`, `kor+eng`) are read by the ONNX OCR engine (PP-OCRv5 models in a sandboxed helper process, `src/lib/conversions/ocr-onnx-helper.ts`). `auto` (the default) uses it when the models, the `onnxruntime-node` package and the helper program are present, and reads Korean with Tesseract otherwise (the result carries `engineFallback`). `off` always reads Korean with Tesseract.
 - `FFMPEG_PATH`: Path of the ffmpeg executable; searched in the standard locations when unset.
 - `FFPROBE_PATH`: Path of the ffprobe executable.
 - `FLUIDSYNTH_PATH`: Path of the FluidSynth `fluidsynth` executable that renders MIDI files to WAV; searched in the standard locations when unset.
@@ -384,7 +386,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `RSVG_CONVERT_PATH`: Path of the librsvg `rsvg-convert` executable that writes an SVG as a vector PDF.
 - `TESSERACT_PATH`: Path of the `tesseract` executable.
 - `TESSDATA_PREFIX`: Directory of the Tesseract language data.
-- `EASYCONVERT_OCR_ONNX_DIR`: Directory of the optional ONNX Korean OCR models (`det.onnx`, `rec.onnx`, `dict.txt`, entry 230). Off by default: when unset the ONNX engine is unavailable and Korean OCR uses Tesseract.
+- `EASYCONVERT_OCR_ONNX_DIR`: Directory of the ONNX Korean OCR models (`det.onnx`, `rec.onnx`, `dict.txt`); `/opt/ocr-onnx` (the worker image) when unset. Installed by `scripts/install-onnx-ocr-models.sh`.
 - `VERAPDF_PATH`: Path of the `verapdf` executable that validates PDF/A output.
 - `QPDF_PATH`: Path of the `qpdf` executable that encrypts PDF output.
 - `FC_LIST_PATH`: Path of the fontconfig `fc-list` executable.

@@ -18,6 +18,8 @@
 #   9. xz (the .xz encoder and decoder of the archive conversions) is installed and round-trips inside the sandbox, also under the worker's own address-space caps
 #  10. pid-init runs a program as PID 2 of a PID namespace of its own, under this container's seccomp profile, and the program cannot see or signal a sibling process
 #      nor read its command line and status in /proc (the Landlock ruleset of pid-init)
+#  11. the ONNX OCR helper (dist/ocr-onnx-child.js) loads its models and reads one real page (detector and recogniser) in a user, network and PID
+#      namespace of its own, under the address-space and CPU limits the worker gives it and this container's seccomp profile
 #
 # The sandbox is entered with the same `unshare -r -n` and `prlimit --as` the worker uses
 # (src/lib/security/process-sandbox.ts); this script does not load the worker's own code.
@@ -446,6 +448,65 @@ else
     fi
   fi
   kill "$sibling_pid" 2>/dev/null
+fi
+
+# --- 11. ONNX OCR helper ------------------------------------------------------------------------------
+# The helper (src/lib/conversions/ocr-onnx-helper.ts starts it) loads the two models of /opt/ocr-onnx, says it is ready, and reads a page of raw pixels
+# from its standard input. It is started as the worker starts it (unshare -r -n, pid-init, prlimit, node), and this check sends it one real page: a blank
+# 200 x 60 image, which the detector reads and the recogniser then reads whole (an image of up to 100 pixels with no box is one line). The check passes
+# when a result frame comes back, so session creation AND an inference of both models ran under this container's seccomp profile; a refused system call
+# of the runtime shows in the first bytes of the helper's standard error, which are printed on failure.
+if [ ! -s /opt/ocr-onnx/rec.onnx ] || [ ! -f "$APP_DIR/dist/ocr-onnx-child.js" ]; then
+  fail "the ONNX OCR models (/opt/ocr-onnx) or the helper ($APP_DIR/dist/ocr-onnx-child.js) are missing: Korean pages are read by Tesseract"
+else
+  cat > "$work_dir/onnx-probe.js" <<'PROBE'
+const { spawn } = require('node:child_process');
+const command = process.argv.slice(2);
+const child = spawn(command[0], command.slice(1), { stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+let out = Buffer.alloc(0);
+let err = '';
+let sent = false;
+const finish = (line) => {
+  process.stdout.write(line + '\n');
+  try { process.kill(-child.pid, 'SIGKILL'); } catch {}
+  process.exit(0);
+};
+const frame = (header, payload) => {
+  const json = Buffer.from(JSON.stringify(header));
+  const prefix = Buffer.alloc(8);
+  prefix.writeUInt32BE(json.length, 0);
+  prefix.writeUInt32BE(payload ? payload.length : 0, 4);
+  return Buffer.concat(payload ? [prefix, json, payload] : [prefix, json]);
+};
+const timer = setTimeout(() => finish('ONNX-FAIL timeout ' + err.slice(0, 300)), 90000);
+child.stderr.on('data', (c) => { if (err.length < 2048) err += c.toString('utf8'); });
+child.on('exit', (code) => finish('ONNX-FAIL helper exited with ' + code + ' ' + err.replace(/\s+/g, ' ').slice(0, 300)));
+child.stdout.on('data', (chunk) => {
+  out = Buffer.concat([out, chunk]);
+  while (out.length >= 8) {
+    const headerBytes = out.readUInt32BE(0);
+    const payloadBytes = out.readUInt32BE(4);
+    if (out.length < 8 + headerBytes + payloadBytes) return;
+    const header = JSON.parse(out.toString('utf8', 8, 8 + headerBytes));
+    out = out.subarray(8 + headerBytes + payloadBytes);
+    if (header.type === 'ready' && !sent) {
+      sent = true;
+      child.stdin.write(frame({ type: 'run', id: 1, width: 200, height: 60, detector: { width: 320, height: 96 }, language: 'kor', recoverSpaces: true }, Buffer.alloc(3 * (200 * 60 + 320 * 96), 255)));
+    } else if (header.type === 'result') {
+      clearTimeout(timer);
+      finish(Array.isArray(header.result && header.result.lineBlocks) ? 'ONNX-OK' : 'ONNX-FAIL a result without lines');
+    } else {
+      finish('ONNX-FAIL ' + JSON.stringify(header).slice(0, 300));
+    }
+  }
+});
+PROBE
+  onnx_output="$(timeout 120 node "$work_dir/onnx-probe.js" unshare -r -n -- pid-init -- prlimit --as=$((10 * 1024 * 1024 * 1024)) --cpu=300 -- node "$APP_DIR/dist/ocr-onnx-child.js" --models=/opt/ocr-onnx --threads=1 2>&1 | head -c 600)"
+  if [ "$onnx_output" = "ONNX-OK" ]; then
+    pass "the ONNX OCR helper loaded its models and read a page (detector and recogniser) in a sandbox of its own under this container's seccomp profile"
+  else
+    fail "the ONNX OCR helper did not read a page in a sandbox: $(printf '%s' "$onnx_output" | tr '\n' ' ' | head -c 500)"
+  fi
 fi
 
 if [ "$failures" -eq 0 ]; then

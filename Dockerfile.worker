@@ -32,6 +32,15 @@ RUN npm run build:worker
 # Prune devDependencies to ship production dependencies only
 RUN npm prune --omit=dev --ignore-scripts
 
+# onnxruntime-node ships its native library for every platform it supports (293 MB unpacked); the image keeps the one for its own
+# architecture (linux x64 47.5 MB, linux arm64 25.3 MB) and the binding beside it. The build fails if that library is not left.
+RUN set -eu; \
+    case "$(dpkg --print-architecture)" in amd64) ort_arch=x64 ;; arm64) ort_arch=arm64 ;; *) echo "No onnxruntime build for $(dpkg --print-architecture)" >&2; exit 1 ;; esac; \
+    cd node_modules/onnxruntime-node/bin/napi-v6; \
+    rm -rf darwin win32; \
+    for dir in linux/*; do [ "$(basename "$dir")" = "$ort_arch" ] || rm -rf "$dir"; done; \
+    ls linux/"$ort_arch"/libonnxruntime.so.1 linux/"$ort_arch"/onnxruntime_binding.node
+
 # ==============================================================================
 # Stage 2: Pinned 7-Zip console build
 # ==============================================================================
@@ -277,6 +286,20 @@ RUN /src/qpdf-runner/build.sh /usr/local/bin/qpdf-runner
 # run cannot see or signal another, and under a Landlock ruleset that refuses it the /proc entries of the other runs. It needs the same C compiler and nothing else, so it is built here.
 COPY native/pid-init/ /src/pid-init/
 RUN /src/pid-init/build.sh /usr/local/bin/pid-init
+
+# ==============================================================================
+# Stage 4b, second part: Models of the ONNX Korean OCR engine
+# ==============================================================================
+# The PP-OCRv5 mobile detector and Korean recognizer (PaddleOCR weights, Apache-2.0, converted to ONNX by RapidOCR, Apache-2.0) and the
+# recognizer's character list, 18 MB in all, each pinned by SHA-256 in scripts/install-onnx-ocr-models.sh, which checks it before it is
+# copied. They are data that onnxruntime reads in a sandboxed helper process (docs/policy-decisions.md, entries 230 and 246).
+FROM ${NODE_IMAGE} AS ocronnx
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/install-onnx-ocr-models.sh /tmp/install-onnx-ocr-models.sh
+RUN /tmp/install-onnx-ocr-models.sh /opt/ocr-onnx
 
 # ==============================================================================
 # Stage 4c: sharp's libvips (libvips-cpp.so) with the codecs built for speed
@@ -540,6 +563,11 @@ RUN qpdf-runner --check | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
 COPY --from=qpdfrunner /usr/local/bin/pid-init /usr/local/bin/pid-init
 RUN pid-init 2>&1 | grep -q '^usage: pid-init'
 
+# Models of the ONNX Korean OCR engine, at the fixed directory the worker reads (src/lib/conversions/ocr-onnx-helper.ts). The engine runs in a
+# sandboxed helper process; without these files Korean pages are read by Tesseract and the result says so.
+COPY --from=ocronnx /opt/ocr-onnx /opt/ocr-onnx
+RUN test -s /opt/ocr-onnx/det.onnx && test -s /opt/ocr-onnx/rec.onnx && test -s /opt/ocr-onnx/dict.txt
+
 # MIDI renderer: FluidSynth (LGPL, run unmodified as a separate sandboxed program) turns a Standard MIDI File into sound with the General MIDI
 # SoundFont of timgm6mb-soundfont (6 MB, GPL-2 data that the program only reads), which the Debian alternatives link default-GM.sf2 names.
 # The build fails if the program does not start or the link leads nowhere (docs/policy-decisions.md, "MIDI sources").
@@ -593,6 +621,8 @@ RUN --mount=type=bind,from=sharplibvips,target=/mnt/sharplibvips \
     --mount=type=bind,source=docker/sharp-libvips,target=/mnt/sharp-libvips \
     bash /mnt/sharp-libvips/use-libvips.sh /app /mnt/sharplibvips
 COPY --chown=easyconvert:easyconvert scripts/worker-healthcheck.js ./scripts/worker-healthcheck.js
+# The ONNX runtime must load here (the image's libc, the binding of its architecture); the engine itself is checked by scripts/verify-worker-container.sh.
+RUN node -e "const ort = require('onnxruntime-node'); if (typeof ort.InferenceSession.create !== 'function') process.exit(1)"
 
 # 3. Create strictly permissioned scratch directories
 RUN mkdir -p /shared/storage /tmp /home/easyconvert \
@@ -620,6 +650,9 @@ RUN cp /usr/share/doc/vtracer-pixels/THIRD-PARTY-NOTICES /licenses/vtracer-pixel
 RUN cp /usr/share/doc/vtracer-pixels/NOTICE-mimalloc /licenses/vtracer-pixels.NOTICE-mimalloc
 RUN cp /usr/share/doc/oxipng/SOURCE /licenses/oxipng.SOURCE
 RUN cp /usr/share/doc/oxipng/THIRD-PARTY-NOTICES /licenses/oxipng.THIRD-PARTY-NOTICES
+# The ONNX OCR engine: the MIT text and the third-party notices of onnxruntime (the npm package ships neither), the Apache-2.0 texts of the PaddleOCR
+# weights and the RapidOCR conversion, and the NOTICE that names the models (installed beside them by scripts/install-onnx-ocr-models.sh).
+RUN cd /opt/ocr-onnx/licenses && for f in *; do cp "$f" "/licenses/onnx-ocr.$f" || exit 1; done && cp /opt/ocr-onnx/NOTICE /licenses/onnx-ocr.NOTICE
 RUN cd /usr/share/doc/avifenc && for f in SOURCE LICENSE.libaom PATENTS.libaom LICENSE.libyuv PATENTS.libyuv LICENSE.libpng LICENSE.zlib-ng LICENSE.libjpeg-turbo README.ijg; do cp "$f" "/licenses/avifenc.$f" || exit 1; done
 RUN cp /usr/share/doc/ffmpeg/SOURCE /licenses/ffmpeg.SOURCE
 RUN cp /usr/share/doc/djvulibre/SOURCE /licenses/djvulibre.SOURCE

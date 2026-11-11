@@ -37,7 +37,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 ## Waiting
 - Paid plans and a payment provider: QA decision; launch is free only.
 - Learned OCR layout tier: legal sign-off on model and data provenance first.
-- Korean ONNX OCR (entry 230, off by default, 0.33% CER against 8.73% on the 29-page render set): QA decides after the provenance sign-off whether to wire it behind a sandboxed helper process and ship the 18 MB of models; real Korean scans are needed to confirm.
 - Rare samples: DWG before R13, WP Greek accented letters, Word Wingdings check boxes.
 - sk/sk1 input: QA decision on UniConvertor 2 (GPL, separate process).
 - Delete src/lib/quota (usage ledger and pricing) and tests/usage-metering-ledger.test.ts parts 1 to 3: nothing writes the ledger or prices a job since GET /api/v1/usage was removed (entry 241); conversions are charged one unit each.
