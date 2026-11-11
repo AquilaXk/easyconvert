@@ -14,7 +14,7 @@ import type { ChromaSubsampling } from './image-encoder-defaults';
 
 /**
  * JPEG written by `cjpegli`, the command-line encoder of jpegli (the libjpeg-compatible encoder of the JPEG XL project, BSD-3-Clause), run
- * as an external executable under the process sandbox (docs/policy-decisions.md, entry 231). The caller prepares the pixels
+ * as an external executable under the process sandbox (docs/policy-decisions.md, entry 232). The caller prepares the pixels
  * (orientation, resize, colour handling) and hands the 8-bit samples over as a binary PNM stream on the program's standard input, which has
  * no header worth parsing and no compression to pay for; the JPEG comes back on the standard output. No file is written, and the program
  * is started before the samples exist (`startJpegli`), so the start of the sandbox overlaps the decode of the picture. The encoder writes

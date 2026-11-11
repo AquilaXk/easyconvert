@@ -222,7 +222,7 @@ export function jpegOptionsFor(requestedQuality: number | undefined, content: Co
 }
 
 /**
- * What the jpegli encoder (`cjpegli`, entry 231) is asked for a photograph. It replaces the image library's JPEG encoder for continuous-tone
+ * What the jpegli encoder (`cjpegli`, entry 232) is asked for a photograph. It replaces the image library's JPEG encoder for continuous-tone
  * pictures when the program is installed; the quality number, the chroma rule (`jpegChromaFor`) and the grey rule are the ones of
  * `jpegOptionsFor`, and the scan is the encoder's own progressive script (level 2): 2.4% fewer bytes at equal quality than the sequential
  * scan with optimised tables (level 0), for about 2 ms more on a 0.4 megapixel picture. A graphic keeps `jpegOptionsFor`.

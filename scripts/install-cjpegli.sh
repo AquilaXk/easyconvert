@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds cjpegli, the command-line JPEG encoder of jpegli (google/jpegli, BSD-3-Clause), from pinned source and installs it as a separate
 # program. The worker runs it sandboxed and nothing links it into the application (src/lib/conversions/jpegli-cli.ts); the image library's
-# own JPEG encoder stays the fallback for a worker without it (docs/policy-decisions.md, entry 231).
+# own JPEG encoder stays the fallback for a worker without it (docs/policy-decisions.md, entry 232).
 #
 # jpegli is the libjpeg-compatible encoder of the JPEG XL project (libjxl, which carried it until release 0.11 and moved it to its own
 # repository afterwards). The repository has no release tags, so the pin is a commit of its main branch; the archive GitHub makes of that

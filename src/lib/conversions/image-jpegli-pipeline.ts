@@ -47,7 +47,7 @@ export async function encodeJpegliFromPipeline(pipeline: Sharp, requestedQuality
 }
 
 /**
- * The JPEG of a prepared pipeline: a photograph goes to the jpegli program when it is installed and takes the picture (entry 231), and
+ * The JPEG of a prepared pipeline: a photograph goes to the jpegli program when it is installed and takes the picture (entry 232), and
  * everything else, a graphic included, to the image library with the options of `jpegOptionsFor`.
  */
 export async function encodeJpegFromPipeline(pipeline: Sharp, requestedQuality: number | undefined, content: ContentClass, grey: boolean): Promise<Buffer> {
