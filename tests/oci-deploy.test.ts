@@ -458,7 +458,7 @@ describe('deploy workflow', () => {
         const negated = glob.startsWith('!');
         return pattern(negated ? glob.slice(1) : glob).test(file) ? !negated : included;
       }, false);
-    for (const file of ['Dockerfile.worker', 'tsconfig.json', 'postcss.config.mjs', 'tailwind.config.ts', 'THIRD_PARTY_NOTICES.md', 'src/app/page.tsx', 'docker/imagemagick/policy.xml', '.github/workflows/deploy-oci.yml', '.dockerignore', 'deploy/oci/deploy.sh', 'docker-compose.prod.yml']) {
+    for (const file of ['Dockerfile.worker', 'tsconfig.json', 'postcss.config.mjs', 'tailwind.config.ts', 'THIRD_PARTY_NOTICES.md', 'src/app/page.tsx', 'docker/imagemagick/policy.xml', '.github/workflows/deploy-oci.yml', '.dockerignore', 'deploy/oci/deploy.sh', 'docker-compose.prod.yml', 'docs/legal/privacy.en.md', 'docs/legal/terms.ko.md', 'docs/legal/SOURCES.md']) {
       expect(triggers(file), file).toBe(true);
     }
     for (const file of ['docs/deploy-oci.md', 'tests/oci-deploy.test.ts', 'README.md', 'native/qpdf-runner/README.md', 'CHANGELOG.md']) {
@@ -533,6 +533,11 @@ describe('deploy workflow', () => {
     expect(wait).toBeGreaterThan(-1);
     expect(tag).toBeGreaterThan(wait);
     expect(names).toContain('Check that the main tags name the digests');
+    const newer = promote.steps.find((step) => step.id === 'newer');
+    expect(newer?.run).toContain('git fetch --no-tags origin main');
+    expect(newer?.run).toContain('bash scripts/ci-commit-gate.sh current-main "$WEB_REPO")"');
+    expect(newer?.run).not.toContain('|| true');
+    expect(newer?.run?.indexOf('git fetch')).toBeLessThan(newer?.run?.indexOf('is-behind') ?? -1);
     for (const step of promote.steps.filter((candidate) => /imagetools (create|inspect)/.test(candidate.run ?? ''))) {
       expect(step.if, step.name).toBe("steps.newer.outputs.skip != 'true'");
     }

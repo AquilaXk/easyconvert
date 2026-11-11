@@ -21,7 +21,8 @@ name: Deploy to the OCI host
 #            them back. A rollback needs no image and checks out main.
 #
 # Every push to main builds unless it changes only documentation or tests. The list is `paths` with negations rather than
-# `paths-ignore`, because only `paths` can take a path back in after a negation, and the worker image copies THIRD_PARTY_NOTICES.md.
+# `paths-ignore`, because only `paths` can take a path back in after a negation: the worker image copies THIRD_PARTY_NOTICES.md, and the
+# web image copies docs/legal/ (src/lib/legal/texts.ts imports the texts with `?raw`), which are Markdown under docs/ and still image content.
 # scripts/ci-commit-gate.sh holds the same list as git pathspecs, for the search of a later commit with the same image contents.
 on:
   push:
@@ -32,6 +33,7 @@ on:
       - '!tests/**'
       - '!**/*.md'
       - 'THIRD_PARTY_NOTICES.md'
+      - 'docs/legal/**'
   workflow_dispatch:
     inputs:
       action:
@@ -194,18 +196,26 @@ jobs:
       - name: Wait for the required check of CI on this commit
         run: bash scripts/ci-commit-gate.sh wait "$GITHUB_SHA"
 
-      # A newer commit may have become main while this one waited. Its images were promoted after the check of its own commit, so
-      # main stays with it.
+      # A newer commit may have become main while this one waited. Its images were promoted after the check of its own commit, so main
+      # stays with it. The history is fetched again right before the check, since the clone is as old as the wait, and an unreadable
+      # main tag fails the job: it is not the same as having none.
       - name: Find out whether a newer build is already main
         id: newer
         run: |
-          current="$(bash scripts/ci-commit-gate.sh image-commit "$WEB_REPO" main || true)"
-          if [ -n "$current" ] && bash scripts/ci-commit-gate.sh is-behind "$GITHUB_SHA" "$current"; then
-            echo "main already names the build of the newer commit $current: this build stays under sha-$GITHUB_SHA"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          git fetch --no-tags origin main
+          current="$(bash scripts/ci-commit-gate.sh current-main "$WEB_REPO")"
+          skip=false
+          if [ -n "$current" ]; then
+            behind=0
+            bash scripts/ci-commit-gate.sh is-behind "$GITHUB_SHA" "$current" || behind=$?
+            case "$behind" in
+              0) skip=true; echo "main already names the build of the newer commit $current: this build stays under sha-$GITHUB_SHA" ;;
+              1) ;;
+              *) exit "$behind" ;;
+            esac
           fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
 
       - name: Tag both images main
         if: steps.newer.outputs.skip != 'true'

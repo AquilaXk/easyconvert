@@ -43,8 +43,12 @@ sha="$(printf '%s' "$2" | sed -E 's#.*/commits/([0-9a-f]{40})/check-runs.*#\\1#'
 printf '.' >> "$STUB_CI/$sha.calls"
 printf '%s' "$2" > "$STUB_CI/last-url"
 calls="$(wc -c < "$STUB_CI/$sha.calls" | tr -d ' ')"
-if [ "$calls" -gt 1 ] && [ -f "$STUB_CI/$sha.then.json" ]; then cat "$STUB_CI/$sha.then.json"; exit 0; fi
-if [ -f "$STUB_CI/$sha.json" ]; then cat "$STUB_CI/$sha.json"; else echo '{"check_runs":[]}'; fi
+file="$STUB_CI/$sha.json"
+if [ "$calls" -gt 1 ] && [ -f "$STUB_CI/$sha.then.json" ]; then file="$STUB_CI/$sha.then.json"; fi
+[ -f "$file" ] || { echo '{"check_runs":[]}'; exit 0; }
+# the server filters by check_name when the URL names one
+name="$(printf '%s' "$2" | sed -n 's/.*check_name=\\([^&]*\\).*/\\1/p')"
+if [ -n "$name" ]; then jq --arg n "$name" '.check_runs |= map(select(.name == $n))' "$file"; else cat "$file"; fi
 `
   );
   // `docker buildx imagetools inspect --format {{json .Image}} <repo>:<ref>` answers with images/<repo with / and : as _>.json.
@@ -53,7 +57,9 @@ if [ -f "$STUB_CI/$sha.json" ]; then cat "$STUB_CI/$sha.json"; else echo '{"chec
     `#!/usr/bin/env bash
 [ "$1 $2 $3 $4 $5" = "buildx imagetools inspect --format {{json .Image}}" ] || exit 64
 file="$STUB_IMAGES/$(printf '%s' "$6" | tr '/:' '__').json"
-[ -f "$file" ] && cat "$file" || { echo "no such image $6" >&2; exit 1; }
+errors="$STUB_IMAGES/$(printf '%s' "$6" | tr '/:' '__').error"
+[ ! -f "$errors" ] || { cat "$errors" >&2; exit 1; }
+[ -f "$file" ] && cat "$file" || { echo "ERROR: $6: not found" >&2; exit 1; }
 `
   );
   chmodSync(path.join(sandbox.bin, 'gh'), 0o755);
@@ -76,15 +82,30 @@ function commit(sandbox: Sandbox, file: string, content: string): string {
   return git(sandbox, 'rev-parse', 'HEAD');
 }
 
-type Verdict = 'success' | 'failure' | 'in_progress' | 'none';
+/**
+ * `success`: `verify` and every heavy job of CI succeeded. `docs-only`: `verify` succeeded because the push changed documentation only and
+ * every heavy job was skipped (ci.yml `changes`), which proves nothing about code.
+ */
+type Verdict = 'success' | 'failure' | 'in_progress' | 'none' | 'docs-only';
+
+const HEAVY_JOBS = ['checks', 'tests (1/6)', 'tests (2/6)', 'conformance (1/4)', 'integration', 'container'];
+
+function run_(name: string, status: string, conclusion: string | null, app = 'github-actions') {
+  return { name, status, conclusion, started_at: '2026-11-11T07:00:00Z', app: { slug: app } };
+}
 
 function recordCheck(sandbox: Sandbox, sha: string, verdict: Verdict, file: 'json' | 'then.json' = 'json'): void {
   if (verdict === 'none') return;
-  const run =
+  const heavy = (conclusion: string | null, status = 'completed') => HEAVY_JOBS.map((name) => run_(name, status, conclusion));
+  const runs =
     verdict === 'in_progress'
-      ? { name: 'verify', status: 'in_progress', conclusion: null, started_at: '2026-11-11T07:00:00Z', app: { slug: 'github-actions' } }
-      : { name: 'verify', status: 'completed', conclusion: verdict, started_at: '2026-11-11T07:00:00Z', app: { slug: 'github-actions' } };
-  writeFileSync(path.join(sandbox.ci, `${sha}.${file}`), JSON.stringify({ total_count: 1, check_runs: [run] }));
+      ? [run_('verify', 'in_progress', null)]
+      : verdict === 'docs-only'
+        ? [run_('verify', 'completed', 'success'), ...heavy('skipped')]
+        : verdict === 'success'
+          ? [run_('verify', 'completed', 'success'), ...heavy('success')]
+          : [run_('verify', 'completed', 'failure'), ...heavy('failure')];
+  writeFileSync(path.join(sandbox.ci, `${sha}.${file}`), JSON.stringify({ total_count: runs.length, check_runs: runs }));
 }
 
 function recordImage(sandbox: Sandbox, repo: string, ref: string, labels: Record<string, string> | null): void {
@@ -124,6 +145,7 @@ describe('state', () => {
     ['failure', 'failure'],
     ['in_progress', 'pending'],
     ['none', 'none'],
+    ['docs-only', 'skipped'],
   ] as const)('reports a %s check run as %s', (verdict, expected) => {
     recordCheck(sandbox, base, verdict);
     const result = run(sandbox, ['state', base]);
@@ -131,23 +153,36 @@ describe('state', () => {
     expect(result.stdout.trim()).toBe(expected);
   });
 
-  it('takes the latest check run of GitHub Actions and ignores a check of another app that has the same name', () => {
+  it('takes the latest verify run of GitHub Actions and ignores a check of another app that has the same name', () => {
+    const heavy = HEAVY_JOBS.map((name) => run_(name, 'completed', 'success'));
     writeFileSync(
       path.join(sandbox.ci, `${base}.json`),
       JSON.stringify({
         check_runs: [
-          { name: 'verify', status: 'completed', conclusion: 'failure', started_at: '2026-11-11T07:00:00Z', app: { slug: 'github-actions' } },
-          { name: 'verify', status: 'completed', conclusion: 'success', started_at: '2026-11-11T08:00:00Z', app: { slug: 'github-actions' } },
-          { name: 'verify', status: 'completed', conclusion: 'failure', started_at: '2026-11-11T09:00:00Z', app: { slug: 'another-app' } },
+          { ...run_('verify', 'completed', 'failure'), started_at: '2026-11-11T07:00:00Z' },
+          { ...run_('verify', 'completed', 'success'), started_at: '2026-11-11T08:00:00Z' },
+          { ...run_('verify', 'completed', 'failure', 'another-app'), started_at: '2026-11-11T09:00:00Z' },
+          ...heavy,
         ],
       })
     );
     expect(run(sandbox, ['state', base]).stdout.trim()).toBe('success');
   });
 
-  it('asks for the check named verify of the commit, newest run per name', () => {
+  it.each([
+    ['a heavy job that did not succeed', (runs: ReturnType<typeof run_>[]) => runs.map((r) => (r.name === 'tests (2/6)' ? { ...r, conclusion: 'failure' } : r))],
+    ['no tests job at all', (runs: ReturnType<typeof run_>[]) => runs.filter((r) => !r.name.startsWith('tests ('))],
+    ['no checks job', (runs: ReturnType<typeof run_>[]) => runs.filter((r) => r.name !== 'checks')],
+    ['a heavy job still running', (runs: ReturnType<typeof run_>[]) => runs.map((r) => (r.name === 'integration' ? { ...r, status: 'in_progress', conclusion: null } : r))],
+  ])('does not call a successful verify a success with %s: it proves no code ran and passed', (_name, change) => {
+    const runs = change([run_('verify', 'completed', 'success'), ...HEAVY_JOBS.map((name) => run_(name, 'completed', 'success'))]);
+    writeFileSync(path.join(sandbox.ci, `${base}.json`), JSON.stringify({ check_runs: runs }));
+    expect(run(sandbox, ['state', base]).stdout.trim()).toBe('skipped');
+  });
+
+  it('asks for the latest check runs of the commit', () => {
     run(sandbox, ['state', base]);
-    expect(readFileSync(path.join(sandbox.ci, 'last-url'), 'utf-8')).toBe(`repos/example/repo/commits/${base}/check-runs?check_name=verify&filter=latest&per_page=100`);
+    expect(readFileSync(path.join(sandbox.ci, 'last-url'), 'utf-8')).toBe(`repos/example/repo/commits/${base}/check-runs?filter=latest&per_page=100`);
   });
 
   it('refuses anything but a full commit', () => {
@@ -181,6 +216,13 @@ describe('wait', () => {
     expect(readFileSync(path.join(sandbox.ci, `${base}.calls`), 'utf-8')).toHaveLength(2);
   });
 
+  it('fails for a verify that succeeded only because every heavy job was skipped (a documentation-only push)', () => {
+    recordCheck(sandbox, base, 'docs-only');
+    const result = run(sandbox, ['wait', base], { GATE_TIMEOUT_SECONDS: '3600' });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('ran no successful heavy job');
+  });
+
   it('keeps asking while no check run exists yet, and gives up at the timeout without promoting', () => {
     const result = run(sandbox, ['wait', base], { GATE_TIMEOUT_SECONDS: '0' });
     expect(result.status).toBe(1);
@@ -207,6 +249,32 @@ describe('image-commit', () => {
   it('refuses a ref that is neither main nor a commit tag', () => {
     expect(run(sandbox, ['image-commit', WEB, 'latest']).status).toBe(1);
   });
+});
+
+describe('current-main', () => {
+  it('prints the commit of the build main names', () => {
+    recordImage(sandbox, WEB, 'main', { 'org.opencontainers.image.revision': base });
+    expect(run(sandbox, ['current-main', WEB]).stdout.trim()).toBe(base);
+  });
+
+  it('prints nothing when there is no main tag yet, and for an image without the label', () => {
+    const none = run(sandbox, ['current-main', WEB]);
+    expect(none.status).toBe(0);
+    expect(none.stdout.trim()).toBe('');
+    recordImage(sandbox, WEB, 'main', null);
+    expect(run(sandbox, ['current-main', WEB]).stdout.trim()).toBe('');
+  });
+
+  it.each(['ERROR: failed to authorize: failed to fetch anonymous token: 401 Unauthorized', 'ERROR: denied: permission_denied: read_package', 'ERROR: dial tcp: lookup ghcr.io: no such host'])(
+    'fails, and does not call it "no main", when the registry cannot be read: %s',
+    (message) => {
+      writeFileSync(path.join(sandbox.images, `${WEB}:main`.replace(/[/:]/g, '_') + '.error'), message);
+      const result = run(sandbox, ['current-main', WEB]);
+      expect(result.status).toBe(1);
+      expect(result.stdout.trim()).toBe('');
+      expect(result.stderr).toContain('could not read the main tag');
+    }
+  );
 });
 
 describe('verified-by', () => {
@@ -239,6 +307,15 @@ describe('verified-by', () => {
     recordCheck(sandbox, tests, 'failure');
     recordCheck(sandbox, source, 'success');
     expect(run(sandbox, ['verified-by', base]).status).toBe(1);
+  });
+
+  it('does not accept a later documentation-only commit whose verify succeeded with every heavy job skipped: red C, then docs-only D, is refused', () => {
+    recordCheck(sandbox, base, 'failure');
+    recordCheck(sandbox, docs, 'docs-only');
+    expect(run(sandbox, ['verified-by', base]).status).toBe(1);
+    // the same history with a test-only commit whose heavy jobs ran after the docs-only one is accepted, and names that commit
+    recordCheck(sandbox, tests, 'success');
+    expect(run(sandbox, ['verified-by', base]).stdout.trim()).toBe(tests);
   });
 
   it('does not accept a commit whose check has not finished', () => {
@@ -294,6 +371,9 @@ describe('verified-by', () => {
       'THIRD_PARTY_NOTICES.md',
       'docs/deploy-oci.md',
       'docs/legal/notice.txt',
+      'docs/legal/privacy.en.md',
+      'docs/legal/terms.ko.md',
+      'docs/legal/SOURCES.md',
       'tests/oci-deploy.test.ts',
       'tests/fixtures/sample.bin',
       'README.md',
@@ -367,6 +447,17 @@ describe('deploy-commit', () => {
     expect(result.stdout).toBe(`commit=${base}\nverified_by=${fix}\n`);
   });
 
+  it('refuses the commit tag of a red build when only a documentation-only commit followed it', () => {
+    recordCheck(sandbox, base, 'failure');
+    const docs = commit(sandbox, 'docs/note.md', 'n');
+    recordCheck(sandbox, docs, 'docs-only');
+    recordImage(sandbox, WEB, SHA_REF(base), { [REVISION]: base });
+    recordImage(sandbox, WORKER, SHA_REF(base), { [REVISION]: base });
+    const result = run(sandbox, ['deploy-commit', WEB, WORKER, SHA_REF(base)]);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+  });
+
   it('refuses a commit tag whose image records another commit: the tag was moved', () => {
     const other = commit(sandbox, 'src/b.ts', 'b');
     recordCheck(sandbox, base, 'success');
@@ -395,5 +486,11 @@ describe('is-behind', () => {
     expect(run(sandbox, ['is-behind', base, later]).status).toBe(0);
     expect(run(sandbox, ['is-behind', later, base]).status).toBe(1);
     expect(run(sandbox, ['is-behind', base, base]).status).toBe(1);
+  });
+
+  it('exits 2, not 1, when a commit is not in the clone: an unknown history is not "not behind"', () => {
+    const result = run(sandbox, ['is-behind', base, 'e'.repeat(40)]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('is not in this clone');
   });
 });
