@@ -64,3 +64,41 @@ export async function deflateRawInBlocks(data: Uint8Array, level: number): Promi
 export async function deflateRawBlocks(data: Uint8Array, productLevel: number): Promise<Buffer> {
   return deflateRawInBlocks(data, zlibLevelFor(productLevel));
 }
+
+// ---------------------------------------------------------------------------
+// gzip member (RFC 1952)
+// ---------------------------------------------------------------------------
+
+/** A buffer of at most this many bytes is gzipped on the calling thread: a pool round trip costs more than the work. */
+const GZIP_SYNC_MAX_BYTES = 64 * 1024;
+const GZIP_HEADER_BYTES = 10;
+const GZIP_TRAILER_BYTES = 8;
+const GZIP_METHOD_DEFLATE = 8;
+const GZIP_XFL_BEST = 2;
+const GZIP_XFL_FASTEST = 4;
+const GZIP_OS_UNIX = 3;
+const UINT32_MODULUS = 0x100000000;
+
+/** The header of a gzip member without a name or a time, as zlib writes it (the extra-flags byte names level 9 and the fastest levels). */
+function gzipHeader(level: number): Buffer {
+  const header = Buffer.alloc(GZIP_HEADER_BYTES);
+  header[0] = 0x1f;
+  header[1] = 0x8b;
+  header[2] = GZIP_METHOD_DEFLATE;
+  header[8] = level === 9 ? GZIP_XFL_BEST : level < 2 ? GZIP_XFL_FASTEST : 0;
+  header[9] = GZIP_OS_UNIX;
+  return header;
+}
+
+/**
+ * One gzip member of `data` at a zlib level, deflated in parallel blocks ({@link deflateRawInBlocks}) when it is large; the
+ * CRC-32 is zlib's, taken once over the whole. A buffer of up to 64 KiB is `zlib.gzipSync`'s output, byte for byte.
+ */
+export async function gzipInBlocks(data: Uint8Array, level: number): Promise<Buffer> {
+  if (data.length <= GZIP_SYNC_MAX_BYTES) return zlib.gzipSync(data, { level });
+  const deflated = await deflateRawInBlocks(data, level);
+  const trailer = Buffer.alloc(GZIP_TRAILER_BYTES);
+  trailer.writeUInt32LE(zlib.crc32(data), 0);
+  trailer.writeUInt32LE(data.length % UINT32_MODULUS, 4);
+  return Buffer.concat([gzipHeader(level), deflated, trailer]);
+}

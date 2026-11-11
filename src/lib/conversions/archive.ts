@@ -56,6 +56,7 @@ import { resolveArchiveCompressionLevel } from './archive-compression-level';
 import { singleStreamPayload } from './archive-single-stream';
 import { RAR4_FILE_FLAG_UNICODE, decodeRar4FileName } from './archive-rar4-name';
 import { canonicalEntryPath, encryptedStagedName, safeCanonicalArchivePath, validateEntryPath } from './archive-entry-path';
+import { gzipInBlocks } from './deflate-blocks';
 import { createZipBuffer, deflaterRunningAhead, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
 import { decodeLzma, decodeLzma2 } from './lzma-decoder';
 import { packXzStream, unpackXzStream } from './xz-format';
@@ -3911,9 +3912,7 @@ export async function convertArchive(
   // 2. Target TAR.GZ or TGZ
   if (tgt === 'tar.gz' || tgt === 'tgz') {
     const tarResult = createTarArchive(files, options, `${baseName}.tar`);
-    const gzipped = zlib.gzipSync(tarResult.buffer, {
-      level: resolveArchiveCompressionLevel(options.compressionLevel),
-    });
+    const gzipped = await gzipInBlocks(tarResult.buffer, resolveArchiveCompressionLevel(options.compressionLevel));
     result = {
       buffer: gzipped,
       mimeType: 'application/gzip',
@@ -3954,7 +3953,7 @@ export async function convertArchive(
   } else if (tgt === 'gz') {
     // 7. Target GZ
     const { raw: rawToCompress, filename, mimeType } = singleStreamPayload(files, options, { baseName, sourceFilename: effectiveFilename, target: tgt, streamMimeType: 'application/gzip' }, createTarArchive);
-    const gzipped = zlib.gzipSync(rawToCompress, { level: resolveArchiveCompressionLevel(options.compressionLevel) });
+    const gzipped = await gzipInBlocks(rawToCompress, resolveArchiveCompressionLevel(options.compressionLevel));
     result = {
       buffer: gzipped,
       mimeType,
