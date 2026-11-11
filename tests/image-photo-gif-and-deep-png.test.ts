@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import sharp from 'sharp';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { convertFile } from '../src/lib/conversions';
 
 /**
@@ -60,6 +60,14 @@ function chunks(png: Buffer): Array<{ type: string; data: Buffer }> {
 }
 
 describe('a 16-bit picture to PNG', () => {
+  // The test judges the encoder's own adaptive filtering, so the lossless optimiser that follows a PNG to PNG conversion (entry 232) is out of the run.
+  beforeAll(() => {
+    vi.stubEnv('OXIPNG_PATH', '/nonexistent/oxipng');
+  });
+  afterAll(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('stays 16 bits per sample and filters its rows adaptively', async () => {
     const result = await convertFile(await png16(), 'png', 'png', {}, 'photo.png');
     const parts = chunks(result.buffer);
