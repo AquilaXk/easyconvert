@@ -102,13 +102,10 @@ const RAW_USER_UNIT_PATTERN = new RegExp(`\\/UserUnit\\s+(${RAW_NUMBER_TOKEN})`,
 const RAW_LEAF_PAGE_PATTERN = /\/Type\s*\/Page\b(?![A-Za-z])/g;
 const RAW_PAGE_COUNT_PATTERN = /\/Count\s+(\d+)/g;
 
-/** The page box pdf.js gives a page whose tree carries no /MediaBox (`LETTER_SIZE_MEDIABOX` in its `Page.mediaBox`). */
-const LETTER_SIZE_MEDIA_BOX = { x: 0, y: 0, width: 612, height: 792 } as const;
-
 function readPageCropBox(page: PDFPage, pageNumber: number): PdfBox {
   let crop: ReturnType<typeof page.getCropBox>;
   try {
-    crop = page.node.getInheritableAttribute(PDFName.of('MediaBox')) === undefined && page.node.CropBox() === undefined ? LETTER_SIZE_MEDIA_BOX : page.getCropBox();
+    crop = page.getCropBox();
   } catch (err) {
     throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} has no readable page box (${err instanceof Error ? err.message : String(err)}).`);
   }
