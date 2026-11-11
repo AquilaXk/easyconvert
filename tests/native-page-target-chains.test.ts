@@ -17,6 +17,10 @@ import { decodeRgba, runConvert, runIdentify, withTempImage } from './helpers/im
 import { readDxf, type DxfPoint } from './helpers/dxf-reader';
 import { flatOdg, flatOdgWithRectangle, normalizeWhitespace, sofficeConvert } from './helpers/soffice-office';
 import { skipWithoutTools } from './helpers/strict-skip';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * Pages become any target a native tool chain writes, not only the two the first Poppler route offered:

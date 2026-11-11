@@ -9,6 +9,10 @@ import { oracleTest } from './helpers/oracle-test';
 import { pdfWithWords } from './helpers/page-edge-pdf';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipUnless } from './helpers/strict-skip';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * When the PDF the office suite draws for an HTML page has words past the edge of its page, the in-process renderer's PDF is

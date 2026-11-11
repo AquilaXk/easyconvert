@@ -52,9 +52,8 @@ export function createValidatorScripts(): ValidatorScripts {
     dir,
     write,
     printing: (name, stdout, exitCode) => {
-      const reportFile = path.join(dir, `${name}.json`);
-      fs.writeFileSync(reportFile, stdout);
-      return write(name, `cat "${reportFile}"\nexit ${exitCode}`);
+      // The report is in the script itself: a run confined to its job directory cannot read a file that sits beside the script.
+      return write(name, `cat <<'REPORT_END'\n${stdout}\nREPORT_END\nexit ${exitCode}`);
     },
     dispose: () => fs.rmSync(dir, { recursive: true, force: true }),
   };

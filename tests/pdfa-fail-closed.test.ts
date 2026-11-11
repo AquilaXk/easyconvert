@@ -10,6 +10,10 @@ import * as pdfaModule from '../src/lib/conversions/pdf-postprocess/pdfa';
 import { convertToPdfA, parseVerapdfVerdict } from '../src/lib/conversions/pdf-postprocess/pdfa';
 import { convertFile } from '../src/lib/conversions';
 import { EngineUnavailableError, PdfPostprocessError, UnsupportedOptionError } from '../src/lib/types';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * PDF/A output must be a converted, PDF/A-identified file: a converter that writes nothing or

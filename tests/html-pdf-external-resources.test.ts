@@ -9,6 +9,10 @@ import { oracleTest } from './helpers/oracle-test';
 import { pdfImageCount, pdfLinkTargets, withCapturingSoffice } from './helpers/html-pdf-oracle';
 import { solidPng, startImageServer, type ImageServer } from './helpers/image-server';
 import { requireRealworldSample } from './helpers/realworld-sample';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * An HTML page that names things the PDF cannot carry (relative links, style sheets, scripts, form controls, frames, CSS

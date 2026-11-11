@@ -18,6 +18,10 @@ import { oracleTest } from './helpers/oracle-test';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { withMissingBinary } from './helpers/native-tools';
 import { noisyJpeg, solidPng, startImageServer, type ImageServer } from './helpers/image-server';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * The external images of an HTML page are fetched and embedded before the page is rendered, on both routes (the

@@ -27,6 +27,10 @@ import { craftBmp, storedRowBytes } from './helpers/bmp-craft';
 import { captureError } from './helpers/capture-error';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { skipUnless } from './helpers/strict-skip';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * Raster pictures traced to SVG by the pinned vtracer program. The wrapper is judged with stand-in programs (shell scripts that fail in

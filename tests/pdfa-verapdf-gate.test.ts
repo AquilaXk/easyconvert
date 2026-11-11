@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -100,6 +100,10 @@ beforeAll(async () => {
   workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdfa-verapdf-gate-'));
   validators = createValidatorScripts();
   docx = await buildDocxWithJpeg(await makeNoisyJpeg());
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 afterAll(() => {
@@ -295,6 +299,9 @@ describe('POST /api/v1/convert with a PDF/A request', () => {
     async () => {
       // veraPDF itself judges a fixed file that breaks three rules; the wrapper only swaps the input,
       // so the route, the conversion and the error mapping are the real ones.
+      // The wrapper reads that file from the directory of the test, outside the job directory of its run, which the file confinement refuses
+      // (policy 248); every other test of this file runs the real veraPDF confined.
+      vi.stubEnv('SANDBOX_CONFINE_FILES', 'false');
       const negative = writePdf('route-negative.pdf', await identifiedButNonConformingPdf());
       const expected = runVerapdf(negative, '2b');
       expect(expected.failedRules).toContain(FONT_NOT_EMBEDDED_RULE);
