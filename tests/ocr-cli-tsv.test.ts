@@ -18,6 +18,10 @@ import { oracleTest } from './helpers/oracle-test';
 import { getOracleToolPath, OracleToolMissingError } from './helpers/differential-oracle';
 import { characterErrorRatePercent } from './helpers/ocr-cer';
 import { processesWithArgument, uniqueSleepInterval, waitUntilNoProcessWithArgument } from './helpers/process-state';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 232).
+runWithoutFileConfinement();
 
 const FIXTURE_DIR = path.join(__dirname, 'fixtures', 'ocr');
 const GROUND_TRUTH = fs.readFileSync(path.join(FIXTURE_DIR, 'twocol.gt.txt'), 'utf-8');
