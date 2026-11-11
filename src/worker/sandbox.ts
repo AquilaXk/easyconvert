@@ -57,6 +57,30 @@ export interface WorkerSandboxOptions {
 }
 
 /**
+ * The directories this process made and has not removed. The sweep of leftovers (sandbox-sweep.ts) leaves them alone and refreshes
+ * their modification time, which is how another process that shares the temporary directory tells a live owner from a dead one.
+ */
+const ownedSandboxDirs = new Set<string>();
+
+export function isOwnedWorkerSandboxDir(dir: string): boolean {
+  return ownedSandboxDirs.has(dir);
+}
+
+/**
+ * Sets the modification time of every directory this process owns to `now`, and forgets one that is gone (the LibreOffice pool removes
+ * its slot directories itself). A directory whose time stops moving has no live owner.
+ */
+export function touchOwnedWorkerSandboxDirs(now: Date = new Date()): void {
+  for (const dir of ownedSandboxDirs) {
+    try {
+      fs.utimesSync(dir, now, now);
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') ownedSandboxDirs.delete(dir);
+    }
+  }
+}
+
+/**
  * Creates a dedicated ephemeral sandbox directory isolated with strict 0o700 permission mask.
  */
 export function createWorkerSandboxDir(prefix: string = 'easyconvert_worker_sandbox_'): string {
@@ -73,6 +97,7 @@ export function createWorkerSandboxDir(prefix: string = 'easyconvert_worker_sand
   } catch {
     // Filesystem may not support chmod (e.g. FAT/exFAT); mkdirSync mode already applied
   }
+  ownedSandboxDirs.add(sandboxDir);
   return sandboxDir;
 }
 
@@ -81,6 +106,7 @@ export function createWorkerSandboxDir(prefix: string = 'easyconvert_worker_sand
  */
 export function cleanupWorkerSandboxDir(sandboxDir: string): void {
   if (!sandboxDir || typeof sandboxDir !== 'string') return;
+  ownedSandboxDirs.delete(sandboxDir);
   try {
     if (fs.existsSync(sandboxDir)) {
       fs.rmSync(sandboxDir, { recursive: true, force: true });

@@ -1442,7 +1442,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Portable Network Graphics - Lossless raster format with alpha transparency support.',
     targetFormats: ['jpg', 'jpeg', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'icns', 'odd', 'png', 'ps', 'psd', 'xps', 'hocr', 'alto', 'svg'],
-    optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
+    optionsSchema: { quality: true, fit: true, background: true, stripMetadata: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   jpg: {
     id: 'jpg',
@@ -1452,7 +1452,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Joint Photographic Experts Group - Standard lossy image compression for photography.',
     targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'xps', 'hocr', 'alto', 'svg'],
-    optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
+    optionsSchema: { quality: true, fit: true, background: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   jpeg: {
     id: 'jpeg',
@@ -1462,7 +1462,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Joint Photographic Experts Group standard image format.',
     targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'xps', 'hocr', 'alto', 'svg'],
-    optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
+    optionsSchema: { quality: true, fit: true, background: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   webp: {
     id: 'webp',
@@ -1472,7 +1472,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Modern web image format providing superior lossless and lossy compression.',
     targetFormats: ['png', 'jpg', 'jpeg', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'odd', 'ps', 'psd', 'webp', 'avi', 'flv', 'mkv', 'mov', 'mp4', 'webm', 'wmv', 'hocr', 'alto', 'svg'],
-    optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
+    optionsSchema: { quality: true, fit: true, background: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   avif: {
     id: 'avif',
@@ -1482,7 +1482,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Next-generation AV1 Image File Format delivering state-of-the-art compression.',
     targetFormats: ['png', 'jpg', 'webp', 'tiff', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'hocr', 'alto'],
-    optionsSchema: { quality: true, dimensions: true, fit: true, background: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
+    optionsSchema: { quality: true, fit: true, background: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   tiff: {
     id: 'tiff',
@@ -1492,7 +1492,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Tagged Image File Format - High-depth raster format favored in publishing and printing.',
     targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'hocr', 'alto', 'svg'],
-    optionsSchema: { background: true, quality: true, dimensions: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
+    optionsSchema: { background: true, quality: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   tif: {
     id: 'tif',
@@ -1502,7 +1502,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Short extension for Tagged Image File Format.',
     targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'hocr', 'alto', 'svg'],
-    optionsSchema: { background: true, quality: true, dimensions: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
+    optionsSchema: { background: true, quality: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   gif: {
     id: 'gif',
@@ -1512,7 +1512,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Graphics Interchange Format with animated frame and transparency support.',
     targetFormats: ['png', 'webp', 'jpg', 'mp4', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'avi', 'flv', 'mkv', 'mov', 'webm', 'wmv', 'hocr', 'alto', 'svg'],
-    optionsSchema: { background: true, dimensions: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
+    optionsSchema: { background: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   bmp: {
     id: 'bmp',
@@ -1522,7 +1522,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Bitmap Image File - Uncompressed standard raster image.',
     targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'hocr', 'alto', 'svg'],
-    optionsSchema: { background: true, dimensions: true, colorDepth: true, dither: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
+    optionsSchema: { background: true, colorDepth: true, dither: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   svg: {
     id: 'svg',
@@ -1532,7 +1532,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'vector',
     description: 'Scalable Vector Graphics - XML-based resolution-independent 2D vector format.',
     targetFormats: ['png', 'jpg', 'webp', 'pdf', 'dxf', 'zip', 'eot', 'otf', 'ttf', 'woff', 'woff2', 'avif', 'bmp', 'eps', 'gif', 'ps', 'tiff', 'svg', 'emf', 'wmf', 'cgm', 'ico', 'odd', 'psd'],
-    optionsSchema: { dimensions: true },
+    optionsSchema: {},
   },
   ico: {
     id: 'ico',
@@ -1542,7 +1542,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Icon format used for website favicons and application icons.',
     targetFormats: ['png', 'jpg', 'webp', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff'],
-    optionsSchema: { background: true, dimensions: true, ocrEnabled: true, ocrLanguage: true },
+    optionsSchema: { background: true, ocrEnabled: true, ocrLanguage: true },
   },
   cur: {
     id: 'cur',
@@ -1792,7 +1792,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Industrial Light & Magic high dynamic range raster format.',
     targetFormats: ['png', 'jpg', 'webp', 'tiff', 'pdf', 'zip', 'avif', 'bmp', 'exr', 'ultrahdr'],
-    optionsSchema: { background: true, quality: true, dimensions: true, outputDepth: true },
+    optionsSchema: { background: true, quality: true, outputDepth: true },
   },
   ultrahdr: {
     id: 'ultrahdr',
@@ -1802,7 +1802,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'High dynamic range image with ISO 21496-1 gain map metadata.',
     targetFormats: ['jpg', 'png', 'webp', 'tiff', 'pdf', 'zip', 'exr'],
-    optionsSchema: { background: true, quality: true, dimensions: true, gainMap: true },
+    optionsSchema: { background: true, quality: true, gainMap: true },
   },
   jfif: {
     id: 'jfif',
@@ -2575,7 +2575,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'vector',
     description: 'CorelDRAW proprietary vector illustration and design file format.',
     targetFormats: ['pdf', 'eps', 'png', 'ps', 'svg', 'dxf'],
-    optionsSchema: {dimensions:true,quality:true},
+    optionsSchema: {quality:true},
   },
   cgm: {
     id: 'cgm',
@@ -2585,7 +2585,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'vector',
     description: 'ISO standard 2D vector and raster graphics interchange format.',
     targetFormats: ['pdf', 'eps', 'jpg', 'png', 'ps', 'svg', 'dxf'],
-    optionsSchema: {dimensions:true},
+    optionsSchema: {},
     available: true,
   },
   dwf: {
@@ -2596,7 +2596,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'cad',
     description: 'Autodesk compact vector format for distributing CAD engineering data.',
     targetFormats: ['dxf', 'pdf', 'bmp', 'eps', 'gif', 'jpg', 'png', 'tiff', 'svg'],
-    optionsSchema: {dimensions:true},
+    optionsSchema: {},
   },
   emf: {
     id: 'emf',
@@ -2606,7 +2606,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'vector',
     description: '32-bit Windows GDI vector graphic metafile format.',
     targetFormats: ['pdf', 'eps', 'jpg', 'png', 'ps', 'svg', 'avif', 'bmp', 'gif', 'ico', 'odd', 'psd', 'tiff', 'webp'],
-    optionsSchema: {dimensions:true,dpi:true},
+    optionsSchema: {dpi:true},
     available: true,
   },
   ps: {
@@ -2627,7 +2627,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'vector',
     description: 'Vector graphic document format used by Sketch and open vector tools.',
     targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'svg'],
-    optionsSchema: {dimensions:true},
+    optionsSchema: {},
   },
   sk1: {
     id: 'sk1',
@@ -2637,7 +2637,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'vector',
     description: 'Open-source sK1 multi-page vector graphics illustration format.',
     targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'svg'],
-    optionsSchema: {dimensions:true},
+    optionsSchema: {},
   },
   svgz: {
     id: 'svgz',
@@ -2647,7 +2647,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'vector',
     description: 'Gzip compressed Scalable Vector Graphics document.',
     targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'jpg', 'png', 'ps', 'tiff', 'webp', 'svg', 'emf', 'wmf', 'ico', 'odd', 'psd'],
-    optionsSchema: {dimensions:true,quality:true},
+    optionsSchema: {quality:true},
   },
   vsd: {
     id: 'vsd',
@@ -2667,7 +2667,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'vector',
     description: '16-bit Windows GDI vector and bitmap graphic metafile.',
     targetFormats: ['pdf', 'eps', 'jpg', 'png', 'ps', 'svg', 'dxf'],
-    optionsSchema: {dimensions:true},
+    optionsSchema: {},
     available: true,
   },
   '3fr': {
@@ -2678,7 +2678,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Hasselblad camera raw photograph uncompressed sensor data.',
     targetFormats: ['pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp'],
-    optionsSchema: { background: true,quality:true,dimensions:true},
+    optionsSchema: { background: true,quality:true},
   },
   crw: {
     id: 'crw',
@@ -2688,7 +2688,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Canon Camera Image File Format early legacy RAW image.',
     targetFormats: ['pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp'],
-    optionsSchema: { background: true,quality:true,dimensions:true},
+    optionsSchema: { background: true,quality:true},
   },
   dcr: {
     id: 'dcr',
@@ -2698,7 +2698,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Kodak digital camera uncompressed raw sensor photograph.',
     targetFormats: ['pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp'],
-    optionsSchema: { background: true,quality:true,dimensions:true},
+    optionsSchema: { background: true,quality:true},
   },
   erf: {
     id: 'erf',
@@ -2708,7 +2708,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Epson digital camera uncompressed raw image file.',
     targetFormats: ['pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp'],
-    optionsSchema: { background: true,quality:true,dimensions:true},
+    optionsSchema: { background: true,quality:true},
   },
   icns: {
     id: 'icns',
@@ -2718,7 +2718,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Apple macOS application icon container supporting 16x16 to 1024x1024 Retina.',
     targetFormats: ['png'],
-    optionsSchema: { background: true,dimensions:true},
+    optionsSchema: { background: true},
   },
   mos: {
     id: 'mos',
@@ -2728,7 +2728,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Leaf Aptus digital camera raw photograph capture.',
     targetFormats: ['pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp'],
-    optionsSchema: { background: true,quality:true,dimensions:true},
+    optionsSchema: { background: true,quality:true},
   },
   mrw: {
     id: 'mrw',
@@ -2738,7 +2738,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Konica Minolta camera raw photograph uncompressed data.',
     targetFormats: ['pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp'],
-    optionsSchema: { background: true,quality:true,dimensions:true},
+    optionsSchema: { background: true,quality:true},
   },
   x3f: {
     id: 'x3f',
@@ -2748,7 +2748,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     category: 'image',
     description: 'Sigma direct image three-layer Foveon X3 raw photograph.',
     targetFormats: ['pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp'],
-    optionsSchema: { background: true,quality:true,dimensions:true},
+    optionsSchema: { background: true,quality:true},
   },
   hwp: {
     id: 'hwp',

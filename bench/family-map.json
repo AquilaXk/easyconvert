@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scope": "^bench/(corpus/|families/|[^/]+\\.(ts|py|json)$)|^scripts/ci-parity-[^/]*\\.mjs$|^\\.github/workflows/ci\\.yml$|^src/(lib/conversions|lib/workers|worker)/|^src/lib/jobs/artifact-helpers\\.ts$|^src/lib/queue/graph/node-executor\\.ts$|^src/lib/security/(process-sandbox|svg-sanitizer|helper-process|sandbox-launcher[^/]*)\\.ts$|^package(-lock)?\\.json$|^Dockerfile(?!\\.web$)[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/|^native/(cad-convert|qpdf-runner)/|^docker/sharp-libvips/|^\\.github/(actions/sharp-libvips/|workflows/sharp-libvips\\.yml$)|^scripts/ab-base-dependencies\\.sh$",
+  "scope": "^bench/(corpus/|families/|[^/]+\\.(ts|py|json)$)|^scripts/ci-parity-[^/]*\\.mjs$|^\\.github/workflows/ci\\.yml$|^src/(lib/conversions|lib/workers|worker)/|^src/lib/jobs/artifact-helpers\\.ts$|^src/lib/queue/graph/node-executor\\.ts$|^src/lib/security/(process-sandbox|svg-sanitizer|helper-process|sandbox-launcher[^/]*)\\.ts$|^package(-lock)?\\.json$|^Dockerfile(?!\\.web$)[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/|^native/|^docker/sharp-libvips/|^\\.github/(actions/sharp-libvips/|workflows/sharp-libvips\\.yml$)|^scripts/ab-base-dependencies\\.sh$|^scripts/(install-[^/]*\\.sh$|[^/]*-patches/|vtracer-pixels/|vtracer-notices/|oxipng-notices/|avifenc/|lib/djvulibre-gates\\.sh$)",
   "families": {
     "image": { "bench": "image" },
     "video": { "bench": "video" },
@@ -119,7 +119,7 @@
     },
     {
       "families": ["*"],
-      "match": "^src/lib/conversions/(dispatch|index|job-time|options-guard|conversion-warnings|wasm-import-wrappers)\\.ts$|^src/lib/workers/|^src/worker/(engines|index|sandbox|persisted-output|worker-output|worker-types)\\.ts$"
+      "match": "^src/lib/conversions/(dispatch|index|job-time|options-guard|conversion-warnings|wasm-import-wrappers)\\.ts$|^src/lib/workers/|^src/worker/(engines|index|sandbox|sandbox-sweep|persisted-output|worker-output|worker-types)\\.ts$"
     },
     {
       "families": ["*"],
@@ -135,7 +135,7 @@
     },
     {
       "families": ["*"],
-      "match": "^src/lib/security/process-sandbox\\.ts$|^package(-lock)?\\.json$|^Dockerfile[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/"
+      "match": "^native/pid-init/|^src/lib/security/process-sandbox\\.ts$|^package(-lock)?\\.json$|^Dockerfile[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/"
     },
     {
       "families": ["*"],
@@ -147,7 +147,43 @@
     },
     {
       "families": ["vectorize"],
-      "match": "^bench/families/vectorize\\.ts$|^src/lib/conversions/raster-vectorize[^/]*\\.ts$"
+      "match": "^bench/families/vectorize\\.ts$|^src/lib/conversions/raster-vectorize[^/]*\\.ts$|^scripts/(install-vtracer(-pixels)?\\.sh$|vtracer-pixels/|vtracer-notices/)"
+    },
+    {
+      "families": ["image", "raw"],
+      "match": "^scripts/(install-avifenc\\.sh$|avifenc/)"
+    },
+    {
+      "families": ["image"],
+      "match": "^scripts/(install-oxipng\\.sh$|oxipng-notices/)"
+    },
+    {
+      "families": ["video", "audio"],
+      "match": "^scripts/(install-ffmpeg\\.sh$|ffmpeg-patches/)"
+    },
+    {
+      "families": ["document"],
+      "match": "^scripts/(install-djvulibre\\.sh$|djvulibre-patches/|lib/djvulibre-gates\\.sh$)"
+    },
+    {
+      "families": ["document", "vector"],
+      "match": "^scripts/install-ghostxps\\.sh$"
+    },
+    {
+      "families": ["raw"],
+      "match": "^scripts/install-libraw-he\\.sh$"
+    },
+    {
+      "families": ["cad"],
+      "match": "^scripts/install-libredwg\\.sh$"
+    },
+    {
+      "families": ["pdf-ops"],
+      "match": "^scripts/install-verapdf\\.sh$"
+    },
+    {
+      "families": ["ocr"],
+      "match": "^scripts/install-onnx-ocr-models\\.sh$"
     },
     {
       "families": ["pdf-ops"],

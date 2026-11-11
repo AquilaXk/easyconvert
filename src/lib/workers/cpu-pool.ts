@@ -158,7 +158,9 @@ export function resolveCpuWorkerEntry(): WorkerEntry {
  */
 export function spawnCpuWorker(entry: WorkerEntry = resolveCpuWorkerEntry()): Worker {
   const resourceLimits = { maxOldGenerationSizeMb: THREAD_HEAP_LIMIT_MB, maxYoungGenerationSizeMb: THREAD_YOUNG_LIMIT_MB };
-  const worker = entry.kind === 'compiled' ? new Worker(entry.file, { resourceLimits }) : new Worker(entry.bootstrap, { eval: true, resourceLimits });
+  // The bundle needs no loader: a thread inherits the `--import` of its parent, which under a development or benchmark process would load
+  // the bundle's own modules through the TypeScript loader.
+  const worker = entry.kind === 'compiled' ? new Worker(entry.file, { resourceLimits, execArgv: [] }) : new Worker(entry.bootstrap, { eval: true, resourceLimits });
   worker.unref();
   return worker;
 }

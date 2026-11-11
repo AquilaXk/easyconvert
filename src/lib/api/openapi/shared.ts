@@ -250,6 +250,40 @@ export const IDEMPOTENCY_KEY_PARAMETER = {
   schema: { $ref: '#/components/schemas/IdempotencyKeyHeader' },
 };
 
+/** `Prefer: respond-async` of `POST /api/v1/convert`: queue the conversion as a job instead of answering with the result. */
+export const PREFER_RESPOND_ASYNC_PARAMETER = {
+  name: 'Prefer',
+  in: 'header',
+  required: false,
+  description:
+    'Send `respond-async` to have the conversion queued as a job and answered at once with 202 and `Preference-Applied: respond-async`, whatever the size of the file. Without it a file over the synchronous limit is queued too. Other preferences are ignored.',
+  schema: { type: 'string', example: 'respond-async' },
+};
+
+/** `?raw=true` of `POST /api/v1/convert`: answer a finished synchronous conversion with the bytes of the result. */
+export const RAW_RESULT_PARAMETER = {
+  name: 'raw',
+  in: 'query',
+  required: false,
+  description:
+    'Set to `true` (or send `Accept: application/octet-stream`) to answer a finished synchronous conversion with the bytes of the result (its own content type, and its file name in `Content-Disposition`) instead of JSON. A queued conversion (202) answers JSON either way.',
+  schema: { type: 'boolean', default: false },
+};
+
+/** Webhook fields of a conversion that is queued; the same names and meaning as those of `POST /api/v1/jobs`. */
+export const CONVERT_WEBHOOK_FORM_PROPERTIES = {
+  webhookUrl: {
+    type: 'string',
+    format: 'uri',
+    description:
+      'Destination of the HMAC-signed event sent when a queued conversion ends (a file over the synchronous limit, or a request with `Prefer: respond-async`); a synchronous answer sends none. Defaults to the webhook of the API key. A private, loopback or otherwise restricted host is refused with 400.',
+  },
+  webhookSecret: {
+    type: 'string',
+    description: 'Secret of the HMAC-SHA256 signature of the event. Required with `webhookUrl`; defaults to the secret of the API key.',
+  },
+};
+
 type SchemaProperties = Record<string, unknown>;
 
 const objectSchema = (properties: SchemaProperties, required?: string[]) => ({

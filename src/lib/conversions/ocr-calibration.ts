@@ -6,6 +6,7 @@ import engNeural from './ocr-calibration/eng.neural.json';
 import korWasm from './ocr-calibration/kor.wasm.json';
 import korCli from './ocr-calibration/kor.cli.json';
 import korNeural from './ocr-calibration/kor.neural.json';
+import korOnnx from './ocr-calibration/kor.onnx.json';
 
 /**
  * The engine's word confidence is a raw score, not a probability: a page can read perfectly at a
@@ -15,8 +16,8 @@ import korNeural from './ocr-calibration/kor.neural.json';
  * pages whose text is known. A language without a table keeps the raw score and says so.
  */
 
-/** The recognizers that produce word scores: the WebAssembly engine, the native command line tool, and the Korean-first CPU neural pipeline. */
-export type OcrEnginePath = 'wasm' | 'cli' | 'neural';
+/** The recognizers that produce word scores: the WebAssembly engine, the native command line tool, the Korean-first CPU neural pipeline, and the ONNX Korean recognizer. */
+export type OcrEnginePath = 'wasm' | 'cli' | 'neural' | 'onnx';
 
 export interface CalibrationProvenance {
   /** What the table was fitted on: how the pages were made and where the labels come from. */
@@ -49,6 +50,7 @@ const TABLES: ReadonlyArray<CalibrationTable> = [
   korWasm as CalibrationTable,
   korCli as CalibrationTable,
   korNeural as CalibrationTable,
+  korOnnx as CalibrationTable,
 ];
 
 function invalidTable(table: CalibrationTable, why: string): OcrEngineUnavailableError {
@@ -78,6 +80,8 @@ const TABLE_BY_KEY = new Map<string, CalibrationTable>(
 /** The table for a recognition language (such as `eng`) and engine path, or null when none was fitted. */
 export function calibrationTableFor(language: string | undefined, enginePath: OcrEnginePath): CalibrationTable | null {
   if (!language) return null;
+  // The ONNX engine reads Hangul and Latin with one recognizer whatever languages the request named (`kor`, `kor+eng`).
+  if (enginePath === 'onnx') return TABLE_BY_KEY.get('kor/onnx') ?? null;
   return TABLE_BY_KEY.get(`${language}/${enginePath}`) ?? null;
 }
 

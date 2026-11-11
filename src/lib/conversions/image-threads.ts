@@ -101,29 +101,31 @@ export function pipelineThreadsFor(cores: number, memoryBytes: number = Number.P
   return Math.max(baseImageThreads(env), Math.min(IMAGE_PIPELINE_THREADS, imageThreadsFor(cores, memoryBytes, env)));
 }
 
-/** Encodes in flight that hold the lease, and the largest count any of them asked for. */
-let leases = 0;
-let leasedThreads = 0;
+/** The thread counts of the encodes in flight that hold the lease, and the count the image library was last set to for them (0: none). */
+const activeLeases: number[] = [];
+let appliedThreads = 0;
+
+/** Sets the image library to the largest count that a lease in flight asks for, or to the base count when none is. */
+function applyLeasedThreads(): void {
+  const target = activeLeases.length > 0 ? Math.max(...activeLeases) : 0;
+  if (target === appliedThreads) return;
+  appliedThreads = target;
+  sharp.concurrency(target > 0 ? target : baseImageThreads());
+}
 
 /**
  * Runs `encode` with the image library on `threads` threads (`imageThreadsFor` unless the caller names a count). The count is process-wide,
- * so concurrent encodes share it: a lease that asks for more raises it for all, the last to end puts the base count back, whether they
- * end or fail.
+ * so concurrent encodes share it: it is the largest count that an encode in flight asks for, so a lease that asks for more raises it for
+ * all and drops it again when that lease ends, not when the last one does; the last to end puts the base count back, whether they end or fail.
  */
 export async function withImageThreads<T>(encode: () => Promise<T>, threads: number = imageThreadsFor(availableCpus(), memoryLimitBytes())): Promise<T> {
-  if (threads > leasedThreads) {
-    sharp.concurrency(threads);
-    leasedThreads = threads;
-  }
-  leases += 1;
+  activeLeases.push(threads);
+  applyLeasedThreads();
   try {
     return await encode();
   } finally {
-    leases -= 1;
-    if (leases === 0) {
-      leasedThreads = 0;
-      sharp.concurrency(baseImageThreads());
-    }
+    activeLeases.splice(activeLeases.indexOf(threads), 1);
+    applyLeasedThreads();
   }
 }
 

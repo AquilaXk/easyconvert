@@ -166,19 +166,17 @@ export interface OcrResult {
    * ALTO against what the engine wrote. Its boxes are in the pixels of the page as submitted.
    */
   engineMarkup?: { format: 'hocr' | 'alto'; content: string };
-  /**
-   * Set when a failure of the WebAssembly engine was answered by the native one: what failed and what read the page.
-   * Absent when the first engine read it.
-   */
+  /** Set when the first engine failed and another read the page (ONNX by WebAssembly, WebAssembly by the native tool); absent otherwise. */
   engineFallback?: OcrEngineFallback;
 }
 
-/** A page the WebAssembly engine could not read and the native tool did, with the class of failure. */
+/** A page the first engine could not read and the next one did, with the class of failure. */
 export interface OcrEngineFallback {
-  from: 'wasm';
-  to: 'cli';
-  /** Documented recoverable failure class of the first engine (see ocr-engine-failure.ts). */
+  from: 'wasm' | 'onnx';
+  to: 'cli' | 'wasm';
+  /** Documented recoverable failure class of the first engine (see ocr-engine-failure.ts, ocr-onnx-helper.ts). */
   reason: string;
+  previous?: OcrEngineFallback; // the earlier fallback this one answered (ONNX, then WebAssembly, then the native tool)
 }
 
 export interface ColumnGutter {
