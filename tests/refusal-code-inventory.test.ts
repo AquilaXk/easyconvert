@@ -60,6 +60,7 @@ const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
   ParquetUnsupportedError: 'conversion_failed',
   ParquetValueError: 'conversion_failed',
   PdfLayoutLimitError: 'conversion_failed',
+  OfficePackageUnreadableError: 'conversion_failed',
   PdfPageFrameError: 'conversion_failed',
   PdfPageRenderError: 'conversion_failed',
   PdfStructureError: 'conversion_failed',

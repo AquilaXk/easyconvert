@@ -76,3 +76,17 @@ export function engineTraceHeaders(result: EngineTraceSource): Record<string, st
   if (fields.fallbackReason) headers[FALLBACK_REASON_HEADER] = fields.fallbackReason;
   return headers;
 }
+
+/**
+ * A conversion result as the web application's own routes (`/api/convert`, `/api/queue/jobs`) show it: without the engine
+ * fields. They name the converters this deployment runs and why one fell back, which the application's pages do not use; only the
+ * documented API (`/api/v1`) carries them, in the bounded form above. `nestedAt` names the field that holds the result.
+ */
+export function withoutEngineTrace<T>(result: T, nestedAt?: string): T {
+  if (typeof result !== 'object' || result === null || Array.isArray(result)) return result;
+  const record = result as Record<string, unknown>;
+  // A telemetry event carries the result one level down (`data.result`).
+  if (nestedAt !== undefined) return { ...record, [nestedAt]: withoutEngineTrace(record[nestedAt]) } as T;
+  const { engineUsed: _engine, fallbackReason: _reason, ...rest } = record;
+  return rest as T;
+}

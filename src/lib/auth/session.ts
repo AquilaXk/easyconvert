@@ -1,8 +1,10 @@
 import { DEFAULT_JWT_AUDIENCE, DEFAULT_JWT_ISSUER, signJwt, verifyJwt } from './jwt';
 import { redisUserStore } from './redis-user-store';
 import type { SessionPayload, User } from './types';
+import { LEGACY_SESSION_COOKIE_NAME, SESSION_COOKIE_NAMES, sessionCookieName, sessionTokenFromCookieHeader } from './session-cookie';
 
-export const SESSION_COOKIE_NAME = 'easyconvert_session';
+/** The plain name of the session cookie (development, tests and sessions issued before the `__Host-` prefix); `sessionCookieName()` is the one written. */
+export const SESSION_COOKIE_NAME = LEGACY_SESSION_COOKIE_NAME;
 const SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
 /**
@@ -54,7 +56,7 @@ export async function revokeAllUserSessions(userId: string): Promise<number> {
 export function createSessionCookie(token: string): string {
   const isProd = process.env.NODE_ENV === 'production';
   const cookieParts = [
-    `${SESSION_COOKIE_NAME}=${token}`,
+    `${sessionCookieName()}=${token}`,
     'Path=/',
     `Max-Age=${SESSION_MAX_AGE_SECONDS}`,
     'HttpOnly',
@@ -68,24 +70,27 @@ export function createSessionCookie(token: string): string {
   return cookieParts.join('; ');
 }
 
-/**
- * Formats a Set-Cookie header string to invalidate/clear the session cookie.
- */
-export function clearSessionCookie(): string {
-  const isProd = process.env.NODE_ENV === 'production';
-  const cookieParts = [
-    `${SESSION_COOKIE_NAME}=`,
-    'Path=/',
-    'Max-Age=0',
-    'HttpOnly',
-    'SameSite=Lax',
-  ];
-
-  if (isProd) {
+function expiredCookie(name: string): string {
+  const cookieParts = [`${name}=`, 'Path=/', 'Max-Age=0', 'HttpOnly', 'SameSite=Lax'];
+  if (process.env.NODE_ENV === 'production') {
     cookieParts.push('Secure');
   }
-
   return cookieParts.join('; ');
+}
+
+/**
+ * Formats a Set-Cookie header string to invalidate/clear the session cookie under the name it is written with.
+ */
+export function clearSessionCookie(): string {
+  return expiredCookie(sessionCookieName());
+}
+
+/**
+ * The Set-Cookie headers that clear the session cookie under every name a request may carry it (a session issued before the
+ * `__Host-` prefix has the plain name), so a sign-out leaves no session behind.
+ */
+export function clearSessionCookies(): string[] {
+  return SESSION_COOKIE_NAMES.filter((name) => name === sessionCookieName() || name === LEGACY_SESSION_COOKIE_NAME).map(expiredCookie);
 }
 
 /**
@@ -96,19 +101,8 @@ export async function getSessionFromRequest(request: Request): Promise<User | nu
   if (!request?.headers || typeof request.headers.get !== 'function') {
     return null;
   }
-  let token: string | null = null;
-
-  // 1. Check Cookie header
-  const cookieHeader = request.headers.get('cookie');
-  if (cookieHeader) {
-    const cookies = cookieHeader.split(';').map((c) => c.trim());
-    for (const c of cookies) {
-      if (c.startsWith(`${SESSION_COOKIE_NAME}=`)) {
-        token = c.substring(SESSION_COOKIE_NAME.length + 1);
-        break;
-      }
-    }
-  }
+  // 1. Check Cookie header (the `__Host-` name first, then the plain name of earlier sessions)
+  let token = sessionTokenFromCookieHeader(request.headers.get('cookie'));
 
   // 2. Check Authorization header
   if (!token) {
@@ -127,7 +121,10 @@ export async function getSessionFromRequest(request: Request): Promise<User | nu
 
 /**
  * The signed-in user a session token stands for, or null when the token is invalid, expired, revoked, older than the
- * account's session version, or the account is gone. A request's cookie and a server-rendered page's cookie both end here.
+ * account's session version (or carries none), or the account is gone. A request's cookie and a server-rendered page's cookie
+ * both end here.
+ *
+ * @throws AuthStoreUnavailableError when the session store cannot answer: a session is never accepted without its check.
  */
 export async function getSessionFromToken(token: string): Promise<User | null> {
   const payload = verifyJwt<SessionPayload>(token, {
@@ -148,12 +145,10 @@ export async function getSessionFromToken(token: string): Promise<User | null> {
     return null;
   }
 
-  // Check user session version (reject if token sessionVersion is older than current)
-  if (
-    payload.sessionVersion !== undefined &&
-    userRecord.sessionVersion !== undefined &&
-    payload.sessionVersion < userRecord.sessionVersion
-  ) {
+  // A token older than the account's session version is a revoked session. A token without the claim is older than any
+  // version (every token this server issues carries it), so it is refused instead of skipping the check.
+  const currentVersion = userRecord.sessionVersion ?? 1;
+  if ((payload.sessionVersion ?? 0) < currentVersion) {
     return null;
   }
 

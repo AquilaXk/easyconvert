@@ -6,6 +6,7 @@ import {
   OAUTH_STATE_COOKIE_NAME,
 } from '@/lib/auth/oauth';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
+import { AuthStoreUnavailableError } from '@/lib/auth/store-unavailable';
 import { createSessionToken, createSessionCookie, getSessionFromRequest } from '@/lib/auth/session';
 import { getPathname } from '@/i18n/navigation';
 import { routing, type AppLocale } from '@/i18n/routing';
@@ -43,7 +44,14 @@ export async function GET(req: NextRequest) {
   }
 
   // 3. Atomically consume OAuth state from Redis or local cache
-  const oauthSession = await consumeOAuthSession(state);
+  let oauthSession;
+  try {
+    oauthSession = await consumeOAuthSession(state);
+  } catch (error) {
+    // The store that holds the state is down: the sign-in is not completed, and the page says so as it does for any exchange failure.
+    if (error instanceof AuthStoreUnavailableError) return redirectTo(origin, routing.defaultLocale, '/auth', '?error=oauth_exchange_failed');
+    throw error;
+  }
   if (!oauthSession) {
     return redirectTo(origin, routing.defaultLocale, '/auth', '?error=invalid_oauth_state');
   }
@@ -54,7 +62,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const googleProfile = await exchangeGoogleCode(code, redirectUri, oauthSession.codeVerifier);
+    const googleProfile = await exchangeGoogleCode(code, redirectUri, oauthSession.codeVerifier, oauthSession.nonce);
     let userRecord = await redisUserStore.findByEmail(googleProfile.email);
 
     if (!userRecord) {

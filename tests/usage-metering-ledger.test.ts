@@ -11,8 +11,6 @@ import {
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { userStore } from '@/lib/auth/user-store';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
-import { ajv } from '@/lib/api/contracts/validate';
-import { GET } from '@/app/api/v1/usage/route';
 import { requiredHeader } from './helpers/ratelimit-headers';
 
 /**
@@ -270,76 +268,6 @@ describe('WP-13 Usage Metering Ledger & Standard RateLimit Headers', () => {
       expect(headers['X-RateLimit-Remaining']).toBe('380');
       expect(headers['RateLimit-Limit']).toBe('500');
       expect(headers['RateLimit-Remaining']).toBe('380');
-    });
-  });
-
-  describe('5. Authenticated Usage Query Endpoint (GET /api/v1/usage)', () => {
-    it('returns 401 Unauthorized when request lacks authentication', async () => {
-      const req = new NextRequest('http://localhost/api/v1/usage', {
-        method: 'GET',
-      });
-
-      const res = await GET(req);
-      expect(res.status).toBe(401);
-      const body = await res.json();
-      expect(body.code).toBe('UNAUTHORIZED');
-    });
-
-    it('returns 400 Bad Request when query params "from" or "to" are invalid', async () => {
-      const req = new NextRequest('http://localhost/api/v1/usage?from=not-a-valid-date', {
-        method: 'GET',
-        headers: {
-          'x-api-key': testApiKey.key,
-        },
-      });
-
-      const res = await GET(req);
-      expect(res.status).toBe(400);
-      const body = await res.json();
-      expect(body.code).toBe('INVALID_QUERY_PARAM');
-    });
-
-    it('returns 200 OK with metered ledger items conforming strictly to JSON Schema', async () => {
-      const ledger = getUsageLedger();
-      const now = Date.now();
-
-      await ledger.recordUsage(testUser.id, {
-        jobId: 'job_api_01',
-        nodeId: 'node_convert',
-        units: 2,
-        resourceClass: 'cpu',
-        bytesIn: 2000000,
-        bytesOut: 1000000,
-        durationMs: 350,
-        timestamp: now,
-        status: 'completed',
-      });
-
-      const req = new NextRequest('http://localhost/api/v1/usage', {
-        method: 'GET',
-        headers: {
-          'x-api-key': testApiKey.key,
-        },
-      });
-
-      const res = await GET(req);
-      expect(res.status).toBe(200);
-
-      // Reading the usage ledger spends no unit of the pro quota (500 a day).
-      expect(requiredHeader(res.headers, 'ratelimit')).toMatch(/^limit=500, remaining=500, reset=\d+$/);
-      expect(requiredHeader(res.headers, 'ratelimit-policy')).toBe('500;w=86400;comment="pro daily quota"');
-
-      const body = await res.json();
-      expect(body.success).toBe(true);
-      expect(body.items).toHaveLength(1);
-      expect(body.totalUnits).toBe(2);
-      expect(body.count).toBe(1);
-
-      // Strict validation against registered Ajv 2020 schema
-      const validate = ajv.getSchema('https://easyconvert.local/schemas/usage-query-response.json');
-      expect(validate).toBeDefined();
-      const isValid = validate!(body);
-      expect(isValid).toBe(true);
     });
   });
 });

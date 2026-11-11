@@ -36,11 +36,13 @@ describe('Office pairs through LibreOffice', () => {
     for (const line of PARAGRAPHS) expect(texts).toContain(line);
   }, NATIVE_TIMEOUT_MS);
 
-  oracleTest('answers a document LibreOffice cannot open with a typed 400, not an untyped failure', ['soffice'], async () => {
+  oracleTest('answers a package that cannot be read with a typed 400 before LibreOffice sees it, not an untyped failure', ['soffice'], async () => {
     const docx = await craftDocx({ body: PARAGRAPHS.map(paragraph).join('') });
     const truncated = docx.subarray(0, Math.floor(docx.length / 2));
     const run = dispatchConversion(truncated, 'docx', 'pdf', {}, 'cut.docx');
-    await expect(run).rejects.toThrow('LibreOffice could not read the .docx file');
+    // The picture check refuses a package it cannot read (policy 240), with the answer a damaged document always had.
+    await expect(run).rejects.toThrow('LibreOffice could not read the .docx file: it is damaged or not a valid DOCX document.');
+    await expect(run).rejects.toMatchObject({ name: 'ConversionFailedError' });
   }, NATIVE_TIMEOUT_MS);
 
   it('keeps the cases above honest: a truncated package is not a readable ZIP', async () => {

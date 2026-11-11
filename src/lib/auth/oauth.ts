@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type { GoogleUserInfo } from './types';
 import { redisUserStore } from './redis-user-store';
+import { failClosed } from './store-unavailable';
 import { routing, type AppLocale } from '@/i18n/routing';
 
 export const OAUTH_STATE_COOKIE_NAME = 'easyconvert_oauth_state';
@@ -92,9 +93,9 @@ export async function createOAuthSession(options?: {
       const key = `${redisUserStore.getKeyPrefix()}oauth_state:${state}`;
       await redis.setex(key, OAUTH_STATE_TTL_SECONDS, JSON.stringify(sessionState));
       return sessionState;
-    } catch {
-      activeStates.set(state, sessionState);
-      return sessionState;
+    } catch (err) {
+      // A state kept only in this process would be unknown to the process that gets the callback.
+      return failClosed('OAuth', 'createOAuthSession', err);
     }
   }
 
@@ -103,7 +104,9 @@ export async function createOAuthSession(options?: {
 }
 
 /**
- * Atomically consumes and validates an OAuth state from Redis or local cache.
+ * Consumes an OAuth state: it can be used once. In Redis it is read and deleted by one command (GETDEL), so two callbacks that
+ * carry the same state cannot both get it; with a Redis that fails the answer is AuthStoreUnavailableError, never a state this
+ * process happens to hold.
  */
 export async function consumeOAuthSession(state: string): Promise<OAuthSessionState | null> {
   if (!state || typeof state !== 'string') {
@@ -114,18 +117,16 @@ export async function consumeOAuthSession(state: string): Promise<OAuthSessionSt
 
   const redis = redisUserStore.getRedisClient();
   if (redis) {
+    let raw: string | null;
     try {
-      const key = `${redisUserStore.getKeyPrefix()}oauth_state:${state}`;
-      const raw = await redis.get(key);
-      if (raw) {
-        await redis.del(key);
-        activeStates.delete(state);
-        const stored = JSON.parse(raw) as OAuthSessionState;
-        return { ...stored, locale: offeredLocale(stored.locale) };
-      }
-    } catch {
-      // Fallback
+      raw = await redis.getdel(`${redisUserStore.getKeyPrefix()}oauth_state:${state}`);
+    } catch (err) {
+      return failClosed('OAuth', 'consumeOAuthSession', err);
     }
+    activeStates.delete(state);
+    if (!raw) return null;
+    const stored = JSON.parse(raw) as OAuthSessionState;
+    return { ...stored, locale: offeredLocale(stored.locale) };
   }
 
   const local = activeStates.get(state);
@@ -259,10 +260,39 @@ export function getGoogleOAuthUrl(
   return `${rootUrl}?${qs}`;
 }
 
+/** The claims of the ID token that Google returned from its token endpoint (read over TLS from Google, so the signature is not what is checked here). */
+function idTokenClaims(idToken: unknown): { nonce?: unknown; sub?: unknown; aud?: unknown } {
+  if (typeof idToken !== 'string') throw new Error('Security violation: Google returned no ID token');
+  const parts = idToken.split('.');
+  if (parts.length !== 3) throw new Error('Security violation: Google ID token is malformed');
+  try {
+    const claims: unknown = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    if (typeof claims !== 'object' || claims === null || Array.isArray(claims)) throw new Error('not an object');
+    return claims as { nonce?: unknown; sub?: unknown; aud?: unknown };
+  } catch {
+    throw new Error('Security violation: Google ID token is malformed');
+  }
+}
+
+/** Refuses an ID token that was not issued for this sign-in (nonce), for this client (aud), or for another account than the profile (sub). */
+function assertIdTokenMatches(idToken: unknown, expectedNonce: string, clientId: string, subject: unknown): void {
+  const claims = idTokenClaims(idToken);
+  const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  if (claims.nonce !== expectedNonce) throw new Error('Security violation: Google ID token nonce does not match this sign-in');
+  if (!audiences.includes(clientId)) throw new Error('Security violation: Google ID token was issued for another client');
+  if (typeof claims.sub !== 'string' || claims.sub !== subject) throw new Error('Security violation: Google ID token names another account than the profile');
+}
+
+/**
+ * Exchanges the authorization code for the profile of the account. With `expectedNonce` (the nonce of the sign-in's
+ * OAuth session) the ID token that Google returns must carry it, be issued for this client and name the same account as the
+ * profile, so a token from another sign-in is not accepted.
+ */
 export async function exchangeGoogleCode(
   code: string,
   redirectUri: string,
-  codeVerifier?: string
+  codeVerifier?: string,
+  expectedNonce?: string
 ): Promise<GoogleUserInfo> {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
@@ -346,6 +376,10 @@ export async function exchangeGoogleCode(
 
   if (!emailVerified) {
     throw new Error('Security violation: Google OAuth account email is not verified');
+  }
+
+  if (expectedNonce !== undefined) {
+    assertIdTokenMatches(tokenData.id_token, expectedNonce, clientId, userData.sub);
   }
 
   return {

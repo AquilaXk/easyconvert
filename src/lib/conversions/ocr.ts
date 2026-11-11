@@ -16,7 +16,6 @@ import {
 } from '../types';
 import {
   createLosslessSandwichPdfFromImage,
-  createLosslessSandwichPdfFromPdf,
   parseTesseractBlocks,
   sortLineBlocksTopological,
   detectColumnGutters,
@@ -28,6 +27,7 @@ import {
   OcrPageResult,
   OcrEngineFallback,
 } from './ocr-pdf-combiner';
+import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-sandwich';
 import { openPdfPageRenderer } from './pdf-page-render';
 import { OcrWorkBudget } from './ocr-work-budget';
 import {

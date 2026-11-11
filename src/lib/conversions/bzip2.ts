@@ -723,7 +723,7 @@ class OutputSink {
   buffer: Buffer;
   length = 0;
 
-  constructor(private readonly maxBytes: number, expectedBytes: number) {
+  constructor(readonly maxBytes: number, expectedBytes: number) {
     this.buffer = Buffer.alloc(Math.min(Math.max(expectedBytes, OUTPUT_INITIAL_CAPACITY), maxBytes));
   }
 
@@ -814,9 +814,15 @@ function readSelectors(reader: BitReader, numTrees: number): Uint8Array {
 
 /**
  * Decodes one block into `sink`, returning nothing; verifies the block CRC and returns it via
- * the caller. `tt` is a reusable work array sized for the stream's declared block size.
+ * the caller. `tt` is a reusable work array that holds `room` symbols, at most the stream's declared block size.
+ * A block that fills `room` without reaching the declared size would write more than the output limit allows.
  */
-function decodeBlock(reader: BitReader, tt: Uint32Array, maxBlock: number, sink: OutputSink): number {
+function decodeBlock(reader: BitReader, tt: Uint32Array, declaredBlock: number, sink: OutputSink): number {
+  const maxBlock = Math.min(declaredBlock, tt.length);
+  const overflow = (): Error =>
+    maxBlock < declaredBlock
+      ? new DecompressionLimitError(`Invalid bzip2 data: decompressed size exceeds the limit of ${sink.maxBytes} bytes`)
+      : bzError('block exceeds the declared block size');
   const storedCrc = reader.read32();
   if (reader.readBit() !== 0) {
     throw bzError('randomised blocks are not supported');
@@ -871,13 +877,13 @@ function decodeBlock(reader: BitReader, tt: Uint32Array, maxBlock: number, sink:
     if (sym === BZ_RUNA || sym === BZ_RUNB) {
       runLength += runWeight * (sym + 1);
       runWeight *= 2;
-      if (runLength > maxBlock - nblock) throw bzError('block exceeds the declared block size');
+      if (runLength > maxBlock - nblock) throw overflow();
       continue;
     }
     flushRun();
     if (sym === eob) break;
 
-    if (nblock >= maxBlock) throw bzError('block exceeds the declared block size');
+    if (nblock >= maxBlock) throw overflow();
     const idx = sym - 1;
     const moved = mtf[idx];
     mtf.copyWithin(1, 0, idx);
@@ -951,14 +957,26 @@ function matchesMagic(bytes: number[], expected: number[]): boolean {
   return bytes.length === expected.length && bytes.every((b, i) => b === expected[i]);
 }
 
-function decodeStream(reader: BitReader, sink: OutputSink): void {
+/**
+ * The most symbols a block can hold and still decode to no more than `maxOutputBytes`: the first stage of the format writes a
+ * run of 4 to 255 equal bytes as 5 symbols, so a block of n symbols decodes to at least 4n/5 bytes.
+ */
+function symbolsForOutput(maxOutputBytes: number): number {
+  return Math.floor((maxOutputBytes * BZ_RLE1_RUN_BYTES) / BZ_RLE1_MIN_RUN) + BZ_RLE1_RUN_BYTES;
+}
+
+/** The block work array of a file: made when its first block is read, and grown only for a stream that declares a larger block size. */
+interface BlockWork {
+  tt: Uint32Array | null;
+}
+
+function decodeStream(reader: BitReader, sink: OutputSink, work: BlockWork): void {
   const sig: number[] = [];
   for (let i = 0; i < BZ_SIGNATURE.length; i++) sig.push(reader.readBits(BYTE_BITS));
   if (!matchesMagic(sig, BZ_SIGNATURE)) throw bzError('missing BZh signature');
   const level = reader.readBits(BYTE_BITS) - BZ_DIGIT_ZERO;
   if (level < BZ_MIN_LEVEL || level > BZ_MAX_LEVEL) throw bzError('invalid block size digit');
   const maxBlock = level * BZ_BLOCK_UNIT;
-  let tt: Uint32Array | null = null;
 
   let combined = 0;
   for (;;) {
@@ -974,8 +992,10 @@ function decodeStream(reader: BitReader, sink: OutputSink): void {
       return;
     }
     if (!matchesMagic(magic, BZ_BLOCK_MAGIC)) throw bzError('invalid block header');
-    tt ??= new Uint32Array(maxBlock);
-    combined = combineCrc(combined, decodeBlock(reader, tt, maxBlock, sink));
+    // Not made per stream: a file of a few thousand empty-looking streams would zero a work array each (3.6 MB at level 9).
+    const room = Math.min(maxBlock, symbolsForOutput(sink.maxBytes));
+    if (work.tt === null || work.tt.length < room) work.tt = new Uint32Array(room);
+    combined = combineCrc(combined, decodeBlock(reader, work.tt, maxBlock, sink));
   }
 }
 
@@ -1002,8 +1022,9 @@ export function decompressBzip2(input: Buffer, maxOutputBytes = BZIP2_DEFAULT_MA
     maxOutputBytes,
     Math.min(input.length * OUTPUT_EXPECTED_EXPANSION, OUTPUT_INITIAL_CAPACITY_MAX)
   );
+  const work: BlockWork = { tt: null };
   for (;;) {
-    decodeStream(reader, sink);
+    decodeStream(reader, sink, work);
     reader.alignToByte();
     if (reader.bytesRemaining() === 0) break;
     // Block-device and tape writers pad files with zero bytes; that padding carries no data.

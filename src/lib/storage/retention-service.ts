@@ -129,12 +129,19 @@ export async function removeUnregistered(storage: Pick<IStorageBackend, 'deleteO
  * An upload in the ownerless namespace (every upload of an anonymous caller) starts its clock: nobody converting it
  * within the undelivered time of a result means it was abandoned, so it goes then. An account's upload is kept as long
  * as the store keeps it, and stays out of the rule for results (newAccountUploadRecord). When the record cannot be
- * written the object is removed again and the error is rethrown, as for a result.
+ * written the object is removed again and the error is rethrown, as for a result. With `jobInput`, the upload of an account is
+ * recorded as an ownerless one is: it is the body of one request, deleted shortly after its job ends and, unread, after the
+ * undelivered time.
  */
-export async function registerCompletedUpload(storage: Pick<IStorageBackend, 'deleteObject'>, key: string): Promise<void> {
+export async function registerCompletedUpload(
+  storage: Pick<IStorageBackend, 'deleteObject'>,
+  key: string,
+  options: { jobInput?: boolean } = {}
+): Promise<void> {
   const now = Date.now();
   const policy = resolveRetentionPolicy();
-  const fresh = isUploadKey(key) ? newUnclaimedUploadRecord(key, now, policy) : newAccountUploadRecord(key, now);
+  // A file the request body carried exists for one job: it is recorded as an ownerless upload is, whatever its prefix, so the end of the job deletes it.
+  const fresh = isUploadKey(key) || options.jobInput ? newUnclaimedUploadRecord(key, now, policy) : newAccountUploadRecord(key, now);
   try {
     await getRetentionLedger().update(key, (current) => current ?? fresh);
   } catch (error) {

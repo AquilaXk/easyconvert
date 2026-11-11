@@ -1,4 +1,5 @@
 import { SecretSealError, sealJobSecret, unsealJobSecret } from '../security/job-secret-seal';
+import { sealWebhookSecret } from '../security/sealed-webhook-secret';
 import { ConversionFailedError, type ConversionJobData } from '../types';
 
 /**
@@ -103,7 +104,8 @@ function parsePasswordList(json: string): Array<string | null> {
 }
 
 /**
- * The job data with the password of its options (and of each task's options) sealed for `jobId`.
+ * The job data with the password of its options (and of each task's options) and its webhook secret sealed for `jobId`; the
+ * worker opens the webhook secret with `openWebhookSecret` when it signs the delivery.
  *
  * @throws ConversionFailedError (400) when a password is too long to seal, instead of an untyped 500.
  */
@@ -124,5 +126,6 @@ function sealJobDataSecretsUnchecked(data: ConversionJobData, jobId: string): Co
     ...data,
     options: sealPasswordOption(data.options, jobId),
     ...(tasks === undefined ? {} : { tasks }),
+    ...(data.webhookSecret ? { webhookSecret: sealWebhookSecret(data.webhookSecret, jobId) } : {}),
   };
 }

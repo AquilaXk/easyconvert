@@ -545,6 +545,8 @@ export interface StreamToStorageOptions {
   storage: IStorageBackend;
   partSizeBytes?: number; // default 5MB (5 * 1024 * 1024)
   signal?: AbortSignal;
+  /** The account the file belongs to: its key lies under `conversions/<id>/`, where the erasure of the account finds it. */
+  ownerUserId?: string;
 }
 
 export interface StreamToStorageResult {
@@ -620,6 +622,7 @@ export async function pipeStreamToStorageMultipart(
     storage,
     partSizeBytes = 5 * 1024 * 1024, // 5MB standard multipart part size
     signal,
+    ownerUserId,
   } = options;
 
   const startTime = Date.now();
@@ -655,7 +658,7 @@ export async function pipeStreamToStorageMultipart(
   assertNotSpoofedFile(headerSlice, sourceExtension, filename);
 
   // 2. Initiate multipart session in storage
-  const init = await storage.initiateMultipartUpload(filename, mimeType, expectedTotalSize, undefined, partSizeBytes);
+  const init = await storage.initiateMultipartUpload(filename, mimeType, expectedTotalSize, ownerUserId, partSizeBytes);
   const uploadId = init.uploadId;
 
   const hasher = crypto.createHash('sha256');
