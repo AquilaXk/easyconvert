@@ -14,13 +14,13 @@ import {
   onnxOcrAvailable,
   planDetectorSize,
   recoverSpaces,
-  recognizePageOnnx,
   releaseOnnxOcr,
   unclipBox,
   wordSpans,
   type OnnxRuntime,
   type RotatedBox,
 } from '../src/lib/conversions/ocr-onnx';
+import { recognizePageOnnx } from '../src/lib/conversions/ocr-onnx-input';
 import { OcrEngineUnavailableError } from '../src/lib/types';
 
 function rotatedRectPoints(cx: number, cy: number, width: number, height: number, angle: number): [number, number][] {
@@ -314,28 +314,4 @@ describe('ONNX OCR pipeline with stand-in models', () => {
   });
 });
 
-// The real models are not part of the repository or the image. Point the variable at a directory with det.onnx, rec.onnx
-// and dict.txt (and have onnxruntime-node installed) to run this against them.
-const realModels = process.env[ONNX_OCR_MODEL_DIR_ENV];
-// skip-ok: the engine is optional and off by default; its models are not in the repository or the image, so CI cannot have them.
-describe.skipIf(!realModels)('ONNX OCR with the real models', () => {
-  it('reads the Korean golden page with a character error rate under 3 percent', async () => {
-    const fixture = path.join(__dirname, 'fixtures/ocr');
-    const truth = fs.readFileSync(path.join(fixture, 'ko_a.gt.txt'), 'utf8').replace(/\s+/g, '');
-    const result = await recognizePageOnnx(fs.readFileSync(path.join(fixture, 'ko_a__clean300.png')));
-    const read = result.text.replace(/\s+/g, '');
-    const edits = levenshtein([...truth], [...read]);
-    expect(edits / [...truth].length).toBeLessThan(0.03);
-    expect(result.lineBlocks!.every((b) => b.words.length > 0 && b.baseline)).toBe(true);
-  }, 120_000);
-});
-
-function levenshtein(a: string[], b: string[]): number {
-  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
-  for (let i = 1; i <= a.length; i++) {
-    const cur = [i];
-    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
-    prev = cur;
-  }
-  return prev[b.length];
-}
+// The real models are read by tests/ocr-onnx-real.test.ts, through the helper process.

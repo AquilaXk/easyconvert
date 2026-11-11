@@ -1,8 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { availableCpus } from '../workers/available-cpus';
-import { ConversionFailedError, OcrEngineUnavailableError } from '../types';
-import { assertEncodedImageWithinLimit, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
+import { OcrEngineUnavailableError } from '../types';
 import { sortLineBlocksTopological, type OcrLineBlock, type OcrResult, type OcrWord } from './ocr-pdf-combiner';
 
 /**
@@ -75,6 +74,8 @@ const ONNX_RUNTIME_PACKAGE: string = 'onnxruntime-node';
 export interface OnnxOcrOptions {
   /** Directory holding `det.onnx`, `rec.onnx` and `dict.txt`; defaults to the directory named by `EASYCONVERT_OCR_ONNX_DIR`. */
   modelDir?: string;
+  /** The language the result is labelled with (`kor`, or `kor+eng` for a page that names both); the recognizer reads Hangul and Latin either way. */
+  language?: string;
   /** Threads of one inference; defaults to the CPUs available to the process. */
   threads?: number;
   detectorMinSide?: number;
@@ -615,6 +616,11 @@ export async function releaseOnnxOcr(): Promise<void> {
   }
 }
 
+/** Loads the sessions now (the helper does this before it says it is ready) with the thread count the pages will be read with. */
+export async function warmOnnxOcr(modelDir: string, threads: number, runtime?: OnnxRuntime): Promise<void> {
+  await loadModels(modelDir, threads, runtime);
+}
+
 /** Whether the engine could run here: the package resolves and the model directory is complete. */
 export async function onnxOcrAvailable(modelDir: string | undefined = process.env[ONNX_OCR_MODEL_DIR_ENV]): Promise<boolean> {
   if (!modelDir) return false;
@@ -626,46 +632,29 @@ export async function onnxOcrAvailable(modelDir: string | undefined = process.en
   }
 }
 
-async function readPixels(imageBuffer: Buffer): Promise<{ rgb: Uint8Array; width: number; height: number }> {
-  try {
-    await assertEncodedImageWithinLimit(imageBuffer);
-    const { data, info } = await openLimitedSharp(imageBuffer)
-      .rotate()
-      .flatten({ background: '#ffffff' })
-      .toColourspace('srgb')
-      .removeAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-    return { rgb: new Uint8Array(data.buffer, data.byteOffset, data.length), width: info.width, height: info.height };
-  } catch (err) {
-    rethrowInputPixelLimit(err);
-    if (err instanceof OcrEngineUnavailableError || err instanceof ConversionFailedError) throw err;
-    throw new ConversionFailedError('Invalid image: the OCR input could not be decoded.');
-  }
+/** A page as the recognizer reads it: the pixels at full size, for the line crops, and a copy scaled to the detector's size. */
+export interface OnnxPageInput {
+  width: number;
+  height: number;
+  /** Packed RGB, `width * height * 3` bytes. */
+  rgb: Uint8Array;
+  detector: { width: number; height: number; rgb: Uint8Array };
 }
 
-/**
- * Recognizes one page with the ONNX detector and recognizer. Boxes are in the pixels of the page as displayed (EXIF turn
- * applied); the page is not otherwise prepared (no levelling, no binarization): the models read photographs as they are.
- */
-export async function recognizePageOnnx(imageBuffer: Buffer, options: OnnxOcrOptions = {}): Promise<OcrResult> {
+/** Recognizes a page that `prepareOnnxInput` (ocr-onnx-input.ts) made; this is what the helper process runs. */
+export async function recognizeOnnxInput(input: OnnxPageInput, options: OnnxOcrOptions = {}): Promise<OcrResult> {
   const modelDir = options.modelDir ?? process.env[ONNX_OCR_MODEL_DIR_ENV];
   if (!modelDir) throw new OcrEngineUnavailableError(`The ONNX OCR engine needs a model directory (${ONNX_OCR_MODEL_DIR_ENV}).`);
   const { signal } = options;
-  const { rgb, width, height } = await readPixels(imageBuffer);
-  signal?.throwIfAborted();
+  const { rgb, width, height } = input;
   const models = await loadModels(modelDir, options.threads ?? availableCpus(), options.runtime);
   const { ort } = models;
 
   // Detector: the page scaled to the detector's size, then one probability map of the same size.
-  const plan = planDetectorSize(width, height, options.detectorMinSide, options.detectorMaxSide);
-  const resized = await openLimitedSharp(Buffer.from(rgb.buffer, rgb.byteOffset, rgb.length), { raw: { width, height, channels: 3 } })
-    .resize(plan.width, plan.height, { fit: 'fill' })
-    .raw()
-    .toBuffer();
-  const input = new ort.Tensor('float32', normalizedPlanes(resized, plan.width * plan.height, DETECTOR_MEAN, DETECTOR_STD), [1, 3, plan.height, plan.width]);
+  const plan = input.detector;
+  const tensor = new ort.Tensor('float32', normalizedPlanes(input.detector.rgb, plan.width * plan.height, DETECTOR_MEAN, DETECTOR_STD), [1, 3, plan.height, plan.width]);
   signal?.throwIfAborted();
-  const detection = await models.detector.run({ [models.detector.inputNames[0]]: input });
+  const detection = await models.detector.run({ [models.detector.inputNames[0]]: tensor });
   const map = Object.values(detection)[0].data;
   const scaleX = width / plan.width;
   const scaleY = height / plan.height;
@@ -734,7 +723,7 @@ export async function recognizePageOnnx(imageBuffer: Buffer, options: OnnxOcrOpt
     lineBlocks: ordered,
     imageWidth: width,
     imageHeight: height,
-    language: 'kor',
+    language: options.language ?? 'kor',
   };
 }
 
