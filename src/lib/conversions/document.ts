@@ -1,7 +1,8 @@
 import { remainingJobMs } from './job-time';
-import { PdfPageFrameError } from './pdf-page-geometry';
+import { reportConversionWarning } from './conversion-warnings';
+import { skippedOcrWarning } from './pdf-ocr-refusal';
 import JSZip from 'jszip';
-import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedTargetError, EngineUnavailableError, OcrEngineUnavailableError, OcrLanguageUnavailableError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedTargetError, EngineUnavailableError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
 import { unconvertibleOfficeTarget } from './native-engine-pairs';
 import {
@@ -185,6 +186,53 @@ async function pdfOcrMarkupResult(tgt: 'hocr' | 'alto', sources: PdfOcrMarkupSou
     ...(sources.ocrMetadata ? { metadata: sources.ocrMetadata } : {}),
   };
 }
+/** A line box as an engine may report it: origin and size, or two corners. */
+type LooseLineBox = Partial<Record<'x' | 'y' | 'width' | 'height' | 'x0' | 'y0' | 'x1' | 'y1', number | null>>;
+/** A recognized line that is a plain string or an object with an optional box. */
+type LooseOcrLine = string | { bbox?: LooseLineBox; text?: string; confidence?: number } | null;
+
+const DLA_DEFAULT_BOX_WIDTH = 100;
+const DLA_DEFAULT_BOX_HEIGHT = 20;
+
+function dlaGeometry(box: LooseLineBox): Pick<DlaBoundingBox, 'x' | 'y' | 'width' | 'height'> {
+  const x = box.x ?? box.x0 ?? 0;
+  const y = box.y ?? box.y0 ?? 0;
+  const width = box.width ?? (box.x1 != null ? Math.max(1, box.x1 - x) : DLA_DEFAULT_BOX_WIDTH);
+  const height = box.height ?? (box.y1 != null ? Math.max(1, box.y1 - y) : DLA_DEFAULT_BOX_HEIGHT);
+  return { x, y, width, height };
+}
+
+/** The boxes of a page whose lines carry none: strings stack down the page in fixed-size boxes. */
+function dlaBoxesOfLines(lines: readonly LooseOcrLine[], pageConfidence: number | undefined): DlaBoundingBox[] {
+  const boxes: DlaBoundingBox[] = [];
+  let lineY = 0;
+  for (const line of lines) {
+    if (typeof line === 'object' && line !== null && line.bbox) {
+      boxes.push({ ...dlaGeometry(line.bbox), text: line.text || '', confidence: line.confidence ?? pageConfidence });
+    } else if (typeof line === 'string') {
+      boxes.push({ x: 50, y: lineY, width: 500, height: 20, text: line, confidence: pageConfidence });
+      lineY += 24;
+    }
+  }
+  return boxes;
+}
+
+/** The line boxes of the recognized pages, in the shape the Document Layout Analysis reads. */
+function collectDlaBoxes(pageOcrResults: ReadonlyMap<number, OcrResult>): DlaBoundingBox[] {
+  const dlaBoxes: DlaBoundingBox[] = [];
+  for (const ocr of pageOcrResults.values()) {
+    const pageConfidence = ocr.confidence ?? undefined;
+    if (ocr.lineBlocks && ocr.lineBlocks.length > 0) {
+      for (const lb of ocr.lineBlocks) {
+        dlaBoxes.push({ ...dlaGeometry(lb.bbox), text: lb.text, confidence: characterWeightedConfidence([lb]) ?? pageConfidence });
+      }
+    } else if (ocr.lines && ocr.lines.length > 0) {
+      dlaBoxes.push(...dlaBoxesOfLines(ocr.lines, pageConfidence));
+    }
+  }
+  return dlaBoxes;
+}
+
 export async function convertDocument(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -337,16 +385,16 @@ export async function convertDocument(
       } catch (err: unknown) {
         // An input over the pixel limit is refused whether or not OCR was asked for, never answered empty.
         rethrowInputPixelLimit(err);
-        // OCR that nobody asked for (a scanned page converted to text) is best effort when no engine can render the
-        // pages; the text stays as extracted. A requested OCR, or a target that is OCR output, never is.
-        // A page tree that cannot be walked leaves nothing to render either, so it is treated the same way.
-        const optional = !options.ocrEnabled && tgt !== 'hocr' && tgt !== 'alto';
-        const cannotRender = (err instanceof OcrEngineUnavailableError && !(err instanceof OcrLanguageUnavailableError)) || (!isScanned && err instanceof PdfPageFrameError);
-        if (!(optional && cannotRender)) {
+        // OCR that nobody asked for (a scanned page converted to text) is best effort: when it is refused, or no engine can
+        // render the pages, the text stays as extracted and the conversion says so. A requested OCR, or a target that is
+        // OCR output, never is (see skippedOcrWarning for what counts as a refusal).
+        const skipped = options.ocrEnabled || STRUCTURED_OCR_TARGETS.has(tgt) ? undefined : skippedOcrWarning(err, pagesNeedingOcr, isScanned);
+        if (skipped === undefined) {
           if (err instanceof ConversionFailedError) throw err;
           const rawMsg = err instanceof Error ? err.message : String(err);
           throw new ConversionFailedError(`PDF OCR failed: ${rawMsg.startsWith('PDF OCR failed: ') ? rawMsg.replace('PDF OCR failed: ', '') : rawMsg}`);
         }
+        reportConversionWarning(skipped);
       }
 
       if (recognizedPages.size > 0) {
@@ -399,57 +447,7 @@ export async function convertDocument(
     const ocrMetadata = pdfOcrMetadata(pageOcrResults);
 
     // Collect bounding boxes for Document Layout Analysis (DLA)
-    let dlaBoxes: DlaBoundingBox[] = [];
-    if (pageOcrResults.size > 0) {
-      for (const [, ocr] of pageOcrResults) {
-        if (ocr.lineBlocks && ocr.lineBlocks.length > 0) {
-          for (const lb of ocr.lineBlocks) {
-            const b = lb.bbox as any;
-            const x = b.x ?? b.x0 ?? 0;
-            const y = b.y ?? b.y0 ?? 0;
-            const width = b.width ?? (b.x1 != null ? Math.max(1, b.x1 - x) : 100);
-            const height = b.height ?? (b.y1 != null ? Math.max(1, b.y1 - y) : 20);
-            dlaBoxes.push({
-              x,
-              y,
-              width,
-              height,
-              text: lb.text,
-              confidence: characterWeightedConfidence([lb]) ?? ocr.confidence ?? undefined,
-            });
-          }
-        } else if (ocr.lines && ocr.lines.length > 0) {
-          let lineY = 0;
-          for (const l of (ocr.lines as any[])) {
-            if (typeof l === 'object' && l !== null && l.bbox) {
-              const b = l.bbox as any;
-              const x = b.x ?? b.x0 ?? 0;
-              const y = b.y ?? b.y0 ?? 0;
-              const width = b.width ?? (b.x1 != null ? Math.max(1, b.x1 - x) : 100);
-              const height = b.height ?? (b.y1 != null ? Math.max(1, b.y1 - y) : 20);
-              dlaBoxes.push({
-                x,
-                y,
-                width,
-                height,
-                text: l.text || '',
-                confidence: l.confidence ?? ocr.confidence ?? undefined,
-              });
-            } else if (typeof l === 'string') {
-              dlaBoxes.push({
-                x: 50,
-                y: lineY,
-                width: 500,
-                height: 20,
-                text: l,
-                confidence: ocr.confidence ?? undefined,
-              });
-              lineY += 24;
-            }
-          }
-        }
-      }
-    }
+    const dlaBoxes = collectDlaBoxes(pageOcrResults);
 
     // The boxes of several scanned pages all start at the top of their own page: analysed together they interleave
     // by height, so a multi-page scan keeps its text in page order instead of going through the layout analysis.

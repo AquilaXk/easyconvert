@@ -7,12 +7,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 import { assembleCombinedOcrResult, performSmartMultiPagePdfOcr, recognizeRenderedPdfPages } from '../src/lib/conversions/ocr';
 import { pxToPdfUserSpace, type PdfPageFrame } from '../src/lib/conversions/pdf-page-geometry';
-import { OCR_MAX_RENDERED_PAGES } from '../src/lib/conversions/pdf-page-render';
+import { OCR_MAX_RENDERED_PAGES, PdfPageRenderError, openPdfPageRenderer } from '../src/lib/conversions/pdf-page-render';
 import { OCR_DEFAULT_DPI, OCR_MAX_DPI } from '../src/lib/conversions/ocr-dpi';
 import { OcrEngineUnavailableError, PayloadLimitError, UnsupportedOptionError } from '../src/lib/types';
 import { getOracleToolPath, OracleToolMissingError } from './helpers/differential-oracle';
 import { MAGICK_BINARY, requireMagick } from './helpers/imagemagick';
 import { requireTessdata, requireTesseract } from './helpers/ocr-fixtures';
+import { buildPdf } from './helpers/pdf-craft';
 import { oracleTest } from './helpers/oracle-test';
 import { wordIous, type PdfWord } from './helpers/pdftotext-bbox';
 
@@ -157,6 +158,52 @@ describe('what a PDF render is allowed to cost', () => {
     });
     vi.unstubAllEnvs();
   });
+});
+
+describe('how a page that Poppler cannot draw is told apart', () => {
+  it('names a render that pdftoppm refuses as a malformed page, not as a limit', async () => {
+    const stub = path.join(workDir, 'pdftoppm-refuses');
+    fs.writeFileSync(stub, "#!/bin/sh\necho 'Syntax Error: Could not find a page' >&2\nexit 1\n", { mode: 0o755 });
+    vi.stubEnv('PDFTOPPM_PATH', stub);
+    const doc = await PDFDocument.create();
+    doc.addPage([612, 792]);
+    const renderer = await openPdfPageRenderer(Buffer.from(await doc.save()), undefined, 72);
+    try {
+      const refused = renderer.render(0);
+      await expect(refused).rejects.toBeInstanceOf(PdfPageRenderError);
+      await expect(refused).rejects.toMatchObject({ reason: 'malformed', message: 'Page 1 could not be rendered for OCR: the PDF is malformed or unsupported.' });
+    } finally {
+      await renderer.close();
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe('a page whose tree carries no MediaBox', () => {
+  oracleTest(
+    'is drawn by pdftoppm at the size of the US Letter frame the render plan holds for it',
+    ['pdftoppm'],
+    async () => {
+      const pdf = buildPdf(
+        [
+          { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+          { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 1' },
+          { id: 3, dict: '/Type /Page /Parent 2 0 R /CropBox [500 700 900 900]' },
+        ],
+        1
+      ).buffer;
+      const renderer = await openPdfPageRenderer(pdf, undefined, 100);
+      try {
+        const rendered = await renderer.render(0);
+        // The CropBox is cut to the 612x792 page: 112x92 points at 100 dpi, rounded up.
+        expect(rendered.page.frame.cropBox).toEqual({ x0: 500, y0: 700, x1: 612, y1: 792 });
+        expect([rendered.page.widthPx, rendered.page.heightPx]).toEqual([156, 128]);
+      } finally {
+        await renderer.close();
+      }
+    },
+    REFERENCE_TIMEOUT_MS
+  );
 });
 
 /** Two strips of text on a page that is shown turned 90 degrees and cropped, each drawn turned the other way. */

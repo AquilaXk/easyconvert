@@ -355,21 +355,50 @@ describe('PDF page rasterization pixel budgets', () => {
     expect((error as Error).message).toContain('PDF page 21');
   });
 
-  it('gives a page whose tree carries no MediaBox the US Letter box pdf.js gives it, and keeps a CropBox that stands alone', async () => {
-    const page = (dict: string): Buffer =>
+  describe('a page whose tree carries no MediaBox', () => {
+    // pdf.js (`LETTER_SIZE_MEDIABOX` of `Page.mediaBox`) and Poppler (`PageAttrs`, which starts from 0 0 612 792) both give such a page
+    // US Letter and cut its CropBox to it: `pdftoppm -cropbox` of the files below draws 612x792, 300x400, 612x792 and 112x92 pixels at 72 dpi.
+    const withoutMediaBox = (pageEntries: string): Buffer =>
       buildPdf(
         [
           { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
           { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 1' },
-          { id: 3, dict: `/Type /Page /Parent 2 0 R ${dict}` },
+          { id: 3, dict: `/Type /Page /Parent 2 0 R ${pageEntries}` },
         ],
         1
       ).buffer;
-    const [letter] = await readPdfPageFrames(page(''));
-    expect(letter.cropBox).toEqual({ x0: 0, y0: 0, x1: 612, y1: 792 });
-    await expect(checkPdfRasterPageBudget(page(''), (count) => Array.from({ length: count }, (_, i) => i + 1), 300)).resolves.not.toThrow();
-    const [cropped] = await readPdfPageFrames(page('/CropBox [0 0 300 400]'));
-    expect(cropped.cropBox).toEqual({ x0: 0, y0: 0, x1: 300, y1: 400 });
+    const everyPage = (count: number): number[] => Array.from({ length: count }, (_, i) => i + 1);
+
+    it.each([
+      ['no box at all', '', { x0: 0, y0: 0, x1: 612, y1: 792 }],
+      ['a CropBox inside the Letter page', '/CropBox [0 0 300 400]', { x0: 0, y0: 0, x1: 300, y1: 400 }],
+      ['a CropBox past the Letter page', '/CropBox [0 0 1000 1000]', { x0: 0, y0: 0, x1: 612, y1: 792 }],
+      ['a CropBox that crosses the Letter page edge', '/CropBox [500 700 900 900]', { x0: 500, y0: 700, x1: 612, y1: 792 }],
+    ])('reads the frame of a page with %s as the US Letter page cut by its CropBox', async (_label, entries, expected) => {
+      const pdf = withoutMediaBox(entries);
+      const [frame] = await readPdfPageFrames(pdf);
+      expect(frame.cropBox).toEqual(expected);
+      const checked = await checkPdfRasterPageBudget(pdf, everyPage, 300);
+      expect(checked?.frames[0].cropBox).toEqual(expected);
+    });
+
+    it('plans the render of such a page instead of refusing it for want of a box', async () => {
+      const plan = await planPageRender(withoutMediaBox(''), undefined, 300);
+      expect(plan.frames[0].cropBox).toEqual({ x0: 0, y0: 0, x1: 612, y1: 792 });
+    });
+
+    it('still reads the MediaBox a parent page tree node hands down', async () => {
+      const pdf = buildPdf(
+        [
+          { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+          { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 300]' },
+          { id: 3, dict: '/Type /Page /Parent 2 0 R' },
+        ],
+        1
+      ).buffer;
+      const [frame] = await readPdfPageFrames(pdf);
+      expect(frame.cropBox).toEqual({ x0: 0, y0: 0, x1: 200, y1: 300 });
+    });
   });
 
   it('reads the CropBox of a page of a damaged file, not the MediaBox it is cut from, as pdftoppm draws it with -cropbox', async () => {

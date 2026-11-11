@@ -10,7 +10,7 @@ import { buildTiffOptions } from './image-tiff-options';
 import { encodePsd, PSD_MAX_SIDE, type PsdChannels } from './psd-writer';
 import { decodeBmp } from './bmp';
 import { buildJpegPdf, planJpegPassthrough } from './pdf-jpeg-passthrough';
-import { classifyContent, classifyRaster, type ContentClass, type Raster } from './image-content';
+import { choosesPngFilter, classifyContent, classifyRaster, eightBitPngOptions, writesPalettePng, type ContentClass, type Raster } from './image-content';
 import {
   AVIF_EFFORT,
   AVIF_TUNE,
@@ -2076,13 +2076,13 @@ async function convertImage(
   // A deep picture written as AVIF is encoded by the command-line tool whatever its content, so its class is awaited
   // by the encoder, after the PNG for the tool has been started; the other encoders need it at once.
   let pendingContent: Promise<ContentClass> | undefined;
-  if ((CONTENT_CLASSIFIED_TARGETS.has(fmt) || fmt === 'gif') && !frameSelection?.keepsAnimation) {
+  if ((CONTENT_CLASSIFIED_TARGETS.has(fmt) || fmt === 'gif' || choosesPngFilter(fmt, options, deepColourspace !== undefined || !!rawDemosaiced?.rgb16)) && !frameSelection?.keepsAnimation) {
     if (decoded) content = decoded.content ?? classifyRaster(decoded.raster);
     else if (fmt === 'avif' && (await metadataOf(pipeline)).depth === SHARP_SIXTEEN_BIT_DEPTH) {
       pendingContent = classifyContent(pipeline, deepPipeline);
       // Awaited by the encoder; a failure before that must not surface as an unhandled rejection.
       pendingContent.catch(() => undefined);
-    } else content = await classifyContent(pipeline, deepPipeline);
+    } else content = await classifyContent(pipeline, deepPipeline).catch((err: unknown) => { throw toImageFailure(err, fmt); }); // read before the encode, so a source that cannot be read is named here
   }
 
   // Resize options
@@ -2169,7 +2169,7 @@ async function convertImage(
           mimeType = 'image/png';
           break;
         }
-        if (options.colorDepth === 8 || options.palette || options.quantizer === 'oklab') {
+        if (writesPalettePng(options)) {
           const colours = Math.min(256, Math.max(2, options.colors || 256));
           if (
             options.quantizer === 'oklab' ||
@@ -2216,7 +2216,7 @@ async function convertImage(
             photoPng ??
             (await (deepColourspace
               ? pipeline.toColourspace(deepColourspace).png({ compressionLevel: DEEP_PNG_COMPRESSION_LEVEL, adaptiveFiltering: true })
-              : pipeline.png({ compressionLevel: 8 })
+              : pipeline.png(eightBitPngOptions(content))
             ).toBuffer());
         }
         if (tagsPq) outputBuffer = writePngCicp(outputBuffer, { primaries: CICP_PRIMARIES_BT2020, transfer: CICP_TRANSFER_PQ, matrix: CICP_MATRIX_IDENTITY, fullRange: true });
