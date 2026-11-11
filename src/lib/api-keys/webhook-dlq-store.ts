@@ -1,4 +1,5 @@
 import type Redis from 'ioredis';
+import { pipelineReplies as replies } from '../redis/pipeline-replies';
 import { whenReady } from '../redis/when-ready';
 import type { WebhookDlqEntry } from './types';
 
@@ -51,13 +52,6 @@ function parseEntry(raw: string | null | undefined): WebhookDlqEntry | undefined
   } catch {
     return undefined;
   }
-}
-
-/** The replies of a pipeline, or the first error of one of its commands. */
-async function replies(pipeline: ReturnType<Redis['pipeline']>): Promise<unknown[]> {
-  const results = (await pipeline.exec()) ?? [];
-  for (const [error] of results) if (error) throw error;
-  return results.map(([, reply]) => reply);
 }
 
 function groupByOwner(entries: readonly Pick<WebhookDlqEntry, 'id' | 'ownerUserId'>[]): { owned: Map<string, string[]>; ownerless: string[] } {

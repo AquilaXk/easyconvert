@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
-import { readyGatedRedis } from '../redis/when-ready';
+import { pipelineReplies } from '../redis/pipeline-replies';
+import { readyGatedRedis, whenReady } from '../redis/when-ready';
 import { MIN_PRODUCTION_SEALING_KEY_LENGTH, secretForms } from '../security/secret-forms';
 
 export type StorageProviderType =
@@ -100,6 +101,24 @@ interface StoredCredentialEnvelope {
 }
 
 const VAULT_PREFIX = 'vault:cred:';
+/**
+ * The ids of one user's credentials, a set per user (`vault:user:{<userId>}`, the tag the account's other keys carry, so
+ * `erase-account` finds it), so a request lists the credentials of its user and does not read the vault of every user.
+ */
+const USER_INDEX_PREFIX = 'vault:user:';
+/**
+ * Set (with a lifetime) while the index is known to hold every credential. Whoever finds it missing indexes the whole vault with one
+ * SCAN pass, so credentials written before the index existed, or by a process that does not maintain it, are listed within a day.
+ */
+const USER_INDEX_MARKER = 'vault:index:complete';
+const USER_INDEX_REFRESH_MS = 24 * 60 * 60 * 1000;
+/** A process asks again whether the index is complete after this long. */
+const USER_INDEX_CHECK_MS = 60 * 60 * 1000;
+const SCAN_BATCH = 500;
+
+function userIndexKey(userId: string): string {
+  return `${USER_INDEX_PREFIX}{${userId.replace(/[{}]/g, '_')}}`;
+}
 
 /**
  * The shared credential store could not be reached. With Redis configured it is the only store:
@@ -232,6 +251,7 @@ function decryptEnvelopeWithCandidateKeys(envelope: StoredCredentialEnvelope): {
 export class CredentialsVault {
   private readonly inMemoryStore = new Map<string, StoredCredentialEnvelope>();
   private readonly redisClient: Redis | null = null;
+  private userIndexCheckedUntil = 0;
 
   constructor(redisClient?: Redis) {
     if (redisClient) {
@@ -298,13 +318,13 @@ export class CredentialsVault {
     if (this.redisClient) {
       // A configured Redis is the only store: if the write fails, the save fails.
       try {
-        const key = `${VAULT_PREFIX}${id}`;
+        await whenReady(this.redisClient);
         const serialized = JSON.stringify(envelope);
-        if (options?.ttlSeconds) {
-          await this.redisClient.setex(key, options.ttlSeconds, serialized);
-        } else {
-          await this.redisClient.set(key, serialized);
-        }
+        // The index first: an id without a credential is dropped by the next listing, a credential without an id would never be listed.
+        const pipeline = this.redisClient.pipeline().sadd(userIndexKey(userId), id);
+        if (options?.ttlSeconds) pipeline.setex(`${VAULT_PREFIX}${id}`, options.ttlSeconds, serialized);
+        else pipeline.set(`${VAULT_PREFIX}${id}`, serialized);
+        await pipelineReplies(pipeline);
       } catch (err) {
         console.error('[CredentialsVault] Redis save failed:', err);
         throw new CredentialsVaultPersistenceError({ cause: err });
@@ -455,7 +475,9 @@ export class CredentialsVault {
 
     if (this.redisClient) {
       try {
-        await this.redisClient.del(`${VAULT_PREFIX}${credentialRef}`);
+        await whenReady(this.redisClient);
+        // The credential first, then its place in the index: an id left behind is dropped by the next listing.
+        await pipelineReplies(this.redisClient.pipeline().del(`${VAULT_PREFIX}${credentialRef}`).srem(userIndexKey(envelope.userId), credentialRef));
       } catch (err) {
         console.error('[CredentialsVault] Redis delete failed:', err);
         throw new CredentialsVaultPersistenceError({ cause: err, saving: false });
@@ -477,30 +499,8 @@ export class CredentialsVault {
     const now = Date.now();
 
     if (this.redisClient) {
-      const redis = this.redisClient;
       try {
-        const keys = await redis.keys(`${VAULT_PREFIX}*`);
-        if (keys.length === 0) return results;
-        const raws =
-          typeof redis.mget === 'function'
-            ? await redis.mget(...keys)
-            : await Promise.all(keys.map((k) => redis.get(k)));
-        for (const raw of raws) {
-          if (raw) {
-            const envelope = JSON.parse(raw) as StoredCredentialEnvelope;
-            if (envelope.userId === userId && (!envelope.expiresAt || now <= envelope.expiresAt)) {
-              results.push({
-                id: envelope.id,
-                userId: envelope.userId,
-                providerType: envelope.providerType,
-                name: envelope.name,
-                createdAt: envelope.createdAt,
-                expiresAt: envelope.expiresAt,
-              });
-            }
-          }
-        }
-        return results;
+        return await this.listFromIndex(this.redisClient, userId, now);
       } catch (err) {
         console.error('[CredentialsVault] Redis list failed:', err);
         throw new CredentialsVaultPersistenceError({ cause: err, saving: false });
@@ -524,6 +524,66 @@ export class CredentialsVault {
     }
 
     return results;
+  }
+
+  /** The summaries of the credentials the index of `userId` names: the index and the credentials themselves, not the vault of every user. */
+  private async listFromIndex(redis: Redis, userId: string, now: number): Promise<CredentialSummary[]> {
+    await this.ensureUserIndex(redis);
+    const key = userIndexKey(userId);
+    const ids = await redis.smembers(key);
+    if (ids.length === 0) return [];
+    const raws = await redis.mget(ids.map((id) => `${VAULT_PREFIX}${id}`));
+    const results: CredentialSummary[] = [];
+    const stale: string[] = [];
+    raws.forEach((raw, position) => {
+      const envelope = raw ? (JSON.parse(raw) as StoredCredentialEnvelope) : undefined;
+      // A credential that expired or was deleted, or one the index names for the wrong user, leaves the index.
+      if (!envelope || envelope.userId !== userId) {
+        stale.push(ids[position]);
+      } else if (!envelope.expiresAt || now <= envelope.expiresAt) {
+        results.push({
+          id: envelope.id,
+          userId: envelope.userId,
+          providerType: envelope.providerType,
+          name: envelope.name,
+          createdAt: envelope.createdAt,
+          expiresAt: envelope.expiresAt,
+        });
+      }
+    });
+    if (stale.length > 0) await redis.srem(key, ...stale).catch(() => undefined);
+    return results.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  }
+
+  /** Indexes every credential of the vault when no process has done it within the last day. */
+  private async ensureUserIndex(redis: Redis): Promise<void> {
+    if (Date.now() < this.userIndexCheckedUntil) return;
+    const claimed = await redis.set(USER_INDEX_MARKER, '1', 'PX', USER_INDEX_REFRESH_MS, 'NX');
+    if (claimed === 'OK') {
+      try {
+        await this.indexVault(redis);
+      } catch (err) {
+        await redis.del(USER_INDEX_MARKER).catch(() => undefined);
+        throw err;
+      }
+    }
+    this.userIndexCheckedUntil = Date.now() + USER_INDEX_CHECK_MS;
+  }
+
+  private async indexVault(redis: Redis): Promise<void> {
+    let cursor = '0';
+    do {
+      const [next, keys] = await redis.scan(cursor, 'MATCH', `${VAULT_PREFIX}*`, 'COUNT', SCAN_BATCH);
+      cursor = next;
+      if (keys.length === 0) continue;
+      const pipeline = redis.pipeline();
+      for (const raw of await redis.mget(keys)) {
+        if (!raw) continue;
+        const envelope = JSON.parse(raw) as StoredCredentialEnvelope;
+        pipeline.sadd(userIndexKey(envelope.userId), envelope.id);
+      }
+      if (pipeline.length > 0) await pipelineReplies(pipeline);
+    } while (cursor !== '0');
   }
 
   async listByUser(userId: string): Promise<string[]> {

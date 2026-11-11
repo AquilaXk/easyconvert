@@ -31,7 +31,7 @@ const GRAPHS = 1000;
 const JOBS = 500;
 const FILES = 500;
 const CREDENTIALS_PER_USER = 4;
-const CREDENTIAL_USERS = 50;
+const CREDENTIAL_USERS = 500;
 const ALL_STATES = ['waiting', 'active', 'completed', 'failed', 'delayed', 'cancelled'] as const;
 
 interface Tally {
@@ -231,7 +231,7 @@ function scenarios(): Scenario[] {
       },
     },
     {
-      name: 'credentials.list (200 of 50 users)',
+      name: 'credentials.list (2000 of 500 users)',
       prepare: async () => {
         const { user, list } = await seedCredentials();
         return () => list(user);
