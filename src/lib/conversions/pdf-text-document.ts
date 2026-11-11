@@ -69,8 +69,8 @@ export function assertPdfHeader(pdf: Buffer): void {
 const LEFT_OUT_REASON = 'more of its glyphs have no Unicode mapping than have one.';
 
 /**
- * Tells the conversion what the text lacks: the glyphs left out of pages that read, the pages that keep only the text their
- * fonts map, and the pages whose own text is left out, naming those that keep the text of their annotations.
+ * Tells the conversion what the text lacks: the glyphs left out of pages that read, the pages that lost the text of their Type 3
+ * fonts and kept the rest, and the pages whose own text is left out, naming those that keep the text of their annotations.
  */
 function reportLeftOut(
   content: readonly PdfPageContent[],
