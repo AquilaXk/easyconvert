@@ -217,6 +217,7 @@ Delivery
 221. [Thread, worker, and process pool sizing reads Linux cgroup v2 cpu.max and cgroup v1 CFS quotas before os.availableParallelism()](#221-thread-worker-and-process-pool-sizing-reads-linux-cgroup-v2-cpumax-and-cgroup-v1-cfs-quotas-before-osavailableparallelism)
 222. [Prometheus alerting rules on SLO burn, queue age, and worker restarts, and full TypeScript type-checking across tests/](#222-prometheus-alerting-rules-on-slo-burn-queue-age-and-worker-restarts-and-full-typescript-type-checking-across-tests)
 223. [PowerPoint 4.0/95 import filter selection, outer layout table unwrapping in DOCX writer, structured document tag unwrapping in DOCX table rows, stage-deadline enforcement on Poppler multi-page chains, and OCR job deadline propagation in the corpus runner](#223-powerpoint-4095-import-filter-selection-outer-layout-table-unwrapping-in-docx-writer-structured-document-tag-unwrapping-in-docx-table-rows-stage-deadline-enforcement-on-poppler-multi-page-chains-and-ocr-job-deadline-propagation-in-the-corpus-runner)
+224. [A corpus file may list mirror addresses that are tried after its origin fails, with the same digest pin](#224-a-corpus-file-may-list-mirror-addresses-that-are-tried-after-its-origin-fails-with-the-same-digest-pin)
 
 Quality evidence
 
@@ -7283,3 +7284,16 @@ Security
 - **Alternatives rejected**: Falling back to single-threaded in-process `sharp` for multi-page `pdf -> avif` (measured slower than multi-threaded `avifenc` CLI on 100-page PDFs); leaving `deadlineMs` out of `bench/realworld/child.ts` (prevents `OcrWorkBudget` from capping work below `MAX_JOB_DEADLINE_MS`).
 - **Verified by**: `tests/office-legacy-import-filters.test.ts`, `tests/docx-writer-structure.test.ts`, `tests/realworld-corpus.test.ts`, `tests/realworld-output-check.test.ts`, and `tests/postscript-page-limit.test.ts`.
 - **Revisit when**: LibreOffice Writer resolves pagination stalls on multi-page nested `<w:tbl>` inside `<w:tc>`.
+
+## 224. A corpus file may list mirror addresses that are tried after its origin fails, with the same digest pin
+
+- **Status**: Implemented, decided 2026-11-11 (QA request: the nightly small parity job failed three nights on one sample); nothing is deployed. It refines entry 143.
+- **Decision**:
+  - **A `file` origin of `bench/corpus/remote-manifest.json` may carry `mirrors`, one to three https addresses** (`bench/corpora.ts`, `checkMirrors`). After the origin's own attempts fail with a fetch error (network error, timeout, 5xx, 429), the mirrors are tried in order. An address that has mirrors gets one retry instead of three, so a dead origin costs one pause and the whole chain stays bounded.
+  - **Every address is read the same way**: the size cap, the redirect rules of its own host (its own domain, or the hosts the set lists) and, afterwards, the pinned size and SHA-256 of the file. Bytes that differ are refused with `CorpusDigestError` and never stored; a mirror is a second place to read the pinned bytes, not a second pin.
+  - **The nine Project Gutenberg files whose live copy still has the pinned bytes list the original address as a mirror** (the web archive stays the origin). `book-pg84.epub` and `book-pg2701.epub` have no mirror: their live files were rebuilt and differ from the pinned digests.
+- **Why**: The connection to the web archive timed out on GitHub-hosted runners (`UND_ERR_CONNECT_TIMEOUT`, four attempts) while it answers from other networks in under two seconds, so `book-pg345.mobi`, the one file the cache had never held, failed the job each night. The files are cached by digest, so one successful fetch ends the problem.
+- **Trade-offs**: A mirror that was rebuilt is a failed address, not a failed benchmark, when another address has the bytes; when none has them, the run fails as before. The live Gutenberg address is rebuilt in place by its host (entry 143), so a mirror there can stop matching at any time; it is only a fallback and the digest decides.
+- **Alternatives rejected**: Making the live address the origin (it changes in place, entry 143); vendoring the files in the repository (entry 143 keeps public samples out); a longer connect timeout (the runner never connected within 4 attempts).
+- **Verified by**: `tests/bench-corpus-mirrors.test.ts` (origin success never asks a mirror, origin refused or 503 reads the mirror, a mirror with other bytes is refused and stores nothing, a mirror's redirect to another domain is refused, manifest validation of `mirrors`) and `tests/corpus-origins.test.ts` (every mirror of a web-archive file is the original address).
+- **Revisit when**: GitHub-hosted runners reach the web archive reliably, or a corpus host publishes versioned addresses.

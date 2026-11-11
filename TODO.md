@@ -24,6 +24,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Install the Redis backup timer on the host on or after 2026-12-08 (30-day notice of the new privacy text).
 
 ## Tests and CI
+- Re-pin `book-pg84.epub` and `book-pg2701.epub` to a fresh archived capture with a matching gutenberg.org mirror: their live files were rebuilt, so they have no mirror and depend on web.archive.org and the CI cache (entry 224).
 
 ## Later
 - Engine choice and version pinning per conversion.

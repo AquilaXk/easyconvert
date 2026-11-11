@@ -24,4 +24,19 @@ describe('the origins of the pinned corpus files', () => {
     expect(captures.length).toBeGreaterThan(0);
     for (const url of captures) expect(url, url).toMatch(/^https:\/\/web\.archive\.org\/web\/\d{14}id_\/https:\/\//);
   });
+
+  it('list the original address of a web-archive file only as a mirror, so the archive is always tried first', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'bench/corpus/remote-manifest.json'), 'utf8')) as unknown;
+    const mirrored = (node: unknown): Array<{ url: string; mirrors: string[] }> => {
+      if (Array.isArray(node)) return node.flatMap(mirrored);
+      if (node === null || typeof node !== 'object') return [];
+      const record = node as { url?: string; mirrors?: string[] };
+      return [...(record.mirrors === undefined ? [] : [{ url: record.url ?? '', mirrors: record.mirrors }]), ...Object.values(node).flatMap(mirrored)];
+    };
+    const found = mirrored(manifest);
+    expect(found.length).toBeGreaterThan(0);
+    for (const { url, mirrors } of found) {
+      expect(mirrors, url).toEqual([url.replace(/^https:\/\/web\.archive\.org\/web\/\d{14}id_\//, '')]);
+    }
+  });
 });
