@@ -182,6 +182,10 @@
       "match": "^scripts/install-verapdf\\.sh$"
     },
     {
+      "families": ["ocr"],
+      "match": "^scripts/install-onnx-ocr-models\\.sh$"
+    },
+    {
       "families": ["pdf-ops"],
       "match": "^src/lib/security/(helper-process|sandbox-launcher[^/]*)\\.ts$|^native/qpdf-runner/"
     },
