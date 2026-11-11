@@ -39,8 +39,12 @@ class EasyConvertClient:
         source_format: Optional[str] = None,
         options: Optional[Dict[str, Any]] = None,
         raw: bool = False,
+        respond_async: bool = False,
+        webhook_url: Optional[str] = None,
+        webhook_secret: Optional[str] = None,
     ) -> Union[Dict[str, Any], bytes]:
-        """Convert a file synchronously."""
+        """Convert a file. The answer is the result (bytes with raw=True), or, for a file over the
+        synchronous limit or with respond_async=True, the queued job as a dict with its statusUrl (also with raw)."""
         url = f"{self.base_url}/api/v1/convert{'?raw=true' if raw else ''}"
         files = {"file": (filename, file)}
         data: Dict[str, Any] = {"targetFormat": target_format}
@@ -48,14 +52,22 @@ class EasyConvertClient:
             data["sourceFormat"] = source_format
         if options:
             data["options"] = json.dumps(options)
+        if webhook_url:
+            data["webhookUrl"] = webhook_url
+        if webhook_secret:
+            data["webhookSecret"] = webhook_secret
 
         headers = {}
         if raw:
             headers["Accept"] = "application/octet-stream"
+        if respond_async:
+            headers["Prefer"] = "respond-async"
 
         resp = self.session.post(url, files=files, data=data, headers=headers, timeout=self.timeout)
         if not resp.ok:
             raise RuntimeError(f"Conversion failed ({resp.status_code}): {resp.text}")
+        if resp.status_code == 202:
+            return resp.json()
         if raw:
             return resp.content
         return resp.json()

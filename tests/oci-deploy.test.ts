@@ -415,7 +415,7 @@ describe('deploy workflow', () => {
   const workflow = parse(text) as {
     on: { push: { branches: string[]; paths: string[] }; workflow_dispatch: { inputs: Record<string, unknown> } };
     permissions: Record<string, string>;
-    jobs: Record<string, { 'runs-on': unknown; environment?: string; if?: string; permissions?: Record<string, string>; 'timeout-minutes'?: number; steps: Array<{ name?: string; uses?: string; run?: string; env?: Record<string, string>; with?: Record<string, string>; if?: string }> }>;
+    jobs: Record<string, { 'runs-on': unknown; needs?: string | string[]; environment?: string; if?: string; permissions?: Record<string, string>; 'timeout-minutes'?: number; steps: Array<{ id?: string; name?: string; uses?: string; run?: string; env?: Record<string, string>; with?: Record<string, string>; if?: string }> }>;
   };
 
   it('pins every action to a full commit hash with its version in a comment', () => {
@@ -458,7 +458,7 @@ describe('deploy workflow', () => {
         const negated = glob.startsWith('!');
         return pattern(negated ? glob.slice(1) : glob).test(file) ? !negated : included;
       }, false);
-    for (const file of ['Dockerfile.worker', 'tsconfig.json', 'postcss.config.mjs', 'tailwind.config.ts', 'THIRD_PARTY_NOTICES.md', 'src/app/page.tsx', 'docker/imagemagick/policy.xml', '.github/workflows/deploy-oci.yml', '.dockerignore', 'deploy/oci/deploy.sh', 'docker-compose.prod.yml']) {
+    for (const file of ['Dockerfile.worker', 'tsconfig.json', 'postcss.config.mjs', 'tailwind.config.ts', 'THIRD_PARTY_NOTICES.md', 'src/app/page.tsx', 'docker/imagemagick/policy.xml', '.github/workflows/deploy-oci.yml', '.dockerignore', 'deploy/oci/deploy.sh', 'docker-compose.prod.yml', 'docs/legal/privacy.en.md', 'docs/legal/terms.ko.md', 'docs/legal/SOURCES.md']) {
       expect(triggers(file), file).toBe(true);
     }
     for (const file of ['docs/deploy-oci.md', 'tests/oci-deploy.test.ts', 'README.md', 'native/qpdf-runner/README.md', 'CHANGELOG.md']) {
@@ -485,7 +485,7 @@ describe('deploy workflow', () => {
     expect(holders[0].run).toContain('deploy.sh filter-env');
     expect(holders[0].run).toContain('umask 077');
     expect(holders[0].run).not.toMatch(/\becho\b[^\n]*\$EASYCONVERT_ENV/);
-    expect(text.match(/secrets\.[A-Z_]+/g)?.sort()).toEqual(['secrets.EASYCONVERT_ENV', 'secrets.GITHUB_TOKEN', 'secrets.GITHUB_TOKEN']);
+    expect(text.match(/secrets\.[A-Z_]+/g)?.sort()).toEqual(['secrets.EASYCONVERT_ENV', 'secrets.GITHUB_TOKEN', 'secrets.GITHUB_TOKEN', 'secrets.GITHUB_TOKEN', 'secrets.GITHUB_TOKEN']);
     expect(steps.at(-1)?.run).toContain('rm -f');
   });
 
@@ -496,34 +496,76 @@ describe('deploy workflow', () => {
     expect(runs).toContain('deploy.sh rollback');
   });
 
-  it('pushes the web image only after it started with the production container flags', () => {
+  it('pushes the web image only after the worker image and then the web image started with the production container flags', () => {
     const steps = workflow.jobs.build.steps;
     const build = steps.findIndex((step) => step.with?.file === 'Dockerfile.web');
+    const bootWorker = steps.findIndex((step) => step.run?.includes('scripts/boot-worker-image.sh'));
     const boot = steps.findIndex((step) => step.run?.includes('scripts/boot-web-image.sh'));
     const push = steps.findIndex((step) => /docker push --quiet "\$WEB_REPO:sha-\$GITHUB_SHA"/.test(step.run ?? ''));
     expect(String(steps[build].with?.load)).toBe('true');
     expect(String(steps[build].with?.push)).toBe('false');
     expect(steps[boot].run).toBe('bash scripts/boot-web-image.sh "$WEB_REPO:sha-$GITHUB_SHA"');
+    expect(steps[bootWorker].run).toBe('bash scripts/boot-worker-image.sh "$WORKER_REPO@$WORKER_DIGEST"');
+    expect(bootWorker).toBeGreaterThan(steps.findIndex((step) => step.with?.file === 'Dockerfile.worker'));
+    expect(bootWorker).toBeLessThan(push);
     expect(build).toBeLessThan(boot);
     expect(boot).toBeLessThan(push);
-    expect(steps[push].run).toContain('docker push --quiet "$WEB_REPO:main"');
+    expect(steps[push].run).not.toContain(':main');
   });
 
-  it('tags the worker image main only after the web image built on it started', () => {
-    const steps = workflow.jobs.build.steps;
-    const worker = steps.findIndex((step) => step.with?.file === 'Dockerfile.worker');
-    const boot = steps.findIndex((step) => step.run?.includes('scripts/boot-web-image.sh'));
-    const tagMain = steps.findIndex((step) => (step.run ?? '').includes('"$WORKER_REPO:main"'));
-    expect(steps[worker].with?.tags).not.toContain(':main');
-    expect(boot).toBeLessThan(tagMain);
+  it('labels both images with their commit, which is how the deploy gate finds the commit an image was built from', () => {
+    for (const file of ['Dockerfile.worker', 'Dockerfile.web']) {
+      const step = workflow.jobs.build.steps.find((candidate) => candidate.with?.file === file);
+      expect(String(step?.with?.labels).trim(), file).toBe('org.opencontainers.image.revision=${{ github.sha }}');
+    }
   });
 
-  describe('the worker main tag against a registry that keeps digests', () => {
+  it('names main in no step of the build job: only the promote job does, after the CI check of the commit succeeded', () => {
+    const build = JSON.stringify(workflow.jobs.build.steps);
+    expect(build).not.toMatch(/[:/]main\b|imagetools create/);
+    const promote = workflow.jobs.promote;
+    expect(promote.needs).toBe('build');
+    expect(promote.if).toBe("github.event_name == 'push'");
+    expect(promote.permissions).toEqual({ contents: 'read', packages: 'write', checks: 'read' });
+    const names = promote.steps.map((step) => step.name);
+    const wait = promote.steps.findIndex((step) => step.run === 'bash scripts/ci-commit-gate.sh wait "$GITHUB_SHA"');
+    const tag = promote.steps.findIndex((step) => (step.run ?? '').includes('imagetools create'));
+    expect(wait).toBeGreaterThan(-1);
+    expect(tag).toBeGreaterThan(wait);
+    expect(names).toContain('Check that the main tags name the digests');
+    const newer = promote.steps.find((step) => step.id === 'newer');
+    expect(newer?.run).toContain('git fetch --no-tags origin main');
+    expect(newer?.run).toContain('bash scripts/ci-commit-gate.sh current-main "$WEB_REPO")"');
+    expect(newer?.run).not.toContain('|| true');
+    expect(newer?.run?.indexOf('git fetch')).toBeLessThan(newer?.run?.indexOf('is-behind') ?? -1);
+    for (const step of promote.steps.filter((candidate) => /imagetools (create|inspect)/.test(candidate.run ?? ''))) {
+      expect(step.if, step.name).toBe("steps.newer.outputs.skip != 'true'");
+    }
+  });
+
+  it('lets a deploy go only through a gate that requires the CI check of the commit of the image, and checks out that commit', () => {
+    const { gate, deploy } = workflow.jobs;
+    expect(gate.if).toContain("github.event_name == 'workflow_dispatch'");
+    expect(gate.permissions).toEqual({ contents: 'read', packages: 'read', checks: 'read' });
+    const check = gate.steps.find((step) => step.id === 'commit');
+    expect(check?.run).toContain('scripts/ci-commit-gate.sh deploy-commit "$WEB_REPO" "$WORKER_REPO" "$IMAGE_REF"');
+    expect(check?.if).toBe("inputs.action == 'deploy'");
+    expect(deploy.needs).toBe('gate');
+    const checkout = deploy.steps.find((step) => step.uses?.startsWith('actions/checkout@'));
+    expect(checkout?.with?.ref).toBe('${{ needs.gate.outputs.commit }}');
+    expect(deploy.steps.indexOf(checkout as never)).toBe(0);
+    const run = deploy.steps.find((step) => /deploy\.sh deploy/.test(step.run ?? ''));
+    expect(run?.env?.IMAGE_REF).toBe('sha-${{ needs.gate.outputs.commit }}');
+  });
+
+  describe('the main tags against a registry that keeps digests', () => {
     const WORKER_REPO = 'ghcr.io/aquilaxk/easyconvert-worker';
+    const WEB_REPO = 'ghcr.io/aquilaxk/easyconvert-web';
     const WORKER_DIGEST = `sha256:${'a'.repeat(64)}`;
-    const steps = workflow.jobs.build.steps;
+    const WEB_DIGEST = `sha256:${'c'.repeat(64)}`;
+    const steps = workflow.jobs.promote.steps;
     const tagMain = steps.findIndex((step) => /imagetools create\b/.test(step.run ?? ''));
-    const checkMain = steps.findIndex((step) => /imagetools inspect\b[^\n]*"\$WORKER_REPO:main"/.test(step.run ?? ''));
+    const checkMain = steps.findIndex((step) => /imagetools inspect\b[^\n]*"\$repo:main"/.test(step.run ?? ''));
     const sandboxes: string[] = [];
     let registry: string;
     let bin: string;
@@ -565,26 +607,40 @@ esac
     const runSteps = (indexes: number[]) =>
       spawnSync('bash', ['-c', indexes.map((index) => `(set -euo pipefail\n${steps[index].run})`).join(' && ')], {
         encoding: 'utf-8',
-        env: { PATH: `${bin}:${process.env.PATH ?? ''}`, STUB_REGISTRY: registry, WORKER_REPO, WORKER_DIGEST } as unknown as NodeJS.ProcessEnv,
+        env: {
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          STUB_REGISTRY: registry,
+          WORKER_REPO,
+          WORKER_DIGEST,
+          WEB_REPO,
+          WEB_DIGEST,
+          GITHUB_SHA: 'f'.repeat(40),
+          GITHUB_STEP_SUMMARY: path.join(registry, 'summary.md'),
+        } as unknown as NodeJS.ProcessEnv,
         timeout: 10_000,
       });
-    const mainDigest = (): string => readFileSync(path.join(registry, `${WORKER_REPO}:main`.replace(/[/:@]/g, '_')), 'utf-8').trim();
+    const mainDigest = (repo: string): string => readFileSync(path.join(registry, `${repo}:main`.replace(/[/:@]/g, '_')), 'utf-8').trim();
 
-    it('points main at the digest of the worker image the web image was built on, and checks it right after', () => {
+    it('points main of both images at the digests that were built, and checks it right after', () => {
       expect(checkMain).toBe(tagMain + 1);
       const result = runSteps([tagMain, checkMain]);
       expect(result.stderr).toBe('');
       expect(result.status).toBe(0);
-      expect(mainDigest()).toBe(WORKER_DIGEST);
+      expect(mainDigest(WORKER_REPO)).toBe(WORKER_DIGEST);
+      expect(mainDigest(WEB_REPO)).toBe(WEB_DIGEST);
     });
 
-    it('fails the build when main names another digest after the tag', () => {
+    it.each([
+      ['worker', WORKER_REPO, WORKER_DIGEST],
+      ['web', WEB_REPO, WEB_DIGEST],
+    ])('fails the job when main of the %s image names another digest after the tag', (_name, repo, digest) => {
+      expect(runSteps([tagMain]).status).toBe(0);
       const other = `sha256:${'b'.repeat(64)}`;
-      writeFileSync(path.join(registry, `${WORKER_REPO}:main`.replace(/[/:@]/g, '_')), `${other}\n`);
+      writeFileSync(path.join(registry, `${repo}:main`.replace(/[/:@]/g, '_')), `${other}\n`);
       expect(checkMain).toBeGreaterThan(tagMain);
       const result = runSteps([checkMain]);
       expect(result.status).not.toBe(0);
-      expect(result.stdout).toContain(`::error::${WORKER_REPO}:main names "${other}", not the worker image ${WORKER_DIGEST}`);
+      expect(result.stdout).toContain(`::error::${repo}:main names "${other}", not the image ${digest}`);
     });
   });
 
