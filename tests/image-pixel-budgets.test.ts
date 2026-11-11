@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import sharp from 'sharp';
 import { convertImage } from '../src/lib/conversions/image';
+import { quantizeImage } from '../src/lib/conversions/color-quantizer';
 import {
   GIF_PHOTO_PIXEL_BUDGET,
   HDR_FLOAT_PIXEL_BUDGET,
@@ -107,6 +108,39 @@ describe('palette quantizers refuse pictures that would not fit the job memory s
     const colours = new Set<string>();
     for (let i = 0; i < data.length; i += info.channels) colours.add(data.subarray(i, i + info.channels).toString('hex'));
     expect(colours.size).toBeLessThanOrEqual(4);
+  });
+});
+
+describe('the quantizer budgets are judged on the picture that is written, before it is decoded', () => {
+  /** A 100 x 100 source scaled to 10000 x 10000 (100 MP, the output limit): 400 MB as RGBA, which the gate must not read. */
+  const scaledUp = { width: SCALED_UP_SIDE, height: SCALED_UP_SIDE, fit: 'fill' as const };
+  const SCALED_REJECTION_RSS_BYTES = 200 * BYTES_PER_MIB;
+  const targets: Array<[string, string, Record<string, unknown>]> = [
+    ['png', 'Oklab', { quantizer: 'oklab' }],
+    ['png', 'Riemersma', { ditherMethod: 'riemersma', colorDepth: 8 }],
+    ['gif', 'Oklab', { quantizer: 'oklab' }],
+    ['gif', 'blue-noise', { ditherMethod: 'blue-noise' }],
+  ];
+
+  it.each(targets)('refuses a small source scaled to 100 MP for %s output with %s quantization before it is decoded', async (target, _label, options) => {
+    const source = await sharp({ create: { width: 100, height: 100, channels: 3, background: { r: 30, g: 120, b: 200 } } }).png().toBuffer();
+    const rssBefore = process.memoryUsage().rss;
+    let error: unknown;
+    try {
+      await convertImage(source, target, { ...options, ...scaledUp }, 'small.png', 'png');
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(InputPixelLimitError);
+    expect(error).toMatchObject({ limit: EXPECTED_QUANTIZER_LIMIT, width: SCALED_UP_SIDE, height: SCALED_UP_SIDE });
+    expect(process.memoryUsage().rss - rssBefore).toBeLessThan(SCALED_REJECTION_RSS_BYTES);
+  });
+
+  it('refuses a raster over the budget inside quantizeImage, whoever calls it', () => {
+    const over = (width: number, height: number, dither: 'none' | 'floyd-steinberg'): (() => unknown) => () =>
+      quantizeImage(new Uint8Array(width * height * 4), width, height, 256, { dither });
+    expect(over(17_000, 1_000, 'floyd-steinberg')).toThrow(InputPixelLimitError);
+    expect(over(100_000, 1_001, 'none')).toThrow(InputPixelLimitError);
   });
 });
 

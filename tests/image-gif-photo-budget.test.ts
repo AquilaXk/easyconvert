@@ -54,10 +54,25 @@ describe('the GIF of a photograph at the in-process budget', () => {
     expect(encodeGifCalls.count).toBe(0);
     expect(result.buffer.subarray(0, 3).toString('latin1')).toBe('GIF');
   }, CONVERSION_TIMEOUT_MS);
+});
 
-  it('measures the size before a resize, which cannot make the picture larger for the quantizer', async () => {
-    const result = await convertFile(await photoOf(1200, 1000), 'png', 'gif', { width: 600 }, 'photo.png');
+describe('the budget is judged on the size the picture is written at', () => {
+  beforeEach(() => {
+    encodeGifCalls.count = 0;
+  });
+
+  it('sends a small source resized past the budget to the image library', async () => {
+    const source = await photoOf(200, 200);
+    const result = await convertFile(source, 'png', 'gif', { width: 1500, height: 1000, fit: 'fill' }, 'photo.png');
     expect(encodeGifCalls.count).toBe(0);
-    expect(result.buffer.subarray(0, 3).toString('latin1')).toBe('GIF');
+    const meta = await sharp(result.buffer).metadata();
+    expect([meta.width, meta.height]).toEqual([1500, 1000]);
+  }, CONVERSION_TIMEOUT_MS);
+
+  it('writes a large source reduced under the budget in process', async () => {
+    const source = await photoOf(1400, 1000);
+    const result = await convertFile(source, 'png', 'gif', { width: 700 }, 'photo.png');
+    expect(encodeGifCalls.count).toBe(1);
+    expect((await sharp(result.buffer).metadata()).width).toBe(700);
   }, CONVERSION_TIMEOUT_MS);
 });
