@@ -212,6 +212,20 @@ export function unclipBox<T extends Omit<RotatedBox, 'score'>>(box: T, ratio: nu
   return { ...box, width: box.width + 2 * distance, height: box.height + 2 * distance };
 }
 
+/**
+ * Margin added to each end of a line's box before the recognizer reads it, as a share of the box height. The detector's box is the text
+ * region enlarged by the reference's unclip rule, and at the product's detector size it often ends at or inside the last mark of a line: a full
+ * stop is a few pixels of ink at the very end, and a strip cut through it, or with no background after it, makes the recognizer emit nothing
+ * for it (a page of five Korean sentences, one to a line, lost all five final periods; see policy decision 246). The recognizer is trained on
+ * strips with background on both sides, so the strip gets some. The layout (rows, columns) still uses the detector's own box.
+ */
+export const ONNX_LINE_END_MARGIN_SHARE = 0.3;
+
+/** The box with ONNX_LINE_END_MARGIN_SHARE of its height added at both ends of its length (the centre, height, angle and score stay). */
+export function widenLineEnds(box: RotatedBox): RotatedBox {
+  return { ...box, width: box.width + 2 * ONNX_LINE_END_MARGIN_SHARE * box.height };
+}
+
 function boxCorners(box: Omit<RotatedBox, 'score'>): [number, number][] {
   const cos = Math.cos(box.angle);
   const sin = Math.sin(box.angle);
@@ -392,15 +406,8 @@ export function decodeCtc(
   return { text: chars.map((c) => c.char).join(''), confidence, chars, steps };
 }
 
-/**
- * Inserts a space between two characters when the recognizer put a tenth of its probability on a space between them, or
- * a thirtieth of that and the strip also has an ink-free gap there (at least a quarter of the strip height and 2.4 times
- * the strip's median blank run, since a typeface that spaces its syllables widely has wide gaps inside words too).
- * `strip` is the planar strip `cropLine` made; a column is ink when two of its pixels are, so a lone speckle does not
- * close a gap. The two levels were chosen on the measurement set (see the policy entry), not on the test pages.
- */
-export function recoverSpaces(line: DecodedLine, strip: Float32Array, width: number): DecodedLine {
-  if (line.chars.length < 2) return line;
+/** Number of ink pixels in each column of a planar strip: a pixel is ink when its grey level is in the darker part of the strip's own range. */
+function darkPixelsPerColumn(strip: Float32Array, width: number): number[] {
   const plane = RECOGNIZER_HEIGHT * width;
   const grey = new Float32Array(plane);
   let low = Infinity;
@@ -411,12 +418,58 @@ export function recoverSpaces(line: DecodedLine, strip: Float32Array, width: num
     if (grey[i] > high) high = grey[i];
   }
   const midpoint = high - GAP_INK_LEVEL * (high - low);
-  const ink: boolean[] = [];
+  const counts: number[] = [];
   for (let x = 0; x < width; x++) {
     let dark = 0;
     for (let y = 0; y < RECOGNIZER_HEIGHT; y++) if (grey[y * width + x] < midpoint) dark++;
-    ink.push(dark >= GAP_INK_COLUMN_PIXELS);
+    counts.push(dark);
   }
+  return counts;
+}
+
+/** A column of the strip is a rule (the border of a table cell, the edge of a box) when this share of its pixels is ink. */
+const RULE_COLUMN_SHARE = 0.8;
+
+/**
+ * Blanks the strip, in place, from the first rule in each of its two end margins (the ONNX_LINE_END_MARGIN_SHARE of the strip height that
+ * `widenLineEnds` added) to the strip's end, to the strip's paper level. The margin exists to show the recognizer the background after a full stop;
+ * where the neighbouring cell's border stands in it the recognizer read the border as a character (`|`), and a bordered table lost 13% on one page.
+ * A full stop, a comma or a bracket is not a rule: a rule is ink over four fifths of the strip's height.
+ */
+export function blankBeyondRules(strip: Float32Array, width: number): void {
+  const margin = Math.round(ONNX_LINE_END_MARGIN_SHARE * RECOGNIZER_HEIGHT);
+  if (margin < 1 || width <= 2 * margin) return;
+  const counts = darkPixelsPerColumn(strip, width);
+  const isRule = (x: number): boolean => counts[x] >= RULE_COLUMN_SHARE * RECOGNIZER_HEIGHT;
+  let leftRule = -1;
+  for (let x = margin - 1; x >= 0 && leftRule < 0; x--) if (isRule(x)) leftRule = x;
+  let rightRule = -1;
+  for (let x = width - margin; x < width && rightRule < 0; x++) if (isRule(x)) rightRule = x;
+  if (leftRule < 0 && rightRule < 0) return;
+  const plane = RECOGNIZER_HEIGHT * width;
+  for (let channel = 0; channel < 3; channel++) {
+    // The paper level of the channel: the median of every seventh pixel.
+    const sample: number[] = [];
+    for (let i = 0; i < plane; i += 7) sample.push(strip[channel * plane + i]);
+    const paper = sample.sort((a, b) => a - b)[sample.length >> 1];
+    for (let y = 0; y < RECOGNIZER_HEIGHT; y++) {
+      const row = channel * plane + y * width;
+      if (leftRule >= 0) strip.fill(paper, row, row + leftRule + 1);
+      if (rightRule >= 0) strip.fill(paper, row + rightRule, row + width);
+    }
+  }
+}
+
+/**
+ * Inserts a space between two characters when the recognizer put a tenth of its probability on a space between them, or
+ * a thirtieth of that and the strip also has an ink-free gap there (at least a quarter of the strip height and 2.4 times
+ * the strip's median blank run, since a typeface that spaces its syllables widely has wide gaps inside words too).
+ * `strip` is the planar strip `cropLine` made; a column is ink when two of its pixels are, so a lone speckle does not
+ * close a gap. The two levels were chosen on the measurement set (see the policy entry), not on the test pages.
+ */
+export function recoverSpaces(line: DecodedLine, strip: Float32Array, width: number): DecodedLine {
+  if (line.chars.length < 2) return line;
+  const ink = darkPixelsPerColumn(strip, width).map((dark) => dark >= GAP_INK_COLUMN_PIXELS);
   const runs: { start: number; end: number }[] = [];
   for (let x = 0, start = -1; x <= width; x++) {
     const blank = x < width && !ink[x];
@@ -505,8 +558,12 @@ function enclosing(points: [number, number][]): { x: number; y: number; width: n
   return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
 }
 
-/** Builds the line block of one recognized box: words with their own boxes, the baseline along the box's lower edge. */
-export function buildLineBlock(box: RotatedBox, line: DecodedLine, imageWidth: number, imageHeight: number): OcrLineBlock | null {
+/**
+ * Builds the line block of one recognized box: words with their own boxes, the baseline along the box's lower edge. `box` is the strip the
+ * line was read from, which `widenLineEnds` made longer than the detector's box; the line's own box, baseline and row height are those of
+ * `layoutBox` (the detector's), so that the reading order does not depend on the margin.
+ */
+export function buildLineBlock(box: RotatedBox, line: DecodedLine, imageWidth: number, imageHeight: number, layoutBox: RotatedBox = box): OcrLineBlock | null {
   const spans = wordSpans(line).filter((w) => w.text.length > 0);
   if (spans.length === 0) return null;
   const clampBox = (b: { x: number; y: number; width: number; height: number }) => {
@@ -526,17 +583,17 @@ export function buildLineBlock(box: RotatedBox, line: DecodedLine, imageWidth: n
       ])
     ),
   }));
-  const [x0, y0] = pointAlong(box, 0, 0.5);
-  const [x1, y1] = pointAlong(box, 1, 0.5);
-  const lineBox = clampBox(enclosing(boxCorners(box)));
+  const [x0, y0] = pointAlong(layoutBox, 0, 0.5);
+  const [x1, y1] = pointAlong(layoutBox, 1, 0.5);
+  const lineBox = clampBox(enclosing(boxCorners(layoutBox)));
   const block: OcrLineBlock = {
     text: words.map((w) => w.text).join(' '),
     bbox: lineBox,
     words,
     baseline: { x0, y0, x1, y1 },
-    rowHeight: box.height,
+    rowHeight: layoutBox.height,
   };
-  const degrees = (box.angle * 180) / Math.PI;
+  const degrees = (layoutBox.angle * 180) / Math.PI;
   if (Math.abs(degrees) > 0.05) block.angleDegrees = degrees;
   return block;
 }
@@ -727,7 +784,12 @@ export async function recognizeOnnxInput(input: OnnxPageInput, options: OnnxOcrO
   }
 
   // Recognizer: lines grouped by width so that a batch pads little.
-  const crops = boxes.map((box) => ({ box, ...cropLine(rgb, width, height, box) }));
+  const reads = boxes.map(widenLineEnds);
+  const crops = reads.map((box) => {
+    const crop = cropLine(rgb, width, height, box);
+    blankBeyondRules(crop.data, crop.width);
+    return crop;
+  });
   const order = crops.map((_, i) => i).sort((a, b) => crops[a].width - crops[b].width);
   const lines = new Map<number, DecodedLine>();
   for (let start = 0; start < order.length; start += RECOGNIZER_BATCH) {
@@ -763,7 +825,7 @@ export async function recognizeOnnxInput(input: OnnxPageInput, options: OnnxOcrO
   const rows = setInColumns(boxes, width) ? items.map((item) => [item]) : groupRows(items);
   for (const row of rows) {
     const parts = row
-      .map((item) => buildLineBlock(item.box, lines.get(item.index) as DecodedLine, width, height))
+      .map((item) => buildLineBlock(reads[item.index], lines.get(item.index) as DecodedLine, width, height, item.box))
       .filter((block): block is OcrLineBlock => block !== null);
     if (parts.length === 0) continue;
     lineBlocks.push(

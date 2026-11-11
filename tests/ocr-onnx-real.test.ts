@@ -60,6 +60,23 @@ describe.skipIf(modelsMissing)('the ONNX Korean engine with the real models', ()
     expect(page.result.language).toBe('kor');
   }, TIMEOUT_MS);
 
+  it('keeps the full stop that ends each line of a page of short sentences', async () => {
+    // Production dropped the last character of every such line: the detector's box ended at the last syllable or inside the full stop.
+    const lines = truth('ko_lines').trim().split('\n');
+    const page = await recognizePage(fs.readFileSync(path.join(FIXTURES, 'ko_lines__clean.png')), 'kor', { detectOrientation: false });
+    expect(page.enginePath).toBe('onnx');
+    expect(page.result.lines).toHaveLength(lines.length);
+    expect(page.result.lines?.map((line) => line.trim().slice(-1))).toEqual(lines.map(() => '.'));
+    expect(characterError(truth('ko_lines'), page.result.text)).toBeLessThan(0.02);
+  }, TIMEOUT_MS);
+
+  it('keeps the final stops and the order of the lines of that page turned by 3 degrees', async () => {
+    const lines = truth('ko_lines').trim().split('\n');
+    const page = await recognizePage(fs.readFileSync(path.join(FIXTURES, 'ko_lines__skew3.png')), 'kor', { detectOrientation: false });
+    expect(page.result.lines?.map((line) => line.trim().slice(-1))).toEqual(lines.map(() => '.'));
+    expect(characterError(truth('ko_lines'), page.result.text)).toBeLessThan(0.02);
+  }, TIMEOUT_MS);
+
   it('reads a page turned by 3 degrees in the order of its lines', async () => {
     const page = await recognizePage(image('skew3'), 'kor', { detectOrientation: false });
     expect(page.enginePath).toBe('onnx');

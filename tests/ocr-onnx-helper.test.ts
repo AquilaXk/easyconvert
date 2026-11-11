@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   checkedResult,
   onnxHelperPlan,
@@ -235,9 +235,13 @@ describe('the helper pool, with a stand-in helper program', () => {
     const pool = makePool('hang', { pageTimeoutMs: 10_000 });
     const controller = new AbortController();
     const reading = pool.read(page(), { language: 'kor', signal: controller.signal });
-    setTimeout(() => controller.abort(new Error('the job was cancelled')), 100);
+    // Abort once the page is sent, not while the helper starts: an abort before the page leaves the helper for the next page.
+    await vi.waitFor(() => expect(pool.size).toBe(1));
+    const [helper] = (pool as unknown as { helpers: Set<{ waiting: unknown }> }).helpers;
+    await vi.waitFor(() => expect(helper.waiting).not.toBeNull(), { timeout: 10_000 });
+    controller.abort(new Error('the job was cancelled'));
     await expect(reading).rejects.toThrow('the job was cancelled');
-    expect(pool.size).toBe(0);
+    await vi.waitFor(() => expect(pool.size).toBe(0));
   });
 
   it('does not start when the signal is already aborted', async () => {
