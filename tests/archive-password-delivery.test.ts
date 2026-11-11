@@ -44,6 +44,10 @@ import { oracleTest } from './helpers/oracle-test';
 import { OracleToolMissingError, getOracleToolPath } from './helpers/differential-oracle';
 import { buildStoredRar4 } from './helpers/rar4-stored';
 import { buildEncryptedRar5 } from './helpers/rar5-encrypted';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 232).
+runWithoutFileConfinement();
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
 const ENGINE_TEST_TIMEOUT_MS = 60_000;

@@ -12,6 +12,7 @@ import {
   EngineUnavailableError,
 } from '../../types';
 import {
+  OFFICE_PIPE_DIR,
   rethrowSandboxUnavailable,
   executeSandboxedBinary,
   SandboxedProcessError,
@@ -318,6 +319,7 @@ export async function convertToPdfA(
           timeoutMs: SOFFICE_TIMEOUT_MS,
           cwd: workDir,
           workDir,
+          socketDirs: [OFFICE_PIPE_DIR],
           env: { HOME: workDir, TMPDIR: workDir, SAL_USE_VCLPLUGIN: 'svp' },
           networkIsolated: true,
         }

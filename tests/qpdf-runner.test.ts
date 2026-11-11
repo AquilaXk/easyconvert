@@ -76,7 +76,7 @@ function childrenOf(pid: number): number[] {
 }
 
 /** A request frame written field by field, with none of the checks `encodeRun` makes, for the refusals the runner must make on its own. */
-function rawRun(id: number, fields: { cwd?: string; workDir?: string; confine?: number; argv?: string[]; env?: string[]; stdin?: Buffer }): Buffer {
+function rawRun(id: number, fields: { cwd?: string; workDir?: string; readPath?: string; confine?: number; argv?: string[]; env?: string[]; stdin?: Buffer }): Buffer {
   const u32be = (value: number): Buffer => Buffer.from([value >>> 24, (value >>> 16) & 255, (value >>> 8) & 255, value & 255]);
   const u64be = (value: number): Buffer => {
     const out = Buffer.alloc(8);
@@ -96,6 +96,7 @@ function rawRun(id: number, fields: { cwd?: string; workDir?: string; confine?: 
     u32be(fields.confine ?? 0), // the confinement of the files
     str(fields.cwd ?? '/tmp'),
     str(fields.workDir ?? ''),
+    str(fields.readPath ?? ''),
     u32be(argv.length),
     ...argv.map(str),
     u32be(env.length),
@@ -120,7 +121,7 @@ const alive = (pid: number): boolean => {
   }
 };
 
-const REQUEST = { timeoutMs: 1000, maxOutput: 1000, limitAsBytes: 0, limitFsizeBytes: 0, limitCpuSeconds: 0, confine: 0, cwd: '/tmp', workDir: '', argv: ['qpdf', 'echo-stdin'], env: ['A=1'], stdin: Buffer.alloc(0) };
+const REQUEST = { timeoutMs: 1000, maxOutput: 1000, limitAsBytes: 0, limitFsizeBytes: 0, limitCpuSeconds: 0, confine: 0, cwd: '/tmp', workDir: '', readPath: '', argv: ['qpdf', 'echo-stdin'], env: ['A=1'], stdin: Buffer.alloc(0) };
 
 beforeAll(async () => {
   scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'qpdf-runner-test-'));
@@ -320,7 +321,10 @@ describe.skipIf(compilerMissing)('the qpdf runner', () => {
       expect(fs.readFileSync(secret, 'utf8')).toBe('another job document');
       // `workDir: null` is a job that touches no file of its own: it cannot make one either.
       expect(lines((await run(['files', secret, own], { workDir: null })).stdout)).toContain('create own: Permission denied');
-      expect(qpdfRunnerState().ran - ranBefore).toBe(3);
+      // One input file may be named to read, as the PDF operations of the product do: that file and nothing else of the other job.
+      const withInput = lines((await run(['files', secret, own], { workDir: null, readDirs: [secret] })).stdout);
+      expect(withInput.slice(0, 3)).toEqual(['read other: ok', 'write other: Permission denied', 'truncate other: Permission denied']);
+      expect(qpdfRunnerState().ran - ranBefore).toBe(4);
     });
 
     it('under STRICT_SANDBOX runs a confined job in the runner and refuses a job that names no work directory', async () => {

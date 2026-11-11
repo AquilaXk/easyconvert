@@ -1,6 +1,6 @@
 // pid-init: runs a program in a PID namespace of its own, with the program as PID 2 and this code as PID 1.
 //
-//   pid-init [--keep-proc] [--confine [--require] [--write <dir>]... [--read <dir>]...] -- <program> [argument...]
+//   pid-init [--keep-proc] [--confine [--require] [--write <dir>]... [--read <dir>]... [--sockets <dir>]...] -- <program> [argument...]
 //   pid-init --no-pid-namespace [--keep-proc] [--confine ...] -- <program> [argument...]
 //   pid-init --check [--confine]
 //
@@ -55,7 +55,8 @@
 // removed and truncated (truncate(2) is not an open for writing). An older kernel cannot confine the files that way: with `--require` the
 // program is not started (125, and `pid-init: cannot confine: <reason>` on the standard error), without it the program runs under the
 // /proc ruleset above, after a line that starts `pid-init: files not confined:`. `--check --confine` exits 0 when this host can make and
-// enforce that ruleset and 3 when it cannot.
+// enforce that ruleset and 3 when it cannot. `--sockets <dir>` (repeatable) also lets the program make and remove sockets below <dir> (and remove the
+// files there, which no right can tell from sockets), for a program that binds a socket at a place it cannot choose.
 //
 // Exit status: that of the program; 127 when it is not found and 126 when it cannot be run (as a shell and `unshare` say); 125 when the
 // namespace cannot be made or, with `--require`, the files cannot be confined.
@@ -95,6 +96,8 @@
 #define LANDLOCK_ACCESS_FS_WRITE_FILE (1ULL << 1)
 #define LANDLOCK_ACCESS_FS_READ_FILE (1ULL << 2)
 #define LANDLOCK_ACCESS_FS_READ_DIR (1ULL << 3)
+#define LANDLOCK_ACCESS_FS_REMOVE_FILE (1ULL << 5)
+#define LANDLOCK_ACCESS_FS_MAKE_SOCK (1ULL << 9)
 #define LANDLOCK_ACCESS_FS_REFER (1ULL << 13)
 #define LANDLOCK_ACCESS_FS_TRUNCATE (1ULL << 14)
 /* Every file right of Landlock version 3 (bits 0 to 14: execute, write, read, list, remove, make, refer, truncate). */
@@ -103,6 +106,10 @@
 #define LANDLOCK_ACCESS_FS_FILE_RIGHTS (LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_TRUNCATE)
 /* What a confined program gets of the system, of /dev, and of its own /proc entries. */
 #define CONFINE_READ_ACCESS (LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR)
+/* What `--sockets` adds below a directory, for a program that must bind a socket at a place it cannot choose (LibreOffice binds its single-instance
+   pipe at /tmp/OSL_PIPE_<uid>_<name>, whatever TMPDIR says, and removes it when it ends; a second run with the same profile fails without the removal).
+   Rights cannot be limited to a name, so the program may also remove other files below the directory; it can neither read nor write them. */
+#define SOCKET_ACCESS (LANDLOCK_ACCESS_FS_MAKE_SOCK | LANDLOCK_ACCESS_FS_REMOVE_FILE)
 #define CONFINE_DEVICE_ACCESS (LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_READ_DIR | LANDLOCK_ACCESS_FS_TRUNCATE)
 #define LANDLOCK_RULE_PATH_BENEATH 1
 /* The first descriptor number the kept /proc entries take when they stay in the program (--no-pid-namespace). */
@@ -128,9 +135,11 @@ struct confinement {
   int write_count;
   const char *read_dirs[CONFINE_DIRS_MAX];
   int read_count;
+  const char *socket_dirs[CONFINE_DIRS_MAX];
+  int socket_count;
 };
 /* The parts of the system a confined program reads and runs from. Anything not listed is not the program's: /shared, /tmp, /home, /app, /root, /srv, /mnt. */
-static const char *const CONFINE_SYSTEM_PATHS[] = {"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/opt", "/sys", "/var/cache", "/var/lib"};
+static const char *const CONFINE_SYSTEM_PATHS[] = {"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/opt", "/sys", "/var/cache", "/var/lib", "/var/spool"};
 /* The /proc entries the ruleset names, open: a rule belongs to an inode that /proc makes again once the entry is dropped from the cache. */
 static int pinned[PIN_MAX];
 static int pinned_count = 0;
@@ -235,6 +244,7 @@ static int make_ruleset(const struct confinement *confine, int keep_proc) {
     failed = failed || allow_below(ruleset, "/dev", 0, CONFINE_DEVICE_ACCESS) != 0;
     failed = failed || (keep_proc ? allow_below(ruleset, "/proc", 0, CONFINE_DEVICE_ACCESS) != 0 : allow_entries(ruleset, "/proc", 1, CONFINE_DEVICE_ACCESS) != 0);
     for (int i = 0; !failed && i < confine->read_count; i++) failed = allow_below(ruleset, confine->read_dirs[i], 0, CONFINE_READ_ACCESS) != 0;
+    for (int i = 0; !failed && i < confine->socket_count; i++) failed = allow_below(ruleset, confine->socket_dirs[i], 0, SOCKET_ACCESS) != 0;
     for (int i = 0; !failed && i < confine->write_count; i++) failed = allow_below(ruleset, confine->write_dirs[i], 0, LANDLOCK_ACCESS_FS_ALL_V3) != 0;
   }
   if (failed) {
@@ -430,6 +440,7 @@ int main(int argc, char **argv) {
     else if (strcmp(argv[first], "--require") == 0) confine.required = 1;
     else if (strcmp(argv[first], "--check") == 0) check = 1;
     else if (strcmp(argv[first], "--write") == 0 && first + 1 < argc && confine.write_count < CONFINE_DIRS_MAX) confine.write_dirs[confine.write_count++] = argv[++first];
+    else if (strcmp(argv[first], "--sockets") == 0 && first + 1 < argc && confine.socket_count < CONFINE_DIRS_MAX) confine.socket_dirs[confine.socket_count++] = argv[++first];
     else if (strcmp(argv[first], "--read") == 0 && first + 1 < argc && confine.read_count < CONFINE_DIRS_MAX) confine.read_dirs[confine.read_count++] = argv[++first];
     else break;
   }

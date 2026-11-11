@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 
 export {
   executeSandboxedBinary,
+  OFFICE_PIPE_DIR,
   detectSandboxEnvironment,
   getSanitizedEnvironment,
   killProcessGroup,

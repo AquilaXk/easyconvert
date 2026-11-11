@@ -8,6 +8,10 @@ import { convertWithNative7z } from '../src/worker/engines';
 import { zipfText } from './helpers/archive-corpus';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 232).
+runWithoutFileConfinement();
 
 /**
  * A compression wrapper that unpacks to one file is vetted as a tar only when that file can be one. The check is the

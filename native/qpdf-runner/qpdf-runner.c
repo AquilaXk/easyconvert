@@ -30,10 +30,11 @@
 //
 // Frame format (all integers big-endian): u32 length of the rest | u8 type | u32 id | body.
 //   host -> runner
-//     RUN    (1): u32 timeout_ms | u64 max_output | u64 limit_as | u64 limit_fsize | u32 limit_cpu | u32 confine | str cwd | str work_dir
+//     RUN    (1): u32 timeout_ms | u64 max_output | u64 limit_as | u64 limit_fsize | u32 limit_cpu | u32 confine | str cwd | str work_dir | str read_path
 //                 | u32 argc | str argv[argc] | u32 envc | str env[envc] | u32 stdin_len | stdin bytes
 //                 (confine: bit 0 puts the job under the ruleset that confines its files to work_dir, bit 1 says that a job that cannot be
-//                 confined is not run; an empty work_dir with bit 0 set is a job that touches no file of its own;
+//                 confined is not run; an empty work_dir with bit 0 set is a job that touches no file of its own; read_path is one more
+//                 file or directory the confined job may read (its input), or empty;
 //                 a limit of 0 is no limit, except max_output, which is 1 byte to 1 GiB and caps standard output and error together;
 //                 a request holds at most 4096 arguments and 4096 environment entries, no string past 64 KB, a frame of at most 4 MiB
 //                 and a standard input of at most 32 KB, which goes into the pipe before the fork without the runner waiting for room)
@@ -354,6 +355,7 @@ typedef struct {
   uint32_t confine;
   const char *cwd;
   const char *work_dir;
+  const char *read_path;
   char **argv; /* NULL-terminated */
   char **envp; /* NULL-terminated */
   uint32_t stdin_len;
@@ -422,9 +424,10 @@ static const char *hide_failure = "";
 /* The directory a confined job may use (see CONFINE_ENABLED in the request). */
 struct confinement {
   const char *write_dir; /* NULL or "": none (a job that touches no file of its own) */
+  const char *read_path; /* NULL or "": none; one file or directory the job may read (its input) */
 };
 /* The parts of the system a confined job reads and runs from. Anything not listed is not the job's: /shared, /tmp, /home, /app, /root, /srv, /mnt. */
-static const char *const CONFINE_SYSTEM_PATHS[] = {"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/opt", "/sys", "/var/cache", "/var/lib"};
+static const char *const CONFINE_SYSTEM_PATHS[] = {"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/opt", "/sys", "/var/cache", "/var/lib", "/var/spool"};
 /* The /proc entries the ruleset names, open: a rule belongs to an inode that /proc makes again once the entry is dropped from the cache. */
 static int pinned[PIN_MAX];
 static int pinned_count = 0;
@@ -528,6 +531,7 @@ static int make_ruleset(const struct confinement *confine, int keep_proc) {
       failed = allow_below(ruleset, CONFINE_SYSTEM_PATHS[i], 0, CONFINE_READ_ACCESS) != 0;
     failed = failed || allow_below(ruleset, "/dev", 0, CONFINE_DEVICE_ACCESS) != 0;
     failed = failed || (keep_proc ? allow_below(ruleset, "/proc", 0, CONFINE_DEVICE_ACCESS) != 0 : allow_entries(ruleset, "/proc", 1, CONFINE_DEVICE_ACCESS) != 0);
+    failed = failed || (confine->read_path != NULL && confine->read_path[0] != '\0' && allow_below(ruleset, confine->read_path, 0, CONFINE_READ_ACCESS) != 0);
     failed = failed || (confine->write_dir != NULL && confine->write_dir[0] != '\0' && allow_below(ruleset, confine->write_dir, 0, LANDLOCK_ACCESS_FS_ALL_V3) != 0);
   }
   if (failed) {
@@ -701,7 +705,7 @@ static void run_child(const Request *r, int in_fd, int out_fd, int err_fd, int s
   /* The /proc entries the ruleset names stay open in the job for as long as it runs. */
   int confined = 0;
   if (r->confine & CONFINE_ENABLED) {
-    struct confinement confine = {.write_dir = r->work_dir};
+    struct confinement confine = {.write_dir = r->work_dir, .read_path = r->read_path};
     int ruleset = make_ruleset(&confine, keep_proc);
     if (ruleset >= 0 && enforce_ruleset(ruleset) != 0) release_pinned();
     else if (ruleset >= 0) confined = 1;
@@ -754,6 +758,7 @@ static bool parse_run(const uint8_t *body, size_t len, Request *r) {
   uint32_t length;
   take_string_bytes(&probe, &length); /* cwd */
   take_string_bytes(&probe, &length); /* work_dir */
+  take_string_bytes(&probe, &length); /* read_path */
   uint32_t argc = take_u32(&probe);
   if (argc == 0 || argc > MAX_ARGS) return false;
   for (uint32_t i = 0; i < argc; i++) take_string_bytes(&probe, &length);
@@ -761,7 +766,7 @@ static bool parse_run(const uint8_t *body, size_t len, Request *r) {
   if (envc > MAX_ARGS) return false;
   for (uint32_t i = 0; i < envc; i++) take_string_bytes(&probe, &length);
   if (probe.bad) return false;
-  size_t strings = 2 + (size_t)argc + envc;
+  size_t strings = 3 + (size_t)argc + envc;
   r->arena_bytes = round_up_to_page(len + strings + 1);
   r->table_bytes = round_up_to_page(((size_t)argc + envc + 2) * sizeof(char *));
   r->arena = mmap(NULL, r->arena_bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -770,6 +775,7 @@ static bool parse_run(const uint8_t *body, size_t len, Request *r) {
   char *arena = r->arena;
   r->cwd = take_string(&c, &arena);
   r->work_dir = take_string(&c, &arena);
+  r->read_path = take_string(&c, &arena);
   uint32_t argc2 = take_u32(&c);
   char **table = r->tables;
   r->argv = table;
@@ -783,7 +789,7 @@ static bool parse_run(const uint8_t *body, size_t len, Request *r) {
   /* A claim past the limit is refused, whether or not the bytes it claims follow. */
   if (r->stdin_len > MAX_STDIN_BYTES) return false;
   r->stdin_bytes = take(&c, r->stdin_len);
-  return !c.bad && c.left == 0 && r->cwd != NULL && r->cwd[0] == '/' && r->work_dir != NULL && (r->work_dir[0] == '\0' || r->work_dir[0] == '/') &&
+  return !c.bad && c.left == 0 && r->cwd != NULL && r->cwd[0] == '/' && r->work_dir != NULL && (r->work_dir[0] == '\0' || r->work_dir[0] == '/') && r->read_path != NULL && (r->read_path[0] == '\0' || r->read_path[0] == '/') &&
          (r->confine & ~(uint32_t)(CONFINE_ENABLED | CONFINE_REQUIRED)) == 0;
 }
 
@@ -1143,6 +1149,7 @@ static int self_test(void) {
   put_u32(&body, 0);
   put_u32(&body, 0);
   put_string(&body, "/");
+  put_string(&body, "");
   put_string(&body, "");
   put_u32(&body, 2);
   put_string(&body, "qpdf");

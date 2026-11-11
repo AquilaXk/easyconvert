@@ -33,7 +33,7 @@ rng = random.Random(seed)  # NOSONAR
 build()
 def s(b): return struct.pack(">I", len(b)) + b
 def run_frame(i, cwd=WORK, argv=(b"qpdf", b"echo-stdin"), env=(b"A=1",), stdin=b"hello", t=2000, mx=100000, a=0, f=0, c=0):
-    body = struct.pack(">IQQQII", t, mx, a, f, c, 0) + s(cwd) + s(b"") + struct.pack(">I", len(argv)) + b"".join(s(x) for x in argv) + struct.pack(">I", len(env)) + b"".join(s(x) for x in env) + struct.pack(">I", len(stdin)) + stdin
+    body = struct.pack(">IQQQII", t, mx, a, f, c, 0) + s(cwd) + s(b"") + s(b"") + struct.pack(">I", len(argv)) + b"".join(s(x) for x in argv) + struct.pack(">I", len(env)) + b"".join(s(x) for x in env) + struct.pack(">I", len(stdin)) + stdin
     return struct.pack(">IBI", 5 + len(body), 1, i) + body
 def mutate(b):
     b = bytearray(b)

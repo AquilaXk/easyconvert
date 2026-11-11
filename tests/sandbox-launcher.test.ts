@@ -227,7 +227,7 @@ describe('sandbox launcher', () => {
     if (canIsolateNetwork) {
       // The oracle: this host has an interface besides the loopback; a fresh namespace has the loopback alone.
       expect(hostInterfaces.length).toBeGreaterThan(1);
-      const isolated = await launch(SH, shell(INTERFACES_SCRIPT), { networkIsolated: true, strictIsolation: true });
+      const isolated = await launch(SH, shell(INTERFACES_SCRIPT), { networkIsolated: true, strictIsolation: true, workDir: null });
       expect(listed(isolated.stdout)).toEqual(['lo']);
       const open = await launch(SH, shell(INTERFACES_SCRIPT), { networkIsolated: false });
       expect(listed(open.stdout)).toEqual(hostInterfaces);
@@ -243,7 +243,7 @@ describe('sandbox launcher', () => {
   it('applies STRICT_SANDBOX of this process, which the helper does not inherit', async () => {
     process.env.STRICT_SANDBOX = 'true';
     try {
-      const outcome = await launch(SH, shell(INTERFACES_SCRIPT), { networkIsolated: true }).then(
+      const outcome = await launch(SH, shell(INTERFACES_SCRIPT), { networkIsolated: true, workDir: null }).then(
         (result) => ({ ran: true, interfaces: result.stdout.toString('utf8').split('\n').filter(Boolean) }),
         (error: Error) => ({ ran: false, name: error.name })
       );

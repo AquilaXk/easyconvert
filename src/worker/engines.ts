@@ -62,7 +62,7 @@ import { runFfmpegTranscode } from '../lib/conversions/media-ffmpeg-run';
 import { openMediaInput, runFfmpeg } from '../lib/conversions/media-process';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from '../lib/conversions/media-two-pass';
 import {
-  executeSandboxedBinary,
+  executeSandboxedBinary, OFFICE_PIPE_DIR,
   rethrowSandboxUnavailable,
   SandboxedMemoryLimitError,
   SandboxedTimeoutError,
@@ -418,7 +418,7 @@ async function runHeadlessOffice(
           inputPath,
         ],
         {
-          cwd: tempDir, workDir: tempDir,
+          cwd: tempDir, workDir: tempDir, socketDirs: [OFFICE_PIPE_DIR],
           timeoutMs: timeout,
           maxBuffer,
           env: { HOME: tempDir, TMPDIR: tempDir, SAL_USE_VCLPLUGIN: 'svp' },

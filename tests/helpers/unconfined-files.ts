@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, vi } from 'vitest';
+import { afterAll, beforeEach, vi } from 'vitest';
 
 /**
  * For a suite whose stand-in programs write a record outside the directory of their job (a spy that appends the arguments it was called
@@ -7,7 +7,8 @@ import { afterAll, beforeAll, vi } from 'vitest';
  * itself is tested in sandbox-file-confinement.test.ts, pid-init-confine.test.ts and qpdf-runner.test.ts.
  */
 export function runWithoutFileConfinement(): void {
-  beforeAll(() => {
+  // Before each test, because a suite that unstubs the environment after a test would otherwise confine the next one.
+  beforeEach(() => {
     vi.stubEnv('SANDBOX_CONFINE_FILES', 'false');
   });
   afterAll(() => {

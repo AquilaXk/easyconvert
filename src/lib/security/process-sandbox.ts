@@ -45,7 +45,15 @@ export interface SandboxFileScope {
   writeDirs?: readonly string[];
   /** More directories the program may read and run files from, beyond the system (model files, an installed tool outside the system paths). */
   readDirs?: readonly string[];
+  /**
+   * Directories in which the program may make and remove sockets, for a program that binds one at a place it cannot choose (the office suite:
+   * `OFFICE_PIPE_DIR`). Rights cannot be limited to a name, so it may also remove the other files there; it can neither read nor write them.
+   */
+  socketDirs?: readonly string[];
 }
+
+/** Where the office suite binds its single-instance pipe, whatever TMPDIR says (sal's osl pipes are made below /tmp). */
+export const OFFICE_PIPE_DIR = '/tmp';
 
 export interface SandboxedExecutionOptions extends SandboxFileScope {
   timeoutMs?: number;
@@ -769,7 +777,8 @@ function confinementOf(
   const writable = [...(scope.workDir === null ? [] : [confinedDirectory(scope.workDir, 'workDir')]), ...(scope.writeDirs ?? []).map((directory) => confinedDirectory(directory, 'write directory'))];
   // The program itself is read and run wherever it is installed (a tool the operator keeps outside the system paths); its libraries are the system's.
   const readable = [...(scope.readDirs ?? []), ...(path.isAbsolute(program) ? [program] : [])].map((directory) => confinedDirectory(directory, 'read directory'));
-  return ['--confine', ...(strict ? ['--require'] : []), ...writable.flatMap((directory) => ['--write', directory]), ...readable.flatMap((directory) => ['--read', directory])];
+  const sockets = (scope.socketDirs ?? []).map((directory) => path.resolve(directory));
+  return ['--confine', ...(strict ? ['--require'] : []), ...writable.flatMap((directory) => ['--write', directory]), ...readable.flatMap((directory) => ['--read', directory]), ...sockets.flatMap((directory) => ['--sockets', directory])];
 }
 
 /**
@@ -809,7 +818,7 @@ export function resolveSandboxedCommand(
     memoryLimitMb = networkIsolatedOrOptions.memoryLimitMb;
     maxFileSize = networkIsolatedOrOptions.maxFileSize;
     rlimits = networkIsolatedOrOptions.rlimits;
-    scope = { workDir: networkIsolatedOrOptions.workDir, writeDirs: networkIsolatedOrOptions.writeDirs, readDirs: networkIsolatedOrOptions.readDirs };
+    scope = { workDir: networkIsolatedOrOptions.workDir, writeDirs: networkIsolatedOrOptions.writeDirs, readDirs: networkIsolatedOrOptions.readDirs, socketDirs: networkIsolatedOrOptions.socketDirs };
   }
 
   const effectiveRlimits = effectiveRlimitsOf(rlimits, memoryLimitMb, maxFileSize);
@@ -1131,6 +1140,7 @@ export async function executeSandboxedBinary(
       workDir: options.workDir,
       writeDirs: options.writeDirs,
       readDirs: options.readDirs,
+      socketDirs: options.socketDirs,
     });
 
     if (spooled) spoolFd = tryOpenStdoutSpool();

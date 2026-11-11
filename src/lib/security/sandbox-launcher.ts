@@ -71,7 +71,7 @@ const BOOT_TIMEOUT_MS = 30_000;
 
 export type LaunchedExecutionOptions = Pick<
   SandboxedExecutionOptions,
-  'timeoutMs' | 'maxBuffer' | 'env' | 'cwd' | 'networkIsolated' | 'strictIsolation' | 'sandboxOptions' | 'memoryLimitMb' | 'maxFileSize' | 'rlimits' | 'signal' | 'workDir' | 'writeDirs' | 'readDirs'
+  'timeoutMs' | 'maxBuffer' | 'env' | 'cwd' | 'networkIsolated' | 'strictIsolation' | 'sandboxOptions' | 'memoryLimitMb' | 'maxFileSize' | 'rlimits' | 'signal' | 'workDir' | 'writeDirs' | 'readDirs' | 'socketDirs'
 > & {
   stdin?: Buffer | null;
   /** About how many bytes the program prints; what the helper has to copy back. Defaults to a quarter of `maxBuffer`. */

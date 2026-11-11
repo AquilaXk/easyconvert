@@ -146,6 +146,23 @@ describe.skipIf(toolsMissing || skipUnless('Landlock version 3 (Linux 6.2 or lat
     expect(result.stdout.trim()).toMatch(/^xx (EACCES|EXDEV)$/);
   });
 
+  it('--sockets lets the program bind and remove a socket in a directory (the office suite binds one in /tmp), and read or write nothing else there', () => {
+    const socketDir = path.join(scratch, 'sockets');
+    fs.mkdirSync(socketDir, { recursive: true });
+    fs.writeFileSync(path.join(socketDir, 'bystander'), 'bystander');
+    const script = [
+      "const net = require('node:net'), fs = require('node:fs'), path = require('node:path');",
+      'const dir = process.argv[1]; const attempt = (action) => { try { action(); return "ok"; } catch (err) { return err.code; } };',
+      "const server = net.createServer(); server.on('error', (err) => { console.log('bind ' + err.code); });",
+      "server.listen(path.join(dir, 'pipe'), () => { server.close(() => { console.log(['bind ok', 'socket removed ' + !fs.existsSync(path.join(dir, 'pipe')), 'read ' + attempt(() => fs.readFileSync(path.join(dir, 'bystander'))), 'write ' + attempt(() => fs.writeFileSync(path.join(dir, 'bystander'), 'x')), 'create ' + attempt(() => fs.writeFileSync(path.join(dir, 'file'), 'x'))].join(', ')); }); });",
+    ].join('\n');
+    const without = inNamespace(['--confine', '--write', own, '--read', path.dirname(process.execPath)], [process.execPath, '-e', script, socketDir]);
+    expect(without.stdout.trim()).toBe('bind EACCES');
+    const withSockets = inNamespace(['--confine', '--write', own, '--read', path.dirname(process.execPath), '--sockets', socketDir], [process.execPath, '-e', script, socketDir]);
+    expect(withSockets.stdout.trim()).toBe('bind ok, socket removed true, read EACCES, write EACCES, create EACCES');
+    expect(fs.readFileSync(path.join(socketDir, 'bystander'), 'utf8')).toBe('bystander');
+  });
+
   it('with --keep-proc leaves /proc as it is and still confines the files', () => {
     const result = inNamespace(['--confine', '--keep-proc', '--write', own], ['sh', '-c', 'cat /proc/1/status > /dev/null && echo proc-ok; cat "$0/secret" 2>&1 | head -n 1', other]);
     expect(lines(result.stdout)).toEqual(['proc-ok', expect.stringContaining('Permission denied')]);
