@@ -20,7 +20,10 @@ import { storageProvider as ociStorage } from '../lib/storage';
 import { startRetentionSweep } from '../lib/storage/retention-service';
 import { processNodeJob, nativeEngine } from '../lib/queue/node-processor';
 import { killProcessGroup } from '../lib/security/process-sandbox';
-import { probeNativeEngines } from './engines';
+import { libreOfficePool, probeNativeEngines } from './engines';
+import { startWorkerSandboxSweep, stopWorkerSandboxSweep } from './sandbox-sweep';
+import { stopQpdfRunner } from '../lib/conversions/pdf-postprocess/qpdf-runner';
+import { shutdownPdfTextThreads } from '../lib/conversions/pdf-text-host';
 import { assertSealingKeyConfigured } from '../lib/security/job-secret-seal';
 import { getFfmpegPath } from '../lib/conversions/media';
 import { enforceFfmpegMinimumVersion } from '../lib/conversions/media-process';
@@ -260,13 +263,48 @@ ociWorker.on('stuck', (job: Job<ConversionJobData, ConversionJobResult>) => {
 attachJobLifecycleListeners(ociWorker);
 attachInputCleanupOnCompletion(ociWorker);
 
+/** Longest wait for the engines to stop at the end of a drain; the container's stop grace period is longer. */
+export const ENGINE_SHUTDOWN_TIMEOUT_MS = 10_000;
+
+/**
+ * Stops the engines the worker keeps between jobs: the LibreOffice pool (which removes its profile directories), the qpdf runner and
+ * the PDF text threads. Each is stopped on its own, so one that fails or hangs does not keep the others running, and the wait is bounded.
+ */
+export async function shutdownEngines(timeoutMs: number = ENGINE_SHUTDOWN_TIMEOUT_MS): Promise<void> {
+  const steps: Array<[string, () => void | Promise<void>]> = [
+    ['LibreOffice pool', () => libreOfficePool.shutdown()],
+    ['qpdf runner', () => stopQpdfRunner()],
+    ['PDF text threads', () => shutdownPdfTextThreads()],
+  ];
+  const stopped = Promise.all(
+    steps.map(async ([name, stop]) => {
+      try {
+        await stop();
+      } catch (error) {
+        console.warn(`[EasyConvert OCI Worker] The ${name} did not stop cleanly: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    })
+  ).then(() => 'stopped' as const);
+  let timer: NodeJS.Timeout | undefined;
+  const outcome = await Promise.race([
+    stopped,
+    new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), timeoutMs);
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  if (outcome === 'timeout') {
+    console.warn(`[EasyConvert OCI Worker] The engines were still stopping after ${timeoutMs}ms; the process goes on without waiting for them.`);
+  }
+}
+
 /**
  * Gracefully drains the worker daemon:
  * 1. Stops popping new jobs immediately.
  * 2. Updates heartbeat to 'draining'.
  * 3. Waits up to drainTimeoutMs for active jobs to finish.
  * 4. If timeout expires, aborts remaining active jobs and forces process group termination.
- * 5. Closes queue worker and cleans up heartbeat state.
+ * 5. Closes queue worker, stops the engines that outlive a job (bounded) and cleans up heartbeat state.
  */
 export async function drainWorker(
   signal: string = 'SIGTERM',
@@ -319,6 +357,8 @@ export async function drainWorker(
   // Close worker queue subscriptions and clean up listeners after active jobs finish
   await ociWorker.close();
   await shutdownSharedOcrWorkerPool();
+  await shutdownEngines();
+  stopWorkerSandboxSweep();
 
   stopHeartbeat();
   console.log(`[EasyConvert OCI Worker] Worker daemon drain completed cleanly.`);
@@ -331,6 +371,8 @@ startHeartbeat();
 if (process.env.NODE_ENV !== 'test') {
   startRetentionSweep(ociStorage);
   startEndedRecordSweep();
+  // What a worker killed without a clean exit left in the temporary directory, which a restart does not clear (policy entry 232).
+  startWorkerSandboxSweep();
   // The metrics listener stays up while the worker drains, so a drain can be watched; it is closed with the process.
   startMetricsFromConfig('worker', () => sampleQueues(metricsQueueSources())).catch((error: unknown) => {
     console.error(`[metrics] worker metrics not started: ${error instanceof Error ? error.message : String(error)}`);
