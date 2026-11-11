@@ -91,6 +91,21 @@ describe('Webhook DLQ owner scoping (#242)', () => {
       expect(await webhookDispatcher.getDlqEntry(aliceEntryId, '')).toBeNull();
     });
 
+    it('pages the list route by limit and offset and reports the owner total, never counting another owner', async () => {
+      for (let n = 0; n < 3; n += 1) {
+        await webhookDispatcher.saveToDlq({ ...dlqEntry(`dlq_page_${aliceEntryId}_${n}`, alice.id), failedAt: Date.now() - (n + 1) * 1000 });
+      }
+
+      const first = await (await listDlqRoute(sessionRequest(alice, '/api/webhooks/dlq?limit=2'))).json();
+      const rest = await (await listDlqRoute(sessionRequest(alice, '/api/webhooks/dlq?limit=2&offset=2'))).json();
+
+      expect(first.total).toBe(4);
+      expect(first.entries).toHaveLength(2);
+      expect(rest.entries).toHaveLength(2);
+      expect([...first.entries, ...rest.entries].map((e: { id: string }) => e.id)).not.toContain(bobEntryId);
+      expect(new Set([...first.entries, ...rest.entries].map((e: { id: string }) => e.id)).size).toBe(4);
+    });
+
     it('delete, clear, and replay never touch another owner entries', async () => {
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response('ok', { status: 200 }));
 
