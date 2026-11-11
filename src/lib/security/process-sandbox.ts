@@ -54,6 +54,11 @@ export interface SandboxFileScope {
   fileConfinementOff?: boolean;
 }
 
+/** The part of the options of a run that says which files it may touch. */
+function fileScopeOf(options: SandboxFileScope): SandboxFileScope {
+  return { workDir: options.workDir, writeDirs: options.writeDirs, readDirs: options.readDirs, socketDirs: options.socketDirs, fileConfinementOff: options.fileConfinementOff };
+}
+
 /** Where the office suite binds its single-instance pipe, whatever TMPDIR says (sal's osl pipes are made below /tmp). */
 export const OFFICE_PIPE_DIR = '/tmp';
 
@@ -820,7 +825,7 @@ export function resolveSandboxedCommand(
     memoryLimitMb = networkIsolatedOrOptions.memoryLimitMb;
     maxFileSize = networkIsolatedOrOptions.maxFileSize;
     rlimits = networkIsolatedOrOptions.rlimits;
-    scope = { workDir: networkIsolatedOrOptions.workDir, writeDirs: networkIsolatedOrOptions.writeDirs, readDirs: networkIsolatedOrOptions.readDirs, socketDirs: networkIsolatedOrOptions.socketDirs, fileConfinementOff: networkIsolatedOrOptions.fileConfinementOff };
+    scope = fileScopeOf(networkIsolatedOrOptions);
   }
 
   const effectiveRlimits = effectiveRlimitsOf(rlimits, memoryLimitMb, maxFileSize);
@@ -1139,11 +1144,7 @@ export async function executeSandboxedBinary(
       rlimits: spooled
         ? { ...rlimits, fsizeBytes: spoolLimit + 1, coreBytes: 0 }
         : rlimits,
-      workDir: options.workDir,
-      writeDirs: options.writeDirs,
-      readDirs: options.readDirs,
-      socketDirs: options.socketDirs,
-      fileConfinementOff: options.fileConfinementOff,
+      ...fileScopeOf(options),
     });
 
     if (spooled) spoolFd = tryOpenStdoutSpool();
