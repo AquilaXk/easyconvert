@@ -172,7 +172,7 @@ export interface PdfContentItem {
   annotation?: true;
   /**
    * Set only on a page whose glyphs mostly have no Unicode value: the run is set in a Type 3 font, whose character codes are
-   * no text when no glyph name says so (entry 225), so a reader that keeps the text of that page leaves the run out.
+   * no text when no glyph name says so (entry 227), so a reader that keeps the text of that page leaves the run out.
    */
   type3Font?: true;
 }
@@ -212,7 +212,7 @@ export interface PdfPageContent {
    * encoding that the Adobe Glyph List maps and, for a symbol font, no entry in its table.
    */
   unmappedGlyphs: number;
-  /** Of `unmappedGlyphs`, the glyphs of Type 3 fonts: programs that draw what they please, so the lines of a figure are among them (entry 225). */
+  /** Of `unmappedGlyphs`, the glyphs of Type 3 fonts: programs that draw what they please, so the lines of a figure are among them (entry 227). */
   unmappedType3Glyphs?: number;
   /** The operator list was not read (too many items or operators): no rules, images or font names for the page. */
   operatorsSkipped: boolean;

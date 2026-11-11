@@ -4,8 +4,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Conversions and quality
 - Drop `scripts/install-libraw-he.sh` and the `librawhe` stage when the distribution's LibRaw (0.23 or later) reads Nikon HE/HE* NEF (entry 195).
-- Hand the developed RAW picture to the encoder from its file, not a 75 MB buffer, to cut the DNG to PDF peak further (entry 191).
-- PDF text still leaves out 0.10% of the glyphs of the real-world corpus (61,350 of 60.7M): 68% in Type 3 fonts (pictures, which stay counted, and bitmap fonts whose codes are no text: 58% of them `govdocs1-001494.pdf`), 20% in simple Type 1 fonts (the built-in encodings map 5 of them; `CG.Times` `G<n>` names, MathematicalPi `H<n>` catalogue names that need Adobe's table, private-use extension pieces of Symbol and CMEX10: entry 225), 8% in composite fonts whose subset programs carry no `cmap` or `post` (nothing to read; Poppler prints control codes there, entry 104).
+- PDF text still leaves out 0.10% of the glyphs of the real-world corpus (61,350 of 60.7M): 68% in Type 3 fonts (pictures, which stay counted, and bitmap fonts whose codes are no text: 58% of them `govdocs1-001494.pdf`), 20% in simple Type 1 fonts (the built-in encodings map 5 of them; `CG.Times` `G<n>` names, MathematicalPi `H<n>` catalogue names that need Adobe's table, private-use extension pieces of Symbol and CMEX10: entry 227), 8% in composite fonts whose subset programs carry no `cmap` or `post` (nothing to read; Poppler prints control codes there, entry 104).
 - Close the noisy-picture JPEG gap (`jxl-noise->jpg` BD-rate PSNR +5.2%; the same pixels from a PNG give the same result).
 
 ## Speed
@@ -13,7 +12,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Cut the `arw` GIF time: 16-to-8-bit RGBA conversion (119 ms) and LZW (52 ms).
 - Lift `screenshot.png->svg` from 0.85 to 0.90 of the reference on arm64.
 - Lift `silesia-xml.xz->tar` from 0.876 to the reference speed.
-- Give the 8-bit PNG writer adaptive filtering: level 6 gives 1,000,922 against 1,345,000 bytes (nightly of 2026-11-09) on `jxl-bicycles` in 43 against 29 ms; it affects every PNG output, so measure the speed rows first.
 - Lift `jxl->avif` throughput from 0.87 (sandbox start plus the intermediate PNG).
 
 ## Product and API

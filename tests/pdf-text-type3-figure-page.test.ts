@@ -8,7 +8,7 @@ import { hasControlCharacters } from './helpers/pdf-text-metrics';
 
 /**
  * A page where the Type 3 glyphs without a Unicode value outnumber the text keeps the text that is not set in a Type 3 font
- * (entry 225). A Type 3 font draws its glyphs with programs of its own, so the lines of a figure are glyphs with no Unicode
+ * (entry 227). A Type 3 font draws its glyphs with programs of its own, so the lines of a figure are glyphs with no Unicode
  * value and the labels are set in other fonts; what a Type 3 font shows as characters on such a page is its character codes
  * (a bitmap font whose glyphs are named `a16`) and is left out. A page where the glyphs of other fonts outnumber the text, and
  * a page with no such text, are left out as a whole (entry 49). The PDFs are written by hand: Helvetica is the font of the text
