@@ -21,7 +21,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Operations and security
 - Cache the public HTML pages at the Cloudflare edge (a cache rule for the page routes; `cf-cache-status` is `DYNAMIC` on `/ko` today although the page sends `s-maxage`): QA sets it in the dashboard later, or puts a scoped API token in `.env`. Leave `/dashboard`, `/*/dashboard` and `/api/` out of the rule and never override the origin's `private, no-store` with an edge TTL (entry 210).
-- Confirm Landlock is on in the kernel of the OCI host (`cat /sys/kernel/security/lsm`) before the next deploy; without it a run can still read the command line and status of the other runs (the worker says so once in the log, entry 208).
 - Install the Redis backup timer on the host on or after 2026-12-08 (30-day notice of the new privacy text).
 
 ## Tests and CI
