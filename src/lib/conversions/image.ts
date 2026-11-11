@@ -73,6 +73,7 @@ import { hasSrgbPrimaries, isProfileDroppedByPngReader, isSrgbProfile, srgb16Lut
 import { EIGHT_BIT_ONLY_TARGETS, reducesAtEncode, roundedToEightBits, SHARP_SIXTEEN_BIT_DEPTH } from './image-depth';
 import { applyDevelopmentCurve } from './image-development-curve';
 import { pinBaseImageThreads, withPipelineThreads } from './image-threads';
+import { rgbaRaster } from './image-rgba-raster';
 import { encodeAvif, PQ_AVIF_CICP } from './image-avif-pipeline';
 import { FIRST_QUARTER_TURN_ORIENTATION } from './image-orientation';
 import { buildOdgPackage } from './odg';
@@ -2345,10 +2346,7 @@ async function convertImage(
           if (frameSelection?.keepsAnimation) {
             assertAnimatableOptions(options);
           }
-          const { data, info } = await pipeline
-            .ensureAlpha()
-            .raw()
-            .toBuffer({ resolveWithObject: true });
+          const { data, info } = await rgbaRaster(pipeline);
           assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
           // The quantizer's palette goes into the GIF as it is: the image library is not asked to quantize again.
           const indexed = quantizeImage(data, info.width, info.height, colours, {
@@ -2365,7 +2363,7 @@ async function convertImage(
           // A photograph that asks for no dithering in particular: the Oklab quantizer's palette, each pixel mapped to its
           // nearest colour. Error diffusion is noise to LZW (25 percent more bytes on the camera samples of the benchmark) and
           // does not raise SSIM or PSNR there; the image library's palette quantizer spends the same bytes on both.
-          const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+          const { data, info } = await rgbaRaster(pipeline);
           const indexed = quantizeImage(data, info.width, info.height, colours, { dither: 'none', transparency: 'threshold', runTolerance: GIF_PHOTO_RUN_TOLERANCE });
           outputBuffer = encodeGif({ width: info.width, height: info.height, ...indexed });
         } else {
