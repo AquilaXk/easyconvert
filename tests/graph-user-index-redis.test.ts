@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INDEX_USER_GRAPH_LUA_SCRIPT, MAX_INDEXED_GRAPHS_PER_USER, RedisGraphScheduler } from '../src/lib/queue/graph';
 import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 import { endedJobRetentionMs } from '../src/lib/queue/enqueue';
+import { QueueUnavailableError } from '../src/lib/types';
 import { JOB_DEADLINE_CEILING_MS } from '../src/lib/config/schema';
 
 /**
@@ -135,5 +136,62 @@ describe.skipIf(!REDIS_URL)('the per-user index of graphs in Redis', () => {
     await scheduler.recoverStart(graphId);
 
     expect(await client.zrange(index(), '0', '-1')).toEqual([graphId]);
+  });
+
+  /** The names of the commands the client sends while `read` runs. */
+  async function commandsOf(read: () => Promise<unknown>): Promise<string[]> {
+    const names: string[] = [];
+    const prototype = Redis.prototype as unknown as { sendCommand: (this: unknown, command: { name: string }, ...rest: unknown[]) => unknown };
+    const real = prototype.sendCommand;
+    vi.spyOn(prototype, 'sendCommand').mockImplementation(function (this: unknown, command, ...rest) {
+      names.push(command.name);
+      return real.call(this, command, ...rest);
+    });
+    await read();
+    vi.restoreAllMocks();
+    return names;
+  }
+
+  it('reads the graphs of a page in one pipeline: two reads for each graph, no scan', async () => {
+    const now = Date.now();
+    for (const age of [30, 20, 10]) await start(userId, now - age);
+
+    const names = await commandsOf(() => scheduler.listGraphsOfUser(userId, 3));
+
+    expect(names).toEqual(['zrevrange', ...Array<string>(6).fill('hgetall')]);
+  });
+
+  it('reads only two fields of the graphs a status filter skips, and the whole graph of those it lists', async () => {
+    const now = Date.now();
+    const running = await start(userId, now - 40);
+    const cancelled = await Promise.all([30, 20, 10].map((age) => start(userId, now - age)));
+    for (const graphId of cancelled) await scheduler.cancelGraph(graphId);
+
+    let listed: string[] = [];
+    const names = await commandsOf(async () => {
+      listed = (await scheduler.listGraphsOfUser(userId, 1, ['running'])).map((graph) => graph.graphId);
+    });
+
+    expect(listed).toEqual([running]);
+    expect(names.filter((name) => name === 'hmget')).toHaveLength(4);
+    expect(names.filter((name) => name === 'hgetall')).toHaveLength(2);
+  });
+
+  it('never lists the graph of another user that the index of this one names', async () => {
+    const now = Date.now();
+    const mine = await start(userId, now - 10);
+    const theirs = await start(`user-${crypto.randomUUID()}`, now - 5);
+    await client.zadd(index(), now, theirs);
+
+    expect((await scheduler.listGraphsOfUser(userId, 10)).map((graph) => graph.graphId)).toEqual([mine]);
+    expect((await scheduler.listGraphsOfUser(userId, 10, ['running'])).map((graph) => graph.graphId)).toEqual([mine]);
+  });
+
+  it('answers a connection that fails as the queue being unavailable, as the single commands of the scheduler do', async () => {
+    await start(userId, Date.now());
+    vi.spyOn(Object.getPrototypeOf(client.pipeline()) as { exec: () => Promise<unknown> }, 'exec').mockRejectedValue(new Error('Connection is closed.'));
+
+    await expect(scheduler.listGraphsOfUser(userId, 10)).rejects.toBeInstanceOf(QueueUnavailableError);
+    await expect(scheduler.listGraphsOfUser(userId, 10, ['running'])).rejects.toBeInstanceOf(QueueUnavailableError);
   });
 });

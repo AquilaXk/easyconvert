@@ -385,9 +385,10 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
     // The index knows no status, so a page that a filter thins reads the next graphs, a page at a time, until it is full.
     for (let at = 0; at < ids.length && listed.length < limit; at += limit) {
       const page = ids.slice(at, at + limit);
-      const states = await Promise.all(page.map((graphId) => this.readIndexedGraph(graphId)));
+      const wanted = statuses ? await this.idsOfStatus(page, userId, statuses, vanished) : page;
+      const states = await this.readIndexedGraphs(wanted);
       states.forEach((state, position) => {
-        if (state === undefined) vanished.push(page[position]);
+        if (state === undefined) vanished.push(wanted[position]);
         else if (state && state.ownerUserId === userId && (!statuses || statuses.includes(state.status))) listed.push(state);
       });
     }
@@ -396,15 +397,56 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
     return listed.slice(0, limit);
   }
 
-  /** The state of an indexed graph: undefined when it expired, null when its record is damaged (logged; the list goes on without it). */
-  private async readIndexedGraph(graphId: string): Promise<GraphExecutionState | undefined | null> {
+  /** A pipeline's replies; a connection that fails is the same QueueUnavailableError the single commands of this scheduler raise. */
+  private async execFailClosed(pipeline: ReturnType<Redis['pipeline']>): Promise<[Error | null, unknown][]> {
     try {
-      return await this.getGraphState(graphId);
+      return (await pipeline.exec()) ?? [];
     } catch (err) {
-      if (!(err instanceof GraphStateCorruptError)) throw err;
-      console.error(`[GraphScheduler] Graph ${graphId} is left out of a list because its record is damaged:`, err);
-      return null;
+      if (err instanceof ReplyError) throw err;
+      throw new QueueUnavailableError(SCHEDULER_QUEUE_NAME, err instanceof Error ? err.message : String(err));
     }
+  }
+
+  /** The ids of `page` whose graph is of `userId` and has one of `statuses`: one pipelined read of two fields each, so the rest of a thinned page is never read whole. Gone graphs go to `vanished`. */
+  private async idsOfStatus(page: readonly string[], userId: string, statuses: readonly GraphStatus[], vanished: string[]): Promise<string[]> {
+    const pipeline = this.redisClient.pipeline();
+    for (const graphId of page) pipeline.hmget(this.graphKeys(graphId).graph, 'status', 'owner');
+    const replies = await this.execFailClosed(pipeline);
+    return page.filter((graphId, position) => {
+      const [error, fields] = replies[position] ?? [new Error('The pipeline answered fewer replies than commands.'), undefined];
+      if (error) throw error;
+      const [status, owner] = fields as (string | null)[];
+      if (status === null && owner === null) {
+        vanished.push(graphId);
+        return false;
+      }
+      return owner === userId && statuses.includes(status as GraphStatus);
+    });
+  }
+
+  /** The states of the graphs, all read in one round trip: undefined when one expired, null when its record is damaged (logged; the list goes on without it). */
+  private async readIndexedGraphs(graphIds: readonly string[]): Promise<(GraphExecutionState | undefined | null)[]> {
+    if (graphIds.length === 0) return [];
+    const pipeline = this.redisClient.pipeline();
+    for (const graphId of graphIds) {
+      const k = this.graphKeys(graphId);
+      pipeline.hgetall(k.graph).hgetall(k.nodes);
+    }
+    const replies = await this.execFailClosed(pipeline);
+    return graphIds.map((graphId, position) => {
+      const [graphError, rawGraph] = replies[position * 2] ?? [new Error('The pipeline answered fewer replies than commands.'), undefined];
+      const [nodesError, rawNodes] = replies[position * 2 + 1] ?? [new Error('The pipeline answered fewer replies than commands.'), undefined];
+      if (graphError || nodesError) throw graphError ?? nodesError;
+      if (!rawGraph || Object.keys(rawGraph).length === 0) return undefined;
+      try {
+        const meta = parseGraphMeta(graphId, rawGraph as Record<string, string>);
+        return { ...meta, nodes: parseNodeStates(graphId, rawNodes as Record<string, string>, meta.totalNodes) };
+      } catch (err) {
+        if (!(err instanceof GraphStateCorruptError)) throw err;
+        console.error(`[GraphScheduler] Graph ${graphId} is left out of a list because its record is damaged:`, err);
+        return null;
+      }
+    });
   }
 
   async deleteGraph(graphId: string): Promise<boolean> {
