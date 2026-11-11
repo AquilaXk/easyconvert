@@ -20,6 +20,8 @@ import { LEFTOVER_AGE_MS } from './temp-file';
  */
 export interface RetentionLedger {
   get(key: string): Promise<RetentionRecord | undefined>;
+  /** The records of `keys` in the order of `keys` (undefined for a key with none), in a few round trips; a ledger without it is read key by key. */
+  getMany?(keys: readonly string[]): Promise<(RetentionRecord | undefined)[]>;
   /** Stores what `change` returns for the record of `key` (undefined stores nothing). Atomic per key. */
   update(
     key: string,
@@ -303,6 +305,15 @@ export class RedisRetentionLedger implements RetentionLedger {
   async get(key: string): Promise<RetentionRecord | undefined> {
     const raw = await this.redis.get(this.recordKey(key));
     return raw === null ? undefined : parseRecord(raw);
+  }
+
+  async getMany(keys: readonly string[]): Promise<(RetentionRecord | undefined)[]> {
+    const records: (RetentionRecord | undefined)[] = [];
+    for (let start = 0; start < keys.length; start += MGET_BATCH) {
+      const raws = await this.redis.mget(keys.slice(start, start + MGET_BATCH).map((key) => this.recordKey(key)));
+      for (const raw of raws) records.push(raw === null ? undefined : parseRecord(raw));
+    }
+    return records;
   }
 
   async update(

@@ -1,5 +1,5 @@
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
-import { resultAvailability } from '@/lib/storage/retention-service';
+import { resultAvailabilities } from '@/lib/storage/retention-service';
 import type { AccountFile } from './snapshot-types';
 
 /**
@@ -8,9 +8,7 @@ import type { AccountFile } from './snapshot-types';
  */
 export async function listAccountFiles(userId: string, now: number = Date.now()): Promise<AccountFile[]> {
   const files = await redisKeyStore.listUserFiles(userId);
-  const availabilities = await Promise.all(
-    files.map((file) => (file.storageKey ? resultAvailability(file.storageKey, now) : undefined))
-  );
+  const availabilities = await resultAvailabilities(files.map((file) => file.storageKey), now);
   return files.flatMap((file, index) => {
     const availability = availabilities[index];
     if (availability?.state === 'deleted') return [];
