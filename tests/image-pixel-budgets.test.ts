@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import sharp from 'sharp';
 import { convertImage } from '../src/lib/conversions/image';
+import { quantizeImage } from '../src/lib/conversions/color-quantizer';
 import {
+  GIF_PHOTO_PIXEL_BUDGET,
   HDR_FLOAT_PIXEL_BUDGET,
   InputPixelLimitError,
   QUANTIZER_PIXEL_BUDGET,
@@ -18,6 +20,8 @@ const HTTP_PAYLOAD_TOO_LARGE = 413;
 /** Written out from the measurements in the issue thread, not read back from the module under test. */
 const EXPECTED_QUANTIZER_LIMIT = 16_000_000;
 const EXPECTED_SENSOR_LIMIT = 64_000_000;
+/** The default input limit: every photograph the product takes by default is written to GIF in process. */
+const EXPECTED_GIF_PHOTO_LIMIT = 100_000_000;
 
 /** 5000 x 5000 = 25 megapixels: over the quantizer budget, well under the 100 MP input limit. */
 const QUANTIZER_BOMB_SIDE = 5_000;
@@ -47,6 +51,7 @@ describe('budgets of the in-process per-pixel paths', () => {
     expect(QUANTIZER_PIXEL_BUDGET.maxPixels).toBe(EXPECTED_QUANTIZER_LIMIT);
     expect(RAW_SENSOR_PIXEL_BUDGET.maxPixels).toBe(EXPECTED_SENSOR_LIMIT);
     expect(HDR_FLOAT_PIXEL_BUDGET.maxPixels).toBe(EXPECTED_SENSOR_LIMIT);
+    expect(GIF_PHOTO_PIXEL_BUDGET.maxPixels).toBe(EXPECTED_GIF_PHOTO_LIMIT);
   });
 
   it('accepts exactly the budget and refuses one pixel more, naming the limit and the path', () => {
@@ -54,6 +59,11 @@ describe('budgets of the in-process per-pixel paths', () => {
     const run = (): void => assertPixelBudget(4_000, 4_001, QUANTIZER_PIXEL_BUDGET);
     expect(run).toThrow(InputPixelLimitError);
     expect(run).toThrow(`over the limit of ${EXPECTED_QUANTIZER_LIMIT} pixels for Oklab and Riemersma palette quantization`);
+  });
+
+  it('draws the in-process GIF photograph boundary at exactly the budget', () => {
+    expect(() => assertPixelBudget(10_000, 10_000, GIF_PHOTO_PIXEL_BUDGET)).not.toThrow();
+    expect(() => assertPixelBudget(10_000, 10_001, GIF_PHOTO_PIXEL_BUDGET)).toThrow(InputPixelLimitError);
   });
 });
 
@@ -98,6 +108,39 @@ describe('palette quantizers refuse pictures that would not fit the job memory s
     const colours = new Set<string>();
     for (let i = 0; i < data.length; i += info.channels) colours.add(data.subarray(i, i + info.channels).toString('hex'));
     expect(colours.size).toBeLessThanOrEqual(4);
+  });
+});
+
+describe('the quantizer budgets are judged on the picture that is written, before it is decoded', () => {
+  /** A 100 x 100 source scaled to 10000 x 10000 (100 MP, the output limit): 400 MB as RGBA, which the gate must not read. */
+  const scaledUp = { width: SCALED_UP_SIDE, height: SCALED_UP_SIDE, fit: 'fill' as const };
+  const SCALED_REJECTION_RSS_BYTES = 200 * BYTES_PER_MIB;
+  const targets: Array<[string, string, Record<string, unknown>]> = [
+    ['png', 'Oklab', { quantizer: 'oklab' }],
+    ['png', 'Riemersma', { ditherMethod: 'riemersma', colorDepth: 8 }],
+    ['gif', 'Oklab', { quantizer: 'oklab' }],
+    ['gif', 'blue-noise', { ditherMethod: 'blue-noise' }],
+  ];
+
+  it.each(targets)('refuses a small source scaled to 100 MP for %s output with %s quantization before it is decoded', async (target, _label, options) => {
+    const source = await sharp({ create: { width: 100, height: 100, channels: 3, background: { r: 30, g: 120, b: 200 } } }).png().toBuffer();
+    const rssBefore = process.memoryUsage().rss;
+    let error: unknown;
+    try {
+      await convertImage(source, target, { ...options, ...scaledUp }, 'small.png', 'png');
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(InputPixelLimitError);
+    expect(error).toMatchObject({ limit: EXPECTED_QUANTIZER_LIMIT, width: SCALED_UP_SIDE, height: SCALED_UP_SIDE });
+    expect(process.memoryUsage().rss - rssBefore).toBeLessThan(SCALED_REJECTION_RSS_BYTES);
+  });
+
+  it('refuses a raster over the budget inside quantizeImage, whoever calls it', () => {
+    const over = (width: number, height: number, dither: 'none' | 'floyd-steinberg'): (() => unknown) => () =>
+      quantizeImage(new Uint8Array(width * height * 4), width, height, 256, { dither });
+    expect(over(17_000, 1_000, 'floyd-steinberg')).toThrow(InputPixelLimitError);
+    expect(over(100_000, 1_001, 'none')).toThrow(InputPixelLimitError);
   });
 });
 
