@@ -357,7 +357,7 @@ async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise
     ));
   }
 
-  const unrecorded = await recordCompletedUpload(storageProvider, uploadedStorageKey, instanceUri);
+  const unrecorded = await recordCompletedUpload(storageProvider, uploadedStorageKey, instanceUri, { jobInput: true });
   if (unrecorded) return reply(unrecorded);
 
   const inputBytes = await trustedInputBytes({ storageKey: uploadedStorageKey }, storageProvider);
