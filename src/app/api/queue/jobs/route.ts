@@ -19,6 +19,7 @@ import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-
 import type { JobState } from '@/lib/queue/bullmq-engine';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { queueErrorResponse, withQueueErrors } from '@/lib/api/queue-error-response';
+import { withoutEngineTrace } from '@/lib/api/engine-trace';
 import { redactText } from '@/lib/security/redact';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { createProblemDetailsResponse, serverFault } from '@/lib/api/problem-details';
@@ -403,7 +404,7 @@ async function listOwnJobs(req: NextRequest) {
       targetFormat: j.data.targetFormat,
       timestamp: j.timestamp,
       durationMs: j.finishedOn && j.processedOn ? j.finishedOn - j.processedOn : undefined,
-      returnvalue: j.returnvalue,
+      returnvalue: withoutEngineTrace(j.returnvalue),
       failedReason: j.failedReason === undefined ? undefined : redactText(j.failedReason),
       failedCode: j.failedCode,
       failedStatus: j.failedStatus,

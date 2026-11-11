@@ -9,6 +9,7 @@ import { processNodeJob } from './node-processor';
 import { recordJobResultInHistory } from './job-history';
 import { isFinalFailure } from './job-failure';
 import { dispatchEngine } from './dispatch-engine';
+import { openWebhookSecretOrLog } from '../security/sealed-webhook-secret';
 import { resolveResourceClass } from './resource-class';
 import { endedJobRetentionMs, legacyJobTimeoutMs } from './enqueue';
 import { graphScheduler } from './graph/scheduler';
@@ -98,7 +99,8 @@ export function attachJobLifecycleListeners(
 
       // Asynchronous Webhook Notification
       if (job.data?.webhookUrl) {
-        if (!job.data.webhookSecret) {
+        const webhookSecret = openWebhookSecretOrLog(job.data.webhookSecret, String(job.id), `job ${job.id}`);
+        if (!webhookSecret) {
           console.warn(
             `[ConversionQueue] Skipping webhook dispatch for job ${job.id}: missing webhookSecret`
           );
@@ -124,7 +126,7 @@ export function attachJobLifecycleListeners(
               job.data.webhookUrl,
               'job.completed',
               result,
-              job.data.webhookSecret,
+              webhookSecret,
               { ownerUserId: job.data.userId, ownerKeyId: job.data.webhookKeyId }
             );
           } catch (err) {
@@ -156,7 +158,8 @@ export function attachJobLifecycleListeners(
 
       // Asynchronous Webhook Failure Notification
       if (job.data?.webhookUrl) {
-        if (!job.data.webhookSecret) {
+        const webhookSecret = openWebhookSecretOrLog(job.data.webhookSecret, String(job.id), `job ${job.id}`);
+        if (!webhookSecret) {
           console.warn(
             `[ConversionQueue] Skipping webhook dispatch for job ${job.id}: missing webhookSecret`
           );
@@ -190,7 +193,7 @@ export function attachJobLifecycleListeners(
                 error: job.failedReason,
                 originalFilename: job.data.originalFilename,
               },
-              job.data.webhookSecret,
+              webhookSecret,
               { ownerUserId: job.data.userId, ownerKeyId: job.data.webhookKeyId }
             );
           } catch (dispatchErr) {

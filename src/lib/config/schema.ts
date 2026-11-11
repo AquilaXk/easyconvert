@@ -801,11 +801,11 @@ const SCHEMA_ENTRIES = [
     name: 'WEBHOOK_SECRET_KEK',
     area: 'secrets',
     description:
-      'Key-encryption key of the webhook signing secrets. At least 32 bytes of UTF-8 text in production. The worker dispatches webhooks and needs it too once the deployment sends them.',
+      'Key-encryption key of the webhook signing secrets. At least 32 bytes of UTF-8 text in production. The web process seals the rotated secrets with it and the worker opens them to sign every delivery, so both need the same value.',
     kind: KEY_SECRET,
     requiredInProduction: true,
     secret: true,
-    roles: WEB,
+    roles: BOTH,
   },
   {
     name: 'STORAGE_VAULT_KEY',

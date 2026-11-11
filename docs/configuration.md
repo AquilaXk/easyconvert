@@ -109,7 +109,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `KEY_HASH_PEPPER` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded); secret, never logged | none | yes | web |
 | `KEY_HASH_PEPPER_PREVIOUS` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded); secret, never logged | none | no | web |
 | `KEY_ENCRYPTION_KEY` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded); secret, never logged | none | no | web, worker |
-| `WEBHOOK_SECRET_KEK` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded); secret, never logged | none | yes | web |
+| `WEBHOOK_SECRET_KEK` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded); secret, never logged | none | yes | web, worker |
 | `STORAGE_VAULT_KEY` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded); secret, never logged | none | no | web, worker |
 | `JOB_SECRET_KEK` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded), no surrounding whitespace in production; secret, never logged | none | yes | web, worker |
 | `JOB_SECRET_KEK_PREVIOUS` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded), no surrounding whitespace in production; secret, never logged | none | no | web, worker |
@@ -117,7 +117,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `KEY_HASH_PEPPER`: Pepper of the HMAC that hashes API key secrets. At least 32 bytes of UTF-8 text in production. Also a legacy decryption fallback key of API key secret encryption.
 - `KEY_HASH_PEPPER_PREVIOUS`: The previous KEY_HASH_PEPPER during a rotation, so API keys hashed under it still verify and are re-hashed under KEY_HASH_PEPPER on next use.
 - `KEY_ENCRYPTION_KEY`: Key that encrypts API key webhook secrets at rest. In production it must be set (at least 32 characters) to encrypt a new secret; without it existing secrets still decrypt under KEY_HASH_PEPPER, KEY_HASH_PEPPER_PREVIOUS or JWT_SECRET. Outside production those keys also encrypt.
-- `WEBHOOK_SECRET_KEK`: Key-encryption key of the webhook signing secrets. At least 32 bytes of UTF-8 text in production. The worker dispatches webhooks and needs it too once the deployment sends them.
+- `WEBHOOK_SECRET_KEK`: Key-encryption key of the webhook signing secrets. At least 32 bytes of UTF-8 text in production. The web process seals the rotated secrets with it and the worker opens them to sign every delivery, so both need the same value.
 - `STORAGE_VAULT_KEY`: Master key of the vault that holds customer storage credentials. In production it must be set (at least 32 characters) to store credentials; without it stored credentials still decrypt under KEY_ENCRYPTION_KEY or JWT_SECRET. Outside production those keys also encrypt.
 - `JOB_SECRET_KEK`: Key-encryption key that seals signed URLs and headers inside queued jobs. At least 32 bytes of UTF-8 text, no surrounding whitespace, in production. Shared by the API and every worker.
 - `JOB_SECRET_KEK_PREVIOUS`: The previous JOB_SECRET_KEK during a rotation, so jobs sealed under it can still be opened.

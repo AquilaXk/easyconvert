@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { PdfAValidationError, type EngineMissingError, type PdfPostprocessError } from '../types';
 import { PROBLEM_TYPE_BASE } from '../refusal-codes';
+import { AuthStoreUnavailableError } from '../auth/store-unavailable';
 
 /**
  * RFC 9457 Problem Details for HTTP APIs (supersedes RFC 7807).
@@ -222,6 +223,18 @@ const HTTP_INTERNAL_SERVER_ERROR = 500;
  * keeps out of an answer, so the answer is the fixed `sentence` and the error goes to the server log under `context`.
  */
 export function serverFault<Code extends string>(context: string, error: unknown, sentence: string, code?: Code): NextResponse {
+  if (error instanceof AuthStoreUnavailableError) return authStoreUnavailableRefusal(error);
   console.error(`[${context}]`, error);
   return codedRefusal(HTTP_INTERNAL_SERVER_ERROR, code, sentence);
+}
+
+/** The 503 of a route whose account store could not answer: a fixed sentence and Retry-After, never the 500 of an unclassified error. */
+export function authStoreUnavailableRefusal(error: AuthStoreUnavailableError = new AuthStoreUnavailableError()): NextResponse {
+  return codedRefusal(
+    HTTP_SERVICE_UNAVAILABLE,
+    undefined,
+    'The account service is temporarily unavailable. Please try again shortly.',
+    {},
+    { 'Retry-After': String(error.retryAfterSeconds) }
+  );
 }

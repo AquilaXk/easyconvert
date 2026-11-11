@@ -7,6 +7,7 @@ import { WebhookDlqStore, type DlqPage, type DlqPageOptions } from './webhook-dl
 import { redisKeyStore } from './redis-key-store';
 import { getWebhookSecretStore, requireWebhookTargetId } from './webhook-secret-store';
 import { decryptSecret, encryptSecret } from './secret-encryption';
+import { openWebhookSecret, sealWebhookSecret } from '../security/sealed-webhook-secret';
 import {
   createQueueEngine,
   Worker,
@@ -84,11 +85,23 @@ export interface WebhookDispatchResult {
   attempts: WebhookDeliveryAttempt[];
 }
 
+/** How long an ended delivery job stays in the webhook queue: a day to look at a failure, an hour after a success. */
+const WEBHOOK_COMPLETED_JOB_KEEP_SECONDS = 3600;
+const WEBHOOK_FAILED_JOB_KEEP_SECONDS = 24 * 3600;
+
+/** What every delivery job gets: ended jobs expire, and the signing secret leaves the stored job when it ends. */
+const WEBHOOK_JOB_OPTIONS = {
+  removeOnComplete: { age: WEBHOOK_COMPLETED_JOB_KEEP_SECONDS },
+  removeOnFail: { age: WEBHOOK_FAILED_JOB_KEEP_SECONDS },
+  removeDataOnFinish: ['secret'],
+} as const;
+
 export interface WebhookJobData<T = Record<string, unknown>> {
   deliveryId: string;
   targetUrl: string;
   event: WebhookEvent;
   data: T;
+  /** The signing secret sealed for `deliveryId` (a retry is a new job with the same delivery id), or empty. */
   secret: string;
   options?: WebhookDispatchOptions;
   attemptNumber: number;
@@ -872,20 +885,21 @@ export class WebhookDispatcher {
       targetUrl,
       event,
       data,
-      secret,
+      secret: sealWebhookSecret(secret, deliveryId),
       options,
       attemptNumber: 1,
       attempts: [],
       createdAt: Date.now(),
     };
 
-    return queue.add('webhook:delivery', jobData as any);
+    return queue.add('webhook:delivery', jobData as any, { ...WEBHOOK_JOB_OPTIONS });
   }
 
   private async processQueuedJob(
     job: Job<WebhookJobData, WebhookDispatchResult>
   ): Promise<WebhookDispatchResult> {
-    const { targetUrl, event, data, secret, options = {} } = job.data;
+    const { targetUrl, event, data, options = {} } = job.data;
+    const secret = openWebhookSecret(job.data.secret, job.data.deliveryId);
     const attemptResult = await this.dispatch(targetUrl, event, data, secret, {
       ...options,
       maxRetries: 1,
@@ -944,7 +958,7 @@ export class WebhookDispatcher {
     }
 
     const delayMs = computeRetryDelay(job.data.attempts.length);
-    await this.getQueue().add('webhook:delivery', job.data, { delay: delayMs });
+    await this.getQueue().add('webhook:delivery', job.data, { ...WEBHOOK_JOB_OPTIONS, delay: delayMs });
     return {
       ...attemptResult,
       totalAttempts: job.data.attempts.length,
