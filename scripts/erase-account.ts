@@ -3,10 +3,12 @@ import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { getWebhookSecretStore } from '../src/lib/api-keys/webhook-secret-store';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
+import { resetLoginAttempts } from '../src/lib/auth/login-rate-limiter';
 import { conversionQueue } from '../src/lib/queue/conversion-queue';
 import { graphScheduler } from '../src/lib/queue/graph/scheduler';
-import { CANCELLABLE_JOB_STATES, type JobState } from '../src/lib/queue/bullmq-engine';
+import { CANCELLABLE_JOB_STATES, HEARTBEAT_INTERVAL_MS, type JobState } from '../src/lib/queue/bullmq-engine';
 import { storageProvider } from '../src/lib/storage';
+import { tusEngine } from '../src/lib/storage/tus-engine';
 import { credentialsVault } from '../src/lib/storage/credentials-vault';
 import { getRetentionLedger } from '../src/lib/storage/retention-ledger';
 
@@ -17,6 +19,7 @@ export interface AccountErasurePlan {
   credentialIds: string[];
   graphIds: string[];
   jobs: { id: string; state: JobState }[];
+  tusSessionIds: string[];
   storedKeys: string[];
   deadLetters: number;
   taggedKeys: string[];
@@ -29,6 +32,24 @@ export interface AccountErasureOutcome {
 
 const MAX_JOBS_PER_RUN = 10_000;
 const SCAN_COUNT = 500;
+/** Keys one DEL names: a command with tens of thousands of arguments is refused by the client and blocks the server. */
+const DELETE_BATCH = 500;
+/**
+ * How long the erasure waits after it cancelled a job that was running. A cancelled job leaves the store at once, but the worker
+ * that runs it learns of it at its next heartbeat (HEARTBEAT_INTERVAL_MS) and may write one more output until it stops, so the files
+ * are deleted only after two heartbeats.
+ */
+const DEFAULT_DRAIN_MS = HEARTBEAT_INTERVAL_MS * 2;
+
+export interface AccountErasureOptions {
+  /** The wait after cancelling a running job, in milliseconds; the default is two heartbeats of the queue. */
+  drainMs?: number;
+}
+
+/** Deletes `keys` in commands of at most DELETE_BATCH keys. */
+export async function deleteKeysInBatches(client: { del(...keys: string[]): Promise<number> }, keys: readonly string[]): Promise<void> {
+  for (let at = 0; at < keys.length; at += DELETE_BATCH) await client.del(...keys.slice(at, at + DELETE_BATCH));
+}
 
 async function findAccount(idOrEmail: string) {
   return idOrEmail.includes('@') ? redisUserStore.findByEmail(idOrEmail) : redisUserStore.findById(idOrEmail);
@@ -48,6 +69,10 @@ async function accountTaggedKeys(userId: string): Promise<string[]> {
   return keys.sort((a, b) => a.localeCompare(b));
 }
 
+/**
+ * The stored files of the account: the files the retention ledger holds under the account's prefix or a result of its jobs and
+ * graphs, and the files its history names (a result whose job record is already gone).
+ */
 async function accountStoredKeys(
   userId: string,
   jobIds: readonly string[],
@@ -60,7 +85,11 @@ async function accountStoredKeys(
   ];
   const ledger = getRetentionLedger();
   const keys = ledger.allKeys ? await ledger.allKeys() : (await ledger.liveRecords()).map((record) => record.key);
-  return keys.filter((key) => prefixes.some((prefix) => key.startsWith(prefix))).sort((a, b) => a.localeCompare(b));
+  const owned = keys.filter((key) => prefixes.some((prefix) => key.startsWith(prefix)));
+  const named = (await redisKeyStore.listUserFiles(userId)).flatMap((file) => (file.storageKey ? [file.storageKey] : []));
+  const history: string[] = [];
+  for (const key of named) if (await Promise.resolve(storageProvider.stat(key)).catch(() => undefined)) history.push(key);
+  return [...new Set([...owned, ...history])].sort((a, b) => a.localeCompare(b));
 }
 
 /** What erasing the account `idOrEmail` deletes, or undefined when there is no such account. Changes nothing. */
@@ -83,50 +112,119 @@ export async function planAccountErasure(idOrEmail: string): Promise<AccountEras
     credentialIds,
     graphIds,
     jobs: jobs.map((job) => ({ id: job.id, state: job.state })),
+    tusSessionIds: await tusEngine.sessionsOfOwner(userId),
     storedKeys: await accountStoredKeys(userId, jobs.map((job) => job.id), graphIds),
     deadLetters: letters.total,
     taggedKeys,
   };
 }
 
-export async function eraseAccount(plan: AccountErasurePlan): Promise<AccountErasureOutcome> {
-  const { userId } = plan;
-  for (const graphId of plan.graphIds) {
-    await graphScheduler.cancelGraph(graphId, 'The account was deleted');
+/** The graphs and jobs the account has now, so work started after the plan was made is found too. */
+async function currentWork(plan: AccountErasurePlan): Promise<{ jobs: AccountErasurePlan['jobs']; graphIds: string[] }> {
+  const listed = await conversionQueue.getJobsByUser(plan.userId, undefined, MAX_JOBS_PER_RUN, 0);
+  const jobs = new Map(plan.jobs.map((job) => [job.id, job]));
+  for (const job of listed) jobs.set(job.id, { id: job.id, state: job.state });
+  const graphIds = new Set([...plan.graphIds, ...(await graphScheduler.graphsOfUser(plan.userId))]);
+  for (const job of listed) if (job.data.graphId) graphIds.add(job.data.graphId);
+  return { jobs: [...jobs.values()], graphIds: [...graphIds].sort((a, b) => a.localeCompare(b)) };
+}
+
+/** The ids of `jobs` that are still active, so cannot be removed. */
+async function removeEndedJobs(jobIds: readonly string[]): Promise<string[]> {
+  const running: string[] = [];
+  for (const id of jobIds) {
+    if (!(await conversionQueue.remove(id)) && (await conversionQueue.getJob(id))) running.push(id);
   }
-  for (const job of plan.jobs) {
-    if (CANCELLABLE_JOB_STATES.has(job.state)) await conversionQueue.cancelJob(job.id, 'The account was deleted');
-  }
-  const runningJobIds: string[] = [];
-  for (const job of plan.jobs) {
-    if (!(await conversionQueue.remove(job.id)) && (await conversionQueue.getJob(job.id))) {
-      runningJobIds.push(job.id);
+  return running;
+}
+
+/** The rounds that look again for work started while the earlier rounds cancelled: a request authenticated before the keys went can still enqueue. */
+const CANCEL_ROUNDS = 5;
+
+/**
+ * Cancels the graphs and jobs the account has, looking again after each round (and waiting for the workers of running ones) until
+ * a round finds nothing new. Cancelling goes through the queue, so a job's quota is given back and the hold on its input ends.
+ * Answers everything it saw.
+ */
+async function cancelAllWork(plan: AccountErasurePlan, drainMs: number): Promise<{ jobs: AccountErasurePlan['jobs']; graphIds: string[] }> {
+  const jobs = new Map<string, AccountErasurePlan['jobs'][number]>();
+  const graphIds = new Set<string>();
+  for (let round = 0; round < CANCEL_ROUNDS; round++) {
+    const current = await currentWork(plan);
+    const freshJobs = current.jobs.filter((job) => !jobs.has(job.id));
+    const freshGraphs = current.graphIds.filter((graphId) => !graphIds.has(graphId));
+    if (round > 0 && freshJobs.length === 0 && freshGraphs.length === 0) break;
+    for (const graphId of freshGraphs) {
+      graphIds.add(graphId);
+      await graphScheduler.cancelGraph(graphId, 'The account was deleted');
     }
+    for (const job of freshJobs) {
+      jobs.set(job.id, job);
+      if (CANCELLABLE_JOB_STATES.has(job.state)) await conversionQueue.cancelJob(job.id, 'The account was deleted');
+    }
+    if (freshJobs.some((job) => job.state === 'active')) await new Promise((resolve) => setTimeout(resolve, drainMs));
   }
-  for (const graphId of plan.graphIds) {
+  return { jobs: [...jobs.values()], graphIds: [...graphIds].sort((a, b) => a.localeCompare(b)) };
+}
+
+/**
+ * Erases the account in an order that lets nothing it started write after the erasure:
+ * 1. the keys and sessions go first, so no request of the account starts new work;
+ * 2. its graphs, jobs and open uploads are cancelled, found again until a round finds nothing new, and when a job was running the
+ *    erasure waits for its worker to notice (`drainMs`), because the files and records that job writes would be untraceable once
+ *    the graph index is gone;
+ * 3. only then the graphs, files, history, counts and the keys tagged with the account (read again, not taken from the plan) go.
+ * A job that is still active after the wait, one that the account's index names beyond the window this run reads (10,000) and one
+ * queued after the last round leave the account, its graph index and its files in place for the next run: their ids are answered.
+ */
+export async function eraseAccount(plan: AccountErasurePlan, options: AccountErasureOptions = {}): Promise<AccountErasureOutcome> {
+  const { userId } = plan;
+  const keyIds = new Set([...plan.apiKeyIds, ...(await redisKeyStore.listApiKeys(userId)).map((key) => key.id)]);
+  for (const keyId of keyIds) {
+    await redisKeyStore.deleteApiKey(userId, keyId);
+    await getWebhookSecretStore().deleteSecretRecord(userId, keyId);
+  }
+  await redisUserStore.incrementSessionVersion(userId);
+
+  await tusEngine.terminateSessionsOfOwner(userId);
+  for (const credentialId of new Set([...plan.credentialIds, ...(await credentialsVault.listByUser(userId))])) {
+    await credentialsVault.delete(credentialId, userId);
+  }
+  const work = await cancelAllWork(plan, options.drainMs ?? DEFAULT_DRAIN_MS);
+
+  const stillActive = await removeEndedJobs(work.jobs.map((job) => job.id));
+  if (stillActive.length > 0) return { runningJobIds: stillActive };
+
+  for (const graphId of work.graphIds) {
     await graphScheduler.deleteGraph(graphId);
     await storageProvider.deleteByPrefix?.(`results/${graphId}/`);
+    await storageProvider.deleteByPrefix?.(`intermediate/${graphId}/`);
   }
   const ledger = getRetentionLedger();
-  for (const key of plan.storedKeys) {
+  for (const key of await accountStoredKeys(userId, work.jobs.map((job) => job.id), work.graphIds)) {
     await Promise.resolve(storageProvider.deleteObject(key)).catch(() => false);
     await ledger.forget(key);
   }
   await storageProvider.deleteByPrefix?.(`conversions/${userId}/`);
-  for (const credentialId of plan.credentialIds) {
-    await credentialsVault.delete(credentialId, userId);
-  }
-  for (const keyId of plan.apiKeyIds) {
-    await redisKeyStore.deleteApiKey(userId, keyId);
-    await getWebhookSecretStore().deleteSecretRecord(userId, keyId);
-  }
-  await webhookDispatcher.clearDlq(userId);
+  const left = (await conversionQueue.forgetUser?.(userId, new Set(work.jobs.map((job) => job.id)))) ?? [];
+  if (left.length > 0) return { runningJobIds: left };
+
+  await webhookDispatcher.clearDlq(userId, { strict: true });
   await redisKeyStore.forgetUsage(userId);
   const client = redisKeyStore.getRedisClient();
-  if (client && plan.taggedKeys.length > 0) await client.del(...plan.taggedKeys);
+  if (client) await deleteKeysInBatches(client, await accountTaggedKeys(userId));
   await deleteAuthTokensOfUser(userId);
-  if (runningJobIds.length === 0 && plan.jobs.length < MAX_JOBS_PER_RUN) await redisUserStore.deleteUser(userId);
-  return { runningJobIds };
+  await forgetFailedLogins(plan.email);
+  await redisUserStore.deleteUser(userId);
+  return { runningJobIds: [] };
+}
+
+/** Deletes the failed-login counters of `email`; a Redis that does not answer fails the erasure (the limiter's own reset falls back to memory). */
+async function forgetFailedLogins(email: string): Promise<void> {
+  const redis = redisUserStore.getRedisClient();
+  // The key the login limiter writes (`login_attempts:email:<lower-cased address>` under the user store's prefix).
+  if (redis) await redis.del(`${redisUserStore.getKeyPrefix()}login_attempts:email:${email.toLowerCase().trim()}`);
+  await resetLoginAttempts(null, email);
 }
 
 function describe(plan: AccountErasurePlan): string {
@@ -136,6 +234,7 @@ function describe(plan: AccountErasurePlan): string {
     `storage credentials: ${plan.credentialIds.length}`,
     `graphs: ${plan.graphIds.length}`,
     `jobs: ${plan.jobs.length}${plan.jobs.length === MAX_JOBS_PER_RUN ? ' (the first batch; run again)' : ''}`,
+    `open resumable uploads: ${plan.tusSessionIds.length}`,
     `stored files: ${plan.storedKeys.length}`,
     `webhook dead letters: ${plan.deadLetters}`,
     `tagged redis keys: ${plan.taggedKeys.length}`,
@@ -162,7 +261,7 @@ async function main(argv: readonly string[]): Promise<number> {
   }
   const { runningJobIds } = await eraseAccount(plan);
   if (runningJobIds.length > 0) {
-    console.log(`Cancelled ${runningJobIds.length} running job(s), not yet removed: run again once they stop.`);
+    console.log(`${runningJobIds.length} job(s) are not removed yet (still running, or queued after this run looked): run again once they stop.`);
     return 3;
   }
   console.log('Deleted.');
