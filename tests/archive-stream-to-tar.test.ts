@@ -11,10 +11,6 @@ import { jsonRecords, runBytes, zipfText } from './helpers/archive-corpus';
 import { oracleTest } from './helpers/oracle-test';
 import { buildTarWithEntries } from './helpers/hostile-archives';
 import { createSevenZipSpy, type SevenZipSpy } from './helpers/seven-zip-spy';
-import { runWithoutFileConfinement } from './helpers/unconfined-files';
-
-// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 232).
-runWithoutFileConfinement();
 
 /**
  * Converting a compressed tar (or a compressed single file) to tar is stream decompression. A payload that is a tar is

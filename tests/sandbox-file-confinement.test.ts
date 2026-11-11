@@ -295,6 +295,7 @@ describe.skipIf(skipUnless('unprivileged namespaces, pid-init and Landlock versi
         'refuses a run that asks for the PID namespace of `unshare -p`, which pid-init does not confine',
         async () => {
           await expect(run({ workDir: own, sandboxOptions: { pidNamespace: true } })).rejects.toBeInstanceOf(SandboxUnavailableError);
+          await expect(run({ workDir: own, sandboxOptions: { pidNamespace: true } })).rejects.toThrow(/cannot confine the files/);
         },
         TEST_TIMEOUT_MS
       );

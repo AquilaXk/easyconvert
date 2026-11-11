@@ -354,8 +354,7 @@ function createEncryptedArchiveVia7z(
       ? ['-t7z', '-mhe=on', SEVEN_ZIP_ASK_PASSWORD_SWITCH]
       : ['-tzip', '-mem=AES256', SEVEN_ZIP_ASK_PASSWORD_SWITCH];
     const resolved = resolveSandboxedCommand(p7z, ['a', '-y', ...extraArgs, outPath, '.'], {
-      networkIsolated: true,
-      workDir,
+      networkIsolated: true, workDir,
     });
     execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
       cwd: stagingDir,
@@ -2568,8 +2567,7 @@ async function createNative7zArchive(plan: SevenZipPlan, p7z: string, signal: Ab
     const outPath = path.join(workDir, 'native.7z');
     const run = (args: string[], cwd: string) =>
       executeSandboxedBinary(p7z, args, {
-        cwd,
-        workDir,
+        cwd, workDir,
         timeoutMs: CPU_POOL_TASK_TIMEOUT_MS,
         maxBuffer: MAX_ENCRYPTION_LISTING_BYTES,
         networkIsolated: true,
@@ -2974,8 +2972,7 @@ export async function repairZipArchive(
       fs.writeFileSync(inPath, zipBuffer);
 
       const resolved = resolveSandboxedCommand(zipBin, [inPath, '-FF', '--out', outPath, '-q'], {
-        networkIsolated: true,
-        workDir,
+        networkIsolated: true, workDir,
       });
       try {
         const out = execFileSync(resolved.binary, resolved.args, {
@@ -3287,8 +3284,7 @@ async function inspectArchiveVia7zCli(
 
     // A password is answered on stdin (never in argv); without one, 7-Zip's prompt reads an empty answer.
     const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', '-ba', archivePath], {
-      networkIsolated: true,
-      workDir,
+      networkIsolated: true, workDir,
     });
 
     let stdoutStr = '';

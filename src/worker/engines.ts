@@ -418,8 +418,7 @@ async function runHeadlessOffice(
           inputPath,
         ],
         {
-          cwd: tempDir,
-          workDir: tempDir,
+          cwd: tempDir, workDir: tempDir,
           timeoutMs: timeout,
           maxBuffer,
           env: { HOME: tempDir, TMPDIR: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
@@ -521,9 +520,7 @@ export async function convertWithNativeFfmpeg(
         const source = await probePackagingSource(media, ffmpegBin);
         const args = await buildHlsDashArguments(media, outputDir, packaging, ffmpegBin, source);
         await runFfmpeg(ffmpegBin, args, {
-          cwd: outputDir,
-          workDir: tempDir,
-          readDirs: [inputPath],
+          cwd: outputDir, workDir: tempDir, readDirs: [inputPath],
           timeoutMs: computePackagingTimeoutMs(
             source.geometry.durationSec,
             plannedRungCount(packaging, source),
@@ -694,9 +691,7 @@ async function assertCreatedArchiveEncrypted(
   let outcome: { listing?: string; failureOutput?: string };
   try {
     const result = await executeSandboxedBinary(p7zBin, ['l', '-slt', archivePath], {
-      cwd: limits.cwd,
-      workDir: limits.cwd,
-      readDirs: [archivePath],
+      cwd: limits.cwd, workDir: limits.cwd, readDirs: [archivePath],
       timeoutMs: limits.timeoutMs,
       maxBuffer: MAX_ENCRYPTION_LISTING_BYTES,
       networkIsolated: true,
@@ -722,16 +717,14 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<string 
   if (tarPlan) {
     const tarPath = path.join(tempDir, 'archive.tar');
     await executeSandboxedBinary(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], {
-      cwd: extractDir,
-      workDir: tempDir,
+      cwd: extractDir, workDir: tempDir,
       timeoutMs: timeout,
       maxBuffer,
       networkIsolated: true,
       signal: options?.signal,
     });
     await executeSandboxedBinary(p7zBin, ['a', '-y', tarPlan.codecSwitch, ...levelArgs, tempOutputPath, tarPath], {
-      cwd: tempDir,
-      workDir: tempDir,
+      cwd: tempDir, workDir: tempDir,
       timeoutMs: timeout,
       maxBuffer,
       networkIsolated: true,
@@ -760,8 +753,7 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<string 
       : undefined;
 
   await executeSandboxedBinary(p7zBin, ['a', '-y', `-t${archiveType}`, ...(tgt === 'tar' ? [] : levelArgs), ...pwArgs, tempOutputPath, '.'], {
-    cwd: extractDir,
-    workDir: tempDir,
+    cwd: extractDir, workDir: tempDir,
     timeoutMs: timeout,
     maxBuffer,
     networkIsolated: true,
@@ -1047,9 +1039,7 @@ export async function countPagesOfReadablePdf(
   if (pdfinfoBin) {
     try {
       const res = await runPdfinfo(pdfinfoBin, [inputPath], {
-        cwd: tempDir,
-        workDir: tempDir,
-        readDirs: [inputPath],
+        cwd: tempDir, workDir: tempDir, readDirs: [inputPath],
         timeoutMs,
         maxBuffer: 10 * 1024 * 1024,
         networkIsolated: true,
@@ -1150,9 +1140,7 @@ async function convertPdfToTextWithPoppler(
         async (readablePath) => {
           try {
             await executeSandboxedBinary(pdftotextBin, [...pdftotextArgs, readablePath, tempOutputPath], {
-              cwd: tempDir,
-              workDir: tempDir,
-              readDirs: [readablePath],
+              cwd: tempDir, workDir: tempDir, readDirs: [readablePath],
               timeoutMs: timeout,
               maxBuffer,
               networkIsolated: true,
@@ -1471,9 +1459,7 @@ async function renderPdfToSvgWithPoppler(
           const pageSvgPath = path.join(tempDir, `page-${p}.svg`);
           const args = ['-svg', '-f', String(p), '-l', String(p), inputPath, pageSvgPath];
           return executeSandboxedBinary(pdftocairoBin, args, {
-            cwd: tempDir,
-            workDir: tempDir,
-            readDirs: [inputPath],
+            cwd: tempDir, workDir: tempDir, readDirs: [inputPath],
             timeoutMs: remaining,
             maxBuffer,
             networkIsolated: true,
@@ -1796,9 +1782,7 @@ export async function convertWithNativeRaw(
     let decoderStderr = '';
     try {
       const run = await executeSandboxedBinary(decoder, [...RAW_DECODE_FLAGS, '-Z', decodedPath, inputPath], {
-        cwd: tempDir,
-        workDir: tempDir,
-        readDirs: [inputPath],
+        cwd: tempDir, workDir: tempDir, readDirs: [inputPath],
         timeoutMs: timeout,
         maxBuffer: options.maxBufferBytes || 100 * 1024 * 1024,
         maxFileSize: RAW_DECODE_MAX_OUTPUT_BYTES,

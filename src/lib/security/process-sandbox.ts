@@ -1000,6 +1000,9 @@ function outputOf(spooled: Buffer | undefined, chunks: Buffer[], headroom: numbe
 /** Why a run that did not exit 0 failed: the memory limit its signal shows, the file size limit, or the process error with what it printed. */
 function failedRunError(run: { code: number | null; signal: NodeJS.Signals | null; stdout: Buffer; stderr: Buffer }, options: SandboxedExecutionOptions, maxBuffer: number): Error {
   const { code, signal, stdout, stderr } = run;
+  // pid-init did not start a program it was told to confine and could not.
+  const refusal = confinementRefusal(code, stderr);
+  if (refusal !== null) return sandboxUnavailable(refusal);
   const effectiveMemLimit =
     options.memoryLimitMb ||
     (options.rlimits?.asBytes ? Math.round(options.rlimits.asBytes / (1024 * 1024)) : undefined);
@@ -1280,13 +1283,7 @@ export async function executeSandboxedBinary(
       const spool = spoolFd !== null && !isSettled ? readStdoutSpool(spoolFd, spoolLimit, headroom, tailroom) : undefined;
       settle(() => {
         const durationMs = Date.now() - startTime;
-        const rawStderr = Buffer.concat(stderrChunks);
-        const refusal = confinementRefusal(code, rawStderr);
-        if (refusal !== null) {
-          reject(sandboxUnavailable(refusal));
-          return;
-        }
-        const stderr = withoutProcHideNotice(rawStderr);
+        const stderr = withoutProcHideNotice(Buffer.concat(stderrChunks));
 
         if (spool !== undefined && 'boundHit' in spool) {
           reject(new SandboxedBufferLimitError(spoolLimit));
