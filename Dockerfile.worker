@@ -650,6 +650,9 @@ RUN cp /usr/share/doc/vtracer-pixels/THIRD-PARTY-NOTICES /licenses/vtracer-pixel
 RUN cp /usr/share/doc/vtracer-pixels/NOTICE-mimalloc /licenses/vtracer-pixels.NOTICE-mimalloc
 RUN cp /usr/share/doc/oxipng/SOURCE /licenses/oxipng.SOURCE
 RUN cp /usr/share/doc/oxipng/THIRD-PARTY-NOTICES /licenses/oxipng.THIRD-PARTY-NOTICES
+# The ONNX OCR engine: the MIT text and the third-party notices of onnxruntime (the npm package ships neither), the Apache-2.0 texts of the PaddleOCR
+# weights and the RapidOCR conversion, and the NOTICE that names the models (installed beside them by scripts/install-onnx-ocr-models.sh).
+RUN cd /opt/ocr-onnx/licenses && for f in *; do cp "$f" "/licenses/onnx-ocr.$f" || exit 1; done && cp /opt/ocr-onnx/NOTICE /licenses/onnx-ocr.NOTICE
 RUN cd /usr/share/doc/avifenc && for f in SOURCE LICENSE.libaom PATENTS.libaom LICENSE.libyuv PATENTS.libyuv LICENSE.libpng LICENSE.zlib-ng LICENSE.libjpeg-turbo README.ijg; do cp "$f" "/licenses/avifenc.$f" || exit 1; done
 RUN cp /usr/share/doc/ffmpeg/SOURCE /licenses/ffmpeg.SOURCE
 RUN cp /usr/share/doc/djvulibre/SOURCE /licenses/djvulibre.SOURCE
