@@ -209,4 +209,21 @@ describe.skipIf(!REDIS_URL)('the per-user index of graphs in Redis', () => {
       });
     }
   });
+
+  it('answers a command of a pipeline that fails, as a connection that drops while it runs does, as the queue being unavailable', async () => {
+    await start(userId, Date.now());
+    const dropped = new Error('Connection is closed.');
+    vi.spyOn(Object.getPrototypeOf(client.pipeline()) as { exec: () => Promise<unknown> }, 'exec').mockImplementation(function (this: { length: number }) {
+      return Promise.resolve(Array.from({ length: this.length }, () => [dropped, null]));
+    });
+
+    for (const statuses of [undefined, ['running'] as const]) {
+      const failure = await scheduler.listGraphsOfUser(userId, 10, statuses).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(QueueUnavailableError);
+      expect({ name: (failure as Error).name, message: (failure as Error).message }).toEqual({
+        name: 'QueueUnavailableError',
+        message: expect.stringContaining('Connection is closed.') as string,
+      });
+    }
+  });
 });

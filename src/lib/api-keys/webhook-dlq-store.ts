@@ -233,8 +233,9 @@ export class WebhookDlqStore {
         const entry = parseEntry(raws[position]);
         return !entry || entry.ownerUserId === ownerUserId;
       });
-      const pipeline = redis.pipeline().zrem(key, ...ids).zrem(EXPIRY_INDEX, ...doomed);
-      if (doomed.length > 0) pipeline.hdel(HASH, ...doomed);
+      const pipeline = redis.pipeline().zrem(key, ...ids);
+      // A batch of strays only has ids to leave the index: a ZREM or HDEL without members is an error that would end the clean-up.
+      if (doomed.length > 0) pipeline.zrem(EXPIRY_INDEX, ...doomed).hdel(HASH, ...doomed);
       await replies(pipeline);
     }
   }

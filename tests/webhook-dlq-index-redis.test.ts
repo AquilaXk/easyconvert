@@ -155,6 +155,27 @@ describe.skipIf(!REDIS_URL)('the per-owner index of webhook dead letters in Redi
     expect(await idsOf(bob)).toEqual([`${bob}-0`]);
   });
 
+  it('clears the entries after a whole batch of strays that another owner holds, and the index key goes', async () => {
+    const strays = client.pipeline();
+    for (let n = 0; n < 520; n += 1) {
+      const e = entry(`${bob}-${n}`, bob, Date.now() - 100_000 - n);
+      written.push(e.id);
+      strays.zadd(`${HASH}:expiry`, e.failedAt, e.id).zadd(ownerKey(bob), e.failedAt, e.id).hset(HASH, e.id, JSON.stringify(e));
+      // The index of alice names them too, with older scores than her own entries, so the first batch of 500 holds only strays.
+      strays.zadd(ownerKey(alice), e.failedAt, e.id);
+    }
+    await strays.exec();
+    for (let n = 0; n < 3; n += 1) await save(`${alice}-${n}`, alice, Date.now() - n);
+
+    await store.clear(alice);
+
+    expect(await admin.exists(ownerKey(alice))).toBe(0);
+    for (let n = 0; n < 3; n += 1) expect(await admin.hexists(HASH, `${alice}-${n}`)).toBe(0);
+    expect(await admin.zscore(`${HASH}:expiry`, `${alice}-0`)).toBeNull();
+    expect(await admin.hexists(HASH, `${bob}-0`)).toBe(1);
+    expect(await admin.zcard(ownerKey(bob))).toBe(520);
+  });
+
   it('keeps an index key that `erase-account` finds by the user tag, and lets it expire', async () => {
     await save(`${alice}-0`, alice);
 

@@ -399,25 +399,31 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
     return listed.slice(0, limit);
   }
 
-  /** A pipeline's replies; a connection that fails is the same QueueUnavailableError the single commands of this scheduler raise. */
-  private async execFailClosed(pipeline: ReturnType<Redis['pipeline']>): Promise<[Error | null, unknown][]> {
+  /**
+   * The replies of a pipeline, one per command. A failure of the connection, of one command (a Redis that drops while the pipeline
+   * runs answers its commands with errors) or of the count of replies is the same QueueUnavailableError the single commands of this
+   * scheduler raise; an error Redis itself answers (a ReplyError) is kept.
+   */
+  private async execFailClosed(pipeline: ReturnType<Redis['pipeline']>, expected: number): Promise<unknown[]> {
+    const unavailable = (err: unknown) => new QueueUnavailableError(SCHEDULER_QUEUE_NAME, err instanceof Error ? err.message : String(err));
+    let results: [Error | null, unknown][];
     try {
-      return (await pipeline.exec()) ?? [];
+      results = (await pipeline.exec()) ?? [];
     } catch (err) {
-      if (err instanceof ReplyError) throw err;
-      throw new QueueUnavailableError(SCHEDULER_QUEUE_NAME, err instanceof Error ? err.message : String(err));
+      throw err instanceof ReplyError ? err : unavailable(err);
     }
+    if (results.length !== expected) throw unavailable(new Error('The pipeline answered fewer replies than commands.'));
+    for (const [error] of results) if (error) throw error instanceof ReplyError ? error : unavailable(error);
+    return results.map(([, reply]) => reply);
   }
 
   /** The ids of `page` whose graph is of `userId` and has one of `statuses`: one pipelined read of two fields each, so the rest of a thinned page is never read whole. Gone graphs go to `vanished`. */
   private async idsOfStatus(page: readonly string[], userId: string, statuses: readonly GraphStatus[], vanished: string[]): Promise<string[]> {
     const pipeline = this.redisClient.pipeline();
     for (const graphId of page) pipeline.hmget(this.graphKeys(graphId).graph, 'status', 'owner');
-    const replies = await this.execFailClosed(pipeline);
+    const replies = await this.execFailClosed(pipeline, page.length);
     return page.filter((graphId, position) => {
-      const [error, fields] = replies[position] ?? [new Error('The pipeline answered fewer replies than commands.'), undefined];
-      if (error) throw error;
-      const [status, owner] = fields as (string | null)[];
+      const [status, owner] = replies[position] as (string | null)[];
       if (status === null && owner === null) {
         vanished.push(graphId);
         return false;
@@ -434,11 +440,10 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
       const k = this.graphKeys(graphId);
       pipeline.hgetall(k.graph).hgetall(k.nodes);
     }
-    const replies = await this.execFailClosed(pipeline);
+    const replies = await this.execFailClosed(pipeline, graphIds.length * 2);
     return graphIds.map((graphId, position) => {
-      const [graphError, rawGraph] = replies[position * 2] ?? [new Error('The pipeline answered fewer replies than commands.'), undefined];
-      const [nodesError, rawNodes] = replies[position * 2 + 1] ?? [new Error('The pipeline answered fewer replies than commands.'), undefined];
-      if (graphError || nodesError) throw graphError ?? nodesError;
+      const rawGraph = replies[position * 2];
+      const rawNodes = replies[position * 2 + 1];
       if (!rawGraph || Object.keys(rawGraph).length === 0) return undefined;
       try {
         const meta = parseGraphMeta(graphId, rawGraph as Record<string, string>);
