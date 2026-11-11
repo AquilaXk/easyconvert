@@ -741,6 +741,8 @@ export class LibreOfficePoolManager {
           // The directory of this job alone, and the profile of the slot: the other jobs of the slot keep theirs.
           workDir: jobSubdir,
           writeDirs: [worker.userProfileDir],
+          // The input of a file of the store is a link to it, which the ruleset reads through to the file.
+          readDirs: [fs.realpathSync(inputPath)],
           socketDirs: [OFFICE_PIPE_DIR],
           timeoutMs: timeout,
           maxBuffer,

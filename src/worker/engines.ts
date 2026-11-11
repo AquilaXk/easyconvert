@@ -418,7 +418,7 @@ async function runHeadlessOffice(
           inputPath,
         ],
         {
-          cwd: tempDir, workDir: tempDir, socketDirs: [OFFICE_PIPE_DIR],
+          cwd: tempDir, workDir: tempDir, readDirs: [fs.realpathSync(inputPath)], socketDirs: [OFFICE_PIPE_DIR],
           timeoutMs: timeout,
           maxBuffer,
           env: { HOME: tempDir, TMPDIR: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
