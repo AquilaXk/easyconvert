@@ -2,7 +2,6 @@ import zlib from 'node:zlib';
 import JSZip from 'jszip';
 import sharp from 'sharp';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 import { stripOfficeMacros } from '../src/lib/conversions/office-macro-strip';
 import { MAX_PACKAGE_ENTRIES, openPackage } from '../src/lib/conversions/package-access';
 import { assertOfficeEmbeddedImagesWithinLimit } from '../src/worker/office-input-checks';
@@ -124,7 +123,7 @@ describe('the entries of a package', () => {
 describe('the picture check of an office package', () => {
   it('refuses a package that cannot be read, which the office suite might still open', async () => {
     const damaged = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(200, 7)]);
-    await expect(assertOfficeEmbeddedImagesWithinLimit(damaged)).rejects.toBeInstanceOf(ConversionFailedError);
+    await expect(assertOfficeEmbeddedImagesWithinLimit(damaged)).rejects.toThrow(/not a valid office package/);
   });
 
   it.each([
@@ -133,12 +132,12 @@ describe('the picture check of an office package', () => {
     ['a part named as XML', 'word/theme/theme9.xml'],
   ])('refuses a picture over the pixel limit in %s', async (_what, name) => {
     const bomb = await packageWith({ [name]: await pngOfSide(40_000) });
-    await expect(assertOfficeEmbeddedImagesWithinLimit(bomb)).rejects.toBeInstanceOf(InputPixelLimitError);
+    await expect(assertOfficeEmbeddedImagesWithinLimit(bomb)).rejects.toMatchObject({ name: 'InputPixelLimitError', status: 413 });
   });
 
   it('refuses a picture over the pixel limit in a media folder, as before', async () => {
     const bomb = await packageWith({ 'word/media/image1.png': await pngOfSide(40_000) });
-    await expect(assertOfficeEmbeddedImagesWithinLimit(bomb)).rejects.toBeInstanceOf(InputPixelLimitError);
+    await expect(assertOfficeEmbeddedImagesWithinLimit(bomb)).rejects.toMatchObject({ name: 'InputPixelLimitError', status: 413 });
   });
 
   it('passes a package of small pictures and of parts that are no pictures', async () => {

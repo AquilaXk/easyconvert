@@ -1455,8 +1455,6 @@ export async function analyzePdfPagesInProcess(pdfBuffer: Buffer | Uint8Array, j
       verbosity: 0,
     });
     const doc = await task.promise;
-    // A job that reads every page (the content, the density of every page, or the geometry of every page that has text) is bounded by the
-    // page count; one that names its pages reads those only.
     const readsEveryPage = job.densityThreshold !== undefined || job.geometry === 'text-pages';
     if ((contentWanted || readsEveryPage) && doc.numPages > PDF_TEXT_MAX_PAGES) {
       throw pdfTextFailure('limit', `PDF has ${doc.numPages} pages; at most ${PDF_TEXT_MAX_PAGES} can be read.`);

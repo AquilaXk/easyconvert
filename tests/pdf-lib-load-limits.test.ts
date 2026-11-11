@@ -106,7 +106,15 @@ describe('pdf-lib stream limits', () => {
       [...BASE, { id: 4, dict: '/Type /ObjStm /N 0 /First 0 /Filter /FlateDecode', stream: bomb }, { id: 6, raw: '<< /Filter /Standard /V 1 /R 2 /O (x) /U (y) /P -4 >>' }],
       1
     ).buffer.toString('latin1').replace('/Root 1 0 R', '/Root 1 0 R /Encrypt 6 0 R');
-    expect(() => assertPdfLibParseWithinLimits(Buffer.from(encrypted, 'latin1'))).not.toThrow();
+    const outcome = ((): string => {
+      try {
+        assertPdfLibParseWithinLimits(Buffer.from(encrypted, 'latin1'));
+        return 'passed';
+      } catch (error) {
+        return (error as Error).name;
+      }
+    })();
+    expect(outcome).toBe('passed');
   });
 });
 

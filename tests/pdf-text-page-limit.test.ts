@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { analyzePdfPagesInProcess } from '../src/lib/conversions/pdf-text-geometry';
 import { PDF_TEXT_MAX_PAGES } from '../src/lib/conversions/pdf-text-types';
-import { PayloadLimitError } from '../src/lib/types';
 import { rawPdf, run } from './helpers/raw-pdf';
 
 /**
@@ -22,7 +21,7 @@ describe('a PDF of more pages than the text reader reads', () => {
     ['the geometry of every page that has text', { geometry: 'text-pages' as const }],
     ['the content', { geometry: 'none' as const, content: true as const }],
   ])('is refused when the job reads %s', async (_what, job) => {
-    await expect(analyzePdfPagesInProcess(tooMany, job)).rejects.toBeInstanceOf(PayloadLimitError);
+    await expect(analyzePdfPagesInProcess(tooMany, job)).rejects.toMatchObject({ name: 'PayloadLimitError', message: `PDF has ${PDF_TEXT_MAX_PAGES + 1} pages; at most ${PDF_TEXT_MAX_PAGES} can be read.` });
   });
 
   it('is read for the pages a job names', async () => {

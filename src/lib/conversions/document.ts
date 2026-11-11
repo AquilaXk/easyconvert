@@ -351,8 +351,7 @@ export async function convertDocument(
         densityThreshold,
         geometry: geometryWanted ? 'text-pages' : 'none',
         onUnmapped: options.ocrEnabled ? 'omit' : 'throw',
-        images: tgt === 'html' || tgt === 'md',
-        signal: options.signal,
+        images: tgt === 'html' || tgt === 'md', signal: options.signal,
       });
     } catch (err) {
       // A document pdfjs cannot read is recognized as displayed when OCR was asked for; otherwise it is refused.
