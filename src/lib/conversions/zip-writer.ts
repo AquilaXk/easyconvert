@@ -2,6 +2,7 @@ import { pipeline } from 'node:stream/promises';
 import { createWriteStream } from 'node:fs';
 import zlib from 'node:zlib';
 import { ConversionFailedError, PayloadLimitError, UnsupportedOptionError } from '../types';
+import { availableCpus } from '../workers/available-cpus';
 
 /**
  * Streaming ZIP writer (PKWARE APPNOTE 6.3.10): local headers, optional data descriptors, ZIP64 extra fields and end
@@ -561,15 +562,22 @@ function deflateRaw(data: Uint8Array, level: number): Promise<Buffer> {
 
 /**
  * Entries of one archive that is deflated while it is written: the entry being written and the next
- * {@link ZIP_DEFLATE_AHEAD_ENTRIES} are on the thread pool at the same time (libuv runs four jobs at once by default), so the
+ * {@link zipDeflateAheadEntries} are on the thread pool at the same time (libuv runs four jobs at once by default), so the
  * archive costs about its longest entries rather than their sum. Each entry is one zlib call, so its bytes do not depend on the
  * number of cores. A job nobody asks for (the archive failed first) is not left as an unhandled rejection.
  */
 const ZIP_DEFLATE_AHEAD_ENTRIES = 4;
 
-function deflaterRunningAhead(sources: readonly Uint8Array[]): ZipDeflater {
+/** Entries run ahead of the one being written: the pool's four threads, and no more than the cores the container may use. */
+export function zipDeflateAheadEntries(): number {
+  return Math.min(ZIP_DEFLATE_AHEAD_ENTRIES, Math.max(1, availableCpus()));
+}
+
+/** A {@link ZipDeflater} for the buffers of one archive: it starts the entries after the one asked for, so they deflate while it is written. */
+export function deflaterRunningAhead(sources: readonly Uint8Array[]): ZipDeflater {
   const positions = new Map<Uint8Array, number>();
   sources.forEach((source, index) => positions.set(source, index));
+  const ahead = zipDeflateAheadEntries();
   const running = new Map<number, Promise<Uint8Array>>();
   const start = (index: number, level: number): void => {
     if (index >= sources.length || running.has(index)) return;
@@ -580,7 +588,7 @@ function deflaterRunningAhead(sources: readonly Uint8Array[]): ZipDeflater {
   return (data, level) => {
     const index = positions.get(data);
     if (index === undefined) return deflateRaw(data, level);
-    for (let next = index; next <= index + ZIP_DEFLATE_AHEAD_ENTRIES; next++) start(next, level);
+    for (let next = index; next <= index + ahead; next++) start(next, level);
     const job = running.get(index) as Promise<Uint8Array>;
     running.delete(index);
     return job;

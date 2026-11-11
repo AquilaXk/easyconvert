@@ -56,7 +56,7 @@ import { resolveArchiveCompressionLevel } from './archive-compression-level';
 import { singleStreamPayload } from './archive-single-stream';
 import { RAR4_FILE_FLAG_UNICODE, decodeRar4FileName } from './archive-rar4-name';
 import { canonicalEntryPath, encryptedStagedName, safeCanonicalArchivePath, validateEntryPath } from './archive-entry-path';
-import { createZipBuffer, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
+import { createZipBuffer, deflaterRunningAhead, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
 import { decodeLzma, decodeLzma2 } from './lzma-decoder';
 import { packXzStream, unpackXzStream } from './xz-format';
 import { readZipDirectory, readZipFiles, zipDirectoryHasEncryptedEntry, type ZipDirectory } from './archive-zip-reader';
@@ -406,7 +406,9 @@ export async function createZipArchive(
     throw new PayloadLimitError(`ZIP archive would hold ${resolvedFiles.length} entries; the limit is ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}.`);
   }
   const compressionLevel = resolveArchiveCompressionLevel(options.compressionLevel);
-  const content = await createZipBuffer(zipEntriesWithFolders(resolvedFiles, compressionLevel));
+  const content = await createZipBuffer(zipEntriesWithFolders(resolvedFiles, compressionLevel), {
+    deflate: deflaterRunningAhead(resolvedFiles.map((file) => file.buffer)),
+  });
 
   return {
     buffer: content,
