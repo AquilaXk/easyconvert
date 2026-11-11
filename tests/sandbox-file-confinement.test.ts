@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   confinementRefusal,
+  execFileSyncConfined,
   executeSandboxedBinary,
   getUnshareCapability,
   resetUnshareCapabilityCache,
@@ -314,6 +315,16 @@ describe('the refusal of a pid-init that could not confine a run it was told to'
     expect(refused(125, 'some program failed\n')).toBeNull();
     expect(refused(1, 'pid-init: cannot confine: x\n')).toBeNull();
     expect(refused(null, '')).toBeNull();
+  });
+
+  it('maps the same refusal of a synchronous run (the archive and media routes) to SandboxUnavailableError, and leaves every other failure alone', () => {
+    const refused = ['-c', 'echo "pid-init: cannot confine: a rule could not be added" >&2; exit 125'];
+    expect(() => execFileSyncConfined('/bin/sh', refused, { stdio: 'pipe' })).toThrow(SandboxUnavailableError);
+    expect(() => execFileSyncConfined('/bin/sh', refused, { stdio: 'pipe' })).toThrow(/a rule could not be added/);
+    const other = ['-c', 'echo "the program failed" >&2; exit 125'];
+    expect(() => execFileSyncConfined('/bin/sh', other, { stdio: 'pipe' })).toThrow(/Command failed/);
+    expect(() => execFileSyncConfined('/bin/sh', other, { stdio: 'pipe' })).not.toThrow(SandboxUnavailableError);
+    expect(execFileSyncConfined('/bin/sh', ['-c', 'printf ok'], { stdio: 'pipe' }).toString()).toBe('ok');
   });
 
   it('takes the notices of a run that went unconfined off the start of its standard error, and keeps the rest', () => {
