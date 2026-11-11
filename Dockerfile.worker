@@ -132,7 +132,7 @@ RUN /tmp/install-vtracer-pixels.sh /opt/vtracer-pixels
 # ==============================================================================
 # Stage 3b''': Pinned oxipng (lossless PNG optimiser)
 # ==============================================================================
-# Every PNG the worker writes from a PNG (the compress page and the PNG to PNG conversions, entry 229). oxipng is MIT; the program is the
+# Every PNG the worker writes from a PNG (the compress page and the PNG to PNG conversions, entry 232). oxipng is MIT; the program is the
 # project's own statically linked musl release for this architecture, pinned by SHA-256 in scripts/install-oxipng.sh and used unmodified, as a
 # separate sandboxed process; nothing links it into the application. Debian ships no package of it. It carries its licence text and the notices
 # of the crates linked into it. Without it a PNG is written as before, only larger.

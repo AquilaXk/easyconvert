@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs the pinned oxipng release program, the lossless optimiser of PNG files (the PNG to PNG conversions, entry 229 of
+# Installs the pinned oxipng release program, the lossless optimiser of PNG files (the PNG to PNG conversions, entry 232 of
 # docs/policy-decisions.md). oxipng (Joshua Holmer and contributors) is MIT; the program is the project's own statically linked musl
 # build from its release page, used unmodified and only as a separate
 # program: it is never linked into the application. The archive and the licence text are each verified against a fixed SHA-256

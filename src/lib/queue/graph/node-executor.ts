@@ -1,6 +1,4 @@
 import path from 'node:path';
-import { promisify } from 'node:util';
-import zlib from 'node:zlib';
 import { Readable } from 'node:stream';
 import JSZip from 'jszip';
 import type { Job } from '../bullmq-engine';
@@ -51,6 +49,7 @@ import {
   gunzipStreamingWithLimits,
 } from '../../conversions/archive';
 import { resolveArchiveCompressionLevel } from '../../conversions/archive-compression-level';
+import { gzipInBlocks } from '../../conversions/deflate-blocks';
 import {
   ConversionFailedError,
   DecompressionLimitError,
@@ -82,11 +81,10 @@ import { deadlineBoundEngine, jobDeadlineAt } from '../job-deadline';
 import { JOB_DEADLINE_AT, remainingJobMs, stripEngineControls } from '../../conversions/job-time';
 
 const INTERMEDIATE_TTL_MS = 24 * 60 * 60 * 1000;
-const gzipAsync = promisify(zlib.gzip);
 
 /** A tar written as .tar.gz at the compression level of the node's options, without holding the event loop; stopped if the attempt ended. */
 async function gzipArchive(tar: Buffer, compressionLevel: unknown, attemptSignal: AbortSignal): Promise<Buffer> {
-  const gzipped = await gzipAsync(tar, { level: resolveArchiveCompressionLevel(compressionLevel) });
+  const gzipped = await gzipInBlocks(tar, resolveArchiveCompressionLevel(compressionLevel));
   attemptSignal.throwIfAborted();
   return gzipped;
 }

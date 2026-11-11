@@ -60,7 +60,7 @@ function chunks(png: Buffer): Array<{ type: string; data: Buffer }> {
 }
 
 describe('a 16-bit picture to PNG', () => {
-  // The test judges the encoder's own adaptive filtering, so the lossless optimiser that follows a PNG to PNG conversion (entry 229) is out of the run.
+  // The test judges the encoder's own adaptive filtering, so the lossless optimiser that follows a PNG to PNG conversion (entry 232) is out of the run.
   beforeAll(() => {
     vi.stubEnv('OXIPNG_PATH', '/nonexistent/oxipng');
   });
