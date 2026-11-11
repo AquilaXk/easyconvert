@@ -1477,13 +1477,14 @@ export async function analyzePdfPagesInProcess(pdfBuffer: Buffer | Uint8Array, j
  * Runs a job on a worker thread with a wall-clock deadline.
  * @throws PdfPasswordRequiredError (422) when the document is encrypted and its open password is not the empty one.
  * @throws EngineUnavailableError when no thread can be run (see pdf-text-host.ts), or the document is encrypted and qpdf is not installed.
+ * The thread stops when `signal` aborts (the caller's job was cancelled), and the job fails with the signal's reason.
  */
-export async function runPdfTextJob(pdfBuffer: Buffer, job: PdfTextJob): Promise<PdfTextJobResult> {
+export async function runPdfTextJob(pdfBuffer: Buffer, job: PdfTextJob, signal?: AbortSignal): Promise<PdfTextJobResult> {
   // An encrypted document is decrypted here, with the empty password pdfjs would have tried, so that the thread reads the bytes its
   // stream guard checked (the guard cannot read ciphertext and refuses it). A caller that holds a password opens the document with
   // it first (`openPdfForReading`), as every converter does. Loaded here and not at the top: the thread loads this module too.
   const { openPdfForReading } = await import('./pdf-access');
-  return runPdfTextJobInThread(await openPdfForReading(pdfBuffer), job);
+  return runPdfTextJobInThread(await openPdfForReading(pdfBuffer, undefined, signal), job, signal);
 }
 
 /** Word geometry for the requested pages, as one OcrResult per page; a page without text yields an empty result. */
