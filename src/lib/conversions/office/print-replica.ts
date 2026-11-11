@@ -1,5 +1,6 @@
 import { PDFDocument } from 'pdf-lib';
-import { ConversionFailedError } from '../../types';
+import { ConversionFailedError, PayloadLimitError } from '../../types';
+import { loadPdfLibDocument } from '../pdf-lib-load';
 import { EncryptedOfficeDocumentError } from './legacy-office-errors';
 import { readMobiRawText } from './mobi-reader';
 
@@ -57,8 +58,9 @@ function sectionsFromSignatures(raw: Buffer): Buffer[] {
 
 async function loadPdf(candidate: Buffer): Promise<PDFDocument | null> {
   try {
-    return await PDFDocument.load(candidate);
+    return await loadPdfLibDocument(candidate);
   } catch (error) {
+    if (error instanceof PayloadLimitError) throw error;
     if (error instanceof Error && /encrypted/i.test(error.message)) {
       throw new EncryptedOfficeDocumentError('The Print Replica PDF is encrypted, so its pages cannot be read.');
     }

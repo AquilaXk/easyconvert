@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { PDFArray, PDFDocument, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import {
-  createLosslessSandwichPdfFromPdf,
   OcrResult,
 } from '../src/lib/conversions/ocr-pdf-combiner';
+import { createLosslessSandwichPdfFromPdf } from '../src/lib/conversions/ocr-pdf-sandwich';
 import { shownWords } from './helpers/pdf-shown-text';
 import { SCALING_TEST_TIMEOUT_MS, expectNoHangOnInput, SCALING_FACTOR } from './helpers/timing';
 import {

@@ -39,7 +39,7 @@ import type { DocumentModel } from './document-model/model';
 import { documentToHtml } from './document-model/html';
 import { documentToMarkdown } from './document-model/markdown';
 import { rethrowInputPixelLimit } from './image-input-limits';
-import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
+import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-sandwich';
 import { characterWeightedConfidence } from './ocr-calibration';
 import { renderPdfBlocks, type PdfBlock } from './pdf-blocks';
 import { canDrawInPdf, loadFontCoverageIndex } from './pdf-fonts';
@@ -352,6 +352,7 @@ export async function convertDocument(
         geometry: geometryWanted ? 'text-pages' : 'none',
         onUnmapped: options.ocrEnabled ? 'omit' : 'throw',
         images: tgt === 'html' || tgt === 'md',
+        signal: options.signal,
       });
     } catch (err) {
       // A document pdfjs cannot read is recognized as displayed when OCR was asked for; otherwise it is refused.
