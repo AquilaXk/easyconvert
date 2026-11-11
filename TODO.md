@@ -11,7 +11,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Bring `3fr->gif`, `x3f-quattro->gif`, `3fr->avif` and `mos->gif` under a fifth of a conformance part on CI, then record the durations.
 - Cut the `arw` GIF time: 16-to-8-bit RGBA conversion (119 ms) and LZW (52 ms).
 - Lift `screenshot.png->svg` from 0.85 to 0.90 of the reference on arm64.
-- Lift `silesia-xml.xz->tar` from 0.876 to the reference speed.
+- Lift `silesia-xml.xz->tar` from 0.876 to the reference speed on the x64 runner (1.12 on the arm64 VM, entry 111): start 7-Zip from the launcher helper with the spool opened by its path, so the fork of a large worker (1.8 ms from 116 MB, 6.0 ms from 570 MB) is not paid.
 - Lift `jxl->avif` throughput from 0.87 (sandbox start plus the intermediate PNG).
 
 ## Product and API
