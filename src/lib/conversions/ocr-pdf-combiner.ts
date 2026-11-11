@@ -179,6 +179,8 @@ export interface OcrEngineFallback {
   to: 'cli' | 'wasm';
   /** Documented recoverable failure class of the first engine (see ocr-engine-failure.ts, ocr-onnx-helper.ts). */
   reason: string;
+  /** Set when the engine that failed here was itself the answer to an earlier failure (the ONNX engine, then the WebAssembly one, then the native tool). */
+  previous?: OcrEngineFallback;
 }
 
 export interface ColumnGutter {

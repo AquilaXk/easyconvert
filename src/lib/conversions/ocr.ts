@@ -81,7 +81,7 @@ import {
   recognizePageWithOnnxHelper,
   shutdownOnnxOcrHelpers,
 } from './ocr-onnx-helper';
-import { koreanOnnxLanguages, ONNX_PRODUCT_DETECTOR_MAX_SIDE, sayOnnxFallbackOnce } from './ocr-onnx-route';
+import { chainEngineFallbacks, koreanOnnxLanguages, ONNX_PRODUCT_DETECTOR_MAX_SIDE, sayOnnxFallbackOnce } from './ocr-onnx-route';
 import {
   OCR_PREPROCESS_STEPS,
   OCR_UNEVEN_BACKGROUND_RATIO,
@@ -350,6 +350,11 @@ export async function recognizePage(
   if (detectOrientation === true) assertOrientationDetectable();
   // What the page declares about its size, for the searchable PDF; undeclared is recorded as assumed.
   const imageDpi = resolveImageDpi(imageBuffer);
+  let onnxFallback: OcrEngineFallback | undefined;
+  const fallbackOf = (tesseract: OcrEngineFallback | undefined): { engineFallback?: OcrEngineFallback } => {
+    const chained = chainEngineFallbacks(onnxFallback, tesseract);
+    return chained ? { engineFallback: chained } : {};
+  };
   const finish = (page: RecognizedPage, orientation: OcrOrientation): RecognizedPage => {
     // The ONNX reading is kept as the recognizer wrote it: the post-correction is for the Tesseract Korean output.
     const corrected = includesKoreanLanguage(page.result.language) && page.enginePath !== 'onnx'
@@ -357,12 +362,11 @@ export async function recognizePage(
       : page.result;
     return {
       ...page,
-      result: { ...corrected, orientation, imageDpi, ...(onnxFallback ? { engineFallback: onnxFallback } : {}) },
+      result: { ...corrected, orientation, imageDpi, ...fallbackOf(page.result.engineFallback) },
     };
   };
 
   // The ONNX engine reads Korean (and the Latin text beside it); a page whose script was found to be another one goes to Tesseract.
-  let onnxFallback: OcrEngineFallback | undefined;
   let onnxWanted = enginePath === 'onnx' || (enginePath === undefined && koreanOnnxLanguages(requested.traineddata));
   const attempt = async (quarterTurn: OcrQuarterTurn, tesseractLang: string, languageData: () => LanguageData): Promise<RecognizedPage> => {
     if (onnxWanted && tesseractLang === requestedLanguage) {

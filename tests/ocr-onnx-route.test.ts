@@ -12,6 +12,7 @@ import { performOcr, recognizePage } from '../src/lib/conversions/ocr';
 import { OnnxOcrFailedError, OnnxOcrUnavailableError } from '../src/lib/conversions/ocr-onnx-helper';
 import { calibrationTableFor } from '../src/lib/conversions/ocr-calibration';
 import { OcrEngineUnavailableError } from '../src/lib/types';
+import { chainEngineFallbacks } from '../src/lib/conversions/ocr-onnx-route';
 
 /**
  * Which engine reads a page. The helper is replaced by a stand-in here, so these tests check the routing (the languages, the explicit
@@ -104,5 +105,20 @@ describe('when the ONNX engine cannot read the page', () => {
     });
     await expect(recognizePage(page, 'kor', { detectOrientation: false, signal: controller.signal })).rejects.toBeInstanceOf(OnnxOcrFailedError);
     expect(helper.recognize).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the fallbacks a result reports', () => {
+  const onnx = { from: 'onnx', to: 'wasm', reason: 'onnx-models-missing' } as const;
+  const wasm = { from: 'wasm', to: 'cli', reason: 'wasm-runtime-trap' } as const;
+
+  it('keeps the WebAssembly to native fallback and the ONNX one under it', () => {
+    expect(chainEngineFallbacks(onnx, wasm)).toEqual({ ...wasm, previous: onnx });
+  });
+
+  it('reports the one that happened when only one did, and nothing when none did', () => {
+    expect(chainEngineFallbacks(onnx, undefined)).toEqual(onnx);
+    expect(chainEngineFallbacks(undefined, wasm)).toEqual(wasm);
+    expect(chainEngineFallbacks(undefined, undefined)).toBeUndefined();
   });
 });

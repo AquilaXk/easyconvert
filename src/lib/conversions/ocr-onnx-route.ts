@@ -1,4 +1,5 @@
 import type { OnnxOcrFailedError, OnnxOcrUnavailableError } from './ocr-onnx-helper';
+import type { OcrEngineFallback } from './ocr-pdf-combiner';
 
 /**
  * Which pages the ONNX engine reads by default, and how a page it did not read is reported. The recognizer is the Korean
@@ -27,4 +28,13 @@ export function sayOnnxFallbackOnce(error: OnnxOcrUnavailableError | OnnxOcrFail
   if (said.has(error.reason)) return;
   said.add(error.reason);
   console.warn(`[ocr] Korean pages are read by Tesseract because the ONNX engine is not usable (${error.reason}): ${error.message}`);
+}
+
+/**
+ * The fallback a result reports when the ONNX engine did not read the page (`onnx`) and the Tesseract reading itself fell back from the
+ * WebAssembly engine to the native tool (`tesseract`): the later one, with the earlier one under `previous`, so that neither is lost.
+ */
+export function chainEngineFallbacks(onnx: OcrEngineFallback | undefined, tesseract: OcrEngineFallback | undefined): OcrEngineFallback | undefined {
+  if (onnx && tesseract) return { ...tesseract, previous: onnx };
+  return tesseract ?? onnx;
 }
