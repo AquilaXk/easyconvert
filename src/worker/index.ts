@@ -371,7 +371,7 @@ startHeartbeat();
 if (process.env.NODE_ENV !== 'test') {
   startRetentionSweep(ociStorage);
   startEndedRecordSweep();
-  // What a worker killed without a clean exit left in the temporary directory, which a restart does not clear (policy entry 232).
+  // What a worker killed without a clean exit left in the temporary directory, which a restart does not clear (policy entry 244).
   startWorkerSandboxSweep();
   // The metrics listener stays up while the worker drains, so a drain can be watched; it is closed with the process.
   startMetricsFromConfig('worker', () => sampleQueues(metricsQueueSources())).catch((error: unknown) => {

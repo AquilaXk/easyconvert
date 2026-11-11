@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Starts a built worker image the way production runs it, next to a Redis, and requires the worker to come up and to stop cleanly
-# (docs/policy-decisions.md, entry 232). The deploy workflow runs it on the worker image before it pushes the web image tag, so a
+# (docs/policy-decisions.md, entry 243). The deploy workflow runs it on the worker image before it pushes the web image tag, so a
 # build whose worker cannot start in the production container is never deployable.
 #
 #   scripts/boot-worker-image.sh <image>

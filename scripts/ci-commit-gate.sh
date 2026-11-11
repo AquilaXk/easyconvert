@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# What the deploy workflow asks of a commit and of an image (docs/policy-decisions.md, entry 232): the required check `verify` of CI
+# What the deploy workflow asks of a commit and of an image (docs/policy-decisions.md, entry 243): the required check `verify` of CI
 # succeeded for the commit, and the files shipped with an image are those of the commit the image was built from.
 #
 #   ci-commit-gate.sh state <commit>               success | failure | pending | none: the latest `verify` check run of the commit

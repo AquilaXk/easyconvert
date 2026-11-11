@@ -14,7 +14,7 @@ import {
 import { LibreOfficePoolManager } from '../src/worker/libreoffice-pool';
 
 /**
- * What a worker killed by SIGKILL leaves in the temporary directory, and what removes it (docs/policy-decisions.md, entry 232). The
+ * What a worker killed by SIGKILL leaves in the temporary directory, and what removes it (docs/policy-decisions.md, entry 244). The
  * temporary directory is a directory of the test: os.tmpdir() follows TMPDIR, and the worker modules ask it on every call.
  */
 

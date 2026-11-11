@@ -127,7 +127,7 @@ jobs:
 
       # The worker image as production runs it, next to a Redis: it must pass its healthcheck, report that it listens for jobs and end
       # with status 0 on SIGTERM. Until a worker was started here, only the web image was, and a worker that could not start was
-      # promoted all the same (policy entry 232).
+      # promoted all the same (policy entry 243).
       - name: Start the worker image as production runs it
         env:
           WORKER_DIGEST: ${{ steps.worker.outputs.digest }}

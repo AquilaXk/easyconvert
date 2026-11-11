@@ -5,7 +5,7 @@ import { EasyConvertClient } from '../sdk/typescript/src/client';
 
 /**
  * POST /api/v1/convert answers 202 with the queued job when the file is over the synchronous limit or the request sends
- * `Prefer: respond-async`, and takes the webhook of that job in the form (docs/policy-decisions.md, entry 232). The SDK sends all three
+ * `Prefer: respond-async`, and takes the webhook of that job in the form (docs/policy-decisions.md, entry 245). The SDK sends all three
  * and does not read the JSON of a 202 as the bytes of a result.
  */
 

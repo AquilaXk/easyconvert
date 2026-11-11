@@ -5,7 +5,7 @@ import { isOwnedWorkerSandboxDir, touchOwnedWorkerSandboxDirs } from './sandbox'
 
 /**
  * Removes the sandbox and LibreOffice profile directories that a worker killed without a clean exit left in the temporary directory
- * (docs/policy-decisions.md, entry 232). A worker that is stopped by SIGKILL (the memory limit of its container) runs no cleanup, and
+ * (docs/policy-decisions.md, entry 244). A worker that is stopped by SIGKILL (the memory limit of its container) runs no cleanup, and
  * the temporary directory of the production worker is a host directory that outlives the container, so nothing else removes them
  * before the host's scheduled sweep two hours later.
  *

@@ -5,7 +5,7 @@ import { libreOfficePool } from '../src/worker/engines';
 import { drainWorker, ENGINE_SHUTDOWN_TIMEOUT_MS, resetWorkerLifecycleState, shutdownEngines } from '../src/worker/index';
 
 /**
- * The drain of a recycled or stopped worker stops the engines that outlive a job (docs/policy-decisions.md, entry 232): the LibreOffice
+ * The drain of a recycled or stopped worker stops the engines that outlive a job (docs/policy-decisions.md, entry 244): the LibreOffice
  * pool removes its profile directories only when it is shut down, and the qpdf runner and the PDF text threads are child processes and
  * threads of this process.
  */

@@ -100,7 +100,7 @@ describe('container job in .github/workflows/ci.yml', () => {
   it('treats a change to every file that Dockerfile.worker copies from the repository, but the application sources, as relevant', () => {
     // The sources are compiled by the unit and integration jobs; what the image build adds is the native tools, the install scripts and
     // their patches, the sandbox and the policy files. A copy that the pattern misses would let a change to it skip the image build
-    // and the hardening checks (policy entry 232).
+    // and the hardening checks (policy entry 243).
     const COMPILED_OR_TESTED_ELSEWHERE = [/^package(-lock)?\.json$|^package\*\.json$/, /^tsconfig\.json$/, /^src\//, /^THIRD_PARTY_NOTICES\.md$/, /^scripts\/erase-account\.ts$/];
     const copies = readFileSync(path.join(ROOT, 'Dockerfile.worker'), 'utf-8')
       .split('\n')
