@@ -18,6 +18,8 @@
 #   9. xz (the .xz encoder and decoder of the archive conversions) is installed and round-trips inside the sandbox, also under the worker's own address-space caps
 #  10. pid-init runs a program as PID 2 of a PID namespace of its own, under this container's seccomp profile, and the program cannot see or signal a sibling process
 #      nor read its command line and status in /proc (the Landlock ruleset of pid-init)
+#  11. the ONNX OCR helper (dist/ocr-onnx-child.js) loads its models and says it is ready in a user, network and PID namespace of its own, under the
+#      address-space and CPU limits the worker gives it and this container's seccomp profile
 #
 # The sandbox is entered with the same `unshare -r -n` and `prlimit --as` the worker uses
 # (src/lib/security/process-sandbox.ts); this script does not load the worker's own code.
@@ -446,6 +448,20 @@ else
     fi
   fi
   kill "$sibling_pid" 2>/dev/null
+fi
+
+# --- 11. ONNX OCR helper ------------------------------------------------------------------------------
+# The helper (src/lib/conversions/ocr-onnx-helper.ts starts it) loads the two models of /opt/ocr-onnx and writes a ready frame (two 32-bit lengths,
+# then {"type":"ready"}) on its standard output. It is started as the worker starts it: unshare -r -n, pid-init, prlimit, node.
+if [ ! -s /opt/ocr-onnx/rec.onnx ] || [ ! -f "$APP_DIR/dist/ocr-onnx-child.js" ]; then
+  fail "the ONNX OCR models (/opt/ocr-onnx) or the helper ($APP_DIR/dist/ocr-onnx-child.js) are missing: Korean pages are read by Tesseract"
+else
+  onnx_output="$(sleep 25 | timeout 25 unshare -r -n -- pid-init -- prlimit --as=$((10 * 1024 * 1024 * 1024)) --cpu=300 -- node "$APP_DIR/dist/ocr-onnx-child.js" --models=/opt/ocr-onnx --threads=1 2>/dev/null | head -c 64 | tr -d '\000-\037')"
+  if printf '%s' "$onnx_output" | grep -q '"type":"ready"'; then
+    pass "the ONNX OCR helper loaded its models and said it is ready in a sandbox of its own"
+  else
+    fail "the ONNX OCR helper did not become ready in a sandbox: $(printf '%s' "$onnx_output" | head -c 200)"
+  fi
 fi
 
 if [ "$failures" -eq 0 ]; then

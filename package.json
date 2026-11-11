@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "next build && npm run build:raw-worker && npm run build:pdf-text-worker && npm run build:cpu-worker && npm run build:image-fetcher && npm run build:sandbox-launcher",
+    "build": "next build && npm run build:raw-worker && npm run build:pdf-text-worker && npm run build:cpu-worker && npm run build:image-fetcher && npm run build:sandbox-launcher && npm run build:ocr-onnx-child",
     "start": "next start",
     "lint": "next lint",
     "licenses:generate": "node scripts/third-party-notices.mjs",
@@ -20,7 +20,7 @@
     "test": "vitest run",
     "test:redis": "vitest run tests/job-lifecycle-redis.test.ts && vitest run tests/job-graph-redis-e2e.test.ts && vitest run tests/byos-secret-sealing-redis.test.ts && vitest run tests/job-failure-redis.test.ts && vitest run tests/result-retention-redis.test.ts && vitest run tests/graph-scheduler-corrupt-state.test.ts && vitest run tests/phase-1-queue-sandbox-lifecycle.test.ts -t \"pops waiting jobs|schedules delayed jobs\" && vitest run tests/redis-first-command-redis.test.ts && vitest run tests/quota-accounting-redis.test.ts && vitest run tests/queue-lists-redis.test.ts && vitest run tests/queue-oldest-waiting-redis.test.ts && vitest run tests/job-record-retention-redis.test.ts && vitest run tests/erase-account.test.ts && vitest run tests/auth-token-store-redis.test.ts && vitest run tests/webhook-rotated-secret-jobs.test.ts && vitest run tests/account-file-history-redis.test.ts && vitest run tests/graph-user-index-redis.test.ts && vitest run tests/graph-ended-node-jobs-redis.test.ts && vitest run tests/graph-output-history-redis.test.ts && vitest run tests/webhook-dlq-index-redis.test.ts && vitest run tests/credentials-vault-index-redis.test.ts && vitest run tests/user-job-list-redis.test.ts && vitest run tests/retention-availability-batch-redis.test.ts",
     "worker": "tsx src/worker/index.ts",
-    "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node24 --outfile=dist/worker.js --packages=external && npm run build:raw-worker && npm run build:pdf-text-worker && npm run build:cpu-worker && npm run build:image-fetcher && npm run build:sandbox-launcher && npm run build:erase-account",
+    "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node24 --outfile=dist/worker.js --packages=external && npm run build:raw-worker && npm run build:pdf-text-worker && npm run build:cpu-worker && npm run build:image-fetcher && npm run build:sandbox-launcher && npm run build:ocr-onnx-child && npm run build:erase-account",
     "bench:quality": "tsx bench/run.ts",
     "bench:quality:update-baseline": "tsx bench/run.ts --update-baseline",
     "bench:refresh-speed": "tsx bench/refresh-speed.ts",
@@ -36,6 +36,7 @@
     "build:raw-worker": "esbuild src/worker/raw-decode-worker.ts --bundle --platform=node --target=node24 --outfile=dist/raw-decode-worker.js --packages=external",
     "build:cpu-worker": "esbuild src/lib/workers/cpu-worker.ts --bundle --platform=node --target=node24 --outfile=dist/cpu-worker.js --packages=external",
     "build:sandbox-launcher": "esbuild src/lib/security/sandbox-launcher-child.ts --bundle --platform=node --target=node24 --outfile=dist/sandbox-launcher-child.js --packages=external",
+    "build:ocr-onnx-child": "esbuild src/lib/conversions/ocr-onnx-child.ts --bundle --platform=node --target=node24 --outfile=dist/ocr-onnx-child.js --packages=external",
     "build:image-fetcher": "esbuild src/lib/conversions/html-image-fetch-child.ts --bundle --platform=node --target=node24 --outfile=dist/html-image-fetch-child.js --packages=external",
     "build:pdf-text-worker": "esbuild src/lib/conversions/pdf-text-worker.ts --bundle --platform=node --target=node24 --outfile=dist/pdf-text-worker.js --packages=external"
   },
@@ -59,6 +60,7 @@
     "next": "^15.5.28",
     "next-intl": "^4.14.9",
     "nodemailer": "^10.3.1",
+    "onnxruntime-node": "1.31.1",
     "papaparse": "^5.4.1",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.3.289",
