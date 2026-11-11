@@ -19,6 +19,7 @@
 import { ConversionFailedError } from '../types';
 import { BLUE_NOISE_SIDE, blueNoiseCentred } from './blue-noise-mask';
 import { COLOUR_MEMO_LAB_STRIDE, ColourMemo } from './image-colour-memo';
+import { GIF_PHOTO_PIXEL_BUDGET, QUANTIZER_PIXEL_BUDGET, assertPixelBudget } from './image-input-limits';
 import { KdTree3 } from './kd-tree';
 
 export interface RgbColor {
@@ -647,29 +648,38 @@ function mapFloydSteinberg(pixels: ArrayLike<number>, width: number, height: num
   return out;
 }
 
-/** Hilbert-curve coordinates of the index d on an n x n grid (n a power of two). */
-function hilbertToXy(n: number, d: number, out: Int32Array): void {
-  let t = d;
-  let x = 0;
-  let y = 0;
-  for (let s = 1; s < n; s <<= 1) {
-    const rx = 1 & (t >> 1);
-    const ry = 1 & (t ^ rx);
-    if (ry === 0) {
-      if (rx === 1) {
-        x = s - 1 - x;
-        y = s - 1 - y;
-      }
-      const swap = x;
-      x = y;
-      y = swap;
+/** The four unit steps of the grid (right, down, left, up) by direction code; `opposite` turns one around. */
+const UNIT_X = [1, 0, -1, 0];
+const UNIT_Y = [0, 1, 0, -1];
+const opposite = (direction: number): number => (direction + 2) % 4;
+
+/**
+ * Calls `visit(x, y)` for every cell of a width x height picture, in the order of the Hilbert curve of the power-of-two
+ * square that holds it with the cells outside the picture left out. The walk goes down the quadrants of the square and
+ * skips every quadrant that lies wholly outside the picture, so its work is in proportion to the cells of the picture
+ * (and the sides' bit length), not to the square: a 65,535 x 1 picture is 65,535 steps, not the 4.3 billion of its square.
+ * A square of side s is placed by its origin (ox, oy) and the two directions a and b that its columns and rows go along.
+ */
+export function walkHilbertCurve(width: number, height: number, visit: (x: number, y: number) => void): void {
+  if (!(width > 0 && height > 0)) return;
+  let side = 1;
+  while (side < Math.max(width, height)) side *= 2;
+  const walk = (s: number, ox: number, oy: number, a: number, b: number): void => {
+    const far = s - 1;
+    const endX = ox + far * (UNIT_X[a] + UNIT_X[b]);
+    const endY = oy + far * (UNIT_Y[a] + UNIT_Y[b]);
+    if (Math.min(ox, endX) >= width || Math.min(oy, endY) >= height) return;
+    if (s === 1) {
+      visit(ox, oy);
+      return;
     }
-    x += s * rx;
-    y += s * ry;
-    t >>= 2;
-  }
-  out[0] = x;
-  out[1] = y;
+    const h = s / 2;
+    walk(h, ox, oy, b, a);
+    walk(h, ox + h * UNIT_X[b], oy + h * UNIT_Y[b], a, b);
+    walk(h, ox + h * (UNIT_X[a] + UNIT_X[b]), oy + h * (UNIT_Y[a] + UNIT_Y[b]), a, b);
+    walk(h, ox + far * UNIT_X[a] + (h - 1) * UNIT_X[b], oy + far * UNIT_Y[a] + (h - 1) * UNIT_Y[b], opposite(b), opposite(a));
+  };
+  walk(side, 0, 0, 0, 1);
 }
 
 /** Hilbert-curve Riemersma error diffusion in Oklab, with a 16-entry exponentially decaying error queue. */
@@ -686,20 +696,13 @@ function mapRiemersma(pixels: ArrayLike<number>, width: number, height: number, 
   const queue = new Float64Array(RIEMERSMA_QUEUE_SIZE * RGB_STRIDE);
   let head = 0;
   const lab = new Float64Array(RGB_STRIDE);
-  const xy = new Int32Array(2);
-  let side = 1;
-  while (side < Math.max(width, height)) side <<= 1;
   let hint = 0;
-  for (let d = 0; d < side * side; d += 1) {
-    hilbertToXy(side, d, xy);
-    const x = xy[0];
-    const y = xy[1];
-    if (x >= width || y >= height) continue;
+  walkHilbertCurve(width, height, (x, y) => {
     const p = y * width + x;
     const i = p * RGBA_STRIDE;
     if (transparentIndex >= 0 && pixels[i + 3] < QUANT_ALPHA_THRESHOLD) {
       out[p] = transparentIndex;
-      continue;
+      return;
     }
     linearToOklab(SRGB_TO_LINEAR_TABLE[pixels[i]], SRGB_TO_LINEAR_TABLE[pixels[i + 1]], SRGB_TO_LINEAR_TABLE[pixels[i + 2]], lab, 0);
     let eL = 0;
@@ -722,7 +725,7 @@ function mapRiemersma(pixels: ArrayLike<number>, width: number, height: number, 
     queue[slot] = L - model.oklab[q];
     queue[slot + 1] = a - model.oklab[q + 1];
     queue[slot + 2] = b - model.oklab[q + 2];
-  }
+  });
   return out;
 }
 
@@ -768,6 +771,8 @@ export function quantizeImage(
   options: QuantizeOptions = {}
 ): IndexedImage {
   assertRaster(pixels, width, height);
+  // Whoever calls: the dithering paths hold far more per pixel than the plain mapping, so each has its own line.
+  assertPixelBudget(width, height, (options.dither ?? 'none') === 'none' ? GIF_PHOTO_PIXEL_BUDGET : QUANTIZER_PIXEL_BUDGET);
   const pixelCount = width * height;
   const keepsTransparency = options.transparency === 'threshold';
   let hasTransparent = false;
@@ -837,15 +842,8 @@ export function quantizePaletteOklab(
 
 /** Hilbert space-filling curve coordinates for an arbitrary width x height image. */
 export function generateHilbertCurveOrder(width: number, height: number): { x: number; y: number }[] {
-  if (width <= 0 || height <= 0) return [];
-  let side = 1;
-  while (side < Math.max(width, height)) side <<= 1;
   const result: { x: number; y: number }[] = [];
-  const xy = new Int32Array(2);
-  for (let d = 0; d < side * side; d += 1) {
-    hilbertToXy(side, d, xy);
-    if (xy[0] < width && xy[1] < height) result.push({ x: xy[0], y: xy[1] });
-  }
+  walkHilbertCurve(width, height, (x, y) => result.push({ x, y }));
   return result;
 }
 
@@ -856,6 +854,7 @@ export function riemersmaDither(
   height: number,
   palette: RgbColor[]
 ): { indexed: Uint8Array; rgba: Uint8ClampedArray } {
+  assertPixelBudget(width, height, QUANTIZER_PIXEL_BUDGET);
   const pixelCount = width * height;
   if (palette.length === 0 || pixelCount === 0) {
     return { indexed: new Uint8Array(pixelCount), rgba: new Uint8ClampedArray(pixelCount * RGBA_STRIDE) };

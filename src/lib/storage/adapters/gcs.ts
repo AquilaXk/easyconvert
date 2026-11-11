@@ -1,16 +1,27 @@
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
-import { request } from 'undici';
 import type { GcsCredentials } from '../credentials-vault';
 import {
   IStorageAdapter,
   StorageAdapterMetadata,
   StorageNotFoundError,
   StorageAuthenticationError,
-  StorageSsrfError,
   StorageAdapterError,
+  StorageInvalidKeyError,
 } from './adapter-interface';
-import { createSsrfSafeAgent, validateUrlForSsrf } from '../../security/ssrf';
+import { assertValidObjectKey } from '../s3-sigv4';
+import { adapterDispatcher, guardedRequest, assertAdapterUrlSafe, readErrorText, releaseDispatcher, readJsonBody } from './http-guard';
+
+/** The object name of a remote path: dot segments are refused, as the other adapters and the S3 client do. */
+function toObjectName(remotePath: string): string {
+  const name = remotePath.replace(/^\/+/, '');
+  try {
+    assertValidObjectKey(name);
+  } catch (err) {
+    throw new StorageInvalidKeyError(err instanceof Error ? err.message : 'Invalid object key', 'gcs', err);
+  }
+  return name;
+}
 
 export class GcsStorageAdapter implements IStorageAdapter {
   readonly providerName = 'gcs';
@@ -24,12 +35,8 @@ export class GcsStorageAdapter implements IStorageAdapter {
     this.endpoint = credentials.endpoint || 'https://storage.googleapis.com';
   }
 
-  private async assertSsrfSafe(urlStr: string): Promise<void> {
-    const url = new URL(urlStr);
-    const safe = await validateUrlForSsrf(url);
-    if (!safe) {
-      throw new StorageSsrfError(urlStr, this.providerName);
-    }
+  private assertSsrfSafe(urlStr: string): Promise<void> {
+    return assertAdapterUrlSafe(urlStr, this.providerName);
   }
 
   private async getAccessToken(): Promise<string | null> {
@@ -82,9 +89,9 @@ export class GcsStorageAdapter implements IStorageAdapter {
       const tokenUrl = 'https://oauth2.googleapis.com/token';
       await this.assertSsrfSafe(tokenUrl);
 
-      const dispatcher = createSsrfSafeAgent();
+      const dispatcher = adapterDispatcher(tokenUrl);
       try {
-        const res = await request(tokenUrl, {
+        const res = await guardedRequest(tokenUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
@@ -97,18 +104,16 @@ export class GcsStorageAdapter implements IStorageAdapter {
         });
 
         if (res.statusCode !== 200) {
-          const errBody = await res.body.text();
+          const errBody = await readErrorText(res.body, this.providerName);
           throw new StorageAuthenticationError(`Token exchange failed (${res.statusCode}): ${errBody}`, this.providerName);
         }
 
-        const tokenData = (await res.body.json()) as { access_token: string; expires_in: number };
+        const tokenData = await readJsonBody<{ access_token: string; expires_in: number }>(res.body, this.providerName);
         this.cachedToken = tokenData.access_token;
         this.tokenExpiresAt = Date.now() + tokenData.expires_in * 1000;
         return this.cachedToken;
       } finally {
-        try {
-          await dispatcher.close?.();
-        } catch {}
+        await releaseDispatcher(dispatcher);
       }
     } catch (err) {
       if (err instanceof StorageAdapterError) throw err;
@@ -126,15 +131,15 @@ export class GcsStorageAdapter implements IStorageAdapter {
   }
 
   async downloadStream(remotePath: string): Promise<NodeJS.ReadableStream> {
-    const encodedObj = encodeURIComponent(remotePath.replace(/^\/+/, ''));
+    const encodedObj = encodeURIComponent(toObjectName(remotePath));
     const url = `${this.endpoint}/storage/v1/b/${encodeURIComponent(this.bucket)}/o/${encodedObj}?alt=media`;
     await this.assertSsrfSafe(url);
 
     const headers = await this.getAuthHeaders();
-    const dispatcher = createSsrfSafeAgent();
+    const dispatcher = adapterDispatcher(url);
     let streaming = false;
     try {
-      const res = await request(url, {
+      const res = await guardedRequest(url, {
         method: 'GET',
         headers,
         dispatcher,
@@ -147,7 +152,7 @@ export class GcsStorageAdapter implements IStorageAdapter {
         throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
       }
       if (res.statusCode < 200 || res.statusCode >= 300) {
-        const errText = await res.body.text();
+        const errText = await readErrorText(res.body, this.providerName);
         throw new Error(`[GcsAdapter] Download failed (${res.statusCode}): ${errText}`);
       }
 
@@ -164,9 +169,7 @@ export class GcsStorageAdapter implements IStorageAdapter {
       return bodyStream;
     } finally {
       if (!streaming) {
-        try {
-          await dispatcher.close?.();
-        } catch {}
+        await releaseDispatcher(dispatcher);
       }
     }
   }
@@ -176,7 +179,7 @@ export class GcsStorageAdapter implements IStorageAdapter {
     stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
     options?: { contentType?: string; size?: number }
   ): Promise<StorageAdapterMetadata> {
-    const cleanPath = remotePath.replace(/^\/+/, '');
+    const cleanPath = toObjectName(remotePath);
     const url = `${this.endpoint}/upload/storage/v1/b/${encodeURIComponent(this.bucket)}/o?uploadType=media&name=${encodeURIComponent(cleanPath)}`;
     await this.assertSsrfSafe(url);
 
@@ -196,9 +199,9 @@ export class GcsStorageAdapter implements IStorageAdapter {
       nodeStream = stream;
     }
 
-    const dispatcher = createSsrfSafeAgent();
+    const dispatcher = adapterDispatcher(url);
     try {
-      const res = await request(url, {
+      const res = await guardedRequest(url, {
         method: 'POST',
         headers,
         body: nodeStream as any,
@@ -206,11 +209,11 @@ export class GcsStorageAdapter implements IStorageAdapter {
       });
 
       if (res.statusCode < 200 || res.statusCode >= 300) {
-        const errText = await res.body.text();
+        const errText = await readErrorText(res.body, this.providerName);
         throw new Error(`[GcsAdapter] Upload failed (${res.statusCode}): ${errText}`);
       }
 
-      const data = (await res.body.json()) as { size?: string; etag?: string; contentType?: string; updated?: string };
+      const data = await readJsonBody<{ size?: string; etag?: string; contentType?: string; updated?: string }>(res.body, this.providerName);
       const size = data.size ? Number.parseInt(data.size, 10) : options?.size || 0;
       return {
         size,
@@ -219,21 +222,19 @@ export class GcsStorageAdapter implements IStorageAdapter {
         lastModified: data.updated ? new Date(data.updated) : new Date(),
       };
     } finally {
-      try {
-        await dispatcher.close?.();
-      } catch {}
+      await releaseDispatcher(dispatcher);
     }
   }
 
   async head(remotePath: string): Promise<StorageAdapterMetadata | null> {
-    const encodedObj = encodeURIComponent(remotePath.replace(/^\/+/, ''));
+    const encodedObj = encodeURIComponent(toObjectName(remotePath));
     const url = `${this.endpoint}/storage/v1/b/${encodeURIComponent(this.bucket)}/o/${encodedObj}`;
     await this.assertSsrfSafe(url);
 
     const headers = await this.getAuthHeaders();
-    const dispatcher = createSsrfSafeAgent();
+    const dispatcher = adapterDispatcher(url);
     try {
-      const res = await request(url, {
+      const res = await guardedRequest(url, {
         method: 'GET',
         headers,
         dispatcher,
@@ -246,7 +247,7 @@ export class GcsStorageAdapter implements IStorageAdapter {
         return null;
       }
 
-      const data = (await res.body.json()) as { size?: string; etag?: string; contentType?: string; updated?: string };
+      const data = await readJsonBody<{ size?: string; etag?: string; contentType?: string; updated?: string }>(res.body, this.providerName);
       return {
         size: data.size ? Number.parseInt(data.size, 10) : 0,
         etag: data.etag,
@@ -254,21 +255,19 @@ export class GcsStorageAdapter implements IStorageAdapter {
         lastModified: data.updated ? new Date(data.updated) : undefined,
       };
     } finally {
-      try {
-        await dispatcher.close?.();
-      } catch {}
+      await releaseDispatcher(dispatcher);
     }
   }
 
   async delete(remotePath: string): Promise<boolean> {
-    const encodedObj = encodeURIComponent(remotePath.replace(/^\/+/, ''));
+    const encodedObj = encodeURIComponent(toObjectName(remotePath));
     const url = `${this.endpoint}/storage/v1/b/${encodeURIComponent(this.bucket)}/o/${encodedObj}`;
     await this.assertSsrfSafe(url);
 
     const headers = await this.getAuthHeaders();
-    const dispatcher = createSsrfSafeAgent();
+    const dispatcher = adapterDispatcher(url);
     try {
-      const res = await request(url, {
+      const res = await guardedRequest(url, {
         method: 'DELETE',
         headers,
         dispatcher,
@@ -276,9 +275,7 @@ export class GcsStorageAdapter implements IStorageAdapter {
 
       return res.statusCode === 204 || res.statusCode === 200;
     } finally {
-      try {
-        await dispatcher.close?.();
-      } catch {}
+      await releaseDispatcher(dispatcher);
     }
   }
 }

@@ -174,7 +174,7 @@ describe('the third-party notices of the tracer program', () => {
     ]);
     const runner = stages[stages.length - 1];
     const runs = runner.instructions.filter((instruction) => instruction.keyword === 'RUN').map((instruction) => instruction.argument);
-    expect(runs.filter((run) => run.includes('THIRD-PARTY-NOTICES'))).toEqual([
+    expect(runs.filter((run) => run.includes('THIRD-PARTY-NOTICES') && run.includes('vtracer'))).toEqual([
       'cp /usr/share/doc/vtracer/THIRD-PARTY-NOTICES /licenses/vtracer.THIRD-PARTY-NOTICES',
       'cp /usr/share/doc/vtracer-pixels/THIRD-PARTY-NOTICES /licenses/vtracer-pixels.THIRD-PARTY-NOTICES',
     ]);
