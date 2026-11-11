@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 154 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 156 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -326,6 +326,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `EBOOK_CONVERT_PATH` | absolute path of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `DWG2DXF_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `VTRACER_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
+| `OXIPNG_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `VTRACER_PIXELS_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `CAD_CONVERT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `PID_INIT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
@@ -335,6 +336,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `RSVG_CONVERT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `TESSERACT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `TESSDATA_PREFIX` | file or directory path | none | no | web, worker |
+| `EASYCONVERT_OCR_ONNX_DIR` | file or directory path | none | no | web, worker |
 | `VERAPDF_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `QPDF_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `FC_LIST_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
@@ -372,6 +374,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `EBOOK_CONVERT_PATH`: Absolute path of the calibre `ebook-convert` executable that writes MOBI, AZW3, PDB, LRF and OEB books; searched in the standard locations when unset. Those five formats cannot be written without it (HTTP 503); a value that is not an absolute path is rejected at start-up.
 - `DWG2DXF_PATH`: Path of the LibreDWG `dwg2dxf` executable that reads a DWG drawing into a DXF; searched in the standard locations when unset. A DWG cannot be converted without it (HTTP 503).
 - `VTRACER_PATH`: Path of the vtracer executable that traces PNG, JPEG, WebP, GIF, BMP and TIFF pictures to SVG; searched in the standard locations when unset. Those pictures cannot be converted to SVG without it (HTTP 503).
+- `OXIPNG_PATH`: Path of the pinned oxipng executable that optimises a PNG converted to PNG without loss (entry 232); searched in the standard locations when unset. Without it the PNG is written as the image library encodes it.
 - `VTRACER_PIXELS_PATH`: Path of the vtracer-pixels executable (scripts/vtracer-pixels), the vtracer front-end that reads the raw pixels the worker decoded; searched in the standard locations when unset. When it is found it traces those pictures instead of the vtracer executable; the SVG is the same.
 - `CAD_CONVERT_PATH`: Path of the `cad-convert` executable (native/cad-convert, linked to the Open CASCADE libraries) that reads and writes STEP and IGES; searched in the standard locations when unset. A STEP or IGES file cannot be converted without it (HTTP 503).
 - `PID_INIT_PATH`: Path of the `pid-init` executable (native/pid-init) that starts every sandboxed program in a PID namespace of its own, so that one run cannot see or signal another, and refuses them the /proc entries of the other runs (Landlock); searched in the standard locations when unset. Without it, or when the host does not allow a PID namespace, programs run in the user and network namespaces only.
@@ -381,6 +384,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `RSVG_CONVERT_PATH`: Path of the librsvg `rsvg-convert` executable that writes an SVG as a vector PDF.
 - `TESSERACT_PATH`: Path of the `tesseract` executable.
 - `TESSDATA_PREFIX`: Directory of the Tesseract language data.
+- `EASYCONVERT_OCR_ONNX_DIR`: Directory of the optional ONNX Korean OCR models (`det.onnx`, `rec.onnx`, `dict.txt`, entry 230). Off by default: when unset the ONNX engine is unavailable and Korean OCR uses Tesseract.
 - `VERAPDF_PATH`: Path of the `verapdf` executable that validates PDF/A output.
 - `QPDF_PATH`: Path of the `qpdf` executable that encrypts PDF output.
 - `FC_LIST_PATH`: Path of the fontconfig `fc-list` executable.

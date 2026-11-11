@@ -44,6 +44,16 @@ export interface PixelBudget {
 export const QUANTIZER_PIXEL_BUDGET: PixelBudget = { maxPixels: 16_000_000, scope: 'Oklab and Riemersma palette quantization' };
 
 /**
+ * The in-process GIF palette of a photograph that asks for no dithering (`quantizeImage` with `dither: 'none'`) holds the
+ * RGBA raster (4 B/pixel) and the index plane (1 B/pixel) and allocates nothing else per pixel, so it needs less than the
+ * image library's quantizer at every size (peak RSS of a photograph to GIF, Linux, `MALLOC_ARENA_MAX=2`: 1.28 GB against
+ * 1.85 GB at 100 MP, 0.60 GB against 0.86 GB at 39 MP, in 6 s against 21 s at 100 MP) and far less than the Oklab and
+ * Riemersma paths above. 100 megapixels is the default input limit, so every photograph the product takes by default is
+ * written in process; a picture over it (an operator raised the input limit) goes to the image library as before.
+ */
+export const GIF_PHOTO_PIXEL_BUDGET: PixelBudget = { maxPixels: 100_000_000, scope: 'in-process GIF palette of a photograph' };
+
+/**
  * Camera RAW sensors are demosaiced and colour-processed as float arrays in process. Peak RSS added by a
  * 16-bit DNG converted to JPEG: 629 MB at 16 MP, 2.4 GB at 62.4 MP (about 40 B/pixel, 40 s). 64 megapixels
  * admits the 61 MP full-frame sensors at about 2.6 GB per job, and nothing larger.
