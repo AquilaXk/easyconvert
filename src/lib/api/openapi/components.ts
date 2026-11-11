@@ -25,7 +25,7 @@ import {
   DroppedStreamsProperties,
   EngineTraceProperties,
 } from '@/lib/api/contracts';
-import { SESSION_COOKIE_NAME } from '@/lib/auth/session';
+import { sessionCookieName } from '@/lib/auth/session-cookie';
 import { API_KEY_SCOPES } from './shared';
 import { DATA_URI_MAX_BYTES } from '@/lib/api/file-size-limit';
 import { formatBytes } from '@/lib/format-bytes';
@@ -47,8 +47,8 @@ export const components = {
     SessionCookie: {
       type: 'apiKey',
       in: 'cookie',
-      name: SESSION_COOKIE_NAME,
-      description: 'Signed-in web application session.',
+      name: sessionCookieName(),
+      description: 'Signed-in web application session. In production the cookie is `__Host-easyconvert_session` (Secure, Path=/, no Domain); a session cookie named `easyconvert_session`, issued before the prefix, is still read until it expires (7 days).',
     },
   },
   schemas: {
