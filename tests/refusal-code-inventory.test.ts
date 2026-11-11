@@ -99,6 +99,8 @@ const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
   EngineUnavailableError: 'engine_unavailable',
   NativeRenameUnsupportedError: 'engine_unavailable',
   OcrEngineUnavailableError: 'engine_unavailable',
+  OnnxOcrFailedError: 'engine_unavailable',
+  OnnxOcrUnavailableError: 'engine_unavailable',
   OcrLanguageDataMissingError: 'engine_unavailable',
   OcrLanguageUnavailableError: 'engine_unavailable',
   OcrGeometryUnavailableError: 'engine_unavailable',
