@@ -65,11 +65,6 @@ export const ConversionOptionsSchema = {
       maximum: MAX_OUTPUT_DIMENSION,
       description: 'Target image height in pixels.',
     },
-    dimensions: {
-      type: 'string',
-      pattern: '^\\d+x\\d+$',
-      description: 'Dimension string in WxH format (e.g. 800x600).',
-    },
     fit: {
       type: 'string',
       enum: ['cover', 'contain', 'fill', 'inside', 'outside'],

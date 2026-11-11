@@ -321,7 +321,6 @@ services:
       <<: *app-environment
       WORKER_QUEUES: gpu
       WORKER_CONCURRENCY: "3"
-      HWACCEL_ENABLED: "true"
 
 networks:
   # Redis and the application containers. No route out: Redis cannot be reached from the host or the internet.

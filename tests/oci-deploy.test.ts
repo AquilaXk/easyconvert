@@ -415,7 +415,7 @@ describe('deploy workflow', () => {
   const workflow = parse(text) as {
     on: { push: { branches: string[]; paths: string[] }; workflow_dispatch: { inputs: Record<string, unknown> } };
     permissions: Record<string, string>;
-    jobs: Record<string, { 'runs-on': unknown; environment?: string; if?: string; permissions?: Record<string, string>; 'timeout-minutes'?: number; steps: Array<{ name?: string; uses?: string; run?: string; env?: Record<string, string>; with?: Record<string, string>; if?: string }> }>;
+    jobs: Record<string, { 'runs-on': unknown; needs?: string | string[]; environment?: string; if?: string; permissions?: Record<string, string>; 'timeout-minutes'?: number; steps: Array<{ id?: string; name?: string; uses?: string; run?: string; env?: Record<string, string>; with?: Record<string, string>; if?: string }> }>;
   };
 
   it('pins every action to a full commit hash with its version in a comment', () => {
