@@ -56,6 +56,30 @@ describe('olderThanSource', () => {
     expect(olderThanSource(newer, source)).toBe(false);
     expect(olderThanSource(newer, undefined)).toBe(false);
   });
+
+  /** A build an hour old, an entry source older than it, and a `src/imported.ts` newer than it. */
+  function buildWithNewerImport(name: string): { built: string; entry: string } {
+    const built = distWithWorker(name, HOUR_SECONDS);
+    vi.spyOn(process, 'cwd').mockReturnValue(dir);
+    const entry = path.join(dir, 'src', 'entry.ts');
+    mkdirSync(path.dirname(entry));
+    writeFileSync(entry, '// entry\n');
+    writeFileSync(path.join(dir, 'src', 'imported.ts'), '// import\n');
+    const old = Date.now() / 1000 - HOUR_SECONDS * 2;
+    utimesSync(entry, old, old);
+    return { built, entry };
+  }
+
+  it('is true when a file the build bundled is newer than it', () => {
+    const { built, entry } = buildWithNewerImport('imports-worker');
+    writeFileSync(built.replace(/\.js$/, '.meta.json'), JSON.stringify({ inputs: { 'src/entry.ts': {}, 'src/imported.ts': {}, 'node_modules/x/y.js': {} } }));
+    expect(olderThanSource(built, entry)).toBe(true);
+  });
+
+  it('compares the entry alone when the build left no metafile', () => {
+    const { built, entry } = buildWithNewerImport('no-meta-worker');
+    expect(olderThanSource(built, entry)).toBe(false);
+  });
 });
 
 describe('the worker hosts', () => {
