@@ -10,6 +10,10 @@ import { ghostscriptPdfArguments, ghostscriptRasterArguments, NO_GARBAGE_COLLECT
 import { requireOracleTool } from './helpers/differential-oracle';
 import { decodeRgba } from './helpers/imagemagick';
 import { oracleTest } from './helpers/oracle-test';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 232).
+runWithoutFileConfinement();
 
 /**
  * PostScript sources run the interpreter itself when it sits next to the configured `ps2pdf`, with the arguments the

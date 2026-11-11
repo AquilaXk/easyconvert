@@ -14,6 +14,10 @@ import { oracleTest } from './helpers/oracle-test';
 import { withMissingBinary } from './helpers/native-tools';
 import { withPs2pdfShim, withPs2pdfSparseOutput, withRejectingPs2pdf } from './helpers/ps2pdf-shim';
 import { skipWithoutTools } from './helpers/strict-skip';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 232).
+runWithoutFileConfinement();
 
 /**
  * EPS and PS are drawn by a PostScript interpreter: the worker runs ps2pdf and then Poppler, and without

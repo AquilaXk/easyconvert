@@ -24,6 +24,10 @@ import {
 import { requireOracleTool } from './helpers/differential-oracle';
 import { decodeRgba } from './helpers/imagemagick';
 import { oracleTest } from './helpers/oracle-test';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 232).
+runWithoutFileConfinement();
 
 /**
  * PNG pages from Poppler are written by the worker's encoder from PPM pages, because Poppler's own PNG writer costs more
