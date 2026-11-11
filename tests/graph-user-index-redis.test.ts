@@ -191,7 +191,13 @@ describe.skipIf(!REDIS_URL)('the per-user index of graphs in Redis', () => {
     await start(userId, Date.now());
     vi.spyOn(Object.getPrototypeOf(client.pipeline()) as { exec: () => Promise<unknown> }, 'exec').mockRejectedValue(new Error('Connection is closed.'));
 
-    await expect(scheduler.listGraphsOfUser(userId, 10)).rejects.toBeInstanceOf(QueueUnavailableError);
-    await expect(scheduler.listGraphsOfUser(userId, 10, ['running'])).rejects.toBeInstanceOf(QueueUnavailableError);
+    for (const statuses of [undefined, ['running'] as const]) {
+      const failure = await scheduler.listGraphsOfUser(userId, 10, statuses).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(QueueUnavailableError);
+      expect({ name: (failure as Error).name, message: (failure as Error).message }).toEqual({
+        name: 'QueueUnavailableError',
+        message: expect.stringContaining('queue:graph-scheduler') as string,
+      });
+    }
   });
 });
