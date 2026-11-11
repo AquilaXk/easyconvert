@@ -3,6 +3,7 @@ import { createWriteStream } from 'node:fs';
 import zlib from 'node:zlib';
 import { ConversionFailedError, PayloadLimitError, UnsupportedOptionError } from '../types';
 import { availableCpus } from '../workers/available-cpus';
+import { inflateChunkHint } from './archive-zip-reader';
 import { DEFLATE_BLOCK_BYTES, deflateRawInBlocks } from './deflate-blocks';
 
 /**
@@ -553,8 +554,9 @@ const SYNC_DEFLATE_MAX_BYTES = 64 * 1024;
 
 function deflateRaw(data: Uint8Array, level: number): Promise<Buffer> {
   if (data.length <= SYNC_DEFLATE_MAX_BYTES) return Promise.resolve(zlib.deflateRawSync(data, { level }));
+  // Output comes back in chunks of this size, and each chunk is a hop between the pool thread and the event loop: the default 16 KiB makes a large entry wait on thousands of hops.
   return new Promise((resolve, reject) => {
-    zlib.deflateRaw(data, { level }, (error, result) => {
+    zlib.deflateRaw(data, { level, chunkSize: inflateChunkHint(data.length) }, (error, result) => {
       if (error) reject(error);
       else resolve(result);
     });
