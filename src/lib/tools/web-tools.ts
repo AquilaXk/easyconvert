@@ -1,6 +1,4 @@
 import path from 'node:path';
-import zlib from 'node:zlib';
-import { promisify } from 'node:util';
 import {
   create7zArchiveAsync,
   createTarArchive,
@@ -9,6 +7,8 @@ import {
   splitPdfPages,
 } from '../conversions';
 import { ARCHIVE_SECURITY_LIMITS } from '../conversions/archive';
+import { ARCHIVE_COMPRESSION_LEVEL_DEFAULT } from '../conversions/archive-compression-level';
+import { gzipInBlocks } from '../conversions/deflate-blocks';
 import type { ArchiveExtractionLimits } from '../conversions/archive-extraction-safety';
 import { mergePdfBuffers } from '../jobs';
 import { ARCHIVE_CREATE_FORMATS } from '../jobs/graph-operations';
@@ -30,7 +30,6 @@ import {
 import type { ConversionRefusalCode } from '../refusal-codes';
 import { ConversionFailedError, type PdfRotateOptions } from '../types';
 
-const gzip = promisify(zlib.gzip);
 
 
 /** The refusals of a tool run that no engine error names; a code is the key of a sentence in the interface. */
@@ -244,7 +243,7 @@ async function createArchive(files: readonly WebToolFile[], format: string, sign
   if (format === 'zip') return fileOutput(filename, mimeType, (await createZipArchive(entries, {}, filename)).buffer);
   if (format === '7z') return fileOutput(filename, mimeType, (await create7zArchiveAsync(entries, {}, filename, { signal })).buffer);
   const tar = createTarArchive(entries, {}, 'archive.tar').buffer;
-  return fileOutput(filename, mimeType, format === 'tar.gz' ? await gzip(tar) : tar);
+  return fileOutput(filename, mimeType, format === 'tar.gz' ? await gzipInBlocks(tar, ARCHIVE_COMPRESSION_LEVEL_DEFAULT) : tar);
 }
 
 /** The names an unpacked archive lists: the leaf of each entry, kept clear of the others, as the job graph names its outputs. */

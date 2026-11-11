@@ -286,7 +286,7 @@
     "rule": "max-lines-per-function",
     "function": "convertArchive",
     "count": 1,
-    "maxValue": 340
+    "maxValue": 338
   },
   {
     "file": "src/lib/conversions/archive.ts",
