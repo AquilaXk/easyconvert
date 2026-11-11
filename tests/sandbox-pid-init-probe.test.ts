@@ -126,7 +126,7 @@ describe('the PID namespace probe', () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
-  it('asks pid-init whether it can confine files, says once that the files of the other runs can be read when it cannot, and does not ask when SANDBOX_CONFINE_FILES is false', () => {
+  it('asks pid-init whether it can confine files, says once that the files of the other runs can be read when it cannot, and reads SANDBOX_CONFINE_FILES when a run starts, not when the host is probed', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     probe.pidInitWorks = true;
     probe.confineWorks = false;
@@ -142,8 +142,9 @@ describe('the PID namespace probe', () => {
       probe.calls = [];
       vi.stubEnv('SANDBOX_CONFINE_FILES', value);
       expect(fileConfinementDisabled()).toBe(true);
-      expect(getUnshareCapability()).toMatchObject({ pidInitPath: PID_INIT, confinesFiles: false });
-      expect(probe.calls.filter((call) => call.includes('--confine'))).toEqual([]);
+      expect(getUnshareCapability()).toMatchObject({ pidInitPath: PID_INIT, confinesFiles: true });
+      const command = resolveSandboxedCommand('/usr/bin/tool', [], { networkIsolated: true, workDir: '/jobs/one' });
+      expect(command.args).not.toContain('--confine');
     }
   });
 

@@ -529,7 +529,8 @@ function probePidInit(base: Pick<UnshareCapability, 'path' | 'args'>): { pidInit
     execFileSync(base.path, [...base.args, '--', pidInit, '--', '/bin/true'], { stdio: 'ignore', timeout: PID_INIT_PROBE_TIMEOUT_MS });
     pidInitDegradeSaid = false;
     if (!procHidingDisabled()) probeProcHide(base, pidInit);
-    return { pidInitPath: pidInit, confinesFiles: !fileConfinementDisabled() && probeConfinement(base, pidInit) };
+    // Asked whatever the switch says: the answer is a fact about the host, and the switch is read when a run is started.
+    return { pidInitPath: pidInit, confinesFiles: probeConfinement(base, pidInit) };
   } catch {
     sayPidInitDegraded(`${pidInit} could not start a program in a PID namespace (a seccomp profile or kernel setting that denies it, or a host too busy to answer in ${PID_INIT_PROBE_TIMEOUT_MS} ms)`);
     return { pidInitPath: '', confinesFiles: false };
