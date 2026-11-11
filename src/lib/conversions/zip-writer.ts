@@ -3,6 +3,7 @@ import { createWriteStream } from 'node:fs';
 import zlib from 'node:zlib';
 import { ConversionFailedError, PayloadLimitError, UnsupportedOptionError } from '../types';
 import { availableCpus } from '../workers/available-cpus';
+import { DEFLATE_BLOCK_BYTES, deflateRawInBlocks } from './deflate-blocks';
 
 /**
  * Streaming ZIP writer (PKWARE APPNOTE 6.3.10): local headers, optional data descriptors, ZIP64 extra fields and end
@@ -573,21 +574,35 @@ export function zipDeflateAheadEntries(): number {
   return Math.min(ZIP_DEFLATE_AHEAD_ENTRIES, Math.max(1, availableCpus()));
 }
 
+/** Entries of at least this many bytes are cut into blocks that deflate at the same time ({@link deflateRawInBlocks}) when the caller opts in. */
+export const ZIP_PARALLEL_BLOCKS_MIN_BYTES = 2 * DEFLATE_BLOCK_BYTES;
+
+export interface RunningAheadOptions {
+  /**
+   * Deflate an entry of {@link ZIP_PARALLEL_BLOCKS_MIN_BYTES} or more in blocks on the pool, one zlib call per block with the
+   * 32 KiB before it as the preset dictionary (the scheme of pigz), instead of one call. The blocks are fixed-size, so the bytes
+   * do not depend on the number of cores; they differ from one call's by the flush between blocks (about 0.01 to 0.05 percent).
+   */
+  parallelBlocks?: boolean;
+}
+
 /** A {@link ZipDeflater} for the buffers of one archive: it starts the entries after the one asked for, so they deflate while it is written. */
-export function deflaterRunningAhead(sources: readonly Uint8Array[]): ZipDeflater {
+export function deflaterRunningAhead(sources: readonly Uint8Array[], options: RunningAheadOptions = {}): ZipDeflater {
+  const deflateEntry = (data: Uint8Array, level: number): Promise<Uint8Array> =>
+    options.parallelBlocks === true && data.length >= ZIP_PARALLEL_BLOCKS_MIN_BYTES ? deflateRawInBlocks(data, level) : deflateRaw(data, level);
   const positions = new Map<Uint8Array, number>();
   sources.forEach((source, index) => positions.set(source, index));
   const ahead = zipDeflateAheadEntries();
   const running = new Map<number, Promise<Uint8Array>>();
   const start = (index: number, level: number): void => {
     if (index >= sources.length || running.has(index)) return;
-    const job = deflateRaw(sources[index], level);
+    const job = deflateEntry(sources[index], level);
     job.catch(() => undefined);
     running.set(index, job);
   };
   return (data, level) => {
     const index = positions.get(data);
-    if (index === undefined) return deflateRaw(data, level);
+    if (index === undefined) return deflateEntry(data, level);
     for (let next = index; next <= index + ahead; next++) start(next, level);
     const job = running.get(index) as Promise<Uint8Array>;
     running.delete(index);

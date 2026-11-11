@@ -407,7 +407,7 @@ export async function createZipArchive(
   }
   const compressionLevel = resolveArchiveCompressionLevel(options.compressionLevel);
   const content = await createZipBuffer(zipEntriesWithFolders(resolvedFiles, compressionLevel), {
-    deflate: deflaterRunningAhead(resolvedFiles.map((file) => file.buffer)),
+    deflate: deflaterRunningAhead(resolvedFiles.map((file) => file.buffer), { parallelBlocks: true }),
   });
 
   return {

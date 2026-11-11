@@ -46,9 +46,8 @@ function deflatePiece(piece: Uint8Array, level: number, dictionary: Uint8Array |
   });
 }
 
-/** Raw deflate stream of `data` at a product level; a buffer of at most one block is compressed in one piece. */
-export async function deflateRawBlocks(data: Uint8Array, productLevel: number): Promise<Buffer> {
-  const level = zlibLevelFor(productLevel);
+/** Raw deflate stream of `data` at a zlib level (0 to 9); a buffer of at most one block is compressed in one piece. */
+export async function deflateRawInBlocks(data: Uint8Array, level: number): Promise<Buffer> {
   const pieces = Math.max(1, Math.ceil(data.length / DEFLATE_BLOCK_BYTES));
   if (pieces === 1) return deflatePiece(data, level, undefined, true);
   const jobs: Promise<Buffer>[] = [];
@@ -59,4 +58,9 @@ export async function deflateRawBlocks(data: Uint8Array, productLevel: number): 
     jobs.push(deflatePiece(data.subarray(start, end), level, dictionary, index === pieces - 1));
   }
   return Buffer.concat(await Promise.all(jobs));
+}
+
+/** Raw deflate stream of `data` at a product level (the mapping of {@link zlibLevelFor}). */
+export async function deflateRawBlocks(data: Uint8Array, productLevel: number): Promise<Buffer> {
+  return deflateRawInBlocks(data, zlibLevelFor(productLevel));
 }
