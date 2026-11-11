@@ -40,7 +40,7 @@ describe('Office pairs through LibreOffice', () => {
     const docx = await craftDocx({ body: PARAGRAPHS.map(paragraph).join('') });
     const truncated = docx.subarray(0, Math.floor(docx.length / 2));
     const run = dispatchConversion(truncated, 'docx', 'pdf', {}, 'cut.docx');
-    // The picture check refuses a package it cannot read (policy 238): LibreOffice might open what it cannot, so the pictures would go unchecked.
+    // The picture check refuses a package it cannot read (policy 240): LibreOffice might open what it cannot, so the pictures would go unchecked.
     await expect(run).rejects.toThrow('The office document file is not a valid office package.');
     await expect(run).rejects.toMatchObject({ name: 'ConversionFailedError' });
   }, NATIVE_TIMEOUT_MS);
