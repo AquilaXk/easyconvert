@@ -82,6 +82,8 @@ async function runNativeXz(job: NativeXzJob, stdin: Buffer, options: ConversionO
       maxBuffer,
       timeoutMs,
       networkIsolated: true,
+      // A filter on standard input and output: it touches no file.
+      workDir: null,
       signal: options.signal,
       rlimits: { asBytes: job.addressSpaceBytes, cpuSeconds: Math.ceil(timeoutMs / 1000) },
     });

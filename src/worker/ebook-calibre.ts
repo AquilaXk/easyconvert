@@ -185,6 +185,7 @@ async function runCalibre(run: CalibreRun, args: readonly string[]): Promise<voi
     sandboxOptions: { pidNamespace: false },
     signal: request.options.signal,
     cwd: run.dir,
+    workDir: run.dir,
     env: run.environment,
     expectedOutputBytes: EXPECTED_PIPED_OUTPUT_BYTES,
   };

@@ -316,7 +316,8 @@ export type ToolRun = { ok: true; stdout: string; stderr: string } | { ok: false
  * no process starts; every other failure is a value.
  */
 function runSandboxedSync(binary: string, args: readonly string[], limits: ToolLimits, rlimits?: SandboxedRlimitsOptions): ToolRun {
-  const command = resolveSandboxedCommand(binary, [...args], { networkIsolated: true, rlimits });
+  // The questions about the build (version, encoders, filters, a test encode to nothing) touch no file.
+  const command = resolveSandboxedCommand(binary, [...args], { networkIsolated: true, rlimits, workDir: null });
   const run = spawnSync(command.binary, command.args, {
     encoding: 'utf-8',
     env: getSanitizedEnvironment({}, true),
@@ -371,6 +372,9 @@ export async function runFfprobeAsync(ffprobe: string, args: readonly string[], 
   try {
     const run = await executeSandboxedBinary(ffprobe, probeArgs, {
       networkIsolated: true,
+      // It reads the one file it is given and writes none.
+      workDir: null,
+      readDirs: [input.path],
       timeoutMs: limits.timeoutMs,
       maxBuffer: limits.maxBuffer,
       rlimits: ffprobeRlimits(limits.timeoutMs),

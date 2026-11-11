@@ -18,6 +18,10 @@ import {
 import { oracleTest } from './helpers/oracle-test';
 import { buildStoredRar4 } from './helpers/rar4-stored';
 import { createSevenZipSpy, type SevenZipSpy } from './helpers/seven-zip-spy';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 232).
+runWithoutFileConfinement();
 
 /**
  * ZIP and stored RAR to tar, and gzip to tar, are read in process. The tar that comes back is unpacked by the system `tar`

@@ -1172,6 +1172,14 @@ function extractArgs(request: ContainedExtractionRequest, exclude: string[]): { 
   };
 }
 
+/**
+ * The files a 7-Zip run of this request may touch: the directory it works in, the directory it extracts into (which is below it unless the
+ * caller put it elsewhere) and the archive it reads, a single file that may be stored outside the working directory.
+ */
+function confinementOf(request: ContainedExtractionRequest): { workDir: string; writeDirs: string[]; readDirs: string[] } {
+  return { workDir: request.cwd, writeDirs: [request.extractDir], readDirs: [request.archivePath] };
+}
+
 function requestTarget(request: ContainedExtractionRequest): ListTarget {
   return {
     archivePath: request.archivePath,
@@ -1185,6 +1193,7 @@ async function listArchive(request: ContainedExtractionRequest, target: ListTarg
   const { args, stdin } = listArgs(request, target, exclude);
   const result = await executeSandboxedBinary(request.p7zBin, args, {
     cwd: request.cwd,
+    ...confinementOf(request),
     timeoutMs: request.timeoutMs,
     maxBuffer: listingBufferLimit(request.limits),
     networkIsolated: true,
@@ -1217,10 +1226,10 @@ function runSevenZipSync(
 
 function listArchiveSync(request: ContainedExtractionRequest, target: ListTarget, exclude: string[]): ArchiveListing {
   const { args, stdin } = listArgs(request, target, exclude);
-  const resolved = resolveSandboxedCommand(request.p7zBin, args, { networkIsolated: true });
+  const resolved = resolveSandboxedCommand(request.p7zBin, args, { networkIsolated: true, ...confinementOf(request) });
   const stdout = runSevenZipSync(resolved.binary, resolved.args, {
     cwd: request.cwd,
-    env: getSanitizedEnvironment({}, true),
+    env: getSanitizedEnvironment({}, true, request.cwd),
     timeout: request.timeoutMs,
     maxBuffer: listingBufferLimit(request.limits),
     input: stdin,
@@ -1307,6 +1316,7 @@ export async function extractArchiveContained(request: ContainedExtractionReques
     const { args, stdin } = extractArgs(request, exclude);
     await executeSandboxedBinary(request.p7zBin, args, {
       cwd: request.cwd,
+      ...confinementOf(request),
       timeoutMs: request.timeoutMs,
       maxBuffer: request.maxBuffer,
       // Second bound for archives whose headers understate a file: no single file may pass the total cap.
@@ -1354,10 +1364,11 @@ export function extractArchiveContainedSync(request: ContainedExtractionRequest)
     const resolved = resolveSandboxedCommand(request.p7zBin, args, {
       networkIsolated: true,
       maxFileSize: request.limits.MAX_UNCOMPRESSED_SIZE,
+      ...confinementOf(request),
     });
     runSevenZipSync(resolved.binary, resolved.args, {
       cwd: request.cwd,
-      env: getSanitizedEnvironment({}, true),
+      env: getSanitizedEnvironment({}, true, request.cwd),
       timeout: request.timeoutMs,
       maxBuffer: request.maxBuffer,
       input: stdin,

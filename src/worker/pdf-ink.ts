@@ -53,6 +53,8 @@ export async function pdfFirstPageHasInk(pdf: { filePath?: string; buffer: Buffe
     const prefix = path.join(tempDir, PAGE_FILE);
     await runPdftoppm(pdftoppm, ['-r', String(INK_DPI), '-f', '1', '-l', '1', '-singlefile', inputPath, prefix], {
       cwd: tempDir,
+      workDir: tempDir,
+      readDirs: [inputPath],
       timeoutMs: Math.min(stageTimeoutMs(options, PAGE_DEFAULT_TIMEOUT_MS), PAGE_MAX_TIMEOUT_MS),
       maxBuffer: options.maxBufferBytes || DEFAULT_MAX_BUFFER_BYTES,
       maxFileSize: PPM_PAGE_MAX_BYTES,

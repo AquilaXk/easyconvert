@@ -332,6 +332,8 @@ export class LibreOfficePoolManager {
           warmArgs,
           {
             cwd: workDir,
+            workDir,
+            writeDirs: [userProfileDir],
             timeoutMs: 15000,
             env: { HOME: workDir, SAL_USE_VCLPLUGIN: 'svp' },
             networkIsolated: true,
@@ -423,6 +425,8 @@ export class LibreOfficePoolManager {
       try {
         await this.executor(sofficePath, args, {
           cwd: workDir,
+          workDir,
+          writeDirs: [profileDir],
           timeoutMs,
           env: { HOME: workDir, SAL_USE_VCLPLUGIN: 'svp' },
           networkIsolated: true,
@@ -731,6 +735,9 @@ export class LibreOfficePoolManager {
         convertArgs,
         {
           cwd: jobSubdir,
+          // The directory of this job alone, and the profile of the slot: the other jobs of the slot keep theirs.
+          workDir: jobSubdir,
+          writeDirs: [worker.userProfileDir],
           timeoutMs: timeout,
           maxBuffer,
           env: { HOME: jobSubdir, TMPDIR: jobSubdir, SAL_USE_VCLPLUGIN: 'svp' },

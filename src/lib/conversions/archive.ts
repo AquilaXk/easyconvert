@@ -305,12 +305,12 @@ export function matchArchiveGlob(filePath: string, patterns?: string[]): boolean
  * ArchiveNotEncryptedError unless it is encrypted, so a plaintext archive is never returned.
  */
 function assertCreatedArchiveEncrypted(p7z: string, archivePath: string, format: 'zip' | '7z', cwd: string): void {
-  const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', archivePath], { networkIsolated: true });
+  const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', archivePath], { networkIsolated: true, workDir: cwd, readDirs: [archivePath] });
   let outcome: { listing?: string; failureOutput?: string };
   try {
     const out = execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
       cwd,
-      env: getSanitizedEnvironment({}, true),
+      env: getSanitizedEnvironment({}, true, cwd),
       timeout: SEVEN_ZIP_LISTING_TIMEOUT_MS,
       maxBuffer: MAX_ENCRYPTION_LISTING_BYTES,
       input: sevenZipEncryptionCheckInput(),
@@ -355,10 +355,11 @@ function createEncryptedArchiveVia7z(
       : ['-tzip', '-mem=AES256', SEVEN_ZIP_ASK_PASSWORD_SWITCH];
     const resolved = resolveSandboxedCommand(p7z, ['a', '-y', ...extraArgs, outPath, '.'], {
       networkIsolated: true,
+      workDir,
     });
     execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
       cwd: stagingDir,
-      env: getSanitizedEnvironment({}, true),
+      env: getSanitizedEnvironment({}, true, workDir),
       timeout: 60000,
       input: sevenZipCreatePasswordInput(password),
     });
@@ -1781,8 +1782,8 @@ export function extractRarArchive(
     try {
       const pwArgs = options.password ? ['-p'] : ['-p-'];
       const runUnrar = (args: string[], maxBuffer: number): Buffer => {
-        const resolved = resolveSandboxedCommand(unrarBin, args, { networkIsolated: true });
-        const unrarOptions = { cwd: extractDir, env: getSanitizedEnvironment({}, true), timeout: UNRAR_EXTRACT_TIMEOUT_MS, maxBuffer };
+        const resolved = resolveSandboxedCommand(unrarBin, args, { networkIsolated: true, workDir: extractDir, readDirs: [tmpFile] });
+        const unrarOptions = { cwd: extractDir, env: getSanitizedEnvironment({}, true, extractDir), timeout: UNRAR_EXTRACT_TIMEOUT_MS, maxBuffer };
         try {
           return options.password
             ? execFileSyncWithPasswordStdin(resolved.binary, resolved.args, { ...unrarOptions, input: Buffer.from(`${options.password}\n`, 'utf-8') })
@@ -2220,25 +2221,25 @@ export function convertWithNative7z(
     const outputPath = path.join(workDir, `output.${tgt}`);
     if (tgt === 'tar.gz' || tgt === 'tgz') {
       const tarPath = path.join(workDir, 'archive.tar');
-      const rTar = resolveSandboxedCommand(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { networkIsolated: true });
-      execFileSync(rTar.binary, rTar.args, { cwd: extractDir, env: getSanitizedEnvironment({}, true), timeout: 60000 });
-      const rGz = resolveSandboxedCommand(p7zBin, ['a', '-y', '-tgzip', outputPath, tarPath], { networkIsolated: true });
-      execFileSync(rGz.binary, rGz.args, { cwd: workDir, env: getSanitizedEnvironment({}, true), timeout: 60000 });
+      const rTar = resolveSandboxedCommand(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { networkIsolated: true, workDir });
+      execFileSync(rTar.binary, rTar.args, { cwd: extractDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 });
+      const rGz = resolveSandboxedCommand(p7zBin, ['a', '-y', '-tgzip', outputPath, tarPath], { networkIsolated: true, workDir });
+      execFileSync(rGz.binary, rGz.args, { cwd: workDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 });
     } else if (tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz') {
       const tarPath = path.join(workDir, 'archive.tar');
-      const rTar = resolveSandboxedCommand(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { networkIsolated: true });
-      execFileSync(rTar.binary, rTar.args, { cwd: extractDir, env: getSanitizedEnvironment({}, true), timeout: 60000 });
-      const rBz = resolveSandboxedCommand(p7zBin, ['a', '-y', '-tbzip2', outputPath, tarPath], { networkIsolated: true });
-      execFileSync(rBz.binary, rBz.args, { cwd: workDir, env: getSanitizedEnvironment({}, true), timeout: 60000 });
+      const rTar = resolveSandboxedCommand(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { networkIsolated: true, workDir });
+      execFileSync(rTar.binary, rTar.args, { cwd: extractDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 });
+      const rBz = resolveSandboxedCommand(p7zBin, ['a', '-y', '-tbzip2', outputPath, tarPath], { networkIsolated: true, workDir });
+      execFileSync(rBz.binary, rBz.args, { cwd: workDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 });
     } else if (tgt === 'tar.xz' || tgt === 'txz') {
       const tarPath = path.join(workDir, 'archive.tar');
-      const rTar = resolveSandboxedCommand(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { networkIsolated: true });
-      execFileSync(rTar.binary, rTar.args, { cwd: extractDir, env: getSanitizedEnvironment({}, true), timeout: 60000 });
-      const rXz = resolveSandboxedCommand(p7zBin, ['a', '-y', '-txz', outputPath, tarPath], { networkIsolated: true });
-      execFileSync(rXz.binary, rXz.args, { cwd: workDir, env: getSanitizedEnvironment({}, true), timeout: 60000 });
+      const rTar = resolveSandboxedCommand(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], { networkIsolated: true, workDir });
+      execFileSync(rTar.binary, rTar.args, { cwd: extractDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 });
+      const rXz = resolveSandboxedCommand(p7zBin, ['a', '-y', '-txz', outputPath, tarPath], { networkIsolated: true, workDir });
+      execFileSync(rXz.binary, rXz.args, { cwd: workDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 });
     } else if (tgt === '7z' || tgt === 'zip' || tgt === 'tar') {
-      const rCreate = resolveSandboxedCommand(p7zBin, ['a', '-y', `-t${tgt}`, ...pwCreateArgs, outputPath, '.'], { networkIsolated: true });
-      const createOptions = { cwd: extractDir, env: getSanitizedEnvironment({}, true), timeout: 60000 };
+      const rCreate = resolveSandboxedCommand(p7zBin, ['a', '-y', `-t${tgt}`, ...pwCreateArgs, outputPath, '.'], { networkIsolated: true, workDir });
+      const createOptions = { cwd: extractDir, env: getSanitizedEnvironment({}, true, workDir), timeout: 60000 };
       if (pwCreateInput) {
         execFileSyncWithPasswordStdin(rCreate.binary, rCreate.args, { ...createOptions, input: pwCreateInput });
       } else {
@@ -2568,6 +2569,7 @@ async function createNative7zArchive(plan: SevenZipPlan, p7z: string, signal: Ab
     const run = (args: string[], cwd: string) =>
       executeSandboxedBinary(p7z, args, {
         cwd,
+        workDir,
         timeoutMs: CPU_POOL_TASK_TIMEOUT_MS,
         maxBuffer: MAX_ENCRYPTION_LISTING_BYTES,
         networkIsolated: true,
@@ -2973,11 +2975,12 @@ export async function repairZipArchive(
 
       const resolved = resolveSandboxedCommand(zipBin, [inPath, '-FF', '--out', outPath, '-q'], {
         networkIsolated: true,
+        workDir,
       });
       try {
         const out = execFileSync(resolved.binary, resolved.args, {
           cwd: workDir,
-          env: getSanitizedEnvironment({}, true),
+          env: getSanitizedEnvironment({}, true, workDir),
           timeout: 60000,
           input: Buffer.from('y\ny\ny\ny\n'),
         });
@@ -3285,13 +3288,14 @@ async function inspectArchiveVia7zCli(
     // A password is answered on stdin (never in argv); without one, 7-Zip's prompt reads an empty answer.
     const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', '-ba', archivePath], {
       networkIsolated: true,
+      workDir,
     });
 
     let stdoutStr = '';
     try {
       const out = execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
         cwd: workDir,
-        env: getSanitizedEnvironment({}, true),
+        env: getSanitizedEnvironment({}, true, workDir),
         timeout: SEVEN_ZIP_LISTING_TIMEOUT_MS,
         input: sevenZipReadPasswordInput(password),
         maxBuffer: listingBufferLimit(ARCHIVE_SECURITY_LIMITS),

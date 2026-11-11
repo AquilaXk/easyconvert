@@ -126,6 +126,7 @@ export async function withWorkerSandbox<T>(
       return executeSandboxedBinary(binaryPath, args, {
         ...execOpts,
         cwd: sandboxDir,
+        workDir: sandboxDir,
         env: {
           TMPDIR: sandboxDir,
           TEMP: sandboxDir,
