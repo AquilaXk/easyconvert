@@ -136,7 +136,7 @@ describe('the helper pool, with a stand-in helper program', () => {
     const first = await pool.read(page(), { language: 'kor' });
     const second = await pool.read(page(), { language: 'kor+eng' });
     expect(pool.size).toBe(1);
-    expect(first.text).toMatch(/^p(\d+)n1$/);
+    expect(first.text).toMatch(/^p([0-9a-f]+)n1$/);
     // the same process served both pages: the page count rose, the process id did not change
     expect(second.text.replace(/n2$/, 'n1')).toBe(first.text);
     expect(second.language).toBe('kor+eng');
@@ -221,7 +221,7 @@ describe('the helper pool, with a stand-in helper program', () => {
     expect(outcome).toBe('the job was cancelled while the helper started');
     // the helper goes on booting and serves the next page
     const next = await pool.read(page(), { language: 'kor' });
-    expect(next.text).toMatch(/^p\d+n1$/);
+    expect(next.text).toMatch(/^p[0-9a-f]+n1$/);
     expect(pool.size).toBe(1);
   });
 
