@@ -90,9 +90,12 @@ function encodeVarint(value: number): number[] {
 
 const CRC64_POLY_LOW = 0xd7870f42;
 const CRC64_POLY_HIGH = 0xc96c5795;
-/** Bytes a slicing step consumes: one table per byte of the 64-bit word. */
-const CRC64_SLICES = 8;
+/** Bytes a slicing step consumes: one table per byte of four 32-bit words. */
+const CRC64_SLICES = 16;
 const CRC64_TABLE_SIZE = 256;
+const CRC64_WORD_BYTES = 4;
+/** The word loop reads the input through a Uint32Array, which holds the bytes in the order of the host. */
+const HOST_LITTLE_ENDIAN = new Uint8Array(Uint32Array.of(1).buffer)[0] === 1;
 // Table k holds the CRC-64 of a byte followed by k zero bytes; table 0 is the plain byte-at-a-time table. Halves are kept
 // apart so the arithmetic stays in 32-bit integers.
 const crc64Low = new Uint32Array(CRC64_SLICES * CRC64_TABLE_SIZE);
@@ -122,33 +125,65 @@ for (let slice = 1; slice < CRC64_SLICES; slice++) {
   }
 }
 
-/** CRC-64 of `data` as [low, high] 32-bit halves, eight bytes per step. */
-function crc64(data: Uint8Array): [number, number] {
+/** CRC-64 of `data` as [low, high] 32-bit halves, sixteen bytes per step read as four words. */
+export function crc64(data: Uint8Array): [number, number] {
   let low = 0xffffffff;
   let high = 0xffffffff;
   let i = 0;
-  const wordEnd = data.length - (CRC64_SLICES - 1);
-  for (; i < wordEnd; i += CRC64_SLICES) {
-    const a = low ^ (data[i] | (data[i + 1] << 8) | (data[i + 2] << 16) | (data[i + 3] << 24));
-    const b = high ^ (data[i + 4] | (data[i + 5] << 8) | (data[i + 6] << 16) | (data[i + 7] << 24));
-    low =
-      crc64Low[7 * CRC64_TABLE_SIZE + (a & 0xff)] ^
-      crc64Low[6 * CRC64_TABLE_SIZE + ((a >>> 8) & 0xff)] ^
-      crc64Low[5 * CRC64_TABLE_SIZE + ((a >>> 16) & 0xff)] ^
-      crc64Low[4 * CRC64_TABLE_SIZE + (a >>> 24)] ^
-      crc64Low[3 * CRC64_TABLE_SIZE + (b & 0xff)] ^
-      crc64Low[2 * CRC64_TABLE_SIZE + ((b >>> 8) & 0xff)] ^
-      crc64Low[CRC64_TABLE_SIZE + ((b >>> 16) & 0xff)] ^
-      crc64Low[b >>> 24];
-    high =
-      crc64High[7 * CRC64_TABLE_SIZE + (a & 0xff)] ^
-      crc64High[6 * CRC64_TABLE_SIZE + ((a >>> 8) & 0xff)] ^
-      crc64High[5 * CRC64_TABLE_SIZE + ((a >>> 16) & 0xff)] ^
-      crc64High[4 * CRC64_TABLE_SIZE + (a >>> 24)] ^
-      crc64High[3 * CRC64_TABLE_SIZE + (b & 0xff)] ^
-      crc64High[2 * CRC64_TABLE_SIZE + ((b >>> 8) & 0xff)] ^
-      crc64High[CRC64_TABLE_SIZE + ((b >>> 16) & 0xff)] ^
-      crc64High[b >>> 24];
+  if (HOST_LITTLE_ENDIAN) {
+    // Bytes up to the next word boundary, so that the words can be read through a Uint32Array.
+    for (; i < data.length && (data.byteOffset + i) % CRC64_WORD_BYTES !== 0; i++) {
+      const index = (low ^ data[i]) & 0xff;
+      const nextLow = ((low >>> 8) | (high << 24)) ^ crc64Low[index];
+      high = (high >>> 8) ^ crc64High[index];
+      low = nextLow;
+    }
+    if (data.length - i >= CRC64_SLICES) {
+      const words = new Uint32Array(data.buffer, data.byteOffset + i, Math.floor((data.length - i) / CRC64_WORD_BYTES));
+      const wordEnd = words.length - (CRC64_SLICES / CRC64_WORD_BYTES - 1);
+      let w = 0;
+      for (; w < wordEnd; w += CRC64_SLICES / CRC64_WORD_BYTES) {
+        const a = low ^ words[w];
+        const b = high ^ words[w + 1];
+        const c = words[w + 2];
+        const d = words[w + 3];
+        low =
+          crc64Low[15 * CRC64_TABLE_SIZE + (a & 0xff)] ^
+          crc64Low[14 * CRC64_TABLE_SIZE + ((a >>> 8) & 0xff)] ^
+          crc64Low[13 * CRC64_TABLE_SIZE + ((a >>> 16) & 0xff)] ^
+          crc64Low[12 * CRC64_TABLE_SIZE + (a >>> 24)] ^
+          crc64Low[11 * CRC64_TABLE_SIZE + (b & 0xff)] ^
+          crc64Low[10 * CRC64_TABLE_SIZE + ((b >>> 8) & 0xff)] ^
+          crc64Low[9 * CRC64_TABLE_SIZE + ((b >>> 16) & 0xff)] ^
+          crc64Low[8 * CRC64_TABLE_SIZE + (b >>> 24)] ^
+          crc64Low[7 * CRC64_TABLE_SIZE + (c & 0xff)] ^
+          crc64Low[6 * CRC64_TABLE_SIZE + ((c >>> 8) & 0xff)] ^
+          crc64Low[5 * CRC64_TABLE_SIZE + ((c >>> 16) & 0xff)] ^
+          crc64Low[4 * CRC64_TABLE_SIZE + (c >>> 24)] ^
+          crc64Low[3 * CRC64_TABLE_SIZE + (d & 0xff)] ^
+          crc64Low[2 * CRC64_TABLE_SIZE + ((d >>> 8) & 0xff)] ^
+          crc64Low[CRC64_TABLE_SIZE + ((d >>> 16) & 0xff)] ^
+          crc64Low[d >>> 24];
+        high =
+          crc64High[15 * CRC64_TABLE_SIZE + (a & 0xff)] ^
+          crc64High[14 * CRC64_TABLE_SIZE + ((a >>> 8) & 0xff)] ^
+          crc64High[13 * CRC64_TABLE_SIZE + ((a >>> 16) & 0xff)] ^
+          crc64High[12 * CRC64_TABLE_SIZE + (a >>> 24)] ^
+          crc64High[11 * CRC64_TABLE_SIZE + (b & 0xff)] ^
+          crc64High[10 * CRC64_TABLE_SIZE + ((b >>> 8) & 0xff)] ^
+          crc64High[9 * CRC64_TABLE_SIZE + ((b >>> 16) & 0xff)] ^
+          crc64High[8 * CRC64_TABLE_SIZE + (b >>> 24)] ^
+          crc64High[7 * CRC64_TABLE_SIZE + (c & 0xff)] ^
+          crc64High[6 * CRC64_TABLE_SIZE + ((c >>> 8) & 0xff)] ^
+          crc64High[5 * CRC64_TABLE_SIZE + ((c >>> 16) & 0xff)] ^
+          crc64High[4 * CRC64_TABLE_SIZE + (c >>> 24)] ^
+          crc64High[3 * CRC64_TABLE_SIZE + (d & 0xff)] ^
+          crc64High[2 * CRC64_TABLE_SIZE + ((d >>> 8) & 0xff)] ^
+          crc64High[CRC64_TABLE_SIZE + ((d >>> 16) & 0xff)] ^
+          crc64High[d >>> 24];
+      }
+      i += w * CRC64_WORD_BYTES;
+    }
   }
   for (; i < data.length; i++) {
     const index = (low ^ data[i]) & 0xff;

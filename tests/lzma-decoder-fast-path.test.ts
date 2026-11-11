@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { decodeLzma } from '../src/lib/conversions/lzma-decoder';
 import { LzmaRangeEncoder } from '../src/lib/conversions/lzma-encoder';
 import { unpackXz } from '../src/lib/conversions/archive';
+import { crc64 } from '../src/lib/conversions/xz-format';
 import * as model from '../src/lib/conversions/lzma-model';
 import { CorruptStreamError } from '../src/lib/types';
 import { SeededRandom } from './helpers/archive-corpus';
@@ -34,6 +35,31 @@ function xz(args: string[], input: Uint8Array): Buffer {
 }
 
 describe('CRC-64 of the .xz reader', () => {
+  /** ECMA-182 CRC-64 (the reflected form xz uses), one bit at a time over BigInt: no tables and no word steps to share a mistake with. */
+  function crc64ByBits(data: Uint8Array): bigint {
+    const polynomial = 0xc96c5795d7870f42n;
+    const mask = (1n << 64n) - 1n;
+    let crc = mask;
+    for (const byte of data) {
+      crc ^= BigInt(byte);
+      for (let bit = 0; bit < 8; bit++) crc = crc & 1n ? (crc >> 1n) ^ polynomial : crc >> 1n;
+    }
+    return crc ^ mask;
+  }
+
+  it('equals the bitwise CRC-64 for every length up to 80 bytes, a long run, and every start offset in a word', () => {
+    const random = new SeededRandom(73);
+    const backing = random.bytes(8192 + 4);
+    const lengths = [...Array.from({ length: 81 }, (_, length) => length), 1000, 4093, 8192];
+    for (let offset = 0; offset < 4; offset++) {
+      for (const length of lengths) {
+        const view = backing.subarray(offset, offset + length);
+        const [low, high] = crc64(view);
+        expect((BigInt(high) << 32n) | BigInt(low), `offset ${offset}, length ${length}`).toBe(crc64ByBits(view));
+      }
+    }
+  });
+
   oracleTest('accepts the check xz writes for every length across the 8-byte steps and the tail', ['xz'], () => {
     const random = new SeededRandom(71);
     for (let length = 0; length <= MAX_TAIL_CHECK_LENGTH; length++) {
