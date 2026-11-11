@@ -156,6 +156,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `AWS_SECRET_ACCESS_KEY` | secret text; secret, never logged | none | no | web, worker |
 | `AWS_REGION` | text | none | no | web, worker |
 | `AWS_BUCKET_NAME` | text | none | no | web, worker |
+| `BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST` | text | none | no | web, worker |
 | `BYOS_S3_DEV_ENDPOINT_ALLOWLIST` | text | none | no | web, worker |
 
 - `STORAGE_DRIVER`: Where objects live: `oci` (OCI Object Storage), `s3` (an S3-compatible service) or `local` (disk of this host, for development and single-node use). Must be chosen in production.
@@ -186,6 +187,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `AWS_SECRET_ACCESS_KEY`: Deprecated fallback of OCI_SECRET_ACCESS_KEY and S3_SECRET_ACCESS_KEY; logs a warning when used.
 - `AWS_REGION`: Deprecated fallback of OCI_REGION and S3_REGION; logs a warning when used.
 - `AWS_BUCKET_NAME`: Deprecated fallback of OCI_BUCKET and S3_BUCKET; logs a warning when used.
+- `BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST`: Comma-separated host:port list of WebDAV, Azure Blob, GCS and import/export URL endpoints that may be plain http or private-address, for a local test server. Honoured only when NODE_ENV is exactly `development`.
 - `BYOS_S3_DEV_ENDPOINT_ALLOWLIST`: Comma-separated host[:port] list of customer S3 endpoints that may be plain http or private-address. Honoured only when NODE_ENV is exactly `development`.
 
 ### Queue and Redis
