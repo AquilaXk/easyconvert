@@ -178,6 +178,21 @@ describe.skipIf(toolsMissing)('fonts without a Unicode map (real files)', () => 
   }, CONVERSION_TIMEOUT_MS);
 });
 
+describe.skipIf(toolsMissing)('a page whose Type 3 glyphs outnumber its text (real files)', () => {
+  it('govdocs1-002202.pdf: keeps the title and the figure labels of page 3, whose 1,223 line and arrow glyphs have no Unicode value', async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, 'govdocs1-002202.pdf');
+    const result = await textOf(bytes);
+    const text = result.buffer.toString('utf8');
+    const reference = pdftotext(bytes, '-f', '3', '-l', '3');
+    for (const label of ['14. Quark model', '(a)', '(b)']) {
+      expect(reference).toContain(label);
+      expect(text).toContain(label);
+    }
+    expect(hasControlCharacters(text)).toBe(false);
+    expect(result.metadata?.warnings).toEqual(['Left out 1223 glyphs that no font encoding maps to Unicode (page 3).']);
+  }, CONVERSION_TIMEOUT_MS);
+});
+
 describe.skipIf(toolsMissing)('PDFs that open with the empty password (real files)', () => {
   it('qpdf-enc-r3-v2.pdf: converts to hOCR and ALTO with the words the reference reader finds', async (ctx) => {
     const { bytes } = await requireRealworldSample(ctx, 'qpdf-enc-r3-v2.pdf');
