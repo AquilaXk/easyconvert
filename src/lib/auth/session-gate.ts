@@ -1,7 +1,8 @@
 import { cookies } from 'next/headers';
 import { redirect } from '@/i18n/navigation';
 import type { AppLocale } from '@/i18n/routing';
-import { getSessionFromToken, SESSION_COOKIE_NAME } from './session';
+import { getSessionFromToken } from './session';
+import { sessionTokenFromCookieStore } from './session-cookie';
 import type { User } from './types';
 
 /**
@@ -11,7 +12,7 @@ import type { User } from './types';
  * the page renders without the person (null), and the browser reads the session itself as it did before.
  */
 export async function readDashboardSession(locale: AppLocale): Promise<User | null> {
-  const token = (await cookies()).get(SESSION_COOKIE_NAME)?.value;
+  const token = sessionTokenFromCookieStore(await cookies());
   if (!token) return redirect({ href: '/auth', locale });
   let user: User | null;
   try {

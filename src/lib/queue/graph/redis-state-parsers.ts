@@ -1,4 +1,5 @@
 import { GraphStateCorruptError } from '../../types';
+import { openWebhookSecretOrLog } from '../../security/sealed-webhook-secret';
 import type { JobGraph } from './types';
 import type { GraphExecutionState, GraphNodeState, GraphStatus, NodeExecutionStatus } from './scheduler-types';
 
@@ -153,6 +154,14 @@ function parseTasks(graphId: string, text: string | undefined): unknown[] | unde
   return parsed;
 }
 
+/**
+ * The webhook secret of the graph, opened. A blob that cannot be opened (sealed under a key that is no longer configured) leaves
+ * the graph readable without a secret, so its webhook is not signed rather than its whole state refused.
+ */
+function openedWebhookSecret(graphId: string, stored: string | undefined): string | undefined {
+  return openWebhookSecretOrLog(stored, graphId, `graph ${graphId}`);
+}
+
 /** The graph hash without its node states (those are parsed one by one with `parseNodeState`). */
 export type GraphMeta = Omit<GraphExecutionState, 'nodes'>;
 
@@ -184,7 +193,7 @@ export function parseGraphMeta(graphId: string, raw: Record<string, string | und
     ownerUserId: optional.owner,
     reservationId: optional.reservationId,
     webhookUrl: optional.webhookUrl,
-    webhookSecret: optional.webhookSecret,
+    webhookSecret: openedWebhookSecret(graphId, optional.webhookSecret),
     webhookKeyId: echoString(raw, 'webhookKeyId'),
     originalFilename: optional.originalFilename,
     sourceStorageKey: optional.sourceStorageKey,

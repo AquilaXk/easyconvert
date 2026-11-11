@@ -43,7 +43,7 @@ describe('webhook target ids are explicit', () => {
       email: `webhook_target_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@test.com`,
       tier: 'pro',
     });
-    const key = await redisKeyStore.generateApiKey(user.id, 'Webhook Target Key', { scopes: ['convert:write'] });
+    const key = await redisKeyStore.generateApiKey(user.id, 'Webhook Target Key', { scopes: ['*'] });
     apiKey = key.secretKey;
     keyId = key.key.id;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {

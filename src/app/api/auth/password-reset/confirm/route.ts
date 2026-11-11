@@ -12,7 +12,7 @@ import {
 } from '@/lib/auth/login-rate-limiter';
 import { isAuthMailEnabled } from '@/lib/auth/mail-config';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
-import { clearSessionCookie, revokeAllUserSessions } from '@/lib/auth/session';
+import { clearSessionCookies, revokeAllUserSessions } from '@/lib/auth/session';
 import type { AuthErrorCode } from '@/lib/refusal-codes';
 
 export const dynamic = 'force-dynamic';
@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
     await resetLoginAttempts(clientIp, record.email);
 
     const response = NextResponse.json({ success: true });
-    response.headers.set('Set-Cookie', clearSessionCookie());
+    for (const cleared of clearSessionCookies()) response.headers.append('Set-Cookie', cleared);
     return response;
   } catch (err: unknown) {
     return serverFault('auth/password-reset', err, 'Password reset failed on the server.');
