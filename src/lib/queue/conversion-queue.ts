@@ -442,6 +442,14 @@ conversionQueue.clean = async (grace: number, limit: number, type: 'completed' |
   return removed;
 };
 
+const origConversionQueueForgetUser = conversionQueue.forgetUser?.bind(conversionQueue);
+if (origConversionQueueForgetUser) {
+  conversionQueue.forgetUser = async (userId: string, processed: ReadonlySet<string>) => {
+    const left = await Promise.all([origConversionQueueForgetUser(userId, processed), ...Object.values(resourceQueues).map((q) => q.forgetUser?.(userId, processed) ?? [])]);
+    return left.flat();
+  };
+}
+
 const origConversionQueueRemove = conversionQueue.remove.bind(conversionQueue);
 conversionQueue.remove = async (id: string) => {
   const removed = await Promise.all([origConversionQueueRemove(id), ...Object.values(resourceQueues).map((q) => q.remove(id))]);

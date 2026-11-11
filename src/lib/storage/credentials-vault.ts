@@ -111,6 +111,12 @@ const USER_INDEX_PREFIX = 'vault:user:';
  * SCAN pass, so credentials written before the index existed, or by a process that does not maintain it, are listed within a day.
  */
 const USER_INDEX_MARKER = 'vault:index:complete';
+/**
+ * Held (with a short lifetime, so a process that dies releases it) by the process that indexes the vault. The marker above is set
+ * only when the pass has finished, so a request that finds the pass running lists by scanning the vault and never reads a half-built index.
+ */
+const USER_INDEX_LOCK = 'vault:index:lock';
+const USER_INDEX_LOCK_MS = 10 * 60 * 1000;
 const USER_INDEX_REFRESH_MS = 24 * 60 * 60 * 1000;
 /** A process asks again whether the index is complete after this long. */
 const USER_INDEX_CHECK_MS = 60 * 60 * 1000;
@@ -118,6 +124,18 @@ const SCAN_BATCH = 500;
 
 function userIndexKey(userId: string): string {
   return `${USER_INDEX_PREFIX}{${userId.replace(/[{}]/g, '_')}}`;
+}
+
+/** The envelope a stored value holds, or undefined when it is not one: a damaged record is logged by its id and left out. */
+function parseEnvelope(raw: string, id?: string): StoredCredentialEnvelope | undefined {
+  try {
+    const envelope = JSON.parse(raw) as Partial<StoredCredentialEnvelope> | null;
+    if (envelope && typeof envelope.id === 'string' && typeof envelope.userId === 'string') return envelope as StoredCredentialEnvelope;
+  } catch {
+    // Reported below.
+  }
+  console.error(`[CredentialsVault] A stored credential${id ? ` "${id}"` : ''} is damaged and was left out.`);
+  return undefined;
 }
 
 /**
@@ -325,6 +343,7 @@ export class CredentialsVault {
         if (options?.ttlSeconds) pipeline.setex(`${VAULT_PREFIX}${id}`, options.ttlSeconds, serialized);
         else pipeline.set(`${VAULT_PREFIX}${id}`, serialized);
         await pipelineReplies(pipeline);
+        await this.dropExpiredFromIndex(this.redisClient, userId);
       } catch (err) {
         console.error('[CredentialsVault] Redis save failed:', err);
         throw new CredentialsVaultPersistenceError({ cause: err });
@@ -391,7 +410,7 @@ export class CredentialsVault {
   async rotate(credentialRefOrUserId: string, userId?: string): Promise<boolean> {
     if (!credentialRefOrUserId) return false;
     if (!credentialRefOrUserId.startsWith('cred_')) {
-      const refs = await this.listByUser(credentialRefOrUserId);
+      const refs = await this.idsForRotation(credentialRefOrUserId);
       let rotatedAny = false;
       for (const ref of refs) {
         if (await this.rotateEnvelope(ref, credentialRefOrUserId)) {
@@ -401,6 +420,19 @@ export class CredentialsVault {
       return rotatedAny;
     }
     return this.rotateEnvelope(credentialRefOrUserId, userId);
+  }
+
+  /** The credentials of one user to rotate: their index when it is complete (not a scan of every user's credentials), else a scan. */
+  private async idsForRotation(userId: string): Promise<string[]> {
+    const redis = this.redisClient;
+    if (!redis) return this.listByUser(userId);
+    try {
+      const ids = (await this.ensureUserIndex(redis)) ? await redis.smembers(userIndexKey(userId)) : await this.scanIdsOfUser(redis, userId);
+      return ids.sort((a, b) => a.localeCompare(b));
+    } catch (err) {
+      console.error('[CredentialsVault] Redis rotate listing failed:', err);
+      throw new CredentialsVaultPersistenceError({ cause: err, saving: false });
+    }
   }
 
   private async rotateEnvelope(credentialRef: string, userId?: string): Promise<boolean> {
@@ -454,11 +486,43 @@ export class CredentialsVault {
   }
 
   /**
+   * A stored value that is not a credential (a damaged record) is deleted when the index of `userId` names it, which is the only
+   * proof it was theirs, so the erasure of an account leaves nothing of theirs behind; for anyone else it stays. A readable or absent
+   * record is the caller's to handle ('readable').
+   */
+  private async deleteUnreadable(redis: Redis, credentialRef: string, userId?: string): Promise<'deleted' | 'kept' | 'readable'> {
+    try {
+      const raw = await redis.get(`${VAULT_PREFIX}${credentialRef}`);
+      if (raw === null || this.isEnvelope(raw)) return 'readable';
+      if (!userId || (await redis.sismember(userIndexKey(userId), credentialRef)) !== 1) return 'kept';
+      await pipelineReplies(redis.pipeline().del(`${VAULT_PREFIX}${credentialRef}`).srem(userIndexKey(userId), credentialRef));
+      return 'deleted';
+    } catch (err) {
+      console.error('[CredentialsVault] Redis delete failed:', err);
+      throw new CredentialsVaultPersistenceError({ cause: err, saving: false });
+    }
+  }
+
+  private isEnvelope(raw: string): boolean {
+    try {
+      const envelope = JSON.parse(raw) as { id?: unknown; userId?: unknown } | null;
+      return typeof envelope?.id === 'string' && typeof envelope.userId === 'string';
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Deletes credentials by reference with optional tenancy check.
    */
   async delete(credentialRef: string, userId?: string): Promise<boolean> {
     if (!credentialRef?.startsWith('cred_')) {
       return false;
+    }
+
+    if (this.redisClient) {
+      const unreadable = await this.deleteUnreadable(this.redisClient, credentialRef, userId);
+      if (unreadable !== 'readable') return unreadable === 'deleted';
     }
 
     const envelope = this.redisClient
@@ -526,19 +590,28 @@ export class CredentialsVault {
     return results;
   }
 
-  /** The summaries of the credentials the index of `userId` names: the index and the credentials themselves, not the vault of every user. */
+  /**
+   * The summaries of the credentials of `userId`: from the index and the credentials themselves, not the vault of every user, once
+   * the index is known to be complete; while a process is still building it, from a scan of the vault, so a listing is never short.
+   */
   private async listFromIndex(redis: Redis, userId: string, now: number): Promise<CredentialSummary[]> {
-    await this.ensureUserIndex(redis);
     const key = userIndexKey(userId);
-    const ids = await redis.smembers(key);
+    const complete = await this.ensureUserIndex(redis);
+    const ids = complete ? await redis.smembers(key) : await this.scanIdsOfUser(redis, userId);
     if (ids.length === 0) return [];
     const raws = await redis.mget(ids.map((id) => `${VAULT_PREFIX}${id}`));
     const results: CredentialSummary[] = [];
     const stale: string[] = [];
     raws.forEach((raw, position) => {
-      const envelope = raw ? (JSON.parse(raw) as StoredCredentialEnvelope) : undefined;
+      if (!raw) {
+        stale.push(ids[position]);
+        return;
+      }
+      // A damaged record is left out of the listing and stays where it is: the erasure of the account deletes it by the index.
+      const envelope = parseEnvelope(raw, ids[position]);
+      if (!envelope) return;
       // A credential that expired or was deleted, or one the index names for the wrong user, leaves the index.
-      if (!envelope || envelope.userId !== userId) {
+      if (envelope.userId !== userId) {
         stale.push(ids[position]);
       } else if (!envelope.expiresAt || now <= envelope.expiresAt) {
         results.push({
@@ -551,23 +624,47 @@ export class CredentialsVault {
         });
       }
     });
-    if (stale.length > 0) await redis.srem(key, ...stale).catch(() => undefined);
+    if (complete && stale.length > 0) await redis.srem(key, ...stale).catch(() => undefined);
     return results.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
   }
 
-  /** Indexes every credential of the vault when no process has done it within the last day. */
-  private async ensureUserIndex(redis: Redis): Promise<void> {
-    if (Date.now() < this.userIndexCheckedUntil) return;
-    const claimed = await redis.set(USER_INDEX_MARKER, '1', 'PX', USER_INDEX_REFRESH_MS, 'NX');
-    if (claimed === 'OK') {
-      try {
-        await this.indexVault(redis);
-      } catch (err) {
-        await redis.del(USER_INDEX_MARKER).catch(() => undefined);
-        throw err;
-      }
+  /** The ids in the index of `userId` whose credential has expired or is gone leave it, so a user who never lists does not keep them. */
+  private async dropExpiredFromIndex(redis: Redis, userId: string): Promise<void> {
+    try {
+      const key = userIndexKey(userId);
+      const ids = await redis.smembers(key);
+      if (ids.length === 0) return;
+      const pipeline = redis.pipeline();
+      for (const id of ids) pipeline.exists(`${VAULT_PREFIX}${id}`);
+      const replies = (await pipelineReplies(pipeline)) as number[];
+      const stale = ids.filter((_, position) => Number(replies[position]) === 0);
+      if (stale.length > 0) await redis.srem(key, ...stale);
+    } catch (err) {
+      // The listing drops them as well; a credential that was saved is never failed for this.
+      console.warn('[CredentialsVault] Could not drop the expired credentials from the index:', err);
+    }
+  }
+
+  /**
+   * Whether the index holds every credential of the vault, indexing the vault first when no process has done it within the last
+   * day. The marker is set when the pass has finished, never before; a request that finds another process running the pass gets
+   * false and lists by scan.
+   */
+  private async ensureUserIndex(redis: Redis): Promise<boolean> {
+    if (Date.now() < this.userIndexCheckedUntil) return true;
+    if ((await redis.exists(USER_INDEX_MARKER)) === 1) {
+      this.userIndexCheckedUntil = Date.now() + USER_INDEX_CHECK_MS;
+      return true;
+    }
+    if ((await redis.set(USER_INDEX_LOCK, '1', 'PX', USER_INDEX_LOCK_MS, 'NX')) !== 'OK') return false;
+    try {
+      await this.indexVault(redis);
+      await redis.set(USER_INDEX_MARKER, '1', 'PX', USER_INDEX_REFRESH_MS);
+    } finally {
+      await redis.del(USER_INDEX_LOCK).catch(() => undefined);
     }
     this.userIndexCheckedUntil = Date.now() + USER_INDEX_CHECK_MS;
+    return true;
   }
 
   private async indexVault(redis: Redis): Promise<void> {
@@ -578,12 +675,28 @@ export class CredentialsVault {
       if (keys.length === 0) continue;
       const pipeline = redis.pipeline();
       for (const raw of await redis.mget(keys)) {
-        if (!raw) continue;
-        const envelope = JSON.parse(raw) as StoredCredentialEnvelope;
-        pipeline.sadd(userIndexKey(envelope.userId), envelope.id);
+        const envelope = raw ? parseEnvelope(raw) : undefined;
+        if (envelope) pipeline.sadd(userIndexKey(envelope.userId), envelope.id);
       }
       if (pipeline.length > 0) await pipelineReplies(pipeline);
     } while (cursor !== '0');
+  }
+
+  /** The ids of the credentials of `userId` by a scan of the whole vault, which needs no index. */
+  private async scanIdsOfUser(redis: Redis, userId: string): Promise<string[]> {
+    const ids = new Set<string>();
+    let cursor = '0';
+    do {
+      const [next, keys] = await redis.scan(cursor, 'MATCH', `${VAULT_PREFIX}*`, 'COUNT', SCAN_BATCH);
+      cursor = next;
+      if (keys.length === 0) continue;
+      const raws = typeof redis.mget === 'function' ? await redis.mget(...keys) : await Promise.all(keys.map((key) => redis.get(key)));
+      for (const raw of raws) {
+        const envelope = raw ? parseEnvelope(raw) : undefined;
+        if (envelope?.userId === userId) ids.add(envelope.id);
+      }
+    } while (cursor !== '0');
+    return [...ids];
   }
 
   async listByUser(userId: string): Promise<string[]> {
@@ -600,25 +713,22 @@ export class CredentialsVault {
     return ids.sort((a, b) => a.localeCompare(b));
   }
 
+  /**
+   * The ids of the credentials of `userId` for an erasure, which never depends on the index being complete: those found by scanning
+   * the vault, and those the index names that still exist (a damaged record names no user, only the index finds it).
+   */
   private async redisIdsOfUser(redis: Redis, userId: string): Promise<string[]> {
     try {
-      const ids = new Set<string>();
-      let cursor = '0';
-      do {
-        const [next, keys] = await redis.scan(cursor, 'MATCH', `${VAULT_PREFIX}*`, 'COUNT', 500);
-        if (keys.length > 0) {
-          const raws =
-            typeof redis.mget === 'function'
-              ? await redis.mget(...keys)
-              : await Promise.all(keys.map((key) => redis.get(key)));
-          for (const raw of raws) {
-            if (!raw) continue;
-            const envelope = JSON.parse(raw) as StoredCredentialEnvelope;
-            if (envelope.userId === userId) ids.add(envelope.id);
-          }
-        }
-        cursor = next;
-      } while (cursor !== '0');
+      const ids = new Set(await this.scanIdsOfUser(redis, userId));
+      const indexed = await redis.smembers(userIndexKey(userId));
+      if (indexed.length > 0) {
+        const pipeline = redis.pipeline();
+        for (const id of indexed) pipeline.exists(`${VAULT_PREFIX}${id}`);
+        const replies = (await pipelineReplies(pipeline)) as number[];
+        indexed.forEach((id, position) => {
+          if (Number(replies[position]) === 1) ids.add(id);
+        });
+      }
       return [...ids].sort((a, b) => a.localeCompare(b));
     } catch (err) {
       console.error('[CredentialsVault] Redis listByUser failed:', err);
