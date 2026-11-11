@@ -21,8 +21,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Install the Redis backup timer on the host on or after 2026-12-08 (30-day notice of the new privacy text).
 
 ## Tests and CI
-- Make the stale-worker check of the PDF text, RAW, CPU and image-fetch hosts compare the compiled worker with every source file it bundles, not only its entry file: on 2026-11-11 a dist/pdf-text-worker.js older than a changed import ran in local tests (`olderThanSource`).
-- Re-pin `book-pg84.epub` and `book-pg2701.epub` to a fresh archived capture with a matching gutenberg.org mirror: their live files were rebuilt, so they have no mirror and depend on web.archive.org and the CI cache (entry 224).
+- Re-pin `book-pg2701.epub` to an archived capture taken after its live file was rebuilt on 2026-11-08, with a gutenberg.org mirror (latest capture 2026-11-01 differs; `book-pg84.epub` done); the pg84 quality rows were not re-measured against the rebuilt bytes (entry 224).
 
 ## Later
 - Engine choice and version pinning per conversion.
