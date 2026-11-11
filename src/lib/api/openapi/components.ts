@@ -8,8 +8,6 @@ import {
   IdempotencyKeyHeaderSchema,
   WebhookSecretRotateRequestSchema,
   WebhookSecretRotateResponseSchema,
-  UsageLedgerEntrySchema,
-  UsageQueryResponseSchema,
   OcrLanguageEntrySchema,
   OcrLanguagesResponseSchema,
   ArchiveInspectResponseSchema,
@@ -184,23 +182,6 @@ export const components = {
     WebhookSecretRotateResponse: {
       ...WebhookSecretRotateResponseSchema,
       $id: undefined,
-    },
-    UsageLedgerEntry: {
-      ...UsageLedgerEntrySchema,
-      $id: undefined,
-    },
-    UsageQueryResponse: {
-      ...UsageQueryResponseSchema,
-      $id: undefined,
-      properties: {
-        ...UsageQueryResponseSchema.properties,
-        items: {
-          type: 'array',
-          items: {
-            $ref: '#/components/schemas/UsageLedgerEntry',
-          },
-        },
-      },
     },
     OcrLanguageEntry: {
       ...OcrLanguageEntrySchema,
