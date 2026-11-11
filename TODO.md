@@ -40,4 +40,3 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Korean ONNX OCR (entry 230, off by default, 0.33% CER against 8.73% on the 29-page render set): QA decides after the provenance sign-off whether to wire it behind a sandboxed helper process and ship the 18 MB of models; real Korean scans are needed to confirm.
 - Rare samples: DWG before R13, WP Greek accented letters, Word Wingdings check boxes.
 - sk/sk1 input: QA decision on UniConvertor 2 (GPL, separate process).
-- BYOS import/url and export/url (byos-operations.ts) accept http: URLs and send a credential bearer token or headers over them; decide whether to require https (entry 232).

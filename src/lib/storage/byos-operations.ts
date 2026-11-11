@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { request } from 'undici';
+import { Agent, request, type Dispatcher } from 'undici';
 import { LocalFsStorage } from './local-fs-storage';
 import { objectStorage } from './selected-storage';
 import { globalSharedObjects } from './shared-store';
@@ -14,6 +14,7 @@ import {
 } from './adapters/adapter-interface';
 import { createSsrfSafeAgent, validateUrlForSsrf } from '../security/ssrf';
 import { redactUrl } from '../security/redact';
+import { assertTlsEndpoint, isDevAllowlistedEndpoint } from './adapters/http-guard';
 import type { ObjectReadStream, StoredObjectMetadata } from './object-storage';
 
 export type ImportOperationType =
@@ -98,6 +99,36 @@ function registerSharedObject(
   });
 }
 
+/**
+ * Checks that a URL a caller named for an import or an export is a public host (`validateUrlForSsrf`) before anything is
+ * read for the request. A host in the server's development allowlist (a local test server, development only) is exempt.
+ */
+async function assertUrlOperationHost(rawUrl: string, operation: string): Promise<void> {
+  const parsedUrl = new URL(rawUrl);
+  if (isDevAllowlistedEndpoint(parsedUrl)) {
+    return;
+  }
+  if (!(await validateUrlForSsrf(parsedUrl))) {
+    throw new StorageSsrfError(rawUrl, operation);
+  }
+}
+
+/** A credential travels with the request (a header, a bearer token or userinfo in the URL) only over TLS, so it is never sent in the clear. */
+function assertCredentialTransport(rawUrl: string, operation: string, headers: Record<string, string>): void {
+  const parsedUrl = new URL(rawUrl);
+  if (isDevAllowlistedEndpoint(parsedUrl)) {
+    return;
+  }
+  if (Object.keys(headers).length > 0 || parsedUrl.username !== '' || parsedUrl.password !== '') {
+    assertTlsEndpoint(parsedUrl, operation);
+  }
+}
+
+/** The connection agent of a URL operation: pinned to public addresses, except for a development-allowlisted local server. */
+function urlOperationDispatcher(rawUrl: string): Dispatcher {
+  return isDevAllowlistedEndpoint(new URL(rawUrl)) ? new Agent() : createSsrfSafeAgent();
+}
+
 async function executeUrlImport(
   params: ImportOperationParams,
   targetKey: string,
@@ -107,11 +138,7 @@ async function executeUrlImport(
     throw new Error('[BYOS] "url" parameter is required for import/url operation');
   }
 
-  const parsedUrl = new URL(params.url);
-  const isSafe = await validateUrlForSsrf(parsedUrl);
-  if (!isSafe) {
-    throw new StorageSsrfError(params.url, 'import/url');
-  }
+  await assertUrlOperationHost(params.url, 'import/url');
 
   const headers: Record<string, string> = {};
   if (params.credentialRef) {
@@ -126,7 +153,9 @@ async function executeUrlImport(
     }
   }
 
-  const dispatcher = createSsrfSafeAgent();
+  assertCredentialTransport(params.url, 'import/url', headers);
+
+  const dispatcher = urlOperationDispatcher(params.url);
   try {
     const res = await request(params.url, {
       method: 'GET',
@@ -244,13 +273,11 @@ async function resolveUrlDestination(params: ExportOperationParams): Promise<Exp
     throw new Error('[BYOS] "url" parameter is required for export/url operation');
   }
 
-  const parsedUrl = new URL(params.url);
-  const isSafe = await validateUrlForSsrf(parsedUrl);
-  if (!isSafe) {
-    throw new StorageSsrfError(params.url, 'export/url');
-  }
+  await assertUrlOperationHost(params.url, 'export/url');
+  const headers = await resolveCredentialHeaders(params);
+  assertCredentialTransport(params.url, 'export/url', headers);
 
-  return { kind: 'url', url: params.url, headers: await resolveCredentialHeaders(params) };
+  return { kind: 'url', url: params.url, headers };
 }
 
 async function resolveAdapterDestination(params: ExportOperationParams): Promise<ExportDestination> {
@@ -287,7 +314,7 @@ async function uploadToUrl(
     ...destination.headers,
   };
 
-  const dispatcher = createSsrfSafeAgent();
+  const dispatcher = urlOperationDispatcher(destination.url);
   try {
     const res = await request(destination.url, {
       method: 'POST',
