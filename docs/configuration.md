@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 153 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 154 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -333,6 +333,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `RSVG_CONVERT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `TESSERACT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `TESSDATA_PREFIX` | file or directory path | none | no | web, worker |
+| `EASYCONVERT_OCR_ONNX_DIR` | file or directory path | none | no | web, worker |
 | `VERAPDF_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `QPDF_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `FC_LIST_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
@@ -379,6 +380,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `RSVG_CONVERT_PATH`: Path of the librsvg `rsvg-convert` executable that writes an SVG as a vector PDF.
 - `TESSERACT_PATH`: Path of the `tesseract` executable.
 - `TESSDATA_PREFIX`: Directory of the Tesseract language data.
+- `EASYCONVERT_OCR_ONNX_DIR`: Directory of the optional ONNX Korean OCR models (`det.onnx`, `rec.onnx`, `dict.txt`, entry 230). Off by default: when unset the ONNX engine is unavailable and Korean OCR uses Tesseract.
 - `VERAPDF_PATH`: Path of the `verapdf` executable that validates PDF/A output.
 - `QPDF_PATH`: Path of the `qpdf` executable that encrypts PDF output.
 - `FC_LIST_PATH`: Path of the fontconfig `fc-list` executable.
