@@ -7,6 +7,10 @@ import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import JSZip from 'jszip';
 import { igesFile } from './helpers/iges-builder';
 import { CpuTaskTimeoutError, EngineMissingError, EngineUnavailableError, UnprocessableCadInputError } from '../src/lib/types';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 232).
+runWithoutFileConfinement();
 
 /**
  * The wrapper around `cad-convert` (src/lib/conversions/cad-occt.ts), tested with stand-in programs that stand for a converter

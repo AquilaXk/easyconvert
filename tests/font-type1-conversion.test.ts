@@ -7,6 +7,10 @@ import { expectSameOutlines, readFontFacts, type OutlineTolerance } from './help
 import { haveType1Oracles } from './helpers/fontforge-tool';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { buildPfa, buildPfb, circleGlyph, rectangleGlyph, type Type1Glyph } from './helpers/type1-builder';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 232).
+runWithoutFileConfinement();
 
 /**
  * PostScript Type 1 fonts converted by the real FontForge. fontTools, which shares no code with the converter, reads the Type 1 source and

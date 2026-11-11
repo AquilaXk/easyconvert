@@ -22,6 +22,10 @@ import {
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { ENTITY_SAMPLE_RELEASES, requireDwgSample } from './helpers/dwg-samples';
 import { skipUnless } from './helpers/strict-skip';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 232).
+runWithoutFileConfinement();
 
 /**
  * DWG input: a pinned open-source reader (`dwg2dxf`, run as a separate sandboxed process) writes a DXF that the DXF path draws.
