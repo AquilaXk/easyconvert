@@ -17,7 +17,7 @@ import {
   FALLBACK_QUALITY,
   type AvifEncoder,
   clampQuality,
-  pngQualityAsPalette,
+  jpegOptionsFor, pngQualityAsPalette,
   webpOptionsFor,
 } from './image-encoder-defaults';
 import {
@@ -72,10 +72,9 @@ import { decodePlainPngForTarget, type DecodedForTarget } from './image-decoded-
 import { hasSrgbPrimaries, isProfileDroppedByPngReader, isSrgbProfile, srgb16LutsFromProfile } from './icc-srgb';
 import { EIGHT_BIT_ONLY_TARGETS, reducesAtEncode, roundedToEightBits, SHARP_SIXTEEN_BIT_DEPTH } from './image-depth';
 import { applyDevelopmentCurve } from './image-development-curve';
-import { pinBaseImageThreads } from './image-threads';
+import { pinBaseImageThreads, withPipelineThreads } from './image-threads';
 import { rgbaRaster } from './image-rgba-raster';
 import { encodeAvif, PQ_AVIF_CICP } from './image-avif-pipeline';
-import { encodeJpegFromPipeline } from './image-jpegli-pipeline';
 import { FIRST_QUARTER_TURN_ORIENTATION } from './image-orientation';
 import { buildOdgPackage } from './odg';
 import { RAW_CAMERA_FORMATS } from './raw-formats';
@@ -2142,7 +2141,8 @@ async function convertImage(
           );
         } else {
           const keepsGrey = (inputSpace === 'b-w' || inputSpace === 'grey16') && isNeutralColour(background);
-          outputBuffer = await encodeJpegFromPipeline(keepsGrey ? pipeline.toColourspace('b-w') : pipeline, options.quality, content, keepsGrey);
+          const jpeg = (keepsGrey ? pipeline.toColourspace('b-w') : pipeline).jpeg(jpegOptionsFor(options.quality, content, keepsGrey));
+          outputBuffer = await withPipelineThreads(() => jpeg.toBuffer());
         }
         mimeType = 'image/jpeg';
         break;

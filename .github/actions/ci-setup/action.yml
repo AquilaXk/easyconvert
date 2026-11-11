@@ -120,18 +120,6 @@ runs:
         path: /opt/avifenc
         key: avifenc-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-avifenc.sh', 'scripts/avifenc/SOURCE') }}
 
-    # cjpegli is built from the sources pinned in scripts/install-cjpegli.sh (its note names them), so the hash of the two is the key.
-    - name: Prepare the JPEG encoder directory
-      shell: bash
-      run: sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/cjpegli
-
-    - name: Restore the cached JPEG encoder build
-      id: cjpegli-cache
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-      with:
-        path: /opt/cjpegli
-        key: cjpegli-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-cjpegli.sh', 'scripts/cjpegli/SOURCE') }}
-
     # The patched djvulibre is built from the Debian source pinned in scripts/install-djvulibre.sh with the patches beside it, and links
     # the libjpeg and libtiff of the runner image, so the image version, the script, its gates library and the patches are the key.
     - name: Prepare the DjVu renderer directory
@@ -178,7 +166,6 @@ runs:
         LIBRAW_HE_CACHE_HIT: ${{ steps.libraw-he-cache.outputs.cache-hit }}
         GHOSTXPS_CACHE_HIT: ${{ steps.ghostxps-cache.outputs.cache-hit }}
         AVIFENC_CACHE_HIT: ${{ steps.avifenc-cache.outputs.cache-hit }}
-        CJPEGLI_CACHE_HIT: ${{ steps.cjpegli-cache.outputs.cache-hit }}
         DJVULIBRE_CACHE_HIT: ${{ steps.djvulibre-cache.outputs.cache-hit }}
         RELEASE_DOWNLOADS: ${{ runner.temp }}/release-downloads
         S3_TEST_SERVER: ${{ inputs.s3-test-server }}
