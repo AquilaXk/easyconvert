@@ -407,9 +407,8 @@ export async function createZipArchive(
     throw new PayloadLimitError(`ZIP archive would hold ${resolvedFiles.length} entries; the limit is ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}.`);
   }
   const compressionLevel = resolveArchiveCompressionLevel(options.compressionLevel);
-  const content = await createZipBuffer(zipEntriesWithFolders(resolvedFiles, compressionLevel), {
-    deflate: deflaterRunningAhead(resolvedFiles.map((file) => file.buffer), { parallelBlocks: true }),
-  });
+  const deflate = deflaterRunningAhead(resolvedFiles.map((file) => file.buffer), { parallelBlocks: true });
+  const content = await createZipBuffer(zipEntriesWithFolders(resolvedFiles, compressionLevel), { deflate });
 
   return {
     buffer: content,

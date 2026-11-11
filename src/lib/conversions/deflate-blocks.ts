@@ -85,7 +85,8 @@ function gzipHeader(level: number): Buffer {
   header[0] = 0x1f;
   header[1] = 0x8b;
   header[2] = GZIP_METHOD_DEFLATE;
-  header[8] = level === 9 ? GZIP_XFL_BEST : level < 2 ? GZIP_XFL_FASTEST : 0;
+  if (level === 9) header[8] = GZIP_XFL_BEST;
+  else if (level < 2) header[8] = GZIP_XFL_FASTEST;
   header[9] = GZIP_OS_UNIX;
   return header;
 }
