@@ -1,5 +1,7 @@
-import type { PngOptions, Sharp } from 'sharp';
+import type { Metadata, PngOptions, Sharp } from 'sharp';
 import type { ConversionOptions } from '../types';
+import { resizedDimensions } from './image-input-limits';
+import { optimiserFollows } from './png-optimise';
 
 /**
  * Cheap content analysis for the lossy encoders. Screenshots, line art and rendered text have large flat areas
@@ -148,7 +150,6 @@ export async function withoutOpaqueAlpha(pipeline: Sharp, alphaIsOpaque?: boolea
   return opaque ? pipeline.removeAlpha() : pipeline;
 }
 
-const SIXTEEN_BIT_DEPTH = 'ushort';
 const OPAQUE_BYTE = 0xff;
 /** Bytes compared per native call; the all-ones block is allocated once. */
 const OPAQUE_BLOCK_BYTES = 64 * 1024;
@@ -201,12 +202,35 @@ export function writesPalettePng(options: ConversionOptions): boolean {
   return options.colorDepth === 8 || Boolean(options.palette) || options.quantizer === 'oklab';
 }
 
+/**
+ * The deflate level of a PNG that the optimiser rewrites at once (a PNG converted to PNG): level 1, a quarter to a half of the encode time of
+ * level 8 on a graphic and 2 to 8 times faster than the filtered level 7 of a photograph, for a file the optimiser reads as fast. Entry 232
+ * has the measurements.
+ */
+export const OPTIMISED_PNG_COMPRESSION_LEVEL = 1;
+const PALETTE_INDEX_BYTES = 1;
+const SIXTEEN_BIT_DEPTH = 'ushort';
+
+/** Whether the PNG written for `meta` (the input, before the resize of `options`) is rewritten by the optimiser, as a palette picture or as full colour. */
+function followedByOptimiser(source: string, fmt: string, meta: Metadata | undefined, options: ConversionOptions, palette: boolean): boolean {
+  if (meta === undefined || meta.width === undefined || meta.height === undefined) return false;
+  const size = resizedDimensions(meta.width, meta.height, options);
+  const bytesPerPixel = palette ? PALETTE_INDEX_BYTES : (meta.channels ?? RGB_CHANNELS + 1) * (meta.depth === SIXTEEN_BIT_DEPTH ? 2 : 1);
+  return optimiserFollows(source, fmt, size.width, size.height, bytesPerPixel, palette);
+}
+
+/** The deflate level of an indexed PNG: `normal`, or the level for a file the optimiser rewrites. */
+export function palettePngLevel(normal: number, source: string, fmt: string, meta: Metadata | undefined, options: ConversionOptions): number {
+  return followedByOptimiser(source, fmt, meta, options, true) ? OPTIMISED_PNG_COMPRESSION_LEVEL : normal;
+}
+
 /** Whether the writer needs the content class of the picture: a full-colour 8-bit PNG is the one that chooses its filters by it. */
-export function choosesPngFilter(fmt: string, options: ConversionOptions, hasDeepSamples: boolean): boolean {
-  return fmt === 'png' && !hasDeepSamples && !writesPalettePng(options);
+export function choosesPngFilter(fmt: string, options: ConversionOptions, hasDeepSamples: boolean, source = '', meta?: Metadata): boolean {
+  return fmt === 'png' && !hasDeepSamples && !writesPalettePng(options) && !followedByOptimiser(source, fmt, meta, options, false);
 }
 
 /** The encoder settings of a full-colour 8-bit PNG of the given content. */
-export function eightBitPngOptions(content: ContentClass): PngOptions {
+export function eightBitPngOptions(content: ContentClass, source = '', meta?: Metadata, options: ConversionOptions = {}): PngOptions {
+  if (followedByOptimiser(source, 'png', meta, options, false)) return { compressionLevel: OPTIMISED_PNG_COMPRESSION_LEVEL };
   return content === 'photo' ? { compressionLevel: PHOTO_PNG_COMPRESSION_LEVEL, adaptiveFiltering: true } : { compressionLevel: GRAPHIC_PNG_COMPRESSION_LEVEL };
 }

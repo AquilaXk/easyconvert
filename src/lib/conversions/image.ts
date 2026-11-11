@@ -10,7 +10,7 @@ import { buildTiffOptions } from './image-tiff-options';
 import { encodePsd, PSD_MAX_SIDE, type PsdChannels } from './psd-writer';
 import { decodeBmp } from './bmp';
 import { buildJpegPdf, planJpegPassthrough } from './pdf-jpeg-passthrough';
-import { choosesPngFilter, classifyContent, classifyRaster, eightBitPngOptions, writesPalettePng, type ContentClass, type Raster } from './image-content';
+import { choosesPngFilter, classifyContent, classifyRaster, eightBitPngOptions, palettePngLevel, writesPalettePng, type ContentClass, type Raster } from './image-content';
 import {
   AVIF_EFFORT,
   AVIF_TUNE,
@@ -2076,7 +2076,7 @@ async function convertImage(
   // A deep picture written as AVIF is encoded by the command-line tool whatever its content, so its class is awaited
   // by the encoder, after the PNG for the tool has been started; the other encoders need it at once.
   let pendingContent: Promise<ContentClass> | undefined;
-  if ((CONTENT_CLASSIFIED_TARGETS.has(fmt) || fmt === 'gif' || choosesPngFilter(fmt, options, deepColourspace !== undefined || !!rawDemosaiced?.rgb16)) && !frameSelection?.keepsAnimation) {
+  if ((CONTENT_CLASSIFIED_TARGETS.has(fmt) || fmt === 'gif' || choosesPngFilter(fmt, options, deepColourspace !== undefined || !!rawDemosaiced?.rgb16, src, inputMeta)) && !frameSelection?.keepsAnimation) {
     if (decoded) content = decoded.content ?? classifyRaster(decoded.raster);
     else if (fmt === 'avif' && (await metadataOf(pipeline)).depth === SHARP_SIXTEEN_BIT_DEPTH) {
       pendingContent = classifyContent(pipeline, deepPipeline);
@@ -2187,7 +2187,7 @@ async function convertImage(
             outputBuffer = await sharp(rgbaBuffer, {
               raw: { width: info.width, height: info.height, channels: 4 },
             })
-              .png({ palette: true, colours, dither: 0, compressionLevel: 8 })
+              .png({ palette: true, colours, dither: 0, compressionLevel: palettePngLevel(8, src, fmt, inputMeta, options) })
               .toBuffer();
           } else {
             outputBuffer = await pipeline
@@ -2195,7 +2195,7 @@ async function convertImage(
                 palette: true,
                 colours,
                 dither: options.dither !== false ? 1.0 : 0.0,
-                compressionLevel: 8,
+                compressionLevel: palettePngLevel(8, src, fmt, inputMeta, options),
               })
               .toBuffer();
           }
@@ -2216,7 +2216,7 @@ async function convertImage(
             photoPng ??
             (await (deepColourspace
               ? pipeline.toColourspace(deepColourspace).png({ compressionLevel: DEEP_PNG_COMPRESSION_LEVEL, adaptiveFiltering: true })
-              : pipeline.png(eightBitPngOptions(content))
+              : pipeline.png(eightBitPngOptions(content, src, inputMeta, options))
             ).toBuffer());
         }
         if (tagsPq) outputBuffer = writePngCicp(outputBuffer, { primaries: CICP_PRIMARIES_BT2020, transfer: CICP_TRANSFER_PQ, matrix: CICP_MATRIX_IDENTITY, fullRange: true });

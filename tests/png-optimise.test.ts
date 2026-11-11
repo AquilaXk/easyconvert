@@ -4,7 +4,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { convertFile } from '../src/lib/conversions';
-import { findOxipng, OXIPNG_LEVEL_FULL_COLOUR, OXIPNG_LEVEL_PALETTE, optimisePng } from '../src/lib/conversions/png-optimise';
+import { findOxipng, OXIPNG_FULL_COLOUR_ARGUMENTS, OXIPNG_LARGE_PALETTE_ARGUMENTS, OXIPNG_PALETTE_ARGUMENTS, optimisePng } from '../src/lib/conversions/png-optimise';
 import { craftPng } from './helpers/png-craft';
 import { chunksOf, headerOf, rgba16Of } from './helpers/png-pixels';
 import { skipUnless } from './helpers/strict-skip';
@@ -77,9 +77,14 @@ describe('the program as the wrapper runs it', () => {
     vi.stubEnv('OXIPNG_PATH', program);
     try {
       await optimisePng(palette());
-      expect(fs.readFileSync(argsFile, 'utf8')).toMatch(new RegExp(`^-q -o ${OXIPNG_LEVEL_PALETTE} --threads \\d+ --timeout \\d+ --stdout - $`));
+      expect(fs.readFileSync(argsFile, 'utf8')).toMatch(new RegExp(`^-q ${OXIPNG_PALETTE_ARGUMENTS.join(' ')} --threads [12] --timeout \\d+ --stdout - $`));
+      const large = palette();
+      large.writeUInt32BE(4000, 16);
+      large.writeUInt32BE(4000, 20);
+      await optimisePng(large);
+      expect(fs.readFileSync(argsFile, 'utf8')).toMatch(new RegExp(`^-q ${OXIPNG_LARGE_PALETTE_ARGUMENTS.join(' ')} --threads`));
       await optimisePng(await rgb());
-      expect(fs.readFileSync(argsFile, 'utf8')).toMatch(new RegExp(`^-q -o ${OXIPNG_LEVEL_FULL_COLOUR} `));
+      expect(fs.readFileSync(argsFile, 'utf8')).toMatch(new RegExp(`^-q ${OXIPNG_FULL_COLOUR_ARGUMENTS.join(' ')} --threads`));
     } finally {
       vi.unstubAllEnvs();
     }
@@ -109,6 +114,43 @@ describe('the program as the wrapper runs it', () => {
       huge.writeUInt32BE(20_000, 20);
       expect((await optimisePng(huge)).equals(huge)).toBe(true);
       expect(fs.existsSync(argsFile)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe('the file the encoder hands to the optimiser', () => {
+  /** The compression level the zlib header of the first IDAT chunk states: 0 or 1 for level 1, 3 for 6 to 9 (its FLEVEL bits are 0, 1, 2 and 3). */
+  const flevel = (png: Buffer): number => {
+    const idat = chunksOf(png).find((chunk) => chunk.type === 'IDAT');
+    return (idat!.data[1] >> 6) & 3;
+  };
+  const source = async (): Promise<Buffer> => encode(pixels(3, (x, y, next) => [Math.round(40 + x * 1.5 + next() * 8), Math.round(70 + y * 2 + next() * 8), Math.round(100 + ((x + y) >> 1) + next() * 8)]), 3, 6);
+
+  it('is written at the lowest level when the program is installed, and at the usual one when it is not', async () => {
+    const png = await source();
+    const { program } = standIn('cat');
+    vi.stubEnv('OXIPNG_PATH', program);
+    const followed = { palette: await convertFile(png, 'png', 'png', { palette: true, colors: 256 }, 'a.png'), full: await convertFile(png, 'png', 'png', {}, 'a.png') };
+    vi.stubEnv('OXIPNG_PATH', '/nonexistent/oxipng');
+    const alone = { palette: await convertFile(png, 'png', 'png', { palette: true, colors: 256 }, 'a.png'), full: await convertFile(png, 'png', 'png', {}, 'a.png') };
+    vi.unstubAllEnvs();
+    expect(flevel(followed.palette.buffer)).toBe(0);
+    expect(flevel(followed.full.buffer)).toBe(0);
+    expect(flevel(alone.palette.buffer)).toBe(3);
+    expect(flevel(alone.full.buffer)).toBe(3);
+    expect(rgba16Of(followed.full.buffer)).toEqual(rgba16Of(alone.full.buffer));
+  });
+
+  it('keeps the usual level for a conversion from another format and for a picture the optimiser will not take', async () => {
+    const { program } = standIn('cat');
+    vi.stubEnv('OXIPNG_PATH', program);
+    try {
+      const jpeg = await sharp(await source()).jpeg().toBuffer();
+      expect(flevel((await convertFile(jpeg, 'jpg', 'png', {}, 'a.jpg')).buffer)).toBe(3);
+      const enlarged = await convertFile(await source(), 'png', 'png', { width: 6000, height: 6000, fit: 'fill' }, 'a.png');
+      expect(flevel(enlarged.buffer)).toBe(3);
     } finally {
       vi.unstubAllEnvs();
     }
