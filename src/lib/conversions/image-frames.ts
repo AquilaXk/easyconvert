@@ -15,6 +15,7 @@ import { maxInputPixels, resizedDimensions } from './image-input-limits';
 import { truncatedJpegDecodeOptions } from './image-jpeg-stream';
 import { EXIF_ORIENTATION_NORMAL, FIRST_QUARTER_TURN_ORIENTATION, orientRgbaFrame, withUprightOrientation } from './image-orientation';
 import { assertPageImageCount, resolvePageSelection } from './page-range';
+import { sharpInput } from './picture-file';
 
 /**
  * Frame and page selection for multi-frame image sources.
@@ -208,7 +209,7 @@ function orientedAnimation(buffer: Buffer, meta: Metadata, frames: number, orien
     async frame(index): Promise<RawFrame> {
       if (!stack) {
         // A kept ICC profile means the pixels stay in the profile space; without it libvips converts to sRGB.
-        const decoder = sharp(buffer, { animated: true, limitInputPixels: maxInputPixels() });
+        const decoder = sharp(sharpInput(buffer), { animated: true, limitInputPixels: maxInputPixels() });
         const decoded = await (options.stripMetadata === true ? decoder : decoder.keepIccProfile())
           .ensureAlpha()
           .raw()
@@ -279,7 +280,7 @@ async function selectDocumentPages(
   // Every page is decoded at its source size and encoded at its resized size: charge the larger of the two.
   let pixels = 0;
   for (const page of pages) {
-    const pageMeta = await sharp(buffer, { page: page - 1, limitInputPixels: maxInputPixels() }).metadata();
+    const pageMeta = await sharp(sharpInput(buffer), { page: page - 1, limitInputPixels: maxInputPixels() }).metadata();
     const sourceWidth = pageMeta.width ?? 0;
     const sourceHeight = pageMeta.height ?? 0;
     const resized = sourceWidth > 0 && sourceHeight > 0 ? resizedDimensions(sourceWidth, sourceHeight, resize ?? {}) : { width: 0, height: 0 };
@@ -309,7 +310,7 @@ export async function selectFrames(
   const apng = parseApng(buffer);
   if (apng) return selectApng(buffer, apng, targetFormat, options);
 
-  const meta = header ?? (await sharp(buffer, { limitInputPixels: maxInputPixels() }).metadata());
+  const meta = header ?? (await sharp(sharpInput(buffer), { limitInputPixels: maxInputPixels() }).metadata());
   const frames = meta.pages ?? SINGLE_FRAME;
   const untouched: FrameSelection = { source: buffer, input: truncatedJpegDecodeOptions(buffer), keepsAnimation: false, ...(frames <= SINGLE_FRAME ? { metadata: meta } : {}) };
   if (frames <= SINGLE_FRAME || meta.format === undefined) return untouched;
