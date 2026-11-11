@@ -1,6 +1,6 @@
 /**
- * The part of ioredis the credentials vault uses, over maps: strings (SET with PX and NX, SETEX, GET, MGET, DEL, SCAN one key at
- * a time, KEYS), sets (SADD, SREM, SMEMBERS) and pipelines. `state.down` makes every command fail, as a Redis that does not answer.
+ * The part of ioredis the credentials vault uses, over maps: strings (SET with PX and NX, SETEX, GET, MGET, DEL, EXISTS, SCAN one key at
+ * a time, KEYS), sets (SADD, SREM, SMEMBERS, SISMEMBER) and pipelines. `state.down` makes every command fail, as a Redis that does not answer.
  */
 export function fakeVaultRedis() {
   const data = new Map<string, string>();
@@ -19,6 +19,7 @@ export function fakeVaultRedis() {
     get: (key: string) => guard(() => data.get(key) ?? null),
     mget: (...keys: (string | string[])[]) => guard(() => keys.flat().map((key) => data.get(key) ?? null)),
     del: (...keys: string[]) => guard(() => keys.filter((key) => data.delete(key) || sets.delete(key)).length),
+    exists: (...keys: string[]) => guard(() => keys.filter((key) => data.has(key) || sets.has(key)).length),
     keys: (pattern: string) => guard(() => [...data.keys()].filter((key) => key.startsWith(pattern.replace('*', '')))),
     scan: (cursor: string, _matchToken: string, pattern: string) =>
       guard(() => {
@@ -43,6 +44,7 @@ export function fakeVaultRedis() {
         return removed;
       }),
     smembers: (key: string) => guard(() => [...(sets.get(key) ?? [])]),
+    sismember: (key: string, member: string) => guard(() => (sets.get(key)?.has(member) ? 1 : 0)),
   };
 
   const pipeline = () => {

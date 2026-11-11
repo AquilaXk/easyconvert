@@ -130,6 +130,8 @@ export interface TusSessionStore {
   saveSession(session: TusSession, ttlSeconds?: number): Promise<void>;
   getSession(id: string): Promise<TusSession | null>;
   deleteSession(id: string): Promise<boolean>;
+  /** The ids of the sessions `ownerUserId` has open, for the erasure of an account. */
+  idsOfOwner?(ownerUserId: string): Promise<string[]>;
   reset?(): Promise<void>;
 }
 
@@ -152,6 +154,10 @@ export class InMemoryTusSessionStore implements TusSessionStore {
 
   async deleteSession(id: string): Promise<boolean> {
     return this.sessions.delete(id);
+  }
+
+  async idsOfOwner(ownerUserId: string): Promise<string[]> {
+    return [...this.sessions.values()].filter((session) => session.ownerUserId === ownerUserId).map((session) => session.id);
   }
 
   async reset(): Promise<void> {
@@ -204,6 +210,27 @@ export class RedisTusSessionStore implements TusSessionStore {
     const key = `${this.prefix}${id}`;
     const res = await this.redis.del(key);
     return res > 0;
+  }
+
+  /** The sessions are keyed by their own id, so the owner is read from each (one SCAN pass; only the erasure of an account asks). */
+  async idsOfOwner(ownerUserId: string): Promise<string[]> {
+    const ids: string[] = [];
+    let cursor = '0';
+    do {
+      const [next, keys] = await this.redis.scan(cursor, 'MATCH', `${this.prefix}*`, 'COUNT', 500);
+      cursor = next;
+      if (keys.length === 0) continue;
+      for (const raw of await this.redis.mget(keys)) {
+        if (!raw) continue;
+        try {
+          const session = JSON.parse(raw) as TusSession;
+          if (session.ownerUserId === ownerUserId) ids.push(session.id);
+        } catch {
+          // A record that is not a session names no owner.
+        }
+      }
+    } while (cursor !== '0');
+    return ids;
   }
 
   async reset(): Promise<void> {
@@ -797,6 +824,34 @@ export class TusEngine {
       }
       return storeDeleted || fileDeleted;
     });
+  }
+
+  /**
+   * The ids of the uploads `ownerUserId` has open: the sessions of the session store, and the staged records of this host's
+   * directory (a record the store lost is still a staged file of the owner).
+   */
+  async sessionsOfOwner(ownerUserId: string): Promise<string[]> {
+    const ids = new Set(await this.sessionStore.idsOfOwner?.(ownerUserId));
+    let names: string[] = [];
+    try {
+      names = fs.readdirSync(this.tusDir);
+    } catch {
+      // No staging directory, no staged uploads.
+    }
+    for (const name of names) {
+      const match = TUS_FILE_PATTERN.exec(name);
+      if (!match || match[2] !== 'info' || !isTusId(match[1])) continue;
+      const owner = await fs.promises.readFile(path.join(this.tusDir, name), 'utf-8').then((raw) => (JSON.parse(raw) as TusSession).ownerUserId, () => undefined);
+      if (owner === ownerUserId) ids.add(match[1]);
+    }
+    return [...ids].sort((a, b) => a.localeCompare(b));
+  }
+
+  /** Ends every upload `ownerUserId` has open, with its staged file. Answers the ids it ended. */
+  async terminateSessionsOfOwner(ownerUserId: string): Promise<string[]> {
+    const ids = await this.sessionsOfOwner(ownerUserId);
+    for (const id of ids) await this.terminateSession(id);
+    return ids;
   }
 
   get activeLockCount(): number {
