@@ -62,7 +62,7 @@ describe('a page whose Type 3 glyphs without a Unicode value outnumber the text'
 
   it('gives the same words in Markdown', async () => {
     const result = await convertFile(documentOf([label('Figure 1 Quark model') + type3Run(PICTURE_CODES)]), 'pdf', 'md', {}, 'figure.pdf');
-    expect(result.buffer.toString('utf8')).toContain('Figure 1 Quark model');
+    expect(result.buffer.toString('utf8').trim()).toBe('Figure 1 Quark model');
   });
 
   it('leaves out what a Type 3 font shows as characters, and says so', async () => {
@@ -93,6 +93,7 @@ describe('a page whose Type 3 glyphs without a Unicode value outnumber the text'
   it('is still refused when no page of the document keeps text', async () => {
     const error = await captureError(() => toText(documentOf([type3Run(PICTURE_CODES + BITMAP_CODES)])));
     expect(error).toBeInstanceOf(PdfTextUnmappedError);
+    expect((error as PdfTextUnmappedError).pages).toEqual([1]);
   });
 
   it('leaves the page to OCR as a whole when OCR is on', async () => {
