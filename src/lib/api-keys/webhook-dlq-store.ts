@@ -217,8 +217,8 @@ export class WebhookDlqStore {
     return removed;
   }
 
-  /** Removes every entry `ownerUserId` owns (expired ones too), in batches, and the entries recorded without an owner. */
-  async clear(ownerUserId: string): Promise<void> {
+  /** Removes every entry `ownerUserId` owns (expired ones too), in batches, and the entries recorded without an owner. A Redis that fails falls back to the process entries, unless `strict`. */
+  async clear(ownerUserId: string, options: { strict?: boolean } = {}): Promise<void> {
     const redis = this.client();
     if (redis) {
       try {
@@ -226,8 +226,9 @@ export class WebhookDlqStore {
         await this.reconcileIfDrifted(redis);
         await this.clearIndexed(redis, ownerUserId);
         await this.purgeAllOwnerless(redis);
-      } catch {
-        // Fallback
+      } catch (error) {
+        // With `strict` (the erasure of an account) a failure is the caller's: entries that were not removed must not be reported removed.
+        if (options.strict) throw error;
       }
     }
     for (const [id, entry] of this.memory) if (!entry.ownerUserId || entry.ownerUserId === ownerUserId) this.memory.delete(id);

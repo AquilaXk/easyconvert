@@ -805,8 +805,8 @@ export class WebhookDispatcher {
   /**
    * Removes every DLQ entry owned by `ownerUserId`; other owners' entries are untouched.
    */
-  public clearDlq(ownerUserId: string): Promise<void> {
-    return this.dlq.clear(ownerUserId);
+  public clearDlq(ownerUserId: string, options?: { strict?: boolean }): Promise<void> {
+    return this.dlq.clear(ownerUserId, options);
   }
 
   public async replayDlq(id: string, ownerUserId: string): Promise<WebhookDispatchResult | null> {

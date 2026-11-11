@@ -156,6 +156,104 @@ describe('erasing an account while its work may still run', () => {
   });
 });
 
+describe('work that starts while the erasure runs', () => {
+  /** Pops jobs until `id` is the one popped, and marks it active (the in-memory queue leaves that to its worker). */
+  async function makeActive(id: string): Promise<void> {
+    let popped = await conversionQueue._popNextWaiting?.();
+    for (let taken = 0; popped && popped.id !== id && taken < 500; taken++) popped = await conversionQueue._popNextWaiting?.();
+    expect(popped?.id).toBe(id);
+    if (popped && popped.state !== 'active') popped.state = 'active';
+  }
+
+  it('cancels a job that was queued after the first look and is running by the next one, and does not report the account deleted with it running', async () => {
+    const user = await newAccount('straggler');
+    await queuedJob(user.id, 'first');
+    const plan = await planAccountErasure(user.id);
+    let straggler: string | undefined;
+    const realGraphs = graphScheduler.graphsOfUser.bind(graphScheduler);
+    let looks = 0;
+    // The first look at the work has listed the jobs; a request authenticated before the keys went queues one more, and a worker takes it.
+    vi.spyOn(graphScheduler, 'graphsOfUser').mockImplementation(async (userId: string) => {
+      const found = await realGraphs(userId);
+      if (looks++ === 0) {
+        straggler = (await queuedJob(user.id, 'straggler')).id;
+        await makeActive(straggler);
+      }
+      return found;
+    });
+
+    const outcome = await eraseAccount(plan!, { drainMs: 0 });
+
+    expect(outcome).toEqual({ runningJobIds: [] });
+    const after = await conversionQueue.getJob(straggler!);
+    expect(after === undefined || after.state === 'cancelled').toBe(true);
+    expect(await redisUserStore.findById(user.id)).toBeNull();
+  });
+
+  it('answers the jobs queued after the last look, and keeps the account and its index for the next run', async () => {
+    const user = await newAccount('late-queue');
+    const first = await queuedJob(user.id, 'first');
+    let late: string | undefined;
+    const real = conversionQueue.remove.bind(conversionQueue);
+    vi.spyOn(conversionQueue, 'remove').mockImplementation(async (id: string) => {
+      if (id === first.id && late === undefined) late = (await queuedJob(user.id, 'late')).id;
+      return real(id);
+    });
+
+    const outcome = await eraseAccount((await planAccountErasure(user.id))!, { drainMs: 0 });
+
+    expect(outcome.runningJobIds).toEqual([late]);
+    expect(await redisUserStore.findById(user.id)).not.toBeNull();
+    expect((await conversionQueue.getJobsByUser(user.id)).map((job) => job.id)).toEqual([late]);
+    vi.restoreAllMocks();
+  });
+
+  it('leaves the jobs of the account that this run did not process, and removes the ones it did', async () => {
+    const user = await newAccount('window');
+    const processed = await queuedJob(user.id, 'processed');
+    const beyond = await queuedJob(user.id, 'beyond');
+
+    const left = await conversionQueue.forgetUser!(user.id, new Set([processed.id]));
+
+    expect(left).toEqual([beyond.id]);
+    expect((await conversionQueue.getJobsByUser(user.id)).map((job) => job.id)).toEqual([beyond.id]);
+    expect((await conversionQueue.getJob(beyond.id))?.state).toBe('waiting');
+  });
+});
+
+describe('a record the erasure could not delete fails the run', () => {
+  it('fails when the dead letters cannot be cleared, and leaves the account', async () => {
+    const user = await newAccount('dlqfail');
+    vi.spyOn(webhookDispatcher, 'clearDlq').mockRejectedValue(new Error('redis is down'));
+
+    await expect(eraseAccount((await planAccountErasure(user.id))!, { drainMs: 0 })).rejects.toThrow('redis is down');
+
+    expect(await redisUserStore.findById(user.id)).not.toBeNull();
+  });
+
+  // skip-ok: mode selection. The shards run without REDIS_URL; the Redis-mode CI step (npm run test:redis) sets it and runs this file.
+  it.skipIf(!process.env.REDIS_URL)('does not report the dead letters cleared when Redis refuses the removal, and does not hide a login counter it could not delete', async () => {
+    const user = await newAccount('redisfail');
+    const client = redisKeyStore.getRedisClient()!;
+    const realPipeline = client.pipeline.bind(client);
+    const broken = vi.spyOn(client, 'pipeline').mockImplementation((() => {
+      throw new Error('connection lost');
+    }) as never);
+    await expect(webhookDispatcher.clearDlq(user.id, { strict: true })).rejects.toThrow('connection lost');
+    await expect(webhookDispatcher.clearDlq(user.id)).resolves.toBeUndefined();
+    broken.mockRestore();
+    void realPipeline;
+
+    const realDel = client.del.bind(client) as (...keys: string[]) => Promise<number>;
+    vi.spyOn(client, 'del').mockImplementation((async (...keys: string[]) => {
+      if (keys.some((key) => key.includes('login_attempts'))) throw new Error('connection lost');
+      return realDel(...keys);
+    }) as never);
+    await expect(eraseAccount((await planAccountErasure(user.id))!, { drainMs: 0 })).rejects.toThrow('connection lost');
+    expect(await redisUserStore.findById(user.id)).not.toBeNull();
+  });
+});
+
 describe('the other records of an account', () => {
   it('deletes its open resumable uploads and no other account\'s', async () => {
     const user = await newAccount('tus');

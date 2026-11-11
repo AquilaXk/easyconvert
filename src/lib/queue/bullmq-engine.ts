@@ -303,8 +303,8 @@ export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   clean(grace: number, limit: number, type: 'completed' | 'failed' | 'cancelled'): Promise<string[]>;
   /** Removes job `id` and its entry in its user's index, as BullMQ's Queue.remove. False when the job is active or unknown. */
   remove(id: string): Promise<boolean>;
-  /** Removes the jobs of `userId` that are not active, the dead letters that carry their id and, once none is active, their index; answers the active ids left. */
-  forgetUser?(userId: string): Promise<string[]>;
+  /** Removes the `processed` jobs of `userId` that are not active, their dead letters and, once none is left, their index; answers the ids of the jobs left (active, or not processed). */
+  forgetUser?(userId: string, processed: ReadonlySet<string>): Promise<string[]>;
   close(): Promise<void>;
   _popNextWaiting?(): Promise<Job<T, R> | undefined> | Job<T, R> | undefined;
   /** Moves an active job back to waiting/delayed. Returns false when the job is no longer active. */
@@ -623,13 +623,13 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
     return true;
   }
 
-  async forgetUser(userId: string): Promise<string[]> {
+  async forgetUser(userId: string, processed: ReadonlySet<string>): Promise<string[]> {
     const ids = [...(this.userJobs.get(userId) ?? [])];
-    const active = ids.filter((id) => this.jobs.get(id)?.state === 'active');
-    for (const id of ids) if (!active.includes(id) && ownerOf(this.jobs.get(id)?.data) === userId) await this.remove(id);
-    this.dlq = this.dlq.filter((entry) => ownerOf(entry.data) !== userId);
-    if (active.length === 0) this.userJobs.delete(userId);
-    return active;
+    const left = ids.filter((id) => !processed.has(id) || this.jobs.get(id)?.state === 'active');
+    for (const id of ids) if (!left.includes(id) && ownerOf(this.jobs.get(id)?.data) === userId) await this.remove(id);
+    this.dlq = this.dlq.filter((entry) => ownerOf(entry.data) !== userId || !(processed.has(entry.jobId) || !this.jobs.has(entry.jobId)));
+    if (left.length === 0) this.userJobs.delete(userId);
+    return left;
   }
 
   async cancelJob(id: string, reason: string = 'Cancelled by user'): Promise<boolean> {
@@ -1827,10 +1827,10 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     }
   }
 
-  async forgetUser(userId: string): Promise<string[]> {
-    if (!this.redisClient) return this.memoryFallback.forgetUser(userId);
+  async forgetUser(userId: string, processed: ReadonlySet<string>): Promise<string[]> {
+    if (!this.redisClient) return this.memoryFallback.forgetUser(userId, processed);
     await this.assertRedisConnected();
-    return forgetUserJobs(this.redisClient, this.keySpace, userId).catch((err: unknown) => {
+    return forgetUserJobs(this.redisClient, this.keySpace, userId, processed).catch((err: unknown) => {
       throw this.toQueueUnavailable(err);
     });
   }

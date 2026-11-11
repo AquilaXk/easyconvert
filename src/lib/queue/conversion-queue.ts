@@ -444,9 +444,9 @@ conversionQueue.clean = async (grace: number, limit: number, type: 'completed' |
 
 const origConversionQueueForgetUser = conversionQueue.forgetUser?.bind(conversionQueue);
 if (origConversionQueueForgetUser) {
-  conversionQueue.forgetUser = async (userId: string) => {
-    const active = await Promise.all([origConversionQueueForgetUser(userId), ...Object.values(resourceQueues).map((q) => q.forgetUser?.(userId) ?? [])]);
-    return active.flat();
+  conversionQueue.forgetUser = async (userId: string, processed: ReadonlySet<string>) => {
+    const left = await Promise.all([origConversionQueueForgetUser(userId, processed), ...Object.values(resourceQueues).map((q) => q.forgetUser?.(userId, processed) ?? [])]);
+    return left.flat();
   };
 }
 

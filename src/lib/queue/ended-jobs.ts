@@ -199,28 +199,28 @@ export async function removeStoredJob(client: Redis, keys: QueueKeySpace, id: st
 }
 
 /**
- * Removes the jobs `userId` has in the queue that `keys` names, with their dead letters, and the dead letters of their jobs that are
- * gone already (a letter carries the user id in its data). An id of the index whose job is gone, or whose data names another user
- * (a damaged index), only leaves the index. The index itself goes once no job of the user is active. Answers the ids of the active
- * jobs, which cannot be removed yet.
+ * Removes the jobs of `userId` in the queue that `keys` names that the caller has processed (cancelled and listed: `processed`), with
+ * their dead letters, and the dead letters of jobs that are gone already (a letter carries the user id in its data). An id of the
+ * index whose job is gone, or whose data names another user (a damaged index), only leaves the index. A job that is not in
+ * `processed` (beyond the caller's window, or queued since) is left whole, and so is a processed job that is still active: their ids are
+ * answered, and the index stays while any is left.
  */
-export async function forgetUserJobs(client: Redis, keys: QueueKeySpace, userId: string): Promise<string[]> {
+export async function forgetUserJobs(client: Redis, keys: QueueKeySpace, userId: string, processed: ReadonlySet<string>): Promise<string[]> {
   const index = keys.userJobsKey(userId);
-  const active: string[] = [];
+  const left: string[] = [];
   for (const id of await client.zrange(index, '0', '-1')) {
     const owner = ownerOf(parsedData(await client.hget(keys.jobKey(id), 'data')));
-    if (owner !== userId) {
-      await client.zrem(index, id);
-    } else if (!(await removeStoredJob(client, keys, id, true))) {
-      active.push(id);
-    }
+    if (owner !== userId) await client.zrem(index, id);
+    else if (!processed.has(id) || !(await removeStoredJob(client, keys, id, true))) left.push(id);
   }
   for (const raw of await client.lrange(keys.dlqKey, 0, -1)) {
-    const entry = parsedData(raw) as { data?: unknown } | undefined;
-    if (ownerOf(entry?.data) === userId) await client.lrem(keys.dlqKey, 0, raw);
+    const entry = parsedData(raw) as { jobId?: string; data?: unknown } | undefined;
+    if (ownerOf(entry?.data) !== userId) continue;
+    const jobId = entry?.jobId ?? '';
+    if (processed.has(jobId) || (await client.exists(keys.jobKey(jobId))) === 0) await client.lrem(keys.dlqKey, 0, raw);
   }
-  if (active.length === 0) await client.del(index);
-  return active;
+  if (left.length === 0) await client.del(index);
+  return left;
 }
 
 /**
