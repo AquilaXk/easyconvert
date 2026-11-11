@@ -178,7 +178,7 @@ export async function planPageRender(pdf: Buffer, pages: ReadonlySet<number> | u
 
 /**
  * A page that Poppler could not draw: it ran out of time (`timeout`, a limit of the render) or it is not a page the engine can
- * draw (`malformed`). The limits of memory and output are a PayloadLimitError instead; see `skippedOcrWarning` for who tells them apart.
+ * draw (`malformed`). See `skippedOcrWarning` for who tells these and the limits apart.
  */
 export class PdfPageRenderError extends ConversionFailedError {
   constructor(
@@ -190,12 +190,23 @@ export class PdfPageRenderError extends ConversionFailedError {
   }
 }
 
+/**
+ * One page needs more memory or output than a render may use: a fact of that page, not of the size of the request (HTTP 413, like
+ * the other limits). `skippedOcrWarning` tells it from the page and work budgets of the request, which name pages to select.
+ */
+export class PdfPageRenderLimitError extends PayloadLimitError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PdfPageRenderLimitError';
+  }
+}
+
 function describeRenderFailure(err: unknown, pageNumber: number): Error {
   if (err instanceof SandboxedTimeoutError) {
     return new PdfPageRenderError(`Page ${pageNumber} could not be rendered for OCR within ${OCR_RENDER_TIMEOUT_MS} ms.`, 'timeout');
   }
   if (err instanceof SandboxedMemoryLimitError || err instanceof SandboxedBufferLimitError) {
-    return new PayloadLimitError(`Page ${pageNumber} needs more memory or output than rendering for OCR allows.`);
+    return new PdfPageRenderLimitError(`Page ${pageNumber} needs more memory or output than rendering for OCR allows.`);
   }
   if (err instanceof SandboxedProcessError) {
     if (INCORRECT_PASSWORD.test(err.stderr)) {

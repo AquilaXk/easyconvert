@@ -4,12 +4,13 @@ import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits'
 import { convertFile } from '../src/lib/conversions/index';
 import { OcrWorkLimitError } from '../src/lib/conversions/ocr-work-budget';
 import { PdfPageFrameError } from '../src/lib/conversions/pdf-page-geometry';
-import { PdfPageRenderError } from '../src/lib/conversions/pdf-page-render';
+import { PdfPageRenderError, PdfPageRenderLimitError } from '../src/lib/conversions/pdf-page-render';
 import { JobTimeoutError, OcrEngineUnavailableError, OcrLanguageUnknownError, PayloadLimitError } from '../src/lib/types';
 
 /**
- * OCR that the request did not ask for (a PDF to text whose pages have no text layer) is a best effort: when the pages cannot be
- * recognized within the engine's limits, the text layer stays the answer and the conversion records a warning. OCR that the request
+ * OCR that the request did not ask for (a PDF to text whose pages have no text layer) is a best effort for one page that cannot be
+ * rendered (the memory or time of a render, no engine): the text layer stays the answer and the conversion records a warning. A
+ * document with no text that is refused for the size of its work (pages, work budget) is refused with the 413 that says so. OCR that the request
  * asked for (`ocrEnabled`, or the hOCR and ALTO targets, which are OCR output) is refused with the typed error. What
  * counts as a refusal is stated by hand here, the rendering and the engine are replaced: the nightly hostile-input suites run the
  * real renderer against the same files.
@@ -35,11 +36,9 @@ beforeEach(() => {
   recognize.mockReset();
 });
 
-describe('OCR the request did not ask for, refused by a limit', () => {
+describe('OCR the request did not ask for, refused for one page that cannot be drawn within the limits of a render', () => {
   it.each([
-    ['the work budget of the document', () => new OcrWorkLimitError('Recognizing this document needs more than the 40000 ms allowed for 1 pages')],
-    ['the memory a render may use', () => new PayloadLimitError('Page 1 needs more memory or output than rendering for OCR allows.')],
-    ['the number of pages one request renders', () => new PayloadLimitError('The request converts 900 pages to images; at most 200 are converted in one request.')],
+    ['the memory a render may use', () => new PdfPageRenderLimitError('Page 1 needs more memory or output than rendering for OCR allows.')],
     ['the time one render may take', () => new PdfPageRenderError('Page 1 could not be rendered for OCR within 60000 ms.', 'timeout')],
     ['an engine that is not installed', () => new OcrEngineUnavailableError('Rendering PDF pages for OCR needs Poppler pdftoppm, which is not installed on this server.')],
   ])('answers the text layer and a warning when %s refuses it', async (_label, makeError) => {
@@ -49,6 +48,19 @@ describe('OCR the request did not ask for, refused by a limit', () => {
     expect(recognize).toHaveBeenCalledTimes(1);
     expect(result.metadata?.warnings).toEqual([expect.stringContaining('Did not recognize page 1 with OCR, which the request did not ask for')]);
     expect((result.metadata?.warnings as string[])[0]).toContain(makeError().message);
+  });
+});
+
+describe('OCR the request did not ask for, refused for the size of the work, on a document with no text', () => {
+  it.each([
+    ['the work budget of the document', () => new OcrWorkLimitError('Recognizing this document needs more than the 40000 ms allowed for 1 pages')],
+    ['the number of pages one request renders', () => new PayloadLimitError('The request converts 900 pages to images; at most 200 are converted in one request.')],
+  ])('stays the 413 that tells the person to select pages when %s refuses it', async (_label, makeError) => {
+    const error = makeError();
+    refuses(error);
+    const refused = convertFile(await blankPage(), 'pdf', 'txt', {}, 'blank.pdf');
+    await expect(refused).rejects.toBe(error);
+    await expect(refused).rejects.toMatchObject({ status: 413 });
   });
 });
 
@@ -78,7 +90,7 @@ describe('a failure that is not a refusal', () => {
 describe('OCR the request asked for', () => {
   it.each([
     ['the work budget of the document', () => new OcrWorkLimitError('Recognizing this document needs more than the 40000 ms allowed for 1 pages')],
-    ['the memory a render may use', () => new PayloadLimitError('Page 1 needs more memory or output than rendering for OCR allows.')],
+    ['the memory a render may use', () => new PdfPageRenderLimitError('Page 1 needs more memory or output than rendering for OCR allows.')],
     ['the time one render may take', () => new PdfPageRenderError('Page 1 could not be rendered for OCR within 60000 ms.', 'timeout')],
     ['an engine that is not installed', () => new OcrEngineUnavailableError('Rendering PDF pages for OCR needs Poppler pdftoppm, which is not installed on this server.')],
   ])('is refused with the typed error when %s refuses it', async (_label, makeError) => {
