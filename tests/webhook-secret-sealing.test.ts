@@ -214,14 +214,19 @@ describe.skipIf(!REDIS_URL)('the webhook secret on a real Redis server', () => {
 
   it('holds a queued webhook delivery with a sealed secret only, and gives the ended jobs a lifetime', async () => {
     const secret = uniqueSecret('redis-delivery');
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('no', { status: 500 }));
+    // The receiver accepts, so the job ends and leaves nothing for another test file's worker to pick up from the shared Redis.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response('ok', { status: 200 }));
 
     const job = await webhookDispatcher.enqueueDelivery(HOOK_URL, 'job.completed', { jobId: 'j' }, secret, { deliveryId: `wh_sealed_${crypto.randomBytes(4).toString('hex')}` });
 
     expect(job.opts?.removeOnComplete).toBeDefined();
     expect(job.opts?.removeOnFail).toBeDefined();
     expect(job.opts?.removeDataOnFinish).toContain('secret');
-    // Wherever the job is by now (waiting, active, or delayed for the retry), no key holds the plaintext.
+    // Wherever the job is by now (waiting, active or ended), no key holds the plaintext.
     expect(await keysHolding(secret)).toEqual([]);
+    const queue = webhookDispatcher.getQueue();
+    await vi.waitFor(async () => expect((await queue.getJob(job.id))?.state).toBe('completed'), { timeout: 20_000, interval: 50 });
+    expect(await keysHolding(secret)).toEqual([]);
+    await queue.remove(job.id);
   });
 });
