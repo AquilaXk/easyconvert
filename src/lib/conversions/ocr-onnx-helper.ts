@@ -229,21 +229,30 @@ class OnnxHelper {
   private ready = false;
   onEnd: () => void = () => undefined;
 
+  /** The directory of this helper: its home and temporary directory (the runtime keeps a device identifier below its home, the source runner a cache below the temporary directory). */
+  private readonly scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert-onnx-ocr-'));
+
   constructor(entry: ChildEntry, modelDir: string, threads: number) {
     const cpuSeconds = ONNX_HELPER_MAX_PAGES * CPU_SECONDS_PER_PAGE * threads;
-    const command = resolveSandboxedCommand(entry.binary, [...entry.args, '--', `--models=${modelDir}`, `--threads=${threads}`], {
+    let command: ReturnType<typeof resolveSandboxedCommand>;
+    try {
+      command = resolveSandboxedCommand(entry.binary, [...entry.args, '--', `--models=${modelDir}`, `--threads=${threads}`], {
       networkIsolated: true,
       // The address space is not the resident memory (that is watched below): the runtime reserves far more than it uses.
       rlimits: { asBytes: ONNX_HELPER_ADDRESS_SPACE_MB * 1024 * 1024, cpuSeconds, fsizeBytes: 1024 * 1024, coreBytes: 0 },
-      // It writes no file. It reads its models and the application it runs from (the bundle and the runtime's native module below the working directory of the worker).
-      workDir: null,
+      // It writes nothing but what the runtime and the source runner keep in its home and temporary directory. It reads its models and the application it runs from (the bundle and the runtime's native module below the working directory of the worker).
+      workDir: this.scratch,
       readDirs: process.cwd() === path.parse(process.cwd()).root ? [modelDir] : [modelDir, process.cwd()],
     });
+    } catch (error) {
+      fs.rmSync(this.scratch, { recursive: true, force: true });
+      throw error;
+    }
     this.levelsAboveProgram = command.levelsAboveProgram;
     // Directly, without a shell, in its own process group, with the three standard streams and the sanitized environment only.
     this.process = spawn(command.binary, command.args, {
-      cwd: os.tmpdir(),
-      env: getSanitizedEnvironment({}, true),
+      cwd: this.scratch,
+      env: getSanitizedEnvironment({}, true, this.scratch),
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
       detached: true,
@@ -388,6 +397,7 @@ class OnnxHelper {
   private end(error: Error): void {
     if (this.ended) return;
     this.ended = true;
+    fs.rmSync(this.scratch, { recursive: true, force: true });
     if (this.idleTimer) clearTimeout(this.idleTimer);
     if (this.memoryTimer) clearInterval(this.memoryTimer);
     const waiters = this.bootWaiters;
