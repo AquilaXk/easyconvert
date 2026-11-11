@@ -12,11 +12,12 @@ import {
   StorageSsrfError,
 } from './adapter-interface';
 import { GcsStorageAdapter } from './gcs';
-import { AzureBlobStorageAdapter } from './azure-blob';
+import { AZURE_STORAGE_ACCOUNT_PATTERN, AzureBlobStorageAdapter } from './azure-blob';
 import { WebDavStorageAdapter } from './webdav';
 import { SftpStorageAdapter } from './sftp';
 import { S3StorageAdapter } from './s3';
 import { isPrivateOrRestrictedHost } from '../../security/ssrf';
+import { assertTlsEndpoint, isDevAllowlistedEndpoint } from './http-guard';
 
 /**
  * Providers whose adapter has no network client yet. Registration and every import/export
@@ -30,8 +31,9 @@ function validateHttpEndpointSyntax(rawUrl: string, provider: string, invalidMes
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
-  } catch (err) {
-    throw new StorageAdapterError(invalidMessage ?? `Invalid ${provider} endpoint URL: "${rawUrl}"`, provider, err);
+  } catch {
+    // neither the text nor the parse error (which keeps its input) is echoed: the URL may carry userinfo or a SAS token
+    throw new StorageAdapterError(invalidMessage ?? `Invalid ${provider} endpoint URL`, provider);
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new StorageSsrfError(rawUrl, provider);
@@ -41,6 +43,8 @@ function validateHttpEndpointSyntax(rawUrl: string, provider: string, invalidMes
 
 function validateExternalEndpointUrl(rawUrl: string, provider: string): void {
   const parsed = validateHttpEndpointSyntax(rawUrl, provider);
+  if (isDevAllowlistedEndpoint(parsed)) return;
+  assertTlsEndpoint(parsed, provider);
   if (isPrivateOrRestrictedHost(parsed.hostname)) {
     throw new StorageSsrfError(rawUrl, provider);
   }
@@ -71,7 +75,11 @@ export function validateCredentials(credentials: CustomerStorageCredentials): vo
       break;
     }
     case 'azure-blob': {
-      if (!credentials.storageAccount || !isSimpleContainerIdentifier(credentials.containerName)) {
+      if (
+        typeof credentials.storageAccount !== 'string' ||
+        !AZURE_STORAGE_ACCOUNT_PATTERN.test(credentials.storageAccount) ||
+        !isSimpleContainerIdentifier(credentials.containerName)
+      ) {
         throw new StorageAdapterError('Invalid Azure Blob storageAccount or containerName', 'azure-blob');
       }
       if (credentials.customEndpoint) {

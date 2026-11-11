@@ -1110,6 +1110,16 @@ const SCHEMA_ENTRIES = [
     roles: BOTH,
   },
   {
+    name: 'BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST',
+    area: 'storage',
+    description:
+      'Comma-separated host:port list of WebDAV, Azure Blob, GCS and import/export URL endpoints that may be plain http or private-address, for a local test server. Honoured only when NODE_ENV is exactly `development`.',
+    kind: { type: 'string' },
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
     name: 'BYOS_S3_DEV_ENDPOINT_ALLOWLIST',
     area: 'storage',
     description:
