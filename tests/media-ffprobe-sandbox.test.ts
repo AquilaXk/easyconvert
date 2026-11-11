@@ -32,7 +32,7 @@ import { userStore } from '../src/lib/auth/user-store';
 import { skipUnless } from './helpers/strict-skip';
 import { runWithoutFileConfinement } from './helpers/unconfined-files';
 
-// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 232).
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 247).
 runWithoutFileConfinement();
 
 const HTTP_SERVICE_UNAVAILABLE = 503;

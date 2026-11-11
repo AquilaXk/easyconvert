@@ -31,7 +31,7 @@ import { oracleTest } from './helpers/oracle-test';
 import { openMediaInput } from '../src/lib/conversions/media-process';
 import { runWithoutFileConfinement } from './helpers/unconfined-files';
 
-// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 232).
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 247).
 runWithoutFileConfinement();
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */

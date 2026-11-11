@@ -94,7 +94,7 @@ export function createSevenZipSpy(workDir: string): SevenZipSpy {
       previous = process.env.P7ZIP_PATH;
       previousConfinement = process.env.SANDBOX_CONFINE_FILES;
       process.env.P7ZIP_PATH = script;
-      // The wrapper appends to logs outside the job directory of the run, which the file confinement refuses (policy 232).
+      // The wrapper appends to logs outside the job directory of the run, which the file confinement refuses (policy 247).
       process.env.SANDBOX_CONFINE_FILES = 'false';
     },
     restore() {

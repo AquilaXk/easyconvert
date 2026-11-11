@@ -11,7 +11,7 @@ import { withMissingBinary } from './helpers/native-tools';
 import { oracleTest } from './helpers/oracle-test';
 import { runWithoutFileConfinement } from './helpers/unconfined-files';
 
-// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 232).
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 247).
 runWithoutFileConfinement();
 
 /**
