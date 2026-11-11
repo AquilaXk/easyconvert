@@ -442,16 +442,10 @@
   },
   {
     "file": "src/lib/conversions/document.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "convertDocument",
-    "count": 3
-  },
-  {
-    "file": "src/lib/conversions/document.ts",
     "rule": "complexity",
     "function": "convertDocument",
     "count": 1,
-    "maxValue": 163
+    "maxValue": 126
   },
   {
     "file": "src/lib/conversions/document.ts",
@@ -465,7 +459,7 @@
     "rule": "max-lines-per-function",
     "function": "convertDocument",
     "count": 1,
-    "maxValue": 475
+    "maxValue": 425
   },
   {
     "file": "src/lib/conversions/docx-model.ts",
@@ -2304,7 +2298,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2521
+    "maxValue": 2395
   },
   {
     "file": "src/worker/engines.ts",

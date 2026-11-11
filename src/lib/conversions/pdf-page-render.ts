@@ -176,19 +176,44 @@ export async function planPageRender(pdf: Buffer, pages: ReadonlySet<number> | u
   return { pageNumbers, frames: pageNumbers.map((pageNumber) => frames[pageNumber - 1]), dpi };
 }
 
+/**
+ * A page that Poppler could not draw: it ran out of time (`timeout`, a limit of the render) or it is not a page the engine can
+ * draw (`malformed`). See `skippedOcrWarning` for who tells these and the limits apart.
+ */
+export class PdfPageRenderError extends ConversionFailedError {
+  constructor(
+    message: string,
+    readonly reason: 'timeout' | 'malformed'
+  ) {
+    super(message);
+    this.name = 'PdfPageRenderError';
+  }
+}
+
+/**
+ * One page needs more memory or output than a render may use: a fact of that page, not of the size of the request (HTTP 413, like
+ * the other limits). `skippedOcrWarning` tells it from the page and work budgets of the request, which name pages to select.
+ */
+export class PdfPageRenderLimitError extends PayloadLimitError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PdfPageRenderLimitError';
+  }
+}
+
 function describeRenderFailure(err: unknown, pageNumber: number): Error {
   if (err instanceof SandboxedTimeoutError) {
-    return new ConversionFailedError(`Page ${pageNumber} could not be rendered for OCR within ${OCR_RENDER_TIMEOUT_MS} ms.`);
+    return new PdfPageRenderError(`Page ${pageNumber} could not be rendered for OCR within ${OCR_RENDER_TIMEOUT_MS} ms.`, 'timeout');
   }
   if (err instanceof SandboxedMemoryLimitError || err instanceof SandboxedBufferLimitError) {
-    return new PayloadLimitError(`Page ${pageNumber} needs more memory or output than rendering for OCR allows.`);
+    return new PdfPageRenderLimitError(`Page ${pageNumber} needs more memory or output than rendering for OCR allows.`);
   }
   if (err instanceof SandboxedProcessError) {
     if (INCORRECT_PASSWORD.test(err.stderr)) {
       return new ConversionFailedError('PDF OCR failed: the PDF is encrypted and needs a password, so its pages cannot be rendered.');
     }
     console.warn(`[ocr] pdftoppm failed on page ${pageNumber}: ${err.stderr.replace(/\s+/g, ' ').trim().slice(0, DIAGNOSTIC_LOGGED_CHARS)}`);
-    return new ConversionFailedError(`Page ${pageNumber} could not be rendered for OCR: the PDF is malformed or unsupported.`);
+    return new PdfPageRenderError(`Page ${pageNumber} could not be rendered for OCR: the PDF is malformed or unsupported.`, 'malformed');
   }
   return err instanceof Error ? err : new Error(String(err));
 }

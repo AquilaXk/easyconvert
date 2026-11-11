@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import { RawDecodeError } from '../lib/types';
 import { RAW_SENSOR_PIXEL_BUDGET, assertInputPixels, assertPixelBudget } from '../lib/conversions/image-input-limits';
-import { withoutAbsoluteResolution } from '../lib/conversions/image-tiff-directories';
+import { tiffDirectoryOffsets, withoutAbsoluteResolution } from '../lib/conversions/image-tiff-directories';
+import { pictureFileHead } from '../lib/conversions/picture-file';
 import { RAW_DECODE_MAX_PIXELS } from '../lib/conversions/raw-formats';
 import { assertRawSensorPixels, dngRawImageData, dngRefusal } from './raw-dng-image-data';
 
@@ -191,4 +192,31 @@ export function assertCompleteDecodedImage(filePath: string, layout: DecodedTiff
  */
 export function readDecodedRawImage(decodedPath: string): Buffer {
   return withoutAbsoluteResolution(fs.readFileSync(decodedPath), { inPlace: true });
+}
+
+/** Targets whose encoders read the bytes of their source themselves (character recognition), so they are given the whole picture. */
+const WHOLE_PICTURE_TARGETS: ReadonlySet<string> = new Set(['hocr', 'alto']);
+/** The most bytes before the pixels of the decoder's TIFF that are held as the head of the file; the decoder's own header is under 1 KB. */
+const MAX_HEAD_BYTES = 1024 * 1024;
+
+/**
+ * The developed picture for the encoder of `target`: the head of the decoder's file, the resolution unit cleared in the file (see
+ * `readDecodedRawImage`), with the pixels left in the file for sharp to open there. 12.5 megapixels are 75 MB that the process then never
+ * holds. A target that reads its source bytes itself, and a file whose directories do not all lie before the pixels, are given the whole
+ * picture as `readDecodedRawImage` reads it.
+ */
+export function developedRawPicture(decodedPath: string, layout: DecodedTiffLayout, target: string): Buffer {
+  if (WHOLE_PICTURE_TARGETS.has(target) || layout.dataOffset > MAX_HEAD_BYTES) return readDecodedRawImage(decodedPath);
+  const fd = fs.openSync(decodedPath, 'r+');
+  try {
+    const head = Buffer.alloc(layout.dataOffset);
+    if (fs.readSync(fd, head, 0, head.length, 0) !== head.length || tiffDirectoryOffsets(head) === null) {
+      return readDecodedRawImage(decodedPath);
+    }
+    const cleared = withoutAbsoluteResolution(head);
+    if (cleared !== head) fs.writeSync(fd, cleared, 0, cleared.length, 0);
+    return pictureFileHead(decodedPath, cleared);
+  } finally {
+    fs.closeSync(fd);
+  }
 }
