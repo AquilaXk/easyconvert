@@ -38,6 +38,14 @@ export interface GifImage {
 let codeTable = new Uint16Array(0);
 /** The slots the current table holds, to zero them at a clear code. */
 const heldSlots = new Int32Array(TABLE_LIMIT);
+/**
+ * A string of one index repeated (a flat area of a picture) is followed through two small tables instead of the large one: `runSymbol[code]` is
+ * the index of which `code` is a run (-1 for any other string), `runChild[code]` the code of the run one longer (0 until it is in the table). Both
+ * together are 12 KB, so they stay in the first level of the cache, where the large table does not: most pixels of a photograph reduced to a
+ * palette with runs (see `QuantizeOptions.runTolerance`) extend a run.
+ */
+const runSymbol = new Int16Array(TABLE_LIMIT);
+const runChild = new Uint16Array(TABLE_LIMIT);
 
 /** LZW codes of the index stream, LSB-first packed, in the variant the GIF specification defines. */
 function lzwEncode(indices: Uint8Array, minCodeSize: number): Uint8Array {
@@ -55,6 +63,8 @@ function lzwEncode(indices: Uint8Array, minCodeSize: number): Uint8Array {
   let accumulated = initialBits;
   let freeEntry = clearCode + 2;
   let held = 0;
+  runSymbol.fill(-1);
+  for (let c = 0; c < clearCode; c += 1) runSymbol[c] = c;
   let codeBits = initialBits;
   let maxCode = (1 << codeBits) - 1;
 
@@ -62,6 +72,13 @@ function lzwEncode(indices: Uint8Array, minCodeSize: number): Uint8Array {
     let prefix = indices[0];
     for (let i = 1; i < count; i += 1) {
       const byte = indices[i];
+      if (runSymbol[prefix] === byte) {
+        const next = runChild[prefix];
+        if (next !== 0) {
+          prefix = next;
+          continue;
+        }
+      }
       const slot = (prefix << minCodeSize) | byte;
       const found = table[slot];
       if (found !== 0) {
@@ -93,9 +110,14 @@ function lzwEncode(indices: Uint8Array, minCodeSize: number): Uint8Array {
         codeBits += 1;
         maxCode = codeBits === MAX_CODE_BITS ? TABLE_LIMIT : (1 << codeBits) - 1;
       }
+      const previous = prefix;
       prefix = byte;
       if (freeEntry < TABLE_LIMIT) {
         table[slot] = freeEntry;
+        if (runSymbol[previous] === byte) {
+          runChild[previous] = freeEntry;
+          runSymbol[freeEntry] = byte;
+        }
         heldSlots[held] = slot;
         held += 1;
         freeEntry += 1;
@@ -104,6 +126,8 @@ function lzwEncode(indices: Uint8Array, minCodeSize: number): Uint8Array {
       // The table is full: clear it, and send the clear code at the width in force.
       for (let h = 0; h < held; h += 1) table[heldSlots[h]] = 0;
       held = 0;
+      runSymbol.fill(-1, clearCode + 2);
+      runChild.fill(0);
       freeEntry = clearCode + 2;
       accumulator |= clearCode << accumulated;
       accumulated += codeBits;
@@ -146,6 +170,7 @@ function lzwEncode(indices: Uint8Array, minCodeSize: number): Uint8Array {
     return bytes.subarray(0, length + tailLength);
   } finally {
     for (let h = 0; h < held; h += 1) table[heldSlots[h]] = 0;
+    runChild.fill(0);
   }
 }
 
