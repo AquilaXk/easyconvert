@@ -1,19 +1,28 @@
 name: Deploy to the OCI host
 
-# Builds the arm64 images on every push to main that changes what they contain, and deploys a chosen build to the shared OCI A1 host on
-# request (docs/deploy-oci.md). Nothing here runs on a schedule and nothing deploys by itself.
+# Builds the arm64 images on every push to main that changes what they contain, promotes a build once CI has passed for its commit, and
+# deploys a chosen build to the shared OCI A1 host on request (docs/deploy-oci.md). Nothing here runs on a schedule and nothing deploys
+# by itself.
 #
-#   build   push to main: the worker image (Dockerfile.worker), then the web image (Dockerfile.web) on top of that exact worker digest,
-#           both for linux/arm64, pushed to GHCR as sha-<commit> and main; the web image, and the main tag of the worker, only once
-#           the web image started with the production container flags (scripts/boot-web-image.sh).
-#   deploy  workflow_dispatch on main, in the environment easyconvert-production, on the runner whose only label is
-#           easyconvert-production: pins the chosen build by digest, starts it, checks health and one conversion, and rolls back to the
-#           previous release when either fails. The runner is separate from the one of the other service on this host and the job
-#           reads and writes only /opt/easyconvert. The job log is public: it names digests and line numbers, never a secret value.
-#           The steps `exec` deploy.sh, so the runner's cancel signals reach it and not a wrapper shell that would hold them back.
+#   build    push to main: the worker image (Dockerfile.worker), then the web image (Dockerfile.web) on top of that exact worker digest,
+#            both for linux/arm64, pushed to GHCR as sha-<commit>, labelled with the commit. The web image gets its tag only after the
+#            worker image started and stopped cleanly (scripts/boot-worker-image.sh) and the web image started with the production
+#            container flags (scripts/boot-web-image.sh). Nothing here names main.
+#   promote  push to main, after build: waits for the required check `verify` of CI on that commit, and only then tags both images main
+#            (scripts/ci-commit-gate.sh). A commit whose CI fails is never main; its sha-<commit> tag stays, and deploy refuses it.
+#   gate     workflow_dispatch on main: finds the commit the chosen image was built from (its revision label) and requires a successful
+#            `verify` for it, or for a later commit with the same image contents, so a test-only fix of a red build counts.
+#   deploy   workflow_dispatch on main, in the environment easyconvert-production, on the runner whose only label is
+#            easyconvert-production: checks out that same commit, so the deploy script, docker-compose.prod.yml and the seccomp profile
+#            it ships are those the image was built with. Pins the chosen build by digest, starts it, checks health and one conversion,
+#            and rolls back to the previous release when either fails. The runner is separate from the one of the other service on this
+#            host and the job reads and writes only /opt/easyconvert. The job log is public: it names digests and line numbers, never
+#            a secret value. The steps `exec` deploy.sh, so the runner's cancel signals reach it and not a wrapper shell that would hold
+#            them back. A rollback needs no image and checks out main.
 #
 # Every push to main builds unless it changes only documentation or tests. The list is `paths` with negations rather than
 # `paths-ignore`, because only `paths` can take a path back in after a negation, and the worker image copies THIRD_PARTY_NOTICES.md.
+# scripts/ci-commit-gate.sh holds the same list as git pathspecs, for the search of a later commit with the same image contents.
 on:
   push:
     branches: [main]
@@ -31,16 +40,12 @@ on:
         options: [deploy, rollback]
         default: deploy
       image_ref:
-        description: 'Tag of the build to deploy: main (the latest build) or sha-<40 character commit>'
+        description: 'Tag of the build to deploy: main (the latest build whose commit passed CI) or sha-<40 character commit>'
         type: string
         default: main
 
 permissions:
   contents: read
-
-concurrency:
-  group: deploy-oci-${{ github.event_name }}
-  cancel-in-progress: false
 
 env:
   WORKER_REPO: ghcr.io/aquilaxk/easyconvert-worker
@@ -51,9 +56,16 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
+    # One build at a time: they share the layer cache. Promotion waits for CI in its own job, so a slow CI run holds up no build.
+    concurrency:
+      group: deploy-oci-build
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
+    outputs:
+      worker_digest: ${{ steps.worker.outputs.digest }}
+      web_digest: ${{ steps.web.outputs.digest }}
 
     steps:
       - name: Checkout repository
@@ -70,7 +82,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # The sharplibvips stage compiles libvips; the layer cache keeps it, so only the first build and a change to that stage pay for it.
-      # The web build reads this image by digest, so it is pushed under its commit tag here; main names it only after the web check.
+      # The web build reads this image by digest, so it is pushed under its commit tag here; the web image gets its tag only after both
+      # boot checks, and main is named by the promote job, after CI. The revision label is what deploy reads to find the commit.
       - name: Build and push the worker image
         id: worker
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
@@ -80,6 +93,8 @@ jobs:
           platforms: linux/arm64
           push: true
           provenance: false
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
           tags: |
             ${{ env.WORKER_REPO }}:sha-${{ github.sha }}
           cache-from: type=registry,ref=${{ env.WORKER_REPO }}:buildcache-arm64
@@ -105,9 +120,18 @@ jobs:
             WORKER_IMAGE=${{ env.WORKER_REPO }}@${{ steps.worker.outputs.digest }}
             APP_ORIGIN=https://convert.aquilaxk.site
             ANONYMOUS_DAILY_LIMIT=${{ vars.ANONYMOUS_DAILY_LIMIT }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
           tags: |
             ${{ env.WEB_REPO }}:sha-${{ github.sha }}
-            ${{ env.WEB_REPO }}:main
+
+      # The worker image as production runs it, next to a Redis: it must pass its healthcheck, report that it listens for jobs and end
+      # with status 0 on SIGTERM. Until a worker was started here, only the web image was, and a worker that could not start was
+      # promoted all the same (policy entry 232).
+      - name: Start the worker image as production runs it
+        env:
+          WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
+        run: bash scripts/boot-worker-image.sh "$WORKER_REPO@$WORKER_DIGEST"
 
       # The production container flags of docker-compose.prod.yml: read-only root, no capabilities, uid 10001, no new privileges,
       # the seccomp profile and noexec scratch. v0.7.0 passed a plain start and failed only under these flags (entry 141).
@@ -119,26 +143,8 @@ jobs:
         run: |
           set -euo pipefail
           docker push --quiet "$WEB_REPO:sha-$GITHUB_SHA"
-          docker push --quiet "$WEB_REPO:main"
           digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$WEB_REPO:sha-$GITHUB_SHA")"
           echo "digest=${digest#*@}" >> "$GITHUB_OUTPUT"
-
-      - name: Tag the worker image main
-        env:
-          WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
-        run: docker buildx imagetools create --prefer-index=false --tag "$WORKER_REPO:main" "$WORKER_REPO@$WORKER_DIGEST"
-
-      # deploy.sh pins the digest it pulls for the worker and refuses a pair whose web image was built on another one, so main must
-      # name the worker digest itself, not an index that wraps it.
-      - name: Check that the worker main tag names the worker digest
-        env:
-          WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
-        run: |
-          tagged="$(docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' "$WORKER_REPO:main")"
-          if [ "$tagged" != "\"$WORKER_DIGEST\"" ]; then
-            echo "::error::$WORKER_REPO:main names $tagged, not the worker image $WORKER_DIGEST"
-            exit 1
-          fi
 
       - name: Record the digests
         env:
@@ -149,21 +155,144 @@ jobs:
             echo '### Images built for linux/arm64'
             echo "- worker: \`${WORKER_REPO}@${WORKER_DIGEST}\`"
             echo "- web: \`${WEB_REPO}@${WEB_DIGEST}\`"
-            echo "- deploy it with the \`deploy-oci\` workflow and image_ref \`sha-${GITHUB_SHA}\`"
+            echo "- they become \`main\` when CI has passed for this commit (the promote job); deploy them with the \`deploy-oci\` workflow and image_ref \`sha-${GITHUB_SHA}\` once it has"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # Names the build main once the required check of CI has succeeded for its commit. A commit whose CI fails keeps its sha tag and
+  # never becomes main. It waits in a job of its own, so a CI run that takes half an hour holds up neither the next build nor this run's
+  # own build. When two promotions finish together the later commit wins: a build is not promoted over a newer one that already is main.
+  promote:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+      checks: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WORKER_DIGEST: ${{ needs.build.outputs.worker_digest }}
+      WEB_DIGEST: ${{ needs.build.outputs.web_digest }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to the container registry
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wait for the required check of CI on this commit
+        run: bash scripts/ci-commit-gate.sh wait "$GITHUB_SHA"
+
+      # A newer commit may have become main while this one waited. Its images were promoted after the check of its own commit, so
+      # main stays with it.
+      - name: Find out whether a newer build is already main
+        id: newer
+        run: |
+          current="$(bash scripts/ci-commit-gate.sh image-commit "$WEB_REPO" main || true)"
+          if [ -n "$current" ] && bash scripts/ci-commit-gate.sh is-behind "$GITHUB_SHA" "$current"; then
+            echo "main already names the build of the newer commit $current: this build stays under sha-$GITHUB_SHA"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Tag both images main
+        if: steps.newer.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create --prefer-index=false --tag "$WORKER_REPO:main" "$WORKER_REPO@$WORKER_DIGEST"
+          docker buildx imagetools create --prefer-index=false --tag "$WEB_REPO:main" "$WEB_REPO@$WEB_DIGEST"
+
+      # deploy.sh pins the digest it pulls for the worker and refuses a pair whose web image was built on another one, so main must
+      # name each digest itself, not an index that wraps it.
+      - name: Check that the main tags name the digests
+        if: steps.newer.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          for pair in "$WORKER_REPO $WORKER_DIGEST" "$WEB_REPO $WEB_DIGEST"; do
+            read -r repo digest <<< "$pair"
+            tagged="$(docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' "$repo:main")"
+            if [ "$tagged" != "\"$digest\"" ]; then
+              echo "::error::$repo:main names $tagged, not the image $digest"
+              exit 1
+            fi
+          done
+          echo "- main now names the build of \`$GITHUB_SHA\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # The commit an image was built from, and whether CI succeeded for it, are read here, on a hosted runner that has gh, jq and the full
+  # history, so the self-hosted deploy runner needs neither. A rollback names no image and passes at once.
+  gate:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+      checks: read
+    outputs:
+      commit: ${{ steps.commit.outputs.commit }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        if: inputs.action == 'deploy'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to the container registry
+        if: inputs.action == 'deploy'
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Require a successful CI check for the commit of the images
+        id: commit
+        if: inputs.action == 'deploy'
+        env:
+          IMAGE_REF: ${{ inputs.image_ref }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci-commit-gate.sh deploy-commit "$WEB_REPO" "$WORKER_REPO" "$IMAGE_REF" | tee "$RUNNER_TEMP/gate.out"
+          cat "$RUNNER_TEMP/gate.out" >> "$GITHUB_OUTPUT"
+
   deploy:
+    needs: gate
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: [easyconvert-production]
     environment: easyconvert-production
     timeout-minutes: 45
+    concurrency:
+      group: deploy-oci-deploy
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: read
 
     steps:
+      # The commit the images were built from, so the deploy script, the compose file and the seccomp profile of the release are the
+      # ones the image was built with, not those of whatever main is now. Empty for a rollback, which then checks out main.
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.gate.outputs.commit }}
 
       - name: Log in to the container registry
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
