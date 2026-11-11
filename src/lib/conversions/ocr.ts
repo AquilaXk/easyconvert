@@ -35,6 +35,7 @@ import {
   OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN,
   OCR_PSM_AUTO,
   ocrBandsAllowedFor,
+  OCR_SMALL_CROP_MAX_HEIGHT_PX,
   OCR_ALTERNATIVE_TRIGGER_QUALITY,
   ocrFallbackPageSegMode,
   ocrSegmentationFor,
@@ -366,7 +367,11 @@ export async function recognizePage(
   const attempt = async (quarterTurn: OcrQuarterTurn, tesseractLang: string, languageData: () => LanguageData): Promise<RecognizedPage> => {
     if (onnxWanted && tesseractLang === requestedLanguage) {
       try {
-        return await recognizeOnnxAttempt(imageBuffer, requestedLanguage, quarterTurn, signal);
+        const read = await recognizeOnnxAttempt(imageBuffer, requestedLanguage, quarterTurn, signal);
+        // A label or a cropped line in which the engine found no text (a bitmap font, a few pixels of text) is read by Tesseract, which has
+        // a mode for it; a blank page of any other size is left empty.
+        const emptyCrop = (read.result.lineBlocks ?? []).length === 0 && (read.result.imageHeight ?? Infinity) <= OCR_SMALL_CROP_MAX_HEIGHT_PX;
+        if (!emptyCrop || enginePath === 'onnx') return read;
       } catch (err) {
         rethrowSandboxUnavailable(err);
         if (enginePath === 'onnx' || signal?.aborted || !(err instanceof OnnxOcrUnavailableError || err instanceof OnnxOcrFailedError)) throw err;

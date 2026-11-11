@@ -180,7 +180,8 @@ describe('a page read in bands', () => {
     async () => {
       requireTessdata('kor');
       const run = vi.spyOn(getSharedOcrWorkerPool(), 'run');
-      const page = await recognizePage(fixtureImage('ko_a', 'clean300'), 'kor');
+      // The Tesseract path: the ONNX engine, which reads a Korean page by default, has no bands.
+      const page = await recognizePage(fixtureImage('ko_a', 'clean300'), 'kor', { enginePath: 'neural' });
       expect(page.preparation?.bands).toBe(1);
       expect(run).toHaveBeenCalledTimes(1);
     },
