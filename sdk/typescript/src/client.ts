@@ -1,6 +1,7 @@
 import type {
   EasyConvertClientConfig,
   ConvertRequestParams,
+  ConversionAcceptedResponse,
   ConversionResponse,
   CreateJobParams,
   JobCreatedResult,
@@ -62,9 +63,10 @@ export class EasyConvertClient {
   }
 
   /**
-   * Synchronously convert an input file buffer, blob, or string.
+   * Convert an input file buffer, blob, or string. The answer is the result, or, for a file over the synchronous limit or with
+   * respondAsync, the queued job (ConversionAcceptedResponse, also when raw is set).
    */
-  public async convert(params: ConvertRequestParams): Promise<ConversionResponse | ArrayBuffer> {
+  public async convert(params: ConvertRequestParams): Promise<ConversionResponse | ConversionAcceptedResponse | ArrayBuffer> {
     const formData = new FormData();
 
     if (typeof params.file === 'string') {
@@ -78,10 +80,15 @@ export class EasyConvertClient {
     formData.append('targetFormat', params.targetFormat);
     if (params.sourceFormat) formData.append('sourceFormat', params.sourceFormat);
     if (params.options) formData.append('options', JSON.stringify(params.options));
+    if (params.webhookUrl) formData.append('webhookUrl', params.webhookUrl);
+    if (params.webhookSecret) formData.append('webhookSecret', params.webhookSecret);
 
     const headers: Record<string, string> = {};
     if (params.raw) {
       headers['Accept'] = 'application/octet-stream';
+    }
+    if (params.respondAsync) {
+      headers['Prefer'] = 'respond-async';
     }
 
     const url = `${this.baseUrl}/api/v1/convert${params.raw ? '?raw=true' : ''}`;
@@ -99,6 +106,9 @@ export class EasyConvertClient {
       throw new Error(`Conversion Error (${response.status}): ${err.error || err.detail || 'Failed'}`);
     }
 
+    if (response.status === 202) {
+      return (await response.json()) as ConversionAcceptedResponse;
+    }
     if (params.raw) {
       return response.arrayBuffer();
     }

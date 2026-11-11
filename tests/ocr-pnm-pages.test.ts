@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { createWorker } from 'tesseract.js';
-import { performOcr } from '../src/lib/conversions/ocr';
+import { performOcr, recognizePage } from '../src/lib/conversions/ocr';
 import { preprocessOcrImage } from '../src/lib/conversions/ocr-preprocess';
 import { encodePbm, encodePgm, encodePpm, isBitonal } from '../src/lib/conversions/pnm';
 import { OcrPreprocessError } from '../src/lib/types';
@@ -188,8 +188,9 @@ describe('recognized text of the golden pages', () => {
       ['tesseract'],
       async () => {
         requireTessdata(lang);
-        const result = await performOcr(fixtureImage(page, variant), lang);
-        expect(crypto.createHash('sha256').update(result.text).digest('hex').slice(0, hash.length)).toBe(hash);
+        // The Tesseract reading: a Korean page is read by the ONNX engine unless the path is named.
+        const { text } = (await recognizePage(fixtureImage(page, variant), lang, { enginePath: lang === 'kor' ? 'neural' : undefined })).result;
+        expect(crypto.createHash('sha256').update(text).digest('hex').slice(0, hash.length)).toBe(hash);
       },
       TEST_TIMEOUT_MS
     );

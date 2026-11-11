@@ -29,7 +29,7 @@ import { combineWordMerge, mergeWordsWithPageText, type OcrWordMerge } from './o
 import type { OcrOrientation } from './ocr-osd';
 import { resolveImageDpi, type ImageDpi } from './ocr-dpi';
 import { mapOcrResultToSource } from './ocr-geometry';
-import { normaliseLeafPageCatalog, unrotatedPageGeometry, unrotatedPageScale, type RenderedPdfPage } from './pdf-page-geometry';
+import { unrotatedPageGeometry, unrotatedPageScale, type RenderedPdfPage } from './pdf-page-geometry';
 import { placeWords, writeTextLayer } from './ocr-text-layer';
 import { embedImagePlan, type PdfImagePlan } from './pdf-image-xobject';
 
@@ -166,19 +166,17 @@ export interface OcrResult {
    * ALTO against what the engine wrote. Its boxes are in the pixels of the page as submitted.
    */
   engineMarkup?: { format: 'hocr' | 'alto'; content: string };
-  /**
-   * Set when a failure of the WebAssembly engine was answered by the native one: what failed and what read the page.
-   * Absent when the first engine read it.
-   */
+  /** Set when the first engine failed and another read the page (ONNX by WebAssembly, WebAssembly by the native tool); absent otherwise. */
   engineFallback?: OcrEngineFallback;
 }
 
-/** A page the WebAssembly engine could not read and the native tool did, with the class of failure. */
+/** A page the first engine could not read and the next one did, with the class of failure. */
 export interface OcrEngineFallback {
-  from: 'wasm';
-  to: 'cli';
-  /** Documented recoverable failure class of the first engine (see ocr-engine-failure.ts). */
+  from: 'wasm' | 'onnx';
+  to: 'cli' | 'wasm';
+  /** Documented recoverable failure class of the first engine (see ocr-engine-failure.ts, ocr-onnx-helper.ts). */
   reason: string;
+  previous?: OcrEngineFallback; // the earlier fallback this one answered (ONNX, then WebAssembly, then the native tool)
 }
 
 export interface ColumnGutter {
@@ -1581,48 +1579,11 @@ export interface TextLayerPlacement {
 }
 
 /**
- * Generates an authentic Lossless Sandwich PDF directly from an existing PDF document.
- * Preserves 100% of the original PDF's metadata, objects, vector artwork, annotations,
- * and compression streams while non-destructively injecting transparent text layers.
- */
-export async function createLosslessSandwichPdfFromPdf(
-  originalPdfBuffer: Buffer,
-  pageOcrResults: Map<number, OcrResult>
-): Promise<Buffer> {
-  const doc = await PDFDocument.load(originalPdfBuffer);
-  normaliseLeafPageCatalog(doc);
-  const numPages = doc.getPageCount();
-  for (let i = 0; i < numPages; i++) {
-    const pageNum = i + 1;
-    const ocrResult = pageOcrResults.get(pageNum);
-    if (!ocrResult) continue;
-
-    const page = doc.getPage(i);
-    if (ocrResult.pageRender) {
-      injectRenderedPageTextLayer(page, ocrResult, ocrResult.pageRender);
-      continue;
-    }
-    const { width: pageWidth, height: pageHeight } = page.getSize();
-
-    const imgWidth = ocrResult.imageWidth || pageWidth;
-    const imgHeight = ocrResult.imageHeight || pageHeight;
-
-    const scaleX = pageWidth / imgWidth;
-    const scaleY = pageHeight / imgHeight;
-
-    injectInvisibleTextLayer(page, ocrResult, scaleX, scaleY);
-  }
-
-  const pdfBytes = await doc.save();
-  return Buffer.from(pdfBytes);
-}
-
-/**
  * Writes the text layer of a page that was rendered for recognition. The boxes are in the pixels of the displayed
  * page (CropBox, turned by /Rotate), so they are first returned to the unrotated page, whose pixel grid starts at
  * the CropBox's top-left corner and is 72 / dpi points per pixel.
  */
-function injectRenderedPageTextLayer(page: PDFPage, ocrResult: OcrResult, render: RenderedPdfPage): void {
+export function injectRenderedPageTextLayer(page: PDFPage, ocrResult: OcrResult, render: RenderedPdfPage): void {
   const unrotated = mapOcrResultToSource(ocrResult, unrotatedPageGeometry(render));
   const { scaleX, scaleY, originX, top } = unrotatedPageScale(render);
   injectInvisibleTextLayer(page, unrotated, scaleX, scaleY, { originX, top, keepOrder: true });

@@ -169,7 +169,7 @@ describe('docker-compose.yml worker hardening', () => {
       }
       const referenceEnv = environmentOf(reference);
       const env = environmentOf(base.services[name]);
-      const ALLOWED_ENV = new Set(['WORKER_QUEUES', 'WORKER_CONCURRENCY', 'WORKER_MAX_RSS_MB', 'HWACCEL_ENABLED']);
+      const ALLOWED_ENV = new Set(['WORKER_QUEUES', 'WORKER_CONCURRENCY', 'WORKER_MAX_RSS_MB']);
       for (const [variable, value] of Object.entries(env)) {
         if (!ALLOWED_ENV.has(variable)) expect(value, `${name}.${variable}`).toBe(referenceEnv[variable]);
       }

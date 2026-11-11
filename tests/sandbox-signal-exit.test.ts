@@ -158,7 +158,8 @@ describe('PR 0-A: Sandbox Signal Exits & Fail-Closed Guardrails', () => {
       process.env.SOFFICE_PATH = mockScriptPath;
 
       try {
-        const dummyDoc = Buffer.from('PK\x03\x04Dummy docx content');
+        // A readable package, so the input checks pass and the stand-in office program is what answers with no output.
+        const dummyDoc = (await createZipArchive([{ filename: 'word/document.xml', buffer: Buffer.from('<w:document/>') }])).buffer;
         await expect(
           convertWithHeadlessOffice(dummyDoc, 'docx', 'pdf', { throwOnUnavailable: true }, 'sample.docx')
         ).rejects.toThrow(/LibreOffice execution completed without producing expected output file/);

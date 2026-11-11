@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { availableCpus } from '../workers/available-cpus';
-import { ConversionFailedError, OcrEngineUnavailableError } from '../types';
-import { assertEncodedImageWithinLimit, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
+import { OcrEngineUnavailableError } from '../types';
+import { OCR_SMALL_CROP_MAX_HEIGHT_PX } from './ocr-config';
 import { sortLineBlocksTopological, type OcrLineBlock, type OcrResult, type OcrWord } from './ocr-pdf-combiner';
 
 /**
@@ -75,6 +75,8 @@ const ONNX_RUNTIME_PACKAGE: string = 'onnxruntime-node';
 export interface OnnxOcrOptions {
   /** Directory holding `det.onnx`, `rec.onnx` and `dict.txt`; defaults to the directory named by `EASYCONVERT_OCR_ONNX_DIR`. */
   modelDir?: string;
+  /** The language the result is labelled with (`kor`, or `kor+eng` for a page that names both); the recognizer reads Hangul and Latin either way. */
+  language?: string;
   /** Threads of one inference; defaults to the CPUs available to the process. */
   threads?: number;
   detectorMinSide?: number;
@@ -445,9 +447,15 @@ export function recoverSpaces(line: DecodedLine, strip: Float32Array, width: num
   return { ...line, text: chars.map((c) => c.char).join(''), chars };
 }
 
+/** How far a word's box may reach toward the next word, as a share of the distance between the two characters on either side of the space. */
+const WORD_REACH_SHARE = 0.35;
+
 /**
  * Words of a decoded line as ranges along the line's length (0..1). A character is emitted at one time step near its
- * centre, so a word spans from half a character pitch before its first character to half a pitch after its last one.
+ * centre, so a word spans from half a character pitch before its first character to half a pitch after its last one,
+ * except toward a neighbouring word: there it reaches only 35% of the way to that word's nearest character, so the space
+ * between two words stays a gap in the boxes (a full half pitch after a full stop, which is narrow, would close it, and a
+ * text extractor then joins the two words in the searchable PDF).
  */
 export function wordSpans(line: DecodedLine): { text: string; start: number; end: number; confidence: number }[] {
   const pitches: number[] = [];
@@ -456,26 +464,27 @@ export function wordSpans(line: DecodedLine): { text: string; start: number; end
   }
   pitches.sort((a, b) => a - b);
   const pitch = pitches.length > 0 ? pitches[pitches.length >> 1] : Math.max(1, Math.min(line.steps, RECOGNIZER_HEIGHT / RECOGNIZER_TIME_PER_PIXEL));
-  const words: { text: string; start: number; end: number; confidence: number }[] = [];
+  const groups: DecodedLine['chars'][] = [];
   let current: DecodedLine['chars'] = [];
-  const flush = (): void => {
-    if (current.length === 0) return;
-    const first = current[0];
-    const last = current[current.length - 1];
-    words.push({
-      text: current.map((c) => c.char).join(''),
-      start: Math.max(0, first.step + 0.5 - pitch / 2) / line.steps,
-      end: Math.min(line.steps, last.step + 0.5 + pitch / 2) / line.steps,
-      confidence: current.reduce((sum, c) => sum + c.probability, 0) / current.length,
-    });
-    current = [];
-  };
   for (const c of line.chars) {
-    if (/^\s*$/.test(c.char)) flush();
-    else current.push(c);
+    if (/^\s*$/.test(c.char)) {
+      if (current.length > 0) groups.push(current);
+      current = [];
+    } else current.push(c);
   }
-  flush();
-  return words;
+  if (current.length > 0) groups.push(current);
+  return groups.map((group, index) => {
+    const first = group[0];
+    const last = group[group.length - 1];
+    const before = index > 0 ? first.step - groups[index - 1][groups[index - 1].length - 1].step : Infinity;
+    const after = index < groups.length - 1 ? groups[index + 1][0].step - last.step : Infinity;
+    return {
+      text: group.map((c) => c.char).join(''),
+      start: Math.max(0, first.step + 0.5 - Math.min(pitch / 2, WORD_REACH_SHARE * before)) / line.steps,
+      end: Math.min(line.steps, last.step + 0.5 + Math.min(pitch / 2, WORD_REACH_SHARE * after)) / line.steps,
+      confidence: group.reduce((sum, c) => sum + c.probability, 0) / group.length,
+    };
+  });
 }
 
 // --- result -----------------------------------------------------------------------------------------------------
@@ -551,6 +560,59 @@ export function groupRows<T extends { box: RotatedBox }>(items: T[]): T[][] {
   return rows.map((r) => r.sort((a, b) => along(a) - along(b)));
 }
 
+/**
+ * The detector's box is the text region enlarged by the reference's unclip rule: a box is about one text height high (a 13 point line at
+ * 300 dpi, 54 pixels, gives a box of 57; measured on the golden page), and the same enlargement puts a margin of 0.3 of that height on
+ * each end of a line, so the text of a line is its box less 0.6 of the box height.
+ */
+const BOX_HEIGHTS_PER_TEXT_HEIGHT = 1.05;
+const BOX_MARGIN_SHARE = 0.3;
+/** A line this many text heights long (about as many syllables) is a line of running text; the cells of a table and labels are shorter. */
+const PROSE_LINE_EMS = 14;
+/** Fewest lines of running text on each side of a gutter for the page to count as set in columns. */
+const COLUMN_MIN_LINES = 4;
+/** A gutter is at least this many text heights wide, and this share of the page width. */
+const GUTTER_MIN_EMS = 1.2;
+const GUTTER_MIN_PAGE_SHARE = 0.015;
+/** A line as wide as this share of the text is a title or a rule across the columns, not a line of one of them. */
+const SPANNING_SHARE = 0.72;
+
+/**
+ * Whether the page is running text set in columns: its long lines (fourteen text heights or more, so not the cells of a table) leave a
+ * gutter between them, with at least four on each side. The boxes of such a page are not joined along a row: a line of the left column
+ * and the line of the right column beside it are two lines, read one column after the other, where the cells of a table are one row.
+ * Lines wider than 72% of the text (titles) do not count against the gutter, and the gutter is measured along the lines' own direction.
+ */
+export function setInColumns(boxes: RotatedBox[], pageWidth: number): boolean {
+  if (boxes.length < 2 * COLUMN_MIN_LINES) return false;
+  const tilt = boxes.map((b) => b.angle).sort((a, b) => a - b)[boxes.length >> 1];
+  const cos = Math.cos(tilt);
+  const sin = Math.sin(tilt);
+  const heights = boxes.map((b) => b.height).sort((a, b) => a - b);
+  const em = heights[heights.length >> 1] / BOX_HEIGHTS_PER_TEXT_HEIGHT;
+  const text = (b: RotatedBox): number => b.width - 2 * BOX_MARGIN_SHARE * b.height;
+  const long = boxes.filter((b) => text(b) >= PROSE_LINE_EMS * em);
+  if (long.length < 2 * COLUMN_MIN_LINES || long.length < 0.6 * boxes.length) return false;
+  const spans = long.map((b) => {
+    const centre = b.cx * cos + b.cy * sin;
+    return { start: centre - text(b) / 2, end: centre + text(b) / 2 };
+  });
+  const textWidth = Math.max(...spans.map((r) => r.end)) - Math.min(...spans.map((r) => r.start));
+  const lines = spans.filter((r) => r.end - r.start < SPANNING_SHARE * textWidth).sort((a, b) => a.start - b.start);
+  const minGap = Math.max(GUTTER_MIN_EMS * em, GUTTER_MIN_PAGE_SHARE * pageWidth);
+  let reach = -Infinity;
+  let left = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0 && lines[i].start - reach >= minGap) {
+      if (left >= COLUMN_MIN_LINES && lines.length - i >= COLUMN_MIN_LINES) return true;
+      left = 0;
+    }
+    reach = Math.max(reach, lines[i].end);
+    left++;
+  }
+  return false;
+}
+
 // --- engine -----------------------------------------------------------------------------------------------------
 
 interface LoadedModels {
@@ -615,6 +677,11 @@ export async function releaseOnnxOcr(): Promise<void> {
   }
 }
 
+/** Loads the sessions now (the helper does this before it says it is ready) with the thread count the pages will be read with. */
+export async function warmOnnxOcr(modelDir: string, threads: number, runtime?: OnnxRuntime): Promise<void> {
+  await loadModels(modelDir, threads, runtime);
+}
+
 /** Whether the engine could run here: the package resolves and the model directory is complete. */
 export async function onnxOcrAvailable(modelDir: string | undefined = process.env[ONNX_OCR_MODEL_DIR_ENV]): Promise<boolean> {
   if (!modelDir) return false;
@@ -626,50 +693,38 @@ export async function onnxOcrAvailable(modelDir: string | undefined = process.en
   }
 }
 
-async function readPixels(imageBuffer: Buffer): Promise<{ rgb: Uint8Array; width: number; height: number }> {
-  try {
-    await assertEncodedImageWithinLimit(imageBuffer);
-    const { data, info } = await openLimitedSharp(imageBuffer)
-      .rotate()
-      .flatten({ background: '#ffffff' })
-      .toColourspace('srgb')
-      .removeAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-    return { rgb: new Uint8Array(data.buffer, data.byteOffset, data.length), width: info.width, height: info.height };
-  } catch (err) {
-    rethrowInputPixelLimit(err);
-    if (err instanceof OcrEngineUnavailableError || err instanceof ConversionFailedError) throw err;
-    throw new ConversionFailedError('Invalid image: the OCR input could not be decoded.');
-  }
+/** A page as the recognizer reads it: the pixels at full size, for the line crops, and a copy scaled to the detector's size. */
+export interface OnnxPageInput {
+  width: number;
+  height: number;
+  /** Packed RGB, `width * height * 3` bytes. */
+  rgb: Uint8Array;
+  detector: { width: number; height: number; rgb: Uint8Array };
 }
 
-/**
- * Recognizes one page with the ONNX detector and recognizer. Boxes are in the pixels of the page as displayed (EXIF turn
- * applied); the page is not otherwise prepared (no levelling, no binarization): the models read photographs as they are.
- */
-export async function recognizePageOnnx(imageBuffer: Buffer, options: OnnxOcrOptions = {}): Promise<OcrResult> {
+/** Recognizes a page that `prepareOnnxInput` (ocr-onnx-input.ts) made; this is what the helper process runs. */
+export async function recognizeOnnxInput(input: OnnxPageInput, options: OnnxOcrOptions = {}): Promise<OcrResult> {
   const modelDir = options.modelDir ?? process.env[ONNX_OCR_MODEL_DIR_ENV];
   if (!modelDir) throw new OcrEngineUnavailableError(`The ONNX OCR engine needs a model directory (${ONNX_OCR_MODEL_DIR_ENV}).`);
   const { signal } = options;
-  const { rgb, width, height } = await readPixels(imageBuffer);
-  signal?.throwIfAborted();
+  const { rgb, width, height } = input;
   const models = await loadModels(modelDir, options.threads ?? availableCpus(), options.runtime);
   const { ort } = models;
 
   // Detector: the page scaled to the detector's size, then one probability map of the same size.
-  const plan = planDetectorSize(width, height, options.detectorMinSide, options.detectorMaxSide);
-  const resized = await openLimitedSharp(Buffer.from(rgb.buffer, rgb.byteOffset, rgb.length), { raw: { width, height, channels: 3 } })
-    .resize(plan.width, plan.height, { fit: 'fill' })
-    .raw()
-    .toBuffer();
-  const input = new ort.Tensor('float32', normalizedPlanes(resized, plan.width * plan.height, DETECTOR_MEAN, DETECTOR_STD), [1, 3, plan.height, plan.width]);
+  const plan = input.detector;
+  const tensor = new ort.Tensor('float32', normalizedPlanes(input.detector.rgb, plan.width * plan.height, DETECTOR_MEAN, DETECTOR_STD), [1, 3, plan.height, plan.width]);
   signal?.throwIfAborted();
-  const detection = await models.detector.run({ [models.detector.inputNames[0]]: input });
+  const detection = await models.detector.run({ [models.detector.inputNames[0]]: tensor });
   const map = Object.values(detection)[0].data;
   const scaleX = width / plan.width;
   const scaleY = height / plan.height;
-  const boxes = extractTextBoxes(map, plan.width, plan.height).map((box) => scaleBox(box, scaleX, scaleY));
+  let boxes = extractTextBoxes(map, plan.width, plan.height).map((box) => scaleBox(box, scaleX, scaleY));
+  // A label or a cropped line (the same images that Tesseract reads as one block) is enlarged by the detector's minimum size until it is a
+  // blur that finds no text: when nothing is found in such an image, the whole image is the line, which is how the recogniser is used on a crop.
+  if (boxes.length === 0 && height <= OCR_SMALL_CROP_MAX_HEIGHT_PX && width >= height) {
+    boxes = [{ cx: width / 2, cy: height / 2, width, height, angle: 0, score: 1 }];
+  }
 
   // Recognizer: lines grouped by width so that a batch pads little.
   const crops = boxes.map((box) => ({ box, ...cropLine(rgb, width, height, box) }));
@@ -704,7 +759,9 @@ export async function recognizePageOnnx(imageBuffer: Buffer, options: OnnxOcrOpt
 
   const items = boxes.map((box, index) => ({ box, index }));
   const lineBlocks: OcrLineBlock[] = [];
-  for (const row of groupRows(items)) {
+  // A page set in columns keeps every box a line of its own; the order of the columns is settled by sortLineBlocksTopological below.
+  const rows = setInColumns(boxes, width) ? items.map((item) => [item]) : groupRows(items);
+  for (const row of rows) {
     const parts = row
       .map((item) => buildLineBlock(item.box, lines.get(item.index) as DecodedLine, width, height))
       .filter((block): block is OcrLineBlock => block !== null);
@@ -734,7 +791,7 @@ export async function recognizePageOnnx(imageBuffer: Buffer, options: OnnxOcrOpt
     lineBlocks: ordered,
     imageWidth: width,
     imageHeight: height,
-    language: 'kor',
+    language: options.language ?? 'kor',
   };
 }
 

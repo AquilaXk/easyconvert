@@ -16,7 +16,26 @@ export interface ConvertRequestParams {
   targetFormat: string;
   sourceFormat?: string;
   options?: ConversionOptions;
+  /** Answer a finished synchronous conversion with the bytes of the result instead of JSON. */
   raw?: boolean;
+  /** Queue the conversion as a job (`Prefer: respond-async`): the answer is a ConversionAcceptedResponse. */
+  respondAsync?: boolean;
+  /** Where the event of a queued conversion is sent; needs webhookSecret. */
+  webhookUrl?: string;
+  webhookSecret?: string;
+}
+
+/** The 202 of a conversion that was queued (a file over the synchronous limit, or respondAsync): poll statusUrl for the result. */
+export interface ConversionAcceptedResponse {
+  success: boolean;
+  status: 'accepted';
+  jobId: string;
+  statusUrl: string;
+  sourceFormat?: string;
+  targetFormat?: string;
+  originalFilename?: string;
+  fileSize?: number;
+  createdAt?: number;
 }
 
 export interface ConversionResponse {

@@ -86,7 +86,7 @@ describe('withImageThreads', () => {
     expect(await withImageThreads(async () => 'done')).toBe('done');
   });
 
-  it('leases the count it is given, and a larger lease that starts while a smaller one runs raises the count for both until the last ends', async () => {
+  it('leases the count it is given: a larger lease that starts while a smaller one runs raises the count, and the count falls to the largest lease still running when it ends', async () => {
     sharp.concurrency(1);
     let releaseSmall = (): void => undefined;
     let releaseLarge = (): void => undefined;
@@ -98,10 +98,43 @@ describe('withImageThreads', () => {
     expect(sharp.concurrency()).toBe(5);
     releaseLarge();
     await large;
-    expect(sharp.concurrency()).toBe(5);
+    expect(sharp.concurrency()).toBe(2);
     releaseSmall();
     await small;
     expect(sharp.concurrency()).toBe(1);
+  });
+
+  it('keeps the count of the largest lease in flight whatever the order the leases end in, and counts equal leases one by one', async () => {
+    sharp.concurrency(1);
+    const releases: Array<() => void> = [];
+    const hold = (threads: number): Promise<void> => withImageThreads(() => new Promise<void>((resolve) => { releases.push(resolve); }), threads);
+    const leases = [hold(8), hold(2), hold(8), hold(4)];
+    expect(sharp.concurrency()).toBe(8);
+    releases[0]();
+    await leases[0];
+    expect(sharp.concurrency()).toBe(8);
+    releases[2]();
+    await leases[2];
+    expect(sharp.concurrency()).toBe(4);
+    releases[3]();
+    await leases[3];
+    expect(sharp.concurrency()).toBe(2);
+    releases[1]();
+    await leases[1];
+    expect(sharp.concurrency()).toBe(1);
+  });
+
+  it('puts the base count back, the operator\'s VIPS_CONCURRENCY when it is set, after the last lease ends', async () => {
+    const saved = process.env[IMAGE_THREADS_ENV];
+    process.env[IMAGE_THREADS_ENV] = '3';
+    try {
+      sharp.concurrency(1);
+      await withImageThreads(async () => undefined, 6);
+      expect(sharp.concurrency()).toBe(3);
+    } finally {
+      if (saved === undefined) delete process.env[IMAGE_THREADS_ENV];
+      else process.env[IMAGE_THREADS_ENV] = saved;
+    }
   });
 
   it('runs a pipeline lease on the pipeline thread count and puts the previous count back', async () => {

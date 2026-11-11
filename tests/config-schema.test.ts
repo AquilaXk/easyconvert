@@ -610,13 +610,13 @@ describe('loadConfig', () => {
     STORAGE_DRIVER: 'local',
     STORAGE_SIGNING_SECRET: SIGNING,
     JOB_SECRET_KEK: KEK,
+    WEBHOOK_SECRET_KEK: `webhook-${ascii(40)}`,
   };
   const WEB_PRODUCTION: Record<string, string> = {
     ...WORKER_PRODUCTION,
     APP_URL: 'https://convert.example.org',
     JWT_SECRET: `jwt-${ascii(40)}`,
     KEY_HASH_PEPPER: `pepper-${ascii(40)}`,
-    WEBHOOK_SECRET_KEK: `webhook-${ascii(40)}`,
   };
 
   function omit(env: Record<string, string>, name: string): Record<string, string> {
@@ -736,11 +736,12 @@ describe('loadConfig', () => {
     expect(failures(WORKER_PRODUCTION, 'worker')).toEqual([]);
   });
 
-  it('asks a worker only for what it needs: no session or API key secrets', () => {
+  it('asks a worker only for what it needs: no session or API key secrets, but the webhook key that opens rotated secrets', () => {
     expect(failures({ NODE_ENV: 'production' }, 'worker').map((f) => f.variable).sort()).toEqual([
       'JOB_SECRET_KEK',
       'STORAGE_DRIVER',
       'STORAGE_SIGNING_SECRET',
+      'WEBHOOK_SECRET_KEK',
     ]);
   });
 
@@ -749,7 +750,6 @@ describe('loadConfig', () => {
       'APP_URL',
       'JWT_SECRET',
       'KEY_HASH_PEPPER',
-      'WEBHOOK_SECRET_KEK',
     ]);
   });
 

@@ -10,10 +10,9 @@ import {
   MAX_RASTER_PAGE_PIXELS,
   PdfPageFrameError,
   assertPdfRasterPageBudget,
-  checkPdfRasterPageBudget,
-  readPdfPageFrames,
   renderedSizePixels,
 } from '../src/lib/conversions/pdf-page-geometry';
+import { checkPdfRasterPageBudget, readPdfPageFrames } from '../src/lib/conversions/pdf-page-frames';
 import { boundPageImages, resolvePageIntervals } from '../src/lib/conversions/page-range';
 import { pagesOfIntervals } from '../src/lib/conversions/page-intervals';
 import { planPageRender } from '../src/lib/conversions/pdf-page-render';

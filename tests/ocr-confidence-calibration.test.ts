@@ -14,6 +14,8 @@ import {
 import { analyzeDocumentLayout } from '../src/lib/conversions/dla-engine';
 import type { OcrResult } from '../src/lib/conversions/ocr-pdf-combiner';
 import { oracleTest } from './helpers/oracle-test';
+import { skipUnless } from './helpers/strict-skip';
+import { onnxOcrUnavailableReason } from '../src/lib/conversions/ocr-onnx-helper';
 import {
   CALIBRATION_DEGRADATIONS,
   calibrationPage,
@@ -163,6 +165,7 @@ describe('the committed tables', () => {
     ['eng', 'cli'],
     ['kor', 'wasm'],
     ['kor', 'cli'],
+    ['kor', 'onnx'],
   ];
 
   for (const [language, enginePath] of combinations) {
@@ -174,10 +177,16 @@ describe('the committed tables', () => {
       expect(table.x.length).toBeGreaterThan(2);
       expect(table.provenance.fittedOn.words).toBeGreaterThan(1000);
       expect(table.provenance.fittedOn.pages).toHaveLength(3);
-      expect(table.provenance.engine).toMatch(/^tesseract /);
+      expect(table.provenance.engine).toMatch(enginePath === 'onnx' ? /^onnxruntime-node / : /^tesseract /);
       expect(calibrationTableFor(language, enginePath)).toEqual(table);
     });
   }
+
+  it('gives the ONNX engine its Korean table whatever languages the request named', () => {
+    expect(calibrationTableFor('kor+eng', 'onnx')).toEqual(committedTable('kor', 'onnx'));
+    expect(calibrationTableFor('kor', 'onnx')).toEqual(committedTable('kor', 'onnx'));
+    expect(calibrationTableFor('kor', 'neural')).toEqual(committedTable('kor', 'neural'));
+  });
 
   it('has no table for a language that was not fitted', () => {
     expect(calibrationTableFor('deu', 'wasm')).toBeNull();
@@ -315,6 +324,23 @@ describe('held-out expected calibration error', () => {
       TEST_TIMEOUT_MS
     );
   }
+
+  const modelsMissing = skipUnless(
+    'the ONNX OCR models and runtime',
+    onnxOcrUnavailableReason() === null
+  );
+  it.skipIf(modelsMissing)(
+    `kor on the onnx path is within ${MAX_HELD_OUT_ECE} on pages and noise the fit never saw`,
+    async () => {
+      const { calibrated, raw } = await heldOutWords('kor', 'onnx');
+      expect(calibrated.length).toBeGreaterThan(900);
+      const calibratedError = expectedCalibrationError(calibrated, ECE_BINS);
+      const rawError = expectedCalibrationError(raw, ECE_BINS);
+      expect(calibratedError).toBeLessThanOrEqual(MAX_HELD_OUT_ECE);
+      expect(calibratedError).toBeLessThanOrEqual(rawError + 0.01);
+    },
+    TEST_TIMEOUT_MS
+  );
 
   oracleTest(
     'performOcr returns every word with a confidence in 0..1 and says the result is calibrated',

@@ -8,7 +8,7 @@ const nextConfig = {
   // harfbuzzjs loads its WebAssembly module from beside its own files, so it must not be bundled. tesseract.js starts its
   // worker from a path beside its own files too (src/worker-script/node): bundled, that path points into .next and the
   // OCR worker never starts, so every OCR conversion of the web server waited 60 s and answered 503.
-  serverExternalPackages: ['sharp', 'pdfkit', 'harfbuzzjs', 'tesseract.js'],
+  serverExternalPackages: ['sharp', 'pdfkit', 'harfbuzzjs', 'tesseract.js', 'onnxruntime-node'],
   experimental: {
     // The middleware matches every /api route, and Next.js hands a route only the first 10 MiB of a body that the
     // middleware could read (it ends the body there without an error), so a file past 10 MiB reached no route whole.

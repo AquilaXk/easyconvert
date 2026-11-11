@@ -1,8 +1,10 @@
-import { EncryptedPDFError, PDFDocument } from 'pdf-lib';
+import { EncryptedPDFError, type PDFDocument } from 'pdf-lib';
 import { decryptPdfToBuffer, pdfPageTreeLoops, readPdfAccess } from '../../worker/pdf-decrypt';
 import { PdfPasswordRequiredError, PdfPermissionDeniedError } from '../types';
 import { PdfStructureError } from './pdf-document';
-import { type CheckedPdfRasterBudget, checkPdfRasterPageBudget } from './pdf-page-geometry';
+import { loadPdfLibDocument } from './pdf-lib-load';
+import { checkPdfRasterPageBudget } from './pdf-page-frames';
+import type { CheckedPdfRasterBudget } from './pdf-page-geometry';
 import { withQpdfInputFile } from './pdf-postprocess/qpdf-run';
 import { inspectPdfEncryption } from './pdf-encryption';
 
@@ -199,7 +201,7 @@ export const PDF_LIB_OBJECTS_PER_TICK = 500;
  */
 export async function loadPdfDocument(plain: Buffer): Promise<PDFDocument> {
   try {
-    return await PDFDocument.load(plain, { parseSpeed: PDF_LIB_OBJECTS_PER_TICK });
+    return await loadPdfLibDocument(plain, { parseSpeed: PDF_LIB_OBJECTS_PER_TICK });
   } catch (error) {
     if (error instanceof EncryptedPDFError) {
       throw new PdfPasswordRequiredError(REQUIRED_MESSAGE);

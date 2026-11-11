@@ -80,7 +80,26 @@ export interface ConvertRequestParams {
   targetFormat: string;
   sourceFormat?: string;
   options?: ConversionOptions;
+  /** Answer a finished synchronous conversion with the bytes of the result instead of JSON. */
   raw?: boolean;
+  /** Queue the conversion as a job (\`Prefer: respond-async\`): the answer is a ConversionAcceptedResponse. */
+  respondAsync?: boolean;
+  /** Where the event of a queued conversion is sent; needs webhookSecret. */
+  webhookUrl?: string;
+  webhookSecret?: string;
+}
+
+/** The 202 of a conversion that was queued (a file over the synchronous limit, or respondAsync): poll statusUrl for the result. */
+export interface ConversionAcceptedResponse {
+  success: boolean;
+  status: 'accepted';
+  jobId: string;
+  statusUrl: string;
+  sourceFormat?: string;
+  targetFormat?: string;
+  originalFilename?: string;
+  fileSize?: number;
+  createdAt?: number;
 }
 
 export interface ConversionResponse {
@@ -199,6 +218,7 @@ export interface DlqReplayResult {
   const clientContent = `import type {
   EasyConvertClientConfig,
   ConvertRequestParams,
+  ConversionAcceptedResponse,
   ConversionResponse,
   CreateJobParams,
   JobCreatedResult,
@@ -260,9 +280,10 @@ export class EasyConvertClient {
   }
 
   /**
-   * Synchronously convert an input file buffer, blob, or string.
+   * Convert an input file buffer, blob, or string. The answer is the result, or, for a file over the synchronous limit or with
+   * respondAsync, the queued job (ConversionAcceptedResponse, also when raw is set).
    */
-  public async convert(params: ConvertRequestParams): Promise<ConversionResponse | ArrayBuffer> {
+  public async convert(params: ConvertRequestParams): Promise<ConversionResponse | ConversionAcceptedResponse | ArrayBuffer> {
     const formData = new FormData();
 
     if (typeof params.file === 'string') {
@@ -276,10 +297,15 @@ export class EasyConvertClient {
     formData.append('targetFormat', params.targetFormat);
     if (params.sourceFormat) formData.append('sourceFormat', params.sourceFormat);
     if (params.options) formData.append('options', JSON.stringify(params.options));
+    if (params.webhookUrl) formData.append('webhookUrl', params.webhookUrl);
+    if (params.webhookSecret) formData.append('webhookSecret', params.webhookSecret);
 
     const headers: Record<string, string> = {};
     if (params.raw) {
       headers['Accept'] = 'application/octet-stream';
+    }
+    if (params.respondAsync) {
+      headers['Prefer'] = 'respond-async';
     }
 
     const url = \`\${this.baseUrl}/api/v1/convert\${params.raw ? '?raw=true' : ''}\`;
@@ -297,6 +323,9 @@ export class EasyConvertClient {
       throw new Error(\`Conversion Error (\${response.status}): \${err.error || err.detail || 'Failed'}\`);
     }
 
+    if (response.status === 202) {
+      return (await response.json()) as ConversionAcceptedResponse;
+    }
     if (params.raw) {
       return response.arrayBuffer();
     }
@@ -597,8 +626,12 @@ class EasyConvertClient:
         source_format: Optional[str] = None,
         options: Optional[Dict[str, Any]] = None,
         raw: bool = False,
+        respond_async: bool = False,
+        webhook_url: Optional[str] = None,
+        webhook_secret: Optional[str] = None,
     ) -> Union[Dict[str, Any], bytes]:
-        """Convert a file synchronously."""
+        """Convert a file. The answer is the result (bytes with raw=True), or, for a file over the
+        synchronous limit or with respond_async=True, the queued job as a dict with its statusUrl (also with raw)."""
         url = f"{self.base_url}/api/v1/convert{'?raw=true' if raw else ''}"
         files = {"file": (filename, file)}
         data: Dict[str, Any] = {"targetFormat": target_format}
@@ -606,14 +639,22 @@ class EasyConvertClient:
             data["sourceFormat"] = source_format
         if options:
             data["options"] = json.dumps(options)
+        if webhook_url:
+            data["webhookUrl"] = webhook_url
+        if webhook_secret:
+            data["webhookSecret"] = webhook_secret
 
         headers = {}
         if raw:
             headers["Accept"] = "application/octet-stream"
+        if respond_async:
+            headers["Prefer"] = "respond-async"
 
         resp = self.session.post(url, files=files, data=data, headers=headers, timeout=self.timeout)
         if not resp.ok:
             raise RuntimeError(f"Conversion failed ({resp.status_code}): {resp.text}")
+        if resp.status_code == 202:
+            return resp.json()
         if raw:
             return resp.content
         return resp.json()

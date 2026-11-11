@@ -3,7 +3,9 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { exportAlto, exportHocr, generateSearchablePdf, performOcr } from '../src/lib/conversions/ocr';
+import { exportAlto, exportHocr, generateSearchablePdf, performOcr, recognizePage } from '../src/lib/conversions/ocr';
+import { onnxOcrUnavailableReason } from '../src/lib/conversions/ocr-onnx-helper';
+import { skipUnless } from './helpers/strict-skip';
 import { parseTesseractTsv, recognizeWithCli } from '../src/lib/conversions/ocr-cli';
 import {
   groupAtBoundaries,
@@ -189,11 +191,11 @@ describe('Korean page, as drawn', () => {
   );
 
   oracleTest(
-    'hOCR and ALTO hold one word element per drawn word, within 2%',
+    'hOCR and ALTO hold one word element per drawn word, within 2% (the Tesseract path)',
     ['tesseract'],
     async () => {
       requireTessdata('kor');
-      const result = await performOcr(fixtureImage(KOREAN_PAGE, 'clean300'), 'kor');
+      const { result } = await recognizePage(fixtureImage(KOREAN_PAGE, 'clean300'), 'kor', { enginePath: 'neural' });
       expect(result.wordMerge).toBe('aligned');
       const hocrWords = (exportHocr(result).match(/class="ocrx_word"/g) ?? []).length;
       const altoWords = (exportAlto(result).match(/<String /g) ?? []).length;
@@ -207,12 +209,12 @@ describe('Korean page, as drawn', () => {
   );
 
   oracleTest(
-    'pdftotext finds at least 95% of the drawn words in the searchable PDF',
+    'pdftotext finds at least 95% of the drawn words in the searchable PDF (the Tesseract path)',
     ['tesseract', 'pdftotext'],
     async () => {
       requireTessdata('kor');
       const image = fixtureImage(KOREAN_PAGE, 'clean300');
-      const result = await performOcr(image, 'kor');
+      const { result } = await recognizePage(image, 'kor', { enginePath: 'neural' });
       const pdf = await generateSearchablePdf(image, result);
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-cjk-merge-'));
       try {
@@ -222,6 +224,50 @@ describe('Korean page, as drawn', () => {
           encoding: 'utf-8',
         });
         expect(wordRecall(KOREAN_DRAWN_TEXT, extracted)).toBeGreaterThanOrEqual(MIN_PDF_WORD_RECALL);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    TEST_TIMEOUT_MS
+  );
+});
+
+/**
+ * The ONNX engine reads Korean by default. Its words are cut from the recogniser's emission points, and the recogniser drops or adds a
+ * space now and then (a full stop followed by no space, a space inside a verb), which is what these bounds allow: measured on this page
+ * 0.91 of the drawn words in the searchable PDF and a word count 2.6% off.
+ */
+const MIN_ONNX_PDF_WORD_RECALL = 0.9;
+const MAX_ONNX_WORD_COUNT_DEVIATION = 0.05;
+
+describe('Korean page, as drawn, read by the ONNX engine', () => {
+  const modelsMissing = skipUnless('the ONNX OCR models and runtime', onnxOcrUnavailableReason() === null);
+
+  it.skipIf(modelsMissing)('hOCR and ALTO hold one word element per drawn word, within 5%', async () => {
+    const { result, enginePath } = await recognizePage(fixtureImage(KOREAN_PAGE, 'clean300'), 'kor', { detectOrientation: false });
+    expect(enginePath).toBe('onnx');
+    const hocrWords = (exportHocr(result).match(/class="ocrx_word"/g) ?? []).length;
+    const altoWords = (exportAlto(result).match(/<String /g) ?? []).length;
+    for (const count of [hocrWords, altoWords]) {
+      expect(Math.abs(count - KOREAN_DRAWN_WORD_COUNT) / KOREAN_DRAWN_WORD_COUNT).toBeLessThanOrEqual(MAX_ONNX_WORD_COUNT_DEVIATION);
+    }
+  }, TEST_TIMEOUT_MS);
+
+  oracleTest(
+    'pdftotext finds at least 90% of the drawn words in the searchable PDF',
+    ['pdftotext'],
+    async (ctx) => {
+      if (modelsMissing) ctx.skip();
+      const image = fixtureImage(KOREAN_PAGE, 'clean300');
+      const result = await performOcr(image, 'kor', undefined, false);
+      expect(result.language).toBe('kor');
+      const pdf = await generateSearchablePdf(image, result);
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-cjk-onnx-'));
+      try {
+        const pdfPath = path.join(dir, 'page.pdf');
+        fs.writeFileSync(pdfPath, pdf);
+        const extracted = execFileSync(getOracleToolPath('pdftotext') as string, ['-enc', 'UTF-8', pdfPath, '-'], { encoding: 'utf-8' });
+        expect(wordRecall(KOREAN_DRAWN_TEXT, extracted)).toBeGreaterThanOrEqual(MIN_ONNX_PDF_WORD_RECALL);
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }

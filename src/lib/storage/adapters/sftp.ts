@@ -2,7 +2,7 @@ import dns from 'node:dns';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { Readable, pipeline } from 'node:stream';
 import { promisify } from 'node:util';
 import type { SftpCredentials } from '../credentials-vault';
@@ -46,6 +46,9 @@ const SFTP_COMMAND_TIMEOUT_MS = 15 * 60_000;
 const SFTP_MAX_SPOOL_BYTES = REMOTE_STAGED_OBJECT_MAX_BYTES;
 const SPOOL_CHECK_INTERVAL_MS = 100;
 
+/** A client stopped for a reason of ours gets this long to leave after SIGTERM before its whole process group is killed. */
+const SFTP_KILL_GRACE_MS = 2_000;
+
 /** The known hosts file is named in an `-o` value, which `ssh` splits on spaces and quotes. */
 const PLAIN_PATH = /^[A-Za-z0-9_/.+-]+$/;
 
@@ -60,6 +63,19 @@ class SftpCommandFailedError extends StorageAdapterError {
     super(message, 'sftp');
     this.name = 'SftpCommandFailedError';
   }
+}
+
+/** Signals the client and the `ssh` it started: the client leads a process group of its own (`detached`). */
+function signalProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (child.pid !== undefined) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // the group is already gone or cannot be signalled; the client itself is the last thing to try
+    }
+  }
+  child.kill(signal);
 }
 
 function removeDirQuietly(dir: string): void {
@@ -203,7 +219,7 @@ export class SftpStorageAdapter implements IStorageAdapter {
   /**
    * Runs one sftp session. The private key, the pinned host key and the child's HOME live in a directory of this
    * call (mkdtemp makes it 0700) that is removed on every way out: success, a failed exit, a spawn failure and
-   * a kill by the timeout.
+   * a stop by the timeout.
    */
   private async runSftpBatch(address: string, commands: string, spool?: Spool): Promise<string> {
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert-sftp-run-'));
@@ -259,23 +275,38 @@ export class SftpStorageAdapter implements IStorageAdapter {
       const sftpBin = fs.existsSync('/usr/bin/sftp') ? '/usr/bin/sftp' : 'sftp';
       const child = spawn(sftpBin, args, {
         shell: false,
+        detached: true,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: sftpChildEnv(workDir),
-        timeout: SFTP_COMMAND_TIMEOUT_MS,
       });
 
       let spoolTimer: NodeJS.Timeout | undefined;
+      let killTimer: NodeJS.Timeout | undefined;
+      let commandTimer: NodeJS.Timeout | undefined;
       let settled = false;
+      let stoppedFor: string | undefined;
       const settle = (outcome: () => void) => {
         if (settled) return;
         settled = true;
         clearInterval(spoolTimer);
+        clearTimeout(killTimer);
+        clearTimeout(commandTimer);
         outcome();
       };
+      /**
+       * Stops the client for a reason of ours and reports it once the client has exited ('close'). The caller removes
+       * the key and the spool as soon as this promise settles, so it may not settle while the client can still write.
+       */
       const stop = (reason: string) => {
-        settle(() => reject(new StorageAdapterError(reason, this.providerName)));
-        child.kill('SIGTERM');
+        if (stoppedFor !== undefined) return;
+        stoppedFor = reason;
+        clearInterval(spoolTimer);
+        signalProcessGroup(child, 'SIGTERM');
+        killTimer = setTimeout(() => signalProcessGroup(child, 'SIGKILL'), SFTP_KILL_GRACE_MS);
       };
+
+      // spawn's own `timeout` would signal the client alone; this one stops the whole group, as every other stop does
+      commandTimer = setTimeout(() => stop(`SFTP command ran longer than ${SFTP_COMMAND_TIMEOUT_MS / 1000} s`), SFTP_COMMAND_TIMEOUT_MS);
 
       const readStdout = collectBounded(child.stdout, () => stop(`SFTP output passed ${SFTP_MAX_OUTPUT_BYTES} bytes`));
       const readStderr = collectBounded(child.stderr, () => stop(`SFTP error output passed ${SFTP_MAX_OUTPUT_BYTES} bytes`));
@@ -296,7 +327,9 @@ export class SftpStorageAdapter implements IStorageAdapter {
       child.on('close', (code, signal) => {
         settle(() => {
           const stderr = readStderr();
-          if (code === 0) {
+          if (stoppedFor !== undefined) {
+            reject(new StorageAdapterError(stoppedFor, this.providerName));
+          } else if (code === 0) {
             resolve(readStdout());
           } else if (code === SFTP_CONNECTION_FAILED_EXIT && /Permission denied|Authentication failed/.test(stderr)) {
             reject(new StorageAuthenticationError(truncateSftpErrorText(stderr), this.providerName));

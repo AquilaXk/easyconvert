@@ -87,7 +87,7 @@ export function decodeRawInThread(
     return Promise.reject(err);
   }
   const worker = entry.kind === 'compiled'
-    ? new Worker(entry.file, { workerData, transferList: [bytes.buffer], resourceLimits })
+    ? new Worker(entry.file, { workerData, transferList: [bytes.buffer], resourceLimits, execArgv: [] })
     : new Worker(entry.bootstrap, { eval: true, workerData, transferList: [bytes.buffer], resourceLimits });
 
   return new Promise<InProcessDecoded>((resolve, reject) => {

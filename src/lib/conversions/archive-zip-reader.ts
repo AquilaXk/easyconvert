@@ -343,6 +343,15 @@ function parseCentralEntry(buf: Buffer, at: number, directoryEnd: number): { ent
   return { entry, next, storedOffset };
 }
 
+/**
+ * The number of entries the end records of a ZIP file declare, read from the end records alone (ZIP64 included), so that a caller can
+ * refuse a file before any reader builds an object for each entry.
+ * @throws UnsafeArchiveError or UnsupportedArchiveMethodError when the end records are missing, ambiguous or inconsistent.
+ */
+export function readZipEntryCount(buf: Buffer): number {
+  return readEndRecord(buf).entryCount;
+}
+
 /** Parses the end records and the central directory. Structure only: names and sizes are judged by the caller. */
 export function readZipDirectory(buf: Buffer, limits: Pick<ArchiveExtractionLimits, 'MAX_FILES'>): ZipDirectory {
   const end = readEndRecord(buf);

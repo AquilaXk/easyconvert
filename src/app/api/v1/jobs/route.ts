@@ -18,6 +18,7 @@ import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-li
 import { resolveResourceClass, tierToPriority } from '@/lib/queue/resource-class';
 import { generateJobId } from '@/lib/queue/bullmq-engine';
 import { storageProvider as s3Storage } from '@/lib/storage';
+import { storeUploadedBuffer } from '@/lib/api/completed-upload';
 import { readObjectHeader } from '@/lib/storage/object-header';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject, spoofCheckRefusal } from '@/lib/security/file-guard';
@@ -702,10 +703,8 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 }));
 
 /** Stores an input that came in the request body as an upload, and answers its key. */
-async function storeRequestInput(buffer: Buffer, file: { name: string; type: string; size: number }): Promise<string> {
-  const init = await s3Storage.initiateMultipartUpload(file.name, file.type, file.size);
-  await s3Storage.uploadPart(init.uploadId, 1, buffer);
-  return (await s3Storage.completeMultipartUpload(init.uploadId)).key;
+function storeRequestInput(buffer: Buffer, file: { name: string; type: string; size: number }, ownerUserId: string): Promise<string> {
+  return storeUploadedBuffer(s3Storage, buffer, file, ownerUserId);
 }
 
 /** The input of a submission as the request gave it: a key it named, a multipart file, or base64 in the body. */
@@ -724,14 +723,15 @@ interface SubmittedInput {
 async function storedRequestInput(
   input: SubmittedInput,
   graph: JobGraph | undefined,
-  file: { filename: string; mimeType: string }
+  file: { filename: string; mimeType: string },
+  ownerUserId: string
 ): Promise<{ storageKey?: string; inputBufferBase64?: string }> {
   const { storageKey, uploadedBuffer, fileMeta, inputBufferBase64 } = input;
   if (storageKey) return { storageKey, inputBufferBase64 };
-  if (uploadedBuffer && fileMeta) return { storageKey: await storeRequestInput(uploadedBuffer, fileMeta), inputBufferBase64 };
+  if (uploadedBuffer && fileMeta) return { storageKey: await storeRequestInput(uploadedBuffer, fileMeta, ownerUserId), inputBufferBase64 };
   if (!graph || !inputBufferBase64) return { inputBufferBase64 };
   const decoded = Buffer.from(inputBufferBase64, 'base64');
-  return { storageKey: await storeRequestInput(decoded, { name: file.filename || 'input', type: file.mimeType, size: decoded.length }) };
+  return { storageKey: await storeRequestInput(decoded, { name: file.filename || 'input', type: file.mimeType, size: decoded.length }, ownerUserId) };
 }
 
 /** The nodes of a graph with each import.upload node that names the request's own input (`inline`) reading `storageKey`. */
@@ -838,7 +838,7 @@ function unitsToReserve(graph: JobGraph | undefined): number {
 async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit): Promise<NextResponse> {
   const { user, sourceDef, targetDef, originalFilename, fileSize, options, graph } = submission;
   const answered = { sourceFormat: sourceDef.id, targetFormat: targetDef.id, originalFilename };
-  const { storageKey, inputBufferBase64 } = await storedRequestInput(submission.input, graph, { filename: originalFilename, mimeType: sourceDef.mimeType });
+  const { storageKey, inputBufferBase64 } = await storedRequestInput(submission.input, graph, { filename: originalFilename, mimeType: sourceDef.mimeType }, user.id);
 
   // A graph (including legacy linear tasks) runs only through the graph scheduler, which
   // enqueues each node; a separate conversion job would run the pipeline a second time.

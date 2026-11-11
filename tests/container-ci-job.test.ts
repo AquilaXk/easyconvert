@@ -51,11 +51,25 @@ const RELEVANT_PATHS = [
   'src/lib/security/process-sandbox.ts',
   '.github/workflows/ci.yml',
   '.github/actions/ci-setup/action.yml',
+  'native/cad-convert/cad-convert.cpp',
+  'native/qpdf-runner/build.sh',
+  'native/pid-init/pid-init.c',
+  'scripts/install-ffmpeg.sh',
+  'scripts/install-verapdf.sh',
+  'scripts/install-vtracer-pixels.sh',
+  'scripts/vtracer-pixels/src/main.rs',
+  'scripts/vtracer-pixels/Cargo.lock',
+  'scripts/vtracer-notices/THIRD-PARTY-NOTICES',
+  'scripts/ffmpeg-patches/libvorbis-whole-frames.patch',
+  'scripts/djvulibre-patches/include-search-visit-once.patch',
+  'scripts/lib/djvulibre-gates.sh',
+  'scripts/avifenc/SOURCE',
+  'scripts/verify-imagemagick-policy.sh',
+  'scripts/worker-healthcheck.js',
 ];
 const UNRELATED_PATHS = [
   'src/lib/security/process-sandbox.test.ts',
   'src/lib/conversions/archive.ts',
-  'scripts/install-verapdf.sh',
   'tests/compose-hardening.test.ts',
   'docs/docker/notes.md',
   '.github/workflows/claude.yml',
@@ -81,6 +95,23 @@ describe('container job in .github/workflows/ci.yml', () => {
 
   it.each(UNRELATED_PATHS)('treats a change to %s as unrelated', (file) => {
     expect(pathPattern.test(file)).toBe(false);
+  });
+
+  it('treats a change to every file that Dockerfile.worker copies from the repository, but the application sources, as relevant', () => {
+    // The sources are compiled by the unit and integration jobs; what the image build adds is the native tools, the install scripts and
+    // their patches, the sandbox and the policy files. A copy that the pattern misses would let a change to it skip the image build
+    // and the hardening checks (policy entry 243).
+    const COMPILED_OR_TESTED_ELSEWHERE = [/^package(-lock)?\.json$|^package\*\.json$/, /^tsconfig\.json$/, /^src\//, /^THIRD_PARTY_NOTICES\.md$/, /^scripts\/erase-account\.ts$/];
+    const copies = readFileSync(path.join(ROOT, 'Dockerfile.worker'), 'utf-8')
+      .split('\n')
+      .filter((line) => /^COPY\b/.test(line) && !line.includes('--from='))
+      .flatMap((line) => line.replace(/^COPY\s+(--\S+\s+)*/, '').split(/\s+/).slice(0, -1));
+    expect(copies.length).toBeGreaterThan(20);
+    for (const source of copies) {
+      if (COMPILED_OR_TESTED_ELSEWHERE.some((pattern) => pattern.test(source))) continue;
+      // A directory is copied whole: a file in it stands for the directory.
+      expect(pathPattern.test(source) || pathPattern.test(`${source.replace(/\/$/, '')}/file`), source).toBe(true);
+    }
   });
 
   it('prints the skip message and gates every build and verification step on the result', () => {

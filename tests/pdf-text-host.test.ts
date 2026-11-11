@@ -23,6 +23,10 @@ const fake = vi.hoisted(() => {
       this.handlers.set(event, [...(this.handlers.get(event) ?? []), handler]);
       return this;
     }
+    off(event: string, handler: (...args: unknown[]) => void): this {
+      this.handlers.set(event, (this.handlers.get(event) ?? []).filter((candidate) => candidate !== handler));
+      return this;
+    }
     emit(event: string, ...args: unknown[]): void {
       // `once`: a handler runs for the first event only.
       const handlers = this.handlers.get(event) ?? [];
@@ -36,8 +40,8 @@ const fake = vi.hoisted(() => {
     unref(): void {}
     terminate(): Promise<number> {
       this.terminated = true;
-      // A stopped thread ends with an `exit` event, a moment later.
-      queueMicrotask(() => this.emit('exit', 1));
+      // A stopped thread ends with an `exit` event, a moment later (or when the test says, to put a reply before it).
+      if (!state.holdExit) queueMicrotask(() => this.emit('exit', 1));
       return Promise.resolve(0);
     }
   }
@@ -45,6 +49,8 @@ const fake = vi.hoisted(() => {
   const state = {
     instances: [] as FakeWorker[],
     construct: null as (() => void) | null,
+    /** Whether a stopped thread waits for the test to emit its `exit`. */
+    holdExit: false,
     calls: [] as unknown[][],
     /** What the host did, in order: the V8 flags it set and the threads it started. */
     events: [] as string[],
@@ -67,7 +73,7 @@ import { runPdfTextJobInThread, shutdownPdfTextThreads } from '../src/lib/conver
 import type { PdfTextJob } from '../src/lib/conversions/pdf-text-types';
 import { inspectPdfPagesTextDensity } from '../src/lib/conversions/ocr';
 import { extractPdfTextLayerPages, PdfTextGeometryError } from '../src/lib/conversions/pdf-text-geometry';
-import { EngineUnavailableError } from '../src/lib/types';
+import { EngineUnavailableError, typedFailureOf } from '../src/lib/types';
 import { rawPdf, run } from './helpers/raw-pdf';
 
 const DEADLINE_ENV = 'EASYCONVERT_PDF_TEXT_DEADLINE_MS';
@@ -102,13 +108,16 @@ beforeEach(() => {
   fake.state.calls = [];
   fake.state.events = [];
   fake.state.construct = null;
+  fake.state.holdExit = false;
 });
 
 afterEach(() => {
   delete process.env[DEADLINE_ENV];
   vi.restoreAllMocks();
-  // Threads are kept between jobs; every test starts without any.
+  // Threads are kept between jobs; every test starts without any. A thread held in its ending is let go.
+  fake.state.holdExit = false;
   shutdownPdfTextThreads();
+  for (const thread of fake.state.instances) thread.emit('exit', 1);
 });
 
 describe('worker thread failures', () => {
@@ -174,6 +183,106 @@ describe('worker thread failures', () => {
     const err = await pending;
     expect(err).toBeInstanceOf(PdfTextGeometryError);
     expect((err as Error).message).toBe('PDF page 1 has more than 100000 text items.');
+  });
+});
+
+/** A reply a thread sends for a finished job. */
+const OK_REPLY = { ok: true, result: { content: [], fonts: [], geometry: new Map(), analyses: [] } };
+const WAITING_JOBS_LIMIT = 64;
+const MIB = 1024 * 1024;
+
+describe('a job that ends before its thread replies', () => {
+  it('does not take a thread that overran its deadline back into the pool when its reply comes late', async () => {
+    process.env[DEADLINE_ENV] = String(SHORT_DEADLINE_MS);
+    fake.state.holdExit = true;
+    const overrun = await failure(runPdfTextJobInThread(pdf(), { geometry: [1] }));
+    expect(overrun).toBeInstanceOf(PdfTextGeometryError);
+    const stopped = await startedThread();
+    expect(stopped.terminated).toBe(true);
+
+    // The thread answered just before it was stopped; its reply is delivered while it is ending.
+    stopped.emit('message', OK_REPLY);
+    delete process.env[DEADLINE_ENV];
+    const next = runPdfTextJobInThread(pdf(), { geometry: [1] });
+    await vi.waitFor(() => expect(fake.state.instances).toHaveLength(2), { timeout: THREAD_STARTED_TIMEOUT_MS, interval: THREAD_STARTED_POLL_MS });
+    expect(stopped.posted).toHaveLength(1);
+
+    stopped.emit('exit', 1);
+    fake.state.instances[1].emit('message', OK_REPLY);
+    await expect(next).resolves.toBe(OK_REPLY.result);
+  });
+
+  it('leaves no listener on a thread that overran its deadline', async () => {
+    process.env[DEADLINE_ENV] = String(SHORT_DEADLINE_MS);
+    fake.state.holdExit = true;
+    await failure(runPdfTextJobInThread(pdf(), { geometry: [1] }));
+    expect(((await startedThread()).handlers.get('message') ?? []).length).toBe(0);
+  });
+});
+
+describe('the jobs that wait for a thread', () => {
+  it(`refuses a job past ${WAITING_JOBS_LIMIT} waiting with an unavailable engine, and keeps the others`, async () => {
+    const jobs: Array<Promise<unknown>> = [];
+    for (let at = 0; at < WAITING_JOBS_LIMIT + 5; at++) jobs.push(failure(runPdfTextJobInThread(pdf(), { geometry: [1] })));
+    const threads = fake.state.instances.length;
+    const refused = WAITING_JOBS_LIMIT + 5 - threads - WAITING_JOBS_LIMIT;
+    const early = await Promise.race([Promise.all(jobs.slice(-refused)), new Promise((resolve) => setTimeout(() => resolve('pending'), THREAD_STARTED_TIMEOUT_MS))]);
+    expect(early).not.toBe('pending');
+    for (const err of early as unknown[]) {
+      expect(err).toBeInstanceOf(EngineUnavailableError);
+      expect(typedFailureOf(err)).toEqual({ status: 503, code: 'engine_unavailable' });
+      expect((err as Error).message).toContain(`limit ${WAITING_JOBS_LIMIT}`);
+    }
+    // The ones before are still waiting for a thread.
+    expect(await Promise.race([jobs[0], Promise.resolve('waiting')])).toBe('waiting');
+  });
+
+  it('does not copy the document of a job that waits', async () => {
+    const big = Buffer.alloc(40 * MIB, 1);
+    big.write('%PDF-1.7\n');
+    const before = process.memoryUsage().arrayBuffers;
+    const jobs: Array<Promise<unknown>> = [];
+    for (let at = 0; at < 20; at++) jobs.push(failure(runPdfTextJobInThread(big, { geometry: [1] })));
+    const copied = (process.memoryUsage().arrayBuffers - before) / MIB;
+    const threads = fake.state.instances.length;
+    // One copy for each thread that took a job, none for the jobs behind them.
+    expect(copied).toBeLessThan((threads + 1) * 40 + 20);
+    shutdownPdfTextThreads();
+    await Promise.all(jobs);
+  });
+
+  it('removes a waiting job whose signal aborts, and never gives it a thread', async () => {
+    const controller = new AbortController();
+    const filler: Array<Promise<unknown>> = [];
+    for (let at = 0; at < 4; at++) filler.push(failure(runPdfTextJobInThread(pdf(), { geometry: [1] })));
+    const threads = fake.state.instances.length;
+    const waiting = failure(runPdfTextJobInThread(pdf(), { geometry: [1] }, controller.signal));
+    const reason = new Error('the caller gave up');
+    controller.abort(reason);
+    await expect(waiting).resolves.toBe(reason);
+    // A thread that finishes now takes the next job, not the aborted one.
+    fake.state.instances[0].emit('message', OK_REPLY);
+    await vi.waitFor(() => expect(fake.state.instances[0].posted.length).toBeGreaterThanOrEqual(1));
+    expect(fake.state.instances.flatMap((instance) => instance.posted)).toHaveLength(Math.min(threads + (4 > threads ? 1 : 0), 5));
+    shutdownPdfTextThreads();
+    await Promise.all(filler);
+  });
+
+  it('stops the thread of a running job whose signal aborts', async () => {
+    const controller = new AbortController();
+    const running = failure(runPdfTextJobInThread(pdf(), { geometry: [1] }, controller.signal));
+    const thread = await startedThread();
+    const reason = new Error('the caller gave up');
+    controller.abort(reason);
+    await expect(running).resolves.toBe(reason);
+    expect(thread.terminated).toBe(true);
+  });
+
+  it('refuses a job whose signal has already aborted without starting a thread', async () => {
+    const reason = new Error('already gone');
+    const err = await failure(runPdfTextJobInThread(pdf(), { geometry: [1] }, AbortSignal.abort(reason)));
+    expect(err).toBe(reason);
+    expect(fake.state.instances).toHaveLength(0);
   });
 });
 

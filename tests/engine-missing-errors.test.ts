@@ -33,6 +33,8 @@ const NOT_ABOUT_THE_WORKER = new Set([
   'WebhookTargetRequiredError',
   // The browser offers no OPFS sync access handle: an internal signal to use the in-memory route.
   'SyncAccessUnavailableError',
+  // The account store (Redis) is down: a 503 about sign-in and keys that fails closed (policy 241), not a missing tool.
+  'AuthStoreUnavailableError',
 ]);
 
 function sourceFiles(directory: string): string[] {

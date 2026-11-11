@@ -8,6 +8,7 @@ import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-li
 import { detectFormatFromFilename } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
 import { storageProvider } from '@/lib/storage';
+import { storeUploadedBuffer } from '@/lib/api/completed-upload';
 import { readObjectHeader } from '@/lib/storage/object-header';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject, spoofCheckRefusal } from '@/lib/security/file-guard';
 import { readMultipartForm } from '@/lib/api/multipart-body';
@@ -18,6 +19,7 @@ import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-
 import type { JobState } from '@/lib/queue/bullmq-engine';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { queueErrorResponse, withQueueErrors } from '@/lib/api/queue-error-response';
+import { withoutEngineTrace } from '@/lib/api/engine-trace';
 import { redactText } from '@/lib/security/redact';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { createProblemDetailsResponse, serverFault } from '@/lib/api/problem-details';
@@ -185,7 +187,7 @@ async function queueJob(req: NextRequest, user: User, unit: ReservedUnit, instan
     const room = await mayEnqueue(user.id, user.tier);
     if (!room.allowed) return concurrencyLimitResponse(room.limit, instanceUri);
 
-    const parsed = await readJobRequest(req, instanceUri);
+    const parsed = await readJobRequest(req, instanceUri, user.id);
     if ('refusal' in parsed) return parsed.refusal;
     const request = parsed.request;
 
@@ -240,7 +242,7 @@ function inlinePayloadProblem(instanceUri: string): Response {
 }
 
 /** Stores an uploaded form file as the job's input, held to the inline limit and checked against its format; null when it passes. */
-async function storeFormFile(file: File, request: JobRequest, instanceUri: string): Promise<Response | null> {
+async function storeFormFile(file: File, request: JobRequest, instanceUri: string, ownerUserId: string): Promise<Response | null> {
   const detected = detectFormatFromFilename(file.name);
   if (!detected) return unknownSourceProblem(file.name, instanceUri);
   if (file.size > INLINE_JOB_PAYLOAD_MAX_BYTES) return inlinePayloadProblem(instanceUri);
@@ -252,9 +254,7 @@ async function storeFormFile(file: File, request: JobRequest, instanceUri: strin
   }
   request.originalFilename = file.name;
   request.fileSize = file.size;
-  const init = await storageProvider.initiateMultipartUpload(file.name, file.type, file.size);
-  await storageProvider.uploadPart(init.uploadId, 1, buffer);
-  request.storageKey = (await storageProvider.completeMultipartUpload(init.uploadId)).key;
+  request.storageKey = await storeUploadedBuffer(storageProvider, buffer, { name: file.name, type: file.type, size: file.size }, ownerUserId);
   request.uploadedInline = true;
   return null;
 }
@@ -270,7 +270,7 @@ function applyFormOptions(optionsRaw: string, request: JobRequest, instanceUri: 
 }
 
 /** A job request from a multipart form: a file in it is stored first and held to the inline limit. */
-async function readFormJobRequest(req: NextRequest, instanceUri: string): Promise<ParsedJobRequest> {
+async function readFormJobRequest(req: NextRequest, instanceUri: string, ownerUserId: string): Promise<ParsedJobRequest> {
   const multipart = await readMultipartForm(req);
   if (multipart.malformed) {
     return { refusal: failJson(400, 'Invalid or malformed multipart/form-data body.') };
@@ -288,7 +288,7 @@ async function readFormJobRequest(req: NextRequest, instanceUri: string): Promis
 
   const optionsRefusal = optionsRaw ? applyFormOptions(optionsRaw, request, instanceUri) : null;
   if (optionsRefusal) return { refusal: optionsRefusal };
-  const fileRefusal = file ? await storeFormFile(file, request, instanceUri) : null;
+  const fileRefusal = file ? await storeFormFile(file, request, instanceUri, ownerUserId) : null;
   if (fileRefusal) return { refusal: fileRefusal };
   return { request };
 }
@@ -331,9 +331,9 @@ async function readJsonJobRequest(req: NextRequest, instanceUri: string): Promis
   };
 }
 
-function readJobRequest(req: NextRequest, instanceUri: string): Promise<ParsedJobRequest> {
+function readJobRequest(req: NextRequest, instanceUri: string, ownerUserId: string): Promise<ParsedJobRequest> {
   const contentType = req.headers.get('content-type') || '';
-  return contentType.includes('multipart/form-data') ? readFormJobRequest(req, instanceUri) : readJsonJobRequest(req, instanceUri);
+  return contentType.includes('multipart/form-data') ? readFormJobRequest(req, instanceUri, ownerUserId) : readJsonJobRequest(req, instanceUri);
 }
 
 const LISTABLE_JOB_STATES: ReadonlySet<JobState> = new Set<JobState>(['waiting', 'active', 'completed', 'failed', 'delayed', 'cancelled']);
@@ -404,7 +404,7 @@ async function listOwnJobs(req: NextRequest) {
       targetFormat: j.data.targetFormat,
       timestamp: j.timestamp,
       durationMs: j.finishedOn && j.processedOn ? j.finishedOn - j.processedOn : undefined,
-      returnvalue: j.returnvalue,
+      returnvalue: withoutEngineTrace(j.returnvalue),
       failedReason: j.failedReason === undefined ? undefined : redactText(j.failedReason),
       failedCode: j.failedCode,
       failedStatus: j.failedStatus,

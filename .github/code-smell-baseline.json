@@ -71,13 +71,6 @@
     "count": 1
   },
   {
-    "file": "src/lib/api-keys/redis-key-store.ts",
-    "rule": "max-depth",
-    "function": "listApiKeys",
-    "count": 1,
-    "maxValue": 6
-  },
-  {
     "file": "src/lib/api-keys/webhook-dispatcher.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "enqueueDelivery",
@@ -658,7 +651,7 @@
     "rule": "max-lines-per-function",
     "function": "convertImage",
     "count": 1,
-    "maxValue": 643
+    "maxValue": 641
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -672,7 +665,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2633
+    "maxValue": 2620
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -896,7 +889,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 1698
+    "maxValue": 1659
   },
   {
     "file": "src/lib/conversions/ocr-sauvola.ts",
@@ -2085,7 +2078,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2332
+    "maxValue": 2320
   },
   {
     "file": "src/lib/queue/conversion-queue.ts",
