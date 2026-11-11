@@ -135,7 +135,7 @@ export const webhookPaths = {
     post: {
       summary: 'Rotate Webhook Signing Secret',
       description:
-        'Programmatically rotates the signing secret of one webhook target, an endpoint (`endpointId`) or an API key (`apiKeyId`), with dual-signature grace period support. Requires "convert:write" scope. A request that names neither target is rejected; there is no shared default secret.',
+        'Programmatically rotates the signing secret of one webhook target, an endpoint (`endpointId`) or an API key (`apiKeyId`), with dual-signature grace period support, and answers the new secret in plaintext. Requires "convert:write" scope. A signed-in session or a key of the admin scope (`*`) may rotate any secret of its account; any other key may rotate only its own (`apiKeyId` equal to the id of the calling key, no `endpointId`). A named `apiKeyId` must be an active key of the caller\'s account. An account holds at most 25 endpoint secrets (a rotation of an existing one is always allowed), and an endpoint secret expires 90 days after its last rotation. A request that names neither target is rejected; there is no shared default secret.',
       operationId: 'rotateWebhookSecretV1',
       security: requireScope('convert:write'),
       requestBody: {
@@ -161,7 +161,11 @@ export const webhookPaths = {
         },
         '400': createProblemResponse('Malformed JSON payload, or neither `endpointId` nor `apiKeyId` was given.'),
         '401': createProblemResponse('Unauthorized'),
+        '403': createProblemResponse('The caller is a key without the admin scope that names another key or an endpoint.'),
+        '404': createProblemResponse('`apiKeyId` is not an active key of the caller\'s account (unknown, revoked or another account\'s).'),
+        '409': createProblemResponse('The account already holds the most endpoint secrets and `endpointId` is a new one.'),
         '422': createProblemResponse('Unprocessable Entity (schema validation failure)'),
+        '503': createProblemResponse('The key and account store could not be reached; retry after the `Retry-After` delay.'),
       },
     },
   },
