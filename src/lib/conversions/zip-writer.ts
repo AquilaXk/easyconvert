@@ -117,6 +117,38 @@ export function hasCompressedMagic(head: Uint8Array): boolean {
   return false;
 }
 
+/**
+ * Entries shorter than this are deflated and stored afterwards when that does not shrink them: the attempt costs less than the
+ * probe's bookkeeping, and an entry this small is not worth a second opinion.
+ */
+export const ZIP_STORE_PROBE_MIN_BYTES = 256 * 1024;
+/** Bytes of each window the probe deflates. It is twice deflate's 32 KiB history, so a repeat deflate could use shows inside the window. */
+const PROBE_WINDOW_BYTES = 64 * 1024;
+const PROBE_WINDOWS_MIN = 3;
+const PROBE_WINDOWS_MAX = 16;
+/** One window per this many bytes of entry, between the minimum and maximum above. */
+const PROBE_BYTES_PER_WINDOW = 1024 * 1024;
+/** A window that level-1 deflate shrinks by at least this share makes the entry worth deflating. */
+const PROBE_SAVING_SHARE = 0.02;
+
+/**
+ * Whether an entry of unknown kind is already entropy-coded (an encrypted blob, a compressed payload with no extension or
+ * magic number): evenly spaced windows of it, the first and last included, are deflated at level 1, and the entry is judged
+ * incompressible only when no window shrinks by {@link PROBE_SAVING_SHARE}. Any compressible window sends the entry to the full
+ * deflate, so a large entry with one compressible stretch is not stored whole. The answer depends on the bytes alone.
+ */
+export function looksIncompressible(data: Uint8Array): boolean {
+  if (data.length < ZIP_STORE_PROBE_MIN_BYTES) return false;
+  const windows = Math.min(PROBE_WINDOWS_MAX, Math.max(PROBE_WINDOWS_MIN, Math.ceil(data.length / PROBE_BYTES_PER_WINDOW)));
+  const span = data.length - PROBE_WINDOW_BYTES;
+  for (let index = 0; index < windows; index++) {
+    const start = Math.floor((span * index) / (windows - 1));
+    const sample = data.subarray(start, start + PROBE_WINDOW_BYTES);
+    if (zlib.deflateRawSync(sample, { level: 1 }).length < sample.length * (1 - PROBE_SAVING_SHARE)) return false;
+  }
+  return true;
+}
+
 function extensionOf(name: string): string {
   const dot = name.lastIndexOf('.');
   const slash = name.lastIndexOf('/');
@@ -257,7 +289,10 @@ export class ZipWriter {
     }
 
     if (isBytes(entry.data)) {
-      const storeWanted = entry.method === 'store' || level === 0 || (entry.method !== 'deflate' && isPrecompressedEntry(entry.name, entry.data.subarray(0, MAGIC_PROBE_BYTES)));
+      const storeWanted =
+        entry.method === 'store' ||
+        level === 0 ||
+        (entry.method !== 'deflate' && (isPrecompressedEntry(entry.name, entry.data.subarray(0, MAGIC_PROBE_BYTES)) || looksIncompressible(entry.data)));
       await this.writeBufferedEntry({ ...base, flags: flagsUtf8 }, entry.data, storeWanted ? METHOD_STORE : METHOD_DEFLATE, level);
       return;
     }
