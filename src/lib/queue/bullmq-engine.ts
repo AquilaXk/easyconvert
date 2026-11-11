@@ -5,6 +5,7 @@ import { redactForOutput, redactText } from '../security/redact';
 import { maskFailure, maskServerText } from '../security/server-paths';
 import { refusalCodeOf, type ConversionRefusalCode } from '../refusal-codes';
 import { classifyJobFailure } from './job-failure';
+import { readUserJobs } from './user-job-list';
 import {
   ADD_JOB_LUA_SCRIPT,
   PROMOTE_DELAYED_JOBS_LUA_SCRIPT,
@@ -18,7 +19,6 @@ import {
   UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT,
   RECOVER_STALLED_JOBS_LUA_SCRIPT,
   PURGE_DEAD_LETTERS_LUA_SCRIPT,
-  REMOVE_GONE_USER_JOBS_LUA_SCRIPT,
 } from './lua-scripts';
 import {
   dropEndedData,
@@ -275,13 +275,22 @@ export function calculateJobPriorityScore(priority?: number, timestamp?: number)
   return priorityRank * PRIORITY_SCORE_BAND + (ts % PRIORITY_SCORE_BAND);
 }
 
+/** What a list of the jobs of a user leaves out: `excludeGraphNodes` drops the node jobs of graphs before `offset` and `limit` apply. */
+export interface UserJobsOptions {
+  excludeGraphNodes?: boolean;
+}
+
+function isGraphNode(job: { data?: unknown }): boolean {
+  return Boolean((job.data as { graphId?: unknown } | undefined)?.graphId);
+}
+
 export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   readonly name: string;
   readonly isDistributed: boolean;
   add(name: string, data: T, opts?: JobOptions): Promise<Job<T, R>>;
   getJob(id: string): Promise<Job<T, R> | undefined>;
   getJobs(types: JobState[]): Promise<Job<T, R>[]>;
-  getJobsByUser(userId: string, states?: JobState[], limit?: number, offset?: number): Promise<Job<T, R>[]>;
+  getJobsByUser(userId: string, states?: JobState[], limit?: number, offset?: number, options?: UserJobsOptions): Promise<Job<T, R>[]>;
   getJobCounts(): Promise<JobCounts>;
   /**
    * When the job that has waited longest in this queue (delayed jobs do not count) began to wait, in milliseconds since the
@@ -453,7 +462,8 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
     userId: string,
     states?: JobState[],
     limit: number = 50,
-    offset: number = 0
+    offset: number = 0,
+    options: UserJobsOptions = {}
   ): Promise<Job<T, R>[]> {
     const ids = this.userJobs.get(userId);
     if (!ids || ids.length === 0) {
@@ -468,7 +478,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
         staleIds.push(ids[i]);
         continue;
       }
-      if (!validStates || validStates.has(job.state)) {
+      if ((!validStates || validStates.has(job.state)) && !(options.excludeGraphNodes && isGraphNode(job))) {
         matching.push(job);
       }
     }
@@ -1788,51 +1798,28 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     userId: string,
     states?: JobState[],
     limit: number = 50,
-    offset: number = 0
+    offset: number = 0,
+    options: UserJobsOptions = {}
   ): Promise<Job<T, R>[]> {
     if (this.redisClient) {
       await this.assertRedisConnected();
       try {
-        const userKey = this.getUserJobsKey(userId);
-        const allJobIds = await this.redisClient.zrevrange(userKey, 0, -1);
-        if (!allJobIds || allJobIds.length === 0) {
-          return [];
-        }
-
-        const matchedJobs: Job<T, R>[] = [];
-        const staleJobIds: string[] = [];
-        const batchSize = Math.max(50, limit + offset);
-
-        for (let i = 0; i < allJobIds.length; i += batchSize) {
-          const chunk = allJobIds.slice(i, i + batchSize);
-          const chunkJobs = await Promise.all(chunk.map((id) => this.getJob(id)));
-          for (let j = 0; j < chunk.length; j++) {
-            const job = chunkJobs[j];
-            if (!job) {
-              staleJobIds.push(chunk[j]);
-              continue;
-            }
-            if (!states || states.length === 0 || states.includes(job.state)) {
-              matchedJobs.push(job);
-            }
-          }
-          if (matchedJobs.length >= offset + limit && (!states || states.length === 0)) {
-            break;
-          }
-        }
-
-        if (staleJobIds.length > 0) {
-          try {
-            await this.redisClient.eval(REMOVE_GONE_USER_JOBS_LUA_SCRIPT, 2, userKey, this.getJobKey(''), ...staleJobIds);
-          } catch {}
-        }
-
-        return matchedJobs.slice(offset, offset + limit);
+        return await readUserJobs(this.redisClient, {
+          indexKey: this.getUserJobsKey(userId),
+          jobKeyPrefix: this.getJobKey(''),
+          states,
+          limit,
+          offset,
+          toJob: (flat) => this.hashToJob(flatHashToRecord(flat)),
+          // The index names the user's jobs; a job that says it is another user's (a damaged index) is never listed.
+          excludeGraphNodes: options.excludeGraphNodes,
+          exclude: (job) => String((job.data as { userId?: unknown } | undefined)?.userId) !== userId || (options.excludeGraphNodes === true && isGraphNode(job)),
+        });
       } catch (err) {
         throw this.toQueueUnavailable(err);
       }
     }
-    return this.memoryFallback.getJobsByUser(userId, states, limit, offset);
+    return this.memoryFallback.getJobsByUser(userId, states, limit, offset, options);
   }
 
   /**

@@ -4,15 +4,14 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Conversions and quality
 - Drop `scripts/install-libraw-he.sh` and the `librawhe` stage when the distribution's LibRaw (0.23 or later) reads Nikon HE/HE* NEF (entry 195).
-- Keep the title and figure labels of a PDF page whose Type 3 glyphs outnumber the mapped ones (`govdocs1-002202.pdf` page 3: Poppler prints them, we leave the whole page out, policy 49).
-- PDF text still leaves out 0.10% of the glyphs of the real-world corpus (61,544 of 60.7M): 68% in Type 3 fonts, 20% in simple Type 1 fonts (`CG.Times095`, `MathematicalPi`, `CMEX10`; read their built-in encoding and glyph names), 8% in composite fonts whose subset programs carry no `cmap` or `post` (nothing to read; Poppler prints control codes there, entry 104).
+- PDF text still leaves out 0.10% of the glyphs of the real-world corpus (61,350 of 60.7M): 68% in Type 3 fonts (pictures, which stay counted, and bitmap fonts whose codes are no text: 58% of them `govdocs1-001494.pdf`), 20% in simple Type 1 fonts (the built-in encodings map 5 of them; `CG.Times` `G<n>` names, MathematicalPi `H<n>` catalogue names that need Adobe's table, private-use extension pieces of Symbol and CMEX10: entry 227), 8% in composite fonts whose subset programs carry no `cmap` or `post` (nothing to read; Poppler prints control codes there, entry 104).
 - Close the noisy-picture JPEG gap (`jxl-noise->jpg` BD-rate PSNR +5.2%; the same pixels from a PNG give the same result).
 
 ## Speed
 - Bring `3fr->gif`, `x3f-quattro->gif`, `3fr->avif` and `mos->gif` under a fifth of a conformance part on CI, then record the durations.
 - Cut the `arw` GIF time: 16-to-8-bit RGBA conversion (119 ms) and LZW (52 ms).
 - Lift `screenshot.png->svg` from 0.85 to 0.90 of the reference on arm64.
-- Lift `silesia-xml.xz->tar` from 0.876 to the reference speed.
+- Lift `silesia-xml.xz->tar` from 0.876 to the reference speed on the x64 runner (1.12 on the arm64 VM, entry 111): start 7-Zip from the launcher helper with the spool opened by its path, so the fork of a large worker (1.8 ms from 116 MB, 6.0 ms from 570 MB) is not paid.
 - Lift `jxl->avif` throughput from 0.87 (sandbox start plus the intermediate PNG).
 
 ## Product and API
@@ -22,6 +21,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Install the Redis backup timer on the host on or after 2026-12-08 (30-day notice of the new privacy text).
 
 ## Tests and CI
+- Make the stale-worker check of the PDF text, RAW, CPU and image-fetch hosts compare the compiled worker with every source file it bundles, not only its entry file: on 2026-11-11 a dist/pdf-text-worker.js older than a changed import ran in local tests (`olderThanSource`).
 - Re-pin `book-pg84.epub` and `book-pg2701.epub` to a fresh archived capture with a matching gutenberg.org mirror: their live files were rebuilt, so they have no mirror and depend on web.archive.org and the CI cache (entry 224).
 
 ## Later

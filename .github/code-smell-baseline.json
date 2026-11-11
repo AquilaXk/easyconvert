@@ -2085,7 +2085,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2345
+    "maxValue": 2332
   },
   {
     "file": "src/lib/queue/conversion-queue.ts",

@@ -446,10 +446,10 @@ conversionQueue.remove = async (id: string) => {
 };
 
 const origConversionQueueGetJobsByUser = conversionQueue.getJobsByUser.bind(conversionQueue);
-conversionQueue.getJobsByUser = async (userId: string, states?: import('./bullmq-engine').JobState[], limit: number = 50, offset: number = 0) => {
+conversionQueue.getJobsByUser = async (userId: string, states?: import('./bullmq-engine').JobState[], limit: number = 50, offset: number = 0, options?: import('./bullmq-engine').UserJobsOptions) => {
   const [direct, ...otherLists] = await Promise.all([
-    origConversionQueueGetJobsByUser(userId, states, limit + offset, 0),
-    ...Object.values(resourceQueues).map((q) => q.getJobsByUser(userId, states, limit + offset, 0)),
+    origConversionQueueGetJobsByUser(userId, states, limit + offset, 0, options),
+    ...Object.values(resourceQueues).map((q) => q.getJobsByUser(userId, states, limit + offset, 0, options)),
   ]);
   const flattened = direct.concat(...otherLists);
   flattened.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));

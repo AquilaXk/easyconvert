@@ -428,22 +428,6 @@ redis.call('DEL', KEYS[1])
 return count
 `;
 
-/**
- * Removes from a user's job index the ids whose job hash is gone, checking each one again inside the step, so an id that a
- * new job took after a listing read it as gone stays listed.
- */
-export const REMOVE_GONE_USER_JOBS_LUA_SCRIPT = `
--- KEYS[1]: the user's job index  KEYS[2]: job key prefix (e.g. prefix:{queue}:job:)
--- ARGV: the ids the listing found without a job
-local removed = 0
-for _, id in ipairs(ARGV) do
-  if redis.call('EXISTS', KEYS[2] .. id) == 0 then
-    removed = removed + redis.call('ZREM', KEYS[1], id)
-  end
-end
-return removed
-`;
-
 /** Gives an ended job the data it keeps (`removeDataOnFinish`), checking inside the step that the job is still there and ended. */
 export const REPLACE_ENDED_JOB_DATA_LUA_SCRIPT = `
 -- KEYS[1]: job hash key

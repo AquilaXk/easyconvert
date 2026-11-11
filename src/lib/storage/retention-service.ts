@@ -210,12 +210,39 @@ async function readRecord(key: string): Promise<RetentionRecord | undefined> {
   }
 }
 
-/** The availability of the result stored under `key`; undefined when no record of it can be read. */
-export async function resultAvailability(key: string, now: number = Date.now()): Promise<ResultAvailability | undefined> {
-  const record = await readRecord(key);
+function availabilityOf(record: RetentionRecord | undefined, now: number): ResultAvailability | undefined {
   if (!record) return undefined;
   if (isDeleted(record, now)) return { state: 'deleted', reason: reasonOf(record), deliveredAt: record.deliveredAt };
   return { state: 'available', deleteAt: record.deleteAt, deliveredAt: record.deliveredAt };
+}
+
+/** The availability of the result stored under `key`; undefined when no record of it can be read. */
+export async function resultAvailability(key: string, now: number = Date.now()): Promise<ResultAvailability | undefined> {
+  return availabilityOf(await readRecord(key), now);
+}
+
+/**
+ * `resultAvailability` of every key (a key that is undefined or not retained answers undefined), reading the records of the keys
+ * the rule covers together where the ledger can (a few `MGET` for Redis, not one `GET` a key). As for one key, an unreadable
+ * ledger leaves the states unknown.
+ */
+export async function resultAvailabilities(keys: readonly (string | undefined)[], now: number = Date.now()): Promise<(ResultAvailability | undefined)[]> {
+  const covered = keys.flatMap((key, position) => (key !== undefined && isRetainedKey(key) ? [{ key, position }] : []));
+  const states: (ResultAvailability | undefined)[] = keys.map(() => undefined);
+  if (covered.length === 0) return states;
+  const ledger = getRetentionLedger();
+  if (!ledger.getMany) {
+    const answers = await Promise.all(covered.map(({ key }) => resultAvailability(key, now)));
+    covered.forEach(({ position }, at) => (states[position] = answers[at]));
+    return states;
+  }
+  try {
+    const records = await ledger.getMany(covered.map(({ key }) => key));
+    covered.forEach(({ position }, at) => (states[position] = availabilityOf(records[at], now)));
+  } catch (error) {
+    console.warn('[Retention] Could not read the records of a list of results; serving them from storage:', error);
+  }
+  return states;
 }
 
 /** Whether the result stored under `key` was deleted by the retention rule (or must be treated as deleted now). */
