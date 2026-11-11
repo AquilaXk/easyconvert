@@ -102,9 +102,33 @@ const RAW_USER_UNIT_PATTERN = new RegExp(`\\/UserUnit\\s+(${RAW_NUMBER_TOKEN})`,
 const RAW_LEAF_PAGE_PATTERN = /\/Type\s*\/Page\b(?![A-Za-z])/g;
 const RAW_PAGE_COUNT_PATTERN = /\/Count\s+(\d+)/g;
 
+/**
+ * The page box of a page whose tree states no /MediaBox: US Letter, as pdf.js (`LETTER_SIZE_MEDIABOX` in `Page.mediaBox`) and
+ * Poppler (the 0 0 612 792 that `PageAttrs` starts from) both give it. Their render of such a page is 612x792 points, so a
+ * frame that refused the page would stop a document that both of them draw.
+ */
+const DEFAULT_MEDIA_BOX: PdfBox = { x0: 0, y0: 0, x1: 612, y1: 792 };
+
+/**
+ * The CropBox of a page with no /MediaBox, cut to the default page as both readers cut it; a CropBox with nothing of the page
+ * inside it is no box at all, and the page is the default page.
+ */
+function cropBoxOfUnboxedPage(page: PDFPage): PdfBox {
+  const rect = page.node.CropBox()?.asRectangle();
+  if (rect === undefined) return DEFAULT_MEDIA_BOX;
+  const cut: PdfBox = {
+    x0: Math.max(Math.min(rect.x, rect.x + rect.width), DEFAULT_MEDIA_BOX.x0),
+    y0: Math.max(Math.min(rect.y, rect.y + rect.height), DEFAULT_MEDIA_BOX.y0),
+    x1: Math.min(Math.max(rect.x, rect.x + rect.width), DEFAULT_MEDIA_BOX.x1),
+    y1: Math.min(Math.max(rect.y, rect.y + rect.height), DEFAULT_MEDIA_BOX.y1),
+  };
+  return cut.x1 > cut.x0 && cut.y1 > cut.y0 ? cut : DEFAULT_MEDIA_BOX;
+}
+
 function readPageCropBox(page: PDFPage, pageNumber: number): PdfBox {
   let crop: ReturnType<typeof page.getCropBox>;
   try {
+    if (page.node.getInheritableAttribute(PDFName.of('MediaBox')) === undefined) return cropBoxOfUnboxedPage(page);
     crop = page.getCropBox();
   } catch (err) {
     throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} has no readable page box (${err instanceof Error ? err.message : String(err)}).`);
