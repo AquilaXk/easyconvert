@@ -48,8 +48,6 @@ export interface QpdfWorkspace {
   maxOutputBytes: number;
   /** Size of the input PDF; a run that prints the document prints about this much. */
   inputBytes: number;
-  /** The files a run of this workspace may touch: its private directory, or for an input file in the temp directory that file alone and no directory. */
-  files: { workDir: string | null; readDirs: string[] };
 }
 
 export function requireQpdfBinary(): string {
@@ -72,7 +70,7 @@ export async function withQpdfWorkspace<T>(pdf: Buffer, operation: (workspace: Q
   try {
     const inputPath = path.join(dir, 'input.pdf');
     fs.writeFileSync(inputPath, pdf, { mode: 0o600 });
-    return await operation({ qpdf, dir, inputPath, maxOutputBytes: maxOutputBytesFor(pdf), inputBytes: pdf.length, files: { workDir: dir, readDirs: [] } });
+    return await operation({ qpdf, dir, inputPath, maxOutputBytes: maxOutputBytesFor(pdf), inputBytes: pdf.length });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -93,7 +91,7 @@ export async function withQpdfInputFile<T>(pdf: Buffer, operation: (workspace: Q
     } finally {
       fs.closeSync(fd);
     }
-    return await operation({ qpdf, dir, inputPath, maxOutputBytes: maxOutputBytesFor(pdf), inputBytes: pdf.length, files: { workDir: null, readDirs: [inputPath] } });
+    return await operation({ qpdf, dir, inputPath, maxOutputBytes: maxOutputBytesFor(pdf), inputBytes: pdf.length });
   } finally {
     fs.rmSync(inputPath, { force: true });
   }
@@ -148,7 +146,6 @@ export async function runQpdf(workspace: QpdfWorkspace, invocation: QpdfInvocati
   try {
     return await launchQpdf(workspace.qpdf, ['--warning-exit-0', ...invocation.args], {
       cwd: invocation.cwd ?? workspace.dir,
-      ...workspace.files,
       timeoutMs: invocation.timeoutMs ?? QPDF_RUN_TIMEOUT_MS,
       maxBuffer: workspace.maxOutputBytes + QPDF_STDERR_SLACK_BYTES,
       memoryLimitMb: QPDF_MEMORY_LIMIT_MB,

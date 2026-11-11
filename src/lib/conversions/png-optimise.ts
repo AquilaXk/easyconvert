@@ -125,8 +125,6 @@ export async function optimisePng(png: Buffer, options: OptimiseOptions = {}): P
       ['-q', ...argumentsOf(header), '--threads', String(Math.max(1, Math.min(OXIPNG_MAX_THREADS, availableCpus()))), '--timeout', String(OXIPNG_SOFT_TIMEOUT_SECONDS), '--stdout', '-'],
       {
         stdin: png,
-        // A filter on standard input and output: it touches no file.
-        workDir: null,
         timeoutMs: OXIPNG_TIMEOUT_MS,
         // The program writes the input back when it finds nothing smaller: one byte more than the input is the most a good run writes.
         maxBuffer: png.length + 1,

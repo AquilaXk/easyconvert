@@ -99,7 +99,6 @@ export async function decodeWithOpenJpeg(input: Buffer, signal?: AbortSignal): P
     try {
       await executeSandboxedBinary(opj, ['-i', kind.file, '-o', `${DECODER_OUTPUT_NAME}.png`, '-threads', OPJ_THREADS], {
         cwd: jobDir,
-        workDir: jobDir,
         timeoutMs: DECODER_TIMEOUT_MS,
         maxBuffer: DECODER_MAX_DIAGNOSTIC_BYTES,
         maxFileSize: maxOutputBytes,

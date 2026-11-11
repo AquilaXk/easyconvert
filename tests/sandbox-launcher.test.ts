@@ -15,7 +15,6 @@ import {
 } from '../src/lib/security/sandbox-launcher';
 import { encodeFrame, FrameReader, isBadFrame, type LauncherReply, type LauncherRequest } from '../src/lib/security/sandbox-launcher-protocol';
 import {
-  getUnshareCapability,
   SandboxedBufferLimitError,
   SandboxedMemoryLimitError,
   SandboxedProcessError,
@@ -228,7 +227,7 @@ describe('sandbox launcher', () => {
     if (canIsolateNetwork) {
       // The oracle: this host has an interface besides the loopback; a fresh namespace has the loopback alone.
       expect(hostInterfaces.length).toBeGreaterThan(1);
-      const isolated = await launch(SH, shell(INTERFACES_SCRIPT), { networkIsolated: true, strictIsolation: true, workDir: null });
+      const isolated = await launch(SH, shell(INTERFACES_SCRIPT), { networkIsolated: true, strictIsolation: true });
       expect(listed(isolated.stdout)).toEqual(['lo']);
       const open = await launch(SH, shell(INTERFACES_SCRIPT), { networkIsolated: false });
       expect(listed(open.stdout)).toEqual(hostInterfaces);
@@ -244,34 +243,13 @@ describe('sandbox launcher', () => {
   it('applies STRICT_SANDBOX of this process, which the helper does not inherit', async () => {
     process.env.STRICT_SANDBOX = 'true';
     try {
-      const outcome = await launch(SH, shell(INTERFACES_SCRIPT), { networkIsolated: true, workDir: null }).then(
+      const outcome = await launch(SH, shell(INTERFACES_SCRIPT), { networkIsolated: true }).then(
         (result) => ({ ran: true, interfaces: result.stdout.toString('utf8').split('\n').filter(Boolean) }),
         (error: Error) => ({ ran: false, name: error.name })
       );
       expect(outcome).toEqual(canIsolateNetwork ? { ran: true, interfaces: ['lo'] } : { ran: false, name: 'SandboxUnavailableError' });
     } finally {
       delete process.env.STRICT_SANDBOX;
-    }
-  });
-
-  // skip-ok: the confinement needs Landlock version 3 and pid-init; the helper test of the files is skipped where a host cannot confine (the confinement itself is tested in sandbox-file-confinement.test.ts).
-  it.skipIf(!canIsolateNetwork || !getUnshareCapability().confinesFiles)('confines the files of a run in the helper, and follows the SANDBOX_CONFINE_FILES of the worker, which the helper does not inherit', async () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-confine-'));
-    try {
-      const own = path.join(scratch, 'own');
-      const other = path.join(scratch, 'other');
-      fs.mkdirSync(own);
-      fs.mkdirSync(other);
-      fs.writeFileSync(path.join(other, 'secret'), 'secret');
-      const readOther = (): Promise<string> =>
-        launch(SH, shell(`cat '${path.join(other, 'secret')}' 2>/dev/null || echo refused`), { networkIsolated: true, workDir: own }).then((result) => result.stdout.toString('utf8').trim());
-      // The helper is running already: its environment is the one it was started with.
-      expect(await readOther()).toBe('refused');
-      vi.stubEnv('SANDBOX_CONFINE_FILES', 'false');
-      expect(await readOther()).toBe('secret');
-    } finally {
-      vi.unstubAllEnvs();
-      fs.rmSync(scratch, { recursive: true, force: true });
     }
   });
 

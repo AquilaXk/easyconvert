@@ -26,10 +26,6 @@ import { executeSandboxedBinary, getUnshareCapability, SandboxedProcessError } f
 import { withMissingBinary } from './helpers/native-tools';
 import { skipUnless } from './helpers/strict-skip';
 import { resolveLocalStagingDir } from '../src/lib/storage/storage-config';
-import { runWithoutFileConfinement } from './helpers/unconfined-files';
-
-// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
-runWithoutFileConfinement();
 
 /**
  * The route of the calibre targets (MOBI, AZW3, PDB, LRF, OEB) without calibre: the typed answer of a worker that lacks

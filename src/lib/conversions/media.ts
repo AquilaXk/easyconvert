@@ -31,7 +31,7 @@ import { describeDroppedStreams } from './media-dropped-streams';
 import { outputSizeError } from './media-empty-output';
 import { DEFAULT_MEDIA_TIER_MAX_MS, computeMediaTimeoutMs } from './media-job-limit';
 import { runFfmpegTranscode } from './media-ffmpeg-run';
-import { type MediaInput, mediaReadDirs, openMediaInput, runFfmpeg, runFfmpegSync } from './media-process';
+import { type MediaInput, openMediaInput, runFfmpeg, runFfmpegSync } from './media-process';
 import { type FfprobePath, probeInput, resolveFfprobeBinary } from './media-ffprobe';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from './media-two-pass';
 import { encodeFlacStreamAsync } from './flac-encoder';
@@ -423,14 +423,14 @@ async function executeFfmpegTranscode(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
+  const tmpDir = os.tmpdir();
   const token = crypto.randomBytes(8).toString('hex');
-  // The input, the output and the pass logs of this run are in a directory of its own, the only one the program may write.
-  const jobDir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert_media_'));
-  const inputPath = path.join(jobDir, `easyconvert_in_${Date.now()}_${token}.${src}`);
-  const outputPath = path.join(jobDir, `easyconvert_out_${Date.now()}_${token}.${tgt}`);
+  const inputPath = path.join(tmpDir, `easyconvert_in_${Date.now()}_${token}.${src}`);
+  const outputPath = path.join(tmpDir, `easyconvert_out_${Date.now()}_${token}.${tgt}`);
+
+  fs.writeFileSync(inputPath, inputBuffer);
 
   try {
-    fs.writeFileSync(inputPath, inputBuffer);
     const input = openMediaInput(inputPath, src);
     const ffmpegBin = getFfmpegPath() || '/usr/bin/ffmpeg';
     const durationSeconds = await probeMediaDuration(input, options, ffmpegBin, options.signal);
@@ -440,8 +440,6 @@ async function executeFfmpegTranscode(
         timeoutMs: limitMs,
         maxBuffer: 50 * 1024 * 1024,
         signal: options.signal,
-        workDir: jobDir,
-        readDirs: mediaReadDirs(inputPath, options),
         ...(cwd ? { cwd } : {}),
       });
     const runTranscode = (ffmpegArgs: string[]) => runFfmpegWith(ffmpegArgs, timeoutMs);
@@ -450,7 +448,7 @@ async function executeFfmpegTranscode(
 
     if (isTwoPassRequested(options)) {
       // Pass logs live in a job directory of their own, removed whether the passes succeed or fail.
-      const passDir = fs.mkdtempSync(path.join(jobDir, 'easyconvert_pass_'));
+      const passDir = fs.mkdtempSync(path.join(tmpDir, 'easyconvert_pass_'));
       try {
         const passes = await buildTwoPassArguments(input, outputPath, tgt, options, ffmpegBin, TWO_PASS_LOG_PREFIX, loudnessStage);
         await runTwoPass(passes, twoPassBudgetMs(timeoutMs), (passArgs, limitMs) => runFfmpegWith(passArgs, limitMs, passDir));
@@ -496,7 +494,8 @@ async function executeFfmpegTranscode(
       },
     };
   } finally {
-    fs.rmSync(jobDir, { recursive: true, force: true });
+    if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+    if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
   }
 }
 
@@ -510,10 +509,9 @@ async function executeFfmpegThumbnails(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
+  const tmpDir = os.tmpdir();
   const token = crypto.randomBytes(8).toString('hex');
-  // The input and the frames of this run are in a directory of its own, the only one the program may write.
-  const jobDir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert_media_'));
-  const inputPath = path.join(jobDir, `easyconvert_in_${Date.now()}_${token}.${src}`);
+  const inputPath = path.join(tmpDir, `easyconvert_in_${Date.now()}_${token}.${src}`);
   fs.writeFileSync(inputPath, inputBuffer);
 
   const ffmpegBin = getFfmpegPath() || '/usr/bin/ffmpeg';
@@ -522,17 +520,18 @@ async function executeFfmpegThumbnails(
     : ['00:00:01.000'];
   const actualTgt = options.thumbnail?.format || (tgt === 'png' ? 'png' : 'jpg');
   const parts: { filename: string; buffer: Buffer }[] = [];
+  const createdFiles: string[] = [inputPath];
 
   try {
     const input = openMediaInput(inputPath, src);
     await probeMediaDuration(input, options, ffmpegBin, options.signal);
     for (let i = 0; i < timestamps.length; i++) {
       const ts = timestamps[i];
-      const outputPath = path.join(jobDir, `easyconvert_thumb_${Date.now()}_${token}_${i}.${actualTgt}`);
+      const outputPath = path.join(tmpDir, `easyconvert_thumb_${Date.now()}_${token}_${i}.${actualTgt}`);
+      createdFiles.push(outputPath);
 
       const args = await buildFfmpegArguments(input, outputPath, actualTgt, options, ffmpegBin, ts);
       await runFfmpeg(ffmpegBin, args, {
-        workDir: jobDir,
         timeoutMs: 30000,
         maxBuffer: 50 * 1024 * 1024,
         signal: options.signal,
@@ -560,7 +559,11 @@ async function executeFfmpegThumbnails(
       parts: parts.length > 1 ? parts : undefined,
     };
   } finally {
-    fs.rmSync(jobDir, { recursive: true, force: true });
+    for (const p of createdFiles) {
+      if (fs.existsSync(p)) {
+        try { fs.unlinkSync(p); } catch {}
+      }
+    }
   }
 }
 
@@ -602,7 +605,6 @@ export async function packageHlsDashMedia(
     const args = await buildHlsDashArguments(input, outputDir, packaging, ffmpegBin, source);
     await runFfmpeg(ffmpegBin, args, {
       cwd: outputDir,
-      workDir: sessionDir,
       timeoutMs: computePackagingTimeoutMs(source.geometry.durationSec, plannedRungCount(packaging, source), stageTimeoutMs(options, DEFAULT_MEDIA_TIER_MAX_MS)),
       maxBuffer: 100 * 1024 * 1024,
       signal: options.signal,

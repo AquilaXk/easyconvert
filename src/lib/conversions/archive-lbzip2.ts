@@ -96,8 +96,6 @@ export async function bzip2WithLbzip2(segments: readonly Uint8Array[], inputByte
       maxBuffer: worstCaseOutputBytes(inputBytes),
       timeoutMs: runtime.timeoutMs ?? CPU_POOL_TASK_TIMEOUT_MS,
       networkIsolated: true,
-      // A filter on standard input and output: it touches no file.
-      workDir: null,
       signal: runtime.signal,
     });
     stream = run.stdout;

@@ -2,9 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { HelperHost, HelperSlot, type PendingJob } from '../../security/helper-process';
 import {
-  confinedDirectory,
   detectSandboxEnvironment,
-  fileConfinementDisabled,
   getSanitizedEnvironment,
   procHidingDisabled,
   SandboxedBufferLimitError,
@@ -97,24 +95,13 @@ function frame(type: number, id: number, ...body: Buffer[]): Buffer[] {
   return [head, ...body.filter((part) => part.length > 0)];
 }
 
-/** The bits of the `confine` field of a request (qpdf-runner.c): confine the job's files to its work directory, and do not run a job that cannot be. */
-const CONFINE_ENABLED = 1;
-const CONFINE_REQUIRED = 2;
-/** How many files or directories beyond the work directory a request may name for reading (qpdf-runner.c). */
-const READ_PATHS_MAX = 4;
-
 interface RunRequest {
   timeoutMs: number;
   maxOutput: number;
   limitAsBytes: number;
   limitFsizeBytes: number;
   limitCpuSeconds: number;
-  confine: number;
   cwd: string;
-  /** The one directory the job may write (and read); empty for a job that touches no file of its own. Read with `confine`. */
-  workDir: string;
-  /** More files or directories the job may read (its input, the program's own path), at most READ_PATHS_MAX. */
-  readPaths: string[];
   argv: string[];
   env: string[];
   stdin: Buffer;
@@ -144,8 +131,6 @@ export function encodeRun(id: number, request: RunRequest): Buffer[] {
   assertWithin(request.limitFsizeBytes, Number.MAX_SAFE_INTEGER, 'the file-size limit');
   if (!(request.maxOutput >= 1 && request.maxOutput <= MAX_OUTPUT_BYTES)) throw new RunnerDeclined('the output limit is out of range');
   if (!request.cwd.startsWith('/')) throw new RunnerDeclined('the working directory is not absolute');
-  if (request.workDir !== '' && !request.workDir.startsWith('/')) throw new RunnerDeclined('the work directory is not absolute');
-  if (request.readPaths.length > READ_PATHS_MAX || request.readPaths.some((readPath) => !readPath.startsWith('/'))) throw new RunnerDeclined('a read path is not absolute, or there are too many');
   if (request.argv.length === 0 || request.argv.length > MAX_ARGUMENTS) throw new RunnerDeclined('the number of arguments is out of range');
   if (request.env.length > MAX_ARGUMENTS) throw new RunnerDeclined('the environment has too many entries');
   if (request.stdin.length > MAX_STDIN_BYTES) throw new RunnerDeclined(`the standard input is longer than ${MAX_STDIN_BYTES} bytes`);
@@ -155,11 +140,7 @@ export function encodeRun(id: number, request: RunRequest): Buffer[] {
     u64(request.limitAsBytes),
     u64(request.limitFsizeBytes),
     u32(request.limitCpuSeconds),
-    u32(request.confine),
     ...text(request.cwd, 'the working directory'),
-    ...text(request.workDir, 'the work directory'),
-    u32(request.readPaths.length),
-    ...request.readPaths.flatMap((readPath) => text(readPath, 'a read path')),
     u32(request.argv.length),
     ...request.argv.flatMap((argument) => text(argument, 'an argument')),
     u32(request.env.length),
@@ -285,15 +266,14 @@ class RunnerHost extends HelperHost<RunnerJob> {
     return new Promise<SandboxedExecutionResult>((resolve, reject) => {
       const id = this.allocateId();
       const timeoutMs = options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
-      const environment = getSanitizedEnvironment(options.env ?? {}, true, options.workDir);
+      const environment = getSanitizedEnvironment(options.env ?? {}, true);
       const request: RunRequest = {
         timeoutMs,
         maxOutput: options.maxBuffer ?? DEFAULT_MAX_BUFFER_BYTES,
         limitAsBytes: options.rlimits?.asBytes ?? (options.memoryLimitMb ? options.memoryLimitMb * BYTES_PER_MB : 0),
         limitFsizeBytes: options.rlimits?.fsizeBytes ?? options.maxFileSize ?? 0,
         limitCpuSeconds: options.rlimits?.cpuSeconds ?? 0,
-        ...confinementOf(options, binary),
-        cwd: options.cwd ?? (typeof options.workDir === 'string' ? options.workDir : os.tmpdir()),
+        cwd: options.cwd ?? os.tmpdir(),
         argv: [path.basename(binary), ...args],
         env: Object.entries(environment).flatMap(([key, value]) => (typeof value === 'string' ? [`${key}=${value}`] : [])),
         stdin: options.stdin ?? Buffer.alloc(0),
@@ -381,27 +361,6 @@ class RunnerHost extends HelperHost<RunnerJob> {
 let ranCount = 0;
 let fallbackCount = 0;
 
-/**
- * How the job is confined to its work directory (SandboxFileScope): not at all when the operator turned it off or the run does not name its
- * directory and STRICT_SANDBOX is off; refused (the caller starts it the usual way, which refuses it as well) when it does not and
- * STRICT_SANDBOX is on. A job that cannot be confined on this host is not run under STRICT_SANDBOX, and runs as before otherwise.
- */
-function confinementOf(options: LaunchedExecutionOptions, program: string): Pick<RunRequest, 'confine' | 'workDir' | 'readPaths'> {
-  if (fileConfinementDisabled()) return { confine: 0, workDir: '', readPaths: [] };
-  const strict = options.strictIsolation ?? process.env.STRICT_SANDBOX === 'true';
-  if (options.workDir === undefined) {
-    if (strict) throw new RunnerDeclined('the run does not name the directory of its job');
-    return { confine: 0, workDir: '', readPaths: [] };
-  }
-  // The program is read wherever it is installed, as pid-init is told (the runner has loaded its library already, but a request names the same paths).
-  const readable = [...(options.readDirs ?? []), ...(path.isAbsolute(program) ? [program] : [])];
-  return {
-    confine: CONFINE_ENABLED | (strict ? CONFINE_REQUIRED : 0),
-    workDir: options.workDir === null ? '' : confinedDirectory(options.workDir, 'workDir'),
-    readPaths: readable.map((readPath) => confinedDirectory(readPath, 'read path')),
-  };
-}
-
 /** The runner program: the path in the environment, else the standard places; null when there is none. */
 function runnerBinary(): string | null {
   return resolveBinaryPath(QPDF_RUNNER_PATH_ENV, RUNNER_CANDIDATES, 'qpdf-runner');
@@ -436,8 +395,6 @@ export function qpdfRunnerState(): { ready: boolean; pid: number | undefined; ve
 function runnerCanTake(binary: string, options: LaunchedExecutionOptions): boolean {
   if (path.basename(binary) !== 'qpdf') return false;
   if (options.networkIsolated === false || options.sandboxOptions !== undefined || options.rlimits?.nproc !== undefined) return false;
-  // The runner confines a job to one directory and a few paths to read; a job with more takes the usual way.
-  if (options.writeDirs?.length || options.socketDirs?.length || (options.readDirs?.length ?? 0) >= READ_PATHS_MAX) return false;
   if (options.signal?.aborted) return false;
   return (options.stdin?.length ?? 0) <= MAX_STDIN_BYTES && (options.maxBuffer ?? DEFAULT_MAX_BUFFER_BYTES) <= MAX_OUTPUT_BYTES;
 }

@@ -17,7 +17,6 @@ import {
   startQpdfRunner,
   stopQpdfRunner,
 } from '../src/lib/conversions/pdf-postprocess/qpdf-runner';
-import { SandboxUnavailableError } from '../src/lib/types';
 import { getSanitizedEnvironment, SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedTimeoutError } from '../src/lib/security/process-sandbox';
 import { skipUnless } from './helpers/strict-skip';
 
@@ -76,7 +75,7 @@ function childrenOf(pid: number): number[] {
 }
 
 /** A request frame written field by field, with none of the checks `encodeRun` makes, for the refusals the runner must make on its own. */
-function rawRun(id: number, fields: { cwd?: string; workDir?: string; readPaths?: string[]; confine?: number; argv?: string[]; env?: string[]; stdin?: Buffer }): Buffer {
+function rawRun(id: number, fields: { cwd?: string; argv?: string[]; env?: string[]; stdin?: Buffer }): Buffer {
   const u32be = (value: number): Buffer => Buffer.from([value >>> 24, (value >>> 16) & 255, (value >>> 8) & 255, value & 255]);
   const u64be = (value: number): Buffer => {
     const out = Buffer.alloc(8);
@@ -93,11 +92,7 @@ function rawRun(id: number, fields: { cwd?: string; workDir?: string; readPaths?
     u64be(0), // the address-space limit
     u64be(0), // the file-size limit
     u32be(0), // the CPU limit
-    u32be(fields.confine ?? 0), // the confinement of the files
     str(fields.cwd ?? '/tmp'),
-    str(fields.workDir ?? ''),
-    u32be((fields.readPaths ?? []).length),
-    ...(fields.readPaths ?? []).map(str),
     u32be(argv.length),
     ...argv.map(str),
     u32be(env.length),
@@ -122,7 +117,7 @@ const alive = (pid: number): boolean => {
   }
 };
 
-const REQUEST = { timeoutMs: 1000, maxOutput: 1000, limitAsBytes: 0, limitFsizeBytes: 0, limitCpuSeconds: 0, confine: 0, cwd: '/tmp', workDir: '', readPaths: [] as string[], argv: ['qpdf', 'echo-stdin'], env: ['A=1'], stdin: Buffer.alloc(0) };
+const REQUEST = { timeoutMs: 1000, maxOutput: 1000, limitAsBytes: 0, limitFsizeBytes: 0, limitCpuSeconds: 0, cwd: '/tmp', argv: ['qpdf', 'echo-stdin'], env: ['A=1'], stdin: Buffer.alloc(0) };
 
 beforeAll(async () => {
   scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'qpdf-runner-test-'));
@@ -229,8 +224,6 @@ describe('the frames the host writes', () => {
     declined({ argv: Array.from({ length: 70 }, () => 'y'.repeat(60 * 1024)) }); // past the frame limit as a whole
     declined({ stdin: Buffer.alloc(32 * 1024 + 1) });
     declined({ maxOutput: 0 });
-    declined({ readPaths: ['relative/input.pdf'] });
-    declined({ readPaths: ['/a', '/b', '/c', '/d', '/e'] });
     declined({ maxOutput: 2 * 1024 * 1024 * 1024 });
     expect(() => encodeRun(1, { ...REQUEST, argv: ['qpdf', 'x'.repeat(64 * 1024)], stdin: Buffer.alloc(32 * 1024) })).not.toThrow();
   });
@@ -300,63 +293,6 @@ describe.skipIf(compilerMissing)('the qpdf runner', () => {
           '/proc/sys/kernel/pid_max: ok',
         ]);
       }
-    });
-
-    it('confines the files of a job to its work directory: the files of another job are refused it, its own directory and the system are not', async () => {
-      const own = fs.mkdtempSync(path.join(scratch, 'job-own-'));
-      const other = fs.mkdtempSync(path.join(scratch, 'job-other-'));
-      const secret = path.join(other, 'secret');
-      fs.writeFileSync(secret, 'another job document');
-      const lines = (result: Buffer): string[] => result.toString('utf8').trim().split('\n');
-      const ranBefore = qpdfRunnerState().ran;
-      // The control: a job that names no work directory keeps the access every job had.
-      expect(lines((await run(['files', secret, own])).stdout)).toEqual(['read other: ok', 'write other: ok', 'truncate other: ok', 'create own: ok', 'truncate own: ok', 'remove own: ok', 'read system: ok']);
-      fs.writeFileSync(secret, 'another job document');
-      expect(lines((await run(['files', secret, own], { workDir: own })).stdout)).toEqual([
-        'read other: Permission denied',
-        'write other: Permission denied',
-        'truncate other: Permission denied',
-        'create own: ok',
-        'truncate own: ok',
-        'remove own: ok',
-        'read system: ok',
-      ]);
-      expect(fs.readFileSync(secret, 'utf8')).toBe('another job document');
-      // `workDir: null` is a job that touches no file of its own: it cannot make one either.
-      expect(lines((await run(['files', secret, own], { workDir: null })).stdout)).toContain('create own: Permission denied');
-      // One input file may be named to read, as the PDF operations of the product do: that file and nothing else of the other job.
-      const withInput = lines((await run(['files', secret, own], { workDir: null, readDirs: [secret] })).stdout);
-      expect(withInput.slice(0, 3)).toEqual(['read other: ok', 'write other: Permission denied', 'truncate other: Permission denied']);
-      // Several inputs, the program's own path among them, are read; what is not named is not.
-      const second = path.join(other, 'second');
-      fs.writeFileSync(second, 'second input');
-      const twoInputs = lines((await run(['files', secret, own], { workDir: null, readDirs: [secret, second] })).stdout);
-      expect(twoInputs[0]).toBe('read other: ok');
-      expect(qpdfRunnerState().ran - ranBefore).toBe(5);
-    });
-
-    it('under STRICT_SANDBOX runs a confined job in the runner and refuses a job that names no work directory', async () => {
-      vi.stubEnv('STRICT_SANDBOX', 'true');
-      try {
-        const own = fs.mkdtempSync(path.join(scratch, 'job-own-'));
-        const secret = path.join(scratch, 'job-strict-secret');
-        fs.writeFileSync(secret, 'another job document');
-        const ranBefore = qpdfRunnerState().ran;
-        const confined = await run(['files', secret, own], { workDir: own });
-        expect(confined.stdout.toString('utf8')).toContain('read other: Permission denied');
-        expect(qpdfRunnerState().ran - ranBefore).toBe(1);
-        await expect(run(['files', secret, own])).rejects.toBeInstanceOf(SandboxUnavailableError);
-      } finally {
-        vi.unstubAllEnvs();
-      }
-    });
-
-    it('declines a job that wants more directories than the runner confines, and it runs the usual way', async () => {
-      const own = fs.mkdtempSync(path.join(scratch, 'job-own-'));
-      const before = qpdfRunnerState().fallbacks;
-      // The usual way starts the real qpdf program, which prints its version.
-      expect((await run(['--version'], { workDir: own, writeDirs: [own] })).stdout.toString('utf8')).toMatch(/^qpdf version/);
-      expect(qpdfRunnerState().fallbacks - before).toBe(1);
     });
 
     it('starts the job the way the sandbox starts a program: own session, PID namespace, working directory, environment, no extra descriptors, limits', async () => {

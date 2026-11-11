@@ -155,7 +155,6 @@ export async function decodeWithDjxl(input: Buffer, signal?: AbortSignal): Promi
     try {
       await executeSandboxedBinary(djxl, [INPUT_FILE, output, DJXL_THREADS, '--quiet'], {
         cwd: jobDir,
-        workDir: jobDir,
         timeoutMs: DECODER_TIMEOUT_MS,
         maxBuffer: DECODER_MAX_DIAGNOSTIC_BYTES,
         maxFileSize: maxOutputBytes,

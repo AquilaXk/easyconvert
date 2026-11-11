@@ -1,7 +1,6 @@
 import { execFileSync, type ExecFileSyncOptionsWithBufferEncoding } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { rethrowConfinementRefusal } from '../security/process-sandbox';
 import {
   ArchiveNotEncryptedError,
   ArchivePasswordRequiredError,
@@ -150,7 +149,6 @@ export function execFileSyncWithPasswordStdin(
   try {
     return execFileSync(binary, args, spawnOptions);
   } catch (err) {
-    rethrowConfinementRefusal(err);
     const failure = err as { code?: string; status?: number | null; stdout?: Buffer | null };
     if (failure.code === 'EPIPE' && failure.status === 0) {
       return failure.stdout ?? Buffer.alloc(0);

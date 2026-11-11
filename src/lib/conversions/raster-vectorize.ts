@@ -214,7 +214,6 @@ async function trace(binary: string, picture: StagedPicture, args: string[], opt
     try {
       await executeSandboxedBinary(binary, [...args, '--input', inputPath, '--output', outputPath], {
         cwd: sandboxDir,
-        workDir: sandboxDir,
         timeoutMs,
         maxBuffer: ENGINE_MAX_DIAGNOSTIC_BYTES,
         maxFileSize: VECTORIZE_MAX_OUTPUT_BYTES,

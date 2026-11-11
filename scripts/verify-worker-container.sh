@@ -20,8 +20,6 @@
 #      nor read its command line and status in /proc (the Landlock ruleset of pid-init)
 #  11. the ONNX OCR helper (dist/ocr-onnx-child.js) loads its models and reads one real page (detector and recogniser) in a user, network and PID
 #      namespace of its own, under the address-space and CPU limits the worker gives it and this container's seccomp profile
-#  12. pid-init --confine --require runs a program that can read, write, truncate and remove files only below the directory of its job: it cannot read, overwrite, truncate,
-#      remove or list the files of another job's directory or the stored files under /shared/storage, and it still runs the system's programs and reads their libraries
 #
 # The sandbox is entered with the same `unshare -r -n` and `prlimit --as` the worker uses
 # (src/lib/security/process-sandbox.ts); this script does not load the worker's own code.
@@ -450,44 +448,6 @@ else
     fi
   fi
   kill "$sibling_pid" 2>/dev/null
-
-  # --- 12. the files of a program ----------------------------------------------------------------------
-  # Every program of the worker runs as the one user 10001, so without a ruleset it could read and overwrite the stored files of every tenant under
-  # /shared/storage and the directories of the other jobs in /tmp. `pid-init --confine` allows the system read-only, /dev and its own /proc entries,
-  # and everything only below the directories named with --write. The control is the same program started without --confine, which sees the other
-  # job's files; a host whose kernel has no Landlock version 3 (Linux 6.2), or whose seccomp profile denies the landlock calls, cannot confine and fails here.
-  confine_dir="$(mktemp -d)"
-  mkdir "$confine_dir/own" "$confine_dir/other"
-  printf 'another job document' > "$confine_dir/other/secret"
-  printf 'another job output' > "$confine_dir/other/victim"
-  confine_attempts='
-    read_other="refused"; if ( : < "$OTHER/secret" ) 2>/dev/null; then read_other="read"; fi
-    write_other="refused"; if ( echo overwritten > "$OTHER/victim" ) 2>/dev/null; then write_other="written"; fi
-    truncate_other="refused"; if truncate -s 0 "$OTHER/victim" 2>/dev/null; then truncate_other="truncated"; fi
-    remove_other="refused"; if rm "$OTHER/victim" 2>/dev/null; then remove_other="removed"; fi
-    list_other="refused"; if ls "$OTHER" >/dev/null 2>&1; then list_other="listed"; fi
-    list_storage="refused"; if [ -d /shared/storage ] && ls /shared/storage >/dev/null 2>&1; then list_storage="listed"; fi
-    write_own="refused"; if ( echo mine > "$OWN/out" ) 2>/dev/null && truncate -s 1 "$OWN/out" && rm "$OWN/out"; then write_own="worked"; fi
-    system="refused"; if cat /etc/passwd >/dev/null 2>&1 && ls /usr/bin >/dev/null 2>&1; then system="worked"; fi
-    echo "$read_other $write_other $truncate_other $remove_other $list_other $list_storage $write_own $system"'
-  # The stored files of the tenants are mounted at /shared/storage in production; the image has the directory, so the control lists it.
-  storage_control=refused
-  if [ -d /shared/storage ] && ls /shared/storage >/dev/null 2>&1; then storage_control=listed; fi
-  control_output="$(unshare -r -n -- pid-init -- env OTHER="$confine_dir/other" OWN="$confine_dir/own" sh -c "$confine_attempts" 2>&1)"
-  printf 'another job document' > "$confine_dir/other/secret"
-  printf 'another job output' > "$confine_dir/other/victim"
-  confined_output="$(unshare -r -n -- pid-init --confine --require --write "$confine_dir/own" -- env OTHER="$confine_dir/other" OWN="$confine_dir/own" sh -c "$confine_attempts" 2>&1)"
-  if [ "$control_output" != "read written truncated removed listed $storage_control worked worked" ]; then
-    fail "the control of the file check (pid-init without --confine) did not reach the other job's files: $(printf '%s' "$control_output" | tr '\n' ' ' | head -c 300)"
-  elif [ "$confined_output" = "refused refused refused refused refused refused worked worked" ]; then
-    pass "pid-init --confine refused the program the files, the listing and the removals of another job and of /shared/storage, and left it its own directory and the system"
-  else
-    fail "pid-init --confine did not confine the files of the program (Landlock version 3 is off in the kernel, or the seccomp profile denies the landlock calls): $(printf '%s' "$confined_output" | tr '\n' ' ' | head -c 300)"
-  fi
-  if [ "$(cat "$confine_dir/other/secret" 2>/dev/null)" != "another job document" ]; then
-    fail "the confined program changed the file of another job"
-  fi
-  rm -rf "$confine_dir"
 fi
 
 # --- 11. ONNX OCR helper ------------------------------------------------------------------------------

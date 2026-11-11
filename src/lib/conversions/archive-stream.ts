@@ -277,8 +277,6 @@ export interface SevenZipRunOptions {
   maxBuffer: number;
   timeoutMs: number;
   stdin?: Buffer;
-  /** The files 7-Zip reads (the archive it is given by path); it writes none, so these are all it may touch. */
-  readFiles?: readonly string[];
   signal?: AbortSignal;
   onLimit: () => Error;
   /** Free bytes to keep before and after the output (see SandboxedExecutionOptions). */
@@ -303,8 +301,6 @@ async function runSevenZipFramed(p7zBin: string, args: string[], options: SevenZ
       timeoutMs: options.timeoutMs,
       maxBuffer: options.maxBuffer,
       networkIsolated: true,
-      workDir: null,
-      readDirs: options.readFiles,
       stdin: options.stdin,
       signal: options.signal,
       stdoutHeadroomBytes: options.headroomBytes,
@@ -340,7 +336,6 @@ export async function streamToTar(request: StreamRunOptions & { compressor: Stre
       maxBuffer: bound + STDERR_ALLOWANCE_BYTES,
       timeoutMs: request.timeoutMs,
       stdin: request.source.buffer,
-      readFiles: request.source.buffer === undefined ? input : undefined,
       signal: request.signal,
       onLimit: () => (memoryBound < cap ? new ExceedsMemoryBudget() : unpackedBytesCapError(archiveBytes, LIMITS)),
       headroomBytes: memberHeaderBytes(memberName),
@@ -503,7 +498,6 @@ export async function sevenZipToTar(request: StreamRunOptions): Promise<Streamed
           runSevenZip(request.p7zBin, ['x', '-so', '-y', archivePath], {
             maxBuffer: Math.min(streamBytes, cap) + STDERR_ALLOWANCE_BYTES,
             timeoutMs: request.timeoutMs,
-            readFiles: [archivePath],
             signal: request.signal,
             onLimit: () => new UnreadableArchiveError('Could not read the archive: 7-Zip produced more data than the archive header declares.'),
           })

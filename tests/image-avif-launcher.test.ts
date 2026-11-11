@@ -9,10 +9,6 @@ import { requireOracleTool } from './helpers/differential-oracle';
 import { interface16 } from './helpers/graphic-parity';
 import { ancestorsOf, processesWithArgument } from './helpers/process-state';
 import { skipWithoutTools } from './helpers/strict-skip';
-import { runWithoutFileConfinement } from './helpers/unconfined-files';
-
-// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
-runWithoutFileConfinement();
 
 /**
  * The AVIF command-line encoder started from the launcher helper (src/lib/security/sandbox-launcher.ts), which is what a worker of a few

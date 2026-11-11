@@ -173,9 +173,6 @@ export async function renderMidiToWav(input: Buffer, options: MidiRenderOptions 
     try {
       await executeSandboxedBinary(binary, ['-ni', '-q', '-r', String(RENDER_SAMPLE_RATE), '-T', 'wav', '-F', outputPath, soundFont, inputPath], {
         cwd: sandboxDir,
-        workDir: sandboxDir,
-        // The SoundFont may be one the operator named, outside the system paths.
-        readDirs: [soundFont],
         timeoutMs,
         maxBuffer: RENDER_MAX_DIAGNOSTIC_BYTES,
         maxFileSize: RENDER_MAX_BYTES,

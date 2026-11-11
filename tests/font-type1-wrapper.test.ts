@@ -6,10 +6,6 @@ import { convertFont } from '../src/lib/conversions/font';
 import { CpuTaskTimeoutError, EngineMissingError, EngineUnavailableError, UnprocessableFontInputError } from '../src/lib/types';
 import { buildOtf, cs } from './helpers/cff-font-builder';
 import { buildPfa, buildPfb, circleGlyph, rectangleGlyph, type Type1Glyph } from './helpers/type1-builder';
-import { runWithoutFileConfinement } from './helpers/unconfined-files';
-
-// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
-runWithoutFileConfinement();
 
 /**
  * The wrapper around FontForge (src/lib/conversions/font-fontforge.ts), tested with stand-in programs that stand for a converter failing

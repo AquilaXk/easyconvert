@@ -169,8 +169,6 @@ async function runMagick(job: MagickJob, args: readonly string[], maxFileSize: n
   try {
     return await executeSandboxedBinary(magick, [...MAGICK_LIMITS, ...warningPolicy(source), ...args], {
       cwd: jobDir,
-      workDir: jobDir,
-      readDirs: [policyDir],
       env: { MAGICK_CONFIGURE_PATH: policyDir, MAGICK_TEMPORARY_PATH: jobDir },
       timeoutMs: DECODER_TIMEOUT_MS,
       maxBuffer: DECODER_MAX_DIAGNOSTIC_BYTES,

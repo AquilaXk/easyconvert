@@ -18,10 +18,6 @@ import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { EngineUnavailableError } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
-import { runWithoutFileConfinement } from './helpers/unconfined-files';
-
-// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
-runWithoutFileConfinement();
 
 /**
  * Every ffmpeg and ffprobe process starts in one module, which gives each input a protocol whitelist and a demuxer of the
@@ -153,7 +149,7 @@ describe('runFfmpeg and runFfprobe', () => {
   });
 
   it('control: starts ffmpeg when every input is guarded', async () => {
-    await runFfmpeg(spy, ['-y', '-protocol_whitelist', 'file', '-f', 'mov', '-i', '/x/in.mp4', '/x/out.wav'], { workDir: null });
+    await runFfmpeg(spy, ['-y', '-protocol_whitelist', 'file', '-f', 'mov', '-i', '/x/in.mp4', '/x/out.wav'], {});
     expect(started()).toBe(true);
   });
 

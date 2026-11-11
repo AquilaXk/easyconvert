@@ -10,10 +10,6 @@ import { compressPdf, convertToPdfA } from '../src/lib/conversions/pdf-postproce
 import { getGhostscriptBinaryPath } from '../src/lib/conversions/pdf-postprocess/gs-path';
 import { pdftotext, qpdfCheckPasses } from './helpers/encrypted-pdf-fixtures';
 import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
-import { runWithoutFileConfinement } from './helpers/unconfined-files';
-
-// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
-runWithoutFileConfinement();
 
 /**
  * Bytes in front of the `%PDF-` header and the tools that dispatch on the first bytes of a file. pdf.js (`moveStart`

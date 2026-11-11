@@ -11,10 +11,6 @@ import {
   probeHardwareAcceleration,
   resetHardwareAccelerationCache,
 } from '../src/lib/conversions/media-ffmpeg-args';
-import { runWithoutFileConfinement } from './helpers/unconfined-files';
-
-// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
-runWithoutFileConfinement();
 
 /**
  * Hosts whose ffmpeg lists h264_qsv but have no Intel device used to fail every default H.264

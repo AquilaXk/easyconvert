@@ -14,10 +14,6 @@ import { lineArt16, interface16 } from './helpers/graphic-parity';
 import { runConvert } from './helpers/imagemagick';
 import { oracleTest } from './helpers/oracle-test';
 import { uniqueSleepInterval, waitUntilNoProcessWithArgument, waitUntilProcessWithArgument } from './helpers/process-state';
-import { runWithoutFileConfinement } from './helpers/unconfined-files';
-
-// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
-runWithoutFileConfinement();
 
 /**
  * AVIF through the reference AVIF library's command-line encoder. Oracles: `avifdec --info` (bit depth, chroma

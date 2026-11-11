@@ -58,10 +58,10 @@ import { describeAudioProcessing, measureLoudnessStage } from '../lib/conversion
 import { describeDroppedStreams } from '../lib/conversions/media-dropped-streams';
 import { assertOutputWritten } from '../lib/conversions/media-empty-output';
 import { runFfmpegTranscode } from '../lib/conversions/media-ffmpeg-run';
-import { mediaReadDirs, openMediaInput, runFfmpeg } from '../lib/conversions/media-process';
+import { openMediaInput, runFfmpeg } from '../lib/conversions/media-process';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from '../lib/conversions/media-two-pass';
 import {
-  executeSandboxedBinary, OFFICE_PIPE_DIR,
+  executeSandboxedBinary,
   rethrowSandboxUnavailable,
   SandboxedMemoryLimitError,
   SandboxedTimeoutError,
@@ -418,7 +418,7 @@ async function runHeadlessOffice(
           inputPath,
         ],
         {
-          cwd: tempDir, workDir: tempDir, readDirs: [fs.realpathSync(inputPath)], socketDirs: [OFFICE_PIPE_DIR],
+          cwd: tempDir,
           timeoutMs: timeout,
           maxBuffer,
           env: { HOME: tempDir, TMPDIR: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
@@ -494,7 +494,7 @@ export async function convertWithNativeFfmpeg(
           const ts = options.thumbnail.at[i];
           const partOut = path.join(tempDir, `output_${i}.${tgt}`);
           const partArgs = await buildFfmpegArguments(media, partOut, tgt, options, ffmpegBin, ts);
-          await runFfmpeg(ffmpegBin, partArgs, { cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: timeout, maxBuffer, signal: options.signal });
+          await runFfmpeg(ffmpegBin, partArgs, { cwd: tempDir, timeoutMs: timeout, maxBuffer, signal: options.signal });
           if (fs.existsSync(partOut) && fs.statSync(partOut).size > 0) {
             firstValidOutputPath ??= partOut;
             parts.push({ filename: `${baseName}_thumb_${i + 1}.${tgt}`, buffer: fs.readFileSync(partOut) });
@@ -520,7 +520,7 @@ export async function convertWithNativeFfmpeg(
         const source = await probePackagingSource(media, ffmpegBin);
         const args = await buildHlsDashArguments(media, outputDir, packaging, ffmpegBin, source);
         await runFfmpeg(ffmpegBin, args, {
-          cwd: outputDir, workDir: tempDir, readDirs: [inputPath],
+          cwd: outputDir,
           timeoutMs: computePackagingTimeoutMs(
             source.geometry.durationSec,
             plannedRungCount(packaging, source),
@@ -561,7 +561,7 @@ export async function convertWithNativeFfmpeg(
       }
 
       const runFfmpegWith = (ffmpegArgs: string[], limitMs: number) =>
-        runFfmpegTranscode(ffmpegBin, ffmpegArgs, { cwd: tempDir, workDir: tempDir, readDirs: mediaReadDirs(inputPath, options), timeoutMs: limitMs, maxBuffer, signal: options.signal });
+        runFfmpegTranscode(ffmpegBin, ffmpegArgs, { cwd: tempDir, timeoutMs: limitMs, maxBuffer, signal: options.signal });
       const runTranscode = (ffmpegArgs: string[]) => runFfmpegWith(ffmpegArgs, timeout);
       // A loudness request measures first (cheap: audio only), so the encode applies real numbers.
       const loudnessStage = await measureLoudnessStage({ input: media, tgt, options, ffmpegBin, run: runTranscode });
@@ -691,7 +691,7 @@ async function assertCreatedArchiveEncrypted(
   let outcome: { listing?: string; failureOutput?: string };
   try {
     const result = await executeSandboxedBinary(p7zBin, ['l', '-slt', archivePath], {
-      cwd: limits.cwd, workDir: limits.cwd, readDirs: [archivePath],
+      cwd: limits.cwd,
       timeoutMs: limits.timeoutMs,
       maxBuffer: MAX_ENCRYPTION_LISTING_BYTES,
       networkIsolated: true,
@@ -717,14 +717,14 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<string 
   if (tarPlan) {
     const tarPath = path.join(tempDir, 'archive.tar');
     await executeSandboxedBinary(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], {
-      cwd: extractDir, workDir: tempDir,
+      cwd: extractDir,
       timeoutMs: timeout,
       maxBuffer,
       networkIsolated: true,
       signal: options?.signal,
     });
     await executeSandboxedBinary(p7zBin, ['a', '-y', tarPlan.codecSwitch, ...levelArgs, tempOutputPath, tarPath], {
-      cwd: tempDir, workDir: tempDir,
+      cwd: tempDir,
       timeoutMs: timeout,
       maxBuffer,
       networkIsolated: true,
@@ -753,7 +753,7 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<string 
       : undefined;
 
   await executeSandboxedBinary(p7zBin, ['a', '-y', `-t${archiveType}`, ...(tgt === 'tar' ? [] : levelArgs), ...pwArgs, tempOutputPath, '.'], {
-    cwd: extractDir, workDir: tempDir,
+    cwd: extractDir,
     timeoutMs: timeout,
     maxBuffer,
     networkIsolated: true,
@@ -1039,7 +1039,7 @@ export async function countPagesOfReadablePdf(
   if (pdfinfoBin) {
     try {
       const res = await runPdfinfo(pdfinfoBin, [inputPath], {
-        cwd: tempDir, workDir: tempDir, readDirs: [inputPath],
+        cwd: tempDir,
         timeoutMs,
         maxBuffer: 10 * 1024 * 1024,
         networkIsolated: true,
@@ -1140,7 +1140,7 @@ async function convertPdfToTextWithPoppler(
         async (readablePath) => {
           try {
             await executeSandboxedBinary(pdftotextBin, [...pdftotextArgs, readablePath, tempOutputPath], {
-              cwd: tempDir, workDir: tempDir, readDirs: [readablePath],
+              cwd: tempDir,
               timeoutMs: timeout,
               maxBuffer,
               networkIsolated: true,
@@ -1401,14 +1401,14 @@ async function renderPdfToImageWithPoppler(
     startEarly: (tempDir, inputPath) => {
       if (tgt !== PNG_FORMAT || selectsPages(options) || options.multiPageOutput === 'first') return null;
       const throughPage = ppmBatchPages(dpi);
-      const sandbox = { cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal };
+      const sandbox = { cwd: tempDir, timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal };
       const prefix = path.join(tempDir, 'page');
       const done = renderPngBatch(pdftoppmBin, tempDir, dpi, sandbox, buildPdftoppmArgs(tgt, options, 1, throughPage, inputPath, prefix), { start: 1, end: throughPage });
       return { throughPage, done };
     },
     renderPages: async (tempDir, inputPath, intervals, early) => {
       const prefix = path.join(tempDir, 'page');
-      const sandbox = { cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal };
+      const sandbox = { cwd: tempDir, timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal };
       // Poppler draws on one thread, so the batches of pages run side by side (the early batch counted among them).
       const isPng = tgt === PNG_FORMAT;
       const batchPages = isPng ? ppmBatchPages(dpi) : DIRECT_RENDER_BATCH_PAGES;
@@ -1459,7 +1459,7 @@ async function renderPdfToSvgWithPoppler(
           const pageSvgPath = path.join(tempDir, `page-${p}.svg`);
           const args = ['-svg', '-f', String(p), '-l', String(p), inputPath, pageSvgPath];
           return executeSandboxedBinary(pdftocairoBin, args, {
-            cwd: tempDir, workDir: tempDir, readDirs: [inputPath],
+            cwd: tempDir,
             timeoutMs: remaining,
             maxBuffer,
             networkIsolated: true,
@@ -1672,10 +1672,10 @@ async function convertPdfToPostScript(
   const maxBuffer = Math.min(options.maxBufferBytes || POPPLER_DEFAULT_MAX_BUFFER_BYTES, POPPLER_MAX_BUFFER_BYTES);
   const isEps = tgt === EPS_TARGET;
   const deadline = Date.now() + timeout;
-  const run = (tempDir: string, inputPath: string, args: string[]) => {
+  const run = (tempDir: string, args: string[]) => {
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new SandboxedTimeoutError(timeout);
-    return executeSandboxedBinary(pdftopsBin, args, { cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: remaining, maxBuffer, networkIsolated: true, signal: options.signal });
+    return executeSandboxedBinary(pdftopsBin, args, { cwd: tempDir, timeoutMs: remaining, maxBuffer, networkIsolated: true, signal: options.signal });
   };
 
   return executePopplerRender({
@@ -1691,14 +1691,14 @@ async function convertPdfToPostScript(
     missingOutputError: `pdftops execution completed without producing any .${tgt} output`,
     renderPages: async (tempDir, inputPath, intervals) => {
       if (isEps) {
-        await writeEpsPages(pagesOfIntervals(intervals), tempDir, inputPath, (dir, args) => run(dir, inputPath, args), pageRenderProcesses());
+        await writeEpsPages(pagesOfIntervals(intervals), tempDir, inputPath, run, pageRenderProcesses());
         return;
       }
       if (intervals.length !== 1) {
         throw new InvalidPageRangeError('PostScript output holds one run of consecutive pages: select a single range such as 2-4.');
       }
       const { start: first, end: last } = intervals[0];
-      await run(tempDir, inputPath, ['-f', String(first), '-l', String(last), inputPath, path.join(tempDir, `output.${tgt}`)]);
+      await run(tempDir, ['-f', String(first), '-l', String(last), inputPath, path.join(tempDir, `output.${tgt}`)]);
     },
   });
 }
@@ -1782,7 +1782,7 @@ export async function convertWithNativeRaw(
     let decoderStderr = '';
     try {
       const run = await executeSandboxedBinary(decoder, [...RAW_DECODE_FLAGS, '-Z', decodedPath, inputPath], {
-        cwd: tempDir, workDir: tempDir, readDirs: [inputPath],
+        cwd: tempDir,
         timeoutMs: timeout,
         maxBuffer: options.maxBufferBytes || 100 * 1024 * 1024,
         maxFileSize: RAW_DECODE_MAX_OUTPUT_BYTES,
