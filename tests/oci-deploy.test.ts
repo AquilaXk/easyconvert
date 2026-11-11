@@ -549,6 +549,8 @@ describe('deploy workflow', () => {
     const checkout = deploy.steps.find((step) => step.uses?.startsWith('actions/checkout@'));
     expect(checkout?.with?.ref).toBe('${{ needs.gate.outputs.commit }}');
     expect(deploy.steps.indexOf(checkout as never)).toBe(0);
+    const run = deploy.steps.find((step) => /deploy\.sh deploy/.test(step.run ?? ''));
+    expect(run?.env?.IMAGE_REF).toBe('sha-${{ needs.gate.outputs.commit }}');
   });
 
   describe('the main tags against a registry that keeps digests', () => {

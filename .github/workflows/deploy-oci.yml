@@ -320,7 +320,9 @@ jobs:
         if: inputs.action == 'deploy'
         env:
           SOURCE_DIR: ${{ github.workspace }}
-          IMAGE_REF: ${{ inputs.image_ref }}
+          # The tag of the commit the gate checked, also when main was asked for: main may have moved to a newer build since, and the
+          # files of this checkout belong to the commit the gate approved.
+          IMAGE_REF: sha-${{ needs.gate.outputs.commit }}
           ANONYMOUS_DAILY_LIMIT: ${{ vars.ANONYMOUS_DAILY_LIMIT }}
         run: exec bash deploy/oci/deploy.sh deploy "$IMAGE_REF"
 

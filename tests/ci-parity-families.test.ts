@@ -178,6 +178,9 @@ describe('classifying changed paths', () => {
     ['the LibRaw install script', 'scripts/install-libraw-he.sh', ['raw']],
     ['the LibreDWG install script', 'scripts/install-libredwg.sh', ['cad']],
     ['the veraPDF install script', 'scripts/install-verapdf.sh', ['pdf-ops']],
+    ['the oxipng install script', 'scripts/install-oxipng.sh', ['image']],
+    ['the oxipng notices', 'scripts/oxipng-notices/THIRD-PARTY-NOTICES', ['image']],
+    ['the sweep of leftover sandbox directories', 'src/worker/sandbox-sweep.ts', [...BENCH_FAMILIES]],
   ])('maps %s, a file of the worker image that no conversion module imports, to the families it builds', (_name, file, benchmarked) => {
     expect(MAP.scope.test(file), file).toBe(true);
     expect(classify(file)).toEqual({ benchmarked, unmapped: [], unclassified: [] });

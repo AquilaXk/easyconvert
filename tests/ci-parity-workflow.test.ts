@@ -393,7 +393,7 @@ describe('the step that maps changed paths to families', () => {
   });
 
   only('fails open without a comparable base commit: a pull request with no base, and a push with no or an all-zero before', () => {
-    const everything = { families: 'image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font,cad,raw,vector', unmapped: '', changed: 'true' };
+    const everything = { families: 'image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font,cad,raw,vector,vectorize', unmapped: '', changed: 'true' };
     expect(outputs([], { baseSha: null }).outputs).toEqual(everything);
     expect(outputs([], { event: 'push', baseSha: null }).outputs).toEqual(everything);
     expect(outputs([], { event: 'push', baseSha: '0'.repeat(40) }).outputs).toEqual(everything);
