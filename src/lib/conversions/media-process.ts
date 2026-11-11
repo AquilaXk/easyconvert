@@ -9,6 +9,7 @@ import {
   rethrowConfinementRefusal,
   SandboxedProcessError,
   SandboxedTimeoutError,
+  strictSandboxEnabled,
   type SandboxedExecutionOptions,
   type SandboxedExecutionResult,
   type SandboxedRlimitsOptions,
@@ -475,6 +476,6 @@ export function enforceFfmpegMinimumVersion(ffmpegBin: string | null, ffprobeBin
   const problems = [ffmpegVersionProblem(ffmpegBin), ffprobeProblem].filter((problem) => problem !== undefined);
   if (problems.length === 0) return;
   const problem = problems.join(' ');
-  if (process.env.STRICT_SANDBOX === 'true') throw new EngineUnavailableError('ffmpeg', problem);
+  if (strictSandboxEnabled()) throw new EngineUnavailableError('ffmpeg', problem);
   console.warn(`[EasyConvert] ${problem}`);
 }

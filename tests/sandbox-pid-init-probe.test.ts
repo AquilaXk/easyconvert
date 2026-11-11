@@ -23,7 +23,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 import { SandboxUnavailableError } from '../src/lib/types';
-import { fileConfinementDisabled, getUnshareCapability, PID_INIT_REPROBE_MS, PID_INIT_STRICT_REPROBE_MS, resetUnshareCapabilityCache, resolveSandboxedCommand, withoutProcHideNotice } from '../src/lib/security/process-sandbox';
+import { fileConfinementDisabled, getUnshareCapability, PID_INIT_REPROBE_MS, PID_INIT_STRICT_REPROBE_MS, resetUnshareCapabilityCache, resolveSandboxedCommand, strictSandboxEnabled, withoutProcHideNotice } from '../src/lib/security/process-sandbox';
 
 const PID_INIT = '/opt/test/pid-init-stand-in';
 const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
@@ -196,6 +196,17 @@ describe('the PID namespace probe', () => {
     resetUnshareCapabilityCache();
     expect(start).toThrow(/no pid-init/);
     expect(() => resolveSandboxedCommand('/usr/bin/tool', [], { networkIsolated: true, workDir: '/jobs/one', strictIsolation: false })).not.toThrow();
+  });
+
+  it('reads STRICT_SANDBOX as the start-up check does, so " True " refuses a run without a job directory', () => {
+    probe.pidInitWorks = true;
+    for (const value of [' True ', 'TRUE']) {
+      vi.stubEnv('STRICT_SANDBOX', value);
+      expect(strictSandboxEnabled()).toBe(true);
+      expect(() => resolveSandboxedCommand('/usr/bin/tool', [], { networkIsolated: true })).toThrow(SandboxUnavailableError);
+    }
+    vi.stubEnv('STRICT_SANDBOX', 'yes');
+    expect(strictSandboxEnabled()).toBe(false);
   });
 
   it('refuses a directory it cannot confine to with the typed 503 error, not a plain one', () => {

@@ -10,6 +10,7 @@ import {
   SandboxedProcessError,
   SandboxedTimeoutError,
   sandboxUnavailable,
+  strictSandboxEnabled,
   type SandboxedExecutionOptions,
   type SandboxedExecutionResult,
 } from './process-sandbox';
@@ -173,7 +174,7 @@ class LauncherHost extends HelperHost {
     return new Promise<SandboxedExecutionResult>((resolve, reject) => {
       const id = this.allocateId();
       const { stdin, signal, ...rest } = options;
-      const runOptions: LaunchedRunOptions = { ...rest, strictIsolation: options.strictIsolation ?? process.env.STRICT_SANDBOX === 'true', fileConfinementOff: fileConfinementDisabled() };
+      const runOptions: LaunchedRunOptions = { ...rest, strictIsolation: options.strictIsolation ?? strictSandboxEnabled(), fileConfinementOff: fileConfinementDisabled() };
       const request: LauncherRequest = { type: 'run', id, binary, args, hasStdin: Boolean(stdin), options: runOptions };
       this.enroll({ id, timeoutMs: options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS, signal, cancel: () => this.send({ type: 'cancel', id }), resolve, reject, extra: {} });
       this.send(request, stdin ?? undefined);

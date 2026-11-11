@@ -11,6 +11,7 @@ import {
   SandboxedMemoryLimitError,
   SandboxedProcessError,
   SandboxedTimeoutError,
+  strictSandboxEnabled,
   withoutProcHideNotice,
   type SandboxedExecutionResult,
 } from '../../security/process-sandbox';
@@ -388,7 +389,7 @@ let fallbackCount = 0;
  */
 function confinementOf(options: LaunchedExecutionOptions, program: string): Pick<RunRequest, 'confine' | 'workDir' | 'readPaths'> {
   if (fileConfinementDisabled()) return { confine: 0, workDir: '', readPaths: [] };
-  const strict = options.strictIsolation ?? process.env.STRICT_SANDBOX === 'true';
+  const strict = options.strictIsolation ?? strictSandboxEnabled();
   if (options.workDir === undefined) {
     if (strict) throw new RunnerDeclined('the run does not name the directory of its job');
     return { confine: 0, workDir: '', readPaths: [] };

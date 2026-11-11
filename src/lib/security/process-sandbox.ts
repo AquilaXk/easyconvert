@@ -487,6 +487,11 @@ function sayConfineDegraded(reason: string): void {
 }
 
 /** Whether the confinement of the files of a run to its work directory is switched off for every run (SANDBOX_CONFINE_FILES=false, read as SANDBOX_PID_NAMESPACE is). */
+/** Whether STRICT_SANDBOX is on, read as the config parser reads it (trimmed, any case), so a run is never less strict than the start-up check took it to be. */
+export function strictSandboxEnabled(): boolean {
+  return process.env.STRICT_SANDBOX?.trim().toLowerCase() === 'true';
+}
+
 export function fileConfinementDisabled(): boolean {
   return process.env[SANDBOX_CONFINE_FILES_ENV]?.trim().toLowerCase() === 'false';
 }
@@ -571,7 +576,7 @@ function withPidInitProbe(base: Omit<UnshareCapability, 'pidInitPath' | 'confine
 /** The capability, with a host that went without `pid-init`, or without the confinement of files, tried again once `PID_INIT_REPROBE_MS` have passed since it was last tried. */
 function withPidInitRetried(capability: UnshareCapability): UnshareCapability {
   const complete = capability.pidInitPath !== '' && (capability.confinesFiles || fileConfinementDisabled());
-  const backoff = process.env.STRICT_SANDBOX === 'true' ? PID_INIT_STRICT_REPROBE_MS : PID_INIT_REPROBE_MS;
+  const backoff = strictSandboxEnabled() ? PID_INIT_STRICT_REPROBE_MS : PID_INIT_REPROBE_MS;
   if (!capability.available || complete || Date.now() - pidInitTriedAt < backoff) return capability;
   return { ...capability, ...probePidInit(capability) };
 }
@@ -818,7 +823,7 @@ export function resolveSandboxedCommand(
 ): { binary: string; args: string[]; wrapped: boolean; levelsAboveProgram: number } {
   let networkIsolated = true;
   let sandboxOptions: UnshareIsolationOptions = {};
-  let strictIsolation = process.env.STRICT_SANDBOX === 'true';
+  let strictIsolation = strictSandboxEnabled();
   let memoryLimitMb: number | undefined;
   let maxFileSize: number | undefined;
   let rlimits: SandboxedRlimitsOptions | undefined;
