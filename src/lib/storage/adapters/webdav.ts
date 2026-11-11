@@ -7,9 +7,8 @@ import {
   StorageAdapterMetadata,
   StorageNotFoundError,
   StorageAuthenticationError,
-  StorageSsrfError,
 } from './adapter-interface';
-import { createSsrfSafeAgent, validateUrlForSsrf } from '../../security/ssrf';
+import { adapterDispatcher, assertAdapterUrlSafe, readErrorText, releaseDispatcher } from './http-guard';
 
 function stripTrailingSlashes(s: string): string {
   let end = s.length;
@@ -64,12 +63,8 @@ export class WebDavStorageAdapter implements IStorageAdapter {
     }
   }
 
-  private async assertSsrfSafe(urlStr: string): Promise<void> {
-    const url = new URL(urlStr);
-    const safe = await validateUrlForSsrf(url);
-    if (!safe) {
-      throw new StorageSsrfError(urlStr, this.providerName);
-    }
+  private assertSsrfSafe(urlStr: string): Promise<void> {
+    return assertAdapterUrlSafe(urlStr, this.providerName);
   }
 
   private buildUrl(remotePath: string): string {
@@ -89,7 +84,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
     const url = this.buildUrl(remotePath);
     await this.assertSsrfSafe(url);
 
-    const dispatcher = createSsrfSafeAgent();
+    const dispatcher = adapterDispatcher(url);
     let streaming = false;
     try {
       const res = await request(url, {
@@ -105,7 +100,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
         throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
       }
       if (res.statusCode < 200 || res.statusCode >= 300) {
-        const errText = await res.body.text();
+        const errText = await readErrorText(res.body, this.providerName);
         throw new Error(`[WebDavAdapter] Download failed (${res.statusCode}): ${errText}`);
       }
 
@@ -122,9 +117,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
       return bodyStream;
     } finally {
       if (!streaming) {
-        try {
-          await dispatcher.close?.();
-        } catch {}
+        await releaseDispatcher(dispatcher);
       }
     }
   }
@@ -151,7 +144,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
       nodeStream = stream;
     }
 
-    const dispatcher = createSsrfSafeAgent();
+    const dispatcher = adapterDispatcher(url);
     try {
       const res = await request(url, {
         method: 'PUT',
@@ -164,7 +157,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
         throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
       }
       if (res.statusCode < 200 || res.statusCode >= 300) {
-        const errText = await res.body.text();
+        const errText = await readErrorText(res.body, this.providerName);
         throw new Error(`[WebDavAdapter] Upload failed (${res.statusCode}): ${errText}`);
       }
 
@@ -178,9 +171,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
         lastModified: lastModifiedHeader ? new Date(lastModifiedHeader) : new Date(),
       };
     } finally {
-      try {
-        await dispatcher.close?.();
-      } catch {}
+      await releaseDispatcher(dispatcher);
     }
   }
 
@@ -188,7 +179,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
     const url = this.buildUrl(remotePath);
     await this.assertSsrfSafe(url);
 
-    const dispatcher = createSsrfSafeAgent();
+    const dispatcher = adapterDispatcher(url);
     try {
       const res = await request(url, {
         method: 'HEAD',
@@ -212,9 +203,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
         lastModified: lastModified ? new Date(lastModified) : undefined,
       };
     } finally {
-      try {
-        await dispatcher.close?.();
-      } catch {}
+      await releaseDispatcher(dispatcher);
     }
   }
 
@@ -222,7 +211,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
     const url = this.buildUrl(remotePath);
     await this.assertSsrfSafe(url);
 
-    const dispatcher = createSsrfSafeAgent();
+    const dispatcher = adapterDispatcher(url);
     try {
       const res = await request(url, {
         method: 'DELETE',
@@ -232,9 +221,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
 
       return res.statusCode === 204 || res.statusCode === 200;
     } finally {
-      try {
-        await dispatcher.close?.();
-      } catch {}
+      await releaseDispatcher(dispatcher);
     }
   }
 }
