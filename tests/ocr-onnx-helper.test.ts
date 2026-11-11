@@ -214,11 +214,11 @@ describe('the helper pool, with a stand-in helper program', () => {
   it('stops waiting for a helper that is still starting when the job is aborted', async () => {
     const pool = makePool('slow-boot');
     const controller = new AbortController();
-    const started = Date.now();
     const reading = pool.read(page(), { language: 'kor', signal: controller.signal });
     setTimeout(() => controller.abort(new Error('the job was cancelled while the helper started')), 100);
-    await expect(reading).rejects.toThrow('the job was cancelled while the helper started');
-    expect(Date.now() - started).toBeLessThan(1200);
+    // the helper needs 1.5 s to start: the read ends with the abort long before that
+    const outcome = await Promise.race([reading.catch((e: Error) => e.message), new Promise((resolve) => setTimeout(() => resolve('still waiting'), 1000))]);
+    expect(outcome).toBe('the job was cancelled while the helper started');
     // the helper goes on booting and serves the next page
     const next = await pool.read(page(), { language: 'kor' });
     expect(next.text).toMatch(/^p\d+n1$/);

@@ -52,8 +52,8 @@ describe('the ocronnx stage of the worker image', () => {
 
   it('removes the native libraries of the other platforms and checks the one that is left', () => {
     const build = stages[0].instructions.filter((instruction) => instruction.keyword === 'RUN').map((instruction) => instruction.argument).join('\n');
-    expect(build).toContain('rm -rf darwin win32');
-    expect(build).toContain('libonnxruntime.so.1');
+    expect(/rm -rf (darwin win32)/.exec(build)?.[1]).toBe('darwin win32');
+    expect(/ls linux\/"\$ort_arch"\/(libonnxruntime\.so\.1) /.exec(build)?.[1]).toBe('libonnxruntime.so.1');
   });
 });
 
