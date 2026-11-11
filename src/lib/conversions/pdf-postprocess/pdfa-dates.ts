@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import {
   PDFDict,
-  PDFDocument,
+  type PDFDocument,
   PDFHexString,
   PDFName,
   PDFRawStream,
@@ -9,6 +9,8 @@ import {
   PDFString,
   decodePDFRawStream,
 } from 'pdf-lib';
+import { PayloadLimitError } from '../../types';
+import { loadPdfLibDocument } from '../pdf-lib-load';
 
 const MAX_DATE_STRING_LENGTH = 64;
 const PDF_DATE_HEAD_PATTERN = /^D:(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(.*)$/;
@@ -629,8 +631,9 @@ export async function normalisePdfADates(pdf: Buffer, now: Date = new Date()): P
 
   let doc: PDFDocument;
   try {
-    doc = await PDFDocument.load(pdf, { updateMetadata: false });
-  } catch {
+    doc = await loadPdfLibDocument(pdf, { updateMetadata: false });
+  } catch (error) {
+    if (error instanceof PayloadLimitError) throw error;
     return pdf;
   }
 

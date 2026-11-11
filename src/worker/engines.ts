@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import JSZip from 'jszip';
-import { PDFDocument } from 'pdf-lib';
 import {
   ConversionOptions,
   ConversionResult,
@@ -17,7 +16,7 @@ import {
   MediaPackagingOptions,
   UnsupportedTargetError,
   RawDecodeError, UnsupportedRawCompressionError, InvalidRawSensorError,
-  RawEngineRequiredError, PdfPasswordRequiredError,
+  RawEngineRequiredError, PdfPasswordRequiredError, PayloadLimitError,
 } from '../lib/types';
 import { convertFile, convertImage } from '../lib/conversions';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
@@ -84,6 +83,7 @@ import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnserve
 import { InputPixelLimitError } from '../lib/conversions/image-input-limits';
 import { checkOpenedPdfRasterPageBudget } from '../lib/conversions/pdf-access';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
+import { loadPdfLibDocument } from '../lib/conversions/pdf-lib-load';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
 import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
 import { normalizeSvgForRendering } from '../lib/conversions/svg-render-normalize';
@@ -1067,11 +1067,11 @@ export async function countPagesOfReadablePdf(
     if (inspectPdfEncryption(buf).encrypted) {
       throw new PdfPasswordRequiredError(PDF_PASSWORD_REJECTED_MESSAGE);
     }
-    const pdfDoc = await PDFDocument.load(buf);
+    const pdfDoc = await loadPdfLibDocument(buf);
     const count = pdfDoc.getPageCount();
     if (count > 0) return count;
   } catch (err) {
-    if (err instanceof PdfPasswordRequiredError) throw err;
+    if (err instanceof PdfPasswordRequiredError || err instanceof PayloadLimitError) throw err;
     // Fall-through to the typed error
   }
   throw new PdfStructureError('Unable to determine PDF page count: invalid or corrupted PDF structure.');

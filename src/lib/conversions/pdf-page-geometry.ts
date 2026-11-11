@@ -162,7 +162,7 @@ function readPageRotation(page: PDFPage, pageNumber: number): OcrQuarterTurn {
   return normalizePdfRotation(angle);
 }
 
-function readPageFrame(page: PDFPage, pageNumber: number): PdfPageFrame {
+export function readPageFrame(page: PDFPage, pageNumber: number): PdfPageFrame {
   const cropBox = readPageCropBox(page, pageNumber);
   const userUnit = readPageUserUnit(page, pageNumber);
   const rotation = readPageRotation(page, pageNumber);
@@ -171,24 +171,6 @@ function readPageFrame(page: PDFPage, pageNumber: number): PdfPageFrame {
     rotation,
     ...(userUnit === undefined ? {} : { userUnit }),
   };
-}
-
-/** The frame of every page of a PDF, in page order. */
-export async function readPdfPageFrames(pdf: Buffer | Uint8Array): Promise<PdfPageFrame[]> {
-  let doc: PDFDocument;
-  try {
-    doc = await PDFDocument.load(pdf, { updateMetadata: false });
-  } catch (err) {
-    throw new PdfPageFrameError(`Invalid PDF: the page boxes could not be read (${err instanceof Error ? err.message : String(err)}).`);
-  }
-  normaliseLeafPageCatalog(doc);
-  let pages: PDFPage[];
-  try {
-    pages = doc.getPages();
-  } catch (err) {
-    throw new PdfPageFrameError(`Invalid PDF: the page tree could not be read (${err instanceof Error ? err.message : String(err)}).`);
-  }
-  return pages.map((page, index) => readPageFrame(page, index + 1));
 }
 
 /** Size in points of the page as displayed: the CropBox, with width and height swapped by a quarter turn. */
@@ -221,7 +203,7 @@ export interface CheckedPdfRasterBudget {
   frames: PdfPageFrame[];
 }
 
-function checkPageFrameWithBudget(
+export function checkPageFrameWithBudget(
   page: PDFPage,
   pageNumber: number,
   dpi: number,
@@ -362,7 +344,7 @@ function resolveFallbackSelectedPages(
   }
 }
 
-function assertRawPdfBoxesWithinPageLimit(
+export function assertRawPdfBoxesWithinPageLimit(
   pdf: Buffer | Uint8Array,
   selectPageNumbers: (pageCount: number) => readonly number[],
   dpi: number
@@ -398,7 +380,7 @@ function inspectTreeNodeKids(doc: PDFDocument, tree: PDFPageTree, visited: Set<P
   return false;
 }
 
-function hasUnresolvedPageTreeRef(doc: PDFDocument): boolean {
+export function hasUnresolvedPageTreeRef(doc: PDFDocument): boolean {
   if (!(doc.catalog instanceof PDFCatalog)) return true;
   const pagesRef = doc.catalog.get(PDFName.of('Pages'));
   if (pagesRef === undefined || isMissingRef(doc, pagesRef)) return true;
@@ -423,53 +405,6 @@ export function assertPdfRasterPageBudget(frames: readonly PdfPageFrame[], pageN
     }
     assertPageWithinPixelLimit(frame, pageNumber, dpi, perPageLimit);
   }
-}
-
-/**
- * Checks the pages the request selects against the page and pixel limits, from the page tree and the page boxes.
- *
- * `pdf` is a file pdf-lib can open. An encrypted file is not: its page tree may sit in an encrypted object stream that the
- * fallback scan of the raw bytes cannot see, so the caller hands over the decrypted bytes (`openPdfForReading`; this module is
- * reachable from the browser OCR bundle and must not import the qpdf runner).
- */
-export async function checkPdfRasterPageBudget(
-  pdf: Buffer | Uint8Array,
-  selectPageNumbers: (pageCount: number) => readonly number[],
-  dpi: number
-): Promise<CheckedPdfRasterBudget | undefined> {
-  let doc: PDFDocument;
-  try {
-    doc = await PDFDocument.load(pdf, { updateMetadata: false, throwOnInvalidObject: true });
-  } catch {
-    assertRawPdfBoxesWithinPageLimit(pdf, selectPageNumbers, dpi);
-    return undefined;
-  }
-  if (hasUnresolvedPageTreeRef(doc)) {
-    assertRawPdfBoxesWithinPageLimit(pdf, selectPageNumbers, dpi);
-    return undefined;
-  }
-  normaliseLeafPageCatalog(doc);
-  let pages: PDFPage[];
-  try {
-    pages = doc.getPages();
-  } catch (err) {
-    throw new PdfPageFrameError(`Invalid PDF: the page tree could not be read (${err instanceof Error ? err.message : String(err)}).`);
-  }
-  if (pages.length === 0) {
-    assertRawPdfBoxesWithinPageLimit(pdf, selectPageNumbers, dpi);
-    return undefined;
-  }
-  const pageNumbers = [...selectPageNumbers(pages.length)];
-  const perPageLimit = Math.min(MAX_RASTER_PAGE_PIXELS, maxInputPixels());
-  const selectedFrames: PdfPageFrame[] = [];
-  for (const pageNumber of pageNumbers) {
-    const page = pages[pageNumber - 1];
-    if (!page) {
-      throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} does not exist.`);
-    }
-    selectedFrames.push(checkPageFrameWithBudget(page, pageNumber, dpi, perPageLimit));
-  }
-  return { pageNumbers, frames: selectedFrames };
 }
 
 /**

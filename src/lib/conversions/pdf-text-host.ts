@@ -82,6 +82,11 @@ const REPLACEMENT_LEAD_JOBS = 20;
 const RECYCLE_LIMIT_JOBS = 2 * RECYCLE_AFTER_JOBS;
 /** A thread idle this long is stopped. */
 const IDLE_MS = 15_000;
+/**
+ * Jobs that may wait for a thread. Every thread is busy when a job waits, so a queue that grows is a service that is behind; a job past
+ * this many is refused at once with an unavailable engine (503), which a caller or a queue worker retries, instead of holding its document.
+ */
+export const PDF_TEXT_MAX_QUEUED_JOBS = 64;
 
 type WorkerEntry = { kind: 'compiled'; file: string } | { kind: 'source'; bootstrap: string };
 
@@ -96,6 +101,9 @@ interface ActiveJob {
   resolve(result: PdfTextJobResult): void;
   reject(error: unknown): void;
   timer: NodeJS.Timeout;
+  queued: QueuedJob;
+  /** Stops listening to the thread for this job's reply: a reply that comes after the job ended is not its. */
+  detach(): void;
 }
 
 interface PooledThread {
@@ -110,7 +118,8 @@ interface PooledThread {
 }
 
 interface QueuedJob {
-  bytes: Uint8Array;
+  /** The caller's document; it is copied when a thread takes the job, so a waiting job holds no second copy. */
+  pdf: Buffer;
   job: PdfTextJob;
   resolve(result: PdfTextJobResult): void;
   reject(error: unknown): void;
@@ -208,6 +217,7 @@ function settle(thread: PooledThread, action: (job: ActiveJob) => void): void {
   if (!job) return;
   thread.active = null;
   clearTimeout(job.timer);
+  job.detach();
   action(job);
 }
 
@@ -235,6 +245,8 @@ function startReplacement(thread: PooledThread): void {
 }
 
 function release(thread: PooledThread): void {
+  // A thread that was retired (its job overran, or it was stopped) is ending: a reply that still reaches here must not put it back.
+  if (!threads.has(thread)) return;
   thread.jobs++;
   if (thread.jobs >= RECYCLE_AFTER_JOBS - REPLACEMENT_LEAD_JOBS) startReplacement(thread);
   const due = thread.jobs >= RECYCLE_LIMIT_JOBS || (thread.jobs >= RECYCLE_AFTER_JOBS && !awaitsReplacement(thread));
@@ -288,17 +300,21 @@ function dispatch(thread: PooledThread, queued: QueuedJob): void {
     settle(thread, (job) => job.reject(new PdfTextGeometryError(`PDF text extraction exceeded its ${deadlineMs} ms limit.`)));
     startQueued();
   }, deadlineMs);
-  thread.active = { resolve: queued.resolve, reject: queued.reject, timer };
-  if (queued.job.images === true) thread.readImages = true;
-  thread.worker.ref?.();
-  thread.worker.once('message', (reply: WorkerReply) => {
+  const onReply = (reply: WorkerReply): void => {
     settle(thread, (job) => {
       if (reply.ok && reply.result) job.resolve(reply.result);
       else job.reject(pdfTextFailure(reply.kind, reply.message ?? 'PDF text extraction failed.'));
     });
     release(thread);
-  });
-  thread.worker.postMessage({ bytes: queued.bytes, job: queued.job }, [queued.bytes.buffer as ArrayBuffer]);
+  };
+  thread.active = { resolve: queued.resolve, reject: queued.reject, timer, queued, detach: () => thread.worker.off('message', onReply) };
+  if (queued.job.images === true) thread.readImages = true;
+  thread.worker.ref?.();
+  thread.worker.once('message', onReply);
+  // A private copy, made now that a thread takes the job: transferring the caller's (possibly pooled or shared) memory would detach it.
+  const bytes = new Uint8Array(queued.pdf.byteLength);
+  bytes.set(queued.pdf);
+  thread.worker.postMessage({ bytes, job: queued.job }, [bytes.buffer]);
 }
 
 /** Starts as many waiting jobs as there are threads for. */
@@ -330,19 +346,55 @@ export function shutdownPdfTextThreads(): void {
   for (const queued of queue.splice(0)) queued.reject(new EngineUnavailableError(ENGINE_NAME, 'the thread was stopped'));
 }
 
+/** Ends a job its caller gave up on: a waiting job leaves the queue, a running one stops its thread (the thread's state is then unknown). */
+function abortJob(queued: QueuedJob, reason: unknown): void {
+  const waiting = queue.indexOf(queued);
+  if (waiting >= 0) {
+    queue.splice(waiting, 1);
+    queued.reject(reason);
+    return;
+  }
+  const running = [...threads].find((thread) => thread.active?.queued === queued);
+  if (!running) return;
+  retire(running);
+  settle(running, (job) => job.reject(reason));
+  startQueued();
+}
+
 /**
  * @returns the job result.
  * @throws PdfTextGeometryError when the document is rejected, runs out of memory or exceeds the deadline.
  * @throws EncryptedOfficeDocumentError when the document needs a password.
  * @throws PayloadLimitError when the document has more pages than can be read.
- * @throws EngineUnavailableError when the thread cannot run: no entry exists, it cannot be started, or it dies.
+ * @throws EngineUnavailableError when the thread cannot run: no entry exists, it cannot be started, it dies, or PDF_TEXT_MAX_QUEUED_JOBS jobs already wait.
+ * @throws the reason of `signal` when it aborts before the job ends; a running job's thread is stopped.
  */
-export function runPdfTextJobInThread(pdf: Buffer, job: PdfTextJob): Promise<PdfTextJobResult> {
-  // A private copy: transferring the caller's (possibly pooled or shared) memory would detach it.
-  const bytes = new Uint8Array(pdf.byteLength);
-  bytes.set(pdf);
+export function runPdfTextJobInThread(pdf: Buffer, job: PdfTextJob, signal?: AbortSignal): Promise<PdfTextJobResult> {
   return new Promise<PdfTextJobResult>((resolve, reject) => {
-    queue.push({ bytes, job, resolve, reject });
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    // Jobs are started as they arrive, so a waiting job means that every thread is busy.
+    if (queue.length >= PDF_TEXT_MAX_QUEUED_JOBS) {
+      reject(new EngineUnavailableError(ENGINE_NAME, `${queue.length} jobs are already waiting for a thread (limit ${PDF_TEXT_MAX_QUEUED_JOBS})`));
+      return;
+    }
+    const queued: QueuedJob = { pdf, job, resolve, reject };
+    if (signal) {
+      const onAbort = (): void => abortJob(queued, signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+      const settled = (): void => signal.removeEventListener('abort', onAbort);
+      queued.resolve = (result) => {
+        settled();
+        resolve(result);
+      };
+      queued.reject = (error) => {
+        settled();
+        reject(error);
+      };
+    }
+    queue.push(queued);
     startQueued();
   });
 }
