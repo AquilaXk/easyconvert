@@ -122,7 +122,7 @@ const alive = (pid: number): boolean => {
   }
 };
 
-const REQUEST = { timeoutMs: 1000, maxOutput: 1000, limitAsBytes: 0, limitFsizeBytes: 0, limitCpuSeconds: 0, confine: 0, cwd: '/tmp', workDir: '', readPaths: [], argv: ['qpdf', 'echo-stdin'], env: ['A=1'], stdin: Buffer.alloc(0) };
+const REQUEST = { timeoutMs: 1000, maxOutput: 1000, limitAsBytes: 0, limitFsizeBytes: 0, limitCpuSeconds: 0, confine: 0, cwd: '/tmp', workDir: '', readPaths: [] as string[], argv: ['qpdf', 'echo-stdin'], env: ['A=1'], stdin: Buffer.alloc(0) };
 
 beforeAll(async () => {
   scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'qpdf-runner-test-'));
