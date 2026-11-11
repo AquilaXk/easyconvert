@@ -1,7 +1,7 @@
 import type { Metadata, PngOptions, Sharp } from 'sharp';
 import type { ConversionOptions } from '../types';
 import { resizedDimensions } from './image-input-limits';
-import { optimiserFollows } from './png-optimise';
+import { OPTIMISE_PNG_RESULT, optimiserFollows } from './png-optimise';
 
 /**
  * Cheap content analysis for the lossy encoders. Screenshots, line art and rendered text have large flat areas
@@ -214,6 +214,7 @@ const SIXTEEN_BIT_DEPTH = 'ushort';
 /** Whether the PNG written for `meta` (the input, before the resize of `options`) is rewritten by the optimiser, as a palette picture or as full colour. */
 function followedByOptimiser(source: string, fmt: string, meta: Metadata | undefined, options: ConversionOptions, palette: boolean): boolean {
   if (meta === undefined || meta.width === undefined || meta.height === undefined) return false;
+  if ((options as Record<symbol, unknown>)[OPTIMISE_PNG_RESULT] !== true) return false;
   const size = resizedDimensions(meta.width, meta.height, options);
   const bytesPerPixel = palette ? PALETTE_INDEX_BYTES : (meta.channels ?? RGB_CHANNELS + 1) * (meta.depth === SIXTEEN_BIT_DEPTH ? 2 : 1);
   return optimiserFollows(source, fmt, size.width, size.height, bytesPerPixel, palette);

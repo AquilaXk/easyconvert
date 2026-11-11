@@ -1,5 +1,5 @@
 import { executeSandboxedBinary, rethrowSandboxUnavailable, SandboxedBufferLimitError, SandboxedProcessError } from '../security/process-sandbox';
-import type { ConversionResult } from '../types';
+import type { ConversionOptions, ConversionResult } from '../types';
 import { availableCpus } from '../workers/available-cpus';
 import { findDecoderTool, loggableDiagnostic } from './image-decoder-tools';
 
@@ -14,6 +14,18 @@ import { findDecoderTool, loggableDiagnostic } from './image-decoder-tools';
  * be worth the time all give the input back unchanged, so a conversion never fails or grows because of it. Only a host that cannot confine
  * its children refuses (the sandbox's rule for every program), and a cancelled conversion stops.
  */
+
+/**
+ * Set on the options of a conversion whose source file is a PNG and whose target is a PNG (and only by `convertImageSource`): the file
+ * the encoder writes is then optimised, and the encoder writes the cheapest file for it. A symbol, so that it cannot come out of request
+ * JSON; a PNG that another decoder made from a JPEG XL or a camera file never carries it, since that conversion is not a compression of a PNG.
+ */
+export const OPTIMISE_PNG_RESULT = Symbol.for('easyconvert.optimisePngResult');
+
+/** The options with the mark that the file of this PNG to PNG conversion is optimised. */
+export function markedForOptimiser(options: ConversionOptions): ConversionOptions {
+  return { ...options, [OPTIMISE_PNG_RESULT]: true } as ConversionOptions;
+}
 
 /** Environment variable that names the executable; a value is authoritative, so a path that is not an executable file means "not installed". */
 export const OXIPNG_PATH_ENV = 'OXIPNG_PATH';

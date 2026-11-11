@@ -4,6 +4,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { convertFile } from '../src/lib/conversions';
+import { convertImage } from '../src/lib/conversions/image';
 import { findOxipng, OXIPNG_FULL_COLOUR_ARGUMENTS, OXIPNG_LARGE_PALETTE_ARGUMENTS, OXIPNG_PALETTE_ARGUMENTS, optimisePng } from '../src/lib/conversions/png-optimise';
 import { craftPng } from './helpers/png-craft';
 import { chunksOf, headerOf, rgba16Of } from './helpers/png-pixels';
@@ -141,6 +142,17 @@ describe('the file the encoder hands to the optimiser', () => {
     expect(flevel(alone.palette.buffer)).toBe(3);
     expect(flevel(alone.full.buffer)).toBe(3);
     expect(rgba16Of(followed.full.buffer)).toEqual(rgba16Of(alone.full.buffer));
+  });
+
+  it('does not change the encoder for a call that carries no mark, such as a PNG that a decoder made from another format', async () => {
+    const { program } = standIn('cat');
+    vi.stubEnv('OXIPNG_PATH', program);
+    try {
+      const out = await convertImage(await source(), 'png', { palette: true, colors: 256 }, 'a.png', 'png');
+      expect(flevel(out.buffer)).toBe(3);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('keeps the usual level for a conversion from another format and for a picture the optimiser will not take', async () => {

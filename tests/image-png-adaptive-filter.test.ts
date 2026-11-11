@@ -1,6 +1,6 @@
 import zlib from 'node:zlib';
 import sharp from 'sharp';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
 import { scanRows } from '../src/lib/conversions/png-scanlines';
 
@@ -11,14 +11,6 @@ import { scanRows } from '../src/lib/conversions/png-scanlines';
  * samples are read back from the file by this test (inflate, `scanRows` unfiltering), not by the converter's own decoder; the old
  * encoder settings are the reference for the size.
  */
-
-// These tests judge the encoder's own settings; with the lossless optimiser installed a PNG written from a PNG is a plain level 1 file for it (entry 232).
-beforeAll(() => {
-  vi.stubEnv('OXIPNG_PATH', '/nonexistent/oxipng');
-});
-afterAll(() => {
-  vi.unstubAllEnvs();
-});
 
 const WIDTH = 160;
 const HEIGHT = 120;
