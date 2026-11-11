@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { redisUserStore } from '../auth/redis-user-store';
-import { failClosed } from '../auth/store-unavailable';
+import { AuthStoreUnavailableError, failClosed } from '../auth/store-unavailable';
 import { isAnonymousUserId } from '../auth/anonymous-identity';
 import type { UserTier } from '../auth/types';
 import { KeyStore, type ApiKeyVerification, TIER_LIMITS, getAnonymousDailyLimit, getUtcDateKey, getNextMidnightUtc, apiKeyHashCandidates } from './key-store';
@@ -202,6 +202,8 @@ export class RedisKeyStore extends KeyStore {
           resetAt,
         };
       } catch (err) {
+        // The account store's own refusal keeps its type (a 503 in the route); any other failure is the quota service's.
+        if (err instanceof AuthStoreUnavailableError) throw err;
         console.error('[RedisKeyStore] Redis getQuotaUsage failed:', err);
         throw new Error('Distributed quota service is temporarily unavailable');
       }

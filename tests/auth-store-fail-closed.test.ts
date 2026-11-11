@@ -5,13 +5,19 @@ import type Redis from 'ioredis';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { GET as meRoute } from '../src/app/api/auth/me/route';
+import { GET as keysUsageRoute } from '../src/app/api/keys/usage/route';
+import { POST as rotateRoute } from '../src/app/api/v1/webhooks/secrets/rotate/route';
 import { POST as logoutRoute } from '../src/app/api/auth/logout/route';
 import { validateApiAccess } from '../src/lib/api-keys/guard';
+import { loggingOutcomes } from '../src/lib/api/conversion-outcome-log';
 import { RedisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { signJwt, DEFAULT_JWT_AUDIENCE, DEFAULT_JWT_ISSUER } from '../src/lib/auth/jwt';
 import { RedisUserStore, redisUserStore } from '../src/lib/auth/redis-user-store';
-import { createSessionToken, getSessionFromToken, SESSION_COOKIE_NAME } from '../src/lib/auth/session';
+import { createSessionToken, getSessionFromToken, isSessionRevoked, SESSION_COOKIE_NAME } from '../src/lib/auth/session';
+import { HOST_SESSION_COOKIE_NAME } from '../src/lib/auth/session-cookie';
+import { verifyJwt } from '../src/lib/auth/jwt';
+import type { SessionPayload } from '../src/lib/auth/types';
 import { AuthStoreUnavailableError } from '../src/lib/auth/store-unavailable';
 
 /**
@@ -224,5 +230,74 @@ describe('a request while the account store is down', () => {
 
     expect(res.status).toBe(HTTP_UNAVAILABLE);
     expect(res.headers.get('set-cookie')).toBeNull();
+  });
+});
+
+describe('the typed refusal reaches the routes as a 503', () => {
+  it('stays an AuthStoreUnavailableError through the quota read of the key store, not a plain Error', async () => {
+    const store = new RedisKeyStore({ keyPrefix: `failclosed:${crypto.randomBytes(4).toString('hex')}:`, isolated: true, redisClient: silentRedis() });
+    const user = await redisUserStore.createUser({ email: uniqueEmail(), name: 'Quota user' });
+    vi.spyOn(redisUserStore, 'findById').mockRejectedValue(new AuthStoreUnavailableError());
+
+    expect((await refusal(store.getQuotaUsage(user.id))).status).toBe(HTTP_UNAVAILABLE);
+  });
+
+  it('answers /api/keys/usage with 503 and Retry-After when the quota read is refused by the account store', async () => {
+    const user = await redisUserStore.createUser({ email: uniqueEmail(), name: 'Usage user' });
+    const token = createSessionToken(redisUserStore.sanitizeUser(user));
+    vi.spyOn(redisKeyStore, 'getQuotaUsage').mockRejectedValue(new AuthStoreUnavailableError());
+
+    const res = await keysUsageRoute(new NextRequest('http://localhost/api/keys/usage', { headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` } }));
+
+    expect(res.status).toBe(HTTP_UNAVAILABLE);
+    expect(res.headers.get('retry-after')).not.toBeNull();
+  });
+
+  it('answers a conversion route whose account store failed past the guard with 503 instead of letting the error escape', async () => {
+    const route = loggingOutcomes('test/convert', async () => {
+      throw new AuthStoreUnavailableError();
+    });
+
+    const res = await route(new NextRequest('http://localhost/api/v1/convert', { method: 'POST' }));
+
+    expect(res.status).toBe(HTTP_UNAVAILABLE);
+    expect(res.headers.get('retry-after')).not.toBeNull();
+  });
+
+  it('answers a webhook secret rotation with 503, not a 500 or a 404, when the key store cannot list the keys', async () => {
+    const user = await redisUserStore.createUser({ email: uniqueEmail(), name: 'Rotating user' });
+    const { key } = await redisKeyStore.generateApiKey(user.id, 'Rotated', { scopes: ['*'] });
+    const token = createSessionToken(redisUserStore.sanitizeUser(user));
+    vi.spyOn(redisKeyStore, 'listApiKeys').mockRejectedValue(new AuthStoreUnavailableError());
+
+    const res = await rotateRoute(
+      new NextRequest('http://localhost/api/v1/webhooks/secrets/rotate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ apiKeyId: key.id }),
+      })
+    );
+
+    expect(res.status).toBe(HTTP_UNAVAILABLE);
+    expect(res.headers.get('retry-after')).not.toBeNull();
+  });
+});
+
+describe('a sign-out that carries both session cookies', () => {
+  it('revokes the session of each, since the plain name is still read for a release', async () => {
+    const user = await redisUserStore.createUser({ email: uniqueEmail(), name: 'Two cookies' });
+    const hostToken = createSessionToken(redisUserStore.sanitizeUser(user));
+    const plainToken = createSessionToken(redisUserStore.sanitizeUser(user));
+    const hostJti = verifyJwt<SessionPayload>(hostToken)?.jti ?? '';
+    const plainJti = verifyJwt<SessionPayload>(plainToken)?.jti ?? '';
+    expect(hostJti).not.toBe(plainJti);
+
+    const res = await logoutRoute(
+      new Request('http://localhost/api/auth/logout', { method: 'POST', headers: { cookie: `${HOST_SESSION_COOKIE_NAME}=${hostToken}; ${SESSION_COOKIE_NAME}=${plainToken}` } })
+    );
+
+    expect(res.status).toBe(200);
+    expect(await isSessionRevoked(hostJti)).toBe(true);
+    expect(await isSessionRevoked(plainJti)).toBe(true);
   });
 });

@@ -9,6 +9,7 @@ import {
   WebhookTargetRequiredError,
 } from '@/lib/api-keys/webhook-secret-store';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { AuthStoreUnavailableError } from '@/lib/auth/store-unavailable';
 import {
   validateOrProblem,
   WebhookSecretRotateRequestSchema,
@@ -83,7 +84,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (denied) return denied;
   const keyTarget = apiKeyId !== undefined && targetId === apiKeyId;
   // A named key must be an active key of this account; an unknown id and another account's id answer alike.
-  const ownKey = apiKeyId === undefined ? undefined : (await redisKeyStore.listApiKeys(auth.user.id)).find((key) => key.id === apiKeyId && key.status === 'active');
+  let ownKey: Awaited<ReturnType<typeof redisKeyStore.listApiKeys>>[number] | undefined;
+  if (apiKeyId !== undefined) {
+    try {
+      ownKey = (await redisKeyStore.listApiKeys(auth.user.id)).find((key) => key.id === apiKeyId && key.status === 'active');
+    } catch (error) {
+      // The key store cannot say whether the key exists: neither a 404 nor a rotation, but a retry.
+      if (!(error instanceof AuthStoreUnavailableError)) throw error;
+      return createProblemDetailsResponse(error.status, 'The key store is temporarily unavailable. Retry the request shortly.', instanceUri, 'Service Unavailable', undefined, {
+        'Retry-After': String(error.retryAfterSeconds),
+      });
+    }
+  }
   if (apiKeyId !== undefined && !ownKey) {
     return createProblemDetailsResponse(HTTP_NOT_FOUND, 'API key not found.', instanceUri);
   }

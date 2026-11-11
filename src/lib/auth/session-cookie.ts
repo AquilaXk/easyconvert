@@ -22,7 +22,16 @@ export function sessionCookieName(production: boolean = process.env.NODE_ENV ===
 
 /** The session token of a `Cookie` header, under the first of SESSION_COOKIE_NAMES that it carries; null when none. */
 export function sessionTokenFromCookieHeader(header: string | null | undefined): string | null {
-  if (!header) return null;
+  return sessionTokensFromCookieHeader(header)[0] ?? null;
+}
+
+/**
+ * The session tokens of a `Cookie` header under every name of SESSION_COOKIE_NAMES that it carries, the one that is read first
+ * first. A sign-out revokes all of them: while the plain name is still read, a request that carries both would otherwise
+ * keep the session of the one that was not revoked.
+ */
+export function sessionTokensFromCookieHeader(header: string | null | undefined): string[] {
+  if (!header) return [];
   const cookies = new Map<string, string>();
   for (const part of header.split(';')) {
     const text = part.trim();
@@ -31,11 +40,7 @@ export function sessionTokenFromCookieHeader(header: string | null | undefined):
     const name = text.slice(0, equals);
     if (!cookies.has(name)) cookies.set(name, text.slice(equals + 1));
   }
-  for (const name of SESSION_COOKIE_NAMES) {
-    const value = cookies.get(name);
-    if (value) return value;
-  }
-  return null;
+  return SESSION_COOKIE_NAMES.map((name) => cookies.get(name)).filter((value): value is string => Boolean(value));
 }
 
 /** The session token of a cookie store (`cookies()` of next/headers, `request.cookies`), under the first name it carries. */

@@ -5,6 +5,8 @@ import { PROTECT_PASSWORD_KEYS } from '../queue/option-secrets';
 import { HTTP_TOO_MANY_REQUESTS, problemNameOfType } from '../refusal-codes';
 import { escapeRegExp } from '../security/redact';
 import type { ConversionOptions } from '../types';
+import { AuthStoreUnavailableError } from '../auth/store-unavailable';
+import { authStoreUnavailableRefusal } from './problem-details';
 
 /**
  * One server log line for each refusal (4xx) and failure (5xx) of a convert route: the status, the refusal code, the source and
@@ -188,6 +190,13 @@ export function loggingOutcomes<Result extends Response>(
       response = await handler(req, trace);
     } catch (escaped) {
       trace.cause = escaped;
+      if (escaped instanceof AuthStoreUnavailableError) {
+        // The account store failed past the guard (a quota read): a 503 to retry, not the 500 of an unclassified error.
+        const refusal = authStoreUnavailableRefusal(escaped) as unknown as Result;
+        recordConvertAnswer(route, trace.source, refusal.status, startedAt);
+        await logOutcome(route, trace, refusal.status, refusal, startedAt);
+        return refusal;
+      }
       recordConvertAnswer(route, trace.source, HTTP_INTERNAL_SERVER_ERROR, startedAt);
       await logOutcome(route, trace, HTTP_INTERNAL_SERVER_ERROR, undefined, startedAt);
       throw escaped;
