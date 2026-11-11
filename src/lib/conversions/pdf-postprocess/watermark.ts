@@ -9,6 +9,7 @@ import {
   type PDFImage,
 } from 'pdf-lib';
 import { assertEncodedImageWithinLimit } from '../image-input-limits';
+import { loadPdfLibDocument } from '../pdf-lib-load';
 import { loadPdfDocument, openPdfForEditing, PDF_LIB_OBJECTS_PER_TICK, type PdfAccess } from '../pdf-access';
 import { PARSER_LOOP_REFUSAL, withMendedPageTree } from './mend-page-tree';
 import { parsePageRanges } from '../page-range';
@@ -361,7 +362,7 @@ async function stampTextWatermark(
 ): Promise<TextWatermark> {
   const face = family ? await requestedFace(family, text) : undefined;
   const stamp = await renderTextStamp({ text, fontSize, color, opacity, face });
-  const [embedded]: PDFEmbeddedPage[] = await doc.embedPdf(await PDFDocument.load(stamp.pdf), [STAMP_PAGE_INDEX]);
+  const [embedded]: PDFEmbeddedPage[] = await doc.embedPdf(await loadPdfLibDocument(stamp.pdf), [STAMP_PAGE_INDEX]);
   return {
     width: stamp.width,
     height: stamp.height,

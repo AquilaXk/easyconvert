@@ -10,10 +10,11 @@ import { maxDocumentMediaBytes } from '../lib/conversions/office/media-limits';
 import { CFBF_MAX_FILE_BYTES } from '../lib/compound-file-kind';
 import { officeReadingFormat } from '../lib/conversions/office/office-suite-sources';
 import { stripOfficeMacros } from '../lib/conversions/office-macro-strip';
-import { ZIP_LOCAL_HEADER_SIGNATURE, startsWithBytes } from '../lib/conversions/package-access';
-import { MAX_ZIP_MEDIA_BYTES, readZipEntryBytes } from '../lib/conversions/zip-entry-reader';
+import { ZIP_LOCAL_HEADER_SIGNATURE, assertPackageEntryCount, startsWithBytes } from '../lib/conversions/package-access';
+import { MAX_ZIP_MEDIA_BYTES, readZipEntryBytes, scanZipEntry } from '../lib/conversions/zip-entry-reader';
+import { sniffFixedSignature } from '../lib/format-signatures';
 import { getMaxInMemoryBytes } from '../lib/storage/errors';
-import { PayloadLimitError } from '../lib/types';
+import { ConversionFailedError, PayloadLimitError } from '../lib/types';
 import type { WorkerVfsPayload } from './worker-types';
 
 /**
@@ -115,18 +116,58 @@ export async function assertDrawingPackage(input: Buffer | WorkerVfsPayload, src
   if (buffer) await assertOpenDocumentGraphic(buffer, src);
 }
 
+/** Bytes at the start of a part that tell a picture from other data. */
+const IMAGE_SIGNATURE_BYTES = 16;
+const RIFF_FORM_OFFSET = 8;
+const FTYP_BRAND_OFFSET = 8;
+const FTYP_BOX_OFFSET = 4;
+/** Brands of the ISO base media file format that hold a still picture (AVIF, HEIC and HEIF). */
+const STILL_PICTURE_BRANDS: ReadonlySet<string> = new Set(['avif', 'avis', 'heic', 'heix', 'hevc', 'mif1', 'msf1']);
+
+/** Whether the first bytes of a part are those of a raster picture the office suite decodes whatever the part is called. */
+function startsLikeRasterPicture(head: Buffer): boolean {
+  if (sniffFixedSignature(head)?.startsWith('image/') === true) return true;
+  if (isBmp(head)) return true;
+  if (head.toString('latin1', 0, 4) === 'RIFF' && head.toString('latin1', RIFF_FORM_OFFSET, RIFF_FORM_OFFSET + 4) === 'WEBP') return true;
+  return head.toString('latin1', FTYP_BOX_OFFSET, FTYP_BOX_OFFSET + 4) === 'ftyp' && STILL_PICTURE_BRANDS.has(head.toString('latin1', FTYP_BRAND_OFFSET, FTYP_BRAND_OFFSET + 4));
+}
+
+const HEAD_READ_DONE = new Error('head read');
+
+/** The first bytes of a part, read without inflating the rest of it. */
+async function headOf(entry: JSZip.JSZipObject): Promise<Buffer> {
+  let head = Buffer.alloc(0);
+  try {
+    await scanZipEntry(entry, (chunk) => {
+      head = Buffer.from(chunk.subarray(0, IMAGE_SIGNATURE_BYTES));
+      throw HEAD_READ_DONE;
+    }, { maxBytes: MAX_ZIP_MEDIA_BYTES });
+  } catch (error) {
+    if (error !== HEAD_READ_DONE) throw error;
+  }
+  return head;
+}
+
+/**
+ * Checks the pixels of every picture in an office package before the office suite decodes it. A picture is found by where it lies and what it
+ * is called (`isOfficeMediaEntry`) and, for any other part, by its first bytes: a relationship names a part, and the suite decodes it as the
+ * picture it is, whatever the part is called. A package that cannot be read is refused (400) and one with too many entries is refused (413):
+ * the suite opens what this reader cannot, so a package left unread would reach it unchecked.
+ * @throws InputPixelLimitError and PayloadLimitError (413) for a picture past a limit, ConversionFailedError (400) for a package that cannot be read.
+ */
 export async function assertOfficeEmbeddedImagesWithinLimit(input: Buffer | WorkerVfsPayload): Promise<void> {
   const buffer = zipPackageBytes(input);
   if (!buffer) return;
+  assertPackageEntryCount(buffer, 'office document', 'office package');
   let zip: JSZip;
   try {
     zip = await JSZip.loadAsync(buffer);
   } catch {
-    return;
+    throw new ConversionFailedError('The office document is not a valid package, so its pictures cannot be checked before the office suite opens it.');
   }
   const budget = new InflateBudget(maxDocumentMediaBytes());
   for (const [name, entry] of Object.entries(zip.files)) {
-    if (entry.dir || !isOfficeMediaEntry(name)) continue;
+    if (entry.dir || !(isOfficeMediaEntry(name) || startsLikeRasterPicture(await headOf(entry)))) continue;
     const bytes = await readZipEntryBytes(entry, { maxBytes: MAX_ZIP_MEDIA_BYTES, budget });
     const lowerName = name.toLowerCase();
     if (isBmp(bytes) || ((lowerName.endsWith('.dib') || lowerName.endsWith('.bmp')) && isDib(bytes))) {

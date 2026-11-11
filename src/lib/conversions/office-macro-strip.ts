@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
 import { InflateBudget } from './bounded-inflate';
-import { startsWithBytes, ZIP_LOCAL_HEADER_SIGNATURE } from './package-access';
+import { declaredPackageEntries, startsWithBytes, ZIP_LOCAL_HEADER_SIGNATURE } from './package-access';
 import { newRelationshipAllowance, forEachRelationship } from './office/opc-parts';
 import { resolveZipPath } from './office/zip-path';
 import { safeExtractXmlElements, type SafeXmlElement } from './safe-xml-scanner';
@@ -283,6 +283,9 @@ function strongerOutcome(a: StripOutcome, b: StripOutcome): StripOutcome {
 export async function stripOfficeMacros(buffer: Buffer): Promise<MacroStripResult> {
   const unchanged: MacroStripResult = { buffer, droppedMacros: false };
   if (!startsWithBytes(buffer, ZIP_LOCAL_HEADER_SIGNATURE)) return unchanged;
+  // Before JSZip makes an object for every entry the directory declares.
+  const declared = declaredPackageEntries(buffer);
+  if (declared !== undefined && declared > MACRO_STRIP_MAX_ENTRIES) refuseTooMany('entries', declared, MACRO_STRIP_MAX_ENTRIES);
   let zip: JSZip;
   try {
     zip = await JSZip.loadAsync(buffer);
