@@ -287,7 +287,7 @@ describe.skipIf(skipUnless('unprivileged namespaces, pid-init and Landlock versi
           vi.stubEnv('PID_INIT_PATH', '');
           resetUnshareCapabilityCache();
           await expect(run({ workDir: own })).rejects.toBeInstanceOf(SandboxUnavailableError);
-          await expect(run({ workDir: own })).rejects.toThrow(/cannot confine the files/);
+          await expect(run({ workDir: own })).rejects.toThrow(/no pid-init/);
         },
         TEST_TIMEOUT_MS
       );
