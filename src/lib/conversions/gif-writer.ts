@@ -38,91 +38,121 @@ export interface GifImage {
   transparentIndex: number;
 }
 
-class BitSink {
-  private bytes = new Uint8Array(1 << 16);
-  length = 0;
-  private accumulator = 0;
-  private accumulated = 0;
-
-  private push(byte: number): void {
-    if (this.length === this.bytes.length) {
-      const grown = new Uint8Array(this.bytes.length * 2);
-      grown.set(this.bytes);
-      this.bytes = grown;
-    }
-    this.bytes[this.length] = byte;
-    this.length += 1;
-  }
-
-  write(code: number, bits: number): void {
-    this.accumulator |= code << this.accumulated;
-    this.accumulated += bits;
-    while (this.accumulated >= 8) {
-      this.push(this.accumulator & 0xff);
-      this.accumulator >>>= 8;
-      this.accumulated -= 8;
-    }
-  }
-
-  flush(): Uint8Array {
-    if (this.accumulated > 0) this.push(this.accumulator & 0xff);
-    return this.bytes.subarray(0, this.length);
-  }
-}
-
 /** LZW codes of the index stream, LSB-first packed, in the variant the GIF specification defines. */
 function lzwEncode(indices: Uint8Array, minCodeSize: number): Uint8Array {
   const clearCode = 1 << minCodeSize;
   const endCode = clearCode + 1;
-  const sink = new BitSink();
-  const hashKeys = new Int32Array(HASH_SIZE).fill(-1);
-  const hashCodes = new Uint16Array(HASH_SIZE);
+  const initialBits = minCodeSize + 1;
+  // One word per slot: the key (index << 12 | prefix code) in the upper 20 bits, the code in the lower 12. Codes start at clearCode + 2, so a held slot is never 0.
+  const table = new Uint32Array(HASH_SIZE);
+  const count = indices.length;
+  let bytes = new Uint8Array((count >> 1) + 4096);
+  let length = 0;
+  // The first code is the clear code at the initial width.
+  let accumulator = clearCode;
+  let accumulated = initialBits;
   let freeEntry = clearCode + 2;
-  let codeBits = minCodeSize + 1;
+  let codeBits = initialBits;
   let maxCode = (1 << codeBits) - 1;
 
-  const output = (code: number, afterClear = false): void => {
-    sink.write(code, codeBits);
-    if (afterClear) {
-      codeBits = minCodeSize + 1;
-      maxCode = (1 << codeBits) - 1;
-    } else if (freeEntry > maxCode) {
+  let prefix = indices[0];
+  for (let i = 1; i < count; i += 1) {
+    const byte = indices[i];
+    const key = (byte << MAX_CODE_BITS) | prefix;
+    let slot = Math.imul(key, HASH_MULTIPLIER) >>> (32 - HASH_BITS);
+    let entry = table[slot];
+    while (entry !== 0) {
+      if (entry >>> MAX_CODE_BITS === key) break;
+      slot = (slot + 1) & HASH_MASK;
+      entry = table[slot];
+    }
+    if (entry !== 0) {
+      prefix = entry & 0xfff;
+      continue;
+    }
+    // The string `prefix + byte` is new: `prefix` goes out at the current width (at most 19 bits are pending, so at most two bytes leave).
+    accumulator |= prefix << accumulated;
+    accumulated += codeBits;
+    if (length + 4 > bytes.length) {
+      const grown = new Uint8Array(bytes.length * 2);
+      grown.set(bytes);
+      bytes = grown;
+    }
+    if (accumulated >= 16) {
+      bytes[length] = accumulator & 0xff;
+      bytes[length + 1] = (accumulator >>> 8) & 0xff;
+      length += 2;
+      accumulator >>>= 16;
+      accumulated -= 16;
+    }
+    if (accumulated >= 8) {
+      bytes[length] = accumulator & 0xff;
+      length += 1;
+      accumulator >>>= 8;
+      accumulated -= 8;
+    }
+    if (freeEntry > maxCode) {
       codeBits += 1;
       maxCode = codeBits === MAX_CODE_BITS ? TABLE_LIMIT : (1 << codeBits) - 1;
     }
-  };
-
-  output(clearCode);
-  let prefix = indices[0];
-  for (let i = 1; i < indices.length; i += 1) {
-    const byte = indices[i];
-    const key = (byte << MAX_CODE_BITS) + prefix;
-    let slot = Math.imul(key, HASH_MULTIPLIER) >>> (32 - HASH_BITS);
-    let found = false;
-    while (hashKeys[slot] !== -1) {
-      if (hashKeys[slot] === key) {
-        prefix = hashCodes[slot];
-        found = true;
-        break;
-      }
-      slot = (slot + 1) & HASH_MASK;
-    }
-    if (found) continue;
-    output(prefix);
     prefix = byte;
     if (freeEntry < TABLE_LIMIT) {
-      hashKeys[slot] = key;
-      hashCodes[slot] = freeEntry;
+      table[slot] = (key << MAX_CODE_BITS) | freeEntry;
       freeEntry += 1;
     } else {
-      hashKeys.fill(-1);
+      table.fill(0);
       freeEntry = clearCode + 2;
-      output(clearCode, true);
+      // The clear code goes out at the old width; the next code is back to the initial one.
+      accumulator |= clearCode << accumulated;
+      accumulated += codeBits;
+      if (accumulated >= 16) {
+        bytes[length] = accumulator & 0xff;
+        bytes[length + 1] = (accumulator >>> 8) & 0xff;
+        length += 2;
+        accumulator >>>= 16;
+        accumulated -= 16;
+      }
+      if (accumulated >= 8) {
+        bytes[length] = accumulator & 0xff;
+        length += 1;
+        accumulator >>>= 8;
+        accumulated -= 8;
+      }
+      codeBits = initialBits;
+      maxCode = (1 << codeBits) - 1;
     }
   }
-  output(prefix);
-  output(endCode);
-  return sink.flush();
+  // Last prefix and the end code.
+  for (let step = 0; step < 2; step += 1) {
+    const code = step === 0 ? prefix : endCode;
+    accumulator |= code << accumulated;
+    accumulated += codeBits;
+    while (accumulated >= 8) {
+      if (length === bytes.length) {
+        const grown = new Uint8Array(bytes.length * 2);
+        grown.set(bytes);
+        bytes = grown;
+      }
+      bytes[length] = accumulator & 0xff;
+      length += 1;
+      accumulator >>>= 8;
+      accumulated -= 8;
+    }
+    if (step === 0 && freeEntry > maxCode) {
+      codeBits += 1;
+      maxCode = codeBits === MAX_CODE_BITS ? TABLE_LIMIT : (1 << codeBits) - 1;
+    }
+  }
+  if (accumulated > 0) {
+    if (length === bytes.length) {
+      const grown = new Uint8Array(bytes.length * 2);
+      grown.set(bytes);
+      bytes = grown;
+    }
+    bytes[length] = accumulator & 0xff;
+    length += 1;
+  }
+  return bytes.subarray(0, length);
 }
 
 function subBlocks(data: Uint8Array): Buffer {
