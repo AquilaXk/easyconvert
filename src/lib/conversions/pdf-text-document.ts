@@ -7,7 +7,7 @@ import type { OcrResult } from './ocr-pdf-combiner';
 import { layoutPdf, type PdfPageText } from './pdf-layout';
 import type { DetectedTable } from './pdf-layout/types';
 import { runPdfTextJob } from './pdf-text-geometry';
-import { PdfTextUnmappedError, pagesPhrase, type PdfGeometryPages, type PdfPageContent, type PdfTextJobResult } from './pdf-text-types';
+import { PdfTextUnmappedError, pagesPhrase, visibleGlyphsOf, type PdfGeometryPages, type PdfPageContent, type PdfTextJobResult } from './pdf-text-types';
 
 /**
  * The text and structure of a PDF read from its text layer: pdfjs `getTextContent()` per page in page-tree order
@@ -66,28 +66,26 @@ export function assertPdfHeader(pdf: Buffer): void {
   }
 }
 
-const WHITE_SPACE = /\s/u;
-
-/** Characters of the page's text that are not white space. */
-function visibleGlyphsOf(page: PdfPageContent): number {
-  let glyphs = 0;
-  for (const item of page.items) for (const character of item.text) if (!WHITE_SPACE.test(character)) glyphs++;
-  return glyphs;
-}
-
 const LEFT_OUT_REASON = 'more of its glyphs have no Unicode mapping than have one.';
 
 /**
- * Tells the conversion what the text lacks: the glyphs left out of pages that read, and the pages whose own text is left
- * out, naming those that keep the text of their annotations.
+ * Tells the conversion what the text lacks: the glyphs left out of pages that read, the pages that lost the text of their Type 3
+ * fonts and kept the rest, and the pages whose own text is left out, naming those that keep the text of their annotations.
  */
-function reportLeftOut(content: readonly PdfPageContent[], kept: readonly PdfPageContent[], unreadable: ReadonlySet<number>, reportPages: boolean): void {
+function reportLeftOut(
+  content: readonly PdfPageContent[],
+  kept: readonly PdfPageContent[],
+  unreadable: ReadonlySet<number>,
+  reduced: readonly number[],
+  reportPages: boolean
+): void {
   const partial = content.filter((page) => !unreadable.has(page.pageNumber) && page.unmappedGlyphs > 0);
   const glyphs = partial.reduce((total, page) => total + page.unmappedGlyphs, 0);
   if (glyphs > 0) {
     const pages = partial.map((page) => page.pageNumber);
     reportConversionWarning(`Left out ${glyphs} glyph${glyphs === 1 ? '' : 's'} that no font encoding maps to Unicode (${pagesPhrase(pages)}).`);
   }
+  if (reduced.length > 0) reportConversionWarning(`Left out the Type 3 font text of ${pagesPhrase(reduced)} and kept the rest: ${LEFT_OUT_REASON}`);
   if (!reportPages || unreadable.size === 0) return;
   const withAnnotations = new Set(kept.filter((page) => unreadable.has(page.pageNumber) && page.items.length > 0).map((page) => page.pageNumber));
   const without = [...unreadable].filter((pageNumber) => !withAnnotations.has(pageNumber));
@@ -108,18 +106,41 @@ function withoutPageText(page: PdfPageContent, keepAnnotations: boolean): PdfPag
 }
 
 /**
+ * A page whose glyphs mostly have no Unicode value, kept for its text that is not set in a Type 3 font. A Type 3 font draws
+ * its glyphs with programs of its own, so the lines and arrows of a figure are glyphs with no Unicode value, and its labels are
+ * set in other fonts; and where such a font does show characters, they are its character codes (a bitmap font whose glyphs are
+ * named `a16`), which no mapping the file holds tells from letters. The page is kept when the glyphs without a Unicode value
+ * of the other fonts do not outnumber their text (the line of entry 49, without the Type 3 glyphs), and has some. Null otherwise,
+ * and for a page whose fonts were not resolved.
+ */
+function pageWithMappedText(page: PdfPageContent): PdfPageContent | null {
+  const items = page.items.filter((item) => item.annotation === true || item.type3Font !== true);
+  const visible = visibleGlyphsOf(items);
+  const unmappedOutsideType3 = page.unmappedGlyphs - (page.unmappedType3Glyphs ?? 0);
+  return !page.operatorsSkipped && visible > 0 && unmappedOutsideType3 <= visible ? { ...page, items } : null;
+}
+
+/**
  * The document a text job read: the structure of its pages, minus the text of the pages whose glyphs mostly have no
- * Unicode mapping.
+ * Unicode mapping, except the text that is not set in a Type 3 font on a page whose other glyphs read.
  * @throws PdfTextUnmappedError when no page has text left and `onUnmapped` is not `omit`.
  */
 export function documentFromJob(job: PdfTextJobResult, options: ExtractPdfOptions = {}): ReadPdfResult {
   const omit = options.onUnmapped === 'omit';
-  const unmapped = new Set(job.content.filter((page) => page.unmappedGlyphs > visibleGlyphsOf(page)).map((page) => page.pageNumber));
-  const unmappedPages = [...unmapped];
-  const pages = job.content.map((page) => (unmapped.has(page.pageNumber) ? withoutPageText(page, !omit) : page));
-  const someTextReads = pages.some((page) => visibleGlyphsOf(page) > 0);
+  const unmapped = new Set(job.content.filter((page) => page.unmappedGlyphs > visibleGlyphsOf(page.items)).map((page) => page.pageNumber));
+  // OCR recognizes a page it is handed as drawn, so with OCR the page text is not kept whatever it holds.
+  const reduced = new Map<number, PdfPageContent>();
+  for (const page of job.content) {
+    const mapped = unmapped.has(page.pageNumber) && !omit ? pageWithMappedText(page) : null;
+    if (mapped !== null) reduced.set(page.pageNumber, mapped);
+  }
+  const unreadable = new Set([...unmapped].filter((pageNumber) => !reduced.has(pageNumber)));
+  const unmappedPages = [...unreadable];
+  const pages = job.content.map((page) => reduced.get(page.pageNumber) ?? (unreadable.has(page.pageNumber) ? withoutPageText(page, !omit) : page));
+  const someTextReads = pages.some((page) => visibleGlyphsOf(page.items) > 0);
   if (unmappedPages.length > 0 && !someTextReads && !omit) throw new PdfTextUnmappedError(unmappedPages);
-  reportLeftOut(job.content, pages, unmapped, !omit);
+  const trimmed = job.content.filter((page) => reduced.has(page.pageNumber) && (reduced.get(page.pageNumber) as PdfPageContent).items.length < page.items.length);
+  reportLeftOut(job.content, pages, unreadable, trimmed.map((page) => page.pageNumber), !omit);
   const { model, tables, pageText } = layoutPdf(pages, job.fonts);
   const geometry = new Map([...job.geometry].filter(([pageNumber]) => !unmapped.has(pageNumber)));
   const analyses: PdfPageAnalysis[] = job.analyses.map((analysis) =>

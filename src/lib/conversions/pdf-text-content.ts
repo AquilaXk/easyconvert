@@ -15,6 +15,7 @@ import {
   type PdfContentItem,
   type PdfContentRule,
   type PdfPageContent,
+  visibleGlyphsOf,
 } from './pdf-text-types';
 
 /**
@@ -154,6 +155,7 @@ const BOLD_NAME = /bold|black|heavy|demi|extrabd|semibd|\bbd\b|-bd/i;
 const ITALIC_NAME = /italic|oblique|-it\b|\bital\b/i;
 const MONO_NAME = /mono|courier|consolas|typewriter|menlo/i;
 const SUBSET_TAG = /^[A-Z]{6}\+/;
+const TYPE3_FONT = 'Type3';
 
 function describeFont(page: ContentPage, fontId: string, style: PageStyle | undefined): PdfContentFont {
   let name = '';
@@ -230,10 +232,13 @@ function textItemsOf(
   fonts: FontTable,
   pageNumber: number,
   unmappedMark: string
-): { items: PdfContentItem[]; unmapped: number } {
+): { items: PdfContentItem[]; unmapped: number; unmappedType3: number } {
   checkItemLimits(content, pageNumber);
   const items: PdfContentItem[] = [];
   let unmapped = 0;
+  let unmappedType3 = 0;
+  // The font of each item, for the pass over a page that is mostly unmapped.
+  const itemFonts: string[] = [];
   // A ligature name makes a glyph several characters long, so the page limit is read again over the recovered text.
   let characters = 0;
   for (const candidate of content.items) {
@@ -243,9 +248,11 @@ function textItemsOf(
     const geometry = geometryOf(candidate, viewport, vertical);
     let text = normalizeSymbolBullets(candidate.str);
     if (hasUnmappedGlyphs(text)) {
-      const recovered = recoverUnmappedGlyphs(text, resolvedFont(page, candidate.fontName), PDF_TEXT_MAX_CHARS_PER_PAGE - characters, unmappedMark);
+      const font = resolvedFont(page, candidate.fontName);
+      const recovered = recoverUnmappedGlyphs(text, font, PDF_TEXT_MAX_CHARS_PER_PAGE - characters, unmappedMark);
       text = recovered.text;
       unmapped += recovered.unmapped;
+      if (font?.type === TYPE3_FONT) unmappedType3 += recovered.unmapped;
     }
     characters += text.length;
     if (characters > PDF_TEXT_MAX_CHARS_PER_PAGE) {
@@ -266,8 +273,23 @@ function textItemsOf(
       vertical,
       ...(candidate.annotation === true ? { annotation: true } : {}),
     });
+    itemFonts.push(candidate.fontName);
   }
-  return { items, unmapped };
+  if (unmapped > 0 && unmapped > visibleGlyphsOf(items)) markType3Items(page, items, itemFonts);
+  return { items, unmapped, unmappedType3 };
+}
+
+/**
+ * Marks the items set in Type 3 fonts, on a page where glyphs without a Unicode value outnumber the others and a reader may
+ * keep the text of the other fonts (pdf-text-document.ts). `itemFonts[i]` is the font of `items[i]`.
+ */
+function markType3Items(page: ContentPage, items: PdfContentItem[], itemFonts: readonly string[]): void {
+  const isType3 = new Map<string, boolean>();
+  items.forEach((item, index) => {
+    const name = itemFonts[index];
+    if (!isType3.has(name)) isType3.set(name, resolvedFont(page, name)?.type === TYPE3_FONT);
+    if (isType3.get(name) === true) item.type3Font = true;
+  });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -527,7 +549,7 @@ export async function readPageContent(
   }
   if (imageExtractor) await imageExtractor.attach(pageNumber - 1, page, scan.images, scan.sources);
   // Fonts are described after the operator list is read: pdfjs resolves their names while it runs.
-  const { items, unmapped } = textItemsOf(page, content, viewport, fonts, pageNumber, unmappedMark);
+  const { items, unmapped, unmappedType3 } = textItemsOf(page, content, viewport, fonts, pageNumber, unmappedMark);
   return {
     pageNumber,
     width: viewport.width,
@@ -536,6 +558,7 @@ export async function readPageContent(
     rules: scan.rules,
     images: scan.images,
     unmappedGlyphs: unmapped,
+    ...(unmappedType3 > 0 ? { unmappedType3Glyphs: unmappedType3 } : {}),
     operatorsSkipped,
     rulesTruncated: scan.rulesTruncated,
   };
