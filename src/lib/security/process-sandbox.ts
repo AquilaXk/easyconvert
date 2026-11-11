@@ -31,7 +31,7 @@ export interface SandboxedRlimitsOptions {
 /**
  * The files a sandboxed program may touch. The program reads the system (program files, libraries, fonts, settings) and its own /proc
  * entries, and may read, write, create and remove files only below `workDir` and `writeDirs` (a Landlock ruleset applied by pid-init
- * before the program starts, so the files of other people and the directories of other jobs are refused to it; see policy 247).
+ * before the program starts, so the files of other people and the directories of other jobs are refused to it; see policy 248).
  *
  * `workDir` is the directory of this job and of nothing else: it is the directory the program works in, the home and temporary
  * directory it is given (TMPDIR, TEMP, TMP, HOME unless the caller sets them), and the only place it writes. `null` says the program

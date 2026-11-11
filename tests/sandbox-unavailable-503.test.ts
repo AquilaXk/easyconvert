@@ -237,7 +237,7 @@ describe.skipIf(skipUnless('a Linux host (network namespaces)', process.platform
     'control: the same request starts the tool when the sandbox is available',
     async () => {
       vi.stubEnv('STRICT_SANDBOX', 'true');
-      // The spy tools append to a log outside the job directory of their run, which the file confinement refuses (policy 247).
+      // The spy tools append to a log outside the job directory of their run, which the file confinement refuses (policy 248).
       vi.stubEnv('SANDBOX_CONFINE_FILES', 'false');
       await v1ConvertPost(pdfToPngRequest('http://localhost/api/v1/convert'));
       expect(spawnedTools()[0]).toMatch(/^(PDFINFO_PATH|PDFTOPPM_PATH) /);

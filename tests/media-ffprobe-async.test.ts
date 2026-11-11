@@ -7,7 +7,7 @@ import { openMediaInput, runFfprobeAsync } from '../src/lib/conversions/media-pr
 import * as sandbox from '../src/lib/security/process-sandbox';
 import { runWithoutFileConfinement } from './helpers/unconfined-files';
 
-// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 247).
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
 runWithoutFileConfinement();
 
 /**

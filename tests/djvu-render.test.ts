@@ -20,7 +20,7 @@ import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 import { expectWithinHangGuard } from './helpers/timing';
 import { runWithoutFileConfinement } from './helpers/unconfined-files';
 
-// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 247).
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
 runWithoutFileConfinement();
 
 /**

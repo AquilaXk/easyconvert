@@ -20,7 +20,7 @@ import { characterErrorRatePercent } from './helpers/ocr-cer';
 import { processesWithArgument, uniqueSleepInterval, waitUntilNoProcessWithArgument } from './helpers/process-state';
 import { runWithoutFileConfinement } from './helpers/unconfined-files';
 
-// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 247).
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
 runWithoutFileConfinement();
 
 const FIXTURE_DIR = path.join(__dirname, 'fixtures', 'ocr');

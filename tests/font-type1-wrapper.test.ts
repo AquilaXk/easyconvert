@@ -8,7 +8,7 @@ import { buildOtf, cs } from './helpers/cff-font-builder';
 import { buildPfa, buildPfb, circleGlyph, rectangleGlyph, type Type1Glyph } from './helpers/type1-builder';
 import { runWithoutFileConfinement } from './helpers/unconfined-files';
 
-// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 247).
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
 runWithoutFileConfinement();
 
 /**

@@ -1,5 +1,6 @@
 import { executeSandboxedBinary, rethrowSandboxUnavailable, SandboxedBufferLimitError, SandboxedProcessError } from '../security/process-sandbox';
-import type { ConversionResult } from '../types';
+import type { ConversionOptions, ConversionResult } from '../types';
+import { availableCpus } from '../workers/available-cpus';
 import { findDecoderTool, loggableDiagnostic } from './image-decoder-tools';
 
 /**
@@ -14,20 +15,41 @@ import { findDecoderTool, loggableDiagnostic } from './image-decoder-tools';
  * its children refuses (the sandbox's rule for every program), and a cancelled conversion stops.
  */
 
+/**
+ * Set on the options of a conversion whose source file is a PNG and whose target is a PNG (and only by `convertImageSource`): the file
+ * the encoder writes is then optimised, and the encoder writes the cheapest file for it. A symbol, so that it cannot come out of request
+ * JSON; a PNG that another decoder made from a JPEG XL or a camera file never carries it, since that conversion is not a compression of a PNG.
+ */
+export const OPTIMISE_PNG_RESULT = Symbol.for('easyconvert.optimisePngResult');
+
+/** The options with the mark that the file of this PNG to PNG conversion is optimised. */
+export function markedForOptimiser(options: ConversionOptions): ConversionOptions {
+  return { ...options, [OPTIMISE_PNG_RESULT]: true } as ConversionOptions;
+}
+
 /** Environment variable that names the executable; a value is authoritative, so a path that is not an executable file means "not installed". */
 export const OXIPNG_PATH_ENV = 'OXIPNG_PATH';
 const OXIPNG_EXECUTABLE_NAMES = ['oxipng'] as const;
 
 /**
- * oxipng's own optimisation presets (`-o`, 0 the fastest, 6 the slowest). A palette picture is a byte per pixel or less, so the preset that
- * tries four filters and deflates at libdeflate level 11 costs 50 to 200 ms and takes 12 percent off the files of the compress page (7 percent
- * without the palette reductions or without the filter trials, 4 percent with deflate level 9); a full-colour picture is three or four times
- * larger, and the next preset down (two filters, level 10) takes the same bytes off to within a point for 15 to 45 percent less time.
+ * oxipng's options by kind of file (Linux arm64, two threads, 55 pictures; entry 232 has the table). A palette picture is a byte per pixel or
+ * less, so a run at `-o2` costs 50 to 200 ms and takes 12 percent off the files of the compress page. Of its four filter strategies only the
+ * entropy one ever won on those files (`-f 0,6` writes 11.70 percent against 11.73 for 0,1,6,7 in 14 percent less time), and the colour
+ * type reductions of a file that already has a palette find nothing (`--nc --ng`, 2 percent less time again; `--nb` also stops a palette of 16 colours or fewer from being packed into 4, 2 or 1 bits, so it stays off the list); the
+ * preset below (`-o1`) takes 8.8 percent off in half the time and is not chosen: the files of the compress page are smaller than the
+ * reference's in 54 of 55 cases only with the full preset. A full-colour picture is three or four times larger, and `-o1` (two filters, libdeflate level 10) takes the same
+ * bytes off as `-o2` to within a point for 15 to 45 percent less time.
  */
-export const OXIPNG_LEVEL_PALETTE = 2;
-export const OXIPNG_LEVEL_FULL_COLOUR = 1;
-/** Threads of one run: oxipng tries the filters side by side. */
-const OXIPNG_THREADS = 2;
+export const OXIPNG_PALETTE_ARGUMENTS: readonly string[] = ['-o', '2', '-f', '0,6', '--nc', '--ng'];
+export const OXIPNG_FULL_COLOUR_ARGUMENTS: readonly string[] = ['-o', '1'];
+/**
+ * A palette picture past 8 MB decoded (8 megapixels) is run at `-o1`: a 13.5-megapixel one takes 2.1 s against 3.5 s for the same 5.48 MB, and a
+ * 24-megapixel one 3.3 s against 5.7 s for 10.50 MB against 10.67 MB, so `-o2` costs time and no bytes there.
+ */
+export const OXIPNG_LARGE_PALETTE_ARGUMENTS: readonly string[] = ['-o', '1'];
+export const OXIPNG_LARGE_PALETTE_BYTES = 8 * 1024 * 1024;
+/** The most threads of one run: oxipng tries the filters side by side, and a third thread saves 5 percent. */
+const OXIPNG_MAX_THREADS = 2;
 /** A run that has not finished in this time is stopped and the input kept. */
 export const OXIPNG_TIMEOUT_MS = 60_000;
 /** oxipng stops starting new trials after this many seconds, so that it ends before the sandbox has to kill it. */
@@ -52,6 +74,21 @@ const BIT_DEPTH_OFFSET = 24;
 const COLOUR_TYPE_OFFSET = 25;
 const COLOUR_TYPE_PALETTE = 3;
 const CHANNELS_OF_COLOUR_TYPE: Readonly<Record<number, number>> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
+
+/**
+ * Whether the PNG that a conversion writes from a picture of `width` x `height` pixels (`bytesPerPixel` as the encoder holds them: a palette
+ * index is one) is handed to the optimiser: both ends are PNG, the program is installed, and the picture is within its size limit. The
+ * encoder then writes the cheapest file the optimiser can read, since it inflates the file and writes every row again.
+ */
+export function optimiserFollows(source: string, target: string, width: number, height: number, bytesPerPixel: number, palette: boolean): boolean {
+  if (source !== 'png' || target !== 'png' || findOxipng() === null) return false;
+  return height * (width * bytesPerPixel + 1) <= (palette ? OXIPNG_MAX_PALETTE_RAW_BYTES : OXIPNG_MAX_FULL_COLOUR_RAW_BYTES);
+}
+
+function argumentsOf(header: { decodedBytes: number; palette: boolean }): readonly string[] {
+  if (!header.palette) return OXIPNG_FULL_COLOUR_ARGUMENTS;
+  return header.decodedBytes > OXIPNG_LARGE_PALETTE_BYTES ? OXIPNG_LARGE_PALETTE_ARGUMENTS : OXIPNG_PALETTE_ARGUMENTS;
+}
 
 /** Where oxipng is installed, or null. */
 export function findOxipng(env: Readonly<Record<string, string | undefined>> = process.env): string | null {
@@ -85,7 +122,7 @@ export async function optimisePng(png: Buffer, options: OptimiseOptions = {}): P
   try {
     const result = await executeSandboxedBinary(
       program,
-      ['-q', '-o', String(header.palette ? OXIPNG_LEVEL_PALETTE : OXIPNG_LEVEL_FULL_COLOUR), '--threads', String(OXIPNG_THREADS), '--timeout', String(OXIPNG_SOFT_TIMEOUT_SECONDS), '--stdout', '-'],
+      ['-q', ...argumentsOf(header), '--threads', String(Math.max(1, Math.min(OXIPNG_MAX_THREADS, availableCpus()))), '--timeout', String(OXIPNG_SOFT_TIMEOUT_SECONDS), '--stdout', '-'],
       {
         stdin: png,
         // A filter on standard input and output: it touches no file.

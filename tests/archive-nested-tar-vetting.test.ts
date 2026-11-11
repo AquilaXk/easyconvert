@@ -10,7 +10,7 @@ import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { runWithoutFileConfinement } from './helpers/unconfined-files';
 
-// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 247).
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
 runWithoutFileConfinement();
 
 /**
