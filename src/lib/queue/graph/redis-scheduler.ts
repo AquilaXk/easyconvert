@@ -27,6 +27,7 @@ import { assertSealedFor, cancelGraphNodeJob, cancelGraphNodeJobOrLog, enqueueGr
 import { graphInputKeys } from './input-cleanup';
 import { maskTaskRecords } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';
+import { sealWebhookSecret } from '../../security/sealed-webhook-secret';
 import { DEFAULT_QUEUE_KEY_PREFIX } from '../bullmq-engine';
 import { GraphStateCorruptError, QueueUnavailableError } from '../../types';
 import { finishGraph, type EndedGraph, type GraphEnd, type ReservationEnd } from './graph-end';
@@ -141,7 +142,7 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
       owner: meta.ownerUserId || '',
       reservationId: meta.reservationId || '',
       webhookUrl: meta.webhookUrl || '',
-      webhookSecret: meta.webhookSecret || '',
+      webhookSecret: sealWebhookSecret(meta.webhookSecret, graphId) || '',
       webhookKeyId: meta.webhookKeyId || '',
       originalFilename: meta.originalFilename || '',
       sourceStorageKey: meta.sourceStorageKey || '',
@@ -166,7 +167,8 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
       graphId,
       JSON.stringify(fields),
       JSON.stringify(nodes),
-      String(createdAt)
+      String(createdAt),
+      String(endedJobRetentionMs() + JOB_DEADLINE_CEILING_MS)
     );
     await this.indexGraph(graphId, meta.ownerUserId, createdAt);
     await this.drainOutbox(graphId);

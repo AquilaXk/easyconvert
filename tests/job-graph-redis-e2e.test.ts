@@ -10,6 +10,7 @@ import { clusterKeySlot, crc16Xmodem } from './helpers/redis-cluster-slot';
 import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 import { endedJobRetentionMs } from '../src/lib/queue/enqueue';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
+import { JOB_DEADLINE_CEILING_MS } from '../src/lib/config/schema';
 
 /**
  * Job graphs on a real Redis server, executed by real queue workers. Runs only when REDIS_URL
@@ -230,7 +231,11 @@ describe.skipIf(!REDIS_URL)('Job graph execution on a real Redis server', () => 
       const graphId = uniqueId(`forget-${end}`);
       const keys = scheduler.graphKeys(graphId);
       await scheduler.initGraph(graphId, sealGraph(graphId, chain), { webhookUrl: 'https://93.184.215.14/hook', webhookSecret: 'whsec_graph_plain' });
-      expect(await redis.pttl(keys.graph)).toBe(-1);
+      // A graph that never ends still expires: its safety lifetime is its longest deadline plus the retention of an ended job.
+      const safetyTtl = await redis.pttl(keys.graph);
+      expect(safetyTtl).toBeGreaterThan(endedJobRetentionMs());
+      expect(safetyTtl).toBeLessThanOrEqual(endedJobRetentionMs() + JOB_DEADLINE_CEILING_MS);
+      expect(await redis.hget(keys.graph, 'webhookSecret')).not.toContain('whsec_graph_plain');
 
       if (end === 'cancelled') await scheduler.cancelGraph(graphId);
       else await scheduler.onNodeFailed(graphId, 'a', 'boom');
