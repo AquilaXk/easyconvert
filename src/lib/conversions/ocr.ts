@@ -75,6 +75,13 @@ import {
 } from './ocr-neural';
 import { mapWithConcurrency, ocrPageConcurrency } from './ocr-page-batch';
 import {
+  OnnxOcrFailedError,
+  OnnxOcrUnavailableError,
+  recognizePageWithOnnxHelper,
+  shutdownOnnxOcrHelpers,
+} from './ocr-onnx-helper';
+import { koreanOnnxLanguages, ONNX_PRODUCT_DETECTOR_MAX_SIDE, sayOnnxFallbackOnce } from './ocr-onnx-route';
+import {
   OCR_PREPROCESS_STEPS,
   OCR_UNEVEN_BACKGROUND_RATIO,
   preprocessOcrImage,
@@ -108,8 +115,11 @@ function countWords(text: string | null | undefined): number {
   return (text || '').split(/\s+/).filter(Boolean).length;
 }
 
-/** Terminates pooled OCR workers; call on process shutdown. */
-export const shutdownOcrWorkerPool = shutdownSharedOcrWorkerPool;
+/** Terminates pooled OCR workers and the ONNX helpers; call on process shutdown. */
+export function shutdownOcrWorkerPool(): Promise<void> {
+  shutdownOnnxOcrHelpers();
+  return shutdownSharedOcrWorkerPool();
+}
 
 /**
  * Optical Character Recognition (OCR) Engine
@@ -258,7 +268,13 @@ export interface RecognizedPage {
 export interface OcrRecognitionOptions {
   /** Page preparation steps; the default is OCR_PREPROCESS_STEPS. */
   steps?: OcrPreprocessSteps;
-  /** `cli` skips the WebAssembly engine and reads the page with the native tool. */
+  /**
+   * Which engine reads the page. Left out, a Korean page (`kor`, or `kor+eng`) is read by the ONNX engine in a sandboxed helper
+   * (ocr-onnx-helper.ts) and every other page by Tesseract; when the ONNX engine cannot be used the page is read by Tesseract and
+   * the result says so (`engineFallback`). `onnx` demands the ONNX engine and fails with OcrEngineUnavailableError without it;
+   * `wasm`, `cli` and `neural` are the Tesseract paths (`cli` skips the WebAssembly engine and reads with the native tool; `neural`
+   * is the Korean post-corrected Tesseract path) and never use the ONNX engine.
+   */
   enginePath?: OcrEnginePath;
   /**
    * Whether to find the page's orientation and script first. Left out it runs when the `osd` data is
@@ -325,24 +341,43 @@ export async function recognizePage(
   const { steps = OCR_PREPROCESS_STEPS, enginePath, detectOrientation, parallelBands, signal } = options;
   const requested = resolveOcrLanguages(language);
   const requestedLanguage = requested.joined;
-  const requestedData = locateLanguagesData(language || OCR_AUTO_LANGUAGE, requested.traineddata);
+  // The Tesseract data is looked for when Tesseract reads the page: a page the ONNX engine reads needs none of it.
+  let located: LanguageData | undefined;
+  const requestedData = (): LanguageData => (located ??= locateLanguagesData(language || OCR_AUTO_LANGUAGE, requested.traineddata));
 
   await assertEncodedImageWithinLimit(imageBuffer);
   if (detectOrientation === true) assertOrientationDetectable();
   // What the page declares about its size, for the searchable PDF; undeclared is recorded as assumed.
   const imageDpi = resolveImageDpi(imageBuffer);
   const finish = (page: RecognizedPage, orientation: OcrOrientation): RecognizedPage => {
-    const corrected = includesKoreanLanguage(page.result.language)
+    // The ONNX reading is kept as the recognizer wrote it: the post-correction is for the Tesseract Korean output.
+    const corrected = includesKoreanLanguage(page.result.language) && page.enginePath !== 'onnx'
       ? postCorrectKoreanOcrResult(page.result)
       : page.result;
     return {
       ...page,
-      result: { ...corrected, orientation, imageDpi },
+      result: { ...corrected, orientation, imageDpi, ...(onnxFallback ? { engineFallback: onnxFallback } : {}) },
     };
   };
 
-  const attempt = (quarterTurn: OcrQuarterTurn, tesseractLang: string, languageData: LanguageData) =>
-    recognizeAttempt({ imageBuffer, steps, quarterTurn, tesseractLang, languageData, enginePath, language, parallelBands, signal });
+  // The ONNX engine reads Korean (and the Latin text beside it); a page whose script was found to be another one goes to Tesseract.
+  let onnxFallback: OcrEngineFallback | undefined;
+  let onnxWanted = enginePath === 'onnx' || (enginePath === undefined && koreanOnnxLanguages(requested.traineddata));
+  const attempt = async (quarterTurn: OcrQuarterTurn, tesseractLang: string, languageData: () => LanguageData): Promise<RecognizedPage> => {
+    if (onnxWanted && tesseractLang === requestedLanguage) {
+      try {
+        return await recognizeOnnxAttempt(imageBuffer, requestedLanguage, quarterTurn, signal);
+      } catch (err) {
+        rethrowSandboxUnavailable(err);
+        if (enginePath === 'onnx' || signal?.aborted || !(err instanceof OnnxOcrUnavailableError || err instanceof OnnxOcrFailedError)) throw err;
+        // The page is still read, by Tesseract, and the result says that the ONNX engine did not.
+        onnxWanted = false;
+        onnxFallback = { from: 'onnx', to: 'wasm', reason: `onnx-${err.reason}` };
+        sayOnnxFallbackOnce(err);
+      }
+    }
+    return recognizeAttempt({ imageBuffer, steps, quarterTurn, tesseractLang, languageData: languageData(), enginePath: enginePath === 'onnx' ? undefined : enginePath, language, parallelBands, signal });
+  };
   const first = await attempt(0, requestedLanguage, requestedData);
   if (detectOrientation === false) return finish(first, { status: 'disabled', rotationApplied: 0 });
   if (!looksMisread(first.result)) return finish(first, { status: 'not-needed', rotationApplied: 0 });
@@ -362,7 +397,7 @@ export async function recognizePage(
     second = await attempt(
       detection.quarterTurn,
       switchTo ?? requestedLanguage,
-      switchTo === null ? requestedData : (scriptData as LanguageData)
+      switchTo === null ? requestedData : () => scriptData as LanguageData
     );
   } catch (err) {
     rethrowSandboxUnavailable(err);
@@ -378,6 +413,17 @@ export async function recognizePage(
 interface LanguageData {
   dir: string;
   gzip: boolean;
+}
+
+/** Reads the page with the ONNX engine in its helper process, as submitted (EXIF turn applied, then `quarterTurn`). */
+async function recognizeOnnxAttempt(imageBuffer: Buffer, language: string, quarterTurn: OcrQuarterTurn, signal?: AbortSignal): Promise<RecognizedPage> {
+  const result = await recognizePageWithOnnxHelper(imageBuffer, {
+    language,
+    quarterTurn,
+    detectorMaxSide: ONNX_PRODUCT_DETECTOR_MAX_SIDE,
+    signal,
+  });
+  return { result, enginePath: 'onnx' };
 }
 
 /** How well a page was read, 0..1: the mean raw word score weighted by characters; 0 when no word was read. */

@@ -7,7 +7,7 @@
  * degraded, recognized, and every recognized word is labelled correct or incorrect by aligning it to
  * the words that were drawn. Isotonic regression of the label on the raw score gives the table. The
  * held-out half (pages c and d) is never read here; tests/ocr-confidence-calibration.test.ts scores
- * the tables on it. Needs the tesseract CLI and the eng and kor traineddata.
+ * the tables on it. Needs the tesseract CLI and the eng and kor traineddata, and for `kor/onnx` the ONNX models (/opt/ocr-onnx).
  */
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -25,15 +25,22 @@ import {
 } from './ocr-calibration-set';
 import { labelWords, splitWords } from './ocr-word-labels';
 import { requireTessdata } from './ocr-fixtures';
+import { onnxOcrModelDirectory } from '../../src/lib/conversions/ocr-onnx-helper';
 import { getOracleToolPath } from './differential-oracle';
 
 const LANGUAGES: readonly CalibrationLanguage[] = ['eng', 'kor'];
-const PATHS: readonly OcrEnginePath[] = ['wasm', 'cli'];
+const PATHS: readonly OcrEnginePath[] = ['wasm', 'cli', 'onnx'];
+/** The ONNX recognizer reads Korean (and the Latin beside it); it has no table for another language. */
+const supported = (language: CalibrationLanguage, enginePath: OcrEnginePath): boolean => enginePath !== 'onnx' || language === 'kor';
 const OUTPUT_DIR = path.join(import.meta.dirname, '..', '..', 'src', 'lib', 'conversions', 'ocr-calibration');
 const DATA_HASH_CHARS = 16;
 const TABLE_DECIMALS = 6;
 
-function engineVersion(): string {
+function engineVersion(enginePath: OcrEnginePath): string {
+  if (enginePath === 'onnx') {
+    const runtime = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'node_modules', 'onnxruntime-node', 'package.json'), 'utf-8')) as { version: string };
+    return `onnxruntime-node ${runtime.version}, PP-OCRv5 mobile detector and Korean mobile recognizer`;
+  }
   const tesseract = getOracleToolPath('tesseract');
   if (!tesseract) throw new Error('tesseract is required to record the engine version of a calibration table');
   return execFileSync(tesseract, ['--version'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
@@ -41,7 +48,11 @@ function engineVersion(): string {
     .trim();
 }
 
-function dataHash(language: string): string {
+function dataHash(language: string, enginePath: OcrEnginePath): string {
+  if (enginePath === 'onnx') {
+    const models = path.join(onnxOcrModelDirectory(), 'rec.onnx');
+    return crypto.createHash('sha256').update(fs.readFileSync(models)).digest('hex').slice(0, DATA_HASH_CHARS);
+  }
   const file = path.join(requireTessdata(language), `${language}.traineddata`);
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex').slice(0, DATA_HASH_CHARS);
 }
@@ -79,8 +90,8 @@ async function fit(language: CalibrationLanguage, enginePath: OcrEnginePath): Pr
       method:
         'Isotonic regression (pool-adjacent-violators) of word correctness on the raw word score; ' +
         'words are labelled by Levenshtein alignment to the drawn text.',
-      engine: engineVersion(),
-      languageData: `${language}.traineddata sha256:${dataHash(language)}`,
+      engine: engineVersion(enginePath),
+      languageData: enginePath === 'onnx' ? `rec.onnx sha256:${dataHash(language, enginePath)}` : `${language}.traineddata sha256:${dataHash(language, enginePath)}`,
       fittedOn: {
         pages,
         degradations: CALIBRATION_DEGRADATIONS.map((d) => d.name),
@@ -97,6 +108,7 @@ async function main(): Promise<void> {
   const only = process.argv.slice(2);
   for (const language of LANGUAGES) {
     for (const enginePath of PATHS) {
+      if (!supported(language, enginePath)) continue;
       if (only.length > 0 && !only.includes(`${language}/${enginePath}`)) continue;
       const table = await fit(language, enginePath);
       const file = path.join(OUTPUT_DIR, `${language}.${enginePath}.json`);

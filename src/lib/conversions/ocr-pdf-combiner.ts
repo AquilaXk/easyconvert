@@ -167,17 +167,17 @@ export interface OcrResult {
    */
   engineMarkup?: { format: 'hocr' | 'alto'; content: string };
   /**
-   * Set when a failure of the WebAssembly engine was answered by the native one: what failed and what read the page.
-   * Absent when the first engine read it.
+   * Set when a failure of the first engine was answered by another one: what failed and what read the page (the WebAssembly
+   * engine by the native one, the ONNX Korean engine by the WebAssembly one). Absent when the first engine read it.
    */
   engineFallback?: OcrEngineFallback;
 }
 
-/** A page the WebAssembly engine could not read and the native tool did, with the class of failure. */
+/** A page the first engine could not read and the next one did, with the class of failure. */
 export interface OcrEngineFallback {
-  from: 'wasm';
-  to: 'cli';
-  /** Documented recoverable failure class of the first engine (see ocr-engine-failure.ts). */
+  from: 'wasm' | 'onnx';
+  to: 'cli' | 'wasm';
+  /** Documented recoverable failure class of the first engine (see ocr-engine-failure.ts, ocr-onnx-helper.ts). */
   reason: string;
 }
 

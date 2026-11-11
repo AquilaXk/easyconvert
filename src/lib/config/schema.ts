@@ -1457,6 +1457,7 @@ const SCHEMA_ENTRIES = [
   toolPath('RSVG_CONVERT_PATH', 'Path of the librsvg `rsvg-convert` executable that writes an SVG as a vector PDF.', BOTH),
   toolPath('TESSERACT_PATH', 'Path of the `tesseract` executable.', BOTH),
   toolResourcePath('TESSDATA_PREFIX', 'Directory of the Tesseract language data.', BOTH),
+  toolResourcePath('EASYCONVERT_OCR_ONNX_DIR', 'Directory of the optional ONNX Korean OCR models (`det.onnx`, `rec.onnx`, `dict.txt`, entry 230). Off by default: when unset the ONNX engine is unavailable and Korean OCR uses Tesseract.', BOTH),
   toolPath('VERAPDF_PATH', 'Path of the `verapdf` executable that validates PDF/A output.', BOTH),
   toolPath('QPDF_PATH', 'Path of the `qpdf` executable that encrypts PDF output.', BOTH),
   toolPath('FC_LIST_PATH', 'Path of the fontconfig `fc-list` executable.', BOTH),
