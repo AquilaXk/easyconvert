@@ -801,11 +801,11 @@ const SCHEMA_ENTRIES = [
     name: 'WEBHOOK_SECRET_KEK',
     area: 'secrets',
     description:
-      'Key-encryption key of the webhook signing secrets. At least 32 bytes of UTF-8 text in production. The worker dispatches webhooks and needs it too once the deployment sends them.',
+      'Key-encryption key of the webhook signing secrets. At least 32 bytes of UTF-8 text in production. The web process seals the rotated secrets with it and the worker opens them to sign every delivery, so both need the same value.',
     kind: KEY_SECRET,
     requiredInProduction: true,
     secret: true,
-    roles: WEB,
+    roles: BOTH,
   },
   {
     name: 'STORAGE_VAULT_KEY',
@@ -1105,6 +1105,16 @@ const SCHEMA_ENTRIES = [
     area: 'storage',
     description: 'Deprecated fallback of OCI_BUCKET and S3_BUCKET; logs a warning when used.',
     kind: { type: 'string', maxLength: 256 },
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST',
+    area: 'storage',
+    description:
+      'Comma-separated host:port list of WebDAV, Azure Blob, GCS and import/export URL endpoints that may be plain http or private-address, for a local test server. Honoured only when NODE_ENV is exactly `development`.',
+    kind: { type: 'string' },
     requiredInProduction: false,
     secret: false,
     roles: BOTH,
@@ -1433,6 +1443,7 @@ const SCHEMA_ENTRIES = [
   absoluteToolPath('EBOOK_CONVERT_PATH', 'Absolute path of the calibre `ebook-convert` executable that writes MOBI, AZW3, PDB, LRF and OEB books; searched in the standard locations when unset. Those five formats cannot be written without it (HTTP 503); a value that is not an absolute path is rejected at start-up.', BOTH),
   toolPath('DWG2DXF_PATH', 'Path of the LibreDWG `dwg2dxf` executable that reads a DWG drawing into a DXF; searched in the standard locations when unset. A DWG cannot be converted without it (HTTP 503).', BOTH),
   toolPath('VTRACER_PATH', 'Path of the vtracer executable that traces PNG, JPEG, WebP, GIF, BMP and TIFF pictures to SVG; searched in the standard locations when unset. Those pictures cannot be converted to SVG without it (HTTP 503).', BOTH),
+  toolPath('OXIPNG_PATH', 'Path of the pinned oxipng executable that optimises a PNG converted to PNG without loss (entry 232); searched in the standard locations when unset. Without it the PNG is written as the image library encodes it.', BOTH),
   toolPath('VTRACER_PIXELS_PATH', 'Path of the vtracer-pixels executable (scripts/vtracer-pixels), the vtracer front-end that reads the raw pixels the worker decoded; searched in the standard locations when unset. When it is found it traces those pictures instead of the vtracer executable; the SVG is the same.', BOTH),
   toolPath('CAD_CONVERT_PATH', 'Path of the `cad-convert` executable (native/cad-convert, linked to the Open CASCADE libraries) that reads and writes STEP and IGES; searched in the standard locations when unset. A STEP or IGES file cannot be converted without it (HTTP 503).', BOTH),
   toolPath('PID_INIT_PATH', 'Path of the `pid-init` executable (native/pid-init) that starts every sandboxed program in a PID namespace of its own, so that one run cannot see or signal another, and refuses them the /proc entries of the other runs (Landlock); searched in the standard locations when unset. Without it, or when the host does not allow a PID namespace, programs run in the user and network namespaces only.', BOTH),

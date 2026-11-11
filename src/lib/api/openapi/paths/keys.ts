@@ -9,7 +9,7 @@ import {
   requireScope,
 } from '../shared';
 
-/** API key management, quota, and metered usage operations. */
+/** API key management and quota operations. */
 export const keyPaths = {
   '/api/keys': {
     get: {
@@ -153,52 +153,6 @@ export const keyPaths = {
             },
           },
         },
-      },
-    },
-  },
-  '/api/v1/usage': {
-    get: {
-      summary: 'Query Metered Resource Usage Ledger',
-      description:
-        'Queries append-only metered resource usage events recorded for the authenticated user.',
-      operationId: 'getUsageLedgerV1',
-      security: requireScope('read:usage'),
-      parameters: [
-        {
-          name: 'from',
-          in: 'query',
-          required: false,
-          description: 'Start of time window (epoch ms timestamp or ISO 8601 string).',
-          schema: { type: 'string' },
-        },
-        {
-          name: 'to',
-          in: 'query',
-          required: false,
-          description: 'End of time window (epoch ms timestamp or ISO 8601 string).',
-          schema: { type: 'string' },
-        },
-        {
-          name: 'limit',
-          in: 'query',
-          required: false,
-          description: 'Maximum number of ledger records to return (1-200, default 50).',
-          schema: { type: 'integer', default: 50, minimum: 1, maximum: 200 },
-        },
-      ],
-      responses: {
-        '200': {
-          description: 'Metered usage entries retrieved successfully.',
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/UsageQueryResponse',
-              },
-            },
-          },
-        },
-        '400': createProblemResponse('Invalid query parameter'),
-        '401': createProblemResponse('Unauthorized'),
       },
     },
   },

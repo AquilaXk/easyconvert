@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parse } from 'yaml';
+import { CONFIG_SCHEMA } from '../src/lib/config/schema';
 import { StorageConfigError } from '../src/lib/storage/errors';
 import {
   KNOWN_PUBLIC_SIGNING_SECRETS,
@@ -193,8 +194,25 @@ describe(`${PRODUCTION_FILE} (production stack)`, () => {
 
   it.each(APPLICATION_SERVICES)('%s refuses to start without the signing secret, the sealing key and the public origin', (service) => {
     const { missing } = resolveServiceEnvironment(files, service, {});
-    const expected = service === 'web' ? [...REQUIRED, 'JWT_SECRET', 'KEY_HASH_PEPPER', 'WEBHOOK_SECRET_KEK'] : REQUIRED;
+    const expected = service === 'web' ? [...REQUIRED, 'JWT_SECRET', 'KEY_HASH_PEPPER', 'WEBHOOK_SECRET_KEK'] : [...REQUIRED, 'WEBHOOK_SECRET_KEK'];
     expect([...new Set(missing)].sort()).toEqual([...expected].sort());
+  });
+
+  /**
+   * The oracle is the configuration schema, not the compose file: a variable that the schema says a worker reads and that
+   * production requires must be declared in the environment of every worker service, or the container
+   * runs without it and falls back (an unset WEBHOOK_SECRET_KEK made workers sign with the secret a job was queued with and
+   * ignore a rotation).
+   */
+  const WORKER_NEEDS = CONFIG_SCHEMA.filter((spec) => spec.roles.includes('worker') && spec.requiredInProduction).map((spec) => spec.name);
+
+  it('has a worker that needs a required secret to check', () => {
+    expect(WORKER_NEEDS).toEqual(expect.arrayContaining(['JOB_SECRET_KEK', 'STORAGE_DRIVER', 'WEBHOOK_SECRET_KEK']));
+  });
+
+  it.each(WORKER_SERVICES)('%s declares every variable the schema says a worker needs', (service) => {
+    const declared = environmentEntries(readCompose(PRODUCTION_FILE).services?.[service]?.environment).map(([name]) => name);
+    expect(WORKER_NEEDS.filter((name) => !declared.includes(name))).toEqual([]);
   });
 
   it.each(APPLICATION_SERVICES)('%s runs in production and resolves the local driver without any cloud setting', (service) => {

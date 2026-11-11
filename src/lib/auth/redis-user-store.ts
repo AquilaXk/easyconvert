@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { readyGatedRedis } from '../redis/when-ready';
 import type { User, UserRecord } from './types';
+import { failClosed } from './store-unavailable';
 
 export interface RedisUserStoreOptions {
   redisHost?: string;
@@ -79,8 +80,9 @@ return nextVersion
 
 /**
  * Enterprise Distributed User Store.
- * Supports Redis distributed cluster storage with atomic Lua operations
- * and seamless, zero-config in-memory fallback for local development and testnets.
+ * Supports Redis distributed cluster storage with atomic Lua operations. Without Redis it keeps accounts in this process's
+ * memory (local development and tests). With a Redis client every step that fails throws AuthStoreUnavailableError and is
+ * never answered from memory: a process-local copy would accept a revoked session or a stale session version.
  */
 export class RedisUserStore {
   private readonly keyPrefix: string;
@@ -181,8 +183,8 @@ export class RedisUserStore {
         const raw = await this.redisClient.get(userKey);
         if (raw) return JSON.parse(raw);
         return null;
-      } catch {
-        // Fallback to in-memory on redis error
+      } catch (err) {
+        return failClosed('RedisUserStore', 'findById', err);
       }
     }
 
@@ -191,30 +193,25 @@ export class RedisUserStore {
 
   public async findByEmail(email: string): Promise<UserRecord | null> {
     if (!email || typeof email !== 'string') return null;
+    let normalized: string;
     try {
-      const normalized = this.normalizeEmail(email);
-
-      if (this.redisClient) {
-        try {
-          const emailKey = `${this.keyPrefix}emailIndex:${normalized}`;
-          const id = await this.redisClient.get(emailKey);
-          if (id) {
-            return await this.findById(id);
-          }
-          return null;
-        } catch {
-          // Fallback to in-memory on redis error
-        }
-      }
-
-      const id = this.distributedEmails.get(normalized);
-      if (id) {
-        return this.distributedUsers.get(id) || null;
-      }
-      return null;
+      normalized = this.normalizeEmail(email);
     } catch {
       return null;
     }
+
+    if (this.redisClient) {
+      let id: string | null;
+      try {
+        id = await this.redisClient.get(`${this.keyPrefix}emailIndex:${normalized}`);
+      } catch (err) {
+        return failClosed('RedisUserStore', 'findByEmail', err);
+      }
+      return id ? this.findById(id) : null;
+    }
+
+    const id = this.distributedEmails.get(normalized);
+    return id ? this.distributedUsers.get(id) || null : null;
   }
 
   public async createUser(data: {
@@ -271,7 +268,7 @@ export class RedisUserStore {
         if (err.message?.includes('already exists')) {
           throw err;
         }
-        // Fallback to in-memory if Redis eval failed
+        return failClosed('RedisUserStore', 'createUser', err);
       }
     }
 
@@ -301,8 +298,8 @@ export class RedisUserStore {
         );
         if (!updatedRaw) return null;
         return JSON.parse(updatedRaw as string);
-      } catch {
-        // Fallback
+      } catch (err) {
+        return failClosed('RedisUserStore', 'updateUser', err);
       }
     }
 
@@ -334,8 +331,8 @@ export class RedisUserStore {
           String(Date.now())
         );
         return;
-      } catch {
-        // Fallback
+      } catch (err) {
+        return failClosed('RedisUserStore', 'recordConversion', err);
       }
     }
 
@@ -354,8 +351,8 @@ export class RedisUserStore {
       try {
         const key = `${this.keyPrefix}revoked_jti:${jti}`;
         await this.redisClient.setex(key, safeTtl, '1');
-      } catch {
-        // Fallback to in-memory
+      } catch (err) {
+        return failClosed('RedisUserStore', 'revokeJti', err);
       }
     }
 
@@ -370,8 +367,8 @@ export class RedisUserStore {
         const key = `${this.keyPrefix}revoked_jti:${jti}`;
         const exists = await this.redisClient.exists(key);
         if (exists === 1) return true;
-      } catch {
-        // Fallback to in-memory
+      } catch (err) {
+        return failClosed('RedisUserStore', 'isJtiRevoked', err);
       }
     }
 
@@ -400,8 +397,8 @@ export class RedisUserStore {
       try {
         const key = `${this.keyPrefix}session_version:${userId}`;
         nextVersion = Number(await this.redisClient.eval(RAISE_SESSION_VERSION_LUA, 1, key, String(floor)));
-      } catch {
-        // Fallback to the in-memory counter
+      } catch (err) {
+        return failClosed('RedisUserStore', 'incrementSessionVersion', err);
       }
     }
 
@@ -422,8 +419,8 @@ export class RedisUserStore {
         if (val) {
           return parseInt(val, 10) || 1;
         }
-      } catch {
-        // Fallback
+      } catch (err) {
+        return failClosed('RedisUserStore', 'getSessionVersion', err);
       }
     }
 

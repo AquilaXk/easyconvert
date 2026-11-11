@@ -475,6 +475,9 @@ describe('WP-12 Enterprise Webhooks: Rotating Secrets, Multi-Signature Headers &
     });
 
     it('successfully rotates webhook secret and returns whsec_ prefixed secret with grace period', async () => {
+      // An endpoint target needs the admin scope (or a session); tests/webhook-rotate-authorization.test.ts covers the refusals.
+      const adminKey = await redisKeyStore.generateApiKey(testUser.id, 'Webhook Admin Key', { scopes: ['*'] });
+      const testApiKey = adminKey.secretKey;
       const req1 = new NextRequest('http://localhost:3000/api/v1/webhooks/secrets/rotate', {
         method: 'POST',
         headers: {

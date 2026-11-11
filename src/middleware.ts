@@ -13,6 +13,7 @@ import {
   type ResolvedClientIp,
 } from '@/lib/security/client-ip';
 import { requestBodyVerdict, type CountedBody } from '@/lib/api/request-body-limit';
+import { hasSessionCookie } from '@/lib/auth/session-cookie';
 
 /**
  * Next.js Edge-compatible Centralized Middleware
@@ -164,36 +165,44 @@ async function countedBody(body: ReadableStream<Uint8Array>, count: CountedBody,
   return NextResponse.next();
 }
 
+/**
+ * Whether the `Origin` (or the origin of the `Referer`) of a cookie-authenticated mutation is this site. In production only an
+ * `https:` origin counts, unless the configured APP_ORIGIN is itself the plain-HTTP origin of a deployment without TLS: a page
+ * served over plain HTTP for the same host (any on-path attacker can serve one) is not this site, and the Host header alone would
+ * accept it as `http://<host>`.
+ */
 function isOriginAllowed(incomingOrigin: string, request: NextRequest): boolean {
   try {
     const incomingUrl = new URL(incomingOrigin);
-    const hostHeader = request.headers.get('host');
+    const production = process.env.NODE_ENV === 'production';
 
-    // 1. Match request.nextUrl.origin
+    // 1. The configured APP_ORIGIN / NEXT_PUBLIC_APP_URL
+    const envAppOrigin = process.env.APP_ORIGIN || process.env.NEXT_PUBLIC_APP_URL;
+    if (envAppOrigin && incomingUrl.origin === new URL(envAppOrigin).origin) {
+      return true;
+    }
+
+    // Past the configured origin, production takes HTTPS origins only.
+    if (production && incomingUrl.protocol !== 'https:') {
+      return false;
+    }
+
+    // 2. The origin the request itself came in on
     if (incomingUrl.origin === request.nextUrl.origin) {
       return true;
     }
 
-    // 2. Match Host header (accounting for http/https)
+    // 3. The Host header, with the scheme the request has (https in production)
+    const hostHeader = request.headers.get('host');
     if (hostHeader) {
-      const hostOriginHttp = `http://${hostHeader}`;
-      const hostOriginHttps = `https://${hostHeader}`;
-      if (incomingUrl.origin === hostOriginHttp || incomingUrl.origin === hostOriginHttps) {
-        return true;
-      }
-    }
-
-    // 3. Match configured APP_ORIGIN / NEXT_PUBLIC_APP_URL
-    const envAppOrigin = process.env.APP_ORIGIN || process.env.NEXT_PUBLIC_APP_URL;
-    if (envAppOrigin) {
-      const parsedEnv = new URL(envAppOrigin);
-      if (incomingUrl.origin === parsedEnv.origin) {
+      const allowedSchemes = production ? ['https'] : ['http', 'https'];
+      if (allowedSchemes.some((scheme) => incomingUrl.origin === `${scheme}://${hostHeader}`)) {
         return true;
       }
     }
 
     // 4. Localhost / Loopback allowed in development or testing
-    if (process.env.NODE_ENV !== 'production') {
+    if (!production) {
       if (incomingUrl.hostname === 'localhost' || incomingUrl.hostname === '127.0.0.1') {
         return true;
       }
@@ -360,15 +369,14 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
 
   // 3. CSRF Protection for Cookie-Authenticated State Mutations
   if (MUTATING_METHODS.has(request.method.toUpperCase())) {
-    const hasSessionCookie =
-      request.cookies.has('easyconvert_session') || request.cookies.has('session');
+    const hasAmbientSession = hasSessionCookie(request.cookies);
     const authHeader = request.headers.get('authorization');
     const hasApiKey =
       Boolean(request.headers.get('x-api-key')) ||
       Boolean(authHeader?.startsWith('Bearer ec_live_'));
 
     // If request relies on ambient browser credentials (cookies) without an explicit API key:
-    if (hasSessionCookie && !hasApiKey) {
+    if (hasAmbientSession && !hasApiKey) {
       const originHeader = request.headers.get('origin');
       const refererHeader = request.headers.get('referer');
 

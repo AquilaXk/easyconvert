@@ -24,7 +24,6 @@ const LEFT_OUT: Readonly<Record<string, string>> = {
   'DELETE /api/webhooks/dlq/{id}': 'webhook dead letters are an operator tool',
   'POST /api/webhooks/dlq/{id}/replay': 'webhook dead letters are an operator tool',
   'POST /api/v1/webhooks/secrets/rotate': 'it rotates the secret of a webhook endpoint, which only the dashboard registers',
-  'GET /api/v1/usage': 'it needs the read:usage scope, which no key the dashboard creates can hold',
 };
 
 function publishedOperations(): string[] {

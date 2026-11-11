@@ -96,6 +96,21 @@ describe('a page whose Type 3 glyphs without a Unicode value outnumber the text'
     expect((error as PdfTextUnmappedError).pages).toEqual([1]);
   });
 
+  it('keeps the density analysis and the word geometry of a figure page whose Type 3 glyphs are no text, so no OCR reads it', async () => {
+    const read = await readPdfDocument(documentOf([label('Figure 1 Quark model') + type3Run(PICTURE_CODES)]), { densityThreshold: 15, geometry: 'text-pages' });
+    expect(read.extracted.unmappedPages).toEqual([]);
+    expect(read.analyses).toHaveLength(1);
+    expect(read.analyses[0]).toMatchObject({ pageNumber: 1, hasTextLayer: true, text: 'Figure 1 Quark model' });
+    expect(read.geometry.get(1)?.text).toBe('Figure 1 Quark model');
+  });
+
+  it('leaves a page whose Type 3 runs held characters to OCR for its geometry and analysis, which would carry those characters', async () => {
+    const read = await readPdfDocument(documentOf([label('Figure 1 Quark model') + type3Run(PICTURE_CODES + BITMAP_CODES)]), { densityThreshold: 15, geometry: 'text-pages' });
+    expect(read.extracted.unmappedPages).toEqual([]);
+    expect(read.analyses[0]).toMatchObject({ pageNumber: 1, hasTextLayer: false, text: '' });
+    expect(read.geometry.has(1)).toBe(false);
+  });
+
   it('leaves the page to OCR as a whole when OCR is on', async () => {
     const read = await readPdfDocument(documentOf([label('Figure 1 Quark model') + type3Run(PICTURE_CODES)]), { onUnmapped: 'omit' });
     expect(read.extracted.unmappedPages).toEqual([1]);

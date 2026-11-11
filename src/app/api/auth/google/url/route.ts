@@ -7,7 +7,8 @@ import {
   OAUTH_STATE_COOKIE_NAME,
   OAUTH_STATE_TTL_SECONDS,
 } from '@/lib/auth/oauth';
-import { codedRefusal } from '@/lib/api/problem-details';
+import { authStoreUnavailableRefusal, codedRefusal } from '@/lib/api/problem-details';
+import { AuthStoreUnavailableError } from '@/lib/auth/store-unavailable';
 import type { AuthErrorCode } from '@/lib/refusal-codes';
 import { TERMS_VERSION, termsRefusal, termsRefusalText } from '@/lib/legal/documents';
 
@@ -49,6 +50,7 @@ export async function GET(req: NextRequest) {
     res.headers.set('Set-Cookie', cookieParts.join('; '));
     return res;
   } catch (err: unknown) {
+    if (err instanceof AuthStoreUnavailableError) return authStoreUnavailableRefusal(err);
     const message = err instanceof Error ? err.message : 'Failed to generate OAuth URL';
     return NextResponse.json(
       { success: false, error: message },

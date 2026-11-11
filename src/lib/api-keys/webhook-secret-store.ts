@@ -18,6 +18,20 @@ export interface StoredWebhookSecretRecord {
   rotatedAt?: number;
 }
 
+/** Most endpoint records (rotations with an `endpointId`) one owner may hold; a rotation of an existing one is always allowed. */
+export const MAX_ENDPOINT_SECRET_RECORDS_PER_OWNER = 25;
+/** How long a record of an endpoint lives after its last rotation. Records of an API key end with the key and have no expiry. */
+export const ENDPOINT_SECRET_RECORD_TTL_SECONDS = 90 * 24 * 60 * 60;
+const HTTP_CONFLICT = 409;
+
+export interface RotateSecretOptions {
+  /**
+   * Marks the target as an endpoint: its record expires after ENDPOINT_SECRET_RECORD_TTL_SECONDS, and a new one is refused with
+   * WebhookEndpointLimitError while the owner already holds this many.
+   */
+  endpointLimit?: number;
+}
+
 export interface RotateSecretResult {
   newSecret: string;
   expiresAt: number;
@@ -37,6 +51,16 @@ export class WebhookTargetRequiredError extends Error {
   }
 }
 
+/** The owner already holds the most endpoint records a rotation may create. */
+export class WebhookEndpointLimitError extends Error {
+  readonly status = HTTP_CONFLICT;
+
+  constructor(readonly limit: number) {
+    super(`At most ${limit} webhook endpoints can hold a signing secret. Rotate an existing endpoint or use an API key id.`);
+    this.name = 'WebhookEndpointLimitError';
+  }
+}
+
 /** The first candidate that is a non-blank string; throws WebhookTargetRequiredError when there is none. */
 export function requireWebhookTargetId(...candidates: Array<string | undefined>): string {
   for (const candidate of candidates) {
@@ -53,10 +77,12 @@ export interface WebhookSecretStore {
    * exists is never replaced, so a rotation that wrote one in the meantime keeps it.
    */
   seedPrimarySecretIfAbsent(ownerUserId: string, targetId: string, secret: string): Promise<boolean>;
+  /** Atomic: concurrent rotations of one target each keep the secret they replace as the previous one in turn. */
   rotateSecret(
     ownerUserId: string,
     targetId: string,
-    graceSeconds?: number
+    graceSeconds?: number,
+    options?: RotateSecretOptions
   ): Promise<RotateSecretResult>;
   deleteSecretRecord(ownerUserId: string, targetId: string): Promise<boolean>;
   reset(): Promise<void>;
@@ -134,13 +160,73 @@ export function generateWebhookSecret(): string {
 
 /** The one place a record key is built, so no operation can reach a record without naming its target. */
 function buildSecretStorageKey(ownerUserId: string, targetId: string): string {
-  const sanitizedUser = ownerUserId.replace(/[{}]/g, '_');
-  const sanitizedTarget = requireWebhookTargetId(targetId).replace(/[{}]/g, '_');
-  return `webhook:sec:{${sanitizedUser}}:${sanitizedTarget}`;
+  return `${secretKeyPrefix(ownerUserId)}${sanitizedTargetId(targetId)}`;
 }
+
+/** What every record key of the owner starts with. */
+function secretKeyPrefix(ownerUserId: string): string {
+  return `webhook:sec:{${ownerUserId.replace(/[{}]/g, '_')}}:`;
+}
+
+function sanitizedTargetId(targetId: string): string {
+  return requireWebhookTargetId(targetId).replace(/[{}]/g, '_');
+}
+
+/** The set of the endpoint targets an owner holds a record for; same `{owner}` tag as the records, so one script reaches both. */
+function buildEndpointIndexKey(ownerUserId: string): string {
+  return `webhook:sec-endpoints:{${ownerUserId.replace(/[{}]/g, '_')}}`;
+}
+
+function clampGraceSeconds(graceSeconds: number): number {
+  return Math.max(60, Math.min(graceSeconds, 604800));
+}
+
+/**
+ * Rotates one record in a single step, so two concurrent rotations never both read the same primary and lose one grace secret.
+ * KEYS[1] record, KEYS[2] endpoint index. ARGV: new encrypted primary, now, previous expiry, endpoint flag (1/0), endpoint limit,
+ * record TTL seconds, record key prefix (with the owner tag), target id. Answers 0 when a new endpoint record would pass the
+ * limit, 1 for a first record, 2 when it replaced one.
+ */
+export const ROTATE_WEBHOOK_SECRET_LUA = `
+local raw = redis.call('GET', KEYS[1])
+local existing = nil
+if raw then
+  local ok, decoded = pcall(cjson.decode, raw)
+  if ok and type(decoded) == 'table' and decoded.primaryEncrypted then existing = decoded end
+end
+local isEndpoint = ARGV[4] == '1'
+if isEndpoint and not existing then
+  local live = 0
+  for _, member in ipairs(redis.call('SMEMBERS', KEYS[2])) do
+    if redis.call('EXISTS', ARGV[7] .. member) == 1 then
+      live = live + 1
+    else
+      redis.call('SREM', KEYS[2], member)
+    end
+  end
+  if live >= tonumber(ARGV[5]) then return 0 end
+end
+local now = tonumber(ARGV[2])
+local record = { primaryEncrypted = ARGV[1], createdAt = now, rotatedAt = now }
+if existing then
+  record.createdAt = existing.createdAt or now
+  record.previousEncrypted = existing.primaryEncrypted
+  record.previousExpiresAt = tonumber(ARGV[3])
+end
+redis.call('SET', KEYS[1], cjson.encode(record))
+if isEndpoint then
+  redis.call('SADD', KEYS[2], ARGV[8])
+  redis.call('EXPIRE', KEYS[1], tonumber(ARGV[6]))
+  redis.call('EXPIRE', KEYS[2], tonumber(ARGV[6]))
+end
+if existing then return 2 end
+return 1
+`;
 
 export class InMemoryWebhookSecretStore implements WebhookSecretStore {
   private readonly store = new Map<string, StoredWebhookSecretRecord>();
+  /** The record keys of the endpoint targets of each owner (the Redis index set). */
+  private readonly endpointIndex = new Map<string, Set<string>>();
   private readonly clock: () => number;
 
   constructor(options?: { clock?: () => number }) {
@@ -197,13 +283,19 @@ export class InMemoryWebhookSecretStore implements WebhookSecretStore {
   public async rotateSecret(
     ownerUserId: string,
     targetId: string,
-    graceSeconds: number = 86400
+    graceSeconds: number = 86400,
+    options: RotateSecretOptions = {}
   ): Promise<RotateSecretResult> {
-    const clampedGrace = Math.max(60, Math.min(graceSeconds, 604800));
+    const clampedGrace = clampGraceSeconds(graceSeconds);
     const now = this.clock();
     const expiresAt = now + clampedGrace * 1000;
     const key = buildSecretStorageKey(ownerUserId, targetId);
     const existing = this.store.get(key);
+    const indexKey = buildEndpointIndexKey(ownerUserId);
+    const isEndpoint = options.endpointLimit !== undefined;
+    if (isEndpoint && !existing && (this.endpointIndex.get(indexKey)?.size ?? 0) >= options.endpointLimit!) {
+      throw new WebhookEndpointLimitError(options.endpointLimit!);
+    }
 
     const newSecret = generateWebhookSecret();
     const newEncrypted = encryptWebhookSecret(newSecret);
@@ -215,6 +307,11 @@ export class InMemoryWebhookSecretStore implements WebhookSecretStore {
       createdAt: existing?.createdAt || now,
       rotatedAt: now,
     });
+    if (isEndpoint) {
+      const members = this.endpointIndex.get(indexKey) ?? new Set<string>();
+      members.add(sanitizedTargetId(targetId));
+      this.endpointIndex.set(indexKey, members);
+    }
 
     return {
       newSecret,
@@ -226,11 +323,13 @@ export class InMemoryWebhookSecretStore implements WebhookSecretStore {
 
   public async deleteSecretRecord(ownerUserId: string, targetId: string): Promise<boolean> {
     const key = buildSecretStorageKey(ownerUserId, targetId);
+    this.endpointIndex.get(buildEndpointIndexKey(ownerUserId))?.delete(sanitizedTargetId(targetId));
     return this.store.delete(key);
   }
 
   public reset(): Promise<void> {
     this.store.clear();
+    this.endpointIndex.clear();
     return Promise.resolve();
   }
 }
@@ -305,50 +404,51 @@ export class RedisWebhookSecretStore implements WebhookSecretStore {
   public async rotateSecret(
     ownerUserId: string,
     targetId: string,
-    graceSeconds: number = 86400
+    graceSeconds: number = 86400,
+    options: RotateSecretOptions = {}
   ): Promise<RotateSecretResult> {
-    const clampedGrace = Math.max(60, Math.min(graceSeconds, 604800));
+    const clampedGrace = clampGraceSeconds(graceSeconds);
     const now = this.clock();
     const expiresAt = now + clampedGrace * 1000;
     const key = buildSecretStorageKey(ownerUserId, targetId);
-
-    const existingRaw = await this.redis.get(key);
-    let existing: StoredWebhookSecretRecord | undefined;
-    if (existingRaw) {
-      try {
-        existing = JSON.parse(existingRaw);
-      } catch {}
-    }
-
     const newSecret = generateWebhookSecret();
-    const newEncrypted = encryptWebhookSecret(newSecret);
+    const isEndpoint = options.endpointLimit !== undefined;
 
-    const record: StoredWebhookSecretRecord = {
-      primaryEncrypted: newEncrypted,
-      previousEncrypted: existing?.primaryEncrypted,
-      previousExpiresAt: existing ? expiresAt : undefined,
-      createdAt: existing?.createdAt || now,
-      rotatedAt: now,
-    };
-
-    await this.redis.set(key, JSON.stringify(record));
+    const outcome = Number(
+      await this.redis.eval(
+        ROTATE_WEBHOOK_SECRET_LUA,
+        2,
+        key,
+        buildEndpointIndexKey(ownerUserId),
+        encryptWebhookSecret(newSecret),
+        String(now),
+        String(expiresAt),
+        isEndpoint ? '1' : '0',
+        String(options.endpointLimit ?? 0),
+        String(ENDPOINT_SECRET_RECORD_TTL_SECONDS),
+        secretKeyPrefix(ownerUserId),
+        sanitizedTargetId(targetId)
+      )
+    );
+    if (outcome === 0) throw new WebhookEndpointLimitError(options.endpointLimit!);
 
     return {
       newSecret,
       expiresAt,
       graceSeconds: clampedGrace,
-      previousExpiresAt: existing ? expiresAt : undefined,
+      previousExpiresAt: outcome === 2 ? expiresAt : undefined,
     };
   }
 
   public async deleteSecretRecord(ownerUserId: string, targetId: string): Promise<boolean> {
     const key = buildSecretStorageKey(ownerUserId, targetId);
+    await this.redis.srem(buildEndpointIndexKey(ownerUserId), sanitizedTargetId(targetId));
     const count = await this.redis.del(key);
     return count > 0;
   }
 
   public async reset(): Promise<void> {
-    const keys = await this.redis.keys('webhook:sec:*');
+    const keys = [...(await this.redis.keys('webhook:sec:*')), ...(await this.redis.keys('webhook:sec-endpoints:*'))];
     if (keys.length > 0) {
       await Promise.all(keys.map((k) => this.redis.del(k)));
     }

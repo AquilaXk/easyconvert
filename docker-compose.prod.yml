@@ -88,6 +88,9 @@ x-app-environment: &app-environment
   JOB_SECRET_KEK_PREVIOUS:
   KEY_ENCRYPTION_KEY:
   STORAGE_VAULT_KEY:
+  # The web process seals the rotated webhook signing secrets with it and every worker opens them to sign a delivery (src/lib/api-keys/
+  # webhook-secret-store.ts): a worker without it signs with the secret the job was queued with, ignoring a rotation.
+  WEBHOOK_SECRET_KEK: ${WEBHOOK_SECRET_KEK:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
   # The Redis of this stack unless REDIS_URL names another (a managed or separate host). The password is hex (openssl rand -hex 24),
   # so it needs no URL escaping.
   # No `:?` inside the default: some Compose releases evaluate it even when REDIS_URL is set. deploy.sh refuses an env secret
@@ -215,7 +218,6 @@ services:
       JWT_SECRET_PREVIOUS:
       KEY_HASH_PEPPER: ${KEY_HASH_PEPPER:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
       KEY_HASH_PEPPER_PREVIOUS:
-      WEBHOOK_SECRET_KEK: ${WEBHOOK_SECRET_KEK:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
       GOOGLE_CLIENT_ID:
       GOOGLE_CLIENT_SECRET:
       # Mail for password reset and email verification; all empty means both features are off.

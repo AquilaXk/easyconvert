@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 154 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 156 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -109,7 +109,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `KEY_HASH_PEPPER` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded); secret, never logged | none | yes | web |
 | `KEY_HASH_PEPPER_PREVIOUS` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded); secret, never logged | none | no | web |
 | `KEY_ENCRYPTION_KEY` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded); secret, never logged | none | no | web, worker |
-| `WEBHOOK_SECRET_KEK` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded); secret, never logged | none | yes | web |
+| `WEBHOOK_SECRET_KEK` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded); secret, never logged | none | yes | web, worker |
 | `STORAGE_VAULT_KEY` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded); secret, never logged | none | no | web, worker |
 | `JOB_SECRET_KEK` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded), no surrounding whitespace in production; secret, never logged | none | yes | web, worker |
 | `JOB_SECRET_KEK_PREVIOUS` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded), no surrounding whitespace in production; secret, never logged | none | no | web, worker |
@@ -117,7 +117,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `KEY_HASH_PEPPER`: Pepper of the HMAC that hashes API key secrets. At least 32 bytes of UTF-8 text in production. Also a legacy decryption fallback key of API key secret encryption.
 - `KEY_HASH_PEPPER_PREVIOUS`: The previous KEY_HASH_PEPPER during a rotation, so API keys hashed under it still verify and are re-hashed under KEY_HASH_PEPPER on next use.
 - `KEY_ENCRYPTION_KEY`: Key that encrypts API key webhook secrets at rest. In production it must be set (at least 32 characters) to encrypt a new secret; without it existing secrets still decrypt under KEY_HASH_PEPPER, KEY_HASH_PEPPER_PREVIOUS or JWT_SECRET. Outside production those keys also encrypt.
-- `WEBHOOK_SECRET_KEK`: Key-encryption key of the webhook signing secrets. At least 32 bytes of UTF-8 text in production. The worker dispatches webhooks and needs it too once the deployment sends them.
+- `WEBHOOK_SECRET_KEK`: Key-encryption key of the webhook signing secrets. At least 32 bytes of UTF-8 text in production. The web process seals the rotated secrets with it and the worker opens them to sign every delivery, so both need the same value.
 - `STORAGE_VAULT_KEY`: Master key of the vault that holds customer storage credentials. In production it must be set (at least 32 characters) to store credentials; without it stored credentials still decrypt under KEY_ENCRYPTION_KEY or JWT_SECRET. Outside production those keys also encrypt.
 - `JOB_SECRET_KEK`: Key-encryption key that seals signed URLs and headers inside queued jobs. At least 32 bytes of UTF-8 text, no surrounding whitespace, in production. Shared by the API and every worker.
 - `JOB_SECRET_KEK_PREVIOUS`: The previous JOB_SECRET_KEK during a rotation, so jobs sealed under it can still be opened.
@@ -154,6 +154,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `AWS_SECRET_ACCESS_KEY` | secret text; secret, never logged | none | no | web, worker |
 | `AWS_REGION` | text | none | no | web, worker |
 | `AWS_BUCKET_NAME` | text | none | no | web, worker |
+| `BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST` | text | none | no | web, worker |
 | `BYOS_S3_DEV_ENDPOINT_ALLOWLIST` | text | none | no | web, worker |
 
 - `STORAGE_DRIVER`: Where objects live: `oci` (OCI Object Storage), `s3` (an S3-compatible service) or `local` (disk of this host, for development and single-node use). Must be chosen in production.
@@ -184,6 +185,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `AWS_SECRET_ACCESS_KEY`: Deprecated fallback of OCI_SECRET_ACCESS_KEY and S3_SECRET_ACCESS_KEY; logs a warning when used.
 - `AWS_REGION`: Deprecated fallback of OCI_REGION and S3_REGION; logs a warning when used.
 - `AWS_BUCKET_NAME`: Deprecated fallback of OCI_BUCKET and S3_BUCKET; logs a warning when used.
+- `BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST`: Comma-separated host:port list of WebDAV, Azure Blob, GCS and import/export URL endpoints that may be plain http or private-address, for a local test server. Honoured only when NODE_ENV is exactly `development`.
 - `BYOS_S3_DEV_ENDPOINT_ALLOWLIST`: Comma-separated host[:port] list of customer S3 endpoints that may be plain http or private-address. Honoured only when NODE_ENV is exactly `development`.
 
 ### Queue and Redis
@@ -324,6 +326,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `EBOOK_CONVERT_PATH` | absolute path of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `DWG2DXF_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `VTRACER_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
+| `OXIPNG_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `VTRACER_PIXELS_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `CAD_CONVERT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `PID_INIT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
@@ -371,6 +374,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `EBOOK_CONVERT_PATH`: Absolute path of the calibre `ebook-convert` executable that writes MOBI, AZW3, PDB, LRF and OEB books; searched in the standard locations when unset. Those five formats cannot be written without it (HTTP 503); a value that is not an absolute path is rejected at start-up.
 - `DWG2DXF_PATH`: Path of the LibreDWG `dwg2dxf` executable that reads a DWG drawing into a DXF; searched in the standard locations when unset. A DWG cannot be converted without it (HTTP 503).
 - `VTRACER_PATH`: Path of the vtracer executable that traces PNG, JPEG, WebP, GIF, BMP and TIFF pictures to SVG; searched in the standard locations when unset. Those pictures cannot be converted to SVG without it (HTTP 503).
+- `OXIPNG_PATH`: Path of the pinned oxipng executable that optimises a PNG converted to PNG without loss (entry 232); searched in the standard locations when unset. Without it the PNG is written as the image library encodes it.
 - `VTRACER_PIXELS_PATH`: Path of the vtracer-pixels executable (scripts/vtracer-pixels), the vtracer front-end that reads the raw pixels the worker decoded; searched in the standard locations when unset. When it is found it traces those pictures instead of the vtracer executable; the SVG is the same.
 - `CAD_CONVERT_PATH`: Path of the `cad-convert` executable (native/cad-convert, linked to the Open CASCADE libraries) that reads and writes STEP and IGES; searched in the standard locations when unset. A STEP or IGES file cannot be converted without it (HTTP 503).
 - `PID_INIT_PATH`: Path of the `pid-init` executable (native/pid-init) that starts every sandboxed program in a PID namespace of its own, so that one run cannot see or signal another, and refuses them the /proc entries of the other runs (Landlock); searched in the standard locations when unset. Without it, or when the host does not allow a PID namespace, programs run in the user and network namespaces only.

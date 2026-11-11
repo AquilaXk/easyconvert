@@ -6,7 +6,7 @@ import { assertWorkbookFitsXls } from '../lib/conversions/office/xls-limits';
 import { writeTransientWorkbook } from '../lib/conversions/data';
 import { readRawInputBuffer } from './worker-output';
 import { repairPptPersistIdSeed } from '../lib/conversions/office/ppt-reader';
-import { isEncryptedLegacyOffice, legacyOfficeInput } from './office-input-checks';
+import { OfficePackageUnreadableError, isEncryptedLegacyOffice, legacyOfficeInput } from './office-input-checks';
 import {
   CGM_ENCODING_PROBE_BYTES,
   OFFICE_SUITE_SOURCE_FORMATS,
@@ -131,6 +131,9 @@ const LIBREOFFICE_STOPPED_PATTERN = /Unspecified Application Error|Fatal excepti
 /** LibreOffice ran and wrote nothing, could not load the file, or stopped on it: the file is damaged or not that kind of document (typed 400). */
 export function asUnreadableDocument(err: unknown, src: string): unknown {
   if (!OFFICE_NATIVE_SOURCES.has(src)) return err;
+  if (err instanceof OfficePackageUnreadableError) {
+    return new ConversionFailedError(`LibreOffice could not read the .${src} file: it is damaged or not a valid ${src.toUpperCase()} document.`);
+  }
   if (err instanceof Error && !(err instanceof ConversionFailedError) && LIBREOFFICE_NO_OUTPUT_PATTERN.test(err.message)) {
     return new ConversionFailedError(`LibreOffice could not read the .${src} file: it is damaged or not a valid ${src.toUpperCase()} document.`);
   }

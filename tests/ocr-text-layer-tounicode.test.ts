@@ -15,11 +15,11 @@ import {
 } from 'pdf-lib';
 import {
   createLosslessSandwichPdfFromImage,
-  createLosslessSandwichPdfFromPdf,
   createToUnicodeCMap,
   ensureUnicodeFont,
   type OcrResult,
 } from '../src/lib/conversions/ocr-pdf-combiner';
+import { createLosslessSandwichPdfFromPdf } from '../src/lib/conversions/ocr-pdf-sandwich';
 import { TextLayerCidMap } from '../src/lib/conversions/ocr-text-layer-font';
 import { ConversionFailedError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
