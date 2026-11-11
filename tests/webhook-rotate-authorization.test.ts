@@ -167,9 +167,11 @@ describe('the endpoint records of one owner', () => {
     }
 
     await expect(store.rotateSecret(owner.id, 'ep_new', 60, { endpointLimit: MAX_ENDPOINT_SECRET_RECORDS_PER_OWNER })).rejects.toBeInstanceOf(WebhookEndpointLimitError);
-    await expect(store.rotateSecret(other.id, 'ep_new', 60, { endpointLimit: MAX_ENDPOINT_SECRET_RECORDS_PER_OWNER })).resolves.toBeDefined();
+    const forOther = await store.rotateSecret(other.id, 'ep_new', 60, { endpointLimit: MAX_ENDPOINT_SECRET_RECORDS_PER_OWNER });
+    expect((await store.getSecretRecord(other.id, 'ep_new'))?.primary).toBe(forOther.newSecret);
     await store.deleteSecretRecord(owner.id, 'ep_3');
-    await expect(store.rotateSecret(owner.id, 'ep_new', 60, { endpointLimit: MAX_ENDPOINT_SECRET_RECORDS_PER_OWNER })).resolves.toBeDefined();
+    const afterDelete = await store.rotateSecret(owner.id, 'ep_new', 60, { endpointLimit: MAX_ENDPOINT_SECRET_RECORDS_PER_OWNER });
+    expect((await store.getSecretRecord(owner.id, 'ep_new'))?.primary).toBe(afterDelete.newSecret);
   });
 });
 
@@ -225,6 +227,8 @@ describe.skipIf(!process.env.REDIS_URL)('rotation in Redis', () => {
 
     await expect(store.rotateSecret(ownerId, 'ep_extra', 60, { endpointLimit: 3 })).rejects.toBeInstanceOf(WebhookEndpointLimitError);
     await client.del(`webhook:sec:{${ownerId}}:ep_1`);
-    await expect(store.rotateSecret(ownerId, 'ep_extra', 60, { endpointLimit: 3 })).resolves.toBeDefined();
+    const created = await store.rotateSecret(ownerId, 'ep_extra', 60, { endpointLimit: 3 });
+    expect(created.newSecret).toMatch(/^whsec_[a-f0-9]{64}$/);
+    expect((await store.getSecretRecord(ownerId, 'ep_extra'))?.primary).toBe(created.newSecret);
   });
 });

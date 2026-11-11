@@ -39,6 +39,17 @@ function silentRedis(): Redis {
   }) as unknown as Redis;
 }
 
+/** What a step that must refuse threw: the typed 503 error. */
+async function refusal(step: Promise<unknown>): Promise<AuthStoreUnavailableError> {
+  const outcome = await step.then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error })
+  );
+  if (!('error' in outcome)) throw new Error(`the step answered ${JSON.stringify(outcome.value)} instead of refusing`);
+  expect(outcome.error).toBeInstanceOf(AuthStoreUnavailableError);
+  return outcome.error as AuthStoreUnavailableError;
+}
+
 function uniqueEmail(): string {
   return `failclosed_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@test.com`;
 }
@@ -70,7 +81,7 @@ describe('the user store with a Redis client', () => {
     await store.revokeJti('jti-1', 60);
     store.setRedisClient(brokenRedis());
 
-    await expect(step(store, user.id)).rejects.toBeInstanceOf(AuthStoreUnavailableError);
+    expect((await refusal(step(store, user.id))).status).toBe(HTTP_UNAVAILABLE);
   });
 
   it('does not take a revoked session for a live one when the revocation list cannot be read', async () => {
@@ -78,7 +89,7 @@ describe('the user store with a Redis client', () => {
     await store.revokeJti('jti-revoked', 60);
     store.setRedisClient(brokenRedis());
 
-    await expect(store.isJtiRevoked('jti-revoked')).rejects.toBeInstanceOf(AuthStoreUnavailableError);
+    expect((await refusal(store.isJtiRevoked('jti-revoked'))).status).toBe(HTTP_UNAVAILABLE);
   });
 });
 
@@ -107,7 +118,7 @@ describe('a session token', () => {
     const token = createSessionToken(redisUserStore.sanitizeUser(user));
     redisUserStore.setRedisClient(brokenRedis());
 
-    await expect(getSessionFromToken(token)).rejects.toBeInstanceOf(AuthStoreUnavailableError);
+    expect((await refusal(getSessionFromToken(token))).status).toBe(HTTP_UNAVAILABLE);
   });
 });
 
@@ -138,14 +149,14 @@ describe('the key store with a Redis client', () => {
     const { key } = await store.generateApiKey(user.id, 'Remembered key', {});
     store.setRedisClient(brokenRedis());
 
-    await expect(step(store, user.id, key.id)).rejects.toBeInstanceOf(AuthStoreUnavailableError);
+    expect((await refusal(step(store, user.id, key.id))).status).toBe(HTTP_UNAVAILABLE);
   });
 
   it('does not issue a key that Redis did not store', async () => {
     const store = new RedisKeyStore({ keyPrefix: `failclosed:${crypto.randomBytes(4).toString('hex')}:`, isolated: true, redisClient: brokenRedis() });
     const user = await redisUserStore.createUser({ email: uniqueEmail(), name: 'Key owner' });
 
-    await expect(store.generateApiKey(user.id, 'Local only', {})).rejects.toBeInstanceOf(AuthStoreUnavailableError);
+    expect((await refusal(store.generateApiKey(user.id, 'Local only', {}))).status).toBe(HTTP_UNAVAILABLE);
     expect(await store.listApiKeys(user.id).catch(() => 'unavailable')).toBe('unavailable');
   });
 
