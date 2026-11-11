@@ -13,9 +13,11 @@ import type { WebhookDlqEntry } from './types';
  * - `HASH:ownerless`: the ids of entries recorded without an owner, which no caller can reach and which are purged.
  *
  * The hash and the sets are separate keys, so a write is a pipeline, not a script: the sets are written first and removed last (the client may not be connected yet, and a pipeline does not wait for it, so each call waits first),
- * which can leave an id in a set without an entry (the listing that meets it drops it) and never an entry nobody can list. An
- * entry written without its index (by an older build) is found by `reconcile`, which runs when the hash holds more entries than
- * the expiry set. Without Redis, or when it does not answer, the entries stay in `memory`.
+ * which can leave an id in a set without an entry (the listing that meets it drops it, and reads on until its page is full) and
+ * never an entry nobody can list. An entry written without its index (by an older build) is found by `reconcile`, which runs when
+ * the hash holds more entries than the expiry set: in the background and a bounded number of batches at a time when a listing
+ * sees it (the listing does not wait, and a later pass resumes where the last stopped), to the end when a clear or the sweep asks.
+ * Without Redis, or when it does not answer, the entries stay in `memory`.
  */
 const HASH = 'easyconvert:webhook:dlq';
 const EXPIRY_INDEX = `${HASH}:expiry`;
@@ -25,8 +27,12 @@ const OWNER_INDEX_SLACK_MS = 24 * 60 * 60 * 1000;
 /** Entries a listing returns when the caller names no page size, and the most it returns. */
 export const DLQ_PAGE_DEFAULT = 100;
 export const DLQ_PAGE_MAX = 500;
-/** A reconcile reads the whole hash; a process starts one at most this often. */
+/** A process starts a background reconcile at most this often. */
 const RECONCILE_MIN_INTERVAL_MS = 10_000;
+/** The batches (BATCH entries each) one background pass reads before it stops; the next pass resumes from the cursor it left. */
+const RECONCILE_BATCHES_PER_PASS = 20;
+/** The rounds a listing reads on to fill its page when ids of its index have no entry, before it returns the page it has. */
+const PAGE_FILL_ROUNDS = 20;
 
 export interface DlqPage {
   entries: WebhookDlqEntry[];
@@ -67,11 +73,14 @@ function groupByOwner(entries: readonly Pick<WebhookDlqEntry, 'id' | 'ownerUserI
 export class WebhookDlqStore {
   private reconciling: Promise<void> | undefined;
   private lastReconcileAt = 0;
+  /** Where the next reconcile pass resumes in the hash; '0' when the last pass reached the end. */
+  private reconcileCursor = '0';
 
   constructor(
     private readonly memory: Map<string, WebhookDlqEntry>,
     private readonly client: () => Redis | null,
-    private readonly retentionMs: number
+    private readonly retentionMs: number,
+    private readonly reconcileBatchesPerPass: number = RECONCILE_BATCHES_PER_PASS
   ) {}
 
   private isExpired(entry: WebhookDlqEntry, now: number): boolean {
@@ -129,16 +138,10 @@ export class WebhookDlqStore {
     return this.memoryPage(ownerUserId, { includeExpired: options.includeExpired === true, limit, offset }, now);
   }
 
-  private async redisPage(
-    redis: Redis,
-    ownerUserId: string,
-    page: Required<DlqPageOptions>,
-    now: number,
-    reconciled = false
-  ): Promise<DlqPage> {
+  private async redisPage(redis: Redis, ownerUserId: string, page: Required<DlqPageOptions>, now: number): Promise<DlqPage> {
     const key = ownerIndex(ownerUserId);
     const minScore = page.includeExpired ? '-inf' : `(${now - this.retentionMs}`;
-    const [ids, total, ownerless, stored, indexed] = (await replies(
+    const [firstIds, counted, ownerless, stored, indexed] = (await replies(
       redis
         .pipeline()
         .zrevrangebyscore(key, '+inf', minScore, 'LIMIT', page.offset, page.limit)
@@ -148,29 +151,37 @@ export class WebhookDlqStore {
         .zcard(EXPIRY_INDEX)
     )) as [string[], number, string[], number, number];
     if (ownerless.length > 0) await this.purgeOwnerless(redis, ownerless);
-    if (!reconciled && stored > indexed) {
-      await this.reconcile(redis);
-      return this.redisPage(redis, ownerUserId, page, now, true);
-    }
-    if (!ownerUserId || ids.length === 0) return { entries: [], total: ownerUserId ? total : 0 };
+    // Entries an older build wrote without an index are indexed behind this request, which never waits for the pass.
+    if (stored > indexed) this.reconcileInBackground(redis);
+    if (!ownerUserId) return { entries: [], total: 0 };
 
-    const raws = await redis.hmget(HASH, ...ids);
     const entries: WebhookDlqEntry[] = [];
     const gone: string[] = [];
     const strays: string[] = [];
-    raws.forEach((raw, position) => {
-      const entry = parseEntry(raw);
-      if (!entry) gone.push(ids[position]);
-      else if (entry.ownerUserId !== ownerUserId) strays.push(ids[position]);
-      else if (page.includeExpired || !this.isExpired(entry, now)) entries.push(entry);
-    });
+    let ids = firstIds;
+    let asked = page.limit;
+    let position = page.offset;
+    // An id whose entry is gone, or that the entry says another user owns, fills no place of the page: read on until the page is full.
+    for (let round = 0; ids.length > 0 && round < PAGE_FILL_ROUNDS; round += 1) {
+      const raws = await redis.hmget(HASH, ...ids);
+      raws.forEach((raw, at) => {
+        const entry = parseEntry(raw);
+        if (!entry) gone.push(ids[at]);
+        else if (entry.ownerUserId !== ownerUserId) strays.push(ids[at]);
+        else if (page.includeExpired || !this.isExpired(entry, now)) entries.push(entry);
+      });
+      position += ids.length;
+      if (entries.length >= page.limit || ids.length < asked) break;
+      asked = page.limit - entries.length;
+      ids = await redis.zrevrangebyscore(key, '+inf', minScore, 'LIMIT', position, asked);
+    }
     // An id whose entry is gone (removed by another process) leaves the index; one the entry says another user owns leaves this user's.
     if (gone.length + strays.length > 0) {
       const prune = redis.pipeline().zrem(key, ...gone, ...strays);
       if (gone.length > 0) prune.zrem(EXPIRY_INDEX, ...gone);
       await replies(prune).catch(() => undefined);
     }
-    return { entries, total };
+    return { entries: entries.slice(0, page.limit), total: Math.max(0, counted - gone.length - strays.length) };
   }
 
   private memoryPage(ownerUserId: string, page: Required<DlqPageOptions>, now: number): DlqPage {
@@ -302,27 +313,37 @@ export class WebhookDlqStore {
     }
   }
 
+  /** Runs a reconcile to the end when the hash holds more entries than the expiry set; for a clear or the sweep, which need every entry indexed. */
   private async reconcileIfDrifted(redis: Redis): Promise<void> {
     const [stored, indexed] = (await replies(redis.pipeline().hlen(HASH).zcard(EXPIRY_INDEX))) as [number, number];
-    if (stored > indexed) await this.reconcile(redis);
-  }
-
-  /** Indexes every entry of the hash that has no place in the indexes yet, and drops the ones nobody can read. One pass at a time. */
-  private reconcile(redis: Redis): Promise<void> {
-    if (this.reconciling) return this.reconciling;
-    if (Date.now() - this.lastReconcileAt < RECONCILE_MIN_INTERVAL_MS) return Promise.resolve();
-    this.reconciling = this.reindex(redis).finally(() => {
+    if (stored <= indexed) return;
+    await this.reconciling?.catch(() => undefined);
+    this.reconciling = this.reindex(redis, Number.POSITIVE_INFINITY).finally(() => {
       this.lastReconcileAt = Date.now();
       this.reconciling = undefined;
     });
-    return this.reconciling;
+    await this.reconciling;
   }
 
-  private async reindex(redis: Redis): Promise<void> {
-    let cursor = '0';
+  /** Starts one bounded reconcile pass unless one runs or ran lately, and does not wait for it; a pass that fails is logged. */
+  private reconcileInBackground(redis: Redis): void {
+    if (this.reconciling || Date.now() - this.lastReconcileAt < RECONCILE_MIN_INTERVAL_MS) return;
+    this.reconciling = this.reindex(redis, this.reconcileBatchesPerPass)
+      .catch((error: unknown) => console.warn('[WebhookDispatcher] A pass that indexes old DLQ entries failed; the next listing starts it again:', error))
+      .finally(() => {
+        this.lastReconcileAt = Date.now();
+        this.reconciling = undefined;
+      });
+  }
+
+  /** Indexes the entries of the hash that have no place in the indexes yet, and drops the ones nobody can read, `maxBatches` batches from where the last pass stopped. */
+  private async reindex(redis: Redis, maxBatches: number): Promise<void> {
+    let cursor = this.reconcileCursor;
+    let batches = 0;
     do {
       const [next, flat] = await redis.hscan(HASH, cursor, 'COUNT', String(BATCH));
       cursor = next;
+      batches += 1;
       const pipeline = redis.pipeline();
       const owners = new Set<string>();
       for (let at = 0; at + 1 < flat.length; at += 2) {
@@ -341,6 +362,7 @@ export class WebhookDlqStore {
       }
       for (const owner of owners) pipeline.pexpire(ownerIndex(owner), this.retentionMs + OWNER_INDEX_SLACK_MS);
       if (pipeline.length > 0) await replies(pipeline);
-    } while (cursor !== '0');
+      this.reconcileCursor = cursor;
+    } while (cursor !== '0' && batches < maxBatches);
   }
 }

@@ -119,7 +119,9 @@ describe.skipIf(!REDIS_URL)('the per-owner index of webhook dead letters in Redi
     await admin.hset(HASH, `${alice}-garbage`, '{not json');
     written.push(`${alice}-legacy`, `${bob}-legacy`, `${alice}-ownerless`, `${alice}-garbage`);
 
-    expect(await idsOf(alice)).toEqual([`${alice}-legacy`]);
+    // The first listing starts the pass and does not wait for it; the listings that follow find the entries indexed.
+    await idsOf(alice);
+    await vi.waitFor(async () => expect(await idsOf(alice)).toEqual([`${alice}-legacy`]));
     expect(await idsOf(bob)).toEqual([`${bob}-legacy`]);
     expect(await admin.hexists(HASH, `${alice}-ownerless`)).toBe(0);
     expect(await admin.hexists(HASH, `${alice}-garbage`)).toBe(0);

@@ -34,6 +34,7 @@ import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import { DATA_URI_MAX_BYTES, SYNC_CONVERSION_MAX_BYTES, withinSingleRequest } from '@/lib/api/file-size-limit';
 import { describeStorageError, storageErrorResponse } from '@/lib/api/storage-error-response';
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
+import { recordCompletedUpload } from '@/lib/api/completed-upload';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext, releaseKey, replyUnderKey } from '@/lib/api/with-idempotency';
 import { typedFailureProblem } from '@/lib/api/typed-failure-response';
@@ -330,6 +331,7 @@ async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise
       expectedTotalSize: file.size,
       sourceExtension: sourceDef.extension,
       storage: storageProvider,
+      ownerUserId: user.id,
     });
     uploadedStorageKey = streamResult.storageKey;
   } catch (err: unknown) {
@@ -354,6 +356,9 @@ async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise
       rateLimitHeaders
     ));
   }
+
+  const unrecorded = await recordCompletedUpload(storageProvider, uploadedStorageKey, instanceUri);
+  if (unrecorded) return reply(unrecorded);
 
   const inputBytes = await trustedInputBytes({ storageKey: uploadedStorageKey }, storageProvider);
   const job = await handOffConversionJob(

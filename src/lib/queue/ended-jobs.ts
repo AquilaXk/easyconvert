@@ -90,32 +90,68 @@ async function deleteEndedJob(
   if (userId) await client.zrem(keys.userJobsKey(userId), id);
 }
 
+/** The ids of the set one SSCAN call asks for, and so how many jobs are read in one pipeline. */
+const ENDED_SCAN_COUNT = 500;
+
+/** What a pass over the ended jobs of one state found: the ids it removed, and the finish time of the oldest job it left. */
+export interface EndedScan {
+  removed: string[];
+  /**
+   * When the oldest job that stays finished, or Infinity when none stays; undefined when the pass stopped at `limit` before it had
+   * seen every job. No job of the state can have aged out before this time plus the age, so a caller may skip the passes until then.
+   */
+  oldestKeptFinishedOn: number | undefined;
+}
+
 async function removeSetEntriesBefore(
   client: Redis,
   keys: QueueKeySpace,
   stateKey: string,
   threshold: number,
   limit: number
-): Promise<string[]> {
+): Promise<EndedScan> {
   const removed: string[] = [];
-  const ids = await client.smembers(stateKey);
-  for (const { id, finishedOnRaw, dataRaw } of await readEndedFields(client, keys, ids)) {
-    if (finishedOnRaw === null && dataRaw === null && (await client.exists(keys.jobKey(id))) === 0) {
-      await client.srem(stateKey, id);
-      continue;
+  let oldest = Number.POSITIVE_INFINITY;
+  let cursor = '0';
+  do {
+    // The set is read a chunk at a time, so a long set is never held whole, and a pass that reaches `limit` stops there.
+    const [next, scanned] = await client.sscan(stateKey, cursor, 'COUNT', String(ENDED_SCAN_COUNT));
+    cursor = next;
+    // SSCAN may name an id twice.
+    for (const { id, finishedOnRaw, dataRaw } of await readEndedFields(client, keys, [...new Set(scanned)])) {
+      if (finishedOnRaw === null && dataRaw === null && (await client.exists(keys.jobKey(id))) === 0) {
+        await client.srem(stateKey, id);
+      } else if (removed.length < limit && isFinishedBy(finishedOnRaw, threshold)) {
+        await deleteEndedJob(client, keys, stateKey, id, ownerOf(parsedData(dataRaw)));
+        removed.push(id);
+      } else if (Number(finishedOnRaw) > 0) {
+        oldest = Math.min(oldest, Number(finishedOnRaw));
+      }
     }
-    if (removed.length < limit && isFinishedBy(finishedOnRaw, threshold)) {
-      await deleteEndedJob(client, keys, stateKey, id, ownerOf(parsedData(dataRaw)));
-      removed.push(id);
-    }
-  }
-  return removed;
+    if (cursor !== '0' && removed.length >= limit) return { removed, oldestKeptFinishedOn: undefined };
+  } while (cursor !== '0');
+  return { removed, oldestKeptFinishedOn: oldest };
 }
 
 /**
  * Removes up to `limit` jobs of the set `stateKey` that ended at or before `threshold`, with their entry in the index of
- * their user, and answers their ids; with `trimDeadLetters`, also the dead letters recorded by then (BullMQ Queue.clean).
+ * their user, and answers them with the finish time of the oldest job left; with `trimDeadLetters`, also the dead letters
+ * recorded by then (BullMQ Queue.clean).
  */
+export async function scanEndedBefore(
+  client: Redis,
+  keys: QueueKeySpace,
+  stateKey: string,
+  threshold: number,
+  limit: number,
+  trimDeadLetters: boolean
+): Promise<EndedScan> {
+  const scan: EndedScan = limit > 0 ? await removeSetEntriesBefore(client, keys, stateKey, threshold, limit) : { removed: [], oldestKeptFinishedOn: undefined };
+  if (trimDeadLetters) await client.eval(TRIM_DEAD_LETTERS_LUA_SCRIPT, 1, keys.dlqKey, String(threshold));
+  return scan;
+}
+
+/** `scanEndedBefore`, answering only the ids it removed. */
 export async function removeEndedBefore(
   client: Redis,
   keys: QueueKeySpace,
@@ -124,9 +160,7 @@ export async function removeEndedBefore(
   limit: number,
   trimDeadLetters: boolean
 ): Promise<string[]> {
-  const removed = limit > 0 ? await removeSetEntriesBefore(client, keys, stateKey, threshold, limit) : [];
-  if (trimDeadLetters) await client.eval(TRIM_DEAD_LETTERS_LUA_SCRIPT, 1, keys.dlqKey, String(threshold));
-  return removed;
+  return (await scanEndedBefore(client, keys, stateKey, threshold, limit, trimDeadLetters)).removed;
 }
 
 /** Removes the jobs of the set `stateKey` beyond the `count` that ended last, with their entry in their user's index. */
@@ -162,4 +196,54 @@ export async function removeStoredJob(client: Redis, keys: QueueKeySpace, id: st
     ? [keys.jobKey(id), ...keys.stateKeys, userJobsKey, keys.dlqKey]
     : [keys.jobKey(id), ...keys.stateKeys, userJobsKey];
   return Number(await client.eval(REMOVE_JOB_LUA_SCRIPT, scriptKeys.length, ...scriptKeys, id)) === 1;
+}
+
+/**
+ * Removes the jobs `userId` has in the queue that `keys` names, with their dead letters, and the dead letters of their jobs that are
+ * gone already (a letter carries the user id in its data). An id of the index whose job is gone, or whose data names another user
+ * (a damaged index), only leaves the index. The index itself goes once no job of the user is active. Answers the ids of the active
+ * jobs, which cannot be removed yet.
+ */
+export async function forgetUserJobs(client: Redis, keys: QueueKeySpace, userId: string): Promise<string[]> {
+  const index = keys.userJobsKey(userId);
+  const active: string[] = [];
+  for (const id of await client.zrange(index, '0', '-1')) {
+    const owner = ownerOf(parsedData(await client.hget(keys.jobKey(id), 'data')));
+    if (owner !== userId) {
+      await client.zrem(index, id);
+    } else if (!(await removeStoredJob(client, keys, id, true))) {
+      active.push(id);
+    }
+  }
+  for (const raw of await client.lrange(keys.dlqKey, 0, -1)) {
+    const entry = parsedData(raw) as { data?: unknown } | undefined;
+    if (ownerOf(entry?.data) === userId) await client.lrem(keys.dlqKey, 0, raw);
+  }
+  if (active.length === 0) await client.del(index);
+  return active;
+}
+
+/**
+ * Removes the jobs of one ended state that are past their age, but only when one can have aged out: a pass reads the whole set, so
+ * one at every job end would read it again for each job (quadratic over a busy queue). A pass records when its oldest job ages out and
+ * none runs before then (a job ends when it finishes, so the one that ends now ages out last, except one that reports an earlier
+ * `finishedOn`, which moves the time up). The dead letters are trimmed at every end: they are written apart from the job.
+ */
+export class AgedEndedRemoval {
+  private readonly dueAt = new Map<string, number>();
+
+  async run(client: Redis, keys: QueueKeySpace, stateKey: string, state: 'completed' | 'failed', graceMs: number, finishedOn: number | undefined): Promise<void> {
+    const memo = `${state}:${graceMs}`;
+    const now = Date.now();
+    const recorded = this.dueAt.get(memo);
+    const due = recorded !== undefined && finishedOn !== undefined ? Math.min(recorded, finishedOn + graceMs) : recorded;
+    if (due !== undefined && now < due) {
+      this.dueAt.set(memo, due);
+      if (state === 'failed') await scanEndedBefore(client, keys, stateKey, now - graceMs, 0, true);
+      return;
+    }
+    const { oldestKeptFinishedOn } = await scanEndedBefore(client, keys, stateKey, now - graceMs, Number.POSITIVE_INFINITY, state === 'failed');
+    if (oldestKeptFinishedOn === undefined) this.dueAt.delete(memo);
+    else this.dueAt.set(memo, Math.min(oldestKeptFinishedOn, now) + graceMs);
+  }
 }

@@ -6,6 +6,7 @@ import { maskFailure, maskServerText } from '../security/server-paths';
 import { refusalCodeOf, type ConversionRefusalCode } from '../refusal-codes';
 import { classifyJobFailure } from './job-failure';
 import { readUserJobs } from './user-job-list';
+import { applyStoredJobFields, flatHashToRecord, parseStoredJson } from './stored-job';
 import {
   ADD_JOB_LUA_SCRIPT,
   PROMOTE_DELAYED_JOBS_LUA_SCRIPT,
@@ -23,10 +24,12 @@ import {
 import {
   dropEndedData,
   finishedData,
+  forgetUserJobs,
   keepNewestEnded,
   keepJobsOf,
   ownerOf,
   removeEndedBefore,
+  AgedEndedRemoval,
   removeStoredJob,
   type KeepJobs,
   type QueueKeySpace,
@@ -300,6 +303,8 @@ export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   clean(grace: number, limit: number, type: 'completed' | 'failed' | 'cancelled'): Promise<string[]>;
   /** Removes job `id` and its entry in its user's index, as BullMQ's Queue.remove. False when the job is active or unknown. */
   remove(id: string): Promise<boolean>;
+  /** Removes the jobs of `userId` that are not active, the dead letters that carry their id and, once none is active, their index; answers the active ids left. */
+  forgetUser?(userId: string): Promise<string[]>;
   close(): Promise<void>;
   _popNextWaiting?(): Promise<Job<T, R> | undefined> | Job<T, R> | undefined;
   /** Moves an active job back to waiting/delayed. Returns false when the job is no longer active. */
@@ -616,6 +621,15 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
     this.delayTimers.delete(id);
     this.removeJob(job);
     return true;
+  }
+
+  async forgetUser(userId: string): Promise<string[]> {
+    const ids = [...(this.userJobs.get(userId) ?? [])];
+    const active = ids.filter((id) => this.jobs.get(id)?.state === 'active');
+    for (const id of ids) if (!active.includes(id) && ownerOf(this.jobs.get(id)?.data) === userId) await this.remove(id);
+    this.dlq = this.dlq.filter((entry) => ownerOf(entry.data) !== userId);
+    if (active.length === 0) this.userJobs.delete(userId);
+    return active;
   }
 
   async cancelJob(id: string, reason: string = 'Cancelled by user'): Promise<boolean> {
@@ -1053,42 +1067,6 @@ export const DEFAULT_QUEUE_KEY_PREFIX = 'easyconvert:queue:';
 
 /** Reply of CLAIM_DEADLINE_LUA_SCRIPT for a job hash that does not exist. */
 export const CLAIM_DEADLINE_NO_JOB = -1;
-
-/** Parses a JSON hash field; undefined when it is absent or damaged. */
-function parseStoredJson<V>(text: string | undefined): V | undefined {
-  if (!text) return undefined;
-  try {
-    return JSON.parse(text) as V;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Copies the state, outcome and failure fields of a stored job hash onto a job. */
-function applyStoredJobFields<T, R>(job: Job<T, R>, raw: Record<string, string>): void {
-  job.progress = Number(raw.progress || 0);
-  job.state = (raw.state as JobState) || 'waiting';
-  job.attemptsMade = Number(raw.attemptsMade || 0);
-  job.timestamp = Number(raw.timestamp || Date.now());
-  if (raw.processedOn) job.processedOn = Number(raw.processedOn);
-  if (raw.finishedOn) job.finishedOn = Number(raw.finishedOn);
-  if (raw.failedReason) job.failedReason = raw.failedReason;
-  if (raw.failedCode) job.failedCode = raw.failedCode;
-  if (raw.failedStatus) job.failedStatus = Number(raw.failedStatus);
-  if (raw.failedRefusalCode) job.failedRefusalCode = raw.failedRefusalCode as ConversionRefusalCode;
-  if (raw.returnvalue) job.returnvalue = parseStoredJson<R>(raw.returnvalue) ?? job.returnvalue;
-  job.stacktrace = parseStoredJson<string[]>(raw.stacktrace) ?? job.stacktrace;
-  job.logs = parseStoredJson<string[]>(raw.logs) ?? job.logs;
-}
-
-/** Converts a flat HGETALL reply (field, value, field, value, ...) into a record. */
-function flatHashToRecord(flat: string[]): Record<string, string> {
-  const record: Record<string, string> = {};
-  for (let i = 0; i + 1 < flat.length; i += 2) {
-    record[flat[i]] = flat[i + 1];
-  }
-  return record;
-}
 
 const REDIS_WRONGTYPE_PREFIX = 'WRONGTYPE';
 
@@ -1849,6 +1827,14 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     }
   }
 
+  async forgetUser(userId: string): Promise<string[]> {
+    if (!this.redisClient) return this.memoryFallback.forgetUser(userId);
+    await this.assertRedisConnected();
+    return forgetUserJobs(this.redisClient, this.keySpace, userId).catch((err: unknown) => {
+      throw this.toQueueUnavailable(err);
+    });
+  }
+
   async cancelJob(id: string, reason: string = 'Cancelled by user'): Promise<boolean> {
     const client = this.redisClient;
     if (!client) {
@@ -2036,6 +2022,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     return this.memoryFallback._popNextWaiting();
   }
 
+  private readonly agedOut = new AgedEndedRemoval();
+
   private async keepEndedJobs(job: Job<T, R>, state: 'completed' | 'failed', keep: KeepJobs): Promise<void> {
     const client = this.redisClient;
     if (!client) return;
@@ -2047,7 +2035,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         return;
       }
       await dropEndedData(client, this.keySpace, job.id, job.opts?.removeDataOnFinish);
-      if (keep.age !== undefined) await this.clean(keep.age * 1000, Number.POSITIVE_INFINITY, state);
+      if (keep.age !== undefined) await this.agedOut.run(client, this.keySpace, state === 'completed' ? this.completedKey : this.failedKey, state, keep.age * 1000, job.finishedOn);
       if (keep.count !== undefined && keep.count > 0) {
         await keepNewestEnded(client, this.keySpace, state === 'completed' ? this.completedKey : this.failedKey, keep.count);
       }
