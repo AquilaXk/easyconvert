@@ -195,6 +195,8 @@ describe('erasing one account', () => {
     expect(plan!.taggedKeys.some((key) => key.includes(`usage:{${user.id}}`))).toBe(true);
     expect(plan!.taggedKeys.some((key) => key.includes(`user_files:{${user.id}}`))).toBe(true);
     expect(plan!.taggedKeys.some((key) => key.includes(`user_file:{${user.id}}:`))).toBe(true);
+    expect(plan!.taggedKeys.some((key) => key.includes(`webhook:dlq:owner:{${user.id}}`))).toBe(true);
+    expect(plan!.taggedKeys.some((key) => key.includes(`vault:user:{${user.id}}`))).toBe(true);
 
     await eraseAccount(plan!);
     const client = redisKeyStore.getRedisClient()!;

@@ -73,7 +73,7 @@ export async function planAccountErasure(idOrEmail: string): Promise<AccountEras
     credentialsVault.listByUser(userId),
     graphScheduler.graphsOfUser(userId),
     conversionQueue.getJobsByUser(userId, undefined, MAX_JOBS_PER_RUN, 0),
-    webhookDispatcher.getDlqEntries(userId, { includeExpired: true }),
+    webhookDispatcher.getDlqPage(userId, { includeExpired: true, limit: 1 }),
     accountTaggedKeys(userId),
   ]);
   return {
@@ -84,7 +84,7 @@ export async function planAccountErasure(idOrEmail: string): Promise<AccountEras
     graphIds,
     jobs: jobs.map((job) => ({ id: job.id, state: job.state })),
     storedKeys: await accountStoredKeys(userId, jobs.map((job) => job.id), graphIds),
-    deadLetters: letters.length,
+    deadLetters: letters.total,
     taggedKeys,
   };
 }

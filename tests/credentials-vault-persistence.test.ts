@@ -6,6 +6,7 @@ import { DELETE as credentialDelete } from '../src/app/api/v1/storage/credential
 import { userStore } from '../src/lib/auth/user-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { S3_DEV_ENDPOINT_ALLOWLIST_ENV } from '../src/lib/storage';
+import { fakeVaultRedis as fakeRedis } from './helpers/fake-vault-redis';
 
 /**
  * Regression tests for issue #483: the vault kept credentials in process memory when the Redis
@@ -22,30 +23,6 @@ const CREDENTIALS = {
   accessKeyId: 'AKIACUSTOMEREXAMPLE1',
   secretAccessKey: 'customer/Secret+EXAMPLEKEY000000000000',
 };
-
-/** A Redis that keeps strings in a map and can be switched off, like the part of ioredis the vault uses. */
-function fakeRedis() {
-  const data = new Map<string, string>();
-  const state = { down: false };
-  const guard = <T>(value: () => T): Promise<T> =>
-    state.down ? Promise.reject(new Error('redis down')) : Promise.resolve(value());
-  const client = {
-    set: (key: string, value: string) => guard(() => (data.set(key, value), 'OK')),
-    setex: (key: string, _ttl: number, value: string) => guard(() => (data.set(key, value), 'OK')),
-    get: (key: string) => guard(() => data.get(key) ?? null),
-    del: (key: string) => guard(() => (data.delete(key) ? 1 : 0)),
-    keys: (pattern: string) => guard(() => [...data.keys()].filter((key) => key.startsWith(pattern.replace('*', '')))),
-    scan: (cursor: string, _matchToken: string, pattern: string) =>
-      guard(() => {
-        const prefix = pattern.replace('*', '');
-        const matching = [...data.keys()].filter((key) => key.startsWith(prefix));
-        const index = Number(cursor);
-        const next = index + 1 < matching.length ? String(index + 1) : '0';
-        return [next, matching.slice(index, index + 1)] as [string, string[]];
-      }),
-  };
-  return { client, data, state };
-}
 
 function memoryCopies(vault: CredentialsVault): number {
   return (vault as unknown as { inMemoryStore: Map<string, unknown> }).inMemoryStore.size;
@@ -71,6 +48,7 @@ describe('Credentials vault persistence (#483)', () => {
       expect(ref).toMatch(/^cred_[0-9a-f]{32}$/);
       expect(memoryCopies(writer)).toBe(0);
       expect([...redis.data.keys()]).toEqual([`${VAULT_KEY_PREFIX}${ref}`]);
+      expect([...(redis.sets.get('vault:user:{user_1}') ?? [])]).toEqual([ref]);
       expect(redis.data.get(`${VAULT_KEY_PREFIX}${ref}`)).not.toContain(CREDENTIALS.secretAccessKey);
 
       expect(await reader.list('user_1')).toEqual([
@@ -136,7 +114,8 @@ describe('Credentials vault persistence (#483)', () => {
       redis.state.down = false;
       expect(redis.data.has(`${VAULT_KEY_PREFIX}${ref}`)).toBe(true);
       expect(await vault.delete(ref, 'user_1')).toBe(true);
-      expect(redis.data.size).toBe(0);
+      expect(redis.data.has(`${VAULT_KEY_PREFIX}${ref}`)).toBe(false);
+      expect(redis.sets.has('vault:user:{user_1}')).toBe(false);
       expect(await vault.get(ref, 'user_1')).toBeNull();
     });
 

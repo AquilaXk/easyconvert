@@ -4,22 +4,14 @@ import { conversionQueue } from './conversion-queue';
 import { graphScheduler } from './graph/scheduler';
 import type { GraphExecutionState, GraphStatus } from './graph/scheduler-types';
 
-/** Jobs of a caller read from the queues per request; a caller whose recent jobs are nearly all graph nodes gets the page that fits in these. */
-const MAX_JOBS_SCANNED = 1000;
-
-/** Whether `job` is one node of a graph, which the graph answers for as a whole. */
-function isGraphNodeJob(job: Job<ConversionJobData, ConversionJobResult>): boolean {
-  return Boolean(job.data?.graphId);
-}
-
 /**
  * The newest `limit` jobs of `userId` in `states` that a client lists. A graph is run, charged and cancelled as one job, so
- * the node jobs it queues are left out; the graph is read and cancelled by its own id. The queues are read once per request
- * (a Redis queue reads the ids of the caller's jobs whatever the page asks for), up to MAX_JOBS_SCANNED jobs.
+ * the node jobs it queues are left out (by the queue, before the page is counted, so a caller whose recent jobs are nearly all graph
+ * nodes still gets a full page); the graph is read and cancelled by its own id. A Redis queue reads the ids of the caller's jobs
+ * once and their jobs until the page is full.
  */
 export async function listVisibleJobs(userId: string, states: JobState[], limit: number): Promise<Job<ConversionJobData, ConversionJobResult>[]> {
-  const jobs = await conversionQueue.getJobsByUser(userId, states, MAX_JOBS_SCANNED, 0);
-  return jobs.filter((job) => !isGraphNodeJob(job)).slice(0, limit);
+  return conversionQueue.getJobsByUser(userId, states, limit, 0, { excludeGraphNodes: true });
 }
 
 /** One entry of a list a client reads: a queue job, or a graph, which has no queue job of its own. */

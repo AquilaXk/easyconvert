@@ -16,6 +16,7 @@ import { userStore } from '../src/lib/auth/user-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { FileExtensionSpoofError } from '../src/lib/types';
 import { buildCompoundFile, placeDirectory } from './helpers/cfb-craft';
+import { fakeVaultRedis } from './helpers/fake-vault-redis';
 
 const PE_HEADER = Buffer.from([0x4d, 0x5a, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00]);
 const VALID_PDF = Buffer.from('%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n', 'utf8');
@@ -284,19 +285,7 @@ describe('Row 45: separate encryption keys in production and JWT kid + JWT_SECRE
     const legacyKek = 'legacy-kek-for-vault-0123456789abcdef012';
     const dedicatedVaultKey = 'dedicated-vault-key-0123456789abcdef0123';
 
-    const data = new Map<string, string>();
-    const fakeRedis = {
-      set: async (k: string, v: string) => (data.set(k, v), 'OK'),
-      setex: async (k: string, _ttl: number, v: string) => (data.set(k, v), 'OK'),
-      get: async (k: string) => data.get(k) ?? null,
-      del: async (k: string) => (data.delete(k) ? 1 : 0),
-      scan: async (cursor: string, _m: string, pattern: string) => {
-        const prefix = pattern.replace('*', '');
-        const keys = [...data.keys()].filter((k) => k.startsWith(prefix));
-        const idx = Number(cursor);
-        return [idx + 1 < keys.length ? String(idx + 1) : '0', keys.slice(idx, idx + 1)] as [string, string[]];
-      },
-    };
+    const fakeRedis = fakeVaultRedis().client;
     const vault = new CredentialsVault(fakeRedis as never);
     const creds = {
       type: 's3' as const,
