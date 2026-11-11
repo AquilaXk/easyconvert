@@ -1741,6 +1741,15 @@ async function encodePsdFromPipeline(pipeline: Sharp, options: ConversionOptions
 }
 
 /**
+ * The picture as 8-bit RGBA, for the palette quantizer. The library's base count of one thread makes this pass (the ICC transform of a
+ * developed camera picture, the reduction of 16-bit samples to 8 bits, the alpha plane) the longest step of a large GIF: it runs on the
+ * threads a JPEG pipeline leases (see `pipelineThreadsFor`).
+ */
+function rgbaRaster(pipeline: Sharp): Promise<{ data: Buffer; info: OutputInfo }> {
+  return withPipelineThreads(() => pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true }));
+}
+
+/**
  * The public conversion: an AVIF encoder that `convertImage` started on the source file is stopped on every way out of the conversion
  * that did not use it.
  */
@@ -2345,10 +2354,7 @@ async function convertImage(
           if (frameSelection?.keepsAnimation) {
             assertAnimatableOptions(options);
           }
-          const { data, info } = await pipeline
-            .ensureAlpha()
-            .raw()
-            .toBuffer({ resolveWithObject: true });
+          const { data, info } = await rgbaRaster(pipeline);
           assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
           // The quantizer's palette goes into the GIF as it is: the image library is not asked to quantize again.
           const indexed = quantizeImage(data, info.width, info.height, colours, {
@@ -2365,7 +2371,7 @@ async function convertImage(
           // A photograph that asks for no dithering in particular: the Oklab quantizer's palette, each pixel mapped to its
           // nearest colour. Error diffusion is noise to LZW (25 percent more bytes on the camera samples of the benchmark) and
           // does not raise SSIM or PSNR there; the image library's palette quantizer spends the same bytes on both.
-          const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+          const { data, info } = await rgbaRaster(pipeline);
           const indexed = quantizeImage(data, info.width, info.height, colours, { dither: 'none', transparency: 'threshold', runTolerance: GIF_PHOTO_RUN_TOLERANCE });
           outputBuffer = encodeGif({ width: info.width, height: info.height, ...indexed });
         } else {
