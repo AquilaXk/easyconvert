@@ -516,7 +516,7 @@ describe('deploy workflow', () => {
   it('labels both images with their commit, which is how the deploy gate finds the commit an image was built from', () => {
     for (const file of ['Dockerfile.worker', 'Dockerfile.web']) {
       const step = workflow.jobs.build.steps.find((candidate) => candidate.with?.file === file);
-      expect(step?.with?.labels, file).toContain('org.opencontainers.image.revision=${{ github.sha }}');
+      expect(String(step?.with?.labels).trim(), file).toBe('org.opencontainers.image.revision=${{ github.sha }}');
     }
   });
 

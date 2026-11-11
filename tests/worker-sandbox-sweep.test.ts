@@ -139,10 +139,10 @@ describe('startWorkerSandboxSweep', () => {
       const old = new Date(Date.now() - HOUR);
       fs.utimesSync(own, old, old);
       startWorkerSandboxSweep(1000);
-      expect(Date.now() - fs.statSync(own).mtimeMs).toBeLessThan(5000);
+      expect(fs.statSync(own).mtimeMs).toBeGreaterThan(old.getTime() + HOUR / 2);
       fs.utimesSync(own, old, old);
       vi.advanceTimersByTime(1000);
-      expect(Date.now() - fs.statSync(own).mtimeMs).toBeLessThan(5000);
+      expect(fs.statSync(own).mtimeMs).toBeGreaterThan(old.getTime() + HOUR / 2);
       cleanupWorkerSandboxDir(own);
     } finally {
       vi.useRealTimers();

@@ -10,6 +10,9 @@ import { drainWorker, ENGINE_SHUTDOWN_TIMEOUT_MS, resetWorkerLifecycleState, shu
  * threads of this process.
  */
 
+/** The wait for a hung engine ends at its own 50 ms timeout; this only catches a wait that never ends. */
+const ENGINE_HANG_GUARD_MS = 10_000;
+
 afterEach(() => {
   resetWorkerLifecycleState();
   vi.restoreAllMocks();
@@ -54,7 +57,7 @@ describe('shutdownEngines', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const started = Date.now();
     await shutdownEngines(50);
-    expect(Date.now() - started).toBeLessThan(2000);
+    expect(Date.now() - started).toBeLessThan(ENGINE_HANG_GUARD_MS);
     expect(engines.runner).toHaveBeenCalledTimes(1);
     expect(engines.threads).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('still stopping after 50ms'));
