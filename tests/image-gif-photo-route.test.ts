@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * A photograph over the 16 megapixels of the Oklab and Riemersma quantizers, and under `GIF_PHOTO_PIXEL_BUDGET`, is written
- * by the in-process palette quantizer (policy entry 230), not by the image library: the 39 megapixel and 21 megapixel camera
+ * by the in-process palette quantizer (policy entry 233), not by the image library: the 39 megapixel and 21 megapixel camera
  * pictures of the benchmark took 8 s and 10 s that way.
  */
 const encodeGifCalls = vi.hoisted(() => ({ count: 0 }));

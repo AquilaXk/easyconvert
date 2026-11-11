@@ -46,9 +46,8 @@ function deflatePiece(piece: Uint8Array, level: number, dictionary: Uint8Array |
   });
 }
 
-/** Raw deflate stream of `data` at a product level; a buffer of at most one block is compressed in one piece. */
-export async function deflateRawBlocks(data: Uint8Array, productLevel: number): Promise<Buffer> {
-  const level = zlibLevelFor(productLevel);
+/** Raw deflate stream of `data` at a zlib level (0 to 9); a buffer of at most one block is compressed in one piece. */
+export async function deflateRawInBlocks(data: Uint8Array, level: number): Promise<Buffer> {
   const pieces = Math.max(1, Math.ceil(data.length / DEFLATE_BLOCK_BYTES));
   if (pieces === 1) return deflatePiece(data, level, undefined, true);
   const jobs: Promise<Buffer>[] = [];
@@ -59,4 +58,48 @@ export async function deflateRawBlocks(data: Uint8Array, productLevel: number): 
     jobs.push(deflatePiece(data.subarray(start, end), level, dictionary, index === pieces - 1));
   }
   return Buffer.concat(await Promise.all(jobs));
+}
+
+/** Raw deflate stream of `data` at a product level (the mapping of {@link zlibLevelFor}). */
+export async function deflateRawBlocks(data: Uint8Array, productLevel: number): Promise<Buffer> {
+  return deflateRawInBlocks(data, zlibLevelFor(productLevel));
+}
+
+// ---------------------------------------------------------------------------
+// gzip member (RFC 1952)
+// ---------------------------------------------------------------------------
+
+/** A buffer of at most this many bytes is gzipped on the calling thread: a pool round trip costs more than the work. */
+const GZIP_SYNC_MAX_BYTES = 64 * 1024;
+const GZIP_HEADER_BYTES = 10;
+const GZIP_TRAILER_BYTES = 8;
+const GZIP_METHOD_DEFLATE = 8;
+const GZIP_XFL_BEST = 2;
+const GZIP_XFL_FASTEST = 4;
+const GZIP_OS_UNIX = 3;
+const UINT32_MODULUS = 0x100000000;
+
+/** The header of a gzip member without a name or a time, as zlib writes it (the extra-flags byte names level 9 and the fastest levels). */
+function gzipHeader(level: number): Buffer {
+  const header = Buffer.alloc(GZIP_HEADER_BYTES);
+  header[0] = 0x1f;
+  header[1] = 0x8b;
+  header[2] = GZIP_METHOD_DEFLATE;
+  if (level === 9) header[8] = GZIP_XFL_BEST;
+  else if (level < 2) header[8] = GZIP_XFL_FASTEST;
+  header[9] = GZIP_OS_UNIX;
+  return header;
+}
+
+/**
+ * One gzip member of `data` at a zlib level, deflated in parallel blocks ({@link deflateRawInBlocks}) when it is large; the
+ * CRC-32 is zlib's, taken once over the whole. A buffer of up to 64 KiB is `zlib.gzipSync`'s output, byte for byte.
+ */
+export async function gzipInBlocks(data: Uint8Array, level: number): Promise<Buffer> {
+  if (data.length <= GZIP_SYNC_MAX_BYTES) return zlib.gzipSync(data, { level });
+  const deflated = await deflateRawInBlocks(data, level);
+  const trailer = Buffer.alloc(GZIP_TRAILER_BYTES);
+  trailer.writeUInt32LE(zlib.crc32(data), 0);
+  trailer.writeUInt32LE(data.length % UINT32_MODULUS, 4);
+  return Buffer.concat([gzipHeader(level), deflated, trailer]);
 }
