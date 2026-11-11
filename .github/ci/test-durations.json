@@ -1193,6 +1193,7 @@
   "tests/worker-libraw-he-packaging.test.ts": 0,
   "tests/worker-libredwg-packaging.test.ts": 0,
   "tests/worker-native-engines-and-api-dx.test.ts": 0.6,
+  "tests/worker-onnx-ocr-packaging.test.ts": 1,
   "tests/worker-output-missing-route.test.ts": 0,
   "tests/worker-output-missing.test.ts": 0.3,
   "tests/worker-output-segments.test.ts": 0.1,
