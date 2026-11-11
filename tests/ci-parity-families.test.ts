@@ -159,6 +159,44 @@ describe('classifying changed paths', () => {
     }
   });
 
+  it.each([
+    ['the PID namespace init of every sandboxed child', 'native/pid-init/pid-init.c', [...BENCH_FAMILIES]],
+    ['the build of the PID namespace init', 'native/pid-init/build.sh', [...BENCH_FAMILIES]],
+    ['the CAD converter source', 'native/cad-convert/cad-convert.cpp', ['cad']],
+    ['the qpdf runner source', 'native/qpdf-runner/qpdf-runner.c', ['pdf-ops']],
+    ['the vtracer pixel tracer', 'scripts/vtracer-pixels/src/main.rs', ['vectorize']],
+    ['the vtracer pixel tracer lock file', 'scripts/vtracer-pixels/Cargo.lock', ['vectorize']],
+    ['the vtracer install script', 'scripts/install-vtracer.sh', ['vectorize']],
+    ['the vtracer notices', 'scripts/vtracer-notices/THIRD-PARTY-NOTICES', ['vectorize']],
+    ['the ffmpeg patch', 'scripts/ffmpeg-patches/libvorbis-whole-frames.patch', ['video', 'audio']],
+    ['the ffmpeg install script', 'scripts/install-ffmpeg.sh', ['video', 'audio']],
+    ['a djvulibre patch', 'scripts/djvulibre-patches/decode-thread-start-failure.patch', ['document']],
+    ['the djvulibre gates', 'scripts/lib/djvulibre-gates.sh', ['document']],
+    ['the avifenc install script', 'scripts/install-avifenc.sh', ['image', 'raw']],
+    ['the avifenc source pin', 'scripts/avifenc/SOURCE', ['image', 'raw']],
+    ['the GhostXPS install script', 'scripts/install-ghostxps.sh', ['document', 'vector']],
+    ['the LibRaw install script', 'scripts/install-libraw-he.sh', ['raw']],
+    ['the LibreDWG install script', 'scripts/install-libredwg.sh', ['cad']],
+    ['the veraPDF install script', 'scripts/install-verapdf.sh', ['pdf-ops']],
+  ])('maps %s, a file of the worker image that no conversion module imports, to the families it builds', (_name, file, benchmarked) => {
+    expect(MAP.scope.test(file), file).toBe(true);
+    expect(classify(file)).toEqual({ benchmarked, unmapped: [], unclassified: [] });
+  });
+
+  it('classifies every file under native/ and every install script, patch directory and pinned-source directory of scripts/', () => {
+    const tracked = spawnSync('git', ['ls-files', 'native', 'scripts'], { cwd: ROOT, encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+    const inScope = tracked.filter((file) => /^native\/|^scripts\/(install-[^/]*\.sh$|[^/]*-patches\/|vtracer-pixels\/|vtracer-notices\/|avifenc\/|lib\/djvulibre-gates\.sh$)/.test(file));
+    expect(inScope.length).toBeGreaterThan(15);
+    expect(classifyPaths(inScope, MAP).unclassified).toEqual([]);
+    for (const file of inScope) expect(MAP.scope.test(file), file).toBe(true);
+  });
+
+  it('lists every benchmarked family in the fail-open list of ci.yml, in the harness order', () => {
+    const text = readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+    const listed = /ALL_BENCH_FAMILIES: (\S+)/.exec(text)?.[1]?.split(',');
+    expect(listed).toEqual([...MAP.benchmarked]);
+  });
+
   it('keeps a new Dockerfile in scope, and leaves only the web image layer out, which adds the Next.js build and no engine', () => {
     expect(classify('Dockerfile.foo')).toEqual({ benchmarked: [...BENCH_FAMILIES], unmapped: [], unclassified: [] });
     expect(classify('Dockerfile.web')).toEqual({ benchmarked: [], unmapped: [], unclassified: [] });
