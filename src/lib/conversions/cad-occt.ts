@@ -194,6 +194,7 @@ async function runKernel(job: KernelJob): Promise<{ model: Buffer; materials: Bu
     try {
       await executeSandboxedBinary(binary, ['--from', job.from, '--to', job.to, '--unit', job.unit, inputPath, outputPath], {
         cwd: sandboxDir,
+        workDir: sandboxDir,
         timeoutMs,
         maxBuffer: PROGRAM_MAX_DIAGNOSTIC_BYTES,
         maxFileSize: PROGRAM_MAX_OUTPUT_BYTES,

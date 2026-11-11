@@ -27,6 +27,10 @@ import {
 import { withMissingBinary } from './helpers/native-tools';
 import { withCapturingSoffice } from './helpers/html-pdf-oracle';
 import { synthesizeHwp5CompoundCorpus } from './helpers/corpus-synthesizer';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * In-process text writers (txt, md, html, hwp to PDF) must embed fonts that really cover the text,

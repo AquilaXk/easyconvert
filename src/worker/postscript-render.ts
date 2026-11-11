@@ -106,12 +106,14 @@ async function writePdf(job: PostScriptJob, ghostscript: string | null, run: Run
         launchSandboxedBinary(ghostscript, ghostscriptPdfArguments(isEps, inputPath, pdfPath, noGarbageCollection), {
           ...run.limits,
           cwd: run.tempDir,
+          workDir: run.tempDir,
+          readDirs: [inputPath],
           expectedOutputBytes: NO_PIPED_OUTPUT_BYTES,
         })
       );
     } else {
       const flags = isEps ? [...INTERPRETER_FLAGS, EPS_CROP_FLAG] : INTERPRETER_FLAGS;
-      await executeSandboxedBinary(job.interpreter, [...flags, inputPath, pdfPath], { ...run.limits, cwd: run.tempDir });
+      await executeSandboxedBinary(job.interpreter, [...flags, inputPath, pdfPath], { ...run.limits, cwd: run.tempDir, workDir: run.tempDir, readDirs: [inputPath] });
     }
   } catch (err) {
     throw toInterpreterError(err, job.src, run.tempDir);
@@ -138,6 +140,8 @@ async function renderEpsToPng(job: PostScriptJob, ghostscript: string, limits: L
         launchSandboxedBinary(ghostscript, ghostscriptRasterArguments(true, dpi, inputPath, pagePath, noGarbageCollection), {
           ...limits,
           cwd: tempDir,
+          workDir: tempDir,
+          readDirs: [inputPath],
           maxFileSize: PPM_PAGE_MAX_BYTES,
           expectedOutputBytes: NO_PIPED_OUTPUT_BYTES,
         })

@@ -12,6 +12,10 @@ import { requireEncoders } from './helpers/ffmpeg-media-fixtures';
 import { measureSsimPsnr, probeFile } from './helpers/ffmpeg-measure';
 import { oracleTest } from './helpers/oracle-test';
 import { openMediaInput } from '../src/lib/conversions/media-process';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * What a video conversion costs besides the encoder. A plain MP4 describes its streams in its header, so planning the

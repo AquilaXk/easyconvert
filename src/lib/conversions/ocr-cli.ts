@@ -436,6 +436,8 @@ async function runCli(request: CliOcrRequest): Promise<OcrResult> {
       // The timeout starts when the process does, not while the request waits for a slot.
       await cliSemaphore.run(() =>
         executeSandboxedBinary(request.cliPath, args, {
+          workDir: jobDir,
+          readDirs: [request.tessdataDir],
           stdin: request.image,
           env: { OMP_THREAD_LIMIT: OCR_CLI_THREAD_LIMIT },
           signal: runSignal(timeoutMs, request.signal),
@@ -489,6 +491,9 @@ export async function runOsdWithCli(request: CliOsdRequest): Promise<string | nu
   try {
     const { stdout } = await cliSemaphore.run(() =>
       executeSandboxedBinary(request.cliPath, args, {
+        // It prints its report on standard output and writes no file.
+        workDir: null,
+        readDirs: [request.tessdataDir],
         stdin: request.image,
         env: { OMP_THREAD_LIMIT: OCR_CLI_THREAD_LIMIT },
         signal: runSignal(timeoutMs, request.signal),

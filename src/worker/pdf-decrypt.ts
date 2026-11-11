@@ -172,6 +172,8 @@ async function runQpdfWithPassword(
     fs.writeFileSync(passwordFile, password, { mode: PRIVATE_FILE_MODE, flag: 'wx' });
     return await launchQpdf(qpdf, buildArgs(passwordFile), {
       cwd: request.tempDir,
+      workDir: request.tempDir,
+      readDirs: [path.resolve(request.inputPath)],
       timeoutMs: request.timeoutMs,
       maxBuffer: QPDF_MAX_OUTPUT_BYTES,
       memoryLimitMb: QPDF_MEMORY_LIMIT_MB,
@@ -204,6 +206,9 @@ async function launchWithStdinPassword(
 ): Promise<SandboxedExecutionResult> {
   return launchQpdf(qpdf, ['--password-file=-', '--warning-exit-0', ...args], {
     cwd: request.tempDir,
+    // The password goes in on standard input and the result comes out on standard output: qpdf writes no file, and `tempDir` may be the shared temporary directory.
+    workDir: null,
+    readDirs: [path.resolve(request.inputPath)],
     timeoutMs: request.timeoutMs,
     maxBuffer: maxOutputBytes + QPDF_MAX_OUTPUT_BYTES,
     memoryLimitMb: QPDF_MEMORY_LIMIT_MB,

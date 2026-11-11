@@ -47,6 +47,8 @@ export async function renderSvgAsPdf(job: SvgPdfJob): Promise<WorkerConversionRe
       networkIsolated: true,
       signal: options.signal,
       stdin: Buffer.from(svg, 'utf-8'),
+      // A filter on standard input and output: it touches no file.
+      workDir: null,
       expectedOutputBytes: svg.length + FONT_ALLOWANCE_BYTES,
     }));
   } catch (err) {

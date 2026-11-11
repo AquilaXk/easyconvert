@@ -11,6 +11,10 @@ import { requireOracleTool } from './helpers/differential-oracle';
 import { buildNef } from './helpers/nef-builder';
 import { withBinaryAt, withMissingBinary } from './helpers/native-tools';
 import { rawSamplePath, skipUnless, skipWithoutRawSamples, skipWithoutTools } from './helpers/strict-skip';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * A Nikon NEF with High Efficiency (HE) or High Efficiency* (HE*) compression is read by the `dcraw_emu` of the pinned LibRaw snapshot

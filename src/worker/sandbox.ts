@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 
 export {
   executeSandboxedBinary,
+  OFFICE_PIPE_DIR,
   detectSandboxEnvironment,
   getSanitizedEnvironment,
   killProcessGroup,
@@ -152,6 +153,7 @@ export async function withWorkerSandbox<T>(
       return executeSandboxedBinary(binaryPath, args, {
         ...execOpts,
         cwd: sandboxDir,
+        workDir: sandboxDir,
         env: {
           TMPDIR: sandboxDir,
           TEMP: sandboxDir,

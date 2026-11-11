@@ -13,6 +13,7 @@ import {
   EngineUnavailableError,
 } from '../../types';
 import {
+  OFFICE_PIPE_DIR,
   rethrowSandboxUnavailable,
   executeSandboxedBinary,
   SandboxedProcessError,
@@ -200,6 +201,7 @@ async function runVerapdf(
       timeoutMs,
       maxBuffer: VERAPDF_MAX_REPORT_BYTES,
       cwd: path.dirname(file),
+      workDir: path.dirname(file),
       env: verapdfEnvironment(),
       networkIsolated: true,
       // No PID namespace of its own, like calibre (entry 203): the JVM reads /proc/self for its container and thread setup, and /proc (which the
@@ -319,6 +321,8 @@ export async function convertToPdfA(
         {
           timeoutMs: SOFFICE_TIMEOUT_MS,
           cwd: workDir,
+          workDir,
+          socketDirs: [OFFICE_PIPE_DIR],
           env: { HOME: workDir, TMPDIR: workDir, SAL_USE_VCLPLUGIN: 'svp' },
           networkIsolated: true,
         }

@@ -16,6 +16,10 @@ import { interface16, lineArt16 } from './helpers/graphic-parity';
 import { oracleTest } from './helpers/oracle-test';
 import { withChunksAfterHeader } from './helpers/png-chunks';
 import { processesWithArgument, uniqueSleepInterval } from './helpers/process-state';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * A plain 16-bit or grey PNG goes to the AVIF encoder as the file it arrived in, while the picture is still being decoded

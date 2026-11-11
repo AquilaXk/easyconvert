@@ -56,6 +56,7 @@ export function createSevenZipSpy(workDir: string): SevenZipSpy {
     { mode: 0o755 }
   );
   let previous: string | undefined;
+  let previousConfinement: string | undefined;
   return {
     calls() {
       if (!fs.existsSync(callLog)) return [];
@@ -91,11 +92,16 @@ export function createSevenZipSpy(workDir: string): SevenZipSpy {
     },
     install() {
       previous = process.env.P7ZIP_PATH;
+      previousConfinement = process.env.SANDBOX_CONFINE_FILES;
       process.env.P7ZIP_PATH = script;
+      // The wrapper appends to logs outside the job directory of the run, which the file confinement refuses (policy 248).
+      process.env.SANDBOX_CONFINE_FILES = 'false';
     },
     restore() {
       if (previous === undefined) delete process.env.P7ZIP_PATH;
       else process.env.P7ZIP_PATH = previous;
+      if (previousConfinement === undefined) delete process.env.SANDBOX_CONFINE_FILES;
+      else process.env.SANDBOX_CONFINE_FILES = previousConfinement;
     },
   };
 }

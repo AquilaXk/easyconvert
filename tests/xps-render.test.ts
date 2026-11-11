@@ -18,6 +18,10 @@ import { JPEG_XR_WIDE_70000_BY_1 } from './helpers/jpegxr-samples';
 import { pdfinfoPages } from './helpers/encrypted-pdf-fixtures';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipWithoutTools } from './helpers/strict-skip';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * XPS and OpenXPS documents drawn by GhostXPS (`gxps` of GhostPDL). The oracle of

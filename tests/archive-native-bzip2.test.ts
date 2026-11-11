@@ -12,6 +12,10 @@ import { buildManyEntriesTar, buildTarWithEntries, createHostileWorkspace, type 
 import { oracleTest } from './helpers/oracle-test';
 import { createSevenZipSpy, type SevenZipSpy } from './helpers/seven-zip-spy';
 import { processesWithArgument, uniqueSleepInterval, waitUntilNoProcessWithArgument, waitUntilProcessWithArgument } from './helpers/process-state';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * tar to tar.bz2 is written by `lbzip2` run as one sandboxed process on the vetted tar, not by 7-Zip. The outputs are read
