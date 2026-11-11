@@ -445,7 +445,7 @@
     "rule": "complexity",
     "function": "convertDocument",
     "count": 1,
-    "maxValue": 130
+    "maxValue": 126
   },
   {
     "file": "src/lib/conversions/document.ts",

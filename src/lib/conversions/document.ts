@@ -1,7 +1,8 @@
 import { remainingJobMs } from './job-time';
-import { PdfPageFrameError } from './pdf-page-geometry';
+import { reportConversionWarning } from './conversion-warnings';
+import { skippedOcrWarning } from './pdf-ocr-refusal';
 import JSZip from 'jszip';
-import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedTargetError, EngineUnavailableError, OcrEngineUnavailableError, OcrLanguageUnavailableError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedTargetError, EngineUnavailableError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
 import { unconvertibleOfficeTarget } from './native-engine-pairs';
 import {
@@ -384,16 +385,16 @@ export async function convertDocument(
       } catch (err: unknown) {
         // An input over the pixel limit is refused whether or not OCR was asked for, never answered empty.
         rethrowInputPixelLimit(err);
-        // OCR that nobody asked for (a scanned page converted to text) is best effort when no engine can render the
-        // pages; the text stays as extracted. A requested OCR, or a target that is OCR output, never is.
-        // A page tree that cannot be walked leaves nothing to render either, so it is treated the same way.
-        const optional = !options.ocrEnabled && tgt !== 'hocr' && tgt !== 'alto';
-        const cannotRender = (err instanceof OcrEngineUnavailableError && !(err instanceof OcrLanguageUnavailableError)) || (!isScanned && err instanceof PdfPageFrameError);
-        if (!(optional && cannotRender)) {
+        // OCR that nobody asked for (a scanned page converted to text) is best effort: when it is refused, or no engine can
+        // render the pages, the text stays as extracted and the conversion says so. A requested OCR, or a target that is
+        // OCR output, never is (see skippedOcrWarning for what counts as a refusal).
+        const skipped = options.ocrEnabled || STRUCTURED_OCR_TARGETS.has(tgt) ? undefined : skippedOcrWarning(err, pagesNeedingOcr, isScanned);
+        if (skipped === undefined) {
           if (err instanceof ConversionFailedError) throw err;
           const rawMsg = err instanceof Error ? err.message : String(err);
           throw new ConversionFailedError(`PDF OCR failed: ${rawMsg.startsWith('PDF OCR failed: ') ? rawMsg.replace('PDF OCR failed: ', '') : rawMsg}`);
         }
+        reportConversionWarning(skipped);
       }
 
       if (recognizedPages.size > 0) {
