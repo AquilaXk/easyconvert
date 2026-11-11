@@ -441,23 +441,21 @@ export function blankBeyondRules(strip: Float32Array, width: number): void {
   if (margin < 1 || width <= 2 * margin) return;
   const counts = darkPixelsPerColumn(strip, width);
   const isRule = (x: number): boolean => counts[x] >= RULE_COLUMN_SHARE * RECOGNIZER_HEIGHT;
-  let from = -1;
-  let to = -1;
-  for (let x = margin - 1; x >= 0; x--) if (isRule(x)) { from = 0; to = x; break; }
+  let leftRule = -1;
+  for (let x = margin - 1; x >= 0 && leftRule < 0; x--) if (isRule(x)) leftRule = x;
+  let rightRule = -1;
+  for (let x = width - margin; x < width && rightRule < 0; x++) if (isRule(x)) rightRule = x;
+  if (leftRule < 0 && rightRule < 0) return;
   const plane = RECOGNIZER_HEIGHT * width;
-  const paper = [0, 1, 2].map((c) => {
+  for (let channel = 0; channel < 3; channel++) {
+    // The paper level of the channel: the median of every seventh pixel.
     const sample: number[] = [];
-    for (let i = 0; i < plane; i += 7) sample.push(strip[c * plane + i]);
-    return sample.sort((a, b) => a - b)[sample.length >> 1];
-  });
-  const fill = (start: number, end: number): void => {
-    for (let c = 0; c < 3; c++) for (let y = 0; y < RECOGNIZER_HEIGHT; y++) strip.fill(paper[c], c * plane + y * width + start, c * plane + y * width + end + 1);
-  };
-  if (from >= 0) fill(from, to);
-  for (let x = width - margin; x < width; x++) {
-    if (isRule(x)) {
-      fill(x, width - 1);
-      break;
+    for (let i = 0; i < plane; i += 7) sample.push(strip[channel * plane + i]);
+    const paper = sample.sort((a, b) => a - b)[sample.length >> 1];
+    for (let y = 0; y < RECOGNIZER_HEIGHT; y++) {
+      const row = channel * plane + y * width;
+      if (leftRule >= 0) strip.fill(paper, row, row + leftRule + 1);
+      if (rightRule >= 0) strip.fill(paper, row + rightRule, row + width);
     }
   }
 }
