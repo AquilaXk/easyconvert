@@ -174,6 +174,57 @@ describe('the helper pool, with a stand-in helper program', () => {
     await expect(pool.read(page(), { language: 'kor' })).rejects.toMatchObject({ name: 'OnnxOcrFailedError', reason: 'rejected' });
   });
 
+  it.each(['null-header', 'number-header', 'string-header', 'array-header', 'no-type-header', 'bad-id-header'])(
+    'ends a helper that answers with a header that is not a reply (%s) as a lost helper, without an uncaught error',
+    async (mode) => {
+      const pool = makePool(mode);
+      await expect(pool.read(page(), { language: 'kor' })).rejects.toMatchObject({ name: 'OnnxOcrFailedError', reason: 'helper-lost' });
+      expect(pool.size).toBe(0);
+    }
+  );
+
+  it('ends a helper whose first frame is not a ready frame, and calls the engine unavailable', async () => {
+    const pool = makePool('boot-null');
+    await expect(pool.read(page(), { language: 'kor' })).rejects.toMatchObject({ name: 'OnnxOcrUnavailableError', reason: 'helper-not-starting' });
+    expect(pool.size).toBe(0);
+  });
+
+  it('cuts the message of a helper error to 300 characters, whatever it sends', async () => {
+    const pool = makePool('huge-message');
+    const error = await pool.read(page(), { language: 'kor' }).catch((e: Error) => e);
+    expect(error).toMatchObject({ name: 'OnnxOcrUnavailableError' });
+    expect((error as Error).message.length).toBeLessThan(400);
+    expect((error as Error).message).toContain('xxxxxxxx');
+  });
+
+  it('ends a helper whose error message is not text', async () => {
+    const pool = makePool('non-string-message');
+    await expect(pool.read(page(), { language: 'kor' })).rejects.toMatchObject({ name: 'OnnxOcrFailedError', reason: 'helper-lost' });
+    expect(pool.size).toBe(0);
+  });
+
+  it('puts the first bytes of the helper\'s standard error into the message of a helper that does not start', async () => {
+    const pool = makePool('boot-stderr');
+    const error = await pool.read(page(), { language: 'kor' }).catch((e: Error) => e);
+    expect(error).toMatchObject({ name: 'OnnxOcrUnavailableError', reason: 'helper-not-starting' });
+    expect((error as Error).message).toContain('mbind: Operation not permitted (seccomp)');
+    expect((error as Error).message.length).toBeLessThan(500);
+  });
+
+  it('stops waiting for a helper that is still starting when the job is aborted', async () => {
+    const pool = makePool('slow-boot');
+    const controller = new AbortController();
+    const started = Date.now();
+    const reading = pool.read(page(), { language: 'kor', signal: controller.signal });
+    setTimeout(() => controller.abort(new Error('the job was cancelled while the helper started')), 100);
+    await expect(reading).rejects.toThrow('the job was cancelled while the helper started');
+    expect(Date.now() - started).toBeLessThan(1200);
+    // the helper goes on booting and serves the next page
+    const next = await pool.read(page(), { language: 'kor' });
+    expect(next.text).toMatch(/^p\d+n1$/);
+    expect(pool.size).toBe(1);
+  });
+
   it('kills a helper that does not answer within the time limit', async () => {
     const pool = makePool('hang', { pageTimeoutMs: 300 });
     await expect(pool.read(page(), { language: 'kor' })).rejects.toMatchObject({ reason: 'timeout' });

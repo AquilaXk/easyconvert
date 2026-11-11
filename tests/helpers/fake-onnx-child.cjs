@@ -3,6 +3,10 @@
 // pool's handling of a helper (reuse, replacement, loss, time limit, abort) is tested without onnxruntime. `--mode=` picks the behaviour.
 const mode = (process.argv.find((a) => a.startsWith('--mode=')) || '--mode=ok').slice(7);
 if (mode === 'boot-fail') process.exit(3);
+if (mode === 'boot-stderr') {
+  process.stderr.write('onnxruntime: mbind: Operation not permitted (seccomp)\n' + 'y'.repeat(100_000));
+  process.exit(3);
+}
 
 function frame(header) {
   const json = Buffer.from(JSON.stringify(header));
@@ -32,6 +36,11 @@ function serve(request) {
   served++;
   if (mode === 'crash') process.exit(1);
   if (mode === 'hang') return;
+  // Frames a hostile helper could send: a header that is JSON but not a reply.
+  const hostile = { 'null-header': null, 'number-header': 5, 'string-header': 'x', 'array-header': [1, 2], 'no-type-header': { id: request.id }, 'bad-id-header': { type: 'result', id: 'x', result: {} } };
+  if (mode in hostile) return process.stdout.write(frame(hostile[mode]));
+  if (mode === 'huge-message') return process.stdout.write(frame({ type: 'error', id: request.id, kind: 'unavailable', message: 'x'.repeat(7 * 1024 * 1024) }));
+  if (mode === 'non-string-message') return process.stdout.write(frame({ type: 'error', id: request.id, kind: 'failed', message: { not: 'a string' } }));
   if (mode === 'error') return process.stdout.write(frame({ type: 'error', id: request.id, kind: 'failed', message: 'the page could not be read' }));
   const box = { x: 0, y: 0, width: request.width, height: request.height };
   const confidence = mode === 'bad-confidence' ? 7 : 0.9;
@@ -40,4 +49,5 @@ function serve(request) {
   process.stdout.write(frame({ type: 'result', id: request.id, result }));
 }
 
-process.stdout.write(frame({ type: 'ready' }));
+if (mode === 'slow-boot') setTimeout(() => process.stdout.write(frame({ type: 'ready' })), 1500);
+else process.stdout.write(frame(mode === 'boot-null' ? null : { type: 'ready' }));

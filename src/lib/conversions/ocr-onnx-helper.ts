@@ -108,6 +108,10 @@ const MAX_QUEUED_PAGES = 64;
 const MAX_REPLY_LINES = 2048;
 const MAX_REPLY_WORDS = 200_000;
 const MAX_TEXT_CHARS = 4096;
+/** What is kept of a message the helper sends with an error: it reaches a log line and an error a caller sees. */
+const MAX_HELPER_MESSAGE_CHARS = 300;
+/** What is kept of the helper's standard error when it fails to start. */
+const MAX_STDERR_BYTES = 2048;
 
 export interface OnnxHelperPlan {
   helpers: number;
@@ -183,6 +187,25 @@ export function onnxOcrUnavailableReason(modelDir: string = onnxOcrModelDirector
 
 class HelperEnded extends Error {}
 
+/** One printable line of at most MAX_HELPER_MESSAGE_CHARS: what the helper says about itself is data, not something to log whole. */
+function boundedText(text: string): string {
+  return text.replace(/[^\x20-\x7e]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_HELPER_MESSAGE_CHARS);
+}
+
+/**
+ * The reply a frame header is, or null when it is not one. The header is whatever JSON the helper wrote: a plain object with a string `type`
+ * and, for a result or an error, a whole-number `id`; an error also has a known `kind` and a text `message` (cut to a line).
+ */
+function replyOf(header: unknown): OnnxReply | null {
+  if (typeof header !== 'object' || header === null || Array.isArray(header)) return null;
+  const { type, id, kind, message, result } = header as Record<string, unknown>;
+  if (type === 'ready') return { type: 'ready' };
+  if (typeof id !== 'number' || !Number.isInteger(id)) return null;
+  if (type === 'result') return { type: 'result', id, result: result as OcrResult };
+  if (type === 'error' && (kind === 'unavailable' || kind === 'failed') && typeof message === 'string') return { type: 'error', id, kind, message: boundedText(message) };
+  return null;
+}
+
 interface Waiting {
   id: number;
   resolve(reply: OnnxReply): void;
@@ -198,6 +221,7 @@ class OnnxHelper {
   private memoryTimer: NodeJS.Timeout | null = null;
   private readonly levelsAboveProgram: number;
   private nextId = 1;
+  private stderr: Buffer = Buffer.alloc(0);
   pages = 0;
   ended = false;
   busy = false;
@@ -217,9 +241,14 @@ class OnnxHelper {
     this.process = spawn(command.binary, command.args, {
       cwd: os.tmpdir(),
       env: getSanitizedEnvironment({}, true),
-      stdio: ['pipe', 'pipe', 'ignore'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
       detached: true,
+    });
+    // The first bytes of its standard error are kept for the message of a helper that does not start (a seccomp refusal or a missing library
+    // says so there); the rest is read and dropped so that the pipe never fills.
+    this.process.stderr?.on('data', (chunk: Buffer) => {
+      if (this.stderr.length < MAX_STDERR_BYTES) this.stderr = Buffer.concat([this.stderr, chunk]).subarray(0, MAX_STDERR_BYTES);
     });
     // Referenced while it boots and while it reads a page, so that a caller waiting for it keeps this process alive; let go when idle.
     this.process.stdin?.on('error', () => undefined);
@@ -235,24 +264,38 @@ class OnnxHelper {
     return this.process.pid;
   }
 
+  /** The first bytes the helper wrote to its standard error, as one printable line. */
+  get stderrText(): string {
+    return boundedText(this.stderr.toString('utf8'));
+  }
+
   /** While a page is being read the helper keeps this process alive; idle, it does not. */
   private unref(): void {
     this.process.unref();
     (this.process.stdout as unknown as { unref?: () => void } | null)?.unref?.();
     (this.process.stdin as unknown as { unref?: () => void } | null)?.unref?.();
+    (this.process.stderr as unknown as { unref?: () => void } | null)?.unref?.();
   }
 
   private ref(): void {
     this.process.ref();
     (this.process.stdout as unknown as { ref?: () => void } | null)?.ref?.();
     (this.process.stdin as unknown as { ref?: () => void } | null)?.ref?.();
+    (this.process.stderr as unknown as { ref?: () => void } | null)?.ref?.();
   }
 
   /** Resolves true when the helper said it is ready, false when it ended first. */
-  whenReady(): Promise<boolean> {
+  whenReady(signal?: AbortSignal): Promise<boolean> {
     if (this.ready) return Promise.resolve(true);
     if (this.ended) return Promise.resolve(false);
-    return new Promise<boolean>((resolve) => this.bootWaiters.push(resolve));
+    return new Promise<boolean>((resolve, reject) => {
+      const onAbort = (): void => reject(signal?.reason ?? new Error('The operation was aborted'));
+      signal?.addEventListener('abort', onAbort, { once: true });
+      this.bootWaiters.push((ready) => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve(ready);
+      });
+    });
   }
 
   private onData(chunk: Buffer): void {
@@ -263,14 +306,23 @@ class OnnxHelper {
       this.kill(new HelperEnded('the OCR helper sent something that is not a frame'));
       return;
     }
-    for (const { header } of frames) {
+    for (const frame of frames) {
+      const header = replyOf(frame.header);
+      if (!header) {
+        this.kill(new HelperEnded('the OCR helper sent a reply that is not valid'));
+        return;
+      }
       if (header.type === 'ready') {
+        if (this.ready) {
+          this.kill(new HelperEnded('the OCR helper said it was ready twice'));
+          return;
+        }
         this.ready = true;
         const waiters = this.bootWaiters;
         this.bootWaiters = [];
         for (const wake of waiters) wake(true);
         this.armIdle();
-      } else if (this.waiting && 'id' in header && header.id === this.waiting.id) {
+      } else if (this.waiting && header.id === this.waiting.id) {
         const waiting = this.waiting;
         this.waiting = null;
         waiting.resolve(header);
@@ -401,7 +453,7 @@ export class OnnxOcrPool {
     return this.options.modelDir ?? onnxOcrModelDirectory();
   }
 
-  private async acquire(): Promise<OnnxHelper> {
+  private async acquire(signal?: AbortSignal): Promise<OnnxHelper> {
     const maxPages = this.options.maxPagesPerHelper ?? ONNX_HELPER_MAX_PAGES;
     for (const helper of this.helpers) {
       if (!helper.busy && !helper.ended && helper.pages >= maxPages) helper.stop();
@@ -420,9 +472,21 @@ export class OnnxOcrPool {
     helper.busy = true;
     this.helpers.add(helper);
     helper.onEnd = () => this.helpers.delete(helper);
-    if (!(await helper.whenReady())) {
+    let ready: boolean;
+    try {
+      ready = await helper.whenReady(signal);
+    } catch (error) {
+      // The job was aborted while the helper was starting: the page is not read, and the helper goes on to boot for the next one.
+      helper.busy = false;
+      throw error;
+    }
+    if (!ready) {
       this.retryAfter = Date.now() + RESTART_BACKOFF_MS;
-      throw new OnnxOcrUnavailableError('helper-not-starting', 'The ONNX OCR helper ended before it was ready (the models or the runtime could not be loaded).');
+      const said = helper.stderrText;
+      throw new OnnxOcrUnavailableError(
+        'helper-not-starting',
+        `The ONNX OCR helper ended before it was ready (the models or the runtime could not be loaded)${said ? `: ${said}` : ''}.`
+      );
     }
     return helper;
   }
@@ -431,7 +495,7 @@ export class OnnxOcrPool {
   async read(input: OnnxPageInput, options: { language: string; recoverSpaces?: boolean; signal?: AbortSignal }): Promise<OcrResult> {
     return this.slots.run(async () => {
       options.signal?.throwIfAborted();
-      const helper = await this.acquire();
+      const helper = await this.acquire(options.signal);
       const reply = await helper.read(input, options.language, options.recoverSpaces !== false, this.options.pageTimeoutMs ?? ONNX_PAGE_TIMEOUT_MS, options.signal);
       if (reply.type === 'error') {
         if (reply.kind === 'unavailable') throw new OnnxOcrUnavailableError('helper-not-starting', `The ONNX OCR helper could not read: ${reply.message}`);
