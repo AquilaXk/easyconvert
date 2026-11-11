@@ -718,8 +718,67 @@ export function svgToDxf(svgContent: string): string {
   return encodeSvgPageToDxf(Buffer.from(svgContent, 'utf-8')).toString('utf-8');
 }
 
+/** Most triangles of a mesh read here: what a binary STL may hold, applied to an ASCII STL and to the faces of an OBJ as well. */
+export const MAX_MESH_TRIANGLES = 1_000_000;
+/** Most vertices (and normals) of a mesh read here: the three corners of every triangle at the limit. */
+export const MAX_MESH_VERTICES = 3 * MAX_MESH_TRIANGLES;
+
+function meshTooLarge(what: string, limit: number): PayloadLimitError {
+  return new PayloadLimitError(`The 3D mesh holds more than ${limit} ${what}, the most that is read.`);
+}
+
+const ASCII_STL_FACET = /facet\s+normal\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)[\s\S]*?vertex\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)[\s\S]*?vertex\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)[\s\S]*?vertex\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)/g;
+
+/** The facets of an ASCII STL, or null when it has none. @throws PayloadLimitError (413) past MAX_MESH_TRIANGLES facets. */
+function parseAsciiStl(text: string, name: string): CadMesh3D | null {
+  const vertices: [number, number, number][] = [];
+  const faces: [number, number, number][] = [];
+  const normals: [number, number, number][] = [];
+  const facetRegex = new RegExp(ASCII_STL_FACET);
+  let match: RegExpExecArray | null;
+  while ((match = facetRegex.exec(text)) !== null) {
+    if (faces.length >= MAX_MESH_TRIANGLES) throw meshTooLarge('triangles', MAX_MESH_TRIANGLES);
+    normals.push([parseFloat(match[1]), parseFloat(match[2]), parseFloat(match[3])]);
+    const vStart = vertices.length;
+    vertices.push([parseFloat(match[4]), parseFloat(match[5]), parseFloat(match[6])]);
+    vertices.push([parseFloat(match[7]), parseFloat(match[8]), parseFloat(match[9])]);
+    vertices.push([parseFloat(match[10]), parseFloat(match[11]), parseFloat(match[12])]);
+    faces.push([vStart, vStart + 1, vStart + 2]);
+  }
+  return vertices.length > 0 ? { name, vertices, faces, normals } : null;
+}
+
+/** The vertices, normals and faces of an OBJ, or null when it has no vertex. @throws PayloadLimitError (413) past the mesh limits. */
+function parseObj(text: string, name: string): CadMesh3D | null {
+  const vertices: [number, number, number][] = [];
+  const faces: [number, number, number][] = [];
+  const normals: [number, number, number][] = [];
+  // One line at a time: splitting the whole text would hold an array of every line before a limit could stop the read.
+  for (let lineStart = 0; lineStart < text.length; ) {
+    const lineEnd = text.indexOf('\n', lineStart);
+    const parts = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd).trim().split(/\s+/);
+    lineStart = lineEnd === -1 ? text.length : lineEnd + 1;
+    if (parts[0] === 'v' && parts.length >= 4) {
+      if (vertices.length >= MAX_MESH_VERTICES) throw meshTooLarge('vertices', MAX_MESH_VERTICES);
+      vertices.push([parseFloat(parts[1]) || 0, parseFloat(parts[2]) || 0, parseFloat(parts[3]) || 0]);
+    } else if (parts[0] === 'vn' && parts.length >= 4) {
+      if (normals.length >= MAX_MESH_VERTICES) throw meshTooLarge('normals', MAX_MESH_VERTICES);
+      normals.push([parseFloat(parts[1]) || 0, parseFloat(parts[2]) || 0, parseFloat(parts[3]) || 0]);
+    } else if (parts[0] === 'f' && parts.length >= 4) {
+      if (faces.length >= MAX_MESH_TRIANGLES) throw meshTooLarge('faces', MAX_MESH_TRIANGLES);
+      const v1 = parseInt(parts[1].split('/')[0], 10) - 1;
+      const v2 = parseInt(parts[2].split('/')[0], 10) - 1;
+      const v3 = parseInt(parts[3].split('/')[0], 10) - 1;
+      faces.push([Math.max(0, v1), Math.max(0, v2), Math.max(0, v3)]);
+    }
+  }
+  return vertices.length > 0 ? { name, vertices, faces, normals } : null;
+}
+
 /**
  * 3D mesh parser (STL, OBJ). STEP and IGES are read by the Open CASCADE program (cad-occt.ts), not here.
+ * @throws PayloadLimitError (413) for an ASCII STL of more than MAX_MESH_TRIANGLES facets, or an OBJ of more than MAX_MESH_VERTICES vertices or
+ * MAX_MESH_TRIANGLES faces: a JavaScript array is built for every one of them.
  */
 function parse3dCad(buffer: Buffer, format: string, defaultName: string): CadMesh3D {
   const headerPrefix = buffer.subarray(0, Math.min(6, buffer.length)).toString('ascii').toLowerCase();
@@ -759,52 +818,14 @@ function parse3dCad(buffer: Buffer, format: string, defaultName: string): CadMes
 
   // 2. ASCII STL Parser
   if (format === 'stl' || format === 'stlb' || text.startsWith('solid')) {
-
-    // ASCII STL
-    const vertices: [number, number, number][] = [];
-    const faces: [number, number, number][] = [];
-    const normals: [number, number, number][] = [];
-
-    const facetRegex = /facet\s+normal\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)[\s\S]*?vertex\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)[\s\S]*?vertex\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)[\s\S]*?vertex\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)/g;
-    let match: RegExpExecArray | null;
-
-    while ((match = facetRegex.exec(text)) !== null) {
-      normals.push([parseFloat(match[1]), parseFloat(match[2]), parseFloat(match[3])]);
-      const vStart = vertices.length;
-      vertices.push([parseFloat(match[4]), parseFloat(match[5]), parseFloat(match[6])]);
-      vertices.push([parseFloat(match[7]), parseFloat(match[8]), parseFloat(match[9])]);
-      vertices.push([parseFloat(match[10]), parseFloat(match[11]), parseFloat(match[12])]);
-      faces.push([vStart, vStart + 1, vStart + 2]);
-    }
-
-    if (vertices.length > 0) {
-      return { name: defaultName, vertices, faces, normals };
-    }
+    const mesh = parseAsciiStl(text, defaultName);
+    if (mesh) return mesh;
   }
 
   // 2. OBJ Parser
   if (format === 'obj' || text.includes('v ') || text.includes('f ')) {
-    const vertices: [number, number, number][] = [];
-    const faces: [number, number, number][] = [];
-    const normals: [number, number, number][] = [];
-
-    text.split(/\r?\n/).forEach((line) => {
-      const parts = line.trim().split(/\s+/);
-      if (parts[0] === 'v' && parts.length >= 4) {
-        vertices.push([parseFloat(parts[1]) || 0, parseFloat(parts[2]) || 0, parseFloat(parts[3]) || 0]);
-      } else if (parts[0] === 'vn' && parts.length >= 4) {
-        normals.push([parseFloat(parts[1]) || 0, parseFloat(parts[2]) || 0, parseFloat(parts[3]) || 0]);
-      } else if (parts[0] === 'f' && parts.length >= 4) {
-        const v1 = parseInt(parts[1].split('/')[0], 10) - 1;
-        const v2 = parseInt(parts[2].split('/')[0], 10) - 1;
-        const v3 = parseInt(parts[3].split('/')[0], 10) - 1;
-        faces.push([Math.max(0, v1), Math.max(0, v2), Math.max(0, v3)]);
-      }
-    });
-
-    if (vertices.length > 0) {
-      return { name: defaultName, vertices, faces, normals };
-    }
+    const mesh = parseObj(text, defaultName);
+    if (mesh) return mesh;
   }
 
   // Fail-closed on explicit unsupported/malformed 3D formats

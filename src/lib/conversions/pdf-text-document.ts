@@ -50,6 +50,8 @@ export interface ReadPdfOptions extends ExtractPdfOptions {
   densityThreshold?: number;
   /** Also read word geometry (see PdfGeometryPages). */
   geometry?: PdfGeometryPages;
+  /** Stops the read when the caller's job is cancelled. */
+  signal?: AbortSignal;
 }
 
 export interface ReadPdfResult {
@@ -142,9 +144,12 @@ export function documentFromJob(job: PdfTextJobResult, options: ExtractPdfOption
   const trimmed = job.content.filter((page) => reduced.has(page.pageNumber) && (reduced.get(page.pageNumber) as PdfPageContent).items.length < page.items.length);
   reportLeftOut(job.content, pages, unreadable, trimmed.map((page) => page.pageNumber), !omit);
   const { model, tables, pageText } = layoutPdf(pages, job.fonts);
-  const geometry = new Map([...job.geometry].filter(([pageNumber]) => !unmapped.has(pageNumber)));
+  // A page is read for its geometry and analysis when its text is, and not when OCR is to recognize it: one left out, or one that
+  // kept its text without the runs of a Type 3 font, whose characters the geometry and the analysis (read from every run) would carry.
+  const recognized = new Set([...unreadable, ...trimmed.map((page) => page.pageNumber)]);
+  const geometry = new Map([...job.geometry].filter(([pageNumber]) => !recognized.has(pageNumber)));
   const analyses: PdfPageAnalysis[] = job.analyses.map((analysis) =>
-    unmapped.has(analysis.pageNumber) ? { ...analysis, charCount: 0, wordCount: 0, hasTextLayer: false, text: '' } : analysis
+    recognized.has(analysis.pageNumber) ? { ...analysis, charCount: 0, wordCount: 0, hasTextLayer: false, text: '' } : analysis
   );
   return { extracted: { model, text: documentToText(model), unmappedPages, pages, tables, pageText }, analyses, geometry };
 }
@@ -161,7 +166,7 @@ export function documentFromJob(job: PdfTextJobResult, options: ExtractPdfOption
  */
 export async function readPdfDocument(pdf: Buffer, options: ReadPdfOptions = {}): Promise<ReadPdfResult> {
   assertPdfHeader(pdf);
-  const job = await runPdfTextJob(pdf, { densityThreshold: options.densityThreshold, geometry: options.geometry ?? 'none', content: true, images: options.images });
+  const job = await runPdfTextJob(pdf, { densityThreshold: options.densityThreshold, geometry: options.geometry ?? 'none', content: true, images: options.images }, options.signal);
   return documentFromJob(job, options);
 }
 
