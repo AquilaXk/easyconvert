@@ -31,7 +31,7 @@ import { describeDroppedStreams } from './media-dropped-streams';
 import { outputSizeError } from './media-empty-output';
 import { DEFAULT_MEDIA_TIER_MAX_MS, computeMediaTimeoutMs } from './media-job-limit';
 import { runFfmpegTranscode } from './media-ffmpeg-run';
-import { type MediaInput, openMediaInput, runFfmpeg, runFfmpegSync } from './media-process';
+import { type MediaInput, mediaReadDirs, openMediaInput, runFfmpeg, runFfmpegSync } from './media-process';
 import { type FfprobePath, probeInput, resolveFfprobeBinary } from './media-ffprobe';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from './media-two-pass';
 import { encodeFlacStreamAsync } from './flac-encoder';
@@ -441,6 +441,7 @@ async function executeFfmpegTranscode(
         maxBuffer: 50 * 1024 * 1024,
         signal: options.signal,
         workDir: jobDir,
+        readDirs: mediaReadDirs(inputPath, options),
         ...(cwd ? { cwd } : {}),
       });
     const runTranscode = (ffmpegArgs: string[]) => runFfmpegWith(ffmpegArgs, timeoutMs);

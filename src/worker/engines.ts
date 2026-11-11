@@ -58,7 +58,7 @@ import { describeAudioProcessing, measureLoudnessStage } from '../lib/conversion
 import { describeDroppedStreams } from '../lib/conversions/media-dropped-streams';
 import { assertOutputWritten } from '../lib/conversions/media-empty-output';
 import { runFfmpegTranscode } from '../lib/conversions/media-ffmpeg-run';
-import { openMediaInput, runFfmpeg } from '../lib/conversions/media-process';
+import { mediaReadDirs, openMediaInput, runFfmpeg } from '../lib/conversions/media-process';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from '../lib/conversions/media-two-pass';
 import {
   executeSandboxedBinary, OFFICE_PIPE_DIR,
@@ -561,7 +561,7 @@ export async function convertWithNativeFfmpeg(
       }
 
       const runFfmpegWith = (ffmpegArgs: string[], limitMs: number) =>
-        runFfmpegTranscode(ffmpegBin, ffmpegArgs, { cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: limitMs, maxBuffer, signal: options.signal });
+        runFfmpegTranscode(ffmpegBin, ffmpegArgs, { cwd: tempDir, workDir: tempDir, readDirs: mediaReadDirs(inputPath, options), timeoutMs: limitMs, maxBuffer, signal: options.signal });
       const runTranscode = (ffmpegArgs: string[]) => runFfmpegWith(ffmpegArgs, timeout);
       // A loudness request measures first (cheap: audio only), so the encode applies real numbers.
       const loudnessStage = await measureLoudnessStage({ input: media, tgt, options, ffmpegBin, run: runTranscode });

@@ -294,6 +294,11 @@ function assertGuardedInputs(args: readonly string[]): void {
   });
 }
 
+/** The files an ffmpeg run reads beyond its work directory: the input, and the subtitle file a request names to burn in or carry (a second input). */
+export function mediaReadDirs(inputPath: string, options: { subtitles?: { input?: string } }): string[] {
+  return options.subtitles?.input === undefined ? [inputPath] : [inputPath, options.subtitles.input];
+}
+
 /** The options of an ffmpeg run; the network namespace is not one, because every run gets it. */
 export type FfmpegRunOptions = Omit<SandboxedExecutionOptions, 'networkIsolated'>;
 
