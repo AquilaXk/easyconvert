@@ -552,6 +552,58 @@ export function groupRows<T extends { box: RotatedBox }>(items: T[]): T[][] {
   return rows.map((r) => r.sort((a, b) => along(a) - along(b)));
 }
 
+/**
+ * The detector's boxes are the text region enlarged on every side by area x 1.5 / perimeter, which for a line of text is about 0.75 of
+ * its height; so a box is about 2.5 text heights high, and its text lies 0.3 of the box height inside each side.
+ */
+const BOX_HEIGHTS_PER_TEXT_HEIGHT = 2.5;
+const BOX_MARGIN_SHARE = 0.3;
+/** A line this many text heights long (about as many syllables) is a line of running text; the cells of a table and labels are shorter. */
+const PROSE_LINE_EMS = 14;
+/** Fewest lines of running text on each side of a gutter for the page to count as set in columns. */
+const COLUMN_MIN_LINES = 4;
+/** A gutter is at least this many text heights wide, and this share of the page width. */
+const GUTTER_MIN_EMS = 1.5;
+const GUTTER_MIN_PAGE_SHARE = 0.015;
+/** A line as wide as this share of the text is a title or a rule across the columns, not a line of one of them. */
+const SPANNING_SHARE = 0.72;
+
+/**
+ * Whether the page is running text set in columns: its long lines (fourteen text heights or more, so not the cells of a table) leave a
+ * gutter between them, with at least four on each side. The boxes of such a page are not joined along a row: a line of the left column
+ * and the line of the right column beside it are two lines, read one column after the other, where the cells of a table are one row.
+ * Lines wider than 72% of the text (titles) do not count against the gutter, and the gutter is measured along the lines' own direction.
+ */
+export function setInColumns(boxes: RotatedBox[], pageWidth: number): boolean {
+  if (boxes.length < 2 * COLUMN_MIN_LINES) return false;
+  const tilt = boxes.map((b) => b.angle).sort((a, b) => a - b)[boxes.length >> 1];
+  const cos = Math.cos(tilt);
+  const sin = Math.sin(tilt);
+  const heights = boxes.map((b) => b.height).sort((a, b) => a - b);
+  const em = heights[heights.length >> 1] / BOX_HEIGHTS_PER_TEXT_HEIGHT;
+  const text = (b: RotatedBox): number => b.width - 2 * BOX_MARGIN_SHARE * b.height;
+  const long = boxes.filter((b) => text(b) >= PROSE_LINE_EMS * em);
+  if (long.length < 2 * COLUMN_MIN_LINES || long.length < 0.6 * boxes.length) return false;
+  const spans = long.map((b) => {
+    const centre = b.cx * cos + b.cy * sin;
+    return { start: centre - text(b) / 2, end: centre + text(b) / 2 };
+  });
+  const textWidth = Math.max(...spans.map((r) => r.end)) - Math.min(...spans.map((r) => r.start));
+  const lines = spans.filter((r) => r.end - r.start < SPANNING_SHARE * textWidth).sort((a, b) => a.start - b.start);
+  const minGap = Math.max(GUTTER_MIN_EMS * em, GUTTER_MIN_PAGE_SHARE * pageWidth);
+  let reach = -Infinity;
+  let left = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0 && lines[i].start - reach >= minGap) {
+      if (left >= COLUMN_MIN_LINES && lines.length - i >= COLUMN_MIN_LINES) return true;
+      left = 0;
+    }
+    reach = Math.max(reach, lines[i].end);
+    left++;
+  }
+  return false;
+}
+
 // --- engine -----------------------------------------------------------------------------------------------------
 
 interface LoadedModels {
@@ -693,7 +745,9 @@ export async function recognizeOnnxInput(input: OnnxPageInput, options: OnnxOcrO
 
   const items = boxes.map((box, index) => ({ box, index }));
   const lineBlocks: OcrLineBlock[] = [];
-  for (const row of groupRows(items)) {
+  // A page set in columns keeps every box a line of its own; the order of the columns is settled by sortLineBlocksTopological below.
+  const rows = setInColumns(boxes, width) ? items.map((item) => [item]) : groupRows(items);
+  for (const row of rows) {
     const parts = row
       .map((item) => buildLineBlock(item.box, lines.get(item.index) as DecodedLine, width, height))
       .filter((block): block is OcrLineBlock => block !== null);

@@ -14,6 +14,7 @@ import {
   onnxOcrAvailable,
   planDetectorSize,
   recoverSpaces,
+  setInColumns,
   releaseOnnxOcr,
   unclipBox,
   wordSpans,
@@ -33,6 +34,44 @@ function rotatedRectPoints(cx: number, cy: number, width: number, height: number
   }
   return points;
 }
+
+/** A box of a text line of 42 pixel text (a box height of 105, as the detector's enlargement makes it) whose text runs from `x0` to `x1`. */
+function lineBox(x0: number, x1: number, y: number, angle = 0): RotatedBox {
+  const height = 105;
+  const width = x1 - x0 + 2 * 0.3 * height;
+  const cx = (x0 + x1) / 2;
+  return { cx: cx - y * Math.sin(angle), cy: y + cx * Math.sin(angle), width, height, angle, score: 0.9 };
+}
+
+describe('pages set in columns', () => {
+  const rows = (count: number) => Array.from({ length: count }, (_, i) => 200 + i * 110);
+
+  it('recognizes two columns of running text with a gutter between them', () => {
+    const boxes = rows(10).flatMap((y) => [lineBox(140, 1150, y), lineBox(1240, 2340, y)]);
+    expect(setInColumns(boxes, 2480)).toBe(true);
+  });
+
+  it('recognizes columns on a page turned by 3 degrees and with a title across them', () => {
+    const angle = (3 * Math.PI) / 180;
+    const boxes = [lineBox(140, 2340, 100, angle), ...rows(10).flatMap((y) => [lineBox(140, 1150, y, angle), lineBox(1240, 2340, y, angle)])];
+    expect(setInColumns(boxes, 2480)).toBe(true);
+  });
+
+  it('does not take the cells of a table for columns', () => {
+    const cells = rows(8).flatMap((y) => [lineBox(140, 330, y), lineBox(600, 1000, y), lineBox(1400, 1900, y), lineBox(2100, 2300, y)]);
+    expect(setInColumns(cells, 2480)).toBe(false);
+  });
+
+  it('does not take one column of text, or a few lines, for columns', () => {
+    expect(setInColumns(rows(14).map((y) => lineBox(140, 2340, y)), 2480)).toBe(false);
+    expect(setInColumns(rows(3).flatMap((y) => [lineBox(140, 1150, y), lineBox(1240, 2340, y)]), 2480)).toBe(false);
+  });
+
+  it('needs a gutter, not just two columns that touch', () => {
+    const touching = rows(10).flatMap((y) => [lineBox(140, 1190, y), lineBox(1200, 2340, y)]);
+    expect(setInColumns(touching, 2480)).toBe(false);
+  });
+});
 
 describe('ONNX OCR geometry', () => {
   it('scales the detector input into the side range and rounds each side to 32', () => {
