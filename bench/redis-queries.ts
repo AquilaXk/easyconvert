@@ -265,12 +265,18 @@ function scenarios(): Scenario[] {
   ];
 }
 
+/** Microseconds of CPU the server process has used so far (`INFO cpu`), which a loaded host distorts far less than wall time. */
+async function serverMicros(probe: Redis): Promise<number> {
+  const stats = await probe.info('cpu');
+  const read = (name: string) => Number(new RegExp(`^${name}:([0-9.]+)`, 'm').exec(stats)?.[1] ?? 0);
+  return Math.round((read('used_cpu_sys') + read('used_cpu_user')) * 1e6);
+}
+
 async function main(): Promise<void> {
   const admin = new Redis(REDIS_URL);
   await admin.flushdb();
-  await admin.quit();
   installCounter();
-  const rows: { name: string; commands: number; trips: number; medianMs: number; p95Ms: number; byName: Record<string, number> }[] = [];
+  const rows: { name: string; commands: number; trips: number; medianMs: number; p95Ms: number; serverUs: number; byName: Record<string, number> }[] = [];
   for (const scenario of scenarios()) {
     const run = await scenario.prepare();
     if (ONLY && !ONLY.some((part) => scenario.name.startsWith(part))) continue;
@@ -279,20 +285,24 @@ async function main(): Promise<void> {
     await run();
     const { commands, trips, byName } = { ...tally, byName: { ...tally.byName } };
     const times: number[] = [];
+    const micros: number[] = [];
     for (let n = 0; n < RUNS; n += 1) {
+      const before = await serverMicros(admin);
       const started = process.hrtime.bigint();
       await run();
       times.push(Number(process.hrtime.bigint() - started) / 1e6);
+      micros.push((await serverMicros(admin)) - before);
     }
-    rows.push({ name: scenario.name, commands, trips, medianMs: median(times), p95Ms: percentile95(times), byName });
+    rows.push({ name: scenario.name, commands, trips, medianMs: median(times), p95Ms: percentile95(times), serverUs: median(micros), byName });
   }
   if (AS_JSON) console.log(JSON.stringify(rows));
   else {
-    console.log('scenario'.padEnd(38), 'cmds'.padStart(6), 'trips'.padStart(6), 'median ms'.padStart(10), 'p95 ms'.padStart(8));
+    console.log('scenario'.padEnd(38), 'cmds'.padStart(6), 'trips'.padStart(6), 'median ms'.padStart(10), 'p95 ms'.padStart(8), 'redis us'.padStart(9));
     for (const row of rows) {
-      console.log(row.name.padEnd(38), String(row.commands).padStart(6), String(row.trips).padStart(6), row.medianMs.toFixed(2).padStart(10), row.p95Ms.toFixed(2).padStart(8));
+      console.log(row.name.padEnd(38), String(row.commands).padStart(6), String(row.trips).padStart(6), row.medianMs.toFixed(2).padStart(10), row.p95Ms.toFixed(2).padStart(8), String(row.serverUs).padStart(9));
     }
   }
+  await admin.quit();
   process.exit(0);
 }
 
