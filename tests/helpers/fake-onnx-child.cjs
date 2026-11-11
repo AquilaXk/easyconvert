@@ -1,4 +1,6 @@
 'use strict';
+// Each helper process names itself with a random id: under the sandbox every helper is PID 2 in its own namespace.
+const BOOT_ID = require('node:crypto').randomBytes(6).toString('hex');
 // A stand-in for the ONNX OCR helper program (src/lib/conversions/ocr-onnx-child.ts) that speaks its protocol without loading a model, so the
 // pool's handling of a helper (reuse, replacement, loss, time limit, abort) is tested without onnxruntime. `--mode=` picks the behaviour.
 const mode = (process.argv.find((a) => a.startsWith('--mode=')) || '--mode=ok').slice(7);
@@ -44,7 +46,7 @@ function serve(request) {
   if (mode === 'error') return process.stdout.write(frame({ type: 'error', id: request.id, kind: 'failed', message: 'the page could not be read' }));
   const box = { x: 0, y: 0, width: request.width, height: request.height };
   const confidence = mode === 'bad-confidence' ? 7 : 0.9;
-  const word = { text: `p${process.pid}n${served}`, confidence, bbox: box };
+  const word = { text: `p${BOOT_ID}n${served}`, confidence, bbox: box };
   const result = { lineBlocks: [{ text: word.text, bbox: box, words: [word] }] };
   process.stdout.write(frame({ type: 'result', id: request.id, result }));
 }
