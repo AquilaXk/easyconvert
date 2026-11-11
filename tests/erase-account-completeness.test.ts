@@ -244,8 +244,9 @@ describe('a record the erasure could not delete fails the run', () => {
     broken.mockRestore();
     void realPipeline;
 
-    const realDel = client.del.bind(client) as (...keys: string[]) => Promise<number>;
-    vi.spyOn(client, 'del').mockImplementation((async (...keys: string[]) => {
+    const userClient = redisUserStore.getRedisClient()!;
+    const realDel = userClient.del.bind(userClient) as (...keys: string[]) => Promise<number>;
+    vi.spyOn(userClient, 'del').mockImplementation((async (...keys: string[]) => {
       if (keys.some((key) => key.includes('login_attempts'))) throw new Error('connection lost');
       return realDel(...keys);
     }) as never);
