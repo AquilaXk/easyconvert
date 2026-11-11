@@ -453,6 +453,8 @@ let procHideDegradeSaid = false;
 let confineDegradeSaid = false;
 /** How long a host that could not give a PID namespace goes without one before it is tried again (a probe that failed on a cold start or under load is not a fact about the host). */
 export const PID_INIT_REPROBE_MS = 60_000;
+/** Under STRICT_SANDBOX a host that failed the probe refuses every run until it is asked again, so it is asked again sooner. */
+export const PID_INIT_STRICT_REPROBE_MS = 5_000;
 const PID_INIT_PROBE_TIMEOUT_MS = 2_000;
 
 export function resetUnshareCapabilityCache(): void {
@@ -568,7 +570,8 @@ function withPidInitProbe(base: Omit<UnshareCapability, 'pidInitPath' | 'confine
 /** The capability, with a host that went without `pid-init`, or without the confinement of files, tried again once `PID_INIT_REPROBE_MS` have passed since it was last tried. */
 function withPidInitRetried(capability: UnshareCapability): UnshareCapability {
   const complete = capability.pidInitPath !== '' && (capability.confinesFiles || fileConfinementDisabled());
-  if (!capability.available || complete || Date.now() - pidInitTriedAt < PID_INIT_REPROBE_MS) return capability;
+  const backoff = process.env.STRICT_SANDBOX === 'true' ? PID_INIT_STRICT_REPROBE_MS : PID_INIT_REPROBE_MS;
+  if (!capability.available || complete || Date.now() - pidInitTriedAt < backoff) return capability;
   return { ...capability, ...probePidInit(capability) };
 }
 

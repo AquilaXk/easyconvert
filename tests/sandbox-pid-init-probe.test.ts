@@ -21,7 +21,7 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, default: { ...actual, execFileSync }, execFileSync };
 });
 
-import { fileConfinementDisabled, getUnshareCapability, PID_INIT_REPROBE_MS, resetUnshareCapabilityCache, resolveSandboxedCommand, withoutProcHideNotice } from '../src/lib/security/process-sandbox';
+import { fileConfinementDisabled, getUnshareCapability, PID_INIT_REPROBE_MS, PID_INIT_STRICT_REPROBE_MS, resetUnshareCapabilityCache, resolveSandboxedCommand, withoutProcHideNotice } from '../src/lib/security/process-sandbox';
 
 const PID_INIT = '/opt/test/pid-init-stand-in';
 const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
@@ -145,6 +145,18 @@ describe('the PID namespace probe', () => {
       expect(getUnshareCapability()).toMatchObject({ pidInitPath: PID_INIT, confinesFiles: false });
       expect(probe.calls.filter((call) => call.includes('--confine'))).toEqual([]);
     }
+  });
+
+  it('asks a host that failed the probe again after a few seconds under STRICT_SANDBOX, where every run is refused until it passes, and after a minute otherwise', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.stubEnv('STRICT_SANDBOX', 'true');
+    expect(getUnshareCapability().pidInitPath).toBe('');
+    probe.pidInitWorks = true;
+    vi.setSystemTime(Date.now() + PID_INIT_STRICT_REPROBE_MS - 1);
+    expect(getUnshareCapability().pidInitPath).toBe('');
+    vi.setSystemTime(Date.now() + 1);
+    expect(getUnshareCapability().pidInitPath).toBe(PID_INIT);
+    expect(PID_INIT_STRICT_REPROBE_MS).toBeLessThan(PID_INIT_REPROBE_MS);
   });
 
   it('passes --confine with the directories of the run to pid-init, --require under STRICT_SANDBOX, and the program itself to read', () => {
