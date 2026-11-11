@@ -65,12 +65,12 @@ runs:
 
     # The EPUB validator and vtracer release archives, kept as downloaded and checked against their pinned SHA-256 on every
     # use, so a release download outage does not stop the jobs (every shard failed on 504s on 2026-11-08). The pins are in
-    # install-tools.sh and scripts/install-vtracer.sh, so their hashes are the key.
+    # install-tools.sh, scripts/install-vtracer.sh and scripts/install-oxipng.sh, so their hashes are the key.
     - name: Restore the cached release downloads
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: ${{ runner.temp }}/release-downloads
-        key: release-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/ci-setup/install-tools.sh', 'scripts/install-vtracer.sh') }}
+        key: release-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/ci-setup/install-tools.sh', 'scripts/install-vtracer.sh', 'scripts/install-oxipng.sh') }}
 
     # The DWG reader is built from the release archive pinned in scripts/install-libredwg.sh, so its hash is the key.
     - name: Prepare the DWG reader directory
