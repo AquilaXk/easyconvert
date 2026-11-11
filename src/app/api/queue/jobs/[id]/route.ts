@@ -7,6 +7,7 @@ import {
 } from '@/lib/queue/bullmq-engine';
 import { denyUnlessOwner } from '@/lib/api-keys/owner-access';
 import { redactText } from '@/lib/security/redact';
+import { withoutEngineTrace } from '@/lib/api/engine-trace';
 import { withQueueErrors } from '@/lib/api/queue-error-response';
 import { nodeJobCancelRefusal } from '@/lib/queue/graph/node-jobs';
 
@@ -60,7 +61,7 @@ async function readJob(
           jobId: job.id,
           state: job.state,
           progress: job.progress,
-          result: job.returnvalue,
+          result: withoutEngineTrace(job.returnvalue),
           error: job.failedReason === undefined ? undefined : redactText(job.failedReason),
         });
         controller.enqueue(encoder.encode(`event: initial\ndata: ${initialPayload}\n\n`));
@@ -72,7 +73,7 @@ async function readJob(
 
         const unsubscribe = subscribeToJobTelemetry(conversionQueue, jobId, (event) => {
           try {
-            const dataStr = JSON.stringify(event.data);
+            const dataStr = JSON.stringify(event.event === 'completed' ? withoutEngineTrace(event.data, 'result') : event.data);
             controller.enqueue(encoder.encode(`event: ${event.event}\ndata: ${dataStr}\n\n`));
 
             if (TERMINAL_TELEMETRY_EVENTS.has(event.event)) {
@@ -118,7 +119,7 @@ async function readJob(
       sourceFormat: job.data.sourceFormat,
       targetFormat: job.data.targetFormat,
     },
-    returnvalue: job.returnvalue,
+    returnvalue: withoutEngineTrace(job.returnvalue),
     failedReason: job.failedReason === undefined ? undefined : redactText(job.failedReason),
     failedCode: job.failedCode,
     failedStatus: job.failedStatus,

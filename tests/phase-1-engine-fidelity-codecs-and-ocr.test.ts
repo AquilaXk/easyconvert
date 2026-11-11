@@ -13,12 +13,12 @@ import {
 import { convertArchive, gunzipStreamingWithLimits } from '../src/lib/conversions/archive';
 import {
   createLosslessSandwichPdfFromImage,
-  createLosslessSandwichPdfFromPdf,
   createToUnicodeCMap,
   ensureUnicodeFont,
   registerFontOnPage,
   safeEncodeText,
 } from '../src/lib/conversions/ocr-pdf-combiner';
+import { createLosslessSandwichPdfFromPdf } from '../src/lib/conversions/ocr-pdf-sandwich';
 import { createWinAnsiToUnicodeCMap } from '../src/lib/conversions/pdf-winansi-tounicode';
 import { performOcr } from '../src/lib/conversions/ocr';
 import { probeStream } from './helpers/media-lossy-oracle';

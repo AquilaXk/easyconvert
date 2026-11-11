@@ -16,6 +16,8 @@ export const INIT_GRAPH_LUA_SCRIPT = `
 -- ARGV[2]: JSON graph fields to store on the graph hash
 -- ARGV[3]: JSON nodes array [{ id, op, inDegree, children }]
 -- ARGV[4]: createdAt timestamp ms
+-- ARGV[5]: milliseconds a graph that never ends is kept: every key of the graph expires then unless the end of the graph
+--          (FORGET_ENDED_GRAPH_LUA_SCRIPT) sets the shorter retention of an ended graph first
 
 if redis.call('EXISTS', KEYS[1]) == 1 then
   return redis.error_reply('Graph already exists: ' .. ARGV[1])
@@ -39,6 +41,9 @@ for _, n in ipairs(cjson.decode(ARGV[3])) do
     redis.call('RPUSH', KEYS[6], n.id)
     table.insert(ready, n.id)
   end
+end
+for _, key in ipairs(KEYS) do
+  redis.call('PEXPIRE', key, ARGV[5])
 end
 
 return cjson.encode(ready)

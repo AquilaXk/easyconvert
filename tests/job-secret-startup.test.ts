@@ -15,11 +15,14 @@ const KEY_ENVS = ['JOB_SECRET_KEK', 'STORAGE_VAULT_KEY', 'KEY_ENCRYPTION_KEY', '
 const SECRET_QUERY = 'sig-0e9d4c71b2a85f36';
 // Production storage must be configured for the worker to reach its sealing-key check.
 const STORAGE_SIGNING_SECRET = 'job-secret-startup-signing-secret-0123456789';
+// A worker also needs the webhook key in production (docs/configuration.md).
+const WEBHOOK_SECRET_KEK = 'job-secret-startup-webhook-kek-0123456789abcdef';
 
 function stubProductionWithoutKey(): void {
   vi.stubEnv('NODE_ENV', 'production');
   vi.stubEnv('STORAGE_DRIVER', 'local');
   vi.stubEnv('STORAGE_SIGNING_SECRET', STORAGE_SIGNING_SECRET);
+  vi.stubEnv('WEBHOOK_SECRET_KEK', WEBHOOK_SECRET_KEK);
   for (const name of KEY_ENVS) {
     vi.stubEnv(name, '');
   }

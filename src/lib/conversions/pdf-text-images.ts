@@ -2,6 +2,7 @@ import type { PDFDict, PDFDocument, PDFStream } from 'pdf-lib';
 import { PayloadLimitError } from '../types';
 import { assertInputPixels } from './image-input-limits';
 import { normaliseLeafPageCatalogWithLib } from './ocr-geometry';
+import { loadPdfLibDocument } from './pdf-lib-load';
 import { pdfjsImageToPng } from './pdf-rasterizer';
 import type { OperatorListLike } from './pdf-text-content';
 import {
@@ -115,14 +116,15 @@ class JpegCatalog {
   private async open(lib: PdfLib): Promise<PDFDocument | null> {
     if (this.document === undefined) {
       try {
-        const doc = await lib.PDFDocument.load(this.bytes, { ignoreEncryption: false, throwOnInvalidObject: false, updateMetadata: false });
+        const doc = await loadPdfLibDocument(this.bytes, { ignoreEncryption: false, throwOnInvalidObject: false, updateMetadata: false });
         if (normaliseLeafPageCatalogWithLib(doc, lib)) {
           doc.getPages();
           this.document = doc;
         } else {
           this.document = null;
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof PayloadLimitError) throw error;
         this.document = null;
       }
     }

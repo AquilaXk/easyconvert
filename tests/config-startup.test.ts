@@ -32,6 +32,7 @@ const VALID_WORKER_ENV: Readonly<Record<string, string>> = {
   STORAGE_DRIVER: 'local',
   STORAGE_SIGNING_SECRET: SIGNING_SECRET,
   JOB_SECRET_KEK: VALID_KEK,
+  WEBHOOK_SECRET_KEK: secretOf(48, 'startup-webhook-kek-'),
 };
 
 /** The extra variables the web process needs in production. */
@@ -40,7 +41,6 @@ const VALID_WEB_ENV: Readonly<Record<string, string>> = {
   APP_URL: 'https://convert.example.org',
   JWT_SECRET: secretOf(48, 'startup-jwt-'),
   KEY_HASH_PEPPER: secretOf(48, 'startup-pepper-'),
-  WEBHOOK_SECRET_KEK: secretOf(48, 'startup-webhook-kek-'),
 };
 
 interface SpawnResult {

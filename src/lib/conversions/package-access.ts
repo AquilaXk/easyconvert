@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { readZipDirectory } from './archive-zip-reader';
+import { readZipDirectory, readZipEntryCount } from './archive-zip-reader';
 import { readZipEntryBytes } from './zip-entry-reader';
 import type { InflateBudget } from './bounded-inflate';
 import { ConversionFailedError, PayloadLimitError } from '../types';
@@ -41,8 +41,39 @@ export function decodeXmlBytes(bytes: Buffer, what: string): string {
   }
 }
 
-/** Opens a ZIP package; anything that is not one is a typed 400 error naming the format. */
+/**
+ * Most entries a package may hold. JSZip builds an object for every entry of the central directory (about 1.7 KB each, measured at
+ * 100,000 entries), so a file of a million tiny entries would cost it gigabytes before any part is read. A document holds hundreds;
+ * this is the limit the macro check has always had (`MACRO_STRIP_MAX_ENTRIES`).
+ */
+export const MAX_PACKAGE_ENTRIES = 100_000;
+
+/** The entries the end records of a ZIP file declare, or undefined when they cannot be read. */
+export function declaredPackageEntries(input: Uint8Array): number | undefined {
+  try {
+    return readZipEntryCount(Buffer.from(input.buffer, input.byteOffset, input.byteLength));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Refuses a ZIP package whose end records declare more than `MAX_PACKAGE_ENTRIES` entries, before JSZip reads its directory. A file whose end
+ * records cannot be read is refused too: JSZip finds the end record by its own rules, and the entries it would then read are not counted.
+ * @throws PayloadLimitError (413) for too many entries.
+ * @throws ConversionFailedError (400) when the end records cannot be read.
+ */
+export function assertPackageEntryCount(input: Uint8Array, format: string, packageKind = 'ZIP package'): void {
+  const count = declaredPackageEntries(input);
+  if (count === undefined) throw new ConversionFailedError(`The ${format} file is not a valid ${packageKind}.`);
+  if (count > MAX_PACKAGE_ENTRIES) {
+    throw new PayloadLimitError(`The ${format} package holds ${count} entries, more than the ${MAX_PACKAGE_ENTRIES} that are read.`);
+  }
+}
+
+/** Opens a ZIP package; anything that is not one is a typed 400 error naming the format, and one with too many entries a 413. */
 export async function openPackage(input: Buffer | Uint8Array, format: string, packageKind = 'ZIP package'): Promise<JSZip> {
+  assertPackageEntryCount(input, format, packageKind);
   try {
     return await JSZip.loadAsync(input);
   } catch {

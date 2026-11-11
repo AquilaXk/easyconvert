@@ -296,8 +296,9 @@ describe('Zero-downtime KEY_HASH_PEPPER rotation with KEY_HASH_PEPPER_PREVIOUS',
 
     fakeRedis.hmget.mockRejectedValueOnce(new Error('redis unreachable'));
     const fallbackVerifyAfterPeerRotate = await restartedStore.verifyApiKey(oldSecretKey);
+    // Redis cannot answer: the store does not fall back to its own copy, it says it cannot tell (a 503, not a 401).
     expect(fallbackVerifyAfterPeerRotate.valid).toBe(false);
-    expect(fallbackVerifyAfterPeerRotate.error).toBe('Invalid or non-existent API key');
+    expect(fallbackVerifyAfterPeerRotate.serviceUnavailable).toBe(true);
 
     const listed = await restartedStore.listApiKeys(testUser.id);
     expect(listed.find((item) => item.id === key.id)?.webhookSecret).toBe(WEBHOOK_SECRET);

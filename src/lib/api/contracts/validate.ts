@@ -13,9 +13,6 @@ import {
   IdempotencyKeyHeaderSchema,
   WebhookSecretRotateRequestSchema,
   WebhookSecretRotateResponseSchema,
-  UsageQueryRequestSchema,
-  UsageLedgerEntrySchema,
-  UsageQueryResponseSchema,
   OcrLanguageEntrySchema,
   OcrLanguagesResponseSchema,
 } from './schemas';
@@ -76,9 +73,6 @@ ajv.addSchema(JobResourceSchema);
 ajv.addSchema(IdempotencyKeyHeaderSchema);
 ajv.addSchema(WebhookSecretRotateRequestSchema);
 ajv.addSchema(WebhookSecretRotateResponseSchema);
-ajv.addSchema(UsageQueryRequestSchema);
-ajv.addSchema(UsageLedgerEntrySchema);
-ajv.addSchema(UsageQueryResponseSchema);
 ajv.addSchema(OcrLanguageEntrySchema);
 ajv.addSchema(OcrLanguagesResponseSchema);
 

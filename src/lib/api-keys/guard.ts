@@ -5,6 +5,7 @@ import { QueueUnavailableError } from '../types';
 import type { TokenBucketOptions } from './redis-key-store';
 import { API_KEY_BURST_LIMITS, dailyConversions, planOfCaller, type PlanCaller } from '../plan-limits';
 import { getSessionFromRequest } from '../auth/session';
+import { AuthStoreUnavailableError } from '../auth/store-unavailable';
 import { anonymousUserId, isAnonymousUserId, isUnattributedAnonymous } from '../auth/anonymous-identity';
 import type { User } from '../auth/types';
 import type { ApiKey, ApiKeyScope, QuotaUsage } from './types';
@@ -273,6 +274,7 @@ async function verifyKeyAccess(
   clientIp?: string
 ): Promise<ApiAuthResult> {
   const verification = await redisKeyStore.verifyApiKey(apiKeySecret, clientIp);
+  if (verification.serviceUnavailable) return storeUnavailable(verification.error);
   if (!verification.valid || !verification.user || !verification.key) {
     const isIpDenied = verification.error?.includes('IP');
     return {
@@ -346,6 +348,13 @@ async function verifyKeyAccess(
     reservationId: quota.reservationId,
     remaining: quota.remaining,
   };
+}
+
+const STORE_UNAVAILABLE_MESSAGE = 'Service Unavailable: the account store is temporarily unavailable';
+
+/** The refusal of a request whose key or session the account store could not check: 503 with Retry-After, never an acceptance. */
+function storeUnavailable(error = STORE_UNAVAILABLE_MESSAGE, retryAfterSeconds = 5): ApiAuthResult {
+  return { authorized: false, error, status: HTTP_SERVICE_UNAVAILABLE, retryAfterSeconds, problemType: SERVICE_UNAVAILABLE_PROBLEM_TYPE };
 }
 
 const CLIENT_IP_CONFIG_ERROR_MESSAGE = 'Server misconfiguration: client IP trust settings are invalid.';
@@ -450,6 +459,19 @@ async function verifyAnonymousAccess(clientIp: string, need: QuotaNeed): Promise
 export async function validateApiAccess(
   request: Request,
   optionsOrUnits: number | ValidateApiAccessOptions = 1,
+  legacyScope?: string
+): Promise<ApiAuthResult> {
+  try {
+    return await authenticateRequest(request, optionsOrUnits, legacyScope);
+  } catch (error) {
+    if (error instanceof AuthStoreUnavailableError) return storeUnavailable(undefined, error.retryAfterSeconds);
+    throw error;
+  }
+}
+
+async function authenticateRequest(
+  request: Request,
+  optionsOrUnits: number | ValidateApiAccessOptions,
   legacyScope?: string
 ): Promise<ApiAuthResult> {
   let need: QuotaNeed = 1;

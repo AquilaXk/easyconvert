@@ -1,5 +1,6 @@
 import type { NextResponse } from 'next/server';
 import { GraphStateCorruptError, QueueUnavailableError } from '../types';
+import { AuthStoreUnavailableError } from '../auth/store-unavailable';
 import { createProblemDetailsResponse } from './problem-details';
 
 /**
@@ -39,6 +40,16 @@ export function queueErrorResponse(
       'Service Unavailable',
       undefined,
       { ...queueRetryAfterHeaders(), ...extraHeaders }
+    );
+  }
+  if (error instanceof AuthStoreUnavailableError) {
+    return createProblemDetailsResponse(
+      HTTP_SERVICE_UNAVAILABLE,
+      error.message,
+      instance,
+      'Service Unavailable',
+      undefined,
+      { 'Retry-After': String(error.retryAfterSeconds), ...extraHeaders }
     );
   }
   if (error instanceof GraphStateCorruptError) {

@@ -262,7 +262,6 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
         'Content-Disposition': attachmentContentDisposition(result.filename),
         'Content-Length': result.size.toString(),
         'X-Conversion-Time-Ms': (Date.now() - startTime).toString(),
-        'X-Engine-Used': result.engineUsed,
         ...frameMetadataHeaders(result),
         ...droppedStreamsHeaders(result),
         ...conversionWarningsHeaders(result),

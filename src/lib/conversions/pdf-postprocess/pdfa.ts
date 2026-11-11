@@ -2,11 +2,12 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { PDFDocument, PDFName, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
+import { PDFName, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import {
   PdfAConformance,
   PdfAOptions,
   PdfAConversionResult,
+  PayloadLimitError,
   PdfPostprocessError,
   PdfAValidationError,
   EngineUnavailableError,
@@ -18,6 +19,7 @@ import {
   SandboxedProcessError,
 } from '../../security/process-sandbox';
 import { pdfFromHeader } from '../../format-signatures';
+import { loadPdfLibDocument } from '../pdf-lib-load';
 import { resolveBinaryPath } from './utils';
 import { DEFAULT_PDFA_CONFORMANCE, buildPdfExportFilterData } from '../pdf-export-options';
 import { normalisePdfADates } from './pdfa-dates';
@@ -122,7 +124,7 @@ export function parseVerapdfVerdict(json: string): VerapdfVerdict {
 /** `pdfaid:part` and `pdfaid:conformance` from the document's XMP metadata, if present. */
 async function readPdfAIdentification(pdf: Buffer): Promise<{ part?: string; conformance?: string }> {
   try {
-    const doc = await PDFDocument.load(pdf, { updateMetadata: false });
+    const doc = await loadPdfLibDocument(pdf, { updateMetadata: false });
     const metadata = doc.catalog.lookup(PDFName.of('Metadata'));
     if (!(metadata instanceof PDFRawStream)) {
       return {};
@@ -131,7 +133,8 @@ async function readPdfAIdentification(pdf: Buffer): Promise<{ part?: string; con
     const field = (name: string) =>
       xmp.match(new RegExp(`pdfaid:${name}\\s*(?:=\\s*["']([^"']+)["']|>\\s*([^<\\s]+)\\s*<)`))?.slice(1).find(Boolean);
     return { part: field('part'), conformance: field('conformance') };
-  } catch {
+  } catch (error) {
+    if (error instanceof PayloadLimitError) throw error;
     // The parser's own message can quote offsets and object contents of an untrusted file.
     throw new PdfPostprocessError(PDF_UNREADABLE_MESSAGE);
   }

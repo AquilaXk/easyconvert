@@ -225,7 +225,8 @@ const DO_OPERATOR = /\/([^\s/<>[\](){}%]+)\s+Do(?![A-Za-z0-9*'"])/g;
  * follows it, the last in the file where it scans. `last` and `first` ignore the cross-reference and keep the last or the first
  * definition in file order; `otherReadings` gives them to a caller that cannot tell which one pdf.js reads.
  */
-export type PdfReading = 'preferred' | 'last' | 'first';
+/** `scan` reads the definitions as `last` does and unpacks no object stream, for `assertLibParseWithinLimits`. */
+export type PdfReading = 'preferred' | 'last' | 'first' | 'scan';
 
 /** How a fetch of an object the cross-reference lists fails in pdf.js: `entry` is an `XRefEntryException`, which makes pdf.js read the file by scanning it. */
 type FetchFault = 'entry' | 'format';
@@ -237,6 +238,8 @@ export class PdfDocument {
   private readonly text: string;
   private index = new Map<number, PdfObjectEntry>();
   private readonly objectStreams: PdfObjectEntry[] = [];
+  /** Streams whose /Type is ObjStm, XRef or a reference, in file order: the ones pdf-lib may decode while it loads a file. */
+  private readonly libDecodedStreams: PdfObjectEntry[] = [];
   /** Streams whose /Length is an object the scan had not reached yet; see `applyLaterLengths`. */
   private readonly laterLengths: PdfObjectEntry[] = [];
   private readonly objectStreamTexts: string[] = [];
@@ -284,13 +287,34 @@ export class PdfDocument {
     this.scan();
     this.applyLaterLengths();
     const crossReference = reading === 'preferred' ? this.followCrossReference() : null;
-    this.expandObjectStreams();
+    if (reading !== 'scan') this.expandObjectStreams();
     // The definition the cross-reference leads to is the one pdf.js reads, whatever the file has after it.
     if (crossReference !== null) for (const [num, entry] of crossReference) this.index.set(num, entry);
     // Anything resolved while the index was still growing may have seen a missing or older object.
     this.parsed.clear();
     this.followedCrossReference = crossReference !== null;
     this.uncertain = reading === 'preferred' && this.superseded && (crossReference === null || this.rejectedSections > 0);
+  }
+
+  /**
+   * Decodes, under the stream cap and the document budget, every stream pdf-lib inflates while it loads a file: each stream
+   * defined as an object stream or a cross-reference stream (pdf-lib's `PDFParser.parseIndirectObjects` decodes every one it
+   * meets, referenced or not, superseded or not, whatever its /N or /First say) and each whose /Type is an indirect
+   * reference, which pdf-lib reads as whatever the reference leads to by then. A filter this reader cannot decode (pdf-lib
+   * also decodes LZW and run-length data, whose output no cap here bounds) is refused. An encrypted file is not read: pdf-lib
+   * does not decrypt, so what it inflates is ciphertext.
+   * @throws DecompressionLimitError (413) for a stream or the file that would decode past its budget.
+   * @throws PdfStructureError (400) for a stream that uses a filter this reader cannot decode.
+   * @throws CorruptStreamError (400) for compressed data that is malformed.
+   */
+  assertLibParseWithinLimits(): void {
+    if (this.encrypted) return;
+    for (const entry of this.libDecodedStreams) {
+      const dict = (entry.stream as StreamSpan).dict;
+      const type = this.resolve(dict.entries.get('Type'));
+      if (isName(type, 'XRef')) this.decodeStream(entry, this.xrefStreamBudget, true);
+      else if (isName(type, 'ObjStm') || !isName(type)) this.decodeStream(entry, this.budget, true);
+    }
   }
 
   /**
@@ -380,8 +404,10 @@ export class PdfDocument {
     if (laterLength) this.laterLengths.push(entry);
     if (entry.stream) {
       const dict = entry.stream.dict;
-      if (isName(dict.entries.get('Type'), 'ObjStm')) this.objectStreams.push(entry);
-      if (isName(dict.entries.get('Type'), 'XRef')) this.noteTrailer(dict);
+      const type = dict.entries.get('Type');
+      if (isName(type, 'ObjStm')) this.objectStreams.push(entry);
+      if (isName(type, 'XRef')) this.noteTrailer(dict);
+      if (isRef(type) || isName(type, 'ObjStm') || isName(type, 'XRef')) this.libDecodedStreams.push(entry);
     }
     return resume;
   }

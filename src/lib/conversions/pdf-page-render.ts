@@ -17,11 +17,11 @@ import { checkOpenedPdfRasterPageBudget, openPdfForReading } from './pdf-access'
 import { assertPdfJbig2WithinLimits } from './pdf-jbig2-guard';
 import {
   assertPdfRasterPageBudget,
-  readPdfPageFrames,
   renderedSizePixels,
   type PdfPageFrame,
   type RenderedPdfPage,
 } from './pdf-page-geometry';
+import { readPdfPageFrames } from './pdf-page-frames';
 import { assertPdfImagesWithinLimit } from './pdf-rasterizer';
 import { PAGE_IMAGE_MAX_PAGES, assertPageImageCount } from './page-range';
 

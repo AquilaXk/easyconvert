@@ -95,6 +95,9 @@ export function getNextMidnightUtc(): number {
   return tomorrow.getTime();
 }
 
+/** The answer of `verifyApiKey`. `serviceUnavailable` means the store could not tell: the caller answers 503, not 401. */
+export type ApiKeyVerification = { valid: boolean; key?: ApiKey; user?: User; error?: string; serviceUnavailable?: boolean };
+
 export class KeyStore {
   protected static sharedKeys = new Map<string, ApiKey>();
   protected static sharedKeyHashIndex = new Map<string, string>();
@@ -159,12 +162,21 @@ export class KeyStore {
     }
   }
 
+  /**
+   * Whether keys, usage and file records are mirrored to the JSON files of `.easyconvert` (read at start, written on every
+   * change). A store that keeps them in a shared service answers false: a file on one host would outlive a key deleted there.
+   */
+  protected mirrorsToDisk(): boolean {
+    return true;
+  }
+
   protected ensureInitialized() {
     if (this.initialized) return;
     this.initialized = true;
     if (this.keys === KeyStore.sharedKeys) {
       KeyStore.sharedInitialized = true;
     }
+    if (!this.mirrorsToDisk()) return;
 
     try {
       this.reloadKeysFromDisk();
@@ -187,6 +199,7 @@ export class KeyStore {
 
   protected persist() {
     this.ensureInitialized();
+    if (!this.mirrorsToDisk()) return;
     try {
       if (!fs.existsSync(this.storageDir)) {
         fs.mkdirSync(this.storageDir, { recursive: true });
@@ -264,7 +277,7 @@ export class KeyStore {
 
   private findOrReloadKeyId(candidateHashes: readonly string[]): string | undefined {
     let keyId = this.lookupKeyId(candidateHashes);
-    if (!keyId && fs.existsSync(this.keysFile)) {
+    if (!keyId && this.mirrorsToDisk() && fs.existsSync(this.keysFile)) {
       try {
         this.reloadKeysFromDisk();
         keyId = this.lookupKeyId(candidateHashes);
@@ -327,7 +340,7 @@ export class KeyStore {
   public async verifyApiKey(
     secretKey: string,
     clientIp?: string
-  ): Promise<{ valid: boolean; key?: ApiKey; user?: User; error?: string }> {
+  ): Promise<ApiKeyVerification> {
     this.ensureInitialized();
 
     if (!secretKey || typeof secretKey !== 'string') {
