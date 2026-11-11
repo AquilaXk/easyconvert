@@ -7,7 +7,7 @@ import { decodeWithMagick, type MagickSource } from './image-magick-cli';
 import { decodeWithDjxl } from './image-jxl-cli';
 import { decodeWithOpenJpeg } from './image-openjpeg-cli';
 import { usesOldStyleJpeg, withSortedTiffTags } from './image-tiff-directories';
-import { withOptimisedPng } from './png-optimise';
+import { markedForOptimiser, withOptimisedPng } from './png-optimise';
 
 /**
  * Which still-image sources the image library cannot read itself, and which command-line decoder reads each. The
@@ -114,9 +114,11 @@ export async function convertImageSource(
   const readable = TIFF_FORMATS.has(sourceFormat) ? withSortedTiffTags(input) : input;
   const external = await decodeExternalImage(readable, sourceFormat, options.signal);
   if (external === null) {
-    const converted = await convertImage(readable, targetFormat, options, originalFilename, sourceFormat);
-    // A PNG written from a PNG is a compression of it (entries 198 and 213), so the lossless optimiser has the last word (entry 229).
-    return sourceFormat === 'png' && targetFormat.toLowerCase() === 'png' ? withOptimisedPng(converted, { signal: options.signal }) : converted;
+    // A PNG written from a PNG is a compression of it (entries 198 and 213), so the encoder writes the cheapest file and the lossless
+    // optimiser has the last word (entries 232 and 247).
+    const compresses = sourceFormat === 'png' && targetFormat.toLowerCase() === 'png';
+    const converted = await convertImage(readable, targetFormat, compresses ? markedForOptimiser(options) : options, originalFilename, sourceFormat);
+    return compresses ? withOptimisedPng(converted, { signal: options.signal }) : converted;
   }
   return convertImage(external.buffer, targetFormat, options, originalFilename, external.format);
 }
