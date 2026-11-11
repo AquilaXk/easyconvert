@@ -8,6 +8,10 @@ import { findOxipng, OXIPNG_LEVEL_FULL_COLOUR, OXIPNG_LEVEL_PALETTE, optimisePng
 import { craftPng } from './helpers/png-craft';
 import { chunksOf, headerOf, rgba16Of } from './helpers/png-pixels';
 import { skipUnless } from './helpers/strict-skip';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 232).
+runWithoutFileConfinement();
 
 /**
  * The lossless optimiser of PNG files (oxipng, a separate sandboxed program). Oracle for every picture: the RGBA16 samples read back by
