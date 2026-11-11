@@ -31,6 +31,9 @@ export const MAX_REMOTE_SAMPLE_BYTES = 256 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
 /** Attempts after the first one; BENCH_CORPUS_RETRIES lowers it for a test that fetches from nowhere. */
 const DEFAULT_RETRIES = 3;
+/** Attempts after the first one for an address that has mirrors: the next address is the better second chance, and the total time stays bounded. */
+const MIRRORED_RETRIES = 1;
+const MAX_MIRRORS = 3;
 const REQUEST_TIMEOUT_MS = 300_000;
 const HTTP_OK = 200;
 const HTTP_PARTIAL = 206;
@@ -41,6 +44,8 @@ const USER_AGENT = 'easyconvert-parity-bench/1.0 (+https://github.com/AquilaXk/e
 export interface FileOrigin {
   kind: 'file';
   url: string;
+  /** Other addresses of the same bytes, tried in order when `url` cannot be reached. Each is held to the pinned size and SHA-256 and to the redirect rules of its own host. */
+  mirrors?: string[];
 }
 
 /** A file inside a ZIP archive, read with range requests. */
@@ -138,10 +143,18 @@ function requireCount(value: unknown, where: string): void {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new CorpusError(`${where} must be a non-negative integer`);
 }
 
+function checkMirrors(origin: FileOrigin, where: string): void {
+  if (origin.mirrors === undefined) return;
+  if (!Array.isArray(origin.mirrors) || origin.mirrors.length === 0 || origin.mirrors.length > MAX_MIRRORS) throw new CorpusError(`${where}.mirrors must list 1 to ${MAX_MIRRORS} https URLs`);
+  origin.mirrors.forEach((mirror, index) => requireHttps(mirror, `${where}.mirrors[${index}]`));
+  if (new Set([origin.url, ...origin.mirrors]).size !== origin.mirrors.length + 1) throw new CorpusError(`${where}.mirrors repeats an address`);
+}
+
 function checkOrigin(id: string, origin: RemoteOrigin): void {
   const where = `${id}.origin`;
   if (origin.kind === 'file') {
     requireHttps(origin.url, `${where}.url`);
+    checkMirrors(origin, where);
   } else if (origin.kind === 'zip') {
     requireHttps(origin.archive, `${where}.archive`);
     if (typeof origin.entry !== 'string' || origin.entry === '') throw new CorpusError(`${where}.entry must name the archive entry`);
@@ -326,8 +339,9 @@ async function attempt(url: string, range: [number, number] | null, maxBytes: nu
 
 
 /** The body of `url`, or of the inclusive byte range of it, retried with a pause on network and server errors. */
-export async function httpBytes(url: string, range: [number, number] | null, maxBytes: number = MAX_REMOTE_SAMPLE_BYTES, extraHosts: readonly string[] = []): Promise<Buffer> {
-  const retries = process.env.BENCH_CORPUS_RETRIES === undefined ? DEFAULT_RETRIES : Number(process.env.BENCH_CORPUS_RETRIES);
+export async function httpBytes(url: string, range: [number, number] | null, maxBytes: number = MAX_REMOTE_SAMPLE_BYTES, extraHosts: readonly string[] = [], maxRetries: number = Infinity): Promise<Buffer> {
+  const configured = process.env.BENCH_CORPUS_RETRIES === undefined ? DEFAULT_RETRIES : Number(process.env.BENCH_CORPUS_RETRIES);
+  const retries = Math.min(configured, maxRetries);
   return retryPaced(url, retries, () => attempt(url, range, maxBytes, extraHosts), (message) => new CorpusFetchError(message), {
     contactedHost: () => (redirectedTo.get(url) ?? new URL(url)).host,
   });
@@ -338,11 +352,26 @@ function redirectHostsOf(sample: Pick<RemoteSample, 'set'>): readonly string[] {
   return readRemoteManifest().sets[sample.set]?.redirectHosts ?? [];
 }
 
+/** The bytes of a file from its address, or from the first mirror that answers when the address cannot be reached; the caller checks the digest of whichever bytes come. */
+async function fileBytes(origin: FileOrigin, maxBytes: number, hosts: readonly string[]): Promise<Buffer> {
+  if (origin.mirrors === undefined) return httpBytes(origin.url, null, maxBytes, hosts);
+  const failures: string[] = [];
+  for (const url of [origin.url, ...origin.mirrors]) {
+    try {
+      return await httpBytes(url, null, maxBytes, hosts, MIRRORED_RETRIES);
+    } catch (error) {
+      if (!(error instanceof CorpusFetchError)) throw error;
+      failures.push(error.message);
+    }
+  }
+  throw new CorpusFetchError(`no address of the file answered: ${failures.join('; ')}`);
+}
+
 /** The sample's bytes from its origin, before any digest check. */
 export async function downloadSample(sample: PinnedFile): Promise<Buffer> {
   const origin = sample.origin;
   const hosts = redirectHostsOf(sample);
-  if (origin.kind === 'file') return httpBytes(origin.url, null, sample.bytes, hosts);
+  if (origin.kind === 'file') return fileBytes(origin, sample.bytes, hosts);
   if (origin.kind === 'range') return httpBytes(origin.url, [origin.start, origin.end], sample.bytes, hosts);
   const head = await httpBytes(origin.archive, [origin.offset, origin.offset + ZIP_LOCAL_HEADER_PROBE_BYTES - 1], ZIP_LOCAL_HEADER_PROBE_BYTES, hosts);
   const dataStart = origin.offset + localHeaderLength(head);
