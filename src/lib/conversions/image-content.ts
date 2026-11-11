@@ -1,4 +1,5 @@
-import type { Sharp } from 'sharp';
+import type { PngOptions, Sharp } from 'sharp';
+import type { ConversionOptions } from '../types';
 
 /**
  * Cheap content analysis for the lossy encoders. Screenshots, line art and rendered text have large flat areas
@@ -178,4 +179,34 @@ async function alphaIsOpaquePlane(pipeline: Sharp, deep: boolean): Promise<boole
     .raw({ depth: deep ? SIXTEEN_BIT_DEPTH : 'uchar' })
     .toBuffer({ resolveWithObject: true });
   return isAllOpaqueBytes(data);
+}
+
+/**
+ * Row filtering of the 8-bit PNG the image library writes (PNG Third Edition, W3C, section 12.8; libpng's heuristic of the filter with
+ * the smallest sum of absolute values per row, switched on by `adaptiveFiltering`).
+ *
+ * Camera pixels barely deflate unfiltered: `jxl-bicycles` is 1,344,958 bytes written at level 8 without filters and 888,884 with them at
+ * level 7 (the reference tool writes 895,640). A graphic (flat runs, few colours) is the other way round: its unfiltered rows deflate
+ * better than any filtered ones, `wm-screen-history` is 24 percent larger with the heuristic, so only a picture the content analysis
+ * calls a photograph is filtered.
+ *
+ * Level 7 is where zlib starts to match lazily: against level 6 it writes `jxl-delta-palette` 3.8 percent, `kodim23` 3.2 percent and a
+ * 640 x 432 photograph 9 percent smaller, for 1.7 times the encode time (level 8 costs 3 times for 0.3 percent more).
+ */
+export const PHOTO_PNG_COMPRESSION_LEVEL = 7;
+const GRAPHIC_PNG_COMPRESSION_LEVEL = 8;
+
+/** Whether the request asks for an indexed (palette) PNG rather than full-colour samples. */
+export function writesPalettePng(options: ConversionOptions): boolean {
+  return options.colorDepth === 8 || Boolean(options.palette) || options.quantizer === 'oklab';
+}
+
+/** Whether the writer needs the content class of the picture: a full-colour 8-bit PNG is the one that chooses its filters by it. */
+export function choosesPngFilter(fmt: string, options: ConversionOptions, hasDeepSamples: boolean): boolean {
+  return fmt === 'png' && !hasDeepSamples && !writesPalettePng(options);
+}
+
+/** The encoder settings of a full-colour 8-bit PNG of the given content. */
+export function eightBitPngOptions(content: ContentClass): PngOptions {
+  return content === 'photo' ? { compressionLevel: PHOTO_PNG_COMPRESSION_LEVEL, adaptiveFiltering: true } : { compressionLevel: GRAPHIC_PNG_COMPRESSION_LEVEL };
 }

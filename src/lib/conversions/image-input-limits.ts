@@ -8,6 +8,7 @@ import {
   MAX_INPUT_PIXELS_ENV,
   maxInputPixels,
 } from './image-input-limit-config';
+import { sharpInput } from './picture-file';
 
 /**
  * Pixel budget for still-image inputs. The declared canvas is read from the container header before any pixel
@@ -113,7 +114,7 @@ export function assertPixelBudget(width: number, height: number, budget: PixelBu
  * enforces it even where the header could not be read in advance.
  */
 export function openLimitedSharp(input: Buffer, options: SharpOptions = {}): Sharp {
-  return sharp(input, { ...options, limitInputPixels: maxInputPixels() });
+  return sharp(sharpInput(input), { ...options, limitInputPixels: maxInputPixels() });
 }
 
 /**
@@ -125,7 +126,7 @@ export function openLimitedSharp(input: Buffer, options: SharpOptions = {}): Sha
 export async function assertEncodedImageWithinLimit(input: Buffer, budget?: PixelBudget, options: SharpOptions = {}): Promise<Metadata> {
   let meta: Metadata;
   try {
-    meta = await sharp(input, { ...options, limitInputPixels: false }).metadata();
+    meta = await sharp(sharpInput(input), { ...options, limitInputPixels: false }).metadata();
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     throw new ConversionFailedError(`Invalid image: the header could not be decoded (${reason}).`);

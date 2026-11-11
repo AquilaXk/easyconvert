@@ -2,30 +2,6 @@
   "schemaVersion": 1,
   "gaps": [
     {
-      "id": "image/jxl-bicycles.jxl->png/bytes",
-      "issue": 641,
-      "ratio": null,
-      "note": "the 8-bit PNG writer has no adaptive row filter, so the file is larger than ImageMagick's at its defaults; the same on every PNG output (TODO.md)",
-      "recorded": 1345000,
-      "reference": 895640
-    },
-    {
-      "id": "image/jxl-delta-palette.jxl->png/bytes",
-      "issue": 641,
-      "ratio": null,
-      "note": "the 8-bit PNG writer has no adaptive row filter, so the file is larger than ImageMagick's at its defaults; the same on every PNG output (TODO.md)",
-      "recorded": 1058400,
-      "reference": 523480
-    },
-    {
-      "id": "image/jxl-noise.jxl->png/bytes",
-      "issue": 641,
-      "ratio": null,
-      "note": "the 8-bit PNG writer has no adaptive row filter, so the file is larger than ImageMagick's at its defaults; the same on every PNG output (TODO.md)",
-      "recorded": 857370,
-      "reference": 815970
-    },
-    {
       "id": "image/jxl-noise.jxl->jpg/bd_rate_psnr",
       "issue": 641,
       "ratio": null,
