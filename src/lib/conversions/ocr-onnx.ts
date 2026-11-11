@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { availableCpus } from '../workers/available-cpus';
 import { OcrEngineUnavailableError } from '../types';
+import { OCR_SMALL_CROP_MAX_HEIGHT_PX } from './ocr-config';
 import { sortLineBlocksTopological, type OcrLineBlock, type OcrResult, type OcrWord } from './ocr-pdf-combiner';
 
 /**
@@ -446,9 +447,15 @@ export function recoverSpaces(line: DecodedLine, strip: Float32Array, width: num
   return { ...line, text: chars.map((c) => c.char).join(''), chars };
 }
 
+/** How far a word's box may reach toward the next word, as a share of the distance between the two characters on either side of the space. */
+const WORD_REACH_SHARE = 0.35;
+
 /**
  * Words of a decoded line as ranges along the line's length (0..1). A character is emitted at one time step near its
- * centre, so a word spans from half a character pitch before its first character to half a pitch after its last one.
+ * centre, so a word spans from half a character pitch before its first character to half a pitch after its last one,
+ * except toward a neighbouring word: there it reaches only 35% of the way to that word's nearest character, so the space
+ * between two words stays a gap in the boxes (a full half pitch after a full stop, which is narrow, would close it, and a
+ * text extractor then joins the two words in the searchable PDF).
  */
 export function wordSpans(line: DecodedLine): { text: string; start: number; end: number; confidence: number }[] {
   const pitches: number[] = [];
@@ -457,26 +464,27 @@ export function wordSpans(line: DecodedLine): { text: string; start: number; end
   }
   pitches.sort((a, b) => a - b);
   const pitch = pitches.length > 0 ? pitches[pitches.length >> 1] : Math.max(1, Math.min(line.steps, RECOGNIZER_HEIGHT / RECOGNIZER_TIME_PER_PIXEL));
-  const words: { text: string; start: number; end: number; confidence: number }[] = [];
+  const groups: DecodedLine['chars'][] = [];
   let current: DecodedLine['chars'] = [];
-  const flush = (): void => {
-    if (current.length === 0) return;
-    const first = current[0];
-    const last = current[current.length - 1];
-    words.push({
-      text: current.map((c) => c.char).join(''),
-      start: Math.max(0, first.step + 0.5 - pitch / 2) / line.steps,
-      end: Math.min(line.steps, last.step + 0.5 + pitch / 2) / line.steps,
-      confidence: current.reduce((sum, c) => sum + c.probability, 0) / current.length,
-    });
-    current = [];
-  };
   for (const c of line.chars) {
-    if (/^\s*$/.test(c.char)) flush();
-    else current.push(c);
+    if (/^\s*$/.test(c.char)) {
+      if (current.length > 0) groups.push(current);
+      current = [];
+    } else current.push(c);
   }
-  flush();
-  return words;
+  if (current.length > 0) groups.push(current);
+  return groups.map((group, index) => {
+    const first = group[0];
+    const last = group[group.length - 1];
+    const before = index > 0 ? first.step - groups[index - 1][groups[index - 1].length - 1].step : Infinity;
+    const after = index < groups.length - 1 ? groups[index + 1][0].step - last.step : Infinity;
+    return {
+      text: group.map((c) => c.char).join(''),
+      start: Math.max(0, first.step + 0.5 - Math.min(pitch / 2, WORD_REACH_SHARE * before)) / line.steps,
+      end: Math.min(line.steps, last.step + 0.5 + Math.min(pitch / 2, WORD_REACH_SHARE * after)) / line.steps,
+      confidence: group.reduce((sum, c) => sum + c.probability, 0) / group.length,
+    };
+  });
 }
 
 // --- result -----------------------------------------------------------------------------------------------------
@@ -553,17 +561,17 @@ export function groupRows<T extends { box: RotatedBox }>(items: T[]): T[][] {
 }
 
 /**
- * The detector's boxes are the text region enlarged on every side by area x 1.5 / perimeter, which for a line of text is about 0.75 of
- * its height; so a box is about 2.5 text heights high, and its text lies 0.3 of the box height inside each side.
+ * The detector's boxes are the text region enlarged by the reference's unclip rule, which lands a box at about one text height (a 13 point
+ * line at 300 dpi, 54 pixels, gives a box of 57; measured on the golden page), with a margin of a twentieth of its height on each side.
  */
-const BOX_HEIGHTS_PER_TEXT_HEIGHT = 2.5;
-const BOX_MARGIN_SHARE = 0.3;
+const BOX_HEIGHTS_PER_TEXT_HEIGHT = 1.05;
+const BOX_MARGIN_SHARE = 0.05;
 /** A line this many text heights long (about as many syllables) is a line of running text; the cells of a table and labels are shorter. */
 const PROSE_LINE_EMS = 14;
 /** Fewest lines of running text on each side of a gutter for the page to count as set in columns. */
 const COLUMN_MIN_LINES = 4;
 /** A gutter is at least this many text heights wide, and this share of the page width. */
-const GUTTER_MIN_EMS = 1.5;
+const GUTTER_MIN_EMS = 1.2;
 const GUTTER_MIN_PAGE_SHARE = 0.015;
 /** A line as wide as this share of the text is a title or a rule across the columns, not a line of one of them. */
 const SPANNING_SHARE = 0.72;
@@ -710,7 +718,12 @@ export async function recognizeOnnxInput(input: OnnxPageInput, options: OnnxOcrO
   const map = Object.values(detection)[0].data;
   const scaleX = width / plan.width;
   const scaleY = height / plan.height;
-  const boxes = extractTextBoxes(map, plan.width, plan.height).map((box) => scaleBox(box, scaleX, scaleY));
+  let boxes = extractTextBoxes(map, plan.width, plan.height).map((box) => scaleBox(box, scaleX, scaleY));
+  // A label or a cropped line (the same images that Tesseract reads as one block) is enlarged by the detector's minimum size until it is a
+  // blur that finds no text: when nothing is found in such an image, the whole image is the line, which is how the recogniser is used on a crop.
+  if (boxes.length === 0 && height <= OCR_SMALL_CROP_MAX_HEIGHT_PX && width >= height) {
+    boxes = [{ cx: width / 2, cy: height / 2, width, height, angle: 0, score: 1 }];
+  }
 
   // Recognizer: lines grouped by width so that a batch pads little.
   const crops = boxes.map((box) => ({ box, ...cropLine(rgb, width, height, box) }));

@@ -35,16 +35,16 @@ function rotatedRectPoints(cx: number, cy: number, width: number, height: number
   return points;
 }
 
-/** A box of a text line of 42 pixel text (a box height of 105, as the detector's enlargement makes it) whose text runs from `x0` to `x1`. */
+/** A box of a text line of 42 pixel text (a box height of 46, as the detector's boxes measure on a page) whose text runs from `x0` to `x1`. */
 function lineBox(x0: number, x1: number, y: number, angle = 0): RotatedBox {
-  const height = 105;
-  const width = x1 - x0 + 2 * 0.3 * height;
+  const height = 46;
+  const width = x1 - x0 + 2 * 0.05 * height;
   const cx = (x0 + x1) / 2;
   return { cx: cx - y * Math.sin(angle), cy: y + cx * Math.sin(angle), width, height, angle, score: 0.9 };
 }
 
 describe('pages set in columns', () => {
-  const rows = (count: number) => Array.from({ length: count }, (_, i) => 200 + i * 110);
+  const rows = (count: number) => Array.from({ length: count }, (_, i) => 200 + i * 70);
 
   it('recognizes two columns of running text with a gutter between them', () => {
     const boxes = rows(10).flatMap((y) => [lineBox(140, 1150, y), lineBox(1240, 2340, y)]);
@@ -167,6 +167,16 @@ describe('ONNX OCR decoding', () => {
     expect(spans[0].start).toBeGreaterThanOrEqual(0);
     expect(spans[0].end).toBeLessThanOrEqual(spans[1].start + 0.2);
     expect(spans[1].end).toBeLessThanOrEqual(1);
+  });
+
+  it('keeps a gap between two words, also after a narrow character such as a full stop', () => {
+    const at = (char: string, step: number) => ({ char, step, probability: 0.9 });
+    // "다." then "북부": characters ten steps apart, and the first character of the second word 13 steps after the full stop
+    const decoded = { text: '다. 북부', confidence: 0.9, steps: 40, chars: [at('다', 0), at('.', 10), at(' ', 16), at('북', 23), at('부', 33)] };
+    const [first, second] = wordSpans(decoded);
+    // Each word reaches 35% of 13 steps toward the other (4.55), not half a pitch (5): the gap is 3.9 steps, where half pitches left 3.
+    expect((second.start - first.end) * 40).toBeCloseTo(23.5 - 4.55 - (10.5 + 4.55), 6);
+    expect(first.end * 40).toBeCloseTo(10.5 + 4.55, 6);
   });
 
   it('builds a line block with word boxes on the line and a baseline along its lower edge', () => {
