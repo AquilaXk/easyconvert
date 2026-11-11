@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as convertRoute } from '../src/app/api/convert/route';
 import { GET as listJobsRoute } from '../src/app/api/queue/jobs/route';
@@ -58,7 +58,6 @@ describe('/api/queue/jobs', () => {
     };
     const worker = new Worker(conversionQueue, async () => result, { concurrency: 1 });
     try {
-      const finished = new Promise<void>((resolve) => worker.on('completed', () => resolve()));
       const job = await conversionQueue.add('convert', {
         jobId: '',
         originalFilename: 'a.docx',
@@ -69,7 +68,8 @@ describe('/api/queue/jobs', () => {
         userId: user.id,
         inputBufferBase64: Buffer.from('x').toString('base64'),
       });
-      await finished;
+      // The queue may hold jobs of other tests (a shared Redis): wait for this job, not for the first one a worker ends.
+      await vi.waitFor(async () => expect((await conversionQueue.getJob(job.id))?.state).toBe('completed'), { timeout: 20_000, interval: 50 });
 
       const view = await (await getJobRoute(new NextRequest(`${BASE_URL}/api/queue/jobs/${job.id}`, { headers: cookie }), { params: Promise.resolve({ id: job.id }) })).json();
       const list = await (await listJobsRoute(new NextRequest(`${BASE_URL}/api/queue/jobs`, { headers: cookie }))).json();
