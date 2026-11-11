@@ -50,6 +50,8 @@ export interface SandboxFileScope {
    * `OFFICE_PIPE_DIR`). Rights cannot be limited to a name, so it may also remove the other files there; it can neither read nor write them.
    */
   socketDirs?: readonly string[];
+  /** The worker's SANDBOX_CONFINE_FILES=false, handed to the launcher helper, whose own environment does not carry it. */
+  fileConfinementOff?: boolean;
 }
 
 /** Where the office suite binds its single-instance pipe, whatever TMPDIR says (sal's osl pipes are made below /tmp). */
@@ -765,7 +767,7 @@ function confinementOf(
   options: UnshareIsolationOptions,
   program: string
 ): string[] {
-  if (!isolationArgs || fileConfinementDisabled()) return [];
+  if (!isolationArgs || fileConfinementDisabled() || scope.fileConfinementOff) return [];
   if (scope.workDir === undefined) {
     if (strict) throw sandboxUnavailable('Strict sandbox: the run does not name the directory of its job (workDir), so its files cannot be confined to it; the program is not started.');
     return [];
@@ -818,7 +820,7 @@ export function resolveSandboxedCommand(
     memoryLimitMb = networkIsolatedOrOptions.memoryLimitMb;
     maxFileSize = networkIsolatedOrOptions.maxFileSize;
     rlimits = networkIsolatedOrOptions.rlimits;
-    scope = { workDir: networkIsolatedOrOptions.workDir, writeDirs: networkIsolatedOrOptions.writeDirs, readDirs: networkIsolatedOrOptions.readDirs, socketDirs: networkIsolatedOrOptions.socketDirs };
+    scope = { workDir: networkIsolatedOrOptions.workDir, writeDirs: networkIsolatedOrOptions.writeDirs, readDirs: networkIsolatedOrOptions.readDirs, socketDirs: networkIsolatedOrOptions.socketDirs, fileConfinementOff: networkIsolatedOrOptions.fileConfinementOff };
   }
 
   const effectiveRlimits = effectiveRlimitsOf(rlimits, memoryLimitMb, maxFileSize);
@@ -1141,6 +1143,7 @@ export async function executeSandboxedBinary(
       writeDirs: options.writeDirs,
       readDirs: options.readDirs,
       socketDirs: options.socketDirs,
+      fileConfinementOff: options.fileConfinementOff,
     });
 
     if (spooled) spoolFd = tryOpenStdoutSpool();

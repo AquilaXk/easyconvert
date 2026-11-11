@@ -5,6 +5,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { type FfprobePath, probeInput, resetInputProbeCache } from '../src/lib/conversions/media-ffprobe';
 import { openMediaInput, runFfprobeAsync } from '../src/lib/conversions/media-process';
 import * as sandbox from '../src/lib/security/process-sandbox';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 232).
+runWithoutFileConfinement();
 
 /**
  * ffprobe reads every upload before FFmpeg does. It runs in the namespace sandbox with an address space, a file size, a CPU time and no

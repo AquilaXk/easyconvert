@@ -4,6 +4,7 @@ import path from 'node:path';
 import { HelperHost, HelperSlot } from './helper-process';
 import {
   executeSandboxedBinary,
+  fileConfinementDisabled,
   SandboxedBufferLimitError,
   SandboxedMemoryLimitError,
   SandboxedProcessError,
@@ -71,7 +72,7 @@ const BOOT_TIMEOUT_MS = 30_000;
 
 export type LaunchedExecutionOptions = Pick<
   SandboxedExecutionOptions,
-  'timeoutMs' | 'maxBuffer' | 'env' | 'cwd' | 'networkIsolated' | 'strictIsolation' | 'sandboxOptions' | 'memoryLimitMb' | 'maxFileSize' | 'rlimits' | 'signal' | 'workDir' | 'writeDirs' | 'readDirs' | 'socketDirs'
+  'timeoutMs' | 'maxBuffer' | 'env' | 'cwd' | 'networkIsolated' | 'strictIsolation' | 'sandboxOptions' | 'memoryLimitMb' | 'maxFileSize' | 'rlimits' | 'signal' | 'workDir' | 'writeDirs' | 'readDirs' | 'socketDirs' | 'fileConfinementOff'
 > & {
   stdin?: Buffer | null;
   /** About how many bytes the program prints; what the helper has to copy back. Defaults to a quarter of `maxBuffer`. */
@@ -172,7 +173,7 @@ class LauncherHost extends HelperHost {
     return new Promise<SandboxedExecutionResult>((resolve, reject) => {
       const id = this.allocateId();
       const { stdin, signal, ...rest } = options;
-      const runOptions: LaunchedRunOptions = { ...rest, strictIsolation: options.strictIsolation ?? process.env.STRICT_SANDBOX === 'true' };
+      const runOptions: LaunchedRunOptions = { ...rest, strictIsolation: options.strictIsolation ?? process.env.STRICT_SANDBOX === 'true', fileConfinementOff: fileConfinementDisabled() };
       const request: LauncherRequest = { type: 'run', id, binary, args, hasStdin: Boolean(stdin), options: runOptions };
       this.enroll({ id, timeoutMs: options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS, signal, cancel: () => this.send({ type: 'cancel', id }), resolve, reject, extra: {} });
       this.send(request, stdin ?? undefined);

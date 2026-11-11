@@ -9,6 +9,10 @@ import {
   resetHardwareAccelerationCache,
 } from '../src/lib/conversions/media-ffmpeg-args';
 import { openMediaInput } from '../src/lib/conversions/media-process';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 232).
+runWithoutFileConfinement();
 
 /**
  * The hardware capability probe runs synchronously on the conversion path, so it must be bounded
