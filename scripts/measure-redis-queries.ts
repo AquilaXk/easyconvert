@@ -2,7 +2,7 @@
  * Counts the Redis commands and round trips of the request paths that read per-user data, and times them against a local
  * Redis. The same file runs on any revision (it only calls the public store functions), so a base and a head can be compared:
  *
- *   REDIS_URL=redis://:<password>@127.0.0.1:<port> npx tsx bench/redis-queries.ts [--runs 21] [--only dlq,jobs] [--json]
+ *   REDIS_URL=redis://:<password>@127.0.0.1:<port> npx tsx scripts/measure-redis-queries.ts [--runs 21] [--only dlq,jobs] [--json]
  *
  * It empties the database it is pointed at, so it refuses anything but a loopback host on a port other than 6379.
  */
