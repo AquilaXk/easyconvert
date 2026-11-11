@@ -89,7 +89,7 @@ import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
 import { normalizeSvgForRendering } from '../lib/conversions/svg-render-normalize';
 import {
   RAW_DECODE_MAX_OUTPUT_BYTES, assertCompleteDecodedImage, assertDecodedRawWhole, assertRawSensorPixels, assertWithinPixelCap,
-  readDecodedRawImage, readDecodedTiffLayout,
+  developedRawPicture, readDecodedTiffLayout,
 } from './raw-decoded-tiff';
 import { dataCorruptedWarning, decoderStderrDetail, decoderWarningOffset } from './raw-decoder-report';
 import {
@@ -1816,7 +1816,7 @@ export async function convertWithNativeRaw(
     assertCompleteDecodedImage(decodedPath, layout);
     assertDecodedRawWhole({ src, inputPath, decodedPath, layout, warned: corruptedAt !== null });
 
-    const converted = await convertImage(readDecodedRawImage(decodedPath), tgt, options, originalFilename, 'tiff');
+    const converted = await convertImage(developedRawPicture(decodedPath, layout, tgt), tgt, options, originalFilename, 'tiff');
     const tempOutputPath = path.join(tempDir, `output.${tgt}`);
     fs.writeFileSync(tempOutputPath, converted.buffer);
     const persistedPath = preserveOutput(tempOutputPath, tgt, options, Buffer.isBuffer(input) ? undefined : input);
