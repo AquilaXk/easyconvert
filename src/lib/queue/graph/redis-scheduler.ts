@@ -46,6 +46,7 @@ export interface RedisGraphSchedulerOptions {
 /** The Redis commands this scheduler sends. */
 const SCHEDULER_REDIS_COMMANDS: ReadonlySet<PropertyKey> = new Set(['eval', 'hgetall', 'hmget', 'lrange', 'lrem', 'del', 'hget', 'scan', 'zrevrange', 'zrem']);
 const SCHEDULER_QUEUE_NAME = 'graph-scheduler';
+const GRAPH_STATUS_COUNT = 4;
 
 /**
  * Fails closed when Redis does not answer: a rejected command becomes `QueueUnavailableError` (503
@@ -385,7 +386,8 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
     // The index knows no status, so a page that a filter thins reads the next graphs, a page at a time, until it is full.
     for (let at = 0; at < ids.length && listed.length < limit; at += limit) {
       const page = ids.slice(at, at + limit);
-      const wanted = statuses ? await this.idsOfStatus(page, userId, statuses, vanished) : page;
+      // A filter that admits every status thins nothing, so its pre-read would only add commands.
+      const wanted = statuses && new Set(statuses).size < GRAPH_STATUS_COUNT ? await this.idsOfStatus(page, userId, statuses, vanished) : page;
       const states = await this.readIndexedGraphs(wanted);
       states.forEach((state, position) => {
         if (state === undefined) vanished.push(wanted[position]);

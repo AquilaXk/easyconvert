@@ -177,6 +177,15 @@ describe.skipIf(!REDIS_URL)('the per-user index of graphs in Redis', () => {
     expect(names.filter((name) => name === 'hgetall')).toHaveLength(2);
   });
 
+  it('does not pre-read the status of the graphs when the filter admits every status', async () => {
+    const now = Date.now();
+    for (const age of [20, 10]) await start(userId, now - age);
+
+    const names = await commandsOf(() => scheduler.listGraphsOfUser(userId, 5, ['running', 'completed', 'failed', 'cancelled']));
+
+    expect(names).toEqual(['zrevrange', ...Array<string>(4).fill('hgetall')]);
+  });
+
   it('never lists the graph of another user that the index of this one names', async () => {
     const now = Date.now();
     const mine = await start(userId, now - 10);
