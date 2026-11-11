@@ -46,8 +46,9 @@ jobs:
       DOCS_ONLY_DIRECTORY: '^docs/'
       DOCS_ONLY_MARKDOWN: '\.md$'
       MARKDOWN_INPUT_DIRECTORIES: '^(tests|src|bench|scripts|docker|public)/'
-      # Generated files that drift tests compare with their generators: changing one alone is a code change.
-      GENERATED_DOCS: '^(THIRD_PARTY_NOTICES\.md|docs/configuration\.md|docs/configuration\.example\.env|docs/licensing\.md)$'
+      # Generated files that drift tests compare with their generators, and the legal texts that the web build imports and the web image
+      # copies: changing one alone is a code change.
+      GENERATED_DOCS: '^(THIRD_PARTY_NOTICES\.md|docs/configuration\.md|docs/configuration\.example\.env|docs/licensing\.md|docs/legal/.*)$'
 
     steps:
       - name: Checkout repository
@@ -99,7 +100,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
-          ALL_BENCH_FAMILIES: image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font,cad,raw,vector
+          ALL_BENCH_FAMILIES: image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font,cad,raw,vector,vectorize
         run: |
           families=""
           unmapped=""
@@ -457,7 +458,7 @@ jobs:
 
     env:
       # Files whose change can alter the worker container or its sandbox.
-      CONTAINER_PATHS: '^(Dockerfile\.worker$|docker/|docker-compose[^/]*\.yml$|scripts/verify-worker-container\.sh$|src/lib/security/process-sandbox\.ts$|\.github/workflows/ci\.yml$|\.github/actions/)'
+      CONTAINER_PATHS: '^(Dockerfile\.worker$|docker/|docker-compose[^/]*\.yml$|native/|scripts/(install-[^/]*\.sh$|[^/]*-patches/|vtracer-pixels/|vtracer-notices/|oxipng-notices/|avifenc/|lib/djvulibre-gates\.sh$|verify-worker-container\.sh$|verify-imagemagick-policy\.sh$|worker-healthcheck\.js$)|src/lib/security/process-sandbox\.ts$|\.github/workflows/ci\.yml$|\.github/actions/)'
       WORKER_IMAGE: easyconvert-worker:ci
       REDIS_PORT: '6379'
 

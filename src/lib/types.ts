@@ -30,7 +30,6 @@ export type FormatCategory =
 
 export interface FormatOptionsSchema {
   quality?: boolean;
-  dimensions?: boolean;
   fit?: boolean;
   stripMetadata?: boolean;
   background?: boolean;

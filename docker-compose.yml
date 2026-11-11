@@ -162,7 +162,6 @@ services:
       <<: *worker-environment
       WORKER_QUEUES: gpu
       WORKER_CONCURRENCY: "3"
-      HWACCEL_ENABLED: "true"
     deploy:
       resources:
         limits:

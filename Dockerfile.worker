@@ -292,7 +292,7 @@ RUN /src/pid-init/build.sh /usr/local/bin/pid-init
 # ==============================================================================
 # The PP-OCRv5 mobile detector and Korean recognizer (PaddleOCR weights, Apache-2.0, converted to ONNX by RapidOCR, Apache-2.0) and the
 # recognizer's character list, 18 MB in all, each pinned by SHA-256 in scripts/install-onnx-ocr-models.sh, which checks it before it is
-# copied. They are data that onnxruntime reads in a sandboxed helper process (docs/policy-decisions.md, entries 230 and 243).
+# copied. They are data that onnxruntime reads in a sandboxed helper process (docs/policy-decisions.md, entries 230 and 246).
 FROM ${NODE_IMAGE} AS ocronnx
 
 RUN apt-get update \

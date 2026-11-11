@@ -1,8 +1,11 @@
 import { JobCreateRequestSchema } from '@/lib/api/contracts';
 import {
   CONVERT_FORM_PROPERTIES,
+  CONVERT_WEBHOOK_FORM_PROPERTIES,
   CONVERT_OPTIONS_DESCRIPTION,
   IDEMPOTENCY_KEY_PARAMETER,
+  PREFER_RESPOND_ASYNC_PARAMETER,
+  RAW_RESULT_PARAMETER,
   createPathParameter,
   PDFA_ENGINE_NOTE,
   PDFA_PROBLEM_DESCRIPTION,
@@ -116,8 +119,8 @@ export const conversionPaths = {
         'Converts an uploaded file synchronously. Protected by 2-phase quota transactions (reserve -> commit/rollback). Requires "convert:write" scope.',
       operationId: 'convertFileV1',
       security: requireScope('convert:write'),
-      parameters: [IDEMPOTENCY_KEY_PARAMETER],
-      requestBody: multipartBody(CONVERT_FORM_PROPERTIES, ['file', 'targetFormat']),
+      parameters: [IDEMPOTENCY_KEY_PARAMETER, PREFER_RESPOND_ASYNC_PARAMETER, RAW_RESULT_PARAMETER],
+      requestBody: multipartBody({ ...CONVERT_FORM_PROPERTIES, ...CONVERT_WEBHOOK_FORM_PROPERTIES }, ['file', 'targetFormat']),
       responses: {
         '200': {
           description: 'Successful conversion returning file metadata or raw binary stream.',
