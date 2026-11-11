@@ -2,6 +2,9 @@ import { pipeline } from 'node:stream/promises';
 import { createWriteStream } from 'node:fs';
 import zlib from 'node:zlib';
 import { ConversionFailedError, PayloadLimitError, UnsupportedOptionError } from '../types';
+import { availableCpus } from '../workers/available-cpus';
+import { inflateChunkHint } from './archive-zip-reader';
+import { DEFLATE_BLOCK_BYTES, deflateRawInBlocks } from './deflate-blocks';
 
 /**
  * Streaming ZIP writer (PKWARE APPNOTE 6.3.10): local headers, optional data descriptors, ZIP64 extra fields and end
@@ -115,6 +118,38 @@ export function hasCompressedMagic(head: Uint8Array): boolean {
     return ISO_BMFF_PLAIN_BRANDS.has(brand) || ISO_BMFF_IMAGE_BRANDS.has(brand) || brand.trim().length > 0;
   }
   return false;
+}
+
+/**
+ * Entries shorter than this are deflated and stored afterwards when that does not shrink them: the attempt costs less than the
+ * probe's bookkeeping, and an entry this small is not worth a second opinion.
+ */
+export const ZIP_STORE_PROBE_MIN_BYTES = 256 * 1024;
+/** Bytes of each window the probe deflates. It is twice deflate's 32 KiB history, so a repeat deflate could use shows inside the window. */
+const PROBE_WINDOW_BYTES = 64 * 1024;
+const PROBE_WINDOWS_MIN = 3;
+const PROBE_WINDOWS_MAX = 16;
+/** One window per this many bytes of entry, between the minimum and maximum above. */
+const PROBE_BYTES_PER_WINDOW = 1024 * 1024;
+/** A window that level-1 deflate shrinks by at least this share makes the entry worth deflating. */
+const PROBE_SAVING_SHARE = 0.02;
+
+/**
+ * Whether an entry of unknown kind is already entropy-coded (an encrypted blob, a compressed payload with no extension or
+ * magic number): evenly spaced windows of it, the first and last included, are deflated at level 1, and the entry is judged
+ * incompressible only when no window shrinks by {@link PROBE_SAVING_SHARE}. Any compressible window sends the entry to the full
+ * deflate, so a large entry with one compressible stretch is not stored whole. The answer depends on the bytes alone.
+ */
+export function looksIncompressible(data: Uint8Array): boolean {
+  if (data.length < ZIP_STORE_PROBE_MIN_BYTES) return false;
+  const windows = Math.min(PROBE_WINDOWS_MAX, Math.max(PROBE_WINDOWS_MIN, Math.ceil(data.length / PROBE_BYTES_PER_WINDOW)));
+  const span = data.length - PROBE_WINDOW_BYTES;
+  for (let index = 0; index < windows; index++) {
+    const start = Math.floor((span * index) / (windows - 1));
+    const sample = data.subarray(start, start + PROBE_WINDOW_BYTES);
+    if (zlib.deflateRawSync(sample, { level: 1 }).length < sample.length * (1 - PROBE_SAVING_SHARE)) return false;
+  }
+  return true;
 }
 
 function extensionOf(name: string): string {
@@ -257,7 +292,10 @@ export class ZipWriter {
     }
 
     if (isBytes(entry.data)) {
-      const storeWanted = entry.method === 'store' || level === 0 || (entry.method !== 'deflate' && isPrecompressedEntry(entry.name, entry.data.subarray(0, MAGIC_PROBE_BYTES)));
+      const storeWanted =
+        entry.method === 'store' ||
+        level === 0 ||
+        (entry.method !== 'deflate' && (isPrecompressedEntry(entry.name, entry.data.subarray(0, MAGIC_PROBE_BYTES)) || looksIncompressible(entry.data)));
       await this.writeBufferedEntry({ ...base, flags: flagsUtf8 }, entry.data, storeWanted ? METHOD_STORE : METHOD_DEFLATE, level);
       return;
     }
@@ -516,8 +554,9 @@ const SYNC_DEFLATE_MAX_BYTES = 64 * 1024;
 
 function deflateRaw(data: Uint8Array, level: number): Promise<Buffer> {
   if (data.length <= SYNC_DEFLATE_MAX_BYTES) return Promise.resolve(zlib.deflateRawSync(data, { level }));
+  // Output comes back in chunks of this size, and each chunk is a hop between the pool thread and the event loop: the default 16 KiB makes a large entry wait on thousands of hops.
   return new Promise((resolve, reject) => {
-    zlib.deflateRaw(data, { level }, (error, result) => {
+    zlib.deflateRaw(data, { level, chunkSize: inflateChunkHint(data.length) }, (error, result) => {
       if (error) reject(error);
       else resolve(result);
     });
@@ -526,26 +565,47 @@ function deflateRaw(data: Uint8Array, level: number): Promise<Buffer> {
 
 /**
  * Entries of one archive that is deflated while it is written: the entry being written and the next
- * {@link ZIP_DEFLATE_AHEAD_ENTRIES} are on the thread pool at the same time (libuv runs four jobs at once by default), so the
+ * {@link zipDeflateAheadEntries} are on the thread pool at the same time (libuv runs four jobs at once by default), so the
  * archive costs about its longest entries rather than their sum. Each entry is one zlib call, so its bytes do not depend on the
  * number of cores. A job nobody asks for (the archive failed first) is not left as an unhandled rejection.
  */
 const ZIP_DEFLATE_AHEAD_ENTRIES = 4;
 
-function deflaterRunningAhead(sources: readonly Uint8Array[]): ZipDeflater {
+/** Entries run ahead of the one being written: the pool's four threads, and no more than the cores the container may use. */
+export function zipDeflateAheadEntries(): number {
+  return Math.min(ZIP_DEFLATE_AHEAD_ENTRIES, Math.max(1, availableCpus()));
+}
+
+/** Entries of at least this many bytes are cut into blocks that deflate at the same time ({@link deflateRawInBlocks}) when the caller opts in. */
+export const ZIP_PARALLEL_BLOCKS_MIN_BYTES = 2 * DEFLATE_BLOCK_BYTES;
+
+export interface RunningAheadOptions {
+  /**
+   * Deflate an entry of {@link ZIP_PARALLEL_BLOCKS_MIN_BYTES} or more in blocks on the pool, one zlib call per block with the
+   * 32 KiB before it as the preset dictionary (the scheme of pigz), instead of one call. The blocks are fixed-size, so the bytes
+   * do not depend on the number of cores; they differ from one call's by the flush between blocks (about 0.01 to 0.05 percent).
+   */
+  parallelBlocks?: boolean;
+}
+
+/** A {@link ZipDeflater} for the buffers of one archive: it starts the entries after the one asked for, so they deflate while it is written. */
+export function deflaterRunningAhead(sources: readonly Uint8Array[], options: RunningAheadOptions = {}): ZipDeflater {
+  const deflateEntry = (data: Uint8Array, level: number): Promise<Uint8Array> =>
+    options.parallelBlocks === true && data.length >= ZIP_PARALLEL_BLOCKS_MIN_BYTES ? deflateRawInBlocks(data, level) : deflateRaw(data, level);
   const positions = new Map<Uint8Array, number>();
   sources.forEach((source, index) => positions.set(source, index));
+  const ahead = zipDeflateAheadEntries();
   const running = new Map<number, Promise<Uint8Array>>();
   const start = (index: number, level: number): void => {
     if (index >= sources.length || running.has(index)) return;
-    const job = deflateRaw(sources[index], level);
+    const job = deflateEntry(sources[index], level);
     job.catch(() => undefined);
     running.set(index, job);
   };
   return (data, level) => {
     const index = positions.get(data);
-    if (index === undefined) return deflateRaw(data, level);
-    for (let next = index; next <= index + ZIP_DEFLATE_AHEAD_ENTRIES; next++) start(next, level);
+    if (index === undefined) return deflateEntry(data, level);
+    for (let next = index; next <= index + ahead; next++) start(next, level);
     const job = running.get(index) as Promise<Uint8Array>;
     running.delete(index);
     return job;

@@ -8,8 +8,8 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Close the noisy-picture JPEG gap (`jxl-noise->jpg` BD-rate PSNR +5.2%; the same pixels from a PNG give the same result).
 
 ## Speed
-- Bring `3fr->gif`, `x3f-quattro->gif`, `3fr->avif` and `mos->gif` under a fifth of a conformance part on CI, then record the durations.
-- Cut the `arw` GIF time: 16-to-8-bit RGBA conversion (119 ms) and LZW (52 ms).
+- Send a camera picture over 16 megapixels to the in-process GIF quantizer too (raise `withinQuantizerBudget`): the 39 MP `3fr` and the 21 MP `mos` take 8.4 s and 10 s end to end on the VM because the image library's quantizer writes them; the in-process route took their developed TIFFs from 8.8 s to 2.4 s and from 10.4 s to 1.3 s (palette and bytes change, so it needs a policy entry and the quality rows of those files). Then bring `3fr->gif`, `x3f-quattro->gif`, `3fr->avif` and `mos->gif` under a fifth of a conformance part on CI and record the durations.
+- Cut the `arw` GIF time further: of 418 ms end to end on the VM (508 ms before entry 229) the palette search (`mapNearest` and the k-d tree) is about 200 ms, the LZW coder 41 ms (46 before), the RGBA read 35 ms on four threads (118 ms before).
 - Lift `screenshot.png->svg` from 0.85 to 0.90 of the reference on arm64.
 - Lift `silesia-xml.xz->tar` from 0.876 to the reference speed on the x64 runner (1.12 on the arm64 VM, entry 111): start 7-Zip from the launcher helper with the spool opened by its path, so the fork of a large worker (1.8 ms from 116 MB, 6.0 ms from 570 MB) is not paid.
 - Lift `jxl->avif` throughput from 0.87 (sandbox start plus the intermediate PNG).
@@ -36,5 +36,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 ## Waiting
 - Paid plans and a payment provider: QA decision; launch is free only.
 - Learned OCR layout tier: legal sign-off on model and data provenance first.
+- Korean ONNX OCR (entry 230, off by default, 0.33% CER against 8.73% on the 29-page render set): QA decides after the provenance sign-off whether to wire it behind a sandboxed helper process and ship the 18 MB of models; real Korean scans are needed to confirm.
 - Rare samples: DWG before R13, WP Greek accented letters, Word Wingdings check boxes.
 - sk/sk1 input: QA decision on UniConvertor 2 (GPL, separate process).
