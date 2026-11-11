@@ -73,7 +73,7 @@ import { hasSrgbPrimaries, isProfileDroppedByPngReader, isSrgbProfile, srgb16Lut
 import { EIGHT_BIT_ONLY_TARGETS, reducesAtEncode, roundedToEightBits, SHARP_SIXTEEN_BIT_DEPTH } from './image-depth';
 import { applyDevelopmentCurve } from './image-development-curve';
 import { pinBaseImageThreads, withPipelineThreads } from './image-threads';
-import { rgbaRaster } from './image-rgba-raster';
+import { rgbaRaster, withinQuantizerBudget, writtenSizeOf } from './image-rgba-raster';
 import { encodeAvif, PQ_AVIF_CICP } from './image-avif-pipeline';
 import { FIRST_QUARTER_TURN_ORIENTATION } from './image-orientation';
 import { buildOdgPackage } from './odg';
@@ -1586,12 +1586,6 @@ function assertAnimatableOptions(options: ConversionOptions): void {
 }
 
 /** The dither the request names for the Oklab palette quantizer; error diffusion in linear light by default. */
-/** Whether the picture of a pipeline is small enough for the Oklab quantizer (its size before any resize bounds its size after). */
-async function withinQuantizerBudget(pipeline: Sharp): Promise<boolean> {
-  const { width = 0, height = 0 } = await pipeline.clone().metadata();
-  return width * height <= QUANTIZER_PIXEL_BUDGET.maxPixels;
-}
-
 function ditherKindOf(options: ConversionOptions): DitherKind {
   if (options.dither === false) return 'none';
   if (options.ditherMethod === 'blue-noise') return 'blue-noise';
@@ -1625,12 +1619,8 @@ async function assertPixelBudgetBeforeDecode(
   options: ConversionOptions,
   budget: PixelBudget = HDR_FLOAT_PIXEL_BUDGET
 ): Promise<void> {
-  const { width, height, orientation } = await metadataOf(pipeline);
-  if (width === undefined || height === undefined) return;
-  const quarterTurn = (orientation ?? 1) >= FIRST_QUARTER_TURN_ORIENTATION;
-  const upright = quarterTurn ? { width: height, height: width } : { width, height };
-  const target = resizedDimensions(upright.width, upright.height, options);
-  assertPixelBudget(target.width, target.height, budget);
+  const target = await writtenSizeOf(pipeline, options);
+  if (target !== null) assertPixelBudget(target.width, target.height, budget);
 }
 
 /** True for an ICO or CUR file: named by its extension or recognised by the icon directory header (type 1 or 2). */
@@ -2176,13 +2166,10 @@ async function convertImage(
             options.ditherMethod === 'riemersma' ||
             options.ditherMethod === 'blue-noise'
           ) {
-            const { data, info } = await pipeline
-              .ensureAlpha()
-              .raw()
-              .toBuffer({ resolveWithObject: true });
+            await assertPixelBudgetBeforeDecode(pipeline, options, QUANTIZER_PIXEL_BUDGET);
+            const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
 
             const rgbaBuffer = oklabPaletteRaster(data, info.width, info.height, colours, options).rgba;
-
             // The raster already holds only the palette's colours: the encoder must not dither or re-quantize it.
             outputBuffer = await sharp(rgbaBuffer, {
               raw: { width: info.width, height: info.height, channels: 4 },
@@ -2346,8 +2333,8 @@ async function convertImage(
           if (frameSelection?.keepsAnimation) {
             assertAnimatableOptions(options);
           }
+          await assertPixelBudgetBeforeDecode(pipeline, options, QUANTIZER_PIXEL_BUDGET);
           const { data, info } = await rgbaRaster(pipeline);
-          assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
           // The quantizer's palette goes into the GIF as it is: the image library is not asked to quantize again.
           const indexed = quantizeImage(data, info.width, info.height, colours, {
             dither: ditherKindOf(options),
@@ -2358,7 +2345,7 @@ async function convertImage(
           content === 'photo' &&
           !frameSelection?.keepsAnimation &&
           options.dither === undefined &&
-          (await withinQuantizerBudget(pipeline))
+          (await withinQuantizerBudget(pipeline, options))
         ) {
           // A photograph that asks for no dithering in particular: the Oklab quantizer's palette, each pixel mapped to its
           // nearest colour. Error diffusion is noise to LZW (25 percent more bytes on the camera samples of the benchmark) and
