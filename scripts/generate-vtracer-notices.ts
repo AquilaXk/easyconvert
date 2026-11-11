@@ -51,27 +51,27 @@ export const UPSTREAM_DIGESTS: Readonly<Record<string, string>> = {
   'crates/vtracer/Cargo.toml': '42e7302dd7a27006737a14e085ae7714e005c80284aea9aba05d6176678d760e',
 };
 /** The compiler commit both release programs name in their panic paths (`/rustc/<commit>/library/std/...`). */
-const RUST_COMMIT = '88d9e12ae178fab0fb5cc050a94da85685d449ea';
+export const RUST_COMMIT = '88d9e12ae178fab0fb5cc050a94da85685d449ea';
 /** The musl release the Rust musl targets link at RUST_COMMIT: `MUSL=musl-1.2.5` in src/ci/docker/scripts/musl.sh of that commit. */
-const MUSL_VERSION = '1.2.5';
+export const MUSL_VERSION = '1.2.5';
 const RUST_RAW_URL = `https://raw.githubusercontent.com/rust-lang/rust/${RUST_COMMIT}`;
-const RUST_VERSION = '1.98.0';
+export const RUST_VERSION = '1.98.0';
 /** The rust-src component of RUST_VERSION: `[pkg.rust-src]` of its channel manifest names RUST_COMMIT, and its `.sha256` file and `xz_hash` there give this digest. */
-const RUST_SRC_URL = `https://static.rust-lang.org/dist/rust-src-${RUST_VERSION}.tar.xz`;
+export const RUST_SRC_URL = `https://static.rust-lang.org/dist/rust-src-${RUST_VERSION}.tar.xz`;
 export const RUST_SRC_SHA256 = '0e977492aed5ff137815bf9b4b796e8a85b80fb2367ed64e82d5c5839870f2bf';
-const MAX_RUST_SRC_BYTES = 16 * 1024 * 1024;
+export const MAX_RUST_SRC_BYTES = 16 * 1024 * 1024;
 const STD_LIBRARY_DIR = `rust-src-${RUST_VERSION}/rust-src/lib/rustlib/src/rust/library/`;
 /** The rust-lang/llvm-project commit that src/llvm-project is at in RUST_COMMIT (the submodule pointer of the rust-lang/rust tree). */
 export const LIBUNWIND_COMMIT = '52ed14fcd56afc30f9cccd8ca8ce237c2eef7e04';
 
-interface PinnedText {
+export interface PinnedText {
   readonly heading: string;
   readonly url: string;
   readonly sha256: string;
 }
 
 /** The notices of the code the toolchain links into the program, each at a tag or commit and checked against its SHA-256. */
-const TOOLCHAIN_TEXTS: readonly PinnedText[] = [
+export const TOOLCHAIN_TEXTS: readonly PinnedText[] = [
   {
     heading: `musl libc ${MUSL_VERSION} (MIT), the C library the musl build links statically: COPYRIGHT at tag v${MUSL_VERSION}`,
     url: `https://git.musl-libc.org/cgit/musl/plain/COPYRIGHT?h=v${MUSL_VERSION}`,
@@ -92,14 +92,14 @@ const TOOLCHAIN_TEXTS: readonly PinnedText[] = [
     sha256: 'b5efebcaca80879234098e52d1725e6d9eb8fb96a19fce625d39184b705f7b6d',
   },
 ];
-const APACHE_LICENSE_URL = 'https://www.apache.org/licenses/LICENSE-2.0.txt';
-const APACHE_LICENSE_SHA256 = 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30';
+export const APACHE_LICENSE_URL = 'https://www.apache.org/licenses/LICENSE-2.0.txt';
+export const APACHE_LICENSE_SHA256 = 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30';
 const UPSTREAM_RAW_URL = `https://raw.githubusercontent.com/visioncortex/vtracer/${VTRACER_COMMIT}`;
-const CRATE_URL = 'https://static.crates.io/crates';
+export const CRATE_URL = 'https://static.crates.io/crates';
 const CRATES_IO_SOURCE = 'registry+https://github.com/rust-lang/crates.io-index';
 
 /** The limits of scripts/third-party-notices.mjs, which gathers the npm notices the same way. */
-const MAX_LICENSE_FILE_BYTES = 1024 * 1024;
+export const MAX_LICENSE_FILE_BYTES = 1024 * 1024;
 const MAX_LICENSE_FILES_PER_PACKAGE = 16;
 /** A licence file at the root of the crate, or a text of a REUSE `LICENSES` directory. */
 const LICENSE_FILE_PATTERN = /^((licen[cs]e|copying|notice|unlicen[cs]e)([-._][^/]*)?|LICENSES\/[^/]+)$/i;
@@ -108,12 +108,12 @@ const TAR_PATTERN_CHARACTERS = /[*?[\]\\]/;
 /** The crates whose crates.io archive ships no licence text; any other crate without one stops the generator. */
 const CRATES_WITHOUT_TEXT: ReadonlySet<string> = new Set(['flo_curves 0.3.1']);
 /** The largest crate archive crates.io accepts (its default upload limit is 10 MB), with room to spare. */
-const MAX_CRATE_BYTES = 16 * 1024 * 1024;
+export const MAX_CRATE_BYTES = 16 * 1024 * 1024;
 const MAX_LOCK_PACKAGES = 5_000;
 const MAX_TAR_LISTING_BYTES = 4 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 60_000;
-const APACHE_TEXT = /Apache License\s+Version 2\.0/;
-const APACHE_ID = /\bApache-2\.0\b/;
+export const APACHE_TEXT = /Apache License\s+Version 2\.0/;
+export const APACHE_ID = /\bApache-2\.0\b/;
 const RULE = '='.repeat(80);
 
 export interface LockedPackage {
@@ -240,7 +240,7 @@ export function pinnedLinkedCrates(): LinkedCrate[] {
 }
 
 /** How the notices name a crate and its licence expression. */
-const crateLine = (crate: CrateId, license: string, elected?: string): string => `${crate.name} ${crate.version} (${license}${elected === undefined ? '' : `; elected ${elected}`})`;
+export const crateLine = (crate: CrateId, license: string, elected?: string): string => `${crate.name} ${crate.version} (${license}${elected === undefined ? '' : `; elected ${elected}`})`;
 
 async function download(url: string, maxBytes: number): Promise<Buffer> {
   const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
@@ -250,7 +250,7 @@ async function download(url: string, maxBytes: number): Promise<Buffer> {
   return bytes;
 }
 
-async function downloadChecked(url: string, digest: string, maxBytes: number): Promise<Buffer> {
+export async function downloadChecked(url: string, digest: string, maxBytes: number): Promise<Buffer> {
   const bytes = await download(url, maxBytes);
   const actual = sha256(bytes);
   if (actual !== digest) throw new Error(`${url} has SHA-256 ${actual}, not the pinned ${digest}`);
@@ -385,15 +385,15 @@ export const STD_CRATES: readonly StdCrate[] = [
   vendored('rustc-demangle', '0.1.27'),
 ];
 
-const withFinalNewline = (text: string): string => (text.endsWith('\n') ? text : `${text}\n`);
+export const withFinalNewline = (text: string): string => (text.endsWith('\n') ? text : `${text}\n`);
 
-const block = (heading: string, text: string): string => `${RULE}\n${heading}\n${RULE}\n${withFinalNewline(text)}`;
+export const block = (heading: string, text: string): string => `${RULE}\n${heading}\n${RULE}\n${withFinalNewline(text)}`;
 
 /**
  * One block per distinct text, in the order of the first crate that ships it, naming every crate that ships the same text (once: a
  * crate of the lockfile that the standard library vendors too, at the same version, is the same crate).
  */
-function textBlocks(licences: readonly CrateLicence[]): string[] {
+export function textBlocks(licences: readonly CrateLicence[]): string[] {
   const users = new Map<string, string[]>();
   for (const licence of licences) {
     for (const { file, text } of licence.texts) {
@@ -405,7 +405,7 @@ function textBlocks(licences: readonly CrateLicence[]): string[] {
   return [...users].map(([text, labels]) => block(`Shipped by: ${labels.join(', ')}`, text));
 }
 
-const licenceLine = (licence: CrateLicence): string => crateLine(licence.crate, licence.license, electedLicence(licence.license, licence.texts));
+export const licenceLine = (licence: CrateLicence): string => crateLine(licence.crate, licence.license, electedLicence(licence.license, licence.texts));
 
 function render(
   licences: readonly CrateLicence[],
