@@ -32,6 +32,9 @@ const SUBSCRIPTION_EVENT_TYPES: ReadonlySet<string> = new Set([
 
 const STATUSES: ReadonlySet<string> = new Set<SubscriptionStatus>(['active', 'trialing', 'past_due', 'paused', 'canceled']);
 
+/** The statuses that take a plan away or hold it only to the end of the paid period: they are applied even when the price is no longer sold, so a retired price cannot leave a paid tier in place. */
+const LOSES_PLAN: ReadonlySet<string> = new Set<SubscriptionStatus>(['canceled', 'paused', 'past_due']);
+
 const USER_ID_FIELD = 'easyconvertUserId';
 const BINDING_FIELD = 'easyconvertBinding';
 const BINDING_LABEL = 'easyconvert:checkout:v1:';
@@ -112,8 +115,8 @@ export class PaddleBillingProvider implements BillingProvider {
     const { occurredAt, data } = event.payload as { occurredAt: string; data: SubscriptionData };
     const eventAt = timeOf(occurredAt);
     const plan = planOfItems(this.config, data.items);
-    if (eventAt === undefined || plan === undefined || !STATUSES.has(data.status)) {
-      console.error(`[billing] ${event.type} ${event.id} names no time, no plan this configuration sells or no known status; not applied`);
+    if (eventAt === undefined || !STATUSES.has(data.status) || (plan === undefined && !LOSES_PLAN.has(data.status))) {
+      console.error(`[billing] ${event.type} ${event.id} names no time, no known status or no plan this configuration sells; not applied`);
       return null;
     }
     const cancelAt = data.scheduledChange?.action === 'cancel' ? timeOf(data.scheduledChange.effectiveAt) : undefined;
@@ -127,7 +130,7 @@ export class PaddleBillingProvider implements BillingProvider {
         providerSubscriptionId: data.id,
         providerCustomerId: data.customerId,
         status: data.status as SubscriptionStatus,
-        plan,
+        ...(plan === undefined ? {} : { plan }),
         ...(currentPeriodEnd === undefined ? {} : { currentPeriodEnd }),
         ...(cancelAt === undefined ? {} : { cancelAt }),
       },

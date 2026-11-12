@@ -34,8 +34,15 @@ export interface SubscriptionChange {
   subscription: Omit<SubscriptionRecord, 'userId' | 'eventAt'>;
 }
 
-/** What an event says about a subscription, before the account it belongs to is settled: `userId` is set when the event proves it. */
-export type MappedSubscriptionEvent = Omit<SubscriptionChange, 'userId'> & { userId?: string };
+/**
+ * What an event says about a subscription, before the account it belongs to is settled: `userId` is set when the event proves
+ * it. `plan` is absent when the subscription's price is one this configuration no longer sells (a retired or rotated price); the
+ * event is then read for its status alone, and the plan is the one the stored record of that subscription has.
+ */
+export type MappedSubscriptionEvent = Omit<SubscriptionChange, 'userId' | 'subscription'> & {
+  userId?: string;
+  subscription: Omit<SubscriptionChange['subscription'], 'plan'> & { plan?: PaidPlan };
+};
 
 /** What the browser needs to open a checkout for `plan`. */
 export interface CheckoutParams {

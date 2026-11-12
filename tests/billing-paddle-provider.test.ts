@@ -104,16 +104,27 @@ describe('mapEventToSubscription', () => {
     expect((await mapped({ type: 'subscription.past_due', status: 'past_due' }))?.subscription).toMatchObject({ status: 'past_due', currentPeriodEnd: Date.parse('2026-12-12T12:00:00Z') });
   });
 
+  it('still reads a canceled, paused or past-due subscription whose price is no longer sold, with no plan of its own', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    for (const status of ['canceled', 'paused', 'past_due']) {
+      const result = await mapped({ type: `subscription.${status}`, status, priceIds: ['pri_retired'], periodEnd: status === 'canceled' ? null : '2026-12-12T12:00:00Z' });
+      expect(result?.subscription, status).toMatchObject({ status, providerSubscriptionId: 'sub_01fixture' });
+      expect(result?.subscription.plan, status).toBeUndefined();
+    }
+    expect(error).not.toHaveBeenCalled();
+  });
+
   it('gives the highest plan among the items and reads a plan change', async () => {
     expect((await mapped({ priceIds: ['pri_pro_fixture', 'pri_enterprise_fixture'] }))?.subscription.plan).toBe('enterprise');
     expect((await mapped({ type: 'subscription.updated', priceIds: ['pri_enterprise_fixture'] }))?.subscription.plan).toBe('enterprise');
   });
 
-  it('applies nothing for a price it does not sell, a status it does not know, or an event that is no subscription event', async () => {
+  it('applies nothing for a new subscription at a price it does not sell, a status it does not know, or an event that is no subscription event', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     expect(await mapped({ priceIds: ['pri_someone_else'] })).toBeNull();
+    expect(await mapped({ type: 'subscription.trialing', status: 'trialing', priceIds: ['pri_someone_else'] })).toBeNull();
     expect(await mapped({ status: 'unheard_of' })).toBeNull();
-    expect(error).toHaveBeenCalledTimes(2);
+    expect(error).toHaveBeenCalledTimes(3);
     for (const type of ['transaction.completed', 'customer.updated', 'something.new']) {
       expect(provider.mapEventToSubscription({ id: 'evt_x', type, payload: {} }), type).toBeNull();
     }

@@ -6,6 +6,12 @@ import { InvalidWebhookError } from '@/lib/billing/types';
 
 export const dynamic = 'force-dynamic';
 
+/** The plan the account's stored record has for this subscription, for an event about a price that is no longer sold. */
+async function planOfStoredSubscription(userId: string, providerSubscriptionId: string) {
+  const stored = await subscriptionStore.findByUser(userId);
+  return stored?.providerSubscriptionId === providerSubscriptionId ? stored.plan : undefined;
+}
+
 const SIGNATURE_HEADER = 'paddle-signature';
 
 /**
@@ -38,7 +44,12 @@ export async function POST(req: NextRequest) {
       console.error(`[billing] ${event.type} ${event.id} names no account; not applied`);
       return NextResponse.json({ success: true, result: 'unattributed' });
     }
-    const result = await subscriptionStore.apply({ ...change, userId });
+    const plan = change.subscription.plan ?? (await planOfStoredSubscription(userId, change.subscription.providerSubscriptionId));
+    if (!plan) {
+      console.error(`[billing] ${event.type} ${event.id} is for a price that is no longer sold and a subscription this server does not hold; not applied`);
+      return NextResponse.json({ success: true, result: 'ignored' });
+    }
+    const result = await subscriptionStore.apply({ ...change, userId, subscription: { ...change.subscription, plan } });
     if (result === 'unknown_user') console.error(`[billing] ${event.type} ${event.id} is for an account that no longer exists; not applied`);
     return NextResponse.json({ success: true, result });
   });
