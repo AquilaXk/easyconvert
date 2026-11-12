@@ -414,8 +414,10 @@ export class RemoteStorageBackend implements IStorageBackend {
   /** The uploads that are open on the object store under the keys `ownerUserId` owns (the key of an upload names its owner). */
   private async openUploadsOfOwner(ownerUserId: string): Promise<ListedUpload[]> {
     const uploads: ListedUpload[] = [];
-    for await (const upload of this.client.listMultipartUploads(userConversionPrefix(ownerUserId), REMOTE_OWNER_OPEN_UPLOADS_MAX)) {
-      uploads.push(upload);
+    const prefix = userConversionPrefix(ownerUserId);
+    for await (const upload of this.client.listMultipartUploads(prefix, REMOTE_OWNER_OPEN_UPLOADS_MAX)) {
+      // A store that ignored the prefix would list other accounts' uploads: only the owner's keys are taken.
+      if (upload.key.startsWith(prefix)) uploads.push(upload);
     }
     return uploads;
   }
