@@ -4,7 +4,7 @@ import type { ConversionOptions } from '../types';
 import { findDecoderTool, loggableDiagnostic } from './image-decoder-tools';
 import { maxInputPixels } from './image-input-limits';
 import { rgbaRaster, writtenSizeOf } from './image-rgba-raster';
-import { deflateIndexedRows } from './png-indexed-deflate';
+import { bitDepthOf, deflateIndexedPicture, type IndexedPicture } from './png-indexed-picture';
 import { chunkOf, readChunks } from './png-photo-bands';
 
 /**
@@ -51,14 +51,7 @@ const IHDR_BYTES = 13;
 /** The chunks of the template that the writer replaces; every other one tells how the picture looks and is kept. */
 const REPLACED_CHUNKS = new Set(['IHDR', 'PLTE', 'tRNS', 'IDAT', 'IEND']);
 
-export interface IndexedPicture {
-  width: number;
-  height: number;
-  /** The palette entries, four bytes (RGBA, straight alpha) each. */
-  palette: Buffer;
-  /** One palette index a pixel, row after row. */
-  indices: Buffer;
-}
+export type { IndexedPicture };
 
 export function findQuantizr(env: Readonly<Record<string, string | undefined>> = process.env): string | null {
   return findDecoderTool(QUANTIZR_PATH_ENV, QUANTIZR_EXECUTABLE_NAMES, env);
@@ -117,45 +110,19 @@ function describeFailure(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Bits a palette index takes in a PNG: the smallest of 1, 2, 4 and 8 that holds `colours` entries. */
-function bitDepthOf(colours: number): 1 | 2 | 4 | 8 {
-  if (colours <= 2) return 1;
-  if (colours <= 4) return 2;
-  return colours <= 16 ? 4 : 8;
-}
-
-/** The rows of the picture behind a filter byte of 0 each, with the indices packed into `depth` bits, high bits first. */
-function scanlinesOf(picture: IndexedPicture, depth: 1 | 2 | 4 | 8): Buffer {
-  const { width, height, indices } = picture;
-  const rowBytes = Math.ceil((width * depth) / 8);
-  const out = Buffer.alloc((rowBytes + 1) * height);
-  for (let y = 0; y < height; y += 1) {
-    const start = y * (rowBytes + 1) + 1;
-    if (depth === 8) {
-      indices.copy(out, start, y * width, (y + 1) * width);
-      continue;
-    }
-    const perByte = 8 / depth;
-    for (let x = 0; x < width; x += 1) {
-      const shift = 8 - depth * ((x % perByte) + 1);
-      out[start + Math.floor(x / perByte)] |= indices[y * width + x] << shift;
-    }
-  }
-  return out;
-}
-
 /**
  * The indexed PNG of a quantised picture. `template` is a PNG made from the same pipeline whatever its size: its chunks other than the
  * header, the palette, the transparency and the pixel data go into the file, ahead of the palette, so that the profile, the EXIF block
- * and the resolution are the ones the image library writes. The rows are written without filters and deflated by `deflateIndexedRows`.
+ * and the resolution are the ones the image library writes. The rows and the order of the palette are `deflateIndexedPicture`'s.
  */
 export async function writeIndexedPng(picture: IndexedPicture, template: Buffer, signal?: AbortSignal): Promise<Buffer> {
-  const { width, height, palette, indices } = picture;
-  const colours = palette.length / RGBA_CHANNELS;
-  if (!Number.isInteger(colours) || colours < 1 || colours > MAX_COLOURS) throw new Error(`The palette of ${palette.length} bytes does not hold 1 to ${MAX_COLOURS} entries.`);
+  const { width, height, indices } = picture;
+  const colours = picture.palette.length / RGBA_CHANNELS;
+  if (!Number.isInteger(colours) || colours < 1 || colours > MAX_COLOURS) throw new Error(`The palette of ${picture.palette.length} bytes does not hold 1 to ${MAX_COLOURS} entries.`);
   if (indices.length !== width * height) throw new Error(`The ${indices.length} indices do not make a ${width} x ${height} picture.`);
   if (indices.some((index) => index >= colours)) throw new Error(`An index points past the ${colours} palette entries.`);
   const depth = bitDepthOf(colours);
+  const { picture: arranged, stream } = await deflateIndexedPicture(picture, depth, signal);
 
   const header = Buffer.alloc(IHDR_BYTES);
   header.writeUInt32BE(width, 0);
@@ -166,8 +133,8 @@ export async function writeIndexedPng(picture: IndexedPicture, template: Buffer,
   const entries = Buffer.alloc(colours * 3);
   const alphas = Buffer.alloc(colours);
   for (let i = 0; i < colours; i += 1) {
-    palette.copy(entries, i * 3, i * RGBA_CHANNELS, i * RGBA_CHANNELS + 3);
-    alphas[i] = palette[i * RGBA_CHANNELS + 3];
+    arranged.palette.copy(entries, i * 3, i * RGBA_CHANNELS, i * RGBA_CHANNELS + 3);
+    alphas[i] = arranged.palette[i * RGBA_CHANNELS + 3];
   }
   let transparent = colours;
   while (transparent > 0 && alphas[transparent - 1] === OPAQUE) transparent -= 1;
@@ -176,7 +143,7 @@ export async function writeIndexedPng(picture: IndexedPicture, template: Buffer,
   for (const chunk of readChunks(template).filter((kept) => !REPLACED_CHUNKS.has(kept.type))) pieces.push(chunk.bytes);
   pieces.push(chunkOf('PLTE', [entries]));
   if (transparent > 0) pieces.push(chunkOf('tRNS', [alphas.subarray(0, transparent)]));
-  pieces.push(chunkOf('IDAT', [await deflateIndexedRows(scanlinesOf(picture, depth), signal)]), chunkOf('IEND', []));
+  pieces.push(chunkOf('IDAT', [stream]), chunkOf('IEND', []));
   return Buffer.concat(pieces);
 }
 
