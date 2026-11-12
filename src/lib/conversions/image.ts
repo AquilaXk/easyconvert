@@ -75,6 +75,7 @@ import { EIGHT_BIT_ONLY_TARGETS, reducesAtEncode, roundedToEightBits, SHARP_SIXT
 import { applyDevelopmentCurve } from './image-development-curve';
 import { pinBaseImageThreads, withPipelineThreads } from './image-threads';
 import { rgbaRaster, withinQuantizerBudget, writtenSizeOf } from './image-rgba-raster';
+import { writePalettePng } from './png-palette-quantizer';
 import { encodeAvif, PQ_AVIF_CICP } from './image-avif-pipeline';
 import { FIRST_QUARTER_TURN_ORIENTATION } from './image-orientation';
 import { buildOdgPackage } from './odg';
@@ -2129,14 +2130,7 @@ async function convertImage(
               .png({ palette: true, colours, dither: 0, compressionLevel: palettePngLevel(8, src, fmt, inputMeta, options) })
               .toBuffer();
           } else {
-            outputBuffer = await pipeline
-              .png({
-                palette: true,
-                colours,
-                dither: options.dither !== false ? 1.0 : 0.0,
-                compressionLevel: palettePngLevel(8, src, fmt, inputMeta, options),
-              })
-              .toBuffer();
+            outputBuffer = await writePalettePng(pipeline, { colours, dither: options.dither !== false, level: palettePngLevel(8, src, fmt, inputMeta, options), options });
           }
         } else {
           // A 16-bit picture is mostly noise below its top byte: adaptive row filtering (the smallest-sum choice that libpng's

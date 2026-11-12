@@ -132,6 +132,7 @@ describe('readMarkup', () => {
       expectMarkupError(`<${name}n/>`, /name is longer than/);
     });
 
+    // Two documents of 5 million elements each: about 2 s on a laptop and over 5 s on a slow runner, so the limit is its own.
     it(`stops after ${OCR_MARKUP_MAX_ELEMENTS} elements`, () => {
       let opened = 0;
       const reader = (xml: string): void =>
@@ -145,7 +146,7 @@ describe('readMarkup', () => {
       reader(`<r>${'<a/>'.repeat(OCR_MARKUP_MAX_ELEMENTS - 1)}</r>`);
       expect(opened).toBe(OCR_MARKUP_MAX_ELEMENTS);
       expect(() => reader(`<r>${'<a/>'.repeat(OCR_MARKUP_MAX_ELEMENTS)}</r>`)).toThrow(OcrMarkupError);
-    });
+    }, 30_000);
 
     it(`rejects a document longer than ${OCR_MARKUP_MAX_CHARS} characters before reading it`, () => {
       expectMarkupError('a'.repeat(OCR_MARKUP_MAX_CHARS + 1), /larger than/);

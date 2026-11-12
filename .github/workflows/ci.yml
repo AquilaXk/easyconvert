@@ -459,7 +459,7 @@ jobs:
 
     env:
       # Files whose change can alter the worker container or its sandbox.
-      CONTAINER_PATHS: '^(Dockerfile\.worker$|docker/|docker-compose[^/]*\.yml$|native/|scripts/(install-[^/]*\.sh$|[^/]*-patches/|vtracer-pixels/|vtracer-notices/|oxipng-notices/|avifenc/|lib/djvulibre-gates\.sh$|verify-worker-container\.sh$|verify-imagemagick-policy\.sh$|worker-healthcheck\.js$)|src/lib/security/process-sandbox\.ts$|\.github/workflows/ci\.yml$|\.github/actions/)'
+      CONTAINER_PATHS: '^(Dockerfile\.worker$|docker/|docker-compose[^/]*\.yml$|native/|scripts/(install-[^/]*\.sh$|[^/]*-patches/|vtracer-pixels/|vtracer-notices/|oxipng-notices/|quantizr-pixels/|avifenc/|lib/djvulibre-gates\.sh$|verify-worker-container\.sh$|verify-imagemagick-policy\.sh$|worker-healthcheck\.js$)|src/lib/security/process-sandbox\.ts$|\.github/workflows/ci\.yml$|\.github/actions/)'
       WORKER_IMAGE: easyconvert-worker:ci
       REDIS_PORT: '6379'
 

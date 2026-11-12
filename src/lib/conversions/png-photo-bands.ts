@@ -224,14 +224,14 @@ function isNoiseDominated(layout: PngBandLayout, scanlines: Uint8Array, filter: 
   return runLength <= matched * RUN_LENGTH_TOLERANCE;
 }
 
-interface PngChunk {
+export interface PngChunk {
   type: string;
   /** The whole chunk as written: length, type, data and CRC. */
   bytes: Uint8Array;
   data: Uint8Array;
 }
 
-function readChunks(png: Uint8Array): PngChunk[] {
+export function readChunks(png: Uint8Array): PngChunk[] {
   const chunks: PngChunk[] = [];
   const view = new DataView(png.buffer, png.byteOffset, png.byteLength);
   for (let at = PNG_SIGNATURE_BYTES; at < png.length; ) {
@@ -249,7 +249,7 @@ function readChunks(png: Uint8Array): PngChunk[] {
   return chunks;
 }
 
-function chunkOf(type: string, parts: Uint8Array[]): Uint8Array {
+export function chunkOf(type: string, parts: Uint8Array[]): Uint8Array {
   const length = parts.reduce((sum, part) => sum + part.length, 0);
   const out = new Uint8Array(CHUNK_OVERHEAD_BYTES + length);
   const view = new DataView(out.buffer);

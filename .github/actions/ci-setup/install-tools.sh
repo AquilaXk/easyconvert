@@ -13,6 +13,7 @@
 #   vtracer  the raster to SVG tracers: the project's release program checked against a pinned SHA-256 (scripts/install-vtracer.sh), and the
 #            front-end for raw pixels built from the pinned source with the pinned Rust toolchain (scripts/install-vtracer-pixels.sh)
 #   oxipng   the lossless PNG optimiser, the release program checked against a pinned SHA-256 (scripts/install-oxipng.sh)
+#   quantizr the palette quantiser of the compress page, built from the pinned source with the pinned Rust toolchain (scripts/install-quantizr-pixels.sh)
 #   avifenc  the AVIF encoder, built from the pinned libavif and libaom sources (scripts/install-avifenc.sh), or the cached build when its digest still matches
 #   onnxocr  the models of the ONNX Korean OCR engine (scripts/install-onnx-ocr-models.sh), each file checked against a pinned SHA-256
 #   raw      the RAW sample files
@@ -70,6 +71,7 @@ declare -A task_limit_seconds=(
   [ghostxps]=300
   [vtracer]=300
   [oxipng]=120
+  [quantizr]=300
   [avifenc]=360
   [onnxocr]=120
   [raw]=240
@@ -122,7 +124,7 @@ configure() {
 
 # The tasks of this job; the S3 test server only when the job runs tests that read it.
 select_tasks() {
-  tasks=(apt pip verapdf epubcheck calibre libredwg libraw ghostxps vtracer oxipng avifenc onnxocr raw)
+  tasks=(apt pip verapdf epubcheck calibre libredwg libraw ghostxps vtracer oxipng quantizr avifenc onnxocr raw)
   if [ "$s3_test_server" = true ]; then
     tasks+=(s3)
   fi
@@ -283,6 +285,13 @@ task_oxipng() {
   sudo OXIPNG_DOWNLOADS="$RELEASE_DOWNLOADS" scripts/install-oxipng.sh /opt/oxipng
 }
 
+# The palette of an indexed PNG is chosen by quantizr (MIT, a separate program of ours around the crate): built by scripts/install-quantizr-pixels.sh
+# from the source in scripts/quantizr-pixels with the pinned Rust toolchain (about 160 MB of archives, each checked against a pinned SHA-256, and a
+# build of a few seconds). The build is not cached.
+task_quantizr() {
+  sudo scripts/install-quantizr-pixels.sh /opt/quantizr-pixels
+}
+
 # AVIF is written by avifenc (libavif and libaom, BSD-2-Clause, a separate program) built by scripts/install-avifenc.sh from archives pinned by
 # SHA-256, which checks every digest before anything in the archive runs. The program is linked into /usr/local/bin as avifenc-pinned, where the
 # product looks for it first and the quality benchmark's reference side runs (bench/tools.ts); the apt package stays at /usr/bin/avifenc as the fallback. The build
@@ -397,7 +406,7 @@ task_s3() {
 
 # Each task runs in a `bash -c` of its own under `timeout`, which signals the whole process group of the task when
 # the limit passes and kills what is left after the grace period. The task functions are exported for that shell.
-export -f task_pip task_apt task_djvulibre task_verapdf task_epubcheck task_calibre task_libredwg task_libraw task_ghostxps task_vtracer task_oxipng task_avifenc task_onnxocr task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
+export -f task_pip task_apt task_djvulibre task_verapdf task_epubcheck task_calibre task_libredwg task_libraw task_ghostxps task_vtracer task_oxipng task_quantizr task_avifenc task_onnxocr task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
 
 # Runs one task and ends its log with what happened to it and how long it took.
 run_bounded() {

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scope": "^bench/(corpus/|families/|[^/]+\\.(ts|py|json)$)|^scripts/ci-parity-[^/]*\\.mjs$|^\\.github/workflows/ci\\.yml$|^src/(lib/conversions|lib/workers|worker)/|^src/lib/jobs/artifact-helpers\\.ts$|^src/lib/queue/graph/node-executor\\.ts$|^src/lib/security/(process-sandbox|svg-sanitizer|helper-process|sandbox-launcher[^/]*)\\.ts$|^package(-lock)?\\.json$|^Dockerfile(?!\\.web$)[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/|^native/|^docker/sharp-libvips/|^\\.github/(actions/sharp-libvips/|workflows/sharp-libvips\\.yml$)|^scripts/ab-base-dependencies\\.sh$|^scripts/(install-[^/]*\\.sh$|[^/]*-patches/|vtracer-pixels/|vtracer-notices/|oxipng-notices/|avifenc/|lib/djvulibre-gates\\.sh$)",
+  "scope": "^bench/(corpus/|families/|[^/]+\\.(ts|py|json)$)|^scripts/ci-parity-[^/]*\\.mjs$|^\\.github/workflows/ci\\.yml$|^src/(lib/conversions|lib/workers|worker)/|^src/lib/jobs/artifact-helpers\\.ts$|^src/lib/queue/graph/node-executor\\.ts$|^src/lib/security/(process-sandbox|svg-sanitizer|helper-process|sandbox-launcher[^/]*)\\.ts$|^package(-lock)?\\.json$|^Dockerfile(?!\\.web$)[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/|^native/|^docker/sharp-libvips/|^\\.github/(actions/sharp-libvips/|workflows/sharp-libvips\\.yml$)|^scripts/ab-base-dependencies\\.sh$|^scripts/(install-[^/]*\\.sh$|[^/]*-patches/|vtracer-pixels/|vtracer-notices/|oxipng-notices/|quantizr-pixels/|avifenc/|lib/djvulibre-gates\\.sh$)",
   "families": {
     "image": { "bench": "image" },
     "video": { "bench": "video" },
@@ -158,6 +158,10 @@
       "match": "^scripts/(install-oxipng\\.sh$|oxipng-notices/)"
     },
     {
+      "families": ["image"],
+      "match": "^scripts/(install-quantizr-pixels\\.sh$|quantizr-pixels/)"
+    },
+    {
       "families": ["video", "audio"],
       "match": "^scripts/(install-ffmpeg\\.sh$|ffmpeg-patches/)"
     },
@@ -199,7 +203,7 @@
     },
     {
       "families": ["image", "raw"],
-      "match": "^src/lib/conversions/(avif-cli|avif-colour|blue-noise-mask|ccitt-g4|cicp|color-quantizer|colour-primaries|gif-writer|icc-(reader|srgb)|ico|kd-tree|png-optimise|png-photo-bands|png16|pnm|psd-writer|quantize|sdr-linear|still-cicp)\\.ts$"
+      "match": "^src/lib/conversions/(avif-cli|avif-colour|blue-noise-mask|ccitt-g4|cicp|color-quantizer|colour-primaries|gif-writer|icc-(reader|srgb)|ico|kd-tree|png-optimise|png-palette-quantizer|png-photo-bands|png16|pnm|psd-writer|quantize|sdr-linear|still-cicp)\\.ts$"
     },
     {
       "families": ["hdr-image"],

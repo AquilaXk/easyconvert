@@ -1,0 +1,24 @@
+# Manifest of the palette quantiser program for raw pixels. The library, quantizr (DarthSim, MIT), comes from crates.io at the version and
+# checksum of Cargo.lock; the program around it is ours (see SOURCE). The program has no other dependency: it reads and writes through the
+# standard library.
+[package]
+name = "quantizr-pixels"
+description = "Reduces raw RGBA pixels to a palette of at most 256 colours with quantizr and writes the palette and the indices."
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "quantizr-pixels"
+path = "src/main.rs"
+
+[dependencies]
+quantizr = "=1.4.3"
+
+# Ours, not upstream's: a panic ends the program with an abort and no unwinding, and thin link-time optimisation with one code generation
+# unit lets the compiler inline quantizr, which is a separate crate, into the remap loop. The palette and the indices are the same bytes.
+[profile.release]
+panic = "abort"
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,24 @@
+quantizr-pixels: a program around the quantizr library, reading raw pixels and writing the palette and the indices.
+
+Upstream:   https://github.com/DarthSim/quantizr (MIT, Copyright (c) 2017 Sergey Alexandrovich; the licence text is ./LICENSE, copied from the
+            tagged commit, SHA-256 407b2d167f73ef78da1fcbfb6c2f1051f195b1984b9bfeeac0a39b34c198a7fe)
+Tag:        v1.4.3
+Commit:     cfb26aaf3039ac1179d42a66cc7988c8c6feeba9
+Package:    quantizr 1.4.3 on crates.io, checksum b28ab4659f6754222a9e96c7a48f68dba03a620f23803c67ccd4ca7c35d55f5f (Cargo.lock). Its src/ directory
+            and Cargo.toml are byte for byte those of the tagged commit (compared when the program was added).
+
+Copied from upstream (upstream path -> path here):
+  LICENSE                          -> LICENSE        unchanged
+
+Followed, not copied:
+  example/src/main.rs              -> src/main.rs    the calls of the library (Options, set_max_colors, QuantizeResult::quantize,
+      set_dithering_level, remap_image, get_palette) are the example's, in its order. Everything else is ours: the input (the width and the
+      height as two little-endian u32, then RGBA bytes, on standard input, bounded by MAX_PIXELS), the output (the palette and the indices
+      on standard output) and the argument parser. The example reads and writes PNG files through the png crate, which this program does not use.
+
+The library is not copied: quantizr comes from crates.io at the version and checksum of Cargo.lock, and the program has no other dependency.
+The program is built by scripts/install-quantizr-pixels.sh with the pinned Rust toolchain, for the musl target.
+Additions of ours: [profile.release] panic = "abort", lto = "thin" and codegen-units = 1 in Cargo.toml (3 to 4 percent of the run on a 768 x 512
+picture, linux/arm64; the palette and the indices are the same bytes).
+
+Cargo.lock                         ours: written by cargo for the one crate; the checksum is crates.io's.
