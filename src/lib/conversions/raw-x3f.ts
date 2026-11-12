@@ -426,6 +426,12 @@ const HUFFMAN_WORD_BYTES = 4;
 const HUFFMAN_ROW_OFFSET_BYTES = 4;
 const HUFFMAN_WORD_BITS = 32;
 const HUFFMAN_NO_NODE = -1;
+/** Codes up to this many bits long are resolved by one lookup of the next bits; longer ones walk the trie. */
+const HUFFMAN_LOOKUP_BITS = 12;
+const HUFFMAN_LOOKUP_MASK = (1 << HUFFMAN_LOOKUP_BITS) - 1;
+/** A lookup entry holds the difference in its upper bits and the code length plus one in its low byte; zero means "walk the trie". */
+const HUFFMAN_LOOKUP_LENGTH_MASK = 0xff;
+const HUFFMAN_LOOKUP_DIFFERENCE_SHIFT = 8;
 const INT16_MIN = -0x8000;
 const INT16_MAX = 0x7fff;
 
@@ -465,6 +471,111 @@ function buildHuffmanTrie(codes: Uint32Array): HuffmanTrie {
 }
 
 /**
+ * Table of the next HUFFMAN_LOOKUP_BITS bits of the stream: every slot whose leading bits are the code of a
+ * leaf of at most that length holds that leaf's difference and length, so the common short codes cost one
+ * lookup (the first-bits table of libjpeg-turbo's jdhuff.c, with the trie as the slow path for the rest).
+ * The trie has already refused overlapping codes, so no slot is filled twice. The code field may carry
+ * bits above its length, which the trie ignores, so they are cut here too.
+ */
+function buildHuffmanFirstBitsTable(codes: Uint32Array, differences: Int16Array): Int32Array {
+  const lookup = new Int32Array(1 << HUFFMAN_LOOKUP_BITS);
+  for (let leaf = 0; leaf < codes.length; leaf += 1) {
+    const entry = codes[leaf];
+    if (entry === 0) continue;
+    const length = entry >>> HUFFMAN_LENGTH_SHIFT;
+    if (length > HUFFMAN_LOOKUP_BITS) continue;
+    const first = (entry & HUFFMAN_CODE_MASK & ((1 << length) - 1)) << (HUFFMAN_LOOKUP_BITS - length);
+    lookup.fill((differences[leaf] << HUFFMAN_LOOKUP_DIFFERENCE_SHIFT) | (length + 1), first, first + (1 << (HUFFMAN_LOOKUP_BITS - length)));
+  }
+  return lookup;
+}
+
+/** The big-endian word at `at`; the callers have checked that the four bytes lie inside the buffer. */
+function readWordBE(bytes: Uint8Array, at: number): number {
+  return ((bytes[at] << 24) | (bytes[at + 1] << 16) | (bytes[at + 2] << 8) | bytes[at + 3]) >>> 0;
+}
+
+interface HuffmanTables {
+  differences: Int16Array;
+  lookup: Int32Array;
+  trie: HuffmanTrie;
+}
+
+/** Where the rows of a section go: its planes, `width` samples per row. */
+interface HuffmanOutput {
+  width: number;
+  planes: Int16Array[];
+}
+
+/**
+ * Decodes one row of an SD14/SD15-generation section from the bytes [position, limit) into `planes`.
+ * The bits are read from 32-bit words (most significant bit first) that are taken only when a code needs
+ * them, so the row must end exactly on its limit.
+ */
+function decodeHuffmanRow(file: Buffer, tables: HuffmanTables, position: number, limit: number, row: number, output: HuffmanOutput): void {
+  const { width, planes } = output;
+  const { differences, lookup } = tables;
+  const { children, leaves } = tables.trie;
+  const rowBase = row * width;
+  const predictors = [0, 0, 0];
+  let word = 0;
+  let bit = 0;
+  // The word after `word`, read ahead of need; the row table decides whether the row holds one.
+  let ahead = 0;
+  let aheadReady = position + HUFFMAN_WORD_BYTES <= limit;
+  if (aheadReady) ahead = readWordBE(file, position);
+  for (let column = 0; column < width; column += 1) {
+    for (let layer = 0; layer < TRUE_PLANES; layer += 1) {
+      // Fast path: the next bits name a code of at most HUFFMAN_LOOKUP_BITS bits. They come from the
+      // current word and, when it runs short, the one after it.
+      let entry = 0;
+      if (bit >= HUFFMAN_LOOKUP_BITS) {
+        entry = lookup[(word >>> (bit - HUFFMAN_LOOKUP_BITS)) & HUFFMAN_LOOKUP_MASK];
+      } else if (aheadReady) {
+        const missing = HUFFMAN_LOOKUP_BITS - bit;
+        entry = lookup[((word << missing) | (ahead >>> (HUFFMAN_WORD_BITS - missing))) & HUFFMAN_LOOKUP_MASK];
+      }
+      let difference: number;
+      if (entry !== 0) {
+        const length = (entry & HUFFMAN_LOOKUP_LENGTH_MASK) - 1;
+        difference = entry >> HUFFMAN_LOOKUP_DIFFERENCE_SHIFT;
+        if (length <= bit) {
+          bit -= length;
+        } else {
+          word = ahead;
+          position += HUFFMAN_WORD_BYTES;
+          aheadReady = position + HUFFMAN_WORD_BYTES <= limit;
+          if (aheadReady) ahead = readWordBE(file, position);
+          bit += HUFFMAN_WORD_BITS - length;
+        }
+      } else {
+        let node = 0;
+        while (leaves[node] === HUFFMAN_NO_NODE) {
+          if (bit === 0) {
+            if (!aheadReady) throw fail('the compressed sensor data ends early');
+            word = ahead;
+            position += HUFFMAN_WORD_BYTES;
+            aheadReady = position + HUFFMAN_WORD_BYTES <= limit;
+            if (aheadReady) ahead = readWordBE(file, position);
+            bit = HUFFMAN_WORD_BITS;
+          }
+          bit -= 1;
+          node = children[node * 2 + ((word >>> bit) & 1)];
+          if (node === HUFFMAN_NO_NODE) throw fail('the compressed data holds an unassigned Huffman code');
+        }
+        difference = differences[leaves[node]];
+      }
+      const value = predictors[layer] + difference;
+      if (value < INT16_MIN || value > INT16_MAX) throw fail('a decoded sample is outside the 16-bit range');
+      predictors[layer] = value;
+      planes[layer][rowBase + column] = value;
+    }
+  }
+  // The row table gives each row's exact extent: a row that ends early or late was decoded from damaged data.
+  if (position !== limit) throw fail(`row ${row} does not end where the row table says`);
+}
+
+/**
  * Decodes an SD14/SD15-generation section (format 0x06): a 1024-entry table of signed 16-bit sample
  * differences, a 1024-entry table of Huffman code words (length in the top 5 bits), then per row the
  * three layers' codes interleaved per pixel (layer 0, 1, 2), most significant bit first, each row in
@@ -488,41 +599,16 @@ export function decodeHuffmanLayers(file: Buffer, image: X3fImageSection): Foveo
     differences[index] = file.readInt16LE(tableStart + index * 2);
     codes[index] = file.readUInt32LE(tableStart + HUFFMAN_TABLE_ENTRIES * 2 + index * 4);
   }
-  const { children, leaves } = buildHuffmanTrie(codes);
+  const tables: HuffmanTables = { differences, lookup: buildHuffmanFirstBitsTable(codes, differences), trie: buildHuffmanTrie(codes) };
 
   const planes = [0, 1, 2].map(() => new Int16Array(width * height));
+  const output: HuffmanOutput = { width, planes };
   let rowStart = file.readUInt32LE(offsetsStart);
   for (let row = 0; row < height; row += 1) {
     const rowEnd = row + 1 < height ? file.readUInt32LE(offsetsStart + (row + 1) * HUFFMAN_ROW_OFFSET_BYTES) : offsetsStart - dataStart;
     if (rowStart > rowEnd || rowEnd > offsetsStart - dataStart) throw fail(`row ${row} lies outside the sensor data`);
     if ((rowEnd - rowStart) * BITS_PER_BYTE < width * TRUE_PLANES) throw fail(`row ${row} is too small for ${width} pixels`);
-    let position = dataStart + rowStart;
-    const limit = dataStart + rowEnd;
-    const predictors = [0, 0, 0];
-    let word = 0;
-    let bit = 0;
-    for (let column = 0; column < width; column += 1) {
-      for (let layer = 0; layer < TRUE_PLANES; layer += 1) {
-        let node = 0;
-        while (leaves[node] === HUFFMAN_NO_NODE) {
-          if (bit === 0) {
-            if (position + HUFFMAN_WORD_BYTES > limit) throw fail('the compressed sensor data ends early');
-            word = file.readUInt32BE(position);
-            position += HUFFMAN_WORD_BYTES;
-            bit = HUFFMAN_WORD_BITS;
-          }
-          bit -= 1;
-          node = children[node * 2 + ((word >>> bit) & 1)];
-          if (node === HUFFMAN_NO_NODE) throw fail('the compressed data holds an unassigned Huffman code');
-        }
-        const value = predictors[layer] + differences[leaves[node]];
-        if (value < INT16_MIN || value > INT16_MAX) throw fail('a decoded sample is outside the 16-bit range');
-        predictors[layer] = value;
-        planes[layer][row * width + column] = value;
-      }
-    }
-    // The row table gives each row's exact extent: a row that ends early or late was decoded from damaged data.
-    if (position !== limit) throw fail(`row ${row} does not end where the row table says`);
+    decodeHuffmanRow(file, tables, dataStart + rowStart, dataStart + rowEnd, row, output);
     rowStart = rowEnd;
   }
   return { width, height, planes, dims: fullResolutionDims(width, height) };
