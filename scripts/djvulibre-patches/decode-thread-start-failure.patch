@@ -16,6 +16,26 @@ would have released is released here. The thread object that never started
 stays in decode_thread, which the next start_decode() and ~DjVuFile() already
 delete outside the flags monitor, as the comment above it asks.
 
+That notification must not be sent with the flags monitor of the file held,
+which resume_decode() and decode_chunk() did around start_decode(). A page
+whose JB2 mask needs a shape dictionary waits for it in get_fgjd() holding the
+chunk monitor of each file from the page down to the file it looks at, and
+reads the flags of the files below (is_decoding()). The notification takes the
+chunk monitor of the files above the one that failed (notify_file_flags_changed()
+for DECODE_FAILED), so the two threads waited for each other: ddjvu waited at
+0% CPU until it was killed, on a page whose files were drawn when every thread
+could start. gdb showed the thread in start_decode() called from
+resume_decode() from decode_chunk() waiting for the chunk monitor of a file
+that the thread in get_fgjd() held while it waited for the flags of the file
+that failed.
+
+start_decode() and resume_decode() now share begin_decode(), which makes the
+test that resume_decode() made under a lock of its own (not decoding, not
+decoded, not failed) under the one it takes for the start, and decode_chunk()
+no longer holds the flags monitor of the included file around the call. The
+test and the start stay atomic; the failure is notified with no monitor of the
+file held. Nothing else changes for a file whose thread starts.
+
 The two other threads of the library that ddjvu could start ignore the result
 of GThread::create() too, and neither waits on a chain of files:
 DjVuDocument::start_init() (DjVuDocument.cpp line 208) starts the one thread
@@ -26,7 +46,57 @@ which ddjvu does not run.
 
 --- a/libdjvu/DjVuFile.cpp
 +++ b/libdjvu/DjVuFile.cpp
-@@ -1347,7 +1347,12 @@
+@@ -897,13 +897,10 @@
+     if (file)
+     {
+       int decode_was_already_started = 1;
++        // Start decoding
++      if(file->resume_decode())
+       {
+-        GMonitorLock lock(&file->flags);
+-          // Start decoding
+-        if(file->resume_decode())
+-        {
+-          decode_was_already_started = 0;
+-        }
++        decode_was_already_started = 0;
+       }
+       // Send file notifications if previously started
+       if (decode_was_already_started)
+@@ -1325,17 +1322,28 @@
+   }
+ }
+ 
+-void
+-DjVuFile::start_decode(void)
++// The failure to start the thread is notified to the ports of the file
++// below, and a port that waits for a chunk keeps its chunk monitor while
++// it reads the flags of the files under it (get_fgjd()).  The notification
++// would wait for that monitor and the port for these flags if a caller held
++// them, so no caller does: resume_decode() makes the test that it used to
++// make under a flags lock of its own, here, and decode_chunk() holds none.
++bool
++DjVuFile::begin_decode(const bool resume)
+ {
+   check();
+-  DEBUG_MSG("DjVuFile::start_decode(), url='" << url << "'\n");
++  DEBUG_MSG("DjVuFile::begin_decode(), url='" << url << "'\n");
+   DEBUG_MAKE_INDENT(3);
+   
++  bool retval=true;
+   GThread * thread_to_delete=0;
+   flags.enter();
+   G_TRY {
+-    if (!(flags & DONT_START_DECODE) && !is_decoding())
++    if (resume && (is_decoding() || is_decode_ok() || is_decode_failed()))
++    {
++      retval=false;
++    }
++    else if (!(flags & DONT_START_DECODE) && !is_decoding())
+     {
+       if (flags & DECODE_STOPPED) reset();
+       flags&=~(DECODE_OK | DECODE_STOPPED | DECODE_FAILED);
+@@ -1351,7 +1359,12 @@
        decode_life_saver=this;
        
        decode_thread=new GThread();
@@ -40,3 +110,45 @@ which ddjvu does not run.
      }
    }
    G_CATCH_ALL
+@@ -1366,20 +1379,19 @@
+   G_ENDCATCH;
+   flags.leave();
+   delete thread_to_delete;
++  return retval;
+ }
+ 
++void
++DjVuFile::start_decode(void)
++{
++  begin_decode(false);
++}
++
+ bool
+ DjVuFile::resume_decode(const bool sync)
+ {
+-  bool retval=false;
+-  {
+-    GMonitorLock lock(&flags);
+-    if( !is_decoding() && !is_decode_ok() && !is_decode_failed() )
+-    {
+-      start_decode();
+-      retval=true;
+-    }
+-  }
++  const bool retval=begin_decode(true);
+   if(sync)
+   {
+     wait_for_finish();
+--- a/libdjvu/DjVuFile.h
++++ b/libdjvu/DjVuFile.h
+@@ -637,6 +637,10 @@
+    GP<DjVuPort>		simple_port;
+ 
+    GMonitor		chunk_mon, finish_mon;
++
++      // Starts the decoding thread, unless `resume` and the file was decoded
++      // or is decoding.  Returns false when `resume` found it so.
++   bool		begin_decode(const bool resume);
+ 
+       // Functions called when the decoding thread starts
+    static void	static_decode_func(void *);

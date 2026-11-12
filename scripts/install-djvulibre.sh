@@ -43,11 +43,11 @@ REFERENCE_DDJVU="${DJVULIBRE_REFERENCE_DDJVU:?set DJVULIBRE_REFERENCE_DDJVU to t
 # Our patches, in the order they are applied after Debian's: file name in scripts/djvulibre-patches and its SHA-256.
 # include-search-visit-once.patch: libdjvu/DjVuImage.cpp and libdjvu/DjVuFile.cpp search each included file once for a page component and
 # for the shape dictionary of a JB2 mask, so a shared file reached through many paths no longer costs one search per path.
-# decode-thread-start-failure.patch: libdjvu/DjVuFile.cpp fails the decoding of a file whose thread does not start, instead of waiting for
-# it forever.
+# decode-thread-start-failure.patch: libdjvu/DjVuFile.cpp and DjVuFile.h fail the decoding of a file whose thread does not start, instead of
+# waiting for it forever, and report it with no flags monitor held.
 DJVULIBRE_PATCHES=(
   "include-search-visit-once.patch f5fed030a06452278288fac3583cab8a107fca1351303fd8f2b49cd90a437dfe"
-  "decode-thread-start-failure.patch 68fd3f8c5bcc10dc46a92280b5501f1812f15a47c6a29e04b13b0bee543c4480"
+  "decode-thread-start-failure.patch 1d0fa70e8d36a132befb6860a17f6396a19ee566ca60af155546ab5b390cd656"
 )
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 patch_dir="$script_dir/djvulibre-patches"
@@ -71,6 +71,10 @@ REFERENCE_SEARCH_SECONDS=5
 # A chain of shared files that each include the next, under an address space that holds the stacks of about 64 threads (THREAD_CHAIN_ADDRESS_SPACE
 # and THREAD_STACK_KIB of the gates library).
 THREAD_CHAIN_LEVELS=100
+# The runs of a mask whose page waits for a shape dictionary that is not there over such a chain: before the thread patch reported the failure
+# with no monitor held the program ended only when it was killed in every one of 30 runs of a chain that each include the next (the 4 vCPU
+# arm64 test VM), and in about one of four with each file including the next two.
+THREAD_MASK_RUNS=5
 
 reference_file="$(readlink -f "$REFERENCE_DDJVU")"
 reference_package="$(dpkg-query -S "$reference_file" | cut -d: -f1)"
@@ -246,6 +250,12 @@ same_pixels "$check_dir/dictionary/chain.pdf" "$check_dir/dictionary/reference.p
 # patch it waits until it is killed.
 write_chain "$check_dir/deep" "$THREAD_CHAIN_LEVELS" 1 "$check_dir/info"
 thread_gate "$tools/ddjvu" "$check_dir/deep/chain.djvu" "$check_dir/deep/chain.pdf" "$check_dir/deep/stderr" || exit 1
+# The same with a page whose mask waits for a shape dictionary that no file includes while the threads of the chain below it fail: the file whose
+# thread did not start was reported to its ports with its flags held, and the page held their chunk monitor to read those flags.
+write_chain "$check_dir/deep-mask" "$THREAD_CHAIN_LEVELS" 1 "$check_dir/mask/info" "$check_dir/mask/sjbz"
+for ((run = 1; run <= THREAD_MASK_RUNS; run++)); do
+  thread_gate "$tools/ddjvu" "$check_dir/deep-mask/chain.djvu" "$check_dir/deep-mask/chain.pdf" "$check_dir/deep-mask/stderr" || exit 1
+done
 
 # The patches change no pixel: the reference manual is drawn by the patched program and by the distribution's program of the same version,
 # and pdftoppm renders both PDFs to the same pages.

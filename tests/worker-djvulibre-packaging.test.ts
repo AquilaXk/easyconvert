@@ -121,8 +121,9 @@ describe('the install script of djvulibre', () => {
     expect(search).toContain('+  if (name != "Djbz")\n+    return;');
     for (const walk of ['get_merged_anno()', 'compute_closure()', 'stop_decode() and stop()', 'DjVuDocEditor']) expect(search, walk).toContain(walk);
     const thread = readPatch('decode-thread-start-failure.patch');
-    expect([...thread.matchAll(/^--- (\S+)$/gm)].map((match) => match[1])).toEqual(['a/libdjvu/DjVuFile.cpp']);
+    expect([...thread.matchAll(/^--- (\S+)$/gm)].map((match) => match[1])).toEqual(['a/libdjvu/DjVuFile.cpp', 'a/libdjvu/DjVuFile.h']);
     expect(thread).toContain('+      if (decode_thread->create(static_decode_func, this))');
+    expect(thread).toContain('+  const bool retval=begin_decode(true);');
     expect(thread).toContain('+        G_THROW( ERR_MSG("DjVuFile.decode_fail") );');
     expect(thread).not.toMatch(/^\+.*(delete decode_thread|decode_thread=0)/m);
     for (const site of ['DjVuDocument.cpp line 208', 'ddjvuapi.cpp line\n2695']) expect(thread, site).toContain(site);
@@ -159,6 +160,8 @@ describe('the install script of djvulibre', () => {
     expect(INSTALL).toContain('write_chain "$check_dir/deep" "$THREAD_CHAIN_LEVELS" 1 "$check_dir/info"');
     expect(INSTALL).toContain('[ "$status" -eq "$DDJVU_FAILED" ] || { echo "ddjvu ended with status $status on a mask over $levels shared files without its dictionary: the search patch is not in the build"');
     expect(INSTALL).toContain('thread_gate "$tools/ddjvu" "$check_dir/deep/chain.djvu" "$check_dir/deep/chain.pdf" "$check_dir/deep/stderr" || exit 1');
+    expect(INSTALL).toContain('write_chain "$check_dir/deep-mask" "$THREAD_CHAIN_LEVELS" 1 "$check_dir/mask/info" "$check_dir/mask/sjbz"');
+    expect(INSTALL).toMatch(/^THREAD_MASK_RUNS=5$/m);
     expect(INSTALL.match(/\[ "\$status" -eq "\$TIMED_OUT" \]/g)).toHaveLength(2);
     expect(INSTALL).toContain('same_pixels "$check_dir/dictionary/chain.pdf" "$check_dir/dictionary/reference.pdf" 1');
     expect(INSTALL).toContain('same_pixels "$check_dir/patched.pdf" "$check_dir/reference.pdf" "$("$tools/djvused" -e n "$manual")"');
