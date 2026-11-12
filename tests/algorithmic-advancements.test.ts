@@ -11,12 +11,6 @@ import {
   GlyphPoint,
 } from '../src/lib/conversions/font';
 import {
-  srgbToOklab,
-  deltaEOklab,
-  findClosestPaletteIndexOklab,
-  RgbColor,
-} from '../src/lib/conversions/quantize';
-import {
   SpreadsheetFormulaEvaluator,
 } from '../src/lib/conversions/office';
 import { convertOffice } from '../src/lib/conversions/office';
@@ -130,38 +124,6 @@ describe('Algorithmic Advancements & Standards Parity Suite', () => {
       // Should have generated quadratic Bézier Q commands
       expect(svgPath).toContain('Q');
       expect(svgPath).toContain('Z');
-    });
-  });
-
-  describe('3. Perceptual Color Spaces (OKLab & CIEDE2000)', () => {
-    it('converts sRGB to OKLab with accurate perceptual lightness and chrominance', () => {
-      // Pure white (255, 255, 255)
-      const whiteOk = srgbToOklab(255, 255, 255);
-      expect(whiteOk.L).toBeCloseTo(1.0, 1);
-      expect(whiteOk.a).toBeCloseTo(0.0, 1);
-      expect(whiteOk.b).toBeCloseTo(0.0, 1);
-
-      // Pure black (0, 0, 0)
-      const blackOk = srgbToOklab(0, 0, 0);
-      expect(blackOk.L).toBeCloseTo(0.0, 1);
-
-      // Distance between black and white should be approximately 1
-      const dist = deltaEOklab(whiteOk, blackOk);
-      expect(dist).toBeCloseTo(1.0, 1);
-    });
-
-    it('matches palette colors perceptually using OKLab distance metric', () => {
-      const palette: RgbColor[] = [
-        { r: 0, g: 0, b: 0 },
-        { r: 255, g: 0, b: 0 },
-        { r: 0, g: 255, b: 0 },
-        { r: 0, g: 0, b: 255 },
-        { r: 255, g: 255, b: 255 },
-      ];
-
-      // A dark green pixel should match index 2 (green) or 0 (black)
-      const matchedIdx = findClosestPaletteIndexOklab({ r: 10, g: 240, b: 15 }, palette);
-      expect(matchedIdx).toBe(2);
     });
   });
 

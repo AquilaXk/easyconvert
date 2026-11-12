@@ -8,7 +8,7 @@ import { assertAnimationBudget, assertOutputPixels, outputSideOf } from './image
 import { flattenColour, isNeutralColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground, staysGrey } from './image-background';
 import { buildTiffOptions } from './image-tiff-options';
 import { encodePsd, PSD_MAX_SIDE, type PsdChannels } from './psd-writer';
-import { decodeBmp } from './bmp';
+import { decodeBmp, encodeBmp8 } from './bmp';
 import { buildJpegPdf, planJpegPassthrough } from './pdf-jpeg-passthrough';
 import { choosesPngFilter, classifyContent, classifyRaster, eightBitPngOptions, palettePngLevel, quantizesInScript, writesPalettePng, type ContentClass, type Raster } from './image-content';
 import {
@@ -38,14 +38,6 @@ import { readStillCicp } from './still-cicp';
 import { pipelineFromBitmap, pipelineFromIcon } from './bitmap-pipeline';
 import { buildOpenXpsPackage, withPngDensity96 } from './openxps';
 import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, type PixelBudget, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, asInputPixelLimitError, openInputImage, openLimitedSharp, resizedDimensions, rethrowInputPixelLimit } from './image-input-limits';
-import {
-  quantizeNeuQuant,
-  encodeBmp8,
-  srgbToOklab,
-  deltaEOklab,
-  findClosestPaletteIndexOklab,
-  applyFloydSteinbergDither,
-} from './quantize';
 import {
   applyOklabQuantizationAndDither,
   applyOklabQuantizationAndDitherAsync,
@@ -118,15 +110,10 @@ export {
   decodeBmp,
   decodeIco,
   decodeIcns,
-  quantizeNeuQuant,
   applyOklabQuantizationAndDither,
   quantizePaletteOklab,
   riemersmaDither,
   encodeBmp8,
-  srgbToOklab,
-  deltaEOklab,
-  findClosestPaletteIndexOklab,
-  applyFloydSteinbergDither,
   performOcr,
   generateSearchablePdf,
   UnsupportedRawCompressionError,
@@ -2299,13 +2286,8 @@ async function convertImage(
           const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
           assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
           const colours = Math.min(256, Math.max(2, options.colors || 256));
-          if (options.quantizer === 'oklab' || options.ditherMethod === 'riemersma' || options.ditherMethod === 'blue-noise') {
-            const res = await oklabPaletteRaster(data, info.width, info.height, colours, options);
-            outputBuffer = encodeBmp8(res.indexed, res.palette, info.width, info.height);
-          } else {
-            const quant = quantizeNeuQuant(data, info.width, info.height, 4, 10, options.dither !== false);
-            outputBuffer = encodeBmp8(quant.indexedPixels, quant.palette, info.width, info.height);
-          }
+          const res = await oklabPaletteRaster(data, info.width, info.height, colours, options);
+          outputBuffer = encodeBmp8(res.indexed, res.palette, info.width, info.height);
         } else {
           const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
           outputBuffer = encodeBmp(data, info.width, info.height, info.channels);

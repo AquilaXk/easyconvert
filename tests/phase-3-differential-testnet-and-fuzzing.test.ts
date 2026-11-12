@@ -9,7 +9,7 @@ import { extractZipArchive, createZipArchive } from '../src/lib/conversions/arch
 import { decodeWoff2 } from '../src/lib/conversions/font';
 import { Woff2FormatError } from '../src/lib/conversions/font-woff2';
 import { CorruptStreamError } from '../src/lib/types';
-import { applyFloydSteinbergDither } from '../src/lib/conversions/quantize';
+import { mapToPalette } from '../src/lib/conversions/color-quantizer';
 import { parseCfbf } from '../src/lib/conversions/cfbf-reader';
 import { EdgeUnsupportedError } from '../src/lib/edge/workers/worker-errors';
 import { countVideoPackets, ffmpegTestVideoMp4, toArrayBuffer } from './helpers/media-lossy-oracle';
@@ -354,9 +354,9 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
         expect(ssim).toBeGreaterThanOrEqual(0.90);
       });
 
-      it('preserves structural fidelity (SSIM >= 0.70) when applying OKLab dithering', async () => {
+      it('preserves structural fidelity (SSIM >= 0.70) when applying Oklab dithering', async () => {
         const pngBuf = fs.readFileSync(path.join(FIXTURES_DIR, 'sample.png'));
-        const { data, info } = await sharp(pngBuf).raw().toBuffer({ resolveWithObject: true });
+        const { data, info } = await sharp(pngBuf).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
 
         // 16-color standard palette
         const palette = [
@@ -379,14 +379,13 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
         ];
 
         // Apply Floyd-Steinberg error diffusion with OKLab Euclidean distance
-        const ditheredIndices = applyFloydSteinbergDither(
+        const ditheredIndices = mapToPalette(
           data,
           info.width,
           info.height,
-          info.channels,
-          palette,
-          true,
-          true
+          Uint8Array.from(palette.flatMap((c) => [c.r, c.g, c.b])),
+          palette.length,
+          'floyd-steinberg'
         );
 
         // Reconstruct RGB buffer from indices
