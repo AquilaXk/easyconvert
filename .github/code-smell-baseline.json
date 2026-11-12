@@ -1556,13 +1556,6 @@
   },
   {
     "file": "src/lib/conversions/raw-x3f.ts",
-    "rule": "max-depth",
-    "function": "decodeHuffmanLayers",
-    "count": 1,
-    "maxValue": 6
-  },
-  {
-    "file": "src/lib/conversions/raw-x3f.ts",
     "rule": "max-params",
     "function": "decodeCamfBlocks",
     "count": 1,
