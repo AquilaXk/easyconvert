@@ -42,7 +42,7 @@ export function HighQualityCard() {
 
       <ul className="mt-5 space-y-4">
         {QUALITY_ITEMS.map(({ key, Icon }) => (
-          <li key={key} className="flex gap-3 text-sm leading-5 text-ink-3">
+          <li key={key} className="flex gap-3 text-sm leading-relaxed text-ink-3">
             <span className="flex size-6 shrink-0 items-center justify-center rounded-xs bg-accent/10 text-accent-ink">
               <Icon aria-hidden="true" className="size-3.5" />
             </span>
@@ -66,7 +66,7 @@ export function SecurityDataHandlingCard() {
 
       <ul className="mt-5 space-y-4">
         {SECURITY_ITEMS.map(({ key, Icon }) => (
-          <li key={key} className="flex gap-3 text-sm leading-5 text-ink-3">
+          <li key={key} className="flex gap-3 text-sm leading-relaxed text-ink-3">
             <span className="flex size-6 shrink-0 items-center justify-center rounded-xs bg-accent/10 text-accent-ink">
               <Icon aria-hidden="true" className="size-3.5" />
             </span>

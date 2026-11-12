@@ -50,7 +50,7 @@ export default function PricingPageView({ anonymousDaily }: Readonly<{ anonymous
             <div className="grid gap-6 md:grid-cols-3 md:items-start">
               <section aria-labelledby="free-plan-heading" className="rounded-md border border-rule bg-surface p-6 sm:p-8 md:p-6 flex flex-col">
                 <h2 id="free-plan-heading" className="text-xl text-ink">{t('plan.name')}</h2>
-                <p className="mt-1 text-sm text-ink-3 md:min-h-10">{t('plan.tagline')}</p>
+                <p className="mt-1 text-sm leading-relaxed text-ink-3 md:min-h-12">{t('plan.tagline')}</p>
                 <p className="mt-4 text-3xl font-semibold text-ink">{t('plan.price')}</p>
                 <Link
                   href={{ pathname: '/auth', query: { tab: 'register' } }}
@@ -72,7 +72,7 @@ export default function PricingPageView({ anonymousDaily }: Readonly<{ anonymous
                 <h3 className="mt-8 text-sm font-semibold text-ink">{t('includedHeading')}</h3>
                 <ul className="mt-3 space-y-2">
                   {FEATURE_ROWS.map((row) => (
-                    <li key={row} className="flex gap-2.5 text-sm text-ink-2">
+                    <li key={row} className="flex gap-2.5 text-sm leading-relaxed text-ink-2">
                       <Check aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-success" />
                       <span>{t(`features.${row}`)}</span>
                     </li>
@@ -91,7 +91,7 @@ export default function PricingPageView({ anonymousDaily }: Readonly<{ anonymous
               {FAQ_ITEMS.map((item) => (
                 <div key={item}>
                   <h3 className="text-base font-semibold text-ink">{t(`faq.${item}.question`)}</h3>
-                  <p className="mt-2 text-sm leading-relaxed text-ink-3">{t(`faq.${item}.answer`, values)}</p>
+                  <p className="mt-2 max-w-xl text-sm leading-relaxed text-ink-3">{t(`faq.${item}.answer`, values)}</p>
                 </div>
               ))}
             </div>
@@ -101,7 +101,7 @@ export default function PricingPageView({ anonymousDaily }: Readonly<{ anonymous
         <section className="pb-16 text-center">
           <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
             <h2 className="text-2xl text-ink">{t('cta.heading')}</h2>
-            <p className="mt-3 text-sm text-ink-3">{t('cta.body', values)}</p>
+            <p className="mt-3 text-sm leading-relaxed text-ink-3">{t('cta.body', values)}</p>
             <Link
               href="/"
               className="mt-5 min-h-[44px] inline-flex items-center gap-2 px-5 text-sm font-semibold rounded-sm bg-accent text-on-accent hover:opacity-90 transition-opacity"

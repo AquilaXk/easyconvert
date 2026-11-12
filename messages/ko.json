@@ -363,10 +363,10 @@
       "signOut": "로그아웃",
       "sectionsLabel": "대시보드 메뉴",
       "tabs": {
-        "api": "개발자 API 키",
+        "api": "API 키",
         "files": "변환한 파일",
         "dlq": "실패한 웹훅",
-        "usage": "사용량과 요청 한도"
+        "usage": "사용량과 한도"
       }
     },
     "files": {
@@ -505,7 +505,7 @@
       }
     },
     "usage": {
-      "heading": "사용량과 요청 한도",
+      "heading": "사용량과 한도",
       "intro": "요금제, API 요청 한도, 파일 보관 규칙을 확인합니다.",
       "tier": "현재 요금제: {tier}",
       "quota": "일일 API 사용량",

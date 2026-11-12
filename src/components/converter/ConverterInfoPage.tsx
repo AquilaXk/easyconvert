@@ -28,7 +28,7 @@ export function ConverterInfoPage({ parsed, copy, totalFormatCount, dailyLimit }
           <h1 className="text-3xl sm:text-4xl text-ink">
             {copy.title}
           </h1>
-          <p className="mt-3 text-base sm:text-lg text-ink-3">
+          <p className="mt-3 max-w-2xl text-base sm:text-lg text-ink-3">
             {copy.description}
           </p>
         </div>

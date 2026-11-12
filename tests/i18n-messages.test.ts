@@ -112,7 +112,7 @@ describe('the Korean copy keeps one register and one set of terms', () => {
   it('uses 합니다체 and ~하세요, never 해요체 or 하십시오체 endings', () => {
     // A FAQ question keeps the "~나요?" form every Korean converter site uses for its questions.
     const faqQuestion = /^pricing\.faq\.[a-z]+\.question$/;
-    const informal = /(?:[하되해돼어아예에려져줘봐와써네죠]|이에)요(?=[.!?)]|\s|$)/;
+    const informal = /(?:[하되해돼어아예에려져줘봐와써네죠나까]|이에)요(?=[.!?)]|\s|$)/;
     const formal = /(?:십시오|십시요|하소서)(?![가-힣])/;
     expect(
       koreanEntries.filter(([key, text]) => !faqQuestion.test(key) && (informal.test(text) || formal.test(text))).map(([key]) => key)

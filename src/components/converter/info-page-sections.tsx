@@ -37,7 +37,7 @@ export function PolicySections({
         return (
           <section key={key} className="space-y-2">
             <h2 className="text-xl text-ink">{t(`${key}.heading`)}</h2>
-            <p>{t.rich(`${key}.body`, { ...RICH_TAGS, count: totalFormatCount, dailyLimit })}</p>
+            <p className="max-w-xl">{t.rich(`${key}.body`, { ...RICH_TAGS, count: totalFormatCount, dailyLimit })}</p>
             {key === 'accessibility.feedback' && (
               <div>
                 <a

@@ -31,7 +31,7 @@ export function FormatCards({ ids }: Readonly<{ ids: readonly [string] | readonl
                 <span className="font-mono font-semibold uppercase tracking-wide">{name}</span>
                 <span className="text-sm font-normal text-ink-3">{fullName}</span>
               </h2>
-              <p className="mt-2 text-sm leading-relaxed text-ink-3">{desc}</p>
+              <p className="mt-2 max-w-xl text-sm leading-relaxed text-ink-3">{desc}</p>
               {linked && (
                 <Link
                   href={`/${id}-converter`}

@@ -126,7 +126,7 @@ function PaidPlanCard({ plan, status }: Readonly<{ plan: PaidPlan; status: Enabl
           </span>
         ) : null}
       </div>
-      <p className="mt-1 text-sm text-ink-3 md:min-h-10">{t(`plans.${plan}.tagline`)}</p>
+      <p className="mt-1 text-sm leading-relaxed text-ink-3 md:min-h-12">{t(`plans.${plan}.tagline`)}</p>
       <p className="mt-4 min-h-9 text-3xl font-semibold text-ink">{price ? t(`price.${price.interval ?? 'other'}`, { price: price.formatted }) : null}</p>
       <PlanButton plan={plan} status={status} />
       <ul className="mt-8 space-y-2">
@@ -135,7 +135,7 @@ function PaidPlanCard({ plan, status }: Readonly<{ plan: PaidPlan; status: Enabl
           t('limits.fileSize', { size: formatBytes(PLAN_MAX_FILE_BYTES[plan]) }),
           t('limits.inheritsFree'),
         ].map((line) => (
-          <li key={line} className="flex gap-2.5 text-sm text-ink-2">
+          <li key={line} className="flex gap-2.5 text-sm leading-relaxed text-ink-2">
             <Check aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-success" />
             <span>{line}</span>
           </li>
