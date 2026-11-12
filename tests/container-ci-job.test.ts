@@ -104,7 +104,7 @@ describe('container job in .github/workflows/ci.yml', () => {
     // The sources are compiled by the unit and integration jobs; what the image build adds is the native tools, the install scripts and
     // their patches, the sandbox and the policy files. A copy that the pattern misses would let a change to it skip the image build
     // and the hardening checks (policy entry 243).
-    const COMPILED_OR_TESTED_ELSEWHERE = [/^package(-lock)?\.json$|^package\*\.json$/, /^tsconfig\.json$/, /^src\//, /^THIRD_PARTY_NOTICES\.md$/, /^scripts\/erase-account\.ts$/];
+    const COMPILED_OR_TESTED_ELSEWHERE = [/^package(-lock)?\.json$|^package\*\.json$/, /^tsconfig\.json$/, /^src\//, /^THIRD_PARTY_NOTICES\.md$/, /^scripts\/(erase-account|backfill-dlq-index)\.ts$/];
     const copies = readFileSync(path.join(ROOT, 'Dockerfile.worker'), 'utf-8')
       .split('\n')
       .filter((line) => /^COPY\b/.test(line) && !line.includes('--from='))

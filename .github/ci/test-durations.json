@@ -242,6 +242,7 @@
   "tests/data-sources-to-sheets.test.ts": 23.5,
   "tests/data-toml.test.ts": 0.8,
   "tests/data-xml-faithful.test.ts": 0.7,
+  "tests/dead-letter-index-redis.test.ts": 0,
   "tests/decode-counter.test.ts": 0.5,
   "tests/decompression-bounds-remaining.test.ts": 48.8,
   "tests/deflate-blocks.test.ts": 1,

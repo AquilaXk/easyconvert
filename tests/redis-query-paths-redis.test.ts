@@ -253,9 +253,10 @@ describe.skipIf(!REDIS_URL)('the Redis query paths on a real Redis server', () =
 
       await forgetUserJobs(client, keys, USER, new Set(jobs.map((job) => job.id)));
 
-      // The removal script gets the job, the six states and the index, not the dead-letter list.
-      expect(trips.evalKeyCounts).toHaveLength(60);
-      expect(new Set(trips.evalKeyCounts)).toEqual(new Set([8]));
+      // The removal script gets the job, the six states and the index, not the dead-letter list; the letters of the jobs go in one more
+      // script, which gets the list and the two prefixes of its index.
+      expect(trips.evalKeyCounts.filter((count) => count === 8)).toHaveLength(60);
+      expect(trips.evalKeyCounts.filter((count) => count !== 8)).toEqual([3]);
     });
   });
 
