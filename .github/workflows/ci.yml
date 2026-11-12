@@ -218,7 +218,8 @@ jobs:
     needs: [changes, sharp-libvips]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # A shard takes 10 to 13 minutes; the limit only has to catch a hang, not a slow runner.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

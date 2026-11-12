@@ -49,6 +49,18 @@ const MAXP_GLYPH_COUNT_OFFSET = 4;
 
 export type FontForgeOptions = Pick<ConversionOptions, 'signal' | 'timeoutMs'> & JobDeadlined;
 
+/** Where the image and the CI setup put the preload library that makes tmpfile() use TMPDIR (native/tmpfile-redirect). */
+const TMPFILE_LIBRARY = '/usr/local/lib/libeasyconvert-tmpfile.so';
+
+/**
+ * FontForge reads a Type 1 font through tmpfile(), which makes its file in /tmp whatever TMPDIR says; under the file confinement of the sandbox the program
+ * may write only in its scratch directory, so tmpfile() fails and FontForge ends with a segmentation fault. The library makes the file in TMPDIR instead.
+ * A host without it (a development machine) runs the program as before.
+ */
+function tmpfileRedirect(): Record<string, string> {
+  return fs.existsSync(TMPFILE_LIBRARY) ? { LD_PRELOAD: TMPFILE_LIBRARY } : {};
+}
+
 function programBinary(): string {
   const binary = resolveBinaryPath(PROGRAM_PATH_VARIABLE, PROGRAM_CANDIDATES, PROGRAM_NAME);
   if (binary === null) {
@@ -130,8 +142,9 @@ export async function type1ToOpenType(font: Type1Font, options: FontForgeOptions
     try {
       await executeSandboxedBinary(binary, [SCRIPT_LANGUAGE, '-c', SCRIPT, inputPath, outputPath], {
         cwd: sandboxDir,
+        workDir: sandboxDir,
         // The scratch directory is also where the program puts anything it writes to a temporary file, as the other sandboxed programs do.
-        env: { HOME: sandboxDir, TMPDIR: sandboxDir, TMP: sandboxDir, TEMP: sandboxDir },
+        env: { HOME: sandboxDir, TMPDIR: sandboxDir, TMP: sandboxDir, TEMP: sandboxDir, ...tmpfileRedirect() },
         timeoutMs,
         maxBuffer: PROGRAM_MAX_DIAGNOSTIC_BYTES,
         maxFileSize: PROGRAM_MAX_OUTPUT_BYTES,

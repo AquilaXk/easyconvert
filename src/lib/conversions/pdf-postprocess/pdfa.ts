@@ -13,6 +13,7 @@ import {
   EngineUnavailableError,
 } from '../../types';
 import {
+  OFFICE_PIPE_DIR,
   rethrowSandboxUnavailable,
   executeSandboxedBinary,
   SandboxedProcessError,
@@ -167,8 +168,11 @@ function isStartFailure(err: unknown): boolean {
 }
 
 /** Environment of the validator: sanitized, with the Java runtime location when the host sets one. */
-function verapdfEnvironment(): Record<string, string> {
-  return process.env.JAVA_HOME ? { JAVA_HOME: process.env.JAVA_HOME } : {};
+function verapdfEnvironment(workDir: string): Record<string, string> {
+  // Java takes the home directory from the password file, not from HOME, and veraPDF writes its settings below it: in the user namespace that is
+  // /root, which the ruleset refuses. The job directory is its home and its temporary directory (Java ignores TMPDIR), and the shared performance file in /tmp is not made.
+  const java = { JAVA_TOOL_OPTIONS: `-Duser.home=${workDir} -Djava.io.tmpdir=${workDir} -XX:-UsePerfData` };
+  return process.env.JAVA_HOME ? { JAVA_HOME: process.env.JAVA_HOME, ...java } : java;
 }
 
 /**
@@ -200,7 +204,8 @@ async function runVerapdf(
       timeoutMs,
       maxBuffer: VERAPDF_MAX_REPORT_BYTES,
       cwd: path.dirname(file),
-      env: verapdfEnvironment(),
+      workDir: path.dirname(file),
+      env: verapdfEnvironment(path.dirname(file)),
       networkIsolated: true,
       // No PID namespace of its own, like calibre (entry 203): the JVM reads /proc/self for its container and thread setup, and /proc (which the
       // sandbox cannot remount) shows the host's processes; on the CI runners veraPDF then answered with something other than its JSON report.
@@ -319,6 +324,8 @@ export async function convertToPdfA(
         {
           timeoutMs: SOFFICE_TIMEOUT_MS,
           cwd: workDir,
+          workDir,
+          socketDirs: [OFFICE_PIPE_DIR],
           env: { HOME: workDir, TMPDIR: workDir, SAL_USE_VCLPLUGIN: 'svp' },
           networkIsolated: true,
         }

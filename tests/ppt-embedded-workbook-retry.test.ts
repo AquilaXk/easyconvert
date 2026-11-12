@@ -11,6 +11,10 @@ import { withEmbeddedWorkbookRetry, type OfficeSuiteRun } from '../src/worker/of
 import { writeKeepExcelObjectsSetting } from '../src/worker/libreoffice-profile';
 import { oracleTest } from './helpers/oracle-test';
 import { requireRealworldSample } from './helpers/realworld-sample';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * A PowerPoint 97-2003 presentation with Excel charts in it: the office suite converts each chart to a Calc chart on import, and a chart

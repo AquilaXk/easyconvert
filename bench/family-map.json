@@ -270,6 +270,10 @@
       "match": "^src/lib/conversions/vector-cad\\.ts$"
     },
     {
+      "families": ["font"],
+      "match": "^native/tmpfile-redirect/"
+    },
+    {
       "families": ["cad"],
       "match": "^src/lib/conversions/(bitmap-glyph-text|cad-[^/]*|vector-dxf)\\.ts$|^native/cad-convert/"
     },

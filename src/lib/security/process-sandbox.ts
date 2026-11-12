@@ -1,4 +1,4 @@
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFileSync, type ExecFileSyncOptions } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -28,7 +28,41 @@ export interface SandboxedRlimitsOptions {
   coreBytes?: number;
 }
 
-export interface SandboxedExecutionOptions {
+/**
+ * The files a sandboxed program may touch. The program reads the system (program files, libraries, fonts, settings) and its own /proc
+ * entries, and may read, write, create and remove files only below `workDir` and `writeDirs` (a Landlock ruleset applied by pid-init
+ * before the program starts, so the files of other people and the directories of other jobs are refused to it; see policy 248).
+ *
+ * `workDir` is the directory of this job and of nothing else: it is the directory the program works in, the home and temporary
+ * directory it is given (TMPDIR, TEMP, TMP, HOME unless the caller sets them), and the only place it writes. `null` says the program
+ * touches no file of its own (a filter on standard input and output). A directory that holds other jobs' files, such as the temporary
+ * directory itself or the storage directory, is refused: it would make the ruleset allow what it is there to refuse. Left out, the run is not
+ * confined: it keeps the access every run had, and STRICT_SANDBOX refuses it.
+ */
+export interface SandboxFileScope {
+  workDir?: string | null;
+  /** More directories the program may write below, each the program's own (a profile, a cache beside the job directory). */
+  writeDirs?: readonly string[];
+  /** More directories the program may read and run files from, beyond the system (model files, an installed tool outside the system paths). */
+  readDirs?: readonly string[];
+  /**
+   * Directories in which the program may make and remove sockets, for a program that binds one at a place it cannot choose (the office suite:
+   * `OFFICE_PIPE_DIR`). Rights cannot be limited to a name, so it may also remove the other files there; it can neither read nor write them.
+   */
+  socketDirs?: readonly string[];
+  /** The worker's SANDBOX_CONFINE_FILES=false, handed to the launcher helper, whose own environment does not carry it. */
+  fileConfinementOff?: boolean;
+}
+
+/** The part of the options of a run that says which files it may touch. */
+function fileScopeOf(options: SandboxFileScope): SandboxFileScope {
+  return { workDir: options.workDir, writeDirs: options.writeDirs, readDirs: options.readDirs, socketDirs: options.socketDirs, fileConfinementOff: options.fileConfinementOff };
+}
+
+/** Where the office suite binds its single-instance pipe, whatever TMPDIR says (sal's osl pipes are made below /tmp). */
+export const OFFICE_PIPE_DIR = '/tmp';
+
+export interface SandboxedExecutionOptions extends SandboxFileScope {
   timeoutMs?: number;
   maxBuffer?: number;
   env?: Record<string, string>;
@@ -224,16 +258,22 @@ export const SANDBOX_DEFAULT_PATH = '/usr/local/bin:/usr/bin:/bin:/opt/homebrew/
 /**
  * Sanitizes the process environment variables, stripping credentials, API keys, and sensitive tokens.
  */
-export function getSanitizedEnvironment(customEnv: Record<string, string> = {}, networkIsolated = true): NodeJS.ProcessEnv {
+export function getSanitizedEnvironment(customEnv: Record<string, string> = {}, networkIsolated = true, workDir?: string | null): NodeJS.ProcessEnv {
+  // A run confined to its work directory writes its temporary files and its home there: the shared temporary directory is not its to use.
+  const scratch = typeof workDir === 'string' && !fileConfinementDisabled() ? workDir : os.tmpdir();
   const sanitized: NodeJS.ProcessEnv = {
     NODE_ENV: (process.env.NODE_ENV as 'development' | 'production' | 'test') || 'production',
     PATH: process.env.PATH || SANDBOX_DEFAULT_PATH,
-    TMPDIR: os.tmpdir(),
+    TMPDIR: scratch,
     LANG: 'C.UTF-8',
     LC_ALL: 'C.UTF-8',
     TZ: 'UTC',
-    HOME: os.tmpdir(),
+    HOME: scratch,
   };
+  if (scratch !== os.tmpdir()) {
+    sanitized.TEMP = scratch;
+    sanitized.TMP = scratch;
+  }
 
   if (networkIsolated) {
     // Poison proxy variables to prevent network egress from standard tools (both uppercase and lowercase)
@@ -378,6 +418,8 @@ export interface UnshareCapability {
   supportsNetNamespace: boolean;
   /** The `pid-init` program (native/pid-init) that runs a program in a PID namespace of its own on this host, or '' when it cannot. */
   pidInitPath: string;
+  /** Whether `pid-init --confine` can confine the files of a program on this host (Landlock version 3: Linux 6.2 or later, the calls allowed by the seccomp profile). */
+  confinesFiles: boolean;
 }
 
 export const PID_INIT_PATH_ENV = 'PID_INIT_PATH';
@@ -385,8 +427,15 @@ export const PID_INIT_PATH_ENV = 'PID_INIT_PATH';
 export const SANDBOX_PID_NAMESPACE_ENV = 'SANDBOX_PID_NAMESPACE';
 /** Set to `false` to start sandboxed programs without the Landlock ruleset that refuses them the /proc entries of the other runs (pid-init `--keep-proc`); the PID namespace stays. On by default. */
 export const SANDBOX_HIDE_PROC_ENV = 'SANDBOX_HIDE_PROC';
+/** Set to `false` to start sandboxed programs without confining their files to their work directory (see SandboxFileScope); the /proc hiding and the PID namespace stay. On by default; with STRICT_SANDBOX=true the configuration refuses to load while it is `false`. */
+export const SANDBOX_CONFINE_FILES_ENV = 'SANDBOX_CONFINE_FILES';
 /** What pid-init and qpdf-runner print at the start of the standard error of a program they could not hide /proc from. */
 export const PROC_NOT_HIDDEN_NOTICE = 'pid-init: /proc not hidden: ';
+/** What they print before a program they could not confine to its directories, and what they print instead of starting one that must be (`--require`). */
+export const FILES_NOT_CONFINED_NOTICE = 'pid-init: files not confined: ';
+export const CANNOT_CONFINE_REFUSAL = 'pid-init: cannot confine: ';
+/** The exit status with which pid-init refuses to start a program (it also says so when it cannot make the PID namespace). */
+const PID_INIT_REFUSED_STATUS = 125;
 const PID_INIT_CANDIDATES = ['/usr/local/bin/pid-init', '/usr/bin/pid-init'];
 
 /** The `pid-init` executable: the one `PID_INIT_PATH` names, or the first of the standard places. */
@@ -401,8 +450,11 @@ let unshareCapability: UnshareCapability | null = null;
 let pidInitTriedAt = 0;
 let pidInitDegradeSaid = false;
 let procHideDegradeSaid = false;
+let confineDegradeSaid = false;
 /** How long a host that could not give a PID namespace goes without one before it is tried again (a probe that failed on a cold start or under load is not a fact about the host). */
 export const PID_INIT_REPROBE_MS = 60_000;
+/** Under STRICT_SANDBOX a host that failed the probe refuses every run until it is asked again, so it is asked again sooner. */
+export const PID_INIT_STRICT_REPROBE_MS = 5_000;
 const PID_INIT_PROBE_TIMEOUT_MS = 2_000;
 
 export function resetUnshareCapabilityCache(): void {
@@ -410,6 +462,7 @@ export function resetUnshareCapabilityCache(): void {
   pidInitTriedAt = 0;
   pidInitDegradeSaid = false;
   procHideDegradeSaid = false;
+  confineDegradeSaid = false;
 }
 
 /** Says once that runs go without a PID namespace, and why; a program that can signal its siblings is not something to find out from a test. */
@@ -426,43 +479,66 @@ function sayProcHideDegraded(reason: string): void {
   console.warn(`[sandbox] Programs can read the command line and the status of the other runs of this worker in /proc: ${reason}. The Landlock ruleset that hides them needs Linux 5.13 or later with Landlock enabled (cat /sys/kernel/security/lsm) and a seccomp profile that allows the landlock_* calls.`);
 }
 
+/** Says once that runs can read and write the files of the other runs, and why. */
+function sayConfineDegraded(reason: string): void {
+  if (confineDegradeSaid) return;
+  confineDegradeSaid = true;
+  console.warn(`[sandbox] Programs can read and write the files of the other runs of this worker, such as the stored files of other people: ${reason}. The Landlock ruleset that confines them to their own directory needs Linux 6.2 or later with Landlock enabled (cat /sys/kernel/security/lsm) and a seccomp profile that allows the landlock_* calls.`);
+}
+
+/** Whether the confinement of the files of a run to its work directory is switched off for every run (SANDBOX_CONFINE_FILES=false, read as SANDBOX_PID_NAMESPACE is). */
+/** Whether STRICT_SANDBOX is on, read as the config parser reads it (trimmed, any case), so a run is never less strict than the start-up check took it to be. */
+export function strictSandboxEnabled(): boolean {
+  return process.env.STRICT_SANDBOX?.trim().toLowerCase() === 'true';
+}
+
+export function fileConfinementDisabled(): boolean {
+  return process.env[SANDBOX_CONFINE_FILES_ENV]?.trim().toLowerCase() === 'false';
+}
+
 /** Whether the hiding of the /proc entries of the other runs is switched off for every run (SANDBOX_HIDE_PROC=false, read as SANDBOX_PID_NAMESPACE is). */
 export function procHidingDisabled(): boolean {
   return process.env[SANDBOX_HIDE_PROC_ENV]?.trim().toLowerCase() === 'false';
 }
 
 /**
- * Takes the line off the start of a program's standard error with which pid-init or qpdf-runner say that they could not put the ruleset
- * in force for this run, and says so (once, as the probe does). The line is printed before the program starts, so it is the first thing in
- * the output; a program's own output never starts with it.
+ * Takes the lines off the start of a program's standard error with which pid-init or qpdf-runner say that they could not put the rulesets
+ * in force for this run (the /proc hiding, the confinement of the files), and says so (once each, as the probe does). The lines are printed
+ * before the program starts, so they are the first things in the output; a program's own output never starts with them.
  */
 export function withoutProcHideNotice(stderr: Buffer): Buffer {
-  if (stderr.length < PROC_NOT_HIDDEN_NOTICE.length || stderr.toString('utf-8', 0, PROC_NOT_HIDDEN_NOTICE.length) !== PROC_NOT_HIDDEN_NOTICE) return stderr;
-  let end = stderr.indexOf(0x0a);
-  const reason = stderr.toString('utf-8', PROC_NOT_HIDDEN_NOTICE.length, end === -1 ? stderr.length : end).trim().slice(0, 200);
-  end = end === -1 ? stderr.length : end + 1;
-  sayProcHideDegraded(`a run could not be started under the ruleset (${reason})`);
-  return stderr.subarray(end);
+  let rest = stderr;
+  for (;;) {
+    const notice = [PROC_NOT_HIDDEN_NOTICE, FILES_NOT_CONFINED_NOTICE].find((prefix) => rest.length >= prefix.length && rest.toString('utf-8', 0, prefix.length) === prefix);
+    if (notice === undefined) return rest;
+    let end = rest.indexOf(0x0a);
+    const reason = rest.toString('utf-8', notice.length, end === -1 ? rest.length : end).trim().slice(0, 200);
+    end = end === -1 ? rest.length : end + 1;
+    if (notice === PROC_NOT_HIDDEN_NOTICE) sayProcHideDegraded(`a run could not be started under the ruleset (${reason})`);
+    else sayConfineDegraded(`a run could not be confined (${reason})`);
+    rest = rest.subarray(end);
+  }
 }
 
-/** The `pid-init` program that runs a program here with the namespaces of `base` around it, or '' (and a warning) when none does. */
-function probePidInit(base: Pick<UnshareCapability, 'path' | 'args'>): string {
+/** The `pid-init` program that runs a program here with the namespaces of `base` around it, or '' (and a warning) when none does, and whether it can confine files. */
+function probePidInit(base: Pick<UnshareCapability, 'path' | 'args'>): { pidInitPath: string; confinesFiles: boolean } {
   pidInitTriedAt = Date.now();
   // Read as the config schema reads a boolean (trimmed, any case), so `FALSE` turns it off as the startup check accepted.
-  if (process.env[SANDBOX_PID_NAMESPACE_ENV]?.trim().toLowerCase() === 'false') return '';
+  if (process.env[SANDBOX_PID_NAMESPACE_ENV]?.trim().toLowerCase() === 'false') return { pidInitPath: '', confinesFiles: false };
   const pidInit = findPidInit();
   if (pidInit === null) {
     sayPidInitDegraded(`no pid-init program was found (${PID_INIT_PATH_ENV}, ${PID_INIT_CANDIDATES.join(', ')})`);
-    return '';
+    return { pidInitPath: '', confinesFiles: false };
   }
   try {
     execFileSync(base.path, [...base.args, '--', pidInit, '--', '/bin/true'], { stdio: 'ignore', timeout: PID_INIT_PROBE_TIMEOUT_MS });
     pidInitDegradeSaid = false;
     if (!procHidingDisabled()) probeProcHide(base, pidInit);
-    return pidInit;
+    // Asked whatever the switch says: the answer is a fact about the host, and the switch is read when a run is started.
+    return { pidInitPath: pidInit, confinesFiles: probeConfinement(base, pidInit) };
   } catch {
     sayPidInitDegraded(`${pidInit} could not start a program in a PID namespace (a seccomp profile or kernel setting that denies it, or a host too busy to answer in ${PID_INIT_PROBE_TIMEOUT_MS} ms)`);
-    return '';
+    return { pidInitPath: '', confinesFiles: false };
   }
 }
 
@@ -476,19 +552,33 @@ function probeProcHide(base: Pick<UnshareCapability, 'path' | 'args'>, pidInit: 
   }
 }
 
+/** Asks `pid-init` whether it can confine the files of a program here to its directories; the reason it cannot is said once. */
+function probeConfinement(base: Pick<UnshareCapability, 'path' | 'args'>, pidInit: string): boolean {
+  try {
+    execFileSync(base.path, [...base.args, '--', pidInit, '--check', '--confine'], { stdio: 'ignore', timeout: PID_INIT_PROBE_TIMEOUT_MS });
+    confineDegradeSaid = false;
+    return true;
+  } catch {
+    sayConfineDegraded(`${pidInit} could not make the ruleset on this host`);
+    return false;
+  }
+}
+
 /**
  * Adds the `pid-init` program when it can run a program here, with the namespaces of `base` around it. A host may allow the user and
  * network namespaces and not a PID namespace (a seccomp profile that lets `clone` make the first two only), and a host without the
  * program has none to offer; runs there go without a PID namespace, which is said once and tried again after `PID_INIT_REPROBE_MS`.
  */
-function withPidInitProbe(base: Omit<UnshareCapability, 'pidInitPath'>): UnshareCapability {
-  return { ...base, pidInitPath: probePidInit(base) };
+function withPidInitProbe(base: Omit<UnshareCapability, 'pidInitPath' | 'confinesFiles'>): UnshareCapability {
+  return { ...base, ...probePidInit(base) };
 }
 
-/** The capability, with a host that went without `pid-init` tried again once `PID_INIT_REPROBE_MS` have passed since it was last tried. */
+/** The capability, with a host that went without `pid-init`, or without the confinement of files, tried again once `PID_INIT_REPROBE_MS` have passed since it was last tried. */
 function withPidInitRetried(capability: UnshareCapability): UnshareCapability {
-  if (!capability.available || capability.pidInitPath !== '' || Date.now() - pidInitTriedAt < PID_INIT_REPROBE_MS) return capability;
-  return { ...capability, pidInitPath: probePidInit(capability) };
+  const complete = capability.pidInitPath !== '' && (capability.confinesFiles || fileConfinementDisabled());
+  const backoff = strictSandboxEnabled() ? PID_INIT_STRICT_REPROBE_MS : PID_INIT_REPROBE_MS;
+  if (!capability.available || complete || Date.now() - pidInitTriedAt < backoff) return capability;
+  return { ...capability, ...probePidInit(capability) };
 }
 
 /**
@@ -500,7 +590,7 @@ export function getUnshareCapability(): UnshareCapability {
     return unshareCapability;
   }
   if (process.platform !== 'linux') {
-    unshareCapability = { available: false, path: '', args: [], supportsNetNamespace: false, pidInitPath: '' };
+    unshareCapability = { available: false, path: '', args: [], supportsNetNamespace: false, pidInitPath: '', confinesFiles: false };
     return unshareCapability;
   }
 
@@ -523,7 +613,7 @@ export function getUnshareCapability(): UnshareCapability {
     }
   }
 
-  unshareCapability = { available: false, path: '', args: [], supportsNetNamespace: false, pidInitPath: '' };
+  unshareCapability = { available: false, path: '', args: [], supportsNetNamespace: false, pidInitPath: '', confinesFiles: false };
   return unshareCapability;
 }
 
@@ -648,7 +738,8 @@ function effectiveRlimitsOf(rlimits: SandboxedRlimitsOptions | undefined, memory
 function pidIsolationOf(
   unshare: UnshareCapability | undefined,
   isolationArgs: string[] | undefined,
-  options: UnshareIsolationOptions
+  options: UnshareIsolationOptions,
+  confinement: readonly string[]
 ): { wrapper: string[]; levelsAboveProgram: number } {
   if (!isolationArgs) return { wrapper: [], levelsAboveProgram: 0 };
   if (options.pidNamespace) {
@@ -656,12 +747,60 @@ function pidIsolationOf(
     return { wrapper: [], levelsAboveProgram: 1 };
   }
   if (unshare?.pidInitPath) {
-    const keepProc = options.hideProc === false || procHidingDisabled() ? ['--keep-proc'] : [];
+    const flags = options.hideProc === false || procHidingDisabled() ? ['--keep-proc', ...confinement] : [...confinement];
     // `pidNamespace: false` still hides the /proc entries of the other runs: pid-init applies the ruleset and becomes the program (no process in between).
-    if (options.pidNamespace === false) return { wrapper: [unshare.pidInitPath, '--no-pid-namespace', ...keepProc, '--'], levelsAboveProgram: 0 };
-    if (options.pidNamespace === undefined) return { wrapper: [unshare.pidInitPath, ...keepProc, '--'], levelsAboveProgram: 2 };
+    if (options.pidNamespace === false) return { wrapper: [unshare.pidInitPath, '--no-pid-namespace', ...flags, '--'], levelsAboveProgram: 0 };
+    if (options.pidNamespace === undefined) return { wrapper: [unshare.pidInitPath, ...flags, '--'], levelsAboveProgram: 2 };
   }
   return { wrapper: [], levelsAboveProgram: 0 };
+}
+
+/** A directory a run is confined to, as pid-init takes it: absolute, normalized, and never one that holds the files of other jobs. */
+export function confinedDirectory(directory: string, what: string): string {
+  // A directory the ruleset cannot be made from is the refusal of the run (503, retried elsewhere), not a failure of the program.
+  if (typeof directory !== 'string' || !path.isAbsolute(directory) || directory.includes('\0')) {
+    throw sandboxUnavailable(`The ${what} of a sandboxed run must be an absolute path without NUL (got ${JSON.stringify(directory)}); the program is not started.`);
+  }
+  const resolved = path.resolve(directory);
+  if (resolved === path.parse(resolved).root || resolved === path.resolve(os.tmpdir())) {
+    throw sandboxUnavailable(`The ${what} of a sandboxed run is the directory of one job, not ${resolved}: the confinement would allow the files of every other job; the program is not started.`);
+  }
+  return resolved;
+}
+
+/**
+ * The pid-init options that confine the files of a run to its directories (see SandboxFileScope), or none when the run is not to be
+ * confined: the operator turned it off, or the run did not name its directory and STRICT_SANDBOX is off, or this host cannot (said once by
+ * the probe) and STRICT_SANDBOX is off. Under STRICT_SANDBOX a run that cannot be confined is refused before it starts, and pid-init is
+ * told to refuse it as well (`--require`) should the ruleset fail after a good probe.
+ */
+function confinementOf(
+  scope: SandboxFileScope,
+  strict: boolean,
+  unshare: UnshareCapability | undefined,
+  isolationArgs: string[] | undefined,
+  options: UnshareIsolationOptions,
+  program: string
+): string[] {
+  if (!isolationArgs) return [];
+  // Whatever the switch for the files says: under STRICT_SANDBOX a program that would run without a PID namespace of its own is not started.
+  if (strict && !options.pidNamespace && !unshare?.pidInitPath) {
+    throw sandboxUnavailable(`Strict sandbox: this host has no pid-init to start the program in a PID namespace of its own (${PID_INIT_PATH_ENV}, ${SANDBOX_PID_NAMESPACE_ENV}); the program is not started.`);
+  }
+  if (fileConfinementDisabled() || scope.fileConfinementOff) return [];
+  if (scope.workDir === undefined) {
+    if (strict) throw sandboxUnavailable('Strict sandbox: the run does not name the directory of its job (workDir), so its files cannot be confined to it; the program is not started.');
+    return [];
+  }
+  if (options.pidNamespace === true || !unshare?.pidInitPath || !unshare.confinesFiles) {
+    if (strict) throw sandboxUnavailable('Strict sandbox: this host cannot confine the files of a program to the directory of its job (it needs pid-init, Linux 6.2 or later with Landlock, and the landlock_* calls in the seccomp profile); the program is not started.');
+    return [];
+  }
+  const writable = [...(scope.workDir === null ? [] : [confinedDirectory(scope.workDir, 'workDir')]), ...(scope.writeDirs ?? []).map((directory) => confinedDirectory(directory, 'write directory'))];
+  // The program itself is read and run wherever it is installed (a tool the operator keeps outside the system paths); its libraries are the system's.
+  const readable = [...(scope.readDirs ?? []), ...(path.isAbsolute(program) ? [program] : [])].map((directory) => confinedDirectory(directory, 'read directory'));
+  const sockets = (scope.socketDirs ?? []).map((directory) => path.resolve(directory));
+  return ['--confine', ...(strict ? ['--require'] : []), ...writable.flatMap((directory) => ['--write', directory]), ...readable.flatMap((directory) => ['--read', directory]), ...sockets.flatMap((directory) => ['--sockets', directory])];
 }
 
 /**
@@ -680,14 +819,15 @@ export function resolveSandboxedCommand(
         memoryLimitMb?: number;
         maxFileSize?: number;
         rlimits?: SandboxedRlimitsOptions;
-      }
+      } & SandboxFileScope
 ): { binary: string; args: string[]; wrapped: boolean; levelsAboveProgram: number } {
   let networkIsolated = true;
   let sandboxOptions: UnshareIsolationOptions = {};
-  let strictIsolation = process.env.STRICT_SANDBOX === 'true';
+  let strictIsolation = strictSandboxEnabled();
   let memoryLimitMb: number | undefined;
   let maxFileSize: number | undefined;
   let rlimits: SandboxedRlimitsOptions | undefined;
+  let scope: SandboxFileScope = {};
 
   if (typeof networkIsolatedOrOptions === 'boolean') {
     networkIsolated = networkIsolatedOrOptions;
@@ -700,12 +840,14 @@ export function resolveSandboxedCommand(
     memoryLimitMb = networkIsolatedOrOptions.memoryLimitMb;
     maxFileSize = networkIsolatedOrOptions.maxFileSize;
     rlimits = networkIsolatedOrOptions.rlimits;
+    scope = fileScopeOf(networkIsolatedOrOptions);
   }
 
   const effectiveRlimits = effectiveRlimitsOf(rlimits, memoryLimitMb, maxFileSize);
   const unshare = process.platform === 'linux' && networkIsolated ? getUnshareCapability() : undefined;
   const isolationArgs = unshare?.available ? buildUnshareIsolationArgs(unshare, sandboxOptions) : undefined;
-  const pid = pidIsolationOf(unshare, isolationArgs, sandboxOptions);
+  const confinement = confinementOf(scope, strictIsolation, unshare, isolationArgs, sandboxOptions, binaryPath);
+  const pid = pidIsolationOf(unshare, isolationArgs, sandboxOptions, confinement);
   const capPrlimit = getPrlimitCapability();
   if (effectiveRlimits.nproc !== undefined && !(isolationArgs?.includes('-r') && capPrlimit.available)) {
     throw sandboxUnavailable('The task limit of a run is kept only by prlimit in a user namespace of its own (unshare -r), which this host cannot give the run; the program is not started.');
@@ -751,6 +893,37 @@ export function resolveSandboxedCommand(
   }
 
   return { binary: finalBinary, args: finalArgs, wrapped: isWrapped, levelsAboveProgram: 0 };
+}
+
+/**
+ * What pid-init said when it did not start a program because the files could not be confined to its directories (`--require`, which a
+ * STRICT_SANDBOX run passes): its reason, or null when the run ended any other way. The program never ran.
+ */
+export function confinementRefusal(exitCode: number | null, stderr: Buffer): string | null {
+  if (exitCode !== PID_INIT_REFUSED_STATUS || stderr.length < CANNOT_CONFINE_REFUSAL.length || stderr.toString('utf-8', 0, CANNOT_CONFINE_REFUSAL.length) !== CANNOT_CONFINE_REFUSAL) return null;
+  const end = stderr.indexOf(0x0a);
+  return `Strict sandbox: the files of the program could not be confined to its directory, so it was not started (${stderr.toString('utf-8', CANNOT_CONFINE_REFUSAL.length, end === -1 ? stderr.length : end).trim().slice(0, 200)}).`;
+}
+
+/**
+ * execFileSync for a command that resolveSandboxedCommand made: a run that pid-init refused to start (status 125 and its `cannot confine` line)
+ * is the typed SandboxUnavailableError, as the asynchronous executor makes it, and not a failed program (500).
+ */
+export function execFileSyncConfined(file: string, args: readonly string[], options: ExecFileSyncOptions): Buffer {
+  try {
+    return execFileSync(file, args, options) as Buffer;
+  } catch (error) {
+    rethrowConfinementRefusal(error);
+    throw error;
+  }
+}
+
+/** Throws SandboxUnavailableError when `error` is a synchronous run that pid-init refused to start (see confinementRefusal); returns otherwise. */
+export function rethrowConfinementRefusal(error: unknown): void {
+  const { status, stderr } = (error ?? {}) as { status?: number | null; stderr?: Buffer | string | null };
+  if (stderr === undefined || stderr === null) return;
+  const reason = confinementRefusal(status ?? null, Buffer.isBuffer(stderr) ? stderr : Buffer.from(stderr));
+  if (reason !== null) throw sandboxUnavailable(reason);
 }
 
 /** The refusal of a host that cannot confine a program, counted for the metrics. */
@@ -879,6 +1052,9 @@ function outputOf(spooled: Buffer | undefined, chunks: Buffer[], headroom: numbe
 /** Why a run that did not exit 0 failed: the memory limit its signal shows, the file size limit, or the process error with what it printed. */
 function failedRunError(run: { code: number | null; signal: NodeJS.Signals | null; stdout: Buffer; stderr: Buffer }, options: SandboxedExecutionOptions, maxBuffer: number): Error {
   const { code, signal, stdout, stderr } = run;
+  // pid-init did not start a program it was told to confine and could not.
+  const refusal = confinementRefusal(code, stderr);
+  if (refusal !== null) return sandboxUnavailable(refusal);
   const effectiveMemLimit =
     options.memoryLimitMb ||
     (options.rlimits?.asBytes ? Math.round(options.rlimits.asBytes / (1024 * 1024)) : undefined);
@@ -923,17 +1099,17 @@ export async function executeSandboxedBinary(
     maxFileSize,
     rlimits,
     env: customEnv = {},
-    cwd = os.tmpdir(),
     networkIsolated = true,
     stdin,
   } = options;
+  const cwd = options.cwd ?? (typeof options.workDir === 'string' ? options.workDir : os.tmpdir());
 
   if (!binaryPath || typeof binaryPath !== 'string') {
     throw new SandboxedProcessError('Sandboxed execution error: invalid binary path provided.', null, '');
   }
 
   const sandboxEnv = detectSandboxEnvironment();
-  const sanitizedEnv = getSanitizedEnvironment(customEnv, networkIsolated);
+  const sanitizedEnv = getSanitizedEnvironment(customEnv, networkIsolated, options.workDir);
   const startTime = Date.now();
   // The bound on a spooled output is RLIMIT_FSIZE, which prlimit sets; without it the output goes through a pipe, bounded as it flows.
   const spoolLimit = Math.min(rlimits?.fsizeBytes ?? maxFileSize ?? maxBuffer, maxBuffer);
@@ -1004,6 +1180,7 @@ export async function executeSandboxedBinary(
       rlimits: spooled
         ? { ...rlimits, fsizeBytes: spoolLimit + 1, coreBytes: 0 }
         : rlimits,
+      ...fileScopeOf(options),
     });
 
     if (spooled) spoolFd = tryOpenStdoutSpool();

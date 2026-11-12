@@ -17,6 +17,10 @@ import { requireRealworldSample } from './helpers/realworld-sample';
 import { sofficeConvert } from './helpers/soffice-convert';
 import { skipWithoutTools } from './helpers/strict-skip';
 import { compareImages } from './helpers/vrt-engine';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * The vector, image and CAD pairs of entry 187: Windows metafiles written as the raster formats, PostScript and SVG written as icons, Photoshop

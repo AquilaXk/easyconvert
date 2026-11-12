@@ -11,6 +11,10 @@ import {
 } from './helpers/pdfa-route-harness';
 import { convertToPdfA, verifyPdfA } from '../src/lib/conversions/pdf-postprocess';
 import { EngineUnavailableError, PdfAValidationError, PdfPostprocessError } from '../src/lib/types';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 const COMPLIANT_REPORT = '{"report":{"jobs":[{"validationResult":[{"compliant":true}]}]}}';
 const EXIT_STATUS = 2;

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -7,20 +8,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  * the probe starts are stand-ins that fail or succeed as the test says; what is read is the capability the sandbox then reports.
  */
 
-const probe = vi.hoisted(() => ({ pidInitWorks: false, procHideWorks: true, calls: [] as string[][] }));
+const probe = vi.hoisted(() => ({ pidInitWorks: false, procHideWorks: true, confineWorks: true, calls: [] as string[][] }));
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   const execFileSync = ((file: string, args: string[]) => {
     probe.calls.push([file, ...args]);
     if (args.includes('--') && args.some((arg) => arg.endsWith('/pid-init-stand-in')) && !probe.pidInitWorks) throw new Error('unshare: unshare failed: Operation not permitted');
-    if (args.includes('--check') && !probe.procHideWorks) throw new Error('Command failed: exit status 3');
+    if (args.includes('--check') && args.includes('--confine') && !probe.confineWorks) throw new Error('Command failed: exit status 3');
+    if (args.includes('--check') && !args.includes('--confine') && !probe.procHideWorks) throw new Error('Command failed: exit status 3');
     return Buffer.alloc(0);
   }) as typeof actual.execFileSync;
   return { ...actual, default: { ...actual, execFileSync }, execFileSync };
 });
 
-import { getUnshareCapability, PID_INIT_REPROBE_MS, resetUnshareCapabilityCache, resolveSandboxedCommand, withoutProcHideNotice } from '../src/lib/security/process-sandbox';
+import { SandboxUnavailableError } from '../src/lib/types';
+import { fileConfinementDisabled, getUnshareCapability, PID_INIT_REPROBE_MS, PID_INIT_STRICT_REPROBE_MS, resetUnshareCapabilityCache, resolveSandboxedCommand, strictSandboxEnabled, withoutProcHideNotice } from '../src/lib/security/process-sandbox';
 
 const PID_INIT = '/opt/test/pid-init-stand-in';
 const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
@@ -31,9 +34,11 @@ beforeEach(() => {
   vi.stubEnv('PID_INIT_PATH', PID_INIT);
   vi.stubEnv('SANDBOX_PID_NAMESPACE', undefined);
   vi.stubEnv('SANDBOX_HIDE_PROC', undefined);
+  vi.stubEnv('SANDBOX_CONFINE_FILES', undefined);
   vi.useFakeTimers({ toFake: ['Date'] });
   probe.pidInitWorks = false;
   probe.procHideWorks = true;
+  probe.confineWorks = true;
   probe.calls = [];
   resetUnshareCapabilityCache();
 });
@@ -104,7 +109,9 @@ describe('the PID namespace probe', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     probe.pidInitWorks = true;
     expect(getUnshareCapability().pidInitPath).toBe(PID_INIT);
-    expect(probe.calls.filter((call) => call.includes('--check'))).toHaveLength(1);
+    expect(probe.calls.filter((call) => call.includes('--check') && !call.includes('--confine'))).toHaveLength(1);
+    expect(probe.calls.filter((call) => call.includes('--check') && call.includes('--confine'))).toHaveLength(1);
+    expect(getUnshareCapability().confinesFiles).toBe(true);
     expect(warn).not.toHaveBeenCalled();
   });
 
@@ -119,6 +126,94 @@ describe('the PID namespace probe', () => {
     vi.setSystemTime(Date.now() + 10 * PID_INIT_REPROBE_MS);
     getUnshareCapability();
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks pid-init whether it can confine files, says once that the files of the other runs can be read when it cannot, and reads SANDBOX_CONFINE_FILES when a run starts, not when the host is probed', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    probe.pidInitWorks = true;
+    probe.confineWorks = false;
+    expect(getUnshareCapability()).toMatchObject({ pidInitPath: PID_INIT, confinesFiles: false });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('files of the other runs');
+    // A host that can confine nothing is asked again after the backoff, and is confined once it can.
+    probe.confineWorks = true;
+    vi.setSystemTime(Date.now() + PID_INIT_REPROBE_MS);
+    expect(getUnshareCapability().confinesFiles).toBe(true);
+    for (const value of ['false', ' FALSE ']) {
+      resetUnshareCapabilityCache();
+      probe.calls = [];
+      vi.stubEnv('SANDBOX_CONFINE_FILES', value);
+      expect(fileConfinementDisabled()).toBe(true);
+      expect(getUnshareCapability()).toMatchObject({ pidInitPath: PID_INIT, confinesFiles: true });
+      const command = resolveSandboxedCommand('/usr/bin/tool', [], { networkIsolated: true, workDir: '/jobs/one' });
+      expect(command.args).not.toContain('--confine');
+    }
+  });
+
+  it('asks a host that failed the probe again after a few seconds under STRICT_SANDBOX, where every run is refused until it passes, and after a minute otherwise', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.stubEnv('STRICT_SANDBOX', 'true');
+    expect(getUnshareCapability().pidInitPath).toBe('');
+    probe.pidInitWorks = true;
+    vi.setSystemTime(Date.now() + PID_INIT_STRICT_REPROBE_MS - 1);
+    expect(getUnshareCapability().pidInitPath).toBe('');
+    vi.setSystemTime(Date.now() + 1);
+    expect(getUnshareCapability().pidInitPath).toBe(PID_INIT);
+    expect(PID_INIT_STRICT_REPROBE_MS).toBeLessThan(PID_INIT_REPROBE_MS);
+  });
+
+  it('passes --confine with the directories of the run to pid-init, --require under STRICT_SANDBOX, and the program itself to read', () => {
+    probe.pidInitWorks = true;
+    const wrapperOf = (options: Parameters<typeof resolveSandboxedCommand>[2]) => {
+      const command = resolveSandboxedCommand('/opt/tool/bin/tool', ['a'], options);
+      return command.args.slice(command.args.indexOf(PID_INIT), command.args.lastIndexOf('/opt/tool/bin/tool'));
+    };
+    expect(wrapperOf({ networkIsolated: true, workDir: '/jobs/one', writeDirs: ['/jobs/profile'], readDirs: ['/models/m.onnx'] })).toEqual([
+      PID_INIT, '--confine', '--write', '/jobs/one', '--write', '/jobs/profile', '--read', '/models/m.onnx', '--read', '/opt/tool/bin/tool', '--',
+    ]);
+    expect(wrapperOf({ networkIsolated: true, workDir: null })).toEqual([PID_INIT, '--confine', '--read', '/opt/tool/bin/tool', '--']);
+    expect(wrapperOf({ networkIsolated: true, workDir: '/jobs/one', strictIsolation: true })).toContain('--require');
+    // A run that names no directory is not confined (the access every run had), and under STRICT_SANDBOX it is refused.
+    expect(wrapperOf({ networkIsolated: true })).toEqual([PID_INIT, '--']);
+    expect(() => wrapperOf({ networkIsolated: true, strictIsolation: true })).toThrow(/does not name the directory of its job/);
+    probe.confineWorks = false;
+    resetUnshareCapabilityCache();
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(wrapperOf({ networkIsolated: true, workDir: '/jobs/one' })).toEqual([PID_INIT, '--']);
+    expect(() => wrapperOf({ networkIsolated: true, workDir: '/jobs/one', strictIsolation: true })).toThrow(/cannot confine the files/);
+  });
+
+  it('refuses a program under STRICT_SANDBOX when the host has no pid-init, whatever the switch for the files says', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const start = () => resolveSandboxedCommand('/usr/bin/tool', [], { networkIsolated: true, workDir: '/jobs/one', strictIsolation: true });
+    // No pid-init program, the PID namespace turned off, and the confinement turned off on top: the program is never started in none of them.
+    vi.stubEnv('PID_INIT_PATH', '');
+    vi.stubEnv('SANDBOX_CONFINE_FILES', 'false');
+    resetUnshareCapabilityCache();
+    expect(start).toThrow(/no pid-init/);
+    vi.stubEnv('PID_INIT_PATH', PID_INIT);
+    vi.stubEnv('SANDBOX_PID_NAMESPACE', 'false');
+    resetUnshareCapabilityCache();
+    expect(start).toThrow(/no pid-init/);
+    expect(() => resolveSandboxedCommand('/usr/bin/tool', [], { networkIsolated: true, workDir: '/jobs/one', strictIsolation: false })).not.toThrow();
+  });
+
+  it('reads STRICT_SANDBOX as the start-up check does, so " True " refuses a run without a job directory', () => {
+    probe.pidInitWorks = true;
+    for (const value of [' True ', 'TRUE']) {
+      vi.stubEnv('STRICT_SANDBOX', value);
+      expect(strictSandboxEnabled()).toBe(true);
+      expect(() => resolveSandboxedCommand('/usr/bin/tool', [], { networkIsolated: true })).toThrow(SandboxUnavailableError);
+    }
+    vi.stubEnv('STRICT_SANDBOX', 'yes');
+    expect(strictSandboxEnabled()).toBe(false);
+  });
+
+  it('refuses a directory it cannot confine to with the typed 503 error, not a plain one', () => {
+    probe.pidInitWorks = true;
+    for (const workDir of ['relative/dir', '/', os.tmpdir()]) {
+      expect(() => resolveSandboxedCommand('/usr/bin/tool', [], { networkIsolated: true, workDir })).toThrow(SandboxUnavailableError);
+    }
   });
 
   it('starts a program that opts out of the PID namespace through pid-init, which hides /proc and becomes the program in place', () => {
@@ -140,7 +235,7 @@ describe('the PID namespace probe', () => {
       probe.calls = [];
       vi.stubEnv('SANDBOX_HIDE_PROC', value);
       expect(getUnshareCapability().pidInitPath).toBe(PID_INIT);
-      expect(probe.calls.filter((call) => call.includes('--check'))).toEqual([]);
+      expect(probe.calls.filter((call) => call.includes('--check') && !call.includes('--confine'))).toEqual([]);
       for (const sandboxOptions of [undefined, { pidNamespace: false }]) {
         const command = resolveSandboxedCommand('/usr/bin/tool', [], { networkIsolated: true, sandboxOptions });
         const wrapper = command.args.slice(command.args.indexOf('--') + 1, command.args.indexOf('/usr/bin/tool'));

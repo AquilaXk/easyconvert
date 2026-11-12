@@ -1,4 +1,4 @@
-import type { BufferLimitKind, SandboxedRlimitsOptions, UnshareIsolationOptions } from './process-sandbox';
+import type { BufferLimitKind, SandboxedRlimitsOptions, SandboxFileScope, UnshareIsolationOptions } from './process-sandbox';
 
 /**
  * What the worker and its launcher helper (sandbox-launcher.ts, sandbox-launcher-child.ts) say to each other.
@@ -13,7 +13,7 @@ export const FRAME_PREFIX_BYTES = 8;
 export const MAX_HEADER_BYTES = 1024 * 1024;
 
 /** The options of one run that cross the pipe: everything executeSandboxedBinary takes except what is a stream or a callback. */
-export interface LaunchedRunOptions {
+export interface LaunchedRunOptions extends SandboxFileScope {
   timeoutMs?: number;
   maxBuffer?: number;
   env?: Record<string, string>;

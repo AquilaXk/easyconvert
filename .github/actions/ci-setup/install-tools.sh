@@ -159,6 +159,8 @@ task_apt() {
   # pid-init (native/pid-init) starts every sandboxed program in a PID namespace of its own; run without arguments it prints its usage.
   sudo "$action_path/../../../native/pid-init/build.sh" /usr/local/bin/pid-init || return 1
   { pid-init 2>&1 || true; } | grep -q '^usage: pid-init' || { echo "pid-init does not start" >&2; return 1; }
+  # The preload library that makes tmpfile() use TMPDIR (native/tmpfile-redirect), which FontForge needs under the file confinement of pid-init.
+  sudo "$action_path/../../../native/tmpfile-redirect/build.sh" /usr/local/lib/libeasyconvert-tmpfile.so || return 1
 }
 
 # DjVu input is drawn by djvulibre built from the Debian source of 3.5.28 with two patches (scripts/install-djvulibre.sh), against the

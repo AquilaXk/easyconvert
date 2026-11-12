@@ -533,7 +533,7 @@ const SCHEMA_ENTRIES = [
   {
     name: 'STRICT_SANDBOX',
     area: 'security',
-    description: 'Set to `true` to refuse running native tools without the strict process sandbox.',
+    description: 'Set to `true` to refuse running native tools without the strict process sandbox: the user and network namespaces, and pid-init with the Landlock ruleset that confines the files of a program to the directory of its job. A run that does not name its job directory, or that this host cannot confine, is refused with a 503 before the program starts.',
     kind: { type: 'boolean' },
     default: false,
     requiredInProduction: false,
@@ -560,6 +560,7 @@ const SCHEMA_ENTRIES = [
     secret: false,
     roles: BOTH,
   },
+  { name: 'SANDBOX_CONFINE_FILES', area: 'security', description: 'Set to `false` to start sandboxed programs without the Landlock ruleset that confines their files to the directory of their job (on by default; `pid-init --confine`). Without it a program can read and write every file its user can, such as the stored files of other people. With `STRICT_SANDBOX=true` the process does not start while this is `false` (as with `SANDBOX_PID_NAMESPACE=false`). The PID namespace and the /proc hiding stay.', kind: { type: 'boolean' }, default: true, requiredInProduction: false, secret: false, roles: BOTH },
   autoOffSetting(
     'SANDBOX_LAUNCHER',
     'security',

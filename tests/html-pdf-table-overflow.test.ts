@@ -6,6 +6,10 @@ import { pdfFacts } from './helpers/corpus-facts';
 import { pdfInternalLinkTargets } from './helpers/pdf-link-targets';
 import { oracleTest } from './helpers/oracle-test';
 import { requireRealworldSample } from './helpers/realworld-sample';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * Words of a page must stay on the page the office suite draws them on. Three layouts of table pages made it lose them, each

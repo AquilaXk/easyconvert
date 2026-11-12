@@ -136,6 +136,7 @@ async function writePdf(job: XpsJob, entries: readonly PackageEntry[], tempDir: 
     networkIsolated: true,
     signal: job.options.signal,
     cwd: tempDir,
+    workDir: tempDir,
     expectedOutputBytes: NO_PIPED_OUTPUT_BYTES,
   };
   let stderr: string;

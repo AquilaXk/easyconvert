@@ -286,6 +286,10 @@ RUN /src/qpdf-runner/build.sh /usr/local/bin/qpdf-runner
 # run cannot see or signal another, and under a Landlock ruleset that refuses it the /proc entries of the other runs. It needs the same C compiler and nothing else, so it is built here.
 COPY native/pid-init/ /src/pid-init/
 RUN /src/pid-init/build.sh /usr/local/bin/pid-init
+# The preload library that makes tmpfile() use TMPDIR (native/tmpfile-redirect): FontForge reads a Type 1 font through tmpfile(), which makes its file in /tmp,
+# where a program under the file confinement of pid-init may not write.
+COPY native/tmpfile-redirect/ /src/tmpfile-redirect/
+RUN /src/tmpfile-redirect/build.sh /usr/local/lib/libeasyconvert-tmpfile.so
 
 # ==============================================================================
 # Stage 4b, second part: Models of the ONNX Korean OCR engine
@@ -561,6 +565,7 @@ RUN qpdf-runner --check | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
 
 # pid-init (built in the qpdfrunner stage). Run without arguments it prints its usage and exits 2; that line is the sign that it starts.
 COPY --from=qpdfrunner /usr/local/bin/pid-init /usr/local/bin/pid-init
+COPY --from=qpdfrunner /usr/local/lib/libeasyconvert-tmpfile.so /usr/local/lib/libeasyconvert-tmpfile.so
 RUN pid-init 2>&1 | grep -q '^usage: pid-init'
 
 # Models of the ONNX Korean OCR engine, at the fixed directory the worker reads (src/lib/conversions/ocr-onnx-helper.ts). The engine runs in a

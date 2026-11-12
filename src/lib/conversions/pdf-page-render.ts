@@ -263,6 +263,7 @@ export async function openPdfPageRenderer(
       try {
         await executeSandboxedBinary(pdftoppm, args, {
           cwd: jobDir,
+          workDir: jobDir,
           timeoutMs: OCR_RENDER_TIMEOUT_MS,
           maxBuffer: RENDER_MAX_DIAGNOSTIC_BYTES,
           maxFileSize: expected.width * expected.height * RENDER_MAX_BYTES_PER_PIXEL + RENDER_FILE_OVERHEAD_BYTES,

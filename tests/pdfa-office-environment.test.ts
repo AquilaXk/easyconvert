@@ -4,6 +4,10 @@ import path from 'node:path';
 import { PDFDocument, PDFName, StandardFonts } from 'pdf-lib';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { convertToPdfA } from '../src/lib/conversions/pdf-postprocess/pdfa';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+
+// The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
+runWithoutFileConfinement();
 
 /**
  * The PDF/A conversion starts the office suite as every other run of it does: with its home and temporary directory in the directory of the

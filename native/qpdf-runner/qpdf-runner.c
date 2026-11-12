@@ -30,9 +30,12 @@
 //
 // Frame format (all integers big-endian): u32 length of the rest | u8 type | u32 id | body.
 //   host -> runner
-//     RUN    (1): u32 timeout_ms | u64 max_output | u64 limit_as | u64 limit_fsize | u32 limit_cpu | str cwd
+//     RUN    (1): u32 timeout_ms | u64 max_output | u64 limit_as | u64 limit_fsize | u32 limit_cpu | u32 confine | str cwd | str work_dir | u32 read_count | str read_path[read_count]
 //                 | u32 argc | str argv[argc] | u32 envc | str env[envc] | u32 stdin_len | stdin bytes
-//                 (a limit of 0 is no limit, except max_output, which is 1 byte to 1 GiB and caps standard output and error together;
+//                 (confine: bit 0 puts the job under the ruleset that confines its files to work_dir, bit 1 says that a job that cannot be
+//                 confined is not run; an empty work_dir with bit 0 set is a job that touches no file of its own; at most READ_PATHS_MAX read_path
+//                 strings are more files or directories the confined job may read (its input, the program's own path);
+//                 a limit of 0 is no limit, except max_output, which is 1 byte to 1 GiB and caps standard output and error together;
 //                 a request holds at most 4096 arguments and 4096 environment entries, no string past 64 KB, a frame of at most 4 MiB
 //                 and a standard input of at most 32 KB, which goes into the pipe before the fork without the runner waiting for room)
 //     CANCEL (2): the id of the job to kill
@@ -76,7 +79,11 @@
 enum { FRAME_RUN = 1, FRAME_CANCEL = 2, FRAME_READY = 10, FRAME_RESULT = 11 };
 enum { KIND_EXITED = 0, KIND_TIMEOUT = 1, KIND_OUTPUT_LIMIT = 2, KIND_SETUP = 3, KIND_CANCELLED = 4, KIND_REJECTED = 5 };
 /* Setup failures the child reports through its status pipe, one byte each. */
-enum { SETUP_NAMESPACE = 1, SETUP_CHDIR = 2, SETUP_LIMITS = 3, SETUP_STREAMS = 4 };
+enum { SETUP_NAMESPACE = 1, SETUP_CHDIR = 2, SETUP_LIMITS = 3, SETUP_STREAMS = 4, SETUP_CONFINE = 5 };
+/* The bits of the `confine` field of a request. */
+enum { CONFINE_ENABLED = 1, CONFINE_REQUIRED = 2 };
+/* How many files or directories beyond the work directory a request may name for reading. */
+#define READ_PATHS_MAX 4
 
 #define MAX_JOBS 64
 #define MAX_FRAME_BYTES (4u * 1024 * 1024)
@@ -347,7 +354,11 @@ typedef struct {
   uint32_t timeout_ms;
   uint64_t max_output, limit_as, limit_fsize;
   uint32_t limit_cpu;
+  uint32_t confine;
   const char *cwd;
+  const char *work_dir;
+  uint32_t read_count;
+  const char *read_paths[READ_PATHS_MAX];
   char **argv; /* NULL-terminated */
   char **envp; /* NULL-terminated */
   uint32_t stdin_len;
@@ -386,9 +397,19 @@ static bool write_text_file(const char *path, const char *text) {
 #define __NR_landlock_restrict_self 446
 #endif
 #define LANDLOCK_CREATE_RULESET_VERSION (1U << 0)
+#define LANDLOCK_ACCESS_FS_EXECUTE (1ULL << 0)
 #define LANDLOCK_ACCESS_FS_WRITE_FILE (1ULL << 1)
 #define LANDLOCK_ACCESS_FS_READ_FILE (1ULL << 2)
+#define LANDLOCK_ACCESS_FS_READ_DIR (1ULL << 3)
 #define LANDLOCK_ACCESS_FS_REFER (1ULL << 13)
+#define LANDLOCK_ACCESS_FS_TRUNCATE (1ULL << 14)
+/* Every file right of Landlock version 3 (bits 0 to 14: execute, write, read, list, remove, make, refer, truncate). */
+#define LANDLOCK_ACCESS_FS_ALL_V3 ((1ULL << 15) - 1)
+/* The rights that a rule on something that is not a directory may name. */
+#define LANDLOCK_ACCESS_FS_FILE_RIGHTS (LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_TRUNCATE)
+/* What a confined job gets of the system, of /dev, and of its own /proc entries. */
+#define CONFINE_READ_ACCESS (LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR)
+#define CONFINE_DEVICE_ACCESS (LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_READ_DIR | LANDLOCK_ACCESS_FS_TRUNCATE)
 #define LANDLOCK_RULE_PATH_BENEATH 1
 /* The first descriptor number the kept /proc entries take when they stay in the program (--no-pid-namespace). */
 #define PIN_FD_FLOOR 200
@@ -397,10 +418,20 @@ static bool write_text_file(const char *path, const char *text) {
 #define PIN_BATCH 128
 /* What is said on the standard error of the program when /proc is not hidden; the worker looks for it at the start of the output. */
 #define NOT_HIDDEN_NOTICE "pid-init: /proc not hidden: "
+/* The same for the files of the host, said when a job that was asked to be confined to its directory (and not told that it must be) runs without. */
+#define NOT_CONFINED_NOTICE "pid-init: files not confined: "
 
 /* Why the last attempt to hide /proc failed, for the notice. */
 static const char *hide_failure = "";
-static int refer_handled = 0;
+
+/* The directory a confined job may use (see CONFINE_ENABLED in the request). */
+struct confinement {
+  const char *write_dir; /* NULL or "": none (a job that touches no file of its own) */
+  const char *const *read_paths; /* files or directories the job may read (its input, the program) */
+  uint32_t read_count;
+};
+/* The parts of the system a confined job reads and runs from. Anything not listed is not the job's: /shared, /tmp, /home, /app, /root, /srv, /mnt. */
+static const char *const CONFINE_SYSTEM_PATHS[] = {"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/opt", "/sys", "/var/cache", "/var/lib", "/var/spool"};
 /* The /proc entries the ruleset names, open: a rule belongs to an inode that /proc makes again once the entry is dropped from the cache. */
 static int pinned[PIN_MAX];
 static int pinned_count = 0;
@@ -413,17 +444,17 @@ struct landlock_path_beneath_attr_v1 {
   int32_t parent_fd;
 } __attribute__((packed));
 
-/* Allows reading and writing files below `path` (and moving them between directories where the kernel has that right). An entry that is not
+/* Allows `access` below `path`: the rights of a rule on a file are cut to the ones a file has. An entry that is not
    there (a dangling link, a process that ended) or that this process may not look at adds nothing; any other failure (out of descriptors, a
    refused rule) returns -1, because a rule that is missing takes a whole directory away from the program and the ruleset must not be put in
    force then. With `keep` the entry stays open (see pinned). */
-static int allow_below(int ruleset, const char *path, int keep) {
+static int allow_below(int ruleset, const char *path, int keep, uint64_t access) {
   int fd = open(path, O_PATH | O_CLOEXEC);
   if (fd < 0) return errno == ENOENT || errno == EACCES || errno == ELOOP || errno == ENOTDIR || errno == ENXIO ? 0 : -1;
-  struct landlock_path_beneath_attr_v1 rule = {.allowed_access = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE, .parent_fd = fd};
+  struct landlock_path_beneath_attr_v1 rule = {.allowed_access = access, .parent_fd = fd};
   struct stat st;
-  /* The right to move is one of directories; a rule on a file that names it is refused. */
-  if (refer_handled && fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) rule.allowed_access |= LANDLOCK_ACCESS_FS_REFER;
+  /* The right to move, to list and to make entries are rights of directories; a rule on a file that names one is refused. */
+  if (fstat(fd, &st) != 0 || !S_ISDIR(st.st_mode)) rule.allowed_access &= LANDLOCK_ACCESS_FS_FILE_RIGHTS;
   int added = (int)syscall(__NR_landlock_add_rule, ruleset, LANDLOCK_RULE_PATH_BENEATH, &rule, 0);
   if (added == 0 && keep && pinned_count < PIN_MAX) {
     pinned[pinned_count++] = fd;
@@ -442,7 +473,7 @@ static int is_number(const char *name) {
 }
 
 /* Allows every entry of `parent`: all but "proc" for the root directory, and all but the process numbers (kept open) for /proc. */
-static int allow_entries(int ruleset, const char *parent, int proc_entries) {
+static int allow_entries(int ruleset, const char *parent, int proc_entries, uint64_t access) {
   DIR *directory = opendir(parent);
   if (directory == NULL) return -1;
   int result = 0;
@@ -453,7 +484,7 @@ static int allow_entries(int ruleset, const char *parent, int proc_entries) {
     if (proc_entries ? is_number(name) : strcmp(name, "proc") == 0) continue;
     char path[512];
     if (snprintf(path, sizeof path, "%s/%s", strcmp(parent, "/") == 0 ? "" : parent, name) >= (int)sizeof path) continue;
-    if (allow_below(ruleset, path, proc_entries) != 0) {
+    if (allow_below(ruleset, path, proc_entries, access) != 0) {
       result = -1;
       break;
     }
@@ -466,10 +497,13 @@ static void release_pinned(void) {
   while (pinned_count > 0) close(pinned[--pinned_count]);
 }
 
-/* Makes the ruleset: reading and writing files below every entry of / but /proc, and below every entry of /proc but the process numbers.
-   "self" is a link to the directory of this process, so the entries of /proc that are not numbers include its own. Returns its descriptor, or
-   -1 (with hide_failure set) when it cannot be made: no Landlock, or the first version, which refuses every move between directories. */
-static int make_ruleset(void) {
+/* Makes the ruleset. Without `confine` it hides /proc from the job and nothing else: reading and writing files below every entry of / but
+   /proc, and below every entry of /proc but the process numbers. With it, it confines the files (see native/pid-init/pid-init.c, which holds
+   the same code): the parts of the system read-only, /dev and the entries of /proc that are not process numbers (everything below /proc with
+   `keep_proc`) as the job had them, and every right below the directory of the job. "self" is a link to the directory of this process, so the
+   entries of /proc that are not numbers include its own. Returns its descriptor, or -1 (with hide_failure set) when it cannot be made: no
+   Landlock, or a version that is too old (the first refuses every move between directories, the first two cannot refuse a truncate). */
+static int make_ruleset(const struct confinement *confine, int keep_proc) {
   hide_failure = "";
   long abi = syscall(__NR_landlock_create_ruleset, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
   if (abi < 1) {
@@ -480,14 +514,31 @@ static int make_ruleset(void) {
     hide_failure = "Landlock version 1 refuses every move between directories";
     return -1;
   }
-  refer_handled = 1;
-  struct landlock_ruleset_attr_v1 handled = {.handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REFER};
+  if (confine != NULL && abi < 3) {
+    hide_failure = "Landlock version 2 cannot refuse a truncate (Linux 6.2 has version 3)";
+    return -1;
+  }
+  uint64_t everything = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REFER;
+  if (confine != NULL) everything = LANDLOCK_ACCESS_FS_ALL_V3;
+  struct landlock_ruleset_attr_v1 handled = {.handled_access_fs = everything};
   int ruleset = (int)syscall(__NR_landlock_create_ruleset, &handled, sizeof handled, 0);
   if (ruleset < 0) {
     hide_failure = "landlock_create_ruleset was refused";
     return -1;
   }
-  if (allow_entries(ruleset, "/", 0) != 0 || allow_entries(ruleset, "/proc", 1) != 0) {
+  int failed = 0;
+  if (confine == NULL) {
+    failed = allow_entries(ruleset, "/", 0, LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REFER) != 0 ||
+             allow_entries(ruleset, "/proc", 1, LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REFER) != 0;
+  } else {
+    for (size_t i = 0; !failed && i < sizeof CONFINE_SYSTEM_PATHS / sizeof CONFINE_SYSTEM_PATHS[0]; i++)
+      failed = allow_below(ruleset, CONFINE_SYSTEM_PATHS[i], 0, CONFINE_READ_ACCESS) != 0;
+    failed = failed || allow_below(ruleset, "/dev", 0, CONFINE_DEVICE_ACCESS) != 0;
+    failed = failed || (keep_proc ? allow_below(ruleset, "/proc", 0, CONFINE_DEVICE_ACCESS) != 0 : allow_entries(ruleset, "/proc", 1, CONFINE_DEVICE_ACCESS) != 0);
+    for (uint32_t i = 0; !failed && i < confine->read_count; i++) failed = allow_below(ruleset, confine->read_paths[i], 0, CONFINE_READ_ACCESS) != 0;
+    failed = failed || (confine->write_dir != NULL && confine->write_dir[0] != '\0' && allow_below(ruleset, confine->write_dir, 0, LANDLOCK_ACCESS_FS_ALL_V3) != 0);
+  }
+  if (failed) {
     hide_failure = "a rule could not be added";
     close(ruleset);
     release_pinned();
@@ -655,9 +706,24 @@ static void run_child(const Request *r, int in_fd, int out_fd, int err_fd, int s
   /* The maps are written; from here no process of the same user can read this one or the processes it makes through /proc/<pid>/mem. */
   prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
   enter_job_process();
-  if (!keep_proc) {
-    /* The /proc entries the ruleset names stay open in the job for as long as it runs. */
-    int ruleset = make_ruleset();
+  /* The /proc entries the ruleset names stay open in the job for as long as it runs. */
+  int confined = 0;
+  if (r->confine & CONFINE_ENABLED) {
+    struct confinement confine = {.write_dir = r->work_dir, .read_paths = r->read_paths, .read_count = r->read_count};
+    int ruleset = make_ruleset(&confine, keep_proc);
+    if (ruleset >= 0 && enforce_ruleset(ruleset) != 0) release_pinned();
+    else if (ruleset >= 0) confined = 1;
+    if (!confined) {
+      /* A job that must be confined is not run; the caller starts it the usual way, which refuses it the same way. */
+      if (r->confine & CONFINE_REQUIRED) child_fail(SETUP_CONFINE);
+      (void)!write(STDERR_FILENO, NOT_CONFINED_NOTICE, sizeof NOT_CONFINED_NOTICE - 1);
+      (void)!write(STDERR_FILENO, hide_failure, strlen(hide_failure));
+      (void)!write(STDERR_FILENO, "\n", 1);
+    }
+  }
+  /* The ruleset that confines the files hides /proc as well; the one that only hides it is what a host without the first has left. */
+  if (!confined && !keep_proc) {
+    int ruleset = make_ruleset(NULL, 0);
     if (ruleset >= 0 && enforce_ruleset(ruleset) != 0) release_pinned();
     if (*hide_failure != '\0') {
       (void)!write(STDERR_FILENO, NOT_HIDDEN_NOTICE, sizeof NOT_HIDDEN_NOTICE - 1);
@@ -681,6 +747,14 @@ static void run_child(const Request *r, int in_fd, int out_fd, int err_fd, int s
  * Requests
  * ------------------------------------------------------------------------------------------------------------------------ */
 
+/* Whether every path to read of a request is absolute. */
+static bool read_paths_absolute(const Request *r) {
+  for (uint32_t i = 0; i < r->read_count && i < READ_PATHS_MAX; i++) {
+    if (r->read_paths[i] == NULL || r->read_paths[i][0] != '/') return false;
+  }
+  return true;
+}
+
 /* Parses a RUN body. The strings are copied into one arena so that the frame buffer can be wiped at once. */
 static bool parse_run(const uint8_t *body, size_t len, Request *r) {
   memset(r, 0, sizeof *r);
@@ -690,10 +764,15 @@ static bool parse_run(const uint8_t *body, size_t len, Request *r) {
   r->limit_as = take_u64(&c);
   r->limit_fsize = take_u64(&c);
   r->limit_cpu = take_u32(&c);
+  r->confine = take_u32(&c);
   /* A first pass over the strings sizes the arena they are copied into: each needs its bytes and a NUL. */
   Cursor probe = c;
   uint32_t length;
   take_string_bytes(&probe, &length); /* cwd */
+  take_string_bytes(&probe, &length); /* work_dir */
+  uint32_t read_count = take_u32(&probe);
+  if (read_count > READ_PATHS_MAX) return false;
+  for (uint32_t i = 0; i < read_count; i++) take_string_bytes(&probe, &length); /* read_path */
   uint32_t argc = take_u32(&probe);
   if (argc == 0 || argc > MAX_ARGS) return false;
   for (uint32_t i = 0; i < argc; i++) take_string_bytes(&probe, &length);
@@ -701,7 +780,7 @@ static bool parse_run(const uint8_t *body, size_t len, Request *r) {
   if (envc > MAX_ARGS) return false;
   for (uint32_t i = 0; i < envc; i++) take_string_bytes(&probe, &length);
   if (probe.bad) return false;
-  size_t strings = 1 + (size_t)argc + envc;
+  size_t strings = 2 + (size_t)read_count + argc + envc;
   r->arena_bytes = round_up_to_page(len + strings + 1);
   r->table_bytes = round_up_to_page(((size_t)argc + envc + 2) * sizeof(char *));
   r->arena = mmap(NULL, r->arena_bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -709,6 +788,9 @@ static bool parse_run(const uint8_t *body, size_t len, Request *r) {
   if (r->arena == MAP_FAILED || r->tables == MAP_FAILED) die("out of memory");
   char *arena = r->arena;
   r->cwd = take_string(&c, &arena);
+  r->work_dir = take_string(&c, &arena);
+  r->read_count = take_u32(&c);
+  for (uint32_t i = 0; i < r->read_count && i < READ_PATHS_MAX; i++) r->read_paths[i] = take_string(&c, &arena);
   uint32_t argc2 = take_u32(&c);
   char **table = r->tables;
   r->argv = table;
@@ -722,7 +804,8 @@ static bool parse_run(const uint8_t *body, size_t len, Request *r) {
   /* A claim past the limit is refused, whether or not the bytes it claims follow. */
   if (r->stdin_len > MAX_STDIN_BYTES) return false;
   r->stdin_bytes = take(&c, r->stdin_len);
-  return !c.bad && c.left == 0 && r->cwd != NULL && r->cwd[0] == '/';
+  return !c.bad && c.left == 0 && r->cwd != NULL && r->cwd[0] == '/' && r->work_dir != NULL && (r->work_dir[0] == '\0' || r->work_dir[0] == '/') && r->read_count == read_count && read_paths_absolute(r) &&
+         (r->confine & ~(uint32_t)(CONFINE_ENABLED | CONFINE_REQUIRED)) == 0;
 }
 
 static void release_request(Request *r) {
@@ -1079,7 +1162,10 @@ static int self_test(void) {
   put_u64(&body, 0);
   put_u64(&body, 0);
   put_u32(&body, 0);
+  put_u32(&body, 0);
   put_string(&body, "/");
+  put_string(&body, "");
+  put_u32(&body, 0);
   put_u32(&body, 2);
   put_string(&body, "qpdf");
   put_string(&body, "--version");
