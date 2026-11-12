@@ -105,6 +105,8 @@ export const CONVERSION_REFUSAL_CODES = [
   'import_budget_exceeded',
   'quota_exceeded',
   'timeout',
+  'engine_not_offered',
+  'engine_version_unavailable',
   'engine_unavailable',
   'conversion_failed',
 ] as const;

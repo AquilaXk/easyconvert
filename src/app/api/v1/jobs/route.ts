@@ -23,7 +23,9 @@ import { readObjectHeader } from '@/lib/storage/object-header';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject, spoofCheckRefusal } from '@/lib/security/file-guard';
 import { resolveEffectiveWebhook } from '@/lib/security/ssrf';
-import { ConversionOptions, JobStatus, PipelineTask, JobGraph, QueueUnavailableError } from '@/lib/types';
+import { ConversionOptions, JobStatus, PipelineTask, JobGraph, QueueUnavailableError, typedFailureOf } from '@/lib/types';
+import { checkSubmittedEngineChoices } from '@/lib/api/engine-choice-check';
+import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import {
   validateJobGraph,
   linearTasksToJobGraph,
@@ -168,6 +170,21 @@ async function verifyStoredInput(check: StoredInputCheck, plan: ReturnType<typeo
   }
   assertNotSpoofedFile(stored.buffer, check.ext, check.filename);
   return { size: info.size };
+}
+
+/** Sets `pages` from `page` on the options of a job and of each of its tasks and checks the range syntax; the message of the first range that is not valid, else undefined. */
+function normalizePageRanges(options: ConversionOptions | undefined, tasks: PipelineTask[] | undefined): string | undefined {
+  for (const target of [options, ...(tasks ?? []).map((task) => task.options)]) {
+    if (!target) continue;
+    if (!target.pages && target.page) target.pages = String(target.page);
+    if (!target.pages) continue;
+    try {
+      validatePageRangeSyntax(target.pages);
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+  return undefined;
 }
 
 export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
@@ -388,40 +405,8 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     const { webhookUrl: effectiveWebhookUrl, webhookSecret: effectiveWebhookSecret, webhookKeyId } = resolvedWebhook;
 
     // Normalize page / pages option and validate the page range syntax
-    if (options) {
-      if (!options.pages && options.page) {
-        options.pages = String(options.page);
-      }
-      if (options.pages) {
-        try {
-          validatePageRangeSyntax(options.pages);
-        } catch (err: any) {
-          return await fail(422, err.message, 'Unprocessable Entity');
-        }
-      }
-    }
-
-    if (tasks && Array.isArray(tasks)) {
-      let pageRangeError: string | null = null;
-      for (const t of tasks) {
-        if (t.options) {
-          if (!t.options.pages && t.options.page) {
-            t.options.pages = String(t.options.page);
-          }
-          if (t.options.pages) {
-            try {
-              validatePageRangeSyntax(t.options.pages);
-            } catch (err: any) {
-              pageRangeError = err.message;
-              break;
-            }
-          }
-        }
-      }
-      if (pageRangeError) {
-        return await fail(422, pageRangeError, 'Unprocessable Entity');
-      }
-    }
+    const pageRangeError = normalizePageRanges(options, tasks);
+    if (pageRangeError !== undefined) return await fail(422, pageRangeError, 'Unprocessable Entity');
 
     // Resolve uploadId if provided
     if (uploadId && !storageKey) {
@@ -457,6 +442,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
 
     // 1c. Validate JobGraph or adapt legacy tasks into JobGraph
+    const submittedGraph = graph;
     if (graph) {
       const graphValidation = validateJobGraph(graph, {
         userTier: auth.user.tier,
@@ -650,6 +636,14 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
           `Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`
         );
       }
+    }
+
+    // An engine the conversion does not list, or a version that is not installed, is refused before anything is reserved.
+    try {
+      await checkSubmittedEngineChoices({ sourceFormat: sourceDef.id, targetFormat: targetDef.id, options, tasks, graph: submittedGraph });
+    } catch (err) {
+      if (typedFailureOf(err) === undefined) throw err;
+      return reply(typedFailureProblem(err, instanceUri));
     }
 
     const unit = await reserveConversionUnit(auth.user, reservedUnits);

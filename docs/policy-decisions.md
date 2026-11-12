@@ -159,6 +159,7 @@ Engines
 179. [The service is measured by process metrics that each process serves on a port of its own, with closed labels and the registry's family, and its objectives are written down as starting values](#179-the-service-is-measured-by-process-metrics-that-each-process-serves-on-a-port-of-its-own-with-closed-labels-and-the-registrys-family-and-its-objectives-are-written-down-as-starting-values)
 180. [The session read answers 200 for a visitor without a session, a format list names each format by its id, and a page that does not convert words its upload card for what it does](#180-the-session-read-answers-200-for-a-visitor-without-a-session-a-format-list-names-each-format-by-its-id-and-a-page-that-does-not-convert-words-its-upload-card-for-what-it-does)
 189. [JPEG XL pictures are read by libjxl's `djxl` as a separate sandboxed program, from the bare codestream and from the container, and an animation is read as a GIF or WebP is](#189-jpeg-xl-pictures-are-read-by-libjxls-djxl-as-a-separate-sandboxed-program-from-the-bare-codestream-and-from-the-container-and-an-animation-is-read-as-a-gif-or-webp-is)
+267. [A request may name the engine of a conversion and the version it expects: each pair lists the engines that convert it, one version of each is installed, and every result names the engine and version that ran](#267-a-request-may-name-the-engine-of-a-conversion-and-the-version-it-expects-each-pair-lists-the-engines-that-convert-it-one-version-of-each-is-installed-and-every-result-names-the-engine-and-version-that-ran)
 
 Usage limits
 
@@ -523,14 +524,14 @@ Security
 
 ## 12. Engine choice and version pinning
 
-- **Status**: Decided (#703).
+- **Status**: Decided (#703). Entry 267 carries it out for one version of each engine.
 - **Decision**: callers may choose an engine and an engine version for a conversion. Every engine version is pinned in the images, and a pinned version is used until the caller or a release changes it.
 - **Why**:
   - Reproducibility: the same input and options give the same output today and next month.
   - Choice: some content renders better in a different engine, and power users need to pick it.
 - **Trade-offs**: several engine versions must be kept, with images and tests for each.
 - **Alternatives rejected**: always the newest engine, which silently changes outputs between releases.
-- **Verified by**: the tests planned with #703.
+- **Verified by**: the tests of entry 267.
 - **Revisit when**: image size or maintenance cost becomes a constraint. If so, limit the number of retained versions.
 
 ## 13. CAD input
@@ -8269,3 +8270,51 @@ Security
 - **Verified by**: `tests/dead-letter-index-redis.test.ts` on a real Redis (the keys equal what the letters say after a write, the trim, a purge, a removal and an erasure; `remove(id)` and the erasure remove exactly what a copy of the old script and the old erasure remove, for letters of every kind, mixed owners, duplicates, malformed letters and an active job, with the letters in the list, in the hashes and in both; a lone surrogate and a letter nested 1,100 levels deep are removed by the erasure (job gone or processed) and by `remove(id)`, kept for another user or a live job, and trimmed; no `LRANGE` runs once the list is empty and the erasure reads no letter of another user; the trim goes by time, in steps, and over both layouts; a migration counts without writing, moves every letter with its time, is idempotent, resumes after a failed step, does not store a letter removed between its read and its step, moves a late letter, and an erasure that runs while the whole migration happens between its two reads removes the same letters as the old erasure; Redis that fails the scripts fails the removal, the erasure and the migration with `QueueUnavailableError` and leaves the letters), and the mutations of that file: the two passes of the erasure in the other order or the list pass left out, `remove(id)` without the list scan, a removal that forgets the set of the user, a trim that does not read the order set. The file is in `test:redis`; `tests/redis-query-paths-redis.test.ts` and `tests/job-record-retention-redis.test.ts` follow the new keys.
 - **Sources**: BullMQ (taskforcesh/bullmq, MIT, 9.6k stars, read 2026-11-12): `src/commands/addStandardJob-9.lua` and `includes/storeJob.lua` (a hash per job under an id from a counter, ids in sorted sets and sets), `removeJob-2.lua` and `includes/removeJobKeys.lua` (removal by id from every key that names it), `cleanJobsInSet-3.lua` and `includes/cleanSet.lua` (`ZRANGEBYSCORE` by finish time with a limit); the data model and the scripts' shape are followed, the letter fields, the id padding and the migration are ours.
 - **Revisit when**: every deployment has run the migration (the list pass of the scripts and of the erasure can go), the dead letters get a reader that needs a page by time (the order set already serves one), or the letters of one user pass the size that one `SMEMBERS` of the set suits.
+
+## 267. A request may name the engine of a conversion and the version it expects: each pair lists the engines that convert it, one version of each is installed, and every result names the engine and version that ran
+
+- **Status**: Implemented, decided 2026-11-12 (QA request: the `TODO.md` line "Engine choice and version pinning per conversion"); nothing is deployed. It carries out entry 12 for one version of each engine.
+- **Decision**:
+  - **Eleven engines, with stable ids**: `easyconvert` (the in-process converter), `libreoffice`, `ffmpeg`, `poppler`, `7zip`, `ghostscript`, `ghostxps`, `djvulibre`, `calibre`, `librsvg` and `libraw` (`src/lib/conversions/engine-ids.ts`).
+  - **A pair lists an engine only where the worker has a route of it.** `src/worker/engine-registry.ts` reads the format tables of `executeWorkerConversion` and `convertFile` in the order those try their routes (the tables are exported from `engines.ts`, `office-suite-route.ts`, `text-pdf-route.ts` and the new `route-formats.ts`, which `convertFile` also reads for its archive and media routes), so a route and its listing cannot differ. A pair has at most one program and, where the in-process converter converts it too, the converter as the second engine; the default is the engine that runs when a request names none (`requiresNativeEngine` pairs never list the converter):
+
+    | Pairs | Engines, default first |
+    |---|---|
+    | Word, Excel, PowerPoint, OpenDocument, RTF to PDF and to each other's own formats; HTML to PDF | `libreoffice`, `easyconvert` |
+    | Text, Markdown and Hangul to PDF (the program renders only what needs its layout: CJK and complex scripts) | `easyconvert`, `libreoffice` |
+    | Documents and pictures only the office suite reads or writes (`.doc`, `.rtf`, `.xls`, page images of a document, Keynote, Visio) | `libreoffice` |
+    | PDF to PNG, JPEG, TIFF, PostScript, SVG and the encoded pictures; text and Markdown pages as images | `poppler` |
+    | PDF to text | `poppler`, `easyconvert` |
+    | PostScript and EPS; XPS and OpenXPS; DjVu to PDF and pictures | `ghostscript`; `ghostxps`; `djvulibre` |
+    | Targets only calibre writes (MOBI, AZW3, PDB, LRF, OEB) | `calibre` |
+    | Audio and video; subtitles | `ffmpeg` |
+    | WAV, FLAC and AIFF to WAV or FLAC (the converter encodes these without FFmpeg) | `ffmpeg`, `easyconvert` |
+    | SVG to PDF | `librsvg`, `easyconvert` |
+    | ZIP, TAR, GZIP, BZIP2, XZ and 7z to each other | `7zip`, `easyconvert` |
+    | RAR, ISO and the other archives the converter does not read; Zstandard is the converter's alone | `7zip`; `easyconvert` |
+    | Camera RAW; Sigma X3F; Raspberry Pi `.raw` frames (the converter tries them first, LibRaw takes the other `.raw` files) | `libraw`; `easyconvert`; `easyconvert`, `libraw` |
+    | Everything else (pictures, data, fonts, CAD, ebooks read by the converter) | `easyconvert` |
+
+  - **The request** is `options.engine` and `options.engineVersion`, on `POST /api/v1/convert`, on a job's `options`, on a pipeline task and on a graph node (the options contract is the one bag every one of those carries). With neither, the conversion runs as before: the default engine, with the fallback to the converter. **A named engine never falls back**: the worker runs only the routes of that engine (`engineAllowsRoute`); naming `easyconvert` skips every program, keeps FFmpeg out of the media converter and keeps the office suite from retrying a legacy document the strict reader refused; naming `libreoffice` renders every text and HTML source there. A named program that is missing is the 503 of any missing tool.
+  - **Refusals, with codes worded in English and Korean** (`messages/*.json`): 422 `engine_not_offered` for an id nobody knows, an engine the pair does not list, or a version without an engine, with the pair's engines in `engines`; 422 `engine_version_unavailable` for a version other than the installed one, with `engine` and `installedVersion`; 503 `engine_unavailable` for a listed engine whose program is not installed. The convert and job routes answer them before a unit is reserved, and the dispatcher checks again, so the queue and a graph node cannot run a pair an engine does not list. A graph is checked for engine ids and versions when it is submitted and for the pair when the node runs, where a refusal fails that node (a node reads the file an earlier node writes, so its pair is not known before).
+  - **One version of each engine is installed, and that is the only version a request may name** (exact string). It is read from the program: `soffice --version`, `ffmpeg -version`, `pdftoppm -v`, the 7-Zip banner, `gs --version`, `gxps -h`, `ddjvu -help`, `ebook-convert --version`, `rsvg-convert --version`, run once per process in the process sandbox without network and kept by the program's path, size and modification time; a probe that could not run is asked again after 60 seconds. LibRaw's `dcraw_emu` prints no version, so its version is that of the `libraw-bin` package in dpkg's status file (absent outside Debian, where no version can be named). The converter's version is the release in `package.json`.
+  - **Reporting**: `engine` and `engineVersion` next to `engineUsed` in the JSON answer of `POST /api/v1/convert`, as the headers `X-Engine` and `X-Engine-Version` of a raw answer, in the job view and its result, in the webhook payload, and in the result of a graph node whose conversions all ran on one engine. `engineUsed` and `fallbackReason` stay as they were. The web application's own routes drop the new fields as they drop `engineUsed`.
+  - **`GET /api/formats`** adds `engines` (every engine of the deployment with its installed version) and, with `source`, `target` or `engine`, `pairs` (the engines of each selected pair: id, name, version, `default`, `available`). The OpenAPI document, the options schema, the 422 problem fields and the response headers say the same.
+- **Why**:
+  - The reference converter's public formats API lists one row per engine for a pair (a document to PDF has an office engine and a LibreOffice row; a picture has an ImageMagick and a GraphicsMagick row), each with its versions flagged `default`, `latest` and `deprecated`, and a task names `engine` and `engine_version`. A named engine that does not convert the pair is refused. EasyConvert follows that shape with its own engines, and its single installed version is the `default` and the `latest`.
+  - Reproducibility (entry 12): a caller that pins an engine and its version learns at once, by a 422 that names the installed version, when a release changes the program.
+- **Not offered, on purpose**:
+  - The decoders the in-process converter calls for a source format (ImageMagick for PSD, XCF, TGA, HEIC and the rest, OpenJPEG, `djxl`, libheif) are chosen by the source, not alternatives to another engine for the same pair, so no pair lists them. The converter reports as `easyconvert`.
+  - Camera RAW has no in-process route except the previews and the Sigma and Raspberry Pi frames; RAR has one only for stored data. Those pairs do not list the converter.
+  - More than one version of an engine: nothing installs a second one (the cost entry 12 names), so `engineVersion` is an exact match against one.
+- **Trade-offs**:
+  - A listing is per pair and the route is per file: a request can name an engine whose route does not take this file (an Illustrator file that is PostScript, a `.raw` file that is a LibRaw one). The worker then refuses with `unsupported_pair` and names the engine, and nothing runs.
+  - A cold version probe costs a process start: on macOS 360 ms for LibreOffice on the first call, 14 to 54 ms for the other programs, 0.14 ms for all eleven once cached (median of three runs). The probe runs on the first conversion or the first `/api/formats` call of a process; a worker could ask at start.
+  - `engineVersion` is an exact string, so a caller pins `25.2.3.2`, not `25.2`.
+- **Alternatives rejected**:
+  - **Versions read from `/licenses/tool-versions.txt`** (dpkg's list written at the image build): it misses the programs built from pinned sources (FFmpeg, 7-Zip, GhostXPS) in the form the programs print, and does not exist on a developer machine or in CI.
+  - **`engine` as a top-level form field**: the options object is already the one place a convert request, a job, a task and a graph node all carry per-conversion settings.
+  - **Ignoring an engine the pair does not list**: a caller that pins an engine to reproduce a result would get another engine's file without knowing.
+- **Verified by**: `tests/engine-registry.test.ts` (the listing of 40 pairs written from the routes, the invariants over all 2,766 pairs, the version of each program from its own output, the refusals), `tests/engine-choice-dispatch.test.ts` (each listed engine of 13 sample pairs converts the sample and the result, `engineUsed` and the engine fields name it; the missing program, no fallback and the refusals), `tests/engine-choice-api.test.ts` (convert, job, pipeline task and graph node over HTTP, the 422 bodies, no unit charged, the formats API, the OpenAPI document), `tests/refusal-code-inventory.test.ts` and `tests/openapi-convert-contract.test.ts` (the new codes).
+- **Sources**: the reference converter's public formats API, read 2026-11-12 for `docx` to `pdf` (the engines `office` and `libreoffice`), `png` to `jpg` (`imagemagick`, `graphicsmagick`), `mp4` to `mp3` (`ffmpeg`, four versions), `pdf` to `png` (`pdfium`), `svg` to `pdf` (`inkscape`) and `zip` to `tar` (`archivetool`), with the `filter[engine]` and `include=engine_versions` parameters; the worker's routes (`src/worker/engines.ts`, `office-suite-route.ts`, `text-pdf-route.ts`, `src/lib/conversions/index.ts`, `media.ts`); the version output of each program as it printed on the development machine and in the tests' stand-ins.
+- **Revisit when**: a second version of an engine is installed (a list of versions with `default` and `latest` flags, as the reference lists them), the graph view carries a result for each node (so a node's engine can be read there), or a pair gains an engine the table above does not name.

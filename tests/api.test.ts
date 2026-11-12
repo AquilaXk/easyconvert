@@ -13,7 +13,7 @@ describe('API Route Logic Tests', () => {
   });
 
   it('GET /api/formats returns valid response structure', async () => {
-    const res = await getFormats();
+    const res = await getFormats(new NextRequest('http://localhost/api/formats'));
     expect(res.status).toBe(200);
 
     const data = await res.json();

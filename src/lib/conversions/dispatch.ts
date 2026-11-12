@@ -14,6 +14,9 @@ import {
 import { SandboxedTimeoutError } from '../security/process-sandbox';
 import { isCalibreEbookTarget } from './calibre-ebook-targets';
 import { requiresNativeEngine } from './native-engine-pairs';
+import { BUILT_IN_ENGINE, type EngineId } from './engine-ids';
+import { checkFfmpeg } from './media';
+import { engineOfResult, installedEngineVersion, resolveEngineChoice } from '../../worker/engine-registry';
 import { OFFICE_SUITE_SOURCE_FORMATS } from './office/office-suite-sources';
 import { checkConversionOutput } from './output-check';
 import { applyPdfPostProcessing, assertPdfPostProcessOptions, normalisePdfADates, verifyPdfA } from './index';
@@ -134,6 +137,34 @@ async function postProcessNativePdf(
 }
 
 /**
+ * The options the worker runs with. A pair only a native engine converts runs without a fallback, and a request's engine
+ * is dropped for it: its one engine is the program, and the worker's inner steps (the in-process write of an interchange file)
+ * must not be held to it. For any other pair a chosen engine reaches the worker, which runs only that engine's routes; the
+ * built-in converter also keeps FFmpeg out of the media engine, which it would otherwise run itself.
+ */
+function workerOptionsFor(src: string, tgt: string, options: WorkerEngineOptions, chosen: EngineId | undefined): WorkerEngineOptions {
+  if (requiresNativeEngine(src, tgt)) {
+    const { engine: _engine, engineVersion: _version, ...rest } = options;
+    return { ...rest, inProcessFallback: false };
+  }
+  return chosen === BUILT_IN_ENGINE ? { ...options, disableNativeEngine: true } : options;
+}
+
+/** The result with the engine that converted and its installed version, as the formats API names them. */
+async function withEngine(
+  result: WorkerConversionResult,
+  src: string,
+  tgt: string,
+  chosen: EngineId | undefined,
+  workerOptions: WorkerEngineOptions
+): Promise<WorkerConversionResult> {
+  const ffmpegRanInProcess = !workerOptions.disableNativeEngine && checkFfmpeg();
+  const engine = chosen ?? engineOfResult(src, tgt, result.engineUsed, ffmpegRanInProcess);
+  const engineVersion = await installedEngineVersion(engine);
+  return { ...result, engine, ...(engineVersion === undefined ? {} : { engineVersion }) };
+}
+
+/**
  * Single conversion dispatcher for every entry point (sync and batch APIs, graph executor,
  * queue workers).
  *
@@ -159,16 +190,16 @@ export async function dispatchConversion(
     assertPdfPostProcessOptions(options);
   }
 
-  const workerOptions: WorkerEngineOptions = requiresNativeEngine(src, tgt)
-    ? { ...options, inProcessFallback: false }
-    : options;
+  const choice = await resolveEngineChoice(src, tgt, options);
+  const workerOptions = workerOptionsFor(src, tgt, options, choice?.engine);
   let converted: WorkerConversionResult;
   try {
     converted = await executeWorkerConversion(input, src, tgt, workerOptions, originalFilename);
   } catch (err) {
     throw toEngineUnavailable(err, src, tgt);
   }
-  const result = await checkConversionOutput(await postProcessNativePdf(converted, tgt, options), src, tgt);
+  const processed = await checkConversionOutput(await postProcessNativePdf(converted, tgt, options), src, tgt);
+  const result = await withEngine(processed, src, tgt, choice?.engine, workerOptions);
 
   const keepOnDisk = !Buffer.isBuffer(input) || Boolean(options.zeroHeap) || Boolean((options as { outputPath?: string }).outputPath);
   return keepOnDisk ? result : materialize(result);

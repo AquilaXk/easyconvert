@@ -7,6 +7,8 @@ import { redactText } from '../security/redact';
  */
 
 export const ENGINE_USED_HEADER = 'X-Engine-Used';
+export const ENGINE_HEADER = 'X-Engine';
+export const ENGINE_VERSION_HEADER = 'X-Engine-Version';
 export const FALLBACK_REASON_HEADER = 'X-Fallback-Reason';
 
 /** Longest `fallbackReason` an API surface carries, ellipsis included. */
@@ -26,12 +28,18 @@ const WINDOWS_PATH = new RegExp(String.raw`\b[A-Za-z]:\\${PATH_BODY}`, 'g');
 
 export interface EngineTrace {
   engineUsed?: string;
+  /** Id of the engine that converted, as the formats API lists it. */
+  engine?: string;
+  /** Installed version of that engine. */
+  engineVersion?: string;
   fallbackReason?: string;
 }
 
 /** The engine fields of a conversion result; `fallbackChain` lists the engines that failed before it. */
 export interface EngineTraceSource {
   engineUsed?: string;
+  engine?: string;
+  engineVersion?: string;
   fallbackReason?: string;
   fallbackChain?: string[];
 }
@@ -63,6 +71,8 @@ export function publicFallbackReason(reason: string | undefined): string | undef
 export function engineTraceFields(result: EngineTraceSource): EngineTrace {
   const fields: EngineTrace = {};
   if (result.engineUsed) fields.engineUsed = result.engineUsed;
+  if (result.engine) fields.engine = result.engine;
+  if (result.engineVersion) fields.engineVersion = result.engineVersion;
   const reason = publicFallbackReason(result.fallbackReason ?? result.fallbackChain?.at(-1));
   if (reason !== undefined) fields.fallbackReason = reason;
   return fields;
@@ -73,6 +83,8 @@ export function engineTraceHeaders(result: EngineTraceSource): Record<string, st
   const fields = engineTraceFields(result);
   const headers: Record<string, string> = {};
   if (fields.engineUsed) headers[ENGINE_USED_HEADER] = fields.engineUsed;
+  if (fields.engine) headers[ENGINE_HEADER] = fields.engine;
+  if (fields.engineVersion) headers[ENGINE_VERSION_HEADER] = fields.engineVersion;
   if (fields.fallbackReason) headers[FALLBACK_REASON_HEADER] = fields.fallbackReason;
   return headers;
 }
@@ -87,6 +99,6 @@ export function withoutEngineTrace<T>(result: T, nestedAt?: string): T {
   const record = result as Record<string, unknown>;
   // A telemetry event carries the result one level down (`data.result`).
   if (nestedAt !== undefined) return { ...record, [nestedAt]: withoutEngineTrace(record[nestedAt]) } as T;
-  const { engineUsed: _engine, fallbackReason: _reason, ...rest } = record;
+  const { engineUsed: _used, engine: _engine, engineVersion: _version, fallbackReason: _reason, ...rest } = record;
   return rest as T;
 }

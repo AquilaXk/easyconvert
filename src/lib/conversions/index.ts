@@ -2,6 +2,7 @@
 import './wasm-import-wrappers';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedTargetError } from '../types';
 import { assertNotSubtitlePair } from './subtitle';
+import { isArchiveRoutePair, isMediaRoutePair } from './route-formats';
 import { FORMAT_REGISTRY, sniffMimeTypeFromMagicBytes, isFormatCompatibleWithMagicBytes } from '../registry';
 import { assertNotSpoofedFile } from '../security/file-guard';
 import {
@@ -408,43 +409,7 @@ async function convertFileInScope(
   }
 
   // 1. Archive routing (including archive sources or archive targets)
-  if (
-    srcDef.category === 'archive' ||
-    ['zip', 'tar', 'gz', 'tgz', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.7z', '7z', 'rar', 'bz2', 'bz', 'tbz', 'tbz2'].includes(tgt) ||
-    [
-      'ace',
-      'alz',
-      'arc',
-      'arj',
-      'bz',
-      'bz2',
-      'cab',
-      'cpio',
-      'deb',
-      'dmg',
-      'img',
-      'iso',
-      'jar',
-      'lha',
-      'lz',
-      'lzma',
-      'lzo',
-      'rpm',
-      'rz',
-      'tar.7z',
-      'tar.bz',
-      'tar.bz2',
-      'tar.gz',
-      'tar.lzo',
-      'tar.xz',
-      'tar.z',
-      'tbz',
-      'tbz2',
-      'tz',
-      'tzo',
-      'z',
-    ].includes(src)
-  ) {
+  if (isArchiveRoutePair(srcDef.category, src, tgt)) {
     return convertArchive(inputBuffer, src, tgt, options, originalFilename);
   }
 
@@ -454,56 +419,7 @@ async function convertFileInScope(
 
   // 2. Media (Audio & Video) routing
   if (
-    srcDef.category === 'audio' ||
-    srcDef.category === 'video' ||
-    [
-      'mp3',
-      'wav',
-      'aac',
-      'flac',
-      'ogg',
-      'opus',
-      'wma',
-      'm4a',
-      'aiff',
-      'aif',
-      'ac3',
-      'amr',
-      'au',
-      'caf',
-      'dss',
-      'm4b',
-      'oga',
-      'voc',
-      'weba',
-      'mp4',
-      'webm',
-      'mkv',
-      'avi',
-      'mov',
-      '3gp',
-      '3gpp',
-      '3g2',
-      'flv',
-      'm2ts',
-      'm4v',
-      'mod',
-      'mpeg',
-      'mpg',
-      'mts',
-      'mxf',
-      'ogv',
-      'rm',
-      'rmvb',
-      'swf',
-      'ts',
-      'vob',
-      'wmv',
-      'wtv',
-      'cavs',
-      'dv',
-      'dvr',
-    ].includes(tgt) ||
+    isMediaRoutePair(srcDef.category, tgt) ||
     (Boolean(options.thumbnail) && ['jpg', 'jpeg', 'png'].includes(tgt)) ||
     (options.subtitles?.mode === 'extract' && ['srt', 'vtt', 'ass'].includes(tgt)) ||
     Boolean(options.packaging) ||

@@ -27,6 +27,8 @@ function publicResult(result: ConversionJobResult | undefined): ConversionJobRes
   if (!result) return result;
   const view: ConversionJobResult = { ...result };
   delete view.engineUsed;
+  delete view.engine;
+  delete view.engineVersion;
   delete view.fallbackReason;
   delete view.droppedStreams;
   delete view.warnings;

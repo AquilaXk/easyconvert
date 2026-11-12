@@ -16,6 +16,8 @@ export const dispatchEngine: ConversionEnginePort = {
       mimeType: res.mimeType,
       filename: res.filename,
       engineUsed: res.engineUsed,
+      engine: res.engine,
+      engineVersion: res.engineVersion,
       executionTimeMs: res.executionTimeMs,
       filePath: res.filePath,
       metadata: res.metadata,

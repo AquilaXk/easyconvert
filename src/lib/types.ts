@@ -263,6 +263,14 @@ export interface ConversionOptions {
   disableHwaccel?: boolean;
   /** Server code and tests only (the options schema refuses it): convert in-process, as a host without FFmpeg does. */
   disableNativeEngine?: boolean;
+  /**
+   * The engine that converts: one the pair lists (`GET /api/formats?source=..&target=..`), such as `libreoffice`, `poppler`, `ffmpeg`,
+   * `7zip` or `easyconvert` (the in-process converter). Left out, the pair's default engine runs and may fall back to the
+   * in-process converter; a named engine never falls back. Another engine is refused with `engine_not_offered`.
+   */
+  engine?: string;
+  /** The version of `engine` the request expects. One version of each engine is installed; any other is refused with `engine_version_unavailable`. */
+  engineVersion?: string;
   // Office & PDF export options
   pdfStandard?: 'pdfa' | 'pdfa-1b' | 'pdfa-2b' | 'pdfa-3b';
   pdfVersion?: string;
@@ -327,6 +335,10 @@ export interface ConversionResult {
   frameUsed?: number;
   /** Link entries left out of an extraction because `skipLinks` was set. */
   skippedLinks?: string[];
+  /** Public id of the engine that converted (`libreoffice`, `ffmpeg`, `easyconvert`, ...), set by the dispatcher. */
+  engine?: string;
+  /** Version of that engine as installed; absent when the program prints none. */
+  engineVersion?: string;
   /**
    * Engine and post-processing facts about the result, such as the PDF/A verdict. A media conversion lists the
    * input streams the output lacks as `droppedStreams` (see DroppedStream). `warnings` lists, one line each,
@@ -419,6 +431,10 @@ export interface ConversionJobResult {
   frameUsed?: number;
   /** Engine that produced the output (for example `native-ffmpeg` or `internal-fallback`). */
   engineUsed?: string;
+  /** Public id of the engine that converted (`libreoffice`, `ffmpeg`, `easyconvert`, ...), as the formats API lists it. */
+  engine?: string;
+  /** Version of that engine as installed; absent when the program did not report one. */
+  engineVersion?: string;
   /** Public, redacted reason a fallback happened; absent when the first-choice engine ran. */
   fallbackReason?: string;
   /** Input streams the output lacks because the target cannot carry them; absent when nothing was left out. */
