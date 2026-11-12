@@ -42,15 +42,15 @@ export function HighQualityCard() {
       <h2 className="text-lg sm:text-xl text-ink">{t('heading')}</h2>
       <p className="mt-3 max-w-xl text-sm leading-relaxed text-ink-3">{t('intro')}</p>
 
-      <ul className="mt-4 space-y-3">
+      <ul className="mt-5 space-y-4">
         {QUALITY_ITEMS.map(({ key, Icon }) => (
           <li key={key} className="flex gap-3 text-sm leading-5 text-ink-3">
             <span className="flex size-6 shrink-0 items-center justify-center rounded-xs bg-accent/10 text-accent-ink">
               <Icon aria-hidden="true" className="size-3.5" />
             </span>
             <span>
-              <span className="font-medium text-ink">{t(`${key}.heading`)}:</span>{' '}
-              {t(`${key}.body`, { formats: REGISTRY_STATS.formatCount, categories: REGISTRY_STATS.categoryCount })}
+              <span className="block font-medium text-ink">{t(`${key}.heading`)}</span>
+              <span className="mt-1 block">{t(`${key}.body`, { formats: REGISTRY_STATS.formatCount, categories: REGISTRY_STATS.categoryCount })}</span>
             </span>
           </li>
         ))}
@@ -66,14 +66,15 @@ export function SecurityDataHandlingCard() {
       <h2 className="text-lg sm:text-xl text-ink">{t('heading')}</h2>
       <p className="mt-3 max-w-xl text-sm leading-relaxed text-ink-3">{t('intro')}</p>
 
-      <ul className="mt-4 space-y-3">
+      <ul className="mt-5 space-y-4">
         {SECURITY_ITEMS.map(({ key, Icon }) => (
           <li key={key} className="flex gap-3 text-sm leading-5 text-ink-3">
             <span className="flex size-6 shrink-0 items-center justify-center rounded-xs bg-accent/10 text-accent-ink">
               <Icon aria-hidden="true" className="size-3.5" />
             </span>
             <span>
-              <span className="font-medium text-ink">{t(`${key}.heading`)}:</span> {t(`${key}.body`)}
+              <span className="block font-medium text-ink">{t(`${key}.heading`)}</span>
+              <span className="mt-1 block">{t(`${key}.body`)}</span>
             </span>
           </li>
         ))}

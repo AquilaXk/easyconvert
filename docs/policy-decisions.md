@@ -8471,6 +8471,7 @@ Security
 - **Decision**:
   - **The home page's hero is the title and intro centred over the upload card**, with no pair of format tiles beside them (`HomeHero`, `src/components/Hero.tsx`). The DOCX to PDF tiles with the round swap between them, which opened a pair page when changed, are gone with `HomeFormatPicker`.
   - **A converter page keeps its tiles** (`PairHero`): there they name the pair the page converts and change it, and the pair pages, the format list and the menus still reach every pair.
+  - **Each item of the security and quality lists puts its heading on a line of its own and the sentence under it** (`HomeEditorialSections`), as the second reference converter lays out its feature items (a heading, then the sentence 8 px under it), not a bold label run into the sentence; QA compared both on 2026-11-13 and chose the separate line.
   - This supersedes the home part of entry 139, which kept the tiles as matching their reference.
 - **Why**: Two square tiles with an icon and a format name, a round swap control and thin connecting lines repeated the reference converter's home page nearly element for element, which goes beyond following a reference's shared patterns. The home page already works the way the QA decision of 2026-11-02 set it (upload first, the target picked after the file), so the tiles were a second, decorative way in.
 - **Trade-offs**: A visitor who wants a pair page from the home page uses the format list under the card or the tools menu instead of the tiles.
