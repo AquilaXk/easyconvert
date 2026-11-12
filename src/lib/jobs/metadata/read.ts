@@ -2,9 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
-import { PDFDict, PDFDocument, PDFHexString, PDFName, PDFString } from 'pdf-lib';
+import { PDFDict, PDFHexString, PDFName, PDFString, type PDFDocument } from 'pdf-lib';
 import { inspectPdfEncryption } from '../../conversions/pdf-encryption';
 import { PDF_LIB_OBJECTS_PER_TICK } from '../../conversions/pdf-access';
+import { loadPdfLibDocument } from '../../conversions/pdf-lib-load';
 import { readZipDirectory, readZipFiles } from '../../conversions/archive-zip-reader';
 import { childElements, firstChild, ownText, parseXmlTree, type XmlElement } from '../../conversions/xml-tree';
 import { FFPROBE_TIMEOUT_MS, resolveFfprobeBinary } from '../../conversions/media-ffprobe';
@@ -154,7 +155,7 @@ async function readPdf(buf: Buffer, report: MetadataReport): Promise<void> {
     return;
   }
   // The library stamps its own producer and modification date on a document it loads, unless told not to: that would be reported as the file's.
-  const doc = await PDFDocument.load(buf, { updateMetadata: false, parseSpeed: PDF_LIB_OBJECTS_PER_TICK });
+  const doc = await loadPdfLibDocument(buf, { updateMetadata: false, parseSpeed: PDF_LIB_OBJECTS_PER_TICK });
   put(pdf, 'PageCount', doc.getPageCount());
   const size = doc.getPageCount() > 0 ? doc.getPage(0).getSize() : undefined;
   put(pdf, 'PageWidth', size ? Number(size.width.toFixed(2)) : undefined);
