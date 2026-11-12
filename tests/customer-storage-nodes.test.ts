@@ -1,6 +1,7 @@
 import dns, { type LookupAddress } from 'node:dns';
 import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Job } from '../src/lib/queue/bullmq-engine';
 import { exportToCustomerStorage, importFromCustomerStorage } from '../src/lib/queue/graph/node-storage-io';
@@ -443,10 +444,18 @@ describe('customer storage nodes against an S3-compatible bucket', () => {
 
 // skip-ok: environment probe; a host without the OpenSSH client has no real client to drive (CI images carry it).
 describe.skipIf(!fs.existsSync('/usr/bin/sftp'))('import.sftp from a server that states a size it does not keep to', () => {
-  const scratch = () => fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('easyconvert-sftp-down-'));
+  /** The scratch directory of this test alone, so a test of another file that stages a file at the same time does not count. */
+  let scratchRoot: string;
+  const scratch = () => fs.readdirSync(scratchRoot);
+
+  beforeEach(() => {
+    scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sftp-node-scratch-'));
+    vi.stubEnv('TMPDIR', scratchRoot);
+  });
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    fs.rmSync(scratchRoot, { recursive: true, force: true });
     planLimit.fileBytes = undefined;
   });
 
@@ -459,7 +468,6 @@ describe.skipIf(!fs.existsSync('/usr/bin/sftp'))('import.sftp from a server that
       sftp.files.set('/data/in/big.bin', Buffer.alloc(3 * 1024 * 1024, 1));
       sftp.statedSizes.set('/data/in/big.bin', 100);
       planLimit.fileBytes = 1024;
-      const before = scratch();
       const node = sealGraphNode(
         { op: 'import.sftp', credentials: { host: sftp.host, port: sftp.port, username: 'tester', privateKey: sftp.clientPrivateKey, hostKey: sftp.hostPublicKey, basePath: '/data' }, path: 'in/big.bin' } as ImportSftpNode,
         JOB_ID
@@ -469,7 +477,7 @@ describe.skipIf(!fs.existsSync('/usr/bin/sftp'))('import.sftp from a server that
 
       expect(refusalCodeOf(failure)).toBe('input_over_limit');
       expect((failure as { retryable: boolean }).retryable).toBe(false);
-      expect(scratch()).toEqual(before);
+      expect(scratch()).toEqual([]);
       expect(await storageProvider.stat(`intermediate/${GRAPH_ID}/${NODE_ID}/0/big.bin`)).toBeNull();
     } finally {
       await sftp.close();

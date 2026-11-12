@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Readable } from 'node:stream';
 import { SFTP_DEV_ENDPOINT_ALLOWLIST_ENV, SftpStorageAdapter } from '../src/lib/storage/adapters/sftp';
@@ -93,14 +94,16 @@ describe.skipIf(!CLIENT_AVAILABLE)('SftpStorageAdapter with the OpenSSH client a
     const adapter = new SftpStorageAdapter(credentials());
     stub.files.set(`${BASE_PATH}/reports/big.bin`, Buffer.alloc(3 * 1024 * 1024, 7));
     stub.statedSizes.set(`${BASE_PATH}/reports/big.bin`, 100);
-    const scratchBefore = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('easyconvert-sftp-down-'));
+    const scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sftp-scratch-'));
+    vi.stubEnv('TMPDIR', scratchRoot);
 
     expect((await adapter.head('reports/big.bin'))?.size).toBe(100);
     await expect(adapter.downloadStream('reports/big.bin', { maxBytes: 1024 })).rejects.toMatchObject({ name: StorageSizeLimitError.name, maxBytes: 1024 });
 
-    expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('easyconvert-sftp-down-'))).toEqual(scratchBefore);
+    expect(fs.readdirSync(scratchRoot)).toEqual([]);
     const whole = await readAll(await adapter.downloadStream('reports/big.bin', { maxBytes: 4 * 1024 * 1024 }));
     expect(whole.length).toBe(3 * 1024 * 1024);
+    fs.rmSync(scratchRoot, { recursive: true, force: true });
   });
 
   it('refuses a directory with more files than the limit instead of listing it short', async () => {
