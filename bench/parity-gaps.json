@@ -1,30 +1,5 @@
 {
   "schemaVersion": 1,
-  "gaps": [
-    {
-      "id": "image/jxl-noise.jxl->jpg/bd_rate_psnr",
-      "issue": 641,
-      "ratio": null,
-      "note": "JPEG encoder on a noisy picture: +5.24% bits at equal PSNR (SSIM BD-rate is 4.06% better); the same pixels from a PNG give the same bytes, so it is not the JXL path",
-      "recorded": 5.2391,
-      "reference": 0
-    },
-    {
-      "id": "image/jxl-noise.jxl->jpg/psnr",
-      "issue": 641,
-      "ratio": null,
-      "note": "point of the curve above: judged with bd_rate_psnr because the sizes differ, so it follows that row",
-      "recorded": 28.241,
-      "reference": 29.94
-    },
-    {
-      "id": "image/jxl-noise.jxl->jpg/ssim",
-      "issue": 641,
-      "ratio": null,
-      "note": "point of the curve above: judged with bd_rate_psnr because the sizes differ, so it follows that row",
-      "recorded": 0.90566,
-      "reference": 0.91896
-    }
-  ],
+  "gaps": [],
   "acceptedSlowdowns": []
 }

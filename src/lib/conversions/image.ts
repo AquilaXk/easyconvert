@@ -9,6 +9,7 @@ import { flattenColour, isNeutralColour, letterboxColour, OPAQUE_IMAGE_TARGETS, 
 import { buildTiffOptions } from './image-tiff-options';
 import { encodePsd, PSD_MAX_SIDE, type PsdChannels } from './psd-writer';
 import { decodeBmp, encodeBmp8 } from './bmp';
+import { jpegPipelineOf } from './image-jpeg-pipeline';
 import { buildJpegPdf, planJpegPassthrough } from './pdf-jpeg-passthrough';
 import { choosesPngFilter, classifyContent, classifyRaster, eightBitPngOptions, palettePngLevel, quantizesInScript, writesPalettePng, type ContentClass, type Raster } from './image-content';
 import {
@@ -17,7 +18,7 @@ import {
   FALLBACK_QUALITY,
   type AvifEncoder,
   clampQuality,
-  jpegOptionsFor, pngQualityAsPalette,
+  pngQualityAsPalette,
   webpOptionsFor,
 } from './image-encoder-defaults';
 import {
@@ -2064,8 +2065,7 @@ async function convertImage(
             { quality }
           );
         } else {
-          const keepsGrey = staysGrey(inputSpace, background);
-          const jpeg = (keepsGrey ? pipeline.toColourspace('b-w') : pipeline).jpeg(jpegOptionsFor(options.quality, content, keepsGrey));
+          const jpeg = await jpegPipelineOf(pipeline, { options, content, inputSpace, background, decoded, source: src, resize: resizeOptions });
           outputBuffer = await withPipelineThreads(() => jpeg.toBuffer());
         }
         mimeType = 'image/jpeg';

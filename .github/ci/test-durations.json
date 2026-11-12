@@ -517,6 +517,8 @@
   "tests/image-metadata-overhead.test.ts": 1.6,
   "tests/image-multipage-postscript.test.ts": 10.3,
   "tests/image-multipage-sources.test.ts": 0.7,
+  "tests/image-noise-content.test.ts": 0.4,
+  "tests/image-noisy-jpeg-parity.test.ts": 1.5,
   "tests/image-odg-output.test.ts": 0.2,
   "tests/image-old-style-jpeg-tiff.test.ts": 7,
   "tests/image-option-validation-and-errors.test.ts": 0,
