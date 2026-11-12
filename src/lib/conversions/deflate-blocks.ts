@@ -46,18 +46,46 @@ function deflatePiece(piece: Uint8Array, level: number, dictionary: Uint8Array |
   });
 }
 
-/** Raw deflate stream of `data` at a zlib level (0 to 9); a buffer of at most one block is compressed in one piece. */
-export async function deflateRawInBlocks(data: Uint8Array, level: number): Promise<Buffer> {
-  const pieces = Math.max(1, Math.ceil(data.length / DEFLATE_BLOCK_BYTES));
+/** Raw deflate stream of `data` at a zlib level (0 to 9), in blocks of `blockBytes`; a buffer of at most one block is compressed in one piece. */
+export async function deflateRawInBlocks(data: Uint8Array, level: number, blockBytes = DEFLATE_BLOCK_BYTES): Promise<Buffer> {
+  const pieces = Math.max(1, Math.ceil(data.length / blockBytes));
   if (pieces === 1) return deflatePiece(data, level, undefined, true);
   const jobs: Promise<Buffer>[] = [];
   for (let index = 0; index < pieces; index++) {
-    const start = index * DEFLATE_BLOCK_BYTES;
-    const end = Math.min(data.length, start + DEFLATE_BLOCK_BYTES);
+    const start = index * blockBytes;
+    const end = Math.min(data.length, start + blockBytes);
     const dictionary = index === 0 ? undefined : data.subarray(Math.max(0, start - DICTIONARY_BYTES), start);
     jobs.push(deflatePiece(data.subarray(start, end), level, dictionary, index === pieces - 1));
   }
   return Buffer.concat(await Promise.all(jobs));
+}
+
+const ZLIB_HEADER_BEST = Uint8Array.of(0x78, 0xda);
+const ZLIB_HEADER_DEFAULT = Uint8Array.of(0x78, 0x9c);
+const ZLIB_HEADER_FASTEST = Uint8Array.of(0x78, 0x01);
+const ADLER_BYTES = 4;
+
+/** Adler-32 of `bytes`, from the trailer of a zlib stream of stored blocks: the library computes it at memory speed, where a loop in script costs as much as a compression of the same bytes. */
+function adler32(bytes: Uint8Array): number {
+  const stream = zlib.deflateSync(bytes, { level: 0 });
+  return stream.readUInt32BE(stream.length - ADLER_BYTES);
+}
+
+function zlibHeader(level: number): Uint8Array {
+  if (level >= 9) return ZLIB_HEADER_BEST;
+  return level < 2 ? ZLIB_HEADER_FASTEST : ZLIB_HEADER_DEFAULT;
+}
+
+/** The zlib stream (RFC 1950) around the raw deflate stream of `data`: the header zlib writes for `level` (a stream of another encoder is framed as the level it is closest to) and the Adler-32 of `data`. */
+export function zlibFrame(deflated: Uint8Array, data: Uint8Array, level: number): Buffer {
+  const trailer = Buffer.alloc(ADLER_BYTES);
+  trailer.writeUInt32BE(adler32(data));
+  return Buffer.concat([zlibHeader(level), deflated, trailer]);
+}
+
+/** One zlib stream of `data` at a zlib level (0 to 9), its deflate stream written in parallel blocks ({@link deflateRawInBlocks}) when `data` is longer than one block. */
+export async function zlibInBlocks(data: Uint8Array, level: number, blockBytes = DEFLATE_BLOCK_BYTES): Promise<Buffer> {
+  return zlibFrame(await deflateRawInBlocks(data, level, blockBytes), data, level);
 }
 
 /** Raw deflate stream of `data` at a product level (the mapping of {@link zlibLevelFor}). */

@@ -10,7 +10,7 @@ import { buildTiffOptions } from './image-tiff-options';
 import { encodePsd, PSD_MAX_SIDE, type PsdChannels } from './psd-writer';
 import { decodeBmp } from './bmp';
 import { buildJpegPdf, planJpegPassthrough } from './pdf-jpeg-passthrough';
-import { choosesPngFilter, classifyContent, classifyRaster, eightBitPngOptions, palettePngLevel, writesPalettePng, type ContentClass, type Raster } from './image-content';
+import { choosesPngFilter, classifyContent, classifyRaster, eightBitPngOptions, palettePngLevel, quantizesInScript, writesPalettePng, type ContentClass, type Raster } from './image-content';
 import {
   AVIF_EFFORT,
   AVIF_TUNE,
@@ -2108,11 +2108,7 @@ async function convertImage(
         }
         if (writesPalettePng(options)) {
           const colours = Math.min(256, Math.max(2, options.colors || 256));
-          if (
-            options.quantizer === 'oklab' ||
-            options.ditherMethod === 'riemersma' ||
-            options.ditherMethod === 'blue-noise'
-          ) {
+          if (quantizesInScript(options)) {
             await assertPixelBudgetBeforeDecode(pipeline, options, QUANTIZER_PIXEL_BUDGET);
             const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
 

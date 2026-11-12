@@ -1,11 +1,10 @@
-import zlib from 'node:zlib';
-import { promisify } from 'node:util';
 import type { Sharp } from 'sharp';
 import { executeSandboxedBinary, rethrowSandboxUnavailable, SandboxedProcessError } from '../security/process-sandbox';
 import type { ConversionOptions } from '../types';
 import { findDecoderTool, loggableDiagnostic } from './image-decoder-tools';
 import { maxInputPixels } from './image-input-limits';
 import { rgbaRaster, writtenSizeOf } from './image-rgba-raster';
+import { deflateIndexedRows } from './png-indexed-deflate';
 import { chunkOf, readChunks } from './png-photo-bands';
 
 /**
@@ -51,7 +50,6 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0
 const IHDR_BYTES = 13;
 /** The chunks of the template that the writer replaces; every other one tells how the picture looks and is kept. */
 const REPLACED_CHUNKS = new Set(['IHDR', 'PLTE', 'tRNS', 'IDAT', 'IEND']);
-const deflate = promisify(zlib.deflate);
 
 export interface IndexedPicture {
   width: number;
@@ -149,9 +147,9 @@ function scanlinesOf(picture: IndexedPicture, depth: 1 | 2 | 4 | 8): Buffer {
 /**
  * The indexed PNG of a quantised picture. `template` is a PNG made from the same pipeline whatever its size: its chunks other than the
  * header, the palette, the transparency and the pixel data go into the file, ahead of the palette, so that the profile, the EXIF block
- * and the resolution are the ones the image library writes. `level` is the deflate level of the rows, which are written without filters.
+ * and the resolution are the ones the image library writes. The rows are written without filters and deflated by `deflateIndexedRows`.
  */
-export async function writeIndexedPng(picture: IndexedPicture, template: Buffer, level: number): Promise<Buffer> {
+export async function writeIndexedPng(picture: IndexedPicture, template: Buffer, signal?: AbortSignal): Promise<Buffer> {
   const { width, height, palette, indices } = picture;
   const colours = palette.length / RGBA_CHANNELS;
   if (!Number.isInteger(colours) || colours < 1 || colours > MAX_COLOURS) throw new Error(`The palette of ${palette.length} bytes does not hold 1 to ${MAX_COLOURS} entries.`);
@@ -178,7 +176,7 @@ export async function writeIndexedPng(picture: IndexedPicture, template: Buffer,
   for (const chunk of readChunks(template).filter((kept) => !REPLACED_CHUNKS.has(kept.type))) pieces.push(chunk.bytes);
   pieces.push(chunkOf('PLTE', [entries]));
   if (transparent > 0) pieces.push(chunkOf('tRNS', [alphas.subarray(0, transparent)]));
-  pieces.push(chunkOf('IDAT', [await deflate(scanlinesOf(picture, depth), { level })]), chunkOf('IEND', []));
+  pieces.push(chunkOf('IDAT', [await deflateIndexedRows(scanlinesOf(picture, depth), signal)]), chunkOf('IEND', []));
   return Buffer.concat(pieces);
 }
 
@@ -186,7 +184,7 @@ export interface PalettePngRequest {
   colours: number;
   /** Whether the request dithers; the level is `QUANTIZR_DITHER_LEVEL`. */
   dither: boolean;
-  /** The deflate level of the rows (`palettePngLevel`). */
+  /** The deflate level of the image library's own file, which a worker without the program or a failed run writes (`palettePngLevel`); the program's file has its own deflater. */
   level: number;
   options: ConversionOptions;
   /** The most pixels the program is given; a larger picture is left to the image library. */
@@ -210,7 +208,7 @@ export async function quantizedPalettePng(pipeline: Sharp, request: PalettePngRe
   });
   if (picture === null) return null;
   const template = await pipeline.clone().extract({ left: 0, top: 0, width: 1, height: 1 }).png({ palette: true, compressionLevel: 0 }).toBuffer();
-  return writeIndexedPng(picture, template, request.level);
+  return writeIndexedPng(picture, template, request.options.signal);
 }
 
 /**
