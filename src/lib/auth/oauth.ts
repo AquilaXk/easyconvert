@@ -285,7 +285,7 @@ const GOOGLE_ID_TOKEN_ISSUERS: ReadonlySet<unknown> = new Set(['https://accounts
 function assertIdTokenMatches(idToken: unknown, expectedNonce: string, clientId: string, subject: unknown): void {
   const claims = idTokenClaims(idToken);
   if (!GOOGLE_ID_TOKEN_ISSUERS.has(claims.iss)) throw new Error('Security violation: Google ID token was not issued by Google');
-  if (typeof claims.exp !== 'number' || claims.exp * 1000 <= Date.now()) throw new Error('Security violation: Google ID token has expired');
+  if (typeof claims.exp !== 'number' || !Number.isFinite(claims.exp) || claims.exp * 1000 <= Date.now()) throw new Error('Security violation: Google ID token has expired');
   const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
   if (claims.nonce !== expectedNonce) throw new Error('Security violation: Google ID token nonce does not match this sign-in');
   if (!audiences.includes(clientId)) throw new Error('Security violation: Google ID token was issued for another client');
