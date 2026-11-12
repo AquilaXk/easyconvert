@@ -44,6 +44,22 @@ export const AUTH_ERROR_CODES = [
 export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];
 
 /**
+ * Why a billing route (`/api/billing/**`) refused: billing is not configured on this server, the plan asked for is not one that
+ * is sold, the account already has a plan, it has no subscription to manage, the payment provider could not be reached, or a
+ * webhook's signature did not verify. The status of each is in src/lib/api/billing-refusal.ts.
+ */
+export const BILLING_REFUSAL_CODES = [
+  'billing_unavailable',
+  'billing_provider_failed',
+  'invalid_plan',
+  'already_subscribed',
+  'no_subscription',
+  'invalid_signature',
+] as const;
+
+export type BillingRefusalCode = (typeof BILLING_REFUSAL_CODES)[number];
+
+/**
  * Why a route of the dashboard (`/api/account/files/**`, `/api/keys/**`, `/api/webhooks/dlq/**`) refused, where its status
  * cannot say it: a key without the `*` scope a route requires, a key requested without accepting the terms in force, key
  * settings or a grace period out of range, or a key that could not be made. The access check (401, 403, 429, 503) and an unknown id (404) are worded by their status.
