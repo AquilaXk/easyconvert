@@ -421,9 +421,14 @@ jobs:
         env:
           ORACLE_STRICT_MODE: "1"
           P7ZIP_PATH: ${{ steps.seven-zip.outputs.path }}
+        # The nightly speed suites are left out here, as the shard planner leaves them out.
         run: |
-          npx --no-install vitest run \
-            tests/*archive* tests/*7z* tests/*rar* tests/worker-seven-zip-packaging.test.ts
+          shopt -s nullglob
+          files=()
+          for file in tests/*archive* tests/*7z* tests/*rar* tests/worker-seven-zip-packaging.test.ts; do
+            [[ "$file" == *.perf.* ]] || files+=("$file")
+          done
+          npx --no-install vitest run "${files[@]}"
 
       # Kept separate from `npm test`: some suites assume no Redis is configured.
       - name: Run Redis-mode queue tests
