@@ -25,7 +25,7 @@ describe('the options dialog of a raster to SVG pair', () => {
   it('shows the tracer options in English and none of the picture options', () => {
     const text = visibleText(dialog({}));
     expect(phrasesMissing(text, ['Vector Tracing', 'Preset', 'Mode', 'Advanced'])).toEqual([]);
-    expect(phrasesPresent(text, ['Compression Quality', 'Width (px)', 'Resize Fit', 'Strip EXIF'])).toEqual([]);
+    expect(phrasesPresent(text, ['Quality', 'Width (px)', 'Resize Fit', 'Strip EXIF'])).toEqual([]);
   });
 
   it('shows them in Korean', () => {
@@ -35,7 +35,7 @@ describe('the options dialog of a raster to SVG pair', () => {
 
   it('keeps the picture options for other image targets', () => {
     const text = visibleText(dialog({}, 'en', 'webp'));
-    expect(phrasesMissing(text, ['Compression Quality'])).toEqual([]);
+    expect(phrasesMissing(text, ['Quality'])).toEqual([]);
     expect(phrasesPresent(text, ['Vector Tracing', 'Advanced'])).toEqual([]);
   });
 
@@ -143,14 +143,14 @@ describe('the preset and mode radio lists', () => {
     const { container } = await mount({}, 'ko');
     expect(radiosOf(container, '프리셋').map(({ label, description }) => [label, description])).toEqual([
       ['사용 안 함', ''],
-      ['흑백', '흑백 선화에 알맞아요.'],
-      ['포스터', '색이 적은 평면 그래픽에 알맞아요.'],
-      ['사진', '사진에 알맞아요.'],
+      ['흑백', '흑백 선화에 알맞습니다.'],
+      ['포스터', '색이 적은 평면 그래픽에 알맞습니다.'],
+      ['사진', '사진에 알맞습니다.'],
     ]);
     expect(radiosOf(container, '곡선 방식').map(({ label, description }) => [label, description])).toEqual([
-      ['스플라인', '부드러운 곡선으로 그려요.'],
-      ['다각형', '곧은 모서리로 그려요.'],
-      ['픽셀', '픽셀 경계를 그대로 살려요. 픽셀 아트에 알맞아요.'],
+      ['스플라인', '부드러운 곡선으로 그립니다.'],
+      ['다각형', '곧은 모서리로 그립니다.'],
+      ['픽셀', '픽셀 경계를 그대로 살립니다. 픽셀 아트에 알맞습니다.'],
     ]);
   });
 
@@ -336,7 +336,7 @@ describe('the fields the engine ignores', () => {
     }
     const korean = await mount({ vectorize: { mode: 'polygon' } }, 'ko');
     await expand(korean);
-    expect(phrasesMissing(textUnder(korean), ['스플라인 곡선 방식에만 적용돼요.'])).toEqual([]);
+    expect(phrasesMissing(textUnder(korean), ['스플라인 곡선 방식에만 적용됩니다.'])).toEqual([]);
   });
 
   it('greys out color precision, slider and number field, under the black and white preset and says why', async () => {

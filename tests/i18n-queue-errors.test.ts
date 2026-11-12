@@ -100,8 +100,8 @@ describe('a refusal of /api/convert reads in the page language, without the serv
 
   it('words an answer with no code it knows by its status class, never with its text', () => {
     const alertOf = (problem: Record<string, unknown>, locale: TestLocale) => renderedFailure({ code: 'server', problem }, locale).alert;
-    expect(alertOf({ error: 'Unsupported target format "xyz".', status: 400 }, 'ko')).toBe('요청을 처리하지 못했어요. 입력한 내용과 고른 설정을 확인해 주세요.');
-    expect(alertOf({ error: 'Worker pool exploded.', status: 500 }, 'ko')).toBe('문제가 생겼어요. 잠시 후 다시 시도해 주세요.');
+    expect(alertOf({ error: 'Unsupported target format "xyz".', status: 400 }, 'ko')).toBe('요청을 처리하지 못했습니다. 입력한 내용과 고른 설정을 확인하세요.');
+    expect(alertOf({ error: 'Worker pool exploded.', status: 500 }, 'ko')).toBe('문제가 생겼습니다. 잠시 후 다시 시도하세요.');
     expect(alertOf({ error: 'Worker pool exploded.', status: 500 }, 'en')).toBe('Something went wrong on our side. Try again.');
     expect(alertOf({ success: false, error: 'Too many requests', status: 429 }, 'en')).toBe('Too many requests in a short time. Wait a moment and try again.');
     expect(alertOf({ status: 409 }, 'en')).toBe('The request was refused. Check what you entered and the settings you chose.');
@@ -140,7 +140,7 @@ describe('the failures the client decides read in the page language', () => {
   });
 
   it('words a browser-only conversion that failed in the browser', () => {
-    expect(renderedFailure({ code: 'clientEdgeFailed' }, 'ko').alert).toBe('브라우저에서 이 파일을 변환하지 못했어요. 브라우저에서만 변환하도록 설정돼 있어서 파일은 기기 밖으로 보내지 않았어요.');
+    expect(renderedFailure({ code: 'clientEdgeFailed' }, 'ko').alert).toBe('브라우저에서 이 파일을 변환하지 못했습니다. 브라우저에서만 변환하도록 설정돼 있어서 파일은 기기 밖으로 보내지 않았습니다.');
     expect(renderedFailure({ code: 'clientEdgeFailed' }, 'en').alert).toBe('The browser could not convert this file. It stays on your device, because it is set to convert in the browser only.');
   });
 });
@@ -148,7 +148,7 @@ describe('the failures the client decides read in the page language', () => {
 describe('a job that failed on the worker reads as one sentence', () => {
   it('shows the generic job sentence and no HTTP status', () => {
     const failure: ConversionFailure = { code: 'jobFailed' };
-    expect(renderedFailure(failure, 'ko').alert).toBe('서버에서 변환하지 못했어요. 변환을 눌러 다시 시도하거나 다른 형식을 골라 주세요.');
+    expect(renderedFailure(failure, 'ko').alert).toBe('서버에서 변환하지 못했습니다. 변환을 눌러 다시 시도하거나 다른 형식을 선택하세요.');
     expect(renderedFailure(failure, 'en').alert).toBe('The conversion failed on the server. Select Convert to try again, or try another format.');
   });
 

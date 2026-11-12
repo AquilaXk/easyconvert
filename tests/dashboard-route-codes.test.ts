@@ -214,11 +214,11 @@ describe('a dashboard route', () => {
       await answer(await createKey(request('/api/keys', { method: 'POST', cookie, body: { acceptedTermsVersion: '2020-01-01' } }))),
     ];
     expect(refusals.map(({ body, status }) => worded('ko', body, status))).toEqual([
-      '계속하려면 로그인해 주세요.',
-      '찾는 항목이 더 이상 없어요.',
-      'API 키 설정을 확인해 주세요. 이름, 권한 범위, 주소 목록, 만료일 중 맞지 않는 값이 있어요.',
-      'API 키를 만들려면 이용약관에 동의해 주세요.',
-      '이 페이지를 연 뒤에 이용약관이 바뀌었어요. 페이지를 새로 고친 뒤 다시 동의해 주세요.',
+      '계속하려면 로그인하세요.',
+      '찾는 항목이 더 이상 없습니다.',
+      'API 키 설정을 확인하세요. 이름, 권한 범위, 주소 목록, 만료일 중 맞지 않는 값이 있습니다.',
+      'API 키를 만들려면 이용약관에 동의하세요.',
+      '이 페이지를 연 뒤에 이용약관이 바뀌었습니다. 페이지를 새로 고친 뒤 다시 동의하세요.',
     ]);
     for (const { body, status } of refusals) expect(worded('en', body, status)).not.toContain(String(body.error));
   });

@@ -247,7 +247,7 @@ describe('the dashboard page rendered on the server', () => {
     expect(text(doc.querySelector('main h1'))).toBe('Developer Dashboard');
     expect(text(doc.querySelector('main'))?.includes(`Reader (${user.email})`)).toBe(true);
     const tabs = doc.querySelector('main [role=tablist]')!.querySelectorAll('[role=tab]');
-    expect([...tabs].map(text)).toEqual(['Developer API Keys', 'My Converted Files1', 'Failed webhooks1', 'Usage & Rate Limits']);
+    expect([...tabs].map(text)).toEqual(['API keys', 'Converted files1', 'Failed webhooks1', 'Usage and limits']);
     expect(doc.querySelectorAll('main tbody tr').length).toBe(1);
     expect(text(doc.querySelector('main tbody tr'))?.startsWith('first-key')).toBe(true);
     expect(doc.querySelectorAll('main output .animate-spin').length).toBe(0);

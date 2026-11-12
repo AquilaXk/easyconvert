@@ -71,7 +71,7 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
   it('words the concurrency limit with its number and no English sentence', async () => {
     const { status, body } = await bodyOf(concurrencyLimitResponse(5, '/api/convert'));
     expect(status).toBe(429);
-    expect(worded(useProblemWording, 'ko', body, status)).toBe('동시에 진행할 수 있는 변환은 5개예요. 하나가 끝난 뒤 다시 시도해 주세요.');
+    expect(worded(useProblemWording, 'ko', body, status)).toBe('동시에 진행할 수 있는 변환은 5개입니다. 하나가 끝난 뒤 다시 시도하세요.');
   });
 
   it('words the plan limit of a file from the plan and the size the 413 names', async () => {
@@ -119,14 +119,14 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
     const { status, body } = await conversionsShort(3, 2);
     expect(worded(useProblemWording, 'en', body, status)).toBe('This job needs 3 conversions, and 2 are left today.');
     const korean = worded(useProblemWording, 'ko', body, status);
-    expect(korean).toBe('이 작업에는 변환이 3회 필요한데 오늘 남은 횟수는 2회예요.');
+    expect(korean).toBe('이 작업에는 변환이 3회 필요한데 오늘 남은 횟수는 2회입니다.');
     expectKorean(korean, 'conversions short');
     expect(worded(useProblemWording, 'en', (await conversionsShort(5, 1)).body, status)).toBe('This job needs 5 conversions, and 1 is left today.');
   });
 
   it('words a job refused once the day has no conversion left by the daily limit', async () => {
     const { status, body } = await conversionsShort(1, 0);
-    expect(worded(useProblemWording, 'ko', body, status)).toBe(`오늘 변환 한도 ${FREE_DAILY_CONVERSIONS}회를 모두 썼어요. 내일 다시 시도해 주세요.`);
+    expect(worded(useProblemWording, 'ko', body, status)).toBe(`오늘 변환 한도 ${FREE_DAILY_CONVERSIONS}회를 모두 썼습니다. 내일 다시 시도하세요.`);
   });
 
   it('words a file larger than what the day has left for link imports by what is left, in both locales', async () => {
@@ -136,7 +136,7 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
     const korean = worded(useProblemWording, 'ko', body, status);
     expectKorean(korean, 'larger than left');
     expect(korean).toContain('30 MB');
-    expect(korean).not.toContain('모두 썼어요');
+    expect(korean).not.toContain('모두 썼습니다');
   });
 
   it('words an answer it does not know by its status class, and never shows the server text of either', () => {
@@ -151,18 +151,18 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
   });
 
   const UNTYPED = { success: false, error: 'File record not found or not owned by user.' };
-  const ACTION = '파일을 지우지 못했어요.';
-  const CHECK_VALUES = '요청을 처리하지 못했어요. 입력한 내용과 고른 설정을 확인해 주세요.';
+  const ACTION = '파일을 지우지 못했습니다.';
+  const CHECK_VALUES = '요청을 처리하지 못했습니다. 입력한 내용과 고른 설정을 확인하세요.';
 
   it.each([
-    [401, '계속하려면 로그인해 주세요.'],
-    [403, '이 계정으로는 할 수 없는 작업이에요.'],
-    [404, '찾는 항목이 더 이상 없어요.'],
-    [405, '요청을 보내는 방식이 맞지 않아요.'],
-    [413, '파일이 한 번에 보낼 수 있는 크기보다 커요.'],
-    [415, '이 종류의 파일은 여기에 올릴 수 없어요.'],
-    [429, '짧은 시간에 요청이 너무 많았어요. 잠시 후 다시 시도해 주세요.'],
-    [503, '서비스를 잠시 사용할 수 없어요. 잠시 후 다시 시도해 주세요.'],
+    [401, '계속하려면 로그인하세요.'],
+    [403, '이 계정으로는 할 수 없는 작업입니다.'],
+    [404, '찾는 항목이 더 이상 없습니다.'],
+    [405, '요청을 보내는 방식이 맞지 않습니다.'],
+    [413, '파일이 한 번에 보낼 수 있는 크기보다 큽니다.'],
+    [415, '이 종류의 파일은 여기에 올릴 수 없습니다.'],
+    [429, '짧은 시간에 요청이 너무 많았습니다. 잠시 후 다시 시도하세요.'],
+    [503, '서비스를 잠시 사용할 수 없습니다. 잠시 후 다시 시도하세요.'],
   ])('words an answer without a problem type by the one cause its %i names by default, never by the server text', (status, sentence) => {
     expect(worded(useProblemWording, 'ko', UNTYPED, status, ACTION)).toBe(sentence);
   });
@@ -182,7 +182,7 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
   });
 
   const NGINX_BURST = { success: false, error: 'Too many requests' };
-  const RATE_LIMITED_KO = '짧은 시간에 요청이 너무 많았어요. 잠시 후 다시 시도해 주세요.';
+  const RATE_LIMITED_KO = '짧은 시간에 요청이 너무 많았습니다. 잠시 후 다시 시도하세요.';
 
   it('reads the nginx burst limit (an untyped 429) as a short wait on the queue, not as the daily limit', () => {
     const failure: ConversionFailure = { code: 'server', problem: { ...NGINX_BURST, status: 429 } };
@@ -203,13 +203,13 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
       }), locale);
       return select(queue, 'p', 'role', 'alert').map(visibleText);
     };
-    expect(alert('ko')).toEqual(['ZIP 파일을 만들지 못했어요. 다시 시도해 주세요.']);
+    expect(alert('ko')).toEqual(['ZIP 파일을 만들지 못했습니다. 다시 시도하세요.']);
     expect(alert('en')).toEqual(['Could not build the ZIP archive.']);
   });
 
   it('words a refusal of a known type by its sentence, not by the server text', () => {
     const quota = { type: `${PROBLEM}quota-exceeded`, detail: 'The daily limit of 50 conversions is used up.', dailyLimit: 50 };
-    expect(worded(useProblemWording, 'ko', quota, 429)).toBe('오늘 변환 한도 50회를 모두 썼어요. 내일 다시 시도해 주세요.');
+    expect(worded(useProblemWording, 'ko', quota, 429)).toBe('오늘 변환 한도 50회를 모두 썼습니다. 내일 다시 시도하세요.');
     const plan = { type: `${PROBLEM}payload-too-large`, detail: 'File size 3 GiB exceeds the 1 GiB limit.', plan: 'free', sizeBytes: 3 * 1024 ** 3 };
     expect(worded(useProblemWording, 'ko', plan, 413)).not.toContain(plan.detail);
     const down = { type: `${PROBLEM}service-unavailable`, detail: 'Redis at /var/run/redis.sock is down.' };
@@ -218,9 +218,9 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
 
   it('words a refusal that names no known type as "check what you entered", and a failure by the action that failed', () => {
     const conflict = { type: `${PROBLEM}conflict`, status: 409, detail: 'The file is still being written and cannot be deleted yet.' };
-    expect(worded(useProblemWording, 'ko', conflict, 409, '파일을 지우지 못했어요.')).toBe(CHECK_VALUES);
+    expect(worded(useProblemWording, 'ko', conflict, 409, '파일을 지우지 못했습니다.')).toBe(CHECK_VALUES);
     const broken = { type: `${PROBLEM}bad-gateway`, status: 502, detail: 'upstream /srv/engine died' };
-    expect(worded(useProblemWording, 'ko', broken, 502, '파일을 지우지 못했어요.')).toBe('파일을 지우지 못했어요.');
+    expect(worded(useProblemWording, 'ko', broken, 502, '파일을 지우지 못했습니다.')).toBe('파일을 지우지 못했습니다.');
   });
 });
 
@@ -269,14 +269,14 @@ describe('link import refusals', () => {
       expectKorean(worded(useUrlImportErrorWording, 'ko', { code, error: 'English text', status: 404 }, 400), code);
     }
     expect(worded(useUrlImportErrorWording, 'ko', { code: 'remote_error', remoteStatus: 404, error: 'x' }, 400)).toBe(
-      '링크의 사이트가 파일을 보내 주지 않았어요. 브라우저에서 링크가 파일을 여는지 확인해 주세요.'
+      '링크의 사이트가 파일을 보내 주지 않았습니다. 브라우저에서 링크가 파일을 여는지 확인하세요.'
     );
   });
 
   it('words an answer without a known code by its status, never with the server text', () => {
     const korean = worded(useUrlImportErrorWording, 'ko', { error: 'Upstream said no.' }, 400);
     expectKorean(korean, 'unknown');
-    expect(korean).toBe('요청을 처리하지 못했어요. 입력한 내용과 고른 설정을 확인해 주세요.');
+    expect(korean).toBe('요청을 처리하지 못했습니다. 입력한 내용과 고른 설정을 확인하세요.');
     expectKorean(worded(useUrlImportErrorWording, 'ko', { error: 'Upstream said no.' }, 502), 'server failure');
   });
 });
@@ -372,7 +372,7 @@ describe('sign-in refusals are worded by their code', () => {
     expect(untyped).not.toContain('Email and password');
     expect(untyped).not.toBe(worded(useAuthErrorWording, 'ko', { code: 'missing_fields' }, 400));
     for (const status of [400, 401, 403, 429, 503]) {
-      expect(worded(useAuthErrorWording, 'ko', { error: 'Rejected.' }, status), String(status)).toBe('로그인하지 못했어요. 다시 시도해 주세요.');
+      expect(worded(useAuthErrorWording, 'ko', { error: 'Rejected.' }, status), String(status)).toBe('로그인하지 못했습니다. 다시 시도하세요.');
     }
   });
 });

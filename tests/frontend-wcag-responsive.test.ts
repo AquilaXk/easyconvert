@@ -166,7 +166,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     const imageText = visibleText(imageModal);
     expect(
       phrasesMissing(imageText, [
-        'Compression Quality',
+        'Quality',
         'Width (px)',
         'Height (px)',
         'Strip EXIF, GPS, and camera metadata',
@@ -315,7 +315,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     const dlqDialogs = select(dlqModal, 'dialog');
     expect(dlqDialogs).toHaveLength(1);
     expect(attrOf(dlqDialogs[0], 'aria-labelledby')).toBe('dlq-payload-dialog-title');
-    expect(phrasesMissing(visibleText(dlqModal), ['Inspect Webhook Payload', 'Upstream gateway timeout', 'Replay Now'])).toEqual([]);
+    expect(phrasesMissing(visibleText(dlqModal), ['Webhook payload', 'Upstream gateway timeout', 'Replay now'])).toEqual([]);
   });
 
   it('distinguishes unselected, ready, converting, and error states in ConversionQueue with semantic progress and output elements', () => {
@@ -454,9 +454,9 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       phrasesMissing(visibleText(accessibilityRoute.dom), [
         'Accessibility Statement',
         'WCAG',
-        'Keyboard Navigation',
-        'Screen Reader Landmarks',
-        'Visual Contrast, Motion & Zoom',
+        'Keyboard navigation',
+        'Screen readers',
+        'Contrast, motion and zoom',
       ])
     ).toEqual([]);
   });

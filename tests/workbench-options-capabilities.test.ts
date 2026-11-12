@@ -429,7 +429,7 @@ describe('Workbench media, document, and tabular capability model', () => {
       expect(getPasswordValidationError('txt', '7z', badPw)).toBe('forbiddenChars');
       expect(getPasswordValidationError('pdf', 'txt', badPw)).toBe('forbiddenChars');
     }
-    expect(tPassword('forbiddenChars')).toBe('Passwords cannot contain line breaks, null bytes, or invalid Unicode.');
+    expect(tPassword('forbiddenChars')).toBe('Passwords cannot contain line breaks or invalid characters.');
     expect(getPasswordValidationError('txt', '7z', 'a'.repeat(257))).toBe('tooLong');
     expect(getPasswordValidationError('pdf', 'txt', 'a'.repeat(257))).toBe('tooLong');
     expect(tPassword('tooLong')).toBe('Passwords must be 256 characters or fewer.');

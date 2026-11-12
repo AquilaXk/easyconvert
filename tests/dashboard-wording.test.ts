@@ -115,10 +115,10 @@ describe('a refused dashboard request', () => {
   };
 
   it.each([
-    [401, 'Unauthorized: Authentication required.', '계속하려면 로그인해 주세요.', 'Sign in to continue.'],
-    [403, 'Forbidden: API key lacks admin wildcard (*) scope to clear DLQ.', '이 계정으로는 할 수 없는 작업이에요.', 'This action is not allowed for your account.'],
-    [429, 'Too many requests', '짧은 시간에 요청이 너무 많았어요. 잠시 후 다시 시도해 주세요.', 'Too many requests in a short time. Wait a moment and try again.'],
-    [503, 'Storage unavailable.', '서비스를 잠시 사용할 수 없어요. 잠시 후 다시 시도해 주세요.', 'The service is temporarily unavailable. Try again shortly.'],
+    [401, 'Unauthorized: Authentication required.', '계속하려면 로그인하세요.', 'Sign in to continue.'],
+    [403, 'Forbidden: API key lacks admin wildcard (*) scope to clear DLQ.', '이 계정으로는 할 수 없는 작업입니다.', 'This action is not allowed for your account.'],
+    [429, 'Too many requests', '짧은 시간에 요청이 너무 많았습니다. 잠시 후 다시 시도하세요.', 'Too many requests in a short time. Wait a moment and try again.'],
+    [503, 'Storage unavailable.', '서비스를 잠시 사용할 수 없습니다. 잠시 후 다시 시도하세요.', 'The service is temporarily unavailable. Try again shortly.'],
   ])('words a %i answer of a route (a body without a problem type) by its status, not as "try again"', async (status, error, korean, english) => {
     const ko = await mountDashboard('ko', answerWith(status, error));
     await ko.controller.handleClearDlq();
@@ -137,9 +137,9 @@ describe('a refused dashboard request', () => {
     };
     const reported: string[] = [];
     const dashboard = await mountController('ko', refusingReads, (report) => useFilesAndDlqController(true, (error) => { if (error) reported.push(error); }), (c) => c.dlqEntries.length === 1);
-    await vi.waitFor(() => expect(reported).toContain('변환한 파일을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.'));
+    await vi.waitFor(() => expect(reported).toContain('변환한 파일을 불러오지 못했습니다. 잠시 후 다시 시도하세요.'));
     await dashboard.controller.handleReplayWebhook('d-1');
-    await vi.waitFor(() => expect(dashboard.controller.dlqFeedback).toBe('웹훅을 다시 전송하지 못했어요.'));
+    await vi.waitFor(() => expect(dashboard.controller.dlqFeedback).toBe('웹훅을 다시 전송하지 못했습니다.'));
     root?.unmount();
 
     const keysRefused = (url: string) =>
@@ -151,7 +151,7 @@ describe('a refused dashboard request', () => {
   it('says a file that is already gone is gone, and drops its row', async () => {
     const ko = await mountDashboard('ko', answerWith(404, 'File record not found or not owned by user.'));
     await ko.controller.handleDeleteFile('f-1');
-    expect(ko.reported()).toBe('이미 삭제된 파일이에요.');
+    expect(ko.reported()).toBe('이미 삭제된 파일입니다.');
     await vi.waitFor(() => expect(ko.controller.userFiles).toHaveLength(0));
     root?.unmount();
     const en = await mountDashboard('en', answerWith(404, 'File record not found or not owned by user.'));
@@ -163,7 +163,7 @@ describe('a refused dashboard request', () => {
   it('says a failed webhook that is already gone is gone, and drops its row', async () => {
     const ko = await mountDashboard('ko', answerWith(404, 'Entry not found.'));
     await ko.controller.handleDeleteDlq('d-1');
-    expect(ko.reported()).toBe('이미 삭제된 웹훅이에요.');
+    expect(ko.reported()).toBe('이미 삭제된 웹훅입니다.');
     await vi.waitFor(() => expect(ko.controller.dlqEntries).toHaveLength(0));
     root?.unmount();
     const en = await mountDashboard('en', answerWith(404, 'Entry not found.'));
@@ -197,7 +197,7 @@ describe('a refused dashboard request', () => {
       await vi.waitFor(() => expect(ko.controller.state.revokingKeyId).toBe('k-1'));
       ko.controller.actions.onConfirmRevoke('k-1');
       await vi.waitFor(() => expect(ko.controller.state.apiKeys.map((key) => key.id)).toEqual(['k-2']));
-      expect(ko.reported()).toBe('이 API 키는 더 이상 없어요.');
+      expect(ko.reported()).toBe('이 API 키는 더 이상 없습니다.');
       expect(ko.controller.state.revokingKeyId).toBeNull();
       root?.unmount();
       const en = await mountKeys('en', notFound());
@@ -234,7 +234,7 @@ describe('a refused dashboard request', () => {
       const ko = await mountKeys('ko', new Response(JSON.stringify(routeBody('Failed to revoke.')), { status: 500 }));
       ko.controller.actions.onRequestRevoke('k-1');
       ko.controller.actions.onConfirmRevoke('k-1');
-      await vi.waitFor(() => expect(ko.reported()).toBe('API 키를 폐기하지 못했어요. 잠시 후 다시 시도해 주세요.'));
+      await vi.waitFor(() => expect(ko.reported()).toBe('API 키를 폐기하지 못했습니다. 잠시 후 다시 시도하세요.'));
       expect(ko.controller.state.apiKeys).toHaveLength(2);
       expect(ko.controller.state.revokingKeyId).toBe('k-1');
     });
@@ -255,7 +255,7 @@ describe('a refused dashboard request', () => {
       let reported: string | null = null;
       const report = (error: string | null) => { reported = error; };
       await mountController('ko', answerKeyRoutes(answer(), listed()), () => useApiKeysController(true, report), () => true);
-      await vi.waitFor(() => expect(reported).toBe('계속하려면 로그인해 주세요.'));
+      await vi.waitFor(() => expect(reported).toBe('계속하려면 로그인하세요.'));
     });
 
     const submit = async (create: Response, locale: TestLocale = 'ko') => {
@@ -267,18 +267,18 @@ describe('a refused dashboard request', () => {
     };
 
     it.each([
-      [429, '짧은 시간에 요청이 너무 많았어요. 잠시 후 다시 시도해 주세요.'],
-      [503, '서비스를 잠시 사용할 수 없어요. 잠시 후 다시 시도해 주세요.'],
+      [429, '짧은 시간에 요청이 너무 많았습니다. 잠시 후 다시 시도하세요.'],
+      [503, '서비스를 잠시 사용할 수 없습니다. 잠시 후 다시 시도하세요.'],
     ])('words a key creation answered with an untyped %i by the one cause it names', async (status, sentence) => {
       expect(await submit(untyped(status, 'Too many requests'))).toBe(sentence);
     });
 
     it('words a key creation the route refused for its settings by the code, and an untyped 400 as "check what you entered"', async () => {
-      expect(await submit(coded(400, 'invalid_key_settings', "Invalid scope 'admin'."))).toBe('API 키 설정을 확인해 주세요. 이름, 권한 범위, 주소 목록, 만료일 중 맞지 않는 값이 있어요.');
+      expect(await submit(coded(400, 'invalid_key_settings', "Invalid scope 'admin'."))).toBe('API 키 설정을 확인하세요. 이름, 권한 범위, 주소 목록, 만료일 중 맞지 않는 값이 있습니다.');
       root?.unmount();
-      expect(await submit(untyped(400, "Invalid scope 'admin'."))).toBe('요청을 처리하지 못했어요. 입력한 내용과 고른 설정을 확인해 주세요.');
+      expect(await submit(untyped(400, "Invalid scope 'admin'."))).toBe('요청을 처리하지 못했습니다. 입력한 내용과 고른 설정을 확인하세요.');
       root?.unmount();
-      expect(await submit(untyped(500, 'connect ECONNREFUSED'))).toBe('API 키를 만들지 못했어요. 잠시 후 다시 시도해 주세요.');
+      expect(await submit(untyped(500, 'connect ECONNREFUSED'))).toBe('API 키를 만들지 못했습니다. 잠시 후 다시 시도하세요.');
     });
   });
 
@@ -316,7 +316,7 @@ describe('a refused dashboard request', () => {
   it('keeps the row and words the deletion that failed with a 500, not as a fault of the service in general', async () => {
     const ko = await mountDashboard('ko', answerWith(500, 'Failed to delete file.'));
     await ko.controller.handleDeleteFile('f-1');
-    expect(ko.reported()).toBe('파일을 삭제하지 못했어요. 잠시 후 다시 시도해 주세요.');
+    expect(ko.reported()).toBe('파일을 삭제하지 못했습니다. 잠시 후 다시 시도하세요.');
     expect(ko.controller.userFiles).toHaveLength(1);
     root?.unmount();
     const en = await mountDashboard('en', answerWith(500, 'Failed to delete file.'));
@@ -329,7 +329,7 @@ describe('a refused dashboard request', () => {
     const files = answerWith(0, '');
     const dashboard = await mountDashboard('ko', (url, method) => (method === 'GET' ? files(url, method) : new Response(JSON.stringify(typed), { status: 400 })));
     await dashboard.controller.handleDeleteFile('f-1');
-    expect(dashboard.reported()).toBe('요청을 처리하지 못했어요. 입력한 내용과 고른 설정을 확인해 주세요.');
+    expect(dashboard.reported()).toBe('요청을 처리하지 못했습니다. 입력한 내용과 고른 설정을 확인하세요.');
   });
 });
 

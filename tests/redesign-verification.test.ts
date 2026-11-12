@@ -262,7 +262,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(sections.map(visibleText)).toEqual([
       'File Converter',
       'Select your file to convert',
-      'Supported Format Directory',
+      'Supported formats',
       'Security & Data Handling',
       'API & batch jobs',
       'Conversion quality',

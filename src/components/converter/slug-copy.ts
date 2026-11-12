@@ -59,7 +59,7 @@ function formatPageFiles(t: SlugCopyTranslator, name: SlugName): string {
 /**
  * How each language lists names: "PNG, JPG, and GIF" in English, "PNG, JPG, GIF" in Korean, whose sentences end the list
  * with 등 or 형식으로 where the list format of the language would join the last name with the written 및. A sentence of one
- * option subject reads without 등 ("구분 기호 옵션을 정할 수 있어요.", "Options include the delimiter.").
+ * option subject reads without 등 ("구분 기호 옵션을 정할 수 있습니다.", "Options include the delimiter.").
  */
 const LIST_OF: Readonly<Record<AppLocale, (items: readonly string[]) => string>> = {
   en: (items) => new Intl.ListFormat('en', { type: 'conjunction' }).format(items),

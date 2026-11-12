@@ -24,7 +24,7 @@ const BANNED_CLAIMS: Readonly<Record<TestLocale, readonly RegExp[]>> = {
     /\bin[- ](?:browser )?memory\b|browser memory/i,
   ],
   ko: [
-    /(?:보관|저장)하지 않아요/,
+    /(?:보관|저장)하지 않(?:아요|습니다)/,
     /클라우드에는 (?:올리지|저장하지)/,
     /손실 없이 래스터화|화질 손실 없이/,
     /고음질로|정밀하게/,
@@ -98,14 +98,14 @@ describe('the interface copy', () => {
     expect(claimsIn('en', 'formatSpecs.csv.desc', 'Lossless conversion of every table')).toBe(true);
     const claims = {
       en: ['Converted directly in your browser.', 'Zero data retention guaranteed.', 'High-fidelity media transcoding.', '100% In-Browser Execution', 'X-Zero-Data-Retention: true', 'Fast, accurate file conversions.', 'Accurate image structure translation', 'Preserves container layout', 'Vector artwork preservation in PDF', 'Converts precisely.', 'Supported pairs run locally in browser memory.', 'Files are processed in-memory.', 'Standard lossless conversion parameters apply.', 'Crisp rasterized PNG graphic'],
-      ko: ['파일은 보관하지 않아요.', '고음질로 인코딩해요.', '휘발성 메모리', '모든 처리를 브라우저에서 실행', '빠르고 정확하게 변환해요.', '구조를 정확하게 변환', '벡터 아트워크를 PDF로 보존', '빠르게 해결할게요.', '브라우저 메모리에서 바로 처리해요.', '기본 무손실 변환 설정이 적용돼요.', '선명한 PNG 이미지로 래스터화'],
+      ko: ['파일은 보관하지 않습니다.', '파일은 보관하지 않아요.', '고음질로 인코딩합니다.', '휘발성 메모리', '모든 처리를 브라우저에서 실행', '빠르고 정확하게 변환합니다.', '구조를 정확하게 변환', '벡터 아트워크를 PDF로 보존', '빠르게 해결하겠습니다.', '브라우저 메모리에서 바로 처리합니다.', '기본 무손실 변환 설정이 적용됩니다.', '선명한 PNG 이미지로 래스터화'],
     } as const;
     for (const locale of ['en', 'ko'] as const) {
       for (const sample of claims[locale]) expect(claimsIn(locale, 'converterPage.sample', sample), sample).toBe(true);
     }
     const notClaims = {
       en: [['converterPage.sample', 'Does converting PNG to JPG preserve layout and quality?'], ['features.sample', 'Breakfast menus and steadfast rules'], ['formatSpecs.mp4.desc', 'Supports fast-start web playback'], ['options.audio.codecs.flac', 'FLAC (Lossless)']],
-      ko: [['formatDescriptions.pdfa', '장기 보존용으로 특화된 ISO 표준 PDF예요.']],
+      ko: [['formatDescriptions.pdfa', '장기 보존용으로 특화된 ISO 표준 PDF입니다.']],
     } as const;
     for (const locale of ['en', 'ko'] as const) {
       for (const [key, sample] of notClaims[locale]) expect(claimsIn(locale, key, sample), sample).toBe(false);

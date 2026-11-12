@@ -19,7 +19,7 @@ const LOCALES: readonly TestLocale[] = ['en', 'ko'];
 const FIRST_SENTENCE_MAX = 120;
 const INTRO_MAX = 160;
 
-const firstSentence = (text: string) => text.split(/(?<=[.요])\s/)[0];
+const firstSentence = (text: string) => text.split(/(?<=\.)\s/)[0];
 
 const registeredPairs = Object.keys(FORMAT_REGISTRY)
   .flatMap((source) =>
@@ -34,16 +34,16 @@ const categoryPages = Object.keys(CATEGORY_WORDS).map((word) => `${word}-convert
 describe('the intro of a converter page', () => {
   it.each([
     ['png-to-jpg', 'en', 'Convert PNG files to JPG online. Other targets include WEBP, AVIF, TIFF, GIF, and BMP. Options include image size, quality, and metadata removal.'],
-    ['png-to-jpg', 'ko', 'PNG 파일을 JPG 형식으로 온라인에서 변환해요. WEBP, AVIF, TIFF, GIF, BMP 형식으로도 바꿀 수 있어요. 옵션에서 이미지 크기, 품질, 메타데이터 제거 등을 정할 수 있어요.'],
+    ['png-to-jpg', 'ko', 'PNG 파일을 JPG 형식으로 온라인에서 변환합니다. WEBP, AVIF, TIFF, GIF, BMP 형식으로도 바꿀 수 있습니다. 옵션에서 이미지 크기, 품질, 메타데이터 제거 등을 정할 수 있습니다.'],
     ['mp4-to-mp3', 'en', 'Extract the sound of MP4 files as MP3 files online. Other targets include WEBM, MKV, AVI, and MOV. Options include bitrate, sample rate, and audio channels.'],
     ['docx-to-pdf', 'en', 'Convert DOCX files to PDF online. Other targets include HTML, TXT, MD, EPUB, and ODT.'],
     ['pdf-to-docx', 'en', 'Convert PDF files to DOCX online. Other targets include HTML, MD, RTF, TXT, and EPUB.'],
     ['csv-to-xlsx', 'en', 'Convert CSV files to XLSX online. Other targets include JSON, TSV, PARQUET, HTML, and YAML.'],
     ['jpeg-to-png', 'en', 'Convert JPEG files to PNG online. Other targets include WEBP, AVIF, TIFF, GIF, and BMP. Options include image size, quality, and metadata removal.'],
     ['video-converter', 'en', 'Convert videos online. Targets include WEBM, MKV, AVI, MOV, and MP3.'],
-    ['video-converter', 'ko', '동영상 파일을 온라인에서 변환해요. WEBM, MKV, AVI, MOV, MP3 등으로 바꿀 수 있어요.'],
+    ['video-converter', 'ko', '동영상 파일을 온라인에서 변환합니다. WEBM, MKV, AVI, MOV, MP3 등으로 바꿀 수 있습니다.'],
     ['ttf-converter', 'en', 'Convert TTF fonts online. Targets include WOFF, WOFF2, EOT, OTF, and SVG.'],
-    ['ttf-converter', 'ko', 'TTF 글꼴 파일을 온라인에서 변환해요. WOFF, WOFF2, EOT, OTF, SVG 등으로 바꿀 수 있어요.'],
+    ['ttf-converter', 'ko', 'TTF 글꼴 파일을 온라인에서 변환합니다. WOFF, WOFF2, EOT, OTF, SVG 등으로 바꿀 수 있습니다.'],
     ['dxf-converter', 'en', 'Convert DXF drawings online. Targets include PDF, SVG, PNG, ZIP, and JPG.'],
   ] as const)('of %s in %s says what it converts, other targets and the options', (slug, locale, intro) => {
     expect(slugPageCopy(slug, locale).description).toBe(intro);
@@ -51,10 +51,10 @@ describe('the intro of a converter page', () => {
 
   it.each([
     ['video-converter', 'en', 'Convert videos online.'],
-    ['video-converter', 'ko', '동영상 파일을 온라인에서 변환해요.'],
+    ['video-converter', 'ko', '동영상 파일을 온라인에서 변환합니다.'],
     ['document-converter', 'en', 'Convert documents online.'],
     ['image-converter', 'en', 'Convert images online.'],
-    ['image-converter', 'ko', '이미지 파일을 온라인에서 변환해요.'],
+    ['image-converter', 'ko', '이미지 파일을 온라인에서 변환합니다.'],
   ] as const)('of the category page %s in %s names the category once', (slug, locale, lead) => {
     expect(firstSentence(slugPageCopy(slug, locale).description)).toBe(lead);
   });
@@ -148,8 +148,8 @@ describe('the options a pair page names', () => {
 
   it.each([
     ['png-to-hocr', 'en', 'Options include the text recognition.'],
-    ['png-to-hocr', 'ko', '문자 인식 옵션을 정할 수 있어요.'],
-    ['png-to-jpg', 'ko', '옵션에서 이미지 크기, 품질, 메타데이터 제거 등을 정할 수 있어요.'],
+    ['png-to-hocr', 'ko', '문자 인식 옵션을 정할 수 있습니다.'],
+    ['png-to-jpg', 'ko', '옵션에서 이미지 크기, 품질, 메타데이터 제거 등을 정할 수 있습니다.'],
   ] as const)('of %s in %s reads naturally with one subject or several', (slug, locale, sentence) => {
     expect(slugPageCopy(slug, locale).description.endsWith(sentence), slugPageCopy(slug, locale).description).toBe(true);
   });

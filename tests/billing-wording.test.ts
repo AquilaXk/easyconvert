@@ -27,9 +27,9 @@ describe('the wording of a billing refusal', () => {
 
   it('words a refusal by its code, with none of the English the route sent', () => {
     const refusal = { success: false, code: 'already_subscribed', error: 'This account already has a paid plan. Change or cancel it from the billing portal.' };
-    expect(worded('ko', refusal, 409)).toBe('이미 유료 요금제를 쓰고 있어요. 구독 관리에서 변경하거나 해지할 수 있어요.');
+    expect(worded('ko', refusal, 409)).toBe('이미 유료 요금제를 쓰고 있습니다. 구독 관리에서 변경하거나 해지할 수 있습니다.');
     expect(worded('en', refusal, 409)).toBe('You already have a paid plan. Change or cancel it under Manage subscription.');
-    expect(worded('ko', { success: false, code: 'billing_unavailable', error: 'Paid plans are not available on this server.' }, 503)).toBe('유료 요금제는 아직 이용할 수 없어요.');
+    expect(worded('ko', { success: false, code: 'billing_unavailable', error: 'Paid plans are not available on this server.' }, 503)).toBe('유료 요금제는 아직 이용할 수 없습니다.');
   });
 
   it('falls back to the sentence of the action for an answer with no code it knows', () => {
@@ -49,9 +49,9 @@ describe('the Korean billing copy', () => {
     }
   });
 
-  it('is polite 해요체 and names no payment provider', () => {
+  it('is written in 합니다체 or ~하세요 and names no payment provider', () => {
     const messages = testMessages('ko');
     for (const text of [...leaves(messages.billing), ...leaves(messages.errors.billing)]) expect(text, text).not.toMatch(/Paddle/i);
-    for (const text of leaves(messages.errors.billing)) expect(text, text).toMatch(/(요|죠)\.$/);
+    for (const text of leaves(messages.errors.billing)) expect(text, text).toMatch(/(니다|세요)\.$/);
   });
 });

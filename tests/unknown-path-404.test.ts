@@ -231,8 +231,8 @@ describe('the parser reads a pair as a page exactly when the registry offers it'
 
 describe('the page a path with no page shows', () => {
   const WORDING: Record<TestLocale, { code: string; title: (route: string) => string; description: string; home: string }> = {
-    en: { code: '404', title: (route) => `The route ${route} could not be found.`, description: 'Sorry, the page you are looking for could not be found.', home: '/' },
-    ko: { code: '404', title: () => '페이지를 찾을 수 없어요.', description: '주소가 잘못됐거나 페이지가 옮겨졌어요.', home: '/ko' },
+    en: { code: '404', title: (route) => `The page ${route} could not be found.`, description: 'Sorry, the page you are looking for could not be found.', home: '/' },
+    ko: { code: '404', title: () => '페이지를 찾을 수 없습니다.', description: '주소가 잘못되었거나 페이지가 옮겨졌습니다.', home: '/ko' },
   };
   const render = (locale: TestLocale, pathname: string) => {
     request.pathname = pathname;
@@ -288,7 +288,7 @@ describe('the page a path with no page shows', () => {
 
   it.each([
     ['en', 'Page not found | EasyConvert'],
-    ['ko', '페이지를 찾을 수 없어요 | EasyConvert'],
+    ['ko', '페이지를 찾을 수 없습니다 | EasyConvert'],
   ] as const)('titles the page in %s as not found, not as the home page', async (locale, title) => {
     request.locale = locale;
     const metadata = await notFoundMetadata();

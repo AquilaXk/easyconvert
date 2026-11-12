@@ -363,18 +363,18 @@
       "signOut": "Sign Out",
       "sectionsLabel": "Dashboard sections",
       "tabs": {
-        "api": "Developer API Keys",
-        "files": "My Converted Files",
+        "api": "API keys",
+        "files": "Converted files",
         "dlq": "Failed webhooks",
-        "usage": "Usage & Rate Limits"
+        "usage": "Usage and limits"
       }
     },
     "files": {
-      "heading": "Recent Conversion Files",
+      "heading": "Recent files",
       "intro": "Temporary output files are deleted after download or when their retention timer expires.",
       "refresh": "Refresh",
-      "emptyHeading": "No active conversion files",
-      "emptyBody": "Files converted via your account or API keys appear here with a live automatic expiration countdown.",
+      "emptyHeading": "No converted files",
+      "emptyBody": "Files you convert with your account or API keys appear here.",
       "openWorkbench": "Open the converter",
       "columns": {
         "name": "File Name",
@@ -390,36 +390,36 @@
       "deleteLabel": "Delete {name}"
     },
     "quota": {
-      "used": "Daily API Requests Used",
+      "used": "API requests used today",
       "allowed": "/ {limit, number} allowed",
-      "remaining": "Remaining Quota",
+      "remaining": "Remaining today",
       "callsLeft": "calls left",
-      "remainingNote": "Counts authenticated REST requests. Output files are deleted automatically.",
-      "reset": "Daily Reset",
-      "resetNote": "Daily API counters reset automatically at midnight UTC."
+      "remainingNote": "Counts authenticated API requests. Result files are deleted automatically.",
+      "reset": "Resets daily",
+      "resetNote": "Counts reset daily at midnight UTC."
     },
     "keys": {
-      "heading": "API Secret Keys",
-      "intro": "Create and revoke scoped keys for backend scripts and webhook pipelines.",
-      "generate": "Generate New Key",
+      "heading": "API keys",
+      "intro": "Create and revoke keys for scripts and webhooks, each with its own scopes.",
+      "generate": "New key",
       "defaultName": "Production API Key",
-      "createHeading": "Create New API Key",
-      "name": "Key Name",
-      "namePlaceholder": "Production Backend Worker",
+      "createHeading": "New API key",
+      "name": "Key name",
+      "namePlaceholder": "Production backend",
       "scopesLegend": "Scopes",
       "scopes": {
-        "convertWrite": "{scope} (Upload & Convert)",
-        "convertRead": "{scope} (Job Status & Polling)",
-        "storageDownload": "{scope} (Output Artifacts)"
+        "convertWrite": "{scope} (upload and convert)",
+        "convertRead": "{scope} (job status)",
+        "storageDownload": "{scope} (download results)"
       },
       "scopesRequired": "Select at least one scope to generate a key.",
-      "expiry": "Key Expiration",
+      "expiry": "Key expiry",
       "expiryChoices": {
-        "30d": "30 Days",
-        "60d": "60 Days",
-        "90d": "90 Days",
-        "1y": "1 Year",
-        "never": "Never (No Expiration)"
+        "30d": "30 days",
+        "60d": "60 days",
+        "90d": "90 days",
+        "1y": "1 year",
+        "never": "No expiry"
       },
       "expiryNote": "A <code>key.expiring_soon</code> webhook fires 7 days before expiration.",
       "acceptTerms": "I accept the <link>terms of service</link>.",
@@ -427,14 +427,14 @@
       "cancel": "Cancel",
       "generated": {
         "label": "Generated API key",
-        "copiedAnnouncement": "API secret key copied to clipboard.",
-        "generatedAnnouncement": "API key generated.",
-        "heading": "API Key Generated",
+        "copiedAnnouncement": "Secret key copied.",
+        "generatedAnnouncement": "API key created.",
+        "heading": "API key created",
         "body": "Copy this secret key now. Only the key hash is stored and the secret is not shown again.",
         "inputLabel": "Generated API secret key",
         "copyLabel": "Copy generated API key",
         "copied": "Copied",
-        "copy": "Copy Key",
+        "copy": "Copy key",
         "dismiss": "Dismiss"
       },
       "table": {
@@ -445,11 +445,11 @@
         "emptyHeading": "No API keys created yet",
         "emptyBody": "Generate an API key to authenticate programmatic conversion requests.",
         "columns": {
-          "name": "Name & Scopes",
-          "prefix": "Key Prefix",
+          "name": "Name and scopes",
+          "prefix": "Key prefix",
           "created": "Created",
           "expires": "Expires",
-          "lastUsed": "Last Used",
+          "lastUsed": "Last used",
           "status": "Status",
           "actions": "Actions"
         },
@@ -469,7 +469,7 @@
     },
     "dlq": {
       "heading": "Failed webhooks",
-      "failedCount": "{count} Failed",
+      "failedCount": "{count} failed",
       "intro": "Webhooks that could not be delivered after every retry. Inspect a payload or send it again.",
       "refresh": "Refresh",
       "clear": "Clear all",
@@ -480,7 +480,7 @@
         "event": "Event",
         "target": "Target URL",
         "status": "Status",
-        "failedAt": "Failed At",
+        "failedAt": "Failed at",
         "retries": "Retries",
         "actions": "Actions"
       },
@@ -491,45 +491,45 @@
       "replay": "Replay",
       "deleteLabel": "Delete failed webhook {id}",
       "dialog": {
-        "heading": "Inspect Webhook Payload",
+        "heading": "Webhook payload",
         "close": "Close payload viewer",
         "target": "Target URL",
-        "error": "Delivery Error",
+        "error": "Delivery error",
         "payload": "Payload JSON",
         "copyLabel": "Copy webhook payload JSON",
         "copied": "Copied",
-        "copy": "Copy Payload",
-        "copiedAnnouncement": "Webhook payload JSON copied to clipboard",
-        "replay": "Replay Now",
+        "copy": "Copy payload",
+        "copiedAnnouncement": "Webhook payload copied",
+        "replay": "Replay now",
         "closeButton": "Close"
       }
     },
     "usage": {
-      "heading": "Usage & Rate Limits",
+      "heading": "Usage and limits",
       "intro": "Your plan, your API request allowance, and the retention rules.",
-      "tier": "Active Tier: {tier}",
-      "quota": "Daily API Quota",
-      "remaining": "{count, number} programmatic requests remaining today",
-      "activeKeys": "Active API Keys",
+      "tier": "Plan: {tier}",
+      "quota": "API requests per day",
+      "remaining": "{count, number} API requests left today",
+      "activeKeys": "Active API keys",
       "activeKeysNote": "Keys with scopes that work on this account",
-      "reset": "Quota Window Reset",
+      "reset": "Quota reset",
       "nextReset": "Next reset at {date}",
       "resetDaily": "Counters reset daily at midnight UTC",
       "workbench": {
         "heading": "Web converter",
         "free": "Free conversions in your browser",
-        "local": "Some formats are converted in your browser with WebAssembly"
+        "local": "Some formats are converted in your browser"
       },
       "api": {
-        "heading": "Programmatic REST API Policy",
+        "heading": "API policy",
         "scopes": "Scopes per key (<code>convert:write</code>, <code>convert:read</code>, <code>storage:download</code>)",
-        "isolation": "Runs in an isolated worker; a result is deleted 10 minutes after download, or an hour after conversion at the latest"
+        "isolation": "A result is deleted 10 minutes after download, or an hour after conversion at the latest"
       },
-      "reference": "View OpenAPI Reference"
+      "reference": "View the OpenAPI reference"
     },
     "guide": {
-      "heading": "Programmatic Integration Guide",
-      "intro": "Submit multipart conversion requests with your scoped API key.",
+      "heading": "Integration guide",
+      "intro": "Send conversion requests with your API key.",
       "languageLabel": "SDK language",
       "copyLabel": "Copy {language} integration snippet",
       "copied": "Copied",
@@ -571,8 +571,8 @@
     }
   },
   "features": {
-    "directoryHeading": "Supported Format Directory",
-    "directoryIntro": "Browse {formats} formats across {categories} categories covering {pairs} registered conversion pairs.",
+    "directoryHeading": "Supported formats",
+    "directoryIntro": "{categories} categories, {formats} formats, {pairs} conversions.",
     "extensionsHeading": "{category} formats",
     "pairsHeading": "Common {category} pairs",
     "categoryNouns": {
@@ -645,7 +645,7 @@
   },
   "formatDetail": {
     "fallbackName": "{ext} Format",
-    "fallbackDesc": "{name} is a structured file format supported across modern operating systems and conversion workflows."
+    "fallbackDesc": "{name} is a file format supported by many operating systems and converters."
   },
   "formatSelector": {
     "defaultTitle": "Select Format",
@@ -657,100 +657,100 @@
   },
   "formatSpecs": {
     "pdf": {
-      "desc": "PDF is an open ISO standard format for electronic document exchange. It encapsulates formatted text, vector graphics, raster images, and embedded fonts independent of operating system or viewer hardware."
+      "desc": "PDF is an open standard for exchanging electronic documents. Text, graphics, images and fonts look the same on any device or program."
     },
     "docx": {
-      "desc": "DOCX is an XML-based document container used by Microsoft Word. It packages formatted text, tables, charts, embedded media, and styles inside a compressed ZIP archive."
+      "desc": "DOCX is the document format of Microsoft Word. It holds formatted text, tables, charts, images and styles in one file."
     },
     "doc": {
-      "desc": "DOC is a binary document format developed by Microsoft for Word 97 through 2003. It stores styled text, inline graphics, tables, and formatting inside an OLE compound file container."
+      "desc": "DOC is the older document format of Word 97 through 2003. It holds formatted text, pictures and tables."
     },
     "csv": {
-      "desc": "CSV stores two-dimensional tabular records as plain UTF-8 text lines with delimiter-separated fields and RFC 4180 quoting rules."
+      "desc": "CSV stores table data as plain text, with the fields separated by commas or another delimiter."
     },
     "json": {
-      "desc": "JSON is a text data-interchange format encoding key-value objects, arrays, numbers, booleans, and UTF-8 strings per RFC 8259 and ECMA-404."
+      "desc": "JSON is a text format for data made of keys and values, lists, numbers and strings."
     },
     "xlsx": {
-      "desc": "XLSX packages multi-sheet workbooks, typed cell values, shared string tables, formulas, and number formats inside a ZIP-compressed OpenXML archive."
+      "desc": "XLSX is the workbook format of Excel. It holds several sheets, cell values, formulas and number formats in one file."
     },
     "xls": {
-      "desc": "XLS is the BIFF8 binary workbook format used by Excel 97 through 2003, storing worksheets, cell records, and formulas in a Compound File Binary stream."
+      "desc": "XLS is the older workbook format of Excel 97 through 2003. It holds worksheets, cells and formulas."
     },
     "pptx": {
-      "desc": "PPTX stores presentation slides, master layouts, DrawingML vector shapes, embedded images, and speaker notes inside an OpenXML ZIP package."
+      "desc": "PPTX is the presentation format of PowerPoint. It holds slides, shapes, images and speaker notes in one file."
     },
     "mp4": {
-      "desc": "MP4 is a digital multimedia container used to store video, audio, and subtitle streams. Derived from the ISO Base Media File Format, it combines high compression efficiency with native browser and hardware playback."
+      "desc": "MP4 holds video, audio and subtitles in one file. It compresses well and plays directly in browsers and most devices."
     },
     "mp3": {
       "desc": "MP3 is a lossy compressed audio format, readable by almost every player and device."
     },
     "wav": {
-      "desc": "WAV is an uncompressed audio container storing linear pulse-code modulation (LPCM) samples. It records acoustic waveforms sample-for-sample without lossy compression artifacts."
+      "desc": "WAV is an uncompressed audio format. It records sound as it is, with no loss of quality."
     },
     "aac": {
       "desc": "AAC is a lossy audio format designed as the successor to MP3, common in MP4 and M4A files."
     },
     "flac": {
-      "desc": "FLAC is an open, royalty-free lossless audio codec. Compressed FLAC streams decode back to an exact bit-for-bit match of the source PCM audio."
+      "desc": "FLAC is a free lossless audio format. A compressed file restores to an exact copy of the original."
     },
     "ogg": {
-      "desc": "OGG is an open multimedia bitstream container commonly paired with the Vorbis or Opus audio codecs for patent-free streaming and game asset delivery."
+      "desc": "OGG is an open format for Vorbis or Opus audio, common in streaming and game assets."
     },
     "m4a": {
-      "desc": "M4A is an audio-only MPEG-4 container carrying AAC or Apple Lossless (ALAC) streams alongside structured chapter and cover-art metadata."
+      "desc": "M4A is an MPEG-4 audio format for AAC or Apple Lossless audio. It can also hold chapters and cover art."
     },
     "png": {
-      "desc": "PNG is a raster graphics file format using lossless DEFLATE compression. It supports indexed palettes, greyscale, and full RGBA alpha transparency up to 16 bits per channel."
+      "desc": "PNG is a lossless image format. It supports palettes, greyscale, transparency and up to 16 bits per color channel."
     },
     "jpg": {
-      "desc": "JPG is the ISO standard for continuous-tone photographic images, applying Discrete Cosine Transform (DCT) compression tuned for natural colour gradients."
+      "desc": "JPG is the standard image format for photos. It keeps natural color transitions while reducing file size."
     },
     "jpeg": {
-      "desc": "JPEG is the standard continuous-tone photographic format identical in bitstream structure to JPG, using DCT block compression for natural imagery."
+      "desc": "JPEG is another name for the JPG format. It uses the standard photo compression."
     },
     "webp": {
-      "desc": "WebP provides both lossy VP8 intra-frame coding and lossless dictionary compression for web imagery, supporting alpha transparency, ICC profiles, and animation."
+      "desc": "WebP is an image format for the web. It supports lossy and lossless compression, transparency, color profiles and animation."
     },
     "avif": {
-      "desc": "AVIF stores AV1 intra-coded still images inside an ISO HEIF container, supporting 8-bit, 10-bit, and 12-bit colour depths alongside HDR transfer functions."
+      "desc": "AVIF is an image format that uses AV1 compression. It supports 8-bit, 10-bit and 12-bit color and HDR."
     },
     "heic": {
-      "desc": "HEIC stores HEVC (H.265) intra-coded photographs inside an ISO Base Media container, cutting storage size roughly in half relative to baseline JPEG."
+      "desc": "HEIC is a photo format compressed with HEVC (H.265). A file is roughly half the size of a standard JPEG."
     },
     "svg": {
-      "desc": "SVG is an XML vector graphics specification describing two-dimensional paths, shapes, text, and gradients mathematically so artwork renders sharply at any DPI."
+      "desc": "SVG is a vector graphics format drawn with paths, shapes, text and gradients. It stays sharp at any resolution."
     },
     "gif": {
-      "desc": "GIF is an indexed-palette bitmap format using lossless LZW compression for up to 256 colours per frame and looping frame sequences."
+      "desc": "GIF is an image format with up to 256 colors per frame. It is used for short looping animations."
     },
     "epub": {
-      "desc": "EPUB packages XHTML content documents, CSS stylesheets, fonts, and navigation manifests in a ZIP container for reflowable digital books."
+      "desc": "EPUB is an e-book format whose text reflows to fit the screen. It holds the text, styles, fonts and table of contents in one file."
     },
     "mobi": {
-      "desc": "MOBI is a binary PalmDOC-derived e-book container developed by Mobipocket for portable e-ink readers, bundling HTML markup, images, and chapter offsets."
+      "desc": "MOBI is an e-book format that Mobipocket made for e-ink readers. It holds the text, images and chapter positions."
     },
     "zip": {
-      "desc": "ZIP bundles one or more files and directory trees with independent per-entry DEFLATE compression and a central directory index."
+      "desc": "ZIP bundles files and folders into one file and compresses each entry."
     },
     "rar": {
-      "desc": "RAR is a compressed archive container supporting solid dictionary compression, Reed-Solomon recovery records, and multi-volume split archives."
+      "desc": "RAR is an archive format with strong compression, recovery data and split archives."
     },
     "7z": {
-      "desc": "7Z is an open modular archive container using LZMA and LZMA2 dictionary compression with large solid blocks and optional AES-256 encryption."
+      "desc": "7Z is an open archive format with strong compression and AES-256 encryption."
     },
     "tar": {
-      "desc": "TAR serializes files and directory hierarchies sequentially in 512-byte blocks while preserving POSIX permissions, ownership, and modification timestamps."
+      "desc": "TAR bundles files and folders into one file without compressing them. It keeps permissions, owners and modification times."
     },
     "dxf": {
-      "desc": "DXF is a tagged CAD data exchange format representing 2D and 3D entities, layers, blocks, arcs, polylines, and splines for CAD/CAM interoperability."
+      "desc": "DXF is a format for exchanging drawings between CAD programs. It holds 2D and 3D objects, layers, blocks and curves."
     },
     "ttf": {
-      "desc": "TTF defines quadratic Bézier glyph outlines, character-to-glyph cmap tables, kerning metrics, and hinting instructions in a single binary font file."
+      "desc": "TTF is a font format. It holds the glyph outlines, character mapping, spacing and hinting in one file."
     },
     "woff2": {
-      "desc": "WOFF2 wraps TrueType or OpenType glyph tables with font-specific preprocessing and Brotli compression for `@font-face` delivery on the web."
+      "desc": "WOFF2 is a compressed font format for the web, made from TrueType or OpenType fonts."
     }
   },
   "header": {
@@ -878,12 +878,12 @@
   "infoPages": {
     "about": {
       "purpose": {
-        "heading": "Purpose-Built File Conversion Utility",
-        "body": "EasyConvert converts files across {count} registered formats spanning documents, spreadsheets, presentations, raster and RAW images, vector graphics, CAD drawings, audio, video, fonts, ebooks, and archives."
+        "heading": "A tool for file conversion",
+        "body": "EasyConvert converts {count} formats: documents, spreadsheets, presentations, images (RAW included), vector graphics, CAD drawings, audio, video, fonts, e-books and archives."
       },
       "architecture": {
         "heading": "Browser and Server Conversion",
-        "body": "Some formats run on your device through WebAssembly and WebCodecs. The others run in isolated workers on our servers, reached over TLS 1.3. A converted file is deleted 10 minutes after you download it, or an hour after conversion if you never do."
+        "body": "Some formats are converted in your browser. The others are sent over an encrypted connection and converted on our servers in an isolated environment. A converted file is deleted 10 minutes after you download it, or an hour after conversion if you never do."
       },
       "contact": {
         "heading": "Contact",
@@ -892,48 +892,48 @@
     },
     "security": {
       "transport": {
-        "heading": "TLS 1.3 Transport Encryption",
-        "body": "All HTTPS traffic uses TLS 1.3 with strict HSTS headers, CSRF validation on cookie-authenticated routes, and scoped bearer keys for programmatic API calls across {count} supported formats."
+        "heading": "Encryption in transit",
+        "body": "All traffic uses HTTPS. Requests from a signed-in browser are checked against forgery, and programs call the API with scoped keys. {count} formats are supported."
       },
       "isolation": {
-        "heading": "Sandboxed Browser & Worker Isolation",
-        "body": "Browser conversions stay inside the browser's origin sandbox. Server conversions run in resource-limited worker processes with strict input validation, archive decompression limits, and automatic deletion of output files."
+        "heading": "Isolated processing",
+        "body": "Browser conversions stay in your browser. Server conversions run in separate processes with limited resources, input checks, archive size limits and automatic deletion of results."
       }
     },
     "accessibility": {
       "conformance": {
-        "heading": "Conformance Target",
+        "heading": "Conformance",
         "body": "EasyConvert targets Web Content Accessibility Guidelines (WCAG) 2.1 Level AA conformance across desktop, tablet, and mobile viewports in both light and dark themes."
       },
       "keyboard": {
-        "heading": "Keyboard Navigation & Shortcuts",
+        "heading": "Keyboard navigation",
         "body": "Every interactive control is operable with a keyboard alone. A skip link jumps directly to <code>#main-content</code>, focus indicators remain visible on all interactive elements, format selectors and tabs support arrow and tab key navigation, and modal dialogs use native HTML <code>'<'dialog></code> focus containment with <code>Escape</code> dismissal."
       },
       "landmarks": {
-        "heading": "Screen Reader Landmarks & Live Announcements",
+        "heading": "Screen readers",
         "body": "Pages expose semantic <code>'<'header></code>, <code>'<'nav></code>, <code>'<'main></code>, and <code>'<'footer></code> landmarks, sequential heading levels from <code>h1</code> through <code>h3</code>, explicit <code>'<'label htmlFor></code> associations on every text input and selector, descriptive <code>aria-label</code> names on icon-only controls, and polite status regions for conversion progress and clipboard confirmation."
       },
       "contrast": {
-        "heading": "Visual Contrast, Motion & Zoom",
+        "heading": "Contrast, motion and zoom",
         "body": "Text keeps at least a 4.5:1 contrast ratio and the borders of text fields keep at least 3:1 across light and dark palettes, and buttons are identified by their labels rather than by their outlines. Form controls use a minimum 16px text size to prevent forced viewport zoom on mobile browsers, primary and icon buttons provide 44px touch targets, layouts reflow cleanly at 390px width and 200% browser zoom without horizontal page scroll, and non-essential motion honours <code>prefers-reduced-motion</code>."
       },
       "feedback": {
-        "heading": "Feedback & Assistance",
+        "heading": "Feedback",
         "body": "If you encounter an accessibility barrier on any EasyConvert page or API tool, contact our team so we can reproduce and resolve the issue.",
         "link": "support@aquilaxk.site (Accessibility Feedback)"
       }
     },
     "contact": {
-      "heading": "Get in Touch",
-      "intro": "Send questions about format support, conversion results, or API integration directly to our engineering team.",
+      "heading": "Contact us",
+      "intro": "Send questions about formats, conversion results or the API.",
       "email": {
-        "heading": "Direct Support Email",
-        "body": "Contact our engineering team for technical questions, API inquiries, or general feedback."
+        "heading": "Support email",
+        "body": "Email us with technical questions, API questions or feedback."
       },
       "bugs": {
-        "heading": "Bug Reports & Issues",
-        "body": "Found an edge case or rendering discrepancy? Email reproduction steps and a non-sensitive sample file.",
-        "link": "Report an Issue"
+        "heading": "Report a bug",
+        "body": "Found a result that looks wrong? Email the steps to reproduce it and a sample file with no sensitive data.",
+        "link": "Report a bug"
       }
     }
   },
@@ -962,7 +962,7 @@
     },
     "dashboard": {
       "title": "Developer Dashboard | EasyConvert",
-      "description": "Manage API keys, converted files, webhook deliveries, and usage quotas for your EasyConvert account."
+      "description": "Manage the API keys, converted files, webhook deliveries and usage limits of your EasyConvert account."
     },
     "apiDocs": {
       "title": "API documentation | EasyConvert",
@@ -1006,7 +1006,7 @@
       "end": "Trim End (HH:MM:SS)"
     },
     "image": {
-      "heading": "Image & Raster Parameters",
+      "heading": "Image settings",
       "width": "Width (px)",
       "height": "Height (px)",
       "original": "Original",
@@ -1018,11 +1018,11 @@
         "fill": "Stretch to Fill",
         "inside": "Fit Inside"
       },
-      "quality": "Compression Quality",
+      "quality": "Quality",
       "stripMetadata": "Strip EXIF, GPS, and camera metadata"
     },
     "video": {
-      "heading": "Video Stream Parameters",
+      "heading": "Video settings",
       "codec": "Video Codec",
       "codecAuto": "Automatic (format default)",
       "codecs": {
@@ -1040,7 +1040,7 @@
       "original": "Original"
     },
     "audio": {
-      "heading": "Audio Stream Parameters",
+      "heading": "Audio settings",
       "codec": "Audio Codec",
       "codecAuto": "Automatic for Format",
       "codecs": {
@@ -1065,17 +1065,17 @@
         "surround51": "Surround (5.1)",
         "surround71": "Surround (7.1)"
       },
-      "gain": "Output Gain"
+      "gain": "Volume"
     },
     "document": {
-      "heading": "Document & Page Layout",
+      "heading": "Document settings",
       "pages": "Page Range",
       "pagesPlaceholder": "All pages (e.g. 1-5)",
       "orientation": "Orientation",
       "orientationAuto": "Auto (match source)",
       "portrait": "Portrait",
       "landscape": "Landscape",
-      "ocrAutomatic": "OCR runs automatically for searchable structured XML output.",
+      "ocrAutomatic": "OCR runs automatically for searchable XML output.",
       "ocrEnable": "Enable OCR text recognition",
       "ocrLanguage": "OCR Language",
       "ocrLanguages": {
@@ -1095,7 +1095,7 @@
       "encrypt": {
         "heading": "Archive Encryption",
         "label": "Output Archive Password ({tgt})",
-        "helper": "Optional AES-256 password to protect the generated archive."
+        "helper": "Optional AES-256 password to protect the archive."
       },
       "reencrypt": {
         "heading": "Archive Password & Re-encryption",
@@ -1110,12 +1110,12 @@
       },
       "errors": {
         "zipCharset": "ZIP passwords support 1 to 99 printable ASCII characters only.",
-        "forbiddenChars": "Passwords cannot contain line breaks, null bytes, or invalid Unicode.",
+        "forbiddenChars": "Passwords cannot contain line breaks or invalid characters.",
         "tooLong": "Passwords must be 256 characters or fewer."
       }
     },
     "data": {
-      "heading": "Tabular & Structured Data",
+      "heading": "Table and data settings",
       "delimiter": "Field Delimiter",
       "delimiterAuto": "Auto (match format)",
       "delimiters": {
@@ -1460,7 +1460,7 @@
   },
   "notFound": {
     "code": "404",
-    "title": "The route {route} could not be found.",
+    "title": "The page {route} could not be found.",
     "description": "Sorry, the page you are looking for could not be found."
   },
   "urlImport": {
@@ -1472,7 +1472,7 @@
     "fetching": "Fetching...",
     "submit": "Load File",
     "invalidUrl": "Enter a full link that starts with http:// or https://.",
-    "networkError": "Invalid URL or network error"
+    "networkError": "The link is not valid or the connection dropped. Check it and try again."
   },
   "userNav": {
     "dashboard": "Dashboard",

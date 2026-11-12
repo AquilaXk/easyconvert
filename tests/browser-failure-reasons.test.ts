@@ -61,7 +61,7 @@ describe('the dashboard', () => {
     mount(createElement(Probe), 'ko');
     await vi.waitFor(() => expect(controller).toBeDefined());
     await controller!.handleReplayWebhook('dlq-1');
-    await vi.waitFor(() => expect(controller!.dlqFeedback).toBe('다시 전송을 요청하지 못했어요. 연결을 확인해 주세요.'));
+    await vi.waitFor(() => expect(controller!.dlqFeedback).toBe('다시 전송을 요청하지 못했습니다. 연결을 확인하세요.'));
     expect(controller!.dlqFeedback).not.toContain(REASON);
     expect(warnings()).toEqual([`Sending a webhook again failed: ${REASON}`]);
   });
