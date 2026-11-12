@@ -35,7 +35,11 @@ afterAll(() => {
   for (const dir of standIns) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-/** A program that records its arguments and what it was given, then runs `body` (a Node script text) with `input` bound to the bytes on standard input. */
+/**
+ * A program that records its arguments and what it was given, then runs `body` (a Python script text) with `input` bound to the bytes on
+ * standard input and `out` to standard output. Python, not Node: the wrapper caps the program's address space (256 MB and up), which is
+ * below what Node reserves at start on Linux.
+ */
 function standIn(body: string): { program: string; argsFile: string; inputFile: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quantizr-stand-in-'));
   standIns.push(dir);
@@ -43,11 +47,16 @@ function standIn(body: string): { program: string; argsFile: string; inputFile: 
   const inputFile = path.join(dir, 'input.bin');
   const program = path.join(dir, 'quantizr-pixels');
   const script = [
-    '#!/usr/bin/env node',
-    "const fs = require('node:fs');",
-    `fs.writeFileSync(${JSON.stringify(argsFile)}, process.argv.slice(2).join(' '));`,
-    "const input = fs.readFileSync(0);",
-    `fs.writeFileSync(${JSON.stringify(inputFile)}, input);`,
+    '#!/usr/bin/env python3',
+    'import struct, sys',
+    `open(${JSON.stringify(argsFile)}, 'w').write(' '.join(sys.argv[1:]))`,
+    'input = sys.stdin.buffer.read()',
+    // The conversion caps the program's file size near the size of its answer, so a copy of a larger input is skipped there.
+    'try:',
+    `  open(${JSON.stringify(inputFile)}, 'wb').write(input)`,
+    'except OSError:',
+    '  pass',
+    'out = sys.stdout.buffer',
     body,
   ].join('\n');
   fs.writeFileSync(program, script, { mode: 0o755 });
@@ -56,11 +65,9 @@ function standIn(body: string): { program: string; argsFile: string; inputFile: 
 
 /** The reply of a program for the picture on its input: `colours` entries (RGBA) and an index of 0 for every pixel. */
 const flatReply = (colours: number[][]): string => `
-const width = input.readUInt32LE(0), height = input.readUInt32LE(4);
-const head = Buffer.alloc(4 + ${colours.length} * 4);
-head.writeUInt32LE(${colours.length}, 0);
-${colours.map((c, i) => `Buffer.from(${JSON.stringify(c)}).copy(head, ${4 + i * 4});`).join('\n')}
-process.stdout.write(Buffer.concat([head, Buffer.alloc(width * height)]));`;
+width, height = struct.unpack_from('<II', input, 0)
+out.write(struct.pack('<I', ${colours.length}) + bytes(${JSON.stringify(colours.flat())}) + bytes(width * height))
+out.flush()`;
 
 /** A deterministic picture: an RGBA raster of `colours` distinct colours laid out in rows, so that its palette is known. */
 function stripes(width: number, height: number, colours: number, alpha = 255): { rgba: Buffer; expected: Uint16Array; picture: IndexedPicture } {
@@ -151,12 +158,12 @@ describe('quantizePixels, as the wrapper runs the program', () => {
   it('answers null, and logs, when the program fails, writes nothing or writes a result that does not fit the picture', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const bad = [
-      'process.stderr.write("broken"); process.exit(3);',
+      'sys.stderr.write("broken"); sys.exit(3)',
       '',
-      'process.stdout.write(Buffer.from([1, 0, 0, 0, 9, 9, 9, 255]));', // an entry, but no indices
-      'const h = Buffer.alloc(4); h.writeUInt32LE(0, 0); process.stdout.write(Buffer.concat([h, Buffer.alloc(15)]));', // no colours
-      'const h = Buffer.alloc(4); h.writeUInt32LE(257, 0); process.stdout.write(Buffer.concat([h, Buffer.alloc(257 * 4 + 15)]));',
-      `${flatReply([[1, 2, 3, 255]])}\nprocess.stdout.write(Buffer.alloc(1));`, // a byte too many
+      'out.write(bytes([1, 0, 0, 0, 9, 9, 9, 255]))', // an entry, but no indices
+      "out.write(struct.pack('<I', 0) + bytes(15))", // no colours
+      "out.write(struct.pack('<I', 257) + bytes(257 * 4 + 15))",
+      `${flatReply([[1, 2, 3, 255]])}\nout.write(bytes(1))`, // a byte too many
     ];
     try {
       for (const body of bad) {
@@ -290,7 +297,7 @@ describe('the compress page with the program', () => {
 
   it('writes the palette of the image library when the program fails, so that a conversion never fails because of it', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    vi.stubEnv('QUANTIZR_PIXELS_PATH', standIn('process.exit(5);').program);
+    vi.stubEnv('QUANTIZR_PIXELS_PATH', standIn('sys.exit(5)').program);
     try {
       const out = await compress(await photo());
       expect(headerOf(out).colorType).toBe(COLOUR_TYPE_PALETTE);

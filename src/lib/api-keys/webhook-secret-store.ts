@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type { Redis } from 'ioredis';
 import { redisKeyStore } from './redis-key-store';
+import { clearKeysMatching } from '../redis/clear-keys';
 
 export interface WebhookSecretRecord {
   primary: string;
@@ -448,10 +449,7 @@ export class RedisWebhookSecretStore implements WebhookSecretStore {
   }
 
   public async reset(): Promise<void> {
-    const keys = [...(await this.redis.keys('webhook:sec:*')), ...(await this.redis.keys('webhook:sec-endpoints:*'))];
-    if (keys.length > 0) {
-      await Promise.all(keys.map((k) => this.redis.del(k)));
-    }
+    await clearKeysMatching(this.redis, ['webhook:sec:*', 'webhook:sec-endpoints:*']);
   }
 }
 

@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { ConversionFailedError, type ArchiveCollisionPolicy } from '../types';
-import { SandboxedBufferLimitError, executeSandboxedBinary } from '../security/process-sandbox';
+import { SandboxedBufferLimitError } from '../security/process-sandbox';
+import { launchSandboxedBinary } from '../security/sandbox-launcher';
 import { getMaxInMemoryBytes } from '../storage/errors';
 import {
   ARCHIVE_SECURITY_LIMITS,
@@ -299,7 +300,7 @@ export async function runSevenZip(p7zBin: string, args: string[], options: Seven
 
 async function runSevenZipFramed(p7zBin: string, args: string[], options: SevenZipRunOptions): Promise<SevenZipOutput> {
   try {
-    const run = await executeSandboxedBinary(p7zBin, args, {
+    const run = await launchSandboxedBinary(p7zBin, args, {
       timeoutMs: options.timeoutMs,
       maxBuffer: options.maxBuffer,
       networkIsolated: true,

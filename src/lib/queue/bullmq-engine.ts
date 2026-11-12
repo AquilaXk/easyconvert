@@ -6,7 +6,7 @@ import { maskFailure, maskServerText } from '../security/server-paths';
 import { refusalCodeOf, type ConversionRefusalCode } from '../refusal-codes';
 import { classifyJobFailure } from './job-failure';
 import { readUserJobs } from './user-job-list';
-import { applyStoredJobFields, flatHashToRecord, parseStoredJson } from './stored-job';
+import { applyStoredJobFields, flatHashToRecord, parseStoredJson, readJobHashes } from './stored-job';
 import {
   ADD_JOB_LUA_SCRIPT,
   PROMOTE_DELAYED_JOBS_LUA_SCRIPT,
@@ -1686,8 +1686,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         let slicedIds = uniqueIds;
         if (end >= 0) slicedIds = uniqueIds.slice(start, end + 1);
         else if (start > 0) slicedIds = uniqueIds.slice(start);
-        const fetched = await Promise.all(slicedIds.map((id) => this.getJob(id)));
-        return fetched.filter((j): j is Job<T, R> => j !== null);
+        const hashes = await readJobHashes(redis, slicedIds.map((id) => this.getJobKey(id)));
+        return hashes.flatMap((hash) => (hash.id ? [this.hashToJob(hash)] : []));
       } catch (err) {
         throw this.toQueueUnavailable(err);
       }

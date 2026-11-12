@@ -1,5 +1,8 @@
 import fs from 'node:fs';
 
+// Captures stay out of public/: the site would serve them.
+fs.mkdirSync('.screenshots', { recursive: true });
+
 async function captureAllSubpages() {
   const tabs = await fetch('http://localhost:9222/json/list').then((r) => r.json());
   let targetTab = tabs.find((t) => t.url && (t.url.includes('localhost:3000') || t.url.includes('easyconvert') || t.type === 'page'));
@@ -43,7 +46,7 @@ async function captureAllSubpages() {
   });
 
   const subpages = [
-    { name: 'pdf-converter', path: '/pdf-converter', out: 'public/screenshots/fidelity_pdf_converter.png' },
+    { name: 'pdf-converter', path: '/pdf-converter', out: '.screenshots/fidelity_pdf_converter.png' },
   ];
 
   for (const page of subpages) {

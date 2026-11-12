@@ -6,7 +6,7 @@ This document outlines the licensing architecture, operational compliance bounda
 
 ## 1. Overview & Architectural Boundaries
 
-EasyConvert is released under the **MIT License**. Its core algorithms, web application (Next.js), and in-process conversion engines are implemented in pure TypeScript without proprietary runtime dependencies.
+EasyConvert is released under the **Apache License 2.0** (`LICENSE`, with `NOTICE`; until 2026-11-12, commit `b7a24a12`, the MIT License). The directories `NOTICE` names keep their own licences: the DjVuLibre patches (GPL-2.0-or-later), the vtracer and quantizr programs (MIT) and the format icons (MIT). Its core algorithms, web application (Next.js), and in-process conversion engines are implemented in pure TypeScript without proprietary runtime dependencies.
 
 To support wide-ranging format conversion across media, vector, and document formats, EasyConvert orchestrates external open-source engines in worker container environments. These components are categorized into two architectural tiers:
 

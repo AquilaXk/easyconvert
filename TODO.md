@@ -13,11 +13,11 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Cut the GIF time of the camera rows further: the palette mapper (`mapNearest`) is 13 to 38 ns a pixel on the VM after the direct colour table, and the run tolerance check is 45 percent of it (half of the 50 to 60 percent of pixels that change their nearest colour read the 32-byte Oklab entry of the colour, a quarter of those keep the previous colour); a split over the pool threads needs each stripe to start with a guess of the previous colour and a short repair at its first pixels, which is not written. The LZW coder (200 to 320 ms for 20 to 39 MP) and the `3fr` development by `dcraw_emu` (0.9 s) are the other large steps.
 - Compare `raw-x3f.ts` with the BSD X3F reference credited by LibRaw (Roland Karlsson) and copy its decode loops with attribution where they are faster or decode more cameras.
 - `quantize.ts` (401 lines) is on the product path only for the 8-bit BMP (`quantizeNeuQuant`, the Floyd-Steinberg mapper, `encodeBmp8`); decide whether BMP takes its palette from `color-quantizer.ts` and the file goes. That changes the BMP bytes, so it needs an `image` parity run.
-- Lift `silesia-xml.xz->tar` from 0.876 to the reference speed on the x64 runner (1.12 on the arm64 VM, entry 111): start 7-Zip from the launcher helper with the spool opened by its path, so the fork of a large worker (1.8 ms from 116 MB, 6.0 ms from 570 MB) is not paid.
 
 ## Product and API
 
 ## Operations and security
+- `conversionQueue.remove(id)` still reads the whole dead-letter list inside its Lua script for each job, so the per-job removal of `scripts/erase-account.ts` (removeEndedJobs) is O(jobs x letters): keep a per-job or per-user index of the letters at `moveToDlq` and remove by it.
 - Cache the public HTML pages at the Cloudflare edge (a cache rule for the page routes; `cf-cache-status` is `DYNAMIC` on `/ko` today although the page sends `s-maxage`): QA sets it in the dashboard later, or puts a scoped API token in `.env`. Leave `/dashboard`, `/*/dashboard` and `/api/` out of the rule and never override the origin's `private, no-store` with an edge TTL (entry 210).
 - Install the Redis backup timer on the host on or after 2026-12-08 (30-day notice of the new privacy text).
 

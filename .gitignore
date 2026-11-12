@@ -83,3 +83,6 @@ bench-results/
 # Public benchmark samples fetched at run time
 /.bench-corpora/
 /.test-sample-list
+
+# Design captures of the capture scripts; never published under public/.
+/.screenshots/

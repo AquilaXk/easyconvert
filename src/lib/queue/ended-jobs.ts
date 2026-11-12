@@ -1,4 +1,5 @@
 import type Redis from 'ioredis';
+import { pipelineReplies } from '../redis/pipeline-replies';
 import { REMOVE_JOB_LUA_SCRIPT, REPLACE_ENDED_JOB_DATA_LUA_SCRIPT, TRIM_DEAD_LETTERS_LUA_SCRIPT } from './lua-scripts';
 
 /**
@@ -198,29 +199,101 @@ export async function removeStoredJob(client: Redis, keys: QueueKeySpace, id: st
   return Number(await client.eval(REMOVE_JOB_LUA_SCRIPT, scriptKeys.length, ...scriptKeys, id)) === 1;
 }
 
+/** The ids of one pipeline that `forgetUserJobs` sends: the jobs it reads or removes together, and the dead letters it checks or removes together. */
+const FORGET_BATCH = 500;
+
+/**
+ * Removes the jobs of `ids` (a batch of `userId`'s index) that the caller processed, and drops the ids whose job is gone or is
+ * another user's from the index. Answers the ids that stay in the index, in index order, and the ids of the jobs whose dead letters the
+ * job script clears: a job that is not active (the script answers 1 for it) and one it does not know (it answers 0, like an active one).
+ */
+async function removeProcessedJobs(
+  client: Redis,
+  keys: QueueKeySpace,
+  userId: string,
+  ids: readonly string[],
+  processed: ReadonlySet<string>
+): Promise<{ left: string[]; cleared: string[] }> {
+  const index = keys.userJobsKey(userId);
+  const read = client.pipeline();
+  for (const id of ids) read.hmget(keys.jobKey(id), 'data', 'state');
+  const rows = (await pipelineReplies(read)) as [string | null, string | null][];
+  const foreign: string[] = [];
+  const staying = new Set<string>();
+  const toRemove: { id: string; unknownState: boolean }[] = [];
+  ids.forEach((id, at) => {
+    if (ownerOf(parsedData(rows[at][0])) !== userId) foreign.push(id);
+    else if (processed.has(id)) toRemove.push({ id, unknownState: rows[at][1] === null });
+    else staying.add(id);
+  });
+  const removal = client.pipeline();
+  if (foreign.length > 0) removal.zrem(index, ...foreign);
+  for (const { id } of toRemove) removal.eval(REMOVE_JOB_LUA_SCRIPT, keys.stateKeys.length + 2, keys.jobKey(id), ...keys.stateKeys, index, id);
+  const answers = (await pipelineReplies(removal)).slice(foreign.length > 0 ? 1 : 0);
+  const cleared: string[] = [];
+  toRemove.forEach(({ id, unknownState }, at) => {
+    if (Number(answers[at]) === 1 || unknownState) cleared.push(id);
+    if (Number(answers[at]) !== 1) staying.add(id);
+  });
+  return { left: ids.filter((id) => staying.has(id)), cleared };
+}
+
 /**
  * Removes the jobs of `userId` in the queue that `keys` names that the caller has processed (cancelled and listed: `processed`), with
  * their dead letters, and the dead letters of jobs that are gone already (a letter carries the user id in its data). An id of the
  * index whose job is gone, or whose data names another user (a damaged index), only leaves the index. A job that is not in
  * `processed` (beyond the caller's window, or queued since) is left whole, and so is a processed job that is still active: their ids are
  * answered, and the index stays while any is left.
+ *
+ * The jobs are read and removed a batch at a time (two round trips per batch), and the dead letters are read once and removed in
+ * batches. The job script is not given the dead-letter list: it reads the whole list for each job it removes, which is quadratic
+ * here, and the letters of the removed jobs go in the one pass below. That pass reads the list in one command, not in pages: a page
+ * walk is not atomic, so a letter could be skipped when another run trims or removes letters between two pages, and an erasure
+ * must not leave a letter behind.
  */
 export async function forgetUserJobs(client: Redis, keys: QueueKeySpace, userId: string, processed: ReadonlySet<string>): Promise<string[]> {
   const index = keys.userJobsKey(userId);
   const left: string[] = [];
-  for (const id of await client.zrange(index, '0', '-1')) {
-    const owner = ownerOf(parsedData(await client.hget(keys.jobKey(id), 'data')));
-    if (owner !== userId) await client.zrem(index, id);
-    else if (!processed.has(id) || !(await removeStoredJob(client, keys, id, true))) left.push(id);
+  const clearedJobIds = new Set<string>();
+  const ids = await client.zrange(index, '0', '-1');
+  for (let at = 0; at < ids.length; at += FORGET_BATCH) {
+    const batch = await removeProcessedJobs(client, keys, userId, ids.slice(at, at + FORGET_BATCH), processed);
+    left.push(...batch.left);
+    for (const id of batch.cleared) clearedJobIds.add(id);
   }
-  for (const raw of await client.lrange(keys.dlqKey, 0, -1)) {
-    const entry = parsedData(raw) as { jobId?: string; data?: unknown } | undefined;
-    if (ownerOf(entry?.data) !== userId) continue;
-    const jobId = entry?.jobId ?? '';
-    if (processed.has(jobId) || (await client.exists(keys.jobKey(jobId))) === 0) await client.lrem(keys.dlqKey, 0, raw);
-  }
+  await removeDeadLetters(client, keys, userId, processed, clearedJobIds);
   if (left.length === 0) await client.del(index);
   return left;
+}
+
+/**
+ * Removes from the dead-letter list the letters of the jobs in `clearedJobIds`, those of `userId` for a job in `processed`, and those
+ * of `userId` for a job that is gone.
+ */
+async function removeDeadLetters(client: Redis, keys: QueueKeySpace, userId: string, processed: ReadonlySet<string>, clearedJobIds: ReadonlySet<string>): Promise<void> {
+  const doomed = new Set<string>();
+  const unsure: { raw: string; jobId: string }[] = [];
+  for (const raw of await client.lrange(keys.dlqKey, 0, -1)) {
+    const entry = parsedData(raw) as { jobId?: string; data?: unknown } | undefined;
+    const jobId = entry?.jobId ?? '';
+    if (clearedJobIds.has(jobId) || (ownerOf(entry?.data) === userId && processed.has(jobId))) doomed.add(raw);
+    else if (ownerOf(entry?.data) === userId) unsure.push({ raw, jobId });
+  }
+  for (let at = 0; at < unsure.length; at += FORGET_BATCH) {
+    const batch = unsure.slice(at, at + FORGET_BATCH);
+    const check = client.pipeline();
+    for (const { jobId } of batch) check.exists(keys.jobKey(jobId));
+    const exists = await pipelineReplies(check);
+    batch.forEach(({ raw }, position) => {
+      if (Number(exists[position]) === 0) doomed.add(raw);
+    });
+  }
+  const raws = [...doomed];
+  for (let at = 0; at < raws.length; at += FORGET_BATCH) {
+    const removal = client.pipeline();
+    for (const raw of raws.slice(at, at + FORGET_BATCH)) removal.lrem(keys.dlqKey, 0, raw);
+    await pipelineReplies(removal);
+  }
 }
 
 /**
