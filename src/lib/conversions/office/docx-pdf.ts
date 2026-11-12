@@ -5,6 +5,17 @@ import { configurePdfKitFontFallback, measurePdfTextHeight, renderSafePdfText } 
 import { renderPdfChart } from './pdf-chart';
 import { renderPdfDrawingShapes } from './pdf-shapes';
 
+/** The tables nested in a cell: the list when it has one, else the single table when it has rows. */
+function nestedTablesOf(cell: DocxTableCell): DocxTable[] {
+  if (cell.nestedTables && cell.nestedTables.length > 0) return cell.nestedTables;
+  return cell.nestedTable && cell.nestedTable.rows.length > 0 ? [cell.nestedTable] : [];
+}
+
+function pdfAlignmentOf(alignment: DocxParagraph['alignment']): 'center' | 'right' | 'left' {
+  if (alignment === 'center') return 'center';
+  return alignment === 'right' ? 'right' : 'left';
+}
+
 export async function generatePdfFromDocx(
   paragraphs: DocxParagraph[],
   tables: DocxTable[],
@@ -88,9 +99,7 @@ export async function generatePdfFromDocx(
             const textHeight = cellText.trim().length > 0 ? measurePdfTextHeight(doc, cellText, { width: textWidth }) : 0;
             let requiredHeight = Math.ceil(textHeight + 10);
 
-            const tablesToRender = cell.nestedTables && cell.nestedTables.length > 0
-              ? cell.nestedTables
-              : (cell.nestedTable && cell.nestedTable.rows.length > 0 ? [cell.nestedTable] : []);
+            const tablesToRender = nestedTablesOf(cell);
 
             if (tablesToRender.length > 0) {
               for (const nTbl of tablesToRender) {
@@ -205,9 +214,7 @@ export async function generatePdfFromDocx(
               textOffsetY += Math.ceil(tH + 4);
             }
 
-            const tablesToRender = cell.nestedTables && cell.nestedTables.length > 0
-              ? cell.nestedTables
-              : (cell.nestedTable && cell.nestedTable.rows.length > 0 ? [cell.nestedTable] : []);
+            const tablesToRender = nestedTablesOf(cell);
 
             if (tablesToRender.length > 0) {
               for (const nTbl of tablesToRender) {
@@ -325,8 +332,7 @@ export async function generatePdfFromDocx(
       } else {
         doc.fillColor(p.isBold ? '#1F2340' : '#4D536B').fontSize(10.5).lineGap(3);
         renderSafePdfText(doc, p.text, hasUnicodeFont, {
-          align:
-            p.alignment === 'center' ? 'center' : p.alignment === 'right' ? 'right' : 'left',
+          align: pdfAlignmentOf(p.alignment),
         });
         doc.moveDown(0.4);
       }

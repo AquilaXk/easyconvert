@@ -6,6 +6,19 @@ import { renderChartToSvg } from './chart-svg';
 import { renderDrawingMlToSvg } from './drawingml-shapes';
 import { safeExtractDocxBlocks, safeExtractFirstXmlElement, safeExtractXmlTags } from './xml-helpers';
 
+function borderStyleOf(val: string): 'double' | 'dashed' | 'dotted' | 'solid' {
+  if (val === 'double') return 'double';
+  if (val.includes('dash')) return 'dashed';
+  return val.includes('dot') ? 'dotted' : 'solid';
+}
+
+function headingLevelOf(isHeading1: boolean, isHeading2: boolean, isHeading3: boolean, isHeading: boolean): number {
+  if (isHeading1) return 1;
+  if (isHeading2) return 2;
+  if (isHeading3) return 3;
+  return isHeading ? 2 : 0;
+}
+
 export function parseBorder(borderXml: string): TableBorder | undefined {
   if (!borderXml) return undefined;
   const valMatch = borderXml.match(/w:val="([^"]+)"/);
@@ -15,9 +28,7 @@ export function parseBorder(borderXml: string): TableBorder | undefined {
   const sz = szMatch ? parseInt(szMatch[1], 10) / 8 : 0.5; // in pt (w:sz is in eighths of a point)
   const colMatch = borderXml.match(/w:color="([A-Fa-f0-9]{6})"/);
   const color = colMatch ? `#${colMatch[1]}` : '#CCD2FC';
-  const style =
-    val === 'double' ? 'double' : val.includes('dash') ? 'dashed' : val.includes('dot') ? 'dotted' : 'solid';
-  return { style, size: sz, color };
+  return { style: borderStyleOf(val), size: sz, color };
 }
 
 function parseDrawingBlockElement(
@@ -382,7 +393,7 @@ export function parseDocxXml(
     const isHeading2 = /<w:pStyle\s+[^>]*w:val="Heading2"/i.test(chunk);
     const isHeading3 = /<w:pStyle\s+[^>]*w:val="Heading3"/i.test(chunk);
     const isHeading = isHeading1 || isHeading2 || isHeading3 || /<w:pStyle\s+[^>]*w:val="Heading/i.test(chunk);
-    const headingLevel = isHeading1 ? 1 : isHeading2 ? 2 : isHeading3 ? 3 : isHeading ? 2 : 0;
+    const headingLevel = headingLevelOf(isHeading1, isHeading2, isHeading3, isHeading);
 
     const jcMatch = chunk.match(/<w:jc\s+[^>]*w:val="([^"]+)"/);
     const alignment = jcMatch && ALLOWED_JC.has(jcMatch[1]) ? (jcMatch[1] as any) : undefined;

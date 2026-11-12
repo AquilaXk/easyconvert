@@ -52,6 +52,10 @@ export function transformPoint(m: Matrix2D, x: number, y: number): { x: number; 
  * mapping child coordinate space (chOff, chExt) into the group's bounding box (off, ext),
  * accounting for group rotation (around parent center) and flipH / flipV.
  */
+function nonZeroOr(value: number, fallback: number): number {
+  return value !== 0 ? value : fallback;
+}
+
 export function computeGroupTransformMatrix(
   off: { x: number; y: number },
   ext: { cx: number; cy: number },
@@ -61,8 +65,8 @@ export function computeGroupTransformMatrix(
   flipH: boolean = false,
   flipV: boolean = false
 ): Matrix2D {
-  const chw = chExt.cx !== 0 ? chExt.cx : (ext.cx !== 0 ? ext.cx : 1);
-  const chh = chExt.cy !== 0 ? chExt.cy : (ext.cy !== 0 ? ext.cy : 1);
+  const chw = nonZeroOr(chExt.cx, nonZeroOr(ext.cx, 1));
+  const chh = nonZeroOr(chExt.cy, nonZeroOr(ext.cy, 1));
   const gw = ext.cx;
   const gh = ext.cy;
 

@@ -891,31 +891,11 @@
     "maxValue": 7
   },
   {
-    "file": "src/lib/conversions/office/affine.ts",
-    "rule": "no-nested-ternary",
-    "function": "computeGroupTransformMatrix",
-    "count": 2
-  },
-  {
     "file": "src/lib/conversions/office/biff-chart.ts",
     "rule": "complexity",
     "function": "readChartRecord",
     "count": 1,
     "maxValue": 31
-  },
-  {
-    "file": "src/lib/conversions/office/convert-office.ts",
-    "rule": "complexity",
-    "function": "convertOffice",
-    "count": 1,
-    "maxValue": 54
-  },
-  {
-    "file": "src/lib/conversions/office/convert-office.ts",
-    "rule": "max-lines-per-function",
-    "function": "convertOffice",
-    "count": 1,
-    "maxValue": 253
   },
   {
     "file": "src/lib/conversions/office/docx-html.ts",
@@ -938,23 +918,11 @@
     "maxValue": 53
   },
   {
-    "file": "src/lib/conversions/office/docx-parse.ts",
-    "rule": "no-nested-ternary",
-    "function": "parseBorder",
-    "count": 2
-  },
-  {
-    "file": "src/lib/conversions/office/docx-parse.ts",
-    "rule": "no-nested-ternary",
-    "function": "parseDocxXml",
-    "count": 3
-  },
-  {
     "file": "src/lib/conversions/office/docx-pdf.ts",
     "rule": "complexity",
     "function": "renderTable",
     "count": 1,
-    "maxValue": 50
+    "maxValue": 46
   },
   {
     "file": "src/lib/conversions/office/docx-pdf.ts",
@@ -968,26 +936,14 @@
     "rule": "max-lines-per-function",
     "function": "generatePdfFromDocx",
     "count": 2,
-    "maxValue": 313
+    "maxValue": 308
   },
   {
     "file": "src/lib/conversions/office/docx-pdf.ts",
     "rule": "max-lines-per-function",
     "function": "renderTable",
     "count": 1,
-    "maxValue": 258
-  },
-  {
-    "file": "src/lib/conversions/office/docx-pdf.ts",
-    "rule": "no-nested-ternary",
-    "function": "renderParagraph",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office/docx-pdf.ts",
-    "rule": "no-nested-ternary",
-    "function": "renderTable",
-    "count": 2
+    "maxValue": 254
   },
   {
     "file": "src/lib/conversions/office/drawingml-shapes.ts",
@@ -1102,12 +1058,6 @@
     "maxValue": 8
   },
   {
-    "file": "src/lib/conversions/office/raster.ts",
-    "rule": "no-nested-ternary",
-    "function": "renderTableToRaster",
-    "count": 1
-  },
-  {
     "file": "src/lib/conversions/office/spreadsheet-format.ts",
     "rule": "complexity",
     "function": "formatSpreadsheetCellValue",
@@ -1142,7 +1092,7 @@
     "file": "src/lib/conversions/office/spreadsheet-formula.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "executeFunction",
-    "count": 8
+    "count": 6
   },
   {
     "file": "src/lib/conversions/office/spreadsheet-formula.ts",
@@ -1252,7 +1202,7 @@
     "rule": "complexity",
     "function": "executeFunction",
     "count": 1,
-    "maxValue": 113
+    "maxValue": 105
   },
   {
     "file": "src/lib/conversions/office/spreadsheet-formula.ts",
@@ -1260,12 +1210,6 @@
     "function": "tokenize",
     "count": 1,
     "maxValue": 31
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "no-nested-ternary",
-    "function": "executeFunction",
-    "count": 3
   },
   {
     "file": "src/lib/conversions/office/xls-parse.ts",

@@ -67,7 +67,8 @@ export async function renderTableToRaster(
   rows.forEach((row, rIdx) => {
     const y = 50 + rIdx * rowHeight;
     const isHeader = rIdx === 0;
-    const bgFill = isHeader ? '#f1f5f9' : (rIdx % 2 === 0 ? '#ffffff' : '#f8fafc');
+    const stripeFill = rIdx % 2 === 0 ? '#ffffff' : '#f8fafc';
+    const bgFill = isHeader ? '#f1f5f9' : stripeFill;
     svg += `<rect x="20" y="${y}" width="${width - 40}" height="${rowHeight}" fill="${bgFill}" stroke="#e2e8f0" />`;
     row.forEach((cell, cIdx) => {
       const x = 25 + cIdx * colWidth;

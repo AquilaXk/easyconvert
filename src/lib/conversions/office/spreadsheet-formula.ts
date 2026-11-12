@@ -25,6 +25,18 @@ interface FormulaToken {
  * Supports basic arithmetic (+, -, *, /, ^, %, &), comparisons (=, <>, <, <=, >, >=),
  * cell references/ranges (A1, $B$2, A1:B10), and common functions (SUM, AVERAGE, COUNT, MIN, MAX, IF).
  */
+/**
+ * The table argument of VLOOKUP and INDEX as rows: a two-dimensional range keeps its rows, an array of arrays is
+ * the rows, any other array is one column (VLOOKUP) or one row (INDEX), and a single value is a one-cell table.
+ */
+function lookupGridOf(tableArg: unknown, singleArrayAs: 'column' | 'row'): unknown[][] {
+  const range = (tableArg as { _range2D?: unknown[][] } | null | undefined)?._range2D;
+  if (range) return range;
+  if (Array.isArray(tableArg) && Array.isArray(tableArg[0])) return tableArg;
+  if (Array.isArray(tableArg)) return singleArrayAs === 'column' ? tableArg.map((x) => [x]) : [tableArg];
+  return [[tableArg]];
+}
+
 export class SpreadsheetFormulaEvaluator {
   constructor(private cellLookup: CellResolver) {}
 
@@ -304,7 +316,8 @@ export class SpreadsheetFormulaEvaluator {
       }
       case 'IF': {
         const cond = Boolean(args[0]);
-        return cond ? args[1] : args.length > 2 ? args[2] : false;
+        if (cond) return args[1];
+        return args.length > 2 ? args[2] : false;
       }
       case 'ROUND': {
         const val = Number(args[0]);
@@ -358,13 +371,7 @@ export class SpreadsheetFormulaEvaluator {
         const colIdx = Number(args[2]);
         const rangeLookup = args.length > 3 ? Boolean(args[3]) : true;
 
-        const grid: any[][] =
-          (tableArg as any)?._range2D ||
-          (Array.isArray(tableArg) && Array.isArray(tableArg[0])
-            ? tableArg
-            : Array.isArray(tableArg)
-            ? tableArg.map((x) => [x])
-            : [[tableArg]]);
+        const grid: any[][] = lookupGridOf(tableArg, 'column');
 
         if (grid.length === 0 || colIdx < 1) return '#REF!';
         const maxCols = Math.max(...grid.map((r) => r.length));
@@ -440,13 +447,7 @@ export class SpreadsheetFormulaEvaluator {
         const rowNum = Number(args[1]);
         const colNum = args.length > 2 ? Number(args[2]) : 1;
 
-        const grid: any[][] =
-          (tableArg as any)?._range2D ||
-          (Array.isArray(tableArg) && Array.isArray(tableArg[0])
-            ? tableArg
-            : Array.isArray(tableArg)
-            ? [tableArg]
-            : [[tableArg]]);
+        const grid: any[][] = lookupGridOf(tableArg, 'row');
 
         if (rowNum < 1 || rowNum > grid.length) return '#REF!';
         const targetRow = grid[rowNum - 1];
