@@ -1,0 +1,4 @@
+# Read by openapi-python-client (scripts/generate-sdk.ts). The resumable upload operations send and take
+# application/offset+octet-stream, which the generator does not know; it is raw bytes like application/octet-stream.
+content_type_overrides:
+  application/offset+octet-stream: application/octet-stream

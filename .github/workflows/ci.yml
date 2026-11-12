@@ -153,6 +153,14 @@ jobs:
       - name: Verify test integrity and anti-cheating guards
         run: npm run guard:anti-cheat
 
+      # Regenerates the TypeScript and Python SDKs from the served OpenAPI document and fails when sdk/ differs. The Python generator
+      # is installed from sdk/python/generator-requirements.txt (pinned with hashes) into a virtual environment, which the Python SDK
+      # round trip then reuses.
+      - name: Check the generated SDKs against the OpenAPI document
+        run: |
+          npm run sdk:check
+          EASYCONVERT_SDK_PYTHON_REQUIRED=1 npx vitest run tests/sdk-python-roundtrip.test.ts --maxWorkers=2
+
       - name: Gate new code smells against the shrinking baseline
         run: npm run guard:code-smells
 

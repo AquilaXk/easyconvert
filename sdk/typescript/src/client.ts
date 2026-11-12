@@ -1,258 +1,161 @@
-import type {
-  EasyConvertClientConfig,
-  ConvertRequestParams,
-  ConversionAcceptedResponse,
-  ConversionResponse,
-  CreateJobParams,
-  JobCreatedResult,
-  JobDetails,
-  JobSummary,
-  ApiKey,
-  ApiKeyCreateResult,
-  ApiKeyScope,
-  QuotaUsage,
-  WebhookDlqEntry,
-  DlqReplayResult,
-} from './types';
+import createClient, { type Client } from 'openapi-fetch';
+import type { components, paths } from './generated/schema';
 
+export type Schemas = components['schemas'];
+export type ConversionOptions = Schemas['ConversionOptions'];
+export type ConversionResponse = Schemas['ConversionResponse'];
+export type JobDetails = Schemas['JobDetails'];
+export type ProblemDetails = Schemas['ProblemDetails'];
+
+const DEFAULT_BASE_URL = 'https://easyconvert.app';
+const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_POLL_INTERVAL_MS = 1_000;
+const DEFAULT_WAIT_TIMEOUT_MS = 5 * 60_000;
+const TERMINAL_JOB_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled']);
+
+export interface EasyConvertClientConfig {
+  apiKey: string;
+  baseUrl?: string;
+  /** Per request, including a download. */
+  timeoutMs?: number;
+  /** A replacement for the global fetch, for tests or a proxy. */
+  fetch?: typeof fetch;
+}
+
+export interface UploadParams {
+  file: Blob;
+  /** The file name sent with the upload; a Blob has none of its own unless it is a File. */
+  filename?: string;
+  targetFormat: string;
+  sourceFormat?: string;
+  options?: ConversionOptions;
+  webhookUrl?: string;
+  webhookSecret?: string;
+}
+
+/** The 202 of a conversion that was queued (a file over the synchronous limit): poll the job for the result. */
+export interface ConversionAccepted {
+  status: 'accepted';
+  jobId: string;
+  statusUrl: string;
+}
+
+export interface WaitForJobOptions {
+  intervalMs?: number;
+  timeoutMs?: number;
+}
+
+export class EasyConvertApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly problem: ProblemDetails | undefined,
+  ) {
+    super(`EasyConvert API error (${status}): ${problem?.detail ?? problem?.title ?? 'request failed'}`);
+    this.name = 'EasyConvertApiError';
+  }
+}
+
+type FormValue = Blob | string | number | boolean | undefined;
+
+/** multipart/form-data from an object: a Blob is sent as a file, anything else as text, `options` as its JSON. */
+function multipartBody(fields: object, filename: string | undefined): FormData {
+  const form = new FormData();
+  for (const [name, value] of Object.entries(fields) as [string, FormValue | object][]) {
+    if (value === undefined) continue;
+    if (value instanceof Blob) form.append(name, value, filename ?? (value instanceof File ? value.name : 'upload.bin'));
+    else form.append(name, typeof value === 'object' ? JSON.stringify(value) : String(value));
+  }
+  return form;
+}
+
+/**
+ * Hand-written convenience layer over the generated client: upload, poll a job, download the result. `api` is the full generated
+ * surface, typed from `paths` of the OpenAPI document, for every other operation.
+ */
 export class EasyConvertClient {
+  readonly api: Client<paths>;
   private readonly baseUrl: string;
-  private readonly apiKey: string;
+  private readonly authorization: string;
   private readonly timeoutMs: number;
+  private readonly fetchImpl: typeof fetch;
 
   constructor(config: EasyConvertClientConfig) {
-    if (!config.apiKey || typeof config.apiKey !== 'string') {
-      throw new Error('EasyConvertClient requires a valid Bearer API key starting with ec_live_');
-    }
-    this.apiKey = config.apiKey.trim();
-    const rawUrl = config.baseUrl || 'https://easyconvert.app';
-    this.baseUrl = rawUrl.endsWith('/') ? rawUrl.slice(0, -1) : rawUrl;
-    this.timeoutMs = config.timeoutMs || 30000;
-  }
-
-  private async request<T = unknown>(
-    endpoint: string,
-    options: RequestInit = {}
-  ): Promise<T> {
-    const normalizedEndpoint = endpoint.startsWith('/') ? endpoint : '/' + endpoint;
-    const url = this.baseUrl + normalizedEndpoint;
-    const headers = new Headers(options.headers || {});
-    headers.set('Authorization', `Bearer ${this.apiKey}`);
-    headers.set('User-Agent', 'EasyConvert-Node-SDK/1.0.0');
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-
-    try {
-      const response = await fetch(url, {
-        ...options,
-        headers,
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        const errorBody = await response.json().catch(() => ({}));
-        const message = errorBody.error || errorBody.title || errorBody.detail || `HTTP ${response.status}`;
-        throw new Error(`EasyConvert API Error (${response.status}): ${message}`);
-      }
-
-      return (await response.json()) as T;
-    } finally {
-      clearTimeout(timer);
-    }
+    const apiKey = config.apiKey?.trim();
+    if (!apiKey) throw new Error('EasyConvertClient needs an API key');
+    this.baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
+    this.authorization = `Bearer ${apiKey}`;
+    this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.fetchImpl = config.fetch ?? fetch;
+    this.api = createClient<paths>({
+      baseUrl: this.baseUrl,
+      headers: { Authorization: this.authorization },
+      fetch: (request) => this.fetchImpl(request, { signal: AbortSignal.timeout(this.timeoutMs) }),
+    });
   }
 
   /**
-   * Convert an input file buffer, blob, or string. The answer is the result, or, for a file over the synchronous limit or with
-   * respondAsync, the queued job (ConversionAcceptedResponse, also when raw is set).
+   * Converts a file. The answer is the result, or the queued job when the file is over the synchronous limit or `respondAsync` is
+   * set (also with `raw`); a finished `raw` conversion answers the bytes of the result.
    */
-  public async convert(params: ConvertRequestParams): Promise<ConversionResponse | ConversionAcceptedResponse | ArrayBuffer> {
-    const formData = new FormData();
-
-    if (typeof params.file === 'string') {
-      formData.append('file', new Blob([params.file]), params.filename || 'document.txt');
-    } else if (params.file instanceof Uint8Array || Buffer.isBuffer(params.file)) {
-      formData.append('file', new Blob([params.file as unknown as BlobPart]), params.filename || 'input.bin');
-    } else {
-      formData.append('file', params.file, params.filename || 'input.bin');
-    }
-
-    formData.append('targetFormat', params.targetFormat);
-    if (params.sourceFormat) formData.append('sourceFormat', params.sourceFormat);
-    if (params.options) formData.append('options', JSON.stringify(params.options));
-    if (params.webhookUrl) formData.append('webhookUrl', params.webhookUrl);
-    if (params.webhookSecret) formData.append('webhookSecret', params.webhookSecret);
-
-    const headers: Record<string, string> = {};
-    if (params.raw) {
-      headers['Accept'] = 'application/octet-stream';
-    }
-    if (params.respondAsync) {
-      headers['Prefer'] = 'respond-async';
-    }
-
-    const url = `${this.baseUrl}/api/v1/convert${params.raw ? '?raw=true' : ''}`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        ...headers,
-      },
-      body: formData,
+  async convert(params: UploadParams & { respondAsync?: boolean; raw?: boolean }): Promise<ConversionResponse | ConversionAccepted | ArrayBuffer> {
+    const { filename, respondAsync, raw, ...fields } = params;
+    const { data, error, response } = await this.api.POST('/api/v1/convert', {
+      params: { header: respondAsync ? { Prefer: 'respond-async' } : {}, query: raw ? { raw } : {} },
+      // The generated type calls a binary part a string; bodySerializer turns the Blob into the part.
+      body: { ...fields, file: fields.file as unknown as string, options: undefined },
+      bodySerializer: () => multipartBody(fields, filename),
+      // A queued conversion answers JSON even with raw, so the bytes are decoded below.
+      parseAs: raw ? 'arrayBuffer' : 'json',
     });
-
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      throw new Error(`Conversion Error (${response.status}): ${err.error || err.detail || 'Failed'}`);
-    }
-
+    if (error !== undefined) throw new EasyConvertApiError(response.status, error as ProblemDetails);
     if (response.status === 202) {
-      return (await response.json()) as ConversionAcceptedResponse;
+      const accepted = raw ? JSON.parse(new TextDecoder().decode(data as ArrayBuffer)) : data;
+      return { status: 'accepted', ...(accepted as Omit<ConversionAccepted, 'status'>) };
     }
-    if (params.raw) {
-      return response.arrayBuffer();
+    return data as ConversionResponse | ArrayBuffer;
+  }
+
+  /** Queues a conversion job for a file and returns its id; follow it with `waitForJob`. */
+  async createJob(params: UploadParams): Promise<{ jobId: string; statusUrl: string }> {
+    const { filename, ...fields } = params;
+    const { data, error, response } = await this.api.POST('/api/v1/jobs', {
+      body: { ...fields, file: fields.file as unknown as string, options: undefined },
+      bodySerializer: () => multipartBody(fields, filename),
+    });
+    if (data === undefined || data.jobId === undefined || data.statusUrl === undefined) {
+      throw new EasyConvertApiError(response.status, error as ProblemDetails | undefined);
     }
-    return (await response.json()) as ConversionResponse;
+    return { jobId: data.jobId, statusUrl: data.statusUrl };
   }
 
-  /**
-   * Submit an asynchronous conversion job to the distributed queue.
-   */
-  public async createJob(params: CreateJobParams): Promise<JobCreatedResult> {
-    if (params.file) {
-      const formData = new FormData();
-      if (typeof params.file === 'string') {
-        formData.append('file', new Blob([params.file]), params.filename || 'upload.bin');
-      } else if (params.file instanceof Uint8Array || Buffer.isBuffer(params.file)) {
-        formData.append('file', new Blob([params.file as unknown as BlobPart]), params.filename || 'upload.bin');
-      } else {
-        formData.append('file', params.file, params.filename || 'upload.bin');
-      }
-      formData.append('targetFormat', params.targetFormat);
-      if (params.sourceFormat) formData.append('sourceFormat', params.sourceFormat);
-      if (params.options) formData.append('options', JSON.stringify(params.options));
-      if (params.webhookUrl) formData.append('webhookUrl', params.webhookUrl);
-      if (params.webhookSecret) formData.append('webhookSecret', params.webhookSecret);
+  async getJob(jobId: string): Promise<JobDetails> {
+    const { data, error, response } = await this.api.GET('/api/v1/jobs/{id}', { params: { path: { id: jobId } } });
+    if (data === undefined) throw new EasyConvertApiError(response.status, error as ProblemDetails | undefined);
+    return data;
+  }
 
-      return this.request<JobCreatedResult>('/api/v1/jobs', {
-        method: 'POST',
-        body: formData,
-      });
+  /** Polls until the job completed, failed or was cancelled, and returns its last state; check `status`. */
+  async waitForJob(jobId: string, options: WaitForJobOptions = {}): Promise<JobDetails> {
+    const { intervalMs = DEFAULT_POLL_INTERVAL_MS, timeoutMs = DEFAULT_WAIT_TIMEOUT_MS } = options;
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const job = await this.getJob(jobId);
+      if (job.status !== undefined && TERMINAL_JOB_STATUSES.has(job.status)) return job;
+      if (Date.now() + intervalMs > deadline) throw new Error(`Job ${jobId} did not finish within ${timeoutMs} ms (status ${job.status})`);
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
+  }
 
-    return this.request<JobCreatedResult>('/api/v1/jobs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
+  /** Downloads the bytes of a finished conversion from the `downloadUrl` of its result. */
+  async download(downloadUrl: string): Promise<ArrayBuffer> {
+    const response = await this.fetchImpl(new URL(downloadUrl, this.baseUrl), {
+      headers: { Authorization: this.authorization },
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
-  }
-
-  /**
-   * Poll status and progress of a specific asynchronous conversion job.
-   */
-  public async getJob(jobId: string): Promise<JobDetails> {
-    return this.request<JobDetails>(`/api/v1/jobs/${encodeURIComponent(jobId)}`);
-  }
-
-  /**
-   * List conversion jobs for the authenticated developer.
-   */
-  public async listJobs(options: { status?: string; limit?: number } = {}): Promise<{ total: number; jobs: JobSummary[] }> {
-    const params = new URLSearchParams();
-    if (options.status) params.set('status', options.status);
-    if (options.limit) params.set('limit', options.limit.toString());
-    const query = params.toString() ? `?${params.toString()}` : '';
-    return this.request<{ total: number; jobs: JobSummary[] }>(`/api/v1/jobs${query}`);
-  }
-
-  /**
-   * List all API keys for developer account.
-   */
-  public async listApiKeys(): Promise<ApiKey[]> {
-    const res = await this.request<{ success: boolean; keys: ApiKey[] }>('/api/keys');
-    return res.keys;
-  }
-
-  /**
-   * Generate a new scoped API key.
-   */
-  public async createApiKey(
-    name: string,
-    options: {
-      scopes?: ApiKeyScope[];
-      expiresAt?: number;
-      allowedIps?: string[];
-      webhookUrl?: string;
-      webhookSecret?: string;
-    } = {}
-  ): Promise<ApiKeyCreateResult> {
-    return this.request<ApiKeyCreateResult>('/api/keys', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, ...options }),
-    });
-  }
-
-  /**
-   * Revoke an active API key.
-   */
-  public async revokeApiKey(keyId: string): Promise<boolean> {
-    const res = await this.request<{ success: boolean }>(`/api/keys/${encodeURIComponent(keyId)}`, {
-      method: 'DELETE',
-    });
-    return res.success;
-  }
-
-  /**
-   * Get current quota usage and daily conversion limits.
-   */
-  public async getQuotaUsage(): Promise<QuotaUsage> {
-    const res = await this.request<{ success: boolean; usage: QuotaUsage }>('/api/keys/usage');
-    return res.usage;
-  }
-
-  /**
-   * List all dead-lettered webhooks.
-   */
-  public async getDlqEntries(): Promise<WebhookDlqEntry[]> {
-    const res = await this.request<{ success: boolean; entries: WebhookDlqEntry[] }>('/api/webhooks/dlq');
-    return res.entries;
-  }
-
-  /**
-   * Inspect a specific dead-lettered webhook.
-   */
-  public async getDlqEntry(id: string): Promise<WebhookDlqEntry> {
-    const res = await this.request<{ success: boolean; entry: WebhookDlqEntry }>(`/api/webhooks/dlq/${encodeURIComponent(id)}`);
-    return res.entry;
-  }
-
-  /**
-   * Delete a dead-lettered webhook.
-   */
-  public async deleteDlqEntry(id: string): Promise<boolean> {
-    const res = await this.request<{ success: boolean }>(`/api/webhooks/dlq/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-    });
-    return res.success;
-  }
-
-  /**
-   * Clear the entire webhook dead letter queue.
-   */
-  public async clearDlq(): Promise<boolean> {
-    const res = await this.request<{ success: boolean }>('/api/webhooks/dlq', {
-      method: 'DELETE',
-    });
-    return res.success;
-  }
-
-  /**
-   * Manually replay a dead-lettered webhook.
-   */
-  public async replayDlq(id: string): Promise<DlqReplayResult> {
-    return this.request<DlqReplayResult>(`/api/webhooks/dlq/${encodeURIComponent(id)}/replay`, {
-      method: 'POST',
-    });
+    if (!response.ok) {
+      const problem = (await response.json().catch(() => undefined)) as ProblemDetails | undefined;
+      throw new EasyConvertApiError(response.status, problem);
+    }
+    return response.arrayBuffer();
   }
 }
