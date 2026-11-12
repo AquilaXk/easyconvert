@@ -428,14 +428,14 @@ export class WebhookDispatcher {
 
     try {
       const fetchFn = (globalThis.fetch || undiciFetch) as unknown as typeof undiciFetch;
-      const response = (await fetchFn(targetUrl, {
+      const response = await fetchFn(targetUrl, {
         method: 'POST',
         headers,
         body: bodyString,
         redirect: 'manual',
         dispatcher: this.ssrfAgent,
         signal: controller.signal,
-      })) as unknown as Response;
+      });
 
       await response.body?.cancel?.().catch(() => undefined);
       const attemptDuration = Date.now() - attemptStart;

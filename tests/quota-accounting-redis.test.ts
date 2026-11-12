@@ -41,7 +41,7 @@ import { userStore } from '../src/lib/auth/user-store';
 import { ANONYMOUS_DAILY_CONVERSIONS, URL_IMPORT_MAX_BYTES, type Plan } from '../src/lib/plan-limits';
 import { acquireSyncSlot, syncSlotsInUse, type ConversionSlot } from '../src/lib/queue/concurrency-limit';
 import { QueueUnavailableError, type ConversionJobData, type ConversionJobResult } from '../src/lib/types';
-import { itNeedsOneUnitLeftForEveryCaller } from './helpers/unit-left-identities';
+import { itFetchesWithNoUnitLeftForEveryCaller } from './helpers/unit-left-identities';
 import { itChargesAGraphOnlyThroughItsScheduler } from './helpers/graph-charge-cases';
 import { itLeasesHandedOffWork, itLeasesReservations } from './helpers/reservation-lease-cases';
 import { itRecoversAGraphStart } from './helpers/graph-start-recovery-cases';
@@ -290,7 +290,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
     expect(await remaining()).toBe(0);
   }, 60000);
 
-  it('keeps a link import and an unrelated refusal from using the last conversion', async () => {
+  it('keeps a link import and an unrelated refusal from using the last conversion, and lets a link import through once none is left', async () => {
     for (let i = 0; i < DAY_ALLOWANCE - 1; i++) expect((await convertCsv()).status).toBe(200);
     remoteFile(CSV);
     expect((await fetchUrlRoute(importRequest())).status).toBe(200);
@@ -298,7 +298,8 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
 
     expect(await remaining()).toBe(1);
     expect((await convertCsv()).status).toBe(200);
-    expect((await fetchUrlRoute(importRequest())).status).toBe(HTTP_TOO_MANY_REQUESTS);
+    expect((await fetchUrlRoute(importRequest())).status).toBe(200);
+    expect(await remaining()).toBe(0);
   }, 60000);
 
   describe('a link import', () => {
@@ -575,8 +576,8 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
     });
   });
 
-  describe('a request that needs a conversion left but reserves none', () => {
-    itNeedsOneUnitLeftForEveryCaller((userId) => otherUsers.push(userId));
+  describe('a request that reserves no conversion', () => {
+    itFetchesWithNoUnitLeftForEveryCaller((userId) => otherUsers.push(userId));
   });
 
   describe('a queued graph', () => {
