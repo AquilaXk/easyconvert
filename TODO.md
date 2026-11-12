@@ -31,7 +31,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Thumbnail, metadata and website capture (website capture needs an SSRF suite).
 - Customer storage and SFTP import and export; presets and watched sources after that.
 - SDKs generated from OpenAPI with a drift check.
-- Split `office.ts` (10,339 lines) and `buildFfmpegArguments`; merge the 15 `escapeXml`/`escapeHtml` copies.
+- Split the long office functions (`parsePptxSlideSceneGraph`, `parseDrawingMlShapes`, `parseAllXlsxWorksheets`, `renderTable`, `generatePdfFromDocx`), give the 7-parameter `computeGroupTransformMatrix`, `renderPdfChart` and `renderSinglePdfShape` an options object, and move the S3 adapter onto `src/lib/text/escape.ts` once the upload-session change lands.
 - Evaluation-size sample sets: 30+ video, 30+ RAW from 10 makers, 40+ audio, 60+ PDF stress files.
 - Learned OCR layout tier: pick a permissively licensed layout model and record its model and data provenance with the change.
 - Rare samples: DWG before R13, WP Greek accented letters, Word Wingdings check boxes.
