@@ -11,7 +11,6 @@ import { POST as batchRoute } from '../src/app/api/convert/batch/route';
 import { SINGLE_REQUEST_BODY_MAX_BYTES } from '../src/lib/plan-limits';
 import {
   convertFile,
-  quantizeMedianCut,
   quantizeNeuQuant,
   encodeBmp8,
   evaluateCubicBezier,
@@ -32,34 +31,7 @@ import { characterErrorRatePercent } from './helpers/ocr-cer';
 
 
 describe('Advanced Conversion Algorithms & Cross-Domain Boost', () => {
-  describe('Domain: Color Quantization (NeuQuant & Median Cut)', () => {
-    it('quantizes RGB image with Median Cut algorithm into 16 and 256 colors', () => {
-      // Create synthetic 100x100 RGB buffer with gradient
-      const width = 100;
-      const height = 100;
-      const rgb = Buffer.alloc(width * height * 3);
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const idx = (y * width + x) * 3;
-          rgb[idx] = Math.floor((x / width) * 255); // R
-          rgb[idx + 1] = Math.floor((y / height) * 255); // G
-          rgb[idx + 2] = 128; // B
-        }
-      }
-
-      // Test 16 colors
-      const res16 = quantizeMedianCut(rgb, width, height, 3, 16, true);
-      expect(res16.palette.length).toBeLessThanOrEqual(16);
-      expect(res16.palette.length).toBeGreaterThan(0);
-      expect(res16.indexedPixels.length).toBe(width * height);
-      expect(res16.paletteBuffer.length).toBe(res16.palette.length * 3);
-
-      // Test 256 colors
-      const res256 = quantizeMedianCut(rgb, width, height, 3, 256, true);
-      expect(res256.palette.length).toBeLessThanOrEqual(256);
-      expect(res256.palette.length).toBeGreaterThan(16);
-    });
-
+  describe('Domain: Color Quantization (NeuQuant)', () => {
     it('quantizes complex RGB image using NeuQuant neural network and encodes valid 8-bit paletted BMP', async () => {
       const width = 64;
       const height = 64;

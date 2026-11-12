@@ -12,7 +12,7 @@ import {
 } from '../src/lib/conversions/image-input-limits';
 import { convertMedia } from '../src/lib/conversions/media';
 import { resetInputProbeCache } from '../src/lib/conversions/media-ffprobe';
-import { quantizeMedianCut, quantizeNeuQuant, quantizeXiaolinWu } from '../src/lib/conversions/quantize';
+import { quantizeNeuQuant } from '../src/lib/conversions/quantize';
 import {
   convertWithHeadlessOffice,
   convertWithNativeFfmpeg,
@@ -395,7 +395,7 @@ describe('native FFmpeg image and video stream pixel gate', () => {
 });
 
 describe('palette quantizer pixel budget and bounded NeuQuant training', () => {
-  it('refuses 25 MP and 49 MP inputs in quantizeNeuQuant, quantizeMedianCut, and quantizeXiaolinWu under 500 ms', async () => {
+  it('refuses 25 MP and 49 MP inputs in quantizeNeuQuant under 500 ms', async () => {
     const empty = Buffer.alloc(0);
     await expectFastPixelLimitRejection(
       () => quantizeNeuQuant(empty, 5_000, 5_000),
@@ -408,18 +408,6 @@ describe('palette quantizer pixel budget and bounded NeuQuant training', () => {
       QUANTIZER_PIXEL_BUDGET.maxPixels,
       7_000,
       7_000
-    );
-    await expectFastPixelLimitRejection(
-      () => quantizeMedianCut(empty, 5_000, 5_000),
-      QUANTIZER_PIXEL_BUDGET.maxPixels,
-      5_000,
-      5_000
-    );
-    await expectFastPixelLimitRejection(
-      () => quantizeXiaolinWu(empty, 5_000, 5_000),
-      QUANTIZER_PIXEL_BUDGET.maxPixels,
-      5_000,
-      5_000
     );
   });
 

@@ -665,7 +665,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2563
+    "maxValue": 2557
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -1477,13 +1477,6 @@
     "function": "wordCorners",
     "count": 1,
     "maxValue": 7
-  },
-  {
-    "file": "src/lib/conversions/quantize.ts",
-    "rule": "complexity",
-    "function": "quantizeXiaolinWu",
-    "count": 1,
-    "maxValue": 34
   },
   {
     "file": "src/lib/conversions/quantize.ts",

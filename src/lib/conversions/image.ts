@@ -39,10 +39,7 @@ import { pipelineFromBitmap, pipelineFromIcon } from './bitmap-pipeline';
 import { buildOpenXpsPackage, withPngDensity96 } from './openxps';
 import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, type PixelBudget, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, asInputPixelLimitError, openInputImage, openLimitedSharp, resizedDimensions, rethrowInputPixelLimit } from './image-input-limits';
 import {
-  quantizeMedianCut,
   quantizeNeuQuant,
-  quantizeWuOklab,
-  applyBlueNoiseDither,
   encodeBmp8,
   srgbToOklab,
   deltaEOklab,
@@ -121,10 +118,7 @@ export {
   decodeBmp,
   decodeIco,
   decodeIcns,
-  quantizeMedianCut,
   quantizeNeuQuant,
-  quantizeWuOklab,
-  applyBlueNoiseDither,
   applyOklabQuantizationAndDither,
   quantizePaletteOklab,
   riemersmaDither,
