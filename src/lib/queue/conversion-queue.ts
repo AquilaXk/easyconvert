@@ -8,6 +8,7 @@ import { MISSING_WEBHOOK_SECRET_REASON, webhookDispatcher } from '../api-keys/we
 import { processNodeJob } from './node-processor';
 import { recordJobResultInHistory } from './job-history';
 import { isFinalFailure } from './job-failure';
+import { refusalCodeList } from '../refusal-codes';
 import { dispatchEngine } from './dispatch-engine';
 import { openWebhookSecretOrLog } from '../security/sealed-webhook-secret';
 import { resolveResourceClass } from './resource-class';
@@ -50,12 +51,12 @@ export async function processConversionJob(
  * however the node ended, also when the node never ran its own failure path (a stalled or killed worker, a cancel by an
  * operator). A node that already ended is ignored by the scheduler, so a second report changes nothing.
  */
-async function reportGraphNodeEnded(job: Job<ConversionJobData, ConversionJobResult>, reason: string): Promise<void> {
+async function reportGraphNodeEnded(job: Job<ConversionJobData, ConversionJobResult>, reason: string, failure?: unknown): Promise<void> {
   const graphId = job.data?.graphId;
   const nodeId = job.data?.graphNodeId;
   if (!graphId || !nodeId) return;
   try {
-    await graphScheduler.onNodeFailed(graphId, nodeId, reason);
+    await graphScheduler.onNodeFailed(graphId, nodeId, reason, ...refusalCodeList(failure));
   } catch (graphErr) {
     console.error(`[ConversionQueue] Failed to fail graph node ${nodeId} of ${graphId}:`, graphErr);
   }
@@ -154,7 +155,7 @@ export function attachJobLifecycleListeners(
       }
 
       // The worker emits `failed` once, for the last attempt of a job, so a graph node is failed in its graph here.
-      await reportGraphNodeEnded(job, err instanceof Error ? err.message : String(err));
+      await reportGraphNodeEnded(job, err instanceof Error ? err.message : String(err), err);
 
       // Asynchronous Webhook Failure Notification
       if (job.data?.webhookUrl) {

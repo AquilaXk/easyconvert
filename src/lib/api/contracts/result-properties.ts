@@ -4,6 +4,14 @@ import { MAX_FALLBACK_REASON_CHARS } from '../engine-trace';
 
 /** Which engine ran and, only after a fallback, why; shared by every response that reports a conversion. */
 export const EngineTraceProperties = {
+  engine: {
+    type: 'string',
+    description: 'Id of the engine that converted, as `GET /api/formats` lists it for the pair, for example `libreoffice`, `ffmpeg` or `easyconvert` (the in-process converter).',
+  },
+  engineVersion: {
+    type: 'string',
+    description: 'Version of that engine as installed. Absent when the program reports none.',
+  },
   engineUsed: {
     type: 'string',
     description: 'Engine that produced the output, for example `native-ffmpeg`, `native-soffice` or `internal-fallback`.',

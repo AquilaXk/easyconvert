@@ -1523,6 +1523,11 @@
       "byos-invalid-endpoint": "The storage endpoint cannot be used. Check its address and try again.",
       "byos-provider-unavailable": "This storage provider cannot be connected yet. Choose another provider.",
       "graph-without-conversion": "A job needs at least one conversion. Add a conversion step between the import and the export.",
+      "task-name-invalid": "A task name must start with a lowercase letter and use only lowercase letters, digits, hyphens and underscores, up to 64 characters.",
+      "task-name-duplicate": "Two tasks have the same name. Give each task its own name.",
+      "task-count-exceeded": "The job has more tasks than your plan allows. Remove some tasks or split the job in two.",
+      "task-input-unknown": "A task reads the output of a task that does not exist. Check the names in the inputs of your tasks.",
+      "task-graph-cycle": "The tasks read each other's output in a loop. Remove the input that closes the loop.",
       "ocr-asset-integrity-failed": "The text recognition data on the server could not be verified. Try again later."
     },
     "limits": {
@@ -1561,6 +1566,8 @@
       "import_budget_exceeded": "Today's limit for link imports has no room for this file. Try again tomorrow.",
       "quota_exceeded": "This job needs more conversions than are left today. Try again tomorrow.",
       "timeout": "The conversion did not finish in time. Select Convert to try again.",
+      "engine_not_offered": "The chosen engine does not convert this pair. Choose one of the engines the pair lists, or leave the engine out.",
+      "engine_version_unavailable": "The chosen engine version is not installed. Use the installed version, or leave the version out.",
       "engine_unavailable": "The program this conversion needs is not available right now. Try again later.",
       "conversion_failed": "Conversion failed. Try another format, or select Convert to try again."
     },

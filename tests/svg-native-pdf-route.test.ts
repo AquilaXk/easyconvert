@@ -88,8 +88,8 @@ describe('SVG to PDF', () => {
       fs.writeFileSync(shim, ['#!/bin/sh', `printf '%s\\n' "$*" >> '${log}'`, `exec '${requireOracleTool('rsvg-convert')}' "$@"`, ''].join('\n'), { mode: 0o755 });
       process.env.RSVG_CONVERT_PATH = shim;
       const result = await dispatchConversion(Buffer.from(SVG), 'svg', 'pdf', {}, 'art.svg');
-      // One start; no input or output file on the command line, so none was written.
-      expect(fs.readFileSync(log, 'utf8').trim().split('\n')).toEqual(['--format pdf']);
+      // One conversion start; no input or output file on the command line, so none was written. The engine version probe (entry 267) is another start, with `--version`.
+      expect(fs.readFileSync(log, 'utf8').trim().split('\n').filter((call) => call !== '--version')).toEqual(['--format pdf']);
       fs.writeFileSync(path.join(dir, 'ours.pdf'), result.buffer);
       fs.writeFileSync(path.join(dir, 'in.svg'), SVG);
       execFileSync(requireOracleTool('rsvg-convert'), ['--format', 'pdf', '--output', path.join(dir, 'ref.pdf'), path.join(dir, 'in.svg')]);

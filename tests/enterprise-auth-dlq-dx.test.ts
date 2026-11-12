@@ -751,65 +751,42 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       ]);
     });
 
-    it('verifies generated TypeScript SDK and Python SDK client structures', () => {
-      const tsClientPath = path.resolve(__dirname, '../sdk/typescript/src/client.ts');
-      const pyClientPath = path.resolve(__dirname, '../sdk/python/easyconvert/client.py');
+    it('verifies the generated and hand-written layers of the TypeScript SDK and the Python SDK', () => {
+      const sdkFile = (...parts: string[]) => path.resolve(__dirname, '../sdk', ...parts);
+      const tsSchema = fs.readFileSync(sdkFile('typescript/src/generated/schema.d.ts'), 'utf-8');
+      for (const operation of ['getQuotaUsage', 'listWebhookDlq', 'replayWebhookDlq', 'listApiKeys']) expect(tsSchema).toContain(`${operation}: {`);
 
-      expect(fs.existsSync(tsClientPath)).toBe(true);
-      expect(fs.existsSync(pyClientPath)).toBe(true);
-
-      const tsContent = fs.readFileSync(tsClientPath, 'utf-8');
+      const tsContent = fs.readFileSync(sdkFile('typescript/src/client.ts'), 'utf-8');
       expect(tsContent).toContain('export class EasyConvertClient');
-      expect(tsContent).toContain('convert(');
-      expect(tsContent).toContain('createJob(');
-      expect(tsContent).toContain('getDlqEntries(');
-      expect(tsContent).toContain('replayDlq(');
-      expect(tsContent).toContain('getQuotaUsage(');
+      for (const method of ['convert(', 'createJob(', 'getJob(', 'waitForJob(', 'download(']) expect(tsContent).toContain(`async ${method}`);
 
-      const pyContent = fs.readFileSync(pyClientPath, 'utf-8');
+      const pyContent = fs.readFileSync(sdkFile('python/easyconvert/client.py'), 'utf-8');
       expect(pyContent).toContain('class EasyConvertClient');
-      expect(pyContent).toContain('def convert(');
-      expect(pyContent).toContain('def create_job(');
-      expect(pyContent).toContain('def get_dlq_entries(');
-      expect(pyContent).toContain('def get_dlq_entry(');
-      expect(pyContent).toContain('def delete_dlq_entry(');
-      expect(pyContent).toContain('def clear_dlq(');
-      expect(pyContent).toContain('def replay_dlq(');
-      expect(pyContent).toContain('def get_quota_usage(');
+      for (const method of ['convert', 'create_job', 'get_job', 'wait_for_job', 'download']) expect(pyContent).toContain(`def ${method}(`);
+      for (const operation of ['get_quota_usage', 'list_webhook_dlq', 'replay_webhook_dlq', 'list_api_keys']) {
+        expect(fs.existsSync(sdkFile('python/easyconvert/_generated/api/default', `${operation}.py`))).toBe(true);
+      }
     });
 
-    it('verifies TypeScript SDK client methods for quota and key management', async () => {
-      const client = new EasyConvertClient({
-        apiKey: 'ec_live_test_dummy_key_1234567890',
-        baseUrl: 'https://api.test',
-      });
-
-      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
-        const u = url.toString();
+    it('answers quota and key management through the generated operations of the TypeScript SDK', async () => {
+      const fetchStub = vi.fn(async (request: Request | URL | string) => {
+        const u = (request instanceof Request ? request.url : request.toString());
         if (u.includes('/api/keys/usage')) {
-          return new Response(JSON.stringify({
-            success: true,
-            usage: { tier: 'pro', dailyLimit: 500, usedToday: 10, remaining: 490, resetAt: 12345678 },
-          }));
+          return Response.json({ success: true, usage: { tier: 'pro', dailyLimit: 500, usedToday: 10, remaining: 490, resetAt: 12345678 } });
         }
-        if (u.includes('/api/keys')) {
-          return new Response(JSON.stringify({
-            success: true,
-            keys: [{ id: 'key_1', name: 'Test Key' }],
-          }));
-        }
+        if (u.includes('/api/keys')) return Response.json({ success: true, keys: [{ id: 'key_1', name: 'Test Key' }] });
         return new Response('Not found', { status: 404 });
       });
+      const client = new EasyConvertClient({ apiKey: 'ec_live_test_dummy_key_1234567890', baseUrl: 'https://api.test', fetch: fetchStub as typeof fetch });
 
-      const quota = await client.getQuotaUsage();
-      expect(quota.tier).toBe('pro');
-      expect(quota.remaining).toBe(490);
+      const quota = await client.api.GET('/api/keys/usage');
+      expect(quota.data?.usage?.tier).toBe('pro');
+      expect(quota.data?.usage?.remaining).toBe(490);
 
-      const keys = await client.listApiKeys();
-      expect(keys).toHaveLength(1);
-      expect(keys[0].id).toBe('key_1');
-
-      fetchSpy.mockRestore();
+      // The document describes no body for this 200, so the generated type has none.
+      const keys = (await client.api.GET('/api/keys')).data as unknown as { keys: { id: string }[] };
+      expect(keys.keys).toHaveLength(1);
+      expect(keys.keys[0].id).toBe('key_1');
     });
   });
 });

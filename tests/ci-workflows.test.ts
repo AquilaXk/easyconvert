@@ -167,8 +167,12 @@ describe('the pull request workflow', () => {
   it('fetches the real-world test files through the shared action before any step that runs vitest', () => {
     // A job that calls a workflow has no steps of its own.
     const jobsRunningVitest = Object.entries(ci.jobs).filter(([, job]) => (job.steps ?? []).some(runsVitest));
-    expect(jobsRunningVitest.map(([name]) => name).sort()).toEqual(['conformance', 'integration', 'tests']);
-    for (const [name, job] of jobsRunningVitest) {
+    expect(jobsRunningVitest.map(([name]) => name).sort()).toEqual(['checks', 'conformance', 'integration', 'tests']);
+    // The checks job runs only the Python SDK round trip, which talks to a stub server and reads no corpus file.
+    const checksVitest = (ci.jobs.checks.steps ?? []).filter(runsVitest).map((step) => step.run ?? '');
+    expect(checksVitest).toEqual([expect.stringContaining('npx vitest run tests/sdk-python-roundtrip.test.ts')]);
+    expect(checksVitest[0].match(/tests\/\S+\.test\.ts/g)).toEqual(['tests/sdk-python-roundtrip.test.ts']);
+    for (const [name, job] of jobsRunningVitest.filter(([jobName]) => jobName !== 'checks')) {
       expect(fetchesTestSamplesBeforeVitest(job.steps), `${name} fetches the test samples before vitest`).toBe(true);
     }
   });

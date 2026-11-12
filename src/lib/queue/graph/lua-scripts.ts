@@ -136,7 +136,7 @@ return { 1, status, cjson.encode(ready), tostring(units), redis.call('HGET', KEY
 
 export const NODE_FAILED_LUA_SCRIPT = `
 -- KEYS[1]: graphKey  KEYS[2]: childrenKey  KEYS[3]: nodesKey  KEYS[4]: outboxKey
--- ARGV[1]: nodeId  ARGV[2]: error message  ARGV[3]: finishedAt ms
+-- ARGV[1]: nodeId  ARGV[2]: error message  ARGV[3]: finishedAt ms  ARGV[4]: refusal code of the failure ('' for none)
 -- Returns { applied(0|1), graphStatus, cancelledNodeIds JSON, skippedNodeIds JSON, accumulatedUnits, reservationId, inputKeys JSON }
 ${COMPLETE_WHEN_ALL_TERMINAL}
 local graphStatus = redis.call('HGET', KEYS[1], 'status')
@@ -154,6 +154,9 @@ end
 
 nodeState.status = 'failed'
 nodeState.error = ARGV[2]
+if ARGV[4] ~= '' then
+  nodeState.errorCode = ARGV[4]
+end
 nodeState.finishedAt = tonumber(ARGV[3])
 redis.call('HSET', KEYS[3], ARGV[1], cjson.encode(nodeState))
 redis.call('HINCRBY', KEYS[1], 'failedNodes', 1)

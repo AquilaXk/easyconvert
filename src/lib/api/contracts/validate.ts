@@ -1,11 +1,13 @@
 import Ajv2020 from 'ajv/dist/2020';
 import addFormats from 'ajv-formats';
-import type { SchemaValidateFunction } from 'ajv/dist/types';
+import type { ErrorObject, SchemaValidateFunction } from 'ajv/dist/types';
 import { NextResponse } from 'next/server';
 import { createProblemDetailsResponse, ProblemDetails } from '../problem-details';
 import {
   ConversionOptionsSchema,
   PipelineTaskSchema,
+  NamedTaskSchema,
+  TaskReportSchema,
   JobGraphSchema,
   JobCreateRequestSchema,
   ProblemDetailsSchema,
@@ -66,6 +68,8 @@ ajv.addKeyword({
 // Register SSOT schemas with Ajv
 ajv.addSchema(ConversionOptionsSchema);
 ajv.addSchema(PipelineTaskSchema);
+ajv.addSchema(NamedTaskSchema);
+ajv.addSchema(TaskReportSchema);
 ajv.addSchema(JobGraphSchema);
 ajv.addSchema(JobCreateRequestSchema);
 ajv.addSchema(ProblemDetailsSchema);
@@ -110,6 +114,26 @@ function prototypeKeyPointers(document: unknown): string[] {
 /** A JSON pointer as the dotted name `invalidParams` uses. */
 function paramName(pointer: string): string {
   return pointer.replace(/^\//, '').replace(/\//g, '.');
+}
+
+/**
+ * Drops, for each `oneOf` that failed, the "wrong type" errors of its branches and its summary "must match exactly one schema"
+ * error when some branch took the value by type and failed on its content (an error at the value or below it that is not a type
+ * error of a branch), so only the errors of the branch that fits the value remain. A value no branch takes by type keeps every
+ * error.
+ */
+function withoutUnionNoise(errors: readonly ErrorObject[]): ErrorObject[] {
+  const noise = new Set<ErrorObject>();
+  for (const union of errors.filter((e) => e.keyword === 'oneOf')) {
+    const typeMisses = errors.filter((e) => e.keyword === 'type' && e.instancePath === union.instancePath && /\/oneOf\/\d+\/type$/.test(e.schemaPath));
+    const contentErrors = errors.filter(
+      (e) => e !== union && !typeMisses.includes(e) && (e.instancePath === union.instancePath || e.instancePath.startsWith(`${union.instancePath}/`))
+    );
+    if (typeMisses.length === 0 || contentErrors.length === 0) continue;
+    noise.add(union);
+    for (const miss of typeMisses) noise.add(miss);
+  }
+  return errors.filter((e) => !noise.has(e));
 }
 
 export type ValidateResult<T> =
@@ -167,7 +191,7 @@ export function validateOrProblem<T = unknown>(
     return { ok: true, data: data as T };
   }
 
-  const errors = validator.errors || [];
+  const errors = withoutUnionNoise(validator.errors || []);
   let isPlannedOption = false;
 
   const invalidParams: Array<{ name: string; reason: string }> = errors.map((err) => {

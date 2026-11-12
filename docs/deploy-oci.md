@@ -198,6 +198,14 @@ The dead letters of a queue are a hash per letter with sets of ids by job and by
 
 What the command does not touch expires on its own. The edge server log keeps the request lines for up to 15 days (`/etc/logrotate.d/nginx`). A multi-step job's state goes 25 hours after the job ends. The list of an account's files in the web process lasts no longer than the file.
 
+### Setting the plan of an account by hand
+
+Only for the operator's own test account (QA 2026-11-12, entry 268): the smoke checks after a deploy run with its API key, so they are not stopped by the free daily limit. Run it only with QA's approval.
+
+1. See the change. Nothing is written: `docker compose -p easyconvert exec worker node dist/set-account-tier.js --user <account email or id> --tier enterprise`.
+2. Run the same command with `--apply`. It prints the time and the change for the host's log. An account whose plan comes from a live subscription is refused.
+3. `--tier free` takes the plan back. Erasing the account removes it with everything else.
+
 ## Releases
 
 One version per production deploy. The rule and its reasons are in entry 122 of `docs/policy-decisions.md`.

@@ -19,7 +19,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Reconcile subscriptions against Paddle (entry 262): a lost cancel or past-due event leaves a paid tier until `tierUntil` or forever, and a first subscription event with no valid binding is `unattributed` and answered 200, so Paddle never retries it; add a job that lists subscriptions through the API and compares them with the store, and an alert on `unattributed` and `unknown_user` log lines.
 - Consider exempting `/api/billing/webhook` from the edge IP rate limit in `src/middleware.ts` (a burst from Paddle's addresses answers 429, which Paddle retries) once the sandbox shows the real delivery pattern, and check the server clock against the 5 second signature window (a skewed clock rejects every event with 400).
 - Check once in the Paddle sandbox that the portal-session error log (`[billing] portal session failed`) carries no authorization header or key.
-- Run `node dist/backfill-dlq-index.js` (dry run, then `--apply`) on the host after the deploy that carries entry 265 has replaced every container that uses the queue, with QA's approval; until then removal of a job's dead letters reads the old list as before (docs/deploy-oci.md, "Moving the dead letters").
 - Cache the public HTML pages at the Cloudflare edge (a cache rule for the page routes; `cf-cache-status` is `DYNAMIC` on `/ko` today although the page sends `s-maxage`): QA sets it in the dashboard later, or puts a scoped API token in `.env`. Leave `/dashboard`, `/*/dashboard` and `/api/` out of the rule and never override the origin's `private, no-store` with an edge TTL (entry 210).
 - Install the Redis backup timer on the host on or after 2026-12-08 (30-day notice of the new privacy text).
 
@@ -27,11 +26,10 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Re-pin `book-pg2701.epub` to an archived capture taken after its live file was rebuilt on 2026-11-08, with a gutenberg.org mirror (latest capture 2026-11-01 differs; `book-pg84.epub` done); the pg84 quality rows were not re-measured against the rebuilt bytes (entry 224).
 
 ## Approved backlog (QA 2026-11-12: every Later and Waiting item is approved)
-- Engine choice and version pinning per conversion.
-- Named task graphs in one API job.
+- Engine choice, second step (entry 267 offers one installed version of each engine): install a second version of an engine when a pair needs it and list the versions with `default` and `latest` flags in `GET /api/formats`; show the engine and version of each node in the graph view (the node job's result carries them, the view lists no node result yet); read the engine versions at worker start, so the first conversion does not pay the probe.
+- Describe the named-task form (fields, report, refusals) on the Jobs page of the API documentation; its `tasks` row shows only the array branch (needs QA screenshots).
 - Thumbnail, metadata and website capture (website capture needs an SSRF suite).
 - Customer storage and SFTP import and export; presets and watched sources after that.
-- SDKs generated from OpenAPI with a drift check.
 - Split the long office functions (`parsePptxSlideSceneGraph`, `parseDrawingMlShapes`, `parseAllXlsxWorksheets`, `renderTable`, `generatePdfFromDocx`), give the 7-parameter `computeGroupTransformMatrix`, `renderPdfChart` and `renderSinglePdfShape` an options object, and move the S3 adapter onto `src/lib/text/escape.ts` once the upload-session change lands.
 - Evaluation-size sample sets: 30+ video, 30+ RAW from 10 makers, 40+ audio, 60+ PDF stress files.
 - Learned OCR layout tier: pick a permissively licensed layout model and record its model and data provenance with the change.

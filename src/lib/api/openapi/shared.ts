@@ -1,5 +1,5 @@
 import { ALL_API_KEY_SCOPES } from '@/lib/api-keys/types';
-import { ENGINE_USED_HEADER, FALLBACK_REASON_HEADER, MAX_FALLBACK_REASON_CHARS } from '@/lib/api/engine-trace';
+import { ENGINE_HEADER, ENGINE_USED_HEADER, ENGINE_VERSION_HEADER, FALLBACK_REASON_HEADER, MAX_FALLBACK_REASON_CHARS } from '@/lib/api/engine-trace';
 import { CONVERSION_WARNINGS_HEADER } from '@/lib/api/conversion-warnings';
 import { DROPPED_STREAMS_HEADER } from '@/lib/api/dropped-streams';
 import { FRAME_USED_HEADER, SOURCE_FRAMES_HEADER } from '@/lib/api/frame-headers';
@@ -31,6 +31,14 @@ export const FRAME_RESPONSE_HEADERS = {
 
 /** Response headers naming the engine of a raw binary conversion result. */
 export const ENGINE_RESPONSE_HEADERS = {
+  [ENGINE_HEADER]: {
+    description: 'Id of the engine that converted, as `GET /api/formats` lists it for the pair, for example `libreoffice` or `easyconvert`.',
+    schema: { type: 'string' },
+  },
+  [ENGINE_VERSION_HEADER]: {
+    description: 'Version of that engine as installed. Sent only when the program reports one.',
+    schema: { type: 'string' },
+  },
   [ENGINE_USED_HEADER]: {
     description: 'Engine that produced the raw output, for example `native-ffmpeg` or `internal-fallback`.',
     schema: { type: 'string' },
@@ -76,14 +84,22 @@ export const createProblemResponse = (description: string) => ({
  */
 export const V1_CONVERT_CODES = {
   400: ['conversion_failed', 'input_over_limit', 'invalid_pages', 'malformed_input', 'option_not_supported', 'spoofed_file', 'unsafe_archive', 'unsupported_input', 'unsupported_pair'],
-  422: ['archive_entry_collision', 'conversion_failed', 'empty_file', 'encrypted_input', 'input_over_limit', 'invalid_password', 'malformed_input', 'missing_volume', 'option_not_supported', 'password_required', 'timeout', 'unsupported_input', 'unsupported_method'],
+  422: ['archive_entry_collision', 'conversion_failed', 'empty_file', 'encrypted_input', 'engine_not_offered', 'engine_version_unavailable', 'input_over_limit', 'invalid_password', 'malformed_input', 'missing_volume', 'option_not_supported', 'password_required', 'timeout', 'unsupported_input', 'unsupported_method'],
   503: ['engine_unavailable'],
 } as const satisfies Record<number, readonly ConversionRefusalCode[]>;
 
 const CODED_PROBLEM_SCHEMA = (codes: readonly string[]) => ({
   allOf: [
     { $ref: '#/components/schemas/ProblemDetails' },
-    { type: 'object', properties: { code: { type: 'string', enum: [...codes], description: 'The cause of the refusal, stable across releases.' } } },
+    {
+      type: 'object',
+      properties: {
+        code: { type: 'string', enum: [...codes], description: 'The cause of the refusal, stable across releases.' },
+        engines: { type: 'array', items: { type: 'string' }, description: '`engine_not_offered` only: the ids of the engines that convert the pair, the default first.' },
+        engine: { type: 'string', description: '`engine_version_unavailable` only: the engine whose version was named.' },
+        installedVersion: { type: 'string', description: '`engine_version_unavailable` only: the version of `engine` that is installed (absent when its program prints none).' },
+      },
+    },
   ],
 });
 

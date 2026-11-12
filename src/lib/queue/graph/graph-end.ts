@@ -4,6 +4,7 @@ import { storageProvider } from '../../storage';
 import { recordGraphOutputsInHistory } from './graph-history';
 import { releaseInputHolds } from './input-cleanup';
 import type { GraphExecutionState } from './scheduler-types';
+import { namedJobFields } from '../../jobs/named-task-report';
 
 /** How a graph ended: completed, failed for a reason, or cancelled. */
 export type GraphOutcome = { status: 'completed' } | { status: 'failed'; error: string } | { status: 'cancelled' };
@@ -92,10 +93,10 @@ async function notifyWebhook(state: GraphExecutionState, outcome: GraphOutcome):
   if (!webhookUrl || !webhookSecret) return;
   const owner = { ownerUserId: state.ownerUserId, ownerKeyId: state.webhookKeyId };
   if (outcome.status === 'completed') {
-    const payload = { jobId: graphId, status: 'completed', graphId, nodes };
+    const payload = { jobId: graphId, status: 'completed', graphId, nodes, ...(state.namedTasks ? namedJobFields(state) : {}) };
     await logUndelivered(state, 'graph.completed', webhookDispatcher.dispatch(webhookUrl, 'graph.completed', payload, webhookSecret, owner));
   } else if (outcome.status === 'failed') {
-    const payload = { jobId: graphId, status: 'failed', error: outcome.error, graphId, nodes };
+    const payload = { jobId: graphId, status: 'failed', error: outcome.error, graphId, nodes, ...(state.namedTasks ? namedJobFields(state) : {}) };
     await logUndelivered(state, 'graph.failed', webhookDispatcher.dispatch(webhookUrl, 'graph.failed', payload, webhookSecret, owner));
   }
 }

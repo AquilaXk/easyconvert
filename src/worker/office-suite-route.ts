@@ -396,12 +396,17 @@ const PAGE_IMAGE_TARGETS: ReadonlySet<string> = new Set(['jpg', 'png']);
 /** The sources whose pages the native PDF tools draw: the text and markup sources, and a delimited table, whose PDF the in-process engine writes. */
 const PAGE_IMAGE_SOURCES: ReadonlySet<string> = new Set([...MARKUP_SOURCES, 'csv']);
 
+/** Whether the pair is a text, markup or delimited source written as page images (`convertMarkupPageImages`). */
+export function isMarkupPageImagePair(src: string, tgt: string): boolean {
+  return PAGE_IMAGE_SOURCES.has(src) && PAGE_IMAGE_TARGETS.has(tgt);
+}
+
 /**
  * The format the in-process converter writes first for a target that only the office suite writes, or undefined when the pair has
  * no such bridge: a Word 97-2003 file from a Hangul document, a text, markup or PDF source (through its DOCX), and RTF from a text or
  * markup source.
  */
-function bridgeFormat(src: string, tgt: string): string | undefined {
+export function bridgeFormat(src: string, tgt: string): string | undefined {
   if (tgt === WORD_97_TARGET && (HANCOM_SOURCES.has(src) || MARKUP_SOURCES.has(src) || src === PDF_FORMAT)) return DOCX_FORMAT;
   if (tgt === RTF_TARGET && MARKUP_SOURCES.has(src)) return DOCX_FORMAT;
   return undefined;
@@ -454,7 +459,7 @@ export async function convertMarkupPageImages(
   convertDirectly: () => Promise<WorkerConversionResult>
 ): Promise<WorkerConversionResult> {
   const { input, src, tgt, options, originalFilename } = request;
-  if (!PAGE_IMAGE_SOURCES.has(src) || !PAGE_IMAGE_TARGETS.has(tgt)) return convertDirectly();
+  if (!isMarkupPageImagePair(src, tgt)) return convertDirectly();
   const requestedOutput = Buffer.isBuffer(input) ? undefined : input.outputPath;
   const source: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? input : { ...input, outputPath: undefined };
   const pdfOptions = { ...options, libreOfficeFilter: undefined, outputPath: undefined, inProcessFallback: undefined, page: undefined, pages: undefined, multiPageOutput: undefined } as WorkerEngineOptions;

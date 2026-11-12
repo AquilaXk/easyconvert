@@ -82,6 +82,9 @@ const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
 
   EmptyAudioInputError: 'empty_file',
 
+  EngineNotOfferedError: 'engine_not_offered',
+  EngineVersionNotOfferedError: 'engine_version_unavailable',
+
   ImportBudgetExceededError: 'import_budget_exceeded',
   NodeQuotaExceededError: 'quota_exceeded',
 

@@ -23,7 +23,9 @@ import { readObjectHeader } from '@/lib/storage/object-header';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject, spoofCheckRefusal } from '@/lib/security/file-guard';
 import { resolveEffectiveWebhook } from '@/lib/security/ssrf';
-import { ConversionOptions, JobStatus, PipelineTask, JobGraph, QueueUnavailableError } from '@/lib/types';
+import { ConversionOptions, JobStatus, PipelineTask, JobGraph, QueueUnavailableError, typedFailureOf } from '@/lib/types';
+import { checkSubmittedEngineChoices } from '@/lib/api/engine-choice-check';
+import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import {
   validateJobGraph,
   linearTasksToJobGraph,
@@ -32,6 +34,9 @@ import {
   JobGraphValidationError,
 } from '@/lib/jobs';
 import { graphReservationUnits } from '@/lib/jobs/graph-operations';
+import { duplicateKeys } from '@/lib/jobs/duplicate-keys';
+import { isNamedTaskMap, namedTaskNameErrors, namedTaskRefusal, namedTasksToJobGraph, type NamedTask, type NamedTaskMap } from '@/lib/jobs/named-tasks';
+import { namedJobFields } from '@/lib/jobs/named-task-report';
 import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 import { graphScheduler } from '@/lib/queue/graph';
 import { sealGraph } from '@/lib/queue/graph/node-jobs';
@@ -51,6 +56,7 @@ import {
   JobCreateRequestSchema,
   ConversionOptionsSchema,
   PipelineTaskSchema,
+  NamedTaskMapSchema,
   JobGraphSchema,
 } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext, releaseKey, replyUnderKey } from '@/lib/api/with-idempotency';
@@ -170,6 +176,106 @@ async function verifyStoredInput(check: StoredInputCheck, plan: ReturnType<typeo
   return { size: info.size };
 }
 
+type UploadSessionVerdict =
+  | { session: { key: string; filename: string; uploadLength: number } }
+  | { refusal: { status: number; message: string; title: string } };
+
+/** The completed upload session `uploadId` of `userId`, or why a job cannot read it. */
+async function completedUploadSession(uploadId: string, userId: string): Promise<UploadSessionVerdict> {
+  const session = await tusEngine.getSession(uploadId);
+  if (!session) return { refusal: { status: 404, message: `Upload session "${uploadId}" not found or expired.`, title: 'Not Found' } };
+  if (!session.completed) return { refusal: { status: 400, message: `Upload session "${uploadId}" is not completed yet.`, title: 'Bad Request' } };
+  if (session.ownerUserId && session.ownerUserId !== userId) return { refusal: { status: 404, message: STORAGE_OBJECT_NOT_FOUND, title: 'Not Found' } };
+  return { session };
+}
+
+/** The 422 that refuses named tasks, typed by the first cause it names. */
+function namedTaskProblem(instanceUri: string, errors: Parameters<typeof namedTaskRefusal>[0]): NextResponse {
+  const refusal = namedTaskRefusal(errors);
+  return createProblemDetailsResponse(422, refusal.detail, instanceUri, 'Unprocessable Entity', refusal.type, undefined, refusal.invalidParams);
+}
+
+/**
+ * The 422 of a graph, pipeline or named tasks that failed validation. Named tasks (no `prefix`) are typed by their first cause;
+ * the others name the generic problem with the faults after `prefix`, or the `detail` given.
+ */
+function invalidGraphProblem(instanceUri: string, prefix: string | undefined, errors: Parameters<typeof namedTaskRefusal>[0], detail?: string): NextResponse {
+  if (prefix === undefined && detail === undefined) return namedTaskProblem(instanceUri, errors);
+  const text = detail ?? `${prefix}: ${errors.map((e) => e.message).join(' ')}`;
+  return createProblemDetailsResponse(422, text, instanceUri, 'Unprocessable Entity', 'https://api.easyconvert.io/problems/unprocessable-entity', undefined, errors.map((e) => ({ name: e.path, reason: e.message })));
+}
+
+type TasksField = { tasks: PipelineTask[] } | { namedTasks: NamedTaskMap; duplicates: string[] } | { response: NextResponse };
+
+/** The `tasks` field of a multipart request: the JSON of a pipeline array or of an object of named tasks, validated. */
+function parseMultipartTasks(raw: string, instanceUri: string): TasksField {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { response: createProblemDetailsResponse(400, 'Invalid JSON string provided in "tasks" parameter.', instanceUri) };
+  }
+  if (isNamedTaskMap(parsed)) {
+    const validation = validateOrProblem(NamedTaskMapSchema, parsed, instanceUri);
+    return validation.ok ? { namedTasks: parsed, duplicates: duplicateKeys(raw) } : { response: validation.response };
+  }
+  if (!Array.isArray(parsed)) {
+    const reason = 'must be an array or an object of named tasks';
+    return {
+      response: createProblemDetailsResponse(422, `Request validation failed: tasks ${reason}`, instanceUri, 'Unprocessable Entity', 'https://api.easyconvert.io/problems/unprocessable-entity', undefined, [{ name: 'tasks', reason }]),
+    };
+  }
+  for (const task of parsed) {
+    const validation = validateOrProblem(PipelineTaskSchema, task, instanceUri);
+    if (!validation.ok) return { response: validation.response };
+  }
+  return { tasks: parsed };
+}
+
+/** The tasks of an object of named tasks as a list, in the order sent. */
+function namedTaskList(namedTasks: NamedTaskMap | undefined): NamedTask[] | undefined {
+  return namedTasks && Object.values(namedTasks);
+}
+
+/** Sets `pages` from `page` on the options of a job and of each of its tasks (a pipeline stage or a named task) and checks the range syntax; the message of the first range that is not valid, else undefined. */
+function normalizePageRanges(options: ConversionOptions | undefined, stages: ReadonlyArray<{ options?: ConversionOptions }> | undefined): string | undefined {
+  for (const target of [options, ...(stages ?? []).map((stage) => stage.options)]) {
+    if (!target) continue;
+    if (!target.pages && target.page) target.pages = String(target.page);
+    if (!target.pages) continue;
+    try {
+      validatePageRangeSyntax(target.pages);
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The graph the named tasks of a request run as. Their names are refused first (a huge request is not walked), then the uploads
+ * the tasks name are resolved, as a top-level `uploadId` is.
+ */
+async function namedTasksGraph(
+  namedTasks: NamedTaskMap,
+  request: { duplicates: string[]; graphGiven: boolean; user: User; instanceUri: string }
+): Promise<{ graph: JobGraph } | { response: NextResponse }> {
+  const { duplicates, graphGiven, user, instanceUri } = request;
+  if (graphGiven) {
+    return { response: createProblemDetailsResponse(422, 'Send either "graph" or named "tasks", not both.', instanceUri, 'Unprocessable Entity', undefined, undefined, [{ name: 'tasks', reason: 'cannot be combined with graph' }]) };
+  }
+  const nameErrors = namedTaskNameErrors(Object.keys(namedTasks), user.tier, duplicates);
+  if (nameErrors.length > 0) return { response: namedTaskProblem(instanceUri, nameErrors) };
+  const uploadKeys: Record<string, string> = {};
+  for (const id of new Set(Object.values(namedTasks).flatMap((task) => (task.upload_id ? [task.upload_id] : [])))) {
+    const resolved = await completedUploadSession(id, user.id);
+    if ('refusal' in resolved) return { response: createProblemDetailsResponse(resolved.refusal.status, resolved.refusal.message, instanceUri, resolved.refusal.title) };
+    uploadKeys[id] = resolved.session.key;
+  }
+  const translation = namedTasksToJobGraph(namedTasks, uploadKeys);
+  return translation.ok ? { graph: translation.graph } : { response: namedTaskProblem(instanceUri, translation.errors) };
+}
+
 export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/jobs';
 
@@ -228,6 +334,8 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     let sourceFormatParam: string | undefined;
     let options: ConversionOptions = {};
     let tasks: PipelineTask[] | undefined;
+    let namedTasks: NamedTaskMap | undefined;
+    let duplicateTaskNames: string[] = [];
     let graph: JobGraph | undefined;
     let storageKey: string | undefined;
     let uploadId: string | undefined;
@@ -287,29 +395,13 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 
       const tasksRaw = formData.get('tasks') as string | null;
       if (tasksRaw) {
-        try {
-          const parsedTasks = JSON.parse(tasksRaw);
-          if (Array.isArray(parsedTasks)) {
-            tasks = parsedTasks;
-          } else {
-            return reply(createProblemDetailsResponse(
-              422,
-              'Request validation failed: tasks must be array',
-              instanceUri,
-              'Unprocessable Entity',
-              'https://api.easyconvert.io/problems/unprocessable-entity',
-              undefined,
-              [{ name: 'tasks', reason: 'must be array' }]
-            ));
-          }
-        } catch {
-          return reply(createProblemDetailsResponse(400, 'Invalid JSON string provided in "tasks" parameter.', instanceUri));
-        }
-        for (let i = 0; i < tasks.length; i++) {
-          const taskValidation = validateOrProblem(PipelineTaskSchema, tasks[i], instanceUri);
-          if (!taskValidation.ok) {
-            return reply(taskValidation.response);
-          }
+        const field = parseMultipartTasks(tasksRaw, instanceUri);
+        if ('response' in field) return reply(field.response);
+        if ('namedTasks' in field) {
+          namedTasks = field.namedTasks;
+          duplicateTaskNames = field.duplicates;
+        } else {
+          tasks = field.tasks;
         }
       }
 
@@ -339,8 +431,10 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     } else {
       // JSON body
       let body: unknown;
+      let bodyText = '';
       try {
-        body = await req.json();
+        bodyText = await req.text();
+        body = JSON.parse(bodyText);
       } catch {
         return reply(createProblemDetailsResponse(400, 'Invalid JSON body provided in request.', instanceUri));
       }
@@ -357,6 +451,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       options = validBody.options && typeof validBody.options === 'object' ? validBody.options : {};
       if (validBody.tasks && Array.isArray(validBody.tasks)) {
         tasks = validBody.tasks;
+      } else if (isNamedTaskMap(validBody.tasks)) {
+        namedTasks = validBody.tasks;
+        duplicateTaskNames = duplicateKeys(bodyText, 'tasks');
       }
       if (validBody.graph && typeof validBody.graph === 'object') {
         graph = validBody.graph as JobGraph;
@@ -388,61 +485,26 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     const { webhookUrl: effectiveWebhookUrl, webhookSecret: effectiveWebhookSecret, webhookKeyId } = resolvedWebhook;
 
     // Normalize page / pages option and validate the page range syntax
-    if (options) {
-      if (!options.pages && options.page) {
-        options.pages = String(options.page);
-      }
-      if (options.pages) {
-        try {
-          validatePageRangeSyntax(options.pages);
-        } catch (err: any) {
-          return await fail(422, err.message, 'Unprocessable Entity');
-        }
-      }
-    }
-
-    if (tasks && Array.isArray(tasks)) {
-      let pageRangeError: string | null = null;
-      for (const t of tasks) {
-        if (t.options) {
-          if (!t.options.pages && t.options.page) {
-            t.options.pages = String(t.options.page);
-          }
-          if (t.options.pages) {
-            try {
-              validatePageRangeSyntax(t.options.pages);
-            } catch (err: any) {
-              pageRangeError = err.message;
-              break;
-            }
-          }
-        }
-      }
-      if (pageRangeError) {
-        return await fail(422, pageRangeError, 'Unprocessable Entity');
-      }
-    }
+    const pageRangeError = normalizePageRanges(options, tasks ?? namedTaskList(namedTasks));
+    if (pageRangeError !== undefined) return await fail(422, pageRangeError, 'Unprocessable Entity');
 
     // Resolve uploadId if provided
     if (uploadId && !storageKey) {
-      const tusSession = await tusEngine.getSession(uploadId);
-      if (tusSession) {
-        if (!tusSession.completed) {
-          return await fail(400, `Upload session "${uploadId}" is not completed yet.`);
-        }
-        if (tusSession.ownerUserId && tusSession.ownerUserId !== auth.user.id) {
-          return await fail(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
-        }
-        storageKey = tusSession.key;
-        if (!originalFilename) {
-          originalFilename = tusSession.filename;
-        }
-        if (!fileSize) {
-          fileSize = tusSession.uploadLength;
-        }
-      } else {
-        return await fail(404, `Upload session "${uploadId}" not found or expired.`, 'Not Found');
+      const resolved = await completedUploadSession(uploadId, auth.user.id);
+      if ('refusal' in resolved) return await fail(resolved.refusal.status, resolved.refusal.message, resolved.refusal.title);
+      storageKey = resolved.session.key;
+      if (!originalFilename) {
+        originalFilename = resolved.session.filename;
       }
+      if (!fileSize) {
+        fileSize = resolved.session.uploadLength;
+      }
+    }
+
+    if (namedTasks) {
+      const named = await namedTasksGraph(namedTasks, { duplicates: duplicateTaskNames, graphGiven: graph !== undefined, user: auth.user, instanceUri });
+      if ('response' in named) return reply(named.response);
+      graph = named.graph;
     }
 
     // 1b'. Refuse what could not be sealed or masked later, before any job exists or is charged.
@@ -457,6 +519,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
 
     // 1c. Validate JobGraph or adapt legacy tasks into JobGraph
+    const submittedGraph = graph;
     if (graph) {
       const graphValidation = validateJobGraph(graph, {
         userTier: auth.user.tier,
@@ -464,17 +527,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         sourceFilename: originalFilename,
       });
       if (!graphValidation.valid) {
-        return reply(
-          createProblemDetailsResponse(
-            422,
-            `Graph validation failed: ${graphValidation.errors.map((e) => e.message).join(' ')}`,
-            instanceUri,
-            'Unprocessable Entity',
-            'https://api.easyconvert.io/problems/unprocessable-entity',
-            undefined,
-            graphValidation.errors.map((e) => ({ name: e.path, reason: e.message }))
-          )
-        );
+        return reply(invalidGraphProblem(instanceUri, namedTasks ? undefined : 'Graph validation failed', graphValidation.errors));
       }
     } else if (tasks && tasks.length > 0) {
       try {
@@ -490,17 +543,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         if (!(err instanceof JobGraphValidationError)) {
           throw err;
         }
-        return reply(
-          createProblemDetailsResponse(
-            422,
-            err.message,
-            instanceUri,
-            'Unprocessable Entity',
-            'https://api.easyconvert.io/problems/unprocessable-entity',
-            undefined,
-            err.errors.map((e) => ({ name: e.path, reason: e.message }))
-          )
-        );
+        return reply(invalidGraphProblem(instanceUri, undefined, err.errors, err.message));
       }
       const graphValidation = validateJobGraph(graph, {
         userTier: auth.user.tier,
@@ -508,17 +551,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         sourceFilename: originalFilename,
       });
       if (!graphValidation.valid) {
-        return reply(
-          createProblemDetailsResponse(
-            422,
-            `Pipeline tasks validation failed: ${graphValidation.errors.map((e) => e.message).join(' ')}`,
-            instanceUri,
-            'Unprocessable Entity',
-            'https://api.easyconvert.io/problems/unprocessable-entity',
-            undefined,
-            graphValidation.errors.map((e) => ({ name: e.path, reason: e.message }))
-          )
-        );
+        return reply(invalidGraphProblem(instanceUri, 'Pipeline tasks validation failed', graphValidation.errors));
       }
       // The job produces the final task's output, which overrides the top-level targetFormat.
       const finalOutputFormat = linearGraphOutputFormat(graphValidation);
@@ -652,6 +685,14 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       }
     }
 
+    // An engine the conversion does not list, or a version that is not installed, is refused before anything is reserved.
+    try {
+      await checkSubmittedEngineChoices({ sourceFormat: sourceDef.id, targetFormat: targetDef.id, options, tasks, graph: submittedGraph });
+    } catch (err) {
+      if (typedFailureOf(err) === undefined) throw err;
+      return reply(typedFailureProblem(err, instanceUri));
+    }
+
     const unit = await reserveConversionUnit(auth.user, reservedUnits);
     if (!unit.reserved) return reply(conversionRefusalResponse(unit.refusal, instanceUri));
 
@@ -664,6 +705,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       options,
       graph,
       tasks,
+      namedTasks: namedTasks !== undefined,
       input: { storageKey, uploadedBuffer, fileMeta, inputBufferBase64 },
       webhookUrl: effectiveWebhookUrl,
       webhookSecret: effectiveWebhookSecret,
@@ -816,6 +858,8 @@ interface ReservedSubmission {
   options: ConversionOptions;
   graph?: JobGraph;
   tasks?: PipelineTask[];
+  /** The graph was submitted as named tasks (`tasks` is an object), so its job answers each task by name. */
+  namedTasks: boolean;
   input: SubmittedInput;
   webhookUrl?: string;
   webhookSecret?: string;
@@ -861,6 +905,7 @@ async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit)
             sourceFormat: sourceDef.id,
             targetFormat: targetDef.id,
             tasks: submission.tasks,
+            namedTasks: submission.namedTasks,
           }),
         recover: () => graphScheduler.recoverStart(graphId),
       })
@@ -879,6 +924,7 @@ async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit)
         ...answered,
         graph: redactForOutput(graphState.graph),
         nodes: nodesResponse,
+        ...(submission.namedTasks ? namedJobFields(graphState) : {}),
       },
       { status: 202 }
     );
@@ -979,6 +1025,7 @@ async function listJobs(req: NextRequest) {
           processedOn: graphProcessedOn(g),
           finishedOn: g.finishedAt,
           failedReason: g.failedReason === undefined ? undefined : redactText(g.failedReason),
+          ...(g.namedTasks ? namedJobFields(g) : {}),
         };
       }
       const j = work.job;

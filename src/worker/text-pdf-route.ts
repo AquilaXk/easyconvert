@@ -13,7 +13,7 @@ import type { WorkerVfsPayload } from './worker-types';
 import { escapeMarkupText } from '../lib/text/escape';
 
 /** Text sources rendered to PDF; CJK or complex-script text and all HTML prefer LibreOffice. */
-const TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md', 'html', 'htm', 'hwp']);
+export const TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md', 'html', 'htm', 'hwp']);
 /** Sources LibreOffice reads directly; their text is scanned in chunks, whatever the size. HTML is decoded whole, by encoding sniffing. */
 const STREAMED_TEXT_SOURCES: ReadonlySet<string> = new Set(['txt']);
 /** HTML always prefers LibreOffice, which keeps its full structure. */
@@ -30,6 +30,12 @@ const PAGE_SIZE_CSS: Readonly<Record<'portrait' | 'landscape', string>> = {
 };
 
 type PageOrientation = 'portrait' | 'landscape';
+
+/** What the route reads from the request: how HTML resources are treated, and whether LibreOffice was chosen as the engine. */
+export interface TextPdfPolicy extends HtmlResourcePolicy {
+  /** The request chose LibreOffice: every source of the table renders there, whatever its script and orientation. */
+  forceNative?: boolean;
+}
 
 export interface TextPdfRoute {
   /** Text has Arabic, Hebrew, Indic or another complex script: LibreOffice lays it out first, the in-process shaper is the fallback. */
@@ -72,7 +78,7 @@ export async function planTextPdfRoute(
   tgt: string,
   originalFilename: string,
   orientation?: PageOrientation,
-  policy: HtmlResourcePolicy = {}
+  policy: TextPdfPolicy = {}
 ): Promise<TextPdfRoute | null> {
   if (tgt !== 'pdf' || !TEXT_PDF_SOURCES.has(src)) return null;
   await loadFontCoverageIndex();
@@ -86,7 +92,7 @@ export async function planTextPdfRoute(
     }
     assertFontCoverage(Array.from(scriptLetters).join(''));
   }
-  const route = planTextPdfEngine(src, text, complexScript, cjk, orientation);
+  const route = policy.forceNative ? { complexScript, preferNative: true, orientation } : planTextPdfEngine(src, text, complexScript, cjk, orientation);
   if (!route.preferNative || (src === PLAIN_TEXT_SOURCE && !route.orientation)) return route;
   // Staged here, before LibreOffice is tried, so a refused reference is a 400 and never a fallback.
   const staged = await stageTextPdfHtml(input, src, originalFilename, route.orientation, policy);

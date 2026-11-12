@@ -4,6 +4,7 @@ import { ARCHIVE_COMPRESSION_LEVEL_MAX, ARCHIVE_COMPRESSION_LEVEL_MIN } from '@/
 import { OCR_MAX_LANGUAGES_PER_REQUEST } from '@/lib/conversions/ocr-languages';
 import { ALLOWED_LIBREOFFICE_FILTERS } from '@/lib/conversions/pdf-export-options';
 
+import { NamedTaskMapSchema, TaskReportSchema } from './named-task-schemas';
 import { PIPELINE_OPERATIONS } from './enums';
 import {
   ConversionWarningsProperties,
@@ -35,7 +36,13 @@ export {
   PdfWatermarkOptionsSchema,
 };
 
+export { NamedTaskSchema, NamedTaskMapSchema, TaskReportSchema } from './named-task-schemas';
+
 export const MAX_THUMBNAIL_TIMESTAMPS = 16;
+
+/** Longest `engine` and `engineVersion` the contract reads: far over any id or version of the engines, so a longer value is a malformed request. */
+const ENGINE_ID_MAX_LENGTH = 32;
+const ENGINE_VERSION_MAX_LENGTH = 48;
 
 /** One language code (letters, digits, `-` and `_`), then up to the per-request limit of further ones joined with `+`. */
 const OCR_LANGUAGE_PATTERN = `^[A-Za-z0-9_-]+(\\+[A-Za-z0-9_-]+){0,${OCR_MAX_LANGUAGES_PER_REQUEST - 1}}$`;
@@ -764,6 +771,20 @@ export const ConversionOptionsSchema = {
       description:
         'Longest output in seconds, applied as an output-side limit (-t). Must be more than 0 and not longer than the input; a longer value answers 400.',
     },
+    engine: {
+      type: 'string',
+      minLength: 1,
+      maxLength: ENGINE_ID_MAX_LENGTH,
+      description:
+        'The engine that converts, one of the engines `GET /api/formats?source=..&target=..` lists for the pair (`libreoffice`, `poppler`, `ffmpeg`, `7zip`, `librsvg`, `easyconvert` for the in-process converter, and the others the pair names). Left out, the pair\'s default engine runs and may fall back to the in-process converter; a named engine never falls back. An engine the pair does not list answers 422 with the code `engine_not_offered` and the list in `engines`. In a graph, the check runs when the node starts.',
+    },
+    engineVersion: {
+      type: 'string',
+      minLength: 1,
+      maxLength: ENGINE_VERSION_MAX_LENGTH,
+      description:
+        'The version of `engine` the request expects, as the formats API shows it. One version of each engine is installed; any other answers 422 with the code `engine_version_unavailable` and the installed one in `installedVersion`. Needs `engine`.',
+    },
     useFfmpeg: {
       type: 'boolean',
       description: 'Force FFmpeg processing pipeline.',
@@ -1012,11 +1033,17 @@ export const JobCreateRequestSchema = {
       description: 'Conversion configuration options.',
     },
     tasks: {
-      type: 'array',
-      description: 'Array of sequential pipeline tasks for multi-stage conversion execution.',
-      items: {
-        $ref: 'https://easyconvert.local/schemas/pipeline-task.json',
-      },
+      description: 'Either an array of sequential pipeline tasks, or an object of named tasks (a task graph) keyed by the names the caller chooses.',
+      oneOf: [
+        {
+          type: 'array',
+          description: 'Array of sequential pipeline tasks for multi-stage conversion execution.',
+          items: {
+            $ref: 'https://easyconvert.local/schemas/pipeline-task.json',
+          },
+        },
+        NamedTaskMapSchema,
+      ],
     },
     graph: {
       $ref: 'https://easyconvert.local/schemas/job-graph.json',
@@ -1195,11 +1222,25 @@ export const JobResourceSchema = {
       },
     },
     tasks: {
-      type: 'array',
-      description: 'Pipeline task stages.',
-      items: {
-        $ref: 'https://easyconvert.local/schemas/pipeline-task.json',
-      },
+      description: 'The submitted pipeline stages (an array), or for a job submitted as named tasks an object that reports each task under its name.',
+      oneOf: [
+        {
+          type: 'array',
+          description: 'Pipeline task stages.',
+          items: {
+            $ref: 'https://easyconvert.local/schemas/pipeline-task.json',
+          },
+        },
+        {
+          type: 'object',
+          description: 'The report of each task of a job submitted as named tasks, by name.',
+          additionalProperties: { $ref: 'https://easyconvert.local/schemas/task-report.json' },
+        },
+      ],
+    },
+    failedTask: {
+      type: 'string',
+      description: 'For a job submitted as named tasks that failed: the name of the task that failed it.',
     },
     logs: {
       type: 'array',

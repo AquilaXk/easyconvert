@@ -34,6 +34,7 @@ import {
 import { SYNC_CONVERSION_MAX_BYTES } from '@/lib/api/file-size-limit';
 import { formatBytes } from '@/lib/format-bytes';
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
+import { ENGINE_IDS } from '@/lib/conversions/engine-ids';
 
 const ENGINE_UNAVAILABLE_DESCRIPTION = `The pair needs a native engine that is not installed on this deployment (problem type \`${ENGINE_UNAVAILABLE_PROBLEM_TYPE}\`; quota reservation rolled back).${PDFA_ENGINE_NOTE}`;
 /** A file sent in the request: one request carries at most 64 MiB, so the plan limit is reached only by a stored file. */
@@ -170,6 +171,7 @@ export const conversionPaths = {
             'Problem type `https://api.easyconvert.io/problems/unprocessable-entity`, or `.../option-not-supported` for an option that is planned and not yet supported: `options` fail the contract (the fields in `invalidParams`). ' +
             'Or the file is intact but the engine cannot convert it: the document is encrypted, password protected or DRM protected so its text cannot be read, an archive uses a method no engine here decodes, a CAD or font file the readers refuse, an audio file with no samples, or the conversion overran its CPU limit; these name the cause in `code`. ' +
             'An archive whose entry names collide when unpacked is also a 422, titled "Archive Entry Collision", with the `code` "archive_entry_collision". ' +
+            'An `options.engine` that the pair does not list (or an engine id nobody knows, or `engineVersion` without an engine) is a 422 with the `code` "engine_not_offered" and the engines the pair lists in `engines`; an `options.engineVersion` other than the installed one is a 422 with the `code` "engine_version_unavailable" and the installed version in `installedVersion`. Both are answered before anything is reserved. ' +
             PDFA_PROBLEM_DESCRIPTION,
           V1_CONVERT_CODES[422]
         ),
@@ -240,7 +242,7 @@ export const conversionPaths = {
                 options: { type: 'string', description: CONVERT_OPTIONS_DESCRIPTION },
                 tasks: {
                   type: 'string',
-                  description: 'JSON-serialized array of sequential pipeline tasks: [{ name, operation, targetFormat, options }].',
+                  description: 'JSON-serialized array of sequential pipeline tasks: [{ name, operation, targetFormat, options }], or a JSON-serialized object of named tasks (a task graph) keyed by task name, as `tasks` of the JSON body.',
                 },
                 webhookUrl: { type: 'string', format: 'uri', description: 'Destination URL for job events.' },
                 webhookSecret: { type: 'string', description: 'Secret used for HMAC-SHA256 signature.' },
@@ -276,6 +278,11 @@ export const conversionPaths = {
                     description: 'Format of the job output. For a task pipeline, the output format of the final task.',
                   },
                   originalFilename: { type: 'string' },
+                  tasks: {
+                    type: 'object',
+                    description: 'A job submitted as named tasks: the report of each task by name (all `waiting` or `active` when the job is accepted).',
+                    additionalProperties: { $ref: '#/components/schemas/TaskReport' },
+                  },
                 },
               },
             },
@@ -288,7 +295,8 @@ export const conversionPaths = {
         '409': createProblemResponse('A request with the same idempotency key is currently in-flight. Retry after delay.'),
         '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
         '422': createProblemResponse(
-          'The graph or pipeline tasks failed validation (for example, a merge with fewer than 2 inputs), an idempotency key was reused with a different request payload, or the graph has no conversion (problem type `https://api.easyconvert.io/problems/graph-without-conversion`): a graph that only imports and exports files is refused before anything is reserved.'
+          'The graph or pipeline tasks failed validation (for example, a merge with fewer than 2 inputs), an idempotency key was reused with a different request payload, or the graph has no conversion (problem type `https://api.easyconvert.io/problems/graph-without-conversion`): a graph that only imports and exports files is refused before anything is reserved. Named tasks are refused with a problem type of their own when the cause is a task name (`task-name-invalid`: not a lowercase letter then lowercase letters, digits, `-` or `_`, up to 64 characters; `task-name-duplicate`: the same name twice in the object), the count (`task-count-exceeded`: more than 8 tasks on the free plan, 24 on pro, 32 on the largest plan), an `input` that names no task (`task-input-unknown`) or tasks that read each other in a loop (`task-graph-cycle`); `invalidParams` names each task (`tasks.convert-1.input`). Any other fault of the tasks (a field the operation does not take, a missing `output_format`, a conversion the formats do not allow) is the generic `unprocessable-entity`, also with `invalidParams` by task. Nothing is reserved or charged for a refused request. ' +
+            'Or an `engine` that the conversion does not list (the `code` "engine_not_offered", with the engines it lists in `engines`) or an `engineVersion` that is not installed (the `code` "engine_version_unavailable", with `installedVersion`), in the job\'s `options` in a pipeline task or in a named task. In a graph, the engine ids and versions are checked here and the pair of each node when the node runs, which fails that node with the same code.'
         ),
         '429': createProblemResponse(
           'The day has fewer conversions left than the job needs (problem type `https://api.easyconvert.io/problems/quota-exceeded`, with `dailyLimit`, `remaining` and `requiredUnits`). A graph needs one unit for each input declared by a node that makes one output of each input (`convert`, `ocr`, `optimize`, `thumbnail`, `media.package`, `watermark` and the `pdf.*` page operations) and one for each `merge`, `metadata`, `archive.create` or `archive.extract` node. A node whose inputs hold more files than it declares (an unpacked archive) takes the rest of its units when it starts, and fails with the refusal code `quota_exceeded` when the day has too few left.' +
@@ -344,7 +352,7 @@ export const conversionPaths = {
   '/api/v1/jobs/{id}': {
     get: {
       summary: 'Get Job Status and Details',
-      description: 'Polls status, real-time progress, logs, and artifacts of a specific conversion job. Requires "convert:read" scope.',
+      description: 'Polls status, real-time progress, logs, and artifacts of a specific conversion job. A job submitted as named tasks reports each task under its name in `tasks`: its `status`, for an `export/url` task without a `url` the `result` with the `downloadUrl` of each file it kept, and for a task that did not complete its `error` (a `code` and a `message`; a task that did not run because a task it reads failed is `failed` with the code `dependency_failed` and the failed task in `error.task`). The job `status` is `failed` when a task failed, and `failedTask` names it. Requires "convert:read" scope.',
       operationId: 'getJobStatusV1',
       security: requireScope('convert:read'),
       parameters: [
@@ -401,14 +409,24 @@ export const conversionPaths = {
   },
   '/api/formats': {
     get: {
-      summary: 'List Supported Formats',
-      description: 'Returns all supported file formats, categories, and bidirectional conversion targets.',
+      summary: 'List Supported Formats and Engines',
+      description:
+        'Returns all supported file formats, categories, and conversion targets, and the engines of this deployment with their installed versions. ' +
+        'With `source`, `target` or `engine` it also lists, for each pair they select, the engines that convert it: the id to send as `options.engine`, the installed version to send as `options.engineVersion`, whether the engine is the default for the pair (the one that runs when a request names none) and whether its program is installed. ' +
+        'Only the engines a pair really has are listed; a pair that one program or the in-process converter alone converts lists that one.',
       operationId: 'getFormats',
       security: PUBLIC_ACCESS,
+      parameters: [
+        { name: 'source', in: 'query', required: false, schema: { type: 'string', example: 'docx' }, description: 'Source format extension: lists the engines of each target of this format.' },
+        { name: 'target', in: 'query', required: false, schema: { type: 'string', example: 'pdf' }, description: 'Target format extension: with `source`, one pair; alone, every source that converts to it.' },
+        { name: 'engine', in: 'query', required: false, schema: { type: 'string', enum: [...ENGINE_IDS] }, description: 'Keeps the pairs that list this engine.' },
+      ],
       responses: {
         '200': {
-          description: 'Dictionary of supported format definitions.',
+          description: 'Dictionary of supported format definitions, the engines of the deployment and, when asked, the engines of each selected pair.',
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/FormatsResponse' } } },
         },
+        '400': createProblemResponse('A `source`, `target` or `engine` that names no format or engine (an unknown engine answers with the known ids in `engines`).'),
       },
     },
   },

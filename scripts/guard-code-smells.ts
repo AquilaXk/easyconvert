@@ -233,6 +233,30 @@ function totalsByFilePair(entries: readonly SmellEntry[]): Map<string, PairTotal
   return totals;
 }
 
+/** Totals per rule + function over every file, so a function moved to another file keeps the totals it had. */
+function totalsByFunction(entries: readonly SmellEntry[]): Map<string, PairTotals> {
+  return totalsByFilePair(entries.map((entry) => ({ ...entry, file: entry.function })));
+}
+
+/**
+ * Whether the file + rule pair the base branch lacks holds only functions that the base already had under the same rule in
+ * another file, with no more violations and no worse value over all files: a function moved by a split, not a new one.
+ */
+function onlyMovedFunctions(
+  pair: string,
+  head: readonly SmellEntry[],
+  baseByFunction: ReadonlyMap<string, PairTotals>,
+  headByFunction: ReadonlyMap<string, PairTotals>
+): boolean {
+  const entries = head.filter((entry) => `${entry.file} :: ${entry.rule}` === pair);
+  return entries.every((entry) => {
+    const key = `${entry.function} :: ${entry.rule}`;
+    const before = baseByFunction.get(key);
+    const after = headByFunction.get(key);
+    return before !== undefined && after !== undefined && after.count <= before.count && after.maxValue <= before.maxValue;
+  });
+}
+
 /**
  * Compares the baseline of a change with the baseline of its base branch, so `--update --allow-growth` in the change cannot
  * hide a new violation. Totals are summed per file + rule, which lets a renamed function pass; a pair the base lacks, or a
@@ -240,10 +264,13 @@ function totalsByFilePair(entries: readonly SmellEntry[]): Map<string, PairTotal
  */
 export function baselineGrowth(base: readonly SmellEntry[], head: readonly SmellEntry[]): string[] {
   const baseTotals = totalsByFilePair(base);
+  const baseByFunction = totalsByFunction(base);
+  const headByFunction = totalsByFunction(head);
   const growth: string[] = [];
   for (const [pair, total] of totalsByFilePair(head)) {
     const before = baseTotals.get(pair);
     if (before === undefined) {
+      if (onlyMovedFunctions(pair, head, baseByFunction, headByFunction)) continue;
       growth.push(`NEW PAIR ${pair} (count ${total.count}, worst ${total.maxValue}); the base branch has none`);
     } else if (total.count > before.count || total.maxValue > before.maxValue) {
       growth.push(`GREW ${pair} (count ${total.count}, worst ${total.maxValue}); base has count ${before.count}, worst ${before.maxValue}`);

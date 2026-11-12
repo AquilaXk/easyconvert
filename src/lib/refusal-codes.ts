@@ -105,6 +105,8 @@ export const CONVERSION_REFUSAL_CODES = [
   'import_budget_exceeded',
   'quota_exceeded',
   'timeout',
+  'engine_not_offered',
+  'engine_version_unavailable',
   'engine_unavailable',
   'conversion_failed',
 ] as const;
@@ -120,6 +122,12 @@ export function isCodeOf<const Codes extends readonly string[]>(codes: Codes, va
 export function refusalCodeOf(error: unknown): ConversionRefusalCode | undefined {
   const code = error instanceof Error ? (error as Error & { refusalCode?: unknown }).refusalCode : undefined;
   return isCodeOf(CONVERSION_REFUSAL_CODES, code) ? code : undefined;
+}
+
+/** The code an error names as a list of one, or an empty list: the optional trailing argument of a call that reports a failure. */
+export function refusalCodeList(error: unknown): string[] {
+  const code = refusalCodeOf(error);
+  return code ? [code] : [];
 }
 
 /** The start of every problem `type` URI the API answers with (RFC 9457); the name after it is as stable as a code. */
