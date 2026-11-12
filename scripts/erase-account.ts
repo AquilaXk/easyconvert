@@ -224,6 +224,8 @@ export async function eraseAccount(plan: AccountErasurePlan, options: AccountEra
   await subscriptionStore.forgetUser(userId);
   await forgetFailedLogins(plan.email);
   await redisUserStore.deleteUser(userId);
+  // An event that landed between the first deletion and the account's own can have written the record and its index again.
+  await subscriptionStore.forgetUser(userId);
   return { runningJobIds: [] };
 }
 

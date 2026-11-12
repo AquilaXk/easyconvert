@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { eraseAccount, planAccountErasure } from '../scripts/erase-account';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { subscriptionStore } from '../src/lib/billing/subscription-store';
@@ -23,6 +23,7 @@ async function subscriber(subscriptionId: string) {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const userId of created.splice(0)) {
     const plan = await planAccountErasure(userId);
     if (plan) await eraseAccount(plan, { drainMs: 0 });
@@ -54,5 +55,25 @@ describe('erasing an account that has a subscription', () => {
     expect(await subscriptionStore.userOfSubscription('sub_erased')).toBeNull();
     expect(await subscriptionStore.findByUser(kept.id)).toMatchObject({ providerSubscriptionId: 'sub_kept' });
     expect(await subscriptionStore.userOfSubscription('sub_kept')).toBe(kept.id);
+  });
+
+  it('deletes the record again when an event lands after the first deletion and before the account goes', async () => {
+    const user = await subscriber('sub_late');
+    const plan = (await planAccountErasure(user.id))!;
+    const deleteUser = redisUserStore.deleteUser.bind(redisUserStore);
+    vi.spyOn(redisUserStore, 'deleteUser').mockImplementation(async (id) => {
+      const late = await subscriptionStore.apply({
+        eventId: `evt_${crypto.randomUUID()}`,
+        eventAt: NOW + 1000,
+        userId: id,
+        subscription: { provider: 'paddle', providerSubscriptionId: 'sub_late', providerCustomerId: 'ctm_sub_late', status: 'active', plan: 'pro' },
+      });
+      expect(late).toBe('applied');
+      return deleteUser(id);
+    });
+    expect(await eraseAccount(plan, { drainMs: 0 })).toEqual({ runningJobIds: [] });
+    expect(await redisUserStore.findById(user.id)).toBeNull();
+    expect(await subscriptionStore.findByUser(user.id)).toBeNull();
+    expect(await subscriptionStore.userOfSubscription('sub_late')).toBeNull();
   });
 });
