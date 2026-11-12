@@ -70,7 +70,7 @@ import { findJpegEnd, JPEG_SOI_MARKER } from './image-jpeg-stream';
 import { assemblePicturePdf, type PdfPageImage } from './image-pdf-pages';
 import { DEFAULT_PRINT_DENSITY, pictureDensity, selectionDensity, type PrintDensity } from './image-print-density';
 import { decodePlainPngForTarget, type DecodedForTarget } from './image-decoded-source';
-import { hasSrgbPrimaries, isProfileDroppedByPngReader, isSrgbProfile, srgb16LutsFromProfile } from './icc-srgb';
+import { hasSrgbPrimaries, isSrgbProfile, srgb16LutsFromProfile } from './icc-srgb';
 import { EIGHT_BIT_ONLY_TARGETS, reducesAtEncode, roundedToEightBits, SHARP_SIXTEEN_BIT_DEPTH } from './image-depth';
 import { applyDevelopmentCurve } from './image-development-curve';
 import { pinBaseImageThreads, withPipelineThreads } from './image-threads';
@@ -82,6 +82,7 @@ import { RAW_CAMERA_FORMATS } from './raw-formats';
 import { demosaicAhdBayerCfa, demosaicAmazeBayerCfa } from './raw-demosaic';
 import { encode16BitPngAsync } from './png16';
 import { writePhotoPng16 } from './png-photo-bands';
+import { compressesPng, DEFAULT_DENSITY_PPI, keepSourceBlocks, keepsSourceBlocks, openWithoutSrgbProfile, SOURCE_BLOCK_TARGETS } from './image-source-blocks';
 import { CPU_POOL_MIN_BYTES } from '../workers/cpu-pool';
 import {
   demosaicRcdBayerCfa,
@@ -1416,18 +1417,6 @@ export { AVIF_EFFORT, AVIF_TUNE };
  */
 const SRGB_TAGGED_TARGETS: ReadonlySet<string> = new Set(['tiff', 'tif']);
 
-/** Density (pixels per inch) every viewer assumes for an image that does not state one; it is not worth a metadata block. */
-const DEFAULT_DENSITY_PPI = 72;
-
-/**
- * Targets that carry the source's own EXIF block, XMP packet and ICC profile exactly as they are, the way the reference
- * service's engine writes them with its default (metadata kept): the profile is attached and the pixels are not converted through
- * it, and no block is made up; the profiles of `keepSourceBlocks` are the exceptions. The library's "keep metadata" switch makes it write an EXIF block of its own for a source that has
- * none (about 190 bytes, from the density; 2% of a small file), so the blocks are kept one by one. WebP and AVIF viewers
- * ignore a print density, which only an EXIF block could hold there; a JPEG keeps it (see `keepSourceBlocks`).
- */
-const SOURCE_BLOCK_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'webp', 'avif']);
-
 const SIXTEEN_BIT_CURVE_TARGETS: ReadonlySet<string> = new Set(['png', 'tiff', 'tif', 'avif', 'psd']);
 
 /**
@@ -1440,10 +1429,12 @@ const SIXTEEN_BIT_CURVE_TARGETS: ReadonlySet<string> = new Set(['png', 'tiff', '
  * colour (red drops, saturation rises). Those images keep only their blocks and reach the encoder as plain device RGB. The
  * pipeline has already been auto-oriented, which removes the Orientation tag from the kept EXIF block.
  */
-async function preserveMetadata(pipeline: Sharp, target: string, srgbProfileIgnored: boolean): Promise<Sharp> {
+async function preserveMetadata(pipeline: Sharp, target: string, srgbProfileIgnored: boolean, options: ConversionOptions): Promise<Sharp> {
   // Float targets apply the input's own colour description to the samples (see sdr-linear.ts) and write no metadata.
   if (FLOAT_TARGETS.has(target)) return pipeline;
   const meta = await metadataOf(pipeline);
+  // A PNG written from a PNG is its compression: the profile it carries is attached as it is and no sample goes through it.
+  if (meta.hasProfile && compressesPng(target, options)) return keepSourceBlocks(pipeline, meta, target, srgbProfileIgnored, true);
   if (
     meta.depth === SHARP_SIXTEEN_BIT_DEPTH &&
     (SIXTEEN_BIT_CURVE_TARGETS.has(target) || EIGHT_BIT_ONLY_TARGETS.has(target)) &&
@@ -1463,41 +1454,6 @@ async function preserveMetadata(pipeline: Sharp, target: string, srgbProfileIgno
   if (isDeepWithoutProfile) return hasMetadataBlock || hasCustomDensity ? pipeline.keepExif() : pipeline;
   if (!hasMetadataBlock && !hasCustomDensity && !meta.hasProfile && !tagsSrgb) return pipeline;
   return pipeline.keepMetadata().withIccProfile('srgb', { attach: tagsSrgb });
-}
-
-const profileIsDropped = (meta: Metadata): boolean => meta.format === 'png' && meta.icc !== undefined && isProfileDroppedByPngReader(meta.icc);
-
-/**
- * The input opened again without its ICC profile when it is a PNG whose profile the reference engine's PNG reader drops, for the targets
- * that write the source's blocks: such a profile is not written and changes no pixel, so converting through it only costs time. For an 8-bit picture the
- * transform to sRGB is the identity and costs 3 to 6 ms per read of a 1 to 2 megapixel picture, and a thumbnail, the encode and the alpha
- * check each read it. For a 16-bit picture the transform goes through a wide-gamut working space and back, which moves about a third of the
- * samples by one step of 65535, enough to turn the nearest 8-bit level of 3.5% of them into the one below. Null: no such profile.
- */
-async function openWithoutSrgbProfile(pipeline: Sharp, selection: FrameSelection): Promise<Sharp | null> {
-  const meta = await metadataOf(pipeline);
-  if (!profileIsDropped(meta)) return null;
-  return openLimitedSharp(selection.source, { ...selection.input, ignoreIcc: true });
-}
-
-/**
- * The pipeline keeping the EXIF block, XMP packet and ICC profile the input has, and no block it has not. A source with an
- * IPTC block keeps it in a JPEG, which the library can only do by keeping everything.
- */
-function keepSourceBlocks(pipeline: Sharp, meta: Metadata, target: string, srgbProfileIgnored: boolean): Sharp {
-  if (meta.iptc !== undefined && (target === 'jpg' || target === 'jpeg')) return pipeline.keepMetadata();
-  let kept = pipeline;
-  // The library writes a JPEG's print density only along with an EXIF block (made from the density when the source has none):
-  // the one block this adds, for a picture whose density says it is meant for print.
-  const keepsDensity = (target === 'jpg' || target === 'jpeg') && meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI;
-  if (meta.exif !== undefined || keepsDensity) kept = kept.keepExif();
-  if (meta.xmp !== undefined) kept = kept.keepXmp();
-  // The profile is attached as it is, the pixels not converted through it, except a profile the reference engine's PNG reader drops (opened
-  // without by `openWithoutSrgbProfile`) and a development curve over sRGB primaries, which are applied to the pixels and not written.
-  if (!meta.hasProfile) return kept;
-  const appliedNotWritten = profileIsDropped(meta) || (meta.icc !== undefined && hasSrgbPrimaries(meta.icc) && !isSrgbProfile(meta.icc));
-  if (meta.icc !== undefined && !appliedNotWritten) return kept.keepIccProfile();
-  return srgbProfileIgnored ? kept : kept.withIccProfile('srgb', { attach: false });
 }
 
 /** Keeps typed conversion errors; wraps any other decoder failure in a ConversionFailedError (HTTP 400). */
@@ -1997,7 +1953,7 @@ async function convertImage(
         decoded = await decodePlainPngForTarget(pipeline, frameSelection.source, { fmt, changesPixels, stripsMetadata: options.stripMetadata === true }, startDirectAvifOn(directAvif, fmt, changesPixels, frameSelection.source, options));
         pipeline = decoded?.pipeline ?? pipeline;
       }
-      if (inputCicp === null && decoded === null && !frameSelection.keepsAnimation && options.stripMetadata !== true && SOURCE_BLOCK_TARGETS.has(fmt)) {
+      if (inputCicp === null && decoded === null && !frameSelection.keepsAnimation && options.stripMetadata !== true && keepsSourceBlocks(fmt, options)) {
         const withoutProfile = await openWithoutSrgbProfile(pipeline, frameSelection);
         if (withoutProfile !== null) {
           pipeline = withoutProfile;
@@ -2016,7 +1972,7 @@ async function convertImage(
 
     // Preserve ICC color profiles and EXIF metadata unless explicitly stripped
     if (options.stripMetadata !== true) {
-      pipeline = await preserveMetadata(pipeline, fmt, srgbProfileIgnored);
+      pipeline = await preserveMetadata(pipeline, fmt, srgbProfileIgnored, options);
     }
   } catch (err: unknown) {
     if (err instanceof InputPixelLimitError) throw err;
