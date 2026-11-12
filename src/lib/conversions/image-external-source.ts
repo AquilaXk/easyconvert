@@ -8,6 +8,7 @@ import { decodeWithDjxl } from './image-jxl-cli';
 import { decodeWithOpenJpeg } from './image-openjpeg-cli';
 import { usesOldStyleJpeg, withSortedTiffTags } from './image-tiff-directories';
 import { writesProgramPalette } from './image-content';
+import { pngQualityAsPalette } from './image-encoder-defaults';
 import { markedForOptimiser, withOptimisedPng } from './png-optimise';
 
 /**
@@ -119,7 +120,8 @@ export async function convertImageSource(
     // optimiser has the last word (entries 232 and 247), except for an indexed file that quantizr-pixels writes with its own deflater (entry 258).
     const compresses = sourceFormat === 'png' && targetFormat.toLowerCase() === 'png';
     const converted = await convertImage(readable, targetFormat, compresses ? markedForOptimiser(options) : options, originalFilename, sourceFormat);
-    return compresses && !writesProgramPalette(options) ? withOptimisedPng(converted, { signal: options.signal }) : converted;
+    // The palette a quality stands for (pngQualityAsPalette, applied inside convertImage) decides as an explicit palette does.
+    return compresses && !writesProgramPalette(pngQualityAsPalette(sourceFormat, targetFormat, options)) ? withOptimisedPng(converted, { signal: options.signal }) : converted;
   }
   return convertImage(external.buffer, targetFormat, options, originalFilename, external.format);
 }
