@@ -29,7 +29,12 @@ T = TypeVar("T", bound="JobGraphNodesAdditionalProperty")
 class JobGraphNodesAdditionalProperty:
     """
     Attributes:
-        op (JobGraphNodesAdditionalPropertyOp): Operation type for this graph node.
+        op (JobGraphNodesAdditionalPropertyOp): Operation type for this graph node. `thumbnail` makes one picture (JPEG,
+            PNG or WebP) of the first page, or the page `options.thumbnail.page` names, of a document, or of a frame of a
+            video (`options.thumbnail.at`), or of an image, within `options.thumbnail.width` x `height` as
+            `options.thumbnail.fit` places it. `metadata` reads the metadata of its first input into `metadata.json` (the
+            `MetadataReport` schema). `metadata.write` writes `options.metadata.set` into each input, a JPEG, a PNG or a
+            PDF, and keeps the rest of the file as it is.
         input_ (list[str] | str | Unset): Single upstream NodeId or array of upstream NodeIds. A merge node needs at
             least 2 distinct inputs.
         storage_key (str | Unset): Storage key for import.upload node.

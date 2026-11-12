@@ -778,6 +778,7 @@ function fixedNodeTargetFormat(nodes: ReturnType<typeof normalizeGraphNodes>[str
   if (direct) return direct;
   const thumb = nodes.find((n) => n.op === 'thumbnail');
   if (thumb) return thumb.targetFormat ?? thumb.options?.thumbnail?.format ?? 'jpg';
+  if (nodes.some((n) => n.op === 'metadata')) return 'json';
   if (nodes.some((n) => n.op === 'pdf.split-pages' || n.op === 'media.package')) return 'zip';
   if (nodes.some((n) => typeof n.op === 'string' && PDF_GRAPH_NODE_OPS.has(n.op))) return 'pdf';
   return '';
@@ -792,7 +793,7 @@ function graphTargetFormat(graph: JobGraph, fallbackFormat?: string, filename = 
   const fixed = fixedNodeTargetFormat(nodes);
   if (fixed) return fixed;
   const fallback = resolveGraphFallbackFormat(nodes, fallbackFormat, filename);
-  if (nodes.some((n) => n.op === 'optimize' || n.op === 'watermark')) return fallback;
+  if (nodes.some((n) => n.op === 'optimize' || n.op === 'watermark' || n.op === 'metadata.write')) return fallback;
   if (nodes.some((n) => n.op === 'archive.extract')) return fallback || 'zip';
   return '';
 }

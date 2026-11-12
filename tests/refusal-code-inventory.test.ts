@@ -50,6 +50,8 @@ const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
   LoudnessReportMissingError: 'conversion_failed',
   MacFontContainerError: 'conversion_failed',
   MarkdownSanitizationError: 'conversion_failed',
+  MetadataFieldError: 'metadata_field_invalid',
+  MetadataWriteUnsupportedError: 'metadata_write_unsupported',
   NoAudioStreamError: 'conversion_failed',
   NoVideoStreamError: 'conversion_failed',
   OcrMarkupError: 'conversion_failed',

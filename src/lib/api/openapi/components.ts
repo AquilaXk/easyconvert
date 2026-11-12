@@ -59,6 +59,33 @@ export const components = {
       },
     },
     ProblemDetails: ProblemDetailsSchema,
+    MetadataReport: {
+      type: 'object',
+      required: ['schemaVersion', 'File'],
+      description:
+        'The JSON file a `metadata` task makes (`metadata.json`): the facts a file states, in groups, under the field names ExifTool prints for them. A group holds only what the file states, so a field that is not there is absent, never null. Dates read `YYYY:MM:DD HH:MM:SS` with the zone when the file states one. A rational is its value as a number, and a GPS position is signed decimal degrees and meters. The same bytes give the same report.',
+      properties: {
+        schemaVersion: { type: 'integer', enum: [1], description: 'The version of this layout.' },
+        File: {
+          type: 'object',
+          required: ['FileName', 'FileSize', 'FileType', 'FileTypeExtension', 'MIMEType', 'Category'],
+          description: 'The file: `FileName`, `FileSize` (bytes), `FileType`, `FileTypeExtension`, `MIMEType` and `Category`, and a `Warning` when a part of the file could not be read (the other groups then leave that part out; the task does not fail).',
+          additionalProperties: true,
+        },
+        Image: { type: 'object', additionalProperties: true, description: 'A picture: `ImageWidth`, `ImageHeight`, `ColorSpace`, `ColorComponents`, `BitsPerSample`, `HasAlpha`, `FrameCount` (more than one frame), `Progressive`, `YCbCrSubSampling` and `ICCProfile`.' },
+        EXIF: { type: 'object', additionalProperties: true, description: 'EXIF tags of a picture: `Make`, `Model`, `Orientation`, `XResolution`, `YResolution`, `ResolutionUnit`, `Software`, `ModifyDate`, `Artist`, `Copyright`, `ImageDescription`, `ExposureTime`, `FNumber`, `ISO`, `DateTimeOriginal`, `CreateDate`, `FocalLength`, `Flash`, `UserComment`, `LensMake`, `LensModel`, `SerialNumber` and a few more; a tag the layout does not list is left out.' },
+        GPS: { type: 'object', additionalProperties: true, description: '`GPSLatitude` and `GPSLongitude` in signed decimal degrees (south and west negative) and `GPSAltitude` in meters (below sea level negative).' },
+        XMP: { type: 'object', additionalProperties: true, description: 'XMP properties of a picture: `Title`, `Description`, `Rights`, `Creator` (a list), `Subject` (a list), `Format`, `CreatorTool`, `CreateDate`, `ModifyDate`, `MetadataDate`, `Label` and `Rating`.' },
+        PDF: { type: 'object', additionalProperties: true, description: 'A PDF: `PDFVersion`, `PageCount`, `PageWidth` and `PageHeight` of the first page in points, and the information dictionary (`Title`, `Author`, `Subject`, `Keywords`, `Creator`, `Producer`, `CreateDate`, `ModifyDate`). An encrypted PDF reports `Encrypted: true` and nothing behind its password.' },
+        Document: { type: 'object', additionalProperties: true, description: 'The properties of an Office Open XML or OpenDocument file: `Title`, `Subject`, `Creator`, `Keywords`, `Description`, `LastModifiedBy`, `CreateDate`, `ModifyDate`, `RevisionNumber`, `Application`, `AppVersion`, `Company`, `Pages`, `Words`, `Characters`.' },
+        Media: { type: 'object', additionalProperties: true, description: 'The container of an audio or video file: `Format`, `Duration` (seconds), `BitRate`, `StreamCount` and its tags (`Title`, `Artist`, `Album`, `CreationTime`, ...).' },
+        Streams: {
+          type: 'array',
+          description: 'The streams of an audio or video file, at most 64: `Index`, `Type`, `Codec`, `Profile`, `Width`, `Height`, `FrameRate`, `BitRate`, `ChannelCount`, `SampleRate`, `Language`, `Title`.',
+          items: { type: 'object', additionalProperties: true },
+        },
+      },
+    },
     PdfaValidationProblem: {
       description: 'Problem details of a PDF/A output that veraPDF rejected, with the requested profile and the failed rules.',
       allOf: [

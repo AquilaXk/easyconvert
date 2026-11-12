@@ -627,6 +627,50 @@ export interface components {
             /** @description Legacy compatibility error message mirroring detail. */
             error?: string;
         };
+        /** @description The JSON file a `metadata` task makes (`metadata.json`): the facts a file states, in groups, under the field names ExifTool prints for them. A group holds only what the file states, so a field that is not there is absent, never null. Dates read `YYYY:MM:DD HH:MM:SS` with the zone when the file states one. A rational is its value as a number, and a GPS position is signed decimal degrees and meters. The same bytes give the same report. */
+        MetadataReport: {
+            /**
+             * @description The version of this layout.
+             * @enum {integer}
+             */
+            schemaVersion: 1;
+            /** @description The file: `FileName`, `FileSize` (bytes), `FileType`, `FileTypeExtension`, `MIMEType` and `Category`, and a `Warning` when a part of the file could not be read (the other groups then leave that part out; the task does not fail). */
+            File: {
+                [key: string]: unknown;
+            };
+            /** @description A picture: `ImageWidth`, `ImageHeight`, `ColorSpace`, `ColorComponents`, `BitsPerSample`, `HasAlpha`, `FrameCount` (more than one frame), `Progressive`, `YCbCrSubSampling` and `ICCProfile`. */
+            Image?: {
+                [key: string]: unknown;
+            };
+            /** @description EXIF tags of a picture: `Make`, `Model`, `Orientation`, `XResolution`, `YResolution`, `ResolutionUnit`, `Software`, `ModifyDate`, `Artist`, `Copyright`, `ImageDescription`, `ExposureTime`, `FNumber`, `ISO`, `DateTimeOriginal`, `CreateDate`, `FocalLength`, `Flash`, `UserComment`, `LensMake`, `LensModel`, `SerialNumber` and a few more; a tag the layout does not list is left out. */
+            EXIF?: {
+                [key: string]: unknown;
+            };
+            /** @description `GPSLatitude` and `GPSLongitude` in signed decimal degrees (south and west negative) and `GPSAltitude` in meters (below sea level negative). */
+            GPS?: {
+                [key: string]: unknown;
+            };
+            /** @description XMP properties of a picture: `Title`, `Description`, `Rights`, `Creator` (a list), `Subject` (a list), `Format`, `CreatorTool`, `CreateDate`, `ModifyDate`, `MetadataDate`, `Label` and `Rating`. */
+            XMP?: {
+                [key: string]: unknown;
+            };
+            /** @description A PDF: `PDFVersion`, `PageCount`, `PageWidth` and `PageHeight` of the first page in points, and the information dictionary (`Title`, `Author`, `Subject`, `Keywords`, `Creator`, `Producer`, `CreateDate`, `ModifyDate`). An encrypted PDF reports `Encrypted: true` and nothing behind its password. */
+            PDF?: {
+                [key: string]: unknown;
+            };
+            /** @description The properties of an Office Open XML or OpenDocument file: `Title`, `Subject`, `Creator`, `Keywords`, `Description`, `LastModifiedBy`, `CreateDate`, `ModifyDate`, `RevisionNumber`, `Application`, `AppVersion`, `Company`, `Pages`, `Words`, `Characters`. */
+            Document?: {
+                [key: string]: unknown;
+            };
+            /** @description The container of an audio or video file: `Format`, `Duration` (seconds), `BitRate`, `StreamCount` and its tags (`Title`, `Artist`, `Album`, `CreationTime`, ...). */
+            Media?: {
+                [key: string]: unknown;
+            };
+            /** @description The streams of an audio or video file, at most 64: `Index`, `Type`, `Codec`, `Profile`, `Width`, `Height`, `FrameRate`, `BitRate`, `ChannelCount`, `SampleRate`, `Language`, `Title`. */
+            Streams?: {
+                [key: string]: unknown;
+            }[];
+        };
         /** @description Problem details of a PDF/A output that veraPDF rejected, with the requested profile and the failed rules. */
         PdfaValidationProblem: components["schemas"]["ProblemDetails"] & {
             /**
@@ -879,13 +923,18 @@ export interface components {
                 streamIndex?: number;
                 format?: components["schemas"]["FormatOfSubtitles"];
             };
-            /** @description Video frame thumbnail extraction options. */
+            /** @description Video frame thumbnail extraction options, and the size, fit and page of a thumbnail task. */
             thumbnail?: {
                 /** @description Timestamp strings or second offsets where thumbnails should be sampled (at most 16). */
                 at?: string[];
                 format?: components["schemas"]["FormatOfThumbnail"];
                 /** @description Target thumbnail width in pixels. */
                 width?: number;
+                /** @description Target thumbnail height in pixels (thumbnail task; the width and the height bound the picture, which `fit` places inside them). */
+                height?: number;
+                fit?: components["schemas"]["FitOfThumbnail"];
+                /** @description Page of a document (or frame of a multi-frame picture) a thumbnail task shows, 1-indexed; the first by default. */
+                page?: number;
                 /** @description Whether to use sample-accurate seek instead of fast keyframe seek. */
                 accurate?: boolean;
             };
@@ -991,6 +1040,13 @@ export interface components {
                     annotate?: boolean;
                 };
             };
+            /** @description Fields a `metadata.write` task writes into its input (a JPEG, a PNG or a PDF) without changing anything else in the file. The names are those of ExifTool and may carry their group (`EXIF:Artist`, `XMP:Title`, `PDF:Title`). */
+            metadata?: {
+                /** @description The fields to set, by name. A JPEG or a PNG takes the EXIF fields ImageDescription, Make, Model, Orientation, Software, ModifyDate, Artist, Copyright, DateTimeOriginal, CreateDate, UserComment, LensMake, LensModel, SerialNumber, GPSLatitude, GPSLongitude and GPSAltitude (a field set to null is removed; dates are "YYYY:MM:DD HH:MM:SS", positions are signed decimal degrees and meters), and the XMP fields XMP:Title, XMP:Description, XMP:Rights, XMP:Creator, XMP:Subject and XMP:CreatorTool when the picture holds no XMP packet yet. A PDF takes Title, Author, Subject, Keywords, Creator, Producer, CreateDate and ModifyDate. Any other format, field or value is a 422 (`metadata_write_unsupported`, `metadata_field_invalid`). */
+                set: {
+                    [key: string]: string | number | null | string[];
+                };
+            };
             /** @description PDF/A archival conversion options. */
             pdfa?: {
                 conformance?: components["schemas"]["ConformanceOfPdfa"];
@@ -1062,10 +1118,10 @@ export interface components {
             nodes: {
                 [key: string]: {
                     /**
-                     * @description Operation type for this graph node.
+                     * @description Operation type for this graph node. `thumbnail` makes one picture (JPEG, PNG or WebP) of the first page, or the page `options.thumbnail.page` names, of a document, or of a frame of a video (`options.thumbnail.at`), or of an image, within `options.thumbnail.width` x `height` as `options.thumbnail.fit` places it. `metadata` reads the metadata of its first input into `metadata.json` (the `MetadataReport` schema). `metadata.write` writes `options.metadata.set` into each input, a JPEG, a PNG or a PDF, and keeps the rest of the file as it is.
                      * @enum {string}
                      */
-                    op: "import.upload" | "import.url" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "archive.create" | "archive.extract" | "export.url" | "export.internal";
+                    op: "import.upload" | "import.url" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "metadata.write" | "archive.create" | "archive.extract" | "export.url" | "export.internal";
                     /** @description Single upstream NodeId or array of upstream NodeIds. A merge node needs at least 2 distinct inputs. */
                     input?: string | string[];
                     /** @description Storage key for import.upload node. */
@@ -1086,7 +1142,7 @@ export interface components {
                     method?: "PUT" | "POST";
                     /** @description Target format extension for convert or archive.create. */
                     targetFormat?: string;
-                    /** @description Transformation options for convert, ocr, optimize, archive.create and the PDF nodes: `watermark` (pdf.watermark), `protect` (pdf.protect), `password` and `confirmEditRights` (pdf.unlock and every PDF edit), `split` (pdf.split-pages), `pages` (pdf.extract-pages, pdf.delete-pages), `reorder` (pdf.reorder-pages), `rotate` (pdf.rotate-pages) and `optimize` (optimize on a PDF). */
+                    /** @description Transformation options for convert, ocr, optimize, archive.create and the PDF nodes: `watermark` (pdf.watermark), `protect` (pdf.protect), `password` and `confirmEditRights` (pdf.unlock and every PDF edit), `split` (pdf.split-pages), `pages` (pdf.extract-pages, pdf.delete-pages), `reorder` (pdf.reorder-pages), `rotate` (pdf.rotate-pages), `optimize` (optimize on a PDF), `thumbnail` (thumbnail) and `metadata` (metadata.write). */
                     options?: components["schemas"]["ConversionOptions"];
                     /** @description Glob patterns for archive.extract entries. */
                     entries?: string[];
@@ -1912,6 +1968,11 @@ export interface components {
          */
         FormatOfThumbnail: "jpg" | "png";
         /**
+         * @description How a thumbnail task places the picture within `width` x `height`: `inside` (default) keeps the whole picture and its proportions.
+         * @enum {string}
+         */
+        FitOfThumbnail: "cover" | "contain" | "fill" | "inside" | "outside";
+        /**
          * @description Streaming delivery packaging format standard.
          * @enum {string}
          */
@@ -2320,7 +2381,7 @@ export interface operations {
                          * @description The cause of the refusal, stable across releases.
                          * @enum {string}
                          */
-                        code?: "archive_entry_collision" | "conversion_failed" | "empty_file" | "encrypted_input" | "engine_not_offered" | "engine_version_unavailable" | "input_over_limit" | "invalid_password" | "malformed_input" | "missing_volume" | "option_not_supported" | "password_required" | "timeout" | "unsupported_input" | "unsupported_method";
+                        code?: "archive_entry_collision" | "conversion_failed" | "empty_file" | "encrypted_input" | "engine_not_offered" | "engine_version_unavailable" | "input_over_limit" | "invalid_password" | "malformed_input" | "metadata_field_invalid" | "metadata_write_unsupported" | "missing_volume" | "option_not_supported" | "password_required" | "timeout" | "unsupported_input" | "unsupported_method";
                         /** @description `engine_not_offered` only: the ids of the engines that convert the pair, the default first. */
                         engines?: string[];
                         /** @description `engine_version_unavailable` only: the engine whose version was named. */
@@ -2333,7 +2394,7 @@ export interface operations {
                          * @description The cause of the refusal, stable across releases.
                          * @enum {string}
                          */
-                        code?: "archive_entry_collision" | "conversion_failed" | "empty_file" | "encrypted_input" | "engine_not_offered" | "engine_version_unavailable" | "input_over_limit" | "invalid_password" | "malformed_input" | "missing_volume" | "option_not_supported" | "password_required" | "timeout" | "unsupported_input" | "unsupported_method";
+                        code?: "archive_entry_collision" | "conversion_failed" | "empty_file" | "encrypted_input" | "engine_not_offered" | "engine_version_unavailable" | "input_over_limit" | "invalid_password" | "malformed_input" | "metadata_field_invalid" | "metadata_write_unsupported" | "missing_volume" | "option_not_supported" | "password_required" | "timeout" | "unsupported_input" | "unsupported_method";
                         /** @description `engine_not_offered` only: the ids of the engines that convert the pair, the default first. */
                         engines?: string[];
                         /** @description `engine_version_unavailable` only: the engine whose version was named. */
@@ -2705,7 +2766,7 @@ export interface operations {
                     "application/json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description The day has fewer conversions left than the job needs (problem type `https://api.easyconvert.io/problems/quota-exceeded`, with `dailyLimit`, `remaining` and `requiredUnits`). A graph needs one unit for each input declared by a node that makes one output of each input (`convert`, `ocr`, `optimize`, `thumbnail`, `media.package`, `watermark` and the `pdf.*` page operations) and one for each `merge`, `metadata`, `archive.create` or `archive.extract` node. A node whose inputs hold more files than it declares (an unpacked archive) takes the rest of its units when it starts, and fails with the refusal code `quota_exceeded` when the day has too few left. Or: the account already has the most conversions in flight (queued and running) its tier allows, 5 for anonymous and free callers (problem type `https://api.easyconvert.io/problems/concurrency-limit`, with `Retry-After`); the request takes no quota. */
+            /** @description The day has fewer conversions left than the job needs (problem type `https://api.easyconvert.io/problems/quota-exceeded`, with `dailyLimit`, `remaining` and `requiredUnits`). A graph needs one unit for each input declared by a node that makes one output of each input (`convert`, `ocr`, `optimize`, `thumbnail`, `metadata.write`, `media.package`, `watermark` and the `pdf.*` page operations) and one for each `merge`, `metadata`, `archive.create` or `archive.extract` node. A node whose inputs hold more files than it declares (an unpacked archive) takes the rest of its units when it starts, and fails with the refusal code `quota_exceeded` when the day has too few left. Or: the account already has the most conversions in flight (queued and running) its tier allows, 5 for anonymous and free callers (problem type `https://api.easyconvert.io/problems/concurrency-limit`, with `Retry-After`); the request takes no quota. */
             429: {
                 headers: {
                     [name: string]: unknown;

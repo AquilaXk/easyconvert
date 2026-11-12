@@ -132,8 +132,8 @@ export interface PdfRotatePagesNode {
 export interface ThumbnailNode {
   op: 'thumbnail';
   input: NodeId;
-  targetFormat?: 'jpg' | 'png';
-  options?: ConversionOptions & { thumbnail?: { width?: number; height?: number; format?: 'jpg' | 'png' } };
+  targetFormat?: 'jpg' | 'png' | 'webp';
+  options?: ConversionOptions;
 }
 
 /** Adaptive-bitrate packaging (HLS or MPEG-DASH) of a video; the output is one ZIP with the manifest and segments. */
@@ -157,6 +157,13 @@ export interface MetadataNode {
   input: NodeId;
 }
 
+/** Writes `options.metadata.set` into each input (a JPEG, a PNG or a PDF) and keeps the rest of the file as it is. */
+export interface MetadataWriteNode {
+  op: 'metadata.write';
+  input: NodeId | NodeId[];
+  options?: ConversionOptions;
+}
+
 export interface ExportInternalNode {
   op: 'export.internal';
   input: NodeId | NodeId[];
@@ -172,6 +179,7 @@ export type GraphNode =
   | MediaPackageNode
   | MergeNode
   | MetadataNode
+  | MetadataWriteNode
   | WatermarkNode
   | PdfWatermarkNode
   | PdfProtectNode

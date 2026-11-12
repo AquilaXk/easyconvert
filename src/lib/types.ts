@@ -282,6 +282,8 @@ export interface ConversionOptions {
   jpegQuality?: number;
   watermark?: PdfWatermarkOptions;
   protect?: PdfProtectOptions;
+  /** `metadata.write` node: the fields to write, by their ExifTool names; a field set to null is removed. */
+  metadata?: { set: Record<string, string | number | string[] | null> };
   pdfa?: PdfAOptions;
   /** `pdf.split-pages` node: how the document is cut into parts. */
   split?: PdfSplitOptions;

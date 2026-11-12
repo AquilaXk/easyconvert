@@ -107,6 +107,8 @@ export const CONVERSION_REFUSAL_CODES = [
   'timeout',
   'engine_not_offered',
   'engine_version_unavailable',
+  'metadata_write_unsupported',
+  'metadata_field_invalid',
   'engine_unavailable',
   'conversion_failed',
 ] as const;

@@ -139,9 +139,9 @@ describe('queue node executor operations', () => {
 
     it('rejects a target format outside the thumbnail formats', async () => {
       const png = seed('photo.png', await sourcePng(), 'image/png');
-      const run = processGraphNodeJob(nodeJob({ op: 'thumbnail', targetFormat: 'webp' }, [png]), undefined, s3Storage);
+      const run = processGraphNodeJob(nodeJob({ op: 'thumbnail', targetFormat: 'gif' }, [png]), undefined, s3Storage);
       await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
-      await expect(run).rejects.toThrow(/cannot produce "webp"/);
+      await expect(run).rejects.toThrow(/cannot produce "gif"/);
     });
   });
 
@@ -156,13 +156,12 @@ describe('queue node executor operations', () => {
       expect(result.resultKey).toMatch(/\/n1\/0\/metadata\.json$/);
       const parsed = JSON.parse(storedOutput(result.resultKey).toString('utf-8'));
       expect(parsed).toMatchObject({
-        format: 'png',
-        sizeBytes: source.length,
-        width: sourceMeta.width,
-        height: sourceMeta.height,
+        schemaVersion: 1,
+        File: { FileType: 'PNG', FileSize: source.length },
+        Image: { ImageWidth: sourceMeta.width, ImageHeight: sourceMeta.height },
       });
-      expect(parsed.width).toBe(SOURCE_WIDTH);
-      expect(parsed.height).toBe(SOURCE_HEIGHT);
+      expect(parsed.Image.ImageWidth).toBe(SOURCE_WIDTH);
+      expect(parsed.Image.ImageHeight).toBe(SOURCE_HEIGHT);
     });
   });
 

@@ -2010,14 +2010,14 @@
     "rule": "complexity",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 91
+    "maxValue": 84
   },
   {
     "file": "src/lib/queue/graph/node-executor.ts",
     "rule": "max-lines-per-function",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 445
+    "maxValue": 409
   },
   {
     "file": "src/lib/queue/node-processor.ts",

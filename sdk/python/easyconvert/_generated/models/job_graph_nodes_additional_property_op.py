@@ -13,6 +13,7 @@ class JobGraphNodesAdditionalPropertyOp(StrEnum):
     MEDIA_PACKAGE = "media.package"
     MERGE = "merge"
     METADATA = "metadata"
+    METADATA_WRITE = "metadata.write"
     OCR = "ocr"
     OPTIMIZE = "optimize"
     PDF_DELETE_PAGES = "pdf.delete-pages"

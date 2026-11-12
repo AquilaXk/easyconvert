@@ -14,6 +14,7 @@ import {
   RESTRICTED_OUTPUT_FORMATS,
   MERGE_FORMATS,
   MIN_MERGE_INPUTS,
+  METADATA_WRITE_FORMATS,
   FIXED_OUTPUT_FORMATS,
   canonicalGraphOperation,
   requestedTargetFormat,
@@ -693,8 +694,8 @@ export function validateJobGraph(
         break;
       }
       default: {
-        // Pass-through operations (watermark, protect, export) keep their input format.
-        checkPdfRequiredInputs(nodeId, op, getTaskDependencies(node), inferredFormats, errors);
+        // Pass-through operations (watermark, protect, metadata.write, export) keep their input format.
+        checkPassThroughNode(nodeId, node, op, getTaskDependencies(node), inferredFormats, errors);
         inferredFormats[nodeId] = firstInputFormat(node);
         break;
       }
@@ -785,6 +786,42 @@ function checkOptimizeNode(
   }
   for (const depId of deps) {
     checkOptimizeSingleInput(nodeId, depId, inferredFormats[depId] || UNKNOWN_FORMAT, errors);
+  }
+}
+
+/** The checks of an operation that keeps the format of its input: the PDF operations need PDF, metadata.write a format it can write. */
+function checkPassThroughNode(
+  nodeId: string,
+  node: { options?: { metadata?: { set?: unknown } } & Record<string, unknown> },
+  op: GraphOperation,
+  deps: readonly string[],
+  inferredFormats: Record<string, string>,
+  errors: GraphValidationErrorDetail[]
+): void {
+  if (op === 'metadata.write') checkMetadataWriteNode(nodeId, node, deps, inferredFormats, errors);
+  else checkPdfRequiredInputs(nodeId, op, deps, inferredFormats, errors);
+}
+
+function checkMetadataWriteNode(
+  nodeId: string,
+  node: { options?: { metadata?: { set?: unknown } } & Record<string, unknown> },
+  deps: readonly string[],
+  inferredFormats: Record<string, string>,
+  errors: GraphValidationErrorDetail[]
+): void {
+  const set = node.options?.metadata?.set;
+  if (typeof set !== 'object' || set === null || Array.isArray(set) || Object.keys(set).length === 0) {
+    errors.push({ path: `nodes.${nodeId}.options.metadata.set`, message: `Node "${nodeId}" (metadata.write) needs "options.metadata.set" with at least one field.`, code: 'INVALID_NODE_OPTIONS' });
+  }
+  for (const depId of deps) {
+    const depFmt = inferredFormats[depId] || UNKNOWN_FORMAT;
+    if (depFmt !== UNKNOWN_FORMAT && depFmt !== DYNAMIC_FORMAT && !METADATA_WRITE_FORMATS.includes(depFmt)) {
+      errors.push({
+        path: `nodes.${nodeId}.input`,
+        message: `Operation "metadata.write" in node "${nodeId}" writes into ${METADATA_WRITE_FORMATS.join(', ')} files, but input "${depId}" produces "${depFmt}".`,
+        code: 'UNSUPPORTED_TARGET_FORMAT',
+      });
+    }
   }
 }
 

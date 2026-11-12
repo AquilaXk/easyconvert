@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         ConversionOptionsAspectRatioType1,
     )
     from ..models.conversion_options_audio import ConversionOptionsAudio
+    from ..models.conversion_options_metadata import ConversionOptionsMetadata
     from ..models.conversion_options_optimize import ConversionOptionsOptimize
     from ..models.conversion_options_packaging import ConversionOptionsPackaging
     from ..models.conversion_options_pdfa import ConversionOptionsPdfa
@@ -190,7 +191,8 @@ class ConversionOptions:
         subtitles (ConversionOptionsSubtitles | Unset): Subtitle rendering and stream management options. Subtitles come
             from a stream of the input, chosen with `streamIndex`; an external subtitle file is not accepted, and `input`
             answers 400.
-        thumbnail (ConversionOptionsThumbnail | Unset): Video frame thumbnail extraction options.
+        thumbnail (ConversionOptionsThumbnail | Unset): Video frame thumbnail extraction options, and the size, fit and
+            page of a thumbnail task.
         packaging (ConversionOptionsPackaging | Unset): Adaptive bitrate (ABR) packaging options for HLS and MPEG-DASH.
         video_resolution (VideoResolution | Unset): Target video resolution preset.
         video_fps (VideoFps | Unset): Video frame rate in frames per second.
@@ -226,6 +228,9 @@ class ConversionOptions:
             keeping the source JPEG stream byte for byte.
         watermark (ConversionOptionsWatermark | Unset): PDF text or image watermarking options.
         protect (ConversionOptionsProtect | Unset): PDF AES-256 encryption and permission restriction options.
+        metadata (ConversionOptionsMetadata | Unset): Fields a `metadata.write` task writes into its input (a JPEG, a
+            PNG or a PDF) without changing anything else in the file. The names are those of ExifTool and may carry their
+            group (`EXIF:Artist`, `XMP:Title`, `PDF:Title`).
         pdfa (ConversionOptionsPdfa | Unset): PDF/A archival conversion options.
         split (ConversionOptionsSplit | Unset): pdf.split-pages node: cuts the PDF into parts and returns one ZIP of
             PDFs. Give `ranges` or `everyNPages`; with neither, every page becomes a file of its own.
@@ -337,6 +342,7 @@ class ConversionOptions:
     jpeg_quality: int | Unset = UNSET
     watermark: ConversionOptionsWatermark | Unset = UNSET
     protect: ConversionOptionsProtect | Unset = UNSET
+    metadata: ConversionOptionsMetadata | Unset = UNSET
     pdfa: ConversionOptionsPdfa | Unset = UNSET
     split: ConversionOptionsSplit | Unset = UNSET
     rotate: ConversionOptionsRotate | Unset = UNSET
@@ -647,6 +653,10 @@ class ConversionOptions:
         if not isinstance(self.protect, Unset):
             protect = self.protect.to_dict()
 
+        metadata: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.metadata, Unset):
+            metadata = self.metadata.to_dict()
+
         pdfa: dict[str, Any] | Unset = UNSET
         if not isinstance(self.pdfa, Unset):
             pdfa = self.pdfa.to_dict()
@@ -868,6 +878,8 @@ class ConversionOptions:
             field_dict["watermark"] = watermark
         if protect is not UNSET:
             field_dict["protect"] = protect
+        if metadata is not UNSET:
+            field_dict["metadata"] = metadata
         if pdfa is not UNSET:
             field_dict["pdfa"] = pdfa
         if split is not UNSET:
@@ -887,6 +899,7 @@ class ConversionOptions:
             ConversionOptionsAspectRatioType1,
         )
         from ..models.conversion_options_audio import ConversionOptionsAudio
+        from ..models.conversion_options_metadata import ConversionOptionsMetadata
         from ..models.conversion_options_optimize import ConversionOptionsOptimize
         from ..models.conversion_options_packaging import ConversionOptionsPackaging
         from ..models.conversion_options_pdfa import ConversionOptionsPdfa
@@ -1341,6 +1354,13 @@ class ConversionOptions:
         else:
             protect = ConversionOptionsProtect.from_dict(_protect)
 
+        _metadata = d.pop("metadata", UNSET)
+        metadata: ConversionOptionsMetadata | Unset
+        if isinstance(_metadata, Unset):
+            metadata = UNSET
+        else:
+            metadata = ConversionOptionsMetadata.from_dict(_metadata)
+
         _pdfa = d.pop("pdfa", UNSET)
         pdfa: ConversionOptionsPdfa | Unset
         if isinstance(_pdfa, Unset):
@@ -1476,6 +1496,7 @@ class ConversionOptions:
             jpeg_quality=jpeg_quality,
             watermark=watermark,
             protect=protect,
+            metadata=metadata,
             pdfa=pdfa,
             split=split,
             rotate=rotate,

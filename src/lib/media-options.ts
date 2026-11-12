@@ -116,6 +116,12 @@ export interface ThumbnailOptions {
   at?: string[];
   format?: 'jpg' | 'png';
   width?: number;
+  /** A thumbnail task: the longest height of the picture (default 256, as the width is). */
+  height?: number;
+  /** A thumbnail task: how the picture meets the width and height (default `inside`). */
+  fit?: 'cover' | 'contain' | 'fill' | 'inside' | 'outside';
+  /** A thumbnail task: the page of a document (or the frame of a multi-frame picture) to show, 1-indexed (default 1). */
+  page?: number;
   accurate?: boolean;
 }
 

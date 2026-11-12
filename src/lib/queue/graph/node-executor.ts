@@ -52,6 +52,7 @@ import { resolveArchiveCompressionLevel } from '../../conversions/archive-compre
 import { gzipInBlocks } from '../../conversions/deflate-blocks';
 import {
   ConversionFailedError,
+  type ConversionOptions,
   DecompressionLimitError,
   GraphExportError,
   InvalidPageRangeError,
@@ -62,7 +63,10 @@ import {
   WorkerOutputMissingError,
 } from '../../types';
 import { getFormatByExtension } from '../../registry';
-import { mergePdfBuffers, extractArtifactMetadata } from '../../jobs';
+import { mergePdfBuffers } from '../../jobs';
+import { readMetadata } from '../../jobs/metadata/read';
+import { writeMetadata } from '../../jobs/metadata/write';
+import { MetadataFieldError } from '../../jobs/metadata/errors';
 import {
   ARCHIVE_CREATE_FORMATS,
   MEDIA_PACKAGE_OUTPUT_FORMAT,
@@ -73,6 +77,7 @@ import {
   requestedTargetFormat,
 } from '../../jobs/graph-operations';
 import { importUrlWithinBudget } from './node-url-import';
+import { thumbnailPlan } from './thumbnail-node';
 import { holdUnitsForInputs } from './node-reservation';
 import type { GraphNode } from './types';
 import { saveRetainedResult } from '../../storage/retention-service';
@@ -206,21 +211,26 @@ async function saveIntermediateNodeOutput(
   return outKey;
 }
 
+/** What a node reads and runs with: its place in the graph, the artifacts it takes, the storage and the engine. */
+interface NodeContext {
+  graphId: string;
+  nodeId: string;
+  inputArtifacts: string[];
+  storage: IStorageBackend;
+  engine: ConversionEnginePort;
+  attemptSignal: AbortSignal;
+}
+
 async function convertGraphNodeInputs(
-  context: {
-    graphId: string;
-    nodeId: string;
-    inputArtifacts: string[];
-    storage: IStorageBackend;
-    engine: ConversionEnginePort;
-    attemptSignal: AbortSignal;
-  },
+  context: NodeContext,
   spec: {
     targetFormat: string;
     options: Parameters<ConversionEnginePort['convert']>[3];
     fallbackFilename: string;
     outputFilenameOverride?: string;
     mimeTypeOverride?: string;
+    /** Turns an input into the bytes and options the conversion reads, as the input's own format says (a video into the picture of its frame). */
+    prepare?: (input: { buffer: Buffer; srcExt: string; name: string }) => Promise<{ buffer: Buffer; srcExt: string; options: Parameters<ConversionEnginePort['convert']>[3] }>;
   }
 ): Promise<string[]> {
   const keys: string[] = [];
@@ -232,7 +242,8 @@ async function convertGraphNodeInputs(
     }
     const srcExt = artifactExtension(stored.filename, inputKey);
     const safeInputName = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), `input.${srcExt}`);
-    const convRes = await context.engine.convert(stored.buffer, srcExt, spec.targetFormat, spec.options, safeInputName);
+    const source = spec.prepare ? await spec.prepare({ buffer: stored.buffer, srcExt, name: safeInputName }) : { buffer: stored.buffer, srcExt, options: spec.options };
+    const convRes = await context.engine.convert(source.buffer, source.srcExt, spec.targetFormat, source.options, safeInputName);
     keys.push(
       await saveIntermediateNodeOutput(
         context.storage,
@@ -243,6 +254,73 @@ async function convertGraphNodeInputs(
           filename: spec.outputFilenameOverride ?? convRes.filename,
           fallbackFilename: spec.fallbackFilename,
         }
+      )
+    );
+  }
+  return keys;
+}
+
+function assertHasInputs(context: NodeContext, op: string): void {
+  if (context.inputArtifacts.length === 0) {
+    throw new Error(`Node "${context.nodeId}" (${op}) has no input artifacts from upstream`);
+  }
+}
+
+async function requireStoredInput(storage: IStorageBackend, inputKey: string): Promise<{ buffer: Buffer; filename?: string }> {
+  const stored = await storage.getObject(inputKey);
+  if (!stored) {
+    throw new Error(`Input artifact "${inputKey}" not found in storage`);
+  }
+  return stored;
+}
+
+/** A thumbnail node: one picture of each input, as `thumbnailPlan` says. */
+async function runThumbnailNode(context: NodeContext, node: { options?: ConversionOptions; targetFormat?: unknown }): Promise<string[]> {
+  assertHasInputs(context, 'thumbnail');
+  const targetFormat = requireTargetFormat(node, context.nodeId);
+  if (!THUMBNAIL_FORMATS.has(targetFormat)) {
+    throw new ConversionFailedError(`Thumbnail node "${context.nodeId}" cannot produce "${targetFormat}"`);
+  }
+  const plan = thumbnailPlan(node.options?.thumbnail, context.engine, context.attemptSignal);
+  return convertGraphNodeInputs(context, {
+    targetFormat,
+    options: {},
+    prepare: async (input) => {
+      const source = await plan.prepare(input);
+      return { ...source, options: { ...(node.options || {}), thumbnail: undefined, ...source.options } };
+    },
+    outputFilenameOverride: `thumbnail.${targetFormat}`,
+    fallbackFilename: `thumbnail.${targetFormat}`,
+  });
+}
+
+/** A metadata node: the report of its first input, as `metadata.json`. */
+async function runMetadataNode(context: NodeContext): Promise<string[]> {
+  assertHasInputs(context, 'metadata');
+  const inputKey = context.inputArtifacts[0];
+  const stored = await requireStoredInput(context.storage, inputKey);
+  const report = await readMetadata(stored.buffer, stored.filename || path.basename(inputKey), context.attemptSignal);
+  const outFilename = 'metadata.json';
+  const outKey = nodeOutputKey('intermediate', context.graphId, context.nodeId, 0, outFilename);
+  await context.storage.saveObject(outKey, Buffer.from(JSON.stringify(report, null, 2), 'utf-8'), registryMimeType('json'), outFilename, INTERMEDIATE_TTL_MS);
+  return [outKey];
+}
+
+/** A metadata.write node: each input with `options.metadata.set` written into it, under the name it had. */
+async function runMetadataWriteNode(context: NodeContext, node: { options?: ConversionOptions }): Promise<string[]> {
+  assertHasInputs(context, 'metadata.write');
+  const edits = node.options?.metadata?.set;
+  if (edits === undefined) throw new MetadataFieldError(`Node "${context.nodeId}" (metadata.write) needs "options.metadata.set".`);
+  const keys: string[] = [];
+  for (const [index, inputKey] of context.inputArtifacts.entries()) {
+    context.attemptSignal.throwIfAborted();
+    const stored = await requireStoredInput(context.storage, inputKey);
+    const written = await writeMetadata(stored.buffer, stored.filename || path.basename(inputKey), edits, pdfAccessOf(node.options, context.attemptSignal));
+    keys.push(
+      await saveIntermediateNodeOutput(
+        context.storage,
+        { graphId: context.graphId, nodeId: context.nodeId, index },
+        { buffer: written.buffer, mimeType: written.mimeType, filename: written.filename, fallbackFilename: 'metadata-written' }
       )
     );
   }
@@ -289,7 +367,6 @@ function requiredPagesOption(options: { pages?: unknown } | undefined, nodeId: s
   return options.pages;
 }
 
-const DEFAULT_THUMBNAIL_EDGE_PX = 256;
 /** Packaging format of a media.package node that names none. */
 const DEFAULT_PACKAGING_FORMAT = 'hls';
 
@@ -448,6 +525,7 @@ export async function processGraphNodeJob(
     attemptSignal.throwIfAborted();
     const inputArtifacts = await resolveInputArtifacts(graphId, node, job.data.inputArtifacts);
     await holdUnitsForInputs(graphId, nodeId, node, inputArtifacts.length);
+    const nodeContext: NodeContext = { graphId, nodeId, inputArtifacts, storage: effectiveStorage, engine: effectiveEngine, attemptSignal };
 
     switch (node.op) {
       case 'import.upload': {
@@ -524,32 +602,7 @@ export async function processGraphNodeJob(
       }
 
       case 'thumbnail': {
-        if (inputArtifacts.length === 0) {
-          throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
-        }
-        const targetFormat = requireTargetFormat(node, nodeId);
-        if (!THUMBNAIL_FORMATS.has(targetFormat)) {
-          throw new ConversionFailedError(`Thumbnail node "${nodeId}" cannot produce "${targetFormat}"`);
-        }
-        const width = node.options?.thumbnail?.width ?? DEFAULT_THUMBNAIL_EDGE_PX;
-        const height = node.options?.thumbnail?.height ?? DEFAULT_THUMBNAIL_EDGE_PX;
-        outputKeys.push(
-          ...(await convertGraphNodeInputs(
-            { graphId, nodeId, inputArtifacts, storage: effectiveStorage, engine: effectiveEngine, attemptSignal },
-            {
-              targetFormat,
-              options: {
-                ...(node.options || {}),
-                thumbnail: undefined,
-                width,
-                height,
-                fit: 'inside',
-              },
-              outputFilenameOverride: `thumbnail.${targetFormat}`,
-              fallbackFilename: `thumbnail.${targetFormat}`,
-            }
-          ))
-        );
+        outputKeys.push(...(await runThumbnailNode(nodeContext, node)));
         break;
       }
 
@@ -722,24 +775,13 @@ export async function processGraphNodeJob(
       }
 
       case 'metadata': {
-        if (inputArtifacts.length === 0) {
-          throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
-        }
-        const inputKey = inputArtifacts[0];
-        const stored = await effectiveStorage.getObject(inputKey);
-        if (!stored) {
-          throw new Error(`Input artifact "${inputKey}" not found in storage`);
-        }
-        const meta = await extractArtifactMetadata(
-          stored.buffer,
-          stored.filename || path.basename(inputKey),
-          inputKey
-        );
-        const jsonBuf = Buffer.from(JSON.stringify(meta, null, 2), 'utf-8');
-        const outFilename = 'metadata.json';
-        const outKey = nodeOutputKey('intermediate', graphId, nodeId, 0, outFilename);
-        await effectiveStorage.saveObject(outKey, jsonBuf, registryMimeType('json'), outFilename, INTERMEDIATE_TTL_MS);
-        outputKeys.push(outKey);
+        outputKeys.push(...(await runMetadataNode(nodeContext)));
+        break;
+      }
+
+      case 'metadata.write': {
+        outputKeys.push(...(await runMetadataWriteNode(nodeContext, node)));
+        await job.log(`Node "${nodeId}" wrote metadata into ${inputArtifacts.length} artifact(s)`);
         break;
       }
 

@@ -660,7 +660,7 @@ export const ConversionOptionsSchema = {
     },
     thumbnail: {
       type: 'object',
-      description: 'Video frame thumbnail extraction options.',
+      description: 'Video frame thumbnail extraction options, and the size, fit and page of a thumbnail task.',
       properties: {
         at: {
           type: 'array',
@@ -679,6 +679,22 @@ export const ConversionOptionsSchema = {
           minimum: 16,
           maximum: 7680,
           description: 'Target thumbnail width in pixels.',
+        },
+        height: {
+          type: 'integer',
+          minimum: 16,
+          maximum: 7680,
+          description: 'Target thumbnail height in pixels (thumbnail task; the width and the height bound the picture, which `fit` places inside them).',
+        },
+        fit: {
+          type: 'string',
+          enum: ['cover', 'contain', 'fill', 'inside', 'outside'],
+          description: 'How a thumbnail task places the picture within `width` x `height`: `inside` (default) keeps the whole picture and its proportions.',
+        },
+        page: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Page of a document (or frame of a multi-frame picture) a thumbnail task shows, 1-indexed; the first by default.',
         },
         accurate: {
           type: 'boolean',
@@ -855,6 +871,24 @@ export const ConversionOptionsSchema = {
       description: 'PDF AES-256 encryption and permission restriction options.',
       properties: PdfProtectOptionsSchema.properties,
     },
+    metadata: {
+      type: 'object',
+      required: ['set'],
+      description:
+        'Fields a `metadata.write` task writes into its input (a JPEG, a PNG or a PDF) without changing anything else in the file. The names are those of ExifTool and may carry their group (`EXIF:Artist`, `XMP:Title`, `PDF:Title`).',
+      properties: {
+        set: {
+          type: 'object',
+          minProperties: 1,
+          maxProperties: 64,
+          description:
+            'The fields to set, by name. A JPEG or a PNG takes the EXIF fields ImageDescription, Make, Model, Orientation, Software, ModifyDate, Artist, Copyright, DateTimeOriginal, CreateDate, UserComment, LensMake, LensModel, SerialNumber, GPSLatitude, GPSLongitude and GPSAltitude (a field set to null is removed; dates are "YYYY:MM:DD HH:MM:SS", positions are signed decimal degrees and meters), and the XMP fields XMP:Title, XMP:Description, XMP:Rights, XMP:Creator, XMP:Subject and XMP:CreatorTool when the picture holds no XMP packet yet. A PDF takes Title, Author, Subject, Keywords, Creator, Producer, CreateDate and ModifyDate. Any other format, field or value is a 422 (`metadata_write_unsupported`, `metadata_field_invalid`).',
+          additionalProperties: {
+            oneOf: [{ type: 'string', maxLength: 8192 }, { type: 'number' }, { type: 'null' }, { type: 'array', maxItems: 64, items: { type: 'string', maxLength: 8192 } }],
+          },
+        },
+      },
+    },
     pdfa: {
       type: 'object',
       description: 'PDF/A archival conversion options.',
@@ -930,7 +964,8 @@ export const JobGraphSchema = {
           op: {
             type: 'string',
             enum: [...GRAPH_OPERATIONS],
-            description: 'Operation type for this graph node.',
+            description:
+              'Operation type for this graph node. `thumbnail` makes one picture (JPEG, PNG or WebP) of the first page, or the page `options.thumbnail.page` names, of a document, or of a frame of a video (`options.thumbnail.at`), or of an image, within `options.thumbnail.width` x `height` as `options.thumbnail.fit` places it. `metadata` reads the metadata of its first input into `metadata.json` (the `MetadataReport` schema). `metadata.write` writes `options.metadata.set` into each input, a JPEG, a PNG or a PDF, and keeps the rest of the file as it is.',
           },
           input: {
             description: 'Single upstream NodeId or array of upstream NodeIds. A merge node needs at least 2 distinct inputs.',
@@ -975,7 +1010,7 @@ export const JobGraphSchema = {
           options: {
             $ref: 'https://easyconvert.local/schemas/conversion-options.json',
             description:
-              'Transformation options for convert, ocr, optimize, archive.create and the PDF nodes: `watermark` (pdf.watermark), `protect` (pdf.protect), `password` and `confirmEditRights` (pdf.unlock and every PDF edit), `split` (pdf.split-pages), `pages` (pdf.extract-pages, pdf.delete-pages), `reorder` (pdf.reorder-pages), `rotate` (pdf.rotate-pages) and `optimize` (optimize on a PDF).',
+              'Transformation options for convert, ocr, optimize, archive.create and the PDF nodes: `watermark` (pdf.watermark), `protect` (pdf.protect), `password` and `confirmEditRights` (pdf.unlock and every PDF edit), `split` (pdf.split-pages), `pages` (pdf.extract-pages, pdf.delete-pages), `reorder` (pdf.reorder-pages), `rotate` (pdf.rotate-pages), `optimize` (optimize on a PDF), `thumbnail` (thumbnail) and `metadata` (metadata.write).',
           },
           entries: {
             type: 'array',

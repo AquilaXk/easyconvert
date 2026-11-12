@@ -22,6 +22,7 @@ export const GRAPH_OPERATIONS = [
   'pdf.rotate-pages',
   'merge',
   'metadata',
+  'metadata.write',
   'archive.create',
   'archive.extract',
   'export.url',
@@ -80,6 +81,7 @@ const CHARGE_RULES: Readonly<Record<GraphOperation, ChargeRule>> = {
   'pdf.rotate-pages': 'per-output',
   merge: 'once',
   metadata: 'once',
+  'metadata.write': 'per-output',
   'archive.create': 'once',
   'archive.extract': 'once',
   'export.url': 'free',
@@ -158,7 +160,10 @@ export const TARGET_FORMAT_REQUIRED_OPERATIONS: ReadonlySet<GraphOperation> = ne
 ]);
 
 /** Formats a thumbnail node can produce. */
-export const THUMBNAIL_FORMATS: ReadonlySet<string> = new Set(['jpg', 'png']);
+export const THUMBNAIL_FORMATS: ReadonlySet<string> = new Set(['jpg', 'png', 'webp']);
+
+/** Formats a metadata.write node can write into without changing more than the metadata of the file. */
+export const METADATA_WRITE_FORMATS: readonly string[] = ['jpg', 'jpeg', 'png', 'pdf'];
 
 /** Fewest distinct inputs a merge node needs; with one input there is nothing to merge. */
 export const MIN_MERGE_INPUTS = 2;
