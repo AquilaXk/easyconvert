@@ -130,6 +130,12 @@
     outline-color: rgb(var(--c-accent-ink));
   }
 
+  /* After a pointer or touch press no ring is drawn, even where the browser counts a scripted focus as visible
+     (src/lib/input-modality.ts); the next key press brings it back. */
+  :root[data-input-modality='pointer'] :focus-visible {
+    outline-color: transparent;
+  }
+
   /* Preflight colours a placeholder with a fixed grey (2.54:1 on a white field); the tertiary ink is 4.5:1 or more on every surface. */
   input::placeholder,
   textarea::placeholder {
