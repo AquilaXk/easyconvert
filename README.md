@@ -12,7 +12,7 @@ EasyConvert is an open-source file conversion service with a web app and an HTTP
 ## Features
 
 - **Many formats, one API.** Images (including camera RAW), documents, archives, video, audio, subtitles, ebooks, spreadsheets, presentations, data files, vector graphics, fonts, and CAD and 3D.
-- **Sandboxed engines.** LibreOffice, FFmpeg, libvips, Poppler, Tesseract, 7-Zip, Calibre, and veraPDF run as external tools inside a per-job sandbox. Some formats use in-process TypeScript engines: HWP 5.0 (OLE2 CFBF), BZip2, TrueType/OpenType font tables, B-spline and Bézier path flattening, and Oklab, NeuQuant, and Median Cut palette quantization.
+- **Sandboxed engines.** LibreOffice, FFmpeg, libvips, Poppler, Tesseract, 7-Zip, Calibre, and veraPDF run as external tools inside a per-job sandbox. Some formats use in-process TypeScript engines: HWP 5.0 (OLE2 CFBF), BZip2, TrueType/OpenType font tables, B-spline and Bézier path flattening, and Oklab and NeuQuant palette quantization.
 - **Searchable OCR.** Scanned input becomes a PDF with a searchable text layer.
 - **PDF/A output.** Every PDF/A result is validated with veraPDF against the requested level.
 - **Synchronous and queued conversion.** `POST /api/v1/convert` answers in the request. `POST /api/v1/jobs` queues single conversions, `tasks` pipelines, and `graph` DAGs on a Redis-backed queue with retries, progress, and HMAC-SHA256 signed webhooks.

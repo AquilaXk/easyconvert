@@ -12,7 +12,7 @@ EasyConvert는 웹 앱과 HTTP API를 함께 제공하는 오픈소스 파일 �
 ## 주요 기능
 
 - **여러 포맷을 한 API로.** 이미지(카메라 RAW 포함), 문서, 압축 파일, 영상, 오디오, 자막, 전자책, 스프레드시트, 프레젠테이션, 데이터 파일, 벡터 그래픽, 폰트, CAD·3D를 변환해요.
-- **샌드박스 엔진.** LibreOffice, FFmpeg, libvips, Poppler, Tesseract, 7-Zip, Calibre, veraPDF는 작업마다 격리된 샌드박스에서 외부 도구로 실행해요. 일부 포맷은 프로세스 안의 TypeScript 엔진이 처리해요. HWP 5.0(OLE2 CFBF), BZip2, TrueType/OpenType 폰트 테이블, B-스플라인·베지에 경로 평탄화, Oklab·NeuQuant·Median Cut 팔레트 양자화가 여기에 들어가요.
+- **샌드박스 엔진.** LibreOffice, FFmpeg, libvips, Poppler, Tesseract, 7-Zip, Calibre, veraPDF는 작업마다 격리된 샌드박스에서 외부 도구로 실행해요. 일부 포맷은 프로세스 안의 TypeScript 엔진이 처리해요. HWP 5.0(OLE2 CFBF), BZip2, TrueType/OpenType 폰트 테이블, B-스플라인·베지에 경로 평탄화, Oklab·NeuQuant 팔레트 양자화가 여기에 들어가요.
 - **검색 가능한 OCR.** 스캔한 입력을 텍스트 레이어가 있는 PDF로 바꿔요.
 - **PDF/A 출력.** 모든 PDF/A 결과를 요청한 수준에 맞춰 veraPDF로 검증해요.
 - **동기 변환과 큐 변환.** `POST /api/v1/convert`는 요청 안에서 바로 응답해요. `POST /api/v1/jobs`는 단일 변환, `tasks` 파이프라인, `graph` DAG를 Redis 기반 큐에 넣고, 재시도·진행률·HMAC-SHA256 서명 웹훅을 지원해요.
