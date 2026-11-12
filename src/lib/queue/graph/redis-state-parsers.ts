@@ -110,7 +110,20 @@ export function parseGraphStatus(graphId: string, value: unknown): GraphStatus {
   return value as GraphStatus;
 }
 
-/** The stored graph definition: an object whose `nodes` is an object of objects that each name an `op`. */
+/** The inputs a node names: one node id or a list of them (`input` of the node types); absent for a node that reads none. */
+function nodeInputs(graphId: string, nodeId: string, input: unknown): string[] {
+  if (input === undefined) return [];
+  const inputs = Array.isArray(input) ? input : [input];
+  if (!inputs.every((id) => typeof id === 'string')) {
+    throw corrupt(graphId, `graph node "${nodeId}" field "input" is not a node id or a list of them`);
+  }
+  return inputs;
+}
+
+/**
+ * The stored graph definition: an object whose `nodes` is an object of objects that each name an `op` and whose `input`
+ * (when it has one) names nodes of the graph, and whose `failurePolicy` (when it has one) is a known policy.
+ */
 export function parseGraphDefinition(graphId: string, text: string | undefined): JobGraph {
   if (typeof text !== 'string' || text === '') {
     throw corrupt(graphId, 'field "graph" is missing');
@@ -119,9 +132,17 @@ export function parseGraphDefinition(graphId: string, text: string | undefined):
   if (!isPlainObject(parsed) || !isPlainObject(parsed.nodes)) {
     throw corrupt(graphId, 'field "graph" has no "nodes" object');
   }
+  if (parsed.failurePolicy !== undefined && !GRAPH_POLICIES.has(parsed.failurePolicy as string)) {
+    throw corrupt(graphId, 'field "graph" has an unknown "failurePolicy"');
+  }
   for (const [nodeId, node] of Object.entries(parsed.nodes)) {
     if (!isPlainObject(node) || typeof node.op !== 'string') {
       throw corrupt(graphId, `graph node "${nodeId}" has no "op"`);
+    }
+    for (const input of nodeInputs(graphId, nodeId, node.input)) {
+      if (!Object.hasOwn(parsed.nodes, input)) {
+        throw corrupt(graphId, `graph node "${nodeId}" reads "${input}", which is not a node of the graph`);
+      }
     }
   }
   return parsed as unknown as JobGraph;

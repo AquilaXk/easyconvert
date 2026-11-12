@@ -200,6 +200,11 @@ export function getAppOrigin(): string {
   return 'http://localhost:3000';
 }
 
+/** Whether Google sign-in works here: a client id is set, or the build is not production (where a local sandbox answers in its place). */
+export function isGoogleSignInEnabled(): boolean {
+  return Boolean(process.env.GOOGLE_CLIENT_ID) || process.env.NODE_ENV !== 'production';
+}
+
 export function getGoogleOAuthUrl(
   redirectUri: string,
   customStateOrSession?: string | OAuthSessionState

@@ -83,6 +83,7 @@
   "tests/audio-resampler-simd.test.ts": 1.2,
   "tests/audio-resampler-throughput.test.ts": 3.3,
   "tests/auth-and-api-keys.test.ts": 0.7,
+  "tests/auth-google-state.test.ts": 0.2,
   "tests/auth-mail.test.ts": 0.3,
   "tests/auth-store-fail-closed.test.ts": 0.2,
   "tests/auth-token-store-redis.test.ts": 0,
