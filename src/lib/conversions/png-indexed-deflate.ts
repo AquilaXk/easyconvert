@@ -49,9 +49,9 @@ export function looksLikeNoise(rows: Uint8Array): boolean {
   return zlib.deflateRawSync(sample, { level: SAMPLE_LEVEL }).length >= sample.length * NOISE_RATIO;
 }
 
-/** The zlib stream of the rows: libdeflate level 10 for noise-like rows, zlib level 9 for the others. */
-export async function deflateIndexedRows(rows: Uint8Array, signal?: AbortSignal): Promise<Buffer> {
-  if (!looksLikeNoise(rows)) return zlibInBlocks(rows, GRAPHIC_LEVEL, BLOCK_BYTES);
+/** The zlib stream of the rows: libdeflate level 10 for noise-like rows (`looksLikeNoise`), zlib level 9 for the others. */
+export async function deflateIndexedRows(rows: Uint8Array, noisy: boolean, signal?: AbortSignal): Promise<Buffer> {
+  if (!noisy) return zlibInBlocks(rows, GRAPHIC_LEVEL, BLOCK_BYTES);
   try {
     const deflated = await deflateRawWithLibdeflate(rows, LIBDEFLATE_10_PRODUCT_LEVEL, {
       signal,
