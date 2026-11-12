@@ -7,11 +7,22 @@ import {
   EngineUnavailableError,
   InvalidMediaOptionError,
   AudioCodec,
-  MediaLadderRung,
-  MediaPackagingOptions,
-  MediaPackagingFormat,
   VideoRateControl,
 } from '../types';
+import { probeHardwareAcceleration, probeSupportedEncoders, type HardwareAccelerationCapabilities } from './media-hw-probe';
+import { resolveVideoCodec, type VideoCodecName } from './media-video-codec';
+import {
+  PASS_LOG_PREFIX_PATTERN,
+  aspectReshapeFilter,
+  assertTwoPassSupported,
+  isTwoPassRequested,
+  resolveAspectRatio,
+  resolveFastStart,
+  resolveOutputDuration,
+  twoPassEncoderArgs,
+  type AspectPlan,
+  type TwoPassStage,
+} from './media-ffmpeg-container-args';
 import { assertChannelLimits, planAudioChannels } from './media-audio-channels';
 import {
   assertEncoderAvailable,
@@ -24,17 +35,15 @@ import {
 } from './media-audio-targets';
 import {
   FfprobePath,
+  type StreamLayout,
   firstVideoStream,
   layoutColorTransfer,
   probeStreamLayout,
   probeAudioChannels,
   probeAudioSampleRate,
   probeAudioStreamCount,
-  probeInputDuration,
   probeVideoColorTransfer,
   resolveFfprobeBinary,
-  probeVideoGeometry,
-  VideoGeometry,
 } from './media-ffprobe';
 import { DEFAULT_TONE_MAP, TONE_MAP_MODES } from './hdr-tonemap';
 import { escapeFfmpegFilterPath } from './media-filter-escape';
@@ -42,7 +51,7 @@ import { pictureOf, softwareEncoderThreads } from './media-encoder-threads';
 import { type Vp9Deadline, vp9DeadlineOfInput, vp9SpeedArgs } from './media-vp9-effort';
 import type { LayoutStream } from './mp4-layout';
 import { addWavPacketSize, readWavInputFacts } from './media-wav-input';
-import { lavfiInputArgs, type MediaInput, mediaInputArgs, openMediaInput, runFfmpegSync } from './media-process';
+import { type MediaInput, mediaInputArgs, openMediaInput } from './media-process';
 import { SDR_COLOUR_ARGS, type VideoToneMapPlan, assertZscaleAvailable, planVideoToneMap, probeVideoMaxLightLevel } from './media-hdr';
 import {
   chooseResampler,
@@ -62,15 +71,6 @@ import {
   VARIABLE_FRAME_RATE_CONTAINERS,
   VideoContainer,
 } from './media-stream-plan';
-import {
-  capLadderToSource,
-  forcedKeyframeExpression,
-  keyframeIntervalFrames,
-  packagingManifestName,
-  resolveSegmentType,
-  rungRateCaps,
-  MIN_RUNG_BITRATE_K,
-} from './media-packaging';
 
 export {
   probeAudioChannels,
@@ -80,15 +80,24 @@ export {
   resolveFfprobeBinary,
 };
 export type { FfprobePath };
-
-export interface HardwareAccelerationCapabilities {
-  nvenc: boolean;
-  vaapi: boolean;
-  qsv: boolean;
-  videotoolbox: boolean;
-  supportedEncoders: ReadonlySet<string>;
-  probedAt: number;
-}
+export { isTwoPassRequested } from './media-ffmpeg-container-args';
+export type { TwoPassStage } from './media-ffmpeg-container-args';
+export {
+  probeHardwareAcceleration,
+  probeSupportedEncoders,
+  resetHardwareAccelerationCache,
+  usesHardwareVideoEncoder,
+} from './media-hw-probe';
+export type { HardwareAccelerationCapabilities, HardwareProbeEnvironment } from './media-hw-probe';
+export {
+  DEFAULT_PACKAGING_LADDER,
+  MAX_LADDER_RUNGS,
+  PACKAGING_AUDIO_ENCODERS,
+  PACKAGING_VIDEO_ENCODERS,
+  buildHlsDashArguments,
+  probePackagingSource,
+} from './media-ffmpeg-packaging-args';
+export type { PackagingSource } from './media-ffmpeg-packaging-args';
 
 export const AUDIO_CODEC_MAP: Record<AudioCodec, string> = {
   aac: 'aac',
@@ -116,315 +125,6 @@ export const H264_ALLOWED_LEVELS = new Set([
 ]);
 export const HEVC_ALLOWED_PROFILES = new Set(['main', 'main10']);
 export const AV1_ALLOWED_PROFILES = new Set(['main', '0']);
-
-/**
- * Probe results per ffmpeg binary (and DRM directory). The probe runs synchronously, so a long
- * lifetime keeps it off the request path; the worker warms it at startup.
- */
-const hwCapabilityCache = new Map<string, HardwareAccelerationCapabilities>();
-/**
- * The encoders a binary lists, per binary. A conversion that only needs to know whether an encoder exists (every
- * audio target, the AV1 check) reads this and never opens a hardware session, which costs a process per device.
- */
-const encoderListCache = new Map<string, { encoders: ReadonlySet<string>; probedAt: number }>();
-const PROBE_CACHE_TTL_MS = 10 * 60 * 1000;
-const ENCODER_LIST_TIMEOUT_MS = 3000;
-const ENCODER_LIST_MAX_BYTES = 1024 * 1024;
-/** Directory that holds the DRM nodes Intel Quick Sync needs. */
-const DRM_DEVICE_DIR = '/dev/dri';
-const DRM_RENDER_NODE = /^renderD\d+$/;
-/** Opening a hardware session is quick on a working device; a hung driver must not stall conversions. */
-const HW_SESSION_PROBE_TIMEOUT_MS = 5000;
-const HW_SESSION_PROBE_MAX_BYTES = 64 * 1024;
-const HW_PROBE_FRAME_SIZE = '256x256';
-const QSV_ENCODERS = ['h264_qsv', 'hevc_qsv'];
-const NVENC_ENCODERS = ['h264_nvenc', 'hevc_nvenc'];
-const VAAPI_ENCODERS = ['h264_vaapi', 'hevc_vaapi'];
-const VAAPI_DEVICES = ['/dev/dri/renderD128', '/dev/dri/card0'];
-const VAAPI_UPLOAD_FILTER = 'format=nv12,hwupload';
-/**
- * One `ffmpeg -encoders` row: a type letter (V, A, S) and five capability flags (F, S, X, B, D or
- * a dot), then the encoder name. Most encoders carry the D (direct rendering) flag.
- */
-const ENCODER_LISTING_LINE = /^\s*[VAS][.FSXBD]{5}\s+([a-zA-Z0-9_-]+)/;
-const HARDWARE_ENCODER_NAME = /_(nvenc|vaapi|qsv|videotoolbox)$/;
-
-/** Test seam for the host facts the probe reads. */
-export interface HardwareProbeEnvironment {
-  /** Directory scanned for DRM render nodes; defaults to /dev/dri. */
-  drmDir?: string;
-}
-
-function hasDrmRenderNode(drmDir: string): boolean {
-  try {
-    return fs.readdirSync(drmDir).some((entry) => DRM_RENDER_NODE.test(entry));
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Encodes one black frame with a hardware encoder to a null sink. Listing an encoder only proves
- * it was compiled in; a session can still fail (no device, missing driver or libcuda), so this
- * decides whether the encoder may be selected.
- */
-function canOpenEncoderSession(
-  ffmpegPath: string,
-  encoder: string,
-  deviceArgs: readonly string[] = [],
-  filter?: string
-): boolean {
-  const run = runFfmpegSync(
-    ffmpegPath,
-    [
-      '-hide_banner', '-v', 'error', ...deviceArgs,
-      ...lavfiInputArgs(`color=c=black:s=${HW_PROBE_FRAME_SIZE}:r=1:d=1`),
-      ...(filter ? ['-vf', filter] : []),
-      '-frames:v', '1', '-c:v', encoder, '-f', 'null', '-',
-    ],
-    { timeoutMs: HW_SESSION_PROBE_TIMEOUT_MS, maxBuffer: HW_SESSION_PROBE_MAX_BYTES }
-  );
-  return run.ok;
-}
-
-/** True when the ffmpeg arguments select a hardware video encoder (nvenc, vaapi, qsv, videotoolbox). */
-export function usesHardwareVideoEncoder(args: readonly string[]): boolean {
-  const idx = args.indexOf('-c:v');
-  return idx >= 0 && idx + 1 < args.length && HARDWARE_ENCODER_NAME.test(args[idx + 1]);
-}
-
-export function resetHardwareAccelerationCache(): void {
-  hwCapabilityCache.clear();
-  encoderListCache.clear();
-}
-
-/** Names of the encoders `ffmpeg -encoders` lists, cached per binary; empty when the binary cannot be run. */
-export function probeSupportedEncoders(ffmpegPath: string | null | undefined): ReadonlySet<string> {
-  if (!ffmpegPath || !fs.existsSync(ffmpegPath)) {
-    // Not cached: a binary installed later must be seen at once, and this check costs one stat.
-    return new Set<string>();
-  }
-  const now = Date.now();
-  const cached = encoderListCache.get(ffmpegPath);
-  if (cached && now - cached.probedAt < PROBE_CACHE_TTL_MS) {
-    return cached.encoders;
-  }
-  const encoders = new Set<string>();
-  const listing = runFfmpegSync(ffmpegPath, ['-hide_banner', '-encoders'], { timeoutMs: ENCODER_LIST_TIMEOUT_MS, maxBuffer: ENCODER_LIST_MAX_BYTES });
-  // An unrunnable binary lists nothing; the empty answer is cached with the others for the probe's lifetime.
-  for (const line of listing.ok ? listing.stdout.split('\n') : []) {
-    const match = line.match(ENCODER_LISTING_LINE);
-    if (match) {
-      encoders.add(match[1]);
-    }
-  }
-  encoderListCache.set(ffmpegPath, { encoders, probedAt: now });
-  return encoders;
-}
-
-/**
- * Dynamically probes FFmpeg binary for hardware-accelerated video encoders.
- * Caches results in-memory with a 10-minute TTL to avoid redundant CLI executions.
- */
-export function probeHardwareAcceleration(
-  ffmpegPath?: string | null,
-  env: HardwareProbeEnvironment = {}
-): HardwareAccelerationCapabilities {
-  const now = Date.now();
-  const cacheKey = `${ffmpegPath ?? ''}\0${env.drmDir ?? ''}`;
-  const cached = hwCapabilityCache.get(cacheKey);
-  if (cached && now - cached.probedAt < PROBE_CACHE_TTL_MS) {
-    return cached;
-  }
-
-  const defaultCaps: HardwareAccelerationCapabilities = {
-    nvenc: false,
-    vaapi: false,
-    qsv: false,
-    videotoolbox: false,
-    supportedEncoders: new Set<string>(),
-    probedAt: now,
-  };
-
-  if (!ffmpegPath || !fs.existsSync(ffmpegPath)) {
-    // Not cached: a binary installed later must be seen at once, and this check costs one stat.
-    return defaultCaps;
-  }
-
-  const supported = probeSupportedEncoders(ffmpegPath);
-
-  const vaapiDevice = VAAPI_DEVICES.find((device) => fs.existsSync(device));
-  const isDarwin = process.platform === 'darwin';
-  // QSV needs a DRM render node and a session that really opens, not just a compiled-in encoder.
-  const qsvEncoder = QSV_ENCODERS.find((enc) => supported.has(enc));
-  const qsv =
-    qsvEncoder !== undefined &&
-    hasDrmRenderNode(env.drmDir ?? DRM_DEVICE_DIR) &&
-    canOpenEncoderSession(ffmpegPath, qsvEncoder);
-  // NVENC and VAAPI are also only usable when a session really opens (no GPU, no driver, no libcuda).
-  const nvencEncoder = NVENC_ENCODERS.find((enc) => supported.has(enc));
-  const nvenc = nvencEncoder !== undefined && canOpenEncoderSession(ffmpegPath, nvencEncoder);
-  const vaapiEncoder = VAAPI_ENCODERS.find((enc) => supported.has(enc));
-  const vaapi =
-    vaapiEncoder !== undefined &&
-    vaapiDevice !== undefined &&
-    canOpenEncoderSession(ffmpegPath, vaapiEncoder, ['-vaapi_device', vaapiDevice], VAAPI_UPLOAD_FILTER);
-
-  const caps: HardwareAccelerationCapabilities = {
-    nvenc,
-    vaapi,
-    qsv,
-    videotoolbox: isDarwin && (supported.has('h264_videotoolbox') || supported.has('hevc_videotoolbox')),
-    supportedEncoders: supported,
-    probedAt: now,
-  };
-
-  hwCapabilityCache.set(cacheKey, caps);
-  return caps;
-}
-
-const VIDEO_CODECS: ReadonlySet<string> = new Set(['h264', 'hevc', 'vp9', 'av1', 'prores']);
-/** Spellings accepted for a codec; h265 is the common name of hevc. */
-const VIDEO_CODEC_ALIASES: Readonly<Record<string, string>> = { h265: 'hevc' };
-
-type VideoCodecName = 'h264' | 'hevc' | 'vp9' | 'av1' | 'prores';
-
-/** Normalizes a requested video codec, rejecting any name this builder cannot encode. */
-function resolveVideoCodec(requested: string): VideoCodecName {
-  const name = Object.hasOwn(VIDEO_CODEC_ALIASES, requested) ? VIDEO_CODEC_ALIASES[requested] : requested;
-  if (!VIDEO_CODECS.has(name)) {
-    throw new InvalidMediaOptionError(
-      `Unsupported video codec '${requested}'. Allowed: ${[...VIDEO_CODECS].join(', ')} (h265 is accepted as hevc).`
-    );
-  }
-  return name as VideoCodecName;
-}
-
-/** One pass of a two-pass encode: the pass number and the prefix of the pass log files. */
-export interface TwoPassStage {
-  pass: 1 | 2;
-  /** File name prefix of the pass logs; written in the job's working directory, which is removed afterwards. */
-  logPrefix: string;
-}
-
-/** Codecs with an encoder that writes and reads a rate-control pass log through ffmpeg (SVT-AV1 does not). */
-const TWO_PASS_CODECS: ReadonlySet<string> = new Set(['h264', 'hevc', 'vp9']);
-/** A pass log prefix goes into `-passlogfile` and x265's colon-separated parameter list: no separators or spaces. */
-const PASS_LOG_PREFIX_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
-/** Longest an output may be asked to run: one day. */
-const MAX_OUTPUT_DURATION_SEC = 86_400;
-/** A requested duration may exceed the probed one by this much: container durations are rounded. */
-const DURATION_EPSILON_SEC = 0.001;
-/** Terms of an aspect ratio, and the widest ratio padding or cropping may produce (bounds the padded frame). */
-const MAX_ASPECT_TERM = 10_000;
-const MAX_ASPECT_RATIO = 10;
-const ASPECT_RATIO_PATTERN = /^(\d{1,5}):(\d{1,5})$/;
-
-/** True when the request asks for a two-pass VBR encode; such a request must be built with buildTwoPassArguments. */
-export function isTwoPassRequested(options: ConversionOptions): boolean {
-  const twoPass = (options.video?.rateControl as { twoPass?: unknown } | undefined)?.twoPass;
-  if (twoPass === undefined || twoPass === false) return false;
-  if (twoPass !== true) {
-    throw new InvalidMediaOptionError(`Invalid twoPass ${JSON.stringify(twoPass)}. Must be true or false.`);
-  }
-  return true;
-}
-
-/** Pass-specific encoder arguments: x265 takes its pass and stats file as parameters, the others as ffmpeg options. */
-function twoPassEncoderArgs(stage: TwoPassStage, codec: string): string[] {
-  if (codec === 'hevc') {
-    return ['-x265-params', `pass=${stage.pass}:stats=${stage.logPrefix}`];
-  }
-  return ['-pass', String(stage.pass), '-passlogfile', stage.logPrefix];
-}
-
-function assertTwoPassSupported(options: ConversionOptions, tgt: string, codec: string): void {
-  const rateControl = options.video?.rateControl;
-  if (rateControl?.mode !== 'vbr') {
-    throw new InvalidMediaOptionError(`twoPass needs rateControl.mode 'vbr' with a bitrate; mode '${rateControl?.mode ?? 'unset'}' has no target rate to reach.`);
-  }
-  if (!TWO_PASS_CODECS.has(codec)) {
-    throw new InvalidMediaOptionError(
-      `twoPass is available for h264, hevc and vp9; '${codec}' has no rate-control pass through ffmpeg (SVT-AV1 and ProRes ignore -pass).`
-    );
-  }
-  if (tgt === 'avi') {
-    throw new InvalidMediaOptionError("twoPass is not available for the 'avi' target.");
-  }
-}
-
-/** The output length cap in seconds, checked against the input when it can be read. */
-async function resolveOutputDuration(options: ConversionOptions, input: MediaInput, ffmpegBin?: string | null): Promise<number | undefined> {
-  const duration = options.duration;
-  if (duration === undefined) return undefined;
-  if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0 || duration > MAX_OUTPUT_DURATION_SEC) {
-    throw new InvalidMediaOptionError(`Invalid duration ${String(duration)}. Must be more than 0 and at most ${MAX_OUTPUT_DURATION_SEC} seconds.`);
-  }
-  if (fs.existsSync(input.path)) {
-    const sourceDuration = await probeInputDuration(input, resolveFfprobeBinary(ffmpegBin), options.signal);
-    if (duration > sourceDuration + DURATION_EPSILON_SEC) {
-      throw new InvalidMediaOptionError(`Invalid duration ${duration}: the input lasts ${sourceDuration.toFixed(3)} seconds.`);
-    }
-  }
-  return duration;
-}
-
-/** `+faststart` (moov before mdat) is the default for mp4, mov and m4a; `false` omits it and `true` elsewhere is an error. */
-function resolveFastStart(options: ConversionOptions, tgt: string, capable: boolean): boolean {
-  const requested = options.fastStart;
-  if (requested === undefined) return capable;
-  if (typeof requested !== 'boolean') {
-    throw new InvalidMediaOptionError(`Invalid fastStart ${JSON.stringify(requested)}. Must be true or false.`);
-  }
-  if (requested && !capable) {
-    throw new InvalidMediaOptionError(`fastStart applies to mp4, mov and m4a output; the '${tgt}' target has no moov box to move.`);
-  }
-  return requested;
-}
-
-interface AspectPlan {
-  num: number;
-  den: number;
-  mode: 'dar' | 'pad' | 'crop';
-}
-
-function resolveAspectRatio(requested: ConversionOptions['aspectRatio']): AspectPlan | undefined {
-  if (requested === undefined) return undefined;
-  const ratio = typeof requested === 'string' ? requested : requested?.ratio;
-  const mode = typeof requested === 'string' ? 'dar' : (requested?.mode ?? 'dar');
-  const match = typeof ratio === 'string' ? ASPECT_RATIO_PATTERN.exec(ratio) : null;
-  if (!match) {
-    throw new InvalidMediaOptionError(`Invalid aspectRatio ${JSON.stringify(requested)}. Use W:H with whole numbers, e.g. "16:9".`);
-  }
-  const num = Number(match[1]);
-  const den = Number(match[2]);
-  if (num < 1 || den < 1 || num > MAX_ASPECT_TERM || den > MAX_ASPECT_TERM || num / den > MAX_ASPECT_RATIO || den / num > MAX_ASPECT_RATIO) {
-    throw new InvalidMediaOptionError(`Invalid aspectRatio ${num}:${den}. Each term is 1 to ${MAX_ASPECT_TERM} and the ratio at most ${MAX_ASPECT_RATIO}:1.`);
-  }
-  if (mode !== 'dar' && mode !== 'pad' && mode !== 'crop') {
-    throw new InvalidMediaOptionError(`Invalid aspectRatio mode ${JSON.stringify(mode)}. Allowed: dar, pad, crop.`);
-  }
-  return { num, den, mode };
-}
-
-/**
- * Filters that reshape the picture to the ratio, keeping even sizes (4:2:0 needs them): pad adds black bars
- * to the smaller side, crop removes from the larger one, both centred. Each ends with a square pixel aspect, so
- * the displayed ratio is the frame's own width over height.
- */
-function aspectReshapeFilter(plan: AspectPlan): string | undefined {
-  const { num, den } = plan;
-  if (plan.mode === 'pad') {
-    return (
-      `pad=w='max(iw\\,ceil(ih*${num}/${den}/2)*2)':h='max(ih\\,ceil(iw*${den}/${num}/2)*2)'` +
-      ":x='(ow-iw)/2':y='(oh-ih)/2':color=black,setsar=1"
-    );
-  }
-  if (plan.mode === 'crop') {
-    return `crop=w='min(iw\\,floor(ih*${num}/${den}/2)*2)':h='min(ih\\,floor(iw*${den}/${num}/2)*2)',setsar=1`;
-  }
-  return undefined;
-}
 
 /** x264 and x265 presets a caller may name; `placebo` is left out because its cost is unbounded for a service. */
 export const X26X_PRESETS: ReadonlySet<string> = new Set([
@@ -673,6 +373,79 @@ export async function buildTwoPassArguments(
   return [await build(1), await build(2)];
 }
 
+/** The request one argument build serves and the three lists it fills in order: global options, inputs and outputs. */
+interface BuildContext {
+  input: MediaInput;
+  tgt: string;
+  options: ConversionOptions;
+  ffmpegBin?: string | null;
+  loudnessStage?: LoudnessStage;
+  passStage?: TwoPassStage;
+  globalArgs: string[];
+  inputArgs: string[];
+  outputArgs: string[];
+}
+
+/** What the stream mapping decided, for the video and audio stages that follow. */
+interface StreamMapping {
+  inputLayout: StreamLayout | undefined;
+  burnRequested: boolean;
+  burnBitmapStream: LayoutStream | undefined;
+  streamPlan: StreamMapPlan | undefined;
+  audioOnlyMapArgs: string[];
+}
+
+/** What the video stage needs from the checks and decisions made before it. */
+interface VideoStageInput {
+  aspect: AspectPlan | undefined;
+  fastStart: boolean;
+  twoPass: boolean;
+  mapping: StreamMapping;
+}
+
+type HardwareEncoderKind = 'nvenc' | 'vaapi' | 'videotoolbox' | 'qsv';
+
+/** The video codec, its gates passed, and the facts the filter graph and the encoder arguments both read. */
+interface VideoPlan {
+  codec: VideoCodecName;
+  rateControl: VideoRateControl | undefined;
+  tenBit: boolean;
+  hdrToSdr: VideoToneMapPlan | undefined;
+  hardware: HardwareEncoderKind | undefined;
+  driDevice: string | null;
+  sourcePicture: ReturnType<typeof firstVideoStream>;
+  unscaledPicture: ReturnType<typeof pictureOf>;
+  vp9Deadline: Vp9Deadline;
+}
+
+const VIDEO_TARGETS: ReadonlySet<string> = new Set(['mp4', 'mkv', 'avi', 'mov', 'webm']);
+const SOFT_SUBTITLE_TARGETS: ReadonlySet<string> = new Set(['mp4', 'mov', 'mkv', 'webm']);
+const HARDWARE_ENCODER_TARGETS: ReadonlySet<string> = new Set(['mp4', 'mov', 'mkv']);
+const DRI_DEVICES = ['/dev/dri/renderD128', '/dev/dri/card0'] as const;
+const VIDEO_RESOLUTION_SIZES: Record<string, string> = {
+  '4k': '3840:2160',
+  '1080p': '1920:1080',
+  '720p': '1280:720',
+  '480p': '854:480',
+  '360p': '640:360',
+};
+const PRORES_PROFILE_NUMBERS: Record<string, string> = {
+  proxy: '0',
+  '0': '0',
+  lt: '1',
+  '1': '1',
+  standard: '2',
+  '2': '2',
+  hq: '3',
+  '3': '3',
+  '4444': '4',
+  '4': '4',
+};
+const DEFAULT_PRORES_PROFILE = '3';
+const MIN_AUDIO_SAMPLE_RATE = 8000;
+const MAX_AUDIO_SAMPLE_RATE = 192000;
+const MAX_AUDIO_VOLUME_PERCENT = 200;
+
 /**
  * Builds optimized, compliant FFmpeg argument array with hardware acceleration,
  * strict filter graph ordering, rate control, and profile/level validation.
@@ -690,66 +463,133 @@ export async function buildFfmpegArguments(
   loudnessStage?: LoudnessStage,
   passStage?: TwoPassStage
 ): Promise<string[]> {
-  const globalArgs: string[] = ['-y'];
-  const inputArgs: string[] = [];
-  const outputArgs: string[] = [];
+  const ctx: BuildContext = { input, tgt, options, ffmpegBin, loudnessStage, passStage, globalArgs: ['-y'], inputArgs: [], outputArgs: [] };
+  if (options.thumbnail) return thumbnailArguments(ctx, outputPath, overrideTimestamp);
+  if (options.subtitles?.mode === 'extract') return subtitleExtractionArguments(ctx, outputPath);
+  return await transcodeArguments(ctx, outputPath);
+}
 
-  // Thumbnail branch: produce a single frame image
-  const isThumbnail = Boolean(options.thumbnail) || (['jpg', 'jpeg', 'png'].includes(tgt) && Boolean(options.thumbnail));
-  if (isThumbnail) {
-    const timestamp = overrideTimestamp || options.thumbnail?.at?.[0] || '00:00:01.000';
-    if (options.thumbnail?.accurate) {
-      inputArgs.push(...mediaInputArgs(input));
-      outputArgs.push('-ss', timestamp);
-    } else {
-      inputArgs.push('-ss', timestamp, ...mediaInputArgs(input));
-    }
-
-    const videoFilters: string[] = [];
-    if (options.thumbnail?.width && options.thumbnail.width > 0) {
-      videoFilters.push(`scale=${options.thumbnail.width}:-2`);
-    }
-    videoFilters.push('scale=trunc(iw/2)*2:trunc(ih/2)*2');
-    outputArgs.push('-vf', videoFilters.join(','));
-
-    outputArgs.push('-frames:v', '1', '-an');
-    const imgCodec = (tgt === 'png' || options.thumbnail?.format === 'png') ? 'png' : 'mjpeg';
-    outputArgs.push('-c:v', imgCodec);
-
-    return [...globalArgs, ...inputArgs, ...outputArgs, outputPath];
-  }
-
-  // Subtitle extraction branch: demux subtitle stream directly
-  if (options.subtitles?.mode === 'extract') {
-    if (options.trim?.start) {
-      inputArgs.push('-ss', options.trim.start);
-    }
-    if (options.trim?.end) {
-      inputArgs.push('-to', options.trim.end);
-    }
+/** A single frame image. */
+function thumbnailArguments(ctx: BuildContext, outputPath: string, overrideTimestamp: string | undefined): string[] {
+  const { input, tgt, options, globalArgs, inputArgs, outputArgs } = ctx;
+  const timestamp = overrideTimestamp || options.thumbnail?.at?.[0] || '00:00:01.000';
+  if (options.thumbnail?.accurate) {
     inputArgs.push(...mediaInputArgs(input));
-
-    outputArgs.push('-vn', '-an');
-    const sIdx = typeof options.subtitles.streamIndex === 'number' ? options.subtitles.streamIndex : 0;
-    if (sIdx < 0) {
-      throw new InvalidMediaOptionError('Subtitle stream index must be non-negative.');
-    }
-    outputArgs.push('-map', `0:s:${sIdx}`);
-
-    const subFmt = options.subtitles.format || (tgt === 'vtt' ? 'vtt' : tgt === 'ass' ? 'ass' : 'srt');
-    const subCodec = subFmt === 'vtt' ? 'webvtt' : subFmt === 'ass' ? 'ass' : 'srt';
-    outputArgs.push('-c:s', subCodec);
-
-    return [...globalArgs, ...inputArgs, ...outputArgs, outputPath];
+    outputArgs.push('-ss', timestamp);
+  } else {
+    inputArgs.push('-ss', timestamp, ...mediaInputArgs(input));
   }
 
-  // Standard video/audio transcoding branch
+  const videoFilters: string[] = [];
+  if (options.thumbnail?.width && options.thumbnail.width > 0) {
+    videoFilters.push(`scale=${options.thumbnail.width}:-2`);
+  }
+  videoFilters.push('scale=trunc(iw/2)*2:trunc(ih/2)*2');
+  outputArgs.push('-vf', videoFilters.join(','));
+
+  outputArgs.push('-frames:v', '1', '-an');
+  const imgCodec = (tgt === 'png' || options.thumbnail?.format === 'png') ? 'png' : 'mjpeg';
+  outputArgs.push('-c:v', imgCodec);
+
+  return [...globalArgs, ...inputArgs, ...outputArgs, outputPath];
+}
+
+function subtitleFormatOf(tgt: string): string {
+  if (tgt === 'vtt') return 'vtt';
+  return tgt === 'ass' ? 'ass' : 'srt';
+}
+
+function subtitleCodecOf(format: string): string {
+  if (format === 'vtt') return 'webvtt';
+  return format === 'ass' ? 'ass' : 'srt';
+}
+
+/** The subtitle stream demuxed on its own. */
+function subtitleExtractionArguments(ctx: BuildContext, outputPath: string): string[] {
+  const { input, tgt, options, globalArgs, inputArgs, outputArgs } = ctx;
+  addTrimInputArgs(ctx);
+  inputArgs.push(...mediaInputArgs(input));
+
+  outputArgs.push('-vn', '-an');
+  const sIdx = typeof options.subtitles?.streamIndex === 'number' ? options.subtitles.streamIndex : 0;
+  if (sIdx < 0) {
+    throw new InvalidMediaOptionError('Subtitle stream index must be non-negative.');
+  }
+  outputArgs.push('-map', `0:s:${sIdx}`);
+
+  const subFmt = options.subtitles?.format || subtitleFormatOf(tgt);
+  outputArgs.push('-c:s', subtitleCodecOf(subFmt));
+
+  return [...globalArgs, ...inputArgs, ...outputArgs, outputPath];
+}
+
+function addTrimInputArgs(ctx: BuildContext): void {
+  const { options, inputArgs } = ctx;
   if (options.trim?.start) {
     inputArgs.push('-ss', options.trim.start);
   }
   if (options.trim?.end) {
     inputArgs.push('-to', options.trim.end);
   }
+}
+
+/** The standard video or audio transcode. */
+async function transcodeArguments(ctx: BuildContext, outputPath: string): Promise<string[]> {
+  const { input, tgt, options, ffmpegBin, passStage, globalArgs, inputArgs, outputArgs } = ctx;
+  const wav = addTranscodeInputArgs(ctx);
+
+  const isVideo = VIDEO_TARGETS.has(tgt);
+  const audioSpec = isAudioOnlyTarget(tgt) ? resolveAudioTargetSpec(tgt) : undefined;
+
+  const twoPass = isTwoPassRequested(options);
+  assertTwoPassRequest(ctx, isVideo, twoPass);
+  const outputDuration = await resolveOutputDuration(options, input, ffmpegBin);
+  if (outputDuration !== undefined) {
+    outputArgs.push('-t', String(outputDuration));
+  }
+  const fastStart = resolveFastStart(options, tgt, tgt === 'mp4' || tgt === 'mov' || audioSpec?.muxer === 'ipod');
+  const aspect = resolveAspectRatio(options.aspectRatio);
+  assertRequestsFitTarget(ctx, isVideo, audioSpec, aspect);
+
+  // The spec's limits describe its own encoder; a caller-selected different codec has other limits.
+  const specEncoderInUse =
+    audioSpec !== undefined && (!options.audio?.codec || AUDIO_CODEC_MAP[options.audio.codec] === audioSpec.encoder);
+  if (audioSpec && specEncoderInUse) {
+    await assertEncoderLimits(tgt, audioSpec, options, input, ffmpegBin);
+  }
+
+  const mapping = await addStreamMapping(ctx, isVideo, audioSpec);
+  addSoftSubtitleCodecArgs(ctx, mapping.streamPlan);
+
+  if (isVideo) {
+    await addVideoArguments(ctx, { aspect, fastStart, twoPass, mapping });
+  }
+
+  // The analysing pass writes its statistics and no media: no audio, no subtitles, a null sink.
+  if (passStage?.pass === 1) {
+    addVariableFrameRateTiming(ctx, isVideo);
+    return [...globalArgs, ...inputArgs, ...outputArgs, '-an', '-sn', '-dn', '-f', 'null', os.devNull];
+  }
+
+  // Timing: keep the source's own frame timestamps (variable frame rate) unless a rate was requested,
+  // in which case the fps filter has already produced a constant rate.
+  addVariableFrameRateTiming(ctx, isVideo);
+
+  const measureArguments = await addAudioArguments(ctx, { isVideo, audioSpec, specEncoderInUse, mapping });
+  if (measureArguments) return measureArguments;
+
+  if (audioSpec?.muxer === 'ipod' && fastStart) {
+    outputArgs.push('-movflags', '+faststart');
+  }
+
+  addWavPacketSize(inputArgs, wav, options, outputArgs, ffmpegBin);
+  return [...globalArgs, ...inputArgs, ...outputArgs, outputPath];
+}
+
+/** Trim, the input itself and the external subtitle file of a soft subtitle request; returns the WAV facts of the input. */
+function addTranscodeInputArgs(ctx: BuildContext): ReturnType<typeof readWavInputFacts> {
+  const { input, tgt, options, inputArgs } = ctx;
+  addTrimInputArgs(ctx);
   const wav = readWavInputFacts(tgt, input.path, inputArgs);
   inputArgs.push(...mediaInputArgs(input));
 
@@ -760,11 +600,11 @@ export async function buildFfmpegArguments(
     const subtitleFile = options.subtitles.input;
     inputArgs.push(...mediaInputArgs(openMediaInput(subtitleFile, path.extname(subtitleFile).slice(1))));
   }
+  return wav;
+}
 
-  const isVideo = ['mp4', 'mkv', 'avi', 'mov', 'webm'].includes(tgt);
-  const audioSpec = isAudioOnlyTarget(tgt) ? resolveAudioTargetSpec(tgt) : undefined;
-
-  const twoPass = isTwoPassRequested(options);
+function assertTwoPassRequest(ctx: BuildContext, isVideo: boolean, twoPass: boolean): void {
+  const { tgt, passStage } = ctx;
   if (twoPass && !isVideo) {
     throw new InvalidMediaOptionError(`twoPass applies to video targets; '${tgt}' is not one.`);
   }
@@ -774,12 +614,11 @@ export async function buildFfmpegArguments(
   if (passStage && !PASS_LOG_PREFIX_PATTERN.test(passStage.logPrefix)) {
     throw new ConversionFailedError(`Invalid pass log prefix "${passStage.logPrefix}".`);
   }
-  const outputDuration = await resolveOutputDuration(options, input, ffmpegBin);
-  if (outputDuration !== undefined) {
-    outputArgs.push('-t', String(outputDuration));
-  }
-  const fastStart = resolveFastStart(options, tgt, tgt === 'mp4' || tgt === 'mov' || audioSpec?.muxer === 'ipod');
-  const aspect = resolveAspectRatio(options.aspectRatio);
+}
+
+/** Refuses the aspect ratio, subtitle and audio codec requests the target container cannot carry. */
+function assertRequestsFitTarget(ctx: BuildContext, isVideo: boolean, audioSpec: AudioTargetSpec | undefined, aspect: AspectPlan | undefined): void {
+  const { tgt, options } = ctx;
   if (aspect && !isVideo) {
     throw new InvalidMediaOptionError(`aspectRatio applies to video targets; '${tgt}' is not one.`);
   }
@@ -787,65 +626,51 @@ export async function buildFfmpegArguments(
   if (options.subtitles?.mode === 'burn' && !isVideo) {
     throw new InvalidMediaOptionError("Subtitle 'burn' mode is only supported for video targets.");
   }
-  if (options.subtitles?.mode === 'soft' && !['mp4', 'mov', 'mkv', 'webm'].includes(tgt)) {
+  if (options.subtitles?.mode === 'soft' && !SOFT_SUBTITLE_TARGETS.has(tgt)) {
     throw new InvalidMediaOptionError(`Container '${tgt}' does not support soft subtitle embedding.`);
   }
 
   // Audio codec validation and container compatibility gates
   if (options.audio?.codec) {
-    const ac = options.audio.codec;
-    if (!AUDIO_CODEC_MAP[ac]) {
-      throw new InvalidMediaOptionError(`Unsupported audio codec '${ac}'.`);
-    }
-    if (tgt === 'webm' && ac !== 'opus' && ac !== 'vorbis') {
-      throw new InvalidMediaOptionError(
-        `WebM container only supports 'opus' or 'vorbis' audio codecs, but '${ac}' was requested.`
-      );
-    }
-    if (tgt === 'ogg' && ac !== 'opus' && ac !== 'vorbis' && ac !== 'flac') {
-      throw new InvalidMediaOptionError(
-        `Ogg container only supports 'opus', 'vorbis', or 'flac' audio codecs, but '${ac}' was requested.`
-      );
-    }
-    if ((tgt === 'mp4' || tgt === 'mov') && ac === 'vorbis') {
-      throw new InvalidMediaOptionError("MP4/MOV container does not support 'vorbis' audio codec.");
-    }
-    if (audioSpec && !audioSpec.userCodecs.includes(ac)) {
-      throw new InvalidMediaOptionError(`The '${tgt}' target does not support the '${ac}' audio codec.`);
-    }
+    assertAudioCodecFitsTarget(tgt, options.audio.codec, audioSpec);
   }
-  // The spec's limits describe its own encoder; a caller-selected different codec has other limits.
-  const specEncoderInUse =
-    audioSpec !== undefined && (!options.audio?.codec || AUDIO_CODEC_MAP[options.audio.codec] === audioSpec.encoder);
-  if (audioSpec && specEncoderInUse) {
-    await assertEncoderLimits(tgt, audioSpec, options, input, ffmpegBin);
-  }
+}
 
-  // Stream mapping
-  // The input is probed so every audio track, every subtitle the container can carry and (for mkv) the
-  // attachments are mapped explicitly, instead of ffmpeg's one-audio, one-subtitle default selection.
-  // A missing input file (argument-only callers) keeps the earlier selection rules.
+function assertAudioCodecFitsTarget(tgt: string, ac: AudioCodec, audioSpec: AudioTargetSpec | undefined): void {
+  if (!AUDIO_CODEC_MAP[ac]) {
+    throw new InvalidMediaOptionError(`Unsupported audio codec '${ac}'.`);
+  }
+  if (tgt === 'webm' && ac !== 'opus' && ac !== 'vorbis') {
+    throw new InvalidMediaOptionError(
+      `WebM container only supports 'opus' or 'vorbis' audio codecs, but '${ac}' was requested.`
+    );
+  }
+  if (tgt === 'ogg' && ac !== 'opus' && ac !== 'vorbis' && ac !== 'flac') {
+    throw new InvalidMediaOptionError(
+      `Ogg container only supports 'opus', 'vorbis', or 'flac' audio codecs, but '${ac}' was requested.`
+    );
+  }
+  if ((tgt === 'mp4' || tgt === 'mov') && ac === 'vorbis') {
+    throw new InvalidMediaOptionError("MP4/MOV container does not support 'vorbis' audio codec.");
+  }
+  if (audioSpec && !audioSpec.userCodecs.includes(ac)) {
+    throw new InvalidMediaOptionError(`The '${tgt}' target does not support the '${ac}' audio codec.`);
+  }
+}
+
+// Stream mapping
+// The input is probed so every audio track, every subtitle the container can carry and (for mkv) the
+// attachments are mapped explicitly, instead of ffmpeg's one-audio, one-subtitle default selection.
+// A missing input file (argument-only callers) keeps the earlier selection rules.
+async function addStreamMapping(ctx: BuildContext, isVideo: boolean, audioSpec: AudioTargetSpec | undefined): Promise<StreamMapping> {
+  const { input, tgt, options, ffmpegBin, outputArgs } = ctx;
   const inputLayout =
     !audioSpec && isVideo && fs.existsSync(input.path)
       ? await probeStreamLayout(input, resolveFfprobeBinary(ffmpegBin), options.signal)
       : undefined;
   const inputStreams = inputLayout?.streams;
   const burnRequested = options.subtitles?.mode === 'burn';
-  const embeddedBurn = burnRequested && !options.subtitles?.input;
-  let burnSubtitleStream: LayoutStream | undefined;
-  if (embeddedBurn && !inputStreams) {
-    throw new InvalidMediaOptionError("Subtitle 'burn' mode needs a video input with a subtitle stream.");
-  }
-  if (embeddedBurn && inputStreams) {
-    const subtitleStreams = inputStreams.filter((stream) => stream.type === 'subtitle');
-    const wanted = options.subtitles?.streamIndex ?? 0;
-    if (!Number.isInteger(wanted) || wanted < 0 || wanted >= subtitleStreams.length) {
-      throw new InvalidMediaOptionError(
-        `Subtitle 'burn' mode needs an input with subtitle stream ${wanted}; the input has ${subtitleStreams.length}.`
-      );
-    }
-    burnSubtitleStream = subtitleStreams[wanted];
-  }
+  const burnSubtitleStream = selectBurnSubtitleStream(options, inputStreams);
   const burnBitmapStream =
     burnSubtitleStream && BITMAP_SUBTITLE_CODECS.has(burnSubtitleStream.codecName) ? burnSubtitleStream : undefined;
   let streamPlan: StreamMapPlan | undefined;
@@ -854,51 +679,10 @@ export async function buildFfmpegArguments(
     audioOnlyMapArgs = await audioOnlyStreamArgs(tgt, input, options, ffmpegBin);
     outputArgs.push(...audioOnlyMapArgs);
   } else if (inputStreams) {
-    const chapters = inputLayout?.chapters;
-    streamPlan = planStreamMapping({
-      streams: inputStreams,
-      container: tgt as VideoContainer,
-      audioTrack: options.audio?.track,
-      burnSubtitles: burnRequested,
-      hasChapters: chapters !== undefined,
-    });
-    // The analysing pass of a two-pass encode reads the picture only.
-    const analysisOnly = passStage?.pass === 1;
-    for (const operand of streamPlan.maps) {
-      // A bitmap subtitle is overlaid by a filter graph, whose output replaces the stored video stream.
-      const isVideoOperand = streamPlan.videoIndex !== undefined && operand === `0:${streamPlan.videoIndex}`;
-      if (analysisOnly && !isVideoOperand) continue;
-      outputArgs.push('-map', burnBitmapStream && isVideoOperand ? BURN_GRAPH_OUTPUT : operand);
-    }
-    if (options.subtitles?.mode === 'soft' && !analysisOnly) {
-      outputArgs.push('-map', '1:0');
-    }
-    if (CHAPTER_CONTAINERS.has(tgt) && !analysisOnly) {
-      let chapterInput = 0;
-      if (chapters !== undefined && chapters.startTimeSec < 0) {
-        // A track that starts before zero (AAC encoder delay) makes ffmpeg move the chapters later by that
-        // amount, while the picture keeps its place. The chapters are read through a second open of the input
-        // that is offset back by the start, which leaves each chapter on the frame it marked.
-        chapterInput = inputArgs.filter((arg) => arg === '-i').length;
-        inputArgs.push('-itsoffset', chapters.startTimeSec.toFixed(CHAPTER_OFFSET_DECIMALS));
-        if (options.trim?.start) inputArgs.push('-ss', options.trim.start);
-        inputArgs.push(...mediaInputArgs(input));
-      }
-      outputArgs.push('-map_metadata', '0', '-map_chapters', String(chapterInput));
-    }
-    for (const { outputIndex, name } of analysisOnly ? [] : streamPlan.handlerNames) {
-      outputArgs.push(`-metadata:s:${outputIndex}`, `handler_name=${name}`);
-    }
+    streamPlan = addPlannedStreamMaps(ctx, { inputLayout, inputStreams, burnRequested, burnBitmapStream });
   } else if (options.subtitles?.mode === 'soft') {
     outputArgs.push('-map', '0:v');
-    if (options.audio?.track === 'all') {
-      outputArgs.push('-map', '0:a');
-    } else if (typeof options.audio?.track === 'number') {
-      if (options.audio.track < 0) {
-        throw new InvalidMediaOptionError('Audio track index must be non-negative.');
-      }
-      outputArgs.push('-map', `0:a:${options.audio.track}`);
-    } else {
+    if (!addAudioTrackMap(outputArgs, options.audio?.track)) {
       outputArgs.push('-map', '0:a?');
     }
     outputArgs.push('-map', '1:0');
@@ -906,16 +690,97 @@ export async function buildFfmpegArguments(
     if (isVideo) {
       outputArgs.push('-map', '0:v:0');
     }
-    if (options.audio.track === 'all') {
-      outputArgs.push('-map', '0:a');
-    } else if (typeof options.audio.track === 'number') {
-      if (options.audio.track < 0) {
-        throw new InvalidMediaOptionError('Audio track index must be non-negative.');
-      }
-      outputArgs.push('-map', `0:a:${options.audio.track}`);
-    }
+    addAudioTrackMap(outputArgs, options.audio.track);
   }
+  return { inputLayout, burnRequested, burnBitmapStream, streamPlan, audioOnlyMapArgs };
+}
 
+/** The subtitle stream a burn request draws from the input itself; undefined when the request names an external file or none. */
+function selectBurnSubtitleStream(options: ConversionOptions, inputStreams: readonly LayoutStream[] | undefined): LayoutStream | undefined {
+  const embeddedBurn = options.subtitles?.mode === 'burn' && !options.subtitles.input;
+  if (embeddedBurn && !inputStreams) {
+    throw new InvalidMediaOptionError("Subtitle 'burn' mode needs a video input with a subtitle stream.");
+  }
+  if (!embeddedBurn || !inputStreams) return undefined;
+  const subtitleStreams = inputStreams.filter((stream) => stream.type === 'subtitle');
+  const wanted = options.subtitles?.streamIndex ?? 0;
+  if (!Number.isInteger(wanted) || wanted < 0 || wanted >= subtitleStreams.length) {
+    throw new InvalidMediaOptionError(
+      `Subtitle 'burn' mode needs an input with subtitle stream ${wanted}; the input has ${subtitleStreams.length}.`
+    );
+  }
+  return subtitleStreams[wanted];
+}
+
+/** Maps the audio tracks a request chose; false when it named none. */
+function addAudioTrackMap(outputArgs: string[], track: number | 'all' | undefined): boolean {
+  if (track === 'all') {
+    outputArgs.push('-map', '0:a');
+    return true;
+  }
+  if (typeof track === 'number') {
+    if (track < 0) {
+      throw new InvalidMediaOptionError('Audio track index must be non-negative.');
+    }
+    outputArgs.push('-map', `0:a:${track}`);
+    return true;
+  }
+  return false;
+}
+
+/** `-map` operands, soft subtitle input, chapters and handler names of a probed input. */
+function addPlannedStreamMaps(
+  ctx: BuildContext,
+  probed: { inputLayout: StreamLayout | undefined; inputStreams: LayoutStream[]; burnRequested: boolean; burnBitmapStream: LayoutStream | undefined }
+): StreamMapPlan {
+  const { tgt, options, passStage, outputArgs } = ctx;
+  const { inputLayout, burnBitmapStream } = probed;
+  const chapters = inputLayout?.chapters;
+  const streamPlan = planStreamMapping({
+    streams: probed.inputStreams,
+    container: tgt as VideoContainer,
+    audioTrack: options.audio?.track,
+    burnSubtitles: probed.burnRequested,
+    hasChapters: chapters !== undefined,
+  });
+  // The analysing pass of a two-pass encode reads the picture only.
+  const analysisOnly = passStage?.pass === 1;
+  for (const operand of streamPlan.maps) {
+    // A bitmap subtitle is overlaid by a filter graph, whose output replaces the stored video stream.
+    const isVideoOperand = streamPlan.videoIndex !== undefined && operand === `0:${streamPlan.videoIndex}`;
+    if (analysisOnly && !isVideoOperand) continue;
+    outputArgs.push('-map', burnBitmapStream && isVideoOperand ? BURN_GRAPH_OUTPUT : operand);
+  }
+  if (options.subtitles?.mode === 'soft' && !analysisOnly) {
+    outputArgs.push('-map', '1:0');
+  }
+  if (CHAPTER_CONTAINERS.has(tgt) && !analysisOnly) {
+    addChapterArgs(ctx, chapters);
+  }
+  for (const { outputIndex, name } of analysisOnly ? [] : streamPlan.handlerNames) {
+    outputArgs.push(`-metadata:s:${outputIndex}`, `handler_name=${name}`);
+  }
+  return streamPlan;
+}
+
+function addChapterArgs(ctx: BuildContext, chapters: StreamLayout['chapters']): void {
+  const { input, options, inputArgs, outputArgs } = ctx;
+  let chapterInput = 0;
+  if (chapters !== undefined && chapters.startTimeSec < 0) {
+    // A track that starts before zero (AAC encoder delay) makes ffmpeg move the chapters later by that
+    // amount, while the picture keeps its place. The chapters are read through a second open of the input
+    // that is offset back by the start, which leaves each chapter on the frame it marked.
+    chapterInput = inputArgs.filter((arg) => arg === '-i').length;
+    inputArgs.push('-itsoffset', chapters.startTimeSec.toFixed(CHAPTER_OFFSET_DECIMALS));
+    if (options.trim?.start) inputArgs.push('-ss', options.trim.start);
+    inputArgs.push(...mediaInputArgs(input));
+  }
+  outputArgs.push('-map_metadata', '0', '-map_chapters', String(chapterInput));
+}
+
+/** The subtitle codecs of the output; the analysing pass of a two-pass encode writes none. */
+function addSoftSubtitleCodecArgs(ctx: BuildContext, streamPlan: StreamMapPlan | undefined): void {
+  const { tgt, options, passStage, outputArgs } = ctx;
   if (streamPlan?.subtitleCodec && passStage?.pass !== 1) {
     outputArgs.push('-c:s', streamPlan.subtitleCodec);
   }
@@ -930,394 +795,450 @@ export async function buildFfmpegArguments(
       outputArgs.push('-c:s', SOFT_SUBTITLE_CODEC_BY_CONTAINER[tgt] ?? 'copy');
     }
   }
+}
 
-  if (isVideo) {
-    const disableHw = Boolean(options.disableHwaccel);
-    const driDev = fs.existsSync('/dev/dri/renderD128')
-      ? '/dev/dri/renderD128'
-      : fs.existsSync('/dev/dri/card0')
-      ? '/dev/dri/card0'
-      : null;
+function addVariableFrameRateTiming(ctx: BuildContext, isVideo: boolean): void {
+  if (isVideo && !hasRequestedFrameRate(ctx.options) && VARIABLE_FRAME_RATE_CONTAINERS.has(ctx.tgt)) {
+    ctx.outputArgs.push('-fps_mode', 'passthrough');
+  }
+}
 
-    const videoOpts = options.video;
-    const codec = resolveVideoCodec(videoOpts?.codec || options.videoCodec || (tgt === 'webm' ? 'vp9' : 'h264'));
+// ---- Video ----
 
-    // 1. Container Compatibility Gate
-    if (tgt === 'webm' && codec !== 'vp9' && codec !== 'av1') {
+async function addVideoArguments(ctx: BuildContext, stage: VideoStageInput): Promise<void> {
+  const plan = await planVideo(ctx, stage);
+  addVideoFilterArgs(ctx, plan, stage);
+  addVideoEncoderArgs(ctx, plan, stage);
+  if (ctx.passStage) {
+    ctx.outputArgs.push(...twoPassEncoderArgs(ctx.passStage, plan.codec));
+  }
+}
+
+/** Runs the video gates in their order and decides the encoder path and the picture facts. */
+async function planVideo(ctx: BuildContext, stage: VideoStageInput): Promise<VideoPlan> {
+  const { tgt, options, ffmpegBin } = ctx;
+  const driDevice = DRI_DEVICES.find((device) => fs.existsSync(device)) ?? null;
+
+  const videoOpts = options.video;
+  const codec = resolveVideoCodec(videoOpts?.codec || options.videoCodec || (tgt === 'webm' ? 'vp9' : 'h264'));
+  assertVideoContainerGate(tgt, codec);
+  assertVideoProfileAndLevel(codec, videoOpts);
+  const rateControl = videoOpts?.rateControl;
+  assertCrfRange(codec, rateControl);
+
+  // Bit Depth and HDR Gate (before encoder selection, independent of available hardware)
+  // Hardware encoders receive no -profile:v and may only accept 8-bit surfaces (VAAPI uploads
+  // nv12, h264_qsv takes nv12), so a 10-bit profile always takes the software encoder path.
+  const tenBit = TEN_BIT_PROFILES.has((videoOpts?.profile || '').toLowerCase());
+  const hdrToSdr = await planHdrToSdr(ctx, codec, tenBit, stage.mapping.inputLayout);
+
+  // Two-pass needs the software encoders' pass logs, so it never selects a hardware encoder.
+  const hardware = !options.disableHwaccel && !tenBit && !stage.twoPass && HARDWARE_ENCODER_TARGETS.has(tgt)
+    ? chooseHardwareEncoder(probeHardwareAcceleration(ffmpegBin), codec, driDevice)
+    : undefined;
+
+  if (stage.twoPass) {
+    assertTwoPassSupported(options, tgt, codec);
+  }
+
+  // The picture the encoder receives when no filter below changes its size; undefined when one may.
+  const { aspect, mapping } = stage;
+  const sizeUntouched = !videoOpts?.crop && !videoOpts?.scale && !aspect && !options.videoResolution && !mapping.burnBitmapStream;
+  const sourcePicture = mapping.inputLayout ? firstVideoStream(mapping.inputLayout.streams) : undefined;
+  const unscaledPicture = sizeUntouched ? pictureOf(sourcePicture) : undefined;
+  const vp9Deadline = vp9DeadlineOfInput({ codec, picture: unscaledPicture, layout: mapping.inputLayout, twoPass: stage.twoPass, rateRequested: hasRequestedFrameRate(options), options });
+  return { codec, rateControl, tenBit, hdrToSdr, hardware, driDevice, sourcePicture, unscaledPicture, vp9Deadline };
+}
+
+function assertVideoContainerGate(tgt: string, codec: VideoCodecName): void {
+  if (tgt === 'webm' && codec !== 'vp9' && codec !== 'av1') {
+    throw new InvalidMediaOptionError(
+      `WebM container only supports 'vp9' or 'av1' video codecs, but '${codec}' was requested.`
+    );
+  }
+  if (codec === 'prores' && tgt !== 'mov') {
+    throw new InvalidMediaOptionError(
+      `ProRes video codec is only supported in 'mov' container, but '${tgt}' was requested.`
+    );
+  }
+}
+
+/** Profile and Level Validation Gate */
+function assertVideoProfileAndLevel(codec: VideoCodecName, videoOpts: ConversionOptions['video']): void {
+  if (codec === 'h264') {
+    if (videoOpts?.profile && !H264_ALLOWED_PROFILES.has(videoOpts.profile.toLowerCase())) {
       throw new InvalidMediaOptionError(
-        `WebM container only supports 'vp9' or 'av1' video codecs, but '${codec}' was requested.`
+        `Invalid H.264 profile '${videoOpts.profile}'. Allowed profiles: ${Array.from(H264_ALLOWED_PROFILES).join(', ')}.`
       );
     }
-    if (codec === 'prores' && tgt !== 'mov') {
+    if (videoOpts?.level && !H264_ALLOWED_LEVELS.has(videoOpts.level.toLowerCase())) {
       throw new InvalidMediaOptionError(
-        `ProRes video codec is only supported in 'mov' container, but '${tgt}' was requested.`
+        `Invalid H.264 level '${videoOpts.level}'. Allowed levels: 3.0 to 5.2.`
       );
     }
-
-    // 2. Profile and Level Validation Gate
-    if (codec === 'h264') {
-      if (videoOpts?.profile && !H264_ALLOWED_PROFILES.has(videoOpts.profile.toLowerCase())) {
-        throw new InvalidMediaOptionError(
-          `Invalid H.264 profile '${videoOpts.profile}'. Allowed profiles: ${Array.from(H264_ALLOWED_PROFILES).join(', ')}.`
-        );
-      }
-      if (videoOpts?.level && !H264_ALLOWED_LEVELS.has(videoOpts.level.toLowerCase())) {
-        throw new InvalidMediaOptionError(
-          `Invalid H.264 level '${videoOpts.level}'. Allowed levels: 3.0 to 5.2.`
-        );
-      }
-    } else if (codec === 'hevc') {
-      if (videoOpts?.profile && !HEVC_ALLOWED_PROFILES.has(videoOpts.profile.toLowerCase())) {
-        throw new InvalidMediaOptionError(
-          `Invalid HEVC profile '${videoOpts.profile}'. Allowed profiles: ${Array.from(HEVC_ALLOWED_PROFILES).join(', ')}.`
-        );
-      }
-    } else if (codec === 'av1') {
-      if (videoOpts?.profile && !AV1_ALLOWED_PROFILES.has(videoOpts.profile.toLowerCase())) {
-        throw new InvalidMediaOptionError(
-          `Invalid AV1 profile '${videoOpts.profile}'. Allowed profiles: main.`
-        );
-      }
-    }
-
-    // 3. Rate Control Validation Gate
-    const rateControl = videoOpts?.rateControl;
-    if (rateControl?.mode === 'crf') {
-      const crf = rateControl.crf;
-      if (codec === 'h264' || codec === 'hevc') {
-        if (typeof crf !== 'number' || !Number.isFinite(crf) || crf < 0 || crf > 51) {
-          throw new InvalidMediaOptionError(
-            `CRF for ${codec.toUpperCase()} must be between 0 and 51, received ${crf}.`
-          );
-        }
-      } else if (codec === 'vp9' || codec === 'av1') {
-        if (typeof crf !== 'number' || !Number.isFinite(crf) || crf < 0 || crf > 63) {
-          throw new InvalidMediaOptionError(
-            `CRF for ${codec.toUpperCase()} must be between 0 and 63, received ${crf}.`
-          );
-        }
-      } else if (codec === 'prores') {
-        throw new InvalidMediaOptionError('CRF rate control is not supported for ProRes codec.');
-      }
-    }
-
-    // 4. Bit Depth and HDR Gate (before encoder selection, independent of available hardware)
-    // Hardware encoders receive no -profile:v and may only accept 8-bit surfaces (VAAPI uploads
-    // nv12, h264_qsv takes nv12), so a 10-bit profile always takes the software encoder path.
-    const tenBit = TEN_BIT_PROFILES.has((videoOpts?.profile || '').toLowerCase());
-    const toneMapMode = options.toneMap ?? DEFAULT_TONE_MAP;
-    if (!(TONE_MAP_MODES as readonly string[]).includes(toneMapMode)) {
-      throw new InvalidMediaOptionError(`toneMap "${String(toneMapMode)}" is not supported; use one of ${TONE_MAP_MODES.join(', ')}.`);
-    }
-    let hdrToSdr: VideoToneMapPlan | undefined;
-    if (!tenBit && codec !== 'prores' && inputLayout !== undefined) {
-      // PQ/HLG samples squeezed into 8 bits unchanged would corrupt the picture: they are tone mapped to SDR, or
-      // refused when the request asks to keep HDR.
-      const transfer = layoutColorTransfer(inputLayout);
-      if (HDR_TRANSFERS.has(transfer)) {
-        if (toneMapMode === 'none') {
-          throw new InvalidMediaOptionError(
-            `HDR input (transfer "${transfer}") needs a 10-bit profile such as hevc main10 when toneMap is "none"; 8-bit output without tone mapping is not supported.`
-          );
-        }
-        assertZscaleAvailable(ffmpegBin);
-        hdrToSdr = planVideoToneMap(transfer, toneMapMode, await probeVideoMaxLightLevel(input, resolveFfprobeBinary(ffmpegBin), options.signal));
-      }
-    }
-
-    // 5. Determine Hardware Acceleration Usage
-    let isVaapi = false;
-    let isNvenc = false;
-    let isVideotoolbox = false;
-    let isQsv = false;
-
-    // Two-pass needs the software encoders' pass logs, so it never selects a hardware encoder.
-    if (!disableHw && !tenBit && !twoPass && (tgt === 'mp4' || tgt === 'mov' || tgt === 'mkv')) {
-      // Only a request that may pick a hardware encoder asks which sessions open; each answer costs a process.
-      const hw = probeHardwareAcceleration(ffmpegBin);
-      if (codec === 'h264') {
-        if (hw.nvenc && hw.supportedEncoders.has('h264_nvenc')) isNvenc = true;
-        else if (hw.vaapi && driDev && hw.supportedEncoders.has('h264_vaapi')) isVaapi = true;
-        else if (hw.videotoolbox && hw.supportedEncoders.has('h264_videotoolbox')) isVideotoolbox = true;
-        else if (hw.qsv && hw.supportedEncoders.has('h264_qsv')) isQsv = true;
-      } else if (codec === 'hevc') {
-        if (hw.nvenc && hw.supportedEncoders.has('hevc_nvenc')) isNvenc = true;
-        else if (hw.vaapi && driDev && hw.supportedEncoders.has('hevc_vaapi')) isVaapi = true;
-        else if (hw.videotoolbox && hw.supportedEncoders.has('hevc_videotoolbox')) isVideotoolbox = true;
-      }
-    }
-
-    if (twoPass) {
-      assertTwoPassSupported(options, tgt, codec);
-    }
-
-    // The picture the encoder receives when no filter below changes its size; undefined when one may.
-    const sizeUntouched = !videoOpts?.crop && !videoOpts?.scale && !aspect && !options.videoResolution && !burnBitmapStream;
-    const sourcePicture = inputLayout ? firstVideoStream(inputLayout.streams) : undefined;
-    const unscaledPicture = sizeUntouched ? pictureOf(sourcePicture) : undefined;
-    const vp9Deadline = vp9DeadlineOfInput({ codec, picture: unscaledPicture, layout: inputLayout, twoPass, rateRequested: hasRequestedFrameRate(options), options });
-
-    // 6. Strict Filter Graph Construction
-    // Sequence: bwdif -> crop -> transpose -> scale -> fps -> subtitles (burn) -> even parity correction -> format
-    const videoFilters: string[] = [];
-
-    // Stage 1: bwdif (deinterlace)
-    if (videoOpts?.deinterlace) {
-      videoFilters.push(DEINTERLACE_FILTER);
-    }
-
-    // Stage 2: crop
-    if (videoOpts?.crop) {
-      const { w, h, x, y } = videoOpts.crop;
-      videoFilters.push(`crop=${w}:${h}:${x}:${y}`);
-    }
-
-    // Stage 3: transpose (rotation)
-    if (typeof videoOpts?.rotate === 'number') {
-      const rot = videoOpts.rotate;
-      if (rot === 90) {
-        videoFilters.push('transpose=1');
-      } else if (rot === 180) {
-        videoFilters.push('transpose=2,transpose=2');
-      } else if (rot === 270) {
-        videoFilters.push('transpose=2');
-      } else if (rot !== 0) {
-        throw new InvalidMediaOptionError(`Invalid rotate angle ${rot}. Allowed values: 0, 90, 180, 270.`);
-      }
-    }
-
-    // Stage 4: scale
-    if (videoOpts?.scale) {
-      const { width, height, fit } = videoOpts.scale;
-      const w = width && width > 0 ? width : -1;
-      const h = height && height > 0 ? height : -1;
-      if (fit === 'cover' && width && height) {
-        videoFilters.push(`scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${width}:${height}`);
-      } else if (fit === 'stretch') {
-        videoFilters.push(`scale=${w}:${h}`);
-      } else {
-        videoFilters.push(`scale=${w}:${h}:force_original_aspect_ratio=decrease`);
-      }
-    } else if (options.videoResolution && options.videoResolution !== 'original') {
-      const resMap: Record<string, string> = {
-        '4k': '3840:2160',
-        '1080p': '1920:1080',
-        '720p': '1280:720',
-        '480p': '854:480',
-        '360p': '640:360',
-      };
-      if (resMap[options.videoResolution]) {
-        videoFilters.push(`scale=${resMap[options.videoResolution]}:force_original_aspect_ratio=decrease`);
-      }
-    }
-
-    // Stage 4b: aspect ratio by padding or cropping (the default mode only sets the display ratio, below)
-    const reshape = aspect ? aspectReshapeFilter(aspect) : undefined;
-    if (reshape) {
-      videoFilters.push(reshape);
-    }
-
-    // Stage 5: fps. One control only: the fps filter. The output option -r is never emitted next to it.
-    const requestedFps = videoOpts?.fps ?? options.videoFps;
-    if (requestedFps !== undefined) {
-      if (typeof requestedFps !== 'number' || !Number.isFinite(requestedFps) || requestedFps <= 0 || requestedFps > MAX_OUTPUT_FPS) {
-        throw new InvalidMediaOptionError(`Invalid frame rate ${requestedFps}. Allowed: more than 0 and at most ${MAX_OUTPUT_FPS}.`);
-      }
-      videoFilters.push(`fps=${requestedFps}`);
-    }
-
-    // Stage 5b: HDR to SDR (after the geometry filters so fewer pixels go through the 16-bit chain, before any burn-in)
-    if (hdrToSdr) {
-      videoFilters.push(hdrToSdr.filter);
-    }
-
-    // Stage 6: subtitles burn (prior to even dimension normalization)
-    if (burnRequested && !burnBitmapStream) {
-      // An external file, or a text subtitle stream of the input itself (`si` counts subtitle streams).
-      const source = options.subtitles?.input ?? input.path;
-      const stream = options.subtitles?.input ? '' : `:si=${options.subtitles?.streamIndex ?? 0}`;
-      videoFilters.push(`subtitles=filename=${escapeFfmpegFilterPath(source)}${stream}`);
-    }
-
-    // Stage 7: Even dimension normalization (ALWAYS LAST filter before format). A picture the header gives an even
-    // size, and nothing above resizes, is already even: the filter would only add a stage to the graph.
-    // A stream with a crop (container clean aperture or frame cropping) decodes to a smaller picture than it is stored at.
-    const alreadyEven =
-      unscaledPicture !== undefined &&
-      sourcePicture?.cropped !== true &&
-      unscaledPicture.width % 2 === 0 &&
-      unscaledPicture.height % 2 === 0;
-    if (!alreadyEven) {
-      videoFilters.push('scale=trunc(iw/2)*2:trunc(ih/2)*2');
-    }
-
-    // Stage 7b: display aspect ratio without touching the pixels
-    if (aspect?.mode === 'dar') {
-      videoFilters.push(`setdar=${aspect.num}/${aspect.den}`);
-    }
-
-    // Stage 8: Format upload (for VAAPI)
-    if (isVaapi) {
-      videoFilters.push('format=nv12,hwupload');
-    }
-
-    if (burnBitmapStream && streamPlan?.videoIndex !== undefined) {
-      // Picture subtitles are overlaid at the source size, before any crop or scale moves the picture.
-      outputArgs.push(
-        '-filter_complex',
-        `[0:${streamPlan.videoIndex}][0:${burnBitmapStream.index}]overlay=format=auto:eof_action=pass,${videoFilters.join(',')}${BURN_GRAPH_OUTPUT}`
+  } else if (codec === 'hevc') {
+    if (videoOpts?.profile && !HEVC_ALLOWED_PROFILES.has(videoOpts.profile.toLowerCase())) {
+      throw new InvalidMediaOptionError(
+        `Invalid HEVC profile '${videoOpts.profile}'. Allowed profiles: ${Array.from(HEVC_ALLOWED_PROFILES).join(', ')}.`
       );
-    } else if (videoFilters.length > 0) {
-      outputArgs.push('-vf', videoFilters.join(','));
     }
-
-    // Software pixel format (exclude VAAPI which uses hwupload, and ProRes which has custom 10-bit format)
-    if (!isVaapi && codec !== 'prores') {
-      outputArgs.push('-pix_fmt', tenBit ? TEN_BIT_PIX_FMT : EIGHT_BIT_PIX_FMT);
-    }
-    // The SDR rendition says so in its stream tags and the encoders' VUI, on every encoder path.
-    if (hdrToSdr) {
-      outputArgs.push(...SDR_COLOUR_ARGS);
-    }
-
-    // 7. Video Encoder Selection and Arguments
-    if (tgt === 'mp4' || tgt === 'mov' || tgt === 'mkv') {
-      if (codec === 'h264' || codec === 'hevc') {
-        const isH264 = codec === 'h264';
-        const defaultCrf = isH264 ? '23' : '26';
-        const defaultVaapiQp = isH264 ? '24' : '26';
-        const swLib = isH264 ? 'libx264' : 'libx265';
-        const crfVal = rateControl?.mode === 'crf' ? String(rateControl.crf) : defaultCrf;
-
-        if (isNvenc) {
-          outputArgs.push('-c:v', `${codec}_nvenc`, '-preset', videoOpts?.preset || 'p4');
-          if (rateControl?.mode === 'crf' || !rateControl) {
-            outputArgs.push('-cq', crfVal);
-          }
-        } else if (isVaapi && driDev) {
-          globalArgs.push('-vaapi_device', driDev);
-          outputArgs.push('-filter_hw_device', driDev, '-c:v', `${codec}_vaapi`);
-          if (rateControl?.mode === 'crf') {
-            outputArgs.push('-qp', String(rateControl.crf));
-          } else if (!rateControl) {
-            outputArgs.push('-qp', defaultVaapiQp);
-          }
-        } else if (isVideotoolbox) {
-          outputArgs.push('-c:v', `${codec}_videotoolbox`);
-          if (rateControl?.mode === 'crf') {
-            outputArgs.push('-q:v', String(Math.max(1, Math.min(100, Math.round(100 - rateControl.crf * 1.5)))));
-          } else if (!rateControl) {
-            outputArgs.push('-q:v', '65');
-          }
-        } else if (isH264 && isQsv) {
-          outputArgs.push('-c:v', 'h264_qsv');
-          if (rateControl?.mode === 'crf' || !rateControl) {
-            outputArgs.push('-global_quality', crfVal);
-          }
-        } else {
-          outputArgs.push('-c:v', swLib, '-preset', resolveX26xPreset(videoOpts?.preset));
-          if (rateControl?.mode === 'crf' || !rateControl) {
-            outputArgs.push('-crf', crfVal);
-          }
-          if (videoOpts?.profile) {
-            outputArgs.push('-profile:v', videoOpts.profile.toLowerCase());
-          }
-          if (isH264 && videoOpts?.level) {
-            outputArgs.push('-level', videoOpts.level);
-          }
-          // Both passes of a two-pass encode must agree, and an encode held to a bitrate estimates its rate worse
-          // with more threads; neither is given a count.
-          const unconstrained = bitrateControlArgs(rateControl, options, codec).length === 0;
-          const threads = passStage || !unconstrained ? undefined : softwareEncoderThreads(codec, unscaledPicture);
-          if (threads !== undefined) {
-            outputArgs.push('-threads', String(threads));
-          }
-        }
-      } else if (codec === 'vp9') {
-        outputArgs.push(...vp9Args(rateControl, vp9Deadline));
-      } else if (codec === 'av1') {
-        assertSvtAv1Available(ffmpegBin);
-        outputArgs.push(...svtAv1Args(rateControl, videoOpts?.preset, videoOpts?.profile));
-      } else if (codec === 'prores') {
-        outputArgs.push('-c:v', 'prores_ks');
-        const proresProfileMap: Record<string, string> = {
-          proxy: '0',
-          '0': '0',
-          lt: '1',
-          '1': '1',
-          standard: '2',
-          '2': '2',
-          hq: '3',
-          '3': '3',
-          '4444': '4',
-          '4': '4',
-        };
-        const p = videoOpts?.profile?.toLowerCase();
-        const prof = p && proresProfileMap[p] ? proresProfileMap[p] : '3';
-        outputArgs.push(
-          '-profile:v', prof,
-          '-pix_fmt', prof === '4' ? 'yuva444p10le' : 'yuv422p10le'
-        );
-      }
-
-      outputArgs.push(...bitrateControlArgs(rateControl, options, codec));
-
-      if ((tgt === 'mp4' || tgt === 'mov') && fastStart && passStage?.pass !== 1) {
-        outputArgs.push('-movflags', '+faststart');
-      }
-    } else if (tgt === 'webm') {
-      if (codec === 'av1') {
-        assertSvtAv1Available(ffmpegBin);
-        outputArgs.push(...svtAv1Args(rateControl, videoOpts?.preset, videoOpts?.profile));
-      } else {
-        outputArgs.push(...vp9Args(rateControl, vp9Deadline));
-      }
-      outputArgs.push(...bitrateControlArgs(rateControl, options, codec));
-    } else if (tgt === 'avi') {
-      // The MP3 encoder's priming gives the audio a negative start; shifting every stream to make it
-      // non-negative moves the video by one frame in AVI (a frame lost at 0.04 s). Keep the timestamps.
-      outputArgs.push('-c:v', 'mpeg4', '-vtag', 'XVID', ...MPEG4_QUALITY_ARGS, '-avoid_negative_ts', 'disabled');
-      const rateArgs = bitrateControlArgs(rateControl, options, 'mpeg4');
-      // Without a requested rate, constant quality instead of the encoder's 200 kbit/s default.
-      outputArgs.push(...(rateArgs.length > 0 ? rateArgs : ['-q:v', String(MPEG4_DEFAULT_QSCALE)]));
-    }
-
-    if (passStage) {
-      outputArgs.push(...twoPassEncoderArgs(passStage, codec));
+  } else if (codec === 'av1') {
+    if (videoOpts?.profile && !AV1_ALLOWED_PROFILES.has(videoOpts.profile.toLowerCase())) {
+      throw new InvalidMediaOptionError(
+        `Invalid AV1 profile '${videoOpts.profile}'. Allowed profiles: main.`
+      );
     }
   }
+}
 
-  // The analysing pass writes its statistics and no media: no audio, no subtitles, a null sink.
-  if (passStage?.pass === 1) {
-    if (isVideo && !hasRequestedFrameRate(options) && VARIABLE_FRAME_RATE_CONTAINERS.has(tgt)) {
-      outputArgs.push('-fps_mode', 'passthrough');
+/** Rate Control Validation Gate */
+function assertCrfRange(codec: VideoCodecName, rateControl: VideoRateControl | undefined): void {
+  if (rateControl?.mode !== 'crf') return;
+  const crf = rateControl.crf;
+  if (codec === 'h264' || codec === 'hevc') {
+    if (typeof crf !== 'number' || !Number.isFinite(crf) || crf < 0 || crf > 51) {
+      throw new InvalidMediaOptionError(
+        `CRF for ${codec.toUpperCase()} must be between 0 and 51, received ${crf}.`
+      );
     }
-    return [...globalArgs, ...inputArgs, ...outputArgs, '-an', '-sn', '-dn', '-f', 'null', os.devNull];
+  } else if (codec === 'vp9' || codec === 'av1') {
+    if (typeof crf !== 'number' || !Number.isFinite(crf) || crf < 0 || crf > 63) {
+      throw new InvalidMediaOptionError(
+        `CRF for ${codec.toUpperCase()} must be between 0 and 63, received ${crf}.`
+      );
+    }
+  } else if (codec === 'prores') {
+    throw new InvalidMediaOptionError('CRF rate control is not supported for ProRes codec.');
+  }
+}
+
+/**
+ * PQ/HLG samples squeezed into 8 bits unchanged would corrupt the picture: they are tone mapped to SDR, or
+ * refused when the request asks to keep HDR.
+ */
+async function planHdrToSdr(
+  ctx: BuildContext,
+  codec: VideoCodecName,
+  tenBit: boolean,
+  inputLayout: StreamLayout | undefined
+): Promise<VideoToneMapPlan | undefined> {
+  const { input, options, ffmpegBin } = ctx;
+  const toneMapMode = options.toneMap ?? DEFAULT_TONE_MAP;
+  if (!(TONE_MAP_MODES as readonly string[]).includes(toneMapMode)) {
+    throw new InvalidMediaOptionError(`toneMap "${String(toneMapMode)}" is not supported; use one of ${TONE_MAP_MODES.join(', ')}.`);
+  }
+  if (tenBit || codec === 'prores' || inputLayout === undefined) return undefined;
+  const transfer = layoutColorTransfer(inputLayout);
+  if (!HDR_TRANSFERS.has(transfer)) return undefined;
+  if (toneMapMode === 'none') {
+    throw new InvalidMediaOptionError(
+      `HDR input (transfer "${transfer}") needs a 10-bit profile such as hevc main10 when toneMap is "none"; 8-bit output without tone mapping is not supported.`
+    );
+  }
+  assertZscaleAvailable(ffmpegBin);
+  return planVideoToneMap(transfer, toneMapMode, await probeVideoMaxLightLevel(input, resolveFfprobeBinary(ffmpegBin), options.signal));
+}
+
+/** The first hardware encoder of the codec the host can open a session on, in the order NVENC, VAAPI, VideoToolbox, QSV. */
+function chooseHardwareEncoder(
+  hw: HardwareAccelerationCapabilities,
+  codec: VideoCodecName,
+  driDevice: string | null
+): HardwareEncoderKind | undefined {
+  if (codec !== 'h264' && codec !== 'hevc') return undefined;
+  const hasEncoder = (kind: HardwareEncoderKind) => hw.supportedEncoders.has(`${codec}_${kind}`);
+  if (hw.nvenc && hasEncoder('nvenc')) return 'nvenc';
+  if (hw.vaapi && driDevice && hasEncoder('vaapi')) return 'vaapi';
+  if (hw.videotoolbox && hasEncoder('videotoolbox')) return 'videotoolbox';
+  if (codec === 'h264' && hw.qsv && hasEncoder('qsv')) return 'qsv';
+  return undefined;
+}
+
+function rotateFilter(rot: number): string | undefined {
+  if (rot === 90) return 'transpose=1';
+  if (rot === 180) return 'transpose=2,transpose=2';
+  if (rot === 270) return 'transpose=2';
+  if (rot !== 0) {
+    throw new InvalidMediaOptionError(`Invalid rotate angle ${rot}. Allowed values: 0, 90, 180, 270.`);
+  }
+  return undefined;
+}
+
+function scaleFilter(options: ConversionOptions): string | undefined {
+  const scale = options.video?.scale;
+  if (scale) {
+    const { width, height, fit } = scale;
+    const w = width && width > 0 ? width : -1;
+    const h = height && height > 0 ? height : -1;
+    if (fit === 'cover' && width && height) {
+      return `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${width}:${height}`;
+    }
+    if (fit === 'stretch') {
+      return `scale=${w}:${h}`;
+    }
+    return `scale=${w}:${h}:force_original_aspect_ratio=decrease`;
+  }
+  if (options.videoResolution && options.videoResolution !== 'original' && VIDEO_RESOLUTION_SIZES[options.videoResolution]) {
+    return `scale=${VIDEO_RESOLUTION_SIZES[options.videoResolution]}:force_original_aspect_ratio=decrease`;
+  }
+  return undefined;
+}
+
+/** One control only: the fps filter. The output option -r is never emitted next to it. */
+function fpsFilter(options: ConversionOptions): string | undefined {
+  const requestedFps = options.video?.fps ?? options.videoFps;
+  if (requestedFps === undefined) return undefined;
+  if (typeof requestedFps !== 'number' || !Number.isFinite(requestedFps) || requestedFps <= 0 || requestedFps > MAX_OUTPUT_FPS) {
+    throw new InvalidMediaOptionError(`Invalid frame rate ${requestedFps}. Allowed: more than 0 and at most ${MAX_OUTPUT_FPS}.`);
+  }
+  return `fps=${requestedFps}`;
+}
+
+/** An external subtitle file, or a text subtitle stream of the input itself (`si` counts subtitle streams). */
+function burnSubtitlesFilter(ctx: BuildContext): string {
+  const { input, options } = ctx;
+  const source = options.subtitles?.input ?? input.path;
+  const stream = options.subtitles?.input ? '' : `:si=${options.subtitles?.streamIndex ?? 0}`;
+  return `subtitles=filename=${escapeFfmpegFilterPath(source)}${stream}`;
+}
+
+/**
+ * Even dimension normalization (ALWAYS LAST filter before format). A picture the header gives an even
+ * size, and nothing above resizes, is already even: the filter would only add a stage to the graph.
+ * A stream with a crop (container clean aperture or frame cropping) decodes to a smaller picture than it is stored at.
+ */
+function needsEvenDimensionFilter(plan: VideoPlan): boolean {
+  const { unscaledPicture, sourcePicture } = plan;
+  const alreadyEven =
+    unscaledPicture !== undefined &&
+    sourcePicture?.cropped !== true &&
+    unscaledPicture.width % 2 === 0 &&
+    unscaledPicture.height % 2 === 0;
+  return !alreadyEven;
+}
+
+/**
+ * Strict filter graph: bwdif -> crop -> transpose -> scale -> aspect -> fps -> HDR to SDR -> subtitles (burn)
+ * -> even parity correction -> display aspect ratio -> VAAPI upload.
+ */
+function videoFilterChain(ctx: BuildContext, plan: VideoPlan, stage: VideoStageInput): string[] {
+  const { options } = ctx;
+  const videoOpts = options.video;
+  const videoFilters: string[] = [];
+  const add = (filter: string | undefined) => {
+    if (filter !== undefined) videoFilters.push(filter);
+  };
+
+  if (videoOpts?.deinterlace) {
+    videoFilters.push(DEINTERLACE_FILTER);
+  }
+  if (videoOpts?.crop) {
+    const { w, h, x, y } = videoOpts.crop;
+    videoFilters.push(`crop=${w}:${h}:${x}:${y}`);
+  }
+  if (typeof videoOpts?.rotate === 'number') {
+    add(rotateFilter(videoOpts.rotate));
+  }
+  add(scaleFilter(options));
+  // Aspect ratio by padding or cropping (the default mode only sets the display ratio, below)
+  const reshape = stage.aspect ? aspectReshapeFilter(stage.aspect) : undefined;
+  if (reshape) {
+    videoFilters.push(reshape);
+  }
+  add(fpsFilter(options));
+  // HDR to SDR after the geometry filters so fewer pixels go through the 16-bit chain, before any burn-in
+  add(plan.hdrToSdr?.filter);
+  if (stage.mapping.burnRequested && !stage.mapping.burnBitmapStream) {
+    videoFilters.push(burnSubtitlesFilter(ctx));
+  }
+  if (needsEvenDimensionFilter(plan)) {
+    videoFilters.push('scale=trunc(iw/2)*2:trunc(ih/2)*2');
+  }
+  // Display aspect ratio without touching the pixels
+  if (stage.aspect?.mode === 'dar') {
+    videoFilters.push(`setdar=${stage.aspect.num}/${stage.aspect.den}`);
+  }
+  // Format upload (for VAAPI)
+  if (plan.hardware === 'vaapi') {
+    videoFilters.push('format=nv12,hwupload');
+  }
+  return videoFilters;
+}
+
+function addVideoFilterArgs(ctx: BuildContext, plan: VideoPlan, stage: VideoStageInput): void {
+  const { outputArgs } = ctx;
+  const videoFilters = videoFilterChain(ctx, plan, stage);
+  const { streamPlan, burnBitmapStream } = stage.mapping;
+  if (burnBitmapStream && streamPlan?.videoIndex !== undefined) {
+    // Picture subtitles are overlaid at the source size, before any crop or scale moves the picture.
+    outputArgs.push(
+      '-filter_complex',
+      `[0:${streamPlan.videoIndex}][0:${burnBitmapStream.index}]overlay=format=auto:eof_action=pass,${videoFilters.join(',')}${BURN_GRAPH_OUTPUT}`
+    );
+  } else if (videoFilters.length > 0) {
+    outputArgs.push('-vf', videoFilters.join(','));
   }
 
-  // Timing: keep the source's own frame timestamps (variable frame rate) unless a rate was requested,
-  // in which case the fps filter has already produced a constant rate.
-  if (isVideo && !hasRequestedFrameRate(options) && VARIABLE_FRAME_RATE_CONTAINERS.has(tgt)) {
-    outputArgs.push('-fps_mode', 'passthrough');
+  // Software pixel format (exclude VAAPI which uses hwupload, and ProRes which has custom 10-bit format)
+  if (plan.hardware !== 'vaapi' && plan.codec !== 'prores') {
+    outputArgs.push('-pix_fmt', plan.tenBit ? TEN_BIT_PIX_FMT : EIGHT_BIT_PIX_FMT);
   }
+  // The SDR rendition says so in its stream tags and the encoders' VUI, on every encoder path.
+  if (plan.hdrToSdr) {
+    outputArgs.push(...SDR_COLOUR_ARGS);
+  }
+}
 
-  // Unified Audio Encoding & Filter Configuration
-  let resolvedAudioCodec: string;
-  if (options.audio?.codec) {
-    resolvedAudioCodec = AUDIO_CODEC_MAP[options.audio.codec];
-  } else if (isVideo) {
-    if (tgt === 'webm') {
-      resolvedAudioCodec = 'libopus';
-    } else if (tgt === 'avi') {
-      resolvedAudioCodec = 'libmp3lame';
-    } else {
-      resolvedAudioCodec = 'aac';
+/** Video Encoder Selection and Arguments */
+function addVideoEncoderArgs(ctx: BuildContext, plan: VideoPlan, stage: VideoStageInput): void {
+  const { tgt, options, passStage, outputArgs } = ctx;
+  const { codec, rateControl } = plan;
+  if (tgt === 'mp4' || tgt === 'mov' || tgt === 'mkv') {
+    addMp4FamilyEncoderArgs(ctx, plan);
+    outputArgs.push(...bitrateControlArgs(rateControl, options, codec));
+
+    if ((tgt === 'mp4' || tgt === 'mov') && stage.fastStart && passStage?.pass !== 1) {
+      outputArgs.push('-movflags', '+faststart');
     }
-  } else if (audioSpec) {
-    resolvedAudioCodec = audioSpec.encoder;
+  } else if (tgt === 'webm') {
+    addWebmEncoderArgs(ctx, plan);
+    outputArgs.push(...bitrateControlArgs(rateControl, options, codec));
+  } else if (tgt === 'avi') {
+    // The MP3 encoder's priming gives the audio a negative start; shifting every stream to make it
+    // non-negative moves the video by one frame in AVI (a frame lost at 0.04 s). Keep the timestamps.
+    outputArgs.push('-c:v', 'mpeg4', '-vtag', 'XVID', ...MPEG4_QUALITY_ARGS, '-avoid_negative_ts', 'disabled');
+    const rateArgs = bitrateControlArgs(rateControl, options, 'mpeg4');
+    // Without a requested rate, constant quality instead of the encoder's 200 kbit/s default.
+    outputArgs.push(...(rateArgs.length > 0 ? rateArgs : ['-q:v', String(MPEG4_DEFAULT_QSCALE)]));
+  }
+}
+
+function addMp4FamilyEncoderArgs(ctx: BuildContext, plan: VideoPlan): void {
+  const { options, ffmpegBin, outputArgs } = ctx;
+  const { codec, rateControl } = plan;
+  const videoOpts = options.video;
+  if (codec === 'h264' || codec === 'hevc') {
+    addH26xEncoderArgs(ctx, plan);
+  } else if (codec === 'vp9') {
+    outputArgs.push(...vp9Args(rateControl, plan.vp9Deadline));
+  } else if (codec === 'av1') {
+    assertSvtAv1Available(ffmpegBin);
+    outputArgs.push(...svtAv1Args(rateControl, videoOpts?.preset, videoOpts?.profile));
+  } else if (codec === 'prores') {
+    outputArgs.push('-c:v', 'prores_ks');
+    const p = videoOpts?.profile?.toLowerCase();
+    const prof = p && PRORES_PROFILE_NUMBERS[p] ? PRORES_PROFILE_NUMBERS[p] : DEFAULT_PRORES_PROFILE;
+    outputArgs.push(
+      '-profile:v', prof,
+      '-pix_fmt', prof === '4' ? 'yuva444p10le' : 'yuv422p10le'
+    );
+  }
+}
+
+function addWebmEncoderArgs(ctx: BuildContext, plan: VideoPlan): void {
+  const { options, ffmpegBin, outputArgs } = ctx;
+  const videoOpts = options.video;
+  if (plan.codec === 'av1') {
+    assertSvtAv1Available(ffmpegBin);
+    outputArgs.push(...svtAv1Args(plan.rateControl, videoOpts?.preset, videoOpts?.profile));
   } else {
-    resolvedAudioCodec = 'aac';
+    outputArgs.push(...vp9Args(plan.rateControl, plan.vp9Deadline));
   }
+}
+
+/** H.264 and HEVC: the hardware encoder the plan chose, else the software one. */
+function addH26xEncoderArgs(ctx: BuildContext, plan: VideoPlan): void {
+  const { options, globalArgs, outputArgs } = ctx;
+  const { codec, rateControl, hardware, driDevice } = plan;
+  const videoOpts = options.video;
+  const isH264 = codec === 'h264';
+  const defaultCrf = isH264 ? '23' : '26';
+  const defaultVaapiQp = isH264 ? '24' : '26';
+  const crfVal = rateControl?.mode === 'crf' ? String(rateControl.crf) : defaultCrf;
+
+  if (hardware === 'nvenc') {
+    outputArgs.push('-c:v', `${codec}_nvenc`, '-preset', videoOpts?.preset || 'p4');
+    if (rateControl?.mode === 'crf' || !rateControl) {
+      outputArgs.push('-cq', crfVal);
+    }
+  } else if (hardware === 'vaapi' && driDevice) {
+    globalArgs.push('-vaapi_device', driDevice);
+    outputArgs.push('-filter_hw_device', driDevice, '-c:v', `${codec}_vaapi`);
+    if (rateControl?.mode === 'crf') {
+      outputArgs.push('-qp', String(rateControl.crf));
+    } else if (!rateControl) {
+      outputArgs.push('-qp', defaultVaapiQp);
+    }
+  } else if (hardware === 'videotoolbox') {
+    outputArgs.push('-c:v', `${codec}_videotoolbox`);
+    if (rateControl?.mode === 'crf') {
+      outputArgs.push('-q:v', String(Math.max(1, Math.min(100, Math.round(100 - rateControl.crf * 1.5)))));
+    } else if (!rateControl) {
+      outputArgs.push('-q:v', '65');
+    }
+  } else if (isH264 && hardware === 'qsv') {
+    outputArgs.push('-c:v', 'h264_qsv');
+    if (rateControl?.mode === 'crf' || !rateControl) {
+      outputArgs.push('-global_quality', crfVal);
+    }
+  } else {
+    addSoftwareH26xArgs(ctx, plan, crfVal);
+  }
+}
+
+function addSoftwareH26xArgs(ctx: BuildContext, plan: VideoPlan, crfVal: string): void {
+  const { options, passStage, outputArgs } = ctx;
+  const { codec, rateControl } = plan;
+  const videoOpts = options.video;
+  outputArgs.push('-c:v', codec === 'h264' ? 'libx264' : 'libx265', '-preset', resolveX26xPreset(videoOpts?.preset));
+  if (rateControl?.mode === 'crf' || !rateControl) {
+    outputArgs.push('-crf', crfVal);
+  }
+  if (videoOpts?.profile) {
+    outputArgs.push('-profile:v', videoOpts.profile.toLowerCase());
+  }
+  if (codec === 'h264' && videoOpts?.level) {
+    outputArgs.push('-level', videoOpts.level);
+  }
+  // Both passes of a two-pass encode must agree, and an encode held to a bitrate estimates its rate worse
+  // with more threads; neither is given a count.
+  const unconstrained = bitrateControlArgs(rateControl, options, codec).length === 0;
+  const threads = passStage || !unconstrained ? undefined : softwareEncoderThreads(codec, plan.unscaledPicture);
+  if (threads !== undefined) {
+    outputArgs.push('-threads', String(threads));
+  }
+}
+
+// ---- Audio ----
+
+/** What the audio stage needs from the checks and decisions made before it. */
+interface AudioStageInput {
+  isVideo: boolean;
+  audioSpec: AudioTargetSpec | undefined;
+  specEncoderInUse: boolean;
+  mapping: StreamMapping;
+}
+
+function resolveAudioEncoder(ctx: BuildContext, stage: AudioStageInput): string {
+  const { tgt, options } = ctx;
+  if (options.audio?.codec) {
+    return AUDIO_CODEC_MAP[options.audio.codec];
+  }
+  if (stage.isVideo) {
+    if (tgt === 'webm') return 'libopus';
+    return tgt === 'avi' ? 'libmp3lame' : 'aac';
+  }
+  return stage.audioSpec ? stage.audioSpec.encoder : 'aac';
+}
+
+/**
+ * The audio encoder, bitrate, format, filters and loudness handling. Returns the complete arguments of the
+ * loudness measuring pass when that is what was asked for; undefined when the encode arguments were filled in.
+ */
+async function addAudioArguments(ctx: BuildContext, stage: AudioStageInput): Promise<string[] | undefined> {
+  const { tgt, options, ffmpegBin, outputArgs } = ctx;
+  const { isVideo, audioSpec } = stage;
+  const resolvedAudioCodec = resolveAudioEncoder(ctx, stage);
 
   if (audioSpec && ffmpegBin) {
     assertEncoderAvailable(tgt, resolvedAudioCodec, probeSupportedEncoders(ffmpegBin));
@@ -1327,8 +1248,40 @@ export async function buildFfmpegArguments(
   if (audioSpec) {
     outputArgs.push('-f', audioSpec.muxer);
   }
+  addAudioBitrateArgs(ctx, stage, resolvedAudioCodec);
 
-  // Audio bitrate
+  // Audio filters and ITU-R BS.775 downmix
+  const audioFilters: string[] = [];
+  /** `-ac` and `-ar`: shared by the encode and the loudness measuring pass, which must see the same audio. */
+  const audioFormatArgs: string[] = [];
+  if (isVideo) {
+    // The audio is re-encoded: start it at zero and fill or trim leading gaps so it stays in step with the picture.
+    audioFilters.push(AUDIO_SYNC_FILTER);
+  }
+  const channelPlan = await planAudioChannels(audioSpec, stage.specEncoderInUse, options, ctx.input, ffmpegBin);
+  audioFilters.push(...channelPlan.filters);
+  audioFormatArgs.push(...channelPlan.args);
+  audioFormatArgs.push(...(await audioSampleRateArgs(ctx, stage)));
+  outputArgs.push(...audioFormatArgs);
+
+  const volumeFilter = audioVolumeFilter(options);
+  if (volumeFilter !== undefined) {
+    audioFilters.push(volumeFilter);
+  }
+
+  const loudness = addLoudnessFilter(ctx, stage, audioFormatArgs, audioFilters);
+  if (loudness.measureArguments) return loudness.measureArguments;
+  addResampleFilters(ctx, { audioFormatArgs, audioFilters, resolvedAudioCodec, loudnessRate: loudness.rate });
+
+  if (audioFilters.length > 0) {
+    outputArgs.push('-filter:a', audioFilters.join(','));
+  }
+  return undefined;
+}
+
+function addAudioBitrateArgs(ctx: BuildContext, stage: AudioStageInput, resolvedAudioCodec: string): void {
+  const { tgt, options, outputArgs } = ctx;
+  const { audioSpec } = stage;
   if (typeof options.audio?.bitrateK === 'number') {
     if (!Number.isFinite(options.audio.bitrateK) || options.audio.bitrateK <= 0) {
       throw new InvalidMediaOptionError(`Invalid audio bitrate: ${options.audio.bitrateK}k`);
@@ -1336,7 +1289,7 @@ export async function buildFfmpegArguments(
     outputArgs.push('-b:a', `${Math.floor(options.audio.bitrateK)}k`);
   } else if (options.audioBitrate && /^\d+[kK]?$/.test(options.audioBitrate)) {
     outputArgs.push('-b:a', options.audioBitrate.toLowerCase().endsWith('k') ? options.audioBitrate : `${options.audioBitrate}k`);
-  } else if (audioSpec && specEncoderInUse) {
+  } else if (audioSpec && stage.specEncoderInUse) {
     if (audioSpec.defaultBitrate !== undefined) {
       outputArgs.push('-b:a', audioSpec.defaultBitrate);
     } else if (audioSpec.defaultQuality !== undefined) {
@@ -1352,84 +1305,99 @@ export async function buildFfmpegArguments(
       outputArgs.push('-b:a', '192k');
     }
   }
+}
 
-  // Audio filters and ITU-R BS.775 downmix
-  const audioFilters: string[] = [];
-  /** `-ac` and `-ar`: shared by the encode and the loudness measuring pass, which must see the same audio. */
-  const audioFormatArgs: string[] = [];
-  if (isVideo) {
-    // The audio is re-encoded: start it at zero and fill or trim leading gaps so it stays in step with the picture.
-    audioFilters.push(AUDIO_SYNC_FILTER);
-  }
-  const channelPlan = await planAudioChannels(audioSpec, specEncoderInUse, options, input, ffmpegBin);
-  audioFilters.push(...channelPlan.filters);
-  audioFormatArgs.push(...channelPlan.args);
-
-  // Audio sample rate
+/** `-ar`: the spec's fixed rate, the request's rate, or for a spec encoder the rate the input already keeps or is brought to. */
+async function audioSampleRateArgs(ctx: BuildContext, stage: AudioStageInput): Promise<string[]> {
+  const { input, options, ffmpegBin } = ctx;
+  const { audioSpec, specEncoderInUse } = stage;
   if (audioSpec?.fixedSampleRate !== undefined) {
-    audioFormatArgs.push('-ar', String(audioSpec.fixedSampleRate));
-  } else if (typeof options.audio?.sampleRate === 'number') {
-    if (!Number.isFinite(options.audio.sampleRate) || options.audio.sampleRate < 8000 || options.audio.sampleRate > 192000) {
+    return ['-ar', String(audioSpec.fixedSampleRate)];
+  }
+  if (typeof options.audio?.sampleRate === 'number') {
+    if (!Number.isFinite(options.audio.sampleRate) || options.audio.sampleRate < MIN_AUDIO_SAMPLE_RATE || options.audio.sampleRate > MAX_AUDIO_SAMPLE_RATE) {
       throw new InvalidMediaOptionError(`Invalid audio sample rate: ${options.audio.sampleRate}. Allowed range: 8000 to 192000 Hz.`);
     }
-    audioFormatArgs.push('-ar', String(options.audio.sampleRate));
-  } else if (typeof options.audioSampleRate === 'number' && Number.isFinite(options.audioSampleRate) && options.audioSampleRate >= 8000 && options.audioSampleRate <= 192000) {
-    audioFormatArgs.push('-ar', String(options.audioSampleRate));
-  } else if (audioSpec && specEncoderInUse && (audioSpec.allowedSampleRates || audioSpec.maxSampleRate) && fs.existsSync(input.path)) {
+    return ['-ar', String(options.audio.sampleRate)];
+  }
+  if (typeof options.audioSampleRate === 'number' && Number.isFinite(options.audioSampleRate) && options.audioSampleRate >= MIN_AUDIO_SAMPLE_RATE && options.audioSampleRate <= MAX_AUDIO_SAMPLE_RATE) {
+    return ['-ar', String(options.audioSampleRate)];
+  }
+  if (audioSpec && specEncoderInUse && (audioSpec.allowedSampleRates || audioSpec.maxSampleRate) && fs.existsSync(input.path)) {
     // The caller set no rate: an input the encoder codes natively keeps its rate (a forced rate makes libopus
     // code a band the signal does not have), and one it cannot code is brought into its supported set.
     const track = typeof options.audio?.track === 'number' ? options.audio.track : 0;
     const resampleRate = resampleRateFor(audioSpec, await probeAudioSampleRate(input, resolveFfprobeBinary(ffmpegBin), track, options.signal));
-    if (resampleRate !== undefined) {
-      audioFormatArgs.push('-ar', String(resampleRate));
-    }
-  } else if (audioSpec?.defaultSampleRate !== undefined && specEncoderInUse) {
-    audioFormatArgs.push('-ar', String(audioSpec.defaultSampleRate));
+    return resampleRate === undefined ? [] : ['-ar', String(resampleRate)];
   }
-  outputArgs.push(...audioFormatArgs);
+  if (audioSpec?.defaultSampleRate !== undefined && specEncoderInUse) {
+    return ['-ar', String(audioSpec.defaultSampleRate)];
+  }
+  return [];
+}
 
-  // Audio volume
+function audioVolumeFilter(options: ConversionOptions): string | undefined {
   if (typeof options.audio?.volume === 'number') {
-    if (!Number.isFinite(options.audio.volume) || options.audio.volume < 0 || options.audio.volume > 200) {
+    if (!Number.isFinite(options.audio.volume) || options.audio.volume < 0 || options.audio.volume > MAX_AUDIO_VOLUME_PERCENT) {
       throw new InvalidMediaOptionError(`Invalid audio volume: ${options.audio.volume}. Allowed range: 0 to 200%.`);
     }
-    if (options.audio.volume !== 100) {
-      audioFilters.push(`volume=${options.audio.volume / 100}`);
-    }
-  } else if (typeof options.audioVolume === 'number' && Number.isFinite(options.audioVolume) && options.audioVolume >= 0 && options.audioVolume <= 200 && options.audioVolume !== 100) {
-    audioFilters.push(`volume=${options.audioVolume / 100}`);
+    return options.audio.volume !== 100 ? `volume=${options.audio.volume / 100}` : undefined;
   }
+  if (typeof options.audioVolume === 'number' && Number.isFinite(options.audioVolume) && options.audioVolume >= 0 && options.audioVolume <= MAX_AUDIO_VOLUME_PERCENT && options.audioVolume !== 100) {
+    return `volume=${options.audioVolume / 100}`;
+  }
+  return undefined;
+}
 
-  // Loudness normalisation (two passes), then the final resample with the chosen resampler and 16-bit dither.
+/**
+ * Loudness normalisation (two passes). The measuring pass returns its complete arguments; the encode gets the
+ * loudnorm filter and the measured sample rate, which the output is brought back to after loudnorm's 192 kHz.
+ */
+function addLoudnessFilter(
+  ctx: BuildContext,
+  stage: AudioStageInput,
+  audioFormatArgs: string[],
+  audioFilters: string[]
+): { measureArguments?: string[]; rate?: number } {
+  const { options, loudnessStage, globalArgs, inputArgs } = ctx;
+  const { audioSpec } = stage;
   const loudnessTarget = options.audio?.loudness ? resolveLoudnessTarget(options.audio.loudness) : undefined;
-  let loudnessRate: number | undefined;
-  if (loudnessTarget) {
-    if (!loudnessStage) {
-      throw new ConversionFailedError('Loudness normalisation needs its measuring pass before the encode; no measurement was given.');
-    }
-    const audioMaps = audioSpec ? undefined : streamPlan?.audioMaps;
-    if (!audioSpec && (audioMaps === undefined || audioMaps.length !== 1)) {
-      throw new InvalidMediaOptionError(
-        audioMaps === undefined
-          ? 'Loudness normalisation needs an input file to measure.'
-          : `Loudness normalisation measures one audio track; this conversion maps ${audioMaps.length}. Select one with audio.track.`
-      );
-    }
-    if (loudnessStage.kind === 'measure') {
-      const mapArgs = audioSpec ? audioOnlyMapArgs : ['-vn', '-sn', '-dn', '-map', (audioMaps as string[])[0]];
-      return [
+  if (!loudnessTarget) return {};
+  if (!loudnessStage) {
+    throw new ConversionFailedError('Loudness normalisation needs its measuring pass before the encode; no measurement was given.');
+  }
+  const audioMaps = audioSpec ? undefined : stage.mapping.streamPlan?.audioMaps;
+  if (!audioSpec && (audioMaps === undefined || audioMaps.length !== 1)) {
+    throw new InvalidMediaOptionError(
+      audioMaps === undefined
+        ? 'Loudness normalisation needs an input file to measure.'
+        : `Loudness normalisation measures one audio track; this conversion maps ${audioMaps.length}. Select one with audio.track.`
+    );
+  }
+  if (loudnessStage.kind === 'measure') {
+    const mapArgs = audioSpec ? stage.mapping.audioOnlyMapArgs : ['-vn', '-sn', '-dn', '-map', (audioMaps as string[])[0]];
+    return {
+      measureArguments: [
         ...globalArgs,
         ...inputArgs,
         ...mapArgs,
         ...audioFormatArgs,
         '-af', [...audioFilters, loudnormMeasureFilter(loudnessTarget)].join(','),
         '-f', 'null', '-',
-      ];
-    }
-    audioFilters.push(loudnormApplyFilter(loudnessTarget, loudnessStage.measurement));
-    // loudnorm works at 192 kHz and returns that rate; the output is brought back to the requested or source rate.
-    loudnessRate = loudnessStage.measurement.sampleRate;
+      ],
+    };
   }
+  audioFilters.push(loudnormApplyFilter(loudnessTarget, loudnessStage.measurement));
+  return { rate: loudnessStage.measurement.sampleRate };
+}
+
+/** The final resample with the chosen resampler and 16-bit dither. */
+function addResampleFilters(
+  ctx: BuildContext,
+  audio: { audioFormatArgs: string[]; audioFilters: string[]; resolvedAudioCodec: string; loudnessRate: number | undefined }
+): void {
+  const { options, ffmpegBin } = ctx;
+  const { audioFormatArgs, audioFilters, resolvedAudioCodec, loudnessRate } = audio;
   const requestedRate = audioFormatArgs.includes('-ar') ? Number(audioFormatArgs[audioFormatArgs.indexOf('-ar') + 1]) : undefined;
   const finalRate = requestedRate ?? loudnessRate;
   const dither = resolveDither(options.audio?.dither, resolvedAudioCodec);
@@ -1443,312 +1411,5 @@ export async function buildFfmpegArguments(
   if (dither !== undefined) {
     audioFilters.push(SIXTEEN_BIT_FORMAT_FILTER);
   }
-
-  if (audioFilters.length > 0) {
-    outputArgs.push('-filter:a', audioFilters.join(','));
-  }
-
-  if (audioSpec?.muxer === 'ipod' && fastStart) {
-    outputArgs.push('-movflags', '+faststart');
-  }
-
-  addWavPacketSize(inputArgs, wav, options, outputArgs, ffmpegBin);
-  return [...globalArgs, ...inputArgs, ...outputArgs, outputPath];
 }
 
-export const DEFAULT_PACKAGING_LADDER: readonly MediaLadderRung[] = [
-  { height: 1080, bitrateK: 4500, audioBitrateK: 192 },
-  { height: 720, bitrateK: 2500, audioBitrateK: 128 },
-  { height: 480, bitrateK: 1000, audioBitrateK: 96 },
-] as const;
-
-export const PACKAGING_VIDEO_ENCODERS: Record<string, string> = {
-  h264: 'libx264',
-  hevc: 'libx265',
-  vp9: 'libvpx-vp9',
-  av1: 'libsvtav1',
-};
-
-export const PACKAGING_AUDIO_ENCODERS: Record<string, string> = {
-  aac: 'aac',
-  opus: 'libopus',
-};
-
-const DEFAULT_SEGMENT_SECONDS = 4;
-const MIN_SEGMENT_SECONDS = 2;
-const MAX_SEGMENT_SECONDS = 10;
-const MIN_RUNG_HEIGHT = 144;
-const MAX_RUNG_HEIGHT = 4320;
-const MAX_RUNG_BITRATE_K = 50_000;
-const MAX_RUNG_FPS = 240;
-/** Most rungs a ladder may have: every rung is a full encode, so the count bounds the work a request can ask for. */
-export const MAX_LADDER_RUNGS = 10;
-const MIN_RUNG_AUDIO_BITRATE_K = 16;
-const MAX_RUNG_AUDIO_BITRATE_K = 1024;
-/** Audio bitrate of the first, second and later rungs when the ladder gives none. */
-const DEFAULT_RUNG_AUDIO_BITRATE_K = [192, 128, 96] as const;
-const TS_SEGMENT_PATTERN = 'stream_%v_%03d.ts';
-const FMP4_SEGMENT_PATTERN = 'stream_%v_%03d.m4s';
-const FMP4_INIT_PATTERN = 'init_%v.mp4';
-const PACKAGING_PIX_FMT = 'yuv420p';
-const HEVC_PACKAGING_TAG = 'hvc1';
-
-/** What packaging needs to know about the input before it plans a ladder. */
-export interface PackagingSource {
-  geometry: VideoGeometry;
-  hasAudio: boolean;
-}
-
-/** Probes the first video stream (exact frame rate, displayed size, duration) and whether the input has audio. */
-export async function probePackagingSource(input: MediaInput, ffmpegBin?: string | null, signal?: AbortSignal): Promise<PackagingSource> {
-  const ffprobe = resolveFfprobeBinary(ffmpegBin);
-  return {
-    geometry: await probeVideoGeometry(input, ffprobe, signal),
-    hasAudio: (await probeAudioChannels(input, ffprobe, 0, signal)) > 0,
-  };
-}
-
-function validateLadder(ladder: readonly MediaLadderRung[]): void {
-  if (!Array.isArray(ladder) || ladder.length === 0) {
-    throw new InvalidMediaOptionError('Packaging ladder must be a non-empty array of rungs.');
-  }
-  if (ladder.length > MAX_LADDER_RUNGS) {
-    throw new InvalidMediaOptionError(`Packaging ladder has ${ladder.length} rungs; it may have at most ${MAX_LADDER_RUNGS} rungs.`);
-  }
-  const seenHeights = new Set<number>();
-  for (const rung of ladder) {
-    if (typeof rung.height !== 'number' || !Number.isInteger(rung.height) || rung.height < MIN_RUNG_HEIGHT || rung.height > MAX_RUNG_HEIGHT) {
-      throw new InvalidMediaOptionError(
-        `Invalid ladder rung height: ${rung.height}. Must be an integer between ${MIN_RUNG_HEIGHT} and ${MAX_RUNG_HEIGHT}.`
-      );
-    }
-    if (rung.height % 2 !== 0) {
-      throw new InvalidMediaOptionError(`Invalid ladder rung height: ${rung.height}. 4:2:0 video needs an even height.`);
-    }
-    if (seenHeights.has(rung.height)) {
-      throw new InvalidMediaOptionError(`Duplicate ladder rung height ${rung.height}; each rung names its playlist by height.`);
-    }
-    seenHeights.add(rung.height);
-    if (typeof rung.bitrateK !== 'number' || !Number.isInteger(rung.bitrateK) || rung.bitrateK < MIN_RUNG_BITRATE_K || rung.bitrateK > MAX_RUNG_BITRATE_K) {
-      throw new InvalidMediaOptionError(
-        `Invalid ladder rung bitrateK: ${rung.bitrateK}. Must be an integer between ${MIN_RUNG_BITRATE_K} and ${MAX_RUNG_BITRATE_K}.`
-      );
-    }
-    if (rung.fps !== undefined && (typeof rung.fps !== 'number' || !Number.isFinite(rung.fps) || rung.fps <= 0 || rung.fps > MAX_RUNG_FPS)) {
-      throw new InvalidMediaOptionError(`Invalid ladder rung fps: ${rung.fps}. Must be a number between 1 and ${MAX_RUNG_FPS}.`);
-    }
-    if (
-      rung.audioBitrateK !== undefined &&
-      (typeof rung.audioBitrateK !== 'number' ||
-        !Number.isInteger(rung.audioBitrateK) ||
-        rung.audioBitrateK < MIN_RUNG_AUDIO_BITRATE_K ||
-        rung.audioBitrateK > MAX_RUNG_AUDIO_BITRATE_K)
-    ) {
-      throw new InvalidMediaOptionError(
-        `Invalid ladder rung audioBitrateK: ${rung.audioBitrateK}. Must be an integer between ${MIN_RUNG_AUDIO_BITRATE_K} and ${MAX_RUNG_AUDIO_BITRATE_K}.`
-      );
-    }
-  }
-}
-
-/**
- * Encoder arguments that put an IDR frame at every segment boundary on every rung: the GOP spans one
- * segment, a keyframe is forced at each boundary time, and scene-cut keyframes are off so no keyframe
- * lands elsewhere and the rungs cut at the same instants (RFC 8216, section 6.2.3).
- */
-function segmentKeyframeArgs(codec: string, rungIndex: number, gopFrames: number, segmentSeconds: number): string[] {
-  const at = (option: string) => `${option}:v:${rungIndex}`;
-  const common = [at('-g'), String(gopFrames), at('-force_key_frames'), forcedKeyframeExpression(segmentSeconds)];
-  switch (codec) {
-    case 'libx264':
-      return [...common, at('-keyint_min'), String(gopFrames), at('-sc_threshold'), '0', at('-forced-idr'), '1'];
-    case 'libx265':
-      return [
-        ...common,
-        at('-keyint_min'), String(gopFrames),
-        at('-forced-idr'), '1',
-        at('-x265-params'), 'scenecut=0:open-gop=0',
-      ];
-    case 'libsvtav1':
-      return [...common, at('-svtav1-params'), 'scd=0'];
-    default:
-      return [...common, at('-keyint_min'), String(gopFrames)];
-  }
-}
-
-/**
- * Builds FFmpeg command-line arguments for multi-bitrate ABR packaging (HLS and MPEG-DASH).
- *
- * `source` is what was probed from the input (exact frame rate, displayed size, audio presence); when it is
- * left out the input file is probed here. The ladder is cut to what the source can fill and every rung
- * gets a capped peak rate, so the declared BANDWIDTH holds.
- */
-export async function buildHlsDashArguments(
-  input: MediaInput,
-  outputDir: string,
-  packaging: MediaPackagingOptions,
-  ffmpegBin?: string | null,
-  source?: PackagingSource
-): Promise<string[]> {
-  if (!packaging || !packaging.format) {
-    throw new InvalidMediaOptionError('Packaging format is required ("hls" or "dash").');
-  }
-
-  const format = packaging.format.toLowerCase();
-  if (format !== 'hls' && format !== 'dash') {
-    throw new InvalidMediaOptionError(
-      `Unsupported packaging format "${packaging.format}". Allowed: "hls", "dash".`
-    );
-  }
-  const manifestName = packagingManifestName(format, packaging.masterPlaylistName, outputDir);
-
-  let segmentSeconds = DEFAULT_SEGMENT_SECONDS;
-  if (packaging.segmentSeconds !== undefined) {
-    if (
-      typeof packaging.segmentSeconds !== 'number' ||
-      !Number.isInteger(packaging.segmentSeconds) ||
-      packaging.segmentSeconds < MIN_SEGMENT_SECONDS ||
-      packaging.segmentSeconds > MAX_SEGMENT_SECONDS
-    ) {
-      throw new InvalidMediaOptionError(
-        `Invalid segmentSeconds: ${packaging.segmentSeconds}. Allowed range: ${MIN_SEGMENT_SECONDS} to ${MAX_SEGMENT_SECONDS} seconds integer.`
-      );
-    }
-    segmentSeconds = packaging.segmentSeconds;
-  }
-  const segmentType = resolveSegmentType(packaging.segmentType, format);
-
-  const requestedLadder: readonly MediaLadderRung[] = packaging.ladder ?? DEFAULT_PACKAGING_LADDER;
-  validateLadder(requestedLadder);
-
-  // Video codec
-  const videoCodecKey = resolveVideoCodec((packaging.videoCodec || 'h264').toLowerCase());
-  const vEncoder = PACKAGING_VIDEO_ENCODERS[videoCodecKey];
-  if (!vEncoder) {
-    throw new InvalidMediaOptionError(
-      `Unsupported video codec "${packaging.videoCodec}". Allowed: h264, hevc (h265), vp9, av1.`
-    );
-  }
-
-  // Audio codec
-  const audioCodecKey = (packaging.audioCodec || 'aac').toLowerCase();
-  const aEncoder = PACKAGING_AUDIO_ENCODERS[audioCodecKey];
-  if (!aEncoder) {
-    throw new InvalidMediaOptionError(
-      `Unsupported audio codec "${packaging.audioCodec}". Allowed: aac, opus.`
-    );
-  }
-
-  const probed = source ?? (await probePackagingSource(input, ffmpegBin));
-  const ladder = capLadderToSource(requestedLadder, probed.geometry);
-  const hasAudio = probed.hasAudio;
-  const { fpsNum, fpsDen } = probed.geometry;
-
-  const globalArgs: string[] = ['-y', '-loglevel', 'error'];
-  const inputArgs: string[] = mediaInputArgs(input);
-
-  // Construct filter_complex
-  const filterParts: string[] = [];
-
-  // Video split & scale
-  const vSplitOuts = ladder.map((_, i) => `[v_in${i}]`).join('');
-  filterParts.push(`[0:v]split=${ladder.length}${vSplitOuts}`);
-  for (let i = 0; i < ladder.length; i++) {
-    const rung = ladder[i];
-    const fpsFilter = rung.fps ? `,fps=${rung.fps}` : '';
-    filterParts.push(`[v_in${i}]scale=w=-2:h=${rung.height}${fpsFilter}[v_out${i}]`);
-  }
-
-  // Audio split
-  if (hasAudio) {
-    const aSplitOuts = ladder.map((_, i) => `[a_out${i}]`).join('');
-    filterParts.push(`[0:a]asplit=${ladder.length}${aSplitOuts}`);
-  }
-
-  const complexFilter = filterParts.join('; ');
-  const streamArgs: string[] = ['-filter_complex', complexFilter];
-
-  // Map each rung
-  for (let i = 0; i < ladder.length; i++) {
-    const rung = ladder[i];
-    const caps = rungRateCaps(rung.bitrateK);
-    streamArgs.push(
-      '-map', `[v_out${i}]`,
-      `-c:v:${i}`, vEncoder,
-      `-b:v:${i}`, `${rung.bitrateK}k`,
-      `-maxrate:v:${i}`, `${caps.maxrateK}k`,
-      `-bufsize:v:${i}`, `${caps.bufsizeK}k`,
-      `-pix_fmt:v:${i}`, PACKAGING_PIX_FMT
-    );
-    if (videoCodecKey === 'hevc') {
-      streamArgs.push(`-tag:v:${i}`, HEVC_PACKAGING_TAG);
-    }
-
-    // The rung's own rate when it names one, otherwise the source's exact rational rate.
-    const gopFrames = rung.fps
-      ? keyframeIntervalFrames(rung.fps, 1, segmentSeconds)
-      : keyframeIntervalFrames(fpsNum, fpsDen, segmentSeconds);
-    streamArgs.push(...segmentKeyframeArgs(vEncoder, i, gopFrames, segmentSeconds));
-
-    if (hasAudio) {
-      const audioBitrate = rung.audioBitrateK || DEFAULT_RUNG_AUDIO_BITRATE_K[Math.min(i, DEFAULT_RUNG_AUDIO_BITRATE_K.length - 1)];
-      streamArgs.push(
-        '-map', `[a_out${i}]`,
-        `-c:a:${i}`, aEncoder,
-        `-b:a:${i}`, `${audioBitrate}k`
-      );
-    }
-  }
-
-  if (format === 'hls') {
-    const varStreamMap = ladder
-      .map((rung, i) => {
-        const streamName = `${rung.height}p`;
-        return hasAudio ? `v:${i},a:${i},name:${streamName}` : `v:${i},name:${streamName}`;
-      })
-      .join(' ');
-
-    // ffmpeg expands %v in the init name only when there are several variants; with one it keeps the
-    // literal "%v", so a single rung names its init section directly.
-    const initName = ladder.length === 1 ? `init_${ladder[0].height}p.mp4` : FMP4_INIT_PATTERN;
-    const segmentArgs =
-      segmentType === 'fmp4'
-        ? [
-            '-hls_segment_type', 'fmp4',
-            '-hls_fmp4_init_filename', initName,
-            '-hls_segment_filename', path.join(outputDir, FMP4_SEGMENT_PATTERN),
-          ]
-        : ['-hls_segment_filename', path.join(outputDir, TS_SEGMENT_PATTERN)];
-
-    const hlsArgs: string[] = [
-      '-f', 'hls',
-      '-hls_time', String(segmentSeconds),
-      '-hls_playlist_type', 'vod',
-      '-hls_flags', 'independent_segments',
-      '-master_pl_name', manifestName,
-      ...segmentArgs,
-      '-var_stream_map', varStreamMap,
-      path.join(outputDir, 'stream_%v.m3u8'),
-    ];
-
-    return [...globalArgs, ...inputArgs, ...streamArgs, ...hlsArgs];
-  } else {
-    // DASH
-    const adaptationSets = hasAudio
-      ? 'id=0,streams=v id=1,streams=a'
-      : 'id=0,streams=v';
-
-    const dashArgs: string[] = [
-      '-f', 'dash',
-      '-seg_duration', String(segmentSeconds),
-      '-use_template', '1',
-      '-use_timeline', '1',
-      '-init_seg_name', 'init_$RepresentationID$.m4s',
-      '-media_seg_name', 'chunk_$RepresentationID$_$Number%05d$.m4s',
-      '-adaptation_sets', adaptationSets,
-      path.join(outputDir, manifestName),
-    ];
-
-    return [...globalArgs, ...inputArgs, ...streamArgs, ...dashArgs];
-  }
-}

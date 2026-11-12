@@ -1,4 +1,5 @@
 import { HeadingSlugs } from '../markdown/github-slug';
+import { escapeMarkupAttribute } from '../text/escape';
 
 /**
  * Markdown to HTML for the PDF routes (in-process renderer and LibreOffice staging).
@@ -28,13 +29,9 @@ const IMAGE_SOURCE = /^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]+$/i;
 const STRONG = /\*\*(?=\S)([^*\n]*?\S)\*\*/g;
 const EMPHASIS = /\*(?=\S)([^*\n]*?\S)\*/g;
 
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 /** Plain text: escaped, then asterisk emphasis, which only ever sees this text segment. */
 function renderText(text: string): string {
-  return escapeHtml(text).replace(STRONG, '<strong>$1</strong>').replace(EMPHASIS, '<em>$1</em>');
+  return escapeMarkupAttribute(text).replace(STRONG, '<strong>$1</strong>').replace(EMPHASIS, '<em>$1</em>');
 }
 
 /**
@@ -77,7 +74,7 @@ function renderInline(text: string, insideLink = false): string {
       const close = text.indexOf('`', i + 1);
       if (close > i) {
         flushPlain(i);
-        html += `<code>${escapeHtml(text.slice(i + 1, close))}</code>`;
+        html += `<code>${escapeMarkupAttribute(text.slice(i + 1, close))}</code>`;
         i = close + 1;
         plainStart = i;
         continue;
@@ -89,10 +86,10 @@ function renderInline(text: string, insideLink = false): string {
         flushPlain(i);
         if (isImage) {
           html += IMAGE_SOURCE.test(link.target)
-            ? `<img alt="${escapeHtml(link.label)}" src="${escapeHtml(link.target)}">`
-            : escapeHtml(link.label);
+            ? `<img alt="${escapeMarkupAttribute(link.label)}" src="${escapeMarkupAttribute(link.target)}">`
+            : escapeMarkupAttribute(link.label);
         } else if (LINK_TARGET.test(link.target)) {
-          html += `<a href="${escapeHtml(link.target)}">${renderInline(link.label, true)}</a>`;
+          html += `<a href="${escapeMarkupAttribute(link.target)}">${renderInline(link.label, true)}</a>`;
         } else {
           html += renderInline(link.label, true);
         }
@@ -181,7 +178,7 @@ export function markdownToSafeHtml(markdown: string, title: string): string {
       const code: string[] = [];
       i++;
       while (i < lines.length && !lines[i].trim().startsWith(fence)) code.push(lines[i++]);
-      out.push(`<pre>${escapeHtml(code.join('\n'))}</pre>`);
+      out.push(`<pre>${escapeMarkupAttribute(code.join('\n'))}</pre>`);
       continue;
     }
     if (trimmed.length === 0) {
@@ -195,7 +192,7 @@ export function markdownToSafeHtml(markdown: string, title: string): string {
       flushList();
       const heading = renderInline(headingText(trimmed, level));
       const slug = headingSlugs.slug(textContentOf(heading));
-      out.push(`<h${level}${slug === '' ? '' : ` id="${escapeHtml(slug)}"`}>${heading}</h${level}>`);
+      out.push(`<h${level}${slug === '' ? '' : ` id="${escapeMarkupAttribute(slug)}"`}>${heading}</h${level}>`);
       continue;
     }
     if (trimmed.startsWith('|') && isTableDelimiter(lines[i + 1])) {
@@ -226,5 +223,5 @@ export function markdownToSafeHtml(markdown: string, title: string): string {
   }
   flushParagraph();
   flushList();
-  return `<!DOCTYPE html>\n<html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title></head><body>\n${out.join('\n')}\n</body></html>\n`;
+  return `<!DOCTYPE html>\n<html><head><meta charset="utf-8"><title>${escapeMarkupAttribute(title)}</title></head><body>\n${out.join('\n')}\n</body></html>\n`;
 }

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scope": "^bench/(corpus/|families/|[^/]+\\.(ts|py|json)$)|^scripts/ci-parity-[^/]*\\.mjs$|^\\.github/workflows/ci\\.yml$|^src/(lib/conversions|lib/workers|worker)/|^src/lib/jobs/artifact-helpers\\.ts$|^src/lib/queue/graph/node-executor\\.ts$|^src/lib/security/(process-sandbox|svg-sanitizer|helper-process|sandbox-launcher[^/]*)\\.ts$|^package(-lock)?\\.json$|^Dockerfile(?!\\.web$)[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/|^native/|^docker/sharp-libvips/|^\\.github/(actions/sharp-libvips/|workflows/sharp-libvips\\.yml$)|^scripts/ab-base-dependencies\\.sh$|^scripts/(install-[^/]*\\.sh$|[^/]*-patches/|vtracer-pixels/|vtracer-notices/|oxipng-notices/|quantizr-pixels/|avifenc/|lib/djvulibre-gates\\.sh$)",
+  "scope": "^bench/(corpus/|families/|[^/]+\\.(ts|py|json)$)|^scripts/ci-parity-[^/]*\\.mjs$|^\\.github/workflows/ci\\.yml$|^src/(lib/conversions|lib/text|lib/workers|worker)/|^src/lib/jobs/artifact-helpers\\.ts$|^src/lib/queue/graph/node-executor\\.ts$|^src/lib/security/(process-sandbox|svg-sanitizer|helper-process|sandbox-launcher[^/]*)\\.ts$|^package(-lock)?\\.json$|^Dockerfile(?!\\.web$)[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/|^native/|^docker/sharp-libvips/|^\\.github/(actions/sharp-libvips/|workflows/sharp-libvips\\.yml$)|^scripts/ab-base-dependencies\\.sh$|^scripts/(install-[^/]*\\.sh$|[^/]*-patches/|vtracer-pixels/|vtracer-notices/|oxipng-notices/|quantizr-pixels/|avifenc/|lib/djvulibre-gates\\.sh$)",
   "families": {
     "image": { "bench": "image" },
     "video": { "bench": "video" },
@@ -223,15 +223,19 @@
     },
     {
       "families": ["video", "audio"],
-      "match": "^src/lib/conversions/media-(decode-failures|dropped-streams|empty-output|encoder-threads|ffmpeg-args|ffmpeg-run|ffprobe|filter-escape|job-limit|packaging|process|stream-plan|undecodable-audio)\\.ts$"
+      "match": "^src/lib/conversions/media-(decode-failures|dropped-streams|empty-output|encoder-threads|ffmpeg-args|ffmpeg-container-args|ffmpeg-packaging-args|ffmpeg-run|hw-probe|video-codec|ffprobe|filter-escape|job-limit|packaging|process|stream-plan|undecodable-audio)\\.ts$"
     },
     {
       "families": ["ocr"],
       "match": "^src/lib/conversions/(ocr[^/]*\\.ts|ocr-calibration/.*|dla-engine\\.ts|pdf-page-render\\.ts)$"
     },
     {
+      "families": ["document", "ebook", "data", "font", "vector"],
+      "match": "^src/lib/text/escape\\.ts$"
+    },
+    {
       "families": ["document", "ebook", "data"],
-      "match": "^src/lib/conversions/(office|office-macro-strip|xlsx-writer|sheet-text-tables|table-grid|office/spreadsheet-limits)\\.ts$"
+      "match": "^src/lib/conversions/(office|office-macro-strip|xlsx-writer|sheet-text-tables|table-grid|office/(spreadsheet-limits|affine|chart-parse|chart-svg|convert-docx|convert-generic|convert-office|docx-html|docx-parse|docx-pdf|drawingml-formulas|drawingml-shapes|ebook-convert|odf-charts|odf-convert|odf-writers|odp-convert|odt-text|office-from-text|pdf-chart|pdf-shapes|pdf-text|ppt-convert|pptx-convert|pptx-scene|raster|rtf-escape|sheet-extract|slides-render|spreadsheet-format|spreadsheet-formula|spreadsheet-ranges|text-constants|text-extraction|types|xls-convert|xls-parse|xlsx-convert|xlsx-parse|xml-helpers))\\.ts$"
     },
     {
       "families": ["document", "ebook"],

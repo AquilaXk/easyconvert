@@ -4,6 +4,7 @@ import type { DocumentModel } from './document-model/model';
 import { safeHref } from './document-model/support';
 import { HTML_MODEL_MAX_IMAGE_BYTES, HTML_MODEL_MAX_IMAGES, htmlToDocumentModel } from './html-model';
 import { XML_TREE_MAX_DEPTH, XML_TREE_MAX_ELEMENTS } from './xml-tree';
+import { escapeMarkupAttribute, escapeMarkupText } from '../text/escape';
 
 /**
  * Reads a FictionBook 2 book into the document model with its structure: the nesting of `section` elements becomes
@@ -47,8 +48,6 @@ const NAME_PARTS = ['first-name', 'middle-name', 'last-name'] as const;
 /** Bare `&` in URL query strings or text that is not an XML entity reference. */
 const BARE_AMPERSAND_PATTERN = /&(?!(?:[A-Za-z_:][\w:.-]*|#\d+|#x[0-9a-fA-F]+);)/g;
 
-const escapeText = (text: string): string => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-const escapeAttribute = (text: string): string => escapeText(text).replace(/"/g, '&quot;');
 
 interface Frame {
   local: string;
@@ -200,7 +199,7 @@ class Fb2Translator {
     const anchored = ['title', 'p', 'v', 'date', 'subtitle', 'li'].includes(local);
     const id = attr('id') ?? (anchored ? this.pendingId : undefined);
     if (anchored && !(local === 'p' && parent === 'title')) this.pendingId = undefined;
-    const idAttribute = id === undefined ? '' : ` id="${escapeAttribute(id)}"`;
+    const idAttribute = id === undefined ? '' : ` id="${escapeMarkupAttribute(id)}"`;
     if (local === 'title') {
       if (parent === 'body' && this.bodyIndex === 0) this.levelOffset = 1;
       const depth = this.stack[this.stack.length - 1].sectionDepth;
@@ -226,13 +225,13 @@ class Fb2Translator {
     if (local === 'a') {
       const href = hrefOf(attributes);
       const target = fragmentId(href) !== undefined ? href : safeHref(href);
-      this.push(target === undefined ? '<span>' : `<a href="${escapeAttribute(target)}">`, target === undefined ? '</span>' : '</a>');
+      this.push(target === undefined ? '<span>' : `<a href="${escapeMarkupAttribute(target)}">`, target === undefined ? '</span>' : '</a>');
       return;
     }
     if (local === 'image') {
       const id = fragmentId(hrefOf(attributes));
-      const alt = escapeAttribute(attr('alt') ?? attr('title') ?? '');
-      const picture = id === undefined ? '' : `<img src="${COVER_SOURCE_PREFIX}${escapeAttribute(id)}" alt="${alt}"/>`;
+      const alt = escapeMarkupAttribute(attr('alt') ?? attr('title') ?? '');
+      const picture = id === undefined ? '' : `<img src="${COVER_SOURCE_PREFIX}${escapeMarkupAttribute(id)}" alt="${alt}"/>`;
       const inlineHost = TEXT_ELEMENTS.has(parent) || INLINE_TAGS.has(parent) || parent === 'a' || parent === 'title';
       this.html.push(inlineHost ? picture : `<p>${picture}</p>`);
       return;
@@ -263,7 +262,7 @@ class Fb2Translator {
       return;
     }
     if (TABLE_ELEMENTS.has(local)) {
-      const spans = local === 'td' || local === 'th' ? TABLE_SPAN_ATTRIBUTES.map((name) => (attr(name) ? ` ${name}="${escapeAttribute(attr(name) as string)}"` : '')).join('') : '';
+      const spans = local === 'td' || local === 'th' ? TABLE_SPAN_ATTRIBUTES.map((name) => (attr(name) ? ` ${name}="${escapeMarkupAttribute(attr(name) as string)}"` : '')).join('') : '';
       this.push(`<${local}${spans}>`, `</${local}>`);
     }
   }
@@ -291,7 +290,7 @@ class Fb2Translator {
       if (!inHeadingLine) return;
       if (text.trim() !== '') this.headingHasText = true;
     }
-    this.html.push(escapeText(text));
+    this.html.push(escapeMarkupText(text));
   }
 
   private close(local: string): void {
@@ -359,7 +358,7 @@ export async function readFb2Model(xml: string, fallbackTitle: string): Promise<
     decoded.set(id, bytes);
     return bytes;
   };
-  const coverMarkup = metadata.coverId !== undefined && binaries.has(metadata.coverId) ? `<p><img src="${COVER_SOURCE_PREFIX}${escapeAttribute(metadata.coverId)}" alt="Cover"/></p>` : '';
+  const coverMarkup = metadata.coverId !== undefined && binaries.has(metadata.coverId) ? `<p><img src="${COVER_SOURCE_PREFIX}${escapeMarkupAttribute(metadata.coverId)}" alt="Cover"/></p>` : '';
   const html = `<html><body>${coverMarkup}${translator.html.join('')}</body></html>`;
   const model = await htmlToDocumentModel(html, {
     resolveImage,

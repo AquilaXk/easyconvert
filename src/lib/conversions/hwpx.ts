@@ -4,16 +4,11 @@ import { openPackage } from './package-access';
 import { readZipEntryText } from './zip-entry-reader';
 import { ConversionOptions, ConversionResult, CorruptStreamError } from '../types';
 import { assertWellFormedXml } from './xml-wellformed';
+import { escapeXmlQuoted } from '../text/escape';
 import { HwpDocument, HwpParagraph, HwpTable, buildHwpCompoundFile, legacyHwpModel, parseHwpDocument, convertHwpDocument } from './hwp';
 
 function escapeXml(str?: string | null): string {
-  if (!str) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
+  return str ? escapeXmlQuoted(String(str)) : '';
 }
 
 /**

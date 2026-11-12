@@ -54,6 +54,7 @@ import { DELIMITED_RECORD_SEPARATOR, FORMULA_TRIGGER, UTF8_BOM_CHAR, writesBomBy
 import { DELIMITER_CANDIDATES, detectDelimiter, nominalDelimiter, parseDelimitedRecords, raggedRowWarnings } from './delimited-detect';
 import { reportConversionWarning } from './conversion-warnings';
 import { LEGACY_TABLES, MIN_LEGACY_EVIDENCE_CHARS, decodeWithTable } from './legacy-tables';
+import { escapeMarkupAttribute } from '../text/escape';
 
 export { encodeParquet, decodeParquet };
 
@@ -1140,7 +1141,7 @@ function generateTableHtml(data: Record<string, unknown>[], title: string): stri
   const headerHtml = headers
     .map(
       (h) =>
-        `<th style="padding: 10px; border: 1px solid #CCD2FC; background: #F0F2FE; color: #1F2340;">${escapeHtml(
+        `<th style="padding: 10px; border: 1px solid #CCD2FC; background: #F0F2FE; color: #1F2340;">${escapeMarkupAttribute(
           h
         )}</th>`
     )
@@ -1151,7 +1152,7 @@ function generateTableHtml(data: Record<string, unknown>[], title: string): stri
         `<tr>${headers
           .map(
             (h) =>
-              `<td style="padding: 8px 10px; border: 1px solid #E1E4EE; color: #4D536B;">${escapeHtml(
+              `<td style="padding: 8px 10px; border: 1px solid #E1E4EE; color: #4D536B;">${escapeMarkupAttribute(
                 String(row[h] ?? '')
               )}</td>`
           )
@@ -1163,7 +1164,7 @@ function generateTableHtml(data: Record<string, unknown>[], title: string): stri
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>${escapeHtml(title)}</title>
+  <title>${escapeMarkupAttribute(title)}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 2rem; color: #1F2340; }
     h1 { color: #5C6BC0; }
@@ -1171,17 +1172,13 @@ function generateTableHtml(data: Record<string, unknown>[], title: string): stri
   </style>
 </head>
 <body>
-  <h1>${escapeHtml(title)}</h1>
+  <h1>${escapeMarkupAttribute(title)}</h1>
   <table>
     <thead><tr>${headerHtml}</tr></thead>
     <tbody>${rowsHtml}</tbody>
   </table>
 </body>
 </html>`;
-}
-
-function escapeHtml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 /**

@@ -56,6 +56,7 @@ import {
   type ParsedSvgVectorDocument,
   parseSvgPathToPoints as parseSvgPathToBezierPoints,
 } from './vector-metafile';
+import { escapeMarkupAttribute } from '../text/escape';
 
 export {
   encodeEmf,
@@ -116,7 +117,7 @@ function parseCgmTextElements(cgmText: string): string[] {
     if (close < 0) break;
     if (close > open + 1) {
       elements.push(
-        `<text x="${head[1]}" y="${head[2]}" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="#111827">${escapeXml(cgmText.substring(open + 1, close))}</text>`
+        `<text x="${head[1]}" y="${head[2]}" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="#111827">${escapeMarkupAttribute(cgmText.substring(open + 1, close))}</text>`
       );
       CGM_TEXT_HEAD_PATTERN.lastIndex = close + 1;
     }
@@ -1009,6 +1010,3 @@ function dxfToDwg(_dxfString: string): never {
   throw new CadGeometryUnavailableError('Unsupported CAD format: DWG binary encoder unavailable');
 }
 
-function escapeXml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}

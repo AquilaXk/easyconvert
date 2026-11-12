@@ -10,6 +10,7 @@ import { parseHwpDocument } from '../lib/conversions/hwp';
 import { convertFile } from '../lib/conversions';
 import { readRawInputBuffer } from './worker-output';
 import type { WorkerVfsPayload } from './worker-types';
+import { escapeMarkupText } from '../lib/text/escape';
 
 /** Text sources rendered to PDF; CJK or complex-script text and all HTML prefer LibreOffice. */
 const TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md', 'html', 'htm', 'hwp']);
@@ -135,12 +136,8 @@ function planTextPdfEngine(
   return { complexScript, preferNative: cjk };
 }
 
-function escapeHtmlText(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
 /** Plain text as an HTML document, one paragraph per line. */
 function plainTextToHtml(text: string): string {
-  const paragraphs = text.split(/\r\n?|\n/).map((line) => (line.trim() ? `<p>${escapeHtmlText(line)}</p>` : '<p><br></p>'));
+  const paragraphs = text.split(/\r\n?|\n/).map((line) => (line.trim() ? `<p>${escapeMarkupText(line)}</p>` : '<p><br></p>'));
   return `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>\n${paragraphs.join('\n')}\n</body></html>\n`;
 }

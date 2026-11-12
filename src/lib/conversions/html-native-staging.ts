@@ -21,6 +21,7 @@ import {
   stripControls,
   type HtmlResourcePolicy,
 } from './html-omitted-resources';
+import { escapeHtmlQuoted } from '../text/escape';
 
 /**
  * Rebuilds HTML bound for LibreOffice from the parsed tree, so LibreOffice reads exactly what was
@@ -143,10 +144,6 @@ const IMAGE_SIGNATURES: ReadonlyMap<string, readonly Buffer[]> = new Map([
   ['gif', [Buffer.from('GIF87a', 'latin1'), Buffer.from('GIF89a', 'latin1')]],
 ]);
 const MAX_REFERENCE_PREVIEW = 80;
-
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
 
 /** Base64 PNG, JPEG or GIF data whose decoded bytes start with the declared format's signature. */
 function isEmbeddedRasterImage(url: string): boolean {
@@ -345,7 +342,7 @@ class StagedHtmlWriter {
   write(root: HtmlElement): string {
     this.styleText = styleSheetsText(root);
     this.children(root.children);
-    const title = this.title ? `<title>${escapeHtml(stripControls(this.title))}</title>` : '';
+    const title = this.title ? `<title>${escapeHtmlQuoted(stripControls(this.title))}</title>` : '';
     const styles = this.styles.map((css) => `<style>${css}</style>`).join('');
     return (
       `<html${this.documentAttributes ?? ''}><head><meta charset="utf-8">${title}${styles}</head>` +
@@ -359,7 +356,7 @@ class StagedHtmlWriter {
 
   private node(node: HtmlNode): void {
     if (typeof node === 'string') {
-      this.body.push(escapeHtml(stripControls(node)));
+      this.body.push(escapeHtmlQuoted(stripControls(node)));
       return;
     }
     const tag = node.tag;
@@ -377,7 +374,7 @@ class StagedHtmlWriter {
       return;
     }
     if (PREFORMATTED_TEXT_ELEMENTS.has(tag)) {
-      this.body.push(`<pre>${escapeHtml(stripControls(textContent(node)))}</pre>`);
+      this.body.push(`<pre>${escapeHtmlQuoted(stripControls(textContent(node)))}</pre>`);
       return;
     }
     if (tag === DOCUMENT_ELEMENT && this.documentAttributes === undefined) this.documentAttributes = this.attributes(node);
@@ -401,7 +398,7 @@ class StagedHtmlWriter {
   /** The link target of an element that is not written with its `id`, or is written with one LibreOffice ignores: a named anchor, written where the element starts. */
   private targetAtStart(element: HtmlElement): void {
     const id = stripControls(element.attrs.get(ID_ATTRIBUTE) ?? '');
-    if (id !== '') this.body.push(`<a name="${escapeHtml(id)}"></a>`);
+    if (id !== '') this.body.push(`<a name="${escapeHtmlQuoted(id)}"></a>`);
   }
 
   /** A `<link rel="stylesheet">` is dropped like the rest of the head, but its style sheet is a loss worth reporting. */
@@ -416,7 +413,7 @@ class StagedHtmlWriter {
     let written = '';
     for (const [name, value] of element.attrs) {
       const kept = this.attributeValue(element, name, value);
-      if (kept !== null) written += ` ${name}="${escapeHtml(kept)}"`;
+      if (kept !== null) written += ` ${name}="${escapeHtmlQuoted(kept)}"`;
     }
     return written;
   }

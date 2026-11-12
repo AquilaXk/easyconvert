@@ -1,4 +1,5 @@
 import { CorruptStreamError } from '../types';
+import { escapeMarkupText } from '../text/escape';
 
 /**
  * Transpiler for the equation scripts of the Hangul word processor (HWPTAG_EQEDIT) to MathML and LaTeX.
@@ -437,28 +438,24 @@ function latexOperator(text: string): string {
   }
 }
 
-function escapeXml(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
 function mathmlOf(node: EqNode): string {
   switch (node.type) {
-    case 'mi': return node.upright ? `<mi mathvariant="normal">${escapeXml(node.text)}</mi>` : `<mi>${escapeXml(node.text)}</mi>`;
+    case 'mi': return node.upright ? `<mi mathvariant="normal">${escapeMarkupText(node.text)}</mi>` : `<mi>${escapeMarkupText(node.text)}</mi>`;
     case 'mn': return `<mn>${node.text}</mn>`;
-    case 'mo': return `<mo>${escapeXml(node.text)}</mo>`;
-    case 'text': return `<mtext>${escapeXml(node.text)}</mtext>`;
+    case 'mo': return `<mo>${escapeMarkupText(node.text)}</mo>`;
+    case 'text': return `<mtext>${escapeMarkupText(node.text)}</mtext>`;
     case 'space': return `<mspace width="${node.width}"/>`;
     case 'row': return node.children.length === 1 ? mathmlOf(node.children[0]) : `<mrow>${node.children.map(mathmlOf).join('')}</mrow>`;
     case 'frac': return `<mfrac${node.atop ? ' linethickness="0"' : ''}>${mathmlOf(node.num)}${mathmlOf(node.den)}</mfrac>`;
     case 'sqrt': return `<msqrt>${mathmlOf(node.body)}</msqrt>`;
     case 'root': return `<mroot>${mathmlOf(node.body)}${mathmlOf(node.index)}</mroot>`;
     case 'script': return scriptMathml(node);
-    case 'fence': return `<mrow><mo fence="true">${escapeXml(node.open)}</mo>${mathmlOf(node.body)}<mo fence="true">${escapeXml(node.close)}</mo></mrow>`;
+    case 'fence': return `<mrow><mo fence="true">${escapeMarkupText(node.open)}</mo>${mathmlOf(node.body)}<mo fence="true">${escapeMarkupText(node.close)}</mo></mrow>`;
     case 'table': return tableMathml(node);
     case 'accent':
       return node.under
-        ? `<munder>${mathmlOf(node.base)}<mo>${escapeXml(node.glyph)}</mo></munder>`
-        : `<mover accent="true">${mathmlOf(node.base)}<mo>${escapeXml(node.glyph)}</mo></mover>`;
+        ? `<munder>${mathmlOf(node.base)}<mo>${escapeMarkupText(node.glyph)}</mo></munder>`
+        : `<mover accent="true">${mathmlOf(node.base)}<mo>${escapeMarkupText(node.glyph)}</mo></mover>`;
     case 'style': return `<mstyle mathvariant="${node.variant}">${mathmlOf(node.body)}</mstyle>`;
   }
 }
@@ -476,7 +473,7 @@ function tableMathml(node: Extract<EqNode, { type: 'table' }>): string {
   const rows = node.rows.map((row) => `<mtr>${row.map((cell) => `<mtd>${mathmlOf(cell)}</mtd>`).join('')}</mtr>`).join('');
   const table = `<mtable${align}>${rows}</mtable>`;
   if (!node.open && !node.close) return table;
-  return `<mrow><mo fence="true">${escapeXml(node.open)}</mo>${table}<mo fence="true">${escapeXml(node.close)}</mo></mrow>`;
+  return `<mrow><mo fence="true">${escapeMarkupText(node.open)}</mo>${table}<mo fence="true">${escapeMarkupText(node.close)}</mo></mrow>`;
 }
 
 /** LaTeX for a sequence: source spacing between terms is kept, and a command is never glued to a following letter. */

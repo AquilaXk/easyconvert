@@ -15,6 +15,7 @@ import type { DocumentModel } from './document-model/model';
 import { textRun } from './document-model/support';
 import { HWP_TAGS, HWP_UTF16_UNIT_BYTES, buildHwpRecord, decodeHwpText, parseHwpRecords, type HwpRecord } from './hwp-records';
 import { HWP_EQ_GREEK, HWP_EQ_SYMBOLS, hwpEquationToLaTeX, hwpEquationToMathML } from './hwp-equation';
+import { escapeMarkupAttribute } from '../text/escape';
 
 export interface HwpEquation {
   script: string;
@@ -486,11 +487,11 @@ export async function convertHwpDocument(
   if (tgt === 'rtf') {
     const bodyParts: string[] = [];
     doc.paragraphs.forEach((p) => {
-      bodyParts.push(escapeHtml(p.text).replace(/\r?\n/g, '\\par '));
+      bodyParts.push(escapeMarkupAttribute(p.text).replace(/\r?\n/g, '\\par '));
     });
     doc.tables.forEach((t) => {
       t.rows.forEach((r) => {
-        bodyParts.push(r.map(escapeHtml).join(' \\tab ') + '\\par ');
+        bodyParts.push(r.map(escapeMarkupAttribute).join(' \\tab ') + '\\par ');
       });
     });
     const rtf = `{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Malgun Gothic;\\f1 Times New Roman;}}\\fs24 ${bodyParts.join('\\par\\par ')}}\n`;
@@ -545,14 +546,6 @@ export async function convertHwp(
 ): Promise<ConversionResult> {
   const doc = parseHwpDocument(inputBuffer);
   return convertHwpDocument(doc, targetFormat, options, baseName);
-}
-
-function escapeXml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-function escapeHtml(str: string): string {
-  return escapeXml(str);
 }
 
 /**

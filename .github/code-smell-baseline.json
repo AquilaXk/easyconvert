@@ -569,7 +569,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3448
+    "maxValue": 3445
   },
   {
     "file": "src/lib/conversions/hwp-reader.ts",
@@ -768,27 +768,6 @@
   },
   {
     "file": "src/lib/conversions/media-ffmpeg-args.ts",
-    "rule": "complexity",
-    "function": "buildFfmpegArguments",
-    "count": 1,
-    "maxValue": 360
-  },
-  {
-    "file": "src/lib/conversions/media-ffmpeg-args.ts",
-    "rule": "max-lines-per-function",
-    "function": "buildFfmpegArguments",
-    "count": 1,
-    "maxValue": 649
-  },
-  {
-    "file": "src/lib/conversions/media-ffmpeg-args.ts",
-    "rule": "max-lines",
-    "function": "<module>",
-    "count": 1,
-    "maxValue": 1754
-  },
-  {
-    "file": "src/lib/conversions/media-ffmpeg-args.ts",
     "rule": "max-params",
     "function": "buildFfmpegArguments",
     "count": 1,
@@ -800,12 +779,6 @@
     "function": "buildTwoPassArguments",
     "count": 1,
     "maxValue": 7
-  },
-  {
-    "file": "src/lib/conversions/media-ffmpeg-args.ts",
-    "rule": "no-nested-ternary",
-    "function": "buildFfmpegArguments",
-    "count": 3
   },
   {
     "file": "src/lib/conversions/media.ts",
@@ -911,407 +884,11 @@
     "count": 1
   },
   {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "<module>",
-    "count": 2
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "constructor",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "convertXlsxSource",
-    "count": 3
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "evaluate",
-    "count": 2
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "evaluateWithDag",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "executeFunction",
-    "count": 8
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "flattenNumbers",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "getCellValue",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "isCellMatch",
-    "count": 2
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "isErrorCode",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parseAdditive",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parseAllXlsxWorksheets",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parseComparison",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parseConcat",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parseDocxXml",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parseFunctionCall",
-    "count": 3
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parseMultiplicative",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parsePower",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parsePrimary",
-    "count": 3
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parseUnary",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "resolveRange",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "resolveRange2D",
-    "count": 3
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "setCell",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "walk",
-    "count": 2
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "complexity",
-    "function": "convertFb2Source",
-    "count": 1,
-    "maxValue": 31
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "complexity",
-    "function": "convertOffice",
-    "count": 1,
-    "maxValue": 54
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "complexity",
-    "function": "convertXlsxSource",
-    "count": 1,
-    "maxValue": 36
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "complexity",
-    "function": "evaluateWithDag",
-    "count": 1,
-    "maxValue": 34
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "complexity",
-    "function": "executeFunction",
-    "count": 1,
-    "maxValue": 113
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "complexity",
-    "function": "formatSpreadsheetCellValue",
-    "count": 1,
-    "maxValue": 33
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "complexity",
-    "function": "parseAllXlsxWorksheets",
-    "count": 1,
-    "maxValue": 85
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "complexity",
-    "function": "parseDrawingMlShapes",
-    "count": 1,
-    "maxValue": 81
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "complexity",
-    "function": "parsePptxSlideSceneGraph",
-    "count": 1,
-    "maxValue": 121
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "complexity",
-    "function": "parseSingleDocxTable",
-    "count": 1,
-    "maxValue": 53
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "complexity",
-    "function": "readBiff8Worksheets",
-    "count": 1,
-    "maxValue": 44
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "complexity",
-    "function": "renderPdfChart",
-    "count": 1,
-    "maxValue": 31
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "complexity",
-    "function": "renderSinglePdfShape",
-    "count": 1,
-    "maxValue": 53
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "complexity",
-    "function": "renderSingleShapeSvg",
-    "count": 1,
-    "maxValue": 77
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "complexity",
-    "function": "renderTable",
-    "count": 2,
-    "maxValue": 50
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "complexity",
-    "function": "tokenize",
-    "count": 1,
-    "maxValue": 31
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "max-depth",
-    "function": "parseAllXlsxWorksheets",
-    "count": 1,
-    "maxValue": 6
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "max-depth",
-    "function": "parseDrawingMlShapes",
-    "count": 8,
-    "maxValue": 7
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "max-depth",
-    "function": "parsePptxSlideSceneGraph",
-    "count": 17,
-    "maxValue": 9
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "max-depth",
-    "function": "renderTable",
-    "count": 1,
-    "maxValue": 6
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "max-lines-per-function",
-    "function": "convertOffice",
-    "count": 1,
-    "maxValue": 253
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "max-lines-per-function",
-    "function": "generatePdfFromDocx",
-    "count": 2,
-    "maxValue": 313
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "max-lines-per-function",
-    "function": "parseAllXlsxWorksheets",
-    "count": 1,
-    "maxValue": 273
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "max-lines-per-function",
-    "function": "parseDrawingMlShapes",
-    "count": 1,
-    "maxValue": 275
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "max-lines-per-function",
-    "function": "parsePptxSlideSceneGraph",
-    "count": 1,
-    "maxValue": 473
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "max-lines-per-function",
-    "function": "renderTable",
-    "count": 1,
-    "maxValue": 258
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "max-lines",
-    "function": "<module>",
-    "count": 1,
-    "maxValue": 9241
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
+    "file": "src/lib/conversions/office/affine.ts",
     "rule": "max-params",
     "function": "computeGroupTransformMatrix",
     "count": 1,
     "maxValue": 7
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "max-params",
-    "function": "parsePptxSlideSceneGraph",
-    "count": 1,
-    "maxValue": 8
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "max-params",
-    "function": "renderPdfChart",
-    "count": 1,
-    "maxValue": 7
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "max-params",
-    "function": "renderSinglePdfShape",
-    "count": 1,
-    "maxValue": 7
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "no-nested-ternary",
-    "function": "computeGroupTransformMatrix",
-    "count": 2
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "no-nested-ternary",
-    "function": "executeFunction",
-    "count": 3
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "no-nested-ternary",
-    "function": "parseBorder",
-    "count": 2
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "no-nested-ternary",
-    "function": "parseDocxXml",
-    "count": 3
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "no-nested-ternary",
-    "function": "renderParagraph",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "no-nested-ternary",
-    "function": "renderTable",
-    "count": 2
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "no-nested-ternary",
-    "function": "renderTableToRaster",
-    "count": 1
   },
   {
     "file": "src/lib/conversions/office/biff-chart.ts",
@@ -1321,11 +898,122 @@
     "maxValue": 31
   },
   {
+    "file": "src/lib/conversions/office/docx-html.ts",
+    "rule": "complexity",
+    "function": "renderTable",
+    "count": 1,
+    "maxValue": 34
+  },
+  {
+    "file": "src/lib/conversions/office/docx-parse.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseDocxXml",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office/docx-parse.ts",
+    "rule": "complexity",
+    "function": "parseSingleDocxTable",
+    "count": 1,
+    "maxValue": 53
+  },
+  {
+    "file": "src/lib/conversions/office/docx-pdf.ts",
+    "rule": "complexity",
+    "function": "renderTable",
+    "count": 1,
+    "maxValue": 46
+  },
+  {
+    "file": "src/lib/conversions/office/docx-pdf.ts",
+    "rule": "max-depth",
+    "function": "renderTable",
+    "count": 1,
+    "maxValue": 6
+  },
+  {
+    "file": "src/lib/conversions/office/docx-pdf.ts",
+    "rule": "max-lines-per-function",
+    "function": "generatePdfFromDocx",
+    "count": 2,
+    "maxValue": 308
+  },
+  {
+    "file": "src/lib/conversions/office/docx-pdf.ts",
+    "rule": "max-lines-per-function",
+    "function": "renderTable",
+    "count": 1,
+    "maxValue": 254
+  },
+  {
+    "file": "src/lib/conversions/office/drawingml-shapes.ts",
+    "rule": "complexity",
+    "function": "parseDrawingMlShapes",
+    "count": 1,
+    "maxValue": 81
+  },
+  {
+    "file": "src/lib/conversions/office/drawingml-shapes.ts",
+    "rule": "complexity",
+    "function": "renderSingleShapeSvg",
+    "count": 1,
+    "maxValue": 77
+  },
+  {
+    "file": "src/lib/conversions/office/drawingml-shapes.ts",
+    "rule": "max-depth",
+    "function": "parseDrawingMlShapes",
+    "count": 8,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/office/drawingml-shapes.ts",
+    "rule": "max-lines-per-function",
+    "function": "parseDrawingMlShapes",
+    "count": 1,
+    "maxValue": 275
+  },
+  {
+    "file": "src/lib/conversions/office/ebook-convert.ts",
+    "rule": "complexity",
+    "function": "convertFb2Source",
+    "count": 1,
+    "maxValue": 31
+  },
+  {
     "file": "src/lib/conversions/office/html-text.ts",
     "rule": "complexity",
     "function": "htmlToText",
     "count": 1,
     "maxValue": 31
+  },
+  {
+    "file": "src/lib/conversions/office/pdf-chart.ts",
+    "rule": "complexity",
+    "function": "renderPdfChart",
+    "count": 1,
+    "maxValue": 31
+  },
+  {
+    "file": "src/lib/conversions/office/pdf-chart.ts",
+    "rule": "max-params",
+    "function": "renderPdfChart",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/office/pdf-shapes.ts",
+    "rule": "complexity",
+    "function": "renderSinglePdfShape",
+    "count": 1,
+    "maxValue": 53
+  },
+  {
+    "file": "src/lib/conversions/office/pdf-shapes.ts",
+    "rule": "max-params",
+    "function": "renderSinglePdfShape",
+    "count": 1,
+    "maxValue": 7
   },
   {
     "file": "src/lib/conversions/office/pml-reader.ts",
@@ -1340,6 +1028,235 @@
     "function": "readCharacterFontRuns",
     "count": 1,
     "maxValue": 32
+  },
+  {
+    "file": "src/lib/conversions/office/pptx-scene.ts",
+    "rule": "complexity",
+    "function": "parsePptxSlideSceneGraph",
+    "count": 1,
+    "maxValue": 121
+  },
+  {
+    "file": "src/lib/conversions/office/pptx-scene.ts",
+    "rule": "max-depth",
+    "function": "parsePptxSlideSceneGraph",
+    "count": 17,
+    "maxValue": 9
+  },
+  {
+    "file": "src/lib/conversions/office/pptx-scene.ts",
+    "rule": "max-lines-per-function",
+    "function": "parsePptxSlideSceneGraph",
+    "count": 1,
+    "maxValue": 473
+  },
+  {
+    "file": "src/lib/conversions/office/pptx-scene.ts",
+    "rule": "max-params",
+    "function": "parsePptxSlideSceneGraph",
+    "count": 1,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-format.ts",
+    "rule": "complexity",
+    "function": "formatSpreadsheetCellValue",
+    "count": 1,
+    "maxValue": 33
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "<module>",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "constructor",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "evaluate",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "evaluateWithDag",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "executeFunction",
+    "count": 6
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "flattenNumbers",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "getCellValue",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "isCellMatch",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "isErrorCode",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseAdditive",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseComparison",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseConcat",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseFunctionCall",
+    "count": 3
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseMultiplicative",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parsePower",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parsePrimary",
+    "count": 3
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseUnary",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "resolveRange",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "resolveRange2D",
+    "count": 3
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "setCell",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "walk",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "complexity",
+    "function": "evaluateWithDag",
+    "count": 1,
+    "maxValue": 34
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "complexity",
+    "function": "executeFunction",
+    "count": 1,
+    "maxValue": 105
+  },
+  {
+    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
+    "rule": "complexity",
+    "function": "tokenize",
+    "count": 1,
+    "maxValue": 31
+  },
+  {
+    "file": "src/lib/conversions/office/xls-parse.ts",
+    "rule": "complexity",
+    "function": "readBiff8Worksheets",
+    "count": 1,
+    "maxValue": 44
+  },
+  {
+    "file": "src/lib/conversions/office/xlsx-convert.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "convertXlsxSource",
+    "count": 3
+  },
+  {
+    "file": "src/lib/conversions/office/xlsx-convert.ts",
+    "rule": "complexity",
+    "function": "convertXlsxSource",
+    "count": 1,
+    "maxValue": 36
+  },
+  {
+    "file": "src/lib/conversions/office/xlsx-parse.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseAllXlsxWorksheets",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office/xlsx-parse.ts",
+    "rule": "complexity",
+    "function": "parseAllXlsxWorksheets",
+    "count": 1,
+    "maxValue": 85
+  },
+  {
+    "file": "src/lib/conversions/office/xlsx-parse.ts",
+    "rule": "max-depth",
+    "function": "parseAllXlsxWorksheets",
+    "count": 1,
+    "maxValue": 6
+  },
+  {
+    "file": "src/lib/conversions/office/xlsx-parse.ts",
+    "rule": "max-lines-per-function",
+    "function": "parseAllXlsxWorksheets",
+    "count": 1,
+    "maxValue": 273
   },
   {
     "file": "src/lib/conversions/openexr-decode-piz.ts",

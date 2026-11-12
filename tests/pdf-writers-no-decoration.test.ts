@@ -218,12 +218,18 @@ describe('office document writers draw only the document', () => {
 });
 
 describe('the writers no longer carry fixed truncations or decorations', () => {
-  const read = (rel: string) => fs.readFileSync(path.resolve(__dirname, '..', 'src', 'lib', 'conversions', rel), 'utf-8');
+  const conversionsDir = path.resolve(__dirname, '..', 'src', 'lib', 'conversions');
+  const read = (rel: string) => fs.readFileSync(path.join(conversionsDir, rel), 'utf-8');
+  /** `office.ts` re-exports the modules of `office/`, so the writers' literals live in that directory. */
+  const readOfficeSources = () =>
+    ['office.ts', ...fs.readdirSync(path.join(conversionsDir, 'office')).filter((name) => name.endsWith('.ts')).map((name) => `office/${name}`)]
+      .map(read)
+      .join('\n');
 
   it.each([
     ['data.ts', /slice\(0, 10\)|slice\(0, 200\)|Structured Data Export|ellipsis: true/],
-    ['office.ts', /Epub content|FB2 text content|ellipsis: true|Sheet: \$\{sheet\.name\}`, hasUnicodeFont|Extracted content from|document content`|ebook content|Electronic Book Content|Presentation slide content|Generated presentation content/],
+    ['office', /Epub content|FB2 text content|ellipsis: true|Sheet: \$\{sheet\.name\}`, hasUnicodeFont|Extracted content from|document content`|ebook content|Electronic Book Content|Presentation slide content|Generated presentation content/],
   ])('%s has none of the removed literals', (file, pattern) => {
-    expect(read(file as string)).not.toMatch(pattern as RegExp);
+    expect(file === 'office' ? readOfficeSources() : read(file as string)).not.toMatch(pattern as RegExp);
   });
 });
