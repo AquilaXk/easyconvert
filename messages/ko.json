@@ -1937,17 +1937,64 @@
       "invalid_key_settings": "API 키 설정을 확인해 주세요. 이름, 권한 범위, 주소 목록, 만료일 중 맞지 않는 값이 있어요.",
       "invalid_grace_period": "유예 시간은 0초에서 7일 사이로 정해 주세요.",
       "key_create_failed": "API 키를 만들지 못했어요. 잠시 후 다시 시도해 주세요."
+    },
+    "billing": {
+      "billing_unavailable": "유료 요금제는 아직 이용할 수 없어요.",
+      "billing_provider_failed": "결제 서비스에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.",
+      "invalid_plan": "선택한 요금제를 이용할 수 없어요.",
+      "already_subscribed": "이미 유료 요금제를 쓰고 있어요. 구독 관리에서 변경하거나 해지할 수 있어요.",
+      "no_subscription": "구독 중인 요금제가 없어요.",
+      "invalid_signature": "요청을 확인하지 못했어요."
+    }
+  },
+  "billing": {
+    "comingSoon": "출시 예정",
+    "subscribe": "구독하기",
+    "signInToSubscribe": "로그인하고 구독하기",
+    "currentPlan": "현재 요금제",
+    "manage": "구독 관리",
+    "starting": "결제 화면을 여는 중이에요",
+    "completed": "결제가 완료됐어요. 요금제는 잠시 뒤에 바뀌어요.",
+    "plans": {
+      "pro": {
+        "tagline": "변환을 자주 하거나 큰 파일을 다루는 분을 위한 요금제예요."
+      },
+      "enterprise": {
+        "tagline": "대량 변환이나 자동화에 쓰는 요금제예요."
+      }
+    },
+    "limits": {
+      "daily": "하루 {count, number}회 변환",
+      "fileSize": "파일당 최대 {size}",
+      "inheritsFree": "무료 요금제의 모든 기능"
+    },
+    "price": {
+      "month": "한 달 {price}",
+      "year": "1년 {price}",
+      "other": "{price}"
+    },
+    "account": {
+      "heading": "구독",
+      "plan": "{plan} 요금제",
+      "renews": "다음 결제일은 {date}이에요.",
+      "endsOn": "{date}에 끝나고, 그 뒤에는 무료 요금제로 돌아가요.",
+      "pastDue": "마지막 결제가 처리되지 않았어요. {date}까지는 지금 요금제를 쓸 수 있어요.",
+      "ended": "구독이 종료됐어요. 지금은 무료 요금제예요.",
+      "none": "지금은 무료 요금제예요.",
+      "manage": "구독 관리",
+      "plans": "유료 요금제 보기"
     }
   },
   "pricing": {
     "title": "요금",
-    "intro": "EasyConvert는 무료예요. 지금은 요금제가 하나뿐이고, 한도는 아래와 같아요.",
+    "intro": "EasyConvert는 무료로 쓸 수 있어요. 한도가 더 높은 유료 요금제는 아래에 안내해요.",
     "plan": {
       "name": "무료",
       "tagline": "일상적인 변환, 테스트, 작은 프로젝트를 위한 요금제예요.",
       "price": "0원",
       "cta": "회원가입"
     },
+    "plansLabel": "요금제",
     "limitsHeading": "한도",
     "limits": {
       "daily": {
@@ -1977,7 +2024,6 @@
       "api": "계정에서 만든 API 키로 API 사용",
       "noCard": "신용카드 없이 사용"
     },
-    "paidNote": "아직 판매 중인 유료 요금제는 없어요. 생기면 요금제와 가격을 이 페이지에 안내할게요.",
     "faqHeading": "자주 묻는 질문",
     "faq": {
       "daily": {
@@ -2001,8 +2047,8 @@
         "answer": "네, 계정에서 API 키를 만들어 요청을 보내면 돼요. API 요청도 같은 하루 {daily}회 한도에 포함돼요."
       },
       "paid": {
-        "question": "유료 요금제가 생기나요?",
-        "answer": "아직 판매 중인 유료 요금제는 없어서 살 것도, 낼 요금도 없어요. 한도가 더 높은 유료 요금제를 추가하면 이 페이지에 안내할게요."
+        "question": "유료 요금제를 살 수 있나요?",
+        "answer": "유료 요금제는 판매를 시작하기 전까지 \"출시 예정\"으로 표시돼요. 판매를 시작하면 이 페이지에서 구독하고, 대시보드에서 구독을 관리하거나 해지할 수 있어요."
       }
     },
     "cta": {

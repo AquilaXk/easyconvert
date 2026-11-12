@@ -3,7 +3,7 @@ import { useFormatter, useMessages, useTranslations, type Messages } from 'next-
 import type { ConversionFailure } from '@/lib/conversion-failure';
 import { PLAN_MAX_FILE_BYTES, URL_IMPORT_MAX_BYTES, maxFileBytes, type Plan } from '@/lib/plan-limits';
 import {
-  AUTH_ERROR_CODES, CONVERSION_REFUSAL_CODES, DASHBOARD_REFUSAL_CODES, URL_IMPORT_ERROR_CODES, isCodeOf, problemNameOfType,
+  AUTH_ERROR_CODES, BILLING_REFUSAL_CODES, CONVERSION_REFUSAL_CODES, DASHBOARD_REFUSAL_CODES, URL_IMPORT_ERROR_CODES, isCodeOf, problemNameOfType,
 } from '@/lib/refusal-codes';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import { useFileTooLargeMessage, useFormatBytes } from './format';
@@ -195,6 +195,19 @@ export function useDashboardErrorWording(
     (payload: unknown, status: number, fallback: string) => {
       const code = answerOf(payload).code;
       return isCodeOf(DASHBOARD_REFUSAL_CODES, code) ? t(code) : problemWording(payload, status, fallback);
+    },
+    [t, problemWording]
+  );
+}
+
+/** A refusal of a billing route (`/api/billing/**`), by its `code`; an answer without a code this build knows is worded by its status. */
+export function useBillingErrorWording(): (payload: unknown, status: number, fallback: string) => string {
+  const t = useTranslations('errors.billing');
+  const problemWording = useProblemWording({ untypedRefusal: 'action' });
+  return useCallback(
+    (payload: unknown, status: number, fallback: string) => {
+      const code = answerOf(payload).code;
+      return isCodeOf(BILLING_REFUSAL_CODES, code) ? t(code) : problemWording(payload, status, fallback);
     },
     [t, problemWording]
   );

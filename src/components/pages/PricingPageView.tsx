@@ -2,6 +2,7 @@ import { useTranslations } from 'next-intl';
 import { ArrowRight, Check } from 'lucide-react';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
+import PaidPlanCards from '@/components/billing/PaidPlanCards';
 import { Link } from '@/i18n/navigation';
 import { formatBytesForDisplay } from '@/lib/format-bytes';
 import {
@@ -28,7 +29,7 @@ function limitValues(anonymousDaily: number) {
   };
 }
 
-/** The pricing page: the one free plan with its limits, a note that no paid plan is on sale, and the questions about it. */
+/** The pricing page: the free plan with its limits, the paid plans (coming soon until billing is configured), and the questions about them. */
 export default function PricingPageView({ anonymousDaily }: Readonly<{ anonymousDaily: number }>) {
   const t = useTranslations('pricing');
   const values = limitValues(anonymousDaily);
@@ -44,40 +45,41 @@ export default function PricingPageView({ anonymousDaily }: Readonly<{ anonymous
           </div>
         </section>
 
-        <section aria-labelledby="free-plan-heading" className="pb-12">
-          <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="rounded-md border border-rule bg-surface p-6 sm:p-8">
-              <h2 id="free-plan-heading" className="text-xl text-ink">{t('plan.name')}</h2>
-              <p className="mt-1 text-sm text-ink-3">{t('plan.tagline')}</p>
-              <p className="mt-4 text-3xl font-semibold text-ink">{t('plan.price')}</p>
-              <Link
-                href={{ pathname: '/auth', query: { tab: 'register' } }}
-                className="mt-5 min-h-[44px] inline-flex items-center justify-center px-5 text-sm font-semibold rounded-sm bg-accent text-on-accent hover:opacity-90 transition-opacity"
-              >
-                {t('plan.cta')}
-              </Link>
+        <section aria-label={t('plansLabel')} className="pb-12">
+          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="grid gap-6 md:grid-cols-3 md:items-start">
+              <section aria-labelledby="free-plan-heading" className="rounded-md border border-rule bg-surface p-6 sm:p-8 md:p-6 flex flex-col">
+                <h2 id="free-plan-heading" className="text-xl text-ink">{t('plan.name')}</h2>
+                <p className="mt-1 text-sm text-ink-3 md:min-h-10">{t('plan.tagline')}</p>
+                <p className="mt-4 text-3xl font-semibold text-ink">{t('plan.price')}</p>
+                <Link
+                  href={{ pathname: '/auth', query: { tab: 'register' } }}
+                  className="mt-5 min-h-[44px] inline-flex items-center justify-center self-start px-5 text-sm font-semibold rounded-sm bg-accent text-on-accent hover:opacity-90 transition-opacity"
+                >
+                  {t('plan.cta')}
+                </Link>
 
-              <h3 className="mt-8 text-sm font-semibold text-ink">{t('limitsHeading')}</h3>
-              <dl className="mt-2 divide-y divide-rule border-y border-rule">
-                {LIMIT_ROWS.map((row) => (
-                  <div key={row} className="flex items-baseline justify-between gap-4 py-2.5 text-sm">
-                    <dt className="text-ink-3">{t(`limits.${row}.label`)}</dt>
-                    <dd className="font-medium text-ink text-right">{t(`limits.${row}.value`, values)}</dd>
-                  </div>
-                ))}
-              </dl>
+                <h3 className="mt-8 text-sm font-semibold text-ink">{t('limitsHeading')}</h3>
+                <dl className="mt-2 divide-y divide-rule border-y border-rule">
+                  {LIMIT_ROWS.map((row) => (
+                    <div key={row} className="flex items-baseline justify-between gap-4 py-2.5 text-sm">
+                      <dt className="text-ink-3">{t(`limits.${row}.label`)}</dt>
+                      <dd className="font-medium text-ink text-right">{t(`limits.${row}.value`, values)}</dd>
+                    </div>
+                  ))}
+                </dl>
 
-              <h3 className="mt-8 text-sm font-semibold text-ink">{t('includedHeading')}</h3>
-              <ul className="mt-3 space-y-2">
-                {FEATURE_ROWS.map((row) => (
-                  <li key={row} className="flex gap-2.5 text-sm text-ink-2">
-                    <Check aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-success" />
-                    <span>{t(`features.${row}`)}</span>
-                  </li>
-                ))}
-              </ul>
-
-              <p className="mt-8 border-t border-rule pt-5 text-sm text-ink-3">{t('paidNote')}</p>
+                <h3 className="mt-8 text-sm font-semibold text-ink">{t('includedHeading')}</h3>
+                <ul className="mt-3 space-y-2">
+                  {FEATURE_ROWS.map((row) => (
+                    <li key={row} className="flex gap-2.5 text-sm text-ink-2">
+                      <Check aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-success" />
+                      <span>{t(`features.${row}`)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+              <PaidPlanCards />
             </div>
           </div>
         </section>
