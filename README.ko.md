@@ -169,7 +169,7 @@ npm run bench:quality      # 변환 품질 벤치마크
 - **코드 스멜 래칫.** `npm run guard:code-smells`는 `src/**/*.{ts,tsx}`에 ESLint 규칙 `complexity` 30, `max-depth` 5, `max-lines-per-function` 250, `max-params` 6, `max-lines` 1500, `no-nested-ternary`, `no-explicit-any`를 적용해요. 인라인 `eslint-disable` 주석은 무시해요. 기존 위반은 파일, 규칙, 함수 이름을 키로 `.github/code-smell-baseline.json`에 기록해요. 기준선은 줄어들기만 해요. `NEW`나 `GREW` 줄은 코드를 고쳐서 없애고, 스멜을 지웠다면 `npm run guard:code-smells -- --update`로 줄어든 기준선을 커밋해요.
 - **정책 결정.** 출력 기본값, 한도, 엔진, 품질 게이트는 근거와 함께 [docs/policy-decisions.md](docs/policy-decisions.md)에 기록해요. 정책을 바꾸는 커밋에서 이 문서도 함께 고쳐요.
 - **운영.** [docs/operations/README.md](docs/operations/README.md), [docs/deploy-oci.md](docs/deploy-oci.md), [docs/slo.md](docs/slo.md)를 보세요.
-- **정적 분석.** SonarCloud를 쓰고, 설정은 `sonar-project.properties`에 있어요.
+- **정적 분석.** SonarCloud를 쓰고, 설정은 `.sonarcloud.properties`에 있어요.
 
 관리자는 한 명이에요. 변경은 `main`에 바로 올리고 push마다 CI가 돌아요. 남은 일은 [TODO.md](TODO.md)에 있어요. 배포할 때마다 릴리스에 태그를 달고 짧은 노트를 직접 써요([docs/deploy-oci.md](docs/deploy-oci.md)의 "Releases", [CHANGELOG.md](CHANGELOG.md) 참고).
 
