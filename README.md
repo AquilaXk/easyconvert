@@ -243,6 +243,6 @@ One maintainer. Changes go straight to `main` and CI runs on every push. Remaini
 
 ## Licensing
 
-- **Project License**: EasyConvert is distributed under the [MIT License](LICENSE).
+- **Project License**: EasyConvert is distributed under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE) for the parts that keep their own licences. Versions published before 2026-11-12 were released under the MIT License.
 - **Third-Party Open Source Notices**: Full attribution, copyright, and licence terms for all production dependencies are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 - **External Tools, Relinking & Patent Considerations**: Legal and architecture guidelines covering external CLI tools (FFmpeg, Poppler, veraPDF), LGPL relinking, unRAR component restrictions, and codec patent considerations are available in [docs/licensing.md](docs/licensing.md).

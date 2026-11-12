@@ -1,0 +1,14 @@
+EasyConvert
+Copyright 2026 EasyConvert Contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Parts of this repository keep their own licences:
+- scripts/djvulibre-patches/: patches to DjVuLibre, GPL-2.0-or-later.
+- scripts/vtracer-pixels/: built on the command-line front-end of vtracer, MIT (scripts/vtracer-pixels/LICENSE).
+- scripts/quantizr-pixels/: a program around the quantizr library, MIT (scripts/quantizr-pixels/LICENSE).
+- public/format-icons/: Material Icon Theme icons, MIT (public/format-icons/LICENSE).
+Third-party npm packages and the programs in the worker image are listed in THIRD_PARTY_NOTICES.md and docs/licensing.md.
+
+Versions of EasyConvert published before this licence change (up to commit
+b7a24a12 and its ancestors on the main branch) were released under the MIT License.
