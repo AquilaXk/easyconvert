@@ -5,10 +5,11 @@ import { assertAllowedLibreOfficeFilter } from '@/lib/conversions/pdf-export-opt
 import { validatePdfProtectOptions } from '@/lib/conversions/pdf-postprocess/protect';
 import type { ConversionOptions, PipelineTask } from '@/lib/types';
 import type { FailurePolicy } from '@/lib/queue/graph/types';
+import { captureUrlProblem } from './capture-url';
 import { OPTIMIZABLE_FORMATS, hasOptimizer, optimizeUnavailableMessage } from './optimize-formats';
 import {
   GRAPH_OPERATION_SET,
-  IMPORT_OPERATIONS,
+  SOURCE_OPERATIONS,
   EXPORT_OPERATIONS,
   TARGET_FORMAT_REQUIRED_OPERATIONS,
   RESTRICTED_OUTPUT_FORMATS,
@@ -303,6 +304,92 @@ function findCyclePath(
   return null;
 }
 
+interface GraphEdges {
+  /** u -> [v]: u is a dependency of v. */
+  adjacency: Map<string, string[]>;
+  /** v -> [u]: v depends on u. */
+  incoming: Map<string, string[]>;
+}
+
+/** Checks the inputs of every node (a node that needs one, a reference to a node that exists, a cycle on itself, an export used as input) and the fan-in and fan-out limits, and records the edges. */
+function checkDependencies(
+  nodes: Record<string, TaskNode>,
+  nodeEntries: ReadonlyArray<[string, TaskNode]>,
+  edges: GraphEdges,
+  options: GraphValidationOptions,
+  errors: GraphValidationErrorDetail[]
+): void {
+  const { adjacency, incoming } = edges;
+  const maxFanIn = options.maxFanIn ?? DEFAULT_MAX_FAN_IN;
+  const maxFanOut = options.maxFanOut ?? DEFAULT_MAX_FAN_OUT;
+
+  for (const [nodeId, node] of nodeEntries) {
+    const deps = getTaskDependencies(node);
+    const op = node.op ?? '';
+    const isImport = SOURCE_OPERATIONS.has(op as GraphOperation);
+
+    if (!isImport && deps.length === 0) {
+      errors.push({
+        path: `nodes.${nodeId}.input`,
+        message: `Node "${nodeId}" of operation "${op}" requires at least one input node.`,
+        code: 'MISSING_NODE_INPUT',
+      });
+    }
+
+    // Fan-in check
+    if (deps.length > maxFanIn) {
+      errors.push({
+        path: `nodes.${nodeId}`,
+        message: `Single task fan-in exceeds limit of ${maxFanIn} (task "${nodeId}" has ${deps.length} incoming dependencies).`,
+        code: 'FAN_IN_LIMIT_EXCEEDED',
+      });
+    }
+
+    for (const depId of deps) {
+      if (!nodes[depId]) {
+        errors.push({
+          path: `nodes.${nodeId}.input`,
+          message: `Node "${nodeId}" references non-existent input node "${depId}".`,
+          code: 'NON_EXISTENT_INPUT',
+        });
+        continue;
+      }
+
+      if (depId === nodeId) {
+        errors.push({
+          path: `nodes.${nodeId}.input`,
+          message: `Cycle detected: ${nodeId} -> ${nodeId}`,
+          code: 'SELF_CYCLE_DETECTED',
+        });
+        continue;
+      }
+
+      const depNode = nodes[depId];
+      if (EXPORT_OPERATIONS.has(depNode.op as GraphOperation)) {
+        errors.push({
+          path: `nodes.${nodeId}.input`,
+          message: `Node "${nodeId}" cannot use terminal export node "${depId}" as an input.`,
+          code: 'EXPORT_USED_AS_INPUT',
+        });
+      }
+
+      adjacency.get(depId)?.push(nodeId);
+      incoming.get(nodeId)?.push(depId);
+    }
+  }
+
+  // Fan-out verification: max outgoing connections per node
+  for (const [nodeId, outgoingList] of adjacency.entries()) {
+    if (outgoingList.length > maxFanOut) {
+      errors.push({
+        path: `nodes.${nodeId}`,
+        message: `Single node fan-out exceeds limit of ${maxFanOut} (node "${nodeId}" has ${outgoingList.length} outgoing connections).`,
+        code: 'FAN_OUT_LIMIT_EXCEEDED',
+      });
+    }
+  }
+}
+
 /**
  * Validates a DAG JobGraph using Kahn's topological sort algorithm,
  * enforcing cycle detection, dangling reference rejection, fan-in/fan-out caps,
@@ -404,13 +491,13 @@ export function validateJobGraph(
       });
     }
 
-    if (IMPORT_OPERATIONS.has(op as GraphOperation)) {
+    if (SOURCE_OPERATIONS.has(op as GraphOperation)) {
       importCount++;
       const deps = getTaskDependencies(node);
       if (deps.length > 0) {
         errors.push({
           path: `nodes.${nodeId}.input`,
-          message: `Import node "${nodeId}" cannot specify an input dependency.`,
+          message: `Node "${nodeId}" brings its files in itself and cannot specify an input dependency.`,
           code: 'IMPORT_NODE_HAS_INPUT',
         });
       }
@@ -422,7 +509,7 @@ export function validateJobGraph(
   if (importCount === 0) {
     errors.push({
       path: 'nodes',
-      message: 'Graph must contain at least one import node (import.upload or import.url).',
+      message: 'Graph must contain at least one import node (import.upload or import.url) or a capture.website node.',
       code: 'MISSING_IMPORT_NODE',
     });
   }
@@ -436,74 +523,7 @@ export function validateJobGraph(
   }
 
   // 5. Validate dependency references, self-cycles, and build graphs
-  const maxFanIn = options.maxFanIn ?? DEFAULT_MAX_FAN_IN;
-  const maxFanOut = options.maxFanOut ?? DEFAULT_MAX_FAN_OUT;
-
-  for (const [nodeId, node] of nodeEntries) {
-    const deps = getTaskDependencies(node);
-    const op = node.op ?? '';
-    const isImport = IMPORT_OPERATIONS.has(op as GraphOperation);
-
-    if (!isImport && deps.length === 0) {
-      errors.push({
-        path: `nodes.${nodeId}.input`,
-        message: `Node "${nodeId}" of operation "${op}" requires at least one input node.`,
-        code: 'MISSING_NODE_INPUT',
-      });
-    }
-
-    // Fan-in check
-    if (deps.length > maxFanIn) {
-      errors.push({
-        path: `nodes.${nodeId}`,
-        message: `Single task fan-in exceeds limit of ${maxFanIn} (task "${nodeId}" has ${deps.length} incoming dependencies).`,
-        code: 'FAN_IN_LIMIT_EXCEEDED',
-      });
-    }
-
-    for (const depId of deps) {
-      if (!nodes[depId]) {
-        errors.push({
-          path: `nodes.${nodeId}.input`,
-          message: `Node "${nodeId}" references non-existent input node "${depId}".`,
-          code: 'NON_EXISTENT_INPUT',
-        });
-        continue;
-      }
-
-      if (depId === nodeId) {
-        errors.push({
-          path: `nodes.${nodeId}.input`,
-          message: `Cycle detected: ${nodeId} -> ${nodeId}`,
-          code: 'SELF_CYCLE_DETECTED',
-        });
-        continue;
-      }
-
-      const depNode = nodes[depId];
-      if (EXPORT_OPERATIONS.has(depNode.op as GraphOperation)) {
-        errors.push({
-          path: `nodes.${nodeId}.input`,
-          message: `Node "${nodeId}" cannot use terminal export node "${depId}" as an input.`,
-          code: 'EXPORT_USED_AS_INPUT',
-        });
-      }
-
-      adjacency.get(depId)?.push(nodeId);
-      incoming.get(nodeId)?.push(depId);
-    }
-  }
-
-  // Fan-out verification: max outgoing connections per node
-  for (const [nodeId, outgoingList] of adjacency.entries()) {
-    if (outgoingList.length > maxFanOut) {
-      errors.push({
-        path: `nodes.${nodeId}`,
-        message: `Single node fan-out exceeds limit of ${maxFanOut} (node "${nodeId}" has ${outgoingList.length} outgoing connections).`,
-        code: 'FAN_OUT_LIMIT_EXCEEDED',
-      });
-    }
-  }
+  checkDependencies(nodes, nodeEntries, { adjacency, incoming }, options, errors);
 
   // If there are dangling references or self-loops, abort topological sort to avoid noise
   if (errors.some((e) => e.code === 'NON_EXISTENT_INPUT' || e.code === 'SELF_CYCLE_DETECTED')) {
@@ -658,6 +678,12 @@ export function validateJobGraph(
       }
       case 'import.url': {
         inferredFormats[nodeId] = extractExtension(node.url) || DYNAMIC_FORMAT;
+        break;
+      }
+      case 'capture.website': {
+        const problem = captureUrlProblem(node.url);
+        if (problem !== undefined) errors.push({ path: `nodes.${nodeId}.url`, message: `Node "${nodeId}" (capture.website): ${problem}`, code: 'INVALID_NODE_OPTIONS' });
+        inferredFormats[nodeId] = target ?? UNKNOWN_FORMAT;
         break;
       }
       case 'archive.extract': {

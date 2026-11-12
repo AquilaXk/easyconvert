@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         ConversionOptionsAspectRatioType1,
     )
     from ..models.conversion_options_audio import ConversionOptionsAudio
+    from ..models.conversion_options_capture import ConversionOptionsCapture
     from ..models.conversion_options_metadata import ConversionOptionsMetadata
     from ..models.conversion_options_optimize import ConversionOptionsOptimize
     from ..models.conversion_options_packaging import ConversionOptionsPackaging
@@ -228,6 +229,10 @@ class ConversionOptions:
             keeping the source JPEG stream byte for byte.
         watermark (ConversionOptionsWatermark | Unset): PDF text or image watermarking options.
         protect (ConversionOptionsProtect | Unset): PDF AES-256 encryption and permission restriction options.
+        capture (ConversionOptionsCapture | Unset): How a `capture-website` task loads and draws its page (the page is
+            the `url` of the task). The browser reaches the network only through a gate that refuses every address that is
+            not a public web address, for the page and for each redirect, frame, image, script and request it makes; a hop
+            to a private, loopback or link-local address ends the task with a 422 (`capture_target_blocked`).
         metadata (ConversionOptionsMetadata | Unset): Fields a `metadata.write` task writes into its input (a JPEG, a
             PNG or a PDF) without changing anything else in the file. The names are those of ExifTool and may carry their
             group (`EXIF:Artist`, `XMP:Title`, `PDF:Title`).
@@ -342,6 +347,7 @@ class ConversionOptions:
     jpeg_quality: int | Unset = UNSET
     watermark: ConversionOptionsWatermark | Unset = UNSET
     protect: ConversionOptionsProtect | Unset = UNSET
+    capture: ConversionOptionsCapture | Unset = UNSET
     metadata: ConversionOptionsMetadata | Unset = UNSET
     pdfa: ConversionOptionsPdfa | Unset = UNSET
     split: ConversionOptionsSplit | Unset = UNSET
@@ -653,6 +659,10 @@ class ConversionOptions:
         if not isinstance(self.protect, Unset):
             protect = self.protect.to_dict()
 
+        capture: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.capture, Unset):
+            capture = self.capture.to_dict()
+
         metadata: dict[str, Any] | Unset = UNSET
         if not isinstance(self.metadata, Unset):
             metadata = self.metadata.to_dict()
@@ -878,6 +888,8 @@ class ConversionOptions:
             field_dict["watermark"] = watermark
         if protect is not UNSET:
             field_dict["protect"] = protect
+        if capture is not UNSET:
+            field_dict["capture"] = capture
         if metadata is not UNSET:
             field_dict["metadata"] = metadata
         if pdfa is not UNSET:
@@ -899,6 +911,7 @@ class ConversionOptions:
             ConversionOptionsAspectRatioType1,
         )
         from ..models.conversion_options_audio import ConversionOptionsAudio
+        from ..models.conversion_options_capture import ConversionOptionsCapture
         from ..models.conversion_options_metadata import ConversionOptionsMetadata
         from ..models.conversion_options_optimize import ConversionOptionsOptimize
         from ..models.conversion_options_packaging import ConversionOptionsPackaging
@@ -1354,6 +1367,13 @@ class ConversionOptions:
         else:
             protect = ConversionOptionsProtect.from_dict(_protect)
 
+        _capture = d.pop("capture", UNSET)
+        capture: ConversionOptionsCapture | Unset
+        if isinstance(_capture, Unset):
+            capture = UNSET
+        else:
+            capture = ConversionOptionsCapture.from_dict(_capture)
+
         _metadata = d.pop("metadata", UNSET)
         metadata: ConversionOptionsMetadata | Unset
         if isinstance(_metadata, Unset):
@@ -1496,6 +1516,7 @@ class ConversionOptions:
             jpeg_quality=jpeg_quality,
             watermark=watermark,
             protect=protect,
+            capture=capture,
             metadata=metadata,
             pdfa=pdfa,
             split=split,

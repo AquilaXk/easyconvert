@@ -874,6 +874,40 @@ export const ConversionOptionsSchema = {
       description: 'PDF AES-256 encryption and permission restriction options.',
       properties: PdfProtectOptionsSchema.properties,
     },
+    capture: {
+      type: 'object',
+      description:
+        'How a `capture-website` task loads and draws its page (the page is the `url` of the task). The browser reaches the network only through a gate that refuses every address that is not a public web address, for the page and for each redirect, frame, image, script and request it makes; a hop to a private, loopback or link-local address ends the task with a 422 (`capture_target_blocked`).',
+      properties: {
+        viewport: {
+          type: 'object',
+          description: 'The browser window of a PNG or JPEG capture.',
+          properties: {
+            width: { type: 'integer', minimum: 200, maximum: 3840, description: 'Window width in pixels (1280).' },
+            height: { type: 'integer', minimum: 200, maximum: 16384, description: 'Window height in pixels (800).' },
+          },
+        },
+        fullPage: { type: 'boolean', description: 'PNG and JPEG: capture the whole height of the page, up to 16384 pixels, instead of the window.' },
+        waitUntil: { type: 'string', enum: ['load', 'idle'], description: '`load` (default) draws when the page has loaded; `idle` also waits until the page has made no request for half a second.' },
+        delayMs: { type: 'integer', minimum: 0, maximum: 30000, description: 'Extra time to wait before drawing, in milliseconds.' },
+        quality: { type: 'integer', minimum: 1, maximum: 100, description: 'JPEG quality (85).' },
+        userAgent: { type: 'string', maxLength: 300, description: 'The User-Agent the browser sends.' },
+        timeoutMs: { type: 'integer', minimum: 1000, maximum: 120000, description: 'The time the page has to load and be drawn, in milliseconds (60000). A page that is not done in time ends the task with the code `timeout`.' },
+        pdf: {
+          type: 'object',
+          description: 'PDF output.',
+          properties: {
+            paper: { type: 'string', enum: ['A3', 'A4', 'A5', 'Letter', 'Legal', 'Tabloid'], description: 'Page size (A4).' },
+            width: { type: 'number', minimum: 50, maximum: 2000, description: 'Page width in millimetres; with `height`, it takes the place of `paper`.' },
+            height: { type: 'number', minimum: 50, maximum: 2000, description: 'Page height in millimetres.' },
+            landscape: { type: 'boolean', description: 'Landscape orientation.' },
+            margin: { type: 'number', minimum: 0, maximum: 50, description: 'Margin on every side, in millimetres (10).' },
+            printBackground: { type: 'boolean', description: 'Print the backgrounds of the page (true).' },
+            scale: { type: 'number', minimum: 0.1, maximum: 2, description: 'Zoom of the page (1).' },
+          },
+        },
+      },
+    },
     metadata: {
       type: 'object',
       required: ['set'],
@@ -968,7 +1002,7 @@ export const JobGraphSchema = {
             type: 'string',
             enum: [...GRAPH_OPERATIONS],
             description:
-              'Operation type for this graph node. `thumbnail` makes one picture (JPEG, PNG or WebP) of the first page, or the page `options.thumbnail.page` names, of a document, or of a frame of a video (`options.thumbnail.at`), or of an image, within `options.thumbnail.width` x `height` as `options.thumbnail.fit` places it. `metadata` reads the metadata of its first input into `metadata.json` (the `MetadataReport` schema). `metadata.write` writes `options.metadata.set` into each input, a JPEG, a PNG or a PDF, and keeps the rest of the file as it is.',
+              'Operation type for this graph node. `thumbnail` makes one picture (JPEG, PNG or WebP) of the first page, or the page `options.thumbnail.page` names, of a document, or of a frame of a video (`options.thumbnail.at`), or of an image, within `options.thumbnail.width` x `height` as `options.thumbnail.fit` places it. `metadata` reads the metadata of its first input into `metadata.json` (the `MetadataReport` schema). `metadata.write` writes `options.metadata.set` into each input, a JPEG, a PNG or a PDF, and keeps the rest of the file as it is. `capture.website` draws the public web page at `url` as a PDF, a PNG or a JPEG (`targetFormat`, `options.capture`); it takes no input, and its `url` is kept sealed.',
           },
           input: {
             description: 'Single upstream NodeId or array of upstream NodeIds. A merge node needs at least 2 distinct inputs.',
@@ -994,7 +1028,7 @@ export const JobGraphSchema = {
           url: {
             type: 'string',
             format: 'uri',
-            description: 'URL for import.url or export.url node.',
+            description: 'URL for import.url or export.url node, or the page a capture.website node draws (an http or https page on port 80 or 443).',
           },
           headers: {
             type: 'object',
@@ -1013,7 +1047,7 @@ export const JobGraphSchema = {
           options: {
             $ref: 'https://easyconvert.local/schemas/conversion-options.json',
             description:
-              'Transformation options for convert, ocr, optimize, archive.create and the PDF nodes: `watermark` (pdf.watermark), `protect` (pdf.protect), `password` and `confirmEditRights` (pdf.unlock and every PDF edit), `split` (pdf.split-pages), `pages` (pdf.extract-pages, pdf.delete-pages), `reorder` (pdf.reorder-pages), `rotate` (pdf.rotate-pages), `optimize` (optimize on a PDF), `thumbnail` (thumbnail) and `metadata` (metadata.write).',
+              'Transformation options for convert, ocr, optimize, archive.create and the PDF nodes: `watermark` (pdf.watermark), `protect` (pdf.protect), `password` and `confirmEditRights` (pdf.unlock and every PDF edit), `split` (pdf.split-pages), `pages` (pdf.extract-pages, pdf.delete-pages), `reorder` (pdf.reorder-pages), `rotate` (pdf.rotate-pages), `optimize` (optimize on a PDF), `thumbnail` (thumbnail), `metadata` (metadata.write) and `capture` (capture.website).',
           },
           entries: {
             type: 'array',

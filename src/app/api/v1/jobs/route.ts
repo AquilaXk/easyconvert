@@ -586,7 +586,8 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       originalFilename = storageKey.split('/').pop() || 'file';
     }
 
-    const hasImportUrl = graph && Object.values(normalizeGraphNodes(graph)).some((n) => n.op === 'import.url');
+    const urlSources = graphUrlSources(graph);
+    const hasImportUrl = urlSources.importUrl || urlSources.capture;
 
     if (!targetFormat) {
       return await fail(400, 'Missing required parameter: "targetFormat".');
@@ -609,21 +610,10 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     let sourceDef = sourceFormatParam ? getFormatByExtension(sourceFormatParam) : undefined;
     sourceDef ??= detectFormatFromFilename(originalFilename);
 
-    if (!sourceDef && hasImportUrl && graph) {
-      const graphNodes = normalizeGraphNodes(graph);
-      const urlNode = Object.values(graphNodes).find((n) => n.op === 'import.url') as { url?: string } | undefined;
-      if (urlNode?.url) {
-        try {
-          const parsedUrl = new URL(urlNode.url);
-          const urlExt = path.extname(parsedUrl.pathname).replace(/^\./, '').toLowerCase();
-          sourceDef = getFormatByExtension(urlExt);
-          if (!originalFilename) {
-            originalFilename = path.basename(parsedUrl.pathname) || 'remote_file';
-          }
-        } catch {
-          // ignore
-        }
-      }
+    if (!sourceDef && graph) {
+      const fromGraph = graphSourceOfUrls(graph, urlSources, originalFilename);
+      sourceDef = fromGraph.sourceDef;
+      originalFilename = fromGraph.originalFilename;
     }
 
     if (!sourceDef) {
@@ -794,6 +784,35 @@ const PDF_GRAPH_NODE_OPS = new Set([
   'pdf.rotate-pages',
 ]);
 
+/** Which nodes of a graph make files from an address (an import of a URL, a website capture) instead of from an upload. */
+function graphUrlSources(graph: JobGraph | undefined): { importUrl: boolean; capture: boolean } {
+  const ops = new Set(graph ? Object.values(normalizeGraphNodes(graph)).map((node) => node.op) : []);
+  return { importUrl: ops.has('import.url'), capture: ops.has('capture.website') };
+}
+
+/**
+ * The source format and file name of a graph that has no file of its own, from the extension of the URL its first import names; a graph
+ * that captures a page has the HTML of the page as its source.
+ */
+function graphSourceOfUrls(
+  graph: JobGraph,
+  sources: { importUrl: boolean; capture: boolean },
+  originalFilename: string
+): { sourceDef: FormatDefinition | undefined; originalFilename: string } {
+  const urlNode = Object.values(normalizeGraphNodes(graph)).find((n) => n.op === 'import.url') as { url?: string } | undefined;
+  if (sources.importUrl && urlNode?.url) {
+    try {
+      const parsedUrl = new URL(urlNode.url);
+      const sourceDef = getFormatByExtension(path.extname(parsedUrl.pathname).replace(/^\./, '').toLowerCase());
+      return { sourceDef, originalFilename: originalFilename || path.basename(parsedUrl.pathname) || 'remote_file' };
+    } catch {
+      // an address that does not parse names no format
+    }
+  }
+  if (sources.capture) return { sourceDef: getFormatByExtension('html'), originalFilename: originalFilename || 'page.html' };
+  return { sourceDef: undefined, originalFilename };
+}
+
 function resolveGraphFallbackFormat(
   nodes: ReturnType<typeof normalizeGraphNodes>[string][],
   sourceFormat?: string,
@@ -824,6 +843,8 @@ function fixedNodeTargetFormat(nodes: ReturnType<typeof normalizeGraphNodes>[str
   if (lastConvert) return lastConvert;
   const direct = nodes.find((n) => n.op === 'archive.create' || n.op === 'merge')?.targetFormat;
   if (direct) return direct;
+  const capture = nodes.find((n) => n.op === 'capture.website');
+  if (capture?.targetFormat) return capture.targetFormat;
   const thumb = nodes.find((n) => n.op === 'thumbnail');
   if (thumb) return thumb.targetFormat ?? thumb.options?.thumbnail?.format ?? 'jpg';
   if (nodes.some((n) => n.op === 'metadata')) return 'json';

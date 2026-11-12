@@ -67,7 +67,7 @@ describe('named tasks become a graph of the same names', () => {
     const operations = [...NAMED_TASK_OPERATIONS];
     expect(operations).toContain('import/url');
     for (const operation of operations) {
-      const result = namedTasksToJobGraph({ t: { operation, ...(operation === 'import/url' ? { url: 'https://x.example.com/a.pdf' } : {}), ...(operation === 'import/upload' ? { storage_key: 'uploads/a/b.pdf' } : {}) } });
+      const result = namedTasksToJobGraph({ t: { operation, ...(operation === 'import/url' || operation === 'capture/website' ? { url: 'https://x.example.com/a.pdf' } : {}), ...(operation === 'import/upload' ? { storage_key: 'uploads/a/b.pdf' } : {}) } });
       if (!result.ok) throw new Error(result.errors[0].message);
       expect(publicOperationName((result.graph.nodes!.t as { op: string }).op)).toBe(operation);
     }

@@ -34,11 +34,13 @@ class JobGraphNodesAdditionalProperty:
             video (`options.thumbnail.at`), or of an image, within `options.thumbnail.width` x `height` as
             `options.thumbnail.fit` places it. `metadata` reads the metadata of its first input into `metadata.json` (the
             `MetadataReport` schema). `metadata.write` writes `options.metadata.set` into each input, a JPEG, a PNG or a
-            PDF, and keeps the rest of the file as it is.
+            PDF, and keeps the rest of the file as it is. `capture.website` draws the public web page at `url` as a PDF, a
+            PNG or a JPEG (`targetFormat`, `options.capture`); it takes no input, and its `url` is kept sealed.
         input_ (list[str] | str | Unset): Single upstream NodeId or array of upstream NodeIds. A merge node needs at
             least 2 distinct inputs.
         storage_key (str | Unset): Storage key for import.upload node.
-        url (str | Unset): URL for import.url or export.url node.
+        url (str | Unset): URL for import.url or export.url node, or the page a capture.website node draws (an http or
+            https page on port 80 or 443).
         headers (JobGraphNodesAdditionalPropertyHeaders | Unset): Optional HTTP headers for URL operations.
         method (JobGraphNodesAdditionalPropertyMethod | Unset): HTTP method for export.url node.
         target_format (str | Unset): Target format extension for convert or archive.create.

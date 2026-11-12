@@ -23,6 +23,7 @@ export const GRAPH_OPERATIONS = [
   'merge',
   'metadata',
   'metadata.write',
+  'capture.website',
   'archive.create',
   'archive.extract',
   'export.url',
@@ -47,6 +48,8 @@ export const LEGACY_GRAPH_OPERATION_ALIASES: Readonly<Record<string, GraphOperat
 };
 
 export const IMPORT_OPERATIONS: ReadonlySet<GraphOperation> = new Set<GraphOperation>(['import.upload', 'import.url']);
+/** Operations that make files from nothing the graph holds: an import brings a file in, a website capture draws a page. They take no input. */
+export const SOURCE_OPERATIONS: ReadonlySet<GraphOperation> = new Set<GraphOperation>([...IMPORT_OPERATIONS, 'capture.website']);
 export const EXPORT_OPERATIONS: ReadonlySet<GraphOperation> = new Set<GraphOperation>(['export.url', 'export.internal']);
 
 export function isGraphOperation(value: string): value is GraphOperation {
@@ -82,6 +85,7 @@ const CHARGE_RULES: Readonly<Record<GraphOperation, ChargeRule>> = {
   merge: 'once',
   metadata: 'once',
   'metadata.write': 'per-output',
+  'capture.website': 'once',
   'archive.create': 'once',
   'archive.extract': 'once',
   'export.url': 'free',
@@ -157,10 +161,14 @@ export const TARGET_FORMAT_REQUIRED_OPERATIONS: ReadonlySet<GraphOperation> = ne
   'thumbnail',
   'merge',
   'archive.create',
+  'capture.website',
 ]);
 
 /** Formats a thumbnail node can produce. */
 export const THUMBNAIL_FORMATS: ReadonlySet<string> = new Set(['jpg', 'png', 'webp']);
+
+/** Formats a capture.website node can produce. */
+export const CAPTURE_FORMATS_LIST: readonly string[] = ['pdf', 'png', 'jpg'];
 
 /** Formats a metadata.write node can write into without changing more than the metadata of the file. */
 export const METADATA_WRITE_FORMATS: readonly string[] = ['jpg', 'jpeg', 'png', 'pdf'];
@@ -183,6 +191,7 @@ export const PDF_SPLIT_OUTPUT_FORMAT = 'zip';
 /** Allowed output formats for operations limited to a fixed set. */
 export const RESTRICTED_OUTPUT_FORMATS: Readonly<Partial<Record<GraphOperation, ReadonlySet<string>>>> = {
   thumbnail: THUMBNAIL_FORMATS,
+  'capture.website': new Set(CAPTURE_FORMATS_LIST),
   merge: MERGE_FORMATS,
   'archive.create': ARCHIVE_CREATE_FORMATS,
   'media.package': new Set([MEDIA_PACKAGE_OUTPUT_FORMAT]),

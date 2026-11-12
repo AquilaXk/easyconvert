@@ -25,7 +25,10 @@ class NamedTask:
 
         Attributes:
             operation (NamedTaskOperation): `import/url` and `import/upload` bring a file in; `convert`, `ocr`, `optimize`,
-                `thumbnail`, `media.package`, `watermark`, `merge`, `metadata`, `archive/create`, `archive/extract` and the
+                `thumbnail`, `media.package`, `watermark`, `merge`, `metadata` (reads the metadata of its input into
+                `metadata.json`), `metadata/write` (writes `options.metadata.set` into a JPEG, a PNG or a PDF),
+                `capture/website` (draws the page at `url` as a PDF, a PNG or a JPEG, with `output_format` and
+                `options.capture`; it takes no input and counts as a conversion), `archive/create`, `archive/extract` and the
                 `pdf.*` page operations work on it; `export/url` ends a branch: with `url` it sends the files there, without it
                 keeps them for download and lists their download URLs in the task result. A job needs at least one task that
                 converts.
@@ -34,7 +37,8 @@ class NamedTask:
             output_format (str | Unset): Format extension the task produces. Required by `convert`, `merge` and
                 `archive/create`; `thumbnail` also takes it (`jpg` or `png`).
             options (ConversionOptions | Unset):
-            url (str | Unset): The file to fetch (`import/url`), or the destination that receives the files (`export/url`).
+            url (str | Unset): The file to fetch (`import/url`), the destination that receives the files (`export/url`), or
+                the public page that `capture/website` draws.
             headers (NamedTaskHeaders | Unset): HTTP headers of the request to `url`. Stored sealed and never returned.
             method (NamedTaskMethod | Unset): HTTP method of an `export/url` with a `url`. Defaults to `PUT`.
             upload_id (str | Unset): Completed upload (`import/upload`), from the direct multipart or resumable upload API.

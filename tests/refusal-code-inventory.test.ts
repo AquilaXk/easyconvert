@@ -14,6 +14,8 @@ const SRC = path.resolve(__dirname, '..', 'src');
 
 const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
   ArchiveEntryCollisionError: 'archive_entry_collision',
+  CaptureFailedError: 'capture_failed',
+  CaptureTargetBlockedError: 'capture_target_blocked',
 
   ArchiveNotEncryptedError: 'conversion_failed',
   AudioResampleError: 'conversion_failed',

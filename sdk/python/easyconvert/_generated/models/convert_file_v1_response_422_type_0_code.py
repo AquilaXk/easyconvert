@@ -4,6 +4,8 @@ from enum import StrEnum
 
 class ConvertFileV1Response422Type0Code(StrEnum):
     ARCHIVE_ENTRY_COLLISION = "archive_entry_collision"
+    CAPTURE_FAILED = "capture_failed"
+    CAPTURE_TARGET_BLOCKED = "capture_target_blocked"
     CONVERSION_FAILED = "conversion_failed"
     EMPTY_FILE = "empty_file"
     ENCRYPTED_INPUT = "encrypted_input"

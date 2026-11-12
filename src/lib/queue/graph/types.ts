@@ -20,6 +20,18 @@ export interface ImportUrlNode {
   sealed?: string;
 }
 
+/**
+ * Draws a public web page as a PDF, a PNG or a JPEG (`options.capture`). Like `import.url` it takes no input, and its `url` is sealed
+ * before the node is stored or queued: a page address can carry a token.
+ */
+export interface CaptureWebsiteNode {
+  op: 'capture.website';
+  url?: string;
+  sealed?: string;
+  targetFormat: 'pdf' | 'png' | 'jpg';
+  options?: ConversionOptions;
+}
+
 export interface ConvertNode {
   op: 'convert';
   input: NodeId;
@@ -172,6 +184,7 @@ export interface ExportInternalNode {
 export type GraphNode =
   | ImportUploadNode
   | ImportUrlNode
+  | CaptureWebsiteNode
   | ConvertNode
   | OcrNode
   | OptimizeNode

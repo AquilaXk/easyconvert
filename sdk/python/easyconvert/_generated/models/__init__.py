@@ -32,6 +32,9 @@ from .conversion_options_aspect_ratio_type_1_mode import (
 )
 from .conversion_options_audio import ConversionOptionsAudio
 from .conversion_options_audio_loudness import ConversionOptionsAudioLoudness
+from .conversion_options_capture import ConversionOptionsCapture
+from .conversion_options_capture_pdf import ConversionOptionsCapturePdf
+from .conversion_options_capture_viewport import ConversionOptionsCaptureViewport
 from .conversion_options_highlight_reconstruction_type_1 import (
     ConversionOptionsHighlightReconstructionType1,
 )
@@ -237,6 +240,7 @@ from .output_unit import OutputUnit
 from .pair_engine import PairEngine
 from .pair_engine_id import PairEngineId
 from .pair_engines import PairEngines
+from .paper_of_pdf_of_capture import PaperOfPdfOfCapture
 from .pdf_a_options import PdfAOptions
 from .pdf_a_options_conformance import PdfAOptionsConformance
 from .pdf_optimize_options import PdfOptimizeOptions
@@ -299,6 +303,7 @@ from .video_codec import VideoCodec
 from .video_codec_of_packaging import VideoCodecOfPackaging
 from .video_fps import VideoFps
 from .video_resolution import VideoResolution
+from .wait_until_of_capture import WaitUntilOfCapture
 from .webhook_dlq_entry import WebhookDlqEntry
 from .webhook_dlq_entry_payload import WebhookDlqEntryPayload
 from .webhook_dlq_entry_status import WebhookDlqEntryStatus
@@ -331,6 +336,9 @@ __all__ = (
     "ConversionOptionsAspectRatioType1Mode",
     "ConversionOptionsAudio",
     "ConversionOptionsAudioLoudness",
+    "ConversionOptionsCapture",
+    "ConversionOptionsCapturePdf",
+    "ConversionOptionsCaptureViewport",
     "ConversionOptionsHighlightReconstructionType1",
     "ConversionOptionsMetadata",
     "ConversionOptionsMetadataSet",
@@ -486,6 +494,7 @@ __all__ = (
     "PairEngine",
     "PairEngineId",
     "PairEngines",
+    "PaperOfPdfOfCapture",
     "PdfAOptions",
     "PdfAOptionsConformance",
     "PdfOptimizeOptions",
@@ -546,6 +555,7 @@ __all__ = (
     "VideoCodecOfPackaging",
     "VideoFps",
     "VideoResolution",
+    "WaitUntilOfCapture",
     "WebhookDlqEntry",
     "WebhookDlqEntryPayload",
     "WebhookDlqEntryStatus",

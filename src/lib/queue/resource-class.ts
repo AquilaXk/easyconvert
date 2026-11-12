@@ -192,6 +192,7 @@ export function resolveNodeResourceClass(node: any): ResourceClass {
     case 'export.internal':
       return 'light';
     case 'ocr':
+    case 'capture.website':
       return 'memory';
     case 'archive.create':
     case 'archive.extract':

@@ -79,6 +79,7 @@ import {
 } from '../../jobs/graph-operations';
 import { importUrlWithinBudget } from './node-url-import';
 import { thumbnailPlan } from './thumbnail-node';
+import { captureWebsite } from '../../capture/website-capture';
 import { holdUnitsForInputs } from './node-reservation';
 import type { GraphNode } from './types';
 import { saveRetainedResult } from '../../storage/retention-service';
@@ -295,6 +296,21 @@ async function runThumbnailNode(context: NodeContext, node: { options?: Conversi
   });
 }
 
+/** A capture.website node: the page of its (sealed) url drawn as the target format. */
+async function runCaptureNode(context: NodeContext, node: GraphNode & { op: 'capture.website' }, job: Pick<Job<ConversionJobData, ConversionJobResult>, 'log'>): Promise<string[]> {
+  const { url } = openUrlNodeSecrets(node, graphNodeJobId(context.graphId, context.nodeId));
+  const { timeoutMs, ...capture } = node.options?.capture ?? {};
+  const result = await captureWebsite({ url, format: node.targetFormat, options: capture, timeoutMs, signal: context.attemptSignal });
+  for (const warning of result.warnings) await job.log(`Node "${context.nodeId}" ${warning}`);
+  return [
+    await saveIntermediateNodeOutput(
+      context.storage,
+      { graphId: context.graphId, nodeId: context.nodeId, index: 0 },
+      { buffer: result.buffer, mimeType: result.mimeType, filename: result.filename, fallbackFilename: `capture.${node.targetFormat}` }
+    ),
+  ];
+}
+
 /** A metadata node: the report of its first input, as `metadata.json`. */
 async function runMetadataNode(context: NodeContext): Promise<string[]> {
   assertHasInputs(context, 'metadata');
@@ -327,6 +343,16 @@ async function runMetadataWriteNode(context: NodeContext, node: { options?: Conv
   }
   return keys;
 }
+
+type NodeRunner = (context: NodeContext, node: GraphNode, job: Pick<Job<ConversionJobData, ConversionJobResult>, 'log'>) => Promise<string[]>;
+
+/** The nodes that run in a function of their own: each takes the context of the node, the node and its job, and answers the keys of the files it made. */
+const NODE_RUNNERS: Readonly<Record<string, NodeRunner>> = {
+  thumbnail: runThumbnailNode as NodeRunner,
+  metadata: runMetadataNode as NodeRunner,
+  'metadata.write': runMetadataWriteNode as NodeRunner,
+  'capture.website': runCaptureNode as NodeRunner,
+};
 
 /** Like processIntermediatePdfArtifacts for a node that names its own output file. */
 async function processIntermediatePdfParts(
@@ -602,11 +628,6 @@ export async function processGraphNodeJob(
         break;
       }
 
-      case 'thumbnail': {
-        outputKeys.push(...(await runThumbnailNode(nodeContext, node)));
-        break;
-      }
-
       case 'media.package': {
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
@@ -775,17 +796,6 @@ export async function processGraphNodeJob(
         break;
       }
 
-      case 'metadata': {
-        outputKeys.push(...(await runMetadataNode(nodeContext)));
-        break;
-      }
-
-      case 'metadata.write': {
-        outputKeys.push(...(await runMetadataWriteNode(nodeContext, node)));
-        await job.log(`Node "${nodeId}" wrote metadata into ${inputArtifacts.length} artifact(s)`);
-        break;
-      }
-
       case 'archive.create': {
         if (inputArtifacts.length === 0) {
           throw new Error(`archive.create node "${nodeId}" has no input artifacts to bundle`);
@@ -912,7 +922,9 @@ export async function processGraphNodeJob(
       }
 
       default: {
-        throw new Error(`Unsupported graph node operation: ${(node as { op: string }).op}`);
+        const runner = NODE_RUNNERS[(node as { op: string }).op];
+        if (runner === undefined) throw new Error(`Unsupported graph node operation: ${(node as { op: string }).op}`);
+        outputKeys.push(...(await runner(nodeContext, node, job)));
       }
     }
 

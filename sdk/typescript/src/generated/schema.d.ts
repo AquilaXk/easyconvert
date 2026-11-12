@@ -1040,6 +1040,43 @@ export interface components {
                     annotate?: boolean;
                 };
             };
+            /** @description How a `capture-website` task loads and draws its page (the page is the `url` of the task). The browser reaches the network only through a gate that refuses every address that is not a public web address, for the page and for each redirect, frame, image, script and request it makes; a hop to a private, loopback or link-local address ends the task with a 422 (`capture_target_blocked`). */
+            capture?: {
+                /** @description The browser window of a PNG or JPEG capture. */
+                viewport?: {
+                    /** @description Window width in pixels (1280). */
+                    width?: number;
+                    /** @description Window height in pixels (800). */
+                    height?: number;
+                };
+                /** @description PNG and JPEG: capture the whole height of the page, up to 16384 pixels, instead of the window. */
+                fullPage?: boolean;
+                waitUntil?: components["schemas"]["WaitUntilOfCapture"];
+                /** @description Extra time to wait before drawing, in milliseconds. */
+                delayMs?: number;
+                /** @description JPEG quality (85). */
+                quality?: number;
+                /** @description The User-Agent the browser sends. */
+                userAgent?: string;
+                /** @description The time the page has to load and be drawn, in milliseconds (60000). A page that is not done in time ends the task with the code `timeout`. */
+                timeoutMs?: number;
+                /** @description PDF output. */
+                pdf?: {
+                    paper?: components["schemas"]["PaperOfPdfOfCapture"];
+                    /** @description Page width in millimetres; with `height`, it takes the place of `paper`. */
+                    width?: number;
+                    /** @description Page height in millimetres. */
+                    height?: number;
+                    /** @description Landscape orientation. */
+                    landscape?: boolean;
+                    /** @description Margin on every side, in millimetres (10). */
+                    margin?: number;
+                    /** @description Print the backgrounds of the page (true). */
+                    printBackground?: boolean;
+                    /** @description Zoom of the page (1). */
+                    scale?: number;
+                };
+            };
             /** @description Fields a `metadata.write` task writes into its input (a JPEG, a PNG or a PDF) without changing anything else in the file. The names are those of ExifTool and may carry their group (`EXIF:Artist`, `XMP:Title`, `PDF:Title`). */
             metadata?: {
                 /** @description The fields to set, by name. A JPEG or a PNG takes the EXIF fields ImageDescription, Make, Model, Orientation, Software, ModifyDate, Artist, Copyright, DateTimeOriginal, CreateDate, UserComment, LensMake, LensModel, SerialNumber, GPSLatitude, GPSLongitude and GPSAltitude (a field set to null is removed; dates are "YYYY:MM:DD HH:MM:SS", positions are signed decimal degrees and meters), and the XMP fields XMP:Title, XMP:Description, XMP:Rights, XMP:Creator, XMP:Subject and XMP:CreatorTool when the picture holds no XMP packet yet. A PDF takes Title, Author, Subject, Keywords, Creator, Producer, CreateDate and ModifyDate. Any other format, field or value is a 422 (`metadata_write_unsupported`, `metadata_field_invalid`). */
@@ -1111,10 +1148,10 @@ export interface components {
         /** @description One task of a job made of named tasks. Each operation takes only its own fields: a field that does not belong to it answers 422. */
         NamedTask: {
             /**
-             * @description `import/url` and `import/upload` bring a file in; `convert`, `ocr`, `optimize`, `thumbnail`, `media.package`, `watermark`, `merge`, `metadata`, `archive/create`, `archive/extract` and the `pdf.*` page operations work on it; `export/url` ends a branch: with `url` it sends the files there, without it keeps them for download and lists their download URLs in the task result. A job needs at least one task that converts.
+             * @description `import/url` and `import/upload` bring a file in; `convert`, `ocr`, `optimize`, `thumbnail`, `media.package`, `watermark`, `merge`, `metadata` (reads the metadata of its input into `metadata.json`), `metadata/write` (writes `options.metadata.set` into a JPEG, a PNG or a PDF), `capture/website` (draws the page at `url` as a PDF, a PNG or a JPEG, with `output_format` and `options.capture`; it takes no input and counts as a conversion), `archive/create`, `archive/extract` and the `pdf.*` page operations work on it; `export/url` ends a branch: with `url` it sends the files there, without it keeps them for download and lists their download URLs in the task result. A job needs at least one task that converts.
              * @enum {string}
              */
-            operation: "import/url" | "import/upload" | "archive/create" | "archive/extract" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "export/url";
+            operation: "import/url" | "import/upload" | "archive/create" | "archive/extract" | "metadata/write" | "capture/website" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "export/url";
             /** @description The name of the task whose output this task reads, or a list of names. Every task but an import needs one. A `merge` needs at least 2 distinct names. */
             input?: string | string[];
             /** @description Format extension the task produces. Required by `convert`, `merge` and `archive/create`; `thumbnail` also takes it (`jpg` or `png`). */
@@ -1123,7 +1160,7 @@ export interface components {
             options?: components["schemas"]["ConversionOptions"];
             /**
              * Format: uri
-             * @description The file to fetch (`import/url`), or the destination that receives the files (`export/url`).
+             * @description The file to fetch (`import/url`), the destination that receives the files (`export/url`), or the public page that `capture/website` draws.
              */
             url?: string;
             /** @description HTTP headers of the request to `url`. Stored sealed and never returned. */
@@ -1147,7 +1184,7 @@ export interface components {
              * @description The operation the task was sent with.
              * @enum {string}
              */
-            operation: "import/url" | "import/upload" | "archive/create" | "archive/extract" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "export/url";
+            operation: "import/url" | "import/upload" | "archive/create" | "archive/extract" | "metadata/write" | "capture/website" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "export/url";
             /**
              * @description `waiting` until the tasks it reads have completed, then `active`, then `completed` or `failed`. A task that did not run because a task it reads failed is `failed` too, with the code `dependency_failed`; a task the job stopped (after a failure elsewhere, or a cancel) that reads no failed task is `cancelled`.
              * @enum {string}
@@ -1190,17 +1227,17 @@ export interface components {
             nodes: {
                 [key: string]: {
                     /**
-                     * @description Operation type for this graph node. `thumbnail` makes one picture (JPEG, PNG or WebP) of the first page, or the page `options.thumbnail.page` names, of a document, or of a frame of a video (`options.thumbnail.at`), or of an image, within `options.thumbnail.width` x `height` as `options.thumbnail.fit` places it. `metadata` reads the metadata of its first input into `metadata.json` (the `MetadataReport` schema). `metadata.write` writes `options.metadata.set` into each input, a JPEG, a PNG or a PDF, and keeps the rest of the file as it is.
+                     * @description Operation type for this graph node. `thumbnail` makes one picture (JPEG, PNG or WebP) of the first page, or the page `options.thumbnail.page` names, of a document, or of a frame of a video (`options.thumbnail.at`), or of an image, within `options.thumbnail.width` x `height` as `options.thumbnail.fit` places it. `metadata` reads the metadata of its first input into `metadata.json` (the `MetadataReport` schema). `metadata.write` writes `options.metadata.set` into each input, a JPEG, a PNG or a PDF, and keeps the rest of the file as it is. `capture.website` draws the public web page at `url` as a PDF, a PNG or a JPEG (`targetFormat`, `options.capture`); it takes no input, and its `url` is kept sealed.
                      * @enum {string}
                      */
-                    op: "import.upload" | "import.url" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "metadata.write" | "archive.create" | "archive.extract" | "export.url" | "export.internal";
+                    op: "import.upload" | "import.url" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "metadata.write" | "capture.website" | "archive.create" | "archive.extract" | "export.url" | "export.internal";
                     /** @description Single upstream NodeId or array of upstream NodeIds. A merge node needs at least 2 distinct inputs. */
                     input?: string | string[];
                     /** @description Storage key for import.upload node. */
                     storageKey?: string;
                     /**
                      * Format: uri
-                     * @description URL for import.url or export.url node.
+                     * @description URL for import.url or export.url node, or the page a capture.website node draws (an http or https page on port 80 or 443).
                      */
                     url?: string;
                     /** @description Optional HTTP headers for URL operations. */
@@ -1214,7 +1251,7 @@ export interface components {
                     method?: "PUT" | "POST";
                     /** @description Target format extension for convert or archive.create. */
                     targetFormat?: string;
-                    /** @description Transformation options for convert, ocr, optimize, archive.create and the PDF nodes: `watermark` (pdf.watermark), `protect` (pdf.protect), `password` and `confirmEditRights` (pdf.unlock and every PDF edit), `split` (pdf.split-pages), `pages` (pdf.extract-pages, pdf.delete-pages), `reorder` (pdf.reorder-pages), `rotate` (pdf.rotate-pages), `optimize` (optimize on a PDF), `thumbnail` (thumbnail) and `metadata` (metadata.write). */
+                    /** @description Transformation options for convert, ocr, optimize, archive.create and the PDF nodes: `watermark` (pdf.watermark), `protect` (pdf.protect), `password` and `confirmEditRights` (pdf.unlock and every PDF edit), `split` (pdf.split-pages), `pages` (pdf.extract-pages, pdf.delete-pages), `reorder` (pdf.reorder-pages), `rotate` (pdf.rotate-pages), `optimize` (optimize on a PDF), `thumbnail` (thumbnail), `metadata` (metadata.write) and `capture` (capture.website). */
                     options?: components["schemas"]["ConversionOptions"];
                     /** @description Glob patterns for archive.extract entries. */
                     entries?: string[];
@@ -2139,6 +2176,16 @@ export interface components {
          */
         ModifyOfPermissionsOfProtect: "none" | "assembly" | "annotate" | "form" | "all";
         /**
+         * @description `load` (default) draws when the page has loaded; `idle` also waits until the page has made no request for half a second.
+         * @enum {string}
+         */
+        WaitUntilOfCapture: "load" | "idle";
+        /**
+         * @description Page size (A4).
+         * @enum {string}
+         */
+        PaperOfPdfOfCapture: "A3" | "A4" | "A5" | "Letter" | "Legal" | "Tabloid";
+        /**
          * @description PDF/A conformance level. Defaults to pdfa-2b.
          * @enum {string}
          */
@@ -2469,7 +2516,7 @@ export interface operations {
                          * @description The cause of the refusal, stable across releases.
                          * @enum {string}
                          */
-                        code?: "archive_entry_collision" | "conversion_failed" | "empty_file" | "encrypted_input" | "engine_not_offered" | "engine_version_unavailable" | "input_over_limit" | "invalid_password" | "malformed_input" | "metadata_field_invalid" | "metadata_write_unsupported" | "missing_volume" | "option_not_supported" | "password_required" | "timeout" | "unsupported_input" | "unsupported_method";
+                        code?: "archive_entry_collision" | "conversion_failed" | "empty_file" | "encrypted_input" | "engine_not_offered" | "engine_version_unavailable" | "input_over_limit" | "invalid_password" | "malformed_input" | "capture_failed" | "capture_target_blocked" | "metadata_field_invalid" | "metadata_write_unsupported" | "missing_volume" | "option_not_supported" | "password_required" | "timeout" | "unsupported_input" | "unsupported_method";
                         /** @description `engine_not_offered` only: the ids of the engines that convert the pair, the default first. */
                         engines?: string[];
                         /** @description `engine_version_unavailable` only: the engine whose version was named. */
@@ -2482,7 +2529,7 @@ export interface operations {
                          * @description The cause of the refusal, stable across releases.
                          * @enum {string}
                          */
-                        code?: "archive_entry_collision" | "conversion_failed" | "empty_file" | "encrypted_input" | "engine_not_offered" | "engine_version_unavailable" | "input_over_limit" | "invalid_password" | "malformed_input" | "metadata_field_invalid" | "metadata_write_unsupported" | "missing_volume" | "option_not_supported" | "password_required" | "timeout" | "unsupported_input" | "unsupported_method";
+                        code?: "archive_entry_collision" | "conversion_failed" | "empty_file" | "encrypted_input" | "engine_not_offered" | "engine_version_unavailable" | "input_over_limit" | "invalid_password" | "malformed_input" | "capture_failed" | "capture_target_blocked" | "metadata_field_invalid" | "metadata_write_unsupported" | "missing_volume" | "option_not_supported" | "password_required" | "timeout" | "unsupported_input" | "unsupported_method";
                         /** @description `engine_not_offered` only: the ids of the engines that convert the pair, the default first. */
                         engines?: string[];
                         /** @description `engine_version_unavailable` only: the engine whose version was named. */
@@ -2860,7 +2907,7 @@ export interface operations {
                     "application/json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description The day has fewer conversions left than the job needs (problem type `https://api.easyconvert.io/problems/quota-exceeded`, with `dailyLimit`, `remaining` and `requiredUnits`). A graph needs one unit for each input declared by a node that makes one output of each input (`convert`, `ocr`, `optimize`, `thumbnail`, `metadata.write`, `media.package`, `watermark` and the `pdf.*` page operations) and one for each `merge`, `metadata`, `archive.create` or `archive.extract` node. A node whose inputs hold more files than it declares (an unpacked archive) takes the rest of its units when it starts, and fails with the refusal code `quota_exceeded` when the day has too few left. Or: the account already has the most conversions in flight (queued and running) its tier allows, 5 for anonymous and free callers (problem type `https://api.easyconvert.io/problems/concurrency-limit`, with `Retry-After`); the request takes no quota. */
+            /** @description The day has fewer conversions left than the job needs (problem type `https://api.easyconvert.io/problems/quota-exceeded`, with `dailyLimit`, `remaining` and `requiredUnits`). A graph needs one unit for each input declared by a node that makes one output of each input (`convert`, `ocr`, `optimize`, `thumbnail`, `metadata.write`, `media.package`, `watermark` and the `pdf.*` page operations) and one for each `merge`, `metadata`, `capture.website`, `archive.create` or `archive.extract` node. A node whose inputs hold more files than it declares (an unpacked archive) takes the rest of its units when it starts, and fails with the refusal code `quota_exceeded` when the day has too few left. Or: the account already has the most conversions in flight (queued and running) its tier allows, 5 for anonymous and free callers (problem type `https://api.easyconvert.io/problems/concurrency-limit`, with `Retry-After`); the request takes no quota. */
             429: {
                 headers: {
                     [name: string]: unknown;

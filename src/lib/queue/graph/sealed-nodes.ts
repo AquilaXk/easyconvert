@@ -9,8 +9,8 @@ import { ConversionFailedError } from '../../types';
 import { sealPasswordOption } from '../option-secrets';
 import type { GraphNode } from './types';
 
-/** Operations whose `url` and `headers` are bearer secrets of customer storage. */
-const SECRET_URL_OPERATIONS: ReadonlySet<string> = new Set(['import.url', 'export.url']);
+/** Operations whose `url` and `headers` are bearer secrets (of customer storage, or the token in the address of a page to capture). */
+const SECRET_URL_OPERATIONS: ReadonlySet<string> = new Set(['import.url', 'export.url', 'capture.website']);
 /** Longest URL a sealed node may carry, in characters. */
 export const MAX_SEALED_URL_CHARS = 8192;
 /** Most request headers a sealed node may carry. */

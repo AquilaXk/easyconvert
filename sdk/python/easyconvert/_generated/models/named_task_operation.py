@@ -5,6 +5,7 @@ from enum import StrEnum
 class NamedTaskOperation(StrEnum):
     ARCHIVECREATE = "archive/create"
     ARCHIVEEXTRACT = "archive/extract"
+    CAPTUREWEBSITE = "capture/website"
     CONVERT = "convert"
     EXPORTURL = "export/url"
     IMPORTUPLOAD = "import/upload"
@@ -12,6 +13,7 @@ class NamedTaskOperation(StrEnum):
     MEDIA_PACKAGE = "media.package"
     MERGE = "merge"
     METADATA = "metadata"
+    METADATAWRITE = "metadata/write"
     OCR = "ocr"
     OPTIMIZE = "optimize"
     PDF_DELETE_PAGES = "pdf.delete-pages"
