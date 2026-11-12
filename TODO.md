@@ -40,6 +40,5 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Learned OCR layout tier: legal sign-off on model and data provenance first.
 - Rare samples: DWG before R13, WP Greek accented letters, Word Wingdings check boxes.
 - sk/sk1 input: QA decision on UniConvertor 2 (GPL, separate process).
-- Delete src/lib/quota (usage ledger and pricing) and tests/usage-metering-ledger.test.ts parts 1 to 3: nothing writes the ledger or prices a job since GET /api/v1/usage was removed (entry 241); conversions are charged one unit each.
 - Privacy cookie table (docs/legal/privacy.en.md and privacy.ko.md) names easyconvert_session; production now writes __Host-easyconvert_session (entry 241): name both in the next legal revision, and drop the plain name from SESSION_COOKIE_NAMES 7 days after the first deploy.
 - Erasure of an account does not search open multipart sessions of the local store by owner (they expire by their own sweep within the session lifetime).
