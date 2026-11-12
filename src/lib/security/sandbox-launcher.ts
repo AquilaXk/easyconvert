@@ -302,9 +302,12 @@ async function runWithFiles(host: LauncherHost, binary: string, args: string[], 
   try {
     if (output === null || (stdin && input === null)) return null;
     if (input !== null) {
-      await fillFile(input, stdin as Buffer);
+      // A file that cannot take the input (a full temporary directory) is no reason to fail the run: it runs here, through a pipe.
+      if (!(await fillFile(input, stdin as Buffer).then(() => true, () => false))) return null;
       // An abort during the write has no run to stop yet, and the helper would never hear of it.
       options.signal?.throwIfAborted();
+      // The helper may have ended while the input was written; a request to it would then wait out its timeout.
+      if (slot.ready !== host) return null;
     }
     const run = await host.run(binary, args, {
       ...rest,
