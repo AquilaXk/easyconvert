@@ -394,6 +394,66 @@ describe.skipIf(!ENABLED)('Sigma Quattro hostile input', () => {
   });
 });
 
+describe.skipIf(!ENABLED)('Sigma sd Quattro and sd Quattro H hostile input', () => {
+  const NAMES = ['x3f-sdq', 'x3f-sdqh'] as const;
+  const MAX_U16 = 65535;
+  const LAYER_DIMENSION_BYTES = 12;
+  const SEED_BYTES = 8;
+  const mutate = (name: SampleName, change: (file: Buffer, section: ReturnType<typeof sensorSection>) => Buffer | void): Buffer => {
+    const file = Buffer.from(load(name));
+    return change(file, sensorSection(file)) ?? file;
+  };
+  const afterTable = (file: Buffer, from: number) => {
+    let at = from;
+    while (file[at] !== 0) at += 2;
+    return at + 2;
+  };
+  const tableStart = (section: ReturnType<typeof sensorSection>) => section.payload + LAYER_DIMENSION_BYTES + SEED_BYTES;
+
+  it.each(NAMES)('rejects a %s file cut after most of its sensor data', async (name) => {
+    await expectRejected(mutate(name, (file) => file.subarray(0, Math.floor(file.length * 0.6))), 'x3f', /malformed/);
+  });
+
+  it.each(NAMES)('rejects a %s top layer above the pixel limit before allocating', async (name) => {
+    const file = mutate(name, (buffer, section) => {
+      buffer.writeUInt16LE(MAX_U16, section.payload + 8);
+      buffer.writeUInt16LE(MAX_U16, section.payload + 10);
+    });
+    await expectRejected(file, 'x3f', /pixel limit/);
+  });
+
+  it.each(NAMES)('rejects a %s lower layer that is not half the top layer', async (name) => {
+    await expectRejected(mutate(name, (file, section) => void file.writeUInt16LE(100, section.payload)), 'x3f', /does not match half the top layer/);
+  });
+
+  it.each(NAMES)('rejects a %s plane that extends past its section', async (name) => {
+    const file = mutate(name, (buffer, section) => void buffer.writeUInt32LE(0xffffff00, afterTable(buffer, tableStart(section)) + 4));
+    await expectRejected(file, 'x3f', /extends past its section/);
+  });
+
+  it.each(NAMES)('rejects a %s plane too small for its samples', async (name) => {
+    const file = mutate(name, (buffer, section) => void buffer.writeUInt32LE(64, afterTable(buffer, tableStart(section)) + 4 + 8));
+    await expectRejected(file, 'x3f', /layer 2 is too small for \d+x\d+ samples/);
+  });
+
+  it.each(NAMES)('rejects a %s Huffman table that is never terminated', async (name) => {
+    const file = mutate(name, (buffer, section) => void buffer.fill(0x41, tableStart(section), tableStart(section) + 600));
+    await expectRejected(file, 'x3f', /Huffman table/);
+  });
+
+  it.each(NAMES)('rejects a %s Huffman table whose codes overlap', async (name) => {
+    const file = mutate(name, (buffer, section) => {
+      // Two pairs with the same one-bit code.
+      const at = tableStart(section);
+      buffer[at] = 1;
+      buffer[at + 1] = 0x80;
+      buffer[at + 2] = 1;
+      buffer[at + 3] = 0x80;
+    });
+    await expectRejected(file, 'x3f', /overlapping codes/);
+  });
+});
+
 describe.skipIf(!ENABLED)('Raspberry Pi imx219 and imx477 hostile input', () => {
   const OFFSET_STRIDE = 0xa0;
   const OFFSET_WIDTH = 0xd0;

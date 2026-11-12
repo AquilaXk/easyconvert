@@ -16,9 +16,11 @@ export const CACHE_DIR = path.join(__dirname, '..', 'fixtures', 'raw', '.cache')
  *  - x3f-sd14: Huffman (type 3, format 0x06), 1024-entry difference and code tables, interleaved layers
  *  - x3f-merrill: TRUE per-layer planes (type 1, format 0x1e)
  *  - x3f-quattro: TRUE planes (type 1, format 0x23), full-resolution top layer, quarter-resolution lower layers
+ *  - x3f-sdq, x3f-sdqh: the sd Quattro (format 0x25) and sd Quattro H (format 0x27), the same planes; the sd Quattro lists no dark-shield
+ *    rectangles (its dark columns serve) and the sd Quattro H a wrong bottom one and a digital gain per layer
  *  - raw: Raspberry Pi ov5647, MIPI RAW10; raw-imx219: RAW10; raw-imx477: MIPI RAW12
  */
-export const SAMPLES = ['x3f', 'x3f-sd14', 'x3f-merrill', 'x3f-quattro', 'raw', 'raw-imx219', 'raw-imx477'] as const;
+export const SAMPLES = ['x3f', 'x3f-sd14', 'x3f-merrill', 'x3f-quattro', 'x3f-sdq', 'x3f-sdqh', 'raw', 'raw-imx219', 'raw-imx477'] as const;
 export type SampleName = (typeof SAMPLES)[number];
 export const formatOf = (name: string) => name.split('-')[0];
 export const samplePath = (name: string) => path.join(CACHE_DIR, `${name}.${formatOf(name)}`);
@@ -49,6 +51,7 @@ export interface Tolerance {
  * the 16-bit encode stopped shifting colours through a wide-gamut working profile:
  *   x3f 0.049 / 0.008 / 0.007 / 0.999      x3f-sd14 0.124 / 0.016 / 0.024 / 0.998
  *   x3f-merrill 0.496 / 0.039 / 0.039 / 0.996   x3f-quattro 0.203 / 0.037 / 0.038 / 0.985
+ *   x3f-sdq 0.192 / 0.050 / 0.068 / 0.994      x3f-sdqh 0.063 / 0.012 / 0.019 / 0.983
  *   raw 0.165 / 0.012 / 0.056 / 0.804      raw-imx219 0.183 / 0.031 / 0.067 / 0.798
  *   raw-imx477 0.154 / 0.071 / 0.103 / 0.988
  * The Raspberry Pi frames carry no sensor colour characterisation (grey-world white balance and a generic
@@ -59,6 +62,8 @@ export const TOLERANCE: Readonly<Record<SampleName, Tolerance>> = {
   'x3f-sd14': { lumaRatioError: 0.17, chromaRelativeError: 0.025, chromaAbsoluteError: 0.035, lumaRankCorrelation: 0.98 },
   'x3f-merrill': { lumaRatioError: 0.6, chromaRelativeError: 0.05, chromaAbsoluteError: 0.055, lumaRankCorrelation: 0.98 },
   'x3f-quattro': { lumaRatioError: 0.26, chromaRelativeError: 0.045, chromaAbsoluteError: 0.05, lumaRankCorrelation: 0.96 },
+  'x3f-sdq': { lumaRatioError: 0.25, chromaRelativeError: 0.06, chromaAbsoluteError: 0.08, lumaRankCorrelation: 0.98 },
+  'x3f-sdqh': { lumaRatioError: 0.1, chromaRelativeError: 0.02, chromaAbsoluteError: 0.03, lumaRankCorrelation: 0.97 },
   raw: { lumaRatioError: 0.25, chromaRelativeError: 0.03, chromaAbsoluteError: 0.1, lumaRankCorrelation: 0.7 },
   'raw-imx219': { lumaRatioError: 0.25, chromaRelativeError: 0.04, chromaAbsoluteError: 0.08, lumaRankCorrelation: 0.7 },
   'raw-imx477': { lumaRatioError: 0.18, chromaRelativeError: 0.09, chromaAbsoluteError: 0.12, lumaRankCorrelation: 0.96 },

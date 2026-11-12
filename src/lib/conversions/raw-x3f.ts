@@ -15,9 +15,9 @@
  *        the leaf value of the n-th pair is n, the number of extra bits that follow the code,
  *      u32 planeSize[3], then the planes, each starting on a 16-byte boundary.
  *
- *  - type 1, format 0x23 (Quattro): the same coding, preceded by three (u16 columns, u16 rows) layer
- *    sizes and with one zero word between the Huffman table and the plane sizes; the third layer has the
- *    sensor's full resolution, the first two half the columns and rows;
+ *  - type 1, format 0x23 (dp Quattro), 0x25 (sd Quattro) and 0x27 (sd Quattro H): the same coding, preceded by
+ *    three (u16 columns, u16 rows) layer sizes and with one zero word between the Huffman table and the plane
+ *    sizes; the third layer has the sensor's full resolution, the first two half the columns and rows;
  *  - type 3, format 0x06 (SD14/SD15): tables of 1024 sample differences and 1024 Huffman code words,
  *    rows of interleaved three-layer samples, and a trailing table of the rows' byte offsets.
  *
@@ -32,6 +32,18 @@
  * matrix of the white balance named in the file header (both from CAMF; SD14/SD15 files list a
  * camera-to-XYZ matrix and a per-white-balance XYZ correction instead), producing linear sRGB, then the
  * sRGB transfer curve.
+ *
+ * Reference comparison (2026-11-12, entry 256 of docs/policy-decisions.md): the open-source x3f tools by Roland and Erik Karlsson
+ * (https://github.com/Kalpanika/x3f, 104 stars, BSD-style licence in doc/copyright.txt, commit e8b48cac, files src/x3f_io.c and
+ * src/x3f_process.c; the code LibRaw credits for its Foveon reader) read the same container and the same three codings. No code is
+ * copied from it: its C decode loops (gcc -O2) walk the Huffman tree one bit at a time and take 1.2 to 1.9 times as long as the loops here
+ * on the TRUE, Merrill and Quattro planes of the Lima testbed (aarch64); on the SD14 Huffman rows its C is faster (190 ms a pass
+ * against 400 ms), but its loop ported to TypeScript takes 490 ms, so the gap is the language and the loop here stays. What it decodes
+ * and this file did not is followed in behaviour: the sd Quattro and sd Quattro H formats, the
+ * dark columns of `DarkShieldColRange` as the dark area when no rectangle is listed, and the sd Quattro H's wrong bottom dark-shield
+ * rectangle left out (`darkRectangles`). Not read: the Polaroid x530 format (0x30005), the uncompressed Huffman rows (nonzero row
+ * stride), the binned Quattro layout (lower layers as large as the top one) and the SD9 and SD10 (their calibration has no
+ * "Auto" white balance and no dark level), for lack of a sample or a calibration to check a picture against.
  */
 import { RawDecodeError } from '../types';
 import { applyMatrixAndSrgbEncode, exposureScale, MAX_SAMPLE_16, multiply3x3, RGB_CHANNELS, type Matrix3x3 } from './raw-srgb';
@@ -66,12 +78,12 @@ const TRUE_MAX_EXTRA_BITS = 16;
 /**
  * Pixel caps per layer, from the sensor arrays (margins included) of each generation, each with a few
  * percent of headroom: DP1/DP2 and SD14/SD15 sensors are 2688 x 1792, Merrill sensors 4928 x 3264
- * (16.1 MP) and the Quattro top layer 6272 x 3672 (23.0 MP). Anything larger is rejected before allocation.
+ * (16.1 MP), the Quattro top layer 6272 x 3672 (23.0 MP) and the sd Quattro H 6656 x 4480 (29.8 MP). Anything larger is rejected before allocation.
  */
 const X3F_TRUE_MAX_PIXELS = 5_000_000;
 const X3F_HUFFMAN_MAX_PIXELS = 5_000_000;
 const X3F_MERRILL_MAX_PIXELS = 17_000_000;
-const X3F_QUATTRO_MAX_PIXELS = 24_000_000;
+const X3F_QUATTRO_MAX_PIXELS = 31_000_000;
 const SAMPLE_MAX = 0xffff;
 const BITS_PER_BYTE = 8;
 const BIT_WINDOW = 32;
@@ -976,7 +988,7 @@ function findWhiteBalanceEntry(matrices: Map<string, CamfMatrix>, whiteBalance: 
   throw new RawDecodeError(`Sigma X3F file has no ${suffix} calibration for the "${whiteBalance}" white balance`);
 }
 
-interface Rectangle {
+export interface Rectangle {
   left: number;
   top: number;
   right: number;
@@ -991,11 +1003,32 @@ function readRectangle(matrices: Map<string, CamfMatrix>, name: string, width: n
   return inside ? { left, top, right, bottom } : null;
 }
 
+/** Camera id of the sd Quattro H in the CAMF `CAMERAID` entry: its firmware lists the bottom dark-shield rectangle wrongly. */
+const CAMERA_ID_SD_QUATTRO_H = 41;
+const COLUMN_RANGE_ELEMENTS = 4;
+
+/**
+ * The optically dark areas of the sensor: the top and bottom dark-shield rectangles, or, when the calibration lists neither (the
+ * sd Quattro), the dark columns left and right of the image over the full height (`DarkShieldColRange`).
+ */
+export function darkRectangles(matrices: Map<string, CamfMatrix>, width: number, height: number): Rectangle[] {
+  const bottomListedWrongly = matrices.get('CAMERAID')?.values[0] === CAMERA_ID_SD_QUATTRO_H;
+  const rectangles = (bottomListedWrongly ? ['DarkShieldTop'] : ['DarkShieldTop', 'DarkShieldBottom'])
+    .map((name) => readRectangle(matrices, name, width, height))
+    .filter((rectangle): rectangle is Rectangle => rectangle !== null);
+  if (rectangles.length > 0) return rectangles;
+  const columns = matrices.get('DarkShieldColRange')?.values;
+  if (!columns || columns.length !== COLUMN_RANGE_ELEMENTS) return [];
+  const [leftFrom, leftTo, rightFrom, rightTo] = columns;
+  return [
+    { left: leftFrom, top: 0, right: leftTo, bottom: height - 1 },
+    { left: rightFrom, top: 0, right: rightTo, bottom: height - 1 },
+  ].filter((rectangle) => Number.isInteger(rectangle.left) && Number.isInteger(rectangle.right) && rectangle.left >= 0 && rectangle.left <= rectangle.right && rectangle.right < width);
+}
+
 /** Mean level of each layer inside the optically dark rectangles. */
 function darkLevels(layers: FoveonLayers, reader: LayerRowReader, matrices: Map<string, CamfMatrix>): number[] {
-  const rectangles = ['DarkShieldTop', 'DarkShieldBottom']
-    .map((name) => readRectangle(matrices, name, layers.width, layers.height))
-    .filter((rectangle): rectangle is Rectangle => rectangle !== null);
+  const rectangles = darkRectangles(matrices, layers.width, layers.height);
   if (rectangles.length === 0) throw fail('the calibration holds no valid dark-shield area');
   return layers.planes.map((_, layer) => {
     let sum = 0;
@@ -1086,6 +1119,10 @@ type SensorVariant = 'true' | 'merrill' | 'quattro' | 'huffman';
 const IMAGE_TYPE_RAW_V1 = 1;
 const IMAGE_FORMAT_HUFFMAN = 0x06;
 const IMAGE_FORMAT_QUATTRO = 0x23;
+const IMAGE_FORMAT_SD_QUATTRO = 0x25;
+const IMAGE_FORMAT_SD_QUATTRO_H = 0x27;
+
+const QUATTRO_FORMATS: ReadonlySet<number> = new Set([IMAGE_FORMAT_QUATTRO, IMAGE_FORMAT_SD_QUATTRO, IMAGE_FORMAT_SD_QUATTRO_H]);
 
 function findSensorSection(images: X3fImageSection[]): { sensor: X3fImageSection; variant: SensorVariant } {
   const sensor = images.find((image) => image.imageType === IMAGE_TYPE_RAW || image.imageType === IMAGE_TYPE_RAW_V1);
@@ -1094,7 +1131,7 @@ function findSensorSection(images: X3fImageSection[]): { sensor: X3fImageSection
   if (sensor.imageType === IMAGE_TYPE_RAW && sensor.format === IMAGE_FORMAT_TRUE) return { sensor, variant: 'true' };
   if (sensor.imageType === IMAGE_TYPE_RAW && sensor.format === IMAGE_FORMAT_HUFFMAN) return { sensor, variant: 'huffman' };
   if (sensor.imageType === IMAGE_TYPE_RAW_V1 && sensor.format === IMAGE_FORMAT_TRUE) return { sensor, variant: 'merrill' };
-  if (sensor.imageType === IMAGE_TYPE_RAW_V1 && sensor.format === IMAGE_FORMAT_QUATTRO) return { sensor, variant: 'quattro' };
+  if (sensor.imageType === IMAGE_TYPE_RAW_V1 && QUATTRO_FORMATS.has(sensor.format)) return { sensor, variant: 'quattro' };
   throw new RawDecodeError(`Sigma X3F sensor data (${describe}) is not supported`, true);
 }
 
@@ -1139,8 +1176,21 @@ function usableRange(variant: SensorVariant, matrices: Map<string, CamfMatrix>, 
 
 const XYZ_ELEMENTS = 9;
 const TEMPERATURE_GAIN_ENTRY = 'TempGainFact';
+/**
+ * Per-layer gain (4, 4, 2 in the sd Quattro H sample) by which the layers' values are scaled before the colour matrix applies: without
+ * it the top layer reads twice as strong against the lower ones and the picture is purple; with it the picture matches the camera's own.
+ */
+const DIGITAL_GAIN_ENTRY = 'DigitalISOGain';
 /** XYZ (D65) to linear sRGB primaries, IEC 61966-2-1. */
 const XYZ_D65_TO_SRGB: Matrix3x3 = [3.2404542, -1.5371385, -0.4985314, -0.969266, 1.8760108, 0.041556, 0.0556434, -0.2040259, 1.0572252];
+
+/** The three per-layer gains of a calibration entry, or 1 each when the calibration lists none. */
+function optionalLayerGains(matrices: Map<string, CamfMatrix>, name: string): number[] {
+  if (!matrices.has(name)) return [1, 1, 1];
+  const gains = requireMatrix(matrices, name, GAIN_ELEMENTS, MAX_CALIBRATION_MAGNITUDE);
+  if (gains.some((value) => !(value > 0))) throw fail(`the calibration entry ${name} holds a non-positive gain`);
+  return gains;
+}
 
 /**
  * Matrix taking a layer triple (dark level removed) to linear sRGB, with the usable ranges and ISO
@@ -1161,13 +1211,13 @@ function colourMatrix(variant: SensorVariant, matrices: Map<string, CamfMatrix>,
   }
   const gains = requireMatrix(matrices, findWhiteBalanceEntry(matrices, whiteBalance, 'WBGain'), GAIN_ELEMENTS, MAX_CALIBRATION_MAGNITUDE);
   const colour = requireMatrix(matrices, findWhiteBalanceEntry(matrices, whiteBalance, 'CCMatrix'), MATRIX_ELEMENTS, MAX_CALIBRATION_MAGNITUDE);
-  // Sensor temperature compensation, when the calibration lists one.
-  const temperature = matrices.has(TEMPERATURE_GAIN_ENTRY) ? requireMatrix(matrices, TEMPERATURE_GAIN_ENTRY, GAIN_ELEMENTS, MAX_CALIBRATION_MAGNITUDE) : [1, 1, 1];
-  if (temperature.some((value) => !(value > 0))) throw fail(`the calibration entry ${TEMPERATURE_GAIN_ENTRY} holds a non-positive gain`);
-  // Colour matrix x diag(white balance gain x temperature gain x ISO factor / usable range).
+  // Sensor temperature compensation and the digital gain applied to the layers (sd Quattro H), when the calibration lists them.
+  const temperature = optionalLayerGains(matrices, TEMPERATURE_GAIN_ENTRY);
+  const digital = optionalLayerGains(matrices, DIGITAL_GAIN_ENTRY);
+  // Colour matrix x diag(white balance gain x temperature gain x digital gain x ISO factor / usable range).
   for (let row = 0; row < RGB_CHANNELS; row += 1) {
     for (let layer = 0; layer < RGB_CHANNELS; layer += 1) {
-      combined.push((colour[row * RGB_CHANNELS + layer] * gains[layer] * temperature[layer] * isoFactor) / range[layer]);
+      combined.push((colour[row * RGB_CHANNELS + layer] * gains[layer] * temperature[layer] * digital[layer] * isoFactor) / range[layer]);
     }
   }
   return combined;
@@ -1286,8 +1336,9 @@ export function decodeX3f(file: Buffer): DecodedX3f {
 
 /**
  * Ceiling of the typed arrays a decode holds at once: the stored layer planes plus the 16-bit output.
- * The per-generation pixel caps keep the largest real layouts (Quattro at its cap: about 216 MB) below
- * it; the thread's heap limit does not cover these buffers, so this check backs the caps with one total.
+ * The largest real layout (the sd Quattro H: 6656 x 4480 layers, 6192 x 4128 output) needs about 243 MB, below it;
+ * the thread's heap limit does not cover these buffers, so this check backs the per-generation pixel caps with one total
+ * (a layout at the Quattro cap with a near-full active area is refused by it).
  */
 export const X3F_DECODE_MEMORY_BUDGET_BYTES = 256 * 1024 * 1024;
 

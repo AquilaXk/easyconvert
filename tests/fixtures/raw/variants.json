@@ -24,6 +24,22 @@
     "bytes": 54740948
   },
   {
+    "format": "x3f",
+    "variant": "sdq",
+    "filename": "sample3.X3F",
+    "url": "https://raw.pixls.us/data/Sigma/sd%20Quattro/sample3.X3F",
+    "sha256": "bf26469746e5937ca4f9cfb34a022891f9c8518febd676355930b805b9307b48",
+    "bytes": 58232884
+  },
+  {
+    "format": "x3f",
+    "variant": "sdqh",
+    "filename": "SDIM0061.X3F",
+    "url": "https://raw.pixls.us/data/Sigma/sd%20Quattro%20H/SDIM0061.X3F",
+    "sha256": "c6823f88e7dae554d3ec951d2366aab4b9ba2f8d64ad2d93028b2f9c50c811f2",
+    "bytes": 65875572
+  },
+  {
     "format": "raw",
     "variant": "imx219",
     "filename": "RaspberryPi - RP_imx219 - 3:2.raw",

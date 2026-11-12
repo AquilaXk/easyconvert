@@ -10,7 +10,7 @@ RAW checks; with `ORACLE_STRICT_MODE=1` (CI) a missing sample fails them.
 
 `variants.json` lists further public-domain (CC0) samples whose sensor-data encoding differs from the
 `manifest.json` sample of the same format: older and newer Sigma X3F generations (`x3f-sd14`,
-`x3f-merrill`, `x3f-quattro`) and two more Raspberry Pi sensors (`raw-imx219`, `raw-imx477`). They
+`x3f-merrill`, `x3f-quattro`, and the sd Quattro and sd Quattro H, `x3f-sdq` and `x3f-sdqh`) and two more Raspberry Pi sensors (`raw-imx219`, `raw-imx477`). They
 are cached as `<format>-<variant>.<format>`. `npm run fixtures:raw -- x3f-sd14 raw-imx477` fetches only
 the named samples.
 

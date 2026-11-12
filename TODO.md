@@ -11,13 +11,15 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Speed
 - Cut the GIF time of the camera rows further: the palette mapper (`mapNearest`) is 13 to 38 ns a pixel on the VM after the direct colour table, and the run tolerance check is 45 percent of it (half of the 50 to 60 percent of pixels that change their nearest colour read the 32-byte Oklab entry of the colour, a quarter of those keep the previous colour); a split over the pool threads needs each stripe to start with a guess of the previous colour and a short repair at its first pixels, which is not written. The LZW coder (200 to 320 ms for 20 to 39 MP) and the `3fr` development by `dcraw_emu` (0.9 s) are the other large steps.
-- Compare `raw-x3f.ts` with the BSD X3F reference credited by LibRaw (Roland Karlsson) and copy its decode loops with attribution where they are faster or decode more cameras.
+- Speed up `decodeHuffmanLayers` (SD14/SD15, 12 MP, about 0.5 s on the VM) with a table-driven first-bits lookup: its bit-at-a-time trie walk is the slowest loop of `raw-x3f.ts` (entry 256).
 - `quantize.ts` (401 lines) is on the product path only for the 8-bit BMP (`quantizeNeuQuant`, the Floyd-Steinberg mapper, `encodeBmp8`); decide whether BMP takes its palette from `color-quantizer.ts` and the file goes. That changes the BMP bytes, so it needs an `image` parity run.
 
 ## Product and API
 
 ## Operations and security
-- `conversionQueue.remove(id)` still reads the whole dead-letter list inside its Lua script for each job, so the per-job removal of `scripts/erase-account.ts` (removeEndedJobs) is O(jobs x letters): keep a per-job or per-user index of the letters at `moveToDlq` and remove by it.
+- Bound the `{q}:dlq:unparsed` set of entry 257: a file name with a lone surrogate puts a letter there, and every erasure and every `remove(id)` reads and parses the whole set (age trimming is the only bound today); cap it, or keep its members by job and user as the other index sets do.
+- Run `node dist/backfill-dlq-index.js` (dry run, then `--apply`) on the host after the deploy that carries entry 257 has replaced every worker, with QA's approval; until then removal of a job's dead letters reads the whole list as before (docs/deploy-oci.md, "Indexing the dead letters").
+- Removing a dead letter is an `LREM`, which scans the list in Redis: 1,000 jobs over 50,000 letters take 2.3 s (entry 257). Keep the letters in a hash by id, with a sorted set for the order, when the list passes about 50,000, and extend the backfill script to move the old list.
 - Cache the public HTML pages at the Cloudflare edge (a cache rule for the page routes; `cf-cache-status` is `DYNAMIC` on `/ko` today although the page sends `s-maxage`): QA sets it in the dashboard later, or puts a scoped API token in `.env`. Leave `/dashboard`, `/*/dashboard` and `/api/` out of the rule and never override the origin's `private, no-store` with an edge TTL (entry 210).
 - Install the Redis backup timer on the host on or after 2026-12-08 (30-day notice of the new privacy text).
 
