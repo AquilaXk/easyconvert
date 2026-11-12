@@ -19,6 +19,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 ## Product and API
 
 ## Operations and security
+- `conversionQueue.remove(id)` still reads the whole dead-letter list inside its Lua script for each job, so the per-job removal of `scripts/erase-account.ts` (removeEndedJobs) is O(jobs x letters): keep a per-job or per-user index of the letters at `moveToDlq` and remove by it.
 - Cache the public HTML pages at the Cloudflare edge (a cache rule for the page routes; `cf-cache-status` is `DYNAMIC` on `/ko` today although the page sends `s-maxage`): QA sets it in the dashboard later, or puts a scoped API token in `.env`. Leave `/dashboard`, `/*/dashboard` and `/api/` out of the rule and never override the origin's `private, no-store` with an edge TTL (entry 210).
 - Install the Redis backup timer on the host on or after 2026-12-08 (30-day notice of the new privacy text).
 
