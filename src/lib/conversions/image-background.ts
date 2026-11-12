@@ -18,6 +18,16 @@ export interface RgbColour {
   b: number;
 }
 
+/** True when the colour has no hue (or is absent, which flattens onto white): a grey picture stays grey on it. */
+export function isNeutralColour(colour: RgbColour | undefined): boolean {
+  return colour === undefined || (colour.r === colour.g && colour.g === colour.b);
+}
+
+/** True when a grey input, with no background of a hue, is written as a one-component picture. */
+export function staysGrey(inputSpace: string | undefined, background: RgbColour | undefined): boolean {
+  return (inputSpace === 'b-w' || inputSpace === 'grey16') && isNeutralColour(background);
+}
+
 const WHITE: RgbColour = { r: 255, g: 255, b: 255 };
 const HEX_COLOUR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
 const SHORT_HEX_LENGTH = 3;

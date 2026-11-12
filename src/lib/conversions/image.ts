@@ -5,7 +5,7 @@ import { selectFrames, type FrameSelection, type PageResize } from './image-fram
 import { encodeDecodedAnimation, packagePageOutputs } from './image-frame-output';
 import { encodePostscript } from './image-postscript';
 import { assertAnimationBudget, assertOutputPixels, outputSideOf } from './image-limits';
-import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground } from './image-background';
+import { flattenColour, isNeutralColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground, staysGrey } from './image-background';
 import { buildTiffOptions } from './image-tiff-options';
 import { encodePsd, PSD_MAX_SIDE, type PsdChannels } from './psd-writer';
 import { decodeBmp } from './bmp';
@@ -1610,11 +1610,6 @@ function deepColourspaceOf(meta: Metadata | undefined, options: ConversionOption
   return meta.space === 'b-w' || meta.space === 'grey16' ? 'grey16' : 'rgb16';
 }
 
-/** True when the colour has no hue (or is absent, which flattens onto white): a grey picture stays grey on it. */
-function isNeutralColour(colour: { r: number; g: number; b: number } | undefined): boolean {
-  return colour === undefined || (colour.r === colour.g && colour.g === colour.b);
-}
-
 /**
  * Targets whose encoder choices (chroma, effort, scan search) follow the content of the picture, and whose analyses and
  * encoder read the pixels from one decode of a plain PNG. WebP's choices follow the quality alone and its encoder drops an
@@ -2087,7 +2082,7 @@ async function convertImage(
             { quality }
           );
         } else {
-          const keepsGrey = (inputSpace === 'b-w' || inputSpace === 'grey16') && isNeutralColour(background);
+          const keepsGrey = staysGrey(inputSpace, background);
           const jpeg = (keepsGrey ? pipeline.toColourspace('b-w') : pipeline).jpeg(jpegOptionsFor(options.quality, content, keepsGrey));
           outputBuffer = await withPipelineThreads(() => jpeg.toBuffer());
         }
@@ -2160,7 +2155,7 @@ async function convertImage(
             photoPng ??
             (await (deepColourspace
               ? pipeline.toColourspace(deepColourspace).png({ compressionLevel: DEEP_PNG_COMPRESSION_LEVEL, adaptiveFiltering: true })
-              : pipeline.png(eightBitPngOptions(content, src, inputMeta, options))
+              : (staysGrey(inputSpace, background) ? pipeline.toColourspace('b-w') : pipeline).png(eightBitPngOptions(content, src, inputMeta, options))
             ).toBuffer());
         }
         if (tagsPq) outputBuffer = writePngCicp(outputBuffer, { primaries: CICP_PRIMARIES_BT2020, transfer: CICP_TRANSFER_PQ, matrix: CICP_MATRIX_IDENTITY, fullRange: true });
