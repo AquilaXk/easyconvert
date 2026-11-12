@@ -130,7 +130,7 @@ export function FormatSelectorBody({
               aria-label={t('formatName', { format: label, category: fmt.category })}
               aria-current={isCurrent ? 'true' : undefined}
               onClick={() => onChoose(fmt.id)}
-              className={`min-h-8 px-1 py-1.5 rounded-xs border text-xs font-semibold uppercase tracking-wide text-center [overflow-wrap:anywhere] transition-colors cursor-pointer focus-visible:outline-offset-[-2px] ${
+              className={`min-h-8 px-1 py-1.5 rounded-xs border text-xs font-semibold uppercase tracking-wide text-center [overflow-wrap:anywhere] transition-colors cursor-pointer focus-inset ${
                 isCurrent ? 'bg-accent border-accent text-on-accent' : 'border-rule text-ink-2 hover:bg-sunken hover:text-ink hover:border-rule-strong'
               }`}
             >
@@ -161,7 +161,7 @@ export function FormatSelectorBody({
           autoCorrect="off"
           autoCapitalize="off"
           spellCheck={false}
-          className="block w-full py-1.5 pl-9 pr-2.5 bg-transparent text-sm text-ink border-0 border-b border-rule rounded-none focus-visible:outline-offset-[-2px]"
+          className="block w-full py-1.5 pl-9 pr-2.5 bg-transparent text-sm text-ink border-0 border-b border-rule rounded-none focus-inset"
         />
       </div>
 
@@ -176,7 +176,7 @@ export function FormatSelectorBody({
                     type="button"
                     aria-pressed={isActive}
                     onClick={() => onSelectCategory(cat)}
-                    className={`w-full flex items-center justify-between gap-2 px-2 min-[368px]:px-3 py-2 text-sm text-left transition-colors cursor-pointer focus-visible:outline-offset-[-2px] focus-visible:bg-sunken focus-visible:text-ink ${
+                    className={`w-full flex items-center justify-between gap-2 px-2 min-[368px]:px-3 py-2 text-sm text-left transition-colors cursor-pointer focus-inset focus-visible:bg-sunken focus-visible:text-ink ${
                       isActive ? 'bg-sunken text-ink' : 'text-ink-2 hover:bg-sunken/60 hover:text-ink'
                     }`}
                   >

@@ -103,7 +103,7 @@ export default function MobileMenu({
       aria-label={t('menuLabel')}
       tabIndex={-1}
       onKeyDown={(event) => trapFocus(event, onClose)}
-      className="!m-0 !outline-none h-dvh !max-h-none w-dvw !max-w-none overflow-y-auto rounded-none border-0 p-0 bg-canvas text-ink"
+      className="!m-0 !outline-none !shadow-none h-dvh !max-h-none w-dvw !max-w-none overflow-y-auto rounded-none border-0 p-0 bg-canvas text-ink"
     >
       <div className="flex items-center justify-between px-4 h-[var(--header-height)] border-b border-rule">
         <Link href="/" onClick={onClose} aria-label={t('homeLabel')} className="min-h-[44px] inline-flex items-center shrink-0 rounded-sm">

@@ -36,9 +36,17 @@ describe('the input modality behind the focus ring', () => {
     }
   });
 
-  it('hides the ring only under pointer, more specifically than the dark theme colour', () => {
-    const css = fs.readFileSync(path.join(process.cwd(), 'src/app/globals.css'), 'utf8');
-    expect(css).toMatch(/:root\[data-input-modality='pointer'\] :focus-visible \{\s*outline-color: transparent;/);
+  it('draws the ring and its halo only outside pointer modality, in both themes', () => {
+    const css = fs.readFileSync(path.join(process.cwd(), 'src/app/globals.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rules = [...css.matchAll(/([^{}]*:focus-visible)\s*\{([^}]*)\}/g)].map(([, selector, body]) => ({ selector: selector.trim(), body }));
+    const drawing = rules.filter((rule) => /outline: 1px solid|box-shadow/.test(rule.body));
+    expect(drawing.map((rule) => rule.selector)).toEqual([
+      ":root:not([data-input-modality='pointer']) :focus-visible",
+      ":root.dark:not([data-input-modality='pointer']) :focus-visible",
+      ":root:not([data-input-modality='pointer']) .focus-inset:focus-visible",
+      ":root.dark:not([data-input-modality='pointer']) .focus-inset:focus-visible",
+    ]);
+    expect(rules.find((rule) => rule.selector === ':focus-visible')?.body).toMatch(/outline: none;/);
   });
 
   it('runs from the document head of every page', () => {

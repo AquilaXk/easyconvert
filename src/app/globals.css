@@ -119,21 +119,34 @@
     overflow-wrap: break-word;
   }
 
-  /* Keyboard focus: a 2px outline, 2px off the control, on every focusable element. The accent clears 3:1 on the light
-     surfaces; on the dark ones only its lighter ink does (the accent is 2.88:1 on a dark card). */
+  /* Keyboard focus, drawn the way the most-used component library draws it (entry 272): a 1 px line in the accent on the
+     edge of the control, with no gap, and a 3 px halo of the same colour at half strength around it, both following the
+     control's radius. The line keeps the 3:1 a focus indicator needs: the accent on the light surfaces, its lighter ink on the
+     dark ones (the accent is 2.88:1 on a dark card). Nothing is drawn after a pointer or touch press, even where the browser
+     counts a scripted focus as visible (src/lib/input-modality.ts); the next key press brings it back. */
   :focus-visible {
-    outline: 2px solid rgb(var(--c-accent));
-    outline-offset: 2px;
+    outline: none;
   }
 
-  .dark :focus-visible {
+  :root:not([data-input-modality='pointer']) :focus-visible {
+    outline: 1px solid rgb(var(--c-accent));
+    outline-offset: 0;
+    box-shadow: 0 0 0 4px rgb(var(--c-accent) / 0.5);
+  }
+
+  :root.dark:not([data-input-modality='pointer']) :focus-visible {
     outline-color: rgb(var(--c-accent-ink));
+    box-shadow: 0 0 0 4px rgb(var(--c-accent-ink) / 0.5);
   }
 
-  /* After a pointer or touch press no ring is drawn, even where the browser counts a scripted focus as visible
-     (src/lib/input-modality.ts); the next key press brings it back. */
-  :root[data-input-modality='pointer'] :focus-visible {
-    outline-color: transparent;
+  /* Inside a scrolling list the edge would be cut, so the line and the halo go inside the control. */
+  :root:not([data-input-modality='pointer']) .focus-inset:focus-visible {
+    outline-offset: -1px;
+    box-shadow: inset 0 0 0 4px rgb(var(--c-accent) / 0.5);
+  }
+
+  :root.dark:not([data-input-modality='pointer']) .focus-inset:focus-visible {
+    box-shadow: inset 0 0 0 4px rgb(var(--c-accent-ink) / 0.5);
   }
 
   /* Preflight colours a placeholder with a fixed grey (2.54:1 on a white field); the tertiary ink is 4.5:1 or more on every surface. */
