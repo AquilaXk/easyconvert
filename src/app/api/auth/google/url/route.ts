@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   getGoogleOAuthUrl,
+  isGoogleSignInEnabled,
   createOAuthSession,
   getAppOrigin,
   offeredLocale,
@@ -16,7 +17,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
   // Without a client id there is no Google sign-in in production: a coded 503 the page words, not an unhandled error.
-  if (!process.env.GOOGLE_CLIENT_ID && process.env.NODE_ENV === 'production') {
+  if (!isGoogleSignInEnabled()) {
     return codedRefusal<AuthErrorCode>(503, 'oauth_unavailable', 'Google sign-in is not configured on this server.');
   }
   const origin = getAppOrigin();

@@ -475,6 +475,18 @@ export const internalPaths = {
       },
     },
   },
+  '/api/auth/google': {
+    get: {
+      ...INTERNAL,
+      summary: 'Get Google Sign-In State',
+      description: 'Tells whether Google sign-in is on (a client id is configured).',
+      operationId: 'getGoogleSignIn',
+      security: PUBLIC_ACCESS,
+      responses: {
+        '200': createJsonResponse('Whether Google sign-in is on.', { success: { type: 'boolean' }, enabled: { type: 'boolean' } }),
+      },
+    },
+  },
   '/api/auth/password-reset': {
     get: {
       ...INTERNAL,

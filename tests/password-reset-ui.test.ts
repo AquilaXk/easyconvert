@@ -10,7 +10,7 @@ vi.mock('../src/i18n/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
 }));
 
-const { AuthCredentialsForm } = await import('../src/components/auth/AuthForms');
+const { AuthCredentialsForm, useServerFlag } = await import('../src/components/auth/AuthForms');
 const { useFragmentToken } = await import('../src/components/auth/useFragmentToken');
 
 let root: Root | undefined;
@@ -108,5 +108,23 @@ describe('the token of a mailed link', () => {
     globalThis.history.replaceState(null, '', '/auth/reset-password');
     render('en', createElement(Probe));
     await vi.waitFor(() => expect(host.querySelector('#probe')?.textContent).toBe('ready:null'));
+  });
+});
+
+describe('the Google sign-in flag of the sign-in page', () => {
+  function Probe() {
+    return createElement('p', { id: 'probe' }, useServerFlag('/api/auth/google') ? 'on' : 'off');
+  }
+
+  it.each([
+    ['the server has Google sign-in', true, 'on'],
+    ['the server has none', false, 'off'],
+    ['the server cannot say', 'down' as const, 'off'],
+  ])('reads %s as %s', async (_label, enabled, shown) => {
+    const fetchMock = answerStatus(enabled);
+    render('en', createElement(Probe));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/auth/google'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(host.querySelector('#probe')?.textContent).toBe(shown);
   });
 });
