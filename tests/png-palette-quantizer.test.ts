@@ -351,6 +351,19 @@ describe('the compress page with the program', () => {
     }
   });
 
+  it('does not start the optimiser for a request that names only a quality, which stands for the same palette', async () => {
+    const optimiser = optimiserStandIn();
+    vi.stubEnv('QUANTIZR_PIXELS_PATH', standIn(flatReply([[1, 2, 3, 255], [250, 251, 252, 255]])).program);
+    vi.stubEnv('OXIPNG_PATH', optimiser.program);
+    try {
+      const byQuality = (await convertFile(await photo(), 'png', 'png', { quality: 60 }, 'a.png')).buffer;
+      expect(fs.existsSync(optimiser.argsFile)).toBe(false);
+      expect(chunksOf(byQuality).find((chunk) => chunk.type === 'IDAT')?.data[1]).toBe(0xda);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('starts the optimiser on the full-colour file of a lossless conversion and on a palette that a script quantiser chose', async () => {
     const optimiser = optimiserStandIn();
     vi.stubEnv('QUANTIZR_PIXELS_PATH', standIn(flatReply([[1, 2, 3, 255], [250, 251, 252, 255]])).program);
