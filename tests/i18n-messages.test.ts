@@ -106,8 +106,10 @@ describe('every language carries every message', () => {
 describe('the Korean copy keeps one register and one set of terms', () => {
   const koreanEntries = [...korean];
 
-  it('uses 해요체, never 합니다체 or 하십시오체 endings', () => {
-    const formal = /(?:니다|십시오|십시요|하소서)(?![가-힣])/;
+  // The register follows the reference converters' Korean pages (entry 273): 합니다체 descriptions and ~하세요 prompts.
+  // The stiff 하십시오체 of machine translation stays out.
+  it('never uses 하십시오체 endings', () => {
+    const formal = /(?:십시오|십시요|하소서)(?![가-힣])/;
     expect(koreanEntries.filter(([, text]) => formal.test(text)).map(([key]) => key)).toEqual([]);
   });
 
