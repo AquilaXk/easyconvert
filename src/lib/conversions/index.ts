@@ -158,7 +158,7 @@ import {
 import { getXzBinaryPath } from './xz-native';
 
 import { withConversionWarnings } from './conversion-warnings';
-import { quantizeMedianCut, quantizeNeuQuant, encodeBmp8 } from './quantize';
+import { quantizeNeuQuant, encodeBmp8 } from './quantize';
 import {
   performOcr,
   generateSearchablePdf,
@@ -238,7 +238,6 @@ export {
   encodeFlacStream,
   BitWriter,
   parseSvgPathToBezierPoints,
-  quantizeMedianCut,
   quantizeNeuQuant,
   encodeBmp8,
   performOcr,
