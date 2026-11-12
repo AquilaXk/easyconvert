@@ -134,6 +134,8 @@ from .format_of_packaging import FormatOfPackaging
 from .format_of_subtitles import FormatOfSubtitles
 from .format_of_thumbnail import FormatOfThumbnail
 from .formats_response import FormatsResponse
+from .formats_response_capture import FormatsResponseCapture
+from .formats_response_capture_website import FormatsResponseCaptureWebsite
 from .formats_response_categories_item import FormatsResponseCategoriesItem
 from .formats_response_formats_item import FormatsResponseFormatsItem
 from .get_formats_engine import GetFormatsEngine
@@ -165,6 +167,9 @@ from .job_graph import JobGraph
 from .job_graph_failure_policy import JobGraphFailurePolicy
 from .job_graph_nodes import JobGraphNodes
 from .job_graph_nodes_additional_property import JobGraphNodesAdditionalProperty
+from .job_graph_nodes_additional_property_credentials import (
+    JobGraphNodesAdditionalPropertyCredentials,
+)
 from .job_graph_nodes_additional_property_headers import (
     JobGraphNodesAdditionalPropertyHeaders,
 )
@@ -226,6 +231,7 @@ from .mode_of_vectorize import ModeOfVectorize
 from .modify_of_permissions_of_protect import ModifyOfPermissionsOfProtect
 from .multi_page_output import MultiPageOutput
 from .named_task import NamedTask
+from .named_task_credentials import NamedTaskCredentials
 from .named_task_headers import NamedTaskHeaders
 from .named_task_method import NamedTaskMethod
 from .named_task_operation import NamedTaskOperation
@@ -408,6 +414,8 @@ __all__ = (
     "FormatOfSubtitles",
     "FormatOfThumbnail",
     "FormatsResponse",
+    "FormatsResponseCapture",
+    "FormatsResponseCaptureWebsite",
     "FormatsResponseCategoriesItem",
     "FormatsResponseFormatsItem",
     "GetFormatsEngine",
@@ -435,6 +443,7 @@ __all__ = (
     "JobGraphFailurePolicy",
     "JobGraphNodes",
     "JobGraphNodesAdditionalProperty",
+    "JobGraphNodesAdditionalPropertyCredentials",
     "JobGraphNodesAdditionalPropertyHeaders",
     "JobGraphNodesAdditionalPropertyMethod",
     "JobGraphNodesAdditionalPropertyOp",
@@ -480,6 +489,7 @@ __all__ = (
     "ModifyOfPermissionsOfProtect",
     "MultiPageOutput",
     "NamedTask",
+    "NamedTaskCredentials",
     "NamedTaskHeaders",
     "NamedTaskMethod",
     "NamedTaskOperation",

@@ -18,6 +18,7 @@ import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-li
 import { resolveResourceClass, tierToPriority } from '@/lib/queue/resource-class';
 import { generateJobId } from '@/lib/queue/bullmq-engine';
 import { storageProvider as s3Storage } from '@/lib/storage';
+import { CredentialsVaultPersistenceError } from '@/lib/storage/credentials-vault';
 import { storeUploadedBuffer } from '@/lib/api/completed-upload';
 import { readObjectHeader } from '@/lib/storage/object-header';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
@@ -25,6 +26,7 @@ import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject,
 import { resolveEffectiveWebhook } from '@/lib/security/ssrf';
 import { ConversionOptions, JobStatus, PipelineTask, JobGraph, QueueUnavailableError, typedFailureOf } from '@/lib/types';
 import { checkSubmittedEngineChoices } from '@/lib/api/engine-choice-check';
+import { assertGraphCaptureAllowed } from '@/lib/capture/capture-enabled';
 import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import {
   validateJobGraph,
@@ -34,6 +36,8 @@ import {
   JobGraphValidationError,
 } from '@/lib/jobs';
 import { graphReservationUnits } from '@/lib/jobs/graph-operations';
+import { hasRemoteImport, remoteImportPath, storageImportFileName } from '@/lib/jobs/storage-node-validation';
+import { missingStorageCredentials } from '@/lib/jobs/storage-credential-check';
 import { duplicateKeys } from '@/lib/jobs/duplicate-keys';
 import { isNamedTaskMap, namedTaskNameErrors, namedTaskRefusal, namedTasksToJobGraph, type NamedTask, type NamedTaskMap } from '@/lib/jobs/named-tasks';
 import { namedJobFields } from '@/lib/jobs/named-task-report';
@@ -203,6 +207,21 @@ function invalidGraphProblem(instanceUri: string, prefix: string | undefined, er
   if (prefix === undefined && detail === undefined) return namedTaskProblem(instanceUri, errors);
   const text = detail ?? `${prefix}: ${errors.map((e) => e.message).join(' ')}`;
   return createProblemDetailsResponse(422, text, instanceUri, 'Unprocessable Entity', 'https://api.easyconvert.io/problems/unprocessable-entity', undefined, errors.map((e) => ({ name: e.path, reason: e.message })));
+}
+
+/**
+ * The 422 for a saved credential a storage node of the graph names that the caller cannot use, worded by task for named tasks; the
+ * 503 when the vault cannot be read; undefined when every credential is usable or the graph names none.
+ */
+async function storageCredentialsRefusal(graph: JobGraph | undefined, userId: string, where: { instanceUri: string; named: boolean }): Promise<NextResponse | undefined> {
+  if (!graph) return undefined;
+  try {
+    const problems = await missingStorageCredentials(normalizeGraphNodes(graph), userId);
+    return problems.length > 0 ? invalidGraphProblem(where.instanceUri, where.named ? undefined : 'Graph validation failed', problems) : undefined;
+  } catch (err) {
+    if (!(err instanceof CredentialsVaultPersistenceError)) throw err;
+    return createProblemDetailsResponse(503, err.message, where.instanceUri, 'Service Unavailable');
+  }
 }
 
 type TasksField = { tasks: PipelineTask[] } | { namedTasks: NamedTaskMap; duplicates: string[] } | { response: NextResponse };
@@ -560,6 +579,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       }
     }
 
+    const credentialsRefusal = await storageCredentialsRefusal(graph, auth.user.id, { instanceUri, named: Boolean(namedTasks) });
+    if (credentialsRefusal) return reply(credentialsRefusal);
+
     // A graph that only moves files would cost nothing (policy entry 15), so it is refused before anything is reserved.
     const reservedUnits = unitsToReserve(graph);
     if (graph && reservedUnits === 0) {
@@ -586,8 +608,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       originalFilename = storageKey.split('/').pop() || 'file';
     }
 
-    const urlSources = graphUrlSources(graph);
-    const hasImportUrl = urlSources.importUrl || urlSources.capture;
+    const hasImportUrl = graph && (graphHasCapture(graph) || hasRemoteImport(normalizeGraphNodes(graph)));
 
     if (!targetFormat) {
       return await fail(400, 'Missing required parameter: "targetFormat".');
@@ -610,10 +631,8 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     let sourceDef = sourceFormatParam ? getFormatByExtension(sourceFormatParam) : undefined;
     sourceDef ??= detectFormatFromFilename(originalFilename);
 
-    if (!sourceDef && graph) {
-      const fromGraph = graphSourceOfUrls(graph, urlSources, originalFilename);
-      sourceDef = fromGraph.sourceDef;
-      originalFilename = fromGraph.originalFilename;
+    if (!sourceDef && hasImportUrl && graph) {
+      ({ sourceDef, originalFilename } = graphSourceWithoutFile(graph, originalFilename));
     }
 
     if (!sourceDef) {
@@ -675,8 +694,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       }
     }
 
-    // An engine the conversion does not list, or a version that is not installed, is refused before anything is reserved.
+    // A website capture on a server that has it off, an engine the conversion does not list, or a version that is not installed, is refused before anything is reserved.
     try {
+      assertGraphCaptureAllowed(submittedGraph);
       await checkSubmittedEngineChoices({ sourceFormat: sourceDef.id, targetFormat: targetDef.id, options, tasks, graph: submittedGraph });
     } catch (err) {
       if (typedFailureOf(err) === undefined) throw err;
@@ -784,35 +804,6 @@ const PDF_GRAPH_NODE_OPS = new Set([
   'pdf.rotate-pages',
 ]);
 
-/** Which nodes of a graph make files from an address (an import of a URL, a website capture) instead of from an upload. */
-function graphUrlSources(graph: JobGraph | undefined): { importUrl: boolean; capture: boolean } {
-  const ops = new Set(graph ? Object.values(normalizeGraphNodes(graph)).map((node) => node.op) : []);
-  return { importUrl: ops.has('import.url'), capture: ops.has('capture.website') };
-}
-
-/**
- * The source format and file name of a graph that has no file of its own, from the extension of the URL its first import names; a graph
- * that captures a page has the HTML of the page as its source.
- */
-function graphSourceOfUrls(
-  graph: JobGraph,
-  sources: { importUrl: boolean; capture: boolean },
-  originalFilename: string
-): { sourceDef: FormatDefinition | undefined; originalFilename: string } {
-  const urlNode = Object.values(normalizeGraphNodes(graph)).find((n) => n.op === 'import.url') as { url?: string } | undefined;
-  if (sources.importUrl && urlNode?.url) {
-    try {
-      const parsedUrl = new URL(urlNode.url);
-      const sourceDef = getFormatByExtension(path.extname(parsedUrl.pathname).replace(/^\./, '').toLowerCase());
-      return { sourceDef, originalFilename: originalFilename || path.basename(parsedUrl.pathname) || 'remote_file' };
-    } catch {
-      // an address that does not parse names no format
-    }
-  }
-  if (sources.capture) return { sourceDef: getFormatByExtension('html'), originalFilename: originalFilename || 'page.html' };
-  return { sourceDef: undefined, originalFilename };
-}
-
 function resolveGraphFallbackFormat(
   nodes: ReturnType<typeof normalizeGraphNodes>[string][],
   sourceFormat?: string,
@@ -825,6 +816,9 @@ function resolveGraphFallbackFormat(
     if (node.op === 'import.upload' && typeof node.storageKey === 'string') {
       const detected = detectFormatFromFilename(node.storageKey)?.id;
       if (detected) return detected;
+    } else if (storageImportFileName(node)) {
+      const detected = detectFormatFromFilename(storageImportFileName(node) as string)?.id;
+      if (detected) return detected;
     } else if (node.op === 'import.url' && typeof node.url === 'string') {
       try {
         const detected = detectFormatFromFilename(new URL(node.url).pathname)?.id;
@@ -835,6 +829,24 @@ function resolveGraphFallbackFormat(
     }
   }
   return '';
+}
+
+/** Whether a graph draws a web page: it then has no file of its own. */
+function graphHasCapture(graph: JobGraph): boolean {
+  return Object.values(normalizeGraphNodes(graph)).some((node) => node.op === 'capture.website');
+}
+
+/**
+ * The source format and file name of a graph that has no file of its own: those of the object its first remote import names, or, for
+ * a graph that captures a page, the HTML of the page.
+ */
+function graphSourceWithoutFile(graph: JobGraph, originalFilename: string): { sourceDef: FormatDefinition | undefined; originalFilename: string } {
+  const remote = remoteImportPath(normalizeGraphNodes(graph));
+  if (remote) {
+    return { sourceDef: getFormatByExtension(path.extname(remote).replace(/^\./, '').toLowerCase()), originalFilename: originalFilename || path.basename(remote) || 'remote_file' };
+  }
+  if (graphHasCapture(graph)) return { sourceDef: getFormatByExtension('html'), originalFilename: originalFilename || 'page.html' };
+  return { sourceDef: undefined, originalFilename };
 }
 
 function fixedNodeTargetFormat(nodes: ReturnType<typeof normalizeGraphNodes>[string][]): string {

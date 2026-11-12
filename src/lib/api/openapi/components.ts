@@ -272,13 +272,29 @@ export const components = {
     },
     FormatsResponse: {
       type: 'object',
-      required: ['success', 'count', 'categories', 'formats', 'engines'],
+      required: ['success', 'count', 'categories', 'formats', 'engines', 'capture'],
       properties: {
         success: { type: 'boolean', const: true },
         count: { type: 'integer', description: 'Number of formats.' },
         categories: { type: 'array', items: { type: 'object', required: ['id', 'label', 'count'], properties: { id: { type: 'string' }, label: { type: 'string' }, count: { type: 'integer' } } } },
         formats: { type: 'array', items: { type: 'object', description: 'A format with the target formats it converts to.' } },
         engines: { type: 'array', items: { $ref: '#/components/schemas/Engine' }, description: 'Every engine of this deployment with its installed version.' },
+        capture: {
+          type: 'object',
+          required: ['website'],
+          description: 'The tasks of this deployment that are not on for every server.',
+          properties: {
+            website: {
+              type: 'object',
+              required: ['enabled', 'formats'],
+              description: 'The `capture.website` task (`capture/website` in a named-task job). It is off unless the operator sets `CAPTURE_WEBSITE_ENABLED=true`; where `enabled` is false a job that holds it is refused before anything is reserved with a 422 and the code `capture_unavailable`.',
+              properties: {
+                enabled: { type: 'boolean', description: 'Whether this server captures websites.' },
+                formats: { type: 'array', items: { type: 'string' }, description: 'The formats a page is captured as.' },
+              },
+            },
+          },
+        },
         pairs: { type: 'array', items: { $ref: '#/components/schemas/PairEngines' }, description: 'Sent only when `source`, `target` or `engine` is set: the engines of each pair they select.' },
       },
     },

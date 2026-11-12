@@ -84,7 +84,7 @@ export const createProblemResponse = (description: string) => ({
  */
 export const V1_CONVERT_CODES = {
   400: ['conversion_failed', 'input_over_limit', 'invalid_pages', 'malformed_input', 'option_not_supported', 'spoofed_file', 'unsafe_archive', 'unsupported_input', 'unsupported_pair'],
-  422: ['archive_entry_collision', 'conversion_failed', 'empty_file', 'encrypted_input', 'engine_not_offered', 'engine_version_unavailable', 'input_over_limit', 'invalid_password', 'malformed_input', 'capture_failed', 'capture_target_blocked', 'metadata_field_invalid', 'metadata_write_unsupported', 'missing_volume', 'option_not_supported', 'password_required', 'timeout', 'unsupported_input', 'unsupported_method'],
+  422: ['archive_entry_collision', 'conversion_failed', 'empty_file', 'encrypted_input', 'engine_not_offered', 'engine_version_unavailable', 'input_over_limit', 'invalid_password', 'malformed_input', 'capture_failed', 'capture_target_blocked', 'capture_unavailable', 'metadata_field_invalid', 'metadata_write_unsupported', 'missing_volume', 'option_not_supported', 'password_required', 'timeout', 'unsupported_input', 'unsupported_method'],
   503: ['engine_unavailable'],
 } as const satisfies Record<number, readonly ConversionRefusalCode[]>;
 

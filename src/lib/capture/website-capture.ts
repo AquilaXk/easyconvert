@@ -12,7 +12,8 @@ import {
 } from '../../worker/sandbox';
 import { CpuTaskTimeoutError, EngineUnavailableError, type ConversionOptions } from '../types';
 import { captureUrlProblem } from '../jobs/capture-url';
-import { CaptureFailedError, CaptureTargetBlockedError } from './website-capture-errors';
+import { websiteCaptureEnabled } from './capture-enabled';
+import { CaptureFailedError, CaptureTargetBlockedError, CaptureUnavailableError } from './website-capture-errors';
 
 /**
  * Website capture: a public page as a PDF, a PNG or a JPEG, drawn by Chromium as Qt WebEngine, which the worker image already carries
@@ -142,6 +143,7 @@ function browserEnvironment(dir: string): Record<string, string> {
  */
 export async function captureWebsite(request: WebsiteCaptureRequest): Promise<WebsiteCaptureResult> {
   const format = request.format;
+  if (!websiteCaptureEnabled()) throw new CaptureUnavailableError();
   if (!CAPTURE_FORMATS.has(format)) throw new CaptureFailedError(`A page is captured as pdf, png or jpg, not "${format}".`);
   return runCapture(await assertCaptureUrl(request.url), request);
 }

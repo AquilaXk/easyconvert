@@ -23,7 +23,7 @@ import {
   signS3Request,
 } from '../s3-sigv4';
 import { OutboundRequestBlockedError, safeFetch } from '../../security/safe-fetch';
-import { isPrivateOrRestrictedHost, validateUrlForSsrf } from '../../security/ssrf';
+import { isPrivateOrRestrictedHost, isSsrfBlockedError, validateUrlForSsrf } from '../../security/ssrf';
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
@@ -49,6 +49,8 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 export const S3_REQUEST_MAX_DURATION_MS = 15 * 60_000;
 /** Error documents are small; a larger body is truncated so a hostile endpoint cannot exhaust memory. */
 export const MAX_ERROR_BODY_BYTES = 64 * 1024;
+/** The most of a ListObjectsV2 answer that is read: 1000 keys of 1024 bytes, with their markup, fit. */
+export const MAX_LISTING_BODY_BYTES = 4 * MIB;
 const PROVIDER = 's3';
 export const DEFAULT_CONTENT_TYPE = 'application/octet-stream';
 
@@ -357,17 +359,17 @@ function firstContentByte(chunk: Uint8Array): number {
 }
 
 /**
- * Reads at most MAX_ERROR_BODY_BYTES of a response body, not counting leading whitespace, which
+ * Reads at most `maxBytes` (MAX_ERROR_BODY_BYTES) of a response body, not counting leading whitespace, which
  * S3 sends as keepalive while completing an upload. `onBytes` runs for every chunk so the caller
  * can extend its inactivity deadline.
  */
-export async function readLimitedText(res: Response, onBytes?: () => void): Promise<string> {
+export async function readLimitedText(res: Response, onBytes?: () => void, maxBytes: number = MAX_ERROR_BODY_BYTES): Promise<string> {
   if (!res.body) return '';
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
   let started = false;
-  while (total < MAX_ERROR_BODY_BYTES) {
+  while (total < maxBytes) {
     const { done, value } = await reader.read();
     if (done) break;
     onBytes?.();
@@ -382,7 +384,7 @@ export async function readLimitedText(res: Response, onBytes?: () => void): Prom
     }
   }
   await reader.cancel().catch(() => undefined);
-  return Buffer.concat(chunks).subarray(0, MAX_ERROR_BODY_BYTES).toString('utf-8');
+  return Buffer.concat(chunks).subarray(0, maxBytes).toString('utf-8');
 }
 
 type RequestBody = Buffer | Readable;
@@ -450,6 +452,8 @@ interface S3Request {
   streamBody?: boolean;
   /** Treat an `<Error>` document in a 2xx body as a failure (CompleteMultipartUpload) and return the body text. */
   readBody?: boolean;
+  /** The most of a `readBody` answer that is read; MAX_ERROR_BODY_BYTES when absent. */
+  maxBodyBytes?: number;
 }
 
 /** The request's deadlines, handed to the caller when the response body is streamed onward. */
@@ -654,6 +658,8 @@ export class S3StorageAdapter implements IStorageAdapter {
       }
       return new StorageSsrfError(err.target, PROVIDER);
     }
+    // The address changed between the check and the connection: a verdict on the endpoint, not a failure to try again.
+    if (isSsrfBlockedError(err)) return new StorageSsrfError(this.origin.host, PROVIDER);
     const message = err instanceof Error ? err.message : String(err);
     return new StorageServiceError(`S3 request failed: ${message}`, PROVIDER, { retryable: true }, err);
   }
@@ -786,7 +792,7 @@ export class S3StorageAdapter implements IStorageAdapter {
     if (!res.ok) {
       return { error: await this.toServiceError(res, request.key, undefined, onBytes) };
     }
-    const text = await readLimitedText(res, onBytes);
+    const text = await readLimitedText(res, onBytes, request.maxBodyBytes);
     if (declaresDtd(text)) {
       return {
         error: new StorageServiceError('S3 response declares a DTD and was refused', PROVIDER, {
@@ -865,6 +871,33 @@ export class S3StorageAdapter implements IStorageAdapter {
     });
     source.pipe(output);
     return output;
+  }
+
+  /**
+   * One page of ListObjectsV2 under `prefix`, as the XML the store answered. The keys come URL encoded (`encoding-type=url`), so
+   * a key XML cannot carry still lists. An answer cut at MAX_LISTING_BODY_BYTES is refused, not read short.
+   */
+  async listObjectsXml(prefix: string, page: { maxKeys: number; continuationToken?: string }): Promise<string> {
+    const query: Array<[string, string]> = [
+      ['list-type', '2'],
+      ['max-keys', String(page.maxKeys)],
+      ['encoding-type', 'url'],
+    ];
+    if (prefix !== '') query.push(['prefix', prefix]);
+    if (page.continuationToken) query.push(['continuation-token', page.continuationToken]);
+    const { text } = await this.send({
+      method: 'GET',
+      key: '',
+      query,
+      payloadHash: EMPTY_PAYLOAD_SHA256,
+      replayable: true,
+      readBody: true,
+      maxBodyBytes: MAX_LISTING_BODY_BYTES,
+    });
+    if (text === undefined || !text.includes('</ListBucketResult>')) {
+      throw new StorageServiceError('The listing answer is incomplete or larger than this client reads', PROVIDER, { retryable: false });
+    }
+    return text;
   }
 
   async head(remotePath: string): Promise<StorageAdapterMetadata | null> {

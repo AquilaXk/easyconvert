@@ -6,6 +6,8 @@
 export const GRAPH_OPERATIONS = [
   'import.upload',
   'import.url',
+  'import.s3',
+  'import.sftp',
   'convert',
   'ocr',
   'optimize',
@@ -27,6 +29,8 @@ export const GRAPH_OPERATIONS = [
   'archive.create',
   'archive.extract',
   'export.url',
+  'export.s3',
+  'export.sftp',
   'export.internal',
 ] as const;
 
@@ -47,10 +51,15 @@ export const LEGACY_GRAPH_OPERATION_ALIASES: Readonly<Record<string, GraphOperat
   'media.thumbnail': 'thumbnail',
 };
 
-export const IMPORT_OPERATIONS: ReadonlySet<GraphOperation> = new Set<GraphOperation>(['import.upload', 'import.url']);
+export const IMPORT_OPERATIONS: ReadonlySet<GraphOperation> = new Set<GraphOperation>(['import.upload', 'import.url', 'import.s3', 'import.sftp']);
 /** Operations that make files from nothing the graph holds: an import brings a file in, a website capture draws a page. They take no input. */
 export const SOURCE_OPERATIONS: ReadonlySet<GraphOperation> = new Set<GraphOperation>([...IMPORT_OPERATIONS, 'capture.website']);
-export const EXPORT_OPERATIONS: ReadonlySet<GraphOperation> = new Set<GraphOperation>(['export.url', 'export.internal']);
+export const EXPORT_OPERATIONS: ReadonlySet<GraphOperation> = new Set<GraphOperation>(['export.url', 'export.s3', 'export.sftp', 'export.internal']);
+
+/** Imports that read from the customer's own store, named by a saved credential or by credentials sealed with the node. */
+export const STORAGE_IMPORT_OPERATIONS: ReadonlySet<string> = new Set(['import.s3', 'import.sftp']);
+/** Exports that write to the customer's own store. */
+export const STORAGE_EXPORT_OPERATIONS: ReadonlySet<string> = new Set(['export.s3', 'export.sftp']);
 
 export function isGraphOperation(value: string): value is GraphOperation {
   return GRAPH_OPERATION_SET.has(value);
@@ -68,6 +77,8 @@ type ChargeRule = 'per-output' | 'per-gained-output' | 'once' | 'free';
 const CHARGE_RULES: Readonly<Record<GraphOperation, ChargeRule>> = {
   'import.upload': 'free',
   'import.url': 'free',
+  'import.s3': 'free',
+  'import.sftp': 'free',
   convert: 'per-output',
   ocr: 'per-output',
   optimize: 'per-gained-output',
@@ -89,6 +100,8 @@ const CHARGE_RULES: Readonly<Record<GraphOperation, ChargeRule>> = {
   'archive.create': 'once',
   'archive.extract': 'once',
   'export.url': 'free',
+  'export.s3': 'free',
+  'export.sftp': 'free',
   'export.internal': 'free',
 };
 

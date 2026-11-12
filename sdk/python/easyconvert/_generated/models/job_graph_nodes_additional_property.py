@@ -17,6 +17,9 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.conversion_options import ConversionOptions
+    from ..models.job_graph_nodes_additional_property_credentials import (
+        JobGraphNodesAdditionalPropertyCredentials,
+    )
     from ..models.job_graph_nodes_additional_property_headers import (
         JobGraphNodesAdditionalPropertyHeaders,
     )
@@ -34,8 +37,10 @@ class JobGraphNodesAdditionalProperty:
             video (`options.thumbnail.at`), or of an image, within `options.thumbnail.width` x `height` as
             `options.thumbnail.fit` places it. `metadata` reads the metadata of its first input into `metadata.json` (the
             `MetadataReport` schema). `metadata.write` writes `options.metadata.set` into each input, a JPEG, a PNG or a
-            PDF, and keeps the rest of the file as it is. `capture.website` draws the public web page at `url` as a PDF, a
-            PNG or a JPEG (`targetFormat`, `options.capture`); it takes no input, and its `url` is kept sealed.
+            PDF, and keeps the rest of the file as it is. `capture.website` (only where the server has
+            `CAPTURE_WEBSITE_ENABLED=true`; `GET /api/formats` says whether it is on, and where it is off the job is refused
+            with a 422, code `capture_unavailable`, before anything is reserved) draws the public web page at `url` as a
+            PDF, a PNG or a JPEG (`targetFormat`, `options.capture`); it takes no input, and its `url` is kept sealed.
         input_ (list[str] | str | Unset): Single upstream NodeId or array of upstream NodeIds. A merge node needs at
             least 2 distinct inputs.
         storage_key (str | Unset): Storage key for import.upload node.
@@ -43,6 +48,31 @@ class JobGraphNodesAdditionalProperty:
             https page on port 80 or 443).
         headers (JobGraphNodesAdditionalPropertyHeaders | Unset): Optional HTTP headers for URL operations.
         method (JobGraphNodesAdditionalPropertyMethod | Unset): HTTP method for export.url node.
+        credential_ref (str | Unset): import.s3, export.s3, import.sftp and export.sftp: a credential saved for the
+            account (the `credentialRef` that saving it answered), which only its owner can use. Name this or `credentials`,
+            not both. A reference that is unknown, expired, of another account or of another kind is refused with 422 at
+            submission.
+        credentials (JobGraphNodesAdditionalPropertyCredentials | Unset): import.s3, export.s3, import.sftp and
+            export.sftp: the credentials sent with the node, in place of `credentialRef`. They are sealed when the job is
+            accepted, opened only by the worker that runs the node, and never returned or logged. An S3 node takes `bucket`,
+            `accessKeyId`, `secretAccessKey` (required), and `sessionToken`, `region`, `endpoint` (an https address that
+            resolves to public IPs; any S3-compatible store) and `forcePathStyle`. An SFTP node takes `host`, `username`,
+            `privateKey` (required; password sign-in is not supported), and `port`, `passphrase`, `hostKey` (a known_hosts
+            line or public key the server must show) and `basePath`. A host or endpoint that is private, loopback or link-
+            local is refused.
+        key (str | Unset): import.s3: the one object to bring in. Name `key` or `prefix`. A key is relative: no leading
+            `/`, no `.` or `..` segment, at most 1024 bytes.
+        prefix (str | Unset): import.s3: bring in the objects whose key starts with this prefix (at most `maxObjects`; a
+            folder marker is skipped). export.s3: the text put in front of each file name, taken literally, so `out/` is a
+            folder and `out/report-` a name prefix; left out, the files go to the bucket root. Same rules as `key`.
+        path (str | Unset): import.sftp: the one file to bring in, relative to the credential's `basePath`. Name `path`
+            or `directory`.
+        directory (str | Unset): import.sftp: bring in the regular files of this directory (at most `maxObjects`; hidden
+            files, links and sub-folders are skipped). export.sftp: the directory the files are written into, which must
+            exist; left out, `basePath`. Relative to `basePath`; same rules as `key`.
+        max_objects (int | Unset): import.s3 with `prefix`, import.sftp with `directory`: the most files to bring in. A
+            listing with more files fails the node with `storage_too_many_objects`; nothing is cut short. Each file is held
+            to the plan's file limit and the whole import to the owner's daily link-import budget. Default: 20.
         target_format (str | Unset): Target format extension for convert or archive.create.
         options (ConversionOptions | Unset):
         entries (list[str] | Unset): Glob patterns for archive.extract entries.
@@ -54,6 +84,13 @@ class JobGraphNodesAdditionalProperty:
     url: str | Unset = UNSET
     headers: JobGraphNodesAdditionalPropertyHeaders | Unset = UNSET
     method: JobGraphNodesAdditionalPropertyMethod | Unset = UNSET
+    credential_ref: str | Unset = UNSET
+    credentials: JobGraphNodesAdditionalPropertyCredentials | Unset = UNSET
+    key: str | Unset = UNSET
+    prefix: str | Unset = UNSET
+    path: str | Unset = UNSET
+    directory: str | Unset = UNSET
+    max_objects: int | Unset = 20
     target_format: str | Unset = UNSET
     options: ConversionOptions | Unset = UNSET
     entries: list[str] | Unset = UNSET
@@ -83,6 +120,22 @@ class JobGraphNodesAdditionalProperty:
         if not isinstance(self.method, Unset):
             method = self.method.value
 
+        credential_ref = self.credential_ref
+
+        credentials: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.credentials, Unset):
+            credentials = self.credentials.to_dict()
+
+        key = self.key
+
+        prefix = self.prefix
+
+        path = self.path
+
+        directory = self.directory
+
+        max_objects = self.max_objects
+
         target_format = self.target_format
 
         options: dict[str, Any] | Unset = UNSET
@@ -110,6 +163,20 @@ class JobGraphNodesAdditionalProperty:
             field_dict["headers"] = headers
         if method is not UNSET:
             field_dict["method"] = method
+        if credential_ref is not UNSET:
+            field_dict["credentialRef"] = credential_ref
+        if credentials is not UNSET:
+            field_dict["credentials"] = credentials
+        if key is not UNSET:
+            field_dict["key"] = key
+        if prefix is not UNSET:
+            field_dict["prefix"] = prefix
+        if path is not UNSET:
+            field_dict["path"] = path
+        if directory is not UNSET:
+            field_dict["directory"] = directory
+        if max_objects is not UNSET:
+            field_dict["maxObjects"] = max_objects
         if target_format is not UNSET:
             field_dict["targetFormat"] = target_format
         if options is not UNSET:
@@ -122,6 +189,9 @@ class JobGraphNodesAdditionalProperty:
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.conversion_options import ConversionOptions
+        from ..models.job_graph_nodes_additional_property_credentials import (
+            JobGraphNodesAdditionalPropertyCredentials,
+        )
         from ..models.job_graph_nodes_additional_property_headers import (
             JobGraphNodesAdditionalPropertyHeaders,
         )
@@ -162,6 +232,27 @@ class JobGraphNodesAdditionalProperty:
         else:
             method = JobGraphNodesAdditionalPropertyMethod(_method)
 
+        credential_ref = d.pop("credentialRef", UNSET)
+
+        _credentials = d.pop("credentials", UNSET)
+        credentials: JobGraphNodesAdditionalPropertyCredentials | Unset
+        if isinstance(_credentials, Unset):
+            credentials = UNSET
+        else:
+            credentials = JobGraphNodesAdditionalPropertyCredentials.from_dict(
+                _credentials
+            )
+
+        key = d.pop("key", UNSET)
+
+        prefix = d.pop("prefix", UNSET)
+
+        path = d.pop("path", UNSET)
+
+        directory = d.pop("directory", UNSET)
+
+        max_objects = d.pop("maxObjects", UNSET)
+
         target_format = d.pop("targetFormat", UNSET)
 
         _options = d.pop("options", UNSET)
@@ -180,6 +271,13 @@ class JobGraphNodesAdditionalProperty:
             url=url,
             headers=headers,
             method=method,
+            credential_ref=credential_ref,
+            credentials=credentials,
+            key=key,
+            prefix=prefix,
+            path=path,
+            directory=directory,
+            max_objects=max_objects,
             target_format=target_format,
             options=options,
             entries=entries,

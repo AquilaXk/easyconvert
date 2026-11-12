@@ -248,6 +248,18 @@ function ssrfBlockedError(message: string): NodeJS.ErrnoException {
   return err;
 }
 
+const MAX_CAUSE_DEPTH = 5;
+
+/** Whether `err`, or an error it names as its cause, is the refusal of the connect-time lookup (`ssrfSafeLookup`): a fetch reports it as `fetch failed`. */
+export function isSsrfBlockedError(err: unknown): boolean {
+  let current: unknown = err;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current instanceof Error; depth++) {
+    if ((current as NodeJS.ErrnoException).code === 'ESSRFBLOCKED') return true;
+    current = current.cause;
+  }
+  return false;
+}
+
 /**
  * Connect-time DNS lookup that refuses restricted hosts and every resolution containing a
  * restricted IP. Implements the full `net.LookupFunction` contract: with `options.all` (used by

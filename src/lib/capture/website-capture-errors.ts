@@ -15,6 +15,19 @@ export class CaptureTargetBlockedError extends ConversionFailedError {
   }
 }
 
+/**
+ * Website capture is switched off on this server (`CAPTURE_WEBSITE_ENABLED`, off by default): the request is understood and refused before
+ * anything is reserved, and a worker that has it off refuses the node the same way: 422.
+ */
+export class CaptureUnavailableError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'capture_unavailable';
+  readonly status = 422;
+  constructor(message = 'Website capture is not enabled on this server.') {
+    super(message);
+    this.name = 'CaptureUnavailableError';
+  }
+}
+
 /** The page could not be loaded or drawn (an address that does not answer, a certificate the browser refuses, a page that crashes it): 422. */
 export class CaptureFailedError extends ConversionFailedError {
   readonly refusalCode: ConversionRefusalCode = 'capture_failed';

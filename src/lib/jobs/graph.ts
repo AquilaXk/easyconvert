@@ -21,6 +21,7 @@ import {
   requestedTargetFormat,
   type GraphOperation,
 } from './graph-operations';
+import { storageImportFileName, storageNodeProblems } from './storage-node-validation';
 
 /** The scheduler's own policy: `fail_fast` ends the job as failed when a task fails, `continue` skips what depends on it. */
 export type GraphFailurePolicy = FailurePolicy;
@@ -134,6 +135,11 @@ function extractExtension(target: string | undefined): string | undefined {
   const clean = target.split('?')[0].split('#')[0];
   const ext = path.extname(clean).replace(/^\./, '').toLowerCase().trim();
   return ext || undefined;
+}
+
+/** The link, key or path an import node reads from, whose extension is the format of the file. */
+function importedName(node: TaskNode): string | undefined {
+  return node.op === 'import.url' ? node.url : storageImportFileName(node);
 }
 
 /** The format of an upload node: its own stored key first, then the request's filename and declared format. */
@@ -390,6 +396,47 @@ function checkDependencies(
   }
 }
 
+/** What is wrong with a merge node (other operations have none): too few inputs, a password list that does not match them, and an input that is not in the output format. */
+function mergeNodeProblems(nodeId: string, node: TaskNode, target: string | undefined, inferredFormats: Record<string, string>): GraphValidationErrorDetail[] {
+  const errors: GraphValidationErrorDetail[] = [];
+  const op = node.op;
+  const mergeInputCount = op === 'merge' ? distinctNodeInputs(node).size : 0;
+  if (op === 'merge' && mergeInputCount < MIN_MERGE_INPUTS) {
+    errors.push({
+      path: `nodes.${nodeId}.input`,
+      message: `Merge node "${nodeId}" needs at least ${MIN_MERGE_INPUTS} distinct inputs; found ${mergeInputCount}.`,
+      code: 'MERGE_INPUTS_INSUFFICIENT',
+    });
+  }
+  const mergePasswords = op === 'merge' ? (node as { options?: { passwords?: unknown } }).options?.passwords : undefined;
+  if (mergePasswords !== undefined && (!Array.isArray(mergePasswords) || mergePasswords.length !== mergeInputListed(node))) {
+    errors.push({
+      path: `nodes.${nodeId}.options.passwords`,
+      message: `Merge node "${nodeId}" needs one password entry (null for none) per input, in input order; found ${Array.isArray(mergePasswords) ? mergePasswords.length : 'no list'} for ${mergeInputListed(node)} input(s).`,
+      code: 'MERGE_PASSWORDS_MISMATCH',
+    });
+  }
+  if (op === 'merge' && target && MERGE_FORMATS.has(target)) {
+    for (const inputId of getTaskDependencies(node)) {
+      const inputFormat = inferredFormats[inputId];
+      if (inputFormat === UNKNOWN_FORMAT) {
+        errors.push({
+          path: `nodes.${nodeId}.input`,
+          message: `Cannot determine the format of input "${inputId}" for merge node "${nodeId}"; provide a filename extension or sourceFormat.`,
+          code: 'SOURCE_FORMAT_UNKNOWN',
+        });
+      } else if (inputFormat && inputFormat !== DYNAMIC_FORMAT && inputFormat !== target) {
+        errors.push({
+          path: `nodes.${nodeId}.input`,
+          message: `Merge node "${nodeId}" produces "${target}" but input "${inputId}" is "${inputFormat}".`,
+          code: 'INCOMPATIBLE_MERGE_INPUT',
+        });
+      }
+    }
+  }
+  return errors;
+}
+
 /**
  * Validates a DAG JobGraph using Kahn's topological sort algorithm,
  * enforcing cycle detection, dangling reference rejection, fan-in/fan-out caps,
@@ -509,7 +556,7 @@ export function validateJobGraph(
   if (importCount === 0) {
     errors.push({
       path: 'nodes',
-      message: 'Graph must contain at least one import node (import.upload or import.url) or a capture.website node.',
+      message: 'Graph must contain at least one import node (import.upload, import.url, import.s3 or import.sftp) or a capture.website node.',
       code: 'MISSING_IMPORT_NODE',
     });
   }
@@ -517,7 +564,7 @@ export function validateJobGraph(
   if (exportCount === 0) {
     errors.push({
       path: 'nodes',
-      message: 'Graph must contain at least one export node (export.url or export.internal).',
+      message: 'Graph must contain at least one export node (export.url, export.s3, export.sftp or export.internal).',
       code: 'MISSING_EXPORT_NODE',
     });
   }
@@ -636,48 +683,19 @@ export function validateJobGraph(
         code: 'UNSUPPORTED_OUTPUT_FORMAT',
       });
     }
-    const mergeInputCount = op === 'merge' ? distinctNodeInputs(node).size : 0;
-    if (op === 'merge' && mergeInputCount < MIN_MERGE_INPUTS) {
-      errors.push({
-        path: `nodes.${nodeId}.input`,
-        message: `Merge node "${nodeId}" needs at least ${MIN_MERGE_INPUTS} distinct inputs; found ${mergeInputCount}.`,
-        code: 'MERGE_INPUTS_INSUFFICIENT',
-      });
-    }
-    const mergePasswords = op === 'merge' ? (node as { options?: { passwords?: unknown } }).options?.passwords : undefined;
-    if (mergePasswords !== undefined && (!Array.isArray(mergePasswords) || mergePasswords.length !== mergeInputListed(node))) {
-      errors.push({
-        path: `nodes.${nodeId}.options.passwords`,
-        message: `Merge node "${nodeId}" needs one password entry (null for none) per input, in input order; found ${Array.isArray(mergePasswords) ? mergePasswords.length : 'no list'} for ${mergeInputListed(node)} input(s).`,
-        code: 'MERGE_PASSWORDS_MISMATCH',
-      });
-    }
-    if (op === 'merge' && target && MERGE_FORMATS.has(target)) {
-      for (const inputId of getTaskDependencies(node)) {
-        const inputFormat = inferredFormats[inputId];
-        if (inputFormat === UNKNOWN_FORMAT) {
-          errors.push({
-            path: `nodes.${nodeId}.input`,
-            message: `Cannot determine the format of input "${inputId}" for merge node "${nodeId}"; provide a filename extension or sourceFormat.`,
-            code: 'SOURCE_FORMAT_UNKNOWN',
-          });
-        } else if (inputFormat && inputFormat !== DYNAMIC_FORMAT && inputFormat !== target) {
-          errors.push({
-            path: `nodes.${nodeId}.input`,
-            message: `Merge node "${nodeId}" produces "${target}" but input "${inputId}" is "${inputFormat}".`,
-            code: 'INCOMPATIBLE_MERGE_INPUT',
-          });
-        }
-      }
-    }
+    errors.push(...mergeNodeProblems(nodeId, node, target, inferredFormats));
+    errors.push(...storageNodeProblems(`nodes.${nodeId}`, op, node));
 
     switch (op) {
       case 'import.upload': {
         inferredFormats[nodeId] = uploadNodeFormat(node.storageKey, options);
         break;
       }
-      case 'import.url': {
-        inferredFormats[nodeId] = extractExtension(node.url) || DYNAMIC_FORMAT;
+      case 'import.url':
+      case 'import.s3':
+      case 'import.sftp': {
+        // a link without an extension, a prefix and a directory name no format: the files are known when the node runs
+        inferredFormats[nodeId] = extractExtension(importedName(node)) || DYNAMIC_FORMAT;
         break;
       }
       case 'capture.website': {
@@ -1089,7 +1107,7 @@ export function assertValidLegacyTasks(tasks: PipelineTask[], supported: Readonl
       errors.push({
         path,
         code: 'BYOS_OPERATION_UNSUPPORTED',
-        message: `Operation "${op}" cannot run in a pipeline; use export/url with a signed destination URL.`,
+        message: `Operation "${op}" cannot run in a pipeline; use export/url with a signed destination URL, or send a graph with an export.s3 or export.sftp node.`,
       });
     } else if (op === 'merge') {
       errors.push({

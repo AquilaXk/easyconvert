@@ -11,6 +11,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.engine import Engine
+    from ..models.formats_response_capture import FormatsResponseCapture
     from ..models.formats_response_categories_item import FormatsResponseCategoriesItem
     from ..models.formats_response_formats_item import FormatsResponseFormatsItem
     from ..models.pair_engines import PairEngines
@@ -28,6 +29,7 @@ class FormatsResponse:
         categories (list[FormatsResponseCategoriesItem]):
         formats (list[FormatsResponseFormatsItem]):
         engines (list[Engine]): Every engine of this deployment with its installed version.
+        capture (FormatsResponseCapture): The tasks of this deployment that are not on for every server.
         pairs (list[PairEngines] | Unset): Sent only when `source`, `target` or `engine` is set: the engines of each
             pair they select.
     """
@@ -37,6 +39,7 @@ class FormatsResponse:
     categories: list[FormatsResponseCategoriesItem]
     formats: list[FormatsResponseFormatsItem]
     engines: list[Engine]
+    capture: FormatsResponseCapture
     pairs: list[PairEngines] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -60,6 +63,8 @@ class FormatsResponse:
             engines_item = engines_item_data.to_dict()
             engines.append(engines_item)
 
+        capture = self.capture.to_dict()
+
         pairs: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.pairs, Unset):
             pairs = []
@@ -76,6 +81,7 @@ class FormatsResponse:
                 "categories": categories,
                 "formats": formats,
                 "engines": engines,
+                "capture": capture,
             }
         )
         if pairs is not UNSET:
@@ -86,6 +92,7 @@ class FormatsResponse:
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.engine import Engine
+        from ..models.formats_response_capture import FormatsResponseCapture
         from ..models.formats_response_categories_item import (
             FormatsResponseCategoriesItem,
         )
@@ -120,6 +127,8 @@ class FormatsResponse:
 
             engines.append(engines_item)
 
+        capture = FormatsResponseCapture.from_dict(d.pop("capture"))
+
         _pairs = d.pop("pairs", UNSET)
         pairs: list[PairEngines] | Unset = UNSET
         if _pairs is not UNSET:
@@ -135,6 +144,7 @@ class FormatsResponse:
             categories=categories,
             formats=formats,
             engines=engines,
+            capture=capture,
             pairs=pairs,
         )
 

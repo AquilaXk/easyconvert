@@ -120,6 +120,30 @@ export function parseSftpListingSize(stdout: string): number | undefined {
   return match ? Number.parseInt(match[1], 10) : undefined;
 }
 
+/** One entry of an `ls -l` of a directory: the mode type character, the size, and the name after the date. */
+const LS_LONG_ENTRY = /^([-dlcbps])[-rwxsStTl]{9}\+?\s+(?:\?|\d+)\s+\S+\s+\S+\s+(\d+)\s+[A-Za-z]{3}\s+\d{1,2}\s+(?:\d{2}:\d{2}|\d{4}) (.+)$/;
+
+export interface SftpDirectoryFile {
+  name: string;
+  size: number;
+}
+
+/**
+ * The regular files of the output of one `ls -l` of a directory. Like `parseSftpListingSize`, only the lines after the echo of
+ * the command are read. A directory, a link, a device and a name that holds a `/` (which would name a path, not an entry) are left out.
+ */
+export function parseSftpDirectoryFiles(stdout: string): SftpDirectoryFile[] {
+  const lines = stdout.split('\n');
+  const echo = lines.findIndex((line) => line.startsWith('sftp> ls -l '));
+  if (echo === -1) return [];
+  const files: SftpDirectoryFile[] = [];
+  for (const line of lines.slice(echo + 1)) {
+    const match = LS_LONG_ENTRY.exec(line.replace(/\r$/, ''));
+    if (match && match[1] === '-' && !match[3].includes('/')) files.push({ name: match[3], size: Number.parseInt(match[2], 10) });
+  }
+  return files;
+}
+
 export function sftpBatch(...lines: string[]): string {
   return `${lines.join('\n')}\nquit\n`;
 }

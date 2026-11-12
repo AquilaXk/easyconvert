@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 167 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 169 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -68,6 +68,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `TRUSTED_CDN` | one of `cloudflare` (any case) | none | no | web |
 | `TRUSTED_CDN_RANGES` | comma-separated IPv4/IPv6 addresses or CIDR ranges, at most 256 entries | none | no | web |
 | `TRUSTED_PROXY_HEADER` | one of `x-forwarded-for`, `forwarded` (any case) | none | no | web |
+| `CAPTURE_WEBSITE_ENABLED` | `true` or `false` | `false` | no | web, worker |
 
 - `STRICT_SANDBOX`: Set to `true` to refuse running native tools without the strict process sandbox: the user and network namespaces, and pid-init with the Landlock ruleset that confines the files of a program to the directory of its job. A run that does not name its job directory, or that this host cannot confine, is refused with a 503 before the program starts.
 - `SANDBOX_PID_NAMESPACE`: Set to `false` to start sandboxed programs without `pid-init` (on by default): without the PID namespace of their own, and without the Landlock ruleset that refuses them the /proc entries (command line, status) of the other runs. calibre and veraPDF always run outside the PID namespace: calibre's launcher reads /proc/<its own id>/exe, which names another process in a namespace whose /proc the sandbox cannot remount; they still get the ruleset.
@@ -79,6 +80,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `TRUSTED_CDN`: Name of the CDN whose edge ranges are trusted to forward client addresses.
 - `TRUSTED_CDN_RANGES`: CIDR ranges that replace the built-in edge ranges of TRUSTED_CDN.
 - `TRUSTED_PROXY_HEADER`: The one forwarding header the trusted proxy writes: `x-forwarded-for` (default) or `forwarded`.
+- `CAPTURE_WEBSITE_ENABLED`: Set to `true` to turn on the `capture.website` task, which draws a public web page as a PDF, a PNG or a JPEG with the browser of the worker image. Off by default: the browser keeps the network of the worker and its confinement has not been run on a host with user namespaces (docs/policy-decisions.md, entry 270). Where it is off, a job that holds the task is refused with a 422 (`capture_unavailable`) and `GET /api/formats` says so. Set it on the web and worker processes alike.
 
 ### Sign-in
 
@@ -176,6 +178,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `AWS_BUCKET_NAME` | text | none | no | web, worker |
 | `BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST` | text | none | no | web, worker |
 | `BYOS_S3_DEV_ENDPOINT_ALLOWLIST` | text | none | no | web, worker |
+| `BYOS_SFTP_DEV_ENDPOINT_ALLOWLIST` | text | none | no | web, worker |
 
 - `STORAGE_DRIVER`: Where objects live: `oci` (OCI Object Storage), `s3` (an S3-compatible service) or `local` (disk of this host, for development and single-node use). Must be chosen in production.
 - `STORAGE_SIGNING_SECRET`: Signs upload and download URLs. At least 32 bytes of UTF-8 text in production (surrounding whitespace is trimmed). One of STORAGE_SIGNING_SECRET, S3_SIGNING_SECRET or OCI_SIGNING_SECRET is required in production; the first one set wins.
@@ -207,6 +210,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `AWS_BUCKET_NAME`: Deprecated fallback of OCI_BUCKET and S3_BUCKET; logs a warning when used.
 - `BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST`: Comma-separated host:port list of WebDAV, Azure Blob, GCS and import/export URL endpoints that may be plain http or private-address, for a local test server. Honoured only when NODE_ENV is exactly `development`.
 - `BYOS_S3_DEV_ENDPOINT_ALLOWLIST`: Comma-separated host[:port] list of customer S3 endpoints that may be plain http or private-address. Honoured only when NODE_ENV is exactly `development`.
+- `BYOS_SFTP_DEV_ENDPOINT_ALLOWLIST`: Comma-separated host:port list of customer SFTP servers that may be private-address, for a local test server. Honoured only when NODE_ENV is exactly `development`.
 
 ### Queue and Redis
 

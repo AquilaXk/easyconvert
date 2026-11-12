@@ -33,6 +33,22 @@ export class StorageInvalidKeyError extends StorageInputError {
   }
 }
 
+/** A prefix or a directory holds more files than the import may take; nothing is imported from a listing that does not fit. */
+export class StorageListingLimitError extends StorageInputError {
+  constructor(public readonly maxObjects: number, provider: string) {
+    super(`The listing holds more than ${maxObjects} files`, provider);
+    this.name = 'StorageListingLimitError';
+  }
+}
+
+/** A download passed the byte limit the caller set: the client was stopped and nothing of it is kept. */
+export class StorageSizeLimitError extends StorageAdapterError {
+  constructor(public readonly maxBytes: number, provider: string) {
+    super(`The download passed ${maxBytes} bytes`, provider);
+    this.name = 'StorageSizeLimitError';
+  }
+}
+
 export class StorageNotFoundError extends StorageAdapterError {
   constructor(path: string, provider: string) {
     super(`Remote object not found: "${path}"`, provider);
@@ -100,9 +116,10 @@ export interface IStorageAdapter {
   readonly providerName: string;
 
   /**
-   * Streams content from remote storage.
+   * Streams content from remote storage. An adapter that stages the file before it can stream it (SFTP) stops at `maxBytes` and
+   * throws `StorageSizeLimitError`; one that streams (S3) leaves the byte limit to the caller's stream.
    */
-  downloadStream(remotePath: string): Promise<NodeJS.ReadableStream>;
+  downloadStream(remotePath: string, options?: { maxBytes?: number }): Promise<NodeJS.ReadableStream>;
 
   /**
    * Uploads stream to remote storage without full memory buffering.

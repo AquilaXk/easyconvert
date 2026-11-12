@@ -6,11 +6,17 @@ import {
   unsealJobSecret,
 } from '../../security/job-secret-seal';
 import { ConversionFailedError } from '../../types';
+import { STORAGE_EXPORT_OPERATIONS, STORAGE_IMPORT_OPERATIONS } from '../../jobs/graph-operations';
 import { sealPasswordOption } from '../option-secrets';
 import type { GraphNode } from './types';
 
 /** Operations whose `url` and `headers` are bearer secrets (of customer storage, or the token in the address of a page to capture). */
 const SECRET_URL_OPERATIONS: ReadonlySet<string> = new Set(['import.url', 'export.url', 'capture.website']);
+/** Operations whose inline `credentials` are bearer secrets of the customer's store. */
+function hasInlineCredentialsOperation(op: unknown): boolean {
+  return typeof op === 'string' && (STORAGE_IMPORT_OPERATIONS.has(op) || STORAGE_EXPORT_OPERATIONS.has(op));
+}
+
 /** Longest URL a sealed node may carry, in characters. */
 export const MAX_SEALED_URL_CHARS = 8192;
 /** Most request headers a sealed node may carry. */
@@ -35,6 +41,9 @@ type UrlNodeFields = { op: string; url?: unknown; headers?: unknown; sealed?: un
 export function sealGraphNode<N extends GraphNode>(node: N, jobId: string): N {
   const withSealedPasswords = sealNodePasswords(node, jobId);
   const fields = withSealedPasswords as unknown as UrlNodeFields;
+  if (hasInlineCredentialsOperation(fields.op)) {
+    return sealInlineCredentials(withSealedPasswords, jobId);
+  }
   if (!SECRET_URL_OPERATIONS.has(fields.op) || (fields.url === undefined && fields.headers === undefined)) {
     return withSealedPasswords;
   }
@@ -45,6 +54,36 @@ export function sealGraphNode<N extends GraphNode>(node: N, jobId: string): N {
     payload.headers = headers;
   }
   return { ...rest, sealed: sealJobSecret(JSON.stringify(payload), jobId) } as unknown as N;
+}
+
+/** The node with its inline `credentials` replaced by one sealed blob bound to `jobId`; a node that names a saved credential is returned as it is. */
+function sealInlineCredentials<N extends GraphNode>(node: N, jobId: string): N {
+  const { credentials, ...rest } = node as unknown as { credentials?: unknown } & Record<string, unknown>;
+  if (credentials === undefined) return node;
+  return { ...rest, sealed: sealJobSecret(JSON.stringify({ credentials }), jobId) } as unknown as N;
+}
+
+/**
+ * Opens the inline credentials of a customer-storage node inside the worker, at the point of use: undefined for a node that names
+ * a saved credential. A node that still carries plaintext credentials is refused, and an unsealing failure throws a
+ * SecretSealError; neither falls back to the plaintext.
+ */
+export function openStorageNodeCredentials(node: object, jobId: string): Record<string, unknown> | undefined {
+  const fields = node as { credentials?: unknown; sealed?: unknown };
+  if (fields.credentials !== undefined) {
+    throw new SecretSealError('UNSEALED_SECRET', '[JobSecretSeal] Refusing a node whose credentials are not sealed.');
+  }
+  if (fields.sealed === undefined) return undefined;
+  if (typeof fields.sealed !== 'string') throw malformedPayload();
+  let payload: unknown;
+  try {
+    payload = JSON.parse(unsealJobSecret(fields.sealed, jobId));
+  } catch (err) {
+    throw err instanceof SecretSealError ? err : malformedPayload();
+  }
+  const credentials = (payload as { credentials?: unknown } | null)?.credentials;
+  if (typeof credentials !== 'object' || credentials === null || Array.isArray(credentials)) throw malformedPayload();
+  return credentials as Record<string, unknown>;
 }
 
 /** The node with the open passwords of its options (`password`, `passwords`) sealed; a node without any is returned as is. */
@@ -122,8 +161,11 @@ export function findSealedSecretProblems(node: unknown): SealedSecretProblem[] {
   if (typeof node !== 'object' || node === null) {
     return [];
   }
-  const fields = node as { op?: unknown; operation?: unknown; url?: unknown; headers?: unknown };
+  const fields = node as { op?: unknown; operation?: unknown; url?: unknown; headers?: unknown; credentials?: unknown };
   const operation = typeof fields.op === 'string' ? fields.op : fields.operation;
+  if (typeof operation === 'string' && hasInlineCredentialsOperation(operation.replace('/', '.'))) {
+    return credentialsProblems(fields.credentials);
+  }
   if (typeof operation !== 'string' || !SECRET_URL_OPERATIONS.has(operation.replace('/', '.'))) {
     return [];
   }
@@ -145,6 +187,18 @@ export function findSealedSecretProblems(node: unknown): SealedSecretProblem[] {
     }
   }
   return problems;
+}
+
+/** The reasons the inline credentials of a customer-storage node cannot be sealed: not an object, or larger than one sealed blob holds. */
+function credentialsProblems(credentials: unknown): SealedSecretProblem[] {
+  if (credentials === undefined) return [];
+  if (typeof credentials !== 'object' || credentials === null || Array.isArray(credentials)) {
+    return [{ path: 'credentials', reason: 'credentials must be an object' }];
+  }
+  if (Buffer.byteLength(JSON.stringify({ credentials }), 'utf8') > MAX_SEALED_PLAINTEXT_BYTES) {
+    return [{ path: 'credentials', reason: `credentials are larger than ${MAX_SEALED_PLAINTEXT_BYTES} bytes` }];
+  }
+  return [];
 }
 
 function headerProblems(headers: unknown): SealedSecretProblem[] {

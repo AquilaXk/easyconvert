@@ -31,8 +31,9 @@ class TaskReport:
         input_ (list[str] | Unset): The names of the tasks it reads.
         started_at (float | Unset): When a worker took the task, in epoch milliseconds.
         finished_at (float | Unset): When the task ended, in epoch milliseconds.
-        result (TaskReportResult | Unset): The files an `export/url` task without a `url` kept for download, once it
-            completed. The other tasks hand their files to the tasks that read them and have no result of their own.
+        result (TaskReportResult | Unset): The files an `export/url` task without a `url` kept for download, or the
+            files an `export/s3` or `export/sftp` task wrote to the customer's store, once it completed. The other tasks
+            hand their files to the tasks that read them and have no result of their own.
         error (TaskReportError | Unset): Why the task failed.
     """
 

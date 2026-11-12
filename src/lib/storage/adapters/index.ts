@@ -14,7 +14,7 @@ import {
 import { GcsStorageAdapter } from './gcs';
 import { AZURE_STORAGE_ACCOUNT_PATTERN, AzureBlobStorageAdapter } from './azure-blob';
 import { WebDavStorageAdapter } from './webdav';
-import { SftpStorageAdapter } from './sftp';
+import { SftpStorageAdapter, isSftpDevAllowlisted } from './sftp';
 import { S3StorageAdapter } from './s3';
 import { isPrivateOrRestrictedHost } from '../../security/ssrf';
 import { assertTlsEndpoint, isDevAllowlistedEndpoint } from './http-guard';
@@ -95,7 +95,7 @@ export function validateCredentials(credentials: CustomerStorageCredentials): vo
       break;
     }
     case 'sftp': {
-      if (!credentials.host || isPrivateOrRestrictedHost(credentials.host)) {
+      if (!credentials.host || (!isSftpDevAllowlisted(credentials.host, credentials.port) && isPrivateOrRestrictedHost(credentials.host))) {
         throw new StorageSsrfError(credentials.host || '', 'sftp');
       }
       break;

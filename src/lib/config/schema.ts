@@ -1130,6 +1130,8 @@ const SCHEMA_ENTRIES = [
     roles: BOTH,
   },
 
+  { name: 'BYOS_SFTP_DEV_ENDPOINT_ALLOWLIST', area: 'storage', description: 'Comma-separated host:port list of customer SFTP servers that may be private-address, for a local test server. Honoured only when NODE_ENV is exactly `development`.', kind: { type: 'string' }, requiredInProduction: false, secret: false, roles: BOTH },
+
   // ---- queue ------------------------------------------------------------------------------------------
   {
     name: 'REDIS_URL',
@@ -1441,6 +1443,7 @@ const SCHEMA_ENTRIES = [
   toolPath('DCRAW_EMU_PATH', 'Path of the LibRaw `dcraw_emu` executable.', BOTH),
   toolPath('DCRAW_EMU_HE_PATH', 'Path of the `dcraw_emu` of the pinned LibRaw snapshot (scripts/install-libraw-he.sh) that reads Nikon NEF files with High Efficiency or High Efficiency* compression; searched in the standard locations when unset. Without it such a file is refused with the words of the `dcraw_emu` of `DCRAW_EMU_PATH`; every other camera file never uses it.', BOTH),
   absoluteToolPath('EBOOK_CONVERT_PATH', 'Absolute path of the calibre `ebook-convert` executable that writes MOBI, AZW3, PDB, LRF and OEB books; searched in the standard locations when unset. Those five formats cannot be written without it (HTTP 503); a value that is not an absolute path is rejected at start-up.', BOTH),
+  { name: 'CAPTURE_WEBSITE_ENABLED', area: 'security', description: 'Set to `true` to turn on the `capture.website` task, which draws a public web page as a PDF, a PNG or a JPEG with the browser of the worker image. Off by default: the browser keeps the network of the worker and its confinement has not been run on a host with user namespaces (docs/policy-decisions.md, entry 270). Where it is off, a job that holds the task is refused with a 422 (`capture_unavailable`) and `GET /api/formats` says so. Set it on the web and worker processes alike.', kind: { type: 'boolean' }, default: false, requiredInProduction: false, secret: false, roles: BOTH },
   absoluteToolPath('CAPTURE_PYTHON_PATH', 'Absolute path of the Python 3 interpreter that runs the website capture driver (native/capture-website) with the PyQt6 WebEngine bindings that calibre brings; searched in the standard locations when unset. A website cannot be captured without it (HTTP 503); a value that is not an absolute path is rejected at start-up.', BOTH),
   absoluteToolPath('CAPTURE_DRIVER_PATH', 'Absolute path of the website capture driver script (native/capture-website/capture.py); `/usr/local/lib/easyconvert/capture-website.py` in the worker image, the file in `native/` in a checkout. A website cannot be captured without it (HTTP 503); a value that is not an absolute path is rejected at start-up.', BOTH),
   toolPath('DWG2DXF_PATH', 'Path of the LibreDWG `dwg2dxf` executable that reads a DWG drawing into a DXF; searched in the standard locations when unset. A DWG cannot be converted without it (HTTP 503).', BOTH),

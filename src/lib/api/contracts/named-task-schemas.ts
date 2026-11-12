@@ -14,7 +14,7 @@ export const NamedTaskSchema = {
       type: 'string',
       enum: NAMED_TASK_OPERATIONS,
       description:
-        '`import/url` and `import/upload` bring a file in; `convert`, `ocr`, `optimize`, `thumbnail`, `media.package`, `watermark`, `merge`, `metadata` (reads the metadata of its input into `metadata.json`), `metadata/write` (writes `options.metadata.set` into a JPEG, a PNG or a PDF), `capture/website` (draws the page at `url` as a PDF, a PNG or a JPEG, with `output_format` and `options.capture`; it takes no input and counts as a conversion), `archive/create`, `archive/extract` and the `pdf.*` page operations work on it; `export/url` ends a branch: with `url` it sends the files there, without it keeps them for download and lists their download URLs in the task result. A job needs at least one task that converts.',
+        '`import/url` and `import/upload` bring a file in; `convert`, `ocr`, `optimize`, `thumbnail`, `media.package`, `watermark`, `merge`, `metadata` (reads the metadata of its input into `metadata.json`), `metadata/write` (writes `options.metadata.set` into a JPEG, a PNG or a PDF), `capture/website` (only where the server has it on, see `GET /api/formats`; otherwise a 422 with the code `capture_unavailable`; draws the page at `url` as a PDF, a PNG or a JPEG, with `output_format` and `options.capture`; it takes no input and counts as a conversion), `archive/create`, `archive/extract` and the `pdf.*` page operations work on it; `export/url` ends a branch: with `url` it sends the files there, without it keeps them for download and lists their download URLs in the task result. `import/s3` and `import/sftp` bring files in from the customer\'s own bucket or SFTP server, and `export/s3` and `export/sftp` write the files there and list where each went in the task result; they take a saved credential (`credential_ref`) or the credentials themselves (`credentials`). A job needs at least one task that converts.',
     },
     input: {
       description: 'The name of the task whose output this task reads, or a list of names. Every task but an import needs one. A `merge` needs at least 2 distinct names.',
@@ -59,6 +59,33 @@ export const NamedTaskSchema = {
       items: { type: 'string' },
       description: 'Glob patterns of the entries `archive/extract` unpacks; all when left out.',
     },
+    credential_ref: {
+      type: 'string',
+      pattern: '^cred_[a-f0-9]{32}$',
+      description: '`import/s3`, `export/s3`, `import/sftp`, `export/sftp`: a credential saved for the account (the `credentialRef` that saving it answered), which only its owner can use. Name this or `credentials`, not both. A reference that is unknown, expired, of another account or of another kind answers 422.',
+    },
+    credentials: {
+      type: 'object',
+      writeOnly: true,
+      description: 'The credentials sent with the task, in place of `credential_ref`: sealed when the job is accepted, opened only by the worker that runs the task, never returned or logged. The same fields as the `credentials` of a saved credential without `type`: an S3 task takes `bucket`, `accessKeyId`, `secretAccessKey` and optionally `sessionToken`, `region`, `endpoint` (https, public addresses only) and `forcePathStyle`; an SFTP task takes `host`, `username`, `privateKey` and optionally `port`, `passphrase`, `hostKey` and `basePath`.',
+    },
+    key: { type: 'string', description: '`import/s3`: the one object to bring in. Name `key` or `prefix`. Relative: no leading `/`, no `.` or `..` segment, at most 1024 bytes.' },
+    prefix: {
+      type: 'string',
+      description: '`import/s3`: bring in the objects whose key starts with it (at most `max_objects`). `export/s3`: the text put before each file name, taken literally (`out/` is a folder); the bucket root when left out.',
+    },
+    path: { type: 'string', description: '`import/sftp`: the one file to bring in, relative to the `basePath` of the credentials. Name `path` or `directory`.' },
+    directory: {
+      type: 'string',
+      description: '`import/sftp`: bring in the regular files of this directory (at most `max_objects`). `export/sftp`: the directory the files are written into, which must exist; the `basePath` when left out.',
+    },
+    max_objects: {
+      type: 'integer',
+      minimum: 1,
+      maximum: 100,
+      default: 20,
+      description: '`import/s3` with `prefix`, `import/sftp` with `directory`: the most files to bring in. A listing with more fails the task with `storage_too_many_objects`; nothing is cut short.',
+    },
   },
 } as const;
 
@@ -88,7 +115,7 @@ export const TaskReportSchema = {
     finishedAt: { type: 'number', description: 'When the task ended, in epoch milliseconds.' },
     result: {
       type: 'object',
-      description: 'The files an `export/url` task without a `url` kept for download, once it completed. The other tasks hand their files to the tasks that read them and have no result of their own.',
+      description: 'The files an `export/url` task without a `url` kept for download, or the files an `export/s3` or `export/sftp` task wrote to the customer\'s store, once it completed. The other tasks hand their files to the tasks that read them and have no result of their own.',
       required: ['files', 'fileCount'],
       properties: {
         files: {
@@ -96,10 +123,11 @@ export const TaskReportSchema = {
           description: 'At most 100 files.',
           items: {
             type: 'object',
-            required: ['filename', 'downloadUrl'],
+            required: ['filename'],
             properties: {
               filename: { type: 'string' },
-              downloadUrl: { type: 'string', description: 'Path of the file; send it to `GET /api/storage/file/{key}` with the key.' },
+              downloadUrl: { type: 'string', description: '`export/url` without a `url`: the path of the file; send it to `GET /api/storage/file/{key}` with the key.' },
+              destination: { type: 'string', description: '`export/s3` and `export/sftp`: where the file was written, as a key in the bucket or a path under the directory of the task.' },
             },
           },
         },

@@ -26,6 +26,7 @@ import {
   PdfWatermarkOptionsSchema,
 } from './pdf-operation-schemas';
 import { pageSpecSchema } from './page-spec-schema';
+import { CaptureOptionsSchema, MetadataWriteOptionsSchema } from './task-option-schemas';
 import { VECTORIZE_OPTIONS_SCHEMA } from '@/lib/conversions/raster-vectorize-options';
 
 export {
@@ -874,58 +875,8 @@ export const ConversionOptionsSchema = {
       description: 'PDF AES-256 encryption and permission restriction options.',
       properties: PdfProtectOptionsSchema.properties,
     },
-    capture: {
-      type: 'object',
-      description:
-        'How a `capture-website` task loads and draws its page (the page is the `url` of the task). The browser reaches the network only through a gate that refuses every address that is not a public web address, for the page and for each redirect, frame, image, script and request it makes; a hop to a private, loopback or link-local address ends the task with a 422 (`capture_target_blocked`).',
-      properties: {
-        viewport: {
-          type: 'object',
-          description: 'The browser window of a PNG or JPEG capture.',
-          properties: {
-            width: { type: 'integer', minimum: 200, maximum: 3840, description: 'Window width in pixels (1280).' },
-            height: { type: 'integer', minimum: 200, maximum: 16384, description: 'Window height in pixels (800).' },
-          },
-        },
-        fullPage: { type: 'boolean', description: 'PNG and JPEG: capture the whole height of the page, up to 16384 pixels, instead of the window.' },
-        waitUntil: { type: 'string', enum: ['load', 'idle'], description: '`load` (default) draws when the page has loaded; `idle` also waits until the page has made no request for half a second.' },
-        delayMs: { type: 'integer', minimum: 0, maximum: 30000, description: 'Extra time to wait before drawing, in milliseconds.' },
-        quality: { type: 'integer', minimum: 1, maximum: 100, description: 'JPEG quality (85).' },
-        userAgent: { type: 'string', maxLength: 300, description: 'The User-Agent the browser sends.' },
-        timeoutMs: { type: 'integer', minimum: 1000, maximum: 120000, description: 'The time the page has to load and be drawn, in milliseconds (60000). A page that is not done in time ends the task with the code `timeout`.' },
-        pdf: {
-          type: 'object',
-          description: 'PDF output.',
-          properties: {
-            paper: { type: 'string', enum: ['A3', 'A4', 'A5', 'Letter', 'Legal', 'Tabloid'], description: 'Page size (A4).' },
-            width: { type: 'number', minimum: 50, maximum: 2000, description: 'Page width in millimetres; with `height`, it takes the place of `paper`.' },
-            height: { type: 'number', minimum: 50, maximum: 2000, description: 'Page height in millimetres.' },
-            landscape: { type: 'boolean', description: 'Landscape orientation.' },
-            margin: { type: 'number', minimum: 0, maximum: 50, description: 'Margin on every side, in millimetres (10).' },
-            printBackground: { type: 'boolean', description: 'Print the backgrounds of the page (true).' },
-            scale: { type: 'number', minimum: 0.1, maximum: 2, description: 'Zoom of the page (1).' },
-          },
-        },
-      },
-    },
-    metadata: {
-      type: 'object',
-      required: ['set'],
-      description:
-        'Fields a `metadata.write` task writes into its input (a JPEG, a PNG or a PDF) without changing anything else in the file. The names are those of ExifTool and may carry their group (`EXIF:Artist`, `XMP:Title`, `PDF:Title`).',
-      properties: {
-        set: {
-          type: 'object',
-          minProperties: 1,
-          maxProperties: 64,
-          description:
-            'The fields to set, by name. A JPEG or a PNG takes the EXIF fields ImageDescription, Make, Model, Orientation, Software, ModifyDate, Artist, Copyright, DateTimeOriginal, CreateDate, UserComment, LensMake, LensModel, SerialNumber, GPSLatitude, GPSLongitude and GPSAltitude (a field set to null is removed; dates are "YYYY:MM:DD HH:MM:SS", positions are signed decimal degrees and meters), and the XMP fields XMP:Title, XMP:Description, XMP:Rights, XMP:Creator, XMP:Subject and XMP:CreatorTool when the picture holds no XMP packet yet. A PDF takes Title, Author, Subject, Keywords, Creator, Producer, CreateDate and ModifyDate. Any other format, field or value is a 422 (`metadata_write_unsupported`, `metadata_field_invalid`).',
-          additionalProperties: {
-            oneOf: [{ type: 'string', maxLength: 8192 }, { type: 'number' }, { type: 'null' }, { type: 'array', maxItems: 64, items: { type: 'string', maxLength: 8192 } }],
-          },
-        },
-      },
-    },
+    capture: CaptureOptionsSchema,
+    metadata: MetadataWriteOptionsSchema,
     pdfa: {
       type: 'object',
       description: 'PDF/A archival conversion options.',
@@ -1002,7 +953,7 @@ export const JobGraphSchema = {
             type: 'string',
             enum: [...GRAPH_OPERATIONS],
             description:
-              'Operation type for this graph node. `thumbnail` makes one picture (JPEG, PNG or WebP) of the first page, or the page `options.thumbnail.page` names, of a document, or of a frame of a video (`options.thumbnail.at`), or of an image, within `options.thumbnail.width` x `height` as `options.thumbnail.fit` places it. `metadata` reads the metadata of its first input into `metadata.json` (the `MetadataReport` schema). `metadata.write` writes `options.metadata.set` into each input, a JPEG, a PNG or a PDF, and keeps the rest of the file as it is. `capture.website` draws the public web page at `url` as a PDF, a PNG or a JPEG (`targetFormat`, `options.capture`); it takes no input, and its `url` is kept sealed.',
+              'Operation type for this graph node. `thumbnail` makes one picture (JPEG, PNG or WebP) of the first page, or the page `options.thumbnail.page` names, of a document, or of a frame of a video (`options.thumbnail.at`), or of an image, within `options.thumbnail.width` x `height` as `options.thumbnail.fit` places it. `metadata` reads the metadata of its first input into `metadata.json` (the `MetadataReport` schema). `metadata.write` writes `options.metadata.set` into each input, a JPEG, a PNG or a PDF, and keeps the rest of the file as it is. `capture.website` (only where the server has `CAPTURE_WEBSITE_ENABLED=true`; `GET /api/formats` says whether it is on, and where it is off the job is refused with a 422, code `capture_unavailable`, before anything is reserved) draws the public web page at `url` as a PDF, a PNG or a JPEG (`targetFormat`, `options.capture`); it takes no input, and its `url` is kept sealed.',
           },
           input: {
             description: 'Single upstream NodeId or array of upstream NodeIds. A merge node needs at least 2 distinct inputs.',
@@ -1039,6 +990,61 @@ export const JobGraphSchema = {
             type: 'string',
             enum: ['PUT', 'POST'],
             description: 'HTTP method for export.url node.',
+          },
+          credentialRef: {
+            type: 'string',
+            pattern: '^cred_[a-f0-9]{32}$',
+            description:
+              'import.s3, export.s3, import.sftp and export.sftp: a credential saved for the account (the `credentialRef` that saving it answered), which only its owner can use. Name this or `credentials`, not both. A reference that is unknown, expired, of another account or of another kind is refused with 422 at submission.',
+          },
+          credentials: {
+            type: 'object',
+            writeOnly: true,
+            additionalProperties: false,
+            description:
+              'import.s3, export.s3, import.sftp and export.sftp: the credentials sent with the node, in place of `credentialRef`. They are sealed when the job is accepted, opened only by the worker that runs the node, and never returned or logged. An S3 node takes `bucket`, `accessKeyId`, `secretAccessKey` (required), and `sessionToken`, `region`, `endpoint` (an https address that resolves to public IPs; any S3-compatible store) and `forcePathStyle`. An SFTP node takes `host`, `username`, `privateKey` (required; password sign-in is not supported), and `port`, `passphrase`, `hostKey` (a known_hosts line or public key the server must show) and `basePath`. A host or endpoint that is private, loopback or link-local is refused.',
+            properties: {
+              bucket: { type: 'string' },
+              accessKeyId: { type: 'string' },
+              secretAccessKey: { type: 'string' },
+              sessionToken: { type: 'string' },
+              region: { type: 'string' },
+              endpoint: { type: 'string' },
+              forcePathStyle: { type: 'boolean' },
+              host: { type: 'string' },
+              port: { type: 'integer', minimum: 1, maximum: 65535 },
+              username: { type: 'string' },
+              privateKey: { type: 'string' },
+              passphrase: { type: 'string' },
+              hostKey: { type: 'string' },
+              basePath: { type: 'string' },
+            },
+          },
+          key: {
+            type: 'string',
+            description: 'import.s3: the one object to bring in. Name `key` or `prefix`. A key is relative: no leading `/`, no `.` or `..` segment, at most 1024 bytes.',
+          },
+          prefix: {
+            type: 'string',
+            description:
+              'import.s3: bring in the objects whose key starts with this prefix (at most `maxObjects`; a folder marker is skipped). export.s3: the text put in front of each file name, taken literally, so `out/` is a folder and `out/report-` a name prefix; left out, the files go to the bucket root. Same rules as `key`.',
+          },
+          path: {
+            type: 'string',
+            description: 'import.sftp: the one file to bring in, relative to the credential\'s `basePath`. Name `path` or `directory`.',
+          },
+          directory: {
+            type: 'string',
+            description:
+              'import.sftp: bring in the regular files of this directory (at most `maxObjects`; hidden files, links and sub-folders are skipped). export.sftp: the directory the files are written into, which must exist; left out, `basePath`. Relative to `basePath`; same rules as `key`.',
+          },
+          maxObjects: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 100,
+            default: 20,
+            description:
+              'import.s3 with `prefix`, import.sftp with `directory`: the most files to bring in. A listing with more files fails the node with `storage_too_many_objects`; nothing is cut short. Each file is held to the plan\'s file limit and the whole import to the owner\'s daily link-import budget.',
           },
           targetFormat: {
             type: 'string',

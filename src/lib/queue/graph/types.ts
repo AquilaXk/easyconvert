@@ -1,4 +1,5 @@
 import type { ConversionOptions, MediaPackagingOptions } from '@/lib/types';
+import type { S3Credentials, SftpCredentials } from '@/lib/storage/credentials-vault';
 
 export type NodeId = string;
 
@@ -18,6 +19,51 @@ export interface ImportUrlNode {
   url?: string;
   headers?: Record<string, string>;
   sealed?: string;
+}
+
+/** The credentials a customer-storage node submits inline: those of a saved credential, without `type`, which the operation gives. */
+export type InlineS3Credentials = Omit<S3Credentials, 'type'>;
+export type InlineSftpCredentials = Omit<SftpCredentials, 'type'>;
+
+/**
+ * Where a customer-storage node gets its credentials: `credentialRef` names a saved credential of the graph's owner, or
+ * `credentials` carries them inline. Inline credentials are bearer secrets: submitted as plaintext, they are replaced by `sealed`
+ * before the node is stored or queued, and opened only by the worker that runs the node.
+ */
+interface CustomerStorageAuth<Inline> {
+  credentialRef?: string;
+  credentials?: Inline;
+  sealed?: string;
+}
+
+/** Brings in one object (`key`) or the objects under a key prefix (`prefix`, at most `maxObjects`) of the customer's S3-compatible bucket. */
+export interface ImportS3Node extends CustomerStorageAuth<InlineS3Credentials> {
+  op: 'import.s3';
+  key?: string;
+  prefix?: string;
+  maxObjects?: number;
+}
+
+/** Brings in one file (`path`) or the files of a directory (`directory`, at most `maxObjects`) of the customer's SFTP server. */
+export interface ImportSftpNode extends CustomerStorageAuth<InlineSftpCredentials> {
+  op: 'import.sftp';
+  path?: string;
+  directory?: string;
+  maxObjects?: number;
+}
+
+/** Writes each input as `prefix` followed by its file name into the customer's bucket. */
+export interface ExportS3Node extends CustomerStorageAuth<InlineS3Credentials> {
+  op: 'export.s3';
+  input: NodeId | NodeId[];
+  prefix?: string;
+}
+
+/** Writes each input into `directory` of the customer's SFTP server. */
+export interface ExportSftpNode extends CustomerStorageAuth<InlineSftpCredentials> {
+  op: 'export.sftp';
+  input: NodeId | NodeId[];
+  directory?: string;
 }
 
 /**
@@ -185,6 +231,8 @@ export type GraphNode =
   | ImportUploadNode
   | ImportUrlNode
   | CaptureWebsiteNode
+  | ImportS3Node
+  | ImportSftpNode
   | ConvertNode
   | OcrNode
   | OptimizeNode
@@ -205,6 +253,8 @@ export type GraphNode =
   | ArchiveCreateNode
   | ArchiveExtractNode
   | ExportUrlNode
+  | ExportS3Node
+  | ExportSftpNode
   | ExportInternalNode;
 
 export interface JobGraph {

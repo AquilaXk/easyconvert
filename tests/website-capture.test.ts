@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { assertCaptureUrl, captureWebsite } from '../src/lib/capture/website-capture';
-import { CaptureFailedError, CaptureTargetBlockedError } from '../src/lib/capture/website-capture-errors';
+import { CaptureFailedError, CaptureTargetBlockedError, CaptureUnavailableError } from '../src/lib/capture/website-capture-errors';
 import { CpuTaskTimeoutError, EngineUnavailableError } from '../src/lib/types';
 import { refusalCodeOf } from '../src/lib/refusal-codes';
 import { runWithoutFileConfinement } from './helpers/unconfined-files';
@@ -94,6 +94,7 @@ function publicNames(): void {
 
 function useStandIn(): void {
   publicNames();
+  vi.stubEnv('CAPTURE_WEBSITE_ENABLED', 'true');
   vi.stubEnv('CAPTURE_PYTHON_PATH', PYTHON as string);
   vi.stubEnv('CAPTURE_DRIVER_PATH', driver);
 }
@@ -168,6 +169,7 @@ describe.skipIf(skipUnless('a Python 3 interpreter for the stand-in driver', PYT
 
   it('is unavailable on a worker without the driver or the interpreter', async () => {
     publicNames();
+    vi.stubEnv('CAPTURE_WEBSITE_ENABLED', 'true');
     vi.stubEnv('CAPTURE_PYTHON_PATH', PYTHON as string);
     vi.stubEnv('CAPTURE_DRIVER_PATH', path.join(dir, 'missing.py'));
     const run = captureWebsite({ url: 'https://site.example/', format: 'png' });
@@ -176,6 +178,20 @@ describe.skipIf(skipUnless('a Python 3 interpreter for the stand-in driver', PYT
     vi.stubEnv('CAPTURE_DRIVER_PATH', driver);
     vi.stubEnv('CAPTURE_PYTHON_PATH', path.join(dir, 'no-python'));
     await expect(captureWebsite({ url: 'https://site.example/', format: 'png' })).rejects.toBeInstanceOf(EngineUnavailableError);
+  });
+
+  it('is refused by a worker that has capture off, before the address is looked at and before anything starts', async () => {
+    publicNames();
+    vi.stubEnv('CAPTURE_PYTHON_PATH', PYTHON as string);
+    vi.stubEnv('CAPTURE_DRIVER_PATH', driver);
+    for (const value of [undefined, '', 'false', '0', 'yes']) {
+      if (value === undefined) vi.stubEnv('CAPTURE_WEBSITE_ENABLED', undefined as unknown as string);
+      else vi.stubEnv('CAPTURE_WEBSITE_ENABLED', value);
+      const run = captureWebsite({ url: 'https://site.example/echo', format: 'pdf' });
+      await expect(run).rejects.toBeInstanceOf(CaptureUnavailableError);
+      await expect(run).rejects.toThrow('Website capture is not enabled on this server.');
+      expect(refusalCodeOf(await run.catch((caught: unknown) => caught))).toBe('capture_unavailable');
+    }
   });
 
   it('refuses a format a page is not captured as', async () => {
