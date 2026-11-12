@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { filterRowsByEntropy } from '../src/lib/conversions/png-row-filter';
 
@@ -71,6 +72,28 @@ describe('filterRowsByEntropy', () => {
     expect(filters[0]).toBe(1);
     expect(filters[2]).toBe(2);
     expect(filters[3]).toBe(0);
+  });
+
+  /** A random walk over `colours` indices, `step` at most between neighbours: the smooth picture whose rows the filters are for. */
+  function walk(seed: number, length: number, colours: number, step: number): Buffer {
+    const out = Buffer.alloc(length);
+    let state = seed;
+    let value = 0;
+    for (let i = 0; i < length; i += 1) {
+      state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+      value = Math.max(0, Math.min(colours - 1, value + (((state >>> 16) % (2 * step + 1)) - step)));
+      out[i] = value;
+    }
+    return out;
+  }
+
+  // The digests are those of the first version, which tried each filter on a copy of the row and counted its bytes one filter after the other.
+  it.each([
+    ['a walk of 120 x 90 over 256 indices', 120, 90, walk(1, 120 * 90, 256, 3), 'ca65b1864efaf187'],
+    ['a walk of 77 x 131 over 200 indices', 77, 131, walk(5, 77 * 131, 200, 6), '19d88aa2f1b022e2'],
+    ['noise of 60 x 20 over 40 indices', 60, 20, noise(8, 60 * 20, 40), '6bb5fdbbaf04b013'],
+  ])('writes the rows of the first version for %s', (_name, width, height, indices, digest) => {
+    expect(crypto.createHash('sha256').update(filterRowsByEntropy(indices, width, height)).digest('hex').slice(0, 16)).toBe(digest);
   });
 
   it('is the same on every run and does not change the indices it is given', () => {

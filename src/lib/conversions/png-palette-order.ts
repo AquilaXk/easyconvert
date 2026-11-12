@@ -3,11 +3,28 @@
  * palette. A picture written that way has small differences between the indices of neighbouring pixels, which the row filters and the deflater
  * both use, and the most popular colour at index 0 matches the filter byte in front of every row.
  *
- * Ported from oxipng 10.2.1 (`src/reduction/palette.rs`: `CoOccurrenceMatrix`, `ezeng_reindex`, `pairwise_swap_search`,
- * `apply_most_popular_color`; oxipng/oxipng, MIT, Copyright (c) 2016 Joshua Holmer), which has them from Zeng's technique ("Index assignment
- * for palette-based images", Pinho et al., "A note on Zeng's technique for color reindexing of palette-based images", IEEE SPL 2004) and
- * the C of libwebp (BSD-3-Clause). Everything is its algorithm, in the same order of tie-breaks, so the order equals the one oxipng writes
- * at its `-o2`; what is ours is the typed arrays and the single pass over the pixels.
+ * Ported from oxipng 10.2.1 (https://github.com/oxipng/oxipng, tag `v10.2.1`, commit 36f3ef8aac65ecf1761739ea2f2e530281f1312b, file
+ * `src/reduction/palette.rs`: `CoOccurrenceMatrix`, `ezeng_reindex`, `pairwise_swap_search`, `apply_most_popular_color` and
+ * `most_popular_edge_color`), which follows Zeng's technique for the order of a palette as Pinho et al. refine it ("A note on Zeng's
+ * technique for color reindexing of palette-based images", IEEE Signal Processing Letters, 2004). The order is oxipng's, with the same
+ * tie-breaks, so the picture gets the palette that oxipng writes at its `-o2`; what is ours is the typed arrays, the single pass over the
+ * pixels and the sums of weights that make an insertion linear (`insertionOrder`).
+ *
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2016 Joshua Holmer
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
 const MAX_COLOURS = 256;
