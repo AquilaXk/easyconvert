@@ -106,7 +106,8 @@ The legal ground is the disclosure in this policy of a processing that the contr
 
 | Name | Purpose | Lifetime |
 | --- | --- | --- |
-| `easyconvert_session` | Keeps you signed in | 7 days, or until you sign out |
+| `__Host-easyconvert_session` | Keeps you signed in | 7 days, or until you sign out |
+| `easyconvert_session` | The earlier name of the same cookie. We no longer set it, and still read it for a session that began under it | Until that session ends, at most 7 days |
 | `easyconvert_oauth_state` | Protects the sign-in with Google | 10 minutes |
 | `NEXT_LOCALE` | Remembers the language you chose | Until you close the browser |
 | `theme` (local storage) | Remembers the light or dark theme | Until you clear it |

@@ -36,5 +36,5 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Learned OCR layout tier: pick a permissively licensed layout model and record its model and data provenance with the change.
 - Rare samples: DWG before R13, WP Greek accented letters, Word Wingdings check boxes.
 - sk/sk1 input through UniConvertor 2, run as a separate sandboxed GPL program (behaviour only, no code copied).
-- Privacy cookie table (docs/legal/privacy.en.md and privacy.ko.md) names easyconvert_session; production now writes __Host-easyconvert_session (entry 241): name both in the next legal revision, and drop the plain name from SESSION_COOKIE_NAMES 7 days after the first deploy.
+- On or after 2026-11-19 (7 days after the v0.10.7 tag of 2026-11-12, the first release that writes `__Host-easyconvert_session`; confirm the production deploy date): drop `easyconvert_session` from `SESSION_COOKIE_NAMES` (`src/lib/auth/session-cookie.ts`) and its row from both privacy texts, with a new legal version (`tests/legal-values.test.ts` names every name in `SESSION_COOKIE_NAMES` and fails until the rows match).
 - Report real LCOV coverage to SonarCloud from the CI shards (then drop sonar.coverage.exclusions in .sonarcloud.properties and switch to a CI scanner step)

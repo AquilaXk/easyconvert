@@ -11,6 +11,7 @@ import { RECORD_TTL_MS as UPLOAD_BUDGET_TTL_MS } from '../src/lib/api-keys/uploa
 import { LOGIN_WINDOW_SECONDS } from '../src/lib/auth/login-rate-limiter';
 import { OAUTH_STATE_TTL_SECONDS } from '../src/lib/auth/oauth';
 import { createSessionCookie } from '../src/lib/auth/session';
+import { HOST_SESSION_COOKIE_NAME, LEGACY_SESSION_COOKIE_NAME, SESSION_COOKIE_NAMES, sessionCookieName } from '../src/lib/auth/session-cookie';
 import { MAX_SESSION_AGE_MS } from '../src/lib/edge/opfs/storage-gc';
 
 const MINUTE_MS = 60_000;
@@ -45,7 +46,8 @@ const PRIVACY_VALUES: ReadonlyArray<{ value: string; en: string; ko: string }> =
   { value: 'request burst counters (TOKEN_BUCKET_TTL_SECONDS)', en: `| Request burst counters | ${en(TOKEN_BUCKET_TTL_SECONDS * 1000, 'hour')} after the last request. |`, ko: `| 짧은 시간 요청 횟수 기록 | 마지막 요청부터 ${ko(TOKEN_BUCKET_TTL_SECONDS * 1000, 'hour')} |` },
   { value: 'upload allowance records (upload budget RECORD_TTL_MS)', en: `| Upload allowance records | ${en(UPLOAD_BUDGET_TTL_MS, 'day')}. |`, ko: `| 업로드 한도 기록 | ${ko(UPLOAD_BUDGET_TTL_MS, 'day')} |` },
   { value: 'sign-in attempt limits (LOGIN_WINDOW_SECONDS)', en: `| Sign-in attempt limits | ${en(LOGIN_WINDOW_SECONDS * 1000, 'minute')}. |`, ko: `| 로그인 시도 제한 기록 | ${ko(LOGIN_WINDOW_SECONDS * 1000, 'minute')} |` },
-  { value: 'session cookie (Max-Age)', en: `| \`easyconvert_session\` | Keeps you signed in | ${en(sessionMaxAgeMs, 'day')}, or until you sign out |`, ko: `| \`easyconvert_session\` | 로그인 상태 유지 | ${ko(sessionMaxAgeMs, 'day')} 또는 로그아웃할 때까지 |` },
+  { value: 'session cookie written in production (sessionCookieName, Max-Age)', en: `| \`${sessionCookieName(true)}\` | Keeps you signed in | ${en(sessionMaxAgeMs, 'day')}, or until you sign out |`, ko: `| \`${sessionCookieName(true)}\` | 로그인 상태 유지 | ${ko(sessionMaxAgeMs, 'day')} 또는 로그아웃할 때까지 |` },
+  { value: 'session cookie of earlier sessions (LEGACY_SESSION_COOKIE_NAME, Max-Age)', en: `| \`${LEGACY_SESSION_COOKIE_NAME}\` | The earlier name of the same cookie. We no longer set it, and still read it for a session that began under it | Until that session ends, at most ${en(sessionMaxAgeMs, 'day')} |`, ko: `| \`${LEGACY_SESSION_COOKIE_NAME}\` | 같은 쿠키의 이전 이름. 새로 만들지 않으며, 이 이름으로 시작한 로그인 상태에서만 읽습니다 | 해당 로그인 상태가 끝날 때까지, 길어도 ${ko(sessionMaxAgeMs, 'day')} |` },
   { value: 'OAuth state cookie (OAUTH_STATE_TTL_SECONDS)', en: `| \`easyconvert_oauth_state\` | Protects the sign-in with Google | ${en(OAUTH_STATE_TTL_SECONDS * 1000, 'minute')} |`, ko: `| \`easyconvert_oauth_state\` | Google 로그인 보호 | ${ko(OAUTH_STATE_TTL_SECONDS * 1000, 'minute')} |` },
   { value: 'browser session files (MAX_SESSION_AGE_MS)', en: `once they are ${en(MAX_SESSION_AGE_MS, 'hour')} old`, ko: `${ko(MAX_SESSION_AGE_MS, 'hour')}이 지난 뒤` },
 ];
@@ -54,6 +56,14 @@ describe('the numbers of the legal texts are the values in force', () => {
   it.each(PRIVACY_VALUES)('the privacy policy states the $value', ({ en: english, ko: korean }) => {
     expect(LEGAL_TEXTS.privacy.en).toContain(english);
     expect(LEGAL_TEXTS.privacy.ko).toContain(korean);
+  });
+
+  it('the privacy policy names every name the session cookie is read under, and the one production writes is the prefixed one', () => {
+    expect(sessionCookieName(true)).toBe(HOST_SESSION_COOKIE_NAME);
+    for (const name of SESSION_COOKIE_NAMES) {
+      expect(LEGAL_TEXTS.privacy.en).toContain(`| \`${name}\` |`);
+      expect(LEGAL_TEXTS.privacy.ko).toContain(`| \`${name}\` |`);
+    }
   });
 
   it('the terms state the daily allowance without an account and on the free plan', () => {
