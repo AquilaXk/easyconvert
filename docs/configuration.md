@@ -120,7 +120,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `PADDLE_CLIENT_TOKEN`: Client-side token that Paddle.js opens the checkout with. It is meant to be public: the billing status route hands it to the browser.
 - `PADDLE_ENVIRONMENT`: The Paddle environment the API key, the client token and the price ids belong to: `sandbox` for tests with test cards, `production` for real payments.
 - `PADDLE_PRICE_ID_PRO`: Id of the Paddle price (`pri_...`) of the Pro plan.
-- `PADDLE_PRICE_ID_ENTERPRISE`: Id of the Paddle price (`pri_...`) of the Enterprise plan.
+- `PADDLE_PRICE_ID_ENTERPRISE`: Id of the Paddle price (`pri_...`) of the Enterprise plan; it must differ from PADDLE_PRICE_ID_PRO.
 
 ### Keys and secrets
 

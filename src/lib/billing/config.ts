@@ -28,6 +28,7 @@ export function readBillingConfig(): BillingConfig | null {
   const enterprise = setValue(process.env.PADDLE_PRICE_ID_ENTERPRISE);
   if (!apiKey || !webhookSecret || !clientToken || !pro || !enterprise) return null;
   if (environment !== 'sandbox' && environment !== 'production') return null;
+  if (pro === enterprise) return null;
   const priceIds: Record<PaidPlan, string> = { pro, enterprise };
   return { apiKey, webhookSecret, clientToken, environment, priceIds };
 }

@@ -33,6 +33,11 @@ describe('isBillingConfigured', () => {
     }
   });
 
+  it('is off when both plans name the same price', () => {
+    stub({ ...FULL, PADDLE_PRICE_ID_ENTERPRISE: FULL.PADDLE_PRICE_ID_PRO });
+    expect(isBillingConfigured()).toBe(false);
+  });
+
   it('treats a blank value as unset and an unknown environment as not configured', () => {
     stub({ ...FULL, PADDLE_API_KEY: '   ' });
     expect(isBillingConfigured()).toBe(false);
@@ -66,6 +71,18 @@ describe('the configuration schema', () => {
     expect(error).toBeInstanceOf(ConfigurationError);
     expect([...(error as ConfigurationError).variables].sort()).toEqual(['PADDLE_CLIENT_TOKEN', 'PADDLE_PRICE_ID_ENTERPRISE', 'PADDLE_PRICE_ID_PRO', 'PADDLE_WEBHOOK_SECRET']);
     expect((error as ConfigurationError).message).not.toContain(FULL.PADDLE_API_KEY);
+  });
+
+  it('refuses one price id for both plans, which could not tell a purchase of one from the other', () => {
+    let error: unknown;
+    try {
+      parseConfig({ ...FULL, PADDLE_PRICE_ID_ENTERPRISE: FULL.PADDLE_PRICE_ID_PRO });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(ConfigurationError);
+    expect((error as ConfigurationError).variables).toEqual(['PADDLE_PRICE_ID_ENTERPRISE']);
+    expect((error as ConfigurationError).message).not.toContain(FULL.PADDLE_PRICE_ID_PRO);
   });
 
   it('refuses an environment that is neither sandbox nor production', () => {

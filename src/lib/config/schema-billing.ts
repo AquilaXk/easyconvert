@@ -56,7 +56,7 @@ export const BILLING_ENTRIES = [
   {
     name: 'PADDLE_PRICE_ID_ENTERPRISE',
     area: 'billing',
-    description: 'Id of the Paddle price (`pri_...`) of the Enterprise plan.',
+    description: 'Id of the Paddle price (`pri_...`) of the Enterprise plan; it must differ from PADDLE_PRICE_ID_PRO.',
     kind: { type: 'string', maxLength: 64 },
     requiredInProduction: false,
     secret: false,

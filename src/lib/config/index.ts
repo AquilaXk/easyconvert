@@ -122,8 +122,11 @@ const BILLING_VARIABLES = [
 ] as const;
 
 /** A part of the billing variables would leave the paid plans off without saying why, so the process does not start. */
-function billingFailures(isSet: ReadonlySet<string>): ConfigFailure[] {
+function billingFailures(isSet: ReadonlySet<string>, values: ReadonlyMap<string, ParsedValue>): ConfigFailure[] {
   const missing = BILLING_VARIABLES.filter((name) => !isSet.has(name));
+  if (missing.length === 0 && values.get('PADDLE_PRICE_ID_PRO') === values.get('PADDLE_PRICE_ID_ENTERPRISE')) {
+    return [{ variable: 'PADDLE_PRICE_ID_ENTERPRISE', rule: 'must differ from PADDLE_PRICE_ID_PRO: one price cannot tell the two plans apart' }];
+  }
   if (missing.length === 0 || missing.length === BILLING_VARIABLES.length) return [];
   return missing.map((variable) => ({ variable, rule: 'is required when any other PADDLE_ variable is set: the paid plans need all six' }));
 }
@@ -191,7 +194,7 @@ export function parseConfig(env: Env, options: LoadConfigOptions = {}): Config {
   }
 
   failures.push(...strictSandboxFailures(values));
-  failures.push(...billingFailures(isSet));
+  failures.push(...billingFailures(isSet, values));
 
   if (failures.length > 0) throw new ConfigurationError(failures);
   return Object.freeze(Object.fromEntries(values)) as Config;
