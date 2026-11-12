@@ -1,5 +1,8 @@
 import fs from 'node:fs';
 
+// Captures stay out of public/: the site would serve them.
+fs.mkdirSync('.screenshots', { recursive: true });
+
 async function captureLocalFidelity() {
   const tabs = await fetch('http://localhost:9222/json/list').then(r => r.json());
   let localTab = tabs.find(t => t.url && t.url.includes('localhost:3000'));
@@ -44,7 +47,7 @@ async function captureLocalFidelity() {
 
   // 1. Capture Home Dark
   let ss = await send('Page.captureScreenshot', { format: 'png' });
-  fs.writeFileSync('public/screenshots/fidelity_home_dark.png', Buffer.from(ss.data, 'base64'));
+  fs.writeFileSync('.screenshots/fidelity_home_dark.png', Buffer.from(ss.data, 'base64'));
   console.log('Saved fidelity_home_dark.png');
 
   // 2. Open Tools Dropdown
@@ -58,7 +61,7 @@ async function captureLocalFidelity() {
   });
   await new Promise(r => setTimeout(r, 500));
   ss = await send('Page.captureScreenshot', { format: 'png' });
-  fs.writeFileSync('public/screenshots/fidelity_tools_dropdown.png', Buffer.from(ss.data, 'base64'));
+  fs.writeFileSync('.screenshots/fidelity_tools_dropdown.png', Buffer.from(ss.data, 'base64'));
   console.log('Saved fidelity_tools_dropdown.png');
 
   // Close Tools, Open API Dropdown
@@ -72,7 +75,7 @@ async function captureLocalFidelity() {
   });
   await new Promise(r => setTimeout(r, 500));
   ss = await send('Page.captureScreenshot', { format: 'png' });
-  fs.writeFileSync('public/screenshots/fidelity_api_dropdown.png', Buffer.from(ss.data, 'base64'));
+  fs.writeFileSync('.screenshots/fidelity_api_dropdown.png', Buffer.from(ss.data, 'base64'));
   console.log('Saved fidelity_api_dropdown.png');
 
   // Close dropdowns
@@ -101,7 +104,7 @@ async function captureLocalFidelity() {
   });
   await new Promise(r => setTimeout(r, 500));
   ss = await send('Page.captureScreenshot', { format: 'png' });
-  fs.writeFileSync('public/screenshots/fidelity_cta_dropdown.png', Buffer.from(ss.data, 'base64'));
+  fs.writeFileSync('.screenshots/fidelity_cta_dropdown.png', Buffer.from(ss.data, 'base64'));
   console.log('Saved fidelity_cta_dropdown.png');
 
   // Close CTA dropdown
@@ -136,7 +139,7 @@ async function captureLocalFidelity() {
 
   // Capture Queue Dark
   ss = await send('Page.captureScreenshot', { format: 'png' });
-  fs.writeFileSync('public/screenshots/fidelity_queue_dark.png', Buffer.from(ss.data, 'base64'));
+  fs.writeFileSync('.screenshots/fidelity_queue_dark.png', Buffer.from(ss.data, 'base64'));
   console.log('Saved fidelity_queue_dark.png');
 
   // 5. Click format button in the queue to open popover
@@ -156,7 +159,7 @@ async function captureLocalFidelity() {
   console.log('Select format click:', selectFormatRes.result.value);
   await new Promise(r => setTimeout(r, 600));
   ss = await send('Page.captureScreenshot', { format: 'png' });
-  fs.writeFileSync('public/screenshots/fidelity_format_modal.png', Buffer.from(ss.data, 'base64'));
+  fs.writeFileSync('.screenshots/fidelity_format_modal.png', Buffer.from(ss.data, 'base64'));
   console.log('Saved fidelity_format_modal.png');
 
   // Select format 'DOCX' inside popover to close it
@@ -192,7 +195,7 @@ async function captureLocalFidelity() {
   console.log('Options button click:', optionsClickRes.result.value);
   await new Promise(r => setTimeout(r, 600));
   ss = await send('Page.captureScreenshot', { format: 'png' });
-  fs.writeFileSync('public/screenshots/fidelity_options_modal.png', Buffer.from(ss.data, 'base64'));
+  fs.writeFileSync('.screenshots/fidelity_options_modal.png', Buffer.from(ss.data, 'base64'));
   console.log('Saved fidelity_options_modal.png');
 
   console.log('Finished captures!');

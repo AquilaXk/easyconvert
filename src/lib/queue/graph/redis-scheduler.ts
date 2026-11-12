@@ -367,7 +367,9 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
       const [next, keys] = await this.redisClient.scan(cursor, 'MATCH', `${prefix}*}`, 'COUNT', 500);
       const validKeys = keys.filter((key) => key.endsWith('}'));
       if (validKeys.length > 0) {
-        const owners = await Promise.all(validKeys.map((key) => this.redisClient.hget(key, 'owner')));
+        const pipeline = this.redisClient.pipeline();
+        for (const key of validKeys) pipeline.hget(key, 'owner');
+        const owners = await this.execFailClosed(pipeline, validKeys.length);
         for (let i = 0; i < validKeys.length; i++) {
           if (owners[i] === userId) {
             graphIds.add(validKeys[i].slice(prefix.length, -1));

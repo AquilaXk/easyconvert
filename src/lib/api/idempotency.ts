@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { readyGatedRedis } from '../redis/when-ready';
+import { clearKeysMatching } from '../redis/clear-keys';
 
 export type IdempotencyStatus = 'in_flight' | 'completed';
 
@@ -435,10 +436,7 @@ export class RedisIdempotencyStore implements IdempotencyStore {
   }
 
   public async reset(): Promise<void> {
-    const keys = await this.redis.keys('idem:*');
-    if (keys.length > 0) {
-      await Promise.all(keys.map((k) => this.redis.del(k)));
-    }
+    await clearKeysMatching(this.redis, ['idem:*']);
   }
 }
 
