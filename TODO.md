@@ -14,7 +14,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Measure permissive LZW coders against `gif-writer.ts` on the camera GIF rows (weezl, Rust, MIT OR Apache-2.0, as a pinned helper; the LZW of gifenc, JS, MIT): copy the faster one with attribution, keep ours if neither wins.
 - Compare `raw-x3f.ts` with the BSD X3F reference credited by LibRaw (Roland Karlsson) and copy its decode loops with attribution where they are faster or decode more cameras.
 - Check whether `quantize.ts` (939 lines) is still on a live path next to `color-quantizer.ts`; delete it or merge what it alone does.
-- Lift `silesia-xml.xz->tar` from 0.876 to the reference speed on the x64 runner (1.12 on the arm64 VM, entry 111): start 7-Zip from the launcher helper with the spool opened by its path, so the fork of a large worker (1.8 ms from 116 MB, 6.0 ms from 570 MB) is not paid.
 
 ## Product and API
 

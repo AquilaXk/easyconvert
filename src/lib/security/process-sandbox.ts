@@ -92,6 +92,14 @@ export interface SandboxedExecutionOptions extends SandboxFileScope {
    * Without prlimit on Linux that bound is missing, and the output goes through a pipe as before; the result is the same.
    */
   spoolStdout?: boolean;
+  /**
+   * Implies `spoolStdout`: the file the output goes to, opened by the caller (the launcher helper opens its parent's spool by its
+   * path). The run neither reads nor closes it: `stdout` is empty, and the output is the file (it holds at most the bound, as a file
+   * of the run's own does). A run that cannot spool (see `canSpoolStdout`) refuses it.
+   */
+  stdoutFd?: number;
+  /** Standard input read from this file, opened by the caller and not closed by the run, instead of from a pipe. */
+  stdinFd?: number;
 }
 
 export interface SandboxedExecutionResult {
@@ -991,7 +999,7 @@ function collectFramed(chunks: Buffer[], headroom: number, tailroom: number): Bu
  * left on disk whatever happens to this process. The child gets the descriptor as its stdout; this process keeps its own to read
  * the output back by offset (the two share one open file, so the position is not used).
  */
-function openStdoutSpool(): number {
+export function openStdoutSpool(): number {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert-spool-'));
   const file = path.join(dir, 'stdout');
   let fd: number | undefined;
@@ -1007,7 +1015,7 @@ function openStdoutSpool(): number {
 }
 
 /** The anonymous file of `openStdoutSpool`, or null when it cannot be made: the output then goes through a pipe, which gives the same result. */
-function tryOpenStdoutSpool(): number | null {
+export function tryOpenStdoutSpool(): number | null {
   try {
     return openStdoutSpool();
   } catch {
@@ -1016,14 +1024,14 @@ function tryOpenStdoutSpool(): number | null {
 }
 
 /** What a finished run left in its spool: the output in one buffer of `headroom + size + tailroom` bytes, the file past its bound, or the failure to read it. */
-type SpoolRead = { frame: Buffer } | { boundHit: true } | { error: unknown };
+export type SpoolRead = { frame: Buffer } | { boundHit: true } | { error: unknown };
 
 /**
  * Reads the spool by offset, the output starting after the headroom. The file may hold one byte more than the output may, and that byte is
  * how a program past its bound shows, whether it died of SIGXFSZ, caught the signal and exited with a status of its own, as 7-Zip does, or
  * ignored the failed write and exited 0 with a cut file: such a file is not read.
  */
-function readStdoutSpool(fd: number, limit: number, headroom: number, tailroom: number): SpoolRead {
+export function readStdoutSpool(fd: number, limit: number, headroom: number, tailroom: number): SpoolRead {
   try {
     const size = fs.fstatSync(fd).size;
     if (size > limit) return { boundHit: true };
@@ -1035,6 +1043,15 @@ function readStdoutSpool(fd: number, limit: number, headroom: number, tailroom: 
       read += count;
     }
     return { frame };
+  } catch (error) {
+    return { error };
+  }
+}
+
+/** A spool the caller reads: `boundHit` when the file is past the bound (see readStdoutSpool), the failure to look, or null. */
+function stdoutSpoolFault(fd: number, limit: number): { boundHit: true } | { error: unknown } | null {
+  try {
+    return fs.fstatSync(fd).size > limit ? { boundHit: true } : null;
   } catch (error) {
     return { error };
   }
@@ -1077,6 +1094,21 @@ function failedRunError(run: { code: number | null; signal: NodeJS.Signals | nul
   return new SandboxedProcessError(errorSummary, code, stderr.toString('utf-8'), signal, stdout.toString('utf-8'));
 }
 
+const DEFAULT_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
+
+/** The most a spooled output may hold: RLIMIT_FSIZE, which prlimit sets, caps the file at this many bytes (and one more shows a program past it). */
+export function stdoutSpoolLimit(options: Pick<SandboxedExecutionOptions, 'rlimits' | 'maxFileSize' | 'maxBuffer'>): number {
+  return Math.min(options.rlimits?.fsizeBytes ?? options.maxFileSize ?? options.maxBuffer ?? DEFAULT_MAX_BUFFER_BYTES, options.maxBuffer ?? DEFAULT_MAX_BUFFER_BYTES);
+}
+
+/**
+ * Whether a run collects its stdout through a file: it asked for that, the bound is finite (a spool without one would run with
+ * no RLIMIT_FSIZE at all) and prlimit is there to set it. Otherwise the output goes through a pipe, bounded as it flows.
+ */
+export function canSpoolStdout(options: Pick<SandboxedExecutionOptions, 'spoolStdout' | 'rlimits' | 'maxFileSize' | 'maxBuffer'>): boolean {
+  return options.spoolStdout === true && Number.isFinite(stdoutSpoolLimit(options)) && process.platform === 'linux' && getPrlimitCapability().available;
+}
+
 /**
  * Executes a binary under defensive process guards:
  * - Environment sanitization (credential purging)
@@ -1094,7 +1126,7 @@ export async function executeSandboxedBinary(
 ): Promise<SandboxedExecutionResult> {
   const {
     timeoutMs = 30000,
-    maxBuffer = 50 * 1024 * 1024, // 50MB
+    maxBuffer = DEFAULT_MAX_BUFFER_BYTES,
     memoryLimitMb,
     maxFileSize,
     rlimits,
@@ -1111,10 +1143,11 @@ export async function executeSandboxedBinary(
   const sandboxEnv = detectSandboxEnvironment();
   const sanitizedEnv = getSanitizedEnvironment(customEnv, networkIsolated, options.workDir);
   const startTime = Date.now();
-  // The bound on a spooled output is RLIMIT_FSIZE, which prlimit sets; without it the output goes through a pipe, bounded as it flows.
-  const spoolLimit = Math.min(rlimits?.fsizeBytes ?? maxFileSize ?? maxBuffer, maxBuffer);
-  // A spool without a finite bound would run with no RLIMIT_FSIZE at all, so such a run keeps the pipe.
-  const spooled = options.spoolStdout === true && Number.isFinite(spoolLimit) && process.platform === 'linux' && getPrlimitCapability().available;
+  const spoolLimit = stdoutSpoolLimit(options);
+  const spooled = canSpoolStdout({ ...options, spoolStdout: options.spoolStdout === true || options.stdoutFd !== undefined });
+  if (options.stdoutFd !== undefined && !spooled) {
+    throw new SandboxedProcessError('Sandboxed execution error: this host cannot bound a spooled output, so the output file it was given cannot be used.', null, '');
+  }
 
   return new Promise((resolve, reject) => {
     let stdoutChunks: Buffer[] = [];
@@ -1126,6 +1159,8 @@ export async function executeSandboxedBinary(
     let activeChild: ReturnType<typeof spawn> | null = null;
     let abortListener: (() => void) | null = null;
     let spoolFd: number | null = null;
+    // A file the caller opened is read by the caller and closed by the caller.
+    const ownsSpool = options.stdoutFd === undefined;
 
     if (options.signal?.aborted) {
       reject(options.signal.reason || new Error('The operation was aborted'));
@@ -1155,7 +1190,7 @@ export async function executeSandboxedBinary(
           activeChild.stdin.destroy();
         } catch {}
       }
-      if (spoolFd !== null) {
+      if (spoolFd !== null && ownsSpool) {
         try {
           fs.closeSync(spoolFd);
         } catch {}
@@ -1183,7 +1218,7 @@ export async function executeSandboxedBinary(
       ...fileScopeOf(options),
     });
 
-    if (spooled) spoolFd = tryOpenStdoutSpool();
+    if (spooled) spoolFd = options.stdoutFd ?? tryOpenStdoutSpool();
 
     // Spawn directly without shell to prevent shell injection vulnerabilities.
     // Use detached: true so child becomes process group leader, preventing orphan leaks.
@@ -1192,7 +1227,7 @@ export async function executeSandboxedBinary(
       proc = spawn(resolvedCmd.binary, resolvedCmd.args, {
         cwd,
         env: sanitizedEnv,
-        stdio: [stdin ? 'pipe' : 'ignore', spoolFd ?? 'pipe', 'pipe'],
+        stdio: [options.stdinFd ?? (stdin ? 'pipe' : 'ignore'), spoolFd ?? 'pipe', 'pipe'],
         shell: false,
         detached: true,
       });
@@ -1202,16 +1237,18 @@ export async function executeSandboxedBinary(
     }
     activeChild = proc;
 
+    /** Ends the run with `error`: the whole process group is killed first. */
+    const stopWith = (error: unknown) =>
+      settle(() => {
+        killProcessGroup(proc.pid, 'SIGKILL');
+        try {
+          proc.kill('SIGKILL');
+        } catch {}
+        reject(error);
+      });
+
     if (options.signal) {
-      abortListener = () => {
-        settle(() => {
-          killProcessGroup(proc.pid, 'SIGKILL');
-          try {
-            proc.kill('SIGKILL');
-          } catch {}
-          reject(options.signal!.reason || new Error('The operation was aborted'));
-        });
-      };
+      abortListener = () => stopWith(options.signal!.reason || new Error('The operation was aborted'));
       options.signal.addEventListener('abort', abortListener, { once: true });
       if (options.signal.aborted) {
         abortListener();
@@ -1233,29 +1270,13 @@ export async function executeSandboxedBinary(
         pipeline(stdin, proc.stdin, (err) => {
           if (err) {
             const code = (err as any).code;
-            if (code !== 'EPIPE' && code !== 'ERR_STREAM_PREMATURE_CLOSE' && code !== 'ECONNRESET') {
-              settle(() => {
-                killProcessGroup(proc.pid, 'SIGKILL');
-                try {
-                  proc.kill('SIGKILL');
-                } catch {}
-                reject(err);
-              });
-            }
+            if (code !== 'EPIPE' && code !== 'ERR_STREAM_PREMATURE_CLOSE' && code !== 'ECONNRESET') stopWith(err);
           }
         });
       }
     }
 
-    timer = setTimeout(() => {
-      settle(() => {
-        killProcessGroup(proc.pid, 'SIGKILL');
-        try {
-          proc.kill('SIGKILL');
-        } catch {}
-        reject(new SandboxedTimeoutError(timeoutMs));
-      });
-    }, timeoutMs);
+    timer = setTimeout(() => stopWith(new SandboxedTimeoutError(timeoutMs)), timeoutMs);
 
     const effectiveMemoryLimitMb =
       memoryLimitMb ||
@@ -1267,15 +1288,7 @@ export async function executeSandboxedBinary(
       memoryInterval = setInterval(() => {
         if (!proc.pid || isSettled) return;
         const rssMb = getProcessRssMb(memoryWatchPid(proc.pid, resolvedCmd.levelsAboveProgram));
-        if (rssMb !== null && rssMb > effectiveMemoryLimitMb) {
-          settle(() => {
-            killProcessGroup(proc.pid, 'SIGKILL');
-            try {
-              proc.kill('SIGKILL');
-            } catch {}
-            reject(new SandboxedMemoryLimitError(effectiveMemoryLimitMb));
-          });
-        }
+        if (rssMb !== null && rssMb > effectiveMemoryLimitMb) stopWith(new SandboxedMemoryLimitError(effectiveMemoryLimitMb));
       }, 50);
     }
 
@@ -1284,13 +1297,7 @@ export async function executeSandboxedBinary(
         if (isSettled) return;
         currentBufferSize += chunk.length;
         if (currentBufferSize > maxBuffer) {
-          settle(() => {
-            killProcessGroup(proc.pid, 'SIGKILL');
-            try {
-              proc.kill('SIGKILL');
-            } catch {}
-            reject(new SandboxedBufferLimitError(maxBuffer));
-          });
+          stopWith(new SandboxedBufferLimitError(maxBuffer));
           return;
         }
         stdoutChunks.push(chunk);
@@ -1302,13 +1309,7 @@ export async function executeSandboxedBinary(
         if (isSettled) return;
         currentBufferSize += chunk.length;
         if (currentBufferSize > maxBuffer) {
-          settle(() => {
-            killProcessGroup(proc.pid, 'SIGKILL');
-            try {
-              proc.kill('SIGKILL');
-            } catch {}
-            reject(new SandboxedBufferLimitError(maxBuffer));
-          });
+          stopWith(new SandboxedBufferLimitError(maxBuffer));
           return;
         }
         stderrChunks.push(chunk);
@@ -1317,20 +1318,16 @@ export async function executeSandboxedBinary(
 
     proc.on('error', (err) => {
       observeSandboxSpawnFailure('spawn_error');
-      settle(() => {
-        killProcessGroup(proc.pid, 'SIGKILL');
-        try {
-          proc.kill('SIGKILL');
-        } catch {}
-        reject(spawnFailureError(err));
-      });
+      stopWith(spawnFailureError(err));
     });
 
     proc.on('close', (code, signal) => {
       // Read before settling: settling closes the descriptor.
       const headroom = options.stdoutHeadroomBytes ?? 0;
       const tailroom = options.stdoutTailroomBytes ?? 0;
-      const spool = spoolFd !== null && !isSettled ? readStdoutSpool(spoolFd, spoolLimit, headroom, tailroom) : undefined;
+      const live = spoolFd !== null && !isSettled;
+      const spool = live && ownsSpool ? readStdoutSpool(spoolFd as number, spoolLimit, headroom, tailroom) : undefined;
+      const fault = live && !ownsSpool ? stdoutSpoolFault(spoolFd as number, spoolLimit) : null;
       settle(() => {
         const durationMs = Date.now() - startTime;
         const stderr = withoutProcHideNotice(Buffer.concat(stderrChunks));
@@ -1341,6 +1338,14 @@ export async function executeSandboxedBinary(
         }
         if (spool !== undefined && 'error' in spool) {
           reject(spool.error);
+          return;
+        }
+        if (fault !== null && 'boundHit' in fault) {
+          reject(new SandboxedBufferLimitError(spoolLimit));
+          return;
+        }
+        if (fault !== null && 'error' in fault) {
+          reject(fault.error);
           return;
         }
         const { stdout, frame } = outputOf(spool?.frame, stdoutChunks, headroom, tailroom);

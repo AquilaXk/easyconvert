@@ -1,4 +1,6 @@
+import fs from 'node:fs';
 import {
+  canSpoolStdout,
   executeSandboxedBinary,
   SandboxedBufferLimitError,
   SandboxedMemoryLimitError,
@@ -15,6 +17,7 @@ import {
   ERROR_STREAM_TAIL_BYTES,
   FrameReader,
   isBadFrame,
+  isHelperFilePath,
   type LauncherErrorDetail,
   type LauncherReply,
   type LauncherRequest,
@@ -71,13 +74,39 @@ function send(header: LauncherReply, ...payload: Buffer[]): void {
   process.stdout.uncork();
 }
 
+/** The worker's files cannot be used from here: the worker runs the program itself. */
+class FilesUnavailableError extends Error {}
+
+/** Opens a file of the worker by the path it named. Only `/proc/<worker pid>/fd/<n>` is opened, and only a regular file (a path that is not the worker's, or not a file, is the failure the worker falls back from). */
+function openWorkerFile(candidate: string, flags: number): number {
+  if (!isHelperFilePath(candidate, process.ppid)) throw new FilesUnavailableError(`the path ${candidate} is not a file of the worker`);
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(candidate, flags);
+    if (!fs.fstatSync(fd).isFile()) throw new FilesUnavailableError('the file of the worker is not a regular file');
+    return fd;
+  } catch (error) {
+    if (fd !== undefined) fs.closeSync(fd);
+    throw error instanceof FilesUnavailableError ? error : new FilesUnavailableError(`the file of the worker could not be opened (${error instanceof Error ? error.message : String(error)})`);
+  }
+}
+
 async function run(request: Extract<LauncherRequest, { type: 'run' }>, stdin: Buffer): Promise<void> {
   const controller = new AbortController();
   running.set(request.id, controller);
+  const { stdoutPath, stdinPath, ...options } = request.options;
+  const opened: number[] = [];
   try {
+    if (stdoutPath !== undefined && !canSpoolStdout({ ...options, spoolStdout: true })) throw new FilesUnavailableError('this host cannot bound a spooled output');
+    const stdoutFd = stdoutPath === undefined ? undefined : openWorkerFile(stdoutPath, fs.constants.O_RDWR);
+    if (stdoutFd !== undefined) opened.push(stdoutFd);
+    const stdinFd = stdinPath === undefined ? undefined : openWorkerFile(stdinPath, fs.constants.O_RDONLY);
+    if (stdinFd !== undefined) opened.push(stdinFd);
     const result = await executeSandboxedBinary(request.binary, request.args, {
-      ...request.options,
+      ...options,
       stdin: request.hasStdin ? stdin : undefined,
+      stdoutFd,
+      stdinFd,
       signal: controller.signal,
     });
     send(
@@ -86,6 +115,10 @@ async function run(request: Extract<LauncherRequest, { type: 'run' }>, stdin: Bu
       result.stderr
     );
   } catch (error) {
+    if (error instanceof FilesUnavailableError) {
+      send({ type: 'error', id: request.id, error: { kind: 'files', message: shortMessage(error.message) } });
+      return;
+    }
     if (controller.signal.aborted) {
       send({ type: 'error', id: request.id, error: { kind: 'aborted', message: 'cancelled' } });
     } else {
@@ -93,6 +126,7 @@ async function run(request: Extract<LauncherRequest, { type: 'run' }>, stdin: Bu
       send({ type: 'error', id: request.id, error: detail }, stdout, stderr);
     }
   } finally {
+    for (const fd of opened) fs.closeSync(fd);
     running.delete(request.id);
   }
 }

@@ -1,22 +1,28 @@
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { HelperHost, HelperSlot } from './helper-process';
 import {
+  canSpoolStdout,
   executeSandboxedBinary,
   fileConfinementDisabled,
+  readStdoutSpool,
   SandboxedBufferLimitError,
   SandboxedMemoryLimitError,
   SandboxedProcessError,
   SandboxedTimeoutError,
   sandboxUnavailable,
+  stdoutSpoolLimit,
   strictSandboxEnabled,
+  tryOpenStdoutSpool,
   type SandboxedExecutionOptions,
   type SandboxedExecutionResult,
 } from './process-sandbox';
 import {
   encodeFrame,
   FrameReader,
+  helperFilePath,
   isBadFrame,
   type LauncherErrorDetail,
   type LauncherReply,
@@ -40,7 +46,9 @@ import {
  *
  * The helper is not free: a request and its reply cross two pipes, which adds wake-ups, and the output is copied once
  * more. So a program is started through it only when the fork it saves costs more than that: the saving grows with the
- * memory this process has mapped, the copy with the size of the output (see launchPays).
+ * memory this process has mapped, the copy with the size of the output (see launchPays). A run that spools its output
+ * (`spoolStdout`) has no copy to pay: its output and input are files of this process that the helper opens by path
+ * (see runWithFiles), and only the small request and reply cross the pipes.
  *
  * `SANDBOX_LAUNCHER=off` turns the helper off.
  */
@@ -73,7 +81,7 @@ const BOOT_TIMEOUT_MS = 30_000;
 
 export type LaunchedExecutionOptions = Pick<
   SandboxedExecutionOptions,
-  'timeoutMs' | 'maxBuffer' | 'env' | 'cwd' | 'networkIsolated' | 'strictIsolation' | 'sandboxOptions' | 'memoryLimitMb' | 'maxFileSize' | 'rlimits' | 'signal' | 'workDir' | 'writeDirs' | 'readDirs' | 'socketDirs' | 'fileConfinementOff'
+  'timeoutMs' | 'maxBuffer' | 'env' | 'cwd' | 'networkIsolated' | 'strictIsolation' | 'sandboxOptions' | 'memoryLimitMb' | 'maxFileSize' | 'rlimits' | 'signal' | 'workDir' | 'writeDirs' | 'readDirs' | 'socketDirs' | 'fileConfinementOff' | 'spoolStdout' | 'stdoutHeadroomBytes' | 'stdoutTailroomBytes'
 > & {
   stdin?: Buffer | null;
   /** About how many bytes the program prints; what the helper has to copy back. Defaults to a quarter of `maxBuffer`. */
@@ -137,8 +145,13 @@ function resolveChildEntry(): ChildEntry | null {
   return childEntry;
 }
 
+/** The helper could not open the files of this process that a run named (see runWithFiles); the run is started here instead. */
+class HelperFilesUnavailableError extends Error {}
+
 function toError(detail: LauncherErrorDetail, payload: Buffer): Error {
   switch (detail.kind) {
+    case 'files':
+      return new HelperFilesUnavailableError(detail.message);
     case 'process': {
       const stdoutBytes = detail.stdoutBytes ?? 0;
       return new SandboxedProcessError(
@@ -170,7 +183,7 @@ class LauncherHost extends HelperHost {
     super(entry, 'the launcher', (reason) => new SandboxedProcessError(`Sandboxed execution error: ${reason}`, null, reason));
   }
 
-  run(binary: string, args: string[], options: LaunchedExecutionOptions): Promise<SandboxedExecutionResult> {
+  run(binary: string, args: string[], options: LaunchedExecutionOptions & Pick<LaunchedRunOptions, 'stdoutPath' | 'stdinPath'>): Promise<SandboxedExecutionResult> {
     return new Promise<SandboxedExecutionResult>((resolve, reject) => {
       const id = this.allocateId();
       const { stdin, signal, ...rest } = options;
@@ -256,19 +269,80 @@ export function launchPays(residentBytes: number, expectedOutputBytes: number): 
   return (residentBytes - BASELINE_RESIDENT_BYTES) * FORK_MS_PER_BYTE > expectedOutputBytes * COPY_MS_PER_BYTE;
 }
 
+const closeQuietly = (fd: number): void => {
+  try {
+    fs.closeSync(fd);
+  } catch {
+    // The file was only read from, or its content has been taken already.
+  }
+};
+
+/** The most written to a file in one call, so that the event loop is free between the writes of a large input. */
+const INPUT_WRITE_CHUNK_BYTES = 8 * 1024 * 1024;
+const writeToFile = promisify(fs.write);
+
+/** Writes `data` to the start of the file `fd`. */
+async function fillFile(fd: number, data: Buffer): Promise<void> {
+  for (let written = 0; written < data.length; ) {
+    written += (await writeToFile(fd, data, written, Math.min(INPUT_WRITE_CHUNK_BYTES, data.length - written), written)).bytesWritten;
+  }
+}
+
+/**
+ * A run whose output (and input) are files of this process that the helper opens by path (`/proc/<pid>/fd/<n>`), so no byte of
+ * either goes through the pipes of the helper: the program writes its output to the file, and it is read from there once, into a
+ * buffer of its exact size with the head and tail room asked for. The files are anonymous (made in a private directory and
+ * unlinked at once, as the spool of executeSandboxedBinary is); the helper opens them as they stand, empty or with the input in
+ * them. Returns null when the files cannot be made or the helper cannot open them, and the caller runs the program itself.
+ */
+async function runWithFiles(host: LauncherHost, binary: string, args: string[], options: LaunchedExecutionOptions): Promise<SandboxedExecutionResult | null> {
+  const { stdin, stdoutHeadroomBytes: headroom = 0, stdoutTailroomBytes: tailroom = 0, ...rest } = options;
+  const output = tryOpenStdoutSpool();
+  const input = output !== null && stdin ? tryOpenStdoutSpool() : null;
+  try {
+    if (output === null || (stdin && input === null)) return null;
+    if (input !== null) {
+      await fillFile(input, stdin as Buffer);
+      // An abort during the write has no run to stop yet, and the helper would never hear of it.
+      options.signal?.throwIfAborted();
+    }
+    const run = await host.run(binary, args, {
+      ...rest,
+      stdoutPath: helperFilePath(process.pid, output),
+      stdinPath: input === null ? undefined : helperFilePath(process.pid, input),
+    });
+    const spool = readStdoutSpool(output, stdoutSpoolLimit(options), headroom, tailroom);
+    if ('error' in spool) throw spool.error;
+    if ('boundHit' in spool) throw new SandboxedBufferLimitError(stdoutSpoolLimit(options));
+    const framed = headroom > 0 || tailroom > 0;
+    return { ...run, stdout: framed ? spool.frame.subarray(headroom, spool.frame.length - tailroom) : spool.frame, stdoutFrame: framed ? spool.frame : undefined };
+  } catch (error) {
+    if (error instanceof HelperFilesUnavailableError) return null;
+    throw error;
+  } finally {
+    for (const fd of [output, input]) if (fd !== null) closeQuietly(fd);
+  }
+}
+
 /**
  * Like executeSandboxedBinary, started from the helper when one is ready and it pays. The result and the errors are the same.
- * Standard input is a Buffer or nothing.
+ * Standard input is a Buffer or nothing. A run that collects its output through a spool (`spoolStdout`, where the host can bound
+ * one) keeps it in a file the helper opens by path, so the helper copies nothing back and the run pays whenever the fork it
+ * saves is not nothing; a run that asks for room around its output and cannot spool is started here.
  */
-export function launchSandboxedBinary(binary: string, args: string[], options: LaunchedExecutionOptions = {}): Promise<SandboxedExecutionResult> {
+export async function launchSandboxedBinary(binary: string, args: string[], options: LaunchedExecutionOptions = {}): Promise<SandboxedExecutionResult> {
   const maxBuffer = options.maxBuffer ?? DEFAULT_MAX_BUFFER_BYTES;
   const { expectedOutputBytes = maxBuffer / DEFAULT_OUTPUT_SHARE, ...forwarded } = options;
   const current = slot.ready;
   if (!current) void slot.start();
-  if (!current || options.signal?.aborted || !sandboxLauncherEnabled() || !launchPays(process.memoryUsage.rss(), expectedOutputBytes)) {
-    directCount++;
-    return executeSandboxedBinary(binary, args, forwarded);
+  const files = canSpoolStdout(options);
+  const rooms = (options.stdoutHeadroomBytes ?? 0) > 0 || (options.stdoutTailroomBytes ?? 0) > 0;
+  if (current && !options.signal?.aborted && sandboxLauncherEnabled() && (files || !rooms) && launchPays(process.memoryUsage.rss(), files ? 0 : expectedOutputBytes)) {
+    launchedCount++;
+    const result = files ? await runWithFiles(current, binary, args, forwarded) : await current.run(binary, args, forwarded);
+    if (result !== null) return result;
+    launchedCount--;
   }
-  launchedCount++;
-  return current.run(binary, args, forwarded);
+  directCount++;
+  return executeSandboxedBinary(binary, args, forwarded);
 }

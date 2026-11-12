@@ -1,5 +1,6 @@
-import { readdirSync } from 'node:fs';
+import { closeSync, fstatSync, mkdtempSync, openSync, readdirSync, readSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildPrlimitArgs, executeSandboxedBinary, getPrlimitCapability, SandboxedBufferLimitError, SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { skipUnless } from './helpers/strict-skip';
@@ -97,6 +98,70 @@ describe.skipIf(skipUnless('Linux with prlimit, which bounds a spooled output', 
     setTimeout(() => controller.abort(new Error('stop')), 100);
     await expect(aborted).rejects.toThrow('stop');
     expect(spoolLeftovers()).toEqual(before);
+  });
+});
+
+describe.skipIf(skipUnless('Linux with prlimit, which bounds a spooled output', HAS_SPOOL))('executeSandboxedBinary with files opened by the caller', () => {
+  /** The files are the caller's: the run writes to one and reads from the other, and closes neither. */
+  function withFiles<T>(input: Buffer | null, body: (output: number, inputFd: number | undefined) => Promise<T>): Promise<T> {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'caller-files-'));
+    const outputFd = openSync(path.join(dir, 'out'), 'w+');
+    let inputFd: number | undefined;
+    if (input !== null) {
+      writeFileSync(path.join(dir, 'in'), input);
+      inputFd = openSync(path.join(dir, 'in'), 'r');
+    }
+    return body(outputFd, inputFd).finally(() => {
+      // Still open, so the run did not close them.
+      expect(fstatSync(outputFd).isFile()).toBe(true);
+      closeSync(outputFd);
+      if (inputFd !== undefined) closeSync(inputFd);
+      rmSync(dir, { recursive: true, force: true });
+    });
+  }
+  const readAll = (fd: number): Buffer => {
+    const out = Buffer.alloc(fstatSync(fd).size);
+    readSync(fd, out, 0, out.length, 0);
+    return out;
+  };
+
+  it('leaves the output in the file it was given and returns none of it', async () => {
+    await withFiles(null, async (output) => {
+      const result = await executeSandboxedBinary(SHELL, ['-c', `head -c ${MEBIBYTE + 3} /dev/zero | tr '\\0' 'k'`], { networkIsolated: false, timeoutMs: 10_000, maxBuffer: 4 * MEBIBYTE, stdoutFd: output });
+      expect(result.stdout.length).toBe(0);
+      expect(readAll(output).equals(Buffer.alloc(MEBIBYTE + 3, 'k'))).toBe(true);
+    });
+  });
+
+  it('reads standard input from the file it was given', async () => {
+    const input = Buffer.alloc(2 * MEBIBYTE, 0x62);
+    await withFiles(input, async (output, inputFd) => {
+      await executeSandboxedBinary('/bin/cat', [], { networkIsolated: false, timeoutMs: 10_000, maxBuffer: 4 * MEBIBYTE, stdoutFd: output, stdinFd: inputFd });
+      expect(readAll(output).equals(input)).toBe(true);
+    });
+  });
+
+  it('holds the file to the same bound as a spool of its own', async () => {
+    await withFiles(null, async (output) => {
+      const options = { networkIsolated: false, timeoutMs: 10_000, maxBuffer: MEBIBYTE, stdoutFd: output };
+      await executeSandboxedBinary(SHELL, ['-c', `head -c ${MEBIBYTE} /dev/zero`], options);
+      expect(fstatSync(output).size).toBe(MEBIBYTE);
+    });
+    await withFiles(null, async (output) => {
+      const limit = await executeSandboxedBinary(SHELL, ['-c', `exec head -c ${MEBIBYTE + 1} /dev/zero`], { networkIsolated: false, timeoutMs: 10_000, maxBuffer: MEBIBYTE, stdoutFd: output }).catch((error: unknown) => error);
+      expect(limit).toBeInstanceOf(SandboxedBufferLimitError);
+      expect((limit as SandboxedBufferLimitError).limitBytes).toBe(MEBIBYTE);
+    });
+  });
+
+  it('reports a failure with its status and error text, the output staying in the file', async () => {
+    await withFiles(null, async (output) => {
+      const failure = await executeSandboxedBinary(SHELL, ['-c', 'printf partial; echo oops >&2; exit 3'], { networkIsolated: false, timeoutMs: 10_000, stdoutFd: output }).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(SandboxedProcessError);
+      expect((failure as SandboxedProcessError).exitCode).toBe(3);
+      expect((failure as SandboxedProcessError).stderr).toBe('oops\n');
+      expect(readAll(output).toString('utf8')).toBe('partial');
+    });
   });
 });
 

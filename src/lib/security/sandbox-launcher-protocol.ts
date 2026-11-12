@@ -25,13 +25,30 @@ export interface LaunchedRunOptions extends SandboxFileScope {
   memoryLimitMb?: number;
   maxFileSize?: number;
   rlimits?: SandboxedRlimitsOptions;
+  /**
+   * Files of the worker the helper opens by path (`/proc/<worker pid>/fd/<n>`, see helperFilePath): the standard output goes
+   * to `stdoutPath` and is left there for the worker to read, the standard input is read from `stdinPath`. No bytes of either
+   * cross the pipe.
+   */
+  stdoutPath?: string;
+  stdinPath?: string;
+}
+
+/** The path under which the helper, a child of this process, opens the file this process holds open as `fd`. */
+export function helperFilePath(workerPid: number, fd: number): string {
+  return `/proc/${workerPid}/fd/${fd}`;
+}
+
+/** Whether `candidate` is a file of the process `workerPid` named by helperFilePath: the only paths a helper opens for its parent. */
+export function isHelperFilePath(candidate: string, workerPid: number): boolean {
+  return new RegExp(`^/proc/${workerPid}/fd/\\d{1,9}$`).test(candidate);
 }
 
 export type LauncherRequest =
   | { type: 'run'; id: number; binary: string; args: string[]; hasStdin: boolean; options: LaunchedRunOptions }
   | { type: 'cancel'; id: number };
 
-export type LauncherErrorKind = 'process' | 'timeout' | 'buffer' | 'memory' | 'unavailable' | 'aborted' | 'other';
+export type LauncherErrorKind = 'process' | 'timeout' | 'buffer' | 'memory' | 'unavailable' | 'aborted' | 'files' | 'other';
 
 /**
  * A failed run. The text the program printed travels in the payload (standard output, then standard error), capped to
