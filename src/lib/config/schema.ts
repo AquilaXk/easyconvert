@@ -1,5 +1,6 @@
 import { BlockList, isIP } from 'node:net';
 import path from 'node:path';
+import { BILLING_ENTRIES } from './schema-billing';
 import { ANONYMOUS_DAILY_CONVERSIONS, DELIVERED_FILE_RETENTION_MINUTES, FREE_PROCESSING_MINUTES } from '../plan-limits';
 
 /**
@@ -64,16 +65,8 @@ const NONE_KEYWORD = 'none';
 export type ProcessRole = 'web' | 'worker';
 
 export type ConfigArea =
-  | 'runtime'
-  | 'network'
-  | 'auth'
-  | 'secrets'
-  | 'storage'
-  | 'queue'
-  | 'worker'
-  | 'limits'
-  | 'security'
-  | 'tools';
+  | 'runtime' | 'network' | 'auth' | 'billing' | 'secrets'
+  | 'storage' | 'queue' | 'worker' | 'limits' | 'security' | 'tools';
 
 export type ValueKind =
   | { readonly type: 'integer'; readonly min: number; readonly max: number }
@@ -1473,7 +1466,7 @@ const SCHEMA_ENTRIES = [
 ] as const satisfies readonly VariableSpec[];
 
 /** The schema as data, for the loader and the documentation generator. */
-export const CONFIG_SCHEMA: readonly VariableSpec[] = SCHEMA_ENTRIES;
+export const CONFIG_SCHEMA: readonly VariableSpec[] = [...SCHEMA_ENTRIES, ...BILLING_ENTRIES];
 
 /**
  * Alternatives of which one must be set in production: the signing secret has three names, and the first one set
@@ -1483,7 +1476,7 @@ export const PRODUCTION_ANY_OF_GROUPS: readonly AnyOfGroup[] = [
   { names: ['STORAGE_SIGNING_SECRET', 'S3_SIGNING_SECRET', 'OCI_SIGNING_SECRET'], roles: BOTH, firstSetWins: true },
 ];
 
-type SchemaEntry = (typeof SCHEMA_ENTRIES)[number];
+type SchemaEntry = (typeof SCHEMA_ENTRIES)[number] | (typeof BILLING_ENTRIES)[number];
 
 export type ConfigName = SchemaEntry['name'];
 

@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 159 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 165 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -103,6 +103,24 @@ Generate a secret with `openssl rand -hex 32`.
 - `SMTP_USER`: Account that signs in to SMTP_HOST: the full account address (for a mailbox provider, not a short name).
 - `SMTP_PASSWORD`: Password of SMTP_USER: an application password, not the sign-in password of the account.
 - `MAIL_FROM`: Sender of the mails: an address, or `Name <address>`. Defaults to SMTP_USER. A mailbox provider accepts only the account or one of its aliases.
+
+### Paid plans
+
+| Variable | Type and rule | Default | Required in production | Process |
+| --- | --- | --- | --- | --- |
+| `PADDLE_API_KEY` | secret text; secret, never logged | none | no | web |
+| `PADDLE_WEBHOOK_SECRET` | secret text; secret, never logged | none | no | web |
+| `PADDLE_CLIENT_TOKEN` | text | none | no | web |
+| `PADDLE_ENVIRONMENT` | one of `sandbox`, `production` (any case) | none | no | web |
+| `PADDLE_PRICE_ID_PRO` | text | none | no | web |
+| `PADDLE_PRICE_ID_ENTERPRISE` | text | none | no | web |
+
+- `PADDLE_API_KEY`: Server-side API key of the Paddle account that sells the paid plans (opens customer portal sessions). Paid plans are on sale only when this and the five other PADDLE_ variables are all set; set only some of them and start-up fails. Until then the pricing page marks the paid plans "coming soon" and every billing route answers 503 billing_unavailable.
+- `PADDLE_WEBHOOK_SECRET`: Secret key of the Paddle notification destination that points at /api/billing/webhook. It verifies the Paddle-Signature header of every event, and signs the user id that a checkout carries as custom data.
+- `PADDLE_CLIENT_TOKEN`: Client-side token that Paddle.js opens the checkout with. It is meant to be public: the billing status route hands it to the browser.
+- `PADDLE_ENVIRONMENT`: The Paddle environment the API key, the client token and the price ids belong to: `sandbox` for tests with test cards, `production` for real payments.
+- `PADDLE_PRICE_ID_PRO`: Id of the Paddle price (`pri_...`) of the Pro plan.
+- `PADDLE_PRICE_ID_ENTERPRISE`: Id of the Paddle price (`pri_...`) of the Enterprise plan.
 
 ### Keys and secrets
 
