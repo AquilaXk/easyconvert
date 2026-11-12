@@ -28,7 +28,7 @@ import {
 import { PART_URL_TTL_SECONDS } from './presign-limits';
 import { stripEtagQuotes } from './etag';
 import { assertRegularFile } from './temp-file';
-import { multipartUploadKey } from './key-namespace';
+import { multipartUploadKey, userConversionPrefix } from './key-namespace';
 import { MAX_UPLOAD_ID_LENGTH } from './upload-id';
 import { buildPutOptions, isObjectExpired, isValidContentType, limitFilename, toStoredObjectMetadata } from './object-attributes';
 import type {
@@ -37,7 +37,7 @@ import type {
   StoredObject,
   UploadSessionInfo,
 } from './oci-storage';
-import type { ObjectHead, S3ObjectClient } from './s3-object-client';
+import type { ListedUpload, ObjectHead, S3ObjectClient } from './s3-object-client';
 
 /**
  * Job storage on an S3-compatible object store (OCI Object Storage in production): the
@@ -73,7 +73,11 @@ export const REMOTE_STAGED_OBJECT_MAX_BYTES = 10 * GIB;
 export const REMOTE_STAGED_FILE_MAX_AGE_MS = 6 * HOUR_MS;
 /** deleteByPrefix refuses to walk past this many objects. */
 export const REMOTE_DELETE_BY_PREFIX_MAX_OBJECTS = 10_000;
+/** The listing of one owner's open uploads refuses to walk past this many. */
+export const REMOTE_OWNER_OPEN_UPLOADS_MAX = 10_000;
 const DELETE_CONCURRENCY = 8;
+/** The times the open uploads of an owner are listed and aborted before one that stays open fails the erasure. */
+const REMOTE_ABORT_ROUNDS = 3;
 const UPLOAD_TOKEN_VERSION = 'v1';
 const MAX_FILENAME_KEY_LENGTH = 200;
 const STAGED_FILE_SUFFIX = '.staged';
@@ -405,6 +409,42 @@ export class RemoteStorageBackend implements IStorageBackend {
     if (!session) return false;
     await this.client.abortMultipartUpload(session.k, session.u);
     return true;
+  }
+
+  /** The uploads that are open on the object store under the keys `ownerUserId` owns (the key of an upload names its owner). */
+  private async openUploadsOfOwner(ownerUserId: string): Promise<ListedUpload[]> {
+    const uploads: ListedUpload[] = [];
+    for await (const upload of this.client.listMultipartUploads(userConversionPrefix(ownerUserId), REMOTE_OWNER_OPEN_UPLOADS_MAX)) {
+      uploads.push(upload);
+    }
+    return uploads;
+  }
+
+  /** The object store's ids of the uploads `ownerUserId` has open; rejects when the store cannot list them. */
+  async uploadSessionsOfOwner(ownerUserId: string): Promise<string[]> {
+    return (await this.openUploadsOfOwner(ownerUserId)).map((upload) => upload.uploadId).sort((a, b) => a.localeCompare(b));
+  }
+
+  /**
+   * Aborts every upload `ownerUserId` has open on the object store, with the parts it holds. An abort does not stop a part
+   * that is being uploaded at that moment (the S3 reference: it may be necessary to abort more than once), so the uploads are
+   * listed again after each round and aborted again until none is open, at most REMOTE_ABORT_ROUNDS times, and an upload that
+   * is still open after the last round rejects. Answers the ids it aborted.
+   */
+  async abortUploadSessionsOfOwner(ownerUserId: string): Promise<string[]> {
+    const aborted = new Set<string>();
+    for (let round = 0; round < REMOTE_ABORT_ROUNDS; round++) {
+      const uploads = await this.openUploadsOfOwner(ownerUserId);
+      if (uploads.length === 0) return [...aborted].sort((a, b) => a.localeCompare(b));
+      for (let at = 0; at < uploads.length; at += DELETE_CONCURRENCY) {
+        await Promise.all(uploads.slice(at, at + DELETE_CONCURRENCY).map((upload) => this.client.abortMultipartUpload(upload.key, upload.uploadId)));
+      }
+      for (const upload of uploads) aborted.add(upload.uploadId);
+    }
+    if ((await this.openUploadsOfOwner(ownerUserId)).length > 0) {
+      throw new StorageAdapterError(`An upload of the owner is still open after ${REMOTE_ABORT_ROUNDS} aborts`, this.providerName);
+    }
+    return [...aborted].sort((a, b) => a.localeCompare(b));
   }
 
   // ---------------------------------------------------------------------------------------------

@@ -51,6 +51,7 @@ import {
   stripQuotes,
   toNodeReadable,
 } from './adapters/s3';
+import { parseListMultipartUploads, stripEntryBlocks, type ListedUpload } from './s3-list-xml';
 import {
   EMPTY_PAYLOAD_SHA256,
   PRESIGN_MAX_EXPIRES_SECONDS,
@@ -182,6 +183,8 @@ export interface ListObjectsOptions {
   maxKeys?: number;
   continuationToken?: string;
 }
+
+export type { ListedUpload };
 
 export interface ListedPart {
   partNumber: number;
@@ -1042,7 +1045,7 @@ export class S3ObjectClient {
     try {
       return decodeURIComponent(encoded.replaceAll('+', ' '));
     } catch {
-      throw this.malformed('ListObjectsV2 answer has a Key that is not valid URL encoding');
+      throw this.malformed('A listing answer has a key that is not valid URL encoding');
     }
   }
 
@@ -1105,6 +1108,56 @@ export class S3ObjectClient {
       token = result.nextContinuationToken;
     }
     throw new StorageAdapterError(`Listing "${prefix}" did not finish within ${S3_LIST_MAX_PAGES} pages`, this.providerName);
+  }
+
+  /**
+   * Walks the multipart uploads that are open under a prefix (ListMultipartUploads), a page of `pageSize` at a time. The
+   * walk is bounded like `listAll`: it throws when more than `maxUploads` are open, and when a truncated page does not move
+   * its markers forward.
+   */
+  async *listMultipartUploads(prefix: string, maxUploads: number, pageSize: number = S3_LIST_PAGE_MAX_KEYS): AsyncGenerator<ListedUpload> {
+    if (!Number.isSafeInteger(maxUploads) || maxUploads < 1) {
+      throw new StorageAdapterError('maxUploads must be a positive integer', this.providerName);
+    }
+    if (!isIntegerInRange(pageSize, 1, S3_LIST_PAGE_MAX_KEYS)) {
+      throw new StorageAdapterError(`pageSize must be between 1 and ${S3_LIST_PAGE_MAX_KEYS}`, this.providerName);
+    }
+    let keyMarker: string | undefined;
+    let uploadIdMarker: string | undefined;
+    let yielded = 0;
+    for (let page = 0; page < S3_LIST_MAX_PAGES; page++) {
+      const query: Array<[string, string]> = [
+        ['uploads', ''],
+        ['max-uploads', String(pageSize)],
+        ['encoding-type', 'url'],
+        ['prefix', prefix],
+      ];
+      if (keyMarker !== undefined) query.push(['key-marker', keyMarker]);
+      if (uploadIdMarker !== undefined) query.push(['upload-id-marker', uploadIdMarker]);
+      const { text } = await this.send({
+        method: 'GET',
+        key: '',
+        query,
+        payloadHash: EMPTY_PAYLOAD_SHA256,
+        replayable: true,
+        readBody: true,
+      });
+      const result = parseListMultipartUploads(text ?? '', (encoded) => this.decodeListedKey(encoded), (message) => this.malformed(message));
+      for (const upload of result.uploads) {
+        if (yielded >= maxUploads) {
+          throw new StorageAdapterError(`More than ${maxUploads} open uploads under prefix "${prefix}"`, this.providerName);
+        }
+        yielded++;
+        yield upload;
+      }
+      if (!result.isTruncated) return;
+      if (result.nextKeyMarker === undefined || (result.nextKeyMarker === keyMarker && result.nextUploadIdMarker === uploadIdMarker)) {
+        throw this.malformed('ListMultipartUploads is truncated but has no advancing NextKeyMarker');
+      }
+      keyMarker = result.nextKeyMarker;
+      uploadIdMarker = result.nextUploadIdMarker;
+    }
+    throw new StorageAdapterError(`Listing the uploads under "${prefix}" did not finish within ${S3_LIST_MAX_PAGES} pages`, this.providerName);
   }
 
   private malformed(message: string): StorageServiceError {
@@ -1403,29 +1456,4 @@ export class S3ObjectClient {
       options.now
     );
   }
-}
-
-/**
- * The document with every `<name>...</name>` entry block removed, so the paging fields that
- * surround the entries can be read without an entry-level element of the same name getting in
- * the way. Plain string search; no pattern is built from input.
- */
-function stripEntryBlocks(xml: string, names: readonly string[]): string {
-  let result = xml;
-  for (const name of names) {
-    const open = `<${name}>`;
-    const close = `</${name}>`;
-    let out = '';
-    let cursor = 0;
-    let from = result.indexOf(open);
-    while (from !== -1) {
-      const end = result.indexOf(close, from);
-      if (end === -1) break;
-      out += result.slice(cursor, from);
-      cursor = end + close.length;
-      from = result.indexOf(open, cursor);
-    }
-    result = out + result.slice(cursor);
-  }
-  return result;
 }

@@ -359,6 +359,39 @@ describe('S3ObjectClient against an independent SigV4-verifying S3 server', () =
       await expect(client.listParts(key, uploadId)).rejects.toMatchObject({ code: 'NoSuchUpload' });
     });
 
+    it('lists the open uploads under a prefix page by page, each once, and not the completed or aborted ones', async () => {
+      const keys = ['conversions/u1/b.bin', 'conversions/u1/a ü+&.bin', 'conversions/u2/c.bin', 'uploads/d.bin'];
+      const ids = new Map<string, string>();
+      for (const key of keys) ids.set(key, await client.createMultipartUpload(key));
+      const twin = await client.createMultipartUpload('conversions/u1/b.bin');
+      const aborted = await client.createMultipartUpload('conversions/u1/gone.bin');
+      await client.abortMultipartUpload('conversions/u1/gone.bin', aborted);
+
+      const listed: Array<{ key: string; uploadId: string }> = [];
+      for await (const upload of client.listMultipartUploads('conversions/u1/', 100, 2)) listed.push(upload);
+
+      expect(listed.map((upload) => upload.key)).toEqual(['conversions/u1/a ü+&.bin', 'conversions/u1/b.bin', 'conversions/u1/b.bin']);
+      expect(listed.map((upload) => upload.uploadId).sort()).toEqual([ids.get('conversions/u1/a ü+&.bin')!, ids.get('conversions/u1/b.bin')!, twin].sort());
+      expect(server.requests.filter((req) => req.method === 'GET' && req.query.has('uploads'))).toHaveLength(2);
+    });
+
+    it('bounds the walk over the open uploads, and refuses a truncated page that cannot be followed', async () => {
+      for (let i = 0; i < 5; i++) await client.createMultipartUpload(`conversions/u3/${i}.bin`);
+      const walk = async () => {
+        for await (const upload of client.listMultipartUploads('conversions/u3/', 4)) void upload;
+      };
+      await expect(walk()).rejects.toThrow(/More than 4 open uploads/);
+
+      server.faults.push({
+        match: (req) => req.method === 'GET' && req.query.has('uploads'),
+        status: HTTP_OK,
+        errorIn200: true,
+        body: '<ListMultipartUploadsResult><IsTruncated>true</IsTruncated><Upload><Key>a</Key><UploadId>x</UploadId></Upload></ListMultipartUploadsResult>',
+        times: 1,
+      });
+      await expect(walk()).rejects.toMatchObject({ code: 'MalformedResponse' });
+    });
+
     it('pages ListParts with part-number-marker', async () => {
       const key = 'uploads/many-parts.bin';
       const uploadId = await client.createMultipartUpload(key);

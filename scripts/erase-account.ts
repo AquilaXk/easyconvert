@@ -20,6 +20,8 @@ export interface AccountErasurePlan {
   graphIds: string[];
   jobs: { id: string; state: JobState }[];
   tusSessionIds: string[];
+  /** The multipart uploads the account has open in the store (a direct upload in parts, or an upload through `/api/storage/multipart`). */
+  uploadSessionIds: string[];
   storedKeys: string[];
   deadLetters: number;
   taggedKeys: string[];
@@ -113,6 +115,7 @@ export async function planAccountErasure(idOrEmail: string): Promise<AccountEras
     graphIds,
     jobs: jobs.map((job) => ({ id: job.id, state: job.state })),
     tusSessionIds: await tusEngine.sessionsOfOwner(userId),
+    uploadSessionIds: (await storageProvider.uploadSessionsOfOwner?.(userId)) ?? [],
     storedKeys: await accountStoredKeys(userId, jobs.map((job) => job.id), graphIds),
     deadLetters: letters.total,
     taggedKeys,
@@ -170,9 +173,10 @@ async function cancelAllWork(plan: AccountErasurePlan, drainMs: number): Promise
 /**
  * Erases the account in an order that lets nothing it started write after the erasure:
  * 1. the keys and sessions go first, so no request of the account starts new work;
- * 2. its graphs, jobs and open uploads are cancelled, found again until a round finds nothing new, and when a job was running the
- *    erasure waits for its worker to notice (`drainMs`), because the files and records that job writes would be untraceable once
- *    the graph index is gone;
+ * 2. its graphs, jobs and open resumable uploads are cancelled, found again until a round finds nothing new, and when a job was
+ *    running the erasure waits for its worker to notice (`drainMs`), because the files and records that job writes would be
+ *    untraceable once the graph index is gone; its open multipart uploads are then aborted with the parts they hold (searched
+ *    in the store by owner, after the wait, so one opened by a request the keys did not stop is found too);
  * 3. only then the graphs, files, history, counts and the keys tagged with the account (read again, not taken from the plan) go.
  * A job that is still active after the wait, one that the account's index names beyond the window this run reads (10,000) and one
  * queued after the last round leave the account, its graph index and its files in place for the next run: their ids are answered.
@@ -191,6 +195,7 @@ export async function eraseAccount(plan: AccountErasurePlan, options: AccountEra
     await credentialsVault.delete(credentialId, userId);
   }
   const work = await cancelAllWork(plan, options.drainMs ?? DEFAULT_DRAIN_MS);
+  await storageProvider.abortUploadSessionsOfOwner?.(userId);
 
   const stillActive = await removeEndedJobs(work.jobs.map((job) => job.id));
   if (stillActive.length > 0) return { runningJobIds: stillActive };
@@ -235,6 +240,7 @@ function describe(plan: AccountErasurePlan): string {
     `graphs: ${plan.graphIds.length}`,
     `jobs: ${plan.jobs.length}${plan.jobs.length === MAX_JOBS_PER_RUN ? ' (the first batch; run again)' : ''}`,
     `open resumable uploads: ${plan.tusSessionIds.length}`,
+    `open multipart uploads: ${plan.uploadSessionIds.length}`,
     `stored files: ${plan.storedKeys.length}`,
     `webhook dead letters: ${plan.deadLetters}`,
     `tagged redis keys: ${plan.taggedKeys.length}`,

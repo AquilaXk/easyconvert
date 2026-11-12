@@ -37,5 +37,4 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Rare samples: DWG before R13, WP Greek accented letters, Word Wingdings check boxes.
 - sk/sk1 input through UniConvertor 2, run as a separate sandboxed GPL program (behaviour only, no code copied).
 - Privacy cookie table (docs/legal/privacy.en.md and privacy.ko.md) names easyconvert_session; production now writes __Host-easyconvert_session (entry 241): name both in the next legal revision, and drop the plain name from SESSION_COOKIE_NAMES 7 days after the first deploy.
-- Erasure of an account does not search open multipart sessions of the local store by owner (they expire by their own sweep within the session lifetime).
 - Report real LCOV coverage to SonarCloud from the CI shards (then drop sonar.coverage.exclusions in .sonarcloud.properties and switch to a CI scanner step)

@@ -43,7 +43,12 @@ export function isInlineInputKey(key: string): boolean {
  * ownerless upload namespace for an anonymous caller or none, so that no key carries an anonymous identity.
  */
 export function multipartUploadKey(ownerUserId: string | undefined, uniqueName: string): string {
-  return ownerUserId && !isAnonymousUserId(ownerUserId) ? `conversions/${ownerUserId}/${uniqueName}` : `${UPLOAD_KEY_PREFIX}${uniqueName}`;
+  return ownerUserId && !isAnonymousUserId(ownerUserId) ? `${userConversionPrefix(ownerUserId)}${uniqueName}` : `${UPLOAD_KEY_PREFIX}${uniqueName}`;
+}
+
+/** The prefix of the keys `userId` owns under `conversions/`, with its closing slash so that no other user's prefix matches. */
+export function userConversionPrefix(userId: string): string {
+  return `conversions/${userId}/`;
 }
 
 export function classifyStorageKey(key: string): StorageKeyNamespace {

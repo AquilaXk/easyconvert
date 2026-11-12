@@ -271,6 +271,64 @@ describe('the other records of an account', () => {
     await tusEngine.terminateSession(theirs.id);
   });
 
+  it('deletes its open multipart uploads with their parts and no other account\'s', async () => {
+    const user = await newAccount('multipart');
+    const other = await newAccount('multipartother');
+    const mine = await storageProvider.initiateMultipartUpload('in.csv', 'text/csv', 2048, user.id);
+    await storageProvider.uploadPart(mine.uploadId, 1, Buffer.alloc(1024, 3));
+    const theirs = await storageProvider.initiateMultipartUpload('in.csv', 'text/csv', 2048, other.id);
+
+    const plan = await planAccountErasure(user.id);
+    expect(plan!.uploadSessionIds).toEqual([mine.uploadId]);
+    await eraseAccount(plan!, { drainMs: 0 });
+
+    expect(await storageProvider.getUploadSession?.(mine.uploadId)).toBeUndefined();
+    expect(await storageProvider.getUploadSession?.(theirs.uploadId)).toMatchObject({ ownerUserId: other.id });
+    await storageProvider.abortMultipartUpload(theirs.uploadId);
+  });
+
+  it('finds an upload the account opened after the plan was made, and fails the run with the account left when an upload cannot be aborted', async () => {
+    const user = await newAccount('multipartlate');
+    const plan = await planAccountErasure(user.id);
+    expect(plan!.uploadSessionIds).toEqual([]);
+    const late = await storageProvider.initiateMultipartUpload('late.csv', 'text/csv', 10, user.id);
+
+    vi.spyOn(storageProvider, 'abortUploadSessionsOfOwner').mockRejectedValue(new Error('storage is down'));
+    await expect(eraseAccount(plan!, { drainMs: 0 })).rejects.toThrow('storage is down');
+    expect(await redisUserStore.findById(user.id)).not.toBeNull();
+    vi.restoreAllMocks();
+
+    await eraseAccount((await planAccountErasure(user.id))!, { drainMs: 0 });
+    expect(await storageProvider.getUploadSession?.(late.uploadId)).toBeUndefined();
+    expect(await redisUserStore.findById(user.id)).toBeNull();
+  });
+
+  it('does not plan an erasure it cannot make complete when the uploads cannot be listed', async () => {
+    const user = await newAccount('multipartlist');
+    vi.spyOn(storageProvider, 'uploadSessionsOfOwner').mockRejectedValue(new Error('storage is down'));
+    await expect(planAccountErasure(user.id)).rejects.toThrow('storage is down');
+  });
+
+  // skip-ok: mode selection. The shards run without REDIS_URL; the Redis-mode CI step (npm run test:redis) sets it and runs this file.
+  it.skipIf(!process.env.REDIS_URL)('fails the run, leaving the account and every upload, when Redis cannot be searched for its resumable uploads', async () => {
+    const user = await newAccount('tusredisfail');
+    const other = await newAccount('tusredisfailother');
+    const mine = await tusEngine.createSession({ uploadLength: 10, ownerUserId: user.id });
+    const theirs = await tusEngine.createSession({ uploadLength: 10, ownerUserId: other.id });
+    const plan = (await planAccountErasure(user.id))!;
+
+    const redis = (tusEngine.sessionStore as unknown as { redis: { scan(...args: unknown[]): Promise<unknown> } }).redis;
+    vi.spyOn(redis, 'scan').mockRejectedValue(new Error('connection lost'));
+    await expect(eraseAccount(plan, { drainMs: 0 })).rejects.toThrow('connection lost');
+    vi.restoreAllMocks();
+
+    expect(await redisUserStore.findById(user.id)).not.toBeNull();
+    expect(await tusEngine.getSession(mine.id)).not.toBeNull();
+    expect(await tusEngine.getSession(theirs.id)).not.toBeNull();
+    await tusEngine.terminateSession(mine.id);
+    await tusEngine.terminateSession(theirs.id);
+  });
+
   it('forgets its failed logins, so the address is not locked after the account is gone', async () => {
     const user = await newAccount('locked');
     for (let i = 0; i < LOGIN_MAX_FAILED_ATTEMPTS_PER_EMAIL; i++) await recordFailedLogin('203.0.113.9', user.email);

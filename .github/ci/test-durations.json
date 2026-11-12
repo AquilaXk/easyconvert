@@ -578,6 +578,7 @@
   "tests/libreoffice-pool-staged-output.test.ts": 0,
   "tests/link-import-meter.test.ts": 0,
   "tests/local-multipart-boundary.test.ts": 1.8,
+  "tests/local-multipart-owner-erasure.test.ts": 0.2,
   "tests/login-global-failed-limit.test.ts": 0.1,
   "tests/lzma-decoder-fast-path.test.ts": 1,
   "tests/lzma-decoder.test.ts": 7,

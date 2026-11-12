@@ -151,6 +151,14 @@ export class S3ObjectStorageService implements IStorageBackend {
     return (await this.multipart.getMultipartSession(uploadId))?.ownerUserId;
   }
 
+  uploadSessionsOfOwner(ownerUserId: string): Promise<string[]> {
+    return this.multipart.sessionIdsOfOwner(ownerUserId);
+  }
+
+  abortUploadSessionsOfOwner(ownerUserId: string): Promise<string[]> {
+    return this.multipart.abortSessionsOfOwner(ownerUserId);
+  }
+
   async getUploadedParts(uploadId: string): Promise<StoredPart[] | undefined> {
     return this.multipart.listPartSizes(uploadId);
   }
