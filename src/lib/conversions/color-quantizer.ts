@@ -54,7 +54,7 @@ export const QUANT_ALPHA_THRESHOLD = 128;
 /** Rasters of at least this many pixels are mapped through the candidate grid (it costs a few tens of ms to build). */
 const GRID_MIN_PIXELS = 100_000;
 /** Pixels from which the palette mapper keeps its colour answers in a table indexed by the colour (`DirectColourMemo`). */
-const DIRECT_MEMO_MIN_PIXELS = 1 << 20;
+export const DIRECT_MEMO_MIN_PIXELS = 1 << 20;
 /** Hilbert-curve error queue length of Riemersma dithering. */
 const RIEMERSMA_QUEUE_SIZE = 16;
 /** Blue-noise amplitude, as a share of the typical spacing between palette colours. */
