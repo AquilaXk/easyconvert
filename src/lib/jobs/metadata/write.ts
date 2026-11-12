@@ -1,6 +1,7 @@
 import path from 'node:path';
-import { PDFDict, PDFDocument, PDFHexString, PDFName, PDFString } from 'pdf-lib';
+import { PDFDict, PDFHexString, PDFName, PDFString, type PDFDocument } from 'pdf-lib';
 import { METADATA_WRITE_FORMATS } from '../graph-operations';
+import { loadPdfLibDocument } from '../../conversions/pdf-lib-load';
 import { openPdfForEditing, PDF_LIB_OBJECTS_PER_TICK, type PdfAccess } from '../../conversions/pdf-access';
 import { editExif, ExifFormatError, ExifValueError, WRITABLE_EXIF_FIELDS, type ExifEdits } from './exif';
 import { ImageContainerError, readEmbeddedBlocks, withEmbeddedBlocks } from './image-blocks';
@@ -76,7 +77,7 @@ async function writePdf(buf: Buffer, edits: MetadataEdits, access: PdfAccess): P
   const plain = await openPdfForEditing(buf, 'metadata', access);
   let doc: PDFDocument;
   try {
-    doc = await PDFDocument.load(plain, { updateMetadata: false, parseSpeed: PDF_LIB_OBJECTS_PER_TICK });
+    doc = await loadPdfLibDocument(plain, { updateMetadata: false, parseSpeed: PDF_LIB_OBJECTS_PER_TICK });
   } catch (error) {
     console.warn(`[metadata] a PDF could not be read for a write: ${error instanceof Error ? error.message.replace(/\s+/g, ' ').slice(0, 300) : 'unreadable'}`);
     throw new MetadataWriteUnsupportedError('The PDF cannot be read, so its metadata is not changed.');
