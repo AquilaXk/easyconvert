@@ -141,7 +141,7 @@ RUN /tmp/install-vtracer-pixels.sh /opt/vtracer-pixels
 # ==============================================================================
 # Stage 3b'''': Pinned quantizr-pixels (palette quantiser of the compress page)
 # ==============================================================================
-# The palette of every indexed PNG the worker writes (the compress page, entry 252). quantizr (DarthSim) is MIT; scripts/quantizr-pixels is a
+# The palette of every indexed PNG the worker writes (the compress page, entry 253). quantizr (DarthSim) is MIT; scripts/quantizr-pixels is a
 # small program of ours around it that reads the raw pixels the worker decoded, built here with the pinned Rust toolchain as one static musl
 # program by scripts/install-quantizr-pixels.sh and run as a separate sandboxed process; nothing links it into the application. Debian ships no
 # package of it. It carries its licence text and, beside it, the notices of the Rust standard library and musl (the vtracer notices, a superset).

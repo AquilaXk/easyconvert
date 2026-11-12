@@ -17,7 +17,7 @@ import { chunkOf, readChunks } from './png-photo-bands';
  *
  * It is an extra over the image library's own quantiser, which stays the answer of a worker without the program, of a picture past
  * `QUANTIZR_MAX_PIXELS` and of a run that fails: none of them fails the conversion. Only a host that cannot confine its children refuses
- * (the sandbox's rule for every program), and a cancelled conversion stops. Entry 252 of docs/policy-decisions.md has the measurements.
+ * (the sandbox's rule for every program), and a cancelled conversion stops. Entry 253 of docs/policy-decisions.md has the measurements.
  */
 
 const QUANTIZR_PATH_ENV = 'QUANTIZR_PIXELS_PATH';
@@ -26,16 +26,19 @@ const QUANTIZR_EXECUTABLE_NAMES = ['quantizr-pixels'];
 /**
  * The dithering level handed to the program when the request dithers (the default). The library's own scale runs from 0 to 1 and its
  * default of 1 writes 4 to 6 percent more bytes than the image library's quantiser on photographs and screenshots, at 0.6 dB less PSNR,
- * where 0.25 writes 6 percent fewer at 0.08 dB less (entry 252).
+ * where 0.25 writes 6 percent fewer at 0.08 dB less (entry 253).
  */
 export const QUANTIZR_DITHER_LEVEL = 0.25;
 
 /** The most pixels the program is given: its own bound (scripts/quantizr-pixels/src/main.rs), which a larger picture would exceed. */
 export const QUANTIZR_MAX_PIXELS = 36_000_000;
 const QUANTIZR_TIMEOUT_MS = 60_000;
-/** The program reads 4 bytes a pixel and holds the indices and a histogram of the colours, which is at most about 20 bytes a pixel more. */
+/**
+ * The program holds the pixels (4 bytes a pixel), the indices and a histogram of the colours, which is largest for noise, where every pixel has
+ * its own: 36 megapixels of random pixels took 0.98 GB and 8.2 s on the Linux VM and 1.87 GB (52 bytes a pixel) and 9 s on the Mac (entry 253). The limit leaves room above both.
+ */
 const MEMORY_BASE_MB = 256;
-const MEMORY_PER_PIXEL_BYTES = 32;
+const MEMORY_PER_PIXEL_BYTES = 64;
 const BYTES_PER_MB = 1024 * 1024;
 const RGBA_CHANNELS = 4;
 const HEADER_BYTES = 8;
