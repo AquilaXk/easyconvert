@@ -24,12 +24,6 @@
       "note": "point of the curve above: judged with bd_rate_psnr because the sizes differ, so it follows that row",
       "recorded": 0.90566,
       "reference": 0.91896
-    },
-    {
-      "id": "image/jxl-bicycles.jxl->avif/throughput",
-      "issue": 641,
-      "ratio": 0.869,
-      "note": "speed ratio 0.869 on the arm64 Lima VM: ours adds the sandbox start and the intermediate PNG to the djxl and avifenc the reference runs"
     }
   ],
   "acceptedSlowdowns": []

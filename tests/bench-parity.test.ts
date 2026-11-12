@@ -411,16 +411,13 @@ describe('the known gaps', () => {
   // The families whose quality rows may be tracked as known gaps, with the issue that holds each: a new family or issue is a decision to take here.
   const QUALITY_GAP_ISSUE_BY_FAMILY: Readonly<Record<string, number>> = { image: 641, 'pdf-ops': 783 };
 
-  // Rows of the JPEG XL samples are new: the baseline takes them from a report of the CI runner (`--baseline-from-report`), and this line goes then.
-  const NOT_YET_BASELINED: readonly string[] = ['image/jxl-bicycles.jxl->avif/throughput'];
-
   it('ships a gap file whose every entry names an issue, and whose speed entries name a row the baseline records', () => {
     const shipped = validateGaps(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'parity-gaps.json'), 'utf8')));
     const baseline = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'baseline.json'), 'utf8')) as { entries: Record<string, unknown> };
     for (const gap of shipped.gaps) {
       expect(Number.isInteger(gap.issue) && gap.issue > 0, gap.id).toBe(true);
       // A quality row may be new and not baselined yet; the run refuses an entry whose row it did not produce (gap-row-missing).
-      if (gap.ratio !== null && !NOT_YET_BASELINED.includes(gap.id)) expect(gap.id in baseline.entries, gap.id).toBe(true);
+      if (gap.ratio !== null) expect(gap.id in baseline.entries, gap.id).toBe(true);
     }
   });
 
@@ -468,11 +465,12 @@ describe('the known gaps', () => {
     const issuesOf = (prefix: string, speedRows: boolean): number[] =>
       [...new Set(shipped.gaps.filter((g) => g.id.startsWith(prefix) && g.id.endsWith('/throughput') === speedRows).map((g) => g.issue))];
     // The AVIF curve of the CLIC photograph (641) reached parity in the nightly run of 2026-11-07, with both sides on the worker's encoder (#998).
-    // The JPEG XL rows (641): the 8-bit PNG writer's size, the JPEG encoder on a noisy picture, and the AVIF speed through the sandbox and an intermediate PNG (TODO.md).
+    // The JPEG XL rows (641): the JPEG encoder on a noisy picture (the 8-bit PNG writer's size is below the reference's now).
     expect(issuesOf('image/', false)).toEqual([641]);
     expect(shipped.gaps.filter((g) => g.id.startsWith('image/')).every((g) => g.id.startsWith('image/jxl-'))).toBe(true);
     // The AVIF speed rows of the screenshot, the line art and the deep dart reached parity in the nightly run of 2026-10-31, as the VP9 row of the clip and the scan to PDF row did.
-    expect(issuesOf('image/', true)).toEqual([641]);
+    // The AVIF speed row of the JPEG XL photograph followed them once the decoder's samples no longer went through a compressed PNG (entry 252).
+    expect(issuesOf('image/', true)).toEqual([]);
     // The HEVC encode row and the zstd encode row (497) reached parity on the CI runner with room to spare, so they are no longer known gaps.
     // The H.264 row of the clip and the Opus row of the music file reached parity in the nightly run of 2026-10-24, and the VP9 row of the clip in that of 2026-10-31.
     expect(issuesOf('audio/', true)).toEqual([]);
