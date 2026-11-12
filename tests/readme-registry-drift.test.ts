@@ -211,7 +211,7 @@ describe('Registry stats, CATEGORIES, and README drift guard (#467)', () => {
     const rewrittenKo = replaceRegistryStatsBlock(readmeKo, syntheticStats);
     expect(rewrittenKo).toContain('**15개 카테고리**, **999개 포맷**, **9,876개 변환 쌍**');
     expect(rewrittenKo).toContain('**15개 카테고리 999개 포맷 지원**');
-    expect(rewrittenKo).toContain('`9,876`개 변환 쌍을 지원합니다');
+    expect(rewrittenKo).toContain('`9,876`개 변환 쌍을 지원해요');
     expect(rewrittenKo).toContain('## 지원 포맷 매트릭스 (15개 카테고리)');
     expect(rewrittenKo).toContain('# 999개 표준 포맷 정의 및 옵션 스키마');
   });

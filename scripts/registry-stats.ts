@@ -94,8 +94,8 @@ function replaceHeadlineStats(markdown: string, stats: GeneratedRegistryStats): 
       `**${stats.categoryCount}개 카테고리 ${stats.formatCount}개 포맷 지원**`
     )
     .replace(
-      /`[\d,]+`개 변환 쌍을 지원합니다/g,
-      `\`${formattedPairs}\`개 변환 쌍을 지원합니다`
+      /`[\d,]+`개 변환 쌍을 지원해요/g,
+      `\`${formattedPairs}\`개 변환 쌍을 지원해요`
     )
     .replace(
       /## 지원 포맷 매트릭스 \(\d+개 카테고리\)/g,

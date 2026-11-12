@@ -41,6 +41,9 @@ vi.mock('../src/lib/security/process-sandbox', async (importOriginal) => {
   };
 });
 
+// The frames are observed on the direct run of the program: a run through the launcher helper would bypass the spy above.
+vi.stubEnv('SANDBOX_LAUNCHER', 'off');
+
 const BLOCK = 512;
 const GNU_LONG_NAME_BYTES = 505;
 /** One record of GNU tar and Python's tarfile: the output is padded with zeros to a multiple of this. */
