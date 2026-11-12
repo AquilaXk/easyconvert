@@ -5,13 +5,13 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-EasyConvert is an open-source file conversion service with a web app and an HTTP API. It converts **308 formats** in **13 categories** (**2,766** source-to-target pairs). Production runs at <https://convert.aquilaxk.site>.
+EasyConvert is an open-source file conversion service with a web app and an HTTP API. It converts files across **308 file formats** and **2,766 conversion pairs** in **13 categories**. Production runs at <https://convert.aquilaxk.site>.
 
 [Live service](https://convert.aquilaxk.site) · [API reference](https://convert.aquilaxk.site/api-docs) · [Configuration](docs/configuration.md) · [Security policy](SECURITY.md)
 
 ## Features
 
-- **Many formats, one API.** Images (including camera RAW), documents, archives, video, audio, subtitles, ebooks, spreadsheets, presentations, data files, vector graphics, fonts, and CAD and 3D.
+- **308 Formats Across 13 Categories** (`2,766` source-to-target pairs), one API. Images (including camera RAW), documents, archives, video, audio, subtitles, ebooks, spreadsheets, presentations, data files, vector graphics, fonts, and CAD and 3D.
 - **Sandboxed engines.** LibreOffice, FFmpeg, libvips, Poppler, Tesseract, 7-Zip, Calibre, and veraPDF run as external tools inside a per-job sandbox. Some formats use in-process TypeScript engines: HWP 5.0 (OLE2 CFBF), BZip2, TrueType/OpenType font tables, B-spline and Bézier path flattening, and Oklab and NeuQuant palette quantization.
 - **Searchable OCR.** Scanned input becomes a PDF with a searchable text layer.
 - **PDF/A output.** Every PDF/A result is validated with veraPDF against the requested level.
@@ -21,7 +21,7 @@ EasyConvert is an open-source file conversion service with a web app and an HTTP
 - **Scheduled deletion.** A result is deleted 10 minutes after its first complete download or 1 hour after conversion. An upload is deleted 10 minutes after the last job that reads it (policy decision 125).
 - **Localized UI and pair pages.** Pages such as `/pdf-to-docx`, `/png-to-webp`, and `/mp4-to-mp3`, and API reference pages generated from the OpenAPI 3.1 document.
 
-## Supported formats
+## Supported Format Matrix (13 Categories)
 
 EasyConvert reads and writes the formats below. The `GET /api/formats` endpoint lists them with the pairs each one supports.
 
@@ -81,7 +81,7 @@ See also [docs/client-ip-trust.md](docs/client-ip-trust.md).
 
 ## API
 
-The written reference is served at `/api-docs` (topic pages `quickstart`, `convert`, `jobs`, `uploads`, `downloads`, `formats`, `ocr-languages`, `archives`, `usage`). The OpenAPI 3.1 document is at `GET /api/v1/openapi.json` (alias `GET /api/openapi.json`). TypeScript and Python clients are in [sdk/](sdk).
+The written reference is served at `/api-docs`, starting at [`/api-docs/quickstart`](https://convert.aquilaxk.site/api-docs/quickstart) (topic pages `quickstart`, `convert`, `jobs`, `uploads`, `downloads`, `formats`, `ocr-languages`, `archives`, `usage`). The OpenAPI 3.1 document is at `GET /api/v1/openapi.json` (alias `GET /api/openapi.json`). TypeScript and Python clients are in [sdk/](sdk).
 
 Convert a file synchronously:
 
@@ -145,7 +145,7 @@ easyconvert/
 │   │   ├── conversions/     # Conversion engines and dispatchers
 │   │   ├── queue/           # Redis queue (bullmq-engine.ts, conversion-queue.ts)
 │   │   ├── storage/         # Local, S3, and OCI storage backends
-│   │   ├── registry.ts      # Canonical format definitions and options
+│   │   ├── registry.ts      # 308 canonical format definitions & options
 │   │   └── slug-parser.ts   # [source]-to-[target] route parser
 │   └── worker/              # Queue worker entry point
 ├── sdk/                     # TypeScript and Python clients
