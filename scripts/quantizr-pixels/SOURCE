@@ -18,4 +18,7 @@ Followed, not copied:
 
 The library is not copied: quantizr comes from crates.io at the version and checksum of Cargo.lock, and the program has no other dependency.
 The program is built by scripts/install-quantizr-pixels.sh with the pinned Rust toolchain, for the musl target.
+Additions of ours: [profile.release] panic = "abort", lto = "thin" and codegen-units = 1 in Cargo.toml (3 to 4 percent of the run on a 768 x 512
+picture, linux/arm64; the palette and the indices are the same bytes).
+
 Cargo.lock                         ours: written by cargo for the one crate; the checksum is crates.io's.

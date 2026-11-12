@@ -15,3 +15,10 @@ path = "src/main.rs"
 
 [dependencies]
 quantizr = "=1.4.3"
+
+# Ours, not upstream's: a panic ends the program with an abort and no unwinding, and thin link-time optimisation with one code generation
+# unit lets the compiler inline quantizr, which is a separate crate, into the remap loop. The palette and the indices are the same bytes.
+[profile.release]
+panic = "abort"
+lto = "thin"
+codegen-units = 1
