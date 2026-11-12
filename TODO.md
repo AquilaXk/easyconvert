@@ -18,6 +18,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 ## Product and API
 
 ## Operations and security
+- Bound the `{q}:dlq:unparsed` set of entry 257: a file name with a lone surrogate puts a letter there, and every erasure and every `remove(id)` reads and parses the whole set (age trimming is the only bound today); cap it, or keep its members by job and user as the other index sets do.
 - Run `node dist/backfill-dlq-index.js` (dry run, then `--apply`) on the host after the deploy that carries entry 257 has replaced every worker, with QA's approval; until then removal of a job's dead letters reads the whole list as before (docs/deploy-oci.md, "Indexing the dead letters").
 - Removing a dead letter is an `LREM`, which scans the list in Redis: 1,000 jobs over 50,000 letters take 2.3 s (entry 257). Keep the letters in a hash by id, with a sorted set for the order, when the list passes about 50,000, and extend the backfill script to move the old list.
 - Cache the public HTML pages at the Cloudflare edge (a cache rule for the page routes; `cf-cache-status` is `DYNAMIC` on `/ko` today although the page sends `s-maxage`): QA sets it in the dashboard later, or puts a scoped API token in `.env`. Leave `/dashboard`, `/*/dashboard` and `/api/` out of the rule and never override the origin's `private, no-store` with an edge TTL (entry 210).
