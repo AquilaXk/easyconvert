@@ -3,6 +3,7 @@ import type { HwpDocument } from './hwp';
 import { MAX_RENDER_PIXELS } from './image-limits';
 import { loadFontCoverageIndex, toDrawableText } from './pdf-fonts';
 import { TextMeter, wrapText, type PlacedRun } from './text-wrap';
+import { escapeMarkupAttribute } from '../text/escape';
 
 /**
  * SVG page for an HWP document: every paragraph and every table row, wrapped to the page width by the advance
@@ -29,10 +30,6 @@ const SVG_NUMBER_DECIMALS = 2;
 const ASCENT_RATIO = 0.9;
 const TABLE_BORDER_WIDTH = 0.5;
 
-function escapeText(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 function round(value: number): number {
   return Number(value.toFixed(SVG_NUMBER_DECIMALS));
 }
@@ -41,8 +38,8 @@ function round(value: number): number {
 function lineMarkup(runs: readonly PlacedRun[], x: number, y: number): string {
   const body = runs
     .map((run) => {
-      const family = run.face.font.familyName ? `'${escapeText(run.face.font.familyName).replace(/'/g, '&apos;')}', ${FALLBACK_FAMILY}` : FALLBACK_FAMILY;
-      return `<tspan font-family="${family}">${escapeText(run.text)}</tspan>`;
+      const family = run.face.font.familyName ? `'${escapeMarkupAttribute(run.face.font.familyName).replace(/'/g, '&apos;')}', ${FALLBACK_FAMILY}` : FALLBACK_FAMILY;
+      return `<tspan font-family="${family}">${escapeMarkupAttribute(run.text)}</tspan>`;
     })
     .join('');
   return `<tspan class="line" x="${round(x)}" y="${round(y)}">${body}</tspan>`;

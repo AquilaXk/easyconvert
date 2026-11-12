@@ -7,7 +7,7 @@ import { htmlToDocumentModel } from '../html-model';
 import { plainTextModel } from '../document-model/plain';
 import { documentToEpub } from '../document-model/epub';
 import { documentToDocx } from '../document-model/docx';
-import { escapeXml } from './markup-escape';
+import { escapeXmlQuoted } from '../../text/escape';
 
 /**
  * Generates authentic HWP 5.0 CFBF compound document from text and markdown tables
@@ -128,7 +128,7 @@ export async function generateDocxFromText(
         // Header Row
         tblXml += `<w:tr>`;
         headerCells.forEach((cell) => {
-          tblXml += `<w:tc><w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="F0F2FE"/></w:tcPr><w:p><w:r><w:rPr><w:b/><w:color w:val="1F2340"/></w:rPr><w:t>${escapeXml(
+          tblXml += `<w:tc><w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="F0F2FE"/></w:tcPr><w:p><w:r><w:rPr><w:b/><w:color w:val="1F2340"/></w:rPr><w:t>${escapeXmlQuoted(
             cell
           )}</w:t></w:r></w:p></w:tc>`;
         });
@@ -138,7 +138,7 @@ export async function generateDocxFromText(
         dataRows.forEach((row) => {
           tblXml += `<w:tr>`;
           row.forEach((cell) => {
-            tblXml += `<w:tc><w:p><w:r><w:rPr><w:color w:val="4D536B"/></w:rPr><w:t>${escapeXml(
+            tblXml += `<w:tc><w:p><w:r><w:rPr><w:color w:val="4D536B"/></w:rPr><w:t>${escapeXmlQuoted(
               cell
             )}</w:t></w:r></w:p></w:tc>`;
           });
@@ -154,13 +154,13 @@ export async function generateDocxFromText(
     // Heading 1 (# ...)
     if (trimmed.startsWith('# ')) {
       elementsXml.push(
-        `<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="32"/><w:color w:val="5C6BC0"/></w:rPr><w:t>${escapeXml(
+        `<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="32"/><w:color w:val="5C6BC0"/></w:rPr><w:t>${escapeXmlQuoted(
           trimmed.substring(2)
         )}</w:t></w:r></w:p>`
       );
     } else if (trimmed.startsWith('## ')) {
       elementsXml.push(
-        `<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="26"/><w:color w:val="5C6BC0"/></w:rPr><w:t>${escapeXml(
+        `<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="26"/><w:color w:val="5C6BC0"/></w:rPr><w:t>${escapeXmlQuoted(
           trimmed.substring(3)
         )}</w:t></w:r></w:p>`
       );
@@ -172,7 +172,7 @@ export async function generateDocxFromText(
       elementsXml.push(
         `<w:p><w:r><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>${
           hasBold ? '<w:b/>' : ''
-        }${hasItalic ? '<w:i/>' : ''}<w:color w:val="1F2340"/></w:rPr><w:t>${escapeXml(
+        }${hasItalic ? '<w:i/>' : ''}<w:color w:val="1F2340"/></w:rPr><w:t>${escapeXmlQuoted(
           clean
         )}</w:t></w:r></w:p>`
       );
@@ -189,7 +189,7 @@ export async function generateDocxFromText(
   <w:body>
     <w:p>
       <w:pPr><w:pStyle w:val="Heading1"/></w:pPr>
-      <w:r><w:rPr><w:b/><w:sz w:val="36"/><w:color w:val="5C6BC0"/></w:rPr><w:t>${escapeXml(
+      <w:r><w:rPr><w:b/><w:sz w:val="36"/><w:color w:val="5C6BC0"/></w:rPr><w:t>${escapeXmlQuoted(
         title
       )}</w:t></w:r>
     </w:p>
@@ -302,7 +302,7 @@ export async function generatePptxFromText(
             <a:rPr lang="en-US" sz="1800">
               <a:solidFill><a:srgbClr val="4D536B"/></a:solidFill>
             </a:rPr>
-            <a:t>${escapeXml(b)}</a:t>
+            <a:t>${escapeXmlQuoted(b)}</a:t>
           </a:r>
         </a:p>`;
     });
@@ -335,7 +335,7 @@ export async function generatePptxFromText(
               <a:rPr lang="en-US" sz="3200" b="1">
                 <a:solidFill><a:srgbClr val="5C6BC0"/></a:solidFill>
               </a:rPr>
-              <a:t>${escapeXml(slide.title)}</a:t>
+              <a:t>${escapeXmlQuoted(slide.title)}</a:t>
             </a:r>
           </a:p>
         </p:txBody>
@@ -457,14 +457,14 @@ export function generateFb2FromText(
 
   if (sections.length === 0) throw new ConversionFailedError('There is no text to write as an FB2 book.');
 
-  let bodyXml = `    <title><p>${escapeXml(title)}</p></title>\n`;
+  let bodyXml = `    <title><p>${escapeXmlQuoted(title)}</p></title>\n`;
   for (const sec of sections) {
     bodyXml += `    <section>\n`;
     if (sec.title) {
-      bodyXml += `      <title><p>${escapeXml(sec.title)}</p></title>\n`;
+      bodyXml += `      <title><p>${escapeXmlQuoted(sec.title)}</p></title>\n`;
     }
     for (const p of sec.paragraphs) {
-      bodyXml += `      <p>${escapeXml(p)}</p>\n`;
+      bodyXml += `      <p>${escapeXmlQuoted(p)}</p>\n`;
     }
     if (sec.table && sec.table.length > 0) {
       bodyXml += `      <table>\n`;
@@ -472,7 +472,7 @@ export function generateFb2FromText(
         bodyXml += `        <tr>\n`;
         const tag = rIdx === 0 ? 'th' : 'td';
         row.forEach((cell) => {
-          bodyXml += `          <${tag}>${escapeXml(cell)}</${tag}>\n`;
+          bodyXml += `          <${tag}>${escapeXmlQuoted(cell)}</${tag}>\n`;
         });
         bodyXml += `        </tr>\n`;
       });
@@ -491,7 +491,7 @@ export function generateFb2FromText(
         <first-name>EasyConvert</first-name>
         <last-name>Author</last-name>
       </author>
-      <book-title>${escapeXml(title)}</book-title>
+      <book-title>${escapeXmlQuoted(title)}</book-title>
       <date>${dateStr}</date>
       <lang>en</lang>
     </title-info>

@@ -569,7 +569,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3448
+    "maxValue": 3445
   },
   {
     "file": "src/lib/conversions/hwp-reader.ts",

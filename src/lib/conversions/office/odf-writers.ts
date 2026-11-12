@@ -1,7 +1,7 @@
 import { assertSheetsWithinGrid } from '../table-grid';
 import JSZip from 'jszip';
 import { type OfficeWorksheet } from './types';
-import { escapeXml } from './markup-escape';
+import { escapeXmlQuoted } from '../../text/escape';
 
 /**
  * Generates OpenDocument Spreadsheet (ODS) Archive
@@ -28,12 +28,12 @@ export async function generateOdsFromData(data: string[][] | OfficeWorksheet[], 
     sheet.rows.forEach((row) => {
       rowsXml += '<table:table-row>';
       row.forEach((cell) => {
-        rowsXml += `<table:table-cell office:value-type="string"><text:p>${escapeXml(cell)}</text:p></table:table-cell>`;
+        rowsXml += `<table:table-cell office:value-type="string"><text:p>${escapeXmlQuoted(cell)}</text:p></table:table-cell>`;
       });
       rowsXml += '</table:table-row>';
     });
     tablesXml += `
-      <table:table table:name="${escapeXml(sheet.name || baseName)}">
+      <table:table table:name="${escapeXmlQuoted(sheet.name || baseName)}">
         ${rowsXml}
       </table:table>`;
   });
@@ -79,7 +79,7 @@ export async function generateOdpFromSlides(
     pagesXml += `<draw:page draw:name="page${idx + 1}">
       <draw:frame draw:layer="layout" svg:width="25cm" svg:height="15cm" svg:x="1cm" svg:y="1cm">
         <draw:text-box>
-          ${s.texts.map((t) => `<text:p>${escapeXml(t)}</text:p>`).join('\n          ')}
+          ${s.texts.map((t) => `<text:p>${escapeXmlQuoted(t)}</text:p>`).join('\n          ')}
         </draw:text-box>
       </draw:frame>
     </draw:page>`;
@@ -123,7 +123,7 @@ export async function generateOdtFromText(text: string, title: string): Promise<
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean)
-    .map((l) => `<text:p>${escapeXml(l)}</text:p>`)
+    .map((l) => `<text:p>${escapeXmlQuoted(l)}</text:p>`)
     .join('\n');
 
   zip.file(
@@ -134,7 +134,7 @@ export async function generateOdtFromText(text: string, title: string): Promise<
   office:version="1.2">
   <office:body>
     <office:text>
-      <text:h text:outline-level="1">${escapeXml(title)}</text:h>
+      <text:h text:outline-level="1">${escapeXmlQuoted(title)}</text:h>
       ${paragraphs}
     </office:text>
   </office:body>

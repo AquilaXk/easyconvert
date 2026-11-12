@@ -5,7 +5,7 @@ import { safeExtractFirstXmlElement, safeFindColor } from './xml-helpers';
 import { parseOpenXmlChart } from './chart-parse';
 import { adjustHexBrightness, renderChartToSvg } from './chart-svg';
 import { parseDrawingMlGuides } from './drawingml-formulas';
-import { escapeHtml } from './markup-escape';
+import { escapeMarkupAttribute } from '../../text/escape';
 
 /**
  * OpenXML DrawingML Vector Shape Parser & SVG Renderer
@@ -502,7 +502,7 @@ export function renderSingleShapeSvg(s: DrawingMlShape): string {
       s.fillColor === '#5C6BC0' || s.fillColor === '#1F2340' ? '#FFFFFF' : '#1F2340';
     elementStr += `\n  <text x="${cx}" y="${
       cy + 4
-    }" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="12" font-weight="500" fill="${textFill}">${escapeHtml(
+    }" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="12" font-weight="500" fill="${textFill}">${escapeMarkupAttribute(
       s.text
     )}</text>`;
   }

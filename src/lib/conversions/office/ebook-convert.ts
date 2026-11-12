@@ -12,7 +12,7 @@ import { readEpubText } from './text-extraction';
 import { writeEbookTargetFromText } from './convert-generic';
 import { convertModelTarget } from './convert-docx';
 import { safeExtractAllText, safeExtractFirstXmlElement } from './xml-helpers';
-import { escapeHtml } from './markup-escape';
+import { escapeMarkupAttribute } from '../../text/escape';
 import { generateDocxFromExtractedText, generateEpubFromText } from './office-from-text';
 import { configurePdfKitFontFallback, renderSafePdfText } from './pdf-text';
 
@@ -133,15 +133,15 @@ export async function convertFb2Source(
   }
 
   if (tgt === 'html') {
-    let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(bookTitle)}</title>`;
+    let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeMarkupAttribute(bookTitle)}</title>`;
     html += `<style>body{font-family:system-ui,-apple-system,sans-serif;line-height:1.7;max-width:800px;margin:2rem auto;padding:0 1.5rem;color:#1F2340;}h1{color:#5C6BC0;}table{border-collapse:collapse;width:100%;margin:1.5rem 0;}th,td{border:1px solid #CCD2FC;padding:8px 12px;text-align:left;}th{background:#F0F2FE;}</style></head><body>`;
-    html += `<h1>${escapeHtml(bookTitle)}</h1>`;
-    if (authorStr) html += `<p><em>${escapeHtml(authorStr)}</em></p>`;
-    html += paragraphs.map((p) => `<p>${escapeHtml(p)}</p>`).join('\n');
+    html += `<h1>${escapeMarkupAttribute(bookTitle)}</h1>`;
+    if (authorStr) html += `<p><em>${escapeMarkupAttribute(authorStr)}</em></p>`;
+    html += paragraphs.map((p) => `<p>${escapeMarkupAttribute(p)}</p>`).join('\n');
     for (const t of tables) {
       html += '<table>';
       t.forEach((row, rIdx) => {
-        html += '<tr>' + row.map((c) => `<${rIdx === 0 ? 'th' : 'td'}>${escapeHtml(c)}</${rIdx === 0 ? 'th' : 'td'}>`).join('') + '</tr>';
+        html += '<tr>' + row.map((c) => `<${rIdx === 0 ? 'th' : 'td'}>${escapeMarkupAttribute(c)}</${rIdx === 0 ? 'th' : 'td'}>`).join('') + '</tr>';
       });
       html += '</table>';
     }

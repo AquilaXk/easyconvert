@@ -10,7 +10,7 @@ import { type OfficeWorksheet } from './types';
 import { renderPdfChart } from './pdf-chart';
 import { parseAllXlsxWorksheets } from './xlsx-parse';
 import { formatCsvCell, sanitizeSheetName, sliceWorksheetToRange } from './spreadsheet-ranges';
-import { escapeHtml, escapeXml } from './markup-escape';
+import { escapeMarkupAttribute, escapeXmlQuoted } from '../../text/escape';
 import { generateOdsFromData } from './odf-writers';
 import { extractRowsForOffice } from './sheet-extract';
 
@@ -121,20 +121,20 @@ export async function convertXlsxSource(
         tableHtml += '<tr>\n';
         r.forEach((c) => {
           if (idx === 0) {
-            tableHtml += `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeHtml(
+            tableHtml += `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeMarkupAttribute(
               c
             )}</th>\n`;
           } else {
-            tableHtml += `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeHtml(c)}</td>\n`;
+            tableHtml += `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeMarkupAttribute(c)}</td>\n`;
           }
         });
         tableHtml += '</tr>\n';
       });
       tableHtml += '</table>';
-      const bodyHtml = `<h3>${escapeHtml(selectedSheet.name)}</h3>${tableHtml}`;
-      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeXml(
+      const bodyHtml = `<h3>${escapeMarkupAttribute(selectedSheet.name)}</h3>${tableHtml}`;
+      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeXmlQuoted(
         baseName
-      )}</title><style>body{font-family:system-ui,sans-serif;padding:2rem;color:#1F2340;}</style></head><body><h2>${escapeXml(
+      )}</title><style>body{font-family:system-ui,sans-serif;padding:2rem;color:#1F2340;}</style></head><body><h2>${escapeXmlQuoted(
         baseName
       )}</h2>${bodyHtml}</body></html>`;
       const buffer = Buffer.from(html, 'utf-8');
@@ -252,9 +252,9 @@ export async function convertXlsxSource(
 
   // XLSX -> XML
   if (tgt === 'xml') {
-    let xml = `<?xml version="1.0" encoding="UTF-8"?>\n<workbook name="${escapeXml(baseName)}">\n`;
+    let xml = `<?xml version="1.0" encoding="UTF-8"?>\n<workbook name="${escapeXmlQuoted(baseName)}">\n`;
     allSheets.forEach((s) => {
-      xml += `  <worksheet name="${escapeXml(s.name)}">\n    <rows>\n`;
+      xml += `  <worksheet name="${escapeXmlQuoted(s.name)}">\n    <rows>\n`;
       if (s.rows.length > 0) {
         const headers = s.rows[0].map((h, i) =>
           h ? h.replace(/[^a-zA-Z0-9_]/g, '_') : `column_${i + 1}`
@@ -263,7 +263,7 @@ export async function convertXlsxSource(
           xml += `      <row id="${rIdx + 1}">\n`;
           row.forEach((cell, cIdx) => {
             const colName = headers[cIdx] || `col_${cIdx + 1}`;
-            xml += `        <${colName}>${escapeXml(cell)}</${colName}>\n`;
+            xml += `        <${colName}>${escapeXmlQuoted(cell)}</${colName}>\n`;
           });
           xml += `      </row>\n`;
         });
@@ -285,22 +285,22 @@ export async function convertXlsxSource(
         tableHtml += '<tr>\n';
         r.forEach((c) => {
           if (idx === 0) {
-            tableHtml += `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeHtml(
+            tableHtml += `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeMarkupAttribute(
               c
             )}</th>\n`;
           } else {
-            tableHtml += `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeHtml(c)}</td>\n`;
+            tableHtml += `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeMarkupAttribute(c)}</td>\n`;
           }
         });
         tableHtml += '</tr>\n';
       });
       tableHtml += '</table>';
-      bodyHtml += `<h3>${escapeHtml(s.name)}</h3>${tableHtml}`;
+      bodyHtml += `<h3>${escapeMarkupAttribute(s.name)}</h3>${tableHtml}`;
     });
 
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeXml(
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeXmlQuoted(
       baseName
-    )}</title><style>body{font-family:system-ui,sans-serif;padding:2rem;color:#1F2340;}</style></head><body><h2>${escapeXml(
+    )}</title><style>body{font-family:system-ui,sans-serif;padding:2rem;color:#1F2340;}</style></head><body><h2>${escapeXmlQuoted(
       baseName
     )}</h2>${bodyHtml}</body></html>`;
     const buffer = Buffer.from(html, 'utf-8');

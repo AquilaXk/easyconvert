@@ -1,5 +1,5 @@
 import { type OpenXmlChartData } from './types';
-import { escapeHtml } from './markup-escape';
+import { escapeMarkupAttribute } from '../../text/escape';
 
 export const CHART_PALETTE = [
   '#5C6BC0',
@@ -50,7 +50,7 @@ export function renderChartToSvg(
 
   // Title
   if (chart.title) {
-    elements += `<text x="${w / 2}" y="24" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="14" font-weight="600" fill="#1F2340">${escapeHtml(
+    elements += `<text x="${w / 2}" y="24" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="14" font-weight="600" fill="#1F2340">${escapeMarkupAttribute(
       chart.title
     )}</text>\n`;
   }
@@ -91,7 +91,7 @@ export function renderChartToSvg(
       });
       elements += `<text x="${plotLeft + cIdx * catWidth + catWidth / 2}" y="${
         plotBottom + 16
-      }" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="10" fill="#4D536B">${escapeHtml(
+      }" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="10" fill="#4D536B">${escapeMarkupAttribute(
         cat
       )}</text>\n`;
     });
@@ -118,7 +118,7 @@ export function renderChartToSvg(
     chart.categories.forEach((cat, cIdx) => {
       elements += `<text x="${plotLeft + cIdx * catStep}" y="${
         plotBottom + 16
-      }" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="10" fill="#4D536B">${escapeHtml(
+      }" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="10" fill="#4D536B">${escapeMarkupAttribute(
         cat
       )}</text>\n`;
     });
@@ -188,7 +188,7 @@ export function renderChartToSvg(
     chart.categories.forEach((cat, cIdx) => {
       elements += `<text x="${plotLeft + cIdx * catStep}" y="${
         plotBottom + 16
-      }" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="10" fill="#4D536B">${escapeHtml(
+      }" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="10" fill="#4D536B">${escapeMarkupAttribute(
         cat
       )}</text>\n`;
     });
@@ -201,7 +201,7 @@ export function renderChartToSvg(
     chart.series.forEach((s, sIdx) => {
       const color = CHART_PALETTE[sIdx % CHART_PALETTE.length];
       elements += `<rect x="${lx}" y="${ly - 7}" width="8" height="8" rx="2" fill="${color}"/>\n`;
-      elements += `<text x="${lx + 12}" y="${ly}" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="9" fill="#4D536B">${escapeHtml(
+      elements += `<text x="${lx + 12}" y="${ly}" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="9" fill="#4D536B">${escapeMarkupAttribute(
         s.name
       )}</text>\n`;
       lx += s.name.length * 6 + 28;

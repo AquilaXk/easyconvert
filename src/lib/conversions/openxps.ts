@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import zlib from 'node:zlib';
 import JSZip from 'jszip';
 import { ConversionFailedError, PayloadLimitError } from '../types';
+import { escapeXmlQuoted } from '../text/escape';
 import { loadFontCoverageIndex, toDrawableText, type PdfFontFace } from './pdf-fonts';
 import { TextMeter } from './text-wrap';
 import {
@@ -40,12 +41,7 @@ export interface XpsPageInput {
 }
 
 function escapeXml(unsafe: string): string {
-  return String(unsafe ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
+  return escapeXmlQuoted(String(unsafe ?? ''));
 }
 
 const XPS_UNITS_PER_INCH = 96;

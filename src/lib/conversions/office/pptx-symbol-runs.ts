@@ -2,6 +2,7 @@ import { safeDecodeXmlEntities, safeExtractXmlElements, type SafeXmlElement } fr
 import { SYMBOL_FONT_FIRST_CODE, SYMBOL_FONT_LAST_CODE, SYMBOL_FONT_PRIVATE_USE_BASE } from '../symbol-font-map';
 import { reportConversionWarning } from '../conversion-warnings';
 import { SymbolReplacements } from './symbol-replacements';
+import { escapeMarkupText } from '../../text/escape';
 
 /**
  * Symbol-font characters in the runs of a PresentationML slide. PowerPoint stores a character of Symbol, Wingdings and the
@@ -25,10 +26,6 @@ const END_RUN_TAG = '</a:r>';
 const SYMBOL_CHARACTER_OR_REFERENCE = /[-]|&#[xX]([0-9a-fA-F]+);|&#(\d+);/g;
 /** A slide that holds none of the three spellings needs no scan of its runs. */
 const HAS_SYMBOL_CANDIDATE = /[-]|&#[xX]0*[fF]0[0-9a-fA-F]{2};|&#0*61[4-6]\d\d;/;
-
-function escapeText(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
 
 function firstElement(xml: string, tag: string): SafeXmlElement | undefined {
   return safeExtractXmlElements(xml, tag, { maxElements: 1 })[0];
@@ -55,7 +52,7 @@ function codeOf(match: string, hex: string | undefined, decimal: string | undefi
 function rewriteTextContent(content: string, font: string | undefined, symbols: SymbolReplacements): string {
   return content.replace(SYMBOL_CHARACTER_OR_REFERENCE, (match, hex: string | undefined, decimal: string | undefined) => {
     const code = codeOf(match, hex, decimal);
-    return code >= FIRST_SYMBOL_CODE && code <= LAST_SYMBOL_CODE ? escapeText(symbols.character(font, code)) : match;
+    return code >= FIRST_SYMBOL_CODE && code <= LAST_SYMBOL_CODE ? escapeMarkupText(symbols.character(font, code)) : match;
   });
 }
 

@@ -2,7 +2,7 @@ import sharp, { type Sharp } from 'sharp';
 import { AVIF_EFFORT, AVIF_TUNE, encodeBmp, encodePostscript } from '../image';
 import { buildTiffOptions } from '../image-tiff-options';
 import { checkedRasterCanvas } from '../image-input-limits';
-import { escapeXml } from './markup-escape';
+import { escapeXmlQuoted } from '../../text/escape';
 
 async function rasterizePipeline(
   pipeline: Sharp,
@@ -61,7 +61,7 @@ export async function renderTableToRaster(
 
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
     <rect width="${width}" height="${height}" fill="#ffffff" />
-    <text x="20" y="32" font-family="sans-serif" font-size="16" font-weight="bold" fill="#1e293b">${escapeXml(baseName)}</text>
+    <text x="20" y="32" font-family="sans-serif" font-size="16" font-weight="bold" fill="#1e293b">${escapeXmlQuoted(baseName)}</text>
   `;
 
   rows.forEach((row, rIdx) => {
@@ -72,7 +72,7 @@ export async function renderTableToRaster(
     row.forEach((cell, cIdx) => {
       const x = 25 + cIdx * colWidth;
       const fontWeight = isHeader ? 'bold' : 'normal';
-      svg += `<text x="${x}" y="${y + 18}" font-family="sans-serif" font-size="12" font-weight="${fontWeight}" fill="#334155">${escapeXml(cell)}</text>`;
+      svg += `<text x="${x}" y="${y + 18}" font-family="sans-serif" font-size="12" font-weight="${fontWeight}" fill="#334155">${escapeXmlQuoted(cell)}</text>`;
     });
   });
 
@@ -92,12 +92,12 @@ export async function renderTextToRaster(
 
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
     <rect width="${width}" height="${height}" fill="#ffffff" />
-    <text x="30" y="36" font-family="sans-serif" font-size="18" font-weight="bold" fill="#0f172a">${escapeXml(baseName)}</text>
+    <text x="30" y="36" font-family="sans-serif" font-size="18" font-weight="bold" fill="#0f172a">${escapeXmlQuoted(baseName)}</text>
   `;
 
   lines.forEach((line, idx) => {
     const y = 68 + idx * 24;
-    svg += `<text x="30" y="${y}" font-family="sans-serif" font-size="13" fill="#334155">${escapeXml(line)}</text>`;
+    svg += `<text x="30" y="${y}" font-family="sans-serif" font-size="13" fill="#334155">${escapeXmlQuoted(line)}</text>`;
   });
 
   svg += `</svg>`;

@@ -10,7 +10,7 @@ import { htmlToText } from './html-text';
 import { readPmlText } from './pml-reader';
 import { extractRowsForOffice } from './sheet-extract';
 import { generateOdsFromData, generateOdtFromText } from './odf-writers';
-import { escapeHtml } from './markup-escape';
+import { escapeMarkupAttribute } from '../../text/escape';
 import { renderTableToRaster, renderTextToRaster } from './raster';
 import { generatePdfFromDocx } from './docx-pdf';
 import { generateDocxFromExtractedText, generateEpubFromText } from './office-from-text';
@@ -47,8 +47,8 @@ export async function convertEtSource(
   }
 
   if (tgt === 'html') {
-    const tableRows = rows.map((r) => `<tr>${r.map((c) => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`).join('\n');
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(baseName)}</title><style>table { border-collapse: collapse; width: 100%; } td { border: 1px solid #ddd; padding: 8px; font-family: sans-serif; }</style></head><body><table>${tableRows}</table></body></html>`;
+    const tableRows = rows.map((r) => `<tr>${r.map((c) => `<td>${escapeMarkupAttribute(c)}</td>`).join('')}</tr>`).join('\n');
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeMarkupAttribute(baseName)}</title><style>table { border-collapse: collapse; width: 100%; } td { border: 1px solid #ddd; padding: 8px; font-family: sans-serif; }</style></head><body><table>${tableRows}</table></body></html>`;
     const buffer = Buffer.from(html, 'utf-8');
     return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
   }
@@ -84,7 +84,7 @@ export async function convertGenericDocumentSource(
     return { buffer, mimeType: 'application/vnd.oasis.opendocument.text', filename: `${baseName}.odt`, size: buffer.length };
   }
   if (tgt === 'html') {
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(baseName)}</title></head><body><pre>${escapeHtml(text)}</pre></body></html>`;
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeMarkupAttribute(baseName)}</title></head><body><pre>${escapeMarkupAttribute(text)}</pre></body></html>`;
     const buffer = Buffer.from(html, 'utf-8');
     return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
   }

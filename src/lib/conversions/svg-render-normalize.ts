@@ -1,5 +1,6 @@
 import { ABSOLUTE_LENGTH_UNITS } from './svg-length';
 import { CHAR_SLASH, XML_NAME_PATTERN, endOfTag, skipNonElementMarkup } from './svg-xml';
+import { escapeMarkupAttribute } from '../text/escape';
 
 // ============================================================================
 // SVG rendering normalization (96-dpi physical units & child clip-path union)
@@ -138,10 +139,6 @@ const ATTR_CLIP_RULE_PATTERN = /\bclip-rule\s*=\s*(?:"([^"]+)"|'([^']+)')/i;
 const SAFE_XML_ID_PATTERN = /^[A-Za-z_][\w.:-]*$/;
 const MASK_OVERRIDE_STYLE_PROP_PATTERN = /^(?:fill|fill-opacity|opacity|stroke|fill-rule|clip-rule)\s*:/i;
 
-function escapeMaskAttr(val: string): string {
-  return val.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
 function rewriteClipChildTagToWhiteMaskShape(tagText: string): string {
   const clipRuleMatch = ATTR_CLIP_RULE_PATTERN.exec(tagText);
   let fillRule =
@@ -236,7 +233,7 @@ function lowerChildClipPathsToMasks(svg: string): string {
     const clipUnits = rawUnits === 'objectBoundingBox' ? 'objectBoundingBox' : 'userSpaceOnUse';
     const transformMatch = ATTR_TRANSFORM_PATTERN.exec(block.openAttrs);
     const transformVal = transformMatch?.[1] ?? transformMatch?.[2];
-    const transformAttr = transformVal ? ` transform="${escapeMaskAttr(transformVal)}"` : '';
+    const transformAttr = transformVal ? ` transform="${escapeMarkupAttribute(transformVal)}"` : '';
     const rewrittenInner = block.inner.replace(
       /<(path|rect|circle|ellipse|polygon|polyline|line|text|use)\b[^>]*>/gi,
       (childTag) => rewriteClipChildTagToWhiteMaskShape(childTag)

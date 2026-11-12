@@ -9,7 +9,7 @@ import { type OfficeWorksheet } from './types';
 import { generatePdfFromWorksheets } from './xlsx-convert';
 import { generateOdsFromData } from './odf-writers';
 import { generatePdfFromDocx } from './docx-pdf';
-import { escapeHtml } from './markup-escape';
+import { escapeMarkupAttribute } from '../../text/escape';
 
 /**
  * Excel XLS Parser & Converter
@@ -128,15 +128,15 @@ export async function convertXlsSource(
       r.forEach((c) => {
         tableHtml +=
           idx === 0
-            ? `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeHtml(c)}</th>\n`
-            : `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeHtml(c)}</td>\n`;
+            ? `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeMarkupAttribute(c)}</th>\n`
+            : `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeMarkupAttribute(c)}</td>\n`;
       });
       tableHtml += '</tr>\n';
     });
     tableHtml += '</table>';
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeMarkupAttribute(
       baseName
-    )}</title><style>body{font-family:system-ui,sans-serif;padding:2rem;color:#1F2340;}</style></head><body><h2>${escapeHtml(
+    )}</title><style>body{font-family:system-ui,sans-serif;padding:2rem;color:#1F2340;}</style></head><body><h2>${escapeMarkupAttribute(
       baseName
     )}</h2>${tableHtml}</body></html>`;
     const buffer = Buffer.from(html, 'utf-8');

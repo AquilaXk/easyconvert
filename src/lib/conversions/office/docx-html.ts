@@ -1,5 +1,5 @@
 import { type DocxBlockElement, type DocxParagraph, type DocxTable } from './types';
-import { escapeHtml } from './markup-escape';
+import { escapeMarkupAttribute } from '../../text/escape';
 
 export function generateHtmlFromDocx(
   paragraphs: DocxParagraph[],
@@ -12,7 +12,7 @@ export function generateHtmlFromDocx(
   const renderParagraph = (p: DocxParagraph): string => {
     let pContent = '';
     for (const r of (p.runs || [])) {
-      let t = escapeHtml(r.text);
+      let t = escapeMarkupAttribute(r.text);
       if (r.isBold) t = `<strong>${t}</strong>`;
       if (r.isItalic) t = `<em>${t}</em>`;
       if (r.isUnderline) t = `<u>${t}</u>`;
@@ -20,7 +20,7 @@ export function generateHtmlFromDocx(
       if (r.color) t = `<span style="color:#${r.color}">${t}</span>`;
       pContent += t;
     }
-    if (!pContent) pContent = escapeHtml(p.text);
+    if (!pContent) pContent = escapeMarkupAttribute(p.text);
 
     if (p.isHeading) {
       const hTag = `h${p.headingLevel || 2}`;
@@ -75,7 +75,7 @@ export function generateHtmlFromDocx(
           }
           const colSpanAttr = cell.colSpan && cell.colSpan > 1 ? ` colspan="${cell.colSpan}"` : '';
           const rowSpanAttr = cell.rowSpan && cell.rowSpan > 1 ? ` rowspan="${cell.rowSpan}"` : '';
-          let cellInner = escapeHtml(cell.text).replace(/\n/g, '<br/>');
+          let cellInner = escapeMarkupAttribute(cell.text).replace(/\n/g, '<br/>');
           if (cell.nestedTable) {
             cellInner += (cellInner ? '<br/>' : '') + renderTable(cell.nestedTable);
           }
@@ -88,9 +88,9 @@ export function generateHtmlFromDocx(
         tblHtml += '<tr>\n';
         row.forEach((cell) => {
           if (rIdx === 0) {
-            tblHtml += `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeHtml(cell)}</th>\n`;
+            tblHtml += `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeMarkupAttribute(cell)}</th>\n`;
           } else {
-            tblHtml += `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeHtml(cell)}</td>\n`;
+            tblHtml += `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeMarkupAttribute(cell)}</td>\n`;
           }
         });
         tblHtml += '</tr>\n';
@@ -111,9 +111,9 @@ export function generateHtmlFromDocx(
     for (const tbl of tables) body += renderTable(tbl);
   }
 
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeMarkupAttribute(
     title
-  )}</title><style>body{font-family:system-ui,-apple-system,sans-serif;line-height:1.6;max-width:850px;margin:2rem auto;padding:0 1.5rem;color:#1F2340;}h1,h2,h3{color:#5C6BC0;}</style></head><body><h1>${escapeHtml(
+  )}</title><style>body{font-family:system-ui,-apple-system,sans-serif;line-height:1.6;max-width:850px;margin:2rem auto;padding:0 1.5rem;color:#1F2340;}h1,h2,h3{color:#5C6BC0;}</style></head><body><h1>${escapeMarkupAttribute(
     title
   )}</h1>${body}</body></html>`;
 }

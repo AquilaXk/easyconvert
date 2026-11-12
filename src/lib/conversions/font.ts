@@ -16,6 +16,7 @@ import { readGlyfOutlines } from './font-glyf';
 import { WOFF2_KNOWN_TAGS, countWoff2Fonts, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, encodeWoff2Container, encodeWoff2ContainerAsync, type Woff2DecodedFont } from './font-woff2';
 import { isXmlCharacter, parseSvgFontDocument, type SvgFont } from './font-svg';
 import { parseSvgPathData, SvgPathDataError, type SvgSubpath } from './font-svg-path';
+import { escapeMarkupAttribute } from '../text/escape';
 
 export { WOFF2_KNOWN_TAGS, decodeUIntBase128, encodeUIntBase128 };
 
@@ -885,8 +886,8 @@ function readSvgFontMetrics(font: ParsedFont): { unitsPerEm: number; ascent: num
 
 function glyphElement(record: SvgGlyphRecord): string {
   const attributes: string[] = [];
-  if (record.unicode !== '') attributes.push(`unicode="${escapeXml(record.unicode)}"`);
-  if (record.name !== '') attributes.push(`glyph-name="${escapeXml(record.name)}"`);
+  if (record.unicode !== '') attributes.push(`unicode="${escapeMarkupAttribute(record.unicode)}"`);
+  if (record.name !== '') attributes.push(`glyph-name="${escapeMarkupAttribute(record.name)}"`);
   attributes.push(`horiz-adv-x="${record.advWidth}"`);
   if (record.d !== '') attributes.push(`d="${record.d}"`);
   return `<glyph ${attributes.join(' ')} />`;
@@ -935,8 +936,8 @@ function encodeSvgFontDocument(font: ParsedFont, defaultName: string): Buffer {
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
 <svg xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <font id="${escapeXml(family)}" horiz-adv-x="${unitsPerEm}">
-      <font-face font-family="${escapeXml(family)}" units-per-em="${unitsPerEm}" ascent="${ascent}" descent="${descent}" />
+    <font id="${escapeMarkupAttribute(family)}" horiz-adv-x="${unitsPerEm}">
+      <font-face font-family="${escapeMarkupAttribute(family)}" units-per-em="${unitsPerEm}" ascent="${ascent}" descent="${descent}" />
       <missing-glyph ${missingAttributes.join(' ')} />
       ${glyphsXml.join('\n      ')}
     </font>
@@ -1693,10 +1694,6 @@ export function calculateTableChecksum(data: Buffer): number {
     sum = (sum + (lastWord >>> 0)) >>> 0;
   }
   return sum;
-}
-
-function escapeXml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 /**

@@ -26,7 +26,7 @@ import { generateDocxFromExtractedText, generateDocxFromText, generateEpubFromTe
 import { extractRowsForOffice } from './sheet-extract';
 import { generateOdpFromSlides, generateOdsFromData, generateOdtFromText } from './odf-writers';
 import { generatePdfFromDocx } from './docx-pdf';
-import { escapeHtml } from './markup-escape';
+import { escapeMarkupAttribute } from '../../text/escape';
 import { escapeRtf } from './rtf-escape';
 
 /**
@@ -343,7 +343,7 @@ export async function convertOffice(
   }
   if (tgt === 'html') {
     const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(baseName)}</title></head><body><pre>${escapeHtml(textContent)}</pre></body></html>`;
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeMarkupAttribute(baseName)}</title></head><body><pre>${escapeMarkupAttribute(textContent)}</pre></body></html>`;
     const buffer = Buffer.from(html, 'utf-8');
     return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
   }

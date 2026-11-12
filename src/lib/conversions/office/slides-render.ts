@@ -2,7 +2,7 @@ import { HTML_MAX_EMBEDDED_BASE64_CHARS, base64Length } from './pptx-media';
 import { PayloadLimitError } from '../../types';
 import PDFDocument from 'pdfkit';
 import { type VisualSlideShape } from './pptx-scene';
-import { escapeHtml } from './markup-escape';
+import { escapeMarkupAttribute } from '../../text/escape';
 import { renderSingleShapeSvg } from './drawingml-shapes';
 import { type OpenXmlChartData } from './types';
 import { configurePdfKitFontFallback, renderSafePdfText } from './pdf-text';
@@ -70,7 +70,7 @@ export function generateHtmlFromSlides(
               const fill = c.fillColor || (rIdx === 0 ? '#F0F2FE' : '#FFFFFF');
               svgElements += `        <rect x="${curX}" y="${curY}" width="${colW}" height="${rowH}" fill="${fill}" stroke="#CCD2FC" stroke-width="0.5"/>\n`;
               if (c.text) {
-                svgElements += `        <text x="${curX + 4}" y="${curY + 12}" font-size="9" fill="${c.fontColor || '#1F2340'}" font-weight="${c.bold || rIdx === 0 ? 'bold' : 'normal'}" font-family="sans-serif">${escapeHtml(c.text)}</text>\n`;
+                svgElements += `        <text x="${curX + 4}" y="${curY + 12}" font-size="9" fill="${c.fontColor || '#1F2340'}" font-weight="${c.bold || rIdx === 0 ? 'bold' : 'normal'}" font-family="sans-serif">${escapeMarkupAttribute(c.text)}</text>\n`;
               }
               curX += colW;
             });
@@ -105,17 +105,17 @@ ${svgElements}        </svg>
     slidesHtml += `
     <div style="border:1px solid #CCD2FC;border-radius:12px;padding:24px;margin-bottom:20px;background:#FAFAFE;box-shadow:0 1px 3px rgba(0,0,0,0.05);">
       <div style="font-size:11px;font-weight:700;color:#5C6BC0;text-transform:uppercase;margin-bottom:8px;">Slide ${slide.number}</div>
-      <h2 style="font-size:18px;color:#1F2340;margin-top:0;margin-bottom:16px;">${slide.texts[0] ? escapeHtml(slide.texts[0]) : `Slide ${slide.number}`}</h2>
+      <h2 style="font-size:18px;color:#1F2340;margin-top:0;margin-bottom:16px;">${slide.texts[0] ? escapeMarkupAttribute(slide.texts[0]) : `Slide ${slide.number}`}</h2>
       ${visualSvg}
       <ul style="color:#4D536B;font-size:14px;line-height:1.6;margin:0;padding-left:20px;">
-        ${slide.texts.slice(1).map((t) => `<li>${escapeHtml(t)}</li>`).join('\n')}
+        ${slide.texts.slice(1).map((t) => `<li>${escapeMarkupAttribute(t)}</li>`).join('\n')}
       </ul>
     </div>`;
   });
 
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeMarkupAttribute(
     title
-  )}</title><style>body{font-family:system-ui,-apple-system,sans-serif;max-width:850px;margin:2rem auto;padding:0 1rem;background:#F8F9FE;color:#1F2340;}h1{color:#5C6BC0;text-align:center;margin-bottom:2rem;}</style></head><body><h1>${escapeHtml(
+  )}</title><style>body{font-family:system-ui,-apple-system,sans-serif;max-width:850px;margin:2rem auto;padding:0 1rem;background:#F8F9FE;color:#1F2340;}h1{color:#5C6BC0;text-align:center;margin-bottom:2rem;}</style></head><body><h1>${escapeMarkupAttribute(
     title
   )}</h1>${slidesHtml}</body></html>`;
 }

@@ -50,6 +50,7 @@ import { sourceBytesAsText } from './office/text-source';
 import { markdownToSafeHtml } from './markdown-pdf';
 import { renderMarkdownFragment } from '../markdown/safe-markdown';
 import { analyzeDocumentLayout, DlaBoundingBox, DlaBlock, DlaPageLayout } from './dla-engine';
+import { escapeMarkupAttribute } from '../text/escape';
 
 /**
  * Facts about how the PDF's pages were recognized, for the result metadata: pages the WebAssembly engine failed on
@@ -487,26 +488,26 @@ export async function convertDocument(
           .map((b) => {
             switch (b.type) {
               case 'header':
-                return `<header style="font-size:0.875rem;color:#6E768E;border-bottom:1px solid #E1E4EE;margin-bottom:1.5rem;padding-bottom:0.5rem;">${escapeHtml(b.text)}</header>`;
+                return `<header style="font-size:0.875rem;color:#6E768E;border-bottom:1px solid #E1E4EE;margin-bottom:1.5rem;padding-bottom:0.5rem;">${escapeMarkupAttribute(b.text)}</header>`;
               case 'footer':
-                return `<footer style="font-size:0.875rem;color:#6E768E;border-top:1px solid #E1E4EE;margin-top:2rem;padding-top:0.5rem;text-align:center;">${escapeHtml(b.text)}</footer>`;
+                return `<footer style="font-size:0.875rem;color:#6E768E;border-top:1px solid #E1E4EE;margin-top:2rem;padding-top:0.5rem;text-align:center;">${escapeMarkupAttribute(b.text)}</footer>`;
               case 'heading':
-                return `<h2 style="font-size:1.5rem;color:#1F2340;margin-top:1.5rem;margin-bottom:0.5rem;">${escapeHtml(b.text)}</h2>`;
+                return `<h2 style="font-size:1.5rem;color:#1F2340;margin-top:1.5rem;margin-bottom:0.5rem;">${escapeMarkupAttribute(b.text)}</h2>`;
               case 'list_item':
-                return `<ul style="margin:0 0 0.5rem 1.5rem;padding:0;"><li>${escapeHtml(b.text.replace(/^[•\-\*]\s*/, ''))}</li></ul>`;
+                return `<ul style="margin:0 0 0.5rem 1.5rem;padding:0;"><li>${escapeMarkupAttribute(b.text.replace(/^[•\-\*]\s*/, ''))}</li></ul>`;
               case 'table':
-                return `<table border="1" cellpadding="6" style="border-collapse:collapse;width:100%;margin-bottom:1rem;border-color:#CCD2FC;"><tr><td>${escapeHtml(b.text)}</td></tr></table>`;
+                return `<table border="1" cellpadding="6" style="border-collapse:collapse;width:100%;margin-bottom:1rem;border-color:#CCD2FC;"><tr><td>${escapeMarkupAttribute(b.text)}</td></tr></table>`;
               case 'paragraph':
               default:
-                return `<p style="margin-bottom:1rem;color:#373D54;">${escapeHtml(b.text)}</p>`;
+                return `<p style="margin-bottom:1rem;color:#373D54;">${escapeMarkupAttribute(b.text)}</p>`;
             }
           })
           .join('\n');
       } else {
-        bodyContent = `<pre>${escapeHtml(extractedText)}</pre>`;
+        bodyContent = `<pre>${escapeMarkupAttribute(extractedText)}</pre>`;
       }
 
-      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(
+      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeMarkupAttribute(
         baseName
       )}</title><style>body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; padding: 2rem; max-width: 800px; margin: 0 auto; }</style></head><body>${bodyContent}</body></html>`;
       const buffer = Buffer.from(html, 'utf-8');
@@ -685,11 +686,11 @@ export async function convertDocument(
     const html =
       src === 'md'
         ? markdownToHtml(textContent, baseName)
-        : `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(
+        : `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeMarkupAttribute(
             baseName
-          )}</title><style>body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; padding: 2rem; max-width: 800px; margin: 0 auto; color:#1F2340; }h1{color:#5C6BC0;}</style></head><body><h1>${escapeHtml(
+          )}</title><style>body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; padding: 2rem; max-width: 800px; margin: 0 auto; color:#1F2340; }h1{color:#5C6BC0;}</style></head><body><h1>${escapeMarkupAttribute(
             baseName
-          )}</h1><pre>${escapeHtml(textContent)}</pre></body></html>`;
+          )}</h1><pre>${escapeMarkupAttribute(textContent)}</pre></body></html>`;
     const buffer = Buffer.from(html, 'utf-8');
     return {
       buffer,
@@ -750,7 +751,7 @@ function markdownToHtml(md: string, title: string): string {
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="${MARKDOWN_HTML_CSP}">
-  <title>${escapeHtml(title)}</title>
+  <title>${escapeMarkupAttribute(title)}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.6; max-width: 800px; margin: 2rem auto; padding: 0 1rem; color: #1F2340; }
     h1, h2, h3 { color: #5C6BC0; }
@@ -866,10 +867,6 @@ function stripMarkdownSyntax(md: string): string {
     .replace(/`([^`]+)`/g, '$1')
     .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')
     .trim();
-}
-
-function escapeHtml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 /** Text sources decoded strictly (UTF-8, or UTF-16 with a byte order mark) when rendered to PDF. HTML is not one: it is decoded by encoding sniffing. */

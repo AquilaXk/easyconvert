@@ -8,7 +8,7 @@ import { writeXlsx } from '../xlsx-writer';
 import { unconvertibleOfficeTarget } from '../native-engine-pairs';
 import { safeExtractAllText, safeExtractFirstXmlElement } from './xml-helpers';
 import { formatCsvCell } from './spreadsheet-ranges';
-import { escapeHtml } from './markup-escape';
+import { escapeMarkupAttribute } from '../../text/escape';
 import { generatePdfFromDocx } from './docx-pdf';
 import { readOdtText } from './odt-text';
 import { generateDocxFromExtractedText, generateEpubFromText } from './office-from-text';
@@ -116,15 +116,15 @@ export async function convertOdsSource(
       r.forEach((c) => {
         tableHtml +=
           idx === 0
-            ? `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeHtml(c)}</th>\n`
-            : `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeHtml(c)}</td>\n`;
+            ? `  <th style="background:#F0F2FE;color:#1F2340;padding:8px;text-align:left;">${escapeMarkupAttribute(c)}</th>\n`
+            : `  <td style="padding:8px;border:1px solid #E1E4EE;">${escapeMarkupAttribute(c)}</td>\n`;
       });
       tableHtml += '</tr>\n';
     });
     tableHtml += '</table>';
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeMarkupAttribute(
       baseName
-    )}</title><style>body{font-family:system-ui,sans-serif;padding:2rem;color:#1F2340;}</style></head><body><h2>${escapeHtml(
+    )}</title><style>body{font-family:system-ui,sans-serif;padding:2rem;color:#1F2340;}</style></head><body><h2>${escapeMarkupAttribute(
       baseName
     )}</h2>${tableHtml}</body></html>`;
     const buffer = Buffer.from(html, 'utf-8');
@@ -167,11 +167,11 @@ export async function convertOdtSource(
   }
 
   if (tgt === 'html') {
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeMarkupAttribute(
       baseName
-    )}</title><style>body{font-family:system-ui,sans-serif;padding:2rem;color:#1F2340;}</style></head><body><h1>${escapeHtml(
+    )}</title><style>body{font-family:system-ui,sans-serif;padding:2rem;color:#1F2340;}</style></head><body><h1>${escapeMarkupAttribute(
       baseName
-    )}</h1>${text.split('\n\n').map((p) => `<p>${escapeHtml(p)}</p>`).join('\n')}</body></html>`;
+    )}</h1>${text.split('\n\n').map((p) => `<p>${escapeMarkupAttribute(p)}</p>`).join('\n')}</body></html>`;
     const buffer = Buffer.from(html, 'utf-8');
     return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
   }
