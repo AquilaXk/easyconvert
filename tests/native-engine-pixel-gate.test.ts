@@ -12,7 +12,6 @@ import {
 } from '../src/lib/conversions/image-input-limits';
 import { convertMedia } from '../src/lib/conversions/media';
 import { resetInputProbeCache } from '../src/lib/conversions/media-ffprobe';
-import { quantizeNeuQuant } from '../src/lib/conversions/quantize';
 import {
   convertWithHeadlessOffice,
   convertWithNativeFfmpeg,
@@ -394,23 +393,7 @@ describe('native FFmpeg image and video stream pixel gate', () => {
   });
 });
 
-describe('palette quantizer pixel budget and bounded NeuQuant training', () => {
-  it('refuses 25 MP and 49 MP inputs in quantizeNeuQuant under 500 ms', async () => {
-    const empty = Buffer.alloc(0);
-    await expectFastPixelLimitRejection(
-      () => quantizeNeuQuant(empty, 5_000, 5_000),
-      QUANTIZER_PIXEL_BUDGET.maxPixels,
-      5_000,
-      5_000
-    );
-    await expectFastPixelLimitRejection(
-      () => quantizeNeuQuant(empty, 7_000, 7_000),
-      QUANTIZER_PIXEL_BUDGET.maxPixels,
-      7_000,
-      7_000
-    );
-  });
-
+describe('palette quantizer pixel budget', () => {
   it('refuses a 25 MP BMP 8-bit conversion with InputPixelLimitError under 500 ms', async () => {
     const source = await sharp({
       create: { width: 5_000, height: 5_000, channels: 3, background: { r: 40, g: 90, b: 160 } },
@@ -425,14 +408,7 @@ describe('palette quantizer pixel budget and bounded NeuQuant training', () => {
     );
   });
 
-  it('quantizes an in-budget image to 8-bit BMP and bounds NeuQuant sample count', async () => {
-    const rgb = Buffer.alloc(512 * 512 * 3, 120);
-    const quantized = await expectNoHang('NeuQuant 512x512 sampleFactor=1', () =>
-      quantizeNeuQuant(rgb, 512, 512, 256, 1)
-    );
-    expect(quantized.palette.length).toBe(256);
-    expect(quantized.indexedPixels.length).toBe(512 * 512);
-
+  it('quantizes an in-budget image to 8-bit BMP', async () => {
     const source = await sharp({
       create: { width: 128, height: 128, channels: 3, background: { r: 40, g: 180, b: 90 } },
     })

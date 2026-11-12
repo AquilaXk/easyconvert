@@ -609,7 +609,7 @@
     "rule": "complexity",
     "function": "convertImage",
     "count": 1,
-    "maxValue": 209
+    "maxValue": 206
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -651,7 +651,7 @@
     "rule": "max-lines-per-function",
     "function": "convertImage",
     "count": 1,
-    "maxValue": 627
+    "maxValue": 622
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -665,7 +665,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2553
+    "maxValue": 2535
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -1479,13 +1479,6 @@
     "maxValue": 7
   },
   {
-    "file": "src/lib/conversions/quantize.ts",
-    "rule": "max-params",
-    "function": "applyFloydSteinbergDither",
-    "count": 1,
-    "maxValue": 7
-  },
-  {
     "file": "src/lib/conversions/raw-demosaic-tiles.ts",
     "rule": "max-params",
     "function": "copyTile",
@@ -1553,13 +1546,6 @@
     "rule": "no-nested-ternary",
     "function": "demosaicRcdBayerCfa",
     "count": 4
-  },
-  {
-    "file": "src/lib/conversions/raw-x3f.ts",
-    "rule": "max-depth",
-    "function": "decodeHuffmanLayers",
-    "count": 1,
-    "maxValue": 6
   },
   {
     "file": "src/lib/conversions/raw-x3f.ts",

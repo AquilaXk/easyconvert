@@ -11,7 +11,6 @@ import { POST as batchRoute } from '../src/app/api/convert/batch/route';
 import { SINGLE_REQUEST_BODY_MAX_BYTES } from '../src/lib/plan-limits';
 import {
   convertFile,
-  quantizeNeuQuant,
   encodeBmp8,
   evaluateCubicBezier,
   evaluateCubicBezierDerivative,
@@ -23,6 +22,7 @@ import {
   generateSearchablePdf,
   generateFb2FromText,
 } from '../src/lib/conversions';
+import { decodeBmp } from '../src/lib/conversions/bmp';
 import { zipEntryText } from './helpers/zip-entry';
 import { xmlWellFormed, xpathString } from './helpers/xml-oracle';
 import { oracleTest } from './helpers/oracle-test';
@@ -31,8 +31,8 @@ import { characterErrorRatePercent } from './helpers/ocr-cer';
 
 
 describe('Advanced Conversion Algorithms & Cross-Domain Boost', () => {
-  describe('Domain: Color Quantization (NeuQuant)', () => {
-    it('quantizes complex RGB image using NeuQuant neural network and encodes valid 8-bit paletted BMP', async () => {
+  describe('Domain: Color Quantization (8-bit BMP)', () => {
+    it('writes an 8-bit paletted BMP from the Oklab quantizer that decodes to the picture it was given', async () => {
       const width = 64;
       const height = 64;
       const rgb = Buffer.alloc(width * height * 3);
@@ -41,15 +41,24 @@ describe('Advanced Conversion Algorithms & Cross-Domain Boost', () => {
         rgb[i * 3 + 1] = (i * 13) % 256;
         rgb[i * 3 + 2] = (i * 19) % 256;
       }
+      const png = await sharp(rgb, { raw: { width, height, channels: 3 } }).png().toBuffer();
 
-      const quant = quantizeNeuQuant(rgb, width, height, 3, 5, true);
-      expect(quant.palette.length).toBe(256);
-      expect(quant.indexedPixels.length).toBe(width * height);
-
-      const bmp8 = encodeBmp8(quant.indexedPixels, quant.palette, width, height);
+      const bmp8 = (await convertFile(png, 'png', 'bmp', { colorDepth: 8, dither: false }, 'gradient.png')).buffer;
       expect(bmp8.toString('ascii', 0, 2)).toBe('BM');
-      expect(bmp8.readUInt16LE(28)).toBe(8); // 8 bits per pixel
-      expect(bmp8.readUInt32LE(46)).toBe(256); // 256 colors in palette
+      expect(bmp8.readUInt16LE(28)).toBe(8);
+      expect(bmp8.readUInt32LE(46)).toBeLessThanOrEqual(256);
+      expect(bmp8.readUInt32LE(2)).toBe(bmp8.length);
+      const decoded = decodeBmp(bmp8);
+      expect(decoded.width).toBe(width);
+      expect(decoded.height).toBe(height);
+    });
+
+    it('writes the colour table as blue, green, red, reserved and the rows bottom-up, padded to four bytes', () => {
+      const indices = Uint8Array.from([0, 1, 1, 0, 1, 0]);
+      const bmp = encodeBmp8(indices, [{ r: 1, g: 2, b: 3 }, { r: 10, g: 20, b: 30 }], 3, 2);
+      expect(bmp.readUInt32LE(10)).toBe(54 + 8);
+      expect([...bmp.subarray(54, 62)]).toEqual([3, 2, 1, 0, 30, 20, 10, 0]);
+      expect([...bmp.subarray(62)]).toEqual([0, 1, 0, 0, 0, 1, 1, 0]);
     });
 
     it('converts image to paletted GIF and 8-bit paletted PNG using color quantization options', async () => {

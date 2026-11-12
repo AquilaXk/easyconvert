@@ -1,4 +1,5 @@
 import { ConversionFailedError } from '../types';
+import type { RgbColor } from './color-quantizer';
 import { assertInputPixels, assertPixelBudget, type PixelBudget } from './image-input-limits';
 
 /**
@@ -554,4 +555,45 @@ export function decodeBmp(buf: Buffer, budget?: PixelBudget): DecodedBmp {
 /** Decodes a headerless DIB (the form inside ICO and CUR files) to 8-bit RGBA. */
 export function decodeDib(buf: Buffer, options: DibOptions = {}): DecodedBmp {
   return decodeBitmap(buf, 0, null, options);
+}
+
+/** 72 dpi in pixels per metre, the resolution the encoder declares. */
+const PIXELS_PER_METRE_72_DPI = 2835;
+const ROW_ALIGNMENT_BYTES = 4;
+
+/**
+ * Encodes an 8-bit palettised bitmap (BITMAPINFOHEADER, uncompressed, bottom-up): the colour table of RGBQUADs
+ * (blue, green, red, reserved) and one index per pixel, each row padded to a multiple of four bytes.
+ */
+export function encodeBmp8(indices: Uint8Array, palette: readonly RgbColor[], width: number, height: number): Buffer {
+  const stride = Math.ceil(width / ROW_ALIGNMENT_BYTES) * ROW_ALIGNMENT_BYTES;
+  const pixelDataSize = stride * height;
+  const pixelOffset = FILE_HEADER_BYTES + INFO_HEADER_BYTES + palette.length * PALETTE_ENTRY_BYTES;
+  const buf = Buffer.alloc(pixelOffset + pixelDataSize);
+
+  buf.write(FILE_SIGNATURE, 0);
+  buf.writeUInt32LE(buf.length, 2);
+  buf.writeUInt32LE(pixelOffset, PIXEL_OFFSET_FIELD);
+  buf.writeUInt32LE(INFO_HEADER_BYTES, 14);
+  buf.writeInt32LE(width, 18);
+  buf.writeInt32LE(height, 22);
+  buf.writeUInt16LE(1, 26);
+  buf.writeUInt16LE(8, 28);
+  buf.writeUInt32LE(pixelDataSize, 34);
+  buf.writeInt32LE(PIXELS_PER_METRE_72_DPI, 38);
+  buf.writeInt32LE(PIXELS_PER_METRE_72_DPI, 42);
+  buf.writeUInt32LE(palette.length, 46);
+
+  let offset = FILE_HEADER_BYTES + INFO_HEADER_BYTES;
+  for (const { r, g, b } of palette) {
+    buf[offset++] = b;
+    buf[offset++] = g;
+    buf[offset++] = r;
+    offset++;
+  }
+  for (let y = height - 1; y >= 0; y--) {
+    buf.set(indices.subarray(y * width, (y + 1) * width), offset);
+    offset += stride;
+  }
+  return buf;
 }

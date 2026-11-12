@@ -11,8 +11,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Speed
 - Cut the GIF time of the camera rows further: the palette mapper (`mapNearest`) is 13 to 38 ns a pixel on the VM after the direct colour table, and the run tolerance check is 45 percent of it (half of the 50 to 60 percent of pixels that change their nearest colour read the 32-byte Oklab entry of the colour, a quarter of those keep the previous colour); a split over the pool threads needs each stripe to start with a guess of the previous colour and a short repair at its first pixels, which is not written. The LZW coder (200 to 320 ms for 20 to 39 MP) and the `3fr` development by `dcraw_emu` (0.9 s) are the other large steps.
-- Speed up `decodeHuffmanLayers` (SD14/SD15, 12 MP, about 0.5 s on the VM) with a table-driven first-bits lookup: its bit-at-a-time trie walk is the slowest loop of `raw-x3f.ts` (entry 256).
-- `quantize.ts` (401 lines) is on the product path only for the 8-bit BMP (`quantizeNeuQuant`, the Floyd-Steinberg mapper, `encodeBmp8`); decide whether BMP takes its palette from `color-quantizer.ts` and the file goes. That changes the BMP bytes, so it needs an `image` parity run.
 
 ## Product and API
 

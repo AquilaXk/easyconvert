@@ -2,12 +2,12 @@ import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
 import { compareImages, computeSsim, pixelmatch } from './helpers/vrt-engine';
 import { renderDrawingMlToSvg } from '../src/lib/conversions/office';
-import { applyFloydSteinbergDither, type RgbColor as ColorRgb } from '../src/lib/conversions/quantize';
+import { mapToPalette, srgbToLinear, type DitherKind, type RgbColor as ColorRgb } from '../src/lib/conversions/color-quantizer';
 
 /** Side of the tiles whose average colour is compared. */
 const DITHER_BLOCK = 8;
 /** Levels (0 to 255) by which the average colour of a dithered tile may stray from the source. */
-/** Measured 4.1 for the dithered image and 22.5 for the nearest-colour image; the bound keeps about twice the measured error. */
+/** Measured 4.1 for the dithered image and 19.2 for the nearest-colour image, in linear light; the bound keeps about twice the measured error. */
 const DITHERED_MAX_BLOCK_ERROR = 8;
 
 describe('Phase 4: Visual Regression Testing (VRT) CI Gate', () => {
@@ -215,6 +215,9 @@ describe('Phase 4: Visual Regression Testing (VRT) CI Gate', () => {
   // 4. Image Quantization & Dithering Perceptual Stability
   // =========================================================================
   describe('4. Image Quantization & Dithering Perceptual Stability', () => {
+    const mapPalette = (rgba: Buffer, width: number, height: number, palette: ColorRgb[], dither: DitherKind): Uint8Array =>
+      mapToPalette(rgba, width, height, Uint8Array.from(palette.flatMap((c) => [c.r, c.g, c.b])), palette.length, dither);
+
     it('verifies deterministic pixel parity across repeated Floyd-Steinberg runs', async () => {
       const width = 64;
       const height = 64;
@@ -238,9 +241,9 @@ describe('Phase 4: Visual Regression Testing (VRT) CI Gate', () => {
       ];
 
       // Run 1
-      const dither1 = applyFloydSteinbergDither(gradientBuf, width, height, 4, palette, true, true);
+      const dither1 = mapPalette(gradientBuf, width, height, palette, 'floyd-steinberg');
       // Run 2
-      const dither2 = applyFloydSteinbergDither(gradientBuf, width, height, 4, palette, true, true);
+      const dither2 = mapPalette(gradientBuf, width, height, palette, 'floyd-steinberg');
 
       // Reconstruct RGBA buffers
       const rgba1 = Buffer.alloc(width * height * 4);
@@ -305,6 +308,8 @@ describe('Phase 4: Visual Regression Testing (VRT) CI Gate', () => {
         }
         return out;
       };
+      // The quantizer diffuses its error in linear light, so the tile averages are compared there (levels 0 to 255 of linear light).
+      const linearLevel = (code: number): number => srgbToLinear(code) * 255;
       // Mean absolute difference of the per-channel average over each BLOCK x BLOCK tile, against the source.
       const blockMeanError = (candidate: Buffer): number => {
         let total = 0;
@@ -316,8 +321,8 @@ describe('Phase 4: Visual Regression Testing (VRT) CI Gate', () => {
               let quantized = 0;
               for (let y = by; y < by + DITHER_BLOCK; y++) {
                 for (let x = bx; x < bx + DITHER_BLOCK; x++) {
-                  source += gradientBuf[(y * width + x) * 4 + channel];
-                  quantized += candidate[(y * width + x) * 4 + channel];
+                  source += linearLevel(gradientBuf[(y * width + x) * 4 + channel]);
+                  quantized += linearLevel(candidate[(y * width + x) * 4 + channel]);
                 }
               }
               total += Math.abs(source - quantized) / (DITHER_BLOCK * DITHER_BLOCK);
@@ -328,8 +333,8 @@ describe('Phase 4: Visual Regression Testing (VRT) CI Gate', () => {
         return total / count;
       };
 
-      const dithered = blockMeanError(render(applyFloydSteinbergDither(gradientBuf, width, height, 4, palette, true, true)));
-      const nearest = blockMeanError(render(applyFloydSteinbergDither(gradientBuf, width, height, 4, palette, false, true)));
+      const dithered = blockMeanError(render(mapPalette(gradientBuf, width, height, palette, 'floyd-steinberg')));
+      const nearest = blockMeanError(render(mapPalette(gradientBuf, width, height, palette, 'none')));
       expect(dithered).toBeLessThan(DITHERED_MAX_BLOCK_ERROR);
       expect(dithered).toBeLessThan(nearest / 2);
     });
