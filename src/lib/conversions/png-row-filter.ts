@@ -93,24 +93,24 @@ export function filterRowsByEntropy(indices: Uint8Array, width: number, height: 
       }
     }
     out[target - 1] = best;
-    writeFiltered(best, indices, rowStart, above, out, target, width);
+    writeFiltered(best, indices.subarray(rowStart, rowStart + width), above, out.subarray(target, target + width));
   }
   return out;
 }
 
-/** The bytes of one row under one filter, written to `out` at `target`. */
-function writeFiltered(filter: number, indices: Uint8Array, rowStart: number, above: Uint8Array, out: Uint8Array, target: number, width: number): void {
+/** The bytes of `row` under one filter, written to `out` (as long as the row), given the row above it. */
+function writeFiltered(filter: number, row: Uint8Array, above: Uint8Array, out: Uint8Array): void {
   let left = 0;
   let upLeft = 0;
-  for (let x = 0; x < width; x += 1) {
-    const value = indices[rowStart + x];
+  for (let x = 0; x < row.length; x += 1) {
+    const value = row[x];
     const up = above[x];
     let predicted = 0;
     if (filter === FILTER_SUB) predicted = left;
     else if (filter === FILTER_UP) predicted = up;
     else if (filter === FILTER_AVERAGE) predicted = (left + up) >> 1;
     else if (filter === FILTER_PAETH) predicted = paeth(left, up, upLeft);
-    out[target + x] = (value - predicted) & 0xff;
+    out[x] = (value - predicted) & 0xff;
     left = value;
     upLeft = up;
   }

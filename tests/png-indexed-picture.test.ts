@@ -98,6 +98,6 @@ describe('the order and filters of the indexed PNG', () => {
     const { palette, indices } = photograph(120, 80, 60);
     const controller = new AbortController();
     controller.abort();
-    await expect(writeIndexedPng({ width: 120, height: 80, palette, indices }, await template(), controller.signal)).rejects.toBeDefined();
+    await expect(writeIndexedPng({ width: 120, height: 80, palette, indices }, await template(), controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
   });
 });
