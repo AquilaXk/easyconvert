@@ -1,12 +1,12 @@
 {
   "name": "@easyconvert/sdk",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Official type-safe TypeScript/JavaScript client SDK for the EasyConvert platform.",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node -e \"require('fs').cpSync('src/generated','dist/generated',{recursive:true})\"",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -19,5 +19,8 @@
     "api"
   ],
   "author": "EasyConvert Engineering",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "openapi-fetch": "0.17.0"
+  }
 }

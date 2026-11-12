@@ -1109,7 +1109,9 @@
   "tests/sandbox-stdout-frame.test.ts": 0,
   "tests/sandbox-stdout-spool.test.ts": 0.4,
   "tests/sandbox-unavailable-503.test.ts": 0.2,
-  "tests/sdk-convert-async.test.ts": 0,
+  "tests/sdk-convert-async.test.ts": 0.5,
+  "tests/sdk-openapi-normalization.test.ts": 0.4,
+  "tests/sdk-python-roundtrip.test.ts": 0.2,
   "tests/seccomp-worker-profile.test.ts": 0,
   "tests/secret-masking-api.test.ts": 0.5,
   "tests/secret-masking-queue.test.ts": 0.1,
@@ -1296,5 +1298,6 @@
   "tests/zstd-level-pins.test.ts": 2.1,
   "tests/zstd-native.test.ts": 1,
   "tests/zstd-optimal-ratio.test.ts": 18.6,
-  "tests/zstd-streaming-dict.test.ts": 0.5
+  "tests/zstd-streaming-dict.test.ts": 0.5,
+  "tests/set-account-tier.test.ts": 0.3
 }

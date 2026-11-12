@@ -1,199 +1,134 @@
+"""Hand-written convenience layer over the generated client in ``easyconvert._generated``: upload, poll a job, download the
+result. ``EasyConvertClient.generated`` is the authenticated generated client, for every other operation."""
+
+from __future__ import annotations
+
 import json
-import requests
-from typing import Optional, Dict, Any, Union, List, BinaryIO
-from .models import ConversionResponse, JobSummary, ApiKey, WebhookDlqEntry, QuotaUsage
+import time
+from collections.abc import Mapping
+from io import BytesIO
+from typing import Any, BinaryIO
+
+import httpx2
+
+from ._generated.api.default import convert_file_v1, create_job_v1, get_job_status_v1
+from ._generated.client import AuthenticatedClient
+from ._generated.models.conversion_response import ConversionResponse
+from ._generated.models.convert_file_v1_body import ConvertFileV1Body
+from ._generated.models.convert_file_v1_response_202 import ConvertFileV1Response202
+from ._generated.models.create_job_v1_files_body import CreateJobV1FilesBody
+from ._generated.models.create_job_v1_response_202 import CreateJobV1Response202
+from ._generated.models.job_details import JobDetails
+from ._generated.models.problem_details import ProblemDetails
+from ._generated.types import UNSET, File, Response
+
+DEFAULT_BASE_URL = "https://easyconvert.app"
+DEFAULT_TIMEOUT_SECONDS = 30.0
+TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
+HTTP_ERROR_FLOOR = 400
+
+
+class EasyConvertApiError(Exception):
+    """The API answered with an error status; ``problem`` is its problem document when it sent one."""
+
+    def __init__(self, status_code: int, problem: ProblemDetails | None):
+        detail = (problem.detail if problem is not None and problem.detail is not UNSET else None) or "request failed"
+        super().__init__(f"EasyConvert API error ({status_code}): {detail}")
+        self.status_code = status_code
+        self.problem = problem
+
+
+def _as_file(file: bytes | BinaryIO, filename: str) -> File:
+    return File(payload=BytesIO(file) if isinstance(file, bytes) else file, file_name=filename)
+
+
+def _problem(response: Response[Any]) -> ProblemDetails | None:
+    try:
+        return ProblemDetails.from_dict(json.loads(response.content))
+    except (ValueError, AttributeError, KeyError, TypeError):
+        return None
+
+
+def _checked(response: Response[Any]) -> Any:
+    if response.status_code >= HTTP_ERROR_FLOOR or response.parsed is None:
+        raise EasyConvertApiError(int(response.status_code), _problem(response))
+    return response.parsed
+
 
 class EasyConvertClient:
-    """Official EasyConvert REST API client."""
-
-    def __init__(self, api_key: str, base_url: str = "https://easyconvert.app", timeout: float = 30.0):
-        if not api_key or not isinstance(api_key, str):
-            raise ValueError("api_key must be a valid string starting with ec_live_")
-        self.api_key = api_key.strip()
-        self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
-        self.session = requests.Session()
-        self.session.headers.update({
-            "Authorization": f"Bearer {self.api_key}",
-            "User-Agent": "EasyConvert-Python-SDK/1.0.0",
-        })
-
-    def _request(self, method: str, path: str, **kwargs) -> Dict[str, Any]:
-        url = f"{self.base_url}/{path.lstrip('/')}"
-        kwargs.setdefault("timeout", self.timeout)
-        resp = self.session.request(method, url, **kwargs)
-        if not resp.ok:
-            try:
-                err_data = resp.json()
-                msg = err_data.get("error") or err_data.get("detail") or f"HTTP {resp.status_code}"
-            except Exception:
-                msg = resp.text or f"HTTP {resp.status_code}"
-            raise RuntimeError(f"EasyConvert API Error ({resp.status_code}): {msg}")
-        return resp.json()
+    def __init__(self, api_key: str, base_url: str = DEFAULT_BASE_URL, timeout: float = DEFAULT_TIMEOUT_SECONDS):
+        if not api_key or not api_key.strip():
+            raise ValueError("EasyConvertClient needs an API key")
+        self.generated = AuthenticatedClient(
+            base_url=base_url.rstrip("/"),
+            token=api_key.strip(),
+            timeout=httpx2.Timeout(timeout),
+        )
 
     def convert(
         self,
-        file: Union[bytes, BinaryIO],
+        file: bytes | BinaryIO,
         target_format: str,
         filename: str = "input.bin",
-        source_format: Optional[str] = None,
-        options: Optional[Dict[str, Any]] = None,
-        raw: bool = False,
+        source_format: str | None = None,
+        options: Mapping[str, Any] | None = None,
         respond_async: bool = False,
-        webhook_url: Optional[str] = None,
-        webhook_secret: Optional[str] = None,
-    ) -> Union[Dict[str, Any], bytes]:
-        """Convert a file. The answer is the result (bytes with raw=True), or, for a file over the
-        synchronous limit or with respond_async=True, the queued job as a dict with its statusUrl (also with raw)."""
-        url = f"{self.base_url}/api/v1/convert{'?raw=true' if raw else ''}"
-        files = {"file": (filename, file)}
-        data: Dict[str, Any] = {"targetFormat": target_format}
-        if source_format:
-            data["sourceFormat"] = source_format
-        if options:
-            data["options"] = json.dumps(options)
-        if webhook_url:
-            data["webhookUrl"] = webhook_url
-        if webhook_secret:
-            data["webhookSecret"] = webhook_secret
-
-        headers = {}
-        if raw:
-            headers["Accept"] = "application/octet-stream"
-        if respond_async:
-            headers["Prefer"] = "respond-async"
-
-        resp = self.session.post(url, files=files, data=data, headers=headers, timeout=self.timeout)
-        if not resp.ok:
-            raise RuntimeError(f"Conversion failed ({resp.status_code}): {resp.text}")
-        if resp.status_code == 202:
-            return resp.json()
-        if raw:
-            return resp.content
-        return resp.json()
-
-    def _create_job_multipart(
-        self,
-        target_format: str,
-        file: Union[bytes, BinaryIO],
-        filename: Optional[str],
-        source_format: Optional[str],
-        options: Optional[Dict[str, Any]],
-        webhook_url: Optional[str],
-        webhook_secret: Optional[str],
-    ) -> Dict[str, Any]:
-        files = {"file": (filename or "upload.bin", file)}
-        data: Dict[str, Any] = {"targetFormat": target_format}
-        if source_format:
-            data["sourceFormat"] = source_format
-        if options:
-            data["options"] = json.dumps(options)
-        if webhook_url:
-            data["webhookUrl"] = webhook_url
-        if webhook_secret:
-            data["webhookSecret"] = webhook_secret
-        url = f"{self.base_url}/api/v1/jobs"
-        resp = self.session.post(url, files=files, data=data, timeout=self.timeout)
-        if not resp.ok:
-            raise RuntimeError(f"Job creation failed ({resp.status_code}): {resp.text}")
-        return resp.json()
+        webhook_url: str | None = None,
+        webhook_secret: str | None = None,
+    ) -> ConversionResponse | ConvertFileV1Response202:
+        """Converts a file. The answer is the result, or the queued job when the file is over the synchronous limit or
+        ``respond_async`` is set."""
+        body = ConvertFileV1Body(
+            file=_as_file(file, filename),
+            target_format=target_format,
+            source_format=source_format or UNSET,
+            options=json.dumps(options) if options else UNSET,
+            webhook_url=webhook_url or UNSET,
+            webhook_secret=webhook_secret or UNSET,
+        )
+        response = convert_file_v1.sync_detailed(
+            client=self.generated, body=body, prefer="respond-async" if respond_async else UNSET
+        )
+        return _checked(response)
 
     def create_job(
         self,
+        file: bytes | BinaryIO,
         target_format: str,
-        file: Optional[Union[bytes, BinaryIO]] = None,
-        filename: Optional[str] = None,
-        source_format: Optional[str] = None,
-        options: Optional[Dict[str, Any]] = None,
-        webhook_url: Optional[str] = None,
-        webhook_secret: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Submit an asynchronous conversion job."""
-        if file is not None:
-            return self._create_job_multipart(
-                target_format, file, filename, source_format, options, webhook_url, webhook_secret
-            )
+        filename: str = "input.bin",
+        source_format: str | None = None,
+        options: Mapping[str, Any] | None = None,
+        webhook_url: str | None = None,
+        webhook_secret: str | None = None,
+    ) -> CreateJobV1Response202:
+        """Queues a conversion job for a file; follow it with ``wait_for_job``."""
+        body = CreateJobV1FilesBody(
+            file=_as_file(file, filename),
+            target_format=target_format,
+            source_format=source_format or UNSET,
+            options=json.dumps(options) if options else UNSET,
+            webhook_url=webhook_url or UNSET,
+            webhook_secret=webhook_secret or UNSET,
+        )
+        return _checked(create_job_v1.sync_detailed(client=self.generated, body=body))
 
-        payload: Dict[str, Any] = {"targetFormat": target_format}
-        if source_format:
-            payload["sourceFormat"] = source_format
-        if options:
-            payload["options"] = options
-        if webhook_url:
-            payload["webhookUrl"] = webhook_url
-        if webhook_secret:
-            payload["webhookSecret"] = webhook_secret
-        return self._request("POST", "/api/v1/jobs", json=payload)
+    def get_job(self, job_id: str) -> JobDetails:
+        return _checked(get_job_status_v1.sync_detailed(job_id, client=self.generated))
 
-    def get_job(self, job_id: str) -> Dict[str, Any]:
-        """Get job status and result."""
-        return self._request("GET", f"/api/v1/jobs/{job_id}")
+    def wait_for_job(self, job_id: str, interval: float = 1.0, timeout: float = 300.0) -> JobDetails:
+        """Polls until the job completed, failed or was cancelled and returns its last state; check ``status``."""
+        deadline = time.monotonic() + timeout
+        while True:
+            job = self.get_job(job_id)
+            if job.status is not UNSET and job.status.value in TERMINAL_JOB_STATUSES:
+                return job
+            if time.monotonic() + interval > deadline:
+                raise TimeoutError(f"Job {job_id} did not finish within {timeout} s")
+            time.sleep(interval)
 
-    def list_jobs(self, status: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
-        """List conversion jobs."""
-        params = {"limit": limit}
-        if status:
-            params["status"] = status
-        return self._request("GET", "/api/v1/jobs", params=params)
-
-    def list_api_keys(self) -> List[Dict[str, Any]]:
-        """List API keys."""
-        res = self._request("GET", "/api/keys")
-        return res.get("keys", [])
-
-    def create_api_key(
-        self,
-        name: str,
-        scopes: Optional[List[str]] = None,
-        expires_at: Optional[int] = None,
-        allowed_ips: Optional[List[str]] = None,
-        webhook_url: Optional[str] = None,
-        webhook_secret: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Create a new API key."""
-        payload: Dict[str, Any] = {"name": name}
-        if scopes:
-            payload["scopes"] = scopes
-        if expires_at:
-            payload["expiresAt"] = expires_at
-        if allowed_ips:
-            payload["allowedIps"] = allowed_ips
-        if webhook_url:
-            payload["webhookUrl"] = webhook_url
-        if webhook_secret:
-            payload["webhookSecret"] = webhook_secret
-        return self._request("POST", "/api/keys", json=payload)
-
-    def revoke_api_key(self, key_id: str) -> bool:
-        """Revoke an API key."""
-        res = self._request("DELETE", f"/api/keys/{key_id}")
-        return res.get("success", False)
-
-    def get_quota_usage(self) -> Dict[str, Any]:
-        """Get current quota usage and daily limits."""
-        res = self._request("GET", "/api/keys/usage")
-        return res.get("usage", {})
-
-    def get_dlq_entries(self) -> List[Dict[str, Any]]:
-        """List dead-lettered webhook entries."""
-        res = self._request("GET", "/api/webhooks/dlq")
-        return res.get("entries", [])
-
-    def get_dlq_entry(self, dlq_id: str) -> Dict[str, Any]:
-        """Get dead-lettered webhook entry by ID."""
-        res = self._request("GET", f"/api/webhooks/dlq/{dlq_id}")
-        return res.get("entry", {})
-
-    def delete_dlq_entry(self, dlq_id: str) -> bool:
-        """Delete a dead-lettered webhook entry."""
-        res = self._request("DELETE", f"/api/webhooks/dlq/{dlq_id}")
-        return res.get("success", False)
-
-    def clear_dlq(self) -> bool:
-        """Clear all dead-lettered webhook entries."""
-        res = self._request("DELETE", "/api/webhooks/dlq")
-        return res.get("success", False)
-
-    def replay_dlq(self, dlq_id: str) -> Dict[str, Any]:
-        """Replay a dead-lettered webhook."""
-        return self._request("POST", f"/api/webhooks/dlq/{dlq_id}/replay")
+    def download(self, download_url: str) -> bytes:
+        """Downloads the bytes of a finished conversion from the ``download_url`` of its result."""
+        response = self.generated.get_httpx_client().get(download_url)
+        if response.status_code >= HTTP_ERROR_FLOOR:
+            raise EasyConvertApiError(response.status_code, None)
+        return response.content

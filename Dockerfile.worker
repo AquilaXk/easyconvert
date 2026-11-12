@@ -25,7 +25,7 @@ RUN npm ci --include=dev --ignore-scripts
 # Copy configuration and source files
 COPY tsconfig.json ./
 COPY src/ ./src/
-COPY scripts/erase-account.ts scripts/backfill-dlq-index.ts ./scripts/
+COPY scripts/erase-account.ts scripts/backfill-dlq-index.ts scripts/set-account-tier.ts ./scripts/
 
 RUN npm run build:worker
 
