@@ -190,6 +190,22 @@ export const PHOTO_JPEG_QUANTISATION_TABLE = 3;
  * the reference at equal PSNR once the picture is 4:4:4 (see `jpegOptionsFor`).
  */
 export const PHOTO_FULL_CHROMA_JPEG_QUANTISATION_TABLE = 0;
+/**
+ * mozjpeg quantisation table for noise-dominated photographs below the full-chroma quality: 2, the table tuned for MS-SSIM. Table 3
+ * zeroes the high frequencies that such a picture is made of: `jxl-noise` was +5.2% PSNR BD-rate behind the reference with it, and
+ * -4.2% ahead with table 2 (SSIM -7.6%, SSIMULACRA 2 -8.2%), where the standard table 0 reaches the reference's curve and no more.
+ */
+export const NOISY_PHOTO_JPEG_QUANTISATION_TABLE = 2;
+
+function photoQuantisationTableFor(chromaSubsampling: ChromaSubsampling, noisy: boolean): number {
+  if (chromaSubsampling === '4:4:4') return PHOTO_FULL_CHROMA_JPEG_QUANTISATION_TABLE;
+  return noisy ? NOISY_PHOTO_JPEG_QUANTISATION_TABLE : PHOTO_JPEG_QUANTISATION_TABLE;
+}
+
+/** Whether the table of a JPEG depends on the noise of the picture: a photograph below the full-chroma quality (the only one that has two tables to pick from). */
+export function jpegTableDependsOnNoise(requestedQuality: number | undefined, content: ContentClass): boolean {
+  return content === 'photo' && jpegChromaFor(clampQuality(requestedQuality, DEFAULT_QUALITY_BY_CODEC.jpeg)) === '4:2:0';
+}
 
 /**
  * What the JPEG encoder is asked for, by the picture's content. All of them keep the encoder's optimal Huffman tables and
@@ -205,6 +221,8 @@ export const PHOTO_FULL_CHROMA_JPEG_QUANTISATION_TABLE = 0;
  *   the reference (+0.2% PSNR, -1.5% SSIM) at no cost in time. A progressive scan saves another 3.6% (4.2% with the scan
  *   search) and takes 1.1 to 1.7 times the reference's time from 0.3 to 12 MP (2.3 times with the search), which misses
  *   the speed bar.
+ *   A noise-dominated photograph (`noisy`: most of its variation is pixel to pixel, `noiseRatio` in image-content.ts) takes table 2
+ *   below the full-chroma quality, where table 3 is up to 15% behind the reference in PSNR.
  * - Grey photographs (one component, a radiograph or a scan): the same, in a progressive scan without the scan search. One plane
  *   costs little to scan twice, and on the benchmark's radiograph it takes the SSIM BD-rate against the reference from +3.9% to
  *   +1.3% (2% fewer bytes).
@@ -219,12 +237,12 @@ export const PHOTO_FULL_CHROMA_JPEG_QUANTISATION_TABLE = 0;
  *   A request for that quality asks for full chroma and the smallest file for it; the search is worth 12% of the bytes on an
  *   interface (29.9 kB against 33.9 kB).
  */
-export function jpegOptionsFor(requestedQuality: number | undefined, content: ContentClass, grey: boolean = false): JpegOptions {
+export function jpegOptionsFor(requestedQuality: number | undefined, content: ContentClass, grey: boolean = false, noisy: boolean = false): JpegOptions {
   const quality = clampQuality(requestedQuality, DEFAULT_QUALITY_BY_CODEC.jpeg);
   const chromaSubsampling = jpegChromaFor(quality);
   const common = { quality, chromaSubsampling, optimiseCoding: true, overshootDeringing: true } satisfies JpegOptions;
   if (content === 'photo') {
-    const quantisationTable = chromaSubsampling === '4:4:4' ? PHOTO_FULL_CHROMA_JPEG_QUANTISATION_TABLE : PHOTO_JPEG_QUANTISATION_TABLE;
+    const quantisationTable = photoQuantisationTableFor(chromaSubsampling, noisy);
     return { ...common, progressive: grey, trellisQuantisation: false, quantisationTable };
   }
   // Measured on line art: trellis quantisation costs 5 to 6 dB of PSNR at the same quality number; without it,

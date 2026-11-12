@@ -465,9 +465,8 @@ describe('the known gaps', () => {
     const issuesOf = (prefix: string, speedRows: boolean): number[] =>
       [...new Set(shipped.gaps.filter((g) => g.id.startsWith(prefix) && g.id.endsWith('/throughput') === speedRows).map((g) => g.issue))];
     // The AVIF curve of the CLIC photograph (641) reached parity in the nightly run of 2026-11-07, with both sides on the worker's encoder (#998).
-    // The JPEG XL rows (641): the JPEG encoder on a noisy picture (the 8-bit PNG writer's size is below the reference's now).
-    expect(issuesOf('image/', false)).toEqual([641]);
-    expect(shipped.gaps.filter((g) => g.id.startsWith('image/')).every((g) => g.id.startsWith('image/jxl-'))).toBe(true);
+    // The JPEG XL rows (641): the JPEG encoder on a noisy picture reached parity with the noise reading of entry 266.
+    expect(issuesOf('image/', false)).toEqual([]);
     // The AVIF speed rows of the screenshot, the line art and the deep dart reached parity in the nightly run of 2026-10-31, as the VP9 row of the clip and the scan to PDF row did.
     // The AVIF speed row of the JPEG XL photograph followed them once the decoder's samples no longer went through a compressed PNG (entry 252).
     expect(issuesOf('image/', true)).toEqual([]);

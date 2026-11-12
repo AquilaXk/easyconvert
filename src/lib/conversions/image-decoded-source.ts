@@ -20,6 +20,9 @@ import { metadataOf } from './image-metadata';
  * qualifies the picture for an encoder that writes none (`ignoresDensity`: AVIF), and for one that writes it (JPEG) when the file states
  * it exactly (`pngDensityDpi`: the library reports it rounded, the file's pixels per metre give the figure it would write). When the
  * request strips metadata the output carries no block at all, and neither the packet nor the density matters.
+ *
+ * The JPEG table of a noise-dominated photograph (`noiseRatio`, entry 266) is read from the samples held here; a PNG that is not decoded to
+ * memory is read by one more decode (`greenRasterOf`), so the table does not depend on the route.
  */
 
 /** Largest decoded picture, in bytes, held in memory this way; a larger PNG is still read by the encoder from the PNG. */

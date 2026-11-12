@@ -2,7 +2,7 @@ import sharp, { type Sharp } from 'sharp';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
 import { decodePlainPngOnce, isPlainPng, type DecodedPng } from '../src/lib/conversions/image-decoded-source';
-import { classifyContent, classifyRaster, type ContentClass } from '../src/lib/conversions/image-content';
+import { classifyContent, classifyRaster, greenRasterOf, isNoiseDominated, type ContentClass } from '../src/lib/conversions/image-content';
 import { flattenColour } from '../src/lib/conversions/image-background';
 import { jpegOptionsFor, webpOptionsFor } from '../src/lib/conversions/image-encoder-defaults';
 import { countPipelineRuns } from './helpers/pipeline-runs';
@@ -34,6 +34,14 @@ async function png(channels: 1 | 2 | 3 | 4, deep: boolean, build: (image: Sharp)
   // The library writes a colour PNG from one or two bands unless the picture is declared grey first.
   const picture = sharp(data, { raw: { width: WIDTH, height: HEIGHT, channels } });
   return build(channels < 3 ? picture.toColourspace(deep ? 'grey16' : 'b-w') : picture).png().toBuffer();
+}
+
+/**
+ * Whether the converter reads this PNG as noise-dominated: it reads the noise of a PNG source whichever route decodes it (entry 266), so an encode
+ * that is to equal its output takes the same table. The pictures here are half noise.
+ */
+async function noiseOf(source: Buffer): Promise<boolean> {
+  return isNoiseDominated(await greenRasterOf(sharp(source)));
 }
 
 const PLAIN_PNGS: Array<[string, () => Promise<Buffer>]> = [
@@ -229,13 +237,13 @@ describe('convertImage on a plain PNG', () => {
   });
 
   it.each([
-    ['jpg', (image: Sharp, content: ContentClass) => image.pipelineColourspace('srgb').flatten({ background: flattenColour(undefined) }).jpeg(jpegOptionsFor(70, content))],
+    ['jpg', (image: Sharp, content: ContentClass, noisy: boolean) => image.pipelineColourspace('srgb').flatten({ background: flattenColour(undefined) }).jpeg(jpegOptionsFor(70, content, false, noisy))],
     ['webp', (image: Sharp) => image.webp(webpOptionsFor(70))],
   ] as const)('writes the same %s as the encoder reading the PNG itself, for a 16-bit picture with translucent pixels', async (target, encode) => {
     const source = await png(4, true, (image) => image.toColourspace('rgb16'));
     const converted = (await convertImage(source, target, { quality: 70 }, 'plain.png', 'png')).buffer;
     const content = await classifyContent(sharp(source));
-    const direct = await encode(sharp(source), content).toBuffer();
+    const direct = await encode(sharp(source), content, await noiseOf(source)).toBuffer();
     expect(converted.equals(direct)).toBe(true);
   });
 
@@ -300,7 +308,7 @@ describe('convertImage on a plain PNG', () => {
     const content = await classifyContent(sharp(source));
     const grey = (await sharp(source).metadata()).channels === 2;
     const flattened = sharp(source).pipelineColourspace('srgb').flatten({ background: flattenColour(undefined) });
-    const direct = await (grey ? flattened.toColourspace('b-w') : flattened).jpeg(jpegOptionsFor(70, content, grey)).toBuffer();
+    const direct = await (grey ? flattened.toColourspace('b-w') : flattened).jpeg(jpegOptionsFor(70, content, grey, await noiseOf(source))).toBuffer();
     const [a, b] = [await pixelsOf(converted), await pixelsOf(direct)];
     expect(a.length).toBe(b.length);
     let largest = 0;
