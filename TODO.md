@@ -26,7 +26,8 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 ## Tests and CI
 - Re-pin `book-pg2701.epub` to an archived capture taken after its live file was rebuilt on 2026-11-08, with a gutenberg.org mirror (latest capture 2026-11-01 differs; `book-pg84.epub` done); the pg84 quality rows were not re-measured against the rebuilt bytes (entry 224).
 
-## Later
+## Approved backlog (QA 2026-11-12: every Later and Waiting item is approved)
+- Paid plans with Paddle as merchant of record (QA's pick over Polar, Toss Payments and Lemon Squeezy), behind a provider interface: the paid tiers and checkout show only when billing is configured (keys, products, webhook secret); until then the pricing page marks them "coming soon" and nothing can be bought. Launch stays free-only.
 - Engine choice and version pinning per conversion.
 - Named task graphs in one API job.
 - Thumbnail, metadata and website capture (website capture needs an SSRF suite).
@@ -34,12 +35,9 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - SDKs generated from OpenAPI with a drift check.
 - Split `office.ts` (10,339 lines) and `buildFfmpegArguments`; merge the 15 `escapeXml`/`escapeHtml` copies.
 - Evaluation-size sample sets: 30+ video, 30+ RAW from 10 makers, 40+ audio, 60+ PDF stress files.
-
-## Waiting
-- Paid plans and a payment provider: QA decision; launch is free only.
-- Learned OCR layout tier: legal sign-off on model and data provenance first.
+- Learned OCR layout tier: pick a permissively licensed layout model and record its model and data provenance with the change.
 - Rare samples: DWG before R13, WP Greek accented letters, Word Wingdings check boxes.
-- sk/sk1 input: QA decision on UniConvertor 2 (GPL, separate process).
+- sk/sk1 input through UniConvertor 2, run as a separate sandboxed GPL program (behaviour only, no code copied).
 - Privacy cookie table (docs/legal/privacy.en.md and privacy.ko.md) names easyconvert_session; production now writes __Host-easyconvert_session (entry 241): name both in the next legal revision, and drop the plain name from SESSION_COOKIE_NAMES 7 days after the first deploy.
 - Erasure of an account does not search open multipart sessions of the local store by owner (they expire by their own sweep within the session lifetime).
 - Report real LCOV coverage to SonarCloud from the CI shards (then drop sonar.coverage.exclusions in .sonarcloud.properties and switch to a CI scanner step)
