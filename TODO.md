@@ -13,6 +13,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Cut the GIF time of the camera rows further: the palette mapper (`mapNearest`) is 13 to 38 ns a pixel on the VM after the direct colour table, and the run tolerance check is 45 percent of it (half of the 50 to 60 percent of pixels that change their nearest colour read the 32-byte Oklab entry of the colour, a quarter of those keep the previous colour); a split over the pool threads needs each stripe to start with a guess of the previous colour and a short repair at its first pixels, which is not written. The LZW coder (200 to 320 ms for 20 to 39 MP) and the `3fr` development by `dcraw_emu` (0.9 s) are the other large steps.
 
 ## Product and API
+- Before Paddle billing goes on (entry 262): add Paddle as a processor of billing data to `docs/legal/privacy.en.md`, `privacy.ko.md` and the DPA with the next legal revision (30-day notice, as for the cookie table below), run one sandbox purchase end to end (account, six `PADDLE_` variables, notification destination to `/api/billing/webhook`, CSP if one is added for cdn.paddle.com and checkout frames), and make `PAID_PLANS_ON_SALE` follow `isBillingConfigured()` so the 413 text and the FAQ name the paid plans.
 
 ## Operations and security
 - Bound the `{q}:dlq:unparsed` set of entry 257: a file name with a lone surrogate puts a letter there, and every erasure and every `remove(id)` reads and parses the whole set (age trimming is the only bound today); cap it, or keep its members by job and user as the other index sets do.
@@ -25,7 +26,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Re-pin `book-pg2701.epub` to an archived capture taken after its live file was rebuilt on 2026-11-08, with a gutenberg.org mirror (latest capture 2026-11-01 differs; `book-pg84.epub` done); the pg84 quality rows were not re-measured against the rebuilt bytes (entry 224).
 
 ## Approved backlog (QA 2026-11-12: every Later and Waiting item is approved)
-- Paid plans with Paddle as merchant of record (QA's pick over Polar, Toss Payments and Lemon Squeezy), behind a provider interface: the paid tiers and checkout show only when billing is configured (keys, products, webhook secret); until then the pricing page marks them "coming soon" and nothing can be bought. Launch stays free-only.
 - Engine choice and version pinning per conversion.
 - Named task graphs in one API job.
 - Thumbnail, metadata and website capture (website capture needs an SSRF suite).
