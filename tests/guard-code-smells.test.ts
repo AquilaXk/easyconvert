@@ -149,6 +149,14 @@ describe('code smell ratchet guard (#774)', () => {
       expect(baselineGrowth(base, [...base, entry('g', 1, undefined, 'src/a.ts', 'max-params')])).toEqual([expect.stringContaining('NEW PAIR src/a.ts :: max-params')]);
     });
 
+    it('passes a function moved to another file with no more violations, and fails a moved one that got worse or was copied', () => {
+      expect(baselineGrowth(base, [entry('f', 2, 40, 'src/split/a-part.ts')])).toEqual([]);
+      expect(baselineGrowth(base, [entry('f', 1, 40, 'src/split/a-part.ts'), entry('f', 1, 38, 'src/split/b-part.ts')])).toEqual([]);
+      expect(baselineGrowth(base, [entry('f', 2, 41, 'src/split/a-part.ts')])).toEqual([expect.stringContaining('NEW PAIR src/split/a-part.ts :: complexity')]);
+      expect(baselineGrowth(base, [...base, entry('f', 2, 40, 'src/split/a-part.ts')])).toEqual([expect.stringContaining('NEW PAIR src/split/a-part.ts :: complexity')]);
+      expect(baselineGrowth(base, [entry('f', 2, 40, 'src/split/a-part.ts', 'max-depth')])).toEqual([expect.stringContaining('NEW PAIR src/split/a-part.ts :: max-depth')]);
+    });
+
     it('passes a rename within one file and rule', () => {
       expect(baselineGrowth(base, [entry('renamed', 2, 40)])).toEqual([]);
     });
