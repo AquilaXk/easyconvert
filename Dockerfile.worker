@@ -139,6 +139,24 @@ RUN /tmp/install-vtracer.sh /opt/vtracer
 RUN /tmp/install-vtracer-pixels.sh /opt/vtracer-pixels
 
 # ==============================================================================
+# Stage 3b'''': Pinned quantizr-pixels (palette quantiser of the compress page)
+# ==============================================================================
+# The palette of every indexed PNG the worker writes (the compress page, entry 252). quantizr (DarthSim) is MIT; scripts/quantizr-pixels is a
+# small program of ours around it that reads the raw pixels the worker decoded, built here with the pinned Rust toolchain as one static musl
+# program by scripts/install-quantizr-pixels.sh and run as a separate sandboxed process; nothing links it into the application. Debian ships no
+# package of it. It carries its licence text and, beside it, the notices of the Rust standard library and musl (the vtracer notices, a superset).
+# Without it the image library chooses the palette, as before.
+FROM ${NODE_IMAGE} AS quantizr
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/install-quantizr-pixels.sh /tmp/install-quantizr-pixels.sh
+COPY scripts/vtracer-notices/THIRD-PARTY-NOTICES /tmp/vtracer-notices/THIRD-PARTY-NOTICES
+COPY scripts/quantizr-pixels/ /tmp/quantizr-pixels/
+RUN /tmp/install-quantizr-pixels.sh /opt/quantizr-pixels
+
+# ==============================================================================
 # Stage 3b''': Pinned oxipng (lossless PNG optimiser)
 # ==============================================================================
 # Every PNG the worker writes from a PNG (the compress page and the PNG to PNG conversions, entry 232). oxipng is MIT; the program is the
@@ -496,6 +514,18 @@ RUN dir="$(mktemp -d)" \
     && grep -q '<path d="M' "$dir/out.svg" \
     && rm -rf "$dir"
 
+# Palette quantiser of the compress page (the quantizr stage). Its licence text goes to /usr/share/doc/quantizr-pixels/copyright, which the notices
+# step below collects into /licenses with the system packages; THIRD-PARTY-NOTICES beside it holds the licences of the standard library and musl, and
+# the SOURCE file names the source and the digest of the program. The build fails unless the program answers a palette of two colours and 64 indices
+# for an 8 x 8 picture of two colours, written here as bytes.
+COPY --from=quantizr /opt/quantizr-pixels/bin/quantizr-pixels /usr/local/bin/quantizr-pixels
+COPY --from=quantizr /opt/quantizr-pixels/share/doc/quantizr-pixels /usr/share/doc/quantizr-pixels
+RUN dir="$(mktemp -d)" \
+    && { printf '\010\000\000\000\010\000\000\000'; y=0; while [ "$y" -lt 8 ]; do x=0; while [ "$x" -lt 8 ]; do if [ "$x" -ge 2 ] && [ "$x" -lt 6 ] && [ "$y" -ge 2 ] && [ "$y" -lt 6 ]; then printf '\000\000\000\377'; else printf '\377\377\377\377'; fi; x=$((x + 1)); done; y=$((y + 1)); done; } > "$dir/in.rgba" \
+    && quantizr-pixels < "$dir/in.rgba" > "$dir/out.bin" \
+    && [ "$(wc -c < "$dir/out.bin")" -eq 76 ] \
+    && rm -rf "$dir"
+
 # Lossless PNG optimiser (the oxipng stage). Its licence text goes to /usr/share/doc/oxipng/copyright, which the notices step below collects
 # into /licenses with the system packages; THIRD-PARTY-NOTICES beside it holds the licences of the crates linked into it, and the SOURCE file names
 # the archive and its digest. The build fails unless the program starts.
@@ -653,6 +683,8 @@ RUN cp /usr/share/doc/vtracer/THIRD-PARTY-NOTICES /licenses/vtracer.THIRD-PARTY-
 RUN cp /usr/share/doc/vtracer-pixels/SOURCE /licenses/vtracer-pixels.SOURCE
 RUN cp /usr/share/doc/vtracer-pixels/THIRD-PARTY-NOTICES /licenses/vtracer-pixels.THIRD-PARTY-NOTICES
 RUN cp /usr/share/doc/vtracer-pixels/NOTICE-mimalloc /licenses/vtracer-pixels.NOTICE-mimalloc
+RUN cp /usr/share/doc/quantizr-pixels/SOURCE /licenses/quantizr-pixels.SOURCE
+RUN cp /usr/share/doc/quantizr-pixels/THIRD-PARTY-NOTICES /licenses/quantizr-pixels.THIRD-PARTY-NOTICES
 RUN cp /usr/share/doc/oxipng/SOURCE /licenses/oxipng.SOURCE
 RUN cp /usr/share/doc/oxipng/THIRD-PARTY-NOTICES /licenses/oxipng.THIRD-PARTY-NOTICES
 # The ONNX OCR engine: the MIT text and the third-party notices of onnxruntime (the npm package ships neither), the Apache-2.0 texts of the PaddleOCR

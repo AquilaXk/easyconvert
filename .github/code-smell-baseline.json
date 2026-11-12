@@ -609,7 +609,7 @@
     "rule": "complexity",
     "function": "convertImage",
     "count": 1,
-    "maxValue": 212
+    "maxValue": 211
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -651,7 +651,7 @@
     "rule": "max-lines-per-function",
     "function": "convertImage",
     "count": 1,
-    "maxValue": 638
+    "maxValue": 631
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -665,7 +665,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2569
+    "maxValue": 2563
   },
   {
     "file": "src/lib/conversions/image.ts",

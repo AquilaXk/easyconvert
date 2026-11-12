@@ -180,6 +180,9 @@ describe('classifying changed paths', () => {
     ['the veraPDF install script', 'scripts/install-verapdf.sh', ['pdf-ops']],
     ['the oxipng install script', 'scripts/install-oxipng.sh', ['image']],
     ['the oxipng notices', 'scripts/oxipng-notices/THIRD-PARTY-NOTICES', ['image']],
+    ['the quantizr pixel quantiser', 'scripts/quantizr-pixels/src/main.rs', ['image']],
+    ['the quantizr pixel quantiser lock file', 'scripts/quantizr-pixels/Cargo.lock', ['image']],
+    ['the quantizr install script', 'scripts/install-quantizr-pixels.sh', ['image']],
     ['the sweep of leftover sandbox directories', 'src/worker/sandbox-sweep.ts', [...BENCH_FAMILIES]],
   ])('maps %s, a file of the worker image that no conversion module imports, to the families it builds', (_name, file, benchmarked) => {
     expect(MAP.scope.test(file), file).toBe(true);
@@ -188,7 +191,7 @@ describe('classifying changed paths', () => {
 
   it('classifies every file under native/ and every install script, patch directory and pinned-source directory of scripts/', () => {
     const tracked = spawnSync('git', ['ls-files', 'native', 'scripts'], { cwd: ROOT, encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
-    const inScope = tracked.filter((file) => /^native\/|^scripts\/(install-[^/]*\.sh$|[^/]*-patches\/|vtracer-pixels\/|vtracer-notices\/|avifenc\/|lib\/djvulibre-gates\.sh$)/.test(file));
+    const inScope = tracked.filter((file) => /^native\/|^scripts\/(install-[^/]*\.sh$|[^/]*-patches\/|vtracer-pixels\/|vtracer-notices\/|quantizr-pixels\/|avifenc\/|lib\/djvulibre-gates\.sh$)/.test(file));
     expect(inScope.length).toBeGreaterThan(15);
     expect(classifyPaths(inScope, MAP).unclassified).toEqual([]);
     for (const file of inScope) expect(MAP.scope.test(file), file).toBe(true);
