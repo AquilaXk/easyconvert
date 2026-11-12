@@ -1,6 +1,7 @@
 import type Redis from 'ioredis';
 import type { ResourceClass } from './pricing';
 import { redisKeyStore } from '../api-keys/redis-key-store';
+import { clearKeysMatching } from '../redis/clear-keys';
 
 export type UsageLedgerStatus = 'completed' | 'failed' | 'cancelled';
 
@@ -189,10 +190,7 @@ export class RedisUsageLedger implements UsageLedger {
 
   public async reset(): Promise<void> {
     // For testnet cleanup
-    const keys = await this.redis.keys(`${this.prefix}usage:*`);
-    if (keys.length > 0) {
-      await this.redis.del(...keys);
-    }
+    await clearKeysMatching(this.redis, [`${this.prefix}usage:*`]);
   }
 }
 

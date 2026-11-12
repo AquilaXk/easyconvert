@@ -1024,6 +1024,7 @@
   "tests/redis-backup.test.ts": 17.5,
   "tests/redis-first-command-redis.test.ts": 0,
   "tests/redis-key-store-reset.test.ts": 0,
+  "tests/redis-query-paths-redis.test.ts": 0,
   "tests/redis-suites-registered.test.ts": 0,
   "tests/redis-when-ready.test.ts": 2.1,
   "tests/refusal-code-inventory.test.ts": 1.2,

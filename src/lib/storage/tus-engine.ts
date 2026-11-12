@@ -15,6 +15,7 @@ import { StorageServiceError } from './adapters/adapter-interface';
 import { multipartUploadKey } from './key-namespace';
 import { registerCompletedUpload } from './retention-service';
 import { MAX_CONTENT_TYPE_LENGTH, isValidContentType } from './object-attributes';
+import { clearKeysMatching } from '../redis/clear-keys';
 
 export class TusOffsetMismatchError extends Error {
   constructor(public readonly expectedOffset: number) {
@@ -234,10 +235,7 @@ export class RedisTusSessionStore implements TusSessionStore {
   }
 
   async reset(): Promise<void> {
-    const keys = await this.redis.keys(`${this.prefix}*`);
-    if (keys.length > 0) {
-      await Promise.all(keys.map((k) => this.redis.del(k)));
-    }
+    await clearKeysMatching(this.redis, [`${this.prefix}*`]);
   }
 }
 

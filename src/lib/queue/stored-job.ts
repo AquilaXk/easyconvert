@@ -1,4 +1,6 @@
+import type Redis from 'ioredis';
 import type { ConversionRefusalCode } from '../refusal-codes';
+import { pipelineReplies } from '../redis/pipeline-replies';
 import type { Job, JobState } from './bullmq-engine';
 
 /** Parses a JSON hash field; undefined when it is absent or damaged. */
@@ -35,4 +37,11 @@ export function flatHashToRecord(flat: string[]): Record<string, string> {
     record[flat[i]] = flat[i + 1];
   }
   return record;
+}
+
+/** The hashes of the job keys `jobKeys`, in order, all read through one pipeline (as BullMQ Queue.getJobs reads them through one multi); an empty one is a job that is gone. */
+export async function readJobHashes(redis: Redis, jobKeys: readonly string[]): Promise<Record<string, string>[]> {
+  const pipeline = redis.pipeline();
+  for (const key of jobKeys) pipeline.hgetall(key);
+  return (await pipelineReplies(pipeline)) as Record<string, string>[];
 }
