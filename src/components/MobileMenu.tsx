@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useState, type KeyboardEvent } from 'react';
+import React, { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useTranslations, type Messages } from 'next-intl';
 import { ChevronDown, Moon, Sun, X } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
@@ -88,6 +88,11 @@ export default function MobileMenu({
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   useModalDialog(dialogRef, true, onClose);
+  // showModal() focuses the first link (the logo), and touch browsers then draw its focus ring. The sheet itself takes focus
+  // instead, as the HTML dialog guidance advises for a dialog that opens on a large region; Tab still reaches every item.
+  useEffect(() => {
+    dialogRef.current?.focus();
+  }, []);
 
   const iconButton =
     'min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors cursor-pointer';
@@ -96,8 +101,9 @@ export default function MobileMenu({
     <dialog
       ref={dialogRef}
       aria-label={t('menuLabel')}
+      tabIndex={-1}
       onKeyDown={(event) => trapFocus(event, onClose)}
-      className="!m-0 h-dvh !max-h-none w-dvw !max-w-none overflow-y-auto rounded-none border-0 p-0 bg-canvas text-ink"
+      className="!m-0 !outline-none h-dvh !max-h-none w-dvw !max-w-none overflow-y-auto rounded-none border-0 p-0 bg-canvas text-ink"
     >
       <div className="flex items-center justify-between px-4 h-[var(--header-height)] border-b border-rule">
         <Link href="/" onClick={onClose} aria-label={t('homeLabel')} className="min-h-[44px] inline-flex items-center shrink-0 rounded-sm">
