@@ -86,3 +86,6 @@ bench-results/
 
 # Design captures of the capture scripts; never published under public/.
 /.screenshots/
+
+# qpdf-runner fuzz builds
+native/qpdf-runner/.fuzz-build/
