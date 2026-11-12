@@ -78,7 +78,8 @@ async function writePdf(buf: Buffer, edits: MetadataEdits, access: PdfAccess): P
   try {
     doc = await PDFDocument.load(plain, { updateMetadata: false, parseSpeed: PDF_LIB_OBJECTS_PER_TICK });
   } catch (error) {
-    throw new MetadataWriteUnsupportedError(`The PDF cannot be read, so its metadata is not changed (${error instanceof Error ? error.message.slice(0, 120) : 'unreadable'}).`);
+    console.warn(`[metadata] a PDF could not be read for a write: ${error instanceof Error ? error.message.replace(/\s+/g, ' ').slice(0, 300) : 'unreadable'}`);
+    throw new MetadataWriteUnsupportedError('The PDF cannot be read, so its metadata is not changed.');
   }
   let info = doc.context.lookupMaybe(doc.context.trailerInfo.Info, PDFDict);
   if (info === undefined) {

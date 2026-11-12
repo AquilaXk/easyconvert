@@ -139,6 +139,45 @@ describe('thumbnail task', () => {
     await expect(run).rejects.toThrow(/one frame/);
   });
 
+  it.each(['3', '1.5', '00:00:03.250', '1:03', '0'])('passes the frame time %s to the media engine', async (at) => {
+    const calls: Call[] = [];
+    const video = seed('clip.mp4', Buffer.from('stand-in video'), 'video/mp4');
+    await processGraphNodeJob(nodeJob({ op: 'thumbnail', targetFormat: 'png', options: { thumbnail: { at: [at] } } }, [video]), recordingEngine(calls), s3Storage);
+    expect(calls[0].options.thumbnail?.at).toEqual([at]);
+  });
+
+  it.each(['-5', '-00:00:01', '--version', '1;rm', 'abc', '1:2:3:4', ' 3', '3 ', '', '1e3', '99999999', 'lavfi'])('refuses the frame time %j before the media engine is asked', async (at) => {
+    const calls: Call[] = [];
+    const video = seed('clip.mp4', Buffer.from('stand-in video'), 'video/mp4');
+    const run = processGraphNodeJob(nodeJob({ op: 'thumbnail', targetFormat: 'png', options: { thumbnail: { at: [at] } } }, [video]), recordingEngine(calls), s3Storage);
+    await expect(run).rejects.toBeInstanceOf(UnsupportedOptionError);
+    await expect(run).rejects.toThrow(/"thumbnail.at" takes seconds/);
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ['width', 15],
+    ['width', 7681],
+    ['width', 100.5],
+    ['height', 0],
+    ['height', 9000],
+    ['height', -64],
+  ])('refuses a %s of %s on the node itself, since the schema is not the only way a node is made', async (field, value) => {
+    const calls: Call[] = [];
+    const input = seed('photo.png', await sourcePng(), 'image/png');
+    const run = processGraphNodeJob(nodeJob({ op: 'thumbnail', targetFormat: 'png', options: { thumbnail: { [field]: value } } }, [input]), recordingEngine(calls), s3Storage);
+    await expect(run).rejects.toBeInstanceOf(UnsupportedOptionError);
+    await expect(run).rejects.toThrow(new RegExp(`thumbnail.${field}" takes a whole number from 16 to 7680`));
+    expect(calls).toEqual([]);
+  });
+
+  it.each([16, 7680])('accepts the edge of %i pixels', async (edge) => {
+    const calls: Call[] = [];
+    const input = seed('photo.png', await sourcePng(), 'image/png');
+    await processGraphNodeJob(nodeJob({ op: 'thumbnail', targetFormat: 'png', options: { thumbnail: { width: edge, height: edge } } }, [input]), recordingEngine(calls), s3Storage);
+    expect(calls[0].options).toMatchObject({ width: edge, height: edge });
+  });
+
   it('refuses a target outside JPEG, PNG and WebP', async () => {
     const input = seed('photo.png', await sourcePng(), 'image/png');
     await expect(processGraphNodeJob(nodeJob({ op: 'thumbnail', targetFormat: 'gif' }, [input]), undefined, s3Storage)).rejects.toThrow(/cannot produce "gif"/);

@@ -21,7 +21,7 @@ import { readXmp } from './xmp';
  * rational is its value, a GPS position is signed decimal degrees.
  *
  * Reading is best effort for what is inside a file: a part that cannot be read leaves its group out and says so in
- * `File.Warning`, it does not fail the task. The file itself is never changed.
+ * `File.Warning` (in words that name no path); it does not fail the task. The file itself is never changed.
  */
 export const METADATA_SCHEMA_VERSION = 1;
 
@@ -107,9 +107,12 @@ async function readImage(buf: Buffer, ext: string, report: MetadataReport): Prom
   put(image, 'ICCProfile', meta.icc === undefined ? undefined : true);
   report.Image = image;
 
-  const blocks: EmbeddedBlocks = { exif: null, xmp: null };
-  if (meta.exif !== undefined) blocks.exif = tiffBlockOf(meta.exif);
-  blocks.xmp = meta.xmpAsString ?? readContainerXmp(buf, ext);
+  // The image library reads the blocks that stand before the picture data; the container is read for those it left, wherever they stand.
+  const container = readContainerBlocks(buf, ext);
+  const blocks: EmbeddedBlocks = {
+    exif: (meta.exif === undefined ? null : tiffBlockOf(meta.exif)) ?? container.exif,
+    xmp: meta.xmpAsString ?? container.xmp,
+  };
   if (blocks.exif !== null) {
     for (const [group, tags] of Object.entries(readExif(blocks.exif))) report[group] = tags as MetadataGroup;
   }
@@ -124,14 +127,14 @@ function jpegOrPng(ext: string): 'jpeg' | 'png' | undefined {
   return ext === 'jpg' || ext === 'jpeg' ? 'jpeg' : undefined;
 }
 
-/** The XMP packet of a JPEG or PNG read from its container, for a library build that does not hand it over. */
-function readContainerXmp(buf: Buffer, ext: string): string | null {
+/** The blocks of a JPEG or PNG read from its container; none for another format or a container that cannot be walked. */
+function readContainerBlocks(buf: Buffer, ext: string): EmbeddedBlocks {
   const container = jpegOrPng(ext);
-  if (container === undefined) return null;
+  if (container === undefined) return { exif: null, xmp: null };
   try {
-    return readEmbeddedBlocks(buf, container).xmp;
+    return readEmbeddedBlocks(buf, container);
   } catch {
-    return null;
+    return { exif: null, xmp: null };
   }
 }
 
@@ -334,7 +337,9 @@ export async function readMetadata(buf: Buffer, filename: string, signal?: Abort
   } catch (error) {
     signal?.throwIfAborted();
     if (isMissingTool(error)) throw error;
-    report.File.Warning = `The ${ext.toUpperCase()} content could not be read: ${error instanceof Error ? error.message.slice(0, 200) : 'unreadable'}`;
+    // What failed can carry a path of the server (a probe's stderr names its scratch directory), so the file gets fixed wording and the log the detail.
+    console.warn(`[metadata] ${ext.toUpperCase()} content could not be read: ${error instanceof Error ? error.message.replace(/\s+/g, ' ').slice(0, 300) : 'unreadable'}`);
+    report.File.Warning = `The ${ext.toUpperCase()} content could not be read.`;
   }
   return report;
 }

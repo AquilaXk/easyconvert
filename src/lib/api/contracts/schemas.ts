@@ -670,7 +670,7 @@ export const ConversionOptionsSchema = {
           type: 'array',
           minItems: 1,
           maxItems: MAX_THUMBNAIL_TIMESTAMPS,
-          items: { type: 'string' },
+          items: { type: 'string', pattern: '^(?:\\d{1,5}(?:\\.\\d{1,6})?|(?:\\d{1,2}:)?\\d{1,2}:\\d{1,2}(?:\\.\\d{1,6})?)$' },
           description: `Timestamp strings or second offsets where thumbnails should be sampled (at most ${MAX_THUMBNAIL_TIMESTAMPS}).`,
         },
         format: {

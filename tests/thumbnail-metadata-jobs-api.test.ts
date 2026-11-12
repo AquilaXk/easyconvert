@@ -55,6 +55,25 @@ describe('thumbnail and metadata graphs through POST /api/v1/jobs', () => {
     expect(initGraph).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ['a width under 16', { width: 15 }],
+    ['a width over 7680', { width: 7681 }],
+    ['a height over 7680', { height: 9000 }],
+    ['a height that is not whole', { height: 64.5 }],
+    ['a frame time with a sign', { at: ['-5'] }],
+    ['a frame time that is an option', { at: ['--version'] }],
+    ['a frame time with a command in it', { at: ['1;rm'] }],
+    ['an unknown fit', { fit: 'stretch' }],
+    ['a page of 0', { page: 0 }],
+  ])('refuses %s at submission with a 422 that names the field, and reserves nothing', async (_what, thumbnail) => {
+    const quotaBefore = JSON.stringify(await redisKeyStore.getQuotaUsage(userId));
+    const { res, json } = await submit('pic.png', await png(), 'image/png', { t: { op: 'thumbnail', input: 'src', targetFormat: 'png', options: { thumbnail } }, out: { op: 'export.internal', input: 't' } });
+    expect(res.status, JSON.stringify(json)).toBe(422);
+    expect(JSON.stringify(json.invalidParams)).toContain('thumbnail');
+    expect(initGraph).not.toHaveBeenCalled();
+    expect(JSON.stringify(await redisKeyStore.getQuotaUsage(userId))).toBe(quotaBefore);
+  });
+
   it('refuses a thumbnail whose format is not JPEG, PNG or WebP, naming the node', async () => {
     const { res, json } = await submit('pic.png', await png(), 'image/png', { t: { op: 'thumbnail', input: 'src', targetFormat: 'gif' }, out: { op: 'export.internal', input: 't' } });
     expect(res.status).toBe(422);

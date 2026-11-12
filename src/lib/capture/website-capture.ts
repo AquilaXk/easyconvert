@@ -195,6 +195,25 @@ export async function runCapture(url: URL, request: WebsiteCaptureRequest): Prom
   }
 }
 
+/**
+ * The bytes of the file the browser wrote, by the name this run gave it. The browser runs on page content, so the name may be a link to a
+ * file of the worker: it is opened without following a link and must be a regular file.
+ */
+function readCapturedFile(file: string): Buffer {
+  let descriptor: number;
+  try {
+    descriptor = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  } catch {
+    throw new CaptureFailedError('The browser wrote no file.');
+  }
+  try {
+    if (!fs.fstatSync(descriptor).isFile()) throw new CaptureFailedError('The browser wrote no file.');
+    return fs.readFileSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
 /** Whether the gate refused the address or the port of a request, as against a limit or a failure to connect. */
 function isAddressRefusal(refusal: { reason: string }): boolean {
   return refusal.reason === 'blocked' || refusal.reason === 'port';
@@ -210,9 +229,7 @@ function finish(report: DriverReport, dir: string, format: string, refusals: Rea
     }
     throw new CaptureFailedError(report.code === 'load_failed' ? `The page at ${url.origin} could not be loaded.` : `The page at ${url.origin} could not be drawn.`);
   }
-  const file = path.join(dir, path.basename(report.output ?? `capture.${format}`));
-  if (!fs.existsSync(file)) throw new CaptureFailedError('The browser wrote no file.');
-  const buffer = fs.readFileSync(file);
+  const buffer = readCapturedFile(path.join(dir, `capture.${format}`));
   if (!hasMagic(buffer, format)) throw new CaptureFailedError(`The browser wrote a file that is not a ${format.toUpperCase()}.`);
   const warnings: string[] = [];
   const blocked = refusals.filter(isAddressRefusal);

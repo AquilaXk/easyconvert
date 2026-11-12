@@ -51,6 +51,12 @@ if path.startswith('subresource-private'):
     status2 = through_proxy('localhost:80')
     open(out, 'wb').write(${PNG_BYTES} if request['format'] == 'png' else b'%PDF-1.7 stand-in')
     say({'ok': True, 'output': request['output'], 'finalUrl': request['url'], 'title': status + ' / ' + status2, 'blocked': ['file:///etc/passwd']}); sys.exit(0)
+if path.startswith('symlink'):
+    import os
+    secret = sys.argv[1].rsplit('/', 1)[0] + '/../secret-of-the-worker.txt'
+    open(secret, 'w').write('%PDF-1.7 a file of the worker, not a capture')
+    os.symlink(secret, out)
+    say({'ok': True, 'output': request['output'], 'finalUrl': request['url'], 'title': '', 'blocked': []}); sys.exit(0)
 if path.startswith('badfile'):
     open(out, 'wb').write(b'<html>not a pdf</html>')
     say({'ok': True, 'output': request['output'], 'finalUrl': request['url'], 'title': ''}); sys.exit(0)
@@ -165,6 +171,13 @@ describe.skipIf(skipUnless('a Python 3 interpreter for the stand-in driver', PYT
     const slow = captureWebsite({ url: 'https://site.example/timeout', format: 'png', timeoutMs: 2000 });
     await expect(slow).rejects.toBeInstanceOf(CpuTaskTimeoutError);
     await expect(slow).rejects.toThrow(/2000 ms/);
+  });
+
+  it('does not read the file of the worker that a page-driven browser left as a link in place of its output', async () => {
+    useStandIn();
+    const run = captureWebsite({ url: 'https://site.example/symlink', format: 'pdf' });
+    await expect(run).rejects.toBeInstanceOf(CaptureFailedError);
+    await expect(run).rejects.toThrow('The browser wrote no file.');
   });
 
   it('is unavailable on a worker without the driver or the interpreter', async () => {

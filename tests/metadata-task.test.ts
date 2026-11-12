@@ -1,6 +1,7 @@
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import JSZip from 'jszip';
 import sharp from 'sharp';
 import { PDFDocument } from 'pdf-lib';
@@ -173,6 +174,107 @@ describe('reading metadata', () => {
         { Index: 1, Type: 'audio', Codec: 'aac', ChannelCount: 2, SampleRate: 48000, Language: 'eng', Title: 'Main' },
       ]);
     });
+  });
+});
+
+/** A PNG chunk: length, type, data and the CRC-32 of the type and the data. */
+function chunkOf(type: string, data: Buffer): Buffer {
+  const head = Buffer.alloc(8);
+  head.writeUInt32BE(data.length, 0);
+  head.write(type, 4, 'latin1');
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(zlib.crc32(Buffer.concat([head.subarray(4), data])));
+  return Buffer.concat([head, data, crc]);
+}
+
+/** The PNG with `extra` chunks put just before its IEND chunk: after the picture data, where a writer that saves metadata last leaves them. */
+function withChunksAfterPictureData(png: Buffer, extra: Buffer[]): Buffer {
+  const iend = png.length - 12;
+  return Buffer.concat([png.subarray(0, iend), ...extra, png.subarray(iend)]);
+}
+
+const xmpItxt = (text: string, compressed = false): Buffer =>
+  chunkOf('iTXt', Buffer.concat([Buffer.from('XML:com.adobe.xmp\0', 'latin1'), Buffer.from([compressed ? 1 : 0, 0]), Buffer.from('\0\0', 'latin1'), compressed ? Buffer.from(text, 'latin1') : Buffer.from(text, 'utf8')]));
+
+describe('metadata after the picture data of a PNG', () => {
+  const XMP = '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title><rdf:Alt><rdf:li xml:lang="x-default">Late title</rdf:li></rdf:Alt></dc:title></rdf:Description></rdf:RDF></x:xmpmeta>';
+
+  async function lateExifPng(): Promise<{ png: Buffer; exifChunk: Buffer; xmpChunk: Buffer }> {
+    const withExif = await writeMetadata(await plainPng(), 'p.png', { Make: 'Acme', Artist: 'Ann' });
+    // Take the eXIf chunk the writer made after the header, and put it (with an XMP chunk) after the picture data instead.
+    const start = withExif.buffer.indexOf(Buffer.from('eXIf', 'latin1')) - 4;
+    const length = withExif.buffer.readUInt32BE(start);
+    const exifChunk = withExif.buffer.subarray(start, start + 12 + length);
+    const bare = Buffer.concat([withExif.buffer.subarray(0, start), withExif.buffer.subarray(start + exifChunk.length)]);
+    const xmpChunk = xmpItxt(XMP);
+    return { png: withChunksAfterPictureData(bare, [exifChunk, xmpChunk]), exifChunk, xmpChunk };
+  }
+
+  it('reads an eXIf chunk and an XMP chunk that stand after the picture data', async () => {
+    const { png } = await lateExifPng();
+    const report = await readMetadata(png, 'late.png');
+    expect(report.EXIF).toEqual({ Make: 'Acme', Artist: 'Ann' });
+    expect(report.XMP).toEqual({ Title: 'Late title' });
+    const blocks = readEmbeddedBlocks(png, 'png');
+    expect(blocks.xmp).toBe(XMP);
+    expect(blocks.exif).not.toBeNull();
+  });
+
+  it('writing one EXIF field keeps the others of an eXIf chunk after the picture data, and leaves the XMP chunk there byte for byte', async () => {
+    const { png, xmpChunk } = await lateExifPng();
+    const written = await writeMetadata(png, 'late.png', { Model: 'X1' });
+    expect((await readMetadata(written.buffer, 'late.png')).EXIF).toEqual({ Make: 'Acme', Artist: 'Ann', Model: 'X1' });
+    expect(written.buffer.indexOf(xmpChunk)).toBeGreaterThan(0);
+    expect(written.buffer.toString('latin1').split('eXIf')).toHaveLength(2);
+    expect((await pixels(written.buffer)).equals(await pixels(png))).toBe(true);
+  });
+
+  it('refuses XMP fields into a PNG whose XMP chunk stands after the picture data, as it does for one before it', async () => {
+    const { png } = await lateExifPng();
+    await expect(writeMetadata(png, 'late.png', { 'XMP:Description': 'D' })).rejects.toThrow(/already carries an XMP packet/);
+  });
+
+  it('turns a damaged compressed XMP chunk into the coded 422 for a write, and into no XMP for a read', async () => {
+    const damaged = withChunksAfterPictureData(await plainPng(), [xmpItxt('this is not zlib data', true)]);
+    const run = writeMetadata(damaged, 'bad.png', { Artist: 'x' });
+    await expect(run).rejects.toBeInstanceOf(MetadataWriteUnsupportedError);
+    await expect(run).rejects.toThrow(/XMP packet of the PNG is damaged/);
+    expect(refusalCodeOf(await run.catch((caught: unknown) => caught))).toBe('metadata_write_unsupported');
+    expect((await readMetadata(damaged, 'bad.png')).XMP).toBeUndefined();
+  });
+});
+
+describe('what a report says of a part it cannot read', () => {
+  let dir = '';
+  beforeAll(() => {
+    dir = mkdtempSync(path.join(os.tmpdir(), 'easyconvert-metadata-failing-ffprobe-'));
+    const ffprobe = path.join(dir, 'ffprobe');
+    // Fails as a probe does on a file it cannot open: its message names the scratch file of the run.
+    writeFileSync(ffprobe, '#!/bin/sh\ncase "$*" in *-show_format*) echo "$*: Invalid data found when processing input" >&2; exit 1;; *) echo "ffprobe version stand-in";; esac\n');
+    chmodSync(ffprobe, SPY_MODE);
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('words every failed part the same way for every reader, naming no path of the server', async () => {
+    vi.stubEnv('FFPROBE_PATH', path.join(dir, 'ffprobe'));
+    const logged = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const cases: Array<[string, Buffer]> = [
+      ['clip.mp4', Buffer.from('not a video at all, ftypmp42')],
+      ['track.mp3', Buffer.from('not audio')],
+      ['photo.jpg', Buffer.from('not a jpeg')],
+      ['doc.pdf', Buffer.from('%PDF-1.4 nothing')],
+      ['letter.docx', Buffer.from('not a zip')],
+      ['notes.odt', Buffer.from('not a zip')],
+    ];
+    for (const [name, bytes] of cases) {
+      const warning = String((await readMetadata(bytes, name)).File.Warning);
+      expect(warning, name).toBe(`The ${name.split('.')[1].toUpperCase()} content could not be read.`);
+      expect(warning).not.toContain('/');
+      expect(warning).not.toContain(os.tmpdir());
+    }
+    // The detail went to the log of the server instead: the failed probe named the scratch directory of its run.
+    expect(logged.mock.calls.map((call) => String(call[0])).find((line) => line.includes('MP4'))).toMatch(/easyconvert_metadata_.*input\.mp4/);
   });
 });
 

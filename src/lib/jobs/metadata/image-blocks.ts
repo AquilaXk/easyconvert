@@ -26,7 +26,7 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0
 const PNG_CHUNK_OVERHEAD = 12;
 const PNG_EXIF = 'eXIf';
 const PNG_TEXT = 'iTXt';
-const PNG_DATA = 'IDAT';
+const PNG_END = 'IEND';
 const PNG_HEADER = 'IHDR';
 const PNG_XMP_KEYWORD = 'XML:com.adobe.xmp';
 
@@ -88,7 +88,8 @@ interface PngChunk {
   data: Buffer;
 }
 
-function pngChunks(file: Buffer, until: string | null): PngChunk[] {
+/** The chunks of a PNG up to and including IEND: every chunk the file has, before the picture data and after it. */
+function pngChunks(file: Buffer): PngChunk[] {
   if (file.length < PNG_SIGNATURE.length || !file.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) throw new ImageContainerError('The file is not a PNG.');
   const chunks: PngChunk[] = [];
   let at = PNG_SIGNATURE.length;
@@ -98,7 +99,7 @@ function pngChunks(file: Buffer, until: string | null): PngChunk[] {
     if (end > file.length) throw new ImageContainerError('The PNG is cut short.');
     const type = file.toString('latin1', at + 4, at + 8);
     chunks.push({ type, start: at, end, data: file.subarray(at + 8, at + 8 + length) });
-    if (type === until) break;
+    if (type === PNG_END) break;
     at = end;
   }
   return chunks;
@@ -116,7 +117,11 @@ function xmpOfItxt(data: Buffer): string | null {
     at = end + 1;
   }
   const text = data.subarray(at);
-  return (compressed ? zlib.inflateSync(text, { maxOutputLength: 1024 * 1024 }) : text).toString('utf8');
+  try {
+    return (compressed ? zlib.inflateSync(text, { maxOutputLength: 1024 * 1024 }) : text).toString('utf8');
+  } catch {
+    throw new ImageContainerError('The XMP packet of the PNG is damaged.');
+  }
 }
 
 /** The blocks of a JPEG or PNG file; null for a block it has not. */
@@ -130,14 +135,19 @@ export function readEmbeddedBlocks(file: Buffer, container: 'jpeg' | 'png'): Emb
       xmp: xmp ? xmp.payload.subarray(XMP_SIGNATURE.length).toString('utf8') : null,
     };
   }
-  const chunks = pngChunks(file, PNG_DATA);
+  const found = pngBlocksOf(pngChunks(file));
+  return { exif: found.exif ? tiffBlockOf(found.exif.data) : null, xmp: found.xmp?.text ?? null };
+}
+
+/** The eXIf chunk and the XMP iTXt chunk of a PNG, wherever they stand in it (before the picture data or after it). Reader and writer both take them from here. */
+function pngBlocksOf(chunks: readonly PngChunk[]): { exif?: PngChunk; xmp?: PngChunk & { text: string } } {
   const exif = chunks.find((chunk) => chunk.type === PNG_EXIF);
-  let xmp: string | null = null;
-  for (const chunk of chunks.filter((candidate) => candidate.type === PNG_TEXT)) {
-    xmp = xmpOfItxt(chunk.data);
-    if (xmp !== null) break;
+  for (const chunk of chunks) {
+    if (chunk.type !== PNG_TEXT) continue;
+    const text = xmpOfItxt(chunk.data);
+    if (text !== null) return { exif, xmp: { ...chunk, text } };
   }
-  return { exif: exif ? tiffBlockOf(exif.data) : null, xmp };
+  return { exif };
 }
 
 function jpegSegment(marker: number, payload: Buffer): Buffer {
@@ -195,14 +205,13 @@ function xmpChunk(packet: Buffer): Buffer {
 
 /** The PNG with its eXIf chunk and/or XMP iTXt chunk set; a new one goes right after the header chunk, before the picture data. */
 function withPngBlocks(file: Buffer, blocks: Partial<{ exif: Buffer; xmp: Buffer }>): Buffer {
-  const chunks = pngChunks(file, null);
+  const chunks = pngChunks(file);
   if (chunks[0]?.type !== PNG_HEADER) throw new ImageContainerError('The PNG does not start with its header chunk.');
-  const existingExif = chunks.find((chunk) => chunk.type === PNG_EXIF);
-  const existingXmp = chunks.find((chunk) => chunk.type === PNG_TEXT && xmpOfItxt(chunk.data) !== null);
+  const { exif: existingExif, xmp: existingXmp } = pngBlocksOf(chunks);
   const pieces: Buffer[] = [file.subarray(0, PNG_SIGNATURE.length)];
   for (const chunk of chunks) {
     if (chunk === existingExif && blocks.exif) pieces.push(pngChunk(PNG_EXIF, blocks.exif));
-    else if (chunk === existingXmp && blocks.xmp) pieces.push(xmpChunk(blocks.xmp));
+    else if (chunk.start === existingXmp?.start && blocks.xmp) pieces.push(xmpChunk(blocks.xmp));
     else pieces.push(file.subarray(chunk.start, chunk.end));
     if (chunk.type === PNG_HEADER) {
       if (blocks.exif && !existingExif) pieces.push(pngChunk(PNG_EXIF, blocks.exif));

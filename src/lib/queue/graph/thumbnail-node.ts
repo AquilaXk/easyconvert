@@ -9,6 +9,10 @@ const DEFAULT_FRAME_TIME = '00:00:01.000';
 const VIDEO_CATEGORY = 'video';
 const IMAGE_CATEGORY = 'image';
 const PICTURE_FORMAT = 'png';
+/** Seconds (`3`, `1.5`) or a clock time (`00:00:03.250`, `1:03`): what ffmpeg takes after `-ss` without an option, a sign or a unit. */
+const FRAME_TIME = /^(?:\d{1,5}(?:\.\d{1,6})?|(?:\d{1,2}:)?\d{1,2}:\d{1,2}(?:\.\d{1,6})?)$/;
+const MIN_EDGE_PX = 16;
+const MAX_EDGE_PX = 7680;
 
 /** What a thumbnail node asks of the engine for one input. */
 export interface ThumbnailSource {
@@ -38,6 +42,14 @@ export function thumbnailPlan(
   const frames = thumbnail?.at ?? [];
   if (frames.length > 1) {
     throw new UnsupportedOptionError(`A thumbnail shows one frame; "thumbnail.at" lists ${frames.length}.`);
+  }
+  if (frames[0] !== undefined && !FRAME_TIME.test(frames[0])) {
+    throw new UnsupportedOptionError('"thumbnail.at" takes seconds (3 or 1.5) or a time (00:00:03.250).');
+  }
+  for (const [name, edge] of [['width', thumbnail?.width], ['height', thumbnail?.height]] as const) {
+    if (edge !== undefined && !(Number.isInteger(edge) && edge >= MIN_EDGE_PX && edge <= MAX_EDGE_PX)) {
+      throw new UnsupportedOptionError(`"thumbnail.${name}" takes a whole number from ${MIN_EDGE_PX} to ${MAX_EDGE_PX}.`);
+    }
   }
   const scaling: ConversionOptions = {
     width: thumbnail?.width ?? DEFAULT_THUMBNAIL_EDGE_PX,
