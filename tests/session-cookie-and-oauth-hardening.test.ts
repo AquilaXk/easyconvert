@@ -177,9 +177,12 @@ describe('the ID token of the Google sign-in', () => {
   const SUB = 'google-subject-1';
   let originalFetch: typeof fetch;
 
+  /** Google's issuer and an expiry an hour ahead, under the claims of the case. */
+  const issued = (): Record<string, unknown> => ({ iss: 'https://accounts.google.com', exp: Math.floor(Date.now() / 1000) + 3600 });
+
   function idToken(claims: Record<string, unknown>): string {
     const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
-    return `${encode({ alg: 'RS256' })}.${encode(claims)}.signature`;
+    return `${encode({ alg: 'RS256' })}.${encode({ ...issued(), ...claims })}.signature`;
   }
 
   function stubGoogle(tokenResponse: Record<string, unknown>): void {
@@ -203,6 +206,12 @@ describe('the ID token of the Google sign-in', () => {
 
   const exchange = (nonce: string | undefined = NONCE) => exchangeGoogleCode('code', 'http://localhost:3000/cb', 'verifier', nonce);
 
+  it('is accepted from either issuer Google uses', async () => {
+    stubGoogle({ id_token: idToken({ nonce: NONCE, aud: CLIENT_ID, sub: SUB, iss: 'accounts.google.com' }) });
+
+    expect((await exchange()).email).toBe('person@example.test');
+  });
+
   it('is accepted when it carries the nonce, the client and the subject of the profile', async () => {
     stubGoogle({ id_token: idToken({ nonce: NONCE, aud: CLIENT_ID, sub: SUB }) });
 
@@ -214,6 +223,11 @@ describe('the ID token of the Google sign-in', () => {
     ['no nonce', { aud: CLIENT_ID, sub: SUB }, /nonce/],
     ['another client', { nonce: NONCE, aud: 'someone-else', sub: SUB }, /another client/],
     ['another account', { nonce: NONCE, aud: CLIENT_ID, sub: 'someone-else' }, /another account/],
+    ['another issuer', { nonce: NONCE, aud: CLIENT_ID, sub: SUB, iss: 'https://accounts.example.test' }, /not issued by Google/],
+    ['no issuer', { nonce: NONCE, aud: CLIENT_ID, sub: SUB, iss: undefined }, /not issued by Google/],
+    ['an expiry in the past', { nonce: NONCE, aud: CLIENT_ID, sub: SUB, exp: Math.floor(Date.now() / 1000) - 1 }, /expired/],
+    ['no expiry', { nonce: NONCE, aud: CLIENT_ID, sub: SUB, exp: undefined }, /expired/],
+    ['an expiry given as text', { nonce: NONCE, aud: CLIENT_ID, sub: SUB, exp: '9999999999' }, /expired/],
   ])('is refused with %s', async (_name, claims, message) => {
     stubGoogle({ id_token: idToken(claims) });
 

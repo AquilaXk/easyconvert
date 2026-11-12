@@ -214,10 +214,12 @@ function validateJwtClaims(payload: Record<string, unknown>, options?: VerifyJwt
       return false;
     }
   }
+  // Fails closed: a token without a whole-number session version, or one from before the expected version, is refused.
   if (
     typeof options?.expectedSessionVersion === 'number' &&
-    typeof payload.sessionVersion === 'number' &&
-    payload.sessionVersion < options.expectedSessionVersion
+    (typeof payload.sessionVersion !== 'number' ||
+      !Number.isInteger(payload.sessionVersion) ||
+      payload.sessionVersion < options.expectedSessionVersion)
   ) {
     return false;
   }

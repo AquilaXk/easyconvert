@@ -253,6 +253,23 @@ describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
       }
     });
 
+    it('GET /api/auth/google/url answers a coded 503, without an internal message, when production has no client id', async () => {
+      const env = process.env as Record<string, string | undefined>;
+      const originalEnv = env.NODE_ENV;
+      delete process.env.GOOGLE_CLIENT_ID;
+      env.NODE_ENV = 'production';
+      try {
+        const res = await googleUrlHandler(new NextRequest('http://localhost:3000/api/auth/google/url'));
+        expect(res.status).toBe(503);
+        const json = await res.json();
+        expect(json.code).toBe('oauth_unavailable');
+        expect(JSON.stringify(json)).not.toContain('GOOGLE_CLIENT_ID');
+        expect(res.headers.get('set-cookie')).toBeNull();
+      } finally {
+        env.NODE_ENV = originalEnv;
+      }
+    });
+
     it('GET /api/auth/google/callback rejects missing or mismatched cookie state (Login CSRF defense)', async () => {
       const session = await createOAuthSession();
       const attackerState = 'attacker_forged_state_token_1234';
@@ -351,7 +368,7 @@ describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
         process.env.GOOGLE_CLIENT_SECRET = 'mock-secret';
 
         await expect(
-          exchangeGoogleCode('real_auth_code_xyz', 'http://localhost:3000/api/auth/google/callback')
+          exchangeGoogleCode('real_auth_code_xyz', 'http://localhost:3000/api/auth/google/callback', undefined, 'nonce-of-the-sign-in')
         ).rejects.toThrow(/email is not verified/i);
       } finally {
         globalThis.fetch = originalFetch;
