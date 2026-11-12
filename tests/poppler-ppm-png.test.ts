@@ -117,7 +117,8 @@ async function withShimScript<T>(body: string[], run: (dir: string) => Promise<T
 async function withPdftoppmShim<T>(onRaw: string, run: (calls: () => string[][]) => Promise<T>): Promise<T> {
   const real = requireOracleTool('pdftoppm');
   return withShimScript(
-    ['echo "$*" >> "$(dirname "$0")/calls.log"', 'case " $* " in', `  *" -png "*) exec '${real}' "$@" ;;`, 'esac', onRaw],
+    // The engine registry asks for the version once (`-v`, entry 267); that call is not a run of the conversion.
+    [`case "$*" in -v) exec '${real}' -v ;; esac`, 'echo "$*" >> "$(dirname "$0")/calls.log"', 'case " $* " in', `  *" -png "*) exec '${real}' "$@" ;;`, 'esac', onRaw],
     (dir) => {
       const log = path.join(dir, 'calls.log');
       return run(() => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').map((line) => line.split(' ')) : []));
@@ -134,6 +135,7 @@ async function withOverlapShim<T>(run: (observed: () => { mostAtOnce: number; ca
   const PAUSE_SECONDS = 0.4;
   return withShimScript(
     [
+      `case "$*" in -v) exec '${real}' -v ;; esac`,
       'here="$(dirname "$0")"',
       'mkdir -p "$here/alive"',
       'echo "$*" >> "$here/calls.log"',

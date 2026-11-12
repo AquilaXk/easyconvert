@@ -61,7 +61,8 @@ async function withSiblingInterpreter<T>(run: (calls: () => string[][], dir: str
   try {
     const log = path.join(dir, 'calls.log');
     fs.writeFileSync(path.join(dir, 'ps2pdf'), '#!/bin/sh\necho "ps2pdf must not run" >&2\nexit 99\n', { mode: 0o755 });
-    fs.writeFileSync(path.join(dir, 'gs'), ['#!/bin/sh', `printf '%s\\n' "$*" >> '${log}'`, beforeRun, `exec '${requireOracleTool('gs')}' "$@"`, ''].join('\n'), { mode: 0o755 });
+    // The engine registry asks for the version once (`--version`, entry 267); that call is not a run of the conversion.
+    fs.writeFileSync(path.join(dir, 'gs'), ['#!/bin/sh', `case "$*" in --version) exec '${requireOracleTool('gs')}' --version ;; esac`, `printf '%s\\n' "$*" >> '${log}'`, beforeRun, `exec '${requireOracleTool('gs')}' "$@"`, ''].join('\n'), { mode: 0o755 });
     process.env.PS2PDF_PATH = path.join(dir, 'ps2pdf');
     return await run(() => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').map((line) => line.split(' ')) : []), dir);
   } finally {
