@@ -51,7 +51,11 @@ function standIn(body: string): { program: string; argsFile: string; inputFile: 
     'import struct, sys',
     `open(${JSON.stringify(argsFile)}, 'w').write(' '.join(sys.argv[1:]))`,
     'input = sys.stdin.buffer.read()',
-    `open(${JSON.stringify(inputFile)}, 'wb').write(input)`,
+    // The conversion caps the program's file size near the size of its answer, so a copy of a larger input is skipped there.
+    'try:',
+    `  open(${JSON.stringify(inputFile)}, 'wb').write(input)`,
+    'except OSError:',
+    '  pass',
     'out = sys.stdout.buffer',
     body,
   ].join('\n');
