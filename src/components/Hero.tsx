@@ -3,7 +3,6 @@
 import React from 'react';
 import { useTranslations } from 'next-intl';
 import HeroFormatTiles from './workbench/HeroFormatTiles';
-import HomeFormatPicker from './workbench/HomeFormatPicker';
 import HeroDropzoneCard from './workbench/HeroDropzoneCard';
 import { formatsTitle } from './workbench/hero-copy';
 import { useHeroUpload, type HeroOperation } from './hero/useHeroUpload';
@@ -17,7 +16,10 @@ interface HomeHeroProps {
   dailyLimit: number;
 }
 
-/** The home page's hero: the title and intro, and the upload card centred under them. */
+/**
+ * The home page's hero: the title and intro centred over the upload card. It names no pair: the file chosen sets the source
+ * and the target is picked after it (entry 273); the pair tiles stay on a converter page.
+ */
 export function HomeHero({ onFilesSelected, dailyLimit }: Readonly<HomeHeroProps>) {
   const t = useTranslations('hero');
   const upload = useHeroUpload(onFilesSelected, undefined);
@@ -25,14 +27,9 @@ export function HomeHero({ onFilesSelected, dailyLimit }: Readonly<HomeHeroProps
     <section className="pt-10 pb-6 lg:pt-14">
       <input {...upload.fileInput} />
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="lg:flex lg:items-center lg:justify-between lg:gap-12">
-          <div className="text-center lg:text-left lg:max-w-2xl">
-            <h1 className="text-3xl sm:text-4xl lg:text-5xl text-ink">{t('title.default')}</h1>
-            <p className="mt-5 text-base sm:text-lg sm:leading-relaxed text-ink-3">{t('subtitle.default')}</p>
-          </div>
-          <div className="mt-8 lg:mt-0 flex justify-center shrink-0">
-            <HomeFormatPicker />
-          </div>
+        <div className="text-center max-w-2xl mx-auto">
+          <h1 className="text-3xl sm:text-4xl lg:text-5xl text-ink">{t('title.default')}</h1>
+          <p className="mt-5 text-base sm:text-lg sm:leading-relaxed text-ink-3">{t('subtitle.default')}</p>
         </div>
         <div className="mt-10 lg:mt-12 max-w-2xl mx-auto">
           <HeroDropzoneCard {...upload.dropzone} dailyLimit={dailyLimit} />

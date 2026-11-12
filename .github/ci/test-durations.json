@@ -427,7 +427,6 @@
   "tests/health-live-probes.test.ts": 9.2,
   "tests/health-live-route.test.ts": 0,
   "tests/hero-upload.test.ts": 0.1,
-  "tests/home-format-picker.test.ts": 0.9,
   "tests/html-division-anchors.test.ts": 31.8,
   "tests/html-encoding-sniffing.test.ts": 1.4,
   "tests/html-external-images-load.test.ts": 4.7,

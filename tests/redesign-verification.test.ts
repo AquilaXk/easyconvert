@@ -209,9 +209,9 @@ describe('Redesign & Free Static Architecture Verification', () => {
     // The home page holds no row of trust claims and no format chips in the upload card, and no tiles that name a pair.
     expect(phrasesPresent(text, ['Encrypted transfers', 'No sign-up needed', 'What do you want to convert?'])).toEqual([]);
     expect(select(hero, 'button').filter((b) => attrOf(b, 'aria-label')?.endsWith(', choose a target') ?? false)).toHaveLength(0);
-    // The home page's tiles start on DOCX to PDF: changing one chooses the pair whose page opens.
-    expect(select(hero, 'button', 'data-testid', 'hero-source-format-btn').map((b) => attrOf(b, 'aria-label'))).toEqual(['Source format DOCX']);
-    expect(select(hero, 'button', 'data-testid', 'hero-target-format-btn').map((b) => attrOf(b, 'aria-label'))).toEqual(['Target format PDF']);
+    // The home page names no pair (entry 273): the file sets the source, the target is picked after it.
+    expect(select(hero, 'button', 'data-testid', 'hero-source-format-btn')).toHaveLength(0);
+    expect(select(hero, 'button', 'data-testid', 'hero-target-format-btn')).toHaveLength(0);
 
     const pairPage = renderSlug('png-to-jpg');
     expect(select(pairPage, 'button', 'data-testid', 'hero-source-format-btn').map((b) => attrOf(b, 'aria-label'))).toEqual(['Source format PNG']);
