@@ -3,10 +3,6 @@ import { oracleTest } from './helpers/oracle-test';
 import { xmlWellFormed, xpathString } from './helpers/xml-oracle';
 
 import {
-  quantizeXiaolinWu,
-  applyBlueNoiseDither,
-} from '../src/lib/conversions/quantize';
-import {
   hwpEquationToMathML,
   hwpEquationToLaTeX,
   buildHwpCompoundFile,
@@ -14,60 +10,6 @@ import {
 } from '../src/lib/conversions/hwp';
 
 describe('Phase 2: Core Engine SOTA Algorithms & High-Fidelity Domain Engines (#66)', () => {
-
-  // =========================================================================
-  // 4. Xiaolin Wu 3D Moment Quantization & Blue Noise Dithering
-  // =========================================================================
-  describe('4. Xiaolin Wu 3D Moment Quantization & Blue Noise Dithering', () => {
-    it('quantizes 24-bit RGB buffer with Xiaolin Wu minimum-variance algorithm', () => {
-      // 8x8 gradient image with 64 distinct colors
-      const width = 8;
-      const height = 8;
-      const rgb = Buffer.alloc(width * height * 3);
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const idx = (y * width + x) * 3;
-          rgb[idx] = x * 32;
-          rgb[idx + 1] = y * 32;
-          rgb[idx + 2] = (x + y) * 16;
-        }
-      }
-
-      const res = quantizeXiaolinWu(rgb, width, height, 8);
-      expect(res.palette.length).toBeLessThanOrEqual(8);
-      expect(res.palette.length).toBeGreaterThanOrEqual(2);
-      expect(res.indexedPixels.length).toBe(64);
-      expect(res.paletteBuffer.length).toBe(res.palette.length * 3);
-
-      // Verify all indices are valid
-      for (let i = 0; i < 64; i++) {
-        expect(res.indexedPixels[i]).toBeLessThan(res.palette.length);
-        expect(res.indexedPixels[i]).toBeGreaterThanOrEqual(0);
-      }
-    });
-
-    it('applies isotropic void-and-cluster Blue Noise dithering', () => {
-      const width = 16;
-      const height = 16;
-      const rgb = Buffer.alloc(width * height * 3, 128); // Mid-gray
-
-      const palette = [
-        { r: 0, g: 0, b: 0 },
-        { r: 255, g: 255, b: 255 },
-      ];
-
-      const dithered = applyBlueNoiseDither(rgb, width, height, palette, 1.0);
-      expect(dithered.length).toBe(width * height);
-
-      // Mid-gray with blue noise dither must produce both black (0) and white (1) pixels
-      const counts = [0, 0];
-      for (let i = 0; i < dithered.length; i++) {
-        counts[dithered[i]]++;
-      }
-      expect(counts[0]).toBeGreaterThan(0);
-      expect(counts[1]).toBeGreaterThan(0);
-    });
-  });
 
   // =========================================================================
   // 5. HWP 5.0 CFBF EqEdit MathML / LaTeX Transpilation

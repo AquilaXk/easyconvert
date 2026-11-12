@@ -39,6 +39,26 @@
       "e9d8bf016dd7dcee510961708c9ffaec8c643caf04222cada73210a987642bf2"
     ]
   },
+  "x3f-sdq": {
+    "width": 5424,
+    "height": 3616,
+    "rgb16Sha256": "2c30273dd0ca98d14f8e34885c1a09f15adb8d53d96fddfc044f73723ce99a88",
+    "layerSha256": [
+      "30df324f061ac3c2558503fe8fe82153e45aef79f57d4260aed68050c383c3ad",
+      "31e669b3761dbe3fac75eb3a24fa8b9ff4a126db84a55de724c4f014eec7553b",
+      "19ad7507f75a5d4fe11be1533ed3c6671c2df7bbc04fcbcefac6592570244085"
+    ]
+  },
+  "x3f-sdqh": {
+    "width": 6192,
+    "height": 4128,
+    "rgb16Sha256": "b7288027072fd771c800147988c2f8add3c58175a4681bd896bafe4a8ff00ccc",
+    "layerSha256": [
+      "d7b1bba9abaf83ad07086dd16e8ea3d2c468ab80ee83b8d4ec886d250abd969d",
+      "5c1ef72521ee35433aac2c108f5a0895210ffb9676cbc3352f98a5fa18680b8f",
+      "a502b6b57b2d3803deea115eb86f0fbebf50e45d99fa0761580ef25829a2a77c"
+    ]
+  },
   "raw": {
     "width": 2592,
     "height": 1944,

@@ -13,7 +13,6 @@ import {
 import {
   srgbToOklab,
   deltaEOklab,
-  ciede2000,
   findClosestPaletteIndexOklab,
   RgbColor,
 } from '../src/lib/conversions/quantize';
@@ -149,16 +148,6 @@ describe('Algorithmic Advancements & Standards Parity Suite', () => {
       // Distance between black and white should be approximately 1
       const dist = deltaEOklab(whiteOk, blackOk);
       expect(dist).toBeCloseTo(1.0, 1);
-    });
-
-    it('computes CIEDE2000 color difference conforming to colorimetry standards', () => {
-      const c1 = { L: 50, a: 2.5, b: 0 };
-      const c2 = { L: 50, a: 2.5, b: 0 };
-      // Identical colors -> Delta E = 0
-      expect(ciede2000(c1, c2)).toBeCloseTo(0, 4);
-
-      const c3 = { L: 50, a: 5.0, b: 2.0 };
-      expect(ciede2000(c1, c3)).toBeGreaterThan(0);
     });
 
     it('matches palette colors perceptually using OKLab distance metric', () => {

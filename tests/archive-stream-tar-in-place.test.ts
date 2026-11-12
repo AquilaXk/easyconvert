@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import zlib from 'node:zlib';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readTarEntries } from '../src/lib/conversions/archive';
 import { memberNameFor, streamToTar, tarFromEntries, wrapAsMember, type StreamRunOptions } from '../src/lib/conversions/archive-stream';
 import { classifyUnpacked } from '../src/lib/conversions/archive-stream-route';
@@ -40,9 +40,6 @@ vi.mock('../src/lib/security/process-sandbox', async (importOriginal) => {
     },
   };
 });
-
-// The frames are observed on the direct run of the program: a run through the launcher helper would bypass the spy above.
-vi.stubEnv('SANDBOX_LAUNCHER', 'off');
 
 const BLOCK = 512;
 const GNU_LONG_NAME_BYTES = 505;
@@ -563,6 +560,12 @@ describe('the segments of a converted tar', () => {
 });
 
 describe('a payload that 7-Zip carries out of its sandbox', () => {
+  // The frames are observed on the direct run of the program: a run through the launcher helper would bypass the spy above.
+  // Before each test, because the suite's afterEach unstubs the environment.
+  beforeEach(() => {
+    vi.stubEnv('SANDBOX_LAUNCHER', 'off');
+  });
+
   async function throughSandbox(
     payload: Buffer
   ): Promise<{ segments: Uint8Array[]; frame: Buffer; headroom: number; tailroom: number; observed: ReturnType<typeof observeWrites>; bodiesBefore: Uint8Array[] }> {
