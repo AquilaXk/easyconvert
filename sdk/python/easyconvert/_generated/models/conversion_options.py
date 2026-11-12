@@ -198,6 +198,14 @@ class ConversionOptions:
         video_bitrate (int | Unset): Target video bitrate in bits per second.
         duration (float | Unset): Longest output in seconds, applied as an output-side limit (-t). Must be more than 0
             and not longer than the input; a longer value answers 400.
+        engine (str | Unset): The engine that converts, one of the engines `GET /api/formats?source=..&target=..` lists
+            for the pair (`libreoffice`, `poppler`, `ffmpeg`, `7zip`, `librsvg`, `easyconvert` for the in-process converter,
+            and the others the pair names). Left out, the pair's default engine runs and may fall back to the in-process
+            converter; a named engine never falls back. An engine the pair does not list answers 422 with the code
+            `engine_not_offered` and the list in `engines`. In a graph, the check runs when the node starts.
+        engine_version (str | Unset): The version of `engine` the request expects, as the formats API shows it. One
+            version of each engine is installed; any other answers 422 with the code `engine_version_unavailable` and the
+            installed one in `installedVersion`. Needs `engine`.
         use_ffmpeg (bool | Unset): Force FFmpeg processing pipeline.
         fast_start (bool | Unset): Place the moov atom before the media data of mp4, mov and m4a output for progressive
             playback. Defaults to true for those containers; false leaves it at the end. true for any other container
@@ -315,6 +323,8 @@ class ConversionOptions:
     video_codec: VideoCodec | Unset = UNSET
     video_bitrate: int | Unset = UNSET
     duration: float | Unset = UNSET
+    engine: str | Unset = UNSET
+    engine_version: str | Unset = UNSET
     use_ffmpeg: bool | Unset = UNSET
     fast_start: bool | Unset = UNSET
     aspect_ratio: ConversionOptionsAspectRatioType1 | str | Unset = UNSET
@@ -595,6 +605,10 @@ class ConversionOptions:
 
         duration = self.duration
 
+        engine = self.engine
+
+        engine_version = self.engine_version
+
         use_ffmpeg = self.use_ffmpeg
 
         fast_start = self.fast_start
@@ -826,6 +840,10 @@ class ConversionOptions:
             field_dict["videoBitrate"] = video_bitrate
         if duration is not UNSET:
             field_dict["duration"] = duration
+        if engine is not UNSET:
+            field_dict["engine"] = engine
+        if engine_version is not UNSET:
+            field_dict["engineVersion"] = engine_version
         if use_ffmpeg is not UNSET:
             field_dict["useFfmpeg"] = use_ffmpeg
         if fast_start is not UNSET:
@@ -1260,6 +1278,10 @@ class ConversionOptions:
 
         duration = d.pop("duration", UNSET)
 
+        engine = d.pop("engine", UNSET)
+
+        engine_version = d.pop("engineVersion", UNSET)
+
         use_ffmpeg = d.pop("useFfmpeg", UNSET)
 
         fast_start = d.pop("fastStart", UNSET)
@@ -1440,6 +1462,8 @@ class ConversionOptions:
             video_codec=video_codec,
             video_bitrate=video_bitrate,
             duration=duration,
+            engine=engine,
+            engine_version=engine_version,
             use_ffmpeg=use_ffmpeg,
             fast_start=fast_start,
             aspect_ratio=aspect_ratio,

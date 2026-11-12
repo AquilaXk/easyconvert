@@ -117,12 +117,18 @@ from .create_storage_credential_v1_response_201 import (
 from .demosaic_method import DemosaicMethod
 from .dither_of_audio import DitherOfAudio
 from .downmix_of_audio import DownmixOfAudio
+from .engine import Engine
+from .engine_id import EngineId
 from .error_response import ErrorResponse
 from .fit import Fit
 from .fit_of_scale_of_video import FitOfScaleOfVideo
 from .format_of_packaging import FormatOfPackaging
 from .format_of_subtitles import FormatOfSubtitles
 from .format_of_thumbnail import FormatOfThumbnail
+from .formats_response import FormatsResponse
+from .formats_response_categories_item import FormatsResponseCategoriesItem
+from .formats_response_formats_item import FormatsResponseFormatsItem
+from .get_formats_engine import GetFormatsEngine
 from .get_quota_usage_response_200 import GetQuotaUsageResponse200
 from .get_webhook_dlq_entry_response_200 import GetWebhookDlqEntryResponse200
 from .image_type_of_watermark import ImageTypeOfWatermark
@@ -204,6 +210,9 @@ from .ocr_mode import OcrMode
 from .orientation import Orientation
 from .output_depth import OutputDepth
 from .output_unit import OutputUnit
+from .pair_engine import PairEngine
+from .pair_engine_id import PairEngineId
+from .pair_engines import PairEngines
 from .pdf_a_options import PdfAOptions
 from .pdf_a_options_conformance import PdfAOptionsConformance
 from .pdf_optimize_options import PdfOptimizeOptions
@@ -347,12 +356,18 @@ __all__ = (
     "DemosaicMethod",
     "DitherOfAudio",
     "DownmixOfAudio",
+    "Engine",
+    "EngineId",
     "ErrorResponse",
     "Fit",
     "FitOfScaleOfVideo",
     "FormatOfPackaging",
     "FormatOfSubtitles",
     "FormatOfThumbnail",
+    "FormatsResponse",
+    "FormatsResponseCategoriesItem",
+    "FormatsResponseFormatsItem",
+    "GetFormatsEngine",
     "GetQuotaUsageResponse200",
     "GetWebhookDlqEntryResponse200",
     "ImageTypeOfWatermark",
@@ -414,6 +429,9 @@ __all__ = (
     "Orientation",
     "OutputDepth",
     "OutputUnit",
+    "PairEngine",
+    "PairEngineId",
+    "PairEngines",
     "PdfAOptions",
     "PdfAOptionsConformance",
     "PdfOptimizeOptions",

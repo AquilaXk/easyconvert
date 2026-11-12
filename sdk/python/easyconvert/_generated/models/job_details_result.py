@@ -28,6 +28,9 @@ class JobDetailsResult:
         mime_type (str | Unset):
         size (int | Unset): Size of the result in bytes.
         duration_ms (float | Unset): Time the conversion took, in milliseconds.
+        engine (str | Unset): Id of the engine that converted, as `GET /api/formats` lists it for the pair, for example
+            `libreoffice`, `ffmpeg` or `easyconvert` (the in-process converter).
+        engine_version (str | Unset): Version of that engine as installed. Absent when the program reports none.
         engine_used (str | Unset): Engine that produced the output, for example `native-ffmpeg`, `native-soffice` or
             `internal-fallback`.
         fallback_reason (str | Unset): Why a first-choice engine did not produce the output. Present only when a
@@ -50,6 +53,8 @@ class JobDetailsResult:
     mime_type: str | Unset = UNSET
     size: int | Unset = UNSET
     duration_ms: float | Unset = UNSET
+    engine: str | Unset = UNSET
+    engine_version: str | Unset = UNSET
     engine_used: str | Unset = UNSET
     fallback_reason: str | Unset = UNSET
     dropped_streams: list[JobDetailsResultDroppedStreamsItem] | Unset = UNSET
@@ -68,6 +73,10 @@ class JobDetailsResult:
         size = self.size
 
         duration_ms = self.duration_ms
+
+        engine = self.engine
+
+        engine_version = self.engine_version
 
         engine_used = self.engine_used
 
@@ -101,6 +110,10 @@ class JobDetailsResult:
             field_dict["size"] = size
         if duration_ms is not UNSET:
             field_dict["durationMs"] = duration_ms
+        if engine is not UNSET:
+            field_dict["engine"] = engine
+        if engine_version is not UNSET:
+            field_dict["engineVersion"] = engine_version
         if engine_used is not UNSET:
             field_dict["engineUsed"] = engine_used
         if fallback_reason is not UNSET:
@@ -133,6 +146,10 @@ class JobDetailsResult:
 
         duration_ms = d.pop("durationMs", UNSET)
 
+        engine = d.pop("engine", UNSET)
+
+        engine_version = d.pop("engineVersion", UNSET)
+
         engine_used = d.pop("engineUsed", UNSET)
 
         fallback_reason = d.pop("fallbackReason", UNSET)
@@ -160,6 +177,8 @@ class JobDetailsResult:
             mime_type=mime_type,
             size=size,
             duration_ms=duration_ms,
+            engine=engine,
+            engine_version=engine_version,
             engine_used=engine_used,
             fallback_reason=fallback_reason,
             dropped_streams=dropped_streams,

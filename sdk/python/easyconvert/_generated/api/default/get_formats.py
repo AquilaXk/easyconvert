@@ -6,14 +6,37 @@ import httpx2
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...types import Response
+from ...models.formats_response import FormatsResponse
+from ...models.get_formats_engine import GetFormatsEngine
+from ...models.problem_details import ProblemDetails
+from ...types import UNSET, Response, Unset
 
 
-def _get_kwargs() -> dict[str, Any]:
+def _get_kwargs(
+    *,
+    source: str | Unset = UNSET,
+    target: str | Unset = UNSET,
+    engine: GetFormatsEngine | Unset = UNSET,
+) -> dict[str, Any]:
+
+    params: dict[str, Any] = {}
+
+    params["source"] = source
+
+    params["target"] = target
+
+    json_engine: str | Unset = UNSET
+    if not isinstance(engine, Unset):
+        json_engine = engine.value
+
+    params["engine"] = json_engine
+
+    params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
     _kwargs: dict[str, Any] = {
         "method": "get",
         "url": "/api/formats",
+        "params": params,
     }
 
     return _kwargs
@@ -21,9 +44,16 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx2.Response
-) -> Any | None:
+) -> FormatsResponse | ProblemDetails | None:
     if response.status_code == 200:
-        return None
+        response_200 = FormatsResponse.from_dict(response.json())
+
+        return response_200
+
+    if response.status_code == 400:
+        response_400 = ProblemDetails.from_dict(response.json())
+
+        return response_400
 
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
@@ -33,7 +63,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx2.Response
-) -> Response[Any]:
+) -> Response[FormatsResponse | ProblemDetails]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -45,20 +75,38 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any]:
-    """List Supported Formats
+    source: str | Unset = UNSET,
+    target: str | Unset = UNSET,
+    engine: GetFormatsEngine | Unset = UNSET,
+) -> Response[FormatsResponse | ProblemDetails]:
+    """List Supported Formats and Engines
 
-     Returns all supported file formats, categories, and bidirectional conversion targets.
+     Returns all supported file formats, categories, and conversion targets, and the engines of this
+    deployment with their installed versions. With `source`, `target` or `engine` it also lists, for
+    each pair they select, the engines that convert it: the id to send as `options.engine`, the
+    installed version to send as `options.engineVersion`, whether the engine is the default for the pair
+    (the one that runs when a request names none) and whether its program is installed. Only the engines
+    a pair really has are listed; a pair that one program or the in-process converter alone converts
+    lists that one.
+
+    Args:
+        source (str | Unset):  Example: docx.
+        target (str | Unset):  Example: pdf.
+        engine (GetFormatsEngine | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx2.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any]
+        Response[FormatsResponse | ProblemDetails]
     """
 
-    kwargs = _get_kwargs()
+    kwargs = _get_kwargs(
+        source=source,
+        target=target,
+        engine=engine,
+    )
 
     response = client.get_httpx_client().request(
         **kwargs,
@@ -67,24 +115,120 @@ def sync_detailed(
     return _build_response(client=client, response=response)
 
 
-async def asyncio_detailed(
+def sync(
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any]:
-    """List Supported Formats
+    source: str | Unset = UNSET,
+    target: str | Unset = UNSET,
+    engine: GetFormatsEngine | Unset = UNSET,
+) -> FormatsResponse | ProblemDetails | None:
+    """List Supported Formats and Engines
 
-     Returns all supported file formats, categories, and bidirectional conversion targets.
+     Returns all supported file formats, categories, and conversion targets, and the engines of this
+    deployment with their installed versions. With `source`, `target` or `engine` it also lists, for
+    each pair they select, the engines that convert it: the id to send as `options.engine`, the
+    installed version to send as `options.engineVersion`, whether the engine is the default for the pair
+    (the one that runs when a request names none) and whether its program is installed. Only the engines
+    a pair really has are listed; a pair that one program or the in-process converter alone converts
+    lists that one.
+
+    Args:
+        source (str | Unset):  Example: docx.
+        target (str | Unset):  Example: pdf.
+        engine (GetFormatsEngine | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx2.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any]
+        FormatsResponse | ProblemDetails
     """
 
-    kwargs = _get_kwargs()
+    return sync_detailed(
+        client=client,
+        source=source,
+        target=target,
+        engine=engine,
+    ).parsed
+
+
+async def asyncio_detailed(
+    *,
+    client: AuthenticatedClient | Client,
+    source: str | Unset = UNSET,
+    target: str | Unset = UNSET,
+    engine: GetFormatsEngine | Unset = UNSET,
+) -> Response[FormatsResponse | ProblemDetails]:
+    """List Supported Formats and Engines
+
+     Returns all supported file formats, categories, and conversion targets, and the engines of this
+    deployment with their installed versions. With `source`, `target` or `engine` it also lists, for
+    each pair they select, the engines that convert it: the id to send as `options.engine`, the
+    installed version to send as `options.engineVersion`, whether the engine is the default for the pair
+    (the one that runs when a request names none) and whether its program is installed. Only the engines
+    a pair really has are listed; a pair that one program or the in-process converter alone converts
+    lists that one.
+
+    Args:
+        source (str | Unset):  Example: docx.
+        target (str | Unset):  Example: pdf.
+        engine (GetFormatsEngine | Unset):
+
+    Raises:
+        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
+        httpx2.TimeoutException: If the request takes longer than Client.timeout.
+
+    Returns:
+        Response[FormatsResponse | ProblemDetails]
+    """
+
+    kwargs = _get_kwargs(
+        source=source,
+        target=target,
+        engine=engine,
+    )
 
     response = await client.get_async_httpx_client().request(**kwargs)
 
     return _build_response(client=client, response=response)
+
+
+async def asyncio(
+    *,
+    client: AuthenticatedClient | Client,
+    source: str | Unset = UNSET,
+    target: str | Unset = UNSET,
+    engine: GetFormatsEngine | Unset = UNSET,
+) -> FormatsResponse | ProblemDetails | None:
+    """List Supported Formats and Engines
+
+     Returns all supported file formats, categories, and conversion targets, and the engines of this
+    deployment with their installed versions. With `source`, `target` or `engine` it also lists, for
+    each pair they select, the engines that convert it: the id to send as `options.engine`, the
+    installed version to send as `options.engineVersion`, whether the engine is the default for the pair
+    (the one that runs when a request names none) and whether its program is installed. Only the engines
+    a pair really has are listed; a pair that one program or the in-process converter alone converts
+    lists that one.
+
+    Args:
+        source (str | Unset):  Example: docx.
+        target (str | Unset):  Example: pdf.
+        engine (GetFormatsEngine | Unset):
+
+    Raises:
+        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
+        httpx2.TimeoutException: If the request takes longer than Client.timeout.
+
+    Returns:
+        FormatsResponse | ProblemDetails
+    """
+
+    return (
+        await asyncio_detailed(
+            client=client,
+            source=source,
+            target=target,
+            engine=engine,
+        )
+    ).parsed

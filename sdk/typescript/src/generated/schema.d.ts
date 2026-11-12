@@ -121,8 +121,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List Supported Formats
-         * @description Returns all supported file formats, categories, and bidirectional conversion targets.
+         * List Supported Formats and Engines
+         * @description Returns all supported file formats, categories, and conversion targets, and the engines of this deployment with their installed versions. With `source`, `target` or `engine` it also lists, for each pair they select, the engines that convert it: the id to send as `options.engine`, the installed version to send as `options.engineVersion`, whether the engine is the default for the pair (the one that runs when a request names none) and whether its program is installed. Only the engines a pair really has are listed; a pair that one program or the in-process converter alone converts lists that one.
          */
         get: operations["getFormats"];
         put?: never;
@@ -921,6 +921,10 @@ export interface components {
             videoBitrate?: number;
             /** @description Longest output in seconds, applied as an output-side limit (-t). Must be more than 0 and not longer than the input; a longer value answers 400. */
             duration?: number;
+            /** @description The engine that converts, one of the engines `GET /api/formats?source=..&target=..` lists for the pair (`libreoffice`, `poppler`, `ffmpeg`, `7zip`, `librsvg`, `easyconvert` for the in-process converter, and the others the pair names). Left out, the pair's default engine runs and may fall back to the in-process converter; a named engine never falls back. An engine the pair does not list answers 422 with the code `engine_not_offered` and the list in `engines`. In a graph, the check runs when the node starts. */
+            engine?: string;
+            /** @description The version of `engine` the request expects, as the formats API shows it. One version of each engine is installed; any other answers 422 with the code `engine_version_unavailable` and the installed one in `installedVersion`. Needs `engine`. */
+            engineVersion?: string;
             /** @description Force FFmpeg processing pipeline. */
             useFfmpeg?: boolean;
             /** @description Place the moov atom before the media data of mp4, mov and m4a output for progressive playback. Defaults to true for those containers; false leaves it at the end. true for any other container answers 400. */
@@ -1168,6 +1172,10 @@ export interface components {
                  */
                 reason?: "delivered" | "expired" | "capacity";
             };
+            /** @description Id of the engine that converted, as `GET /api/formats` lists it for the pair, for example `libreoffice`, `ffmpeg` or `easyconvert` (the in-process converter). */
+            engine?: string;
+            /** @description Version of that engine as installed. Absent when the program reports none. */
+            engineVersion?: string;
             /** @description Engine that produced the output, for example `native-ffmpeg`, `native-soffice` or `internal-fallback`. */
             engineUsed?: string;
             /** @description Why a first-choice engine did not produce the output. Present only when a fallback happened; redacted, one line, without file paths. */
@@ -1203,6 +1211,10 @@ export interface components {
                 size?: number;
                 /** @description Time the conversion took, in milliseconds. */
                 durationMs?: number;
+                /** @description Id of the engine that converted, as `GET /api/formats` lists it for the pair, for example `libreoffice`, `ffmpeg` or `easyconvert` (the in-process converter). */
+                engine?: string;
+                /** @description Version of that engine as installed. Absent when the program reports none. */
+                engineVersion?: string;
                 /** @description Engine that produced the output, for example `native-ffmpeg`, `native-soffice` or `internal-fallback`. */
                 engineUsed?: string;
                 /** @description Why a first-choice engine did not produce the output. Present only when a fallback happened; redacted, one line, without file paths. */
@@ -1287,6 +1299,10 @@ export interface components {
                  */
                 reason?: "delivered" | "expired" | "capacity";
             };
+            /** @description Id of the engine that converted, as `GET /api/formats` lists it for the pair, for example `libreoffice`, `ffmpeg` or `easyconvert` (the in-process converter). */
+            engine?: string;
+            /** @description Version of that engine as installed. Absent when the program reports none. */
+            engineVersion?: string;
             /** @description Engine that produced the output, for example `native-ffmpeg`, `native-soffice` or `internal-fallback`. */
             engineUsed?: string;
             /** @description Why a first-choice engine did not produce the output. Present only when a fallback happened; redacted, one line, without file paths. */
@@ -1322,6 +1338,10 @@ export interface components {
                 size?: number;
                 /** @description Time the conversion took, in milliseconds. */
                 durationMs?: number;
+                /** @description Id of the engine that converted, as `GET /api/formats` lists it for the pair, for example `libreoffice`, `ffmpeg` or `easyconvert` (the in-process converter). */
+                engine?: string;
+                /** @description Version of that engine as installed. Absent when the program reports none. */
+                engineVersion?: string;
                 /** @description Engine that produced the output, for example `native-ffmpeg`, `native-soffice` or `internal-fallback`. */
                 engineUsed?: string;
                 /** @description Why a first-choice engine did not produce the output. Present only when a fallback happened; redacted, one line, without file paths. */
@@ -1371,6 +1391,10 @@ export interface components {
             /** @description Path of the result; send it to `GET /api/storage/file/{key}` with the key. */
             downloadUrl?: string;
             expiresAt?: number;
+            /** @description Id of the engine that converted, as `GET /api/formats` lists it for the pair, for example `libreoffice`, `ffmpeg` or `easyconvert` (the in-process converter). */
+            engine?: string;
+            /** @description Version of that engine as installed. Absent when the program reports none. */
+            engineVersion?: string;
             /** @description Engine that produced the output, for example `native-ffmpeg`, `native-soffice` or `internal-fallback`. */
             engineUsed?: string;
             /** @description Why a first-choice engine did not produce the output. Present only when a fallback happened; redacted, one line, without file paths. */
@@ -1552,6 +1576,54 @@ export interface components {
                 /** @description Another entry in the archive has the same path. */
                 duplicate?: boolean;
             }[];
+        };
+        Engine: {
+            /**
+             * @description The id a request names in `options.engine`. Stable across releases.
+             * @enum {string}
+             */
+            id: "easyconvert" | "libreoffice" | "ffmpeg" | "poppler" | "7zip" | "ghostscript" | "ghostxps" | "djvulibre" | "calibre" | "librsvg" | "libraw";
+            /** @description Display name of the engine. */
+            name: string;
+            /** @description Whether the program of the engine is installed on this deployment (the in-process converter always is). */
+            installed: boolean;
+            /** @description The one version installed, which `options.engineVersion` may name. Absent when the engine is not installed or its program prints no version. */
+            version?: string;
+        };
+        PairEngine: {
+            /** @enum {string} */
+            id: "easyconvert" | "libreoffice" | "ffmpeg" | "poppler" | "7zip" | "ghostscript" | "ghostxps" | "djvulibre" | "calibre" | "librsvg" | "libraw";
+            name: string;
+            /** @description The installed version of the engine; the only version a request may name. */
+            version?: string;
+            /** @description Whether this engine converts the pair when a request names none. Exactly one engine of a pair is the default, and it is listed first. */
+            default: boolean;
+            /** @description Whether the program is installed here. A named engine that is not available answers 503 with the code `engine_unavailable`. */
+            available: boolean;
+        };
+        PairEngines: {
+            /** @description Source format id. */
+            source: string;
+            /** @description Target format id. */
+            target: string;
+            /** @description The engines that convert the pair, the default first. */
+            engines: components["schemas"]["PairEngine"][];
+        };
+        FormatsResponse: {
+            /** @constant */
+            success: true;
+            /** @description Number of formats. */
+            count: number;
+            categories: {
+                id: string;
+                label: string;
+                count: number;
+            }[];
+            formats: Record<string, never>[];
+            /** @description Every engine of this deployment with its installed version. */
+            engines: components["schemas"]["Engine"][];
+            /** @description Sent only when `source`, `target` or `engine` is set: the engines of each pair they select. */
+            pairs?: components["schemas"]["PairEngines"][];
         };
         PdfWatermarkOptions: {
             /** @enum {string} */
@@ -2099,6 +2171,10 @@ export interface operations {
                     "X-Source-Frames"?: number;
                     /** @description 1-based frame or page a single-image output was taken from. Sent only when one frame was chosen. */
                     "X-Frame-Used"?: number;
+                    /** @description Id of the engine that converted, as `GET /api/formats` lists it for the pair, for example `libreoffice` or `easyconvert`. */
+                    "X-Engine"?: string;
+                    /** @description Version of that engine as installed. Sent only when the program reports one. */
+                    "X-Engine-Version"?: string;
                     /** @description Engine that produced the raw output, for example `native-ffmpeg` or `internal-fallback`. */
                     "X-Engine-Used"?: string;
                     /** @description Why a first-choice engine did not produce the output. Sent only when a fallback happened; redacted, one line, printable ASCII. */
@@ -2151,6 +2227,12 @@ export interface operations {
                          * @enum {string}
                          */
                         code?: "conversion_failed" | "input_over_limit" | "invalid_pages" | "malformed_input" | "option_not_supported" | "spoofed_file" | "unsafe_archive" | "unsupported_input" | "unsupported_pair";
+                        /** @description `engine_not_offered` only: the ids of the engines that convert the pair, the default first. */
+                        engines?: string[];
+                        /** @description `engine_version_unavailable` only: the engine whose version was named. */
+                        engine?: string;
+                        /** @description `engine_version_unavailable` only: the version of `engine` that is installed (absent when its program prints none). */
+                        installedVersion?: string;
                     };
                     "application/json": components["schemas"]["ProblemDetails"] & {
                         /**
@@ -2158,6 +2240,12 @@ export interface operations {
                          * @enum {string}
                          */
                         code?: "conversion_failed" | "input_over_limit" | "invalid_pages" | "malformed_input" | "option_not_supported" | "spoofed_file" | "unsafe_archive" | "unsupported_input" | "unsupported_pair";
+                        /** @description `engine_not_offered` only: the ids of the engines that convert the pair, the default first. */
+                        engines?: string[];
+                        /** @description `engine_version_unavailable` only: the engine whose version was named. */
+                        engine?: string;
+                        /** @description `engine_version_unavailable` only: the version of `engine` that is installed (absent when its program prints none). */
+                        installedVersion?: string;
                     };
                 };
             };
@@ -2221,7 +2309,7 @@ export interface operations {
                     "application/json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description The request is understood and refused. Problem type `https://api.easyconvert.io/problems/idempotency-key-reused`: an idempotency key was reused with a different request payload or parameters. Problem type `https://api.easyconvert.io/problems/unprocessable-entity`, or `.../option-not-supported` for an option that is planned and not yet supported: `options` fail the contract (the fields in `invalidParams`). Or the file is intact but the engine cannot convert it: the document is encrypted, password protected or DRM protected so its text cannot be read, an archive uses a method no engine here decodes, a CAD or font file the readers refuse, an audio file with no samples, or the conversion overran its CPU limit; these name the cause in `code`. An archive whose entry names collide when unpacked is also a 422, titled "Archive Entry Collision", with the `code` "archive_entry_collision". A PDF/A output failed validation (problem type `https://api.easyconvert.io/problems/pdfa-validation-failed`, with the requested `profile` and the veraPDF `failedRules`), or the PDF/A conversion could not complete on the document (problem type `https://api.easyconvert.io/problems/pdf-postprocess-failed`). */
+            /** @description The request is understood and refused. Problem type `https://api.easyconvert.io/problems/idempotency-key-reused`: an idempotency key was reused with a different request payload or parameters. Problem type `https://api.easyconvert.io/problems/unprocessable-entity`, or `.../option-not-supported` for an option that is planned and not yet supported: `options` fail the contract (the fields in `invalidParams`). Or the file is intact but the engine cannot convert it: the document is encrypted, password protected or DRM protected so its text cannot be read, an archive uses a method no engine here decodes, a CAD or font file the readers refuse, an audio file with no samples, or the conversion overran its CPU limit; these name the cause in `code`. An archive whose entry names collide when unpacked is also a 422, titled "Archive Entry Collision", with the `code` "archive_entry_collision". An `options.engine` that the pair does not list (or an engine id nobody knows, or `engineVersion` without an engine) is a 422 with the `code` "engine_not_offered" and the engines the pair lists in `engines`; an `options.engineVersion` other than the installed one is a 422 with the `code` "engine_version_unavailable" and the installed version in `installedVersion`. Both are answered before anything is reserved. A PDF/A output failed validation (problem type `https://api.easyconvert.io/problems/pdfa-validation-failed`, with the requested `profile` and the veraPDF `failedRules`), or the PDF/A conversion could not complete on the document (problem type `https://api.easyconvert.io/problems/pdf-postprocess-failed`). */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -2232,14 +2320,26 @@ export interface operations {
                          * @description The cause of the refusal, stable across releases.
                          * @enum {string}
                          */
-                        code?: "archive_entry_collision" | "conversion_failed" | "empty_file" | "encrypted_input" | "input_over_limit" | "invalid_password" | "malformed_input" | "missing_volume" | "option_not_supported" | "password_required" | "timeout" | "unsupported_input" | "unsupported_method";
+                        code?: "archive_entry_collision" | "conversion_failed" | "empty_file" | "encrypted_input" | "engine_not_offered" | "engine_version_unavailable" | "input_over_limit" | "invalid_password" | "malformed_input" | "missing_volume" | "option_not_supported" | "password_required" | "timeout" | "unsupported_input" | "unsupported_method";
+                        /** @description `engine_not_offered` only: the ids of the engines that convert the pair, the default first. */
+                        engines?: string[];
+                        /** @description `engine_version_unavailable` only: the engine whose version was named. */
+                        engine?: string;
+                        /** @description `engine_version_unavailable` only: the version of `engine` that is installed (absent when its program prints none). */
+                        installedVersion?: string;
                     }) | components["schemas"]["PdfaValidationProblem"];
                     "application/json": (components["schemas"]["ProblemDetails"] & {
                         /**
                          * @description The cause of the refusal, stable across releases.
                          * @enum {string}
                          */
-                        code?: "archive_entry_collision" | "conversion_failed" | "empty_file" | "encrypted_input" | "input_over_limit" | "invalid_password" | "malformed_input" | "missing_volume" | "option_not_supported" | "password_required" | "timeout" | "unsupported_input" | "unsupported_method";
+                        code?: "archive_entry_collision" | "conversion_failed" | "empty_file" | "encrypted_input" | "engine_not_offered" | "engine_version_unavailable" | "input_over_limit" | "invalid_password" | "malformed_input" | "missing_volume" | "option_not_supported" | "password_required" | "timeout" | "unsupported_input" | "unsupported_method";
+                        /** @description `engine_not_offered` only: the ids of the engines that convert the pair, the default first. */
+                        engines?: string[];
+                        /** @description `engine_version_unavailable` only: the engine whose version was named. */
+                        engine?: string;
+                        /** @description `engine_version_unavailable` only: the version of `engine` that is installed (absent when its program prints none). */
+                        installedVersion?: string;
                     }) | components["schemas"]["PdfaValidationProblem"];
                 };
             };
@@ -2321,6 +2421,12 @@ export interface operations {
                          * @enum {string}
                          */
                         code?: "engine_unavailable";
+                        /** @description `engine_not_offered` only: the ids of the engines that convert the pair, the default first. */
+                        engines?: string[];
+                        /** @description `engine_version_unavailable` only: the engine whose version was named. */
+                        engine?: string;
+                        /** @description `engine_version_unavailable` only: the version of `engine` that is installed (absent when its program prints none). */
+                        installedVersion?: string;
                     };
                     "application/json": components["schemas"]["ProblemDetails"] & {
                         /**
@@ -2328,6 +2434,12 @@ export interface operations {
                          * @enum {string}
                          */
                         code?: "engine_unavailable";
+                        /** @description `engine_not_offered` only: the ids of the engines that convert the pair, the default first. */
+                        engines?: string[];
+                        /** @description `engine_version_unavailable` only: the engine whose version was named. */
+                        engine?: string;
+                        /** @description `engine_version_unavailable` only: the version of `engine` that is installed (absent when its program prints none). */
+                        installedVersion?: string;
                     };
                 };
             };
@@ -2583,7 +2695,7 @@ export interface operations {
                     "application/json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description The graph or pipeline tasks failed validation (for example, a merge with fewer than 2 inputs), an idempotency key was reused with a different request payload, or the graph has no conversion (problem type `https://api.easyconvert.io/problems/graph-without-conversion`): a graph that only imports and exports files is refused before anything is reserved. */
+            /** @description The graph or pipeline tasks failed validation (for example, a merge with fewer than 2 inputs), an idempotency key was reused with a different request payload, or the graph has no conversion (problem type `https://api.easyconvert.io/problems/graph-without-conversion`): a graph that only imports and exports files is refused before anything is reserved. Or an `engine` that the conversion does not list (the `code` "engine_not_offered", with the engines it lists in `engines`) or an `engineVersion` that is not installed (the `code` "engine_version_unavailable", with `installedVersion`), in the job's `options` or in a pipeline task. In a graph, the engine ids and versions are checked here and the pair of each node when the node runs, which fails that node with the same code. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -2751,19 +2863,38 @@ export interface operations {
     };
     getFormats: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Source format extension: lists the engines of each target of this format. */
+                source?: string;
+                /** @description Target format extension: with `source`, one pair; alone, every source that converts to it. */
+                target?: string;
+                /** @description Keeps the pairs that list this engine. */
+                engine?: "easyconvert" | "libreoffice" | "ffmpeg" | "poppler" | "7zip" | "ghostscript" | "ghostxps" | "djvulibre" | "calibre" | "librsvg" | "libraw";
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Dictionary of supported format definitions. */
+            /** @description Dictionary of supported format definitions, the engines of the deployment and, when asked, the engines of each selected pair. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["FormatsResponse"];
+                };
+            };
+            /** @description A `source`, `target` or `engine` that names no format or engine (an unknown engine answers with the known ids in `engines`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -4199,6 +4330,10 @@ export interface operations {
                         size: number;
                         durationMs: number;
                         ocrExtracted?: boolean;
+                        /** @description Id of the engine that converted, as `GET /api/formats` lists it for the pair, for example `libreoffice`, `ffmpeg` or `easyconvert` (the in-process converter). */
+                        engine?: string;
+                        /** @description Version of that engine as installed. Absent when the program reports none. */
+                        engineVersion?: string;
                         /** @description Engine that produced the output, for example `native-ffmpeg`, `native-soffice` or `internal-fallback`. */
                         engineUsed?: string;
                         /** @description Why a first-choice engine did not produce the output. Present only when a fallback happened; redacted, one line, without file paths. */
