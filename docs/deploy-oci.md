@@ -187,13 +187,14 @@ The privacy policy promises an answer to a deletion request within 10 days (sect
 
 Do steps 1 to 5 within 2 days of the request. Redis is backed up every 6 hours and a backup is kept 7 days, so a backup that still holds the account is gone about 9 days 6 hours after the request at the latest ([backup-and-restore.md](operations/backup-and-restore.md#account-deletion-and-backups)). After a restore from a backup, erase again every account whose erasure finished after the backup was taken, including a request that was still open then.
 
-### Indexing the dead letters after an update to entry 257
+### Moving the dead letters after an update to entry 265
 
-The dead letters of a queue are indexed by job and by user (entry 257). Until the index is built, removing a job's letters (and an account erasure) reads the whole list, as before, so an erasure is complete either way, only slower. The index is built by one command and by nothing else: a write never marks it complete, because a worker of an older image writes letters without it. Run it once, after the deploy has replaced every worker and no container of an older image runs, and only with QA's approval.
+The dead letters of a queue are a hash per letter with sets of ids by job and by user (entry 265). Letters that a worker of an older image wrote are still in the list `<queue>:dlq`. Until they are moved, removing a job's letters reads that list while it holds letters (as before, slowly: 1,000 jobs over 50,000 letters take about 3 minutes), and an account erasure reads it in one command, so an erasure is complete either way. Nothing moves them by itself. Run the command once, after the deploy has replaced every container that uses the queue (the web process and the worker) and no container of an older image runs: an older worker appends to the list and does not read the new layout, so an erasure run from it would miss the new letters. Run it only with QA's approval.
 
-1. Count what would be indexed. Nothing is written: `docker compose -p easyconvert exec worker node dist/backfill-dlq-index.js`.
-2. Run the same command with `--apply` when the queues are quiet. Each queue is read in one Redis step that takes about 7 ms for 1,000 letters (330 ms for 50,000). A second run reports that the index covers the list and changes nothing.
-3. Before a rollback to an image older than entry 257, delete the marks (`DEL` of each `...:dlq:indexed` key), so the removal reads the list again; the older image does not write the index.
+1. Count what would be moved. Nothing is written: `docker compose -p easyconvert exec worker node dist/backfill-dlq-index.js`.
+2. Run the same command with `--apply`. It moves 500 letters to a Redis step (about 5 ms) and about 50,000 letters in half a second; the queues can keep working. It can be stopped and run again. A second run reports that the list holds no letters.
+3. A letter that an older worker appended after the run is moved by running it again.
+4. There is no reverse script. Before a rollback to an image older than entry 265, ask QA: that image neither reads, erases nor trims the new letters, so the answer is to roll forward, or to delete the keys `<queue>:dlq:letter:*`, `:order`, `:seq`, `:by-job:*` and `:by-user:*` (a dead letter is kept 25 hours).
 
 What the command does not touch expires on its own. The edge server log keeps the request lines for up to 15 days (`/etc/logrotate.d/nginx`). A multi-step job's state goes 25 hours after the job ends. The list of an account's files in the web process lasts no longer than the file.
 

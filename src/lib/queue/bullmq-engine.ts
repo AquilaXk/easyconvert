@@ -6,7 +6,7 @@ import { maskFailure, maskServerText } from '../security/server-paths';
 import { refusalCodeOf, type ConversionRefusalCode } from '../refusal-codes';
 import { classifyJobFailure } from './job-failure';
 import { readUserJobs } from './user-job-list';
-import { applyStoredJobFields, flatHashToRecord, parseStoredJson, readJobHashes } from './stored-job';
+import { applyStoredJobFields, flatHashToRecord, ownerOf, parseStoredJson, readJobHashes } from './stored-job';
 import {
   ADD_JOB_LUA_SCRIPT,
   PROMOTE_DELAYED_JOBS_LUA_SCRIPT,
@@ -20,14 +20,13 @@ import {
   UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT,
   RECOVER_STALLED_JOBS_LUA_SCRIPT,
 } from './lua-scripts';
-import { addDeadLetter, backfillDeadLetterIndex, purgeDeadLetters, readDeadLetters, type DeadLetterBackfill } from './dead-letters';
+import { addDeadLetter, migrateDeadLetters, purgeDeadLetters, readDeadLetters, type DeadLetterMigration } from './dead-letters';
 import {
   dropEndedData,
   finishedData,
   forgetUserJobs,
   keepNewestEnded,
   keepJobsOf,
-  ownerOf,
   removeEndedBefore,
   AgedEndedRemoval,
   removeStoredJob,
@@ -328,8 +327,8 @@ export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   getDlqEntries?(): Promise<DlqEntry<T>[]>;
   moveToDlq?(job: Job<T, R>, reason: string): Promise<void>;
   purgeDlq?(): Promise<number>;
-  /** Distributed engines: indexes the dead letters written before the index existed (`apply`), or only counts them. */
-  backfillDeadLetterIndex?(apply: boolean): Promise<DeadLetterBackfill>;
+  /** Distributed engines: moves the dead letters of the list of the earlier layout to the new one (`apply`), or only counts them. */
+  migrateDeadLetters?(apply: boolean): Promise<DeadLetterMigration>;
   /**
    * Cancels a waiting, delayed, or active job, emitting `cancelled` once. Returns false for
    * completed, failed, already cancelled, or unknown jobs.
@@ -1896,7 +1895,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     if (this.redisClient && this.redisConnected) {
       try {
         const entry = buildDlqEntry(job, reason);
-        await addDeadLetter(this.redisClient, this.dlqKey, JSON.stringify(entry));
+        await addDeadLetter(this.redisClient, this.dlqKey, entry);
         this.emit('dlq', entry);
       } catch {}
       return;
@@ -1918,12 +1917,12 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     return this.memoryFallback.purgeDlq ? this.memoryFallback.purgeDlq() : 0;
   }
 
-  async backfillDeadLetterIndex(apply: boolean): Promise<DeadLetterBackfill> {
+  async migrateDeadLetters(apply: boolean): Promise<DeadLetterMigration> {
     const client = this.redisClient;
-    if (!client) return { letters: 0, indexable: 0, unparsed: 0, alreadyCovered: true, applied: false };
+    if (!client) return { letters: 0, indexed: 0, unindexed: 0, unreadable: 0, moved: 0, applied: false };
     await this.assertRedisConnected();
     try {
-      return await backfillDeadLetterIndex(client, this.dlqKey, apply);
+      return await migrateDeadLetters(client, this.dlqKey, apply);
     } catch (err) {
       throw this.toQueueUnavailable(err);
     }

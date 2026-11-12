@@ -3,7 +3,8 @@ import Redis from 'ioredis';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RedisIdempotencyStore } from '../src/lib/api/idempotency';
 import { DistributedBullMQAdapter } from '../src/lib/queue/bullmq-engine';
-import { forgetUserJobs, ownerOf, removeStoredJob, type QueueKeySpace } from '../src/lib/queue/ended-jobs';
+import { forgetUserJobs, removeStoredJob, type QueueKeySpace } from '../src/lib/queue/ended-jobs';
+import { ownerOf } from '../src/lib/queue/stored-job';
 import { RedisGraphScheduler } from '../src/lib/queue/graph';
 import { clearKeysMatching } from '../src/lib/redis/clear-keys';
 
@@ -253,10 +254,10 @@ describe.skipIf(!REDIS_URL)('the Redis query paths on a real Redis server', () =
 
       await forgetUserJobs(client, keys, USER, new Set(jobs.map((job) => job.id)));
 
-      // The removal script gets the job, the six states and the index, not the dead-letter list; the letters of the jobs go in one more
-      // script, which gets the list, the two prefixes of its index and the set of undecodable letters.
+      // The removal script gets the job, the six states and the index, not the dead-letter key; the letters of the 60 jobs go in one more
+      // script, which gets the dead-letter key alone and the ids of the jobs (the letter of the list is removed by a pipelined LREM).
       expect(trips.evalKeyCounts.filter((count) => count === 8)).toHaveLength(60);
-      expect(trips.evalKeyCounts.filter((count) => count !== 8)).toEqual([4]);
+      expect(trips.evalKeyCounts.filter((count) => count !== 8)).toEqual([1]);
     });
   });
 

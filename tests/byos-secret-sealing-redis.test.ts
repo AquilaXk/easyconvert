@@ -87,10 +87,12 @@ async function dumpKeyspace(redis: Redis): Promise<Map<string, string>> {
   return dump;
 }
 
+/** The dead letters of the dump: the hash of each letter (`<queue>:dlq:letter:<id>`) and any left in the list of the earlier layout (`<queue>:dlq`). */
 function deadLetterEntriesOf(dump: Map<string, string>): { jobId: string; failedReason: string }[] {
-  return [...dump]
-    .filter(([key]) => key.endsWith(':dlq'))
-    .flatMap(([, text]) => (JSON.parse(text) as string[]).map((raw) => JSON.parse(raw) as { jobId: string; failedReason: string }));
+  return [...dump].flatMap(([key, text]) => {
+    const raws = key.endsWith(':dlq') ? (JSON.parse(text) as string[]) : key.includes(':dlq:letter:') ? [(JSON.parse(text) as { raw: string }).raw] : [];
+    return raws.map((raw) => JSON.parse(raw) as { jobId: string; failedReason: string });
+  });
 }
 
 function expectNoSecretsInKeyspace(dump: Map<string, string>, secrets: readonly string[]): void {
@@ -225,7 +227,7 @@ describe.skipIf(!REDIS_URL)('BYOS secrets on a real Redis server', () => {
     expect(deadLetterEntriesOf(dump).filter((entry) => entry.jobId === `${graphId}:in`)).toEqual([
       expect.objectContaining({ jobId: `${graphId}:in`, failedReason: masked }),
     ]);
-    // The job's hash, not the set of its dead letters (`<queue>:dlq:job:<id>`), which the dead-letter index keeps under a key that ends the same.
+    // The job's hash, not the set of its dead letters (`<queue>:dlq:by-job:<id>`) or a letter's hash, whose keys end the same.
     const jobKey = [...dump].find(([key]) => key.endsWith(`${graphId}:in`) && key.includes('job') && !key.includes(':dlq:'));
     expect(JSON.parse(jobKey![1])).toMatchObject({ state: 'failed', failedReason: masked });
   }, GRAPH_TIMEOUT_MS + 10_000);

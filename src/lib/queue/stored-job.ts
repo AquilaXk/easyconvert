@@ -3,6 +3,12 @@ import type { ConversionRefusalCode } from '../refusal-codes';
 import { pipelineReplies } from '../redis/pipeline-replies';
 import type { Job, JobState } from './bullmq-engine';
 
+/** The `userId` of job data, or undefined. */
+export function ownerOf(data: unknown): string | undefined {
+  const userId = typeof data === 'object' && data !== null ? (data as { userId?: unknown }).userId : undefined;
+  return typeof userId === 'string' && userId !== '' ? userId : undefined;
+}
+
 /** Parses a JSON hash field; undefined when it is absent or damaged. */
 export function parseStoredJson<V>(text: string | undefined): V | undefined {
   if (!text) return undefined;

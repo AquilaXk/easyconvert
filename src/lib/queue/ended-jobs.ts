@@ -1,7 +1,8 @@
 import type Redis from 'ioredis';
 import { pipelineReplies } from '../redis/pipeline-replies';
-import { deadLetterKeys, indexKeysOf } from './dead-letters';
-import { REMOVE_DEAD_LETTERS_LUA_SCRIPT, REMOVE_JOB_LUA_SCRIPT, REPLACE_ENDED_JOB_DATA_LUA_SCRIPT, TRIM_DEAD_LETTERS_LUA_SCRIPT } from './lua-scripts';
+import { deadLetterKeys, trimDeadLettersBefore } from './dead-letters';
+import { REMOVE_DEAD_LETTERS_LUA_SCRIPT, REMOVE_JOB_DEAD_LETTERS_LUA_SCRIPT, REMOVE_JOB_LUA_SCRIPT, REPLACE_ENDED_JOB_DATA_LUA_SCRIPT } from './lua-scripts';
+import { ownerOf } from './stored-job';
 
 /**
  * Which ended jobs a queue keeps, as BullMQ's KeepJobs (src/interfaces/keep-jobs.ts): those that ended at most `age`
@@ -25,12 +26,6 @@ export function keepJobsOf(remove: boolean | number | KeepJobs | undefined): Kee
 export function finishedData<T>(data: T, removeDataOnFinish: readonly string[] | undefined): T {
   if (!removeDataOnFinish?.length || typeof data !== 'object' || data === null) return data;
   return Object.fromEntries(Object.entries(data).filter(([key]) => !removeDataOnFinish.includes(key))) as T;
-}
-
-/** The `userId` of job data, or undefined. */
-export function ownerOf(data: unknown): string | undefined {
-  const userId = typeof data === 'object' && data !== null ? (data as { userId?: unknown }).userId : undefined;
-  return typeof userId === 'string' && userId !== '' ? userId : undefined;
 }
 
 function parsedData(text: string | null): unknown {
@@ -149,7 +144,7 @@ export async function scanEndedBefore(
   trimDeadLetters: boolean
 ): Promise<EndedScan> {
   const scan: EndedScan = limit > 0 ? await removeSetEntriesBefore(client, keys, stateKey, threshold, limit) : { removed: [], oldestKeptFinishedOn: undefined };
-  if (trimDeadLetters) await client.eval(TRIM_DEAD_LETTERS_LUA_SCRIPT, 4, keys.dlqKey, ...indexKeysOf(keys.dlqKey), String(threshold));
+  if (trimDeadLetters) await trimDeadLettersBefore(client, keys.dlqKey, threshold);
   return scan;
 }
 
@@ -193,21 +188,12 @@ export async function dropEndedData(client: Redis, keys: QueueKeySpace, id: stri
 
 /**
  * Removes job `id` from every state and from its user's index unless it is active (BullMQ removeJob-2.lua); whether it did. With `removeDlq`
- * it also removes the job's dead letters: the script takes them from the index, and the letters the scripts cannot decode (the set
- * `unparsed`, normally empty) are parsed here and the job's go with the call.
+ * it also removes the job's dead letters, by the ids in the set of the job (and from the list of the earlier layout while that holds letters).
  */
 export async function removeStoredJob(client: Redis, keys: QueueKeySpace, id: string, removeDlq: boolean = false): Promise<boolean> {
-  const dead = deadLetterKeys(keys.dlqKey);
-  const read = client.pipeline();
-  read.hget(keys.jobKey(id), 'data');
-  if (removeDlq) read.smembers(dead.unparsed);
-  const [data, unparsed = []] = (await pipelineReplies(read)) as [string | null, string[] | undefined];
-  const userJobsKey = keys.userJobsKey(ownerOf(parsedData(data)));
-  const scriptKeys = removeDlq
-    ? [keys.jobKey(id), ...keys.stateKeys, userJobsKey, keys.dlqKey, ...indexKeysOf(keys.dlqKey), dead.coveredFlag]
-    : [keys.jobKey(id), ...keys.stateKeys, userJobsKey];
-  const undecodable = unparsed.filter((raw) => (parsedData(raw) as { jobId?: unknown } | undefined)?.jobId === id);
-  return Number(await client.eval(REMOVE_JOB_LUA_SCRIPT, scriptKeys.length, ...scriptKeys, id, ...undecodable)) === 1;
+  const userJobsKey = keys.userJobsKey(ownerOf(parsedData(await client.hget(keys.jobKey(id), 'data'))));
+  const scriptKeys = removeDlq ? [keys.jobKey(id), ...keys.stateKeys, userJobsKey, keys.dlqKey] : [keys.jobKey(id), ...keys.stateKeys, userJobsKey];
+  return Number(await client.eval(REMOVE_JOB_LUA_SCRIPT, scriptKeys.length, ...scriptKeys, id)) === 1;
 }
 
 /** The ids of one pipeline that `forgetUserJobs` sends: the jobs it reads or removes together, and the dead letters it checks or removes together. */
@@ -256,12 +242,10 @@ async function removeProcessedJobs(
  * `processed` (beyond the caller's window, or queued since) is left whole, and so is a processed job that is still active: their ids are
  * answered, and the index stays while any is left.
  *
- * The jobs are read and removed a batch at a time (two round trips per batch). The job script is not given the dead-letter list: the
- * letters of the removed jobs go in the one pass below. Once the dead-letter index covers the list (`deadLetterKeys`), that pass reads
- * the sets of the jobs of the user and of the removed jobs, a batch at a time, with the letters the scripts cannot decode (read and parsed
- * here), and never the list; until then it reads the list in one
- * command, not in pages: a page walk is not atomic, so a letter could be skipped when another run trims or removes letters between
- * two pages, and an erasure must not leave a letter behind.
+ * The jobs are read and removed a batch at a time (two round trips per batch). The job script is not given the dead-letter key: the
+ * letters go in the one pass below, which reads the letters of the user by the set of their ids, removes those of the removed jobs by the
+ * sets of their jobs, and reads the list of the earlier layout in one command, not in pages, while it holds letters (a page walk is not
+ * atomic, so a letter could be skipped when another run trims or removes letters between two pages, and an erasure must not leave one).
  */
 export async function forgetUserJobs(client: Redis, keys: QueueKeySpace, userId: string, processed: ReadonlySet<string>): Promise<string[]> {
   const index = keys.userJobsKey(userId);
@@ -278,87 +262,100 @@ export async function forgetUserJobs(client: Redis, keys: QueueKeySpace, userId:
   return left;
 }
 
-/** The letters of the user's dead-letter list that a removal looks at: those it removes at once, and those it removes when their job is gone. */
-interface DeadLetterCandidates {
-  doomed: Set<string>;
-  unsure: { raw: string; jobId: string }[];
+/** A letter that an erasure looks at: how to remove it (its id, or its text when it is in the list of the earlier layout), its job, and whether it names the user. */
+interface DeadLetterCandidate {
+  ref: string;
+  jobId: string;
+  owned: boolean;
 }
 
-/** Sorts `raws` into the letters that go (a cleared job's, or a processed job's of `userId`) and the letters of `userId` that go when their job is gone. */
-function sortDeadLetters(raws: Iterable<string>, userId: string, processed: ReadonlySet<string>, clearedJobIds: ReadonlySet<string>): DeadLetterCandidates {
+/**
+ * The references among `candidates` that go: the letters of a cleared job (the job was removed by this run), the letters of `userId` for a
+ * job in `processed`, and the letters of `userId` for a job that is gone.
+ */
+async function doomedLetters(
+  client: Redis,
+  keys: QueueKeySpace,
+  processed: ReadonlySet<string>,
+  clearedJobIds: ReadonlySet<string>,
+  candidates: readonly DeadLetterCandidate[]
+): Promise<string[]> {
   const doomed = new Set<string>();
-  const unsure: { raw: string; jobId: string }[] = [];
-  for (const raw of raws) {
-    const entry = parsedData(raw) as { jobId?: string; data?: unknown } | undefined;
-    const jobId = entry?.jobId ?? '';
-    if (clearedJobIds.has(jobId) || (ownerOf(entry?.data) === userId && processed.has(jobId))) doomed.add(raw);
-    else if (ownerOf(entry?.data) === userId) unsure.push({ raw, jobId });
+  const unsure: DeadLetterCandidate[] = [];
+  for (const candidate of candidates) {
+    if (clearedJobIds.has(candidate.jobId) || (candidate.owned && processed.has(candidate.jobId))) doomed.add(candidate.ref);
+    else if (candidate.owned) unsure.push(candidate);
   }
-  return { doomed, unsure };
-}
-
-/**
- * The letters to look at when the index covers the list: those of the jobs the user has a letter for and of the jobs `clearedJobIds`
- * names. Also answers the ids of the user's jobs that no letter is left for, which the index still names (a damaged index), so the
- * caller can drop them.
- */
-async function indexedDeadLetters(client: Redis, dlqKey: string, userJobIds: readonly string[], clearedJobIds: ReadonlySet<string>): Promise<{ raws: string[]; stale: string[] }> {
-  const { jobPrefix } = deadLetterKeys(dlqKey);
-  const candidates = [...new Set([...clearedJobIds, ...userJobIds])];
-  const raws: string[] = [];
-  const stale: string[] = [];
-  const userSet = new Set(userJobIds);
-  for (let at = 0; at < candidates.length; at += FORGET_BATCH) {
-    const batch = candidates.slice(at, at + FORGET_BATCH);
-    const read = client.pipeline();
-    for (const jobId of batch) read.smembers(`${jobPrefix}${jobId}`);
-    const sets = (await pipelineReplies(read)) as string[][];
-    batch.forEach((jobId, position) => {
-      raws.push(...sets[position]);
-      if (sets[position].length === 0 && userSet.has(jobId)) stale.push(jobId);
-    });
-  }
-  return { raws, stale };
-}
-
-/**
- * Removes from the dead-letter list the letters of the jobs in `clearedJobIds`, those of `userId` for a job in `processed`, and those
- * of `userId` for a job that is gone, with their index.
- */
-async function removeDeadLetters(client: Redis, keys: QueueKeySpace, userId: string, processed: ReadonlySet<string>, clearedJobIds: ReadonlySet<string>): Promise<void> {
-  const dead = deadLetterKeys(keys.dlqKey);
-  const userKey = `${dead.userPrefix}${userId}`;
-  const lookup = client.pipeline();
-  lookup.exists(dead.coveredFlag);
-  lookup.smembers(userKey);
-  lookup.smembers(dead.unparsed);
-  const [covered, userJobIds, unparsed] = (await pipelineReplies(lookup)) as [number, string[], string[]];
-  let raws: Iterable<string>;
-  let stale: string[] = [];
-  if (Number(covered) === 1) {
-    const found = await indexedDeadLetters(client, keys.dlqKey, userJobIds, clearedJobIds);
-    raws = [...found.raws, ...unparsed];
-    stale = found.stale;
-  } else {
-    raws = await client.lrange(keys.dlqKey, 0, -1);
-  }
-  if (stale.length > 0) await client.srem(userKey, ...stale);
-  const { doomed, unsure } = sortDeadLetters(raws, userId, processed, clearedJobIds);
   for (let at = 0; at < unsure.length; at += FORGET_BATCH) {
     const batch = unsure.slice(at, at + FORGET_BATCH);
     const check = client.pipeline();
     for (const { jobId } of batch) check.exists(keys.jobKey(jobId));
     const exists = await pipelineReplies(check);
-    batch.forEach(({ raw }, position) => {
-      if (Number(exists[position]) === 0) doomed.add(raw);
+    batch.forEach(({ ref }, position) => {
+      if (Number(exists[position]) === 0) doomed.add(ref);
     });
   }
-  const doomedRaws = [...doomed];
-  for (let at = 0; at < doomedRaws.length; at += FORGET_BATCH) {
+  return [...doomed];
+}
+
+/** Removes from the list of the earlier layout the letters that `doomedLetters` picks; a no-op once the migration has emptied the list. */
+async function removeListedLetters(client: Redis, keys: QueueKeySpace, userId: string, processed: ReadonlySet<string>, clearedJobIds: ReadonlySet<string>): Promise<void> {
+  if ((await client.llen(keys.dlqKey)) === 0) return;
+  const candidates = (await client.lrange(keys.dlqKey, 0, -1)).map((raw) => {
+    const letter = parsedData(raw) as { jobId?: string; data?: unknown } | undefined;
+    return { ref: raw, jobId: letter?.jobId ?? '', owned: ownerOf(letter?.data) === userId };
+  });
+  const doomed = await doomedLetters(client, keys, processed, clearedJobIds, candidates);
+  for (let at = 0; at < doomed.length; at += FORGET_BATCH) {
     const removal = client.pipeline();
-    removal.eval(REMOVE_DEAD_LETTERS_LUA_SCRIPT, 4, keys.dlqKey, ...indexKeysOf(keys.dlqKey), ...doomedRaws.slice(at, at + FORGET_BATCH));
+    for (const raw of doomed.slice(at, at + FORGET_BATCH)) removal.lrem(keys.dlqKey, 0, raw);
     await pipelineReplies(removal);
   }
+}
+
+/**
+ * Removes the letters of the cleared jobs (by the set of each job), and those of `userId` that `doomedLetters` picks (by the set of the
+ * user's letters, whose job is a field of the letter hash: no letter is read). An id of the user's set whose letter is gone leaves the set
+ * and the order set.
+ */
+async function removeIndexedLetters(client: Redis, keys: QueueKeySpace, userId: string, processed: ReadonlySet<string>, clearedJobIds: ReadonlySet<string>): Promise<void> {
+  const { letterPrefix, byUserPrefix } = deadLetterKeys(keys.dlqKey);
+  const userKey = `${byUserPrefix}${userId}`;
+  const cleared = [...clearedJobIds];
+  for (let at = 0; at < cleared.length; at += FORGET_BATCH) {
+    await client.eval(REMOVE_JOB_DEAD_LETTERS_LUA_SCRIPT, 1, keys.dlqKey, ...cleared.slice(at, at + FORGET_BATCH));
+  }
+  const ids = await client.smembers(userKey);
+  const candidates: DeadLetterCandidate[] = [];
+  const stale: string[] = [];
+  for (let at = 0; at < ids.length; at += FORGET_BATCH) {
+    const batch = ids.slice(at, at + FORGET_BATCH);
+    const read = client.pipeline();
+    for (const id of batch) read.hget(`${letterPrefix}${id}`, 'job');
+    const jobIds = (await pipelineReplies(read)) as (string | null)[];
+    batch.forEach((id, position) => {
+      const jobId = jobIds[position];
+      if (jobId === null) stale.push(id);
+      else candidates.push({ ref: id, jobId, owned: true });
+    });
+  }
+  const gone = [...stale, ...(await doomedLetters(client, keys, processed, clearedJobIds, candidates))];
+  for (let at = 0; at < gone.length; at += FORGET_BATCH) {
+    const batch = gone.slice(at, at + FORGET_BATCH);
+    await client.eval(REMOVE_DEAD_LETTERS_LUA_SCRIPT, 1, keys.dlqKey, ...batch);
+    await client.srem(userKey, ...batch);
+  }
+}
+
+/**
+ * Removes from the dead letters those of the jobs in `clearedJobIds`, those of `userId` for a job in `processed`, and those of `userId`
+ * for a job that is gone. The list of the earlier layout goes first, then the indexed letters: the migration moves a letter from the list
+ * to the index in one step and never back, so a letter is in the list when the first pass reads it or in the index when the second does,
+ * whichever of the two it is in when a migration runs alongside.
+ */
+async function removeDeadLetters(client: Redis, keys: QueueKeySpace, userId: string, processed: ReadonlySet<string>, clearedJobIds: ReadonlySet<string>): Promise<void> {
+  await removeListedLetters(client, keys, userId, processed, clearedJobIds);
+  await removeIndexedLetters(client, keys, userId, processed, clearedJobIds);
 }
 
 /**

@@ -162,8 +162,10 @@ describe.skipIf(!REDIS_URL)('Job records after the job ends, on a real Redis ser
       old.finishedOn = Date.now() - AGE_MS - 1;
       await queue._onJobFailed(old, new Error('old'));
       await queue.moveToDlq(old, 'old');
-      const dlqKey = keyOf('age-fail', 'dlq');
-      await admin.lset(dlqKey, 0, JSON.stringify({ ...(await queue.getDlqEntries())[0], timestamp: Date.now() - AGE_MS - 1 }));
+      // The sweep reads the time of a letter from the order set: age the letter of the old job there.
+      const order = keyOf('age-fail', 'dlq:order');
+      const [oldLetter] = await admin.zrange(order, '0', '-1');
+      await admin.zadd(order, String(Date.now() - AGE_MS - 1), oldLetter);
 
       const last = await runToActive(queue, { name: 'last' });
       await queue._onJobFailed(last, new Error('last'));
