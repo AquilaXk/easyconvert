@@ -5,6 +5,7 @@ from enum import StrEnum
 class JobGraphNodesAdditionalPropertyOp(StrEnum):
     ARCHIVE_CREATE = "archive.create"
     ARCHIVE_EXTRACT = "archive.extract"
+    CAPTURE_WEBSITE = "capture.website"
     CONVERT = "convert"
     EXPORT_INTERNAL = "export.internal"
     EXPORT_S3 = "export.s3"
@@ -17,6 +18,7 @@ class JobGraphNodesAdditionalPropertyOp(StrEnum):
     MEDIA_PACKAGE = "media.package"
     MERGE = "merge"
     METADATA = "metadata"
+    METADATA_WRITE = "metadata.write"
     OCR = "ocr"
     OPTIMIZE = "optimize"
     PDF_DELETE_PAGES = "pdf.delete-pages"

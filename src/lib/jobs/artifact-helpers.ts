@@ -1,51 +1,6 @@
-import path from 'node:path';
 import { PDFDocument } from 'pdf-lib';
 import { loadPdfDocument, openPdfForEditing, PDF_LIB_OBJECTS_PER_TICK } from '@/lib/conversions/pdf-access';
 import { PARSER_LOOP_REFUSAL, withMendedPageTree } from '@/lib/conversions/pdf-postprocess/mend-page-tree';
-import { inspectPdfEncryption } from '@/lib/conversions/pdf-encryption';
-import { getFormatByExtension } from '@/lib/registry';
-
-/**
- * Extracts metadata from file buffer in a safe, deterministic manner.
- */
-export async function extractArtifactMetadata(
-  buf: Buffer,
-  filename: string,
-  storageKey?: string
-): Promise<Record<string, unknown>> {
-  const ext = path.extname(filename).replace(/^\./, '').toLowerCase();
-  const formatDef = getFormatByExtension(ext);
-  const metadata: Record<string, unknown> = {
-    filename,
-    sizeBytes: buf.length,
-    format: ext,
-    mimeType: formatDef?.mimeType || 'application/octet-stream',
-    category: formatDef?.category || 'unknown',
-    storageKey,
-    timestamp: new Date().toISOString(),
-  };
-
-  if (ext === 'pdf') {
-    try {
-      if (inspectPdfEncryption(buf).encrypted) {
-        // Page count, title and author of an encrypted file sit behind its password: record that, read nothing.
-        metadata.encrypted = true;
-      } else {
-        const pdfDoc = await loadPdfDocument(buf);
-        metadata.pageCount = pdfDoc.getPageCount();
-        metadata.title = pdfDoc.getTitle() || undefined;
-        metadata.author = pdfDoc.getAuthor() || undefined;
-      }
-    } catch {
-      // Metadata is best effort for a PDF whose structure cannot be read; the file itself is not touched.
-    }
-  } else if (ext === 'png' && buf.length >= 24) {
-    metadata.width = buf.readUInt32BE(16);
-    metadata.height = buf.readUInt32BE(20);
-  }
-
-  return metadata;
-}
 
 /** Passwords for the inputs of a merge, by position; an input without an entry is merged only if it has no open password. */
 export interface PdfMergeAccess {

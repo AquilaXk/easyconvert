@@ -5,15 +5,17 @@ import { assertAllowedLibreOfficeFilter } from '@/lib/conversions/pdf-export-opt
 import { validatePdfProtectOptions } from '@/lib/conversions/pdf-postprocess/protect';
 import type { ConversionOptions, PipelineTask } from '@/lib/types';
 import type { FailurePolicy } from '@/lib/queue/graph/types';
+import { captureUrlProblem } from './capture-url';
 import { OPTIMIZABLE_FORMATS, hasOptimizer, optimizeUnavailableMessage } from './optimize-formats';
 import {
   GRAPH_OPERATION_SET,
-  IMPORT_OPERATIONS,
+  SOURCE_OPERATIONS,
   EXPORT_OPERATIONS,
   TARGET_FORMAT_REQUIRED_OPERATIONS,
   RESTRICTED_OUTPUT_FORMATS,
   MERGE_FORMATS,
   MIN_MERGE_INPUTS,
+  METADATA_WRITE_FORMATS,
   FIXED_OUTPUT_FORMATS,
   canonicalGraphOperation,
   requestedTargetFormat,
@@ -308,6 +310,92 @@ function findCyclePath(
   return null;
 }
 
+interface GraphEdges {
+  /** u -> [v]: u is a dependency of v. */
+  adjacency: Map<string, string[]>;
+  /** v -> [u]: v depends on u. */
+  incoming: Map<string, string[]>;
+}
+
+/** Checks the inputs of every node (a node that needs one, a reference to a node that exists, a cycle on itself, an export used as input) and the fan-in and fan-out limits, and records the edges. */
+function checkDependencies(
+  nodes: Record<string, TaskNode>,
+  nodeEntries: ReadonlyArray<[string, TaskNode]>,
+  edges: GraphEdges,
+  options: GraphValidationOptions,
+  errors: GraphValidationErrorDetail[]
+): void {
+  const { adjacency, incoming } = edges;
+  const maxFanIn = options.maxFanIn ?? DEFAULT_MAX_FAN_IN;
+  const maxFanOut = options.maxFanOut ?? DEFAULT_MAX_FAN_OUT;
+
+  for (const [nodeId, node] of nodeEntries) {
+    const deps = getTaskDependencies(node);
+    const op = node.op ?? '';
+    const isImport = SOURCE_OPERATIONS.has(op as GraphOperation);
+
+    if (!isImport && deps.length === 0) {
+      errors.push({
+        path: `nodes.${nodeId}.input`,
+        message: `Node "${nodeId}" of operation "${op}" requires at least one input node.`,
+        code: 'MISSING_NODE_INPUT',
+      });
+    }
+
+    // Fan-in check
+    if (deps.length > maxFanIn) {
+      errors.push({
+        path: `nodes.${nodeId}`,
+        message: `Single task fan-in exceeds limit of ${maxFanIn} (task "${nodeId}" has ${deps.length} incoming dependencies).`,
+        code: 'FAN_IN_LIMIT_EXCEEDED',
+      });
+    }
+
+    for (const depId of deps) {
+      if (!nodes[depId]) {
+        errors.push({
+          path: `nodes.${nodeId}.input`,
+          message: `Node "${nodeId}" references non-existent input node "${depId}".`,
+          code: 'NON_EXISTENT_INPUT',
+        });
+        continue;
+      }
+
+      if (depId === nodeId) {
+        errors.push({
+          path: `nodes.${nodeId}.input`,
+          message: `Cycle detected: ${nodeId} -> ${nodeId}`,
+          code: 'SELF_CYCLE_DETECTED',
+        });
+        continue;
+      }
+
+      const depNode = nodes[depId];
+      if (EXPORT_OPERATIONS.has(depNode.op as GraphOperation)) {
+        errors.push({
+          path: `nodes.${nodeId}.input`,
+          message: `Node "${nodeId}" cannot use terminal export node "${depId}" as an input.`,
+          code: 'EXPORT_USED_AS_INPUT',
+        });
+      }
+
+      adjacency.get(depId)?.push(nodeId);
+      incoming.get(nodeId)?.push(depId);
+    }
+  }
+
+  // Fan-out verification: max outgoing connections per node
+  for (const [nodeId, outgoingList] of adjacency.entries()) {
+    if (outgoingList.length > maxFanOut) {
+      errors.push({
+        path: `nodes.${nodeId}`,
+        message: `Single node fan-out exceeds limit of ${maxFanOut} (node "${nodeId}" has ${outgoingList.length} outgoing connections).`,
+        code: 'FAN_OUT_LIMIT_EXCEEDED',
+      });
+    }
+  }
+}
+
 /** What is wrong with a merge node (other operations have none): too few inputs, a password list that does not match them, and an input that is not in the output format. */
 function mergeNodeProblems(nodeId: string, node: TaskNode, target: string | undefined, inferredFormats: Record<string, string>): GraphValidationErrorDetail[] {
   const errors: GraphValidationErrorDetail[] = [];
@@ -450,13 +538,13 @@ export function validateJobGraph(
       });
     }
 
-    if (IMPORT_OPERATIONS.has(op as GraphOperation)) {
+    if (SOURCE_OPERATIONS.has(op as GraphOperation)) {
       importCount++;
       const deps = getTaskDependencies(node);
       if (deps.length > 0) {
         errors.push({
           path: `nodes.${nodeId}.input`,
-          message: `Import node "${nodeId}" cannot specify an input dependency.`,
+          message: `Node "${nodeId}" brings its files in itself and cannot specify an input dependency.`,
           code: 'IMPORT_NODE_HAS_INPUT',
         });
       }
@@ -468,7 +556,7 @@ export function validateJobGraph(
   if (importCount === 0) {
     errors.push({
       path: 'nodes',
-      message: 'Graph must contain at least one import node (import.upload, import.url, import.s3 or import.sftp).',
+      message: 'Graph must contain at least one import node (import.upload, import.url, import.s3 or import.sftp) or a capture.website node.',
       code: 'MISSING_IMPORT_NODE',
     });
   }
@@ -482,74 +570,7 @@ export function validateJobGraph(
   }
 
   // 5. Validate dependency references, self-cycles, and build graphs
-  const maxFanIn = options.maxFanIn ?? DEFAULT_MAX_FAN_IN;
-  const maxFanOut = options.maxFanOut ?? DEFAULT_MAX_FAN_OUT;
-
-  for (const [nodeId, node] of nodeEntries) {
-    const deps = getTaskDependencies(node);
-    const op = node.op ?? '';
-    const isImport = IMPORT_OPERATIONS.has(op as GraphOperation);
-
-    if (!isImport && deps.length === 0) {
-      errors.push({
-        path: `nodes.${nodeId}.input`,
-        message: `Node "${nodeId}" of operation "${op}" requires at least one input node.`,
-        code: 'MISSING_NODE_INPUT',
-      });
-    }
-
-    // Fan-in check
-    if (deps.length > maxFanIn) {
-      errors.push({
-        path: `nodes.${nodeId}`,
-        message: `Single task fan-in exceeds limit of ${maxFanIn} (task "${nodeId}" has ${deps.length} incoming dependencies).`,
-        code: 'FAN_IN_LIMIT_EXCEEDED',
-      });
-    }
-
-    for (const depId of deps) {
-      if (!nodes[depId]) {
-        errors.push({
-          path: `nodes.${nodeId}.input`,
-          message: `Node "${nodeId}" references non-existent input node "${depId}".`,
-          code: 'NON_EXISTENT_INPUT',
-        });
-        continue;
-      }
-
-      if (depId === nodeId) {
-        errors.push({
-          path: `nodes.${nodeId}.input`,
-          message: `Cycle detected: ${nodeId} -> ${nodeId}`,
-          code: 'SELF_CYCLE_DETECTED',
-        });
-        continue;
-      }
-
-      const depNode = nodes[depId];
-      if (EXPORT_OPERATIONS.has(depNode.op as GraphOperation)) {
-        errors.push({
-          path: `nodes.${nodeId}.input`,
-          message: `Node "${nodeId}" cannot use terminal export node "${depId}" as an input.`,
-          code: 'EXPORT_USED_AS_INPUT',
-        });
-      }
-
-      adjacency.get(depId)?.push(nodeId);
-      incoming.get(nodeId)?.push(depId);
-    }
-  }
-
-  // Fan-out verification: max outgoing connections per node
-  for (const [nodeId, outgoingList] of adjacency.entries()) {
-    if (outgoingList.length > maxFanOut) {
-      errors.push({
-        path: `nodes.${nodeId}`,
-        message: `Single node fan-out exceeds limit of ${maxFanOut} (node "${nodeId}" has ${outgoingList.length} outgoing connections).`,
-        code: 'FAN_OUT_LIMIT_EXCEEDED',
-      });
-    }
-  }
+  checkDependencies(nodes, nodeEntries, { adjacency, incoming }, options, errors);
 
   // If there are dangling references or self-loops, abort topological sort to avoid noise
   if (errors.some((e) => e.code === 'NON_EXISTENT_INPUT' || e.code === 'SELF_CYCLE_DETECTED')) {
@@ -677,6 +698,12 @@ export function validateJobGraph(
         inferredFormats[nodeId] = extractExtension(importedName(node)) || DYNAMIC_FORMAT;
         break;
       }
+      case 'capture.website': {
+        const problem = captureUrlProblem(node.url);
+        if (problem !== undefined) errors.push({ path: `nodes.${nodeId}.url`, message: `Node "${nodeId}" (capture.website): ${problem}`, code: 'INVALID_NODE_OPTIONS' });
+        inferredFormats[nodeId] = target ?? UNKNOWN_FORMAT;
+        break;
+      }
       case 'archive.extract': {
         inferredFormats[nodeId] = DYNAMIC_FORMAT;
         break;
@@ -721,8 +748,8 @@ export function validateJobGraph(
         break;
       }
       default: {
-        // Pass-through operations (watermark, protect, export) keep their input format.
-        checkPdfRequiredInputs(nodeId, op, getTaskDependencies(node), inferredFormats, errors);
+        // Pass-through operations (watermark, protect, metadata.write, export) keep their input format.
+        checkPassThroughNode(nodeId, node, op, getTaskDependencies(node), inferredFormats, errors);
         inferredFormats[nodeId] = firstInputFormat(node);
         break;
       }
@@ -813,6 +840,42 @@ function checkOptimizeNode(
   }
   for (const depId of deps) {
     checkOptimizeSingleInput(nodeId, depId, inferredFormats[depId] || UNKNOWN_FORMAT, errors);
+  }
+}
+
+/** The checks of an operation that keeps the format of its input: the PDF operations need PDF, metadata.write a format it can write. */
+function checkPassThroughNode(
+  nodeId: string,
+  node: { options?: { metadata?: { set?: unknown } } & Record<string, unknown> },
+  op: GraphOperation,
+  deps: readonly string[],
+  inferredFormats: Record<string, string>,
+  errors: GraphValidationErrorDetail[]
+): void {
+  if (op === 'metadata.write') checkMetadataWriteNode(nodeId, node, deps, inferredFormats, errors);
+  else checkPdfRequiredInputs(nodeId, op, deps, inferredFormats, errors);
+}
+
+function checkMetadataWriteNode(
+  nodeId: string,
+  node: { options?: { metadata?: { set?: unknown } } & Record<string, unknown> },
+  deps: readonly string[],
+  inferredFormats: Record<string, string>,
+  errors: GraphValidationErrorDetail[]
+): void {
+  const set = node.options?.metadata?.set;
+  if (typeof set !== 'object' || set === null || Array.isArray(set) || Object.keys(set).length === 0) {
+    errors.push({ path: `nodes.${nodeId}.options.metadata.set`, message: `Node "${nodeId}" (metadata.write) needs "options.metadata.set" with at least one field.`, code: 'INVALID_NODE_OPTIONS' });
+  }
+  for (const depId of deps) {
+    const depFmt = inferredFormats[depId] || UNKNOWN_FORMAT;
+    if (depFmt !== UNKNOWN_FORMAT && depFmt !== DYNAMIC_FORMAT && !METADATA_WRITE_FORMATS.includes(depFmt)) {
+      errors.push({
+        path: `nodes.${nodeId}.input`,
+        message: `Operation "metadata.write" in node "${nodeId}" writes into ${METADATA_WRITE_FORMATS.join(', ')} files, but input "${depId}" produces "${depFmt}".`,
+        code: 'UNSUPPORTED_TARGET_FORMAT',
+      });
+    }
   }
 }
 

@@ -7,7 +7,8 @@ import { applyPdfWatermark, protectPdf, unlockPdf } from '../src/lib/conversions
 import { applyPdfPostProcessing } from '../src/lib/conversions';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { PdfStructureError } from '../src/lib/conversions/pdf-document';
-import { extractArtifactMetadata, mergePdfBuffers } from '../src/lib/jobs';
+import { mergePdfBuffers } from '../src/lib/jobs';
+import { readMetadata } from '../src/lib/jobs/metadata/read';
 import { classifyJobFailure } from '../src/lib/queue/job-failure';
 import { getPdfPageCount } from '../src/worker/engines';
 import { PdfPasswordRequiredError, PdfPermissionDeniedError } from '../src/lib/types';
@@ -388,20 +389,20 @@ describe.skipIf(toolsMissing)('the post-processing of a conversion result carrie
 describe.skipIf(toolsMissing)('artifact metadata of an encrypted PDF', () => {
   it('skips an encrypted file explicitly and records that, without reading it', async () => {
     const encrypted = qpdfEncrypt(await plainPdf(), { variant: AES_256, userPassword: '', ownerPassword: OWNER_PASSWORD });
-    const meta = await extractArtifactMetadata(encrypted, 'locked.pdf', 'k/locked.pdf');
-    expect(meta).toMatchObject({ format: 'pdf', encrypted: true, sizeBytes: encrypted.length, storageKey: 'k/locked.pdf' });
-    expect(meta).not.toHaveProperty('pageCount');
-    expect(meta).not.toHaveProperty('title');
-    expect(meta).not.toHaveProperty('author');
+    const meta = await readMetadata(encrypted, 'locked.pdf');
+    expect(meta).toMatchObject({ File: { FileType: 'PDF', FileSize: encrypted.length }, PDF: { Encrypted: true } });
+    expect(meta.PDF).not.toHaveProperty('PageCount');
+    expect(meta.PDF).not.toHaveProperty('Title');
+    expect(meta.PDF).not.toHaveProperty('Author');
   });
 
   it('still reports the page count of an unencrypted PDF and no encrypted flag', async () => {
     const doc = await PDFDocument.create();
     doc.addPage([100, 100]);
     doc.setTitle('Open title');
-    const meta = await extractArtifactMetadata(Buffer.from(await doc.save()), 'open.pdf');
-    expect(meta).toMatchObject({ pageCount: 1, title: 'Open title' });
-    expect(meta).not.toHaveProperty('encrypted');
+    const meta = await readMetadata(Buffer.from(await doc.save()), 'open.pdf');
+    expect(meta).toMatchObject({ PDF: { PageCount: 1, Title: 'Open title' } });
+    expect(meta.PDF).not.toHaveProperty('Encrypted');
   });
 });
 

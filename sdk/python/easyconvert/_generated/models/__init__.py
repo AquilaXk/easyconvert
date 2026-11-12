@@ -32,9 +32,14 @@ from .conversion_options_aspect_ratio_type_1_mode import (
 )
 from .conversion_options_audio import ConversionOptionsAudio
 from .conversion_options_audio_loudness import ConversionOptionsAudioLoudness
+from .conversion_options_capture import ConversionOptionsCapture
+from .conversion_options_capture_pdf import ConversionOptionsCapturePdf
+from .conversion_options_capture_viewport import ConversionOptionsCaptureViewport
 from .conversion_options_highlight_reconstruction_type_1 import (
     ConversionOptionsHighlightReconstructionType1,
 )
+from .conversion_options_metadata import ConversionOptionsMetadata
+from .conversion_options_metadata_set import ConversionOptionsMetadataSet
 from .conversion_options_optimize import ConversionOptionsOptimize
 from .conversion_options_packaging import ConversionOptionsPackaging
 from .conversion_options_packaging_ladder_item import (
@@ -124,10 +129,13 @@ from .engine_id import EngineId
 from .error_response import ErrorResponse
 from .fit import Fit
 from .fit_of_scale_of_video import FitOfScaleOfVideo
+from .fit_of_thumbnail import FitOfThumbnail
 from .format_of_packaging import FormatOfPackaging
 from .format_of_subtitles import FormatOfSubtitles
 from .format_of_thumbnail import FormatOfThumbnail
 from .formats_response import FormatsResponse
+from .formats_response_capture import FormatsResponseCapture
+from .formats_response_capture_website import FormatsResponseCaptureWebsite
 from .formats_response_categories_item import FormatsResponseCategoriesItem
 from .formats_response_formats_item import FormatsResponseFormatsItem
 from .get_formats_engine import GetFormatsEngine
@@ -207,6 +215,17 @@ from .list_storage_credentials_v1_response_200_credentials_item import (
 )
 from .list_webhook_dlq_response_200 import ListWebhookDlqResponse200
 from .margin import Margin
+from .metadata_report import MetadataReport
+from .metadata_report_document import MetadataReportDocument
+from .metadata_report_exif import MetadataReportEXIF
+from .metadata_report_file import MetadataReportFile
+from .metadata_report_gps import MetadataReportGPS
+from .metadata_report_image import MetadataReportImage
+from .metadata_report_media import MetadataReportMedia
+from .metadata_report_pdf import MetadataReportPDF
+from .metadata_report_schema_version import MetadataReportSchemaVersion
+from .metadata_report_streams_item import MetadataReportStreamsItem
+from .metadata_report_xmp import MetadataReportXMP
 from .mode_of_subtitles import ModeOfSubtitles
 from .mode_of_vectorize import ModeOfVectorize
 from .modify_of_permissions_of_protect import ModifyOfPermissionsOfProtect
@@ -227,6 +246,7 @@ from .output_unit import OutputUnit
 from .pair_engine import PairEngine
 from .pair_engine_id import PairEngineId
 from .pair_engines import PairEngines
+from .paper_of_pdf_of_capture import PaperOfPdfOfCapture
 from .pdf_a_options import PdfAOptions
 from .pdf_a_options_conformance import PdfAOptionsConformance
 from .pdf_optimize_options import PdfOptimizeOptions
@@ -289,6 +309,7 @@ from .video_codec import VideoCodec
 from .video_codec_of_packaging import VideoCodecOfPackaging
 from .video_fps import VideoFps
 from .video_resolution import VideoResolution
+from .wait_until_of_capture import WaitUntilOfCapture
 from .webhook_dlq_entry import WebhookDlqEntry
 from .webhook_dlq_entry_payload import WebhookDlqEntryPayload
 from .webhook_dlq_entry_status import WebhookDlqEntryStatus
@@ -321,7 +342,12 @@ __all__ = (
     "ConversionOptionsAspectRatioType1Mode",
     "ConversionOptionsAudio",
     "ConversionOptionsAudioLoudness",
+    "ConversionOptionsCapture",
+    "ConversionOptionsCapturePdf",
+    "ConversionOptionsCaptureViewport",
     "ConversionOptionsHighlightReconstructionType1",
+    "ConversionOptionsMetadata",
+    "ConversionOptionsMetadataSet",
     "ConversionOptionsOptimize",
     "ConversionOptionsPackaging",
     "ConversionOptionsPackagingLadderItem",
@@ -383,10 +409,13 @@ __all__ = (
     "ErrorResponse",
     "Fit",
     "FitOfScaleOfVideo",
+    "FitOfThumbnail",
     "FormatOfPackaging",
     "FormatOfSubtitles",
     "FormatOfThumbnail",
     "FormatsResponse",
+    "FormatsResponseCapture",
+    "FormatsResponseCaptureWebsite",
     "FormatsResponseCategoriesItem",
     "FormatsResponseFormatsItem",
     "GetFormatsEngine",
@@ -444,6 +473,17 @@ __all__ = (
     "ListStorageCredentialsV1Response200CredentialsItem",
     "ListWebhookDlqResponse200",
     "Margin",
+    "MetadataReport",
+    "MetadataReportDocument",
+    "MetadataReportEXIF",
+    "MetadataReportFile",
+    "MetadataReportGPS",
+    "MetadataReportImage",
+    "MetadataReportMedia",
+    "MetadataReportPDF",
+    "MetadataReportSchemaVersion",
+    "MetadataReportStreamsItem",
+    "MetadataReportXMP",
     "ModeOfSubtitles",
     "ModeOfVectorize",
     "ModifyOfPermissionsOfProtect",
@@ -464,6 +504,7 @@ __all__ = (
     "PairEngine",
     "PairEngineId",
     "PairEngines",
+    "PaperOfPdfOfCapture",
     "PdfAOptions",
     "PdfAOptionsConformance",
     "PdfOptimizeOptions",
@@ -524,6 +565,7 @@ __all__ = (
     "VideoCodecOfPackaging",
     "VideoFps",
     "VideoResolution",
+    "WaitUntilOfCapture",
     "WebhookDlqEntry",
     "WebhookDlqEntryPayload",
     "WebhookDlqEntryStatus",

@@ -14,7 +14,7 @@ export const NamedTaskSchema = {
       type: 'string',
       enum: NAMED_TASK_OPERATIONS,
       description:
-        '`import/url` and `import/upload` bring a file in; `convert`, `ocr`, `optimize`, `thumbnail`, `media.package`, `watermark`, `merge`, `metadata`, `archive/create`, `archive/extract` and the `pdf.*` page operations work on it; `export/url` ends a branch: with `url` it sends the files there, without it keeps them for download and lists their download URLs in the task result. `import/s3` and `import/sftp` bring files in from the customer\'s own bucket or SFTP server, and `export/s3` and `export/sftp` write the files there and list where each went in the task result; they take a saved credential (`credential_ref`) or the credentials themselves (`credentials`). A job needs at least one task that converts.',
+        '`import/url` and `import/upload` bring a file in; `convert`, `ocr`, `optimize`, `thumbnail`, `media.package`, `watermark`, `merge`, `metadata` (reads the metadata of its input into `metadata.json`), `metadata/write` (writes `options.metadata.set` into a JPEG, a PNG or a PDF), `capture/website` (only where the server has it on, see `GET /api/formats`; otherwise a 422 with the code `capture_unavailable`; draws the page at `url` as a PDF, a PNG or a JPEG, with `output_format` and `options.capture`; it takes no input and counts as a conversion), `archive/create`, `archive/extract` and the `pdf.*` page operations work on it; `export/url` ends a branch: with `url` it sends the files there, without it keeps them for download and lists their download URLs in the task result. `import/s3` and `import/sftp` bring files in from the customer\'s own bucket or SFTP server, and `export/s3` and `export/sftp` write the files there and list where each went in the task result; they take a saved credential (`credential_ref`) or the credentials themselves (`credentials`). A job needs at least one task that converts.',
     },
     input: {
       description: 'The name of the task whose output this task reads, or a list of names. Every task but an import needs one. A `merge` needs at least 2 distinct names.',
@@ -34,7 +34,7 @@ export const NamedTaskSchema = {
     url: {
       type: 'string',
       format: 'uri',
-      description: 'The file to fetch (`import/url`), or the destination that receives the files (`export/url`).',
+      description: 'The file to fetch (`import/url`), the destination that receives the files (`export/url`), or the public page that `capture/website` draws.',
     },
     headers: {
       type: 'object',

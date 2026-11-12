@@ -10,8 +10,8 @@ import { STORAGE_EXPORT_OPERATIONS, STORAGE_IMPORT_OPERATIONS } from '../../jobs
 import { sealPasswordOption } from '../option-secrets';
 import type { GraphNode } from './types';
 
-/** Operations whose `url` and `headers` are bearer secrets of customer storage. */
-const SECRET_URL_OPERATIONS: ReadonlySet<string> = new Set(['import.url', 'export.url']);
+/** Operations whose `url` and `headers` are bearer secrets (of customer storage, or the token in the address of a page to capture). */
+const SECRET_URL_OPERATIONS: ReadonlySet<string> = new Set(['import.url', 'export.url', 'capture.website']);
 /** Operations whose inline `credentials` are bearer secrets of the customer's store. */
 function hasInlineCredentialsOperation(op: unknown): boolean {
   return typeof op === 'string' && (STORAGE_IMPORT_OPERATIONS.has(op) || STORAGE_EXPORT_OPERATIONS.has(op));

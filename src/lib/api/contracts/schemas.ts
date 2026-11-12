@@ -26,6 +26,7 @@ import {
   PdfWatermarkOptionsSchema,
 } from './pdf-operation-schemas';
 import { pageSpecSchema } from './page-spec-schema';
+import { CaptureOptionsSchema, MetadataWriteOptionsSchema } from './task-option-schemas';
 import { VECTORIZE_OPTIONS_SCHEMA } from '@/lib/conversions/raster-vectorize-options';
 
 export {
@@ -663,13 +664,13 @@ export const ConversionOptionsSchema = {
     },
     thumbnail: {
       type: 'object',
-      description: 'Video frame thumbnail extraction options.',
+      description: 'Video frame thumbnail extraction options, and the size, fit and page of a thumbnail task.',
       properties: {
         at: {
           type: 'array',
           minItems: 1,
           maxItems: MAX_THUMBNAIL_TIMESTAMPS,
-          items: { type: 'string' },
+          items: { type: 'string', pattern: '^(?:\\d{1,5}(?:\\.\\d{1,6})?|(?:\\d{1,2}:)?\\d{1,2}:\\d{1,2}(?:\\.\\d{1,6})?)$' },
           description: `Timestamp strings or second offsets where thumbnails should be sampled (at most ${MAX_THUMBNAIL_TIMESTAMPS}).`,
         },
         format: {
@@ -682,6 +683,22 @@ export const ConversionOptionsSchema = {
           minimum: 16,
           maximum: 7680,
           description: 'Target thumbnail width in pixels.',
+        },
+        height: {
+          type: 'integer',
+          minimum: 16,
+          maximum: 7680,
+          description: 'Target thumbnail height in pixels (thumbnail task; the width and the height bound the picture, which `fit` places inside them).',
+        },
+        fit: {
+          type: 'string',
+          enum: ['cover', 'contain', 'fill', 'inside', 'outside'],
+          description: 'How a thumbnail task places the picture within `width` x `height`: `inside` (default) keeps the whole picture and its proportions.',
+        },
+        page: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Page of a document (or frame of a multi-frame picture) a thumbnail task shows, 1-indexed; the first by default.',
         },
         accurate: {
           type: 'boolean',
@@ -858,6 +875,8 @@ export const ConversionOptionsSchema = {
       description: 'PDF AES-256 encryption and permission restriction options.',
       properties: PdfProtectOptionsSchema.properties,
     },
+    capture: CaptureOptionsSchema,
+    metadata: MetadataWriteOptionsSchema,
     pdfa: {
       type: 'object',
       description: 'PDF/A archival conversion options.',
@@ -933,7 +952,8 @@ export const JobGraphSchema = {
           op: {
             type: 'string',
             enum: [...GRAPH_OPERATIONS],
-            description: 'Operation type for this graph node.',
+            description:
+              'Operation type for this graph node. `thumbnail` makes one picture (JPEG, PNG or WebP) of the first page, or the page `options.thumbnail.page` names, of a document, or of a frame of a video (`options.thumbnail.at`), or of an image, within `options.thumbnail.width` x `height` as `options.thumbnail.fit` places it. `metadata` reads the metadata of its first input into `metadata.json` (the `MetadataReport` schema). `metadata.write` writes `options.metadata.set` into each input, a JPEG, a PNG or a PDF, and keeps the rest of the file as it is. `capture.website` (only where the server has `CAPTURE_WEBSITE_ENABLED=true`; `GET /api/formats` says whether it is on, and where it is off the job is refused with a 422, code `capture_unavailable`, before anything is reserved) draws the public web page at `url` as a PDF, a PNG or a JPEG (`targetFormat`, `options.capture`); it takes no input, and its `url` is kept sealed.',
           },
           input: {
             description: 'Single upstream NodeId or array of upstream NodeIds. A merge node needs at least 2 distinct inputs.',
@@ -959,7 +979,7 @@ export const JobGraphSchema = {
           url: {
             type: 'string',
             format: 'uri',
-            description: 'URL for import.url or export.url node.',
+            description: 'URL for import.url or export.url node, or the page a capture.website node draws (an http or https page on port 80 or 443).',
           },
           headers: {
             type: 'object',
@@ -1033,7 +1053,7 @@ export const JobGraphSchema = {
           options: {
             $ref: 'https://easyconvert.local/schemas/conversion-options.json',
             description:
-              'Transformation options for convert, ocr, optimize, archive.create and the PDF nodes: `watermark` (pdf.watermark), `protect` (pdf.protect), `password` and `confirmEditRights` (pdf.unlock and every PDF edit), `split` (pdf.split-pages), `pages` (pdf.extract-pages, pdf.delete-pages), `reorder` (pdf.reorder-pages), `rotate` (pdf.rotate-pages) and `optimize` (optimize on a PDF).',
+              'Transformation options for convert, ocr, optimize, archive.create and the PDF nodes: `watermark` (pdf.watermark), `protect` (pdf.protect), `password` and `confirmEditRights` (pdf.unlock and every PDF edit), `split` (pdf.split-pages), `pages` (pdf.extract-pages, pdf.delete-pages), `reorder` (pdf.reorder-pages), `rotate` (pdf.rotate-pages), `optimize` (optimize on a PDF), `thumbnail` (thumbnail), `metadata` (metadata.write) and `capture` (capture.website).',
           },
           entries: {
             type: 'array',

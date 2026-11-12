@@ -5,6 +5,7 @@ from enum import StrEnum
 class TaskReportOperation(StrEnum):
     ARCHIVECREATE = "archive/create"
     ARCHIVEEXTRACT = "archive/extract"
+    CAPTUREWEBSITE = "capture/website"
     CONVERT = "convert"
     EXPORTS3 = "export/s3"
     EXPORTSFTP = "export/sftp"
@@ -16,6 +17,7 @@ class TaskReportOperation(StrEnum):
     MEDIA_PACKAGE = "media.package"
     MERGE = "merge"
     METADATA = "metadata"
+    METADATAWRITE = "metadata/write"
     OCR = "ocr"
     OPTIMIZE = "optimize"
     PDF_DELETE_PAGES = "pdf.delete-pages"

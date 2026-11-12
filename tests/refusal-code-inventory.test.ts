@@ -14,6 +14,9 @@ const SRC = path.resolve(__dirname, '..', 'src');
 
 const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
   ArchiveEntryCollisionError: 'archive_entry_collision',
+  CaptureFailedError: 'capture_failed',
+  CaptureTargetBlockedError: 'capture_target_blocked',
+  CaptureUnavailableError: 'capture_unavailable',
 
   ArchiveNotEncryptedError: 'conversion_failed',
   AudioResampleError: 'conversion_failed',
@@ -50,6 +53,8 @@ const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
   LoudnessReportMissingError: 'conversion_failed',
   MacFontContainerError: 'conversion_failed',
   MarkdownSanitizationError: 'conversion_failed',
+  MetadataFieldError: 'metadata_field_invalid',
+  MetadataWriteUnsupportedError: 'metadata_write_unsupported',
   NoAudioStreamError: 'conversion_failed',
   NoVideoStreamError: 'conversion_failed',
   OcrMarkupError: 'conversion_failed',

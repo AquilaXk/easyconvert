@@ -38,6 +38,10 @@ const NOT_ABOUT_THE_WORKER = new Set([
   'HelperFilesUnavailableError',
   // The account store (Redis) is down: a 503 about sign-in and keys that fails closed (policy 241), not a missing tool.
   'AuthStoreUnavailableError',
+  // The customer's own S3 or SFTP store did not answer: a 502 about that store, retried by its own rule (policy 271), not a missing tool.
+  'StorageUnavailableError',
+  // Website capture is switched off on this server (policy 270): a 422 about configuration that no retry changes, not a missing tool.
+  'CaptureUnavailableError',
 ]);
 
 function sourceFiles(directory: string): string[] {

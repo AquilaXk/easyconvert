@@ -104,7 +104,8 @@ describe.skipIf(!CLIENT_AVAILABLE)('SftpStorageAdapter with the OpenSSH client a
     const whole = await readAll(await adapter.downloadStream('reports/big.bin', { maxBytes: 4 * 1024 * 1024 }));
     expect(whole.length).toBe(3 * 1024 * 1024);
     fs.rmSync(scratchRoot, { recursive: true, force: true });
-  });
+    // Two OpenSSH transfers of 3 MiB each: about 1 s on a laptop, several on a shared runner.
+  }, 30_000);
 
   it('refuses a directory with more files than the limit instead of listing it short', async () => {
     for (let i = 0; i < 4; i++) stub.files.set(`${BASE_PATH}/reports/f${i}.csv`, Buffer.from('x'));

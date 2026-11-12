@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
-import { mergePdfBuffers, extractArtifactMetadata } from '@/lib/jobs';
+import { mergePdfBuffers } from '@/lib/jobs';
+import { readMetadata } from '@/lib/jobs/metadata/read';
 
 const FIRST_PAGE_SIZE: [number, number] = [400, 400];
 const SECOND_PAGE_SIZE: [number, number] = [300, 500];
@@ -33,23 +34,20 @@ describe('artifact helpers', () => {
     expect(sizes).toEqual([FIRST_PAGE_SIZE, SECOND_PAGE_SIZE]);
   });
 
-  it('extracts PNG dimensions from the IHDR chunk and PDF page count', async () => {
+  it('reads the dimensions of a PNG and the page count and size of a PDF', async () => {
     const png = Buffer.from(ONE_PIXEL_PNG_BASE64, 'base64');
-    const pngMeta = await extractArtifactMetadata(png, 'pixel.png', 'k/pixel.png');
+    const pngMeta = await readMetadata(png, 'pixel.png');
     expect(pngMeta).toMatchObject({
-      filename: 'pixel.png',
-      format: 'png',
-      sizeBytes: png.length,
-      storageKey: 'k/pixel.png',
-      width: 1,
-      height: 1,
+      schemaVersion: 1,
+      File: { FileName: 'pixel.png', FileType: 'PNG', FileSize: png.length, MIMEType: 'image/png' },
+      Image: { ImageWidth: 1, ImageHeight: 1 },
     });
 
     const pdf = await mergePdfBuffers([
       await createSinglePagePdf(FIRST_PAGE_SIZE, 'A'),
       await createSinglePagePdf(SECOND_PAGE_SIZE, 'B'),
     ]);
-    const pdfMeta = await extractArtifactMetadata(pdf, 'doc.pdf');
-    expect(pdfMeta).toMatchObject({ format: 'pdf', pageCount: 2, sizeBytes: pdf.length });
+    const pdfMeta = await readMetadata(pdf, 'doc.pdf');
+    expect(pdfMeta).toMatchObject({ File: { FileType: 'PDF', FileSize: pdf.length }, PDF: { PageCount: 2, PageWidth: FIRST_PAGE_SIZE[0], PageHeight: FIRST_PAGE_SIZE[1] } });
   });
 });

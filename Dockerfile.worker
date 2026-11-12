@@ -639,6 +639,24 @@ RUN scratch="$(mktemp -d)" \
     && find "${scratch}/book.oeb" -name '*.opf' | grep -q . \
     && rm -rf "${scratch}"
 
+# Website capture (src/lib/capture/website-capture.ts): the page is drawn by Qt WebEngine (Chromium), which calibre's dependencies already put in this image
+# (libqt6webenginecore6 and python3-pyqt6.qtwebengine; nothing is added), driven by our own script as a separate sandboxed process whose only route to the
+# network is the gate proxy of the worker. The build fails unless the browser starts without a display and draws a page, from a `data:` URL that needs no
+# network, as a PDF, a PNG and a JPEG that carry their format's signature.
+COPY --chmod=0555 native/capture-website/capture.py /usr/local/lib/easyconvert/capture-website.py
+RUN scratch="$(mktemp -d)" \
+    && for format in pdf png jpg; do \
+        mkdir "${scratch}/${format}" \
+        && printf '{"url":"data:text/html,<h1>Capture</h1>","format":"%s","proxyPort":9,"timeoutMs":60000,"output":"out.%s"}' "${format}" "${format}" > "${scratch}/${format}/request.json" \
+        && HOME="${scratch}/${format}" XDG_RUNTIME_DIR="${scratch}/${format}" XDG_CONFIG_HOME="${scratch}/${format}" \
+            timeout 120 python3 -I /usr/local/lib/easyconvert/capture-website.py "${scratch}/${format}/request.json" | grep -q '"ok": true' \
+        || exit 1; \
+    done \
+    && test "$(head -c 5 "${scratch}/pdf/out.pdf")" = "%PDF-" \
+    && test "$(od -An -tx1 -N4 "${scratch}/png/out.png" | tr -d ' \n')" = "89504e47" \
+    && test "$(od -An -tx1 -N3 "${scratch}/jpg/out.jpg" | tr -d ' \n')" = "ffd8ff" \
+    && rm -rf "${scratch}"
+
 # PDF/A validator (pinned release, checksum-verified); the PDF/A post-process refuses to run without it.
 COPY scripts/install-verapdf.sh /tmp/install-verapdf.sh
 RUN /tmp/install-verapdf.sh /opt/verapdf && rm /tmp/install-verapdf.sh

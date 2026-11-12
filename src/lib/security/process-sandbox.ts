@@ -631,6 +631,12 @@ export interface UnshareIsolationOptions {
   mountNamespace?: boolean;
   ipcNamespace?: boolean;
   pidNamespace?: boolean;
+  /**
+   * With `networkIsolated: false`, still start the program in the user namespace and PID namespace of the others, and under the file
+   * confinement of pid-init, but keep the network of the worker (no network namespace). For the one program that must reach the gate
+   * of the worker on the loopback interface, the browser of a website capture; every other run is network isolated.
+   */
+  keepNetwork?: boolean;
   /** `false` starts the program with the /proc entries of the other runs readable (pid-init `--keep-proc`), for a program whose own children must read their /proc entries. On by default; SANDBOX_HIDE_PROC=false turns it off for every run. */
   hideProc?: boolean;
 }
@@ -642,7 +648,8 @@ export function buildUnshareIsolationArgs(
   cap: { available: boolean; path: string; args: string[] },
   options: UnshareIsolationOptions = {}
 ): string[] {
-  const args = [...(cap.args || [])];
+  // The probe found the namespaces the host gives (`-r -n`); a run that keeps the network of the worker takes all of them but that one.
+  const args = [...(cap.args || [])].filter((flag) => !(options.keepNetwork && flag === '-n'));
   if (options.userNamespace && !args.includes('-r')) {
     args.push('-r');
   }
@@ -852,7 +859,8 @@ export function resolveSandboxedCommand(
   }
 
   const effectiveRlimits = effectiveRlimitsOf(rlimits, memoryLimitMb, maxFileSize);
-  const unshare = process.platform === 'linux' && networkIsolated ? getUnshareCapability() : undefined;
+  const keepsNetwork = !networkIsolated && sandboxOptions.keepNetwork === true;
+  const unshare = process.platform === 'linux' && (networkIsolated || keepsNetwork) ? getUnshareCapability() : undefined;
   const isolationArgs = unshare?.available ? buildUnshareIsolationArgs(unshare, sandboxOptions) : undefined;
   const confinement = confinementOf(scope, strictIsolation, unshare, isolationArgs, sandboxOptions, binaryPath);
   const pid = pidIsolationOf(unshare, isolationArgs, sandboxOptions, confinement);

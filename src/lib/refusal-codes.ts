@@ -113,6 +113,11 @@ export const CONVERSION_REFUSAL_CODES = [
   'storage_unavailable',
   'engine_not_offered',
   'engine_version_unavailable',
+  'metadata_write_unsupported',
+  'metadata_field_invalid',
+  'capture_unavailable',
+  'capture_target_blocked',
+  'capture_failed',
   'engine_unavailable',
   'conversion_failed',
 ] as const;

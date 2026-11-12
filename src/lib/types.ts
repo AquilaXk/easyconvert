@@ -12,6 +12,8 @@ import type {
 } from './media-options';
 
 export type * from './media-options';
+export type * from './capture-options';
+import type { WebsiteCaptureOptions } from './capture-options';
 
 export type FormatCategory =
   | 'image'
@@ -282,6 +284,10 @@ export interface ConversionOptions {
   jpegQuality?: number;
   watermark?: PdfWatermarkOptions;
   protect?: PdfProtectOptions;
+  /** `capture.website` node: how the page is loaded and drawn. */
+  capture?: WebsiteCaptureOptions;
+  /** `metadata.write` node: the fields to write, by their ExifTool names; a field set to null is removed. */
+  metadata?: { set: Record<string, string | number | string[] | null> };
   pdfa?: PdfAOptions;
   /** `pdf.split-pages` node: how the document is cut into parts. */
   split?: PdfSplitOptions;

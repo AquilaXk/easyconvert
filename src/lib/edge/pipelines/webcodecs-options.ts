@@ -40,7 +40,7 @@ const NOT_ABOUT_MEDIA = [
   'compressionLevel', 'archiveCoder', 'splitVolumeBytes', 'zstdDict', 'archiveParts', 'useNative7z', 'solid',
   'collisionPolicy', 'entries', 'skipLinks', 'repair', 'requireResources', 'timeoutMs', 'signal', 'disableNativeEngine', 'engine', 'engineVersion',
   'pdfStandard', 'pdfVersion', 'libreOfficeFilter', 'losslessImageCompression',
-  'imageDpi', 'jpegQuality', 'watermark', 'protect', 'pdfa', 'split', 'rotate', 'reorder', 'optimize',
+  'imageDpi', 'jpegQuality', 'watermark', 'protect', 'metadata', 'capture', 'pdfa', 'split', 'rotate', 'reorder', 'optimize',
 ] as const satisfies readonly (keyof ConversionOptions)[];
 
 /** Media options the edge worker has no way to apply. */

@@ -26,6 +26,7 @@ import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject,
 import { resolveEffectiveWebhook } from '@/lib/security/ssrf';
 import { ConversionOptions, JobStatus, PipelineTask, JobGraph, QueueUnavailableError, typedFailureOf } from '@/lib/types';
 import { checkSubmittedEngineChoices } from '@/lib/api/engine-choice-check';
+import { assertGraphCaptureAllowed } from '@/lib/capture/capture-enabled';
 import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import {
   validateJobGraph,
@@ -607,7 +608,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       originalFilename = storageKey.split('/').pop() || 'file';
     }
 
-    const hasImportUrl = graph && hasRemoteImport(normalizeGraphNodes(graph));
+    const hasImportUrl = graph && (graphHasCapture(graph) || hasRemoteImport(normalizeGraphNodes(graph)));
 
     if (!targetFormat) {
       return await fail(400, 'Missing required parameter: "targetFormat".');
@@ -631,11 +632,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     sourceDef ??= detectFormatFromFilename(originalFilename);
 
     if (!sourceDef && hasImportUrl && graph) {
-      const remote = remoteImportPath(normalizeGraphNodes(graph));
-      if (remote) {
-        sourceDef = getFormatByExtension(path.extname(remote).replace(/^\./, '').toLowerCase());
-        originalFilename ||= path.basename(remote) || 'remote_file';
-      }
+      ({ sourceDef, originalFilename } = graphSourceWithoutFile(graph, originalFilename));
     }
 
     if (!sourceDef) {
@@ -697,8 +694,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       }
     }
 
-    // An engine the conversion does not list, or a version that is not installed, is refused before anything is reserved.
+    // A website capture on a server that has it off, an engine the conversion does not list, or a version that is not installed, is refused before anything is reserved.
     try {
+      assertGraphCaptureAllowed(submittedGraph);
       await checkSubmittedEngineChoices({ sourceFormat: sourceDef.id, targetFormat: targetDef.id, options, tasks, graph: submittedGraph });
     } catch (err) {
       if (typedFailureOf(err) === undefined) throw err;
@@ -833,14 +831,35 @@ function resolveGraphFallbackFormat(
   return '';
 }
 
+/** Whether a graph draws a web page: it then has no file of its own. */
+function graphHasCapture(graph: JobGraph): boolean {
+  return Object.values(normalizeGraphNodes(graph)).some((node) => node.op === 'capture.website');
+}
+
+/**
+ * The source format and file name of a graph that has no file of its own: those of the object its first remote import names, or, for
+ * a graph that captures a page, the HTML of the page.
+ */
+function graphSourceWithoutFile(graph: JobGraph, originalFilename: string): { sourceDef: FormatDefinition | undefined; originalFilename: string } {
+  const remote = remoteImportPath(normalizeGraphNodes(graph));
+  if (remote) {
+    return { sourceDef: getFormatByExtension(path.extname(remote).replace(/^\./, '').toLowerCase()), originalFilename: originalFilename || path.basename(remote) || 'remote_file' };
+  }
+  if (graphHasCapture(graph)) return { sourceDef: getFormatByExtension('html'), originalFilename: originalFilename || 'page.html' };
+  return { sourceDef: undefined, originalFilename };
+}
+
 function fixedNodeTargetFormat(nodes: ReturnType<typeof normalizeGraphNodes>[string][]): string {
   const convertNodes = nodes.filter((n) => n.op === 'convert');
   const lastConvert = convertNodes[convertNodes.length - 1]?.targetFormat;
   if (lastConvert) return lastConvert;
   const direct = nodes.find((n) => n.op === 'archive.create' || n.op === 'merge')?.targetFormat;
   if (direct) return direct;
+  const capture = nodes.find((n) => n.op === 'capture.website');
+  if (capture?.targetFormat) return capture.targetFormat;
   const thumb = nodes.find((n) => n.op === 'thumbnail');
   if (thumb) return thumb.targetFormat ?? thumb.options?.thumbnail?.format ?? 'jpg';
+  if (nodes.some((n) => n.op === 'metadata')) return 'json';
   if (nodes.some((n) => n.op === 'pdf.split-pages' || n.op === 'media.package')) return 'zip';
   if (nodes.some((n) => typeof n.op === 'string' && PDF_GRAPH_NODE_OPS.has(n.op))) return 'pdf';
   return '';
@@ -855,7 +874,7 @@ function graphTargetFormat(graph: JobGraph, fallbackFormat?: string, filename = 
   const fixed = fixedNodeTargetFormat(nodes);
   if (fixed) return fixed;
   const fallback = resolveGraphFallbackFormat(nodes, fallbackFormat, filename);
-  if (nodes.some((n) => n.op === 'optimize' || n.op === 'watermark')) return fallback;
+  if (nodes.some((n) => n.op === 'optimize' || n.op === 'watermark' || n.op === 'metadata.write')) return fallback;
   if (nodes.some((n) => n.op === 'archive.extract')) return fallback || 'zip';
   return '';
 }

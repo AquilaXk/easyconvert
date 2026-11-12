@@ -20,6 +20,8 @@ const SLASH_OPERATIONS = {
   'import/sftp': 'import.sftp',
   'export/s3': 'export.s3',
   'export/sftp': 'export.sftp',
+  'metadata/write': 'metadata.write',
+  'capture/website': 'capture.website',
 } as const satisfies Record<string, GraphOperation>;
 
 /** The graph operations a task cannot name directly: its imports, archives and exports take the slash spelling. */
@@ -30,6 +32,8 @@ const SLASH_ONLY: ReadonlySet<string> = new Set<GraphOperation>([
   'import.sftp',
   'archive.create',
   'archive.extract',
+  'metadata.write',
+  'capture.website',
   'export.url',
   'export.s3',
   'export.sftp',
@@ -84,7 +88,7 @@ export function isNamedTaskMap(tasks: unknown): tasks is NamedTaskMap {
 
 /** The operations that read from or write to the customer's own store. */
 const STORAGE_OPERATIONS: ReadonlySet<string> = new Set(['import/s3', 'import/sftp', 'export/s3', 'export/sftp']);
-const TARGET_OPERATIONS: ReadonlySet<string> = new Set(['convert', 'thumbnail', 'merge', 'archive/create']);
+const TARGET_OPERATIONS: ReadonlySet<string> = new Set(['convert', 'thumbnail', 'merge', 'archive/create', 'capture/website']);
 const INPUT_FIELDS = ['operation', 'input'] as const;
 const URL_FIELDS = ['url', 'headers'] as const;
 const STORAGE_FIELDS = ['credential_ref', 'credentials'] as const;
@@ -94,6 +98,8 @@ function allowedFields(operation: string): ReadonlySet<string> {
   switch (operation) {
     case 'import/url':
       return new Set(['operation', ...URL_FIELDS]);
+    case 'capture/website':
+      return new Set(['operation', 'url', 'options', 'output_format']);
     case 'import/upload':
       return new Set(['operation', 'upload_id', 'storage_key']);
     case 'export/url':
@@ -135,7 +141,10 @@ function taskNode(name: string, task: NamedTask, uploadKeys: Readonly<Record<str
   if (task.options !== undefined) node.options = task.options;
   if (task.entries !== undefined) node.entries = task.entries;
 
-  if (task.operation === 'import/url') {
+  if (task.operation === 'capture/website') {
+    if (!task.url) refuse('MISSING_TASK_FIELD', 'url', `Task "${name}" captures a page and needs "url".`);
+    node.url = task.url;
+  } else if (task.operation === 'import/url') {
     if (!task.url) refuse('MISSING_TASK_FIELD', 'url', `Task "${name}" imports from a URL and needs "url".`);
     node.url = task.url;
     if (task.headers) node.headers = task.headers;

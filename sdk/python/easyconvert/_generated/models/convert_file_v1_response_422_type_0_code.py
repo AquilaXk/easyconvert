@@ -4,6 +4,9 @@ from enum import StrEnum
 
 class ConvertFileV1Response422Type0Code(StrEnum):
     ARCHIVE_ENTRY_COLLISION = "archive_entry_collision"
+    CAPTURE_FAILED = "capture_failed"
+    CAPTURE_TARGET_BLOCKED = "capture_target_blocked"
+    CAPTURE_UNAVAILABLE = "capture_unavailable"
     CONVERSION_FAILED = "conversion_failed"
     EMPTY_FILE = "empty_file"
     ENCRYPTED_INPUT = "encrypted_input"
@@ -12,6 +15,8 @@ class ConvertFileV1Response422Type0Code(StrEnum):
     INPUT_OVER_LIMIT = "input_over_limit"
     INVALID_PASSWORD = "invalid_password"
     MALFORMED_INPUT = "malformed_input"
+    METADATA_FIELD_INVALID = "metadata_field_invalid"
+    METADATA_WRITE_UNSUPPORTED = "metadata_write_unsupported"
     MISSING_VOLUME = "missing_volume"
     OPTION_NOT_SUPPORTED = "option_not_supported"
     PASSWORD_REQUIRED = "password_required"

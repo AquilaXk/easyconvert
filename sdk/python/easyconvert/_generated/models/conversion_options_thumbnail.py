@@ -7,6 +7,7 @@ from typing import Any, Self, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.fit_of_thumbnail import FitOfThumbnail
 from ..models.format_of_thumbnail import FormatOfThumbnail
 from ..types import UNSET, Unset
 
@@ -15,18 +16,27 @@ T = TypeVar("T", bound="ConversionOptionsThumbnail")
 
 @_attrs_define
 class ConversionOptionsThumbnail:
-    """Video frame thumbnail extraction options.
+    """Video frame thumbnail extraction options, and the size, fit and page of a thumbnail task.
 
     Attributes:
         at (list[str] | Unset): Timestamp strings or second offsets where thumbnails should be sampled (at most 16).
         format_ (FormatOfThumbnail | Unset): Output thumbnail image format.
         width (int | Unset): Target thumbnail width in pixels.
+        height (int | Unset): Target thumbnail height in pixels (thumbnail task; the width and the height bound the
+            picture, which `fit` places inside them).
+        fit (FitOfThumbnail | Unset): How a thumbnail task places the picture within `width` x `height`: `inside`
+            (default) keeps the whole picture and its proportions.
+        page (int | Unset): Page of a document (or frame of a multi-frame picture) a thumbnail task shows, 1-indexed;
+            the first by default.
         accurate (bool | Unset): Whether to use sample-accurate seek instead of fast keyframe seek.
     """
 
     at: list[str] | Unset = UNSET
     format_: FormatOfThumbnail | Unset = UNSET
     width: int | Unset = UNSET
+    height: int | Unset = UNSET
+    fit: FitOfThumbnail | Unset = UNSET
+    page: int | Unset = UNSET
     accurate: bool | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -41,6 +51,14 @@ class ConversionOptionsThumbnail:
 
         width = self.width
 
+        height = self.height
+
+        fit: str | Unset = UNSET
+        if not isinstance(self.fit, Unset):
+            fit = self.fit.value
+
+        page = self.page
+
         accurate = self.accurate
 
         field_dict: dict[str, Any] = {}
@@ -52,6 +70,12 @@ class ConversionOptionsThumbnail:
             field_dict["format"] = format_
         if width is not UNSET:
             field_dict["width"] = width
+        if height is not UNSET:
+            field_dict["height"] = height
+        if fit is not UNSET:
+            field_dict["fit"] = fit
+        if page is not UNSET:
+            field_dict["page"] = page
         if accurate is not UNSET:
             field_dict["accurate"] = accurate
 
@@ -71,12 +95,26 @@ class ConversionOptionsThumbnail:
 
         width = d.pop("width", UNSET)
 
+        height = d.pop("height", UNSET)
+
+        _fit = d.pop("fit", UNSET)
+        fit: FitOfThumbnail | Unset
+        if isinstance(_fit, Unset):
+            fit = UNSET
+        else:
+            fit = FitOfThumbnail(_fit)
+
+        page = d.pop("page", UNSET)
+
         accurate = d.pop("accurate", UNSET)
 
         conversion_options_thumbnail = cls(
             at=at,
             format_=format_,
             width=width,
+            height=height,
+            fit=fit,
+            page=page,
             accurate=accurate,
         )
 

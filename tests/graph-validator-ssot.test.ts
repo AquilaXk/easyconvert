@@ -126,7 +126,7 @@ describe('legacy task translation', () => {
 
 describe('restricted output formats', () => {
   it.each([
-    ['thumbnail', 'src', 'webp'],
+    ['thumbnail', 'src', 'gif'],
     ['merge', MERGE_INPUTS, 'docx'],
     ['archive.create', ['src'], 'tar.zst'],
   ])('rejects %s producing a format it cannot write', (op, input, targetFormat) => {

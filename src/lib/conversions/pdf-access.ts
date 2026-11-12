@@ -45,7 +45,8 @@ export type PdfEditOperation =
   | 'delete'
   | 'reorder'
   | 'rotate'
-  | 'compress';
+  | 'compress'
+  | 'metadata';
 
 /** Plain-language names of the rights qpdf reports, used in the message that tells the caller what is forbidden. */
 const RIGHT_LABELS: Readonly<Record<string, string>> = {
@@ -71,6 +72,7 @@ const OPERATION_VERBS: Readonly<Record<PdfEditOperation, string>> = {
   reorder: 'page reordering',
   rotate: 'rotation',
   compress: 'compression',
+  metadata: 'metadata change',
 };
 
 export interface PdfAccess {
@@ -95,6 +97,7 @@ function neededRights(operation: PdfEditOperation, capabilities: Readonly<Record
     case 'rotate':
       return [['modifyassembly', 'modifyother']];
     case 'compress':
+    case 'metadata':
       return [['modifyother']];
     case 'unlock':
     case 'protect':

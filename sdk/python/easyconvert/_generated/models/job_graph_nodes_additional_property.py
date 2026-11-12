@@ -32,11 +32,20 @@ T = TypeVar("T", bound="JobGraphNodesAdditionalProperty")
 class JobGraphNodesAdditionalProperty:
     """
     Attributes:
-        op (JobGraphNodesAdditionalPropertyOp): Operation type for this graph node.
+        op (JobGraphNodesAdditionalPropertyOp): Operation type for this graph node. `thumbnail` makes one picture (JPEG,
+            PNG or WebP) of the first page, or the page `options.thumbnail.page` names, of a document, or of a frame of a
+            video (`options.thumbnail.at`), or of an image, within `options.thumbnail.width` x `height` as
+            `options.thumbnail.fit` places it. `metadata` reads the metadata of its first input into `metadata.json` (the
+            `MetadataReport` schema). `metadata.write` writes `options.metadata.set` into each input, a JPEG, a PNG or a
+            PDF, and keeps the rest of the file as it is. `capture.website` (only where the server has
+            `CAPTURE_WEBSITE_ENABLED=true`; `GET /api/formats` says whether it is on, and where it is off the job is refused
+            with a 422, code `capture_unavailable`, before anything is reserved) draws the public web page at `url` as a
+            PDF, a PNG or a JPEG (`targetFormat`, `options.capture`); it takes no input, and its `url` is kept sealed.
         input_ (list[str] | str | Unset): Single upstream NodeId or array of upstream NodeIds. A merge node needs at
             least 2 distinct inputs.
         storage_key (str | Unset): Storage key for import.upload node.
-        url (str | Unset): URL for import.url or export.url node.
+        url (str | Unset): URL for import.url or export.url node, or the page a capture.website node draws (an http or
+            https page on port 80 or 443).
         headers (JobGraphNodesAdditionalPropertyHeaders | Unset): Optional HTTP headers for URL operations.
         method (JobGraphNodesAdditionalPropertyMethod | Unset): HTTP method for export.url node.
         credential_ref (str | Unset): import.s3, export.s3, import.sftp and export.sftp: a credential saved for the

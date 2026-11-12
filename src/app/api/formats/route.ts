@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAllFormats, getFormatByExtension, CATEGORIES } from '@/lib/registry';
+import { CAPTURE_OUTPUT_FORMATS, websiteCaptureEnabled } from '@/lib/capture/capture-enabled';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { ENGINE_NAMES, isEngineId } from '@/lib/conversions/engine-ids';
 import { describeEngines, enginesForPair, installedEngineVersion, isEngineInstalled } from '@/worker/engine-registry';
@@ -30,7 +31,8 @@ export async function GET(req: NextRequest) {
   const sourceParam = params.get('source');
   const targetParam = params.get('target');
   const engineParam = params.get('engine');
-  const body = { success: true, count: formats.length, categories: CATEGORIES, formats, engines };
+  const capture = { website: { enabled: websiteCaptureEnabled(), formats: CAPTURE_OUTPUT_FORMATS } };
+  const body = { success: true, count: formats.length, categories: CATEGORIES, formats, engines, capture };
   if (sourceParam === null && targetParam === null && engineParam === null) return NextResponse.json(body);
 
   const instance = req.nextUrl.pathname;
