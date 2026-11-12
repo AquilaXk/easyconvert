@@ -39,16 +39,12 @@ export function validateRegistrationInput(password: string, confirmPassword: str
   return null;
 }
 
-/**
- * The link to the password reset page. It asks the server whether reset is on (mail is configured) and shows nothing until
- * the answer says so, so a server without mail never offers a page that cannot work.
- */
-function ForgotPasswordLink() {
-  const t = useTranslations('auth.form');
+/** Asks a status endpoint whether a feature is on; false until the answer says so, and when the server cannot answer. */
+export function useServerFlag(url: string): boolean {
   const [enabled, setEnabled] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/auth/password-reset')
+    fetch(url)
       .then((res) => (res.ok ? res.json() : null))
       .then((data: { enabled?: unknown } | null) => {
         if (!cancelled) setEnabled(data?.enabled === true);
@@ -57,7 +53,17 @@ function ForgotPasswordLink() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [url]);
+  return enabled;
+}
+
+/**
+ * The link to the password reset page. It asks the server whether reset is on (mail is configured) and shows nothing until
+ * the answer says so, so a server without mail never offers a page that cannot work.
+ */
+function ForgotPasswordLink() {
+  const t = useTranslations('auth.form');
+  const enabled = useServerFlag('/api/auth/password-reset');
   if (!enabled) return null;
   return (
     <div className="mt-2 text-right">

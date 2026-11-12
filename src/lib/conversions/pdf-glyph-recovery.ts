@@ -1,4 +1,5 @@
 import { glyphNameToText, isDingbatsFontName } from './pdf-glyph-names';
+import { SPECIAL_PRIVATE_USE_SYMBOLS } from './pdf-glyph-list-pdfjs';
 import { PdfTextGeometryError } from './pdf-text-types';
 import { isSymbolFontName, mapSymbolFontCharacter } from './symbol-font-map';
 
@@ -11,7 +12,10 @@ import { isSymbolFontName, mapSymbolFontCharacter } from './symbol-font-map';
  *    rules of pdf-glyph-names.ts: pdfjs maps `fi`, but not the `s_s` and `e_t_t` that a layout program writes for the
  *    ligatures of a typeface;
  *  - for the Symbol, Wingdings and Webdings families, the symbol-font tables of the office readers (symbol-font-map.ts)
- *    for the private-use character U+F000 + code that their fonts keep their glyphs at.
+ *    for the private-use character U+F000 + code that their fonts keep their glyphs at;
+ *  - for the characters of the Adobe private-use area that stand for a symbol with a character of its own (the pieces of the
+ *    big brackets and braces of Symbol and CMEX10, the serif and sans copyright, registered and trademark signs), the
+ *    equivalents pdf.js maps them to (`SPECIAL_PRIVATE_USE_SYMBOLS`, pdf-glyph-list-pdfjs.ts).
  *
  * A glyph neither source maps has no text: it is left out and counted, never replaced by a guess. A caller that has to keep
  * every glyph in its place (the DXF writer replaces each glyph picture of a bitmap font with text) asks for a mark instead.
@@ -65,6 +69,19 @@ function isPrivateUse(codePoint: number): boolean {
   return codePoint >= PRIVATE_USE_BMP_START && codePoint <= PRIVATE_USE_BMP_END;
 }
 
+/** The character pdf.js gives a private-use character of the Adobe set in its place, or undefined when it has none. */
+function specialPrivateUse(codePoint: number): string | undefined {
+  const equivalent = SPECIAL_PRIVATE_USE_SYMBOLS[codePoint];
+  return equivalent === undefined ? undefined : String.fromCodePoint(equivalent);
+}
+
+/** The text with each character of the Adobe private-use area that has an equivalent replaced by it. */
+function withSpecialPrivateUse(text: string): string {
+  let replaced = '';
+  for (const character of text) replaced += specialPrivateUse(character.codePointAt(0) as number) ?? character;
+  return replaced;
+}
+
 function fontNameOf(font: RecoverableFont | null): string {
   return typeof font?.name === 'string' ? font.name.replace(SUBSET_TAG, '') : '';
 }
@@ -88,7 +105,8 @@ function readNamedGlyph(code: number, font: RecoverableFont): string | null {
   if (isNotdefCode(code, font)) return '';
   const name = glyphNameAt(code, font);
   if (name === null) return null;
-  const text = glyphNameToText(name, { dingbats: isDingbatsFontName(fontNameOf(font)) });
+  const listed = glyphNameToText(name, { dingbats: isDingbatsFontName(fontNameOf(font)) });
+  const text = listed === null ? null : withSpecialPrivateUse(listed);
   return text !== null && !hasUnmappedGlyphs(text) ? text : null;
 }
 
@@ -109,7 +127,7 @@ function recoverGlyph(character: string, font: RecoverableFont | null): string |
   const codePoint = character.codePointAt(0) as number;
   if (isPrivateUse(codePoint)) {
     const mapped = isSymbolFontName(fontNameOf(font)) ? mapSymbolFontCharacter(fontNameOf(font), codePoint) : undefined;
-    return mapped ?? null;
+    return mapped ?? specialPrivateUse(codePoint) ?? null;
   }
   return codePoint < SINGLE_BYTE_CODES ? textOfNamedGlyph(codePoint, font) : null;
 }

@@ -1,9 +1,11 @@
 import { ADOBE_GLYPH_LIST, ZAPF_DINGBATS_GLYPH_LIST } from './pdf-glyph-list';
+import { PDFJS_GLYPH_LIST_ADDITIONS } from './pdf-glyph-list-pdfjs';
 
 /**
  * The text a PDF font glyph name stands for, by the algorithm of the Adobe Glyph List specification ("Unicode and Glyph
  * Names", https://github.com/adobe-type-tools/agl-aglfn): drop everything from the first period, split at underscores
- * into components (a ligature `f_f_i` is three letters), and map each component through the Adobe Glyph List, a
+ * into components (a ligature `f_f_i` is three letters), and map each component through the Adobe Glyph List (with the
+ * names pdf.js adds to it, among them those of the TeX fonts: pdf-glyph-list-pdfjs.ts), a
  * `uniXXXX` name (one or more four-digit UTF-16 code units) or a `uXXXX` to `uXXXXXX` name (one scalar value).
  *
  * A glyph named like nothing the specification maps has no text: the result is `null`, never a guess. A ligature with
@@ -46,7 +48,13 @@ let adobeGlyphs: ReadonlyMap<string, string> | undefined;
 let dingbatGlyphs: ReadonlyMap<string, string> | undefined;
 
 function adobeGlyphList(): ReadonlyMap<string, string> {
-  adobeGlyphs ??= parseList(ADOBE_GLYPH_LIST);
+  if (adobeGlyphs === undefined) {
+    const names = new Map(parseList(ADOBE_GLYPH_LIST));
+    for (const [name, codePoint] of Object.entries(PDFJS_GLYPH_LIST_ADDITIONS)) {
+      if (!names.has(name)) names.set(name, String.fromCodePoint(codePoint));
+    }
+    adobeGlyphs = names;
+  }
   return adobeGlyphs;
 }
 

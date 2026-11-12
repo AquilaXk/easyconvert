@@ -169,7 +169,7 @@ npm run bench:quality      # conversion quality benchmark
 - **Code smell ratchet.** `npm run guard:code-smells` runs ESLint over `src/**/*.{ts,tsx}` with `complexity` 30, `max-depth` 5, `max-lines-per-function` 250, `max-params` 6, `max-lines` 1500, `no-nested-ternary`, and `no-explicit-any`. Inline `eslint-disable` comments are ignored. Existing violations are in `.github/code-smell-baseline.json`, keyed by file, rule, and function name. The baseline only shrinks: fix a `NEW` or `GREW` line, and run `npm run guard:code-smells -- --update` to commit a smaller baseline.
 - **Policy decisions.** Output defaults, limits, engines, and the quality gate are recorded with their rationale in [docs/policy-decisions.md](docs/policy-decisions.md). Update it in the commit that changes a policy.
 - **Operations.** [docs/operations/README.md](docs/operations/README.md), [docs/deploy-oci.md](docs/deploy-oci.md), and [docs/slo.md](docs/slo.md).
-- **Static analysis.** SonarCloud, configured in `sonar-project.properties`.
+- **Static analysis.** SonarCloud, configured in `.sonarcloud.properties`.
 
 One maintainer works on this project. Changes go straight to `main` and CI runs on every push. Remaining work is listed in [TODO.md](TODO.md). A release is tagged per deploy with a short hand-written note (see [docs/deploy-oci.md](docs/deploy-oci.md), "Releases", and [CHANGELOG.md](CHANGELOG.md)).
 
