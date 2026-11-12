@@ -221,10 +221,17 @@ describe('encoder choices', () => {
     expect([jpegOptionsFor(70, 'photo').quantisationTable, jpegOptionsFor(70, 'graphic').quantisationTable]).toEqual([3, 2]);
   });
 
+  it('writes photographs with the standard table (0) from the full-chroma quality and keeps table 3 below it; graphics keep table 2', () => {
+    expect([89, 90, 96, 100].map((quality) => jpegOptionsFor(quality, 'photo').quantisationTable)).toEqual([3, 0, 0, 0]);
+    expect(jpegOptionsFor(92, 'photo', true).quantisationTable).toBe(0);
+    expect([70, 92].map((quality) => jpegOptionsFor(quality, 'graphic').quantisationTable)).toEqual([2, 2]);
+  });
+
   it('spends the progressive scan search only on a colour graphic at the full-chroma quality', () => {
     expect(jpegOptionsFor(92, 'graphic')).toMatchObject({ chromaSubsampling: '4:4:4', progressive: true, optimiseScans: true });
     expect(jpegOptionsFor(92, 'graphic', true)).toMatchObject({ progressive: false });
-    expect(jpegOptionsFor(92, 'photo')).toMatchObject({ chromaSubsampling: '4:4:4', progressive: false });
+    expect(jpegOptionsFor(92, 'photo')).toMatchObject({ chromaSubsampling: '4:4:4', progressive: false, trellisQuantisation: false });
+    expect(jpegOptionsFor(92, 'photo').optimiseScans).toBeUndefined();
   });
 
   it('writes a grey AVIF as monochrome at any quality and content, and a colour one by the chroma rule', () => {

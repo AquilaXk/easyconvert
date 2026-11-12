@@ -182,8 +182,14 @@ export function avifSpeedFor(effort: number): number {
  * they zero the high-frequency coefficients that make up the edges.
  */
 export const GRAPHIC_JPEG_QUANTISATION_TABLE = 2;
-/** mozjpeg quantisation table for photographs: 3, ImageMagick's table, which mozjpeg uses by default. */
+/** mozjpeg quantisation table for photographs below the full-chroma quality: 3, ImageMagick's table, which mozjpeg uses by default. */
 export const PHOTO_JPEG_QUANTISATION_TABLE = 3;
+/**
+ * mozjpeg quantisation table for photographs at the full-chroma quality (90 and above): 0, the standard table of the JPEG
+ * specification that the reference encoder writes. Table 3 wins at the qualities of 40 to 85 and needs 15% more bytes than
+ * the reference at equal PSNR once the picture is 4:4:4 (see `jpegOptionsFor`).
+ */
+export const PHOTO_FULL_CHROMA_JPEG_QUANTISATION_TABLE = 0;
 
 /**
  * What the JPEG encoder is asked for, by the picture's content. All of them keep the encoder's optimal Huffman tables and
@@ -191,9 +197,14 @@ export const PHOTO_JPEG_QUANTISATION_TABLE = 3;
  * BD-rate against ImageMagick's encoder; encode times are those of the 768 x 512 photograph, the 640 x 640 line art and
  * the 1024 x 640 interface, measured on Linux with the prebuilt image library):
  *
- * - Photographs: baseline scan, table 3, no trellis quantisation. The trellis saves another 8% of the bytes (BD-rate
- *   -19.9% PSNR against -12.4% without it) and costs 5.6 ms of the 7.6 ms encode, which made the row slower than the
- *   reference encoder, whose whole run takes 10 ms. Without it the BD-rate stays 12% ahead in PSNR and 11% in SSIM.
+ * - Photographs: baseline scan, no trellis quantisation, table 3 below the full-chroma quality and table 0 from it. The
+ *   trellis saves another 8% of the bytes (BD-rate -19.9% PSNR against -12.4% without it) and costs 5.6 ms of the 7.6 ms
+ *   encode, which made the row slower than the reference encoder, whose whole run takes 10 ms. Without it the BD-rate
+ *   stays 12% ahead in PSNR and 11% in SSIM. From quality 90 (4:4:4) table 3 needs 15% more bytes than the reference for
+ *   the same PSNR and 9% for the same SSIM on 34 photographs (BD-rate over the qualities 88, 90, 93 and 96); table 0 is at
+ *   the reference (+0.2% PSNR, -1.5% SSIM) at no cost in time. A progressive scan saves another 3.6% (4.2% with the scan
+ *   search) and takes 1.1 to 1.7 times the reference's time from 0.3 to 12 MP (2.3 times with the search), which misses
+ *   the speed bar.
  * - Grey photographs (one component, a radiograph or a scan): the same, in a progressive scan without the scan search. One plane
  *   costs little to scan twice, and on the benchmark's radiograph it takes the SSIM BD-rate against the reference from +3.9% to
  *   +1.3% (2% fewer bytes).
@@ -212,7 +223,10 @@ export function jpegOptionsFor(requestedQuality: number | undefined, content: Co
   const quality = clampQuality(requestedQuality, DEFAULT_QUALITY_BY_CODEC.jpeg);
   const chromaSubsampling = jpegChromaFor(quality);
   const common = { quality, chromaSubsampling, optimiseCoding: true, overshootDeringing: true } satisfies JpegOptions;
-  if (content === 'photo') return { ...common, progressive: grey, trellisQuantisation: false, quantisationTable: PHOTO_JPEG_QUANTISATION_TABLE };
+  if (content === 'photo') {
+    const quantisationTable = chromaSubsampling === '4:4:4' ? PHOTO_FULL_CHROMA_JPEG_QUANTISATION_TABLE : PHOTO_JPEG_QUANTISATION_TABLE;
+    return { ...common, progressive: grey, trellisQuantisation: false, quantisationTable };
+  }
   // Measured on line art: trellis quantisation costs 5 to 6 dB of PSNR at the same quality number; without it,
   // with table 2, the file is 10% smaller than the reference encoder's at equal PSNR, where it was 9% larger.
   // Overshoot deringing stays on: switching it off costs 1.5 dB on text and rules.
