@@ -106,6 +106,9 @@ describe('every language carries every message', () => {
 describe('the Korean copy keeps one register and one set of terms', () => {
   const koreanEntries = [...korean];
 
+  // The register follows the reference converters' Korean pages (entries 273 and 274): labels, 합니다체 descriptions and
+  // ~하세요 prompts. 해요체 and the stiff 하십시오체 of machine translation stay out. The one named exception is a FAQ
+  // question, which keeps the "~나요?" form the reference converters use for their questions.
   it('uses 합니다체 and ~하세요, never 해요체 or 하십시오체 endings', () => {
     // A FAQ question keeps the "~나요?" form every Korean converter site uses for its questions.
     const faqQuestion = /^pricing\.faq\.[a-z]+\.question$/;

@@ -178,8 +178,8 @@ describe('design tokens', () => {
       ['danger', 'danger-soft'],
       ['info', 'info-soft'],
     ];
-    const lightFocus = /(?:^|\n)\s*:focus-visible\s*\{[^}]*outline:\s*2px solid rgb\(var\(--c-([a-z0-9-]+)\)\)/.exec(globalsCss)?.[1];
-    const darkFocus = /(?:^|\n)\s*\.dark :focus-visible\s*\{[^}]*outline-color:\s*rgb\(var\(--c-([a-z0-9-]+)\)\)/.exec(globalsCss)?.[1] ?? lightFocus;
+    const lightFocus = /:root:not\(\[data-input-modality='pointer'\]\) :focus-visible\s*\{[^}]*outline:\s*1px solid rgb\(var\(--c-([a-z0-9-]+)\)\)/.exec(globalsCss)?.[1];
+    const darkFocus = /:root\.dark:not\(\[data-input-modality='pointer'\]\) :focus-visible\s*\{[^}]*outline-color:\s*rgb\(var\(--c-([a-z0-9-]+)\)\)/.exec(globalsCss)?.[1] ?? lightFocus;
     const focusColour = { light: lightFocus, dark: darkFocus };
     const below: string[] = [];
     for (const [theme, selector] of [['light', ':root'], ['dark', '.dark']] as const) {
@@ -207,12 +207,15 @@ describe('design tokens', () => {
     expect(below).toEqual([]);
   });
 
-  it('draws keyboard focus as an explicit 2px accent outline with a 2px offset on every focusable element', () => {
-    const rule = /(?:^|\n)\s*:focus-visible\s*\{([^}]*)\}/.exec(globalsCss)?.[1] ?? '';
-    expect(rule).toMatch(/outline:\s*2px solid rgb\(var\(--c-accent\)\)\s*;/);
-    expect(rule).toMatch(/outline-offset:\s*2px\s*;/);
-    const darkRule = /(?:^|\n)\s*\.dark :focus-visible\s*\{([^}]*)\}/.exec(globalsCss)?.[1] ?? '';
-    expect(darkRule).toMatch(/outline-color:\s*rgb\(var\(--c-accent-ink\)\)\s*;/);
+  it('draws keyboard focus on the edge of every focusable element: a 1px accent line with no gap and a half-strength halo (entry 272)', () => {
+    const rule = (selector: string) => new RegExp(`(?:^|\\n)\\s*${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`).exec(globalsCss)?.[1] ?? '';
+    expect(rule(':focus-visible')).toMatch(/outline:\s*none\s*;/);
+    const light = rule(":root:not([data-input-modality='pointer']) :focus-visible");
+    expect(light).toMatch(/outline:\s*1px solid rgb\(var\(--c-accent\)\)\s*;/);
+    expect(light).toMatch(/outline-offset:\s*0\s*;/);
+    expect(light).toMatch(/box-shadow:\s*0 0 0 4px rgb\(var\(--c-accent\) \/ 0\.5\)\s*;/);
+    const dark = rule(":root.dark:not([data-input-modality='pointer']) :focus-visible");
+    expect(dark).toMatch(/outline-color:\s*rgb\(var\(--c-accent-ink\)\)\s*;/);
     expect(globalsCss.indexOf(':focus-visible {')).toBeGreaterThan(globalsCss.indexOf('@layer base'));
     expect(globalsCss.indexOf(':focus-visible {')).toBeLessThan(globalsCss.indexOf('@layer components'));
   });
