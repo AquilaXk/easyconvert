@@ -33,6 +33,9 @@ const NOT_ABOUT_THE_WORKER = new Set([
   'WebhookTargetRequiredError',
   // The browser offers no OPFS sync access handle: an internal signal to use the in-memory route.
   'SyncAccessUnavailableError',
+  // The launcher helper cannot open the files a run named: an internal signal to run the program directly (policy 255).
+  'FilesUnavailableError',
+  'HelperFilesUnavailableError',
   // The account store (Redis) is down: a 503 about sign-in and keys that fails closed (policy 241), not a missing tool.
   'AuthStoreUnavailableError',
 ]);
