@@ -53,6 +53,12 @@ export function multiply3x3(a: Matrix3x3, b: Matrix3x3): Matrix3x3 {
 export function applyMatrixAndSrgbEncode(rgb: Uint16Array, matrix: Matrix3x3): void {
   const table = getSrgbEncodeTable();
   const [m0, m1, m2, m3, m4, m5, m6, m7, m8] = matrix;
+  if (m0 === 1 && m1 === 0 && m2 === 0 && m3 === 0 && m4 === 1 && m5 === 0 && m6 === 0 && m7 === 0 && m8 === 1) {
+    // The identity maps every 16-bit sample to itself (1 * r + 0 * g + 0 * b is exactly r), so only the curve is left.
+    const whole = rgb.length - (rgb.length % RGB_CHANNELS);
+    for (let i = 0; i < whole; i += 1) rgb[i] = table[rgb[i]];
+    return;
+  }
   for (let i = 0; i + 2 < rgb.length; i += RGB_CHANNELS) {
     const r = rgb[i];
     const g = rgb[i + 1];

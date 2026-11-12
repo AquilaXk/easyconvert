@@ -19,6 +19,7 @@
 import { ConversionFailedError } from '../types';
 import { BLUE_NOISE_SIDE, blueNoiseCentred } from './blue-noise-mask';
 import { COLOUR_MEMO_LAB_STRIDE, ColourMemo } from './image-colour-memo';
+import { DirectColourMemo } from './image-colour-direct-memo';
 import { GIF_PHOTO_PIXEL_BUDGET, QUANTIZER_PIXEL_BUDGET, assertPixelBudget } from './image-input-limits';
 import { KdTree3 } from './kd-tree';
 import { runCpuTask } from '../workers/cpu-pool';
@@ -52,6 +53,8 @@ export const QUANT_CONVERGENCE_DELTA = 1e-4;
 export const QUANT_ALPHA_THRESHOLD = 128;
 /** Rasters of at least this many pixels are mapped through the candidate grid (it costs a few tens of ms to build). */
 const GRID_MIN_PIXELS = 100_000;
+/** Pixels from which the palette mapper keeps its colour answers in a table indexed by the colour (`DirectColourMemo`). */
+const DIRECT_MEMO_MIN_PIXELS = 1 << 20;
 /** Hilbert-curve error queue length of Riemersma dithering. */
 const RIEMERSMA_QUEUE_SIZE = 16;
 /** Blue-noise amplitude, as a share of the typical spacing between palette colours. */
@@ -518,7 +521,7 @@ function paletteSpacing(model: PaletteModel): { linear: number; oklab: number } 
 }
 
 /** Whether a colour is at most `distanceFactor` (squared) times as far from palette colour `previous` as from its nearest one. */
-function withinRunTolerance(memo: ColourMemo, entry: number, model: PaletteModel, previous: number, distanceFactor: number): boolean {
+function withinRunTolerance(memo: Pick<ColourMemo, 'lab'>, entry: number, model: PaletteModel, previous: number, distanceFactor: number): boolean {
   const at = entry * COLOUR_MEMO_LAB_STRIDE;
   const to = previous * RGB_STRIDE;
   const dx = memo.lab[at + 1] - model.oklab[to];
@@ -532,7 +535,7 @@ function mapNearest(pixels: ArrayLike<number>, pixelCount: number, model: Palett
   const lab = new Float64Array(RGB_STRIDE);
   const keepsRuns = runTolerance > 0;
   const distanceFactor = (1 + runTolerance) ** 2;
-  const memo = new ColourMemo(keepsRuns, pixelCount);
+  const memo = pixelCount >= DIRECT_MEMO_MIN_PIXELS ? new DirectColourMemo(keepsRuns) : new ColourMemo(keepsRuns, pixelCount);
   let lastKey = -1;
   let lastIndex = 0;
   let lastNearest = 0;

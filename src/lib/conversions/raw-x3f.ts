@@ -75,6 +75,8 @@ const X3F_QUATTRO_MAX_PIXELS = 24_000_000;
 const SAMPLE_MAX = 0xffff;
 const BITS_PER_BYTE = 8;
 const BIT_WINDOW = 32;
+/** Bits of the longest difference: a code and the extra bits that follow it. */
+const FULL_DIFFERENCE_BITS = 8 + 16;
 
 const CAMF_HEADER_BYTES = 28;
 const CAMF_TYPE_XOR = 2;
@@ -216,6 +218,48 @@ class BitReader {
     }
   }
 
+  /** Takes over the state of a reader whose bytes up to `position` were read by the caller: `bitBuffer` holds `bitCount` unread bits. */
+  resume(position: number, bitBuffer: number, bitCount: number): void {
+    this.position = position;
+    this.bitBuffer = bitBuffer >>> 0;
+    this.bitCount = bitCount;
+  }
+
+  /**
+   * Whether the buffer holds the longest difference (a code of `TRUE_MAX_CODE_BITS` and the extra bits of `TRUE_MAX_EXTRA_BITS`) in full,
+   * after taking in as many bytes as the window holds: then `takeDifference` needs no check on the way. Near the end of the range it is
+   * false and the caller reads bit by bit, so a plane that ends early is refused exactly as before.
+   */
+  holdsFullDifference(): boolean {
+    if (this.bitCount >= FULL_DIFFERENCE_BITS) return true;
+    if (this.position + (BIT_WINDOW - this.bitCount) / BITS_PER_BYTE > this.end) return false;
+    while (this.bitCount <= BIT_WINDOW - BITS_PER_BYTE) {
+      this.bitBuffer = ((this.bitBuffer << BITS_PER_BYTE) | this.data[this.position]) >>> 0;
+      this.position += 1;
+      this.bitCount += BITS_PER_BYTE;
+    }
+    return true;
+  }
+
+  /** One difference from a buffer that `holdsFullDifference`: the same value and the same refusals as reading it bit by bit. */
+  takeDifference(entries: Uint16Array): number {
+    const count = this.bitCount;
+    const buffer = this.bitBuffer;
+    const entry = entries[(buffer >>> (count - TRUE_MAX_CODE_BITS)) & ((1 << TRUE_MAX_CODE_BITS) - 1)];
+    if (entry === 0) throw fail('the compressed data holds an unassigned Huffman code');
+    const bits = entry >> TRUE_MAX_CODE_BITS;
+    const rest = count - (entry & 0xff);
+    if (bits === 0) {
+      this.bitCount = rest;
+      return 0;
+    }
+    if (bits > TRUE_MAX_EXTRA_BITS) throw fail(`a difference of ${bits} bits is not valid`);
+    const left = rest - bits;
+    this.bitCount = left;
+    const value = (buffer >>> left) & ((1 << bits) - 1);
+    return value >>> (bits - 1) === 0 ? value - ((1 << bits) - 1) : value;
+  }
+
   private load(): void {
     this.bitBuffer = ((this.bitBuffer << BITS_PER_BYTE) | this.data[this.position]) >>> 0;
     this.position += 1;
@@ -266,6 +310,7 @@ function readHuffmanTable(file: Buffer, start: number, end: number): { lookup: H
 
 /** Decodes one signed difference. */
 function readDifference(reader: BitReader, lookup: HuffmanLookup): number {
+  if (reader.holdsFullDifference()) return reader.takeDifference(lookup.entries);
   const entry = lookup.entries[reader.peekBits(TRUE_MAX_CODE_BITS)];
   if (entry === 0) throw fail('the compressed data holds an unassigned Huffman code');
   reader.skipBits(entry & 0xff);
@@ -501,21 +546,48 @@ export function decodeQuattroLayers(file: Buffer, image: X3fImageSection): Foveo
   return { width: top.columns, height: top.rows, planes, dims };
 }
 
-/** Bilinear 2x upsampling of one lower Quattro layer, one output row at a time into a reused buffer. */
+/**
+ * Bilinear 2x upsampling of one lower Quattro layer, one output row at a time into a reused buffer. An output row blends the
+ * horizontal interpolations of two source rows, and each source row serves two output rows (and is the lower row of one pair and the
+ * upper row of the next), so the interpolated rows are kept: each is made once, with the same arithmetic as in-line.
+ */
 class UpsampledRows {
   private readonly columnLow: Int32Array;
-  private readonly columnWeight: Float32Array;
+  private readonly columnWeight: Float64Array;
   private readonly out: Uint16Array;
+  /** Two interpolated source rows, the source row of each (-1: none yet) and the slot the next one goes to. */
+  private readonly interpolated: [Float64Array, Float64Array];
+  private readonly interpolatedRow: [number, number] = [-1, -1];
+  private nextSlot = 0;
 
   constructor(private readonly plane: LayerPlane, private readonly width: number, private readonly height: number, outWidth: number) {
     this.out = new Uint16Array(outWidth);
+    this.interpolated = [new Float64Array(outWidth), new Float64Array(outWidth)];
     this.columnLow = new Int32Array(outWidth);
-    this.columnWeight = new Float32Array(outWidth);
+    this.columnWeight = new Float64Array(outWidth);
     for (let x = 0; x < outWidth; x += 1) {
       const position = Math.min(width - 1, Math.max(0, (x + 0.5) / QUATTRO_LOWER_SCALE - 0.5));
       this.columnLow[x] = Math.min(width - 2, Math.floor(position));
-      this.columnWeight[x] = position - this.columnLow[x];
+      // The weight is kept in single precision, as the interpolation has always read it.
+      this.columnWeight[x] = Math.fround(position - this.columnLow[x]);
     }
+  }
+
+  /** Source row `sourceRow` interpolated along its columns, from the cache or made now. */
+  private interpolatedFrom(sourceRow: number): Float64Array {
+    if (this.interpolatedRow[0] === sourceRow) return this.interpolated[0];
+    if (this.interpolatedRow[1] === sourceRow) return this.interpolated[1];
+    const slot = this.nextSlot;
+    this.nextSlot = 1 - slot;
+    this.interpolatedRow[slot] = sourceRow;
+    const target = this.interpolated[slot];
+    const { plane, columnLow, columnWeight } = this;
+    const base = sourceRow * this.width;
+    for (let x = 0; x < target.length; x += 1) {
+      const left = base + columnLow[x];
+      target[x] = plane[left] + columnWeight[x] * (plane[left + 1] - plane[left]);
+    }
+    return target;
   }
 
   /**
@@ -524,19 +596,13 @@ class UpsampledRows {
    * buffer is overwritten by the next call.
    */
   row(y: number): Uint16Array {
-    const { plane, width, height, out, columnLow, columnWeight } = this;
+    const { height, out } = this;
     const position = Math.min(height - 1, Math.max(0, (y + 0.5) / QUATTRO_LOWER_SCALE - 0.5));
     const rowLow = Math.min(height - 2, Math.floor(position));
     const rowWeight = position - rowLow;
-    const upper = rowLow * width;
-    const lower = upper + width;
-    for (let x = 0; x < out.length; x += 1) {
-      const left = columnLow[x];
-      const weight = columnWeight[x];
-      const top = plane[upper + left] + weight * (plane[upper + left + 1] - plane[upper + left]);
-      const bottom = plane[lower + left] + weight * (plane[lower + left + 1] - plane[lower + left]);
-      out[x] = Math.round(top + rowWeight * (bottom - top));
-    }
+    const top = this.interpolatedFrom(rowLow);
+    const bottom = this.interpolatedFrom(rowLow + 1);
+    for (let x = 0; x < out.length; x += 1) out[x] = Math.round(top[x] + rowWeight * (bottom[x] - top[x]));
     return out;
   }
 }
@@ -575,21 +641,63 @@ function decodeTruePlane(
   lookup: HuffmanLookup
 ): Uint16Array {
   const reader = new BitReader(file, start, end);
+  const entries = lookup.entries;
   const plane = new Uint16Array(width * height);
+  // The bits are read through local variables while the range holds at least a window of bytes; the last few bytes go through the
+  // reader, which refuses a plane that ends early exactly where it did before.
+  let inline = true;
+  let position = start;
+  let buffer = 0;
+  let count = 0;
   // Row-start predictors for the four (row parity, column parity) positions.
   const rowStart = [seed, seed, seed, seed];
-  const running = [0, 0];
+  let at = 0;
   for (let row = 0; row < height; row += 1) {
     const rowParity = (row & 1) * 2;
+    let even = rowStart[rowParity];
+    let odd = rowStart[rowParity + 1];
     for (let column = 0; column < width; column += 1) {
-      const columnParity = column & 1;
-      const difference = readDifference(reader, lookup);
-      const previous = column < 2 ? rowStart[rowParity + columnParity] : running[columnParity];
-      const value = previous + difference;
+      if (inline && count < FULL_DIFFERENCE_BITS) {
+        if (position + BIT_WINDOW / BITS_PER_BYTE <= end) {
+          while (count <= BIT_WINDOW - BITS_PER_BYTE) {
+            buffer = (buffer << BITS_PER_BYTE) | file[position];
+            position += 1;
+            count += BITS_PER_BYTE;
+          }
+        } else {
+          inline = false;
+          reader.resume(position, buffer, count);
+        }
+      }
+      let difference: number;
+      if (inline) {
+        const entry = entries[(buffer >>> (count - TRUE_MAX_CODE_BITS)) & ((1 << TRUE_MAX_CODE_BITS) - 1)];
+        if (entry === 0) throw fail('the compressed data holds an unassigned Huffman code');
+        const bits = entry >> TRUE_MAX_CODE_BITS;
+        count -= entry & 0xff;
+        if (bits === 0) {
+          difference = 0;
+        } else {
+          if (bits > TRUE_MAX_EXTRA_BITS) throw fail(`a difference of ${bits} bits is not valid`);
+          count -= bits;
+          const extra = (buffer >>> count) & ((1 << bits) - 1);
+          difference = extra >>> (bits - 1) === 0 ? extra - ((1 << bits) - 1) : extra;
+        }
+      } else {
+        difference = readDifference(reader, lookup);
+      }
+      let value: number;
+      if ((column & 1) === 0) {
+        even += difference;
+        value = even;
+      } else {
+        odd += difference;
+        value = odd;
+      }
       if (value < 0 || value > SAMPLE_MAX) throw fail('a decoded sample is outside the 16-bit range');
-      running[columnParity] = value;
-      if (column < 2) rowStart[rowParity + columnParity] = value;
-      plane[row * width + column] = value;
+      if (column < 2) rowStart[rowParity + column] = value;
+      plane[at] = value;
+      at += 1;
     }
   }
   return plane;
@@ -921,40 +1029,54 @@ function readSpatialGain(matrices: Map<string, CamfMatrix>, whiteBalance: string
   return { rows: matrix.dims[0], columns: matrix.dims[1], values: matrix.values };
 }
 
-/** Per-pixel spatial gain: bilinear over the grid, which spans the whole sensor image. */
+/**
+ * Per-pixel spatial gain: bilinear over the grid, which spans the whole sensor image. The gains of one image row are made for all its
+ * pixels at once (`fillRow`): the grid is much coarser than the picture, so the interpolation along a grid row is made once per grid row
+ * and kept for the two grid rows an image row blends, with the arithmetic the per-pixel form used.
+ */
 class SpatialGainSampler {
   private readonly columnIndex: Int32Array;
-  private readonly columnFraction: Float32Array;
-  private rowOffset = 0;
-  private rowNext = 0;
-  private rowFraction = 0;
+  private readonly columnFraction: Float64Array;
+  /** Grid rows interpolated along the columns (`width` x channels gains each), by grid row; made on first use. */
+  private readonly interpolated = new Map<number, Float64Array>();
 
   constructor(private readonly grid: SpatialGainGrid, private readonly width: number, private readonly height: number) {
     this.columnIndex = new Int32Array(width);
-    this.columnFraction = new Float32Array(width);
+    this.columnFraction = new Float64Array(width);
     for (let x = 0; x < width; x += 1) {
       const position = (x / width) * (grid.columns - 1);
       const index = Math.min(grid.columns - 2, Math.floor(position));
       this.columnIndex[x] = index;
-      this.columnFraction[x] = position - index;
+      // The fraction is kept in single precision, as the interpolation has always read it.
+      this.columnFraction[x] = Math.fround(position - index);
     }
   }
 
-  setRow(y: number): void {
-    const position = (y / this.height) * (this.grid.rows - 1);
-    const index = Math.min(this.grid.rows - 2, Math.floor(position));
-    this.rowOffset = index * this.grid.columns * RGB_CHANNELS;
-    this.rowNext = this.rowOffset + this.grid.columns * RGB_CHANNELS;
-    this.rowFraction = position - index;
+  private gridRow(row: number): Float64Array {
+    const known = this.interpolated.get(row);
+    if (known) return known;
+    const { values, columns } = this.grid;
+    const made = new Float64Array(this.width * RGB_CHANNELS);
+    const base = row * columns * RGB_CHANNELS;
+    for (let x = 0; x < this.width; x += 1) {
+      const fraction = this.columnFraction[x];
+      for (let channel = 0; channel < RGB_CHANNELS; channel += 1) {
+        const at = base + this.columnIndex[x] * RGB_CHANNELS + channel;
+        made[x * RGB_CHANNELS + channel] = values[at] + fraction * (values[at + RGB_CHANNELS] - values[at]);
+      }
+    }
+    this.interpolated.set(row, made);
+    return made;
   }
 
-  gain(x: number, channel: number): number {
-    const { values } = this.grid;
-    const at = this.columnIndex[x] * RGB_CHANNELS + channel;
-    const fraction = this.columnFraction[x];
-    const top = values[this.rowOffset + at] + fraction * (values[this.rowOffset + at + RGB_CHANNELS] - values[this.rowOffset + at]);
-    const bottom = values[this.rowNext + at] + fraction * (values[this.rowNext + at + RGB_CHANNELS] - values[this.rowNext + at]);
-    return top + this.rowFraction * (bottom - top);
+  /** Writes the gain of every pixel of image row `y` to `out` (`width` x channels, pixel by pixel). */
+  fillRow(y: number, out: Float64Array): void {
+    const position = (y / this.height) * (this.grid.rows - 1);
+    const index = Math.min(this.grid.rows - 2, Math.floor(position));
+    const fraction = position - index;
+    const top = this.gridRow(index);
+    const bottom = this.gridRow(index + 1);
+    for (let i = 0; i < out.length; i += 1) out[i] = top[i] + fraction * (bottom[i] - top[i]);
   }
 }
 
@@ -1088,27 +1210,31 @@ export function decodeX3f(file: Buffer): DecodedX3f {
   // Linear sRGB of one pixel, single precision; computed twice per sampled pixel rather than kept for the
   // whole image, which would cost 12 bytes per pixel.
   const pixel = new Float32Array(RGB_CHANNELS);
-  const normalised: number[] = [0, 0, 0];
-  const rows: LayerPlane[] = [];
+  const gains = new Float64Array(layers.width * RGB_CHANNELS).fill(1);
+  const [black0, black1, black2] = black;
+  const [full0, full1, full2] = fullScale;
+  const [c0, c1, c2, c3, c4, c5, c6, c7, c8] = combined;
+  let row0: LayerPlane = layers.planes[0];
+  let row1: LayerPlane = layers.planes[1];
+  let row2: LayerPlane = layers.planes[2];
   const loadRow = (y: number) => {
-    sampler?.setRow(y + active.top);
-    for (let layer = 0; layer < RGB_CHANNELS; layer += 1) rows[layer] = reader.row(layer, y + active.top);
+    sampler?.fillRow(y + active.top, gains);
+    row0 = reader.row(0, y + active.top);
+    row1 = reader.row(1, y + active.top);
+    row2 = reader.row(2, y + active.top);
   };
   const linearPixel = (x: number) => {
-    let clipped = false;
-    for (let layer = 0; layer < RGB_CHANNELS; layer += 1) {
-      const value = rows[layer][x + active.left];
-      if (value >= fullScale[layer]) clipped = true;
-      const gain = sampler ? sampler.gain(x + active.left, layer) : 1;
-      normalised[layer] = Math.max(0, value - black[layer]) * gain;
-    }
-    for (let row = 0; row < RGB_CHANNELS; row += 1) {
-      pixel[row] =
-        combined[row * RGB_CHANNELS] * normalised[0] +
-        combined[row * RGB_CHANNELS + 1] * normalised[1] +
-        combined[row * RGB_CHANNELS + 2] * normalised[2];
-    }
-    if (clipped) neutralise(pixel);
+    const at = x + active.left;
+    const v0 = row0[at];
+    const v1 = row1[at];
+    const v2 = row2[at];
+    const n0 = Math.max(0, v0 - black0) * gains[at * RGB_CHANNELS];
+    const n1 = Math.max(0, v1 - black1) * gains[at * RGB_CHANNELS + 1];
+    const n2 = Math.max(0, v2 - black2) * gains[at * RGB_CHANNELS + 2];
+    pixel[0] = c0 * n0 + c1 * n1 + c2 * n2;
+    pixel[1] = c3 * n0 + c4 * n1 + c5 * n2;
+    pixel[2] = c6 * n0 + c7 * n1 + c8 * n2;
+    if (v0 >= full0 || v1 >= full1 || v2 >= full2) neutralise(pixel);
   };
 
   // First pass over the statistics grid only: the exposure that brings the scene average to mid-grey.
@@ -1123,14 +1249,35 @@ export function decodeX3f(file: Buffer): DecodedX3f {
   const exposure = exposureScale(Float32Array.from(samples));
 
   const rgb16 = new Uint16Array(width * height * RGB_CHANNELS);
+  let out = 0;
+  const left = active.left;
   for (let y = 0; y < height; y += 1) {
     loadRow(y);
+    // The same arithmetic as `linearPixel`, with the row's samples and the pixel's three values in locals (single precision where the
+    // pixel is stored in single precision above).
+    const samples0 = row0;
+    const samples1 = row1;
+    const samples2 = row2;
     for (let x = 0; x < width; x += 1) {
-      linearPixel(x);
-      const out = (y * width + x) * RGB_CHANNELS;
-      for (let channel = 0; channel < RGB_CHANNELS; channel += 1) {
-        rgb16[out + channel] = Math.round(Math.min(1, Math.max(0, pixel[channel] * exposure)) * MAX_SAMPLE_16);
+      const at = x + left;
+      const v0 = samples0[at];
+      const v1 = samples1[at];
+      const v2 = samples2[at];
+      const n0 = Math.max(0, v0 - black0) * gains[at * RGB_CHANNELS];
+      const n1 = Math.max(0, v1 - black1) * gains[at * RGB_CHANNELS + 1];
+      const n2 = Math.max(0, v2 - black2) * gains[at * RGB_CHANNELS + 2];
+      let p0 = Math.fround(c0 * n0 + c1 * n1 + c2 * n2);
+      let p1 = Math.fround(c3 * n0 + c4 * n1 + c5 * n2);
+      let p2 = Math.fround(c6 * n0 + c7 * n1 + c8 * n2);
+      if (v0 >= full0 || v1 >= full1 || v2 >= full2) {
+        p0 = Math.fround(LUMA_RED * p0 + LUMA_GREEN * p1 + LUMA_BLUE * p2);
+        p1 = p0;
+        p2 = p0;
       }
+      rgb16[out] = Math.round(Math.min(1, Math.max(0, p0 * exposure)) * MAX_SAMPLE_16);
+      rgb16[out + 1] = Math.round(Math.min(1, Math.max(0, p1 * exposure)) * MAX_SAMPLE_16);
+      rgb16[out + 2] = Math.round(Math.min(1, Math.max(0, p2 * exposure)) * MAX_SAMPLE_16);
+      out += RGB_CHANNELS;
     }
   }
   applyMatrixAndSrgbEncode(rgb16, IDENTITY);
