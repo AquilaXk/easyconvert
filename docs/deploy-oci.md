@@ -187,12 +187,13 @@ The privacy policy promises an answer to a deletion request within 10 days (sect
 
 Do steps 1 to 5 within 2 days of the request. Redis is backed up every 6 hours and a backup is kept 7 days, so a backup that still holds the account is gone about 9 days 6 hours after the request at the latest ([backup-and-restore.md](operations/backup-and-restore.md#account-deletion-and-backups)). After a restore from a backup, erase again every account whose erasure finished after the backup was taken, including a request that was still open then.
 
-### Indexing the dead letters after an update to entry 256
+### Indexing the dead letters after an update to entry 257
 
-The dead letters of a queue are indexed by job and by user (entry 256). A queue whose list held letters before that update removes a job's letters by reading the list until the index is built, so an erasure is complete either way, only slower. Build the index once per Redis, after the update is deployed and no worker of the older image runs, and only with QA's approval. Nothing runs it by itself.
+The dead letters of a queue are indexed by job and by user (entry 257). Until the index is built, removing a job's letters (and an account erasure) reads the whole list, as before, so an erasure is complete either way, only slower. The index is built by one command and by nothing else: a write never marks it complete, because a worker of an older image writes letters without it. Run it once, after the deploy has replaced every worker and no container of an older image runs, and only with QA's approval.
 
 1. Count what would be indexed. Nothing is written: `docker compose -p easyconvert exec worker node dist/backfill-dlq-index.js`.
 2. Run the same command with `--apply` when the queues are quiet. Each queue is read in one Redis step that takes about 7 ms for 1,000 letters (330 ms for 50,000). A second run reports that the index covers the list and changes nothing.
+3. Before a rollback to an image older than entry 257, delete the marks (`DEL` of each `...:dlq:indexed` key), so the removal reads the list again; the older image does not write the index.
 
 What the command does not touch expires on its own. The edge server log keeps the request lines for up to 15 days (`/etc/logrotate.d/nginx`). A multi-step job's state goes 25 hours after the job ends. The list of an account's files in the web process lasts no longer than the file.
 

@@ -149,10 +149,7 @@ export async function scanEndedBefore(
   trimDeadLetters: boolean
 ): Promise<EndedScan> {
   const scan: EndedScan = limit > 0 ? await removeSetEntriesBefore(client, keys, stateKey, threshold, limit) : { removed: [], oldestKeptFinishedOn: undefined };
-  if (trimDeadLetters) {
-    const { jobPrefix, userPrefix } = deadLetterKeys(keys.dlqKey);
-    await client.eval(TRIM_DEAD_LETTERS_LUA_SCRIPT, 3, keys.dlqKey, jobPrefix, userPrefix, String(threshold));
-  }
+  if (trimDeadLetters) await client.eval(TRIM_DEAD_LETTERS_LUA_SCRIPT, 4, keys.dlqKey, ...indexKeysOf(keys.dlqKey), String(threshold));
   return scan;
 }
 
@@ -194,13 +191,23 @@ export async function dropEndedData(client: Redis, keys: QueueKeySpace, id: stri
   await client.eval(REPLACE_ENDED_JOB_DATA_LUA_SCRIPT, 1, keys.jobKey(id), JSON.stringify(finishedData(stored, removeDataOnFinish)));
 }
 
-/** Removes job `id` from every state and from its user's index unless it is active (BullMQ removeJob-2.lua); whether it did. */
+/**
+ * Removes job `id` from every state and from its user's index unless it is active (BullMQ removeJob-2.lua); whether it did. With `removeDlq`
+ * it also removes the job's dead letters: the script takes them from the index, and the letters the scripts cannot decode (the set
+ * `unparsed`, normally empty) are parsed here and the job's go with the call.
+ */
 export async function removeStoredJob(client: Redis, keys: QueueKeySpace, id: string, removeDlq: boolean = false): Promise<boolean> {
-  const userJobsKey = keys.userJobsKey(ownerOf(parsedData(await client.hget(keys.jobKey(id), 'data'))));
+  const dead = deadLetterKeys(keys.dlqKey);
+  const read = client.pipeline();
+  read.hget(keys.jobKey(id), 'data');
+  if (removeDlq) read.smembers(dead.unparsed);
+  const [data, unparsed = []] = (await pipelineReplies(read)) as [string | null, string[] | undefined];
+  const userJobsKey = keys.userJobsKey(ownerOf(parsedData(data)));
   const scriptKeys = removeDlq
-    ? [keys.jobKey(id), ...keys.stateKeys, userJobsKey, keys.dlqKey, ...indexKeysOf(keys.dlqKey)]
+    ? [keys.jobKey(id), ...keys.stateKeys, userJobsKey, keys.dlqKey, ...indexKeysOf(keys.dlqKey), dead.coveredFlag]
     : [keys.jobKey(id), ...keys.stateKeys, userJobsKey];
-  return Number(await client.eval(REMOVE_JOB_LUA_SCRIPT, scriptKeys.length, ...scriptKeys, id)) === 1;
+  const undecodable = unparsed.filter((raw) => (parsedData(raw) as { jobId?: unknown } | undefined)?.jobId === id);
+  return Number(await client.eval(REMOVE_JOB_LUA_SCRIPT, scriptKeys.length, ...scriptKeys, id, ...undecodable)) === 1;
 }
 
 /** The ids of one pipeline that `forgetUserJobs` sends: the jobs it reads or removes together, and the dead letters it checks or removes together. */
@@ -251,7 +258,8 @@ async function removeProcessedJobs(
  *
  * The jobs are read and removed a batch at a time (two round trips per batch). The job script is not given the dead-letter list: the
  * letters of the removed jobs go in the one pass below. Once the dead-letter index covers the list (`deadLetterKeys`), that pass reads
- * the sets of the jobs of the user and of the removed jobs, a batch at a time, and never the list; until then it reads the list in one
+ * the sets of the jobs of the user and of the removed jobs, a batch at a time, with the letters the scripts cannot decode (read and parsed
+ * here), and never the list; until then it reads the list in one
  * command, not in pages: a page walk is not atomic, so a letter could be skipped when another run trims or removes letters between
  * two pages, and an erasure must not leave a letter behind.
  */
@@ -323,12 +331,13 @@ async function removeDeadLetters(client: Redis, keys: QueueKeySpace, userId: str
   const lookup = client.pipeline();
   lookup.exists(dead.coveredFlag);
   lookup.smembers(userKey);
-  const [covered, userJobIds] = (await pipelineReplies(lookup)) as [number, string[]];
+  lookup.smembers(dead.unparsed);
+  const [covered, userJobIds, unparsed] = (await pipelineReplies(lookup)) as [number, string[], string[]];
   let raws: Iterable<string>;
   let stale: string[] = [];
   if (Number(covered) === 1) {
     const found = await indexedDeadLetters(client, keys.dlqKey, userJobIds, clearedJobIds);
-    raws = found.raws;
+    raws = [...found.raws, ...unparsed];
     stale = found.stale;
   } else {
     raws = await client.lrange(keys.dlqKey, 0, -1);
@@ -347,7 +356,7 @@ async function removeDeadLetters(client: Redis, keys: QueueKeySpace, userId: str
   const doomedRaws = [...doomed];
   for (let at = 0; at < doomedRaws.length; at += FORGET_BATCH) {
     const removal = client.pipeline();
-    removal.eval(REMOVE_DEAD_LETTERS_LUA_SCRIPT, 3, keys.dlqKey, dead.jobPrefix, dead.userPrefix, ...doomedRaws.slice(at, at + FORGET_BATCH));
+    removal.eval(REMOVE_DEAD_LETTERS_LUA_SCRIPT, 4, keys.dlqKey, ...indexKeysOf(keys.dlqKey), ...doomedRaws.slice(at, at + FORGET_BATCH));
     await pipelineReplies(removal);
   }
 }

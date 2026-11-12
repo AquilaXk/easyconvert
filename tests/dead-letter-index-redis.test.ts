@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DistributedBullMQAdapter } from '../src/lib/queue/bullmq-engine';
-import { addDeadLetter } from '../src/lib/queue/dead-letters';
+import { addDeadLetter, backfillDeadLetterIndex } from '../src/lib/queue/dead-letters';
 import { forgetUserJobs, ownerOf, removeStoredJob, type QueueKeySpace } from '../src/lib/queue/ended-jobs';
 import { QueueUnavailableError } from '../src/lib/types';
 
@@ -129,17 +129,37 @@ describe.skipIf(!REDIS_URL)('the index of the dead letters on a real Redis serve
       if (indexed && !preIndex) await addDeadLetter(client, keys.dlqKey, raw);
       else await admin.rpush(keys.dlqKey, raw);
     }
+    // The list is covered once the backfill ran: nothing else sets the flag.
+    if (indexed) await backfillDeadLetterIndex(client, keys.dlqKey, true);
   }
 
-  /** What the index must hold for the letters in the list: jobs to their raws, users to their jobs. */
-  async function expectedIndex(dlqKey: string): Promise<{ jobs: Record<string, string[]>; users: Record<string, string[]> }> {
+  /** The letters that `JSON.parse` reads and Lua's `cjson` does not: a lone surrogate escape, and nesting past a thousand levels. */
+  const LONE_SURROGATE_LETTER = JSON.stringify({ jobId: 'surrogate', name: 'convert', data: { userId: USER, fileName: 'a\ud800b.png' }, failedReason: 'failed', attemptsMade: 1, timestamp: 1, stacktrace: [] });
+  const deepLetter = (jobId: string, owner: string): string =>
+    `{"jobId":"${jobId}","name":"convert","data":{"userId":"${owner}","nested":${'['.repeat(1100)}${']'.repeat(1100)}},"failedReason":"failed","attemptsMade":1,"timestamp":1,"stacktrace":[]}`;
+  const luaCannotDecode = (raw: string): boolean => raw.includes('\\ud800') || raw.includes('['.repeat(1001));
+
+  interface IndexShape {
+    jobs: Record<string, string[]>;
+    users: Record<string, string[]>;
+    unparsed: string[];
+  }
+
+  /** What the index must hold for the letters in the list: jobs to their raws, users to their jobs, and the letters Lua cannot decode. */
+  async function expectedIndex(dlqKey: string): Promise<IndexShape> {
     const jobs: Record<string, Set<string>> = {};
     const users: Record<string, Set<string>> = {};
+    const unparsed: string[] = [];
     for (const raw of await admin.lrange(dlqKey, 0, -1)) {
+      if (luaCannotDecode(raw)) {
+        unparsed.push(raw);
+        continue;
+      }
       let parsed: { jobId?: unknown; data?: unknown } | undefined;
       try {
         parsed = JSON.parse(raw) as { jobId?: unknown; data?: unknown };
       } catch {
+        unparsed.push(raw);
         continue;
       }
       if (typeof parsed !== 'object' || parsed === null) continue;
@@ -150,17 +170,17 @@ describe.skipIf(!REDIS_URL)('the index of the dead letters on a real Redis serve
       if (owner !== undefined) (users[owner] ??= new Set()).add(jobId);
     }
     const sorted = (map: Record<string, Set<string>>) => Object.fromEntries(Object.entries(map).map(([key, set]) => [key, [...set].sort()]));
-    return { jobs: sorted(jobs), users: sorted(users) };
+    return { jobs: sorted(jobs), users: sorted(users), unparsed: [...new Set(unparsed)].sort() };
   }
 
-  async function actualIndex(dlqKey: string): Promise<{ jobs: Record<string, string[]>; users: Record<string, string[]> }> {
+  async function actualIndex(dlqKey: string): Promise<IndexShape> {
     const read = async (kind: 'job' | 'user') => {
       const stem = `${dlqKey}:${kind}:`;
       const out: Record<string, string[]> = {};
       for (const key of await admin.keys(`${stem}*`)) out[key.slice(stem.length)] = (await admin.smembers(key)).sort();
       return out;
     };
-    return { jobs: await read('job'), users: await read('user') };
+    return { jobs: await read('job'), users: await read('user'), unparsed: (await admin.smembers(`${dlqKey}:unparsed`)).sort() };
   }
 
   /**
@@ -177,6 +197,7 @@ describe.skipIf(!REDIS_URL)('the index of the dead letters on a real Redis serve
     const inList = new Set(await admin.lrange(dlqKey, 0, -1));
     for (const raws of Object.values(actual.jobs)) for (const raw of raws) expect(inList.has(raw)).toBe(true);
     for (const jobIds of Object.values(actual.users)) for (const jobId of jobIds) expect(actual.jobs[jobId]).toBeDefined();
+    for (const raw of actual.unparsed) expect(inList.has(raw)).toBe(true);
   }
 
   /** Everything under a key space, the space name left out, so two runs on two spaces compare. */
@@ -431,20 +452,21 @@ describe.skipIf(!REDIS_URL)('the index of the dead letters on a real Redis serve
   describe('the paths of the queue that add or remove a letter', () => {
     const job = (id: string, userId: string) => ({ id, name: 'convert', data: { userId }, attemptsMade: 1, stacktrace: ['at here'], opts: {} }) as never;
 
-    it('indexes a letter as it is written, and sets the flag on an empty list', async () => {
-      const { adapter } = await adapterOn('written');
+    it('indexes a letter as it is written, and never sets the flag that says the index covers the list', async () => {
+      const { adapter, client } = await adapterOn('written');
       await adapter.moveToDlq(job('job1', USER), 'first');
       await adapter.moveToDlq(job('job1', USER), 'second');
       await adapter.moveToDlq(job('job2', OTHER), 'third');
 
       const dlqKey = `${prefix}{written}:dlq`;
-      expect(await admin.get(`${dlqKey}:indexed`)).toBe('1');
+      expect(await admin.exists(`${dlqKey}:indexed`)).toBe(0);
       expect(await admin.smembers(`${dlqKey}:user:${USER}`)).toEqual(['job1']);
       expect(await admin.scard(`${dlqKey}:job:job1`)).toBe(2);
+      await backfillDeadLetterIndex(client, dlqKey, true);
       await expectConsistent(dlqKey);
     });
 
-    it('does not set the flag when the list already held letters, and keeps indexing the new ones', async () => {
+    it('keeps indexing the new letters of a list that held older ones, with the flag still absent', async () => {
       const dlqKey = `${prefix}{older}:dlq`;
       await admin.rpush(dlqKey, letter('job0', USER, '-old'));
       const { adapter } = await adapterOn('older');
@@ -456,8 +478,9 @@ describe.skipIf(!REDIS_URL)('the index of the dead letters on a real Redis serve
     });
 
     it('takes the index of a letter out when the sweep trims it by age', async () => {
-      const { adapter } = await adapterOn('trim');
+      const { adapter, client } = await adapterOn('trim');
       const dlqKey = `${prefix}{trim}:dlq`;
+      await backfillDeadLetterIndex(client, dlqKey, true);
       const now = vi.spyOn(Date, 'now');
       now.mockReturnValue(1_000);
       await adapter.moveToDlq(job('old1', USER), 'old');
@@ -475,14 +498,20 @@ describe.skipIf(!REDIS_URL)('the index of the dead letters on a real Redis serve
       await expectConsistent(dlqKey);
     });
 
-    it('empties the index when the list is purged, and covers the empty list again', async () => {
+    it('empties the index when the list is purged, and leaves the flag as it was', async () => {
       const dlqKey = `${prefix}{purge}:dlq`;
       await admin.rpush(dlqKey, letter('job0', USER, '-old'));
-      const { adapter } = await adapterOn('purge');
+      const { adapter, client } = await adapterOn('purge');
       await adapter.moveToDlq(job('job1', USER), 'new');
+      await addDeadLetter(client, dlqKey, LONE_SURROGATE_LETTER);
+      expect(await admin.smembers(`${dlqKey}:unparsed`)).toEqual([LONE_SURROGATE_LETTER]);
 
-      expect(await adapter.purgeDlq()).toBe(2);
+      expect(await adapter.purgeDlq()).toBe(3);
 
+      expect(await admin.keys(`${dlqKey}*`)).toEqual([]);
+      await backfillDeadLetterIndex(client, dlqKey, true);
+      await adapter.moveToDlq(job('job2', USER), 'later');
+      expect(await adapter.purgeDlq()).toBe(1);
       expect(await admin.keys(`${dlqKey}*`)).toEqual([`${dlqKey}:indexed`]);
     });
 
@@ -510,17 +539,17 @@ describe.skipIf(!REDIS_URL)('the index of the dead letters on a real Redis serve
       const { adapter } = await adapterOn('legacy');
 
       const dry = await adapter.backfillDeadLetterIndex!(false);
-      expect(dry).toEqual({ letters: 5, indexable: 4, alreadyCovered: false, applied: false });
+      expect(dry).toEqual({ letters: 5, indexable: 4, unparsed: 1, alreadyCovered: false, applied: false });
       expect(await admin.keys(`${dlqKey}:*`)).toEqual([]);
 
       const applied = await adapter.backfillDeadLetterIndex!(true);
-      expect(applied).toEqual({ letters: 5, indexable: 4, alreadyCovered: false, applied: true });
+      expect(applied).toEqual({ letters: 5, indexable: 4, unparsed: 1, alreadyCovered: false, applied: true });
       expect(await admin.get(`${dlqKey}:indexed`)).toBe('1');
       expect(await admin.lrange(dlqKey, 0, -1)).toEqual(raws);
       await expectConsistent(dlqKey);
 
       const again = await adapter.backfillDeadLetterIndex!(true);
-      expect(again).toEqual({ letters: 5, indexable: 0, alreadyCovered: true, applied: false });
+      expect(again).toEqual({ letters: 5, indexable: 0, unparsed: 0, alreadyCovered: true, applied: false });
       await expectConsistent(dlqKey);
     });
 
@@ -541,6 +570,113 @@ describe.skipIf(!REDIS_URL)('the index of the dead letters on a real Redis serve
       expect(erasedAfter).toEqual(erasedBefore);
       expect(await admin.lrange(after.dlqKey, 0, -1)).toEqual(await admin.lrange(before.dlqKey, 0, -1));
       await expectConsistent(after.dlqKey);
+    });
+  });
+
+  describe('a letter that JSON.parse reads and the Lua scripts do not', () => {
+    const GHOST_LETTERS = [
+      { name: 'a lone surrogate escape', raw: LONE_SURROGATE_LETTER, jobId: 'surrogate' },
+      { name: 'nesting past a thousand levels', raw: deepLetter('deep', USER), jobId: 'deep' },
+    ];
+
+    async function covered(keys: QueueKeySpace, jobs: Seed['jobs']) {
+      const client = connect();
+      await seed(client, keys, { jobs, letters: [...GHOST_LETTERS.map(({ raw }) => ({ raw })), { raw: letter('kept', OTHER) }, { raw: letter('mine', USER) }] }, true);
+      return client;
+    }
+
+    it('is kept in the set of letters the scripts cannot decode, and the flag is set by the backfill only', async () => {
+      const keys = keySpace(`${prefix}ghost:`);
+      await covered(keys, []);
+
+      expect((await admin.smembers(`${keys.dlqKey}:unparsed`)).sort()).toEqual(GHOST_LETTERS.map(({ raw }) => raw).sort());
+      expect(await admin.get(`${keys.dlqKey}:indexed`)).toBe('1');
+      await expectConsistent(keys.dlqKey);
+    });
+
+    it.each(GHOST_LETTERS)('is removed by the erasure of its user when its job is gone, with $name', async ({ raw }) => {
+      const keys = keySpace(`${prefix}ghost-gone:`);
+      const client = await covered(keys, []);
+
+      await forgetUserJobs(client, keys, USER, new Set());
+
+      expect(await admin.lrange(keys.dlqKey, 0, -1)).toEqual([letter('kept', OTHER)]);
+      expect(await admin.exists(`${keys.dlqKey}:unparsed`)).toBe(0);
+      expect(raw.length).toBeGreaterThan(0);
+      await expectConsistent(keys.dlqKey);
+    });
+
+    it.each(GHOST_LETTERS)('is removed by the erasure of its user when its job is processed, with $name', async ({ jobId }) => {
+      const keys = keySpace(`${prefix}ghost-done:`);
+      const client = await covered(keys, [{ id: jobId, data: { userId: USER }, state: 'completed' }]);
+
+      expect(await forgetUserJobs(client, keys, USER, new Set([jobId]))).toEqual([]);
+
+      expect((await admin.lrange(keys.dlqKey, 0, -1)).filter((raw) => raw.includes(jobId))).toEqual([]);
+      expect(await admin.exists(`${keys.dlqKey}:unparsed`)).toBe(0);
+    });
+
+    it('is left when its user is another one, and when its job is alive and not processed', async () => {
+      const keys = keySpace(`${prefix}ghost-kept:`);
+      const client = await covered(keys, [{ id: 'surrogate', data: { userId: USER }, state: 'waiting' }]);
+
+      expect(await forgetUserJobs(client, keys, OTHER, new Set())).toEqual([]);
+      expect(await forgetUserJobs(client, keys, USER, new Set())).toEqual(['surrogate']);
+
+      const left = await admin.lrange(keys.dlqKey, 0, -1);
+      expect(left).toContain(LONE_SURROGATE_LETTER);
+      expect(left).not.toContain(deepLetter('deep', USER));
+      await expectConsistent(keys.dlqKey);
+    });
+
+    it.each(GHOST_LETTERS)('is removed with its job by remove(id), with $name', async ({ jobId }) => {
+      const keys = keySpace(`${prefix}ghost-remove:`);
+      const client = await covered(keys, [{ id: jobId, data: { userId: USER }, state: 'completed' }]);
+
+      expect(await removeStoredJob(client, keys, jobId, true)).toBe(true);
+
+      expect((await admin.lrange(keys.dlqKey, 0, -1)).filter((raw) => raw.includes(`"jobId":"${jobId}"`))).toEqual([]);
+      expect(await admin.smembers(`${keys.dlqKey}:unparsed`)).toEqual(GHOST_LETTERS.filter((ghost) => ghost.jobId !== jobId).map(({ raw }) => raw));
+      await expectConsistent(keys.dlqKey);
+    });
+
+    it('is also removed by remove(id) for a job that is gone, and in a list the flag does not cover yet', async () => {
+      const keys = keySpace(`${prefix}ghost-uncovered:`);
+      const client = connect();
+      await addDeadLetter(client, keys.dlqKey, LONE_SURROGATE_LETTER);
+      await addDeadLetter(client, keys.dlqKey, letter('kept', OTHER));
+      expect(await admin.exists(`${keys.dlqKey}:indexed`)).toBe(0);
+
+      await removeStoredJob(client, keys, 'surrogate', true);
+
+      expect(await admin.lrange(keys.dlqKey, 0, -1)).toEqual([letter('kept', OTHER)]);
+      expect(await admin.exists(`${keys.dlqKey}:unparsed`)).toBe(0);
+    });
+
+    it('goes out of the set when the sweep trims it by age', async () => {
+      const { adapter, client } = await adapterOn('ghost-trim');
+      const dlqKey = `${prefix}{ghost-trim}:dlq`;
+      await addDeadLetter(client, dlqKey, LONE_SURROGATE_LETTER);
+      await addDeadLetter(client, dlqKey, deepLetter('deep', OTHER));
+      await backfillDeadLetterIndex(client, dlqKey, true);
+      expect(await admin.scard(`${dlqKey}:unparsed`)).toBe(2);
+
+      await adapter.clean(60_000, 100, 'failed');
+
+      expect(await admin.llen(dlqKey)).toBe(0);
+      expect(await admin.exists(`${dlqKey}:unparsed`)).toBe(0);
+    });
+
+    it('is counted and set apart by the backfill of a list written before the index', async () => {
+      const { adapter } = await adapterOn('ghost-legacy');
+      const dlqKey = `${prefix}{ghost-legacy}:dlq`;
+      await admin.rpush(dlqKey, LONE_SURROGATE_LETTER, letter('job1', USER), deepLetter('deep', USER));
+
+      expect(await adapter.backfillDeadLetterIndex!(false)).toEqual({ letters: 3, indexable: 1, unparsed: 2, alreadyCovered: false, applied: false });
+      expect(await admin.exists(`${dlqKey}:unparsed`)).toBe(0);
+      expect(await adapter.backfillDeadLetterIndex!(true)).toEqual({ letters: 3, indexable: 1, unparsed: 2, alreadyCovered: false, applied: true });
+
+      await expectConsistent(dlqKey);
     });
   });
 

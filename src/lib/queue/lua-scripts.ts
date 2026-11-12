@@ -426,13 +426,19 @@ return { requeued, failed }
  * that remove jobs). The index is a set of the raw letters of each job (`jobPrefix .. jobId`) and a set of the ids of the jobs of each
  * user that have a letter (`userPrefix .. userId`), as BullMQ keeps the keys of a job beside its hash and removes them with it. A
  * letter that has neither a job id nor a user is not indexed: nothing can look it up. A letter whose job id is missing, with a user, is
- * indexed under the empty job id, which is how the erasure of a user found it before.
+A letter that Lua's `cjson` cannot decode but
+ * `JSON.parse` can (a lone surrogate escape, which `JSON.stringify` writes; nesting past a thousand levels) cannot be looked up by job or
+ * user here, so its raw text goes into one set per queue (`unparsed`), which the removals in the process read and parse themselves.
  */
 const DEAD_LETTER_INDEX_LUA_FUNCTIONS = `
+-- Answers the job id and the user id of a letter (nil when nothing can look it up), and true as the third value when it cannot be decoded.
 local function deadLetterOwners(raw)
   local ok, letter = pcall(cjson.decode, raw)
-  if not ok or type(letter) ~= 'table' then
-    return nil, nil
+  if not ok then
+    return nil, nil, true
+  end
+  if type(letter) ~= 'table' then
+    return nil, nil, false
   end
   local jobId = ''
   if type(letter.jobId) == 'string' then
@@ -443,14 +449,16 @@ local function deadLetterOwners(raw)
     userId = letter.data.userId
   end
   if jobId == '' and not userId then
-    return nil, nil
+    return nil, nil, false
   end
-  return jobId, userId
+  return jobId, userId, false
 end
 
-local function indexDeadLetter(jobPrefix, userPrefix, raw)
-  local jobId, userId = deadLetterOwners(raw)
-  if jobId then
+local function indexDeadLetter(jobPrefix, userPrefix, unparsedKey, raw)
+  local jobId, userId, undecodable = deadLetterOwners(raw)
+  if undecodable then
+    redis.call('SADD', unparsedKey, raw)
+  elseif jobId then
     redis.call('SADD', jobPrefix .. jobId, raw)
     if userId then
       redis.call('SADD', userPrefix .. userId, jobId)
@@ -459,9 +467,11 @@ local function indexDeadLetter(jobPrefix, userPrefix, raw)
 end
 
 -- The id leaves the set of the user when no other letter of the job names that user (a set that loses its last member is deleted by Redis).
-local function unindexDeadLetter(jobPrefix, userPrefix, raw)
-  local jobId, userId = deadLetterOwners(raw)
-  if jobId then
+local function unindexDeadLetter(jobPrefix, userPrefix, unparsedKey, raw)
+  local jobId, userId, undecodable = deadLetterOwners(raw)
+  if undecodable then
+    redis.call('SREM', unparsedKey, raw)
+  elseif jobId then
     local jobKey = jobPrefix .. jobId
     redis.call('SREM', jobKey, raw)
     if userId then
@@ -477,34 +487,31 @@ local function unindexDeadLetter(jobPrefix, userPrefix, raw)
 end
 `;
 
-/** Appends a dead letter and indexes it in one step. An empty list is covered by the index, so the flag is set before the first letter. */
+/** Appends a dead letter and indexes it in one step. It never sets the flag that says the index covers the list: only the backfill does. */
 export const ADD_DEAD_LETTER_LUA_SCRIPT = `
 -- KEYS[1]: dead-letter list
 -- KEYS[2]: prefix of the keys of the letter sets of a job
 -- KEYS[3]: prefix of the keys of the job sets of a user
--- KEYS[4]: flag that the index covers every letter of the list
+-- KEYS[4]: set of the letters that cannot be decoded here
 -- ARGV[1]: the letter, as JSON
 ${DEAD_LETTER_INDEX_LUA_FUNCTIONS}
-if redis.call('LLEN', KEYS[1]) == 0 then
-  redis.call('SET', KEYS[4], '1')
-end
 redis.call('RPUSH', KEYS[1], ARGV[1])
-indexDeadLetter(KEYS[2], KEYS[3], ARGV[1])
+indexDeadLetter(KEYS[2], KEYS[3], KEYS[4], ARGV[1])
 return 1
 `;
 
 /** Empties the dead-letter list and its index and answers how many entries it held, in one step, so an entry added meanwhile is never lost uncounted. */
 export const PURGE_DEAD_LETTERS_LUA_SCRIPT = `
 -- KEYS[1]: dead-letter list
--- KEYS[2], KEYS[3], KEYS[4]: prefixes of the job sets and the user sets, and the flag, as in ADD_DEAD_LETTER_LUA_SCRIPT
--- An empty list holds no letter from before the index, so the index covers it and the flag is set.
+-- KEYS[2], KEYS[3], KEYS[4]: prefixes of the job sets and the user sets, and the set of undecodable letters, as in ADD_DEAD_LETTER_LUA_SCRIPT
+-- The flag that says the index covers the list is left as it is: an empty list does not show that no older build still writes letters.
 ${DEAD_LETTER_INDEX_LUA_FUNCTIONS}
 local count = redis.call('LLEN', KEYS[1])
 for _, raw in ipairs(redis.call('LRANGE', KEYS[1], 0, -1)) do
-  unindexDeadLetter(KEYS[2], KEYS[3], raw)
+  unindexDeadLetter(KEYS[2], KEYS[3], KEYS[4], raw)
 end
 redis.call('DEL', KEYS[1])
-redis.call('SET', KEYS[4], '1')
+redis.call('DEL', KEYS[4])
 return count
 `;
 
@@ -513,44 +520,50 @@ return count
  */
 export const REMOVE_DEAD_LETTERS_LUA_SCRIPT = `
 -- KEYS[1]: dead-letter list
--- KEYS[2], KEYS[3]: prefixes of the job sets and the user sets, as in ADD_DEAD_LETTER_LUA_SCRIPT
+-- KEYS[2], KEYS[3], KEYS[4]: prefixes of the job sets and the user sets, and the set of undecodable letters, as in ADD_DEAD_LETTER_LUA_SCRIPT
 -- ARGV[1..N]: the letters to remove, as they are stored; a letter that is not in the list only leaves the index
 ${DEAD_LETTER_INDEX_LUA_FUNCTIONS}
 local removed = 0
 for _, raw in ipairs(ARGV) do
   removed = removed + redis.call('LREM', KEYS[1], 0, raw)
-  unindexDeadLetter(KEYS[2], KEYS[3], raw)
+  unindexDeadLetter(KEYS[2], KEYS[3], KEYS[4], raw)
 end
 return removed
 `;
 
 /**
  * Indexes every letter of the list and sets the flag, in one step: a letter added or removed meanwhile cannot be missed, which is what
- * lets the flag say that the index covers the whole list. Answers { letters, indexed, covered }; when the flag is set already it
- * changes nothing and answers covered 1. The step reads the list once, so it holds Redis for the time of a read of the list.
+ * lets the flag say that the index covers the whole list. This is the only step that sets the flag. Answers { letters, indexed, covered,
+ * unparsed }; when the flag is set already it changes nothing and answers covered 1. The step reads the list once, so it holds Redis for
+ * the time of a read of the list.
  */
 export const BACKFILL_DEAD_LETTER_INDEX_LUA_SCRIPT = `
 -- KEYS[1]: dead-letter list
--- KEYS[2], KEYS[3], KEYS[4]: prefixes of the job sets and the user sets, and the flag, as in ADD_DEAD_LETTER_LUA_SCRIPT
+-- KEYS[2], KEYS[3], KEYS[4]: prefixes of the job sets and the user sets, and the set of undecodable letters, as in ADD_DEAD_LETTER_LUA_SCRIPT
+-- KEYS[5]: flag that the index covers every letter of the list
 -- ARGV[1]: '1' to write, '0' to only count (the answer is the same; nothing is written)
 ${DEAD_LETTER_INDEX_LUA_FUNCTIONS}
 local letters = redis.call('LLEN', KEYS[1])
-if redis.call('EXISTS', KEYS[4]) == 1 then
-  return { letters, 0, 1 }
+if redis.call('EXISTS', KEYS[5]) == 1 then
+  return { letters, 0, 1, 0 }
 end
 local indexed = 0
+local unparsed = 0
 for _, raw in ipairs(redis.call('LRANGE', KEYS[1], 0, -1)) do
-  if deadLetterOwners(raw) then
+  local jobId, _, undecodable = deadLetterOwners(raw)
+  if undecodable then
+    unparsed = unparsed + 1
+  elseif jobId then
     indexed = indexed + 1
-    if ARGV[1] == '1' then
-      indexDeadLetter(KEYS[2], KEYS[3], raw)
-    end
+  end
+  if ARGV[1] == '1' then
+    indexDeadLetter(KEYS[2], KEYS[3], KEYS[4], raw)
   end
 end
 if ARGV[1] == '1' then
-  redis.call('SET', KEYS[4], '1')
+  redis.call('SET', KEYS[5], '1')
 end
-return { letters, indexed, 0 }
+return { letters, indexed, 0, unparsed }
 `;
 
 /** Gives an ended job the data it keeps (`removeDataOnFinish`), checking inside the step that the job is still there and ended. */
@@ -569,7 +582,7 @@ return 1
 /** Removes the dead letters recorded at or before a time, with their index. Letters are appended as jobs fail, so the oldest are at the head. */
 export const TRIM_DEAD_LETTERS_LUA_SCRIPT = `
 -- KEYS[1]: dead-letter list, oldest first
--- KEYS[2], KEYS[3]: prefixes of the job sets and the user sets, as in ADD_DEAD_LETTER_LUA_SCRIPT
+-- KEYS[2], KEYS[3], KEYS[4]: prefixes of the job sets and the user sets, and the set of undecodable letters, as in ADD_DEAD_LETTER_LUA_SCRIPT
 -- ARGV[1]: time in milliseconds
 -- A letter that is not readable counts as the oldest. Returns how many letters were removed.
 ${DEAD_LETTER_INDEX_LUA_FUNCTIONS}
@@ -589,7 +602,7 @@ while true do
     return removed
   end
   redis.call('LPOP', KEYS[1])
-  unindexDeadLetter(KEYS[2], KEYS[3], head)
+  unindexDeadLetter(KEYS[2], KEYS[3], KEYS[4], head)
   removed = removed + 1
 end
 `;
@@ -603,8 +616,10 @@ export const REMOVE_JOB_LUA_SCRIPT = `
 -- KEYS[2..7]: waiting, delayed, active, completed, failed and cancelled keys
 -- KEYS[8]: the index of the job's user (a placeholder key when it has none)
 -- KEYS[9]: dead-letter list (optional)
--- KEYS[10], KEYS[11], KEYS[12]: with KEYS[9], the prefixes of the job sets and the user sets, and the flag, as in ADD_DEAD_LETTER_LUA_SCRIPT
+-- KEYS[10], KEYS[11], KEYS[12]: with KEYS[9], the prefixes of the job sets and the user sets and the set of undecodable letters, as in ADD_DEAD_LETTER_LUA_SCRIPT
+-- KEYS[13]: with KEYS[9], the flag that the index covers every letter of the list
 -- ARGV[1]: job id
+-- ARGV[2..N]: letters of the job that cannot be decoded here, which the caller found in the set of undecodable letters
 -- Returns 1 after removing the job, 0 when it is active (its attempt is still running) or unknown.
 ${DEAD_LETTER_INDEX_LUA_FUNCTIONS}
 local state = redis.call('HGET', KEYS[1], 'state')
@@ -614,15 +629,19 @@ end
 if KEYS[9] and KEYS[9] ~= '' then
   for _, raw in ipairs(redis.call('SMEMBERS', KEYS[10] .. ARGV[1])) do
     redis.call('LREM', KEYS[9], 0, raw)
-    unindexDeadLetter(KEYS[10], KEYS[11], raw)
+    unindexDeadLetter(KEYS[10], KEYS[11], KEYS[12], raw)
+  end
+  for i = 2, #ARGV do
+    redis.call('LREM', KEYS[9], 0, ARGV[i])
+    unindexDeadLetter(KEYS[10], KEYS[11], KEYS[12], ARGV[i])
   end
   -- Until the index covers the whole list, a letter written before it is found by reading the list.
-  if redis.call('EXISTS', KEYS[12]) == 0 then
+  if redis.call('EXISTS', KEYS[13]) == 0 then
     for _, raw in ipairs(redis.call('LRANGE', KEYS[9], 0, -1)) do
       local ok, letter = pcall(cjson.decode, raw)
       if ok and type(letter) == 'table' and letter.jobId == ARGV[1] then
         redis.call('LREM', KEYS[9], 0, raw)
-        unindexDeadLetter(KEYS[10], KEYS[11], raw)
+        unindexDeadLetter(KEYS[10], KEYS[11], KEYS[12], raw)
       end
     end
   end

@@ -1920,7 +1920,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   async backfillDeadLetterIndex(apply: boolean): Promise<DeadLetterBackfill> {
     const client = this.redisClient;
-    if (!client) return { letters: 0, indexable: 0, alreadyCovered: true, applied: false };
+    if (!client) return { letters: 0, indexable: 0, unparsed: 0, alreadyCovered: true, applied: false };
     await this.assertRedisConnected();
     try {
       return await backfillDeadLetterIndex(client, this.dlqKey, apply);
