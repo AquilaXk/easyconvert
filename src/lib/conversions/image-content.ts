@@ -100,6 +100,102 @@ export function classifyRaster(raster: Raster): ContentClass {
   return flat / ((thumbWidth - 1) * thumbHeight) >= GRAPHIC_FLAT_PAIR_SHARE ? 'graphic' : 'photo';
 }
 
+/** Side of the blocks the noise reading takes, in pixels (a JPEG block). */
+const NOISE_BLOCK = 8;
+/**
+ * Most blocks the noise reading visits; a larger picture is read on a regular grid of them. 256 blocks keep the reading within 0.03 of
+ * the one over every block on the photographs (the margin to the limit below is 0.06) and take 20 microseconds, where 1024 blocks took
+ * 0.5 ms in a conversion (the sampled rows are cache misses).
+ */
+export const NOISE_SAMPLE_BLOCKS = 256;
+/** Fewest blocks a picture must hold for its noise to be read: a thumbnail-sized picture says nothing about its grain. */
+const NOISE_MIN_BLOCKS = 16;
+/**
+ * Share of a picture's variation that is pixel-to-pixel above which the picture is noise-dominated. The reading is the mean squared
+ * difference of horizontal and vertical neighbours inside 8 x 8 blocks over twice the mean variance of the blocks, summed over the
+ * visited blocks: 1 for white noise, 2 * (1 - rho) for a correlation rho between neighbours. Measured on 76 pictures: the 39 photographs read
+ * 0.07 to 0.51 (`clic-juskteez-vu-1041`, a sharp gravel texture, the highest), `jxl-noise` 0.68, the Kodak pictures with added Gaussian noise
+ * 0.72 to 0.99 (and 0.48 at the lightest level, `-attenuate 1` on a busy picture, which stays on table 3).
+ */
+export const NOISE_DOMINATED_RATIO = 0.62;
+/**
+ * Root-mean-square difference between neighbours, in 8-bit levels, below which noise is too faint to count whatever its share: a smooth
+ * picture with a grain of a few levels reads a share of 1 too, and its table makes no difference. White noise with a standard deviation of
+ * 18 levels reads 25. Measured: `jxl-noise` 41, the Kodak pictures with added noise 29 to 95, the sharpest gravel photograph
+ * (`clic-juskteez-vu-1041`) 17.
+ */
+export const NOISE_MIN_DIFFERENCE = 25;
+
+/** What `readNoise` finds: the share of the variation that is pixel-to-pixel, and the root-mean-square difference between neighbours in levels. */
+export interface NoiseReading {
+  ratio: number;
+  difference: number;
+}
+
+/**
+ * The share of the picture's variation that is pixel-to-pixel (see `NOISE_DOMINATED_RATIO`) and the size of the differences, both 0 for a picture too small to read. It is
+ * jpegli's measure of high-frequency activity in a block (`HfModulation`, `lib/jpegli/adaptive_quantization.cc`: the sum of absolute
+ * differences with the right and the lower neighbour) read as a share of the block's own variance, at squared differences, and over a grid
+ * of at most `NOISE_SAMPLE_BLOCKS` blocks instead of every block. The green band stands for luma (grey is its one band), 16-bit samples are
+ * cut to their high byte, alpha is left out.
+ */
+export function readNoise(raster: Raster): NoiseReading {
+  const { samples, width, height, channels } = raster;
+  const blocksX = Math.floor(width / NOISE_BLOCK);
+  const blocksY = Math.floor(height / NOISE_BLOCK);
+  if (blocksX * blocksY < NOISE_MIN_BLOCKS) return { ratio: 0, difference: 0 };
+  const step = Math.ceil(Math.sqrt((blocksX * blocksY) / NOISE_SAMPLE_BLOCKS));
+  const shift = samples instanceof Uint16Array ? 8 : 0;
+  const band = channels >= RGB_CHANNELS ? 1 : 0;
+  const above = new Int32Array(NOISE_BLOCK);
+  let differences = 0;
+  let variance = 0;
+  let visited = 0;
+  for (let by = 0; by < blocksY; by += step) {
+    for (let bx = 0; bx < blocksX; bx += step) {
+      visited += 1;
+      let sum = 0;
+      let squares = 0;
+      for (let y = 0; y < NOISE_BLOCK; y += 1) {
+        let at = ((by * NOISE_BLOCK + y) * width + bx * NOISE_BLOCK) * channels + band;
+        let left = 0;
+        for (let x = 0; x < NOISE_BLOCK; x += 1) {
+          const value = samples[at] >> shift;
+          sum += value;
+          squares += value * value;
+          if (x > 0) differences += (value - left) ** 2;
+          if (y > 0) differences += (value - above[x]) ** 2;
+          above[x] = value;
+          left = value;
+          at += channels;
+        }
+      }
+      variance += squares - (sum * sum) / (NOISE_BLOCK * NOISE_BLOCK);
+    }
+  }
+  const pairsPerBlock = 2 * NOISE_BLOCK * (NOISE_BLOCK - 1);
+  const pixelsLessOne = NOISE_BLOCK * NOISE_BLOCK - 1;
+  return {
+    ratio: variance > 0 ? differences / pairsPerBlock / ((2 * variance) / pixelsLessOne) : 0,
+    difference: Math.sqrt(differences / (pairsPerBlock * visited)),
+  };
+}
+
+/** Whether most of the picture's variation is pixel-to-pixel (`NOISE_DOMINATED_RATIO`) and its differences are visible (`NOISE_MIN_DIFFERENCE`). */
+export function isNoiseDominated(raster: Raster): boolean {
+  const { ratio, difference } = readNoise(raster);
+  return ratio >= NOISE_DOMINATED_RATIO && difference >= NOISE_MIN_DIFFERENCE;
+}
+
+/**
+ * The green band (grey stands for it) of the picture a pipeline holds, in 8 bits, as a one-band raster that `isNoiseDominated` reads: the
+ * samples of a picture the route has not decoded to memory. It costs a decode of the picture, which the decoded route does not pay.
+ */
+export async function greenRasterOf(pipeline: Sharp): Promise<Raster> {
+  const { data, info } = await pipeline.clone().removeAlpha().toColourspace('srgb').extractChannel('green').raw({ depth: 'uchar' }).toBuffer({ resolveWithObject: true });
+  return { samples: new Uint8Array(data.buffer, data.byteOffset, data.length), width: info.width, height: info.height, channels: 1 };
+}
+
 /**
  * Classifies the picture the pipeline will encode from a nearest-neighbour thumbnail of it. A picture with more than 8 bits per
  * sample that the thumbnail calls graphic is read again at its own depth, where its tones are counted (`classifyRaster` does
