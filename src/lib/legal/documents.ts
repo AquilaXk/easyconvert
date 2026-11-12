@@ -3,7 +3,7 @@
  * top. The texts are the Markdown files of docs/legal (src/lib/legal/texts.ts), kept out of this module so that a client
  * component that needs a version does not ship them.
  */
-const LEGAL_TEXTS_VERSION = '2026-11-08';
+const LEGAL_TEXTS_VERSION = '2026-11-12';
 
 export const LEGAL_DOCUMENTS = {
   terms: { path: '/terms', version: LEGAL_TEXTS_VERSION },

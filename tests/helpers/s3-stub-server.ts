@@ -161,7 +161,7 @@ export async function startS3StubServer(options: {
   const objects = new Map<string, StoredStubObject>();
   const uploads = new Map<string, Map<number, Buffer>>();
   /** Content-Type and `x-amz-meta-*` given at CreateMultipartUpload, which S3 applies to the assembled object. */
-  const uploadInfo = new Map<string, { contentType: string; metadata: Record<string, string> }>();
+  const uploadInfo = new Map<string, { key: string; seq: number; contentType: string; metadata: Record<string, string> }>();
   const requests: StubRequestRecord[] = [];
   const faults: StubFault[] = [];
   const complete: StubCompleteBehavior = {};
@@ -263,6 +263,8 @@ export async function startS3StubServer(options: {
       const id = `stub-upload-${uploadCounter}`;
       uploads.set(id, new Map());
       uploadInfo.set(id, {
+        key: record.key,
+        seq: uploadCounter,
         contentType: String(record.headers['content-type'] ?? 'binary/octet-stream'),
         metadata: metadataFrom(record.headers),
       });
@@ -272,6 +274,10 @@ export async function startS3StubServer(options: {
     const uploadId = record.query.get('uploadId');
     if (uploadId !== null) {
       handleUpload(record, body, bucket, uploadId, res);
+      return;
+    }
+    if (record.key === '' && record.method === 'GET' && record.query.has('uploads')) {
+      handleListUploads(record, bucket, res);
       return;
     }
     if (record.key === '' && record.method === 'GET' && record.query.get('list-type') === '2') {
@@ -481,6 +487,45 @@ export async function startS3StubServer(options: {
   /** S3 orders keys by UTF-8 binary order, which differs from UTF-16 code unit order for astral characters. */
   function compareUtf8Binary(a: string, b: string): number {
     return Buffer.compare(Buffer.from(a, 'utf-8'), Buffer.from(b, 'utf-8'));
+  }
+
+  /**
+   * ListMultipartUploads: the uploads that are still open, by key in UTF-8 binary order and, within a key, by the order they
+   * were initiated; `prefix`, `max-uploads`, `key-marker` with `upload-id-marker` (an upload after the one it names) and
+   * `encoding-type=url` for the keys, as the S3 API reference describes them.
+   */
+  function handleListUploads(record: StubRequestRecord, bucket: string, res: http.ServerResponse): void {
+    const urlEncoded = record.query.get('encoding-type') === 'url';
+    const keyText = (key: string): string => (urlEncoded ? formEncode(key) : escapeText(key));
+    const prefix = record.query.get('prefix') ?? '';
+    const maxUploads = Number(record.query.get('max-uploads') ?? DEFAULT_MAX_KEYS);
+    const keyMarker = record.query.get('key-marker') ?? '';
+    const uploadIdMarker = record.query.get('upload-id-marker') ?? '';
+    const markerSeq = uploadInfo.get(uploadIdMarker)?.seq ?? 0;
+    const open = [...uploadInfo].filter(([id]) => uploads.has(id)).map(([id, info]) => ({ id, ...info }));
+    const matching = open
+      .filter((upload) => upload.key.startsWith(prefix))
+      .sort((a, b) => compareUtf8Binary(a.key, b.key) || a.seq - b.seq)
+      .filter((upload) => {
+        const order = compareUtf8Binary(upload.key, keyMarker);
+        return order > 0 || (order === 0 && uploadIdMarker !== '' && upload.seq > markerSeq);
+      });
+    const page = matching.slice(0, maxUploads);
+    const truncated = matching.length > page.length;
+    const last = page[page.length - 1];
+    const entries = page.map(
+      (upload) =>
+        `<Upload><Key>${keyText(upload.key)}</Key><UploadId>${upload.id}</UploadId><Initiator><ID>stub</ID></Initiator><Owner><ID>stub</ID></Owner><StorageClass>STANDARD</StorageClass><Initiated>2026-10-01T10:00:00.000Z</Initiated></Upload>`
+    );
+    send(
+      res,
+      200,
+      `<?xml version="1.0" encoding="UTF-8"?><ListMultipartUploadsResult><Bucket>${bucket}</Bucket><KeyMarker>${keyText(keyMarker)}</KeyMarker><UploadIdMarker>${uploadIdMarker}</UploadIdMarker>` +
+        (truncated ? `<NextKeyMarker>${keyText(last.key)}</NextKeyMarker><NextUploadIdMarker>${last.id}</NextUploadIdMarker>` : '') +
+        `<Prefix>${keyText(prefix)}</Prefix>` +
+        (urlEncoded ? '<EncodingType>url</EncodingType>' : '') +
+        `<MaxUploads>${maxUploads}</MaxUploads><IsTruncated>${truncated}</IsTruncated>${entries.join('')}</ListMultipartUploadsResult>`
+    );
   }
 
   /**

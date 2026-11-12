@@ -226,6 +226,13 @@ services:
       SMTP_USER:
       SMTP_PASSWORD:
       MAIL_FROM:
+      # Paid plans: all six empty means they are not on sale (the pricing page says "coming soon"); a part of them stops the start.
+      PADDLE_API_KEY:
+      PADDLE_WEBHOOK_SECRET:
+      PADDLE_CLIENT_TOKEN:
+      PADDLE_ENVIRONMENT:
+      PADDLE_PRICE_ID_PRO:
+      PADDLE_PRICE_ID_ENTERPRISE:
       # The host reverse proxy is the only hop that can reach the published port; it overwrites X-Forwarded-For with the client
       # address that the CDN in front of the origin reported (deploy/oci/nginx-easyconvert.conf), docs/client-ip-trust.md.
       TRUSTED_PROXIES: ${EASYCONVERT_TRUSTED_PROXIES:-127.0.0.1/32,172.16.0.0/12}

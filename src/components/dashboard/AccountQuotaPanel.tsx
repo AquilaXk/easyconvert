@@ -6,6 +6,7 @@ import { useTierLabel } from '../i18n/format';
 import type { User } from '@/lib/auth/types';
 import type { ApiKey, QuotaUsage } from '@/lib/api-keys/types';
 import { TIER_LIMITS } from '@/lib/plan-limits';
+import { SubscriptionPanel } from '../billing/SubscriptionPanel';
 import { displayedUsage } from './dashboard-types';
 
 interface AccountQuotaPanelProps {
@@ -89,6 +90,8 @@ export function AccountQuotaPanel({ user, quota, apiKeys }: Readonly<AccountQuot
             </p>
           </div>
         </div>
+
+        <SubscriptionPanel />
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
           <div className="p-5 rounded-md border border-rule space-y-2.5">

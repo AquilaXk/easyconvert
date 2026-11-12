@@ -115,6 +115,70 @@ describe('RemoteStorageBackend (IStorageBackend over an S3-compatible object sto
       expect(backend.getUploadOwner(init.uploadId)).toBe('user_7');
     });
 
+    describe('the open uploads of an owner, for the erasure of an account', () => {
+      it('lists and aborts the uploads under the owner\'s prefix on the object store, and keeps other owners\' and ownerless ones', async () => {
+        const mine = await backend.initiateMultipartUpload('a.bin', 'application/octet-stream', 10, 'user_7');
+        const mineToo = await backend.initiateMultipartUpload('b.bin', 'application/octet-stream', 10, 'user_7');
+        await backend.uploadPart(mine.uploadId, 1, Buffer.from('part'));
+        const theirs = await backend.initiateMultipartUpload('c.bin', 'application/octet-stream', 10, 'user_77');
+        const ownerless = await backend.initiateMultipartUpload('d.bin', 'application/octet-stream', 10);
+        expect(server.uploads.size).toBe(4);
+
+        const listed = await backend.uploadSessionsOfOwner('user_7');
+        expect(listed).toHaveLength(2);
+        expect(await backend.abortUploadSessionsOfOwner('user_7')).toEqual(listed);
+
+        expect(server.uploads.size).toBe(2);
+        await expect(backend.getUploadedParts(mine.uploadId)).rejects.toMatchObject({ code: 'NoSuchUpload' });
+        await expect(backend.getUploadedParts(mineToo.uploadId)).rejects.toMatchObject({ code: 'NoSuchUpload' });
+        expect(await backend.getUploadedParts(theirs.uploadId)).toEqual([]);
+        expect(await backend.getUploadedParts(ownerless.uploadId)).toEqual([]);
+      });
+
+      it('lists more than one page of uploads', async () => {
+        const client = makeClient();
+        const batch = 50;
+        for (let at = 0; at < 1001; at += batch) {
+          await Promise.all(Array.from({ length: Math.min(batch, 1001 - at) }, (_, i) => client.createMultipartUpload(`conversions/bulk/${at + i}.bin`)));
+        }
+        expect(await backend.uploadSessionsOfOwner('bulk')).toHaveLength(1001);
+        expect(server.requests.filter((req) => req.method === 'GET' && req.query.has('uploads')).length).toBeGreaterThanOrEqual(2);
+      });
+
+      it('aborts again an upload that is still open after the first abort, and fails when it never closes', async () => {
+        const client = makeClient();
+        const mine = new RemoteStorageBackend(client, { signingSecret: SIGNING_SECRET, scratchDir });
+        await mine.initiateMultipartUpload('a.bin', 'application/octet-stream', 10, 'user_7');
+        const realAbort = client.abortMultipartUpload.bind(client);
+        const ignore = vi.spyOn(client, 'abortMultipartUpload').mockImplementationOnce(async () => undefined);
+        expect(await mine.abortUploadSessionsOfOwner('user_7')).toHaveLength(1);
+        expect(ignore).toHaveBeenCalledTimes(2);
+        expect(server.uploads.size).toBe(0);
+
+        await mine.initiateMultipartUpload('b.bin', 'application/octet-stream', 10, 'user_7');
+        ignore.mockImplementation(async () => undefined);
+        await expect(mine.abortUploadSessionsOfOwner('user_7')).rejects.toThrow(/still open/);
+        ignore.mockImplementation(realAbort);
+        expect(await mine.abortUploadSessionsOfOwner('user_7')).toHaveLength(1);
+      });
+
+      it('rejects when the object store cannot list or abort, so the erasure does not report the uploads gone', async () => {
+        const init = await backend.initiateMultipartUpload('a.bin', 'application/octet-stream', 10, 'user_7');
+        server.faults.push({ match: (req) => req.method === 'GET' && req.query.has('uploads'), status: 403, code: 'AccessDenied', times: Infinity });
+        await expect(backend.abortUploadSessionsOfOwner('user_7')).rejects.toThrow();
+        server.faults.length = 0;
+        expect(server.uploads.size).toBe(1);
+
+        server.faults.push({ match: (req) => req.method === 'DELETE' && req.query.has('uploadId'), status: 500, code: 'InternalError', times: Infinity });
+        await expect(backend.abortUploadSessionsOfOwner('user_7')).rejects.toThrow();
+        server.faults.length = 0;
+        expect(server.uploads.size).toBe(1);
+
+        expect(await backend.abortUploadSessionsOfOwner('user_7')).toHaveLength(1);
+        await expect(backend.getUploadedParts(init.uploadId)).rejects.toMatchObject({ code: 'NoSuchUpload' });
+      });
+    });
+
     it('puts ownerless uploads in the upload namespace', async () => {
       const init = await backend.initiateMultipartUpload('a.bin', 'application/octet-stream', 10);
       expect(init.key).toMatch(/^uploads\/\d+_[0-9a-f]{16}_a\.bin$/);

@@ -657,6 +657,46 @@ export class LocalFsStorage implements IObjectStorage {
     }).length;
   }
 
+  /** The owner a session directory records, or undefined when it has no record yet (it is being opened) or an unreadable one. */
+  private async ownerOfSessionDir(sessionDir: string): Promise<string | undefined> {
+    try {
+      const record = JSON.parse(await fs.promises.readFile(path.join(sessionDir, SESSION_FILE), 'utf-8')) as Partial<LocalMultipartSession> | null;
+      return record?.ownerUserId;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT' || err instanceof SyntaxError) return undefined;
+      throw err;
+    }
+  }
+
+  /**
+   * The ids of the sessions `ownerUserId` started, found by reading the record of every session directory: the sessions
+   * are bounded by their time (the sweep removes one an hour after it expires) and only the erasure of an account asks, so
+   * no per-owner index is kept. A session past its time that the sweep has not removed yet is listed, since its parts are
+   * still on the disk. A read that fails other than by a missing record rejects, so the caller cannot take a session it
+   * could not read for one that is not the owner's.
+   */
+  async sessionIdsOfOwner(ownerUserId: string): Promise<string[]> {
+    let names: string[];
+    try {
+      names = await fs.promises.readdir(this.partsDir);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw err;
+    }
+    const ids: string[] = [];
+    for (const name of names) {
+      if (isLocalUploadId(name) && (await this.ownerOfSessionDir(this.sessionDirFor(name))) === ownerUserId) ids.push(name);
+    }
+    return ids.sort((a, b) => a.localeCompare(b));
+  }
+
+  /** Removes every session of `ownerUserId` with its parts and answers the ids; a session that cannot be removed rejects. */
+  async abortSessionsOfOwner(ownerUserId: string): Promise<string[]> {
+    const ids = await this.sessionIdsOfOwner(ownerUserId);
+    for (const id of ids) await fs.promises.rm(this.sessionDirFor(id), { recursive: true, force: true });
+    return ids;
+  }
+
   async abortMultipart(key: string, uploadId: string): Promise<boolean> {
     const sessionDir = this.sessionDirFor(uploadId);
     if (!fs.existsSync(sessionDir)) return false;

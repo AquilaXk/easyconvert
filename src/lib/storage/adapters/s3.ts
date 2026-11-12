@@ -217,6 +217,8 @@ export type S3XmlElement =
   | 'NextContinuationToken'
   | 'PartNumber'
   | 'NextPartNumberMarker'
+  | 'NextKeyMarker'
+  | 'NextUploadIdMarker'
   | 'EncodingType';
 
 /**

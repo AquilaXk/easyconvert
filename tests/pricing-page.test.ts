@@ -10,7 +10,7 @@ import {
   PLAN_MAX_FILE_BYTES,
 } from '../src/lib/plan-limits';
 import { formatBytesForDisplay } from '../src/lib/format-bytes';
-import { headings, links, renderDom, select, visibleText } from './helpers/rendered-dom';
+import { attrOf, headings, links, renderDom, select, visibleText } from './helpers/rendered-dom';
 import { testMessages } from './helpers/intl-messages';
 import { CONFIG_SCHEMA } from '../src/lib/config/schema';
 
@@ -34,10 +34,17 @@ describe('the pricing page', () => {
     expect(visibleText(page('ko', 25)).match(/계정이 없으면 하루 (\d+)회/)?.[1]).toBe('25');
   });
 
-  it('says no paid plan is on sale, with no price but zero', () => {
-    const text = visibleText(page('en'));
-    expect(text).toContain('No paid plans are on sale yet');
-    expect(text.match(/[$€£]\s?\d[\d.,]*/g)).toEqual(['$0']);
+  it('shows the paid plans as coming soon, with disabled buttons and no price but zero', () => {
+    for (const locale of ['en', 'ko'] as const) {
+      const tree = page(locale);
+      const soon = (testMessages(locale) as unknown as { billing: { comingSoon: string } }).billing.comingSoon;
+      const text = visibleText(tree);
+      expect(text.split(soon).length - 1, locale).toBeGreaterThanOrEqual(4); // a badge and a button on each plan, and the FAQ
+      expect(headings(tree).filter((heading) => ['Pro', 'Enterprise'].includes(heading)), locale).toEqual(['Pro', 'Enterprise']);
+      const disabled = select(tree, 'button').filter((button) => attrOf(button, 'disabled') !== null);
+      expect(disabled.map((button) => visibleText(button)), locale).toEqual([soon, soon]);
+    }
+    expect(visibleText(page('en')).match(/[$€£]\s?\d[\d.,]*/g)).toEqual(['$0']);
   });
 
   it('has a title, one free plan and an FAQ in both languages', () => {

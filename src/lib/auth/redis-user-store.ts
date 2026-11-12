@@ -78,6 +78,12 @@ redis.call('SET', KEYS[1], nextVersion)
 return nextVersion
 `;
 
+/** The record as a request sees it: a paid tier whose end has passed reads as free, so the end needs no sweep. */
+function withCurrentTier(record: UserRecord): UserRecord {
+  if (record.tierUntil === undefined || record.tier === 'free' || record.tierUntil > Date.now()) return record;
+  return { ...record, tier: 'free' };
+}
+
 /**
  * Enterprise Distributed User Store.
  * Supports Redis distributed cluster storage with atomic Lua operations. Without Redis it keeps accounts in this process's
@@ -181,14 +187,14 @@ export class RedisUserStore {
       try {
         const userKey = `${this.keyPrefix}${id}`;
         const raw = await this.redisClient.get(userKey);
-        if (raw) return JSON.parse(raw);
-        return null;
+        return raw ? withCurrentTier(JSON.parse(raw)) : null;
       } catch (err) {
         return failClosed('RedisUserStore', 'findById', err);
       }
     }
 
-    return this.distributedUsers.get(id) || null;
+    const record = this.distributedUsers.get(id);
+    return record ? withCurrentTier(record) : null;
   }
 
   public async findByEmail(email: string): Promise<UserRecord | null> {

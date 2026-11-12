@@ -111,6 +111,26 @@ function strictSandboxFailures(values: ReadonlyMap<string, ParsedValue>): Config
     .map((name) => ({ variable: name, rule: 'must not be false while STRICT_SANDBOX is true: a strict sandbox does not run a program without it' }));
 }
 
+/** The variables that turn the paid plans on; they work only together (src/lib/billing/config.ts). */
+const BILLING_VARIABLES = [
+  'PADDLE_API_KEY',
+  'PADDLE_WEBHOOK_SECRET',
+  'PADDLE_CLIENT_TOKEN',
+  'PADDLE_ENVIRONMENT',
+  'PADDLE_PRICE_ID_PRO',
+  'PADDLE_PRICE_ID_ENTERPRISE',
+] as const;
+
+/** A part of the billing variables would leave the paid plans off without saying why, so the process does not start. */
+function billingFailures(isSet: ReadonlySet<string>, values: ReadonlyMap<string, ParsedValue>): ConfigFailure[] {
+  const missing = BILLING_VARIABLES.filter((name) => !isSet.has(name));
+  if (missing.length === 0 && values.get('PADDLE_PRICE_ID_PRO') === values.get('PADDLE_PRICE_ID_ENTERPRISE')) {
+    return [{ variable: 'PADDLE_PRICE_ID_ENTERPRISE', rule: 'must differ from PADDLE_PRICE_ID_PRO: one price cannot tell the two plans apart' }];
+  }
+  if (missing.length === 0 || missing.length === BILLING_VARIABLES.length) return [];
+  return missing.map((variable) => ({ variable, rule: 'is required when any other PADDLE_ variable is set: the paid plans need all six' }));
+}
+
 /** Validates `env` against the schema without caching. Throws ConfigurationError listing every failing variable. */
 export function parseConfig(env: Env, options: LoadConfigOptions = {}): Config {
   const production = env.NODE_ENV === PRODUCTION && env.NEXT_PHASE !== PRODUCTION_BUILD_PHASE;
@@ -174,6 +194,7 @@ export function parseConfig(env: Env, options: LoadConfigOptions = {}): Config {
   }
 
   failures.push(...strictSandboxFailures(values));
+  failures.push(...billingFailures(isSet, values));
 
   if (failures.length > 0) throw new ConfigurationError(failures);
   return Object.freeze(Object.fromEntries(values)) as Config;

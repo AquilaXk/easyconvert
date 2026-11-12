@@ -2,6 +2,7 @@ import { LEGAL_DOCUMENTS } from '../../legal/documents';
 import { getAppOrigin } from '../../auth/oauth';
 import { components } from './components';
 import { webhookEvents } from './events';
+import { billingPaths } from './paths/billing';
 import { conversionPaths } from './paths/conversion';
 import { internalPaths } from './paths/internal';
 import { keyPaths } from './paths/keys';
@@ -43,6 +44,7 @@ export function buildOpenApiDocument() {
       ...uploadPaths,
       ...storagePaths,
       ...keyPaths,
+      ...billingPaths,
       ...webhookPaths,
       ...internalPaths,
     },

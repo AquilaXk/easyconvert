@@ -123,6 +123,10 @@ export interface IStorageBackend {
   abortMultipartUpload(uploadId: string): MaybePromise<boolean>;
   getUploadSession?(uploadId: string): MaybePromise<UploadSessionInfo | undefined>;
   getUploadOwner?(uploadId: string): MaybePromise<string | undefined>;
+  /** The ids of the open multipart uploads `ownerUserId` started, for the erasure of an account; rejects when they cannot be listed. */
+  uploadSessionsOfOwner?(ownerUserId: string): MaybePromise<string[]>;
+  /** Aborts every open multipart upload `ownerUserId` started with the parts it holds, and answers their ids; rejects when one cannot be aborted. */
+  abortUploadSessionsOfOwner?(ownerUserId: string): MaybePromise<string[]>;
   /** Parts received so far for an open session, in any order; undefined when the session is unknown. */
   getUploadedParts?(
     uploadId: string
