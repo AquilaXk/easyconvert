@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ADOBE_GLYPH_LIST, ZAPF_DINGBATS_GLYPH_LIST } from '../src/lib/conversions/pdf-glyph-list';
 import { glyphNameToText } from '../src/lib/conversions/pdf-glyph-names';
+import { PDFJS_GLYPH_LIST_ADDITIONS, SPECIAL_PRIVATE_USE_SYMBOLS } from '../src/lib/conversions/pdf-glyph-list-pdfjs';
 
 /**
  * Glyph names to text. The expectations are the worked examples of the Adobe Glyph List specification, and the lists
@@ -20,6 +21,15 @@ function pdfjsTable(factory: string): Map<string, number> {
   expect(start, `${factory} in the pdfjs worker`).toBeGreaterThan(-1);
   const body = source.slice(start, source.indexOf('\n});', start));
   return new Map([...body.matchAll(/t\.(\w+) = 0x([0-9a-fA-F]+);/g)].map((match) => [match[1], Number.parseInt(match[2], HEX_RADIX)]));
+}
+
+/** The `code = code point` table of a lookup factory whose keys are numbers. */
+function pdfjsNumberedTable(factory: string): Map<number, number> {
+  const source = fs.readFileSync(PDFJS_WORKER, 'utf8');
+  const start = source.indexOf(`const ${factory} = getLookupTableFactory(function (t) {`);
+  expect(start, `${factory} in the pdfjs worker`).toBeGreaterThan(-1);
+  const body = source.slice(start, source.indexOf('\n});', start));
+  return new Map([...body.matchAll(/t\[(\d+)\] = 0x([0-9a-fA-F]+);/g)].map((match) => [Number(match[1]), Number.parseInt(match[2], HEX_RADIX)]));
 }
 
 function entriesOf(list: string): Array<[string, string]> {
@@ -56,6 +66,59 @@ describe('the worked examples of the Adobe Glyph List specification', () => {
   });
 });
 
+describe('the names pdf.js adds to the Adobe Glyph List', () => {
+  it('maps the glyph names of the TeX fonts and the names the list misses', () => {
+    expect(glyphNameToText('parenleftbig')).toBe('(');
+    expect(glyphNameToText('bracketrightBigg')).toBe(']');
+    expect(glyphNameToText('angbracketleftbig')).toBe('\u2329');
+    expect(glyphNameToText('summationtext')).toBe('\u2211');
+    expect(glyphNameToText('integraldisplay')).toBe('\u222B');
+    expect(glyphNameToText('bracehtipdownleft')).toBe('\uFE37');
+    expect(glyphNameToText('angbracketleft')).toBe('\u3008');
+    expect(glyphNameToText('planckover2pi')).toBe('\u210F');
+    expect(glyphNameToText('circlecopyrt')).toBe('\u00A9');
+  });
+
+  it('reads them in a ligature and with a suffix, like any listed name', () => {
+    expect(glyphNameToText('summationtext.alt')).toBe('\u2211');
+    expect(glyphNameToText('parenleftbig_parenrightbig')).toBe('()');
+    expect(glyphNameToText('parenleftbig_zzz')).toBeNull();
+  });
+
+  it('lists no name twice with the Adobe Glyph List, and gives each the code point pdfjs gives it', () => {
+    const pdfjs = pdfjsTable('getGlyphsUnicode');
+    const adobe = new Set(entriesOf(ADOBE_GLYPH_LIST).map(([name]) => name));
+    const names = Object.keys(PDFJS_GLYPH_LIST_ADDITIONS);
+    expect(names.length).toBeGreaterThan(110);
+    expect(names.filter((name) => adobe.has(name))).toEqual([]);
+    expect(names.filter((name) => pdfjs.get(name) !== PDFJS_GLYPH_LIST_ADDITIONS[name])).toEqual([]);
+  });
+
+  it('keeps the characters pdfjs draws private-use glyphs as, and no more', () => {
+    const pdfjs = pdfjsNumberedTable('getSpecialPUASymbols');
+    expect(pdfjs.size).toBe(27);
+    expect(new Map(Object.entries(SPECIAL_PRIVATE_USE_SYMBOLS).map(([code, point]) => [Number(code), point]))).toEqual(pdfjs);
+  });
+});
+
+describe('names that no table maps', () => {
+  it('maps the glyph numbers of a printer driver and the catalogue names of the Mathematical Pi fonts to nothing, never to a guess', () => {
+    for (const name of ['G101', 'G69', 'g0041', 'C24', 'H20849', 'H9262', 'H11011', 'MT69']) expect(glyphNameToText(name), name).toBeNull();
+  });
+
+  it('maps a uni or u name that holds a character that is not an uppercase hexadecimal digit to nothing', () => {
+    expect(glyphNameToText('uni03BC')).toBe('\u03BC');
+    for (const name of ['uni03bc', 'uniZZZZ', 'uni03B', 'uni03BCG', 'u12G4', 'u+0041', 'u0041 ', 'uni']) expect(glyphNameToText(name), name).toBeNull();
+  });
+
+  it('maps a name of 100 KB made of a listed name, a catalogue number or hexadecimal digits to nothing', () => {
+    expect(glyphNameToText('parenleftbig'.repeat(10_000))).toBeNull();
+    expect(glyphNameToText(`H${'9'.repeat(100_000)}`)).toBeNull();
+    expect(glyphNameToText(`u${'F'.repeat(100_000)}`)).toBeNull();
+    expect(glyphNameToText(`parenleftbig${'_parenleftbig'.repeat(10_000)}`)).toBeNull();
+  });
+});
+
 describe('the length of a glyph name', () => {
   /** ISO 32000-2 Annex C: a name holds at most 127 bytes. */
   const MAX_NAME_LENGTH = 127;
@@ -86,6 +149,14 @@ describe('the Zapf Dingbats names', () => {
     expect(glyphNameToText('a1')).toBeNull();
     expect(glyphNameToText('a1', { dingbats: true })).toBe('✁');
     expect(glyphNameToText('a16', { dingbats: false })).toBeNull();
+  });
+
+  it('reads the brackets, the last name and a ligature of Zapf Dingbats names, and no name past the list', () => {
+    expect(glyphNameToText('a89', { dingbats: true })).toBe('\u2768');
+    expect(glyphNameToText('a206', { dingbats: true })).toBe('\u2770');
+    expect(glyphNameToText('a89_a90', { dingbats: true })).toBe('\u2768\u2769');
+    expect(glyphNameToText('a207', { dingbats: true })).toBeNull();
+    expect(glyphNameToText('a'.concat('9'.repeat(1000)), { dingbats: true })).toBeNull();
   });
 });
 

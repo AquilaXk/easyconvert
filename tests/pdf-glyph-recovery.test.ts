@@ -55,4 +55,21 @@ describe('private-use characters', () => {
     expect(recoverUnmappedGlyphs('', { name: 'Arial' })).toEqual({ text: '', unmapped: 1 });
     expect(recoverUnmappedGlyphs('', { name: 'cmex10' })).toEqual({ text: '', unmapped: 2 });
   });
+
+  it('are read as the character pdf.js draws them as when the Adobe set gives one, in any font', () => {
+    // The pieces of the big parenthesis, brace and bracket of Symbol and CMEX10, and the serif and sans signs.
+    expect(recoverUnmappedGlyphs('', { name: 'CMEX10', type: 'Type1' })).toEqual({ text: '⎛⎜⎝', unmapped: 0 });
+    expect(recoverUnmappedGlyphs('', { name: 'ABCDEF+Symbol' })).toEqual({ text: '⎧⎨⎩', unmapped: 0 });
+    expect(recoverUnmappedGlyphs('', { name: 'cmex10', composite: true })).toEqual({ text: '©®™', unmapped: 0 });
+  });
+
+  it('keep the symbol font table first, and leave out the Adobe private-use characters pdf.js has no character for', () => {
+    expect(recoverUnmappedGlyphs('', { name: 'Symbol' }).text).toBe('α');
+    expect(recoverUnmappedGlyphs('', { name: 'CMEX10' })).toEqual({ text: '', unmapped: 3 });
+  });
+
+  it('are read from the name of the code when a font names the glyph by an Adobe private-use name', () => {
+    const font: RecoverableFont = { name: 'Helvetica', differences: names({ 1: 'parenlefttp', 2: 'copyrightserif', 3: 'AEsmall' }) };
+    expect(recoverUnmappedGlyphs('\u0001\u0002\u0003', font)).toEqual({ text: '⎛©', unmapped: 1 });
+  });
 });

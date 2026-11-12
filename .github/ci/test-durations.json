@@ -846,6 +846,7 @@
   "tests/pdf-text-notdef-glyph.test.ts": 1.2,
   "tests/pdf-text-page-limit.test.ts": 0.8,
   "tests/pdf-text-partial-tounicode.test.ts": 4.3,
+  "tests/pdf-text-private-use-symbols.test.ts": 0.3,
   "tests/pdf-text-reading-order.test.ts": 0.2,
   "tests/pdf-text-real-samples.test.ts": 36.7,
   "tests/pdf-text-standard-glyph-order.test.ts": 3.6,
