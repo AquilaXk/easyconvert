@@ -1295,5 +1295,6 @@
   "tests/zstd-level-pins.test.ts": 2.1,
   "tests/zstd-native.test.ts": 1,
   "tests/zstd-optimal-ratio.test.ts": 18.6,
-  "tests/zstd-streaming-dict.test.ts": 0.5
+  "tests/zstd-streaming-dict.test.ts": 0.5,
+  "tests/set-account-tier.test.ts": 0.3
 }
