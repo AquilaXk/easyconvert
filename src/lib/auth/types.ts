@@ -6,6 +6,8 @@ export interface User {
   name: string;
   avatarUrl?: string;
   tier: UserTier;
+  /** When a paid `tier` ends, in milliseconds since the epoch; the account is on the free plan from then (a subscription that is canceled at period end). */
+  tierUntil?: number;
   provider: 'email' | 'google';
   createdAt: number;
   updatedAt: number;

@@ -1612,17 +1612,64 @@
       "invalid_key_settings": "Check the key's settings: a name, scope, address list or expiry date is not valid.",
       "invalid_grace_period": "Choose a grace period between 0 seconds and 7 days.",
       "key_create_failed": "Could not create the API key. Try again in a moment."
+    },
+    "billing": {
+      "billing_unavailable": "Paid plans are not available yet.",
+      "billing_provider_failed": "Could not reach the payment service. Try again in a moment.",
+      "invalid_plan": "That plan is not available.",
+      "already_subscribed": "You already have a paid plan. Change or cancel it under Manage subscription.",
+      "no_subscription": "You do not have a subscription.",
+      "invalid_signature": "The request could not be verified."
+    }
+  },
+  "billing": {
+    "comingSoon": "Coming soon",
+    "subscribe": "Subscribe",
+    "signInToSubscribe": "Sign in to subscribe",
+    "currentPlan": "Current plan",
+    "manage": "Manage subscription",
+    "starting": "Opening checkout",
+    "completed": "Thank you. Your plan switches on in a few moments.",
+    "plans": {
+      "pro": {
+        "tagline": "For frequent conversions and larger files."
+      },
+      "enterprise": {
+        "tagline": "For heavy and automated use."
+      }
+    },
+    "limits": {
+      "daily": "{count, number} conversions a day",
+      "fileSize": "Up to {size} per file",
+      "inheritsFree": "Everything in Free"
+    },
+    "price": {
+      "month": "{price} per month",
+      "year": "{price} per year",
+      "other": "{price}"
+    },
+    "account": {
+      "heading": "Subscription",
+      "plan": "{plan} plan",
+      "renews": "Renews on {date}.",
+      "endsOn": "Ends on {date}. After that you are on the Free plan.",
+      "pastDue": "The last payment did not go through. The plan stays until {date}.",
+      "ended": "The subscription has ended. You are on the Free plan.",
+      "none": "You are on the Free plan.",
+      "manage": "Manage subscription",
+      "plans": "See paid plans"
     }
   },
   "pricing": {
     "title": "Pricing",
-    "intro": "EasyConvert is free. There is one plan today, and these are its limits.",
+    "intro": "EasyConvert is free to use. Paid plans with higher limits are listed below.",
     "plan": {
       "name": "Free",
       "tagline": "For everyday conversions, testing and small projects.",
       "price": "$0",
       "cta": "Sign up"
     },
+    "plansLabel": "Plans",
     "limitsHeading": "Limits",
     "limits": {
       "daily": {
@@ -1652,7 +1699,6 @@
       "api": "Access to the API with an API key from your account",
       "noCard": "No credit card needed"
     },
-    "paidNote": "No paid plans are on sale yet. If that changes, the plans and their prices will be listed here.",
     "faqHeading": "Frequently asked questions",
     "faq": {
       "daily": {
@@ -1676,8 +1722,8 @@
         "answer": "Yes. Create an API key in your account and send requests to it. API requests count against the same {daily, plural, one {# conversion} other {# conversions}} a day."
       },
       "paid": {
-        "question": "Will there be paid plans?",
-        "answer": "None are on sale yet, so there is nothing to buy and no price to pay. If we add paid plans with higher limits, they will be listed on this page."
+        "question": "Can I buy a paid plan?",
+        "answer": "Paid plans are marked \"Coming soon\" until they go on sale. When they do, you subscribe on this page, and you manage or cancel the subscription from your dashboard."
       }
     },
     "cta": {

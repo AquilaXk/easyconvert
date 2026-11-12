@@ -1,6 +1,9 @@
 import { deleteAuthTokensOfUser } from '../src/lib/auth/auth-email-token-store';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { isEntitlingStatus } from '../src/lib/billing/entitlement';
+import { subscriptionStore } from '../src/lib/billing/subscription-store';
+import type { SubscriptionRecord } from '../src/lib/billing/types';
 import { getWebhookSecretStore } from '../src/lib/api-keys/webhook-secret-store';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { resetLoginAttempts } from '../src/lib/auth/login-rate-limiter';
@@ -24,6 +27,8 @@ export interface AccountErasurePlan {
   uploadSessionIds: string[];
   storedKeys: string[];
   deadLetters: number;
+  /** The subscription record of the account; the customer and the subscription stay with the payment provider, which this script never calls. */
+  subscription: SubscriptionRecord | null;
   taggedKeys: string[];
 }
 
@@ -99,13 +104,14 @@ export async function planAccountErasure(idOrEmail: string): Promise<AccountEras
   const account = await findAccount(idOrEmail);
   if (!account) return undefined;
   const userId = account.id;
-  const [keys, credentialIds, graphIds, jobs, letters, taggedKeys] = await Promise.all([
+  const [keys, credentialIds, graphIds, jobs, letters, taggedKeys, subscription] = await Promise.all([
     redisKeyStore.listApiKeys(userId),
     credentialsVault.listByUser(userId),
     graphScheduler.graphsOfUser(userId),
     conversionQueue.getJobsByUser(userId, undefined, MAX_JOBS_PER_RUN, 0),
     webhookDispatcher.getDlqPage(userId, { includeExpired: true, limit: 1 }),
     accountTaggedKeys(userId),
+    subscriptionStore.findByUser(userId),
   ]);
   return {
     userId,
@@ -118,6 +124,7 @@ export async function planAccountErasure(idOrEmail: string): Promise<AccountEras
     uploadSessionIds: (await storageProvider.uploadSessionsOfOwner?.(userId)) ?? [],
     storedKeys: await accountStoredKeys(userId, jobs.map((job) => job.id), graphIds),
     deadLetters: letters.total,
+    subscription,
     taggedKeys,
   };
 }
@@ -219,8 +226,11 @@ export async function eraseAccount(plan: AccountErasurePlan, options: AccountEra
   const client = redisKeyStore.getRedisClient();
   if (client) await deleteKeysInBatches(client, await accountTaggedKeys(userId));
   await deleteAuthTokensOfUser(userId);
+  await subscriptionStore.forgetUser(userId);
   await forgetFailedLogins(plan.email);
   await redisUserStore.deleteUser(userId);
+  // An event that landed between the first deletion and the account's own can have written the record and its index again.
+  await subscriptionStore.forgetUser(userId);
   return { runningJobIds: [] };
 }
 
@@ -230,6 +240,15 @@ async function forgetFailedLogins(email: string): Promise<void> {
   // The key the login limiter writes (`login_attempts:email:<lower-cased address>` under the user store's prefix).
   if (redis) await redis.del(`${redisUserStore.getKeyPrefix()}login_attempts:email:${email.toLowerCase().trim()}`);
   await resetLoginAttempts(null, email);
+}
+
+/** The subscription record is deleted here; the payment provider keeps the customer and keeps charging an active subscription until it is canceled there. */
+function subscriptionLines({ subscription }: AccountErasurePlan): string[] {
+  if (!subscription) return [];
+  const warning = isEntitlingStatus(subscription.status)
+    ? `  WARNING: the subscription is ${subscription.status}; cancel ${subscription.providerSubscriptionId} at the payment provider first, or it keeps charging the customer`
+    : '  the customer stays at the payment provider';
+  return [`subscription record: ${subscription.providerSubscriptionId} (${subscription.status})`, warning];
 }
 
 function describe(plan: AccountErasurePlan): string {
@@ -243,6 +262,7 @@ function describe(plan: AccountErasurePlan): string {
     `open multipart uploads: ${plan.uploadSessionIds.length}`,
     `stored files: ${plan.storedKeys.length}`,
     `webhook dead letters: ${plan.deadLetters}`,
+    ...subscriptionLines(plan),
     `tagged redis keys: ${plan.taggedKeys.length}`,
     ...plan.taggedKeys.map((key) => `  ${key}`),
   ].join('\n');

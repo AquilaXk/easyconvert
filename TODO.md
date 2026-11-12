@@ -13,8 +13,12 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Cut the GIF time of the camera rows further: the palette mapper (`mapNearest`) is 13 to 38 ns a pixel on the VM after the direct colour table, and the run tolerance check is 45 percent of it (half of the 50 to 60 percent of pixels that change their nearest colour read the 32-byte Oklab entry of the colour, a quarter of those keep the previous colour); a split over the pool threads needs each stripe to start with a guess of the previous colour and a short repair at its first pixels, which is not written. The LZW coder (200 to 320 ms for 20 to 39 MP) and the `3fr` development by `dcraw_emu` (0.9 s) are the other large steps.
 
 ## Product and API
+- Before Paddle billing goes on (entry 262): add Paddle as a processor of billing data to `docs/legal/privacy.en.md`, `privacy.ko.md` and the DPA with the next legal revision (30-day notice, as for the cookie table below), run one sandbox purchase end to end (account, six `PADDLE_` variables, notification destination to `/api/billing/webhook`, CSP if one is added for cdn.paddle.com and checkout frames), and make `PAID_PLANS_ON_SALE` follow `isBillingConfigured()` so the 413 text and the FAQ name the paid plans.
 
 ## Operations and security
+- Reconcile subscriptions against Paddle (entry 262): a lost cancel or past-due event leaves a paid tier until `tierUntil` or forever, and a first subscription event with no valid binding is `unattributed` and answered 200, so Paddle never retries it; add a job that lists subscriptions through the API and compares them with the store, and an alert on `unattributed` and `unknown_user` log lines.
+- Consider exempting `/api/billing/webhook` from the edge IP rate limit in `src/middleware.ts` (a burst from Paddle's addresses answers 429, which Paddle retries) once the sandbox shows the real delivery pattern, and check the server clock against the 5 second signature window (a skewed clock rejects every event with 400).
+- Check once in the Paddle sandbox that the portal-session error log (`[billing] portal session failed`) carries no authorization header or key.
 - Bound the `{q}:dlq:unparsed` set of entry 257: a file name with a lone surrogate puts a letter there, and every erasure and every `remove(id)` reads and parses the whole set (age trimming is the only bound today); cap it, or keep its members by job and user as the other index sets do.
 - Run `node dist/backfill-dlq-index.js` (dry run, then `--apply`) on the host after the deploy that carries entry 257 has replaced every worker, with QA's approval; until then removal of a job's dead letters reads the whole list as before (docs/deploy-oci.md, "Indexing the dead letters").
 - Removing a dead letter is an `LREM`, which scans the list in Redis: 1,000 jobs over 50,000 letters take 2.3 s (entry 257). Keep the letters in a hash by id, with a sorted set for the order, when the list passes about 50,000, and extend the backfill script to move the old list.
@@ -25,7 +29,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Re-pin `book-pg2701.epub` to an archived capture taken after its live file was rebuilt on 2026-11-08, with a gutenberg.org mirror (latest capture 2026-11-01 differs; `book-pg84.epub` done); the pg84 quality rows were not re-measured against the rebuilt bytes (entry 224).
 
 ## Approved backlog (QA 2026-11-12: every Later and Waiting item is approved)
-- Paid plans with Paddle as merchant of record (QA's pick over Polar, Toss Payments and Lemon Squeezy), behind a provider interface: the paid tiers and checkout show only when billing is configured (keys, products, webhook secret); until then the pricing page marks them "coming soon" and nothing can be bought. Launch stays free-only.
 - Engine choice and version pinning per conversion.
 - Named task graphs in one API job.
 - Thumbnail, metadata and website capture (website capture needs an SSRF suite).
