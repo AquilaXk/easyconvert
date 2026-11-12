@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { fetch as undiciFetch } from 'undici';
+import { parse as parseContentDisposition } from 'content-disposition';
+import { getFormatByMimeType } from '@/lib/format-by-mime-type';
 import {
   MAX_REDIRECTS,
   validateUrlForSsrf,
@@ -29,21 +31,11 @@ const refusal = codedRefusal<UrlImportErrorCode>;
 const HEADERS_TIMEOUT_MS = 12_000;
 const MS_PER_SECOND = 1000;
 
-/** File name extensions for the content types of a link whose name has none. */
-const EXTENSIONS_BY_CONTENT_TYPE: ReadonlyArray<readonly [string, string]> = [
-  ['image/png', '.png'],
-  ['image/jpeg', '.jpg'],
-  ['image/webp', '.webp'],
-  ['application/pdf', '.pdf'],
-  ['text/csv', '.csv'],
-  ['application/json', '.json'],
-];
-
-/** `filename`, with the extension of its content type when it has none (`.bin` for any other type). */
+/** `filename`, with the extension of its content type when it has none (`.bin` for a type the registry does not list). */
 function withExtension(filename: string, contentType: string): string {
   if (filename.includes('.')) return filename;
-  const known = EXTENSIONS_BY_CONTENT_TYPE.find(([type]) => contentType.includes(type));
-  return filename + (known ? known[1] : '.bin');
+  const format = getFormatByMimeType(contentType);
+  return `${filename}.${format ? format.extension : 'bin'}`;
 }
 
 /**
@@ -174,28 +166,17 @@ async function readBody(res: Response, meter: LinkImportMeter, importer: ImportC
   return { buffer: Buffer.concat(chunks) };
 }
 
-/** A name from a `Content-Disposition` header, percent-decoded; one that is not valid percent-encoding (`100%.pdf`) is the name as written. */
-function decodedFilename(raw: string): string {
-  try {
-    return decodeURIComponent(raw);
-  } catch (error: unknown) {
-    if (error instanceof URIError) return raw;
-    throw error;
-  }
+/** The name a `Content-Disposition` header gives (RFC 6266: `filename*` before `filename`), or '' when it gives none. */
+function dispositionFilename(header: string | null): string {
+  const name = header ? (parseContentDisposition(header).parameters.filename ?? '') : '';
+  // A name is a name, not a path: `../../x` or `dir\x` keeps only its last part, whatever later steps do with it.
+  return name.split(/[/\\]/).pop() ?? '';
 }
 
 /** The imported file: its bytes, with the name the remote gave it or the last segment of its address. */
 function importedFile(res: Response, finalUrl: URL, buffer: Buffer): NextResponse {
   // Determine filename
-  let filename = '';
-  const contentDisposition = res.headers.get('content-disposition');
-  if (contentDisposition) {
-    const match = /filename\*?=['"]?(?:UTF-\d['"]*)?([^;\r\n"']*)['"]?/i.exec(contentDisposition);
-    if (match && match[1]) {
-      filename = decodedFilename(match[1]);
-    }
-  }
-
+  let filename = dispositionFilename(res.headers.get('content-disposition'));
   if (!filename) {
     const pathParts = finalUrl.pathname.split('/').filter(Boolean);
     filename = pathParts[pathParts.length - 1] || 'remote_file';
@@ -267,10 +248,9 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/fetch-url';
 
   // 1. Guard check: Authenticate API key/session or enforce the anonymous IP rate limit. An import costs no conversion
-  // (QA decision of 2026-11-02): it only needs one left for the conversion that follows, and reserves none.
+  // (QA decision of 2026-11-02) and needs none left: a caller whose day is used up may still fetch, and is refused at the conversion.
   const auth = await validateApiAccess(req, {
     requiredUnits: 0,
-    requireUnitLeft: true,
     requiredScope: 'convert:write',
     allowAnonymous: true,
   });

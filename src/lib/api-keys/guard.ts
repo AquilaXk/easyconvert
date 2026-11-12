@@ -38,19 +38,10 @@ interface AccessScopeOptions {
   allowAnonymous?: boolean;
 }
 
-/**
- * What a request needs of the caller's conversions today: `requiredUnits` to reserve (1 when absent), or, with
- * `requireUnitLeft`, none reserved but one left, for a request that costs no conversion but only makes sense while the
- * caller can still convert, such as a link import (refused 429 with the quota problem otherwise). Reserving units and
- * requiring one left are exclusive, so the type has no state that would reserve units it then refuses.
- */
-type QuotaNeedOptions = { requiredUnits?: number; requireUnitLeft?: false } | { requiredUnits: 0; requireUnitLeft: true };
-
-export type ValidateApiAccessOptions = AccessScopeOptions & QuotaNeedOptions;
-
-/** Units to reserve, or `ONE_UNIT_LEFT`: none reserved, but the caller must have one left. */
-const ONE_UNIT_LEFT = 'one-unit-left';
-type QuotaNeed = number | typeof ONE_UNIT_LEFT;
+export type ValidateApiAccessOptions = AccessScopeOptions & {
+  /** Conversions to reserve (1 when absent; 0 for a request that costs none, such as a link import, which a used-up day does not refuse). */
+  requiredUnits?: number;
+};
 
 const WILDCARD_SCOPE = '*';
 const HTTP_BAD_REQUEST = 400;
@@ -74,8 +65,6 @@ export function getAnonymousBurstLimit(): BurstLimit {
     refillRate: process.env.ANONYMOUS_BURST_REFILL_RATE ? parseInt(process.env.ANONYMOUS_BURST_REFILL_RATE, 10) : 1, // 1 token per second in production
   };
 }
-
-export const ANONYMOUS_BURST_LIMIT: BurstLimit = getAnonymousBurstLimit();
 
 // The unattributed identity is every anonymous caller whose address cannot be trusted, so its bucket is sized
 // for site-wide traffic like the edge middleware's shared bucket (600 burst, 100/s), not for one client.
@@ -221,8 +210,8 @@ function quotaRefusal(quota: QuotaCheck, userId: string): QuotaRefusal {
   };
 }
 
-async function checkQuotaAndReserve(userId: string, tier: string, need: QuotaNeed): Promise<QuotaCheck> {
-  if (need !== ONE_UNIT_LEFT && need > 0) {
+async function checkQuotaAndReserve(userId: string, tier: string, need: number): Promise<QuotaCheck> {
+  if (need > 0) {
     const reservation = await redisKeyStore.reserveQuota(userId, need);
     if (!reservation.allowed) {
       if (reservation.serviceUnavailable) {
@@ -246,13 +235,9 @@ async function checkQuotaAndReserve(userId: string, tier: string, need: QuotaNee
     };
   }
 
-  // Zero-unit check (reads/downloads/status inspections) - non-consuming, must not lock out user, unless the request
-  // needs one unit left
+  // Zero-unit check (reads/downloads/status inspections, link imports) - non-consuming, must not lock out user
   try {
     const quota = await redisKeyStore.getQuotaUsage(userId);
-    if (need === ONE_UNIT_LEFT && quota.remaining < 1) {
-      return { allowed: false, error: quotaExceeded({ id: userId, tier }), remaining: 0 };
-    }
     return {
       allowed: true,
       remaining: quota.remaining,
@@ -269,7 +254,7 @@ async function checkQuotaAndReserve(userId: string, tier: string, need: QuotaNee
 
 async function verifyKeyAccess(
   apiKeySecret: string,
-  need: QuotaNeed,
+  need: number,
   requiredScope?: string,
   clientIp?: string
 ): Promise<ApiAuthResult> {
@@ -393,7 +378,7 @@ function buildAnonymousUser(id: string): User {
   };
 }
 
-async function verifyAnonymousAccess(clientIp: string, need: QuotaNeed): Promise<ApiAuthResult> {
+async function verifyAnonymousAccess(clientIp: string, need: number): Promise<ApiAuthResult> {
   // Anonymous burst and daily quota buckets: IPv6 clients share their /64.
   const anonBucket = rateLimitKey(clientIp);
   const anonIdentifier = `rate:anon:${anonBucket}`;
@@ -474,14 +459,14 @@ async function authenticateRequest(
   optionsOrUnits: number | ValidateApiAccessOptions,
   legacyScope?: string
 ): Promise<ApiAuthResult> {
-  let need: QuotaNeed = 1;
+  let need: number = 1;
   let requiredScope: string | undefined = legacyScope;
   let allowAnonymous = false;
 
   if (typeof optionsOrUnits === 'number') {
     need = optionsOrUnits;
   } else if (typeof optionsOrUnits === 'object' && optionsOrUnits !== null) {
-    need = optionsOrUnits.requireUnitLeft ? ONE_UNIT_LEFT : (optionsOrUnits.requiredUnits ?? 1);
+    need = optionsOrUnits.requiredUnits ?? 1;
     requiredScope = optionsOrUnits.requiredScope || optionsOrUnits.scope || legacyScope;
     allowAnonymous = Boolean(optionsOrUnits.allowAnonymous);
   }

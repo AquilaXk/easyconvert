@@ -5,11 +5,12 @@ import { useTranslations } from 'next-intl';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import { AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
-import { AuthCredentialsForm, GoogleOAuthButton } from '@/components/auth/AuthForms';
+import { AuthCredentialsForm, GoogleOAuthButton, useServerFlag } from '@/components/auth/AuthForms';
 import { useAuthController } from '@/components/auth/useAuthController';
 
 function LoginFormContent() {
   const t = useTranslations('auth');
+  const googleEnabled = useServerFlag('/api/auth/google');
   const {
     activeTab,
     email,
@@ -70,19 +71,23 @@ function LoginFormContent() {
           </output>
         )}
 
-        <GoogleOAuthButton
-          isGoogleLoading={isGoogleLoading}
-          disabled={isGoogleLoading || isLoading}
-          onClick={() => {
-            void handleGoogleLogin();
-          }}
-        />
+        {googleEnabled && (
+          <>
+            <GoogleOAuthButton
+              isGoogleLoading={isGoogleLoading}
+              disabled={isGoogleLoading || isLoading}
+              onClick={() => {
+                void handleGoogleLogin();
+              }}
+            />
 
-        <div className="my-5 flex items-center gap-3 text-sm text-ink-3">
-          <span aria-hidden="true" className="flex-1 border-t border-rule" />
-          <span>{t('emailDivider')}</span>
-          <span aria-hidden="true" className="flex-1 border-t border-rule" />
-        </div>
+            <div className="my-5 flex items-center gap-3 text-sm text-ink-3">
+              <span aria-hidden="true" className="flex-1 border-t border-rule" />
+              <span>{t('emailDivider')}</span>
+              <span aria-hidden="true" className="flex-1 border-t border-rule" />
+            </div>
+          </>
+        )}
 
         <AuthCredentialsForm
           activeTab={activeTab}

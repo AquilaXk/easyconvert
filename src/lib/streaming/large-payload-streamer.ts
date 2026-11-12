@@ -386,8 +386,8 @@ export class EnduranceSoakController {
     const initialRssMb = initialMem.rss / (1024 * 1024);
     const initialExternalMb = (initialMem.external || 0) / (1024 * 1024);
     const initialArrayBuffersMb = (initialMem.arrayBuffers || 0) / (1024 * 1024);
-    const initialActiveResources = typeof (process as any).getActiveResourcesInfo === 'function'
-      ? (process as any).getActiveResourcesInfo().length
+    const initialActiveResources = typeof process.getActiveResourcesInfo === 'function'
+      ? process.getActiveResourcesInfo().length
       : 0;
 
     let peakHeapMb = initialHeapMb;
@@ -437,8 +437,8 @@ export class EnduranceSoakController {
         const currentRssMb = currentMem.rss / (1024 * 1024);
         const currentExternalMb = (currentMem.external || 0) / (1024 * 1024);
         const currentArrayBuffersMb = (currentMem.arrayBuffers || 0) / (1024 * 1024);
-        const currentActiveResources = typeof (process as any).getActiveResourcesInfo === 'function'
-          ? (process as any).getActiveResourcesInfo().length
+        const currentActiveResources = typeof process.getActiveResourcesInfo === 'function'
+          ? process.getActiveResourcesInfo().length
           : 0;
         const currentFds = getOpenFileDescriptorCount();
 
@@ -491,8 +491,8 @@ export class EnduranceSoakController {
     const finalRssMb = finalMem.rss / (1024 * 1024);
     const finalExternalMb = (finalMem.external || 0) / (1024 * 1024);
     const finalArrayBuffersMb = (finalMem.arrayBuffers || 0) / (1024 * 1024);
-    const finalActiveResources = typeof (process as any).getActiveResourcesInfo === 'function'
-      ? (process as any).getActiveResourcesInfo().length
+    const finalActiveResources = typeof process.getActiveResourcesInfo === 'function'
+      ? process.getActiveResourcesInfo().length
       : 0;
     const finalFds = getOpenFileDescriptorCount();
     const totalDurationMs = Math.max(1, Date.now() - sessionStartTime);

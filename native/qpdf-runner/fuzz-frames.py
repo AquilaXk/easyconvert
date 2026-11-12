@@ -13,8 +13,11 @@ anything but status 0 or 2 is reported.
 import os, random, shutil, struct, subprocess, sys, tempfile, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 COMPILER = "/usr/bin/cc"
-# The jobs, the builds and the files of this run live in a private directory, not in a shared one.
-WORK_DIR = tempfile.mkdtemp(prefix="qpdf-runner-fuzz-")
+# The jobs, the builds and the files of this run live in a private directory under a gitignored directory of the project: the system
+# temporary directory is often mounted noexec, where the sanitizer build could not run.
+BUILD_ROOT = os.path.join(HERE, ".fuzz-build")
+os.makedirs(BUILD_ROOT, exist_ok=True)
+WORK_DIR = tempfile.mkdtemp(prefix="qpdf-runner-fuzz-", dir=BUILD_ROOT)
 BIN = os.path.join(WORK_DIR, "qpdf-runner-asan")
 LIB = os.path.join(WORK_DIR, "probe.so")
 WORK = WORK_DIR.encode()

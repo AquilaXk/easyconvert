@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import Redis from 'ioredis';
 import { RedisGraphScheduler } from '../src/lib/queue/graph';
 import {
+  parseGraphDefinition,
   parseGraphMeta,
   parseGraphStatus,
   parseNodeState,
@@ -137,6 +138,24 @@ describe('parseGraphMeta', () => {
     expect(meta.status).toBe('failed');
     expect(meta.finishedAt).toBe(1700000005000);
     expect(meta.failedReason).toBe('node out failed');
+  });
+});
+
+describe('parseGraphDefinition', () => {
+  it('reads a stored graph with its inputs and failure policy', () => {
+    const graph = parseGraphDefinition(GRAPH_ID, JSON.stringify({ nodes: JSON.parse(TWO_NODE_GRAPH).nodes, failurePolicy: 'continue' }));
+    expect(graph.failurePolicy).toBe('continue');
+    expect(Object.keys(graph.nodes)).toEqual(['src', 'out']);
+  });
+
+  it.each([
+    ['a failure policy that is unknown', { nodes: { a: { op: 'import.upload' } }, failurePolicy: 'retry' }],
+    ['an input that is neither a node id nor a list of them', { nodes: { a: { op: 'import.upload' }, b: { op: 'export.internal', input: 7 } } }],
+    ['an input list holding a non-string', { nodes: { a: { op: 'import.upload' }, b: { op: 'zip', input: ['a', null] } } }],
+    ['an input that names no node', { nodes: { a: { op: 'import.upload' }, b: { op: 'export.internal', input: 'gone' } } }],
+    ['an old shape whose nodes are a list', { nodes: [{ id: 'a', op: 'import.upload' }] }],
+  ])('refuses %s', (_name, stored) => {
+    expect(() => parseGraphDefinition(GRAPH_ID, JSON.stringify(stored))).toThrow(GraphStateCorruptError);
   });
 });
 
