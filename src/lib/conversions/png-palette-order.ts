@@ -56,9 +56,18 @@ function heaviestEdge(cells: Uint32Array, colours: number): [number, number] | n
   return best;
 }
 
-/** Zeng's greedy order with the insertion at the cheapest position (oxipng's `ezeng_reindex`): the colour most tied to the placed ones goes next. */
+/**
+ * Zeng's greedy order with the insertion at the cheapest position (oxipng's `ezeng_reindex`): the colour most tied to the placed ones goes
+ * next. The cost of a position is the weighted distance of the new colour to the placed ones plus the weight of the pairs that the insertion
+ * pushes one step further apart. oxipng sums both for every position, which makes an insertion quadratic in the colours placed; here the cost
+ * of the next position follows from the last (the new colour's distances change by the weight on its left minus the weight on its right, the
+ * pairs by what each colour weighs to its right minus to its left), so that an insertion is linear and the order is the same.
+ */
 function insertionOrder(cells: Uint32Array, colours: number, edge: [number, number]): number[] {
   const order = [edge[0], edge[1]];
+  /** What `order[i]` weighs to the colours placed before it and after it. */
+  const weightLeft = [0, cells[edge[1] * colours + edge[0]]];
+  const weightRight = [cells[edge[0] * colours + edge[1]], 0];
   const sumColour: number[] = [];
   const sumWeight: number[] = [];
   let bestAt = 0;
@@ -73,27 +82,41 @@ function insertionOrder(cells: Uint32Array, colours: number, edge: [number, numb
     sumColour.push(colour);
     sumWeight.push(weight);
   }
+  const weights: number[] = [];
   while (sumColour.length > 0) {
     const next = sumColour[bestAt];
     const nextRow = next * colours;
     const placed = order.length;
+    let total = 0;
+    let weightedDistance = 0;
+    for (let k = 0; k < placed; k += 1) {
+      weights[k] = cells[nextRow + order[k]];
+      total += weights[k];
+      weightedDistance += weights[k] * (k + 1);
+    }
     let bestPosition = 0;
-    let bestCost = Number.POSITIVE_INFINITY;
+    let bestCost = weightedDistance;
     let crossCost = 0;
-    for (let position = 0; position <= placed; position += 1) {
-      let newCost = 0;
-      for (let k = 0; k < placed; k += 1) newCost += cells[nextRow + order[k]] * (k < position ? position - k : k + 1 - position);
-      if (newCost + crossCost < bestCost) {
-        bestCost = newCost + crossCost;
-        bestPosition = position;
-      }
-      if (position < placed) {
-        const rowAt = order[position] * colours;
-        for (let k = position + 1; k < placed; k += 1) crossCost += cells[rowAt + order[k]];
-        for (let k = 0; k < position; k += 1) crossCost -= cells[rowAt + order[k]];
+    let weightBefore = 0;
+    for (let position = 0; position < placed; position += 1) {
+      // From position to position + 1 the colour at `position` stays one step away, those before it move away and those after it come closer.
+      weightedDistance += 2 * weightBefore + weights[position] - total;
+      crossCost += weightRight[position] - weightLeft[position];
+      weightBefore += weights[position];
+      if (weightedDistance + crossCost < bestCost) {
+        bestCost = weightedDistance + crossCost;
+        bestPosition = position + 1;
       }
     }
+    let toLeft = 0;
+    for (let k = 0; k < bestPosition; k += 1) {
+      weightRight[k] += weights[k];
+      toLeft += weights[k];
+    }
+    for (let k = bestPosition; k < placed; k += 1) weightLeft[k] += weights[k];
     order.splice(bestPosition, 0, next);
+    weightLeft.splice(bestPosition, 0, toLeft);
+    weightRight.splice(bestPosition, 0, total - toLeft);
     const last = sumColour.length - 1;
     sumColour[bestAt] = sumColour[last];
     sumWeight[bestAt] = sumWeight[last];
