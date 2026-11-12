@@ -97,7 +97,7 @@ describe('writeIndexedPng', () => {
     [256, 8],
   ])('writes %i colours at %i bits a pixel, and every pixel reads back as it was', async (colours, depth) => {
     const { picture, expected } = stripes(13, 9, colours);
-    const png = await writeIndexedPng(picture, await template(), 6);
+    const png = await writeIndexedPng(picture, await template());
     expect(headerOf(png)).toMatchObject({ width: 13, height: 9, bitDepth: depth, colorType: COLOUR_TYPE_PALETTE, interlace: 0 });
     expect(Array.from(rgba16Of(png))).toEqual(Array.from(expected));
     // The image library, which checks every chunk's CRC and the length of the rows, reads the same picture.
@@ -106,17 +106,35 @@ describe('writeIndexedPng', () => {
     expect(Array.from(read.data, (v) => v * 257)).toEqual(Array.from(expected));
   });
 
+  it.each([
+    ['flat rows, in blocks of the parallel deflater', false],
+    ['noisy rows, which take libdeflate where it is installed', true],
+  ])('writes a picture of 700 x 500 pixels of %s, and every pixel reads back as it was', async (_name, noisy) => {
+    const { picture, expected } = stripes(700, 500, 200);
+    if (noisy) {
+      let state = 99;
+      for (let i = 0; i < picture.indices.length; i += 1) {
+        state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+        const index = (state >>> 16) % 200;
+        picture.indices[i] = index;
+        for (let c = 0; c < 4; c += 1) expected[i * 4 + c] = picture.palette[index * 4 + c] * 257;
+      }
+    }
+    const png = await writeIndexedPng(picture, await template());
+    expect(Array.from(rgba16Of(png))).toEqual(Array.from(expected));
+  });
+
   it('writes a transparency chunk only when an entry is not opaque, and cuts off the opaque entries at its end', async () => {
-    const opaque = await writeIndexedPng(stripes(8, 4, 6).picture, await template(), 1);
+    const opaque = await writeIndexedPng(stripes(8, 4, 6).picture, await template());
     expect(chunksOf(opaque).some((chunk) => chunk.type === 'tRNS')).toBe(false);
     const { picture } = stripes(8, 4, 6, 40);
-    const png = await writeIndexedPng(picture, await template(), 1);
+    const png = await writeIndexedPng(picture, await template());
     const trns = chunksOf(png).find((chunk) => chunk.type === 'tRNS');
     expect(Array.from(trns?.data ?? [])).toEqual([40, 255, 40, 255, 40]);
   });
 
   it('carries the chunks of the template that tell how the picture looks, ahead of the palette, and one chunk of pixel data after it', async () => {
-    const png = await writeIndexedPng(stripes(8, 4, 6).picture, await template((image) => image.withMetadata({ density: 300 })), 1);
+    const png = await writeIndexedPng(stripes(8, 4, 6).picture, await template((image) => image.withMetadata({ density: 300 })));
     const types = chunksOf(png).map((chunk) => chunk.type);
     expect(types[0]).toBe('IHDR');
     expect(types.at(-1)).toBe('IEND');
@@ -130,9 +148,9 @@ describe('writeIndexedPng', () => {
 
   it('refuses a picture whose parts do not agree', async () => {
     const { picture } = stripes(8, 4, 6);
-    await expect(writeIndexedPng({ ...picture, indices: picture.indices.subarray(1) }, await template(), 1)).rejects.toThrow(/indices/);
-    await expect(writeIndexedPng({ ...picture, palette: Buffer.alloc(0) }, await template(), 1)).rejects.toThrow(/palette/);
-    await expect(writeIndexedPng({ ...picture, indices: Buffer.alloc(32, 9) }, await template(), 1)).rejects.toThrow(/index/);
+    await expect(writeIndexedPng({ ...picture, indices: picture.indices.subarray(1) }, await template())).rejects.toThrow(/indices/);
+    await expect(writeIndexedPng({ ...picture, palette: Buffer.alloc(0) }, await template())).rejects.toThrow(/palette/);
+    await expect(writeIndexedPng({ ...picture, indices: Buffer.alloc(32, 9) }, await template())).rejects.toThrow(/index/);
   });
 });
 
@@ -304,6 +322,46 @@ describe('the compress page with the program', () => {
       expect(new Set(rgba16Of(out).filter((_, i) => i % 4 === 0)).size).toBeGreaterThan(8);
     } finally {
       warn.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  /** An optimiser that writes down its arguments and hands the file back, to see whether the conversion starts it. */
+  const optimiserStandIn = (): { program: string; argsFile: string } => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oxipng-stand-in-'));
+    standIns.push(dir);
+    const argsFile = path.join(dir, 'args.txt');
+    const program = path.join(dir, 'oxipng');
+    fs.writeFileSync(program, `#!/bin/sh\nprintf '%s ' "$@" > '${argsFile}'\ncat\n`, { mode: 0o755 });
+    return { program, argsFile };
+  };
+
+  it('does not start the optimiser on a palette that the program wrote, with its own deflater instead', async () => {
+    const optimiser = optimiserStandIn();
+    vi.stubEnv('QUANTIZR_PIXELS_PATH', standIn(flatReply([[1, 2, 3, 255], [250, 251, 252, 255]])).program);
+    vi.stubEnv('OXIPNG_PATH', optimiser.program);
+    try {
+      const out = await compress(await photo(), { colors: 32 });
+      expect(fs.existsSync(optimiser.argsFile)).toBe(false);
+      // A zlib stream that names its best level is written by deflateIndexedRows, not by the image library's level 1.
+      const idat = chunksOf(out).find((chunk) => chunk.type === 'IDAT');
+      expect(idat?.data[1]).toBe(0xda);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('starts the optimiser on the full-colour file of a lossless conversion and on a palette that a script quantiser chose', async () => {
+    const optimiser = optimiserStandIn();
+    vi.stubEnv('QUANTIZR_PIXELS_PATH', standIn(flatReply([[1, 2, 3, 255], [250, 251, 252, 255]])).program);
+    vi.stubEnv('OXIPNG_PATH', optimiser.program);
+    try {
+      await convertFile(await photo(), 'png', 'png', {}, 'a.png');
+      expect(fs.readFileSync(optimiser.argsFile, 'utf8')).toMatch(/^-q -o 1 /);
+      fs.rmSync(optimiser.argsFile);
+      await compress(await photo(), { quantizer: 'oklab', colors: 32 });
+      expect(fs.readFileSync(optimiser.argsFile, 'utf8')).toMatch(/^-q -o 2 -f 0,6 /);
+    } finally {
       vi.unstubAllEnvs();
     }
   });

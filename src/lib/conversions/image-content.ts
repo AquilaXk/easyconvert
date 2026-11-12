@@ -2,6 +2,7 @@ import type { Metadata, PngOptions, Sharp } from 'sharp';
 import type { ConversionOptions } from '../types';
 import { resizedDimensions } from './image-input-limits';
 import { isMarkedForOptimiser, optimiserFollows } from './png-optimise';
+import { findQuantizr } from './png-palette-quantizer';
 
 /**
  * Cheap content analysis for the lossy encoders. Screenshots, line art and rendered text have large flat areas
@@ -202,6 +203,20 @@ export function writesPalettePng(options: ConversionOptions): boolean {
   return options.colorDepth === 8 || Boolean(options.palette) || options.quantizer === 'oklab';
 }
 
+/** Whether the palette of the request is chosen by the quantisers in script (an explicit `oklab` quantizer, or the Riemersma or blue-noise dithering) instead of by `quantizr-pixels` or the image library. */
+export function quantizesInScript(options: ConversionOptions): boolean {
+  return options.quantizer === 'oklab' || options.ditherMethod === 'riemersma' || options.ditherMethod === 'blue-noise';
+}
+
+/**
+ * Whether the indexed PNG of the request is written by `quantizr-pixels` and the worker's own deflater (`deflateIndexedRows`), which is as small
+ * as the reference's file and 1.4 to 1.9 times as fast as it (entry 258), where the optimiser's step costs the whole of the reference's run again.
+ * The optimiser then does not follow it. A worker without the program writes the palette by the image library and the optimiser follows, as before.
+ */
+export function writesProgramPalette(options: ConversionOptions): boolean {
+  return writesPalettePng(options) && !quantizesInScript(options) && findQuantizr() !== null;
+}
+
 /**
  * The deflate level of a PNG that the optimiser rewrites at once (a PNG converted to PNG): level 1, a quarter to a half of the encode time of
  * level 8 on a graphic and 2 to 8 times faster than the filtered level 7 of a photograph, for a file the optimiser reads as fast. Entry 232
@@ -222,7 +237,7 @@ function followedByOptimiser(source: string, fmt: string, meta: Metadata | undef
 
 /** The deflate level of an indexed PNG: `normal`, or the level for a file the optimiser rewrites. */
 export function palettePngLevel(normal: number, source: string, fmt: string, meta: Metadata | undefined, options: ConversionOptions): number {
-  return followedByOptimiser(source, fmt, meta, options, true) ? OPTIMISED_PNG_COMPRESSION_LEVEL : normal;
+  return followedByOptimiser(source, fmt, meta, options, true) && !writesProgramPalette(options) ? OPTIMISED_PNG_COMPRESSION_LEVEL : normal;
 }
 
 /** Whether the writer needs the content class of the picture: a full-colour 8-bit PNG is the one that chooses its filters by it. */

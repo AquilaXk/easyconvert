@@ -136,6 +136,8 @@ describe('the file the encoder hands to the optimiser', () => {
   it('is written at the lowest level when the program is installed, and at the usual one when it is not', async () => {
     const png = await source();
     const { program } = standIn('cat');
+    // The palette of a worker with quantizr-pixels is written by its own deflater and is not followed (png-palette-quantizer.test.ts).
+    vi.stubEnv('QUANTIZR_PIXELS_PATH', '/nonexistent/quantizr-pixels');
     vi.stubEnv('OXIPNG_PATH', program);
     const followed = { palette: await convertFile(png, 'png', 'png', { palette: true, colors: 256 }, 'a.png'), full: await convertFile(png, 'png', 'png', {}, 'a.png') };
     vi.stubEnv('OXIPNG_PATH', '/nonexistent/oxipng');
@@ -323,10 +325,13 @@ describe.skipIf(skipped)('PNG to PNG conversions', () => {
 
   it('write the palette of the compress page smaller than without the optimiser, with the same pixels', async () => {
     const source = await noisy();
+    vi.stubEnv('QUANTIZR_PIXELS_PATH', '/nonexistent/quantizr-pixels');
     vi.stubEnv('OXIPNG_PATH', '/nonexistent/oxipng');
     const plain = await convertFile(source, 'png', 'png', { palette: true, colors: 256 }, 'noise.png');
     vi.unstubAllEnvs();
+    vi.stubEnv('QUANTIZR_PIXELS_PATH', '/nonexistent/quantizr-pixels');
     const optimised = await convertFile(source, 'png', 'png', { palette: true, colors: 256 }, 'noise.png');
+    vi.unstubAllEnvs();
     expect(optimised.buffer.length).toBeLessThan(plain.buffer.length);
     expect(rgba16Of(optimised.buffer)).toEqual(rgba16Of(plain.buffer));
   });

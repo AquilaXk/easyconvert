@@ -7,6 +7,7 @@ import { decodeWithMagick, type MagickSource } from './image-magick-cli';
 import { decodeWithDjxl } from './image-jxl-cli';
 import { decodeWithOpenJpeg } from './image-openjpeg-cli';
 import { usesOldStyleJpeg, withSortedTiffTags } from './image-tiff-directories';
+import { writesProgramPalette } from './image-content';
 import { markedForOptimiser, withOptimisedPng } from './png-optimise';
 
 /**
@@ -115,10 +116,10 @@ export async function convertImageSource(
   const external = await decodeExternalImage(readable, sourceFormat, options.signal);
   if (external === null) {
     // A PNG written from a PNG is a compression of it (entries 198 and 213), so the encoder writes the cheapest file and the lossless
-    // optimiser has the last word (entries 232 and 247).
+    // optimiser has the last word (entries 232 and 247), except for an indexed file that quantizr-pixels writes with its own deflater (entry 258).
     const compresses = sourceFormat === 'png' && targetFormat.toLowerCase() === 'png';
     const converted = await convertImage(readable, targetFormat, compresses ? markedForOptimiser(options) : options, originalFilename, sourceFormat);
-    return compresses ? withOptimisedPng(converted, { signal: options.signal }) : converted;
+    return compresses && !writesProgramPalette(options) ? withOptimisedPng(converted, { signal: options.signal }) : converted;
   }
   return convertImage(external.buffer, targetFormat, options, originalFilename, external.format);
 }
