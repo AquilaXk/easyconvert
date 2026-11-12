@@ -200,6 +200,12 @@ describe('POST /api/fetch-url names the file by RFC 6266 and by its media type',
     expect(await nameOf(await importFrom({ 'content-type': 'text/csv', 'content-disposition': 'attachment; filename="a\\"b.csv"' }))).toBe('ab.csv');
   });
 
+  it('keeps only the last part of a name that is written as a path', async () => {
+    const traversal = `attachment; filename*=UTF-8''${encodeURIComponent('../../etc/passwd.csv')}`;
+    expect(await nameOf(await importFrom({ 'content-type': 'text/csv', 'content-disposition': traversal }))).toBe('passwd.csv');
+    expect(await nameOf(await importFrom({ 'content-type': 'text/csv', 'content-disposition': 'attachment; filename="dir\\\\x.csv"' }))).toBe('x.csv');
+  });
+
   it.each([
     ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'download.docx'],
     ['audio/mpeg', 'download.mp3'],

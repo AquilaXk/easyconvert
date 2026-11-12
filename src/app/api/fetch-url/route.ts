@@ -168,7 +168,9 @@ async function readBody(res: Response, meter: LinkImportMeter, importer: ImportC
 
 /** The name a `Content-Disposition` header gives (RFC 6266: `filename*` before `filename`), or '' when it gives none. */
 function dispositionFilename(header: string | null): string {
-  return header ? (parseContentDisposition(header).parameters.filename ?? '') : '';
+  const name = header ? (parseContentDisposition(header).parameters.filename ?? '') : '';
+  // A name is a name, not a path: `../../x` or `dir\x` keeps only its last part, whatever later steps do with it.
+  return name.split(/[/\\]/).pop() ?? '';
 }
 
 /** The imported file: its bytes, with the name the remote gave it or the last segment of its address. */
