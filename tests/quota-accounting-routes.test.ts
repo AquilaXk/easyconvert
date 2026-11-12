@@ -41,7 +41,7 @@ import { graphScheduler } from '../src/lib/queue/graph';
 import { storageProvider } from '../src/lib/storage';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import { ANONYMOUS_DAILY_CONVERSIONS, FREE_DAILY_CONVERSIONS, TIER_LIMITS, getAnonymousDailyLimit, type Plan } from '../src/lib/plan-limits';
-import { itNeedsOneUnitLeftForEveryCaller } from './helpers/unit-left-identities';
+import { itFetchesWithNoUnitLeftForEveryCaller } from './helpers/unit-left-identities';
 import { gzipRemote } from './helpers/gzip-remote';
 
 /**
@@ -266,16 +266,16 @@ describe('what a request is charged', () => {
       expect(await client.remaining()).toBe(before);
     });
 
-    it('is refused up front with the quota problem when the caller has no conversion left', async () => {
+    it('is not refused when the caller has no conversion left, since only a successful conversion is charged (QA 2026-11-02)', async () => {
       const client = visitor();
       await client.spend(await client.remaining());
       remoteFile(CSV);
 
       const res = await fetchUrlRoute(importRequest(client));
 
-      expect(res.status).toBe(HTTP_TOO_MANY_REQUESTS);
-      expect((await res.json()).type).toBe(QUOTA_EXCEEDED_PROBLEM);
-      expect(vi.mocked(undiciFetch)).not.toHaveBeenCalled();
+      expect(res.status).toBe(200);
+      expect(vi.mocked(undiciFetch)).toHaveBeenCalledTimes(1);
+      expect(await client.remaining()).toBe(0);
     });
 
     it('counts the bytes it brings in against the daily byte budget and is refused once that is spent', async () => {
@@ -794,8 +794,8 @@ describe('what a request is charged', () => {
     });
   });
 
-  describe('a request that needs a conversion left but reserves none', () => {
-    itNeedsOneUnitLeftForEveryCaller();
+  describe('a request that reserves no conversion', () => {
+    itFetchesWithNoUnitLeftForEveryCaller();
   });
 });
 

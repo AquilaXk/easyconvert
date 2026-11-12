@@ -168,3 +168,45 @@ describe('POST /api/fetch-url of a file whose name the remote gives with a perce
     expect(utf8FilenameOf(res.headers.get('content-disposition'))).toBe('100%.csv');
   });
 });
+
+describe('POST /api/fetch-url names the file by RFC 6266 and by its media type', () => {
+  async function importFrom(headers: Record<string, string>, url = 'https://files.example.com/scores') {
+    const client = visitor();
+    vi.mocked(undiciFetch).mockResolvedValue(new Response('name,score\n', { status: 200, headers }) as never);
+    return fetchUrlRoute(
+      new NextRequest('http://localhost/api/fetch-url', {
+        method: 'POST',
+        headers: { ...client.headers, 'content-type': 'application/json' },
+        body: JSON.stringify({ url }),
+      })
+    );
+  }
+
+  const nameOf = async (res: Response) => {
+    expect(res.status, await res.clone().text().then((t) => t.slice(0, 300))).toBe(HTTP_OK);
+    return utf8FilenameOf(res.headers.get('content-disposition'));
+  };
+
+  it('prefers filename* over a filename that comes before it', async () => {
+    const res = await importFrom({
+      'content-type': 'text/csv',
+      'content-disposition': `attachment; filename="fallback.txt"; filename*=UTF-8''${encodeURIComponent('한글.csv')}`,
+    });
+    expect(await nameOf(res)).toBe('한글.csv');
+  });
+
+  it('decodes an ISO-8859-1 filename* and a quoted filename with escapes', async () => {
+    expect(await nameOf(await importFrom({ 'content-type': 'text/csv', 'content-disposition': "attachment; filename*=ISO-8859-1'en'caf%e9.csv" }))).toBe('café.csv');
+    expect(await nameOf(await importFrom({ 'content-type': 'text/csv', 'content-disposition': 'attachment; filename="a\\"b.csv"' }))).toBe('ab.csv');
+  });
+
+  it.each([
+    ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'download.docx'],
+    ['audio/mpeg', 'download.mp3'],
+    ['application/x-yaml; charset=utf-8', 'download.yaml'],
+    ['image/jpeg', 'download.jpg'],
+    ['application/x-unlisted-type', 'download.bin'],
+  ])('gives a link with no extension the extension of its type %s', async (contentType, expected) => {
+    expect(await nameOf(await importFrom({ 'content-type': contentType }, 'https://files.example.com/download'))).toBe(expected);
+  });
+});

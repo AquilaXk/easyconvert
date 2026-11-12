@@ -9,14 +9,12 @@ import { userStore } from '../../src/lib/auth/user-store';
 import type { User } from '../../src/lib/auth/types';
 
 /**
- * A request that costs no conversion but needs one left (`requireUnitLeft`, a link import), checked for each kind of
+ * A request that costs no conversion and needs none left (a link import, QA 2026-11-02), checked for each kind of
  * caller the guard knows: a signed-in session, an API key, an anonymous visitor a declared proxy attributes, and the
  * shared identity of visitors no proxy attributes, which has no daily count. The same cases run against the in-memory
  * store and a real Redis server.
  */
 
-const HTTP_TOO_MANY_REQUESTS = 429;
-const QUOTA_EXCEEDED_PROBLEM = 'https://api.easyconvert.io/problems/quota-exceeded';
 const IMPORT_URL = 'http://localhost/api/fetch-url';
 
 interface Caller {
@@ -46,8 +44,8 @@ const CALLERS: Record<'session' | 'API key' | 'anonymous visitor', () => Promise
   },
 };
 
-const needsUnitLeft = (caller: Caller) =>
-  validateApiAccess(caller.request(), { requiredUnits: 0, requireUnitLeft: true, requiredScope: 'convert:write', allowAnonymous: true });
+const importAccess = (caller: Caller) =>
+  validateApiAccess(caller.request(), { requiredUnits: 0, requiredScope: 'convert:write', allowAnonymous: true });
 
 const remainingOf = async (caller: Caller) => (await redisKeyStore.getQuotaUsage(caller.userId)).remaining;
 
@@ -55,28 +53,28 @@ const remainingOf = async (caller: Caller) => (await redisKeyStore.getQuotaUsage
  * Registers the cases. The suite stubs `TRUSTED_PROXIES` so that an anonymous visitor is attributed; `onCaller` gets the
  * id of each caller made, for a suite that removes what it wrote.
  */
-export function itNeedsOneUnitLeftForEveryCaller(onCaller: (userId: string) => void = () => undefined): void {
+export function itFetchesWithNoUnitLeftForEveryCaller(onCaller: (userId: string) => void = () => undefined): void {
   it.each(Object.keys(CALLERS) as Array<keyof typeof CALLERS>)(
-    'lets a %s with one conversion left through without reserving it, and refuses one with none',
+    'lets a %s through without reserving a conversion, with one left and with none',
     async (kind) => {
       const caller = await CALLERS[kind]();
       onCaller(caller.userId);
       await redisKeyStore.recordUsage(caller.userId, (await remainingOf(caller)) - 1);
 
-      const withOneLeft = await needsUnitLeft(caller);
+      const withOneLeft = await importAccess(caller);
       expect([withOneLeft.authorized, withOneLeft.reservationId]).toEqual([true, undefined]);
       expect(await remainingOf(caller)).toBe(1);
 
       await redisKeyStore.recordUsage(caller.userId, 1);
-      const withNoneLeft = await needsUnitLeft(caller);
-      expect([withNoneLeft.authorized, withNoneLeft.status, withNoneLeft.problemType]).toEqual([false, HTTP_TOO_MANY_REQUESTS, QUOTA_EXCEEDED_PROBLEM]);
+      const withNoneLeft = await importAccess(caller);
+      expect([withNoneLeft.authorized, withNoneLeft.reservationId]).toEqual([true, undefined]);
       expect(await remainingOf(caller)).toBe(0);
     }
   );
 
   it('lets the shared identity of unattributed visitors through, since it has no daily count', async () => {
     vi.stubEnv('TRUSTED_PROXIES', 'none');
-    const auth = await needsUnitLeft({ userId: 'anon:unattributed', request: () => new NextRequest(IMPORT_URL, { method: 'POST' }) });
+    const auth = await importAccess({ userId: 'anon:unattributed', request: () => new NextRequest(IMPORT_URL, { method: 'POST' }) });
     expect([auth.authorized, auth.user?.id, auth.reservationId]).toEqual([true, 'anon:unattributed', undefined]);
   });
 }
