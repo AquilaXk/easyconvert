@@ -22,28 +22,21 @@
     "file": "src/app/api/v1/jobs/route.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "POST",
-    "count": 4
+    "count": 3
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 162
-  },
-  {
-    "file": "src/app/api/v1/jobs/route.ts",
-    "rule": "max-depth",
-    "function": "POST",
-    "count": 1,
-    "maxValue": 6
+    "maxValue": 157
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",
     "rule": "max-lines-per-function",
     "function": "POST",
     "count": 1,
-    "maxValue": 466
+    "maxValue": 441
   },
   {
     "file": "src/app/api/v1/uploads/[[...id]]/route.ts",
@@ -1892,7 +1885,7 @@
     "rule": "complexity",
     "function": "validateJobGraph",
     "count": 1,
-    "maxValue": 98
+    "maxValue": 97
   },
   {
     "file": "src/lib/jobs/graph.ts",

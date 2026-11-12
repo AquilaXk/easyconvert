@@ -73,8 +73,12 @@ def sync_detailed(
 ) -> Response[JobDetails | ProblemDetails]:
     """Get Job Status and Details
 
-     Polls status, real-time progress, logs, and artifacts of a specific conversion job. Requires
-    "convert:read" scope.
+     Polls status, real-time progress, logs, and artifacts of a specific conversion job. A job submitted
+    as named tasks reports each task under its name in `tasks`: its `status`, for an `export/url` task
+    without a `url` the `result` with the `downloadUrl` of each file it kept, and for a task that did
+    not complete its `error` (a `code` and a `message`; a task that did not run because a task it reads
+    failed is `failed` with the code `dependency_failed` and the failed task in `error.task`). The job
+    `status` is `failed` when a task failed, and `failedTask` names it. Requires "convert:read" scope.
 
     Args:
         id (str):
@@ -105,8 +109,12 @@ def sync(
 ) -> JobDetails | ProblemDetails | None:
     """Get Job Status and Details
 
-     Polls status, real-time progress, logs, and artifacts of a specific conversion job. Requires
-    "convert:read" scope.
+     Polls status, real-time progress, logs, and artifacts of a specific conversion job. A job submitted
+    as named tasks reports each task under its name in `tasks`: its `status`, for an `export/url` task
+    without a `url` the `result` with the `downloadUrl` of each file it kept, and for a task that did
+    not complete its `error` (a `code` and a `message`; a task that did not run because a task it reads
+    failed is `failed` with the code `dependency_failed` and the failed task in `error.task`). The job
+    `status` is `failed` when a task failed, and `failedTask` names it. Requires "convert:read" scope.
 
     Args:
         id (str):
@@ -132,8 +140,12 @@ async def asyncio_detailed(
 ) -> Response[JobDetails | ProblemDetails]:
     """Get Job Status and Details
 
-     Polls status, real-time progress, logs, and artifacts of a specific conversion job. Requires
-    "convert:read" scope.
+     Polls status, real-time progress, logs, and artifacts of a specific conversion job. A job submitted
+    as named tasks reports each task under its name in `tasks`: its `status`, for an `export/url` task
+    without a `url` the `result` with the `downloadUrl` of each file it kept, and for a task that did
+    not complete its `error` (a `code` and a `message`; a task that did not run because a task it reads
+    failed is `failed` with the code `dependency_failed` and the failed task in `error.task`). The job
+    `status` is `failed` when a task failed, and `failedTask` names it. Requires "convert:read" scope.
 
     Args:
         id (str):
@@ -162,8 +174,12 @@ async def asyncio(
 ) -> JobDetails | ProblemDetails | None:
     """Get Job Status and Details
 
-     Polls status, real-time progress, logs, and artifacts of a specific conversion job. Requires
-    "convert:read" scope.
+     Polls status, real-time progress, logs, and artifacts of a specific conversion job. A job submitted
+    as named tasks reports each task under its name in `tasks`: its `status`, for an `export/url` task
+    without a `url` the `result` with the `downloadUrl` of each file it kept, and for a task that did
+    not complete its `error` (a `code` and a `message`; a task that did not run because a task it reads
+    failed is `failed` with the code `dependency_failed` and the failed task in `error.task`). The job
+    `status` is `failed` when a task failed, and `failedTask` names it. Requires "convert:read" scope.
 
     Args:
         id (str):

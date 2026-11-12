@@ -3,6 +3,7 @@ import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { graphScheduler, type GraphExecutionState } from '@/lib/queue/graph';
 import { graphProgress } from '@/lib/queue/graph/graph-progress';
+import { namedJobFields } from '@/lib/jobs/named-task-report';
 import { nodeJobCancelRefusal } from '@/lib/queue/graph/node-jobs';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { withQueueErrors } from '@/lib/api/queue-error-response';
@@ -112,7 +113,8 @@ async function readJob(req: NextRequest, context: RouteContext) {
       createdAt: state.createdAt,
       finishedOn: state.finishedAt,
       failedReason: maskedText(state.failedReason),
-      tasks: redactForOutput(state.tasks),
+      // A job submitted as named tasks reports each task by its name where a pipeline job echoes its submitted stages.
+      ...(state.namedTasks ? namedJobFields(state) : { tasks: redactForOutput(state.tasks) }),
       graph: redactForOutput(state.graph),
       nodes: nodesResponse,
     });

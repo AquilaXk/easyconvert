@@ -240,7 +240,7 @@ export const conversionPaths = {
                 options: { type: 'string', description: CONVERT_OPTIONS_DESCRIPTION },
                 tasks: {
                   type: 'string',
-                  description: 'JSON-serialized array of sequential pipeline tasks: [{ name, operation, targetFormat, options }].',
+                  description: 'JSON-serialized array of sequential pipeline tasks: [{ name, operation, targetFormat, options }], or a JSON-serialized object of named tasks (a task graph) keyed by task name, as `tasks` of the JSON body.',
                 },
                 webhookUrl: { type: 'string', format: 'uri', description: 'Destination URL for job events.' },
                 webhookSecret: { type: 'string', description: 'Secret used for HMAC-SHA256 signature.' },
@@ -276,6 +276,11 @@ export const conversionPaths = {
                     description: 'Format of the job output. For a task pipeline, the output format of the final task.',
                   },
                   originalFilename: { type: 'string' },
+                  tasks: {
+                    type: 'object',
+                    description: 'A job submitted as named tasks: the report of each task by name (all `waiting` or `active` when the job is accepted).',
+                    additionalProperties: { $ref: '#/components/schemas/TaskReport' },
+                  },
                 },
               },
             },
@@ -288,7 +293,7 @@ export const conversionPaths = {
         '409': createProblemResponse('A request with the same idempotency key is currently in-flight. Retry after delay.'),
         '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
         '422': createProblemResponse(
-          'The graph or pipeline tasks failed validation (for example, a merge with fewer than 2 inputs), an idempotency key was reused with a different request payload, or the graph has no conversion (problem type `https://api.easyconvert.io/problems/graph-without-conversion`): a graph that only imports and exports files is refused before anything is reserved.'
+          'The graph or pipeline tasks failed validation (for example, a merge with fewer than 2 inputs), an idempotency key was reused with a different request payload, or the graph has no conversion (problem type `https://api.easyconvert.io/problems/graph-without-conversion`): a graph that only imports and exports files is refused before anything is reserved. Named tasks are refused with a problem type of their own when the cause is a task name (`task-name-invalid`: not a lowercase letter then lowercase letters, digits, `-` or `_`, up to 64 characters; `task-name-duplicate`: the same name twice in the object), the count (`task-count-exceeded`: more than 8 tasks on the free plan, 24 on pro, 32 on the largest plan), an `input` that names no task (`task-input-unknown`) or tasks that read each other in a loop (`task-graph-cycle`); `invalidParams` names each task (`tasks.convert-1.input`). Any other fault of the tasks (a field the operation does not take, a missing `output_format`, a conversion the formats do not allow) is the generic `unprocessable-entity`, also with `invalidParams` by task. Nothing is reserved or charged for a refused request.'
         ),
         '429': createProblemResponse(
           'The day has fewer conversions left than the job needs (problem type `https://api.easyconvert.io/problems/quota-exceeded`, with `dailyLimit`, `remaining` and `requiredUnits`). A graph needs one unit for each input declared by a node that makes one output of each input (`convert`, `ocr`, `optimize`, `thumbnail`, `media.package`, `watermark` and the `pdf.*` page operations) and one for each `merge`, `metadata`, `archive.create` or `archive.extract` node. A node whose inputs hold more files than it declares (an unpacked archive) takes the rest of its units when it starts, and fails with the refusal code `quota_exceeded` when the day has too few left.' +
@@ -344,7 +349,7 @@ export const conversionPaths = {
   '/api/v1/jobs/{id}': {
     get: {
       summary: 'Get Job Status and Details',
-      description: 'Polls status, real-time progress, logs, and artifacts of a specific conversion job. Requires "convert:read" scope.',
+      description: 'Polls status, real-time progress, logs, and artifacts of a specific conversion job. A job submitted as named tasks reports each task under its name in `tasks`: its `status`, for an `export/url` task without a `url` the `result` with the `downloadUrl` of each file it kept, and for a task that did not complete its `error` (a `code` and a `message`; a task that did not run because a task it reads failed is `failed` with the code `dependency_failed` and the failed task in `error.task`). The job `status` is `failed` when a task failed, and `failedTask` names it. Requires "convert:read" scope.',
       operationId: 'getJobStatusV1',
       security: requireScope('convert:read'),
       parameters: [

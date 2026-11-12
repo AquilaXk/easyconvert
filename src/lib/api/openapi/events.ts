@@ -101,6 +101,12 @@ const graphResultSchema = (status: string) => ({
     status: { type: 'string', const: status },
     error: { type: 'string' },
     nodes: { type: 'object', additionalProperties: true, description: 'Per-node state keyed by node ID.' },
+    tasks: {
+      type: 'object',
+      description: 'A job submitted as named tasks: the report of each task by name, as `GET /api/v1/jobs/{id}` answers it.',
+      additionalProperties: { $ref: '#/components/schemas/TaskReport' },
+    },
+    failedTask: { type: 'string', description: 'A job submitted as named tasks that failed: the name of the task that failed it.' },
   },
 });
 

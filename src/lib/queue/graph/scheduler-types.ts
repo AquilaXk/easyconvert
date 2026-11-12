@@ -21,6 +21,8 @@ export interface GraphNodeState {
   status: NodeExecutionStatus;
   outputs: string[];
   error?: string;
+  /** The refusal code of the failure that ended the node (`refusalCodeOf`), when it names one; set with `error`. */
+  errorCode?: string;
   startedAt?: number;
   finishedAt?: number;
 }
@@ -38,6 +40,8 @@ export interface GraphMetadata {
   sourceFormat?: string;
   targetFormat?: string;
   tasks?: unknown[];
+  /** The graph was submitted as named tasks: its job answers its nodes by name (`namedTaskReports`). */
+  namedTasks?: boolean;
   createdAt?: number;
 }
 
@@ -59,6 +63,7 @@ export interface GraphExecutionState {
   sourceFormat?: string;
   targetFormat?: string;
   tasks?: unknown[];
+  namedTasks?: boolean;
   createdAt: number;
   finishedAt?: number;
   failedReason?: string;
@@ -101,7 +106,8 @@ export interface IGraphScheduler {
     outputs: string[],
     actualUnits?: number
   ): Promise<NodeCompletionResult>;
-  onNodeFailed(graphId: string, nodeId: NodeId, error: string): Promise<NodeFailureResult>;
+  /** `errorCode` is the refusal code of the failure, when it names one; the node and its job report it. */
+  onNodeFailed(graphId: string, nodeId: NodeId, error: string, errorCode?: string): Promise<NodeFailureResult>;
   getGraphState(graphId: string): Promise<GraphExecutionState | undefined>;
   /**
    * Finishes the start of a graph whose `initGraph` threw after it stored the graph: queues the ready nodes the start left

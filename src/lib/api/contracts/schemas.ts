@@ -4,6 +4,7 @@ import { ARCHIVE_COMPRESSION_LEVEL_MAX, ARCHIVE_COMPRESSION_LEVEL_MIN } from '@/
 import { OCR_MAX_LANGUAGES_PER_REQUEST } from '@/lib/conversions/ocr-languages';
 import { ALLOWED_LIBREOFFICE_FILTERS } from '@/lib/conversions/pdf-export-options';
 
+import { NamedTaskMapSchema, TaskReportSchema } from './named-task-schemas';
 import { PIPELINE_OPERATIONS } from './enums';
 import {
   ConversionWarningsProperties,
@@ -34,6 +35,8 @@ export {
   PdfProtectOptionsSchema,
   PdfWatermarkOptionsSchema,
 };
+
+export { NamedTaskSchema, NamedTaskMapSchema, TaskReportSchema } from './named-task-schemas';
 
 export const MAX_THUMBNAIL_TIMESTAMPS = 16;
 
@@ -1012,11 +1015,17 @@ export const JobCreateRequestSchema = {
       description: 'Conversion configuration options.',
     },
     tasks: {
-      type: 'array',
-      description: 'Array of sequential pipeline tasks for multi-stage conversion execution.',
-      items: {
-        $ref: 'https://easyconvert.local/schemas/pipeline-task.json',
-      },
+      description: 'Either an array of sequential pipeline tasks, or an object of named tasks (a task graph) keyed by the names the caller chooses.',
+      oneOf: [
+        {
+          type: 'array',
+          description: 'Array of sequential pipeline tasks for multi-stage conversion execution.',
+          items: {
+            $ref: 'https://easyconvert.local/schemas/pipeline-task.json',
+          },
+        },
+        NamedTaskMapSchema,
+      ],
     },
     graph: {
       $ref: 'https://easyconvert.local/schemas/job-graph.json',
@@ -1195,11 +1204,25 @@ export const JobResourceSchema = {
       },
     },
     tasks: {
-      type: 'array',
-      description: 'Pipeline task stages.',
-      items: {
-        $ref: 'https://easyconvert.local/schemas/pipeline-task.json',
-      },
+      description: 'The submitted pipeline stages (an array), or for a job submitted as named tasks an object that reports each task under its name.',
+      oneOf: [
+        {
+          type: 'array',
+          description: 'Pipeline task stages.',
+          items: {
+            $ref: 'https://easyconvert.local/schemas/pipeline-task.json',
+          },
+        },
+        {
+          type: 'object',
+          description: 'The report of each task of a job submitted as named tasks, by name.',
+          additionalProperties: { $ref: 'https://easyconvert.local/schemas/task-report.json' },
+        },
+      ],
+    },
+    failedTask: {
+      type: 'string',
+      description: 'For a job submitted as named tasks that failed: the name of the task that failed it.',
     },
     logs: {
       type: 'array',

@@ -98,7 +98,7 @@ export interface paths {
         };
         /**
          * Get Job Status and Details
-         * @description Polls status, real-time progress, logs, and artifacts of a specific conversion job. Requires "convert:read" scope.
+         * @description Polls status, real-time progress, logs, and artifacts of a specific conversion job. A job submitted as named tasks reports each task under its name in `tasks`: its `status`, for an `export/url` task without a `url` the `result` with the `downloadUrl` of each file it kept, and for a task that did not complete its `error` (a `code` and a `message`; a task that did not run because a task it reads failed is `failed` with the code `dependency_failed` and the failed task in `error.task`). The job `status` is `failed` when a task failed, and `failedTask` names it. Requires "convert:read" scope.
          */
         get: operations["getJobStatusV1"];
         put?: never;
@@ -1048,6 +1048,78 @@ export interface components {
              */
             url?: string;
         };
+        /** @description One task of a job made of named tasks. Each operation takes only its own fields: a field that does not belong to it answers 422. */
+        NamedTask: {
+            /**
+             * @description `import/url` and `import/upload` bring a file in; `convert`, `ocr`, `optimize`, `thumbnail`, `media.package`, `watermark`, `merge`, `metadata`, `archive/create`, `archive/extract` and the `pdf.*` page operations work on it; `export/url` ends a branch: with `url` it sends the files there, without it keeps them for download and lists their download URLs in the task result. A job needs at least one task that converts.
+             * @enum {string}
+             */
+            operation: "import/url" | "import/upload" | "archive/create" | "archive/extract" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "export/url";
+            /** @description The name of the task whose output this task reads, or a list of names. Every task but an import needs one. A `merge` needs at least 2 distinct names. */
+            input?: string | string[];
+            /** @description Format extension the task produces. Required by `convert`, `merge` and `archive/create`; `thumbnail` also takes it (`jpg` or `png`). */
+            output_format?: string;
+            /** @description Options of the operation, as for `POST /api/v1/convert`, including `engine` and `engineVersion` for `convert`. */
+            options?: components["schemas"]["ConversionOptions"];
+            /**
+             * Format: uri
+             * @description The file to fetch (`import/url`), or the destination that receives the files (`export/url`).
+             */
+            url?: string;
+            /** @description HTTP headers of the request to `url`. Stored sealed and never returned. */
+            headers?: {
+                [key: string]: string;
+            };
+            /**
+             * @description HTTP method of an `export/url` with a `url`. Defaults to `PUT`.
+             * @enum {string}
+             */
+            method?: "PUT" | "POST";
+            /** @description Completed upload (`import/upload`), from the direct multipart or resumable upload API. Name `upload_id` or `storage_key`. */
+            upload_id?: string;
+            /** @description Key of a stored object the caller may use (`import/upload`), as `storageKey` of the job. */
+            storage_key?: string;
+            /** @description Glob patterns of the entries `archive/extract` unpacks; all when left out. */
+            entries?: string[];
+        };
+        TaskReport: {
+            /**
+             * @description The operation the task was sent with.
+             * @enum {string}
+             */
+            operation: "import/url" | "import/upload" | "archive/create" | "archive/extract" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "export/url";
+            /**
+             * @description `waiting` until the tasks it reads have completed, then `active`, then `completed` or `failed`. A task that did not run because a task it reads failed is `failed` too, with the code `dependency_failed`; a task the job stopped (after a failure elsewhere, or a cancel) that reads no failed task is `cancelled`.
+             * @enum {string}
+             */
+            status: "waiting" | "active" | "completed" | "failed" | "cancelled";
+            /** @description The names of the tasks it reads. */
+            input?: string[];
+            /** @description When a worker took the task, in epoch milliseconds. */
+            startedAt?: number;
+            /** @description When the task ended, in epoch milliseconds. */
+            finishedAt?: number;
+            /** @description The files an `export/url` task without a `url` kept for download, once it completed. The other tasks hand their files to the tasks that read them and have no result of their own. */
+            result?: {
+                /** @description At most 100 files. */
+                files: {
+                    filename: string;
+                    /** @description Path of the file; send it to `GET /api/storage/file/{key}` with the key. */
+                    downloadUrl: string;
+                }[];
+                /** @description How many files the task kept, which may be more than `files` lists. */
+                fileCount: number;
+            };
+            /** @description Why the task failed. */
+            error?: {
+                /** @description The cause of the failure when it names one (for example `unsupported_pair`, `malformed_input` or `timeout`), else `task_failed`; `dependency_failed` for a task that did not run because a task it reads failed. */
+                code: string;
+                /** @description The reason, in English, with credentials and server paths masked. */
+                message: string;
+                /** @description For `dependency_failed`: the name of the failed task that this one reads, directly or through other tasks. */
+                task?: string;
+            };
+        };
         JobGraph: {
             /**
              * @description Failure handling policy across parallel execution branches.
@@ -1108,8 +1180,10 @@ export interface components {
             fileSize?: number;
             /** @description Conversion configuration options. */
             options?: components["schemas"]["ConversionOptions"];
-            /** @description Array of sequential pipeline tasks for multi-stage conversion execution. */
-            tasks?: components["schemas"]["PipelineTask"][];
+            /** @description Either an array of sequential pipeline tasks, or an object of named tasks (a task graph) keyed by the names the caller chooses. */
+            tasks?: components["schemas"]["PipelineTask"][] | {
+                [key: string]: components["schemas"]["NamedTask"];
+            };
             /** @description Directed acyclic graph (DAG) specifying multi-stage fan-out and fan-in conversion workflow. */
             graph?: components["schemas"]["JobGraph"];
             /**
@@ -1232,8 +1306,12 @@ export interface components {
                 /** @description 1-based frame or page a single-image output was taken from; present only when one was chosen. */
                 frameUsed?: number;
             };
-            /** @description Pipeline task stages. */
-            tasks?: components["schemas"]["PipelineTask"][];
+            /** @description The submitted pipeline stages (an array), or for a job submitted as named tasks an object that reports each task under its name. */
+            tasks?: components["schemas"]["PipelineTask"][] | {
+                [key: string]: components["schemas"]["TaskReport"];
+            };
+            /** @description For a job submitted as named tasks that failed: the name of the task that failed it. */
+            failedTask?: string;
             /** @description Execution logs. */
             logs?: string[];
         };
@@ -1351,8 +1429,12 @@ export interface components {
                 /** @description 1-based frame or page a single-image output was taken from; present only when one was chosen. */
                 frameUsed?: number;
             };
-            /** @description Pipeline task stages. */
-            tasks?: components["schemas"]["PipelineTask"][];
+            /** @description The submitted pipeline stages (an array), or for a job submitted as named tasks an object that reports each task under its name. */
+            tasks?: components["schemas"]["PipelineTask"][] | {
+                [key: string]: components["schemas"]["TaskReport"];
+            };
+            /** @description For a job submitted as named tasks that failed: the name of the task that failed it. */
+            failedTask?: string;
             /** @description Execution logs. */
             logs?: string[];
         };
@@ -1416,6 +1498,12 @@ export interface components {
             failedReason?: string;
             failedCode?: string;
             failedStatus?: number;
+            /** @description A job submitted as named tasks: the report of each task by name (without the `result` files beyond the first 100 of a task). */
+            tasks?: {
+                [key: string]: components["schemas"]["TaskReport"];
+            };
+            /** @description A job submitted as named tasks that failed: the name of the task that failed it. */
+            failedTask?: string;
         };
         ApiKey: {
             id?: string;
@@ -2450,7 +2538,7 @@ export interface operations {
                     storageKey?: string;
                     /** @description JSON-serialized conversion options (e.g. quality, resolution, delimiter). Document options: `layout` (PDF to TXT: keep the physical layout), `imageDpi` and `jpegQuality` (Office to PDF: opt-in image compression), and `pdfa` or `pdfStandard` (PDF/A output, validated with veraPDF; a request that names no level is answered at pdfa-2b). */
                     options?: string;
-                    /** @description JSON-serialized array of sequential pipeline tasks: [{ name, operation, targetFormat, options }]. */
+                    /** @description JSON-serialized array of sequential pipeline tasks: [{ name, operation, targetFormat, options }], or a JSON-serialized object of named tasks (a task graph) keyed by task name, as `tasks` of the JSON body. */
                     tasks?: string;
                     /**
                      * Format: uri
@@ -2479,8 +2567,10 @@ export interface operations {
                     fileSize?: number;
                     /** @description Conversion configuration options. */
                     options?: components["schemas"]["ConversionOptions"];
-                    /** @description Array of sequential pipeline tasks for multi-stage conversion execution. */
-                    tasks?: components["schemas"]["PipelineTask"][];
+                    /** @description Either an array of sequential pipeline tasks, or an object of named tasks (a task graph) keyed by the names the caller chooses. */
+                    tasks?: components["schemas"]["PipelineTask"][] | {
+                        [key: string]: components["schemas"]["NamedTask"];
+                    };
                     /** @description Directed acyclic graph (DAG) specifying multi-stage fan-out and fan-in conversion workflow. */
                     graph?: components["schemas"]["JobGraph"];
                     /**
@@ -2520,6 +2610,10 @@ export interface operations {
                          */
                         targetFormat?: string;
                         originalFilename?: string;
+                        /** @description A job submitted as named tasks: the report of each task by name (all `waiting` or `active` when the job is accepted). */
+                        tasks?: {
+                            [key: string]: components["schemas"]["TaskReport"];
+                        };
                     };
                 };
             };
@@ -2583,7 +2677,7 @@ export interface operations {
                     "application/json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description The graph or pipeline tasks failed validation (for example, a merge with fewer than 2 inputs), an idempotency key was reused with a different request payload, or the graph has no conversion (problem type `https://api.easyconvert.io/problems/graph-without-conversion`): a graph that only imports and exports files is refused before anything is reserved. */
+            /** @description The graph or pipeline tasks failed validation (for example, a merge with fewer than 2 inputs), an idempotency key was reused with a different request payload, or the graph has no conversion (problem type `https://api.easyconvert.io/problems/graph-without-conversion`): a graph that only imports and exports files is refused before anything is reserved. Named tasks are refused with a problem type of their own when the cause is a task name (`task-name-invalid`: not a lowercase letter then lowercase letters, digits, `-` or `_`, up to 64 characters; `task-name-duplicate`: the same name twice in the object), the count (`task-count-exceeded`: more than 8 tasks on the free plan, 24 on pro, 32 on the largest plan), an `input` that names no task (`task-input-unknown`) or tasks that read each other in a loop (`task-graph-cycle`); `invalidParams` names each task (`tasks.convert-1.input`). Any other fault of the tasks (a field the operation does not take, a missing `output_format`, a conversion the formats do not allow) is the generic `unprocessable-entity`, also with `invalidParams` by task. Nothing is reserved or charged for a refused request. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -4365,6 +4459,12 @@ export interface operations {
                         nodes: {
                             [key: string]: unknown;
                         };
+                        /** @description A job submitted as named tasks: the report of each task by name, as `GET /api/v1/jobs/{id}` answers it. */
+                        tasks?: {
+                            [key: string]: components["schemas"]["TaskReport"];
+                        };
+                        /** @description A job submitted as named tasks that failed: the name of the task that failed it. */
+                        failedTask?: string;
                     };
                 };
             };
@@ -4437,6 +4537,12 @@ export interface operations {
                         nodes: {
                             [key: string]: unknown;
                         };
+                        /** @description A job submitted as named tasks: the report of each task by name, as `GET /api/v1/jobs/{id}` answers it. */
+                        tasks?: {
+                            [key: string]: components["schemas"]["TaskReport"];
+                        };
+                        /** @description A job submitted as named tasks that failed: the name of the task that failed it. */
+                        failedTask?: string;
                     };
                 };
             };

@@ -27,7 +27,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Approved backlog (QA 2026-11-12: every Later and Waiting item is approved)
 - Engine choice and version pinning per conversion.
-- Named task graphs in one API job.
+- Describe the named-task form (fields, report, refusals) on the Jobs page of the API documentation; its `tasks` row shows only the array branch (needs QA screenshots).
 - Thumbnail, metadata and website capture (website capture needs an SSRF suite).
 - Customer storage and SFTP import and export; presets and watched sources after that.
 - Split the long office functions (`parsePptxSlideSceneGraph`, `parseDrawingMlShapes`, `parseAllXlsxWorksheets`, `renderTable`, `generatePdfFromDocx`), give the 7-parameter `computeGroupTransformMatrix`, `renderPdfChart` and `renderSinglePdfShape` an options object, and move the S3 adapter onto `src/lib/text/escape.ts` once the upload-session change lands.

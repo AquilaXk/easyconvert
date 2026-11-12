@@ -101,6 +101,11 @@ export { JobGraphValidationError as GraphValidationError };
 export const SUPPORTED_GRAPH_OPERATIONS: ReadonlySet<string> = GRAPH_OPERATION_SET;
 
 const NODE_ID_REGEX = /^[a-z][a-z0-9_-]{0,63}$/;
+
+/** Whether `id` is a node id a graph (and so a named task) may carry. */
+export function isValidNodeId(id: string): boolean {
+  return NODE_ID_REGEX.test(id);
+}
 /** Inferred format of a node whose source format could not be determined at submission. */
 const UNKNOWN_FORMAT = 'unknown';
 /** Inferred format resolved only at run time (URL imports without an extension, extracted entries). */
@@ -111,6 +116,11 @@ const TIER_NODE_LIMITS: Record<string, number> = {
   pro: 24,
   enterprise: 32,
 };
+
+/** Most nodes a graph of a caller on `tier` may hold; a tier this table does not know gets the hard ceiling. */
+export function maxGraphNodesForTier(tier: string | undefined): number {
+  return TIER_NODE_LIMITS[tier ?? 'pro'] || MAX_NODES_HARD_CEILING;
+}
 
 const DEFAULT_MAX_FAN_IN = 16;
 const DEFAULT_MAX_FAN_OUT = 16;
@@ -347,7 +357,7 @@ export function validateJobGraph(
 
   // 2. Node count caps
   const userTier = options.userTier || 'pro';
-  const tierLimit = options.maxNodes ?? (TIER_NODE_LIMITS[userTier] || MAX_NODES_HARD_CEILING);
+  const tierLimit = options.maxNodes ?? maxGraphNodesForTier(userTier);
 
   if (totalNodes > tierLimit) {
     errors.push({

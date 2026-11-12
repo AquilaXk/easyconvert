@@ -26,7 +26,10 @@ describe('the OpenAPI document as the SDK generators read it', () => {
   it('refers to component schemas locally and drops their $id', () => {
     expect(text).not.toContain('easyconvert.local');
     expect(text).not.toContain('"$id"');
-    expect(normalized.components.schemas.JobCreateRequest.properties?.tasks).toMatchObject({ items: { $ref: '#/components/schemas/PipelineTask' } });
+    // `tasks` is the array of a pipeline or the object of named tasks.
+    expect(normalized.components.schemas.JobCreateRequest.properties?.tasks).toMatchObject({
+      oneOf: [{ items: { $ref: '#/components/schemas/PipelineTask' } }, { additionalProperties: { $ref: '#/components/schemas/NamedTask' } }],
+    });
   });
 
   it('moves the inline enums of ConversionOptions into components under distinct names', () => {

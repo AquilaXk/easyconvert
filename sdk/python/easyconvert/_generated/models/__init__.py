@@ -100,7 +100,9 @@ from .create_direct_upload_v1_response_200_parts_item import (
 )
 from .create_job_v1_files_body import CreateJobV1FilesBody
 from .create_job_v1_json_body import CreateJobV1JsonBody
+from .create_job_v1_json_body_tasks_type_1 import CreateJobV1JsonBodyTasksType1
 from .create_job_v1_response_202 import CreateJobV1Response202
+from .create_job_v1_response_202_tasks import CreateJobV1Response202Tasks
 from .create_storage_credential_v1_body import CreateStorageCredentialV1Body
 from .create_storage_credential_v1_body_credentials import (
     CreateStorageCredentialV1BodyCredentials,
@@ -129,6 +131,7 @@ from .image_type_of_watermark import ImageTypeOfWatermark
 from .inspect_archive_v1_files_body import InspectArchiveV1FilesBody
 from .inspect_archive_v1_json_body import InspectArchiveV1JsonBody
 from .job_create_request import JobCreateRequest
+from .job_create_request_tasks_type_1 import JobCreateRequestTasksType1
 from .job_details import JobDetails
 from .job_details_dropped_streams_item import JobDetailsDroppedStreamsItem
 from .job_details_dropped_streams_item_kind import JobDetailsDroppedStreamsItemKind
@@ -145,6 +148,7 @@ from .job_details_retention import JobDetailsRetention
 from .job_details_retention_reason import JobDetailsRetentionReason
 from .job_details_retention_state import JobDetailsRetentionState
 from .job_details_status import JobDetailsStatus
+from .job_details_tasks_type_1 import JobDetailsTasksType1
 from .job_graph import JobGraph
 from .job_graph_failure_policy import JobGraphFailurePolicy
 from .job_graph_nodes import JobGraphNodes
@@ -176,8 +180,10 @@ from .job_resource_retention import JobResourceRetention
 from .job_resource_retention_reason import JobResourceRetentionReason
 from .job_resource_retention_state import JobResourceRetentionState
 from .job_resource_status import JobResourceStatus
+from .job_resource_tasks_type_1 import JobResourceTasksType1
 from .job_summary import JobSummary
 from .job_summary_status import JobSummaryStatus
+from .job_summary_tasks import JobSummaryTasks
 from .kernel import Kernel
 from .key_length_of_protect import KeyLengthOfProtect
 from .layer_of_watermark import LayerOfWatermark
@@ -196,6 +202,10 @@ from .mode_of_subtitles import ModeOfSubtitles
 from .mode_of_vectorize import ModeOfVectorize
 from .modify_of_permissions_of_protect import ModifyOfPermissionsOfProtect
 from .multi_page_output import MultiPageOutput
+from .named_task import NamedTask
+from .named_task_headers import NamedTaskHeaders
+from .named_task_method import NamedTaskMethod
+from .named_task_operation import NamedTaskOperation
 from .ocr_engine_markup import OcrEngineMarkup
 from .ocr_language_entry import OcrLanguageEntry
 from .ocr_language_entry_direction import OcrLanguageEntryDirection
@@ -249,6 +259,12 @@ from .rotation_of_rotate import RotationOfRotate
 from .segment_type_of_packaging import SegmentTypeOfPackaging
 from .sheet_mode import SheetMode
 from .target_color_space import TargetColorSpace
+from .task_report import TaskReport
+from .task_report_error import TaskReportError
+from .task_report_operation import TaskReportOperation
+from .task_report_result import TaskReportResult
+from .task_report_result_files_item import TaskReportResultFilesItem
+from .task_report_status import TaskReportStatus
 from .tiff_compression import TiffCompression
 from .tone_map import ToneMap
 from .type_of_watermark import TypeOfWatermark
@@ -338,7 +354,9 @@ __all__ = (
     "CreateDirectUploadV1Response200PartsItem",
     "CreateJobV1FilesBody",
     "CreateJobV1JsonBody",
+    "CreateJobV1JsonBodyTasksType1",
     "CreateJobV1Response202",
+    "CreateJobV1Response202Tasks",
     "CreateStorageCredentialV1Body",
     "CreateStorageCredentialV1BodyCredentials",
     "CreateStorageCredentialV1BodyCredentialsType",
@@ -359,6 +377,7 @@ __all__ = (
     "InspectArchiveV1FilesBody",
     "InspectArchiveV1JsonBody",
     "JobCreateRequest",
+    "JobCreateRequestTasksType1",
     "JobDetails",
     "JobDetailsDroppedStreamsItem",
     "JobDetailsDroppedStreamsItemKind",
@@ -371,6 +390,7 @@ __all__ = (
     "JobDetailsRetentionReason",
     "JobDetailsRetentionState",
     "JobDetailsStatus",
+    "JobDetailsTasksType1",
     "JobGraph",
     "JobGraphFailurePolicy",
     "JobGraphNodes",
@@ -390,8 +410,10 @@ __all__ = (
     "JobResourceRetentionReason",
     "JobResourceRetentionState",
     "JobResourceStatus",
+    "JobResourceTasksType1",
     "JobSummary",
     "JobSummaryStatus",
+    "JobSummaryTasks",
     "Kernel",
     "KeyLengthOfProtect",
     "LayerOfWatermark",
@@ -406,6 +428,10 @@ __all__ = (
     "ModeOfVectorize",
     "ModifyOfPermissionsOfProtect",
     "MultiPageOutput",
+    "NamedTask",
+    "NamedTaskHeaders",
+    "NamedTaskMethod",
+    "NamedTaskOperation",
     "OcrEngineMarkup",
     "OcrLanguageEntry",
     "OcrLanguageEntryDirection",
@@ -457,6 +483,12 @@ __all__ = (
     "SegmentTypeOfPackaging",
     "SheetMode",
     "TargetColorSpace",
+    "TaskReport",
+    "TaskReportError",
+    "TaskReportOperation",
+    "TaskReportResult",
+    "TaskReportResultFilesItem",
+    "TaskReportStatus",
     "TiffCompression",
     "ToneMap",
     "TypeOfWatermark",

@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from ..models.job_resource_dropped_streams_item import JobResourceDroppedStreamsItem
     from ..models.job_resource_result import JobResourceResult
     from ..models.job_resource_retention import JobResourceRetention
+    from ..models.job_resource_tasks_type_1 import JobResourceTasksType1
     from ..models.pipeline_task import PipelineTask
 
 
@@ -57,7 +58,9 @@ class JobResource:
             image that could not be loaded: it is omitted unless the request sets `requireResources`. The conversion
             succeeded. Present only when something was left out.
         result (JobResourceResult | Unset): Job execution result metadata.
-        tasks (list[PipelineTask] | Unset): Pipeline task stages.
+        tasks (JobResourceTasksType1 | list[PipelineTask] | Unset): The submitted pipeline stages (an array), or for a
+            job submitted as named tasks an object that reports each task under its name.
+        failed_task (str | Unset): For a job submitted as named tasks that failed: the name of the task that failed it.
         logs (list[str] | Unset): Execution logs.
     """
 
@@ -82,7 +85,8 @@ class JobResource:
     dropped_streams: list[JobResourceDroppedStreamsItem] | Unset = UNSET
     warnings: list[str] | Unset = UNSET
     result: JobResourceResult | Unset = UNSET
-    tasks: list[PipelineTask] | Unset = UNSET
+    tasks: JobResourceTasksType1 | list[PipelineTask] | Unset = UNSET
+    failed_task: str | Unset = UNSET
     logs: list[str] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -142,12 +146,19 @@ class JobResource:
         if not isinstance(self.result, Unset):
             result = self.result.to_dict()
 
-        tasks: list[dict[str, Any]] | Unset = UNSET
-        if not isinstance(self.tasks, Unset):
+        tasks: dict[str, Any] | list[dict[str, Any]] | Unset
+        if isinstance(self.tasks, Unset):
+            tasks = UNSET
+        elif isinstance(self.tasks, list):
             tasks = []
-            for tasks_item_data in self.tasks:
-                tasks_item = tasks_item_data.to_dict()
-                tasks.append(tasks_item)
+            for tasks_type_0_item_data in self.tasks:
+                tasks_type_0_item = tasks_type_0_item_data.to_dict()
+                tasks.append(tasks_type_0_item)
+
+        else:
+            tasks = self.tasks.to_dict()
+
+        failed_task = self.failed_task
 
         logs: list[str] | Unset = UNSET
         if not isinstance(self.logs, Unset):
@@ -200,6 +211,8 @@ class JobResource:
             field_dict["result"] = result
         if tasks is not UNSET:
             field_dict["tasks"] = tasks
+        if failed_task is not UNSET:
+            field_dict["failedTask"] = failed_task
         if logs is not UNSET:
             field_dict["logs"] = logs
 
@@ -212,6 +225,7 @@ class JobResource:
         )
         from ..models.job_resource_result import JobResourceResult
         from ..models.job_resource_retention import JobResourceRetention
+        from ..models.job_resource_tasks_type_1 import JobResourceTasksType1
         from ..models.pipeline_task import PipelineTask
 
         d = dict(src_dict)
@@ -281,14 +295,33 @@ class JobResource:
         else:
             result = JobResourceResult.from_dict(_result)
 
-        _tasks = d.pop("tasks", UNSET)
-        tasks: list[PipelineTask] | Unset = UNSET
-        if _tasks is not UNSET:
-            tasks = []
-            for tasks_item_data in _tasks:
-                tasks_item = PipelineTask.from_dict(tasks_item_data)
+        def _parse_tasks(
+            data: object,
+        ) -> JobResourceTasksType1 | list[PipelineTask] | Unset:
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                tasks_type_0 = []
+                _tasks_type_0 = data
+                for tasks_type_0_item_data in _tasks_type_0:
+                    tasks_type_0_item = PipelineTask.from_dict(tasks_type_0_item_data)
 
-                tasks.append(tasks_item)
+                    tasks_type_0.append(tasks_type_0_item)
+
+                return tasks_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            if not isinstance(data, dict):
+                raise TypeError()
+            tasks_type_1 = JobResourceTasksType1.from_dict(data)
+
+            return tasks_type_1
+
+        tasks = _parse_tasks(d.pop("tasks", UNSET))
+
+        failed_task = d.pop("failedTask", UNSET)
 
         logs = cast(list[str], d.pop("logs", UNSET))
 
@@ -315,6 +348,7 @@ class JobResource:
             warnings=warnings,
             result=result,
             tasks=tasks,
+            failed_task=failed_task,
             logs=logs,
         )
 

@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Self, TypeVar
+from typing import TYPE_CHECKING, Any, Self, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.create_job_v1_response_202_tasks import CreateJobV1Response202Tasks
+
 
 T = TypeVar("T", bound="CreateJobV1Response202")
 
@@ -26,6 +30,8 @@ class CreateJobV1Response202:
         target_format (str | Unset): Format of the job output. For a task pipeline, the output format of the final task.
             Example: jpg.
         original_filename (str | Unset):
+        tasks (CreateJobV1Response202Tasks | Unset): A job submitted as named tasks: the report of each task by name
+            (all `waiting` or `active` when the job is accepted).
     """
 
     success: bool | Unset = UNSET
@@ -37,6 +43,7 @@ class CreateJobV1Response202:
     source_format: str | Unset = UNSET
     target_format: str | Unset = UNSET
     original_filename: str | Unset = UNSET
+    tasks: CreateJobV1Response202Tasks | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -57,6 +64,10 @@ class CreateJobV1Response202:
         target_format = self.target_format
 
         original_filename = self.original_filename
+
+        tasks: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.tasks, Unset):
+            tasks = self.tasks.to_dict()
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -79,11 +90,17 @@ class CreateJobV1Response202:
             field_dict["targetFormat"] = target_format
         if original_filename is not UNSET:
             field_dict["originalFilename"] = original_filename
+        if tasks is not UNSET:
+            field_dict["tasks"] = tasks
 
         return field_dict
 
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.create_job_v1_response_202_tasks import (
+            CreateJobV1Response202Tasks,
+        )
+
         d = dict(src_dict)
         success = d.pop("success", UNSET)
 
@@ -103,6 +120,13 @@ class CreateJobV1Response202:
 
         original_filename = d.pop("originalFilename", UNSET)
 
+        _tasks = d.pop("tasks", UNSET)
+        tasks: CreateJobV1Response202Tasks | Unset
+        if isinstance(_tasks, Unset):
+            tasks = UNSET
+        else:
+            tasks = CreateJobV1Response202Tasks.from_dict(_tasks)
+
         create_job_v1_response_202 = cls(
             success=success,
             job_id=job_id,
@@ -113,6 +137,7 @@ class CreateJobV1Response202:
             source_format=source_format,
             target_format=target_format,
             original_filename=original_filename,
+            tasks=tasks,
         )
 
         create_job_v1_response_202.additional_properties = d
