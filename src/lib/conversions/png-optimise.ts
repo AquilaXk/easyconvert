@@ -22,6 +22,11 @@ import { findDecoderTool, loggableDiagnostic } from './image-decoder-tools';
  */
 export const OPTIMISE_PNG_RESULT = Symbol.for('easyconvert.optimisePngResult');
 
+/** Whether the conversion is a PNG written from a PNG (see `OPTIMISE_PNG_RESULT`). */
+export function isMarkedForOptimiser(options: ConversionOptions): boolean {
+  return (options as Record<symbol, unknown>)[OPTIMISE_PNG_RESULT] === true;
+}
+
 /** The options with the mark that the file of this PNG to PNG conversion is optimised. */
 export function markedForOptimiser(options: ConversionOptions): ConversionOptions {
   return { ...options, [OPTIMISE_PNG_RESULT]: true } as ConversionOptions;
