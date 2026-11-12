@@ -30,6 +30,8 @@ export interface SftpStub {
   /** Files by absolute path. */
   files: Map<string, Buffer>;
   directories: Set<string>;
+  /** Sizes the server states for a file (absolute path) in place of its real size, as a server that lists a few bytes and serves many. */
+  statedSizes: Map<string, number>;
   /** Sign-ins and requests the server saw, for assertions. */
   log: { connections: number; signedIn: number; refusedKeys: number; reads: string[]; writes: string[]; removes: string[] };
   /** The next this many connections are closed at once, as a server that is going away. */
@@ -52,11 +54,15 @@ function normalize(path: string): string {
   return absolute.length > 1 ? absolute.replace(/\/+$/, '') : absolute;
 }
 
+function sizeOf(stub: SftpStub, file: string, body: Buffer): number {
+  return stub.statedSizes.get(file) ?? body.length;
+}
+
 function childrenOf(stub: SftpStub, directory: string): Array<{ name: string; isDirectory: boolean; size: number }> {
   const prefix = directory === '/' ? '/' : `${directory}/`;
   const entries = new Map<string, { name: string; isDirectory: boolean; size: number }>();
   for (const [file, body] of stub.files) {
-    if (file.startsWith(prefix) && !file.slice(prefix.length).includes('/')) entries.set(file, { name: file.slice(prefix.length), isDirectory: false, size: body.length });
+    if (file.startsWith(prefix) && !file.slice(prefix.length).includes('/')) entries.set(file, { name: file.slice(prefix.length), isDirectory: false, size: sizeOf(stub, file, body) });
   }
   for (const dir of stub.directories) {
     if (dir.startsWith(prefix) && dir !== directory && !dir.slice(prefix.length).includes('/')) entries.set(dir, { name: dir.slice(prefix.length), isDirectory: true, size: 0 });
@@ -75,7 +81,7 @@ function serveSftp(stub: SftpStub, sftp: SFTPWrapper): void {
   const statOf = (reqId: number, path: string) => {
     const target = normalize(path);
     const file = stub.files.get(target);
-    if (file) return sftp.attrs(reqId, attributes(false, file.length));
+    if (file) return sftp.attrs(reqId, attributes(false, sizeOf(stub, target, file)));
     if (stub.directories.has(target) || target === '/') return sftp.attrs(reqId, attributes(true, 0));
     return sftp.status(reqId, STATUS_CODE.NO_SUCH_FILE);
   };
@@ -171,6 +177,7 @@ export async function startSftpStub(): Promise<SftpStub> {
     hostPublicKey: `ssh-ed25519 ${Buffer.from(hostPublic.getPublicSSH()).toString('base64')}`,
     files: new Map(),
     directories: new Set(),
+    statedSizes: new Map(),
     log: { connections: 0, signedIn: 0, refusedKeys: 0, reads: [], writes: [], removes: [] },
     dropConnections: 0,
     close: async () => undefined,

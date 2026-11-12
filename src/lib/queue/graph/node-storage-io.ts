@@ -16,7 +16,7 @@ import { credentialsVault, type CustomerStorageCredentials } from '../../storage
 import { createStorageAdapter } from '../../storage/adapters';
 import { S3StorageAdapter } from '../../storage/adapters/s3';
 import { SftpStorageAdapter } from '../../storage/adapters/sftp';
-import { StorageNotFoundError } from '../../storage/adapters/adapter-interface';
+import { StorageNotFoundError, StorageSizeLimitError } from '../../storage/adapters/adapter-interface';
 import {
   StorageCredentialNotFoundError,
   StorageObjectNotFoundError,
@@ -57,7 +57,8 @@ interface CustomerStore {
   /** The files of a prefix or directory by remote path, at most `max`; more throws `StorageListingLimitError`. */
   list(listed: string, max: number): Promise<Array<{ path: string; size: number }>>;
   size(remotePath: string): Promise<number>;
-  download(remotePath: string): Promise<NodeJS.ReadableStream>;
+  /** `maxBytes` is the most an adapter that stages the file before streaming it may stage. */
+  download(remotePath: string, options: { maxBytes: number }): Promise<NodeJS.ReadableStream>;
   upload(remotePath: string, body: NodeJS.ReadableStream, meta: { contentType: string; size: number }): Promise<{ size: number; etag?: string }>;
 }
 
@@ -82,7 +83,7 @@ function sftpStore(adapter: SftpStorageAdapter): CustomerStore {
       if (!head) throw new StorageNotFoundError(remotePath, 'sftp');
       return head.size;
     },
-    download: (remotePath) => adapter.downloadStream(remotePath),
+    download: (remotePath, options) => adapter.downloadStream(remotePath, options),
     upload: (remotePath, body, meta) => adapter.uploadStream(remotePath, body, meta),
   };
 }
@@ -183,42 +184,81 @@ async function filesToImport(node: ImportS3Node | ImportSftpNode, store: Custome
   });
 }
 
-/** One file read into intermediate storage under the owner's daily budget and the plan's file limit; the bytes of a failed try are charged. */
+type ImportBudget = { owner: string; plan: Plan; limitBytes: number; deadlineMs: number };
+
+/** The failure of a download the store itself stopped at `cap` bytes: the plan's file limit, or what the owner's day has left when that is less. */
+function capReached(cap: number, budget: ImportBudget): Error {
+  return cap < budget.limitBytes
+    ? new ImportBudgetExceededError(dailyLimitReachedDetail(budget.plan))
+    : new StorageObjectTooLargeError(`A file in the store passed the ${budget.limitBytes}-byte file limit of the plan while it was fetched.`);
+}
+
+/** What stopped a source stream, as a failure of the store: an adapter error is typed by `customerStorageFailure`, any other (a reset socket) is the store not answering. */
+function sourceFailure(err: unknown): unknown {
+  const typed = customerStorageFailure(err);
+  return typed instanceof Error && !(typed instanceof ConversionFailedError) ? new StorageUnavailableError(typed.message, true) : typed;
+}
+
+/**
+ * One try at one file under its own meter, so that the plan's file limit is judged on the bytes of this try and the bytes of every
+ * try are still charged to the owner's day. An adapter that stages the file first (SFTP) is told the most it may stage, the smaller of
+ * the file limit and what the day has left, so a server that lists a few bytes and serves gigabytes fills nothing past that.
+ */
+async function importAttempt(
+  storage: IStorageBackend,
+  file: RemoteFile,
+  store: CustomerStore,
+  target: { key: string; filename: string; mimeType: string },
+  budget: ImportBudget,
+  meter: LinkImportMeter
+): Promise<void> {
+  const overflow = meter.declared(file.size);
+  if (overflow) {
+    throw overflow.kind === 'too-large'
+      ? new StorageObjectTooLargeError(`A file in the store is ${file.size} bytes, above the ${budget.limitBytes}-byte file limit of the plan.`)
+      : new ImportBudgetExceededError(largerThanLeftDetail(overflow.leftBytes));
+  }
+  const cap = Math.min(budget.limitBytes, meter.leftBytes);
+  let downloaded: NodeJS.ReadableStream;
+  try {
+    downloaded = await store.download(file.path, { maxBytes: cap });
+  } catch (err) {
+    if (!(err instanceof StorageSizeLimitError)) throw err;
+    await meter.count(cap);
+    throw capReached(cap, budget);
+  }
+  const source = downloaded instanceof Readable ? downloaded : Readable.from(downloaded);
+  let sourceError: unknown;
+  source.once('error', (err) => {
+    sourceError = err;
+  });
+  const { stream, stopReason } = meterStream(source, meter, (verdict) =>
+    verdict === 'too-large'
+      ? new StorageObjectTooLargeError(`A file in the store passed the ${budget.limitBytes}-byte file limit of the plan while it was read.`)
+      : new ImportBudgetExceededError(dailyLimitReachedDetail(budget.plan))
+  );
+  try {
+    await storage.saveObjectFromStream(target.key, stream, { filename: target.filename, mimeType: target.mimeType }, INTERMEDIATE_TTL_MS);
+  } catch (err) {
+    // the storage backend wraps the error of the stream it consumed in its own: what stopped the stream is what failed the file
+    throw stopReason() ?? (sourceError === undefined ? err : sourceFailure(sourceError));
+  }
+}
+
+/** One file read into intermediate storage under the owner's daily budget and the plan's file limit; each try is metered alone, and the bytes of a failed try are charged. */
 async function importFile(
   storage: IStorageBackend,
   file: RemoteFile,
   store: CustomerStore,
   target: { key: string; filename: string },
-  budget: { owner: string; plan: Plan; limitBytes: number; deadlineMs: number },
+  budget: ImportBudget,
   signal: AbortSignal
 ): Promise<void> {
-  const refused = (meter: LinkImportMeter): Error | undefined => {
-    const overflow = meter.declared(file.size);
-    if (!overflow) return undefined;
-    return overflow.kind === 'too-large'
-      ? new StorageObjectTooLargeError(`A file in the store is ${file.size} bytes, above the ${budget.limitBytes}-byte file limit of the plan.`)
-      : new ImportBudgetExceededError(largerThanLeftDetail(overflow.leftBytes));
-  };
   const mimeType = detectFormatFromFilename(target.filename)?.mimeType ?? 'application/octet-stream';
-  const imported = await withLinkImportMeter(budget, async (meter) => {
-    const declaredRefusal = refused(meter);
-    if (declaredRefusal) throw declaredRefusal;
-    await withTransientRetry(signal, async () => {
-      const downloaded = await store.download(file.path);
-      const source = downloaded instanceof Readable ? downloaded : Readable.from(downloaded);
-      const { stream, stopReason } = meterStream(source, meter, (verdict) =>
-        verdict === 'too-large'
-          ? new StorageObjectTooLargeError(`A file in the store passed the ${budget.limitBytes}-byte file limit of the plan while it was read.`)
-          : new ImportBudgetExceededError(dailyLimitReachedDetail(budget.plan))
-      );
-      try {
-        await storage.saveObjectFromStream(target.key, stream, { filename: target.filename, mimeType }, INTERMEDIATE_TTL_MS);
-      } catch (err) {
-        throw stopReason() ?? err;
-      }
-    });
+  await withTransientRetry(signal, async () => {
+    const imported = await withLinkImportMeter(budget, (meter) => importAttempt(storage, file, store, { ...target, mimeType }, budget, meter));
+    if ('refusal' in imported) throw new ImportBudgetExceededError(budgetRefusalDetail(imported.refusal, budget.plan));
   });
-  if ('refusal' in imported) throw new ImportBudgetExceededError(budgetRefusalDetail(imported.refusal, budget.plan));
 }
 
 /**

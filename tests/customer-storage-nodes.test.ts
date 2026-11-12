@@ -1,17 +1,22 @@
 import dns, { type LookupAddress } from 'node:dns';
+import fs from 'node:fs';
+import os from 'node:os';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Job } from '../src/lib/queue/bullmq-engine';
 import { exportToCustomerStorage, importFromCustomerStorage } from '../src/lib/queue/graph/node-storage-io';
 import { graphNodeJobId, sealGraph } from '../src/lib/queue/graph/node-jobs';
 import { sealGraphNode } from '../src/lib/queue/graph/sealed-nodes';
-import type { ExportS3Node, ImportS3Node } from '../src/lib/queue/graph/types';
+import type { ExportS3Node, ImportS3Node, ImportSftpNode } from '../src/lib/queue/graph/types';
+import type { IStorageBackend } from '../src/lib/storage/oci-storage';
 import { storageProvider } from '../src/lib/storage';
 import { credentialsVault } from '../src/lib/storage/credentials-vault';
 import { S3_DEV_ENDPOINT_ALLOWLIST_ENV } from '../src/lib/storage/adapters/s3';
+import { SFTP_DEV_ENDPOINT_ALLOWLIST_ENV } from '../src/lib/storage/adapters/sftp';
 import { refusalCodeOf } from '../src/lib/refusal-codes';
 import { DEFAULT_STORAGE_IMPORT_OBJECTS } from '../src/lib/storage/customer-storage-limits';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import { startS3StubServer, type S3StubServer } from './helpers/s3-stub-server';
+import { startSftpStub } from './helpers/sftp-stub-server';
 import testCredentials from './fixtures/sigv4/test-credentials.json';
 
 /**
@@ -210,6 +215,38 @@ describe('customer storage nodes against an S3-compatible bucket', () => {
       expect((failure as { retryable: boolean }).retryable).toBe(true);
     }, 30_000);
 
+    it('judges the file limit on the bytes of one try, so a retry of a file under the limit is not misjudged', async () => {
+      put('a.csv', 'x'.repeat(600));
+      planLimit.fileBytes = 605;
+      stub.faults.push({ match: (request) => request.method === 'GET' && request.key === 'a.csv', status: 200, truncateBody: true, times: 1 });
+
+      const [key] = await importKeys(sealed({ op: 'import.s3', credentials: inlineCredentials(), key: 'a.csv' } as ImportS3Node));
+
+      expect((await stored(key))?.length).toBe(600);
+      expect(stub.requests.filter((request) => request.method === 'GET' && request.key === 'a.csv')).toHaveLength(2);
+    }, 30_000);
+
+    it('classifies a stream failure that the storage backend wrapped as the store not answering, and tries again', async () => {
+      put('a.csv', 'x'.repeat(600));
+      stub.faults.push({ match: (request) => request.method === 'GET' && request.key === 'a.csv', status: 200, truncateBody: true, times: Infinity });
+      const wrapping = Object.create(storageProvider, {
+        saveObjectFromStream: {
+          value: async (...args: Parameters<IStorageBackend['saveObjectFromStream']>) => {
+            try {
+              return await storageProvider.saveObjectFromStream(...args);
+            } catch (err) {
+              throw new Error('the storage backend failed to save the stream', { cause: err });
+            }
+          },
+        },
+      }) as IStorageBackend;
+
+      const failure = await importFromCustomerStorage(fakeJob().job, wrapping, sealed({ op: 'import.s3', credentials: inlineCredentials(), key: 'a.csv' } as ImportS3Node), JOB_ID).catch((err: unknown) => err);
+
+      expect(refusalCodeOf(failure)).toBe('storage_unavailable');
+      expect(stub.requests.filter((request) => request.method === 'GET' && request.key === 'a.csv')).toHaveLength(3);
+    }, 30_000);
+
     it('gives up at once, with the abort reason, when the job is cancelled while it waits to try again', async () => {
       put('a.csv', 'a');
       stub.faults.push({ match: (request) => request.method === 'HEAD', status: 500, code: 'InternalError', times: Infinity });
@@ -401,5 +438,41 @@ describe('customer storage nodes against an S3-compatible bucket', () => {
         expect(text).not.toContain(ACCESS_KEY);
       }
     });
+  });
+});
+
+// skip-ok: environment probe; a host without the OpenSSH client has no real client to drive (CI images carry it).
+describe.skipIf(!fs.existsSync('/usr/bin/sftp'))('import.sftp from a server that states a size it does not keep to', () => {
+  const scratch = () => fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('easyconvert-sftp-down-'));
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    planLimit.fileBytes = undefined;
+  });
+
+  it('stops the download at the plan limit, charges nothing past it to the disk, and fails as input_over_limit', async () => {
+    const sftp = await startSftpStub();
+    try {
+      vi.stubEnv('NODE_ENV', 'development');
+      vi.stubEnv(SFTP_DEV_ENDPOINT_ALLOWLIST_ENV, `${sftp.host}:${sftp.port}`);
+      for (const dir of ['/data', '/data/in']) sftp.directories.add(dir);
+      sftp.files.set('/data/in/big.bin', Buffer.alloc(3 * 1024 * 1024, 1));
+      sftp.statedSizes.set('/data/in/big.bin', 100);
+      planLimit.fileBytes = 1024;
+      const before = scratch();
+      const node = sealGraphNode(
+        { op: 'import.sftp', credentials: { host: sftp.host, port: sftp.port, username: 'tester', privateKey: sftp.clientPrivateKey, hostKey: sftp.hostPublicKey, basePath: '/data' }, path: 'in/big.bin' } as ImportSftpNode,
+        JOB_ID
+      );
+
+      const failure = await importFromCustomerStorage(fakeJob().job, storageProvider, node, JOB_ID).catch((err: unknown) => err);
+
+      expect(refusalCodeOf(failure)).toBe('input_over_limit');
+      expect((failure as { retryable: boolean }).retryable).toBe(false);
+      expect(scratch()).toEqual(before);
+      expect(await storageProvider.stat(`intermediate/${GRAPH_ID}/${NODE_ID}/0/big.bin`)).toBeNull();
+    } finally {
+      await sftp.close();
+    }
   });
 });

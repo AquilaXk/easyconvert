@@ -7,6 +7,7 @@ import {
   StorageListingLimitError,
   StorageNotFoundError,
   StorageServiceError,
+  StorageSizeLimitError,
   StorageSsrfError,
   StorageTimeoutError,
 } from './adapters/adapter-interface';
@@ -102,6 +103,7 @@ export function customerStorageFailure(err: unknown): unknown {
   if (err instanceof StorageSsrfError) return new StorageEndpointBlockedError(err.message);
   if (err instanceof StorageAuthenticationError) return new StorageAccessDeniedError(err.message);
   if (err instanceof StorageNotFoundError) return new StorageObjectNotFoundError(err.message);
+  if (err instanceof StorageSizeLimitError) return new StorageObjectTooLargeError(`A file in the store passed the ${err.maxBytes}-byte limit while it was fetched.`);
   if (err instanceof StorageListingLimitError) return new StorageTooManyObjectsError(`${err.message}; narrow the prefix or directory, or raise maxObjects`);
   // a name the store cannot address was refused at submission; this is the same check at the store
   if (err instanceof StorageInputError) return new ConversionFailedError(err.message);

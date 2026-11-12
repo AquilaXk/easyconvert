@@ -14,6 +14,7 @@ import {
   StorageSsrfError,
   StorageAdapterError,
   StorageListingLimitError,
+  StorageSizeLimitError,
 } from './adapter-interface';
 import { isPrivateOrRestrictedHost, isBlockedIp } from '../../security/ssrf';
 import { REMOTE_STAGED_OBJECT_MAX_BYTES } from '../remote-storage-backend';
@@ -101,6 +102,14 @@ function removeDirQuietly(dir: string): void {
   }
 }
 
+/** The file being fetched grew past the byte limit of the call, whatever size the listing gave it. */
+class SftpSpoolLimitError extends StorageAdapterError {
+  constructor(message: string) {
+    super(message, 'sftp');
+    this.name = 'SftpSpoolLimitError';
+  }
+}
+
 /** The client wrote more output than a call keeps: a directory of more entries than one listing can hold. */
 class SftpOutputLimitError extends StorageAdapterError {
   constructor(message: string) {
@@ -147,7 +156,8 @@ export class SftpStorageAdapter implements IStorageAdapter {
     }
   }
 
-  async downloadStream(remotePath: string): Promise<NodeJS.ReadableStream> {
+  async downloadStream(remotePath: string, options: { maxBytes?: number } = {}): Promise<NodeJS.ReadableStream> {
+    const maxBytes = Math.min(options.maxBytes ?? SFTP_MAX_SPOOL_BYTES, SFTP_MAX_SPOOL_BYTES);
     const address = await this.resolveAllowedAddress();
     const resolved = resolveRemotePath(this.basePath, remotePath);
 
@@ -158,10 +168,11 @@ export class SftpStorageAdapter implements IStorageAdapter {
     try {
       await this.runSftpBatch(address, sftpBatch(sftpCommandLine('get', resolved, localTmp)), {
         file: localTmp,
-        maxBytes: SFTP_MAX_SPOOL_BYTES,
+        maxBytes,
       });
     } catch (err) {
       removeDirQuietly(tmpDir);
+      if (err instanceof SftpSpoolLimitError) throw new StorageSizeLimitError(maxBytes, this.providerName);
       if (err instanceof SftpCommandFailedError && isSftpNotFound(err.stderr)) {
         throw new StorageNotFoundError(remotePath, this.providerName);
       }
@@ -330,6 +341,7 @@ export class SftpStorageAdapter implements IStorageAdapter {
       let settled = false;
       let stoppedFor: string | undefined;
       let stoppedByOutput = false;
+      let stoppedBySpool = false;
       const settle = (outcome: () => void) => {
         if (settled) return;
         settled = true;
@@ -364,7 +376,10 @@ export class SftpStorageAdapter implements IStorageAdapter {
 
       if (spool) {
         spoolTimer = setInterval(() => {
-          if (spoolSize(spool.file) > spool.maxBytes) stop(`SFTP download passed ${spool.maxBytes} bytes`);
+          if (spoolSize(spool.file) > spool.maxBytes) {
+            if (stoppedFor === undefined) stoppedBySpool = true;
+            stop(`SFTP download passed ${spool.maxBytes} bytes`);
+          }
         }, SPOOL_CHECK_INTERVAL_MS);
       }
 
@@ -376,7 +391,10 @@ export class SftpStorageAdapter implements IStorageAdapter {
         settle(() => {
           const stderr = readStderr();
           if (stoppedFor !== undefined) {
-            reject(stoppedByOutput ? new SftpOutputLimitError(stoppedFor) : new StorageAdapterError(stoppedFor, this.providerName));
+            reject(stoppedAs(stoppedFor, { output: stoppedByOutput, spool: stoppedBySpool }, this.providerName));
+          } else if (code === 0 && spool && spoolSize(spool.file) > spool.maxBytes) {
+            // a transfer that finished between two measurements of the spool is held to the limit too
+            reject(new SftpSpoolLimitError(`SFTP download passed ${spool.maxBytes} bytes`));
           } else if (code === 0) {
             resolve(readStdout());
           } else if (code === SFTP_CONNECTION_FAILED_EXIT && /Permission denied|Authentication failed|Host key verification failed/.test(stderr)) {
@@ -393,6 +411,13 @@ export class SftpStorageAdapter implements IStorageAdapter {
       child.stdin.end();
     });
   }
+}
+
+/** The error of a client that was stopped for a reason of ours: the one limit that stopped it, else a plain adapter error. */
+function stoppedAs(reason: string, by: { output: boolean; spool: boolean }, provider: string): StorageAdapterError {
+  if (by.output) return new SftpOutputLimitError(reason);
+  if (by.spool) return new SftpSpoolLimitError(reason);
+  return new StorageAdapterError(reason, provider);
 }
 
 /** The size of the spool so far; the file is not there until the client opens it. */

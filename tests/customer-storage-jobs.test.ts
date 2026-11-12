@@ -322,6 +322,19 @@ describe('jobs that read from and write to the customer store', () => {
       },
     });
 
+    it('answers 401 to a caller with no API key, so customer storage is for accounts only', async () => {
+      const res = await createJob(
+        new NextRequest(`${BASE_URL}/api/v1/jobs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ graph: graphWith({ credentials: s3Credentials() }) }),
+        })
+      );
+
+      expect(res.status).toBe(401);
+      expect(s3.requests).toEqual([]);
+    });
+
     it('answers 422 for a saved credential that is not the caller\'s, and the same for one that does not exist', async () => {
       const other = await newAccount();
       const theirs = await save('s3', s3Credentials(), other.authorization);

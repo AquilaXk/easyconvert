@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Readable } from 'node:stream';
 import { SFTP_DEV_ENDPOINT_ALLOWLIST_ENV, SftpStorageAdapter } from '../src/lib/storage/adapters/sftp';
@@ -6,6 +7,7 @@ import {
   StorageAuthenticationError,
   StorageListingLimitError,
   StorageNotFoundError,
+  StorageSizeLimitError,
   StorageSsrfError,
 } from '../src/lib/storage/adapters/adapter-interface';
 import type { SftpCredentials } from '../src/lib/storage/credentials-vault';
@@ -45,6 +47,7 @@ describe.skipIf(!CLIENT_AVAILABLE)('SftpStorageAdapter with the OpenSSH client a
     stub.directories.clear();
     stub.directories.add(BASE_PATH);
     stub.directories.add(`${BASE_PATH}/reports`);
+    stub.statedSizes.clear();
     stub.dropConnections = 0;
     stub.log.reads.length = 0;
     stub.log.writes.length = 0;
@@ -84,6 +87,20 @@ describe.skipIf(!CLIENT_AVAILABLE)('SftpStorageAdapter with the OpenSSH client a
       { name: 'a.csv', size: 4 },
       { name: 'b name.csv', size: 2 },
     ]);
+  });
+
+  it('stops a download at the byte limit and keeps nothing, whatever size the listing stated', async () => {
+    const adapter = new SftpStorageAdapter(credentials());
+    stub.files.set(`${BASE_PATH}/reports/big.bin`, Buffer.alloc(3 * 1024 * 1024, 7));
+    stub.statedSizes.set(`${BASE_PATH}/reports/big.bin`, 100);
+    const scratchBefore = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('easyconvert-sftp-down-'));
+
+    expect((await adapter.head('reports/big.bin'))?.size).toBe(100);
+    await expect(adapter.downloadStream('reports/big.bin', { maxBytes: 1024 })).rejects.toMatchObject({ name: StorageSizeLimitError.name, maxBytes: 1024 });
+
+    expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('easyconvert-sftp-down-'))).toEqual(scratchBefore);
+    const whole = await readAll(await adapter.downloadStream('reports/big.bin', { maxBytes: 4 * 1024 * 1024 }));
+    expect(whole.length).toBe(3 * 1024 * 1024);
   });
 
   it('refuses a directory with more files than the limit instead of listing it short', async () => {
