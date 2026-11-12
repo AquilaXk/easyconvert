@@ -86,6 +86,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler, StartingGraphSch
       sourceFormat: meta.sourceFormat,
       targetFormat: meta.targetFormat,
       tasks: maskTaskRecords(meta.tasks),
+      ...(meta.namedTasks ? { namedTasks: true } : {}),
       createdAt,
       totalNodes,
       completedNodes: 0,
@@ -191,7 +192,8 @@ export class InMemoryGraphScheduler implements IGraphScheduler, StartingGraphSch
   async onNodeFailed(
     graphId: string,
     nodeId: NodeId,
-    reportedError: string
+    reportedError: string,
+    errorCode?: string
   ): Promise<NodeFailureResult> {
     // The reason is stored, returned by the job API and sent in webhooks: credentials and server paths are masked here, on write.
     const error = maskServerText(reportedError);
@@ -208,6 +210,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler, StartingGraphSch
 
     nodeState.status = 'failed';
     nodeState.error = error;
+    if (errorCode) nodeState.errorCode = errorCode;
     nodeState.finishedAt = Date.now();
     data.state.failedNodes++;
 

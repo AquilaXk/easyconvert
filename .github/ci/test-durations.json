@@ -661,6 +661,8 @@
   "tests/mobile-menu.test.ts": 0.3,
   "tests/mp4-layout.test.ts": 4.5,
   "tests/multi-domain-expansion.test.ts": 1.6,
+  "tests/named-task-jobs.test.ts": 0.7,
+  "tests/named-tasks.test.ts": 0.1,
   "tests/native-engine-pixel-gate.test.ts": 1.4,
   "tests/native-office-targets.test.ts": 0,
   "tests/native-page-target-chains.test.ts": 63.5,

@@ -12,6 +12,7 @@ import { graphScheduler } from './scheduler';
 import { isFinalFailure } from '../job-failure';
 import { assertPublicOutboundUrl, safeFetch } from '../../security/safe-fetch';
 import { maskFailure } from '../../security/server-paths';
+import { refusalCodeList } from '../../refusal-codes';
 import { graphNodeJobId, nodeOutputKey, sanitizeNodeOutputFilename } from './node-jobs';
 import { openUrlNodeSecrets } from './sealed-nodes';
 import {
@@ -951,7 +952,7 @@ export async function processGraphNodeJob(
     // Whatever an SDK, a remote or an engine quoted into the error, it leaves this node run masked.
     const reason = maskFailure(failure);
     if ((!attemptSignal.aborted || pastDeadline) && isFinalFailure({ attemptsMade: job.attemptsMade, opts: { attempts: job.opts?.attempts ?? 1 } }, failure)) {
-      await graphScheduler.onNodeFailed(graphId, nodeId, reason);
+      await graphScheduler.onNodeFailed(graphId, nodeId, reason, ...refusalCodeList(failure));
     }
     throw failure;
   } finally {

@@ -221,6 +221,7 @@ export function parseGraphMeta(graphId: string, raw: Record<string, string | und
     sourceFormat: echoString(raw, 'sourceFormat'),
     targetFormat: echoString(raw, 'targetFormat'),
     tasks: parseTasks(graphId, raw.tasks),
+    ...(echoString(raw, 'namedTasks') === '1' ? { namedTasks: true } : {}),
     createdAt: requireCount(graphId, raw, 'createdAt'),
     finishedAt: finishedOn ? Number(finishedOn) : undefined,
     failedReason: echoString(raw, 'failedReason'),
@@ -270,6 +271,9 @@ export function parseNodeState(graphId: string, nodeId: string, text: string | u
   if (parsed.error !== undefined && typeof parsed.error !== 'string') {
     throw corrupt(graphId, `node "${nodeId}" field "error" is not a string`);
   }
+  if (parsed.errorCode !== undefined && typeof parsed.errorCode !== 'string') {
+    throw corrupt(graphId, `node "${nodeId}" field "errorCode" is not a string`);
+  }
 
   return {
     id: nodeId,
@@ -277,6 +281,7 @@ export function parseNodeState(graphId: string, nodeId: string, text: string | u
     status: parsed.status as NodeExecutionStatus,
     outputs,
     error: parsed.error,
+    ...(parsed.errorCode !== undefined ? { errorCode: parsed.errorCode } : {}),
     startedAt: optionalTimestamp(graphId, nodeId, parsed.startedAt, 'startedAt'),
     finishedAt: optionalTimestamp(graphId, nodeId, parsed.finishedAt, 'finishedAt'),
   };

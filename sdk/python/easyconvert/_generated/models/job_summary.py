@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Self, TypeVar
+from typing import TYPE_CHECKING, Any, Self, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..models.job_summary_status import JobSummaryStatus
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.job_summary_tasks import JobSummaryTasks
+
 
 T = TypeVar("T", bound="JobSummary")
 
@@ -32,6 +36,9 @@ class JobSummary:
             failed_reason (str | Unset):
             failed_code (str | Unset):
             failed_status (int | Unset):
+            tasks (JobSummaryTasks | Unset): A job submitted as named tasks: the report of each task by name (without the
+                `result` files beyond the first 100 of a task).
+            failed_task (str | Unset): A job submitted as named tasks that failed: the name of the task that failed it.
     """
 
     job_id: str | Unset = UNSET
@@ -47,6 +54,8 @@ class JobSummary:
     failed_reason: str | Unset = UNSET
     failed_code: str | Unset = UNSET
     failed_status: int | Unset = UNSET
+    tasks: JobSummaryTasks | Unset = UNSET
+    failed_task: str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -78,6 +87,12 @@ class JobSummary:
 
         failed_status = self.failed_status
 
+        tasks: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.tasks, Unset):
+            tasks = self.tasks.to_dict()
+
+        failed_task = self.failed_task
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -107,11 +122,17 @@ class JobSummary:
             field_dict["failedCode"] = failed_code
         if failed_status is not UNSET:
             field_dict["failedStatus"] = failed_status
+        if tasks is not UNSET:
+            field_dict["tasks"] = tasks
+        if failed_task is not UNSET:
+            field_dict["failedTask"] = failed_task
 
         return field_dict
 
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.job_summary_tasks import JobSummaryTasks
+
         d = dict(src_dict)
         job_id = d.pop("jobId", UNSET)
 
@@ -144,6 +165,15 @@ class JobSummary:
 
         failed_status = d.pop("failedStatus", UNSET)
 
+        _tasks = d.pop("tasks", UNSET)
+        tasks: JobSummaryTasks | Unset
+        if isinstance(_tasks, Unset):
+            tasks = UNSET
+        else:
+            tasks = JobSummaryTasks.from_dict(_tasks)
+
+        failed_task = d.pop("failedTask", UNSET)
+
         job_summary = cls(
             job_id=job_id,
             status=status,
@@ -158,6 +188,8 @@ class JobSummary:
             failed_reason=failed_reason,
             failed_code=failed_code,
             failed_status=failed_status,
+            tasks=tasks,
+            failed_task=failed_task,
         )
 
         job_summary.additional_properties = d

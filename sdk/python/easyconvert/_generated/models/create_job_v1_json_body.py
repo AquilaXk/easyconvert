@@ -11,6 +11,9 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.conversion_options import ConversionOptions
+    from ..models.create_job_v1_json_body_tasks_type_1 import (
+        CreateJobV1JsonBodyTasksType1,
+    )
     from ..models.job_graph import JobGraph
     from ..models.pipeline_task import PipelineTask
 
@@ -31,7 +34,8 @@ class CreateJobV1JsonBody:
         input_buffer_base_64 (str | Unset): Base64-encoded source payload.
         file_size (float | Unset): File size in bytes.
         options (ConversionOptions | Unset):
-        tasks (list[PipelineTask] | Unset): Array of sequential pipeline tasks for multi-stage conversion execution.
+        tasks (CreateJobV1JsonBodyTasksType1 | list[PipelineTask] | Unset): Either an array of sequential pipeline
+            tasks, or an object of named tasks (a task graph) keyed by the names the caller chooses.
         graph (JobGraph | Unset):
         webhook_url (str | Unset): Destination URL for job lifecycle webhooks.
         webhook_secret (str | Unset): Secret used for HMAC-SHA256 signature verification.
@@ -46,7 +50,7 @@ class CreateJobV1JsonBody:
     input_buffer_base_64: str | Unset = UNSET
     file_size: float | Unset = UNSET
     options: ConversionOptions | Unset = UNSET
-    tasks: list[PipelineTask] | Unset = UNSET
+    tasks: CreateJobV1JsonBodyTasksType1 | list[PipelineTask] | Unset = UNSET
     graph: JobGraph | Unset = UNSET
     webhook_url: str | Unset = UNSET
     webhook_secret: str | Unset = UNSET
@@ -73,12 +77,17 @@ class CreateJobV1JsonBody:
         if not isinstance(self.options, Unset):
             options = self.options.to_dict()
 
-        tasks: list[dict[str, Any]] | Unset = UNSET
-        if not isinstance(self.tasks, Unset):
+        tasks: dict[str, Any] | list[dict[str, Any]] | Unset
+        if isinstance(self.tasks, Unset):
+            tasks = UNSET
+        elif isinstance(self.tasks, list):
             tasks = []
-            for tasks_item_data in self.tasks:
-                tasks_item = tasks_item_data.to_dict()
-                tasks.append(tasks_item)
+            for tasks_type_0_item_data in self.tasks:
+                tasks_type_0_item = tasks_type_0_item_data.to_dict()
+                tasks.append(tasks_type_0_item)
+
+        else:
+            tasks = self.tasks.to_dict()
 
         graph: dict[str, Any] | Unset = UNSET
         if not isinstance(self.graph, Unset):
@@ -123,6 +132,9 @@ class CreateJobV1JsonBody:
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.conversion_options import ConversionOptions
+        from ..models.create_job_v1_json_body_tasks_type_1 import (
+            CreateJobV1JsonBodyTasksType1,
+        )
         from ..models.job_graph import JobGraph
         from ..models.pipeline_task import PipelineTask
 
@@ -150,14 +162,31 @@ class CreateJobV1JsonBody:
         else:
             options = ConversionOptions.from_dict(_options)
 
-        _tasks = d.pop("tasks", UNSET)
-        tasks: list[PipelineTask] | Unset = UNSET
-        if _tasks is not UNSET:
-            tasks = []
-            for tasks_item_data in _tasks:
-                tasks_item = PipelineTask.from_dict(tasks_item_data)
+        def _parse_tasks(
+            data: object,
+        ) -> CreateJobV1JsonBodyTasksType1 | list[PipelineTask] | Unset:
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                tasks_type_0 = []
+                _tasks_type_0 = data
+                for tasks_type_0_item_data in _tasks_type_0:
+                    tasks_type_0_item = PipelineTask.from_dict(tasks_type_0_item_data)
 
-                tasks.append(tasks_item)
+                    tasks_type_0.append(tasks_type_0_item)
+
+                return tasks_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            if not isinstance(data, dict):
+                raise TypeError()
+            tasks_type_1 = CreateJobV1JsonBodyTasksType1.from_dict(data)
+
+            return tasks_type_1
+
+        tasks = _parse_tasks(d.pop("tasks", UNSET))
 
         _graph = d.pop("graph", UNSET)
         graph: JobGraph | Unset

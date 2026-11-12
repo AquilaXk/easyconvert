@@ -27,7 +27,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Approved backlog (QA 2026-11-12: every Later and Waiting item is approved)
 - Engine choice, second step (entry 267 offers one installed version of each engine): install a second version of an engine when a pair needs it and list the versions with `default` and `latest` flags in `GET /api/formats`; show the engine and version of each node in the graph view (the node job's result carries them, the view lists no node result yet); read the engine versions at worker start, so the first conversion does not pay the probe.
-- Named task graphs in one API job.
+- Describe the named-task form (fields, report, refusals) on the Jobs page of the API documentation; its `tasks` row shows only the array branch (needs QA screenshots).
 - Thumbnail, metadata and website capture (website capture needs an SSRF suite).
 - Customer storage and SFTP import and export; presets and watched sources after that.
 - Split the long office functions (`parsePptxSlideSceneGraph`, `parseDrawingMlShapes`, `parseAllXlsxWorksheets`, `renderTable`, `generatePdfFromDocx`), give the 7-parameter `computeGroupTransformMatrix`, `renderPdfChart` and `renderSinglePdfShape` an options object, and move the S3 adapter onto `src/lib/text/escape.ts` once the upload-session change lands.

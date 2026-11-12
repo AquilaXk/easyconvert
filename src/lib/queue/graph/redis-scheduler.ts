@@ -149,6 +149,7 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
       sourceFormat: meta.sourceFormat || '',
       targetFormat: meta.targetFormat || '',
       tasks: meta.tasks ? JSON.stringify(maskTaskRecords(meta.tasks)) : '',
+      namedTasks: meta.namedTasks ? '1' : '',
       inputKeys: JSON.stringify(graphInputKeys(graph.nodes)),
       createdAt: String(createdAt),
       totalNodes: String(entries.length),
@@ -272,7 +273,7 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
     await this.redisClient.eval(FORGET_ENDED_GRAPH_LUA_SCRIPT, 6, k.graph, k.deps, k.children, k.nodes, k.outputs, k.outbox, String(endedJobRetentionMs()));
   }
 
-  async onNodeFailed(graphId: string, nodeId: NodeId, reportedError: string): Promise<NodeFailureResult> {
+  async onNodeFailed(graphId: string, nodeId: NodeId, reportedError: string, errorCode = ''): Promise<NodeFailureResult> {
     // The reason is stored, returned by the job API and sent in webhooks: credentials and server paths are masked here, on write.
     const error = maskServerText(reportedError);
     const k = this.graphKeys(graphId);
@@ -285,7 +286,8 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
       k.outbox,
       nodeId,
       error,
-      String(Date.now())
+      String(Date.now()),
+      errorCode
     )) as [number, string, string, string, string?, string?, string?];
 
     const graphStatus = parseGraphStatus(graphId, raw[1]);

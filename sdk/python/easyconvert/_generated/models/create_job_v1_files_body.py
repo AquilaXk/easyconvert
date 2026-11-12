@@ -29,7 +29,8 @@ class CreateJobV1FilesBody:
             image compression), and `pdfa` or `pdfStandard` (PDF/A output, validated with veraPDF; a request that names no
             level is answered at pdfa-2b).
         tasks (str | Unset): JSON-serialized array of sequential pipeline tasks: [{ name, operation, targetFormat,
-            options }].
+            options }], or a JSON-serialized object of named tasks (a task graph) keyed by task name, as `tasks` of the JSON
+            body.
         webhook_url (str | Unset): Destination URL for job events.
         webhook_secret (str | Unset): Secret used for HMAC-SHA256 signature.
     """
