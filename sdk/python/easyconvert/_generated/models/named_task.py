@@ -12,6 +12,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.conversion_options import ConversionOptions
+    from ..models.named_task_credentials import NamedTaskCredentials
     from ..models.named_task_headers import NamedTaskHeaders
 
 
@@ -27,8 +28,10 @@ class NamedTask:
             operation (NamedTaskOperation): `import/url` and `import/upload` bring a file in; `convert`, `ocr`, `optimize`,
                 `thumbnail`, `media.package`, `watermark`, `merge`, `metadata`, `archive/create`, `archive/extract` and the
                 `pdf.*` page operations work on it; `export/url` ends a branch: with `url` it sends the files there, without it
-                keeps them for download and lists their download URLs in the task result. A job needs at least one task that
-                converts.
+                keeps them for download and lists their download URLs in the task result. `import/s3` and `import/sftp` bring
+                files in from the customer's own bucket or SFTP server, and `export/s3` and `export/sftp` write the files there
+                and list where each went in the task result; they take a saved credential (`credential_ref`) or the credentials
+                themselves (`credentials`). A job needs at least one task that converts.
             input_ (list[str] | str | Unset): The name of the task whose output this task reads, or a list of names. Every
                 task but an import needs one. A `merge` needs at least 2 distinct names.
             output_format (str | Unset): Format extension the task produces. Required by `convert`, `merge` and
@@ -42,6 +45,26 @@ class NamedTask:
             storage_key (str | Unset): Key of a stored object the caller may use (`import/upload`), as `storageKey` of the
                 job.
             entries (list[str] | Unset): Glob patterns of the entries `archive/extract` unpacks; all when left out.
+            credential_ref (str | Unset): `import/s3`, `export/s3`, `import/sftp`, `export/sftp`: a credential saved for the
+                account (the `credentialRef` that saving it answered), which only its owner can use. Name this or `credentials`,
+                not both. A reference that is unknown, expired, of another account or of another kind answers 422.
+            credentials (NamedTaskCredentials | Unset): The credentials sent with the task, in place of `credential_ref`:
+                sealed when the job is accepted, opened only by the worker that runs the task, never returned or logged. The
+                same fields as the `credentials` of a saved credential without `type`: an S3 task takes `bucket`, `accessKeyId`,
+                `secretAccessKey` and optionally `sessionToken`, `region`, `endpoint` (https, public addresses only) and
+                `forcePathStyle`; an SFTP task takes `host`, `username`, `privateKey` and optionally `port`, `passphrase`,
+                `hostKey` and `basePath`.
+            key (str | Unset): `import/s3`: the one object to bring in. Name `key` or `prefix`. Relative: no leading `/`, no
+                `.` or `..` segment, at most 1024 bytes.
+            prefix (str | Unset): `import/s3`: bring in the objects whose key starts with it (at most `max_objects`).
+                `export/s3`: the text put before each file name, taken literally (`out/` is a folder); the bucket root when left
+                out.
+            path (str | Unset): `import/sftp`: the one file to bring in, relative to the `basePath` of the credentials. Name
+                `path` or `directory`.
+            directory (str | Unset): `import/sftp`: bring in the regular files of this directory (at most `max_objects`).
+                `export/sftp`: the directory the files are written into, which must exist; the `basePath` when left out.
+            max_objects (int | Unset): `import/s3` with `prefix`, `import/sftp` with `directory`: the most files to bring
+                in. A listing with more fails the task with `storage_too_many_objects`; nothing is cut short. Default: 20.
     """
 
     operation: NamedTaskOperation
@@ -54,6 +77,13 @@ class NamedTask:
     upload_id: str | Unset = UNSET
     storage_key: str | Unset = UNSET
     entries: list[str] | Unset = UNSET
+    credential_ref: str | Unset = UNSET
+    credentials: NamedTaskCredentials | Unset = UNSET
+    key: str | Unset = UNSET
+    prefix: str | Unset = UNSET
+    path: str | Unset = UNSET
+    directory: str | Unset = UNSET
+    max_objects: int | Unset = 20
 
     def to_dict(self) -> dict[str, Any]:
         operation = self.operation.value
@@ -91,6 +121,22 @@ class NamedTask:
         if not isinstance(self.entries, Unset):
             entries = self.entries
 
+        credential_ref = self.credential_ref
+
+        credentials: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.credentials, Unset):
+            credentials = self.credentials.to_dict()
+
+        key = self.key
+
+        prefix = self.prefix
+
+        path = self.path
+
+        directory = self.directory
+
+        max_objects = self.max_objects
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update(
@@ -116,12 +162,27 @@ class NamedTask:
             field_dict["storage_key"] = storage_key
         if entries is not UNSET:
             field_dict["entries"] = entries
+        if credential_ref is not UNSET:
+            field_dict["credential_ref"] = credential_ref
+        if credentials is not UNSET:
+            field_dict["credentials"] = credentials
+        if key is not UNSET:
+            field_dict["key"] = key
+        if prefix is not UNSET:
+            field_dict["prefix"] = prefix
+        if path is not UNSET:
+            field_dict["path"] = path
+        if directory is not UNSET:
+            field_dict["directory"] = directory
+        if max_objects is not UNSET:
+            field_dict["max_objects"] = max_objects
 
         return field_dict
 
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.conversion_options import ConversionOptions
+        from ..models.named_task_credentials import NamedTaskCredentials
         from ..models.named_task_headers import NamedTaskHeaders
 
         d = dict(src_dict)
@@ -173,6 +234,25 @@ class NamedTask:
 
         entries = cast(list[str], d.pop("entries", UNSET))
 
+        credential_ref = d.pop("credential_ref", UNSET)
+
+        _credentials = d.pop("credentials", UNSET)
+        credentials: NamedTaskCredentials | Unset
+        if isinstance(_credentials, Unset):
+            credentials = UNSET
+        else:
+            credentials = NamedTaskCredentials.from_dict(_credentials)
+
+        key = d.pop("key", UNSET)
+
+        prefix = d.pop("prefix", UNSET)
+
+        path = d.pop("path", UNSET)
+
+        directory = d.pop("directory", UNSET)
+
+        max_objects = d.pop("max_objects", UNSET)
+
         named_task = cls(
             operation=operation,
             input_=input_,
@@ -184,6 +264,13 @@ class NamedTask:
             upload_id=upload_id,
             storage_key=storage_key,
             entries=entries,
+            credential_ref=credential_ref,
+            credentials=credentials,
+            key=key,
+            prefix=prefix,
+            path=path,
+            directory=directory,
+            max_objects=max_objects,
         )
 
         return named_task

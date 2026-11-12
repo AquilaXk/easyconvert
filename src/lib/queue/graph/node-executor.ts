@@ -15,6 +15,7 @@ import { maskFailure } from '../../security/server-paths';
 import { refusalCodeList } from '../../refusal-codes';
 import { graphNodeJobId, nodeOutputKey, sanitizeNodeOutputFilename } from './node-jobs';
 import { openUrlNodeSecrets } from './sealed-nodes';
+import { exportToCustomerStorage, importFromCustomerStorage } from './node-storage-io';
 import {
   createTarArchive,
   extractTarArchive,
@@ -75,7 +76,7 @@ import {
 } from '../../jobs/graph-operations';
 import { importUrlWithinBudget } from './node-url-import';
 import { holdUnitsForInputs } from './node-reservation';
-import type { GraphNode } from './types';
+import type { ExportUrlNode, GraphNode } from './types';
 import { saveRetainedResult } from '../../storage/retention-service';
 import { heldGraphInput } from './input-cleanup';
 import { deadlineBoundEngine, jobDeadlineAt } from '../job-deadline';
@@ -465,6 +466,12 @@ export async function processGraphNodeJob(
         break;
       }
 
+      case 'import.s3':
+      case 'import.sftp': {
+        outputKeys = await importFromCustomerStorage(job, effectiveStorage, node, graphNodeJobId(graphId, nodeId));
+        break;
+      }
+
       case 'convert': {
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
@@ -838,33 +845,18 @@ export async function processGraphNodeJob(
       }
 
       case 'export.url': {
-        const destination = openUrlNodeSecrets(node, graphNodeJobId(graphId, nodeId));
-        for (const inputKey of inputArtifacts) {
-          attemptSignal.throwIfAborted();
-          await exportArtifactToUrl(
-            effectiveStorage,
-            inputKey,
-            destination.url,
-            node.method || 'PUT',
-            destination.headers,
-            attemptSignal
-          );
-        }
-        outputKeys = inputArtifacts;
+        outputKeys = await exportNodeToUrl(effectiveStorage, node, { graphId, nodeId, inputArtifacts, signal: attemptSignal });
+        break;
+      }
+
+      case 'export.s3':
+      case 'export.sftp': {
+        outputKeys = await exportToCustomerStorage(job, effectiveStorage, node, inputArtifacts, graphNodeJobId(graphId, nodeId));
         break;
       }
 
       case 'export.internal': {
-        for (const [index, inputKey] of inputArtifacts.entries()) {
-          attemptSignal.throwIfAborted();
-          const stored = await effectiveStorage.getObject(inputKey);
-          if (!stored) continue;
-
-          const safeFilename = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), `export_${index}.bin`);
-          const promotedKey = nodeOutputKey('results', graphId, nodeId, index, safeFilename);
-          await saveRetainedResult(effectiveStorage, promotedKey, stored.buffer, stored.mimeType, safeFilename);
-          outputKeys.push(promotedKey);
-        }
+        outputKeys = await promoteResults(effectiveStorage, { graphId, nodeId, inputArtifacts, signal: attemptSignal });
         await job.log(`Promoted ${outputKeys.length} result(s) for download`);
         break;
       }
@@ -916,6 +908,39 @@ export async function processGraphNodeJob(
   } finally {
     await scope?.releaseAll();
   }
+}
+
+/** An export.url node: each input sent to its destination, which is opened here from the node's sealed secrets; the inputs it handed on. */
+async function exportNodeToUrl(
+  storage: IStorageBackend,
+  node: ExportUrlNode,
+  run: { graphId: string; nodeId: string; inputArtifacts: string[]; signal: AbortSignal }
+): Promise<string[]> {
+  const destination = openUrlNodeSecrets(node, graphNodeJobId(run.graphId, run.nodeId));
+  for (const inputKey of run.inputArtifacts) {
+    run.signal.throwIfAborted();
+    await exportArtifactToUrl(storage, inputKey, destination.url, node.method || 'PUT', destination.headers, run.signal);
+  }
+  return run.inputArtifacts;
+}
+
+/** An export.internal node's inputs kept as results for download: each stored file copied under `results/<graphId>/`; the keys it made. */
+async function promoteResults(
+  storage: IStorageBackend,
+  node: { graphId: string; nodeId: string; inputArtifacts: string[]; signal: AbortSignal }
+): Promise<string[]> {
+  const keys: string[] = [];
+  for (const [index, inputKey] of node.inputArtifacts.entries()) {
+    node.signal.throwIfAborted();
+    const stored = await storage.getObject(inputKey);
+    if (!stored) continue;
+
+    const safeFilename = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), `export_${index}.bin`);
+    const promotedKey = nodeOutputKey('results', node.graphId, node.nodeId, index, safeFilename);
+    await saveRetainedResult(storage, promotedKey, stored.buffer, stored.mimeType, safeFilename);
+    keys.push(promotedKey);
+  }
+  return keys;
 }
 
 /** `work`, or the abort reason as soon as `signal` fires, so an optimiser that ignores the signal cannot hold the job past its deadline. */

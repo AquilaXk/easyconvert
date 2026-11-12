@@ -118,7 +118,19 @@ def sync_detailed(
     """Submit Asynchronous Conversion Job
 
      Enqueues a conversion job to the distributed Redis-backed job queue with automatic 2-phase quota
-    reservation and optional HMAC-signed webhook callback. Requires "convert:write" scope.
+    reservation and optional HMAC-signed webhook callback. Requires "convert:write" scope. A graph can
+    read from and write to the customer's own store with the nodes `import.s3`, `export.s3`,
+    `import.sftp` and `export.sftp` (any S3-compatible endpoint, or an SFTP server). A node names a
+    credential saved for the account (`credentialRef`, which only its owner can use) or carries the
+    credentials (`credentials`), which are sealed when the job is accepted, opened only by the worker
+    that runs the node, and never returned or logged. The endpoint or host must resolve to public
+    addresses (S3 over https), and the connection goes to the address that was checked. An import takes
+    one object or file, or at most `maxObjects` (up to 100) files of a prefix or directory, each held to
+    the plan's file limit and the owner's daily link-import budget; an export writes each input under
+    the `prefix` or `directory` the node names, with its content type. A node that fails names the cause
+    in its error: `storage_credential_not_found`, `storage_access_denied`, `storage_endpoint_blocked`,
+    `storage_object_not_found`, `storage_too_many_objects`, `input_over_limit` or `storage_unavailable`
+    (the store did not answer after tries with a growing wait).
 
     Args:
         idempotency_key (str | Unset): Unique 1-255 character printable ASCII idempotency key for
@@ -155,7 +167,19 @@ def sync(
     """Submit Asynchronous Conversion Job
 
      Enqueues a conversion job to the distributed Redis-backed job queue with automatic 2-phase quota
-    reservation and optional HMAC-signed webhook callback. Requires "convert:write" scope.
+    reservation and optional HMAC-signed webhook callback. Requires "convert:write" scope. A graph can
+    read from and write to the customer's own store with the nodes `import.s3`, `export.s3`,
+    `import.sftp` and `export.sftp` (any S3-compatible endpoint, or an SFTP server). A node names a
+    credential saved for the account (`credentialRef`, which only its owner can use) or carries the
+    credentials (`credentials`), which are sealed when the job is accepted, opened only by the worker
+    that runs the node, and never returned or logged. The endpoint or host must resolve to public
+    addresses (S3 over https), and the connection goes to the address that was checked. An import takes
+    one object or file, or at most `maxObjects` (up to 100) files of a prefix or directory, each held to
+    the plan's file limit and the owner's daily link-import budget; an export writes each input under
+    the `prefix` or `directory` the node names, with its content type. A node that fails names the cause
+    in its error: `storage_credential_not_found`, `storage_access_denied`, `storage_endpoint_blocked`,
+    `storage_object_not_found`, `storage_too_many_objects`, `input_over_limit` or `storage_unavailable`
+    (the store did not answer after tries with a growing wait).
 
     Args:
         idempotency_key (str | Unset): Unique 1-255 character printable ASCII idempotency key for
@@ -187,7 +211,19 @@ async def asyncio_detailed(
     """Submit Asynchronous Conversion Job
 
      Enqueues a conversion job to the distributed Redis-backed job queue with automatic 2-phase quota
-    reservation and optional HMAC-signed webhook callback. Requires "convert:write" scope.
+    reservation and optional HMAC-signed webhook callback. Requires "convert:write" scope. A graph can
+    read from and write to the customer's own store with the nodes `import.s3`, `export.s3`,
+    `import.sftp` and `export.sftp` (any S3-compatible endpoint, or an SFTP server). A node names a
+    credential saved for the account (`credentialRef`, which only its owner can use) or carries the
+    credentials (`credentials`), which are sealed when the job is accepted, opened only by the worker
+    that runs the node, and never returned or logged. The endpoint or host must resolve to public
+    addresses (S3 over https), and the connection goes to the address that was checked. An import takes
+    one object or file, or at most `maxObjects` (up to 100) files of a prefix or directory, each held to
+    the plan's file limit and the owner's daily link-import budget; an export writes each input under
+    the `prefix` or `directory` the node names, with its content type. A node that fails names the cause
+    in its error: `storage_credential_not_found`, `storage_access_denied`, `storage_endpoint_blocked`,
+    `storage_object_not_found`, `storage_too_many_objects`, `input_over_limit` or `storage_unavailable`
+    (the store did not answer after tries with a growing wait).
 
     Args:
         idempotency_key (str | Unset): Unique 1-255 character printable ASCII idempotency key for
@@ -222,7 +258,19 @@ async def asyncio(
     """Submit Asynchronous Conversion Job
 
      Enqueues a conversion job to the distributed Redis-backed job queue with automatic 2-phase quota
-    reservation and optional HMAC-signed webhook callback. Requires "convert:write" scope.
+    reservation and optional HMAC-signed webhook callback. Requires "convert:write" scope. A graph can
+    read from and write to the customer's own store with the nodes `import.s3`, `export.s3`,
+    `import.sftp` and `export.sftp` (any S3-compatible endpoint, or an SFTP server). A node names a
+    credential saved for the account (`credentialRef`, which only its owner can use) or carries the
+    credentials (`credentials`), which are sealed when the job is accepted, opened only by the worker
+    that runs the node, and never returned or logged. The endpoint or host must resolve to public
+    addresses (S3 over https), and the connection goes to the address that was checked. An import takes
+    one object or file, or at most `maxObjects` (up to 100) files of a prefix or directory, each held to
+    the plan's file limit and the owner's daily link-import budget; an export writes each input under
+    the `prefix` or `directory` the node names, with its content type. A node that fails names the cause
+    in its error: `storage_credential_not_found`, `storage_access_denied`, `storage_endpoint_blocked`,
+    `storage_object_not_found`, `storage_too_many_objects`, `input_over_limit` or `storage_unavailable`
+    (the store did not answer after tries with a growing wait).
 
     Args:
         idempotency_key (str | Unset): Unique 1-255 character printable ASCII idempotency key for

@@ -86,6 +86,15 @@ const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
   EngineVersionNotOfferedError: 'engine_version_unavailable',
 
   ImportBudgetExceededError: 'import_budget_exceeded',
+
+  StorageCredentialNotFoundError: 'storage_credential_not_found',
+  StorageAccessDeniedError: 'storage_access_denied',
+  StorageEndpointBlockedError: 'storage_endpoint_blocked',
+  StorageObjectNotFoundError: 'storage_object_not_found',
+  StorageTooManyObjectsError: 'storage_too_many_objects',
+  StorageUnavailableError: 'storage_unavailable',
+  StorageObjectTooLargeError: 'input_over_limit',
+
   NodeQuotaExceededError: 'quota_exceeded',
 
   ArchiveEncryptedHeaderError: 'encrypted_input',

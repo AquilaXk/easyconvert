@@ -80,7 +80,7 @@ export interface paths {
         put?: never;
         /**
          * Submit Asynchronous Conversion Job
-         * @description Enqueues a conversion job to the distributed Redis-backed job queue with automatic 2-phase quota reservation and optional HMAC-signed webhook callback. Requires "convert:write" scope.
+         * @description Enqueues a conversion job to the distributed Redis-backed job queue with automatic 2-phase quota reservation and optional HMAC-signed webhook callback. Requires "convert:write" scope. A graph can read from and write to the customer's own store with the nodes `import.s3`, `export.s3`, `import.sftp` and `export.sftp` (any S3-compatible endpoint, or an SFTP server). A node names a credential saved for the account (`credentialRef`, which only its owner can use) or carries the credentials (`credentials`), which are sealed when the job is accepted, opened only by the worker that runs the node, and never returned or logged. The endpoint or host must resolve to public addresses (S3 over https), and the connection goes to the address that was checked. An import takes one object or file, or at most `maxObjects` (up to 100) files of a prefix or directory, each held to the plan's file limit and the owner's daily link-import budget; an export writes each input under the `prefix` or `directory` the node names, with its content type. A node that fails names the cause in its error: `storage_credential_not_found`, `storage_access_denied`, `storage_endpoint_blocked`, `storage_object_not_found`, `storage_too_many_objects`, `input_over_limit` or `storage_unavailable` (the store did not answer after tries with a growing wait).
          */
         post: operations["createJobV1"];
         delete?: never;
@@ -1055,10 +1055,10 @@ export interface components {
         /** @description One task of a job made of named tasks. Each operation takes only its own fields: a field that does not belong to it answers 422. */
         NamedTask: {
             /**
-             * @description `import/url` and `import/upload` bring a file in; `convert`, `ocr`, `optimize`, `thumbnail`, `media.package`, `watermark`, `merge`, `metadata`, `archive/create`, `archive/extract` and the `pdf.*` page operations work on it; `export/url` ends a branch: with `url` it sends the files there, without it keeps them for download and lists their download URLs in the task result. A job needs at least one task that converts.
+             * @description `import/url` and `import/upload` bring a file in; `convert`, `ocr`, `optimize`, `thumbnail`, `media.package`, `watermark`, `merge`, `metadata`, `archive/create`, `archive/extract` and the `pdf.*` page operations work on it; `export/url` ends a branch: with `url` it sends the files there, without it keeps them for download and lists their download URLs in the task result. `import/s3` and `import/sftp` bring files in from the customer's own bucket or SFTP server, and `export/s3` and `export/sftp` write the files there and list where each went in the task result; they take a saved credential (`credential_ref`) or the credentials themselves (`credentials`). A job needs at least one task that converts.
              * @enum {string}
              */
-            operation: "import/url" | "import/upload" | "archive/create" | "archive/extract" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "export/url";
+            operation: "import/url" | "import/upload" | "archive/create" | "archive/extract" | "import/s3" | "import/sftp" | "export/s3" | "export/sftp" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "export/url";
             /** @description The name of the task whose output this task reads, or a list of names. Every task but an import needs one. A `merge` needs at least 2 distinct names. */
             input?: string | string[];
             /** @description Format extension the task produces. Required by `convert`, `merge` and `archive/create`; `thumbnail` also takes it (`jpg` or `png`). */
@@ -1085,13 +1085,30 @@ export interface components {
             storage_key?: string;
             /** @description Glob patterns of the entries `archive/extract` unpacks; all when left out. */
             entries?: string[];
+            /** @description `import/s3`, `export/s3`, `import/sftp`, `export/sftp`: a credential saved for the account (the `credentialRef` that saving it answered), which only its owner can use. Name this or `credentials`, not both. A reference that is unknown, expired, of another account or of another kind answers 422. */
+            credential_ref?: string;
+            /** @description The credentials sent with the task, in place of `credential_ref`: sealed when the job is accepted, opened only by the worker that runs the task, never returned or logged. The same fields as the `credentials` of a saved credential without `type`: an S3 task takes `bucket`, `accessKeyId`, `secretAccessKey` and optionally `sessionToken`, `region`, `endpoint` (https, public addresses only) and `forcePathStyle`; an SFTP task takes `host`, `username`, `privateKey` and optionally `port`, `passphrase`, `hostKey` and `basePath`. */
+            credentials?: Record<string, never>;
+            /** @description `import/s3`: the one object to bring in. Name `key` or `prefix`. Relative: no leading `/`, no `.` or `..` segment, at most 1024 bytes. */
+            key?: string;
+            /** @description `import/s3`: bring in the objects whose key starts with it (at most `max_objects`). `export/s3`: the text put before each file name, taken literally (`out/` is a folder); the bucket root when left out. */
+            prefix?: string;
+            /** @description `import/sftp`: the one file to bring in, relative to the `basePath` of the credentials. Name `path` or `directory`. */
+            path?: string;
+            /** @description `import/sftp`: bring in the regular files of this directory (at most `max_objects`). `export/sftp`: the directory the files are written into, which must exist; the `basePath` when left out. */
+            directory?: string;
+            /**
+             * @description `import/s3` with `prefix`, `import/sftp` with `directory`: the most files to bring in. A listing with more fails the task with `storage_too_many_objects`; nothing is cut short.
+             * @default 20
+             */
+            max_objects?: number;
         };
         TaskReport: {
             /**
              * @description The operation the task was sent with.
              * @enum {string}
              */
-            operation: "import/url" | "import/upload" | "archive/create" | "archive/extract" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "export/url";
+            operation: "import/url" | "import/upload" | "archive/create" | "archive/extract" | "import/s3" | "import/sftp" | "export/s3" | "export/sftp" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "export/url";
             /**
              * @description `waiting` until the tasks it reads have completed, then `active`, then `completed` or `failed`. A task that did not run because a task it reads failed is `failed` too, with the code `dependency_failed`; a task the job stopped (after a failure elsewhere, or a cancel) that reads no failed task is `cancelled`.
              * @enum {string}
@@ -1103,13 +1120,15 @@ export interface components {
             startedAt?: number;
             /** @description When the task ended, in epoch milliseconds. */
             finishedAt?: number;
-            /** @description The files an `export/url` task without a `url` kept for download, once it completed. The other tasks hand their files to the tasks that read them and have no result of their own. */
+            /** @description The files an `export/url` task without a `url` kept for download, or the files an `export/s3` or `export/sftp` task wrote to the customer's store, once it completed. The other tasks hand their files to the tasks that read them and have no result of their own. */
             result?: {
                 /** @description At most 100 files. */
                 files: {
                     filename: string;
-                    /** @description Path of the file; send it to `GET /api/storage/file/{key}` with the key. */
-                    downloadUrl: string;
+                    /** @description `export/url` without a `url`: the path of the file; send it to `GET /api/storage/file/{key}` with the key. */
+                    downloadUrl?: string;
+                    /** @description `export/s3` and `export/sftp`: where the file was written, as a key in the bucket or a path under the directory of the task. */
+                    destination?: string;
                 }[];
                 /** @description How many files the task kept, which may be more than `files` lists. */
                 fileCount: number;
@@ -1137,7 +1156,7 @@ export interface components {
                      * @description Operation type for this graph node.
                      * @enum {string}
                      */
-                    op: "import.upload" | "import.url" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "archive.create" | "archive.extract" | "export.url" | "export.internal";
+                    op: "import.upload" | "import.url" | "import.s3" | "import.sftp" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "archive.create" | "archive.extract" | "export.url" | "export.s3" | "export.sftp" | "export.internal";
                     /** @description Single upstream NodeId or array of upstream NodeIds. A merge node needs at least 2 distinct inputs. */
                     input?: string | string[];
                     /** @description Storage key for import.upload node. */
@@ -1156,6 +1175,38 @@ export interface components {
                      * @enum {string}
                      */
                     method?: "PUT" | "POST";
+                    /** @description import.s3, export.s3, import.sftp and export.sftp: a credential saved for the account (the `credentialRef` that saving it answered), which only its owner can use. Name this or `credentials`, not both. A reference that is unknown, expired, of another account or of another kind is refused with 422 at submission. */
+                    credentialRef?: string;
+                    /** @description import.s3, export.s3, import.sftp and export.sftp: the credentials sent with the node, in place of `credentialRef`. They are sealed when the job is accepted, opened only by the worker that runs the node, and never returned or logged. An S3 node takes `bucket`, `accessKeyId`, `secretAccessKey` (required), and `sessionToken`, `region`, `endpoint` (an https address that resolves to public IPs; any S3-compatible store) and `forcePathStyle`. An SFTP node takes `host`, `username`, `privateKey` (required; password sign-in is not supported), and `port`, `passphrase`, `hostKey` (a known_hosts line or public key the server must show) and `basePath`. A host or endpoint that is private, loopback or link-local is refused. */
+                    credentials?: {
+                        bucket?: string;
+                        accessKeyId?: string;
+                        secretAccessKey?: string;
+                        sessionToken?: string;
+                        region?: string;
+                        endpoint?: string;
+                        forcePathStyle?: boolean;
+                        host?: string;
+                        port?: number;
+                        username?: string;
+                        privateKey?: string;
+                        passphrase?: string;
+                        hostKey?: string;
+                        basePath?: string;
+                    };
+                    /** @description import.s3: the one object to bring in. Name `key` or `prefix`. A key is relative: no leading `/`, no `.` or `..` segment, at most 1024 bytes. */
+                    key?: string;
+                    /** @description import.s3: bring in the objects whose key starts with this prefix (at most `maxObjects`; a folder marker is skipped). export.s3: the text put in front of each file name, taken literally, so `out/` is a folder and `out/report-` a name prefix; left out, the files go to the bucket root. Same rules as `key`. */
+                    prefix?: string;
+                    /** @description import.sftp: the one file to bring in, relative to the credential's `basePath`. Name `path` or `directory`. */
+                    path?: string;
+                    /** @description import.sftp: bring in the regular files of this directory (at most `maxObjects`; hidden files, links and sub-folders are skipped). export.sftp: the directory the files are written into, which must exist; left out, `basePath`. Relative to `basePath`; same rules as `key`. */
+                    directory?: string;
+                    /**
+                     * @description import.s3 with `prefix`, import.sftp with `directory`: the most files to bring in. A listing with more files fails the node with `storage_too_many_objects`; nothing is cut short. Each file is held to the plan's file limit and the whole import to the owner's daily link-import budget.
+                     * @default 20
+                     */
+                    maxObjects?: number;
                     /** @description Target format extension for convert or archive.create. */
                     targetFormat?: string;
                     /** @description Transformation options for convert, ocr, optimize, archive.create and the PDF nodes: `watermark` (pdf.watermark), `protect` (pdf.protect), `password` and `confirmEditRights` (pdf.unlock and every PDF edit), `split` (pdf.split-pages), `pages` (pdf.extract-pages, pdf.delete-pages), `reorder` (pdf.reorder-pages), `rotate` (pdf.rotate-pages) and `optimize` (optimize on a PDF). */
@@ -2789,7 +2840,7 @@ export interface operations {
                     "application/json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description The graph or pipeline tasks failed validation (for example, a merge with fewer than 2 inputs), an idempotency key was reused with a different request payload, or the graph has no conversion (problem type `https://api.easyconvert.io/problems/graph-without-conversion`): a graph that only imports and exports files is refused before anything is reserved. Named tasks are refused with a problem type of their own when the cause is a task name (`task-name-invalid`: not a lowercase letter then lowercase letters, digits, `-` or `_`, up to 64 characters; `task-name-duplicate`: the same name twice in the object), the count (`task-count-exceeded`: more than 8 tasks on the free plan, 24 on pro, 32 on the largest plan), an `input` that names no task (`task-input-unknown`) or tasks that read each other in a loop (`task-graph-cycle`); `invalidParams` names each task (`tasks.convert-1.input`). Any other fault of the tasks (a field the operation does not take, a missing `output_format`, a conversion the formats do not allow) is the generic `unprocessable-entity`, also with `invalidParams` by task. Nothing is reserved or charged for a refused request. Or an `engine` that the conversion does not list (the `code` "engine_not_offered", with the engines it lists in `engines`) or an `engineVersion` that is not installed (the `code` "engine_version_unavailable", with `installedVersion`), in the job's `options` in a pipeline task or in a named task. In a graph, the engine ids and versions are checked here and the pair of each node when the node runs, which fails that node with the same code. */
+            /** @description The graph or pipeline tasks failed validation (for example, a merge with fewer than 2 inputs, or a storage node with credentials the caller cannot use, an endpoint that is not a public address, or a key that leaves the bucket), an idempotency key was reused with a different request payload, or the graph has no conversion (problem type `https://api.easyconvert.io/problems/graph-without-conversion`): a graph that only imports and exports files is refused before anything is reserved. Named tasks are refused with a problem type of their own when the cause is a task name (`task-name-invalid`: not a lowercase letter then lowercase letters, digits, `-` or `_`, up to 64 characters; `task-name-duplicate`: the same name twice in the object), the count (`task-count-exceeded`: more than 8 tasks on the free plan, 24 on pro, 32 on the largest plan), an `input` that names no task (`task-input-unknown`) or tasks that read each other in a loop (`task-graph-cycle`); `invalidParams` names each task (`tasks.convert-1.input`). Any other fault of the tasks (a field the operation does not take, a missing `output_format`, a conversion the formats do not allow) is the generic `unprocessable-entity`, also with `invalidParams` by task. Nothing is reserved or charged for a refused request. Or an `engine` that the conversion does not list (the `code` "engine_not_offered", with the engines it lists in `engines`) or an `engineVersion` that is not installed (the `code` "engine_version_unavailable", with `installedVersion`), in the job's `options` in a pipeline task or in a named task. In a graph, the engine ids and versions are checked here and the pair of each node when the node runs, which fails that node with the same code. */
             422: {
                 headers: {
                     [name: string]: unknown;

@@ -1130,6 +1130,8 @@ const SCHEMA_ENTRIES = [
     roles: BOTH,
   },
 
+  { name: 'BYOS_SFTP_DEV_ENDPOINT_ALLOWLIST', area: 'storage', description: 'Comma-separated host:port list of customer SFTP servers that may be private-address, for a local test server. Honoured only when NODE_ENV is exactly `development`.', kind: { type: 'string' }, requiredInProduction: false, secret: false, roles: BOTH },
+
   // ---- queue ------------------------------------------------------------------------------------------
   {
     name: 'REDIS_URL',

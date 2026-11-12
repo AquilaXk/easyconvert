@@ -20,7 +20,7 @@ import { tierForOwner } from '../enqueue';
 import { tierMaxDeadlineMs } from '../job-deadline';
 import { nodeOutputKey, sanitizeNodeOutputFilename } from './node-jobs';
 
-const INTERMEDIATE_TTL_MS = 24 * 60 * 60 * 1000;
+export const INTERMEDIATE_TTL_MS = 24 * 60 * 60 * 1000;
 /** Largest body an import.url node accepts; override with GRAPH_URL_IMPORT_MAX_BYTES. */
 const DEFAULT_URL_IMPORT_MAX_BYTES = 5 * 1024 * 1024 * 1024;
 
@@ -55,6 +55,34 @@ export async function importUrlWithinBudget(
   );
   if ('refusal' in imported) throw new ImportBudgetExceededError(budgetRefusalDetail(imported.refusal, plan));
   return imported.result;
+}
+
+/**
+ * `source` read through the owner's meter: each chunk is counted, and a verdict past the import limit or the day's budget ends the
+ * stream with the error `stoppedBy` makes of it. `stopReason` answers that error, which is the one the node fails with, also when
+ * the storage backend wraps the stream's error in its own. A source error (remote reset, abort) is forwarded to the stream that
+ * storage consumes, and the source is destroyed, cancelling the download, when the meter fails.
+ */
+export function meterStream(
+  source: Readable,
+  meter: LinkImportMeter,
+  stoppedBy: (verdict: Exclude<MeterVerdict, 'ok'>) => Error
+): { stream: Readable; stopReason: () => Error | undefined } {
+  let stop: Error | undefined;
+  const stopWith = (verdict: Exclude<MeterVerdict, 'ok'>, done: TransformCallback) => {
+    stop = stoppedBy(verdict);
+    done(stop);
+  };
+  const metered = new Transform({
+    transform(chunk: Buffer, _enc, done) {
+      meter.count(chunk.length).then((verdict) => (verdict === 'ok' ? done(null, chunk) : stopWith(verdict, done)), done);
+    },
+    flush(done) {
+      meter.charge().then((verdict) => (verdict === 'ok' ? done() : stopWith(verdict, done)), done);
+    },
+  });
+  // Storage observes every failure through the meter's 'error' event, so the callback has nothing left to do.
+  return { stream: pipeline(source, metered, () => undefined), stopReason: () => stop };
 }
 
 /** The failure of a body past the `limitBytes` an import.url node reads, by the length it declared when it declared one. */
@@ -97,25 +125,9 @@ async function importUrlArtifact(request: {
     throw declaredFailure(url, overflow, limitBytes, declared);
   }
 
-  let stop: Error | undefined;
-  const stopWith = (error: Error, done: TransformCallback) => {
-    stop = error;
-    done(error);
-  };
   const stopped = (verdict: Exclude<MeterVerdict, 'ok'>): Error =>
     verdict === 'too-large' ? tooLarge(url, limitBytes) : new ImportBudgetExceededError(dailyLimitReachedDetail(plan));
-  const metered = new Transform({
-    transform(chunk: Buffer, _enc, done) {
-      meter.count(chunk.length).then((verdict) => (verdict === 'ok' ? done(null, chunk) : stopWith(stopped(verdict), done)), done);
-    },
-    flush(done) {
-      meter.charge().then((verdict) => (verdict === 'ok' ? done() : stopWith(stopped(verdict), done)), done);
-    },
-  });
-  // pipeline forwards a source error (remote reset, abort) to the meter that storage consumes, and destroys the source,
-  // cancelling the download, when the meter fails. Storage observes every failure through the meter's 'error' event, so the
-  // callback has nothing left to do.
-  const limited = pipeline(Readable.fromWeb(response.body as import('node:stream/web').ReadableStream), metered, () => undefined);
+  const { stream: limited, stopReason } = meterStream(Readable.fromWeb(response.body as import('node:stream/web').ReadableStream), meter, stopped);
 
   const urlName = path.basename(new URL(url).pathname);
   const filename = sanitizeNodeOutputFilename(urlName && urlName !== '/' ? urlName : `${nodeId}.bin`, `${nodeId}.bin`);
@@ -124,7 +136,7 @@ async function importUrlArtifact(request: {
   try {
     await storage.saveObjectFromStream(key, limited, { filename, mimeType }, INTERMEDIATE_TTL_MS);
   } catch (err) {
-    throw stop ?? err;
+    throw stopReason() ?? err;
   }
   return key;
 }

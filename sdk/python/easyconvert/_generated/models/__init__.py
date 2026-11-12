@@ -159,6 +159,9 @@ from .job_graph import JobGraph
 from .job_graph_failure_policy import JobGraphFailurePolicy
 from .job_graph_nodes import JobGraphNodes
 from .job_graph_nodes_additional_property import JobGraphNodesAdditionalProperty
+from .job_graph_nodes_additional_property_credentials import (
+    JobGraphNodesAdditionalPropertyCredentials,
+)
 from .job_graph_nodes_additional_property_headers import (
     JobGraphNodesAdditionalPropertyHeaders,
 )
@@ -209,6 +212,7 @@ from .mode_of_vectorize import ModeOfVectorize
 from .modify_of_permissions_of_protect import ModifyOfPermissionsOfProtect
 from .multi_page_output import MultiPageOutput
 from .named_task import NamedTask
+from .named_task_credentials import NamedTaskCredentials
 from .named_task_headers import NamedTaskHeaders
 from .named_task_method import NamedTaskMethod
 from .named_task_operation import NamedTaskOperation
@@ -410,6 +414,7 @@ __all__ = (
     "JobGraphFailurePolicy",
     "JobGraphNodes",
     "JobGraphNodesAdditionalProperty",
+    "JobGraphNodesAdditionalPropertyCredentials",
     "JobGraphNodesAdditionalPropertyHeaders",
     "JobGraphNodesAdditionalPropertyMethod",
     "JobGraphNodesAdditionalPropertyOp",
@@ -444,6 +449,7 @@ __all__ = (
     "ModifyOfPermissionsOfProtect",
     "MultiPageOutput",
     "NamedTask",
+    "NamedTaskCredentials",
     "NamedTaskHeaders",
     "NamedTaskMethod",
     "NamedTaskOperation",

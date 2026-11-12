@@ -1,6 +1,8 @@
 import path from 'node:path';
 import type { GraphExecutionState, GraphNodeState, NodeExecutionStatus } from '@/lib/queue/graph/scheduler-types';
 import { redactText } from '@/lib/security/redact';
+import { STORAGE_EXPORT_OPERATIONS } from './graph-operations';
+import { exportDestination, exportedFileNames } from './storage-export-names';
 import { publicOperationName } from './named-tasks';
 
 /** What a task is doing, as the job reports it by name. */
@@ -21,8 +23,8 @@ export interface TaskReport {
   input?: string[];
   startedAt?: number;
   finishedAt?: number;
-  /** The files an export task keeps for download. */
-  result?: { files: Array<{ filename: string; downloadUrl: string }>; fileCount: number };
+  /** The files an export task keeps for download (`downloadUrl`), or wrote to the customer's store (`destination`). */
+  result?: { files: Array<{ filename: string; downloadUrl?: string; destination?: string }>; fileCount: number };
   error?: { code: string; message: string; task?: string };
 }
 
@@ -49,6 +51,16 @@ function keptFiles(state: GraphExecutionState, node: GraphNodeState): TaskReport
   return {
     files: keys.slice(0, MAX_TASK_RESULT_FILES).map((key) => ({ filename: path.posix.basename(key), downloadUrl: `/api/storage/file/${encodeURIComponent(key)}` })),
     fileCount: keys.length,
+  };
+}
+
+/** The files an `export/s3` or `export/sftp` task wrote: each input under the name and place the node gave it. */
+function writtenFiles(node: GraphNodeState, graphNode: GraphExecutionState['graph']['nodes'][string]): TaskReport['result'] {
+  const destination = (graphNode as { prefix?: string; directory?: string }).prefix ?? (graphNode as { directory?: string }).directory;
+  const names = exportedFileNames(node.outputs.map((key) => path.posix.basename(key)));
+  return {
+    files: names.slice(0, MAX_TASK_RESULT_FILES).map((name) => ({ filename: name, destination: exportDestination(graphNode.op, destination, name) })),
+    fileCount: names.length,
   };
 }
 
@@ -83,6 +95,7 @@ export function namedTaskReports(state: GraphExecutionState): Record<string, Tas
     if (node.startedAt !== undefined) report.startedAt = node.startedAt;
     if (node.finishedAt !== undefined) report.finishedAt = node.finishedAt;
     if (node.status === 'completed' && graphNode.op === 'export.internal') report.result = keptFiles(state, node);
+    if (node.status === 'completed' && STORAGE_EXPORT_OPERATIONS.has(graphNode.op)) report.result = writtenFiles(node, graphNode);
     if (node.status === 'failed') {
       report.error = { code: node.errorCode ?? TASK_FAILED_CODE, message: redactText(node.error ?? '') };
     } else if (node.status !== 'completed') {

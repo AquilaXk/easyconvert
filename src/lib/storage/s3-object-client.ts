@@ -51,7 +51,9 @@ import {
   stripQuotes,
   toNodeReadable,
 } from './adapters/s3';
-import { parseListMultipartUploads, stripEntryBlocks, type ListedUpload } from './s3-list-xml';
+import { parseListMultipartUploads, parseListObjectsPage, stripEntryBlocks, type ListedObject, type ListObjectsPage, type ListedUpload } from './s3-list-xml';
+
+export type { ListedObject, ListObjectsPage };
 import {
   EMPTY_PAYLOAD_SHA256,
   PRESIGN_MAX_EXPIRES_SECONDS,
@@ -163,19 +165,6 @@ export interface PutObjectResult {
   size: number;
   etag: string;
   contentType: string;
-}
-
-export interface ListedObject {
-  key: string;
-  size: number;
-  etag: string;
-  lastModified?: Date;
-}
-
-export interface ListObjectsPage {
-  objects: ListedObject[];
-  isTruncated: boolean;
-  nextContinuationToken?: string;
 }
 
 export interface ListObjectsOptions {
@@ -1050,39 +1039,7 @@ export class S3ObjectClient {
   }
 
   private parseListObjects(xml: string): ListObjectsPage {
-    const objects: ListedObject[] = [];
-    // A server that ignores encoding-type answers without <EncodingType>; its keys are plain text.
-    const urlEncoded = readXmlElement(stripEntryBlocks(xml, ['Contents']), 'EncodingType') === 'url';
-    const open = '<Contents>';
-    const close = '</Contents>';
-    let from = xml.indexOf(open);
-    while (from !== -1) {
-      const end = xml.indexOf(close, from);
-      if (end === -1) {
-        throw this.malformed('ListObjectsV2 answer has an unterminated <Contents>');
-      }
-      const block = xml.slice(from + open.length, end);
-      const rawKey = readXmlElement(block, 'Key');
-      const key = urlEncoded && rawKey !== undefined ? this.decodeListedKey(rawKey) : rawKey;
-      const size = Number.parseInt(readXmlElement(block, 'Size') ?? '', 10);
-      if (key === undefined || !Number.isSafeInteger(size) || size < 0) {
-        throw this.malformed('ListObjectsV2 answer has an entry without a valid Key and Size');
-      }
-      objects.push({
-        key,
-        size,
-        etag: stripQuotes(readXmlElement(block, 'ETag')) ?? '',
-        lastModified: parseHttpDate(readXmlElement(block, 'LastModified') ?? null),
-      });
-      from = xml.indexOf(open, end + close.length);
-    }
-    const envelope = stripEntryBlocks(xml, ['Contents']);
-    const isTruncated = readXmlElement(envelope, 'IsTruncated') === 'true';
-    const nextContinuationToken = readXmlElement(envelope, 'NextContinuationToken');
-    if (isTruncated && !nextContinuationToken) {
-      throw this.malformed('ListObjectsV2 answer is truncated but has no NextContinuationToken');
-    }
-    return { objects, isTruncated, nextContinuationToken };
+    return parseListObjectsPage(xml, (encoded) => this.decodeListedKey(encoded), (message) => this.malformed(message));
   }
 
   /**

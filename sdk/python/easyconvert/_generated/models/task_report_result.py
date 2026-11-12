@@ -16,8 +16,9 @@ T = TypeVar("T", bound="TaskReportResult")
 
 @_attrs_define
 class TaskReportResult:
-    """The files an `export/url` task without a `url` kept for download, once it completed. The other tasks hand their
-    files to the tasks that read them and have no result of their own.
+    """The files an `export/url` task without a `url` kept for download, or the files an `export/s3` or `export/sftp` task
+    wrote to the customer's store, once it completed. The other tasks hand their files to the tasks that read them and
+    have no result of their own.
 
         Attributes:
             files (list[TaskReportResultFilesItem]): At most 100 files.

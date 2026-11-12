@@ -7,6 +7,8 @@ from typing import Any, Self, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..types import UNSET, Unset
+
 T = TypeVar("T", bound="TaskReportResultFilesItem")
 
 
@@ -15,11 +17,15 @@ class TaskReportResultFilesItem:
     """
     Attributes:
         filename (str):
-        download_url (str): Path of the file; send it to `GET /api/storage/file/{key}` with the key.
+        download_url (str | Unset): `export/url` without a `url`: the path of the file; send it to `GET
+            /api/storage/file/{key}` with the key.
+        destination (str | Unset): `export/s3` and `export/sftp`: where the file was written, as a key in the bucket or
+            a path under the directory of the task.
     """
 
     filename: str
-    download_url: str
+    download_url: str | Unset = UNSET
+    destination: str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -27,14 +33,19 @@ class TaskReportResultFilesItem:
 
         download_url = self.download_url
 
+        destination = self.destination
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "filename": filename,
-                "downloadUrl": download_url,
             }
         )
+        if download_url is not UNSET:
+            field_dict["downloadUrl"] = download_url
+        if destination is not UNSET:
+            field_dict["destination"] = destination
 
         return field_dict
 
@@ -43,11 +54,14 @@ class TaskReportResultFilesItem:
         d = dict(src_dict)
         filename = d.pop("filename")
 
-        download_url = d.pop("downloadUrl")
+        download_url = d.pop("downloadUrl", UNSET)
+
+        destination = d.pop("destination", UNSET)
 
         task_report_result_files_item = cls(
             filename=filename,
             download_url=download_url,
+            destination=destination,
         )
 
         task_report_result_files_item.additional_properties = d

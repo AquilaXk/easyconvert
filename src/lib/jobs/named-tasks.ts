@@ -16,10 +16,25 @@ const SLASH_OPERATIONS = {
   'import/upload': 'import.upload',
   'archive/create': 'archive.create',
   'archive/extract': 'archive.extract',
+  'import/s3': 'import.s3',
+  'import/sftp': 'import.sftp',
+  'export/s3': 'export.s3',
+  'export/sftp': 'export.sftp',
 } as const satisfies Record<string, GraphOperation>;
 
 /** The graph operations a task cannot name directly: its imports, archives and exports take the slash spelling. */
-const SLASH_ONLY: ReadonlySet<string> = new Set<GraphOperation>(['import.url', 'import.upload', 'archive.create', 'archive.extract', 'export.url', 'export.internal']);
+const SLASH_ONLY: ReadonlySet<string> = new Set<GraphOperation>([
+  'import.url',
+  'import.upload',
+  'import.s3',
+  'import.sftp',
+  'archive.create',
+  'archive.extract',
+  'export.url',
+  'export.s3',
+  'export.sftp',
+  'export.internal',
+]);
 
 /** Every `operation` a named task accepts. */
 export const NAMED_TASK_OPERATIONS: readonly string[] = [
@@ -47,6 +62,17 @@ export interface NamedTask {
   upload_id?: string;
   storage_key?: string;
   entries?: string[];
+  /** `import/s3`, `export/s3`, `import/sftp` and `export/sftp`: a saved credential of the caller, or the credentials sent with the task (sealed, never returned). */
+  credential_ref?: string;
+  credentials?: Record<string, unknown>;
+  /** `import/s3`: one object (`key`) or the objects under a `prefix`; `export/s3`: the `prefix` put before each file name. */
+  key?: string;
+  prefix?: string;
+  /** `import/sftp`: one file (`path`) or the files of a `directory`; `export/sftp`: the `directory` written into. */
+  path?: string;
+  directory?: string;
+  /** The most files an import takes from a prefix or directory. */
+  max_objects?: number;
 }
 
 export type NamedTaskMap = Record<string, NamedTask>;
@@ -56,9 +82,12 @@ export function isNamedTaskMap(tasks: unknown): tasks is NamedTaskMap {
   return typeof tasks === 'object' && tasks !== null && !Array.isArray(tasks);
 }
 
+/** The operations that read from or write to the customer's own store. */
+const STORAGE_OPERATIONS: ReadonlySet<string> = new Set(['import/s3', 'import/sftp', 'export/s3', 'export/sftp']);
 const TARGET_OPERATIONS: ReadonlySet<string> = new Set(['convert', 'thumbnail', 'merge', 'archive/create']);
 const INPUT_FIELDS = ['operation', 'input'] as const;
 const URL_FIELDS = ['url', 'headers'] as const;
+const STORAGE_FIELDS = ['credential_ref', 'credentials'] as const;
 
 /** The fields each operation takes beside `operation`; a field of another operation is refused, so a misplaced one is not ignored. */
 function allowedFields(operation: string): ReadonlySet<string> {
@@ -71,9 +100,23 @@ function allowedFields(operation: string): ReadonlySet<string> {
       return new Set([...INPUT_FIELDS, ...URL_FIELDS, 'method']);
     case 'archive/extract':
       return new Set([...INPUT_FIELDS, 'entries', 'options']);
+    case 'import/s3':
+      return new Set(['operation', ...STORAGE_FIELDS, 'key', 'prefix', 'max_objects']);
+    case 'import/sftp':
+      return new Set(['operation', ...STORAGE_FIELDS, 'path', 'directory', 'max_objects']);
+    case 'export/s3':
+      return new Set([...INPUT_FIELDS, ...STORAGE_FIELDS, 'prefix']);
+    case 'export/sftp':
+      return new Set([...INPUT_FIELDS, ...STORAGE_FIELDS, 'directory']);
     default:
       return new Set([...INPUT_FIELDS, 'options', ...(TARGET_OPERATIONS.has(operation) ? ['output_format'] : [])]);
   }
+}
+
+/** The fields of a storage task as its graph node names them: the two spelled with an underscore in a task are camel case in the node. */
+function storageNodeFields(task: NamedTask): Partial<TaskNode> {
+  const { credential_ref: credentialRef, max_objects: maxObjects, credentials, key, prefix, path, directory } = task;
+  return Object.fromEntries(Object.entries({ credentialRef, maxObjects, credentials, key, prefix, path, directory }).filter(([, value]) => value !== undefined));
 }
 
 /** The graph node of a task, or the errors that say why the task is not one. */
@@ -101,6 +144,8 @@ function taskNode(name: string, task: NamedTask, uploadKeys: Readonly<Record<str
     if (task.storage_key !== undefined && task.upload_id !== undefined) refuse('INVALID_TASK_FIELD', 'upload_id', `Task "${name}" names its upload by "upload_id" or by "storage_key", not both.`);
     else if (!key) refuse('MISSING_TASK_FIELD', 'upload_id', `Task "${name}" imports an upload and needs "upload_id" or "storage_key".`);
     node.storageKey = key;
+  } else if (STORAGE_OPERATIONS.has(task.operation)) {
+    Object.assign(node, storageNodeFields(task));
   } else if (task.operation === 'export/url') {
     // With a destination the files are sent there; without one they are kept for the caller to download.
     node.op = task.url ? 'export.url' : 'export.internal';
@@ -131,6 +176,11 @@ export function namedTaskNameErrors(names: readonly string[], tier: string | und
       .filter((name) => !isValidNodeId(name))
       .map((name) => ({ path: `tasks.${name}`, code: 'INVALID_NODE_ID', message: `Invalid task name "${name}". A name starts with a lowercase letter and holds lowercase letters, digits, "-" and "_", up to 64 characters.` })),
   ];
+}
+
+/** The two fields a graph node spells in camel case, as a task spells them. */
+function taskFieldNames(text: string): string {
+  return text.replaceAll('credentialRef', 'credential_ref').replaceAll('maxObjects', 'max_objects');
 }
 
 export type NamedTaskTranslation = { ok: true; graph: JobGraph } | { ok: false; errors: GraphValidationErrorDetail[] };
@@ -177,7 +227,7 @@ export interface NamedTaskRefusal {
 
 /** The refusal of `errors` (those of the name checks, of `namedTasksToJobGraph`, or of `validateJobGraph` on its graph), by task. */
 export function namedTaskRefusal(errors: readonly GraphValidationErrorDetail[]): NamedTaskRefusal {
-  const named = errors.map((e) => ({ ...e, path: e.path.replace(/^nodes(?=\.|$)/, 'tasks'), problem: CODED_PROBLEMS[e.code] ?? GENERIC_PROBLEM }));
+  const named = errors.map((e) => ({ ...e, path: taskFieldNames(e.path.replace(/^nodes(?=\.|$)/, 'tasks')), message: taskFieldNames(e.message), problem: CODED_PROBLEMS[e.code] ?? GENERIC_PROBLEM }));
   return {
     type: PROBLEM_PRIORITY.find((candidate) => named.some((e) => e.problem === candidate)) ?? GENERIC_PROBLEM,
     detail: `Task validation failed: ${named.map((e) => e.message).join(' ')}`,

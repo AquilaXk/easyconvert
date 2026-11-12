@@ -33,6 +33,14 @@ export class StorageInvalidKeyError extends StorageInputError {
   }
 }
 
+/** A prefix or a directory holds more files than the import may take; nothing is imported from a listing that does not fit. */
+export class StorageListingLimitError extends StorageInputError {
+  constructor(public readonly maxObjects: number, provider: string) {
+    super(`The listing holds more than ${maxObjects} files`, provider);
+    this.name = 'StorageListingLimitError';
+  }
+}
+
 export class StorageNotFoundError extends StorageAdapterError {
   constructor(path: string, provider: string) {
     super(`Remote object not found: "${path}"`, provider);

@@ -13,6 +13,7 @@ import {
   StorageAuthenticationError,
   StorageSsrfError,
   StorageAdapterError,
+  StorageListingLimitError,
 } from './adapter-interface';
 import { isPrivateOrRestrictedHost, isBlockedIp } from '../../security/ssrf';
 import { REMOTE_STAGED_OBJECT_MAX_BYTES } from '../remote-storage-backend';
@@ -24,6 +25,7 @@ import {
   assertSftpPort,
   isSftpNotFound,
   normalizeBasePath,
+  parseSftpDirectoryFiles,
   parseSftpListingSize,
   resolveRemotePath,
   sftpBatch,
@@ -57,6 +59,19 @@ interface Spool {
   maxBytes: number;
 }
 
+/**
+ * Comma-separated `host:port` list of SFTP servers that may be private, for a local test server during development. It is
+ * server configuration, never a field of the customer's credentials, and is honoured only when NODE_ENV is exactly "development".
+ */
+export const SFTP_DEV_ENDPOINT_ALLOWLIST_ENV = 'BYOS_SFTP_DEV_ENDPOINT_ALLOWLIST';
+
+/** Whether the server's development allowlist names exactly this host and port. */
+export function isSftpDevAllowlisted(host: string, port: number | undefined): boolean {
+  if (process.env.NODE_ENV !== 'development') return false;
+  const entry = `${host}:${port ?? 22}`.toLowerCase();
+  return (process.env[SFTP_DEV_ENDPOINT_ALLOWLIST_ENV] ?? '').split(',').some((listed) => listed.trim().toLowerCase() === entry);
+}
+
 /** The client ran and a command of the batch failed (exit 1): a missing file, a refused write, a directory that is not there. */
 class SftpCommandFailedError extends StorageAdapterError {
   constructor(message: string, public readonly stderr: string) {
@@ -86,6 +101,14 @@ function removeDirQuietly(dir: string): void {
   }
 }
 
+/** The client wrote more output than a call keeps: a directory of more entries than one listing can hold. */
+class SftpOutputLimitError extends StorageAdapterError {
+  constructor(message: string) {
+    super(message, 'sftp');
+    this.name = 'SftpOutputLimitError';
+  }
+}
+
 export class SftpStorageAdapter implements IStorageAdapter {
   readonly providerName = 'sftp';
   private readonly port: number;
@@ -102,7 +125,8 @@ export class SftpStorageAdapter implements IStorageAdapter {
   /** The address the client is told to connect to: the first the name resolves to, after every address passed the check. */
   private async resolveAllowedAddress(): Promise<string> {
     const host = this.credentials.host;
-    if (isPrivateOrRestrictedHost(host)) {
+    const devAllowlisted = isSftpDevAllowlisted(host, this.port);
+    if (!devAllowlisted && isPrivateOrRestrictedHost(host)) {
       throw new StorageSsrfError(host, this.providerName);
     }
 
@@ -112,7 +136,7 @@ export class SftpStorageAdapter implements IStorageAdapter {
         throw new StorageSsrfError(`Could not resolve host ${host}`, this.providerName);
       }
       for (const addr of addresses) {
-        if (isBlockedIp(addr.address)) {
+        if (!devAllowlisted && isBlockedIp(addr.address)) {
           throw new StorageSsrfError(`${host} resolves to restricted IP ${addr.address}`, this.providerName);
         }
       }
@@ -203,6 +227,26 @@ export class SftpStorageAdapter implements IStorageAdapter {
     return { size, lastModified: new Date() };
   }
 
+  /**
+   * The regular files of a directory, by name. More than `maxFiles` of them, or a listing too long for the client's output cap,
+   * is refused with a `StorageListingLimitError`: nothing is listed short. A directory that is not there is `StorageNotFoundError`.
+   */
+  async listDirectory(directory: string, maxFiles: number): Promise<Array<{ name: string; size: number }>> {
+    const address = await this.resolveAllowedAddress();
+    const resolved = resolveRemotePath(this.basePath, directory);
+    let output: string;
+    try {
+      output = await this.runSftpBatch(address, sftpBatch(sftpCommandLine('ls -l', resolved)));
+    } catch (err) {
+      if (err instanceof SftpOutputLimitError) throw new StorageListingLimitError(maxFiles, this.providerName);
+      if (err instanceof SftpCommandFailedError && isSftpNotFound(err.stderr)) throw new StorageNotFoundError(directory, this.providerName);
+      throw err;
+    }
+    const files = parseSftpDirectoryFiles(output);
+    if (files.length > maxFiles) throw new StorageListingLimitError(maxFiles, this.providerName);
+    return files;
+  }
+
   async delete(remotePath: string): Promise<boolean> {
     const address = await this.resolveAllowedAddress();
     const resolved = resolveRemotePath(this.basePath, remotePath);
@@ -285,6 +329,7 @@ export class SftpStorageAdapter implements IStorageAdapter {
       let commandTimer: NodeJS.Timeout | undefined;
       let settled = false;
       let stoppedFor: string | undefined;
+      let stoppedByOutput = false;
       const settle = (outcome: () => void) => {
         if (settled) return;
         settled = true;
@@ -308,7 +353,10 @@ export class SftpStorageAdapter implements IStorageAdapter {
       // spawn's own `timeout` would signal the client alone; this one stops the whole group, as every other stop does
       commandTimer = setTimeout(() => stop(`SFTP command ran longer than ${SFTP_COMMAND_TIMEOUT_MS / 1000} s`), SFTP_COMMAND_TIMEOUT_MS);
 
-      const readStdout = collectBounded(child.stdout, () => stop(`SFTP output passed ${SFTP_MAX_OUTPUT_BYTES} bytes`));
+      const readStdout = collectBounded(child.stdout, () => {
+        if (stoppedFor === undefined) stoppedByOutput = true;
+        stop(`SFTP output passed ${SFTP_MAX_OUTPUT_BYTES} bytes`);
+      });
       const readStderr = collectBounded(child.stderr, () => stop(`SFTP error output passed ${SFTP_MAX_OUTPUT_BYTES} bytes`));
       child.stdin.on('error', () => {
         // a child that never started or already exited reports its failure through 'error' and 'close'
@@ -328,10 +376,10 @@ export class SftpStorageAdapter implements IStorageAdapter {
         settle(() => {
           const stderr = readStderr();
           if (stoppedFor !== undefined) {
-            reject(new StorageAdapterError(stoppedFor, this.providerName));
+            reject(stoppedByOutput ? new SftpOutputLimitError(stoppedFor) : new StorageAdapterError(stoppedFor, this.providerName));
           } else if (code === 0) {
             resolve(readStdout());
-          } else if (code === SFTP_CONNECTION_FAILED_EXIT && /Permission denied|Authentication failed/.test(stderr)) {
+          } else if (code === SFTP_CONNECTION_FAILED_EXIT && /Permission denied|Authentication failed|Host key verification failed/.test(stderr)) {
             reject(new StorageAuthenticationError(truncateSftpErrorText(stderr), this.providerName));
           } else if (code === SFTP_COMMAND_FAILED_EXIT) {
             reject(new SftpCommandFailedError(`SFTP command failed: ${truncateSftpErrorText(stderr)}`, stderr));

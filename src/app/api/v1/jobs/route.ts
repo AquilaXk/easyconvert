@@ -18,6 +18,7 @@ import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-li
 import { resolveResourceClass, tierToPriority } from '@/lib/queue/resource-class';
 import { generateJobId } from '@/lib/queue/bullmq-engine';
 import { storageProvider as s3Storage } from '@/lib/storage';
+import { CredentialsVaultPersistenceError } from '@/lib/storage/credentials-vault';
 import { storeUploadedBuffer } from '@/lib/api/completed-upload';
 import { readObjectHeader } from '@/lib/storage/object-header';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
@@ -34,6 +35,8 @@ import {
   JobGraphValidationError,
 } from '@/lib/jobs';
 import { graphReservationUnits } from '@/lib/jobs/graph-operations';
+import { hasRemoteImport, remoteImportPath, storageImportFileName } from '@/lib/jobs/storage-node-validation';
+import { missingStorageCredentials } from '@/lib/jobs/storage-credential-check';
 import { duplicateKeys } from '@/lib/jobs/duplicate-keys';
 import { isNamedTaskMap, namedTaskNameErrors, namedTaskRefusal, namedTasksToJobGraph, type NamedTask, type NamedTaskMap } from '@/lib/jobs/named-tasks';
 import { namedJobFields } from '@/lib/jobs/named-task-report';
@@ -203,6 +206,21 @@ function invalidGraphProblem(instanceUri: string, prefix: string | undefined, er
   if (prefix === undefined && detail === undefined) return namedTaskProblem(instanceUri, errors);
   const text = detail ?? `${prefix}: ${errors.map((e) => e.message).join(' ')}`;
   return createProblemDetailsResponse(422, text, instanceUri, 'Unprocessable Entity', 'https://api.easyconvert.io/problems/unprocessable-entity', undefined, errors.map((e) => ({ name: e.path, reason: e.message })));
+}
+
+/**
+ * The 422 for a saved credential a storage node of the graph names that the caller cannot use, worded by task for named tasks; the
+ * 503 when the vault cannot be read; undefined when every credential is usable or the graph names none.
+ */
+async function storageCredentialsRefusal(graph: JobGraph | undefined, userId: string, where: { instanceUri: string; named: boolean }): Promise<NextResponse | undefined> {
+  if (!graph) return undefined;
+  try {
+    const problems = await missingStorageCredentials(normalizeGraphNodes(graph), userId);
+    return problems.length > 0 ? invalidGraphProblem(where.instanceUri, where.named ? undefined : 'Graph validation failed', problems) : undefined;
+  } catch (err) {
+    if (!(err instanceof CredentialsVaultPersistenceError)) throw err;
+    return createProblemDetailsResponse(503, err.message, where.instanceUri, 'Service Unavailable');
+  }
 }
 
 type TasksField = { tasks: PipelineTask[] } | { namedTasks: NamedTaskMap; duplicates: string[] } | { response: NextResponse };
@@ -560,6 +578,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       }
     }
 
+    const credentialsRefusal = await storageCredentialsRefusal(graph, auth.user.id, { instanceUri, named: Boolean(namedTasks) });
+    if (credentialsRefusal) return reply(credentialsRefusal);
+
     // A graph that only moves files would cost nothing (policy entry 15), so it is refused before anything is reserved.
     const reservedUnits = unitsToReserve(graph);
     if (graph && reservedUnits === 0) {
@@ -586,7 +607,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       originalFilename = storageKey.split('/').pop() || 'file';
     }
 
-    const hasImportUrl = graph && Object.values(normalizeGraphNodes(graph)).some((n) => n.op === 'import.url');
+    const hasImportUrl = graph && hasRemoteImport(normalizeGraphNodes(graph));
 
     if (!targetFormat) {
       return await fail(400, 'Missing required parameter: "targetFormat".');
@@ -610,19 +631,10 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     sourceDef ??= detectFormatFromFilename(originalFilename);
 
     if (!sourceDef && hasImportUrl && graph) {
-      const graphNodes = normalizeGraphNodes(graph);
-      const urlNode = Object.values(graphNodes).find((n) => n.op === 'import.url') as { url?: string } | undefined;
-      if (urlNode?.url) {
-        try {
-          const parsedUrl = new URL(urlNode.url);
-          const urlExt = path.extname(parsedUrl.pathname).replace(/^\./, '').toLowerCase();
-          sourceDef = getFormatByExtension(urlExt);
-          if (!originalFilename) {
-            originalFilename = path.basename(parsedUrl.pathname) || 'remote_file';
-          }
-        } catch {
-          // ignore
-        }
+      const remote = remoteImportPath(normalizeGraphNodes(graph));
+      if (remote) {
+        sourceDef = getFormatByExtension(path.extname(remote).replace(/^\./, '').toLowerCase());
+        originalFilename ||= path.basename(remote) || 'remote_file';
       }
     }
 
@@ -805,6 +817,9 @@ function resolveGraphFallbackFormat(
   for (const node of nodes) {
     if (node.op === 'import.upload' && typeof node.storageKey === 'string') {
       const detected = detectFormatFromFilename(node.storageKey)?.id;
+      if (detected) return detected;
+    } else if (storageImportFileName(node)) {
+      const detected = detectFormatFromFilename(storageImportFileName(node) as string)?.id;
       if (detected) return detected;
     } else if (node.op === 'import.url' && typeof node.url === 'string') {
       try {

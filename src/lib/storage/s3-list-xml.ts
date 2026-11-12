@@ -1,4 +1,4 @@
-import { readXmlElement } from './adapters/s3';
+import { readXmlElement, stripQuotes } from './adapters/s3';
 
 /**
  * The document with every `<name>...</name>` entry block removed, so the paging fields that
@@ -70,4 +70,67 @@ export function parseListMultipartUploads(
     nextKeyMarker: decode(readXmlElement(envelope, 'NextKeyMarker')),
     nextUploadIdMarker: readXmlElement(envelope, 'NextUploadIdMarker'),
   };
+}
+
+export interface ListedObject {
+  key: string;
+  size: number;
+  etag: string;
+  lastModified?: Date;
+}
+
+export interface ListObjectsPage {
+  objects: ListedObject[];
+  isTruncated: boolean;
+  nextContinuationToken?: string;
+}
+
+function parseListedDate(value: string | undefined): Date | undefined {
+  if (!value) return undefined;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+/**
+ * One page of a ListObjectsV2 answer. `decodeKey` reverses the form URL encoding of `encoding-type=url` for the keys, and
+ * `malformed` makes the error of an answer that cannot be read. A server that ignores `encoding-type` answers without
+ * `<EncodingType>`; its keys are plain text.
+ */
+export function parseListObjectsPage(
+  xml: string,
+  decodeKey: (encoded: string) => string,
+  malformed: (message: string) => Error
+): ListObjectsPage {
+  const envelope = stripEntryBlocks(xml, ['Contents']);
+  const urlEncoded = readXmlElement(envelope, 'EncodingType') === 'url';
+  const objects: ListedObject[] = [];
+  const open = '<Contents>';
+  const close = '</Contents>';
+  let from = xml.indexOf(open);
+  while (from !== -1) {
+    const end = xml.indexOf(close, from);
+    if (end === -1) {
+      throw malformed('ListObjectsV2 answer has an unterminated <Contents>');
+    }
+    const block = xml.slice(from + open.length, end);
+    const rawKey = readXmlElement(block, 'Key');
+    const key = urlEncoded && rawKey !== undefined ? decodeKey(rawKey) : rawKey;
+    const size = Number.parseInt(readXmlElement(block, 'Size') ?? '', 10);
+    if (key === undefined || !Number.isSafeInteger(size) || size < 0) {
+      throw malformed('ListObjectsV2 answer has an entry without a valid Key and Size');
+    }
+    objects.push({
+      key,
+      size,
+      etag: stripQuotes(readXmlElement(block, 'ETag')) ?? '',
+      lastModified: parseListedDate(readXmlElement(block, 'LastModified')),
+    });
+    from = xml.indexOf(open, end + close.length);
+  }
+  const isTruncated = readXmlElement(envelope, 'IsTruncated') === 'true';
+  const nextContinuationToken = readXmlElement(envelope, 'NextContinuationToken');
+  if (isTruncated && !nextContinuationToken) {
+    throw malformed('ListObjectsV2 answer is truncated but has no NextContinuationToken');
+  }
+  return { objects, isTruncated, nextContinuationToken };
 }

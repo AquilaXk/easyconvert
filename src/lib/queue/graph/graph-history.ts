@@ -42,6 +42,11 @@ export function sourceFormatForExport(state: GraphExecutionState, exportNodeId: 
       if (fromKey) return fromKey;
       break;
     }
+    if (node.op === 'import.s3' || node.op === 'import.sftp') {
+      const fromOut = formatOfFilename(state.nodes[currentId]?.outputs?.[0] || '');
+      if (fromOut) return fromOut;
+      break;
+    }
     if (node.op === 'import.url') {
       const fromOut = formatOfFilename(state.nodes[currentId]?.outputs?.[0] || '');
       if (fromOut) return fromOut;

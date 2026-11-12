@@ -188,7 +188,11 @@ export function resolveNodeResourceClass(node: any): ResourceClass {
   switch (node.op) {
     case 'import.upload':
     case 'import.url':
+    case 'import.s3':
+    case 'import.sftp':
     case 'export.url':
+    case 'export.s3':
+    case 'export.sftp':
     case 'export.internal':
       return 'light';
     case 'ocr':

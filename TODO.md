@@ -29,7 +29,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Engine choice, second step (entry 267 offers one installed version of each engine): install a second version of an engine when a pair needs it and list the versions with `default` and `latest` flags in `GET /api/formats`; show the engine and version of each node in the graph view (the node job's result carries them, the view lists no node result yet); read the engine versions at worker start, so the first conversion does not pay the probe.
 - Describe the named-task form (fields, report, refusals) on the Jobs page of the API documentation; its `tasks` row shows only the array branch (needs QA screenshots).
 - Thumbnail, metadata and website capture (website capture needs an SSRF suite).
-- Customer storage and SFTP import and export; presets and watched sources after that.
+- Presets and watched sources.
 - Split the long office functions (`parsePptxSlideSceneGraph`, `parseDrawingMlShapes`, `parseAllXlsxWorksheets`, `renderTable`, `generatePdfFromDocx`), give the 7-parameter `computeGroupTransformMatrix`, `renderPdfChart` and `renderSinglePdfShape` an options object, and move the S3 adapter onto `src/lib/text/escape.ts` once the upload-session change lands.
 - Evaluation-size sample sets: 30+ video, 30+ RAW from 10 makers, 40+ audio, 60+ PDF stress files.
 - Learned OCR layout tier: pick a permissively licensed layout model and record its model and data provenance with the change.
