@@ -572,7 +572,7 @@
   },
   "features": {
     "directoryHeading": "지원 파일 형식",
-    "directoryIntro": "{categories}개 분류에 {formats}개 형식, 변환 조합 {pairs}개가 있어요.",
+    "directoryIntro": "{categories}개 분류, {formats}개 형식, 변환 조합 {pairs}개를 지원합니다.",
     "extensionsHeading": "{category} 형식",
     "pairsHeading": "자주 쓰는 {category} 변환",
     "categoryNouns": {
@@ -779,12 +779,12 @@
     "operations": {
       "merge": {
         "fileInputLabel": "병합할 파일 선택",
-        "heading": "병합할 파일을 선택해 주세요",
+        "heading": "병합할 파일을 선택하세요",
         "selectFile": "파일 선택"
       },
       "compress": {
         "fileInputLabel": "압축할 파일 선택",
-        "heading": "압축할 파일을 선택해 주세요",
+        "heading": "압축할 파일을 선택하세요",
         "selectFile": "파일 선택"
       },
       "ocr": {
@@ -819,8 +819,8 @@
       }
     },
     "dropzone": {
-      "heading": "변환할 파일을 선택해 주세요",
-      "hint": "또는 파일을 여기에 놓아 주세요",
+      "heading": "변환할 파일을 선택하세요",
+      "hint": "또는 여기에 파일을 놓으세요",
       "selectFile": "파일 선택",
       "moreSources": "다른 파일 가져오기",
       "sourcesMenu": "파일 가져오기",
