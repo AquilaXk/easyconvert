@@ -264,8 +264,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
       'Select your file to convert',
       'Supported Format Directory',
       'Security & Data Handling',
-      'REST API & Batch Workflows',
-      'High-Quality Conversions',
+      'API & batch jobs',
+      'Conversion quality',
     ]);
     const text = visibleText(main);
     expect(phrasesPresent(text, ['How Conversion Works', 'Frequently Asked', 'Add source files', 'Select an extension'])).toEqual([]);

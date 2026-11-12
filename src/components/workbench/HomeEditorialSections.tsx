@@ -2,9 +2,8 @@
 
 import React, { useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { ArrowRight, Check, Copy, Lock, Cpu, Clock, Gauge, SlidersHorizontal, Layers } from 'lucide-react';
+import { ArrowRight, Check, Copy, Lock, Cpu, Clock, Gauge, SlidersHorizontal } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
-import { REGISTRY_STATS } from '@/lib/registry-stats';
 
 /** The home page's curl sample against `origin`, the public origin the API documents use as their base URL. */
 export function apiCurlExample(origin: string): string {
@@ -32,7 +31,6 @@ const SECURITY_ITEMS = [
 const QUALITY_ITEMS = [
   { key: 'measured', Icon: Gauge },
   { key: 'options', Icon: SlidersHorizontal },
-  { key: 'formats', Icon: Layers },
 ] as const;
 
 export function HighQualityCard() {
@@ -50,7 +48,7 @@ export function HighQualityCard() {
             </span>
             <span>
               <span className="block font-medium text-ink">{t(`${key}.heading`)}</span>
-              <span className="mt-1 block">{t(`${key}.body`, { formats: REGISTRY_STATS.formatCount, categories: REGISTRY_STATS.categoryCount })}</span>
+              <span className="mt-1 block">{t(`${key}.body`)}</span>
             </span>
           </li>
         ))}
