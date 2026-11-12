@@ -79,6 +79,12 @@ describe('the mobile menu', () => {
     expect(sheet.querySelectorAll('#mobile-menu-tools a')).toHaveLength(16);
   });
 
+  it('gives focus to the sheet itself on open, so no focus ring lands on the logo link', async () => {
+    const { sheet } = await openMenu();
+    expect(document.activeElement).toBe(sheet);
+    expect(sheet.querySelector('a[href="/"]')).not.toBe(document.activeElement);
+  });
+
   it('keeps Tab and Shift+Tab inside the sheet', async () => {
     const { sheet } = await openMenu();
     const items = focusable(sheet);

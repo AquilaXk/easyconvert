@@ -6,6 +6,7 @@ import { getMessages, getTranslations, setRequestLocale } from 'next-intl/server
 import { clientMessages } from '@/i18n/client-messages';
 import { routing } from '@/i18n/routing';
 import { siteMetadataBase } from '@/i18n/metadata';
+import { INPUT_MODALITY_SCRIPT } from '@/lib/input-modality';
 import '../globals.css';
 
 // One OFL sans for Latin and Hangul, cut from Pretendard Variable into two files by scripts/subset-web-font.py and vendored
@@ -76,6 +77,8 @@ export default async function LocaleLayout({ children, params }: Readonly<Locale
             `,
           }}
         />
+        {/* Input modality for the focus ring, see src/lib/input-modality.ts. */}
+        <script dangerouslySetInnerHTML={{ __html: INPUT_MODALITY_SCRIPT }} />
       </head>
       <body className="min-h-screen flex flex-col antialiased font-sans">
         <NextIntlClientProvider messages={clientMessages(messages, 'layout')}>
