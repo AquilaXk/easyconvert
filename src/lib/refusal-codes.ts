@@ -38,6 +38,7 @@ export const AUTH_ERROR_CODES = [
   'mail_unavailable',
   'mail_rate_limited',
   'invalid_token',
+  'oauth_unavailable',
 ] as const;
 
 export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];

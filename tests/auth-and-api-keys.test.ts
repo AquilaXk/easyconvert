@@ -97,6 +97,16 @@ describe('Auth & API Key Infrastructure', () => {
       const token = signJwt({ sub: 'user-old' }, 'secret', -10); // already expired 10s ago
       expect(verifyJwt(token, 'secret')).toBeNull();
     });
+
+    it('refuses a token whose session version is missing, not a whole number, or older than the one expected', () => {
+      const expecting = { expectedSessionVersion: 2 };
+      expect(verifyJwt(signJwt({ sub: 'u' }, 'secret', 3600), 'secret', expecting)).toBeNull();
+      for (const sessionVersion of ['2', 2.5, 1, null]) {
+        expect(verifyJwt(signJwt({ sub: 'u', sessionVersion }, 'secret', 3600), 'secret', expecting), String(sessionVersion)).toBeNull();
+      }
+      expect(verifyJwt(signJwt({ sub: 'u', sessionVersion: 2 }, 'secret', 3600), 'secret', expecting)?.sub).toBe('u');
+      expect(verifyJwt(signJwt({ sub: 'u', sessionVersion: 3 }, 'secret', 3600), 'secret', expecting)?.sub).toBe('u');
+    });
   });
 
   describe('User Store Repository', () => {
@@ -231,7 +241,7 @@ describe('Auth & API Key Infrastructure', () => {
     });
 
     it('exchanges mock code in sandbox mode returning developer profile', async () => {
-      const profile = await exchangeGoogleCode('mock_code_abc', 'http://localhost:3000/api/auth/google/callback');
+      const profile = await exchangeGoogleCode('mock_code_abc', 'http://localhost:3000/api/auth/google/callback', undefined, 'nonce-of-the-sign-in');
       expect(profile.email).toBe('dev.sandbox@example.com');
       expect(profile.name).toBe('Sandbox Developer');
     });
@@ -669,7 +679,7 @@ describe('Auth & API Key Infrastructure', () => {
       const originalEnv = env.NODE_ENV;
       try {
         env.NODE_ENV = 'production';
-        await expect(exchangeGoogleCode('mock_code_attacker', 'http://localhost/callback')).rejects.toThrow(
+        await expect(exchangeGoogleCode('mock_code_attacker', 'http://localhost/callback', undefined, 'nonce-of-the-sign-in')).rejects.toThrow(
           /mock codes are not permitted in production/i
         );
       } finally {
@@ -860,9 +870,10 @@ describe('Auth & API Key Infrastructure', () => {
 
         const req = new NextRequest('http://localhost:3000/api/auth/google/url');
         const res = await googleUrlHandler(req);
-        expect(res.status).toBe(500);
+        // Fails closed with a coded 503 the page can word, not an unhandled 500.
+        expect(res.status).toBe(503);
         const data = await res.json();
-        expect(data.success).toBe(false);
+        expect(data.code).toBe('oauth_unavailable');
       } finally {
         env.NODE_ENV = originalEnv;
         if (originalClientId) {

@@ -1927,7 +1927,8 @@
       "account_exists": "이 이메일 주소로 만든 계정이 이미 있어요. 로그인해 주세요.",
       "mail_unavailable": "이 서버에서는 쓸 수 없어요.",
       "mail_rate_limited": "요청이 너무 많아요. {seconds, number}초 뒤에 다시 시도해 주세요.",
-      "invalid_token": "링크가 올바르지 않거나 만료됐어요. 새 링크를 요청해 주세요."
+      "invalid_token": "링크가 올바르지 않거나 만료됐어요. 새 링크를 요청해 주세요.",
+      "oauth_unavailable": "이 서버에서는 Google 로그인을 쓸 수 없어요. 이메일로 로그인해 주세요."
     },
     "dashboard": {
       "admin_scope_required": "이 작업에는 전체 권한(*)이 있는 API 키가 필요해요.",

@@ -1493,7 +1493,7 @@ describe('real camera RAW samples', () => {
 
   const VARIANT_TIMEOUT_MS = 600_000;
   const MIN_VARIANT_SAMPLES = 5;
-  /** Sigma SD14, Merrill and Quattro generations, Raspberry Pi imx219 and imx477. */
+  /** Sigma SD14, Merrill, Quattro, sd Quattro and sd Quattro H generations, Raspberry Pi imx219 and imx477. */
   const variantPairs = RAW_VARIANT_MANIFEST.flatMap((entry) =>
     FORMAT_REGISTRY[entry.format].targetFormats.map((target) => [`${entry.format}-${entry.variant}`, target] as [string, string])
   ).filter(([name, target]) => inPart(`${name}->${target}`));

@@ -19,8 +19,8 @@ import {
   REFRESH_HEARTBEAT_LUA_SCRIPT,
   UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT,
   RECOVER_STALLED_JOBS_LUA_SCRIPT,
-  PURGE_DEAD_LETTERS_LUA_SCRIPT,
 } from './lua-scripts';
+import { addDeadLetter, backfillDeadLetterIndex, purgeDeadLetters, readDeadLetters, type DeadLetterBackfill } from './dead-letters';
 import {
   dropEndedData,
   finishedData,
@@ -328,6 +328,8 @@ export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   getDlqEntries?(): Promise<DlqEntry<T>[]>;
   moveToDlq?(job: Job<T, R>, reason: string): Promise<void>;
   purgeDlq?(): Promise<number>;
+  /** Distributed engines: indexes the dead letters written before the index existed (`apply`), or only counts them. */
+  backfillDeadLetterIndex?(apply: boolean): Promise<DeadLetterBackfill>;
   /**
    * Cancels a waiting, delayed, or active job, emitting `cancelled` once. Returns false for
    * completed, failed, already cancelled, or unknown jobs.
@@ -1882,22 +1884,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     if (this.redisClient) {
       await this.assertRedisConnected();
       try {
-        const raws = await this.redisClient.lrange(this.dlqKey, 0, -1);
-        return raws.map((r: string) => {
-          try {
-            return JSON.parse(r);
-          } catch {
-            return {
-              jobId: '',
-              name: '',
-              data: {} as T,
-              failedReason: r,
-              attemptsMade: 0,
-              timestamp: 0,
-              stacktrace: [],
-            };
-          }
-        });
+        return await readDeadLetters<T>(this.redisClient, this.dlqKey);
       } catch (err) {
         throw this.toQueueUnavailable(err);
       }
@@ -1909,7 +1896,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     if (this.redisClient && this.redisConnected) {
       try {
         const entry = buildDlqEntry(job, reason);
-        await this.redisClient.rpush(this.dlqKey, JSON.stringify(entry));
+        await addDeadLetter(this.redisClient, this.dlqKey, JSON.stringify(entry));
         this.emit('dlq', entry);
       } catch {}
       return;
@@ -1923,12 +1910,23 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     if (this.redisClient) {
       await this.assertRedisConnected();
       try {
-        return Number(await this.redisClient.eval(PURGE_DEAD_LETTERS_LUA_SCRIPT, 1, this.dlqKey));
+        return await purgeDeadLetters(this.redisClient, this.dlqKey);
       } catch (err) {
         throw this.toQueueUnavailable(err);
       }
     }
     return this.memoryFallback.purgeDlq ? this.memoryFallback.purgeDlq() : 0;
+  }
+
+  async backfillDeadLetterIndex(apply: boolean): Promise<DeadLetterBackfill> {
+    const client = this.redisClient;
+    if (!client) return { letters: 0, indexable: 0, unparsed: 0, alreadyCovered: true, applied: false };
+    await this.assertRedisConnected();
+    try {
+      return await backfillDeadLetterIndex(client, this.dlqKey, apply);
+    } catch (err) {
+      throw this.toQueueUnavailable(err);
+    }
   }
 
   async ping(): Promise<{ ok: boolean; latencyMs: number }> {

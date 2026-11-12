@@ -261,22 +261,31 @@ export function getGoogleOAuthUrl(
 }
 
 /** The claims of the ID token that Google returned from its token endpoint (read over TLS from Google, so the signature is not what is checked here). */
-function idTokenClaims(idToken: unknown): { nonce?: unknown; sub?: unknown; aud?: unknown } {
+function idTokenClaims(idToken: unknown): { nonce?: unknown; sub?: unknown; aud?: unknown; iss?: unknown; exp?: unknown } {
   if (typeof idToken !== 'string') throw new Error('Security violation: Google returned no ID token');
   const parts = idToken.split('.');
   if (parts.length !== 3) throw new Error('Security violation: Google ID token is malformed');
   try {
     const claims: unknown = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
     if (typeof claims !== 'object' || claims === null || Array.isArray(claims)) throw new Error('not an object');
-    return claims as { nonce?: unknown; sub?: unknown; aud?: unknown };
+    return claims as { nonce?: unknown; sub?: unknown; aud?: unknown; iss?: unknown; exp?: unknown };
   } catch {
     throw new Error('Security violation: Google ID token is malformed');
   }
 }
 
-/** Refuses an ID token that was not issued for this sign-in (nonce), for this client (aud), or for another account than the profile (sub). */
+/** The two issuer values Google's ID tokens carry (OpenID Connect Core 3.1.3.7 and Google's own documentation). */
+const GOOGLE_ID_TOKEN_ISSUERS: ReadonlySet<unknown> = new Set(['https://accounts.google.com', 'accounts.google.com']);
+
+/**
+ * Refuses an ID token that was not issued by Google (iss), has expired (exp), or was not issued for this sign-in (nonce), for
+ * this client (aud), or for another account than the profile (sub). The token comes straight from Google's token endpoint over
+ * TLS, which OpenID Connect Core 3.1.3.7 accepts in place of checking its signature; the claims are still checked.
+ */
 function assertIdTokenMatches(idToken: unknown, expectedNonce: string, clientId: string, subject: unknown): void {
   const claims = idTokenClaims(idToken);
+  if (!GOOGLE_ID_TOKEN_ISSUERS.has(claims.iss)) throw new Error('Security violation: Google ID token was not issued by Google');
+  if (typeof claims.exp !== 'number' || !Number.isFinite(claims.exp) || claims.exp * 1000 <= Date.now()) throw new Error('Security violation: Google ID token has expired');
   const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
   if (claims.nonce !== expectedNonce) throw new Error('Security violation: Google ID token nonce does not match this sign-in');
   if (!audiences.includes(clientId)) throw new Error('Security violation: Google ID token was issued for another client');
@@ -284,15 +293,15 @@ function assertIdTokenMatches(idToken: unknown, expectedNonce: string, clientId:
 }
 
 /**
- * Exchanges the authorization code for the profile of the account. With `expectedNonce` (the nonce of the sign-in's
- * OAuth session) the ID token that Google returns must carry it, be issued for this client and name the same account as the
- * profile, so a token from another sign-in is not accepted.
+ * Exchanges the authorization code for the profile of the account. The ID token that Google returns must come from Google,
+ * be unexpired, carry `expectedNonce` (the nonce of the sign-in's OAuth session), be issued for this client and name the same
+ * account as the profile, so a token from another sign-in is not accepted. The nonce is required: a caller cannot skip the checks.
  */
 export async function exchangeGoogleCode(
   code: string,
   redirectUri: string,
-  codeVerifier?: string,
-  expectedNonce?: string
+  codeVerifier: string | undefined,
+  expectedNonce: string
 ): Promise<GoogleUserInfo> {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
@@ -378,9 +387,7 @@ export async function exchangeGoogleCode(
     throw new Error('Security violation: Google OAuth account email is not verified');
   }
 
-  if (expectedNonce !== undefined) {
-    assertIdTokenMatches(tokenData.id_token, expectedNonce, clientId, userData.sub);
-  }
+  assertIdTokenMatches(tokenData.id_token, expectedNonce, clientId, userData.sub);
 
   return {
     id: userData.sub,

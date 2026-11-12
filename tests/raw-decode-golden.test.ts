@@ -27,7 +27,7 @@ const DECODE_TIMEOUT_MS = 120_000;
 /** Sensor data section types: 3 (DP1/DP2/SD14 generation) and 1 (Merrill/Quattro generation). */
 const SENSOR_IMAGE_TYPES = new Set([1, 3]);
 const IMAGE_FORMAT_HUFFMAN = 0x06;
-const IMAGE_FORMAT_QUATTRO = 0x23;
+const QUATTRO_FORMATS: ReadonlySet<number> = new Set([0x23, 0x25, 0x27]);
 
 interface Golden {
   width: number;
@@ -47,7 +47,7 @@ function decodeSensorLayers(file: Buffer): LayerPlane[] {
   const sensor = readX3fImageSections(file, readX3fDirectory(file)).find((image) => SENSOR_IMAGE_TYPES.has(image.imageType));
   if (!sensor) throw new Error('the sample holds no sensor section');
   if (sensor.format === IMAGE_FORMAT_HUFFMAN) return decodeHuffmanLayers(file, sensor).planes;
-  if (sensor.format === IMAGE_FORMAT_QUATTRO) return decodeQuattroLayers(file, sensor).planes;
+  if (QUATTRO_FORMATS.has(sensor.format)) return decodeQuattroLayers(file, sensor).planes;
   return decodeTrueLayers(file, sensor, sensor.columns * sensor.rows).planes;
 }
 

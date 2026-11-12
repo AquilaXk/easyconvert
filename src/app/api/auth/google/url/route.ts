@@ -15,6 +15,10 @@ import { TERMS_VERSION, termsRefusal, termsRefusalText } from '@/lib/legal/docum
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
+  // Without a client id there is no Google sign-in in production: a coded 503 the page words, not an unhandled error.
+  if (!process.env.GOOGLE_CLIENT_ID && process.env.NODE_ENV === 'production') {
+    return codedRefusal<AuthErrorCode>(503, 'oauth_unavailable', 'Google sign-in is not configured on this server.');
+  }
   const origin = getAppOrigin();
   const redirectUri = `${origin}/api/auth/google/callback`;
 
@@ -51,11 +55,9 @@ export async function GET(req: NextRequest) {
     return res;
   } catch (err: unknown) {
     if (err instanceof AuthStoreUnavailableError) return authStoreUnavailableRefusal(err);
-    const message = err instanceof Error ? err.message : 'Failed to generate OAuth URL';
-    return NextResponse.json(
-      { success: false, error: message },
-      { status: 500 }
-    );
+    // The message of an unexpected error stays in the log; the answer does not carry it.
+    console.error('[oauth] The authorization URL could not be made:', err);
+    return NextResponse.json({ success: false, error: 'The authorization URL could not be made.' }, { status: 500 });
   }
 }
 

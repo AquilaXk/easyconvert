@@ -1602,7 +1602,8 @@
       "account_exists": "An account with this email address already exists. Sign in instead.",
       "mail_unavailable": "This is not available on this server.",
       "mail_rate_limited": "Too many requests. Try again in {seconds, plural, one {# second} other {# seconds}}.",
-      "invalid_token": "This link is not valid or has expired. Ask for a new one."
+      "invalid_token": "This link is not valid or has expired. Ask for a new one.",
+      "oauth_unavailable": "Google sign-in is not available on this server. Sign in with your email instead."
     },
     "dashboard": {
       "admin_scope_required": "This needs an API key with the full (*) scope.",

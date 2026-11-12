@@ -358,13 +358,10 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
       await cleanup();
     });
 
-    // The purge is one Lua script, which this mock does not run: tests/queue-lists-redis.test.ts purges on a real Redis server.
-    it('records and lists dead letters on the Redis backend', async () => {
-      const mockRedis = new InMemoryRedisMock();
-      const adapter = new DistributedBullMQAdapter('dlq-test-queue', {
-        redisClient: mockRedis as any,
-        keyPrefix: 'testqueue:',
-      });
+    // Recording a letter and its index is one Lua script (entry 257), which InMemoryRedisMock cannot execute.
+    // skip-ok: mode selection; runs in the Redis-mode CI step (npm run test:redis).
+    it.skipIf(!process.env.REDIS_URL)('records and lists dead letters on the Redis backend', async () => {
+      const { adapter, cleanup } = createRealRedisAdapter('dlq-test-queue');
 
       const job = await adapter.add('corrupt-payload', { bad: true });
       await adapter.moveToDlq(job, 'Unrecoverable syntax corruption in stream');
@@ -374,7 +371,7 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
       expect(dlqEntries[0].jobId).toBe(job.id);
       expect(dlqEntries[0].failedReason).toBe('Unrecoverable syntax corruption in stream');
 
-      await adapter.close();
+      await cleanup();
     });
 
     it('falls back seamlessly to in-memory queue when Redis is offline or not configured', async () => {

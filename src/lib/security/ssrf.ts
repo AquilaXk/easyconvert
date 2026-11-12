@@ -105,7 +105,8 @@ export function isBlockedIp(ip: string): boolean {
   if (clean.includes(':')) {
     return isBlockedIpv6(clean);
   }
-  return false;
+  // Not an address in canonical form (`2130706433`, `0177.0.0.1`, `127.1`, empty): refused, as isBlockedIpv4 refuses it.
+  return true;
 }
 
 /**
@@ -140,6 +141,11 @@ export function isPrivateOrRestrictedHost(hostname: string): boolean {
   const ipType = net.isIP(clean);
   if (ipType !== 0) {
     return isBlockedIp(clean);
+  }
+  // A host made only of numbers (decimal, octal or hex, with up to three dots) is an IPv4 address in the forms inet_aton
+  // accepts (`2130706433`, `0177.0.0.1`, `0x7f.1`, `127.1`), which a resolver turns into any address: refused.
+  if (/^(?:0x[0-9a-f]+|\d+)(?:\.(?:0x[0-9a-f]*|\d+)){0,3}$/i.test(clean)) {
+    return true;
   }
 
   return false;

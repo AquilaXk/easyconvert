@@ -16,7 +16,7 @@ import { DELETE as deleteKeyRoute } from '../src/app/api/keys/[id]/route';
 import { GET as getKeyUsageRoute } from '../src/app/api/keys/usage/route';
 import { EasyConvertClient } from '../sdk/typescript/src/client';
 import { createSessionToken } from '../src/lib/auth/session';
-import { isBlockedIp, createSsrfSafeAgent } from '../src/lib/security/ssrf';
+import { isBlockedIp, isPrivateOrRestrictedHost, createSsrfSafeAgent } from '../src/lib/security/ssrf';
 import type { ApiKeyScope, WebhookDlqEntry } from '../src/lib/api-keys/types';
 import { TERMS_VERSION } from '../src/lib/legal/documents';
 
@@ -282,11 +282,18 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
     });
 
     it('accurately distinguishes public domain names from blocked IP addresses in SSRF protection', async () => {
-      // 1. isBlockedIp should never classify valid domain names as blocked IPs
-      expect(isBlockedIp('example.com')).toBe(false);
-      expect(isBlockedIp('webhook.site')).toBe(false);
-      expect(isBlockedIp('api.stripe.com')).toBe(false);
+      // 1. Host names are judged by isPrivateOrRestrictedHost; isBlockedIp takes resolved addresses and refuses anything else.
+      expect(isPrivateOrRestrictedHost('example.com')).toBe(false);
+      expect(isPrivateOrRestrictedHost('webhook.site')).toBe(false);
+      expect(isPrivateOrRestrictedHost('api.stripe.com')).toBe(false);
       expect(isBlockedIp('93.184.215.14')).toBe(false); // Public IPv4
+      // Not an address in canonical form: the loopback written in decimal, octal and short form, a host name, nothing.
+      for (const notCanonical of ['2130706433', '0177.0.0.1', '127.1', 'example.com', '']) {
+        expect(isBlockedIp(notCanonical), notCanonical).toBe(true);
+      }
+      for (const numericHost of ['2130706433', '0177.0.0.1', '0x7f.1', '127.1', '0x7f000001']) {
+        expect(isPrivateOrRestrictedHost(numericHost), numericHost).toBe(true);
+      }
 
       // 2. isBlockedIp must block private/restricted IPs
       expect(isBlockedIp('169.254.169.254')).toBe(true);
