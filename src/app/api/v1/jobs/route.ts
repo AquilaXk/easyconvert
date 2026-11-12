@@ -23,7 +23,9 @@ import { readObjectHeader } from '@/lib/storage/object-header';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject, spoofCheckRefusal } from '@/lib/security/file-guard';
 import { resolveEffectiveWebhook } from '@/lib/security/ssrf';
-import { ConversionOptions, JobStatus, PipelineTask, JobGraph, QueueUnavailableError } from '@/lib/types';
+import { ConversionOptions, JobStatus, PipelineTask, JobGraph, QueueUnavailableError, typedFailureOf } from '@/lib/types';
+import { checkSubmittedEngineChoices } from '@/lib/api/engine-choice-check';
+import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import {
   validateJobGraph,
   linearTasksToJobGraph,
@@ -33,7 +35,7 @@ import {
 } from '@/lib/jobs';
 import { graphReservationUnits } from '@/lib/jobs/graph-operations';
 import { duplicateKeys } from '@/lib/jobs/duplicate-keys';
-import { isNamedTaskMap, namedTaskNameErrors, namedTaskRefusal, namedTasksToJobGraph, type NamedTaskMap } from '@/lib/jobs/named-tasks';
+import { isNamedTaskMap, namedTaskNameErrors, namedTaskRefusal, namedTasksToJobGraph, type NamedTask, type NamedTaskMap } from '@/lib/jobs/named-tasks';
 import { namedJobFields } from '@/lib/jobs/named-task-report';
 import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 import { graphScheduler } from '@/lib/queue/graph';
@@ -193,6 +195,16 @@ function namedTaskProblem(instanceUri: string, errors: Parameters<typeof namedTa
   return createProblemDetailsResponse(422, refusal.detail, instanceUri, 'Unprocessable Entity', refusal.type, undefined, refusal.invalidParams);
 }
 
+/**
+ * The 422 of a graph, pipeline or named tasks that failed validation. Named tasks (no `prefix`) are typed by their first cause;
+ * the others name the generic problem with the faults after `prefix`, or the `detail` given.
+ */
+function invalidGraphProblem(instanceUri: string, prefix: string | undefined, errors: Parameters<typeof namedTaskRefusal>[0], detail?: string): NextResponse {
+  if (prefix === undefined && detail === undefined) return namedTaskProblem(instanceUri, errors);
+  const text = detail ?? `${prefix}: ${errors.map((e) => e.message).join(' ')}`;
+  return createProblemDetailsResponse(422, text, instanceUri, 'Unprocessable Entity', 'https://api.easyconvert.io/problems/unprocessable-entity', undefined, errors.map((e) => ({ name: e.path, reason: e.message })));
+}
+
 type TasksField = { tasks: PipelineTask[] } | { namedTasks: NamedTaskMap; duplicates: string[] } | { response: NextResponse };
 
 /** The `tasks` field of a multipart request: the JSON of a pipeline array or of an object of named tasks, validated. */
@@ -220,19 +232,24 @@ function parseMultipartTasks(raw: string, instanceUri: string): TasksField {
   return { tasks: parsed };
 }
 
-/** Moves `options.page` to `options.pages` in each stage and answers the first page range that does not parse, or null. */
-function normalizeStagePageRanges(stages: ReadonlyArray<{ options?: ConversionOptions }>): string | null {
-  for (const { options } of stages) {
-    if (!options) continue;
-    if (!options.pages && options.page) options.pages = String(options.page);
-    if (!options.pages) continue;
+/** The tasks of an object of named tasks as a list, in the order sent. */
+function namedTaskList(namedTasks: NamedTaskMap | undefined): NamedTask[] | undefined {
+  return namedTasks && Object.values(namedTasks);
+}
+
+/** Sets `pages` from `page` on the options of a job and of each of its tasks (a pipeline stage or a named task) and checks the range syntax; the message of the first range that is not valid, else undefined. */
+function normalizePageRanges(options: ConversionOptions | undefined, stages: ReadonlyArray<{ options?: ConversionOptions }> | undefined): string | undefined {
+  for (const target of [options, ...(stages ?? []).map((stage) => stage.options)]) {
+    if (!target) continue;
+    if (!target.pages && target.page) target.pages = String(target.page);
+    if (!target.pages) continue;
     try {
-      validatePageRangeSyntax(options.pages);
+      validatePageRangeSyntax(target.pages);
     } catch (err) {
       return err instanceof Error ? err.message : String(err);
     }
   }
-  return null;
+  return undefined;
 }
 
 /**
@@ -468,24 +485,8 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     const { webhookUrl: effectiveWebhookUrl, webhookSecret: effectiveWebhookSecret, webhookKeyId } = resolvedWebhook;
 
     // Normalize page / pages option and validate the page range syntax
-    if (options) {
-      if (!options.pages && options.page) {
-        options.pages = String(options.page);
-      }
-      if (options.pages) {
-        try {
-          validatePageRangeSyntax(options.pages);
-        } catch (err: any) {
-          return await fail(422, err.message, 'Unprocessable Entity');
-        }
-      }
-    }
-
-    const staged = tasks ?? (namedTasks ? Object.values(namedTasks) : undefined);
-    const pageRangeError = staged && normalizeStagePageRanges(staged);
-    if (pageRangeError) {
-      return await fail(422, pageRangeError, 'Unprocessable Entity');
-    }
+    const pageRangeError = normalizePageRanges(options, tasks ?? namedTaskList(namedTasks));
+    if (pageRangeError !== undefined) return await fail(422, pageRangeError, 'Unprocessable Entity');
 
     // Resolve uploadId if provided
     if (uploadId && !storageKey) {
@@ -518,27 +519,15 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
 
     // 1c. Validate JobGraph or adapt legacy tasks into JobGraph
+    const submittedGraph = graph;
     if (graph) {
       const graphValidation = validateJobGraph(graph, {
         userTier: auth.user.tier,
         sourceFormat: sourceFormatParam,
         sourceFilename: originalFilename,
       });
-      if (!graphValidation.valid && namedTasks) {
-        return reply(namedTaskProblem(instanceUri, graphValidation.errors));
-      }
       if (!graphValidation.valid) {
-        return reply(
-          createProblemDetailsResponse(
-            422,
-            `Graph validation failed: ${graphValidation.errors.map((e) => e.message).join(' ')}`,
-            instanceUri,
-            'Unprocessable Entity',
-            'https://api.easyconvert.io/problems/unprocessable-entity',
-            undefined,
-            graphValidation.errors.map((e) => ({ name: e.path, reason: e.message }))
-          )
-        );
+        return reply(invalidGraphProblem(instanceUri, namedTasks ? undefined : 'Graph validation failed', graphValidation.errors));
       }
     } else if (tasks && tasks.length > 0) {
       try {
@@ -554,17 +543,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         if (!(err instanceof JobGraphValidationError)) {
           throw err;
         }
-        return reply(
-          createProblemDetailsResponse(
-            422,
-            err.message,
-            instanceUri,
-            'Unprocessable Entity',
-            'https://api.easyconvert.io/problems/unprocessable-entity',
-            undefined,
-            err.errors.map((e) => ({ name: e.path, reason: e.message }))
-          )
-        );
+        return reply(invalidGraphProblem(instanceUri, undefined, err.errors, err.message));
       }
       const graphValidation = validateJobGraph(graph, {
         userTier: auth.user.tier,
@@ -572,17 +551,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         sourceFilename: originalFilename,
       });
       if (!graphValidation.valid) {
-        return reply(
-          createProblemDetailsResponse(
-            422,
-            `Pipeline tasks validation failed: ${graphValidation.errors.map((e) => e.message).join(' ')}`,
-            instanceUri,
-            'Unprocessable Entity',
-            'https://api.easyconvert.io/problems/unprocessable-entity',
-            undefined,
-            graphValidation.errors.map((e) => ({ name: e.path, reason: e.message }))
-          )
-        );
+        return reply(invalidGraphProblem(instanceUri, 'Pipeline tasks validation failed', graphValidation.errors));
       }
       // The job produces the final task's output, which overrides the top-level targetFormat.
       const finalOutputFormat = linearGraphOutputFormat(graphValidation);
@@ -714,6 +683,14 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
           `Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`
         );
       }
+    }
+
+    // An engine the conversion does not list, or a version that is not installed, is refused before anything is reserved.
+    try {
+      await checkSubmittedEngineChoices({ sourceFormat: sourceDef.id, targetFormat: targetDef.id, options, tasks, graph: submittedGraph });
+    } catch (err) {
+      if (typedFailureOf(err) === undefined) throw err;
+      return reply(typedFailureProblem(err, instanceUri));
     }
 
     const unit = await reserveConversionUnit(auth.user, reservedUnits);

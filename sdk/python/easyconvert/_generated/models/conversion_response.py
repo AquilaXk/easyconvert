@@ -33,6 +33,9 @@ class ConversionResponse:
         data_uri (str | Unset): The result as a `data:` URI, present only for a result of 5 MiB or less.
         download_url (str | Unset): Path of the result; send it to `GET /api/storage/file/{key}` with the key.
         expires_at (float | Unset):
+        engine (str | Unset): Id of the engine that converted, as `GET /api/formats` lists it for the pair, for example
+            `libreoffice`, `ffmpeg` or `easyconvert` (the in-process converter).
+        engine_version (str | Unset): Version of that engine as installed. Absent when the program reports none.
         engine_used (str | Unset): Engine that produced the output, for example `native-ffmpeg`, `native-soffice` or
             `internal-fallback`.
         fallback_reason (str | Unset): Why a first-choice engine did not produce the output. Present only when a
@@ -61,6 +64,8 @@ class ConversionResponse:
     data_uri: str | Unset = UNSET
     download_url: str | Unset = UNSET
     expires_at: float | Unset = UNSET
+    engine: str | Unset = UNSET
+    engine_version: str | Unset = UNSET
     engine_used: str | Unset = UNSET
     fallback_reason: str | Unset = UNSET
     dropped_streams: list[ConversionResponseDroppedStreamsItem] | Unset = UNSET
@@ -91,6 +96,10 @@ class ConversionResponse:
         download_url = self.download_url
 
         expires_at = self.expires_at
+
+        engine = self.engine
+
+        engine_version = self.engine_version
 
         engine_used = self.engine_used
 
@@ -136,6 +145,10 @@ class ConversionResponse:
             field_dict["downloadUrl"] = download_url
         if expires_at is not UNSET:
             field_dict["expiresAt"] = expires_at
+        if engine is not UNSET:
+            field_dict["engine"] = engine
+        if engine_version is not UNSET:
+            field_dict["engineVersion"] = engine_version
         if engine_used is not UNSET:
             field_dict["engineUsed"] = engine_used
         if fallback_reason is not UNSET:
@@ -180,6 +193,10 @@ class ConversionResponse:
 
         expires_at = d.pop("expiresAt", UNSET)
 
+        engine = d.pop("engine", UNSET)
+
+        engine_version = d.pop("engineVersion", UNSET)
+
         engine_used = d.pop("engineUsed", UNSET)
 
         fallback_reason = d.pop("fallbackReason", UNSET)
@@ -213,6 +230,8 @@ class ConversionResponse:
             data_uri=data_uri,
             download_url=download_url,
             expires_at=expires_at,
+            engine=engine,
+            engine_version=engine_version,
             engine_used=engine_used,
             fallback_reason=fallback_reason,
             dropped_streams=dropped_streams,

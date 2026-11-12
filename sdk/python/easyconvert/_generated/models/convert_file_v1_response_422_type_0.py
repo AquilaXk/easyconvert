@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Self, TypeVar
+from typing import TYPE_CHECKING, Any, Self, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -35,6 +35,11 @@ class ConvertFileV1Response422Type0:
         code (ConvertFileV1Response422Type0Code | Unset): The cause of the refusal, stable across releases.
         success (bool | Unset): Legacy compatibility flag (always false).
         error (str | Unset): Legacy compatibility error message mirroring detail.
+        engines (list[str] | Unset): `engine_not_offered` only: the ids of the engines that convert the pair, the
+            default first.
+        engine (str | Unset): `engine_version_unavailable` only: the engine whose version was named.
+        installed_version (str | Unset): `engine_version_unavailable` only: the version of `engine` that is installed
+            (absent when its program prints none).
     """
 
     type_: str
@@ -46,6 +51,9 @@ class ConvertFileV1Response422Type0:
     code: ConvertFileV1Response422Type0Code | Unset = UNSET
     success: bool | Unset = UNSET
     error: str | Unset = UNSET
+    engines: list[str] | Unset = UNSET
+    engine: str | Unset = UNSET
+    installed_version: str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -74,6 +82,14 @@ class ConvertFileV1Response422Type0:
 
         error = self.error
 
+        engines: list[str] | Unset = UNSET
+        if not isinstance(self.engines, Unset):
+            engines = self.engines
+
+        engine = self.engine
+
+        installed_version = self.installed_version
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -93,6 +109,12 @@ class ConvertFileV1Response422Type0:
             field_dict["success"] = success
         if error is not UNSET:
             field_dict["error"] = error
+        if engines is not UNSET:
+            field_dict["engines"] = engines
+        if engine is not UNSET:
+            field_dict["engine"] = engine
+        if installed_version is not UNSET:
+            field_dict["installedVersion"] = installed_version
 
         return field_dict
 
@@ -135,6 +157,12 @@ class ConvertFileV1Response422Type0:
 
         error = d.pop("error", UNSET)
 
+        engines = cast(list[str], d.pop("engines", UNSET))
+
+        engine = d.pop("engine", UNSET)
+
+        installed_version = d.pop("installedVersion", UNSET)
+
         convert_file_v1_response_422_type_0 = cls(
             type_=type_,
             title=title,
@@ -145,6 +173,9 @@ class ConvertFileV1Response422Type0:
             code=code,
             success=success,
             error=error,
+            engines=engines,
+            engine=engine,
+            installed_version=installed_version,
         )
 
         convert_file_v1_response_422_type_0.additional_properties = d

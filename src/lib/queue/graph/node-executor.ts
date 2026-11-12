@@ -6,7 +6,7 @@ import type { ConversionJobData, ConversionJobResult } from '../../types';
 import { storageProvider } from '../../storage';
 import { scopeStorageObjects } from '../../storage/scoped-storage';
 import type { IStorageBackend } from '../../storage/oci-storage';
-import type { ConversionEnginePort } from '../engine-port';
+import type { ConversionEnginePort, EngineResult } from '../engine-port';
 import { dispatchEngine } from '../dispatch-engine';
 import { graphScheduler } from './scheduler';
 import { isFinalFailure } from '../job-failure';
@@ -362,6 +362,36 @@ function pdfAccessOf(options: { password?: string; confirmEditRights?: boolean }
   return { password: options?.password, confirmEditRights: options?.confirmEditRights, signal };
 }
 
+/** An engine that keeps what each conversion of the node returned, so the node can name the engine it ran on. */
+function recordingConversions(engine: ConversionEnginePort): ConversionEnginePort & { conversions: EngineResult[] } {
+  const conversions: EngineResult[] = [];
+  return {
+    name: engine.name,
+    conversions,
+    convert: async (...args) => {
+      const result = await engine.convert(...args);
+      conversions.push(result);
+      return result;
+    },
+  };
+}
+
+/**
+ * What a node's result adds to the common fields: the engine and version the node ran on, when every conversion of it ran on the same (a node
+ * over inputs of different formats can use several, and then names none), and what its optimisers did.
+ */
+function nodeResultExtras(
+  conversions: readonly EngineResult[],
+  optimizations: NonNullable<ConversionJobResult['optimizations']>
+): Pick<ConversionJobResult, 'engine' | 'engineVersion' | 'optimizations'> {
+  const first = conversions[0];
+  const uniform = first?.engine !== undefined && conversions.every((c) => c.engine === first.engine && c.engineVersion === first.engineVersion);
+  return {
+    ...(uniform ? { engine: first.engine, ...(first.engineVersion === undefined ? {} : { engineVersion: first.engineVersion }) } : {}),
+    ...(optimizations.length > 0 ? { optimizations } : {}),
+  };
+}
+
 /**
  * The node a job carries, ready to run. Its options come from the request body, so they cannot carry the signal, a
  * timeout or a deadline into an engine; passwords sealed for the queue are opened here, in memory, and never stored back.
@@ -413,7 +443,7 @@ export async function processGraphNodeJob(
     const effectiveStorage: IStorageBackend = scope.storage;
     let outputKeys: string[] = [];
     const optimizations: NonNullable<ConversionJobResult['optimizations']> = [];
-    const effectiveEngine: ConversionEnginePort = deadlineBoundEngine(engine || dispatchEngine, job);
+    const effectiveEngine = recordingConversions(deadlineBoundEngine(engine || dispatchEngine, job));
     await job.log(`Executing graph node "${nodeId}" (op: ${node.op}) in graph ${graphId}`);
     await job.updateProgress(10);
     attemptSignal.throwIfAborted();
@@ -868,7 +898,7 @@ export async function processGraphNodeJob(
       mimeType: primaryOutput.mimeType,
       size: primaryOutput.size,
       durationMs,
-      ...(optimizations.length > 0 ? { optimizations } : {}),
+      ...nodeResultExtras(effectiveEngine.conversions, optimizations),
     };
   } catch (err: any) {
     // A retry may still succeed, and a cancelled attempt is not a failure: only the last failed attempt fails the node

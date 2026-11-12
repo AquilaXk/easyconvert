@@ -38,6 +38,7 @@ import { recordCompletedUpload } from '@/lib/api/completed-upload';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext, releaseKey, replyUnderKey } from '@/lib/api/with-idempotency';
 import { typedFailureProblem } from '@/lib/api/typed-failure-response';
+import { resolveEngineChoice } from '@/worker/engine-registry';
 import {
   ArchiveEntryCollisionError,
   PdfPostprocessError,
@@ -230,6 +231,9 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
         return reply(optionsValidation.response as NextResponse);
       }
     }
+
+    // An engine the pair does not list, or a version that is not installed, is refused before anything is reserved.
+    await resolveEngineChoice(sourceDef.id, targetDef.id, options);
 
     trace.keepPrivate(file.name, options);
 

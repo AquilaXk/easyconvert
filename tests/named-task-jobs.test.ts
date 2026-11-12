@@ -320,6 +320,13 @@ describe('a named task graph that is refused', () => {
     expect(problem.invalidParams.some((p: { name: string }) => p.name.startsWith('tasks.to-json'))).toBe(true);
   });
 
+  it('refuses an engine the conversion does not list, named in the options of a convert task, as a graph node is', async () => {
+    const tasks = await convertedTasks();
+    const { status, problem } = await refused({ tasks: { ...tasks, 'to-json': { operation: 'convert', input: 'up', output_format: 'json', options: { engine: 'no-such-engine' } } } });
+    expect(status).toBe(422);
+    expect(problem.code).toBe('engine_not_offered');
+  });
+
   it('refuses a request that sends both a graph and named tasks', async () => {
     const tasks = await convertedTasks();
     const { status, problem } = await refused({ tasks, graph: { nodes: { a: { op: 'import.upload', storageKey: await storedCsv() }, b: { op: 'export.internal', input: 'a' } } } });

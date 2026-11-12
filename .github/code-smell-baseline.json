@@ -22,21 +22,21 @@
     "file": "src/app/api/v1/jobs/route.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "POST",
-    "count": 3
+    "count": 2
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 157
+    "maxValue": 151
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",
     "rule": "max-lines-per-function",
     "function": "POST",
     "count": 1,
-    "maxValue": 441
+    "maxValue": 400
   },
   {
     "file": "src/app/api/v1/uploads/[[...id]]/route.ts",
@@ -683,7 +683,7 @@
     "rule": "complexity",
     "function": "convertFileInScope",
     "count": 1,
-    "maxValue": 38
+    "maxValue": 34
   },
   {
     "file": "src/lib/conversions/lzma-decoder.ts",
@@ -2010,7 +2010,7 @@
     "rule": "complexity",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 92
+    "maxValue": 91
   },
   {
     "file": "src/lib/queue/graph/node-executor.ts",
@@ -2160,21 +2160,21 @@
     "rule": "complexity",
     "function": "convertWithinImageSession",
     "count": 1,
-    "maxValue": 125
+    "maxValue": 97
   },
   {
     "file": "src/worker/engines.ts",
     "rule": "max-lines-per-function",
     "function": "convertWithinImageSession",
     "count": 1,
-    "maxValue": 294
+    "maxValue": 288
   },
   {
     "file": "src/worker/engines.ts",
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2395
+    "maxValue": 2351
   },
   {
     "file": "src/worker/engines.ts",

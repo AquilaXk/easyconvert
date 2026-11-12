@@ -26,6 +26,7 @@ import {
   EngineTraceProperties,
 } from '@/lib/api/contracts';
 import { sessionCookieName } from '@/lib/auth/session-cookie';
+import { ENGINE_IDS } from '@/lib/conversions/engine-ids';
 import { API_KEY_SCOPES } from './shared';
 import { DATA_URI_MAX_BYTES } from '@/lib/api/file-size-limit';
 import { formatBytes } from '@/lib/format-bytes';
@@ -211,6 +212,48 @@ export const components = {
     ArchiveInspectResponse: {
       ...ArchiveInspectResponseSchema,
       $id: undefined,
+    },
+    Engine: {
+      type: 'object',
+      required: ['id', 'name', 'installed'],
+      properties: {
+        id: { type: 'string', enum: [...ENGINE_IDS], description: 'The id a request names in `options.engine`. Stable across releases.' },
+        name: { type: 'string', description: 'Display name of the engine.' },
+        installed: { type: 'boolean', description: 'Whether the program of the engine is installed on this deployment (the in-process converter always is).' },
+        version: { type: 'string', description: 'The one version installed, which `options.engineVersion` may name. Absent when the engine is not installed or its program prints no version.' },
+      },
+    },
+    PairEngine: {
+      type: 'object',
+      required: ['id', 'name', 'default', 'available'],
+      properties: {
+        id: { type: 'string', enum: [...ENGINE_IDS] },
+        name: { type: 'string' },
+        version: { type: 'string', description: 'The installed version of the engine; the only version a request may name.' },
+        default: { type: 'boolean', description: 'Whether this engine converts the pair when a request names none. Exactly one engine of a pair is the default, and it is listed first.' },
+        available: { type: 'boolean', description: 'Whether the program is installed here. A named engine that is not available answers 503 with the code `engine_unavailable`.' },
+      },
+    },
+    PairEngines: {
+      type: 'object',
+      required: ['source', 'target', 'engines'],
+      properties: {
+        source: { type: 'string', description: 'Source format id.' },
+        target: { type: 'string', description: 'Target format id.' },
+        engines: { type: 'array', items: { $ref: '#/components/schemas/PairEngine' }, description: 'The engines that convert the pair, the default first.' },
+      },
+    },
+    FormatsResponse: {
+      type: 'object',
+      required: ['success', 'count', 'categories', 'formats', 'engines'],
+      properties: {
+        success: { type: 'boolean', const: true },
+        count: { type: 'integer', description: 'Number of formats.' },
+        categories: { type: 'array', items: { type: 'object', required: ['id', 'label', 'count'], properties: { id: { type: 'string' }, label: { type: 'string' }, count: { type: 'integer' } } } },
+        formats: { type: 'array', items: { type: 'object', description: 'A format with the target formats it converts to.' } },
+        engines: { type: 'array', items: { $ref: '#/components/schemas/Engine' }, description: 'Every engine of this deployment with its installed version.' },
+        pairs: { type: 'array', items: { $ref: '#/components/schemas/PairEngines' }, description: 'Sent only when `source`, `target` or `engine` is set: the engines of each pair they select.' },
+      },
     },
     PdfWatermarkOptions: {
       ...PdfWatermarkOptionsSchema,

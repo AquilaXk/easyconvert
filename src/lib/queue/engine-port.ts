@@ -12,6 +12,8 @@ export interface EngineResult {
   mimeType: string;
   filename: string;
   engineUsed?: string;
+  engine?: string;
+  engineVersion?: string;
   filePath?: string;
   executionTimeMs?: number;
   metadata?: Record<string, unknown>;

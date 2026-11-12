@@ -7,6 +7,8 @@ class ConvertFileV1Response422Type0Code(StrEnum):
     CONVERSION_FAILED = "conversion_failed"
     EMPTY_FILE = "empty_file"
     ENCRYPTED_INPUT = "encrypted_input"
+    ENGINE_NOT_OFFERED = "engine_not_offered"
+    ENGINE_VERSION_UNAVAILABLE = "engine_version_unavailable"
     INPUT_OVER_LIMIT = "input_over_limit"
     INVALID_PASSWORD = "invalid_password"
     MALFORMED_INPUT = "malformed_input"

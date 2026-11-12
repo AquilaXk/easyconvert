@@ -21,9 +21,16 @@ import {
 import { convertFile, convertImage } from '../lib/conversions';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertDrawingPackage, assertOfficeEmbeddedImagesWithinLimit, officeInputWithoutMacros } from './office-input-checks';
-import { BIFF8_TARGET, asUnreadableDocument, convertBridgedTarget, convertMarkupPageImages, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withEmbeddedWorkbookRetry, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageChainLimits, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { BIFF8_TARGET, asUnreadableDocument, convertBridgedTarget, convertMarkupPageImages, convertThroughInterchange, convertXlsTarget, interchangeNeeded, retryRefusedLegacyDocument, withEmbeddedWorkbookRetry, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageChainLimits, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { writeEpsPages } from './postscript-page-limit';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
+import { isMediaRoutePair } from '../lib/conversions/route-formats';
+import {
+  ARCHIVE_EXTRACT_FORMATS, ARCHIVE_TARGET_FORMATS, ENCODED_RASTER_TARGETS, FIXED_PAGE_SOURCES, HTML_TARGET, ILLUSTRATOR_FORMAT, POPPLER_IMAGE_FORMATS,
+  POSTSCRIPT_TARGETS, PDF_SOURCE_FORMAT, RAW_PACKAGING_TARGETS, IN_PROCESS_RAW_SENSOR_FORMATS, SVG_FORMAT, SVG_SOURCE, isPdfChainTarget,
+} from './native-route-formats';
+import { planNativeRoutes } from './native-route-plan';
+import { FORMAT_REGISTRY } from '../lib/registry';
 import { reportConversionWarning, withConversionWarnings } from '../lib/conversions/conversion-warnings';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
@@ -125,6 +132,7 @@ import {
 } from '../lib/conversions/archive-password';
 import { resolveArchiveCompressionLevel } from '../lib/conversions/archive-compression-level';
 import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter, standaloneProfileArguments } from './libreoffice-pool';
+import { BUILT_IN_ENGINE, engineAllowsRoute, type EngineId } from '../lib/conversions/engine-ids';
 
 export { EngineUnavailableError, InvalidPageRangeError, ComplexScriptRequiresNativeEngineError };
 
@@ -252,6 +260,8 @@ export type NativeBinaryName =
   | 'pdftotext'
   | 'tesseract'
   | 'ps2pdf'
+  | 'gxps'
+  | 'ddjvu'
   | 'rsvgConvert'
   | 'dcrawEmu'
   | 'dcrawEmuHe'
@@ -267,6 +277,8 @@ const NATIVE_BINARY_ENV_VARS: Readonly<Record<NativeBinaryName, string>> = {
   pdftotext: 'PDFTOTEXT_PATH',
   tesseract: 'TESSERACT_PATH',
   ps2pdf: 'PS2PDF_PATH',
+  gxps: 'GXPS_PATH',
+  ddjvu: 'DDJVU_PATH',
   rsvgConvert: 'RSVG_CONVERT_PATH',
   dcrawEmu: 'DCRAW_EMU_PATH',
   dcrawEmuHe: 'DCRAW_EMU_HE_PATH',
@@ -620,22 +632,6 @@ export async function convertWithNativeFfmpeg(
     return null;
   }
 }
-
-/**
- * Archive extraction and re-packaging formats supported by 7-Zip CLI.
- */
-const ARCHIVE_EXTRACT_FORMATS = new Set([
-  'zip', '7z', 'rar', 'tar', 'gz', 'gzip', 'tgz', 'tar.gz',
-  'bz2', 'bzip2', 'tbz2', 'tar.bz2', 'xz', 'txz', 'tar.xz',
-  'iso', 'deb', 'rpm', 'cab', 'wim', 'arj', 'cpio', 'lzh', 'zstd', 'zst',
-  // Sources the in-process archive engine leaves to this engine (NATIVE_SEVEN_ZIP_SOURCES in archive.ts).
-  'dmg', 'img', 'lha', 'lzma', 'z', 'tar.z', 'tz',
-]);
-
-const ARCHIVE_TARGET_FORMATS = new Set([
-  'zip', '7z', 'tar', 'gz', 'gzip', 'tgz', 'tar.gz',
-  'bz2', 'bzip2', 'tbz2', 'tar.bz2', 'xz', 'txz', 'tar.xz',
-]);
 
 function get7zArchiveType(format: string): string | null {
   switch (format.toLowerCase()) {
@@ -1004,11 +1000,6 @@ export async function convertWithNative7z(
     return withExtractionNotes(createConversionResult(persistedPath, packagedFormat, baseName, 'native-7z', Date.now() - startTime), { skippedLinks, alternateStreams });
   });
 }
-
-/**
- * Image formats supported by Poppler pdftoppm.
- */
-const POPPLER_IMAGE_FORMATS = new Set(['png', 'jpg', 'jpeg', 'tiff', 'tif', 'ppm']);
 
 /**
  * Counts the pages of a PDF. A password never reaches the pdfinfo command line: the document is
@@ -1508,32 +1499,13 @@ export async function convertWithNativePoppler(
   return null;
 }
 
-/**
- * Raster targets written by the in-process image encoders: Poppler renders each page to PNG and the encoder
- * takes the picture from there, the way the camera RAW route hands its decoded image to the same encoders.
- */
-const ENCODED_RASTER_TARGETS: ReadonlySet<string> = new Set(['avif', 'bmp', 'gif', 'ico', 'odd', 'psd', 'webp']);
-/** PostScript targets: Poppler's pdftops writes them from the PDF. */
-const POSTSCRIPT_TARGETS: ReadonlySet<string> = new Set(['eps', 'ps']);
 const EPS_TARGET = 'eps';
 const PNG_FORMAT = 'png';
-const SVG_FORMAT = 'svg';
 /** Poppler tools: default and ceiling for the run time, and for the bytes read from a tool's output pipes. */
 const POPPLER_DEFAULT_TIMEOUT_MS = 45_000;
 const POPPLER_MAX_TIMEOUT_MS = 120_000;
 const POPPLER_DEFAULT_MAX_BUFFER_BYTES = 100 * 1024 * 1024;
 const POPPLER_MAX_BUFFER_BYTES = 500 * 1024 * 1024;
-
-/** Every target a PDF turns into with native tools: Poppler images and SVG, the encoded rasters, PostScript, DXF and the metafiles. */
-function isPdfChainTarget(tgt: string): boolean {
-  return (
-    POPPLER_IMAGE_FORMATS.has(tgt) ||
-    tgt === SVG_FORMAT ||
-    ENCODED_RASTER_TARGETS.has(tgt) ||
-    POSTSCRIPT_TARGETS.has(tgt) ||
-    isSvgPageTarget(tgt)
-  );
-}
 
 interface ChainOutputContext {
   /** The engine reported for the result: the one that did the page rendering. */
@@ -1746,8 +1718,6 @@ export async function convertPdfPagesWithNativeTools(
   return convertWithNativePoppler(input, 'pdf', tgt, options, originalFilename);
 }
 
-/** Targets that package the original camera file instead of rendering its pixels. */
-const RAW_PACKAGING_TARGETS: ReadonlySet<string> = new Set(['zip']);
 /**
  * Decodes camera RAW sensor data natively with LibRaw (`dcraw_emu`) into a 16-bit sRGB TIFF, then
  * encodes the requested target from it with the in-process image pipeline.
@@ -1825,9 +1795,6 @@ export async function convertWithNativeRaw(
   }));
 }
 
-/** SVG drawings written as PDF: librsvg draws the vectors and the text, so the page stays a vector page. */
-const SVG_SOURCE = 'svg';
-
 /**
  * Writes an SVG as a vector PDF with librsvg's `rsvg-convert` (see svg-render.ts). The SVG is sanitised first and the renderer
  * runs in the sandbox without network. Returns null when the target is not PDF or `rsvg-convert` is missing and the caller
@@ -1857,6 +1824,8 @@ export async function convertWithNativeSvg(
 /** A program that draws the pages of a source no other engine can: it writes a PDF (the XPS and DjVu routes also count its pages). */
 interface FixedPageRoute {
   sources: ReadonlySet<string>;
+  /** The engine a request names to choose this route. */
+  engine: EngineId;
   /** The engine label and the prefix of the fallback chain entry. */
   label: string;
   /** The key of the program in `BINARY_PATHS`; its path setting in the environment is `<BINARY>_PATH`. */
@@ -1871,9 +1840,9 @@ interface FixedPageRoute {
  * encoded rasters, pdftops and the DXF writer).
  */
 const FIXED_PAGE_ROUTES: readonly FixedPageRoute[] = [
-  { sources: new Set(['eps', 'ps']), label: 'native-postscript', binary: 'ps2pdf', program: 'ps2pdf (Ghostscript)', render: convertPostScript },
-  { sources: new Set(['xps', 'oxps']), label: 'native-xps', binary: 'gxps', program: 'gxps (GhostXPS)', render: convertXps },
-  { sources: new Set(['djvu', 'djv']), label: 'native-djvu', binary: 'ddjvu', program: 'ddjvu (djvulibre)', render: convertDjvu },
+  { sources: FIXED_PAGE_SOURCES.ghostscript, engine: 'ghostscript', label: 'native-postscript', binary: 'ps2pdf', program: 'ps2pdf (Ghostscript)', render: convertPostScript },
+  { sources: FIXED_PAGE_SOURCES.ghostxps, engine: 'ghostxps', label: 'native-xps', binary: 'gxps', program: 'gxps (GhostXPS)', render: convertXps },
+  { sources: FIXED_PAGE_SOURCES.djvulibre, engine: 'djvulibre', label: 'native-djvu', binary: 'ddjvu', program: 'ddjvu (djvulibre)', render: convertDjvu },
 ];
 /** What a fixed page route is asked to draw: the source, its bytes and the request. */
 type FixedPageRequest = Pick<PostScriptJob, 'input' | 'src' | 'tgt' | 'options' | 'originalFilename'>;
@@ -1887,12 +1856,6 @@ async function convertWithFixedPageRoute(route: FixedPageRoute, request: FixedPa
   if (!interpreter) return null;
   return route.render({ ...request, interpreter, convertPdfPages: convertPdfPagesWithNativeTools, countPdfPages: countPagesOfReadablePdf });
 }
-
-/**
- * Camera RAW formats LibRaw's distribution build cannot open and that are decoded in-process from the
- * real sensor data instead: Sigma X3F (Foveon) and Raspberry Pi frames (a JPEG followed by a "BRCM" Bayer dump).
- */
-const IN_PROCESS_RAW_SENSOR_FORMATS: ReadonlySet<string> = new Set(['x3f', 'raw']);
 
 /**
  * Decodes Sigma X3F and Raspberry Pi RAW frames in-process into 16-bit sRGB and encodes the requested
@@ -1931,14 +1894,8 @@ export async function convertWithInProcessRawSensor(
  * Universal Worker Conversion Orchestrator.
  * Dispatches to native container engines first, with fail-closed security and pure TS fallback.
  */
-/** Formats LibreOffice also writes back out: a drawing template is saved again as a normalised template (.otg). */
-const OFFICE_NATIVE_RESAVE_FORMATS: ReadonlySet<string> = new Set(['odd']);
-/** A presentation LibreOffice can only read: its HTML is the text of the PDF it renders. */
-const PRESENTATION_HTML_SOURCES: ReadonlySet<string> = new Set(['key']);
-const HTML_TARGET = 'html';
 const HTML_BODY_PATTERN = /<body[^>]*>([\s\S]*)<\/body>/i;
 const HTML_TAG_PATTERN = /<[^>]*>/g;
-const MEDIA_FORMATS = new Set(['mp4', 'mkv', 'avi', 'mov', 'webm', 'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma']);
 
 /**
  * Renders text or HTML to PDF with LibreOffice: the staged HTML when the route has one (HTML,
@@ -1965,9 +1922,6 @@ async function convertTextPdfWithHeadlessOffice(
 function hasNonWhitespaceText(buffer: Buffer): boolean {
   return buffer.toString('utf-8').trim().length > 0;
 }
-
-const ILLUSTRATOR_FORMAT = 'ai';
-const PDF_SOURCE_FORMAT = 'pdf';
 
 /** Deletes an engine's temporary output file unless it is the destination the caller asked for. */
 function discardPersistedOutput(filePath: string | undefined, input: Buffer | WorkerVfsPayload, options: WorkerEngineOptions): void {
@@ -2025,7 +1979,8 @@ async function convertWithOfficeSuiteRoutes(
   if (interchange !== undefined || request.tgt === BIFF8_TARGET) assertNotSpoofedFileVfs(input, request.src, originalFilename);
   if (interchange !== undefined) return convertThroughInterchange(OFFICE_SUITE_DEPS, request, interchange);
   return convertBridgedTarget(OFFICE_SUITE_DEPS, request, () => convertMarkupPageImages(OFFICE_SUITE_DEPS, request, () => convertXlsTarget(OFFICE_SUITE_DEPS, request, () => convertWithinImageSession(input, sourceFormat, targetFormat, options, originalFilename)))).catch(async (refusal: unknown) => {
-    const retried = await retryRefusedLegacyDocument(OFFICE_SUITE_DEPS, request, refusal);
+    // Choosing the built-in converter forbids the office suite as a second try.
+    const retried = options.engine === BUILT_IN_ENGINE ? undefined : await retryRefusedLegacyDocument(OFFICE_SUITE_DEPS, request, refusal);
     if (retried) return retried;
     throw refusal;
   });
@@ -2037,13 +1992,18 @@ async function convertWithOfficeSuiteRoutes(
  * checked, the request needs the office suite (a PDF standard) or forbids the in-process engine, or the in-process renderer
  * refuses the page. The office suite's output is discarded only once the other PDF exists.
  */
+/** Whether the in-process converter may run for this request: not when it forbids the fallback, nor when it chose a program as its engine. */
+function inProcessAllowed(options: WorkerEngineOptions): boolean {
+  return options.inProcessFallback !== false && engineAllowsRoute(options.engine, BUILT_IN_ENGINE);
+}
+
 async function inProcessPdfInsteadOfOverflow(
   officeRes: WorkerConversionResult,
   request: { input: Buffer | WorkerVfsPayload; src: string; options: WorkerEngineOptions; originalFilename: string },
   startTime: number
 ): Promise<WorkerConversionResult | null> {
   const { input, src, options, originalFilename } = request;
-  if (options.pdfStandard || options.inProcessFallback === false) return null;
+  if (options.pdfStandard || !inProcessAllowed(options)) return null;
   const overflow = await wordsPastEdgeOfOfficePdf(officeRes);
   if (overflow === null) return null;
   options.signal?.throwIfAborted();
@@ -2089,14 +2049,14 @@ async function convertWithinImageSession(
   const textPdfRoute = await planTextPdfRoute(input, src, tgt, originalFilename, options.orientation, {
     requireResources: options.requireResources,
     signal: options.signal,
+    forceNative: options.engine === 'libreoffice',
   });
   const isNativeTextPdf = Boolean(textPdfRoute?.preferNative);
-  const isRecalculate = Boolean(options.recalculate) && (src === 'xlsx' || src === 'xls' || src === 'ods');
+  const plan = planNativeRoutes({ src, tgt, input, options: nativeOptions, isNativeTextPdf });
 
   // 1. Native Headless Office
   await assertDrawingPackage(input, src);
-  const isOfficeResave = src === tgt && OFFICE_NATIVE_RESAVE_FORMATS.has(src);
-  if (isNativeTextPdf || isRecalculate || isOfficeResave || officeSuiteReadsInputAndWrites(src, tgt, input)) {
+  if (plan.libreoffice) {
     try {
       const officeRes = isNativeTextPdf
         ? await convertTextPdfWithHeadlessOffice(input, src, nativeOptions, originalFilename, textPdfRoute?.stagedHtml)
@@ -2113,6 +2073,8 @@ async function convertWithinImageSession(
       }
     } catch (err) {
       rethrowSandboxUnavailable(err);
+      // A request that chose LibreOffice has no in-process render to fall back to: its own failure stands.
+      if (isNativeTextPdf && !inProcessAllowed(options) && !(err instanceof EngineUnavailableError)) throw err;
       if (isNativeTextPdf && !options.signal?.aborted) {
         // Text and HTML: a LibreOffice that is missing, fails or times out never surfaces as an untyped error.
         const message = err instanceof Error ? err.message : String(err);
@@ -2123,7 +2085,7 @@ async function convertWithinImageSession(
         fallbackReason = message;
         if (err instanceof EngineUnavailableError) lastUnavailable = err;
       } else if (err instanceof EngineUnavailableError) {
-        if (isRecalculate) {
+        if (plan.recalculate) {
           throw new EngineUnavailableError(
             'soffice',
             `Spreadsheet formula recalculation requires native LibreOffice engine: ${err.message}`
@@ -2146,8 +2108,7 @@ async function convertWithinImageSession(
 
   // 1b. Office Documents -> pages via LibreOffice + native PDF tools: Poppler images and SVG, the encoded
   // rasters, PostScript and EPS, DXF; a presentation LibreOffice only reads also becomes HTML.
-  const isPresentationHtml = PRESENTATION_HTML_SOURCES.has(src) && tgt === HTML_TARGET;
-  if (officeSuiteReadsInput(src, input) && (isPdfChainTarget(tgt) || isPresentationHtml)) {
+  if (plan.libreofficePages) {
     let intermediatePdf: WorkerConversionResult | null = null;
     try {
       intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', withOfficePageChainLimits(src, nativeOptions), originalFilename);
@@ -2155,7 +2116,7 @@ async function convertWithinImageSession(
         const popplerInput = intermediatePdf.filePath
           ? { inputPath: intermediatePdf.filePath }
           : intermediatePdf.buffer;
-        const popplerRes = isPresentationHtml
+        const popplerRes = plan.presentationHtml
           ? await convertPdfToHtml(intermediatePdf.buffer, nativeOptions, originalFilename, input, intermediatePdf.engineUsed)
           : await convertPdfPagesWithNativeTools(popplerInput, tgt, withOfficePageChainLimits(src, nativeOptions), originalFilename);
         if (popplerRes) {
@@ -2184,7 +2145,7 @@ async function convertWithinImageSession(
   }
 
   // 1c. In-process sensor decode for the camera files LibRaw cannot open (Sigma X3F, Raspberry Pi frames).
-  if (IN_PROCESS_RAW_SENSOR_FORMATS.has(src) && !RAW_PACKAGING_TARGETS.has(tgt)) {
+  if (plan.rawSensor) {
     try {
       const sensorRes = await convertWithInProcessRawSensor(input, src, tgt, nativeOptions, originalFilename);
       if (sensorRes) {
@@ -2204,7 +2165,7 @@ async function convertWithinImageSession(
   }
 
   // 1c''. SVG drawings written as PDF: librsvg keeps the vectors and the text. A worker without it keeps the in-process raster page.
-  if (src === SVG_SOURCE && tgt === PDF_SOURCE_FORMAT) {
+  if (plan.svg) {
     try {
       const svgRes = await convertWithNativeSvg(input, src, tgt, nativeOptions, originalFilename);
       if (svgRes) {
@@ -2225,8 +2186,8 @@ async function convertWithinImageSession(
   }
 
   // 1c'. PostScript, XPS and DjVu sources: the program that draws them, then the native PDF tools for every page target.
-  const fixedPageRoute = FIXED_PAGE_ROUTES.find((route) => route.sources.has(src));
-  if (fixedPageRoute && (tgt === 'pdf' || isPdfChainTarget(tgt))) {
+  const fixedPageRoute = FIXED_PAGE_ROUTES.find((route) => route.engine === plan.fixedPage);
+  if (fixedPageRoute) {
     try {
       const pageRes = await convertWithFixedPageRoute(fixedPageRoute, { input, src, tgt, options: nativeOptions, originalFilename });
       if (pageRes) return { ...pageRes, fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined };
@@ -2244,7 +2205,7 @@ async function convertWithinImageSession(
 
   // 1d. Native RAW sensor decode (LibRaw). Formats LibRaw does not recognize may still yield an
   // embedded preview in-process, but only when the request opted in.
-  if (RAW_CAMERA_FORMATS.has(src) && !RAW_PACKAGING_TARGETS.has(tgt)) {
+  if (plan.raw) {
     try {
       const rawRes = await convertWithNativeRaw(input, src, tgt, nativeOptions, originalFilename);
       if (rawRes) {
@@ -2269,13 +2230,7 @@ async function convertWithinImageSession(
   }
 
   // 2. Native FFmpeg
-  const isThumbnailTarget = (tgt === 'jpg' || tgt === 'jpeg' || tgt === 'png') && Boolean(nativeOptions.thumbnail);
-  const isSubtitleExtractTarget = (tgt === 'srt' || tgt === 'vtt' || tgt === 'ass') && nativeOptions.subtitles?.mode === 'extract';
-  const isPackagingTarget = Boolean(nativeOptions.packaging) || tgt === 'hls' || tgt === 'dash';
-  if (
-    (MEDIA_FORMATS.has(src) && MEDIA_FORMATS.has(tgt)) ||
-    (MEDIA_FORMATS.has(src) && (isThumbnailTarget || isSubtitleExtractTarget || isPackagingTarget))
-  ) {
+  if (plan.ffmpeg) {
     try {
       const ffmpegRes = await convertWithNativeFfmpeg(input, src, tgt, nativeOptions, originalFilename);
       if (ffmpegRes) {
@@ -2297,12 +2252,10 @@ async function convertWithinImageSession(
   }
 
   // 3. Native Poppler (PDF -> Image, SVG, or Text). OCR requests skip the text-layer route.
-  const isPdfTextTarget = tgt === 'txt' || tgt === 'text';
-  const skipPopplerForOcr = isPdfTextTarget && Boolean(options.ocrEnabled);
-  if (src === 'pdf' && !skipPopplerForOcr && (isPdfChainTarget(tgt) || isPdfTextTarget)) {
+  if (plan.poppler) {
     try {
-      const popplerRes = isPdfTextTarget ? await convertWithNativePoppler(input, src, tgt, nativeOptions, originalFilename) : await convertPdfPagesWithNativeTools(input, tgt, nativeOptions, originalFilename);
-      if (popplerRes && isPdfTextTarget && options.inProcessFallback !== false && !hasNonWhitespaceText(popplerRes.buffer)) {
+      const popplerRes = plan.pdfTextTarget ? await convertWithNativePoppler(input, src, tgt, nativeOptions, originalFilename) : await convertPdfPagesWithNativeTools(input, tgt, nativeOptions, originalFilename);
+      if (popplerRes && plan.pdfTextTarget && inProcessAllowed(options) && !hasNonWhitespaceText(popplerRes.buffer)) {
         // No text layer: scanned pages need the in-process engine's OCR. Drop the empty output first.
         discardPersistedOutput(popplerRes.filePath, input, options);
         if (options.password) {
@@ -2335,7 +2288,7 @@ async function convertWithinImageSession(
   }
 
   // 4. Native 7-Zip (Archive handling)
-  if (ARCHIVE_EXTRACT_FORMATS.has(src) && ARCHIVE_TARGET_FORMATS.has(tgt)) {
+  if (plan.sevenZip) {
     try {
       const p7zRes = await convertWithNative7z(input, src, tgt, nativeOptions, originalFilename);
       if (p7zRes) {
@@ -2357,11 +2310,14 @@ async function convertWithinImageSession(
   }
 
   // 5. In-Repo Pure TS Fallback
-  if (options.inProcessFallback === false) {
+  // The media converter is FFmpeg's own route for the pairs the native step above does not take, so it serves a request that chose FFmpeg.
+  const ffmpegMediaRoute = options.engine === 'ffmpeg' && isMediaRoutePair(FORMAT_REGISTRY[src]?.category, tgt);
+  if (!inProcessAllowed(options) && !ffmpegMediaRoute) {
     if (lastUnavailable) {
       throw lastUnavailable;
     }
-    throw new UnsupportedTargetError(`No native engine route converts ${src} to ${tgt}`);
+    const chosen = options.engine === undefined ? 'native engine' : `engine '${options.engine}'`;
+    throw new UnsupportedTargetError(`No ${chosen} route converts ${src} to ${tgt}`);
   }
   if (src === 'pdf' && options.password && isUnservedPasswordRequest(lastUnavailable)) {
     // The in-process engine ignores PDF passwords, so it must not run for a request a native engine could not serve.

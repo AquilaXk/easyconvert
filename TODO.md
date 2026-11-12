@@ -26,7 +26,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Re-pin `book-pg2701.epub` to an archived capture taken after its live file was rebuilt on 2026-11-08, with a gutenberg.org mirror (latest capture 2026-11-01 differs; `book-pg84.epub` done); the pg84 quality rows were not re-measured against the rebuilt bytes (entry 224).
 
 ## Approved backlog (QA 2026-11-12: every Later and Waiting item is approved)
-- Engine choice and version pinning per conversion.
+- Engine choice, second step (entry 267 offers one installed version of each engine): install a second version of an engine when a pair needs it and list the versions with `default` and `latest` flags in `GET /api/formats`; show the engine and version of each node in the graph view (the node job's result carries them, the view lists no node result yet); read the engine versions at worker start, so the first conversion does not pay the probe.
 - Describe the named-task form (fields, report, refusals) on the Jobs page of the API documentation; its `tasks` row shows only the array branch (needs QA screenshots).
 - Thumbnail, metadata and website capture (website capture needs an SSRF suite).
 - Customer storage and SFTP import and export; presets and watched sources after that.

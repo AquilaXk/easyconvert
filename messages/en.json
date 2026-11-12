@@ -1566,6 +1566,8 @@
       "import_budget_exceeded": "Today's limit for link imports has no room for this file. Try again tomorrow.",
       "quota_exceeded": "This job needs more conversions than are left today. Try again tomorrow.",
       "timeout": "The conversion did not finish in time. Select Convert to try again.",
+      "engine_not_offered": "The chosen engine does not convert this pair. Choose one of the engines the pair lists, or leave the engine out.",
+      "engine_version_unavailable": "The chosen engine version is not installed. Use the installed version, or leave the version out.",
       "engine_unavailable": "The program this conversion needs is not available right now. Try again later.",
       "conversion_failed": "Conversion failed. Try another format, or select Convert to try again."
     },

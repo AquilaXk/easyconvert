@@ -40,6 +40,10 @@ export { NamedTaskSchema, NamedTaskMapSchema, TaskReportSchema } from './named-t
 
 export const MAX_THUMBNAIL_TIMESTAMPS = 16;
 
+/** Longest `engine` and `engineVersion` the contract reads: far over any id or version of the engines, so a longer value is a malformed request. */
+const ENGINE_ID_MAX_LENGTH = 32;
+const ENGINE_VERSION_MAX_LENGTH = 48;
+
 /** One language code (letters, digits, `-` and `_`), then up to the per-request limit of further ones joined with `+`. */
 const OCR_LANGUAGE_PATTERN = `^[A-Za-z0-9_-]+(\\+[A-Za-z0-9_-]+){0,${OCR_MAX_LANGUAGES_PER_REQUEST - 1}}$`;
 
@@ -766,6 +770,20 @@ export const ConversionOptionsSchema = {
       maximum: 86400,
       description:
         'Longest output in seconds, applied as an output-side limit (-t). Must be more than 0 and not longer than the input; a longer value answers 400.',
+    },
+    engine: {
+      type: 'string',
+      minLength: 1,
+      maxLength: ENGINE_ID_MAX_LENGTH,
+      description:
+        'The engine that converts, one of the engines `GET /api/formats?source=..&target=..` lists for the pair (`libreoffice`, `poppler`, `ffmpeg`, `7zip`, `librsvg`, `easyconvert` for the in-process converter, and the others the pair names). Left out, the pair\'s default engine runs and may fall back to the in-process converter; a named engine never falls back. An engine the pair does not list answers 422 with the code `engine_not_offered` and the list in `engines`. In a graph, the check runs when the node starts.',
+    },
+    engineVersion: {
+      type: 'string',
+      minLength: 1,
+      maxLength: ENGINE_VERSION_MAX_LENGTH,
+      description:
+        'The version of `engine` the request expects, as the formats API shows it. One version of each engine is installed; any other answers 422 with the code `engine_version_unavailable` and the installed one in `installedVersion`. Needs `engine`.',
     },
     useFfmpeg: {
       type: 'boolean',

@@ -6,6 +6,12 @@ import { createEngineUnavailableResponse, createProblemDetailsResponse } from '.
 const HTTP_INTERNAL_SERVER_ERROR = 500;
 const INTERNAL_ERROR_DETAIL = 'Internal conversion error';
 
+/** The fields a typed failure adds to its problem (the engines a pair offers), declared by its class as `problemExtensions`. */
+function problemExtensionsOf(error: unknown): Record<string, unknown> {
+  const extensions = (error as { problemExtensions?: unknown } | null)?.problemExtensions;
+  return typeof extensions === 'object' && extensions !== null ? (extensions as Record<string, unknown>) : {};
+}
+
 /**
  * The problem+json answer of an error no named branch of a convert route handles. A typed failure is answered with the status and
  * code its class declares (the file is intact but encrypted or coded with a method no engine here decodes: 422), and a missing tool
@@ -17,7 +23,7 @@ export function typedFailureProblem(error: unknown, instanceUri: string, headers
   if (typed && error instanceof EngineMissingError && typed.status === HTTP_SERVICE_UNAVAILABLE) return createEngineUnavailableResponse(error, instanceUri, headers);
   if (typed && typed.status < HTTP_INTERNAL_SERVER_ERROR) {
     const detail = error instanceof Error ? error.message : String(error);
-    return createProblemDetailsResponse(typed.status, detail, instanceUri, undefined, undefined, headers, undefined, { code: typed.code });
+    return createProblemDetailsResponse(typed.status, detail, instanceUri, undefined, undefined, headers, undefined, { code: typed.code, ...problemExtensionsOf(error) });
   }
   return createProblemDetailsResponse(typed?.status ?? HTTP_INTERNAL_SERVER_ERROR, INTERNAL_ERROR_DETAIL, instanceUri, undefined, undefined, headers);
 }

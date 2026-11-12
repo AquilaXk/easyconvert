@@ -45,6 +45,9 @@ class JobResource:
         retention (JobResourceRetention | Unset): Whether the converted file can still be downloaded. A result is
             deleted shortly after its first complete download, or when nobody downloaded it in time; its download then
             answers 410. Present for a completed job that stored a result.
+        engine (str | Unset): Id of the engine that converted, as `GET /api/formats` lists it for the pair, for example
+            `libreoffice`, `ffmpeg` or `easyconvert` (the in-process converter).
+        engine_version (str | Unset): Version of that engine as installed. Absent when the program reports none.
         engine_used (str | Unset): Engine that produced the output, for example `native-ffmpeg`, `native-soffice` or
             `internal-fallback`.
         fallback_reason (str | Unset): Why a first-choice engine did not produce the output. Present only when a
@@ -80,6 +83,8 @@ class JobResource:
     failed_code: str | Unset = UNSET
     failed_status: int | Unset = UNSET
     retention: JobResourceRetention | Unset = UNSET
+    engine: str | Unset = UNSET
+    engine_version: str | Unset = UNSET
     engine_used: str | Unset = UNSET
     fallback_reason: str | Unset = UNSET
     dropped_streams: list[JobResourceDroppedStreamsItem] | Unset = UNSET
@@ -126,6 +131,10 @@ class JobResource:
         retention: dict[str, Any] | Unset = UNSET
         if not isinstance(self.retention, Unset):
             retention = self.retention.to_dict()
+
+        engine = self.engine
+
+        engine_version = self.engine_version
 
         engine_used = self.engine_used
 
@@ -199,6 +208,10 @@ class JobResource:
             field_dict["failedStatus"] = failed_status
         if retention is not UNSET:
             field_dict["retention"] = retention
+        if engine is not UNSET:
+            field_dict["engine"] = engine
+        if engine_version is not UNSET:
+            field_dict["engineVersion"] = engine_version
         if engine_used is not UNSET:
             field_dict["engineUsed"] = engine_used
         if fallback_reason is not UNSET:
@@ -271,6 +284,10 @@ class JobResource:
         else:
             retention = JobResourceRetention.from_dict(_retention)
 
+        engine = d.pop("engine", UNSET)
+
+        engine_version = d.pop("engineVersion", UNSET)
+
         engine_used = d.pop("engineUsed", UNSET)
 
         fallback_reason = d.pop("fallbackReason", UNSET)
@@ -342,6 +359,8 @@ class JobResource:
             failed_code=failed_code,
             failed_status=failed_status,
             retention=retention,
+            engine=engine,
+            engine_version=engine_version,
             engine_used=engine_used,
             fallback_reason=fallback_reason,
             dropped_streams=dropped_streams,
