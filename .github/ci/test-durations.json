@@ -1012,6 +1012,7 @@
   "tests/raw-srgb-identity.test.ts": 0,
   "tests/raw-x3f-calibration.test.ts": 6.5,
   "tests/raw-x3f-camf-limits.test.ts": 0,
+  "tests/raw-x3f-dark-rectangles.test.ts": 0,
   "tests/raw-x3f-pi-decode-dispatch.test.ts": 34.5,
   "tests/raw-x3f-pi-decode-negative-controls.test.ts": 30.8,
   "tests/raw-x3f-pi-decode-no-libraw.test.ts": 20.1,
