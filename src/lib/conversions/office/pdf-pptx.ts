@@ -3,17 +3,20 @@ import { ConversionFailedError, type ConversionOptions } from '../../types';
 import { escapeXmlText } from '../document-model/xml-text';
 import { layoutPdfPages, type PageBlock } from '../pdf-layout';
 import type { DetectedTable, LayoutLine, Paragraph, StyledRun, TableCell } from '../pdf-layout/types';
+import { dominantRuleInk, ruleInside, UNIFORM_RULE_SHARE } from '../pdf-layout/ink';
 import { readPdfContentForOffice } from '../pdf-office';
-import type { PdfContentFont, PdfContentImage, PdfContentRule } from '../pdf-text-types';
+import type { PdfContentFont, PdfContentImage, PdfContentRule, PdfContentShape } from '../pdf-text-types';
+import { rgbHex, shapeProperties } from '../document-model/shape-xml';
 
 /**
  * A presentation from a PDF that keeps the pages: one slide for each page, as large as the page, with every line of text where the page
  * sets it (one text box for a line, so a renderer that breaks lines differently cannot move a word), every table of the layout analysis
- * as a table of the slide, every picture at its place and the thin rules of the page as lines. The package is the minimal valid one of
+ * as a table of the slide, every picture at its place and the rules of the page as lines. The package is the minimal valid one of
  * ECMA-376 Part 1 (presentation, one master, one blank layout, a theme, slides), so PowerPoint opens it without a repair.
  *
- * What the layout analysis does not carry stays out: colour (text is black, rules are black, no page or shape fill), vector figures
- * and the clipping of pictures. A page read by OCR has no geometry: its text is one text box on its slide.
+ * The colour of text and rules is the page's, and its filled rectangles and outlines of lines and curves are shapes, all in the order
+ * the page paints them under the text. What stays out is the clipping of pictures and shapes, gradients and patterns, dashes and
+ * shadows. A page read by OCR has no geometry: its text is one text box on its slide.
  */
 
 const EMU_PER_POINT = 12_700;
@@ -28,12 +31,13 @@ const MAX_FONT_HUNDREDTHS = 400_000;
 /** The first line of a text box sits one ascent below its top; the share of the em that three font families use. */
 const ASCENT_EM = { sans: 0.905, serif: 0.891, monospace: 0.833 } as const;
 const LINE_HEIGHT_EM = 1.2;
-/** Rules thicker than this (points) are the fills of shapes that this slide has no colour for. */
+/** Rules thicker than this (points) are drawn as filled rectangles, which is what a bar of that width is. */
 const MAX_RULE_THICKNESS_PT = 3;
 /** A line rule is a hairline at least as thick as this (EMU). */
 const MIN_RULE_EMU = 3_175;
 const TABLE_CELL_MARGIN_EMU = 22_860;
-const TABLE_BORDER_EMU = 6_350;
+/** A ruled table's border when the page's rules give none: half a point, black. */
+const DEFAULT_BORDER: TableBorder = { width: 6_350, color: '000000' };
 /** The text box of an OCR page: its margin and the size of its text (points). */
 const OCR_MARGIN_PT = 36;
 const OCR_TEXT_SIZE_PT = 12;
@@ -89,6 +93,7 @@ interface SlidePage {
   height: number;
   images: PdfContentImage[];
   rules: PdfContentRule[];
+  shapes: PdfContentShape[];
   blocks: PageBlock[];
   /** The text of a page that has no geometry (read by OCR). */
   plainText?: string;
@@ -141,15 +146,15 @@ class SlideXml {
     private readonly mediaRelation: (image: PdfContentImage) => string | null
   ) {}
 
-  private x(points: number): number {
+  x(points: number): number {
     return emu(points * this.placement.scale + this.placement.offsetX);
   }
 
-  private y(points: number): number {
+  y(points: number): number {
     return emu(points * this.placement.scale + this.placement.offsetY);
   }
 
-  private length(points: number): number {
+  length(points: number): number {
     return Math.max(0, emu(points * this.placement.scale));
   }
 
@@ -179,8 +184,14 @@ class SlideXml {
     const extent = horizontal ? `<a:off x="${offX}" y="${offY}"/><a:ext cx="${width}" cy="0"/>` : `<a:off x="${offX}" y="${offY}"/><a:ext cx="0" cy="${height}"/>`;
     this.shapes.push(
       `<p:cxnSp><p:nvCxnSpPr><p:cNvPr id="${id}" name="Line ${id}"/><p:cNvCxnSpPr/><p:nvPr/></p:nvCxnSpPr><p:spPr><a:xfrm>${extent}</a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom>` +
-        `<a:ln w="${thickness}"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln></p:spPr></p:cxnSp>`
+        `<a:ln w="${thickness}"><a:solidFill><a:srgbClr val="${rgbHex(rule.color ?? 0)}"/></a:solidFill></a:ln></p:spPr></p:cxnSp>`
     );
+  }
+
+  /** A filled rectangle, or an outline of lines and curves, with its fill and stroke. */
+  shape(shape: PdfContentShape): void {
+    const id = this.id();
+    this.shapes.push(`<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Shape ${id}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>${shapeProperties(shape, this)}</p:sp>`);
   }
 
   /** The text box of one line, at the place the line's baseline gives. */
@@ -217,13 +228,13 @@ class SlideXml {
     );
   }
 
-  table(table: DetectedTable, fonts: ReadonlyMap<string, PdfContentFont>): void {
+  table(table: DetectedTable, fonts: ReadonlyMap<string, PdfContentFont>, border: TableBorder): void {
     const id = this.id();
     const grid = table.columnWidths.map((width) => `<a:gridCol w="${this.length(width)}"/>`).join('');
     const rowTops = table.rows.map((row) => rowTopOf(row, table.box.y0));
     const rows = table.rows.map((row, index) => {
       const bottom = index + 1 < rowTops.length ? rowTops[index + 1] : table.box.y1;
-      const cells = row.map((cell) => this.cell(cell, table.kind === 'lattice', fonts)).join('');
+      const cells = row.map((cell) => this.cell(cell, table.kind === 'lattice' ? border : null, fonts)).join('');
       return `<a:tr h="${this.length(Math.max(bottom - rowTops[index], 1))}">${cells}</a:tr>`;
     });
     const width = table.columnWidths.reduce((sum, value) => sum + value, 0);
@@ -234,11 +245,11 @@ class SlideXml {
     );
   }
 
-  private cell(cell: TableCell, ruled: boolean, fonts: ReadonlyMap<string, PdfContentFont>): string {
+  private cell(cell: TableCell, border: TableBorder | null, fonts: ReadonlyMap<string, PdfContentFont>): string {
     const attributes = (cell.colSpan > 1 ? ` gridSpan="${cell.colSpan}"` : '') + rowMergeOf(cell);
     const text = cell.paragraphs.length > 0 ? cell.paragraphs.map((paragraph) => this.cellParagraph(paragraph, fonts)).join('') : '<a:p><a:endParaRPr lang="en-US"/></a:p>';
     const edge = (tag: string): string =>
-      ruled ? `<a:${tag} w="${TABLE_BORDER_EMU}"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:${tag}>` : `<a:${tag} w="0"><a:noFill/></a:${tag}>`;
+      border ? `<a:${tag} w="${border.width}"><a:solidFill><a:srgbClr val="${border.color}"/></a:solidFill></a:${tag}>` : `<a:${tag} w="0"><a:noFill/></a:${tag}>`;
     const margins = `marL="${TABLE_CELL_MARGIN_EMU}" marR="${TABLE_CELL_MARGIN_EMU}" marT="${TABLE_CELL_MARGIN_EMU}" marB="${TABLE_CELL_MARGIN_EMU}" anchor="t"`;
     const cells = [`<a:tc${attributes}><a:txBody><a:bodyPr/><a:lstStyle/>${text}</a:txBody><a:tcPr ${margins}>${edge('lnL')}${edge('lnR')}${edge('lnT')}${edge('lnB')}<a:noFill/></a:tcPr></a:tc>`];
     // A cell that spans columns is followed by the grid slots it covers.
@@ -255,6 +266,48 @@ class SlideXml {
       `${XML_DECLARATION}<p:sld ${NAMESPACES}><p:cSld><p:spTree>${EMPTY_GROUP}${this.shapes.join('')}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`
     );
   }
+}
+
+/** The line the borders of a ruled table are drawn with: width in EMU and colour as six hex digits. */
+interface TableBorder {
+  width: number;
+  color: string;
+}
+
+/**
+ * Whether the table is one grid in one colour. A page that boxes its text in several colours (a diagram of labelled boxes) has
+ * rules the layout analysis reads as a table, but the slide's table has one border colour, so its text stays in text boxes and its
+ * rules stay lines.
+ */
+function isUniformlyRuled(table: DetectedTable, rules: readonly PdfContentRule[]): boolean {
+  const ink = dominantRuleInk(rules, table.box);
+  return table.kind !== 'lattice' || ink === null || ink.share >= UNIFORM_RULE_SHARE;
+}
+
+/** The border of a table: the colour and median width of the rules that lie inside its box, so a table ruled in grey stays grey. */
+function borderOf(table: DetectedTable, rules: readonly PdfContentRule[]): TableBorder {
+  const ink = dominantRuleInk(rules, table.box);
+  return ink === null ? DEFAULT_BORDER : { width: Math.max(emu(ink.width), MIN_RULE_EMU), color: rgbHex(ink.color) };
+}
+
+/** A rule thicker than a hairline as the filled rectangle it is: the line's length by its width, centred on the line. */
+function barOf(rule: PdfContentRule): PdfContentShape {
+  const half = rule.thickness / 2;
+  const horizontal = rule.x1 - rule.x0 >= rule.y1 - rule.y0;
+  return {
+    kind: 'rect',
+    x0: horizontal ? rule.x0 : rule.x0 - half,
+    x1: horizontal ? rule.x1 : rule.x1 + half,
+    y0: horizontal ? rule.y0 - half : rule.y0,
+    y1: horizontal ? rule.y1 + half : rule.y1,
+    fill: rule.color ?? 0,
+    z: rule.z ?? -1,
+  };
+}
+
+/** The lines of text of a table's cells, each at the place the page sets it. */
+function linesOfTable(table: DetectedTable): LayoutLine[] {
+  return table.rows.flatMap((row) => row.flatMap((cell) => cell.paragraphs.flatMap((paragraph) => paragraph.lines)));
 }
 
 /** The attribute that merges a cell with those below it (`vMerge` marks a slot a cell above covers). */
@@ -274,7 +327,7 @@ function runXml(run: StyledRun, sizeHundredths: number, face: Face): string {
   const font = `typeface="${escapeXmlText(typeface)}" pitchFamily="${PITCH_FAMILY[family]}"`;
   return (
     `<a:r><a:rPr lang="en-US" sz="${sizeHundredths}"${run.bold ? ' b="1"' : ''}${run.italic ? ' i="1"' : ''} dirty="0">` +
-    `<a:solidFill><a:srgbClr val="000000"/></a:solidFill><a:latin ${font}/><a:cs ${font}/></a:rPr><a:t>${escapeXmlText(run.text)}</a:t></a:r>`
+    `<a:solidFill><a:srgbClr val="${run.color ?? '000000'}"/></a:solidFill><a:latin ${font}/><a:cs ${font}/></a:rPr><a:t>${escapeXmlText(run.text)}</a:t></a:r>`
   );
 }
 
@@ -350,13 +403,18 @@ async function writePackage(pages: readonly SlidePage[], fonts: ReadonlyMap<stri
     if (page.plainText !== undefined) {
       slideXml.plainText(page.plainText, page);
     } else {
-      for (const image of page.images) slideXml.picture(image);
-      const tables = page.blocks.flatMap((block) => (block.kind === 'table' ? [block.table] : []));
-      for (const rule of page.rules) {
-        if (rule.thickness <= MAX_RULE_THICKNESS_PT && !tables.some((table) => ruleInside(rule, table))) slideXml.rule(rule);
-      }
+      const tables = page.blocks.flatMap((block) => (block.kind === 'table' && isUniformlyRuled(block.table, page.rules) ? [block.table] : []));
+      const rules = page.rules.filter((rule) => rule.inShape !== true && !tables.some((table) => ruleInside(rule, table.box)));
+      // Pictures, shapes and rules go in the order the page paints them, so a band drawn over a picture stays over it.
+      const painted: { z: number; draw: () => void }[] = [
+        ...page.images.map((image) => ({ z: image.z ?? -1, draw: () => slideXml.picture(image) })),
+        ...page.shapes.map((shape) => ({ z: shape.z, draw: () => slideXml.shape(shape) })),
+        ...rules.map((rule) => ({ z: rule.z ?? -1, draw: () => (rule.thickness <= MAX_RULE_THICKNESS_PT ? slideXml.rule(rule) : slideXml.shape(barOf(rule))) })),
+      ];
+      for (const { draw } of painted.sort((a, b) => a.z - b.z)) draw();
       for (const block of page.blocks) {
-        if (block.kind === 'table') slideXml.table(block.table, fonts);
+        if (block.kind === 'table' && tables.includes(block.table)) slideXml.table(block.table, fonts, borderOf(block.table, page.rules));
+        else if (block.kind === 'table') for (const line of linesOfTable(block.table)) slideXml.line(line, fonts);
         else if (block.kind === 'paragraph') for (const line of block.paragraph.lines) slideXml.line(line, fonts);
       }
     }
@@ -412,31 +470,25 @@ async function writePackage(pages: readonly SlidePage[], fonts: ReadonlyMap<stri
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
-/** Whether a rule lies inside a table's box: the table draws its own borders. */
-function ruleInside(rule: PdfContentRule, table: DetectedTable): boolean {
-  const slack = 2;
-  return rule.x0 >= table.box.x0 - slack && rule.x1 <= table.box.x1 + slack && rule.y0 >= table.box.y0 - slack && rule.y1 <= table.box.y1 + slack;
-}
-
 /**
  * A presentation from a PDF: one slide for each page.
  * For the failures of reading the document see `readPdfContentForOffice`; a document that needs more than the layout analysis allows
  * a page is refused as it is for a Word document (`PdfLayoutLimitError`).
  */
 export async function pdfToPptx(source: Buffer, options: ConversionOptions, title: string): Promise<Buffer> {
-  const content = await readPdfContentForOffice(source, options, true);
+  const content = await readPdfContentForOffice(source, options, { images: true, colour: true });
   const fonts = new Map<string, PdfContentFont>();
   const noteFonts = (list: readonly PdfContentFont[]): void => list.forEach((font) => fonts.set(font.name, font));
   if (content.kind === 'layout') {
     noteFonts(content.extracted.fonts);
     const layouts = layoutPdfPages(content.extracted.pages, content.extracted.fonts);
-    return writePackage(layouts.map(({ page, blocks }) => ({ width: page.width, height: page.height, images: page.images, rules: page.rules, blocks })), fonts, title);
+    return writePackage(layouts.map(({ page, blocks }) => ({ width: page.width, height: page.height, images: page.images, rules: page.rules, shapes: page.shapes ?? [], blocks })), fonts, title);
   }
   // Pages read by OCR (and the pages of a scan's document that kept their text layer) have text and no geometry.
   const known = new Map((content.extracted?.pages ?? []).map((page) => [page.pageNumber, page]));
   const pages: SlidePage[] = content.pages.map(({ pageNumber, text }) => {
     const page = known.get(pageNumber);
-    return { width: page?.width ?? LETTER_WIDTH_PT, height: page?.height ?? LETTER_HEIGHT_PT, images: [], rules: [], blocks: [], plainText: text };
+    return { width: page?.width ?? LETTER_WIDTH_PT, height: page?.height ?? LETTER_HEIGHT_PT, images: [], rules: [], shapes: [], blocks: [], plainText: text };
   });
   return writePackage(pages, fonts, title);
 }

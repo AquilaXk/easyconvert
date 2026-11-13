@@ -47,8 +47,17 @@ function overlapShare(top: number, bottom: number, other: { top: number; bottom:
   return smaller > 0 ? overlap / smaller : 0;
 }
 
-/** Drops runs drawn twice at (almost) the same place, which is how some producers fake bold type. */
+/** Whether two runs are set in different colours (a run without a colour is black). */
+function differInColour(a: PdfContentItem, b: PdfContentItem): boolean {
+  return (a.colors?.[0]?.color ?? 0) !== (b.colors?.[0]?.color ?? 0);
+}
+
+/**
+ * Drops runs drawn twice at (almost) the same place, which is how some producers fake bold type. Of two runs in different colours
+ * (a white shadow under black type) the one drawn last is the one seen, and it is the one kept.
+ */
 function withoutDuplicates(items: PdfContentItem[], budget: LayoutBudget): PdfContentItem[] {
+  const drawn = new Map(items.map((item, index) => [item, index]));
   const sorted = [...items].sort((a, b) => a.baseline - b.baseline || a.x - b.x);
   const kept: PdfContentItem[] = [];
   for (const item of sorted) {
@@ -59,6 +68,7 @@ function withoutDuplicates(items: PdfContentItem[], budget: LayoutBudget): PdfCo
       if (item.baseline - other.baseline > DUPLICATE_DISTANCE) break;
       if (other.text === item.text && Math.abs(other.x - item.x) <= DUPLICATE_DISTANCE) {
         duplicate = true;
+        if (differInColour(other, item) && (drawn.get(item) ?? 0) > (drawn.get(other) ?? 0)) kept[i] = item;
         break;
       }
     }
@@ -163,7 +173,23 @@ function styleOf(item: PdfContentItem, fonts: FontList): Omit<StyledRun, 'text'>
 }
 
 function sameStyle(a: Omit<StyledRun, 'text'>, b: Omit<StyledRun, 'text'>): boolean {
-  return a.bold === b.bold && a.italic === b.italic && a.monospace === b.monospace;
+  return a.bold === b.bold && a.italic === b.italic && a.monospace === b.monospace && a.color === b.color && a.fill === b.fill;
+}
+
+const HEX_DIGITS = 6;
+const HEX_RADIX = 16;
+const hexOf = (color: number): string => color.toString(HEX_RADIX).toUpperCase().padStart(HEX_DIGITS, '0');
+
+/** The pieces of an item's text with their colours (black pieces have none): the whole text when the item has no colour. */
+function colouredPieces(item: PdfContentItem): { text: string; color?: string }[] {
+  if (!item.colors) return [{ text: item.text }];
+  const pieces: { text: string; color?: string }[] = [];
+  let from = 0;
+  for (const { end, color } of item.colors) {
+    if (end > from) pieces.push(color === 0 ? { text: item.text.slice(from, end) } : { text: item.text.slice(from, end), color: hexOf(color) });
+    from = end;
+  }
+  return from < item.text.length ? [...pieces, { text: item.text.slice(from) }] : pieces;
 }
 
 const SIZE_PRECISION = 10;
@@ -180,12 +206,13 @@ export function lineFromItems(items: PdfContentItem[], fonts: FontList): LayoutL
     const joint = index === 0 ? '' : separator(logical[index - 1], item);
     const style = styleOf(item, fonts);
     const piece = item.text;
-    const previous = runs[runs.length - 1];
-    if (previous && sameStyle(previous, style)) {
-      previous.text += joint + piece;
-    } else {
-      if (joint !== '' && previous) previous.text += joint;
-      runs.push({ text: piece, ...style });
+    if (joint !== '' && runs.length > 0) runs[runs.length - 1].text += joint;
+    for (const part of colouredPieces(item)) {
+      const previous = runs[runs.length - 1];
+      const partStyle = { ...style, ...(part.color === undefined ? {} : { color: part.color }), ...(item.fill === undefined || part.color === undefined ? {} : { fill: hexOf(item.fill) }) };
+      // White space takes the colour of the text before it, so a space between two coloured words is not a run of its own.
+      if (previous && (sameStyle(previous, partStyle) || (part.text.trim() === '' && sameStyle(previous, { ...partStyle, color: previous.color })))) previous.text += part.text;
+      else runs.push({ text: part.text, ...partStyle });
     }
     text += joint + piece;
     const font = item.font >= 0 ? fonts[item.font] : undefined;

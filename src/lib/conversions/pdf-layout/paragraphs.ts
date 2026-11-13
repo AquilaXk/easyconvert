@@ -236,7 +236,7 @@ export class ParagraphBuilder {
     }
     for (const run of line.runs) {
       const last = this.runs[this.runs.length - 1];
-      if (last && last.bold === run.bold && last.italic === run.italic && last.monospace === run.monospace) {
+      if (last && last.bold === run.bold && last.italic === run.italic && last.monospace === run.monospace && last.color === run.color && last.fill === run.fill) {
         this.runPieces[this.runPieces.length - 1].push(run.text);
       } else {
         this.runs.push({ ...run });

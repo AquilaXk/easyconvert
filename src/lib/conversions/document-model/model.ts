@@ -63,10 +63,35 @@ export interface Inline {
   sizePt?: number;
   /** RGB colour as six hex digits. */
   color?: string;
+  /** Background of the run as six hex digits (white text on a coloured badge). */
+  shading?: string;
   image?: InlineImage;
   note?: NoteReference;
   /** A named position other parts of the document link to. */
   anchor?: string;
+}
+
+/**
+ * A shape a PDF page paints under its text, hung on a paragraph: a filled rectangle or an outline of lines and curves. Its box is
+ * in points, `x` from the left edge of the page and `y` from the top of the paragraph it hangs on (negative above it), so the shape
+ * keeps its place against that paragraph's text however the document flows; with `pageRelative`, `y` is from the top of the page.
+ */
+export interface PageShape {
+  kind: 'rect' | 'path';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Fill and stroke colour as six hex digits. */
+  fill?: string;
+  stroke?: string;
+  strokeWidthPt?: number;
+  /** Fill opacity below one. */
+  alpha?: number;
+  /** The segments of a `path`, as pdf.js encodes them, relative to the corner of the box. */
+  path?: number[];
+  /** `y` counts from the top of the page and not from the paragraph. */
+  pageRelative?: true;
 }
 
 export interface ParagraphBlock {
@@ -76,6 +101,12 @@ export interface ParagraphBlock {
   align: 'left' | 'center' | 'right' | 'justify';
   /** Em size in points of the paragraph's text, when it differs from the body size. */
   size?: number;
+  /** Background of the paragraph as six hex digits (a PDF paints text on a filled area). */
+  shading?: string;
+  /** Shapes of the page that hang on this paragraph (see `PageShape`). */
+  shapes?: PageShape[];
+  /** Height in points the paragraph holds open for the shapes that hang on it, when it has no text. */
+  spacerPt?: number;
 }
 
 export interface HeadingBlock {
@@ -86,6 +117,10 @@ export interface HeadingBlock {
   rtl: boolean;
   /** The number the document shows before the heading text ("2.1"), when it is generated rather than typed. */
   label?: string;
+  /** Background of the heading as six hex digits. */
+  shading?: string;
+  /** Shapes of the page that hang on this heading (see `PageShape`). */
+  shapes?: PageShape[];
 }
 
 export interface ListLevelFormat {
@@ -139,6 +174,8 @@ export interface TableBlock {
   columnWidths: number[];
   /** The source drew lines around the cells (a ruled table); an aligned table without lines has none. */
   bordered: boolean;
+  /** Colour of the lines of a ruled table as six hex digits and their width in points, when the source states them (black, half a point otherwise). */
+  border?: { color: string; widthPt: number };
 }
 
 export interface ImageBlock {
