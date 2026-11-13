@@ -8,6 +8,15 @@ import { LEGAL_DOCUMENTS } from '@/lib/legal/documents';
 
 export type AuthTab = 'login' | 'register';
 
+/**
+ * Where a form stands. `start`: the fields of the tab (email, password; sign-up asks only for the email and the terms). `code`: the
+ * six-digit code was mailed, and the form asks for it (with the name and the password for a sign-up; alone for the sign-in of an
+ * account whose address was never confirmed).
+ */
+export type AuthStep = 'start' | 'code';
+
+const EMAIL_CODE_LENGTH = 6;
+
 /** The 32 px height of the form controls; 44 px where the pointer is a finger, as the accessibility statement promises. */
 export const CONTROL_HEIGHT = 'h-8 [@media(pointer:coarse)]:h-11';
 
@@ -32,6 +41,11 @@ export function resolveOAuthErrorKey(urlError: string | null): OAuthErrorKey | n
 }
 
 export type RegistrationProblem = 'passwordTooShort' | 'passwordMismatch';
+
+/** Whether `code` is what a code mail carries: six digits. */
+export function isEmailCodeInput(code: string): boolean {
+  return /^\d{6}$/.test(code);
+}
 
 export function validateRegistrationInput(password: string, confirmPassword: string): RegistrationProblem | null {
   if (password.length < 8) return 'passwordTooShort';
@@ -85,6 +99,8 @@ export function GoogleOAuthButton({
 
 export interface AuthCredentialsFormProps {
   activeTab: AuthTab;
+  step: AuthStep;
+  code: string;
   name: string;
   email: string;
   password: string;
@@ -95,6 +111,9 @@ export interface AuthCredentialsFormProps {
   isSubmitting: boolean;
   /** Whether the server can mail a reset link (`isAuthMailEnabled`), read when the page is rendered. */
   passwordResetEnabled: boolean;
+  onCodeChange: (value: string) => void;
+  onResendCode: () => void;
+  onBackToStart: () => void;
   onNameChange: (value: string) => void;
   onEmailChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
@@ -106,6 +125,8 @@ export interface AuthCredentialsFormProps {
 
 export function AuthCredentialsForm({
   activeTab,
+  step,
+  code,
   name,
   email,
   password,
@@ -115,6 +136,9 @@ export function AuthCredentialsForm({
   isBusy,
   isSubmitting,
   passwordResetEnabled,
+  onCodeChange,
+  onResendCode,
+  onBackToStart,
   onNameChange,
   onEmailChange,
   onPasswordChange,
@@ -127,10 +151,43 @@ export function AuthCredentialsForm({
   const inputClass =
     `${CONTROL_HEIGHT} w-full px-2.5 rounded-xs border border-rule-strong bg-sunken text-ink text-base transition-colors`;
   const labelClass = 'block text-sm font-medium text-ink-2 mb-1';
+  const registering = activeTab === 'register';
+  const askingForCode = step === 'code';
+  // A sign-up asks for the email and the terms first; the name and the password come with the code. The sign-in of an account
+  // whose address was never confirmed asks for the code alone: its email and password were sent already.
+  const showEmail = !askingForCode;
+  const showPasswords = registering ? askingForCode : !askingForCode;
+  const showName = registering && askingForCode;
+  const showTerms = registering && !askingForCode;
+  const submitLabel = (() => {
+    if (!registering) return askingForCode ? t('confirmSignIn') : t('signIn');
+    return askingForCode ? t('createAccount') : t('sendCode');
+  })();
 
   return (
     <form onSubmit={onSubmit} className="space-y-5">
-      {activeTab === 'register' && (
+      {askingForCode && (
+        <div>
+          <label htmlFor="auth-code" className={labelClass}>
+            {t('code')}
+          </label>
+          <input
+            id="auth-code"
+            type="text"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            pattern="[0-9]{6}"
+            maxLength={EMAIL_CODE_LENGTH}
+            required
+            value={code}
+            onChange={(e) => onCodeChange(e.target.value.replace(/\D/g, ''))}
+            placeholder={t('codePlaceholder')}
+            className={`${inputClass} tracking-widest`}
+          />
+        </div>
+      )}
+
+      {showName && (
         <div>
           <label htmlFor="auth-full-name" className={labelClass}>
             {t('name')}
@@ -148,49 +205,53 @@ export function AuthCredentialsForm({
         </div>
       )}
 
-      <div>
-        <label htmlFor="auth-email" className={labelClass}>
-          {t('email')}
-        </label>
-        <input
-          id="auth-email"
-          type="email"
-          autoComplete="email"
-          required
-          value={email}
-          onChange={(e) => onEmailChange(e.target.value)}
-          placeholder={t('emailPlaceholder')}
-          className={inputClass}
-        />
-      </div>
-
-      <div>
-        <label htmlFor="auth-password" className={labelClass}>
-          {t('password')}
-        </label>
-        <div className="relative">
+      {showEmail && (
+        <div>
+          <label htmlFor="auth-email" className={labelClass}>
+            {t('email')}
+          </label>
           <input
-            id="auth-password"
-            type={showPassword ? 'text' : 'password'}
-            autoComplete={activeTab === 'login' ? 'current-password' : 'new-password'}
+            id="auth-email"
+            type="email"
+            autoComplete="email"
             required
-            value={password}
-            onChange={(e) => onPasswordChange(e.target.value)}
-            className={`${inputClass} pr-9 [@media(pointer:coarse)]:pr-11`}
+            value={email}
+            onChange={(e) => onEmailChange(e.target.value)}
+            placeholder={t('emailPlaceholder')}
+            className={inputClass}
           />
-          <button
-            type="button"
-            onClick={onTogglePassword}
-            aria-label={showPassword ? t('hidePassword') : t('showPassword')}
-            className="absolute inset-y-0 right-0 w-8 [@media(pointer:coarse)]:w-11 flex items-center justify-center rounded-xs text-ink-3 hover:text-ink transition-colors"
-          >
-            {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-          </button>
         </div>
-        {activeTab === 'login' && passwordResetEnabled && <ForgotPasswordLink />}
-      </div>
+      )}
 
-      {activeTab === 'register' && (
+      {showPasswords && (
+        <div>
+          <label htmlFor="auth-password" className={labelClass}>
+            {t('password')}
+          </label>
+          <div className="relative">
+            <input
+              id="auth-password"
+              type={showPassword ? 'text' : 'password'}
+              autoComplete={registering ? 'new-password' : 'current-password'}
+              required
+              value={password}
+              onChange={(e) => onPasswordChange(e.target.value)}
+              className={`${inputClass} pr-9 [@media(pointer:coarse)]:pr-11`}
+            />
+            <button
+              type="button"
+              onClick={onTogglePassword}
+              aria-label={showPassword ? t('hidePassword') : t('showPassword')}
+              className="absolute inset-y-0 right-0 w-8 [@media(pointer:coarse)]:w-11 flex items-center justify-center rounded-xs text-ink-3 hover:text-ink transition-colors"
+            >
+              {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
+          </div>
+          {!registering && passwordResetEnabled && <ForgotPasswordLink />}
+        </div>
+      )}
+
+      {registering && showPasswords && (
         <div>
           <label htmlFor="auth-confirm-password" className={labelClass}>
             {t('confirmPassword')}
@@ -207,7 +268,7 @@ export function AuthCredentialsForm({
         </div>
       )}
 
-      {activeTab === 'register' && (
+      {showTerms && (
         <div className="flex items-center gap-2">
           <input
             id="auth-accept-terms"
@@ -234,8 +295,19 @@ export function AuthCredentialsForm({
         disabled={isBusy}
         className={`${CONTROL_HEIGHT} w-full flex items-center justify-center px-2.5 rounded-xs bg-accent text-on-accent hover:bg-accent-hover text-sm font-medium transition-colors disabled:opacity-60`}
       >
-        {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <span>{activeTab === 'login' ? t('signIn') : t('createAccount')}</span>}
+        {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <span>{submitLabel}</span>}
       </button>
+
+      {askingForCode && (
+        <div className="flex items-center justify-between gap-3 text-sm">
+          <button type="button" onClick={onResendCode} disabled={isBusy} className="font-medium text-accent-ink hover:underline rounded-xs disabled:opacity-60">
+            {t('resendCode')}
+          </button>
+          <button type="button" onClick={onBackToStart} disabled={isBusy} className="font-medium text-accent-ink hover:underline rounded-xs disabled:opacity-60">
+            {registering ? t('changeEmail') : t('backToSignIn')}
+          </button>
+        </div>
+      )}
     </form>
   );
 }
