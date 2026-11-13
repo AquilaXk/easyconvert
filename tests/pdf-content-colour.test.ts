@@ -99,16 +99,21 @@ describe('the content of a page read with colour', () => {
 
   it('gives rules their colour and paints bars, a triangle and an ellipse as shapes in paint order', async () => {
     const page = await pageOf('shapes-chart', true);
-    const rects = (page.shapes ?? []).filter((shape) => shape.kind === 'rect');
-    expect(rects.map((shape) => hex(shape.fill))).toEqual(['0d47a1', '1976d2', 'e53935', '43a047', 'fb8c00']);
+    // The bars of the chart start half way along their base and so have six segments, which `paint_path` of pdfminer.six takes for curves.
+    expect((page.shapes ?? []).filter((shape) => shape.kind === 'rect')).toEqual([]);
     const paths = (page.shapes ?? []).filter((shape) => shape.kind === 'path');
     // The triangle is filled and stroked by one operator; the ellipse is filled by one and stroked by the next, which is one shape.
     expect(paths.map((shape) => [hex(shape.fill), hex(shape.stroke)])).toEqual([
+      ['0d47a1', undefined],
+      ['1976d2', undefined],
+      ['e53935', undefined],
+      ['43a047', undefined],
+      ['fb8c00', undefined],
       ['ce93d8', '4a148c'],
       ['80deea', '006064'],
     ]);
     // The ellipse is made of curves.
-    expect(paths[1].path).toContain(2);
+    expect(paths[6].path).toContain(2);
     const zs = [...(page.shapes ?? []).map((shape) => shape.z), ...page.rules.map((rule) => rule.z ?? -1)];
     expect(zs.every((z) => z >= 0)).toBe(true);
     // The base of the triangle is a rule its shape draws.

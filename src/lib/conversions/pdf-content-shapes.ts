@@ -1,10 +1,11 @@
+import { LTContainer, LTLine, LTRect, mult_matrix, PDFGraphicState, PDFLayoutAnalyzer, type LTCurve, type PathSegment, type TransformedPathSegment } from './pdfminer-paint-path';
 import { PDF_CONTENT_MAX_SHAPES_PER_PAGE, PDF_CONTENT_MAX_SHAPE_COORDINATES_PER_PAGE, type PdfContentItem, type PdfContentShape } from './pdf-text-types';
 
 /**
  * The painted paths of a page that are not rules: filled rectangles and outlines with a fill, a stroke or both. The page's
- * operator list gives each painted path with the fill and stroke colour in force; a subpath is classified the way pdfminer.six
- * classifies the paths it paints (`PDFLayoutAnalyzer.paint_path`, MIT): two points are a line, a closed loop of four points
- * with axis-aligned sides is a rectangle and anything else is a curve, here a `path` shape. See docs/licensing.md.
+ * operator list gives each painted path with the fill and stroke colour in force; each subpath goes to `paint_path` of pdfminer.six
+ * (`pdfminer-paint-path.ts`, a translation of the original, MIT), which makes of it a line, a rectangle or a curve; a line is a rule
+ * (the rule collector's), a rectangle a `rect` shape and a curve a `path` shape. See docs/licensing.md.
  */
 
 /** pdf.js path codes (its `DrawOPS`). */
@@ -24,7 +25,6 @@ export const COORDINATES_OF: Readonly<Record<number, number>> = {
   [QUADRATIC_TO]: QUADRATIC_COORDINATES,
   [CLOSE]: 0,
 };
-const RECTANGLE_POINTS = 4;
 /** Points that count as one place. */
 const COINCIDENT = 0.01;
 /** A side this far (points) from the axis is not axis-aligned. */
@@ -34,6 +34,9 @@ const SPECK = 0.5;
 /** A white fill covering this share of the page is the paper. */
 const PAPER_SHARE = 0.9;
 const WHITE = 0xf0;
+/** The operator letters of pdfminer.six for the pdf.js path codes: pdf.js's quadratic curve has the four operands of the `v` curve. */
+const PDFMINER_OPERATOR: Readonly<Record<number, string>> = { [MOVE_TO]: 'm', [LINE_TO]: 'l', [CURVE_TO]: 'c', [QUADRATIC_TO]: 'v', [CLOSE]: 'h' };
+const PDFJS_CODE: Readonly<Record<string, number>> = Object.fromEntries(Object.entries(PDFMINER_OPERATOR).map(([code, operator]) => [operator, Number(code)]));
 const CHANNEL_MASK = 0xff;
 const GREEN_SHIFT = 8;
 const RED_SHIFT = 16;
@@ -87,65 +90,38 @@ export function isLightColour(color: number): boolean {
   return ((color >> RED_SHIFT) & CHANNEL_MASK) >= WHITE && ((color >> GREEN_SHIFT) & CHANNEL_MASK) >= WHITE && (color & CHANNEL_MASK) >= WHITE;
 }
 
-/** The viewport points of a subpath's segments, with the number of coordinates they take. */
-function pagePath(segments: readonly number[], to: (x: number, y: number) => Point): number[] {
-  const out: number[] = [];
-  const point = (at: number): void => {
-    const p = to(segments[at], segments[at + 1]);
-    out.push(p.x, p.y);
-  };
+/** The segments of a subpath as the interpreter of pdfminer.six gives them to `paint_path`: `m`, `l`, `c`, `v` and `h` with their operands. */
+function pdfminerPath(segments: readonly number[]): PathSegment[] {
+  const path: PathSegment[] = [];
   let at = 0;
   while (at < segments.length) {
     const code = segments[at++];
-    out.push(code);
     const count = COORDINATES_OF[code] ?? 0;
-    for (let i = 0; i < count; i += POINT_COORDINATES) point(at + i);
+    path.push([PDFMINER_OPERATOR[code], ...segments.slice(at, at + count)]);
     at += count;
+  }
+  return path;
+}
+
+/** The segments `paint_path` kept of a path (`original_path`, transformed to the page) as pdf.js codes with their coordinates. */
+function pagePath(original: readonly TransformedPathSegment[]): number[] {
+  const out: number[] = [];
+  for (const [operator, ...points] of original) {
+    out.push(PDFJS_CODE[operator]);
+    for (const [x, y] of points) out.push(x, y);
   }
   return out;
 }
 
-const same = (a: Point, b: Point): boolean => Math.abs(a.x - b.x) < COINCIDENT && Math.abs(a.y - b.y) < COINCIDENT;
+/** The viewport as a matrix, `[a, b, c, d, e, f]`, from where it puts the origin and the two unit points (it only scales, rotates and flips). */
+function viewportMatrix(viewport: Viewport): Matrix {
+  const [e, f] = viewport.convertToViewportPoint(0, 0);
+  const [x, y] = viewport.convertToViewportPoint(1, 0);
+  const [u, v] = viewport.convertToViewportPoint(0, 1);
+  return [x - e, y - f, u - e, v - f, e, f];
+}
+
 const near = (a: number, b: number): boolean => Math.abs(a - b) <= AXIS_TOLERANCE;
-
-/** Whether four corners are those of a rectangle with axis-aligned sides. */
-function isRectangle(points: readonly Point[]): boolean {
-  if (points.length !== RECTANGLE_POINTS) return false;
-  const [a, b, c, d] = points;
-  return (near(a.x, b.x) && near(b.y, c.y) && near(c.x, d.x) && near(d.y, a.y)) || (near(a.y, b.y) && near(b.x, c.x) && near(c.y, d.y) && near(d.x, a.x));
-}
-
-/** Three points on one axis-aligned line. */
-const onOneLine = (a: Point, b: Point, c: Point): boolean => (near(a.x, b.x) && near(b.x, c.x)) || (near(a.y, b.y) && near(b.y, c.y));
-
-/**
- * The corners of a closed outline: the points without a last point that repeats the first (a rectangle is drawn as four lines and
- * a line back), repeated points and the points in the middle of a straight side (a producer starts a rectangle half way along a side).
- */
-function corners(points: readonly Point[]): Point[] {
-  let kept = points.filter((p, i) => i === 0 || !same(p, points[i - 1]));
-  if (kept.length > 1 && same(kept[0], kept[kept.length - 1])) kept = kept.slice(0, -1);
-  let changed = kept.length > RECTANGLE_POINTS;
-  while (changed) {
-    changed = false;
-    for (let i = 0; i < kept.length && kept.length > RECTANGLE_POINTS; i++) {
-      const before = kept[(i + kept.length - 1) % kept.length];
-      const after = kept[(i + 1) % kept.length];
-      if (onOneLine(before, kept[i], after)) {
-        kept = kept.filter((_, j) => j !== i);
-        changed = true;
-        break;
-      }
-    }
-  }
-  return kept;
-}
-
-function boxOf(points: readonly Point[]): { x0: number; y0: number; x1: number; y1: number } {
-  const xs = points.map((p) => p.x);
-  const ys = points.map((p) => p.y);
-  return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
-}
 
 /** Whether two shapes are one path painted twice: the same box and the same first point (a closing line back to it may be there or not). */
 function samePath(a: Omit<PdfContentShape, 'z'>, b: Omit<PdfContentShape, 'z'>): boolean {
@@ -155,22 +131,31 @@ function samePath(a: Omit<PdfContentShape, 'z'>, b: Omit<PdfContentShape, 'z'>):
 }
 
 /** Whether every segment of a path of straight lines is horizontal or vertical (a stepped line or a table border drawn as one path). */
-function isAxisPolyline(points: readonly Point[], curved: boolean): boolean {
+function isAxisPolyline(points: readonly (readonly [number, number])[], curved: boolean): boolean {
   if (curved) return false;
-  return points.every((p, i) => i === 0 || near(p.x, points[i - 1].x) || near(p.y, points[i - 1].y));
+  return points.every((p, i) => i === 0 || near(p[0], points[i - 1][0]) || near(p[1], points[i - 1][1]));
 }
+
+/** Whether the first and the last of the points of a path are one place. */
+const closesOnItself = (points: readonly (readonly [number, number])[]): boolean => {
+  const [first, last] = [points[0], points[points.length - 1]];
+  return Math.abs(first[0] - last[0]) < COINCIDENT && Math.abs(first[1] - last[1]) < COINCIDENT;
+};
 
 /** Collects the shapes of one page; the rules of a page are the `RuleCollector`'s. */
 export class ShapeCollector {
   readonly shapes: PdfContentShape[] = [];
   private coordinates = 0;
+  /** The classifier of pdfminer.six: it puts what it makes of a subpath in `items`. */
+  private readonly analyzer = new PDFLayoutAnalyzer();
+  private readonly items = new LTContainer([0, 0, 0, 0]);
+  private readonly graphicState = new PDFGraphicState();
+  private readonly toViewport: Matrix;
 
-  constructor(private readonly viewport: Viewport) {}
-
-  private toPage = (ctm: Matrix) => (x: number, y: number): Point => {
-    const [vx, vy] = this.viewport.convertToViewportPoint(ctm[0] * x + ctm[2] * y + ctm[4], ctm[1] * x + ctm[3] * y + ctm[5]);
-    return { x: vx, y: vy };
-  };
+  constructor(private readonly viewport: Viewport) {
+    this.toViewport = viewportMatrix(viewport);
+    this.analyzer.cur_item = this.items;
+  }
 
   private full(): boolean {
     return this.shapes.length >= PDF_CONTENT_MAX_SHAPES_PER_PAGE || this.coordinates >= PDF_CONTENT_MAX_SHAPE_COORDINATES_PER_PAGE;
@@ -193,34 +178,43 @@ export class ShapeCollector {
    * shape strokes), so that the rule is not drawn twice.
    */
   paint(subpaths: readonly Subpath[], paint: Paint, state: ShapeState, z: number): ShapesDrawn {
-    const to = this.toPage(state.ctm);
+    // pdfminer.six puts the points under the matrix in force; here that is the matrix of the operator list and the viewport.
+    this.analyzer.set_ctm(mult_matrix(state.ctm, this.toViewport));
+    this.graphicState.linewidth = state.lineWidth;
     const fill = paint.fill && state.fill !== null && state.fillAlpha > 0 ? state.fill : undefined;
     const drawn: ShapesDrawn = { fill: [], stroke: [] };
     for (const subpath of subpaths) {
-      const [fillDrawn, strokeDrawn] = this.paintSubpath(subpath, paint, state, fill, z, to);
+      const [fillDrawn, strokeDrawn] = this.paintSubpath(subpath, paint, state, fill, z);
       drawn.fill.push(fillDrawn);
       drawn.stroke.push(strokeDrawn);
     }
     return drawn;
   }
 
+  /** The line, rectangle or curve that `paint_path` makes of a subpath; undefined when it makes none. */
+  private classify(subpath: Subpath, paint: Paint): LTCurve | undefined {
+    this.items._objs.length = 0;
+    this.analyzer.paint_path(this.graphicState, paint.stroke, paint.fill, false, pdfminerPath(subpath.segments ?? []));
+    return this.items._objs[0] as LTCurve | undefined;
+  }
+
   /** Records one subpath; tells whether a shape draws its fill and whether one draws its stroke. */
-  private paintSubpath(subpath: Subpath, paint: Paint, state: ShapeState, fill: number | undefined, z: number, to: (x: number, y: number) => Point): [boolean, boolean] {
-    if (!subpath.segments || subpath.points.length < RECTANGLE_POINTS - 1 || this.full()) return [false, false];
-    const points = subpath.points.map((p) => to(p.x, p.y));
-    const outline = corners(points);
-    const loop = subpath.closed || paint.fill || same(points[0], points[points.length - 1]);
-    const box = boxOf(points);
-    if (isRectangle(outline) && subpath.curved !== true && loop) {
+  private paintSubpath(subpath: Subpath, paint: Paint, state: ShapeState, fill: number | undefined, z: number): [boolean, boolean] {
+    if (!subpath.segments || this.full()) return [false, false];
+    const item = this.classify(subpath, paint);
+    // A line is a rule, and the rule collector draws it.
+    if (!item || item instanceof LTLine) return [false, false];
+    const box = { x0: item.x0, y0: item.y0, x1: item.x1, y1: item.y1 };
+    if (item instanceof LTRect) {
       // A rectangle's stroke is four rules.
       if (fill !== undefined) this.addRectangle(box, fill, state.fillAlpha, z);
       return [fill !== undefined, false];
     }
-    const curved = subpath.curved === true;
-    const stroke = paint.stroke && state.stroke !== null && !(fill === undefined && isAxisPolyline(outline, curved)) ? state.stroke : undefined;
+    const loop = subpath.closed || paint.fill || closesOnItself(item.pts);
+    const stroke = paint.stroke && state.stroke !== null && !(fill === undefined && isAxisPolyline(item.pts, subpath.curved === true)) ? state.stroke : undefined;
     if (fill === undefined && stroke === undefined) return [false, false];
     if (fill !== undefined && this.isPaper(fill, box)) return [false, false];
-    const path = pagePath(subpath.segments, to);
+    const path = pagePath(item.original_path ?? []);
     this.coordinates += path.length;
     this.add(
       {
