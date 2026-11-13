@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { codedRefusal, serverFault } from '@/lib/api/problem-details';
 import { readJsonObject } from '@/lib/api/json-body';
-import { isPasswordAccount } from '@/lib/auth/account-mail';
+import { isEmailVerified, isPasswordAccount } from '@/lib/auth/account-mail';
 import { consumeAuthToken, isAuthTokenShape } from '@/lib/auth/auth-email-token-store';
 import { hashPassword } from '@/lib/auth/crypto';
 import {
@@ -13,6 +13,7 @@ import {
 import { isAuthMailEnabled } from '@/lib/auth/mail-config';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { clearSessionCookies, revokeAllUserSessions } from '@/lib/auth/session';
+import { revokeStandingAccess } from '@/lib/auth/standing-access';
 import type { AuthErrorCode } from '@/lib/refusal-codes';
 
 export const dynamic = 'force-dynamic';
@@ -24,7 +25,9 @@ const refusal = codedRefusal<AuthErrorCode>;
  * up by the request that presents it, so it works once; a password that breaks the rules is refused before the token is
  * touched, so a typo does not cost the link. Every session of the account ends, this one included. The mail reached the
  * mailbox of the address, so using its link also confirms the address: an account that someone registered with an address that
- * was not theirs goes to the real owner, with the registrant's password and sessions gone.
+ * was not theirs goes to the real owner, with the registrant's password and sessions gone, and with the API keys, webhooks and
+ * saved storage credentials they made gone too (`revokeStandingAccess`): a key made before the address was confirmed is the
+ * registrant's, not the owner's.
  */
 export async function POST(req: NextRequest) {
   if (!isAuthMailEnabled()) return refusal(404, 'mail_unavailable', 'Password reset is not available.');
@@ -58,10 +61,12 @@ export async function POST(req: NextRequest) {
     }
 
     const { hash, salt } = await hashPassword(password);
+    const changesHands = !isEmailVerified(record);
     if (!(await redisUserStore.updateUser(record.id, { passwordHash: hash, salt, emailVerified: true }))) {
       return refusal(400, 'invalid_token', 'This link is not valid or has expired.');
     }
     await revokeAllUserSessions(record.id);
+    if (changesHands) await revokeStandingAccess(record.id);
     await resetLoginAttempts(clientIp, record.email);
 
     const response = NextResponse.json({ success: true });
