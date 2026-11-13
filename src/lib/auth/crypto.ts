@@ -75,3 +75,26 @@ export function sha256(content: string): string {
 export function hmacSha256(key: string, content: string): string {
   return crypto.createHmac('sha256', key).update(content).digest('hex');
 }
+
+/**
+ * Keyed hashes of `material` for a secret that is stored only as a hash: HMAC-SHA256 under `KEY_HASH_PEPPER` first, then, during
+ * a rotation, under `KEY_HASH_PEPPER_PREVIOUS`. Without a pepper only a development run gets a plain SHA-256; production throws.
+ */
+export function pepperedHashes(material: string): string[] {
+  const pepper = process.env.KEY_HASH_PEPPER;
+  if (!pepper) {
+    if (process.env.NODE_ENV === 'production') throw new Error('KEY_HASH_PEPPER is required in production');
+    return [sha256(material)];
+  }
+  const hashes = [hmacSha256(pepper, material)];
+  const previous = process.env.KEY_HASH_PEPPER_PREVIOUS;
+  if (previous) hashes.push(hmacSha256(previous, material));
+  return hashes;
+}
+
+/** Whether two hex digests are equal, compared in constant time. */
+export function sameDigest(a: string, b: string): boolean {
+  const left = Buffer.from(a, 'hex');
+  const right = Buffer.from(b, 'hex');
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}

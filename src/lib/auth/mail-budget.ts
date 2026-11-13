@@ -13,6 +13,13 @@ export const MAIL_DAILY_HARD_CAP = 480;
 
 const COUNTER_TTL_SECONDS = 2 * 24 * 60 * 60;
 
+// KEYS[1]: the day's counter; ARGV[1]: seconds to live. Counts one and keeps the counter for two days.
+const COUNT_LUA = `
+local count = redis.call('INCR', KEYS[1])
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
+return count
+`;
+
 const memoryCounts = new Map<string, number>();
 
 const dayKey = () => `${redisUserStore.getKeyPrefix()}mail_sent:${new Date().toISOString().slice(0, 10)}`;
@@ -33,8 +40,7 @@ async function increment(key: string): Promise<number> {
   const redis = redisUserStore.getRedisClient();
   if (redis) {
     try {
-      const results = await redis.multi().incr(key).expire(key, COUNTER_TTL_SECONDS).exec();
-      const count = Number(results?.[0]?.[1]);
+      const count = Number(await redis.eval(COUNT_LUA, 1, key, String(COUNTER_TTL_SECONDS)));
       if (Number.isSafeInteger(count)) return count;
     } catch {
       // Fall through to the memory count: a failed counter must not stop a mail.
