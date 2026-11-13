@@ -98,7 +98,8 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
 
       const quota = await redisKeyStore.recordUsage(user.id, 5);
       expect(quota.allowed).toBe(true);
-      expect(quota.remaining).toBe(2995);
+      // The account has no package or subscription yet: the 10 credits of the free day are what it spends from.
+      expect(quota.remaining).toBe(5);
     });
 
     it('end-to-end auth routes register and login correctly via redisUserStore', async () => {

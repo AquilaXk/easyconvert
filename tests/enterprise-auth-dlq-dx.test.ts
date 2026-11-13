@@ -19,6 +19,7 @@ import { createSessionToken } from '../src/lib/auth/session';
 import { isBlockedIp, isPrivateOrRestrictedHost, createSsrfSafeAgent } from '../src/lib/security/ssrf';
 import type { ApiKeyScope, WebhookDlqEntry } from '../src/lib/api-keys/types';
 import { TERMS_VERSION } from '../src/lib/legal/documents';
+import { subscriptionStore } from '../src/lib/billing/subscription-store';
 
 describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
   let testUser: { id: string; email: string; name: string; tier: 'free' | 'paid' };
@@ -37,6 +38,13 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       salt: 'dummy_salt',
     });
     testUser = { id: created.id, email: created.email, name: created.name, tier: 'paid' };
+    // A subscription of 1,000 credits: what the account spends and what its tier reads from.
+    await subscriptionStore.apply({
+      eventId: `evt_${created.id}`,
+      eventAt: Date.now(),
+      userId: created.id,
+      subscription: { provider: 'paddle', providerSubscriptionId: `sub_${created.id}`, providerCustomerId: 'ctm_fixture', status: 'active', credits: 1000, currentPeriodEnd: Date.now() + 20 * 86_400_000 },
+    });
     const token = createSessionToken(testUser as any);
     sessionCookie = `easyconvert_session=${token}`;
   });
@@ -60,13 +68,13 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
 
     it('enforces atomic 2-phase quota reservation, commit, and rollback via redisKeyStore', async () => {
       const quotaBefore = await redisKeyStore.getQuotaUsage(testUser.id);
-      expect(quotaBefore.remaining).toBe(3000);
+      expect(quotaBefore.remaining).toBe(1000);
 
       // Phase 1: Reserve 10 units
       const res = await redisKeyStore.reserveQuota(testUser.id, 10);
       expect(res.allowed).toBe(true);
       expect(res.reservationId).toBeDefined();
-      expect(res.remaining).toBe(2990);
+      expect(res.remaining).toBe(990);
 
       expect((await redisKeyStore.getQuotaUsage(testUser.id)).usedToday).toBe(10);
 
@@ -76,18 +84,18 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       expect(await redisKeyStore.rollbackQuota(res.reservationId!)).toBe(false);
 
       const quotaAfterCommit = await redisKeyStore.getQuotaUsage(testUser.id);
-      expect(quotaAfterCommit.remaining).toBe(2990);
+      expect(quotaAfterCommit.remaining).toBe(990);
 
       // Phase 2b: Reserve and Rollback
       const res2 = await redisKeyStore.reserveQuota(testUser.id, 5);
       expect(res2.allowed).toBe(true);
-      expect(res2.remaining).toBe(2985);
+      expect(res2.remaining).toBe(985);
 
       const rolledBack = await redisKeyStore.rollbackQuota(res2.reservationId!);
       expect(rolledBack).toBe(true);
 
       const quotaAfterRollback = await redisKeyStore.getQuotaUsage(testUser.id);
-      expect(quotaAfterRollback.remaining).toBe(2990);
+      expect(quotaAfterRollback.remaining).toBe(990);
     });
 
     it('enforces quota exhaustion when daily tier limit is exceeded', async () => {
@@ -111,7 +119,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       const auth = await validateApiAccess(req, 1);
       expect(auth.authorized).toBe(false);
       expect(auth.status).toBe(429);
-      expect(auth.error).toContain('Daily conversion quota exceeded');
+      expect(auth.error).toContain('Daily credit quota exceeded');
     });
 
     it('permits 0-unit read requests (file download, job tracking) even when daily quota is exhausted', async () => {
@@ -629,7 +637,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       const usageJson = await usageRes.json();
       expect(usageJson.success).toBe(true);
       expect(usageJson.usage.tier).toBe('paid');
-      expect(usageJson.usage.dailyLimit).toBe(3000);
+      expect(usageJson.usage.dailyLimit).toBe(1000);
 
       // POST /api/keys using Admin API Key
       const createReq = new Request('https://easyconvert.app/api/keys', {

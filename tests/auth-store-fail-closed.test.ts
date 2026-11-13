@@ -10,6 +10,7 @@ import { POST as rotateRoute } from '../src/app/api/v1/webhooks/secrets/rotate/r
 import { POST as logoutRoute } from '../src/app/api/auth/logout/route';
 import { validateApiAccess } from '../src/lib/api-keys/guard';
 import { loggingOutcomes } from '../src/lib/api/conversion-outcome-log';
+import { subscriptionStore } from '../src/lib/billing/subscription-store';
 import { RedisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { signJwt, DEFAULT_JWT_AUDIENCE, DEFAULT_JWT_ISSUER } from '../src/lib/auth/jwt';
@@ -237,7 +238,8 @@ describe('the typed refusal reaches the routes as a 503', () => {
   it('stays an AuthStoreUnavailableError through the quota read of the key store, not a plain Error', async () => {
     const store = new RedisKeyStore({ keyPrefix: `failclosed:${crypto.randomBytes(4).toString('hex')}:`, isolated: true, redisClient: silentRedis() });
     const user = await redisUserStore.createUser({ email: uniqueEmail(), name: 'Quota user' });
-    vi.spyOn(redisUserStore, 'findById').mockRejectedValue(new AuthStoreUnavailableError());
+    // The quota read asks the subscription store, which keeps its records beside the accounts.
+    vi.spyOn(subscriptionStore, 'findByUser').mockRejectedValue(new AuthStoreUnavailableError());
 
     expect((await refusal(store.getQuotaUsage(user.id))).status).toBe(HTTP_UNAVAILABLE);
   });

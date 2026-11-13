@@ -183,7 +183,7 @@ describe('Per-key burst rate limit and Retry-After (#242)', () => {
       const jobsRes = await createJobRoute(keyRequest('/api/v1/jobs', secretKey, { method: 'POST' }));
       expect(jobsRes.status).toBe(429);
       const jobsBody = await jobsRes.json();
-      expect(jobsBody.detail).toContain('Daily conversion quota exceeded');
+      expect(jobsBody.detail).toContain('Daily credit quota exceeded');
       expect(jobsRes.headers.get('retry-after')).toBe(String(SECONDS_UNTIL_UTC_MIDNIGHT));
 
       const convertRes = await v1ConvertRoute(keyRequest('/api/v1/convert', secretKey, { method: 'POST' }));

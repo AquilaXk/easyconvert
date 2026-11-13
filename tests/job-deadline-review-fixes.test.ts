@@ -415,7 +415,7 @@ describe('a job queued without a timeout gets the maximum of its owner tier', ()
       salt: 's',
     });
     const forOwner = (userId?: string) => legacyJobTimeoutMs({ data: jobData('x', { userId }) } as never);
-    expect(await forOwner(pro.id)).toBe(1_800_000);
+    expect(await forOwner(pro.id)).toBe(3_600_000);
     expect(await forOwner('anon:1.2.3.4')).toBe(300_000);
     expect(await forOwner('nobody')).toBe(300_000);
     expect(await forOwner(undefined)).toBe(300_000);

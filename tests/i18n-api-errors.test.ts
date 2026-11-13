@@ -100,10 +100,10 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
 
   it("words an account's spent link import budget with its plan's allowance, not the anonymous one", async () => {
     const { status, body } = await bodyOf(uploadBudgetRefusalResponse('daily-bytes', '/api/fetch-url', 'paid'));
-    expect(body).toMatchObject({ refusal: 'daily-bytes', limitBytes: 10 * 1024 ** 3, plan: 'paid' });
+    expect(body).toMatchObject({ refusal: 'daily-bytes', limitBytes: 20 * 1024 ** 3, plan: 'paid' });
 
     const korean = worded(useProblemWording, 'ko', body, status);
-    expect(korean).toContain('10 GB');
+    expect(korean).toContain('20 GB');
     expect(korean).toContain('링크 가져오기');
     expect(korean).not.toContain('계정 없이');
   });
@@ -111,22 +111,22 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
   /** The 429 of a job that needs `requiredUnits` conversions when `remaining` of a free account's day are left. */
   async function conversionsShort(requiredUnits: number, remaining: number) {
     const usage = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CREDITS, usedToday: FREE_DAILY_CREDITS - remaining, remaining, resetAt: Date.now() , packageCredits: 0};
-    const refusal = { reason: 'used-up' as const, error: 'Daily conversion quota exceeded.', usage, requiredUnits };
+    const refusal = { reason: 'used-up' as const, error: 'Daily credit quota exceeded.', usage, requiredUnits };
     return bodyOf(conversionRefusalResponse(refusal, '/api/v1/jobs'));
   }
 
-  it('words a job that needs more conversions than are left by both numbers, in both locales', async () => {
+  it('words a job that needs more credits than are left by both numbers, in both locales', async () => {
     const { status, body } = await conversionsShort(3, 2);
-    expect(worded(useProblemWording, 'en', body, status)).toBe('This job needs 3 conversions, and 2 are left today.');
+    expect(worded(useProblemWording, 'en', body, status)).toBe('This job needs 3 credits, and 2 are left today.');
     const korean = worded(useProblemWording, 'ko', body, status);
-    expect(korean).toBe('이 작업에는 변환이 3회 필요한데 오늘 남은 횟수는 2회입니다.');
+    expect(korean).toBe('이 작업에는 3크레딧이 필요한데 오늘 남은 크레딧은 2입니다.');
     expectKorean(korean, 'conversions short');
-    expect(worded(useProblemWording, 'en', (await conversionsShort(5, 1)).body, status)).toBe('This job needs 5 conversions, and 1 is left today.');
+    expect(worded(useProblemWording, 'en', (await conversionsShort(5, 1)).body, status)).toBe('This job needs 5 credits, and 1 is left today.');
   });
 
-  it('words a job refused once the day has no conversion left by the daily limit', async () => {
+  it('words a job refused once the day has no credit left by the daily limit', async () => {
     const { status, body } = await conversionsShort(1, 0);
-    expect(worded(useProblemWording, 'ko', body, status)).toBe(`오늘 변환 한도 ${FREE_DAILY_CREDITS}회를 모두 썼습니다. 내일 다시 시도하세요.`);
+    expect(worded(useProblemWording, 'ko', body, status)).toBe(`오늘 크레딧 ${FREE_DAILY_CREDITS}개를 모두 썼습니다. 내일 다시 시도하세요.`);
   });
 
   it('words a file larger than what the day has left for link imports by what is left, in both locales', async () => {
@@ -209,7 +209,7 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
 
   it('words a refusal of a known type by its sentence, not by the server text', () => {
     const quota = { type: `${PROBLEM}quota-exceeded`, detail: 'The daily limit of 50 conversions is used up.', dailyLimit: 50 };
-    expect(worded(useProblemWording, 'ko', quota, 429)).toBe('오늘 변환 한도 50회를 모두 썼습니다. 내일 다시 시도하세요.');
+    expect(worded(useProblemWording, 'ko', quota, 429)).toBe('오늘 크레딧 50개를 모두 썼습니다. 내일 다시 시도하세요.');
     const plan = { type: `${PROBLEM}payload-too-large`, detail: 'File size 3 GiB exceeds the 1 GiB limit.', plan: 'free', sizeBytes: 3 * 1024 ** 3 };
     expect(worded(useProblemWording, 'ko', plan, 413)).not.toContain(plan.detail);
     const down = { type: `${PROBLEM}service-unavailable`, detail: 'Redis at /var/run/redis.sock is down.' };

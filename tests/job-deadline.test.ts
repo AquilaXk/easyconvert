@@ -78,7 +78,7 @@ describe('jobDeadlineMs defaults', () => {
 
   it('gives work of unknown size the maximum of the tier, never no limit', () => {
     expect(jobDeadlineMs({ tier: 'free', family: 'bytes' })).toBe(FREE_MAX);
-    expect(jobDeadlineMs({ tier: 'paid', family: 'media' })).toBe(1_800_000);
+    expect(jobDeadlineMs({ tier: 'paid', family: 'media' })).toBe(3_600_000);
   });
 
   it('never shrinks when the work grows', () => {
@@ -234,7 +234,7 @@ describe('the settings are documented configuration', () => {
   const configDoc = readFileSync(path.resolve(__dirname, '..', 'docs', 'configuration.md'), 'utf8');
 
   it('declares every deadline variable in the configuration schema with the default the code uses', () => {
-    expect(Object.values(JOB_DEADLINE_ENV).length).toBe(11);
+    expect(Object.values(JOB_DEADLINE_ENV).length).toBe(7);
     expect(byName.has('JOB_DEADLINE_PER_PAGE_MS')).toBe(false);
     expect(configDoc).not.toContain('JOB_DEADLINE_PER_PAGE_MS');
     for (const [key, name] of Object.entries(JOB_DEADLINE_ENV)) {
@@ -250,7 +250,7 @@ describe('the settings are documented configuration', () => {
 describe('start-up configuration check of the deadline settings', () => {
   it('stops the process for a base above the maximum of its tier, naming the variable and not the value', () => {
     try {
-      parseConfig({ JOB_DEADLINE_BASE_MS_PAID: '3000000' });
+      parseConfig({ JOB_DEADLINE_MAX_MS_PAID: '1000000', JOB_DEADLINE_BASE_MS_PAID: '3000000' });
       throw new Error('parseConfig accepted a base above the maximum');
     } catch (error) {
       expect(error).toBeInstanceOf(ConfigurationError);

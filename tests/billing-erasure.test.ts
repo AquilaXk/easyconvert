@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { eraseAccount, planAccountErasure } from '../scripts/erase-account';
+import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { subscriptionStore } from '../src/lib/billing/subscription-store';
 import { TERMS_VERSION } from '../src/lib/legal/documents';
@@ -75,5 +76,19 @@ describe('erasing an account that has a subscription', () => {
     expect(await redisUserStore.findById(user.id)).toBeNull();
     expect(await subscriptionStore.findByUser(user.id)).toBeNull();
     expect(await subscriptionStore.userOfSubscription('sub_late')).toBeNull();
+  });
+
+  it('lists the package credits of the account in the plan, and deletes the balance, the payments and the index of them with the account', async () => {
+    const user = await redisUserStore.createUser({ email: `erase_${crypto.randomUUID()}@billing.test`, name: 'Package', acceptedTermsVersion: TERMS_VERSION });
+    created.push(user.id);
+    expect(await redisKeyStore.creditPackage(user.id, { transactionId: `txn_${user.id}`, credits: 2500, paid: '1999', at: NOW })).toBe('granted');
+    const plan = (await planAccountErasure(user.id))!;
+    expect(plan.packageCredits).toBe(2500);
+    expect(await redisKeyStore.packageBalance(user.id)).toBe(2500);
+
+    expect(await eraseAccount(plan, { drainMs: 0 })).toEqual({ runningJobIds: [] });
+    expect(await redisKeyStore.packageBalance(user.id)).toBe(0);
+    expect(await redisKeyStore.packageTransactionOwner(`txn_${user.id}`)).toBeNull();
+    expect((await planAccountErasure(user.id)) ?? null).toBeNull();
   });
 });

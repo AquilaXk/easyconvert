@@ -203,7 +203,7 @@ describe('what a request is charged', () => {
       expect(res.status).toBe(HTTP_TOO_MANY_REQUESTS);
       const body = await res.json();
       expect(body.detail ?? body.error).toBe(
-        'Daily conversion quota exceeded (3 conversions per day). It resets at midnight UTC. This request needs 1 conversion and 0 are left today.'
+        'Daily credit quota exceeded (3 credits per day). It resets at midnight UTC. This request needs 1 credit and 0 are left today.'
       );
     });
 
@@ -222,7 +222,7 @@ describe('what a request is charged', () => {
       expect(res.status).toBe(HTTP_TOO_MANY_REQUESTS);
       const body = await res.json();
       expect(body.detail ?? body.error).toBe(
-        `Daily conversion quota exceeded (${FREE_DAILY_CREDITS} conversions per day). It resets at midnight UTC. This request needs 1 conversion and 0 are left today.`
+        `Daily credit quota exceeded (${FREE_DAILY_CREDITS} credits per day). It resets at midnight UTC. This request needs 1 credit and 0 are left today.`
       );
     });
   });
@@ -294,7 +294,7 @@ describe('what a request is charged', () => {
 
     it.each([
       ['free', 2 * GIB],
-      ['paid', 10 * GIB],
+      ['paid', 20 * GIB],
     ] as const)('by a %s account is refused once the plan allowance of %d bytes is spent', async (tier, allowance) => {
       const caller = await account(tier);
       await spendImportBytes(caller.userId, tier, allowance - Buffer.byteLength(CSV));
@@ -747,7 +747,7 @@ describe('what a request is charged', () => {
       expect(refused.headers.get('RateLimit-Remaining')).toBe('2');
       const problem = await refused.json();
       expect(problem).toMatchObject({ type: QUOTA_EXCEEDED_PROBLEM, remaining: 2, requiredUnits: 3, dailyLimit: FREE_DAY_ALLOWANCE });
-      expect(problem.detail).toContain('needs 3 conversions and 2 are left today');
+      expect(problem.detail).toContain('needs 3 credits and 2 are left today');
       expect(await caller.usedToday()).toBe(FREE_DAY_ALLOWANCE - 2);
     });
 

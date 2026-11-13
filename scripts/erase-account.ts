@@ -29,6 +29,8 @@ export interface AccountErasurePlan {
   deadLetters: number;
   /** The subscription record of the account; the customer and the subscription stay with the payment provider, which this script never calls. */
   subscription: SubscriptionRecord | null;
+  /** The package credits the account holds; they are deleted with it and the payment provider is not told, so a customer who paid for them is owed an answer before the erasure. */
+  packageCredits: number;
   taggedKeys: string[];
 }
 
@@ -104,7 +106,7 @@ export async function planAccountErasure(idOrEmail: string): Promise<AccountEras
   const account = await findAccount(idOrEmail);
   if (!account) return undefined;
   const userId = account.id;
-  const [keys, credentialIds, graphIds, jobs, letters, taggedKeys, subscription] = await Promise.all([
+  const [keys, credentialIds, graphIds, jobs, letters, taggedKeys, subscription, packageCredits] = await Promise.all([
     redisKeyStore.listApiKeys(userId),
     credentialsVault.listByUser(userId),
     graphScheduler.graphsOfUser(userId),
@@ -112,6 +114,7 @@ export async function planAccountErasure(idOrEmail: string): Promise<AccountEras
     webhookDispatcher.getDlqPage(userId, { includeExpired: true, limit: 1 }),
     accountTaggedKeys(userId),
     subscriptionStore.findByUser(userId),
+    redisKeyStore.packageBalance(userId),
   ]);
   return {
     userId,
@@ -125,6 +128,7 @@ export async function planAccountErasure(idOrEmail: string): Promise<AccountEras
     storedKeys: await accountStoredKeys(userId, jobs.map((job) => job.id), graphIds),
     deadLetters: letters.total,
     subscription,
+    packageCredits,
     taggedKeys,
   };
 }
@@ -263,6 +267,7 @@ function describe(plan: AccountErasurePlan): string {
     `stored files: ${plan.storedKeys.length}`,
     `webhook dead letters: ${plan.deadLetters}`,
     ...subscriptionLines(plan),
+    ...(plan.packageCredits > 0 ? [`package credits: ${plan.packageCredits} (deleted with the account)`] : []),
     `tagged redis keys: ${plan.taggedKeys.length}`,
     ...plan.taggedKeys.map((key) => `  ${key}`),
   ].join('\n');

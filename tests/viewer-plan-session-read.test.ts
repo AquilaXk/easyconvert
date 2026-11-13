@@ -80,7 +80,7 @@ describe('a session change the page made itself', () => {
     plan.applySessionChange(ADA);
 
     expect(plan.getViewerAccount()).toEqual({ name: 'Ada', tier: 'paid' });
-    expect(plan.getViewerPlan()).toBe('pro');
+    expect(plan.getViewerPlan()).toBe('paid');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -138,7 +138,7 @@ describe('a session change the page made itself', () => {
 
     answers[1](sessionAnswer({ success: true, user: { ...ADA, tier: 'paid' } }));
     await afterChange;
-    expect(plan.getViewerPlan()).toBe('enterprise');
+    expect(plan.getViewerPlan()).toBe('paid');
   });
 });
 

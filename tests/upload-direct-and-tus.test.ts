@@ -311,12 +311,12 @@ describe('TUS 1.0 Resumable Upload Protocol (/api/v1/uploads/tus)', () => {
     const noLengthRes = await tusPostHandler(noLengthReq, { params: Promise.resolve({}) });
     expect(noLengthRes.status).toBe(400);
 
-    // Exceeding 5 GiB limit
+    // Exceeding the 10 GiB limit of the largest plan
     const hugeReq = new NextRequest(`${BASE_URL}/api/v1/uploads/tus`, {
       method: 'POST',
       headers: {
         'Tus-Resumable': '1.0.0',
-        'Upload-Length': String(6 * 1024 * 1024 * 1024),
+        'Upload-Length': String(11 * 1024 * 1024 * 1024),
         ...authHeaders,
       },
     });

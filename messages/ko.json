@@ -544,7 +544,7 @@
         "batch": "여러 파일의 일괄 변환",
         "graph": "여러 단계로 된 작업",
         "tool": "{tool}",
-        "pair": "{from}에서 {to}로",
+        "pair": "{from} → {to}",
         "fromPackage": "패키지에서 {count, number}크레딧",
         "uncharged": "{count, number}크레딧은 남은 크레딧이 없어 차감하지 못했습니다"
       }

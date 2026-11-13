@@ -270,7 +270,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const text = visibleText(main);
     expect(phrasesPresent(text, ['How Conversion Works', 'Frequently Asked', 'Add source files', 'Select an extension'])).toEqual([]);
     // The limits line under the upload card is the one place the home page states the allowance.
-    expect(text).toContain('10 conversions a day');
+    expect(text).toContain('10 credits a day');
     expect(allElements(home).filter((element) => attrOf(element, 'id') === 'how-it-works')).toEqual([]);
     expect(presentIn(hrefsOf(home), ['/#how-it-works'])).toEqual([]);
   });
@@ -417,7 +417,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect([...classTokens(page)].filter((token) => token.startsWith('rating-star-'))).toEqual([]);
 
     // The real limits are stated once, under the upload card, and no separate coloured strip repeats them
-    expect(phrasesMissing(text, ['Up to 1 GB per file', '10 conversions a day', 'Files deleted automatically'])).toEqual([]);
+    expect(phrasesMissing(text, ['Up to 1 GB per file', '10 credits a day', 'Files deleted automatically'])).toEqual([]);
     expect(phrasesPresent(text, ['Free, 10 server conversions a day', 'Encrypted Ephemeral Processing', 'Browser Edge & Isolated Worker Pipeline'])).toEqual([]);
   });
 

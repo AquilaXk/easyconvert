@@ -85,7 +85,7 @@ describe('the 429 of the convert routes is the answer the code sends', () => {
     expect(buildRateLimitHeaders({ ...exhausted, remaining: 3 })['Retry-After']).toBeUndefined();
     const spec = await loadSpec();
     const retryAfter = spec.paths[V1_CONVERT].post.responses[String(HTTP_TOO_MANY)].headers?.['Retry-After'] as { description: string };
-    expect(retryAfter.description).toMatch(/except a `quota-exceeded` that leaves some conversions/);
+    expect(retryAfter.description).toMatch(/except a `quota-exceeded` that leaves some credits/);
   });
 
   it('documents the numbers of a quota refusal and the limit of a concurrency refusal', async () => {

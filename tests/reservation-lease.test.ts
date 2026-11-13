@@ -234,7 +234,7 @@ describe('a reservation a request hands to queued work', () => {
   });
 
   it('gives handed-off work a lease of a day, at least an hour longer than the longest job deadline the settings accept', () => {
-    expect(() => jobDeadlineSettings({ JOB_DEADLINE_MAX_MS_ENTERPRISE: String(JOB_DEADLINE_CEILING_MS + 1) })).toThrow(JobDeadlineError);
+    expect(() => jobDeadlineSettings({ JOB_DEADLINE_MAX_MS_PAID: String(JOB_DEADLINE_CEILING_MS + 1) })).toThrow(JobDeadlineError);
     expect(RESERVATION_LEASE.handedOffMs).toBe(24 * HOUR_MS);
     expect(JOB_DEADLINE_CEILING_MS).toBeLessThanOrEqual(23 * HOUR_MS);
   });

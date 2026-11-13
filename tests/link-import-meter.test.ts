@@ -283,6 +283,6 @@ describe('the meter of a link import', () => {
 
   it('meters an account against its plan, in a budget of its own', async () => {
     const account = `user_meter_${crypto.randomBytes(4).toString('hex')}`;
-    expect(await withLinkImportMeter({ owner: account, plan: 'paid', limitBytes: URL_IMPORT_MAX_BYTES, deadlineMs: IMPORT_DEADLINE_MS }, async (meter) => meter.leftBytes)).toEqual({ result: 10 * GIB });
+    expect(await withLinkImportMeter({ owner: account, plan: 'paid', limitBytes: URL_IMPORT_MAX_BYTES, deadlineMs: IMPORT_DEADLINE_MS }, async (meter) => meter.leftBytes)).toEqual({ result: 20 * GIB });
   });
 });

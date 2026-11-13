@@ -469,7 +469,7 @@ describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
       return { uid: user.id, key: key.secretKey };
     }
 
-    it('enqueues enterprise jobs with priority 1 and free jobs with priority 3', async () => {
+    it('enqueues paid jobs with priority 1 and free jobs with priority 3', async () => {
       const { key: enterpriseKey } = await createTestApiKey('paid');
       const { key: freeKey } = await createTestApiKey('free');
 
@@ -558,7 +558,7 @@ describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
       const jobCad = await resourceQueues.memory.getJob(dataCad.jobId);
       expect(jobCad).toBeDefined();
       expect(jobCad?.data.resourceClass).toBe('memory');
-      expect(jobCad?.opts.priority).toBe(2); // Pro priority
+      expect(jobCad?.opts.priority).toBe(1); // paid priority
 
       // Video Job (mp4 -> webm)
       const MP4_DATA = Buffer.from([
@@ -591,7 +591,7 @@ describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
       const jobVideo = await resourceQueues.gpu.getJob(dataVideo.jobId);
       expect(jobVideo).toBeDefined();
       expect(jobVideo?.data.resourceClass).toBe('gpu');
-      expect(jobVideo?.opts.priority).toBe(2);
+      expect(jobVideo?.opts.priority).toBe(1);
     });
   });
 });

@@ -320,6 +320,8 @@ describe('Phase 1-A: API Key Scope Integrity, Redis Revocation Sync & Rotation',
           const obj = memoryRedisMap.get(key);
           return obj ? obj[field] ?? null : null;
         }),
+        // The package balance of the account behind a key, which a verification reads: none.
+        get: vi.fn(async () => null),
         hexists: vi.fn(async (key: string, field: string) => {
           const obj = memoryRedisMap.get(key);
           return obj && field in obj ? 1 : 0;

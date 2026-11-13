@@ -13,9 +13,15 @@ const BILLING_ENV = {
   PADDLE_WEBHOOK_SECRET: WEBHOOK_SECRET,
   PADDLE_CLIENT_TOKEN: 'test_fixture_client_token',
   PADDLE_ENVIRONMENT: 'sandbox',
-  PADDLE_PRICE_ID_BASIC: 'pri_basic_fixture',
-  PADDLE_PRICE_ID_PRO: 'pri_pro_fixture',
-  PADDLE_PRICE_ID_ENTERPRISE: 'pri_enterprise_fixture',
+  PADDLE_PRICE_ID_PACKAGE_500: 'pri_package_500_fixture',
+  PADDLE_PRICE_ID_PACKAGE_1000: 'pri_package_1000_fixture',
+  PADDLE_PRICE_ID_PACKAGE_2500: 'pri_package_2500_fixture',
+  PADDLE_PRICE_ID_PACKAGE_5000: 'pri_package_5000_fixture',
+  PADDLE_PRICE_ID_PACKAGE_10000: 'pri_package_10000_fixture',
+  PADDLE_PRICE_ID_SUBSCRIPTION_1000: 'pri_subscription_1000_fixture',
+  PADDLE_PRICE_ID_SUBSCRIPTION_2500: 'pri_subscription_2500_fixture',
+  PADDLE_PRICE_ID_SUBSCRIPTION_5000: 'pri_subscription_5000_fixture',
+  PADDLE_PRICE_ID_SUBSCRIPTION_10000: 'pri_subscription_10000_fixture',
 };
 
 function configure(on: boolean): void {
@@ -32,20 +38,20 @@ describe('the 413 of a file over the limit', () => {
     expect(await detail()).toBe('File size 3 GiB exceeds the 1 GiB limit for the free plan.');
   });
 
-  it('names the next plan once billing is configured', async () => {
+  it('names the paid plan and its limit once billing is configured', async () => {
     configure(true);
-    expect(await detail()).toBe('File size 3 GiB exceeds the 1 GiB limit for the free plan. Pro allows files up to 5 GiB.');
+    expect(await detail()).toBe('File size 3 GiB exceeds the 1 GiB limit for the free plan. A paid plan allows files up to 10 GiB.');
   });
 
-  it('names the smallest plan that takes the file', async () => {
+  it('names no plan for a file over the paid limit: none takes more', async () => {
     configure(true);
-    const problem = await fileSizeLimitProblem({ id: 'user-1', tier: 'free' }, 1.5 * GIB, '/api/v1/jobs');
-    expect(((await problem?.json()) as { detail: string }).detail).toBe('File size 1.5 GiB exceeds the 1 GiB limit for the free plan. Basic allows files up to 2 GiB.');
+    const problem = await fileSizeLimitProblem({ id: 'user-1', tier: 'paid' }, 11 * GIB, '/api/v1/jobs');
+    expect(((await problem?.json()) as { detail: string }).detail).toBe('File size 11 GiB exceeds the 10 GiB limit for a paid plan.');
   });
 });
 
 describe('the API reference', () => {
-  const limitTexts = () => JSON.stringify(buildOpenApiDocument()).match(/\(([^()]*callers[^()]*)\)/g) ?? [];
+  const limitTexts = () => (JSON.stringify(buildOpenApiDocument()).match(/\(([^()]*callers[^()]*)\)/g) ?? []).filter((text) => text.includes('GiB'));
 
   it('documents the limit of the free plan alone while billing is not configured', () => {
     configure(false);
@@ -54,12 +60,15 @@ describe('the API reference', () => {
     expect(new Set(texts)).toEqual(new Set(['(1 GiB for anonymous callers and accounts)', '(up to 1 GiB for anonymous callers and accounts)']));
   });
 
-  it('documents the limits of every plan once billing is configured', () => {
+  it('documents the limit of the paid plan once billing is configured', () => {
     configure(true);
     const texts = limitTexts();
     expect(texts.length).toBeGreaterThan(0);
     expect(new Set(texts)).toEqual(
-      new Set(['(1 GiB for anonymous callers and the free plan, 2 GiB for Basic, 5 GiB for Pro, 10 GiB for Enterprise)', '(up to 1 GiB for anonymous callers and the free plan, 2 GiB for Basic, 5 GiB for Pro, 10 GiB for Enterprise)'])
+      new Set([
+        '(1 GiB for anonymous callers and the free plan, 10 GiB for an account with package credits or a subscription)',
+        '(up to 1 GiB for anonymous callers and the free plan, 10 GiB for an account with package credits or a subscription)',
+      ])
     );
   });
 });

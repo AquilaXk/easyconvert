@@ -32,7 +32,7 @@ export function expectRateLimitHeaders(headers: Headers, expected: ExpectedRateL
   expect(Number(reset)).toBeLessThanOrEqual(DAILY_WINDOW_SECONDS);
   expect(requiredHeader(headers, 'RateLimit')).toBe(`limit=${expected.limit}, remaining=${expected.remaining}, reset=${reset}`);
   expect(requiredHeader(headers, 'RateLimit-Policy')).toBe(
-    `${expected.limit};w=${DAILY_WINDOW_SECONDS};comment="${expected.tier} daily quota"`
+    `${expected.limit};w=${DAILY_WINDOW_SECONDS};comment="${expected.tier} daily credits"`
   );
   expect(requiredHeader(headers, 'X-RateLimit-Limit')).toBe(String(expected.limit));
   expect(requiredHeader(headers, 'X-RateLimit-Remaining')).toBe(String(expected.remaining));
