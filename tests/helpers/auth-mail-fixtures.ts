@@ -2,7 +2,6 @@ import { NextRequest } from 'next/server';
 import { expect, vi } from 'vitest';
 import { OPAQUE_RESPONSE_MS } from '../../src/lib/auth/opaque-response';
 import { hashPassword } from '../../src/lib/auth/crypto';
-import { issueEmailCode } from '../../src/lib/auth/email-code-store';
 import { redisUserStore } from '../../src/lib/auth/redis-user-store';
 import { TERMS_VERSION } from '../../src/lib/legal/documents';
 
@@ -45,11 +44,6 @@ export function jsonPost(path: string, body: unknown, options: { ip?: string; co
     },
     body: JSON.stringify(body),
   });
-}
-
-/** The code a sign-up mail would carry for the address, made directly so a test of the second step needs no mail. */
-export function mailedSignupCode(email: string): Promise<string> {
-  return issueEmailCode('signup', email);
 }
 
 export const GOOD_PASSWORD = 'correct horse battery staple';

@@ -1,5 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mailedSignupCode, stubMailConfig } from './helpers/auth-mail-fixtures';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { hashPassword, verifyPassword, sha256 } from '../src/lib/auth/crypto';
 import { signJwt, verifyJwt } from '../src/lib/auth/jwt';
 import { userStore } from '../src/lib/auth/user-store';
@@ -341,45 +340,33 @@ describe('Auth & API Key Infrastructure', () => {
   });
 
   describe('End-to-End API Route Handlers', () => {
-    afterEach(() => {
-      vi.unstubAllEnvs();
-    });
+    it('registers an unverified account without a session, answers a repeat the same, and permits login', async () => {
+      const register = () =>
+        registerHandler(
+          new NextRequest('http://localhost:3000/api/auth/register', {
+            method: 'POST',
+            body: JSON.stringify({
+              email: 'fullstack@example.com',
+              password: 'Password999!',
+              name: 'Full Stack',
+              acceptedTermsVersion: TERMS_VERSION,
+            }),
+          })
+        );
 
-    it('registers user, issues session cookie, and permits login', async () => {
-      stubMailConfig();
-      // 1. Register
-      const regReq = new NextRequest('http://localhost:3000/api/auth/register', {
-        method: 'POST',
-        body: JSON.stringify({
-          email: 'fullstack@example.com',
-          code: await mailedSignupCode('fullstack@example.com'),
-          password: 'Password999!',
-          name: 'Full Stack',
-          acceptedTermsVersion: TERMS_VERSION,
-        }),
-      });
+      // 1. Register: 202, no session, and an account whose address is not verified
+      const regRes = await register();
+      expect(regRes.status).toBe(202);
+      expect(await regRes.json()).toEqual({ success: true });
+      expect(regRes.headers.get('set-cookie')).toBeNull();
+      const stored = await userStore.findByEmail('fullstack@example.com');
+      expect(stored).toMatchObject({ name: 'Full Stack', provider: 'email', emailVerified: false });
 
-      const regRes = await registerHandler(regReq);
-      expect(regRes.status).toBe(200);
-      const regData = await regRes.json();
-      expect(regData.success).toBe(true);
-      expect(regData.user.email).toBe('fullstack@example.com');
-      const setCookie = regRes.headers.get('set-cookie');
-      expect(setCookie).toContain('easyconvert_session');
-
-      // 2. Duplicate registration fails with 409
-      const dupReq = new NextRequest('http://localhost:3000/api/auth/register', {
-        method: 'POST',
-        body: JSON.stringify({
-          email: 'fullstack@example.com',
-          code: await mailedSignupCode('fullstack@example.com'),
-          password: 'Password999!',
-          name: 'Full Stack',
-          acceptedTermsVersion: TERMS_VERSION,
-        }),
-      });
-      const dupRes = await registerHandler(dupReq);
-      expect(dupRes.status).toBe(409);
+      // 2. A repeat for the same address is answered the same and changes nothing
+      const dupRes = await register();
+      expect(dupRes.status).toBe(202);
+      expect(await dupRes.json()).toEqual({ success: true });
+      expect((await userStore.findByEmail('fullstack@example.com'))?.id).toBe(stored?.id);
 
       // 3. Login with wrong password fails with 401
       const wrongLoginReq = new NextRequest('http://localhost:3000/api/auth/login', {
@@ -775,7 +762,6 @@ describe('Auth & API Key Infrastructure', () => {
     });
 
     it('rejects non-string or malformed JSON payloads in login and register routes', async () => {
-      stubMailConfig();
       // 1. Malformed JSON to login
       const reqMalformedLogin = new NextRequest('http://localhost:3000/api/auth/login', {
         method: 'POST',

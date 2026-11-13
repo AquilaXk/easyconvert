@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { codedRefusal } from '@/lib/api/problem-details';
 import { readJsonObject } from '@/lib/api/json-body';
 import { isPlainMailbox } from '@/lib/auth/mailbox';
-import { isEmailVerified, isPasswordAccount, queueAccountMail } from '@/lib/auth/account-mail';
+import { isPasswordAccount, queueAccountMail } from '@/lib/auth/account-mail';
 import { authRateLimitRefusal, consumeMailLinkRateLimit, resolveAuthClientIp } from '@/lib/auth/login-rate-limiter';
 import { isAuthMailEnabled, mailLocale } from '@/lib/auth/mail-config';
 import { holdUntil } from '@/lib/auth/opaque-response';
@@ -15,8 +15,10 @@ const refusal = codedRefusal<AuthErrorCode>;
 
 /**
  * Asks for a password reset mail. The answer is the same 202 and leaves after the same time whether or not the address has
- * an account, whether the account signs in with Google, and whether its address is verified: only an account that signs in
- * with a password and whose address is verified is mailed a link. A mail that cannot be sent is logged by its category
+ * an account and whether the account signs in with Google: only an account that signs in with a password is mailed a link,
+ * whether or not its address was verified. A reset to an unverified address goes to whoever owns the mailbox, and using the
+ * link confirms the address (`password-reset/confirm`), so the real owner of an address that someone else registered takes
+ * the account back this way (entry 288). A mail that cannot be sent is logged by its category
  * (src/lib/auth/auth-mail.ts) and changes nothing in the answer.
  */
 export async function POST(req: NextRequest) {
@@ -44,7 +46,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const record = await redisUserStore.findByEmail(email);
-    if (record && isPasswordAccount(record) && isEmailVerified(record)) {
+    if (record && isPasswordAccount(record)) {
       await queueAccountMail('reset', record, mailLocale(body.locale));
     }
   } catch {

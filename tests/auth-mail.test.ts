@@ -25,7 +25,7 @@ import {
   dispatchAuthMail,
   sendAuthMail,
 } from '../src/lib/auth/auth-mail';
-import { MAIL_DAILY_HARD_CAP, reserveMailSend, resetMailBudgetMemory } from '../src/lib/auth/mail-budget';
+import { MAIL_DAILY_VERIFY_CAP, reserveMailSend, resetMailBudgetMemory } from '../src/lib/auth/mail-budget';
 import { FAKE_SMTP, stubMailConfig, stubNoMailConfig } from './helpers/auth-mail-fixtures';
 
 const MAIL = { subject: 'subject', text: 'body' };
@@ -153,7 +153,7 @@ describe('a failed send in the background', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     transport.sendMail.mockRejectedValue(leakyError(code));
 
-    dispatchAuthMail(RECIPIENT, MAIL);
+    dispatchAuthMail(RECIPIENT, MAIL, 'verify');
     await vi.waitFor(() => expect(warn).toHaveBeenCalled());
 
     expect(warn.mock.calls).toEqual([[`auth_mail_failure category=${category}`]]);
@@ -166,7 +166,7 @@ describe('a failed send in the background', () => {
   it('logs the same for an error that is not a mail error at all', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     transport.sendMail.mockRejectedValue(new Error(SECRETS.join(' ')));
-    dispatchAuthMail(RECIPIENT, MAIL);
+    dispatchAuthMail(RECIPIENT, MAIL, 'verify');
     await vi.waitFor(() => expect(warn).toHaveBeenCalled());
     expect(warn.mock.calls).toEqual([['auth_mail_failure category=transport']]);
   });
@@ -175,32 +175,35 @@ describe('a failed send in the background', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const releases: Array<() => void> = [];
     transport.sendMail.mockImplementation(() => new Promise<void>((resolve) => releases.push(resolve)));
-    for (let index = 0; index < MAIL_MAX_IN_FLIGHT + 2; index++) dispatchAuthMail(RECIPIENT, MAIL);
+    for (let index = 0; index < MAIL_MAX_IN_FLIGHT + 2; index++) dispatchAuthMail(RECIPIENT, MAIL, 'verify');
     await vi.waitFor(() => expect(releases).toHaveLength(MAIL_MAX_IN_FLIGHT));
     expect(warn.mock.calls).toEqual([['auth_mail_failure category=busy'], ['auth_mail_failure category=busy']]);
 
     releases.forEach((release) => release());
     await vi.waitFor(() => expect(transport.close).toHaveBeenCalledTimes(MAIL_MAX_IN_FLIGHT));
     transport.sendMail.mockResolvedValue({});
-    dispatchAuthMail(RECIPIENT, MAIL);
+    dispatchAuthMail(RECIPIENT, MAIL, 'verify');
     await vi.waitFor(() => expect(transport.sendMail).toHaveBeenCalledTimes(MAIL_MAX_IN_FLIGHT + 1));
     expect(warn).toHaveBeenCalledTimes(2);
   });
 });
 
 describe('the daily mail budget', () => {
-  it('drops a mail past the cap of the day as `budget`, and sends none of it', async () => {
+  it('drops a verification mail past its cap as `budget` and sends none of it, while a reset mail still goes', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    for (let sent = 0; sent < MAIL_DAILY_HARD_CAP; sent++) await reserveMailSend();
+    for (let sent = 0; sent < MAIL_DAILY_VERIFY_CAP; sent++) await reserveMailSend('verify');
     warn.mockClear();
     transport.sendMail.mockResolvedValue({});
 
-    dispatchAuthMail(RECIPIENT, MAIL);
+    dispatchAuthMail(RECIPIENT, MAIL, 'verify');
     await vi.waitFor(() => expect(warn).toHaveBeenCalled());
-
     expect(warn.mock.calls).toEqual([['auth_mail_failure category=budget']]);
     expect(transport.sendMail).not.toHaveBeenCalled();
+
+    dispatchAuthMail(RECIPIENT, MAIL, 'reset');
+    await vi.waitFor(() => expect(transport.sendMail).toHaveBeenCalledTimes(1));
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });
 

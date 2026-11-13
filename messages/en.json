@@ -295,7 +295,6 @@
       "missingFields": "Fill in all required fields.",
       "passwordTooShort": "Password must be at least 8 characters long.",
       "passwordMismatch": "Passwords do not match.",
-      "created": "Account created. Redirecting...",
       "signedIn": "Signed in. Redirecting...",
       "connection": "The connection dropped. Try again."
     },
@@ -316,6 +315,12 @@
       "toSignIn": "Go to sign in",
       "noToken": "This link is incomplete. Open the link in your mail again, or ask for a new one.",
       "requestNew": "Ask for a new link"
+    },
+    "checkMail": {
+      "heading": "Check your mail",
+      "text": "We sent a confirmation mail to {email}. Open the link in it to confirm your email address. Until you do, conversions use the same allowance as a visitor who is not signed in.",
+      "hint": "If the mail does not arrive, check your spam folder. No mail is sent to an address that already has an account: sign in, or reset your password.",
+      "toSignIn": "Go to sign in"
     },
     "verify": {
       "heading": "Confirm your email address",
@@ -586,7 +591,7 @@
       "signOutNetwork": "The connection dropped and you were not signed out. Try again."
     },
     "emailNotice": {
-      "text": "Your email address is not confirmed yet. Until it is, password reset mails are not sent to it.",
+      "text": "Your email address is not confirmed yet. Until it is, conversions use the same daily allowance as a visitor who is not signed in. Open the link in the mail we sent to confirm it.",
       "resend": "Send the link again",
       "sent": "The link is on its way. It works for 24 hours.",
       "connection": "The connection dropped. Try again."
@@ -1638,11 +1643,8 @@
       "password_length": "The password must be 8 to 1024 characters long.",
       "terms_not_accepted": "Accept the terms of service to create an account.",
       "terms_outdated": "The terms of service changed after this page was opened. Reload the page, then accept them again.",
-      "account_exists": "An account with this email address already exists. Sign in instead.",
       "disposable_email": "Temporary email addresses cannot be used. Enter the address of your own mailbox.",
-      "invalid_code": "The code is not valid or has expired. Check it, or ask for a new code.",
-      "email_verification_required": "Confirm your email address to sign in. A code was sent to it.",
-      "mail_temporarily_unavailable": "Codes cannot be sent right now. Try again later, or continue with Google.",
+      "mail_temporarily_unavailable": "Sign-up is unavailable for now. Try again later, or continue with Google.",
       "mail_unavailable": "This is not available on this server.",
       "mail_rate_limited": "Too many requests. Try again in {seconds, plural, one {# second} other {# seconds}}.",
       "invalid_token": "This link is not valid or has expired. Ask for a new one.",

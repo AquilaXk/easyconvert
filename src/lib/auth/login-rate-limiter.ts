@@ -74,8 +74,7 @@ const GLOBAL_ATTEMPTS_KEY = 'global';
 export const REGISTER_MAX_ATTEMPTS_PER_IP = 10;
 export const REGISTER_WINDOW_SECONDS = 300;
 export const REGISTER_GLOBAL_MAX_ATTEMPTS = 300;
-/** What a registration request is counted for: the account form itself, or the mail of a code that comes before it (each has its own 10 per 5 minutes per client). */
-export type RegistrationStep = 'register' | 'code';
+const REGISTER_GLOBAL_ATTEMPTS_KEY = 'register:global';
 
 export interface LoginRateLimitCheckResult {
   allowed: boolean;
@@ -320,10 +319,8 @@ async function consumeRedisFixedWindow(
 }
 
 export async function consumeRegistrationRateLimit(
-  ip: string | null,
-  step: RegistrationStep = 'register'
+  ip: string | null
 ): Promise<LoginRateLimitCheckResult> {
-  const scope = step === 'code' ? 'register_code' : 'register';
   const normIp = normalizeLoginIp(ip);
   const useGlobal = usesGlobalCounter(ip);
 
@@ -333,7 +330,7 @@ export async function consumeRegistrationRateLimit(
   if (redis) {
     try {
       if (normIp) {
-        const ipKey = `${prefix}${scope}_attempts:ip:${normIp}`;
+        const ipKey = `${prefix}register_attempts:ip:${normIp}`;
         const blocked = await consumeRedisFixedWindow(
           redis,
           ipKey,
@@ -345,7 +342,7 @@ export async function consumeRegistrationRateLimit(
       }
 
       if (useGlobal) {
-        const globalKey = `${prefix}${scope}_attempts:${GLOBAL_ATTEMPTS_KEY}`;
+        const globalKey = `${prefix}register_attempts:${GLOBAL_ATTEMPTS_KEY}`;
         const blocked = await consumeRedisFixedWindow(
           redis,
           globalKey,
@@ -365,7 +362,7 @@ export async function consumeRegistrationRateLimit(
   const expiresAt = now + REGISTER_WINDOW_SECONDS * 1000;
 
   if (normIp) {
-    const key = `${scope}:ip:${normIp}`;
+    const key = `register:ip:${normIp}`;
     const existing = inMemoryAttempts.get(key);
     const entry: AttemptEntry =
       existing && now < existing.expiresAt
@@ -379,13 +376,12 @@ export async function consumeRegistrationRateLimit(
   }
 
   if (useGlobal) {
-    const globalKey = `${scope}:global`;
-    const existing = inMemoryAttempts.get(globalKey);
+    const existing = inMemoryAttempts.get(REGISTER_GLOBAL_ATTEMPTS_KEY);
     const entry: AttemptEntry =
       existing && now < existing.expiresAt
         ? { count: existing.count + 1, expiresAt: existing.expiresAt }
         : { count: 1, expiresAt };
-    inMemoryAttempts.set(globalKey, entry);
+    inMemoryAttempts.set(REGISTER_GLOBAL_ATTEMPTS_KEY, entry);
     if (entry.count > REGISTER_GLOBAL_MAX_ATTEMPTS) {
       const retryAfter = Math.max(1, Math.ceil((entry.expiresAt - now) / 1000));
       return { allowed: false, retryAfterSeconds: retryAfter, reason: 'global' };
@@ -490,36 +486,55 @@ async function consumeLimits(limits: readonly MailLimit[]): Promise<LoginRateLim
 }
 
 // ---------------------------------------------------------------------------------------------------------
-// Mailed codes: sign-up and the sign-in of an unverified account
+// Verification mails: the link a sign-up and a resend send
 // ---------------------------------------------------------------------------------------------------------
 
-export const EMAIL_CODE_PAIR_WINDOW_SECONDS = 60;
-/** Codes one address may have sent in a minute from one client (entry 288 of docs/policy-decisions.md). */
-export const EMAIL_CODE_MAX_PER_ADDRESS_AND_IP = 2;
+export const VERIFY_MAIL_PAIR_WINDOW_SECONDS = 60;
+/** Verification mails one address may be sent in a minute at the request of one client (entry 288 of docs/policy-decisions.md). */
+export const VERIFY_MAIL_MAX_PER_ADDRESS_AND_IP = 2;
+export const VERIFY_MAIL_DAY_SECONDS = 24 * 60 * 60;
+/** Verification mails one address is sent in a day, whoever asks and by whatever route (a sign-up, a resend). */
+export const VERIFY_MAIL_MAX_PER_ADDRESS_PER_DAY = 5;
 
 /**
- * Counts one request for a mailed code against its limits: per address and client two a minute, and per address, whatever
- * the client, as many as a reset mail (`MAIL_LINK_MAX_PER_SUBJECT` in `MAIL_LINK_WINDOW_SECONDS`), so that many clients cannot
- * fill one mailbox or the day's mail budget with one address. The address is counted whether or not it has an account, so the
- * limit tells nothing about accounts; it is kept as a hash. A client that cannot be attributed (`ip` null) has no pair counter.
+ * Counts one sign-up for the mail it may send against its limits: per address and client two a minute, and per address,
+ * whatever the client, as many as a reset mail (`MAIL_LINK_MAX_PER_SUBJECT` in `MAIL_LINK_WINDOW_SECONDS`), so that many clients
+ * cannot fill one mailbox or the day's mail budget with one address. The address is counted whether or not it has an account,
+ * so the limit tells nothing about accounts; it is kept as a hash. A client that cannot be attributed (`ip` null) has no pair counter.
  */
-export async function consumeEmailCodeRateLimit(ip: string | null, email: string): Promise<LoginRateLimitCheckResult> {
+export async function consumeVerifyMailRateLimit(ip: string | null, email: string): Promise<LoginRateLimitCheckResult> {
   const hashed = sha256(email.toLowerCase().trim());
   const limits: MailLimit[] = [];
   const normIp = normalizeLoginIp(ip);
   if (normIp) {
     limits.push({
-      key: `email_code:pair:${hashed}:${normIp}`,
-      max: EMAIL_CODE_MAX_PER_ADDRESS_AND_IP,
-      windowSeconds: EMAIL_CODE_PAIR_WINDOW_SECONDS,
+      key: `verify_mail:pair:${hashed}:${normIp}`,
+      max: VERIFY_MAIL_MAX_PER_ADDRESS_AND_IP,
+      windowSeconds: VERIFY_MAIL_PAIR_WINDOW_SECONDS,
       reason: 'ip',
     });
   }
   limits.push({
-    key: `email_code:address:${hashed}`,
+    key: `verify_mail:address:${hashed}`,
     max: MAIL_LINK_MAX_PER_SUBJECT,
     windowSeconds: MAIL_LINK_WINDOW_SECONDS,
     reason: 'email',
   });
   return consumeLimits(limits);
+}
+
+/**
+ * Counts one verification mail against the daily cap of its address. Every verification mail goes through it (the one of a
+ * sign-up and the ones of resends), so the cap holds for the address however the mails are asked for. Only a mail that is
+ * about to be sent is counted.
+ */
+export async function consumeVerifyMailDailyCap(email: string): Promise<LoginRateLimitCheckResult> {
+  return consumeLimits([
+    {
+      key: `verify_mail:day:${sha256(email.toLowerCase().trim())}`,
+      max: VERIFY_MAIL_MAX_PER_ADDRESS_PER_DAY,
+      windowSeconds: VERIFY_MAIL_DAY_SECONDS,
+      reason: 'email',
+    },
+  ]);
 }

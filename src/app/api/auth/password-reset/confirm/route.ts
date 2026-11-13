@@ -22,7 +22,9 @@ const refusal = codedRefusal<AuthErrorCode>;
 /**
  * Sets a new password with the token of a reset mail. The password follows the rules of registration. The token is used
  * up by the request that presents it, so it works once; a password that breaks the rules is refused before the token is
- * touched, so a typo does not cost the link. Every session of the account ends, this one included.
+ * touched, so a typo does not cost the link. Every session of the account ends, this one included. The mail reached the
+ * mailbox of the address, so using its link also confirms the address: an account that someone registered with an address that
+ * was not theirs goes to the real owner, with the registrant's password and sessions gone.
  */
 export async function POST(req: NextRequest) {
   if (!isAuthMailEnabled()) return refusal(404, 'mail_unavailable', 'Password reset is not available.');
@@ -56,7 +58,7 @@ export async function POST(req: NextRequest) {
     }
 
     const { hash, salt } = await hashPassword(password);
-    if (!(await redisUserStore.updateUser(record.id, { passwordHash: hash, salt }))) {
+    if (!(await redisUserStore.updateUser(record.id, { passwordHash: hash, salt, emailVerified: true }))) {
       return refusal(400, 'invalid_token', 'This link is not valid or has expired.');
     }
     await revokeAllUserSessions(record.id);

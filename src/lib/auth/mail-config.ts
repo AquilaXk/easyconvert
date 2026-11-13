@@ -39,7 +39,7 @@ export function siteOrigin(): string | undefined {
 
 /**
  * The SMTP settings, or null when mail is not configured: the host, the account and its password, and a public origin for
- * the links are all required. A null result turns password reset, email verification and the sign-up codes (so sign-up by password) off.
+ * the links are all required. A null result turns password reset and email verification off.
  */
 export function readMailConfig(): MailConfig | null {
   const host = setValue('SMTP_HOST');

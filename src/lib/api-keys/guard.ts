@@ -456,7 +456,7 @@ async function verifyAnonymousAccess(clientIp: string, need: number): Promise<Ap
   };
 }
 
-const UNCONFIRMED_ADDRESS_MESSAGE = 'Confirm your email address to use this. Sign in again to get a code by mail.';
+const UNCONFIRMED_ADDRESS_MESSAGE = 'Confirm your email address to use this: open the link in the mail we sent, or ask for a new link on your dashboard.';
 
 /**
  * The access of an account whose address was never confirmed (`countsAsAnonymousForConversions`), or undefined for any other

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { pepperedHashes } from './crypto';
+import { hmacSha256, sha256 } from './crypto';
 import { redisUserStore } from './redis-user-store';
 
 /**
@@ -59,7 +59,16 @@ const memoryTokens = new Map<string, MemoryToken>();
 const memoryPointers = new Map<string, string>();
 
 function pepperHashes(purpose: AuthTokenPurpose, token: string): string[] {
-  return pepperedHashes(`${HASH_LABEL}${purpose}:${token}`);
+  const material = `${HASH_LABEL}${purpose}:${token}`;
+  const pepper = process.env.KEY_HASH_PEPPER;
+  if (!pepper) {
+    if (process.env.NODE_ENV === 'production') throw new Error('KEY_HASH_PEPPER is required in production');
+    return [sha256(material)];
+  }
+  const hashes = [hmacSha256(pepper, material)];
+  const previous = process.env.KEY_HASH_PEPPER_PREVIOUS;
+  if (previous) hashes.push(hmacSha256(previous, material));
+  return hashes;
 }
 
 const tokenKey = (purpose: AuthTokenPurpose, hash: string) => `${redisUserStore.getKeyPrefix()}auth_token:${purpose}:${hash}`;

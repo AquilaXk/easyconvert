@@ -107,9 +107,9 @@ describe('the request route', () => {
       expect(response.headers.get('content-type')).toBe(responses[0].headers.get('content-type'));
     }
 
-    // Only the verified password account was mailed.
-    expect(mail.sendMail).toHaveBeenCalledTimes(1);
-    expect(mail.sendMail.mock.calls[0][0].to).toBe('known@fixture.test');
+    // Every password account was mailed, verified or not: the link goes to the mailbox, and using it confirms the address (entry 288).
+    expect(mail.sendMail).toHaveBeenCalledTimes(2);
+    expect(mail.sendMail.mock.calls.map((call) => call[0].to).sort()).toEqual(['known@fixture.test', 'unverified@fixture.test']);
   });
 
   it('answers a mail that cannot be sent as it answers one that was sent', async () => {

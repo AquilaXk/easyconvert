@@ -14,6 +14,7 @@ import { POST as confirmVerification } from '../src/app/api/auth/email-verificat
 import { POST as register } from '../src/app/api/auth/register/route';
 import { POST as login } from '../src/app/api/auth/login/route';
 import { POST as requestReset } from '../src/app/api/auth/password-reset/request/route';
+import { POST as confirmReset } from '../src/app/api/auth/password-reset/confirm/route';
 import { issueAuthToken, resetAuthTokenMemory } from '../src/lib/auth/auth-email-token-store';
 import { isEmailVerified } from '../src/lib/auth/account-mail';
 import { MAIL_LINK_MAX_PER_SUBJECT, resetLoginRateLimiterStore } from '../src/lib/auth/login-rate-limiter';
@@ -27,7 +28,6 @@ import {
   googleAccount,
   jsonPost,
   passwordAccount,
-  mailedSignupCode,
   stubMailConfig,
   stubNoMailConfig,
   tokenOfMail,
@@ -82,44 +82,80 @@ describe('registration', () => {
     expect(mail.sendMail).not.toHaveBeenCalled();
   });
 
-  it('creates the account verified from a mailed code, and sends no link', async () => {
-    const response = await register(registration('new.person@fixture.test', { code: await mailedSignupCode('new.person@fixture.test') }));
-    expect(response.status).toBe(200);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(mail.sendMail).not.toHaveBeenCalled();
+  it('makes the account unverified, mails a link to the address, and leaves it unverified until the link is used', async () => {
+    const response = await register(registration('new.person@fixture.test', { locale: 'ko' }));
+    expect(response.status).toBe(202);
+    await vi.waitFor(() => expect(mail.sendMail).toHaveBeenCalledTimes(1));
+    const sent = mail.sendMail.mock.calls[0][0];
+    expect(sent.to).toBe('new.person@fixture.test');
+    expect(sent.text).toContain('https://convert.fixture.test/ko/auth/verify-email#token=');
+    expect(isEmailVerified((await redisUserStore.findByEmail('new.person@fixture.test'))!)).toBe(false);
+
+    const confirmed = await confirmVerification(jsonPost(CONFIRM_URL, { token: tokenOfMail(sent.text) }));
+    expect(confirmed.status).toBe(200);
     expect(isEmailVerified((await redisUserStore.findByEmail('new.person@fixture.test'))!)).toBe(true);
   });
 
-  it('answers 404 and creates nothing when SMTP is not configured, since no code can be sent', async () => {
+  it('does not wait for the mail, and does not fail when it cannot be sent', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mail.sendMail.mockReturnValueOnce(new Promise(() => undefined));
+    // The mail never finishes; the sign-up answers all the same.
+    const response = await register(registration('slow.mail@fixture.test'));
+    expect(response.status).toBe(202);
+
+    mail.sendMail.mockRejectedValueOnce(Object.assign(new Error('x'), { code: 'EAUTH' }));
+    expect((await register(registration('failing.mail@fixture.test'))).status).toBe(202);
+  });
+
+  it('makes the account and sends nothing when SMTP is not configured', async () => {
     stubNoMailConfig();
-    const response = await register(registration('plain@fixture.test', { code: '123456' }));
-    expect(response.status).toBe(404);
-    expect((await response.json()).code).toBe('mail_unavailable');
-    expect(await redisUserStore.findByEmail('plain@fixture.test')).toBeNull();
+    const response = await register(registration('plain@fixture.test'));
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ success: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mail.sendMail).not.toHaveBeenCalled();
+    expect(isEmailVerified((await redisUserStore.findByEmail('plain@fixture.test'))!)).toBe(false);
+    const status = await verificationStatus(statusRequest(await signedIn((await redisUserStore.findByEmail('plain@fixture.test'))!)));
+    expect(await status.json()).toEqual({ success: true, enabled: false, verified: false });
   });
 });
 
 describe('an unverified account', () => {
-  it('signs in as before when the server cannot mail a code, including an account made before verification existed', async () => {
+  it('signs in as before, including an account made before verification existed', async () => {
     await passwordAccount('old.timer');
-    stubNoMailConfig();
     const response = await login(jsonPost('/api/auth/login', { email: 'old.timer@fixture.test', password: GOOD_PASSWORD }));
     expect(response.status).toBe(200);
     expect((await response.json()).success).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mail.sendMail).not.toHaveBeenCalled();
   });
 
-  it('is not sent a password reset mail, and the answer does not show it', async () => {
+  it('is sent a password reset mail like a verified one, and the answer does not show a difference', async () => {
     await passwordAccount('unverified');
     await passwordAccount('verified', { emailVerified: true });
-    const answers = await Promise.all(
-      ['unverified', 'verified'].map(async (label) => {
-        const response = await requestReset(jsonPost('/api/auth/password-reset/request', { email: `${label}@fixture.test` }));
-        return { status: response.status, body: await response.json() };
-      })
+    await googleAccount('googler');
+    const answers = await answersAtTheOpaqueFloor(
+      ['unverified', 'verified', 'googler', 'nobody'].map((label) => () => requestReset(jsonPost('/api/auth/password-reset/request', { email: `${label}@fixture.test` })))
     );
-    expect(answers[0]).toEqual(answers[1]);
+    expect(answers.map((answer) => answer.status)).toEqual([202, 202, 202, 202]);
+    await vi.waitFor(() => expect(mail.sendMail).toHaveBeenCalledTimes(2));
+    expect(mail.sendMail.mock.calls.map((call) => call[0].to).sort()).toEqual(['unverified@fixture.test', 'verified@fixture.test']);
+  });
+
+  it('goes to the owner of the mailbox when its reset link is used: the address is confirmed, the password is theirs, the sessions of the registrant end', async () => {
+    const record = await passwordAccount('squatted');
+    const registrantCookie = await signedIn(record);
+    expect((await verificationStatus(statusRequest(registrantCookie))).status).toBe(200);
+    await requestReset(jsonPost('/api/auth/password-reset/request', { email: record.email }));
     await vi.waitFor(() => expect(mail.sendMail).toHaveBeenCalledTimes(1));
-    expect(mail.sendMail.mock.calls[0][0].to).toBe('verified@fixture.test');
+    const token = tokenOfMail(mail.sendMail.mock.calls[0][0].text);
+
+    const reset = await confirmReset(jsonPost('/api/auth/password-reset/confirm', { token, password: 'Owner chose this 1!' }));
+    expect(reset.status).toBe(200);
+    expect(isEmailVerified((await redisUserStore.findByEmail(record.email))!)).toBe(true);
+    expect((await verificationStatus(statusRequest(registrantCookie))).status).toBe(401);
+    expect((await login(jsonPost('/api/auth/login', { email: record.email, password: GOOD_PASSWORD }))).status).toBe(401);
+    expect((await login(jsonPost('/api/auth/login', { email: record.email, password: 'Owner chose this 1!' }))).status).toBe(200);
   });
 
   it('is told so by the status route, which a Google account and a verified account are not', async () => {

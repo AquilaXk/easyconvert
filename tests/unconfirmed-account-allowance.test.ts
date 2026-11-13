@@ -6,8 +6,9 @@ import { createSessionToken, SESSION_COOKIE_NAME } from '../src/lib/auth/session
 import { freshClientIp, googleAccount, passwordAccount, stubMailConfig } from './helpers/auth-mail-fixtures';
 
 /**
- * An account of the old kind, whose address nobody confirmed, has no daily allowance of its own: it counts as an anonymous
- * visitor of its address bucket for conversions until a code confirms the address. docs/policy-decisions.md, entry 288.
+ * An account whose address nobody confirmed (every new password account until its link is used, and the older ones) has no daily
+ * allowance of its own: it counts as an anonymous visitor of its address bucket for conversions until the address is confirmed.
+ * docs/policy-decisions.md, entry 288.
  */
 
 beforeEach(() => {
@@ -57,7 +58,7 @@ describe('an account whose address was never confirmed counts as anonymous for c
   it('is refused, with a way out, on a route that is not open to visitors and needs a conversion', async () => {
     const refused = await accessOf(await passwordAccount('old.timer'), { requiredUnits: 1 });
     expect(refused).toMatchObject({ authorized: false, status: 403 });
-    expect(refused.error).toContain('Sign in again');
+    expect(refused.error).toContain('open the link in the mail');
   });
 
   it('applies to the API key of such an account too', async () => {

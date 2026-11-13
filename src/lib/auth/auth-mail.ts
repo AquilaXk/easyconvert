@@ -1,5 +1,5 @@
 import { createTransport } from 'nodemailer';
-import { reserveMailSend } from './mail-budget';
+import { reserveMailSend, type MailBudgetKind } from './mail-budget';
 import { readMailConfig } from './mail-config';
 import { isPlainMailbox } from './mailbox';
 import type { AuthMail } from './auth-mail-templates';
@@ -30,6 +30,7 @@ export const MAIL_FAILURE_CATEGORIES = [
   'configuration',
   'busy',
   'budget',
+  'address_cap',
   'transport',
 ] as const;
 
@@ -123,16 +124,17 @@ let inFlight = 0;
 
 /**
  * Sends a mail without making the caller wait for it: the caller answers on its own schedule, and a failure is logged as
- * its category. Never rejects. Each mail counts against the day's budget, and one past the cap is dropped (`budget`).
+ * its category. Never rejects. Each mail counts against the day's budget (`kind` says which share it draws on), and one past the
+ * cap of its kind is dropped (`budget`).
  */
-export function dispatchAuthMail(to: string, mail: AuthMail): void {
+export function dispatchAuthMail(to: string, mail: AuthMail, kind: MailBudgetKind): void {
   if (inFlight >= MAIL_MAX_IN_FLIGHT) {
     console.warn(`auth_mail_failure category=busy`);
     return;
   }
   inFlight++;
   // Counted against the day's budget first (src/lib/auth/mail-budget.ts): past its cap the mail is dropped, as the account would drop it.
-  reserveMailSend()
+  reserveMailSend(kind)
     .then((allowed) => (allowed ? sendAuthMail(to, mail) : Promise.reject(new MailFailure('budget'))))
     .catch((error: unknown) => {
       const category = error instanceof MailFailure ? error.category : 'transport';
