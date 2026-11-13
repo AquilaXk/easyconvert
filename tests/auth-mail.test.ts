@@ -25,6 +25,7 @@ import {
   dispatchAuthMail,
   sendAuthMail,
 } from '../src/lib/auth/auth-mail';
+import { MAIL_DAILY_HARD_CAP, reserveMailSend, resetMailBudgetMemory } from '../src/lib/auth/mail-budget';
 import { FAKE_SMTP, stubMailConfig, stubNoMailConfig } from './helpers/auth-mail-fixtures';
 
 const MAIL = { subject: 'subject', text: 'body' };
@@ -42,6 +43,7 @@ function logged(spy: ReturnType<typeof vi.spyOn>): string {
 }
 
 beforeEach(() => {
+  resetMailBudgetMemory();
   transport.options.length = 0;
   transport.sendMail.mockReset();
   transport.close.mockReset();
@@ -183,6 +185,22 @@ describe('a failed send in the background', () => {
     dispatchAuthMail(RECIPIENT, MAIL);
     await vi.waitFor(() => expect(transport.sendMail).toHaveBeenCalledTimes(MAIL_MAX_IN_FLIGHT + 1));
     expect(warn).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('the daily mail budget', () => {
+  it('drops a mail past the cap of the day as `budget`, and sends none of it', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    for (let sent = 0; sent < MAIL_DAILY_HARD_CAP; sent++) await reserveMailSend();
+    warn.mockClear();
+    transport.sendMail.mockResolvedValue({});
+
+    dispatchAuthMail(RECIPIENT, MAIL);
+    await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+
+    expect(warn.mock.calls).toEqual([['auth_mail_failure category=budget']]);
+    expect(transport.sendMail).not.toHaveBeenCalled();
   });
 });
 
