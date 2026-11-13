@@ -7,7 +7,10 @@
 //
 // Input:  the width and the height (two little-endian u32), then width * height RGBA bytes (8 bits a sample, straight alpha).
 // Output: the number of palette entries (little-endian u32), the entries as RGBA bytes, then width * height palette indices, one byte each.
-// Usage:  quantizr-pixels [--colors 2..256] [--dither 0..1]     (defaults: 256 colours, dithering level 1.0, the library's own)
+// Usage:  quantizr-pixels [--colors 2..256] [--dither 0..1] [--target-psnr 1..200]
+//         (defaults: 256 colours, dithering level 1.0, the library's own, and no target). With a target the palette may have fewer colours than
+//         asked for, as long as the PSNR of its colours against the pixels, computed over the three colour channels before dithering, stays at or
+//         above it (in decibels).
 use std::io::{Read, Write};
 use std::process::ExitCode;
 
@@ -22,16 +25,24 @@ const CHANNELS: usize = 4;
 struct Settings {
     colors: i32,
     dither: f32,
+    /// PSNR in dB below which the palette may not be made smaller than `colors`; 0 for no target.
+    target_psnr: f32,
 }
 
 fn parse_arguments() -> Result<Settings, String> {
-    let mut settings = Settings { colors: 256, dither: 1.0 };
+    let mut settings = Settings { colors: 256, dither: 1.0, target_psnr: 0.0 };
     let mut arguments = std::env::args().skip(1);
     while let Some(name) = arguments.next() {
         let value = arguments.next().ok_or_else(|| format!("{name} needs a value"))?;
         match name.as_str() {
             "--colors" => settings.colors = value.parse().map_err(|_| "--colors is not a number".to_string())?,
             "--dither" => settings.dither = value.parse().map_err(|_| "--dither is not a number".to_string())?,
+            "--target-psnr" => {
+                settings.target_psnr = value.parse().map_err(|_| "--target-psnr is not a number".to_string())?;
+                if !(1.0..=200.0).contains(&settings.target_psnr) {
+                    return Err("--target-psnr is not between 1 and 200".to_string());
+                }
+            }
             _ => return Err(format!("unknown argument {name}")),
         }
     }
@@ -63,6 +74,10 @@ fn run() -> Result<(), String> {
     let image = Image::new(&pixels, width, height).map_err(failed)?;
     let mut options = Options::default();
     options.set_max_colors(settings.colors).map_err(failed)?;
+    if settings.target_psnr > 0.0 {
+        // The PSNR of 8-bit samples: 255^2 over the mean squared error.
+        options.set_target_mse(255.0 * 255.0 / 10f32.powf(settings.target_psnr / 10.0)).map_err(failed)?;
+    }
     let mut result = QuantizeResult::quantize(&image, &options);
     result.set_dithering_level(settings.dither).map_err(failed)?;
     let mut indices = vec![0u8; width * height];

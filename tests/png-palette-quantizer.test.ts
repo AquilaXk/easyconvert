@@ -8,6 +8,7 @@ import { convertFile } from '../src/lib/conversions';
 import {
   findQuantizr,
   QUANTIZR_DITHER_LEVEL,
+  QUANTIZR_TARGET_PSNR,
   quantizePixels,
   quantizedPalettePng,
   writeIndexedPng,
@@ -162,7 +163,7 @@ describe('quantizePixels, as the wrapper runs the program', () => {
     vi.stubEnv('QUANTIZR_PIXELS_PATH', program);
     try {
       const picture = await quantizePixels(rgba(5, 3), 5, 3, { colours: 64, dither: 0.25 });
-      expect(fs.readFileSync(argsFile, 'utf8')).toBe('--colors 64 --dither 0.25');
+      expect(fs.readFileSync(argsFile, 'utf8')).toBe(`--colors 64 --dither 0.25 --target-psnr ${QUANTIZR_TARGET_PSNR}`);
       const input = fs.readFileSync(inputFile);
       expect([input.readUInt32LE(0), input.readUInt32LE(4), input.length]).toEqual([5, 3, 8 + 5 * 3 * 4]);
       expect(picture).not.toBeNull();
@@ -235,7 +236,7 @@ describe('the palette PNG of a pipeline', () => {
       expect(png).not.toBeNull();
       expect(headerOf(png as Buffer)).toMatchObject({ width: 12, height: 8, colorType: COLOUR_TYPE_PALETTE, bitDepth: 1 });
       expect(new Set(rgba16Of(png as Buffer).filter((_, i) => i % 4 === 0))).toEqual(new Set([9 * 257]));
-      expect(fs.readFileSync(argsFile, 'utf8')).toBe(`--colors 256 --dither ${QUANTIZR_DITHER_LEVEL}`);
+      expect(fs.readFileSync(argsFile, 'utf8')).toBe(`--colors 256 --dither ${QUANTIZR_DITHER_LEVEL} --target-psnr ${QUANTIZR_TARGET_PSNR}`);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -246,7 +247,7 @@ describe('the palette PNG of a pipeline', () => {
     vi.stubEnv('QUANTIZR_PIXELS_PATH', program);
     try {
       await quantizedPalettePng(sharp(await source()), { ...params, colours: 16, dither: false });
-      expect(fs.readFileSync(argsFile, 'utf8')).toBe('--colors 16 --dither 0');
+      expect(fs.readFileSync(argsFile, 'utf8')).toBe(`--colors 16 --dither 0 --target-psnr ${QUANTIZR_TARGET_PSNR}`);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -307,7 +308,7 @@ describe('the compress page with the program', () => {
       const out = await compress(await photo(), { colors: 32 });
       expect(headerOf(out)).toMatchObject({ width: 64, height: 48, colorType: COLOUR_TYPE_PALETTE });
       expect(new Set(rgba16Of(out).filter((_, i) => i % 4 === 0))).toEqual(new Set([1 * 257]));
-      expect(fs.readFileSync(argsFile, 'utf8')).toBe(`--colors 32 --dither ${QUANTIZR_DITHER_LEVEL}`);
+      expect(fs.readFileSync(argsFile, 'utf8')).toBe(`--colors 32 --dither ${QUANTIZR_DITHER_LEVEL} --target-psnr ${QUANTIZR_TARGET_PSNR}`);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -441,6 +442,20 @@ describe.skipIf(skippedWithoutProgram)('the program itself', () => {
     }
   });
 
+  it('writes fewer colours than asked for when the target PSNR allows it, and the whole palette when it does not', () => {
+    // 300 colours in 3 bands of 100 shades of one hue, each shade 1 level from the next: merging neighbours costs almost nothing.
+    const shades = 300;
+    const pixels = Buffer.alloc(shades * 8 * 4);
+    for (let i = 0; i < shades * 8; i += 1) pixels.set([40 + Math.floor((i % shades) / 3), 90 + Math.floor((i % shades) / 3), 150 + ((i % shades) % 3), 255], i * 4);
+    const input = Buffer.concat([header(shades * 8, 1), pixels]);
+    const colours = (args: string[]): number => run(input, ['--colors', '256', '--dither', '0', ...args]).stdout.readUInt32LE(0);
+    expect(colours([])).toBe(256);
+    const reduced = colours(['--target-psnr', '50']);
+    expect(reduced).toBeLessThan(256);
+    expect(reduced).toBeGreaterThanOrEqual(2);
+    expect(colours(['--target-psnr', '200'])).toBe(256);
+  });
+
   it('answers the same bytes on every run for a picture whose Lloyd passes run on several threads', () => {
     // 100 x 100 pixels of pseudo-random colours: 10,000 entries in the histogram, past the 8,192 where the passes are cut into ranges.
     const pixels = noise(100 * 100);
@@ -490,7 +505,7 @@ describe.skipIf(skippedWithoutProgram)('the program itself', () => {
     expect(out.stderr.toString()).toMatch(/^quantizr-pixels: /);
   });
 
-  it.each([[['--colors', '1']], [['--colors', '257']], [['--colors', 'x']], [['--dither', '1.5']], [['--dither', '-1']], [['--bogus', '1']], [['--colors']]])(
+  it.each([[['--colors', '1']], [['--colors', '257']], [['--target-psnr', '0']], [['--target-psnr', '201']], [['--target-psnr', 'x']], [['--colors', 'x']], [['--dither', '1.5']], [['--dither', '-1']], [['--bogus', '1']], [['--colors']]])(
     'refuses the arguments %j',
     (args) => {
       const out = run(Buffer.concat([header(2, 2), Buffer.alloc(16, 9)]), args);

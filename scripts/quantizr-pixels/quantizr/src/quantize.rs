@@ -73,11 +73,18 @@ impl QuantizeResult {
         let colormap = if hist.map.len() <= max_colors {
             Colormap::from_histogram(hist)
         } else {
+            // The squared error that the target allows, summed over the pixels and the three colour channels. No target: nothing is allowed.
+            let target_sse = if attr.get_target_mse() > 0.0 {
+                let total_weight: f64 = hist.map.values().map(|entry| entry.weight as f64).sum();
+                attr.get_target_mse() as f64 * 3.0 * total_weight
+            } else {
+                f64::MIN
+            };
             let clusters = if hist.map.len() <= WARD_MAX_ENTRIES {
                 // A histogram this small is merged from its own entries, where the median cut would split it into boxes.
-                crate::cluster::merge_cheapest(hist.map.values().map(|entry| Cluster::new(vec![entry])).collect(), max_colors)
+                crate::cluster::merge_cheapest(hist.map.values().map(|entry| Cluster::new(vec![entry])).collect(), max_colors, target_sse)
             } else {
-                Cluster::from_histogram(hist).split_into(max_colors)
+                Cluster::from_histogram(hist).split_into(max_colors, target_sse)
             };
 
             Colormap::from_clusters(&clusters)

@@ -2,10 +2,15 @@ use crate::ord_float::OrdFloat32;
 
 use crate::histogram::{Histogram, HistogramEntry};
 
+/// The fewest colours a target error may reduce a palette to. (Not in upstream.)
+const MIN_COLORS: usize = 2;
+
 pub(crate) struct Cluster<'clust> {
     pub entries: Vec<&'clust HistogramEntry>,
     pub mean: [f32; 4],
     pub weight: f32,
+    /// The weighted sum of squared distances of the entries to the mean, over the four channels. (Not in upstream.)
+    pub sse: f64,
     pub chan_diff: f32,
     widest_chan: u8,
 }
@@ -16,6 +21,7 @@ impl<'clust> Cluster<'clust> {
             entries,
             mean: [0.0; 4],
             weight: 0.0,
+            sse: 0.0,
             chan_diff: 0.0,
             widest_chan: 0,
         };
@@ -66,6 +72,7 @@ impl<'clust> Cluster<'clust> {
         self.mean[3] /= self.weight;
 
         let mut diff_sum: [f32; 4] = [0f32; 4];
+        let mut sse = 0f64;
 
         for &e in self.entries.iter() {
             let weight = e.weight as f32;
@@ -77,7 +84,12 @@ impl<'clust> Cluster<'clust> {
                 e.color[3] as f32,
             ];
             add_diff(&mut diff_sum, &tmp, &self.mean, weight);
+            for k in 0..4 {
+                let d = (tmp[k] - self.mean[k]) as f64;
+                sse += d * d * weight as f64;
+            }
         }
+        self.sse = sse;
 
         let (chan, max_diff_sum) = diff_sum
             .iter()
@@ -89,14 +101,17 @@ impl<'clust> Cluster<'clust> {
         self.widest_chan = chan as u8;
     }
 
-    pub(crate) fn split_into(self, max_colors: usize) -> Vec<Self> {
+    /// Splits into at most `max_colors` clusters, and stops earlier, with at least two, once the clusters' squared errors add up to
+    /// `target_sse` or less (`f64::MIN` for no target). (The target is not in upstream.)
+    pub(crate) fn split_into(self, max_colors: usize, target_sse: f64) -> Vec<Self> {
         let max_colors_f32 = max_colors as f32;
 
         let mut clusters = Vec::<Self>::with_capacity(max_colors);
+        let mut total_sse = self.sse;
 
         clusters.push(self);
 
-        while clusters.len() < max_colors {
+        while clusters.len() < max_colors && (clusters.len() < MIN_COLORS || total_sse > target_sse) {
             // We want to split bigger clusters in the beginning,
             // and clusters with bigger chan_diff in the end
             let weight_ratio = 0.75 - (clusters.len() as f32 + 1.0) / max_colors_f32 / 2.0;
@@ -120,6 +135,7 @@ impl<'clust> Cluster<'clust> {
             };
 
             let (mut c1, mut c2) = to_split.split();
+            total_sse += c1.sse + c2.sse - to_split.sse;
 
             if c1.entries.is_empty() {
                 c2.chan_diff = 0.0;
@@ -288,13 +304,15 @@ fn add_diff(dst: &mut [f32; 4], a: &[f32; 4], b: &[f32; 4], weight: f32) {
 /// Ward's agglomeration: start with each of `start` as a cluster and merge the pair whose merge adds the least squared error, until `max_colors`
 /// clusters are left. Merging clusters of weights wa and wb whose means are d apart adds wa * wb / (wa + wb) * d^2 to the sum of squared errors,
 /// so the cheapest merge is found from each cluster's cheapest partner, which is kept up to date. O(n^2) in the number of clusters, so `start`
-/// is a histogram of a thousand entries or fewer. (Not in upstream.)
-pub(crate) fn merge_cheapest<'clust>(start: Vec<Cluster<'clust>>, max_colors: usize) -> Vec<Cluster<'clust>> {
+/// is a histogram of a thousand entries or fewer. It goes on merging past `max_colors`, down to two clusters, while the errors of all merges so far
+/// and the next one add up to `target_sse` or less (`f64::MIN` for no target).
+pub(crate) fn merge_cheapest<'clust>(start: Vec<Cluster<'clust>>, max_colors: usize, target_sse: f64) -> Vec<Cluster<'clust>> {
     struct Merging<'clust> {
         entries: Vec<&'clust HistogramEntry>,
         mean: [f64; 4],
         weight: f64,
         alive: bool,
+        sse: f64,
         /// The cluster that is cheapest to merge this one with, and what that costs.
         partner: usize,
         cost: f64,
@@ -307,6 +325,10 @@ pub(crate) fn merge_cheapest<'clust>(start: Vec<Cluster<'clust>>, max_colors: us
             squared += d * d;
         }
         a.weight * b.weight / (a.weight + b.weight) * squared
+    }
+
+    fn next_cost(all: &[Merging]) -> f64 {
+        all.iter().filter(|c| c.alive).map(|c| c.cost).fold(f64::MAX, f64::min)
     }
 
     fn cheapest_partner(of: usize, all: &[Merging]) -> (usize, f64) {
@@ -329,6 +351,7 @@ pub(crate) fn merge_cheapest<'clust>(start: Vec<Cluster<'clust>>, max_colors: us
             weight: c.weight as f64,
             entries: c.entries,
             alive: true,
+            sse: c.sse,
             partner: usize::MAX,
             cost: f64::MAX,
         })
@@ -341,9 +364,11 @@ pub(crate) fn merge_cheapest<'clust>(start: Vec<Cluster<'clust>>, max_colors: us
     }
 
     let mut alive = n;
-    while alive > max_colors {
+    let mut total_sse: f64 = clusters.iter().map(|c| c.sse).sum();
+    while alive > max_colors || (alive > MIN_COLORS && next_cost(&clusters) + total_sse <= target_sse) {
         let a = (0..n).filter(|&i| clusters[i].alive).min_by(|&x, &y| clusters[x].cost.total_cmp(&clusters[y].cost)).expect("two clusters are alive");
         let b = clusters[a].partner;
+        total_sse += clusters[a].cost;
         let (wa, wb) = (clusters[a].weight, clusters[b].weight);
         for k in 0..4 {
             clusters[a].mean[k] = (clusters[a].mean[k] * wa + clusters[b].mean[k] * wb) / (wa + wb);

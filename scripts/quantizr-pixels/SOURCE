@@ -21,7 +21,7 @@ this digest by tests/quantizr-pixels-packaging.test.ts, a file that was changed 
   src/histogram.rs                 -> quantizr/src/histogram.rs  unchanged  0b2e4426eeab106841aec568ed72e5535cba556c7677d3013308ff4171792709
   src/image.rs                     -> quantizr/src/image.rs      unchanged  a68d38d2246036f131e6800bee6116d71173e410f35c3d73ef78a66fdc8ec97f
   src/lib.rs                       -> quantizr/src/lib.rs        unchanged  f7769f5c80f5ce3c1b56bf99fd7aa2272fc9903c0983c905a5105c0329983f1f
-  src/options.rs                   -> quantizr/src/options.rs    unchanged  baf2f8bf160ec283444b1de244f427f45b61f19d30a33fbb81c8b10e7f352417
+  src/options.rs                   -> quantizr/src/options.rs    changed, see below (upstream SHA-256 baf2f8bf160ec283444b1de244f427f45b61f19d30a33fbb81c8b10e7f352417)
   src/ord_float.rs                 -> quantizr/src/ord_float.rs  unchanged  d1a15163d08dadf3f3ccfafa2194f23e18fd0ad62e7b1ac578422ffdfb8b3052
   src/palette.rs                   -> quantizr/src/palette.rs    unchanged  a2d9b8aceeaf068c7baccb9c06e766d861f464f9644035f47ceb3539724ca0e4
   src/quantize.rs                  -> quantizr/src/quantize.rs   changed, see below (upstream SHA-256 a703394b2fbf3554919fdbcd46e0e019576e5b16f63a3f35294d701457a3beb0)
@@ -31,6 +31,8 @@ Changed from upstream (each change is marked "(Not in upstream.)" in the file):
   src/colormap.rs   two more passes of Lloyd's algorithm over the histogram after upstream's two (up to 24 passes, until the error stops falling, for
       a histogram of 1024 entries or fewer), cut into four ranges that run on threads for 8192 entries or more; the sums are added in range order, so
       the palette does not depend on the number of threads. A histogram of more than 1,048,576 entries keeps upstream's two passes.
+  src/cluster.rs, src/options.rs, src/quantize.rs   a target error: Options::set_target_mse lets the palette have fewer colours than asked for while the
+      mean squared error of a colour channel stays at or below it (the median cut stops splitting, Ward's agglomeration goes on merging).
   src/cluster.rs, src/quantize.rs   a histogram of more colours than asked for and at most 1024 entries is reduced by Ward's agglomeration of
       its entries (merge the pair that adds the least squared error) where upstream splits it by median cut.
   src/quantize.rs, src/colormap.rs   a cache of the nearest palette entry by exact pixel colour in the two remap loops, and no error passed on by a

@@ -29,6 +29,14 @@ const QUANTIZR_EXECUTABLE_NAMES = ['quantizr-pixels'];
  */
 export const QUANTIZR_DITHER_LEVEL = 0.25;
 
+/**
+ * The PSNR (dB, over the three colour channels, before dithering) below which the program may not make a palette smaller than the colours asked
+ * for. A picture of more colours than that, made of few enough to be written with fewer at this quality, gets the fewer (screenshot.png, 797 colours,
+ * is written with 135 entries; a photograph never: its error at 256 colours is 30 to 45 dB). The reference service keeps 68.49 dB on the one picture of the
+ * 55 where it trims its palette (screenshot.png, 176 colours); 69 keeps the file above that (entry 276 of docs/policy-decisions.md).
+ */
+export const QUANTIZR_TARGET_PSNR = 69;
+
 /** The most pixels the program is given: its own bound (scripts/quantizr-pixels/src/main.rs), which a larger picture would exceed. */
 export const QUANTIZR_MAX_PIXELS = 36_000_000;
 const QUANTIZR_TIMEOUT_MS = 60_000;
@@ -74,7 +82,7 @@ export async function quantizePixels(rgba: Buffer, width: number, height: number
   header.writeUInt32LE(width, 0);
   header.writeUInt32LE(height, COUNT_BYTES);
   try {
-    const run = await executeSandboxedBinary(program, ['--colors', String(request.colours), '--dither', String(request.dither)], {
+    const run = await executeSandboxedBinary(program, ['--colors', String(request.colours), '--dither', String(request.dither), '--target-psnr', String(QUANTIZR_TARGET_PSNR)], {
       stdin: Buffer.concat([header, rgba]),
       // A filter on standard input and output: it touches no file.
       workDir: null,
