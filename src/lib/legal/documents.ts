@@ -19,7 +19,7 @@ export type LegalDocumentId = keyof typeof LEGAL_DOCUMENTS;
  * reachable from the site's navigation). A section's id is the anchor a code host gives its heading, so it is the number and the
  * title in each language; `tests/legal-pages.test.ts` fails when a heading changes and this no longer names it.
  */
-export const REFUND_POLICY_SECTION_ID = { en: '7-refunds', ko: '7-환불' } as const;
+export const REFUND_POLICY_SECTION_ID = { en: 'refunds', ko: '환불' } as const;
 
 /** The version of the terms that sign-up and API key creation record as accepted. */
 export const TERMS_VERSION = LEGAL_DOCUMENTS.terms.version;

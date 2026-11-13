@@ -94,15 +94,19 @@ describe('each legal page in each language', () => {
 describe('the terms state the free allowance and the paid plans', () => {
   it.each(LOCALES)('in %s', (locale) => {
     const text = visibleText(renderPage('terms', locale));
-    expect(text).toContain(locale === 'en' ? 'you can run 10 conversions on our servers per day' : '하루에 서버 변환을 10회까지');
+    expect(text).toContain(locale === 'en' ? 'you can use 10 credits on our servers per day' : '하루에 서버 변환 크레딧을 10개까지');
     expect(text).not.toContain(locale === 'en' ? 'Paid plans are not offered at present' : '현재 유료 요금제는 판매하지 않습니다');
   });
 
-  it.each(LOCALES)('name the seller, the payment provider and the four paid sections, in the order of the other terms, in %s', (locale) => {
+  it.each(LOCALES)('name the seller and the payment provider, in the section order of the reference converters\' terms, in %s', (locale) => {
     const page = renderPage('terms', locale);
     const titles = select(page, 'h2').filter((heading) => attrOf(heading, 'id') !== 'legal-contents').map((heading) => visibleText(heading));
-    const sections = locale === 'en' ? ['5. Paid plans and billing', '6. Cancellation', '7. Refunds', '8. Price changes'] : ['5. 유료 요금제와 결제', '6. 해지', '7. 환불', '8. 가격 변경'];
-    expect(titles.slice(4, 8)).toEqual(sections);
+    const sections =
+      locale === 'en'
+        ? ['1. Allowed usage', '2. Packages', '3. Subscriptions', '4. Availability of service', '5. Limitation of liability', '6. Termination', '7. Privacy policy', '8. Copyright policy']
+        : ['1. 허용되는 이용', '2. 패키지', '3. 구독', '4. 서비스 가용성', '5. 책임의 제한', '6. 이용 종료', '7. 개인정보 처리방침', '8. 저작권 정책'];
+    expect(titles).toEqual(sections);
+    expect(select(page, 'h3').map((heading) => visibleText(heading))).toEqual(locale === 'en' ? ['Refunds', 'Exclusions'] : ['환불', '제외 사항']);
     const text = visibleText(page);
     expect(text).toContain(locale === 'en' ? 'operated by Dongin Jeong, Republic of Korea' : '정동인(대한민국, 이하');
     expect(text).toContain('Paddle.com');
@@ -188,7 +192,7 @@ describe('the web image', () => {
 describe('the refund policy', () => {
   it.each(LOCALES)('is the section of the terms the footer links to in %s, by an anchor that heading has', (locale) => {
     const anchor = REFUND_POLICY_SECTION_ID[locale];
-    const sectionIds = select(renderPage('terms', locale), 'h2').map((heading) => attrOf(heading, 'id'));
+    const sectionIds = select(renderPage('terms', locale), 'h3').map((heading) => attrOf(heading, 'id'));
     expect(sectionIds).toContain(anchor);
     const prefix = locale === 'en' ? '' : `/${locale}`;
     const refundLinks = select(renderDom(createElement(Footer), locale), 'a').filter((a) => decodeURIComponent(attrOf(a, 'href') ?? '') === `${prefix}/terms#${anchor}`);
