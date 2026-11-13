@@ -127,7 +127,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
 
     const violations: string[] = [];
     const forbiddenPatterns: ReadonlyArray<{ label: string; pattern: RegExp }> = [
-      { label: 'hardcoded 292 format count', pattern: /\b292\b/ },
+      { label: 'hardcoded 292 format count', pattern: /(?<![\d.])292(?![\d.])/ },
       { label: 'fake AVAILABLE_LANGUAGES selector', pattern: /AVAILABLE_LANGUAGES/ },
       { label: 'decorative Sparkles icon', pattern: /\bSparkles\b/ },
       { label: 'lavender-glow class', pattern: /lavender-glow/ },

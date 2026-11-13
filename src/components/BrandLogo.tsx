@@ -3,23 +3,34 @@
 import React, { useId } from 'react';
 
 /**
- * The brand mark (QA's asset, docs/policy-decisions.md entry 139) in its small form, for 32 px and the header: the tile
- * fills the canvas and drops the source's glow, rim and shadow, which blur away at this size. Three bars form an E beside a
- * chevron. The colours are the mark's own, the same in both themes.
+ * The brand mark (QA's prism asset of 2026-11-13, which replaced the mark of entry 139) in its small form, for 32 px and the
+ * header: the tile fills the canvas and drops the source's glow, rims and shadows, which blur away at this size. A white
+ * document sits beside a cyan chevron. The colours are the mark's own, the same in both themes; `src/app/icon.svg` is the same
+ * drawing.
  */
+const VIEW_BOX = '36 28 440 440';
 const TILE_STOPS = [
-  ['0%', '#1E3A8A'],
-  ['48%', '#4F46E5'],
-  ['100%', '#7C3AED'],
+  ['0%', '#2664EB'],
+  ['26%', '#2952D8'],
+  ['52%', '#332699'],
+  ['80%', '#6D2DCB'],
+  ['100%', '#8D31E3'],
 ] as const;
-const BAR_TOP =
-  'M 30.1 37.0 L 49.0 37.0 C 50.1 37.0 51.1 37.5 51.8 38.4 L 56.6 45.0 C 57.5 46.2 56.6 47.8 55.2 47.8 L 30.1 47.8 C 27.12 47.8 24.7 45.38 24.7 42.4 C 24.7 39.42 27.12 37.0 30.1 37.0 Z';
-const BAR_MIDDLE =
-  'M 30.1 58.6 L 56.8 58.6 C 57.8 58.6 58.8 59.1 59.4 59.9 L 61.9 63.2 C 62.4 63.7 62.4 64.3 61.9 64.8 L 59.4 68.1 C 58.8 68.9 57.8 69.4 56.8 69.4 L 30.1 69.4 C 27.12 69.4 24.7 66.98 24.7 64.0 C 24.7 61.02 27.12 58.6 30.1 58.6 Z';
-const BAR_BOTTOM =
-  'M 30.1 80.2 L 55.2 80.2 C 56.6 80.2 57.5 81.8 56.6 83.0 L 51.8 89.6 C 51.1 90.5 50.1 91.0 49.0 91.0 L 30.1 91.0 C 27.12 91.0 24.7 88.58 24.7 85.6 C 24.7 82.62 27.12 80.2 30.1 80.2 Z';
+const FACE_STOPS = [
+  ['0%', '#8AF4FF'],
+  ['52%', '#76DFFE'],
+  ['100%', '#2FB3FA'],
+] as const;
+const BEVEL_STOPS = [
+  ['0%', '#1EB7F8'],
+  ['50%', '#55CEFD'],
+  ['100%', '#8DF3FE'],
+] as const;
+const DOCUMENT =
+  'M 170.30 127.57 A 12.37 12.37 0 0 1 179.05 123.94 L 236.14 123.94 A 19.11 19.11 0 0 1 255.25 143.06 L 255.25 352.94 A 19.11 19.11 0 0 1 236.14 372.05 L 145.82 372.05 A 19.11 19.11 0 0 1 126.70 352.94 L 126.70 176.29 A 12.37 12.37 0 0 1 130.32 167.54 Z';
 const CHEVRON =
-  'M 67.2 37.0 L 79.0 37.0 C 81.3 37.0 83.4 38.1 84.7 40.0 L 100.0 61.2 C 101.3 63.0 101.3 65.0 100.0 66.8 L 84.7 88.0 C 83.4 89.9 81.3 91.0 79.0 91.0 L 67.2 91.0 C 64.6 91.0 63.1 88.0 64.6 85.9 L 80.5 64.0 L 64.6 42.1 C 63.1 40.0 64.6 37.0 67.2 37.0 Z';
+  'M 283.36 126.84 A 1.20 1.20 0 0 1 285.41 125.99 L 405.71 246.52 A 2.10 2.10 0 0 1 405.71 249.48 L 285.41 370.00 A 1.20 1.20 0 0 1 283.36 369.15 L 283.36 293.41 A 1.05 1.05 0 0 1 283.67 292.67 L 327.17 249.16 A 1.65 1.65 0 0 0 327.17 246.83 L 283.67 203.33 A 1.05 1.05 0 0 1 283.36 202.59 Z';
+const BEVEL = 'M 281.86 122.44 L 337.71 248.00 L 281.86 373.55 L 280.37 373.55 L 280.37 122.44 Z';
 
 type LogoSizePreset = 'sm' | 'md' | 'lg' | 'xl';
 
@@ -36,16 +47,27 @@ interface BrandIconProps {
   decorative?: boolean;
 }
 
+function Stops({ stops }: Readonly<{ stops: ReadonlyArray<readonly [string, string]> }>) {
+  return (
+    <>
+      {stops.map(([offset, color]) => (
+        <stop key={offset} offset={offset} stopColor={color} />
+      ))}
+    </>
+  );
+}
+
 export function BrandIcon({ size = 32, className = '', decorative = false }: Readonly<BrandIconProps>) {
   const id = useId();
   const tile = `${id}-tile`;
-  const beam = `${id}-beam`;
-  const chevron = `${id}-chevron`;
+  const face = `${id}-face`;
+  const bevel = `${id}-bevel`;
+  const clip = `${id}-chevron`;
   return (
     <svg
       width={size}
       height={size}
-      viewBox="8 8 112 112"
+      viewBox={VIEW_BOX}
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={`shrink-0 ${className}`}
@@ -54,26 +76,25 @@ export function BrandIcon({ size = 32, className = '', decorative = false }: Rea
       aria-label={decorative ? undefined : 'EasyConvert'}
     >
       <defs>
-        <linearGradient id={tile} x1="0%" y1="0%" x2="100%" y2="100%">
-          {TILE_STOPS.map(([offset, color]) => (
-            <stop key={offset} offset={offset} stopColor={color} />
-          ))}
+        <linearGradient id={tile} x1="52.49" y1="40.74" x2="464.76" y2="456.76" gradientUnits="userSpaceOnUse">
+          <Stops stops={TILE_STOPS} />
         </linearGradient>
-        <linearGradient id={beam} x1="0%" y1="0%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor="#38BDF8" />
-          <stop offset="100%" stopColor="#E0F2FE" />
+        <linearGradient id={face} x1="341.08" y1="128.44" x2="326.09" y2="368.31" gradientUnits="userSpaceOnUse">
+          <Stops stops={FACE_STOPS} />
         </linearGradient>
-        <linearGradient id={chevron} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#FFFFFF" />
-          <stop offset="65%" stopColor="#E0E7FF" />
-          <stop offset="100%" stopColor="#C4B5FD" />
+        <linearGradient id={bevel} x1="296.86" y1="128.44" x2="296.86" y2="366.81" gradientUnits="userSpaceOnUse">
+          <Stops stops={BEVEL_STOPS} />
         </linearGradient>
+        <clipPath id={clip}>
+          <path d={CHEVRON} />
+        </clipPath>
       </defs>
-      <rect x="8" y="8" width="112" height="112" rx="28" fill={`url(#${tile})`} />
-      <path d={BAR_TOP} fill="#FFFFFF" />
-      <path d={BAR_MIDDLE} fill={`url(#${beam})`} />
-      <path d={BAR_BOTTOM} fill="#BAE6FD" />
-      <path d={CHEVRON} fill={`url(#${chevron})`} />
+      <rect x="36" y="28" width="440" height="440" rx="106.96" fill={`url(#${tile})`} />
+      <path d={DOCUMENT} fill="#FFFFFF" />
+      <g clipPath={`url(#${clip})`}>
+        <path d={CHEVRON} fill={`url(#${face})`} />
+        <path d={BEVEL} fill={`url(#${bevel})`} />
+      </g>
     </svg>
   );
 }
