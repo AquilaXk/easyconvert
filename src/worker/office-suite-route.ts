@@ -386,7 +386,7 @@ export async function convertThroughInterchange(deps: OfficeSuiteRouteDeps, requ
 /** Hangul sources: no office suite reads them, and the in-process converter writes their DOCX. */
 const HANCOM_SOURCES: ReadonlySet<string> = new Set(['hwp', 'hwpx']);
 /** Text and markup sources: the in-process converter writes their DOCX and their PDF, and no office suite reads them as such. */
-const MARKUP_SOURCES: ReadonlySet<string> = new Set(['html', 'md', 'txt', 'rst']);
+const MARKUP_SOURCES: ReadonlySet<string> = new Set(['html', 'htm', 'md', 'txt', 'rst']);
 const WORD_97_TARGET = 'doc';
 const POWERPOINT_97_TARGET = 'ppt';
 const PPTX_FORMAT = 'pptx';

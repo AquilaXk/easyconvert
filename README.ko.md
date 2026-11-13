@@ -5,13 +5,13 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-EasyConvert는 웹 앱과 HTTP API를 함께 제공하는 오픈소스 파일 변환 서비스예요. **13개 카테고리**, **308개 포맷**, **2,767개 변환 쌍**을 지원해요. 운영 중인 서비스는 <https://convert.aquilaxk.site>에서 쓸 수 있어요.
+EasyConvert는 웹 앱과 HTTP API를 함께 제공하는 오픈소스 파일 변환 서비스예요. **13개 카테고리**, **308개 포맷**, **2,771개 변환 쌍**을 지원해요. 운영 중인 서비스는 <https://convert.aquilaxk.site>에서 쓸 수 있어요.
 
 [서비스 바로가기](https://convert.aquilaxk.site) · [API 문서](https://convert.aquilaxk.site/api-docs) · [설정](docs/configuration.md) · [보안 정책](SECURITY.md)
 
 ## 주요 기능
 
-- **13개 카테고리 308개 포맷 지원**. 하나의 API로 이미지(카메라 RAW 포함), 문서, 압축 파일, 영상, 오디오, 자막, 전자책, 스프레드시트, 프레젠테이션, 데이터 파일, 벡터 그래픽, 폰트, CAD·3D 사이의 `2,767`개 변환 쌍을 지원해요.
+- **13개 카테고리 308개 포맷 지원**. 하나의 API로 이미지(카메라 RAW 포함), 문서, 압축 파일, 영상, 오디오, 자막, 전자책, 스프레드시트, 프레젠테이션, 데이터 파일, 벡터 그래픽, 폰트, CAD·3D 사이의 `2,771`개 변환 쌍을 지원해요.
 - **샌드박스 엔진.** LibreOffice, FFmpeg, libvips, Poppler, Tesseract, 7-Zip, Calibre, veraPDF는 작업마다 격리된 샌드박스에서 외부 도구로 실행해요. 일부 포맷은 프로세스 안의 TypeScript 엔진이 처리해요. HWP 5.0(OLE2 CFBF), BZip2, TrueType/OpenType 폰트 테이블, B-스플라인·베지에 경로 평탄화, Oklab·NeuQuant 팔레트 양자화가 여기에 들어가요.
 - **검색 가능한 OCR.** 스캔한 입력을 텍스트 레이어가 있는 PDF로 바꿔요.
 - **PDF/A 출력.** 모든 PDF/A 결과를 요청한 수준에 맞춰 veraPDF로 검증해요.

@@ -658,7 +658,7 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   dot: ['doc'],
   dotx: ['doc', 'jpg', 'png', 'rtf'],
   eps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
-  htm: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  htm: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
   html: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
   htmlz: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   json: ['xls'],
@@ -1054,7 +1054,6 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     eps: ['emf', 'wmf'],
     fods: ['json'],
     gif: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma'],
-    htm: ['doc', 'jpg', 'png', 'rtf'],
     html: ['tex'],
     ibooks: ['epub', 'pdf', 'txt'],
     key: ['doc', 'xls'],
@@ -1541,7 +1540,7 @@ describe('native-engine pairs route through the dispatcher', () => {
   const PDF_MAGIC = Buffer.from('%PDF-', 'latin1');
   const IMAGE_TARGETS = new Set(['jpg', 'png']);
   /** Text and markup sources: their Word 97 and RTF files are the office suite's, and their page images are drawn by Poppler from their PDF. */
-  const DOCUMENT_TEXT_SOURCES = new Set(['txt', 'md', 'html', 'rst']);
+  const DOCUMENT_TEXT_SOURCES = new Set(['txt', 'md', 'html', 'htm', 'rst']);
   /** A CSV table's page images are likewise the pages of the PDF the in-process engine writes of it, drawn by Poppler. */
   const TABLE_PICTURE_SOURCE = 'csv';
   /** Targets of a PDF that the office suite writes from the DOCX or PPTX the in-process converter writes of it. */
@@ -1634,6 +1633,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     txt: `${OFFICE_DOC_TEXT}\n`,
     md: `# Probe heading\n\n${OFFICE_DOC_TEXT}\n`,
     html: `<!DOCTYPE html><html><head><title>Probe</title></head><body><h1>Probe heading</h1><p>${OFFICE_DOC_TEXT}</p></body></html>`,
+    htm: `<!DOCTYPE html><html><head><title>Probe</title></head><body><h1>Probe heading</h1><p>${OFFICE_DOC_TEXT}</p></body></html>`,
     rst: `Probe heading\n=============\n\n${OFFICE_DOC_TEXT}\n`,
   };
   /** The Word variants that are the seed package with the content type of the variant's main part. */

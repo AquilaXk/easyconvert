@@ -25,6 +25,7 @@ const NATIVE_ENGINE_ONLY_PAIRS: ReadonlySet<string> = new Set([
   'dotx->doc', 'dotx->jpg', 'dotx->png', 'dotx->rtf',
   // Text and markup: the in-process converter writes their DOCX or PDF, and the office suite writes Word 97 and RTF from the DOCX or Poppler draws the PDF pages.
   'html->doc', 'html->jpg', 'html->png', 'html->rtf',
+  'htm->doc', 'htm->jpg', 'htm->png', 'htm->rtf',
   'md->doc', 'md->jpg', 'md->png', 'md->rtf',
   'txt->doc', 'txt->jpg', 'txt->png', 'txt->rtf',
   'rst->rtf',

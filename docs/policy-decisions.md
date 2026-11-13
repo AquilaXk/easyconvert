@@ -331,6 +331,7 @@ Security
 280. [Paid plans are Free, Basic, Pro and Enterprise, the paid ones count conversions by the month of the subscription, every plan has its own concurrency and processing limits, and the pricing page is rendered for each request](#280-paid-plans-are-free-basic-pro-and-enterprise-the-paid-ones-count-conversions-by-the-month-of-the-subscription-every-plan-has-its-own-concurrency-and-processing-limits-and-the-pricing-page-is-rendered-for-each-request)
 281. [A PDF becomes a presentation of its pages: one slide for each page, the lines of text, tables and pictures where the page has them, in a package PowerPoint opens](#281-a-pdf-becomes-a-presentation-of-its-pages-one-slide-for-each-page-the-lines-of-text-tables-and-pictures-where-the-page-has-them-in-a-package-powerpoint-opens)
 282. [PDF to PPT is offered: the presentation of the pages, exported by the office suite as PowerPoint 97-2003](#282-pdf-to-ppt-is-offered-the-presentation-of-the-pages-exported-by-the-office-suite-as-powerpoint-97-2003)
+283. [A `.htm` page converts to Word 97-2003, RTF, JPG and PNG as a `.html` page does](#283-a-htm-page-converts-to-word-97-2003-rtf-jpg-and-png-as-a-html-page-does)
 
 ---
 
@@ -8712,3 +8713,11 @@ Security
   - **The size of the file**: the suite's PPT of a one-page PDF is 0.58 MB on the VM, many times the size of the PPTX it is made from.
 - **Verified by**: `tests/pdf-to-ppt.test.ts` (the pair advertised and listed by the reference, the bridge, the order and clean-up of the two steps on stand-ins, and, with LibreOffice and Poppler present, a PPT of the real engine: a compound file, as many pages drawn back as the PDF has, every word of the PDF drawn), `tests/parity-audit.test.ts` (the registry advertises every reference pair that is not withdrawn).
 - **Revisit when**: a reference conversion of PDF to PPT can be compared, or the `.ppt` of the suite can be made smaller.
+
+## 283. A `.htm` page converts to Word 97-2003, RTF, JPG and PNG as a `.html` page does
+
+- **Status**: Implemented, decided 2026-11-13 (QA request: raise conversion quality to commercial level against the reference service; four pairs it lists that entry 183 left to the `html` registry entry); nothing is deployed. It lifts four pairs of entry 183's list.
+- **Decision**: `htm` offers `doc`, `rtf`, `jpg` and `png`, by the routes `html` has for them (`MARKUP_SOURCES` of `src/worker/office-suite-route.ts`: the in-process converter writes the page as a DOCX and the office suite exports Word 97 and RTF; Poppler draws the pages of the PDF the page converts to, one picture for each page and a ZIP of them for several). `htm` and `html` are one format under two names, and the reference lists the same targets for both except `md` and `tex`, which it lists for `html` only.
+- **Why**: Entry 183 opened these four targets for `html` and noted that `htm` pairs "are not part of this change". A `.htm` file is a page saved by a Windows browser or an older site, so the person who holds one asked for Word or a picture and was told the pair does not exist. Measured through the dispatcher on the Linux arm64 VM with one page (heading, paragraph, list, table) saved under both names: `rtf` (10,481 bytes), `jpg` (62,065 bytes) and `png` (46,709 bytes) are byte for byte the files of the `.html` page; `doc` has the same size (13,312 bytes) and differs in the creation time the suite writes.
+- **Trade-offs**: None beyond the four registry rows; the routes and their limits are the `html` ones.
+- **Verified by**: `tests/registry-engine-conformance.test.ts` (the four pairs advertised, listed as native-engine pairs, converted by the real engines with a seed page and read back, and refused with an unavailable engine when the engine is missing), `tests/parity-audit.test.ts` (the registry advertises every reference pair that is not withdrawn: `htm` to `doc`, `jpg`, `png` and `rtf` leave its list).
