@@ -15,10 +15,13 @@ interface AccountQuotaPanelProps {
   quota: QuotaUsage | null;
   apiKeys: ApiKey[];
   charges: ChargeEntry[];
+  /** True for an account whose address is not confirmed: its credits are shown once the address is. */
+  quotaUnavailable?: boolean;
 }
 
-export function AccountQuotaPanel({ user, quota, apiKeys, charges }: Readonly<AccountQuotaPanelProps>) {
+export function AccountQuotaPanel({ user, quota, apiKeys, charges, quotaUnavailable = false }: Readonly<AccountQuotaPanelProps>) {
   const t = useTranslations('dashboard.usage');
+  const tQuota = useTranslations('dashboard.quota');
   const format = useFormatter();
   const tierLabel = useTierLabel();
   const activeKeyCount = apiKeys.filter((key) => key.status === 'active').length;
@@ -56,12 +59,18 @@ export function AccountQuotaPanel({ user, quota, apiKeys, charges }: Readonly<Ac
             <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
               {t(monthly ? 'quotaMonth' : 'quota')}
             </div>
-            <div className="mt-1.5 text-2xl font-bold text-ink">
-              {format.number(usedToday)} / {format.number(dailyLimit)}
-            </div>
-            <p className="mt-1 text-xs text-ink-2">
-              {t(monthly ? 'remainingMonth' : 'remaining', { count: remaining })}
-            </p>
+            {quotaUnavailable ? (
+              <p className="mt-1.5 text-sm text-ink-2">{tQuota('unavailable')}</p>
+            ) : (
+              <>
+                <div className="mt-1.5 text-2xl font-bold text-ink">
+                  {format.number(usedToday)} / {format.number(dailyLimit)}
+                </div>
+                <p className="mt-1 text-xs text-ink-2">
+                  {t(monthly ? 'remainingMonth' : 'remaining', { count: remaining })}
+                </p>
+              </>
+            )}
           </div>
 
           <div className="p-4 rounded-md border border-rule">

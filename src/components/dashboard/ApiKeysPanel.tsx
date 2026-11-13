@@ -64,6 +64,17 @@ function QuotaSummaryStrip({ quota }: Readonly<{ quota: QuotaUsage }>) {
   );
 }
 
+/** The place of the usage block of an account whose address is not confirmed: it has no allowance of its own to show yet. */
+function QuotaUnavailableStrip() {
+  const t = useTranslations('dashboard.quota');
+  return (
+    <div className="border-t border-rule pt-5">
+      <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">{t('used')}</div>
+      <p className="mt-2 text-sm text-ink-2">{t('unavailable')}</p>
+    </div>
+  );
+}
+
 export interface ApiKeysPanelState {
   apiKeys: ApiKey[];
   quota: QuotaUsage | null;
@@ -97,6 +108,8 @@ export interface ApiKeysPanelActions {
 interface ApiKeysPanelProps {
   state: ApiKeysPanelState;
   actions: ApiKeysPanelActions;
+  /** True for an account whose address is not confirmed: the usage block says it is shown once the address is. */
+  quotaUnavailable?: boolean;
 }
 
 const subscribeToNothing = () => () => undefined;
@@ -106,7 +119,7 @@ function useSiteOrigin(): string {
   return useSyncExternalStore(subscribeToNothing, () => window.location.origin, () => '');
 }
 
-export function ApiKeysPanel({ state, actions }: Readonly<ApiKeysPanelProps>) {
+export function ApiKeysPanel({ state, actions, quotaUnavailable = false }: Readonly<ApiKeysPanelProps>) {
   const {
     apiKeys,
     quota,
@@ -131,7 +144,7 @@ export function ApiKeysPanel({ state, actions }: Readonly<ApiKeysPanelProps>) {
       aria-labelledby="dashboard-tab-api"
       className="space-y-6"
     >
-      {quota && <QuotaSummaryStrip quota={quota} />}
+      {quotaUnavailable ? <QuotaUnavailableStrip /> : quota && <QuotaSummaryStrip quota={quota} />}
 
       {generatedSecret && (
         <GeneratedSecretBanner

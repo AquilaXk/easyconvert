@@ -37,14 +37,16 @@ function render(locale: 'en' | 'ko', node: ReactNode) {
 }
 
 describe('the state after a sign-up', () => {
-  it('tells the address the mail was sent for, what the link does and where an address with an account goes, in Korean', async () => {
+  it('says in one grey sentence, with the address in bold, where the link went, and offers the way to sign in, in Korean', async () => {
     const onSignIn = vi.fn();
     render('ko', createElement(RegistrationSentPanel, { email: 'reader@example.com', onSignIn }));
     await vi.waitFor(() => expect(host.querySelector('button')).not.toBeNull());
-    const text = host.textContent ?? '';
-    expect(text).toContain('메일 확인');
-    expect(text).toContain('reader@example.com 주소로 확인 메일을 보냈습니다.');
-    expect(text).toContain('이미 가입한 주소에는 메일을 보내지 않습니다. 로그인하거나 비밀번호를 재설정하세요.');
+    expect(host.querySelector('strong')?.textContent).toBe('reader@example.com');
+    expect(host.querySelector('p')?.textContent).toBe('reader@example.com 주소로 인증 링크를 보냈습니다. 메일의 링크를 열어 가입을 마치세요.');
+    expect(host.textContent).toContain('메일이 오지 않으면 스팸 메일함을 확인하세요.');
+    // The card's heading is the state (set by the page), and nothing here is an alert box.
+    expect(host.querySelector('[role="alert"], output, [class*="bg-success"], [class*="bg-danger"]')).toBeNull();
+    expect(host.querySelector('h1, h2')).toBeNull();
     host.querySelector('button')!.click();
     expect(onSignIn).toHaveBeenCalledTimes(1);
     expect(host.querySelector('button')!.textContent).toBe('로그인하러 가기');
@@ -53,7 +55,8 @@ describe('the state after a sign-up', () => {
   it('is worded in English too', async () => {
     render('en', createElement(RegistrationSentPanel, { email: 'reader@example.com', onSignIn: () => undefined }));
     await vi.waitFor(() => expect(host.querySelector('button')).not.toBeNull());
-    expect(host.textContent).toContain('We sent a confirmation mail to reader@example.com.');
+    expect(host.querySelector('p')?.textContent).toBe('We sent a verification link to reader@example.com. Open it to finish signing up.');
+    expect(host.textContent).toContain('If it does not arrive, check your spam folder.');
     expect(host.querySelector('button')!.textContent).toBe('Go to sign in');
   });
 });

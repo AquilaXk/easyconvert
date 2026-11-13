@@ -41,6 +41,8 @@ function LoginFormContent({ googleEnabled, passwordResetEnabled }: Readonly<Auth
   } = useAuthController();
   const otherTab = activeTab === 'login' ? 'register' : 'login';
   const registerTitle = t('registerDocumentTitle');
+  let heading = activeTab === 'login' ? t('loginHeading') : t('registerHeading');
+  if (registeredEmail) heading = t('checkMail.heading');
 
   useEffect(() => {
     if (activeTab !== 'register') return;
@@ -55,7 +57,7 @@ function LoginFormContent({ googleEnabled, passwordResetEnabled }: Readonly<Auth
     <div className="bg-surface max-w-md w-full border border-rule p-6">
       <div className="text-center">
         <h1 className="text-xl font-semibold text-ink">
-          {activeTab === 'login' ? t('loginHeading') : t('registerHeading')}
+          {heading}
         </h1>
       </div>
 

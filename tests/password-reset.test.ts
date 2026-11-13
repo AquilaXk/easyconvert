@@ -339,7 +339,7 @@ describe('the messages', () => {
   it('writes the Korean sentences of the new screens in 합니다체 or ~하세요', () => {
     const sentences = ['auth.forgot', 'auth.reset', 'auth.verify', 'dashboard.emailNotice']
       .flatMap((path) => Object.entries(pick(ko, path) as Record<string, string>))
-      .filter(([key]) => ['intro', 'sent', 'done', 'noToken', 'text', 'connection'].includes(key))
+      .filter(([key]) => ['intro', 'sent', 'confirmedText', 'noToken', 'text', 'connection'].includes(key))
       .map(([, text]) => text);
     expect(sentences.length).toBeGreaterThan(6);
     for (const sentence of sentences) expect(sentence).toMatch(/(니다|세요)[.…]*$/);

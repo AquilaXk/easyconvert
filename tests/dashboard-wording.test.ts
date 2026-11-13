@@ -391,6 +391,19 @@ describe('the credits on the dashboard', () => {
     expect(charges.map((entry) => entry.credits)).toEqual([4, 1, 6]);
   });
 
+  it('does not show the credits of an account whose address is not confirmed, and says when they are shown', () => {
+    const day = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CREDITS, usedToday: 0, remaining: FREE_DAILY_CREDITS, resetAt: Date.UTC(2026, 11, 2), packageCredits: 0 };
+    const panel = visibleText(renderDom(createElement(AccountQuotaPanel, { user: freeUser, quota: day, apiKeys: [], charges: [], quotaUnavailable: true })));
+    expect(panel).toContain('Shown once your email address is confirmed.');
+    expect(panel).not.toContain('credits left today');
+    expect(panel).not.toContain(`0 / ${FREE_DAILY_CREDITS}`);
+    const strip = visibleText(renderDom(createElement(ApiKeysPanel, { state: { ...keysPanelState, quota: day }, actions: keysPanelActions, quotaUnavailable: true })));
+    expect(strip).toContain('Shown once your email address is confirmed.');
+    expect(strip).not.toContain('Credits left');
+    const korean = visibleText(renderDom(createElement(ApiKeysPanel, { state: { ...keysPanelState, quota: day }, actions: keysPanelActions, quotaUnavailable: true }), 'ko'));
+    expect(korean).toContain('이메일 주소를 확인하면 표시됩니다.');
+  });
+
   it('never shows more credits used than the day allows, for a count made under a larger allowance before a deploy', () => {
     expect(usageCount(freeUser, overLimit)).toBe(`${FREE_DAILY_CREDITS} / ${FREE_DAILY_CREDITS}`);
     const strip = renderDom(createElement(ApiKeysPanel, { state: { ...keysPanelState, quota: overLimit }, actions: keysPanelActions }));

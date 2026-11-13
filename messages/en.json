@@ -317,16 +317,17 @@
       "requestNew": "Ask for a new link"
     },
     "checkMail": {
-      "heading": "Check your mail",
-      "text": "We sent a confirmation mail to {email}. Open the link in it to confirm your email address. Until you do, conversions use the same allowance as a visitor who is not signed in.",
-      "hint": "If the mail does not arrive, check your spam folder. No mail is sent to an address that already has an account: sign in, or reset your password.",
+      "heading": "Check your email",
+      "text": "We sent a verification link to <strong>{email}</strong>. Open it to finish signing up.",
+      "hint": "If it does not arrive, check your spam folder.",
       "toSignIn": "Go to sign in"
     },
     "verify": {
       "heading": "Confirm your email address",
       "intro": "Confirm that this address is yours.",
       "submit": "Confirm email address",
-      "done": "Your email address is confirmed.",
+      "confirmedHeading": "Email address confirmed",
+      "confirmedText": "You can now use your free credits.",
       "noToken": "This link is incomplete. Open the link in your mail again.",
       "toSignIn": "Go to sign in",
       "toDashboard": "Go to the dashboard"
@@ -395,6 +396,7 @@
       "deleteLabel": "Delete {name}"
     },
     "quota": {
+      "unavailable": "Shown once your email address is confirmed.",
       "used": "Credits used today",
       "usedMonth": "Credits used this period",
       "allowed": "/ {limit, number} credits",
@@ -591,7 +593,7 @@
       "signOutNetwork": "The connection dropped and you were not signed out. Try again."
     },
     "emailNotice": {
-      "text": "Your email address is not confirmed yet. Until it is, conversions use the same daily allowance as a visitor who is not signed in. Open the link in the mail we sent to confirm it.",
+      "text": "Confirm your email address to use your free credits.",
       "resend": "Send the link again",
       "sent": "The link is on its way. It works for 24 hours.",
       "connection": "The connection dropped. Try again."

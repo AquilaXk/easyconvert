@@ -11,6 +11,7 @@ import { JobsHistoryPanel } from '@/components/dashboard/JobsHistoryPanel';
 import { WebhooksPanel } from '@/components/dashboard/WebhooksPanel';
 import { AccountQuotaPanel } from '@/components/dashboard/AccountQuotaPanel';
 import { EmailVerificationNotice } from '@/components/dashboard/EmailVerificationNotice';
+import { countsAsAnonymousForConversions } from '@/lib/auth/email-verified';
 import { useDashboardController } from '@/components/dashboard/useDashboardController';
 import type { DashboardSnapshot } from '@/lib/dashboard/snapshot-types';
 
@@ -86,7 +87,7 @@ export default function DashboardPageView({ initial }: Readonly<{ initial?: Dash
               </div>
             )}
 
-            {activeTab === 'api' && <ApiKeysPanel state={keys.state} actions={keys.actions} />}
+            {activeTab === 'api' && <ApiKeysPanel state={keys.state} actions={keys.actions} quotaUnavailable={countsAsAnonymousForConversions(user)} />}
 
             {activeTab === 'files' && (
               <JobsHistoryPanel
@@ -132,6 +133,7 @@ export default function DashboardPageView({ initial }: Readonly<{ initial?: Dash
                 quota={keys.state.quota}
                 apiKeys={keys.state.apiKeys}
                 charges={keys.state.charges}
+                quotaUnavailable={countsAsAnonymousForConversions(user)}
               />
             )}
           </>

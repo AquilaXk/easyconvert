@@ -5,7 +5,6 @@ import { useTranslations } from 'next-intl';
 import { Loader2 } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { AuthShell } from '@/components/auth/AuthShell';
-import { AuthErrorNotice, AuthSuccessNotice } from '@/components/auth/AuthNotices';
 import { CONTROL_HEIGHT } from '@/components/auth/AuthForms';
 import { useFragmentToken } from '@/components/auth/useFragmentToken';
 import { useAuthErrorWording } from '@/components/i18n/error-wording';
@@ -44,11 +43,16 @@ export default function VerifyEmailPageView() {
 
   if (!ready) return <AuthShell heading={t('heading')}>{null}</AuthShell>;
 
+  // The heading is the state: the page asks, then says the address is confirmed. A failure is a plain line of text.
+  const heading = done ? t('confirmedHeading') : t('heading');
+  let intro: string | undefined;
+  if (done) intro = t('confirmedText');
+  else if (token) intro = t('intro');
+
   return (
-    <AuthShell heading={t('heading')} intro={done || !token ? undefined : t('intro')}>
-      {error && <AuthErrorNotice>{error}</AuthErrorNotice>}
-      {!token && !done && <AuthErrorNotice>{t('noToken')}</AuthErrorNotice>}
-      {done && <AuthSuccessNotice>{t('done')}</AuthSuccessNotice>}
+    <AuthShell heading={heading} intro={intro}>
+      {error && <p role="alert" className="mb-4 text-center text-sm text-danger">{error}</p>}
+      {!token && !done && <p role="alert" className="mb-4 text-center text-sm text-danger">{t('noToken')}</p>}
       {token && !done && (
         <button
           type="button"
