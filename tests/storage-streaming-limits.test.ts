@@ -208,6 +208,7 @@ describe('WP-20 Storage Streaming API & 2GB Crash Removal', () => {
   describe('4. In-Process Queue TS Engine Memory Guard & Quota Rollback', () => {
     it('fails closed with PayloadTooLargeForMemoryError (native worker required) and rolls back quota', async () => {
       const user = await redisUserStore.createUser({
+        emailVerified: true,
         name: 'Queue Tester',
         email: `qtest_${Date.now()}@example.com`,
         tier: 'paid',
@@ -258,6 +259,7 @@ describe('WP-20 Storage Streaming API & 2GB Crash Removal', () => {
   describe('5. API Jobs Endpoint Storage Tier Ceiling Enforcement', () => {
     it('rejects 2.1 GiB storageKey for free tier user with HTTP 413 Payload Too Large', async () => {
       const user = await redisUserStore.createUser({
+        emailVerified: true,
         name: 'Free Tier User',
         email: `free_${Date.now()}@example.com`,
         tier: 'free',

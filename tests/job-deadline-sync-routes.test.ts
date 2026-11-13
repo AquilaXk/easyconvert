@@ -46,6 +46,7 @@ beforeEach(async () => {
   vi.stubEnv('JOB_DEADLINE_MAX_MS_FREE', String(DEADLINE_MS));
   seen = [];
   const user = await userStore.createUser({
+    emailVerified: true,
     email: `sync_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@deadline.test`,
     name: 'Sync Deadline',
     tier: 'free',

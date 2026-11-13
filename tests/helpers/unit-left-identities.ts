@@ -24,7 +24,7 @@ interface Caller {
 
 async function account(): Promise<User> {
   const email = `unit-left-${crypto.randomBytes(6).toString('hex')}@quota.test`;
-  return userStore.sanitizeUser(await userStore.createUser({ email, name: 'Unit Left', tier: 'free' }));
+  return userStore.sanitizeUser(await userStore.createUser({ emailVerified: true, email, name: 'Unit Left', tier: 'free' }));
 }
 
 const CALLERS: Record<'session' | 'API key' | 'anonymous visitor', () => Promise<Caller>> = {

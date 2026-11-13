@@ -129,7 +129,7 @@ describe('each route leaves a job with its tier deadline', () => {
 
   async function makeKey(tier: 'free' | 'paid'): Promise<void> {
     const email = `deadline_${tier}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@deadline.test`;
-    const user = await userStore.createUser({ email, name: `Deadline ${tier}`, tier });
+    const user = await userStore.createUser({ emailVerified: true, email, name: `Deadline ${tier}`, tier });
     users[tier] = user.id;
     apiKeys[tier] = (await redisKeyStore.generateApiKey(user.id, 'Deadline Key', { scopes: ['convert:write', 'convert:read'] })).secretKey;
   }

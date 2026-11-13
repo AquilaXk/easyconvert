@@ -79,7 +79,7 @@ describe('the allowance of an account', () => {
   let counter = 0;
 
   async function account(tier: UserTier, subscription?: { credits: SubscriptionSize; status?: 'active' | 'past_due' | 'canceled'; currentPeriodEnd?: number }) {
-    const user = await userStore.createUser({ email: `monthly_${tier}_${++counter}_${crypto.randomBytes(4).toString('hex')}@quota.test`, name: 'Monthly', tier });
+    const user = await userStore.createUser({ emailVerified: true, email: `monthly_${tier}_${++counter}_${crypto.randomBytes(4).toString('hex')}@quota.test`, name: 'Monthly', tier });
     if (subscription) {
       const applied = await subscriptionStore.apply({
         eventId: `evt_${crypto.randomUUID()}`,

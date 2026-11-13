@@ -102,7 +102,7 @@ export function itKeepsCredits(controls: CreditCaseControls): void {
 
   it('gives the package credits of an ended lease back when the billing period of the subscription changed, and a lease that ends later stays held', async () => {
     // A subscription belongs to an account that exists.
-    const account = await redisUserStore.createUser({ email: `ledger_${crypto.randomBytes(6).toString('hex')}@credits.test`, name: 'Ledger' });
+    const account = await redisUserStore.createUser({ emailVerified: true, email: `ledger_${crypto.randomBytes(6).toString('hex')}@credits.test`, name: 'Ledger' });
     owner = account.id;
     await grant(100);
     const subscribe = (periodEnd: number, credits: 1000 | 2500) =>

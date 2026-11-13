@@ -86,6 +86,7 @@ describe('every route refuses an oversized resize with a client error', () => {
 
   beforeEach(async () => {
     const user = await userStore.createUser({
+      emailVerified: true,
       name: 'pixel cap',
       email: `pixels_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
       tier: 'free',

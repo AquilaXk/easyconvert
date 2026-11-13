@@ -317,6 +317,7 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
 
     it('enforces 2-phase quota transactions (reserve -> rollback & reserve -> commit)', async () => {
       const user = await userStore.createUser({
+        emailVerified: true,
         email: 'quota-test@example.com',
         name: 'Quota Tester',
         tier: 'free',
@@ -384,6 +385,7 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
       // The deployment declares its front proxy; the proxy-observed address is the identity.
       vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
       const user = await userStore.createUser({
+        emailVerified: true,
         email: 'ip-guard@example.com',
         name: 'IP Guard User',
       });
@@ -424,6 +426,7 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
   describe('Phase 6: Async Jobs API & OpenAPI 3.1 Specification', () => {
     it('POST /api/v1/jobs submits job, reserves quota, and GET /api/v1/jobs/{id} tracks status', async () => {
       const user = await userStore.createUser({
+        emailVerified: true,
         email: 'async-jobs@example.com',
         name: 'Async Jobs User',
       });
@@ -481,11 +484,13 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
 
     it('enforces strict tenant boundary isolation between users on async job endpoints', async () => {
       const userA = await userStore.createUser({
+        emailVerified: true,
         email: 'user-a@example.com',
         name: 'User A',
         tier: 'free',
       });
       const userB = await userStore.createUser({
+        emailVerified: true,
         email: 'user-b@example.com',
         name: 'User B',
         tier: 'paid', // Even enterprise tier cannot inspect other users' jobs

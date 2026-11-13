@@ -396,6 +396,7 @@ describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
 
     it('cancels jobs across resource queues and triggers quota rollback', async () => {
       const testUser = await redisUserStore.createUser({
+        emailVerified: true,
         name: 'Queue Test User',
         email: `queue-test-${Date.now()}@example.com`,
         tier: 'paid',
@@ -459,6 +460,7 @@ describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
     async function createTestApiKey(tier: 'paid' | 'free') {
       const uid = `user_${tier}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
       const user = await redisUserStore.createUser({
+        emailVerified: true,
         name: `User ${tier}`,
         email: `${uid}@example.com`,
         tier,

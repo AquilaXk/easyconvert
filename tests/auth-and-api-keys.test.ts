@@ -113,6 +113,7 @@ describe('Auth & API Key Infrastructure', () => {
   describe('User Store Repository', () => {
     it('creates, indexes, and finds users by email case-insensitively', async () => {
       const user = await userStore.createUser({
+        emailVerified: true,
         email: 'Alice@Example.COM',
         name: 'Alice Developer',
         tier: 'free',
@@ -132,12 +133,14 @@ describe('Auth & API Key Infrastructure', () => {
 
     it('enforces email uniqueness on registration', async () => {
       await userStore.createUser({
+        emailVerified: true,
         email: 'bob@example.com',
         name: 'Bob',
       });
 
       await expect(
         userStore.createUser({
+          emailVerified: true,
           email: 'BOB@example.com',
           name: 'Bob Duplicate',
         })
@@ -146,6 +149,7 @@ describe('Auth & API Key Infrastructure', () => {
 
     it('sanitizes user records by stripping password hashes', async () => {
       const userRecord = await userStore.createUser({
+        emailVerified: true,
         email: 'carol@example.com',
         name: 'Carol',
         passwordHash: 'secret-hash',
@@ -176,6 +180,7 @@ describe('Auth & API Key Infrastructure', () => {
 
     it('extracts user from cookie in Request', async () => {
       const userRecord = await userStore.createUser({
+        emailVerified: true,
         email: 'dave@example.com',
         name: 'Dave',
       });
@@ -196,6 +201,7 @@ describe('Auth & API Key Infrastructure', () => {
 
     it('extracts user from Authorization: Bearer <jwt> header', async () => {
       const userRecord = await userStore.createUser({
+        emailVerified: true,
         email: 'eve@example.com',
         name: 'Eve',
       });
@@ -251,6 +257,7 @@ describe('Auth & API Key Infrastructure', () => {
   describe('API Key Lifecycle & Quota Management', () => {
     it('generates key with ec_live_ prefix and saves only the sha256 hash', async () => {
       const userRecord = await userStore.createUser({
+        emailVerified: true,
         email: 'dev@example.com',
         name: 'Dev User',
       });
@@ -269,6 +276,7 @@ describe('Auth & API Key Infrastructure', () => {
 
     it('rejects revoked API keys immediately', async () => {
       const userRecord = await userStore.createUser({
+        emailVerified: true,
         email: 'revoker@example.com',
         name: 'Revoker',
       });
@@ -283,6 +291,7 @@ describe('Auth & API Key Infrastructure', () => {
 
     it('enforces tier limits and records daily usage correctly', async () => {
       const userRecord = await userStore.createUser({
+        emailVerified: true,
         email: 'quota-tester@example.com',
         name: 'Quota Tester',
         tier: 'free',
@@ -311,6 +320,7 @@ describe('Auth & API Key Infrastructure', () => {
 
     it('records and lists user conversion files with 1-hour expiration', async () => {
       const userRecord = await userStore.createUser({
+        emailVerified: true,
         email: 'file-owner@example.com',
         name: 'File Owner',
       });
@@ -414,6 +424,7 @@ describe('Auth & API Key Infrastructure', () => {
       // Create user and token
       const user = userStore.sanitizeUser(
         await userStore.createUser({
+          emailVerified: true,
           email: 'api-dev@example.com',
           name: 'API Dev',
         })
@@ -471,6 +482,7 @@ describe('Auth & API Key Infrastructure', () => {
       // Create user and key
       const user = userStore.sanitizeUser(
         await userStore.createUser({
+          emailVerified: true,
           email: 'programmer@example.com',
           name: 'Programmer',
         })
@@ -539,6 +551,7 @@ describe('Auth & API Key Infrastructure', () => {
     it('enforces 429 quota exhaustion on /api/v1/convert when daily limit is reached', async () => {
       const user = userStore.sanitizeUser(
         await userStore.createUser({
+          emailVerified: true,
           email: 'heavy-user@example.com',
           name: 'Heavy User',
           tier: 'free',
@@ -571,6 +584,7 @@ describe('Auth & API Key Infrastructure', () => {
     it('returns raw binary stream on /api/v1/convert when raw=true is requested', async () => {
       const user = userStore.sanitizeUser(
         await userStore.createUser({
+          emailVerified: true,
           email: 'binary-dev@example.com',
           name: 'Binary Dev',
         })
@@ -602,6 +616,7 @@ describe('Auth & API Key Infrastructure', () => {
     it('handles validation failures in /api/v1/convert safely', async () => {
       const user = userStore.sanitizeUser(
         await userStore.createUser({
+          emailVerified: true,
           email: 'validator@example.com',
           name: 'Validator',
         })
@@ -711,6 +726,7 @@ describe('Auth & API Key Infrastructure', () => {
     it('recordUsage handles concurrent requests safely without exceeding tier limit', async () => {
       const user = userStore.sanitizeUser(
         await userStore.createUser({
+          emailVerified: true,
           email: 'concurrent@example.com',
           name: 'Concurrent User',
           tier: 'free',
@@ -740,6 +756,7 @@ describe('Auth & API Key Infrastructure', () => {
     it('prunes expired user files and persists changes to disk', async () => {
       const user = userStore.sanitizeUser(
         await userStore.createUser({
+          emailVerified: true,
           email: 'purge-dev@example.com',
           name: 'Purge Dev',
         })
@@ -791,6 +808,7 @@ describe('Auth & API Key Infrastructure', () => {
     it('rejects non-Blob file parameters and non-object options in /api/v1/convert', async () => {
       const user = userStore.sanitizeUser(
         await userStore.createUser({
+          emailVerified: true,
           email: 'guard-edge@example.com',
           name: 'Guard Edge',
         })
@@ -826,6 +844,7 @@ describe('Auth & API Key Infrastructure', () => {
     it('prevents negative or zero unit quota deductions in recordUsage', async () => {
       const user = userStore.sanitizeUser(
         await userStore.createUser({
+          emailVerified: true,
           email: 'quota-safety@example.com',
           name: 'Quota Safety',
           tier: 'free',
@@ -886,6 +905,7 @@ describe('Auth & API Key Infrastructure', () => {
 
     it('rejects options.thumbnail.at with more than 16 timestamps before reserving quota', async () => {
       const user = await userStore.createUser({
+        emailVerified: true,
         email: 'thumb.cap@example.com',
         name: 'Thumbnail Cap User',
         tier: 'free',

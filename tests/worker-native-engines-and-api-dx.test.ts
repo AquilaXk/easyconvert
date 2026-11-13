@@ -38,6 +38,7 @@ async function createUniqueTestUser(tier: 'free' | 'paid' = 'free') {
   const uniqueId = `${Date.now()}_${userCounter}_${Math.random().toString(36).slice(2, 7)}`;
   return userStore.sanitizeUser(
     await userStore.createUser({
+      emailVerified: true,
       email: `test_dev_${uniqueId}@example.com`,
       name: `Test Dev ${uniqueId}`,
       tier,

@@ -40,6 +40,7 @@ let pro: Account;
 
 async function account(tier: 'free' | 'paid'): Promise<Account> {
   const user = await userStore.createUser({
+    emailVerified: true,
     name: `cap ${tier}`,
     email: `cap_${tier}_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
     tier,

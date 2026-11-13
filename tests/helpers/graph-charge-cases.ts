@@ -140,7 +140,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
   }
 
   async function apiAccount() {
-    const user = userStore.sanitizeUser(await userStore.createUser({ email: `graph-charge-${crypto.randomBytes(6).toString('hex')}@quota.test`, name: 'Graph charge', tier: 'free' }));
+    const user = userStore.sanitizeUser(await userStore.createUser({ emailVerified: true, email: `graph-charge-${crypto.randomBytes(6).toString('hex')}@quota.test`, name: 'Graph charge', tier: 'free' }));
     track(user.id);
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'graph charge key', { scopes: ['convert:write'] });
     return { userId: user.id, authorization: `Bearer ${secretKey}` };

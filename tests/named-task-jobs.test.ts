@@ -54,7 +54,7 @@ function startWorker(): void {
 }
 
 async function caller(tier: 'free' | 'paid' = 'paid') {
-  const user = userStore.sanitizeUser(await userStore.createUser({ email: `named-${Date.now()}-${crypto.randomBytes(4).toString('hex')}@named.test`, name: 'Named', tier }));
+  const user = userStore.sanitizeUser(await userStore.createUser({ emailVerified: true, email: `named-${Date.now()}-${crypto.randomBytes(4).toString('hex')}@named.test`, name: 'Named', tier }));
   const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'named tasks', { scopes: ['convert:write', 'convert:read'] });
   return { userId: user.id, authorization: `Bearer ${secretKey}`, usedToday: async () => (await redisKeyStore.getQuotaUsage(user.id)).usedToday };
 }

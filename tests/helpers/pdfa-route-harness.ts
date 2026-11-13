@@ -73,6 +73,7 @@ export async function withValidator<T>(validator: string, operation: () => Promi
 
 export async function createApiKey(): Promise<string> {
   const user = await userStore.createUser({
+    emailVerified: true,
     name: 'PDF/A Route Tester',
     email: `pdfa_route_${randomUUID()}@easyconvert.local`,
     tier: 'paid',

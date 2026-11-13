@@ -51,6 +51,7 @@ const tiffWithPages = (count: number) => buildBilevelTiff(Array.from({ length: c
 
 async function keyOfTier(tier: 'free' | 'paid'): Promise<string> {
   const user = await userStore.createUser({
+    emailVerified: true,
     name: 'no tier page limit',
     email: `no_limit_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
     tier,
