@@ -1,14 +1,34 @@
 quantizr-pixels: a program around the quantizr library, reading raw pixels and writing the palette and the indices.
 
-Upstream:   https://github.com/DarthSim/quantizr (MIT, Copyright (c) 2017 Sergey Alexandrovich; the licence text is ./LICENSE, copied from the
-            tagged commit, SHA-256 407b2d167f73ef78da1fcbfb6c2f1051f195b1984b9bfeeac0a39b34c198a7fe)
+Upstream:   https://github.com/DarthSim/quantizr (MIT, Copyright (c) 2017 Sergey Alexandrovich; the licence text is ./LICENSE and
+            ./quantizr/LICENSE, copied from the tagged commit, SHA-256 407b2d167f73ef78da1fcbfb6c2f1051f195b1984b9bfeeac0a39b34c198a7fe)
 Tag:        v1.4.3
 Commit:     cfb26aaf3039ac1179d42a66cc7988c8c6feeba9
-Package:    quantizr 1.4.3 on crates.io, checksum b28ab4659f6754222a9e96c7a48f68dba03a620f23803c67ccd4ca7c35d55f5f (Cargo.lock). Its src/ directory
-            and Cargo.toml are byte for byte those of the tagged commit (compared when the program was added).
+Package:    quantizr 1.4.3 on crates.io, checksum b28ab4659f6754222a9e96c7a48f68dba03a620f23803c67ccd4ca7c35d55f5f. Its src/ directory, LICENSE,
+            README.md and Cargo.toml.orig are byte for byte those of the tagged commit (compared when the source was copied here).
 
-Copied from upstream (upstream path -> path here):
-  LICENSE                          -> LICENSE        unchanged
+Copied from upstream (upstream path -> path here, with the SHA-256 of the upstream file; a file listed here as "unchanged" is compared with
+this digest by tests/quantizr-pixels-packaging.test.ts, a file that was changed is listed under "Changed from upstream" and nowhere else):
+  LICENSE                          -> LICENSE                    unchanged
+  LICENSE                          -> quantizr/LICENSE           unchanged
+  README.md                        -> quantizr/README.md         unchanged
+  Cargo.toml.orig                  -> quantizr/Cargo.toml        changed: the [profile.release] table is dropped (a profile of a dependency
+      is ignored by cargo, which warns about it; the program's own Cargo.toml has the profile)
+  src/capi.rs                      -> quantizr/src/capi.rs       unchanged  e31f9b5fd122fce0a509ff17a272121fdc744ef681d5810cb39d6fe02a130cfc
+  src/cluster.rs                   -> quantizr/src/cluster.rs    unchanged  a41eaa3d72974fd376aac4163bd26ab2a3a4b8d05ac9f5ccfde97abbf2c1237d
+  src/colormap.rs                  -> quantizr/src/colormap.rs   unchanged  bec109ecce78e63ee58d80b4951ac8b047747977c3afba70d8d5facd5391cb4b
+  src/error.rs                     -> quantizr/src/error.rs      unchanged  555bfd8574f2790742478953bb976e6df2c833d6a49d4c1bf1b013d661ed5f36
+  src/histogram.rs                 -> quantizr/src/histogram.rs  unchanged  0b2e4426eeab106841aec568ed72e5535cba556c7677d3013308ff4171792709
+  src/image.rs                     -> quantizr/src/image.rs      unchanged  a68d38d2246036f131e6800bee6116d71173e410f35c3d73ef78a66fdc8ec97f
+  src/lib.rs                       -> quantizr/src/lib.rs        unchanged  f7769f5c80f5ce3c1b56bf99fd7aa2272fc9903c0983c905a5105c0329983f1f
+  src/options.rs                   -> quantizr/src/options.rs    unchanged  baf2f8bf160ec283444b1de244f427f45b61f19d30a33fbb81c8b10e7f352417
+  src/ord_float.rs                 -> quantizr/src/ord_float.rs  unchanged  d1a15163d08dadf3f3ccfafa2194f23e18fd0ad62e7b1ac578422ffdfb8b3052
+  src/palette.rs                   -> quantizr/src/palette.rs    unchanged  a2d9b8aceeaf068c7baccb9c06e766d861f464f9644035f47ceb3539724ca0e4
+  src/quantize.rs                  -> quantizr/src/quantize.rs   unchanged  a703394b2fbf3554919fdbcd46e0e019576e5b16f63a3f35294d701457a3beb0
+  src/vpsearch.rs                  -> quantizr/src/vpsearch.rs   unchanged  8d274a7a350c24e6f1a1acba46edcc3c5382d1f1cdfd8fd0c2004860f0630c55
+
+Changed from upstream:
+  (none yet)
 
 Followed, not copied:
   example/src/main.rs              -> src/main.rs    the calls of the library (Options, set_max_colors, QuantizeResult::quantize,
@@ -16,9 +36,10 @@ Followed, not copied:
       height as two little-endian u32, then RGBA bytes, on standard input, bounded by MAX_PIXELS), the output (the palette and the indices
       on standard output) and the argument parser. The example reads and writes PNG files through the png crate, which this program does not use.
 
-The library is not copied: quantizr comes from crates.io at the version and checksum of Cargo.lock, and the program has no other dependency.
-The program is built by scripts/install-quantizr-pixels.sh with the pinned Rust toolchain, for the musl target.
+The library is built from ./quantizr (a path dependency), not from crates.io, so that the project can change it in measured steps (the palette
+size, more k-means passes, the dither). The program has no other dependency. The program is built by scripts/install-quantizr-pixels.sh with the
+pinned Rust toolchain, for the musl target.
 Additions of ours: [profile.release] panic = "abort", lto = "thin" and codegen-units = 1 in Cargo.toml (3 to 4 percent of the run on a 768 x 512
 picture, linux/arm64; the palette and the indices are the same bytes).
 
-Cargo.lock                         ours: written by cargo for the one crate; the checksum is crates.io's.
+Cargo.lock                         ours: written by cargo for the two crates; quantizr is a path dependency, so the lockfile holds no checksum.

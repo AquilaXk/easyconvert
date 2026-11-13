@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the palette quantiser program that reads raw RGBA pixels (scripts/quantizr-pixels, see its SOURCE file) and installs it as a separate
-# program. The quantiser is quantizr (DarthSim, MIT), a crate of the lockfile; the program around it is the project's own. The worker decodes a
+# program. The quantiser is quantizr (DarthSim, MIT), copied into scripts/quantizr-pixels/quantizr; the program around it is the project's own. The worker decodes a
 # picture itself, so this program never sees uploaded bytes (docs/policy-decisions.md, entries 142 and 171); a worker without it quantises with
 # the image library, as before.
 #
@@ -9,7 +9,7 @@
 #
 # Everything that decides the bytes of the program is pinned as in install-quantizr-pixels.sh, whose toolchain pins this file repeats: the Rust
 # toolchain by version, with the SHA-256 of each of its four component archives for both architectures (checked before anything in them runs),
-# and the crate by the checksum in Cargo.lock (`cargo build --locked` refuses a lockfile that has to change). The toolchain is unpacked next to
+# and the lockfile (`cargo build --locked` refuses a lockfile that has to change; the program has no crate from a registry). The toolchain is unpacked next to
 # the build and removed with it, and the build runs with its own CARGO_HOME. tests/quantizr-pixels-packaging.test.ts fails when the two
 # installers pin different toolchains. No C file is compiled: the program has no allocator of its own, and the host's `cc` only links it.
 #
@@ -118,7 +118,7 @@ install -m 0755 "$program" "$INSTALL_DIR/bin/quantizr-pixels"
 # The Debian-style name, so the image collects it into /licenses with the system notices.
 install -m 0644 "$source_dir/LICENSE" "$INSTALL_DIR/share/doc/quantizr-pixels/copyright"
 install -m 0644 "$notices" "$INSTALL_DIR/share/doc/quantizr-pixels/THIRD-PARTY-NOTICES"
-printf 'quantizr-pixels (the program of scripts/quantizr-pixels around quantizr 1.4.3 by DarthSim, tag v1.4.3, commit cfb26aaf3039ac1179d42a66cc7988c8c6feeba9), built here with Rust %s for %s, cargo build --release --locked\nSHA-256 %s\nSource: https://github.com/DarthSim/quantizr/tree/v1.4.3 (crates.io package quantizr 1.4.3, checksum in scripts/quantizr-pixels/Cargo.lock)\n' \
+printf 'quantizr-pixels (the program of scripts/quantizr-pixels around quantizr 1.4.3 by DarthSim, tag v1.4.3, commit cfb26aaf3039ac1179d42a66cc7988c8c6feeba9), built here with Rust %s for %s, cargo build --release --locked\nSHA-256 %s\nSource: https://github.com/DarthSim/quantizr/tree/v1.4.3 (copied into scripts/quantizr-pixels/quantizr; scripts/quantizr-pixels/SOURCE lists what changed)\n' \
   "$RUST_VERSION" "$target" "$digest" > "$INSTALL_DIR/share/doc/quantizr-pixels/SOURCE"
 
 if [ "$(id -u)" -eq 0 ] && [ "$INSTALL_DIR" != "/usr/local" ]; then

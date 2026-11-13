@@ -73,16 +73,36 @@ describe('the program sources', () => {
   const source = read('scripts', 'quantizr-pixels', 'SOURCE');
   const licence = fs.readFileSync(path.join(ROOT, 'scripts', 'quantizr-pixels', 'LICENSE'));
 
-  it('depends on quantizr at one version and no other crate, by the checksum of the lockfile', () => {
-    expect(read('scripts', 'quantizr-pixels', 'Cargo.toml')).toMatch(/^\[dependencies\]\nquantizr = "=1\.4\.3"\n*$/m);
+  it('depends on the copy of quantizr in ./quantizr and on no other crate, so the lockfile holds no registry checksum', () => {
+    expect(read('scripts', 'quantizr-pixels', 'Cargo.toml')).toMatch(/^\[dependencies\]\nquantizr = \{ path = "quantizr" \}\n*$/m);
     const packages = [...lock.matchAll(/^name = "([^"]+)"$/gm)].map((match) => match[1]);
     expect(packages).toEqual(['quantizr', 'quantizr-pixels']);
-    const checksum = /name = "quantizr"\nversion = "1\.4\.3"\nsource = "registry\+https:\/\/github\.com\/rust-lang\/crates\.io-index"\nchecksum = "([0-9a-f]{64})"/.exec(lock)?.[1];
-    expect(checksum).toBeDefined();
-    expect(source).toContain(checksum);
+    expect(lock).not.toContain('checksum');
+    expect(lock).not.toContain('source =');
+    expect(read('scripts', 'quantizr-pixels', 'quantizr', 'Cargo.toml')).toContain('version = "1.4.3"');
+  });
+
+  it('lists every file of the copy in SOURCE, and the files it calls unchanged match the digest of the upstream file', () => {
+    const copyDir = path.join(ROOT, 'scripts', 'quantizr-pixels', 'quantizr', 'src');
+    const unchanged = new Map(
+      [...source.matchAll(/^ {2}src\/(\S+\.rs) +-> quantizr\/src\/\S+ +unchanged +([0-9a-f]{64})$/gm)].map((match) => [match[1], match[2]])
+    );
+    const changed = source.slice(source.indexOf('Changed from upstream:'), source.indexOf('Followed, not copied:'));
+    const files = fs.readdirSync(copyDir).filter((name) => name.endsWith('.rs')).sort();
+    expect(files.length).toBeGreaterThan(0);
+    for (const name of files) {
+      const text = fs.readFileSync(path.join(copyDir, name));
+      if (unchanged.has(name)) {
+        expect(createHash('sha256').update(text).digest('hex'), name).toBe(unchanged.get(name));
+        expect(changed, name).not.toContain(`src/${name}`);
+      } else {
+        expect(changed, name).toContain(`src/${name}`);
+      }
+    }
   });
 
   it('ships the MIT text of the tagged commit, with its digest and its provenance recorded', () => {
+    expect(fs.readFileSync(path.join(ROOT, 'scripts', 'quantizr-pixels', 'quantizr', 'LICENSE'))).toEqual(licence);
     expect(licence.toString('utf-8')).toContain('MIT License');
     expect(licence.toString('utf-8')).toContain('Copyright (c) 2017 Sergey Alexandrovich');
     expect(source).toContain(createHash('sha256').update(licence).digest('hex'));
