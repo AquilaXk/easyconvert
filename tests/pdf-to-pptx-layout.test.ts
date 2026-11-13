@@ -8,6 +8,7 @@ import { convertFile } from '../src/lib/conversions/index';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { cer } from './helpers/pdf-text-metrics';
+import { rawPdf, type RawPage } from './helpers/raw-pdf';
 
 /**
  * PDF to PPTX keeps the pages: one slide for each page, as large as the page, with the lines of text, the tables and the pictures where
@@ -244,4 +245,45 @@ describe('LibreOffice reads the result', () => {
     },
     ROUND_TRIP_TEST_TIMEOUT_MS
   );
+});
+
+describe('pages of unusual sizes and text that XML cannot carry', () => {
+  const textPage = (width: number, height: number, shown: string, size = 14): RawPage => ({ width, height, content: `BT /F1 ${size} Tf 20 ${Math.round(height / 2)} Td (${shown}) Tj ET` });
+  const slideSizeOf = async (pptx: Buffer): Promise<{ cx: number; cy: number }> => {
+    const match = /<p:sldSz cx="(\d+)" cy="(\d+)"\/>/.exec(await partOf(pptx, 'ppt/presentation.xml')) as RegExpExecArray;
+    return { cx: Number(match[1]), cy: Number(match[2]) };
+  };
+  const convert = async (pages: RawPage[]): Promise<Buffer> => (await convertFile(rawPdf(pages), 'pdf', 'pptx', {}, 'sized.pdf')).buffer;
+  const MIN_SLIDE_EMU = 914_400;
+  const MAX_SLIDE_EMU = 51_206_400;
+
+  it('keeps the slide inside the sizes PowerPoint accepts for a page smaller than an inch or larger than 56 inches', async () => {
+    const tiny = await slideSizeOf(await convert([textPage(40, 30, 'tiny', 6)]));
+    expect(Math.min(tiny.cx, tiny.cy)).toBeGreaterThanOrEqual(MIN_SLIDE_EMU);
+    const huge = await slideSizeOf(await convert([textPage(20_000, 10_000, 'huge', 400)]));
+    expect(Math.max(huge.cx, huge.cy)).toBeLessThanOrEqual(MAX_SLIDE_EMU);
+    // The proportions of the page are the proportions of the slide.
+    expect(huge.cx / huge.cy).toBeCloseTo(2, 2);
+    expect(tiny.cx / tiny.cy).toBeCloseTo(40 / 30, 2);
+  });
+
+  it('scales a page of another size than the first onto the first slide size and keeps its text inside', async () => {
+    const pptx = await convert([textPage(400, 200, 'wide page'), textPage(200, 400, 'tall page')]);
+    const { cx, cy } = await slideSizeOf(pptx);
+    expect(cx / cy).toBeCloseTo(2, 2);
+    const [, second] = await slidesOf(pptx);
+    const [x, y, width, height] = (/<a:off x="(\d+)" y="(\d+)"\/><a:ext cx="(\d+)" cy="(\d+)"\/>/.exec(second.slice(second.indexOf('<p:sp>'))) as RegExpExecArray).slice(1).map(Number);
+    expect(x).toBeGreaterThan(0);
+    expect(x + width).toBeLessThanOrEqual(cx);
+    expect(y + height).toBeLessThanOrEqual(cy);
+    expect(textsOf(second).join(' ')).toBe('tall page');
+  });
+
+  it('writes the characters of the markup as text and leaves no control character in a part', async () => {
+    const pptx = await convert([textPage(400, 200, 'Fish \\& Chips <b> \\(A\\)')]);
+    const slide = (await slidesOf(pptx))[0];
+    expect(slide).toContain('Fish &amp; Chips &lt;b&gt; (A)');
+    // eslint-disable-next-line no-control-regex
+    expect(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(slide)).toBe(false);
+  });
 });
