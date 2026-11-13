@@ -230,9 +230,9 @@ function textItemsOf(
   viewport: Viewport,
   fonts: FontTable,
   pageNumber: number,
-  unmappedMark: string,
-  colours: ItemColours | null
+  reading: { unmappedMark: string; colours: ItemColours | null }
 ): { items: PdfContentItem[]; unmapped: number; unmappedType3: number } {
+  const { unmappedMark, colours } = reading;
   checkItemLimits(content, pageNumber);
   const items: PdfContentItem[] = [];
   let unmapped = 0;
@@ -534,58 +534,96 @@ function alphaOf(entries: unknown, current: number): number {
   return current;
 }
 
-function scanOperators(list: OperatorListLike, ops: Record<string, number>, viewport: Viewport, colour: boolean): OperatorScan {
-  const kinds = paintKinds(ops);
-  const collector = new RuleCollector(viewport, colour);
-  const shapes = colour ? new ShapeCollector(viewport) : null;
-  const glyphs = colour ? new GlyphColours() : null;
-  const showsText = new Set([ops.showText, ops.showSpacedText, ops.nextLineShowText, ops.nextLineSetSpacingShowText]);
-  const images: PdfContentImage[] = [];
-  const sources: ImageSource[] = [];
-  const stack: GraphicsState[] = [];
-  let state: GraphicsState = { ctm: MATRIX_IDENTITY, lineWidth: 1, fill: BLACK, stroke: BLACK, fillAlpha: 1, textMode: 0 };
-  for (let i = 0; i < list.fnArray.length; i++) {
-    const fn = list.fnArray[i];
-    const args = list.argsArray[i];
-    // The place of an operator in the paint order of the page, for the writers that keep it.
-    const z = colour ? i : undefined;
-    if (fn === ops.save) {
-      if (stack.length < PDF_CONTENT_MAX_STATE_DEPTH) stack.push(state);
-    } else if (fn === ops.restore) {
-      state = stack.pop() ?? state;
-    } else if (fn === ops.transform) {
-      if (isMatrix(args)) state = { ...state, ctm: multiply(args, state.ctm) };
-    } else if (fn === ops.setLineWidth) {
-      const width = args?.[0];
-      if (typeof width === 'number' && Number.isFinite(width)) state = { ...state, lineWidth: width };
-    } else if (fn === ops.constructPath) {
-      const paint = args?.[0];
-      if (typeof paint === 'number') {
-        const painted: Paint = { fill: kinds.fill.has(paint), stroke: kinds.stroke.has(paint) };
-        for (const data of pathArrays(args?.[1])) {
-          const subpaths = subpathsOf(data, PDF_CONTENT_MAX_RULES_PER_PAGE, colour);
-          const drawn = shapes?.paint(subpaths, painted, state, i);
-          if (painted.stroke) collector.stroke(subpaths, state, z, drawn?.stroke);
-          if (painted.fill) collector.fill(subpaths, state, z, drawn?.fill);
-        }
-      }
-    } else if (fn === ops.paintImageXObject || fn === ops.paintInlineImageXObject) {
-      if (images.length < PDF_CONTENT_MAX_IMAGES_PER_PAGE) {
-        const target = fn === ops.paintImageXObject ? (args as unknown[]) : [undefined, (args?.[0] as { width?: number })?.width, (args?.[0] as { height?: number })?.height];
-        const pixelWidth = target[1];
-        const pixelHeight = target[2];
-        if (typeof pixelWidth === 'number' && typeof pixelHeight === 'number') {
-          images.push({ ...imageBox(viewport, state.ctm), pixelWidth, pixelHeight, ...(z === undefined ? {} : { z }) });
-          sources.push(fn === ops.paintImageXObject ? { objId: String(args?.[0]) } : { inline: args?.[0] });
-        }
-      }
-    } else if (glyphs && showsText.has(fn)) {
-      glyphs.show(args?.[fn === ops.nextLineSetSpacingShowText ? 2 : 0], state.fill, state.stroke, state.textMode);
-    } else {
-      state = withColour(fn, args, ops, state, colour) ?? state;
+/** Walks the operator list of a page with the graphics state it keeps (matrix, line width, colours), collecting rules, images and, with colour, shapes and glyph colours. */
+class OperatorScanner {
+  private readonly kinds: PaintKinds;
+  private readonly collector: RuleCollector;
+  private readonly shapes: ShapeCollector | null;
+  private readonly glyphs: GlyphColours | null;
+  private readonly showsText: ReadonlySet<number>;
+  private readonly images: PdfContentImage[] = [];
+  private readonly sources: ImageSource[] = [];
+  private readonly stack: GraphicsState[] = [];
+  private state: GraphicsState = { ctm: MATRIX_IDENTITY, lineWidth: 1, fill: BLACK, stroke: BLACK, fillAlpha: 1, textMode: 0 };
+
+  constructor(
+    private readonly ops: Record<string, number>,
+    private readonly viewport: Viewport,
+    private readonly colour: boolean
+  ) {
+    this.kinds = paintKinds(ops);
+    this.collector = new RuleCollector(viewport, colour);
+    this.shapes = colour ? new ShapeCollector(viewport) : null;
+    this.glyphs = colour ? new GlyphColours() : null;
+    this.showsText = new Set([ops.showText, ops.showSpacedText, ops.nextLineShowText, ops.nextLineSetSpacingShowText]);
+  }
+
+  /** A painted path: its shapes and the rules its subpaths make. `place` is the operator's place in the paint order. */
+  private path(args: unknown[] | undefined, place: number): void {
+    const paint = args?.[0];
+    if (typeof paint !== 'number') return;
+    const painted: Paint = { fill: this.kinds.fill.has(paint), stroke: this.kinds.stroke.has(paint) };
+    // The place in the paint order is kept for the writers that draw in that order, which only a job that reads colour has.
+    const z = this.colour ? place : undefined;
+    for (const data of pathArrays(args?.[1])) {
+      const subpaths = subpathsOf(data, PDF_CONTENT_MAX_RULES_PER_PAGE, this.colour);
+      const drawn = this.shapes?.paint(subpaths, painted, this.state, place);
+      if (painted.stroke) this.collector.stroke(subpaths, this.state, z, drawn?.stroke);
+      if (painted.fill) this.collector.fill(subpaths, this.state, z, drawn?.fill);
     }
   }
-  return { rules: collector.rules, images, sources, rulesTruncated: collector.truncated, ...(shapes ? { shapes: shapes.shapes } : {}), ...(glyphs ? { glyphs } : {}) };
+
+  private image(fn: number, args: unknown[] | undefined, place: number): void {
+    if (this.images.length >= PDF_CONTENT_MAX_IMAGES_PER_PAGE) return;
+    const named = fn === this.ops.paintImageXObject;
+    const target = named ? (args as unknown[]) : [undefined, (args?.[0] as { width?: number })?.width, (args?.[0] as { height?: number })?.height];
+    const pixelWidth = target[1];
+    const pixelHeight = target[2];
+    if (typeof pixelWidth !== 'number' || typeof pixelHeight !== 'number') return;
+    this.images.push({ ...imageBox(this.viewport, this.state.ctm), pixelWidth, pixelHeight, ...(this.colour ? { z: place } : {}) });
+    this.sources.push(named ? { objId: String(args?.[0]) } : { inline: args?.[0] });
+  }
+
+  private apply(fn: number, args: unknown[] | undefined): void {
+    const { ops, state } = this;
+    if (fn === ops.save) {
+      if (this.stack.length < PDF_CONTENT_MAX_STATE_DEPTH) this.stack.push(state);
+    } else if (fn === ops.restore) {
+      this.state = this.stack.pop() ?? state;
+    } else if (fn === ops.transform) {
+      if (isMatrix(args)) this.state = { ...state, ctm: multiply(args, state.ctm) };
+    } else if (fn === ops.setLineWidth) {
+      const width = args?.[0];
+      if (typeof width === 'number' && Number.isFinite(width)) this.state = { ...state, lineWidth: width };
+    } else if (this.glyphs && this.showsText.has(fn)) {
+      this.glyphs.show(args?.[fn === ops.nextLineSetSpacingShowText ? 2 : 0], state.fill, state.stroke, state.textMode);
+    } else {
+      this.state = withColour(fn, args, ops, state, this.colour) ?? state;
+    }
+  }
+
+  scan(list: OperatorListLike): OperatorScan {
+    const { ops } = this;
+    for (let i = 0; i < list.fnArray.length; i++) {
+      const fn = list.fnArray[i];
+      const args = list.argsArray[i];
+      if (fn === ops.constructPath) this.path(args, i);
+      else if (fn === ops.paintImageXObject || fn === ops.paintInlineImageXObject) this.image(fn, args, i);
+      else this.apply(fn, args);
+    }
+    return {
+      rules: this.collector.rules,
+      images: this.images,
+      sources: this.sources,
+      rulesTruncated: this.collector.truncated,
+      ...(this.shapes ? { shapes: this.shapes.shapes } : {}),
+      ...(this.glyphs ? { glyphs: this.glyphs } : {}),
+    };
+  }
+}
+
+function scanOperators(list: OperatorListLike, ops: Record<string, number>, viewport: Viewport, colour: boolean): OperatorScan {
+  return new OperatorScanner(ops, viewport, colour).scan(list);
 }
 
 /** How one page's content is read: whether its operator list is walked, where its images go, what an unmapped glyph becomes. */
@@ -620,7 +658,7 @@ export async function readPageContent(
   }
   if (imageExtractor) await imageExtractor.attach(pageNumber - 1, page, scan.images, scan.sources);
   // Fonts are described after the operator list is read: pdfjs resolves their names while it runs.
-  const { items, unmapped, unmappedType3 } = textItemsOf(page, content, viewport, fonts, pageNumber, unmappedMark, scan.glyphs ? new ItemColours(scan.glyphs.glyphs) : null);
+  const { items, unmapped, unmappedType3 } = textItemsOf(page, content, viewport, fonts, pageNumber, { unmappedMark, colours: scan.glyphs ? new ItemColours(scan.glyphs.glyphs) : null });
   if (scan.shapes) markFillBehindLightText(items, scan.shapes);
   return {
     pageNumber,
