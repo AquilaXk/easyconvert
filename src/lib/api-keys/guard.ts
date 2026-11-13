@@ -462,7 +462,8 @@ const UNCONFIRMED_ADDRESS_MESSAGE = 'Confirm your email address to use this: ope
  * The access of an account whose address was never confirmed (`countsAsAnonymousForConversions`), or undefined for any other
  * account. A route open to anonymous callers answers as for an anonymous visitor of the same address bucket, whatever it
  * needs, so what the route reserves afterwards is the visitor's allowance and not one of the account; a route that is not
- * open to them refuses the account when it needs a conversion and lets it read.
+ * open to them refuses the account when it asks for a conversion here, and lets it through when it asks for none. A route
+ * that asks for none and reserves its conversions later (the REST routes) is stopped by `reserveConversionUnit`.
  */
 async function accessOfUnconfirmedAccount(
   request: Request,
@@ -565,11 +566,13 @@ export async function getQuotaUsage(userId: string): Promise<QuotaUsage> {
 
 /**
  * Why the conversions a request needs were refused, as data for the route layer to answer (`conversionRefusalResponse`):
- * the quota store is offline, or the period has fewer conversions left than the request needs. `usage` is the period's count
+ * the quota store is offline, the account's address is not confirmed so it has no allowance of its own (403), or the period
+ * has fewer conversions left than the request needs. `usage` is the period's count
  * with `remaining` as the refusal found it.
  */
 export type ConversionRefusal =
   | { reason: 'offline'; error: string }
+  | { reason: 'unconfirmed'; error: string }
   | { reason: 'used-up'; error: string; usage: QuotaUsage; requiredUnits: number };
 
 /** Conversion units of a caller, reserved after the request was authenticated with none; or why they were refused. */
@@ -591,9 +594,18 @@ export function creditsUsedUp(user: User, usage: QuotaUsage, requiredUnits: numb
  * Reserves `units` conversion units for `user`, whose request was authenticated with none so that a repeat answered from
  * its idempotency key costs nothing, or a batch reserves only for the files it will convert. The shared identity of
  * requests no proxy attributes has no daily quota (docs/client-ip-trust.md, item 5), so it reserves nothing.
+ *
+ * Every conversion of every route is reserved here, so this is where an account whose address was never confirmed
+ * (`countsAsAnonymousForConversions`) is kept off its own daily allowance, whatever route it came by and whatever the route
+ * asked of `validateApiAccess` (a route that authenticates with no units, as the REST routes do, reserves only now). A route
+ * open to visitors has turned such an account into the visitor of its address bucket before it gets here; one that is not
+ * has no address to charge, so the account is refused with 403 until it confirms the address (docs/policy-decisions.md, entry 288).
  */
 export async function reserveConversionUnit(user: User, units: number = 1): Promise<ConversionUnit> {
   if (isUnattributedAnonymous(user.id)) return { reserved: true };
+  if (!isAnonymousUserId(user.id) && countsAsAnonymousForConversions(user)) {
+    return { reserved: false, refusal: { reason: 'unconfirmed', error: UNCONFIRMED_ADDRESS_MESSAGE } };
+  }
   const quota = await checkQuotaAndReserve(user.id, units);
   if (quota.allowed) return { reserved: true, reservationId: quota.reservationId };
   const offline = (): ConversionUnit => ({ reserved: false, refusal: { reason: 'offline', error: quotaRefusal({ allowed: false, serviceUnavailable: true }, user.id).error } });

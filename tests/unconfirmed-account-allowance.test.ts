@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { validateApiAccess } from '../src/lib/api-keys/guard';
+import { reserveConversionUnit, validateApiAccess } from '../src/lib/api-keys/guard';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { createSessionToken, SESSION_COOKIE_NAME } from '../src/lib/auth/session';
@@ -46,13 +46,33 @@ describe('an account whose address was never confirmed counts as anonymous for c
     expect(second.remaining).toBe((first.remaining ?? 0) - 1);
   });
 
-  it('keeps its own identity when it has paid, and on a route that only reads', async () => {
+  it('keeps its own identity when it has paid', async () => {
     const paid = await passwordAccount('payer');
     await redisUserStore.updateUser(paid.id, { tier: 'paid' });
     const record = (await redisUserStore.findById(paid.id))!;
     expect((await accessOf(record, { allowAnonymous: true })).user?.id).toBe(paid.id);
+  });
+
+  it('is let through, as itself, by a route that asks for no units; a conversion it then reserves is refused (see tests/unconfirmed-account-rest-routes.test.ts)', async () => {
     const reader = await passwordAccount('reader');
     expect((await accessOf(reader, { requiredUnits: 0 })).user?.id).toBe(reader.id);
+    expect(await reserveConversionUnit(redisUserStore.sanitizeUser(reader))).toMatchObject({ reserved: false, refusal: { reason: 'unconfirmed' } });
+    expect((await redisKeyStore.getQuotaUsage(reader.id)).usedToday).toBe(0);
+  });
+
+  it('reserves for an account that confirmed its address, a Google account, a paid one and a visitor, and refuses only the unconfirmed one', async () => {
+    const confirmed = await passwordAccount('confirmed', { emailVerified: true });
+    const google = await googleAccount('googler');
+    for (const record of [confirmed, google]) {
+      const unit = await reserveConversionUnit(redisUserStore.sanitizeUser(record));
+      expect(unit.reserved, record.email).toBe(true);
+    }
+    const paid = await passwordAccount('payer');
+    await redisUserStore.updateUser(paid.id, { tier: 'paid' });
+    expect((await reserveConversionUnit(redisUserStore.sanitizeUser((await redisUserStore.findById(paid.id))!))).reserved).toBe(true);
+    // The visitor of an address bucket has the shape of an unconfirmed password account and must not be mistaken for one.
+    const visitor = await validateApiAccess(new Request('http://localhost:3000/api/convert', { headers: { 'x-forwarded-for': '198.51.100.30' } }), { allowAnonymous: true, requiredUnits: 0 });
+    expect((await reserveConversionUnit(visitor.user!)).reserved).toBe(true);
   });
 
   it('is refused, with a way out, on a route that is not open to visitors and needs a conversion', async () => {
