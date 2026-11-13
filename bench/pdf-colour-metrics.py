@@ -67,18 +67,24 @@ def words_of(doc):
 
 
 def match_words(source, drawn):
-    """Greedy matches of (word, colour): the same word and a colour within tolerance. Returns (matched, matched coloured source)."""
+    """Greedy matches of (word, colour): the same word and a colour within tolerance. Returns the matches of the word and its colour, of
+    the coloured words only, and of the word alone (each drawn word answers one source word, whatever its colour)."""
     pool = {}
     for word, colour in drawn:
         pool.setdefault(word, []).append(colour)
+    spare = {}
+    for word, colour in drawn:
+        spare[word] = spare.get(word, 0) + 1
     matched = 0
     coloured_matched = 0
     word_matched = 0
     for word, colour in source:
+        if spare.get(word, 0) > 0:
+            spare[word] -= 1
+            word_matched += 1
         candidates = pool.get(word)
         if not candidates:
             continue
-        word_matched += 1
         for index, other in enumerate(candidates):
             if close(colour, other):
                 candidates.pop(index)
@@ -129,7 +135,10 @@ def shapes_of(page):
             colour = rgb255(stroke)
             curve_box = None
             for item in items:
-                if item[0] == "l":
+                if item[0] == "l" and drawing.get("width", 0) > THIN:
+                    # A stroke wider than a rule is a bar, which is how a converted document writes it.
+                    shapes.append(bar_of(item[1], item[2], drawing["width"], colour))
+                elif item[0] == "l":
                     add_line(shapes, item[1], item[2], colour)
                 elif item[0] == "re":
                     r = item[1]
@@ -156,6 +165,13 @@ def fills_its_box(items, rect):
     for a, b in zip(points, points[1:] + points[:1]):
         area += a.x * b.y - b.x * a.y
     return rect.width > 0 and rect.height > 0 and abs(area) / 2 >= 0.98 * rect.width * rect.height
+
+
+def bar_of(p1, p2, width, colour):
+    half = width / 2
+    if abs(p1.y - p2.y) <= 0.5:
+        return {"kind": "box", "box": (min(p1.x, p2.x), p1.y - half, max(p1.x, p2.x), p1.y + half), "colour": colour}
+    return {"kind": "box", "box": (p1.x - half, min(p1.y, p2.y), p1.x + half, max(p1.y, p2.y)), "colour": colour}
 
 
 def line_of(rect, colour):
