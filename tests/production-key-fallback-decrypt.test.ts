@@ -158,7 +158,7 @@ describe('Production decrypt never depends on the new primary key being set', ()
       const user = await userStore.createUser({
         name: 'Fallback Decrypt User',
         email: `fallback_${Date.now()}_${Math.random().toString(36).slice(2)}@example.com`,
-        tier: 'pro',
+        tier: 'paid',
       });
       const store = new KeyStore(true);
       const { key, secretKey } = await store.generateApiKey(user.id, 'Webhook Key', {
@@ -270,7 +270,7 @@ describe('JWT_SECRET and JWT_SECRET_PREVIOUS treat surrounding whitespace the sa
     const newSecret = 'new-jwt-secret-value-at-least-32-bytes!!';
 
     vi.stubEnv('JWT_SECRET', paddedOld);
-    const token = signJwt({ sub: 'u_pad', email: 'p@example.com', tier: 'pro' });
+    const token = signJwt({ sub: 'u_pad', email: 'p@example.com', tier: 'paid' });
     expect(verifyJwt(token)?.sub).toBe('u_pad');
 
     vi.stubEnv('JWT_SECRET', newSecret);

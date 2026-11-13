@@ -185,7 +185,7 @@ describe('POST /api/v1/uploads multipart actions on local storage', () => {
 
     async function createUser(tag: string): Promise<{ user: User; headers: Record<string, string> }> {
       const email = `${tag}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@local-multipart.local`;
-      const user = userStore.sanitizeUser(await userStore.createUser({ email, name: tag, tier: 'pro' }));
+      const user = userStore.sanitizeUser(await userStore.createUser({ email, name: tag, tier: 'paid' }));
       return { user, headers: { Cookie: `easyconvert_session=${createSessionToken(user)}` } };
     }
 
@@ -344,7 +344,7 @@ describe('POST /api/v1/uploads multipart errors on local storage', () => {
     const { userStore } = await import('../src/lib/auth/user-store');
     const { createSessionToken } = await import('../src/lib/auth/session');
     const email = `errors_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@local-multipart.local`;
-    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'errors', tier: 'pro' }));
+    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'errors', tier: 'paid' }));
     const headers = { Cookie: `easyconvert_session=${createSessionToken(user)}` };
 
     async function postJson(action: string, body: unknown): Promise<Response> {
@@ -414,7 +414,7 @@ describe('POST /api/storage/multipart?action=presign on local storage', () => {
     const { userStore } = await import('../src/lib/auth/user-store');
     const { createSessionToken } = await import('../src/lib/auth/session');
     const email = `presign_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@local-multipart.local`;
-    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'presign', tier: 'pro' }));
+    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'presign', tier: 'paid' }));
     const headers = { 'Content-Type': 'application/json', Cookie: `easyconvert_session=${createSessionToken(user)}` };
 
     async function call(action: string, body: unknown): Promise<Response> {
@@ -588,7 +588,7 @@ describe('resumable upload ids', () => {
     const { userStore } = await import('../src/lib/auth/user-store');
     const { createSessionToken } = await import('../src/lib/auth/session');
     const email = `tus_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@local-multipart.local`;
-    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'tus', tier: 'pro' }));
+    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'tus', tier: 'paid' }));
 
     const now = Date.now();
     const hostileId = '../victim';
@@ -635,7 +635,7 @@ describe('direct part uploads on local storage', () => {
     const { userStore } = await import('../src/lib/auth/user-store');
     const { createSessionToken } = await import('../src/lib/auth/session');
     const email = `direct_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@local-multipart.local`;
-    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'direct', tier: 'pro' }));
+    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'direct', tier: 'paid' }));
     const headers = { 'Content-Type': 'application/json', Cookie: `easyconvert_session=${createSessionToken(user)}` };
 
     async function initiate(totalSize: number) {

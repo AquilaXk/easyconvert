@@ -21,7 +21,7 @@ const BASE_URL = 'http://localhost:3000';
 const GIB = 1024 * 1024 * 1024;
 const PAYLOAD_TOO_LARGE = 413;
 
-type SignedInPlan = 'free' | 'pro' | 'enterprise';
+type SignedInPlan = 'free' | 'paid';
 
 interface PlanCase {
   plan: 'anonymous' | SignedInPlan;
@@ -31,8 +31,7 @@ interface PlanCase {
 const PLAN_CASES: readonly PlanCase[] = [
   { plan: 'anonymous', limit: PLAN_MAX_FILE_BYTES.anonymous },
   { plan: 'free', limit: PLAN_MAX_FILE_BYTES.free },
-  { plan: 'pro', limit: PLAN_MAX_FILE_BYTES.pro },
-  { plan: 'enterprise', limit: PLAN_MAX_FILE_BYTES.enterprise },
+  { plan: 'paid', limit: PLAN_MAX_FILE_BYTES.paid },
 ];
 const SIGNED_IN_CASES = PLAN_CASES.filter((c): c is PlanCase & { plan: SignedInPlan } => c.plan !== 'anonymous');
 

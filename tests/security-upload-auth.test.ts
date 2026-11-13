@@ -25,7 +25,7 @@ function uniqueSuffix(): string {
   return `${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
 }
 
-async function createUser(label: string, tier: 'free' | 'pro' | 'enterprise' = 'pro'): Promise<User> {
+async function createUser(label: string, tier: 'free' | 'paid' = 'paid'): Promise<User> {
   const email = `${label}_${uniqueSuffix()}@upload-auth.test`;
   return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier }));
 }

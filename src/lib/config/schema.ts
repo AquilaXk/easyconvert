@@ -1,7 +1,7 @@
 import { BlockList, isIP } from 'node:net';
 import path from 'node:path';
 import { BILLING_ENTRIES } from './schema-billing';
-import { ANONYMOUS_DAILY_CONVERSIONS, DELIVERED_FILE_RETENTION_MINUTES, PLAN_CONCURRENCY, PLAN_PROCESSING_MINUTES } from '../plan-limits';
+import { ANONYMOUS_DAILY_CREDITS, DELIVERED_FILE_RETENTION_MINUTES, PLAN_CONCURRENCY, PLAN_PROCESSING_MINUTES } from '../plan-limits';
 
 /**
  * The configuration schema: every environment variable the application reads, with its parser, default,
@@ -1316,13 +1316,9 @@ const SCHEMA_ENTRIES = [
     4
   ),
   intLimit('JOB_DEADLINE_BASE_MS_FREE', `${deadlineBase('free')} Must not exceed JOB_DEADLINE_MAX_MS_FREE.`, JOB_DEADLINE_CEILING_MS, 60_000),
-  intLimit('JOB_DEADLINE_BASE_MS_BASIC', `${deadlineBase('basic')} Must not exceed JOB_DEADLINE_MAX_MS_BASIC.`, JOB_DEADLINE_CEILING_MS, 90_000),
-  intLimit('JOB_DEADLINE_BASE_MS_PRO', `${deadlineBase('pro')} Must not exceed JOB_DEADLINE_MAX_MS_PRO.`, JOB_DEADLINE_CEILING_MS, 120_000),
-  intLimit('JOB_DEADLINE_BASE_MS_ENTERPRISE', `${deadlineBase('enterprise')} Must not exceed JOB_DEADLINE_MAX_MS_ENTERPRISE.`, JOB_DEADLINE_CEILING_MS, 180_000),
+  intLimit('JOB_DEADLINE_BASE_MS_PAID', `${deadlineBase('paid')} Must not exceed JOB_DEADLINE_MAX_MS_PAID.`, JOB_DEADLINE_CEILING_MS, 120_000),
   intLimit('JOB_DEADLINE_MAX_MS_FREE', deadlineMax('free'), JOB_DEADLINE_CEILING_MS, PLAN_PROCESSING_MINUTES.free * 60_000),
-  intLimit('JOB_DEADLINE_MAX_MS_BASIC', deadlineMax('basic'), JOB_DEADLINE_CEILING_MS, PLAN_PROCESSING_MINUTES.basic * 60_000),
-  intLimit('JOB_DEADLINE_MAX_MS_PRO', deadlineMax('pro'), JOB_DEADLINE_CEILING_MS, PLAN_PROCESSING_MINUTES.pro * 60_000),
-  intLimit('JOB_DEADLINE_MAX_MS_ENTERPRISE', deadlineMax('enterprise'), JOB_DEADLINE_CEILING_MS, PLAN_PROCESSING_MINUTES.enterprise * 60_000),
+  intLimit('JOB_DEADLINE_MAX_MS_PAID', deadlineMax('paid'), JOB_DEADLINE_CEILING_MS, PLAN_PROCESSING_MINUTES.paid * 60_000),
   intLimit('JOB_DEADLINE_PER_MIB_MS', 'Milliseconds added to a job deadline for each started MiB of input.', INT32_MAX, 2_000),
   intLimit('JOB_DEADLINE_PER_MEDIA_SECOND_MS', 'Milliseconds added to a job deadline for each second of audio or video, when the length is known.', INT32_MAX, 3_000),
   intLimit(
@@ -1332,9 +1328,7 @@ const SCHEMA_ENTRIES = [
     120_000
   ),
   intLimit('CONVERSION_CONCURRENCY_FREE', concurrencyNote('an anonymous or free-tier caller'), INT32_MAX, PLAN_CONCURRENCY.free),
-  intLimit('CONVERSION_CONCURRENCY_BASIC', concurrencyNote('a basic-tier caller'), INT32_MAX, PLAN_CONCURRENCY.basic),
-  intLimit('CONVERSION_CONCURRENCY_PRO', concurrencyNote('a pro-tier caller'), INT32_MAX, PLAN_CONCURRENCY.pro),
-  intLimit('CONVERSION_CONCURRENCY_ENTERPRISE', concurrencyNote('an enterprise-tier caller'), INT32_MAX, PLAN_CONCURRENCY.enterprise),
+  intLimit('CONVERSION_CONCURRENCY_PAID', concurrencyNote('a caller of a paid account'), INT32_MAX, PLAN_CONCURRENCY.paid),
   {
     name: 'JOB_STUCK_RECYCLE_MS',
     area: 'worker',
@@ -1380,7 +1374,7 @@ const SCHEMA_ENTRIES = [
     'ANONYMOUS_DAILY_LIMIT',
     'Conversions per day for an anonymous caller. In the OCI deployment it is the repository variable of the same name, which the web image build and the deploy both read (the deploy refuses an image built with another value).',
     INT32_MAX,
-    ANONYMOUS_DAILY_CONVERSIONS
+    ANONYMOUS_DAILY_CREDITS
   ),
   intLimit('ANONYMOUS_BURST_CAPACITY', 'Token bucket size (largest burst of requests) of one anonymous caller.', INT32_MAX, 10, WEB),
   intLimit('ANONYMOUS_BURST_REFILL_RATE', 'Requests per second that refill the token bucket of one anonymous caller.', INT32_MAX, 1, WEB),

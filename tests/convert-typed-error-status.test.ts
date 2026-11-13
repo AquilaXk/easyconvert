@@ -49,7 +49,7 @@ async function keyHeaders(): Promise<Record<string, string>> {
   const user = await userStore.createUser({
     name: 'Typed Status Tester',
     email: `typed_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-    tier: 'pro',
+    tier: 'paid',
   });
   const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Typed Key', { scopes: ['convert:write'] });
   return { Authorization: `Bearer ${secretKey}` };

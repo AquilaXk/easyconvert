@@ -41,7 +41,7 @@ let outsidePath = '';
 
 beforeEach(async () => {
   const email = `serveronly_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@server-only.test`;
-  const user = await userStore.createUser({ email, name: 'Server Only Tester', tier: 'pro' });
+  const user = await userStore.createUser({ email, name: 'Server Only Tester', tier: 'paid' });
   apiKey = (await redisKeyStore.generateApiKey(user.id, 'Server Only Key', { scopes: ['convert:write', 'convert:read'] })).secretKey;
   outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'server-only-option-'));
   outsidePath = path.join(outsideDir, 'written-by-request.json');

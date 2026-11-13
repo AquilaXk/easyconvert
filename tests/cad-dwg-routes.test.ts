@@ -33,7 +33,7 @@ async function apiKeyHeaders(): Promise<Record<string, string>> {
   const user = await userStore.createUser({
     name: 'Dwg Route Tester',
     email: `dwg_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-    tier: 'pro',
+    tier: 'paid',
   });
   const key = await redisKeyStore.generateApiKey(user.id, 'Dwg key', { scopes: ['convert:write', 'convert:read'] });
   return { Authorization: `Bearer ${key.secretKey}` };

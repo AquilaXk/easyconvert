@@ -18,7 +18,7 @@ const CSV_FIXTURE = 'name,role\nAlice,Engineer\nBob,Designer';
 
 async function createUser(label: string) {
   const email = `${label}_${Date.now()}_${Math.random().toString(36).slice(2)}@scope.test`;
-  const record = await userStore.createUser({ email, name: label, tier: 'pro' });
+  const record = await userStore.createUser({ email, name: label, tier: 'paid' });
   return userStore.sanitizeUser(record);
 }
 

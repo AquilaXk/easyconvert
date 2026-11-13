@@ -7,8 +7,8 @@ import { readIntegerSetting } from './job-deadline';
 
 /**
  * How many conversions a caller may have in flight (queued plus running): five for an anonymous or free caller
- * (`CONVERSION_CONCURRENCY_FREE`), and 10, 25 and 50 for Basic, Pro and Enterprise (`CONVERSION_CONCURRENCY_BASIC`,
- * `_PRO`, `_ENTERPRISE`; entry 280). The count is made on the server: queued and running jobs
+ * (`CONVERSION_CONCURRENCY_FREE`) and 25 for an account with package credits or a subscription (`CONVERSION_CONCURRENCY_PAID`;
+ * entries 280 and 285). The count is made on the server: queued and running jobs
  * come from the job queue (its index of jobs by user, shared by every web process), synchronous conversions from the
  * slots held by the requests of this process. A request over the limit is answered 429 and takes no quota.
  *
@@ -19,9 +19,7 @@ import { readIntegerSetting } from './job-deadline';
 /** The variable that sets the limit of each tier. */
 export const CONCURRENCY_LIMIT_ENV = {
   free: 'CONVERSION_CONCURRENCY_FREE',
-  basic: 'CONVERSION_CONCURRENCY_BASIC',
-  pro: 'CONVERSION_CONCURRENCY_PRO',
-  enterprise: 'CONVERSION_CONCURRENCY_ENTERPRISE',
+  paid: 'CONVERSION_CONCURRENCY_PAID',
 } as const satisfies Record<UserTier, string>;
 export { DEFAULT_FREE_CONCURRENCY };
 export const CONCURRENCY_LIMIT_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/concurrency-limit';

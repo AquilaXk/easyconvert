@@ -49,7 +49,7 @@ function uniqueSuffix(): string {
 
 async function createUser(label: string): Promise<User> {
   const email = `${label}_${uniqueSuffix()}@job-input-keys.test`;
-  return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'pro' }));
+  return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'paid' }));
 }
 
 function storeCsv(key: string): string {

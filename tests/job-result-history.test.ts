@@ -27,7 +27,7 @@ let worker: Worker<ConversionJobData, ConversionJobResult>;
 let user: User;
 
 beforeEach(async () => {
-  user = userStore.sanitizeUser(await userStore.createUser({ email: `history_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@history.test`, name: 'History', tier: 'pro' }));
+  user = userStore.sanitizeUser(await userStore.createUser({ email: `history_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@history.test`, name: 'History', tier: 'paid' }));
   queue = new Queue<ConversionJobData, ConversionJobResult>(`job-history-${queueNumber++}`);
   worker = new Worker<ConversionJobData, ConversionJobResult>(queue, (job) => processNodeJob(job, dispatchEngine), { concurrency: 1 });
   attachJobLifecycleListeners(worker);

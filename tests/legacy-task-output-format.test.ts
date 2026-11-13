@@ -17,7 +17,7 @@ const PDF_BASE64 = readFileSync(join(__dirname, 'fixtures', 'sample.pdf')).toStr
 
 async function apiKey(): Promise<string> {
   const email = `legacy_fmt_${Date.now()}_${Math.random().toString(36).slice(2)}@legacy.test`;
-  const user = await userStore.createUser({ email, name: 'legacy-fmt', tier: 'pro' });
+  const user = await userStore.createUser({ email, name: 'legacy-fmt', tier: 'paid' });
   const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'legacy-fmt', { scopes: ['convert:write'] });
   return secretKey;
 }

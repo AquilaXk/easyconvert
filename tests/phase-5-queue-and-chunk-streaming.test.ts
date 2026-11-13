@@ -276,7 +276,7 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
       const user = await userStore.createUser({
         name: 'Presign Tester',
         email: `presign_${Date.now()}@test.com`,
-        tier: 'pro',
+        tier: 'paid',
       });
       const init = await s3Storage.initiateMultipartUpload(
         'chunk_001.bin',
@@ -315,7 +315,7 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
       const user = await userStore.createUser({
         name: 'Presign Download Tester',
         email: `presign_dl_${Date.now()}@test.com`,
-        tier: 'pro',
+        tier: 'paid',
       });
       const sessionToken = createSessionToken(user);
 
@@ -344,7 +344,7 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
       const user = await userStore.createUser({
         name: 'Presign Reject Tester',
         email: `presign_rej_${Date.now()}@test.com`,
-        tier: 'pro',
+        tier: 'paid',
       });
       const sessionToken = createSessionToken(user);
 

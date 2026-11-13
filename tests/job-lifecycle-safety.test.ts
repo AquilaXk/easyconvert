@@ -70,7 +70,7 @@ async function createQuotaUser(label: string) {
   const user = await redisUserStore.createUser({
     email: `${label}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}@example.com`,
     name: `Lifecycle ${label}`,
-    tier: 'pro',
+    tier: 'paid',
     provider: 'email',
     passwordHash: 'lifecycle_hash',
     salt: 'lifecycle_salt',

@@ -44,7 +44,7 @@ describe('submission limits', () => {
   beforeEach(async () => {
     vi.spyOn(dns.promises, 'lookup').mockImplementation((async () => [{ address: PUBLIC_IP, family: 4 }]) as never);
     const email = `limits_${Date.now()}_${Math.random().toString(36).slice(2)}@limits.test`;
-    user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'limits', tier: 'pro' }));
+    user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'limits', tier: 'paid' }));
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'limits', { scopes: ['convert:read', 'convert:write'] });
     authHeaders = { Authorization: `Bearer ${secretKey}`, 'Content-Type': 'application/json' };
     storageKey = `uploads/${user.id}/limits.csv`;
@@ -171,7 +171,7 @@ describe('submission limits', () => {
 describe('output paths never throw on oversized structures', () => {
   it('GET stays stable for a graph and tasks stored beyond the redaction limits', async () => {
     const email = `limits_get_${Date.now()}_${Math.random().toString(36).slice(2)}@limits.test`;
-    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'limits', tier: 'pro' }));
+    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'limits', tier: 'paid' }));
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'limits', { scopes: ['convert:read', 'convert:write'] });
     const graphId = `g_deep_${Date.now()}`;
     // Reaches the scheduler without the API's checks, as a graph stored by an older version would.

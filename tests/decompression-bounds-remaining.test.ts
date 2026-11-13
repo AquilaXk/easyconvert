@@ -246,7 +246,7 @@ function graphExtractJob(inputKey: string) {
 describe('the inspect API answers 413 for a decompression bomb', () => {
   it('maps a gzip bomb to HTTP 413, not the 422 of an invalid archive', async () => {
     const email = `bomb_${Date.now()}_${Math.random().toString(36).slice(2)}@test.local`;
-    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'Bomb Inspector', tier: 'pro' }));
+    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'Bomb Inspector', tier: 'paid' }));
     const bomb = fs.readFileSync(fixtures.get('gzip-bomb.bin')!);
     const request = new NextRequest('http://localhost:3000/api/v1/archives/inspect', {
       method: 'POST',

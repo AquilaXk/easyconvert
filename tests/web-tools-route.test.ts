@@ -13,7 +13,7 @@ import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { acquireSyncSlot, type ConversionSlot } from '../src/lib/queue/concurrency-limit';
-import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CREDITS } from '../src/lib/plan-limits';
 import { MAX_EXTRACTED_BYTES, MAX_EXTRACTED_ENTRIES, MAX_TOOL_FILES, MAX_TOOL_OPTIONS_CHARS, MAX_TOOL_OUTPUT_BYTES } from '../src/lib/tools/tool-names';
 import { assertToolInput, fileOutput, parseToolOptions, WebToolRefusal } from '../src/lib/tools/web-tools';
 import { rotatePdfPages } from '../src/lib/conversions';
@@ -86,7 +86,7 @@ beforeEach(() => {
   redisKeyStore.setRedisClient(null);
   redisUserStore.setRedisClient(null);
   vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
-  vi.stubEnv('ANONYMOUS_DAILY_LIMIT', String(ANONYMOUS_DAILY_CONVERSIONS));
+  vi.stubEnv('ANONYMOUS_DAILY_LIMIT', String(ANONYMOUS_DAILY_CREDITS));
   redisKeyStore.resetStore();
 });
 

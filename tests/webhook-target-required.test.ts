@@ -41,7 +41,7 @@ describe('webhook target ids are explicit', () => {
     user = await userStore.createUser({
       name: 'Webhook Target User',
       email: `webhook_target_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@test.com`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const key = await redisKeyStore.generateApiKey(user.id, 'Webhook Target Key', { scopes: ['*'] });
     apiKey = key.secretKey;

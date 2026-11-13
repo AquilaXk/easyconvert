@@ -13,7 +13,7 @@ const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
 
 async function createUser(label: string): Promise<User> {
   const email = `${label}_${Date.now()}_${Math.random().toString(36).slice(2)}@empty-secret.test`;
-  return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'pro' }));
+  return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'paid' }));
 }
 
 function headerOf(init: RequestInit | undefined, name: string): string | null {

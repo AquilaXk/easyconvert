@@ -544,7 +544,7 @@ describe('collision errors map to 422 at the convert routes', () => {
     const user = await userStore.createUser({
       name: 'Collision Tester',
       email: `collision_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const key = await redisKeyStore.generateApiKey(user.id, 'Collision Key', { scopes: ['convert:write', 'convert:read'] });
     const res = await v1ConvertRoute(

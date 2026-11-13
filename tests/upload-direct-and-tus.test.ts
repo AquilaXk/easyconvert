@@ -27,7 +27,7 @@ function uniqueSuffix(): string {
 
 async function createUser(label: string): Promise<User> {
   const email = `${label}_${uniqueSuffix()}@upload-test.local`;
-  return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'pro' }));
+  return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'paid' }));
 }
 
 function sessionHeaders(user: User): Record<string, string> {

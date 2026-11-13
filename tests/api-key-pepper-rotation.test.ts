@@ -113,7 +113,7 @@ describe('Zero-downtime KEY_HASH_PEPPER rotation with KEY_HASH_PEPPER_PREVIOUS',
     testUser = await userStore.createUser({
       name: 'Pepper Rotation User',
       email: `pepper_rot_${Date.now()}_${Math.random().toString(36).slice(2)}@example.com`,
-      tier: 'pro',
+      tier: 'paid',
     });
   });
 

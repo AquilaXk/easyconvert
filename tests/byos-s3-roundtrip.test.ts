@@ -52,7 +52,7 @@ describe('s3 BYOS provider end-to-end', () => {
     stub.objects.clear();
     stub.requests.length = 0;
     const email = `byos_${Date.now()}_${Math.random().toString(36).slice(2)}@byos.test`;
-    const user = await userStore.createUser({ email, name: 'byos', tier: 'pro' });
+    const user = await userStore.createUser({ email, name: 'byos', tier: 'paid' });
     userId = user.id;
     const { secretKey } = await redisKeyStore.generateApiKey(userId, 'byos', {
       scopes: ['convert:read', 'convert:write'],

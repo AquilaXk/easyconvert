@@ -27,11 +27,11 @@ function fileLimitLine(plan: Plan, locale: TestLocale): string {
 }
 
 const GIB = 1024 * 1024 * 1024;
-const PLANS: readonly Plan[] = ['anonymous', 'free', 'basic', 'pro', 'enterprise'];
+const PLANS: readonly Plan[] = ['anonymous', 'free', 'paid'];
 
 describe('plan file size limits', () => {
-  it('gives anonymous and free callers 1 GiB, Basic 2 GiB, Pro 5 GiB and Enterprise 10 GiB', () => {
-    expect(PLAN_MAX_FILE_BYTES).toEqual({ anonymous: GIB, free: GIB, basic: 2 * GIB, pro: 5 * GIB, enterprise: 10 * GIB });
+  it('gives anonymous and free callers 1 GiB and an account with package credits or a subscription 10 GiB', () => {
+    expect(PLAN_MAX_FILE_BYTES).toEqual({ anonymous: GIB, free: GIB, paid: 10 * GIB });
     expect(LARGEST_PLAN_FILE_BYTES).toBe(10 * GIB);
   });
 
@@ -49,13 +49,12 @@ describe('plan file size limits', () => {
 describe('planOfCaller', () => {
   it('reads the plan from the tier of a signed-in caller', () => {
     expect(planOfCaller({ id: 'u1', tier: 'free' })).toBe('free');
-    expect(planOfCaller({ id: 'u1', tier: 'pro' })).toBe('pro');
-    expect(planOfCaller({ id: 'u1', tier: 'enterprise' })).toBe('enterprise');
+    expect(planOfCaller({ id: 'u1', tier: 'paid' })).toBe('paid');
   });
 
   it('treats an anonymous identity as anonymous whatever tier it carries', () => {
     expect(planOfCaller({ id: 'anon:203.0.113.0', tier: 'free' })).toBe('anonymous');
-    expect(planOfCaller({ id: 'anon:203.0.113.0', tier: 'enterprise' })).toBe('anonymous');
+    expect(planOfCaller({ id: 'anon:203.0.113.0', tier: 'paid' })).toBe('anonymous');
     expect(planOfCaller(undefined)).toBe('anonymous');
     expect(planOfCaller(null)).toBe('anonymous');
   });
@@ -71,9 +70,8 @@ describe('copy', () => {
   it('states the limit of the plan under the drop zone in KB, MB and GB', () => {
     expect(fileLimitLine('anonymous', 'en')).toBe('Up to 1 GB per file');
     expect(fileLimitLine('free', 'en')).toBe('Up to 1 GB per file');
-    expect(fileLimitLine('pro', 'en')).toBe('Up to 5 GB per file');
-    expect(fileLimitLine('enterprise', 'en')).toBe('Up to 10 GB per file');
-    expect(fileLimitLine('pro', 'ko')).toMatch(/^[^A-Za-z]*5 GB[^A-Za-z]*$/);
+    expect(fileLimitLine('paid', 'en')).toBe('Up to 10 GB per file');
+    expect(fileLimitLine('paid', 'ko')).toMatch(/^[^A-Za-z]*10 GB[^A-Za-z]*$/);
   });
 
   it('names the size and the limit, and offers no plan while none can be bought', () => {
@@ -81,19 +79,17 @@ describe('copy', () => {
     expect(fileTooLargeMessage('free', 3 * GIB, false)).toBe('File size 3 GiB exceeds the 1 GiB limit for the free plan.');
   });
 
-  it('names the smallest plan on sale that takes the file, or the largest when none does', () => {
+  it('names the paid plan and its limit when billing is on and the plan has less than it', () => {
     expect(fileTooLargeMessage('anonymous', GIB + 1, true)).toBe(
-      'File size 1,073,741,825 bytes exceeds the 1 GiB limit for anonymous use. Basic allows files up to 2 GiB.'
+      'File size 1,073,741,825 bytes exceeds the 1 GiB limit for anonymous use. A paid plan allows files up to 10 GiB.'
     );
-    expect(fileTooLargeMessage('free', 2 * GIB + 1, true)).toBe(
-      'File size 2 GiB exceeds the 1 GiB limit for the free plan. Pro allows files up to 5 GiB.'
-    );
-    expect(fileTooLargeMessage('free', 11 * GIB, true)).toBe('File size 11 GiB exceeds the 1 GiB limit for the free plan. Enterprise allows files up to 10 GiB.');
-    expect(fileTooLargeMessage('free', 3 * GIB, true)).toBe('File size 3 GiB exceeds the 1 GiB limit for the free plan. Pro allows files up to 5 GiB.');
-    expect(fileTooLargeMessage('pro', 6 * GIB, true)).toBe(
-      'File size 6 GiB exceeds the 5 GiB limit for the Pro plan. Enterprise allows files up to 10 GiB.'
-    );
-    expect(fileTooLargeMessage('enterprise', 11 * GIB, true)).toBe('File size 11 GiB exceeds the 10 GiB limit for the Enterprise plan.');
+    expect(fileTooLargeMessage('free', 3 * GIB, true)).toBe('File size 3 GiB exceeds the 1 GiB limit for the free plan. A paid plan allows files up to 10 GiB.');
+    expect(fileTooLargeMessage('free', 11 * GIB, true)).toBe('File size 11 GiB exceeds the 1 GiB limit for the free plan. A paid plan allows files up to 10 GiB.');
+  });
+
+  it('names no plan for a file over the largest limit: no plan takes more', () => {
+    expect(fileTooLargeMessage('paid', 11 * GIB, true)).toBe('File size 11 GiB exceeds the 10 GiB limit for a paid plan.');
+    expect(fileTooLargeMessage('paid', 11 * GIB, false)).toBe('File size 11 GiB exceeds the 10 GiB limit for a paid plan.');
   });
 });
 
@@ -101,8 +97,7 @@ describe('fileSizeLimitProblem', () => {
   const callers = [
     { plan: 'anonymous', caller: { id: 'anon:198.51.100.0', tier: 'free' }, limit: GIB },
     { plan: 'free', caller: { id: 'u-free', tier: 'free' }, limit: GIB },
-    { plan: 'pro', caller: { id: 'u-pro', tier: 'pro' }, limit: 5 * GIB },
-    { plan: 'enterprise', caller: { id: 'u-ent', tier: 'enterprise' }, limit: 10 * GIB },
+    { plan: 'paid', caller: { id: 'u-paid', tier: 'paid' }, limit: 10 * GIB },
   ] as const;
 
   it.each(callers)('accepts a file of exactly the limit and refuses one byte more for $plan', async ({ caller, limit }) => {

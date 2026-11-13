@@ -177,7 +177,7 @@ function taskNode(name: string, task: NamedTask, uploadKeys: Readonly<Record<str
 export function namedTaskNameErrors(names: readonly string[], tier: string | undefined, duplicates: readonly string[] = []): GraphValidationErrorDetail[] {
   const limit = maxGraphNodesForTier(tier);
   if (names.length > limit) {
-    return [{ path: 'tasks', code: 'GRAPH_NODE_LIMIT_EXCEEDED', message: `The job has ${names.length} tasks; the most a "${tier ?? 'pro'}" plan allows is ${limit}.` }];
+    return [{ path: 'tasks', code: 'GRAPH_NODE_LIMIT_EXCEEDED', message: `The job has ${names.length} tasks; the most a "${tier ?? 'paid'}" account allows is ${limit}.` }];
   }
   return [
     ...duplicates.map((name) => ({ path: `tasks.${name}`, code: 'DUPLICATE_TASK_NAME', message: `Task name "${name}" is used by more than one task.` })),

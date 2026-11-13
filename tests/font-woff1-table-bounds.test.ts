@@ -191,7 +191,7 @@ describe('decompression limit errors answer 413 at the convert routes', () => {
     const user = await userStore.createUser({
       name: 'Limit Tester',
       email: `limit_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const key = await redisKeyStore.generateApiKey(user.id, 'Limit Key', { scopes: ['convert:write', 'convert:read'] });
     const res = await v1ConvertRoute(

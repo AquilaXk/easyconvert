@@ -39,7 +39,7 @@ describe('OpenAPI storage credentials contract', () => {
 
   it('accepts s3 registration as advertised and answers with the documented 201 shape', async () => {
     const email = `byosdoc_${Date.now()}_${Math.random().toString(36).slice(2)}@byos.test`;
-    const user = await userStore.createUser({ email, name: 'byosdoc', tier: 'pro' });
+    const user = await userStore.createUser({ email, name: 'byosdoc', tier: 'paid' });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'byosdoc', { scopes: ['convert:write'] });
     vi.stubEnv('NODE_ENV', 'development');
     vi.stubEnv(S3_DEV_ENDPOINT_ALLOWLIST_ENV, LOCAL_ENDPOINT_HOST);
@@ -72,7 +72,7 @@ describe('OpenAPI storage credentials contract', () => {
 
   it('documents the invalid-endpoint problem the route returns and no unreachable problem type', async () => {
     const email = `byosdoc_${Date.now()}_${Math.random().toString(36).slice(2)}@byos.test`;
-    const user = await userStore.createUser({ email, name: 'byosdoc', tier: 'pro' });
+    const user = await userStore.createUser({ email, name: 'byosdoc', tier: 'paid' });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'byosdoc', { scopes: ['convert:write'] });
     const res = await credentialsPost(
       new NextRequest(`http://localhost:3000${CREDENTIALS_PATH}`, {

@@ -60,7 +60,7 @@ describe('optimize fails closed for formats without an optimiser', () => {
 
   beforeEach(async () => {
     const email = `optimize_${Date.now()}_${Math.random().toString(36).slice(2)}@optimize.test`;
-    const user = await userStore.createUser({ email, name: 'optimize', tier: 'pro' });
+    const user = await userStore.createUser({ email, name: 'optimize', tier: 'paid' });
     userId = user.id;
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'optimize', { scopes: ['convert:read', 'convert:write'] });
     authHeaders = { Authorization: `Bearer ${secretKey}`, 'Content-Type': 'application/json' };

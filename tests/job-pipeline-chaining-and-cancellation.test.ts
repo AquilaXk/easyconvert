@@ -16,13 +16,13 @@ import { s3Storage } from '../src/lib/storage/s3-storage';
 async function createTestUserWithKey(opts: {
   userId?: string;
   scopes?: ApiKeyScope[];
-  tier?: 'free' | 'pro' | 'enterprise';
+  tier?: 'free' | 'paid';
 } = {}) {
   const userId = opts.userId || `user_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const user = await redisUserStore.createUser({
     email: `${userId}@example.com`,
     name: `Test User ${userId}`,
-    tier: opts.tier || 'pro',
+    tier: opts.tier || 'paid',
     provider: 'email',
     passwordHash: 'dummy_hash',
     salt: 'dummy_salt',

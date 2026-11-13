@@ -45,7 +45,7 @@ describe('Security, Developer API & Distributed Quota Hardening (Issue #178)', (
   beforeEach(async () => {
     // Setup clean test user and keys
     const email = `sec_api_${Date.now()}_${Math.random().toString(36).substring(7)}@easyconvert.local`;
-    testUser = await userStore.createUser({ name: 'Security Tester', email, tier: 'pro' });
+    testUser = await userStore.createUser({ name: 'Security Tester', email, tier: 'paid' });
 
     fullAccessKey = await redisKeyStore.generateApiKey(testUser.id, 'Full Access Key', {
       scopes: ['*'],

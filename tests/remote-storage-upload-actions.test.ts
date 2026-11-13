@@ -63,7 +63,7 @@ describe('/api/v1/uploads multipart actions bind a session to its declared size'
     const { userStore } = await import('../src/lib/auth/user-store');
     const { createSessionToken } = await import('../src/lib/auth/session');
     const email = `${tag}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@upload-actions.local`;
-    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: tag, tier: 'pro' }));
+    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: tag, tier: 'paid' }));
     return { user, cookie: { Cookie: `easyconvert_session=${createSessionToken(user)}` } };
   }
 

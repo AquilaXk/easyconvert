@@ -52,7 +52,7 @@ describe('jobs that read from and write to the customer store', () => {
   });
 
   async function newAccount(): Promise<{ id: string; authorization: string }> {
-    const user = await userStore.createUser({ email: `byos_${Date.now()}_${Math.random().toString(36).slice(2)}@byos.test`, name: 'byos', tier: 'pro' });
+    const user = await userStore.createUser({ email: `byos_${Date.now()}_${Math.random().toString(36).slice(2)}@byos.test`, name: 'byos', tier: 'paid' });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'byos', { scopes: ['convert:read', 'convert:write'] });
     return { id: user.id, authorization: `Bearer ${secretKey}` };
   }

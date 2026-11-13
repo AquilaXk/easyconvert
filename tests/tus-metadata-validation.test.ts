@@ -41,7 +41,7 @@ describe('tus session creation validates the declared content type', () => {
     const { serializeTusMetadata } = await import('../src/lib/storage/tus-engine');
     const { POST } = await import('../src/app/api/v1/uploads/[[...id]]/route');
     const user = userStore.sanitizeUser(
-      await userStore.createUser({ email: `tus_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@tus-metadata.local`, name: 'tus', tier: 'pro' })
+      await userStore.createUser({ email: `tus_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@tus-metadata.local`, name: 'tus', tier: 'paid' })
     );
     return POST(
       new NextRequest(`${BASE_URL}/api/v1/uploads`, {

@@ -75,7 +75,7 @@ export async function createApiKey(): Promise<string> {
   const user = await userStore.createUser({
     name: 'PDF/A Route Tester',
     email: `pdfa_route_${randomUUID()}@easyconvert.local`,
-    tier: 'pro',
+    tier: 'paid',
   });
   const key = await redisKeyStore.generateApiKey(user.id, 'PDF/A Route Key', { scopes: ['convert:write', 'convert:read'] });
   return key.secretKey;

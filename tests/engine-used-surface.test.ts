@@ -35,7 +35,7 @@ beforeEach(async () => {
   const user = await userStore.createUser({
     name: 'Engine Trace Tester',
     email: `engine_trace_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-    tier: 'pro',
+    tier: 'paid',
   });
   userId = user.id;
   const key = await redisKeyStore.generateApiKey(user.id, 'Engine Trace Key', { scopes: ['convert:write', 'convert:read'] });

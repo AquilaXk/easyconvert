@@ -18,7 +18,7 @@ let user: User;
 
 beforeEach(async () => {
   setWebhookSecretStore(new InMemoryWebhookSecretStore());
-  user = await userStore.createUser({ name: 'First rotation', email: `first_rotation_${Date.now()}_${Math.random().toString(36).slice(2)}@test.com`, tier: 'pro' });
+  user = await userStore.createUser({ name: 'First rotation', email: `first_rotation_${Date.now()}_${Math.random().toString(36).slice(2)}@test.com`, tier: 'paid' });
 });
 
 afterEach(() => setWebhookSecretStore(null));

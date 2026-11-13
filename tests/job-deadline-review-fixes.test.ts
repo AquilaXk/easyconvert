@@ -409,7 +409,7 @@ describe('a job queued without a timeout gets the maximum of its owner tier', ()
     const pro = await redisUserStore.createUser({
       email: `legacy_${Date.now()}_${Math.random().toString(36).slice(2, 8)}@deadline.test`,
       name: 'Legacy Pro',
-      tier: 'pro',
+      tier: 'paid',
       provider: 'email',
       passwordHash: 'h',
       salt: 's',

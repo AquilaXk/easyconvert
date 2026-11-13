@@ -45,7 +45,7 @@ describe('WP-12 Enterprise Webhooks: Rotating Secrets, Multi-Signature Headers &
     testUser = await userStore.createUser({
       name: 'Webhook Enterprise User',
       email: `webhook_ent_${Date.now()}_${Math.random().toString(36).substring(7)}@test.com`,
-      tier: 'pro',
+      tier: 'paid',
     });
 
     const keyResult = await redisKeyStore.generateApiKey(testUser.id, 'Webhook Test Key', {

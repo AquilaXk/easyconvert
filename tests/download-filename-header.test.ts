@@ -103,7 +103,7 @@ describe('POST /api/v1/convert?raw=true with a Korean file name', () => {
     const user = await userStore.createUser({
       name: 'Filename Tester',
       email: `filename_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Filename Key', { scopes: ['convert:write'] });
 

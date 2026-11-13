@@ -95,7 +95,7 @@ describe('graph validator merge inputs', () => {
 describe('POST /api/v1/jobs with a single-input merge graph', () => {
   it('answers 422 before reserving quota', async () => {
     const email = `merge_${Date.now()}_${Math.random().toString(36).slice(2)}@merge.test`;
-    const user = await userStore.createUser({ email, name: 'merge', tier: 'pro' });
+    const user = await userStore.createUser({ email, name: 'merge', tier: 'paid' });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'merge', { scopes: ['convert:write'] });
     const usedBefore = (await redisKeyStore.getQuotaUsage(user.id)).usedToday;
 

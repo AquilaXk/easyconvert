@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { validateApiAccess, extractClientIp } from '../src/lib/api-keys/guard';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
-import { TIER_LIMITS } from '../src/lib/plan-limits';
+import { FREE_DAILY_CREDITS } from '../src/lib/plan-limits';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { decryptSecret } from '../src/lib/api-keys/secret-encryption';
 import { userStore } from '../src/lib/auth/user-store';
@@ -21,7 +21,7 @@ import type { ApiKeyScope, WebhookDlqEntry } from '../src/lib/api-keys/types';
 import { TERMS_VERSION } from '../src/lib/legal/documents';
 
 describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
-  let testUser: { id: string; email: string; name: string; tier: 'free' | 'pro' | 'enterprise' };
+  let testUser: { id: string; email: string; name: string; tier: 'free' | 'paid' };
   let sessionCookie: string;
 
   beforeEach(async () => {
@@ -32,11 +32,11 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
     const created = await userStore.createUser({
       email,
       name: 'Enterprise Test Developer',
-      tier: 'pro',
+      tier: 'paid',
       passwordHash: 'dummy_hash',
       salt: 'dummy_salt',
     });
-    testUser = { id: created.id, email: created.email, name: created.name, tier: 'pro' };
+    testUser = { id: created.id, email: created.email, name: created.name, tier: 'paid' };
     const token = createSessionToken(testUser as any);
     sessionCookie = `easyconvert_session=${token}`;
   });
@@ -103,7 +103,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
         headers: { Authorization: `Bearer ${keyResult.secretKey}` },
       });
 
-      const fillRes = await redisKeyStore.recordUsage(freeUser.id, TIER_LIMITS.free);
+      const fillRes = await redisKeyStore.recordUsage(freeUser.id, FREE_DAILY_CREDITS);
       expect(fillRes.allowed).toBe(true);
       expect(fillRes.remaining).toBe(0);
 
@@ -122,7 +122,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       });
 
       const keyResult = await redisKeyStore.generateApiKey(freeUser.id, 'Free Key Exhausted');
-      await redisKeyStore.recordUsage(freeUser.id, TIER_LIMITS.free);
+      await redisKeyStore.recordUsage(freeUser.id, FREE_DAILY_CREDITS);
       const usage = await redisKeyStore.getQuotaUsage(freeUser.id);
       expect(usage.remaining).toBe(0);
 
@@ -628,7 +628,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       expect(usageRes.status).toBe(200);
       const usageJson = await usageRes.json();
       expect(usageJson.success).toBe(true);
-      expect(usageJson.usage.tier).toBe('pro');
+      expect(usageJson.usage.tier).toBe('paid');
       expect(usageJson.usage.dailyLimit).toBe(3000);
 
       // POST /api/keys using Admin API Key
@@ -772,7 +772,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       const fetchStub = vi.fn(async (request: Request | URL | string) => {
         const u = (request instanceof Request ? request.url : request.toString());
         if (u.includes('/api/keys/usage')) {
-          return Response.json({ success: true, usage: { tier: 'pro', dailyLimit: 500, usedToday: 10, remaining: 490, resetAt: 12345678 } });
+          return Response.json({ success: true, usage: { tier: 'paid', dailyLimit: 500, usedToday: 10, remaining: 490, resetAt: 12345678 } });
         }
         if (u.includes('/api/keys')) return Response.json({ success: true, keys: [{ id: 'key_1', name: 'Test Key' }] });
         return new Response('Not found', { status: 404 });
@@ -780,7 +780,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       const client = new EasyConvertClient({ apiKey: 'ec_live_test_dummy_key_1234567890', baseUrl: 'https://api.test', fetch: fetchStub as typeof fetch });
 
       const quota = await client.api.GET('/api/keys/usage');
-      expect(quota.data?.usage?.tier).toBe('pro');
+      expect(quota.data?.usage?.tier).toBe('paid');
       expect(quota.data?.usage?.remaining).toBe(490);
 
       // The document describes no body for this 200, so the generated type has none.

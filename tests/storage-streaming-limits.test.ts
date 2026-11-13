@@ -210,7 +210,7 @@ describe('WP-20 Storage Streaming API & 2GB Crash Removal', () => {
       const user = await redisUserStore.createUser({
         name: 'Queue Tester',
         email: `qtest_${Date.now()}@example.com`,
-        tier: 'pro',
+        tier: 'paid',
       });
 
       const usedToday = async () => (await redisKeyStore.getQuotaUsage(user.id)).usedToday;

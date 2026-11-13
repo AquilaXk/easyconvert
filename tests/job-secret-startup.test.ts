@@ -86,7 +86,7 @@ describe('graph submission without a sealing key', () => {
     stubProductionWithoutKey();
     // Authentication has its own secret in production; only the sealing key is absent here.
     vi.stubEnv('KEY_HASH_PEPPER', 'pepper-for-this-test-0123456789abcdef');
-    const user = await userStore.createUser({ email: `nokey_${Date.now()}@seal.test`, name: 'nokey', tier: 'pro' });
+    const user = await userStore.createUser({ email: `nokey_${Date.now()}@seal.test`, name: 'nokey', tier: 'paid' });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'nokey', { scopes: ['convert:read', 'convert:write'] });
 
     const res = await createJob(

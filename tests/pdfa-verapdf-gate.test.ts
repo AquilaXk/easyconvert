@@ -212,7 +212,7 @@ describe('POST /api/v1/convert with a PDF/A request', () => {
     const user = await userStore.createUser({
       name: 'PDF/A Gate Tester',
       email: `pdfa_gate_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const key = await redisKeyStore.generateApiKey(user.id, 'PDF/A Gate Key', { scopes: ['convert:write', 'convert:read'] });
     secretKey = key.secretKey;

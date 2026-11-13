@@ -20,7 +20,7 @@ describe('POST /api/convert/batch answers 413 for an image over the input limit'
     const user = await userStore.createUser({
       name: 'Batch Pixel Limit',
       email: `batch_pixel_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const key = await redisKeyStore.generateApiKey(user.id, 'Batch Pixel Key', { scopes: ['convert:write'] });
     secretKey = key.secretKey;
@@ -66,7 +66,7 @@ describe('OpenAPI document lists the 413 answer of the conversion routes', () =>
     const user = await userStore.createUser({
       name: 'Batch Small',
       email: `batch_small_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const key = await redisKeyStore.generateApiKey(user.id, 'Batch Small Key', { scopes: ['convert:write'] });
     const sharp = (await import('sharp')).default;

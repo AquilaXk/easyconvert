@@ -40,8 +40,8 @@ function uniqueEmail(prefix: string): string {
 beforeEach(async () => {
   vi.stubEnv('WEBHOOK_SECRET_KEK', KEK);
   setWebhookSecretStore(new InMemoryWebhookSecretStore());
-  owner = await userStore.createUser({ name: 'Rotation owner', email: uniqueEmail('rot_owner'), tier: 'pro' });
-  other = await userStore.createUser({ name: 'Rotation other', email: uniqueEmail('rot_other'), tier: 'pro' });
+  owner = await userStore.createUser({ name: 'Rotation owner', email: uniqueEmail('rot_owner'), tier: 'paid' });
+  other = await userStore.createUser({ name: 'Rotation other', email: uniqueEmail('rot_other'), tier: 'paid' });
 });
 
 afterEach(() => {

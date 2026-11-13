@@ -9,7 +9,7 @@ const URL_OF_ROUTE = 'http://localhost:3000/api/v1/archives/inspect';
 
 async function post(contentType: string, body: string): Promise<Response> {
   const email = `inspect_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@malformed.test`;
-  const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'Inspector', tier: 'pro' }));
+  const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'Inspector', tier: 'paid' }));
   return inspectArchiveRoute(
     new NextRequest(URL_OF_ROUTE, {
       method: 'POST',

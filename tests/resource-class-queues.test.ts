@@ -190,10 +190,8 @@ describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
       expect(resolveQueueName('memory')).toBe('easyconvert-jobs:memory');
       expect(resolveQueueName('gpu')).toBe('easyconvert-jobs:gpu');
 
-      expect(tierToPriority('enterprise')).toBe(1);
-      expect(tierToPriority('Enterprise')).toBe(1);
-      expect(tierToPriority('pro')).toBe(2);
-      expect(tierToPriority('Pro')).toBe(2);
+      expect(tierToPriority('paid')).toBe(1);
+      expect(tierToPriority('Paid')).toBe(1);
       expect(tierToPriority('free')).toBe(3);
       expect(tierToPriority(undefined)).toBe(3);
       expect(tierToPriority('unknown')).toBe(3);
@@ -400,7 +398,7 @@ describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
       const testUser = await redisUserStore.createUser({
         name: 'Queue Test User',
         email: `queue-test-${Date.now()}@example.com`,
-        tier: 'pro',
+        tier: 'paid',
       });
 
       const usedToday = async () => (await redisKeyStore.getQuotaUsage(testUser.id)).usedToday;
@@ -458,7 +456,7 @@ describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
   // 6. Jobs API Route Priority and Resource Routing Integration
   // =========================================================================
   describe('6. Jobs API Route Priority and Resource Routing Integration', () => {
-    async function createTestApiKey(tier: 'enterprise' | 'pro' | 'free') {
+    async function createTestApiKey(tier: 'paid' | 'free') {
       const uid = `user_${tier}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
       const user = await redisUserStore.createUser({
         name: `User ${tier}`,
@@ -472,7 +470,7 @@ describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
     }
 
     it('enqueues enterprise jobs with priority 1 and free jobs with priority 3', async () => {
-      const { key: enterpriseKey } = await createTestApiKey('enterprise');
+      const { key: enterpriseKey } = await createTestApiKey('paid');
       const { key: freeKey } = await createTestApiKey('free');
 
       s3Storage.saveObject('uploads/data_ent.csv', Buffer.from('name,score\nAlice,100\n'), 'text/csv', 'data_ent.csv');
@@ -530,7 +528,7 @@ describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
     });
 
     it('routes CAD conversions to memory queue and Video conversions to gpu queue via API', async () => {
-      const { key: proKey } = await createTestApiKey('pro');
+      const { key: proKey } = await createTestApiKey('paid');
 
       // CAD Job (stl -> obj)
       const STL_DATA = Buffer.from(

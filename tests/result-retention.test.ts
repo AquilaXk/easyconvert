@@ -223,7 +223,7 @@ describe('delete on delivery through the download route and the sweep', () => {
 
   async function createUser(label: string): Promise<User> {
     const email = `${label}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@retention.test`;
-    return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'pro' }));
+    return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'paid' }));
   }
 
   function asUser(user: User): Record<string, string> {
@@ -755,7 +755,7 @@ describe('the file ledger shared by the web server and the workers', () => {
 
   async function storeOwnResult(label: string): Promise<{ owner: User; key: string }> {
     const owner = await userStore.sanitizeUser(
-      await userStore.createUser({ email: `${label}_${Date.now()}@retention.test`, name: label, tier: 'pro' })
+      await userStore.createUser({ email: `${label}_${Date.now()}@retention.test`, name: label, tier: 'paid' })
     );
     const key = `conversions/${owner.id}/${Date.now()}_${label}.bin`;
     await storageProvider.saveObject(key, TEN_BYTES, MIME_TYPE, `${label}.bin`);

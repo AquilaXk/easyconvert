@@ -127,7 +127,7 @@ describe('each route leaves a job with its tier deadline', () => {
   let apiKeys: Record<string, string>;
   let users: Record<string, string>;
 
-  async function makeKey(tier: 'free' | 'pro'): Promise<void> {
+  async function makeKey(tier: 'free' | 'paid'): Promise<void> {
     const email = `deadline_${tier}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@deadline.test`;
     const user = await userStore.createUser({ email, name: `Deadline ${tier}`, tier });
     users[tier] = user.id;
@@ -140,7 +140,7 @@ describe('each route leaves a job with its tier deadline', () => {
     apiKeys = {};
     users = {};
     await makeKey('free');
-    await makeKey('pro');
+    await makeKey('paid');
   });
 
   afterEach(() => {
@@ -173,7 +173,7 @@ describe('each route leaves a job with its tier deadline', () => {
 
   it.each([
     ['free', FREE_CSV_DEADLINE_MS],
-    ['pro', PRO_CSV_DEADLINE_MS],
+    ['paid', PRO_CSV_DEADLINE_MS],
   ])('POST /api/queue/jobs (%s, JSON body with inline input)', async (tier, expected) => {
     const res = await queueJobsRoute(
       jsonRequest('/api/queue/jobs', tier, {
@@ -208,7 +208,7 @@ describe('each route leaves a job with its tier deadline', () => {
 
   it.each([
     ['free', FREE_CSV_DEADLINE_MS],
-    ['pro', PRO_CSV_DEADLINE_MS],
+    ['paid', PRO_CSV_DEADLINE_MS],
   ])('POST /api/v1/convert with Prefer: respond-async (%s)', async (tier, expected) => {
     const res = await v1ConvertRoute(multipart('/api/v1/convert', tier, csvForm(), { Prefer: 'respond-async' }));
     expect(res.status).toBe(202);
@@ -218,7 +218,7 @@ describe('each route leaves a job with its tier deadline', () => {
 
   it.each([
     ['free', FREE_CSV_DEADLINE_MS],
-    ['pro', PRO_CSV_DEADLINE_MS],
+    ['paid', PRO_CSV_DEADLINE_MS],
   ])('POST /api/v1/jobs single conversion (%s)', async (tier, expected) => {
     const res = await v1JobsRoute(
       jsonRequest('/api/v1/jobs', tier, {
@@ -236,7 +236,7 @@ describe('each route leaves a job with its tier deadline', () => {
     const storageKey = `uploads/${users.pro}/graph.csv`;
     s3Storage.saveObject(storageKey, Buffer.from(CSV_INPUT), 'text/csv', 'graph.csv');
     const res = await v1JobsRoute(
-      jsonRequest('/api/v1/jobs', 'pro', {
+      jsonRequest('/api/v1/jobs', 'paid', {
         graph: {
           nodes: {
             up: { op: 'import.upload', storageKey },
@@ -299,7 +299,7 @@ describe('each route leaves a job with its tier deadline', () => {
 
   it('a graph node of a known pro owner gets the pro maximum', async () => {
     const owner = await redisUserStore.findById(users.pro);
-    expect(owner?.tier).toBe('pro');
+    expect(owner?.tier).toBe('paid');
     await enqueueGraphNodeJob('graph_pro', 'a', { op: 'convert', input: 'up', targetFormat: 'json' } as never, { ownerUserId: users.pro }, []);
     expect((await conversionQueue.getJob('graph_pro:a'))?.opts.timeout).toBe(PRO_MAX_MS);
   });

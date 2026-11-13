@@ -38,7 +38,7 @@ beforeEach(async () => {
   const user = await userStore.createUser({
     name: 'Dropped Streams Tester',
     email: `dropped_streams_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-    tier: 'pro',
+    tier: 'paid',
   });
   userId = user.id;
   const key = await redisKeyStore.generateApiKey(user.id, KEY_NAME, { scopes: ['convert:write', 'convert:read'] });

@@ -314,7 +314,7 @@ describe('POST /api/v1/jobs when the password of a job or a graph cannot be seal
     ['a job', { filename: 'locked.pdf', targetFormat: 'docx', inputBufferBase64: PDF, options: { password: 'open-sesame' } }],
     ['a graph', { filename: 'locked.pdf', inputBufferBase64: PDF, tasks: [{ name: 'unlock', operation: 'convert', targetFormat: 'docx', options: { password: 'open-sesame' } }] }],
   ])('answers 503 for %s and gives the unit back at once, since nothing was handed off', async (_label, body) => {
-    const user = await userStore.createUser({ email: `seal_${crypto.randomBytes(6).toString('hex')}@lease.test`, name: 'seal', tier: 'pro' });
+    const user = await userStore.createUser({ email: `seal_${crypto.randomBytes(6).toString('hex')}@lease.test`, name: 'seal', tier: 'paid' });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'seal', { scopes: ['convert:write'] });
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('KEY_HASH_PEPPER', 'pepper-for-this-test-0123456789abcdef');
@@ -355,7 +355,7 @@ describe('POST /api/v1/jobs when the queue stores the job and then fails', () =>
   });
 
   async function submit(body: Record<string, unknown>): Promise<{ res: Response; userId: string }> {
-    const user = await userStore.createUser({ email: `lease_${crypto.randomBytes(6).toString('hex')}@lease.test`, name: 'lease', tier: 'pro' });
+    const user = await userStore.createUser({ email: `lease_${crypto.randomBytes(6).toString('hex')}@lease.test`, name: 'lease', tier: 'paid' });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'lease', { scopes: ['convert:write'] });
     const res = await createJob(
       new NextRequest('https://easyconvert.app/api/v1/jobs', {

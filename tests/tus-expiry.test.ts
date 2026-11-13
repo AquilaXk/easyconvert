@@ -54,7 +54,7 @@ describe('TUS expiration extension', () => {
       await userStore.createUser({
         email: `tus_expiry_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@tus-expiry.local`,
         name: 'tus expiry',
-        tier: 'pro',
+        tier: 'paid',
       })
     );
     const auth = { Cookie: `easyconvert_session=${createSessionToken(user)}` };

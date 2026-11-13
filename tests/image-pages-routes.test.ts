@@ -38,7 +38,7 @@ interface Account {
 let free: Account;
 let pro: Account;
 
-async function account(tier: 'free' | 'pro'): Promise<Account> {
+async function account(tier: 'free' | 'paid'): Promise<Account> {
   const user = await userStore.createUser({
     name: `cap ${tier}`,
     email: `cap_${tier}_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
@@ -50,7 +50,7 @@ async function account(tier: 'free' | 'pro'): Promise<Account> {
 
 beforeEach(async () => {
   free = await account('free');
-  pro = await account('pro');
+  pro = await account('paid');
 });
 
 function form(fields: Record<string, string | Blob>, key?: string): NextRequest {

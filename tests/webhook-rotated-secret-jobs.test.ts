@@ -46,7 +46,7 @@ beforeEach(async () => {
   process.env.WEBHOOK_SECRET_KEK = KEK;
   const store = new InMemoryWebhookSecretStore();
   setWebhookSecretStore(store);
-  user = await userStore.createUser({ name: 'Hook Owner', email: `hook_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@rotation.test`, tier: 'pro' });
+  user = await userStore.createUser({ name: 'Hook Owner', email: `hook_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@rotation.test`, tier: 'paid' });
   const created = await redisKeyStore.generateApiKey(user.id, 'Hook key', {
     scopes: ['convert:write'],
     webhookUrl: HOOK_URL,

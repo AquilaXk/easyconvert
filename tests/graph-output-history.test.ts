@@ -109,7 +109,7 @@ describe('the step that records the outputs of a graph is bounded', () => {
     const user = await userStore.createUser({
       email: `dag_fmt_${Date.now()}_${Math.random().toString(36).slice(2)}@dag.test`,
       name: 'dag-fmt',
-      tier: 'pro',
+      tier: 'paid',
     });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'dag-fmt', { scopes: ['convert:write'] });
 

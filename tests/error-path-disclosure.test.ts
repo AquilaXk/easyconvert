@@ -23,7 +23,7 @@ describe('Security: Error Path Disclosure Prevention', () => {
     testUser = await userStore.createUser({
       name: 'Path Leak Tester',
       email: `path_leak_${Date.now()}_${Math.random().toString(36).substring(7)}@test.com`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const keyResult = await redisKeyStore.generateApiKey(testUser.id, 'Path Leak Key', {
       scopes: ['convert:write'],

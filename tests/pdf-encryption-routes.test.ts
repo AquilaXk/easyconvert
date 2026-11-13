@@ -36,7 +36,7 @@ async function apiKeyHeaders(): Promise<{ headers: Record<string, string>; userI
   const user = await userStore.createUser({
     name: 'Encrypted Pdf Tester',
     email: `encrypted_pdf_${Date.now()}_${counter}@easyconvert.local`,
-    tier: 'pro',
+    tier: 'paid',
   });
   const key = await redisKeyStore.generateApiKey(user.id, 'Encrypted pdf key', { scopes: ['convert:write', 'convert:read'] });
   return { headers: { Authorization: `Bearer ${key.secretKey}` }, userId: user.id };
@@ -447,7 +447,7 @@ describe('password length limits', () => {
       'convert',
       { jobId: '', originalFilename: 'a.pdf', sourceFormat: 'pdf', targetFormat: 'txt', fileSize: 1, options: { password: 'p'.repeat(70_000) } } as ConversionJobData,
       {},
-      { tier: 'pro' }
+      { tier: 'paid' }
     );
     await expect(run).rejects.toMatchObject({ name: 'ConversionFailedError', message: expect.stringMatching(/too long/) });
   });

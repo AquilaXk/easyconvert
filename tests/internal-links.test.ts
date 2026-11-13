@@ -8,7 +8,7 @@ import { POPULAR_PAIRS_BY_CATEGORY } from '../src/components/Features';
 import ConverterPageView from '../src/components/pages/ConverterPageView';
 import HomePageView from '../src/components/pages/HomePageView';
 import { FOOTER_COLUMNS, PRIMARY_LINKS, TOOL_ROUTES, type SiteLink } from '../src/components/site-links';
-import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CREDITS } from '../src/lib/plan-limits';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { CATEGORY_WORDS } from '../src/lib/category-words';
 import { parseConverterSlug } from '../src/lib/slug-parser';
@@ -76,7 +76,7 @@ describe('the links the site renders lead to pages that exist', () => {
 
   it.each(LOCALES)('holds for the header, the footer and the home page in %s', (locale) => {
     expect(deadLinks([...render(createElement(Header), locale), ...render(createElement(Footer), locale)])).toEqual([]);
-    const home = render(createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS, apiOrigin: 'https://convert.example.test' }), locale);
+    const home = render(createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CREDITS, apiOrigin: 'https://convert.example.test' }), locale);
     expect(home.length).toBeGreaterThan(50);
     expect(deadLinks(home)).toEqual([]);
   });
@@ -86,7 +86,7 @@ describe('the links the site renders lead to pages that exist', () => {
     const dead: string[] = [];
     let checked = 0;
     for (const slug of slugs) {
-      const hrefs = render(createElement(ConverterPageView, { parsed: parsedSlug(slug), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }), locale);
+      const hrefs = render(createElement(ConverterPageView, { parsed: parsedSlug(slug), dailyLimit: ANONYMOUS_DAILY_CREDITS }), locale);
       checked += hrefs.length;
       dead.push(...deadLinks(hrefs).map((href) => `/${slug} links ${href}`));
     }
@@ -97,7 +97,7 @@ describe('the links the site renders lead to pages that exist', () => {
   it.each(LOCALES)('holds for pair pages, utility pages and site pages in %s', (locale) => {
     const slugs = ['png-to-jpg', 'pdf-to-docx', 'mp4-to-gif', 'jpeg-to-jpg', 'zip-to-tar.gz', 'merge-pdf', 'compress-pdf', 'compress-png', 'compress-jpg', 'create-zip-archive', 'extract-zip-archive', 'split-pdf', 'rotate-pdf', 'save-website-as-pdf', 'website-png-screenshot', 'pdf-ocr', 'contact', 'about', 'accessibility'];
     const dead = slugs.flatMap((slug) =>
-      deadLinks(render(createElement(ConverterPageView, { parsed: parsedSlug(slug), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }), locale)).map((href) => `/${slug} links ${href}`)
+      deadLinks(render(createElement(ConverterPageView, { parsed: parsedSlug(slug), dailyLimit: ANONYMOUS_DAILY_CREDITS }), locale)).map((href) => `/${slug} links ${href}`)
     );
     expect(dead).toEqual([]);
   });

@@ -23,7 +23,7 @@ describe('Security: Webhook secret enforcement', () => {
     testUser = await userStore.createUser({
       name: 'Webhook Tester',
       email: `webhook_tester_${Date.now()}_${Math.random().toString(36).substring(7)}@test.com`,
-      tier: 'pro',
+      tier: 'paid',
     });
     sessionToken = createSessionToken(testUser);
   });

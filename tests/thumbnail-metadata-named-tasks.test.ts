@@ -32,7 +32,7 @@ afterEach(async () => {
 });
 
 async function caller() {
-  const user = userStore.sanitizeUser(await userStore.createUser({ email: `tm-named-${Date.now()}-${crypto.randomBytes(4).toString('hex')}@named.test`, name: 'Named', tier: 'pro' }));
+  const user = userStore.sanitizeUser(await userStore.createUser({ email: `tm-named-${Date.now()}-${crypto.randomBytes(4).toString('hex')}@named.test`, name: 'Named', tier: 'paid' }));
   const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'named tasks', { scopes: ['convert:write', 'convert:read'] });
   return { authorization: `Bearer ${secretKey}`, usedToday: async () => (await redisKeyStore.getQuotaUsage(user.id)).usedToday };
 }

@@ -157,7 +157,7 @@ async function seedAccount() {
   const { redisKeyStore } = await import('../src/lib/api-keys/redis-key-store');
   const { getRetentionLedger } = await import('../src/lib/storage/retention-ledger');
   const { newRecord, resolveRetentionPolicy } = await import('../src/lib/storage/result-retention');
-  const user = userStore.sanitizeUser(await userStore.createUser({ email: `bench_${Date.now()}@bench.test`, name: 'bench', tier: 'pro' }));
+  const user = userStore.sanitizeUser(await userStore.createUser({ email: `bench_${Date.now()}@bench.test`, name: 'bench', tier: 'paid' }));
   const keys: { secretKey: string }[] = [];
   for (let n = 0; n < 3; n += 1) keys.push(await redisKeyStore.generateApiKey(user.id, `key${n}`, { scopes: ['*'] }));
   const ledger = getRetentionLedger();

@@ -23,7 +23,7 @@ beforeEach(async () => {
   store = new InMemoryIdempotencyStore();
   setIdempotencyStore(store);
   const email = `idem_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@idempotency.test`;
-  const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'Idem', tier: 'pro' }));
+  const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'Idem', tier: 'paid' }));
   userId = user.id;
   cookie = { Cookie: `easyconvert_session=${createSessionToken(user)}` };
 });

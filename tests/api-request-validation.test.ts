@@ -14,7 +14,7 @@ describe('API Request Schema Validation & Quota Conservation', () => {
     testUser = await userStore.createUser({
       name: 'Validation Tester',
       email,
-      tier: 'pro',
+      tier: 'paid',
     });
 
     writeKey = await redisKeyStore.generateApiKey(testUser.id, 'Validation Test Key', {

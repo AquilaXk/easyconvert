@@ -71,7 +71,7 @@ describe.each([
     testUser = await userStore.createUser({
       name: 'Idempotency Concurrency Tester',
       email,
-      tier: 'pro',
+      tier: 'paid',
     });
 
     apiKey = await redisKeyStore.generateApiKey(testUser.id, 'Idempotency Key', {

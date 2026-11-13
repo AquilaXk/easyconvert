@@ -114,17 +114,29 @@ Generate a secret with `openssl rand -hex 32`.
 | `PADDLE_WEBHOOK_SECRET` | secret text; secret, never logged | none | no | web |
 | `PADDLE_CLIENT_TOKEN` | text | none | no | web |
 | `PADDLE_ENVIRONMENT` | one of `sandbox`, `production` (any case) | none | no | web |
-| `PADDLE_PRICE_ID_BASIC` | text | none | no | web |
-| `PADDLE_PRICE_ID_PRO` | text | none | no | web |
-| `PADDLE_PRICE_ID_ENTERPRISE` | text | none | no | web |
+| `PADDLE_PRICE_ID_PACKAGE_500` | text | none | no | web |
+| `PADDLE_PRICE_ID_PACKAGE_1000` | text | none | no | web |
+| `PADDLE_PRICE_ID_PACKAGE_2500` | text | none | no | web |
+| `PADDLE_PRICE_ID_PACKAGE_5000` | text | none | no | web |
+| `PADDLE_PRICE_ID_PACKAGE_10000` | text | none | no | web |
+| `PADDLE_PRICE_ID_SUBSCRIPTION_1000` | text | none | no | web |
+| `PADDLE_PRICE_ID_SUBSCRIPTION_2500` | text | none | no | web |
+| `PADDLE_PRICE_ID_SUBSCRIPTION_5000` | text | none | no | web |
+| `PADDLE_PRICE_ID_SUBSCRIPTION_10000` | text | none | no | web |
 
-- `PADDLE_API_KEY`: Server-side API key of the Paddle account that sells the paid plans (opens customer portal sessions). Paid plans are on sale only when this and the six other PADDLE_ variables are all set; set only some of them and start-up fails. Until then the pricing page marks the paid plans "coming soon" and every billing route answers 503 billing_unavailable.
+- `PADDLE_API_KEY`: Server-side API key of the Paddle account that sells the packages and subscriptions (opens customer portal sessions, and moves a subscription to another size). Packages and subscriptions are on sale only when this and the twelve other PADDLE_ variables (the webhook secret, the client token, the environment and nine price ids) are all set; set only some of them and start-up fails. Until then the pricing page marks them "coming soon" and every billing route answers 503 billing_unavailable.
 - `PADDLE_WEBHOOK_SECRET`: Secret key of the Paddle notification destination that points at /api/billing/webhook. It verifies the Paddle-Signature header of every event, and signs the user id that a checkout carries as custom data.
 - `PADDLE_CLIENT_TOKEN`: Client-side token that Paddle.js opens the checkout with. It is meant to be public: the billing status route hands it to the browser.
 - `PADDLE_ENVIRONMENT`: The Paddle environment the API key, the client token and the price ids belong to: `sandbox` for tests with test cards, `production` for real payments.
-- `PADDLE_PRICE_ID_BASIC`: Id of the Paddle price (`pri_...`) of the Basic plan; the three price ids must all differ.
-- `PADDLE_PRICE_ID_PRO`: Id of the Paddle price (`pri_...`) of the Pro plan; it must differ from the other two.
-- `PADDLE_PRICE_ID_ENTERPRISE`: Id of the Paddle price (`pri_...`) of the Enterprise plan; it must differ from the other two.
+- `PADDLE_PRICE_ID_PACKAGE_500`: Id of the Paddle price (`pri_...`) of the package of 500 credits; the nine price ids must all differ.
+- `PADDLE_PRICE_ID_PACKAGE_1000`: Id of the Paddle price (`pri_...`) of the package of 1,000 credits; the nine price ids must all differ.
+- `PADDLE_PRICE_ID_PACKAGE_2500`: Id of the Paddle price (`pri_...`) of the package of 2,500 credits; the nine price ids must all differ.
+- `PADDLE_PRICE_ID_PACKAGE_5000`: Id of the Paddle price (`pri_...`) of the package of 5,000 credits; the nine price ids must all differ.
+- `PADDLE_PRICE_ID_PACKAGE_10000`: Id of the Paddle price (`pri_...`) of the package of 10,000 credits; the nine price ids must all differ.
+- `PADDLE_PRICE_ID_SUBSCRIPTION_1000`: Id of the Paddle price (`pri_...`) of the subscription of 1,000 credits a month; the nine price ids must all differ.
+- `PADDLE_PRICE_ID_SUBSCRIPTION_2500`: Id of the Paddle price (`pri_...`) of the subscription of 2,500 credits a month; the nine price ids must all differ.
+- `PADDLE_PRICE_ID_SUBSCRIPTION_5000`: Id of the Paddle price (`pri_...`) of the subscription of 5,000 credits a month; the nine price ids must all differ.
+- `PADDLE_PRICE_ID_SUBSCRIPTION_10000`: Id of the Paddle price (`pri_...`) of the subscription of 10,000 credits a month; the nine price ids must all differ.
 
 ### Keys and secrets
 
@@ -268,20 +280,14 @@ Generate a secret with `openssl rand -hex 32`.
 | `EASYCONVERT_OCR_PAGE_BUDGET_MS` | integer, 1 to 2147483647 | `10000` | no | web, worker |
 | `EASYCONVERT_OCR_PAGE_CONCURRENCY` | integer, 1 to 2147483647 | `4` | no | web, worker |
 | `JOB_DEADLINE_BASE_MS_FREE` | integer, 1 to 3600000 | `60000` | no | web, worker |
-| `JOB_DEADLINE_BASE_MS_BASIC` | integer, 1 to 3600000 | `90000` | no | web, worker |
-| `JOB_DEADLINE_BASE_MS_PRO` | integer, 1 to 3600000 | `120000` | no | web, worker |
-| `JOB_DEADLINE_BASE_MS_ENTERPRISE` | integer, 1 to 3600000 | `180000` | no | web, worker |
+| `JOB_DEADLINE_BASE_MS_PAID` | integer, 1 to 3600000 | `120000` | no | web, worker |
 | `JOB_DEADLINE_MAX_MS_FREE` | integer, 1 to 3600000 | `300000` | no | web, worker |
-| `JOB_DEADLINE_MAX_MS_BASIC` | integer, 1 to 3600000 | `900000` | no | web, worker |
-| `JOB_DEADLINE_MAX_MS_PRO` | integer, 1 to 3600000 | `1800000` | no | web, worker |
-| `JOB_DEADLINE_MAX_MS_ENTERPRISE` | integer, 1 to 3600000 | `3600000` | no | web, worker |
+| `JOB_DEADLINE_MAX_MS_PAID` | integer, 1 to 3600000 | `3600000` | no | web, worker |
 | `JOB_DEADLINE_PER_MIB_MS` | integer, 1 to 2147483647 | `2000` | no | web, worker |
 | `JOB_DEADLINE_PER_MEDIA_SECOND_MS` | integer, 1 to 2147483647 | `3000` | no | web, worker |
 | `SYNC_DEADLINE_MAX_MS` | integer, 1 to 2147483647 | `120000` | no | web, worker |
 | `CONVERSION_CONCURRENCY_FREE` | integer, 1 to 2147483647 | `5` | no | web, worker |
-| `CONVERSION_CONCURRENCY_BASIC` | integer, 1 to 2147483647 | `10` | no | web, worker |
-| `CONVERSION_CONCURRENCY_PRO` | integer, 1 to 2147483647 | `25` | no | web, worker |
-| `CONVERSION_CONCURRENCY_ENTERPRISE` | integer, 1 to 2147483647 | `50` | no | web, worker |
+| `CONVERSION_CONCURRENCY_PAID` | integer, 1 to 2147483647 | `25` | no | web, worker |
 | `EASYCONVERT_XLS_MAX_GRID_CELLS` | integer, at least 1 | `4194304` | no | web, worker |
 | `EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS` | integer, at least 1 | `500000` | no | web, worker |
 | `EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS` | integer, at least 1 | `67108864` | no | web, worker |
@@ -301,20 +307,14 @@ Generate a secret with `openssl rand -hex 32`.
 - `EASYCONVERT_OCR_PAGE_BUDGET_MS`: Milliseconds of work the text recognition (OCR) of one page of a scanned PDF may cost. A document may take three page budgets plus one for each page it reads, so a long scan is never cut at a fixed time, and never more than 90 percent of the job's own deadline when it has one; a single page that takes six page budgets is refused too. A document or page over its limit is refused with HTTP 413.
 - `EASYCONVERT_OCR_PAGE_CONCURRENCY`: Most pages of one scanned PDF that text recognition (OCR) prepares and recognizes at once, capped at the built-in per-document ceiling of 4 and the OCR worker pool size.
 - `JOB_DEADLINE_BASE_MS_FREE`: Wall-clock milliseconds every conversion job of the free tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_FREE.
-- `JOB_DEADLINE_BASE_MS_BASIC`: Wall-clock milliseconds every conversion job of the basic tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_BASIC.
-- `JOB_DEADLINE_BASE_MS_PRO`: Wall-clock milliseconds every conversion job of the pro tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_PRO.
-- `JOB_DEADLINE_BASE_MS_ENTERPRISE`: Wall-clock milliseconds every conversion job of the enterprise tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_ENTERPRISE.
+- `JOB_DEADLINE_BASE_MS_PAID`: Wall-clock milliseconds every conversion job of the paid tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_PAID.
 - `JOB_DEADLINE_MAX_MS_FREE`: Most wall-clock milliseconds a conversion job of the free tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.
-- `JOB_DEADLINE_MAX_MS_BASIC`: Most wall-clock milliseconds a conversion job of the basic tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.
-- `JOB_DEADLINE_MAX_MS_PRO`: Most wall-clock milliseconds a conversion job of the pro tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.
-- `JOB_DEADLINE_MAX_MS_ENTERPRISE`: Most wall-clock milliseconds a conversion job of the enterprise tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.
+- `JOB_DEADLINE_MAX_MS_PAID`: Most wall-clock milliseconds a conversion job of the paid tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.
 - `JOB_DEADLINE_PER_MIB_MS`: Milliseconds added to a job deadline for each started MiB of input.
 - `JOB_DEADLINE_PER_MEDIA_SECOND_MS`: Milliseconds added to a job deadline for each second of audio or video, when the length is known.
 - `SYNC_DEADLINE_MAX_MS`: Most wall-clock milliseconds a synchronous conversion request (`/api/convert`, `/api/v1/convert`, `/api/convert/batch`) may run, held below the job deadline of the tier. A request past it is stopped and answered with 504 and a pointer to the asynchronous API (`POST /api/v1/jobs`), which runs conversions up to the job deadline.
 - `CONVERSION_CONCURRENCY_FREE`: Most conversions an anonymous or free-tier caller may have in flight at once, queued and running together, counted on the server. A request that would exceed it is answered 429 (problem type `concurrency-limit`, with `Retry-After`) and takes no quota.
-- `CONVERSION_CONCURRENCY_BASIC`: Most conversions a basic-tier caller may have in flight at once, queued and running together, counted on the server. A request that would exceed it is answered 429 (problem type `concurrency-limit`, with `Retry-After`) and takes no quota.
-- `CONVERSION_CONCURRENCY_PRO`: Most conversions a pro-tier caller may have in flight at once, queued and running together, counted on the server. A request that would exceed it is answered 429 (problem type `concurrency-limit`, with `Retry-After`) and takes no quota.
-- `CONVERSION_CONCURRENCY_ENTERPRISE`: Most conversions an enterprise-tier caller may have in flight at once, queued and running together, counted on the server. A request that would exceed it is answered 429 (problem type `concurrency-limit`, with `Retry-After`) and takes no quota.
+- `CONVERSION_CONCURRENCY_PAID`: Most conversions a caller of a paid account may have in flight at once, queued and running together, counted on the server. A request that would exceed it is answered 429 (problem type `concurrency-limit`, with `Retry-After`) and takes no quota.
 - `EASYCONVERT_XLS_MAX_GRID_CELLS`: Most cells (rows x columns of the used range) of a legacy XLS sheet that an HTML, ODS or XLSX conversion expands to a grid in memory; a larger sheet is refused with HTTP 413. CSV, TSV and JSON are written row by row and are not limited by it.
 - `EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS`: Most cells holding text of a legacy XLS sheet that the in-process PDF writer lays out as a table (about 3 KB of memory per cell); a sheet with more is refused with HTTP 413. Blank cells are not counted.
 - `EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS`: Most characters the cells of a legacy XLS sheet may expand to for an HTML, ODS, XLSX or PDF conversion, shared strings counted once per cell that uses them; a sheet over it is refused with HTTP 413 (protects against one long shared string used by many cells).

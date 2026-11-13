@@ -148,7 +148,7 @@ describe('Credentials vault persistence (#483)', () => {
       const user = await userStore.createUser({
         email: `vault503_${Date.now()}_${Math.random().toString(36).slice(2)}@vault.test`,
         name: 'vault503',
-        tier: 'pro',
+        tier: 'paid',
       });
       userId = user.id;
       const { secretKey } = await redisKeyStore.generateApiKey(userId, 'vault503', { scopes: ['convert:write', 'convert:read'] });

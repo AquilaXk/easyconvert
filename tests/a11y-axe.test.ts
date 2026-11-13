@@ -7,7 +7,7 @@ import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { testMessages, type TestLocale } from './helpers/intl-messages';
 import { parsedSlug } from './helpers/intl';
-import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CREDITS } from '../src/lib/plan-limits';
 import type { ConversionQueueItem } from '../src/lib/types';
 
 vi.mock('next/navigation', async (importOriginal) => ({
@@ -45,12 +45,12 @@ interface PageCase {
 const API_ORIGIN = 'https://convert.aquilaxk.site';
 
 const PAGES: PageCase[] = [
-  { name: 'home', locale: 'en', page: () => createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS, apiOrigin: API_ORIGIN }) },
-  { name: 'home in Korean', locale: 'ko', page: () => createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS, apiOrigin: API_ORIGIN }) },
-  { name: 'converter pair /pdf-to-docx', locale: 'en', page: () => createElement(ConverterPageView, { parsed: parsedSlug('pdf-to-docx'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
-  { name: 'format page /pdf-converter', locale: 'en', page: () => createElement(ConverterPageView, { parsed: parsedSlug('pdf-converter'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
-  { name: 'pricing', locale: 'en', page: () => createElement(PricingPageView, { anonymousDaily: ANONYMOUS_DAILY_CONVERSIONS, billing: null }) },
-  { name: 'pricing in Korean', locale: 'ko', page: () => createElement(PricingPageView, { anonymousDaily: ANONYMOUS_DAILY_CONVERSIONS, billing: null }) },
+  { name: 'home', locale: 'en', page: () => createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CREDITS, apiOrigin: API_ORIGIN }) },
+  { name: 'home in Korean', locale: 'ko', page: () => createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CREDITS, apiOrigin: API_ORIGIN }) },
+  { name: 'converter pair /pdf-to-docx', locale: 'en', page: () => createElement(ConverterPageView, { parsed: parsedSlug('pdf-to-docx'), dailyLimit: ANONYMOUS_DAILY_CREDITS }) },
+  { name: 'format page /pdf-converter', locale: 'en', page: () => createElement(ConverterPageView, { parsed: parsedSlug('pdf-converter'), dailyLimit: ANONYMOUS_DAILY_CREDITS }) },
+  { name: 'pricing', locale: 'en', page: () => createElement(PricingPageView, { anonymousDaily: ANONYMOUS_DAILY_CREDITS, billing: null }) },
+  { name: 'pricing in Korean', locale: 'ko', page: () => createElement(PricingPageView, { anonymousDaily: ANONYMOUS_DAILY_CREDITS, billing: null }) },
   { name: 'not found', locale: 'en', page: () => createElement(NotFoundPageView) },
   {
     name: 'terms',
@@ -158,7 +158,7 @@ describe('keyboard and target-size guards that jsdom can see', () => {
   };
 
   it('keeps the visually hidden file input out of the Tab order, so no focus stop is invisible', async () => {
-    await mount('ko', () => createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS, apiOrigin: API_ORIGIN }));
+    await mount('ko', () => createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CREDITS, apiOrigin: API_ORIGIN }));
     expect(document.querySelector<HTMLInputElement>('input[type="file"]')?.tabIndex).toBe(-1);
   });
 

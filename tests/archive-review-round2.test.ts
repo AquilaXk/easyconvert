@@ -314,7 +314,7 @@ describe('C: collisions are typed and answered with 422', () => {
 
     oracleTest('/api/v1/convert answers 422', [...TOOLS], async () => {
       const user = userStore.sanitizeUser(
-        await userStore.createUser({ email: `collide_${Date.now()}@test.local`, name: 'Collider', tier: 'pro' })
+        await userStore.createUser({ email: `collide_${Date.now()}@test.local`, name: 'Collider', tier: 'paid' })
       );
       const { secretKey } = await keyStore.generateApiKey(user.id, 'collision key');
 
