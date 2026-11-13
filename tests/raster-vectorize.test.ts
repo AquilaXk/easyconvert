@@ -459,7 +459,7 @@ describe.skipIf(!haveTracer)('the pinned tracer', () => {
   }
 
   async function account(): Promise<string> {
-    const user = await userStore.createUser({ name: 'vectorize', email: `vectorize_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`, tier: 'free' });
+    const user = await userStore.createUser({ name: 'vectorize', email: `vectorize_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`, tier: 'free', emailVerified: true });
     return (await redisKeyStore.generateApiKey(user.id, 'vectorize', { scopes: ['convert:write', 'convert:read'] })).secretKey;
   }
 
