@@ -352,7 +352,7 @@
     "loading": "Loading account session...",
     "dismissError": "Dismiss dashboard error",
     "header": {
-      "heading": "Developer Dashboard",
+      "heading": "Dashboard",
       "tier": "{tier} plan",
       "provider": "Signed in with <strong>{provider}</strong>",
       "providers": {
@@ -968,7 +968,7 @@
       "description": "Sign in or create an EasyConvert account to manage developer API keys, webhooks, and conversion history."
     },
     "dashboard": {
-      "title": "Developer Dashboard | EasyConvert",
+      "title": "Dashboard | EasyConvert",
       "description": "Manage the API keys, converted files, webhook deliveries and usage limits of your EasyConvert account."
     },
     "apiDocs": {

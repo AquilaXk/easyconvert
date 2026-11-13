@@ -352,7 +352,7 @@
     "loading": "계정 정보를 불러오는 중입니다...",
     "dismissError": "오류 닫기",
     "header": {
-      "heading": "개발자 대시보드",
+      "heading": "대시보드",
       "tier": "{tier} 요금제",
       "provider": "로그인 방식 <strong>{provider}</strong>",
       "providers": {
@@ -968,7 +968,7 @@
       "description": "로그인하거나 계정을 만들어 API 키, 웹훅, 변환 기록을 관리하세요."
     },
     "dashboard": {
-      "title": "개발자 대시보드 | EasyConvert",
+      "title": "대시보드 | EasyConvert",
       "description": "EasyConvert 계정의 API 키, 변환한 파일, 웹훅 전송, 사용량 한도를 관리합니다."
     },
     "apiDocs": {

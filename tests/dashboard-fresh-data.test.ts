@@ -244,7 +244,7 @@ describe('the dashboard page rendered on the server', () => {
 
     expect(text(doc.querySelector('header'))).toContain('Reader');
     expect(doc.querySelectorAll('header a[href="/auth"]')).toHaveLength(0);
-    expect(text(doc.querySelector('main h1'))).toBe('Developer Dashboard');
+    expect(text(doc.querySelector('main h1'))).toBe('Dashboard');
     expect(text(doc.querySelector('main'))?.includes(`Reader (${user.email})`)).toBe(true);
     const tabs = doc.querySelector('main [role=tablist]')!.querySelectorAll('[role=tab]');
     expect([...tabs].map(text)).toEqual(['API keys', 'Converted files1', 'Failed webhooks1', 'Usage and limits']);
