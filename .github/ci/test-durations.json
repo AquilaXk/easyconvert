@@ -863,6 +863,7 @@
   "tests/pdf-raster-page-budget.test.ts": 2.8,
   "tests/pdf-raster-pages-parallel.test.ts": 2.9,
   "tests/pdf-roman-list.test.ts": 0.7,
+  "tests/pdf-split-page-count-parallel.test.ts": 1.2,
   "tests/pdf-stream-decompression-limits.test.ts": 4.2,
   "tests/pdf-structure-bounds.test.ts": 2.3,
   "tests/pdf-svg-pages-parallel.test.ts": 3.7,
