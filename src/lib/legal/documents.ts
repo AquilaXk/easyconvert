@@ -3,7 +3,7 @@
  * top. The texts are the Markdown files of docs/legal (src/lib/legal/texts.ts), kept out of this module so that a client
  * component that needs a version does not ship them.
  */
-const LEGAL_TEXTS_VERSION = '2026-11-12';
+const LEGAL_TEXTS_VERSION = '2026-12-13';
 
 export const LEGAL_DOCUMENTS = {
   terms: { path: '/terms', version: LEGAL_TEXTS_VERSION },
@@ -13,6 +13,13 @@ export const LEGAL_DOCUMENTS = {
 } as const;
 
 export type LegalDocumentId = keyof typeof LEGAL_DOCUMENTS;
+
+/**
+ * The refund policy is the section "Refunds" of the terms, which the footer links to (a payment provider asks for a refund policy
+ * reachable from the site's navigation). A section's id is the anchor a code host gives its heading, so it is the number and the
+ * title in each language; `tests/legal-pages.test.ts` fails when a heading changes and this no longer names it.
+ */
+export const REFUND_POLICY_SECTION_ID = { en: '7-refunds', ko: '7-환불' } as const;
 
 /** The version of the terms that sign-up and API key creation record as accepted. */
 export const TERMS_VERSION = LEGAL_DOCUMENTS.terms.version;

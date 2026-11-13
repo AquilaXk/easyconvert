@@ -1,16 +1,18 @@
 'use client';
 
 import React from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { Moon, Sun } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useThemeToggle } from '@/hooks/useThemeToggle';
-import { FOOTER_COLUMNS } from './site-links';
+import type { AppLocale } from '@/i18n/routing';
+import { FOOTER_COLUMNS, footerHrefOf } from './site-links';
 
 export default function Footer() {
   const t = useTranslations('footer');
   const tLinks = useTranslations('siteLinks');
   const tTheme = useTranslations('theme');
+  const locale = useLocale() as AppLocale;
   const { isDark, toggleDarkMode } = useThemeToggle();
 
   return (
@@ -36,7 +38,7 @@ export default function Footer() {
                   {column.links.map((link) => (
                     <li key={link.key}>
                       <Link
-                        href={link.href}
+                        href={footerHrefOf(link, locale)}
                         className="inline-flex min-h-6 items-center rounded-xs text-sm font-medium text-accent-ink hover:underline transition-colors"
                       >
                         {tLinks(link.key)}

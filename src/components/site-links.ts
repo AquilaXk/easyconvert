@@ -1,5 +1,7 @@
 import type { ComponentProps } from 'react';
 import type { Link } from '@/i18n/navigation';
+import type { AppLocale } from '@/i18n/routing';
+import { REFUND_POLICY_SECTION_ID } from '@/lib/legal/documents';
 
 type Href = ComponentProps<typeof Link>['href'];
 
@@ -73,6 +75,7 @@ export const FOOTER_COLUMNS = [
     links: [
       { key: 'privacy', href: '/privacy' },
       { key: 'terms', href: '/terms' },
+      { key: 'refunds', href: '/terms' },
       { key: 'acceptableUse', href: '/acceptable-use' },
       { key: 'dpa', href: '/dpa' },
       { key: 'accessibility', href: '/accessibility' },
@@ -83,3 +86,8 @@ export const FOOTER_COLUMNS = [
     links: [{ key: 'contact', href: '/contact' }],
   },
 ] as const satisfies readonly FooterColumn[];
+
+/** Where a footer link goes in `locale`: the refund policy is a section of the terms, found by the anchor its heading has in that language. */
+export function footerHrefOf(link: SiteLink, locale: AppLocale): Href {
+  return link.key === 'refunds' ? { pathname: '/terms', hash: REFUND_POLICY_SECTION_ID[locale] } : link.href;
+}
