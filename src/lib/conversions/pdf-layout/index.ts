@@ -48,7 +48,7 @@ export type PageBlock =
   | ({ kind: 'table'; table: DetectedTable } & BlockMeta)
   | ({ kind: 'image'; image: PdfContentImage; imageId: number } & BlockMeta);
 
-interface PageLayout {
+export interface PageLayout {
   page: PdfPageContent;
   blocks: PageBlock[];
   /** Extent of the page's body text. */
@@ -133,6 +133,17 @@ function layoutPage(page: PdfPageContent, fonts: FontList, flows: Counter, bandB
     blocks.push({ kind: 'paragraph', paragraph, full: true, columns: 1, band: -1 });
   }
   return { page, blocks, bounds: textBounds(page.items) };
+}
+
+/**
+ * The positioned blocks of every page as the layout pass finds them, with nothing taken out and nothing joined across pages: the
+ * running headers and footers, page counters and the pieces of a table that goes on over a page stay where the page draws them. A
+ * writer that keeps the page (slides) reads this; one that makes a flow (documents) reads `layoutPdf`.
+ * @throws PdfLayoutLimitError when a page needs more than PDF_LAYOUT_MAX_STEPS_PER_PAGE steps.
+ */
+export function layoutPdfPages(pages: PdfPageContent[], fonts: PdfContentFont[]): PageLayout[] {
+  const flows = new Counter();
+  return pages.map((page, index) => layoutPage(page, fonts, flows, index * COLUMN_FLOW_BASE * 1000));
 }
 
 function blockBox(block: PageBlock): { x0: number; y0: number; x1: number; y1: number } {
