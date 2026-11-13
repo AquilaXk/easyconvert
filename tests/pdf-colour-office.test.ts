@@ -48,10 +48,11 @@ function slideRun(slide: string, text: string): string {
 describe('PDF to PPTX keeps colour and shapes', () => {
   it('writes the colour of each run of text and black for the rest', async () => {
     const slide = await slideOf('colour-text');
-    expect(slideRun(slide, 'red lantern')).toContain('<a:srgbClr val="D32F2F"/>');
-    expect(slideRun(slide, 'bright orange flare')).toContain('<a:srgbClr val="E65100"/>');
-    expect(slideRun(slide, 'White on charcoal')).toContain('<a:srgbClr val="FFFFFF"/>');
-    expect(slideRun(slide, 'Closing remark in the default colour.')).toContain('<a:srgbClr val="000000"/>');
+    const colourOf = (text: string): string | undefined => /<a:srgbClr val="([0-9A-F]{6})"\/>/.exec(slideRun(slide, text))?.[1];
+    expect(colourOf('red lantern')).toBe('D32F2F');
+    expect(colourOf('bright orange flare')).toBe('E65100');
+    expect(colourOf('White on charcoal')).toBe('FFFFFF');
+    expect(colourOf('Closing remark in the default colour.')).toBe('000000');
   });
 
   it('draws the fills behind the text as rectangles that come before the text in the shape tree', async () => {
