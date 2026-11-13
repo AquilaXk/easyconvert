@@ -35,7 +35,7 @@ const NATIVE_ENGINE_ONLY_PAIRS: ReadonlySet<string> = new Set([
   'ods->jpg', 'ods->png',
   'odt->doc', 'odt->jpg', 'odt->png', 'odt->rtf',
   'oxps->avif', 'oxps->bmp', 'oxps->eps', 'oxps->gif', 'oxps->ico', 'oxps->jpg', 'oxps->pdf', 'oxps->png', 'oxps->ps', 'oxps->psd', 'oxps->svg', 'oxps->tiff', 'oxps->webp',
-  'pdf->avif', 'pdf->bmp', 'pdf->doc', 'pdf->dxf', 'pdf->eps', 'pdf->gif', 'pdf->ico', 'pdf->odd', 'pdf->ps', 'pdf->psd', 'pdf->svg', 'pdf->webp',
+  'pdf->avif', 'pdf->bmp', 'pdf->doc', 'pdf->dxf', 'pdf->eps', 'pdf->gif', 'pdf->ico', 'pdf->odd', 'pdf->ppt', 'pdf->ps', 'pdf->psd', 'pdf->svg', 'pdf->webp',
   'ps->avif', 'ps->bmp', 'ps->dxf', 'ps->eps', 'ps->gif', 'ps->ico', 'ps->jpg', 'ps->odd', 'ps->pdf', 'ps->png', 'ps->ps', 'ps->psd', 'ps->svg', 'ps->tiff', 'ps->webp',
   'pot->jpg', 'pot->png', 'pot->ppt',
   'potx->jpg', 'potx->odp', 'potx->png', 'potx->ppt',

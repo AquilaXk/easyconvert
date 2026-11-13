@@ -5,13 +5,13 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-EasyConvert is an open-source file conversion service with a web app and an HTTP API. It converts files across **308 file formats** and **2,766 conversion pairs** in **13 categories**. Production runs at <https://convert.aquilaxk.site>.
+EasyConvert is an open-source file conversion service with a web app and an HTTP API. It converts files across **308 file formats** and **2,767 conversion pairs** in **13 categories**. Production runs at <https://convert.aquilaxk.site>.
 
 [Live service](https://convert.aquilaxk.site) · [API reference](https://convert.aquilaxk.site/api-docs) · [Configuration](docs/configuration.md) · [Security policy](SECURITY.md)
 
 ## Features
 
-- **308 Formats Across 13 Categories** (`2,766` source-to-target pairs), one API. Images (including camera RAW), documents, archives, video, audio, subtitles, ebooks, spreadsheets, presentations, data files, vector graphics, fonts, and CAD and 3D.
+- **308 Formats Across 13 Categories** (`2,767` source-to-target pairs), one API. Images (including camera RAW), documents, archives, video, audio, subtitles, ebooks, spreadsheets, presentations, data files, vector graphics, fonts, and CAD and 3D.
 - **Sandboxed engines.** LibreOffice, FFmpeg, libvips, Poppler, Tesseract, 7-Zip, Calibre, and veraPDF run as external tools inside a per-job sandbox. Some formats use in-process TypeScript engines: HWP 5.0 (OLE2 CFBF), BZip2, TrueType/OpenType font tables, B-spline and Bézier path flattening, and Oklab and NeuQuant palette quantization.
 - **Searchable OCR.** Scanned input becomes a PDF with a searchable text layer.
 - **PDF/A output.** Every PDF/A result is validated with veraPDF against the requested level.

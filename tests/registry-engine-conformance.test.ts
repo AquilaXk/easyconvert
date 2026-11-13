@@ -679,7 +679,7 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   oxps: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   parquet: ['xls'],
   pdb: ['azw3', 'lrf', 'mobi', 'oeb'],
-  pdf: ['avif', 'azw3', 'bmp', 'doc', 'dxf', 'eps', 'gif', 'ico', 'jpg', 'lrf', 'mobi', 'odd', 'oeb', 'pdb', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp', 'xls'],
+  pdf: ['avif', 'azw3', 'bmp', 'doc', 'dxf', 'eps', 'gif', 'ico', 'jpg', 'lrf', 'mobi', 'odd', 'oeb', 'pdb', 'png', 'ppt', 'ps', 'psd', 'svg', 'tiff', 'webp', 'xls'],
   pml: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   pot: ['ppt'],
   potx: ['jpg', 'odp', 'png', 'ppt'],
@@ -1067,7 +1067,7 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     odt: ['hwp', 'hwpx', 'xps'],
     oxps: ['docx', 'odd'],
     pages: ['html', 'ppt', 'xls'],
-    pdf: ['emf', 'ppt', 'wmf'],
+    pdf: ['emf', 'wmf'],
     pot: ['emf', 'xps'],
     potx: ['emf', 'xps'],
     pps: ['swf'],
@@ -1545,7 +1545,7 @@ describe('native-engine pairs route through the dispatcher', () => {
   /** A CSV table's page images are likewise the pages of the PDF the in-process engine writes of it, drawn by Poppler. */
   const TABLE_PICTURE_SOURCE = 'csv';
   /** Targets of a PDF that the office suite writes from the DOCX or PPTX the in-process converter writes of it. */
-  const BRIDGED_PDF_TARGETS = new Set(['doc', 'xls']);
+  const BRIDGED_PDF_TARGETS = new Set(['doc', 'ppt', 'xls']);
   /** Page targets beyond jpg and png: the encoded rasters, PostScript, EPS and DXF are written from the rendered PDF pages. */
   const ENCODED_PAGE_TARGETS = new Set(['avif', 'bmp', 'gif', 'ico', 'psd', 'tiff', 'webp']);
   const PAGE_TARGETS = new Set([...IMAGE_TARGETS, ...ENCODED_PAGE_TARGETS, 'eps', 'ps', 'dxf', 'svg']);

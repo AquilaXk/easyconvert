@@ -330,6 +330,7 @@ Security
 279. [The plain palette mapper of a picture of 2 megapixels or more runs in stripes on the pool threads, and the palette histogram is counted in chunks](#279-the-plain-palette-mapper-of-a-picture-of-2-megapixels-or-more-runs-in-stripes-on-the-pool-threads-and-the-palette-histogram-is-counted-in-chunks)
 280. [Paid plans are Free, Basic, Pro and Enterprise, the paid ones count conversions by the month of the subscription, every plan has its own concurrency and processing limits, and the pricing page is rendered for each request](#280-paid-plans-are-free-basic-pro-and-enterprise-the-paid-ones-count-conversions-by-the-month-of-the-subscription-every-plan-has-its-own-concurrency-and-processing-limits-and-the-pricing-page-is-rendered-for-each-request)
 281. [A PDF becomes a presentation of its pages: one slide for each page, the lines of text, tables and pictures where the page has them, in a package PowerPoint opens](#281-a-pdf-becomes-a-presentation-of-its-pages-one-slide-for-each-page-the-lines-of-text-tables-and-pictures-where-the-page-has-them-in-a-package-powerpoint-opens)
+282. [PDF to PPT is offered: the presentation of the pages, exported by the office suite as PowerPoint 97-2003](#282-pdf-to-ppt-is-offered-the-presentation-of-the-pages-exported-by-the-office-suite-as-powerpoint-97-2003)
 
 ---
 
@@ -8660,7 +8661,7 @@ Security
 
 ## 281. A PDF becomes a presentation of its pages: one slide for each page, the lines of text, tables and pictures where the page has them, in a package PowerPoint opens
 
-- **Status**: Implemented, decided 2026-11-13 (QA request: raise conversion quality to commercial level against the reference service, the measured gaps first); nothing is deployed. It replaces the text route of PDF to PPTX; the other sources of PPTX (Word, OpenDocument, PowerPoint 97, Markdown, text) keep entry 40's text route.
+- **Status**: Implemented, decided 2026-11-13 (QA request: raise conversion quality to commercial level against the reference service, the measured gaps first); nothing is deployed. It replaces the text route of PDF to PPTX; the other sources of PPTX (Word, OpenDocument, PowerPoint 97, Markdown, text) keep their text route.
 - **Decision**:
   - **A PDF written as PPTX gets one slide for each page, as large as the page** (`src/lib/conversions/office/pdf-pptx.ts`). The slide holds a text box for each line of text at the baseline the layout analysis found (`layoutPdfPages`, the pass that writes DOCX, EPUB and spreadsheets, now exported page by page: running heads, page counters and the pieces of a table across pages stay where the page draws them), each table of that analysis as a PowerPoint table (grid, spans and, for a ruled table, borders), each picture at its place with the file of the PDF (a JPEG stream byte for byte, a decoded picture as PNG, one media file for a picture the pages repeat) and each rule up to 3 points thick as a line. A page of another size than the first is scaled to fit the slide and centred; a size outside what PowerPoint accepts (1 to 56 inches) is scaled into it.
   - **A line is one text box** (no wrap, no inset, the box top one ascent above the baseline), so a program that sets a typeface wider or narrower than the PDF's cannot break a line elsewhere or move a word to the next line. The words of a hyphenated line stay as the page breaks them.
@@ -8688,3 +8689,26 @@ Security
   - **A scaled page** (a presentation takes one size) is placed in the slide at its scale, with the margin that leaves.
 - **Verified by**: `tests/pdf-to-pptx-layout.test.ts` (8 of its 12 tests red on `origin/main`: the slide count and size, the Markdown marks, the hyphenated line, the table, the picture and its relationship, the right-to-left lines, the parts and relationships of the package, and the LibreOffice round trip of four documents: character error rate at most 0.03 and as many pages as the source; the XML of every part by `xmllint`; the words of the page by this project's presentation reader).
 - **Revisit when**: the layout analysis carries colour (text, fills, rules), or a page of vector figures is to be kept (a figure as a picture of the drawn region), or PowerPoint on a real installation shows a rendering the office suite does not.
+
+## 282. PDF to PPT is offered: the presentation of the pages, exported by the office suite as PowerPoint 97-2003
+
+- **Status**: Implemented, decided 2026-11-13 (QA request: raise conversion quality to commercial level against the reference service; the pair the reference service lists and entry 183 left out for a measured defect, whose cause entry 281 removes); nothing is deployed. It lifts one pair of entry 183's list.
+- **Decision**:
+  - **`pdf` offers `ppt`** (registry, `NATIVE_ENGINE_ONLY_PAIRS`), written as Word 97-2003 is written from a PDF (`bridgeFormat`, `convertBridgedTarget`, `src/worker/office-suite-route.ts`): the in-process converter writes the PDF as the PPTX of entry 281 (one slide for each page) and the office suite exports that file with its PowerPoint 97 filter. The PPTX never goes to the request's output path. Without the office suite the answer is an unavailable engine (503), as for `pdf` to `doc`; there is no in-process `.ppt` writer.
+  - **`tests/parity-audit.test.ts` no longer withdraws `pdf->ppt`**, so the registry has to keep advertising it.
+- **Why**:
+  - **Entry 183 left it out for one measurement**: on `latin.pdf` the word recall against the text it was set from was 0.9798 (0.0202 under the office suite, where 0.02 is allowed) because the text route joined `well-known` across a line end into `wellknown`. The route is gone: a line of the page is a line of the slide and a hyphenated word stays as the page breaks it.
+  - **Measured** on the 32 PDFs that convert of `tests/fixtures/pdf-structure` and `tests/fixtures/pdf-text`, written by the product through the worker route (engine `native-soffice-pool`), drawn back to pages by LibreOffice 24.2 on the Linux arm64 VM and read with Poppler, against the office suite's own PDF import saved as PPT:
+
+    | | the product | the suite's own import |
+    |---|---|---|
+    | Slides equal to pages | 32 of 32 | 34 of 34 |
+    | SSIM of the slide against the source page, mean (60 dpi) | 0.841 | 0.889 |
+    | Word F1 of the text read from the drawn slides against the source | 0.999 | 0.992 |
+
+    One PDF converts in 1.4 s on the VM, the export being most of it.
+- **Trade-offs**:
+  - **The reference's engine for the pair is not measured** (the service is not reachable from here), the office suite's own import is the stand-in that entry 281 names; a deck the reference writes may place text in other boxes.
+  - **The size of the file**: the suite's PPT of a one-page PDF is 0.58 MB on the VM, many times the size of the PPTX it is made from.
+- **Verified by**: `tests/pdf-to-ppt.test.ts` (the pair advertised and listed by the reference, the bridge, the order and clean-up of the two steps on stand-ins, and, with LibreOffice and Poppler present, a PPT of the real engine: a compound file, as many pages drawn back as the PDF has, every word of the PDF drawn), `tests/parity-audit.test.ts` (the registry advertises every reference pair that is not withdrawn).
+- **Revisit when**: a reference conversion of PDF to PPT can be compared, or the `.ppt` of the suite can be made smaller.

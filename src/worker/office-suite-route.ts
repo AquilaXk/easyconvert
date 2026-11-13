@@ -388,6 +388,8 @@ const HANCOM_SOURCES: ReadonlySet<string> = new Set(['hwp', 'hwpx']);
 /** Text and markup sources: the in-process converter writes their DOCX and their PDF, and no office suite reads them as such. */
 const MARKUP_SOURCES: ReadonlySet<string> = new Set(['html', 'md', 'txt', 'rst']);
 const WORD_97_TARGET = 'doc';
+const POWERPOINT_97_TARGET = 'ppt';
+const PPTX_FORMAT = 'pptx';
 const RTF_TARGET = 'rtf';
 const DOCX_FORMAT = 'docx';
 const PDF_FORMAT = 'pdf';
@@ -403,18 +405,19 @@ export function isMarkupPageImagePair(src: string, tgt: string): boolean {
 
 /**
  * The format the in-process converter writes first for a target that only the office suite writes, or undefined when the pair has
- * no such bridge: a Word 97-2003 file from a Hangul document, a text, markup or PDF source (through its DOCX), and RTF from a text or
- * markup source.
+ * no such bridge: a Word 97-2003 file from a Hangul document, a text, markup or PDF source (through its DOCX), RTF from a text or
+ * markup source, and a PowerPoint 97-2003 file from a PDF (through its PPTX, one slide for each page).
  */
 export function bridgeFormat(src: string, tgt: string): string | undefined {
   if (tgt === WORD_97_TARGET && (HANCOM_SOURCES.has(src) || MARKUP_SOURCES.has(src) || src === PDF_FORMAT)) return DOCX_FORMAT;
   if (tgt === RTF_TARGET && MARKUP_SOURCES.has(src)) return DOCX_FORMAT;
+  if (tgt === POWERPOINT_97_TARGET && src === PDF_FORMAT) return PPTX_FORMAT;
   return undefined;
 }
 
 /**
- * A Hangul, text, Markdown, reStructuredText, HTML or PDF document written as `.doc`, or a text or markup document written as `.rtf`: the
- * in-process converter writes the source as a DOCX (the document it reads, with its tables and pictures), and the office suite exports that
+ * A Hangul, text, Markdown, reStructuredText, HTML or PDF document written as `.doc`, a text or markup document written as `.rtf`, or a PDF
+ * written as `.ppt`: the in-process converter writes the source as a DOCX (a PPTX for a presentation) (the document it reads, with its tables and pictures), and the office suite exports that
  * file with its `MS Word 97` or `Rich Text Format` filter, the way every Word document is written in a legacy format.
  * The converter's own `.doc` is a Rich Text stream under the `.doc` name, which no Word 97-2003 reader and no signature check takes
  * for a compound file. The DOCX never goes to the output path of the request, which only the export writes. An HTML page is read by the
