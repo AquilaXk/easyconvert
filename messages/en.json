@@ -276,14 +276,7 @@
       "acceptTerms": "I accept the <link>terms of service</link>.",
       "signIn": "Sign In",
       "createAccount": "Create Account",
-      "forgotPassword": "Forgot password?",
-      "sendCode": "Send verification code",
-      "code": "Verification Code",
-      "codePlaceholder": "6 digits",
-      "confirmSignIn": "Confirm and Sign In",
-      "resendCode": "Send a new code",
-      "changeEmail": "Change email address",
-      "backToSignIn": "Back"
+      "forgotPassword": "Forgot password?"
     },
     "oauthErrors": {
       "oauth_code_missing": "Authentication request cancelled or authorization code missing.",
@@ -302,10 +295,6 @@
       "missingFields": "Fill in all required fields.",
       "passwordTooShort": "Password must be at least 8 characters long.",
       "passwordMismatch": "Passwords do not match.",
-      "codeFormat": "The verification code is 6 digits.",
-      "codeSentRegister": "We sent a verification code to {email}. Enter it within 10 minutes. If it does not arrive, check your spam folder.",
-      "codeSentLogin": "This account's email address has not been confirmed yet. We sent a verification code to {email}. Enter it within 10 minutes.",
-      "codeResent": "A new verification code was sent.",
       "created": "Account created. Redirecting...",
       "signedIn": "Signed in. Redirecting...",
       "connection": "The connection dropped. Try again."

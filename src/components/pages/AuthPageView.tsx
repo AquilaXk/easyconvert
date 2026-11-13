@@ -18,8 +18,6 @@ function LoginFormContent({ googleEnabled, passwordResetEnabled }: Readonly<Auth
   const t = useTranslations('auth');
   const {
     activeTab,
-    step,
-    code,
     email,
     password,
     confirmPassword,
@@ -30,7 +28,6 @@ function LoginFormContent({ googleEnabled, passwordResetEnabled }: Readonly<Auth
     isGoogleLoading,
     error,
     successMessage,
-    setCode,
     setEmail,
     setPassword,
     setConfirmPassword,
@@ -40,8 +37,6 @@ function LoginFormContent({ googleEnabled, passwordResetEnabled }: Readonly<Auth
     handleTabSwitch,
     handleGoogleLogin,
     handleSubmit,
-    resendCode,
-    backToStart,
   } = useAuthController();
   const otherTab = activeTab === 'login' ? 'register' : 'login';
   const registerTitle = t('registerDocumentTitle');
@@ -81,7 +76,7 @@ function LoginFormContent({ googleEnabled, passwordResetEnabled }: Readonly<Auth
           </output>
         )}
 
-        {googleEnabled && step === 'start' && (
+        {googleEnabled && (
           <>
             <GoogleOAuthButton
               isGoogleLoading={isGoogleLoading}
@@ -101,8 +96,6 @@ function LoginFormContent({ googleEnabled, passwordResetEnabled }: Readonly<Auth
 
         <AuthCredentialsForm
           activeTab={activeTab}
-          step={step}
-          code={code}
           passwordResetEnabled={passwordResetEnabled}
           name={name}
           email={email}
@@ -112,11 +105,6 @@ function LoginFormContent({ googleEnabled, passwordResetEnabled }: Readonly<Auth
           showPassword={showPassword}
           isBusy={isLoading || isGoogleLoading}
           isSubmitting={isLoading}
-          onCodeChange={setCode}
-          onResendCode={() => {
-            void resendCode();
-          }}
-          onBackToStart={backToStart}
           onNameChange={setName}
           onEmailChange={setEmail}
           onPasswordChange={setPassword}

@@ -32,8 +32,6 @@ function render(locale: 'en' | 'ko', node: ReactNode) {
 }
 
 const formProps = {
-  step: 'start',
-  code: '',
   name: '',
   email: '',
   password: '',
@@ -42,9 +40,6 @@ const formProps = {
   showPassword: false,
   isBusy: false,
   isSubmitting: false,
-  onCodeChange: () => undefined,
-  onResendCode: () => undefined,
-  onBackToStart: () => undefined,
   onNameChange: () => undefined,
   onEmailChange: () => undefined,
   onPasswordChange: () => undefined,
