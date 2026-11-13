@@ -34,7 +34,7 @@ const LOCALES: readonly TestLocale[] = ['en', 'ko'];
 const CASES = DOCUMENTS.flatMap((id) => LOCALES.map((locale) => [id, locale] as const));
 
 /** The version date as each language writes it, typed out from the requirement rather than from the formatter. */
-const VERSION_DATE: Record<TestLocale, string> = { en: 'Effective December 14, 2026', ko: '시행일 2026년 12월 14일' };
+const VERSION_DATE: Record<TestLocale, string> = { en: 'Effective December 13, 2026', ko: '시행일 2026년 12월 13일' };
 
 const TITLES: Record<LegalDocumentId, Record<TestLocale, string>> = {
   terms: { en: 'Terms of Service', ko: '이용약관' },
@@ -57,7 +57,7 @@ describe('each legal page in each language', () => {
   it.each(CASES)('%s in %s names its version date above its title', (id, locale) => {
     const page = renderPage(id, locale);
     const [time] = select(page, 'time');
-    expect(attrOf(time, 'datetime')).toBe('2026-12-14');
+    expect(attrOf(time, 'datetime')).toBe('2026-12-13');
     expect(visibleText(time)).toBe(VERSION_DATE[locale]);
     expect(headings(page)[0]).toBe(TITLES[id][locale]);
   });

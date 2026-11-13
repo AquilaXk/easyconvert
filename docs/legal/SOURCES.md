@@ -1,6 +1,6 @@
 # Sources of the legal texts
 
-This file cites the source of every clause of the four legal pages: the terms of service, the privacy policy, the data processing terms and the acceptable use policy. The texts are `terms`, `privacy`, `dpa` and `acceptable-use` in this folder, each in English (`.en.md`) and Korean (`.ko.md`). The two languages carry the same clauses under the same section numbers. The site renders them at `/terms`, `/privacy`, `/dpa` and `/acceptable-use` (`src/lib/legal/`), with the parser and policy of the Markdown conversion (`src/lib/markdown/safe-markdown.ts`). The texts link to pages of the site without a language prefix, and the renderer adds the prefix of the page's language. The four pages share one version, the date shown at their top (`LEGAL_TEXTS_VERSION`, `src/lib/legal/documents.ts:7`), since they cite each other's sections. Version of this set: 2026-12-14 (the paid plans, the refund policy and Paddle as the payment provider; the session cookie names are of 2026-11-12, the backup wording of 2026-11-08, and the law texts above were read on 2026-11-03).
+This file cites the source of every clause of the four legal pages: the terms of service, the privacy policy, the data processing terms and the acceptable use policy. The texts are `terms`, `privacy`, `dpa` and `acceptable-use` in this folder, each in English (`.en.md`) and Korean (`.ko.md`). The two languages carry the same clauses under the same section numbers. The site renders them at `/terms`, `/privacy`, `/dpa` and `/acceptable-use` (`src/lib/legal/`), with the parser and policy of the Markdown conversion (`src/lib/markdown/safe-markdown.ts`). The texts link to pages of the site without a language prefix, and the renderer adds the prefix of the page's language. The four pages share one version, the date shown at their top (`LEGAL_TEXTS_VERSION`, `src/lib/legal/documents.ts:7`), since they cite each other's sections. Version of this set: 2026-12-13 (the paid plans, the refund policy and Paddle as the payment provider; the session cookie names are of 2026-11-12, the backup wording of 2026-11-08, and the law texts above were read on 2026-11-03).
 
 The numbers the texts state (the daily allowance, the retention periods, the cookie and counter lifetimes) are read from the code in `tests/legal-values.test.ts`, which fails when a text and the value in force differ. A test also holds the two languages to the same sections, list items and table rows.
 
@@ -83,7 +83,7 @@ The Korean text follows the order of PIPC-G (items 1 to 24). Items that do not a
 | 12 | No pseudonymised data, no automated decisions | PIPA 30(1)(4-2); PIPC-G items 13 and 17; GDPR 13(2)(f) |
 | 13 | Privacy officer and contact | PIPA 30(1)(6); PIPA 31(1), 31(2) (the owner is the officer when none is designated); PIPC-G item 18; GDPR 13(1)(a), (b). A domestic representative (PIPA 31-2) does not apply: the operator is in Korea |
 | 14 | Remedy bodies and their numbers | PIPC-G item 20 (the bodies and numbers are copied from its example) |
-| 15 | Version date, changes announced, earlier versions kept | PIPA 30(2); PIPA-D 31(2); PIPC-G item 24 ; the 2026-12-14 version states what it adds |
+| 15 | Version date, changes announced, earlier versions kept | PIPA 30(2); PIPA-D 31(2); PIPC-G item 24 ; the 2026-12-13 version states what it adds |
 | Footer | The link is named "개인정보 처리방침" and set out in bold | PIPC-G section "개인정보 처리방침의 공개" (표준지침 제20조: name it so and set it apart by size, colour or weight) |
 
 ## Data processing terms
@@ -114,7 +114,7 @@ The Korean text follows the order of PIPC-G (items 1 to 24). Items that do not a
 
 ## Open points
 
-- The privacy policy names the operator and privacy officer, Dongin Jeong (정동인) from the 2026-12-14 version (Jeong Dongin before it), with the contact address `support@aquilaxk.site` (QA decision 2026-11-03), for PIPA 30(1)(6) and GDPR 13(1)(a). No telephone number is published; an e-mail address is the contact the service offers.
+- The privacy policy names the operator and privacy officer, Dongin Jeong (정동인) from the 2026-12-13 version (Jeong Dongin before it), with the contact address `support@aquilaxk.site` (QA decision 2026-11-03), for PIPA 30(1)(6) and GDPR 13(1)(a). No telephone number is published; an e-mail address is the contact the service offers.
 - The contact page and every request and report path show `support@aquilaxk.site`. Mail to it is forwarded by Cloudflare Email Routing to the operator's own mailbox (CF-MAIL). The provider of that mailbox is not named: if it is a service, it receives the messages as the operator's processor, and the privacy policy has to name it (PIPA 26(2), GDPR 13(1)(e)). QA to decide.
 - Contact messages have no deletion period: they stay in the operator's mailbox until deleted on request. PIPA 21(1) asks for deletion once a message is no longer needed; a period has to be chosen. QA to decide.
 - Accounts and API keys created before these terms are not asked to accept them; they are given notice of the terms on the website, and their records carry no `acceptedTermsVersion` (policy entry 146).
