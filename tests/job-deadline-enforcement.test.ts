@@ -22,7 +22,9 @@ import { isProcessRunning } from './helpers/process-state';
  * system (`process.kill(pid, 0)`), not from a flag the test sets.
  */
 
-const DEADLINE_MS = 400;
+// Long enough that the sandboxed shell and its sleeper are up and checked before the deadline on a slow runner: at 400 ms the
+// deadline could pass while the sandbox was still starting, and the test then found the processes already gone.
+const DEADLINE_MS = 1_500;
 const JOB_FAIL_BOUND_MS = 4_000;
 const POLL_MS = 25;
 const HTTP_GATEWAY_TIMEOUT = 504;
