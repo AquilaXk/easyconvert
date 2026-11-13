@@ -28,6 +28,9 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 ## Operations and security
 - Check once in the Paddle sandbox that the portal-session error log (`[billing] portal session failed`) carries no authorization header or key.
 - Install the Redis backup timer on the host on or after 2026-12-08 (30-day notice of the new privacy text).
+- Refresh the disposable email list about once a month (entry 288): `node scripts/refresh-disposable-email-domains.mjs`, read `git diff --stat third_party/disposable-email-domains`, commit the list, `SOURCE.md` and the generated module together.
+- Watch the `auth_mail_budget level=warn` line of the server log (400 mails of a day, cap 480, entry 288); when sign-ups come near it, move the auth mails to a mail provider with a free tier and raise `MAIL_DAILY_WARN` and `MAIL_DAILY_HARD_CAP` in `src/lib/auth/mail-budget.ts` to its limit.
+- Tell an account of the old kind, in the dashboard notice of an unconfirmed address (`emailVerification` in the messages, now about a mailed link), that it counts as a visitor for conversions until the code asked at its next sign-in (entry 288; needs QA's copy and a screenshot).
 
 ## Tests and CI
 - Re-pin `book-pg2701.epub` to an archived capture taken after its live file was rebuilt on 2026-11-08, with a gutenberg.org mirror (latest capture 2026-11-01 differs; `book-pg84.epub` done); the pg84 quality rows were not re-measured against the rebuilt bytes (entry 224).
