@@ -46,7 +46,7 @@ afterEach(async () => {
 
 async function createUser(tier: SignedInPlan): Promise<User> {
   const email = `${tier}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@plan-size.test`;
-  return userStore.sanitizeUser(await userStore.createUser({ email, name: tier, tier }));
+  return userStore.sanitizeUser(await userStore.createUser({ emailVerified: true, email, name: tier, tier }));
 }
 
 async function headersFor(plan: PlanCase['plan'], extra: Record<string, string> = {}): Promise<Record<string, string>> {

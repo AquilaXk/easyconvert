@@ -47,6 +47,7 @@ const PAID_TEST_CREDITS = 500;
 
 async function account(tier: 'free' | 'paid'): Promise<Account> {
   const user = await userStore.createUser({
+    emailVerified: true,
     email: `conc_${tier}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@concurrency.test`,
     name: `Concurrency ${tier}`,
     tier,

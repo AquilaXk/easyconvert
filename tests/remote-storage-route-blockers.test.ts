@@ -73,7 +73,7 @@ describe('object-store routes after the final review', () => {
     const { userStore } = await import('../src/lib/auth/user-store');
     const { createSessionToken } = await import('../src/lib/auth/session');
     const email = `${tag}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@route-blockers.local`;
-    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: tag, tier }));
+    const user = userStore.sanitizeUser(await userStore.createUser({ emailVerified: true, email, name: tag, tier }));
     return { user, cookie: { Cookie: `easyconvert_session=${createSessionToken(user)}` } };
   }
 

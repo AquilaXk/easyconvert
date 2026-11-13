@@ -27,7 +27,7 @@ function uniqueSuffix(): string {
 
 async function createUser(label: string, tier: 'free' | 'paid' = 'paid'): Promise<User> {
   const email = `${label}_${uniqueSuffix()}@upload-auth.test`;
-  return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier }));
+  return userStore.sanitizeUser(await userStore.createUser({ emailVerified: true, email, name: label, tier }));
 }
 
 function sessionHeaders(user: User, extraHeaders: Record<string, string> = {}): Record<string, string> {

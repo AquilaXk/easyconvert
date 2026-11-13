@@ -294,6 +294,7 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
     beforeEach(async () => {
       redisUserStore.resetStore();
       testUser = await redisUserStore.createUser({
+        emailVerified: true,
         email: 'tier@test.com',
         name: 'Tier Test User',
         tier: 'free',

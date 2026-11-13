@@ -31,6 +31,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
 
     const email = `dev_${Date.now()}_${Math.random().toString(36).substring(7)}@example.com`;
     const created = await userStore.createUser({
+      emailVerified: true,
       email,
       name: 'Enterprise Test Developer',
       tier: 'paid',
@@ -101,6 +102,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
     it('enforces quota exhaustion when daily tier limit is exceeded', async () => {
       // Free tier user
       const freeUser = await userStore.createUser({
+        emailVerified: true,
         email: `free_${Date.now()}@example.com`,
         name: 'Free User',
         tier: 'free',
@@ -124,6 +126,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
 
     it('permits 0-unit read requests (file download, job tracking) even when daily quota is exhausted', async () => {
       const freeUser = await userStore.createUser({
+        emailVerified: true,
         email: `free_read_${Date.now()}@example.com`,
         name: 'Free User 2',
         tier: 'free',

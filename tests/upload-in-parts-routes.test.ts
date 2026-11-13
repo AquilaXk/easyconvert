@@ -36,7 +36,7 @@ afterEach(async () => {
 
 async function createUser(): Promise<User> {
   const email = `parts_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@upload-parts.test`;
-  return userStore.sanitizeUser(await userStore.createUser({ email, name: 'parts', tier: 'free' }));
+  return userStore.sanitizeUser(await userStore.createUser({ emailVerified: true, email, name: 'parts', tier: 'free' }));
 }
 
 async function sessionHeaders(): Promise<Record<string, string>> {

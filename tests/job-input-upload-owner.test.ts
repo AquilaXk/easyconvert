@@ -31,7 +31,7 @@ beforeEach(async () => {
   vi.stubEnv('REDIS_URL', '');
   vi.stubEnv('REDIS_HOST', '');
   const email = `owner_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@owner.test`;
-  const user = await userStore.createUser({ email, name: 'Owner', tier: 'free' });
+  const user = await userStore.createUser({ emailVerified: true, email, name: 'Owner', tier: 'free' });
   userId = user.id;
   secretKey = (await redisKeyStore.generateApiKey(user.id, 'Owner Key', { scopes: ['convert:write', 'convert:read'] })).secretKey;
 });

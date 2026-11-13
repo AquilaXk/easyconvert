@@ -542,6 +542,7 @@ describe('collision errors map to 422 at the convert routes', () => {
 
   it('POST /api/v1/convert answers 422 for an entry collision', async () => {
     const user = await userStore.createUser({
+      emailVerified: true,
       name: 'Collision Tester',
       email: `collision_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
       tier: 'paid',

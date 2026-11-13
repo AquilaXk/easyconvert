@@ -120,7 +120,7 @@ describe('the upload budget of an address bucket', () => {
 
 async function account(): Promise<Record<string, string>> {
   const email = `budget_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@budget.test`;
-  const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'budget', tier: 'free' }));
+  const user = userStore.sanitizeUser(await userStore.createUser({ emailVerified: true, email, name: 'budget', tier: 'free' }));
   return { Cookie: `easyconvert_session=${createSessionToken(user)}` };
 }
 

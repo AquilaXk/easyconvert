@@ -8,6 +8,7 @@ import { API_KEY_BURST_LIMITS, type QuotaPeriod } from '../plan-limits';
 import { getSessionFromRequest } from '../auth/session';
 import { AuthStoreUnavailableError } from '../auth/store-unavailable';
 import { anonymousUserId, isAnonymousUserId, isUnattributedAnonymous } from '../auth/anonymous-identity';
+import { countsAsAnonymousForConversions } from '../auth/email-verified';
 import type { User } from '../auth/types';
 import type { ApiKey, ApiKeyScope, QuotaUsage } from './types';
 import { webhookDispatcher } from './webhook-dispatcher';
@@ -266,8 +267,10 @@ async function checkQuotaAndReserve(userId: string, need: number): Promise<Quota
 }
 
 async function verifyKeyAccess(
+  request: Request,
   apiKeySecret: string,
   need: number,
+  allowAnonymous: boolean,
   requiredScope?: string,
   clientIp?: string
 ): Promise<ApiAuthResult> {
@@ -332,6 +335,9 @@ async function verifyKeyAccess(
       problemType: RATE_LIMITED_PROBLEM_TYPE,
     };
   }
+
+  const unconfirmed = await accessOfUnconfirmedAccount(request, verification.user, need, allowAnonymous);
+  if (unconfirmed) return unconfirmed;
 
   const quota = await checkQuotaAndReserve(verification.user.id, need);
   if (!quota.allowed) {
@@ -450,6 +456,30 @@ async function verifyAnonymousAccess(clientIp: string, need: number): Promise<Ap
   };
 }
 
+const UNCONFIRMED_ADDRESS_MESSAGE = 'Confirm your email address to use this. Sign in again to get a code by mail.';
+
+/**
+ * The access of an account whose address was never confirmed (`countsAsAnonymousForConversions`), or undefined for any other
+ * account. A route open to anonymous callers answers as for an anonymous visitor of the same address bucket, whatever it
+ * needs, so what the route reserves afterwards is the visitor's allowance and not one of the account; a route that is not
+ * open to them refuses the account when it needs a conversion and lets it read.
+ */
+async function accessOfUnconfirmedAccount(
+  request: Request,
+  user: User,
+  need: number,
+  allowAnonymous: boolean
+): Promise<ApiAuthResult | undefined> {
+  if (!countsAsAnonymousForConversions(user)) return undefined;
+  if (allowAnonymous) {
+    const resolved = resolveClientIpForAuth(request);
+    if ('rejection' in resolved) return resolved.rejection;
+    return verifyAnonymousAccess(resolved.clientIp, need);
+  }
+  if (need > 0) return { authorized: false, user, error: UNCONFIRMED_ADDRESS_MESSAGE, status: 403 };
+  return undefined;
+}
+
 /**
  * Validates programmatic REST API requests using either API Key header or User session.
  * Supports 2-phase quota transactions (reserve), anonymous IP protection, and granular scope verification.
@@ -488,11 +518,13 @@ async function authenticateRequest(
   if (apiKeySecret) {
     const resolved = resolveClientIpForAuth(request);
     if ('rejection' in resolved) return resolved.rejection;
-    return verifyKeyAccess(apiKeySecret, need, requiredScope, resolved.clientIp);
+    return verifyKeyAccess(request, apiKeySecret, need, allowAnonymous, requiredScope, resolved.clientIp);
   }
 
   const sessionUser = await getSessionFromRequest(request);
   if (sessionUser) {
+    const unconfirmed = await accessOfUnconfirmedAccount(request, sessionUser, need, allowAnonymous);
+    if (unconfirmed) return unconfirmed;
     const quota = await checkQuotaAndReserve(sessionUser.id, need);
     if (!quota.allowed) return { authorized: false, user: sessionUser, ...quotaRefusal(quota, sessionUser.id) };
     return {

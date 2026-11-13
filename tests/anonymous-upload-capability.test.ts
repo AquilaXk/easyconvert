@@ -39,7 +39,7 @@ function from(address: string): Record<string, string> {
 
 async function signedIn(): Promise<Record<string, string>> {
   const email = `cap_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@capability.test`;
-  const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'cap', tier: 'free' }));
+  const user = userStore.sanitizeUser(await userStore.createUser({ emailVerified: true, email, name: 'cap', tier: 'free' }));
   return { Cookie: `easyconvert_session=${createSessionToken(user)}` };
 }
 

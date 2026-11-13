@@ -112,7 +112,7 @@ function importRequest(client: { headers: Record<string, string> }, signal?: Abo
 /** A signed-in account of `tier`, sending its session cookie. */
 async function account(tier: 'free' | 'paid') {
   const email = `import-budget-${tier}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@quota.test`;
-  const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'Import Budget', tier }));
+  const user = userStore.sanitizeUser(await userStore.createUser({ emailVerified: true, email, name: 'Import Budget', tier }));
   return { userId: user.id, headers: { cookie: `easyconvert_session=${createSessionToken(user)}` } };
 }
 
@@ -655,7 +655,7 @@ describe('what a request is charged', () => {
 
     it('answers a finished conversion and charges it once when its answer cannot be recorded', async () => {
       setIdempotencyStore(new StoreThatCannotRecord());
-      const user = userStore.sanitizeUser(await userStore.createUser({ email: `v1-${Date.now()}@quota.test`, name: 'V1', tier: 'free' }));
+      const user = userStore.sanitizeUser(await userStore.createUser({ emailVerified: true, email: `v1-${Date.now()}@quota.test`, name: 'V1', tier: 'free' }));
       const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'v1 key', { scopes: ['convert:write'] });
       const remaining = async () => (await redisKeyStore.getQuotaUsage(user.id)).remaining;
       const before = await remaining();
@@ -691,7 +691,7 @@ describe('what a request is charged', () => {
     });
 
     async function apiCaller() {
-      const user = userStore.sanitizeUser(await userStore.createUser({ email: `v1-jobs-${Date.now()}-${nextClient++}@quota.test`, name: 'V1 jobs', tier: 'free' }));
+      const user = userStore.sanitizeUser(await userStore.createUser({ emailVerified: true, email: `v1-jobs-${Date.now()}-${nextClient++}@quota.test`, name: 'V1 jobs', tier: 'free' }));
       const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'v1 jobs key', { scopes: ['convert:write'] });
       return { userId: user.id, usedToday: async () => (await redisKeyStore.getQuotaUsage(user.id)).usedToday, authorization: `Bearer ${secretKey}` };
     }
