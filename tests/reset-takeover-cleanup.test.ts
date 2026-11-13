@@ -81,6 +81,27 @@ describe('a reset that takes an unverified account back for the owner of its add
     expect(clearDlq).toHaveBeenCalledWith(record.id, { strict: true });
   });
 
+  it('can be done again after a cleanup step failed: the account stays unverified until its keys are gone, so a second reset cleans up', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const record = await passwordAccount('squatted');
+    const { first } = await registrantsSetup(record.id);
+    vi.spyOn(redisKeyStore, 'deleteApiKey').mockRejectedValueOnce(new Error('the store went away'));
+
+    const failed = await resetThrough(record.email);
+    expect(failed.status).toBe(500);
+    // The token is spent and the owner's password is set, but the address is not confirmed and the keys are still there.
+    expect(isEmailVerified((await redisUserStore.findById(record.id))!)).toBe(false);
+    expect((await redisKeyStore.verifyApiKey(first.secretKey)).valid).toBe(true);
+
+    mail.sendMail.mockClear();
+    const retried = await resetThrough(record.email);
+    expect(retried.status).toBe(200);
+    expect(isEmailVerified((await redisUserStore.findById(record.id))!)).toBe(true);
+    expect(await redisKeyStore.listApiKeys(record.id)).toEqual([]);
+    expect((await redisKeyStore.verifyApiKey(first.secretKey)).valid).toBe(false);
+    expect(await credentialsVault.listByUser(record.id)).toEqual([]);
+  });
+
   it('leaves the keys, credentials and webhooks of an account whose address was verified alone: an ordinary reset', async () => {
     const record = await passwordAccount('ordinary', { emailVerified: true });
     const { first, credentialRef } = await registrantsSetup(record.id);
