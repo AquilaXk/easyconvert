@@ -318,7 +318,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
     });
 
     it('by a free account is refused once the plan allowance is spent, in a budget keyed by the account', async () => {
-      const user = userStore.sanitizeUser(await userStore.createUser({ email: `import-${crypto.randomBytes(6).toString('hex')}@quota.test`, name: 'Import', tier: 'free' }));
+      const user = userStore.sanitizeUser(await userStore.createUser({ emailVerified: true, email: `import-${crypto.randomBytes(6).toString('hex')}@quota.test`, name: 'Import', tier: 'free' }));
       otherUsers.push(user.id);
       const session = { cookie: `easyconvert_session=${createSessionToken(user)}` };
       await spendImportBytes(user.id, 'free', FREE_DAILY_IMPORT_BYTES - Buffer.byteLength(CSV));
