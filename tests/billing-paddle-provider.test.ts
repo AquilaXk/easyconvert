@@ -281,6 +281,56 @@ describe('listPackagePurchases', () => {
   });
 });
 
+describe('listPackageRefunds', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  /** An adjustment as the SDK returns it from a list (camel case). */
+  const listed = (id: string, overrides: Record<string, unknown> = {}, createdAt = NOW - DAY) => ({
+    id,
+    action: 'refund',
+    status: 'approved',
+    transactionId: 'txn_01fixture',
+    currencyCode: 'USD',
+    items: [{ type: 'full' }],
+    totals: { total: '499' },
+    createdAt: new Date(createdAt).toISOString(),
+    updatedAt: new Date(createdAt + 60_000).toISOString(),
+    ...overrides,
+  });
+  const read = async (pages: unknown[][]) => {
+    const collection = { hasMore: true, next: vi.fn(async () => { const page = pages.shift() ?? []; collection.hasMore = pages.length > 0; return page; }) };
+    const list = vi.fn().mockReturnValue(collection);
+    const fake = new PaddleBillingProvider(config, { adjustments: { list } } as never);
+    const seen: unknown[] = [];
+    for await (const page of fake.listPackageRefunds({ perPage: 50, signal: new AbortController().signal })) seen.push(...page);
+    return { list, collection, seen };
+  };
+
+  it('asks for approved refunds and chargebacks, newest first, and reads each as an event is', async () => {
+    const { list, seen } = await read([[listed('adj_new'), listed('adj_part', { items: [{ type: 'partial' }], totals: { total: '125' }, action: 'chargeback' })]]);
+    expect(list).toHaveBeenCalledWith({ perPage: 50, action: ['refund', 'chargeback'], status: ['approved'], orderBy: 'id[DESC]' });
+    expect(seen).toEqual([
+      { adjustmentId: 'adj_new', transactionId: 'txn_01fixture', amount: '499', currency: 'USD', full: true, action: 'refund', occurredAt: NOW - DAY + 60_000 },
+      { adjustmentId: 'adj_part', transactionId: 'txn_01fixture', amount: '125', currency: 'USD', full: false, action: 'chargeback', occurredAt: NOW - DAY + 60_000 },
+    ]);
+  });
+
+  it('reads nothing from an adjustment that is not an approved refund or chargeback, whatever the filter said', async () => {
+    const { seen } = await read([[listed('adj_a', { status: 'reversed' }), listed('adj_b', { action: 'chargeback_reverse' }), listed('adj_c', { status: 'pending_approval' })]]);
+    expect(seen).toEqual([]);
+  });
+
+  it('stops at the first page that is older than 30 days in full, and keeps the ones inside the window of the page before it', async () => {
+    const old = NOW - 31 * DAY;
+    const { collection, seen } = await read([
+      [listed('adj_1'), listed('adj_2', {}, old)],
+      [listed('adj_3', {}, old), listed('adj_4', {}, old - DAY)],
+      [listed('adj_5', {}, old - 2 * DAY)],
+    ]);
+    expect(seen.map((refund) => (refund as { adjustmentId: string }).adjustmentId)).toEqual(['adj_1']);
+    expect(collection.next).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('changeSubscription', () => {
   it('moves the subscription to the price of the new size at once, the new price billed in full', async () => {
     const update = vi.fn().mockResolvedValue({});

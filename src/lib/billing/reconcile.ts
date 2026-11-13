@@ -4,16 +4,18 @@ import { observeBillingEvent } from '../metrics/instruments';
 import type { BillingResult } from '../metrics/labels';
 import { getBillingProvider } from './index';
 import { entitlementOf, isEntitlingStatus } from './entitlement';
-import { creditPackagePurchase } from './package-credits';
+import { creditPackagePurchase, refundPackagePurchase } from './package-credits';
 import { subscriptionStore, type SubscriptionStore } from './subscription-store';
-import type { BillingProvider, ListedPackagePurchase, ListedSubscription, SubscriptionChange, SubscriptionRecord } from './types';
+import type { BillingProvider, ListedPackagePurchase, ListedSubscription, PackageRefund, SubscriptionChange, SubscriptionRecord } from './types';
 
 /**
  * Compares the subscriptions of the store with the provider's list and corrects what a lost event left wrong (docs/policy-decisions.md,
  * entries 277 and 285). The webhook is the fast path; this is the second one, so that a cancellation or a failed renewal that never
  * arrived does not leave a paid tier in place for good, and a subscription whose first event never found its account is seen. A second
  * pass reads the provider's completed payments of the last 30 days, newest first, and credits each package payment the ledger lacks
- * (the credit is idempotent by transaction id, so a payment the webhook already credited changes nothing).
+ * (the credit is idempotent by transaction id, so a payment the webhook already credited changes nothing). A third pass, after the
+ * payments, reads the approved refunds and chargebacks of the same 30 days and takes back what each has not yet taken (idempotent by
+ * adjustment id, so a refund the webhook applied changes nothing, and one whose payment is not in the ledger yet is left for the next run).
  *
  * The method is a periodic list of the provider's subscriptions, each read through the code that reads a webhook event and compared with
  * the local record, with the safeguards this store needs:
@@ -61,6 +63,9 @@ export interface ReconcileReport {
   packagesListed: number;
   packagesCredited: number;
   packagesUnattributed: number;
+  /** Approved refunds and chargebacks the provider listed, and those that took credits back that no event had taken. */
+  refundsListed: number;
+  refundsApplied: number;
   /** Why a run is `partial` or `failed`, or the stored subscriptions left alone because the list looks wrong. */
   note?: string;
 }
@@ -234,6 +239,31 @@ async function reconcilePackages(run: Run, signal: AbortSignal, pagePauseMs: num
   }
 }
 
+/** One approved refund or chargeback of the list: applied once for each adjustment id; a payment the ledger does not hold (a subscription's, or one not credited yet) changes nothing. */
+async function reconcileRefund(run: Run, refund: PackageRefund): Promise<void> {
+  run.report.refundsListed += 1;
+  if ((await refundPackagePurchase(refund, run.packages)) === 'revoked') {
+    run.report.refundsApplied += 1;
+    count('applied');
+  }
+}
+
+/** Reads the provider's approved refunds a page at a time, at most `RECONCILE_MAX_PAGES` of them; true when the list was read back to its 30-day bound. */
+async function reconcileRefunds(run: Run, signal: AbortSignal, pagePauseMs: number): Promise<boolean> {
+  const pages = run.provider.listPackageRefunds({ perPage: RECONCILE_PAGE_SIZE, signal });
+  try {
+    for (let page = 0; ; page++) {
+      const next = await pages.next();
+      if (next.done) return true;
+      if (page >= RECONCILE_MAX_PAGES) return false;
+      for (const refund of next.value) await reconcileRefund(run, refund);
+      if (pagePauseMs > 0) await new Promise((resolve) => setTimeout(resolve, pagePauseMs));
+    }
+  } finally {
+    await pages.return();
+  }
+}
+
 async function runReconcile(run: Run, signal: AbortSignal, pagePauseMs: number): Promise<void> {
   const records = await run.store.listRecords();
   for (const record of records) {
@@ -254,6 +284,12 @@ async function runReconcile(run: Run, signal: AbortSignal, pagePauseMs: number):
     run.report.note = `the list of payments has more than ${RECONCILE_MAX_PAGES} pages of ${RECONCILE_PAGE_SIZE}; the oldest were not read`;
     console.error(`[billing] reconcile: ${run.report.note}`);
   }
+  // After the payments, so that a refund of a payment this run just credited is taken back in the same run. A refund is applied on its own, so it needs nothing of the lists before it to be complete.
+  if (!(await reconcileRefunds(run, signal, pagePauseMs))) {
+    run.report.outcome = 'partial';
+    run.report.note = `${run.report.note ? `${run.report.note}; ` : ''}the list of adjustments has more than ${RECONCILE_MAX_PAGES} pages of ${RECONCILE_PAGE_SIZE}; the oldest were not read`;
+    console.error(`[billing] reconcile: ${run.report.note}`);
+  }
 }
 
 /**
@@ -263,7 +299,7 @@ async function runReconcile(run: Run, signal: AbortSignal, pagePauseMs: number):
  */
 export async function reconcileSubscriptions(options: ReconcileOptions = {}): Promise<ReconcileReport> {
   const provider = options.provider ?? getBillingProvider()?.provider;
-  const report: ReconcileReport = { outcome: 'completed', listed: 0, corrected: 0, downgraded: 0, unattributed: 0, packagesListed: 0, packagesCredited: 0, packagesUnattributed: 0 };
+  const report: ReconcileReport = { outcome: 'completed', listed: 0, corrected: 0, downgraded: 0, unattributed: 0, packagesListed: 0, packagesCredited: 0, packagesUnattributed: 0, refundsListed: 0, refundsApplied: 0 };
   if (!provider) return { ...report, outcome: 'disabled' };
   const store = options.store ?? subscriptionStore;
   const now = options.now ?? Date.now;
@@ -286,7 +322,8 @@ export async function reconcileSubscriptions(options: ReconcileOptions = {}): Pr
   }
   console.log(
     `[billing] reconcile ${report.outcome}: listed ${report.listed}, corrected ${report.corrected}, withdrawn ${report.downgraded}, without account ${report.unattributed}; ` +
-      `payments listed ${report.packagesListed}, credited ${report.packagesCredited}, without account ${report.packagesUnattributed}`
+      `payments listed ${report.packagesListed}, credited ${report.packagesCredited}, without account ${report.packagesUnattributed}; ` +
+      `refunds listed ${report.refundsListed}, applied ${report.refundsApplied}`
   );
   return report;
 }

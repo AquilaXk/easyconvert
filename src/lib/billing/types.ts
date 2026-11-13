@@ -130,6 +130,12 @@ export interface BillingProvider {
   /** The refund or chargeback of a package payment an adjustment event reports, once approved, or null. */
   mapEventToPackageRefund(event: VerifiedBillingEvent): PackageRefund | null;
   /**
+   * The approved refunds and chargebacks of the last 30 days from the provider's own list, newest first, a page at a time, read as the
+   * events of `mapEventToPackageRefund` are. Ends when the list is read back to the first adjustment older than that; a page that
+   * cannot be read in time throws.
+   */
+  listPackageRefunds(options: { perPage: number; signal: AbortSignal }): AsyncGenerator<PackageRefund[], void, void>;
+  /**
    * The completed payments of the provider's own list, newest first, a page at a time, read as the events of
    * `mapEventToPackagePurchase` are. A page that cannot be read in time throws.
    */

@@ -106,8 +106,39 @@ class FakePayments {
   }
 }
 
-const provider = (list: FakeList, payments: FakePayments = new FakePayments([])) =>
-  new PaddleBillingProvider(config, { subscriptions: { list: () => list }, transactions: { list: () => payments } } as unknown as Paddle);
+/** An adjustment as the SDK's list gives it (the fields the mapping reads). */
+function adjustment(id: string, transactionId: string, overrides: { action?: string; type?: string; total?: string; createdAt?: number } = {}) {
+  const createdAt = iso(overrides.createdAt ?? NOW - DAY);
+  return {
+    id,
+    action: overrides.action ?? 'refund',
+    status: 'approved',
+    transactionId,
+    currencyCode: 'USD',
+    items: [{ type: overrides.type ?? 'full' }],
+    totals: { total: overrides.total ?? '1999' },
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
+type Adjustment = ReturnType<typeof adjustment>;
+
+/** What `paddle.adjustments.list` returns, read as the list of payments is. */
+class FakeAdjustments {
+  hasMore = true;
+  calls = 0;
+  constructor(private readonly pages: (Adjustment[] | Error)[]) {}
+  async next(): Promise<Adjustment[]> {
+    this.calls += 1;
+    const page = this.pages.shift();
+    this.hasMore = this.pages.length > 0;
+    if (page instanceof Error) throw page;
+    return page ?? [];
+  }
+}
+
+const provider = (list: FakeList, payments: FakePayments = new FakePayments([]), adjustments: FakeAdjustments = new FakeAdjustments([])) =>
+  new PaddleBillingProvider(config, { subscriptions: { list: () => list }, transactions: { list: () => payments }, adjustments: { list: () => adjustments } } as unknown as Paddle);
 const bound = (userId: string) => new PaddleBillingProvider(config).createCheckout({ userId, email: 'a@b.test', product: { kind: 'subscription', credits: 1000 } }).customData;
 
 let run = '';
@@ -141,10 +172,11 @@ async function seed(userId: string, name: string, overrides: { status?: 'active'
 const tierOf = async (userId: string) => (await redisUserStore.findById(userId))?.tier;
 const events = (result: string) => reading('easyconvert_billing_events_total', { source: 'reconcile', result });
 
-function reconcile(pages: (Listed[] | Error | 'hang')[], options: ReconcileOptions = {}, payments: (Payment[] | Error)[] = []) {
+function reconcile(pages: (Listed[] | Error | 'hang')[], options: ReconcileOptions = {}, payments: (Payment[] | Error)[] = [], adjustments: (Adjustment[] | Error)[] = []) {
   const list = new FakeList(pages);
   const paid = new FakePayments(payments);
-  return { list, paid, result: reconcileSubscriptions({ provider: provider(list, paid), now: () => NOW, pagePauseMs: 0, ...options }) };
+  const adjusted = new FakeAdjustments(adjustments);
+  return { list, paid, adjusted, result: reconcileSubscriptions({ provider: provider(list, paid, adjusted), now: () => NOW, pagePauseMs: 0, ...options }) };
 }
 
 beforeEach(() => {
@@ -454,6 +486,96 @@ describe('a package payment the webhook missed', () => {
     const { result } = reconcile([[listed({ id: sub('a'), status: 'canceled', updatedAt: NOW - DAY })]], {}, [new Error('payments are down')]);
     expect(await result).toMatchObject({ outcome: 'failed', corrected: 1, note: 'payments are down' });
     expect(await tierOf(user)).toBe('free');
+  });
+});
+
+describe('a refund or chargeback the webhook missed', () => {
+  const packageBound = (userId: string, credits: 500 | 1000 | 2500 = 1000) => new PaddleBillingProvider(config).createCheckout({ userId, email: 'a@b.test', product: { kind: 'package', credits } }).customData;
+  const balanceOf = (userId: string) => redisKeyStore.packageBalance(userId);
+  const credited = async (userId: string, name: string, credits = 1000, paid = '1999') => {
+    expect(await redisKeyStore.creditPackage(userId, { transactionId: `txn_${run}_${name}`, credits, paid, at: NOW - 2 * DAY })).toBe('granted');
+  };
+
+  it('takes back the credits of an approved full refund, and counts it', async () => {
+    const user = await account();
+    await credited(user, 'a');
+    const { result, adjusted } = reconcile([[]], {}, [], [[adjustment(`adj_${run}_a`, `txn_${run}_a`)]]);
+    expect(await result).toMatchObject({ outcome: 'completed', refundsListed: 1, refundsApplied: 1 });
+    expect(await balanceOf(user)).toBe(0);
+    expect(await events('applied')).toBe(1);
+    expect(adjusted.calls).toBe(1);
+  });
+
+  it('takes the share of a partial refund and a chargeback in full', async () => {
+    const user = await account();
+    await credited(user, 'a', 1000, '2000');
+    await credited(user, 'b', 500, '999');
+    const { result } = reconcile([[]], {}, [], [[
+      adjustment(`adj_${run}_a`, `txn_${run}_a`, { type: 'partial', total: '500' }),
+      adjustment(`adj_${run}_b`, `txn_${run}_b`, { action: 'chargeback', total: '999' }),
+    ]]);
+    expect(await result).toMatchObject({ refundsListed: 2, refundsApplied: 2 });
+    expect(await balanceOf(user)).toBe(750);
+  });
+
+  it('takes it back once however often it is listed, and when the webhook took it back first', async () => {
+    const user = await account();
+    await credited(user, 'a', 1000, '2000');
+    const first = reconcile([[]], {}, [], [[adjustment(`adj_${run}_a`, `txn_${run}_a`, { type: 'partial', total: '500' })]]);
+    expect((await first.result).refundsApplied).toBe(1);
+    const again = reconcile([[]], { now: () => NOW + RECONCILE_HOLD_MS + 1000 }, [], [[adjustment(`adj_${run}_a`, `txn_${run}_a`, { type: 'partial', total: '500' })]]);
+    expect(await again.result).toMatchObject({ refundsListed: 1, refundsApplied: 0 });
+    expect(await balanceOf(user)).toBe(750);
+  });
+
+  it('takes back a refund that arrived before its payment was credited, after the payments pass credits the payment', async () => {
+    const user = await account();
+    const { result } = reconcile([[]], {}, [[payment(`txn_${run}_a`, 'pri_package_1000_fixture', packageBound(user))]], [[adjustment(`adj_${run}_a`, `txn_${run}_a`)]]);
+    expect(await result).toMatchObject({ packagesCredited: 1, refundsListed: 1, refundsApplied: 1 });
+    expect(await balanceOf(user)).toBe(0);
+  });
+
+  it('leaves a refund of a payment the ledger does not hold (a subscription renewal) for later and applies nothing', async () => {
+    const user = await account();
+    await credited(user, 'a');
+    const { result } = reconcile([[]], {}, [], [[adjustment(`adj_${run}_x`, `txn_${run}_unknown`)]]);
+    expect(await result).toMatchObject({ outcome: 'completed', refundsListed: 1, refundsApplied: 0 });
+    expect(await balanceOf(user)).toBe(1000);
+    expect(await events('applied')).toBe(0);
+  });
+
+  it('applies a refund of a payment that is credited by a later run, not only the first', async () => {
+    const user = await account();
+    const early = reconcile([[]], {}, [], [[adjustment(`adj_${run}_a`, `txn_${run}_a`)]]);
+    expect((await early.result).refundsApplied).toBe(0);
+    await credited(user, 'a');
+    const late = reconcile([[]], { now: () => NOW + RECONCILE_HOLD_MS + 1000 }, [], [[adjustment(`adj_${run}_a`, `txn_${run}_a`)]]);
+    expect((await late.result).refundsApplied).toBe(1);
+    expect(await balanceOf(user)).toBe(0);
+  });
+
+  it('reads at most the page cap of adjustments, says the oldest were not read, and ends as partial with what it read applied', async () => {
+    const user = await account();
+    const pages = Array.from({ length: RECONCILE_MAX_PAGES + 5 }, (_, index) => [adjustment(`adj_${run}_p${index}`, `txn_${run}_p${index}`)]);
+    await credited(user, 'p0', 500);
+    const { adjusted, result } = reconcile([[]], {}, [], pages);
+    expect(await result).toMatchObject({ outcome: 'partial', refundsListed: RECONCILE_MAX_PAGES, refundsApplied: 1, note: expect.stringContaining('adjustments') });
+    expect(adjusted.calls).toBe(RECONCILE_MAX_PAGES + 1);
+    expect(await balanceOf(user)).toBe(0);
+  });
+
+  it('asks for no adjustment when the list of subscriptions was not read to its end', async () => {
+    const pages = Array.from({ length: RECONCILE_MAX_PAGES + 1 }, (_, index) => [listed({ id: sub(`p${index}`), updatedAt: NOW - DAY })]);
+    const { adjusted, result } = reconcile(pages, {}, [], [[adjustment(`adj_${run}_a`, `txn_${run}_a`)]]);
+    expect(await result).toMatchObject({ outcome: 'partial', refundsListed: 0 });
+    expect(adjusted.calls).toBe(0);
+  });
+
+  it('ends as failed when the list of adjustments fails, keeping what the earlier passes did', async () => {
+    const user = await account();
+    const { result } = reconcile([[]], {}, [[payment(`txn_${run}_a`, 'pri_package_1000_fixture', packageBound(user))]], [new Error('adjustments are down')]);
+    expect(await result).toMatchObject({ outcome: 'failed', packagesCredited: 1, note: 'adjustments are down' });
+    expect(await balanceOf(user)).toBe(1000);
   });
 });
 

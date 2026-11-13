@@ -111,6 +111,21 @@ interface AdjustmentData {
   totals: { total: string };
 }
 
+/** What an approved refund or chargeback adjustment gives back (of an event or of the list), or null for any other adjustment. */
+function mapAdjustment(data: AdjustmentData, occurredAt: number | undefined): PackageRefund | null {
+  // A refund that is still waiting for approval, was rejected or was reversed gives nothing back yet.
+  if (occurredAt === undefined || data.status !== 'approved' || !REFUND_ACTIONS.has(data.action)) return null;
+  return {
+    adjustmentId: data.id,
+    transactionId: data.transactionId,
+    amount: data.totals.total,
+    currency: data.currencyCode,
+    full: data.items.some((item) => item.type === 'full'),
+    action: data.action as PackageRefund['action'],
+    occurredAt,
+  };
+}
+
 /** The credits of the package items of a payment, quantity included; 0 when it buys no package of this configuration. */
 function packageCreditsOf(config: BillingConfig, items: TransactionData['items']): number {
   let credits = 0;
@@ -248,18 +263,19 @@ export class PaddleBillingProvider implements BillingProvider {
   mapEventToPackageRefund(event: VerifiedBillingEvent): PackageRefund | null {
     if (!PACKAGE_REFUND_EVENTS.has(event.type)) return null;
     const { occurredAt, data } = event.payload as { occurredAt: string; data: AdjustmentData };
-    const at = timeOf(occurredAt);
-    // A refund that is still waiting for approval, was rejected or was reversed gives nothing back yet.
-    if (at === undefined || data.status !== 'approved' || !REFUND_ACTIONS.has(data.action)) return null;
-    return {
-      adjustmentId: data.id,
-      transactionId: data.transactionId,
-      amount: data.totals.total,
-      currency: data.currencyCode,
-      full: data.items.some((item) => item.type === 'full'),
-      action: data.action as PackageRefund['action'],
-      occurredAt: at,
-    };
+    return mapAdjustment(data, timeOf(occurredAt));
+  }
+
+  async *listPackageRefunds({ perPage, signal }: { perPage: number; signal: AbortSignal }): AsyncGenerator<PackageRefund[], void, void> {
+    const since = Date.now() - PACKAGE_LIST_LOOKBACK_MS;
+    // The list has no date filter and sorts only by id, which is newest first (the ids carry their time), so it is read back until a page lies wholly before the window.
+    const collection = this.paddle.adjustments.list({ perPage, action: ['refund', 'chargeback'], status: ['approved'], orderBy: 'id[DESC]' });
+    while (collection.hasMore) {
+      const page = await this.nextPage(collection, signal);
+      const inWindow = page.filter((adjustment) => (timeOf(adjustment.createdAt) ?? Infinity) >= since);
+      yield inWindow.flatMap((adjustment) => mapAdjustment(adjustment, timeOf(adjustment.updatedAt ?? adjustment.createdAt)) ?? []);
+      if (page.length > 0 && inWindow.length === 0) return;
+    }
   }
 
   async *listPackagePurchases({ perPage, signal }: { perPage: number; signal: AbortSignal }): AsyncGenerator<ListedPackagePurchase[], void, void> {
