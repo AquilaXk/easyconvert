@@ -1,5 +1,7 @@
 import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from '@prometheus-io/client';
 import {
+  BILLING_RESULTS,
+  BILLING_SOURCES,
   FAMILIES,
   OUTCOMES,
   QUEUE_DEPTH_STATES,
@@ -7,6 +9,8 @@ import {
   REQUEST_ROUTES,
   SPAWN_FAILURE_REASONS,
   onList,
+  type BillingResult,
+  type BillingSource,
   type Family,
   type Outcome,
   type QueueDepthState,
@@ -37,6 +41,7 @@ export interface Instruments {
   readonly queueOldestWaitingSeconds: Gauge<'queue'>;
   readonly queueSampleFailures: Counter;
   readonly sandboxSpawnFailures: Counter<'reason'>;
+  readonly billingEvents: Counter<'source' | 'result'>;
 }
 
 function createInstruments(): Instruments {
@@ -95,6 +100,12 @@ function createInstruments(): Instruments {
       labelNames: ['reason'] as const,
       registers: [registry],
     }),
+    billingEvents: new Counter({
+      name: 'easyconvert_billing_events_total',
+      help: 'Subscription changes, by source (webhook or reconcile) and result. unattributed and unknown_user are a paid subscription that no account holds.',
+      labelNames: ['source', 'result'] as const,
+      registers: [registry],
+    }),
   };
 }
 
@@ -131,6 +142,14 @@ export function observeSandboxSpawnFailure(reason: SpawnFailureReason): void {
   // Called on the way to settling a spawn: a counter that throws must not leave the run unsettled until its timeout.
   try {
     instruments().sandboxSpawnFailures.inc({ reason: onList(SPAWN_FAILURE_REASONS, reason, 'spawn_error') });
+  } catch {}
+}
+
+/** Counts one subscription change of the provider and what became of it. */
+export function observeBillingEvent(source: BillingSource, result: BillingResult): void {
+  // Called after a subscription was written: a counter that throws must not turn an applied event into a 500 the provider retries.
+  try {
+    instruments().billingEvents.inc({ source: onList(BILLING_SOURCES, source, 'webhook'), result: onList(BILLING_RESULTS, result, 'ignored') });
   } catch {}
 }
 

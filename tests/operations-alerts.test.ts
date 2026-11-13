@@ -36,12 +36,13 @@ describe('deploy/oci/prometheus-alerts.yml and runbook links', () => {
   const group = doc.groups.find((entry) => entry.name === 'easyconvert');
   const rulesByName = new Map((group?.rules ?? []).map((rule) => [rule.alert, rule]));
 
-  it('defines the easyconvert rule group with the three paging alerts', () => {
+  it('defines the easyconvert rule group with the four paging alerts', () => {
     expect(group).toBeDefined();
     expect(group?.rules.map((rule) => rule.alert)).toEqual([
       'EasyConvertErrorBudgetBurn',
       'EasyConvertQueueAgeHigh',
       'EasyConvertWorkerRestarts',
+      'EasyConvertBillingUnmatched',
     ]);
     for (const rule of group?.rules ?? []) {
       expect(rule.labels).toEqual({ severity: 'page' });
@@ -114,6 +115,16 @@ describe('deploy/oci/prometheus-alerts.yml and runbook links', () => {
     );
   });
 
+  it('pages when a subscription change or a listed subscription belongs to no account', () => {
+    const rule = rulesByName.get('EasyConvertBillingUnmatched');
+    expect(rule).toBeDefined();
+    expect(rule?.for).toBe('0m');
+    expect(rule?.annotations.runbook).toBe('docs/operations/alerts.md#alert-billing-unmatched');
+    expect(normalizePromql(rule?.expr ?? '')).toBe(
+      'sum by (source, result) (increase(easyconvert_billing_events_total{result=~"unattributed|unknown_user"}[1h])) > 0'
+    );
+  });
+
   it('references only easyconvert_* metrics that are registered on the process metrics registry', async () => {
     const registered = new Set((await instruments().registry.getMetricsAsJSON()).map((metric) => metric.name));
     const referenced = new Set<string>();
@@ -123,6 +134,7 @@ describe('deploy/oci/prometheus-alerts.yml and runbook links', () => {
       }
     }
     expect([...referenced].sort()).toEqual([
+      'easyconvert_billing_events_total',
       'easyconvert_http_requests_total',
       'easyconvert_jobs_total',
       'easyconvert_queue_oldest_waiting_age_seconds',

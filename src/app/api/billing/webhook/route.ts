@@ -3,6 +3,8 @@ import { billingUnavailable, guardingStore, invalidSignature } from '@/lib/api/b
 import { getBillingProvider } from '@/lib/billing';
 import { subscriptionStore } from '@/lib/billing/subscription-store';
 import { InvalidWebhookError } from '@/lib/billing/types';
+import { observeBillingEvent } from '@/lib/metrics/instruments';
+import type { BillingResult } from '@/lib/metrics/labels';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,6 +15,12 @@ async function planOfStoredSubscription(userId: string, providerSubscriptionId: 
 }
 
 const SIGNATURE_HEADER = 'paddle-signature';
+
+/** The answer of a verified subscription event, counted (`easyconvert_billing_events_total`) so that an event no account holds can alert. */
+function answer(result: BillingResult): NextResponse {
+  observeBillingEvent('webhook', result);
+  return NextResponse.json({ success: true, result });
+}
 
 /**
  * The notification destination of Paddle. The body is read as text, exactly as sent, because the signature covers its bytes;
@@ -42,15 +50,15 @@ export async function POST(req: NextRequest) {
     const userId = change.userId ?? (await subscriptionStore.userOfSubscription(change.subscription.providerSubscriptionId));
     if (!userId) {
       console.error(`[billing] ${event.type} ${event.id} names no account; not applied`);
-      return NextResponse.json({ success: true, result: 'unattributed' });
+      return answer('unattributed');
     }
     const plan = change.subscription.plan ?? (await planOfStoredSubscription(userId, change.subscription.providerSubscriptionId));
     if (!plan) {
       console.error(`[billing] ${event.type} ${event.id} is for a price that is no longer sold and a subscription this server does not hold; not applied`);
-      return NextResponse.json({ success: true, result: 'ignored' });
+      return answer('ignored');
     }
     const result = await subscriptionStore.apply({ ...change, userId, subscription: { ...change.subscription, plan } });
     if (result === 'unknown_user') console.error(`[billing] ${event.type} ${event.id} is for an account that no longer exists; not applied`);
-    return NextResponse.json({ success: true, result });
+    return answer(result);
   });
 }

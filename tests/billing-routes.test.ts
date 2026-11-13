@@ -24,6 +24,7 @@ import { createSessionToken, getSessionFromToken } from '../src/lib/auth/session
 import { getBillingProvider } from '../src/lib/billing';
 import { subscriptionStore } from '../src/lib/billing/subscription-store';
 import { PLAN_MAX_FILE_BYTES, TIER_LIMITS, maxFileBytes, planOfCaller } from '../src/lib/plan-limits';
+import { reading, resetMetrics } from './helpers/metrics-readings';
 import { WEBHOOK_SECRET, sign, subscriptionEventBody } from './helpers/paddle-events';
 
 const ORIGIN = 'http://localhost:3000';
@@ -89,6 +90,7 @@ beforeEach(() => {
   redisUserStore.resetStore();
   subscriptionStore.resetStore();
   keyStore.resetStore();
+  resetMetrics();
   portalCreate.mockReset();
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
@@ -373,5 +375,27 @@ describe('the webhook route', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     expect((await json(await webhook(body))).result).toBe('unknown_user');
     expect((await json(await webhook(JSON.stringify({ event_id: eventId('other'), event_type: 'something.new', occurred_at: '2026-11-12T12:00:00Z', notification_id: 'ntf', data: {} })))).result).toBe('ignored');
+  });
+
+  it('counts what became of each verified subscription event, so that one no account holds can alert', async () => {
+    const user = await account();
+    const events = (result: string) => reading('easyconvert_billing_events_total', { source: 'webhook', result });
+    const customData = await checkoutData(user);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await webhook(eventBody({ eventId: 'new', customData }));
+    await webhook(eventBody({ eventId: 'new', customData }));
+    await webhook(eventBody({ eventId: 'forged', subscriptionId: 'sub_other', customData: { easyconvertUserId: user.id, easyconvertBinding: 'forged' } }));
+    await redisUserStore.deleteUser(user.id);
+    await webhook(eventBody({ eventId: 'gone', customData }));
+    await webhook('{"event_id":"evt_x","event_type":"transaction.completed","occurred_at":"2026-11-12T12:00:00Z","notification_id":"ntf","data":{}}');
+
+    expect({ applied: await events('applied'), duplicate: await events('duplicate'), unattributed: await events('unattributed'), unknown_user: await events('unknown_user') }).toEqual({
+      applied: 1,
+      duplicate: 1,
+      unattributed: 1,
+      unknown_user: 1,
+    });
+    expect(await reading('easyconvert_billing_events_total')).toBe(4);
   });
 });

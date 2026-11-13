@@ -43,6 +43,17 @@ export type QueueDepthState = (typeof QUEUE_DEPTH_STATES)[number];
 export const SPAWN_FAILURE_REASONS = ['spawn_error', 'sandbox_unavailable'] as const;
 export type SpawnFailureReason = (typeof SPAWN_FAILURE_REASONS)[number];
 
+/** Where a subscription change came from: a webhook delivery, or the reconciliation against the provider's list. */
+export const BILLING_SOURCES = ['webhook', 'reconcile'] as const;
+export type BillingSource = (typeof BILLING_SOURCES)[number];
+
+/**
+ * What became of a subscription change (the answers of `SubscriptionStore.apply`, an event or a subscription that changes nothing, one
+ * that names no account, and a stored subscription the provider no longer lists).
+ */
+export const BILLING_RESULTS = ['applied', 'duplicate', 'stale', 'other_subscription', 'unknown_user', 'unattributed', 'ignored', 'missing'] as const;
+export type BillingResult = (typeof BILLING_RESULTS)[number];
+
 const HTTP_BAD_REQUEST = 400;
 const HTTP_SERVER_ERROR = 500;
 const HTTP_GATEWAY_TIMEOUT = 504;

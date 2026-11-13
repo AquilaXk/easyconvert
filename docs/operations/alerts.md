@@ -1,6 +1,6 @@
 # Alert runbook
 
-One entry for each alert rule in [`deploy/oci/prometheus-alerts.yml`](../../deploy/oci/prometheus-alerts.yml) that [slo.md](../slo.md) names: the burn of the error budget ([`EasyConvertErrorBudgetBurn`](#alert-error-budget-burn)), the age of the queue ([`EasyConvertQueueAgeHigh`](#alert-queue-age)), and the restarts of the worker ([`EasyConvertWorkerRestarts`](#alert-worker-restarts)). Each rule in `deploy/oci/prometheus-alerts.yml` links to the anchor of its entry below, and the entries are also what to follow when you see the same symptom by hand. The thresholds (how fast a burn, how many seconds of age, how many restarts) are set with the rules in `deploy/oci/prometheus-alerts.yml`, not here; every entry starts from "the alert fired" or "you saw this".
+One entry for each alert rule in [`deploy/oci/prometheus-alerts.yml`](../../deploy/oci/prometheus-alerts.yml) that [slo.md](../slo.md) names: the burn of the error budget ([`EasyConvertErrorBudgetBurn`](#alert-error-budget-burn)), the age of the queue ([`EasyConvertQueueAgeHigh`](#alert-queue-age)), the restarts of the worker ([`EasyConvertWorkerRestarts`](#alert-worker-restarts)), and a subscription that no account holds ([`EasyConvertBillingUnmatched`](#alert-billing-unmatched)). Each rule in `deploy/oci/prometheus-alerts.yml` links to the anchor of its entry below, and the entries are also what to follow when you see the same symptom by hand. The thresholds (how fast a burn, how many seconds of age, how many restarts) are set with the rules in `deploy/oci/prometheus-alerts.yml`, not here; every entry starts from "the alert fired" or "you saw this".
 
 Commands use the shell function `C` of the [README](README.md#your-shell-on-the-host). Each entry ends with how to know it is over. For the incident levels and who is told, see [incidents.md](incidents.md).
 
@@ -85,3 +85,28 @@ Do not delete jobs from Redis by hand: the steps the worker takes when a job end
 | Redis refuses the connection | [Redis checks](#redis-checks) |
 
 **Over when.** The worker has stayed up for 30 minutes (`C ps worker` shows the `Up` time), `RestartCount` stopped rising, the queue age is 0, and a small conversion through the API completes.
+
+<a id="alert-billing-unmatched"></a>
+## Alert: subscription with no account
+
+**Anchor for the alert:** `docs/operations/alerts.md#alert-billing-unmatched`.
+
+**Means.** `easyconvert_billing_events_total` counted a `result` of `unattributed` or `unknown_user` in the last hour, from the `source` `webhook` (the web process: Paddle sent an event) or `reconcile` (the worker: the hourly comparison with Paddle's list found a subscription that gives a plan). `unattributed`: the subscription carries no account binding that this server signed and no index entry, so no account can be given its plan; the payment is taken and nobody holds the plan. `unknown_user`: the subscription names an account that no longer exists (it was erased while the subscription was live). Paddle sends an event once and is answered 200, so it does not send it again, and the reconcile run counts the subscription again every hour until it is settled. Level: SEV2; the customer is waiting for a plan they paid for.
+
+**Check.**
+
+1. The log lines: `C logs --no-color --since 2h web worker | grep '\[billing\]'`. A webhook line names the event id (`evt_...`); a reconcile line names the subscription id (`sub_...`) and the customer id.
+2. In the Paddle dashboard open the subscription (a webhook line: the notification of that event id first). Note the customer's email and the plan.
+3. Was the purchase made through the checkout of the site? A subscription made in the dashboard, or by a checkout from before the webhook secret changed (the account binding is signed with that secret), has no binding.
+
+**Do.**
+
+| Cause | Action |
+| --- | --- |
+| A real customer, binding lost (secret changed, or made by hand at Paddle) | Find the account by the customer's email and set its plan by hand: `node dist/set-account-tier.js --user <email> --tier <plan> --apply` ([deploy-oci.md](../deploy-oci.md)). Tell QA; the subscription stays unattached, so the plan does not end with it, and the alert goes on until the subscription is canceled at Paddle or QA decides |
+| `unknown_user`: the account was erased | The erasure plan warns that Paddle keeps charging a live subscription. Cancel it in the Paddle dashboard (and refund if QA says so) |
+| A test subscription of the sandbox on a production key, or one nobody can place | Cancel it in the dashboard; QA decides on refunds |
+
+Never edit the subscription keys in Redis by hand: the record, its index and the account's plan are written by one script.
+
+**Over when.** The subscription is canceled at Paddle or its account holds the plan, and `increase(easyconvert_billing_events_total{result=~"unattributed|unknown_user"}[1h])` is 0 (a reconcile run is every hour; the alert resolves at the next one).

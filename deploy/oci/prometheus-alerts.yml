@@ -66,3 +66,14 @@ groups:
           summary: "EasyConvert worker restarted 3 or more times in 15 minutes"
           description: "A worker process restarted at least 3 times within 15 minutes (process_start_time_seconds changes >= 3)."
           runbook: docs/operations/alerts.md#alert-worker-restarts
+
+      - alert: EasyConvertBillingUnmatched
+        expr: |
+          sum by (source, result) (increase(easyconvert_billing_events_total{result=~"unattributed|unknown_user"}[1h])) > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "EasyConvert subscription with no account: {{ $labels.result }} from {{ $labels.source }}"
+          description: "A subscription change or a subscription of the payment provider belongs to no account of this server (unattributed: no valid account binding and no known subscription; unknown_user: the account is gone), so a payment is taken for a plan nobody holds."
+          runbook: docs/operations/alerts.md#alert-billing-unmatched

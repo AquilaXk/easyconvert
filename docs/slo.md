@@ -2,7 +2,7 @@
 
 This page says what the service measures about itself, how an operator reads it, and the objectives (availability and latency per family) that those measures are held against. The choices behind it are entry 179 of [policy-decisions.md](policy-decisions.md).
 
-The Prometheus alert rules on these metrics live in [`deploy/oci/prometheus-alerts.yml`](../deploy/oci/prometheus-alerts.yml) and link each alert to its runbook entry in [`docs/operations/alerts.md`](operations/alerts.md): [`EasyConvertErrorBudgetBurn`](operations/alerts.md#alert-error-budget-burn), [`EasyConvertQueueAgeHigh`](operations/alerts.md#alert-queue-age), and [`EasyConvertWorkerRestarts`](operations/alerts.md#alert-worker-restarts). Alongside them, the scheduled readiness probe (`.github/workflows/uptime.yml`, entry 173) checks public reachability from outside the host.
+The Prometheus alert rules on these metrics live in [`deploy/oci/prometheus-alerts.yml`](../deploy/oci/prometheus-alerts.yml) and link each alert to its runbook entry in [`docs/operations/alerts.md`](operations/alerts.md): [`EasyConvertErrorBudgetBurn`](operations/alerts.md#alert-error-budget-burn), [`EasyConvertQueueAgeHigh`](operations/alerts.md#alert-queue-age), [`EasyConvertWorkerRestarts`](operations/alerts.md#alert-worker-restarts), and [`EasyConvertBillingUnmatched`](operations/alerts.md#alert-billing-unmatched). Alongside them, the scheduled readiness probe (`.github/workflows/uptime.yml`, entry 173) checks public reachability from outside the host.
 
 ## The metrics
 
@@ -22,6 +22,8 @@ Every label value comes from a closed list (`src/lib/metrics/labels.ts`); nothin
 | `queue` | `default`, `light`, `cpu`, `memory`, `gpu` |
 | `state` | `waiting`, `active`, `delayed` |
 | `reason` | `spawn_error`, `sandbox_unavailable` |
+| `source` | `webhook` (an event of the payment provider), `reconcile` (the hourly comparison with the provider's list) |
+| `result` | `applied`, `duplicate`, `stale`, `other_subscription`, `unknown_user`, `unattributed`, `ignored`, `missing` |
 
 | Metric | Type | Process | Meaning |
 |---|---|---|---|
@@ -33,6 +35,7 @@ Every label value comes from a closed list (`src/lib/metrics/labels.ts`); nothin
 | `easyconvert_queue_oldest_waiting_age_seconds{queue}` | gauge | worker | how long the job that waited longest has waited; 0 when none waits |
 | `easyconvert_queue_sample_failures_total` | counter | worker | scrapes in which the queue could not be read (its gauges are left out then) |
 | `easyconvert_sandbox_spawn_failures_total{reason}` | counter | both | programs the sandbox did not start |
+| `easyconvert_billing_events_total{source,result}` | counter | web (`webhook`), worker (`reconcile`) | subscription changes and what became of them; `unattributed` and `unknown_user` are a subscription no account holds |
 | `process_start_time_seconds` and the other default process metrics | gauge | both | a restart is `changes(process_start_time_seconds[1h])`; uptime is `time() - process_start_time_seconds` |
 
 Notes for reading them:
@@ -98,5 +101,6 @@ The Prometheus alert rules live in [`deploy/oci/prometheus-alerts.yml`](../deplo
 - `EasyConvertErrorBudgetBurn` ([`docs/operations/alerts.md#alert-error-budget-burn`](operations/alerts.md#alert-error-budget-burn)): 14.4x multi-window (`1h` and `6h`) burn rate on the 99.5% availability objective (`> 0.072` failure share with at least 20 eligible completions in `1h`), grouped by `family`, for `5m`.
 - `EasyConvertQueueAgeHigh` ([`docs/operations/alerts.md#alert-queue-age`](operations/alerts.md#alert-queue-age)): oldest waiting job in any queue above 300 seconds (`max by (queue) (easyconvert_queue_oldest_waiting_age_seconds) > 300`) or no worker scraped (`max(up{job="easyconvert-worker"}) == 0`), for `5m`.
 - `EasyConvertWorkerRestarts` ([`docs/operations/alerts.md#alert-worker-restarts`](operations/alerts.md#alert-worker-restarts)): three or more worker restarts in 15 minutes (`changes(process_start_time_seconds{job="easyconvert-worker"}[15m]) >= 3`), for `0m`.
+- `EasyConvertBillingUnmatched` ([`docs/operations/alerts.md#alert-billing-unmatched`](operations/alerts.md#alert-billing-unmatched)): a subscription change or a listed subscription that no account holds (`easyconvert_billing_events_total` with `result` `unattributed` or `unknown_user` rising in `1h`), for `0m`.
 
 Structured JSON logs with a request or job id are not part of phase 1: the outcome lines of the convert routes already carry a request id and redact file names and passwords, and the job logs are unchanged.
