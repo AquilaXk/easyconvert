@@ -424,6 +424,30 @@ describe.skipIf(skippedWithoutProgram)('the program itself', () => {
     }
   });
 
+  it('maps every pixel to its nearest palette entry without dithering, flat areas and a gradient alike', () => {
+    // Flat bands (answered from the colour cache after the first pixel of each) next to a gradient of more than 256 colours (searched for each pixel).
+    const width = 96;
+    const height = 40;
+    const pixels = Buffer.alloc(width * height * 4);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const flat = x < 32;
+        const channel = flat ? [200, 30, 30][y % 3] : (x * 2 + y * 3) & 255;
+        pixels.set([channel, flat ? 100 : (x * 5 + y) & 255, flat ? 40 : (y * 6) & 255, 255], (y * width + x) * 4);
+      }
+    }
+    const out = run(Buffer.concat([header(width, height), pixels]), ['--colors', '24', '--dither', '0']);
+    expect(out.status).toBe(0);
+    const count = out.stdout.readUInt32LE(0);
+    const entries = Array.from({ length: count }, (_, i) => Array.from(out.stdout.subarray(4 + i * 4, 8 + i * 4)));
+    const indices = out.stdout.subarray(4 + count * 4);
+    const distance = (a: number[], offset: number) => a.reduce((sum, value, k) => sum + (value - pixels[offset + k]) ** 2, 0);
+    for (let i = 0; i < width * height; i += 1) {
+      const best = Math.min(...entries.map((entry) => distance(entry, i * 4)));
+      expect(distance(entries[indices[i]], i * 4), `pixel ${i}`).toBe(best);
+    }
+  });
+
   it.each([
     ['a header that names more pixels than the program reads', Buffer.concat([header(0xffffffff, 0xffffffff)])],
     ['a header of 37 megapixels', Buffer.concat([header(37_000, 1000)])],

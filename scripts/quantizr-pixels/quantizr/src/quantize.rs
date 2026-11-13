@@ -8,6 +8,44 @@ use crate::palette::Palette;
 
 const EMPTY_PIX: [u8; 4] = [0; 4];
 
+/// Slots of the cache of nearest palette entries by exact pixel colour (a power of two).
+const CACHE_BITS: u32 = 12;
+const CACHE_SLOTS: usize = 1 << CACHE_BITS;
+const CACHE_VALID: u64 = 1 << 40;
+const CACHE_KEY_MASK: u64 = CACHE_VALID | 0xFFFF_FFFF;
+
+/// A direct-mapped cache from the exact colour of a pixel to the palette index nearest to it. The answer for one colour never changes, so a
+/// hit is the index that the search would have found, and a flat area of the picture is looked up instead of searched. (Not in upstream.)
+struct NearestCache {
+    slots: Vec<u64>,
+}
+
+impl NearestCache {
+    fn new() -> Self {
+        Self {
+            slots: vec![0; CACHE_SLOTS],
+        }
+    }
+
+    #[inline(always)]
+    fn index_of(&mut self, key: u32, colormap: &Colormap, pix: &[f32; 4]) -> u8 {
+        let slot = (key.wrapping_mul(0x9E37_79B1) >> (32 - CACHE_BITS)) as usize;
+        let tagged = u64::from(key) | CACHE_VALID;
+        let cached = self.slots[slot];
+        if cached & CACHE_KEY_MASK == tagged {
+            return (cached >> 32) as u8;
+        }
+        let (ind, _, _) = colormap.nearest_ind(pix);
+        self.slots[slot] = tagged | (u64::from(ind) << 32);
+        ind
+    }
+}
+
+#[inline(always)]
+fn colour_key(pix: &[u8]) -> u32 {
+    u32::from_le_bytes([pix[0], pix[1], pix[2], pix[3]])
+}
+
 // Result of quantization
 pub struct QuantizeResult {
     error: f32,
@@ -88,19 +126,16 @@ impl QuantizeResult {
     }
 
     fn remap_image_no_dither(&self, image: &Image, buf: &mut [u8]) {
+        let mut cache = NearestCache::new();
+
         #[allow(clippy::needless_range_loop)]
         for point in 0..image.width * image.height {
             let data_point = point * 4;
 
             let pix = pix_or_empty(&image.data[data_point..data_point + 4]);
-            let r = pix[0] as f32;
-            let g = pix[1] as f32;
-            let b = pix[2] as f32;
-            let a = pix[3] as f32;
+            let colour = [pix[0] as f32, pix[1] as f32, pix[2] as f32, pix[3] as f32];
 
-            let (ind, _, _) = self.colormap.nearest_ind(&[r, g, b, a]);
-
-            buf[point] = ind;
+            buf[point] = cache.index_of(colour_key(pix), &self.colormap, &colour);
         }
     }
 
@@ -114,6 +149,7 @@ impl QuantizeResult {
         // println!("Err threshold {}", self.error);
 
         let mut x_reverse = true;
+        let mut cache = NearestCache::new();
 
         for y in 0..image.height {
             x_reverse = !x_reverse;
@@ -132,28 +168,42 @@ impl QuantizeResult {
                 };
 
                 let err_pix = &mut error_curr[err_ind];
-
-                let err_total = err_pix[0] * err_pix[0]
-                    + err_pix[1] * err_pix[1]
-                    + err_pix[2] * err_pix[2]
-                    + err_pix[3] * err_pix[3];
-
-                if err_total > err_threshold {
-                    err_pix[0] *= 0.8;
-                    err_pix[1] *= 0.8;
-                    err_pix[2] *= 0.8;
-                    err_pix[3] *= 0.8;
-                }
-
                 let pix = pix_or_empty(&image.data[data_point..data_point + 4]);
-                let dith_pix = [
-                    pix[0] as f32 + err_pix[0],
-                    pix[1] as f32 + err_pix[1],
-                    pix[2] as f32 + err_pix[2],
-                    pix[3] as f32 + err_pix[3],
-                ];
 
-                let (ind, pal_pix, _) = self.colormap.nearest_ind(&dith_pix);
+                // No error has reached this pixel (a flat area, or a picture that the palette holds exactly): its colour is searched for as it
+                // is, which the cache answers, and a pixel that the palette holds exactly passes on no error at all. (Not in upstream.)
+                let (ind, pal_pix, dith_pix) = if err_pix.iter().all(|&e| e == 0.0) {
+                    let colour = [pix[0] as f32, pix[1] as f32, pix[2] as f32, pix[3] as f32];
+                    let ind = cache.index_of(colour_key(pix), &self.colormap, &colour);
+                    let pal_pix = self.colormap.entry(ind);
+                    if pal_pix == colour {
+                        buf[point] = ind;
+                        continue;
+                    }
+                    (ind, pal_pix, colour)
+                } else {
+                    let err_total = err_pix[0] * err_pix[0]
+                        + err_pix[1] * err_pix[1]
+                        + err_pix[2] * err_pix[2]
+                        + err_pix[3] * err_pix[3];
+
+                    if err_total > err_threshold {
+                        err_pix[0] *= 0.8;
+                        err_pix[1] *= 0.8;
+                        err_pix[2] *= 0.8;
+                        err_pix[3] *= 0.8;
+                    }
+
+                    let dith_pix = [
+                        pix[0] as f32 + err_pix[0],
+                        pix[1] as f32 + err_pix[1],
+                        pix[2] as f32 + err_pix[2],
+                        pix[3] as f32 + err_pix[3],
+                    ];
+
+                    let (ind, pal_pix, _) = self.colormap.nearest_ind(&dith_pix);
+                    (ind, pal_pix, dith_pix)
+                };
 
                 buf[point] = ind;
 

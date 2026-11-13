@@ -87,7 +87,7 @@ describe('the program sources', () => {
     const unchanged = new Map(
       [...source.matchAll(/^ {2}src\/(\S+\.rs) +-> quantizr\/src\/\S+ +unchanged +([0-9a-f]{64})$/gm)].map((match) => [match[1], match[2]])
     );
-    const changed = source.slice(source.indexOf('Changed from upstream:'), source.indexOf('Followed, not copied:'));
+    const changed = source.slice(source.indexOf('Changed from upstream ('), source.indexOf('Followed, not copied:'));
     const files = fs.readdirSync(copyDir).filter((name) => name.endsWith('.rs')).sort();
     expect(files.length).toBeGreaterThan(0);
     for (const name of files) {

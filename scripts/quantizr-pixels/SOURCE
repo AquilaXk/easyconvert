@@ -16,7 +16,7 @@ this digest by tests/quantizr-pixels-packaging.test.ts, a file that was changed 
       is ignored by cargo, which warns about it; the program's own Cargo.toml has the profile)
   src/capi.rs                      -> quantizr/src/capi.rs       unchanged  e31f9b5fd122fce0a509ff17a272121fdc744ef681d5810cb39d6fe02a130cfc
   src/cluster.rs                   -> quantizr/src/cluster.rs    unchanged  a41eaa3d72974fd376aac4163bd26ab2a3a4b8d05ac9f5ccfde97abbf2c1237d
-  src/colormap.rs                  -> quantizr/src/colormap.rs   unchanged  bec109ecce78e63ee58d80b4951ac8b047747977c3afba70d8d5facd5391cb4b
+  src/colormap.rs                  -> quantizr/src/colormap.rs   changed, see below (upstream SHA-256 bec109ecce78e63ee58d80b4951ac8b047747977c3afba70d8d5facd5391cb4b)
   src/error.rs                     -> quantizr/src/error.rs      unchanged  555bfd8574f2790742478953bb976e6df2c833d6a49d4c1bf1b013d661ed5f36
   src/histogram.rs                 -> quantizr/src/histogram.rs  unchanged  0b2e4426eeab106841aec568ed72e5535cba556c7677d3013308ff4171792709
   src/image.rs                     -> quantizr/src/image.rs      unchanged  a68d38d2246036f131e6800bee6116d71173e410f35c3d73ef78a66fdc8ec97f
@@ -24,11 +24,12 @@ this digest by tests/quantizr-pixels-packaging.test.ts, a file that was changed 
   src/options.rs                   -> quantizr/src/options.rs    unchanged  baf2f8bf160ec283444b1de244f427f45b61f19d30a33fbb81c8b10e7f352417
   src/ord_float.rs                 -> quantizr/src/ord_float.rs  unchanged  d1a15163d08dadf3f3ccfafa2194f23e18fd0ad62e7b1ac578422ffdfb8b3052
   src/palette.rs                   -> quantizr/src/palette.rs    unchanged  a2d9b8aceeaf068c7baccb9c06e766d861f464f9644035f47ceb3539724ca0e4
-  src/quantize.rs                  -> quantizr/src/quantize.rs   unchanged  a703394b2fbf3554919fdbcd46e0e019576e5b16f63a3f35294d701457a3beb0
+  src/quantize.rs                  -> quantizr/src/quantize.rs   changed, see below (upstream SHA-256 a703394b2fbf3554919fdbcd46e0e019576e5b16f63a3f35294d701457a3beb0)
   src/vpsearch.rs                  -> quantizr/src/vpsearch.rs   unchanged  8d274a7a350c24e6f1a1acba46edcc3c5382d1f1cdfd8fd0c2004860f0630c55
 
-Changed from upstream:
-  (none yet)
+Changed from upstream (each change is marked "(Not in upstream.)" in the file; the output is the same bytes as upstream's for every picture tested):
+  src/quantize.rs, src/colormap.rs   a cache of the nearest palette entry by exact pixel colour in the two remap loops, and no error passed on by a
+      pixel that the palette holds exactly. A flat area, or a picture of at most 256 colours, is looked up instead of searched.
 
 Followed, not copied:
   example/src/main.rs              -> src/main.rs    the calls of the library (Options, set_max_colors, QuantizeResult::quantize,

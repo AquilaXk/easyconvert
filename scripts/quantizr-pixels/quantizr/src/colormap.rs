@@ -86,6 +86,13 @@ impl Colormap {
         &self.palette
     }
 
+    /// The palette entry `ind` as the four channels the search compares. (Not in upstream.)
+    #[inline(always)]
+    pub(crate) fn entry(&self, ind: u8) -> [f32; 4] {
+        let c = &self.palette.entries[usize::from(ind)];
+        [c.r as f32, c.g as f32, c.b as f32, c.a as f32]
+    }
+
     #[inline(always)]
     pub(crate) fn nearest_ind(&self, color: &[f32; 4]) -> (u8, [f32; 4], f32) {
         self.tree.find_nearest(color)
