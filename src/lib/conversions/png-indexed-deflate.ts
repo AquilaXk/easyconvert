@@ -17,10 +17,14 @@ import { zlibFrame, zlibInBlocks } from './deflate-blocks';
  * picture that looks like noise at three places and is not) writes the rows with zlib level 6 in blocks, 7 percent larger than libdeflate 10.
  */
 
-/** A sample of the rows is this many bytes at the start, the middle and the end of the picture; a picture of up to three samples is judged whole. */
-const SAMPLE_BYTES = 64 * 1024;
+/**
+ * A sample of the rows is this many bytes at the start, the middle and the end of the picture; a picture of up to three samples is judged whole.
+ * 16 KiB tell the kinds as well as 64 did on the 55 pictures of entry 232 (a photograph's ratio from 0.32, a graphic's up to 0.11, against the
+ * line at 0.3) and take a quarter of the time (0.4 to 0.6 ms of zlib level 1 where 1.4 to 2.5 ms went).
+ */
+const SAMPLE_BYTES = 16 * 1024;
 const SAMPLE_SPOTS = [0, 0.5, 1];
-/** The sample of a photograph shrinks to 38 percent or more at zlib level 1 (38 of 38 pictures), that of a graphic to 13.1 percent or less (17 of 17). */
+/** The sample of a photograph shrinks to 32 percent or more at zlib level 1 (38 of 38 pictures), that of a graphic to 11 percent or less (17 of 17). */
 const NOISE_RATIO = 0.3;
 const SAMPLE_LEVEL = 1;
 const GRAPHIC_LEVEL = 9;
