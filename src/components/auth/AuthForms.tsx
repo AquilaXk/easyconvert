@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { useTranslations } from 'next-intl';
 import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
@@ -39,32 +39,9 @@ export function validateRegistrationInput(password: string, confirmPassword: str
   return null;
 }
 
-/** Asks a status endpoint whether a feature is on; false until the answer says so, and when the server cannot answer. */
-export function useServerFlag(url: string): boolean {
-  const [enabled, setEnabled] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    fetch(url)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { enabled?: unknown } | null) => {
-        if (!cancelled) setEnabled(data?.enabled === true);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [url]);
-  return enabled;
-}
-
-/**
- * The link to the password reset page. It asks the server whether reset is on (mail is configured) and shows nothing until
- * the answer says so, so a server without mail never offers a page that cannot work.
- */
+/** The link to the password reset page, shown only where the server can send its mail; the page says so when it renders. */
 function ForgotPasswordLink() {
   const t = useTranslations('auth.form');
-  const enabled = useServerFlag('/api/auth/password-reset');
-  if (!enabled) return null;
   return (
     <div className="mt-2 text-right">
       <Link href="/auth/forgot-password" className="text-sm font-medium text-accent-ink hover:underline rounded-xs">
@@ -116,6 +93,8 @@ export interface AuthCredentialsFormProps {
   showPassword: boolean;
   isBusy: boolean;
   isSubmitting: boolean;
+  /** Whether the server can mail a reset link (`isAuthMailEnabled`), read when the page is rendered. */
+  passwordResetEnabled: boolean;
   onNameChange: (value: string) => void;
   onEmailChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
@@ -135,6 +114,7 @@ export function AuthCredentialsForm({
   showPassword,
   isBusy,
   isSubmitting,
+  passwordResetEnabled,
   onNameChange,
   onEmailChange,
   onPasswordChange,
@@ -207,7 +187,7 @@ export function AuthCredentialsForm({
             {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
           </button>
         </div>
-        {activeTab === 'login' && <ForgotPasswordLink />}
+        {activeTab === 'login' && passwordResetEnabled && <ForgotPasswordLink />}
       </div>
 
       {activeTab === 'register' && (

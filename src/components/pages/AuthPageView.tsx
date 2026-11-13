@@ -5,12 +5,17 @@ import { useTranslations } from 'next-intl';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import { AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
-import { AuthCredentialsForm, GoogleOAuthButton, useServerFlag } from '@/components/auth/AuthForms';
+import { AuthCredentialsForm, GoogleOAuthButton } from '@/components/auth/AuthForms';
 import { useAuthController } from '@/components/auth/useAuthController';
 
-function LoginFormContent() {
+/** What the server offers on this page, read when the page is rendered so the form draws whole at once. */
+export interface AuthPageFlags {
+  googleEnabled: boolean;
+  passwordResetEnabled: boolean;
+}
+
+function LoginFormContent({ googleEnabled, passwordResetEnabled }: Readonly<AuthPageFlags>) {
   const t = useTranslations('auth');
-  const googleEnabled = useServerFlag('/api/auth/google');
   const {
     activeTab,
     email,
@@ -91,6 +96,7 @@ function LoginFormContent() {
 
         <AuthCredentialsForm
           activeTab={activeTab}
+          passwordResetEnabled={passwordResetEnabled}
           name={name}
           email={email}
           password={password}
@@ -127,7 +133,7 @@ function LoginFormContent() {
   );
 }
 
-export default function AuthPageView() {
+export default function AuthPageView(flags: Readonly<AuthPageFlags>) {
   const t = useTranslations('auth');
   return (
     <div className="min-h-screen flex flex-col">
@@ -141,7 +147,7 @@ export default function AuthPageView() {
             </output>
           }
         >
-          <LoginFormContent />
+          <LoginFormContent {...flags} />
         </Suspense>
       </main>
       <Footer />

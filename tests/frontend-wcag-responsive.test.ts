@@ -399,7 +399,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       { name: '/pdf-to-docx', dom: render(ConverterPageView, { parsed: parsedSlug('pdf-to-docx'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
       { name: '/accessibility', dom: render(ConverterPageView, { parsed: parsedSlug('accessibility'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
       { name: '/contact', dom: render(ConverterPageView, { parsed: parsedSlug('contact'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
-      { name: '/auth', dom: render(AuthPage, {}) },
+      { name: '/auth', dom: render(AuthPage, { googleEnabled: true, passwordResetEnabled: true }) },
       ...API_DOC_TOPICS.map((topic) => ({ name: apiDocsHref(topic.slug), dom: render(ApiDocsPage, { topic: topic.slug }) })),
     ];
 

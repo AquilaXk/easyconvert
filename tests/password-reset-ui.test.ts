@@ -10,7 +10,7 @@ vi.mock('../src/i18n/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
 }));
 
-const { AuthCredentialsForm, useServerFlag } = await import('../src/components/auth/AuthForms');
+const { AuthCredentialsForm } = await import('../src/components/auth/AuthForms');
 const { useFragmentToken } = await import('../src/components/auth/useFragmentToken');
 
 let root: Root | undefined;
@@ -49,42 +49,35 @@ const formProps = {
   onSubmit: () => undefined,
 } as const;
 
-function answerStatus(enabled: boolean | 'down') {
-  const fetchMock = vi.fn(async () => (enabled === 'down' ? new Response('{}', { status: 503 }) : Response.json({ success: true, enabled })));
-  vi.stubGlobal('fetch', fetchMock);
-  return fetchMock;
-}
-
 describe('the forgot-password link on the sign-in form', () => {
-  it('shows the link to the request page when the server has mail, in the language of the page', async () => {
-    const fetchMock = answerStatus(true);
-    render('en', createElement(AuthCredentialsForm, { ...formProps, activeTab: 'login' }));
-    await vi.waitFor(() => expect(host.querySelector('a[href="/auth/forgot-password"]')?.textContent).toBe('Forgot password?'));
-    expect(fetchMock).toHaveBeenCalledWith('/api/auth/password-reset');
+  // Whether the server can mail a reset link is read when the page is rendered and passed in, so the link is drawn with the form
+  // and asks nothing of the server from the browser.
+  const drawn = () => vi.waitFor(() => expect(host.querySelector('form')).not.toBeNull());
+
+  it('shows the link to the request page when the server has mail, in the language of the page, without asking from the browser', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    render('en', createElement(AuthCredentialsForm, { ...formProps, activeTab: 'login', passwordResetEnabled: true }));
+    await drawn();
+    expect(host.querySelector('a[href="/auth/forgot-password"]')?.textContent).toBe('Forgot password?');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('writes the link in Korean for a Korean page', async () => {
-    answerStatus(true);
-    render('ko', createElement(AuthCredentialsForm, { ...formProps, activeTab: 'login' }));
-    await vi.waitFor(() => expect(host.querySelector('a[href="/auth/forgot-password"]')?.textContent).toBe('비밀번호 재설정'));
+    render('ko', createElement(AuthCredentialsForm, { ...formProps, activeTab: 'login', passwordResetEnabled: true }));
+    await drawn();
+    expect(host.querySelector('a[href="/auth/forgot-password"]')?.textContent).toBe('비밀번호 재설정');
   });
 
-  it.each([
-    ['the server has no mail', false],
-    ['the server cannot say', 'down' as const],
-  ])('shows no link when %s', async (_label, enabled) => {
-    const fetchMock = answerStatus(enabled);
-    render('en', createElement(AuthCredentialsForm, { ...formProps, activeTab: 'login' }));
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    await new Promise((resolve) => setTimeout(resolve, 20));
+  it('shows no link when the server has no mail', async () => {
+    render('en', createElement(AuthCredentialsForm, { ...formProps, activeTab: 'login', passwordResetEnabled: false }));
+    await drawn();
     expect(host.querySelector('a[href="/auth/forgot-password"]')).toBeNull();
   });
 
   it('shows no link on the sign-up form', async () => {
-    const fetchMock = answerStatus(true);
-    render('en', createElement(AuthCredentialsForm, { ...formProps, activeTab: 'register' }));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(fetchMock).not.toHaveBeenCalled();
+    render('en', createElement(AuthCredentialsForm, { ...formProps, activeTab: 'register', passwordResetEnabled: true }));
+    await drawn();
     expect(host.querySelector('a[href="/auth/forgot-password"]')).toBeNull();
   });
 });
@@ -108,23 +101,5 @@ describe('the token of a mailed link', () => {
     globalThis.history.replaceState(null, '', '/auth/reset-password');
     render('en', createElement(Probe));
     await vi.waitFor(() => expect(host.querySelector('#probe')?.textContent).toBe('ready:null'));
-  });
-});
-
-describe('the Google sign-in flag of the sign-in page', () => {
-  function Probe() {
-    return createElement('p', { id: 'probe' }, useServerFlag('/api/auth/google') ? 'on' : 'off');
-  }
-
-  it.each([
-    ['the server has Google sign-in', true, 'on'],
-    ['the server has none', false, 'off'],
-    ['the server cannot say', 'down' as const, 'off'],
-  ])('reads %s as %s', async (_label, enabled, shown) => {
-    const fetchMock = answerStatus(enabled);
-    render('en', createElement(Probe));
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/auth/google'));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(host.querySelector('#probe')?.textContent).toBe(shown);
   });
 });
