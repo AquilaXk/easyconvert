@@ -7,7 +7,7 @@ import type { OcrResult } from './ocr-pdf-combiner';
 import { layoutPdf, type PdfPageText } from './pdf-layout';
 import type { DetectedTable } from './pdf-layout/types';
 import { runPdfTextJob } from './pdf-text-geometry';
-import { PdfTextUnmappedError, pagesPhrase, visibleGlyphsOf, type PdfGeometryPages, type PdfPageContent, type PdfTextJobResult } from './pdf-text-types';
+import { PdfTextUnmappedError, pagesPhrase, visibleGlyphsOf, type PdfContentFont, type PdfGeometryPages, type PdfPageContent, type PdfTextJobResult } from './pdf-text-types';
 
 /**
  * The text and structure of a PDF read from its text layer: pdfjs `getTextContent()` per page in page-tree order
@@ -42,6 +42,8 @@ export interface ExtractedPdfDocument {
   tables: DetectedTable[];
   /** The lines of text of every page, for a reader that takes the text of a page apart from the document's flow. */
   pageText: PdfPageText[];
+  /** The document's fonts, which the items of `pages` refer to by index (a writer that places the text of a page needs their families). */
+  fonts: PdfContentFont[];
 }
 
 /** What `readPdfDocument` asks of the single pass over the document. */
@@ -151,7 +153,7 @@ export function documentFromJob(job: PdfTextJobResult, options: ExtractPdfOption
   const analyses: PdfPageAnalysis[] = job.analyses.map((analysis) =>
     recognized.has(analysis.pageNumber) ? { ...analysis, charCount: 0, wordCount: 0, hasTextLayer: false, text: '' } : analysis
   );
-  return { extracted: { model, text: documentToText(model), unmappedPages, pages, tables, pageText }, analyses, geometry };
+  return { extracted: { model, text: documentToText(model), unmappedPages, pages, tables, pageText, fonts: job.fonts }, analyses, geometry };
 }
 
 /**

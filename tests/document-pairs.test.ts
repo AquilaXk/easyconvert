@@ -449,7 +449,8 @@ describe('the pairs of entry 183 in the registry', () => {
   const LEFT_OUT: Readonly<Record<string, readonly string[]>> = {
     docx: ['xps'],
     pages: ['ppt', 'xls'],
-    pdf: ['emf', 'ppt', 'wmf'],
+    // `pdf` to `ppt` was left out here until entry 282 (tests/pdf-to-ppt.test.ts).
+    pdf: ['emf', 'wmf'],
   };
 
   it.each(Object.entries(ADDED))('%s offers the targets of the entry', (source, targets) => {

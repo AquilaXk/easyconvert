@@ -658,7 +658,7 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   dot: ['doc'],
   dotx: ['doc', 'jpg', 'png', 'rtf'],
   eps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
-  htm: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  htm: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
   html: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
   htmlz: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   json: ['xls'],
@@ -679,7 +679,7 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   oxps: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   parquet: ['xls'],
   pdb: ['azw3', 'lrf', 'mobi', 'oeb'],
-  pdf: ['avif', 'azw3', 'bmp', 'doc', 'dxf', 'eps', 'gif', 'ico', 'jpg', 'lrf', 'mobi', 'odd', 'oeb', 'pdb', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp', 'xls'],
+  pdf: ['avif', 'azw3', 'bmp', 'doc', 'dxf', 'eps', 'gif', 'ico', 'jpg', 'lrf', 'mobi', 'odd', 'oeb', 'pdb', 'png', 'ppt', 'ps', 'psd', 'svg', 'tiff', 'webp', 'xls'],
   pml: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   pot: ['ppt'],
   potx: ['jpg', 'odp', 'png', 'ppt'],
@@ -1054,7 +1054,6 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     eps: ['emf', 'wmf'],
     fods: ['json'],
     gif: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma'],
-    htm: ['doc', 'jpg', 'png', 'rtf'],
     html: ['tex'],
     ibooks: ['epub', 'pdf', 'txt'],
     key: ['doc', 'xls'],
@@ -1067,7 +1066,7 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     odt: ['hwp', 'hwpx', 'xps'],
     oxps: ['docx', 'odd'],
     pages: ['html', 'ppt', 'xls'],
-    pdf: ['emf', 'ppt', 'wmf'],
+    pdf: ['emf', 'wmf'],
     pot: ['emf', 'xps'],
     potx: ['emf', 'xps'],
     pps: ['swf'],
@@ -1541,11 +1540,11 @@ describe('native-engine pairs route through the dispatcher', () => {
   const PDF_MAGIC = Buffer.from('%PDF-', 'latin1');
   const IMAGE_TARGETS = new Set(['jpg', 'png']);
   /** Text and markup sources: their Word 97 and RTF files are the office suite's, and their page images are drawn by Poppler from their PDF. */
-  const DOCUMENT_TEXT_SOURCES = new Set(['txt', 'md', 'html', 'rst']);
+  const DOCUMENT_TEXT_SOURCES = new Set(['txt', 'md', 'html', 'htm', 'rst']);
   /** A CSV table's page images are likewise the pages of the PDF the in-process engine writes of it, drawn by Poppler. */
   const TABLE_PICTURE_SOURCE = 'csv';
   /** Targets of a PDF that the office suite writes from the DOCX or PPTX the in-process converter writes of it. */
-  const BRIDGED_PDF_TARGETS = new Set(['doc', 'xls']);
+  const BRIDGED_PDF_TARGETS = new Set(['doc', 'ppt', 'xls']);
   /** Page targets beyond jpg and png: the encoded rasters, PostScript, EPS and DXF are written from the rendered PDF pages. */
   const ENCODED_PAGE_TARGETS = new Set(['avif', 'bmp', 'gif', 'ico', 'psd', 'tiff', 'webp']);
   const PAGE_TARGETS = new Set([...IMAGE_TARGETS, ...ENCODED_PAGE_TARGETS, 'eps', 'ps', 'dxf', 'svg']);
@@ -1634,6 +1633,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     txt: `${OFFICE_DOC_TEXT}\n`,
     md: `# Probe heading\n\n${OFFICE_DOC_TEXT}\n`,
     html: `<!DOCTYPE html><html><head><title>Probe</title></head><body><h1>Probe heading</h1><p>${OFFICE_DOC_TEXT}</p></body></html>`,
+    htm: `<!DOCTYPE html><html><head><title>Probe</title></head><body><h1>Probe heading</h1><p>${OFFICE_DOC_TEXT}</p></body></html>`,
     rst: `Probe heading\n=============\n\n${OFFICE_DOC_TEXT}\n`,
   };
   /** The Word variants that are the seed package with the content type of the variant's main part. */

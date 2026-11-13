@@ -511,7 +511,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/pdf',
     category: 'document',
     description: 'Portable Document Format - Industry standard fixed-layout document.',
-    targetFormats: ['docx', 'html', 'md', 'pdf', 'rtf', 'txt', 'epub', 'xlsx', 'png', 'pptx', 'svg', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'tiff', 'xls', 'hocr', 'alto', 'avif', 'bmp', 'gif', 'ico', 'psd', 'webp', 'eps', 'ps', 'dxf', 'odd', 'doc'],
+    targetFormats: ['docx', 'html', 'md', 'pdf', 'rtf', 'txt', 'epub', 'xlsx', 'png', 'pptx', 'svg', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'tiff', 'xls', 'hocr', 'alto', 'avif', 'bmp', 'gif', 'ico', 'psd', 'webp', 'eps', 'ps', 'dxf', 'odd', 'doc', 'ppt'],
     optionsSchema: { orientation: true, layout: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   docx: {
@@ -642,7 +642,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'text/html',
     category: 'document',
     description: 'Short extension HyperText Markup Language file.',
-    targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'odt', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+    targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'odt', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'doc', 'jpg', 'png', 'rtf'],
   },
   xhtml: {
     id: 'xhtml',

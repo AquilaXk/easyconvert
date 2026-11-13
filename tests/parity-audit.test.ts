@@ -6,12 +6,11 @@ import { FORMAT_REGISTRY, getAllFormats } from '../src/lib/registry';
 const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   // Entry 183 leaves out the XPS of a Word document (the XPS writer holds text only).
   'docx->pages', 'docx->xps',
-  'htm->doc', 'htm->jpg', 'htm->png', 'htm->rtf',
   'html->tex',
   'md->rst', 'md->tex',
   // Entry 183: a Pages document has no export to a presentation, and the metafile writers refuse the pictures that real PDF pages hold.
   'pages->ppt',
-  'pdf->emf', 'pdf->ppt', 'pdf->wmf',
+  'pdf->emf', 'pdf->wmf',
   'txt->tex',
   'chm->azw3', 'chm->epub', 'chm->lrf', 'chm->mobi', 'chm->oeb', 'chm->pdb', 'chm->pdf', 'chm->rtf', 'chm->txt',
   'lit->azw3', 'lit->epub', 'lit->lrf', 'lit->mobi', 'lit->oeb', 'lit->pdb', 'lit->pdf', 'lit->rtf', 'lit->txt',

@@ -28,6 +28,7 @@ import { generateOdpFromSlides, generateOdsFromData, generateOdtFromText } from 
 import { generatePdfFromDocx } from './docx-pdf';
 import { escapeMarkupAttribute } from '../../text/escape';
 import { escapeRtf } from './rtf-escape';
+import { pdfToPptx } from './pdf-pptx';
 
 /** One conversion: the input, its source and target format, the options and the base name of the output. */
 type FormatConverter = (inputBuffer: Buffer, src: string, tgt: string, options: ConversionOptions, baseName: string) => Promise<ConversionResult>;
@@ -37,6 +38,7 @@ function officeResult(buffer: Buffer, mimeType: string, baseName: string, extens
 }
 
 const DOCX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const PPTX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
 /** Sources that have a reader of their own; every other source is read as text for the target's writer. */
 const SOURCE_READERS: ReadonlyArray<readonly [readonly string[], FormatConverter]> = [
@@ -110,9 +112,11 @@ const TARGET_CONVERTERS: ReadonlyMap<string, FormatConverter> = new Map<string, 
   }],
   // Target is PPTX (from Markdown, HTML, TXT, Presentation, etc.)
   ['pptx', async (input, src, _tgt, options, baseName) => {
+    // A PDF keeps its pages: one slide for each, with the text, tables and pictures where the page has them.
+    if (src === 'pdf') return officeResult(await pdfToPptx(input, options, baseName), PPTX_MIME_TYPE, baseName, 'pptx');
     const textContent = await extractTextContentForOffice(input, src, options, baseName);
     const pptxBuffer = await generatePptxFromText(textContent, src, options, baseName);
-    return officeResult(pptxBuffer, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', baseName, 'pptx');
+    return officeResult(pptxBuffer, PPTX_MIME_TYPE, baseName, 'pptx');
   }],
   // Target is XLSX (from CSV, TSV, JSON)
   ['xlsx', async (input, src, _tgt, options, baseName) => {

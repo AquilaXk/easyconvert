@@ -1442,23 +1442,23 @@ async function renderPdfToSvgWithPoppler(
     missingOutputError: 'pdftocairo execution completed without producing any output SVG files',
     renderPages: async (tempDir, inputPath, intervals) => {
       const deadline = Date.now() + timeout;
-      let step: Promise<any> = Promise.resolve();
-      for (const p of pagesOfIntervals(intervals)) {
-        step = step.then(() => {
+      // One process for each page, several at once: a long document is drawn by the cores that are there, as its PNG pages are.
+      await runBounded(
+        pagesOfIntervals(intervals).map((p) => async () => {
           const remaining = deadline - Date.now();
           if (remaining <= 0) throw new SandboxedTimeoutError(timeout);
           const pageSvgPath = path.join(tempDir, `page-${p}.svg`);
           const args = ['-svg', '-f', String(p), '-l', String(p), inputPath, pageSvgPath];
-          return executeSandboxedBinary(pdftocairoBin, args, {
+          await executeSandboxedBinary(pdftocairoBin, args, {
             cwd: tempDir, workDir: tempDir, readDirs: [inputPath],
             timeoutMs: remaining,
             maxBuffer,
             networkIsolated: true,
             signal: options.signal,
           });
-        });
-      }
-      await step;
+        }),
+        pageRenderProcesses()
+      );
     },
   });
 }
