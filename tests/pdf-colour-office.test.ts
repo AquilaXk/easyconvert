@@ -67,6 +67,8 @@ describe('PDF to PPTX keeps colour and shapes', () => {
     // The triangle is a custom geometry with a fill and an outline; the ellipse has curves.
     expect(slide).toMatch(/<a:custGeom>.*?<a:solidFill><a:srgbClr val="CE93D8"\/>.*?<a:ln w="\d+"><a:solidFill><a:srgbClr val="4A148C"\/>/);
     expect(slide).toContain('<a:cubicBezTo>');
+    // A custom geometry with a text rectangle is dropped by the office suite's export to PowerPoint 97, so it has none.
+    expect(slide).not.toContain('<a:rect ');
     // The outline of the bar that has one is lines in its colour (a producer that starts a rectangle half way along a side draws five).
     expect(slide.match(/<a:srgbClr val="8E0000"\/>/g)?.length).toBeGreaterThanOrEqual(4);
   });

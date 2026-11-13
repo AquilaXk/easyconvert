@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { GlyphColours, ItemColours } from '../src/lib/conversions/pdf-content-colours';
 import { analyzePdfPagesInProcess } from '../src/lib/conversions/pdf-text-geometry';
-import type { PdfPageContent } from '../src/lib/conversions/pdf-text-types';
+import { FillIndex } from '../src/lib/conversions/pdf-content-shapes';
+import { dominantRuleInk, PageInk, readableRuns } from '../src/lib/conversions/pdf-layout/ink';
+import type { PdfContentRule, PdfContentShape, PdfPageContent } from '../src/lib/conversions/pdf-text-types';
 
 /**
  * The colour of text, rules and painted shapes read from the operator list of a PDF page (src/lib/conversions/pdf-content-colours.ts,
@@ -115,5 +117,51 @@ describe('the content of a page read with colour', () => {
     const strokedPaths = (page.shapes ?? []).filter((shape) => shape.stroke !== undefined);
     expect(strokedPaths.map((shape) => hex(shape.stroke))).toEqual(['00897b']);
     expect(page.rules.some((rule) => hex(rule.color) === 'c62828' && rule.inShape !== true)).toBe(true);
+  });
+});
+
+describe('the fills and rules a layout looks up (src/lib/conversions/pdf-layout/ink.ts)', () => {
+  const rect = (x0: number, y0: number, x1: number, y1: number, fill: number, z: number, alpha?: number): PdfContentShape => ({ kind: 'rect', x0, y0, x1, y1, fill, z, ...(alpha === undefined ? {} : { alpha }) });
+  const box = { x0: 20, y0: 20, x1: 60, y1: 32 };
+
+  it('finds the smallest rectangle that holds a box of text and notes it as carried', () => {
+    const band = rect(0, 0, 600, 100, 0x0d47a1, 1);
+    const badge = rect(10, 15, 80, 40, 0xffeb3b, 2);
+    const index = new FillIndex([band, badge]);
+    expect(index.behind(box)).toBe(0xffeb3b);
+    expect(index.used.has(badge)).toBe(true);
+    expect(index.used.has(band)).toBe(false);
+    expect(index.behind({ x0: 20, y0: 70, x1: 60, y1: 82 })).toBe(0x0d47a1);
+    expect(index.behind({ x0: 20, y0: 150, x1: 60, y1: 162 })).toBeUndefined();
+  });
+
+  it('takes no tint, no light fill and no rectangle that stops short of the text as the fill behind it', () => {
+    expect(new FillIndex([rect(0, 0, 600, 100, 0xff0000, 1, 0.4)]).behind(box)).toBeUndefined();
+    const paper = new PageInk([{ pageNumber: 1, width: 600, height: 800, items: [], rules: [], images: [], shapes: [rect(0, 0, 600, 100, 0xf8f8f8, 1)], unmappedGlyphs: 0, operatorsSkipped: false, rulesTruncated: false }]);
+    expect(paper.fillBehind(1, box)).toBeUndefined();
+    expect(new FillIndex([rect(30, 0, 600, 100, 0x00ff00, 1)]).behind(box)).toBeUndefined();
+  });
+
+  it('leaves light text light only where a fill is carried', () => {
+    const runs = [
+      { text: 'white', bold: false, italic: false, monospace: false, color: 'FFFFFF' },
+      { text: 'badge', bold: false, italic: false, monospace: false, color: 'F8F8F8', shading: '212121' },
+      { text: 'red', bold: false, italic: false, monospace: false, color: 'D32F2F' },
+    ];
+    expect(readableRuns(runs, true)).toEqual(runs);
+    const plain = readableRuns(runs, false);
+    expect(plain[0].color).toBeUndefined();
+    expect(plain[1].color).toBe('F8F8F8');
+    expect(plain[2].color).toBe('D32F2F');
+  });
+
+  it('reads the colour that most of the length of a table\'s rules has, and says how much that is', () => {
+    const rule = (x0: number, y0: number, x1: number, y1: number, color?: number): PdfContentRule => ({ x0, y0, x1, y1, thickness: 0.5, ...(color === undefined ? {} : { color }) });
+    const table = { x0: 0, y0: 0, x1: 100, y1: 50 };
+    const grey = dominantRuleInk([rule(0, 10, 100, 10, 0x808080), rule(0, 30, 100, 30, 0x808080), rule(50, 0, 50, 50, 0x808080), rule(0, 60, 100, 60, 0xff0000)], table);
+    expect(grey).toEqual({ color: 0x808080, width: 0.5, share: 1 });
+    const mixed = dominantRuleInk([rule(0, 10, 100, 10, 0x1565c0), rule(0, 30, 100, 30, 0xef6c00)], table);
+    expect(mixed?.share).toBe(0.5);
+    expect(dominantRuleInk([], table)).toBeNull();
   });
 });

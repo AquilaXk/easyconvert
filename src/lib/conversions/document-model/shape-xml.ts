@@ -3,7 +3,8 @@ import type { PageShape } from './model';
 
 /**
  * DrawingML for the painted shapes of a PDF page: a rectangle is a `rect` preset, any other outline a custom geometry of the same
- * segments (ECMA-376 20.1.9.8, `a:custGeom`), each with its solid fill, its outline and its opacity.
+ * segments (ECMA-376 20.1.9.8, `a:custGeom`), each with its solid fill, its outline and its opacity. The geometry has no `a:rect`
+ * (its text rectangle, optional): with it the office suite's export to PowerPoint 97 drops the shape.
  */
 
 const PATH_MOVE = 0;
@@ -99,7 +100,7 @@ export function shapeProperties(shape: PdfContentShape, scale: SlideScale, tag =
   const unfilled = shape.fill === undefined ? ' fill="none"' : '';
   return (
     `<${tag}><a:xfrm><a:off x="${scale.x(box.x0)}" y="${scale.y(box.y0)}"/><a:ext cx="${width}" cy="${height}"/></a:xfrm>` +
-    `<a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/><a:rect l="0" t="0" r="r" b="b"/><a:pathLst><a:path w="${width}" h="${height}"${unfilled}>${pathCommands(shape.path, to)}</a:path></a:pathLst></a:custGeom>` +
+    `<a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/><a:pathLst><a:path w="${width}" h="${height}"${unfilled}>${pathCommands(shape.path, to)}</a:path></a:pathLst></a:custGeom>` +
     `${fill}${line}</${tag}>`
   );
 }
