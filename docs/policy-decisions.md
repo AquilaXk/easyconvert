@@ -332,6 +332,7 @@ Security
 281. [A PDF becomes a presentation of its pages: one slide for each page, the lines of text, tables and pictures where the page has them, in a package PowerPoint opens](#281-a-pdf-becomes-a-presentation-of-its-pages-one-slide-for-each-page-the-lines-of-text-tables-and-pictures-where-the-page-has-them-in-a-package-powerpoint-opens)
 282. [PDF to PPT is offered: the presentation of the pages, exported by the office suite as PowerPoint 97-2003](#282-pdf-to-ppt-is-offered-the-presentation-of-the-pages-exported-by-the-office-suite-as-powerpoint-97-2003)
 283. [A `.htm` page converts to Word 97-2003, RTF, JPG and PNG as a `.html` page does](#283-a-htm-page-converts-to-word-97-2003-rtf-jpg-and-png-as-a-html-page-does)
+284. [The pages of a PDF written as SVG are drawn by several `pdftocairo` runs at once](#284-the-pages-of-a-pdf-written-as-svg-are-drawn-by-several-pdftocairo-runs-at-once)
 
 ---
 
@@ -8721,3 +8722,12 @@ Security
 - **Why**: Entry 183 opened these four targets for `html` and noted that `htm` pairs "are not part of this change". A `.htm` file is a page saved by a Windows browser or an older site, so the person who holds one asked for Word or a picture and was told the pair does not exist. Measured through the dispatcher on the Linux arm64 VM with one page (heading, paragraph, list, table) saved under both names: `rtf` (10,481 bytes), `jpg` (62,065 bytes) and `png` (46,709 bytes) are byte for byte the files of the `.html` page; `doc` has the same size (13,312 bytes) and differs in the creation time the suite writes.
 - **Trade-offs**: None beyond the four registry rows; the routes and their limits are the `html` ones.
 - **Verified by**: `tests/registry-engine-conformance.test.ts` (the four pairs advertised, listed as native-engine pairs, converted by the real engines with a seed page and read back, and refused with an unavailable engine when the engine is missing), `tests/parity-audit.test.ts` (the registry advertises every reference pair that is not withdrawn: `htm` to `doc`, `jpg`, `png` and `rtf` leave its list).
+
+## 284. The pages of a PDF written as SVG are drawn by several `pdftocairo` runs at once
+
+- **Status**: Implemented, decided 2026-11-13 (QA request: the nightly regression corpus failed on `cc-3800371.pdf` to SVG on 2026-11-10, 11 and 12); nothing is deployed. It does for SVG what entry 67 does for PNG and JPEG pages (the cores of the process, at most `PAGE_RENDER_MAX_PROCESSES`).
+- **Decision**: `renderPdfToSvgWithPoppler` (`src/worker/engines.ts`) starts one `pdftocairo` for each page as before, and `runBounded` keeps `pageRenderProcesses()` of them alive at once instead of one. The pages are the same files in the same ZIP, the stage limit (45 s unless the request sets one, at most 120 s, clamped to the time the job has left) and the sandbox options of each run are unchanged, and a run that fails or a stage that runs out of time stops the starting of the others, as it did.
+- **Why**: A 212-page PDF (`cc-3800371.pdf`, 4.8 MB) took 34.3 and 33.7 s one page after another and 12.8 and 14.9 s with the runs side by side, interleaved on the 4-core Linux VM while the VM ran another benchmark (load average 7), 25,233,663 bytes either way; the ZIP entries of it and of a 3-page PDF hash to the same value before and after. The runner of the regression corpus has less to give the job, took more than the 45 s on three nights running, and the file that converted the week before was refused (`CpuTaskTimeoutError`), which failed the nightly gate on each of them.
+- **Trade-offs**: A document is drawn by as many processes as cores for the time it takes, where one core was left to the others before; the memory of a run is one page's, and the sandbox limits are for each run.
+- **Verified by**: `tests/pdf-svg-pages-parallel.test.ts` (red on `origin/main`: at most 1 run at once where the cores allow 4; 24 pages, each drawn once, each the bytes the real `pdftocairo -svg` writes for that page, in order).
+- **Revisit when**: a PDF of several hundred pages still reaches the stage limit on the runner, and then a limit that grows with the page count is the next step.
