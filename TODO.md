@@ -26,6 +26,8 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Decide what a refund of spent package credits does: it is only logged and the debt stays (entry 285). A debt that reduces the next purchase, or a hold on the account, needs QA's word.
 
 ## Operations and security
+- Reconcile the approved refunds and chargebacks of the last 30 days as it already reconciles the payments (`paddle.adjustments.list`, applied through `refundPackagePurchase`, which is idempotent by adjustment id): a refund whose event was lost, or arrived before its payment was credited (entry 285 accepts that), is never taken back today. Paddle's own sync guidance (`subscription-sync` of `PaddleHQ/paddle-agent-skills`) reconciles subscriptions and customers from lists, and nothing it covers reconciles adjustments, so the shape is ours.
+- Decide what a reversed chargeback does (`adjustment.updated` with status `reversed` and the action `chargeback_reverse` that Paddle creates when it wins a dispute): the credits `revokePackage` took back stay revoked today, and the surveyed code differs (Polar revokes when a dispute is resolved, won or lost; the Paddle starter kit and agent skills have no case for it); a re-grant needs a ledger entry that undoes one adjustment, which is a QA call.
 - Check once in the Paddle sandbox that the portal-session error log (`[billing] portal session failed`) carries no authorization header or key.
 - Install the Redis backup timer on the host on or after 2026-12-08 (30-day notice of the new privacy text).
 
