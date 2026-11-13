@@ -80,9 +80,12 @@ function cleanExpiredEdgeBuckets() {
 
 // The notification destination of the payment provider: its answer, not an address, is the gate (the signature check), and a 429 makes the
 // provider send the event again, so the route has one bucket of its own, sized like the degraded shared one, in place of the bucket of
-// the sender's address. It is not shared with any client's bucket, so neither side can starve the other.
+// the sender's address. Only a request that carries the provider's signature header takes that bucket; any other request to the path is
+// limited by its own address, so a sender without a signature cannot drain the provider's bucket. One that forges the header can, and the
+// provider's retries and the hourly reconciliation then make up for the delay.
 const BILLING_WEBHOOK_PATH = '/api/billing/webhook';
 const BILLING_WEBHOOK_BUCKET_KEY = 'route:billing-webhook';
+const BILLING_SIGNATURE_HEADER = 'paddle-signature';
 
 function checkEdgeIpRateLimit(bucketKey: string, limits: EdgeBucketLimits): { allowed: boolean; retryAfterSec: number } {
   cleanExpiredEdgeBuckets();
@@ -347,7 +350,7 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
 
   // 1. Edge-level IP Rate Limiter
   const edgeRate =
-    pathname === BILLING_WEBHOOK_PATH
+    pathname === BILLING_WEBHOOK_PATH && request.headers.has(BILLING_SIGNATURE_HEADER)
       ? checkEdgeIpRateLimit(BILLING_WEBHOOK_BUCKET_KEY, SHARED_LIMITS)
       : checkEdgeIpRateLimit(clientIp, clientIp === UNATTRIBUTED_CLIENT_KEY ? SHARED_LIMITS : PER_CLIENT_LIMITS);
   if (!edgeRate.allowed) {

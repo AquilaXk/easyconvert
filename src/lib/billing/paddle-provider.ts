@@ -36,6 +36,9 @@ const STATUSES: ReadonlySet<string> = new Set<SubscriptionStatus>(['active', 'tr
 /** The statuses that take a plan away or hold it only to the end of the paid period: they are applied even when the price is no longer sold, so a retired price cannot leave a paid tier in place. */
 const LOSES_PLAN: ReadonlySet<string> = new Set<SubscriptionStatus>(['canceled', 'paused', 'past_due']);
 
+/** Every status is asked for by name: the API does not say which ones a list without the filter returns, and an entitling subscription left out of it would be withdrawn as missing. */
+const LISTED_STATUSES = ['active', 'trialing', 'past_due', 'paused', 'canceled'] as const;
+
 const USER_ID_FIELD = 'easyconvertUserId';
 const BINDING_FIELD = 'easyconvertBinding';
 const BINDING_LABEL = 'easyconvert:checkout:v1:';
@@ -199,7 +202,7 @@ export class PaddleBillingProvider implements BillingProvider {
   }
 
   async *listSubscriptions({ perPage, signal }: { perPage: number; signal: AbortSignal }): AsyncGenerator<ListedSubscription[], void, void> {
-    const collection = this.paddle.subscriptions.list({ perPage });
+    const collection = this.paddle.subscriptions.list({ perPage, status: [...LISTED_STATUSES] });
     while (collection.hasMore) {
       const page = await this.nextPage(collection, signal);
       yield page.map((subscription) => ({

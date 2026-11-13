@@ -93,7 +93,7 @@ describe('edge middleware client-IP attribution (rate-limit bypass regression)',
   it('the payment provider webhook has a bucket of its own: a burst from one address is not cut at the per-client limit, and clients keep theirs', async () => {
     vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
     const middleware = await loadMiddleware();
-    const hook = () => apiRequest({ 'x-forwarded-for': '198.51.100.7' }, '/api/billing/webhook', 'POST');
+    const hook = () => apiRequest({ 'x-forwarded-for': '198.51.100.7', 'paddle-signature': 'ts=1;h1=00' }, '/api/billing/webhook', 'POST');
     const responses: Response[] = [];
     for (let i = 0; i < REQUESTS_PER_SHARED_PROBE; i++) responses.push(middleware(hook()));
     const { allowed, limited } = countStatuses(responses);
@@ -106,6 +106,15 @@ describe('edge middleware client-IP attribution (rate-limit bypass regression)',
     expect(countStatuses(clientBurst).allowed).toBe(EDGE_BURST_CAPACITY);
     vi.setSystemTime(FROZEN_NOW_MS + 1000);
     expect(middleware(hook()).status).not.toBe(429);
+  });
+
+  it('a request to the webhook without the signature header takes its sender\'s bucket, so it cannot drain the provider\'s', async () => {
+    vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
+    const middleware = await loadMiddleware();
+    const unsigned = Array.from({ length: REQUESTS_PER_PROBE }, () => middleware(apiRequest({ 'x-forwarded-for': '198.51.100.9' }, '/api/billing/webhook', 'POST')));
+    expect(countStatuses(unsigned).allowed).toBe(EDGE_BURST_CAPACITY);
+    const signed = middleware(apiRequest({ 'x-forwarded-for': '198.51.100.7', 'paddle-signature': 'ts=1;h1=00' }, '/api/billing/webhook', 'POST'));
+    expect(signed.status).not.toBe(429);
   });
 
   it('GET and HEAD /api/health are exempt from the shared unattributed bucket', async () => {
