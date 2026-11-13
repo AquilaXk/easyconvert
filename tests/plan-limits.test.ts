@@ -77,8 +77,8 @@ describe('copy', () => {
   });
 
   it('names the size and the limit, and offers no plan while none can be bought', () => {
-    expect(fileTooLargeMessage('anonymous', GIB + 1)).toBe('File size 1,073,741,825 bytes exceeds the 1 GiB limit for anonymous use.');
-    expect(fileTooLargeMessage('free', 3 * GIB)).toBe('File size 3 GiB exceeds the 1 GiB limit for the free plan.');
+    expect(fileTooLargeMessage('anonymous', GIB + 1, false)).toBe('File size 1,073,741,825 bytes exceeds the 1 GiB limit for anonymous use.');
+    expect(fileTooLargeMessage('free', 3 * GIB, false)).toBe('File size 3 GiB exceeds the 1 GiB limit for the free plan.');
   });
 
   it('names the first plan on sale with a larger limit once the paid plans are on sale', () => {

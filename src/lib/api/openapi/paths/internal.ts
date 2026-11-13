@@ -472,6 +472,7 @@ export const internalPaths = {
           success: { type: 'boolean' },
           authenticated: { type: 'boolean' },
           user: { type: 'object', nullable: true },
+          paidPlansOnSale: { type: 'boolean', description: 'Whether the paid plans can be bought on this server (billing is configured).' },
         }),
       },
     },

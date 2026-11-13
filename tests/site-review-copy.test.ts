@@ -135,7 +135,7 @@ describe('/api/auth/me for a visitor without a session', () => {
   it('answers 200 with a signed-out body, so the browser logs no error', async () => {
     const res = await sessionHandler(new NextRequest('http://localhost:3000/api/auth/me'));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ success: false, authenticated: false, user: null });
+    expect(await res.json()).toEqual({ success: false, authenticated: false, user: null, paidPlansOnSale: false });
   });
 
   it('leaves the viewer anonymous when the client reads that answer', async () => {

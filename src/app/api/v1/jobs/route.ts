@@ -6,6 +6,7 @@ import { validateApiAccess, authErrorHeaders, conversionsUsedUp, reserveConversi
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import type { User } from '@/lib/auth/types';
+import { isBillingConfigured } from '@/lib/billing/config';
 import type { FormatDefinition } from '@/lib/types';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
@@ -97,7 +98,7 @@ async function storedInputRefusal(
     const infos = await Promise.all(uniqueGraphKeys.map((key) => s3Storage.stat(key)));
     for (const info of infos) {
       if (info && info.size > limit) {
-        return { status: 413, message: fileTooLargeMessage(plan, info.size), title: 'Payload Too Large' };
+        return { status: 413, message: fileTooLargeMessage(plan, info.size, isBillingConfigured()), title: 'Payload Too Large' };
       }
     }
   }
@@ -152,7 +153,7 @@ async function verifyStoredInput(check: StoredInputCheck, plan: ReturnType<typeo
   const refuse = (status: number, message: string, title: string): StoredInputVerdict => ({ refusal: { status, message, title } });
   const info = await s3Storage.stat(check.key);
   if (!info) return refuse(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
-  if (info.size > maxFileBytes(plan)) return refuse(413, fileTooLargeMessage(plan, info.size), 'Payload Too Large');
+  if (info.size > maxFileBytes(plan)) return refuse(413, fileTooLargeMessage(plan, info.size, isBillingConfigured()), 'Payload Too Large');
   if (s3Storage.kind === 'remote') {
     // The object lives in the object store: check its first bytes without downloading the rest.
     const header = await readObjectHeader(s3Storage, check.key);

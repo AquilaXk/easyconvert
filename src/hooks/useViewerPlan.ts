@@ -4,6 +4,7 @@ import { useEffect, useSyncExternalStore } from 'react';
 import type { Plan } from '@/lib/plan-limits';
 import {
   applySessionChange,
+  getPaidPlansOnSale,
   getViewerAccount,
   getViewerPlan,
   hasViewerSessionState,
@@ -30,6 +31,11 @@ export function useRefreshViewerPlan(initialUser?: SessionUser): void {
 /** The plan of the person using the page: anonymous at first, the plan of the session once `/api/auth/me` answers. */
 export function useViewerPlan(): Plan {
   return useSyncExternalStore(subscribeViewerPlan, getViewerPlan, () => SERVER_PLAN);
+}
+
+/** Whether the server says the paid plans can be bought: false until the session endpoint answers, and on a page rendered on the server. */
+export function usePaidPlansOnSale(): boolean {
+  return useSyncExternalStore(subscribeViewerPlan, getPaidPlansOnSale, () => false);
 }
 
 /** The signed-in person of the page, from the same session read as `useViewerPlan`; null for a visitor. */

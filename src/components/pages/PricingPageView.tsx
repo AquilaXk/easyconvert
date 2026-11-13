@@ -3,6 +3,7 @@ import { ArrowRight, Check } from 'lucide-react';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import PaidPlanCards from '@/components/billing/PaidPlanCards';
+import PricingFaq from '@/components/billing/PricingFaq';
 import { Link } from '@/i18n/navigation';
 import { formatBytesForDisplay } from '@/lib/format-bytes';
 import {
@@ -15,7 +16,6 @@ import {
 
 const LIMIT_ROWS = ['daily', 'fileSize', 'concurrent', 'processing', 'deletion'] as const;
 const FEATURE_ROWS = ['formats', 'api', 'noCard'] as const;
-const FAQ_ITEMS = ['daily', 'account', 'limits', 'deletion', 'api', 'paid'] as const;
 
 /** The free plan's limits, read from `plan-limits` so that the figures on the page are the ones the server enforces. */
 function limitValues(anonymousDaily: number) {
@@ -87,14 +87,7 @@ export default function PricingPageView({ anonymousDaily }: Readonly<{ anonymous
         <section aria-labelledby="faq-heading" className="pb-14">
           <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
             <h2 id="faq-heading" className="text-2xl text-ink">{t('faqHeading')}</h2>
-            <div className="mt-6 space-y-8">
-              {FAQ_ITEMS.map((item) => (
-                <div key={item}>
-                  <h3 className="text-base font-semibold text-ink">{t(`faq.${item}.question`)}</h3>
-                  <p className="mt-2 max-w-xl text-sm leading-relaxed text-ink-3">{t(`faq.${item}.answer`, values)}</p>
-                </div>
-              ))}
-            </div>
+            <PricingFaq values={values} />
           </div>
         </section>
 

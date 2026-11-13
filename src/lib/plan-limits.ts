@@ -18,12 +18,6 @@ export interface PlanCaller {
 }
 
 /**
- * Whether the paid plans can be bought. The launch is free-tier only (QA decision of 2026-10-30), so the copy names only
- * the free limit and never offers a larger plan; the server table above stays as it is. Turning this on shows them.
- */
-export const PAID_PLANS_ON_SALE = false;
-
-/**
  * Conversions a free account may run on the server each UTC day (`TIER_LIMITS.free`): the 10 of the free plan of the
  * converter the product is measured against (QA decision of 2026-11-03, entry 15 of docs/policy-decisions.md).
  */
@@ -132,8 +126,12 @@ export function maxFileBytes(plan: Plan): number {
   return PLAN_MAX_FILE_BYTES[plan];
 }
 
-/** The first plan after `plan` that allows a larger file and can be bought, or undefined when there is none. */
-function nextLargerPlan(plan: Plan, paidPlansOnSale: boolean = PAID_PLANS_ON_SALE): Plan | undefined {
+/**
+ * The first plan after `plan` that allows a larger file and can be bought, or undefined when there is none. Whether the paid plans can be
+ * bought is `isBillingConfigured()` on the server (`src/lib/billing/config.ts`) and what `/api/billing/status` says in the browser; this
+ * module is bundled into the browser too and reads no environment, so each caller says.
+ */
+function nextLargerPlan(plan: Plan, paidPlansOnSale: boolean): Plan | undefined {
   if (!paidPlansOnSale) return undefined;
   const limit = PLAN_MAX_FILE_BYTES[plan];
   return PLAN_ORDER.slice(PLAN_ORDER.indexOf(plan) + 1).find((candidate) => PLAN_MAX_FILE_BYTES[candidate] > limit);
@@ -150,7 +148,7 @@ export interface FileTooLargeFacts {
   next?: { plan: Plan; limitBytes: number };
 }
 
-export function fileTooLargeFacts(plan: Plan, sizeBytes: number, paidPlansOnSale: boolean = PAID_PLANS_ON_SALE): FileTooLargeFacts {
+export function fileTooLargeFacts(plan: Plan, sizeBytes: number, paidPlansOnSale: boolean): FileTooLargeFacts {
   const limitBytes = PLAN_MAX_FILE_BYTES[plan];
   const next = nextLargerPlan(plan, paidPlansOnSale);
   return {
@@ -163,7 +161,7 @@ export function fileTooLargeFacts(plan: Plan, sizeBytes: number, paidPlansOnSale
 }
 
 /** What to tell the caller of a file over their limit: the size, the limit, and the next plan's limit when one is on sale. */
-export function fileTooLargeMessage(plan: Plan, sizeBytes: number, paidPlansOnSale: boolean = PAID_PLANS_ON_SALE): string {
+export function fileTooLargeMessage(plan: Plan, sizeBytes: number, paidPlansOnSale: boolean): string {
   const facts = fileTooLargeFacts(plan, sizeBytes, paidPlansOnSale);
   const size = facts.sizeInExactBytes ? `${sizeBytes.toLocaleString('en-US')} bytes` : formatBytes(sizeBytes);
   const limit = `File size ${size} exceeds the ${formatBytes(facts.limitBytes)} limit for ${PLAN_PHRASE[plan]}.`;

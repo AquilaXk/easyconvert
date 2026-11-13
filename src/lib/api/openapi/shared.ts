@@ -4,7 +4,8 @@ import { CONVERSION_WARNINGS_HEADER } from '@/lib/api/conversion-warnings';
 import { DROPPED_STREAMS_HEADER } from '@/lib/api/dropped-streams';
 import { FRAME_USED_HEADER, SOURCE_FRAMES_HEADER } from '@/lib/api/frame-headers';
 import { formatBytes } from '@/lib/format-bytes';
-import { PAID_PLANS_ON_SALE, PLAN_MAX_FILE_BYTES, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
+import { isBillingConfigured } from '@/lib/billing/config';
+import { PLAN_MAX_FILE_BYTES, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
 import { PDFA_VALIDATION_PROBLEM_TYPE, PDF_POSTPROCESS_PROBLEM_TYPE, RATE_LIMITED_PROBLEM_TYPE } from '@/lib/api/problem-details';
 import { QUOTA_EXCEEDED_PROBLEM_TYPE, type ConversionRefusalCode } from '@/lib/refusal-codes';
 import {
@@ -185,13 +186,21 @@ export const createPdfaProblemResponse = (description: string) => ({
 });
 const PIXELS_PER_MEGAPIXEL = 1_000_000;
 
-/** The most one file may have, by plan, as the API documents it: the free limit, and the paid plans once they are on sale. */
-const PLAN_FILE_LIMITS_TEXT = PAID_PLANS_ON_SALE
-  ? `${formatBytes(PLAN_MAX_FILE_BYTES.free)} for anonymous callers and the free plan, ${formatBytes(PLAN_MAX_FILE_BYTES.pro)} for Pro, ${formatBytes(PLAN_MAX_FILE_BYTES.enterprise)} for Enterprise`
-  : `${formatBytes(PLAN_MAX_FILE_BYTES.free)} for anonymous callers and accounts`;
+/**
+ * Stands for the plan limits in a description. The limits follow the server's configuration (the paid plans are named once billing is
+ * configured), so `buildOpenApiDocument` writes `planFileLimitsText()` in place of it when the document is built.
+ */
+export const PLAN_FILE_LIMITS_PLACEHOLDER = '{plan file limits}';
+
+/** The most one file may have, by plan, as the API documents it: the free limit, and the paid plans once they can be bought. */
+export function planFileLimitsText(): string {
+  return isBillingConfigured()
+    ? `${formatBytes(PLAN_MAX_FILE_BYTES.free)} for anonymous callers and the free plan, ${formatBytes(PLAN_MAX_FILE_BYTES.pro)} for Pro, ${formatBytes(PLAN_MAX_FILE_BYTES.enterprise)} for Enterprise`
+    : `${formatBytes(PLAN_MAX_FILE_BYTES.free)} for anonymous callers and accounts`;
+}
 
 /** Description of the 413 answer for a file over the limit of the caller's plan. */
-export const PLAN_FILE_LIMIT_DESCRIPTION = `Payload Too Large: the file is over the limit of the caller's plan (${PLAN_FILE_LIMITS_TEXT}). The detail states the size and the limit.`;
+export const PLAN_FILE_LIMIT_DESCRIPTION = `Payload Too Large: the file is over the limit of the caller's plan (${PLAN_FILE_LIMITS_PLACEHOLDER}). The detail states the size and the limit.`;
 
 /** Description of the 413 answer of a public route for a request body past what one request may carry. */
 export const SINGLE_REQUEST_LIMIT_DESCRIPTION = `Payload Too Large: the request body is over ${formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES)} of file and form fields. A larger file is uploaded in parts through \`/api/v1/uploads\` and converted by \`POST /api/v1/jobs\` on the stored file.`;
@@ -334,7 +343,7 @@ export const CONVERT_OPTIONS_DESCRIPTION =
 
 /** Form fields of a single-file conversion request. */
 export const CONVERT_FORM_PROPERTIES = {
-  file: { type: 'string', format: 'binary', description: `Source input file binary (up to ${PLAN_FILE_LIMITS_TEXT}).` },
+  file: { type: 'string', format: 'binary', description: `Source input file binary (up to ${PLAN_FILE_LIMITS_PLACEHOLDER}).` },
   targetFormat: { type: 'string', description: 'Target format extension or identifier (e.g., "pdf", "step", "webp").' },
   sourceFormat: { type: 'string', description: 'Explicit source format override. If omitted, inferred from filename.' },
   options: { type: 'string', description: CONVERT_OPTIONS_DESCRIPTION },

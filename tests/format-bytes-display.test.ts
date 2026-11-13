@@ -18,6 +18,6 @@ describe('byte sizes on web pages and on the API', () => {
   it('keeps the IEC names for the API, logs and OpenAPI', () => {
     expect(formatBytes(GIB)).toBe('1 GiB');
     expect(formatBytes(30 * MIB)).toBe('30 MiB');
-    expect(fileTooLargeMessage('free', 3 * GIB)).toBe('File size 3 GiB exceeds the 1 GiB limit for the free plan.');
+    expect(fileTooLargeMessage('free', 3 * GIB, false)).toBe('File size 3 GiB exceeds the 1 GiB limit for the free plan.');
   });
 });

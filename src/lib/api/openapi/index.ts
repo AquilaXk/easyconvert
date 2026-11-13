@@ -2,6 +2,7 @@ import { LEGAL_DOCUMENTS } from '../../legal/documents';
 import { getAppOrigin } from '../../auth/oauth';
 import { components } from './components';
 import { webhookEvents } from './events';
+import { PLAN_FILE_LIMITS_PLACEHOLDER, planFileLimitsText } from './shared';
 import { billingPaths } from './paths/billing';
 import { conversionPaths } from './paths/conversion';
 import { internalPaths } from './paths/internal';
@@ -12,10 +13,11 @@ import { webhookPaths } from './paths/webhooks';
 
 /**
  * Builds the OpenAPI 3.1 document, the single source for API reference docs and SDKs. `info.termsOfService` must be an absolute
- * URL (OpenAPI 3.1, Info Object), so it is resolved against the configured public origin, never the request's Host.
+ * URL (OpenAPI 3.1, Info Object), so it is resolved against the configured public origin, never the request's Host. The plan limits in
+ * the descriptions are written when the document is built, so they follow the server's configuration (`planFileLimitsText`).
  */
 export function buildOpenApiDocument() {
-  return {
+  const document = {
     openapi: '3.1.0',
     info: {
       title: 'EasyConvert API',
@@ -51,4 +53,5 @@ export function buildOpenApiDocument() {
     webhooks: webhookEvents,
     components,
   };
+  return JSON.parse(JSON.stringify(document).replaceAll(PLAN_FILE_LIMITS_PLACEHOLDER, planFileLimitsText())) as typeof document;
 }

@@ -1,4 +1,5 @@
 import type { NextRequest, NextResponse } from 'next/server';
+import { isBillingConfigured } from '../billing/config';
 import { SINGLE_REQUEST_BODY_MAX_BYTES, fileTooLargeMessage, maxFileBytes, planOfCaller, type PlanCaller } from '../plan-limits';
 import { createProblemDetailsResponse } from './problem-details';
 import { partBodyVerdict, singleRequestVerdict, type BodyLengthVerdict } from './request-body-limit';
@@ -22,7 +23,7 @@ export function fileSizeLimitProblem(
   if (sizeBytes === undefined) return null;
   const plan = planOfCaller(caller);
   if (sizeBytes <= maxFileBytes(plan)) return null;
-  return createProblemDetailsResponse(413, fileTooLargeMessage(plan, sizeBytes), instanceUri, undefined, undefined, extraHeaders, undefined, {
+  return createProblemDetailsResponse(413, fileTooLargeMessage(plan, sizeBytes, isBillingConfigured()), instanceUri, undefined, undefined, extraHeaders, undefined, {
     plan,
     sizeBytes,
     limitBytes: maxFileBytes(plan),

@@ -2,6 +2,7 @@ import { useCallback } from 'react';
 import { useFormatter, useTranslations } from 'next-intl';
 import { byteMagnitude, displayByteUnit } from '@/lib/format-bytes';
 import { fileTooLargeFacts, PLAN_MAX_FILE_BYTES, type Plan } from '@/lib/plan-limits';
+import { usePaidPlansOnSale } from '@/hooks/useViewerPlan';
 
 /**
  * Formatting hooks of the page's locale. Each returns the same function while the locale stays, so a callback or an effect
@@ -27,19 +28,23 @@ export function useFileLimitCopy(): (plan: Plan) => string {
   return useCallback((plan: Plan) => t('fileLimit', { size: formatBytes(PLAN_MAX_FILE_BYTES[plan]) }), [t, formatBytes]);
 }
 
-/** The message for a file over its plan's limit, worded from `fileTooLargeFacts`. */
+/**
+ * The message for a file over its plan's limit, worded from `fileTooLargeFacts`. It names the next plan only when the server says
+ * the paid plans can be bought (the session endpoint's answer), so a page that has not heard names none.
+ */
 export function useFileTooLargeMessage(): (plan: Plan, sizeBytes: number) => string {
   const t = useTranslations('plans');
   const formatBytes = useFormatBytes();
+  const paidPlansOnSale = usePaidPlansOnSale();
   return useCallback(
     (plan: Plan, sizeBytes: number) => {
-      const facts = fileTooLargeFacts(plan, sizeBytes);
+      const facts = fileTooLargeFacts(plan, sizeBytes, paidPlansOnSale);
       const size = facts.sizeInExactBytes ? t('exactBytes', { count: sizeBytes }) : formatBytes(sizeBytes);
       const limit = t('tooLarge', { size, limit: formatBytes(facts.limitBytes), plan: facts.plan });
       if (!facts.next) return limit;
       return `${limit} ${t('nextPlanAllows', { plan: facts.next.plan, limit: formatBytes(facts.next.limitBytes) })}`;
     },
-    [t, formatBytes]
+    [t, formatBytes, paidPlansOnSale]
   );
 }
 

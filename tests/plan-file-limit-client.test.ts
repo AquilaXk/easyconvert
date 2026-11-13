@@ -20,6 +20,7 @@ vi.mock('../src/hooks/useViewerPlan', () => ({
   useViewerPlan: () => shownPlan.current,
   useViewerAccount: () => shownAccount.current,
   useRefreshViewerPlan: () => undefined,
+  usePaidPlansOnSale: () => false,
 }));
 
 import HeroDropzoneCard from '../src/components/workbench/HeroDropzoneCard';

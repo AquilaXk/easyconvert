@@ -24,7 +24,7 @@ export const PAGE_NAMESPACES = {
   auth: [...CHROME, 'auth', 'errors'],
   dashboard: [...CHROME, 'dashboard', 'billing', 'errors'],
   apiDocs: [...CHROME],
-  pricing: [...CHROME, 'billing', 'errors'],
+  pricing: [...CHROME, 'billing', 'errors', 'pricing'],
   legal: [...CHROME],
   notFound: [...CHROME, 'notFound'],
 } as const satisfies Record<string, readonly Namespace[]>;

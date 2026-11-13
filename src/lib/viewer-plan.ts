@@ -9,6 +9,8 @@ export interface ViewerAccount {
 }
 
 let viewerPlan: Plan = 'anonymous';
+/** Whether the paid plans can be bought on this server, as the session endpoint says; false until it answers. */
+let paidPlansOnSale = false;
 let viewerAccount: ViewerAccount | null = null;
 let sessionKnown = false;
 let seededAccount: ViewerAccount | null = null;
@@ -19,6 +21,16 @@ const listeners = new Set<() => void>();
 
 export function getViewerPlan(): Plan {
   return viewerPlan;
+}
+
+export function getPaidPlansOnSale(): boolean {
+  return paidPlansOnSale;
+}
+
+function setPaidPlansOnSale(next: boolean): void {
+  if (next === paidPlansOnSale) return;
+  paidPlansOnSale = next;
+  for (const listener of listeners) listener();
 }
 
 /** Whether the session store has been populated by `/api/auth/me` or `applySessionChange`. */
@@ -72,6 +84,8 @@ const HTTP_UNAUTHORIZED = 401;
 interface Viewer {
   plan: Plan;
   account: ViewerAccount | null;
+  /** What the session endpoint said of the paid plans; absent when the answer did not say. */
+  paidPlansOnSale?: boolean;
 }
 
 const SIGNED_OUT: Viewer = { plan: 'anonymous', account: null };
@@ -108,8 +122,8 @@ async function askSession(): Promise<Viewer | undefined> {
   const res = await fetch(SESSION_ENDPOINT, { signal: AbortSignal.timeout(SESSION_READ_TIMEOUT_MS) });
   if (res.status === HTTP_UNAUTHORIZED) return SIGNED_OUT;
   if (!res.ok) return undefined;
-  const body = (await res.json()) as { success?: boolean; user?: SessionUser };
-  return body.success && body.user ? viewerOf(body.user) : SIGNED_OUT;
+  const body = (await res.json()) as { success?: boolean; user?: SessionUser; paidPlansOnSale?: boolean };
+  return { ...(body.success && body.user ? viewerOf(body.user) : SIGNED_OUT), paidPlansOnSale: body.paidPlansOnSale === true };
 }
 
 /**
@@ -124,7 +138,9 @@ export function refreshViewerPlan(): Promise<void> {
   const read: Promise<void> = askSession()
     .then(
       (viewer) => {
-        if (viewer && readId === latestRead) setViewer(viewer.plan, viewer.account);
+        if (!viewer || readId !== latestRead) return;
+        setViewer(viewer.plan, viewer.account);
+        if (viewer.paidPlansOnSale !== undefined) setPaidPlansOnSale(viewer.paidPlansOnSale);
       },
       () => undefined
     )
