@@ -11,6 +11,7 @@ import { itKeepsCredits } from './helpers/credit-ledger-cases';
  */
 const REDIS_URL = process.env.REDIS_URL;
 
+// skip-ok: mode selection. The shards run without REDIS_URL; the Redis-mode CI step (npm run test:redis) sets it and runs this file.
 describe.skipIf(!REDIS_URL)('the credit ledger on a real Redis server', () => {
   let admin: Redis;
   let keyPrefix = '';

@@ -705,8 +705,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       return reply(typedFailureProblem(err, instanceUri));
     }
 
-    // One job costs the credits of its class; a graph reserves a credit for each conversion in it and is charged by class as its nodes run.
-    const unit = await reserveConversionUnit(auth.user, graph ? reservedUnits : baseCredits(sourceDef.id, targetDef.id));
+    const unit = await reserveConversionUnit(auth.user, creditsToReserve(graph, reservedUnits, sourceDef.id, targetDef.id));
     if (!unit.reserved) return reply(conversionRefusalResponse(unit.refusal, instanceUri));
 
     const submission: ReservedSubmission = {
@@ -910,6 +909,11 @@ interface ReservedSubmission {
  */
 function unitsToReserve(graph: JobGraph | undefined): number {
   return graph ? graphReservationUnits(normalizeGraphNodes(graph)) : 1;
+}
+
+/** The credits a submission reserves: those of the class of its conversion for a job, one for each conversion of a graph (it is charged by class as its nodes end). */
+function creditsToReserve(graph: JobGraph | undefined, graphUnits: number, sourceFormat: string, targetFormat: string): number {
+  return graph ? graphUnits : baseCredits(sourceFormat, targetFormat);
 }
 
 /**

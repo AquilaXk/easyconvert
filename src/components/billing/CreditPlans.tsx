@@ -138,6 +138,12 @@ async function startCheckout(status: PublicBillingConfig, product: Product, loca
   return (await openCheckout(status, payload.checkout, locale)) ? undefined : { payload: null, status: 502 };
 }
 
+/** The text of the button of a product: buy, subscribe, or switch from the size the account has. */
+function labelOf(product: Product, current: 'same' | 'other' | undefined, t: ReturnType<typeof useTranslations<'billing'>>): string {
+  if (product.kind === 'package') return t('buyPackage');
+  return t(current === 'other' ? 'switchTo' : 'subscribe');
+}
+
 function ProductButton({ product, status, current }: Readonly<{ product: Product; status: PublicBillingConfig | null; current?: 'same' | 'other' }>) {
   const t = useTranslations('billing');
   const locale = useLocale();
@@ -167,7 +173,7 @@ function ProductButton({ product, status, current }: Readonly<{ product: Product
     );
   }
 
-  const label = product.kind === 'package' ? t('buyPackage') : current === 'other' ? t('switchTo') : t('subscribe');
+  const label = labelOf(product, current, t);
   const buy = () =>
     run(async () => {
       const result = await startCheckout(status, product, locale);

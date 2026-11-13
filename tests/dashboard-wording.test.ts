@@ -386,6 +386,9 @@ describe('the credits on the dashboard', () => {
     expect(panel).toContain('PNG to JPG');
     expect(panel).toContain('A batch of files');
     expect(panel).not.toContain('No conversions have been charged yet.');
+    // The newest charge is first, and each row ends with the credits it cost.
+    expect(panel.indexOf('DOCX to PDF')).toBeLessThan(panel.indexOf('PNG to JPG'));
+    expect(charges.map((entry) => entry.credits)).toEqual([4, 1, 6]);
   });
 
   it('never shows more credits used than the day allows, for a count made under a larger allowance before a deploy', () => {

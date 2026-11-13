@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { billingUnavailable, guardingStore, invalidSignature } from '@/lib/api/billing-refusal';
 import { getBillingProvider } from '@/lib/billing';
-import { creditPackagePurchase, refundPackagePurchase } from '@/lib/billing/package-credits';
+import { creditPackagePurchase, refundPackagePurchase, type PackageRefundResult } from '@/lib/billing/package-credits';
 import { subscriptionStore } from '@/lib/billing/subscription-store';
 import { InvalidWebhookError, type BillingProvider, type VerifiedBillingEvent } from '@/lib/billing/types';
 import { observeBillingEvent } from '@/lib/metrics/instruments';
@@ -36,13 +36,15 @@ async function applyPackagePurchase(provider: BillingProvider, event: VerifiedBi
   return answer(result === 'granted' ? 'applied' : result);
 }
 
+const REFUND_RESULTS: Readonly<Record<PackageRefundResult, BillingResult>> = { revoked: 'applied', duplicate: 'duplicate', unknown_transaction: 'ignored' };
+
 /** An approved refund or chargeback of a package payment: takes back the credits of it that are unused. */
 async function applyPackageRefund(provider: BillingProvider, event: VerifiedBillingEvent): Promise<NextResponse | undefined> {
   const refund = provider.mapEventToPackageRefund(event);
   if (!refund) return undefined;
   const result = await refundPackagePurchase(refund);
   // A payment this server never credited (a subscription's, or one before the ledger) has nothing to take back.
-  return answer(result === 'revoked' ? 'applied' : result === 'duplicate' ? 'duplicate' : 'ignored');
+  return answer(REFUND_RESULTS[result]);
 }
 
 /** A subscription event: the subscription it describes becomes the account's, once for each event id. */

@@ -77,6 +77,7 @@ import {
   PDF_SPLIT_OUTPUT_FORMAT,
   THUMBNAIL_FORMATS,
   graphNodeCharge,
+  type GraphNodeProduct,
   requestedTargetFormat,
 } from '../../jobs/graph-operations';
 import { importUrlWithinBudget } from './node-url-import';
@@ -527,6 +528,16 @@ export async function processGraphNodeJobIfAlive(
   return processGraphNodeJob(job, engine, storage);
 }
 
+/**
+ * The credits a node charges when it ends: a `convert` node charges the cost of the class of its conversion (the format of its first
+ * input and its target) for each output and its own minutes beyond the first; every other operation one credit for each output, as the
+ * rule of its operation says (docs/policy-decisions.md, entry 285).
+ */
+function nodeCharge(node: { op?: string; targetFormat?: string }, inputArtifacts: readonly string[], product: GraphNodeProduct, processingMs: number): number {
+  const creditsEach = node.op === 'convert' ? baseCredits(path.extname(inputArtifacts[0] ?? '').slice(1), node.targetFormat ?? '') : 1;
+  return graphNodeCharge(node.op, product, { creditsEach, processingMs });
+}
+
 export async function processGraphNodeJob(
   job: Job<ConversionJobData, ConversionJobResult>,
   engine?: ConversionEnginePort,
@@ -547,8 +558,6 @@ export async function processGraphNodeJob(
     const node = openedNode(job.data.graphNode as GraphNode, graphNodeJobId(graphId, nodeId));
     const effectiveStorage: IStorageBackend = scope.storage;
     let outputKeys: string[] = [];
-    /** Credits of the class of a `convert` node's conversion, for each output it makes; one for every other operation. */
-    let creditsEach = 1;
     const optimizations: NonNullable<ConversionJobResult['optimizations']> = [];
     const effectiveEngine = recordingConversions(deadlineBoundEngine(engine || dispatchEngine, job));
     await job.log(`Executing graph node "${nodeId}" (op: ${node.op}) in graph ${graphId}`);
@@ -584,7 +593,6 @@ export async function processGraphNodeJob(
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
 
-        creditsEach = baseCredits(path.extname(inputArtifacts[0]).slice(1), node.targetFormat);
         outputKeys.push(
           ...(await convertGraphNodeInputs(
             { graphId, nodeId, inputArtifacts, storage: effectiveStorage, engine: effectiveEngine, attemptSignal },
@@ -937,7 +945,7 @@ export async function processGraphNodeJob(
     // cancel or takeover), so the node is never recorded as completed.
     attemptSignal.throwIfAborted();
     const outputs = [...new Set(outputKeys)];
-    await graphScheduler.onNodeCompleted(graphId, nodeId, outputs, graphNodeCharge(node.op, { outputs: outputs.length, optimizations }, { creditsEach, processingMs: durationMs }));
+    await graphScheduler.onNodeCompleted(graphId, nodeId, outputs, nodeCharge(node, inputArtifacts, { outputs: outputs.length, optimizations }, durationMs));
 
     return {
       jobId: job.id,

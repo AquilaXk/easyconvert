@@ -186,6 +186,7 @@ describe('the volume selector', () => {
     expect(cards(host)[PACKAGE_CARD]).toContain('500 credits');
     expect(cards(host)[SUBSCRIPTION_CARD]).toContain('1,000 credits every month');
     expect(cards(host)[SUBSCRIPTION_CARD]).toContain('Subscriptions start at 1,000 credits a month.');
+    expect(radios(host).find((input) => input.checked)?.value).toBe('500');
     await pick(host, 1000);
     expect(cards(host)[SUBSCRIPTION_CARD]).not.toContain('Subscriptions start at');
   });
