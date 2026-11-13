@@ -3,6 +3,7 @@ import { executeSandboxedBinary, rethrowSandboxUnavailable, SandboxedProcessErro
 import type { ConversionOptions } from '../types';
 import { findDecoderTool, loggableDiagnostic } from './image-decoder-tools';
 import { maxInputPixels } from './image-input-limits';
+import { metadataOf } from './image-metadata';
 import { rgbaRaster, writtenSizeOf } from './image-rgba-raster';
 import { bitDepthOf, deflateIndexedPicture, type IndexedPicture } from './png-indexed-picture';
 import { chunkOf, readChunks } from './png-photo-bands';
@@ -58,6 +59,8 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0
 const IHDR_BYTES = 13;
 /** The chunks of the template that the writer replaces; every other one tells how the picture looks and is kept. */
 const REPLACED_CHUNKS = new Set(['IHDR', 'PLTE', 'tRNS', 'IDAT', 'IEND']);
+/** The image library writes an `eXIf` chunk of 180 bytes for a picture whose density is not the default, though the source has no EXIF block; `pHYs` already says it. */
+const EXIF_CHUNK = 'eXIf';
 
 export type { IndexedPicture };
 
@@ -123,7 +126,7 @@ function describeFailure(error: unknown): string {
  * header, the palette, the transparency and the pixel data go into the file, ahead of the palette, so that the profile, the EXIF block
  * and the resolution are the ones the image library writes. The rows and the order of the palette are `deflateIndexedPicture`'s.
  */
-export async function writeIndexedPng(picture: IndexedPicture, template: Buffer, signal?: AbortSignal): Promise<Buffer> {
+export async function writeIndexedPng(picture: IndexedPicture, template: Buffer, signal?: AbortSignal, keepExif = true): Promise<Buffer> {
   const { width, height, indices } = picture;
   const colours = picture.palette.length / RGBA_CHANNELS;
   if (!Number.isInteger(colours) || colours < 1 || colours > MAX_COLOURS) throw new Error(`The palette of ${picture.palette.length} bytes does not hold 1 to ${MAX_COLOURS} entries.`);
@@ -148,7 +151,7 @@ export async function writeIndexedPng(picture: IndexedPicture, template: Buffer,
   while (transparent > 0 && alphas[transparent - 1] === OPAQUE) transparent -= 1;
 
   const pieces: Uint8Array[] = [PNG_SIGNATURE, chunkOf('IHDR', [header])];
-  for (const chunk of readChunks(template).filter((kept) => !REPLACED_CHUNKS.has(kept.type))) pieces.push(chunk.bytes);
+  for (const chunk of readChunks(template).filter((kept) => !REPLACED_CHUNKS.has(kept.type) && (keepExif || kept.type !== EXIF_CHUNK))) pieces.push(chunk.bytes);
   pieces.push(chunkOf('PLTE', [entries]));
   if (transparent > 0) pieces.push(chunkOf('tRNS', [alphas.subarray(0, transparent)]));
   pieces.push(chunkOf('IDAT', [stream]), chunkOf('IEND', []));
@@ -185,7 +188,9 @@ export async function quantizedPalettePng(pipeline: Sharp, request: PalettePngRe
     signal: request.options.signal,
   });
   if (picture === null) return null;
-  return writeIndexedPng(picture, await template, request.options.signal);
+  // The EXIF block of the template is kept when the source has one; the one the library makes up from a density is not (the reference drops both).
+  const { exif } = await metadataOf(pipeline);
+  return writeIndexedPng(picture, await template, request.options.signal, exif !== undefined);
 }
 
 /**

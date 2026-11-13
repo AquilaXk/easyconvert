@@ -268,6 +268,33 @@ describe('the palette PNG of a pipeline', () => {
     }
   });
 
+  it('drops the eXIf chunk that the image library makes up from a density, and keeps the EXIF block that the source carries', async () => {
+    const { program } = standIn(flatReply([[9, 8, 7, 255]]));
+    vi.stubEnv('QUANTIZR_PIXELS_PATH', program);
+    try {
+      // The PNG of a graphic editor: a density in pHYs and no EXIF block (the image library writes one for the density when it saves).
+      const written = await source(24, 16, 300);
+      const pieces: Buffer[] = [written.subarray(0, 8)];
+      for (let at = 8; at < written.length; ) {
+        const length = written.readUInt32BE(at);
+        if (written.toString('latin1', at + 4, at + 8) !== 'eXIf') pieces.push(written.subarray(at, at + 12 + length));
+        at += 12 + length;
+      }
+      const withDensity = Buffer.concat(pieces);
+      expect(chunksOf(withDensity).map((chunk) => chunk.type)).not.toContain('eXIf');
+      const library = await sharp(withDensity).keepMetadata().png({ palette: true }).toBuffer();
+      expect(chunksOf(library).some((chunk) => chunk.type === 'eXIf')).toBe(true);
+      const plain = await quantizedPalettePng(sharp(withDensity).keepMetadata(), params);
+      expect(chunksOf(plain as Buffer).map((chunk) => chunk.type)).not.toContain('eXIf');
+      expect(chunksOf(plain as Buffer).map((chunk) => chunk.type)).toContain('pHYs');
+      const tagged = await sharp(withDensity).withExif({ IFD0: { Copyright: 'someone' } }).png().toBuffer();
+      const kept = await quantizedPalettePng(sharp(tagged).keepMetadata(), params);
+      expect(chunksOf(kept as Buffer).map((chunk) => chunk.type)).toContain('eXIf');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('is null, and the program is not run, for a picture past the pixel limit or with no program', async () => {
     const { program, argsFile } = standIn(flatReply([[9, 8, 7, 255]]));
     vi.stubEnv('QUANTIZR_PIXELS_PATH', program);
