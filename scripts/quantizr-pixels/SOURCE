@@ -35,6 +35,9 @@ Changed from upstream (each change is marked "(Not in upstream.)" in the file):
       mean squared error of a colour channel stays at or below it (the median cut stops splitting, Ward's agglomeration goes on merging).
   src/cluster.rs, src/quantize.rs   a histogram of more colours than asked for and at most 1024 entries is reduced by Ward's agglomeration of
       its entries (merge the pair that adds the least squared error) where upstream splits it by median cut.
+  src/quantize.rs   the dithering loop runs in four horizontal bands on up to four threads for a picture of 100,000 pixels or more; the error that
+      would pass from a band's last row to the next band's first row is dropped, so the indices differ slightly from upstream's and do not depend
+      on the number of threads.
   src/quantize.rs, src/colormap.rs   a cache of the nearest palette entry by exact pixel colour in the two remap loops, and no error passed on by a
       pixel that the palette holds exactly. A flat area, or a picture of at most 256 colours, is looked up instead of searched (same output).
 

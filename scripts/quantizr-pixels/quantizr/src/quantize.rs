@@ -12,6 +12,11 @@ const EMPTY_PIX: [u8; 4] = [0; 4];
 /// quadratic in the entries: 1 to 3 ms for 800); a larger one by upstream's median cut. (Not in upstream.)
 const WARD_MAX_ENTRIES: usize = 1024;
 
+/// A picture of this many pixels or more is dithered in `DITHER_BANDS` bands on as many threads (0.4 megapixel photographs: 12 of 90 ms of the
+/// compress path on the Linux VM become 4). The palette indices change by what the dropped error at the three seams would have added. (Not in upstream.)
+const DITHER_BAND_MIN_PIXELS: usize = 100_000;
+const DITHER_BANDS: usize = 4;
+
 /// Slots of the cache of nearest palette entries by exact pixel colour (a power of two).
 const CACHE_BITS: u32 = 12;
 const CACHE_SLOTS: usize = 1 << CACHE_BITS;
@@ -154,7 +159,41 @@ impl QuantizeResult {
         }
     }
 
+    /// Dithers the picture in horizontal bands, each on its own thread, when it has `DITHER_BAND_MIN_PIXELS` pixels or more. The error that a
+    /// band's last row would pass on to the next band's first row is dropped, and the first row of a band starts with no error, as the first row
+    /// of the picture does: a band's answer does not depend on the others, so the indices do not depend on the number of threads that run.
+    /// (Not in upstream.)
     fn remap_image_dither(&self, image: &Image, buf: &mut [u8]) {
+        let bands = if image.width * image.height >= DITHER_BAND_MIN_PIXELS && image.height >= DITHER_BANDS * 8 {
+            DITHER_BANDS
+        } else {
+            1
+        };
+        let rows_per_band = image.height.div_ceil(bands);
+        let slots: Vec<std::sync::Mutex<&mut [u8]>> = buf[..image.width * image.height]
+            .chunks_mut(rows_per_band * image.width)
+            .map(std::sync::Mutex::new)
+            .collect();
+        let run = |band: usize| {
+            let mut rows = slots[band].lock().expect("a band does not panic");
+            self.remap_rows(image, band * rows_per_band, &mut rows);
+        };
+        std::thread::scope(|scope| {
+            // A thread that cannot start leaves its band to the calling thread, which gives the same indices.
+            let started: Vec<_> = (1..slots.len())
+                .map(|band| (band, std::thread::Builder::new().spawn_scoped(scope, move || run(band)).is_ok()))
+                .collect();
+            run(0);
+            for (band, running) in started {
+                if !running {
+                    run(band);
+                }
+            }
+        });
+    }
+
+    /// The dithering of the rows `first_row ..` that `buf` holds (`buf.len() / image.width` of them).
+    fn remap_rows(&self, image: &Image, first_row: usize, buf: &mut [u8]) {
         let error_size = image.width + 2;
         let mut error_curr = vec![[0f32; 4]; error_size];
         let mut error_next = vec![[0f32; 4]; error_size];
@@ -163,11 +202,12 @@ impl QuantizeResult {
         let err_threshold = self.error;
         // println!("Err threshold {}", self.error);
 
-        let mut x_reverse = true;
         let mut cache = NearestCache::new();
 
-        for y in 0..image.height {
-            x_reverse = !x_reverse;
+        for row in 0..buf.len() / image.width {
+            let y = first_row + row;
+            // The direction of a row follows the row of the picture, as when the picture is dithered in one run: the first row runs to the right.
+            let x_reverse = y % 2 == 1;
 
             for xx in 0..image.width {
                 let x = if x_reverse { image.width - 1 - xx } else { xx };
@@ -192,7 +232,7 @@ impl QuantizeResult {
                     let ind = cache.index_of(colour_key(pix), &self.colormap, &colour);
                     let pal_pix = self.colormap.entry(ind);
                     if pal_pix == colour {
-                        buf[point] = ind;
+                        buf[image.width * row + x] = ind;
                         continue;
                     }
                     (ind, pal_pix, colour)
@@ -220,7 +260,7 @@ impl QuantizeResult {
                     (ind, pal_pix, dith_pix)
                 };
 
-                buf[point] = ind;
+                buf[image.width * row + x] = ind;
 
                 let mut err_r = dith_pix[0] - pal_pix[0];
                 let mut err_g = dith_pix[1] - pal_pix[1];

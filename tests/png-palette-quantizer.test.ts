@@ -493,6 +493,24 @@ describe.skipIf(skippedWithoutProgram)('the program itself', () => {
     for (let round = 0; round < 3; round += 1) expect(run(input, ['--colors', '64', '--dither', '0.25']).stdout.equals(first.stdout)).toBe(true);
   });
 
+  it('dithers a picture of 100,000 pixels or more in bands that give the same indices on every run, each inside the palette', () => {
+    const width = 400;
+    const height = 300;
+    const pixels = Buffer.alloc(width * height * 4);
+    for (let i = 0; i < width * height; i += 1) {
+      const x = i % width;
+      const y = Math.floor(i / width);
+      pixels.set([(x * 255) / width, (y * 255) / height, ((x + y) * 255) / (width + height), 255], i * 4);
+    }
+    const input = Buffer.concat([header(width, height), pixels]);
+    const args = ['--colors', '16', '--dither', '1'];
+    const first = run(input, args);
+    expect(first.status).toBe(0);
+    const count = first.stdout.readUInt32LE(0);
+    expect(Math.max(...first.stdout.subarray(4 + count * 4))).toBeLessThan(count);
+    for (let round = 0; round < 3; round += 1) expect(run(input, args).stdout.equals(first.stdout)).toBe(true);
+  });
+
   it('maps every pixel to its nearest palette entry without dithering, flat areas and a gradient alike', () => {
     // Flat bands (answered from the colour cache after the first pixel of each) next to a gradient of more than 256 colours (searched for each pixel).
     const width = 96;
