@@ -48,7 +48,7 @@ describe('the pricing page', () => {
   it('shows the four plans: Free, a package, a subscription and Enterprise, which has no checkout', () => {
     const names = {
       en: ['Free', 'Package', 'Subscription', 'Enterprise'],
-      ko: ['무료', '패키지', '구독', '엔터프라이즈'],
+      ko: ['무료', '크레딧 충전', '정기 구독', '엔터프라이즈'],
     } as const;
     for (const locale of ['en', 'ko'] as const) {
       const tree = page(locale, ANONYMOUS_DAILY_CREDITS, ON_SALE);
