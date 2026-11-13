@@ -485,8 +485,22 @@ describe('deploy workflow', () => {
     expect(holders[0].run).toContain('deploy.sh filter-env');
     expect(holders[0].run).toContain('umask 077');
     expect(holders[0].run).not.toMatch(/\becho\b[^\n]*\$EASYCONVERT_ENV/);
-    expect(text.match(/secrets\.[A-Z_]+/g)?.sort()).toEqual(['secrets.EASYCONVERT_ENV', 'secrets.GITHUB_TOKEN', 'secrets.GITHUB_TOKEN', 'secrets.GITHUB_TOKEN', 'secrets.GITHUB_TOKEN']);
+    expect(text.match(/secrets\.[A-Z_]+/g)?.sort()).toEqual(['secrets.CLOUDFLARE_PURGE_TOKEN', 'secrets.CLOUDFLARE_ZONE_ID', 'secrets.EASYCONVERT_ENV', 'secrets.GITHUB_TOKEN', 'secrets.GITHUB_TOKEN', 'secrets.GITHUB_TOKEN', 'secrets.GITHUB_TOKEN']);
     expect(steps.at(-1)?.run).toContain('rm -f');
+  });
+
+  it('purges the edge cache after a deploy or a rollback on a hosted runner, so the purge token never reaches the production host', () => {
+    const purge = workflow.jobs['purge-edge-cache'];
+    expect(purge.needs).toBe('deploy');
+    expect(purge.if).toBe(workflow.jobs.deploy.if);
+    expect(purge['runs-on']).toBe('ubuntu-24.04');
+    expect(purge.permissions).toEqual({});
+    const holders = Object.entries(workflow.jobs).filter(([, job]) => JSON.stringify(job).includes('secrets.CLOUDFLARE_'));
+    expect(holders.map(([name]) => name)).toEqual(['purge-edge-cache']);
+    expect(purge.steps).toHaveLength(1);
+    expect(purge.steps[0].env).toEqual({ CLOUDFLARE_PURGE_TOKEN: '${{ secrets.CLOUDFLARE_PURGE_TOKEN }}', CLOUDFLARE_ZONE_ID: '${{ secrets.CLOUDFLARE_ZONE_ID }}' });
+    expect(purge.steps[0].run).toContain('{"purge_everything":true}');
+    expect(purge.steps[0].run).not.toMatch(/\becho\b[^\n]*\$CLOUDFLARE_PURGE_TOKEN/);
   });
 
   it('runs no shell on the host except the deploy script, and no ssh', () => {

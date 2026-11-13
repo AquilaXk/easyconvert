@@ -343,3 +343,35 @@ jobs:
       - name: Remove the filtered env file
         if: always()
         run: rm -f "$RUNNER_TEMP/easyconvert.env"
+
+  # The edge cache keeps a prerendered page for as long as its `s-maxage` (a year, Next's value for a page with no revalidation), and a
+  # page kept past a deploy names script chunks the new server no longer has. After a deploy or a rollback the whole zone's cache is
+  # purged. The job runs on a hosted runner, so the token never reaches the production host; it can purge the cache of one zone and do
+  # nothing else (docs/policy-decisions.md, entry 278).
+  purge-edge-cache:
+    needs: deploy
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+
+    steps:
+      - name: Purge the edge cache of the zone
+        env:
+          CLOUDFLARE_PURGE_TOKEN: ${{ secrets.CLOUDFLARE_PURGE_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CLOUDFLARE_PURGE_TOKEN" ] || [ -z "$CLOUDFLARE_ZONE_ID" ]; then
+            echo "::warning::CLOUDFLARE_PURGE_TOKEN or CLOUDFLARE_ZONE_ID is not set: purge the edge cache by hand, or pages of the previous release stay cached"
+            exit 0
+          fi
+          answer="$(curl -sS --fail-with-body --max-time 30 --retry 3 --retry-all-errors -X POST \
+            -H "Authorization: Bearer $CLOUDFLARE_PURGE_TOKEN" -H 'Content-Type: application/json' \
+            --data '{"purge_everything":true}' \
+            "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/purge_cache")"
+          if [ "$(jq -r '.success' <<<"$answer")" != "true" ]; then
+            echo "::error::the edge cache was not purged: $(jq -c '.errors' <<<"$answer")"
+            exit 1
+          fi
+          echo "the edge cache of the zone was purged"
