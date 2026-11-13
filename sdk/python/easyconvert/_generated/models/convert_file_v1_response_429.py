@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Self, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.convert_file_v1_response_429_period import ConvertFileV1Response429Period
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -33,8 +34,11 @@ class ConvertFileV1Response429:
             the answer names one (for example `engine_unavailable`).
         success (bool | Unset): Legacy compatibility flag (always false).
         error (str | Unset): Legacy compatibility error message mirroring detail.
-        daily_limit (int | Unset): `quota-exceeded` only: conversions the tier allows per day.
-        remaining (int | Unset): `quota-exceeded` only: conversions left today.
+        daily_limit (int | Unset): `quota-exceeded` only: conversions the tier allows in the period (`period`), a day or
+            a month.
+        period (ConvertFileV1Response429Period | Unset): `quota-exceeded` only: how long the conversions are counted
+            before the count starts again.
+        remaining (int | Unset): `quota-exceeded` only: conversions left in the period.
         required_units (int | Unset): `quota-exceeded` only: conversions the request needs.
         limit (int | Unset): `concurrency-limit` only: conversions the account may have in flight.
     """
@@ -49,6 +53,7 @@ class ConvertFileV1Response429:
     success: bool | Unset = UNSET
     error: str | Unset = UNSET
     daily_limit: int | Unset = UNSET
+    period: ConvertFileV1Response429Period | Unset = UNSET
     remaining: int | Unset = UNSET
     required_units: int | Unset = UNSET
     limit: int | Unset = UNSET
@@ -80,6 +85,10 @@ class ConvertFileV1Response429:
 
         daily_limit = self.daily_limit
 
+        period: str | Unset = UNSET
+        if not isinstance(self.period, Unset):
+            period = self.period.value
+
         remaining = self.remaining
 
         required_units = self.required_units
@@ -107,6 +116,8 @@ class ConvertFileV1Response429:
             field_dict["error"] = error
         if daily_limit is not UNSET:
             field_dict["dailyLimit"] = daily_limit
+        if period is not UNSET:
+            field_dict["period"] = period
         if remaining is not UNSET:
             field_dict["remaining"] = remaining
         if required_units is not UNSET:
@@ -152,6 +163,13 @@ class ConvertFileV1Response429:
 
         daily_limit = d.pop("dailyLimit", UNSET)
 
+        _period = d.pop("period", UNSET)
+        period: ConvertFileV1Response429Period | Unset
+        if isinstance(_period, Unset):
+            period = UNSET
+        else:
+            period = ConvertFileV1Response429Period(_period)
+
         remaining = d.pop("remaining", UNSET)
 
         required_units = d.pop("requiredUnits", UNSET)
@@ -169,6 +187,7 @@ class ConvertFileV1Response429:
             success=success,
             error=error,
             daily_limit=daily_limit,
+            period=period,
             remaining=remaining,
             required_units=required_units,
             limit=limit,

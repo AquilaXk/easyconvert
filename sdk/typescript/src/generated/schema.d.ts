@@ -406,7 +406,7 @@ export interface paths {
         };
         /**
          * Get Quota Usage
-         * @description Retrieves current daily quota usage and limits.
+         * @description Retrieves the conversions counted in the current quota period (a day, or the month of a paid plan) and the limit of the period.
          */
         get: operations["getQuotaUsage"];
         put?: never;
@@ -1712,13 +1712,24 @@ export interface components {
         QuotaUsage: {
             /** @example pro */
             tier?: string;
-            /** @example 500 */
+            /**
+             * @description How long conversions are counted before the count starts again: a UTC day for anonymous callers and the free plan, the month of the subscription for a paid plan.
+             * @enum {string}
+             */
+            period?: "day" | "month";
+            /**
+             * @description Conversions the tier allows in the period, whichever it is.
+             * @example 3000
+             */
             dailyLimit?: number;
-            /** @example 42 */
+            /**
+             * @description Conversions counted in the current period, whichever it is.
+             * @example 42
+             */
             usedToday?: number;
-            /** @example 458 */
+            /** @example 2958 */
             remaining?: number;
-            /** @description Unix timestamp in milliseconds for midnight UTC reset. */
+            /** @description Unix timestamp in milliseconds when the count starts again: midnight UTC for a day, the next renewal of the subscription for a month. */
             resetAt?: number;
         };
         WebhookSecretRotateRequest: {
@@ -2600,20 +2611,20 @@ export interface operations {
                     }) | components["schemas"]["PdfaValidationProblem"];
                 };
             };
-            /** @description Too Many Requests, by problem type. `https://api.easyconvert.io/problems/rate-limited`: the burst limit of the API key, of the client address or of the edge is spent; wait `Retry-After` seconds. `https://api.easyconvert.io/problems/quota-exceeded`: the day's conversions are used up or too few are left (`dailyLimit`, `remaining`, `requiredUnits` in the body, the quota headers, and `Retry-After` until the reset when none is left). `https://api.easyconvert.io/problems/concurrency-limit`: the account already has the most conversions in flight its tier allows, 5 for anonymous and free callers (`limit` in the body, `Retry-After` 5); the request takes no quota. */
+            /** @description Too Many Requests, by problem type. `https://api.easyconvert.io/problems/rate-limited`: the burst limit of the API key, of the client address or of the edge is spent; wait `Retry-After` seconds. `https://api.easyconvert.io/problems/quota-exceeded`: the conversions of the period (a day, or a month for the paid plans) are used up or too few are left (`dailyLimit`, `remaining`, `requiredUnits` in the body, the quota headers, and `Retry-After` until the reset when none is left). `https://api.easyconvert.io/problems/concurrency-limit`: the account already has the most conversions in flight its tier allows, which is 5 for anonymous and free callers and higher on a paid plan (the pricing page lists it) (`limit` in the body, `Retry-After` 5); the request takes no quota. */
             429: {
                 headers: {
-                    /** @description Seconds to wait before the request is repeated (RFC 9110 delay-seconds, at least 1). Sent with every 429 except a `quota-exceeded` that leaves some conversions (a batch that needs more than are left); there it is the time to the daily reset at midnight UTC when none is left, and for `concurrency-limit` it is 5. */
+                    /** @description Seconds to wait before the request is repeated (RFC 9110 delay-seconds, at least 1). Sent with every 429 except a `quota-exceeded` that leaves some conversions (a batch that needs more than are left); there it is the time to the reset (midnight UTC for a day, the renewal of the subscription for a month) when none is left, and for `concurrency-limit` it is 5. */
                     "Retry-After"?: number;
-                    /** @description The day's quota as `limit=<n>, remaining=<n>, reset=<seconds>`. Sent with `quota-exceeded`, and on `POST /api/v1/convert` with every 429 its guard answers. */
+                    /** @description The quota of the period (a day, or the month of a paid plan) as `limit=<n>, remaining=<n>, reset=<seconds>`. Sent with `quota-exceeded`, and on `POST /api/v1/convert` with every 429 its guard answers. */
                     RateLimit?: string;
-                    /** @description Conversions the caller's tier allows per day. */
+                    /** @description Conversions the caller's tier allows per period: a day for anonymous callers and the free plan, a month for the paid plans. */
                     "RateLimit-Limit"?: number;
-                    /** @description Conversions left today. */
+                    /** @description Conversions left in the period. */
                     "RateLimit-Remaining"?: number;
-                    /** @description Seconds until the daily quota resets. */
+                    /** @description Seconds until the quota of the period resets. */
                     "RateLimit-Reset"?: number;
-                    /** @description The quota window, for example `10;w=86400;comment="anonymous daily quota"`. */
+                    /** @description The quota window, for example `10;w=86400;comment="anonymous daily quota"`; a paid plan reads `w=2592000` (a nominal month of 30 days) and "monthly quota". */
                     "RateLimit-Policy"?: string;
                     /** @description Legacy copy of `RateLimit-Limit`. */
                     "X-RateLimit-Limit"?: number;
@@ -2625,9 +2636,14 @@ export interface operations {
                 };
                 content: {
                     "application/problem+json": components["schemas"]["ProblemDetails"] & {
-                        /** @description `quota-exceeded` only: conversions the tier allows per day. */
+                        /** @description `quota-exceeded` only: conversions the tier allows in the period (`period`), a day or a month. */
                         dailyLimit?: number;
-                        /** @description `quota-exceeded` only: conversions left today. */
+                        /**
+                         * @description `quota-exceeded` only: how long the conversions are counted before the count starts again.
+                         * @enum {string}
+                         */
+                        period?: "day" | "month";
+                        /** @description `quota-exceeded` only: conversions left in the period. */
                         remaining?: number;
                         /** @description `quota-exceeded` only: conversions the request needs. */
                         requiredUnits?: number;
@@ -2635,9 +2651,14 @@ export interface operations {
                         limit?: number;
                     };
                     "application/json": components["schemas"]["ProblemDetails"] & {
-                        /** @description `quota-exceeded` only: conversions the tier allows per day. */
+                        /** @description `quota-exceeded` only: conversions the tier allows in the period (`period`), a day or a month. */
                         dailyLimit?: number;
-                        /** @description `quota-exceeded` only: conversions left today. */
+                        /**
+                         * @description `quota-exceeded` only: how long the conversions are counted before the count starts again.
+                         * @enum {string}
+                         */
+                        period?: "day" | "month";
+                        /** @description `quota-exceeded` only: conversions left in the period. */
                         remaining?: number;
                         /** @description `quota-exceeded` only: conversions the request needs. */
                         requiredUnits?: number;
@@ -2968,7 +2989,7 @@ export interface operations {
                     "application/json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description The day has fewer conversions left than the job needs (problem type `https://api.easyconvert.io/problems/quota-exceeded`, with `dailyLimit`, `remaining` and `requiredUnits`). A graph needs one unit for each input declared by a node that makes one output of each input (`convert`, `ocr`, `optimize`, `thumbnail`, `metadata.write`, `media.package`, `watermark` and the `pdf.*` page operations) and one for each `merge`, `metadata`, `capture.website`, `archive.create` or `archive.extract` node. A node whose inputs hold more files than it declares (an unpacked archive) takes the rest of its units when it starts, and fails with the refusal code `quota_exceeded` when the day has too few left. Or: the account already has the most conversions in flight (queued and running) its tier allows, 5 for anonymous and free callers (problem type `https://api.easyconvert.io/problems/concurrency-limit`, with `Retry-After`); the request takes no quota. */
+            /** @description The quota period (a day, or the month of a paid plan) has fewer conversions left than the job needs (problem type `https://api.easyconvert.io/problems/quota-exceeded`, with `dailyLimit`, `period`, `remaining` and `requiredUnits`). A graph needs one unit for each input declared by a node that makes one output of each input (`convert`, `ocr`, `optimize`, `thumbnail`, `metadata.write`, `media.package`, `watermark` and the `pdf.*` page operations) and one for each `merge`, `metadata`, `capture.website`, `archive.create` or `archive.extract` node. A node whose inputs hold more files than it declares (an unpacked archive) takes the rest of its units when it starts, and fails with the refusal code `quota_exceeded` when the day has too few left. Or: the account already has the most conversions in flight (queued and running) its tier allows, which is 5 for anonymous and free callers and higher on a paid plan (the pricing page lists it) (problem type `https://api.easyconvert.io/problems/concurrency-limit`, with `Retry-After`); the request takes no quota. */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -4288,7 +4309,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Daily conversion quota usage details. */
+            /** @description Conversion quota usage details. */
             200: {
                 headers: {
                     [name: string]: unknown;

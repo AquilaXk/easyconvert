@@ -51,7 +51,8 @@ def sync_detailed(
 ) -> Response[GetQuotaUsageResponse200]:
     """Get Quota Usage
 
-     Retrieves current daily quota usage and limits.
+     Retrieves the conversions counted in the current quota period (a day, or the month of a paid plan)
+    and the limit of the period.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -76,7 +77,8 @@ def sync(
 ) -> GetQuotaUsageResponse200 | None:
     """Get Quota Usage
 
-     Retrieves current daily quota usage and limits.
+     Retrieves the conversions counted in the current quota period (a day, or the month of a paid plan)
+    and the limit of the period.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -97,7 +99,8 @@ async def asyncio_detailed(
 ) -> Response[GetQuotaUsageResponse200]:
     """Get Quota Usage
 
-     Retrieves current daily quota usage and limits.
+     Retrieves the conversions counted in the current quota period (a day, or the month of a paid plan)
+    and the limit of the period.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -120,7 +123,8 @@ async def asyncio(
 ) -> GetQuotaUsageResponse200 | None:
     """Get Quota Usage
 
-     Retrieves current daily quota usage and limits.
+     Retrieves the conversions counted in the current quota period (a day, or the month of a paid plan)
+    and the limit of the period.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

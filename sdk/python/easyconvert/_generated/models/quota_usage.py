@@ -7,6 +7,7 @@ from typing import Any, Self, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.quota_usage_period import QuotaUsagePeriod
 from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="QuotaUsage")
@@ -17,13 +18,17 @@ class QuotaUsage:
     """
     Attributes:
         tier (str | Unset):  Example: pro.
-        daily_limit (int | Unset):  Example: 500.
-        used_today (int | Unset):  Example: 42.
-        remaining (int | Unset):  Example: 458.
-        reset_at (float | Unset): Unix timestamp in milliseconds for midnight UTC reset.
+        period (QuotaUsagePeriod | Unset): How long conversions are counted before the count starts again: a UTC day for
+            anonymous callers and the free plan, the month of the subscription for a paid plan.
+        daily_limit (int | Unset): Conversions the tier allows in the period, whichever it is. Example: 3000.
+        used_today (int | Unset): Conversions counted in the current period, whichever it is. Example: 42.
+        remaining (int | Unset):  Example: 2958.
+        reset_at (float | Unset): Unix timestamp in milliseconds when the count starts again: midnight UTC for a day,
+            the next renewal of the subscription for a month.
     """
 
     tier: str | Unset = UNSET
+    period: QuotaUsagePeriod | Unset = UNSET
     daily_limit: int | Unset = UNSET
     used_today: int | Unset = UNSET
     remaining: int | Unset = UNSET
@@ -32,6 +37,10 @@ class QuotaUsage:
 
     def to_dict(self) -> dict[str, Any]:
         tier = self.tier
+
+        period: str | Unset = UNSET
+        if not isinstance(self.period, Unset):
+            period = self.period.value
 
         daily_limit = self.daily_limit
 
@@ -46,6 +55,8 @@ class QuotaUsage:
         field_dict.update({})
         if tier is not UNSET:
             field_dict["tier"] = tier
+        if period is not UNSET:
+            field_dict["period"] = period
         if daily_limit is not UNSET:
             field_dict["dailyLimit"] = daily_limit
         if used_today is not UNSET:
@@ -62,6 +73,13 @@ class QuotaUsage:
         d = dict(src_dict)
         tier = d.pop("tier", UNSET)
 
+        _period = d.pop("period", UNSET)
+        period: QuotaUsagePeriod | Unset
+        if isinstance(_period, Unset):
+            period = UNSET
+        else:
+            period = QuotaUsagePeriod(_period)
+
         daily_limit = d.pop("dailyLimit", UNSET)
 
         used_today = d.pop("usedToday", UNSET)
@@ -72,6 +90,7 @@ class QuotaUsage:
 
         quota_usage = cls(
             tier=tier,
+            period=period,
             daily_limit=daily_limit,
             used_today=used_today,
             remaining=remaining,

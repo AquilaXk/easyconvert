@@ -92,6 +92,7 @@ from .convert_file_v1_response_400_code import ConvertFileV1Response400Code
 from .convert_file_v1_response_422_type_0 import ConvertFileV1Response422Type0
 from .convert_file_v1_response_422_type_0_code import ConvertFileV1Response422Type0Code
 from .convert_file_v1_response_429 import ConvertFileV1Response429
+from .convert_file_v1_response_429_period import ConvertFileV1Response429Period
 from .convert_file_v1_response_503 import ConvertFileV1Response503
 from .convert_file_v1_response_503_code import ConvertFileV1Response503Code
 from .create_api_key_body import CreateApiKeyBody
@@ -282,6 +283,7 @@ from .problem_details import ProblemDetails
 from .problem_details_invalid_params_item import ProblemDetailsInvalidParamsItem
 from .profile_of_optimize import ProfileOfOptimize
 from .quota_usage import QuotaUsage
+from .quota_usage_period import QuotaUsagePeriod
 from .range_ import Range
 from .replay_webhook_dlq_response_200 import ReplayWebhookDlqResponse200
 from .resampler_of_audio import ResamplerOfAudio
@@ -382,6 +384,7 @@ __all__ = (
     "ConvertFileV1Response422Type0",
     "ConvertFileV1Response422Type0Code",
     "ConvertFileV1Response429",
+    "ConvertFileV1Response429Period",
     "ConvertFileV1Response503",
     "ConvertFileV1Response503Code",
     "CreateApiKeyBody",
@@ -538,6 +541,7 @@ __all__ = (
     "ProblemDetailsInvalidParamsItem",
     "ProfileOfOptimize",
     "QuotaUsage",
+    "QuotaUsagePeriod",
     "Range",
     "ReplayWebhookDlqResponse200",
     "ResamplerOfAudio",
