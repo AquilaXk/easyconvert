@@ -284,3 +284,92 @@ fn add_diff(dst: &mut [f32; 4], a: &[f32; 4], b: &[f32; 4], weight: f32) {
     dst[2] += (a[2] - b[2]).abs() * weight;
     dst[3] += (a[3] - b[3]).abs() * weight;
 }
+
+/// Ward's agglomeration: start with each of `start` as a cluster and merge the pair whose merge adds the least squared error, until `max_colors`
+/// clusters are left. Merging clusters of weights wa and wb whose means are d apart adds wa * wb / (wa + wb) * d^2 to the sum of squared errors,
+/// so the cheapest merge is found from each cluster's cheapest partner, which is kept up to date. O(n^2) in the number of clusters, so `start`
+/// is a histogram of a thousand entries or fewer. (Not in upstream.)
+pub(crate) fn merge_cheapest<'clust>(start: Vec<Cluster<'clust>>, max_colors: usize) -> Vec<Cluster<'clust>> {
+    struct Merging<'clust> {
+        entries: Vec<&'clust HistogramEntry>,
+        mean: [f64; 4],
+        weight: f64,
+        alive: bool,
+        /// The cluster that is cheapest to merge this one with, and what that costs.
+        partner: usize,
+        cost: f64,
+    }
+
+    fn merge_cost(a: &Merging, b: &Merging) -> f64 {
+        let mut squared = 0.0;
+        for k in 0..4 {
+            let d = a.mean[k] - b.mean[k];
+            squared += d * d;
+        }
+        a.weight * b.weight / (a.weight + b.weight) * squared
+    }
+
+    fn cheapest_partner(of: usize, all: &[Merging]) -> (usize, f64) {
+        let mut best = (usize::MAX, f64::MAX);
+        for (j, other) in all.iter().enumerate() {
+            if j != of && other.alive {
+                let cost = merge_cost(&all[of], other);
+                if cost < best.1 {
+                    best = (j, cost);
+                }
+            }
+        }
+        best
+    }
+
+    let mut clusters: Vec<Merging> = start
+        .into_iter()
+        .map(|c| Merging {
+            mean: [c.mean[0] as f64, c.mean[1] as f64, c.mean[2] as f64, c.mean[3] as f64],
+            weight: c.weight as f64,
+            entries: c.entries,
+            alive: true,
+            partner: usize::MAX,
+            cost: f64::MAX,
+        })
+        .collect();
+    let n = clusters.len();
+    for i in 0..n {
+        let (partner, cost) = cheapest_partner(i, &clusters);
+        clusters[i].partner = partner;
+        clusters[i].cost = cost;
+    }
+
+    let mut alive = n;
+    while alive > max_colors {
+        let a = (0..n).filter(|&i| clusters[i].alive).min_by(|&x, &y| clusters[x].cost.total_cmp(&clusters[y].cost)).expect("two clusters are alive");
+        let b = clusters[a].partner;
+        let (wa, wb) = (clusters[a].weight, clusters[b].weight);
+        for k in 0..4 {
+            clusters[a].mean[k] = (clusters[a].mean[k] * wa + clusters[b].mean[k] * wb) / (wa + wb);
+        }
+        clusters[a].weight = wa + wb;
+        let mut moved = std::mem::take(&mut clusters[b].entries);
+        clusters[a].entries.append(&mut moved);
+        clusters[b].alive = false;
+        alive -= 1;
+
+        for i in 0..n {
+            if !clusters[i].alive {
+                continue;
+            }
+            if i == a || clusters[i].partner == a || clusters[i].partner == b {
+                let (partner, cost) = cheapest_partner(i, &clusters);
+                clusters[i].partner = partner;
+                clusters[i].cost = cost;
+            } else {
+                let cost = merge_cost(&clusters[i], &clusters[a]);
+                if cost < clusters[i].cost {
+                    clusters[i].partner = a;
+                    clusters[i].cost = cost;
+                }
+            }
+        }
+    }
+    clusters.into_iter().filter(|c| c.alive).map(|c| Cluster::new(c.entries)).collect()
+}

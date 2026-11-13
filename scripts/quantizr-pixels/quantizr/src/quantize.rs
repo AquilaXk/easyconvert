@@ -8,6 +8,10 @@ use crate::palette::Palette;
 
 const EMPTY_PIX: [u8; 4] = [0; 4];
 
+/// A histogram of more colours than `max_colors` and at most this many is reduced by Ward's agglomeration of its entries (`cluster::merge_cheapest`,
+/// quadratic in the entries: 1 to 3 ms for 800); a larger one by upstream's median cut. (Not in upstream.)
+const WARD_MAX_ENTRIES: usize = 1024;
+
 /// Slots of the cache of nearest palette entries by exact pixel colour (a power of two).
 const CACHE_BITS: u32 = 12;
 const CACHE_SLOTS: usize = 1 << CACHE_BITS;
@@ -69,8 +73,12 @@ impl QuantizeResult {
         let colormap = if hist.map.len() <= max_colors {
             Colormap::from_histogram(hist)
         } else {
-            let root = Cluster::from_histogram(hist);
-            let clusters = root.split_into(max_colors);
+            let clusters = if hist.map.len() <= WARD_MAX_ENTRIES {
+                // A histogram this small is merged from its own entries, where the median cut would split it into boxes.
+                crate::cluster::merge_cheapest(hist.map.values().map(|entry| Cluster::new(vec![entry])).collect(), max_colors)
+            } else {
+                Cluster::from_histogram(hist).split_into(max_colors)
+            };
 
             Colormap::from_clusters(&clusters)
         };

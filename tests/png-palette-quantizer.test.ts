@@ -424,6 +424,23 @@ describe.skipIf(skippedWithoutProgram)('the program itself', () => {
     }
   });
 
+  it('merges a small histogram into the colours that carry the weight: 250 common colours and 10 rare near-copies of them come back within 1 level', () => {
+    const common = 250;
+    const rare = 10;
+    const pixels = Buffer.alloc((common * 20 + rare) * 4);
+    const colour = (c: number): number[] => [(c * 37) & 255, (c * 91 + 13) & 255, (c * 53 + 7) & 255, 255];
+    for (let i = 0; i < common * 20; i += 1) pixels.set(colour(i % common), i * 4);
+    for (let r = 0; r < rare; r += 1) pixels.set(colour(r * 20).map((v, k) => (k < 3 ? Math.min(255, v + 1) : v)), (common * 20 + r) * 4);
+    const out = run(Buffer.concat([header(common * 20 + rare, 1), pixels]), ['--colors', '250', '--dither', '0']);
+    expect(out.status).toBe(0);
+    const count = out.stdout.readUInt32LE(0);
+    expect(count).toBeLessThanOrEqual(250);
+    const indices = out.stdout.subarray(4 + count * 4);
+    for (let i = 0; i < common * 20 + rare; i += 1) {
+      for (let k = 0; k < 3; k += 1) expect(Math.abs(out.stdout[4 + indices[i] * 4 + k] - pixels[i * 4 + k]), `pixel ${i}`).toBeLessThanOrEqual(1);
+    }
+  });
+
   it('answers the same bytes on every run for a picture whose Lloyd passes run on several threads', () => {
     // 100 x 100 pixels of pseudo-random colours: 10,000 entries in the histogram, past the 8,192 where the passes are cut into ranges.
     const pixels = noise(100 * 100);

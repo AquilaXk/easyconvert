@@ -15,7 +15,7 @@ this digest by tests/quantizr-pixels-packaging.test.ts, a file that was changed 
   Cargo.toml.orig                  -> quantizr/Cargo.toml        changed: the [profile.release] table is dropped (a profile of a dependency
       is ignored by cargo, which warns about it; the program's own Cargo.toml has the profile)
   src/capi.rs                      -> quantizr/src/capi.rs       unchanged  e31f9b5fd122fce0a509ff17a272121fdc744ef681d5810cb39d6fe02a130cfc
-  src/cluster.rs                   -> quantizr/src/cluster.rs    unchanged  a41eaa3d72974fd376aac4163bd26ab2a3a4b8d05ac9f5ccfde97abbf2c1237d
+  src/cluster.rs                   -> quantizr/src/cluster.rs    changed, see below (upstream SHA-256 a41eaa3d72974fd376aac4163bd26ab2a3a4b8d05ac9f5ccfde97abbf2c1237d)
   src/colormap.rs                  -> quantizr/src/colormap.rs   changed, see below (upstream SHA-256 bec109ecce78e63ee58d80b4951ac8b047747977c3afba70d8d5facd5391cb4b)
   src/error.rs                     -> quantizr/src/error.rs      unchanged  555bfd8574f2790742478953bb976e6df2c833d6a49d4c1bf1b013d661ed5f36
   src/histogram.rs                 -> quantizr/src/histogram.rs  unchanged  0b2e4426eeab106841aec568ed72e5535cba556c7677d3013308ff4171792709
@@ -31,6 +31,8 @@ Changed from upstream (each change is marked "(Not in upstream.)" in the file):
   src/colormap.rs   two more passes of Lloyd's algorithm over the histogram after upstream's two (up to 24 passes, until the error stops falling, for
       a histogram of 1024 entries or fewer), cut into four ranges that run on threads for 8192 entries or more; the sums are added in range order, so
       the palette does not depend on the number of threads. A histogram of more than 1,048,576 entries keeps upstream's two passes.
+  src/cluster.rs, src/quantize.rs   a histogram of more colours than asked for and at most 1024 entries is reduced by Ward's agglomeration of
+      its entries (merge the pair that adds the least squared error) where upstream splits it by median cut.
   src/quantize.rs, src/colormap.rs   a cache of the nearest palette entry by exact pixel colour in the two remap loops, and no error passed on by a
       pixel that the palette holds exactly. A flat area, or a picture of at most 256 colours, is looked up instead of searched (same output).
 
