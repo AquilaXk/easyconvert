@@ -1,4 +1,5 @@
 import type { Inline } from '../document-model/model';
+import { hexOf } from '../pdf-content-colours';
 import { FillIndex, isLightColour } from '../pdf-content-shapes';
 import type { PdfContentRule, PdfContentShape, PdfPageContent } from '../pdf-text-types';
 import type { Box, DetectedTable } from './types';
@@ -8,13 +9,11 @@ import type { Box, DetectedTable } from './types';
  * rules that make up a table's grid. Both come from the page's operator list (`PdfContentShape`, `PdfContentRule`).
  */
 
-const HEX_DIGITS = 6;
 const HEX_RADIX = 16;
 /** A rule belongs to a table when it lies inside its box with this much room (points). */
 const RULE_SLACK = 2;
 
-export { isLightColour };
-export const hexOf = (color: number): string => color.toString(HEX_RADIX).toUpperCase().padStart(HEX_DIGITS, '0');
+export { hexOf, isLightColour };
 
 /** Rules of one colour make up at least this share of a table's rules for the table to be ruled in that colour. */
 export const UNIFORM_RULE_SHARE = 0.9;

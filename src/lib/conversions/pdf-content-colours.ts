@@ -13,6 +13,11 @@ export type Rgb = number;
 export const BLACK: Rgb = 0;
 const HEX_COLOR = /^#([0-9a-f]{6})$/i;
 const HEX_RADIX = 16;
+const HEX_DIGITS = 6;
+
+/** A colour as six upper-case hex digits, the form DrawingML and WordprocessingML write. */
+export const hexOf = (color: Rgb): string => color.toString(HEX_RADIX).toUpperCase().padStart(HEX_DIGITS, '0');
+
 /** pdf.js passes `#rrggbb` for every device colour it has converted (RGB, gray, CMYK, ICC, Lab, indexed, separation). */
 export function parseColour(value: unknown): Rgb | null {
   if (typeof value !== 'string') return null;

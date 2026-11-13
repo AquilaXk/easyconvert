@@ -6,7 +6,8 @@ import type { DetectedTable, LayoutLine, Paragraph, StyledRun, TableCell } from 
 import { dominantRuleInk, ruleInside, UNIFORM_RULE_SHARE } from '../pdf-layout/ink';
 import { readPdfContentForOffice } from '../pdf-office';
 import type { PdfContentFont, PdfContentImage, PdfContentRule, PdfContentShape } from '../pdf-text-types';
-import { rgbHex, shapeProperties } from '../document-model/shape-xml';
+import { shapeProperties } from '../document-model/shape-xml';
+import { hexOf } from '../pdf-content-colours';
 
 /**
  * A presentation from a PDF that keeps the pages: one slide for each page, as large as the page, with every line of text where the page
@@ -184,7 +185,7 @@ class SlideXml {
     const extent = horizontal ? `<a:off x="${offX}" y="${offY}"/><a:ext cx="${width}" cy="0"/>` : `<a:off x="${offX}" y="${offY}"/><a:ext cx="0" cy="${height}"/>`;
     this.shapes.push(
       `<p:cxnSp><p:nvCxnSpPr><p:cNvPr id="${id}" name="Line ${id}"/><p:cNvCxnSpPr/><p:nvPr/></p:nvCxnSpPr><p:spPr><a:xfrm>${extent}</a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom>` +
-        `<a:ln w="${thickness}"><a:solidFill><a:srgbClr val="${rgbHex(rule.color ?? 0)}"/></a:solidFill></a:ln></p:spPr></p:cxnSp>`
+        `<a:ln w="${thickness}"><a:solidFill><a:srgbClr val="${hexOf(rule.color ?? 0)}"/></a:solidFill></a:ln></p:spPr></p:cxnSp>`
     );
   }
 
@@ -287,7 +288,7 @@ function isUniformlyRuled(table: DetectedTable, rules: readonly PdfContentRule[]
 /** The border of a table: the colour and median width of the rules that lie inside its box, so a table ruled in grey stays grey. */
 function borderOf(table: DetectedTable, rules: readonly PdfContentRule[]): TableBorder {
   const ink = dominantRuleInk(rules, table.box);
-  return ink === null ? DEFAULT_BORDER : { width: Math.max(emu(ink.width), MIN_RULE_EMU), color: rgbHex(ink.color) };
+  return ink === null ? DEFAULT_BORDER : { width: Math.max(emu(ink.width), MIN_RULE_EMU), color: hexOf(ink.color) };
 }
 
 /** A rule thicker than a hairline as the filled rectangle it is: the line's length by its width, centred on the line. */

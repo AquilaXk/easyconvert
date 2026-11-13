@@ -1,3 +1,4 @@
+import { hexOf } from '../pdf-content-colours';
 import type { PdfContentItem } from '../pdf-text-types';
 import { LayoutBudget } from './limits';
 import { directionBalance, isDigit, isLetter, isRightToLeftLetter, isUnspacedScript, isWhitespace, firstChar, lastChar } from './text-chars';
@@ -176,9 +177,6 @@ function sameStyle(a: Omit<StyledRun, 'text'>, b: Omit<StyledRun, 'text'>): bool
   return a.bold === b.bold && a.italic === b.italic && a.monospace === b.monospace && a.color === b.color && a.fill === b.fill;
 }
 
-const HEX_DIGITS = 6;
-const HEX_RADIX = 16;
-const hexOf = (color: number): string => color.toString(HEX_RADIX).toUpperCase().padStart(HEX_DIGITS, '0');
 
 /** The pieces of an item's text with their colours (black pieces have none): the whole text when the item has no colour. */
 function colouredPieces(item: PdfContentItem): { text: string; color?: string }[] {

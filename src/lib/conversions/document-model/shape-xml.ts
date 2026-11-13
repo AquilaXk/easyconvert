@@ -1,3 +1,4 @@
+import { hexOf } from '../pdf-content-colours';
 import { CLOSE, COORDINATES_OF, CURVE_TO, LINE_TO, MOVE_TO, QUADRATIC_TO } from '../pdf-content-shapes';
 import type { PdfContentShape } from '../pdf-text-types';
 import type { PageShape } from './model';
@@ -8,12 +9,10 @@ import type { PageShape } from './model';
  * (its text rectangle, optional): with it the office suite's export to PowerPoint 97 drops the shape.
  */
 
-const HEX_DIGITS = 6;
 const HEX_RADIX = 16;
 /** DrawingML opacity is in thousandths of a percent. */
 const ALPHA_UNITS = 100_000;
 
-export const rgbHex = (color: number): string => color.toString(HEX_RADIX).toUpperCase().padStart(HEX_DIGITS, '0');
 
 /** Page points to the slide's EMU: the position of a point and the length of an extent. */
 export interface SlideScale {
@@ -23,7 +22,7 @@ export interface SlideScale {
 }
 
 function solidFill(color: number, alpha?: number): string {
-  const colour = alpha === undefined ? `<a:srgbClr val="${rgbHex(color)}"/>` : `<a:srgbClr val="${rgbHex(color)}"><a:alpha val="${Math.round(alpha * ALPHA_UNITS)}"/></a:srgbClr>`;
+  const colour = alpha === undefined ? `<a:srgbClr val="${hexOf(color)}"/>` : `<a:srgbClr val="${hexOf(color)}"><a:alpha val="${Math.round(alpha * ALPHA_UNITS)}"/></a:srgbClr>`;
   return `<a:solidFill>${colour}</a:solidFill>`;
 }
 
