@@ -162,6 +162,23 @@ describe('the limits on the mails of a sign-up', () => {
 });
 
 describe('the mail budget of the day', () => {
+  it('does not count a mail it has no room for against the daily cap of its address', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const record = await passwordAccount('queued');
+    for (let sent = 0; sent < MAIL_DAILY_VERIFY_CAP; sent++) await reserveMailSend('verify');
+    for (let asked = 0; asked < VERIFY_MAIL_MAX_PER_ADDRESS_PER_DAY + 2; asked++) await queueAccountMail('verify', record, 'en');
+    expect(warn.mock.calls.filter(([line]) => line === 'auth_mail_failure category=budget')).toHaveLength(VERIFY_MAIL_MAX_PER_ADDRESS_PER_DAY + 2);
+    expect(warn.mock.calls.some(([line]) => line === 'auth_mail_failure category=address_cap')).toBe(false);
+    await settle();
+    expect(mail.sendMail).not.toHaveBeenCalled();
+
+    // The day has room again (a new day, here the counter forgotten): the address still has all of its mails for the day.
+    resetMailBudgetMemory();
+    for (let asked = 0; asked < VERIFY_MAIL_MAX_PER_ADDRESS_PER_DAY; asked++) await queueAccountMail('verify', record, 'en');
+    await vi.waitFor(() => expect(mail.sendMail).toHaveBeenCalledTimes(VERIFY_MAIL_MAX_PER_ADDRESS_PER_DAY));
+  });
+
   it('refuses a sign-up with a temporary-unavailable answer, makes no account, and says the same for a known address', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
