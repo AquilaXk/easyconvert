@@ -82,6 +82,10 @@
       "match": "^bench/families/document[^/]*\\.ts$"
     },
     {
+      "families": ["document"],
+      "match": "^bench/pdf-colour(-measure|-metrics)?\\.(ts|py)$"
+    },
+    {
       "families": ["document", "ebook"],
       "match": "^bench/structure-(extract|metrics)\\.ts$"
     },
