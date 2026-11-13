@@ -8,11 +8,11 @@ import { PDF_CONTENT_MAX_SHAPES_PER_PAGE, PDF_CONTENT_MAX_SHAPE_COORDINATES_PER_
  */
 
 /** pdf.js path codes (its `DrawOPS`). */
-const MOVE_TO = 0;
-const LINE_TO = 1;
-const CURVE_TO = 2;
-const QUADRATIC_TO = 3;
-const CLOSE = 4;
+export const MOVE_TO = 0;
+export const LINE_TO = 1;
+export const CURVE_TO = 2;
+export const QUADRATIC_TO = 3;
+export const CLOSE = 4;
 const CURVE_COORDINATES = 6;
 const QUADRATIC_COORDINATES = 4;
 const POINT_COORDINATES = 2;

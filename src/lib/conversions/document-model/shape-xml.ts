@@ -1,3 +1,4 @@
+import { CLOSE, COORDINATES_OF, CURVE_TO, LINE_TO, MOVE_TO, QUADRATIC_TO } from '../pdf-content-shapes';
 import type { PdfContentShape } from '../pdf-text-types';
 import type { PageShape } from './model';
 
@@ -7,11 +8,6 @@ import type { PageShape } from './model';
  * (its text rectangle, optional): with it the office suite's export to PowerPoint 97 drops the shape.
  */
 
-const PATH_MOVE = 0;
-const PATH_LINE = 1;
-const PATH_CURVE = 2;
-const PATH_QUADRATIC = 3;
-const PATH_CLOSE = 4;
 const HEX_DIGITS = 6;
 const HEX_RADIX = 16;
 /** DrawingML opacity is in thousandths of a percent. */
@@ -38,19 +34,19 @@ function pathCommands(path: readonly number[], to: (x: number, y: number) => str
   let at = 0;
   while (at < path.length) {
     const code = path[at++];
-    if (code === PATH_MOVE) {
+    if (code === MOVE_TO) {
       out += `<a:moveTo>${point(at)}</a:moveTo>`;
       at += 2;
-    } else if (code === PATH_LINE) {
+    } else if (code === LINE_TO) {
       out += `<a:lnTo>${point(at)}</a:lnTo>`;
       at += 2;
-    } else if (code === PATH_CURVE) {
+    } else if (code === CURVE_TO) {
       out += `<a:cubicBezTo>${point(at)}${point(at + 2)}${point(at + 4)}</a:cubicBezTo>`;
       at += 6;
-    } else if (code === PATH_QUADRATIC) {
+    } else if (code === QUADRATIC_TO) {
       out += `<a:quadBezTo>${point(at)}${point(at + 2)}</a:quadBezTo>`;
       at += 4;
-    } else if (code === PATH_CLOSE) {
+    } else if (code === CLOSE) {
       out += '<a:close/>';
     } else {
       break;
@@ -66,9 +62,8 @@ function extentOf(path: readonly number[]): { x0: number; y0: number; x1: number
   let x1 = -Infinity;
   let y1 = -Infinity;
   let at = 0;
-  const counts = [2, 2, 6, 4, 0];
   while (at < path.length) {
-    const count = counts[path[at++]] ?? 0;
+    const count = COORDINATES_OF[path[at++]] ?? 0;
     for (let i = 0; i < count; i += 2) {
       x0 = Math.min(x0, path[at + i]);
       x1 = Math.max(x1, path[at + i]);

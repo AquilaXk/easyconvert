@@ -1,5 +1,6 @@
 import type { Block, PageShape, ParagraphBlock } from '../document-model/model';
 import { extentOf } from '../document-model/shape-xml';
+import { COORDINATES_OF } from '../pdf-content-shapes';
 import type { PdfContentRule, PdfContentShape, PdfPageContent } from '../pdf-text-types';
 import { hexOf, type PageInk, ruleInside } from './ink';
 import type { Box } from './types';
@@ -73,10 +74,7 @@ function pageShapeOf(shape: PdfContentShape, hull: Box, top: number | null): Pag
   };
 }
 
-const CURVE_COORDINATES = 6;
-const QUADRATIC_COORDINATES = 4;
 const POINT_COORDINATES = 2;
-const COORDINATES_OF = [POINT_COORDINATES, POINT_COORDINATES, CURVE_COORDINATES, QUADRATIC_COORDINATES, 0];
 
 /** The segments of a path with their coordinates taken from the corner of the hull. */
 function relativePath(path: readonly number[], hull: Box): number[] {
