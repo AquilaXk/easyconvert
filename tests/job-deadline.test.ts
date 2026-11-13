@@ -185,8 +185,8 @@ describe('jobDeadlineSettings', () => {
   it('returns the documented defaults from an empty environment', () => {
     const settings = jobDeadlineSettings({});
     expect(settings).toEqual({
-      baseMs: { free: 60_000, pro: 120_000, enterprise: 180_000 },
-      maxMs: { free: 300_000, pro: 1_800_000, enterprise: 3_600_000 },
+      baseMs: { free: 60_000, basic: 90_000, pro: 120_000, enterprise: 180_000 },
+      maxMs: { free: 300_000, basic: 900_000, pro: 1_800_000, enterprise: 3_600_000 },
       perMibMs: 2_000,
       perMediaSecondMs: 3_000,
       syncMaxMs: 120_000,
@@ -236,7 +236,7 @@ describe('the settings are documented configuration', () => {
   const configDoc = readFileSync(path.resolve(__dirname, '..', 'docs', 'configuration.md'), 'utf8');
 
   it('declares every deadline variable in the configuration schema with the default the code uses', () => {
-    expect(Object.values(JOB_DEADLINE_ENV).length).toBe(9);
+    expect(Object.values(JOB_DEADLINE_ENV).length).toBe(11);
     expect(byName.has('JOB_DEADLINE_PER_PAGE_MS')).toBe(false);
     expect(configDoc).not.toContain('JOB_DEADLINE_PER_PAGE_MS');
     for (const [key, name] of Object.entries(JOB_DEADLINE_ENV)) {

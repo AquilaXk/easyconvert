@@ -52,7 +52,7 @@ afterEach(() => {
 const ANSWERS: Record<string, unknown> = {
   '/api/auth/me': { success: true, user: { id: 'u1', email: 'a@b.test', name: 'A', tier: 'free' } },
   '/api/keys': { success: true, keys: [] },
-  '/api/keys/usage': { success: true, usage: { tier: 'free', dailyLimit: 10, usedToday: 0, remaining: 10, resetAt: 0 } },
+  '/api/keys/usage': { success: true, usage: { tier: 'free', period: 'day' as const, dailyLimit: 10, usedToday: 0, remaining: 10, resetAt: 0 } },
   '/api/account/files': { files: [] },
   '/api/webhooks/dlq': { entries: [] },
 };
@@ -112,7 +112,7 @@ describe('the reset time of the usage tab', () => {
         timeZone,
         createElement(AccountQuotaPanel, {
           user: { id: 'u1', email: 'a@b.test', name: 'A', tier: 'free', provider: 'email', createdAt: 0 } as never,
-          quota: { tier: 'free', dailyLimit: 10, usedToday: 0, remaining: 10, resetAt: RESET_AT },
+          quota: { tier: 'free', period: 'day' as const, dailyLimit: 10, usedToday: 0, remaining: 10, resetAt: RESET_AT },
           apiKeys: [],
         })
       )

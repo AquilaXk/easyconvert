@@ -399,7 +399,7 @@ describe('the budgets of a process without Redis', () => {
 
 describe('an upload opens only when a job could start for the caller', () => {
   it('refuses the upload when the daily conversions are used up', async () => {
-    vi.spyOn(redisKeyStore, 'getQuotaUsage').mockResolvedValue({ tier: 'free', dailyLimit: 10, usedToday: 10, remaining: 0, resetAt: 0 });
+    vi.spyOn(redisKeyStore, 'getQuotaUsage').mockResolvedValue({ tier: 'free', period: 'day' as const, dailyLimit: 10, usedToday: 10, remaining: 0, resetAt: 0 });
 
     const res = await initiate(from('203.0.113.52'), MIB);
 

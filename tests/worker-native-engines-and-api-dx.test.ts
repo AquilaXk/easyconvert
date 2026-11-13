@@ -25,11 +25,11 @@ import { expectRateLimitHeaders, requiredHeader } from './helpers/ratelimit-head
 import { skipUnless } from './helpers/strict-skip';
 
 /**
- * Daily quotas of the account tiers, hand-written from the pricing table (free 10, pro 500, enterprise 10,000) as an oracle
+ * Daily quotas of the account tiers, hand-written from the pricing table (free 10, basic 1,000, pro 3,000, enterprise 10,000) as an oracle
  * independent of src/lib/plan-limits.ts: the headers must state the published numbers.
  */
 const FREE_DAILY_LIMIT = 10;
-const PRO_DAILY_LIMIT = 500;
+const PRO_DAILY_LIMIT = 3000;
 
 let userCounter = 0;
 async function createUniqueTestUser(tier: 'free' | 'pro' | 'enterprise' = 'free') {
@@ -153,7 +153,8 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       const now = Date.now();
       const headers = buildRateLimitHeaders({
         tier: 'pro',
-        dailyLimit: 500,
+        period: 'day' as const,
+      dailyLimit: 500,
         usedToday: 50,
         remaining: 450,
         resetAt: now + 3600 * 1000,

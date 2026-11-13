@@ -5,7 +5,7 @@ import { useTranslations } from 'next-intl';
 import { Upload } from 'lucide-react';
 import { useFileLimitCopy } from '../i18n/format';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
-import { TIER_LIMITS } from '@/lib/plan-limits';
+import { QUOTA_PERIOD, TIER_LIMITS } from '@/lib/plan-limits';
 import type { HeroOperation } from '../hero/useHeroUpload';
 import FileSourceButton from './FileSourceButton';
 
@@ -37,9 +37,13 @@ export default function HeroDropzoneCard({
   const tOperation = useTranslations('hero.operations');
   const fileLimitCopy = useFileLimitCopy();
   const plan = useViewerPlan();
+  const conversionsCopy =
+    plan !== 'anonymous' && QUOTA_PERIOD[plan] === 'month'
+      ? t('monthlyConversions', { count: TIER_LIMITS[plan] })
+      : t('dailyConversions', { count: plan === 'anonymous' ? dailyLimit : TIER_LIMITS[plan] });
   const limits = [
     fileLimitCopy(plan),
-    t('dailyConversions', { count: plan === 'anonymous' ? dailyLimit : TIER_LIMITS[plan] }),
+    conversionsCopy,
     t('autoDeleted'),
   ];
 

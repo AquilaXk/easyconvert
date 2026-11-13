@@ -161,7 +161,7 @@ describe('Per-key burst rate limit and Retry-After (#242)', () => {
   describe('daily quota 429 carries Retry-After until the UTC-midnight reset', () => {
     it('buildRateLimitHeaders adds Retry-After only when the quota is exhausted', () => {
       const now = FIXED_NOW.getTime();
-      const base = { tier: 'free' as const, dailyLimit: FREE_DAILY_LIMIT };
+      const base = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_LIMIT };
 
       const exhausted = buildRateLimitHeaders({ ...base, usedToday: FREE_DAILY_LIMIT, remaining: 0, resetAt: now + 90_500 });
       expect(exhausted['Retry-After']).toBe('91');

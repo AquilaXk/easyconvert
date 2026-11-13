@@ -1,5 +1,5 @@
 import type { Paddle } from '@paddle/paddle-js';
-import type { EnabledBillingStatus } from './billing-status';
+import type { PublicBillingConfig } from '@/lib/billing/types';
 
 /**
  * Paddle.js, loaded only when paid plans are on sale and a page needs a price or a checkout. It follows the starter kit of
@@ -9,7 +9,7 @@ import type { EnabledBillingStatus } from './billing-status';
 let loading: { key: string; paddle: Promise<Paddle | undefined> } | undefined;
 const completedListeners = new Set<() => void>();
 
-function load(status: EnabledBillingStatus): Promise<Paddle | undefined> {
+function load(status: PublicBillingConfig): Promise<Paddle | undefined> {
   const key = `${status.environment}:${status.clientToken}`;
   if (loading?.key === key) return loading.paddle;
   const paddle = import('@paddle/paddle-js').then(({ initializePaddle }) =>
@@ -38,7 +38,7 @@ export interface PlanPrice {
 }
 
 /** The price of a plan for this visitor, or undefined when Paddle.js is unavailable or gives none. */
-export async function previewPrice(status: EnabledBillingStatus, priceId: string): Promise<PlanPrice | undefined> {
+export async function previewPrice(status: PublicBillingConfig, priceId: string): Promise<PlanPrice | undefined> {
   const paddle = await load(status);
   const { data } = (await paddle?.PricePreview({ items: [{ priceId, quantity: 1 }] })) ?? {};
   const line = data?.details.lineItems[0];
@@ -55,7 +55,7 @@ export interface CheckoutInput {
 }
 
 /** Opens the overlay checkout; false when Paddle.js could not be loaded. */
-export async function openCheckout(status: EnabledBillingStatus, input: CheckoutInput, locale: string): Promise<boolean> {
+export async function openCheckout(status: PublicBillingConfig, input: CheckoutInput, locale: string): Promise<boolean> {
   const paddle = await load(status);
   if (!paddle) return false;
   paddle.Checkout.open({ ...input, settings: { displayMode: 'overlay', locale } });

@@ -207,10 +207,11 @@ export const components = {
       type: 'object',
       properties: {
         tier: { type: 'string', example: 'pro' },
-        dailyLimit: { type: 'integer', example: 500 },
-        usedToday: { type: 'integer', example: 42 },
-        remaining: { type: 'integer', example: 458 },
-        resetAt: { type: 'number', description: 'Unix timestamp in milliseconds for midnight UTC reset.' },
+        period: { type: 'string', enum: ['day', 'month'], description: 'How long conversions are counted before the count starts again: a UTC day for anonymous callers and the free plan, the month of the subscription for a paid plan.' },
+        dailyLimit: { type: 'integer', example: 3000, description: 'Conversions the tier allows in the period, whichever it is.' },
+        usedToday: { type: 'integer', example: 42, description: 'Conversions counted in the current period, whichever it is.' },
+        remaining: { type: 'integer', example: 2958 },
+        resetAt: { type: 'number', description: 'Unix timestamp in milliseconds when the count starts again: midnight UTC for a day, the next renewal of the subscription for a month.' },
       },
     },
     WebhookSecretRotateRequest: {

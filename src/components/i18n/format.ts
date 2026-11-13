@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { useFormatter, useTranslations } from 'next-intl';
 import { byteMagnitude, displayByteUnit } from '@/lib/format-bytes';
-import { fileTooLargeFacts, PLAN_MAX_FILE_BYTES, type Plan } from '@/lib/plan-limits';
+import { fileTooLargeFacts, isUserTier, PLAN_MAX_FILE_BYTES, type Plan } from '@/lib/plan-limits';
 import { usePaidPlansOnSale } from '@/hooks/useViewerPlan';
 
 /**
@@ -51,5 +51,5 @@ export function useFileTooLargeMessage(): (plan: Plan, sizeBytes: number) => str
 /** The name of an account tier as the session answers it; a tier the copy does not know reads as it came. */
 export function useTierLabel(): (tier: string) => string {
   const t = useTranslations('plans.tier');
-  return useCallback((tier: string) => (tier === 'free' || tier === 'pro' || tier === 'enterprise' ? t(tier) : tier), [t]);
+  return useCallback((tier: string) => (isUserTier(tier) ? t(tier) : tier), [t]);
 }

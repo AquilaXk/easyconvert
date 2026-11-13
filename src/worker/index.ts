@@ -375,7 +375,7 @@ if (process.env.NODE_ENV !== 'test') {
   startEndedRecordSweep();
   // What a worker killed without a clean exit left in the temporary directory, which a restart does not clear (policy entry 244).
   startWorkerSandboxSweep();
-  // The hourly comparison of subscriptions with the payment provider's list; a worker without the six billing variables does nothing (policy entry 277).
+  // The hourly comparison of subscriptions with the payment provider's list; a worker without the seven billing variables does nothing (policy entry 277).
   startBillingReconcile();
   // The metrics listener stays up while the worker drains, so a drain can be watched; it is closed with the process.
   startMetricsFromConfig('worker', () => sampleQueues(metricsQueueSources())).catch((error: unknown) => {

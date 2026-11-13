@@ -37,7 +37,7 @@ const config: BillingConfig = {
   webhookSecret: WEBHOOK_SECRET,
   clientToken: 'test_fixture_client_token',
   environment: 'sandbox',
-  priceIds: { pro: 'pri_pro_fixture', enterprise: 'pri_enterprise_fixture' },
+  priceIds: { basic: 'pri_basic_fixture', pro: 'pri_pro_fixture', enterprise: 'pri_enterprise_fixture' },
 };
 
 interface ListedFixture {

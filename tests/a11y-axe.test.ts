@@ -49,8 +49,8 @@ const PAGES: PageCase[] = [
   { name: 'home in Korean', locale: 'ko', page: () => createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS, apiOrigin: API_ORIGIN }) },
   { name: 'converter pair /pdf-to-docx', locale: 'en', page: () => createElement(ConverterPageView, { parsed: parsedSlug('pdf-to-docx'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
   { name: 'format page /pdf-converter', locale: 'en', page: () => createElement(ConverterPageView, { parsed: parsedSlug('pdf-converter'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
-  { name: 'pricing', locale: 'en', page: () => createElement(PricingPageView, { anonymousDaily: ANONYMOUS_DAILY_CONVERSIONS }) },
-  { name: 'pricing in Korean', locale: 'ko', page: () => createElement(PricingPageView, { anonymousDaily: ANONYMOUS_DAILY_CONVERSIONS }) },
+  { name: 'pricing', locale: 'en', page: () => createElement(PricingPageView, { anonymousDaily: ANONYMOUS_DAILY_CONVERSIONS, billing: null }) },
+  { name: 'pricing in Korean', locale: 'ko', page: () => createElement(PricingPageView, { anonymousDaily: ANONYMOUS_DAILY_CONVERSIONS, billing: null }) },
   { name: 'not found', locale: 'en', page: () => createElement(NotFoundPageView) },
   {
     name: 'terms',

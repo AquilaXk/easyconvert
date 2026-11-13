@@ -2,7 +2,9 @@ import { bindJobLimits } from '../conversions/job-time';
 import { getFormatByExtension } from '../registry';
 import type { ConversionOptions } from '../types';
 import type { ConversionEnginePort } from './engine-port';
+import type { UserTier } from '../auth/types';
 import { JOB_DEADLINE_CEILING_MS } from '../config/schema';
+import { PLAN_PROCESSING_MINUTES } from '../plan-limits';
 
 /**
  * The wall-clock limit of a conversion job. One pure function, `jobDeadlineMs`, is the single source of every
@@ -38,12 +40,16 @@ export interface JobDeadlineSettings {
   syncMaxMs: number;
 }
 
+const MS_PER_MINUTE = 60_000;
+
 /** Environment variable of each setting. */
 export const JOB_DEADLINE_ENV = {
   BASE_FREE: 'JOB_DEADLINE_BASE_MS_FREE',
+  BASE_BASIC: 'JOB_DEADLINE_BASE_MS_BASIC',
   BASE_PRO: 'JOB_DEADLINE_BASE_MS_PRO',
   BASE_ENTERPRISE: 'JOB_DEADLINE_BASE_MS_ENTERPRISE',
   MAX_FREE: 'JOB_DEADLINE_MAX_MS_FREE',
+  MAX_BASIC: 'JOB_DEADLINE_MAX_MS_BASIC',
   MAX_PRO: 'JOB_DEADLINE_MAX_MS_PRO',
   MAX_ENTERPRISE: 'JOB_DEADLINE_MAX_MS_ENTERPRISE',
   PER_MIB: 'JOB_DEADLINE_PER_MIB_MS',
@@ -60,17 +66,19 @@ export const JOB_DEADLINE_ENV = {
  */
 export const JOB_DEADLINE_DEFAULTS: Record<keyof typeof JOB_DEADLINE_ENV, number> = {
   BASE_FREE: 60_000,
+  BASE_BASIC: 90_000,
   BASE_PRO: 120_000,
   BASE_ENTERPRISE: 180_000,
-  MAX_FREE: 300_000,
-  MAX_PRO: 1_800_000,
-  MAX_ENTERPRISE: JOB_DEADLINE_CEILING_MS,
+  MAX_FREE: PLAN_PROCESSING_MINUTES.free * MS_PER_MINUTE,
+  MAX_BASIC: PLAN_PROCESSING_MINUTES.basic * MS_PER_MINUTE,
+  MAX_PRO: PLAN_PROCESSING_MINUTES.pro * MS_PER_MINUTE,
+  MAX_ENTERPRISE: PLAN_PROCESSING_MINUTES.enterprise * MS_PER_MINUTE,
   PER_MIB: 2_000,
   PER_MEDIA_SECOND: 3_000,
   SYNC_MAX: 120_000,
 };
 
-const TIERS = ['free', 'pro', 'enterprise'] as const;
+const TIERS = ['free', 'basic', 'pro', 'enterprise'] as const satisfies readonly UserTier[];
 const FREE_TIER = 'free';
 const BYTES_PER_MIB = 1024 * 1024;
 const MAX_SETTING_DIGITS = 16;
@@ -116,7 +124,7 @@ export function jobDeadlineSettings(env: Env = process.env): JobDeadlineSettings
   const baseMs: Record<string, number> = {};
   const maxMs: Record<string, number> = {};
   for (const tier of TIERS) {
-    const suffix = tier.toUpperCase() as 'FREE' | 'PRO' | 'ENTERPRISE';
+    const suffix = tier.toUpperCase() as Uppercase<(typeof TIERS)[number]>;
     baseMs[tier] = readSetting(env, `BASE_${suffix}`);
     maxMs[tier] = readSetting(env, `MAX_${suffix}`);
     if (baseMs[tier] > maxMs[tier]) {

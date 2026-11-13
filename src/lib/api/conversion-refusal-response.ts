@@ -6,8 +6,8 @@ import { buildRateLimitHeaders } from './rate-limit';
 
 /**
  * The answer of every route that reserves conversions when the guard refused them: 503 while the quota store is offline,
- * else 429 with the day's count in the rate limit headers and, beside the English detail, the numbers it states (the
- * daily limit, the conversions left, and those the request needs), so a graph that needs more than is left is told both.
+ * else 429 with the period's count in the rate limit headers and, beside the English detail, the numbers it states (the
+ * limit of the period, which `dailyLimit` names whatever the period is, and `period` itself, the conversions left, and those the request needs), so a graph that needs more than is left is told both.
  */
 export function conversionRefusalResponse(refusal: ConversionRefusal, instanceUri: string): NextResponse {
   if (refusal.reason === 'offline') {
@@ -24,6 +24,6 @@ export function conversionRefusalResponse(refusal: ConversionRefusal, instanceUr
     QUOTA_EXCEEDED_PROBLEM_TYPE,
     buildRateLimitHeaders(usage),
     undefined,
-    { dailyLimit: usage.dailyLimit, remaining: usage.remaining, requiredUnits }
+    { dailyLimit: usage.dailyLimit, period: usage.period, remaining: usage.remaining, requiredUnits }
   );
 }

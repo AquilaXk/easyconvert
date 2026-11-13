@@ -60,13 +60,13 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
 
     it('enforces atomic 2-phase quota reservation, commit, and rollback via redisKeyStore', async () => {
       const quotaBefore = await redisKeyStore.getQuotaUsage(testUser.id);
-      expect(quotaBefore.remaining).toBe(500);
+      expect(quotaBefore.remaining).toBe(3000);
 
       // Phase 1: Reserve 10 units
       const res = await redisKeyStore.reserveQuota(testUser.id, 10);
       expect(res.allowed).toBe(true);
       expect(res.reservationId).toBeDefined();
-      expect(res.remaining).toBe(490);
+      expect(res.remaining).toBe(2990);
 
       expect((await redisKeyStore.getQuotaUsage(testUser.id)).usedToday).toBe(10);
 
@@ -76,18 +76,18 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       expect(await redisKeyStore.rollbackQuota(res.reservationId!)).toBe(false);
 
       const quotaAfterCommit = await redisKeyStore.getQuotaUsage(testUser.id);
-      expect(quotaAfterCommit.remaining).toBe(490);
+      expect(quotaAfterCommit.remaining).toBe(2990);
 
       // Phase 2b: Reserve and Rollback
       const res2 = await redisKeyStore.reserveQuota(testUser.id, 5);
       expect(res2.allowed).toBe(true);
-      expect(res2.remaining).toBe(485);
+      expect(res2.remaining).toBe(2985);
 
       const rolledBack = await redisKeyStore.rollbackQuota(res2.reservationId!);
       expect(rolledBack).toBe(true);
 
       const quotaAfterRollback = await redisKeyStore.getQuotaUsage(testUser.id);
-      expect(quotaAfterRollback.remaining).toBe(490);
+      expect(quotaAfterRollback.remaining).toBe(2990);
     });
 
     it('enforces quota exhaustion when daily tier limit is exceeded', async () => {
@@ -629,7 +629,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       const usageJson = await usageRes.json();
       expect(usageJson.success).toBe(true);
       expect(usageJson.usage.tier).toBe('pro');
-      expect(usageJson.usage.dailyLimit).toBe(500);
+      expect(usageJson.usage.dailyLimit).toBe(3000);
 
       // POST /api/keys using Admin API Key
       const createReq = new Request('https://easyconvert.app/api/keys', {

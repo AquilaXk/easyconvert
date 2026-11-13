@@ -36,6 +36,7 @@ const BILLING_ENV = {
   PADDLE_WEBHOOK_SECRET: WEBHOOK_SECRET,
   PADDLE_CLIENT_TOKEN: 'test_fixture_client_token',
   PADDLE_ENVIRONMENT: 'sandbox',
+  PADDLE_PRICE_ID_BASIC: 'pri_basic_fixture',
   PADDLE_PRICE_ID_PRO: 'pri_pro_fixture',
   PADDLE_PRICE_ID_ENTERPRISE: 'pri_enterprise_fixture',
 };
@@ -150,6 +151,7 @@ describe('the status route with billing configured', () => {
       environment: 'sandbox',
       clientToken: 'test_fixture_client_token',
       plans: [
+        { plan: 'basic', priceId: 'pri_basic_fixture' },
         { plan: 'pro', priceId: 'pri_pro_fixture' },
         { plan: 'enterprise', priceId: 'pri_enterprise_fixture' },
       ],

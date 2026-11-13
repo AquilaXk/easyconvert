@@ -7,6 +7,7 @@ const FULL = {
   PADDLE_WEBHOOK_SECRET: 'pdl_ntfset_fixture',
   PADDLE_CLIENT_TOKEN: 'test_fixture_client_token',
   PADDLE_ENVIRONMENT: 'sandbox',
+  PADDLE_PRICE_ID_BASIC: 'pri_basic_fixture',
   PADDLE_PRICE_ID_PRO: 'pri_pro_fixture',
   PADDLE_PRICE_ID_ENTERPRISE: 'pri_enterprise_fixture',
 } as const;
@@ -24,7 +25,7 @@ describe('isBillingConfigured', () => {
     expect(isBillingConfigured()).toBe(false);
   });
 
-  it('is on only when all six variables are set', () => {
+  it('is on only when all seven variables are set', () => {
     stub(FULL);
     expect(isBillingConfigured()).toBe(true);
     for (const name of Object.keys(FULL)) {
@@ -33,8 +34,15 @@ describe('isBillingConfigured', () => {
     }
   });
 
-  it('is off when both plans name the same price', () => {
+  it('is off when two plans name the same price', () => {
     stub({ ...FULL, PADDLE_PRICE_ID_ENTERPRISE: FULL.PADDLE_PRICE_ID_PRO });
+    expect(isBillingConfigured()).toBe(false);
+    stub({ ...FULL, PADDLE_PRICE_ID_BASIC: FULL.PADDLE_PRICE_ID_PRO });
+    expect(isBillingConfigured()).toBe(false);
+  });
+
+  it('is off without the Basic price, though the other six are set', () => {
+    stub({ ...FULL, PADDLE_PRICE_ID_BASIC: undefined });
     expect(isBillingConfigured()).toBe(false);
   });
 
@@ -49,6 +57,7 @@ describe('isBillingConfigured', () => {
     stub({ ...FULL, PADDLE_ENVIRONMENT: 'Production' });
     const config = readBillingConfig()!;
     expect(config.environment).toBe('production');
+    expect(planOfPriceId(config, 'pri_basic_fixture')).toBe('basic');
     expect(planOfPriceId(config, 'pri_pro_fixture')).toBe('pro');
     expect(planOfPriceId(config, 'pri_enterprise_fixture')).toBe('enterprise');
     expect(planOfPriceId(config, 'pri_other')).toBeUndefined();
@@ -69,7 +78,7 @@ describe('the configuration schema', () => {
       error = caught;
     }
     expect(error).toBeInstanceOf(ConfigurationError);
-    expect([...(error as ConfigurationError).variables].sort()).toEqual(['PADDLE_CLIENT_TOKEN', 'PADDLE_PRICE_ID_ENTERPRISE', 'PADDLE_PRICE_ID_PRO', 'PADDLE_WEBHOOK_SECRET']);
+    expect([...(error as ConfigurationError).variables].sort()).toEqual(['PADDLE_CLIENT_TOKEN', 'PADDLE_PRICE_ID_BASIC', 'PADDLE_PRICE_ID_ENTERPRISE', 'PADDLE_PRICE_ID_PRO', 'PADDLE_WEBHOOK_SECRET']);
     expect((error as ConfigurationError).message).not.toContain(FULL.PADDLE_API_KEY);
   });
 
@@ -83,6 +92,17 @@ describe('the configuration schema', () => {
     expect(error).toBeInstanceOf(ConfigurationError);
     expect((error as ConfigurationError).variables).toEqual(['PADDLE_PRICE_ID_ENTERPRISE']);
     expect((error as ConfigurationError).message).not.toContain(FULL.PADDLE_PRICE_ID_PRO);
+  });
+
+  it('refuses the Basic price repeated as another plan\'s, and names the later plan', () => {
+    let error: unknown;
+    try {
+      parseConfig({ ...FULL, PADDLE_PRICE_ID_PRO: FULL.PADDLE_PRICE_ID_BASIC });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(ConfigurationError);
+    expect((error as ConfigurationError).variables).toEqual(['PADDLE_PRICE_ID_PRO']);
   });
 
   it('refuses an environment that is neither sandbox nor production', () => {

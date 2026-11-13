@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { PaidPlan } from '@/lib/billing/types';
+import type { PaidPlan, PublicBillingConfig } from '@/lib/billing/types';
 
 /** What `/api/billing/status` says about the signed-in account's subscription. */
 export interface SubscriptionView {
@@ -14,11 +14,8 @@ export interface SubscriptionView {
 }
 
 /** What the page needs when paid plans are on sale. */
-export interface EnabledBillingStatus {
+export interface EnabledBillingStatus extends PublicBillingConfig {
   enabled: true;
-  environment: 'sandbox' | 'production';
-  clientToken: string;
-  plans: { plan: PaidPlan; priceId: string }[];
   subscription: SubscriptionView | null;
 }
 

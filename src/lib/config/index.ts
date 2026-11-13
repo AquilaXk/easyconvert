@@ -30,7 +30,7 @@ export type { Config, ConfigName, ProcessRole, VariableSpec } from './schema';
 
 const PRODUCTION = 'production';
 /** Tiers whose job deadline base must not exceed their maximum (src/lib/queue/job-deadline.ts). */
-const JOB_DEADLINE_TIERS = ['FREE', 'PRO', 'ENTERPRISE'] as const;
+const JOB_DEADLINE_TIERS = ['FREE', 'BASIC', 'PRO', 'ENTERPRISE'] as const;
 const PRODUCTION_BUILD_PHASE = 'phase-production-build';
 /** Disk thresholds that must rise strictly (src/lib/storage/result-capacity.ts). */
 const DISK_THRESHOLD_ORDER = [
@@ -117,18 +117,29 @@ const BILLING_VARIABLES = [
   'PADDLE_WEBHOOK_SECRET',
   'PADDLE_CLIENT_TOKEN',
   'PADDLE_ENVIRONMENT',
+  'PADDLE_PRICE_ID_BASIC',
   'PADDLE_PRICE_ID_PRO',
   'PADDLE_PRICE_ID_ENTERPRISE',
 ] as const;
 
+/** The price ids that repeat an earlier plan's: one price cannot tell two plans apart. */
+function samePriceFailures(values: ReadonlyMap<string, ParsedValue>): ConfigFailure[] {
+  const failures: ConfigFailure[] = [];
+  const seen = new Map<unknown, string>();
+  for (const name of ['PADDLE_PRICE_ID_BASIC', 'PADDLE_PRICE_ID_PRO', 'PADDLE_PRICE_ID_ENTERPRISE']) {
+    const earlier = seen.get(values.get(name));
+    if (earlier) failures.push({ variable: name, rule: `must differ from ${earlier}: one price cannot tell two plans apart` });
+    else seen.set(values.get(name), name);
+  }
+  return failures;
+}
+
 /** A part of the billing variables would leave the paid plans off without saying why, so the process does not start. */
 function billingFailures(isSet: ReadonlySet<string>, values: ReadonlyMap<string, ParsedValue>): ConfigFailure[] {
   const missing = BILLING_VARIABLES.filter((name) => !isSet.has(name));
-  if (missing.length === 0 && values.get('PADDLE_PRICE_ID_PRO') === values.get('PADDLE_PRICE_ID_ENTERPRISE')) {
-    return [{ variable: 'PADDLE_PRICE_ID_ENTERPRISE', rule: 'must differ from PADDLE_PRICE_ID_PRO: one price cannot tell the two plans apart' }];
-  }
-  if (missing.length === 0 || missing.length === BILLING_VARIABLES.length) return [];
-  return missing.map((variable) => ({ variable, rule: 'is required when any other PADDLE_ variable is set: the paid plans need all six' }));
+  if (missing.length === 0) return samePriceFailures(values);
+  if (missing.length === BILLING_VARIABLES.length) return [];
+  return missing.map((variable) => ({ variable, rule: 'is required when any other PADDLE_ variable is set: the paid plans need all seven' }));
 }
 
 /** Validates `env` against the schema without caching. Throws ConfigurationError listing every failing variable. */

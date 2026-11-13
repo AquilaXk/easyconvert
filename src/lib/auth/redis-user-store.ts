@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { readyGatedRedis } from '../redis/when-ready';
-import type { User, UserRecord } from './types';
+import type { User, UserRecord, UserTier } from './types';
 import { failClosed } from './store-unavailable';
 
 export interface RedisUserStoreOptions {
@@ -224,7 +224,7 @@ export class RedisUserStore {
     email: string;
     name: string;
     avatarUrl?: string;
-    tier?: 'free' | 'pro' | 'enterprise';
+    tier?: UserTier;
     provider?: 'email' | 'google';
     passwordHash?: string;
     salt?: string;
@@ -320,7 +320,7 @@ export class RedisUserStore {
     return updated;
   }
 
-  public async updateTier(id: string, tier: 'free' | 'pro' | 'enterprise'): Promise<UserRecord | null> {
+  public async updateTier(id: string, tier: UserTier): Promise<UserRecord | null> {
     return this.updateUser(id, { tier });
   }
 

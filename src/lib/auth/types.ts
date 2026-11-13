@@ -1,4 +1,4 @@
-export type UserTier = 'free' | 'pro' | 'enterprise';
+export type UserTier = 'free' | 'basic' | 'pro' | 'enterprise';
 
 export interface User {
   id: string;

@@ -164,7 +164,7 @@ export function resolveQueueName(resourceClass: ResourceClass): string {
 }
 
 /**
- * Maps account tier ('enterprise' | 'pro' | 'free') to scheduling priority.
+ * Maps account tier ('enterprise' | 'pro' | 'basic' | 'free') to scheduling priority.
  * BullMQ priority: 1 (highest) to 3 (lowest).
  */
 export function tierToPriority(tier?: string): number {
@@ -173,6 +173,7 @@ export function tierToPriority(tier?: string): number {
     case 'enterprise':
       return 1;
     case 'pro':
+    case 'basic':
       return 2;
     case 'free':
     default:

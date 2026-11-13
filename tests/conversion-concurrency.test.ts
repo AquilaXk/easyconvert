@@ -27,8 +27,8 @@ import { CONFIG_SCHEMA } from '../src/lib/config/schema';
 
 /**
  * Anonymous and free callers may have at most five conversions in flight (queued plus running), counted on the
- * server: a sixth request is answered 429 and its quota unit is refunded. Paid tiers have no such limit. The limit
- * is one setting, CONVERSION_CONCURRENCY_FREE.
+ * server: a sixth request is answered 429 and its quota unit is refunded. A paid tier has a larger limit of its
+ * own (10, 25 and 50). Each limit is one setting, CONVERSION_CONCURRENCY_<TIER>.
  */
 
 const BASE_URL = 'http://localhost:3000';
@@ -42,7 +42,7 @@ interface Account {
   key: string;
 }
 
-async function account(tier: 'free' | 'pro'): Promise<Account> {
+async function account(tier: 'free' | 'basic' | 'pro'): Promise<Account> {
   const user = await userStore.createUser({
     email: `conc_${tier}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@concurrency.test`,
     name: `Concurrency ${tier}`,
@@ -116,27 +116,34 @@ afterEach(() => {
 });
 
 describe('the setting', () => {
-  it('is one documented configuration variable with the default of five', () => {
-    expect(CONCURRENCY_LIMIT_ENV).toBe('CONVERSION_CONCURRENCY_FREE');
+  it('is one documented configuration variable for each tier, with the defaults of QA\'s plan table', () => {
     expect(DEFAULT_FREE_CONCURRENCY).toBe(LIMIT);
-    const spec = CONFIG_SCHEMA.find((entry) => entry.name === CONCURRENCY_LIMIT_ENV);
-    expect(spec?.default).toBe(LIMIT);
-    expect(spec?.roles).toEqual(['web', 'worker']);
+    const defaults = { free: 5, basic: 10, pro: 25, enterprise: 50 } as const;
+    for (const [tier, name] of Object.entries(CONCURRENCY_LIMIT_ENV)) {
+      const spec = CONFIG_SCHEMA.find((entry) => entry.name === name);
+      expect(spec?.default).toBe(defaults[tier as keyof typeof defaults]);
+      expect(spec?.roles).toEqual(['web', 'worker']);
+    }
+    expect(CONCURRENCY_LIMIT_ENV.free).toBe('CONVERSION_CONCURRENCY_FREE');
   });
 
-  it('applies to free and anonymous callers only, and can be changed', () => {
+  it('gives every tier its own limit, an unknown or missing tier the free one, and can be changed', () => {
     expect(concurrencyLimitFor('free')).toBe(LIMIT);
     expect(concurrencyLimitFor(undefined)).toBe(LIMIT);
     expect(concurrencyLimitFor('unknown-tier')).toBe(LIMIT);
-    expect(concurrencyLimitFor('pro')).toBeUndefined();
-    expect(concurrencyLimitFor('enterprise')).toBeUndefined();
-    vi.stubEnv(CONCURRENCY_LIMIT_ENV, '2');
+    expect(concurrencyLimitFor('basic')).toBe(10);
+    expect(concurrencyLimitFor('pro')).toBe(25);
+    expect(concurrencyLimitFor('ENTERPRISE')).toBe(50);
+    vi.stubEnv(CONCURRENCY_LIMIT_ENV.free, '2');
+    vi.stubEnv(CONCURRENCY_LIMIT_ENV.pro, '30');
     expect(concurrencyLimitFor('free')).toBe(2);
+    expect(concurrencyLimitFor('pro')).toBe(30);
+    expect(concurrencyLimitFor('basic')).toBe(10);
   });
 
   it.each(['0', '-1', 'five', '2.5'])('refuses the malformed value %j instead of using the default', (value) => {
-    vi.stubEnv(CONCURRENCY_LIMIT_ENV, value);
-    expect(() => concurrencyLimitFor('free')).toThrow(CONCURRENCY_LIMIT_ENV);
+    vi.stubEnv(CONCURRENCY_LIMIT_ENV.basic, value);
+    expect(() => concurrencyLimitFor('basic')).toThrow(CONCURRENCY_LIMIT_ENV.basic);
   });
 });
 
@@ -184,7 +191,7 @@ describe.each([
     expect((await next).status).toBe(200);
   });
 
-  it('counts a free API-key caller on its own, apart from other callers, and does not limit a pro caller', async () => {
+  it('counts a free API-key caller on its own, apart from other callers, and gives a pro caller a larger limit', async () => {
     const free = await account('free');
     const pro = await account('pro');
     const held = holdConversions();
@@ -198,6 +205,18 @@ describe.each([
     held.releaseAll();
     const answers = await Promise.all([...freeFlight, ...proFlight]);
     expect(answers.every((res) => res.status === 200)).toBe(true);
+  });
+
+  it('holds a basic caller to ten conversions at once and refuses the eleventh', async () => {
+    const basic = await account('basic');
+    const held = holdConversions();
+    const inFlight = Array.from({ length: 10 }, () => route(request(path, form(), basic.key)));
+    await held.untilStarted(10);
+    const refused = await route(request(path, form(), basic.key));
+    expect(refused.status).toBe(HTTP_TOO_MANY);
+    expect((await refused.json()).limit).toBe(10);
+    held.releaseAll();
+    expect((await Promise.all(inFlight)).every((res) => res.status === 200)).toBe(true);
   });
 
   it('refunds the quota unit of the refused request', async () => {
@@ -253,10 +272,17 @@ describe('queued jobs count as in flight', () => {
     expect(again.status).toBe(accepted);
   });
 
-  it.each(submissions)('%s does not limit a pro caller', async (_label, path, route, accepted) => {
+  it.each(submissions)('%s gives a basic caller ten jobs and a pro caller more, and refuses the eleventh job of a basic caller', async (_label, path, route, accepted) => {
+    const basic = await account('basic');
     const pro = await account('pro');
     const body = { filename: 'scores.csv', targetFormat: 'json', inputBufferBase64: Buffer.from(CSV_INPUT).toString('base64') };
-    for (let i = 0; i < LIMIT + 3; i++) {
+    for (let i = 0; i < 10; i++) {
+      expect((await route(jsonRequest(path, basic.key, body))).status).toBe(accepted);
+    }
+    const eleventh = await route(jsonRequest(path, basic.key, body));
+    expect(eleventh.status).toBe(HTTP_TOO_MANY);
+    expect((await eleventh.json()).type).toBe(CONCURRENCY_LIMIT_PROBLEM_TYPE);
+    for (let i = 0; i < 11; i++) {
       expect((await route(jsonRequest(path, pro.key, body))).status).toBe(accepted);
     }
   });

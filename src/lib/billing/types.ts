@@ -1,7 +1,7 @@
 import type { UserTier } from '../auth/types';
 
 /** The plans that are bought; `free` is what an account has without a subscription. */
-export const PAID_PLANS = ['pro', 'enterprise'] as const satisfies readonly UserTier[];
+export const PAID_PLANS = ['basic', 'pro', 'enterprise'] as const satisfies readonly UserTier[];
 export type PaidPlan = (typeof PAID_PLANS)[number];
 
 export const isPaidPlan = (value: unknown): value is PaidPlan => PAID_PLANS.some((plan) => plan === value);
@@ -48,6 +48,13 @@ export type MappedSubscriptionEvent = Omit<SubscriptionChange, 'userId' | 'subsc
 export interface ListedSubscription {
   providerSubscriptionId: string;
   change: MappedSubscriptionEvent | null;
+}
+
+/** What a page needs to offer the paid plans: Paddle.js settings and the price of each plan. All of it is public by design (entry 262). */
+export interface PublicBillingConfig {
+  environment: 'sandbox' | 'production';
+  clientToken: string;
+  plans: { plan: PaidPlan; priceId: string }[];
 }
 
 /** What the browser needs to open a checkout for `plan`. */

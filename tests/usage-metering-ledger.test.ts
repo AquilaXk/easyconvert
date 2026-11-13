@@ -5,6 +5,7 @@ describe('Standard IETF RateLimit headers', () => {
   it('emits RateLimit-Policy and combined RateLimit header field matching IETF draft syntax', () => {
     const quota = {
       tier: 'pro' as const,
+      period: 'day' as const,
       dailyLimit: 500,
       usedToday: 120,
       remaining: 380,

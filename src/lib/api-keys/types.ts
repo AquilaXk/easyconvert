@@ -1,4 +1,5 @@
 import type { UserTier } from '../auth/types';
+import type { QuotaPeriod } from '../plan-limits';
 
 export type ApiKeyScope = 'convert:read' | 'convert:write' | 'storage:download' | '*';
 
@@ -71,8 +72,13 @@ export interface QuotaReservation {
   status: 'reserved' | 'committed' | 'rolled_back';
 }
 
+/**
+ * The conversions of an account in its current quota period. `dailyLimit` and `usedToday` keep the names clients already read and count
+ * the units of the period: the UTC day for anonymous callers and the free plan, the month of the subscription for a paid plan (`period`).
+ */
 export interface QuotaUsage {
   tier: UserTier;
+  period: QuotaPeriod;
   dailyLimit: number;
   usedToday: number;
   remaining: number;

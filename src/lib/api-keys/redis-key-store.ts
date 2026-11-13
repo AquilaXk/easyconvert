@@ -2,9 +2,8 @@ import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { redisUserStore } from '../auth/redis-user-store';
 import { AuthStoreUnavailableError, failClosed } from '../auth/store-unavailable';
-import { isAnonymousUserId } from '../auth/anonymous-identity';
-import type { UserTier } from '../auth/types';
-import { KeyStore, type ApiKeyVerification, TIER_LIMITS, getAnonymousDailyLimit, getUtcDateKey, getNextMidnightUtc, apiKeyHashCandidates } from './key-store';
+import { KeyStore, type ApiKeyVerification, apiKeyHashCandidates } from './key-store';
+import { quotaAllowanceOf } from './quota-window';
 import type {
   ApiKey,
   ApiKeyCreateOptions,
@@ -85,11 +84,9 @@ function connectFromEnvironment(endpoint: RedisEndpoint): Redis | undefined {
   return undefined;
 }
 
-/** Seconds from now until the UTC day ends, at least a minute: the lifetime of the day's count and of its reservations. */
-function secondsUntilUtcMidnight(): number {
-  const midnight = new Date();
-  midnight.setUTCHours(24, 0, 0, 0);
-  return Math.max(60, Math.floor((midnight.getTime() - Date.now()) / 1000));
+/** Seconds from now until `endsAt`, at least a minute: the lifetime of the count of a quota window. */
+function secondsUntil(endsAt: number): number {
+  return Math.max(60, Math.floor((endsAt - Date.now()) / 1000));
 }
 
 /**
@@ -186,21 +183,9 @@ export class RedisKeyStore extends KeyStore {
 
     if (this.redisClient) {
       try {
-        const isAnonymous = isAnonymousUserId(userId);
-        const user = isAnonymous ? null : await redisUserStore.findById(userId);
-        const tier: UserTier = user?.tier || 'free';
-        const dailyLimit = isAnonymous ? getAnonymousDailyLimit() : TIER_LIMITS[tier];
-        const usedToday = await this.ledger().used(userId, getUtcDateKey());
-        const remaining = Math.max(0, dailyLimit - usedToday);
-        const resetAt = getNextMidnightUtc();
-
-        return {
-          tier,
-          dailyLimit,
-          usedToday,
-          remaining,
-          resetAt,
-        };
+        const { tier, window, limit } = await quotaAllowanceOf(userId);
+        const used = await this.ledger().used(userId, window.key);
+        return { tier, period: window.period, dailyLimit: limit, usedToday: used, remaining: Math.max(0, limit - used), resetAt: window.endsAt };
       } catch (err) {
         // The account store's own refusal keeps its type (a 503 in the route); any other failure is the quota service's.
         if (err instanceof AuthStoreUnavailableError) throw err;
@@ -230,21 +215,18 @@ export class RedisKeyStore extends KeyStore {
     }
     this.cleanExpiredReservations();
     this.ensureInitialized();
-    const isAnonymous = isAnonymousUserId(userId);
-    const user = isAnonymous ? null : await redisUserStore.findById(userId);
-    const tier: UserTier = user?.tier ?? 'free';
-    const dailyLimit = isAnonymous ? getAnonymousDailyLimit() : TIER_LIMITS[tier];
+    const { window, limit: dailyLimit } = await quotaAllowanceOf(userId);
 
     if (this.redisClient) {
       try {
-        const usageKey = `${this.keyPrefix}usage:{${userId}}:${getUtcDateKey()}`;
+        const usageKey = `${this.keyPrefix}usage:{${userId}}:${window.key}`;
         const result = (await this.redisClient.eval(
           DEDUCT_QUOTA_LUA_SCRIPT,
           1,
           usageKey,
           units,
           dailyLimit,
-          secondsUntilUtcMidnight()
+          secondsUntil(window.endsAt)
         )) as [number, number];
 
         return {
@@ -262,7 +244,7 @@ export class RedisKeyStore extends KeyStore {
       }
     }
 
-    const dateKey = `${userId}:${getUtcDateKey()}`;
+    const dateKey = `${userId}:${window.key}`;
     const currentUsed = this.dailyUsage.get(dateKey) ?? 0;
 
     if (units === 0) {
@@ -301,16 +283,16 @@ export class RedisKeyStore extends KeyStore {
     }
     this.ensureInitialized();
 
-    // One day for the whole reservation: its count, its id and its record never straddle midnight.
-    const day = getUtcDateKey();
     try {
-      const dailyLimit = await this.dailyLimitOf(userId);
+      // One window for the whole reservation: its count, its id and its record never straddle the end of the day or of the month.
+      const { window, limit } = await quotaAllowanceOf(userId);
+      const day = window.key;
       if (units === 0) {
-        const remaining = Math.max(0, dailyLimit - (await this.ledger().used(userId, day)));
+        const remaining = Math.max(0, limit - (await this.ledger().used(userId, day)));
         return { allowed: remaining > 0, remaining };
       }
       const reservationId = reservationIdOf(userId, day);
-      const request = { owner: userId, day, dayLeftMs: getNextMidnightUtc() - Date.now(), reservationId, units, limit: dailyLimit, leaseMs: RESERVATION_LEASE.provisionalMs };
+      const request = { owner: userId, day, dayLeftMs: window.endsAt - Date.now(), reservationId, units, limit, leaseMs: RESERVATION_LEASE.provisionalMs };
       const reserved = await this.ledger().reserve(request);
       return reserved.allowed ? { allowed: true, reservationId, remaining: reserved.remaining } : { allowed: false, remaining: Math.max(0, reserved.remaining) };
     } catch (err) {
@@ -324,22 +306,15 @@ export class RedisKeyStore extends KeyStore {
     }
   }
 
-  /** The conversions `userId` may have each day: the anonymous allowance, or the limit of the account's tier. */
-  private async dailyLimitOf(userId: string): Promise<number> {
-    if (isAnonymousUserId(userId)) return getAnonymousDailyLimit();
-    const tier: UserTier = (await redisUserStore.findById(userId))?.tier ?? 'free';
-    return TIER_LIMITS[tier];
-  }
-
   /**
    * Holds `units` more in the live reservation `reservationId` for the extension `extensionId`, when they fit under the
-   * owner's daily limit: what the extension holds in all, so a repeated call adds only the difference. A reservation that
+   * owner's limit for the period: what the extension holds in all, so a repeated call adds only the difference. A reservation that
    * ended, or whose day's count is gone, is not extended and no count is written for it.
    */
   public async extendQuota(reservationId: string, extensionId: string, units: number): Promise<QuotaExtension> {
     const named = parseReservationId(reservationId);
     const extension: QuotaExtension = named
-      ? await this.ledger().extend(reservationId, extensionId, units, await this.dailyLimitOf(named.userId))
+      ? await this.ledger().extend(reservationId, extensionId, units, (await quotaAllowanceOf(named.userId)).limit)
       : { status: 'no-reservation' };
     if (extension.status === 'no-reservation') console.warn(`[RedisKeyStore] Extension ${extensionId} found no live reservation ${reservationId}`);
     return extension;

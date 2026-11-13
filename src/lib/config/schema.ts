@@ -1,7 +1,7 @@
 import { BlockList, isIP } from 'node:net';
 import path from 'node:path';
 import { BILLING_ENTRIES } from './schema-billing';
-import { ANONYMOUS_DAILY_CONVERSIONS, DELIVERED_FILE_RETENTION_MINUTES, FREE_PROCESSING_MINUTES } from '../plan-limits';
+import { ANONYMOUS_DAILY_CONVERSIONS, DELIVERED_FILE_RETENTION_MINUTES, PLAN_CONCURRENCY, PLAN_PROCESSING_MINUTES } from '../plan-limits';
 
 /**
  * The configuration schema: every environment variable the application reads, with its parser, default,
@@ -450,6 +450,18 @@ const KEY_SECRET = { type: 'secret', minBytes: MIN_PRODUCTION_SECRET_BYTES, trim
 const SEALING_SECRET = { type: 'secret', minBytes: MIN_PRODUCTION_SECRET_BYTES, trim: false, rejectSurroundingWhitespace: true } as const;
 /** src/lib/storage/storage-config.ts readVar and resolveSigningSecret: the value is trimmed, then measured. */
 const SIGNING_SECRET = { type: 'secret', minBytes: MIN_PRODUCTION_SECRET_BYTES, trim: true, rejectSurroundingWhitespace: false } as const;
+
+/** The description of a job deadline's base for `tier`, which the settings of every tier share. */
+const deadlineBase = (tier: string): string =>
+  `Wall-clock milliseconds every conversion job of the ${tier} tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier.`;
+
+/** The description of the longest a conversion job of `tier` may run, which the settings of every tier share. */
+const deadlineMax = (tier: string): string =>
+  `Most wall-clock milliseconds a conversion job of the ${tier} tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.`;
+
+/** The description of the most conversions in flight that `callers` may have, which the settings of every tier share. */
+const concurrencyNote = (callers: string): string =>
+  `Most conversions ${callers} may have in flight at once, queued and running together, counted on the server. A request that would exceed it is answered 429 (problem type \`concurrency-limit\`, with \`Retry-After\`) and takes no quota.`;
 
 const SCHEMA_ENTRIES = [
   // ---- runtime ----------------------------------------------------------------------------------------
@@ -1303,42 +1315,14 @@ const SCHEMA_ENTRIES = [
     INT32_MAX,
     4
   ),
-  intLimit(
-    'JOB_DEADLINE_BASE_MS_FREE',
-    'Wall-clock milliseconds every conversion job of the free tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_FREE.',
-    JOB_DEADLINE_CEILING_MS,
-    60_000
-  ),
-  intLimit(
-    'JOB_DEADLINE_BASE_MS_PRO',
-    'Wall-clock milliseconds every conversion job of the pro tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_PRO.',
-    JOB_DEADLINE_CEILING_MS,
-    120_000
-  ),
-  intLimit(
-    'JOB_DEADLINE_BASE_MS_ENTERPRISE',
-    'Wall-clock milliseconds every conversion job of the enterprise tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_ENTERPRISE.',
-    JOB_DEADLINE_CEILING_MS,
-    180_000
-  ),
-  intLimit(
-    'JOB_DEADLINE_MAX_MS_FREE',
-    'Most wall-clock milliseconds a conversion job of the free tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
-    JOB_DEADLINE_CEILING_MS,
-    FREE_PROCESSING_MINUTES * 60_000
-  ),
-  intLimit(
-    'JOB_DEADLINE_MAX_MS_PRO',
-    'Most wall-clock milliseconds a conversion job of the pro tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
-    JOB_DEADLINE_CEILING_MS,
-    1_800_000
-  ),
-  intLimit(
-    'JOB_DEADLINE_MAX_MS_ENTERPRISE',
-    'Most wall-clock milliseconds a conversion job of the enterprise tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
-    JOB_DEADLINE_CEILING_MS,
-    JOB_DEADLINE_CEILING_MS
-  ),
+  intLimit('JOB_DEADLINE_BASE_MS_FREE', `${deadlineBase('free')} Must not exceed JOB_DEADLINE_MAX_MS_FREE.`, JOB_DEADLINE_CEILING_MS, 60_000),
+  intLimit('JOB_DEADLINE_BASE_MS_BASIC', `${deadlineBase('basic')} Must not exceed JOB_DEADLINE_MAX_MS_BASIC.`, JOB_DEADLINE_CEILING_MS, 90_000),
+  intLimit('JOB_DEADLINE_BASE_MS_PRO', `${deadlineBase('pro')} Must not exceed JOB_DEADLINE_MAX_MS_PRO.`, JOB_DEADLINE_CEILING_MS, 120_000),
+  intLimit('JOB_DEADLINE_BASE_MS_ENTERPRISE', `${deadlineBase('enterprise')} Must not exceed JOB_DEADLINE_MAX_MS_ENTERPRISE.`, JOB_DEADLINE_CEILING_MS, 180_000),
+  intLimit('JOB_DEADLINE_MAX_MS_FREE', deadlineMax('free'), JOB_DEADLINE_CEILING_MS, PLAN_PROCESSING_MINUTES.free * 60_000),
+  intLimit('JOB_DEADLINE_MAX_MS_BASIC', deadlineMax('basic'), JOB_DEADLINE_CEILING_MS, PLAN_PROCESSING_MINUTES.basic * 60_000),
+  intLimit('JOB_DEADLINE_MAX_MS_PRO', deadlineMax('pro'), JOB_DEADLINE_CEILING_MS, PLAN_PROCESSING_MINUTES.pro * 60_000),
+  intLimit('JOB_DEADLINE_MAX_MS_ENTERPRISE', deadlineMax('enterprise'), JOB_DEADLINE_CEILING_MS, PLAN_PROCESSING_MINUTES.enterprise * 60_000),
   intLimit('JOB_DEADLINE_PER_MIB_MS', 'Milliseconds added to a job deadline for each started MiB of input.', INT32_MAX, 2_000),
   intLimit('JOB_DEADLINE_PER_MEDIA_SECOND_MS', 'Milliseconds added to a job deadline for each second of audio or video, when the length is known.', INT32_MAX, 3_000),
   intLimit(
@@ -1347,12 +1331,10 @@ const SCHEMA_ENTRIES = [
     INT32_MAX,
     120_000
   ),
-  intLimit(
-    'CONVERSION_CONCURRENCY_FREE',
-    'Most conversions an anonymous or free-tier caller may have in flight at once, queued and running together, counted on the server. A request that would exceed it is answered 429 (problem type `concurrency-limit`, with `Retry-After`) and takes no quota. Paid tiers have no such limit.',
-    INT32_MAX,
-    5
-  ),
+  intLimit('CONVERSION_CONCURRENCY_FREE', concurrencyNote('an anonymous or free-tier caller'), INT32_MAX, PLAN_CONCURRENCY.free),
+  intLimit('CONVERSION_CONCURRENCY_BASIC', concurrencyNote('a basic-tier caller'), INT32_MAX, PLAN_CONCURRENCY.basic),
+  intLimit('CONVERSION_CONCURRENCY_PRO', concurrencyNote('a pro-tier caller'), INT32_MAX, PLAN_CONCURRENCY.pro),
+  intLimit('CONVERSION_CONCURRENCY_ENTERPRISE', concurrencyNote('an enterprise-tier caller'), INT32_MAX, PLAN_CONCURRENCY.enterprise),
   {
     name: 'JOB_STUCK_RECYCLE_MS',
     area: 'worker',

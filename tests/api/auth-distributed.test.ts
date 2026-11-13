@@ -98,7 +98,7 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
 
       const quota = await redisKeyStore.recordUsage(user.id, 5);
       expect(quota.allowed).toBe(true);
-      expect(quota.remaining).toBe(495);
+      expect(quota.remaining).toBe(2995);
     });
 
     it('end-to-end auth routes register and login correctly via redisUserStore', async () => {

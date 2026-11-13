@@ -12,7 +12,7 @@ const config: BillingConfig = {
   webhookSecret: WEBHOOK_SECRET,
   clientToken: 'test_fixture_client_token',
   environment: 'sandbox',
-  priceIds: { pro: 'pri_pro_fixture', enterprise: 'pri_enterprise_fixture' },
+  priceIds: { basic: 'pri_basic_fixture', pro: 'pri_pro_fixture', enterprise: 'pri_enterprise_fixture' },
 };
 
 const provider = new PaddleBillingProvider(config);
@@ -133,6 +133,8 @@ describe('mapEventToSubscription', () => {
 
   it('gives the highest plan among the items and reads a plan change', async () => {
     expect((await mapped({ priceIds: ['pri_pro_fixture', 'pri_enterprise_fixture'] }))?.subscription.plan).toBe('enterprise');
+    expect((await mapped({ priceIds: ['pri_basic_fixture', 'pri_pro_fixture'] }))?.subscription.plan).toBe('pro');
+    expect((await mapped({ priceIds: ['pri_basic_fixture'] }))?.subscription.plan).toBe('basic');
     expect((await mapped({ type: 'subscription.updated', priceIds: ['pri_enterprise_fixture'] }))?.subscription.plan).toBe('enterprise');
   });
 

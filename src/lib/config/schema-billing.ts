@@ -10,7 +10,7 @@ export const BILLING_ENTRIES = [
     name: 'PADDLE_API_KEY',
     area: 'billing',
     description:
-      'Server-side API key of the Paddle account that sells the paid plans (opens customer portal sessions). Paid plans are on sale only when this and the five other PADDLE_ variables are all set; set only some of them and start-up fails. Until then the pricing page marks the paid plans "coming soon" and every billing route answers 503 billing_unavailable.',
+      'Server-side API key of the Paddle account that sells the paid plans (opens customer portal sessions). Paid plans are on sale only when this and the six other PADDLE_ variables are all set; set only some of them and start-up fails. Until then the pricing page marks the paid plans "coming soon" and every billing route answers 503 billing_unavailable.',
     kind: { type: 'credential' },
     requiredInProduction: false,
     secret: true,
@@ -45,9 +45,18 @@ export const BILLING_ENTRIES = [
     roles: WEB,
   },
   {
+    name: 'PADDLE_PRICE_ID_BASIC',
+    area: 'billing',
+    description: 'Id of the Paddle price (`pri_...`) of the Basic plan; the three price ids must all differ.',
+    kind: { type: 'string', maxLength: 64 },
+    requiredInProduction: false,
+    secret: false,
+    roles: WEB,
+  },
+  {
     name: 'PADDLE_PRICE_ID_PRO',
     area: 'billing',
-    description: 'Id of the Paddle price (`pri_...`) of the Pro plan.',
+    description: 'Id of the Paddle price (`pri_...`) of the Pro plan; it must differ from the other two.',
     kind: { type: 'string', maxLength: 64 },
     requiredInProduction: false,
     secret: false,
@@ -56,7 +65,7 @@ export const BILLING_ENTRIES = [
   {
     name: 'PADDLE_PRICE_ID_ENTERPRISE',
     area: 'billing',
-    description: 'Id of the Paddle price (`pri_...`) of the Enterprise plan; it must differ from PADDLE_PRICE_ID_PRO.',
+    description: 'Id of the Paddle price (`pri_...`) of the Enterprise plan; it must differ from the other two.',
     kind: { type: 'string', maxLength: 64 },
     requiredInProduction: false,
     secret: false,

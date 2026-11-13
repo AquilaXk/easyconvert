@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { useFormatter, useMessages, useTranslations, type Messages } from 'next-intl';
 import type { ConversionFailure } from '@/lib/conversion-failure';
-import { PLAN_MAX_FILE_BYTES, URL_IMPORT_MAX_BYTES, maxFileBytes, type Plan } from '@/lib/plan-limits';
+import { PLAN_MAX_FILE_BYTES, URL_IMPORT_MAX_BYTES, maxFileBytes, type Plan, type QuotaPeriod } from '@/lib/plan-limits';
 import {
   AUTH_ERROR_CODES, BILLING_REFUSAL_CODES, CONVERSION_REFUSAL_CODES, DASHBOARD_REFUSAL_CODES, URL_IMPORT_ERROR_CODES, isCodeOf, problemNameOfType,
 } from '@/lib/refusal-codes';
@@ -66,19 +66,20 @@ interface LimitWords {
   /** The sentence `key` with the number in `field` of the answer, or undefined when the answer does not carry it. */
   limit: (key: LimitKey, answer: Answer, field: string, unit: 'bytes' | 'count') => string | undefined;
   fileTooLarge: (plan: Plan, sizeBytes: number) => string;
-  /** The sentence of a job that needs `required` conversions when `left` are left today. */
-  conversionsShort: (required: number, left: number) => string;
+  /** The sentence of a job that needs `required` conversions when `left` are left in the period. */
+  conversionsShort: (required: number, left: number, period: QuotaPeriod) => string;
 }
 
 /**
- * The daily quota of a refused job: how many it needs and how many are left, when some are left but fewer than it needs,
- * else the day's limit, which is then used up.
+ * The quota of a refused job: how many it needs and how many are left, when some are left but fewer than it needs,
+ * else the limit of the period (a day, or the month of a paid plan), which is then used up.
  */
 function quotaSentence(answer: Answer, { limit, conversionsShort }: LimitWords): string | undefined {
   const required = numberField(answer, 'requiredUnits');
   const left = numberField(answer, 'remaining');
-  if (required !== undefined && left !== undefined && left > 0 && required > left) return conversionsShort(required, left);
-  return limit('quota-exceeded', answer, 'dailyLimit', 'count');
+  const period: QuotaPeriod = answer.period === 'month' ? 'month' : 'day';
+  if (required !== undefined && left !== undefined && left > 0 && required > left) return conversionsShort(required, left, period);
+  return limit(period === 'month' ? 'quota-exceeded-month' : 'quota-exceeded', answer, 'dailyLimit', 'count');
 }
 
 /** The sentences that name the numbers a problem's answer carries, by problem name; without the number, the problem's own. */
@@ -136,7 +137,8 @@ export function useProblemWording({
           const value = numberField(fields, field);
           return value === undefined ? undefined : t(`limits.${key}`, { limit: unit === 'bytes' ? formatBytes(value) : format.number(value) });
         };
-        const conversionsShort: LimitWords['conversionsShort'] = (required, left) => t('limits.quota-short', { required, left });
+        const conversionsShort: LimitWords['conversionsShort'] = (required, left, period) =>
+          t(period === 'month' ? 'limits.quota-short-month' : 'limits.quota-short', { required, left });
         const limitSentence = LIMIT_SENTENCES[name]?.(answer, { limit, fileTooLarge, conversionsShort });
         return limitSentence ?? t(`problems.${name}`);
       }

@@ -3,11 +3,11 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { hmacSha256, sha256 } from '../auth/crypto';
 import { redisUserStore } from '../auth/redis-user-store';
-import { isAnonymousUserId } from '../auth/anonymous-identity';
-import type { User, UserTier } from '../auth/types';
+import type { User } from '../auth/types';
 import type { ApiKey, ApiKeyCreateOptions, ApiKeyCreateResult, QuotaUsage, UserConversionFile, UserConversionFileInput } from './types';
 import { isIpAllowed } from './ip-utils';
 import { TIER_LIMITS, getAnonymousDailyLimit } from '../plan-limits';
+import { dayWindow, quotaAllowanceOf } from './quota-window';
 import { globalSharedObjects } from '../storage/shared-store';
 import { resolveRetentionPolicy } from '../storage/result-retention';
 import { encryptSecret, decryptSecret, reencryptSecretIfNeeded } from './secret-encryption';
@@ -81,18 +81,7 @@ export function apiKeyHashCandidates(secret: string): ApiKeyHashCandidates {
 }
 
 export function getUtcDateKey(): string {
-  const now = new Date();
-  const yyyy = now.getUTCFullYear();
-  const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(now.getUTCDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-export function getNextMidnightUtc(): number {
-  const tomorrow = new Date();
-  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
-  tomorrow.setUTCHours(0, 0, 0, 0);
-  return tomorrow.getTime();
+  return dayWindow(Date.now()).key;
 }
 
 /** The answer of `verifyApiKey`. `serviceUnavailable` means the store could not tell: the caller answers 503, not 401. */
@@ -560,34 +549,16 @@ export class KeyStore {
   public async getQuotaUsage(userId: string): Promise<QuotaUsage> {
     this.ensureInitialized();
 
-    const isAnonymous = isAnonymousUserId(userId);
-    const user = isAnonymous ? null : await redisUserStore.findById(userId);
-    const tier: UserTier = user?.tier || 'free';
-    const dailyLimit = isAnonymous ? getAnonymousDailyLimit() : TIER_LIMITS[tier];
-
-    const dateKey = `${userId}:${getUtcDateKey()}`;
-    const usedToday = this.dailyUsage.get(dateKey) || 0;
-    const remaining = Math.max(0, dailyLimit - usedToday);
-    const resetAt = getNextMidnightUtc();
-
-    return {
-      tier,
-      dailyLimit,
-      usedToday,
-      remaining,
-      resetAt,
-    };
+    const { tier, window, limit } = await quotaAllowanceOf(userId);
+    const used = this.dailyUsage.get(`${userId}:${window.key}`) || 0;
+    return { tier, period: window.period, dailyLimit: limit, usedToday: used, remaining: Math.max(0, limit - used), resetAt: window.endsAt };
   }
 
   public async recordUsage(userId: string, units: number = 1): Promise<{ allowed: boolean; remaining: number }> {
     this.ensureInitialized();
 
-    const isAnonymous = isAnonymousUserId(userId);
-    const user = isAnonymous ? null : await redisUserStore.findById(userId);
-    const tier: UserTier = user?.tier ?? 'free';
-    const dailyLimit = isAnonymous ? getAnonymousDailyLimit() : TIER_LIMITS[tier];
-
-    const dateKey = `${userId}:${getUtcDateKey()}`;
+    const { window, limit: dailyLimit } = await quotaAllowanceOf(userId);
+    const dateKey = `${userId}:${window.key}`;
     const currentUsed = this.dailyUsage.get(dateKey) ?? 0;
 
     if (units <= 0) {

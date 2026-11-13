@@ -11,12 +11,13 @@ function QuotaSummaryStrip({ quota }: Readonly<{ quota: QuotaUsage }>) {
   const t = useTranslations('dashboard.quota');
   const format = useFormatter();
   const usedToday = displayedUsage(quota.usedToday, quota.dailyLimit);
+  const monthly = quota.period === 'month';
   const pct = quota.dailyLimit > 0 ? (usedToday / quota.dailyLimit) * 100 : 0;
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
       <div className="border-t border-rule pt-5">
         <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
-          {t('used')}
+          {t(monthly ? 'usedMonth' : 'used')}
         </div>
         <div className="mt-2 flex items-baseline gap-2">
           <span className="text-2xl sm:text-3xl font-bold text-accent-ink">
@@ -49,14 +50,14 @@ function QuotaSummaryStrip({ quota }: Readonly<{ quota: QuotaUsage }>) {
 
       <div className="border-t border-rule pt-5">
         <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
-          {t('reset')}
+          {t(monthly ? 'resetMonth' : 'reset')}
         </div>
         <div className="mt-2 flex items-center gap-2 text-xl font-bold text-ink">
           <Clock className="w-5 h-5 text-accent-ink" aria-hidden="true" />
-          <span>00:00 UTC</span>
+          <span>{monthly ? format.dateTime(new Date(quota.resetAt), { year: 'numeric', month: 'short', day: 'numeric' }) : '00:00 UTC'}</span>
         </div>
         <p className="mt-2 text-xs text-ink-3">
-          {t('resetNote')}
+          {t(monthly ? 'resetNoteMonth' : 'resetNote')}
         </p>
       </div>
     </div>

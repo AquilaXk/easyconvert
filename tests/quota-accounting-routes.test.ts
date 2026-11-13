@@ -191,7 +191,7 @@ describe('what a request is charged', () => {
 
     it('is the same 10 for a free account, and a paid plan keeps its own', () => {
       expect(FREE_DAILY_CONVERSIONS).toBe(10);
-      expect(TIER_LIMITS).toEqual({ free: 10, pro: 500, enterprise: 10000 });
+      expect(TIER_LIMITS).toEqual({ free: 10, basic: 1000, pro: 3000, enterprise: 10000 });
     });
 
     it('names the configured limit in the refusal, not a literal', async () => {

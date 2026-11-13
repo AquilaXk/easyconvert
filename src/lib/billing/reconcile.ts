@@ -237,7 +237,7 @@ let firstRun: NodeJS.Timeout | undefined;
 
 /**
  * Runs the reconciliation `RECONCILE_FIRST_RUN_DELAY_MS` after the call and every `RECONCILE_INTERVAL_MS`, while billing is configured
- * (a worker without the six variables does nothing). Every worker calls it; the lock lets one run at a time. A failed run is logged.
+ * (a worker without the seven variables does nothing). Every worker calls it; the lock lets one run at a time. A failed run is logged.
  */
 export function startBillingReconcile(): void {
   if (timer) return;

@@ -3,6 +3,7 @@ import { getFormatByExtension } from '@/lib/registry';
 import { isInlineInputKey } from '@/lib/storage/key-namespace';
 import { assertAllowedLibreOfficeFilter } from '@/lib/conversions/pdf-export-options';
 import { validatePdfProtectOptions } from '@/lib/conversions/pdf-postprocess/protect';
+import type { UserTier } from '@/lib/auth/types';
 import type { ConversionOptions, PipelineTask } from '@/lib/types';
 import type { FailurePolicy } from '@/lib/queue/graph/types';
 import { captureUrlProblem } from './capture-url';
@@ -62,7 +63,7 @@ export interface JobGraph {
 export type SubmittedJobGraph = JobGraph | { nodes: Record<string, object>; failurePolicy?: string };
 
 export interface GraphValidationOptions {
-  userTier?: 'free' | 'pro' | 'enterprise';
+  userTier?: UserTier;
   sourceFormat?: string;
   sourceFilename?: string;
   maxNodes?: number;
@@ -116,6 +117,7 @@ const DYNAMIC_FORMAT = 'dynamic';
 
 const TIER_NODE_LIMITS: Record<string, number> = {
   free: 8,
+  basic: 16,
   pro: 24,
   enterprise: 32,
 };

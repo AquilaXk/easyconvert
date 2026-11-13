@@ -174,7 +174,7 @@ describe('API key scope hardening (#242)', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.usage.tier).toBe('pro');
-      expect(body.usage.dailyLimit).toBe(500);
+      expect(body.usage.dailyLimit).toBe(3000);
     });
   });
 

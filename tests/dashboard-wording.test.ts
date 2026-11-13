@@ -336,14 +336,29 @@ describe('a refused dashboard request', () => {
 describe('the daily count on the dashboard', () => {
   const freeUser = { id: 'u-free', email: 'free@example.com', name: 'Free', tier: 'free' } as User;
   const proUser = { ...freeUser, id: 'u-pro', tier: 'pro' } as User;
-  const overLimit = { tier: 'free' as const, dailyLimit: FREE_DAILY_CONVERSIONS, usedToday: FREE_DAILY_CONVERSIONS + 5, remaining: 0, resetAt: 0 };
+  const overLimit = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CONVERSIONS, usedToday: FREE_DAILY_CONVERSIONS + 5, remaining: 0, resetAt: 0 };
 
   const usageCount = (user: User, quota: QuotaUsage | null) =>
     visibleText(select(renderDom(createElement(AccountQuotaPanel, { user, quota, apiKeys: [] })), 'div').find((div) => /^[\d,]+ \/ [\d,]+$/.test(visibleText(div)))!);
 
   it("states the allowance of the account's own plan while the usage has not loaded", () => {
-    expect(usageCount(proUser, null)).toBe(`0 / ${TIER_LIMITS.pro}`);
+    expect(usageCount(proUser, null)).toBe(`0 / ${TIER_LIMITS.pro.toLocaleString('en-US')}`);
     expect(usageCount(freeUser, null)).toBe(`0 / ${TIER_LIMITS.free}`);
+  });
+
+  it('counts the month for a paid plan: its own label, the date of the next reset, and the monthly note on the usage strip', () => {
+    const month = { tier: 'basic' as const, period: 'month' as const, dailyLimit: TIER_LIMITS.basic, usedToday: 120, remaining: TIER_LIMITS.basic - 120, resetAt: Date.UTC(2026, 11, 2, 8) };
+    const basicUser = { ...freeUser, id: 'u-basic', tier: 'basic' } as User;
+    expect(usageCount(basicUser, month)).toBe('120 / 1,000');
+    const panel = visibleText(renderDom(createElement(AccountQuotaPanel, { user: basicUser, quota: month, apiKeys: [] })));
+    expect(panel).toContain('API requests per month');
+    expect(panel).toContain('880 API requests left this period');
+    expect(panel).toContain('Dec 2, 2026');
+    expect(panel).not.toContain('00:00 UTC');
+    const strip = visibleText(renderDom(createElement(ApiKeysPanel, { state: { ...keysPanelState, quota: month }, actions: keysPanelActions })));
+    expect(strip).toContain('API requests used this period');
+    expect(strip).toContain('Counts reset when your subscription renews.');
+    expect(strip).not.toContain('midnight UTC');
   });
 
   it('never shows more conversions used than the day allows, for a count made under a larger allowance before a deploy', () => {

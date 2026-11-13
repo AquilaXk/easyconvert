@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { guardingStore } from '@/lib/api/billing-refusal';
 import { readSessionOrRefusal } from '@/lib/auth/session-refusal';
-import { getBillingProvider } from '@/lib/billing';
+import { readPublicBillingConfig } from '@/lib/billing/config';
 import { entitlementOf } from '@/lib/billing/entitlement';
 import { subscriptionStore } from '@/lib/billing/subscription-store';
-import { PAID_PLANS } from '@/lib/billing/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,10 +15,8 @@ const NO_STORE = { 'Cache-Control': 'private, no-store' };
  * by design, and so are the price ids), and for a signed-in account its subscription.
  */
 export async function GET(req: NextRequest) {
-  const billing = getBillingProvider();
-  if (!billing) return NextResponse.json({ success: true, enabled: false }, { headers: NO_STORE });
-  const { config } = billing;
-  const plans = PAID_PLANS.map((plan) => ({ plan, priceId: config.priceIds[plan] }));
+  const publicConfig = readPublicBillingConfig();
+  if (!publicConfig) return NextResponse.json({ success: true, enabled: false }, { headers: NO_STORE });
 
   return guardingStore(async () => {
     const session = await readSessionOrRefusal(req);
@@ -35,7 +32,7 @@ export async function GET(req: NextRequest) {
         }
       : null;
     return NextResponse.json(
-      { success: true, enabled: true, environment: config.environment, clientToken: config.clientToken, plans, subscription },
+      { success: true, enabled: true, ...publicConfig, subscription },
       { headers: NO_STORE }
     );
   });

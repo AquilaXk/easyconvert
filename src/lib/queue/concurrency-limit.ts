@@ -1,20 +1,28 @@
 import type { NextResponse } from 'next/server';
+import type { UserTier } from '../auth/types';
 import { createProblemDetailsResponse } from '../api/problem-details';
-import { DEFAULT_FREE_CONCURRENCY } from '../plan-limits';
+import { DEFAULT_FREE_CONCURRENCY, PLAN_CONCURRENCY, isUserTier } from '../plan-limits';
 import { conversionQueue } from './conversion-queue';
 import { readIntegerSetting } from './job-deadline';
 
 /**
- * How many conversions a caller may have in flight (queued plus running). Anonymous and free callers are limited to
- * five (`CONVERSION_CONCURRENCY_FREE`); paid tiers are not. The count is made on the server: queued and running jobs
+ * How many conversions a caller may have in flight (queued plus running): five for an anonymous or free caller
+ * (`CONVERSION_CONCURRENCY_FREE`), and 10, 25 and 50 for Basic, Pro and Enterprise (`CONVERSION_CONCURRENCY_BASIC`,
+ * `_PRO`, `_ENTERPRISE`; entry 280). The count is made on the server: queued and running jobs
  * come from the job queue (its index of jobs by user, shared by every web process), synchronous conversions from the
- * slots held by the requests of this process. A request that would be the sixth is answered 429 and takes no quota.
+ * slots held by the requests of this process. A request over the limit is answered 429 and takes no quota.
  *
  * The queue count and the check that follows it are not one atomic step, so simultaneous submissions of the same
  * caller can overshoot the limit by the number of requests that race; the synchronous slots are per web process.
  */
 
-export const CONCURRENCY_LIMIT_ENV = 'CONVERSION_CONCURRENCY_FREE';
+/** The variable that sets the limit of each tier. */
+export const CONCURRENCY_LIMIT_ENV = {
+  free: 'CONVERSION_CONCURRENCY_FREE',
+  basic: 'CONVERSION_CONCURRENCY_BASIC',
+  pro: 'CONVERSION_CONCURRENCY_PRO',
+  enterprise: 'CONVERSION_CONCURRENCY_ENTERPRISE',
+} as const satisfies Record<UserTier, string>;
 export { DEFAULT_FREE_CONCURRENCY };
 export const CONCURRENCY_LIMIT_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/concurrency-limit';
 /** Seconds a refused caller is told to wait before trying again. */
@@ -24,11 +32,11 @@ const FREE_TIER = 'free';
 const IN_FLIGHT_STATES = ['waiting', 'active', 'delayed'] as const;
 const HTTP_TOO_MANY_REQUESTS = 429;
 
-/** The limit for a caller of `tier` (a missing tier is an anonymous caller), or undefined when the tier has none. */
-export function concurrencyLimitFor(tier: string | undefined, env: Record<string, string | undefined> = process.env): number | undefined {
+/** The limit for a caller of `tier`: a missing or unknown tier is an anonymous or free caller's. */
+export function concurrencyLimitFor(tier: string | undefined, env: Record<string, string | undefined> = process.env): number {
   const normalized = (tier ?? FREE_TIER).toLowerCase();
-  if (normalized === 'pro' || normalized === 'enterprise') return undefined;
-  return readIntegerSetting(env, CONCURRENCY_LIMIT_ENV, DEFAULT_FREE_CONCURRENCY);
+  const known: UserTier = isUserTier(normalized) ? normalized : FREE_TIER;
+  return readIntegerSetting(env, CONCURRENCY_LIMIT_ENV[known], PLAN_CONCURRENCY[known]);
 }
 
 const syncInFlight = new Map<string, number>();
@@ -59,13 +67,9 @@ function takeSyncSlot(userId: string): () => void {
 
 export type ConversionSlot = { granted: true; release: () => void } | { granted: false; limit: number };
 
-/**
- * Takes a slot for a synchronous conversion of `userId`, held until `release` is called. Not granted when the caller
- * already has `limit` conversions in flight. A tier without a limit always gets a slot.
- */
+/** Takes a slot for a synchronous conversion of `userId`, held until `release` is called. Not granted when the caller already has `limit` conversions in flight. */
 export async function acquireSyncSlot(userId: string, tier: string | undefined): Promise<ConversionSlot> {
   const limit = concurrencyLimitFor(tier);
-  if (limit === undefined) return { granted: true, release: takeSyncSlot(userId) };
   // The slot is taken before the queue is asked, so requests that race on this process cannot all pass the check.
   const release = takeSyncSlot(userId);
   try {
@@ -84,7 +88,6 @@ export async function acquireSyncSlot(userId: string, tier: string | undefined):
 /** Whether `userId` may put one more job on the queue; false when it already has `limit` conversions in flight. */
 export async function mayEnqueue(userId: string, tier: string | undefined): Promise<{ allowed: true } | { allowed: false; limit: number }> {
   const limit = concurrencyLimitFor(tier);
-  if (limit === undefined) return { allowed: true };
   const inFlight = (syncInFlight.get(userId) ?? 0) + (await queuedJobs(userId, limit));
   return inFlight >= limit ? { allowed: false, limit } : { allowed: true };
 }

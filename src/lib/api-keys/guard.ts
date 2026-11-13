@@ -3,7 +3,7 @@ import { RESERVATION_LEASE } from './reservation-ledger';
 import { leaseToHandedOffWork, RECOVERY_UNKNOWN, renewLease, RESERVATION_ENGINE, type Recovery, type ReservedUnit } from './hand-off';
 import { QueueUnavailableError } from '../types';
 import type { TokenBucketOptions } from './redis-key-store';
-import { API_KEY_BURST_LIMITS, dailyConversions, planOfCaller, type PlanCaller } from '../plan-limits';
+import { API_KEY_BURST_LIMITS, periodConversions, planOfCaller, QUOTA_PERIOD, type PlanCaller, type QuotaPeriod } from '../plan-limits';
 import { getSessionFromRequest } from '../auth/session';
 import { AuthStoreUnavailableError } from '../auth/store-unavailable';
 import { anonymousUserId, isAnonymousUserId, isUnattributedAnonymous } from '../auth/anonymous-identity';
@@ -47,12 +47,20 @@ const WILDCARD_SCOPE = '*';
 const HTTP_BAD_REQUEST = 400;
 const QUOTA_ENGINE_OFFLINE = 'Service Unavailable: distributed quota engine is temporarily offline';
 
+/** The words of the English refusal for each quota period. */
+export const PERIOD_WORDS: Readonly<Record<QuotaPeriod, { adjective: string; unit: string; resets: string; now: string }>> = {
+  day: { adjective: 'Daily', unit: 'day', resets: 'It resets at midnight UTC.', now: 'today' },
+  month: { adjective: 'Monthly', unit: 'month', resets: 'It resets when the billing period renews.', now: 'this month' },
+};
+
 /**
- * The refusal text of a caller whose conversions of the day are used up: the allowance the key store enforces for its plan
- * (`ANONYMOUS_DAILY_LIMIT` without an account) and when it resets.
+ * The refusal text of a caller whose conversions of the period are used up: the allowance the key store enforces for its plan
+ * (`ANONYMOUS_DAILY_LIMIT` without an account), the period it is counted in, and when it resets.
  */
 function quotaExceeded(caller: PlanCaller): string {
-  return `Daily conversion quota exceeded (${dailyConversions(planOfCaller(caller))} conversions per day). It resets at midnight UTC.`;
+  const plan = planOfCaller(caller);
+  const words = PERIOD_WORDS[QUOTA_PERIOD[plan]];
+  return `${words.adjective} conversion quota exceeded (${periodConversions(plan)} conversions per ${words.unit}). ${words.resets}`;
 }
 
 type BurstLimit = Required<Pick<TokenBucketOptions, 'capacity' | 'refillRate'>>;
@@ -520,7 +528,7 @@ export async function getQuotaUsage(userId: string): Promise<QuotaUsage> {
 
 /**
  * Why the conversions a request needs were refused, as data for the route layer to answer (`conversionRefusalResponse`):
- * the quota store is offline, or the day has fewer conversions left than the request needs. `usage` is the day's count
+ * the quota store is offline, or the period has fewer conversions left than the request needs. `usage` is the period's count
  * with `remaining` as the refusal found it.
  */
 export type ConversionRefusal =
@@ -538,7 +546,7 @@ function conversionsNeeded(units: number): string {
 export function conversionsUsedUp(user: User, usage: QuotaUsage, requiredUnits: number): ConversionRefusal {
   const allowance = quotaExceeded(user);
   const left = Math.max(0, usage.remaining);
-  const error = `${allowance} This request needs ${conversionsNeeded(requiredUnits)} and ${left} ${left === 1 ? 'is' : 'are'} left today.`;
+  const error = `${allowance} This request needs ${conversionsNeeded(requiredUnits)} and ${left} ${left === 1 ? 'is' : 'are'} left ${PERIOD_WORDS[usage.period].now}.`;
   return { reason: 'used-up', error, usage: { ...usage, remaining: left }, requiredUnits };
 }
 

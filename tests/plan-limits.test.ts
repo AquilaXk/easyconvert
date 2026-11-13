@@ -27,11 +27,11 @@ function fileLimitLine(plan: Plan, locale: TestLocale): string {
 }
 
 const GIB = 1024 * 1024 * 1024;
-const PLANS: readonly Plan[] = ['anonymous', 'free', 'pro', 'enterprise'];
+const PLANS: readonly Plan[] = ['anonymous', 'free', 'basic', 'pro', 'enterprise'];
 
 describe('plan file size limits', () => {
-  it('gives anonymous and free callers 1 GiB, Pro 5 GiB and Enterprise 10 GiB', () => {
-    expect(PLAN_MAX_FILE_BYTES).toEqual({ anonymous: GIB, free: GIB, pro: 5 * GIB, enterprise: 10 * GIB });
+  it('gives anonymous and free callers 1 GiB, Basic 2 GiB, Pro 5 GiB and Enterprise 10 GiB', () => {
+    expect(PLAN_MAX_FILE_BYTES).toEqual({ anonymous: GIB, free: GIB, basic: 2 * GIB, pro: 5 * GIB, enterprise: 10 * GIB });
     expect(LARGEST_PLAN_FILE_BYTES).toBe(10 * GIB);
   });
 
@@ -81,10 +81,14 @@ describe('copy', () => {
     expect(fileTooLargeMessage('free', 3 * GIB, false)).toBe('File size 3 GiB exceeds the 1 GiB limit for the free plan.');
   });
 
-  it('names the first plan on sale with a larger limit once the paid plans are on sale', () => {
+  it('names the smallest plan on sale that takes the file, or the largest when none does', () => {
     expect(fileTooLargeMessage('anonymous', GIB + 1, true)).toBe(
-      'File size 1,073,741,825 bytes exceeds the 1 GiB limit for anonymous use. Pro allows files up to 5 GiB.'
+      'File size 1,073,741,825 bytes exceeds the 1 GiB limit for anonymous use. Basic allows files up to 2 GiB.'
     );
+    expect(fileTooLargeMessage('free', 2 * GIB + 1, true)).toBe(
+      'File size 2 GiB exceeds the 1 GiB limit for the free plan. Pro allows files up to 5 GiB.'
+    );
+    expect(fileTooLargeMessage('free', 11 * GIB, true)).toBe('File size 11 GiB exceeds the 1 GiB limit for the free plan. Enterprise allows files up to 10 GiB.');
     expect(fileTooLargeMessage('free', 3 * GIB, true)).toBe('File size 3 GiB exceeds the 1 GiB limit for the free plan. Pro allows files up to 5 GiB.');
     expect(fileTooLargeMessage('pro', 6 * GIB, true)).toBe(
       'File size 6 GiB exceeds the 5 GiB limit for the Pro plan. Enterprise allows files up to 10 GiB.'

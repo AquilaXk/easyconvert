@@ -135,12 +135,12 @@ export const keyPaths = {
   '/api/keys/usage': {
     get: {
       summary: 'Get Quota Usage',
-      description: 'Retrieves current daily quota usage and limits.',
+      description: 'Retrieves the conversions counted in the current quota period (a day, or the month of a paid plan) and the limit of the period.',
       operationId: 'getQuotaUsage',
       security: requireScope(),
       responses: {
         '200': {
-          description: 'Daily conversion quota usage details.',
+          description: 'Conversion quota usage details.',
           content: {
             'application/json': {
               schema: {

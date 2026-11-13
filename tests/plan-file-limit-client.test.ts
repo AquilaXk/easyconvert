@@ -172,13 +172,14 @@ describe('the drop zone states the limit of the plan', () => {
   it.each([
     ['anonymous', 'Up to 1 GB per file · 7 conversions a day · Files deleted automatically'],
     ['free', 'Up to 1 GB per file · 10 conversions a day · Files deleted automatically'],
-    ['pro', 'Up to 5 GB per file · 500 conversions a day · Files deleted automatically'],
-    ['enterprise', 'Up to 10 GB per file · 10,000 conversions a day · Files deleted automatically'],
+    ['basic', 'Up to 2 GB per file · 1,000 conversions a month · Files deleted automatically'],
+    ['pro', 'Up to 5 GB per file · 3,000 conversions a month · Files deleted automatically'],
+    ['enterprise', 'Up to 10 GB per file · 10,000 conversions a month · Files deleted automatically'],
   ] as const)('shows "%s" viewers "%s", the allowance of their own plan', (plan, copy) => {
     shownPlan.current = plan;
     const text = dropzoneText();
     expect(text).toContain(copy);
-    expect(text).not.toMatch(/2 GB|100 MB|OPFS/);
+    expect(text).not.toMatch(/(?<!Up to )2 GB|100 MB|OPFS/);
   });
 });
 

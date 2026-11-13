@@ -5,7 +5,7 @@ import { Link } from '@/i18n/navigation';
 import { useTierLabel } from '../i18n/format';
 import type { User } from '@/lib/auth/types';
 import type { ApiKey, QuotaUsage } from '@/lib/api-keys/types';
-import { TIER_LIMITS } from '@/lib/plan-limits';
+import { QUOTA_PERIOD, TIER_LIMITS } from '@/lib/plan-limits';
 import { SubscriptionPanel } from '../billing/SubscriptionPanel';
 import { displayedUsage } from './dashboard-types';
 
@@ -23,6 +23,7 @@ export function AccountQuotaPanel({ user, quota, apiKeys }: Readonly<AccountQuot
   const dailyLimit = quota?.dailyLimit ?? TIER_LIMITS[user.tier];
   const usedToday = displayedUsage(quota?.usedToday ?? 0, dailyLimit);
   const remaining = quota?.remaining ?? dailyLimit;
+  const monthly = (quota?.period ?? QUOTA_PERIOD[user.tier]) === 'month';
 
   return (
     <div
@@ -50,13 +51,13 @@ export function AccountQuotaPanel({ user, quota, apiKeys }: Readonly<AccountQuot
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="p-4 rounded-md border border-rule">
             <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
-              {t('quota')}
+              {t(monthly ? 'quotaMonth' : 'quota')}
             </div>
             <div className="mt-1.5 text-2xl font-bold text-ink">
               {format.number(usedToday)} / {format.number(dailyLimit)}
             </div>
             <p className="mt-1 text-xs text-ink-2">
-              {t('remaining', { count: remaining })}
+              {t(monthly ? 'remainingMonth' : 'remaining', { count: remaining })}
             </p>
           </div>
 
@@ -79,14 +80,14 @@ export function AccountQuotaPanel({ user, quota, apiKeys }: Readonly<AccountQuot
             </div>
             <div className="mt-1.5 flex items-center gap-2 text-2xl font-bold text-ink">
               <Clock className="w-5 h-5 text-accent-ink" />
-              <span>00:00 UTC</span>
+              <span>{monthly && quota?.resetAt ? format.dateTime(new Date(quota.resetAt), { year: 'numeric', month: 'short', day: 'numeric' }) : '00:00 UTC'}</span>
             </div>
             <p className="mt-1 text-xs text-ink-2">
               {quota?.resetAt
                 ? t('nextReset', {
                     date: format.dateTime(new Date(quota.resetAt), { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }),
                   })
-                : t('resetDaily')}
+                : t(monthly ? 'resetMonthly' : 'resetDaily')}
             </p>
           </div>
         </div>

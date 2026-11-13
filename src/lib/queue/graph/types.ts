@@ -1,3 +1,4 @@
+import type { UserTier } from '@/lib/auth/types';
 import type { ConversionOptions, MediaPackagingOptions } from '@/lib/types';
 import type { S3Credentials, SftpCredentials } from '@/lib/storage/credentials-vault';
 
@@ -263,7 +264,7 @@ export interface JobGraph {
 }
 
 export interface ValidateGraphOptions {
-  userTier?: 'free' | 'pro' | 'enterprise';
+  userTier?: UserTier;
   sourceFormat?: string;
   sourceFilename?: string;
   maxNodes?: number;

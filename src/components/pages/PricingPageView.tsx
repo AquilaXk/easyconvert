@@ -5,6 +5,7 @@ import Footer from '@/components/Footer';
 import PaidPlanCards from '@/components/billing/PaidPlanCards';
 import PricingFaq from '@/components/billing/PricingFaq';
 import { Link } from '@/i18n/navigation';
+import type { PublicBillingConfig } from '@/lib/billing/types';
 import { formatBytesForDisplay } from '@/lib/format-bytes';
 import {
   DEFAULT_FREE_CONCURRENCY,
@@ -29,8 +30,8 @@ function limitValues(anonymousDaily: number) {
   };
 }
 
-/** The pricing page: the free plan with its limits, the paid plans (coming soon until billing is configured), and the questions about them. */
-export default function PricingPageView({ anonymousDaily }: Readonly<{ anonymousDaily: number }>) {
+/** The pricing page: the free plan with its limits, the paid plans (coming soon until billing is configured, as `billing` says), and the questions about them. */
+export default function PricingPageView({ anonymousDaily, billing }: Readonly<{ anonymousDaily: number; billing: PublicBillingConfig | null }>) {
   const t = useTranslations('pricing');
   const values = limitValues(anonymousDaily);
 
@@ -46,8 +47,8 @@ export default function PricingPageView({ anonymousDaily }: Readonly<{ anonymous
         </section>
 
         <section aria-label={t('plansLabel')} className="pb-12">
-          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="grid gap-6 md:grid-cols-3 md:items-start">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4 md:items-start">
               <section aria-labelledby="free-plan-heading" className="rounded-md border border-rule bg-surface p-6 sm:p-8 md:p-6 flex flex-col">
                 <h2 id="free-plan-heading" className="text-xl text-ink">{t('plan.name')}</h2>
                 <p className="mt-1 text-sm leading-relaxed text-ink-3 md:min-h-12">{t('plan.tagline')}</p>
@@ -79,7 +80,7 @@ export default function PricingPageView({ anonymousDaily }: Readonly<{ anonymous
                   ))}
                 </ul>
               </section>
-              <PaidPlanCards />
+              <PaidPlanCards billing={billing} />
             </div>
           </div>
         </section>
@@ -87,7 +88,7 @@ export default function PricingPageView({ anonymousDaily }: Readonly<{ anonymous
         <section aria-labelledby="faq-heading" className="pb-14">
           <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
             <h2 id="faq-heading" className="text-2xl text-ink">{t('faqHeading')}</h2>
-            <PricingFaq values={values} />
+            <PricingFaq values={values} onSale={billing !== null} />
           </div>
         </section>
 

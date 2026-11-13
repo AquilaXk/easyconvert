@@ -23,7 +23,7 @@ import { MemoryBudgetStore, RedisBudgetStore, type BudgetStore } from './upload-
 /** Files at the plan's file size limit a caller may bring in each day: two, the size entry 137 gave the anonymous budget. */
 const DAILY_FILES_AT_PLAN_LIMIT = 2;
 
-/** The bytes a caller of `plan` may bring in each UTC day: two files at the plan's limit (2 GiB free, 10 GiB Pro, 20 GiB Enterprise). */
+/** The bytes a caller of `plan` may bring in each UTC day: two files at the plan's limit (2 GiB free, 4 GiB Basic, 10 GiB Pro, 20 GiB Enterprise). */
 export function dailyBudgetBytes(plan: Plan): number {
   return DAILY_FILES_AT_PLAN_LIMIT * maxFileBytes(plan);
 }

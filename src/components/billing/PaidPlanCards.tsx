@@ -5,12 +5,12 @@ import { useLocale, useTranslations } from 'next-intl';
 import { Check } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useViewerAccount } from '@/hooks/useViewerPlan';
-import { PAID_PLANS, type PaidPlan } from '@/lib/billing/types';
-import { PLAN_MAX_FILE_BYTES, TIER_LIMITS } from '@/lib/plan-limits';
+import { PAID_PLANS, isPaidPlan, type PaidPlan, type PublicBillingConfig } from '@/lib/billing/types';
+import { PLAN_CONCURRENCY, PLAN_MAX_FILE_BYTES, PLAN_PROCESSING_MINUTES, TIER_LIMITS } from '@/lib/plan-limits';
 import { refreshViewerPlan } from '@/lib/viewer-plan';
 import { useBillingErrorWording } from '../i18n/error-wording';
 import { useFormatBytes, useTierLabel } from '../i18n/format';
-import { openBillingPortal, useBillingStatus, type EnabledBillingStatus } from './billing-status';
+import { openBillingPortal } from './billing-status';
 import { onCheckoutCompleted, openCheckout, previewPrice, type PlanPrice } from './paddle-checkout';
 
 /** How long after a paid checkout the page asks for the session again: the plan changes when Paddle's event arrives. */
@@ -19,7 +19,7 @@ const PLAN_REFRESH_DELAY_MS = 5000;
 const BUTTON =
   'mt-5 min-h-[44px] inline-flex items-center justify-center self-start px-5 text-sm font-semibold rounded-sm bg-accent text-on-accent hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:opacity-50';
 
-function usePlanPrice(status: EnabledBillingStatus | undefined, plan: PaidPlan): PlanPrice | undefined {
+function usePlanPrice(status: PublicBillingConfig | undefined, plan: PaidPlan): PlanPrice | undefined {
   const [price, setPrice] = useState<PlanPrice>();
   const priceId = status?.plans.find((entry) => entry.plan === plan)?.priceId;
   useEffect(() => {
@@ -38,7 +38,7 @@ function usePlanPrice(status: EnabledBillingStatus | undefined, plan: PaidPlan):
   return price;
 }
 
-function PlanButton({ plan, status }: Readonly<{ plan: PaidPlan; status: EnabledBillingStatus | null }>) {
+function PlanButton({ plan, status }: Readonly<{ plan: PaidPlan; status: PublicBillingConfig | null }>) {
   const t = useTranslations('billing');
   const locale = useLocale();
   const wording = useBillingErrorWording();
@@ -90,7 +90,7 @@ function PlanButton({ plan, status }: Readonly<{ plan: PaidPlan; status: Enabled
       if (!res.ok || !payload?.checkout) return { payload, status: res.status };
       return (await openCheckout(status, payload.checkout, locale)) ? undefined : { payload: null, status: 502 };
     });
-  const paid = account.tier === 'pro' || account.tier === 'enterprise';
+  const paid = isPaidPlan(account.tier);
   const label = paid ? t('manage') : t('subscribe');
 
   return (
@@ -107,7 +107,7 @@ function PlanButton({ plan, status }: Readonly<{ plan: PaidPlan; status: Enabled
   );
 }
 
-function PaidPlanCard({ plan, status }: Readonly<{ plan: PaidPlan; status: EnabledBillingStatus | null }>) {
+function PaidPlanCard({ plan, status }: Readonly<{ plan: PaidPlan; status: PublicBillingConfig | null }>) {
   const t = useTranslations('billing');
   const tierLabel = useTierLabel();
   const formatBytes = useFormatBytes();
@@ -131,8 +131,10 @@ function PaidPlanCard({ plan, status }: Readonly<{ plan: PaidPlan; status: Enabl
       <PlanButton plan={plan} status={status} />
       <ul className="mt-8 space-y-2">
         {[
-          t('limits.daily', { count: TIER_LIMITS[plan] }),
+          t('limits.monthly', { count: TIER_LIMITS[plan] }),
           t('limits.fileSize', { size: formatBytes(PLAN_MAX_FILE_BYTES[plan]) }),
+          t('limits.concurrent', { count: PLAN_CONCURRENCY[plan] }),
+          t('limits.processing', { minutes: PLAN_PROCESSING_MINUTES[plan] }),
           t('limits.inheritsFree'),
         ].map((line) => (
           <li key={line} className="flex gap-2.5 text-sm leading-relaxed text-ink-2">
@@ -146,14 +148,12 @@ function PaidPlanCard({ plan, status }: Readonly<{ plan: PaidPlan; status: Enabl
 }
 
 /**
- * The paid plans of the pricing page. They read as "coming soon" with a disabled button until `/api/billing/status` says that
- * paid plans are on sale, which is also what the prerendered page shows; then each plan offers a checkout (Paddle.js is
- * loaded only then), or a sign-in, or its own management.
+ * The paid plans of the pricing page. `billing` is what the server read when it rendered the page: null while paid plans are not
+ * on sale, when each plan reads "coming soon" with a disabled button; else each plan offers a checkout (Paddle.js is loaded only
+ * then), or a sign-in, or its own management.
  */
-export default function PaidPlanCards() {
+export default function PaidPlanCards({ billing }: Readonly<{ billing: PublicBillingConfig | null }>) {
   const t = useTranslations('billing');
-  const status = useBillingStatus();
-  const enabled = status?.enabled ? status : null;
   const [completed, setCompleted] = useState(false);
 
   useEffect(
@@ -168,10 +168,10 @@ export default function PaidPlanCards() {
   return (
     <>
       {PAID_PLANS.map((plan) => (
-        <PaidPlanCard key={plan} plan={plan} status={enabled} />
+        <PaidPlanCard key={plan} plan={plan} status={billing} />
       ))}
       {completed ? (
-        <p role="status" className="md:col-span-3 text-sm text-ink-2">
+        <p role="status" className="col-span-full text-sm text-ink-2">
           {t('completed')}
         </p>
       ) : null}

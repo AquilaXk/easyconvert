@@ -6,8 +6,8 @@ import { isAnonymousUserId } from './auth/anonymous-identity';
  * The largest file one conversion may take, by plan. Every server entry point that accepts file bytes and every
  * client check reads this table, so the number shown to a visitor is the number the server enforces.
  *
- * Anonymous callers and the free plan share the limit of entry 16 of docs/policy-decisions.md (1 GiB). The paid
- * plans follow the values the upload and job routes already gave them (5 GiB and 10 GiB).
+ * Anonymous callers and the free plan share the limit of entry 16 of docs/policy-decisions.md (1 GiB). The paid plans
+ * are Basic (2 GiB), Pro (5 GiB) and Enterprise (10 GiB), the figures QA set on 2026-11-13 (entry 280).
  */
 export type Plan = 'anonymous' | UserTier;
 
@@ -25,23 +25,61 @@ export const FREE_DAILY_CONVERSIONS = 10;
 
 export const DEFAULT_FREE_CONCURRENCY = 5;
 
+/** Conversions an account may have in flight at once (queued and running), by plan: the defaults of `CONVERSION_CONCURRENCY_<TIER>`. */
+export const PLAN_CONCURRENCY: Readonly<Record<UserTier, number>> = {
+  free: DEFAULT_FREE_CONCURRENCY,
+  basic: 10,
+  pro: 25,
+  enterprise: 50,
+};
+
 /** Minutes of wall-clock time one conversion of the free plan may run: the default of `JOB_DEADLINE_MAX_MS_FREE`. */
 export const FREE_PROCESSING_MINUTES = 5;
+
+/** Minutes of wall-clock time one conversion may run, by plan: the defaults of `JOB_DEADLINE_MAX_MS_<TIER>`. */
+export const PLAN_PROCESSING_MINUTES: Readonly<Record<UserTier, number>> = {
+  free: FREE_PROCESSING_MINUTES,
+  basic: 15,
+  pro: 30,
+  enterprise: 60,
+};
 
 /** Minutes a converted file stays downloadable after its first complete download: the default of `RESULT_DELIVERED_GRACE_SECONDS`. */
 export const DELIVERED_FILE_RETENTION_MINUTES = 10;
 
 export const API_KEY_BURST_LIMITS: Readonly<Record<UserTier, { capacity: number; refillRate: number }>> = {
   free: { capacity: 20, refillRate: 2 },
+  basic: { capacity: 50, refillRate: 8 },
   pro: { capacity: 100, refillRate: 20 },
   enterprise: { capacity: 500, refillRate: 100 },
 };
 
-/** Conversions each account plan may run on the server each UTC day; a caller without an account has `getAnonymousDailyLimit`. */
+/**
+ * The conversions each account plan may run on the server in one quota period, which `QUOTA_PERIOD` names: a UTC day for the free
+ * plan, a month for the paid plans (entry 280). A caller without an account has `getAnonymousDailyLimit`.
+ */
 export const TIER_LIMITS: Readonly<Record<UserTier, number>> = {
   free: FREE_DAILY_CONVERSIONS,
-  pro: 500,
+  basic: 1000,
+  pro: 3000,
   enterprise: 10000,
+};
+
+/** Whether `value` names an account tier. */
+export function isUserTier(value: string): value is UserTier {
+  return Object.hasOwn(TIER_LIMITS, value);
+}
+
+/** How long the conversions of a plan are counted before the count starts again. */
+export type QuotaPeriod = 'day' | 'month';
+
+/** The period of each plan's allowance: anonymous and free callers by the UTC day, paid plans by the month of the subscription. */
+export const QUOTA_PERIOD: Readonly<Record<Plan, QuotaPeriod>> = {
+  anonymous: 'day',
+  free: 'day',
+  basic: 'month',
+  pro: 'month',
+  enterprise: 'month',
 };
 
 /**
@@ -57,19 +95,20 @@ export function getAnonymousDailyLimit(): number {
   return parsed > 0 ? parsed : ANONYMOUS_DAILY_CONVERSIONS;
 }
 
-/** Conversions `plan` may run on the server each UTC day: the anonymous allowance the server reads, or the account plan's. */
-export function dailyConversions(plan: Plan): number {
+/** Conversions `plan` may run on the server in one period of `QUOTA_PERIOD`: the anonymous allowance the server reads, or the account plan's. */
+export function periodConversions(plan: Plan): number {
   return plan === 'anonymous' ? getAnonymousDailyLimit() : TIER_LIMITS[plan];
 }
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 
-const PLAN_ORDER: readonly Plan[] = ['anonymous', 'free', 'pro', 'enterprise'];
+const PLAN_ORDER: readonly Plan[] = ['anonymous', 'free', 'basic', 'pro', 'enterprise'];
 
 export const PLAN_MAX_FILE_BYTES: Readonly<Record<Plan, number>> = Object.freeze({
   anonymous: GIB,
   free: GIB,
+  basic: 2 * GIB,
   pro: 5 * GIB,
   enterprise: 10 * GIB,
 });
@@ -105,6 +144,7 @@ export function needsUploadInParts(sizeBytes: number): boolean {
 const PLAN_PHRASE: Readonly<Record<Plan, string>> = {
   anonymous: 'anonymous use',
   free: 'the free plan',
+  basic: 'the Basic plan',
   pro: 'the Pro plan',
   enterprise: 'the Enterprise plan',
 };
@@ -112,14 +152,19 @@ const PLAN_PHRASE: Readonly<Record<Plan, string>> = {
 export const PLAN_NAME: Readonly<Record<Plan, string>> = {
   anonymous: 'Anonymous',
   free: 'Free',
+  basic: 'Basic',
   pro: 'Pro',
   enterprise: 'Enterprise',
 };
 
+function isPaidTier(tier: string | undefined): tier is 'basic' | 'pro' | 'enterprise' {
+  return tier === 'basic' || tier === 'pro' || tier === 'enterprise';
+}
+
 /** The plan of a caller. An anonymous identity, a missing tier and a tier this table does not know get the smallest limit. */
 export function planOfCaller(caller: PlanCaller | null | undefined): Plan {
   if (!caller || isAnonymousUserId(caller.id)) return 'anonymous';
-  return caller.tier === 'pro' || caller.tier === 'enterprise' ? caller.tier : 'free';
+  return isPaidTier(caller.tier) ? caller.tier : 'free';
 }
 
 export function maxFileBytes(plan: Plan): number {
@@ -127,14 +172,16 @@ export function maxFileBytes(plan: Plan): number {
 }
 
 /**
- * The first plan after `plan` that allows a larger file and can be bought, or undefined when there is none. Whether the paid plans can be
+ * The smallest plan after `plan` that can be bought and takes a file of `sizeBytes`, the largest one when none does, or undefined when no plan
+ * after `plan` allows a larger file. Whether the paid plans can be
  * bought is `isBillingConfigured()` on the server (`src/lib/billing/config.ts`) and what `/api/billing/status` says in the browser; this
  * module is bundled into the browser too and reads no environment, so each caller says.
  */
-function nextLargerPlan(plan: Plan, paidPlansOnSale: boolean): Plan | undefined {
+function nextLargerPlan(plan: Plan, paidPlansOnSale: boolean, sizeBytes: number): Plan | undefined {
   if (!paidPlansOnSale) return undefined;
   const limit = PLAN_MAX_FILE_BYTES[plan];
-  return PLAN_ORDER.slice(PLAN_ORDER.indexOf(plan) + 1).find((candidate) => PLAN_MAX_FILE_BYTES[candidate] > limit);
+  const larger = PLAN_ORDER.slice(PLAN_ORDER.indexOf(plan) + 1).filter((candidate) => PLAN_MAX_FILE_BYTES[candidate] > limit);
+  return larger.find((candidate) => PLAN_MAX_FILE_BYTES[candidate] >= sizeBytes) ?? larger.at(-1);
 }
 
 /** The facts a message about a file over its plan's limit names, for the copy of any language to word. */
@@ -150,7 +197,7 @@ export interface FileTooLargeFacts {
 
 export function fileTooLargeFacts(plan: Plan, sizeBytes: number, paidPlansOnSale: boolean): FileTooLargeFacts {
   const limitBytes = PLAN_MAX_FILE_BYTES[plan];
-  const next = nextLargerPlan(plan, paidPlansOnSale);
+  const next = nextLargerPlan(plan, paidPlansOnSale, sizeBytes);
   return {
     plan,
     sizeBytes,

@@ -122,14 +122,14 @@ export const createCodedPdfaProblemResponse = (description: string, codes: reado
 /** Headers of a 429 of the convert routes, as `buildRateLimitHeaders` and the guard send them (src/lib/api/rate-limit.ts). */
 export const RATE_LIMIT_RESPONSE_HEADERS = {
   'Retry-After': {
-    description: 'Seconds to wait before the request is repeated (RFC 9110 delay-seconds, at least 1). Sent with every 429 except a `quota-exceeded` that leaves some conversions (a batch that needs more than are left); there it is the time to the daily reset at midnight UTC when none is left, and for `concurrency-limit` it is 5.',
+    description: 'Seconds to wait before the request is repeated (RFC 9110 delay-seconds, at least 1). Sent with every 429 except a `quota-exceeded` that leaves some conversions (a batch that needs more than are left); there it is the time to the reset (midnight UTC for a day, the renewal of the subscription for a month) when none is left, and for `concurrency-limit` it is 5.',
     schema: { type: 'integer', minimum: 1 },
   },
-  RateLimit: { description: 'The day\'s quota as `limit=<n>, remaining=<n>, reset=<seconds>`. Sent with `quota-exceeded`, and on `POST /api/v1/convert` with every 429 its guard answers.', schema: { type: 'string' } },
-  'RateLimit-Limit': { description: 'Conversions the caller\'s tier allows per day.', schema: { type: 'integer' } },
-  'RateLimit-Remaining': { description: 'Conversions left today.', schema: { type: 'integer' } },
-  'RateLimit-Reset': { description: 'Seconds until the daily quota resets.', schema: { type: 'integer' } },
-  'RateLimit-Policy': { description: 'The quota window, for example `10;w=86400;comment="anonymous daily quota"`.', schema: { type: 'string' } },
+  RateLimit: { description: 'The quota of the period (a day, or the month of a paid plan) as `limit=<n>, remaining=<n>, reset=<seconds>`. Sent with `quota-exceeded`, and on `POST /api/v1/convert` with every 429 its guard answers.', schema: { type: 'string' } },
+  'RateLimit-Limit': { description: 'Conversions the caller\'s tier allows per period: a day for anonymous callers and the free plan, a month for the paid plans.', schema: { type: 'integer' } },
+  'RateLimit-Remaining': { description: 'Conversions left in the period.', schema: { type: 'integer' } },
+  'RateLimit-Reset': { description: 'Seconds until the quota of the period resets.', schema: { type: 'integer' } },
+  'RateLimit-Policy': { description: 'The quota window, for example `10;w=86400;comment="anonymous daily quota"`; a paid plan reads `w=2592000` (a nominal month of 30 days) and "monthly quota".', schema: { type: 'string' } },
   'X-RateLimit-Limit': { description: 'Legacy copy of `RateLimit-Limit`.', schema: { type: 'integer' } },
   'X-RateLimit-Remaining': { description: 'Legacy copy of `RateLimit-Remaining`.', schema: { type: 'integer' } },
   'X-RateLimit-Reset': { description: 'Legacy copy of `RateLimit-Reset`.', schema: { type: 'integer' } },
@@ -141,8 +141,9 @@ const TOO_MANY_REQUESTS_SCHEMA = {
     {
       type: 'object',
       properties: {
-        dailyLimit: { type: 'integer', description: '`quota-exceeded` only: conversions the tier allows per day.' },
-        remaining: { type: 'integer', description: '`quota-exceeded` only: conversions left today.' },
+        dailyLimit: { type: 'integer', description: '`quota-exceeded` only: conversions the tier allows in the period (`period`), a day or a month.' },
+        period: { type: 'string', enum: ['day', 'month'], description: '`quota-exceeded` only: how long the conversions are counted before the count starts again.' },
+        remaining: { type: 'integer', description: '`quota-exceeded` only: conversions left in the period.' },
         requiredUnits: { type: 'integer', description: '`quota-exceeded` only: conversions the request needs.' },
         limit: { type: 'integer', description: '`concurrency-limit` only: conversions the account may have in flight.' },
       },
@@ -154,8 +155,8 @@ const TOO_MANY_REQUESTS_SCHEMA = {
 export const createTooManyRequestsResponse = (extra: string) => ({
   description:
     `Too Many Requests, by problem type. \`${RATE_LIMITED_PROBLEM_TYPE}\`: the burst limit of the API key, of the client address or of the edge is spent; wait \`Retry-After\` seconds. ` +
-    `\`${QUOTA_EXCEEDED_PROBLEM_TYPE}\`: the day's conversions are used up or too few are left (\`dailyLimit\`, \`remaining\`, \`requiredUnits\` in the body, the quota headers, and \`Retry-After\` until the reset when none is left). ` +
-    `\`https://api.easyconvert.io/problems/concurrency-limit\`: the account already has the most conversions in flight its tier allows, 5 for anonymous and free callers (\`limit\` in the body, \`Retry-After\` 5); the request takes no quota.${extra}`,
+    `\`${QUOTA_EXCEEDED_PROBLEM_TYPE}\`: the conversions of the period (a day, or a month for the paid plans) are used up or too few are left (\`dailyLimit\`, \`remaining\`, \`requiredUnits\` in the body, the quota headers, and \`Retry-After\` until the reset when none is left). ` +
+    `\`https://api.easyconvert.io/problems/concurrency-limit\`: the account already has the most conversions in flight its tier allows, which is 5 for anonymous and free callers, 10 for Basic, 25 for Pro and 50 for Enterprise (\`limit\` in the body, \`Retry-After\` 5); the request takes no quota.${extra}`,
   headers: RATE_LIMIT_RESPONSE_HEADERS,
   content: {
     'application/problem+json': { schema: TOO_MANY_REQUESTS_SCHEMA },
@@ -195,7 +196,7 @@ export const PLAN_FILE_LIMITS_PLACEHOLDER = '{plan file limits}';
 /** The most one file may have, by plan, as the API documents it: the free limit, and the paid plans once they can be bought. */
 export function planFileLimitsText(): string {
   return isBillingConfigured()
-    ? `${formatBytes(PLAN_MAX_FILE_BYTES.free)} for anonymous callers and the free plan, ${formatBytes(PLAN_MAX_FILE_BYTES.pro)} for Pro, ${formatBytes(PLAN_MAX_FILE_BYTES.enterprise)} for Enterprise`
+    ? `${formatBytes(PLAN_MAX_FILE_BYTES.free)} for anonymous callers and the free plan, ${formatBytes(PLAN_MAX_FILE_BYTES.basic)} for Basic, ${formatBytes(PLAN_MAX_FILE_BYTES.pro)} for Pro, ${formatBytes(PLAN_MAX_FILE_BYTES.enterprise)} for Enterprise`
     : `${formatBytes(PLAN_MAX_FILE_BYTES.free)} for anonymous callers and accounts`;
 }
 
@@ -359,4 +360,4 @@ export const CLIENT_CLOSED_DESCRIPTION =
 
 /** Appended to the 429 of a conversion endpoint: the other reason for a 429 besides the rate limit and the quota. */
 export const CONCURRENCY_LIMIT_NOTE =
-  ' Or: the account already has the most conversions in flight (queued and running) its tier allows, 5 for anonymous and free callers (problem type `https://api.easyconvert.io/problems/concurrency-limit`, with `Retry-After`); the request takes no quota.';
+  ' Or: the account already has the most conversions in flight (queued and running) its tier allows, which is 5 for anonymous and free callers, 10 for Basic, 25 for Pro and 50 for Enterprise (problem type `https://api.easyconvert.io/problems/concurrency-limit`, with `Retry-After`); the request takes no quota.';

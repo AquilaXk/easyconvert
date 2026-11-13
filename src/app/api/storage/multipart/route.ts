@@ -7,7 +7,7 @@ import { MULTIPART_MAX_PARTS, storageProvider } from '@/lib/storage';
 import type { IStorageBackend, UploadSessionInfo } from '@/lib/storage/oci-storage';
 import { stripEtagQuotes } from '@/lib/storage/etag';
 import { isUploadKey } from '@/lib/storage/key-namespace';
-import { validateApiAccess, authErrorHeaders, getQuotaUsage } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, getQuotaUsage, PERIOD_WORDS } from '@/lib/api-keys/guard';
 import { UNRECORDED_UPLOAD_DETAIL } from '@/lib/api/completed-upload';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { isNoSuchUploadError, uploadSessionNotFoundResponse } from '@/lib/api/storage-error-response';
@@ -202,13 +202,13 @@ async function jobStartRefusal(user: User, instanceUri: string): Promise<NextRes
   if (quota.remaining < 1) {
     return createProblemDetailsResponse(
       HTTP_TOO_MANY_REQUESTS,
-      `The daily limit of ${quota.dailyLimit} conversions is used up. It resets at midnight UTC.`,
+      `The ${PERIOD_WORDS[quota.period].adjective.toLowerCase()} limit of ${quota.dailyLimit} conversions is used up. ${PERIOD_WORDS[quota.period].resets}`,
       instanceUri,
       'Too Many Requests',
       QUOTA_EXCEEDED_PROBLEM_TYPE,
       undefined,
       undefined,
-      { dailyLimit: quota.dailyLimit }
+      { dailyLimit: quota.dailyLimit, period: quota.period }
     );
   }
   const room = await mayEnqueue(user.id, user.tier);

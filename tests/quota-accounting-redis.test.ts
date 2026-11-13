@@ -38,6 +38,7 @@ import { spendImportBytes } from './helpers/import-budget';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { createSessionToken } from '../src/lib/auth/session';
 import { userStore } from '../src/lib/auth/user-store';
+import { subscriptionStore } from '../src/lib/billing/subscription-store';
 import { ANONYMOUS_DAILY_CONVERSIONS, URL_IMPORT_MAX_BYTES, type Plan } from '../src/lib/plan-limits';
 import { acquireSyncSlot, syncSlotsInUse, type ConversionSlot } from '../src/lib/queue/concurrency-limit';
 import { QueueUnavailableError, type ConversionJobData, type ConversionJobResult } from '../src/lib/types';
@@ -573,6 +574,44 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       await end(reservationId);
 
       expect(await admin.exists(extensions)).toBe(0);
+    });
+  });
+
+  describe('a paid plan', () => {
+    it('counts by the month of its subscription, in keys that live until the period ends, and refuses past its limit', async () => {
+      const user = await userStore.createUser({ email: `month_${crypto.randomBytes(6).toString('hex')}@redis.test`, name: 'Month', tier: 'basic' });
+      const subscriptionId = `sub_${crypto.randomBytes(6).toString('hex')}`;
+      const eventId = `evt_${crypto.randomBytes(6).toString('hex')}`;
+      otherUsers.push(user.id, subscriptionId, eventId);
+      const periodEnd = Math.floor((Date.now() + 20 * 24 * 60 * 60 * 1000) / 1000) * 1000;
+      const applied = await subscriptionStore.apply({
+        eventId,
+        eventAt: Date.now(),
+        userId: user.id,
+        subscription: { provider: 'paddle', providerSubscriptionId: subscriptionId, providerCustomerId: 'ctm_fixture', status: 'active', plan: 'basic', currentPeriodEnd: periodEnd },
+      });
+      expect(applied).toBe('applied');
+
+      const reservedAt = Date.now();
+      const unit = await redisKeyStore.reserveQuota(user.id, 3);
+      expect(unit).toMatchObject({ allowed: true, remaining: 997 });
+      expect(unit.reservationId).toContain(`_b${periodEnd}_`);
+      expect(await redisKeyStore.commitQuota(unit.reservationId as string)).toBe(true);
+      expect(await redisKeyStore.getQuotaUsage(user.id)).toEqual({ tier: 'basic', period: 'month', dailyLimit: 1000, usedToday: 3, remaining: 997, resetAt: periodEnd });
+
+      const usageKeys = await admin.keys(`*usage:{${user.id}}:*`);
+      expect(usageKeys).toHaveLength(1);
+      expect(usageKeys[0].endsWith(`:b${periodEnd}`)).toBe(true);
+      const timeToLive = await admin.pttl(usageKeys[0]);
+      // The count lives until the period ends, not for a day and not past it by more than the lease that a reservation holds.
+      expect(timeToLive).toBeLessThanOrEqual(periodEnd - reservedAt);
+      expect(timeToLive).toBeGreaterThan(periodEnd - Date.now() - RESERVATION_LEASE.provisionalMs);
+
+      expect(await redisKeyStore.reserveQuota(user.id, 998)).toMatchObject({ allowed: false, remaining: 997 });
+      const rest = await redisKeyStore.reserveQuota(user.id, 997);
+      expect(rest.allowed).toBe(true);
+      expect(await redisKeyStore.rollbackQuota(rest.reservationId as string)).toBe(true);
+      expect((await redisKeyStore.getQuotaUsage(user.id)).usedToday).toBe(3);
     });
   });
 

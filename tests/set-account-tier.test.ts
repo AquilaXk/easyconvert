@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
-import { applyTierChange, planTierChange } from '../scripts/set-account-tier';
+import { SETTABLE_TIERS, applyTierChange, planTierChange } from '../scripts/set-account-tier';
+import { quotaAllowanceOf } from '../src/lib/api-keys/quota-window';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { subscriptionStore } from '../src/lib/billing/subscription-store';
 import { TERMS_VERSION } from '../src/lib/legal/documents';
@@ -27,6 +28,18 @@ describe('set-account-tier, the operator tool that sets the plan of an account b
     expect(byEmail).toEqual({ userId: user.id, email: user.email, from: 'free', to: 'enterprise' });
     expect(await planTierChange(user.id, 'enterprise')).toEqual(byEmail);
     expect((await redisUserStore.findById(user.id))?.tier).toBe('free');
+  });
+
+  it('offers the Basic plan with the others, and counts a plan set by hand by the calendar month', async () => {
+    expect(SETTABLE_TIERS).toEqual(['free', 'basic', 'pro', 'enterprise']);
+    const user = await account();
+    const change = await planTierChange(user.id, 'basic');
+    if ('refusal' in change) throw new Error(change.refusal);
+    await applyTierChange(change);
+    expect((await redisUserStore.findById(user.id))?.tier).toBe('basic');
+    const allowance = await quotaAllowanceOf(user.id);
+    expect(allowance.limit).toBe(1000);
+    expect(allowance.window.key).toMatch(/^m\d{4}-\d{2}$/);
   });
 
   it('writes the plan with no end date, so it does not lapse back to free', async () => {
