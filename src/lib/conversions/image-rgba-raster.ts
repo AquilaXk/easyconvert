@@ -1,5 +1,7 @@
 import type { OutputInfo, Sharp } from 'sharp';
 import type { ConversionOptions } from '../types';
+import { getCpuPool } from '../workers/cpu-pool';
+import { STRIPED_MIN_PIXELS } from './color-quantizer';
 import { GIF_PHOTO_PIXEL_BUDGET, maxInputPixels, resizedDimensions } from './image-input-limits';
 import { metadataOf } from './image-metadata';
 import { FIRST_QUARTER_TURN_ORIENTATION } from './image-orientation';
@@ -14,10 +16,12 @@ export const RASTER_THREADS_MIN_PIXELS = 2_000_000;
 /**
  * The picture as 8-bit RGBA, for the palette quantizer. The library's base count of one thread makes this pass (the ICC transform of a
  * developed camera picture, the reduction of 16-bit samples to 8 bits, the alpha plane) the longest step of a large GIF: a large picture
- * is read on the threads an AVIF encode leases, a small one on the two a JPEG pipeline leases (see `pipelineThreadsFor`).
+ * is read on the threads an AVIF encode leases, a small one on the two a JPEG pipeline leases (see `pipelineThreadsFor`). A picture
+ * the quantizer maps in stripes starts the pool's threads first, so that they are running by the time the raster is read.
  */
 export async function rgbaRaster(pipeline: Sharp): Promise<{ data: Buffer; info: OutputInfo }> {
   const { width = 0, height = 0 } = await metadataOf(pipeline);
+  if (width * height >= STRIPED_MIN_PIXELS) getCpuPool().warm();
   const read = (): Promise<{ data: Buffer; info: OutputInfo }> => pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   return width * height >= RASTER_THREADS_MIN_PIXELS ? withImageThreads(read) : withPipelineThreads(read);
 }

@@ -22,7 +22,7 @@ import { COLOUR_MEMO_LAB_STRIDE, ColourMemo } from './image-colour-memo';
 import { DirectColourMemo } from './image-colour-direct-memo';
 import { GIF_PHOTO_PIXEL_BUDGET, QUANTIZER_PIXEL_BUDGET, assertPixelBudget } from './image-input-limits';
 import { KdTree3 } from './kd-tree';
-import { runCpuTask } from '../workers/cpu-pool';
+import { getCpuPool, runCpuTask, shareBytes } from '../workers/cpu-pool';
 
 export interface RgbColor {
   r: number;
@@ -530,41 +530,101 @@ function withinRunTolerance(memo: Pick<ColourMemo, 'lab'>, entry: number, model:
   return dx * dx + dy * dy + dz * dz <= memo.lab[at] * distanceFactor;
 }
 
+/**
+ * The plain mapper: each pixel takes the nearest palette colour (answered once per distinct colour of the raster, see
+ * `image-colour-memo.ts`), or, where `runTolerance` is set, the colour of the pixel before it when that is nearly as near. What a
+ * pixel takes therefore depends on the pixels before it through three values, which `run` starts from and which `resumeAt` sets
+ * from a raster mapped up to a pixel: the key and the index of the last opaque pixel, and whether the pixel just before is opaque.
+ */
+class NearestMapper {
+  private readonly lab = new Float64Array(RGB_STRIDE);
+  private readonly keepsRuns: boolean;
+  private readonly distanceFactor: number;
+  private readonly memo: ColourMemo | DirectColourMemo;
+  private lastKey = -1;
+  private lastIndex = 0;
+  private lastNearest = 0;
+  private previousIndex = -1;
+
+  /** `memoPixels` is the number of pixels the mapper will see, which picks the kind of memo. */
+  constructor(
+    private readonly pixels: ArrayLike<number>,
+    private readonly model: PaletteModel,
+    private readonly transparentIndex: number,
+    runTolerance: number,
+    memoPixels: number
+  ) {
+    this.keepsRuns = runTolerance > 0;
+    this.distanceFactor = (1 + runTolerance) ** 2;
+    this.memo = memoPixels >= DIRECT_MEMO_MIN_PIXELS ? new DirectColourMemo(this.keepsRuns) : new ColourMemo(this.keepsRuns, memoPixels);
+  }
+
+  private isTransparent(p: number): boolean {
+    return this.transparentIndex >= 0 && this.pixels[p * RGBA_STRIDE + 3] < QUANT_ALPHA_THRESHOLD;
+  }
+
+  private keyAt(p: number): number {
+    const i = p * RGBA_STRIDE;
+    return (this.pixels[i] << 16) | (this.pixels[i + 1] << 8) | this.pixels[i + 2];
+  }
+
+  /** Sets the state of a mapper that has mapped the pixels before `at`, whose indices are in `out`. */
+  resumeAt(out: Uint8Array, at: number): void {
+    this.lastKey = -1;
+    this.lastIndex = 0;
+    this.previousIndex = -1;
+    if (at === 0) return;
+    this.previousIndex = this.isTransparent(at - 1) ? -1 : out[at - 1];
+    let last = at - 1;
+    while (last >= 0 && this.isTransparent(last)) last -= 1;
+    if (last < 0) return;
+    this.lastKey = this.keyAt(last);
+    this.lastIndex = out[last];
+    this.lastNearest = this.lastIndex;
+  }
+
+  /**
+   * Maps the pixels from `from` up to `to` into `out`. With `untilSame`, stops after the first opaque pixel whose index is the one
+   * `out` already holds: the three values of the state are then the same as they were when `out` was written, so the pixels after
+   * it hold what this mapper would give them. Returns the pixel after the last one it mapped.
+   */
+  run(out: Uint8Array, from: number, to: number, untilSame: boolean): number {
+    const { pixels, model, memo, lab, keepsRuns, distanceFactor, transparentIndex } = this;
+    let { lastKey, lastIndex, lastNearest, previousIndex } = this;
+    for (let p = from; p < to; p += 1) {
+      const i = p * RGBA_STRIDE;
+      if (transparentIndex >= 0 && pixels[i + 3] < QUANT_ALPHA_THRESHOLD) {
+        out[p] = transparentIndex;
+        previousIndex = -1;
+        continue;
+      }
+      const key = (pixels[i] << 16) | (pixels[i + 1] << 8) | pixels[i + 2];
+      if (key !== lastKey) {
+        let entry = memo.find(key);
+        if (entry < 0) {
+          linearToOklab(SRGB_TO_LINEAR_TABLE[pixels[i]], SRGB_TO_LINEAR_TABLE[pixels[i + 1]], SRGB_TO_LINEAR_TABLE[pixels[i + 2]], lab, 0);
+          const nearest = model.tree.nearestIndex(lab[0], lab[1], lab[2], lastNearest);
+          entry = memo.add(key, nearest, model.tree.lastDistance2, lab[0], lab[1], lab[2]);
+        }
+        lastNearest = memo.index[entry];
+        lastIndex = lastNearest;
+        if (keepsRuns && previousIndex >= 0 && previousIndex !== lastIndex && withinRunTolerance(memo, entry, model, previousIndex, distanceFactor)) {
+          lastIndex = previousIndex;
+        }
+        lastKey = key;
+      }
+      const same = untilSame && out[p] === lastIndex;
+      out[p] = lastIndex;
+      previousIndex = lastIndex;
+      if (same) return p + 1;
+    }
+    return to;
+  }
+}
+
 function mapNearest(pixels: ArrayLike<number>, pixelCount: number, model: PaletteModel, transparentIndex: number, runTolerance = 0): Uint8Array {
   const out = new Uint8Array(pixelCount);
-  const lab = new Float64Array(RGB_STRIDE);
-  const keepsRuns = runTolerance > 0;
-  const distanceFactor = (1 + runTolerance) ** 2;
-  const memo = pixelCount >= DIRECT_MEMO_MIN_PIXELS ? new DirectColourMemo(keepsRuns) : new ColourMemo(keepsRuns, pixelCount);
-  let lastKey = -1;
-  let lastIndex = 0;
-  let lastNearest = 0;
-  let previousIndex = -1;
-  for (let p = 0; p < pixelCount; p += 1) {
-    const i = p * RGBA_STRIDE;
-    if (transparentIndex >= 0 && pixels[i + 3] < QUANT_ALPHA_THRESHOLD) {
-      out[p] = transparentIndex;
-      previousIndex = -1;
-      continue;
-    }
-    const key = (pixels[i] << 16) | (pixels[i + 1] << 8) | pixels[i + 2];
-    if (key !== lastKey) {
-      let entry = memo.find(key);
-      if (entry < 0) {
-        linearToOklab(SRGB_TO_LINEAR_TABLE[pixels[i]], SRGB_TO_LINEAR_TABLE[pixels[i + 1]], SRGB_TO_LINEAR_TABLE[pixels[i + 2]], lab, 0);
-        const nearest = model.tree.nearestIndex(lab[0], lab[1], lab[2], lastNearest);
-        entry = memo.add(key, nearest, model.tree.lastDistance2, lab[0], lab[1], lab[2]);
-      }
-      lastNearest = memo.index[entry];
-      lastIndex = lastNearest;
-      if (keepsRuns && previousIndex >= 0 && previousIndex !== lastIndex && withinRunTolerance(memo, entry, model, previousIndex, distanceFactor)) {
-        lastIndex = previousIndex;
-      }
-      lastKey = key;
-    }
-    out[p] = lastIndex;
-    previousIndex = lastIndex;
-  }
+  new NearestMapper(pixels, model, transparentIndex, runTolerance, pixelCount).run(out, 0, pixelCount, false);
   return out;
 }
 
@@ -777,8 +837,13 @@ export function quantizeImage(
   assertRaster(pixels, width, height);
   // Whoever calls: the dithering paths hold far more per pixel than the plain mapping, so each has its own line.
   assertPixelBudget(width, height, (options.dither ?? 'none') === 'none' ? GIF_PHOTO_PIXEL_BUDGET : QUANTIZER_PIXEL_BUDGET);
-  const pixelCount = width * height;
-  const keepsTransparency = options.transparency === 'threshold';
+  const { palette, opaqueSize, transparentIndex } = paletteOfImage(pixels, width * height, maxColors, options.transparency === 'threshold');
+  const indices = mapToPalette(pixels, width, height, palette, opaqueSize, options.dither ?? 'none', transparentIndex, options.runTolerance);
+  return { palette, paletteSize: palette.length / RGB_STRIDE, indices, transparentIndex };
+}
+
+/** The palette of a raster: the opaque colours, then the transparent entry (0, 0, 0) when transparency is kept and a pixel is transparent. */
+function paletteOfImage(pixels: ArrayLike<number>, pixelCount: number, maxColors: number, keepsTransparency: boolean): { palette: Uint8Array; opaqueSize: number; transparentIndex: number } {
   let hasTransparent = false;
   if (keepsTransparency) {
     for (let p = 0; p < pixelCount; p += 1) {
@@ -792,11 +857,9 @@ export function quantizeImage(
   const opaqueColours = Math.max(1, clampColourCount(maxColors) - (hasTransparent ? 1 : 0));
   const opaque = buildPalette(pixels, pixelCount, opaqueColours, hasTransparent);
   const opaqueSize = opaque.length / RGB_STRIDE;
-  const transparentIndex = hasTransparent ? opaqueSize : -1;
   const palette = new Uint8Array((opaqueSize + (hasTransparent ? 1 : 0)) * RGB_STRIDE);
   palette.set(opaque);
-  const indices = mapToPalette(pixels, width, height, opaque, opaqueSize, options.dither ?? 'none', transparentIndex, options.runTolerance);
-  return { palette, paletteSize: palette.length / RGB_STRIDE, indices, transparentIndex };
+  return { palette, opaqueSize, transparentIndex: hasTransparent ? opaqueSize : -1 };
 }
 
 /**
@@ -869,7 +932,110 @@ export async function quantizeImageAsync(
   if (width * height < QUANTIZER_POOL_MIN_PIXELS) return quantizeImage(pixels, width, height, maxColors, quantizeOptions);
   assertRaster(pixels, width, height);
   assertPixelBudget(width, height, (quantizeOptions.dither ?? 'none') === 'none' ? GIF_PHOTO_PIXEL_BUDGET : QUANTIZER_PIXEL_BUDGET);
+  const stripes = (quantizeOptions.dither ?? 'none') === 'none' ? stripeCountFor(width * height, getCpuPool().threadLimit) : 1;
+  if (stripes > 1) return quantizeInStripes(pixels, width, height, maxColors, { ...quantizeOptions, stripes, signal });
   return (await quantizeOnPool({ pixels, width, height, maxColors, options: quantizeOptions, withRaster: false }, signal)).image;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The plain mapper in stripes
+// ---------------------------------------------------------------------------------------------------------------
+
+/** Pixels from which the plain mapper (no dithering) runs in stripes on the pool threads. */
+export const STRIPED_MIN_PIXELS = 2_000_000;
+/** Pixels a stripe holds at least: a stripe starts a colour memo of its own, and the colours it shares with its neighbours are searched again. */
+const STRIPE_MIN_PIXELS = 1_000_000;
+/** Pixels the memo of the repair is sized for; it grows when the repair of a stripe runs longer. */
+const REPAIR_MEMO_PIXELS = 1 << 16;
+
+/** How many stripes a raster is cut into on a pool of `threads` threads: one for a raster that is mapped on one thread. */
+function stripeCountFor(pixelCount: number, threads: number): number {
+  if (pixelCount < STRIPED_MIN_PIXELS) return 1;
+  return Math.max(1, Math.min(threads, Math.floor(pixelCount / STRIPE_MIN_PIXELS)));
+}
+
+/** The first pixel of each of `stripes` stripes of whole rows, about as tall as each other (fewer stripes than asked for when there are fewer rows). */
+export function stripeStarts(width: number, height: number, stripes: number): number[] {
+  const count = Math.min(stripes, height);
+  return Array.from({ length: count }, (_, k) => Math.floor((k * height) / count) * width);
+}
+
+/** What the stripes of one picture share: the raster, the indices they fill in, and the palette they map to. */
+export interface PaletteMapTask {
+  pixels: Uint8Array;
+  indices: Uint8Array;
+  palette: Uint8Array;
+  /** Opaque colours of `palette` (a transparent entry after them takes no part in the search). */
+  paletteSize: number;
+  transparentIndex: number;
+  runTolerance: number;
+}
+
+/**
+ * Maps the pixels of one stripe, from a guess of what the mapper would carry into it: no colour before it. A stripe whose first
+ * pixels keep the colour of the pixel before them in the one-pass mapper holds other indices there until `runRepairStripes`.
+ */
+export function runMapStripe(task: PaletteMapTask, range: { from: number; to: number }): void {
+  const model = modelOf(task.palette, task.paletteSize);
+  new NearestMapper(task.pixels, model, task.transparentIndex, task.runTolerance, range.to - range.from).run(task.indices, range.from, range.to, false);
+}
+
+/**
+ * Puts right the first pixels of the stripes that start at `starts`, which follow one another and end at the next start (the last at
+ * the end of the raster): each is mapped again from what the stripe before it ended on, until a pixel takes the index it already
+ * holds, which is where the guess of its mapper and the true state have met. Run after every stripe is mapped, the indices are
+ * those of the one-pass mapper.
+ */
+export function runRepairStripes(task: PaletteMapTask, starts: readonly number[]): void {
+  if (starts.length === 0) return;
+  const mapper = new NearestMapper(task.pixels, modelOf(task.palette, task.paletteSize), task.transparentIndex, task.runTolerance, REPAIR_MEMO_PIXELS);
+  starts.forEach((from, k) => {
+    mapper.resumeAt(task.indices, from);
+    mapper.run(task.indices, from, k + 1 < starts.length ? starts[k + 1] : task.indices.length, true);
+  });
+}
+
+/** What the `quantizePalette` pool task is asked to do. */
+export interface PaletteTaskPayload {
+  pixels: Uint8Array;
+  pixelCount: number;
+  maxColors: number;
+  keepsTransparency: boolean;
+}
+
+export interface PaletteTaskResult {
+  palette: Uint8Array;
+  opaqueSize: number;
+  transparentIndex: number;
+}
+
+/** The work of the `quantizePalette` pool task. */
+export function runPaletteTask(payload: PaletteTaskPayload): PaletteTaskResult {
+  return paletteOfImage(payload.pixels, payload.pixelCount, payload.maxColors, payload.keepsTransparency);
+}
+
+/** `quantizeImageAsync` of a raster whose plain mapping is cut into `stripes` stripes that the pool threads run side by side. */
+async function quantizeInStripes(
+  pixels: Uint8Array,
+  width: number,
+  height: number,
+  maxColors: number,
+  options: QuantizeOptions & { stripes: number; signal?: AbortSignal }
+): Promise<IndexedImage> {
+  const { stripes, signal } = options;
+  const pixelCount = width * height;
+  const shared = await shareBytes(pixels);
+  const { palette, opaqueSize, transparentIndex } = await runCpuTask<PaletteTaskResult>(
+    'quantizePalette',
+    { pixels: shared, pixelCount, maxColors, keepsTransparency: options.transparency === 'threshold' } satisfies PaletteTaskPayload,
+    { signal }
+  );
+  const indices = new Uint8Array(new SharedArrayBuffer(pixelCount));
+  const task: PaletteMapTask = { pixels: shared, indices, palette, paletteSize: opaqueSize, transparentIndex, runTolerance: options.runTolerance ?? 0 };
+  const starts = stripeStarts(width, height, stripes);
+  await Promise.all(starts.map((from, k) => runCpuTask<null>('mapStripe', { task, from, to: k + 1 < starts.length ? starts[k + 1] : pixelCount }, { signal })));
+  await runCpuTask<null>('mapRepair', { task, starts: starts.slice(1) }, { signal });
+  return { palette, paletteSize: palette.length / RGB_STRIDE, indices, transparentIndex };
 }
 
 /**
