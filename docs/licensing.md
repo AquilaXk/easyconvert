@@ -142,6 +142,11 @@ Certain format conversions require specialized external command-line utilities. 
 - **What was found**: the first revokes the purchased benefits when a dispute resolves, won or lost, and on a win only reinstates the amount to the merchant's balance; it never grants them again. The other three do not own the access a payment gives, so they do not grant or revoke it.
 - **Provider documents**: `developer.paddle.com/api-reference/adjustments/list-adjustments` (the actions `chargeback_reverse` and `chargeback_warning`, the status `reversed`, the filters and `per_page` of at most 50) and `paddle.com/help/manage/risk-prevention/understanding-chargebacks-with-paddle` (the amount of a won dispute returns to the seller balance, the fee does not), read 2026-11-13.
 
+### 2.23 Blocklist of disposable email domains (CC0 1.0)
+- **Role**: `src/lib/auth/disposable-email.ts` refuses a sign-up from an address on a disposable domain, so that a person cannot make many accounts to multiply the free daily allowance (entry 288 of `docs/policy-decisions.md`).
+- **Source**: `disposable-email-domains/disposable-email-domains`, file `disposable_email_blocklist.conf` (10,181 domains) and `LICENSE.txt` at commit `ba992a0b4c867db3ff39605696bb7de9fbb2e11f`, fetched 2026-11-13. The repository dedicates the list to the public domain (CC0 1.0 Universal). The list is vendored whole in `third_party/disposable-email-domains/` with its licence text and a `SOURCE.md` that names the commit; `src/lib/auth/disposable-email-domains.generated.ts` is built from it by `scripts/refresh-disposable-email-domains.mjs`, which is the only code that reads the network for it and runs by hand.
+- **Compliance**: CC0 asks for nothing; the licence text and the source commit travel with the copy anyway. `NOTICE` names the directory.
+
 ---
 
 ## 3. LGPL Relinking & On-Premises Container Images
