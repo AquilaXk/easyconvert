@@ -81,8 +81,8 @@ describe('Per-key burst rate limit and Retry-After (#242)', () => {
       expect(refilled.apiKey?.userId).toBe(user.id);
     });
 
-    it('sizes the bucket by tier (pro allows 100 before limiting)', async () => {
-      const user = await createUser('pro');
+    it('sizes the bucket by tier (a paid account allows 100 before limiting)', async () => {
+      const user = await createUser('paid');
       const { secretKey } = await createKey(user.id);
 
       expect(await drainBucket(secretKey, PRO_BURST_CAPACITY)).toBe(PRO_BURST_CAPACITY);
@@ -163,14 +163,14 @@ describe('Per-key burst rate limit and Retry-After (#242)', () => {
       const now = FIXED_NOW.getTime();
       const base = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_LIMIT };
 
-      const exhausted = buildRateLimitHeaders({ ...base, usedToday: FREE_DAILY_LIMIT, remaining: 0, resetAt: now + 90_500 });
+      const exhausted = buildRateLimitHeaders({ ...base, usedToday: FREE_DAILY_LIMIT, remaining: 0, resetAt: now + 90_500 , packageCredits: 0});
       expect(exhausted['Retry-After']).toBe('91');
       expect(exhausted['RateLimit-Reset']).toBe('91');
 
-      const resetInPast = buildRateLimitHeaders({ ...base, usedToday: FREE_DAILY_LIMIT, remaining: 0, resetAt: now - 5_000 });
+      const resetInPast = buildRateLimitHeaders({ ...base, usedToday: FREE_DAILY_LIMIT, remaining: 0, resetAt: now - 5_000 , packageCredits: 0});
       expect(resetInPast['Retry-After']).toBe('1');
 
-      const available = buildRateLimitHeaders({ ...base, usedToday: FREE_DAILY_LIMIT - 3, remaining: 3, resetAt: now + 90_500 });
+      const available = buildRateLimitHeaders({ ...base, usedToday: FREE_DAILY_LIMIT - 3, remaining: 3, resetAt: now + 90_500, packageCredits: 0 });
       expect(Object.keys(available)).not.toContain('Retry-After');
       expect(available['RateLimit-Remaining']).toBe('3');
     });

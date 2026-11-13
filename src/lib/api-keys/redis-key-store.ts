@@ -11,10 +11,12 @@ import type {
   ApiKeyRotateOptions,
   ApiKeyRotateResult,
   ApiKeyUpdateOptions,
+  ChargeEntry,
+  QuotaUsage,
   UserConversionFile,
   UserConversionFileInput,
 } from './types';
-import type { User } from '../auth/types';
+import type { User, UserTier } from '../auth/types';
 import { decryptSecret } from './secret-encryption';
 import { RedisUserFileHistory } from './user-file-history';
 import { isIpInCidr, isIpAllowed } from './ip-utils';
@@ -31,8 +33,14 @@ import {
   RedisReservationLedger,
   reservationIdOf,
   parseReservationId,
+  type ChargeOptions,
+  type PackageGrant,
+  type PackageGrantOutcome,
+  type PackageRefundRequest,
+  type PackageRevokeOutcome,
   type QuotaExtension,
   type ReservationLedger,
+  type Settlement,
 } from './reservation-ledger';
 
 export { isIpInCidr, isIpAllowed, RECORD_VERIFIED_KEY_LUA_SCRIPT };
@@ -178,23 +186,61 @@ export class RedisKeyStore extends KeyStore {
     return this.redisClient ? 0 : this.memoryLedger.reclaim();
   }
 
-  public override async getQuotaUsage(userId: string) {
+  public override async getQuotaUsage(userId: string): Promise<QuotaUsage> {
     this.cleanExpiredReservations();
-
-    if (this.redisClient) {
-      try {
-        const { tier, window, limit } = await quotaAllowanceOf(userId);
-        const used = await this.ledger().used(userId, window.key);
-        return { tier, period: window.period, dailyLimit: limit, usedToday: used, remaining: Math.max(0, limit - used), resetAt: window.endsAt };
-      } catch (err) {
-        // The account store's own refusal keeps its type (a 503 in the route); any other failure is the quota service's.
-        if (err instanceof AuthStoreUnavailableError) throw err;
-        console.error('[RedisKeyStore] Redis getQuotaUsage failed:', err);
-        throw new Error('Distributed quota service is temporarily unavailable');
-      }
+    this.ensureInitialized();
+    try {
+      const { window, limit, subscribed } = await quotaAllowanceOf(userId);
+      const { used, packageCredits } = await this.ledger().used(userId, window.key);
+      const free = Math.max(0, limit - used);
+      return {
+        tier: subscribed || packageCredits > 0 ? 'paid' : 'free',
+        period: window.period,
+        dailyLimit: limit,
+        usedToday: used,
+        remaining: free + packageCredits,
+        resetAt: window.endsAt,
+        packageCredits,
+      };
+    } catch (err) {
+      // The account store's own refusal keeps its type (a 503 in the route); any other failure is the quota service's.
+      if (err instanceof AuthStoreUnavailableError) throw err;
+      console.error('[RedisKeyStore] getQuotaUsage failed:', err);
+      throw new Error('Distributed quota service is temporarily unavailable');
     }
+  }
 
-    return super.getQuotaUsage(userId);
+  /** `user` with the paid tier when its package balance is above zero: packages are held beside the account, so the tier of the record does not say. */
+  public async withCreditTier<T extends { id: string; tier: UserTier }>(user: T): Promise<T> {
+    if (user.tier === 'paid') return user;
+    return (await this.ledger().packageBalance(user.id)) > 0 ? { ...user, tier: 'paid' } : user;
+  }
+
+  /** The package balance of `userId`. */
+  public async packageBalance(userId: string): Promise<number> {
+    return this.ledger().packageBalance(userId);
+  }
+
+  /** Adds the credits of a paid package payment to the account, once for each transaction id, and remembers whose payment it is for refunds. */
+  public async creditPackage(userId: string, grant: PackageGrant): Promise<PackageGrantOutcome> {
+    const outcome = await this.ledger().grantPackage(userId, grant);
+    await this.ledger().rememberTransactionOwner(grant.transactionId, userId);
+    return outcome;
+  }
+
+  /** The account a package payment was credited to, or null. */
+  public async packageTransactionOwner(transactionId: string): Promise<string | null> {
+    return this.ledger().transactionOwner(transactionId);
+  }
+
+  /** Takes back the unused credits of a refunded package payment, once for each adjustment. */
+  public async revokePackage(userId: string, refund: PackageRefundRequest): Promise<PackageRevokeOutcome> {
+    return this.ledger().revokePackage(userId, refund);
+  }
+
+  /** The newest charges of an account, newest first. */
+  public async recentCharges(userId: string): Promise<ChargeEntry[]> {
+    return this.ledger().recentCharges(userId);
   }
 
   /**
@@ -288,7 +334,8 @@ export class RedisKeyStore extends KeyStore {
       const { window, limit } = await quotaAllowanceOf(userId);
       const day = window.key;
       if (units === 0) {
-        const remaining = Math.max(0, limit - (await this.ledger().used(userId, day)));
+        const { used, packageCredits } = await this.ledger().used(userId, day);
+        const remaining = Math.max(0, limit - used) + packageCredits;
         return { allowed: remaining > 0, remaining };
       }
       const reservationId = reservationIdOf(userId, day);
@@ -347,10 +394,18 @@ export class RedisKeyStore extends KeyStore {
    * 2-Phase Quota Transaction: Phase 2a (Commit)
    * Confirms successful task completion and finalizes the reservation.
    */
-  public async commitQuota(reservationId: string): Promise<boolean> {
-    const committed = await this.endReservation('commit', reservationId, (ledger) => ledger.commit(reservationId));
-    if (committed === false) console.warn(`[RedisKeyStore] Commit found no live reservation ${reservationId}`);
-    return committed === true;
+  public async commitQuota(reservationId: string, charge?: ChargeOptions): Promise<boolean> {
+    const committed = await this.endReservation('commit', reservationId, (ledger) => ledger.commit(reservationId, charge));
+    if (committed?.success === false) console.warn(`[RedisKeyStore] Commit found no live reservation ${reservationId}`);
+    this.warnUncharged(reservationId, committed);
+    return committed?.success === true;
+  }
+
+  /** Logs the credits a conversion owed on top of its reservation that the account no longer had: the work is done, so the shortfall is only recorded. */
+  private warnUncharged(reservationId: string, settlement: Settlement | undefined): void {
+    if (settlement && settlement.uncharged > 0) {
+      console.warn(`[RedisKeyStore] Reservation ${reservationId} owed ${settlement.uncharged} credits more than the account had left; they were not charged`);
+    }
   }
 
   /**
@@ -360,12 +415,14 @@ export class RedisKeyStore extends KeyStore {
    */
   public async settleQuota(
     reservationId: string,
-    actualUnits: number
+    actualUnits: number,
+    charge?: ChargeOptions
   ): Promise<{ success: boolean; difference: number }> {
     const safeUnits = Math.max(0, Number.isFinite(actualUnits) ? Math.floor(actualUnits) : 0);
-    const settled = await this.endReservation('settle', reservationId, (ledger) => ledger.settle(reservationId, safeUnits));
+    const settled = await this.endReservation('settle', reservationId, (ledger) => ledger.settle(reservationId, safeUnits, charge));
     if (settled?.success === false) console.warn(`[RedisKeyStore] Settle found no live reservation ${reservationId}`);
-    return settled ?? { success: false, difference: 0 };
+    this.warnUncharged(reservationId, settled);
+    return settled ? { success: settled.success, difference: settled.difference } : { success: false, difference: 0 };
   }
 
   /**
@@ -555,7 +612,7 @@ export class RedisKeyStore extends KeyStore {
         ...key,
         webhookSecret: decryptSecret(key.webhookSecret),
       },
-      user: redisUserStore.sanitizeUser(userRecord),
+      user: await this.withCreditTier(redisUserStore.sanitizeUser(userRecord)),
     };
   }
 
@@ -805,6 +862,7 @@ export class RedisKeyStore extends KeyStore {
 
   public override async forgetUsage(userId: string): Promise<number> {
     this.memoryLedger.forgetOwner(userId);
+    await this.ledger().forgetPackages(userId);
     for (const key of this.tokenBuckets.keys()) {
       if (key === userId || key.startsWith(`${userId}:`) || key.endsWith(`:${userId}`)) {
         this.tokenBuckets.delete(key);

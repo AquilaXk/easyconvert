@@ -39,7 +39,7 @@ import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { createSessionToken } from '../src/lib/auth/session';
 import { userStore } from '../src/lib/auth/user-store';
 import { subscriptionStore } from '../src/lib/billing/subscription-store';
-import { ANONYMOUS_DAILY_CONVERSIONS, URL_IMPORT_MAX_BYTES, type Plan } from '../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CREDITS, URL_IMPORT_MAX_BYTES, type Plan } from '../src/lib/plan-limits';
 import { acquireSyncSlot, syncSlotsInUse, type ConversionSlot } from '../src/lib/queue/concurrency-limit';
 import { QueueUnavailableError, type ConversionJobData, type ConversionJobResult } from '../src/lib/types';
 import { itFetchesWithNoUnitLeftForEveryCaller } from './helpers/unit-left-identities';
@@ -61,7 +61,7 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0
 const JOB_TIMEOUT_MS = 300;
 const JOB_RUNS_FOR_MS = 5000;
 /** The suite unsets ANONYMOUS_DAILY_LIMIT, so it counts against the default allowance. */
-const DAY_ALLOWANCE = ANONYMOUS_DAILY_CONVERSIONS;
+const DAY_ALLOWANCE = ANONYMOUS_DAILY_CREDITS;
 const FREE_CONCURRENCY = 5;
 const UPLOAD_BUDGET_PROBLEM = 'https://api.easyconvert.io/problems/upload-budget-exceeded';
 const CONCURRENCY_PROBLEM = 'https://api.easyconvert.io/problems/concurrency-limit';
@@ -579,7 +579,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
 
   describe('a paid plan', () => {
     it('counts by the month of its subscription, in keys that live until the period ends, and refuses past its limit', async () => {
-      const user = await userStore.createUser({ email: `month_${crypto.randomBytes(6).toString('hex')}@redis.test`, name: 'Month', tier: 'basic' });
+      const user = await userStore.createUser({ email: `month_${crypto.randomBytes(6).toString('hex')}@redis.test`, name: 'Month', tier: 'paid' });
       const subscriptionId = `sub_${crypto.randomBytes(6).toString('hex')}`;
       const eventId = `evt_${crypto.randomBytes(6).toString('hex')}`;
       otherUsers.push(user.id, subscriptionId, eventId);
@@ -588,7 +588,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
         eventId,
         eventAt: Date.now(),
         userId: user.id,
-        subscription: { provider: 'paddle', providerSubscriptionId: subscriptionId, providerCustomerId: 'ctm_fixture', status: 'active', plan: 'basic', currentPeriodEnd: periodEnd },
+        subscription: { provider: 'paddle', providerSubscriptionId: subscriptionId, providerCustomerId: 'ctm_fixture', status: 'active', credits: 1000, currentPeriodEnd: periodEnd },
       });
       expect(applied).toBe('applied');
 
@@ -597,7 +597,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       expect(unit).toMatchObject({ allowed: true, remaining: 997 });
       expect(unit.reservationId).toContain(`_b${periodEnd}_`);
       expect(await redisKeyStore.commitQuota(unit.reservationId as string)).toBe(true);
-      expect(await redisKeyStore.getQuotaUsage(user.id)).toEqual({ tier: 'basic', period: 'month', dailyLimit: 1000, usedToday: 3, remaining: 997, resetAt: periodEnd });
+      expect(await redisKeyStore.getQuotaUsage(user.id)).toEqual({ tier: 'paid', period: 'month', dailyLimit: 1000, usedToday: 3, remaining: 997, resetAt: periodEnd });
 
       const usageKeys = await admin.keys(`*usage:{${user.id}}:*`);
       expect(usageKeys).toHaveLength(1);

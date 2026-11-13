@@ -4,6 +4,8 @@ import { storageProvider } from '../storage';
 import { releaseResultHold } from '../storage/retention-service';
 import { redisKeyStore } from '../api-keys/redis-key-store';
 import { leaseToHandedOffWork } from '../api-keys/hand-off';
+import { chargeOptionsOf } from '../api-keys/conversion-charge';
+import { baseCredits } from '../billing/credits';
 import { MISSING_WEBHOOK_SECRET_REASON, webhookDispatcher } from '../api-keys/webhook-dispatcher';
 import { processNodeJob } from './node-processor';
 import { recordJobResultInHistory } from './job-history';
@@ -89,7 +91,16 @@ export function attachJobLifecycleListeners(
       // 2-Phase Quota: Commit quota upon successful conversion
       if (job.data?.reservationId) {
         try {
-          await redisKeyStore.commitQuota(job.data.reservationId);
+          // The reservation holds the credits of the pair's class; the minutes the conversion ran beyond the first are charged on top.
+          await redisKeyStore.commitQuota(
+            job.data.reservationId,
+            chargeOptionsOf({
+              from: job.data.sourceFormat,
+              to: job.data.targetFormat,
+              base: baseCredits(job.data.sourceFormat, job.data.targetFormat),
+              processingMs: result.durationMs,
+            })
+          );
         } catch (err) {
           console.error(
             `[ConversionQueue] Failed to commit quota for reservation ${job.data.reservationId}:`,

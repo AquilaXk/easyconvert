@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { baseCredits } from '../../billing/credits';
 import { Readable } from 'node:stream';
 import JSZip from 'jszip';
 import type { Job } from '../bullmq-engine';
@@ -546,6 +547,8 @@ export async function processGraphNodeJob(
     const node = openedNode(job.data.graphNode as GraphNode, graphNodeJobId(graphId, nodeId));
     const effectiveStorage: IStorageBackend = scope.storage;
     let outputKeys: string[] = [];
+    /** Credits of the class of a `convert` node's conversion, for each output it makes; one for every other operation. */
+    let creditsEach = 1;
     const optimizations: NonNullable<ConversionJobResult['optimizations']> = [];
     const effectiveEngine = recordingConversions(deadlineBoundEngine(engine || dispatchEngine, job));
     await job.log(`Executing graph node "${nodeId}" (op: ${node.op}) in graph ${graphId}`);
@@ -581,6 +584,7 @@ export async function processGraphNodeJob(
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
 
+        creditsEach = baseCredits(path.extname(inputArtifacts[0]).slice(1), node.targetFormat);
         outputKeys.push(
           ...(await convertGraphNodeInputs(
             { graphId, nodeId, inputArtifacts, storage: effectiveStorage, engine: effectiveEngine, attemptSignal },
@@ -933,7 +937,7 @@ export async function processGraphNodeJob(
     // cancel or takeover), so the node is never recorded as completed.
     attemptSignal.throwIfAborted();
     const outputs = [...new Set(outputKeys)];
-    await graphScheduler.onNodeCompleted(graphId, nodeId, outputs, graphNodeCharge(node.op, { outputs: outputs.length, optimizations }));
+    await graphScheduler.onNodeCompleted(graphId, nodeId, outputs, graphNodeCharge(node.op, { outputs: outputs.length, optimizations }, { creditsEach, processingMs: durationMs }));
 
     return {
       jobId: job.id,

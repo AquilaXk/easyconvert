@@ -12,7 +12,8 @@ import { storeUploadedBuffer } from '@/lib/api/completed-upload';
 import { readObjectHeader } from '@/lib/storage/object-header';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject, spoofCheckRefusal } from '@/lib/security/file-guard';
 import { readMultipartForm } from '@/lib/api/multipart-body';
-import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, holdBaseCredits, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
+import { baseCredits } from '@/lib/billing/credits';
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
@@ -193,6 +194,10 @@ async function queueJob(req: NextRequest, user: User, unit: ReservedUnit, instan
 
     const prepared = await prepareJobInput(user, request, instanceUri);
     if ('refusal' in prepared) return prepared.refusal;
+
+    // The unit was reserved for one credit before the formats were known; the rest of the cost of this pair is held now.
+    const short = await holdBaseCredits(unit, user, baseCredits(prepared.sourceFormat, request.targetFormat));
+    if (short) return conversionRefusalResponse(short, instanceUri);
 
     const job = await handOffConversionJob(
       unit,

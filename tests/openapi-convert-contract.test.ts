@@ -70,7 +70,7 @@ describe('the code values of the convert routes follow the error classes', { tim
 });
 
 describe('the 429 of the convert routes is the answer the code sends', () => {
-  const exhausted = { tier: 'free' as const, period: 'day' as const, dailyLimit: 10, usedToday: 10, remaining: 0, resetAt: Date.now() + 3_600_000 };
+  const exhausted = { tier: 'free' as const, period: 'day' as const, dailyLimit: 10, usedToday: 10, remaining: 0, resetAt: Date.now() + 3_600_000 , packageCredits: 0};
 
   it.each(CONVERT_ROUTES)('%s documents every header of a refused day, and the problem types by name', async (route) => {
     const spec = await loadSpec();

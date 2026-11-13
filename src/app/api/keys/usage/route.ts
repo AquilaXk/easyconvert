@@ -11,8 +11,9 @@ export async function GET(req: NextRequest) {
   if ('refused' in caller) return caller.refused;
 
   let usage;
+  let charges;
   try {
-    usage = await redisKeyStore.getQuotaUsage(caller.user.id);
+    [usage, charges] = await Promise.all([redisKeyStore.getQuotaUsage(caller.user.id), redisKeyStore.recentCharges(caller.user.id)]);
   } catch (error) {
     if (error instanceof AuthStoreUnavailableError) return authStoreUnavailableRefusal(error);
     throw error;
@@ -20,5 +21,6 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     success: true,
     usage,
+    charges,
   });
 }

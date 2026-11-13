@@ -5,6 +5,7 @@ import { generateJobId, type IQueueEngine, type Job, type JobOptions } from './b
 import { sealJobDataSecrets } from './option-secrets';
 import { conversionDeadlineMs, tierMaxDeadlineMs } from './job-deadline';
 import { redisUserStore } from '../auth/redis-user-store';
+import { redisKeyStore } from '../api-keys/redis-key-store';
 import { isAnonymousUserId } from '../auth/anonymous-identity';
 import { foundOrUnknown, type ReservedUnit } from '../api-keys/hand-off';
 import { GONE_RECORD_MS, resolveRetentionPolicy } from '../storage/result-retention';
@@ -136,11 +137,11 @@ export async function trustedInputBytes(
 
 const FREE_TIER = 'free';
 
-/** Tier of the owner of `userId`, which sets the deadline of the owner's jobs; unknown and anonymous owners are the free tier. */
+/** Tier of the owner of `userId` (paid with a subscription or package credits), which sets the deadline of the owner's jobs; unknown and anonymous owners are the free tier. */
 export async function tierForOwner(userId: string | undefined): Promise<string> {
   if (!userId || isAnonymousUserId(userId)) return FREE_TIER;
   const owner = await redisUserStore.findById(userId);
-  return owner?.tier ?? FREE_TIER;
+  return owner ? (await redisKeyStore.withCreditTier(owner)).tier : FREE_TIER;
 }
 
 /**

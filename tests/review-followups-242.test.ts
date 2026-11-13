@@ -9,7 +9,6 @@ import { createSessionToken } from '../src/lib/auth/session';
 import { GET as listQueueJobsRoute } from '../src/app/api/queue/jobs/route';
 import { POST as v1ConvertRoute } from '../src/app/api/v1/convert/route';
 import { API_KEY_BURST_LIMITS } from '../src/lib/api-keys/guard';
-import { TIER_LIMITS } from '../src/lib/plan-limits';
 import type { User } from '../src/lib/auth/types';
 import type { ConversionJobData } from '../src/lib/types';
 
@@ -18,7 +17,7 @@ const BASE_URL = 'http://localhost:3000';
 const RATE_LIMITED_TYPE = 'https://api.easyconvert.io/problems/rate-limited';
 const QUOTA_EXCEEDED_TYPE = 'https://api.easyconvert.io/problems/quota-exceeded';
 
-async function createUser(label: string, tier: 'free' | 'pro' = 'pro'): Promise<User> {
+async function createUser(label: string, tier: 'free' | 'paid' = 'paid'): Promise<User> {
   const email = `${label}_${Date.now()}_${Math.random().toString(36).slice(2)}@followup.test`;
   return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier }));
 }
@@ -102,16 +101,17 @@ describe('PR #246 review follow-ups', () => {
 
     it('labels a per-key burst rejection as rate-limited, not quota-exceeded', async () => {
       // A free key's conversions of the day (10) run out before its burst of 20, so through the route a free key gets the
-      // quota 429 first. A pro key's allowance outlasts every attempt, so this 429 can only come from the burst bucket. The free
+      // quota 429 first. A paid key's credits outlast every attempt, so this 429 can only come from the burst bucket. The free
       // bucket's label is asserted on the guard itself in api-key-burst-rate-limit.test.ts.
-      const user = await createUser('burst_type', 'pro');
+      const user = await createUser('burst_type', 'paid');
       const key = await redisKeyStore.generateApiKey(user.id, 'burst', { scopes: ['convert:write'] });
-      const capacity = API_KEY_BURST_LIMITS.pro.capacity;
+      const capacity = API_KEY_BURST_LIMITS.paid.capacity;
 
       // The bucket refills from Date.now, so the clock is held during the burst: the 429 then comes after capacity + 1 calls
       // on any runner, instead of a slow runner converting until the refill falls behind.
       const maxAttempts = capacity * BURST_ATTEMPT_FACTOR;
-      expect(TIER_LIMITS.pro).toBeGreaterThan(maxAttempts);
+      // A package that outlasts every attempt: credits, not the day's 10, are what the paid key spends.
+      await redisKeyStore.creditPackage(user.id, { transactionId: `txn_${user.id}`, credits: maxAttempts + 100, paid: '0', at: Date.now() });
       const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now());
       let last: Response | undefined;
       let attempts = 0;

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
-import { validateApiAccess, authErrorHeaders, conversionsUsedUp, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, creditsUsedUp, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import type { User } from '@/lib/auth/types';
@@ -12,6 +12,7 @@ import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import { graphInputKeys, withGraphInputsHeld } from '@/lib/queue/graph/input-cleanup';
 import { conversionQueue, getQueueForResourceClass } from '@/lib/queue/conversion-queue';
+import { baseCredits } from '@/lib/billing/credits';
 import { handOffConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { stripEngineControls } from '@/lib/conversions/job-time';
 import { JobDeadlineError } from '@/lib/queue/job-deadline';
@@ -329,7 +330,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   const reply = (res: NextResponse | Response) => replyUnderKey(idempotencyCtx, res, instanceUri);
 
   const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
-  if (quota.remaining <= 0) return reply(conversionRefusalResponse(conversionsUsedUp(auth.user, quota, 1), instanceUri));
+  if (quota.remaining <= 0) return reply(conversionRefusalResponse(creditsUsedUp(auth.user, quota, 1), instanceUri));
 
   const fail = async (
     status: number,
@@ -704,7 +705,8 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       return reply(typedFailureProblem(err, instanceUri));
     }
 
-    const unit = await reserveConversionUnit(auth.user, reservedUnits);
+    // One job costs the credits of its class; a graph reserves a credit for each conversion in it and is charged by class as its nodes run.
+    const unit = await reserveConversionUnit(auth.user, graph ? reservedUnits : baseCredits(sourceDef.id, targetDef.id));
     if (!unit.reserved) return reply(conversionRefusalResponse(unit.refusal, instanceUri));
 
     const submission: ReservedSubmission = {

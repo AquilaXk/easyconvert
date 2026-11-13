@@ -1,4 +1,5 @@
 import { DEFAULT_JWT_AUDIENCE, DEFAULT_JWT_ISSUER, signJwt, verifyJwt } from './jwt';
+import { redisKeyStore } from '../api-keys/redis-key-store';
 import { redisUserStore } from './redis-user-store';
 import type { SessionPayload, User } from './types';
 import { LEGACY_SESSION_COOKIE_NAME, SESSION_COOKIE_NAMES, sessionCookieName, sessionTokenFromCookieHeader } from './session-cookie';
@@ -152,6 +153,7 @@ export async function getSessionFromToken(token: string): Promise<User | null> {
     return null;
   }
 
-  return redisUserStore.sanitizeUser(userRecord);
+  // An account with package credits has the paid tier whatever its record says: the balance is held beside the account.
+  return redisKeyStore.withCreditTier(redisUserStore.sanitizeUser(userRecord));
 }
 

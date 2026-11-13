@@ -1,4 +1,4 @@
-import type { QuotaUsage, UserConversionFile } from '@/lib/api-keys/types';
+import type { ChargeEntry, QuotaUsage, UserConversionFile } from '@/lib/api-keys/types';
 import type { PublicApiKey, PublicWebhookDlqEntry } from '@/lib/api-keys/public-views';
 import type { User } from '@/lib/auth/types';
 
@@ -15,6 +15,7 @@ export interface DashboardSnapshot {
   user: User;
   keys?: PublicApiKey[];
   quota?: QuotaUsage;
+  charges?: ChargeEntry[];
   files?: AccountFile[];
   dlqEntries?: PublicWebhookDlqEntry[];
   emailVerification?: { enabled: boolean; verified: boolean };

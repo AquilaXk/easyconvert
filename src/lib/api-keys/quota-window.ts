@@ -1,19 +1,18 @@
 import { isAnonymousUserId } from '../auth/anonymous-identity';
-import { redisUserStore } from '../auth/redis-user-store';
-import type { UserTier } from '../auth/types';
-import { isEntitlingStatus } from '../billing/entitlement';
+import { entitlementOf } from '../billing/entitlement';
 import { subscriptionStore } from '../billing/subscription-store';
-import { QUOTA_PERIOD, TIER_LIMITS, getAnonymousDailyLimit, type QuotaPeriod } from '../plan-limits';
+import { FREE_DAILY_CREDITS, getAnonymousDailyLimit, type QuotaPeriod } from '../plan-limits';
 
 /**
- * The span of time whose conversions are counted together (docs/policy-decisions.md, entry 280). The free plan and the callers
- * without an account are counted by the UTC day. A paid plan is counted by the month of its subscription: the span between two
- * renewals, which is what a customer sees on the invoice. An account on a paid tier with no live subscription (a plan set by the
- * operator) or whose renewal date is unknown is counted by the UTC calendar month.
+ * The span of time whose credits are counted together (docs/policy-decisions.md, entries 280 and 285). The free plan and the callers
+ * without an account are counted by the UTC day. A subscription is counted by its billing period: the span between two renewals,
+ * which is what a customer sees on the invoice, and its credits do not roll over. A subscription whose renewal date is unknown is
+ * counted by the UTC calendar month. Package credits have no window: the ledger holds them beside the window (`reservation-ledger.ts`).
  *
- * `key` names the span inside the ledger's keys and in a reservation's id (`reservation-ledger.ts`): the date `YYYY-MM-DD` of a day, so
- * the day keys are those that existed before paid quotas, `m<YYYY-MM>` for a calendar month and `b<ms>` for the span that ends at the
- * renewal `<ms>`. A key never holds an underscore, which a reservation id reads its parts by.
+ * `key` names the span inside the ledger's keys and in a reservation's id: the date `YYYY-MM-DD` of a day, so the day keys are those
+ * that existed before paid quotas, and for a subscription `m<YYYY-MM>` (calendar month) or `b<ms>` (the span that ends at the
+ * renewal `<ms>`) followed by `c<credits>`, so that switching to another size starts a count of its own at once and drops what was
+ * left of the period. A key never holds an underscore, which a reservation id reads its parts by.
  */
 export interface QuotaWindow {
   period: QuotaPeriod;
@@ -22,11 +21,11 @@ export interface QuotaWindow {
   endsAt: number;
 }
 
-/** What an account may do in its current window: its tier (anonymous callers are `free`), the window, and the conversions it holds. */
+/** What an account may spend from its window: the window, the credits it holds, and whether a subscription gives it. */
 export interface QuotaAllowance {
-  tier: UserTier;
   window: QuotaWindow;
   limit: number;
+  subscribed: boolean;
 }
 
 /** A renewal date that the roll-forward could not place within this many months of now is not trusted. */
@@ -80,17 +79,17 @@ export function billingMonthWindow(periodEnd: number, now: number): QuotaWindow 
   return { period: 'month', key: `b${endsAt}`, endsAt };
 }
 
-/** The window of a paid account: the month of its live subscription of `tier`, else the calendar month. */
-async function paidWindow(userId: string, tier: UserTier, now: number): Promise<QuotaWindow> {
+/** The window of the live subscription of `userId`, with the credits it holds; undefined when the account has none. */
+async function subscriptionAllowance(userId: string, now: number): Promise<QuotaAllowance | undefined> {
   const subscription = await subscriptionStore.findByUser(userId);
-  const periodEnd = subscription?.plan === tier && isEntitlingStatus(subscription.status) ? subscription.currentPeriodEnd : undefined;
-  return (periodEnd === undefined ? undefined : billingMonthWindow(periodEnd, now)) ?? calendarMonthWindow(now);
+  if (!subscription || entitlementOf(subscription, now).tier !== 'paid') return undefined;
+  const periodEnd = subscription.currentPeriodEnd;
+  const base = (periodEnd === undefined ? undefined : billingMonthWindow(periodEnd, now)) ?? calendarMonthWindow(now);
+  return { window: { ...base, key: `${base.key}c${subscription.credits}` }, limit: subscription.credits, subscribed: true };
 }
 
-/** What `userId` may convert, and since when it has been counted: one read of the account, and of its subscription when its plan is paid. */
+/** What `userId` may spend, and since when it has been counted: the subscription's period when it has one, else the UTC day. One read of the subscription for an account. */
 export async function quotaAllowanceOf(userId: string, now: number = Date.now()): Promise<QuotaAllowance> {
-  if (isAnonymousUserId(userId)) return { tier: 'free', window: dayWindow(now), limit: getAnonymousDailyLimit() };
-  const tier: UserTier = (await redisUserStore.findById(userId))?.tier ?? 'free';
-  const window = QUOTA_PERIOD[tier] === 'day' ? dayWindow(now) : await paidWindow(userId, tier, now);
-  return { tier, window, limit: TIER_LIMITS[tier] };
+  if (isAnonymousUserId(userId)) return { window: dayWindow(now), limit: getAnonymousDailyLimit(), subscribed: false };
+  return (await subscriptionAllowance(userId, now)) ?? { window: dayWindow(now), limit: FREE_DAILY_CREDITS, subscribed: false };
 }

@@ -59,7 +59,7 @@ async function endGraphReservation(graphId: string, reservationId: string | unde
   if (!reservationId) return;
   const action = end.kind === 'rollback' ? 'given back' : `settled to ${end.units} units`;
   try {
-    const ended = end.kind === 'rollback' ? await redisKeyStore.rollbackQuota(reservationId) : (await redisKeyStore.settleQuota(reservationId, end.units)).success;
+    const ended = end.kind === 'rollback' ? await redisKeyStore.rollbackQuota(reservationId) : (await redisKeyStore.settleQuota(reservationId, end.units, { note: { kind: 'graph', base: end.units } })).success;
     if (!ended) console.error(`[GraphScheduler] Reservation ${reservationId} of graph ${graphId} was not ${action}: the key store holds no such reservation.`);
   } catch (err) {
     console.error(`[GraphScheduler] Reservation ${reservationId} of graph ${graphId} could not be ${action}:`, err);

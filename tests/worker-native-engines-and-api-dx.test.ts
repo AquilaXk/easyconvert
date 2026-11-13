@@ -32,7 +32,7 @@ const FREE_DAILY_LIMIT = 10;
 const PRO_DAILY_LIMIT = 3000;
 
 let userCounter = 0;
-async function createUniqueTestUser(tier: 'free' | 'pro' | 'enterprise' = 'free') {
+async function createUniqueTestUser(tier: 'free' | 'paid' = 'free') {
   userCounter++;
   const uniqueId = `${Date.now()}_${userCounter}_${Math.random().toString(36).slice(2, 7)}`;
   return userStore.sanitizeUser(
@@ -152,12 +152,12 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
     it('builds RFC rate-limit headers conforming to IETF draft-ietf-httpapi-ratelimit-headers', () => {
       const now = Date.now();
       const headers = buildRateLimitHeaders({
-        tier: 'pro',
+        tier: 'paid',
         period: 'day' as const,
       dailyLimit: 500,
         usedToday: 50,
         remaining: 450,
-        resetAt: now + 3600 * 1000,
+        resetAt: now + 3600 * 1000, packageCredits: 0,
       });
 
       expect(headers['RateLimit-Limit']).toBe('500');
@@ -249,7 +249,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
     });
 
     it('hands off to asynchronous queue with 202 Accepted when Prefer: respond-async is supplied', async () => {
-      const user = await createUniqueTestUser('pro');
+      const user = await createUniqueTestUser('paid');
       const { secretKey } = await keyStore.generateApiKey(user.id, 'Async Prefer Key');
 
       const csvContent = 'a,b,c\n10,20,30';
@@ -292,7 +292,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
     });
 
     it('automatically hands off files > 10MB to asynchronous queue (202 Accepted)', async () => {
-      const user = await createUniqueTestUser('enterprise');
+      const user = await createUniqueTestUser('paid');
       const { secretKey } = await keyStore.generateApiKey(user.id, 'Large File Key');
 
       // Create a 10.5 MB payload

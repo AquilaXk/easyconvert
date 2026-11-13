@@ -73,8 +73,10 @@ export interface QuotaReservation {
 }
 
 /**
- * The conversions of an account in its current quota period. `dailyLimit` and `usedToday` keep the names clients already read and count
- * the units of the period: the UTC day for anonymous callers and the free plan, the month of the subscription for a paid plan (`period`).
+ * The credits of an account (docs/policy-decisions.md, entry 285). `dailyLimit` and `usedToday` keep the names clients already read and count
+ * the credits of the window: the UTC day for anonymous callers and the free plan, the billing period of a subscription (`period`).
+ * `packageCredits` is the package balance, which has no window. `remaining` is what the account can spend now: what is left of the
+ * window plus the package balance.
  */
 export interface QuotaUsage {
   tier: UserTier;
@@ -83,6 +85,31 @@ export interface QuotaUsage {
   usedToday: number;
   remaining: number;
   resetAt: number;
+  packageCredits: number;
+}
+
+/** What a charge was for: the conversion's formats, its class cost and the credits added for processing time. */
+export interface ChargeNote {
+  /** The source and target format ids; absent for a graph, which charges many conversions together. */
+  from?: string;
+  to?: string;
+  /** Credits of the conversion's class. */
+  base: number;
+  /** Credits added for the minutes of processing beyond the first. */
+  surcharge?: number;
+  /** `graph` for the credits a job graph was charged in all, `batch` for a batch of files. */
+  kind?: 'graph' | 'batch';
+}
+
+/** One charge in the list of recent charges of an account. */
+export interface ChargeEntry extends ChargeNote {
+  /** When it was charged, in milliseconds since the epoch. */
+  at: number;
+  /** Credits charged in all, and how many of them came from the package balance. */
+  credits: number;
+  fromPackage: number;
+  /** Credits owed that the account no longer had (the work was done before the surcharge was known). */
+  uncharged?: number;
 }
 
 export interface UserConversionFile {

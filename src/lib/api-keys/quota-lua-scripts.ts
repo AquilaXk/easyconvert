@@ -4,26 +4,39 @@
  */
 
 /**
- * The leases of an owner's day (reservation-ledger.ts), whose keys every script names once, in the order of
- * `ReservationKeys`: `usage` is the day's count, `leases` a sorted set of the live reservations scored by the time their lease
- * ends, `held` a hash of the units each one holds, `extensions` a hash of what each extension of one reservation holds; a script on the day alone is given the first three. Every script first gives back the units of each lease that ended (`reclaim`), so a reservation whose holder died stops
- * counting once its lease ends, and no script acts on a lease that ended. `now` is the clock of the Redis server (`TIME`,
- * which a script may call since scripts are replicated by their effects), so every web and worker process ends a lease at the
- * same moment whatever its own clock says; callers pass durations, never times. `keep` makes a key live at least until a time,
- * never shorter, so the keys of a day live as long as its day or its longest lease, and a reservation that outlives midnight
- * still ends on its own day.
+ * The credits of an owner, which these scripts reserve, charge and give back (docs/policy-decisions.md, entries 15 and 285). An
+ * account spends from two sources, in this order: the allowance of its window (the free plan's UTC day, or a subscription's billing
+ * period), then its package balance, which has no window and never expires. A reservation holds units of each: `held` has the units
+ * of the window, `pheld` those of the package.
+ *
+ * The leases of an owner's window (reservation-ledger.ts), whose keys every script names once, in the order of
+ * `ReservationKeys`: `usage` is the window's count, `leases` a sorted set of the live reservations scored by the time their lease
+ * ends, `held` a hash of the window units each one holds, `pheld` a hash of the package units each one holds, `pool` the package
+ * balance, `extensions` a hash of what each extension of one reservation holds, `log` the list of recent charges; a script on the
+ * window alone is given the first five. Every script first gives back the units of each lease that ended (`reclaim`), so a
+ * reservation whose holder died stops counting once its lease ends, and no script acts on a lease that ended. `now` is the clock of
+ * the Redis server (`TIME`, which a script may call since scripts are replicated by their effects), so every web and worker
+ * process ends a lease at the same moment whatever its own clock says; callers pass durations, never times. `keep` makes a key
+ * live at least until a time, never shorter, so the keys of a window live as long as its window or its longest lease, and a
+ * reservation that outlives midnight still ends on its own window. A count that is gone (its window ended) and a balance that was
+ * never made are not made again by a refund. Every key of an owner carries the owner's hash tag, so each script stays in one slot.
  */
 const LEASE_FUNCTIONS = `
-local usage, leases, held, extensions = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
+local usage, leases, held, pheld, pool, extensions, log = KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5], KEYS[6], KEYS[7]
 local time = redis.call('TIME')
 local now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
 local function reclaim()
   for _, id in ipairs(redis.call('ZRANGEBYSCORE', leases, '-inf', now)) do
     local units = tonumber(redis.call('HGET', held, id) or '0')
+    local packed = tonumber(redis.call('HGET', pheld, id) or '0')
     redis.call('HDEL', held, id)
+    redis.call('HDEL', pheld, id, 'L:' .. id)
     redis.call('ZREM', leases, id)
     if units > 0 and redis.call('EXISTS', usage) == 1 then
       redis.call('DECRBY', usage, units)
+    end
+    if packed > 0 and redis.call('EXISTS', pool) == 1 then
+      redis.call('INCRBY', pool, packed)
     end
   end
 end
@@ -33,27 +46,39 @@ local function keep(key, untilMs)
   end
 end
 local function keepDay(untilMs)
-  for _, key in ipairs({usage, leases, held}) do keep(key, untilMs) end
+  for _, key in ipairs({usage, leases, held, pheld}) do keep(key, untilMs) end
+end
+-- Splits what an owner can still spend: the window's headroom under the limit, and the package balance.
+local function room(limit)
+  local free = math.max(0, limit - tonumber(redis.call('GET', usage) or '0'))
+  return free, tonumber(redis.call('GET', pool) or '0')
 end
 reclaim()
 `;
 
-/** Reserves units under the daily limit, leased for ARGV[4] milliseconds. */
+/**
+ * Reserves units, leased for ARGV[4] milliseconds: from the window's headroom under the limit first, the rest from the package
+ * balance. Nothing is taken when the two together do not cover them. The limit is kept with the reservation (`L:<id>` in `pheld`),
+ * since a charge on top at the end of it is held to the limit of the window it was made in. Answers {1 | 0, units left in both}.
+ */
 export const RESERVE_QUOTA_LUA_SCRIPT = `
--- ARGV[1]: units  ARGV[2]: daily limit  ARGV[3]: reservation id  ARGV[4]: lease in ms  ARGV[5]: ms until the day ends
+-- ARGV[1]: units  ARGV[2]: window limit  ARGV[3]: reservation id  ARGV[4]: lease in ms  ARGV[5]: ms until the window ends
 ${LEASE_FUNCTIONS}
 local units = tonumber(ARGV[1])
-local limit = tonumber(ARGV[2])
-local current = tonumber(redis.call('GET', usage) or '0')
-if current + units > limit then
-  return {0, limit - current}
+local free, balance = room(tonumber(ARGV[2]))
+local fromWindow = math.min(units, free)
+local fromPackage = units - fromWindow
+if fromPackage > balance then
+  return {0, free + balance}
 end
 local leaseEnd = now + tonumber(ARGV[4])
-redis.call('INCRBY', usage, units)
+if fromWindow > 0 then redis.call('INCRBY', usage, fromWindow) end
+if fromPackage > 0 then redis.call('DECRBY', pool, fromPackage) end
 redis.call('ZADD', leases, leaseEnd, ARGV[3])
-redis.call('HSET', held, ARGV[3], units)
+redis.call('HSET', held, ARGV[3], fromWindow)
+redis.call('HSET', pheld, ARGV[3], fromPackage, 'L:' .. ARGV[3], ARGV[2])
 keepDay(math.max(leaseEnd, now + tonumber(ARGV[5])))
-return {1, limit - (current + units)}
+return {1, free + balance - units}
 `;
 
 /**
@@ -80,35 +105,71 @@ return 1
 
 /**
  * Ends a live reservation once, charging ARGV[2] units in place of those it held, or keeping them with ARGV[2] = 'held': a
- * commit keeps them, a rollback charges 0, and a settle charges what was used. A count that is gone is not made again. The
+ * commit keeps them, a rollback charges 0, and a settle charges what was used. ARGV[3] units more are charged on top (the minute
+ * surcharge of a conversion that ran long): from the window's headroom under the limit the reservation was made under first, then from the package
+ * balance, and what neither covers is not charged and is reported, since the work is done and the credits are not there. A refund
+ * of units goes to the package first, the source that was drawn last. ARGV[5] is a JSON object of what the charge was for, or '':
+ * it joins the list of recent charges with the credits charged in all and the time. A count that is gone is not made again. The
  * extensions of the reservation end with it.
  */
 export const SETTLE_TO_QUOTA_LUA_SCRIPT = `
--- ARGV[1]: reservation id  ARGV[2]: units charged in its place, or 'held'
--- Returns {1 ended | 0 no live reservation, units charged more (fewer when negative)}
+-- ARGV[1]: reservation id  ARGV[2]: units charged in its place, or 'held'  ARGV[3]: units charged on top  ARGV[4]: charge entry JSON or ''
+-- Returns {1 ended | 0 no live reservation, units charged more (fewer when negative), units that could not be charged}
 ${LEASE_FUNCTIONS}
-local reserved = redis.call('HGET', held, ARGV[1])
-if not reserved then
-  return {0, 0}
+local fromWindow = redis.call('HGET', held, ARGV[1])
+if not fromWindow then
+  return {0, 0, 0}
 end
+local fromPackage = tonumber(redis.call('HGET', pheld, ARGV[1]) or '0')
+local limit = tonumber(redis.call('HGET', pheld, 'L:' .. ARGV[1]) or '0')
+fromWindow = tonumber(fromWindow)
 redis.call('HDEL', held, ARGV[1])
+redis.call('HDEL', pheld, ARGV[1], 'L:' .. ARGV[1])
 redis.call('ZREM', leases, ARGV[1])
 redis.call('DEL', extensions)
-reserved = tonumber(reserved)
-local diff = 0
+local held_total = fromWindow + fromPackage
+local target = held_total
 if ARGV[2] ~= 'held' then
-  diff = tonumber(ARGV[2]) - reserved
+  target = tonumber(ARGV[2])
 end
-if diff ~= 0 and redis.call('EXISTS', usage) == 1 then
-  redis.call('INCRBY', usage, diff)
+target = target + tonumber(ARGV[3])
+local newWindow, newPackage, short = fromWindow, fromPackage, 0
+if target <= held_total then
+  newWindow = math.min(fromWindow, target)
+  newPackage = target - newWindow
+else
+  local more = target - held_total
+  local free, balance = room(limit)
+  local addWindow = math.min(more, free)
+  local addPackage = math.min(more - addWindow, balance)
+  newWindow = fromWindow + addWindow
+  newPackage = fromPackage + addPackage
+  short = more - addWindow - addPackage
 end
-return {1, diff}
+local dWindow = newWindow - fromWindow
+local dPackage = newPackage - fromPackage
+if dWindow ~= 0 and redis.call('EXISTS', usage) == 1 then
+  redis.call('INCRBY', usage, dWindow)
+end
+if dPackage ~= 0 and redis.call('EXISTS', pool) == 1 then
+  redis.call('DECRBY', pool, dPackage)
+end
+if ARGV[4] ~= '' and newWindow + newPackage > 0 then
+  local entry = cjson.decode(ARGV[4])
+  entry.at = now
+  entry.credits = newWindow + newPackage
+  entry.fromPackage = newPackage
+  if short > 0 then entry.uncharged = short end
+  redis.call('LPUSH', log, cjson.encode(entry))
+  redis.call('LTRIM', log, 0, 49)
+end
+return {1, newWindow + newPackage - held_total, short}
 `;
 
-/** The day's count once the leases that ended gave their units back. */
+/** The window's count and the package balance, once the leases that ended gave their units back. */
 export const USED_QUOTA_LUA_SCRIPT = `
 ${LEASE_FUNCTIONS}
-return tonumber(redis.call('GET', usage) or '0')
+return {tonumber(redis.call('GET', usage) or '0'), tonumber(redis.call('GET', pool) or '0')}
 `;
 
 export const DEDUCT_QUOTA_LUA_SCRIPT = `
@@ -188,34 +249,92 @@ end
 `;
 
 /**
- * Adds to a live reservation the units of one extension, under the owner's daily limit, once: ARGV[3] is what the extension
- * holds in all, so a second call with the same extension adds only the difference and a retried step never adds twice.
- * The extension is counted in the reservation, so a settle or a rollback ends it with the reservation; `extensions` lives as
- * long as its lease, which a renewal moves with it.
+ * Adds to a live reservation the units of one extension, from the window's headroom under the limit first and then from the
+ * package balance, once: ARGV[3] is what the extension holds in all, so a second call with the same extension adds only the
+ * difference and a retried step never adds twice. The extension is counted in the reservation, so a settle or a rollback ends it
+ * with the reservation; `extensions` lives as long as its lease, which a renewal moves with it.
  */
 export const EXTEND_QUOTA_LUA_SCRIPT = `
--- ARGV[1]: reservation id  ARGV[2]: extension id  ARGV[3]: units the extension holds in all  ARGV[4]: daily limit
--- Returns { 1 added or already held | 0 does not fit | -1 the reservation or the count of its day is gone, units left today }
+-- ARGV[1]: reservation id  ARGV[2]: extension id  ARGV[3]: units the extension holds in all  ARGV[4]: window limit
+-- Returns { 1 added or already held | 0 does not fit | -1 the reservation or the count of its window is gone, units left }
 -- A count that is gone is never made again, as in the settle and the rollback.
 ${LEASE_FUNCTIONS}
 local leaseEnd = redis.call('ZSCORE', leases, ARGV[1])
 if not leaseEnd or redis.call('EXISTS', usage) == 0 then
   return {-1, 0}
 end
-local current = tonumber(redis.call('GET', usage) or '0')
-local limit = tonumber(ARGV[4])
+local free, balance = room(tonumber(ARGV[4]))
 local added = tonumber(ARGV[3]) - tonumber(redis.call('HGET', extensions, ARGV[2]) or '0')
 if added <= 0 then
-  return {1, limit - current}
+  return {1, free + balance}
 end
-if current + added > limit then
-  return {0, limit - current}
+if added > free + balance then
+  return {0, free + balance}
 end
-redis.call('INCRBY', usage, added)
-redis.call('HINCRBY', held, ARGV[1], added)
+local fromWindow = math.min(added, free)
+local fromPackage = added - fromWindow
+if fromWindow > 0 then
+  redis.call('INCRBY', usage, fromWindow)
+  redis.call('HINCRBY', held, ARGV[1], fromWindow)
+end
+if fromPackage > 0 then
+  redis.call('DECRBY', pool, fromPackage)
+  redis.call('HINCRBY', pheld, ARGV[1], fromPackage)
+end
 redis.call('HSET', extensions, ARGV[2], ARGV[3])
 keep(extensions, tonumber(leaseEnd))
-return {1, limit - current - added}
+return {1, free + balance - added}
+`;
+
+/**
+ * Adds the credits of one paid package payment to the balance, once for each transaction id: the payment is written in the
+ * account's hash of payments in the same step, so a second delivery of the same event, or the reconciliation that finds the
+ * payment again, adds nothing. The balance has no expiry.
+ */
+export const GRANT_PACKAGE_LUA_SCRIPT = `
+-- KEYS[1]: the package balance  KEYS[2]: the account's payments (a hash of transaction id to JSON)
+-- ARGV[1]: transaction id  ARGV[2]: credits  ARGV[3]: what was paid (lowest unit, text)  ARGV[4]: when
+-- Returns {1 credited | 0 already credited, the balance}
+if redis.call('HEXISTS', KEYS[2], ARGV[1]) == 1 then
+  return {0, tonumber(redis.call('GET', KEYS[1]) or '0')}
+end
+redis.call('HSET', KEYS[2], ARGV[1], cjson.encode({credits = tonumber(ARGV[2]), paid = ARGV[3], revoked = 0, at = tonumber(ARGV[4])}))
+return {1, redis.call('INCRBY', KEYS[1], tonumber(ARGV[2]))}
+`;
+
+/**
+ * Takes back the unused credits of a refunded or charged-back package payment, once for each adjustment id: a full refund takes back
+ * all that is left of the payment's credits, a partial one the share of them that the amount is of what was paid (rounded down). A
+ * payment's credits are never taken back twice and never more than the balance holds, so the balance does not go below zero; what
+ * the balance no longer holds was spent and is reported as unrecovered.
+ */
+export const REVOKE_PACKAGE_LUA_SCRIPT = `
+-- KEYS[1]: the package balance  KEYS[2]: the account's payments  KEYS[3]: the adjustments already applied (a hash of adjustment id to credits taken)
+-- ARGV[1]: transaction id  ARGV[2]: adjustment id  ARGV[3]: the amount returned (lowest unit, text)  ARGV[4]: 1 for a full refund, else 0
+-- Returns {1 applied | 0 adjustment already applied | -1 payment unknown, credits taken back, credits owed and already spent}
+local raw = redis.call('HGET', KEYS[2], ARGV[1])
+if not raw then
+  return {-1, 0, 0}
+end
+if redis.call('HEXISTS', KEYS[3], ARGV[2]) == 1 then
+  return {0, 0, 0}
+end
+local payment = cjson.decode(raw)
+local left = payment.credits - payment.revoked
+local paid = tonumber(payment.paid) or 0
+local want = left
+if ARGV[4] ~= '1' then
+  want = 0
+  if paid > 0 then want = math.min(left, math.floor(payment.credits * (tonumber(ARGV[3]) or 0) / paid)) end
+end
+local take = math.min(want, tonumber(redis.call('GET', KEYS[1]) or '0'))
+if take > 0 then
+  redis.call('DECRBY', KEYS[1], take)
+end
+payment.revoked = payment.revoked + take
+redis.call('HSET', KEYS[2], ARGV[1], cjson.encode(payment))
+redis.call('HSET', KEYS[3], ARGV[2], take)
+return {1, take, want - take}
 `;
 
 export const RECORD_VERIFIED_KEY_LUA_SCRIPT = `

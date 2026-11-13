@@ -92,6 +92,7 @@ async function runTool(req: NextRequest, caller: User, tool: WebTool, unit: Rese
     assertToolInput(tool, files);
 
     const source = tool === 'archive-extract' || tool === 'archive-create' ? 'zip' : 'pdf';
+    const toolStartedAt = Date.now();
     const deadlineMs = syncDeadlineMs(conversionDeadlineMs({ tier: caller.tier, sourceFormat: source, targetFormat: source, inputBytes: trace.bytes }));
     const output = await runUnderDeadline(req, deadlineMs, (limits) => {
       limits.signal.throwIfAborted();
@@ -101,7 +102,7 @@ async function runTool(req: NextRequest, caller: User, tool: WebTool, unit: Rese
     });
     // The answer is built before the unit is committed, so an answer that cannot be built is not charged.
     const answer = answerOf(output);
-    await unit.commit();
+    await unit.commit({ from: tool, base: 1, processingMs: Date.now() - toolStartedAt });
     return answer;
   } catch (error: unknown) {
     trace.cause = error;

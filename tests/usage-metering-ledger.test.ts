@@ -4,12 +4,12 @@ import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 describe('Standard IETF RateLimit headers', () => {
   it('emits RateLimit-Policy and combined RateLimit header field matching IETF draft syntax', () => {
     const quota = {
-      tier: 'pro' as const,
+      tier: 'paid' as const,
       period: 'day' as const,
       dailyLimit: 500,
       usedToday: 120,
       remaining: 380,
-      resetAt: Date.now() + 3600 * 1000, // 1 hour left
+      resetAt: Date.now() + 3600 * 1000, packageCredits: 0, // 1 hour left
     };
 
     const headers = buildRateLimitHeaders(quota);
