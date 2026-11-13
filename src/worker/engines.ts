@@ -85,7 +85,7 @@ import { HTML_FORMAT, HTML_SOURCES, planTextPdfRoute } from './text-pdf-route';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, findOfficeOutput, getMimeType, handOffOutput, inProcessOutputPath, internalFallbackResult, preserveOutput, resolveInputContext, resolveOfficeInputContext, withPageNumbers, withSandboxDir, writeOutputSegments, readRawInputBuffer } from './worker-output';
-import { DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
+import { DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, renderScratchPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { InputPixelLimitError } from '../lib/conversions/image-input-limits';
 import { checkOpenedPdfRasterPageBudget } from '../lib/conversions/pdf-access';
@@ -1378,6 +1378,7 @@ async function renderPdfToImageWithPoppler(
     return null;
   }
 
+  const writePngBatch = options.intermediateRaster === true ? renderScratchPngBatch : renderPngBatch;
   return executePopplerRender({
     sandboxPrefix: 'easyconvert-poppler-img-',
     tgt,
@@ -1394,7 +1395,7 @@ async function renderPdfToImageWithPoppler(
       const throughPage = ppmBatchPages(dpi);
       const sandbox = { cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal };
       const prefix = path.join(tempDir, 'page');
-      const done = renderPngBatch(pdftoppmBin, tempDir, dpi, sandbox, buildPdftoppmArgs(tgt, options, 1, throughPage, inputPath, prefix), { start: 1, end: throughPage });
+      const done = writePngBatch(pdftoppmBin, tempDir, dpi, sandbox, buildPdftoppmArgs(tgt, options, 1, throughPage, inputPath, prefix), { start: 1, end: throughPage });
       return { throughPage, done };
     },
     renderPages: async (tempDir, inputPath, intervals, early) => {
@@ -1407,7 +1408,7 @@ async function renderPdfToImageWithPoppler(
       const batches = intervals.flatMap((interval) => splitIntoBatches(Math.max(interval.start, drawnEarly + 1), interval.end, batchPages));
       const draw = (batch: PageBatch): Promise<void> => {
         const args = buildPdftoppmArgs(tgt, options, batch.start, batch.end, inputPath, prefix);
-        return isPng ? renderPngBatch(pdftoppmBin, tempDir, dpi, sandbox, args, batch) : runPdftoppm(pdftoppmBin, args, sandbox);
+        return isPng ? writePngBatch(pdftoppmBin, tempDir, dpi, sandbox, args, batch) : runPdftoppm(pdftoppmBin, args, sandbox);
       };
       await runBounded(batches.map((batch) => () => draw(batch)), pageRenderProcesses(), early?.done);
     },
@@ -1598,7 +1599,7 @@ async function convertPdfToEncodedRaster(
   originalFilename: string,
   context: ChainOutputContext
 ): Promise<WorkerConversionResult | null> {
-  const rendered = await convertWithNativePoppler(input, 'pdf', PNG_FORMAT, intermediateOptions(options), originalFilename);
+  const rendered = await convertWithNativePoppler(input, 'pdf', PNG_FORMAT, { ...intermediateOptions(options), intermediateRaster: true }, originalFilename);
   if (!rendered) return null;
   const pageOptions = encoderOptions(options);
   return reencodeRenderedPages(

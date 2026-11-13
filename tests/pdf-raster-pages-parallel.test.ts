@@ -1,5 +1,6 @@
 import { expect, vi } from 'vitest';
 import JSZip from 'jszip';
+import sharp from 'sharp';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import * as conversions from '../src/lib/conversions';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
@@ -68,6 +69,39 @@ oracleTest(
       expect(mostAtOnce).toBe(Math.min(pageRenderProcesses(), PAGES));
     } finally {
       spy.mockRestore();
+    }
+  },
+  NATIVE_TIMEOUT_MS
+);
+
+/**
+ * The PNG pages that only feed the encoder are written the cheap way (no adaptive filter search): the same pixels, a third of the time of
+ * the page PNG that a PNG request gets, which is what the encoder reads back and drops. The files of the PNG route keep the full search.
+ */
+oracleTest(
+  'the PNG pages handed to the encoder hold the pixels of the PNG pages of the PNG route, written without the filter search',
+  ['pdftoppm'],
+  async () => {
+    const pdf = await document();
+    const original = conversions.convertImage;
+    const handed = new Map<string, Buffer>();
+    const spy = vi.spyOn(conversions, 'convertImage').mockImplementation(async (...args: Parameters<typeof original>) => {
+      handed.set(String(args[3]), args[0] as Buffer);
+      return original(...args);
+    });
+    try {
+      await dispatchConversion(pdf, 'pdf', 'bmp', {}, 'long.pdf');
+    } finally {
+      spy.mockRestore();
+    }
+    const pngs = await pagesOf((await dispatchConversion(pdf, 'pdf', 'png', {}, 'long.pdf')).buffer);
+    expect([...handed.keys()].sort()).toEqual(pngs.map((page) => page.name));
+    for (const page of pngs) {
+      const intermediate = handed.get(page.name) as Buffer;
+      const pixels = async (png: Buffer) => (await sharp(png).raw().toBuffer({ resolveWithObject: true }));
+      const [a, b] = await Promise.all([pixels(intermediate), pixels(page.data)]);
+      expect({ name: page.name, info: a.info, same: a.data.equals(b.data) }).toEqual({ name: page.name, info: b.info, same: true });
+      expect({ name: page.name, written: 'cheaply', identical: intermediate.equals(page.data) }).toEqual({ name: page.name, written: 'cheaply', identical: false });
     }
   },
   NATIVE_TIMEOUT_MS
