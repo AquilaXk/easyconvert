@@ -11,8 +11,10 @@ import { FREE_DAILY_CREDITS, getAnonymousDailyLimit, type QuotaPeriod } from '..
  *
  * `key` names the span inside the ledger's keys and in a reservation's id: the date `YYYY-MM-DD` of a day, so the day keys are those
  * that existed before paid quotas, and for a subscription `m<YYYY-MM>` (calendar month) or `b<ms>` (the span that ends at the
- * renewal `<ms>`) followed by `c<credits>`, so that switching to another size starts a count of its own at once and drops what was
- * left of the period. A key never holds an underscore, which a reservation id reads its parts by.
+ * renewal `<ms>`). The key does not name the size: a switch to another size is billed in full (`full_immediately`, entry 285). When the
+ * provider moves the period, the new one has a key and a count of its own and the credits left in the old one expire; when it does not,
+ * the count stays under the new limit, so a switch never hands out credits that were not paid for at either price.
+ * A key never holds an underscore, which a reservation id reads its parts by.
  */
 export interface QuotaWindow {
   period: QuotaPeriod;
@@ -84,8 +86,8 @@ async function subscriptionAllowance(userId: string, now: number): Promise<Quota
   const subscription = await subscriptionStore.findByUser(userId);
   if (!subscription || entitlementOf(subscription, now).tier !== 'paid') return undefined;
   const periodEnd = subscription.currentPeriodEnd;
-  const base = (periodEnd === undefined ? undefined : billingMonthWindow(periodEnd, now)) ?? calendarMonthWindow(now);
-  return { window: { ...base, key: `${base.key}c${subscription.credits}` }, limit: subscription.credits, subscribed: true };
+  const window = (periodEnd === undefined ? undefined : billingMonthWindow(periodEnd, now)) ?? calendarMonthWindow(now);
+  return { window, limit: subscription.credits, subscribed: true };
 }
 
 /** What `userId` may spend, and since when it has been counted: the subscription's period when it has one, else the UTC day. One read of the subscription for an account. */

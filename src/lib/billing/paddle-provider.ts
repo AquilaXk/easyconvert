@@ -296,7 +296,7 @@ export class PaddleBillingProvider implements BillingProvider {
   async changeSubscription(subscription: SubscriptionRecord, credits: SubscriptionSize): Promise<void> {
     await this.paddle.subscriptions.update(subscription.providerSubscriptionId, {
       items: [{ priceId: priceIdOf(this.config, { kind: 'subscription', credits }), quantity: 1 }],
-      prorationBillingMode: 'prorated_immediately',
+      prorationBillingMode: 'full_immediately',
     });
   }
 

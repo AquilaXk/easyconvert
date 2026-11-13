@@ -273,11 +273,11 @@ describe('listPackagePurchases', () => {
 });
 
 describe('changeSubscription', () => {
-  it('moves the subscription to the price of the new size at once, with the difference prorated', async () => {
+  it('moves the subscription to the price of the new size at once, the new price billed in full', async () => {
     const update = vi.fn().mockResolvedValue({});
     const fake = new PaddleBillingProvider(config, { subscriptions: { update } } as never);
     await fake.changeSubscription({ userId: 'u', provider: 'paddle', providerSubscriptionId: 'sub_01fixture', providerCustomerId: 'ctm_1', status: 'active', credits: 1000, eventAt: NOW }, 5000);
-    expect(update).toHaveBeenCalledWith('sub_01fixture', { items: [{ priceId: 'pri_subscription_5000_fixture', quantity: 1 }], prorationBillingMode: 'prorated_immediately' });
+    expect(update).toHaveBeenCalledWith('sub_01fixture', { items: [{ priceId: 'pri_subscription_5000_fixture', quantity: 1 }], prorationBillingMode: 'full_immediately' });
   });
 });
 

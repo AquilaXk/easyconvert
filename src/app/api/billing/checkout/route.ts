@@ -22,8 +22,8 @@ function productOf(body: Record<string, unknown> | null): Product | undefined {
 /**
  * What the browser needs to open the checkout of a package or a subscription for the signed-in account: the price, the customer's
  * address and the account id signed by this server, which the webhook trusts to tell whose purchase it is. A package can be bought at
- * any time, also with a subscription. An account that already has a subscription is moved to the size it asks for at once (the credits
- * left in the period it leaves are dropped, and the answer has `changed: true`) instead of buying a second subscription.
+ * any time, also with a subscription. An account that already has a subscription is moved to the size it asks for at once (the new price
+ * is billed in full, the credits left of the old size do not carry over, and the answer has `changed: true`) instead of buying a second subscription.
  */
 export async function POST(req: NextRequest) {
   const billing = getBillingProvider();

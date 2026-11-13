@@ -107,20 +107,20 @@ describe('the allowance of an account', () => {
     vi.useRealTimers();
   });
 
-  it('gives a free account its 10 credits of the day and a subscriber the credits of its subscription for the period, under a key that names the size', async () => {
+  it('gives a free account its 10 credits of the day and a subscriber the credits of its subscription for the period, under the key of the period', async () => {
     const free = await quotaAllowanceOf(await account('free'));
     expect(free).toEqual({ window: dayWindow(Date.now()), limit: FREE_DAILY_CREDITS, subscribed: false });
 
     const periodEnd = at('2026-12-02T08:00:00Z');
     const small = await quotaAllowanceOf(await account('paid', { credits: 1000, currentPeriodEnd: periodEnd }));
-    expect(small).toEqual({ window: { period: 'month', key: `b${periodEnd}c1000`, endsAt: periodEnd }, limit: 1000, subscribed: true });
+    expect(small).toEqual({ window: { period: 'month', key: `b${periodEnd}`, endsAt: periodEnd }, limit: 1000, subscribed: true });
     const large = await quotaAllowanceOf(await account('paid', { credits: 10000, currentPeriodEnd: periodEnd }));
-    expect(large).toEqual({ window: { period: 'month', key: `b${periodEnd}c10000`, endsAt: periodEnd }, limit: 10000, subscribed: true });
+    expect(large).toEqual({ window: { period: 'month', key: `b${periodEnd}`, endsAt: periodEnd }, limit: 10000, subscribed: true });
   });
 
   it('falls back to the calendar month for a subscription without a period end, and to the day for a paid tier set by hand', async () => {
     const unknownEnd = await quotaAllowanceOf(await account('paid', { credits: 2500 }));
-    expect(unknownEnd.window).toEqual({ ...calendarMonthWindow(Date.now()), key: 'm2026-11c2500' });
+    expect(unknownEnd.window).toEqual({ ...calendarMonthWindow(Date.now()), key: 'm2026-11' });
     expect(unknownEnd.limit).toBe(2500);
 
     const operatorSet = await quotaAllowanceOf(await account('paid'));
@@ -176,21 +176,39 @@ describe('the allowance of an account', () => {
       expect((await store.getQuotaUsage(owner)).usedToday).toBe(4);
     });
 
-    it('starts the credits of the new size at once when the subscription is switched, and drops what was left of the period', async () => {
+    it('starts the credits of the new size with the new billing period of a switch, which is billed in full, and drops what was left of the old one', async () => {
       const periodEnd = at('2026-12-02T08:00:00Z');
       const owner = await account('paid', { credits: 1000, currentPeriodEnd: periodEnd });
       const used = await store.reserveQuota(owner, 600);
       await store.commitQuota(used.reservationId as string);
       expect(await store.getQuotaUsage(owner)).toMatchObject({ dailyLimit: 1000, usedToday: 600, remaining: 400 });
 
+      // The switch is billed in full and the period starts again from the day of the switch.
+      const newEnd = at('2026-12-13T10:00:00Z');
       await subscriptionStore.apply({
         eventId: `evt_${crypto.randomUUID()}`,
         eventAt: Date.now() + 1000,
         userId: owner,
-        subscription: { provider: 'paddle', providerSubscriptionId: 'sub_switched', providerCustomerId: 'ctm_fixture', status: 'active', credits: 2500, currentPeriodEnd: periodEnd },
+        subscription: { provider: 'paddle', providerSubscriptionId: 'sub_switched', providerCustomerId: 'ctm_fixture', status: 'active', credits: 2500, currentPeriodEnd: newEnd },
       });
-      // The same period, a new size: a fresh count of 2,500, none of the 400 left and none of the 600 used carried over.
-      expect(await store.getQuotaUsage(owner)).toMatchObject({ period: 'month', dailyLimit: 2500, usedToday: 0, remaining: 2500, resetAt: periodEnd });
+      expect(await store.getQuotaUsage(owner)).toMatchObject({ period: 'month', dailyLimit: 2500, usedToday: 0, remaining: 2500, resetAt: newEnd });
+    });
+
+    it('carries the count of the period into the new size when a switch leaves the period as it was, so a switch never hands out credits nobody paid for', async () => {
+      const periodEnd = at('2026-12-02T08:00:00Z');
+      const owner = await account('paid', { credits: 1000, currentPeriodEnd: periodEnd });
+      const used = await store.reserveQuota(owner, 900);
+      await store.commitQuota(used.reservationId as string);
+      for (const credits of [2500, 5000, 10000] as const) {
+        await subscriptionStore.apply({
+          eventId: `evt_${crypto.randomUUID()}`,
+          eventAt: Date.now() + credits,
+          userId: owner,
+          subscription: { provider: 'paddle', providerSubscriptionId: 'sub_switched', providerCustomerId: 'ctm_fixture', status: 'active', credits, currentPeriodEnd: periodEnd },
+        });
+        // Chained upgrades in one period: the 900 used stay counted, so the account has the new limit minus 900, never a fresh limit.
+        expect(await store.getQuotaUsage(owner)).toMatchObject({ dailyLimit: credits, usedToday: 900, remaining: credits - 900 });
+      }
     });
 
     it('refuses the credit over the subscription of the period, with no package, and gives a rollback back', async () => {
@@ -243,7 +261,7 @@ describe('the allowance of an account', () => {
       const owner = await account('paid', { credits: 1000 });
       vi.setSystemTime(at('2026-11-30T23:59:00Z'));
       const unit = await store.reserveQuota(owner, 2);
-      expect(unit.reservationId).toContain('_m2026-11c1000_');
+      expect(unit.reservationId).toContain('_m2026-11_');
 
       vi.setSystemTime(at('2026-12-01T00:00:10Z'));
       expect((await store.getQuotaUsage(owner)).usedToday).toBe(0);

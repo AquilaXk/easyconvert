@@ -52,7 +52,7 @@ export const billingPaths = {
       ...INTERNAL,
       summary: 'Start a Checkout',
       description:
-        'Returns what Paddle.js needs to open the checkout of a package or a subscription for the signed-in account: the price, the customer\'s address and the account id, signed by this server. An account that already has a subscription and asks for a subscription of another size is moved to it at once (the credits left in the period it leaves are dropped) and the answer has `changed: true` and no checkout.',
+        'Returns what Paddle.js needs to open the checkout of a package or a subscription for the signed-in account: the price, the customer\'s address and the account id, signed by this server. An account that already has a subscription and asks for a subscription of another size is moved to it at once (the full price of the new size is billed and the credits left of the old size do not carry over) and the answer has `changed: true` and no checkout.',
       operationId: 'startCheckout',
       security: SESSION_ONLY,
       requestBody: jsonBody(

@@ -134,7 +134,7 @@ export interface BillingProvider {
    * `mapEventToPackagePurchase` are. A page that cannot be read in time throws.
    */
   listPackagePurchases(options: { perPage: number; signal: AbortSignal }): AsyncGenerator<ListedPackagePurchase[], void, void>;
-  /** Moves the subscription to another size at once, the credits of the period it leaves being dropped; throws when the provider refuses. */
+  /** Moves the subscription to another size at once: the new price is billed in full, so credits of the new size are never handed out for the price of the difference; throws when the provider refuses. */
   changeSubscription(subscription: SubscriptionRecord, credits: SubscriptionSize): Promise<void>;
   /**
    * Every subscription the provider holds, a page at a time, read as the events of `mapEventToSubscription` are: the time of a

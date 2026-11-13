@@ -1815,7 +1815,7 @@
       },
       "cancel": {
         "question": "Can I cancel or change my subscription?",
-        "answer": "You can cancel at any time from your dashboard. The subscription keeps its credits and limits until the end of the period you paid for. You can switch to another size at any time. The new subscription applies at once, and the credits left in the current period are dropped. Paddle processes the payment."
+        "answer": "You can cancel at any time from your dashboard. The subscription keeps its credits and limits until the end of the period you paid for. You can switch to another size at any time. The new size applies at once and is charged at its full price. The credits left of the old size do not carry over. Paddle processes the payment."
       },
       "limits": {
         "question": "What other limits apply?",

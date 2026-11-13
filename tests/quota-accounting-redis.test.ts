@@ -595,14 +595,13 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       const reservedAt = Date.now();
       const unit = await redisKeyStore.reserveQuota(user.id, 3);
       expect(unit).toMatchObject({ allowed: true, remaining: 997 });
-      // The key names the end of the period and the credits of the subscription, so a switch of size starts a count of its own.
-      expect(unit.reservationId).toContain(`_b${periodEnd}c1000_`);
+      expect(unit.reservationId).toContain(`_b${periodEnd}_`);
       expect(await redisKeyStore.commitQuota(unit.reservationId as string)).toBe(true);
       expect(await redisKeyStore.getQuotaUsage(user.id)).toEqual({ tier: 'paid', period: 'month', dailyLimit: 1000, usedToday: 3, remaining: 997, resetAt: periodEnd, packageCredits: 0 });
 
       const usageKeys = await admin.keys(`*usage:{${user.id}}:*`);
       expect(usageKeys).toHaveLength(1);
-      expect(usageKeys[0].endsWith(`:b${periodEnd}c1000`)).toBe(true);
+      expect(usageKeys[0].endsWith(`:b${periodEnd}`)).toBe(true);
       const timeToLive = await admin.pttl(usageKeys[0]);
       // The count lives until the period ends, not for a day and not past it by more than the lease that a reservation holds.
       expect(timeToLive).toBeLessThanOrEqual(periodEnd - reservedAt);

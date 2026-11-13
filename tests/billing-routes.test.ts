@@ -239,7 +239,7 @@ describe('the checkout route', () => {
     subscriptionUpdate.mockResolvedValueOnce({});
     const res = await startCheckout(post('/api/billing/checkout', await cookieOf(user), { kind: 'subscription', credits: 2500 }));
     expect({ status: res.status, body: await json(res) }).toEqual({ status: 200, body: { success: true, changed: true } });
-    expect(subscriptionUpdate).toHaveBeenCalledWith(SUBSCRIPTION(), { items: [{ priceId: 'pri_subscription_2500_fixture', quantity: 1 }], prorationBillingMode: 'prorated_immediately' });
+    expect(subscriptionUpdate).toHaveBeenCalledWith(SUBSCRIPTION(), { items: [{ priceId: 'pri_subscription_2500_fixture', quantity: 1 }], prorationBillingMode: 'full_immediately' });
   });
 
   it('refuses the size the account has, and says 502 when the provider refuses the change', async () => {
