@@ -3,6 +3,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { RedisKeyStore } from '../../src/lib/api-keys/redis-key-store';
 import { RECENT_CHARGES, RESERVATION_LEASE } from '../../src/lib/api-keys/reservation-ledger';
 import { FREE_DAILY_CREDITS } from '../../src/lib/plan-limits';
+import { redisUserStore } from '../../src/lib/auth/redis-user-store';
+import { subscriptionStore } from '../../src/lib/billing/subscription-store';
 
 /**
  * The credit ledger (docs/policy-decisions.md, entry 285): an account spends the credits of its window (the 10 of the free day
@@ -85,6 +87,49 @@ export function itKeepsCredits(controls: CreditCaseControls): void {
     expect(await usage()).toMatchObject({ usedToday: 0, packageCredits: 50 });
     expect(await store().commitQuota(id)).toBe(false);
     expect(await usage()).toMatchObject({ usedToday: 0, packageCredits: 50 });
+  });
+
+  it('gives the package credits of an ended lease back at the next touch of the balance, also when the day of the reservation is over', async () => {
+    await grant(100);
+    await store().commitQuota(await reserve(DAY));
+    await reserve(4);
+    expect(await usage()).toMatchObject({ usedToday: DAY, packageCredits: 96 });
+    // The lease ends and the UTC day changes: the window of the next read is not the window the reservation was made in.
+    await controls.advance(15 * 60 * 60 * 1000);
+    expect(await usage()).toMatchObject({ usedToday: 0, packageCredits: 100 });
+    expect(await store().packageBalance(owner)).toBe(100);
+  });
+
+  it('gives the package credits of an ended lease back when the billing period of the subscription changed, and a lease that ends later stays held', async () => {
+    // A subscription belongs to an account that exists.
+    const account = await redisUserStore.createUser({ email: `ledger_${crypto.randomBytes(6).toString('hex')}@credits.test`, name: 'Ledger' });
+    owner = account.id;
+    await grant(100);
+    const subscribe = (periodEnd: number, credits: 1000 | 2500) =>
+      subscriptionStore.apply({
+        eventId: `evt_${crypto.randomUUID()}`,
+        eventAt: Date.now(),
+        userId: owner,
+        subscription: { provider: 'paddle', providerSubscriptionId: `sub_${owner}`, providerCustomerId: 'ctm_fixture', status: 'active', credits, currentPeriodEnd: periodEnd },
+      });
+    await subscribe(NOW + 20 * 86_400_000, 1000);
+    await store().commitQuota(await reserve(1000));
+    const ended = await reserve(4);
+    expect(await usage()).toMatchObject({ usedToday: 1000, packageCredits: 96 });
+    await controls.advance(60_000);
+    const live = await reserve(3);
+    await controls.advance(40_000);
+    // The first lease (90 s) has ended, the second (made 40 s ago) has not.
+    expect(await store().packageBalance(owner)).toBe(100 - 3 - 4);
+
+    // The switch is billed in full and starts a new period, so the next read is on another window than the reservations.
+    await subscribe(NOW + 50 * 86_400_000, 2500);
+    expect(await usage()).toMatchObject({ dailyLimit: 2500, usedToday: 0, packageCredits: 100 - 3 });
+    expect(await store().commitQuota(ended)).toBe(false);
+    expect(await store().commitQuota(live)).toBe(true);
+    expect(await store().packageBalance(owner)).toBe(100 - 3);
+    await subscriptionStore.forgetUser(owner);
+    await redisUserStore.deleteUser(owner);
   });
 
   it('refunds the package first when a reservation settles to fewer credits', async () => {

@@ -140,7 +140,7 @@ export function parseReservationId(reservationId: string): { userId: string; day
 const EXTENSION_STATUS: Readonly<Record<string, QuotaExtension['status']>> = { '1': 'extended', '0': 'does-not-fit', '-1': 'no-reservation' };
 
 /** The keys every step on one reservation is given: those of its window, the package balance, its extensions and the list of charges. */
-type ReservationKeys = [usage: string, leases: string, held: string, packageHeld: string, pool: string, extensions: string, log: string];
+type ReservationKeys = [usage: string, leases: string, held: string, limits: string, pool: string, packageLeases: string, packageHolds: string, extensions: string, log: string];
 
 /** How many recent charges an owner keeps; the settle script trims its list to this. */
 export const RECENT_CHARGES = 50;
@@ -152,14 +152,19 @@ export class RedisReservationLedger implements ReservationLedger {
     private readonly prefix: string
   ) {}
 
-  /** The keys of `owner`'s `window`: its count, its leases, the units they hold from it and from the package balance, and the balance itself. */
-  private windowKeys(owner: string, window: string): [string, string, string, string, string] {
+  /**
+   * The keys of `owner`'s `window`: its count, its leases, the units they hold from it and the limit each was made under; then the
+   * owner's own: the package balance and the leases that hold package units, which a script reclaims whichever window it is given.
+   */
+  private windowKeys(owner: string, window: string): [string, string, string, string, string, string, string] {
     return [
       `${this.prefix}usage:{${owner}}:${window}`,
       `${this.prefix}leases:{${owner}}:${window}`,
       `${this.prefix}held:{${owner}}:${window}`,
-      `${this.prefix}pheld:{${owner}}:${window}`,
+      `${this.prefix}limits:{${owner}}:${window}`,
       this.poolKey(owner),
+      `${this.prefix}credits:{${owner}}:plist`,
+      `${this.prefix}credits:{${owner}}:pholds`,
     ];
   }
 
@@ -203,7 +208,7 @@ export class RedisReservationLedger implements ReservationLedger {
 
   async reserve(request: Parameters<ReservationLedger['reserve']>[0]) {
     const args = [request.units, request.limit, request.reservationId, request.leaseMs, request.dayLeftMs];
-    const [allowed, remaining] = (await this.redis.eval(RESERVE_QUOTA_LUA_SCRIPT, 5, ...this.windowKeys(request.owner, request.day), ...args)) as [number, number];
+    const [allowed, remaining] = (await this.redis.eval(RESERVE_QUOTA_LUA_SCRIPT, 7, ...this.windowKeys(request.owner, request.day), ...args)) as [number, number];
     return { allowed: Number(allowed) === 1, remaining: Number(remaining) };
   }
 
@@ -232,7 +237,7 @@ export class RedisReservationLedger implements ReservationLedger {
   }
 
   async used(owner: string, day: string): Promise<LedgerCounts> {
-    const [used, packageCredits] = (await this.redis.eval(USED_QUOTA_LUA_SCRIPT, 5, ...this.windowKeys(owner, day))) as [number, number];
+    const [used, packageCredits] = (await this.redis.eval(USED_QUOTA_LUA_SCRIPT, 7, ...this.windowKeys(owner, day))) as [number, number];
     return { used: Number(used), packageCredits: Number(packageCredits) };
   }
 
@@ -267,8 +272,9 @@ export class RedisReservationLedger implements ReservationLedger {
 
   async forgetPackages(owner: string): Promise<void> {
     const transactionIds = await this.redis.hkeys(this.transactionsKey(owner));
-    const indexKeys = transactionIds.map((id) => `${this.prefix}credits:txnowner:${id}`);
-    await this.redis.del(this.poolKey(owner), this.logKey(owner), this.transactionsKey(owner), this.adjustmentsKey(owner), ...indexKeys);
+    // The keys of the account share one slot; the payment index keys carry no tag, so each goes in a command of its own (Redis Cluster refuses a DEL over two slots).
+    await this.redis.del(this.poolKey(owner), this.logKey(owner), this.transactionsKey(owner), this.adjustmentsKey(owner), `${this.prefix}credits:{${owner}}:plist`, `${this.prefix}credits:{${owner}}:pholds`);
+    for (const id of transactionIds) await this.redis.del(`${this.prefix}credits:txnowner:${id}`);
   }
 }
 
