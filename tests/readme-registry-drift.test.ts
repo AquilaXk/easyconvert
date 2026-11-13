@@ -255,7 +255,7 @@ describe('Registry stats, CATEGORIES, and README drift guard (#467)', () => {
       ...collectSourceFiles(path.join(ROOT_DIR, 'src', 'app')),
     ];
 
-    const stalePattern = /\b292\b|2,156|BullMQ|\/api\/v2\b|action=init(?!iate)/;
+    const stalePattern = /(?<![\d.])292(?![\d.])|2,156|BullMQ|\/api\/v2\b|action=init(?!iate)/;
     const violations: string[] = [];
 
     for (const file of filesToCheck) {
