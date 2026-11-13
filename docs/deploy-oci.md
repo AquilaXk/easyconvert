@@ -213,6 +213,13 @@ Only for the operator's own test account (QA 2026-11-13, entry 288): an unconfir
 1. See the change. Nothing is written: `docker compose -p easyconvert exec worker node dist/confirm-account-email.js --user <account email or id>`.
 2. Run the same command with `--apply`. It prints the time for the host's log. A Google account or an address already confirmed is refused.
 
+### Adding test credits to the operator's account
+
+Only for the operator's own test account (QA 2026-11-14): a plan set by hand carries no credits, and the smoke checks after a deploy spend more than the free day's 10. Run it only with QA's approval.
+
+1. See the change. Nothing is written: `docker compose -p easyconvert exec worker node dist/grant-test-credits.js --user <account email or id> --credits 1000`.
+2. Run the same command with `--apply`. It adds the credits as a package with a paid amount of 0 under an operator transaction id, and prints the time and the new balance for the host's log. At most 10,000 credits a run.
+
 ## Releases
 
 One version per production deploy. The rule and its reasons are in entry 122 of `docs/policy-decisions.md`.

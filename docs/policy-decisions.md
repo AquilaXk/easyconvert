@@ -338,6 +338,7 @@ Security
 287. [The hourly reconcile takes back the approved refunds and chargebacks of the last 30 days, and a reversed chargeback gives the credits back to no one](#287-the-hourly-reconcile-takes-back-the-approved-refunds-and-chargebacks-of-the-last-30-days-and-a-reversed-chargeback-gives-the-credits-back-to-no-one)
 288. [A sign-up makes the account at once, unverified, and mails a verification link; until the link is used the account counts as an anonymous visitor for conversions](#288-a-sign-up-makes-the-account-at-once-unverified-and-mails-a-verification-link-until-the-link-is-used-the-account-counts-as-an-anonymous-visitor-for-conversions)
 289. [A PDF written as slides or as a Word document keeps the colour of its text, rules and fills and its simple vector shapes](#289-a-pdf-written-as-slides-or-as-a-word-document-keeps-the-colour-of-its-text-rules-and-fills-and-its-simple-vector-shapes)
+290. [The operator's test account gets its address confirmed and test credits by two operator tools, never by a payment path](#290-the-operators-test-account-gets-its-address-confirmed-and-test-credits-by-two-operator-tools-never-by-a-payment-path)
 
 ---
 
@@ -8902,3 +8903,18 @@ Security
   - **Not checked in Word or PowerPoint**: the packages are read by their XML, by the office suite (printed and compared as above) and by `xmllint`; the shapes of a Word document (`wps:wsp` in `wp:anchor`) are those of Word 2010 and later.
 - **Verified by**: `tests/pdf-content-colour.test.ts` (the glyph list and its spelling of items, with ligatures, a synthetic space, glyphs no item spells and stroked text; the colours, shapes, rules and paint order read from five PDFs of two producers; the fills and rules a layout looks up), `tests/pdf-colour-office.test.ts` (the colours, fills, borders, shapes and the one-colour-table rule of the slides and of the Word documents of the coloured corpus; no shape, shading or colour in a black document; the package parts by `xmllint`), the rows `document/pdf-colour->pptx|docx|ppt/text_colour_f1|coloured_word_recall|shape_recall|shape_precision` of `bench/families/document-colour.ts` (parity against the suite's import: 12 rows at or above the reference), and the run `ORACLE_STRICT_MODE=1 npm run bench:quality -- --parity --family document` (387 rows, 0 failing).
 - **Revisit when**: a reference conversion of these pairs can be compared, a page of gradients, patterns or clipping matters (shadings are in the operator list and clipping paths are not read), a Word document needs a header or footer with shapes or a page background, or Word and PowerPoint on a real installation draw a package otherwise than the office suite does.
+
+## 290. The operator's test account gets its address confirmed and test credits by two operator tools, never by a payment path
+
+- **Status**: Implemented, decided 2026-11-14 (QA approval: the smoke checks after the v0.10.15 deploy ran out of credits).
+- **Decision**:
+  - `scripts/confirm-account-email.ts` (`node dist/confirm-account-email.js --user <id or email> [--apply]`) marks the address of one password account as confirmed. A Google account or an address already confirmed is refused.
+  - `scripts/grant-test-credits.ts` (`node dist/grant-test-credits.js --user <id or email> --credits <1-10000> [--apply]`) adds package credits under an operator transaction id (`operator-test-…`) with a paid amount of 0, through the ledger's package grant, so they show in the balance like bought credits and give the paid limits while they last.
+  - Both are dry runs by default, print the time and the change for the host's log, ship in the worker image, and are run only on the operator's own test account with QA's approval (`docs/deploy-oci.md`).
+- **Why**: Since entry 288 an unconfirmed password account converts nothing of its own, and since entry 285 a plan set by hand (`set-account-tier`, entry 268) carries no credits, so the smoke checks after a deploy ran out of the free day's 10 credits after one office conversion (2 credits) on 2026-11-13.
+- **Trade-offs**: An operator with shell access to the worker can create credits without a payment. That access already allows any change to the stores; the tools only make the test path explicit and logged. A refund can never find an operator grant, because no payment carries its transaction id.
+- **Alternatives rejected**:
+  - **Exempting the test account from charging**: a branch in the charging path for one account is a hidden bypass that every charging change must remember.
+  - **Waiting for the daily reset**: the checks would run hours after the deploy.
+- **Verified by**: `tests/confirm-account-email.test.ts`, `tests/grant-test-credits.test.ts` (dry run writes nothing, a grant adds to the balance and gives the paid tier, out-of-range amounts and unknown accounts are refused).
+- **Revisit when**: the smoke checks move to a dedicated monitoring account with its own billing, or a second operator joins.
