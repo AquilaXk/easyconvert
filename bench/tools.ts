@@ -112,6 +112,7 @@ export const OPENPYXL_PSEUDO_TOOL = 'python3-openpyxl';
 export const FONTTOOLS_PSEUDO_TOOL = 'python3-fonttools';
 export const EZDXF_PSEUDO_TOOL = 'python3-ezdxf';
 export const XLRD_PSEUDO_TOOL = 'python3-xlrd';
+export const PYMUPDF_PSEUDO_TOOL = 'python3-pymupdf';
 const PYTHON_LIBRARY_OF: Readonly<Record<string, string>> = {
   [PYARROW_PSEUDO_TOOL]: 'pyarrow',
   [DUCKDB_PSEUDO_TOOL]: 'duckdb',
@@ -119,6 +120,7 @@ const PYTHON_LIBRARY_OF: Readonly<Record<string, string>> = {
   [FONTTOOLS_PSEUDO_TOOL]: 'fontTools',
   [EZDXF_PSEUDO_TOOL]: 'ezdxf',
   [XLRD_PSEUDO_TOOL]: 'xlrd',
+  [PYMUPDF_PSEUDO_TOOL]: 'pymupdf',
 };
 
 const TESSDATA_DIRS = [
