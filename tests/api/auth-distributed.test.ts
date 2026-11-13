@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mailedSignupCode, stubMailConfig } from '../helpers/auth-mail-fixtures';
 import { NextRequest } from 'next/server';
 import { redisUserStore } from '../../src/lib/auth/redis-user-store';
 import { redisKeyStore } from '../../src/lib/api-keys/redis-key-store';
@@ -18,6 +19,7 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     redisUserStore.resetStore();
     redisKeyStore.resetStore();
   });
@@ -103,10 +105,12 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
     });
 
     it('end-to-end auth routes register and login correctly via redisUserStore', async () => {
+      stubMailConfig();
       const regReq = new NextRequest('http://localhost:3000/api/auth/register', {
         method: 'POST',
         body: JSON.stringify({
           email: 'e2e-auth@example.com',
+          code: await mailedSignupCode('e2e-auth@example.com'),
           password: 'SecurePassword123!',
           name: 'E2E User',
           acceptedTermsVersion: TERMS_VERSION,

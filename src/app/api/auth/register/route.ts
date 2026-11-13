@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { queueAccountMail } from '@/lib/auth/account-mail';
 import { hashPassword } from '@/lib/auth/crypto';
+import { isEmailCodeShape, verifyEmailCode } from '@/lib/auth/email-code-store';
 import { isPlainMailbox } from '@/lib/auth/mailbox';
-import { isAuthMailEnabled, mailLocale } from '@/lib/auth/mail-config';
+import { isAuthMailEnabled } from '@/lib/auth/mail-config';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 import { codedRefusal, serverFault } from '@/lib/api/problem-details';
@@ -19,7 +19,15 @@ export const dynamic = 'force-dynamic';
 
 const refusal = codedRefusal<AuthErrorCode>;
 
+/**
+ * The second step of a password sign-up: makes the account from the six-digit code that `POST /api/auth/register/code` mailed to
+ * the address, a password, a name and the acceptance of the terms. The code proves the address, so the account is created
+ * verified; an account whose address nobody confirmed is never created. The checks of the form come before the code is
+ * tried, so a short password does not use up one of its few guesses.
+ */
 export async function POST(req: NextRequest) {
+  if (!isAuthMailEnabled()) return refusal(404, 'mail_unavailable', 'Sign-up by email is not available on this server.');
+
   const body = await readJsonObject(req);
   if (!body) {
     return refusal(400, 'invalid_json', 'Invalid JSON request payload.');
@@ -38,6 +46,10 @@ export async function POST(req: NextRequest) {
       return refusal(400, 'invalid_email', 'A valid email address is required.');
     }
 
+    if (!isEmailCodeShape(body.code)) {
+      return refusal(400, 'invalid_code', 'The code is not valid or has expired.');
+    }
+
     if (!password || password.length < 8 || password.length > 1024) {
       return refusal(400, 'password_length', 'Password must be between 8 and 1024 characters in length.');
     }
@@ -53,8 +65,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // A wrong, expired, used or burned code, and an address that was never sent one, answer alike.
+    if (!(await verifyEmailCode('signup', email, body.code))) {
+      return refusal(400, 'invalid_code', 'The code is not valid or has expired.');
+    }
+
     const displayName = name || email.split('@')[0];
 
+    // Past the code the address is proven to be the caller's, so saying that it has an account tells nothing to a stranger.
     const existingUser = await redisUserStore.findByEmail(email);
     if (existingUser) {
       return refusal(409, 'account_exists', 'An account with this email address already exists.');
@@ -68,15 +86,9 @@ export async function POST(req: NextRequest) {
       provider: 'email',
       passwordHash: hash,
       salt,
+      emailVerified: true,
       acceptedTermsVersion: TERMS_VERSION,
     });
-
-    // The mail that confirms the address is sent in the background; a failure of it never fails the sign-up.
-    if (isAuthMailEnabled()) {
-      await queueAccountMail('verify', userRecord, mailLocale(body.locale)).catch(() => {
-        console.warn('auth_mail_failure category=store');
-      });
-    }
 
     const user = redisUserStore.sanitizeUser(userRecord);
     const token = createSessionToken(user);

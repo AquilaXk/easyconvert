@@ -10,6 +10,8 @@ export interface AuthMail {
 
 /** Minutes a password reset link works; the store keeps the token for exactly this long. */
 export const RESET_TOKEN_TTL_MINUTES = 10;
+/** Minutes the code of a sign-up or of the sign-in of an unverified account works; the store keeps the code for exactly this long. */
+export const EMAIL_CODE_TTL_MINUTES = 10;
 /** Hours an email verification link works. */
 export const VERIFY_TOKEN_TTL_HOURS = 24;
 
@@ -70,4 +72,34 @@ const MAIL: Record<AuthMailKind, Record<AppLocale, (link: string) => AuthMail>> 
 
 export function renderAuthMail(kind: AuthMailKind, locale: AppLocale, link: string): AuthMail {
   return MAIL[kind][locale](link);
+}
+
+const CODE_MAIL: Record<AppLocale, (code: string) => AuthMail> = {
+  en: (code) => ({
+    subject: 'Your EasyConvert verification code',
+    text: [
+      'Your EasyConvert verification code is:',
+      '',
+      code,
+      '',
+      `Enter it within ${EMAIL_CODE_TTL_MINUTES} minutes. The code works once. If you did not ask for it, ignore this mail.`,
+      '',
+    ].join('\n'),
+  }),
+  ko: (code) => ({
+    subject: 'EasyConvert 인증 코드',
+    text: [
+      'EasyConvert 인증 코드입니다.',
+      '',
+      code,
+      '',
+      `${EMAIL_CODE_TTL_MINUTES}분 안에 입력하세요. 코드는 한 번만 쓸 수 있습니다. 요청하지 않았다면 이 메일을 무시하세요.`,
+      '',
+    ].join('\n'),
+  }),
+};
+
+/** The mail that carries a six-digit code (sign-up, or the sign-in of an account whose address was never verified). */
+export function renderCodeMail(locale: AppLocale, code: string): AuthMail {
+  return CODE_MAIL[locale](code);
 }

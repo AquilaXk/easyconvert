@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { pepperedHashes, sameDigest, sha256 } from './crypto';
+import { EMAIL_CODE_TTL_MINUTES } from './auth-mail-templates';
 import { redisUserStore } from './redis-user-store';
 
 /**
@@ -16,7 +17,7 @@ import { redisUserStore } from './redis-user-store';
 
 export type EmailCodePurpose = 'signup' | 'login';
 
-export const EMAIL_CODE_TTL_SECONDS = 10 * 60;
+export const EMAIL_CODE_TTL_SECONDS = EMAIL_CODE_TTL_MINUTES * 60;
 export const EMAIL_CODE_MAX_ATTEMPTS = 5;
 const CODE_DIGITS = 6;
 const CODE_SHAPE = /^\d{6}$/;

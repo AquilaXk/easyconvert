@@ -74,7 +74,8 @@ const GLOBAL_ATTEMPTS_KEY = 'global';
 export const REGISTER_MAX_ATTEMPTS_PER_IP = 10;
 export const REGISTER_WINDOW_SECONDS = 300;
 export const REGISTER_GLOBAL_MAX_ATTEMPTS = 300;
-const REGISTER_GLOBAL_ATTEMPTS_KEY = 'register:global';
+/** What a registration request is counted for: the account form itself, or the mail of a code that comes before it (each has its own 10 per 5 minutes per client). */
+export type RegistrationStep = 'register' | 'code';
 
 export interface LoginRateLimitCheckResult {
   allowed: boolean;
@@ -319,8 +320,10 @@ async function consumeRedisFixedWindow(
 }
 
 export async function consumeRegistrationRateLimit(
-  ip: string | null
+  ip: string | null,
+  step: RegistrationStep = 'register'
 ): Promise<LoginRateLimitCheckResult> {
+  const scope = step === 'code' ? 'register_code' : 'register';
   const normIp = normalizeLoginIp(ip);
   const useGlobal = usesGlobalCounter(ip);
 
@@ -330,7 +333,7 @@ export async function consumeRegistrationRateLimit(
   if (redis) {
     try {
       if (normIp) {
-        const ipKey = `${prefix}register_attempts:ip:${normIp}`;
+        const ipKey = `${prefix}${scope}_attempts:ip:${normIp}`;
         const blocked = await consumeRedisFixedWindow(
           redis,
           ipKey,
@@ -342,7 +345,7 @@ export async function consumeRegistrationRateLimit(
       }
 
       if (useGlobal) {
-        const globalKey = `${prefix}register_attempts:${GLOBAL_ATTEMPTS_KEY}`;
+        const globalKey = `${prefix}${scope}_attempts:${GLOBAL_ATTEMPTS_KEY}`;
         const blocked = await consumeRedisFixedWindow(
           redis,
           globalKey,
@@ -362,7 +365,7 @@ export async function consumeRegistrationRateLimit(
   const expiresAt = now + REGISTER_WINDOW_SECONDS * 1000;
 
   if (normIp) {
-    const key = `register:ip:${normIp}`;
+    const key = `${scope}:ip:${normIp}`;
     const existing = inMemoryAttempts.get(key);
     const entry: AttemptEntry =
       existing && now < existing.expiresAt
@@ -376,12 +379,13 @@ export async function consumeRegistrationRateLimit(
   }
 
   if (useGlobal) {
-    const existing = inMemoryAttempts.get(REGISTER_GLOBAL_ATTEMPTS_KEY);
+    const globalKey = `${scope}:global`;
+    const existing = inMemoryAttempts.get(globalKey);
     const entry: AttemptEntry =
       existing && now < existing.expiresAt
         ? { count: existing.count + 1, expiresAt: existing.expiresAt }
         : { count: 1, expiresAt };
-    inMemoryAttempts.set(REGISTER_GLOBAL_ATTEMPTS_KEY, entry);
+    inMemoryAttempts.set(globalKey, entry);
     if (entry.count > REGISTER_GLOBAL_MAX_ATTEMPTS) {
       const retryAfter = Math.max(1, Math.ceil((entry.expiresAt - now) / 1000));
       return { allowed: false, retryAfterSeconds: retryAfter, reason: 'global' };

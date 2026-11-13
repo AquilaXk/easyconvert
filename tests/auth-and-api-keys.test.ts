@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mailedSignupCode, stubMailConfig } from './helpers/auth-mail-fixtures';
 import { hashPassword, verifyPassword, sha256 } from '../src/lib/auth/crypto';
 import { signJwt, verifyJwt } from '../src/lib/auth/jwt';
 import { userStore } from '../src/lib/auth/user-store';
@@ -340,12 +341,18 @@ describe('Auth & API Key Infrastructure', () => {
   });
 
   describe('End-to-End API Route Handlers', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
     it('registers user, issues session cookie, and permits login', async () => {
+      stubMailConfig();
       // 1. Register
       const regReq = new NextRequest('http://localhost:3000/api/auth/register', {
         method: 'POST',
         body: JSON.stringify({
           email: 'fullstack@example.com',
+          code: await mailedSignupCode('fullstack@example.com'),
           password: 'Password999!',
           name: 'Full Stack',
           acceptedTermsVersion: TERMS_VERSION,
@@ -365,6 +372,7 @@ describe('Auth & API Key Infrastructure', () => {
         method: 'POST',
         body: JSON.stringify({
           email: 'fullstack@example.com',
+          code: await mailedSignupCode('fullstack@example.com'),
           password: 'Password999!',
           name: 'Full Stack',
           acceptedTermsVersion: TERMS_VERSION,
@@ -767,6 +775,7 @@ describe('Auth & API Key Infrastructure', () => {
     });
 
     it('rejects non-string or malformed JSON payloads in login and register routes', async () => {
+      stubMailConfig();
       // 1. Malformed JSON to login
       const reqMalformedLogin = new NextRequest('http://localhost:3000/api/auth/login', {
         method: 'POST',

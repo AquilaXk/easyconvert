@@ -117,13 +117,15 @@ const mailRateLimited = {
   headers: { 'Retry-After': { schema: { type: 'integer' } } },
 };
 
-const credentialsBody = (extra: Record<string, unknown> = {}) => ({
+const codeProperty = { type: 'string', pattern: '^[0-9]{6}$', description: 'The six-digit code mailed to the address; it works once, for 10 minutes, and a few wrong guesses burn it.' };
+
+const credentialsBody = (extra: Record<string, unknown> = {}, requiredExtra: string[] = []) => ({
   required: true,
   content: {
     'application/json': {
       schema: {
         type: 'object',
-        required: ['email', 'password'],
+        required: ['email', 'password', ...requiredExtra],
         properties: {
           email: { type: 'string', format: 'email' },
           password: { type: 'string', minLength: 8, maxLength: 1024 },
@@ -430,19 +432,22 @@ export const internalPaths = {
     post: {
       ...INTERNAL,
       summary: 'Sign In',
+      description:
+        'An email account whose address was never confirmed (made before sign-up asked for a code) signs in in two calls: the first, with the right password and no `code`, mails a six-digit code and answers 403 `email_verification_required`; the second sends the same credentials with the `code`. A right code confirms the address for good. A server that cannot mail issues the session at once; until its address is confirmed such an account counts as anonymous for conversions.',
       operationId: 'login',
       security: PUBLIC_ACCESS,
-      requestBody: credentialsBody(),
+      requestBody: credentialsBody({ code: codeProperty, locale: localeProperty }),
       responses: {
         '200': sessionUserResponse('Signed in.'),
-        '400': createCodedErrorResponse('Invalid JSON, missing credentials, or a client address the forwarding headers do not name.', ['invalid_json', 'missing_fields', 'client_address_unknown']),
+        '400': createCodedErrorResponse('Invalid JSON, missing credentials, a code that is not valid or has expired (`invalid_code`), or a client address the forwarding headers do not name.', ['invalid_json', 'missing_fields', 'invalid_code', 'client_address_unknown']),
         '401': createCodedErrorResponse('Invalid email address or password.', ['invalid_credentials']),
+        '403': createCodedErrorResponse('The password is right but the address is not confirmed: a code was mailed to it. Send the credentials again with the code.', ['email_verification_required']),
         '429': {
           ...createProblemResponse('Too many failed attempts (problem type `rate-limited`, `code` "login_locked", the wait in `retryAfterSeconds`); see `Retry-After`.'),
           headers: { 'Retry-After': { schema: { type: 'integer' } } },
         },
         '500': createErrorResponse('Sign-in failed on the server (fixed `error`, no `code`).'),
-        '503': createCodedErrorResponse('The client-IP trust configuration of the server is missing or invalid; see `Retry-After`.', ['client_ip_unconfigured']),
+        '503': createCodedErrorResponse('The client-IP trust configuration of the server is missing or invalid, or the mail budget of the day is used up so no code can be sent; see `Retry-After`.', ['client_ip_unconfigured', 'mail_temporarily_unavailable']),
       },
     },
   },
@@ -539,25 +544,50 @@ export const internalPaths = {
       },
     },
   },
+  '/api/auth/register/code': {
+    post: {
+      ...INTERNAL,
+      summary: 'Send Sign-up Code',
+      description:
+        'The first step of a password sign-up: mails a six-digit code to the address. No account exists until `register` presents the code. An address that already has an account is sent nothing and is answered with the same 202 after the same wait. At most 2 codes a minute per address and client, 3 per address in 10 minutes, and 10 requests per client in 5 minutes. An address on a disposable domain is refused.',
+      operationId: 'sendRegistrationCode',
+      security: PUBLIC_ACCESS,
+      requestBody: jsonBody({ email: { type: 'string', format: 'email' }, locale: localeProperty }, ['email']),
+      responses: {
+        '202': opaqueAccepted('Accepted.'),
+        '400': createCodedErrorResponse('Invalid JSON, an address that is not valid, an address on a disposable domain (`disposable_email`), or a client address the forwarding headers do not name.', ['invalid_json', 'invalid_email', 'disposable_email', 'client_address_unknown']),
+        '404': mailUnavailable,
+        '429': mailRateLimited,
+        '500': createErrorResponse('Sending the code failed on the server (fixed `error`, no `code`).'),
+        '503': createCodedErrorResponse('The client-IP trust configuration of the server is missing or invalid, or the mail budget of the day is used up; see `Retry-After`.', ['client_ip_unconfigured', 'mail_temporarily_unavailable']),
+      },
+    },
+  },
   '/api/auth/register': {
     post: {
       ...INTERNAL,
       summary: 'Register Account',
+      description: 'The second step of a password sign-up: creates the account from the code that `sendRegistrationCode` mailed to the address. The code proves the address, so the account is created verified.',
       operationId: 'register',
       security: PUBLIC_ACCESS,
-      requestBody: credentialsBody({
-        name: { type: 'string' },
-        acceptedTermsVersion: {
-          type: 'string',
-          description: 'Version (effective date) of the terms of service the user accepted; must be the current one.',
+      requestBody: credentialsBody(
+        {
+          code: codeProperty,
+          name: { type: 'string' },
+          acceptedTermsVersion: {
+            type: 'string',
+            description: 'Version (effective date) of the terms of service the user accepted; must be the current one.',
+          },
         },
-      }),
+        ['code']
+      ),
       responses: {
         '200': sessionUserResponse('Account created and signed in.'),
         '400': createCodedErrorResponse(
-          'Invalid JSON, email, or password length; terms of service not accepted (`terms_not_accepted`), accepted in an earlier version (`terms_outdated`), or a client address the forwarding headers do not name (`client_address_unknown`).',
-          ['invalid_json', 'invalid_email', 'password_length', 'terms_not_accepted', 'terms_outdated', 'client_address_unknown']
+          'Invalid JSON, email, code (not valid, expired, used or burned: `invalid_code`) or password length; terms of service not accepted (`terms_not_accepted`), accepted in an earlier version (`terms_outdated`), or a client address the forwarding headers do not name (`client_address_unknown`).',
+          ['invalid_json', 'invalid_email', 'invalid_code', 'password_length', 'terms_not_accepted', 'terms_outdated', 'client_address_unknown']
         ),
+        '404': mailUnavailable,
         '409': createCodedErrorResponse('Email address already registered.', ['account_exists']),
         '429': {
           ...createProblemResponse('Too many registration attempts (problem type `rate-limited`, `code` "login_locked", the wait in `retryAfterSeconds`); see `Retry-After`.'),

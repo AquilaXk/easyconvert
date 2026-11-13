@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mailedSignupCode, stubMailConfig } from './helpers/auth-mail-fixtures';
 import { NextRequest } from 'next/server';
 import { signJwt, verifyJwt, DEFAULT_JWT_ISSUER, DEFAULT_JWT_AUDIENCE } from '../src/lib/auth/jwt';
 import {
@@ -511,10 +512,12 @@ describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
     });
 
     it('blocks rapid successive registration attempts per IP with HTTP 429 and Retry-After', async () => {
+      stubMailConfig();
       process.env.TRUSTED_PROXIES = '10.0.0.0/8';
       try {
         const ip = '198.51.100.99';
         for (let i = 0; i < REGISTER_MAX_ATTEMPTS_PER_IP; i++) {
+          const spamEmail = `reg_spam_${i}_${Date.now()}@example.com`;
           const req = new NextRequest('http://localhost:3000/api/auth/register', {
             method: 'POST',
             headers: {
@@ -522,7 +525,8 @@ describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
               'x-forwarded-for': ip,
             },
             body: JSON.stringify({
-              email: `reg_spam_${i}_${Date.now()}@example.com`,
+              email: spamEmail,
+              code: await mailedSignupCode(spamEmail),
               password: 'ValidPassword123!',
               acceptedTermsVersion: TERMS_VERSION,
             }),
@@ -539,6 +543,7 @@ describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
           },
           body: JSON.stringify({
             email: `reg_spam_blocked_${Date.now()}@example.com`,
+            code: '123456',
             password: 'ValidPassword123!',
             acceptedTermsVersion: TERMS_VERSION,
           }),
@@ -553,6 +558,7 @@ describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
         expect(body.type).toBe('https://api.easyconvert.io/problems/rate-limited');
       } finally {
         delete process.env.TRUSTED_PROXIES;
+        vi.unstubAllEnvs();
       }
     });
   });

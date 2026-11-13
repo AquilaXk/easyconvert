@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as register } from '../src/app/api/auth/register/route';
 import { GET as googleUrl } from '../src/app/api/auth/google/url/route';
@@ -9,6 +9,7 @@ import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import { keyStore } from '../src/lib/api-keys/key-store';
 import { TERMS_VERSION } from '../src/lib/legal/documents';
+import { mailedSignupCode, stubMailConfig } from './helpers/auth-mail-fixtures';
 
 /**
  * Sign-up and API key creation record which version of the terms was accepted (issue #901). The version is the date the
@@ -18,12 +19,12 @@ import { TERMS_VERSION } from '../src/lib/legal/documents';
 const ORIGIN = 'http://localhost:3000';
 const SANDBOX_EMAIL = 'dev.sandbox@example.com';
 
-function signUp(body: Record<string, unknown>) {
+async function signUp(body: Record<string, unknown>) {
   return register(
     new NextRequest(`${ORIGIN}/api/auth/register`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email: 'reader@legal.test', password: 'LongEnough1', ...body }),
+      body: JSON.stringify({ email: 'reader@legal.test', code: await mailedSignupCode('reader@legal.test'), password: 'LongEnough1', ...body }),
     })
   );
 }
@@ -41,6 +42,11 @@ async function signInWithGoogle(query: string): Promise<string> {
 beforeEach(() => {
   redisUserStore.resetStore();
   keyStore.resetStore();
+  stubMailConfig();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe('sign-up records the accepted terms version', () => {

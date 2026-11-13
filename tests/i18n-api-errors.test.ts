@@ -22,6 +22,7 @@ import { importLargerThanLeftResponse, uploadBudgetRefusalResponse } from '../sr
 import { conversionRefusalResponse } from '../src/lib/api/conversion-refusal-response';
 import { AUTH_ERROR_CODES, URL_IMPORT_ERROR_CODES } from '../src/lib/refusal-codes';
 import { FREE_DAILY_CREDITS, PLAN_MAX_FILE_BYTES, SINGLE_REQUEST_BODY_MAX_BYTES } from '../src/lib/plan-limits';
+import { mailedSignupCode, stubMailConfig } from './helpers/auth-mail-fixtures';
 import type { TestLocale } from './helpers/intl';
 import { renderDom, select, visibleText } from './helpers/rendered-dom';
 
@@ -284,6 +285,7 @@ describe('link import refusals', () => {
 describe('sign-in refusals are worded by their code', () => {
   beforeEach(() => {
     resetLoginRateLimiterStore();
+    stubMailConfig();
     vi.stubEnv('TRUSTED_PROXIES', '');
     vi.stubEnv('TRUSTED_CDN', '');
   });
@@ -318,17 +320,21 @@ describe('sign-in refusals are worded by their code', () => {
       await bodyOf(await login(jsonRequest('/api/auth/login', { email: 'a@b.test' }))),
       await bodyOf(await register(jsonRequest('/api/auth/register', '{not json'))),
       await bodyOf(await register(jsonRequest('/api/auth/register', { email: 'no-at-sign', password: 'LongEnough1' }))),
-      await bodyOf(await register(jsonRequest('/api/auth/register', { email: 'new@i18n.test', password: 'short' }))),
       await bodyOf(await register(jsonRequest('/api/auth/register', { email: 'new@i18n.test', password: 'LongEnough1' }))),
-      await bodyOf(await register(jsonRequest('/api/auth/register', { email: existing, password: 'LongEnough1', acceptedTermsVersion: TERMS_VERSION }))),
+      await bodyOf(await register(jsonRequest('/api/auth/register', { email: 'new@i18n.test', code: '123456', password: 'short' }))),
+      await bodyOf(await register(jsonRequest('/api/auth/register', { email: 'new@i18n.test', code: '123456', password: 'LongEnough1' }))),
+      await bodyOf(await register(jsonRequest('/api/auth/register', { email: 'new@i18n.test', code: '123456', password: 'LongEnough1', acceptedTermsVersion: TERMS_VERSION }))),
+      await bodyOf(await register(jsonRequest('/api/auth/register', { email: existing, code: await mailedSignupCode(existing), password: 'LongEnough1', acceptedTermsVersion: TERMS_VERSION }))),
     ];
     expect(answers.map(({ status, body }) => [status, body.code])).toEqual([
       [400, 'invalid_json'],
       [400, 'missing_fields'],
       [400, 'invalid_json'],
       [400, 'invalid_email'],
+      [400, 'invalid_code'],
       [400, 'password_length'],
       [400, 'terms_not_accepted'],
+      [400, 'invalid_code'],
       [409, 'account_exists'],
     ]);
     for (const { status, body } of answers) {

@@ -27,6 +27,7 @@ import {
   googleAccount,
   jsonPost,
   passwordAccount,
+  mailedSignupCode,
   stubMailConfig,
   stubNoMailConfig,
   tokenOfMail,
@@ -81,45 +82,27 @@ describe('registration', () => {
     expect(mail.sendMail).not.toHaveBeenCalled();
   });
 
-  it('mails a link to the new address, and leaves the account unverified until it is used', async () => {
-    const response = await register(registration('new.person@fixture.test', { locale: 'ko' }));
+  it('creates the account verified from a mailed code, and sends no link', async () => {
+    const response = await register(registration('new.person@fixture.test', { code: await mailedSignupCode('new.person@fixture.test') }));
     expect(response.status).toBe(200);
-    await vi.waitFor(() => expect(mail.sendMail).toHaveBeenCalledTimes(1));
-    const sent = mail.sendMail.mock.calls[0][0];
-    expect(sent.to).toBe('new.person@fixture.test');
-    expect(sent.text).toContain('https://convert.fixture.test/ko/auth/verify-email#token=');
-    expect(isEmailVerified((await redisUserStore.findByEmail('new.person@fixture.test'))!)).toBe(false);
-
-    const confirmed = await confirmVerification(jsonPost(CONFIRM_URL, { token: tokenOfMail(sent.text) }));
-    expect(confirmed.status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mail.sendMail).not.toHaveBeenCalled();
     expect(isEmailVerified((await redisUserStore.findByEmail('new.person@fixture.test'))!)).toBe(true);
   });
 
-  it('does not wait for the mail, and does not fail when it cannot be sent', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    mail.sendMail.mockReturnValueOnce(new Promise(() => undefined));
-    // The mail never finishes; the sign-up answers all the same.
-    const response = await register(registration('slow.mail@fixture.test'));
-    expect(response.status).toBe(200);
-
-    mail.sendMail.mockRejectedValueOnce(Object.assign(new Error('x'), { code: 'EAUTH' }));
-    expect((await register(registration('failing.mail@fixture.test'))).status).toBe(200);
-  });
-
-  it('sends nothing and behaves as before when SMTP is not configured', async () => {
+  it('answers 404 and creates nothing when SMTP is not configured, since no code can be sent', async () => {
     stubNoMailConfig();
-    const response = await register(registration('plain@fixture.test'));
-    expect(response.status).toBe(200);
-    expect((await response.json()).success).toBe(true);
-    expect(mail.sendMail).not.toHaveBeenCalled();
-    const status = await verificationStatus(statusRequest(await signedIn((await redisUserStore.findByEmail('plain@fixture.test'))!)));
-    expect(await status.json()).toEqual({ success: true, enabled: false, verified: false });
+    const response = await register(registration('plain@fixture.test', { code: '123456' }));
+    expect(response.status).toBe(404);
+    expect((await response.json()).code).toBe('mail_unavailable');
+    expect(await redisUserStore.findByEmail('plain@fixture.test')).toBeNull();
   });
 });
 
 describe('an unverified account', () => {
-  it('signs in as before, including an account made before verification existed', async () => {
+  it('signs in as before when the server cannot mail a code, including an account made before verification existed', async () => {
     await passwordAccount('old.timer');
+    stubNoMailConfig();
     const response = await login(jsonPost('/api/auth/login', { email: 'old.timer@fixture.test', password: GOOD_PASSWORD }));
     expect(response.status).toBe(200);
     expect((await response.json()).success).toBe(true);
