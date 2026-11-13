@@ -14,6 +14,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Product and API
 - Before Paddle billing goes on (entry 262): add Paddle as a processor of billing data to `docs/legal/privacy.en.md`, `privacy.ko.md` and the DPA with the next legal revision (30-day notice, as for the cookie table below), run one sandbox purchase end to end (account, six `PADDLE_` variables, notification destination to `/api/billing/webhook`, CSP if one is added for cdn.paddle.com and checkout frames). The sandbox run also shows the real delivery pattern (the webhook's own edge bucket of entry 277 may be too small or too large), whether the clock log of entry 277 stays silent, and what the first hourly reconcile run reports (the `[billing] reconcile` line) against the sandbox list.
+- When billing goes on, render the pricing page per request (or at deploy with billing configured): it is prerendered, so its paid-plan cards and FAQ answers switch from "coming soon" only after the browser reads the session, the same late swap the sign-in page had before its Google button and reset link were rendered with the form.
 - The API docs pages are prerendered, so their 413 text names the paid plans only when the build has billing configured (it has none): read `isBillingConfigured()` at request time there (entry 277).
 
 ## Operations and security
