@@ -40,6 +40,15 @@ describe('verifyWebhook', () => {
     await expect(provider.verifyWebhook(body, sign(body, 'another_secret', SECONDS(NOW)))).rejects.toMatchObject(INVALID);
   });
 
+  it('accepts a header with several h1 values when any one is the signature made with the secret', async () => {
+    const [timestamp, valid] = sign(body, WEBHOOK_SECRET, SECONDS(NOW)).split(';');
+    const [, other] = sign(body, 'another_secret', SECONDS(NOW)).split(';');
+    for (const header of [`${timestamp};${valid};${other}`, `${timestamp};${other};${valid}`, `${timestamp};${other};${valid};h2=unknown`]) {
+      await expect(provider.verifyWebhook(body, header)).resolves.toMatchObject({ id: 'evt_01fixture' });
+    }
+    await expect(provider.verifyWebhook(body, `${timestamp};${other};${other}`)).rejects.toMatchObject(INVALID);
+  });
+
   it('refuses a body that changed after it was signed', async () => {
     const signature = sign(body, WEBHOOK_SECRET, SECONDS(NOW));
     await expect(provider.verifyWebhook(body.replace('active', 'canceled'), signature)).rejects.toMatchObject(INVALID);

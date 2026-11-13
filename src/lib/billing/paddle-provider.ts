@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { ApiError, Environment, Paddle } from '@paddle/paddle-node-sdk';
+import { ApiError, Environment, Paddle, Webhooks } from '@paddle/paddle-node-sdk';
 import { priceIdOf, productOfPriceId, type BillingConfig } from './config';
 import type { Product, SubscriptionSize } from './credits';
 import {
@@ -15,10 +15,11 @@ import {
   type SubscriptionStatus,
   type VerifiedBillingEvent,
 } from './types';
+import { SIGNATURE_WINDOW_SECONDS, checkSignature } from './webhook-signature';
 
 /**
- * Paddle Billing as the payment provider, following the official Node SDK (PaddleHQ/paddle-node-sdk, Apache-2.0: signature
- * check, event classes, customer portal sessions) and the checkout of the Paddle Next.js starter kit
+ * Paddle Billing as the payment provider, following the official Node SDK (PaddleHQ/paddle-node-sdk, Apache-2.0: event classes,
+ * customer portal sessions; its signature check is `webhook-signature.ts`, which reads every h1 of a header) and the checkout of the Paddle Next.js starter kit
  * (PaddleHQ/paddle-nextjs-starter-kit, Apache-2.0: Paddle.js overlay with the account carried as custom data).
  */
 
@@ -126,25 +127,7 @@ function packageCreditsOf(config: BillingConfig, items: TransactionData['items']
   return credits;
 }
 
-/** The signature window of the SDK's `webhooks.unmarshal`, in seconds. */
-const SIGNATURE_WINDOW_SECONDS = 5;
 const MS_PER_SECOND = 1000;
-
-/**
- * How far from this server's clock the timestamp of a webhook signature is, in seconds, when the signature is genuine and only its
- * time is outside the window; undefined for any other header. A genuine signature outside the window is a clock that is off here or
- * at the provider (or a captured request sent again), and the SDK answers both and a forged header with the same refusal.
- */
-function genuineSignatureTimeSkew(secret: string, rawBody: string, signature: string, now: number): number | undefined {
-  const fields = signature.split(';').map((part) => part.split('='));
-  const ts = Number(fields.find(([key]) => key === 'ts')?.[1]);
-  const hashes = fields.flatMap(([key, value]) => (key === 'h1' && value ? [value] : []));
-  if (!Number.isFinite(ts) || hashes.length === 0) return undefined;
-  const expected = crypto.createHmac('sha256', secret).update(`${ts}:${rawBody}`).digest('hex');
-  if (!hashes.some((hash) => sameText(hash, expected))) return undefined;
-  const skew = Math.round(now / MS_PER_SECOND - ts);
-  return Math.abs(skew) > SIGNATURE_WINDOW_SECONDS ? skew : undefined;
-}
 
 /** How often a page of the list is asked for again after the provider says to wait, and the longest wait it is obeyed for. */
 const RATE_LIMIT_RETRIES = 3;
@@ -197,17 +180,21 @@ export class PaddleBillingProvider implements BillingProvider {
 
   async verifyWebhook(rawBody: string, signature: string | null): Promise<VerifiedBillingEvent> {
     if (!signature) throw new InvalidWebhookError('The Paddle-Signature header is missing');
-    let event: Awaited<ReturnType<Paddle['webhooks']['unmarshal']>>;
-    try {
-      event = await this.paddle.webhooks.unmarshal(rawBody, this.config.webhookSecret, signature);
-    } catch {
-      const skew = genuineSignatureTimeSkew(this.config.webhookSecret, rawBody, signature, Date.now());
-      if (skew !== undefined) {
+    const check = checkSignature(this.config.webhookSecret, rawBody, signature, Date.now());
+    if (!check.valid) {
+      // A genuine signature outside the window is a clock that is off here or at the provider (or a captured request sent again); a forged or malformed header says nothing.
+      if (check.reason === 'window') {
         console.error(
-          `[billing] webhook signature is genuine but its timestamp is ${Math.abs(skew)} s ${skew > 0 ? 'behind' : 'ahead of'} this server's clock (window ${SIGNATURE_WINDOW_SECONDS} s): ` +
+          `[billing] webhook signature is genuine but its timestamp is ${Math.abs(check.skewSeconds)} s ${check.skewSeconds > 0 ? 'behind' : 'ahead of'} this server's clock (window ${SIGNATURE_WINDOW_SECONDS} s): ` +
             'the clock here or at the provider is off, or a captured request was sent again; refused'
         );
       }
+      throw new InvalidWebhookError();
+    }
+    let event: ReturnType<typeof Webhooks.fromJson>;
+    try {
+      event = Webhooks.fromJson(JSON.parse(rawBody));
+    } catch {
       throw new InvalidWebhookError();
     }
     return { id: event.eventId, type: event.eventType, payload: event };
