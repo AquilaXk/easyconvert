@@ -8,7 +8,7 @@ import * as termsRoute from '../src/app/[locale]/terms/page';
 import * as privacyRoute from '../src/app/[locale]/privacy/page';
 import * as dpaRoute from '../src/app/[locale]/dpa/page';
 import * as acceptableUseRoute from '../src/app/[locale]/acceptable-use/page';
-import { LEGAL_DOCUMENTS, type LegalDocumentId } from '../src/lib/legal/documents';
+import { LEGAL_DOCUMENTS, REFUND_POLICY_SECTION_ID, type LegalDocumentId } from '../src/lib/legal/documents';
 import { LEGAL_TEXTS } from '../src/lib/legal/texts';
 import { readLegalPage } from '../src/lib/legal/render';
 import { allElements, attrOf, classTokens, headings, links, renderDom, select, visibleText } from './helpers/rendered-dom';
@@ -34,7 +34,7 @@ const LOCALES: readonly TestLocale[] = ['en', 'ko'];
 const CASES = DOCUMENTS.flatMap((id) => LOCALES.map((locale) => [id, locale] as const));
 
 /** The version date as each language writes it, typed out from the requirement rather than from the formatter. */
-const VERSION_DATE: Record<TestLocale, string> = { en: 'Effective November 12, 2026', ko: '시행일 2026년 11월 12일' };
+const VERSION_DATE: Record<TestLocale, string> = { en: 'Effective December 14, 2026', ko: '시행일 2026년 12월 14일' };
 
 const TITLES: Record<LegalDocumentId, Record<TestLocale, string>> = {
   terms: { en: 'Terms of Service', ko: '이용약관' },
@@ -57,7 +57,7 @@ describe('each legal page in each language', () => {
   it.each(CASES)('%s in %s names its version date above its title', (id, locale) => {
     const page = renderPage(id, locale);
     const [time] = select(page, 'time');
-    expect(attrOf(time, 'datetime')).toBe('2026-11-12');
+    expect(attrOf(time, 'datetime')).toBe('2026-12-14');
     expect(visibleText(time)).toBe(VERSION_DATE[locale]);
     expect(headings(page)[0]).toBe(TITLES[id][locale]);
   });
@@ -74,7 +74,7 @@ describe('each legal page in each language', () => {
   });
 
   it.each(CASES)('%s in %s links only to pages of the site in its own language', (id, locale) => {
-    const known = [...Object.values(LEGAL_DOCUMENTS).map((doc) => doc.path), '/contact'];
+    const known = [...Object.values(LEGAL_DOCUMENTS).map((doc) => doc.path), '/contact', '/pricing'];
     const expected = new Set(known.map((pathname) => (locale === 'en' ? pathname : `/${locale}${pathname}`)));
     const inSite = links(renderPage(id, locale))
       .map((link) => link.href)
@@ -91,11 +91,33 @@ describe('each legal page in each language', () => {
   });
 });
 
-describe('the terms state the free allowance and no paid plan', () => {
+describe('the terms state the free allowance and the paid plans', () => {
   it.each(LOCALES)('in %s', (locale) => {
     const text = visibleText(renderPage('terms', locale));
     expect(text).toContain(locale === 'en' ? 'you can run 10 conversions on our servers per day' : '하루에 서버 변환을 10회까지');
-    expect(text).toContain(locale === 'en' ? 'Paid plans are not offered at present' : '현재 유료 요금제는 판매하지 않습니다');
+    expect(text).not.toContain(locale === 'en' ? 'Paid plans are not offered at present' : '현재 유료 요금제는 판매하지 않습니다');
+  });
+
+  it.each(LOCALES)('name the seller, the payment provider and the four paid sections, in the order of the other terms, in %s', (locale) => {
+    const page = renderPage('terms', locale);
+    const titles = select(page, 'h2').filter((heading) => attrOf(heading, 'id') !== 'legal-contents').map((heading) => visibleText(heading));
+    const sections = locale === 'en' ? ['5. Paid plans and billing', '6. Cancellation', '7. Refunds', '8. Price changes'] : ['5. 유료 요금제와 결제', '6. 해지', '7. 환불', '8. 가격 변경'];
+    expect(titles.slice(4, 8)).toEqual(sections);
+    const text = visibleText(page);
+    expect(text).toContain(locale === 'en' ? 'Dongin Jeong (정동인), a sole proprietor' : '개인사업자 정동인(Dongin Jeong');
+    expect(text).toContain('Paddle.com');
+    expect(text).toContain(locale === 'en' ? 'merchant of record' : 'Merchant of Record');
+  });
+});
+
+describe('the payment provider in the other legal texts', () => {
+  it.each(LOCALES)('is named in the privacy policy as an independent controller, with its notice, and in the processing terms as no subprocessor, in %s', (locale) => {
+    const privacy = visibleText(renderPage('privacy', locale));
+    const dpa = visibleText(renderPage('dpa', locale));
+    expect(privacy).toContain('Paddle.com Market Limited');
+    expect(privacy).toContain(locale === 'en' ? 'independent controller' : '독립적인 개인정보처리자');
+    expect(links(renderPage('privacy', locale)).map((link) => link.href)).toContain('https://www.paddle.com/legal/privacy');
+    expect(dpa).toContain(locale === 'en' ? 'is not a subprocessor' : '재수탁자가 아닙니다');
   });
 });
 
@@ -160,6 +182,23 @@ describe('the web image', () => {
       .map((step) => step.argument.split(/\s+/)[0]);
     expect(imported).toHaveLength(8);
     expect(imported.filter((file) => !copied.some((source) => file.startsWith(source)))).toEqual([]);
+  });
+});
+
+describe('the refund policy', () => {
+  it.each(LOCALES)('is the section of the terms the footer links to in %s, by an anchor that heading has', (locale) => {
+    const anchor = REFUND_POLICY_SECTION_ID[locale];
+    const sectionIds = select(renderPage('terms', locale), 'h2').map((heading) => attrOf(heading, 'id'));
+    expect(sectionIds).toContain(anchor);
+    const prefix = locale === 'en' ? '' : `/${locale}`;
+    const refundLinks = select(renderDom(createElement(Footer), locale), 'a').filter((a) => decodeURIComponent(attrOf(a, 'href') ?? '') === `${prefix}/terms#${anchor}`);
+    expect(refundLinks.map((a) => visibleText(a))).toEqual([locale === 'en' ? 'Refund policy' : '환불 정책']);
+  });
+
+  it.each(LOCALES)('states that payments are non-refundable except where the law requires, and that refunds go through Paddle, in %s', (locale) => {
+    const text = visibleText(renderPage('terms', locale));
+    expect(text).toContain(locale === 'en' ? 'non-refundable, except where the law requires otherwise' : '환불하지 않습니다. 다만 청약철회권처럼 법령이 환불을 요구하는 경우는 예외입니다');
+    expect(text).toContain(locale === 'en' ? 'Refund requests go through Paddle' : '환불은 Paddle을 통해 요청하며');
   });
 });
 

@@ -33,6 +33,8 @@ You authorise these subprocessors:
 
 Mail you send to support@aquilaxk.site arrives in the operator's own mailbox, where the operator reads and answers it.
 
+Paddle.com, which processes the payments for paid plans, is not a subprocessor. No file you send to EasyConvert, and no personal data in a file, goes to Paddle. Paddle handles payment data as an independent controller, as section 6 of the [Privacy Policy](/privacy) describes.
+
 We tell you of a new or replaced subprocessor by updating this page at least 30 days before the change. You can object within that time through the [contact page](/contact). If we cannot meet your objection, you can stop using the service. We bind each subprocessor to data protection obligations that are no less protective than these terms, and we remain responsible for its work. A subprocessor cannot pass the processing to another party without our consent.
 
 ## 6. Assistance
