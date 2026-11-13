@@ -249,16 +249,20 @@ const HISTOGRAM_SUMS_R = new Uint32Array(HISTOGRAM_BINS);
 const HISTOGRAM_SUMS_G = new Uint32Array(HISTOGRAM_BINS);
 const HISTOGRAM_SUMS_B = new Uint32Array(HISTOGRAM_BINS);
 
-function buildHistogram(pixels: ArrayLike<number>, pixelCount: number, ignoreTransparent: boolean): Histogram {
+/**
+ * Pixels counted by one call of `countColours`. A call that runs for hundreds of milliseconds depends on the engine replacing its loop
+ * while it runs; when the compiled code of an earlier call was dropped, that replacement was seen to take 0.6 s of a 5 megapixel
+ * picture. A call that ends within a millisecond or two enters the compiled code the next time, whatever the engine did in between.
+ */
+const HISTOGRAM_CHUNK_PIXELS = 1 << 16;
+
+/** Adds the pixels from `from` up to `to` to the histogram tables. */
+function countColours(pixels: ArrayLike<number>, from: number, to: number, ignoreTransparent: boolean): void {
   const counts = HISTOGRAM_COUNTS;
   const sumsR = HISTOGRAM_SUMS_R;
   const sumsG = HISTOGRAM_SUMS_G;
   const sumsB = HISTOGRAM_SUMS_B;
-  counts.fill(0);
-  sumsR.fill(0);
-  sumsG.fill(0);
-  sumsB.fill(0);
-  for (let p = 0; p < pixelCount; p += 1) {
+  for (let p = from; p < to; p += 1) {
     const i = p * RGBA_STRIDE;
     if (ignoreTransparent && pixels[i + 3] < QUANT_ALPHA_THRESHOLD) continue;
     const r = pixels[i];
@@ -270,6 +274,18 @@ function buildHistogram(pixels: ArrayLike<number>, pixelCount: number, ignoreTra
     sumsG[bin] += g;
     sumsB[bin] += b;
   }
+}
+
+function buildHistogram(pixels: ArrayLike<number>, pixelCount: number, ignoreTransparent: boolean): Histogram {
+  const counts = HISTOGRAM_COUNTS;
+  const sumsR = HISTOGRAM_SUMS_R;
+  const sumsG = HISTOGRAM_SUMS_G;
+  const sumsB = HISTOGRAM_SUMS_B;
+  counts.fill(0);
+  sumsR.fill(0);
+  sumsG.fill(0);
+  sumsB.fill(0);
+  for (let from = 0; from < pixelCount; from += HISTOGRAM_CHUNK_PIXELS) countColours(pixels, from, Math.min(pixelCount, from + HISTOGRAM_CHUNK_PIXELS), ignoreTransparent);
   let occupied = 0;
   for (let bin = 0; bin < HISTOGRAM_BINS; bin += 1) if (counts[bin] > 0) occupied += 1;
   const weight = new Float64Array(occupied);
