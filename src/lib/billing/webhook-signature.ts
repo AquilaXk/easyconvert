@@ -35,7 +35,8 @@ export function parseSignatureHeader(header: string): ParsedSignature | null {
   return { timestamp: Number(timestamp), hashes };
 }
 
-function sameText(a: string, b: string): boolean {
+/** Whether two texts are equal, compared in constant time for equal lengths (the signature and the checkout tag are secrets of the same kind). */
+export function sameText(a: string, b: string): boolean {
   const left = Buffer.from(a);
   const right = Buffer.from(b);
   return left.length === right.length && crypto.timingSafeEqual(left, right);

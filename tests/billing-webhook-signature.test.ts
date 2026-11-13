@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkSignature, parseSignatureHeader } from '../src/lib/billing/webhook-signature';
+import { checkSignature, parseSignatureHeader, sameText } from '../src/lib/billing/webhook-signature';
 
 /*
  * The vectors are those of PaddleHQ/paddle-node-sdk, src/__tests__/notifications/webhooks-validator.node.test.ts at commit
@@ -63,5 +63,36 @@ describe('parseSignatureHeader', () => {
     expect(parseSignatureHeader('ts=NaN;h1=aa')).toBeNull();
     expect(parseSignatureHeader('ts=;h1=aa')).toBeNull();
     expect(parseSignatureHeader('ts=-5;h1=aa')).toBeNull();
+  });
+});
+
+describe('how strictly a header is read', () => {
+  const HASH = 'a300428748dce5c70e4da19bffd60769591ea969c99dea3105d0ec9612cf43f9';
+  const BODY = '{"data": ["1", "2"]}';
+  const check = (header: string) => checkSignature('VALID_SECRET', BODY, header, NOW);
+
+  it('takes the last timestamp when a header names two, as the Node SDK does', () => {
+    expect(check(`ts=9876;ts=1698796800;h1=${HASH}`).valid).toBe(true);
+    expect(check(`ts=1698796800;ts=9876;h1=${HASH}`)).toEqual({ valid: false, reason: 'mismatch' });
+  });
+
+  it('refuses a key or a value with whitespace around it: the hash is not found', () => {
+    expect(check(`ts=1698796800; h1=${HASH}`)).toEqual({ valid: false, reason: 'malformed' });
+    expect(check(`ts=1698796800;h1 =${HASH}`)).toEqual({ valid: false, reason: 'malformed' });
+    expect(check(` ts=1698796800;h1=${HASH}`)).toEqual({ valid: false, reason: 'malformed' });
+    expect(check(`ts=1698796800;h1= ${HASH}`)).toEqual({ valid: false, reason: 'mismatch' });
+  });
+
+  it('refuses a hash written in upper-case hex: the signature is compared as the lower-case text the provider sends', () => {
+    expect(check(`ts=1698796800;h1=${HASH.toUpperCase()}`)).toEqual({ valid: false, reason: 'mismatch' });
+  });
+});
+
+describe('sameText', () => {
+  it('is true for equal text and false for any difference, in length or in one byte', () => {
+    expect(sameText('abc', 'abc')).toBe(true);
+    expect(sameText('abc', 'abd')).toBe(false);
+    expect(sameText('abc', 'abcd')).toBe(false);
+    expect(sameText('', '')).toBe(true);
   });
 });

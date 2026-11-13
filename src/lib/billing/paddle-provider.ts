@@ -15,7 +15,7 @@ import {
   type SubscriptionStatus,
   type VerifiedBillingEvent,
 } from './types';
-import { SIGNATURE_WINDOW_SECONDS, checkSignature } from './webhook-signature';
+import { SIGNATURE_WINDOW_SECONDS, checkSignature, sameText } from './webhook-signature';
 
 /**
  * Paddle Billing as the payment provider, following the official Node SDK (PaddleHQ/paddle-node-sdk, Apache-2.0: event classes,
@@ -56,12 +56,6 @@ const BINDING_LABEL = 'easyconvert:checkout:v1:';
 /** The tag that ties a checkout to its account: only this server can make one, so custom data typed in a browser proves nothing. */
 function bindingOf(webhookSecret: string, userId: string): string {
   return crypto.createHmac('sha256', webhookSecret).update(`${BINDING_LABEL}${userId}`).digest('base64url');
-}
-
-function sameText(a: string, b: string): boolean {
-  const left = Buffer.from(a);
-  const right = Buffer.from(b);
-  return left.length === right.length && crypto.timingSafeEqual(left, right);
 }
 
 /** The account a checkout's custom data names, when its tag is the one `createCheckout` made. */
