@@ -90,6 +90,24 @@ describe('edge middleware client-IP attribution (rate-limit bypass regression)',
     expect(countStatuses(responses).limited).toBe(REQUESTS_PER_SHARED_PROBE - SHARED_BURST_CAPACITY);
   });
 
+  it('the payment provider webhook has a bucket of its own: a burst from one address is not cut at the per-client limit, and clients keep theirs', async () => {
+    vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
+    const middleware = await loadMiddleware();
+    const hook = () => apiRequest({ 'x-forwarded-for': '198.51.100.7' }, '/api/billing/webhook', 'POST');
+    const responses: Response[] = [];
+    for (let i = 0; i < REQUESTS_PER_SHARED_PROBE; i++) responses.push(middleware(hook()));
+    const { allowed, limited } = countStatuses(responses);
+    expect(allowed).toBe(SHARED_BURST_CAPACITY);
+    expect(limited).toBe(REQUESTS_PER_SHARED_PROBE - SHARED_BURST_CAPACITY);
+
+    // The webhook's burst took nothing from the sender's own bucket on other routes, and a client's burst takes nothing from the webhook's.
+    expect(middleware(apiRequest({ 'x-forwarded-for': '198.51.100.7' })).status).not.toBe(429);
+    const clientBurst = Array.from({ length: REQUESTS_PER_PROBE }, () => middleware(apiRequest({ 'x-forwarded-for': '198.51.100.8' })));
+    expect(countStatuses(clientBurst).allowed).toBe(EDGE_BURST_CAPACITY);
+    vi.setSystemTime(FROZEN_NOW_MS + 1000);
+    expect(middleware(hook()).status).not.toBe(429);
+  });
+
   it('GET and HEAD /api/health are exempt from the shared unattributed bucket', async () => {
     const middleware = await loadMiddleware();
     const responses: Response[] = [];

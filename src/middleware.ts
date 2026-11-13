@@ -78,15 +78,20 @@ function cleanExpiredEdgeBuckets() {
   }
 }
 
-function checkEdgeIpRateLimit(clientIp: string): { allowed: boolean; retryAfterSec: number } {
+// The notification destination of the payment provider: its answer, not an address, is the gate (the signature check), and a 429 makes the
+// provider send the event again, so the route has one bucket of its own, sized like the degraded shared one, in place of the bucket of
+// the sender's address. It is not shared with any client's bucket, so neither side can starve the other.
+const BILLING_WEBHOOK_PATH = '/api/billing/webhook';
+const BILLING_WEBHOOK_BUCKET_KEY = 'route:billing-webhook';
+
+function checkEdgeIpRateLimit(bucketKey: string, limits: EdgeBucketLimits): { allowed: boolean; retryAfterSec: number } {
   cleanExpiredEdgeBuckets();
   const now = Date.now();
-  const limits = clientIp === UNATTRIBUTED_CLIENT_KEY ? SHARED_LIMITS : PER_CLIENT_LIMITS;
-  let bucket = edgeIpBuckets.get(clientIp);
+  let bucket = edgeIpBuckets.get(bucketKey);
 
   if (!bucket) {
     bucket = { tokens: limits.capacity - 1, lastRefill: now };
-    edgeIpBuckets.set(clientIp, bucket);
+    edgeIpBuckets.set(bucketKey, bucket);
     return { allowed: true, retryAfterSec: 0 };
   }
 
@@ -341,7 +346,10 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
   const clientIp = rateLimitKey(clientIpKey(resolved));
 
   // 1. Edge-level IP Rate Limiter
-  const edgeRate = checkEdgeIpRateLimit(clientIp);
+  const edgeRate =
+    pathname === BILLING_WEBHOOK_PATH
+      ? checkEdgeIpRateLimit(BILLING_WEBHOOK_BUCKET_KEY, SHARED_LIMITS)
+      : checkEdgeIpRateLimit(clientIp, clientIp === UNATTRIBUTED_CLIENT_KEY ? SHARED_LIMITS : PER_CLIENT_LIMITS);
   if (!edgeRate.allowed) {
     return new NextResponse(
       JSON.stringify({

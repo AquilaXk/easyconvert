@@ -80,6 +80,26 @@ function planOfItems(config: BillingConfig, items: SubscriptionData['items']): P
   return [...PAID_PLANS].reverse().find((plan) => plans.includes(plan));
 }
 
+/** The signature window of the SDK's `webhooks.unmarshal`, in seconds. */
+const SIGNATURE_WINDOW_SECONDS = 5;
+const MS_PER_SECOND = 1000;
+
+/**
+ * How far from this server's clock the timestamp of a webhook signature is, in seconds, when the signature is genuine and only its
+ * time is outside the window; undefined for any other header. A genuine signature outside the window is a clock that is off here or
+ * at the provider (or a captured request sent again), and the SDK answers both and a forged header with the same refusal.
+ */
+function genuineSignatureTimeSkew(secret: string, rawBody: string, signature: string, now: number): number | undefined {
+  const fields = signature.split(';').map((part) => part.split('='));
+  const ts = Number(fields.find(([key]) => key === 'ts')?.[1]);
+  const hashes = fields.flatMap(([key, value]) => (key === 'h1' && value ? [value] : []));
+  if (!Number.isFinite(ts) || hashes.length === 0) return undefined;
+  const expected = crypto.createHmac('sha256', secret).update(`${ts}:${rawBody}`).digest('hex');
+  if (!hashes.some((hash) => sameText(hash, expected))) return undefined;
+  const skew = Math.round(now / MS_PER_SECOND - ts);
+  return Math.abs(skew) > SIGNATURE_WINDOW_SECONDS ? skew : undefined;
+}
+
 export class PaddleBillingProvider implements BillingProvider {
   readonly id = 'paddle';
   private readonly paddle: Paddle;
@@ -105,6 +125,13 @@ export class PaddleBillingProvider implements BillingProvider {
     try {
       event = await this.paddle.webhooks.unmarshal(rawBody, this.config.webhookSecret, signature);
     } catch {
+      const skew = genuineSignatureTimeSkew(this.config.webhookSecret, rawBody, signature, Date.now());
+      if (skew !== undefined) {
+        console.error(
+          `[billing] webhook signature is genuine but its timestamp is ${Math.abs(skew)} s ${skew > 0 ? 'behind' : 'ahead of'} this server's clock (window ${SIGNATURE_WINDOW_SECONDS} s): ` +
+            'the clock here or at the provider is off, or a captured request was sent again; refused'
+        );
+      }
       throw new InvalidWebhookError();
     }
     return { id: event.eventId, type: event.eventType, payload: event };

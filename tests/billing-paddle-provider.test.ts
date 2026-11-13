@@ -50,6 +50,23 @@ describe('verifyWebhook', () => {
     await expect(provider.verifyWebhook(body, sign(body, WEBHOOK_SECRET, SECONDS(NOW) - 3))).resolves.toMatchObject({ id: 'evt_01fixture' });
   });
 
+  it('says in the log that a genuine signature is outside the window, and nothing for a forged or malformed one', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await expect(provider.verifyWebhook(body, sign(body, WEBHOOK_SECRET, SECONDS(NOW) - 12))).rejects.toMatchObject(INVALID);
+    await expect(provider.verifyWebhook(body, sign(body, WEBHOOK_SECRET, SECONDS(NOW) + 30))).rejects.toMatchObject(INVALID);
+    expect(logged.mock.calls.map(([line]) => String(line))).toEqual([
+      expect.stringContaining('timestamp is 12 s behind this server\'s clock (window 5 s)'),
+      expect.stringContaining('timestamp is 30 s ahead of this server\'s clock (window 5 s)'),
+    ]);
+
+    logged.mockClear();
+    await expect(provider.verifyWebhook(body, sign(body, 'another_secret', SECONDS(NOW) - 12))).rejects.toMatchObject(INVALID);
+    await expect(provider.verifyWebhook(body.replace('active', 'canceled'), sign(body, WEBHOOK_SECRET, SECONDS(NOW) - 12))).rejects.toMatchObject(INVALID);
+    await expect(provider.verifyWebhook(body, 'garbage')).rejects.toMatchObject(INVALID);
+    await expect(provider.verifyWebhook(body, sign(body, WEBHOOK_SECRET, SECONDS(NOW) - 3))).resolves.toMatchObject({ id: 'evt_01fixture' });
+    expect(logged).not.toHaveBeenCalled();
+  });
+
   it('refuses a missing or malformed header', async () => {
     await expect(provider.verifyWebhook(body, null)).rejects.toMatchObject(INVALID);
     await expect(provider.verifyWebhook(body, '')).rejects.toMatchObject(INVALID);
