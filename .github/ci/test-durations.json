@@ -861,6 +861,7 @@
   "tests/pdf-picture-memory.test.ts": 13.2,
   "tests/pdf-picture-repeats.test.ts": 4.7,
   "tests/pdf-raster-page-budget.test.ts": 2.8,
+  "tests/pdf-raster-pages-parallel.test.ts": 2.9,
   "tests/pdf-roman-list.test.ts": 0.7,
   "tests/pdf-stream-decompression-limits.test.ts": 4.2,
   "tests/pdf-structure-bounds.test.ts": 2.3,
