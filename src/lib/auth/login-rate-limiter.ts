@@ -415,6 +415,7 @@ export const MAIL_LINK_GLOBAL_MAX = 300;
 interface MailLimit {
   key: string;
   max: number;
+  windowSeconds: number;
   reason: 'email' | 'ip' | 'global';
 }
 
@@ -447,6 +448,7 @@ export async function consumeMailLinkRateLimit(
     limits.push({
       key: `mail_link:${action}:subject:${sha256(subject.toLowerCase().trim())}`,
       max: MAIL_LINK_MAX_PER_SUBJECT,
+      windowSeconds: MAIL_LINK_WINDOW_SECONDS,
       reason: 'email',
     });
   }
@@ -454,26 +456,66 @@ export async function consumeMailLinkRateLimit(
     limits.push({
       key: `mail_link:${action}:ip:${normIp}`,
       max: confirming ? MAIL_LINK_CONFIRM_MAX_PER_IP : MAIL_LINK_MAX_PER_IP,
+      windowSeconds: MAIL_LINK_WINDOW_SECONDS,
       reason: 'ip',
     });
   }
   if (usesGlobalCounter(ip)) {
-    limits.push({ key: `mail_link:${action}:global`, max: MAIL_LINK_GLOBAL_MAX, reason: 'global' });
+    limits.push({ key: `mail_link:${action}:global`, max: MAIL_LINK_GLOBAL_MAX, windowSeconds: MAIL_LINK_WINDOW_SECONDS, reason: 'global' });
   }
+  return consumeLimits(limits);
+}
 
+/** Counts one request against each limit in turn; the first one that is over its maximum answers. */
+async function consumeLimits(limits: readonly MailLimit[]): Promise<LoginRateLimitCheckResult> {
   const redis = redisUserStore.getRedisClient();
   const prefix = redisUserStore.getKeyPrefix();
   for (const limit of limits) {
     let blocked: LoginRateLimitCheckResult | null | undefined;
     if (redis) {
       try {
-        blocked = await consumeRedisFixedWindow(redis, `${prefix}${limit.key}`, MAIL_LINK_WINDOW_SECONDS, limit.max, limit.reason);
+        blocked = await consumeRedisFixedWindow(redis, `${prefix}${limit.key}`, limit.windowSeconds, limit.max, limit.reason);
       } catch {
         blocked = undefined;
       }
     }
-    if (blocked === undefined) blocked = memoryWindow(limit.key, limit.max, MAIL_LINK_WINDOW_SECONDS, limit.reason);
+    if (blocked === undefined) blocked = memoryWindow(limit.key, limit.max, limit.windowSeconds, limit.reason);
     if (blocked) return blocked;
   }
   return { allowed: true, retryAfterSeconds: 0 };
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Mailed codes: sign-up and the sign-in of an unverified account
+// ---------------------------------------------------------------------------------------------------------
+
+export const EMAIL_CODE_PAIR_WINDOW_SECONDS = 60;
+/** Codes one address may have sent in a minute from one client (entry 288 of docs/policy-decisions.md). */
+export const EMAIL_CODE_MAX_PER_ADDRESS_AND_IP = 2;
+
+/**
+ * Counts one request for a mailed code against its limits: per address and client two a minute, and per address, whatever
+ * the client, as many as a reset mail (`MAIL_LINK_MAX_PER_SUBJECT` in `MAIL_LINK_WINDOW_SECONDS`), so that many clients cannot
+ * fill one mailbox or the day's mail budget with one address. The address is counted whether or not it has an account, so the
+ * limit tells nothing about accounts; it is kept as a hash. A client that cannot be attributed (`ip` null) has no pair counter.
+ */
+export async function consumeEmailCodeRateLimit(ip: string | null, email: string): Promise<LoginRateLimitCheckResult> {
+  const hashed = sha256(email.toLowerCase().trim());
+  const limits: MailLimit[] = [];
+  const normIp = normalizeLoginIp(ip);
+  if (normIp) {
+    limits.push({
+      key: `email_code:pair:${hashed}:${normIp}`,
+      max: EMAIL_CODE_MAX_PER_ADDRESS_AND_IP,
+      windowSeconds: EMAIL_CODE_PAIR_WINDOW_SECONDS,
+      reason: 'ip',
+    });
+  }
+  limits.push({
+    key: `email_code:address:${hashed}`,
+    max: MAIL_LINK_MAX_PER_SUBJECT,
+    windowSeconds: MAIL_LINK_WINDOW_SECONDS,
+    reason: 'email',
+  });
+  return consumeLimits(limits);
 }

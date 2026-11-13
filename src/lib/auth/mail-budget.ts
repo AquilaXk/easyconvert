@@ -1,8 +1,8 @@
 import { redisUserStore } from './redis-user-store';
 
 /**
- * How many mails the server sent today (UTC), against the sending limit of the mail account (about 500 a day for a Gmail
- * account). Every mail of the auth routes is counted when it is queued. At `MAIL_DAILY_WARN` one line tells the operator the
+ * How many mails the server sent today (UTC), against the sending limit of the mail account (about 500 a day for a free
+ * consumer account). Every mail of the auth routes is counted when it is queued. At `MAIL_DAILY_WARN` one line tells the operator the
  * day is filling; past `MAIL_DAILY_HARD_CAP` a send is refused, and the route that mails a sign-up code asks
  * `mailBudgetLeft` first and answers that sending is unavailable for now, so the visitor is told and not left waiting for a
  * mail the account would drop. The cap sits below the account's limit so that the mails of a few concurrent requests, which
