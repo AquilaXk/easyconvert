@@ -156,7 +156,7 @@ export const createTooManyRequestsResponse = (extra: string) => ({
   description:
     `Too Many Requests, by problem type. \`${RATE_LIMITED_PROBLEM_TYPE}\`: the burst limit of the API key, of the client address or of the edge is spent; wait \`Retry-After\` seconds. ` +
     `\`${QUOTA_EXCEEDED_PROBLEM_TYPE}\`: the conversions of the period (a day, or a month for the paid plans) are used up or too few are left (\`dailyLimit\`, \`remaining\`, \`requiredUnits\` in the body, the quota headers, and \`Retry-After\` until the reset when none is left). ` +
-    `\`https://api.easyconvert.io/problems/concurrency-limit\`: the account already has the most conversions in flight its tier allows, which is 5 for anonymous and free callers, 10 for Basic, 25 for Pro and 50 for Enterprise (\`limit\` in the body, \`Retry-After\` 5); the request takes no quota.${extra}`,
+    `\`https://api.easyconvert.io/problems/concurrency-limit\`: the account already has the most conversions in flight its tier allows, which is 5 for anonymous and free callers and higher on a paid plan (the pricing page lists it) (\`limit\` in the body, \`Retry-After\` 5); the request takes no quota.${extra}`,
   headers: RATE_LIMIT_RESPONSE_HEADERS,
   content: {
     'application/problem+json': { schema: TOO_MANY_REQUESTS_SCHEMA },
@@ -360,4 +360,4 @@ export const CLIENT_CLOSED_DESCRIPTION =
 
 /** Appended to the 429 of a conversion endpoint: the other reason for a 429 besides the rate limit and the quota. */
 export const CONCURRENCY_LIMIT_NOTE =
-  ' Or: the account already has the most conversions in flight (queued and running) its tier allows, which is 5 for anonymous and free callers, 10 for Basic, 25 for Pro and 50 for Enterprise (problem type `https://api.easyconvert.io/problems/concurrency-limit`, with `Retry-After`); the request takes no quota.';
+  ' Or: the account already has the most conversions in flight (queued and running) its tier allows, which is 5 for anonymous and free callers and higher on a paid plan (the pricing page lists it) (problem type `https://api.easyconvert.io/problems/concurrency-limit`, with `Retry-After`); the request takes no quota.';
