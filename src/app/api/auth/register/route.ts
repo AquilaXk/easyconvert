@@ -36,7 +36,8 @@ const BUDGET_RETRY_AFTER_SECONDS = 3600;
  * session: a session only for a new address would tell a stranger which addresses have accounts. An address with an account is
  * sent nothing and its account is not touched. (The permissively licensed references do the same: the sign-up of
  * supabase/auth returns an obfuscated user and sends no mail for a confirmed address, and better-auth with required
- * verification answers a synthetic user without a session; docs/licensing.md, 2.24.) A person who registered with an address
+ * verification answers an existing address with a synthetic user and `token: null`, the shape of a new sign-up, and
+ * starts no session; docs/licensing.md, 2.24.) A person who registered with an address
  * that was not theirs cannot keep it: the real owner resets the password, which proves the address and confirms it.
  */
 export async function POST(req: NextRequest) {
