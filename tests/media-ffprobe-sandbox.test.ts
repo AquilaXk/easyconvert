@@ -109,7 +109,7 @@ describe('a media conversion under STRICT_SANDBOX with the namespace sandbox una
     const user = await userStore.createUser({
       name: 'Media Sandbox 503 Tester',
       email: `media503_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const key = await redisKeyStore.generateApiKey(user.id, 'Media Sandbox 503 Key', { scopes: ['convert:write', 'convert:read'] });
     secretKey = key.secretKey;

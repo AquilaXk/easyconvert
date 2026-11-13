@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { NextIntlClientProvider } from 'next-intl';
 import { expect, vi } from 'vitest';
 import { testMessages, type TestLocale } from './intl-messages';
-import { ANONYMOUS_DAILY_CONVERSIONS } from '../../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CREDITS } from '../../src/lib/plan-limits';
 import { parsedSlug } from './intl';
 
 /**
@@ -55,7 +55,7 @@ export async function mountSlug(
   slug: string,
   locale: TestLocale = 'en'
 ): Promise<HTMLElement> {
-  return mountElement(createElement(PageView as never, { parsed: parsedSlug(slug), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }), 'main h2, main h1', locale);
+  return mountElement(createElement(PageView as never, { parsed: parsedSlug(slug), dailyLimit: ANONYMOUS_DAILY_CREDITS }), 'main h2, main h1', locale);
 }
 
 export function filesOf(files: File[]): FileList {

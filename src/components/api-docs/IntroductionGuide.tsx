@@ -1,3 +1,4 @@
+import { CREDITS_PER_CLASS } from '@/lib/billing/credits';
 import { useTranslations } from 'next-intl';
 import { ALL_API_KEY_SCOPES } from '@/lib/api-keys/types';
 import { SYNC_CONVERSION_MAX_BYTES } from '@/lib/api/file-size-limit';
@@ -5,7 +6,7 @@ import { formatBytesForDisplay } from '@/lib/format-bytes';
 import {
   API_KEY_BURST_LIMITS,
   DEFAULT_FREE_CONCURRENCY,
-  FREE_DAILY_CONVERSIONS,
+  FREE_DAILY_CREDITS,
   PLAN_MAX_FILE_BYTES,
   SINGLE_REQUEST_FILE_MAX_BYTES,
 } from '@/lib/plan-limits';
@@ -28,7 +29,10 @@ export default function IntroductionGuide({ origin }: Readonly<{ origin: string 
   const values = {
     ...richText,
     origin,
-    daily: FREE_DAILY_CONVERSIONS,
+    daily: FREE_DAILY_CREDITS,
+    general: CREDITS_PER_CLASS.general,
+    office: CREDITS_PER_CLASS['office-to-pdf'],
+    pdfToOffice: CREDITS_PER_CLASS['pdf-to-office'],
     burst: API_KEY_BURST_LIMITS.free.capacity,
     perSecond: API_KEY_BURST_LIMITS.free.refillRate,
     concurrent: DEFAULT_FREE_CONCURRENCY,

@@ -1,6 +1,8 @@
 import { redisKeyStore } from './redis-key-store';
 import { RESERVATION_LEASE } from './reservation-ledger';
 import { QueueUnavailableError } from '../types';
+import type { ConversionCharge } from './conversion-charge';
+import type { QuotaExtension } from './reservation-ledger';
 
 /**
  * How a request hands its reserved conversion units to queued work (docs/policy-decisions.md, entry 15). The queue layer
@@ -31,8 +33,14 @@ export interface HandOff<T> {
 
 /** A reservation while its request runs. Each way of ending it acts once; after one, the others do nothing. */
 export interface ReservedUnit {
-  /** Charges the reserved units: the conversion succeeded. */
-  commit(): Promise<void>;
+  /** Charges the reserved units: the conversion succeeded. `charge` says what it was and how long it ran, so that the minutes beyond the first are charged on top. */
+  commit(charge?: ConversionCharge): Promise<void>;
+  /**
+   * Holds credits more in the reservation for the extension `extensionId` (what the extension holds in all, so a repeat adds
+   * nothing): a request that reserved before it knew what the conversion is reserves one credit, and holds the rest of the cost of its
+   * class here once it knows.
+   */
+  hold(extensionId: string, credits: number): Promise<QuotaExtension>;
   /**
    * Starts the queued work that will end the reservation itself (a job or a graph commits it or gives it back), with the
    * reservation id. The request stops owning the reservation once the work started, or once `recover` finds it after `start`

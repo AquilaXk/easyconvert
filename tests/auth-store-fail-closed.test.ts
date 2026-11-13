@@ -10,6 +10,7 @@ import { POST as rotateRoute } from '../src/app/api/v1/webhooks/secrets/rotate/r
 import { POST as logoutRoute } from '../src/app/api/auth/logout/route';
 import { validateApiAccess } from '../src/lib/api-keys/guard';
 import { loggingOutcomes } from '../src/lib/api/conversion-outcome-log';
+import { subscriptionStore } from '../src/lib/billing/subscription-store';
 import { RedisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { signJwt, DEFAULT_JWT_AUDIENCE, DEFAULT_JWT_ISSUER } from '../src/lib/auth/jwt';
@@ -237,9 +238,27 @@ describe('the typed refusal reaches the routes as a 503', () => {
   it('stays an AuthStoreUnavailableError through the quota read of the key store, not a plain Error', async () => {
     const store = new RedisKeyStore({ keyPrefix: `failclosed:${crypto.randomBytes(4).toString('hex')}:`, isolated: true, redisClient: silentRedis() });
     const user = await redisUserStore.createUser({ email: uniqueEmail(), name: 'Quota user' });
-    vi.spyOn(redisUserStore, 'findById').mockRejectedValue(new AuthStoreUnavailableError());
+    // The quota read asks the subscription store, which keeps its records beside the accounts.
+    vi.spyOn(subscriptionStore, 'findByUser').mockRejectedValue(new AuthStoreUnavailableError());
 
     expect((await refusal(store.getQuotaUsage(user.id))).status).toBe(HTTP_UNAVAILABLE);
+  });
+
+  it('refuses with the typed 503 error, not a plain Error, when the package balance that decides the tier cannot be read', async () => {
+    const store = new RedisKeyStore({ keyPrefix: `failclosed:${crypto.randomBytes(4).toString('hex')}:`, isolated: true, redisClient: brokenRedis() });
+
+    const error = await refusal(store.withCreditTier({ id: 'user-without-record', tier: 'free' }));
+
+    expect(error.status).toBe(HTTP_UNAVAILABLE);
+  });
+
+  it('refuses a session whose package balance cannot be read with the typed 503 error instead of a 500', async () => {
+    const user = await redisUserStore.createUser({ email: uniqueEmail(), name: 'Balance session' });
+    const token = createSessionToken(redisUserStore.sanitizeUser(user));
+    vi.spyOn(redisKeyStore, 'withCreditTier').mockRestore();
+    vi.spyOn(redisKeyStore as unknown as { ledger: () => unknown }, 'ledger').mockReturnValue({ packageBalance: () => Promise.reject(new Error('redis down: get')) });
+
+    expect((await refusal(getSessionFromToken(token))).status).toBe(HTTP_UNAVAILABLE);
   });
 
   it('answers /api/keys/usage with 503 and Retry-After when the quota read is refused by the account store', async () => {

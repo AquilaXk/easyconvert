@@ -28,8 +28,7 @@ const PER_MEDIA_SECOND = 3_000;
 describe('jobDeadlineMs defaults', () => {
   it('gives an empty input the base of its tier', () => {
     expect(jobDeadlineMs({ tier: 'free', family: 'bytes', inputBytes: 0 })).toBe(FREE_BASE);
-    expect(jobDeadlineMs({ tier: 'pro', family: 'bytes', inputBytes: 0 })).toBe(120_000);
-    expect(jobDeadlineMs({ tier: 'enterprise', family: 'bytes', inputBytes: 0 })).toBe(180_000);
+    expect(jobDeadlineMs({ tier: 'paid', family: 'bytes', inputBytes: 0 })).toBe(120_000);
   });
 
   it('adds the per-MiB allowance and rounds a partial MiB up', () => {
@@ -44,21 +43,20 @@ describe('jobDeadlineMs defaults', () => {
     expect(jobDeadlineMs({ tier: 'free', family: 'bytes', inputBytes: mibsToMax * MIB })).toBe(FREE_MAX);
     expect(jobDeadlineMs({ tier: 'free', family: 'bytes', inputBytes: mibsToMax * MIB + 1 })).toBe(FREE_MAX);
     expect(jobDeadlineMs({ tier: 'free', family: 'bytes', inputBytes: 10_000 * MIB })).toBe(FREE_MAX);
-    expect(jobDeadlineMs({ tier: 'pro', family: 'bytes', inputBytes: 10_000 * MIB })).toBe(1_800_000);
-    expect(jobDeadlineMs({ tier: 'enterprise', family: 'bytes', inputBytes: 10_000 * MIB })).toBe(3_600_000);
+    expect(jobDeadlineMs({ tier: 'paid', family: 'bytes', inputBytes: 10_000 * MIB })).toBe(3_600_000);
   });
 
   it('treats an unknown or missing tier as the free tier and reads a tier in any case', () => {
     const free = jobDeadlineMs({ tier: 'free', family: 'bytes', inputBytes: MIB });
     expect(jobDeadlineMs({ family: 'bytes', inputBytes: MIB })).toBe(free);
     expect(jobDeadlineMs({ tier: 'platinum', family: 'bytes', inputBytes: MIB })).toBe(free);
-    expect(jobDeadlineMs({ tier: 'PRO', family: 'bytes', inputBytes: MIB })).toBe(
-      jobDeadlineMs({ tier: 'pro', family: 'bytes', inputBytes: MIB })
+    expect(jobDeadlineMs({ tier: 'PAID', family: 'bytes', inputBytes: MIB })).toBe(
+      jobDeadlineMs({ tier: 'paid', family: 'bytes', inputBytes: MIB })
     );
   });
 
   it('gives a document the maximum of its tier whatever its size, since its pages are not known before it is converted', () => {
-    for (const [tier, max] of [['free', FREE_MAX], ['pro', 1_800_000], ['enterprise', 3_600_000]] as const) {
+    for (const [tier, max] of [['free', FREE_MAX], ['paid', 3_600_000]] as const) {
       expect(jobDeadlineMs({ tier, family: 'document', inputBytes: 0 }), tier).toBe(max);
       expect(jobDeadlineMs({ tier, family: 'document', inputBytes: 3 * MIB }), tier).toBe(max);
       expect(jobDeadlineMs({ tier, family: 'document' }), tier).toBe(max);
@@ -80,7 +78,7 @@ describe('jobDeadlineMs defaults', () => {
 
   it('gives work of unknown size the maximum of the tier, never no limit', () => {
     expect(jobDeadlineMs({ tier: 'free', family: 'bytes' })).toBe(FREE_MAX);
-    expect(jobDeadlineMs({ tier: 'pro', family: 'media' })).toBe(1_800_000);
+    expect(jobDeadlineMs({ tier: 'paid', family: 'media' })).toBe(3_600_000);
   });
 
   it('never shrinks when the work grows', () => {
@@ -185,8 +183,8 @@ describe('jobDeadlineSettings', () => {
   it('returns the documented defaults from an empty environment', () => {
     const settings = jobDeadlineSettings({});
     expect(settings).toEqual({
-      baseMs: { free: 60_000, basic: 90_000, pro: 120_000, enterprise: 180_000 },
-      maxMs: { free: 300_000, basic: 900_000, pro: 1_800_000, enterprise: 3_600_000 },
+      baseMs: { free: 60_000, paid: 120_000 },
+      maxMs: { free: 300_000, paid: 3_600_000 },
       perMibMs: 2_000,
       perMediaSecondMs: 3_000,
       syncMaxMs: 120_000,
@@ -199,13 +197,13 @@ describe('jobDeadlineSettings', () => {
       JOB_DEADLINE_MAX_MS_FREE: '9000',
       JOB_DEADLINE_PER_MIB_MS: '11',
       JOB_DEADLINE_PER_MEDIA_SECOND_MS: '13',
-      JOB_DEADLINE_BASE_MS_PRO: '  ',
+      JOB_DEADLINE_BASE_MS_PAID: '  ',
     });
     expect(settings.baseMs.free).toBe(5000);
     expect(settings.maxMs.free).toBe(9000);
     expect(settings.perMibMs).toBe(11);
     expect(settings.perMediaSecondMs).toBe(13);
-    expect(settings.baseMs.pro).toBe(120_000);
+    expect(settings.baseMs.paid).toBe(120_000);
   });
 
   it.each(['abc', '1.5', '-1', '0', '99999999999999999999', '1e3'])('refuses the malformed value %j instead of using a default', (value) => {
@@ -216,11 +214,11 @@ describe('jobDeadlineSettings', () => {
     expect(() => jobDeadlineSettings({ JOB_DEADLINE_BASE_MS_FREE: '700000' })).toThrow(/JOB_DEADLINE_BASE_MS_FREE/);
   });
 
-  it.each(['JOB_DEADLINE_MAX_MS_FREE', 'JOB_DEADLINE_MAX_MS_PRO', 'JOB_DEADLINE_MAX_MS_ENTERPRISE', 'JOB_DEADLINE_BASE_MS_ENTERPRISE'])(
+  it.each(['JOB_DEADLINE_MAX_MS_FREE', 'JOB_DEADLINE_MAX_MS_PAID'])(
     'refuses %s above one hour, the longest a job directory is kept before the staging sweep takes it',
     (name) => {
       expect(() => jobDeadlineSettings({ [name]: '3600001' })).toThrow(new RegExp(name));
-      expect(jobDeadlineSettings({ JOB_DEADLINE_MAX_MS_FREE: '3600000', JOB_DEADLINE_MAX_MS_PRO: '3600000' }).maxMs.free).toBe(3_600_000);
+      expect(jobDeadlineSettings({ JOB_DEADLINE_MAX_MS_FREE: '3600000', JOB_DEADLINE_MAX_MS_PAID: '3600000' }).maxMs.free).toBe(3_600_000);
     }
   );
 
@@ -236,7 +234,7 @@ describe('the settings are documented configuration', () => {
   const configDoc = readFileSync(path.resolve(__dirname, '..', 'docs', 'configuration.md'), 'utf8');
 
   it('declares every deadline variable in the configuration schema with the default the code uses', () => {
-    expect(Object.values(JOB_DEADLINE_ENV).length).toBe(11);
+    expect(Object.values(JOB_DEADLINE_ENV).length).toBe(7);
     expect(byName.has('JOB_DEADLINE_PER_PAGE_MS')).toBe(false);
     expect(configDoc).not.toContain('JOB_DEADLINE_PER_PAGE_MS');
     for (const [key, name] of Object.entries(JOB_DEADLINE_ENV)) {
@@ -252,19 +250,19 @@ describe('the settings are documented configuration', () => {
 describe('start-up configuration check of the deadline settings', () => {
   it('stops the process for a base above the maximum of its tier, naming the variable and not the value', () => {
     try {
-      parseConfig({ JOB_DEADLINE_BASE_MS_PRO: '3000000' });
+      parseConfig({ JOB_DEADLINE_MAX_MS_PAID: '1000000', JOB_DEADLINE_BASE_MS_PAID: '3000000' });
       throw new Error('parseConfig accepted a base above the maximum');
     } catch (error) {
       expect(error).toBeInstanceOf(ConfigurationError);
-      const failure = (error as ConfigurationError).failures.find((f) => f.variable === 'JOB_DEADLINE_BASE_MS_PRO');
-      expect(failure?.rule).toBe('must not exceed JOB_DEADLINE_MAX_MS_PRO');
+      const failure = (error as ConfigurationError).failures.find((f) => f.variable === 'JOB_DEADLINE_BASE_MS_PAID');
+      expect(failure?.rule).toBe('must not exceed JOB_DEADLINE_MAX_MS_PAID');
       expect((error as Error).message).not.toContain('3000000');
     }
   });
 
   it('stops the process for a maximum above one hour', () => {
-    expect(() => parseConfig({ JOB_DEADLINE_MAX_MS_ENTERPRISE: '3600001' })).toThrow(/JOB_DEADLINE_MAX_MS_ENTERPRISE/);
-    expect(parseConfig({ JOB_DEADLINE_MAX_MS_ENTERPRISE: '3600000' }).JOB_DEADLINE_MAX_MS_ENTERPRISE).toBe(3_600_000);
+    expect(() => parseConfig({ JOB_DEADLINE_MAX_MS_PAID: '3600001' })).toThrow(/JOB_DEADLINE_MAX_MS_PAID/);
+    expect(parseConfig({ JOB_DEADLINE_MAX_MS_PAID: '3600000' }).JOB_DEADLINE_MAX_MS_PAID).toBe(3_600_000);
   });
 
   it('stops the process for a malformed value, with no fallback to the default', () => {

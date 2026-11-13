@@ -23,7 +23,7 @@ let userId: string;
 beforeEach(async () => {
   vi.stubEnv('REDIS_URL', '');
   vi.stubEnv('REDIS_HOST', '');
-  const user = await userStore.createUser({ email: `size_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@routing.test`, name: 'Routing', tier: 'pro' });
+  const user = await userStore.createUser({ email: `size_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@routing.test`, name: 'Routing', tier: 'paid' });
   userId = user.id;
   apiKey = (await redisKeyStore.generateApiKey(user.id, 'Routing Key', { scopes: ['convert:write', 'convert:read'] })).secretKey;
 });

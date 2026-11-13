@@ -33,7 +33,7 @@ let apiKey = '';
 
 beforeEach(async () => {
   const email = `legacy_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@legacy-validation.test`;
-  const user = await userStore.createUser({ email, name: 'Legacy Tester', tier: 'pro' });
+  const user = await userStore.createUser({ email, name: 'Legacy Tester', tier: 'paid' });
   apiKey = (await redisKeyStore.generateApiKey(user.id, 'Legacy Key', { scopes: ['convert:write', 'convert:read'] })).secretKey;
 });
 

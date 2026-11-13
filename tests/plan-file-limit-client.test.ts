@@ -59,8 +59,7 @@ describe('the plan of the viewer', () => {
 
   it.each([
     ['free', PLAN_MAX_FILE_BYTES.free],
-    ['pro', PLAN_MAX_FILE_BYTES.pro],
-    ['enterprise', PLAN_MAX_FILE_BYTES.enterprise],
+    ['paid', PLAN_MAX_FILE_BYTES.paid],
   ] as const)('becomes the %s plan when the session says so', async (tier, bytes) => {
     vi.stubGlobal('fetch', vi.fn(async () => sessionAnswer(200, { success: true, user: { id: 'u1', tier } })));
     await refreshViewerPlan();
@@ -69,21 +68,21 @@ describe('the plan of the viewer', () => {
   });
 
   it('returns to anonymous when the session endpoint answers 401 after a sign-out', async () => {
-    setViewerPlan('pro');
+    setViewerPlan('paid');
     vi.stubGlobal('fetch', vi.fn(async () => sessionAnswer(401, { success: false })));
     await refreshViewerPlan();
     expect(getViewerPlan()).toBe('anonymous');
   });
 
   it('keeps the plan it had when the network fails', async () => {
-    setViewerPlan('pro');
+    setViewerPlan('paid');
     vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new TypeError('offline'))));
     await refreshViewerPlan();
-    expect(getViewerPlan()).toBe('pro');
+    expect(getViewerPlan()).toBe('paid');
   });
 
   it('asks the session endpoint once for callers that overlap', async () => {
-    const fetchMock = vi.fn(async () => sessionAnswer(200, { success: true, user: { id: 'u1', tier: 'pro' } }));
+    const fetchMock = vi.fn(async () => sessionAnswer(200, { success: true, user: { id: 'u1', tier: 'paid' } }));
     vi.stubGlobal('fetch', fetchMock);
     await Promise.all([refreshViewerPlan(), refreshViewerPlan(), refreshViewerPlan()]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -94,8 +93,8 @@ describe('the plan of the viewer', () => {
   it('tells subscribers once per change and stops after unsubscribing', () => {
     const listener = vi.fn();
     const unsubscribe = subscribeViewerPlan(listener);
-    setViewerPlan('pro');
-    setViewerPlan('pro');
+    setViewerPlan('paid');
+    setViewerPlan('paid');
     expect(listener).toHaveBeenCalledTimes(1);
     unsubscribe();
     setViewerPlan('free');
@@ -106,10 +105,10 @@ describe('the plan of the viewer', () => {
 describe('the signed-in person of the viewer', () => {
   it('is read from the same session answer as the plan, and cleared when the session ends', async () => {
     expect(getViewerAccount()).toBeNull();
-    vi.stubGlobal('fetch', vi.fn(async () => sessionAnswer(200, { success: true, user: { id: 'u1', name: 'Ada Lovelace', tier: 'pro' } })));
+    vi.stubGlobal('fetch', vi.fn(async () => sessionAnswer(200, { success: true, user: { id: 'u1', name: 'Ada Lovelace', tier: 'paid' } })));
     await refreshViewerPlan();
-    expect(getViewerAccount()).toEqual({ name: 'Ada Lovelace', tier: 'pro' });
-    expect(getViewerPlan()).toBe('pro');
+    expect(getViewerAccount()).toEqual({ name: 'Ada Lovelace', tier: 'paid' });
+    expect(getViewerPlan()).toBe('paid');
 
     vi.stubGlobal('fetch', vi.fn(async () => sessionAnswer(401, { success: false })));
     await refreshViewerPlan();
@@ -135,11 +134,11 @@ describe('the signed-in person of the viewer', () => {
   it('is named by the header from the store, without a request of its own', () => {
     const fetchMock = vi.fn(async () => sessionAnswer(401, { success: false }));
     vi.stubGlobal('fetch', fetchMock);
-    shownAccount.current = { name: 'Ada Lovelace', tier: 'pro' };
+    shownAccount.current = { name: 'Ada Lovelace', tier: 'paid' };
 
     const signedIn = visibleText(renderDom(createElement(UserNav, {})));
     expect(signedIn).toContain('Ada');
-    expect(signedIn).toContain('Pro');
+    expect(signedIn).toContain('Paid');
     expect(signedIn).not.toContain('Log in');
 
     shownAccount.current = null;
@@ -170,11 +169,9 @@ describe('the drop zone states the limit of the plan', () => {
 
   // The copy is written out by hand, as the viewer reads it: an oracle independent of src/lib/plan-limits.ts.
   it.each([
-    ['anonymous', 'Up to 1 GB per file · 7 conversions a day · Files deleted automatically'],
-    ['free', 'Up to 1 GB per file · 10 conversions a day · Files deleted automatically'],
-    ['basic', 'Up to 2 GB per file · 1,000 conversions a month · Files deleted automatically'],
-    ['pro', 'Up to 5 GB per file · 3,000 conversions a month · Files deleted automatically'],
-    ['enterprise', 'Up to 10 GB per file · 10,000 conversions a month · Files deleted automatically'],
+    ['anonymous', 'Up to 1 GB per file · 7 credits a day · Files deleted automatically'],
+    ['free', 'Up to 1 GB per file · 10 credits a day · Files deleted automatically'],
+    ['paid', 'Up to 10 GB per file · Credits from your package or subscription · Files deleted automatically'],
   ] as const)('shows "%s" viewers "%s", the allowance of their own plan', (plan, copy) => {
     shownPlan.current = plan;
     const text = dropzoneText();
@@ -216,8 +213,7 @@ describe('a file over the limit', () => {
   it.each([
     ['anonymous', GIB + 1, 'File size 1,073,741,825 bytes exceeds the 1 GB limit for anonymous use.'],
     ['free', 3 * GIB, 'File size 3 GB exceeds the 1 GB limit for the free plan.'],
-    ['pro', 6 * GIB, 'File size 6 GB exceeds the 5 GB limit for the Pro plan.'],
-    ['enterprise', 11 * GIB, 'File size 11 GB exceeds the 10 GB limit for the Enterprise plan.'],
+    ['paid', 11 * GIB, 'File size 11 GB exceeds the 10 GB limit for a paid plan.'],
   ] as const)('shows the %s viewer the size and the limit on the row and offers no plan', (plan, size, message) => {
     shownPlan.current = plan;
     const dom = rowFor(size);
@@ -244,16 +240,16 @@ describe('a file over the limit', () => {
     expect(alertOf(anonymous)).toBe('File size 2 GB exceeds the 1 GB limit for anonymous use.');
     expect(formatButtonDisabled(anonymous)).toBe('');
 
-    shownPlan.current = 'pro';
+    shownPlan.current = 'paid';
     const pro = rowFor(size);
     expect(alertOf(pro)).toBeNull();
     expect(formatButtonDisabled(pro)).toBeNull();
   });
 
   it('is ready at the limit itself and refused one byte past it', () => {
-    shownPlan.current = 'pro';
-    expect(alertOf(rowFor(PLAN_MAX_FILE_BYTES.pro))).toBeNull();
-    expect(alertOf(rowFor(PLAN_MAX_FILE_BYTES.pro + 1))).toBe('File size 5,368,709,121 bytes exceeds the 5 GB limit for the Pro plan.');
+    shownPlan.current = 'paid';
+    expect(alertOf(rowFor(PLAN_MAX_FILE_BYTES.paid))).toBeNull();
+    expect(alertOf(rowFor(PLAN_MAX_FILE_BYTES.paid + 1))).toBe('File size 10,737,418,241 bytes exceeds the 10 GB limit for a paid plan.');
   });
 
   it('lets the viewer cancel a file on its way to the server and names the step', () => {
@@ -287,8 +283,8 @@ describe('a file over the limit', () => {
     expect(select(converting, 'button', 'aria-label', 'Remove clip.mp4')).toHaveLength(0);
   });
 
-  it('leaves the same file convertible for a viewer on the Pro plan', () => {
-    shownPlan.current = 'pro';
+  it('leaves the same file convertible for a viewer on a paid plan', () => {
+    shownPlan.current = 'paid';
     const dom = rowFor(2 * GIB);
     expect(attrOf(select(dom, 'button', 'data-testid', 'queue-target-format-btn')[0], 'disabled')).toBeNull();
   });

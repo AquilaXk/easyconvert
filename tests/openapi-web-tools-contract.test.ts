@@ -50,7 +50,7 @@ describe('the web tool routes in the OpenAPI document', () => {
 
   it('names the files, the options and the answer of each tool', async () => {
     const json = JSON.stringify(await operations());
-    for (const word of ['too_few_files', 'application/zip', 'application/pdf', 'application/json', 'everyNPages', 'rotation', 'tar.gz', 'one conversion', '8192 characters', 'concurrency slot']) {
+    for (const word of ['too_few_files', 'application/zip', 'application/pdf', 'application/json', 'everyNPages', 'rotation', 'tar.gz', '1 credit', '8192 characters', 'concurrency slot']) {
       expect(json, word).toContain(word);
     }
   });

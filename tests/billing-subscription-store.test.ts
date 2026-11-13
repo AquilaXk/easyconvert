@@ -31,7 +31,7 @@ function change(userId: string, overrides: { eventId?: string; eventAt?: number;
       providerSubscriptionId: 'sub_A',
       providerCustomerId: 'ctm_A',
       status: 'active',
-      plan: 'pro',
+      credits: 1000,
       currentPeriodEnd: NOW + 20 * DAY,
       ...overrides.subscription,
     },
@@ -57,8 +57,8 @@ describe('the subscription store', () => {
   it('stores the subscription, gives the account its plan and finds the account by subscription', async () => {
     const userId = await account();
     expect(await subscriptionStore.apply(change(userId))).toBe('applied');
-    expect(await tierOf(userId)).toBe('pro');
-    expect(await subscriptionStore.findByUser(userId)).toMatchObject({ userId, status: 'active', plan: 'pro', providerSubscriptionId: 'sub_A', providerCustomerId: 'ctm_A' });
+    expect(await tierOf(userId)).toBe('paid');
+    expect(await subscriptionStore.findByUser(userId)).toMatchObject({ userId, status: 'active', credits: 1000, providerSubscriptionId: 'sub_A', providerCustomerId: 'ctm_A' });
     expect(await subscriptionStore.userOfSubscription('sub_A')).toBe(userId);
   });
 
@@ -67,7 +67,7 @@ describe('the subscription store', () => {
     const first = change(userId);
     expect(await subscriptionStore.apply(first)).toBe('applied');
     expect(await subscriptionStore.apply({ ...first, eventAt: NOW + 1000, subscription: { ...first.subscription, status: 'canceled' } })).toBe('duplicate');
-    expect(await tierOf(userId)).toBe('pro');
+    expect(await tierOf(userId)).toBe('paid');
     expect((await subscriptionStore.findByUser(userId))?.status).toBe('active');
   });
 
@@ -90,9 +90,9 @@ describe('the subscription store', () => {
     const userId = await account();
     const cancelAt = NOW + 3 * DAY;
     await subscriptionStore.apply(change(userId, { subscription: { cancelAt } }));
-    expect(await tierOf(userId)).toBe('pro');
+    expect(await tierOf(userId)).toBe('paid');
     vi.setSystemTime(cancelAt - 1);
-    expect(await tierOf(userId)).toBe('pro');
+    expect(await tierOf(userId)).toBe('paid');
     vi.setSystemTime(cancelAt);
     expect(await tierOf(userId)).toBe('free');
   });
@@ -101,7 +101,7 @@ describe('the subscription store', () => {
     const userId = await account();
     const currentPeriodEnd = NOW + DAY;
     await subscriptionStore.apply(change(userId, { subscription: { status: 'past_due', currentPeriodEnd } }));
-    expect(await tierOf(userId)).toBe('pro');
+    expect(await tierOf(userId)).toBe('paid');
     vi.setSystemTime(currentPeriodEnd + 1);
     expect(await tierOf(userId)).toBe('free');
   });
@@ -119,10 +119,10 @@ describe('the subscription store', () => {
     const userId = await account();
     await subscriptionStore.apply(change(userId, { subscription: { providerSubscriptionId: 'sub_B' } }));
     expect(await subscriptionStore.apply(change(userId, { eventAt: NOW + 1000, subscription: { providerSubscriptionId: 'sub_A', status: 'canceled' } }))).toBe('other_subscription');
-    expect(await tierOf(userId)).toBe('pro');
+    expect(await tierOf(userId)).toBe('paid');
     expect((await subscriptionStore.findByUser(userId))?.providerSubscriptionId).toBe('sub_B');
-    expect(await subscriptionStore.apply(change(userId, { eventAt: NOW + 2000, subscription: { providerSubscriptionId: 'sub_C', plan: 'enterprise' } }))).toBe('applied');
-    expect(await tierOf(userId)).toBe('enterprise');
+    expect(await subscriptionStore.apply(change(userId, { eventAt: NOW + 2000, subscription: { providerSubscriptionId: 'sub_C', credits: 2500 } }))).toBe('applied');
+    expect(await tierOf(userId)).toBe('paid');
     expect((await subscriptionStore.findByUser(userId))?.providerSubscriptionId).toBe('sub_C');
   });
 

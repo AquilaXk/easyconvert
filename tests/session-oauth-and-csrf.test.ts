@@ -74,7 +74,7 @@ describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
     });
 
     it('attaches standard iss, aud, and cryptographically random jti to signed JWTs', () => {
-      const payload = { sub: 'usr_enterprise_01', email: 'alice@example.com', tier: 'enterprise' as const };
+      const payload = { sub: 'usr_enterprise_01', email: 'alice@example.com', tier: 'paid' as const };
       const token = signJwt(payload, 'test-signing-secret', 3600);
 
       const verified = verifyJwt<SessionPayload>(token, 'test-signing-secret');
@@ -108,7 +108,7 @@ describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
       const user = await redisUserStore.createUser({
         email: 'revocation.test@example.com',
         name: 'Revoke User',
-        tier: 'pro',
+        tier: 'paid',
       });
 
       const token = createSessionToken(user);

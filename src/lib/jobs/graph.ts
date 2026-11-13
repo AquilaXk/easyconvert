@@ -117,14 +117,12 @@ const DYNAMIC_FORMAT = 'dynamic';
 
 const TIER_NODE_LIMITS: Record<string, number> = {
   free: 8,
-  basic: 16,
-  pro: 24,
-  enterprise: 32,
+  paid: 32,
 };
 
 /** Most nodes a graph of a caller on `tier` may hold; a tier this table does not know gets the hard ceiling. */
 export function maxGraphNodesForTier(tier: string | undefined): number {
-  return TIER_NODE_LIMITS[tier ?? 'pro'] || MAX_NODES_HARD_CEILING;
+  return TIER_NODE_LIMITS[tier ?? 'paid'] || MAX_NODES_HARD_CEILING;
 }
 
 const DEFAULT_MAX_FAN_IN = 16;
@@ -493,7 +491,7 @@ export function validateJobGraph(
   }
 
   // 2. Node count caps
-  const userTier = options.userTier || 'pro';
+  const userTier = options.userTier || 'paid';
   const tierLimit = options.maxNodes ?? maxGraphNodesForTier(userTier);
 
   if (totalNodes > tierLimit) {

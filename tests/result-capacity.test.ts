@@ -157,7 +157,7 @@ describe('early deletion when the disk runs full', () => {
 
   async function createUser(label: string): Promise<User> {
     const email = `${label}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@capacity.test`;
-    return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'pro' }));
+    return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'paid' }));
   }
 
   /** Stores and registers a result at `at`; delivered at `deliveredAt` when given. */

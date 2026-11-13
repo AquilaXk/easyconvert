@@ -8,6 +8,7 @@ Parts of this repository keep their own licences:
 - scripts/vtracer-pixels/: built on the command-line front-end of vtracer, MIT (scripts/vtracer-pixels/LICENSE).
 - scripts/quantizr-pixels/: a program around the quantizr library, MIT (scripts/quantizr-pixels/LICENSE).
 - public/format-icons/: Material Icon Theme icons, MIT (public/format-icons/LICENSE).
+- src/lib/billing/parse-money.ts: the money helpers of PaddleHQ/paddle-nextjs-starter-kit (src/utils/paddle/parse-money.ts at commit da90482f8416f0e54a24991200e168496fce94b7), Apache-2.0, Copyright 2024 Paddle.com Market Limited.
 Third-party npm packages and the programs in the worker image are listed in THIRD_PARTY_NOTICES.md and docs/licensing.md.
 
 Versions of EasyConvert published before this licence change (up to commit

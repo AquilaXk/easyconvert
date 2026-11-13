@@ -24,11 +24,11 @@ export async function GET(req: NextRequest) {
     const record = session.user ? await subscriptionStore.findByUser(session.user.id) : null;
     const subscription = record
       ? {
-          plan: record.plan,
+          credits: record.credits,
           status: record.status,
           ...(record.currentPeriodEnd === undefined ? {} : { currentPeriodEnd: record.currentPeriodEnd }),
           ...(record.cancelAt === undefined ? {} : { cancelAt: record.cancelAt }),
-          active: entitlementOf(record, Date.now()).tier !== 'free',
+          active: entitlementOf(record, Date.now()).tier === 'paid',
         }
       : null;
     return NextResponse.json(

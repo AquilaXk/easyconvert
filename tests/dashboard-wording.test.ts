@@ -9,9 +9,9 @@ import { useApiKeysController } from '../src/components/dashboard/useDashboardCo
 import type { FileWithRemaining } from '../src/components/dashboard/dashboard-types';
 import { AccountQuotaPanel } from '../src/components/dashboard/AccountQuotaPanel';
 import { ApiKeysPanel } from '../src/components/dashboard/ApiKeysPanel';
-import type { QuotaUsage } from '../src/lib/api-keys/types';
+import type { ChargeEntry, QuotaUsage } from '../src/lib/api-keys/types';
 import type { User } from '../src/lib/auth/types';
-import { FREE_DAILY_CONVERSIONS, TIER_LIMITS } from '../src/lib/plan-limits';
+import { FREE_DAILY_CREDITS } from '../src/lib/plan-limits';
 import { attrOf, renderDom, select, visibleText } from './helpers/rendered-dom';
 import { testMessages, type TestLocale } from './helpers/intl-messages';
 
@@ -23,7 +23,7 @@ import { testMessages, type TestLocale } from './helpers/intl-messages';
 const noop = () => undefined;
 
 const keysPanelState = {
-  apiKeys: [], quota: null, newKeyName: '', generatedSecret: null, isGeneratingKey: false, showGenerateForm: false,
+  apiKeys: [], quota: null, charges: [], newKeyName: '', generatedSecret: null, isGeneratingKey: false, showGenerateForm: false,
   copiedKey: false, revokingKeyId: null, selectedScopes: ['convert:write' as const], keyExpiry: '30d' as const, acceptedTerms: false,
 };
 const keysPanelActions = {
@@ -333,38 +333,68 @@ describe('a refused dashboard request', () => {
   });
 });
 
-describe('the daily count on the dashboard', () => {
+describe('the credits on the dashboard', () => {
   const freeUser = { id: 'u-free', email: 'free@example.com', name: 'Free', tier: 'free' } as User;
-  const proUser = { ...freeUser, id: 'u-pro', tier: 'pro' } as User;
-  const overLimit = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CONVERSIONS, usedToday: FREE_DAILY_CONVERSIONS + 5, remaining: 0, resetAt: 0 };
+  const paidUser = { ...freeUser, id: 'u-paid', tier: 'paid' } as User;
+  const overLimit = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CREDITS, usedToday: FREE_DAILY_CREDITS + 5, remaining: 0, resetAt: 0, packageCredits: 0 };
+  const panelOf = (user: User, quota: QuotaUsage | null, charges: ChargeEntry[] = []) => visibleText(renderDom(createElement(AccountQuotaPanel, { user, quota, apiKeys: [], charges })));
 
   const usageCount = (user: User, quota: QuotaUsage | null) =>
-    visibleText(select(renderDom(createElement(AccountQuotaPanel, { user, quota, apiKeys: [] })), 'div').find((div) => /^[\d,]+ \/ [\d,]+$/.test(visibleText(div)))!);
+    visibleText(select(renderDom(createElement(AccountQuotaPanel, { user, quota, apiKeys: [], charges: [] })), 'div').find((div) => /^[\d,]+ \/ [\d,]+$/.test(visibleText(div)))!);
 
-  it("states the allowance of the account's own plan while the usage has not loaded", () => {
-    expect(usageCount(proUser, null)).toBe(`0 / ${TIER_LIMITS.pro.toLocaleString('en-US')}`);
-    expect(usageCount(freeUser, null)).toBe(`0 / ${TIER_LIMITS.free}`);
+  it('states the free credits of the day while the usage has not loaded', () => {
+    expect(usageCount(freeUser, null)).toBe(`0 / ${FREE_DAILY_CREDITS}`);
+    expect(usageCount(paidUser, null)).toBe(`0 / ${FREE_DAILY_CREDITS}`);
   });
 
-  it('counts the month for a paid plan: its own label, the date of the next reset, and the monthly note on the usage strip', () => {
-    const month = { tier: 'basic' as const, period: 'month' as const, dailyLimit: TIER_LIMITS.basic, usedToday: 120, remaining: TIER_LIMITS.basic - 120, resetAt: Date.UTC(2026, 11, 2, 8) };
-    const basicUser = { ...freeUser, id: 'u-basic', tier: 'basic' } as User;
-    expect(usageCount(basicUser, month)).toBe('120 / 1,000');
-    const panel = visibleText(renderDom(createElement(AccountQuotaPanel, { user: basicUser, quota: month, apiKeys: [] })));
-    expect(panel).toContain('API requests per month');
-    expect(panel).toContain('880 API requests left this period');
+  it('counts the subscription period: its own label, the date of the next reset, the package balance and the monthly note on the usage strip', () => {
+    const period = { tier: 'paid' as const, period: 'month' as const, dailyLimit: 1000, usedToday: 120, remaining: 880 + 250, resetAt: Date.UTC(2026, 11, 2, 8), packageCredits: 250 };
+    expect(usageCount(paidUser, period)).toBe('120 / 1,000');
+    const panel = panelOf(paidUser, period);
+    expect(panel).toContain('Subscription credits this period');
+    expect(panel).toContain('880 subscription credits left this period');
+    expect(panel).toContain('Package credits');
+    expect(panel).toContain('250 credits that do not expire');
     expect(panel).toContain('Dec 2, 2026');
     expect(panel).not.toContain('00:00 UTC');
-    const strip = visibleText(renderDom(createElement(ApiKeysPanel, { state: { ...keysPanelState, quota: month }, actions: keysPanelActions })));
-    expect(strip).toContain('API requests used this period');
-    expect(strip).toContain('Counts reset when your subscription renews.');
+    const strip = visibleText(renderDom(createElement(ApiKeysPanel, { state: { ...keysPanelState, quota: period }, actions: keysPanelActions })));
+    expect(strip).toContain('Credits used this period');
+    expect(strip).toContain('Subscription credits reset when your subscription renews.');
     expect(strip).not.toContain('midnight UTC');
   });
 
-  it('never shows more conversions used than the day allows, for a count made under a larger allowance before a deploy', () => {
-    expect(usageCount(freeUser, overLimit)).toBe(`${FREE_DAILY_CONVERSIONS} / ${FREE_DAILY_CONVERSIONS}`);
+  it('states a free account with no package as having none', () => {
+    const day = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CREDITS, usedToday: 3, remaining: FREE_DAILY_CREDITS - 3, resetAt: Date.UTC(2026, 11, 2), packageCredits: 0 };
+    const panel = panelOf(freeUser, day);
+    expect(panel).toContain('Credits today');
+    expect(panel).toContain(`${FREE_DAILY_CREDITS - 3} credits left today`);
+    expect(panel).toContain('No package credits');
+    expect(panel).toContain('No conversions have been charged yet.');
+  });
+
+  it('lists the recent charges: the pair of formats, the credits, the minutes beyond the first and what came from the package', () => {
+    const charges: ChargeEntry[] = [
+      { at: Date.UTC(2026, 10, 13, 9, 5), from: 'docx', to: 'pdf', base: 2, surcharge: 2, credits: 4, fromPackage: 3 },
+      { at: Date.UTC(2026, 10, 13, 9, 1), from: 'png', to: 'jpg', base: 1, credits: 1, fromPackage: 0 },
+      { at: Date.UTC(2026, 10, 13, 8, 59), kind: 'batch', base: 6, credits: 6, fromPackage: 0 },
+    ];
+    const panel = panelOf(paidUser, { ...overLimit, tier: 'paid' }, charges);
+    expect(panel).toContain('Recent charges');
+    expect(panel).toContain('DOCX to PDF');
+    expect(panel).toContain('2 credits and 2 for processing time');
+    expect(panel).toContain('3 from your package');
+    expect(panel).toContain('PNG to JPG');
+    expect(panel).toContain('A batch of files');
+    expect(panel).not.toContain('No conversions have been charged yet.');
+    // The newest charge is first, and each row ends with the credits it cost.
+    expect(panel.indexOf('DOCX to PDF')).toBeLessThan(panel.indexOf('PNG to JPG'));
+    expect(charges.map((entry) => entry.credits)).toEqual([4, 1, 6]);
+  });
+
+  it('never shows more credits used than the day allows, for a count made under a larger allowance before a deploy', () => {
+    expect(usageCount(freeUser, overLimit)).toBe(`${FREE_DAILY_CREDITS} / ${FREE_DAILY_CREDITS}`);
     const strip = renderDom(createElement(ApiKeysPanel, { state: { ...keysPanelState, quota: overLimit }, actions: keysPanelActions }));
     const used = select(strip, 'span').find((span) => /text-accent-ink/.test(attrOf(span, 'class') ?? ''));
-    expect(visibleText(used!)).toBe(String(FREE_DAILY_CONVERSIONS));
+    expect(visibleText(used!)).toBe(String(FREE_DAILY_CREDITS));
   });
 });

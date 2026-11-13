@@ -38,7 +38,7 @@ function uniqueSuffix(): string {
 
 async function createUser(label: string): Promise<User> {
   const email = `${label}_${uniqueSuffix()}@storage-download.test`;
-  return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'pro' }));
+  return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'paid' }));
 }
 
 function storeObject(key: string, buffer: Buffer = FIXTURE, filename = 'result.txt'): string {

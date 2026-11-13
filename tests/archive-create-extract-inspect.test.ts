@@ -54,7 +54,7 @@ describe('WP-45: Archive Creation, Selective Extraction, Inspection, and Multi-V
   beforeEach(async () => {
     const email = `archiver_${Date.now()}_${Math.random().toString(36).slice(2)}@test.local`;
     testUser = userStore.sanitizeUser(
-      await userStore.createUser({ email, name: 'Archive Tester', tier: 'pro' })
+      await userStore.createUser({ email, name: 'Archive Tester', tier: 'paid' })
     );
     sessionToken = createSessionToken(testUser);
   });

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
-import { validateApiAccess, authErrorHeaders, conversionsUsedUp, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, creditsUsedUp, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
+import { baseCredits } from '@/lib/billing/credits';
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import { attachmentContentDisposition } from '@/lib/api/content-disposition';
@@ -197,7 +198,7 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
   const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
   const rateLimitHeaders = buildRateLimitHeaders(quota);
 
-  if (quota.remaining <= 0) return reply(conversionRefusalResponse(conversionsUsedUp(auth.user, quota, 1), instanceUri));
+  if (quota.remaining <= 0) return reply(conversionRefusalResponse(creditsUsedUp(auth.user, quota, 1), instanceUri));
   if (!isMultipartBody(req)) {
     return reply(createProblemDetailsResponse(HTTP_UNSUPPORTED_MEDIA_TYPE, 'The request body must be multipart/form-data.', instanceUri, undefined, undefined, rateLimitHeaders));
   }
@@ -259,7 +260,7 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
     const { webhookUrl: effectiveWebhookUrl, webhookSecret: effectiveWebhookSecret, webhookKeyId } = resolvedWebhook;
 
     // Phase 1: Atomically reserve quota unit BEFORE CPU-intensive conversion
-    const unit = await reserveConversionUnit(auth.user);
+    const unit = await reserveConversionUnit(auth.user, baseCredits(sourceDef.id, targetDef.id));
     if (!unit.reserved) return reply(conversionRefusalResponse(unit.refusal, instanceUri));
 
     const conversion: ReservedConversion = {
@@ -450,6 +451,7 @@ async function convertReserved(c: ReservedConversion, unit: ReservedUnit): Promi
       inputBytes: inputBuffer.length,
     })
   );
+  const conversionStartedAt = Date.now();
   const conversionResult = await runUnderDeadline(req, deadlineMs, (limits) =>
     dispatchConversion(
       inputBuffer,
@@ -461,6 +463,7 @@ async function convertReserved(c: ReservedConversion, unit: ReservedUnit): Promi
   );
 
   const durationMs = Date.now() - startTime;
+  const processingMs = Date.now() - conversionStartedAt;
   const outputBuffer = conversionResult.buffer;
 
   // Store the result before the quota unit is committed: a storage outage fails the request and
@@ -496,7 +499,7 @@ async function convertReserved(c: ReservedConversion, unit: ReservedUnit): Promi
     rateLimitHeaders,
   });
   // 3. Phase 2: Commit reserved quota unit upon SUCCESSFUL conversion; `reply` answers whatever the idempotency store does.
-  await unit.commit();
+  await unit.commit({ from: sourceDef.id, to: targetDef.id, base: baseCredits(sourceDef.id, targetDef.id), processingMs });
   return reply(answer);
 }
 

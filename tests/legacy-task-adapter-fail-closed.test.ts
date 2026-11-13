@@ -72,7 +72,7 @@ describe.each(ADAPTERS)('%s rejects incomplete legacy tasks', (_name, adapt) => 
 describe('POST /api/v1/jobs with incomplete legacy tasks', () => {
   it('answers 422 before reserving quota', async () => {
     const email = `tasks_${Date.now()}_${Math.random().toString(36).slice(2)}@tasks.test`;
-    const user = await userStore.createUser({ email, name: 'tasks', tier: 'pro' });
+    const user = await userStore.createUser({ email, name: 'tasks', tier: 'paid' });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'tasks', { scopes: ['convert:write'] });
     const usedBefore = (await redisKeyStore.getQuotaUsage(user.id)).usedToday;
 

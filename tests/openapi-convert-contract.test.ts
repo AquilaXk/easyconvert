@@ -70,7 +70,7 @@ describe('the code values of the convert routes follow the error classes', { tim
 });
 
 describe('the 429 of the convert routes is the answer the code sends', () => {
-  const exhausted = { tier: 'free' as const, period: 'day' as const, dailyLimit: 10, usedToday: 10, remaining: 0, resetAt: Date.now() + 3_600_000 };
+  const exhausted = { tier: 'free' as const, period: 'day' as const, dailyLimit: 10, usedToday: 10, remaining: 0, resetAt: Date.now() + 3_600_000 , packageCredits: 0};
 
   it.each(CONVERT_ROUTES)('%s documents every header of a refused day, and the problem types by name', async (route) => {
     const spec = await loadSpec();
@@ -85,7 +85,7 @@ describe('the 429 of the convert routes is the answer the code sends', () => {
     expect(buildRateLimitHeaders({ ...exhausted, remaining: 3 })['Retry-After']).toBeUndefined();
     const spec = await loadSpec();
     const retryAfter = spec.paths[V1_CONVERT].post.responses[String(HTTP_TOO_MANY)].headers?.['Retry-After'] as { description: string };
-    expect(retryAfter.description).toMatch(/except a `quota-exceeded` that leaves some conversions/);
+    expect(retryAfter.description).toMatch(/except a `quota-exceeded` that leaves some credits/);
   });
 
   it('documents the numbers of a quota refusal and the limit of a concurrency refusal', async () => {

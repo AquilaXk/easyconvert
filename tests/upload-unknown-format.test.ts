@@ -26,7 +26,7 @@ describe('Unknown upload format is a typed 400 (#483)', () => {
 
   beforeEach(async () => {
     const email = `regress_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@storage-regression.local`;
-    user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'regress', tier: 'pro' }));
+    user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'regress', tier: 'paid' }));
   });
 
   function cookie(): Record<string, string> {

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { baseCredits } from '../../billing/credits';
 import { Readable } from 'node:stream';
 import JSZip from 'jszip';
 import type { Job } from '../bullmq-engine';
@@ -76,6 +77,7 @@ import {
   PDF_SPLIT_OUTPUT_FORMAT,
   THUMBNAIL_FORMATS,
   graphNodeCharge,
+  type GraphNodeProduct,
   requestedTargetFormat,
 } from '../../jobs/graph-operations';
 import { importUrlWithinBudget } from './node-url-import';
@@ -526,6 +528,16 @@ export async function processGraphNodeJobIfAlive(
   return processGraphNodeJob(job, engine, storage);
 }
 
+/**
+ * The credits a node charges when it ends: a `convert` node charges the cost of the class of its conversion (the format of its first
+ * input and its target) for each output and its own minutes beyond the first; every other operation one credit for each output, as the
+ * rule of its operation says (docs/policy-decisions.md, entry 285).
+ */
+function nodeCharge(node: { op?: string; targetFormat?: string }, inputArtifacts: readonly string[], product: GraphNodeProduct, processingMs: number): number {
+  const creditsEach = node.op === 'convert' ? baseCredits(path.extname(inputArtifacts[0] ?? '').slice(1), node.targetFormat ?? '') : 1;
+  return graphNodeCharge(node.op, product, { creditsEach, processingMs });
+}
+
 export async function processGraphNodeJob(
   job: Job<ConversionJobData, ConversionJobResult>,
   engine?: ConversionEnginePort,
@@ -933,7 +945,7 @@ export async function processGraphNodeJob(
     // cancel or takeover), so the node is never recorded as completed.
     attemptSignal.throwIfAborted();
     const outputs = [...new Set(outputKeys)];
-    await graphScheduler.onNodeCompleted(graphId, nodeId, outputs, graphNodeCharge(node.op, { outputs: outputs.length, optimizations }));
+    await graphScheduler.onNodeCompleted(graphId, nodeId, outputs, nodeCharge(node, inputArtifacts, { outputs: outputs.length, optimizations }, durationMs));
 
     return {
       jobId: job.id,

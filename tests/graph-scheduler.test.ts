@@ -417,7 +417,7 @@ describe('JobGraph Scheduler: Atomic DAG Orchestration', () => {
   });
 
   describe('Jobs API Graph Integration (POST, GET, DELETE)', () => {
-    async function createTestApiKey(tier: 'free' | 'pro' | 'enterprise' = 'pro') {
+    async function createTestApiKey(tier: 'free' | 'paid' = 'paid') {
       const uid = `usr_api_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       const user = await redisUserStore.createUser({
         email: `${uid}@example.com`,
@@ -434,7 +434,7 @@ describe('JobGraph Scheduler: Atomic DAG Orchestration', () => {
     }
 
     it('creates a graph-based conversion job via POST /api/v1/jobs returning 202 with nodes', async () => {
-      const { uid, key } = await createTestApiKey('pro');
+      const { uid, key } = await createTestApiKey('paid');
       s3Storage.saveObject('uploads/input.txt', Buffer.from('hello world'), 'text/plain', 'input.txt');
       const testGraph: JobGraph = {
         failurePolicy: 'fail_fast',

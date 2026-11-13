@@ -164,21 +164,11 @@ export function resolveQueueName(resourceClass: ResourceClass): string {
 }
 
 /**
- * Maps account tier ('enterprise' | 'pro' | 'basic' | 'free') to scheduling priority.
+ * Maps account tier ('paid' | 'free') to scheduling priority: a paid account is served first (docs/policy-decisions.md, entry 285).
  * BullMQ priority: 1 (highest) to 3 (lowest).
  */
 export function tierToPriority(tier?: string): number {
-  const normalized = (tier || '').toLowerCase().trim();
-  switch (normalized) {
-    case 'enterprise':
-      return 1;
-    case 'pro':
-    case 'basic':
-      return 2;
-    case 'free':
-    default:
-      return 3;
-  }
+  return (tier || '').toLowerCase().trim() === 'paid' ? 1 : 3;
 }
 
 /**

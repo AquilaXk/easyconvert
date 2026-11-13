@@ -60,7 +60,7 @@ describe('presigned download URLs are issued to the owner only', () => {
     const { userStore } = await import('../src/lib/auth/user-store');
     const { createSessionToken } = await import('../src/lib/auth/session');
     const email = `${tag}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@presign-access.local`;
-    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: tag, tier: 'pro' }));
+    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: tag, tier: 'paid' }));
     return { user, cookie: { Cookie: `easyconvert_session=${createSessionToken(user)}` } };
   }
 

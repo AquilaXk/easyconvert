@@ -14,10 +14,10 @@ vi.mock('next/navigation', async (importOriginal) => ({
 
 const { SubscriptionPanel } = await import('../src/components/billing/SubscriptionPanel');
 
-/** The subscription block of the dashboard: absent until paid plans are on sale, then the plan and where it stands. */
+/** The subscription block of the dashboard: absent until paid plans are on sale, then its credits and where it stands. */
 
 const NOW = Date.UTC(2026, 10, 12);
-const ENABLED = { success: true, enabled: true, environment: 'sandbox', clientToken: 'test_x', plans: [] };
+const ENABLED = { success: true, enabled: true, environment: 'sandbox', clientToken: 'test_x', packages: [], subscriptions: [] };
 let root: Root | undefined;
 let assign: ReturnType<typeof vi.fn>;
 
@@ -65,25 +65,25 @@ describe('the subscription block of the dashboard', () => {
   it('points an account without a subscription to the plans', async () => {
     stub({ ...ENABLED, subscription: null });
     const host = await mount();
-    expect(host.textContent).toContain('You are on the Free plan.');
+    expect(host.textContent).toContain('You have no subscription.');
     expect(host.querySelector('a')?.getAttribute('href')).toBe('/pricing');
   });
 
   it.each([
-    ['renews', { plan: 'pro', status: 'active', active: true, currentPeriodEnd: NOW + 20 * 86_400_000 }, 'Renews on Dec 2, 2026.'],
-    ['is canceled at the end of the period', { plan: 'pro', status: 'active', active: true, currentPeriodEnd: NOW + 20 * 86_400_000, cancelAt: NOW + 20 * 86_400_000 }, 'Ends on Dec 2, 2026. After that you are on the Free plan.'],
-    ['failed to pay', { plan: 'enterprise', status: 'past_due', active: true, currentPeriodEnd: NOW + 86_400_000 }, 'The last payment did not go through. The plan stays until Nov 13, 2026.'],
-    ['has ended', { plan: 'pro', status: 'canceled', active: false }, 'The subscription has ended. You are on the Free plan.'],
+    ['renews', { credits: 2500, status: 'active', active: true, currentPeriodEnd: NOW + 20 * 86_400_000 }, 'Renews on Dec 2, 2026.'],
+    ['is canceled at the end of the period', { credits: 2500, status: 'active', active: true, currentPeriodEnd: NOW + 20 * 86_400_000, cancelAt: NOW + 20 * 86_400_000 }, 'Ends on Dec 2, 2026. After that your credits and limits are those of the Free plan, plus any package credits.'],
+    ['failed to pay', { credits: 10000, status: 'past_due', active: true, currentPeriodEnd: NOW + 86_400_000 }, 'The last payment did not go through. The subscription stays until Nov 13, 2026.'],
+    ['has ended', { credits: 2500, status: 'canceled', active: false }, 'The subscription has ended.'],
   ])('says where a subscription that %s stands', async (_name, subscription, sentence) => {
     stub({ ...ENABLED, subscription });
     const host = await mount();
     expect(host.textContent).toContain(sentence);
-    expect(host.textContent).toContain(`${subscription.plan === 'pro' ? 'Pro' : 'Enterprise'} plan`);
+    expect(host.textContent).toContain(`${subscription.credits.toLocaleString('en-US')} credits a month`);
     expect(host.querySelector('button')?.textContent).toBe('Manage subscription');
   });
 
   it('goes to the portal link of the provider when the subscriber asks to manage', async () => {
-    stub({ ...ENABLED, subscription: { plan: 'pro', status: 'active', active: true } }, { status: 200, body: { success: true, url: 'https://portal.example/o' } });
+    stub({ ...ENABLED, subscription: { credits: 2500, status: 'active', active: true } }, { status: 200, body: { success: true, url: 'https://portal.example/o' } });
     const host = await mount();
     await act(async () => host.querySelector('button')?.click());
     await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
@@ -91,7 +91,7 @@ describe('the subscription block of the dashboard', () => {
   });
 
   it('words a refusal of the portal and goes nowhere', async () => {
-    stub({ ...ENABLED, subscription: { plan: 'pro', status: 'active', active: true } }, { status: 502, body: { success: false, code: 'billing_provider_failed', error: 'x' } });
+    stub({ ...ENABLED, subscription: { credits: 2500, status: 'active', active: true } }, { status: 502, body: { success: false, code: 'billing_provider_failed', error: 'x' } });
     const host = await mount();
     await act(async () => host.querySelector('button')?.click());
     await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));

@@ -49,7 +49,7 @@ async function pdfWithPages(count: number): Promise<Buffer> {
 
 const tiffWithPages = (count: number) => buildBilevelTiff(Array.from({ length: count }, () => ({ width: TINY_SIDE, height: TINY_SIDE })));
 
-async function keyOfTier(tier: 'free' | 'enterprise'): Promise<string> {
+async function keyOfTier(tier: 'free' | 'paid'): Promise<string> {
   const user = await userStore.createUser({
     name: 'no tier page limit',
     email: `no_limit_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
@@ -260,9 +260,9 @@ describe('the engine guard of a multi-page image has one value for every caller'
   it.skipIf(SKIP_WITHOUT_MAGICK).each([
     ['an anonymous caller', undefined],
     ['a free account', 'free'],
-    ['an enterprise account', 'enterprise'],
+    ['an enterprise account', 'paid'],
   ] as const)('%s is refused a document past the guard with the same typed answer', async (_label, who) => {
-    const tierKey = who === 'enterprise' ? await keyOfTier('enterprise') : key;
+    const tierKey = who === 'paid' ? await keyOfTier('paid') : key;
     const response = await convertPost(form(tiffWithPages(FIVE_HUNDRED_AND_ONE_PAGES), 'many.tif', { targetFormat: 'png', options: JSON.stringify({}) }, who && tierKey));
     expect(response.status).toBe(HTTP_PAYLOAD_TOO_LARGE);
     expect(JSON.stringify(await response.json())).toContain(`at most ${FIVE_HUNDRED_PAGES}`);

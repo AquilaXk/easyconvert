@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { isAnonymousUserId, isUnattributedAnonymous } from '../auth/anonymous-identity';
 import { formatBytes } from '../format-bytes';
-import { PLAN_NAME, maxFileBytes, type Plan } from '../plan-limits';
+import { PLAN_PHRASE, maxFileBytes, type Plan } from '../plan-limits';
 import { getUtcDateKey } from './key-store';
 import { redisKeyStore } from './redis-key-store';
 import { MemoryBudgetStore, RedisBudgetStore, type BudgetStore } from './upload-budget-store';
@@ -424,7 +424,7 @@ function dailyAllowance(plan: Plan): string {
   const limit = formatBytes(dailyBudgetBytes(plan));
   return plan === 'anonymous'
     ? `Without an account, uploads and link imports may total ${limit} a day.`
-    : `On the ${PLAN_NAME[plan]} plan, link imports may total ${limit} a day.`;
+    : `On ${PLAN_PHRASE[plan]}, link imports may total ${limit} a day.`;
 }
 
 /** The English sentence of a link import stopped because the day of a caller of `plan` passed its budget while it read. */

@@ -15,7 +15,7 @@ const JOB_ID_PATTERN = /^job_\d{13}_[0-9a-f]{32}$/;
 
 async function createUser(label: string): Promise<User> {
   const email = `${label}_${Date.now()}_${Math.random().toString(36).slice(2)}@queue.test`;
-  return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'pro' }));
+  return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'paid' }));
 }
 
 function jobData(userId?: string): ConversionJobData {

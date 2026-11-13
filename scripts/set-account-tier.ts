@@ -9,7 +9,7 @@ import { subscriptionStore } from '../src/lib/billing/subscription-store';
  * overridden, and the change is printed with the time for the host's log. Billing events later set the plan of a paying account
  * as usual.
  */
-export const SETTABLE_TIERS: readonly UserTier[] = ['free', 'basic', 'pro', 'enterprise'];
+export const SETTABLE_TIERS: readonly UserTier[] = ['free', 'paid'];
 
 export interface TierChange {
   userId: string;

@@ -12,10 +12,11 @@ const WINDOW_SECONDS = { day: 86_400, month: 2_592_000 } as const;
 export function buildRateLimitHeaders(quota: QuotaUsage): Record<string, string> {
   const now = Date.now();
   const resetDeltaSeconds = Math.max(0, Math.ceil((quota.resetAt - now) / 1000));
-  const limitStr = Math.max(0, quota.dailyLimit).toString();
+  // The credits the account can spend in the period: the window's allowance and the package balance, which `remaining` counts too.
+  const limitStr = Math.max(0, quota.dailyLimit + quota.packageCredits).toString();
   const remainingStr = Math.max(0, quota.remaining).toString();
   const resetStr = resetDeltaSeconds.toString();
-  const policyStr = `${limitStr};w=${WINDOW_SECONDS[quota.period]};comment="${quota.tier} ${quota.period === 'month' ? 'monthly' : 'daily'} quota"`;
+  const policyStr = `${limitStr};w=${WINDOW_SECONDS[quota.period]};comment="${quota.tier} ${quota.period === 'month' ? 'monthly' : 'daily'} credits"`;
 
   const headers: Record<string, string> = {
     'RateLimit': `limit=${limitStr}, remaining=${remainingStr}, reset=${resetStr}`,

@@ -70,7 +70,7 @@ describe('the session read of a component that mounts', () => {
 });
 
 describe('a session change the page made itself', () => {
-  const ADA = { id: 'u1', name: 'Ada', tier: 'pro' };
+  const ADA = { id: 'u1', name: 'Ada', tier: 'paid' };
 
   it('names the signed-in person from the sign-in answer without reading the session endpoint', async () => {
     const fetchMock = vi.fn(() => Promise.reject(new Error('no read expected')));
@@ -79,8 +79,8 @@ describe('a session change the page made itself', () => {
 
     plan.applySessionChange(ADA);
 
-    expect(plan.getViewerAccount()).toEqual({ name: 'Ada', tier: 'pro' });
-    expect(plan.getViewerPlan()).toBe('pro');
+    expect(plan.getViewerAccount()).toEqual({ name: 'Ada', tier: 'paid' });
+    expect(plan.getViewerPlan()).toBe('paid');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -108,7 +108,7 @@ describe('a session change the page made itself', () => {
     answers[0](sessionAnswer(VISITOR));
     await mountRead;
 
-    expect(plan.getViewerAccount()).toEqual({ name: 'Ada', tier: 'pro' });
+    expect(plan.getViewerAccount()).toEqual({ name: 'Ada', tier: 'paid' });
   });
 
   it('drops a read that began before a sign-out, so the account it saw does not come back', async () => {
@@ -136,9 +136,9 @@ describe('a session change the page made itself', () => {
     const afterChange = plan.refreshViewerPlan();
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
-    answers[1](sessionAnswer({ success: true, user: { ...ADA, tier: 'enterprise' } }));
+    answers[1](sessionAnswer({ success: true, user: { ...ADA, tier: 'paid' } }));
     await afterChange;
-    expect(plan.getViewerPlan()).toBe('enterprise');
+    expect(plan.getViewerPlan()).toBe('paid');
   });
 });
 

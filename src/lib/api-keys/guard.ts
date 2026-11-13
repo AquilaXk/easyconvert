@@ -1,9 +1,10 @@
 import { redisKeyStore } from './redis-key-store';
 import { RESERVATION_LEASE } from './reservation-ledger';
+import { chargeOptionsOf } from './conversion-charge';
 import { leaseToHandedOffWork, RECOVERY_UNKNOWN, renewLease, RESERVATION_ENGINE, type Recovery, type ReservedUnit } from './hand-off';
 import { QueueUnavailableError } from '../types';
 import type { TokenBucketOptions } from './redis-key-store';
-import { API_KEY_BURST_LIMITS, periodConversions, planOfCaller, QUOTA_PERIOD, type PlanCaller, type QuotaPeriod } from '../plan-limits';
+import { API_KEY_BURST_LIMITS, type QuotaPeriod } from '../plan-limits';
 import { getSessionFromRequest } from '../auth/session';
 import { AuthStoreUnavailableError } from '../auth/store-unavailable';
 import { anonymousUserId, isAnonymousUserId, isUnattributedAnonymous } from '../auth/anonymous-identity';
@@ -39,7 +40,7 @@ interface AccessScopeOptions {
 }
 
 export type ValidateApiAccessOptions = AccessScopeOptions & {
-  /** Conversions to reserve (1 when absent; 0 for a request that costs none, such as a link import, which a used-up day does not refuse). */
+  /** Credits to reserve (1 when absent; 0 for a request that costs none, such as a link import, which a used-up day does not refuse). */
   requiredUnits?: number;
 };
 
@@ -54,13 +55,14 @@ export const PERIOD_WORDS: Readonly<Record<QuotaPeriod, { adjective: string; uni
 };
 
 /**
- * The refusal text of a caller whose conversions of the period are used up: the allowance the key store enforces for its plan
- * (`ANONYMOUS_DAILY_LIMIT` without an account), the period it is counted in, and when it resets.
+ * The refusal text of a caller whose credits are used up: the allowance of its window (`ANONYMOUS_DAILY_LIMIT` without an account,
+ * the 10 of the free plan, the credits of a subscription), the period it is counted in, and when it resets. A window that is a
+ * subscription's period also says that no package credits are left, since those are spent after it.
  */
-function quotaExceeded(caller: PlanCaller): string {
-  const plan = planOfCaller(caller);
-  const words = PERIOD_WORDS[QUOTA_PERIOD[plan]];
-  return `${words.adjective} conversion quota exceeded (${periodConversions(plan)} conversions per ${words.unit}). ${words.resets}`;
+function creditsExceeded(usage: QuotaUsage): string {
+  const words = PERIOD_WORDS[usage.period];
+  const packages = usage.period === 'month' ? ' No package credits are left.' : '';
+  return `${words.adjective} credit quota exceeded (${usage.dailyLimit} credits per ${words.unit}).${packages} ${words.resets}`;
 }
 
 type BurstLimit = Required<Pick<TokenBucketOptions, 'capacity' | 'refillRate'>>;
@@ -218,7 +220,7 @@ function quotaRefusal(quota: QuotaCheck, userId: string): QuotaRefusal {
   };
 }
 
-async function checkQuotaAndReserve(userId: string, tier: string, need: number): Promise<QuotaCheck> {
+async function checkQuotaAndReserve(userId: string, need: number): Promise<QuotaCheck> {
   if (need > 0) {
     const reservation = await redisKeyStore.reserveQuota(userId, need);
     if (!reservation.allowed) {
@@ -230,9 +232,12 @@ async function checkQuotaAndReserve(userId: string, tier: string, need: number):
           serviceUnavailable: true,
         };
       }
+      // The store that just refused can fail before it says what the window holds: the refusal is then the offline one.
+      const usage = await redisKeyStore.getQuotaUsage(userId).catch(() => undefined);
+      if (!usage) return { allowed: false, error: QUOTA_ENGINE_OFFLINE, remaining: 0, serviceUnavailable: true };
       return {
         allowed: false,
-        error: quotaExceeded({ id: userId, tier }),
+        error: creditsExceeded(usage),
         remaining: reservation.remaining,
       };
     }
@@ -328,7 +333,7 @@ async function verifyKeyAccess(
     };
   }
 
-  const quota = await checkQuotaAndReserve(verification.user.id, verification.user.tier, need);
+  const quota = await checkQuotaAndReserve(verification.user.id, need);
   if (!quota.allowed) {
     return { authorized: false, user: verification.user, apiKey: verification.key, ...quotaRefusal(quota, verification.user.id) };
   }
@@ -433,7 +438,7 @@ async function verifyAnonymousAccess(clientIp: string, need: number): Promise<Ap
     // (docs/client-ip-trust.md, item 5). Only the shared burst limiter above applies until TRUSTED_PROXIES is declared.
     return { authorized: true, user: buildAnonymousUser(anonUserId), authMethod: 'session' };
   }
-  const quota = await checkQuotaAndReserve(anonUserId, 'anonymous', need);
+  const quota = await checkQuotaAndReserve(anonUserId, need);
   if (!quota.allowed) return { authorized: false, ...quotaRefusal(quota, anonUserId) };
 
   return {
@@ -488,7 +493,7 @@ async function authenticateRequest(
 
   const sessionUser = await getSessionFromRequest(request);
   if (sessionUser) {
-    const quota = await checkQuotaAndReserve(sessionUser.id, sessionUser.tier, need);
+    const quota = await checkQuotaAndReserve(sessionUser.id, need);
     if (!quota.allowed) return { authorized: false, user: sessionUser, ...quotaRefusal(quota, sessionUser.id) };
     return {
       authorized: true,
@@ -538,15 +543,15 @@ export type ConversionRefusal =
 /** Conversion units of a caller, reserved after the request was authenticated with none; or why they were refused. */
 export type ConversionUnit = { reserved: true; reservationId?: string } | { reserved: false; refusal: ConversionRefusal };
 
-function conversionsNeeded(units: number): string {
-  return units === 1 ? '1 conversion' : `${units} conversions`;
+function creditsNeeded(units: number): string {
+  return units === 1 ? '1 credit' : `${units} credits`;
 }
 
 /** The refusal of a request of `user` that needs `requiredUnits` conversions on a day with `usage.remaining` left. */
-export function conversionsUsedUp(user: User, usage: QuotaUsage, requiredUnits: number): ConversionRefusal {
-  const allowance = quotaExceeded(user);
+export function creditsUsedUp(user: User, usage: QuotaUsage, requiredUnits: number): ConversionRefusal {
+  const allowance = creditsExceeded(usage);
   const left = Math.max(0, usage.remaining);
-  const error = `${allowance} This request needs ${conversionsNeeded(requiredUnits)} and ${left} ${left === 1 ? 'is' : 'are'} left ${PERIOD_WORDS[usage.period].now}.`;
+  const error = `${allowance} This request needs ${creditsNeeded(requiredUnits)} and ${left} ${left === 1 ? 'is' : 'are'} left ${PERIOD_WORDS[usage.period].now}.`;
   return { reason: 'used-up', error, usage: { ...usage, remaining: left }, requiredUnits };
 }
 
@@ -557,18 +562,36 @@ export function conversionsUsedUp(user: User, usage: QuotaUsage, requiredUnits: 
  */
 export async function reserveConversionUnit(user: User, units: number = 1): Promise<ConversionUnit> {
   if (isUnattributedAnonymous(user.id)) return { reserved: true };
-  const quota = await checkQuotaAndReserve(user.id, user.tier, units);
+  const quota = await checkQuotaAndReserve(user.id, units);
   if (quota.allowed) return { reserved: true, reservationId: quota.reservationId };
   const offline = (): ConversionUnit => ({ reserved: false, refusal: { reason: 'offline', error: quotaRefusal({ allowed: false, serviceUnavailable: true }, user.id).error } });
   if (quota.serviceUnavailable) return offline();
   // The store that just refused can fail before it says how many are left: the refusal is then the offline one.
   const usage = await redisKeyStore.getQuotaUsage(user.id).catch(() => undefined);
   if (!usage) return offline();
-  return { reserved: false, refusal: conversionsUsedUp(user, { ...usage, remaining: quota.remaining ?? 0 }, units) };
+  return { reserved: false, refusal: creditsUsedUp(user, { ...usage, remaining: quota.remaining ?? 0 }, units) };
+}
+
+/**
+ * Holds the rest of the cost of a conversion's class in a reservation that was made for one credit, because the request reserved before
+ * it knew the formats: the cost minus the credit already held. Answers the refusal to send when the account cannot cover it, else undefined.
+ */
+export async function holdBaseCredits(unit: ReservedUnit, user: User, baseCredits: number): Promise<ConversionRefusal | undefined> {
+  if (baseCredits <= 1) return undefined;
+  const held = await unit.hold('class', baseCredits - 1);
+  if (held.status === 'extended') return undefined;
+  const offline: ConversionRefusal = { reason: 'offline', error: quotaRefusal({ allowed: false, serviceUnavailable: true }, user.id).error };
+  // A reservation that is gone (its lease ended) is not an account without credits.
+  if (held.status === 'no-reservation') return offline;
+  const usage = await redisKeyStore.getQuotaUsage(user.id).catch(() => undefined);
+  if (!usage) return offline;
+  // What the extension could not hold, plus the credit the reservation holds already, is what the account has for this conversion.
+  return creditsUsedUp(user, { ...usage, remaining: held.remaining + 1 }, baseCredits);
 }
 
 const NO_RESERVATION: ReservedUnit = {
   commit: async () => undefined,
+  hold: async () => ({ status: 'extended' }),
   handOff: (work) => work.start(undefined),
 };
 
@@ -602,9 +625,10 @@ export async function withReservedUnit<T>(reservationId: string | undefined, run
     return wasHeld;
   };
   const unit: ReservedUnit = {
-    commit: async () => {
-      if (release()) await redisKeyStore.commitQuota(reservationId);
+    commit: async (charge) => {
+      if (release()) await redisKeyStore.commitQuota(reservationId, charge && chargeOptionsOf(charge));
     },
+    hold: async (extensionId, credits) => (held ? redisKeyStore.extendQuota(reservationId, extensionId, credits) : { status: 'no-reservation' }),
     handOff: async (work) => {
       if (!held) return work.start(undefined);
       if (!(await renewLease(reservationId, RESERVATION_LEASE.provisionalMs))) {

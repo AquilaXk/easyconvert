@@ -14,7 +14,7 @@ import { processNodeJob } from '../src/lib/queue/node-processor';
 import type { ConversionEnginePort } from '../src/lib/queue/engine-port';
 import { InMemoryTusSessionStore, setTusSessionStore } from '../src/lib/storage/tus-engine';
 import { s3Storage } from '../src/lib/storage/s3-storage';
-import { FREE_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
+import { FREE_DAILY_CREDITS } from '../src/lib/plan-limits';
 import { DataParseError, type ConversionJobData, type ConversionJobResult } from '../src/lib/types';
 
 /**
@@ -53,7 +53,7 @@ function startWorker(): void {
   attachJobLifecycleListeners(worker);
 }
 
-async function caller(tier: 'free' | 'pro' = 'pro') {
+async function caller(tier: 'free' | 'paid' = 'paid') {
   const user = userStore.sanitizeUser(await userStore.createUser({ email: `named-${Date.now()}-${crypto.randomBytes(4).toString('hex')}@named.test`, name: 'Named', tier }));
   const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'named tasks', { scopes: ['convert:write', 'convert:read'] });
   return { userId: user.id, authorization: `Bearer ${secretKey}`, usedToday: async () => (await redisKeyStore.getQuotaUsage(user.id)).usedToday };
@@ -229,7 +229,7 @@ describe('a named task that fails', () => {
 });
 
 describe('a named task graph that is refused', () => {
-  async function refused(body: string | Record<string, unknown>, tier: 'free' | 'pro' = 'pro') {
+  async function refused(body: string | Record<string, unknown>, tier: 'free' | 'paid' = 'paid') {
     const who = await caller(tier);
     const res = await post(who.authorization, body);
     const problem = await res.json();
@@ -290,7 +290,7 @@ describe('a named task graph that is refused', () => {
     expect(free.problem.type).toBe(`${PROBLEM}task-count-exceeded`);
     expect(free.problem.detail).toContain('9 tasks');
 
-    const pro = await caller('pro');
+    const pro = await caller('paid');
     expect((await post(pro.authorization, many(9))).status).toBe(202);
   });
 
@@ -338,7 +338,7 @@ describe('a named task graph that is refused', () => {
 describe('the quota of a named task graph', () => {
   it('refuses up front a graph of three conversions when the caller has two left, charging nothing', async () => {
     const who = await caller('free');
-    await redisKeyStore.recordUsage(who.userId, FREE_DAILY_CONVERSIONS - 2);
+    await redisKeyStore.recordUsage(who.userId, FREE_DAILY_CREDITS - 2);
     const key = await storedCsv();
     const res = await post(who.authorization, {
       tasks: {
@@ -351,7 +351,7 @@ describe('the quota of a named task graph', () => {
     });
     expect(res.status).toBe(429);
     expect(await res.json()).toMatchObject({ type: `${PROBLEM}quota-exceeded`, remaining: 2, requiredUnits: 3 });
-    expect(await who.usedToday()).toBe(FREE_DAILY_CONVERSIONS - 2);
+    expect(await who.usedToday()).toBe(FREE_DAILY_CREDITS - 2);
   });
 });
 

@@ -232,7 +232,7 @@ describe('inspectArchive reports unsafe entries', () => {
   oracleTest('serves the report through the inspect API', [...TOOLS], async () => {
     const zip = buildZipWithEntries(path.join(ws.fixturesDir, 'api.zip'), [{ name: '../x', data: 'x' }]);
     const email = `inspector_${Date.now()}_${Math.random().toString(36).slice(2)}@test.local`;
-    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'Inspector', tier: 'pro' }));
+    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'Inspector', tier: 'paid' }));
     const formData = new FormData();
     formData.append('file', new Blob([new Uint8Array(fs.readFileSync(zip))], { type: 'application/zip' }), 'api.zip');
     const request = new NextRequest('http://localhost:3000/api/v1/archives/inspect', {

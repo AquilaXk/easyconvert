@@ -13,9 +13,10 @@ import type { DashboardSnapshot } from './snapshot-types';
  * hydration, so a store that is slow or down for one resource does not hide the others.
  */
 export async function loadDashboardSnapshot(user: User): Promise<DashboardSnapshot> {
-  const [keys, quota, files, dlqEntries] = await Promise.allSettled([
+  const [keys, quota, charges, files, dlqEntries] = await Promise.allSettled([
     redisKeyStore.listApiKeys(user.id),
     redisKeyStore.getQuotaUsage(user.id),
+    redisKeyStore.recentCharges(user.id),
     listAccountFiles(user.id),
     webhookDispatcher.getDlqEntries(user.id),
   ]);
@@ -23,6 +24,7 @@ export async function loadDashboardSnapshot(user: User): Promise<DashboardSnapsh
     user,
     ...(keys.status === 'fulfilled' && { keys: keys.value.map(toPublicApiKey) }),
     ...(quota.status === 'fulfilled' && { quota: quota.value }),
+    ...(charges.status === 'fulfilled' && { charges: charges.value }),
     ...(files.status === 'fulfilled' && { files: files.value }),
     ...(dlqEntries.status === 'fulfilled' && { dlqEntries: dlqEntries.value.map(toPublicDlqEntry) }),
     emailVerification: { enabled: isAuthMailEnabled(), verified: isEmailVerified(user) },

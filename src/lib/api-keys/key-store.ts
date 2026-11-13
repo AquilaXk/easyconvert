@@ -6,7 +6,7 @@ import { redisUserStore } from '../auth/redis-user-store';
 import type { User } from '../auth/types';
 import type { ApiKey, ApiKeyCreateOptions, ApiKeyCreateResult, QuotaUsage, UserConversionFile, UserConversionFileInput } from './types';
 import { isIpAllowed } from './ip-utils';
-import { TIER_LIMITS, getAnonymousDailyLimit } from '../plan-limits';
+import { getAnonymousDailyLimit } from '../plan-limits';
 import { dayWindow, quotaAllowanceOf } from './quota-window';
 import { globalSharedObjects } from '../storage/shared-store';
 import { resolveRetentionPolicy } from '../storage/result-retention';
@@ -23,7 +23,7 @@ function resolveStorageDir(): string {
   return MODULE_STORAGE_DIR;
 }
 
-export { TIER_LIMITS, getAnonymousDailyLimit };
+export { getAnonymousDailyLimit };
 
 const KEY_HASH_PEPPER_ENV = 'KEY_HASH_PEPPER';
 const KEY_HASH_PEPPER_PREVIOUS_ENV = 'KEY_HASH_PEPPER_PREVIOUS';
@@ -549,9 +549,9 @@ export class KeyStore {
   public async getQuotaUsage(userId: string): Promise<QuotaUsage> {
     this.ensureInitialized();
 
-    const { tier, window, limit } = await quotaAllowanceOf(userId);
+    const { window, limit, subscribed } = await quotaAllowanceOf(userId);
     const used = this.dailyUsage.get(`${userId}:${window.key}`) || 0;
-    return { tier, period: window.period, dailyLimit: limit, usedToday: used, remaining: Math.max(0, limit - used), resetAt: window.endsAt };
+    return { tier: subscribed ? 'paid' : 'free', period: window.period, dailyLimit: limit, usedToday: used, remaining: Math.max(0, limit - used), resetAt: window.endsAt, packageCredits: 0 };
   }
 
   public async recordUsage(userId: string, units: number = 1): Promise<{ allowed: boolean; remaining: number }> {

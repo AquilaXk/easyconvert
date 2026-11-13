@@ -16,13 +16,13 @@ import type { ApiKeyScope } from '@/lib/api-keys/types';
 async function createTestUserWithKey(opts: {
   userId?: string;
   scopes?: ApiKeyScope[];
-  tier?: 'free' | 'pro' | 'enterprise';
+  tier?: 'free' | 'paid';
 } = {}) {
   const userId = opts.userId || `user_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const user = await redisUserStore.createUser({
     email: `${userId}@example.com`,
     name: `Test User ${userId}`,
-    tier: opts.tier || 'pro',
+    tier: opts.tier || 'paid',
     provider: 'email',
     passwordHash: 'dummy_hash',
     salt: 'dummy_salt',
@@ -356,7 +356,7 @@ describe('WP-30: Job Graph Schema, Kahn Topological Sort, Validation & Linear Ad
 
   describe('7. API Integration (POST /api/v1/jobs)', () => {
     it('accepts valid JobGraph in POST /api/v1/jobs, enqueueing job with graph and returning 202', async () => {
-      const { user, key } = await createTestUserWithKey({ tier: 'pro' });
+      const { user, key } = await createTestUserWithKey({ tier: 'paid' });
 
       // Staging object in S3
       const fakeCsv = Buffer.from('id,name\n1,Alice\n2,Bob');
@@ -394,7 +394,7 @@ describe('WP-30: Job Graph Schema, Kahn Topological Sort, Validation & Linear Ad
     });
 
     it('rejects cyclic JobGraph with 422 Unprocessable Entity and detailed problem details', async () => {
-      const { user, key } = await createTestUserWithKey({ tier: 'pro' });
+      const { user, key } = await createTestUserWithKey({ tier: 'paid' });
 
       const fakeCsv = Buffer.from('id,val\n1,100');
       const staged = s3Storage.saveObject(`uploads/${user.id}/cyclic.csv`, fakeCsv, 'text/csv', 'cyclic.csv', 3600000);
@@ -429,7 +429,7 @@ describe('WP-30: Job Graph Schema, Kahn Topological Sort, Validation & Linear Ad
     });
 
     it('rejects graph with incompatible conversion with 422 Unprocessable Entity', async () => {
-      const { user, key } = await createTestUserWithKey({ tier: 'pro' });
+      const { user, key } = await createTestUserWithKey({ tier: 'paid' });
 
       const fakeMp3 = Buffer.from('RIFF1234WAVEfmt ');
       const staged = s3Storage.saveObject(`uploads/${user.id}/song.mp3`, fakeMp3, 'audio/mpeg', 'song.mp3', 3600000);

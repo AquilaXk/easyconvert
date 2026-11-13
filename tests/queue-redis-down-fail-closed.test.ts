@@ -235,7 +235,7 @@ describe('HTTP routes with an unreachable Redis', () => {
     routes = { queueModule, v1Jobs, v1JobById, queueJobs, queueJobById, queueStats };
     const email = `down_${Date.now()}_${Math.random().toString(36).slice(2)}@queue.test`;
     const user = userModule.userStore.sanitizeUser(
-      await userModule.userStore.createUser({ email, name: 'down', tier: 'pro' })
+      await userModule.userStore.createUser({ email, name: 'down', tier: 'paid' })
     );
     cookie = `easyconvert_session=${sessionModule.createSessionToken(user)}`;
   });

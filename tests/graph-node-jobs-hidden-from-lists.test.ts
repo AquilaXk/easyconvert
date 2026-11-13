@@ -20,7 +20,7 @@ let user: User;
 let cookie: Record<string, string>;
 
 beforeEach(async () => {
-  user = userStore.sanitizeUser(await userStore.createUser({ name: 'Lister', email: `list_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@lists.test`, tier: 'pro' }));
+  user = userStore.sanitizeUser(await userStore.createUser({ name: 'Lister', email: `list_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@lists.test`, tier: 'paid' }));
   cookie = { Cookie: `easyconvert_session=${createSessionToken(user)}` };
 });
 
@@ -30,7 +30,7 @@ async function ownJob(name: string) {
     'convert',
     { jobId: '', originalFilename: name, sourceFormat: 'csv', targetFormat: 'json', fileSize: 4, options: {}, userId: user.id },
     { attempts: 1 },
-    { tier: 'pro', inputBytes: 4 }
+    { tier: 'paid', inputBytes: 4 }
   );
 }
 

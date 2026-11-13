@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { testMessages } from './helpers/intl-messages';
-import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CREDITS } from '../src/lib/plan-limits';
 import { parsedSlug } from './helpers/intl';
 import { buildQueuedFileItem } from '../src/hooks/useClientQueue';
 import { parseConverterSlug } from '../src/lib/slug-parser';
@@ -64,7 +64,7 @@ async function mountPage(slug: string): Promise<HTMLElement> {
   root.render(
     createElement(NextIntlClientProvider, {
       locale: 'en', messages: testMessages('en'), timeZone: 'UTC',
-      children: createElement(ConverterPageView, { parsed: parsedSlug(slug), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }),
+      children: createElement(ConverterPageView, { parsed: parsedSlug(slug), dailyLimit: ANONYMOUS_DAILY_CREDITS }),
     })
   );
   await vi.waitFor(() => expect(host.querySelector('[data-testid=hero-target-format-btn]')).not.toBeNull());

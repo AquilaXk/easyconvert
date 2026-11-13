@@ -1,59 +1,10 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST } from '../src/app/api/fetch-url/route';
-import { TIERS, calculateBaseCredits } from '../src/lib/pricing';
 import { parseConverterSlug } from '../src/lib/slug-parser';
 import { parsedSlug, slugPageCopy } from './helpers/intl';
 
 describe('Subpages & Routes Verification', () => {
-  describe('Pricing volume calculation logic & Credits Calculator', () => {
-    it('verifies 1,000 credits pricing matches standard tier calculation', () => {
-      const tier1000 = TIERS.find((t) => t.credits === 1000);
-      expect(tier1000).toBeDefined();
-      expect(tier1000!.packagePrice).toBe(18.0);
-      expect(tier1000!.subPrice).toBe(10.0);
-      expect((tier1000!.packagePrice / tier1000!.credits).toFixed(3)).toBe('0.018');
-      expect((tier1000!.subPrice / tier1000!.credits).toFixed(3)).toBe('0.010');
-    });
-
-    it('ensures volume discounts scale monotonically across all tiers', () => {
-      for (let i = 1; i < TIERS.length; i++) {
-        const prev = TIERS[i - 1];
-        const curr = TIERS[i];
-        const prevPkgRate = prev.packagePrice / prev.credits;
-        const currPkgRate = curr.packagePrice / curr.credits;
-        expect(currPkgRate).toBeLessThanOrEqual(prevPkgRate);
-      }
-    });
-
-    it('correctly calculates base credits according to domain conversion matrices', () => {
-      // General conversion -> 1 credit
-      expect(calculateBaseCredits('convert', 'png', 'jpg')).toBe(1);
-      expect(calculateBaseCredits('convert', 'mp4', 'mp3')).toBe(1);
-
-      // Office to PDF -> 2 credits
-      expect(calculateBaseCredits('convert', 'docx', 'pdf')).toBe(2);
-      expect(calculateBaseCredits('convert', 'xlsx', 'pdf')).toBe(2);
-      expect(calculateBaseCredits('convert', 'pptx', 'pdf')).toBe(2);
-
-      // iWork to PDF -> 2 credits
-      expect(calculateBaseCredits('convert', 'pages', 'pdf')).toBe(2);
-      expect(calculateBaseCredits('convert', 'numbers', 'pdf')).toBe(2);
-      expect(calculateBaseCredits('convert', 'key', 'pdf')).toBe(2);
-
-      // PDF to Office -> 4 credits
-      expect(calculateBaseCredits('convert', 'pdf', 'docx')).toBe(4);
-      expect(calculateBaseCredits('convert', 'pdf', 'xlsx')).toBe(4);
-      expect(calculateBaseCredits('convert', 'pdf', 'pptx')).toBe(4);
-
-      // Other operations (Compress, Thumbnail, Capture, Merge) -> 1 credit
-      expect(calculateBaseCredits('compress')).toBe(1);
-      expect(calculateBaseCredits('thumbnail')).toBe(1);
-      expect(calculateBaseCredits('capture')).toBe(1);
-      expect(calculateBaseCredits('merge')).toBe(1);
-    });
-  });
-
   describe('Real Dynamic Converter Slug Parser', () => {
     it('correctly parses format pairs like pdf-to-docx', () => {
       const parsed = parsedSlug('pdf-to-docx');

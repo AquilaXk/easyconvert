@@ -34,7 +34,7 @@ describe('Phase 2-C: BYOS Credentials Vault & Storage Adapters', () => {
   beforeEach(async () => {
     credentialsVault.clear();
     const email = `vault_test_${Date.now()}_${Math.random().toString(36).slice(2)}@example.com`;
-    testUser = userStore.sanitizeUser(await userStore.createUser({ email, name: 'Vault Tester', tier: 'pro' }));
+    testUser = userStore.sanitizeUser(await userStore.createUser({ email, name: 'Vault Tester', tier: 'paid' }));
     const key = await redisKeyStore.generateApiKey(testUser.id, 'Vault Key', {
       scopes: ['convert:write', 'convert:read', '*'],
     });

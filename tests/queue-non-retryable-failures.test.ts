@@ -119,7 +119,7 @@ describe('job status responses carry the typed failure', () => {
     const user = await userStore.createUser({
       name: 'Failure Reader',
       email: `failure_reader_${Date.now()}_${Math.random().toString(36).slice(2)}@queue.test`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const key = await redisKeyStore.generateApiKey(user.id, 'Failure key', { scopes: ['convert:read', 'convert:write'] });
     const data: ConversionJobData = {
@@ -161,7 +161,7 @@ describe('job status responses carry the typed failure', () => {
     const user = await userStore.createUser({
       name: 'End To End Reader',
       email: `e2e_reader_${Date.now()}_${Math.random().toString(36).slice(2)}@queue.test`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const key = await redisKeyStore.generateApiKey(user.id, 'E2E key', { scopes: ['convert:read', 'convert:write'] });
     const headers = { Authorization: `Bearer ${key.secretKey}` };

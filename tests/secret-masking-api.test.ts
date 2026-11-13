@@ -44,7 +44,7 @@ function expectNoSecrets(label: string, text: string): void {
 
 async function createUser(label: string): Promise<User> {
   const email = `${label}_${Date.now()}_${Math.random().toString(36).slice(2)}@mask.test`;
-  return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'pro' }));
+  return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'paid' }));
 }
 
 describe('job API responses', () => {

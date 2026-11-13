@@ -42,7 +42,7 @@ export function useFileTooLargeMessage(): (plan: Plan, sizeBytes: number) => str
       const size = facts.sizeInExactBytes ? t('exactBytes', { count: sizeBytes }) : formatBytes(sizeBytes);
       const limit = t('tooLarge', { size, limit: formatBytes(facts.limitBytes), plan: facts.plan });
       if (!facts.next) return limit;
-      return `${limit} ${t('nextPlanAllows', { plan: facts.next.plan, limit: formatBytes(facts.next.limitBytes) })}`;
+      return `${limit} ${t('nextPlanAllows', { limit: formatBytes(facts.next.limitBytes) })}`;
     },
     [t, formatBytes, paidPlansOnSale]
   );

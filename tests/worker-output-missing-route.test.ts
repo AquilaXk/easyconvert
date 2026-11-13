@@ -46,7 +46,7 @@ beforeEach(async () => {
   const user = await userStore.createUser({
     name: 'Output Missing Tester',
     email: `output_missing_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-    tier: 'pro',
+    tier: 'paid',
   });
   secretKey = (await redisKeyStore.generateApiKey(user.id, 'Output Missing Key', { scopes: ['convert:write'] })).secretKey;
 });

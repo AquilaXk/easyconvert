@@ -1,4 +1,5 @@
-export type UserTier = 'free' | 'basic' | 'pro' | 'enterprise';
+/** `paid` is an account with package credits or an entitling subscription (docs/policy-decisions.md, entry 285). */
+export type UserTier = 'free' | 'paid';
 
 export interface User {
   id: string;

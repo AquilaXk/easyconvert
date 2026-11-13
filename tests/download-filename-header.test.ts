@@ -71,7 +71,7 @@ afterEach(() => {
 });
 
 describe('POST /api/convert with a Korean file name', () => {
-  it('answers the DOCX with the name in filename* and charges one conversion', async () => {
+  it('answers the DOCX with the name in filename* and charges the 4 credits of a PDF converted to Word', async () => {
     const client = visitor();
     const before = await client.remaining();
 
@@ -80,7 +80,7 @@ describe('POST /api/convert with a Korean file name', () => {
     expect(res.status, await res.clone().text().then((t) => t.slice(0, 300))).toBe(HTTP_OK);
     expect(utf8FilenameOf(res.headers.get('content-disposition'))).toBe(`${KOREAN_STEM}.docx`);
     expect(Buffer.from(await res.arrayBuffer()).subarray(0, 2).toString('latin1')).toBe('PK');
-    expect(await client.remaining()).toBe(before - 1);
+    expect(await client.remaining()).toBe(before - 4);
   });
 
   it('answers a TypeError of the server as a 500 that charges nothing, not as a refusal of the file', async () => {
@@ -103,7 +103,7 @@ describe('POST /api/v1/convert?raw=true with a Korean file name', () => {
     const user = await userStore.createUser({
       name: 'Filename Tester',
       email: `filename_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Filename Key', { scopes: ['convert:write'] });
 

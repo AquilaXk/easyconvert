@@ -141,6 +141,12 @@ from .formats_response_categories_item import FormatsResponseCategoriesItem
 from .formats_response_formats_item import FormatsResponseFormatsItem
 from .get_formats_engine import GetFormatsEngine
 from .get_quota_usage_response_200 import GetQuotaUsageResponse200
+from .get_quota_usage_response_200_charges_item import (
+    GetQuotaUsageResponse200ChargesItem,
+)
+from .get_quota_usage_response_200_charges_item_kind import (
+    GetQuotaUsageResponse200ChargesItemKind,
+)
 from .get_webhook_dlq_entry_response_200 import GetWebhookDlqEntryResponse200
 from .image_type_of_watermark import ImageTypeOfWatermark
 from .inspect_archive_v1_files_body import InspectArchiveV1FilesBody
@@ -284,6 +290,7 @@ from .problem_details_invalid_params_item import ProblemDetailsInvalidParamsItem
 from .profile_of_optimize import ProfileOfOptimize
 from .quota_usage import QuotaUsage
 from .quota_usage_period import QuotaUsagePeriod
+from .quota_usage_tier import QuotaUsageTier
 from .range_ import Range
 from .replay_webhook_dlq_response_200 import ReplayWebhookDlqResponse200
 from .resampler_of_audio import ResamplerOfAudio
@@ -423,6 +430,8 @@ __all__ = (
     "FormatsResponseFormatsItem",
     "GetFormatsEngine",
     "GetQuotaUsageResponse200",
+    "GetQuotaUsageResponse200ChargesItem",
+    "GetQuotaUsageResponse200ChargesItemKind",
     "GetWebhookDlqEntryResponse200",
     "ImageTypeOfWatermark",
     "InspectArchiveV1FilesBody",
@@ -542,6 +551,7 @@ __all__ = (
     "ProfileOfOptimize",
     "QuotaUsage",
     "QuotaUsagePeriod",
+    "QuotaUsageTier",
     "Range",
     "ReplayWebhookDlqResponse200",
     "ResamplerOfAudio",

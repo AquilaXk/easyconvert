@@ -97,7 +97,8 @@ describe('an answer of /api/convert that cannot be built', () => {
     const retry = await post(client.headers, pdfForm());
 
     expect(retry.status).toBe(200);
-    expect(await client.remaining()).toBe(before - 1);
+    // A PDF converted to Word costs 4 credits, charged once for the retry that was answered.
+    expect(await client.remaining()).toBe(before - 4);
   });
 });
 

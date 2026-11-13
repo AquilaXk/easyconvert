@@ -529,8 +529,8 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       vi.stubGlobal('navigator', { storage: { getDirectory: async () => ({}) } });
       try {
         expect(getViewerMaxFileBytes()).toBe(PLAN_MAX_FILE_BYTES.anonymous);
-        setViewerPlan('pro');
-        expect(getViewerMaxFileBytes()).toBe(PLAN_MAX_FILE_BYTES.pro);
+        setViewerPlan('paid');
+        expect(getViewerMaxFileBytes()).toBe(PLAN_MAX_FILE_BYTES.paid);
       } finally {
         setViewerPlan('anonymous');
         vi.unstubAllGlobals();

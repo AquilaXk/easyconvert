@@ -42,7 +42,7 @@ describe('POST /api/convert', () => {
 
 describe('/api/queue/jobs', () => {
   it('shows the result of a finished job without the engine fields, in the list, the job view and the event stream', async () => {
-    const user = await userStore.createUser({ name: 'Engine details', email: `engine_details_${Date.now()}_${Math.random().toString(36).slice(2)}@test.com`, tier: 'pro' });
+    const user = await userStore.createUser({ name: 'Engine details', email: `engine_details_${Date.now()}_${Math.random().toString(36).slice(2)}@test.com`, tier: 'paid' });
     const cookie = { Cookie: `easyconvert_session=${createSessionToken(userStore.sanitizeUser(user))}` };
     const result: ConversionJobResult = {
       jobId: 'j',

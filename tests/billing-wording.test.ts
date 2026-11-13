@@ -27,9 +27,9 @@ describe('the wording of a billing refusal', () => {
 
   it('words a refusal by its code, with none of the English the route sent', () => {
     const refusal = { success: false, code: 'already_subscribed', error: 'This account already has a paid plan. Change or cancel it from the billing portal.' };
-    expect(worded('ko', refusal, 409)).toBe('이미 유료 요금제를 쓰고 있습니다. 구독 관리에서 변경하거나 해지할 수 있습니다.');
-    expect(worded('en', refusal, 409)).toBe('You already have a paid plan. Change or cancel it under Manage subscription.');
-    expect(worded('ko', { success: false, code: 'billing_unavailable', error: 'Paid plans are not available on this server.' }, 503)).toBe('유료 요금제는 아직 이용할 수 없습니다.');
+    expect(worded('ko', refusal, 409)).toBe('이미 같은 크기의 구독을 쓰고 있습니다. 다른 크기를 선택하거나 구독 관리에서 변경하거나 해지하세요.');
+    expect(worded('en', refusal, 409)).toBe('You already have a subscription of this size. Choose another size, or change or cancel it under Manage subscription.');
+    expect(worded('ko', { success: false, code: 'billing_unavailable', error: 'Paid plans are not available on this server.' }, 503)).toBe('크레딧은 아직 구매할 수 없습니다.');
   });
 
   it('falls back to the sentence of the action for an answer with no code it knows', () => {

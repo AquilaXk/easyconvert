@@ -19,7 +19,7 @@ const PUBLIC_WEBHOOK_URL = 'https://93.184.215.14/hooks/easyconvert';
 
 async function createUser(label: string): Promise<User> {
   const email = `${label}_${Date.now()}_${Math.random().toString(36).slice(2)}@dlq.test`;
-  return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'pro' }));
+  return userStore.sanitizeUser(await userStore.createUser({ email, name: label, tier: 'paid' }));
 }
 
 function sessionRequest(user: User, pathName: string, method = 'GET'): NextRequest {

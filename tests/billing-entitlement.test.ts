@@ -12,7 +12,7 @@ function record(overrides: Partial<SubscriptionRecord> = {}): SubscriptionRecord
     providerSubscriptionId: 'sub_1',
     providerCustomerId: 'ctm_1',
     status: 'active',
-    plan: 'pro',
+    credits: 1000,
     currentPeriodEnd: NOW + 20 * DAY,
     eventAt: NOW,
     ...overrides,
@@ -21,19 +21,19 @@ function record(overrides: Partial<SubscriptionRecord> = {}): SubscriptionRecord
 
 describe('entitlementOf', () => {
   it('gives the plan of an active or trialing subscription with no end', () => {
-    expect(entitlementOf(record(), NOW)).toEqual({ tier: 'pro' });
-    expect(entitlementOf(record({ status: 'trialing', plan: 'enterprise' }), NOW)).toEqual({ tier: 'enterprise' });
+    expect(entitlementOf(record(), NOW)).toEqual({ tier: 'paid' });
+    expect(entitlementOf(record({ status: 'trialing', credits: 2500 }), NOW)).toEqual({ tier: 'paid' });
   });
 
   it('keeps the plan until the end of a scheduled cancellation and then gives free', () => {
     const cancelAt = NOW + 3 * DAY;
-    expect(entitlementOf(record({ cancelAt }), NOW)).toEqual({ tier: 'pro', until: cancelAt });
+    expect(entitlementOf(record({ cancelAt }), NOW)).toEqual({ tier: 'paid', until: cancelAt });
     expect(entitlementOf(record({ cancelAt }), cancelAt)).toEqual({ tier: 'free' });
   });
 
   it('keeps a past-due plan until the paid period ends, never past it', () => {
     const currentPeriodEnd = NOW + DAY;
-    expect(entitlementOf(record({ status: 'past_due', currentPeriodEnd }), NOW)).toEqual({ tier: 'pro', until: currentPeriodEnd });
+    expect(entitlementOf(record({ status: 'past_due', currentPeriodEnd }), NOW)).toEqual({ tier: 'paid', until: currentPeriodEnd });
     expect(entitlementOf(record({ status: 'past_due', currentPeriodEnd: NOW - 1 }), NOW)).toEqual({ tier: 'free' });
     expect(entitlementOf(record({ status: 'past_due', currentPeriodEnd: undefined }), NOW)).toEqual({ tier: 'free' });
   });

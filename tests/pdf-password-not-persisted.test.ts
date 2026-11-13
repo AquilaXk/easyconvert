@@ -39,7 +39,7 @@ async function apiKeyHeaders(): Promise<Record<string, string>> {
   const user = await userStore.createUser({
     name: 'Password Canary Tester',
     email: `canary_${Date.now()}_${counter}@easyconvert.local`,
-    tier: 'pro',
+    tier: 'paid',
   });
   const key = await redisKeyStore.generateApiKey(user.id, 'Canary key', { scopes: ['convert:write', 'convert:read'] });
   return { Authorization: `Bearer ${key.secretKey}` };

@@ -409,13 +409,13 @@ describe('a job queued without a timeout gets the maximum of its owner tier', ()
     const pro = await redisUserStore.createUser({
       email: `legacy_${Date.now()}_${Math.random().toString(36).slice(2, 8)}@deadline.test`,
       name: 'Legacy Pro',
-      tier: 'pro',
+      tier: 'paid',
       provider: 'email',
       passwordHash: 'h',
       salt: 's',
     });
     const forOwner = (userId?: string) => legacyJobTimeoutMs({ data: jobData('x', { userId }) } as never);
-    expect(await forOwner(pro.id)).toBe(1_800_000);
+    expect(await forOwner(pro.id)).toBe(3_600_000);
     expect(await forOwner('anon:1.2.3.4')).toBe(300_000);
     expect(await forOwner('nobody')).toBe(300_000);
     expect(await forOwner(undefined)).toBe(300_000);

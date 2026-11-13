@@ -42,12 +42,16 @@ interface Account {
   key: string;
 }
 
-async function account(tier: 'free' | 'basic' | 'pro'): Promise<Account> {
+/** The credits a paid account is given, enough for every conversion a test holds in flight. */
+const PAID_TEST_CREDITS = 500;
+
+async function account(tier: 'free' | 'paid'): Promise<Account> {
   const user = await userStore.createUser({
     email: `conc_${tier}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@concurrency.test`,
     name: `Concurrency ${tier}`,
     tier,
   });
+  if (tier === 'paid') await redisKeyStore.creditPackage(user.id, { transactionId: `txn_${user.id}`, credits: PAID_TEST_CREDITS, paid: '0', at: Date.now() });
   const key = await redisKeyStore.generateApiKey(user.id, 'Concurrency Key', { scopes: ['convert:write', 'convert:read'] });
   return { id: user.id, key: key.secretKey };
 }
@@ -118,7 +122,7 @@ afterEach(() => {
 describe('the setting', () => {
   it('is one documented configuration variable for each tier, with the defaults of QA\'s plan table', () => {
     expect(DEFAULT_FREE_CONCURRENCY).toBe(LIMIT);
-    const defaults = { free: 5, basic: 10, pro: 25, enterprise: 50 } as const;
+    const defaults = { free: 5, paid: 25 } as const;
     for (const [tier, name] of Object.entries(CONCURRENCY_LIMIT_ENV)) {
       const spec = CONFIG_SCHEMA.find((entry) => entry.name === name);
       expect(spec?.default).toBe(defaults[tier as keyof typeof defaults]);
@@ -131,19 +135,18 @@ describe('the setting', () => {
     expect(concurrencyLimitFor('free')).toBe(LIMIT);
     expect(concurrencyLimitFor(undefined)).toBe(LIMIT);
     expect(concurrencyLimitFor('unknown-tier')).toBe(LIMIT);
-    expect(concurrencyLimitFor('basic')).toBe(10);
-    expect(concurrencyLimitFor('pro')).toBe(25);
-    expect(concurrencyLimitFor('ENTERPRISE')).toBe(50);
+    expect(concurrencyLimitFor('paid')).toBe(25);
+    expect(concurrencyLimitFor('PAID')).toBe(25);
+    expect(concurrencyLimitFor('pro')).toBe(LIMIT);
     vi.stubEnv(CONCURRENCY_LIMIT_ENV.free, '2');
-    vi.stubEnv(CONCURRENCY_LIMIT_ENV.pro, '30');
+    vi.stubEnv(CONCURRENCY_LIMIT_ENV.paid, '30');
     expect(concurrencyLimitFor('free')).toBe(2);
-    expect(concurrencyLimitFor('pro')).toBe(30);
-    expect(concurrencyLimitFor('basic')).toBe(10);
+    expect(concurrencyLimitFor('paid')).toBe(30);
   });
 
   it.each(['0', '-1', 'five', '2.5'])('refuses the malformed value %j instead of using the default', (value) => {
-    vi.stubEnv(CONCURRENCY_LIMIT_ENV.basic, value);
-    expect(() => concurrencyLimitFor('basic')).toThrow(CONCURRENCY_LIMIT_ENV.basic);
+    vi.stubEnv(CONCURRENCY_LIMIT_ENV.paid, value);
+    expect(() => concurrencyLimitFor('paid')).toThrow(CONCURRENCY_LIMIT_ENV.paid);
   });
 });
 
@@ -191,15 +194,15 @@ describe.each([
     expect((await next).status).toBe(200);
   });
 
-  it('counts a free API-key caller on its own, apart from other callers, and gives a pro caller a larger limit', async () => {
+  it('counts a free API-key caller on its own, apart from other callers, and gives a paid caller a larger limit', async () => {
     const free = await account('free');
-    const pro = await account('pro');
+    const paid = await account('paid');
     const held = holdConversions();
     const freeFlight = Array.from({ length: LIMIT }, () => route(request(path, form(), free.key)));
     await held.untilStarted(LIMIT);
 
     expect((await route(request(path, form(), free.key))).status).toBe(HTTP_TOO_MANY);
-    const proFlight = Array.from({ length: LIMIT + 1 }, () => route(request(path, form(), pro.key)));
+    const proFlight = Array.from({ length: LIMIT + 1 }, () => route(request(path, form(), paid.key)));
     await held.untilStarted(LIMIT + LIMIT + 1);
 
     held.releaseAll();
@@ -207,14 +210,14 @@ describe.each([
     expect(answers.every((res) => res.status === 200)).toBe(true);
   });
 
-  it('holds a basic caller to ten conversions at once and refuses the eleventh', async () => {
-    const basic = await account('basic');
+  it('holds a paid caller to 25 conversions at once and refuses the 26th', async () => {
+    const paid = await account('paid');
     const held = holdConversions();
-    const inFlight = Array.from({ length: 10 }, () => route(request(path, form(), basic.key)));
-    await held.untilStarted(10);
-    const refused = await route(request(path, form(), basic.key));
+    const inFlight = Array.from({ length: 25 }, () => route(request(path, form(), paid.key)));
+    await held.untilStarted(25);
+    const refused = await route(request(path, form(), paid.key));
     expect(refused.status).toBe(HTTP_TOO_MANY);
-    expect((await refused.json()).limit).toBe(10);
+    expect((await refused.json()).limit).toBe(25);
     held.releaseAll();
     expect((await Promise.all(inFlight)).every((res) => res.status === 200)).toBe(true);
   });
@@ -272,19 +275,22 @@ describe('queued jobs count as in flight', () => {
     expect(again.status).toBe(accepted);
   });
 
-  it.each(submissions)('%s gives a basic caller ten jobs and a pro caller more, and refuses the eleventh job of a basic caller', async (_label, path, route, accepted) => {
-    const basic = await account('basic');
-    const pro = await account('pro');
+  it.each(submissions)('%s gives a free caller five jobs and a paid caller 25, and refuses the next job of each', async (_label, path, route, accepted) => {
+    const free = await account('free');
+    const paid = await account('paid');
     const body = { filename: 'scores.csv', targetFormat: 'json', inputBufferBase64: Buffer.from(CSV_INPUT).toString('base64') };
-    for (let i = 0; i < 10; i++) {
-      expect((await route(jsonRequest(path, basic.key, body))).status).toBe(accepted);
+    for (let i = 0; i < LIMIT; i++) {
+      expect((await route(jsonRequest(path, free.key, body))).status).toBe(accepted);
     }
-    const eleventh = await route(jsonRequest(path, basic.key, body));
-    expect(eleventh.status).toBe(HTTP_TOO_MANY);
-    expect((await eleventh.json()).type).toBe(CONCURRENCY_LIMIT_PROBLEM_TYPE);
-    for (let i = 0; i < 11; i++) {
-      expect((await route(jsonRequest(path, pro.key, body))).status).toBe(accepted);
+    const sixth = await route(jsonRequest(path, free.key, body));
+    expect(sixth.status).toBe(HTTP_TOO_MANY);
+    expect((await sixth.json()).type).toBe(CONCURRENCY_LIMIT_PROBLEM_TYPE);
+    for (let i = 0; i < 25; i++) {
+      expect((await route(jsonRequest(path, paid.key, body))).status).toBe(accepted);
     }
+    const next = await route(jsonRequest(path, paid.key, body));
+    expect(next.status).toBe(HTTP_TOO_MANY);
+    expect((await next.json()).type).toBe(CONCURRENCY_LIMIT_PROBLEM_TYPE);
   });
 
   it('counts the jobs of a caller together with its synchronous conversions', async () => {

@@ -49,7 +49,7 @@ async function apiKeyHeaders(): Promise<Record<string, string>> {
   const user = await userStore.createUser({
     name: 'Encrypted Route Tester',
     email: `encrypted_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-    tier: 'pro',
+    tier: 'paid',
   });
   const key = await redisKeyStore.generateApiKey(user.id, 'Encrypted key', { scopes: ['convert:write', 'convert:read'] });
   return { Authorization: `Bearer ${key.secretKey}` };
@@ -104,7 +104,7 @@ describe('an encrypted document fails a job once, with status 422', () => {
     const user = await userStore.createUser({
       name: 'Encrypted Job Tester',
       email: `encrypted_job_${Date.now()}_${Math.random().toString(36).slice(2)}@queue.test`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const key = await redisKeyStore.generateApiKey(user.id, 'Encrypted job key', { scopes: ['convert:read', 'convert:write'] });
     const readHeaders = { Authorization: `Bearer ${key.secretKey}` };

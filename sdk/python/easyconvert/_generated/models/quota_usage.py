@@ -8,6 +8,7 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..models.quota_usage_period import QuotaUsagePeriod
+from ..models.quota_usage_tier import QuotaUsageTier
 from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="QuotaUsage")
@@ -17,26 +18,33 @@ T = TypeVar("T", bound="QuotaUsage")
 class QuotaUsage:
     """
     Attributes:
-        tier (str | Unset):  Example: pro.
-        period (QuotaUsagePeriod | Unset): How long conversions are counted before the count starts again: a UTC day for
-            anonymous callers and the free plan, the month of the subscription for a paid plan.
-        daily_limit (int | Unset): Conversions the tier allows in the period, whichever it is. Example: 3000.
-        used_today (int | Unset): Conversions counted in the current period, whichever it is. Example: 42.
-        remaining (int | Unset):  Example: 2958.
-        reset_at (float | Unset): Unix timestamp in milliseconds when the count starts again: midnight UTC for a day,
-            the next renewal of the subscription for a month.
+        tier (QuotaUsageTier | Unset):  Example: paid.
+        period (QuotaUsagePeriod | Unset): How long the credits of the window are counted before the count starts again:
+            a UTC day for anonymous callers and the free plan, the billing period of a subscription.
+        daily_limit (int | Unset): Credits the window gives, whichever the period is: 10 for the free plan, the credits
+            of a subscription for its period. The name is kept from before credits. Example: 1000.
+        used_today (int | Unset): Credits counted in the current window, whichever the period is. Example: 42.
+        remaining (int | Unset): Credits the account can spend now: what is left of the window plus the package credits.
+            Example: 1208.
+        package_credits (int | Unset): Credits of packages the account holds. They never expire while the account exists
+            and are spent after the credits of the window. Example: 250.
+        reset_at (float | Unset): Unix timestamp in milliseconds when the count of the window starts again: midnight UTC
+            for a day, the next renewal of the subscription for a period. Package credits do not reset.
     """
 
-    tier: str | Unset = UNSET
+    tier: QuotaUsageTier | Unset = UNSET
     period: QuotaUsagePeriod | Unset = UNSET
     daily_limit: int | Unset = UNSET
     used_today: int | Unset = UNSET
     remaining: int | Unset = UNSET
+    package_credits: int | Unset = UNSET
     reset_at: float | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        tier = self.tier
+        tier: str | Unset = UNSET
+        if not isinstance(self.tier, Unset):
+            tier = self.tier.value
 
         period: str | Unset = UNSET
         if not isinstance(self.period, Unset):
@@ -47,6 +55,8 @@ class QuotaUsage:
         used_today = self.used_today
 
         remaining = self.remaining
+
+        package_credits = self.package_credits
 
         reset_at = self.reset_at
 
@@ -63,6 +73,8 @@ class QuotaUsage:
             field_dict["usedToday"] = used_today
         if remaining is not UNSET:
             field_dict["remaining"] = remaining
+        if package_credits is not UNSET:
+            field_dict["packageCredits"] = package_credits
         if reset_at is not UNSET:
             field_dict["resetAt"] = reset_at
 
@@ -71,7 +83,12 @@ class QuotaUsage:
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         d = dict(src_dict)
-        tier = d.pop("tier", UNSET)
+        _tier = d.pop("tier", UNSET)
+        tier: QuotaUsageTier | Unset
+        if isinstance(_tier, Unset):
+            tier = UNSET
+        else:
+            tier = QuotaUsageTier(_tier)
 
         _period = d.pop("period", UNSET)
         period: QuotaUsagePeriod | Unset
@@ -86,6 +103,8 @@ class QuotaUsage:
 
         remaining = d.pop("remaining", UNSET)
 
+        package_credits = d.pop("packageCredits", UNSET)
+
         reset_at = d.pop("resetAt", UNSET)
 
         quota_usage = cls(
@@ -94,6 +113,7 @@ class QuotaUsage:
             daily_limit=daily_limit,
             used_today=used_today,
             remaining=remaining,
+            package_credits=package_credits,
             reset_at=reset_at,
         )
 

@@ -235,7 +235,7 @@ describe('API answers 413 for an image over the input limit', () => {
     const user = await userStore.createUser({
       name: 'Pixel Limit Tester',
       email: `pixel_limit_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const key = await redisKeyStore.generateApiKey(user.id, 'Pixel Limit Key', { scopes: ['convert:write', 'convert:read'] });
     secretKey = key.secretKey;

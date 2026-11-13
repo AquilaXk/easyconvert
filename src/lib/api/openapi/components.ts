@@ -206,12 +206,13 @@ export const components = {
     QuotaUsage: {
       type: 'object',
       properties: {
-        tier: { type: 'string', example: 'pro' },
-        period: { type: 'string', enum: ['day', 'month'], description: 'How long conversions are counted before the count starts again: a UTC day for anonymous callers and the free plan, the month of the subscription for a paid plan.' },
-        dailyLimit: { type: 'integer', example: 3000, description: 'Conversions the tier allows in the period, whichever it is.' },
-        usedToday: { type: 'integer', example: 42, description: 'Conversions counted in the current period, whichever it is.' },
-        remaining: { type: 'integer', example: 2958 },
-        resetAt: { type: 'number', description: 'Unix timestamp in milliseconds when the count starts again: midnight UTC for a day, the next renewal of the subscription for a month.' },
+        tier: { type: 'string', enum: ['free', 'paid'], example: 'paid' },
+        period: { type: 'string', enum: ['day', 'month'], description: 'How long the credits of the window are counted before the count starts again: a UTC day for anonymous callers and the free plan, the billing period of a subscription.' },
+        dailyLimit: { type: 'integer', example: 1000, description: 'Credits the window gives, whichever the period is: 10 for the free plan, the credits of a subscription for its period. The name is kept from before credits.' },
+        usedToday: { type: 'integer', example: 42, description: 'Credits counted in the current window, whichever the period is.' },
+        remaining: { type: 'integer', example: 1208, description: 'Credits the account can spend now: what is left of the window plus the package credits.' },
+        packageCredits: { type: 'integer', example: 250, description: 'Credits of packages the account holds. They never expire while the account exists and are spent after the credits of the window.' },
+        resetAt: { type: 'number', description: 'Unix timestamp in milliseconds when the count of the window starts again: midnight UTC for a day, the next renewal of the subscription for a period. Package credits do not reset.' },
       },
     },
     WebhookSecretRotateRequest: {

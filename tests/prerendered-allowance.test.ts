@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CREDITS } from '../src/lib/plan-limits';
 
 vi.mock('next-intl/server', async (importOriginal) => ({
   ...(await importOriginal<typeof import('next-intl/server')>()),
@@ -38,6 +38,6 @@ describe('the allowance a page states', () => {
     expect(dailyLimitOf(await render())).toBe(30);
 
     vi.stubEnv('ANONYMOUS_DAILY_LIMIT', '');
-    expect(dailyLimitOf(await render())).toBe(ANONYMOUS_DAILY_CONVERSIONS);
+    expect(dailyLimitOf(await render())).toBe(ANONYMOUS_DAILY_CREDITS);
   });
 });

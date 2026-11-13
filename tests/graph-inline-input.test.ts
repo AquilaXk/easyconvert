@@ -27,7 +27,7 @@ afterEach(async () => {
 
 async function apiKey(): Promise<string> {
   const email = `inline_${Date.now()}_${Math.random().toString(36).slice(2)}@inline.test`;
-  const user = await userStore.createUser({ email, name: 'inline', tier: 'pro' });
+  const user = await userStore.createUser({ email, name: 'inline', tier: 'paid' });
   const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'inline', { scopes: ['convert:write'] });
   return secretKey;
 }

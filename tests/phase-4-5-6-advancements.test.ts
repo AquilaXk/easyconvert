@@ -19,7 +19,7 @@ import { POST as jobsPostHandler, GET as jobsGetHandler } from '../src/app/api/v
 import { GET as jobDetailHandler } from '../src/app/api/v1/jobs/[id]/route';
 import { GET as openApiHandler } from '../src/app/api/openapi.json/route';
 import { NextRequest } from 'next/server';
-import { TIER_LIMITS } from '../src/lib/plan-limits';
+import { FREE_DAILY_CREDITS } from '../src/lib/plan-limits';
 
 describe('Phase 4, 5, 6 Enterprise Advancements', () => {
   beforeEach(() => {
@@ -329,13 +329,13 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
 
       const quotaAfterReserve = await redisKeyStore.getQuotaUsage(user.id);
       expect(quotaAfterReserve.usedToday).toBe(1);
-      expect(quotaAfterReserve.remaining).toBe(TIER_LIMITS.free - 1);
+      expect(quotaAfterReserve.remaining).toBe(FREE_DAILY_CREDITS - 1);
 
       // Step 2: Rollback the reservation (simulating aborted conversion)
       await redisKeyStore.rollbackQuota(res1.reservationId!);
       const quotaAfterRollback = await redisKeyStore.getQuotaUsage(user.id);
       expect(quotaAfterRollback.usedToday).toBe(0);
-      expect(quotaAfterRollback.remaining).toBe(TIER_LIMITS.free);
+      expect(quotaAfterRollback.remaining).toBe(FREE_DAILY_CREDITS);
 
       // Step 3: Reserve and commit (simulating successful conversion)
       const res2 = await redisKeyStore.reserveQuota(user.id, 1);
@@ -344,7 +344,7 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
 
       const quotaAfterCommit = await redisKeyStore.getQuotaUsage(user.id);
       expect(quotaAfterCommit.usedToday).toBe(1);
-      expect(quotaAfterCommit.remaining).toBe(TIER_LIMITS.free - 1);
+      expect(quotaAfterCommit.remaining).toBe(FREE_DAILY_CREDITS - 1);
     });
 
     it('WebhookDispatcher signs and verifies HMAC-SHA256 signatures with replay protection', () => {
@@ -488,7 +488,7 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
       const userB = await userStore.createUser({
         email: 'user-b@example.com',
         name: 'User B',
-        tier: 'enterprise', // Even enterprise tier cannot inspect other users' jobs
+        tier: 'paid', // Even enterprise tier cannot inspect other users' jobs
       });
 
       const { secretKey: keyA } = await redisKeyStore.generateApiKey(userA.id, 'Key A');

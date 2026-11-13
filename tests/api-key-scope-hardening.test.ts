@@ -18,7 +18,7 @@ const CSV_FIXTURE = 'name,role\nAlice,Engineer\nBob,Designer';
 
 async function createUser(label: string) {
   const email = `${label}_${Date.now()}_${Math.random().toString(36).slice(2)}@scope.test`;
-  const record = await userStore.createUser({ email, name: label, tier: 'pro' });
+  const record = await userStore.createUser({ email, name: label, tier: 'paid' });
   return userStore.sanitizeUser(record);
 }
 
@@ -169,12 +169,16 @@ describe('API key scope hardening (#242)', () => {
     });
 
     it('GET /api/keys/usage stays available to any authenticated key', async () => {
+      await redisKeyStore.creditPackage(userId, { transactionId: `txn_${userId}`, credits: 3000, paid: '0', at: Date.now() });
       const readKey = await createKey(userId, ['convert:read']);
       const res = await keyUsageRoute(bearer('/api/keys/usage', readKey.secretKey));
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.usage.tier).toBe('pro');
-      expect(body.usage.dailyLimit).toBe(3000);
+      // The account holds a package, so it is paid and has the free day's 10 credits and the package beside them.
+      expect(body.usage.tier).toBe('paid');
+      expect(body.usage.dailyLimit).toBe(10);
+      expect(body.usage.packageCredits).toBe(3000);
+      expect(body.usage.remaining).toBe(3010);
     });
   });
 

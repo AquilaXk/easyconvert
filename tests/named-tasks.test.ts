@@ -106,20 +106,20 @@ describe('the names of the tasks', () => {
     const errors = namedTaskNameErrors(names, 'free', ['dup']);
     expect(errors.map((e) => e.code)).toEqual(['GRAPH_NODE_LIMIT_EXCEEDED']);
     expect(namedTaskNameErrors(names.slice(0, 8).map((_, i) => `t${i}`), 'free')).toEqual([]);
-    expect(namedTaskNameErrors(Array.from({ length: 9 }, (_, i) => `t${i}`), 'pro')).toEqual([]);
-    expect(namedTaskNameErrors(Array.from({ length: 33 }, (_, i) => `t${i}`), 'enterprise').map((e) => e.code)).toEqual(['GRAPH_NODE_LIMIT_EXCEEDED']);
+    expect(namedTaskNameErrors(Array.from({ length: 9 }, (_, i) => `t${i}`), 'paid')).toEqual([]);
+    expect(namedTaskNameErrors(Array.from({ length: 33 }, (_, i) => `t${i}`), 'paid').map((e) => e.code)).toEqual(['GRAPH_NODE_LIMIT_EXCEEDED']);
   });
 
   it.each(['Convert-1', '1convert', 'convert 1', 'convert.1', '', '_x', `a${'b'.repeat(64)}`, 'ünï'])('refuses the name %j', (name) => {
-    expect(namedTaskNameErrors([name], 'pro').map((e) => e.code)).toEqual(['INVALID_NODE_ID']);
+    expect(namedTaskNameErrors([name], 'paid').map((e) => e.code)).toEqual(['INVALID_NODE_ID']);
   });
 
   it.each(['a', 'import-1', 'convert_2', `a${'b'.repeat(63)}`])('accepts the name %j', (name) => {
-    expect(namedTaskNameErrors([name], 'pro')).toEqual([]);
+    expect(namedTaskNameErrors([name], 'paid')).toEqual([]);
   });
 
   it('names a repeated name as a duplicate', () => {
-    expect(namedTaskNameErrors(['a', 'b'], 'pro', ['a'])).toEqual([expect.objectContaining({ code: 'DUPLICATE_TASK_NAME', path: 'tasks.a' })]);
+    expect(namedTaskNameErrors(['a', 'b'], 'paid', ['a'])).toEqual([expect.objectContaining({ code: 'DUPLICATE_TASK_NAME', path: 'tasks.a' })]);
   });
 });
 
@@ -127,7 +127,7 @@ describe('the refusal of a task graph is typed by its cause and worded in both l
   const typeOf = (tasks: NamedTaskMap) => {
     const result = namedTasksToJobGraph(tasks);
     if (!result.ok) return namedTaskRefusal(result.errors);
-    const verdict = validateJobGraph(result.graph as never, { userTier: 'pro' });
+    const verdict = validateJobGraph(result.graph as never, { userTier: 'paid' });
     if (verdict.valid) throw new Error('valid');
     return namedTaskRefusal(verdict.errors);
   };
@@ -154,9 +154,9 @@ describe('the refusal of a task graph is typed by its cause and worded in both l
   });
 
   it('a name that cannot be used, a repeated name and too many tasks', () => {
-    expect(namedTaskRefusal(namedTaskNameErrors(['Bad'], 'pro')).type).toBe(`${PROBLEM}task-name-invalid`);
-    expect(namedTaskRefusal(namedTaskNameErrors(['a'], 'pro', ['a'])).type).toBe(`${PROBLEM}task-name-duplicate`);
-    expect(namedTaskRefusal(namedTaskNameErrors(Array.from({ length: 40 }, (_, i) => `t${i}`), 'pro')).type).toBe(`${PROBLEM}task-count-exceeded`);
+    expect(namedTaskRefusal(namedTaskNameErrors(['Bad'], 'paid')).type).toBe(`${PROBLEM}task-name-invalid`);
+    expect(namedTaskRefusal(namedTaskNameErrors(['a'], 'paid', ['a'])).type).toBe(`${PROBLEM}task-name-duplicate`);
+    expect(namedTaskRefusal(namedTaskNameErrors(Array.from({ length: 40 }, (_, i) => `t${i}`), 'paid')).type).toBe(`${PROBLEM}task-count-exceeded`);
   });
 
   it('any other fault of the tasks is the generic problem, with the task in its path', () => {

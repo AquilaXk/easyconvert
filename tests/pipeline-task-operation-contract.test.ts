@@ -68,7 +68,7 @@ describe('PipelineTask operation contract', () => {
 describe('POST /api/v1/jobs with an untranslatable task operation', () => {
   it('answers 422 with the schema problem before reserving quota', async () => {
     const email = `ops_${Date.now()}_${Math.random().toString(36).slice(2)}@ops.test`;
-    const user = await userStore.createUser({ email, name: 'ops', tier: 'pro' });
+    const user = await userStore.createUser({ email, name: 'ops', tier: 'paid' });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'ops', { scopes: ['convert:write'] });
     const usedBefore = (await redisKeyStore.getQuotaUsage(user.id)).usedToday;
 

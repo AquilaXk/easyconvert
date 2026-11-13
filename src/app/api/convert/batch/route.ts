@@ -19,6 +19,7 @@ import {
   WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
+import { baseCredits } from '@/lib/billing/credits';
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import type { User } from '@/lib/auth/types';
@@ -165,7 +166,7 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('conve
       );
     }
 
-    const unit = await reserveConversionUnit(auth.user, planned.length);
+    const unit = await reserveConversionUnit(auth.user, plannedCredits(planned));
     if (!unit.reserved) return conversionRefusalResponse(unit.refusal, instanceUri);
     const caller = auth.user;
     return await withReservedUnit(unit.reservationId, (reserved) =>
@@ -221,9 +222,15 @@ interface PlannedFile {
   targetFormat: string;
 }
 
+/** The credits a batch reserves: the cost of the class of each planned file. */
+function plannedCredits(planned: readonly PlannedFile[]): number {
+  return planned.reduce((total, item) => total + baseCredits(item.extension, item.targetFormat), 0);
+}
+
 /**
- * Converts the planned files under one deadline and answers the archive of the converted ones. The batch is charged one
- * conversion for each file in the archive; a file of an unknown format was never planned, so it reserved nothing.
+ * Converts the planned files under one deadline and answers the archive of the converted ones. The batch is charged the credits of
+ * the class of each file in the archive, and the minutes each file ran beyond the first; a file of an unknown format was never
+ * planned, so it reserved nothing.
  */
 async function convertPlanned(
   req: NextRequest,
@@ -251,6 +258,7 @@ async function convertPlanned(
 
   const convertedFiles: { filename: string; buffer: Buffer }[] = [];
   const usedNames = new Set<string>();
+  const processingMs: number[] = [];
 
   // Nothing to convert needs no deadline, and the route answers it below.
   await runUnderDeadline(req, Math.max(batchDeadlineMs, 1), async (limits) => {
@@ -262,6 +270,7 @@ async function convertPlanned(
 
         assertNotSpoofedFile(inputBuffer, extension, file.name);
 
+        const startedAt = Date.now();
         const result = await dispatchConversion(
           inputBuffer,
           extension,
@@ -269,6 +278,7 @@ async function convertPlanned(
           bindJobLimits(defaultOptions, limits),
           file.name
         );
+        processingMs.push(Date.now() - startedAt);
 
         let finalName = result.filename;
         let counter = 1;
@@ -300,7 +310,7 @@ async function convertPlanned(
   const zipResult = await createZipArchive(convertedFiles, defaultOptions, 'easyconvert_batch.zip');
 
   // Every planned file was converted: a file that fails ends the batch, so the reserved units are what it used.
-  await unit.commit();
+  await unit.commit({ kind: 'batch', base: plannedCredits(planned), processingMs });
 
   return new NextResponse(new Uint8Array(zipResult.buffer), {
     status: 200,

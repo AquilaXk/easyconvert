@@ -29,7 +29,7 @@ let apiKey = '';
 
 beforeEach(async () => {
   const email = `options_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@options-object.test`;
-  const user = await userStore.createUser({ email, name: 'Options Tester', tier: 'pro' });
+  const user = await userStore.createUser({ email, name: 'Options Tester', tier: 'paid' });
   apiKey = (await redisKeyStore.generateApiKey(user.id, 'Options Test Key', { scopes: ['convert:write', 'convert:read'] })).secretKey;
 });
 

@@ -21,7 +21,7 @@ let other: User;
 let cookie: Record<string, string>;
 
 async function account(label: string): Promise<User> {
-  return userStore.sanitizeUser(await userStore.createUser({ name: label, email: `${label}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@graph-lists.test`, tier: 'pro' }));
+  return userStore.sanitizeUser(await userStore.createUser({ name: label, email: `${label}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@graph-lists.test`, tier: 'paid' }));
 }
 
 beforeEach(async () => {
@@ -46,7 +46,7 @@ async function plainJob(name: string) {
     'convert',
     { jobId: '', originalFilename: name, sourceFormat: 'csv', targetFormat: 'json', fileSize: 4, options: {}, userId: user.id },
     { attempts: 1 },
-    { tier: 'pro', inputBytes: 4 }
+    { tier: 'paid', inputBytes: 4 }
   );
 }
 

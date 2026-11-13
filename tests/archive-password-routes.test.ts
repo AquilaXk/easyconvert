@@ -63,7 +63,7 @@ async function apiKeyHeaders(): Promise<Record<string, string>> {
   const user = await userStore.createUser({
     name: 'Archive Password Route Tester',
     email: `archive_password_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-    tier: 'pro',
+    tier: 'paid',
   });
   const key = await redisKeyStore.generateApiKey(user.id, 'Archive password key', { scopes: ['convert:write', 'convert:read'] });
   return { Authorization: `Bearer ${key.secretKey}` };

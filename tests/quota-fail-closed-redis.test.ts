@@ -13,7 +13,7 @@ import { POST as convertHandler } from '../src/app/api/convert/route';
 import { POST as multipartHandler } from '../src/app/api/storage/multipart/route';
 import { POST as queueJobsHandler } from '../src/app/api/queue/jobs/route';
 import { s3Storage } from '../src/lib/storage/s3-storage';
-import { ANONYMOUS_DAILY_CONVERSIONS, PLAN_MAX_FILE_BYTES, TIER_LIMITS } from '../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CREDITS, FREE_DAILY_CREDITS, PLAN_MAX_FILE_BYTES } from '../src/lib/plan-limits';
 
 describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware', () => {
   beforeEach(() => {
@@ -101,9 +101,9 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
       const store = new RedisKeyStore({ isolated: true });
       const withinLimit = await store.deductQuota('local-user-1', 5);
       expect(withinLimit.allowed).toBe(true);
-      expect(withinLimit.remaining).toBe(TIER_LIMITS.free - 5);
+      expect(withinLimit.remaining).toBe(FREE_DAILY_CREDITS - 5);
 
-      const exactBoundary = await store.deductQuota('local-user-1', TIER_LIMITS.free - 5);
+      const exactBoundary = await store.deductQuota('local-user-1', FREE_DAILY_CREDITS - 5);
       expect(exactBoundary.allowed).toBe(true);
       expect(exactBoundary.remaining).toBe(0);
 
@@ -142,7 +142,7 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
       const original = process.env.ANONYMOUS_DAILY_LIMIT;
       try {
         delete process.env.ANONYMOUS_DAILY_LIMIT;
-        expect(getAnonymousDailyLimit()).toBe(ANONYMOUS_DAILY_CONVERSIONS);
+        expect(getAnonymousDailyLimit()).toBe(ANONYMOUS_DAILY_CREDITS);
       } finally {
         if (original) process.env.ANONYMOUS_DAILY_LIMIT = original;
       }

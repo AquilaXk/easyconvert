@@ -68,7 +68,7 @@ describe('a tus upload to an object store whose record cannot be written', () =>
     const { serializeTusMetadata } = await import('../src/lib/storage/tus-engine');
     const { POST, PATCH, HEAD } = await import('../src/app/api/v1/uploads/[[...id]]/route');
     const email = `tus_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@tus-remote.local`;
-    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'tus', tier: 'pro' }));
+    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'tus', tier: 'paid' }));
     const headers = { 'Tus-Resumable': '1.0.0', Cookie: `easyconvert_session=${createSessionToken(user)}` };
     const created = await POST(
       new NextRequest(`${BASE_URL}/api/v1/uploads/tus`, {

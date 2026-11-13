@@ -7,7 +7,7 @@ import { create7zArchiveAsync, createTarArchive } from '../src/lib/conversions';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
-import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CREDITS } from '../src/lib/plan-limits';
 import { MAX_EXTRACTED_BYTES } from '../src/lib/tools/tool-names';
 
 /**
@@ -81,7 +81,7 @@ beforeEach(() => {
   redisKeyStore.setRedisClient(null);
   redisUserStore.setRedisClient(null);
   vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
-  vi.stubEnv('ANONYMOUS_DAILY_LIMIT', String(ANONYMOUS_DAILY_CONVERSIONS));
+  vi.stubEnv('ANONYMOUS_DAILY_LIMIT', String(ANONYMOUS_DAILY_CREDITS));
   redisKeyStore.resetStore();
 });
 

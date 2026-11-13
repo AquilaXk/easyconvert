@@ -4,7 +4,8 @@ import { signJwt, verifyJwt } from '../src/lib/auth/jwt';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken, createSessionCookie, clearSessionCookie, getSessionFromRequest } from '../src/lib/auth/session';
 import { generateOAuthState, validateOAuthState, getGoogleOAuthUrl, exchangeGoogleCode } from '../src/lib/auth/oauth';
-import { keyStore, TIER_LIMITS } from '../src/lib/api-keys/key-store';
+import { keyStore } from '../src/lib/api-keys/key-store';
+import { FREE_DAILY_CREDITS } from '../src/lib/plan-limits';
 import { validateApiAccess } from '../src/lib/api-keys/guard';
 import { POST as registerHandler } from '../src/app/api/auth/register/route';
 import { TERMS_VERSION } from '../src/lib/legal/documents';
@@ -288,17 +289,17 @@ describe('Auth & API Key Infrastructure', () => {
       });
 
       const initialQuota = await keyStore.getQuotaUsage(userRecord.id);
-      expect(initialQuota.dailyLimit).toBe(TIER_LIMITS.free);
+      expect(initialQuota.dailyLimit).toBe(FREE_DAILY_CREDITS);
       expect(initialQuota.usedToday).toBe(0);
-      expect(initialQuota.remaining).toBe(TIER_LIMITS.free);
+      expect(initialQuota.remaining).toBe(FREE_DAILY_CREDITS);
 
-      const firstPart = Math.floor(TIER_LIMITS.free / 2);
+      const firstPart = Math.floor(FREE_DAILY_CREDITS / 2);
       const step1 = await keyStore.recordUsage(userRecord.id, firstPart);
       expect(step1.allowed).toBe(true);
-      expect(step1.remaining).toBe(TIER_LIMITS.free - firstPart);
+      expect(step1.remaining).toBe(FREE_DAILY_CREDITS - firstPart);
 
       // The rest of the day reaches the limit exactly
-      const step2 = await keyStore.recordUsage(userRecord.id, TIER_LIMITS.free - firstPart);
+      const step2 = await keyStore.recordUsage(userRecord.id, FREE_DAILY_CREDITS - firstPart);
       expect(step2.allowed).toBe(true);
       expect(step2.remaining).toBe(0);
 
@@ -454,8 +455,8 @@ describe('Auth & API Key Infrastructure', () => {
       });
       const usageRes = await usageGetHandler(usageReq);
       const usageData = await usageRes.json();
-      expect(usageData.usage.dailyLimit).toBe(TIER_LIMITS.free);
-      expect(usageData.usage.remaining).toBe(TIER_LIMITS.free);
+      expect(usageData.usage.dailyLimit).toBe(FREE_DAILY_CREDITS);
+      expect(usageData.usage.remaining).toBe(FREE_DAILY_CREDITS);
 
       // 4. Revoke key
       const deleteKeyReq = new NextRequest(`http://localhost:3000/api/keys/${generatedKeyId}`, {
@@ -509,7 +510,7 @@ describe('Auth & API Key Infrastructure', () => {
       // Verify quota was decremented
       const quota = await keyStore.getQuotaUsage(user.id);
       expect(quota.usedToday).toBe(1);
-      expect(quota.remaining).toBe(TIER_LIMITS.free - 1);
+      expect(quota.remaining).toBe(FREE_DAILY_CREDITS - 1);
 
       // Verify file was recorded in user conversion files
       const userFiles = await keyStore.listUserFiles(user.id);
@@ -551,7 +552,7 @@ describe('Auth & API Key Infrastructure', () => {
       const { secretKey } = await keyStore.generateApiKey(user.id, 'Batch Key');
 
       // Exhaust quota manually
-      await keyStore.recordUsage(user.id, TIER_LIMITS.free);
+      await keyStore.recordUsage(user.id, FREE_DAILY_CREDITS);
 
       const file = new File(['1,2,3'], 'numbers.csv', { type: 'text/csv' });
       const formData = new FormData();
@@ -649,7 +650,7 @@ describe('Auth & API Key Infrastructure', () => {
       // CRITICAL: Ensure quota was NOT consumed by the 3 failed requests
       const usage = await keyStore.getQuotaUsage(user.id);
       expect(usage.usedToday).toBe(0);
-      expect(usage.remaining).toBe(TIER_LIMITS.free);
+      expect(usage.remaining).toBe(FREE_DAILY_CREDITS);
     });
 
     it('OAuth callback strictly rejects missing or invalid state parameter to prevent CSRF', async () => {
@@ -722,7 +723,7 @@ describe('Auth & API Key Infrastructure', () => {
       );
 
       // Leave exactly 1 unit left
-      await keyStore.recordUsage(user.id, TIER_LIMITS.free - 1);
+      await keyStore.recordUsage(user.id, FREE_DAILY_CREDITS - 1);
 
       // Simulate 5 simultaneous requests trying to claim the last 1 unit
       const results = await Promise.all([
@@ -737,7 +738,7 @@ describe('Auth & API Key Infrastructure', () => {
       expect(allowedCount).toBe(1);
 
       const finalQuota = await keyStore.getQuotaUsage(user.id);
-      expect(finalQuota.usedToday).toBe(TIER_LIMITS.free);
+      expect(finalQuota.usedToday).toBe(FREE_DAILY_CREDITS);
       expect(finalQuota.remaining).toBe(0);
     });
 
@@ -843,17 +844,17 @@ describe('Auth & API Key Infrastructure', () => {
       // Attempt negative units
       const negResult = await keyStore.recordUsage(user.id, -5);
       expect(negResult.allowed).toBe(true);
-      expect(negResult.remaining).toBe(TIER_LIMITS.free);
+      expect(negResult.remaining).toBe(FREE_DAILY_CREDITS);
 
       // Confirm usage was NOT decremented below 0
       const quotaAfterNeg = await keyStore.getQuotaUsage(user.id);
       expect(quotaAfterNeg.usedToday).toBe(0);
-      expect(quotaAfterNeg.remaining).toBe(TIER_LIMITS.free);
+      expect(quotaAfterNeg.remaining).toBe(FREE_DAILY_CREDITS);
 
       // Zero units check
       const zeroResult = await keyStore.recordUsage(user.id, 0);
       expect(zeroResult.allowed).toBe(true);
-      expect(zeroResult.remaining).toBe(TIER_LIMITS.free);
+      expect(zeroResult.remaining).toBe(FREE_DAILY_CREDITS);
     });
 
     it('enforces fail-closed behavior for OAuth URL generation in production without credentials', async () => {

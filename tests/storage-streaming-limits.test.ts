@@ -210,11 +210,13 @@ describe('WP-20 Storage Streaming API & 2GB Crash Removal', () => {
       const user = await redisUserStore.createUser({
         name: 'Queue Tester',
         email: `qtest_${Date.now()}@example.com`,
-        tier: 'pro',
+        tier: 'paid',
       });
 
-      const usedToday = async () => (await redisKeyStore.getQuotaUsage(user.id)).usedToday;
-      const before = await usedToday();
+      // 50 credits are more than the free day holds, so the account has a package.
+      await redisKeyStore.creditPackage(user.id, { transactionId: `txn_${user.id}`, credits: 100, paid: '0', at: Date.now() });
+      const creditsLeft = async () => (await redisKeyStore.getQuotaUsage(user.id)).remaining;
+      const before = await creditsLeft();
       const reservation = await redisKeyStore.reserveQuota(user.id, 50);
       expect(reservation).not.toBeNull();
       const reservationId = reservation!.reservationId;
@@ -246,9 +248,9 @@ describe('WP-20 Storage Streaming API & 2GB Crash Removal', () => {
         expect(err.message).toMatch(/Native worker required/i);
       }
 
-      expect(await usedToday()).toBe(before + 50);
+      expect(await creditsLeft()).toBe(before - 50);
       expect(await redisKeyStore.rollbackQuota(reservationId!)).toBe(true);
-      expect(await usedToday()).toBe(before);
+      expect(await creditsLeft()).toBe(before);
       expect(await redisKeyStore.rollbackQuota(reservationId!)).toBe(false);
     });
   });

@@ -34,12 +34,13 @@ class ConvertFileV1Response429:
             the answer names one (for example `engine_unavailable`).
         success (bool | Unset): Legacy compatibility flag (always false).
         error (str | Unset): Legacy compatibility error message mirroring detail.
-        daily_limit (int | Unset): `quota-exceeded` only: conversions the tier allows in the period (`period`), a day or
-            a month.
-        period (ConvertFileV1Response429Period | Unset): `quota-exceeded` only: how long the conversions are counted
-            before the count starts again.
-        remaining (int | Unset): `quota-exceeded` only: conversions left in the period.
-        required_units (int | Unset): `quota-exceeded` only: conversions the request needs.
+        daily_limit (int | Unset): `quota-exceeded` only: credits the window gives in the period (`period`), a day or a
+            billing period.
+        period (ConvertFileV1Response429Period | Unset): `quota-exceeded` only: how long the credits of the window are
+            counted before the count starts again.
+        remaining (int | Unset): `quota-exceeded` only: credits left, the window and the package together.
+        required_units (int | Unset): `quota-exceeded` only: credits the request needs: the cost of the class of each
+            conversion in it.
         limit (int | Unset): `concurrency-limit` only: conversions the account may have in flight.
     """
 

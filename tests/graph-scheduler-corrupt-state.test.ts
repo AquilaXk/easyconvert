@@ -368,7 +368,7 @@ describe('the units a scheduler script reports for a completed graph', () => {
     const scheduler = new RedisGraphScheduler({ redisClient: answering([1, 'completed', '[]', '3', 'res_counted']), keyPrefix: 'units:' });
 
     await scheduler.onNodeCompleted('g_units', 'out', [], 1);
-    expect(settled).toHaveBeenCalledWith('res_counted', 3);
+    expect(settled).toHaveBeenCalledWith('res_counted', 3, { note: { kind: 'graph', base: 3 } });
     expect(rolledBack).not.toHaveBeenCalled();
   });
 });

@@ -28,7 +28,7 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
       const user = await redisUserStore.createUser({
         email,
         name: 'Distributed Dev',
-        tier: 'pro',
+        tier: 'paid',
         provider: 'email',
         passwordHash: 'dummy_hash',
         salt: 'dummy_salt',
@@ -36,7 +36,7 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
 
       expect(user.id).toBeDefined();
       expect(user.email).toBe(email);
-      expect(user.tier).toBe('pro');
+      expect(user.tier).toBe('paid');
 
       const byId = await redisUserStore.findById(user.id);
       expect(byId?.id).toBe(user.id);
@@ -54,11 +54,11 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
       ).rejects.toThrow('A user with this email address already exists');
 
       // Update tier
-      const updated = await redisUserStore.updateTier(user.id, 'enterprise');
-      expect(updated?.tier).toBe('enterprise');
+      const updated = await redisUserStore.updateTier(user.id, 'paid');
+      expect(updated?.tier).toBe('paid');
 
       const reFetched = await redisUserStore.findById(user.id);
-      expect(reFetched?.tier).toBe('enterprise');
+      expect(reFetched?.tier).toBe('paid');
     });
 
     it('authenticates session tokens strictly against redisUserStore', async () => {
@@ -85,7 +85,7 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
       const user = await redisUserStore.createUser({
         email: 'key-owner@example.com',
         name: 'Key Owner',
-        tier: 'pro',
+        tier: 'paid',
       });
 
       const { key, secretKey } = await redisKeyStore.generateApiKey(user.id, 'Distributed Key');
@@ -94,11 +94,12 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
       const verification = await redisKeyStore.verifyApiKey(secretKey);
       expect(verification.valid).toBe(true);
       expect(verification.user?.id).toBe(user.id);
-      expect(verification.user?.tier).toBe('pro');
+      expect(verification.user?.tier).toBe('paid');
 
       const quota = await redisKeyStore.recordUsage(user.id, 5);
       expect(quota.allowed).toBe(true);
-      expect(quota.remaining).toBe(2995);
+      // The account has no package or subscription yet: the 10 credits of the free day are what it spends from.
+      expect(quota.remaining).toBe(5);
     });
 
     it('end-to-end auth routes register and login correctly via redisUserStore', async () => {
@@ -145,7 +146,7 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
       const user = await redisUserStore.createUser({
         email: 'queue-tester@example.com',
         name: 'Queue Tester',
-        tier: 'pro',
+        tier: 'paid',
       });
       const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Queue Key', {
         scopes: ['convert:write', 'convert:read'],
@@ -176,7 +177,7 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
       const user = await redisUserStore.createUser({
         email: 'queue-tester2@example.com',
         name: 'Queue Tester 2',
-        tier: 'pro',
+        tier: 'paid',
       });
       const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Queue Key 2', {
         scopes: ['convert:write', 'convert:read'],
@@ -207,7 +208,7 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
       const user = await redisUserStore.createUser({
         email: 'queue-success@example.com',
         name: 'Queue Success User',
-        tier: 'pro',
+        tier: 'paid',
       });
       const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Queue Key 3', {
         scopes: ['convert:write', 'convert:read'],
@@ -239,7 +240,7 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
       const user = await redisUserStore.createUser({
         email: 'queue-missing-storage@example.com',
         name: 'Missing Storage User',
-        tier: 'pro',
+        tier: 'paid',
       });
       const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Queue Key Missing', {
         scopes: ['convert:write'],
@@ -269,7 +270,7 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
       const user = await redisUserStore.createUser({
         email: 'queue-spoofed-storage@example.com',
         name: 'Spoofed Storage User',
-        tier: 'pro',
+        tier: 'paid',
       });
       const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Queue Key Spoofed Store', {
         scopes: ['convert:write'],
@@ -304,7 +305,7 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
       const user = await redisUserStore.createUser({
         email: 'queue-empty-storage@example.com',
         name: 'Empty Storage User',
-        tier: 'pro',
+        tier: 'paid',
       });
       const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Queue Key Empty Store', {
         scopes: ['convert:write'],
@@ -339,7 +340,7 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
       const user = await redisUserStore.createUser({
         email: 'queue-storage-success@example.com',
         name: 'Storage Success User',
-        tier: 'pro',
+        tier: 'paid',
       });
       const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Queue Key Storage Ok', {
         scopes: ['convert:write'],
@@ -387,7 +388,7 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
       const user = await redisUserStore.createUser({
         email: 'raw-tester@example.com',
         name: 'Raw Tester',
-        tier: 'pro',
+        tier: 'paid',
       });
       const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Raw Key', {
         scopes: ['convert:write'],
@@ -422,7 +423,7 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
       const user = await redisUserStore.createUser({
         email: 'small-tester@example.com',
         name: 'Small Tester',
-        tier: 'pro',
+        tier: 'paid',
       });
       const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Small Key', {
         scopes: ['convert:write'],

@@ -19,7 +19,7 @@ describe('thumbnail and metadata graphs through POST /api/v1/jobs', () => {
   let initGraph: MockInstance<typeof graphScheduler.initGraph>;
 
   beforeEach(async () => {
-    const user = await userStore.createUser({ email: `tm_${Date.now()}_${Math.random().toString(36).slice(2)}@tm.test`, name: 'tm', tier: 'pro' });
+    const user = await userStore.createUser({ email: `tm_${Date.now()}_${Math.random().toString(36).slice(2)}@tm.test`, name: 'tm', tier: 'paid' });
     userId = user.id;
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'tm', { scopes: ['convert:read', 'convert:write'] });
     authHeaders = { Authorization: `Bearer ${secretKey}`, 'Content-Type': 'application/json' };

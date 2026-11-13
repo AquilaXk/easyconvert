@@ -73,7 +73,7 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
     const { userStore } = await import('../src/lib/auth/user-store');
     const { createSessionToken } = await import('../src/lib/auth/session');
     const email = `wiring_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@remote-storage.local`;
-    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'wiring', tier: 'pro' }));
+    const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'wiring', tier: 'paid' }));
     const cookie = { Cookie: `easyconvert_session=${createSessionToken(user)}` };
     return { storage, user, cookie };
   }
@@ -177,7 +177,7 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
       const { userStore } = await import('../src/lib/auth/user-store');
       const { createSessionToken } = await import('../src/lib/auth/session');
       const stranger = userStore.sanitizeUser(
-        await userStore.createUser({ email: `stranger_${Date.now()}@remote-storage.local`, name: 'stranger', tier: 'pro' })
+        await userStore.createUser({ email: `stranger_${Date.now()}@remote-storage.local`, name: 'stranger', tier: 'paid' })
       );
       const strangerCookie = { Cookie: `easyconvert_session=${createSessionToken(stranger)}` };
       const res = await complete(strangerCookie, { uploadId: init.uploadId, parts: [{ partNumber: 1, etag: '"x"' }] });
@@ -558,7 +558,7 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
       const { userStore } = await import('../src/lib/auth/user-store');
       const { createSessionToken } = await import('../src/lib/auth/session');
       const stranger = userStore.sanitizeUser(
-        await userStore.createUser({ email: `stranger_${Date.now()}@remote-storage.local`, name: 'stranger', tier: 'pro' })
+        await userStore.createUser({ email: `stranger_${Date.now()}@remote-storage.local`, name: 'stranger', tier: 'paid' })
       );
       const other = { Cookie: `easyconvert_session=${createSessionToken(stranger)}` };
 

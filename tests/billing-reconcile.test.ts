@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const getBillingProvider = vi.hoisted(() => vi.fn<() => { provider: unknown } | null>(() => null));
 vi.mock('../src/lib/billing/index', () => ({ getBillingProvider }));
 
+import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import type { BillingConfig } from '../src/lib/billing/config';
 import { PaddleBillingProvider } from '../src/lib/billing/paddle-provider';
@@ -37,7 +38,8 @@ const config: BillingConfig = {
   webhookSecret: WEBHOOK_SECRET,
   clientToken: 'test_fixture_client_token',
   environment: 'sandbox',
-  priceIds: { basic: 'pri_basic_fixture', pro: 'pri_pro_fixture', enterprise: 'pri_enterprise_fixture' },
+  packagePriceIds: { 500: 'pri_package_500_fixture', 1000: 'pri_package_1000_fixture', 2500: 'pri_package_2500_fixture', 5000: 'pri_package_5000_fixture', 10000: 'pri_package_10000_fixture' },
+  subscriptionPriceIds: { 1000: 'pri_subscription_1000_fixture', 2500: 'pri_subscription_2500_fixture', 5000: 'pri_subscription_5000_fixture', 10000: 'pri_subscription_10000_fixture' },
 };
 
 interface ListedFixture {
@@ -51,7 +53,7 @@ interface ListedFixture {
 }
 
 /** A subscription as the SDK's list gives it (the fields the mapping reads). */
-function listed({ id, status = 'active', updatedAt = NOW, priceId = 'pri_pro_fixture', periodEnd = NOW + 20 * DAY, cancelAt, customData = null }: ListedFixture) {
+function listed({ id, status = 'active', updatedAt = NOW, priceId = 'pri_subscription_1000_fixture', periodEnd = NOW + 20 * DAY, cancelAt, customData = null }: ListedFixture) {
   return {
     id,
     status,
@@ -84,8 +86,29 @@ class FakeList {
   }
 }
 
-const provider = (list: FakeList) => new PaddleBillingProvider(config, { subscriptions: { list: () => list } } as unknown as Paddle);
-const bound = (userId: string) => new PaddleBillingProvider(config).createCheckout({ userId, email: 'a@b.test', plan: 'pro' }).customData;
+/** A completed payment as the SDK's list gives it (the fields the mapping reads). */
+function payment(id: string, priceId: string, customData: Record<string, string> | null = null, total = '1999') {
+  return { id, status: 'completed', customData, currencyCode: 'USD', items: [{ price: { id: priceId }, quantity: 1 }], details: { totals: { total } }, billedAt: iso(NOW - DAY), createdAt: iso(NOW - DAY) };
+}
+type Payment = ReturnType<typeof payment>;
+
+/** What `paddle.transactions.list` returns, read as the list of subscriptions is. */
+class FakePayments {
+  hasMore = true;
+  calls = 0;
+  constructor(private readonly pages: (Payment[] | Error)[]) {}
+  async next(): Promise<Payment[]> {
+    this.calls += 1;
+    const page = this.pages.shift();
+    this.hasMore = this.pages.length > 0;
+    if (page instanceof Error) throw page;
+    return page ?? [];
+  }
+}
+
+const provider = (list: FakeList, payments: FakePayments = new FakePayments([])) =>
+  new PaddleBillingProvider(config, { subscriptions: { list: () => list }, transactions: { list: () => payments } } as unknown as Paddle);
+const bound = (userId: string) => new PaddleBillingProvider(config).createCheckout({ userId, email: 'a@b.test', product: { kind: 'subscription', credits: 1000 } }).customData;
 
 let run = '';
 const created: string[] = [];
@@ -108,7 +131,7 @@ async function seed(userId: string, name: string, overrides: { status?: 'active'
       providerSubscriptionId: sub(name),
       providerCustomerId: 'ctm_fixture',
       status: overrides.status ?? 'active',
-      plan: 'pro',
+      credits: 1000,
       currentPeriodEnd: overrides.currentPeriodEnd ?? NOW + 20 * DAY,
     },
   };
@@ -118,14 +141,16 @@ async function seed(userId: string, name: string, overrides: { status?: 'active'
 const tierOf = async (userId: string) => (await redisUserStore.findById(userId))?.tier;
 const events = (result: string) => reading('easyconvert_billing_events_total', { source: 'reconcile', result });
 
-function reconcile(pages: (Listed[] | Error | 'hang')[], options: ReconcileOptions = {}) {
+function reconcile(pages: (Listed[] | Error | 'hang')[], options: ReconcileOptions = {}, payments: (Payment[] | Error)[] = []) {
   const list = new FakeList(pages);
-  return { list, result: reconcileSubscriptions({ provider: provider(list), now: () => NOW, pagePauseMs: 0, ...options }) };
+  const paid = new FakePayments(payments);
+  return { list, paid, result: reconcileSubscriptions({ provider: provider(list, paid), now: () => NOW, pagePauseMs: 0, ...options }) };
 }
 
 beforeEach(() => {
   run = crypto.randomUUID().slice(0, 8);
   redisUserStore.resetStore();
+  redisKeyStore.resetStore();
   subscriptionStore.resetStore();
   resetMetrics();
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -144,11 +169,11 @@ describe('what the provider says wins over the store', () => {
   it('ends a plan whose cancellation never arrived: the record and the account change together', async () => {
     const user = await account();
     await seed(user, 'a');
-    expect(await tierOf(user)).toBe('pro');
+    expect(await tierOf(user)).toBe('paid');
 
     const { result } = reconcile([[listed({ id: sub('a'), status: 'canceled', updatedAt: NOW - DAY })]]);
     expect(await result).toMatchObject({ outcome: 'completed', listed: 1, corrected: 1 });
-    expect(await subscriptionStore.findByUser(user)).toMatchObject({ status: 'canceled', plan: 'pro', eventAt: NOW - DAY });
+    expect(await subscriptionStore.findByUser(user)).toMatchObject({ status: 'canceled', credits: 1000, eventAt: NOW - DAY });
     expect(await tierOf(user)).toBe('free');
     expect(await events('applied')).toBe(1);
   });
@@ -161,24 +186,24 @@ describe('what the provider says wins over the store', () => {
     expect(await tierOf(user)).toBe('free');
   });
 
-  it('follows a scheduled cancellation and a change of plan the events missed', async () => {
+  it('follows a scheduled cancellation and a change of size the events missed', async () => {
     const user = await account();
     await seed(user, 'a');
-    const { result } = reconcile([[listed({ id: sub('a'), priceId: 'pri_enterprise_fixture', cancelAt: NOW + 3 * DAY, updatedAt: NOW - DAY })]]);
+    const { result } = reconcile([[listed({ id: sub('a'), priceId: 'pri_subscription_5000_fixture', cancelAt: NOW + 3 * DAY, updatedAt: NOW - DAY })]]);
     expect((await result).corrected).toBe(1);
-    expect(await subscriptionStore.findByUser(user)).toMatchObject({ plan: 'enterprise', cancelAt: NOW + 3 * DAY });
-    expect(await redisUserStore.findById(user)).toMatchObject({ tier: 'enterprise', tierUntil: NOW + 3 * DAY });
+    expect(await subscriptionStore.findByUser(user)).toMatchObject({ credits: 5000, cancelAt: NOW + 3 * DAY });
+    expect(await redisUserStore.findById(user)).toMatchObject({ tier: 'paid', tierUntil: NOW + 3 * DAY });
   });
 
   it('gives a plan to a purchase whose first event was lost, when the checkout is bound to the account', async () => {
     const user = await account();
     const { result } = reconcile([[listed({ id: sub('a'), customData: bound(user) })]]);
     expect((await result).corrected).toBe(1);
-    expect(await tierOf(user)).toBe('pro');
+    expect(await tierOf(user)).toBe('paid');
     expect(await subscriptionStore.userOfSubscription(sub('a'))).toBe(user);
   });
 
-  it('reads a retired price of a canceled subscription with the plan of the stored record, and leaves a live one at an unknown price alone', async () => {
+  it('reads a retired price of a canceled subscription with the credits of the stored record, and leaves a live one at an unknown price alone', async () => {
     const user = await account();
     const other = await account('other');
     await seed(user, 'a');
@@ -191,7 +216,7 @@ describe('what the provider says wins over the store', () => {
     ]);
     expect(await result).toMatchObject({ corrected: 1 });
     expect(await tierOf(user)).toBe('free');
-    expect(await tierOf(other)).toBe('pro');
+    expect(await tierOf(other)).toBe('paid');
     expect(await events('ignored')).toBe(1);
   });
 
@@ -224,7 +249,7 @@ describe('a correction never goes over a newer word', () => {
     await seed(user, 'a', { eventAt: NOW + 1000 });
     const { result } = reconcile([[listed({ id: sub('other') })], [listed({ id: sub('other2') })]]);
     expect(await result).toMatchObject({ downgraded: 0 });
-    expect(await tierOf(user)).toBe('pro');
+    expect(await tierOf(user)).toBe('paid');
   });
 });
 
@@ -268,7 +293,7 @@ describe('a stored subscription the provider no longer lists', () => {
     expect(await result).toMatchObject({ outcome: 'completed', downgraded: 1 });
     expect(await subscriptionStore.findByUser(gone)).toMatchObject({ status: 'canceled' });
     expect(await tierOf(gone)).toBe('free');
-    expect(await tierOf(kept)).toBe('pro');
+    expect(await tierOf(kept)).toBe('paid');
     expect(await events('missing')).toBe(1);
   });
 
@@ -277,7 +302,7 @@ describe('a stored subscription the provider no longer lists', () => {
     await seed(user, 'a');
     const { result } = reconcile([[]]);
     expect(await result).toMatchObject({ outcome: 'completed', downgraded: 0, note: expect.stringContaining('left alone') });
-    expect(await tierOf(user)).toBe('pro');
+    expect(await tierOf(user)).toBe('paid');
   });
 
   it('leaves them alone when most of them are missing at once', async () => {
@@ -285,7 +310,7 @@ describe('a stored subscription the provider no longer lists', () => {
     await Promise.all(users.map((user, index) => seed(user, `s${index}`)));
     const { result } = reconcile([[listed({ id: sub('s0') }), listed({ id: sub('unrelated'), status: 'canceled' })]]);
     expect(await result).toMatchObject({ downgraded: 0, note: expect.stringContaining('3 of 4') });
-    expect(await Promise.all(users.map(tierOf))).toEqual(['pro', 'pro', 'pro', 'pro']);
+    expect(await Promise.all(users.map(tierOf))).toEqual(['paid', 'paid', 'paid', 'paid']);
   });
 
   it('does not touch a record that already gives nothing', async () => {
@@ -306,7 +331,7 @@ describe('the run is bounded', () => {
     const { list, result } = reconcile(pages);
     expect(await result).toMatchObject({ outcome: 'partial', listed: RECONCILE_MAX_PAGES, downgraded: 0 });
     expect(list.calls).toBe(RECONCILE_MAX_PAGES + 1);
-    expect(await tierOf(user)).toBe('pro');
+    expect(await tierOf(user)).toBe('paid');
   });
 
   it('ends at its deadline when the provider does not answer, and lets go of the lock', async () => {
@@ -332,7 +357,7 @@ describe('the run is bounded', () => {
     const { result } = reconcile([[listed({ id: sub('a'), status: 'canceled', updatedAt: NOW - DAY })], new Error('provider is down')]);
     expect(await result).toMatchObject({ outcome: 'failed', corrected: 1, downgraded: 0, note: 'provider is down' });
     expect(await tierOf(user)).toBe('free');
-    expect(await tierOf(missing)).toBe('pro');
+    expect(await tierOf(missing)).toBe('paid');
   });
 });
 
@@ -359,6 +384,76 @@ describe('without billing', () => {
   it('does nothing and asks the provider for nothing', async () => {
     getBillingProvider.mockReturnValue(null);
     expect(await reconcileSubscriptions()).toMatchObject({ outcome: 'disabled', listed: 0 });
+  });
+});
+
+describe('a package payment the webhook missed', () => {
+  const packageBound = (userId: string, credits: 500 | 1000 | 2500 | 5000 | 10000 = 1000) => new PaddleBillingProvider(config).createCheckout({ userId, email: 'a@b.test', product: { kind: 'package', credits } }).customData;
+  const balanceOf = (userId: string) => redisKeyStore.packageBalance(userId);
+
+  it('credits a completed payment the ledger lacks, to the account its checkout names, and reports it', async () => {
+    const user = await account();
+    const { result } = reconcile([[]], {}, [[payment(`txn_${run}_a`, 'pri_package_2500_fixture', packageBound(user, 2500))]]);
+    expect(await result).toMatchObject({ outcome: 'completed', packagesListed: 1, packagesCredited: 1, packagesUnattributed: 0 });
+    expect(await balanceOf(user)).toBe(2500);
+    expect(await redisKeyStore.packageTransactionOwner(`txn_${run}_a`)).toBe(user);
+    // The account's record keeps its tier: a package gives the paid limits through the balance (`withCreditTier`).
+    expect(await tierOf(user)).toBe('free');
+    expect((await redisKeyStore.withCreditTier({ id: user, tier: 'free' })).tier).toBe('paid');
+    expect(await events('applied')).toBe(1);
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining(`package payment txn_${run}_a was missing from the ledger`));
+  });
+
+  it('credits a payment once however often it is listed, and when the webhook credited it first', async () => {
+    const user = await account();
+    const first = reconcile([[]], {}, [[payment(`txn_${run}_a`, 'pri_package_1000_fixture', packageBound(user))]]);
+    expect((await first.result).packagesCredited).toBe(1);
+    const again = reconcile([[]], { now: () => NOW + RECONCILE_HOLD_MS + 1000 }, [[payment(`txn_${run}_a`, 'pri_package_1000_fixture', packageBound(user))]]);
+    expect(await again.result).toMatchObject({ packagesListed: 1, packagesCredited: 0 });
+    expect(await balanceOf(user)).toBe(1000);
+
+    const other = await account('other');
+    expect(await redisKeyStore.creditPackage(other, { transactionId: `txn_${run}_b`, credits: 500, paid: '999', at: NOW })).toBe('granted');
+    const late = reconcile([[]], { now: () => NOW + 3 * RECONCILE_HOLD_MS }, [[payment(`txn_${run}_b`, 'pri_package_500_fixture', packageBound(other, 500), '999')]]);
+    expect(await late.result).toMatchObject({ packagesListed: 1, packagesCredited: 0 });
+    expect(await balanceOf(other)).toBe(500);
+  });
+
+  it('ignores a payment that buys no package, and only counts one that names no account', async () => {
+    const { result } = reconcile([[]], {}, [[
+      payment(`txn_${run}_sub`, 'pri_subscription_1000_fixture'),
+      payment(`txn_${run}_unbound`, 'pri_package_1000_fixture', { easyconvertUserId: 'someone', easyconvertBinding: 'forged' }),
+    ]]);
+    expect(await result).toMatchObject({ packagesListed: 1, packagesCredited: 0, packagesUnattributed: 1 });
+    expect(await events('unattributed')).toBe(1);
+    expect(await redisKeyStore.packageTransactionOwner(`txn_${run}_unbound`)).toBeNull();
+  });
+
+  it('counts a payment of an account that is gone as unknown_user and credits nothing', async () => {
+    const user = await account();
+    const customData = packageBound(user);
+    await redisUserStore.deleteUser(user);
+    const { result } = reconcile([[]], {}, [[payment(`txn_${run}_gone`, 'pri_package_1000_fixture', customData)]]);
+    expect(await result).toMatchObject({ packagesCredited: 0, packagesUnattributed: 1 });
+    expect(await events('unknown_user')).toBe(1);
+    expect(await balanceOf(user)).toBe(0);
+  });
+
+  it('reads at most the page cap of payments, says the oldest were not read, and ends as partial', async () => {
+    const user = await account();
+    const pages = Array.from({ length: RECONCILE_MAX_PAGES + 5 }, (_, index) => [payment(`txn_${run}_p${index}`, 'pri_package_500_fixture', packageBound(user, 500))]);
+    const { paid, result } = reconcile([[]], {}, pages);
+    expect(await result).toMatchObject({ outcome: 'partial', packagesListed: RECONCILE_MAX_PAGES, packagesCredited: RECONCILE_MAX_PAGES, note: expect.stringContaining('payments') });
+    expect(paid.calls).toBe(RECONCILE_MAX_PAGES + 1);
+    expect(await balanceOf(user)).toBe(500 * RECONCILE_MAX_PAGES);
+  });
+
+  it('ends as failed when the list of payments fails, keeping what the subscriptions pass corrected', async () => {
+    const user = await account();
+    await seed(user, 'a');
+    const { result } = reconcile([[listed({ id: sub('a'), status: 'canceled', updatedAt: NOW - DAY })]], {}, [new Error('payments are down')]);
+    expect(await result).toMatchObject({ outcome: 'failed', corrected: 1, note: 'payments are down' });
+    expect(await tierOf(user)).toBe('free');
   });
 });
 

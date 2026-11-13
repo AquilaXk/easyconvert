@@ -15,6 +15,7 @@ import { withMissingBinary } from './helpers/native-tools';
 import { FileExtensionSpoofError } from '../src/lib/registry';
 import { convertArchive } from '../src/lib/conversions/archive';
 import { POST as convertRouteHandler } from '../src/app/api/v1/convert/route';
+import { subscriptionStore } from '../src/lib/billing/subscription-store';
 import { keyStore } from '../src/lib/api-keys/key-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
@@ -25,14 +26,14 @@ import { expectRateLimitHeaders, requiredHeader } from './helpers/ratelimit-head
 import { skipUnless } from './helpers/strict-skip';
 
 /**
- * Daily quotas of the account tiers, hand-written from the pricing table (free 10, basic 1,000, pro 3,000, enterprise 10,000) as an oracle
+ * Credits of the plans, hand-written from the pricing table (free 10 a day, a subscription of 1,000 a period) as an oracle
  * independent of src/lib/plan-limits.ts: the headers must state the published numbers.
  */
 const FREE_DAILY_LIMIT = 10;
-const PRO_DAILY_LIMIT = 3000;
+const SUBSCRIPTION_CREDITS = 1000;
 
 let userCounter = 0;
-async function createUniqueTestUser(tier: 'free' | 'pro' | 'enterprise' = 'free') {
+async function createUniqueTestUser(tier: 'free' | 'paid' = 'free') {
   userCounter++;
   const uniqueId = `${Date.now()}_${userCounter}_${Math.random().toString(36).slice(2, 7)}`;
   return userStore.sanitizeUser(
@@ -152,19 +153,19 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
     it('builds RFC rate-limit headers conforming to IETF draft-ietf-httpapi-ratelimit-headers', () => {
       const now = Date.now();
       const headers = buildRateLimitHeaders({
-        tier: 'pro',
+        tier: 'paid',
         period: 'day' as const,
       dailyLimit: 500,
         usedToday: 50,
         remaining: 450,
-        resetAt: now + 3600 * 1000,
+        resetAt: now + 3600 * 1000, packageCredits: 0,
       });
 
       expect(headers['RateLimit-Limit']).toBe('500');
       expect(headers['RateLimit-Remaining']).toBe('450');
       expect(Number(headers['RateLimit-Reset'])).toBeGreaterThanOrEqual(3590);
       expect(headers['RateLimit-Policy']).toContain('500;w=86400');
-      expect(headers['RateLimit-Policy']).toContain('pro daily quota');
+      expect(headers['RateLimit-Policy']).toContain('paid daily credits');
 
       // Check legacy X-RateLimit headers
       expect(headers['X-RateLimit-Limit']).toBe('500');
@@ -249,7 +250,13 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
     });
 
     it('hands off to asynchronous queue with 202 Accepted when Prefer: respond-async is supplied', async () => {
-      const user = await createUniqueTestUser('pro');
+      const user = await createUniqueTestUser('paid');
+      await subscriptionStore.apply({
+        eventId: `evt_${user.id}`,
+        eventAt: Date.now(),
+        userId: user.id,
+        subscription: { provider: 'paddle', providerSubscriptionId: `sub_${user.id}`, providerCustomerId: 'ctm_fixture', status: 'active', credits: SUBSCRIPTION_CREDITS, currentPeriodEnd: Date.now() + 20 * 86_400_000 },
+      });
       const { secretKey } = await keyStore.generateApiKey(user.id, 'Async Prefer Key');
 
       const csvContent = 'a,b,c\n10,20,30';
@@ -271,7 +278,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       expect(res.status).toBe(202);
       expect(res.headers.get('Preference-Applied')).toBe('respond-async');
       expect(res.headers.get('Location')).toMatch(/^\/api\/v1\/jobs\/.+/);
-      expect(requiredHeader(res.headers, 'RateLimit-Limit')).toBe(String(PRO_DAILY_LIMIT));
+      expect(requiredHeader(res.headers, 'RateLimit-Limit')).toBe(String(SUBSCRIPTION_CREDITS));
 
       const body = await res.json();
       expect(body.success).toBe(true);
@@ -292,7 +299,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
     });
 
     it('automatically hands off files > 10MB to asynchronous queue (202 Accepted)', async () => {
-      const user = await createUniqueTestUser('enterprise');
+      const user = await createUniqueTestUser('paid');
       const { secretKey } = await keyStore.generateApiKey(user.id, 'Large File Key');
 
       // Create a 10.5 MB payload
@@ -400,7 +407,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       const body = await res.json();
       expect(body.type).toBe('https://api.easyconvert.io/problems/quota-exceeded');
       expect(body.status).toBe(429);
-      expect(body.detail).toContain('Daily conversion quota exceeded');
+      expect(body.detail).toContain('Daily credit quota exceeded');
       expect(body.success).toBe(false);
       expect(body.error).toBe(body.detail);
     });

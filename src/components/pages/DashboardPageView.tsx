@@ -131,6 +131,7 @@ export default function DashboardPageView({ initial }: Readonly<{ initial?: Dash
                 user={user}
                 quota={keys.state.quota}
                 apiKeys={keys.state.apiKeys}
+                charges={keys.state.charges}
               />
             )}
           </>

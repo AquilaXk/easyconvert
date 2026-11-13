@@ -69,7 +69,7 @@ describe('object-store routes after the final review', () => {
     vi.resetModules();
   });
 
-  async function loadUser(tag: string, tier: 'free' | 'pro' = 'pro') {
+  async function loadUser(tag: string, tier: 'free' | 'paid' = 'paid') {
     const { userStore } = await import('../src/lib/auth/user-store');
     const { createSessionToken } = await import('../src/lib/auth/session');
     const email = `${tag}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@route-blockers.local`;

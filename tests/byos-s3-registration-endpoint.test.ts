@@ -20,7 +20,7 @@ describe('s3 credential registration validates the endpoint', () => {
 
   beforeEach(async () => {
     const email = `byosreg_${Date.now()}_${Math.random().toString(36).slice(2)}@byos.test`;
-    const user = await userStore.createUser({ email, name: 'byosreg', tier: 'pro' });
+    const user = await userStore.createUser({ email, name: 'byosreg', tier: 'paid' });
     userId = user.id;
     const { secretKey } = await redisKeyStore.generateApiKey(userId, 'byosreg', { scopes: ['convert:write'] });
     authHeaders = { Authorization: `Bearer ${secretKey}` };

@@ -45,7 +45,7 @@ describe('Row 35: spoof check at creation across streaming, queue/jobs, v1/jobs,
     const user = await userStore.createUser({
       name: 'Row35 Tester',
       email: `row35_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const key = await redisKeyStore.generateApiKey(user.id, 'Row35 Key', {
       scopes: ['convert:write', 'convert:read'],
@@ -195,7 +195,7 @@ describe('Row 44: POST /api/convert/batch auth before body parse and multipart c
     const user = await userStore.createUser({
       name: 'Row44 Tester',
       email: `row44_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const key = await redisKeyStore.generateApiKey(user.id, 'Row44 Key', {
       scopes: ['convert:write', 'convert:read'],
@@ -322,7 +322,7 @@ describe('Row 45: separate encryption keys in production and JWT kid + JWT_SECRE
     const newSecret = 'new-jwt-secret-value-at-least-32-bytes!!';
 
     vi.stubEnv('JWT_SECRET', oldSecret);
-    const tokenFromOld = signJwt({ sub: 'u_rot', email: 'u@example.com', tier: 'pro' });
+    const tokenFromOld = signJwt({ sub: 'u_rot', email: 'u@example.com', tier: 'paid' });
     const [headerB64] = tokenFromOld.split('.');
     const header = JSON.parse(Buffer.from(headerB64, 'base64url').toString('utf8'));
     expect(header.kid).toBe(deriveJwtKeyId(oldSecret));

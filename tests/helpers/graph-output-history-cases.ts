@@ -34,7 +34,7 @@ export function itRecordsTheFinalOutputsOfACompletedGraph(makeScheduler: () => I
   const storedKeys: string[] = [];
 
   async function account(label: string): Promise<User> {
-    return userStore.sanitizeUser(await userStore.createUser({ name: label, email: `${label}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@graph-history.test`, tier: 'pro' }));
+    return userStore.sanitizeUser(await userStore.createUser({ name: label, email: `${label}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}@graph-history.test`, tier: 'paid' }));
   }
 
   beforeEach(async () => {

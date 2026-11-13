@@ -32,7 +32,7 @@ import {
 } from './helpers/rendered-dom';
 import { parsedSlug, slugPageCopy, type TestLocale } from './helpers/intl';
 import { testMessages } from './helpers/intl-messages';
-import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CREDITS } from '../src/lib/plan-limits';
 
 /**
  * The redesign checks read what a visitor receives: each component is rendered to markup (react-dom/server), the
@@ -47,7 +47,7 @@ const sourcePath = (...parts: string[]) => path.join(rootDir, ...parts);
 // The pages get the allowance from the constant, and the copy checks below write the 10 of entry 15 out by hand, as a visitor
 // reads it: an oracle independent of src/lib/plan-limits.ts.
 const renderSlug = (slug: string, locale: TestLocale = 'en') =>
-  renderDom(createElement(ConverterPageView, { parsed: parsedSlug(slug), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }), locale);
+  renderDom(createElement(ConverterPageView, { parsed: parsedSlug(slug), dailyLimit: ANONYMOUS_DAILY_CREDITS }), locale);
 const render = <P extends object>(component: ComponentType<P>, props: P) => renderDom(createElement(component, props));
 const noop = () => undefined;
 const hrefsOf = (root: DomElement) => links(root).map((l) => l.href);
@@ -255,7 +255,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
   });
 
   it('verifies the home page holds the title, the upload card, the format directory, the security card, the API card and the quality card, and no steps, questions or link to them', () => {
-    const home = renderDom(createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS, apiOrigin: 'https://convert.example.test' }));
+    const home = renderDom(createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CREDITS, apiOrigin: 'https://convert.example.test' }));
     const main = select(home, 'main')[0];
 
     const sections = allElements(main).filter((element) => element.tagName === 'h1' || element.tagName === 'h2');
@@ -270,7 +270,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const text = visibleText(main);
     expect(phrasesPresent(text, ['How Conversion Works', 'Frequently Asked', 'Add source files', 'Select an extension'])).toEqual([]);
     // The limits line under the upload card is the one place the home page states the allowance.
-    expect(text).toContain('10 conversions a day');
+    expect(text).toContain('10 credits a day');
     expect(allElements(home).filter((element) => attrOf(element, 'id') === 'how-it-works')).toEqual([]);
     expect(presentIn(hrefsOf(home), ['/#how-it-works'])).toEqual([]);
   });
@@ -417,7 +417,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect([...classTokens(page)].filter((token) => token.startsWith('rating-star-'))).toEqual([]);
 
     // The real limits are stated once, under the upload card, and no separate coloured strip repeats them
-    expect(phrasesMissing(text, ['Up to 1 GB per file', '10 conversions a day', 'Files deleted automatically'])).toEqual([]);
+    expect(phrasesMissing(text, ['Up to 1 GB per file', '10 credits a day', 'Files deleted automatically'])).toEqual([]);
     expect(phrasesPresent(text, ['Free, 10 server conversions a day', 'Encrypted Ephemeral Processing', 'Browser Edge & Isolated Worker Pipeline'])).toEqual([]);
   });
 
@@ -541,5 +541,5 @@ function renderQueue(status: 'ready' | 'completed' = 'ready'): DomElement {
 
 /** The home page's hero with no files queued. */
 function renderHome(): DomElement {
-  return render(HomeHero, { onFilesSelected: noop, dailyLimit: ANONYMOUS_DAILY_CONVERSIONS });
+  return render(HomeHero, { onFilesSelected: noop, dailyLimit: ANONYMOUS_DAILY_CREDITS });
 }

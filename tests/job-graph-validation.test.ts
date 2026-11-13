@@ -198,7 +198,7 @@ describe('WP-30 / Phase 3-B: Job Graph Specification & Kahn Topological Validati
       }
       nodes['out'] = { id: 'out', operation: 'export.internal', dependencies: [prev] };
 
-      const result = validateJobGraph({ nodes }, { userTier: 'enterprise', maxDepth: 8 });
+      const result = validateJobGraph({ nodes }, { userTier: 'paid', maxDepth: 8 });
       expect(result.valid).toBe(false);
       const depthErr = result.errors.find((e) => e.code === 'DEPTH_LIMIT_EXCEEDED');
       expect(depthErr).toBeDefined();

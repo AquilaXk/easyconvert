@@ -1,7 +1,7 @@
 import React, { useSyncExternalStore } from 'react';
 import { useFormatter, useTranslations } from 'next-intl';
 import { Clock, Plus } from 'lucide-react';
-import type { ApiKey, ApiKeyScope, QuotaUsage } from '@/lib/api-keys/types';
+import type { ApiKey, ApiKeyScope, ChargeEntry, QuotaUsage } from '@/lib/api-keys/types';
 import { CreateApiKeyForm, GeneratedSecretBanner } from './ApiKeyCreateCard';
 import { ApiKeysTable } from './ApiKeysTable';
 import { IntegrationGuide } from './IntegrationGuide';
@@ -67,6 +67,8 @@ function QuotaSummaryStrip({ quota }: Readonly<{ quota: QuotaUsage }>) {
 export interface ApiKeysPanelState {
   apiKeys: ApiKey[];
   quota: QuotaUsage | null;
+  /** The newest charges of the account, newest first. */
+  charges: ChargeEntry[];
   newKeyName: string;
   generatedSecret: string | null;
   isGeneratingKey: boolean;

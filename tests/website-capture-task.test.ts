@@ -77,7 +77,7 @@ function standIn(): void {
 }
 
 async function caller() {
-  const user = userStore.sanitizeUser(await userStore.createUser({ email: `capture-${Date.now()}-${crypto.randomBytes(4).toString('hex')}@capture.test`, name: 'Capture', tier: 'pro' }));
+  const user = userStore.sanitizeUser(await userStore.createUser({ email: `capture-${Date.now()}-${crypto.randomBytes(4).toString('hex')}@capture.test`, name: 'Capture', tier: 'paid' }));
   const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'capture', { scopes: ['convert:write', 'convert:read'] });
   return { authorization: `Bearer ${secretKey}`, usedToday: async () => (await redisKeyStore.getQuotaUsage(user.id)).usedToday };
 }

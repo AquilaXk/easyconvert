@@ -71,7 +71,7 @@ describe('POST /api/v1/convert error responses', () => {
     const user = await userStore.createUser({
       name: 'Error Mapping Tester',
       email: `errmap_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const key = await redisKeyStore.generateApiKey(user.id, 'Error Mapping Key', { scopes: ['convert:write', 'convert:read'] });
     secretKey = key.secretKey;

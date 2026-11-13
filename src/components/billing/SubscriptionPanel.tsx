@@ -5,7 +5,6 @@ import { useFormatter, useTranslations } from 'next-intl';
 import { CreditCard } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useBillingErrorWording } from '../i18n/error-wording';
-import { useTierLabel } from '../i18n/format';
 import { openBillingPortal, useBillingStatus, type SubscriptionView } from './billing-status';
 
 type Translate = ReturnType<typeof useTranslations<'billing.account'>>;
@@ -21,13 +20,12 @@ function stateLine(subscription: SubscriptionView, t: Translate, date: FormatDat
 }
 
 /**
- * The plan of the account and its subscription, on the dashboard. It appears only when paid plans are on sale: a subscriber
- * manages the payment method and the cancellation in the provider's portal, anyone else is pointed to the plans.
+ * The subscription of the account, on the dashboard. It appears only when packages and subscriptions are on sale: a subscriber
+ * manages the payment method and the cancellation in the provider's portal, anyone else is pointed to the packages and subscriptions.
  */
 export function SubscriptionPanel() {
   const t = useTranslations('billing.account');
   const format = useFormatter();
-  const tierLabel = useTierLabel();
   const wording = useBillingErrorWording();
   const status = useBillingStatus();
   const [busy, setBusy] = useState(false);
@@ -57,7 +55,7 @@ export function SubscriptionPanel() {
       </h3>
       {subscription ? (
         <>
-          <p className="text-sm text-ink">{t('plan', { plan: tierLabel(subscription.plan) })}</p>
+          <p className="text-sm text-ink">{t('credits', { credits: subscription.credits })}</p>
           {line ? <p className="text-sm text-ink-2">{line}</p> : null}
           <button
             type="button"

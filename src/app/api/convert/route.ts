@@ -19,7 +19,8 @@ import {
   WorkerOutputMissingError,
   WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
-import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, holdBaseCredits, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
+import { baseCredits } from '@/lib/billing/credits';
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import { attachmentContentDisposition } from '@/lib/api/content-disposition';
@@ -185,6 +186,11 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
       );
     }
 
+    // The unit was reserved for one credit before the formats were known; the rest of the cost of this pair is held now.
+    const base = baseCredits(detectedDef.extension, tgt);
+    const short = await holdBaseCredits(unit, caller, base);
+    if (short) return conversionRefusalResponse(short, instanceUri);
+
     let options: ConversionOptions = {};
     if (optionsRaw) {
       let parsed: unknown;
@@ -238,6 +244,7 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
       })
     );
     let result: Awaited<ReturnType<typeof dispatchConversion>>;
+    const conversionStartedAt = Date.now();
     try {
       result = await runUnderDeadline(req, deadlineMs, (limits) =>
         dispatchConversion(
@@ -267,7 +274,7 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
         ...conversionWarningsHeaders(result),
       },
     });
-    await unit.commit();
+    await unit.commit({ from: detectedDef.extension, to: tgt, base, processingMs: Date.now() - conversionStartedAt });
     return answer;
   } catch (error: unknown) {
     trace.cause = error;

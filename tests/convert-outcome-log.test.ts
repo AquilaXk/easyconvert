@@ -224,7 +224,7 @@ describe('POST /api/v1/convert', () => {
     const user = await userStore.createUser({
       name: 'Outcome Log Tester',
       email: `outcome_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Outcome Key', { scopes: ['convert:write'] });
 
@@ -242,7 +242,7 @@ describe('POST /api/v1/convert', () => {
     const user = await userStore.createUser({
       name: 'Outcome Target Tester',
       email: `target_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Target Key', { scopes: ['convert:write'] });
 
@@ -259,7 +259,7 @@ describe('POST /api/v1/convert', () => {
     const user = await userStore.createUser({
       name: 'Outcome Failure Tester',
       email: `failure_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Failure Key', { scopes: ['convert:write'] });
     vi.mocked(dispatchConversion).mockRejectedValueOnce(new RangeError(`Invalid length in ${PRIVATE_NAME}.pdf`));
@@ -333,7 +333,7 @@ describe('the secrets the log line cuts out', () => {
     const user = await userStore.createUser({
       name: 'Secrets Tester',
       email: `secrets_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-      tier: 'pro',
+      tier: 'paid',
     });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Secrets Key', { scopes: ['convert:write'] });
     return { Authorization: `Bearer ${secretKey}` };
