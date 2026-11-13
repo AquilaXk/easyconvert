@@ -17,7 +17,7 @@ async function subscriber(subscriptionId: string) {
     eventId: `evt_${crypto.randomUUID()}`,
     eventAt: NOW,
     userId: user.id,
-    subscription: { provider: 'paddle', providerSubscriptionId: subscriptionId, providerCustomerId: `ctm_${subscriptionId}`, status: 'active', plan: 'pro' },
+    subscription: { provider: 'paddle', providerSubscriptionId: subscriptionId, providerCustomerId: `ctm_${subscriptionId}`, status: 'active', credits: 1000 },
   });
   return user;
 }
@@ -66,7 +66,7 @@ describe('erasing an account that has a subscription', () => {
         eventId: `evt_${crypto.randomUUID()}`,
         eventAt: NOW + 1000,
         userId: id,
-        subscription: { provider: 'paddle', providerSubscriptionId: 'sub_late', providerCustomerId: 'ctm_sub_late', status: 'active', plan: 'pro' },
+        subscription: { provider: 'paddle', providerSubscriptionId: 'sub_late', providerCustomerId: 'ctm_sub_late', status: 'active', credits: 1000 },
       });
       expect(late).toBe('applied');
       return deleteUser(id);

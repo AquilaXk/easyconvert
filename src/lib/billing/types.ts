@@ -1,10 +1,4 @@
-import type { UserTier } from '../auth/types';
-
-/** The plans that are bought; `free` is what an account has without a subscription. */
-export const PAID_PLANS = ['basic', 'pro', 'enterprise'] as const satisfies readonly UserTier[];
-export type PaidPlan = (typeof PAID_PLANS)[number];
-
-export const isPaidPlan = (value: unknown): value is PaidPlan => PAID_PLANS.some((plan) => plan === value);
+import type { PackageSize, Product, SubscriptionSize } from './credits';
 
 /** The states of a subscription, as the provider words them. */
 export type SubscriptionStatus = 'active' | 'trialing' | 'past_due' | 'paused' | 'canceled';
@@ -16,7 +10,8 @@ export interface SubscriptionRecord {
   providerSubscriptionId: string;
   providerCustomerId: string;
   status: SubscriptionStatus;
-  plan: PaidPlan;
+  /** Credits the subscription gives each billing period. */
+  credits: SubscriptionSize;
   /** When the period that is paid for ends, in milliseconds since the epoch. */
   currentPeriodEnd?: number;
   /** When a scheduled cancellation takes effect; the subscription stays active until then. */
@@ -36,13 +31,45 @@ export interface SubscriptionChange {
 
 /**
  * What an event says about a subscription, before the account it belongs to is settled: `userId` is set when the event proves
- * it. `plan` is absent when the subscription's price is one this configuration no longer sells (a retired or rotated price); the
- * event is then read for its status alone, and the plan is the one the stored record of that subscription has.
+ * it. `credits` is absent when the subscription's price is one this configuration no longer sells (a retired or rotated price); the
+ * event is then read for its status alone, and the credits are those the stored record of that subscription has.
  */
 export type MappedSubscriptionEvent = Omit<SubscriptionChange, 'userId' | 'subscription'> & {
   userId?: string;
-  subscription: Omit<SubscriptionChange['subscription'], 'plan'> & { plan?: PaidPlan };
+  subscription: Omit<SubscriptionChange['subscription'], 'credits'> & { credits?: SubscriptionSize };
 };
+
+/** A completed payment for packages, read from a provider event or list: the credits it buys and the account the checkout named. */
+export interface PackagePurchase {
+  transactionId: string;
+  /** Credits of all the package items of the payment (quantity included). */
+  credits: number;
+  /** What the customer paid in all, in the lowest unit of `currency` as the provider states it; the share of a refund is read against it. */
+  paid: string;
+  currency: string;
+  /** When the provider says the payment happened, in milliseconds since the epoch. */
+  occurredAt: number;
+  /** The account the payment names, when its custom data carries this server's tag. */
+  userId?: string;
+}
+
+/** A refund or a chargeback of a package payment, read from a provider event. */
+export interface PackageRefund {
+  adjustmentId: string;
+  transactionId: string;
+  /** The amount returned, in the lowest unit of `currency`, and how much of the payment's total that is (0 to 1; 1 for a full refund). */
+  amount: string;
+  currency: string;
+  full: boolean;
+  action: 'refund' | 'chargeback';
+  occurredAt: number;
+}
+
+/** One payment of the provider's own list, read as an event is: `purchase` is null for a payment that buys no package of this configuration. */
+export interface ListedPackagePurchase {
+  transactionId: string;
+  purchase: PackagePurchase | null;
+}
 
 /** One subscription of the provider's own list, read as an event is: `change` is null for one whose status or price this configuration does not read. */
 export interface ListedSubscription {
@@ -50,14 +77,21 @@ export interface ListedSubscription {
   change: MappedSubscriptionEvent | null;
 }
 
-/** What a page needs to offer the paid plans: Paddle.js settings and the price of each plan. All of it is public by design (entry 262). */
+/** The credits and Paddle price of each size that is sold. */
+export interface SizedPrice<Size extends number> {
+  credits: Size;
+  priceId: string;
+}
+
+/** What a page needs to offer packages and subscriptions: Paddle.js settings and the price of each size. All of it is public by design (entry 262). */
 export interface PublicBillingConfig {
   environment: 'sandbox' | 'production';
   clientToken: string;
-  plans: { plan: PaidPlan; priceId: string }[];
+  packages: SizedPrice<PackageSize>[];
+  subscriptions: SizedPrice<SubscriptionSize>[];
 }
 
-/** What the browser needs to open a checkout for `plan`. */
+/** What the browser needs to open a checkout for a product. */
 export interface CheckoutParams {
   environment: 'sandbox' | 'production';
   clientToken: string;
@@ -86,11 +120,22 @@ export class InvalidWebhookError extends Error {
 /** The part of a payment provider that the rest of the application depends on. */
 export interface BillingProvider {
   readonly id: string;
-  createCheckout(input: { userId: string; email: string; plan: PaidPlan }): CheckoutParams;
+  createCheckout(input: { userId: string; email: string; product: Product }): CheckoutParams;
   /** Checks the signature of a webhook body; throws `InvalidWebhookError`. */
   verifyWebhook(rawBody: string, signature: string | null): Promise<VerifiedBillingEvent>;
   /** The change an event makes to a subscription, or null for an event that changes none or names no account. */
   mapEventToSubscription(event: VerifiedBillingEvent): MappedSubscriptionEvent | null;
+  /** The package payment a completed-payment event reports, or null for an event that is no such payment. */
+  mapEventToPackagePurchase(event: VerifiedBillingEvent): PackagePurchase | null;
+  /** The refund or chargeback of a package payment an adjustment event reports, once approved, or null. */
+  mapEventToPackageRefund(event: VerifiedBillingEvent): PackageRefund | null;
+  /**
+   * The completed payments of the provider's own list, newest first, a page at a time, read as the events of
+   * `mapEventToPackagePurchase` are. A page that cannot be read in time throws.
+   */
+  listPackagePurchases(options: { perPage: number; signal: AbortSignal }): AsyncGenerator<ListedPackagePurchase[], void, void>;
+  /** Moves the subscription to another size at once, the credits of the period it leaves being dropped; throws when the provider refuses. */
+  changeSubscription(subscription: SubscriptionRecord, credits: SubscriptionSize): Promise<void>;
   /**
    * Every subscription the provider holds, a page at a time, read as the events of `mapEventToSubscription` are: the time of a
    * change is when the provider last updated the subscription. A page that cannot be read in time throws.

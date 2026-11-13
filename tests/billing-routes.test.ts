@@ -3,12 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
 const portalCreate = vi.hoisted(() => vi.fn());
+const subscriptionUpdate = vi.hoisted(() => vi.fn());
 vi.mock('@paddle/paddle-node-sdk', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@paddle/paddle-node-sdk')>();
   class FakePaddle extends actual.Paddle {
     constructor(...args: ConstructorParameters<typeof actual.Paddle>) {
       super(...args);
       this.customerPortalSessions = { create: portalCreate } as never;
+      this.subscriptions = { update: subscriptionUpdate } as never;
     }
   }
   return { ...actual, Paddle: FakePaddle };
@@ -19,13 +21,14 @@ import { POST as startCheckout } from '../src/app/api/billing/checkout/route';
 import { POST as openPortal } from '../src/app/api/billing/portal/route';
 import { POST as receiveWebhook } from '../src/app/api/billing/webhook/route';
 import { keyStore } from '../src/lib/api-keys/key-store';
+import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { createSessionToken, getSessionFromToken } from '../src/lib/auth/session';
 import { getBillingProvider } from '../src/lib/billing';
 import { subscriptionStore } from '../src/lib/billing/subscription-store';
-import { PLAN_MAX_FILE_BYTES, TIER_LIMITS, maxFileBytes, planOfCaller } from '../src/lib/plan-limits';
+import { FREE_DAILY_CREDITS, PLAN_MAX_FILE_BYTES, maxFileBytes, planOfCaller } from '../src/lib/plan-limits';
 import { reading, resetMetrics } from './helpers/metrics-readings';
-import { WEBHOOK_SECRET, sign, subscriptionEventBody } from './helpers/paddle-events';
+import { WEBHOOK_SECRET, adjustmentEventBody, sign, subscriptionEventBody, transactionEventBody } from './helpers/paddle-events';
 
 const ORIGIN = 'http://localhost:3000';
 const NOW = Date.UTC(2026, 10, 12, 12, 0, 0);
@@ -36,9 +39,15 @@ const BILLING_ENV = {
   PADDLE_WEBHOOK_SECRET: WEBHOOK_SECRET,
   PADDLE_CLIENT_TOKEN: 'test_fixture_client_token',
   PADDLE_ENVIRONMENT: 'sandbox',
-  PADDLE_PRICE_ID_BASIC: 'pri_basic_fixture',
-  PADDLE_PRICE_ID_PRO: 'pri_pro_fixture',
-  PADDLE_PRICE_ID_ENTERPRISE: 'pri_enterprise_fixture',
+  PADDLE_PRICE_ID_PACKAGE_500: 'pri_package_500_fixture',
+  PADDLE_PRICE_ID_PACKAGE_1000: 'pri_package_1000_fixture',
+  PADDLE_PRICE_ID_PACKAGE_2500: 'pri_package_2500_fixture',
+  PADDLE_PRICE_ID_PACKAGE_5000: 'pri_package_5000_fixture',
+  PADDLE_PRICE_ID_PACKAGE_10000: 'pri_package_10000_fixture',
+  PADDLE_PRICE_ID_SUBSCRIPTION_1000: 'pri_subscription_1000_fixture',
+  PADDLE_PRICE_ID_SUBSCRIPTION_2500: 'pri_subscription_2500_fixture',
+  PADDLE_PRICE_ID_SUBSCRIPTION_5000: 'pri_subscription_5000_fixture',
+  PADDLE_PRICE_ID_SUBSCRIPTION_10000: 'pri_subscription_10000_fixture',
 };
 
 function configure(on: boolean) {
@@ -93,6 +102,8 @@ beforeEach(() => {
   keyStore.resetStore();
   resetMetrics();
   portalCreate.mockReset();
+  subscriptionUpdate.mockReset();
+  redisKeyStore.resetStore();
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
 });
@@ -100,6 +111,7 @@ afterEach(async () => {
   vi.useRealTimers();
   for (const userId of created.splice(0)) {
     await subscriptionStore.forgetUser(userId);
+    await redisKeyStore.forgetUsage(userId);
     await redisUserStore.deleteUser(userId);
   }
   vi.unstubAllEnvs();
@@ -116,7 +128,7 @@ describe('while billing is not configured', () => {
   });
 
   it.each([
-    ['checkout', () => startCheckout(post('/api/billing/checkout', undefined, { plan: 'pro' }))],
+    ['checkout', () => startCheckout(post('/api/billing/checkout', undefined, { kind: 'package', credits: 1000 }))],
     ['portal', () => openPortal(post('/api/billing/portal'))],
     ['webhook', () => webhook(eventBody())],
   ])('refuses %s with 503 billing_unavailable, even for a signed-in account', async (_name, call) => {
@@ -127,7 +139,7 @@ describe('while billing is not configured', () => {
 
   it('refuses a checkout with 503 for a signed-in account too and changes no tier', async () => {
     const user = await account();
-    const res = await startCheckout(post('/api/billing/checkout', await cookieOf(user), { plan: 'enterprise' }));
+    const res = await startCheckout(post('/api/billing/checkout', await cookieOf(user), { kind: 'subscription', credits: 10000 }));
     expect(res.status).toBe(503);
     expect((await redisUserStore.findById(user.id))?.tier).toBe('free');
   });
@@ -150,10 +162,18 @@ describe('the status route with billing configured', () => {
       enabled: true,
       environment: 'sandbox',
       clientToken: 'test_fixture_client_token',
-      plans: [
-        { plan: 'basic', priceId: 'pri_basic_fixture' },
-        { plan: 'pro', priceId: 'pri_pro_fixture' },
-        { plan: 'enterprise', priceId: 'pri_enterprise_fixture' },
+      packages: [
+        { credits: 500, priceId: 'pri_package_500_fixture' },
+        { credits: 1000, priceId: 'pri_package_1000_fixture' },
+        { credits: 2500, priceId: 'pri_package_2500_fixture' },
+        { credits: 5000, priceId: 'pri_package_5000_fixture' },
+        { credits: 10000, priceId: 'pri_package_10000_fixture' },
+      ],
+      subscriptions: [
+        { credits: 1000, priceId: 'pri_subscription_1000_fixture' },
+        { credits: 2500, priceId: 'pri_subscription_2500_fixture' },
+        { credits: 5000, priceId: 'pri_subscription_5000_fixture' },
+        { credits: 10000, priceId: 'pri_subscription_10000_fixture' },
       ],
       subscription: null,
     });
@@ -166,39 +186,73 @@ describe('the status route with billing configured', () => {
 describe('the checkout route', () => {
   beforeEach(() => configure(true));
 
+  const seedSubscription = async (userId: string, credits: 1000 | 2500 = 1000) =>
+    subscriptionStore.apply({
+      eventId: eventId('seed'),
+      eventAt: NOW,
+      userId,
+      subscription: { provider: 'paddle', providerSubscriptionId: SUBSCRIPTION(), providerCustomerId: 'ctm_seed', status: 'active', credits, currentPeriodEnd: NOW + 20 * 86_400_000 },
+    });
+
   it('refuses a visitor with 401', async () => {
-    expect((await startCheckout(post('/api/billing/checkout', undefined, { plan: 'pro' }))).status).toBe(401);
+    expect((await startCheckout(post('/api/billing/checkout', undefined, { kind: 'package', credits: 1000 }))).status).toBe(401);
   });
 
-  it('refuses a plan that is not sold, and a body that is not JSON', async () => {
+  it('refuses a package or subscription that is not sold, and a body that is not JSON', async () => {
     const cookie = await cookieOf(await account());
-    for (const body of [{ plan: 'free' }, { plan: 'gold' }, {}, { plan: ['pro'] }]) {
+    const bodies = [{ plan: 'pro' }, { kind: 'package', credits: 1500 }, { kind: 'subscription', credits: 500 }, { kind: 'package', credits: '1000' }, { kind: 'gold', credits: 1000 }, {}, { kind: ['package'], credits: 1000 }];
+    for (const body of bodies) {
       const res = await startCheckout(post('/api/billing/checkout', cookie, body));
-      expect({ status: res.status, code: (await json(res)).code }, JSON.stringify(body)).toEqual({ status: 400, code: 'invalid_plan' });
+      expect({ status: res.status, code: (await json(res)).code }, JSON.stringify(body)).toEqual({ status: 400, code: 'invalid_product' });
     }
     const res = await startCheckout(request('/api/billing/checkout', { method: 'POST', cookie, body: 'nope' }));
     expect(res.status).toBe(400);
   });
 
-  it('gives the signed-in account the checkout of its plan, with its id signed', async () => {
+  it('gives the signed-in account the checkout of a package, with its id signed', async () => {
     const user = await account();
-    const res = await startCheckout(post('/api/billing/checkout', await cookieOf(user), { plan: 'pro' }));
+    const res = await startCheckout(post('/api/billing/checkout', await cookieOf(user), { kind: 'package', credits: 2500 }));
     expect(res.status).toBe(200);
     const { checkout } = (await json(res)) as { checkout: Record<string, unknown> & { customData: Record<string, string> } };
-    expect(checkout).toMatchObject({ environment: 'sandbox', items: [{ priceId: 'pri_pro_fixture', quantity: 1 }], customer: { email: user.email } });
+    expect(checkout).toMatchObject({ environment: 'sandbox', items: [{ priceId: 'pri_package_2500_fixture', quantity: 1 }], customer: { email: user.email } });
     expect(checkout.customData.easyconvertUserId).toBe(user.id);
   });
 
-  it('sends an account that has a plan to the portal instead of selling it another', async () => {
+  it('gives the checkout of a subscription at its own price', async () => {
+    const res = await startCheckout(post('/api/billing/checkout', await cookieOf(await account()), { kind: 'subscription', credits: 5000 }));
+    const { checkout } = (await json(res)) as { checkout: { items: unknown } };
+    expect(checkout.items).toEqual([{ priceId: 'pri_subscription_5000_fixture', quantity: 1 }]);
+  });
+
+  it('sells a package to an account that has a subscription', async () => {
     const user = await account();
-    await subscriptionStore.apply({
-      eventId: eventId('seed'),
-      eventAt: NOW,
-      userId: user.id,
-      subscription: { provider: 'paddle', providerSubscriptionId: SUBSCRIPTION(), providerCustomerId: 'ctm_seed', status: 'active', plan: 'pro' },
-    });
-    const res = await startCheckout(post('/api/billing/checkout', await cookieOf(user), { plan: 'enterprise' }));
-    expect({ status: res.status, code: (await json(res)).code }).toEqual({ status: 409, code: 'already_subscribed' });
+    await seedSubscription(user.id);
+    const res = await startCheckout(post('/api/billing/checkout', await cookieOf(user), { kind: 'package', credits: 500 }));
+    expect(res.status).toBe(200);
+    expect(((await json(res)) as { checkout: { items: unknown } }).checkout.items).toEqual([{ priceId: 'pri_package_500_fixture', quantity: 1 }]);
+    expect(subscriptionUpdate).not.toHaveBeenCalled();
+  });
+
+  it('moves an account that has a subscription to the size it asks for at once, instead of selling it a second subscription', async () => {
+    const user = await account();
+    await seedSubscription(user.id);
+    subscriptionUpdate.mockResolvedValueOnce({});
+    const res = await startCheckout(post('/api/billing/checkout', await cookieOf(user), { kind: 'subscription', credits: 2500 }));
+    expect({ status: res.status, body: await json(res) }).toEqual({ status: 200, body: { success: true, changed: true } });
+    expect(subscriptionUpdate).toHaveBeenCalledWith(SUBSCRIPTION(), { items: [{ priceId: 'pri_subscription_2500_fixture', quantity: 1 }], prorationBillingMode: 'prorated_immediately' });
+  });
+
+  it('refuses the size the account has, and says 502 when the provider refuses the change', async () => {
+    const user = await account();
+    await seedSubscription(user.id);
+    const same = await startCheckout(post('/api/billing/checkout', await cookieOf(user), { kind: 'subscription', credits: 1000 }));
+    expect({ status: same.status, code: (await json(same)).code }).toEqual({ status: 409, code: 'already_subscribed' });
+    expect(subscriptionUpdate).not.toHaveBeenCalled();
+
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    subscriptionUpdate.mockRejectedValueOnce(new Error('network down'));
+    const failed = await startCheckout(post('/api/billing/checkout', await cookieOf(user), { kind: 'subscription', credits: 2500 }));
+    expect({ status: failed.status, code: (await json(failed)).code }).toEqual({ status: 502, code: 'billing_provider_failed' });
   });
 });
 
@@ -218,7 +272,7 @@ describe('the portal route', () => {
       eventId: eventId('seed'),
       eventAt: NOW,
       userId: user.id,
-      subscription: { provider: 'paddle', providerSubscriptionId: SUBSCRIPTION(), providerCustomerId: 'ctm_seed', status: 'active', plan: 'pro' },
+      subscription: { provider: 'paddle', providerSubscriptionId: SUBSCRIPTION(), providerCustomerId: 'ctm_seed', status: 'active', credits: 1000 },
     });
     portalCreate.mockResolvedValueOnce({
       urls: { general: { overview: 'https://portal.example/o' }, subscriptions: [{ id: SUBSCRIPTION(), cancelSubscription: 'https://portal.example/c' }] },
@@ -237,25 +291,26 @@ describe('the portal route', () => {
 describe('the webhook route', () => {
   beforeEach(() => configure(true));
 
-  async function checkoutData(user: Awaited<ReturnType<typeof account>>, plan: 'pro' | 'enterprise' = 'pro') {
-    const res = await startCheckout(post('/api/billing/checkout', await cookieOf(user), { plan }));
+  async function checkoutData(user: Awaited<ReturnType<typeof account>>, product: { kind: 'package' | 'subscription'; credits: number } = { kind: 'subscription', credits: 1000 }) {
+    const res = await startCheckout(post('/api/billing/checkout', await cookieOf(user), product));
     return ((await json(res)) as { checkout: { customData: Record<string, string> } }).checkout.customData;
   }
 
-  it('applies a verified subscription and gives the account the limits of the plan', async () => {
+  it('applies a verified subscription and gives the account its credits and the limits of the paid plan', async () => {
     const user = await account();
     const body = eventBody({ customData: await checkoutData(user) });
     const res = await webhook(body);
     expect({ status: res.status, body: await json(res) }).toEqual({ status: 200, body: { success: true, result: 'applied' } });
 
     const session = await getSessionFromToken(createSessionToken(user));
-    expect(session?.tier).toBe('pro');
-    expect(planOfCaller(session)).toBe('pro');
-    expect(maxFileBytes(planOfCaller(session))).toBe(PLAN_MAX_FILE_BYTES.pro);
+    expect(session?.tier).toBe('paid');
+    expect(planOfCaller(session)).toBe('paid');
+    expect(maxFileBytes(planOfCaller(session))).toBe(PLAN_MAX_FILE_BYTES.paid);
     expect(maxFileBytes(planOfCaller(session))).toBeGreaterThan(PLAN_MAX_FILE_BYTES.free);
-    const quota = await keyStore.getQuotaUsage(user.id);
-    expect({ tier: quota.tier, dailyLimit: quota.dailyLimit }).toEqual({ tier: 'pro', dailyLimit: TIER_LIMITS.pro });
-    expect(TIER_LIMITS.pro).toBeGreaterThan(TIER_LIMITS.free);
+    // The period of the subscription holds its credits, counted by the month of the subscription.
+    const quota = await redisKeyStore.getQuotaUsage(user.id);
+    expect({ tier: quota.tier, period: quota.period, dailyLimit: quota.dailyLimit, packageCredits: quota.packageCredits }).toEqual({ tier: 'paid', period: 'month', dailyLimit: 1000, packageCredits: 0 });
+    expect(quota.dailyLimit).toBeGreaterThan(FREE_DAILY_CREDITS);
   });
 
   it('answers 400 to a bad signature and changes nothing', async () => {
@@ -281,7 +336,7 @@ describe('the webhook route', () => {
     const header = sign(body, WEBHOOK_SECRET, seconds(NOW));
     expect((await json(await webhook(body, header))).result).toBe('applied');
     expect((await json(await webhook(body, header))).result).toBe('duplicate');
-    expect((await redisUserStore.findById(user.id))?.tier).toBe('pro');
+    expect((await redisUserStore.findById(user.id))?.tier).toBe('paid');
   });
 
   it('follows the subscription through an update, a scheduled cancellation and the cancellation, by its id alone', async () => {
@@ -292,7 +347,7 @@ describe('the webhook route', () => {
     const cancelAt = '2026-12-12T12:00:00Z';
     const scheduled = await webhook(eventBody({ eventId: '2', type: 'subscription.updated', occurredAt: '2026-11-12T12:01:00Z', scheduledChange: { action: 'cancel', effective_at: cancelAt } }));
     expect((await json(scheduled)).result).toBe('applied');
-    expect((await redisUserStore.findById(user.id))?.tier).toBe('pro');
+    expect((await redisUserStore.findById(user.id))?.tier).toBe('paid');
 
     vi.setSystemTime(Date.parse(cancelAt));
     expect((await redisUserStore.findById(user.id))?.tier).toBe('free');
@@ -307,19 +362,19 @@ describe('the webhook route', () => {
     await webhook(eventBody({ eventId: '1', customData: await checkoutData(user) }));
     vi.setSystemTime(NOW + 60_000);
     await webhook(eventBody({ eventId: '2', type: 'subscription.past_due', status: 'past_due', occurredAt: '2026-11-12T12:01:00Z', periodEnd: '2026-11-13T12:00:00Z' }));
-    expect((await redisUserStore.findById(user.id))?.tier).toBe('pro');
+    expect((await redisUserStore.findById(user.id))?.tier).toBe('paid');
     vi.setSystemTime(Date.parse('2026-11-13T12:00:01Z'));
     expect((await redisUserStore.findById(user.id))?.tier).toBe('free');
   });
 
   describe('after a price has been retired or rotated', () => {
-    const RETIRED = ['pri_pro_fixture'];
+    const RETIRED = ['pri_subscription_1000_fixture'];
 
     async function subscribed() {
       const user = await account();
       await webhook(eventBody({ eventId: '1', customData: await checkoutData(user) }));
-      expect((await redisUserStore.findById(user.id))?.tier).toBe('pro');
-      vi.stubEnv('PADDLE_PRICE_ID_PRO', 'pri_pro_rotated');
+      expect((await redisUserStore.findById(user.id))?.tier).toBe('paid');
+      vi.stubEnv('PADDLE_PRICE_ID_SUBSCRIPTION_1000', 'pri_subscription_rotated');
       vi.setSystemTime(NOW + 60_000);
       return user;
     }
@@ -329,14 +384,14 @@ describe('the webhook route', () => {
       const res = await webhook(eventBody({ eventId: '2', type: 'subscription.canceled', status: 'canceled', periodEnd: null, priceIds: RETIRED, occurredAt: '2026-11-12T12:01:00Z' }));
       expect((await json(res)).result).toBe('applied');
       expect((await redisUserStore.findById(user.id))?.tier).toBe('free');
-      expect(await subscriptionStore.findByUser(user.id)).toMatchObject({ status: 'canceled', plan: 'pro' });
+      expect(await subscriptionStore.findByUser(user.id)).toMatchObject({ status: 'canceled', credits: 1000 });
     });
 
-    it('keeps the plan of a past-due subscription at the retired price to the end of the paid period, then free', async () => {
+    it('keeps the paid tier of a past-due subscription at the retired price to the end of the paid period, then free', async () => {
       const user = await subscribed();
       const res = await webhook(eventBody({ eventId: '2', type: 'subscription.past_due', status: 'past_due', periodEnd: '2026-11-13T12:00:00Z', priceIds: RETIRED, occurredAt: '2026-11-12T12:01:00Z' }));
       expect((await json(res)).result).toBe('applied');
-      expect((await redisUserStore.findById(user.id))?.tier).toBe('pro');
+      expect((await redisUserStore.findById(user.id))?.tier).toBe('paid');
       vi.setSystemTime(Date.parse('2026-11-13T12:00:01Z'));
       expect((await redisUserStore.findById(user.id))?.tier).toBe('free');
     });
@@ -349,7 +404,7 @@ describe('the webhook route', () => {
 
     it('applies nothing for a retired price when the account holds no such subscription, and nothing that would grant a plan', async () => {
       const user = await account();
-      vi.stubEnv('PADDLE_PRICE_ID_PRO', 'pri_pro_rotated');
+      vi.stubEnv('PADDLE_PRICE_ID_SUBSCRIPTION_1000', 'pri_subscription_rotated');
       vi.spyOn(console, 'error').mockImplementation(() => undefined);
       const customData = await checkoutData(user);
       const canceled = await webhook(eventBody({ eventId: '1', type: 'subscription.canceled', status: 'canceled', periodEnd: null, priceIds: RETIRED, customData }));
@@ -399,5 +454,131 @@ describe('the webhook route', () => {
       unknown_user: 1,
     });
     expect(await reading('easyconvert_billing_events_total')).toBe(4);
+  });
+});
+
+describe('the webhook route and package payments', () => {
+  beforeEach(() => configure(true));
+
+  const TXN = () => `txn_${run}`;
+  async function checkoutOf(user: Awaited<ReturnType<typeof account>>, credits = 1000) {
+    const res = await startCheckout(post('/api/billing/checkout', await cookieOf(user), { kind: 'package', credits }));
+    return ((await json(res)) as { checkout: { customData: Record<string, string> } }).checkout.customData;
+  }
+  const purchase = (options: Parameters<typeof transactionEventBody>[0] = {}) => transactionEventBody({ transactionId: TXN(), ...options, eventId: eventId(options.eventId ?? 'txn') });
+  const refund = (options: Parameters<typeof adjustmentEventBody>[0] = {}) =>
+    adjustmentEventBody({ transactionId: TXN(), adjustmentId: `adj_${run}_${options.adjustmentId ?? 'a'}`, ...options, eventId: eventId(options.eventId ?? 'adj') });
+  const balance = (userId: string) => redisKeyStore.packageBalance(userId);
+
+  it('adds the credits of a completed package payment to the account its checkout names, and gives it the paid limits', async () => {
+    const user = await account();
+    const res = await webhook(purchase({ customData: await checkoutOf(user, 2500), items: [{ priceId: 'pri_package_2500_fixture' }] }));
+    expect({ status: res.status, body: await json(res) }).toEqual({ status: 200, body: { success: true, result: 'applied' } });
+    expect(await balance(user.id)).toBe(2500);
+
+    // The record of the account keeps its tier; the session and the key check read the balance.
+    expect((await redisUserStore.findById(user.id))?.tier).toBe('free');
+    const session = await getSessionFromToken(createSessionToken(user));
+    expect(session?.tier).toBe('paid');
+    expect(maxFileBytes(planOfCaller(session))).toBe(PLAN_MAX_FILE_BYTES.paid);
+    const quota = await redisKeyStore.getQuotaUsage(user.id);
+    expect(quota).toMatchObject({ tier: 'paid', period: 'day', dailyLimit: FREE_DAILY_CREDITS, packageCredits: 2500, remaining: FREE_DAILY_CREDITS + 2500 });
+  });
+
+  it('adds a payment once: a replay of the event and a second event for the same transaction change nothing', async () => {
+    const user = await account();
+    const customData = await checkoutOf(user);
+    const body = purchase({ customData });
+    const header = sign(body, WEBHOOK_SECRET, seconds(NOW));
+    expect((await json(await webhook(body, header))).result).toBe('applied');
+    expect((await json(await webhook(body, header))).result).toBe('duplicate');
+    expect((await json(await webhook(purchase({ eventId: 'second', customData })))).result).toBe('duplicate');
+    expect(await balance(user.id)).toBe(1000);
+
+    const another = await webhook(purchase({ eventId: 'third', transactionId: `${TXN()}_b`, customData }));
+    expect((await json(another)).result).toBe('applied');
+    expect(await balance(user.id)).toBe(2000);
+  });
+
+  it('adds nothing for custom data this server did not sign, for an account that is gone, or for a payment that buys no package', async () => {
+    const victim = await account('victim');
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    expect((await json(await webhook(purchase({ customData: { easyconvertUserId: victim.id, easyconvertBinding: 'forged' } })))).result).toBe('unattributed');
+    expect(await balance(victim.id)).toBe(0);
+
+    const gone = await account('gone');
+    const customData = await checkoutOf(gone);
+    await redisUserStore.deleteUser(gone.id);
+    expect((await json(await webhook(purchase({ eventId: 'gone', transactionId: `${TXN()}_gone`, customData })))).result).toBe('unknown_user');
+    expect(await balance(gone.id)).toBe(0);
+
+    const subscriber = await account('subscriber');
+    const subscriptionPayment = await webhook(purchase({ eventId: 'sub', transactionId: `${TXN()}_sub`, customData: await checkoutOf(subscriber), subscriptionId: SUBSCRIPTION(), items: [{ priceId: 'pri_subscription_1000_fixture' }] }));
+    expect((await json(subscriptionPayment)).result).toBe('ignored');
+    expect(await balance(subscriber.id)).toBe(0);
+  });
+
+  it('adds nothing for a payment that is not completed yet', async () => {
+    const user = await account();
+    expect((await json(await webhook(purchase({ status: 'billed', customData: await checkoutOf(user) })))).result).toBe('ignored');
+    expect(await balance(user.id)).toBe(0);
+  });
+
+  it('takes back what is left of the credits of a fully refunded payment, never below zero, and says what was already spent', async () => {
+    const user = await account();
+    await webhook(purchase({ customData: await checkoutOf(user, 1000) }));
+    const spent = await redisKeyStore.reserveQuota(user.id, FREE_DAILY_CREDITS + 300);
+    expect(spent.allowed).toBe(true);
+    await redisKeyStore.commitQuota(spent.reservationId!);
+    expect(await balance(user.id)).toBe(700);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const res = await webhook(refund());
+    expect({ status: res.status, body: await json(res) }).toEqual({ status: 200, body: { success: true, result: 'applied' } });
+    expect(await balance(user.id)).toBe(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('took back 700 credits'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('300 more were owed and are already spent'));
+  });
+
+  it('takes back the share of a partial refund, once for each adjustment', async () => {
+    const user = await account();
+    await webhook(purchase({ customData: await checkoutOf(user, 1000), total: '1000' }));
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect((await json(await webhook(refund({ itemType: 'partial', total: '250' })))).result).toBe('applied');
+    expect(await balance(user.id)).toBe(750);
+    expect((await json(await webhook(refund({ itemType: 'partial', total: '250', eventId: 'again' })))).result).toBe('duplicate');
+    expect(await balance(user.id)).toBe(750);
+    expect((await json(await webhook(refund({ adjustmentId: 'b', itemType: 'partial', total: '100' })))).result).toBe('applied');
+    expect(await balance(user.id)).toBe(650);
+    // A full refund then takes back only what is left of the payment's credits.
+    expect((await json(await webhook(refund({ adjustmentId: 'c' })))).result).toBe('applied');
+    expect(await balance(user.id)).toBe(0);
+  });
+
+  it('takes back a chargeback, and leaves a refund that waits for approval or was rejected', async () => {
+    const user = await account();
+    await webhook(purchase({ customData: await checkoutOf(user, 500), items: [{ priceId: 'pri_package_500_fixture' }] }));
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect((await json(await webhook(refund({ status: 'pending_approval' })))).result).toBe('ignored');
+    expect((await json(await webhook(refund({ adjustmentId: 'r', status: 'rejected' })))).result).toBe('ignored');
+    expect(await balance(user.id)).toBe(500);
+    expect((await json(await webhook(refund({ adjustmentId: 'cb', action: 'chargeback' })))).result).toBe('applied');
+    expect(await balance(user.id)).toBe(0);
+  });
+
+  it('ignores the refund of a payment this server never credited', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect((await json(await webhook(refund({ transactionId: `${TXN()}_unknown` })))).result).toBe('ignored');
+  });
+
+  it('counts what became of each package event', async () => {
+    const user = await account();
+    const events = (result: string) => reading('easyconvert_billing_events_total', { source: 'webhook', result });
+    const customData = await checkoutOf(user);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await webhook(purchase({ customData }));
+    await webhook(purchase({ customData }));
+    await webhook(refund());
+    expect({ applied: await events('applied'), duplicate: await events('duplicate') }).toEqual({ applied: 2, duplicate: 1 });
   });
 });

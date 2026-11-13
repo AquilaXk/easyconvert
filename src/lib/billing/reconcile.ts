@@ -1,15 +1,19 @@
 import crypto from 'node:crypto';
+import { redisKeyStore, type RedisKeyStore } from '../api-keys/redis-key-store';
 import { observeBillingEvent } from '../metrics/instruments';
 import type { BillingResult } from '../metrics/labels';
 import { getBillingProvider } from './index';
 import { entitlementOf, isEntitlingStatus } from './entitlement';
+import { creditPackagePurchase } from './package-credits';
 import { subscriptionStore, type SubscriptionStore } from './subscription-store';
-import type { BillingProvider, ListedSubscription, SubscriptionChange, SubscriptionRecord } from './types';
+import type { BillingProvider, ListedPackagePurchase, ListedSubscription, SubscriptionChange, SubscriptionRecord } from './types';
 
 /**
  * Compares the subscriptions of the store with the provider's list and corrects what a lost event left wrong (docs/policy-decisions.md,
- * entry 277). The webhook is the fast path; this is the second one, so that a cancellation or a failed renewal that never arrived does
- * not leave a paid tier in place for good, and a subscription whose first event never found its account is seen.
+ * entries 277 and 285). The webhook is the fast path; this is the second one, so that a cancellation or a failed renewal that never
+ * arrived does not leave a paid tier in place for good, and a subscription whose first event never found its account is seen. A second
+ * pass reads the provider's completed payments of the last 30 days, newest first, and credits each package payment the ledger lacks
+ * (the credit is idempotent by transaction id, so a payment the webhook already credited changes nothing).
  *
  * The method is a periodic list of the provider's subscriptions, each read through the code that reads a webhook event and compared with
  * the local record, with the safeguards this store needs:
@@ -53,6 +57,10 @@ export interface ReconcileReport {
   downgraded: number;
   /** Subscriptions that give a plan and that no account holds; they are logged and counted, never given an account. */
   unattributed: number;
+  /** Completed payments the provider listed that buy a package, the ones the ledger lacked that were credited, and those that name no account. */
+  packagesListed: number;
+  packagesCredited: number;
+  packagesUnattributed: number;
   /** Why a run is `partial` or `failed`, or the stored subscriptions left alone because the list looks wrong. */
   note?: string;
 }
@@ -61,6 +69,8 @@ export interface ReconcileOptions {
   provider?: BillingProvider;
   store?: SubscriptionStore;
   now?: () => number;
+  /** The ledger package payments are credited to; the key store of this process by default. */
+  packages?: RedisKeyStore;
   pagePauseMs?: number;
   runTimeoutMs?: number;
 }
@@ -68,6 +78,7 @@ export interface ReconcileOptions {
 interface Run {
   provider: BillingProvider;
   store: SubscriptionStore;
+  packages: RedisKeyStore;
   runId: string;
   startedAt: number;
   byUser: Map<string, SubscriptionRecord>;
@@ -85,7 +96,7 @@ function isSame(stored: SubscriptionRecord, listed: SubscriptionChange['subscrip
     stored.providerSubscriptionId === listed.providerSubscriptionId &&
     stored.providerCustomerId === listed.providerCustomerId &&
     stored.status === listed.status &&
-    stored.plan === listed.plan &&
+    stored.credits === listed.credits &&
     stored.currentPeriodEnd === listed.currentPeriodEnd &&
     stored.cancelAt === listed.cancelAt
   );
@@ -126,12 +137,12 @@ async function reconcileListed(run: Run, listed: ListedSubscription): Promise<vo
   }
   const stored = run.byUser.get(userId);
   const sameSubscription = stored?.providerSubscriptionId === id;
-  const plan = change.subscription.plan ?? (sameSubscription ? stored.plan : undefined);
-  if (!plan) {
+  const credits = change.subscription.credits ?? (sameSubscription ? stored.credits : undefined);
+  if (!credits) {
     count('ignored');
     return;
   }
-  const subscription = { ...change.subscription, plan };
+  const subscription = { ...change.subscription, credits };
   if (sameSubscription ? isSame(stored, subscription) : !entitling) return;
   if (!sameSubscription && stored && isEntitlingStatus(stored.status)) {
     console.error(`[billing] reconcile: account ${userId} holds ${stored.providerSubscriptionId} and the provider lists ${id} as live too; left to the events`);
@@ -183,6 +194,46 @@ async function readList(run: Run, signal: AbortSignal, listedIds: Set<string>, p
   }
 }
 
+/** One payment of the list: credited when it buys a package and names an account; the credit does nothing for a payment the ledger already has. */
+async function reconcilePayment(run: Run, listed: ListedPackagePurchase): Promise<void> {
+  const { purchase } = listed;
+  if (!purchase) return;
+  run.report.packagesListed += 1;
+  const userId = purchase.userId ?? (await run.packages.packageTransactionOwner(purchase.transactionId));
+  if (!userId) {
+    run.report.packagesUnattributed += 1;
+    count('unattributed');
+    console.error(`[billing] reconcile: package payment ${purchase.transactionId} (${purchase.credits} credits) names no account; not credited`);
+    return;
+  }
+  const result = await creditPackagePurchase(purchase, userId, run.packages);
+  if (result === 'granted') {
+    run.report.packagesCredited += 1;
+    count('applied');
+    console.error(`[billing] reconcile: package payment ${purchase.transactionId} was missing from the ledger; ${purchase.credits} credits added to account ${userId}`);
+  } else if (result === 'unknown_user') {
+    run.report.packagesUnattributed += 1;
+    count('unknown_user');
+    console.error(`[billing] reconcile: package payment ${purchase.transactionId} names account ${userId}, which no longer exists; not credited`);
+  }
+}
+
+/** Reads the provider's completed payments a page at a time, at most `RECONCILE_MAX_PAGES` of them; true when the list was read to its end. */
+async function reconcilePackages(run: Run, signal: AbortSignal, pagePauseMs: number): Promise<boolean> {
+  const pages = run.provider.listPackagePurchases({ perPage: RECONCILE_PAGE_SIZE, signal });
+  try {
+    for (let page = 0; ; page++) {
+      const next = await pages.next();
+      if (next.done) return true;
+      if (page >= RECONCILE_MAX_PAGES) return false;
+      for (const listed of next.value) await reconcilePayment(run, listed);
+      if (pagePauseMs > 0) await new Promise((resolve) => setTimeout(resolve, pagePauseMs));
+    }
+  } finally {
+    await pages.return();
+  }
+}
+
 async function runReconcile(run: Run, signal: AbortSignal, pagePauseMs: number): Promise<void> {
   const records = await run.store.listRecords();
   for (const record of records) {
@@ -198,6 +249,11 @@ async function runReconcile(run: Run, signal: AbortSignal, pagePauseMs: number):
     return;
   }
   await downgradeMissing(run, listedIds);
+  if (!(await reconcilePackages(run, signal, pagePauseMs))) {
+    run.report.outcome = 'partial';
+    run.report.note = `the list of payments has more than ${RECONCILE_MAX_PAGES} pages of ${RECONCILE_PAGE_SIZE}; the oldest were not read`;
+    console.error(`[billing] reconcile: ${run.report.note}`);
+  }
 }
 
 /**
@@ -207,7 +263,7 @@ async function runReconcile(run: Run, signal: AbortSignal, pagePauseMs: number):
  */
 export async function reconcileSubscriptions(options: ReconcileOptions = {}): Promise<ReconcileReport> {
   const provider = options.provider ?? getBillingProvider()?.provider;
-  const report: ReconcileReport = { outcome: 'completed', listed: 0, corrected: 0, downgraded: 0, unattributed: 0 };
+  const report: ReconcileReport = { outcome: 'completed', listed: 0, corrected: 0, downgraded: 0, unattributed: 0, packagesListed: 0, packagesCredited: 0, packagesUnattributed: 0 };
   if (!provider) return { ...report, outcome: 'disabled' };
   const store = options.store ?? subscriptionStore;
   const now = options.now ?? Date.now;
@@ -215,7 +271,7 @@ export async function reconcileSubscriptions(options: ReconcileOptions = {}): Pr
 
   const token = await store.acquireLock(LOCK_NAME, timeoutMs + LOCK_MARGIN_MS, now());
   if (!token) return { ...report, outcome: 'skipped' };
-  const run: Run = { provider, store, runId: crypto.randomUUID(), startedAt: now(), byUser: new Map(), bySubscription: new Map(), report };
+  const run: Run = { provider, store, packages: options.packages ?? redisKeyStore, runId: crypto.randomUUID(), startedAt: now(), byUser: new Map(), bySubscription: new Map(), report };
   try {
     await runReconcile(run, AbortSignal.timeout(timeoutMs), options.pagePauseMs ?? PAGE_PAUSE_MS);
   } catch (error) {
@@ -228,7 +284,10 @@ export async function reconcileSubscriptions(options: ReconcileOptions = {}): Pr
       console.error('[billing] reconcile could not release its lock; it ends by itself:', error);
     });
   }
-  console.log(`[billing] reconcile ${report.outcome}: listed ${report.listed}, corrected ${report.corrected}, withdrawn ${report.downgraded}, without account ${report.unattributed}`);
+  console.log(
+    `[billing] reconcile ${report.outcome}: listed ${report.listed}, corrected ${report.corrected}, withdrawn ${report.downgraded}, without account ${report.unattributed}; ` +
+      `payments listed ${report.packagesListed}, credited ${report.packagesCredited}, without account ${report.packagesUnattributed}`
+  );
   return report;
 }
 
@@ -237,7 +296,7 @@ let firstRun: NodeJS.Timeout | undefined;
 
 /**
  * Runs the reconciliation `RECONCILE_FIRST_RUN_DELAY_MS` after the call and every `RECONCILE_INTERVAL_MS`, while billing is configured
- * (a worker without the seven variables does nothing). Every worker calls it; the lock lets one run at a time. A failed run is logged.
+ * (a worker without the thirteen variables does nothing). Every worker calls it; the lock lets one run at a time. A failed run is logged.
  */
 export function startBillingReconcile(): void {
   if (timer) return;

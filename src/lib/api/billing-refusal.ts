@@ -15,10 +15,11 @@ const refusal = codedRefusal<BillingRefusalCode>;
 export const billingUnavailable = (): NextResponse =>
   refusal(HTTP_SERVICE_UNAVAILABLE, 'billing_unavailable', 'Paid plans are not available on this server.');
 
-export const invalidPlan = (): NextResponse => refusal(HTTP_BAD_REQUEST, 'invalid_plan', 'Choose one of the plans that are on sale: "basic", "pro" or "enterprise".');
+export const invalidProduct = (): NextResponse =>
+  refusal(HTTP_BAD_REQUEST, 'invalid_product', 'Choose a package or a subscription that is on sale: "kind" is "package" or "subscription" and "credits" is one of its sizes.');
 
 export const alreadySubscribed = (): NextResponse =>
-  refusal(HTTP_CONFLICT, 'already_subscribed', 'This account already has a paid plan. Change or cancel it from the billing portal.');
+  refusal(HTTP_CONFLICT, 'already_subscribed', 'This account already has a subscription of this size. Choose another size, or change or cancel it from the billing portal.');
 
 export const noSubscription = (): NextResponse => refusal(HTTP_NOT_FOUND, 'no_subscription', 'This account has no subscription.');
 

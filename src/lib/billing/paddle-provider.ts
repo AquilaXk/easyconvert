@@ -1,14 +1,16 @@
 import crypto from 'node:crypto';
 import { ApiError, Environment, Paddle } from '@paddle/paddle-node-sdk';
-import { planOfPriceId, type BillingConfig } from './config';
+import { priceIdOf, productOfPriceId, type BillingConfig } from './config';
+import type { Product, SubscriptionSize } from './credits';
 import {
   InvalidWebhookError,
-  PAID_PLANS,
   type BillingProvider,
   type CheckoutParams,
+  type ListedPackagePurchase,
   type ListedSubscription,
   type MappedSubscriptionEvent,
-  type PaidPlan,
+  type PackagePurchase,
+  type PackageRefund,
   type SubscriptionRecord,
   type SubscriptionStatus,
   type VerifiedBillingEvent,
@@ -33,7 +35,14 @@ const SUBSCRIPTION_EVENT_TYPES: ReadonlySet<string> = new Set([
 
 const STATUSES: ReadonlySet<string> = new Set<SubscriptionStatus>(['active', 'trialing', 'past_due', 'paused', 'canceled']);
 
-/** The statuses that take a plan away or hold it only to the end of the paid period: they are applied even when the price is no longer sold, so a retired price cannot leave a paid tier in place. */
+const PACKAGE_PURCHASE_EVENT = 'transaction.completed';
+const PACKAGE_REFUND_EVENTS: ReadonlySet<string> = new Set(['adjustment.created', 'adjustment.updated']);
+const REFUND_ACTIONS: ReadonlySet<string> = new Set(['refund', 'chargeback']);
+
+/** How far back the list of completed payments is read: a payment older than this that the ledger lacks was lost for good, not late. */
+const PACKAGE_LIST_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** The statuses that take the paid tier away or hold it only to the end of the paid period: they are applied even when the price is no longer sold, so a retired price cannot leave a paid tier in place. */
 const LOSES_PLAN: ReadonlySet<string> = new Set<SubscriptionStatus>(['canceled', 'paused', 'past_due']);
 
 /** Every status is asked for by name: the API does not say which ones a list without the filter returns, and an entitling subscription left out of it would be withdrawn as missing. */
@@ -78,10 +87,43 @@ interface SubscriptionData {
   scheduledChange: { action: string; effectiveAt: string } | null;
 }
 
-/** The highest paid plan among the prices of the subscription's items; undefined when none is a price this configuration sells. */
-function planOfItems(config: BillingConfig, items: SubscriptionData['items']): PaidPlan | undefined {
-  const plans = items.flatMap((item) => (item.price ? [planOfPriceId(config, item.price.id)] : []));
-  return [...PAID_PLANS].reverse().find((plan) => plans.includes(plan));
+/** The most credits among the subscription prices of the subscription's items; undefined when none is a price this configuration sells. */
+function creditsOfItems(config: BillingConfig, items: SubscriptionData['items']): SubscriptionSize | undefined {
+  const sold = items.flatMap((item) => {
+    const product = item.price ? productOfPriceId(config, item.price.id) : undefined;
+    return product?.kind === 'subscription' ? [product.credits] : [];
+  });
+  return sold.length === 0 ? undefined : Math.max(...sold) as SubscriptionSize;
+}
+
+interface TransactionData {
+  id: string;
+  status: string;
+  customData: unknown;
+  currencyCode: string;
+  items: { price: { id: string } | null; quantity: number }[];
+  details: { totals: { total: string } | null } | null;
+  createdAt?: string;
+}
+
+interface AdjustmentData {
+  id: string;
+  action: string;
+  status: string;
+  transactionId: string;
+  currencyCode: string;
+  items: { type: string }[];
+  totals: { total: string };
+}
+
+/** The credits of the package items of a payment, quantity included; 0 when it buys no package of this configuration. */
+function packageCreditsOf(config: BillingConfig, items: TransactionData['items']): number {
+  let credits = 0;
+  for (const item of items) {
+    const product = item.price ? productOfPriceId(config, item.price.id) : undefined;
+    if (product?.kind === 'package') credits += product.credits * Math.max(1, item.quantity);
+  }
+  return credits;
 }
 
 /** The signature window of the SDK's `webhooks.unmarshal`, in seconds. */
@@ -143,11 +185,11 @@ export class PaddleBillingProvider implements BillingProvider {
       paddle ?? new Paddle(config.apiKey, { environment: config.environment === 'production' ? Environment.production : Environment.sandbox });
   }
 
-  createCheckout({ userId, email, plan }: { userId: string; email: string; plan: PaidPlan }): CheckoutParams {
+  createCheckout({ userId, email, product }: { userId: string; email: string; product: Product }): CheckoutParams {
     return {
       environment: this.config.environment,
       clientToken: this.config.clientToken,
-      items: [{ priceId: this.config.priceIds[plan], quantity: 1 }],
+      items: [{ priceId: priceIdOf(this.config, product), quantity: 1 }],
       customer: { email },
       customData: { [USER_ID_FIELD]: userId, [BINDING_FIELD]: bindingOf(this.config.webhookSecret, userId) },
     };
@@ -175,14 +217,14 @@ export class PaddleBillingProvider implements BillingProvider {
     if (!SUBSCRIPTION_EVENT_TYPES.has(event.type)) return null;
     const { occurredAt, data } = event.payload as { occurredAt: string; data: SubscriptionData };
     const mapped = this.mapSubscription(data, event.id, timeOf(occurredAt));
-    if (!mapped) console.error(`[billing] ${event.type} ${event.id} names no time, no known status or no plan this configuration sells; not applied`);
+    if (!mapped) console.error(`[billing] ${event.type} ${event.id} names no time, no known status or no subscription this configuration sells; not applied`);
     return mapped;
   }
 
-  /** What a subscription (of an event or of the list) says, or null when it names no time, no known status or no plan this configuration sells. */
+  /** What a subscription (of an event or of the list) says, or null when it names no time, no known status or no subscription this configuration sells. */
   private mapSubscription(data: SubscriptionData, eventId: string, eventAt: number | undefined): MappedSubscriptionEvent | null {
-    const plan = planOfItems(this.config, data.items);
-    if (eventAt === undefined || !STATUSES.has(data.status) || (plan === undefined && !LOSES_PLAN.has(data.status))) return null;
+    const credits = creditsOfItems(this.config, data.items);
+    if (eventAt === undefined || !STATUSES.has(data.status) || (credits === undefined && !LOSES_PLAN.has(data.status))) return null;
     const cancelAt = data.scheduledChange?.action === 'cancel' ? timeOf(data.scheduledChange.effectiveAt) : undefined;
     const currentPeriodEnd = timeOf(data.currentBillingPeriod?.endsAt);
     return {
@@ -194,11 +236,68 @@ export class PaddleBillingProvider implements BillingProvider {
         providerSubscriptionId: data.id,
         providerCustomerId: data.customerId,
         status: data.status as SubscriptionStatus,
-        ...(plan === undefined ? {} : { plan }),
+        ...(credits === undefined ? {} : { credits }),
         ...(currentPeriodEnd === undefined ? {} : { currentPeriodEnd }),
         ...(cancelAt === undefined ? {} : { cancelAt }),
       },
     };
+  }
+
+  mapEventToPackagePurchase(event: VerifiedBillingEvent): PackagePurchase | null {
+    if (event.type !== PACKAGE_PURCHASE_EVENT) return null;
+    const { occurredAt, data } = event.payload as { occurredAt: string; data: TransactionData };
+    return this.mapTransaction(data, timeOf(occurredAt));
+  }
+
+  /** What a completed payment (of an event or of the list) buys, or null when it is not completed, names no time or buys no package of this configuration. */
+  private mapTransaction(data: TransactionData, occurredAt: number | undefined): PackagePurchase | null {
+    const credits = packageCreditsOf(this.config, data.items);
+    if (data.status !== 'completed' || occurredAt === undefined || credits === 0) return null;
+    const userId = boundUserId(this.config, data.customData);
+    return {
+      transactionId: data.id,
+      credits,
+      paid: data.details?.totals?.total ?? '',
+      currency: data.currencyCode,
+      occurredAt,
+      ...(userId === undefined ? {} : { userId }),
+    };
+  }
+
+  mapEventToPackageRefund(event: VerifiedBillingEvent): PackageRefund | null {
+    if (!PACKAGE_REFUND_EVENTS.has(event.type)) return null;
+    const { occurredAt, data } = event.payload as { occurredAt: string; data: AdjustmentData };
+    const at = timeOf(occurredAt);
+    // A refund that is still waiting for approval, was rejected or was reversed gives nothing back yet.
+    if (at === undefined || data.status !== 'approved' || !REFUND_ACTIONS.has(data.action)) return null;
+    return {
+      adjustmentId: data.id,
+      transactionId: data.transactionId,
+      amount: data.totals.total,
+      currency: data.currencyCode,
+      full: data.items.some((item) => item.type === 'full'),
+      action: data.action as PackageRefund['action'],
+      occurredAt: at,
+    };
+  }
+
+  async *listPackagePurchases({ perPage, signal }: { perPage: number; signal: AbortSignal }): AsyncGenerator<ListedPackagePurchase[], void, void> {
+    const since = new Date(Date.now() - PACKAGE_LIST_LOOKBACK_MS).toISOString();
+    const collection = this.paddle.transactions.list({ perPage, status: ['completed'], orderBy: 'created_at[DESC]', 'createdAt[GTE]': since });
+    while (collection.hasMore) {
+      const page = await this.nextPage(collection, signal);
+      yield page.map((transaction) => ({
+        transactionId: transaction.id,
+        purchase: this.mapTransaction(transaction, timeOf(transaction.billedAt ?? transaction.createdAt)),
+      }));
+    }
+  }
+
+  async changeSubscription(subscription: SubscriptionRecord, credits: SubscriptionSize): Promise<void> {
+    await this.paddle.subscriptions.update(subscription.providerSubscriptionId, {
+      items: [{ priceId: priceIdOf(this.config, { kind: 'subscription', credits }), quantity: 1 }],
+      prorationBillingMode: 'prorated_immediately',
+    });
   }
 
   async *listSubscriptions({ perPage, signal }: { perPage: number; signal: AbortSignal }): AsyncGenerator<ListedSubscription[], void, void> {

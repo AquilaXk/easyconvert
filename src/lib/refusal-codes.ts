@@ -44,14 +44,14 @@ export const AUTH_ERROR_CODES = [
 export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];
 
 /**
- * Why a billing route (`/api/billing/**`) refused: billing is not configured on this server, the plan asked for is not one that
- * is sold, the account already has a plan, it has no subscription to manage, the payment provider could not be reached, or a
+ * Why a billing route (`/api/billing/**`) refused: billing is not configured on this server, the package or subscription asked for is
+ * not one that is sold, the account already has a subscription of that size, it has no subscription to manage, the payment provider could not be reached, or a
  * webhook's signature did not verify. The status of each is in src/lib/api/billing-refusal.ts.
  */
 export const BILLING_REFUSAL_CODES = [
   'billing_unavailable',
   'billing_provider_failed',
-  'invalid_plan',
+  'invalid_product',
   'already_subscribed',
   'no_subscription',
   'invalid_signature',
