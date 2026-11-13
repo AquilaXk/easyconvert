@@ -244,6 +244,23 @@ describe('the typed refusal reaches the routes as a 503', () => {
     expect((await refusal(store.getQuotaUsage(user.id))).status).toBe(HTTP_UNAVAILABLE);
   });
 
+  it('refuses with the typed 503 error, not a plain Error, when the package balance that decides the tier cannot be read', async () => {
+    const store = new RedisKeyStore({ keyPrefix: `failclosed:${crypto.randomBytes(4).toString('hex')}:`, isolated: true, redisClient: brokenRedis() });
+
+    const error = await refusal(store.withCreditTier({ id: 'user-without-record', tier: 'free' }));
+
+    expect(error.status).toBe(HTTP_UNAVAILABLE);
+  });
+
+  it('refuses a session whose package balance cannot be read with the typed 503 error instead of a 500', async () => {
+    const user = await redisUserStore.createUser({ email: uniqueEmail(), name: 'Balance session' });
+    const token = createSessionToken(redisUserStore.sanitizeUser(user));
+    vi.spyOn(redisKeyStore, 'withCreditTier').mockRestore();
+    vi.spyOn(redisKeyStore as unknown as { ledger: () => unknown }, 'ledger').mockReturnValue({ packageBalance: () => Promise.reject(new Error('redis down: get')) });
+
+    expect((await refusal(getSessionFromToken(token))).status).toBe(HTTP_UNAVAILABLE);
+  });
+
   it('answers /api/keys/usage with 503 and Retry-After when the quota read is refused by the account store', async () => {
     const user = await redisUserStore.createUser({ email: uniqueEmail(), name: 'Usage user' });
     const token = createSessionToken(redisUserStore.sanitizeUser(user));

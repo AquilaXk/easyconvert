@@ -210,10 +210,15 @@ export class RedisKeyStore extends KeyStore {
     }
   }
 
-  /** `user` with the paid tier when its package balance is above zero: packages are held beside the account, so the tier of the record does not say. */
+  /** `user` with the paid tier when its package balance is above zero: packages are held beside the account, so the tier of the record does not say. Throws `AuthStoreUnavailableError` when the balance cannot be read. */
   public async withCreditTier<T extends { id: string; tier: UserTier }>(user: T): Promise<T> {
     if (user.tier === 'paid') return user;
-    return (await this.ledger().packageBalance(user.id)) > 0 ? { ...user, tier: 'paid' } : user;
+    try {
+      return (await this.ledger().packageBalance(user.id)) > 0 ? { ...user, tier: 'paid' } : user;
+    } catch (error) {
+      // The balance decides the tier of who a caller is, so a store that cannot answer is a 503 here, as for the account store, never a 500 or a guess.
+      return failClosed('RedisKeyStore', 'withCreditTier', error);
+    }
   }
 
   /** The package balance of `userId`. */
