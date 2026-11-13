@@ -1,3 +1,5 @@
+import { BLACK, GlyphColours, ItemColours, parseColour, type Rgb } from './pdf-content-colours';
+import { isLightColour, markFillBehindLightText, ShapeCollector, type Paint, type Subpath } from './pdf-content-shapes';
 import { hasUnmappedGlyphs, recoverUnmappedGlyphs, type RecoverableFont } from './pdf-glyph-recovery';
 import { ImageExtractor, type ImageSource } from './pdf-text-images';
 import {
@@ -14,6 +16,7 @@ import {
   type PdfContentImage,
   type PdfContentItem,
   type PdfContentRule,
+  type PdfContentShape,
   type PdfPageContent,
   visibleGlyphsOf,
 } from './pdf-text-types';
@@ -46,10 +49,6 @@ const HORIZONTAL_TOLERANCE_RAD = 0.03;
 const RULE_MAX_THICKNESS = 3;
 const RULE_MIN_LENGTH = 4;
 const AXIS_TOLERANCE = 0.5;
-/** A fill nearly white on every channel is a background, not a rule. */
-const NEAR_WHITE = 0xf0;
-const HEX_RADIX = 16;
-const HEX_COLOR = /^#([0-9a-f]{6})$/i;
 const TRANSFORM_VALUES = 6;
 const MATRIX_IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
 /** Stroked lines of this width or less count as hairlines, drawn at one device pixel by viewers. */
@@ -231,7 +230,8 @@ function textItemsOf(
   viewport: Viewport,
   fonts: FontTable,
   pageNumber: number,
-  unmappedMark: string
+  unmappedMark: string,
+  colours: ItemColours | null
 ): { items: PdfContentItem[]; unmapped: number; unmappedType3: number } {
   checkItemLimits(content, pageNumber);
   const items: PdfContentItem[] = [];
@@ -261,6 +261,7 @@ function textItemsOf(
     candidate.str = text;
     if (text.length === 0) continue;
     const [a, b] = candidate.transform;
+    const colors = candidate.annotation === true ? undefined : colours?.of(text);
     items.push({
       text,
       x: geometry.x,
@@ -272,6 +273,7 @@ function textItemsOf(
       angled: geometry.angled,
       vertical,
       ...(candidate.annotation === true ? { annotation: true } : {}),
+      ...(colors ? { colors } : {}),
     });
     itemFonts.push(candidate.fontName);
   }
@@ -331,29 +333,44 @@ function pathArrays(operand: unknown): ArrayLike<number>[] {
   return operand.filter(isNumberList);
 }
 
-/** Subpaths (lists of points, with a closed flag) of a pdfjs path array; curves are reduced to their end points. */
-function subpathsOf(data: ArrayLike<number>, limit: number): { points: Point[]; closed: boolean }[] {
-  const subpaths: { points: Point[]; closed: boolean }[] = [];
-  let current: { points: Point[]; closed: boolean } | null = null;
+/**
+ * Subpaths (lists of points, with a closed flag) of a pdfjs path array; curves are reduced to their end points. With `keepSegments`
+ * each subpath also keeps its segments as pdf.js encodes them, for the shapes of the page.
+ */
+function subpathsOf(data: ArrayLike<number>, limit: number, keepSegments: boolean): Subpath[] {
+  const subpaths: Subpath[] = [];
+  let current: Subpath | null = null;
   let at = 0;
   const readPoint = (offset: number): Point => ({ x: data[at + offset], y: data[at + offset + 1] });
+  const keep = (code: number, count: number): void => {
+    if (!current?.segments) return;
+    current.segments.push(code);
+    for (let i = 0; i < count; i++) current.segments.push(data[at + i]);
+  };
   while (at < data.length && subpaths.length < limit) {
     const op = data[at++];
     if (op === PATH_MOVE_TO) {
-      current = { points: [readPoint(0)], closed: false };
+      current = { points: [readPoint(0)], closed: false, ...(keepSegments ? { segments: [] } : {}) };
       subpaths.push(current);
+      keep(op, POINT_OPERANDS);
       at += POINT_OPERANDS;
     } else if (op === PATH_LINE_TO) {
       current?.points.push(readPoint(0));
+      keep(op, POINT_OPERANDS);
       at += POINT_OPERANDS;
     } else if (op === PATH_CURVE_TO) {
       current?.points.push({ x: data[at + CURVE_OPERANDS - 2], y: data[at + CURVE_OPERANDS - 1] });
+      keep(op, CURVE_OPERANDS);
+      if (current) current.curved = true;
       at += CURVE_OPERANDS;
     } else if (op === PATH_QUADRATIC_TO) {
       current?.points.push({ x: data[at + QUADRATIC_OPERANDS - 2], y: data[at + QUADRATIC_OPERANDS - 1] });
+      keep(op, QUADRATIC_OPERANDS);
+      if (current) current.curved = true;
       at += QUADRATIC_OPERANDS;
     } else if (op === PATH_CLOSE) {
       if (current) current.closed = true;
+      keep(op, 0);
     } else {
       break;
     }
@@ -376,22 +393,30 @@ function paintKinds(ops: Record<string, number>): PaintKinds {
 interface GraphicsState {
   ctm: Matrix;
   lineWidth: number;
-  fillIsWhite: boolean;
+  /** Fill and stroke colour; null when a pattern or shading is in force. */
+  fill: Rgb | null;
+  stroke: Rgb | null;
+  /** Opacity of fills (`ca` of the graphics state). */
+  fillAlpha: number;
+  /** Text render mode (`Tr`). */
+  textMode: number;
 }
 
-function isWhite(color: unknown): boolean {
-  if (typeof color !== 'string') return false;
-  const match = HEX_COLOR.exec(color);
-  if (!match) return false;
-  const value = Number.parseInt(match[1], HEX_RADIX);
-  return ((value >> 16) & 0xff) >= NEAR_WHITE && ((value >> 8) & 0xff) >= NEAR_WHITE && (value & 0xff) >= NEAR_WHITE;
+/** What a rule is painted with: its colour (left out for black) and, in a job that reads colour, its place in the paint order. */
+interface RuleInk {
+  color: Rgb | null;
+  z?: number;
+  inShape?: true;
 }
 
 class RuleCollector {
   readonly rules: PdfContentRule[] = [];
   truncated = false;
 
-  constructor(private readonly viewport: Viewport) {}
+  constructor(
+    private readonly viewport: Viewport,
+    private readonly colour: boolean
+  ) {}
 
   private toPage(point: Point, ctm: Matrix): Point {
     const x = ctm[0] * point.x + ctm[2] * point.y + ctm[4];
@@ -400,7 +425,7 @@ class RuleCollector {
     return { x: vx, y: vy };
   }
 
-  private add(from: Point, to: Point, thickness: number): void {
+  private add(from: Point, to: Point, thickness: number, ink: RuleInk): void {
     if (this.rules.length >= PDF_CONTENT_MAX_RULES_PER_PAGE) {
       this.truncated = true;
       return;
@@ -415,6 +440,9 @@ class RuleCollector {
       x1: Math.max(from.x, to.x),
       y1: Math.max(from.y, to.y),
       thickness,
+      ...(this.colour && ink.color !== null && ink.color !== BLACK ? { color: ink.color } : {}),
+      ...(ink.z === undefined ? {} : { z: ink.z }),
+      ...(ink.inShape ? { inShape: true as const } : {}),
     });
   }
 
@@ -423,33 +451,40 @@ class RuleCollector {
     return Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2]));
   }
 
-  stroke(subpaths: { points: Point[]; closed: boolean }[], state: GraphicsState): void {
+  /** `inShape[i]` tells that subpath `i` is drawn by a shape of its own. */
+  stroke(subpaths: Subpath[], state: GraphicsState, z: number | undefined, inShape: readonly boolean[] = []): void {
     const thickness = Math.max(state.lineWidth * RuleCollector.scaleOf(state.ctm), HAIRLINE_FLOOR);
-    for (const subpath of subpaths) {
+    subpaths.forEach((subpath, index) => {
+      const ink: RuleInk = { color: state.stroke, z, ...(inShape[index] ? { inShape: true as const } : {}) };
       const points = subpath.points.map((point) => this.toPage(point, state.ctm));
-      for (let i = 1; i < points.length; i++) this.add(points[i - 1], points[i], thickness);
-      if (subpath.closed && points.length > 2) this.add(points[points.length - 1], points[0], thickness);
-    }
+      for (let i = 1; i < points.length; i++) this.add(points[i - 1], points[i], thickness, ink);
+      if (subpath.closed && points.length > 2) this.add(points[points.length - 1], points[0], thickness, ink);
+    });
   }
 
   /** A filled rectangle thin enough to be a line is a rule; larger fills are backgrounds and are ignored. */
-  fill(subpaths: { points: Point[]; closed: boolean }[], state: GraphicsState): void {
-    if (state.fillIsWhite) return;
-    for (const subpath of subpaths) {
-      if (subpath.points.length < 4 || subpath.points.length > 5) continue;
-      const points = subpath.points.map((point) => this.toPage(point, state.ctm));
-      const xs = points.map((point) => point.x);
-      const ys = points.map((point) => point.y);
-      const width = Math.max(...xs) - Math.min(...xs);
-      const height = Math.max(...ys) - Math.min(...ys);
-      const thin = Math.min(width, height);
-      if (thin > RULE_MAX_THICKNESS || Math.max(width, height) < RULE_MIN_LENGTH) continue;
-      const centre = { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2 };
-      if (width >= height) {
-        this.add({ x: Math.min(...xs), y: centre.y }, { x: Math.max(...xs), y: centre.y }, Math.max(thin, HAIRLINE_FLOOR));
-      } else {
-        this.add({ x: centre.x, y: Math.min(...ys) }, { x: centre.x, y: Math.max(...ys) }, Math.max(thin, HAIRLINE_FLOOR));
-      }
+  fill(subpaths: Subpath[], state: GraphicsState, z: number | undefined, inShape: readonly boolean[] = []): void {
+    if (state.fill !== null && isLightColour(state.fill)) return;
+    subpaths.forEach((subpath, index) => {
+      const ink: RuleInk = { color: state.fill, z, ...(inShape[index] ? { inShape: true as const } : {}) };
+      this.addFilled(subpath, state, ink);
+    });
+  }
+
+  private addFilled(subpath: Subpath, state: GraphicsState, ink: RuleInk): void {
+    if (subpath.points.length < 4 || subpath.points.length > 5) return;
+    const points = subpath.points.map((point) => this.toPage(point, state.ctm));
+    const xs = points.map((point) => point.x);
+    const ys = points.map((point) => point.y);
+    const width = Math.max(...xs) - Math.min(...xs);
+    const height = Math.max(...ys) - Math.min(...ys);
+    const thin = Math.min(width, height);
+    if (thin > RULE_MAX_THICKNESS || Math.max(width, height) < RULE_MIN_LENGTH) return;
+    const centre = { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2 };
+    if (width >= height) {
+      this.add({ x: Math.min(...xs), y: centre.y }, { x: Math.max(...xs), y: centre.y }, Math.max(thin, HAIRLINE_FLOOR), ink);
+    } else {
+      this.add({ x: centre.x, y: Math.min(...ys) }, { x: centre.x, y: Math.max(...ys) }, Math.max(thin, HAIRLINE_FLOOR), ink);
     }
   }
 }
@@ -460,6 +495,9 @@ interface OperatorScan {
   /** For each image, how the operator list paints it. */
   sources: ImageSource[];
   rulesTruncated: boolean;
+  /** In a job that reads colour: the shapes, and the glyphs of the page with their colours. */
+  shapes?: PdfContentShape[];
+  glyphs?: GlyphColours;
 }
 
 function imageBox(viewport: Viewport, ctm: Matrix): { x: number; y: number; width: number; height: number } {
@@ -474,16 +512,43 @@ function imageBox(viewport: Viewport, ctm: Matrix): { x: number; y: number; widt
   return { x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
 }
 
-function scanOperators(list: OperatorListLike, ops: Record<string, number>, viewport: Viewport): OperatorScan {
+/** The operators that set a colour, with the graphics state they change. */
+function withColour(fn: number, args: unknown[] | undefined, ops: Record<string, number>, state: GraphicsState, colour: boolean): GraphicsState | null {
+  if (fn === ops.setFillRGBColor || fn === ops.setFillGray) return { ...state, fill: parseColour(args?.[0]) ?? state.fill };
+  if (!colour) return null;
+  if (fn === ops.setStrokeRGBColor || fn === ops.setStrokeGray) return { ...state, stroke: parseColour(args?.[0]) ?? state.stroke };
+  // A pattern or shading has no single colour.
+  if (fn === ops.setFillColorN) return { ...state, fill: null };
+  if (fn === ops.setStrokeColorN) return { ...state, stroke: null };
+  if (fn === ops.setTextRenderingMode && typeof args?.[0] === 'number') return { ...state, textMode: args[0] };
+  if (fn === ops.setGState) return { ...state, fillAlpha: alphaOf(args?.[0], state.fillAlpha) };
+  return null;
+}
+
+/** The fill opacity a `setGState` operand sets (`ca`), or the one in force. */
+function alphaOf(entries: unknown, current: number): number {
+  if (!Array.isArray(entries)) return current;
+  for (const entry of entries) {
+    if (Array.isArray(entry) && entry[0] === 'ca' && typeof entry[1] === 'number' && Number.isFinite(entry[1])) return Math.min(1, Math.max(0, entry[1]));
+  }
+  return current;
+}
+
+function scanOperators(list: OperatorListLike, ops: Record<string, number>, viewport: Viewport, colour: boolean): OperatorScan {
   const kinds = paintKinds(ops);
-  const collector = new RuleCollector(viewport);
+  const collector = new RuleCollector(viewport, colour);
+  const shapes = colour ? new ShapeCollector(viewport) : null;
+  const glyphs = colour ? new GlyphColours() : null;
+  const showsText = new Set([ops.showText, ops.showSpacedText, ops.nextLineShowText, ops.nextLineSetSpacingShowText]);
   const images: PdfContentImage[] = [];
   const sources: ImageSource[] = [];
   const stack: GraphicsState[] = [];
-  let state: GraphicsState = { ctm: MATRIX_IDENTITY, lineWidth: 1, fillIsWhite: false };
+  let state: GraphicsState = { ctm: MATRIX_IDENTITY, lineWidth: 1, fill: BLACK, stroke: BLACK, fillAlpha: 1, textMode: 0 };
   for (let i = 0; i < list.fnArray.length; i++) {
     const fn = list.fnArray[i];
     const args = list.argsArray[i];
+    // The place of an operator in the paint order of the page, for the writers that keep it.
+    const z = colour ? i : undefined;
     if (fn === ops.save) {
       if (stack.length < PDF_CONTENT_MAX_STATE_DEPTH) stack.push(state);
     } else if (fn === ops.restore) {
@@ -493,15 +558,15 @@ function scanOperators(list: OperatorListLike, ops: Record<string, number>, view
     } else if (fn === ops.setLineWidth) {
       const width = args?.[0];
       if (typeof width === 'number' && Number.isFinite(width)) state = { ...state, lineWidth: width };
-    } else if (fn === ops.setFillRGBColor || fn === ops.setFillGray) {
-      state = { ...state, fillIsWhite: isWhite(args?.[0]) };
     } else if (fn === ops.constructPath) {
       const paint = args?.[0];
       if (typeof paint === 'number') {
+        const painted: Paint = { fill: kinds.fill.has(paint), stroke: kinds.stroke.has(paint) };
         for (const data of pathArrays(args?.[1])) {
-          const subpaths = subpathsOf(data, PDF_CONTENT_MAX_RULES_PER_PAGE);
-          if (kinds.stroke.has(paint)) collector.stroke(subpaths, state);
-          if (kinds.fill.has(paint)) collector.fill(subpaths, state);
+          const subpaths = subpathsOf(data, PDF_CONTENT_MAX_RULES_PER_PAGE, colour);
+          const drawn = shapes?.paint(subpaths, painted, state, i);
+          if (painted.stroke) collector.stroke(subpaths, state, z, drawn?.stroke);
+          if (painted.fill) collector.fill(subpaths, state, z, drawn?.fill);
         }
       }
     } else if (fn === ops.paintImageXObject || fn === ops.paintInlineImageXObject) {
@@ -510,13 +575,17 @@ function scanOperators(list: OperatorListLike, ops: Record<string, number>, view
         const pixelWidth = target[1];
         const pixelHeight = target[2];
         if (typeof pixelWidth === 'number' && typeof pixelHeight === 'number') {
-          images.push({ ...imageBox(viewport, state.ctm), pixelWidth, pixelHeight });
+          images.push({ ...imageBox(viewport, state.ctm), pixelWidth, pixelHeight, ...(z === undefined ? {} : { z }) });
           sources.push(fn === ops.paintImageXObject ? { objId: String(args?.[0]) } : { inline: args?.[0] });
         }
       }
+    } else if (glyphs && showsText.has(fn)) {
+      glyphs.show(args?.[fn === ops.nextLineSetSpacingShowText ? 2 : 0], state.fill, state.stroke, state.textMode);
+    } else {
+      state = withColour(fn, args, ops, state, colour) ?? state;
     }
   }
-  return { rules: collector.rules, images, sources, rulesTruncated: collector.truncated };
+  return { rules: collector.rules, images, sources, rulesTruncated: collector.truncated, ...(shapes ? { shapes: shapes.shapes } : {}), ...(glyphs ? { glyphs } : {}) };
 }
 
 /** How one page's content is read: whether its operator list is walked, where its images go, what an unmapped glyph becomes. */
@@ -525,6 +594,8 @@ export interface PageContentReading {
   imageExtractor: ImageExtractor | null;
   /** The text a glyph without a Unicode value becomes; empty leaves it out. */
   unmappedMark: string;
+  /** Also read the colours of the text and the shapes, and the paint order of rules and images. */
+  colour?: boolean;
 }
 
 /**
@@ -537,7 +608,7 @@ export async function readPageContent(
   content: PageTextContent,
   pageNumber: number,
   fonts: FontTable,
-  { readOperators, imageExtractor, unmappedMark }: PageContentReading
+  { readOperators, imageExtractor, unmappedMark, colour = false }: PageContentReading
 ): Promise<PdfPageContent> {
   const viewport = page.getViewport({ scale: 1 });
   let scan: OperatorScan = { rules: [], images: [], sources: [], rulesTruncated: false };
@@ -545,11 +616,12 @@ export async function readPageContent(
   if (readOperators) {
     const list = await page.getOperatorList();
     if (list.fnArray.length > PDF_CONTENT_MAX_OPERATORS_PER_PAGE) operatorsSkipped = true;
-    else scan = scanOperators(list, ops, viewport);
+    else scan = scanOperators(list, ops, viewport, colour);
   }
   if (imageExtractor) await imageExtractor.attach(pageNumber - 1, page, scan.images, scan.sources);
   // Fonts are described after the operator list is read: pdfjs resolves their names while it runs.
-  const { items, unmapped, unmappedType3 } = textItemsOf(page, content, viewport, fonts, pageNumber, unmappedMark);
+  const { items, unmapped, unmappedType3 } = textItemsOf(page, content, viewport, fonts, pageNumber, unmappedMark, scan.glyphs ? new ItemColours(scan.glyphs.glyphs) : null);
+  if (scan.shapes) markFillBehindLightText(items, scan.shapes);
   return {
     pageNumber,
     width: viewport.width,
@@ -557,6 +629,7 @@ export async function readPageContent(
     items,
     rules: scan.rules,
     images: scan.images,
+    ...(scan.shapes ? { shapes: scan.shapes } : {}),
     unmappedGlyphs: unmapped,
     ...(unmappedType3 > 0 ? { unmappedType3Glyphs: unmappedType3 } : {}),
     operatorsSkipped,

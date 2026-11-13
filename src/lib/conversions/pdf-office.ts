@@ -34,20 +34,26 @@ export type PdfOfficeContent =
   | { kind: 'layout'; extracted: ExtractedPdfDocument }
   | { kind: 'text'; pages: { pageNumber: number; text: string }[]; extracted: ExtractedPdfDocument | null; recognizedPages: ReadonlySet<number> };
 
+/** What a writer places beyond the text: the pictures of the pages, and the colours of text, rules and shapes. */
+export interface PdfOfficeReading {
+  images?: boolean;
+  colour?: boolean;
+}
+
 /**
- * @param withImages carry the images of the pages in the result (a writer that places them needs this).
+ * @param reading what the writer places: `images` carries the pictures of the pages, `colour` the colours of text, rules and shapes.
  * @throws PdfTextUnmappedError when no page of the document reads for want of a Unicode mapping and OCR is off.
  * @throws PdfPasswordRequiredError when the document needs an open password that the request lacks or got wrong.
  * @throws ConversionFailedError when the document has no text and OCR finds none.
  * @throws OcrEngineUnavailableError when a page needs OCR and no engine can render it.
  */
-export async function readPdfContentForOffice(source: Buffer, options: ConversionOptions, withImages = false): Promise<PdfOfficeContent> {
+export async function readPdfContentForOffice(source: Buffer, options: ConversionOptions, reading: PdfOfficeReading = {}): Promise<PdfOfficeContent> {
   // An encrypted document is read from a copy qpdf decrypted with the request's password, the empty one when there is none.
   const inputBuffer = await openPdfForReading(source, options.password, options.signal);
   const densityThreshold = options.ocrDensityThreshold || DEFAULT_DENSITY_THRESHOLD;
   let read: Awaited<ReturnType<typeof readPdfDocument>> | null = null;
   try {
-    read = await readPdfDocument(inputBuffer, { densityThreshold, onUnmapped: options.ocrEnabled ? 'omit' : 'throw', images: withImages, signal: options.signal });
+    read = await readPdfDocument(inputBuffer, { densityThreshold, onUnmapped: options.ocrEnabled ? 'omit' : 'throw', images: reading.images, colour: reading.colour, signal: options.signal });
   } catch (err) {
     // A document pdfjs cannot read is recognized as displayed when OCR was asked for; otherwise it is refused.
     if (!(options.ocrEnabled && err instanceof PdfTextGeometryError)) throw err;
@@ -87,8 +93,8 @@ export async function readPdfContentForOffice(source: Buffer, options: Conversio
 }
 
 /** The document model of a PDF for the Office, e-book and slide writers; see `readPdfContentForOffice` for the failures. */
-export async function readPdfForOffice(source: Buffer, options: ConversionOptions, withImages = false): Promise<DocumentModel> {
-  const content = await readPdfContentForOffice(source, options, withImages);
+export async function readPdfForOffice(source: Buffer, options: ConversionOptions, reading: PdfOfficeReading = {}): Promise<DocumentModel> {
+  const content = await readPdfContentForOffice(source, options, reading);
   return content.kind === 'layout' ? content.extracted.model : plainTextModel(content.pages.map((page) => page.text).join('\n\n'));
 }
 

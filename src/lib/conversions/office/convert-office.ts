@@ -106,7 +106,7 @@ const TARGET_CONVERTERS: ReadonlyMap<string, FormatConverter> = new Map<string, 
   ['docx', async (input, src, _tgt, options, baseName) => {
     // A PDF keeps the structure its layout analysis found: columns, headings, lists, tables and images.
     const docxBuffer = src === 'pdf'
-      ? await documentToDocx(await readPdfForOffice(input, options, true))
+      ? await documentToDocx(await readPdfForOffice(input, options, { images: true, colour: true }))
       : await generateDocxFromSource(input, src, options, baseName);
     return officeResult(docxBuffer, DOCX_MIME_TYPE, baseName, 'docx');
   }],
