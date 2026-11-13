@@ -2051,7 +2051,7 @@
       "limits": {
         "question": "다른 한도도 있나요?",
         "answer": "파일은 {fileSize}까지 올릴 수 있습니다. 동시에 {concurrent}개까지 변환할 수 있고, 변환 하나는 최대 {processing}분 동안 실행됩니다.",
-        "answerOnSale": "파일은 무료 요금제에서 {fileSize}, Pro에서 {proSize}, Enterprise에서 {enterpriseSize}까지 올릴 수 있습니다. 무료 요금제에서는 동시에 {concurrent}개까지 변환할 수 있고, 변환 하나는 최대 {processing}분 동안 실행됩니다."
+        "answerOnSale": "요금제별 파일 크기, 동시 변환 수, 처리 시간은 위 한도 표에서 확인하세요."
       },
       "deletion": {
         "question": "파일은 언제 삭제되나요?",
@@ -2064,7 +2064,7 @@
       "paid": {
         "question": "유료 요금제를 살 수 있나요?",
         "answer": "유료 요금제는 판매를 시작하기 전까지 \"출시 예정\"으로 표시됩니다. 판매를 시작하면 이 페이지에서 구독하고, 대시보드에서 구독을 관리하거나 해지할 수 있습니다.",
-        "answerOnSale": "네, 이 페이지에서 Pro 또는 Enterprise를 선택해 구독할 수 있습니다. 대시보드에서 구독을 관리하거나 해지할 수 있습니다."
+        "answerOnSale": "네. 이 페이지에서 Pro 또는 Enterprise를 선택해 구독하세요. 결제하면 바로 적용됩니다. 대시보드에서 언제든 해지할 수 있고 최소 이용 기간은 없습니다."
       }
     },
     "cta": {

@@ -1726,7 +1726,7 @@
       "limits": {
         "question": "What other limits apply?",
         "answer": "A file can be up to {fileSize}. You can run {concurrent} conversions at the same time, and one conversion can run for up to {processing, plural, one {# minute} other {# minutes}}.",
-        "answerOnSale": "A file can be up to {fileSize} on the Free plan, {proSize} on Pro and {enterpriseSize} on Enterprise. On the Free plan you can run {concurrent} conversions at the same time, and one conversion can run for up to {processing, plural, one {# minute} other {# minutes}}."
+        "answerOnSale": "See the limits table above for the file size, concurrent conversions and processing time of each plan."
       },
       "deletion": {
         "question": "When are my files deleted?",
@@ -1739,7 +1739,7 @@
       "paid": {
         "question": "Can I buy a paid plan?",
         "answer": "Paid plans are marked \"Coming soon\" until they go on sale. When they do, you subscribe on this page, and you manage or cancel the subscription from your dashboard.",
-        "answerOnSale": "Yes. Choose Pro or Enterprise on this page to subscribe. You can manage or cancel the subscription from your dashboard."
+        "answerOnSale": "Yes. Choose Pro or Enterprise on this page to subscribe. The plan applies as soon as you pay. You can cancel at any time from your dashboard, and there is no minimum term."
       }
     },
     "cta": {

@@ -75,7 +75,7 @@ describe('a file over the limit, worded in the browser', () => {
 
 describe('the questions of the pricing page', () => {
   it.each(['en', 'ko'] as const)('answer as if no plan were on sale until the session says one is, in %s', async (locale) => {
-    const messages = testMessages(locale) as unknown as { billing: { comingSoon: string }; pricing: { faq: { paid: { answer: string; answerOnSale: string } } } };
+    const messages = testMessages(locale) as unknown as { billing: { comingSoon: string }; pricing: { faq: { limits: { answerOnSale: string }; paid: { answer: string; answerOnSale: string } } } };
     stubSession(false);
     const host = await mount(createElement(PricingFaq, { values: FAQ_VALUES }), locale);
     expect(host.textContent).toContain(messages.billing.comingSoon);
@@ -85,7 +85,7 @@ describe('the questions of the pricing page', () => {
     await act(async () => refreshViewerPlan());
     expect(host.textContent).toContain(messages.pricing.faq.paid.answerOnSale);
     expect(host.textContent).not.toContain(messages.billing.comingSoon);
-    expect(host.textContent).toMatch(/5 GB/);
-    expect(host.textContent).toMatch(/10 GB/);
+    // The limits themselves stand in the plan table above the questions; the answer points there.
+    expect(host.textContent).toContain(messages.pricing.faq.limits.answerOnSale);
   });
 });
