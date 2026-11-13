@@ -1,4 +1,5 @@
 import type { Paddle } from '@paddle/paddle-js';
+import { convertAmountFromLowestUnit } from '@/lib/billing/parse-money';
 import type { PublicBillingConfig } from '@/lib/billing/types';
 
 /**
@@ -34,18 +35,31 @@ export function onCheckoutCompleted(listener: () => void): () => void {
 export interface PlanPrice {
   /** The price as Paddle formats it for the visitor's country, tax included where it applies. */
   formatted: string;
+  /** The same price as a number of whole currency units, and the currency, for a price per credit. */
+  amount: number;
+  currency: string;
   interval?: 'month' | 'year';
 }
 
-/** The price of a plan for this visitor, or undefined when Paddle.js is unavailable or gives none. */
-export async function previewPrice(status: PublicBillingConfig, priceId: string): Promise<PlanPrice | undefined> {
+/**
+ * The prices of `priceIds` for this visitor, by price id, in one request; empty when Paddle.js is unavailable or gives none. The amount
+ * comes from the lowest-unit string Paddle returns, read by the money helper of the starter kit.
+ */
+export async function previewPrices(status: PublicBillingConfig, priceIds: readonly string[]): Promise<Record<string, PlanPrice>> {
   const paddle = await load(status);
-  const { data } = (await paddle?.PricePreview({ items: [{ priceId, quantity: 1 }] })) ?? {};
-  const line = data?.details.lineItems[0];
-  if (!line) return undefined;
-  const cycle = line.price.billingCycle;
-  const interval = cycle?.frequency === 1 && (cycle.interval === 'month' || cycle.interval === 'year') ? cycle.interval : undefined;
-  return { formatted: line.formattedTotals.total, ...(interval ? { interval } : {}) };
+  const { data } = (await paddle?.PricePreview({ items: priceIds.map((priceId) => ({ priceId, quantity: 1 })) })) ?? {};
+  const prices: Record<string, PlanPrice> = {};
+  for (const line of data?.details.lineItems ?? []) {
+    const cycle = line.price.billingCycle;
+    const interval = cycle?.frequency === 1 && (cycle.interval === 'month' || cycle.interval === 'year') ? cycle.interval : undefined;
+    prices[line.price.id] = {
+      formatted: line.formattedTotals.total,
+      amount: convertAmountFromLowestUnit(line.totals.total, data?.currencyCode ?? 'USD'),
+      currency: data?.currencyCode ?? 'USD',
+      ...(interval ? { interval } : {}),
+    };
+  }
+  return prices;
 }
 
 export interface CheckoutInput {

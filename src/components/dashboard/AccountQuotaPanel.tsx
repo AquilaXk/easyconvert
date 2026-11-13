@@ -1,29 +1,32 @@
 import React from 'react';
 import { useFormatter, useTranslations } from 'next-intl';
-import { Check, Clock, Code2, Key, Shield } from 'lucide-react';
+import { Check, Clock, Code2, Coins, Key, Shield } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useTierLabel } from '../i18n/format';
 import type { User } from '@/lib/auth/types';
-import type { ApiKey, QuotaUsage } from '@/lib/api-keys/types';
-import { QUOTA_PERIOD, TIER_LIMITS } from '@/lib/plan-limits';
+import type { ApiKey, ChargeEntry, QuotaUsage } from '@/lib/api-keys/types';
+import { FREE_DAILY_CREDITS } from '@/lib/plan-limits';
 import { SubscriptionPanel } from '../billing/SubscriptionPanel';
 import { displayedUsage } from './dashboard-types';
+import { RecentCharges } from './RecentCharges';
 
 interface AccountQuotaPanelProps {
   user: User;
   quota: QuotaUsage | null;
   apiKeys: ApiKey[];
+  charges: ChargeEntry[];
 }
 
-export function AccountQuotaPanel({ user, quota, apiKeys }: Readonly<AccountQuotaPanelProps>) {
+export function AccountQuotaPanel({ user, quota, apiKeys, charges }: Readonly<AccountQuotaPanelProps>) {
   const t = useTranslations('dashboard.usage');
   const format = useFormatter();
   const tierLabel = useTierLabel();
   const activeKeyCount = apiKeys.filter((key) => key.status === 'active').length;
-  const dailyLimit = quota?.dailyLimit ?? TIER_LIMITS[user.tier];
+  const dailyLimit = quota?.dailyLimit ?? FREE_DAILY_CREDITS;
   const usedToday = displayedUsage(quota?.usedToday ?? 0, dailyLimit);
-  const remaining = quota?.remaining ?? dailyLimit;
-  const monthly = (quota?.period ?? QUOTA_PERIOD[user.tier]) === 'month';
+  const remaining = Math.max(0, dailyLimit - usedToday);
+  const packageCredits = quota?.packageCredits ?? 0;
+  const monthly = quota?.period === 'month';
 
   return (
     <div
@@ -48,7 +51,7 @@ export function AccountQuotaPanel({ user, quota, apiKeys }: Readonly<AccountQuot
           </span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="p-4 rounded-md border border-rule">
             <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
               {t(monthly ? 'quotaMonth' : 'quota')}
@@ -58,6 +61,19 @@ export function AccountQuotaPanel({ user, quota, apiKeys }: Readonly<AccountQuot
             </div>
             <p className="mt-1 text-xs text-ink-2">
               {t(monthly ? 'remainingMonth' : 'remaining', { count: remaining })}
+            </p>
+          </div>
+
+          <div className="p-4 rounded-md border border-rule">
+            <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
+              {t('package')}
+            </div>
+            <div className="mt-1.5 flex items-center gap-2 text-2xl font-bold text-ink">
+              <Coins className="w-5 h-5 text-accent-ink" />
+              <span>{format.number(packageCredits)}</span>
+            </div>
+            <p className="mt-1 text-xs text-ink-2">
+              {t('packageNote', { count: packageCredits })}
             </p>
           </div>
 
@@ -93,6 +109,8 @@ export function AccountQuotaPanel({ user, quota, apiKeys }: Readonly<AccountQuot
         </div>
 
         <SubscriptionPanel />
+
+        <RecentCharges charges={charges} />
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
           <div className="p-5 rounded-md border border-rule space-y-2.5">

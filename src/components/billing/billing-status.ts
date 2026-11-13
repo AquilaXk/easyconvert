@@ -1,19 +1,21 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { PaidPlan, PublicBillingConfig } from '@/lib/billing/types';
+import type { SubscriptionSize } from '@/lib/billing/credits';
+import type { PublicBillingConfig } from '@/lib/billing/types';
 
 /** What `/api/billing/status` says about the signed-in account's subscription. */
 export interface SubscriptionView {
-  plan: PaidPlan;
+  /** Credits the subscription gives each billing period. */
+  credits: SubscriptionSize;
   status: 'active' | 'trialing' | 'past_due' | 'paused' | 'canceled';
   currentPeriodEnd?: number;
   cancelAt?: number;
-  /** Whether the subscription gives the account its plan now. */
+  /** Whether the subscription gives the account its credits and paid limits now. */
   active: boolean;
 }
 
-/** What the page needs when paid plans are on sale. */
+/** What the page needs when packages and subscriptions are on sale. */
 export interface EnabledBillingStatus extends PublicBillingConfig {
   enabled: true;
   subscription: SubscriptionView | null;

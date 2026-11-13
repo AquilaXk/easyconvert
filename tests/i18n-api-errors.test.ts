@@ -21,7 +21,7 @@ import { fileSizeLimitProblem } from '../src/lib/api/file-size-limit';
 import { importLargerThanLeftResponse, uploadBudgetRefusalResponse } from '../src/lib/api/upload-budget-response';
 import { conversionRefusalResponse } from '../src/lib/api/conversion-refusal-response';
 import { AUTH_ERROR_CODES, URL_IMPORT_ERROR_CODES } from '../src/lib/refusal-codes';
-import { FREE_DAILY_CONVERSIONS, PLAN_MAX_FILE_BYTES, SINGLE_REQUEST_BODY_MAX_BYTES } from '../src/lib/plan-limits';
+import { FREE_DAILY_CREDITS, PLAN_MAX_FILE_BYTES, SINGLE_REQUEST_BODY_MAX_BYTES } from '../src/lib/plan-limits';
 import type { TestLocale } from './helpers/intl';
 import { renderDom, select, visibleText } from './helpers/rendered-dom';
 
@@ -99,8 +99,8 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
   });
 
   it("words an account's spent link import budget with its plan's allowance, not the anonymous one", async () => {
-    const { status, body } = await bodyOf(uploadBudgetRefusalResponse('daily-bytes', '/api/fetch-url', 'pro'));
-    expect(body).toMatchObject({ refusal: 'daily-bytes', limitBytes: 10 * 1024 ** 3, plan: 'pro' });
+    const { status, body } = await bodyOf(uploadBudgetRefusalResponse('daily-bytes', '/api/fetch-url', 'paid'));
+    expect(body).toMatchObject({ refusal: 'daily-bytes', limitBytes: 10 * 1024 ** 3, plan: 'paid' });
 
     const korean = worded(useProblemWording, 'ko', body, status);
     expect(korean).toContain('10 GB');
@@ -110,7 +110,7 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
 
   /** The 429 of a job that needs `requiredUnits` conversions when `remaining` of a free account's day are left. */
   async function conversionsShort(requiredUnits: number, remaining: number) {
-    const usage = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CONVERSIONS, usedToday: FREE_DAILY_CONVERSIONS - remaining, remaining, resetAt: Date.now() };
+    const usage = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CREDITS, usedToday: FREE_DAILY_CREDITS - remaining, remaining, resetAt: Date.now() , packageCredits: 0};
     const refusal = { reason: 'used-up' as const, error: 'Daily conversion quota exceeded.', usage, requiredUnits };
     return bodyOf(conversionRefusalResponse(refusal, '/api/v1/jobs'));
   }
@@ -126,7 +126,7 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
 
   it('words a job refused once the day has no conversion left by the daily limit', async () => {
     const { status, body } = await conversionsShort(1, 0);
-    expect(worded(useProblemWording, 'ko', body, status)).toBe(`오늘 변환 한도 ${FREE_DAILY_CONVERSIONS}회를 모두 썼습니다. 내일 다시 시도하세요.`);
+    expect(worded(useProblemWording, 'ko', body, status)).toBe(`오늘 변환 한도 ${FREE_DAILY_CREDITS}회를 모두 썼습니다. 내일 다시 시도하세요.`);
   });
 
   it('words a file larger than what the day has left for link imports by what is left, in both locales', async () => {

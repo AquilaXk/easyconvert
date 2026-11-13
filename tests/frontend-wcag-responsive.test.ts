@@ -51,7 +51,7 @@ import {
   type DomElement,
 } from './helpers/rendered-dom';
 import { parsedSlug, testTranslator } from './helpers/intl';
-import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CREDITS } from '../src/lib/plan-limits';
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 
@@ -395,10 +395,10 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
 
   it('maintains WCAG 2.1 AA landmarks, single h1, non-skipping heading levels, and labeled 16px controls across routes', () => {
     const routes: ReadonlyArray<{ name: string; dom: DomElement }> = [
-      { name: '/', dom: render(HomePage, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS, apiOrigin: 'https://convert.example.test' }) },
-      { name: '/pdf-to-docx', dom: render(ConverterPageView, { parsed: parsedSlug('pdf-to-docx'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
-      { name: '/accessibility', dom: render(ConverterPageView, { parsed: parsedSlug('accessibility'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
-      { name: '/contact', dom: render(ConverterPageView, { parsed: parsedSlug('contact'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
+      { name: '/', dom: render(HomePage, { dailyLimit: ANONYMOUS_DAILY_CREDITS, apiOrigin: 'https://convert.example.test' }) },
+      { name: '/pdf-to-docx', dom: render(ConverterPageView, { parsed: parsedSlug('pdf-to-docx'), dailyLimit: ANONYMOUS_DAILY_CREDITS }) },
+      { name: '/accessibility', dom: render(ConverterPageView, { parsed: parsedSlug('accessibility'), dailyLimit: ANONYMOUS_DAILY_CREDITS }) },
+      { name: '/contact', dom: render(ConverterPageView, { parsed: parsedSlug('contact'), dailyLimit: ANONYMOUS_DAILY_CREDITS }) },
       { name: '/auth', dom: render(AuthPage, { googleEnabled: true, passwordResetEnabled: true }) },
       ...API_DOC_TOPICS.map((topic) => ({ name: apiDocsHref(topic.slug), dom: render(ApiDocsPage, { topic: topic.slug }) })),
     ];
@@ -545,6 +545,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
           },
         ],
         quota: null,
+        charges: [],
         newKeyName: '',
         generatedSecret: null,
         isGeneratingKey: false,

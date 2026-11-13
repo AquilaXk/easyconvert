@@ -72,7 +72,7 @@ interface LimitWords {
 
 /**
  * The quota of a refused job: how many it needs and how many are left, when some are left but fewer than it needs,
- * else the limit of the period (a day, or the month of a paid plan), which is then used up.
+ * else the credits of the window (a day, or the billing period of a subscription), which are then used up.
  */
 function quotaSentence(answer: Answer, { limit, conversionsShort }: LimitWords): string | undefined {
   const required = numberField(answer, 'requiredUnits');

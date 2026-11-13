@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import type { User } from '@/lib/auth/types';
-import type { ApiKey, ApiKeyScope, QuotaUsage } from '@/lib/api-keys/types';
+import type { ApiKey, ApiKeyScope, ChargeEntry, QuotaUsage } from '@/lib/api-keys/types';
 import type { DashboardSnapshot } from '@/lib/dashboard/snapshot-types';
 import type { ApiKeysPanelActions, ApiKeysPanelState } from './ApiKeysPanel';
 import {
@@ -82,7 +82,7 @@ function useClipboardCopyStatus() {
 export function useApiKeysController(
   enabled: boolean,
   onReportError: (error: string | null) => void,
-  initial?: Pick<DashboardSnapshot, 'keys' | 'quota'>
+  initial?: Pick<DashboardSnapshot, 'keys' | 'quota' | 'charges'>
 ) {
   const t = useTranslations('dashboard.errors');
   const tKeys = useTranslations('dashboard.keys');
@@ -90,6 +90,7 @@ export function useApiKeysController(
   const readWording = useDashboardErrorWording({ untypedRefusal: 'action' });
   const [apiKeys, setApiKeys] = useState<ApiKey[]>((initial?.keys as ApiKey[] | undefined) ?? []);
   const [quota, setQuota] = useState<QuotaUsage | null>(initial?.quota ?? null);
+  const [charges, setCharges] = useState<ChargeEntry[]>(initial?.charges ?? []);
   const [newKeyName, setNewKeyName] = useState('');
   const [generatedSecret, setGeneratedSecret] = useState<string | null>(null);
   const [isGeneratingKey, setIsGeneratingKey] = useState(false);
@@ -119,7 +120,11 @@ export function useApiKeysController(
       if (!isLatest()) return;
       if (!keysRes.ok) onReportError(readWording(keysData, keysRes.status, t('loadKeys')));
       else if (isSuccess(keysData, 'keys')) setApiKeys(keysData.keys as ApiKey[]);
-      if (quotaRes.ok && isSuccess(quotaData, 'usage')) setQuota(quotaData.usage as QuotaUsage);
+      if (quotaRes.ok && isSuccess(quotaData, 'usage')) {
+        setQuota(quotaData.usage as QuotaUsage);
+        const answered = quotaData as { charges?: unknown };
+        if (Array.isArray(answered.charges)) setCharges(answered.charges as ChargeEntry[]);
+      }
     } catch (error) {
       warnBrowserFailure('Reading the API keys failed', error);
       if (isLatest()) onReportError(t('loadKeysNetwork'));
@@ -199,7 +204,7 @@ export function useApiKeysController(
   };
 
   const state: ApiKeysPanelState = {
-    apiKeys, quota, newKeyName, generatedSecret, isGeneratingKey,
+    apiKeys, quota, charges, newKeyName, generatedSecret, isGeneratingKey,
     showGenerateForm, copiedKey, revokingKeyId, selectedScopes, keyExpiry, acceptedTerms,
   };
 

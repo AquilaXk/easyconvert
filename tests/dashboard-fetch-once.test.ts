@@ -141,7 +141,7 @@ describe('the dashboard reads each resource once per visit', () => {
 
 describe('the dashboard the server rendered', () => {
   const USER = { id: 'user-1', email: 'reader@dashboard.test', name: 'Reader', tier: 'free' as const, provider: 'email' as const, createdAt: 1, updatedAt: 1 };
-  const QUOTA = { tier: 'free' as const, period: 'day' as const, dailyLimit: 10, usedToday: 0, remaining: 10, resetAt: 0 };
+  const QUOTA = { tier: 'free' as const, period: 'day' as const, dailyLimit: 10, usedToday: 0, remaining: 10, resetAt: 0 , packageCredits: 0};
 
   it('reads nothing at mount when the server handed it everything', async () => {
     mount(function Dashboard() {

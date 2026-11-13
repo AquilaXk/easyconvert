@@ -70,7 +70,7 @@
         "scopes": "Scopes",
         "errors": "Errors",
         "limits": "Limits",
-        "daily-allowance": "Daily allowance",
+        "daily-allowance": "Credits",
         "request-rate": "Request rate",
         "concurrent-conversions": "Conversions at once",
         "file-size": "File size"
@@ -118,9 +118,9 @@
         "503": "The conversion needs an engine this server does not have.",
         "504": "The conversion ran past its time limit. Send it as a job instead."
       },
-      "limits": "The daily allowance and the conversions at once count for the account, whichever key it uses; the request rate counts for each key.",
-      "dailyAllowance1": "An account on the free plan runs {daily} conversions a day on the server; the count starts again at midnight UTC. Only a conversion that finishes counts: a refused, failed or cancelled conversion is not charged.",
-      "dailyAllowance2": "Each conversion answer carries <code>RateLimit-Limit</code>, <code>RateLimit-Remaining</code> and <code>RateLimit-Reset</code> (the seconds until the count starts again). When none is left, a conversion is answered 429 with <code>Retry-After</code>. The <usage>Usage</usage> endpoint reads the same numbers.",
+      "limits": "The credits and the conversions at once count for the account, whichever key it uses; the request rate counts for each key.",
+      "dailyAllowance1": "Conversions cost credits. Most use {general, plural, one {# credit} other {# credits}}, Office and iWork documents to PDF use {office, plural, one {# credit} other {# credits}} and PDF to Office documents use {pdfToOffice, plural, one {# credit} other {# credits}}; every started minute of processing after the first adds 1 credit. An account on the free plan has {daily} credits a day on the server; the count starts again at midnight UTC. A package adds credits that never expire, and a subscription adds credits every billing period; subscription credits are used first. Only a conversion that finishes is charged: a refused, failed or cancelled conversion is not.",
+      "dailyAllowance2": "Each conversion answer carries <code>RateLimit-Limit</code>, <code>RateLimit-Remaining</code> and <code>RateLimit-Reset</code> (the seconds until the window credits start again; package credits do not reset). <code>RateLimit-Limit</code> and <code>RateLimit-Remaining</code> count the credits of the period and the package credits together. When none is left, a conversion is answered 429 with <code>Retry-After</code>. The <usage>Usage</usage> endpoint reads the same numbers.",
       "requestRate": "A key on the free plan sends up to {burst} requests at once and {perSecond} a second after that. A request over that rate is answered 429 with <code>Retry-After</code>.",
       "concurrentConversions": "An account on the free plan has up to {concurrent} conversions queued or running at once. Another one is answered 429 with <code>Retry-After</code> and takes nothing from the allowance.",
       "fileSize1": "One request carries at most {requestMax} of file and form fields. A file up to {fileMax} is uploaded in parts through <uploads>Uploads</uploads> and converted by a <jobs>job</jobs>.",
@@ -250,8 +250,8 @@
         "lead": "Lists the entries of an archive with their sizes and whether they are encrypted, without unpacking it."
       },
       "show-the-daily-allowance": {
-        "title": "Show the daily allowance",
-        "lead": "Answers with the conversions the account has run today, how many are left and when the count starts again."
+        "title": "Show the credits",
+        "lead": "Answers with the credits the account has used in its current period, the package credits, how many credits are left and when the period starts again."
       }
     }
   },
@@ -390,16 +390,16 @@
       "deleteLabel": "Delete {name}"
     },
     "quota": {
-      "used": "API requests used today",
-      "usedMonth": "API requests used this period",
-      "allowed": "/ {limit, number} allowed",
-      "remaining": "Remaining today",
-      "callsLeft": "calls left",
-      "remainingNote": "Counts authenticated API requests. Result files are deleted automatically.",
+      "used": "Credits used today",
+      "usedMonth": "Credits used this period",
+      "allowed": "/ {limit, number} credits",
+      "remaining": "Credits left",
+      "callsLeft": "credits left",
+      "remainingNote": "Counts the credits of conversions made with your API keys and on the site. Result files are deleted automatically.",
       "reset": "Resets daily",
-      "resetMonth": "Resets each month",
-      "resetNote": "Counts reset daily at midnight UTC.",
-      "resetNoteMonth": "Counts reset when your subscription renews."
+      "resetMonth": "Resets each period",
+      "resetNote": "Daily credits reset at midnight UTC.",
+      "resetNoteMonth": "Subscription credits reset when your subscription renews."
     },
     "keys": {
       "heading": "API keys",
@@ -509,18 +509,18 @@
     },
     "usage": {
       "heading": "Usage and limits",
-      "intro": "Your plan, your API request allowance, and the retention rules.",
+      "intro": "Your plan, your credits, and the retention rules.",
       "tier": "Plan: {tier}",
-      "quota": "API requests per day",
-      "quotaMonth": "API requests per month",
-      "remaining": "{count, number} API requests left today",
-      "remainingMonth": "{count, number} API requests left this period",
+      "quota": "Credits today",
+      "quotaMonth": "Subscription credits this period",
+      "remaining": "{count, number} credits left today",
+      "remainingMonth": "{count, number} subscription credits left this period",
       "activeKeys": "Active API keys",
       "activeKeysNote": "Keys with scopes that work on this account",
-      "reset": "Quota reset",
+      "reset": "Credits reset",
       "nextReset": "Next reset at {date}",
-      "resetDaily": "Counters reset daily at midnight UTC",
-      "resetMonthly": "Counters reset when your subscription renews",
+      "resetDaily": "Daily credits reset every day at midnight UTC",
+      "resetMonthly": "Subscription credits reset when your subscription renews",
       "workbench": {
         "heading": "Web converter",
         "free": "Free conversions in your browser",
@@ -531,7 +531,23 @@
         "scopes": "Scopes per key (<code>convert:write</code>, <code>convert:read</code>, <code>storage:download</code>)",
         "isolation": "A result is deleted 10 minutes after download, or an hour after conversion at the latest"
       },
-      "reference": "View the OpenAPI reference"
+      "reference": "View the OpenAPI reference",
+      "package": "Package credits",
+      "packageNote": "{count, plural, =0 {No package credits} one {# credit that does not expire} other {# credits that do not expire}}",
+      "charges": {
+        "heading": "Recent charges",
+        "empty": "No conversions have been charged yet.",
+        "when": "Time",
+        "what": "Conversion",
+        "credits": "Credits",
+        "extra": "{base, number} credits and {surcharge, number} for processing time",
+        "batch": "A batch of files",
+        "graph": "A job with several steps",
+        "tool": "{tool}",
+        "pair": "{from} to {to}",
+        "fromPackage": "{count, number} from your package",
+        "uncharged": "{count, number} owed and not charged"
+      }
     },
     "guide": {
       "heading": "Integration guide",
@@ -832,9 +848,9 @@
       "sourcesMenu": "File sources",
       "fromDevice": "From Device",
       "fromUrl": "From URL",
-      "dailyConversions": "{count, plural, one {# conversion} other {# conversions}} a day",
-      "monthlyConversions": "{count, plural, one {# conversion} other {# conversions}} a month",
-      "autoDeleted": "Files deleted automatically"
+      "autoDeleted": "Files deleted automatically",
+      "paidCredits": "Credits from your package or subscription",
+      "dailyCredits": "{count, plural, one {# credit} other {# credits}} a day"
     },
     "tiles": {
       "joiner": "to",
@@ -995,7 +1011,7 @@
     },
     "pricing": {
       "title": "Pricing | EasyConvert",
-      "description": "EasyConvert is free to use. See the limits of the free plan: conversions a day, file size, simultaneous conversions, processing time and how long files are kept."
+      "description": "EasyConvert is free to use. See how credits pay for conversions, the free daily credits, the packages and subscriptions, and the limits of each plan."
     }
   },
   "options": {
@@ -1182,13 +1198,11 @@
   "plans": {
     "fileLimit": "Up to {size} per file",
     "exactBytes": "{count, number} bytes",
-    "tooLarge": "File size {size} exceeds the {limit} limit for {plan, select, anonymous {anonymous use} free {the free plan} basic {the Basic plan} pro {the Pro plan} other {the Enterprise plan}}.",
-    "nextPlanAllows": "{plan, select, anonymous {Anonymous} free {Free} basic {Basic} pro {Pro} other {Enterprise}} allows files up to {limit}.",
+    "tooLarge": "File size {size} exceeds the {limit} limit for {plan, select, anonymous {anonymous use} free {the free plan} other {a paid plan}}.",
+    "nextPlanAllows": "A paid plan allows files up to {limit}.",
     "tier": {
       "free": "Free",
-      "basic": "Basic",
-      "pro": "Pro",
-      "enterprise": "Enterprise"
+      "paid": "Paid"
     }
   },
   "queue": {
@@ -1538,10 +1552,10 @@
     "limits": {
       "payload-too-large": "One request can carry at most {limit}.",
       "concurrency-limit": "{limit} conversions are already running, the most at once. Try again when one finishes.",
-      "quota-exceeded": "You have used today's limit of {limit} conversions. Try again tomorrow.",
-      "quota-exceeded-month": "You have used this month's limit of {limit} conversions. Try again after your plan renews.",
-      "quota-short": "This job needs {required, plural, one {# conversion} other {# conversions}}, and {left, plural, one {# is} other {# are}} left today.",
-      "quota-short-month": "This job needs {required, plural, one {# conversion} other {# conversions}}, and {left, plural, one {# is} other {# are}} left this month.",
+      "quota-exceeded": "You have used today's limit of {limit} credits. Try again tomorrow.",
+      "quota-exceeded-month": "You have used this period's {limit} subscription credits and have no package credits left. Try again after your subscription renews.",
+      "quota-short": "This job needs {required, plural, one {# credit} other {# credits}}, and {left, plural, one {# is} other {# are}} left today.",
+      "quota-short-month": "This job needs {required, plural, one {# credit} other {# credits}}, and {left, plural, one {# is} other {# are}} left this period.",
       "open-uploads": "Without an account, up to {limit} uploads may be open at once. Finish or cancel one, then try again.",
       "daily-bytes": "Without an account, uploads and link imports may total {limit} a day. Try again tomorrow.",
       "daily-import-bytes": "On your plan, link imports may total {limit} a day. Try again tomorrow.",
@@ -1571,7 +1585,7 @@
       "unsupported_input": "This kind of file cannot be converted, although it appears intact.",
       "input_over_limit": "The file holds more than a conversion can process, for example too many pixels or too much data once unpacked.",
       "import_budget_exceeded": "Today's limit for link imports has no room for this file. Try again tomorrow.",
-      "quota_exceeded": "This job needs more conversions than are left today. Try again tomorrow.",
+      "quota_exceeded": "This job needs more credits than are left. Try again after your credits reset.",
       "timeout": "The conversion did not finish in time. Select Convert to try again.",
       "storage_credential_not_found": "The saved storage credential was not found, has expired, or is not yours. Save it again, or send the credentials with the task.",
       "storage_access_denied": "The storage refused the credentials or the permission this task needs. Check the keys and the access of the bucket or folder.",
@@ -1639,60 +1653,80 @@
       "key_create_failed": "Could not create the API key. Try again in a moment."
     },
     "billing": {
-      "billing_unavailable": "Paid plans are not available yet.",
+      "billing_unavailable": "Credits cannot be bought yet.",
       "billing_provider_failed": "Could not reach the payment service. Try again in a moment.",
-      "invalid_plan": "That plan is not available.",
-      "already_subscribed": "You already have a paid plan. Change or cancel it under Manage subscription.",
+      "already_subscribed": "You already have a subscription of this size. Choose another size, or change or cancel it under Manage subscription.",
       "no_subscription": "You do not have a subscription.",
-      "invalid_signature": "The request could not be verified."
+      "invalid_signature": "The request could not be verified.",
+      "invalid_product": "That package or subscription is not available."
     }
   },
   "billing": {
     "comingSoon": "Coming soon",
+    "buyPackage": "Buy package",
     "subscribe": "Subscribe",
+    "switchTo": "Switch to this subscription",
+    "signInToBuy": "Sign in to buy",
     "signInToSubscribe": "Sign in to subscribe",
-    "currentPlan": "Current plan",
+    "currentPlan": "Current subscription",
     "manage": "Manage subscription",
     "starting": "Opening checkout",
-    "completed": "Thank you. Your plan switches on in a few moments.",
-    "plans": {
-      "basic": {
-        "tagline": "For regular conversions and bigger files."
-      },
-      "pro": {
-        "tagline": "For frequent conversions and larger files."
-      },
-      "enterprise": {
-        "tagline": "For heavy and automated use."
-      }
+    "completed": "Thank you. Your credits are added in a few moments.",
+    "switched": "Done. The new subscription applies in a few moments.",
+    "volume": {
+      "label": "Credits",
+      "hint": "Choose how many credits"
+    },
+    "package": {
+      "name": "Package",
+      "tagline": "Buy credits once and use them whenever you like.",
+      "credits": "{credits, number} credits",
+      "never": "Credits never expire while your account exists",
+      "after": "Used after your subscription credits"
+    },
+    "subscription": {
+      "name": "Subscription",
+      "tagline": "Credits every month at a lower price per credit.",
+      "credits": "{credits, number} credits every month",
+      "noRollover": "Credits you do not use in a month do not carry over",
+      "cancel": "Cancel at any time",
+      "startsAt": "Subscriptions start at {credits, number} credits a month."
+    },
+    "enterprise": {
+      "name": "Enterprise",
+      "tagline": "For large teams and special requirements.",
+      "price": "Custom",
+      "body": "Volume pricing, invoices and support agreements.",
+      "contact": "Contact us"
     },
     "limits": {
-      "monthly": "{count, number} conversions a month",
       "fileSize": "Up to {size} per file",
       "concurrent": "{count, number} conversions at the same time",
       "processing": "Up to {minutes, plural, one {# minute} other {# minutes}} per conversion",
-      "inheritsFree": "Everything in Free"
+      "priority": "High priority in the queue"
     },
     "price": {
       "month": "{price} per month",
       "year": "{price} per year",
+      "once": "{price} once",
       "other": "{price}"
     },
+    "perCredit": "{price} per credit",
     "account": {
       "heading": "Subscription",
-      "plan": "{plan} plan",
+      "credits": "{credits, number} credits a month",
       "renews": "Renews on {date}.",
-      "endsOn": "Ends on {date}. After that you are on the Free plan.",
-      "pastDue": "The last payment did not go through. The plan stays until {date}.",
-      "ended": "The subscription has ended. You are on the Free plan.",
-      "none": "You are on the Free plan.",
+      "endsOn": "Ends on {date}. After that your credits and limits are those of the Free plan, plus any package credits.",
+      "pastDue": "The last payment did not go through. The subscription stays until {date}.",
+      "ended": "The subscription has ended.",
+      "none": "You have no subscription.",
       "manage": "Manage subscription",
-      "plans": "See paid plans"
+      "plans": "See packages and subscriptions"
     }
   },
   "pricing": {
     "title": "Pricing",
-    "intro": "EasyConvert is free to use. Paid plans with higher limits are listed below.",
+    "intro": "EasyConvert is free to use. When you need more conversions, buy credits as a package or a subscription.",
     "plan": {
       "name": "Free",
       "tagline": "For everyday conversions, testing and small projects.",
@@ -1703,7 +1737,7 @@
     "limitsHeading": "Limits",
     "limits": {
       "daily": {
-        "label": "Conversions",
+        "label": "Credits",
         "value": "{daily} a day"
       },
       "fileSize": {
@@ -1729,20 +1763,63 @@
       "api": "Access to the API with an API key from your account",
       "noCard": "No credit card needed"
     },
+    "creditsHeading": "Credits per conversion",
+    "creditsIntro": "A successful conversion uses credits by its kind. A conversion that fails uses none.",
+    "creditRows": {
+      "general": {
+        "label": "Every other conversion",
+        "value": "{count, plural, one {# credit} other {# credits}}"
+      },
+      "office-to-pdf": {
+        "label": "Office documents to PDF",
+        "value": "{count, plural, one {# credit} other {# credits}}"
+      },
+      "iwork-to-pdf": {
+        "label": "Pages, Numbers and Keynote to PDF",
+        "value": "{count, plural, one {# credit} other {# credits}}"
+      },
+      "pdf-to-office": {
+        "label": "PDF to Word, Excel and PowerPoint",
+        "value": "{count, plural, one {# credit} other {# credits}}"
+      },
+      "minutes": {
+        "label": "Each started minute of processing after the first",
+        "value": "+{count, plural, one {# credit} other {# credits}}"
+      }
+    },
     "faqHeading": "Frequently asked questions",
     "faq": {
-      "daily": {
-        "question": "How many conversions can I run?",
-        "answer": "{anonymous, plural, one {# conversion} other {# conversions}} a day without an account and {daily, plural, one {# conversion} other {# conversions}} a day with a free account. The count starts again every day at midnight UTC. Conversions that run in your browser use none of our servers and are not counted."
+      "credits": {
+        "question": "What are credits?",
+        "answer": "Credits pay for conversions. Each successful conversion uses credits by its kind: most use {general, plural, one {# credit} other {# credits}}, Office documents to PDF use {office, plural, one {# credit} other {# credits}}, and PDF to Office documents use {pdfToOffice, plural, one {# credit} other {# credits}}. A conversion that fails uses none."
+      },
+      "baseCost": {
+        "question": "Why does a conversion have a base cost?",
+        "answer": "The base cost follows the work our servers do. A simple conversion takes little work and uses {general, plural, one {# credit} other {# credits}}. Converting between documents and PDF takes much more and uses {office, plural, one {# credit} other {# credits}} or {pdfToOffice, plural, one {# credit} other {# credits}}. A conversion that runs longer than a minute adds 1 credit for every further minute that starts."
+      },
+      "free": {
+        "question": "How many credits do I get for free?",
+        "answer": "{anonymous, plural, one {# credit} other {# credits}} a day without an account and {daily, plural, one {# credit} other {# credits}} a day with a free account. The count starts again every day at midnight UTC. Conversions that run in your browser use none of our servers and use no credits."
       },
       "account": {
         "question": "Do I need an account?",
-        "answer": "No. You can convert files without signing in. An account gives you the dashboard and API keys."
+        "answer": "No. You can convert files without signing in. An account gives you the dashboard and API keys, and you need one to buy credits."
+      },
+      "packageOrSubscription": {
+        "question": "What is the difference between a package and a subscription?",
+        "answer": "A package is a one-time purchase. Its credits never expire as long as your account exists. A subscription adds credits every month at a lower price per credit. Subscription credits you do not use in a month do not carry over."
+      },
+      "combine": {
+        "question": "Can I use a package and a subscription together?",
+        "answer": "Yes. Subscription credits are used first, then package credits. Package credits stay until you use them."
+      },
+      "cancel": {
+        "question": "Can I cancel or change my subscription?",
+        "answer": "You can cancel at any time from your dashboard. The subscription keeps its credits and limits until the end of the period you paid for. You can switch to another size at any time. The new subscription applies at once, and the credits left in the current period are dropped. Paddle processes the payment."
       },
       "limits": {
         "question": "What other limits apply?",
-        "answer": "A file can be up to {fileSize}. You can run {concurrent} conversions at the same time, and one conversion can run for up to {processing, plural, one {# minute} other {# minutes}}.",
-        "answerOnSale": "Each paid plan lists its own file size, simultaneous conversions and processing time on its card above."
+        "answer": "On the free plan a file can be up to {fileSize}, you can run {concurrent} conversions at the same time, and one conversion can run for up to {processing, plural, one {# minute} other {# minutes}}. While your account has package credits or a subscription, a file can be up to {paidFileSize}, you can run {paidConcurrent} conversions at the same time, one conversion can run for up to {paidProcessing, plural, one {# minute} other {# minutes}}, and your conversions go first in the queue."
       },
       "deletion": {
         "question": "When are my files deleted?",
@@ -1750,21 +1827,12 @@
       },
       "api": {
         "question": "Can I use the API for free?",
-        "answer": "Yes. Create an API key in your account and send requests to it. API requests count against the same {daily, plural, one {# conversion} other {# conversions}} a day."
-      },
-      "paid": {
-        "question": "Can I buy a paid plan?",
-        "answer": "Paid plans are marked \"Coming soon\" until they go on sale. When they do, you subscribe on this page, and you manage or cancel the subscription from your dashboard.",
-        "answerOnSale": "Yes. Choose Basic, Pro or Enterprise on this page to subscribe. The plan applies as soon as you pay. A paid plan renews every month until you cancel. You can cancel at any time from your dashboard, and the plan stays until the end of the period you paid for. Paddle processes the payment."
-      },
-      "monthly": {
-        "question": "How are conversions counted on a paid plan?",
-        "answerOnSale": "A paid plan counts conversions per month, from the day your subscription renews, and the count starts again at each renewal. Visitors and free accounts are counted per day."
+        "answer": "Yes. Create an API key in your account and send requests to it. API requests use the same {daily, plural, one {# credit} other {# credits}} a day."
       }
     },
     "cta": {
       "heading": "Ready to get started?",
-      "body": "Convert up to {anonymous, plural, one {# file} other {# files}} a day, no account and no credit card needed.",
+      "body": "Convert files with up to {anonymous, plural, one {# credit} other {# credits}} a day, no account and no credit card needed.",
       "button": "Convert a file"
     }
   }
