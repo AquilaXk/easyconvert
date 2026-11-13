@@ -2,7 +2,7 @@
 
 This policy explains which personal data EasyConvert processes, why, for how long, who helps us process it, and how you exercise your rights. It follows the Korean Personal Information Protection Act and, for visitors in the European Union, the General Data Protection Regulation (GDPR).
 
-The operator of EasyConvert, Dongin Jeong (정동인, support@aquilaxk.site), is the controller of the personal data described here.
+The operator of EasyConvert, Dongin Jeong (support@aquilaxk.site), is the controller of the personal data described here.
 
 ## 1. Why we process personal data
 
@@ -141,7 +141,7 @@ We do not process pseudonymised data. We do not make decisions about you by auto
 
 ## 13. Privacy officer
 
-The privacy officer is Dongin Jeong (정동인), the operator of EasyConvert. Send privacy questions, requests and complaints to support@aquilaxk.site or through the [contact page](/contact).
+The privacy officer is Dongin Jeong, the operator of EasyConvert. Send privacy questions, requests and complaints to support@aquilaxk.site or through the [contact page](/contact).
 
 ## 14. Remedies
 

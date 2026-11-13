@@ -104,7 +104,7 @@ describe('the terms state the free allowance and the paid plans', () => {
     const sections = locale === 'en' ? ['5. Paid plans and billing', '6. Cancellation', '7. Refunds', '8. Price changes'] : ['5. 유료 요금제와 결제', '6. 해지', '7. 환불', '8. 가격 변경'];
     expect(titles.slice(4, 8)).toEqual(sections);
     const text = visibleText(page);
-    expect(text).toContain(locale === 'en' ? 'Dongin Jeong (정동인), a sole proprietor' : '개인사업자 정동인(Dongin Jeong');
+    expect(text).toContain(locale === 'en' ? 'Dongin Jeong, a sole proprietor' : '개인사업자 정동인(이하');
     expect(text).toContain('Paddle.com');
     expect(text).toContain(locale === 'en' ? 'merchant of record' : 'Merchant of Record');
   });
