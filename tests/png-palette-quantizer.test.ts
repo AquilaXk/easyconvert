@@ -424,6 +424,16 @@ describe.skipIf(skippedWithoutProgram)('the program itself', () => {
     }
   });
 
+  it('answers the same bytes on every run for a picture whose Lloyd passes run on several threads', () => {
+    // 100 x 100 pixels of pseudo-random colours: 10,000 entries in the histogram, past the 8,192 where the passes are cut into ranges.
+    const pixels = noise(100 * 100);
+    for (let i = 3; i < pixels.length; i += 4) pixels[i] = 255;
+    const input = Buffer.concat([header(100, 100), pixels]);
+    const first = run(input, ['--colors', '64', '--dither', '0.25']);
+    expect(first.status).toBe(0);
+    for (let round = 0; round < 3; round += 1) expect(run(input, ['--colors', '64', '--dither', '0.25']).stdout.equals(first.stdout)).toBe(true);
+  });
+
   it('maps every pixel to its nearest palette entry without dithering, flat areas and a gradient alike', () => {
     // Flat bands (answered from the colour cache after the first pixel of each) next to a gradient of more than 256 colours (searched for each pixel).
     const width = 96;

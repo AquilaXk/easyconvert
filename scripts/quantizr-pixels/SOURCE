@@ -27,9 +27,12 @@ this digest by tests/quantizr-pixels-packaging.test.ts, a file that was changed 
   src/quantize.rs                  -> quantizr/src/quantize.rs   changed, see below (upstream SHA-256 a703394b2fbf3554919fdbcd46e0e019576e5b16f63a3f35294d701457a3beb0)
   src/vpsearch.rs                  -> quantizr/src/vpsearch.rs   unchanged  8d274a7a350c24e6f1a1acba46edcc3c5382d1f1cdfd8fd0c2004860f0630c55
 
-Changed from upstream (each change is marked "(Not in upstream.)" in the file; the output is the same bytes as upstream's for every picture tested):
+Changed from upstream (each change is marked "(Not in upstream.)" in the file):
+  src/colormap.rs   two more passes of Lloyd's algorithm over the histogram after upstream's two (up to 24 passes, until the error stops falling, for
+      a histogram of 1024 entries or fewer), cut into four ranges that run on threads for 8192 entries or more; the sums are added in range order, so
+      the palette does not depend on the number of threads. A histogram of more than 1,048,576 entries keeps upstream's two passes.
   src/quantize.rs, src/colormap.rs   a cache of the nearest palette entry by exact pixel colour in the two remap loops, and no error passed on by a
-      pixel that the palette holds exactly. A flat area, or a picture of at most 256 colours, is looked up instead of searched.
+      pixel that the palette holds exactly. A flat area, or a picture of at most 256 colours, is looked up instead of searched (same output).
 
 Followed, not copied:
   example/src/main.rs              -> src/main.rs    the calls of the library (Options, set_max_colors, QuantizeResult::quantize,
