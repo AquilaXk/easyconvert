@@ -68,8 +68,8 @@ describe('the numbers of the legal texts are the values in force', () => {
 
   it('the terms state the daily allowance without an account and on the free plan', () => {
     expect(ANONYMOUS_DAILY_CONVERSIONS).toBe(FREE_DAILY_CONVERSIONS);
-    expect(LEGAL_TEXTS.terms.en).toContain(`Without an account and on the free plan, you can run ${FREE_DAILY_CONVERSIONS} conversions on our servers per day.`);
-    expect(LEGAL_TEXTS.terms.ko).toContain(`하루에 서버 변환을 ${FREE_DAILY_CONVERSIONS}회까지`);
+    expect(LEGAL_TEXTS.terms.en).toContain(`Without an account and on the free plan, you can use ${FREE_DAILY_CONVERSIONS} credits on our servers per day.`);
+    expect(LEGAL_TEXTS.terms.ko).toContain(`하루에 서버 변환 크레딧을 ${FREE_DAILY_CONVERSIONS}개까지`);
   });
 });
 
