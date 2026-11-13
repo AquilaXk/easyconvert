@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { useTranslations } from 'next-intl';
-import { Eye, EyeOff, Loader2 } from 'lucide-react';
+import { Eye, EyeOff, Loader2, Mail } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { LEGAL_DOCUMENTS } from '@/lib/legal/documents';
 
@@ -237,5 +237,33 @@ export function AuthCredentialsForm({
         {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <span>{activeTab === 'login' ? t('signIn') : t('createAccount')}</span>}
       </button>
     </form>
+  );
+}
+
+/**
+ * What a sign-up shows in place of its form: the confirmation mail was sent for the address, and the link in it confirms the
+ * address. The text is the same for an address that has an account (nothing is sent to it, and the answer must not say so), so
+ * it also says where such an address goes: sign in, or reset the password.
+ */
+export function RegistrationSentPanel({ email, onSignIn }: Readonly<{ email: string; onSignIn: () => void }>) {
+  const t = useTranslations('auth.checkMail');
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start gap-3 p-3 rounded-xs bg-sunken border border-rule text-sm text-ink-2">
+        <Mail className="w-5 h-5 shrink-0 mt-0.5 text-ink-3" aria-hidden="true" />
+        <div className="min-w-0 space-y-2">
+          <p role="status" className="font-medium text-ink">{t('heading')}</p>
+          <p>{t('text', { email })}</p>
+          <p>{t('hint')}</p>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onSignIn}
+        className={`${CONTROL_HEIGHT} w-full flex items-center justify-center px-2.5 rounded-xs bg-accent text-on-accent hover:bg-accent-hover text-sm font-medium transition-colors`}
+      >
+        {t('toSignIn')}
+      </button>
+    </div>
   );
 }

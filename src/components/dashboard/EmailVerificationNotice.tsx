@@ -6,8 +6,9 @@ import { Mail } from 'lucide-react';
 import { useAuthErrorWording } from '../i18n/error-wording';
 
 /**
- * Tells a signed-in account whose email address is not confirmed that password reset mails do not reach it yet, with a link
- * that sends the confirmation mail again. It shows nothing when mail is not configured or the address is confirmed.
+ * Tells a signed-in account whose email address is not confirmed that it converts with the allowance of a visitor until the
+ * address is confirmed, with a link that sends the confirmation mail again. It shows nothing when mail is not configured or
+ * the address is confirmed.
  */
 export function EmailVerificationNotice({
   initial,

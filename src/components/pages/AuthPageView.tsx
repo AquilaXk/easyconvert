@@ -5,7 +5,7 @@ import { useTranslations } from 'next-intl';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import { AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
-import { AuthCredentialsForm, GoogleOAuthButton } from '@/components/auth/AuthForms';
+import { AuthCredentialsForm, GoogleOAuthButton, RegistrationSentPanel } from '@/components/auth/AuthForms';
 import { useAuthController } from '@/components/auth/useAuthController';
 
 /** What the server offers on this page, read when the page is rendered so the form draws whole at once. */
@@ -28,6 +28,7 @@ function LoginFormContent({ googleEnabled, passwordResetEnabled }: Readonly<Auth
     isGoogleLoading,
     error,
     successMessage,
+    registeredEmail,
     setEmail,
     setPassword,
     setConfirmPassword,
@@ -76,58 +77,64 @@ function LoginFormContent({ googleEnabled, passwordResetEnabled }: Readonly<Auth
           </output>
         )}
 
-        {googleEnabled && (
+        {registeredEmail ? (
+          <RegistrationSentPanel email={registeredEmail} onSignIn={() => handleTabSwitch('login')} />
+        ) : (
           <>
-            <GoogleOAuthButton
-              isGoogleLoading={isGoogleLoading}
-              disabled={isGoogleLoading || isLoading}
-              onClick={() => {
-                void handleGoogleLogin();
-              }}
-            />
+          {googleEnabled && (
+            <>
+              <GoogleOAuthButton
+                isGoogleLoading={isGoogleLoading}
+                disabled={isGoogleLoading || isLoading}
+                onClick={() => {
+                  void handleGoogleLogin();
+                }}
+              />
 
-            <div className="my-5 flex items-center gap-3 text-sm text-ink-3">
-              <span aria-hidden="true" className="flex-1 border-t border-rule" />
-              <span>{t('emailDivider')}</span>
-              <span aria-hidden="true" className="flex-1 border-t border-rule" />
-            </div>
+              <div className="my-5 flex items-center gap-3 text-sm text-ink-3">
+                <span aria-hidden="true" className="flex-1 border-t border-rule" />
+                <span>{t('emailDivider')}</span>
+                <span aria-hidden="true" className="flex-1 border-t border-rule" />
+              </div>
+            </>
+          )}
+
+          <AuthCredentialsForm
+            activeTab={activeTab}
+            passwordResetEnabled={passwordResetEnabled}
+            name={name}
+            email={email}
+            password={password}
+            confirmPassword={confirmPassword}
+            acceptedTerms={acceptedTerms}
+            showPassword={showPassword}
+            isBusy={isLoading || isGoogleLoading}
+            isSubmitting={isLoading}
+            onNameChange={setName}
+            onEmailChange={setEmail}
+            onPasswordChange={setPassword}
+            onConfirmPasswordChange={setConfirmPassword}
+            onAcceptedTermsChange={setAcceptedTerms}
+            onTogglePassword={() => setShowPassword((prev) => !prev)}
+            onSubmit={(event) => {
+              void handleSubmit(event);
+            }}
+          />
+          <p className="mt-6 text-center text-sm text-ink-3">
+            {t.rich(activeTab === 'login' ? 'switchToRegister' : 'switchToLogin', {
+              link: (chunks) => (
+                <button
+                  type="button"
+                  onClick={() => handleTabSwitch(otherTab)}
+                  className="font-medium text-accent-ink hover:underline rounded-xs"
+                >
+                  {chunks}
+                </button>
+              ),
+            })}
+          </p>
           </>
         )}
-
-        <AuthCredentialsForm
-          activeTab={activeTab}
-          passwordResetEnabled={passwordResetEnabled}
-          name={name}
-          email={email}
-          password={password}
-          confirmPassword={confirmPassword}
-          acceptedTerms={acceptedTerms}
-          showPassword={showPassword}
-          isBusy={isLoading || isGoogleLoading}
-          isSubmitting={isLoading}
-          onNameChange={setName}
-          onEmailChange={setEmail}
-          onPasswordChange={setPassword}
-          onConfirmPasswordChange={setConfirmPassword}
-          onAcceptedTermsChange={setAcceptedTerms}
-          onTogglePassword={() => setShowPassword((prev) => !prev)}
-          onSubmit={(event) => {
-            void handleSubmit(event);
-          }}
-        />
-        <p className="mt-6 text-center text-sm text-ink-3">
-          {t.rich(activeTab === 'login' ? 'switchToRegister' : 'switchToLogin', {
-            link: (chunks) => (
-              <button
-                type="button"
-                onClick={() => handleTabSwitch(otherTab)}
-                className="font-medium text-accent-ink hover:underline rounded-xs"
-              >
-                {chunks}
-              </button>
-            ),
-          })}
-        </p>
       </div>
     </div>
   );

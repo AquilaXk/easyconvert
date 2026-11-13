@@ -13,8 +13,11 @@ import {
   type AuthTab,
 } from './AuthForms';
 
-/** What `/api/auth/login` and `/api/auth/register` answer: the session's user on success (both routes always send it), else a refusal with its `code`. */
-type AuthAnswer = { success: true; user: SessionUser } | { success: false; code?: string; error?: string };
+/**
+ * What `/api/auth/login` and `/api/auth/register` answer. A sign-in sends the session's user on success. A sign-up sends no user:
+ * its answer is the same 202 for a new address and for one that has an account, and starts no session. A refusal carries its `code`.
+ */
+type AuthAnswer = { success: true; user?: SessionUser } | { success: false; code?: string; error?: string };
 
 export function useAuthController() {
   const t = useTranslations('auth');
@@ -42,6 +45,8 @@ export function useAuthController() {
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const [error, setError] = useState<string | null>(() => oauthErrorMessage(urlError));
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  /** The address a sign-up was sent for; the page then asks the person to open the link in the mail instead of showing the form. */
+  const [registeredEmail, setRegisteredEmail] = useState<string | null>(null);
 
   useEffect(() => {
     setActiveTab(tabParam === 'register' ? 'register' : 'login');
@@ -56,6 +61,7 @@ export function useAuthController() {
     setActiveTab(tab);
     setError(null);
     setSuccessMessage(null);
+    setRegisteredEmail(null);
   };
 
   const handleGoogleLogin = async () => {
@@ -121,9 +127,17 @@ export function useAuthController() {
         return;
       }
 
+      if (!data.user) {
+        setRegisteredEmail(email);
+        setPassword('');
+        setConfirmPassword('');
+        setIsLoading(false);
+        return;
+      }
+
       // The header and the queue keep their plan across the client-side navigation; the answer names the new session.
       applySessionChange(data.user);
-      setSuccessMessage(activeTab === 'register' ? t('messages.created') : t('messages.signedIn'));
+      setSuccessMessage(t('messages.signedIn'));
       setTimeout(() => {
         router.push('/dashboard');
         router.refresh();
@@ -146,6 +160,7 @@ export function useAuthController() {
     isGoogleLoading,
     error,
     successMessage,
+    registeredEmail,
     setEmail,
     setPassword,
     setConfirmPassword,
