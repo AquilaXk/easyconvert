@@ -206,6 +206,13 @@ Only for the operator's own test account (QA 2026-11-12, entry 268): the smoke c
 2. Run the same command with `--apply`. It prints the time and the change for the host's log. An account whose plan comes from a live subscription is refused.
 3. `--tier free` takes the plan back. Erasing the account removes it with everything else.
 
+### Confirming the address of an account by hand
+
+Only for the operator's own test account (QA 2026-11-13, entry 288): an unconfirmed password account converts nothing of its own, and the smoke checks after a deploy run with its API key. Run it only with QA's approval.
+
+1. See the change. Nothing is written: `docker compose -p easyconvert exec worker node dist/confirm-account-email.js --user <account email or id>`.
+2. Run the same command with `--apply`. It prints the time for the host's log. A Google account or an address already confirmed is refused.
+
 ## Releases
 
 One version per production deploy. The rule and its reasons are in entry 122 of `docs/policy-decisions.md`.
