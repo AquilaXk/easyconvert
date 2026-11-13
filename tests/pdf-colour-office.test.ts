@@ -131,15 +131,17 @@ describe('PDF to DOCX keeps colour and shapes', () => {
     const text = await bodyOf('colour-text');
     expect(text).toMatch(/<w:color w:val="FFFFFF"\/><w:shd w:val="clear" w:color="auto" w:fill="212121"\/><\/w:rPr><w:t xml:space="preserve">White on charcoal/);
     expect(text).toMatch(/w:fill="1565C0"\/>[^]*?White on blue/);
-    // The title of shapes-chart is a running header, white on a band: the header carries the fill on the run.
+    // The title of shapes-chart is a running header, white on a band taller than the title: no fill is carried, so it is not left white on white.
     const header = await partOf(await convert(FIXTURES, 'shapes-chart', 'docx'), 'word/header1.xml');
-    expect(header).toMatch(/<w:color w:val="FFFFFF"\/><w:shd w:val="clear" w:color="auto" w:fill="0D47A1"\/>/);
+    expect(header.includes('FFFFFF')).toBe(false);
   });
 
   it('shades the cells of a table and draws its grid in the colour of the rules', async () => {
     const body = await bodyOf('colour-table');
     expect(body).toContain('w:fill="1F4E79"');
     expect(body).toContain('w:fill="E8EEF7"');
+    // The white header text sits on the cell's fill, so its runs carry none of their own.
+    expect(body).not.toMatch(/<w:color w:val="FFFFFF"\/><w:shd/);
     // The second table has no rules, so the three shaded cells are not a table: their fills are shapes behind the text.
     for (const fill of ['FFF3CD', 'D4EDDA', 'F8D7DA']) expect(body).toContain(`<a:srgbClr val="${fill}"/>`);
     expect(body).toMatch(/<w:top w:val="single" w:sz="\d+" w:space="0" w:color="1F4E79"\/>/);

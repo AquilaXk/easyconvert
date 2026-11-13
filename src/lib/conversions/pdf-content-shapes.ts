@@ -301,8 +301,8 @@ export class FillIndex {
     this.rectangles = (shapes ?? []).filter((shape) => shape.kind === 'rect' && shape.fill !== undefined && (shape.alpha ?? 1) >= MIN_FILL_ALPHA);
   }
 
-  /** The fill (0xRRGGBB) of the smallest rectangle that holds the box, the one nearest the text; undefined when none does. */
-  behind(box: BoxLike, markUsed = true): number | undefined {
+  /** The smallest rectangle that holds the box, the one nearest the text; undefined when none does. */
+  rectangleBehind(box: BoxLike): PdfContentShape | undefined {
     let found: PdfContentShape | undefined;
     for (const rectangle of this.rectangles) {
       const holds = rectangle.x0 <= box.x0 + HOLD_SLACK && rectangle.x1 >= box.x1 - HOLD_SLACK && rectangle.y0 <= box.y0 + HOLD_SLACK && rectangle.y1 >= box.y1 - HOLD_SLACK;
@@ -310,6 +310,12 @@ export class FillIndex {
       // Rectangles painted later lie over the ones before them, so the later of two of one size is the one seen.
       if (holds && smaller) found = rectangle;
     }
+    return found;
+  }
+
+  /** The fill (0xRRGGBB) of the rectangle behind the box; the rectangle is noted as carried by the text unless `markUsed` is false or it is paper. */
+  behind(box: BoxLike, markUsed = true): number | undefined {
+    const found = this.rectangleBehind(box);
     if (found && markUsed && !isLightColour(found.fill ?? 0)) this.used.add(found);
     return found?.fill;
   }
@@ -328,7 +334,22 @@ export function markFillBehindLightText(items: PdfContentItem[], shapes: readonl
   const fills = new FillIndex(shapes);
   for (const item of items) {
     if (!item.colors?.some((stretch) => isLightColour(stretch.color))) continue;
-    const fill = fills.behind({ x0: item.x, y0: item.baseline - ASCENT_EM * item.size, x1: item.x + item.width, y1: item.baseline + DESCENT_EM * item.size }, false);
-    if (fill !== undefined && !isLightColour(fill)) item.fill = fill;
+    const box = itemBox(item);
+    const holder = fills.rectangleBehind(box);
+    if (holder?.fill !== undefined && !isLightColour(holder.fill) && isHighlight(holder, box, item.size)) item.fill = holder.fill;
   }
+}
+
+/** The box of a run: its width, and the em above and below its baseline. */
+export function itemBox(item: PdfContentItem): BoxLike {
+  return { x0: item.x, y0: item.baseline - ASCENT_EM * item.size, x1: item.x + item.width, y1: item.baseline + DESCENT_EM * item.size };
+}
+
+/** A rectangle is a highlight of a run when it hugs it: no more than this many ems taller and wider than the run. */
+const HIGHLIGHT_EXTRA_HEIGHT_EM = 1.5;
+const HIGHLIGHT_EXTRA_WIDTH_EM = 4;
+
+/** Whether a rectangle is the background of the run alone (a badge, a marker), and not a band or a panel that holds other things too. */
+function isHighlight(rectangle: PdfContentShape, box: BoxLike, size: number): boolean {
+  return rectangle.y1 - rectangle.y0 <= box.y1 - box.y0 + HIGHLIGHT_EXTRA_HEIGHT_EM * size && rectangle.x1 - rectangle.x0 <= box.x1 - box.x0 + HIGHLIGHT_EXTRA_WIDTH_EM * size;
 }

@@ -1,6 +1,6 @@
 import type { Inline } from '../document-model/model';
 import { hexOf } from '../pdf-content-colours';
-import { FillIndex, isLightColour } from '../pdf-content-shapes';
+import { FillIndex, isLightColour, itemBox } from '../pdf-content-shapes';
 import type { PdfContentRule, PdfContentShape, PdfPageContent } from '../pdf-text-types';
 import type { Box, DetectedTable } from './types';
 
@@ -56,7 +56,10 @@ export class PageInk {
   constructor(pages: readonly PdfPageContent[]) {
     for (const page of pages) {
       if (page.shapes === undefined) continue;
-      this.fills.set(page.pageNumber, new FillIndex(page.shapes));
+      const fills = new FillIndex(page.shapes);
+      // A highlight a run carries as its own background is not drawn again as a shape.
+      for (const item of page.items) if (item.fill !== undefined) fills.behind(itemBox(item));
+      this.fills.set(page.pageNumber, fills);
       this.rules.set(page.pageNumber, page.rules);
     }
   }
@@ -95,7 +98,8 @@ export class PageInk {
  * fill is not carried with the text (`filled` is false), the text would vanish on the white page, so it is left in the default colour.
  */
 export function readableRuns(runs: Inline[], filled: boolean): Inline[] {
-  if (filled) return runs;
+  // The fill the paragraph or cell carries is the one behind its runs, so a run needs none of its own.
+  if (filled) return runs.map(({ shading: _own, ...rest }) => rest);
   return runs.map((run) => {
     // A run with a fill of its own carries it, so its light colour stays.
     if (run.color === undefined || run.shading !== undefined || !isLightColour(Number.parseInt(run.color, HEX_RADIX))) return run;

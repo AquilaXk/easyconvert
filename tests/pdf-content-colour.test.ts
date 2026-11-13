@@ -90,6 +90,9 @@ describe('the content of a page read with colour', () => {
     // The run of light text on a fill says which fill.
     expect(hex(text?.fill)).toBe('212121');
     expect(page.items.find((item) => item.text === 'Black on yellow')?.fill).toBeUndefined();
+    // A band that holds more than the run is no highlight of it.
+    const chart = await pageOf('shapes-chart', true);
+    expect(chart.items.find((item) => item.text === 'Harbour traffic by quarter')?.fill).toBeUndefined();
     // The thin pieces of the cut are part of the rectangle, so they are not drawn again as rules.
     expect(page.rules.filter((rule) => rule.inShape === true).length).toBeGreaterThan(0);
   });
@@ -142,16 +145,19 @@ describe('the fills and rules a layout looks up (src/lib/conversions/pdf-layout/
     expect(new FillIndex([rect(30, 0, 600, 100, 0x00ff00, 1)]).behind(box)).toBeUndefined();
   });
 
-  it('leaves light text light only where a fill is carried', () => {
+  it('leaves light text light only where a fill is carried, and drops the run fill a paragraph or cell carries already', () => {
     const runs = [
       { text: 'white', bold: false, italic: false, monospace: false, color: 'FFFFFF' },
       { text: 'badge', bold: false, italic: false, monospace: false, color: 'F8F8F8', shading: '212121' },
       { text: 'red', bold: false, italic: false, monospace: false, color: 'D32F2F' },
     ];
-    expect(readableRuns(runs, true)).toEqual(runs);
+    const carried = readableRuns(runs, true);
+    expect(carried.map((run) => run.color)).toEqual(['FFFFFF', 'F8F8F8', 'D32F2F']);
+    expect(carried.map((run) => run.shading)).toEqual([undefined, undefined, undefined]);
     const plain = readableRuns(runs, false);
     expect(plain[0].color).toBeUndefined();
     expect(plain[1].color).toBe('F8F8F8');
+    expect(plain[1].shading).toBe('212121');
     expect(plain[2].color).toBe('D32F2F');
   });
 
