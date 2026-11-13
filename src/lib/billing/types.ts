@@ -44,6 +44,12 @@ export type MappedSubscriptionEvent = Omit<SubscriptionChange, 'userId' | 'subsc
   subscription: Omit<SubscriptionChange['subscription'], 'plan'> & { plan?: PaidPlan };
 };
 
+/** One subscription of the provider's own list, read as an event is: `change` is null for one whose status or price this configuration does not read. */
+export interface ListedSubscription {
+  providerSubscriptionId: string;
+  change: MappedSubscriptionEvent | null;
+}
+
 /** What the browser needs to open a checkout for `plan`. */
 export interface CheckoutParams {
   environment: 'sandbox' | 'production';
@@ -78,6 +84,11 @@ export interface BillingProvider {
   verifyWebhook(rawBody: string, signature: string | null): Promise<VerifiedBillingEvent>;
   /** The change an event makes to a subscription, or null for an event that changes none or names no account. */
   mapEventToSubscription(event: VerifiedBillingEvent): MappedSubscriptionEvent | null;
+  /**
+   * Every subscription the provider holds, a page at a time, read as the events of `mapEventToSubscription` are: the time of a
+   * change is when the provider last updated the subscription. A page that cannot be read in time throws.
+   */
+  listSubscriptions(options: { perPage: number; signal: AbortSignal }): AsyncGenerator<ListedSubscription[], void, void>;
   /** A link for the subscriber to update the payment method and to cancel. */
   createPortalLink(subscription: SubscriptionRecord): Promise<{ url: string; cancelUrl?: string }>;
 }

@@ -138,16 +138,67 @@ describe('the subscription store', () => {
   });
 });
 
+describe('listing the records', () => {
+  it('lists the record of every account that has one, and none after it is forgotten', async () => {
+    const userId = await account();
+    const otherId = await account();
+    await subscriptionStore.apply(change(userId, { subscription: { providerSubscriptionId: `sub_${userId}` } }));
+    await subscriptionStore.apply(change(otherId, { subscription: { providerSubscriptionId: `sub_${otherId}` } }));
+    const ours = (await subscriptionStore.listRecords()).filter((record) => record.userId === userId || record.userId === otherId);
+    expect(ours.map((record) => record.providerSubscriptionId).sort()).toEqual([`sub_${userId}`, `sub_${otherId}`].sort());
+
+    await subscriptionStore.forgetUser(userId);
+    expect((await subscriptionStore.listRecords()).some((record) => record.userId === userId)).toBe(false);
+  });
+});
+
+describe('the lock of a job', () => {
+  const name = () => `test-${crypto.randomUUID()}`;
+
+  it('is held by one taker at a time, and only its holder lets go', async () => {
+    const lock = name();
+    const first = await subscriptionStore.acquireLock(lock, 60_000);
+    expect(first).not.toBeNull();
+    expect(await subscriptionStore.acquireLock(lock, 60_000)).toBeNull();
+
+    await subscriptionStore.releaseLock(lock, 'not-the-token');
+    expect(await subscriptionStore.acquireLock(lock, 60_000)).toBeNull();
+
+    await subscriptionStore.releaseLock(lock, first as string);
+    const second = await subscriptionStore.acquireLock(lock, 60_000);
+    expect(second).not.toBeNull();
+    await subscriptionStore.releaseLock(lock, second as string);
+  });
+
+  it('stays closed for the time its holder asks to keep it, then opens', async () => {
+    const lock = name();
+    const token = (await subscriptionStore.acquireLock(lock, 60_000)) as string;
+    await subscriptionStore.releaseLock(lock, token, 1000);
+    expect(await subscriptionStore.acquireLock(lock, 60_000)).toBeNull();
+    if (!redisUserStore.getRedisClient()) {
+      expect(await subscriptionStore.acquireLock(lock, 60_000, Date.now() + 1500)).not.toBeNull();
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+      const again = await subscriptionStore.acquireLock(lock, 60_000);
+      expect(again).not.toBeNull();
+      await subscriptionStore.releaseLock(lock, again as string);
+    }
+  });
+});
+
 describe('a store that cannot answer', () => {
   it('refuses instead of answering from this process', async () => {
     const client = redisUserStore.getRedisClient();
-    const broken = { eval: vi.fn().mockRejectedValue(new Error('down')), get: vi.fn().mockRejectedValue(new Error('down')), del: vi.fn().mockRejectedValue(new Error('down')) };
+    const down = () => vi.fn().mockRejectedValue(new Error('down'));
+    const broken = { eval: down(), get: down(), del: down(), scan: down(), set: down() };
     const userId = await account();
     redisUserStore.setRedisClient(broken as never);
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
       await expect(subscriptionStore.apply(change(userId))).rejects.toBeInstanceOf(AuthStoreUnavailableError);
       await expect(subscriptionStore.findByUser(userId)).rejects.toBeInstanceOf(AuthStoreUnavailableError);
+      await expect(subscriptionStore.listRecords()).rejects.toBeInstanceOf(AuthStoreUnavailableError);
+      await expect(subscriptionStore.acquireLock('reconcile', 1000)).rejects.toBeInstanceOf(AuthStoreUnavailableError);
       expect(broken.eval).toHaveBeenCalledTimes(1);
     } finally {
       redisUserStore.setRedisClient(client);

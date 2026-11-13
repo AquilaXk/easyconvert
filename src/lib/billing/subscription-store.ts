@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import type { UserTier } from '../auth/types';
 import { redisUserStore, type RedisUserStore } from '../auth/redis-user-store';
 import { failClosed } from '../auth/store-unavailable';
@@ -10,7 +11,8 @@ import type { SubscriptionChange, SubscriptionRecord } from './types';
  *
  * - `billing:event:<event id>`        a marker that this event was applied, for `EVENT_ID_TTL_SECONDS`;
  * - `billing:sub:<user id>`           the account's subscription, as JSON;
- * - `billing:subindex:<provider id>`  the account a provider's subscription id belongs to.
+ * - `billing:subindex:<provider id>`  the account a provider's subscription id belongs to;
+ * - `billing:lock:<name>`             a lock that keeps one process at a time on a job (the reconciliation).
  *
  * A step that fails throws `AuthStoreUnavailableError` and is never answered from memory when Redis is configured, as in the
  * user store: a process with its own copy would grant or withhold a plan from a stale state. Without Redis (development and
@@ -49,7 +51,18 @@ redis.call('SET', KEYS[3], cjson.encode(user))
 return 'applied'
 `;
 
+/** Releases a lock only for the process that holds it: deletes it, or (ARGV[2] above 0) keeps it for that many more milliseconds. */
+const RELEASE_LOCK_LUA = `
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+if tonumber(ARGV[2]) > 0 then return redis.call('PEXPIRE', KEYS[1], ARGV[2]) end
+return redis.call('DEL', KEYS[1])
+`;
+
+/** The keys one SCAN step asks for, and the most one MGET names. */
+const SCAN_BATCH = 500;
+
 export class SubscriptionStore {
+  private readonly locks = new Map<string, { token: string; until: number }>();
   private readonly bySubscription = new Map<string, string>();
   private readonly byUser = new Map<string, SubscriptionRecord>();
   private readonly events = new Map<string, number>();
@@ -134,6 +147,67 @@ export class SubscriptionStore {
     }
   }
 
+  /** Every account's subscription record, for the comparison with the provider; the keys come from a SCAN, never from KEYS. */
+  async listRecords(): Promise<SubscriptionRecord[]> {
+    const client = this.users.getRedisClient();
+    if (!client) return [...this.byUser.values()];
+    try {
+      const keys = new Set<string>();
+      let cursor = '0';
+      do {
+        const [next, batch] = await client.scan(cursor, 'MATCH', this.key('billing', 'sub', '*'), 'COUNT', SCAN_BATCH);
+        cursor = next;
+        for (const key of batch) keys.add(key);
+      } while (cursor !== '0');
+      const names = [...keys];
+      const records: SubscriptionRecord[] = [];
+      for (let start = 0; start < names.length; start += SCAN_BATCH) {
+        const raws = await client.mget(...names.slice(start, start + SCAN_BATCH));
+        for (const raw of raws) if (raw) records.push(JSON.parse(raw) as SubscriptionRecord);
+      }
+      return records;
+    } catch (error) {
+      return failClosed('SubscriptionStore', 'listRecords', error);
+    }
+  }
+
+  /**
+   * Takes the named lock for `ttlMs` and returns its token, or null when another process holds it. The lock ends by itself, so a
+   * process that dies while holding it blocks no one for longer than `ttlMs`.
+   */
+  async acquireLock(name: string, ttlMs: number, now: number = Date.now()): Promise<string | null> {
+    const token = crypto.randomUUID();
+    const client = this.users.getRedisClient();
+    if (!client) {
+      const held = this.locks.get(name);
+      if (held && held.until > now) return null;
+      this.locks.set(name, { token, until: now + ttlMs });
+      return token;
+    }
+    try {
+      return (await client.set(this.key('billing', 'lock', name), token, 'PX', ttlMs, 'NX')) === 'OK' ? token : null;
+    } catch (error) {
+      return failClosed('SubscriptionStore', 'acquireLock', error);
+    }
+  }
+
+  /** Lets go of a lock this process took, or (`keepForMs` above 0) keeps it closed for that long after the work, so another process does not repeat it at once. */
+  async releaseLock(name: string, token: string, keepForMs: number = 0, now: number = Date.now()): Promise<void> {
+    const client = this.users.getRedisClient();
+    if (!client) {
+      const held = this.locks.get(name);
+      if (held?.token !== token) return;
+      if (keepForMs > 0) held.until = now + keepForMs;
+      else this.locks.delete(name);
+      return;
+    }
+    try {
+      await client.eval(RELEASE_LOCK_LUA, 1, this.key('billing', 'lock', name), token, String(keepForMs));
+    } catch (error) {
+      return failClosed('SubscriptionStore', 'releaseLock', error);
+    }
+  }
+
   /** Deletes the account's subscription and its index entry; the erasure of an account calls it before the account goes. */
   async forgetUser(userId: string): Promise<void> {
     const record = await this.findByUser(userId);
@@ -154,6 +228,7 @@ export class SubscriptionStore {
     this.bySubscription.clear();
     this.byUser.clear();
     this.events.clear();
+    this.locks.clear();
   }
 }
 

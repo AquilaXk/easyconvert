@@ -1,11 +1,12 @@
 import crypto from 'node:crypto';
-import { Environment, Paddle } from '@paddle/paddle-node-sdk';
+import { ApiError, Environment, Paddle } from '@paddle/paddle-node-sdk';
 import { planOfPriceId, type BillingConfig } from './config';
 import {
   InvalidWebhookError,
   PAID_PLANS,
   type BillingProvider,
   type CheckoutParams,
+  type ListedSubscription,
   type MappedSubscriptionEvent,
   type PaidPlan,
   type SubscriptionRecord,
@@ -100,6 +101,36 @@ function genuineSignatureTimeSkew(secret: string, rawBody: string, signature: st
   return Math.abs(skew) > SIGNATURE_WINDOW_SECONDS ? skew : undefined;
 }
 
+/** How often a page of the list is asked for again after the provider says to wait, and the longest wait it is obeyed for. */
+const RATE_LIMIT_RETRIES = 3;
+const RATE_LIMIT_MAX_WAIT_SECONDS = 30;
+
+/** Waits `ms`, or throws the reason of `signal` when it ends first. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    signal.throwIfAborted();
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/** `work`, or the reason of `signal` when it ends first (a request of the SDK has no deadline of its own). */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    signal.throwIfAborted();
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
+
 export class PaddleBillingProvider implements BillingProvider {
   readonly id = 'paddle';
   private readonly paddle: Paddle;
@@ -140,16 +171,19 @@ export class PaddleBillingProvider implements BillingProvider {
   mapEventToSubscription(event: VerifiedBillingEvent): MappedSubscriptionEvent | null {
     if (!SUBSCRIPTION_EVENT_TYPES.has(event.type)) return null;
     const { occurredAt, data } = event.payload as { occurredAt: string; data: SubscriptionData };
-    const eventAt = timeOf(occurredAt);
+    const mapped = this.mapSubscription(data, event.id, timeOf(occurredAt));
+    if (!mapped) console.error(`[billing] ${event.type} ${event.id} names no time, no known status or no plan this configuration sells; not applied`);
+    return mapped;
+  }
+
+  /** What a subscription (of an event or of the list) says, or null when it names no time, no known status or no plan this configuration sells. */
+  private mapSubscription(data: SubscriptionData, eventId: string, eventAt: number | undefined): MappedSubscriptionEvent | null {
     const plan = planOfItems(this.config, data.items);
-    if (eventAt === undefined || !STATUSES.has(data.status) || (plan === undefined && !LOSES_PLAN.has(data.status))) {
-      console.error(`[billing] ${event.type} ${event.id} names no time, no known status or no plan this configuration sells; not applied`);
-      return null;
-    }
+    if (eventAt === undefined || !STATUSES.has(data.status) || (plan === undefined && !LOSES_PLAN.has(data.status))) return null;
     const cancelAt = data.scheduledChange?.action === 'cancel' ? timeOf(data.scheduledChange.effectiveAt) : undefined;
     const currentPeriodEnd = timeOf(data.currentBillingPeriod?.endsAt);
     return {
-      eventId: event.id,
+      eventId,
       eventAt,
       userId: boundUserId(this.config, data.customData),
       subscription: {
@@ -162,6 +196,29 @@ export class PaddleBillingProvider implements BillingProvider {
         ...(cancelAt === undefined ? {} : { cancelAt }),
       },
     };
+  }
+
+  async *listSubscriptions({ perPage, signal }: { perPage: number; signal: AbortSignal }): AsyncGenerator<ListedSubscription[], void, void> {
+    const collection = this.paddle.subscriptions.list({ perPage });
+    while (collection.hasMore) {
+      const page = await this.nextPage(collection, signal);
+      yield page.map((subscription) => ({
+        providerSubscriptionId: subscription.id,
+        change: this.mapSubscription(subscription, `list:${subscription.id}:${subscription.updatedAt}`, timeOf(subscription.updatedAt)),
+      }));
+    }
+  }
+
+  /** The next page of a list; a page the provider asks to wait for is asked for again after the wait, a few times. */
+  private async nextPage<T>(collection: { next(): Promise<T[]> }, signal: AbortSignal): Promise<T[]> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await untilAborted(collection.next(), signal);
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.retryAfter === null || attempt >= RATE_LIMIT_RETRIES) throw error;
+        await pause(Math.min(error.retryAfter, RATE_LIMIT_MAX_WAIT_SECONDS) * MS_PER_SECOND, signal);
+      }
+    }
   }
 
   async createPortalLink(subscription: SubscriptionRecord): Promise<{ url: string; cancelUrl?: string }> {

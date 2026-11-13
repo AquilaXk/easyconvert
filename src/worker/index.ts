@@ -17,6 +17,7 @@ import { Worker, Job, IQueueEngine, JobCancelledError } from '../lib/queue/bullm
 import { legacyJobTimeoutMs } from '../lib/queue/enqueue';
 import type { ConversionJobData, ConversionJobResult, ResourceClass } from '../lib/types';
 import { storageProvider as ociStorage } from '../lib/storage';
+import { startBillingReconcile, stopBillingReconcile } from '../lib/billing/reconcile';
 import { startRetentionSweep } from '../lib/storage/retention-service';
 import { processNodeJob, nativeEngine } from '../lib/queue/node-processor';
 import { killProcessGroup } from '../lib/security/process-sandbox';
@@ -359,6 +360,7 @@ export async function drainWorker(
   await shutdownSharedOcrWorkerPool();
   await shutdownEngines();
   stopWorkerSandboxSweep();
+  stopBillingReconcile();
 
   stopHeartbeat();
   console.log(`[EasyConvert OCI Worker] Worker daemon drain completed cleanly.`);
@@ -373,6 +375,8 @@ if (process.env.NODE_ENV !== 'test') {
   startEndedRecordSweep();
   // What a worker killed without a clean exit left in the temporary directory, which a restart does not clear (policy entry 244).
   startWorkerSandboxSweep();
+  // The hourly comparison of subscriptions with the payment provider's list; a worker without the six billing variables does nothing (policy entry 277).
+  startBillingReconcile();
   // The metrics listener stays up while the worker drains, so a drain can be watched; it is closed with the process.
   startMetricsFromConfig('worker', () => sampleQueues(metricsQueueSources())).catch((error: unknown) => {
     console.error(`[metrics] worker metrics not started: ${error instanceof Error ? error.message : String(error)}`);
