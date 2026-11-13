@@ -1,6 +1,6 @@
 # Terms of Service
 
-These terms apply to the EasyConvert website and API. EasyConvert is run by Dongin Jeong, a sole proprietor in the Republic of Korea (the operator, "we"). By using EasyConvert, you agree to these terms. When you create an account or an API key, we record the version of these terms that you accepted. The [Privacy Policy](/privacy), the [Acceptable Use Policy](/acceptable-use) and, when you process other people's personal data with EasyConvert, the [Data Processing Terms](/dpa) are part of these terms.
+These terms apply to the EasyConvert website and API. EasyConvert is operated by Dongin Jeong, Republic of Korea (the operator, "we"). By using EasyConvert, you agree to these terms. When you create an account or an API key, we record the version of these terms that you accepted. The [Privacy Policy](/privacy), the [Acceptable Use Policy](/acceptable-use) and, when you process other people's personal data with EasyConvert, the [Data Processing Terms](/dpa) are part of these terms.
 
 ## 1. The service
 
