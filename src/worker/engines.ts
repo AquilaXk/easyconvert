@@ -1539,8 +1539,8 @@ async function persistChainFile(
 
 /**
  * Re-encodes every page Poppler rendered. A single page is one file; several pages arrive as the ZIP of per-page
- * files every Poppler route returns, and leave as a ZIP with the same entry names and the new extension. `pagesAtOnce`
- * pages are encoded at the same time (the entries stay in the order of the rendered ones, whichever page ends first).
+ * files every Poppler route returns, and leave as a ZIP with the same entry names and the new extension; `pagesAtOnce`
+ * pages are encoded at a time, and the entries stay in the order of the rendered ones.
  */
 async function reencodeRenderedPages(
   rendered: WorkerConversionResult,
@@ -1562,18 +1562,13 @@ async function reencodeRenderedPages(
       .sort((a, b) => a.localeCompare(b));
     const encoded = new Array<ZipFile>(entryNames.length);
     const renderedSuffix = `.${renderedExtension}`;
-    await runBounded(
-      entryNames.map((entryName, index) => async () => {
-        const remaining = deadline - Date.now();
-        if (remaining <= 0) {
-          throw new SandboxedTimeoutError(timeout);
-        }
-        const stem = entryName.endsWith(renderedSuffix) ? entryName.slice(0, -renderedSuffix.length) : entryName;
-        const page = await pages.files[entryName].async('nodebuffer');
-        encoded[index] = { name: `${stem}.${targetExtension}`, data: await encode(page, entryName, remaining) };
-      }),
-      pagesAtOnce
-    );
+    await runBounded(entryNames.map((entryName, index) => async () => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new SandboxedTimeoutError(timeout);
+      const stem = entryName.endsWith(renderedSuffix) ? entryName.slice(0, -renderedSuffix.length) : entryName;
+      const page = await pages.files[entryName].async('nodebuffer');
+      encoded[index] = { name: `${stem}.${targetExtension}`, data: await encode(page, entryName, remaining) };
+    }), pagesAtOnce);
     return await persistChainFile('zip', context, (outputPath) => writeDeflatedZipFile(outputPath, encoded));
   } finally {
     // The intermediate pages are an implementation detail of this chain: never leave them on disk.
@@ -1601,14 +1596,12 @@ async function convertPdfToEncodedRaster(
 ): Promise<WorkerConversionResult | null> {
   const rendered = await convertWithNativePoppler(input, 'pdf', PNG_FORMAT, { ...intermediateOptions(options), intermediateRaster: true }, originalFilename);
   if (!rendered) return null;
-  const pageOptions = encoderOptions(options);
   return reencodeRenderedPages(
     rendered,
     PNG_FORMAT,
     tgt,
-    async (page, entryName, remainingMs) => (await convertImage(page, tgt, { ...pageOptions, timeoutMs: remainingMs }, entryName, PNG_FORMAT)).buffer,
-    context,
-    pageRenderProcesses()
+    async (page, entryName, remainingMs) => (await convertImage(page, tgt, { ...encoderOptions(options), timeoutMs: remainingMs }, entryName, PNG_FORMAT)).buffer,
+    context, pageRenderProcesses()
   );
 }
 
