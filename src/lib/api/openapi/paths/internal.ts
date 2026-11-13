@@ -178,7 +178,7 @@ const linkImportBudgetResponse = (description: string) => {
   return { description, content: { 'application/problem+json': { schema }, 'application/json': { schema } } };
 };
 
-const TOOL_RUN_NOTE = `One run is one conversion of the daily allowance whatever the number of files, charged only when the run succeeds. Anonymous callers meet the same rate limit, concurrency limit and daily allowance as \`POST /api/convert\`. The \`options\` field is at most ${MAX_TOOL_OPTIONS_CHARS} characters and only the keys named here are read; the file answered is at most ${formatBytes(MAX_TOOL_OUTPUT_BYTES)}. A run stopped by its deadline or a disconnect keeps its concurrency slot until the work has ended.`;
+const TOOL_RUN_NOTE = `One run costs 1 credit whatever the number of files, plus 1 credit for every started minute of processing beyond the first, charged only when the run succeeds. Anonymous callers meet the same rate limit, concurrency limit and daily credits as \`POST /api/convert\`. The \`options\` field is at most ${MAX_TOOL_OPTIONS_CHARS} characters and only the keys named here are read; the file answered is at most ${formatBytes(MAX_TOOL_OUTPUT_BYTES)}. A run stopped by its deadline or a disconnect keeps its concurrency slot until the work has ended.`;
 
 const TOOL_FILES_PROPERTY = (description: string) => ({
   type: 'array',

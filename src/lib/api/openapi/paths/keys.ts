@@ -134,13 +134,13 @@ export const keyPaths = {
   },
   '/api/keys/usage': {
     get: {
-      summary: 'Get Quota Usage',
-      description: 'Retrieves the conversions counted in the current quota period (a day, or the month of a paid plan) and the limit of the period.',
+      summary: 'Get Credits',
+      description: 'Retrieves the credits counted in the current window (a day for anonymous callers and the free plan, the billing period of a subscription), the credits the window gives, the package credits, and the account\'s newest charges (`charges`: one entry for each charged conversion with its formats, its credits and the credits from the package).',
       operationId: 'getQuotaUsage',
       security: requireScope(),
       responses: {
         '200': {
-          description: 'Conversion quota usage details.',
+          description: 'The credits of the account and its newest charges.',
           content: {
             'application/json': {
               schema: {
@@ -148,6 +148,24 @@ export const keyPaths = {
                 properties: {
                   success: { type: 'boolean', example: true },
                   usage: { $ref: '#/components/schemas/QuotaUsage' },
+                  charges: {
+                    type: 'array',
+                    description: 'The newest charges of the account, newest first, at most 50.',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        at: { type: 'number', description: 'Unix timestamp in milliseconds.' },
+                        from: { type: 'string', description: 'Source format of the conversion; the tool for a tool.' },
+                        to: { type: 'string', description: 'Target format of the conversion.' },
+                        kind: { type: 'string', enum: ['graph', 'batch'], description: 'Set for the credits of a job graph or of a batch of files.' },
+                        base: { type: 'integer', description: 'Credits of the class of the conversion.' },
+                        surcharge: { type: 'integer', description: 'Credits added for the started minutes of processing beyond the first.' },
+                        credits: { type: 'integer', description: 'Credits charged in all.' },
+                        fromPackage: { type: 'integer', description: 'How many of them came from the package credits.' },
+                        uncharged: { type: 'integer', description: 'Credits owed that the account no longer had when the conversion ended.' },
+                      },
+                    },
+                  },
                 },
               },
             },
