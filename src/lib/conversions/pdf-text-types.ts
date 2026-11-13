@@ -37,6 +37,10 @@ export const PDF_TEXT_MAX_CHARS_PER_DOCUMENT = 16_777_216;
 export const PDF_CONTENT_MAX_OPERATORS_PER_PAGE = 2_000_000;
 /** Ruling lines one page may contribute; more are dropped (the page is flagged), as they only serve table detection. */
 export const PDF_CONTENT_MAX_RULES_PER_PAGE = 20_000;
+/** Painted shapes one page may report (filled rectangles and filled or stroked paths); more are dropped. */
+export const PDF_CONTENT_MAX_SHAPES_PER_PAGE = 5_000;
+/** Numbers in the path data of the shapes of one page; the shapes that come after are dropped. */
+export const PDF_CONTENT_MAX_SHAPE_COORDINATES_PER_PAGE = 400_000;
 /** Image placements one page may report. */
 export const PDF_CONTENT_MAX_IMAGES_PER_PAGE = 256;
 /** Picture placements a document may return, counted per placement as the Markdown and HTML output repeat a picture at each; more is refused with a 413. */
@@ -137,6 +141,8 @@ export interface PdfTextJob {
   images?: boolean;
   /** With `content`: the text a glyph the fonts give no Unicode value for becomes, in its place; without it the glyph is left out. */
   unmappedGlyphText?: string;
+  /** With `content`: also read the colour of the text and of the rules and images' paint order, and the filled and stroked shapes of the page (a writer that draws them needs this). */
+  colour?: boolean;
 }
 
 /** One font of a document, as the layout needs it. */
@@ -175,6 +181,19 @@ export interface PdfContentItem {
    * no text when no glyph name says so (entry 227), so a reader that keeps the text of that page leaves the run out.
    */
   type3Font?: true;
+  /**
+   * Only in a job that reads colour, and only on a run with a colour other than black: the colour of the characters of `text`,
+   * stretch by stretch in text order. A stretch ends at `end` (UTF-16 units) and the last one ends at the end of the text.
+   */
+  colors?: PdfContentColour[];
+  /** Only on a run with light text (white on a band): the colour of the rectangle that holds the run, as 0xRRGGBB. */
+  fill?: number;
+}
+
+/** One stretch of a run's text in one fill colour (stroke colour for stroked text), as 0xRRGGBB. */
+export interface PdfContentColour {
+  end: number;
+  color: number;
 }
 
 /** An axis-aligned ruling line (a stroked segment or a thin filled rectangle), in page-viewport points. */
@@ -184,6 +203,12 @@ export interface PdfContentRule {
   x1: number;
   y1: number;
   thickness: number;
+  /** In a job that reads colour: the colour as 0xRRGGBB, left out for black. */
+  color?: number;
+  /** In a job that reads colour: the place in the paint order of the page, shared with its images and shapes. */
+  z?: number;
+  /** The rule is a piece of the outline of a `PdfContentShape`, which draws it. */
+  inShape?: true;
 }
 
 /** A placed image: its box in the page viewport and what is needed to find its pixels. */
@@ -198,6 +223,31 @@ export interface PdfContentImage {
   /** The image file: `jpeg` is the PDF's own JPEG stream byte for byte, `png` a PNG of the pixels pdfjs decoded. */
   data?: Uint8Array;
   format?: 'jpeg' | 'png';
+  /** In a job that reads colour: the place in the paint order of the page, shared with its rules and shapes. */
+  z?: number;
+}
+
+/**
+ * A painted path of a page that is not a rule: a filled rectangle, or an outline of straight and curved segments with a fill, a
+ * stroke or both. In the page viewport (points, origin top left). Only in a job that reads colour.
+ */
+export interface PdfContentShape {
+  kind: 'rect' | 'path';
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  /** Fill colour as 0xRRGGBB; absent when the path is not filled. */
+  fill?: number;
+  /** Stroke colour as 0xRRGGBB and line width in points; absent when the path is not stroked (a stroked rectangle is four rules). */
+  stroke?: number;
+  strokeWidth?: number;
+  /** Opacity of the fill below one. */
+  alpha?: number;
+  /** Segments of a `path` as pdf.js encodes them (a move, line, cubic curve, quadratic curve or close code, then its coordinates), in the viewport. */
+  path?: number[];
+  /** The place in the paint order of the page, shared with its rules and images. */
+  z: number;
 }
 
 export interface PdfPageContent {
@@ -207,6 +257,8 @@ export interface PdfPageContent {
   items: PdfContentItem[];
   rules: PdfContentRule[];
   images: PdfContentImage[];
+  /** In a job that reads colour: the painted shapes of the page in paint order. */
+  shapes?: PdfContentShape[];
   /**
    * Glyphs left out of the items because no Unicode value was found for them: no ToUnicode map, no name in the font's
    * encoding that the Adobe Glyph List maps and, for a symbol font, no entry in its table.

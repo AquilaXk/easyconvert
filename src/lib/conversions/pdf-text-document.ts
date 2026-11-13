@@ -28,6 +28,8 @@ export interface ExtractPdfOptions {
   onUnmapped?: 'throw' | 'omit';
   /** Read the files of the images too, so the structure carries them (needed for DOCX, HTML and Markdown output). */
   images?: boolean;
+  /** Read the colours of the text, rules and shapes too (needed by a writer that draws them). */
+  colour?: boolean;
 }
 
 export interface ExtractedPdfDocument {
@@ -168,7 +170,7 @@ export function documentFromJob(job: PdfTextJobResult, options: ExtractPdfOption
  */
 export async function readPdfDocument(pdf: Buffer, options: ReadPdfOptions = {}): Promise<ReadPdfResult> {
   assertPdfHeader(pdf);
-  const job = await runPdfTextJob(pdf, { densityThreshold: options.densityThreshold, geometry: options.geometry ?? 'none', content: true, images: options.images }, options.signal);
+  const job = await runPdfTextJob(pdf, { densityThreshold: options.densityThreshold, geometry: options.geometry ?? 'none', content: true, images: options.images, colour: options.colour }, options.signal);
   return documentFromJob(job, options);
 }
 

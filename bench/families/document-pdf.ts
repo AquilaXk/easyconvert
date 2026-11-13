@@ -10,6 +10,7 @@ import { runTool } from '../tools';
 import { readDocxStructure } from '../../tests/helpers/docx-structure';
 import { aggregate, scoreStructure, type StructureTruth } from '../../tests/helpers/structure-metrics';
 import { importProduct } from '../product';
+import { runDocumentColour } from './document-colour';
 
 /**
  * PDF cases of the document family, measured on the committed golden sets (tests/fixtures/pdf-text and
@@ -154,4 +155,4 @@ const runStructure: FamilyRunner = async (ctx) => {
   return rows;
 };
 
-export const runDocumentPdf: FamilyRunner = async (ctx) => [...(await runText(ctx)), ...(await runStructure(ctx))];
+export const runDocumentPdf: FamilyRunner = async (ctx) => [...(await runText(ctx)), ...(await runStructure(ctx)), ...(await runDocumentColour(ctx))];

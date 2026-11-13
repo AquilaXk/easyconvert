@@ -4,6 +4,7 @@ import { PayloadLimitError } from '../../types';
 import { resolveLanguage } from '../document-language';
 import { redrawAsPng } from '../image-to-png';
 import { uniqueAnchors } from './anchors';
+import { NS_WPS, wordShapeAnchor } from './shape-xml';
 import { escapeXmlText } from './xml-text';
 import type {
   Block,
@@ -14,6 +15,7 @@ import type {
   ListBlock,
   ListLevelFormat,
   NoteDefinition,
+  PageShape,
   ParagraphBlock,
   Section,
   TableBlock,
@@ -171,6 +173,10 @@ interface ParagraphProperties {
   style?: string;
   numbering?: { level: number; id: number };
   border?: string;
+  /** Background as six hex digits. */
+  shading?: string;
+  /** Height in points the paragraph holds open (an exact line height) for the shapes that hang on it. */
+  spacerPt?: number;
   rtl?: boolean;
   align?: ParagraphBlock['align'];
   sectPr?: string;
@@ -184,7 +190,9 @@ function paragraphProperties(props: ParagraphProperties): string {
   if (props.style) xml += `<w:pStyle w:val="${attr(props.style)}"/>`;
   if (props.numbering) xml += `<w:numPr><w:ilvl w:val="${props.numbering.level}"/><w:numId w:val="${props.numbering.id}"/></w:numPr>`;
   if (props.border) xml += props.border;
+  if (props.shading) xml += `<w:shd w:val="clear" w:color="auto" w:fill="${props.shading}"/>`;
   if (props.rtl) xml += '<w:bidi/>';
+  if (props.spacerPt) xml += `<w:spacing w:before="0" w:after="0" w:line="${twips(props.spacerPt)}" w:lineRule="exact"/>`;
   if (props.align && props.align !== 'left') xml += `<w:jc w:val="${JUSTIFICATION[props.align]}"/>`;
   if (props.sectPr) xml += props.sectPr;
   return xml === '' ? '' : `<w:pPr>${xml}</w:pPr>`;
@@ -229,6 +237,7 @@ class PartWriter {
     const points = run.sizePt ?? size;
     if (points !== undefined) props.push(`<w:sz w:val="${Math.round(points * HALF_POINTS)}"/><w:szCs w:val="${Math.round(points * HALF_POINTS)}"/>`);
     if (run.underline) props.push('<w:u w:val="single"/>');
+    if (run.shading) props.push(`<w:shd w:val="clear" w:color="auto" w:fill="${run.shading}"/>`);
     if (run.superscript) props.push('<w:vertAlign w:val="superscript"/>');
     if (run.subscript) props.push('<w:vertAlign w:val="subscript"/>');
     if (RTL_LETTER.test(run.text)) props.push('<w:rtl/>');
@@ -297,8 +306,9 @@ class PartWriter {
     return xml;
   }
 
-  private paragraph(runs: readonly Inline[], props: ParagraphProperties, size?: number): string {
-    return `<w:p>${paragraphProperties(props)}${this.runsXml(runs, size)}</w:p>`;
+  private paragraph(runs: readonly Inline[], props: ParagraphProperties, size?: number, shapes?: readonly PageShape[]): string {
+    const hanging = shapes?.map((shape) => wordShapeAnchor(shape, this.state.drawingId())).join('') ?? '';
+    return `<w:p>${paragraphProperties(props)}${hanging}${this.runsXml(runs, size)}</w:p>`;
   }
 
   // -------------------------------------------------------------------------------------------
@@ -346,7 +356,7 @@ class PartWriter {
         return `<w:tr>${header ? '<w:trPr><w:tblHeader/></w:trPr>' : ''}${cells}</w:tr>`;
       })
       .join('');
-    const borders = table.bordered ? `<w:tblBorders>${TABLE_BORDERS}</w:tblBorders>` : '';
+    const borders = table.bordered ? `<w:tblBorders>${tableBorders(table.border)}</w:tblBorders>` : '';
     const props = `<w:tblPr><w:tblW w:w="${widths.reduce((sum, value) => sum + value, 0)}" w:type="dxa"/>${borders}<w:tblLayout w:type="fixed"/><w:tblCellMar><w:left w:w="80" w:type="dxa"/><w:right w:w="80" w:type="dxa"/></w:tblCellMar></w:tblPr>`;
     return `<w:tbl>${props}<w:tblGrid>${grid}</w:tblGrid>${rows}</w:tbl>`;
   }
@@ -363,14 +373,14 @@ class PartWriter {
         return [
           {
             carriesSection: true,
-            render: (sectPr?: string) => this.paragraph(block.runs, { style: `Heading${Math.min(block.level, HEADING_LEVELS)}`, rtl: block.rtl, sectPr }),
+            render: (sectPr?: string) => this.paragraph(block.runs, { style: `Heading${Math.min(block.level, HEADING_LEVELS)}`, rtl: block.rtl, shading: block.shading, sectPr }, undefined, block.shapes),
           },
         ];
       case 'paragraph':
         return [
           {
             carriesSection: true,
-            render: (sectPr?: string) => this.paragraph(block.runs, { style: quoteStyle, rtl: block.rtl, align: block.align, sectPr }, block.size),
+            render: (sectPr?: string) => this.paragraph(block.runs, { style: quoteStyle, rtl: block.rtl, align: block.align, shading: block.shading, spacerPt: block.spacerPt, sectPr }, block.size, block.shapes),
           },
         ];
       case 'list':
@@ -456,9 +466,18 @@ function unwrapOuterLayoutTables(blocks: readonly Block[]): Block[] {
   return flat;
 }
 
-const TABLE_BORDERS = ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']
-  .map((side) => `<w:${side} w:val="single" w:sz="4" w:space="0" w:color="000000"/>`)
-  .join('');
+/** Width of a border in eighths of a point (`w:sz`), at least the eighth ECMA-376 allows and at most 12 points. */
+const BORDER_EIGHTHS_MIN = 2;
+const BORDER_EIGHTHS_MAX = 96;
+const BORDER_EIGHTHS_PER_POINT = 8;
+const DEFAULT_BORDER = { color: '000000', widthPt: 0.5 };
+
+/** The six border elements of a ruled table, in the colour and width its rules had in the source (black, half a point otherwise). */
+function tableBorders(border: TableBlock['border']): string {
+  const { color, widthPt } = border ?? DEFAULT_BORDER;
+  const size = Math.min(BORDER_EIGHTHS_MAX, Math.max(BORDER_EIGHTHS_MIN, Math.round(widthPt * BORDER_EIGHTHS_PER_POINT)));
+  return ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map((side) => `<w:${side} w:val="single" w:sz="${size}" w:space="0" w:color="${color}"/>`).join('');
+}
 
 // ---------------------------------------------------------------------------------------------
 // Lists (numbering.xml)
@@ -578,7 +597,7 @@ function furniturePartXml(tag: 'hdr' | 'ftr', lines: Inline[][], part: PartWrite
   return `${XML_HEADER}<w:${tag} xmlns:w="${NS_W}" xmlns:r="${NS_R}">${lines.map((runs) => `<w:p>${part.runsXml(runs)}</w:p>`).join('')}</w:${tag}>`;
 }
 
-const DOCUMENT_NAMESPACES = `xmlns:w="${NS_W}" xmlns:r="${NS_R}" xmlns:wp="${NS_WP}" xmlns:a="${NS_A}" xmlns:pic="${NS_PIC}"`;
+const DOCUMENT_NAMESPACES = `xmlns:w="${NS_W}" xmlns:r="${NS_R}" xmlns:wp="${NS_WP}" xmlns:a="${NS_A}" xmlns:pic="${NS_PIC}" xmlns:wps="${NS_WPS}"`;
 
 function relationshipsXml(relationships: readonly Relationship[]): string {
   const items = relationships.map(

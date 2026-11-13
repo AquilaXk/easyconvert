@@ -1398,7 +1398,7 @@ async function readPages(
     if (readOperators) await appendAnnotationText(pdfjs, page, content, { operatorListIsRead: contentWanted }); // NOSONAR S9382 sequential
     if (contentWanted) {
       // Reading the content also replaces the glyphs of `content.items` that have no text, so the page text below is clean.
-      const reading = { readOperators, imageExtractor: images, unmappedMark: job.unmappedGlyphText ?? '' };
+      const reading = { readOperators, imageExtractor: images, unmappedMark: job.unmappedGlyphText ?? '', colour: job.colour === true };
       result.content.push(await readPageContent(pdfjs.OPS, page, content, pageNumber, fonts, reading)); // NOSONAR S9382 sequential
     }
     const pageText = textOfItems(content.items);

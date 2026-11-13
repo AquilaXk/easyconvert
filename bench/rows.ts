@@ -41,6 +41,11 @@ export const SPEC = {
   columnAccuracy: { metric: 'column_accuracy', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.05, 0) },
   paragraphCountError: { metric: 'paragraph_count_error', unit: 'ratio', direction: 'lower', kind: 'quality', tolerance: tol(0.03, 0) },
   readingOrderTau: { metric: 'reading_order_tau', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.02, 0) },
+  /** Colour and shapes of a document written from a PDF (bench/pdf-colour-metrics.py): F1 of the (word, colour) pairs, and the share of the source's coloured words and of its shapes that come back with their colour. */
+  textColourF1: { metric: 'text_colour_f1', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.02, 0) },
+  colouredWordRecall: { metric: 'coloured_word_recall', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.03, 0) },
+  shapeRecall: { metric: 'shape_recall', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.03, 0) },
+  shapePrecision: { metric: 'shape_precision', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.03, 0) },
   pdfCheckFailures: { metric: 'pdf_check_failures', unit: 'count', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
   pageCountError: { metric: 'page_count_error', unit: 'pages', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
   rotationErrors: { metric: 'rotation_errors', unit: 'pages', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },

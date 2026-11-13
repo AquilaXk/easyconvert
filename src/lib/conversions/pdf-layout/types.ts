@@ -14,6 +14,10 @@ export interface StyledRun {
   bold: boolean;
   italic: boolean;
   monospace: boolean;
+  /** Text colour as six hex digits; absent for black and for a page read without colour. */
+  color?: string;
+  /** The fill behind a run of light text, as six hex digits; the run keeps its light colour only with it. */
+  fill?: string;
 }
 
 /** One line of text, or one cell-wide piece of a row, in logical (reading) order. */
