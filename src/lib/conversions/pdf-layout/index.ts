@@ -17,10 +17,12 @@ import { buildRows } from './lines';
 import { LayoutBudget } from './limits';
 import { pageCounterBlocks, type CounterForm, type FurnitureLine } from './page-counters';
 import { builderOf, continuesInNextFlow, type ParagraphBuilder, paragraphsOfFlow } from './paragraphs';
+import { hangShapes, type BlockOrigin } from './figures';
+import { hexOf, PageInk, readableRuns } from './ink';
 import { assembleLists, bodySizeOf, headingLevels, inlineRuns } from './structure';
 import { detectLatticeTables, detectStreamTables, tableSegment } from './tables';
 import { extractVerticalLines } from './vertical';
-import type { DetectedTable, FontList, LayoutLine, Paragraph, Row, TableCell } from './types';
+import type { Box, DetectedTable, FontList, LayoutLine, Paragraph, Row, TableCell } from './types';
 
 /**
  * Document structure from the positioned content of a PDF's pages: lines and rows, tables (ruled, then aligned),
@@ -257,22 +259,74 @@ function plainWeight(runs: Inline[], applies: boolean): Inline[] {
   return applies ? runs.map((run) => ({ ...run, bold: false })) : runs;
 }
 
-function paragraphBlockOf(paragraph: Paragraph, bodySize: number, header = false): ParagraphBlock {
-  const different = Math.abs(paragraph.size - bodySize) > 0.5;
-  return { type: 'paragraph', runs: plainWeight(inlineRuns(paragraph.runs), header), rtl: paragraph.rtl, align: 'left', ...(different ? { size: paragraph.size } : {}) };
+/**
+ * The fill behind a paragraph or heading and its runs with colours that can be read. A page read with colour paints text on fills:
+ * the fill goes with the paragraph, and light text (white on a dark band) stays light only where a fill is carried.
+ */
+function inkOfParagraph(paragraph: Paragraph, runs: Inline[], ink: PageInk | undefined): { runs: Inline[]; shading?: string } {
+  if (!ink?.active) return { runs };
+  const fill = ink.fillBehind(paragraph.pageNumber, paragraph.box);
+  return { runs: readableRuns(runs, fill !== undefined), ...(fill === undefined ? {} : { shading: hexOf(fill) }) };
 }
 
-function tableBlockOf(table: DetectedTable, bodySize: number): TableBlock {
+function paragraphBlockOf(paragraph: Paragraph, bodySize: number, header = false, ink?: PageInk, cellFilled?: boolean): ParagraphBlock {
+  const different = Math.abs(paragraph.size - bodySize) > 0.5;
+  const runs = plainWeight(inlineRuns(paragraph.runs), header);
+  // The paragraph of a shaded cell has the cell's fill, so the cell carries it and its text stays as it is.
+  const painted = cellFilled === undefined ? inkOfParagraph(paragraph, runs, ink) : { runs: ink?.active ? readableRuns(runs, cellFilled) : runs };
+  return { type: 'paragraph', ...painted, rtl: paragraph.rtl, align: 'left', ...(different ? { size: paragraph.size } : {}) };
+}
+
+/** The box of the text of a table cell: the union of the boxes of its paragraphs; null for an empty cell. */
+function cellTextBox(cell: TableCell): Paragraph['box'] | null {
+  const boxes = cell.paragraphs.map((paragraph) => paragraph.box);
+  if (boxes.length === 0) return null;
+  return { x0: Math.min(...boxes.map((b) => b.x0)), y0: Math.min(...boxes.map((b) => b.y0)), x1: Math.max(...boxes.map((b) => b.x1)), y1: Math.max(...boxes.map((b) => b.y1)) };
+}
+
+function tableBlockOf(table: DetectedTable, bodySize: number, ink?: PageInk): TableBlock {
   const rows: TableCellBlock[][] = table.rows.map((row) =>
-    row.map((cell) => ({
-      paragraphs: cell.paragraphs.map((paragraph) => paragraphBlockOf(paragraph, bodySize, cell.header)),
-      colSpan: cell.colSpan,
-      rowSpan: cell.rowSpan,
-      continuation: cell.continuation,
-      header: cell.header,
-    }))
+    row.map((cell) => {
+      const box = ink?.active ? cellTextBox(cell) : null;
+      const fill = box ? ink?.fillBehind(table.pageNumber, box) : undefined;
+      return {
+        paragraphs: cell.paragraphs.map((paragraph) => paragraphBlockOf(paragraph, bodySize, cell.header, ink, ink?.active ? fill !== undefined : undefined)),
+        colSpan: cell.colSpan,
+        rowSpan: cell.rowSpan,
+        continuation: cell.continuation,
+        header: cell.header,
+        ...(fill === undefined ? {} : { shading: hexOf(fill) }),
+      };
+    })
   );
-  return { type: 'table', rows, columnWidths: table.columnWidths, bordered: table.kind === 'lattice' };
+  const rules = table.kind === 'lattice' ? ink?.borderOf(table) : null;
+  return {
+    type: 'table',
+    rows,
+    columnWidths: table.columnWidths,
+    bordered: table.kind === 'lattice',
+    ...(rules ? { border: { color: hexOf(rules.color), widthPt: rules.width } } : {}),
+  };
+}
+
+/** The boxes of the tables each page draws as grids: its ruled tables but those that box labels in several colours. */
+function gridBoxesOf(layouts: readonly PageLayout[], ink: PageInk): Map<number, Box[]> {
+  const grids = new Map<number, Box[]>();
+  for (const layout of layouts) {
+    const boxes = layout.blocks.flatMap((block) => (block.kind === 'table' && !ink.boxesInColours(block.table) ? [block.table.box] : []));
+    grids.set(layout.page.pageNumber, boxes);
+  }
+  return grids;
+}
+
+/** Where a run of paragraphs (a list) stood: its first page and the box of the paragraphs of that page. */
+function originOfRun(paragraphs: Paragraph[]): BlockOrigin | null {
+  if (paragraphs.length === 0) return null;
+  const onFirst = paragraphs.filter((paragraph) => paragraph.pageNumber === paragraphs[0].pageNumber);
+  return {
+    pageNumber: paragraphs[0].pageNumber,
+    box: { x0: Math.min(...onFirst.map((p) => p.box.x0)), y0: Math.min(...onFirst.map((p) => p.box.y0)), x1: Math.max(...onFirst.map((p) => p.box.x1)), y1: Math.max(...onFirst.map((p) => p.box.y1)) },
+  };
 }
 
 function dominantFont(paragraphs: Paragraph[], fonts: FontList): DocumentModel['bodyFont'] {
@@ -462,6 +516,7 @@ function pageTextOf(layout: PageLayout, counters: ReadonlyMap<PageBlock, Counter
 export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[]): LaidOutPdf {
   const flows = new Counter();
   const imageIds = new Counter();
+  const ink = new PageInk(pages);
   const layouts = pages.map((page, index) => layoutPage(page, fonts, flows, index * COLUMN_FLOW_BASE * 1000));
   const documentImages: DocumentImage[] = [];
   // Placements of one picture share its bytes (pdf-text-images.ts), so they share one entry, as DocumentContext.addImage does by content
@@ -493,16 +548,25 @@ export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[]): Lai
 
   const model: Block[] = [];
   const columnsOf: number[] = [];
-  const push = (block: Block, columns: number): void => {
+  const origins: (BlockOrigin | null)[] = [];
+  const push = (block: Block, columns: number, origin: BlockOrigin | null = null): void => {
     model.push(block);
     columnsOf.push(columns);
+    origins.push(origin);
   };
   let listId = 0;
   let at = 0;
   while (at < blocks.length) {
     const block = blocks[at];
     if (block.kind === 'table') {
-      push(tableBlockOf(block.table, bodySize), block.columns);
+      if (ink.boxesInColours(block.table)) {
+        // Rules in several colours box labels (a diagram), they are no grid: the text of the cells is paragraphs and the rules are shapes.
+        for (const paragraph of block.table.rows.flatMap((row) => row.flatMap((cell) => cell.paragraphs))) {
+          push(paragraphBlockOf(paragraph, bodySize, false, ink), block.columns, { pageNumber: paragraph.pageNumber, box: paragraph.box });
+        }
+      } else {
+        push(tableBlockOf(block.table, bodySize, ink), block.columns, { pageNumber: block.table.pageNumber, box: block.table.box });
+      }
       at++;
       continue;
     }
@@ -522,22 +586,26 @@ export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[]): Lai
       const entry = run[index];
       const level = levels.get(entry.paragraph);
       if (level !== undefined) {
-        const heading: HeadingBlock = { type: 'heading', level, runs: plainWeight(inlineRuns(entry.paragraph.runs), entry.paragraph.lines.every((line) => line.bold)), rtl: entry.paragraph.rtl };
-        push(heading, entry.columns);
+        const headingInk = inkOfParagraph(entry.paragraph, plainWeight(inlineRuns(entry.paragraph.runs), entry.paragraph.lines.every((line) => line.bold)), ink);
+        const heading: HeadingBlock = { type: 'heading', level, ...headingInk, rtl: entry.paragraph.rtl };
+        push(heading, entry.columns, { pageNumber: entry.paragraph.pageNumber, box: entry.paragraph.box });
       } else {
-        push(paragraphBlockOf(entry.paragraph, bodySize), entry.columns);
+        push(paragraphBlockOf(entry.paragraph, bodySize, false, ink), entry.columns, { pageNumber: entry.paragraph.pageNumber, box: entry.paragraph.box });
       }
     };
     for (const listRun of listRuns) {
       for (; cursor < listRun.from; cursor++) emitParagraph(cursor);
       const list: ListBlock = listRun.list;
-      push(list, run[listRun.from].columns);
+      // A list item has no fill of its own, so the light text of one is left in the default colour.
+      if (ink.active) for (const item of list.items) item.runs = readableRuns(item.runs, false);
+      push(list, run[listRun.from].columns, originOfRun(runParagraphs.slice(listRun.from, listRun.to)));
       cursor = listRun.to;
     }
     for (; cursor < run.length; cursor++) emitParagraph(cursor);
     at = runEnd;
   }
 
+  if (ink.active) hangShapes(model, columnsOf, origins, pages, ink, gridBoxesOf(layouts, ink));
   const sections: Section[] = [];
   model.forEach((block, index) => {
     const columns = columnsOf[index];
@@ -556,8 +624,8 @@ export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[]): Lai
     bodyFont: dominantFont(paragraphs, fonts),
     headingSizes: headingSizesOf(levels),
     pageCount: pages.length,
-    ...(furniture.header.length > 0 ? { pageHeader: furniture.header.map((paragraph) => inlineRuns(paragraph.runs)) } : {}),
-    ...(furniture.footer.length > 0 ? { pageFooter: furniture.footer.map((paragraph) => inlineRuns(paragraph.runs)) } : {}),
+    ...(furniture.header.length > 0 ? { pageHeader: furniture.header.map((paragraph) => readableRuns(inlineRuns(paragraph.runs), false)) } : {}),
+    ...(furniture.footer.length > 0 ? { pageFooter: furniture.footer.map((paragraph) => readableRuns(inlineRuns(paragraph.runs), false)) } : {}),
   };
   return { model: documentModel, tables, pageText: layouts.map((layout) => pageTextOf(layout, furniture.counters, furniture.headerBareCounters)) };
 }
