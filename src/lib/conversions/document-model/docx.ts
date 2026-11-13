@@ -191,8 +191,8 @@ function paragraphProperties(props: ParagraphProperties): string {
   if (props.numbering) xml += `<w:numPr><w:ilvl w:val="${props.numbering.level}"/><w:numId w:val="${props.numbering.id}"/></w:numPr>`;
   if (props.border) xml += props.border;
   if (props.shading) xml += `<w:shd w:val="clear" w:color="auto" w:fill="${props.shading}"/>`;
-  if (props.spacerPt) xml += `<w:spacing w:before="0" w:after="0" w:line="${twips(props.spacerPt)}" w:lineRule="exact"/>`;
   if (props.rtl) xml += '<w:bidi/>';
+  if (props.spacerPt) xml += `<w:spacing w:before="0" w:after="0" w:line="${twips(props.spacerPt)}" w:lineRule="exact"/>`;
   if (props.align && props.align !== 'left') xml += `<w:jc w:val="${JUSTIFICATION[props.align]}"/>`;
   if (props.sectPr) xml += props.sectPr;
   return xml === '' ? '' : `<w:pPr>${xml}</w:pPr>`;
