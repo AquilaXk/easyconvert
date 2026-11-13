@@ -439,6 +439,32 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
   // 3. Worker Lifecycle Integration (Quota & Webhooks)
   // ==========================================================================
   describe('3. Unified Worker Lifecycle Quota & Webhook Attacher', () => {
+    it('charges the minutes a job ran beyond the first on top of the credits of its class when it completes', async () => {
+      const commitSpy = vi.spyOn(redisKeyStore, 'commitQuota').mockResolvedValue(true as any);
+      const testQueue = new Queue('lifecycle-surcharge-queue');
+      const testWorker = new Worker(
+        testQueue,
+        async (job) => ({
+          jobId: job.id,
+          status: 'completed',
+          filename: 'out.docx',
+          size: 1024,
+          mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          downloadUrl: '/api/storage/file/out.docx',
+          resultKey: 'results/out.docx',
+          // Two minutes and a second: three started minutes, so two beyond the first.
+          durationMs: 121_000,
+        }),
+        { concurrency: 1 }
+      );
+      attachJobLifecycleListeners(testWorker as any);
+      await testQueue.add('transcode', { originalFilename: 'scan.pdf', sourceFormat: 'pdf', targetFormat: 'docx', reservationId: 'res_surcharge_1' } as any);
+      await new Promise<void>((resolve) => testWorker.on('completed', () => resolve()));
+      await vi.waitFor(() => expect(commitSpy).toHaveBeenCalled());
+      expect(commitSpy).toHaveBeenCalledWith('res_surcharge_1', { extra: 2, note: { from: 'pdf', to: 'docx', base: 4, surcharge: 2 } });
+      await testWorker.close();
+    });
+
     it('commits quota reservation and dispatches webhook on job completion', async () => {
       const commitSpy = vi.spyOn(redisKeyStore, 'commitQuota').mockResolvedValue(true as any);
       const webhookSpy = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue(true as any);
@@ -466,6 +492,8 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
 
       const job = await testQueue.add('transcode', {
         originalFilename: 'test.docx',
+        sourceFormat: 'docx',
+        targetFormat: 'pdf',
         reservationId: 'res_quota_commit_123',
         webhookUrl: 'https://api.example.com/webhooks/easyconvert',
         webhookSecret: 'test-secret-key',
@@ -476,7 +504,8 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
         testWorker.on('completed', () => resolve());
       });
 
-      expect(commitSpy).toHaveBeenCalledWith('res_quota_commit_123');
+      // The job ran 120 ms, so nothing is charged on top of the 2 credits of an Office document converted to PDF.
+      expect(commitSpy).toHaveBeenCalledWith('res_quota_commit_123', { extra: 0, note: { from: 'docx', to: 'pdf', base: 2 } });
       expect(webhookSpy).toHaveBeenCalledWith(
         'https://api.example.com/webhooks/easyconvert',
         'job.completed',
