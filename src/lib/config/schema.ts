@@ -731,7 +731,7 @@ const SCHEMA_ENTRIES = [
     name: 'SMTP_HOST',
     area: 'auth',
     description:
-      'SMTP server that sends the password reset and email verification mails (STARTTLS is required, a mail is never sent in the clear). Without SMTP_HOST, SMTP_USER and SMTP_PASSWORD, and a public origin (APP_ORIGIN, NEXT_PUBLIC_APP_URL or APP_URL), both features are off: the sign-in page shows no forgot-password link and their routes answer 404.',
+      'SMTP server that sends the password reset and email verification mails and the six-digit codes of sign-up (STARTTLS is required, a mail is never sent in the clear). Without SMTP_HOST, SMTP_USER and SMTP_PASSWORD, and a public origin (APP_ORIGIN, NEXT_PUBLIC_APP_URL or APP_URL), these features are off: the sign-in page shows no forgot-password link, their routes answer 404, and no account can be made with a password (Google sign-up still works). The daily sending limit of the mail account applies (the server counts its mails, warns at 400 a day and refuses codes past 480).',
     kind: { type: 'string', maxLength: 253 },
     requiredInProduction: false,
     secret: false,
