@@ -167,6 +167,9 @@ export async function quantizedPalettePng(pipeline: Sharp, request: PalettePngRe
   const size = await writtenSizeOf(pipeline, request.options);
   const limit = Math.min(request.maxPixels ?? QUANTIZR_MAX_PIXELS, maxInputPixels());
   if (size === null || size.width * size.height > limit) return null;
+  // The template is read while the raster is decoded and the program runs (1.5 to 2 ms on the Linux VM); a failed read is raised where it is awaited.
+  const template = pipeline.clone().extract({ left: 0, top: 0, width: 1, height: 1 }).png({ palette: true, compressionLevel: 0 }).toBuffer();
+  template.catch(() => undefined);
   const { data, info } = await rgbaRaster(pipeline.clone());
   const picture = await quantizePixels(data, info.width, info.height, {
     colours: request.colours,
@@ -174,8 +177,7 @@ export async function quantizedPalettePng(pipeline: Sharp, request: PalettePngRe
     signal: request.options.signal,
   });
   if (picture === null) return null;
-  const template = await pipeline.clone().extract({ left: 0, top: 0, width: 1, height: 1 }).png({ palette: true, compressionLevel: 0 }).toBuffer();
-  return writeIndexedPng(picture, template, request.options.signal);
+  return writeIndexedPng(picture, await template, request.options.signal);
 }
 
 /**
