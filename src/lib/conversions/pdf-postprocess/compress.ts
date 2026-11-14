@@ -13,6 +13,7 @@ import { executeSandboxedBinary } from '../../../worker/sandbox';
 import { pdfFromHeader } from '../../format-signatures';
 import { assertPdfHeader } from '../pdf-text-document';
 import { openPdfForEditing, type PdfAccess } from '../pdf-access';
+import { readSandboxOutput } from '../../security/sandbox-output';
 import { getGhostscriptBinaryPath } from './gs-path';
 import { qpdfListsPages, repairPageTree } from './page-tree';
 import { QPDF_MEMORY_LIMIT_MB, QPDF_RUN_TIMEOUT_MS, runQpdfToBuffer, withQpdfInputFile, withQpdfWorkspace, type QpdfRunLimits } from './qpdf-run';
@@ -146,7 +147,7 @@ async function rewriteWithGhostscript(pdf: Buffer, preset: string, clock: Compre
     } catch (error) {
       throw toGhostscriptError(error, workspace.dir);
     }
-    const output = fs.readFileSync(outputPath);
+    const output = readSandboxOutput(outputPath);
     const tail = output.subarray(Math.max(0, output.length - EOF_SEARCH_BYTES)).toString('latin1');
     if (!output.subarray(0, 5).equals(Buffer.from('%PDF-')) || !tail.includes(PDF_EOF_MARKER)) {
       throw new PdfPostprocessError('Compression failed: Ghostscript wrote an incomplete document.');

@@ -140,6 +140,7 @@ import {
   createZstdDictionaryTransformStream,
   type ZstdDictionaryStreamOptions,
 } from './zstd-dict';
+import { readSandboxOutput, readSandboxOutputAsync, readSandboxOutputIfPresent } from '../security/sandbox-output';
 
 export {
   canonicalEntryPath,
@@ -364,7 +365,7 @@ function createEncryptedArchiveVia7z(
       input: sevenZipCreatePasswordInput(password),
     });
     assertCreatedArchiveEncrypted(p7z, outPath, archiveType, stagingDir);
-    const content = fs.readFileSync(outPath);
+    const content = readSandboxOutput(outPath);
     return {
       buffer: content,
       mimeType,
@@ -604,13 +605,9 @@ export async function extractZipArchive(
         });
         options.onSkippedLinks?.(tree.skippedLinks);
 
-        const results: { filename: string; buffer: Buffer }[] = [];
-        for (const file of tree.files) {
-          if (matchArchiveGlob(file.relPath, options.entries)) {
-            results.push({ filename: file.relPath, buffer: fs.readFileSync(file.absPath) });
-          }
-        }
-        return results;
+        return tree.files
+          .filter((file) => matchArchiveGlob(file.relPath, options.entries))
+          .map((file) => ({ filename: file.relPath, buffer: readSandboxOutput(file.absPath) }));
       } finally {
         cleanupDirectoryTree(workDir);
       }
@@ -1827,7 +1824,7 @@ export function extractRarArchive(
             }
             const sanitized = canonicalEntryPath(relPath);
             if (sanitized && matchArchiveGlob(sanitized, options.entries)) {
-              extracted.push({ filename: sanitized, buffer: fs.readFileSync(fullPath) });
+              extracted.push({ filename: sanitized, buffer: readSandboxOutput(fullPath) });
             }
           }
         }
@@ -2252,8 +2249,8 @@ export function convertWithNative7z(
       return null;
     }
 
-    if (!fs.existsSync(outputPath)) return null;
-    const outputBuffer = fs.readFileSync(outputPath);
+    const outputBuffer = readSandboxOutputIfPresent(outputPath);
+    if (outputBuffer === null) return null;
 
     let mime = 'application/octet-stream';
     if (tgt === 'zip') mime = 'application/zip';
@@ -2604,7 +2601,7 @@ async function createNative7zArchive(plan: SevenZipPlan, p7z: string, signal: Ab
     if (!matches) {
       throw new ConversionFailedError('Native 7z archive creation produced an archive whose entries differ from the requested files.');
     }
-    return await fs.promises.readFile(outPath);
+    return await readSandboxOutputAsync(outPath);
   } finally {
     await fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => undefined);
   }
@@ -2982,8 +2979,8 @@ export async function repairZipArchive(
           timeout: 60000,
           input: Buffer.from('y\ny\ny\ny\n'),
         });
-        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 22) {
-          const repaired = fs.readFileSync(outPath);
+        const repaired = readSandboxOutputIfPresent(outPath);
+        if (repaired !== null && repaired.length > 22) {
           try {
             if ((await extractZipArchive(repaired)).length > 0) {
               return repaired;

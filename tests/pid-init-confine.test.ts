@@ -44,6 +44,7 @@ echo "create in other: $(attempt sh -c 'echo x > "$0/created"' "$OTHER")"
 echo "list other: $(attempt ls "$OTHER")"
 echo "write own: $(attempt sh -c 'echo x > "$0/out"' "$OWN")"
 echo "truncate own: $(attempt truncate -s 0 "$OWN/out")"
+echo "symlink own: $(attempt sh -c 'ln -s "$0" "$1/link" && rm "$1/link"' "$OTHER/secret" "$OWN")"
 echo "remove own: $(attempt rm "$OWN/out")"
 echo "write extra: $(attempt sh -c 'echo x > "$0/out"' "$EXTRA")"
 echo "read system: $(attempt cat /etc/passwd)"
@@ -66,6 +67,8 @@ const CONFINED = [
   'list other: Permission denied',
   'write own: ok',
   'truncate own: ok',
+  // The program may make files, directories and hard links below its directories but no symbolic link: the host reads and writes what it left there.
+  'symlink own: Permission denied',
   'remove own: ok',
   'write extra: Permission denied',
   'read system: ok',
@@ -104,6 +107,7 @@ describe.skipIf(toolsMissing || skipUnless('Landlock version 3 (Linux 6.2 or lat
   it('control: without --confine the program reads, overwrites, truncates, creates in and lists the directory of another job', () => {
     const lines0 = lines(run([]).stdout);
     expect(lines0.slice(0, 6)).toEqual(['read other: ok', 'write other: ok', 'truncate other: ok', 'remove other: ok', 'create in other: ok', 'list other: ok']);
+    expect(lines0).toContain('symlink own: ok');
     // The next run needs what the control removed or emptied.
     fs.writeFileSync(path.join(other, 'secret'), 'secret');
     fs.writeFileSync(path.join(other, 'victim'), 'victim');

@@ -24,6 +24,7 @@ import { resolveBinaryPath } from './utils';
 import { DEFAULT_PDFA_CONFORMANCE, buildPdfExportFilterData } from '../pdf-export-options';
 import { normalisePdfADates } from './pdfa-dates';
 import { writeOfficeProfile } from '../../../worker/libreoffice-profile';
+import { readSandboxOutputIfPresent } from '../../security/sandbox-output';
 import { officeImportFilterArgs } from '../office/office-suite-sources';
 
 /**
@@ -337,10 +338,11 @@ export async function convertToPdfA(
       throw new PdfPostprocessError('PDF/A conversion failed: LibreOffice could not convert the document.');
     }
 
-    if (!fs.existsSync(outputPdf)) {
+    const converted = readSandboxOutputIfPresent(outputPdf);
+    if (converted === null) {
       throw new PdfPostprocessError('PDF/A conversion failed: output file was not generated.');
     }
-    let resultBuffer: Buffer = fs.readFileSync(outputPdf);
+    let resultBuffer: Buffer = converted;
     if (resultBuffer.equals(pdfBuffer)) {
       throw new PdfPostprocessError('PDF/A conversion failed: the document was not converted.');
     }

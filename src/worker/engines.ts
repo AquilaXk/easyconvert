@@ -42,6 +42,7 @@ import { isCalibreEbookTarget } from '../lib/conversions/calibre-ebook-targets';
 import { runWithImageFetchSession } from '../lib/conversions/html-image-fetch';
 import { assertConversionOptionsObject } from '../lib/conversions/options-guard';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath } from '../lib/security/file-guard';
+import { readSandboxOutput, readSandboxOutputFiles, readSandboxOutputIfPresent, sandboxOutputSize } from '../lib/security/sandbox-output';
 import { boundPageImages, pageEntryName, pagesToDraw, resolvePageIntervals } from '../lib/conversions/page-range';
 import { pagesOfIntervals, type PageInterval } from '../lib/conversions/page-intervals';
 import {
@@ -507,9 +508,10 @@ export async function convertWithNativeFfmpeg(
           const partOut = path.join(tempDir, `output_${i}.${tgt}`);
           const partArgs = await buildFfmpegArguments(media, partOut, tgt, options, ffmpegBin, ts);
           await runFfmpeg(ffmpegBin, partArgs, { cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: timeout, maxBuffer, signal: options.signal });
-          if (fs.existsSync(partOut) && fs.statSync(partOut).size > 0) {
+          const partBytes = readSandboxOutputIfPresent(partOut);
+          if (partBytes !== null && partBytes.length > 0) {
             firstValidOutputPath ??= partOut;
-            parts.push({ filename: `${baseName}_thumb_${i + 1}.${tgt}`, buffer: fs.readFileSync(partOut) });
+            parts.push({ filename: `${baseName}_thumb_${i + 1}.${tgt}`, buffer: partBytes });
           }
         }
         if (parts.length === 0 || !firstValidOutputPath) {
@@ -548,11 +550,8 @@ export async function convertWithNativeFfmpeg(
         }
 
         const parts: { filename: string; buffer: Buffer }[] = [];
-        for (const f of outputFiles) {
-          const p = path.join(outputDir, f);
-          if (fs.statSync(p).isFile()) {
-            parts.push({ filename: f, buffer: fs.readFileSync(p) });
-          }
+        for (const file of readSandboxOutputFiles(outputDir, outputFiles)) {
+          parts.push({ filename: file.name, buffer: file.bytes });
         }
 
         const tempZipPath = path.join(tempDir, `${baseName}-${packaging.format}.zip`);
@@ -991,7 +990,7 @@ export async function convertWithNative7z(
       // The staged directories keep the tar's modes while 7-Zip packs them; the sandbox removes them afterwards.
       staged?.release();
     }
-    if (packagedFormat === null || !fs.existsSync(tempOutputPath)) {
+    if (packagedFormat === null || sandboxOutputSize(tempOutputPath) === null) {
       throw new ConversionFailedError('7-Zip packaging failed to produce output archive');
     }
 
@@ -1143,7 +1142,7 @@ async function convertPdfToTextWithPoppler(
         }
       );
 
-      if (!fs.existsSync(tempOutputPath)) {
+      if (sandboxOutputSize(tempOutputPath) === null) {
         throw new Error(`pdftotext execution completed without producing expected output file "${tempOutputPath}"`);
       }
 
@@ -1249,7 +1248,7 @@ async function finalizeMultiPageOutput(params: FinalizeMultiPageParams): Promise
   const maxPage = requestedPages.at(-1) ?? 1;
   const pageFiles = resolvedFiles.map((item) => ({
     name: pageEntryName(baseName, item.pageNum, maxPage, tgt),
-    data: fs.readFileSync(path.join(tempDir, item.file)),
+    data: readSandboxOutput(path.join(tempDir, item.file)),
   }));
 
   const zipOutputPath = path.join(tempDir, `${baseName}.zip`);
@@ -1772,7 +1771,7 @@ export async function convertWithNativeRaw(
       }
       throw err;
     }
-    if (!fs.existsSync(decodedPath) || fs.statSync(decodedPath).size === 0) {
+    if (!sandboxOutputSize(decodedPath)) {
       throw new RawDecodeError(`Native RAW decoder produced no image for the .${src} file`);
     }
 

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { cleanupDirectoryTree } from '../lib/conversions/archive-extraction-safety';
 import { MAX_DOCUMENT_INFLATE_BYTES } from '../lib/conversions/bounded-inflate';
 import { getFormatByExtension } from '../lib/registry';
+import { readSandboxOutput } from '../lib/security/sandbox-output';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { assertRegularFileSync, makeJobDirectory, moveIntoPlace, stagedOutputPath } from '../lib/storage/temp-file';
 import { readPersistedOutput } from './persisted-output';
@@ -44,9 +45,9 @@ export function drawnPdfTooLargeError(program: string, src: string, size: number
 
 /** The PDF a program drew, read whole for an image target; a file above MAX_DRAWN_PDF_BYTES_FOR_IMAGES is refused before it is read. */
 export function readDrawnPdfForImages(pdfPath: string, program: string, src: string): Buffer {
-  const size = fs.statSync(pdfPath).size;
-  if (size > MAX_DRAWN_PDF_BYTES_FOR_IMAGES) throw drawnPdfTooLargeError(program, src, size, MAX_DRAWN_PDF_BYTES_FOR_IMAGES);
-  return fs.readFileSync(pdfPath);
+  return readSandboxOutput(pdfPath, (size) => {
+    if (size > MAX_DRAWN_PDF_BYTES_FOR_IMAGES) throw drawnPdfTooLargeError(program, src, size, MAX_DRAWN_PDF_BYTES_FOR_IMAGES);
+  });
 }
 
 /** Reads the whole input into memory, within the in-memory payload limit. */

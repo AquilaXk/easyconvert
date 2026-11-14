@@ -30,6 +30,7 @@ import {
   openLimitedSharp,
   type PixelBudget,
 } from './image-input-limits';
+import { readSandboxOutputIfPresent } from '../security/sandbox-output';
 import { remainingJobMs, stageTimeoutMs } from './job-time';
 import { resolveBinaryPath } from './pdf-postprocess/utils';
 import { vectorizeArgs, vectorizeOptionsProblem, type VectorizeOptions } from './raster-vectorize-options';
@@ -225,10 +226,12 @@ async function trace(binary: string, picture: StagedPicture, args: string[], opt
     } catch (error) {
       throw toEngineError(error, sandboxDir, timeoutMs);
     }
-    if (!fs.existsSync(outputPath)) throw new ConversionFailedError('The SVG tracer wrote no SVG from this picture.');
-    // Where the file-size limit is not available (a host without prlimit), the size is checked after the run.
-    if (fs.statSync(outputPath).size >= VECTORIZE_MAX_OUTPUT_BYTES) throw outputRefusal();
-    return fs.readFileSync(outputPath, 'utf8');
+    // Where the file-size limit is not available (a host without prlimit), the size is checked before the read.
+    const svg = readSandboxOutputIfPresent(outputPath, (size) => {
+      if (size >= VECTORIZE_MAX_OUTPUT_BYTES) throw outputRefusal();
+    });
+    if (svg === null) throw new ConversionFailedError('The SVG tracer wrote no SVG from this picture.');
+    return svg.toString('utf8');
   } finally {
     cleanupWorkerSandboxDir(sandboxDir);
   }

@@ -16,6 +16,7 @@ import {
   executeSandboxedBinary,
   rethrowSandboxUnavailable,
 } from '../../worker/sandbox';
+import { readSandboxOutputIfPresent } from '../security/sandbox-output';
 import { stageTimeoutMs, type JobDeadlined } from './job-time';
 import { resolveBinaryPath } from './pdf-postprocess/utils';
 import { parseWavPcmHeader, type WavPcmInfo } from './wav-header';
@@ -187,10 +188,10 @@ export async function renderMidiToWav(input: Buffer, options: MidiRenderOptions 
       throw toRenderError(error, sandboxDir, timeoutMs);
     }
     // The program exits with status 0 after refusing a file it cannot open, so the output is what proves a render.
-    if (!fs.existsSync(outputPath)) {
+    const wav = readSandboxOutputIfPresent(outputPath);
+    if (wav === null) {
       throw new UnprocessableMediaInputError('The MIDI renderer wrote no sound: the file is not a MIDI file it can play.');
     }
-    const wav = fs.readFileSync(outputPath);
     // The header reader answers null for a data chunk without one whole sample frame, as for any layout it cannot read.
     if (parseWavPcmHeader(wav, wav.length) === null) {
       throw new UnprocessableMediaInputError('The MIDI renderer wrote no sound from this file.');

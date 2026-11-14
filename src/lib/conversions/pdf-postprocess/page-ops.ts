@@ -14,6 +14,7 @@ import { SandboxedBufferLimitError } from '../../security/process-sandbox';
 import { createZipArchive } from '../archive';
 import { assertPdfHeader } from '../pdf-text-document';
 import { openPdfForEditing, type PdfAccess, type PdfEditOperation } from '../pdf-access';
+import { readSandboxOutput } from '../../security/sandbox-output';
 import { validatePageRangeSyntax } from '../page-range';
 import { withMendedPageTree } from './mend-page-tree';
 import { QPDF_COMPACT_OUTPUT_ARGS, runQpdf, runQpdfToBuffer, withQpdfInputFile, withQpdfWorkspace, type QpdfWorkspace } from './qpdf-run';
@@ -425,7 +426,7 @@ async function splitFiles(workspace: QpdfWorkspace, options: PdfSplitOptions, bu
     .readdirSync(workspace.dir)
     .filter((name) => name.startsWith(SPLIT_PART_PREFIX))
     .sort((a, b) => partNumberOf(a) - partNumberOf(b));
-  return names.map((name) => fs.readFileSync(path.join(workspace.dir, name)));
+  return names.map((name) => readSandboxOutput(path.join(workspace.dir, name)));
 }
 
 /**

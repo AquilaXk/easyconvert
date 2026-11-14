@@ -401,10 +401,14 @@ static bool write_text_file(const char *path, const char *text) {
 #define LANDLOCK_ACCESS_FS_WRITE_FILE (1ULL << 1)
 #define LANDLOCK_ACCESS_FS_READ_FILE (1ULL << 2)
 #define LANDLOCK_ACCESS_FS_READ_DIR (1ULL << 3)
+#define LANDLOCK_ACCESS_FS_MAKE_SYM (1ULL << 12)
 #define LANDLOCK_ACCESS_FS_REFER (1ULL << 13)
 #define LANDLOCK_ACCESS_FS_TRUNCATE (1ULL << 14)
 /* Every file right of Landlock version 3 (bits 0 to 14: execute, write, read, list, remove, make, refer, truncate). */
 #define LANDLOCK_ACCESS_FS_ALL_V3 ((1ULL << 15) - 1)
+/* What a confined job may do below its write directory: every right but making a symbolic link (the host reads what qpdf wrote there, and a
+   link at the output path would make it open another file of the host). */
+#define CONFINE_WRITE_ACCESS (LANDLOCK_ACCESS_FS_ALL_V3 & ~LANDLOCK_ACCESS_FS_MAKE_SYM)
 /* The rights that a rule on something that is not a directory may name. */
 #define LANDLOCK_ACCESS_FS_FILE_RIGHTS (LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_TRUNCATE)
 /* What a confined job gets of the system, of /dev, and of its own /proc entries. */
@@ -536,7 +540,7 @@ static int make_ruleset(const struct confinement *confine, int keep_proc) {
     failed = failed || allow_below(ruleset, "/dev", 0, CONFINE_DEVICE_ACCESS) != 0;
     failed = failed || (keep_proc ? allow_below(ruleset, "/proc", 0, CONFINE_DEVICE_ACCESS) != 0 : allow_entries(ruleset, "/proc", 1, CONFINE_DEVICE_ACCESS) != 0);
     for (uint32_t i = 0; !failed && i < confine->read_count; i++) failed = allow_below(ruleset, confine->read_paths[i], 0, CONFINE_READ_ACCESS) != 0;
-    failed = failed || (confine->write_dir != NULL && confine->write_dir[0] != '\0' && allow_below(ruleset, confine->write_dir, 0, LANDLOCK_ACCESS_FS_ALL_V3) != 0);
+    failed = failed || (confine->write_dir != NULL && confine->write_dir[0] != '\0' && allow_below(ruleset, confine->write_dir, 0, CONFINE_WRITE_ACCESS) != 0);
   }
   if (failed) {
     hide_failure = "a rule could not be added";

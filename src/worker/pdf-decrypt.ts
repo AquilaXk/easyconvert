@@ -9,6 +9,7 @@ import { reportsPageTreeLoop } from '../lib/conversions/pdf-postprocess/page-tre
 import { getQpdfBinaryPath } from '../lib/conversions/pdf-postprocess/qpdf-path';
 import { QPDF_MEMORY_LIMIT_MB } from '../lib/conversions/pdf-postprocess/qpdf-run';
 import { launchQpdf } from '../lib/conversions/pdf-postprocess/qpdf-runner';
+import { sandboxOutputSize } from '../lib/security/sandbox-output';
 import {
   SandboxedBufferLimitError,
   SandboxedMemoryLimitError,
@@ -259,7 +260,7 @@ async function decryptIntoFile(qpdf: string, request: PdfDecryptRequest, passwor
     (passwordFile) => [`--password-file=${passwordFile}`, '--warning-exit-0', '--decrypt', path.resolve(request.inputPath), decryptedPath],
     { path: decryptedPath, maxBytes: maxFileSize }
   );
-  const decryptedBytes = fs.statSync(decryptedPath).size;
+  const decryptedBytes = sandboxOutputSize(decryptedPath) ?? 0;
   // A copy that grew past the limit between two checks of the watcher is refused the same way.
   if (decryptedBytes > maxFileSize) {
     throw new ConversionFailedError(PDF_DECRYPT_TOO_LARGE_MESSAGE);

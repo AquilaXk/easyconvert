@@ -8,6 +8,7 @@ import { MAX_SUBTITLE_BYTES, isSubtitlePair, prepareSubtitleInput, repairSubtitl
 import { countSubtitleCues, isSubtitleFormat } from '../lib/subtitle-structure';
 import { EngineUnavailableError, InvalidConversionOutputError, InvalidSubtitleInputError, PayloadLimitError } from '../lib/types';
 import { rethrowSandboxUnavailable, SandboxedProcessError } from './sandbox';
+import { readSandboxOutputIfPresent, writeSandboxOutput } from '../lib/security/sandbox-output';
 import { createConversionResult, handOffOutput, readRawInputBuffer, withSandboxDir } from './worker-output';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 
@@ -69,10 +70,10 @@ async function runSubtitleFfmpeg(ffmpegBin: string, args: string[], tempDir: str
 /** Repairs the file FFmpeg wrote (see `repairSubtitleOutput`) and throws unless it holds at least one cue of the target format. */
 function finishSubtitleOutput(outputPath: string, request: SubtitleRequest): void {
   if (!isSubtitleFormat(request.tgt)) throw new InvalidConversionOutputError(request.src, request.tgt);
-  const written = fs.existsSync(outputPath) ? fs.readFileSync(outputPath, 'utf8') : '';
+  const written = readSandboxOutputIfPresent(outputPath)?.toString('utf8') ?? '';
   if (countSubtitleCues(request.tgt, written) === 0) throw new InvalidConversionOutputError(request.src, request.tgt);
   const repaired = repairSubtitleOutput(written, request.tgt, request.src);
-  if (repaired !== written) fs.writeFileSync(outputPath, repaired);
+  if (repaired !== written) writeSandboxOutput(outputPath, repaired);
 }
 
 /**

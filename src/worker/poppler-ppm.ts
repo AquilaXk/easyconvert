@@ -4,6 +4,7 @@ import zlib from 'node:zlib';
 import sharp from 'sharp';
 import { ConversionFailedError, UnsupportedOptionError } from '../lib/types';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
+import { readSandboxOutput, sandboxOutputSize } from '../lib/security/sandbox-output';
 import { availableCpus } from '../lib/workers/available-cpus';
 import { SandboxedBufferLimitError, type SandboxedExecutionResult } from './sandbox';
 
@@ -187,7 +188,7 @@ export function ppmPageEnd(stream: Buffer): number | null {
 
 /** Compresses one PPM page file into a PNG file and removes the PPM. */
 export async function encodePpmPageAsPng(ppmPath: string, pngPath: string, dpi: number, scratch = false): Promise<void> {
-  fs.writeFileSync(pngPath, await compressPpmPage(fs.readFileSync(ppmPath), dpi, scratch));
+  fs.writeFileSync(pngPath, await compressPpmPage(readSandboxOutput(ppmPath), dpi, scratch));
   fs.rmSync(ppmPath, { force: true });
 }
 
@@ -267,7 +268,7 @@ async function renderPngBatchWith(
     fitsInMemory = false;
   }
   const rawPages = fs.readdirSync(tempDir).filter(isRawPageOfBatch);
-  if (fitsInMemory && rawPages.some((name) => exceedsPpmPageLimit(fs.statSync(path.join(tempDir, name)).size))) fitsInMemory = false;
+  if (fitsInMemory && rawPages.some((name) => exceedsPpmPageLimit(sandboxOutputSize(path.join(tempDir, name)) ?? 0))) fitsInMemory = false;
   if (!fitsInMemory) {
     for (const name of rawPages) fs.rmSync(path.join(tempDir, name), { force: true });
     await runPdftoppm(pdftoppm, pngArguments, sandbox);
