@@ -243,7 +243,7 @@ async function forgetFailedLogins(email: string): Promise<void> {
   const redis = redisUserStore.getRedisClient();
   // The key the login limiter writes (`login_attempts:email:<lower-cased address>` under the user store's prefix).
   if (redis) await redis.del(`${redisUserStore.getKeyPrefix()}login_attempts:email:${email.toLowerCase().trim()}`);
-  await resetLoginAttempts(null, email);
+  await resetLoginAttempts(email);
 }
 
 /** The subscription record is deleted here; the payment provider keeps the customer and keeps charging an active subscription until it is canceled there. */

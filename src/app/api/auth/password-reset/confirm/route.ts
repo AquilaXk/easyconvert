@@ -76,7 +76,7 @@ export async function POST(req: NextRequest) {
         return refusal(400, 'invalid_token', 'This link is not valid or has expired.');
       }
     }
-    await resetLoginAttempts(clientIp, record.email);
+    await resetLoginAttempts(record.email);
 
     const response = NextResponse.json({ success: true });
     for (const cleared of clearSessionCookies()) response.headers.append('Set-Cookie', cleared);
