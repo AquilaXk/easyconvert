@@ -69,50 +69,102 @@ const WAVE_FORMAT_IEEE_FLOAT = 3;
 export class BitReader {
   private buf: Buffer;
   private bytePos: number;
-  private bitPos: number; // 7 = MSB, 0 = LSB
+  private bitBuf: number;
+  private bitCount: number;
 
   constructor(buf: Buffer, startOffset = 0) {
     this.buf = buf;
-    this.bytePos = startOffset;
-    this.bitPos = 7;
+    this.bytePos = Math.max(0, startOffset);
+    this.bitBuf = 0;
+    this.bitCount = 0;
+  }
+
+  private fill(): void {
+    while (this.bitCount <= 24 && this.bytePos < this.buf.length) {
+      this.bitBuf = (this.bitBuf | (this.buf[this.bytePos++] << (24 - this.bitCount))) >>> 0;
+      this.bitCount += 8;
+    }
   }
 
   readBit(): number {
-    if (this.bytePos >= this.buf.length) return 0;
-    const bit = (this.buf[this.bytePos] >> this.bitPos) & 1;
-    if (this.bitPos === 0) {
-      this.bytePos++;
-      this.bitPos = 7;
-    } else {
-      this.bitPos--;
+    if (this.bitCount === 0) this.fill();
+    if (this.bitCount === 0) {
+      throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
     }
+    const bit = this.bitBuf >>> 31;
+    this.bitBuf = (this.bitBuf << 1) >>> 0;
+    this.bitCount--;
     return bit;
   }
 
   readBits(count: number): number {
-    let res = 0;
-    for (let i = 0; i < count; i++) {
-      res = (res << 1) | this.readBit();
+    if (count === 0) return 0;
+    if (count < 0 || count > 32) {
+      throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
     }
-    return res >>> 0;
+    if (count > 24) {
+      const hi = this.readBits(16);
+      const loBits = count - 16;
+      const lo = this.readBits(loBits);
+      return ((hi << loBits) | lo) >>> 0;
+    }
+    if (this.bitCount < count) this.fill();
+    if (this.bitCount < count) {
+      throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+    }
+    const val = this.bitBuf >>> (32 - count);
+    this.bitBuf = (this.bitBuf << count) >>> 0;
+    this.bitCount -= count;
+    return val;
   }
 
   readSignedBits(count: number): number {
     if (count <= 0) return 0;
-    const val = this.readBits(count);
-    if (val & (1 << (count - 1))) {
-      return val - (1 << count);
+    if (count <= 31) {
+      const val = this.readBits(count);
+      const shift = 32 - count;
+      return (val << shift) >> shift;
     }
-    return val;
+    if (count === 32) {
+      return this.readBits(32) | 0;
+    }
+    if (count > 53) {
+      throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+    }
+    const hiSigned = this.readSignedBits(count - 32);
+    const lo = this.readBits(32);
+    return hiSigned * 0x100000000 + lo;
+  }
+
+  readUnaryZeroes(maxQ = 0x7fffffff): number {
+    let zeroes = 0;
+    while (true) {
+      if (this.bitCount === 0) this.fill();
+      if (this.bitCount === 0) {
+        throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+      }
+      const lz = Math.clz32(this.bitBuf);
+      if (lz < this.bitCount) {
+        zeroes += lz;
+        if (zeroes > maxQ) {
+          throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+        }
+        const consume = lz + 1;
+        this.bitBuf = consume === 32 ? 0 : (this.bitBuf << consume) >>> 0;
+        this.bitCount -= consume;
+        return zeroes;
+      }
+      zeroes += this.bitCount;
+      if (zeroes > maxQ) {
+        throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+      }
+      this.bitBuf = 0;
+      this.bitCount = 0;
+    }
   }
 
   readUnary(): number {
-    let count = 0;
-    while (this.bytePos < this.buf.length) {
-      if (this.readBit() === 1) break;
-      count++;
-    }
-    return count;
+    return this.readUnaryZeroes();
   }
 
   readUtf8Number(): number {
@@ -123,28 +175,32 @@ export class BitReader {
     while ((b0 & mask) !== 0) {
       numBytes++;
       mask >>= 1;
+      if (numBytes > 7 || mask === 0) {
+        throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+      }
     }
     let val = b0 & (mask - 1);
     for (let i = 1; i < numBytes; i++) {
       const b = this.readBits(8);
-      val = (val << 6) | (b & 0x3f);
+      val = val * 64 + (b & 0x3f);
     }
     return val;
   }
 
   alignToByte(): void {
-    if (this.bitPos !== 7) {
-      this.bytePos++;
-      this.bitPos = 7;
+    const rem = this.bitCount & 7;
+    if (rem !== 0) {
+      this.bitBuf = (this.bitBuf << rem) >>> 0;
+      this.bitCount -= rem;
     }
   }
 
   getBytePos(): number {
-    return this.bytePos;
+    return this.bytePos - ((this.bitCount + 7) >> 3);
   }
 
   isEof(): boolean {
-    return this.bytePos >= this.buf.length;
+    return this.bytePos >= this.buf.length && this.bitCount === 0;
   }
 }
 
@@ -172,72 +228,62 @@ function readExtendedFloat(buf: Buffer, offset: number): number {
 /**
  * Decodes RIFF WAV and AIFF audio buffers into signed 16-bit PCM samples
  */
-export function decodeWav(buffer: Buffer): DecodedAudio {
-  if (!buffer || buffer.length < 12) {
+function decodeAiffContainer(buffer: Buffer): DecodedAudio {
+  if (buffer.length < 12) {
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+  }
+  const formType = buffer.toString('ascii', 8, 12);
+  if (formType !== 'AIFF' && formType !== 'AIFC') {
     throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
-  const magic = buffer.toString('ascii', 0, 4);
+  let channels = 2;
+  let sampleRate = 44100;
+  let bitsPerSample = 16;
+  let dataOffset = -1;
+  let dataSize = 0;
 
-  // 1. Handle AIFF / AIFC
-  if (magic === 'FORM') {
-    const formType = buffer.toString('ascii', 8, 12);
-    if (formType !== 'AIFF' && formType !== 'AIFC') {
-      throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+  let offset = 12;
+  while (offset + 8 <= buffer.length) {
+    const chunkId = buffer.toString('ascii', offset, offset + 4);
+    const chunkSize = buffer.readUInt32BE(offset + 4);
+    const paddedSize = chunkSize + (chunkSize & 1);
+    const nextOffset = offset + 8 + paddedSize;
+
+    if (chunkId === 'COMM' && offset + 26 <= buffer.length) {
+      channels = buffer.readInt16BE(offset + 8);
+      bitsPerSample = buffer.readInt16BE(offset + 14);
+      sampleRate = Math.round(readExtendedFloat(buffer, offset + 16)) || 44100;
+    } else if (chunkId === 'SSND' && offset + 16 <= buffer.length) {
+      const soundOffset = buffer.readUInt32BE(offset + 8);
+      dataOffset = offset + 16 + soundOffset;
+      dataSize = Math.max(0, Math.min(chunkSize - 8 - soundOffset, buffer.length - dataOffset));
     }
 
-    let channels = 2;
-    let sampleRate = 44100;
-    let bitsPerSample = 16;
-    let dataOffset = -1;
-    let dataSize = 0;
-
-    let offset = 12;
-    while (offset + 8 <= buffer.length) {
-      const chunkId = buffer.toString('ascii', offset, offset + 4);
-      const chunkSize = buffer.readUInt32BE(offset + 4);
-
-      if (chunkId === 'COMM' && offset + 26 <= buffer.length) {
-        channels = buffer.readInt16BE(offset + 8);
-        bitsPerSample = buffer.readInt16BE(offset + 14);
-        sampleRate = Math.round(readExtendedFloat(buffer, offset + 16)) || 44100;
-      } else if (chunkId === 'SSND' && offset + 16 <= buffer.length) {
-        const soundOffset = buffer.readUInt32BE(offset + 8);
-        dataOffset = offset + 16 + soundOffset;
-        dataSize = Math.max(0, Math.min(chunkSize - 8 - soundOffset, buffer.length - dataOffset));
-      }
-
-      offset += 8 + ((chunkSize + 1) & ~1);
-    }
-
-    if (dataOffset < 0) {
-      throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
-    }
-
-    assertDecodableLayout(channels, sampleRate);
-    const samples = decodePcmBytes(buffer, dataOffset, dataSize, bitsPerSample, true, WAVE_FORMAT_PCM);
-    const duration = samples.length / (channels * sampleRate);
-    return {
-      samples,
-      sampleRate,
-      channels,
-      bitsPerSample: 16,
-      duration,
-      sourceBitsPerSample: bitsPerSample,
-      sourceSampleFormat: 'int',
-    };
+    if (nextOffset > buffer.length || nextOffset <= offset) break;
+    offset = nextOffset;
   }
 
-  // 2. Handle RIFF / RIFX WAV
-  const isRiff = magic === 'RIFF';
-  const isRifx = magic === 'RIFX';
-
-  if (!isRiff && !isRifx) {
+  if (dataOffset < 0) {
     throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
-  const waveType = buffer.toString('ascii', 8, 12);
-  if (waveType !== 'WAVE') {
+  assertDecodableLayout(channels, sampleRate);
+  const samples = decodePcmBytes(buffer, dataOffset, dataSize, bitsPerSample, true, WAVE_FORMAT_PCM);
+  const duration = samples.length / (channels * sampleRate);
+  return {
+    samples,
+    sampleRate,
+    channels,
+    bitsPerSample: 16,
+    duration,
+    sourceBitsPerSample: bitsPerSample,
+    sourceSampleFormat: 'int',
+  };
+}
+
+function decodeRiffWavContainer(buffer: Buffer, isRifx: boolean): DecodedAudio {
+  if (buffer.length < 12 || buffer.toString('ascii', 8, 12) !== 'WAVE') {
     throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
@@ -252,6 +298,8 @@ export function decodeWav(buffer: Buffer): DecodedAudio {
   while (offset + 8 <= buffer.length) {
     const chunkId = buffer.toString('ascii', offset, offset + 4);
     const chunkSize = isRifx ? buffer.readUInt32BE(offset + 4) : buffer.readUInt32LE(offset + 4);
+    const paddedSize = chunkSize + (chunkSize & 1);
+    const nextOffset = offset + 8 + paddedSize;
 
     if (chunkId === 'fmt ' && offset + 24 <= buffer.length) {
       audioFormat = isRifx ? buffer.readUInt16BE(offset + 8) : buffer.readUInt16LE(offset + 8);
@@ -261,8 +309,7 @@ export function decodeWav(buffer: Buffer): DecodedAudio {
 
       // WAVE_FORMAT_EXTENSIBLE (0xFFFE)
       if (audioFormat === 0xfffe && offset + 40 <= buffer.length) {
-        const subFormatGuid = isRifx ? buffer.readUInt16BE(offset + 32) : buffer.readUInt16LE(offset + 32);
-        audioFormat = subFormatGuid; // 1 = PCM, 3 = Float
+        audioFormat = isRifx ? buffer.readUInt16BE(offset + 32) : buffer.readUInt16LE(offset + 32);
       }
     } else if (chunkId === 'data') {
       dataOffset = offset + 8;
@@ -270,9 +317,8 @@ export function decodeWav(buffer: Buffer): DecodedAudio {
       break;
     }
 
-    const paddedSize = (chunkSize + 1) & ~1;
-    if (paddedSize <= 0 || offset + 8 + paddedSize <= offset) break;
-    offset += 8 + paddedSize;
+    if (nextOffset > buffer.length || nextOffset <= offset) break;
+    offset = nextOffset;
   }
 
   if (dataOffset < 0) {
@@ -291,6 +337,34 @@ export function decodeWav(buffer: Buffer): DecodedAudio {
     sourceBitsPerSample: bitsPerSample,
     sourceSampleFormat: audioFormat === WAVE_FORMAT_IEEE_FLOAT ? 'float' : 'int',
   };
+}
+
+export function decodeWav(buffer: Buffer): DecodedAudio {
+  if (!buffer || buffer.length < 12) {
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+  }
+
+  const magic = buffer.toString('ascii', 0, 4);
+  if (magic === 'FORM') {
+    return decodeAiffContainer(buffer);
+  }
+
+  const isRiff = magic === 'RIFF';
+  const isRifx = magic === 'RIFX';
+  if (!isRiff && !isRifx) {
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+  }
+
+  return decodeRiffWavContainer(buffer, isRifx);
+}
+
+function allocPcmSamples(count: number): Int16Array {
+  if (!Number.isSafeInteger(count) || count < 0 || count > MAX_PURE_DECODED_SAMPLES) {
+    throw new ConversionFailedError(
+      `${UNSUPPORTED_AUDIO_MESSAGE}: PCM sample count ${count} exceeds ${MAX_PURE_DECODED_SAMPLES}`
+    );
+  }
+  return new Int16Array(count);
 }
 
 /**
@@ -315,7 +389,7 @@ function decodePcmBytes(
 
   if (bitsPerSample === 8) {
     const count = length;
-    const samples = new Int16Array(count);
+    const samples = allocPcmSamples(count);
     for (let i = 0; i < count; i++) {
       if (isBigEndian) {
         // AIFF 8-bit is signed (-128..127)
@@ -330,7 +404,7 @@ function decodePcmBytes(
 
   if (bitsPerSample === 16) {
     const count = Math.floor(length / 2);
-    const samples = new Int16Array(count);
+    const samples = allocPcmSamples(count);
     for (let i = 0; i < count; i++) {
       samples[i] = isBigEndian
         ? buffer.readInt16BE(offset + i * 2)
@@ -341,7 +415,7 @@ function decodePcmBytes(
 
   if (bitsPerSample === 24) {
     const count = Math.floor(length / 3);
-    const samples = new Int16Array(count);
+    const samples = allocPcmSamples(count);
     for (let i = 0; i < count; i++) {
       const pos = offset + i * 3;
       if (isBigEndian) {
@@ -365,7 +439,7 @@ function decodePcmBytes(
 
   if (bitsPerSample === 32) {
     const count = Math.floor(length / 4);
-    const samples = new Int16Array(count);
+    const samples = allocPcmSamples(count);
     if (audioFormat === WAVE_FORMAT_IEEE_FLOAT) {
       // 32-bit IEEE float
       for (let i = 0; i < count; i++) {
@@ -386,7 +460,7 @@ function decodePcmBytes(
 
   if (bitsPerSample === 64 && audioFormat === WAVE_FORMAT_IEEE_FLOAT) {
     const count = Math.floor(length / 8);
-    const samples = new Int16Array(count);
+    const samples = allocPcmSamples(count);
     for (let i = 0; i < count; i++) {
       const pos = offset + i * 8;
       const f = isBigEndian ? buffer.readDoubleBE(pos) : buffer.readDoubleLE(pos);
@@ -423,22 +497,313 @@ function seekFrameSync(reader: BitReader, buffer: Buffer): boolean {
   return false;
 }
 
+const MAX_RICE_UVAL = 0x1ffffffff;
+
+type FlacSampleArray = Int32Array | Float64Array;
+
+interface ResidualHeader {
+  numPartitions: number;
+  kBits: number;
+  escapeK: number;
+  partitionSize: number;
+}
+
+function readRiceResidual(reader: BitReader, k: number, kScale: number, maxQ: number): number {
+  const q = reader.readUnaryZeroes(maxQ);
+  const rem = k > 0 ? reader.readBits(k) : 0;
+  const uval = k === 0 ? q : q * kScale + rem;
+  if (uval > MAX_RICE_UVAL) {
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+  }
+  if (uval <= 0xffffffff) {
+    return (uval >>> 1) ^ -(uval & 1);
+  }
+  return (uval & 1) ? -Math.floor((uval + 1) / 2) : uval / 2;
+}
+
+function parseResidualHeader(reader: BitReader, curBlockSize: number, order: number): ResidualHeader {
+  const residualMethod = reader.readBits(2);
+  if (residualMethod > 1) {
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+  }
+  const partitionOrder = reader.readBits(4);
+  const numPartitions = 1 << partitionOrder;
+  const partitionSize = curBlockSize >> partitionOrder;
+  if (numPartitions > curBlockSize || (curBlockSize & (numPartitions - 1)) !== 0 || partitionSize < order) {
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+  }
+  const kBits = residualMethod === 0 ? 4 : 5;
+  return {
+    numPartitions,
+    kBits,
+    escapeK: (1 << kBits) - 1,
+    partitionSize,
+  };
+}
+
+function decodeFixedSubframe(
+  reader: BitReader,
+  channelSamples: FlacSampleArray,
+  curBlockSize: number,
+  subframeBps: number,
+  order: number
+): void {
+  if (order > 4 || order > curBlockSize) {
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+  }
+  for (let s = 0; s < order; s++) {
+    channelSamples[s] = reader.readSignedBits(subframeBps);
+  }
+  const { numPartitions, kBits, escapeK, partitionSize } = parseResidualHeader(reader, curBlockSize, order);
+  let sampleIdx = order;
+
+  for (let p = 0; p < numPartitions; p++) {
+    const k = reader.readBits(kBits);
+    const pSamples = partitionSize - (p === 0 ? order : 0);
+
+    if (k === escapeK) {
+      const rawBits = reader.readBits(5);
+      for (let s = 0; s < pSamples; s++) {
+        channelSamples[sampleIdx++] = rawBits > 0 ? reader.readSignedBits(rawBits) : 0;
+      }
+      continue;
+    }
+
+    const kScale = 1 << k;
+    const maxQ = Math.floor(MAX_RICE_UVAL / kScale);
+    for (let s = 0; s < pSamples; s++) {
+      const res = readRiceResidual(reader, k, kScale, maxQ);
+      let pred = 0;
+      if (order === 1) pred = channelSamples[sampleIdx - 1];
+      else if (order === 2) pred = 2 * channelSamples[sampleIdx - 1] - channelSamples[sampleIdx - 2];
+      else if (order === 3) pred = 3 * channelSamples[sampleIdx - 1] - 3 * channelSamples[sampleIdx - 2] + channelSamples[sampleIdx - 3];
+      else if (order === 4) pred = 4 * channelSamples[sampleIdx - 1] - 6 * channelSamples[sampleIdx - 2] + 4 * channelSamples[sampleIdx - 3] - channelSamples[sampleIdx - 4];
+      channelSamples[sampleIdx++] = res + pred;
+    }
+  }
+}
+
+interface LpcParams {
+  coeffs: Int32Array;
+  order: number;
+  qlpShift: number;
+  shiftScale: number;
+}
+
+function decodeLpcPartitionFast(
+  reader: BitReader,
+  channelSamples: FlacSampleArray,
+  startIdx: number,
+  pSamples: number,
+  k: number,
+  lpc: LpcParams
+): number {
+  const { coeffs, order, shiftScale } = lpc;
+  const kScale = 1 << k;
+  const maxQ = Math.floor(MAX_RICE_UVAL / kScale);
+  let sampleIdx = startIdx;
+  for (let s = 0; s < pSamples; s++) {
+    const res = readRiceResidual(reader, k, kScale, maxQ);
+    let sum = 0;
+    for (let j = 0; j < order; j++) {
+      sum += coeffs[j] * channelSamples[sampleIdx - 1 - j];
+    }
+    const pred = Math.floor(sum / shiftScale);
+    channelSamples[sampleIdx++] = res + pred;
+  }
+  return sampleIdx;
+}
+
+function decodeLpcPartitionBigInt(
+  reader: BitReader,
+  channelSamples: FlacSampleArray,
+  startIdx: number,
+  pSamples: number,
+  k: number,
+  lpc: LpcParams
+): number {
+  const { coeffs, order, qlpShift } = lpc;
+  const kScale = 1 << k;
+  const maxQ = Math.floor(MAX_RICE_UVAL / kScale);
+  let sampleIdx = startIdx;
+  for (let s = 0; s < pSamples; s++) {
+    const res = readRiceResidual(reader, k, kScale, maxQ);
+    let sum = 0n;
+    for (let j = 0; j < order; j++) {
+      sum += BigInt(coeffs[j]) * BigInt(channelSamples[sampleIdx - 1 - j]);
+    }
+    const pred = qlpShift >= 0 ? Number(sum >> BigInt(qlpShift)) : Number(sum << BigInt(-qlpShift));
+    channelSamples[sampleIdx++] = res + pred;
+  }
+  return sampleIdx;
+}
+
+function decodeLpcSubframe(
+  reader: BitReader,
+  channelSamples: FlacSampleArray,
+  curBlockSize: number,
+  subframeBps: number,
+  order: number
+): void {
+  if (order > curBlockSize) {
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+  }
+  for (let s = 0; s < order; s++) {
+    channelSamples[s] = reader.readSignedBits(subframeBps);
+  }
+
+  const qlpPrecisionRaw = reader.readBits(4);
+  if (qlpPrecisionRaw === 15) {
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+  }
+  const qlpPrecision = qlpPrecisionRaw + 1;
+  const qlpShift = reader.readSignedBits(5);
+  const coeffs = new Int32Array(order);
+  for (let j = 0; j < order; j++) {
+    coeffs[j] = reader.readSignedBits(qlpPrecision);
+  }
+
+  const { numPartitions, kBits, escapeK, partitionSize } = parseResidualHeader(reader, curBlockSize, order);
+  const useFastNumberLpc =
+    qlpShift >= 0 && subframeBps + qlpPrecision + Math.ceil(Math.log2(order + 1)) <= 52;
+  const lpc: LpcParams = {
+    coeffs,
+    order,
+    qlpShift,
+    shiftScale: useFastNumberLpc ? 2 ** qlpShift : 1,
+  };
+  let sampleIdx = order;
+
+  for (let p = 0; p < numPartitions; p++) {
+    const k = reader.readBits(kBits);
+    const pSamples = partitionSize - (p === 0 ? order : 0);
+
+    if (k === escapeK) {
+      const rawBits = reader.readBits(5);
+      for (let s = 0; s < pSamples; s++) {
+        const res = rawBits > 0 ? reader.readSignedBits(rawBits) : 0;
+        let pred = 0;
+        if (useFastNumberLpc) {
+          let sum = 0;
+          for (let j = 0; j < order; j++) {
+            sum += coeffs[j] * channelSamples[sampleIdx - 1 - j];
+          }
+          pred = Math.floor(sum / lpc.shiftScale);
+        } else {
+          let sum = 0n;
+          for (let j = 0; j < order; j++) {
+            sum += BigInt(coeffs[j]) * BigInt(channelSamples[sampleIdx - 1 - j]);
+          }
+          pred = qlpShift >= 0 ? Number(sum >> BigInt(qlpShift)) : Number(sum << BigInt(-qlpShift));
+        }
+        channelSamples[sampleIdx++] = res + pred;
+      }
+    } else if (useFastNumberLpc) {
+      sampleIdx = decodeLpcPartitionFast(reader, channelSamples, sampleIdx, pSamples, k, lpc);
+    } else {
+      sampleIdx = decodeLpcPartitionBigInt(reader, channelSamples, sampleIdx, pSamples, k, lpc);
+    }
+  }
+}
+
+function decodeFlacSubframe(
+  reader: BitReader,
+  curBlockSize: number,
+  subframeBps: number
+): FlacSampleArray {
+  const zeroBit = reader.readBit();
+  if (zeroBit !== 0) {
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+  }
+  const subframeType = reader.readBits(6);
+  const wastedFlag = reader.readBit();
+  let wastedBits = 0;
+  let activeBps = subframeBps;
+  if (wastedFlag === 1) {
+    wastedBits = reader.readUnaryZeroes(subframeBps) + 1;
+    activeBps -= wastedBits;
+  }
+  if (activeBps < 1 || activeBps > 33) {
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+  }
+
+  const channelSamples: FlacSampleArray =
+    activeBps >= 32 ? new Float64Array(curBlockSize) : new Int32Array(curBlockSize);
+
+  if (subframeType === 0) {
+    channelSamples.fill(reader.readSignedBits(activeBps));
+  } else if (subframeType === 1) {
+    for (let s = 0; s < curBlockSize; s++) {
+      channelSamples[s] = reader.readSignedBits(activeBps);
+    }
+  } else if ((subframeType & 0x38) === 0x08) {
+    decodeFixedSubframe(reader, channelSamples, curBlockSize, activeBps, subframeType & 0x07);
+  } else if ((subframeType & 0x20) !== 0) {
+    decodeLpcSubframe(reader, channelSamples, curBlockSize, activeBps, (subframeType & 0x1f) + 1);
+  } else {
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+  }
+
+  if (wastedBits > 0) {
+    const scale = 2 ** wastedBits;
+    for (let s = 0; s < curBlockSize; s++) {
+      channelSamples[s] *= scale;
+    }
+  }
+  return channelSamples;
+}
+
+function decorrelateFlacChannels(
+  channelData: FlacSampleArray[],
+  curBlockSize: number,
+  chCode: number
+): void {
+  if (chCode === 8) {
+    for (let s = 0; s < curBlockSize; s++) {
+      channelData[1][s] = channelData[0][s] - channelData[1][s];
+    }
+  } else if (chCode === 9) {
+    for (let s = 0; s < curBlockSize; s++) {
+      channelData[0][s] = channelData[1][s] + channelData[0][s];
+    }
+  } else if (chCode === 10) {
+    for (let s = 0; s < curBlockSize; s++) {
+      const mid = channelData[0][s];
+      const side = channelData[1][s];
+      const m2 = mid * 2 + (side & 1);
+      channelData[0][s] = Math.floor((m2 + side) / 2);
+      channelData[1][s] = Math.floor((m2 - side) / 2);
+    }
+  }
+}
+
 /** How far a sample of each source width moves to become 16 bits: right for wider samples, left for 8-bit ones. */
 const SAMPLE_SHIFT_TO_16_BITS: Readonly<Record<number, number>> = { 8: 8, 24: -8, 32: -16 };
 
 /** The samples of one frame, channel after channel for each instant, scaled to 16 bits and clamped. */
-function interleaveFrame(channelData: readonly Int32Array[], blockSize: number, bitsPerSample: number): Int16Array {
+function interleaveFrame(channelData: readonly FlacSampleArray[], blockSize: number, bitsPerSample: number): Int16Array {
   const channels = channelData.length;
   const shift = SAMPLE_SHIFT_TO_16_BITS[bitsPerSample] ?? 0;
   const frame = new Int16Array(blockSize * channels);
+  const scaleDown = shift < 0 ? 1 << -shift : 1;
+  const scaleUp = shift > 0 ? 1 << shift : 1;
   for (let s = 0; s < blockSize; s++) {
     for (let c = 0; c < channels; c++) {
       const raw = channelData[c][s];
-      const val = shift < 0 ? raw >> -shift : raw << shift;
+      const val = shift < 0 ? Math.floor(raw / scaleDown) : raw * scaleUp;
       frame[s * channels + c] = Math.max(-32768, Math.min(32767, val));
     }
   }
   return frame;
+}
+
+function resolveFlacBlockSize(reader: BitReader, bsCode: number, fallback: number): number {
+  if (bsCode === 1) return 192;
+  if (bsCode >= 2 && bsCode <= 5) return 576 * (1 << (bsCode - 2));
+  if (bsCode === 6) return reader.readBits(8) + 1;
+  if (bsCode === 7) return reader.readBits(16) + 1;
+  if (bsCode >= 8 && bsCode <= 15) return 256 * (1 << (bsCode - 8));
+  return fallback || 4096;
 }
 
 export function decodeFlac(buffer: Buffer): DecodedAudio {
@@ -450,7 +815,6 @@ export function decodeFlac(buffer: Buffer): DecodedAudio {
   let sampleRate = 44100;
   let channels = 2;
   let bitsPerSample = 16;
-  let totalSamples = 0;
   let minBlockSize = 4096;
 
   // 1. Parse Metadata Blocks
@@ -471,10 +835,6 @@ export function decodeFlac(buffer: Buffer): DecodedAudio {
       channels = ((buffer[dataOffset + 12] >> 1) & 0x07) + 1;
       bitsPerSample =
         (((buffer[dataOffset + 12] & 0x01) << 4) | (buffer[dataOffset + 13] >> 4)) + 1;
-      totalSamples = Number(
-        (BigInt(buffer[dataOffset + 13] & 0x0f) << 32n) |
-          BigInt(buffer.readUInt32BE(dataOffset + 14))
-      );
     }
 
     offset += 4 + blockLength;
@@ -489,10 +849,8 @@ export function decodeFlac(buffer: Buffer): DecodedAudio {
   let outLength = 0;
 
   while (!reader.isEof() && reader.getBytePos() < buffer.length - 4) {
-    // Scan for sync code: 14 bits 0x3FFE (0xFF, 0xF8)
     if (!seekFrameSync(reader, buffer)) break;
 
-    // Read frame header
     const sync = reader.readBits(14);
     if (sync !== 0x3ffe) {
       reader.alignToByte();
@@ -500,205 +858,39 @@ export function decodeFlac(buffer: Buffer): DecodedAudio {
     }
 
     reader.readBit(); // reserved (0)
-    reader.readBit(); // blocking strategy (0 = fixed, 1 = variable)
-
+    reader.readBit(); // blocking strategy
     const bsCode = reader.readBits(4);
     const srCode = reader.readBits(4);
     const chCode = reader.readBits(4);
-    const ssCode = reader.readBits(3);
+    reader.readBits(3); // sample size code
     reader.readBit(); // reserved (0)
-
     reader.readUtf8Number(); // frame or sample number
 
-    // Explicit block size if needed
-    let curBlockSize = minBlockSize || 4096;
-    if (bsCode === 1) curBlockSize = 192;
-    else if (bsCode >= 2 && bsCode <= 5) curBlockSize = 576 * (1 << (bsCode - 2));
-    else if (bsCode === 6) curBlockSize = reader.readBits(8) + 1;
-    else if (bsCode === 7) curBlockSize = reader.readBits(16) + 1;
-    else if (bsCode >= 8 && bsCode <= 15) curBlockSize = 256 * (1 << (bsCode - 8));
+    const curBlockSize = resolveFlacBlockSize(reader, bsCode, minBlockSize);
+    if (srCode === 12) sampleRate = reader.readBits(8) * 1000;
+    else if (srCode === 13) sampleRate = reader.readBits(16);
+    else if (srCode === 14) sampleRate = reader.readBits(16) * 10;
 
-    // Explicit sample rate if needed
-    if (srCode === 12) {
-      sampleRate = reader.readBits(8) * 1000;
-    } else if (srCode === 13) {
-      sampleRate = reader.readBits(16);
-    } else if (srCode === 14) {
-      sampleRate = reader.readBits(16) * 10;
-    }
+    reader.readBits(8); // Frame header CRC-8
 
-    // Frame header CRC-8
-    reader.readBits(8);
-
-    // Determine channel topology
     const chCount = chCode <= 7 ? chCode + 1 : 2;
     if (chCount > MAX_PURE_CHANNELS || chCount !== channels || outLength + curBlockSize * chCount > MAX_PURE_DECODED_SAMPLES) {
       throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
     }
-    const channelData: Int32Array[] = [];
 
-    // Decode Subframes
+    const channelData: FlacSampleArray[] = [];
     for (let c = 0; c < chCount; c++) {
       let subframeBps = bitsPerSample;
-      if (chCode === 8 && c === 1) subframeBps++; // Left/side: side requires +1 bit
-      else if (chCode === 9 && c === 0) subframeBps++; // Right/side: side requires +1 bit
-      else if (chCode === 10 && c === 1) subframeBps++; // Mid/side: side requires +1 bit
-
-      reader.readBit(); // zero bit
-      const subframeType = reader.readBits(6);
-      const wastedFlag = reader.readBit();
-      let wastedBits = 0;
-      if (wastedFlag === 1) {
-        wastedBits = reader.readUnary() + 1;
-        subframeBps -= wastedBits;
-      }
-      // readSignedBits shifts by the width: past 31 bits a 32-bit shift wraps, and no width at all cannot carry a sample.
-      if (subframeBps < 1 || subframeBps > 31) {
-        throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
-      }
-
-      const channelSamples = new Int32Array(curBlockSize);
-
-      if (subframeType === 0) {
-        // CONSTANT
-        const val = reader.readSignedBits(subframeBps);
-        channelSamples.fill(val);
-      } else if (subframeType === 1) {
-        // VERBATIM
-        for (let s = 0; s < curBlockSize; s++) {
-          channelSamples[s] = reader.readSignedBits(subframeBps);
-        }
-      } else if ((subframeType & 0x38) === 0x08) {
-        // FIXED Linear Prediction (orders 0..4)
-        const order = subframeType & 0x07;
-        for (let s = 0; s < order; s++) {
-          channelSamples[s] = reader.readSignedBits(subframeBps);
-        }
-
-        const residualMethod = reader.readBits(2);
-        const partitionOrder = reader.readBits(4);
-        const numPartitions = 1 << partitionOrder;
-        const kBits = residualMethod === 0 ? 4 : 5;
-        const escapeK = (1 << kBits) - 1;
-        const partitionSize = curBlockSize >> partitionOrder;
-        let sampleIdx = order;
-
-        for (let p = 0; p < numPartitions; p++) {
-          const k = reader.readBits(kBits);
-          const pSamples = partitionSize - (p === 0 ? order : 0);
-
-          if (k === escapeK) {
-            const rawBits = reader.readBits(5);
-            for (let s = 0; s < pSamples; s++) {
-              channelSamples[sampleIdx++] = reader.readSignedBits(rawBits);
-            }
-          } else {
-            for (let s = 0; s < pSamples; s++) {
-              const q = reader.readUnary();
-              const rem = k > 0 ? reader.readBits(k) : 0;
-              const u = (q << k) | rem;
-              const res = (u & 1) ? -Math.floor((u + 1) / 2) : Math.floor(u / 2);
-
-              let pred = 0;
-              if (order === 1) pred = channelSamples[sampleIdx - 1];
-              else if (order === 2) pred = 2 * channelSamples[sampleIdx - 1] - channelSamples[sampleIdx - 2];
-              else if (order === 3) pred = 3 * channelSamples[sampleIdx - 1] - 3 * channelSamples[sampleIdx - 2] + channelSamples[sampleIdx - 3];
-              else if (order === 4) pred = 4 * channelSamples[sampleIdx - 1] - 6 * channelSamples[sampleIdx - 2] + 4 * channelSamples[sampleIdx - 3] - channelSamples[sampleIdx - 4];
-
-              channelSamples[sampleIdx++] = res + pred;
-            }
-          }
-        }
-      } else if ((subframeType & 0x20) !== 0) {
-        // LPC (Linear Predictive Coding)
-        const order = (subframeType & 0x1f) + 1;
-        for (let s = 0; s < order; s++) {
-          channelSamples[s] = reader.readSignedBits(subframeBps);
-        }
-
-        const qlpPrecision = reader.readBits(4) + 1;
-        const qlpShift = reader.readSignedBits(5);
-        const coeffs = new Int32Array(order);
-        for (let j = 0; j < order; j++) {
-          coeffs[j] = reader.readSignedBits(qlpPrecision);
-        }
-
-        const residualMethod = reader.readBits(2);
-        const partitionOrder = reader.readBits(4);
-        const numPartitions = 1 << partitionOrder;
-        const kBits = residualMethod === 0 ? 4 : 5;
-        const escapeK = (1 << kBits) - 1;
-        const partitionSize = curBlockSize >> partitionOrder;
-        let sampleIdx = order;
-
-        for (let p = 0; p < numPartitions; p++) {
-          const k = reader.readBits(kBits);
-          const pSamples = partitionSize - (p === 0 ? order : 0);
-
-          if (k === escapeK) {
-            const rawBits = reader.readBits(5);
-            for (let s = 0; s < pSamples; s++) {
-              let sum = 0n;
-              for (let j = 0; j < order; j++) {
-                sum += BigInt(coeffs[j]) * BigInt(channelSamples[sampleIdx - 1 - j]);
-              }
-              const pred = qlpShift >= 0 ? Number(sum >> BigInt(qlpShift)) : Number(sum << BigInt(-qlpShift));
-              channelSamples[sampleIdx++] = reader.readSignedBits(rawBits) + pred;
-            }
-          } else {
-            for (let s = 0; s < pSamples; s++) {
-              const q = reader.readUnary();
-              const rem = k > 0 ? reader.readBits(k) : 0;
-              const u = (q << k) | rem;
-              const res = (u & 1) ? -Math.floor((u + 1) / 2) : Math.floor(u / 2);
-
-              let sum = 0n;
-              for (let j = 0; j < order; j++) {
-                sum += BigInt(coeffs[j]) * BigInt(channelSamples[sampleIdx - 1 - j]);
-              }
-              const pred = qlpShift >= 0 ? Number(sum >> BigInt(qlpShift)) : Number(sum << BigInt(-qlpShift));
-              channelSamples[sampleIdx++] = res + pred;
-            }
-          }
-        }
-      }
-
-      if (wastedBits > 0) {
-        for (let s = 0; s < curBlockSize; s++) {
-          channelSamples[s] <<= wastedBits;
-        }
-      }
-
-      channelData.push(channelSamples);
+      if ((chCode === 8 || chCode === 10) && c === 1) subframeBps++;
+      else if (chCode === 9 && c === 0) subframeBps++;
+      channelData.push(decodeFlacSubframe(reader, curBlockSize, subframeBps));
     }
 
-    // Channel decorrelation
-    if (chCode === 8) {
-      // Left / Side: ch0 = left, ch1 = side (left - right) -> right = left - side
-      for (let s = 0; s < curBlockSize; s++) {
-        channelData[1][s] = channelData[0][s] - channelData[1][s];
-      }
-    } else if (chCode === 9) {
-      // Right / Side: ch0 = side (left - right), ch1 = right -> left = right + side
-      for (let s = 0; s < curBlockSize; s++) {
-        channelData[0][s] = channelData[1][s] + channelData[0][s];
-      }
-    } else if (chCode === 10) {
-      // Mid / Side: ch0 = mid, ch1 = side
-      for (let s = 0; s < curBlockSize; s++) {
-        const mid = channelData[0][s];
-        const side = channelData[1][s];
-        const m2 = (mid * 2) | (side & 1);
-        channelData[0][s] = (m2 + side) >> 1; // left
-        channelData[1][s] = (m2 - side) >> 1; // right
-      }
-    }
-
+    decorrelateFlacChannels(channelData, curBlockSize, chCode);
     const frameSamples = interleaveFrame(channelData, curBlockSize, bitsPerSample);
     outChunks.push(frameSamples);
     outLength += frameSamples.length;
 
-    // Frame footer
     reader.alignToByte();
     reader.readBits(16); // CRC-16
   }
@@ -713,13 +905,12 @@ export function decodeFlac(buffer: Buffer): DecodedAudio {
     samples.set(chunk, written);
     written += chunk.length;
   }
-  const duration = samples.length / (channels * sampleRate);
   return {
     samples,
     sampleRate,
     channels,
     bitsPerSample: 16,
-    duration,
+    duration: samples.length / (channels * sampleRate),
     sourceBitsPerSample: bitsPerSample,
     sourceSampleFormat: 'int',
   };

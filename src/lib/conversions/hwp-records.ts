@@ -113,7 +113,7 @@ export function parseHwpRecords(buffer: Buffer): HwpRecord[] {
       );
     }
 
-    const payload = Buffer.from(buffer.subarray(offset, offset + size));
+    const payload = buffer.subarray(offset, offset + size);
     offset += size;
 
     records.push({ tagId, level, size, payload });

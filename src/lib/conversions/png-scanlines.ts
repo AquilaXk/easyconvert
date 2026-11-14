@@ -14,7 +14,7 @@ const FILTER_UP = 2;
 const FILTER_AVERAGE = 3;
 const FILTER_PAETH = 4;
 /** About this many bytes of rows are collected before they are handed to the deflater. */
-const PLANE_BATCH_BYTES = 256 * 1024;
+const PLANE_BATCH_BYTES = 64 * 1024;
 
 function paeth(left: number, above: number, aboveLeft: number): number {
   const estimate = left + above - aboveLeft;
@@ -117,19 +117,22 @@ class DeflatedPlane {
 
   async commitRow(): Promise<void> {
     this.used += this.rowBytes;
-    if (this.used === this.batchBytes) await this.flush();
+    if (this.used === this.batchBytes) await this.flush(true);
   }
 
-  private async flush(): Promise<void> {
+  private async flush(allocateNext: boolean): Promise<void> {
     const full = this.batch.subarray(0, this.used);
-    // The deflater reads the chunk later, so the next rows go to a new buffer.
-    this.batch = Buffer.allocUnsafe(this.batchBytes);
+    // The deflater reads the chunk later, so allocate the next batch only when more rows can follow.
+    if (allocateNext) this.batch = Buffer.allocUnsafe(this.batchBytes);
     this.used = 0;
-    if (full.length > 0 && !this.stream.write(full)) await once(this.stream, 'drain');
+    for (let offset = 0; offset < full.length; offset += PLANE_BATCH_BYTES) {
+      const chunk = full.subarray(offset, Math.min(full.length, offset + PLANE_BATCH_BYTES));
+      if (!this.stream.write(chunk)) await once(this.stream, 'drain');
+    }
   }
 
   async finish(): Promise<Buffer> {
-    await this.flush();
+    await this.flush(false);
     this.stream.end();
     return this.finished;
   }

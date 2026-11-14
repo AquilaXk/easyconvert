@@ -79,11 +79,11 @@ function malformed(reason: string): ConversionFailedError {
 }
 
 /** The PalmDOC LZ77 scheme: literals, runs of literals, back references and space-plus-letter pairs. */
-function decompressPalmDoc(record: Buffer): Buffer {
-  const out = Buffer.alloc(MOBI_MAX_RECORD_TEXT_BYTES);
+function decompressPalmDoc(record: Buffer, scratch?: Uint8Array): Uint8Array {
+  const out = scratch && scratch.length >= MOBI_MAX_RECORD_TEXT_BYTES ? scratch : new Uint8Array(MOBI_MAX_RECORD_TEXT_BYTES);
   let outLength = 0;
   const push = (byte: number) => {
-    if (outLength >= out.length) throw malformed('a text record expands beyond the record size limit');
+    if (outLength >= MOBI_MAX_RECORD_TEXT_BYTES) throw malformed('a text record expands beyond the record size limit');
     out[outLength] = byte;
     outLength += 1;
   };
@@ -110,7 +110,7 @@ function decompressPalmDoc(record: Buffer): Buffer {
       push(c ^ PALMDOC_SPACE_XOR);
     }
   }
-  return out.subarray(0, outLength);
+  return out.slice(0, outLength);
 }
 
 /** Length of one trailing entry, read backwards from the end of `data[0..end)`: a base-128 number whose last byte has the top bit set. */
@@ -218,12 +218,13 @@ function readMobiRecords(file: Buffer, db: PalmDb): MobiRawText {
       extraFlags = first.readUInt16BE(MOBI_EXTRA_FLAGS_OFFSET);
     }
   }
-  const parts: Buffer[] = [];
+  const parts: Uint8Array[] = [];
+  const scratch = compression === COMPRESSION_PALMDOC ? new Uint8Array(MOBI_MAX_RECORD_TEXT_BYTES) : undefined;
   let total = 0;
   for (let index = 1; index <= textRecords; index += 1) {
     const record = recordBytes(index);
     const body = record.subarray(0, record.length - trailingBytes(record, extraFlags));
-    const text = compression === COMPRESSION_PALMDOC ? decompressPalmDoc(body) : body;
+    const text = compression === COMPRESSION_PALMDOC ? decompressPalmDoc(body, scratch) : body;
     total += text.length;
     if (total > MOBI_MAX_TEXT_BYTES) throw malformed(`the text is longer than the ${MOBI_MAX_TEXT_BYTES} byte limit`);
     parts.push(text);

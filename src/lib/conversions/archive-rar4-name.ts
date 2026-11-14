@@ -1,5 +1,64 @@
+import { CorruptStreamError } from '../types';
+
 /** File header flag of RAR 4 (`LHD_UNICODE`): the name field holds the OEM name, a NUL and the encoded Unicode name. */
 export const RAR4_FILE_FLAG_UNICODE = 0x0200;
+
+const RAR4_FLAG_LARGE = 0x0100;
+const RAR4_FLAG_LONG_BLOCK = 0x8000;
+
+export interface ParsedRar4Block {
+  headType: number;
+  headFlags: number;
+  headSize: number;
+  packSize: number;
+  unpSize: number;
+  nameStart: number;
+  nextOffset: number;
+}
+
+/** Parses one RAR 4 block header, supporting 64-bit `LHD_LARGE` sizes and `LONG_BLOCK` `ADD_SIZE`. */
+export function readRar4BlockHeader(buffer: Buffer, offset: number): ParsedRar4Block | null {
+  if (offset + 7 > buffer.length) return null;
+  const headType = buffer[offset + 2];
+  const headFlags = buffer.readUInt16LE(offset + 3);
+  const headSize = buffer.readUInt16LE(offset + 5);
+  if (headSize < 7 || offset + headSize > buffer.length) return null;
+
+  if (headType === 0x74) {
+    if (offset + 32 > buffer.length || headSize < 32) return null;
+    const lowPackSize = buffer.readUInt32LE(offset + 7);
+    const lowUnpSize = buffer.readUInt32LE(offset + 11);
+    const isLarge = (headFlags & RAR4_FLAG_LARGE) !== 0;
+    let packSize = lowPackSize;
+    let unpSize = lowUnpSize;
+    if (isLarge) {
+      if (headSize < 40 || offset + 40 > buffer.length) {
+        throw new CorruptStreamError('Corrupted RAR4 archive: truncated LHD_LARGE header');
+      }
+      packSize = buffer.readUInt32LE(offset + 32) * 0x100000000 + lowPackSize;
+      unpSize = buffer.readUInt32LE(offset + 36) * 0x100000000 + lowUnpSize;
+    }
+    const nameStart = offset + (isLarge ? 40 : 32);
+    return { headType, headFlags, headSize, packSize, unpSize, nameStart, nextOffset: offset + headSize + packSize };
+  }
+
+  let addSize = 0;
+  if ((headFlags & RAR4_FLAG_LONG_BLOCK) !== 0) {
+    if (headSize < 11 || offset + 11 > buffer.length) {
+      throw new CorruptStreamError('Corrupted RAR4 archive: truncated LONG_BLOCK header');
+    }
+    addSize = buffer.readUInt32LE(offset + 7);
+  }
+  return {
+    headType,
+    headFlags,
+    headSize,
+    packSize: addSize,
+    unpSize: 0,
+    nameStart: offset + headSize,
+    nextOffset: offset + headSize + addSize,
+  };
+}
 
 const FLAG_BYTE_BITS = 8;
 const COMMAND_BITS = 2;

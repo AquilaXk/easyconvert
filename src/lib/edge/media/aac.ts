@@ -37,20 +37,32 @@ function refuse(message: string): EdgeUnsupportedError {
   return new EdgeUnsupportedError(`AAC: ${message}; the server engine converts this file.`);
 }
 
+const WORD_BITS = 32;
+const HIGH_SPLIT_BITS = 16;
+
 class BitReader {
-  private bit = 0;
+  private bytePos = 0;
+  private bitBuf = 0;
+  private bitCount = 0;
 
   constructor(private readonly bytes: Uint8Array) {}
 
   read(count: number): number {
-    let value = 0;
-    for (let i = 0; i < count; i++) {
-      const byte = this.bytes[Math.floor(this.bit / BITS_PER_BYTE)];
-      if (byte === undefined) throw refuse('the AudioSpecificConfig is truncated');
-      value = (value << 1) | ((byte >>> (BITS_PER_BYTE - 1 - (this.bit % BITS_PER_BYTE))) & 1);
-      this.bit++;
+    if (count <= 0) return 0;
+    if (count > 25) {
+      const loBits = count - HIGH_SPLIT_BITS;
+      const hi = this.read(HIGH_SPLIT_BITS);
+      const lo = this.read(loBits);
+      return ((hi << loBits) | lo) >>> 0;
     }
-    return value;
+    while (this.bitCount < count) {
+      if (this.bytePos >= this.bytes.length) throw refuse('the AudioSpecificConfig is truncated');
+      this.bitBuf = ((this.bitBuf << BITS_PER_BYTE) | this.bytes[this.bytePos++]) >>> 0;
+      this.bitCount += BITS_PER_BYTE;
+    }
+    this.bitCount -= count;
+    const mask = -1 >>> (WORD_BITS - count);
+    return (this.bitBuf >>> this.bitCount) & mask;
   }
 }
 

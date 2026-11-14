@@ -194,9 +194,23 @@ function isInertTrailingByte(byte: number): boolean {
   return byte === BYTE_CR || byte === BYTE_LF || byte === BYTE_SPACE || byte === BYTE_NUL;
 }
 
+const RTF_MAX_OUTPUT_CHARS = 64 * 1024 * 1024;
+
+function isPlainAsciiRunByte(byte: number): boolean {
+  return (
+    (byte >= FIRST_PRINTABLE_BYTE &&
+      byte < FIRST_NON_ASCII &&
+      byte !== BYTE_OPEN_BRACE &&
+      byte !== BYTE_CLOSE_BRACE &&
+      byte !== BYTE_BACKSLASH) ||
+    byte === BYTE_TAB
+  );
+}
+
 class RtfReader {
   private index = 0;
   private readonly output: string[] = [];
+  private outputChars = 0;
   private readonly stack: GroupState[] = [];
   private current: GroupState = { destination: 'text', unicodeSkip: DEFAULT_UNICODE_SKIP, font: 0, definingFont: -1 };
   private rootClosed = false;
@@ -244,6 +258,17 @@ class RtfReader {
         this.readControl();
       } else if (byte === BYTE_CR || byte === BYTE_LF) {
         this.index++;
+      } else if (this.fallbackToSkip === 0 && isPlainAsciiRunByte(byte)) {
+        const runStart = this.index;
+        let pos = runStart + 1;
+        while (pos < data.length && isPlainAsciiRunByte(data[pos])) pos++;
+        this.index = pos;
+        this.groupJustOpened = false;
+        this.starPending = false;
+        if (this.current.destination === 'text') {
+          this.flushPending();
+          this.pushOutput(data.toString('latin1', runStart, pos));
+        }
       } else {
         this.index++;
         this.acceptTextByte(byte);
@@ -491,6 +516,15 @@ class RtfReader {
     }
   }
 
+  private pushOutput(text: string): void {
+    if (text.length === 0) return;
+    this.outputChars += text.length;
+    if (this.outputChars > RTF_MAX_OUTPUT_CHARS) {
+      throw new LegacyOfficeFormatError(`${LABEL}: decoded text exceeds the ${RTF_MAX_OUTPUT_CHARS}-character limit.`);
+    }
+    this.output.push(text);
+  }
+
   /** `\uN`: a signed 16-bit UTF-16 code unit, followed by `\ucN` fallback characters that are skipped. */
   private appendUnicode(parameter: number | undefined): void {
     if (parameter === undefined) {
@@ -500,7 +534,7 @@ class RtfReader {
     if (code < 0 || code > MAX_UNICODE_CODE_UNIT) {
       throw new LegacyOfficeFormatError(`${LABEL}: \\u${parameter} is outside the 16-bit range.`);
     }
-    this.output.push(String.fromCharCode(code));
+    this.pushOutput(String.fromCharCode(code));
     this.fallbackToSkip = this.current.unicodeSkip;
   }
 
@@ -508,7 +542,7 @@ class RtfReader {
     if (this.output.length > 0 && this.output[this.output.length - 1] === '\t') {
       this.output[this.output.length - 1] = '\n';
     } else {
-      this.output.push('\n');
+      this.pushOutput('\n');
     }
   }
 
@@ -530,14 +564,14 @@ class RtfReader {
     if (this.current.destination !== 'text') return;
     if (byte < FIRST_NON_ASCII) {
       this.flushPending();
-      if (byte >= FIRST_PRINTABLE_BYTE || byte === BYTE_TAB) this.output.push(String.fromCharCode(byte));
+      if (byte >= FIRST_PRINTABLE_BYTE || byte === BYTE_TAB) this.pushOutput(String.fromCharCode(byte));
     } else {
       this.pushEightBit(byte);
     }
   }
 
   private emit(text: string): void {
-    if (this.current.destination === 'text') this.output.push(text);
+    if (this.current.destination === 'text') this.pushOutput(text);
   }
 
   private pushEightBit(byte: number): void {
@@ -552,7 +586,7 @@ class RtfReader {
     if (this.pending.length === 0) return;
     const bytes = Uint8Array.from(this.pending);
     this.pending = [];
-    this.output.push(this.decode(bytes, this.pendingCodepage));
+    this.pushOutput(this.decode(bytes, this.pendingCodepage));
   }
 
   private decode(bytes: Uint8Array, codepage: number): string {

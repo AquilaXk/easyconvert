@@ -265,15 +265,29 @@ export function readXrefTable(text: string, from: number, add: AddXrefEntry, rea
  * @throws XrefFormatError for a field width, a range or a row pdf.js rejects, after the rows before it were added.
  * @throws PdfStructureError for more rows than `maxRows`, or rows of no byte.
  */
+export function readBigUIntBE(data: Buffer, pos: number, width: number): number {
+  if (!Number.isInteger(width) || width < 0 || width > 8) {
+    throw new XrefFormatError(`Invalid XRef byteWidths: width ${width} out of range`);
+  }
+  if (pos < 0 || pos + width > data.length) {
+    throw new XrefFormatError('Invalid XRef byteWidths');
+  }
+  let value = 0;
+  for (let i = 0; i < width; i++) {
+    value = value * 256 + data[pos + i];
+  }
+  if (!Number.isSafeInteger(value)) {
+    throw new XrefFormatError('XRef integer field exceeds MAX_SAFE_INTEGER');
+  }
+  return value;
+}
+
 export function readXrefStreamRows(data: Buffer, widths: readonly unknown[], ranges: readonly unknown[], add: AddXrefEntry, maxRows: number): void {
   const [typeWidth, offsetWidth, genWidth] = widths;
   let pos = 0;
   const field = (width: number): number => {
-    let value = 0;
-    for (let byte = 0; byte < width; byte++) {
-      if (pos >= data.length) throw new XrefFormatError('Invalid XRef byteWidths');
-      value = (value << 8) | data[pos++];
-    }
+    const value = readBigUIntBE(data, pos, width);
+    pos += width;
     return value;
   };
   let rows = 0;

@@ -144,7 +144,7 @@ export function createDeterministicSyntheticStream(
 
       if (currentChunkSize >= 8) {
         chunk.writeUInt32BE(chunkSequence, 0);
-        chunk.writeUInt32BE(bytesRemaining & 0xffffffff, 4);
+        chunk.writeUInt32BE(bytesRemaining >>> 0, 4);
       }
 
       this.push(chunk);
@@ -544,6 +544,8 @@ export interface StreamToStorageOptions {
   sourceExtension: string;
   storage: IStorageBackend;
   partSizeBytes?: number; // default 5MB (5 * 1024 * 1024)
+  /** Maximum total payload bytes accepted by the stream (default 10 GiB). */
+  maxTotalBytes?: number;
   signal?: AbortSignal;
   /** The account the file belongs to: its key lies under `conversions/<id>/`, where the erasure of the account finds it. */
   ownerUserId?: string;
@@ -566,6 +568,17 @@ export type StreamPayloadInput =
   | Buffer
   | Uint8Array;
 
+const DEFAULT_MAX_STREAM_BYTES = 10 * 1024 * 1024 * 1024;
+const HEAP_SAMPLE_INTERVAL_BYTES = 16 * 1024 * 1024;
+
+function toZeroCopyBuffer(chunk: Uint8Array | Buffer | string): Buffer {
+  if (Buffer.isBuffer(chunk)) return chunk;
+  if (chunk instanceof Uint8Array) {
+    return Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+  }
+  return Buffer.from(chunk);
+}
+
 /**
  * Universal async chunk generator supporting both Node.js Readable streams and W3C ReadableStream.
  */
@@ -577,7 +590,7 @@ async function* getStreamChunkGenerator(
     return;
   }
   if (stream instanceof Uint8Array) {
-    yield Buffer.from(stream);
+    yield toZeroCopyBuffer(stream);
     return;
   }
   const candidate = stream as {
@@ -586,7 +599,7 @@ async function* getStreamChunkGenerator(
   };
   if (typeof candidate[Symbol.asyncIterator] === 'function') {
     for await (const chunk of candidate as AsyncIterable<Uint8Array | Buffer | string>) {
-      yield Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      yield toZeroCopyBuffer(chunk);
     }
   } else if (typeof candidate.getReader === 'function') {
     const reader = candidate.getReader();
@@ -595,7 +608,7 @@ async function* getStreamChunkGenerator(
         const { done, value } = await reader.read();
         if (done) break;
         if (value) {
-          yield Buffer.isBuffer(value) ? value : Buffer.from(value);
+          yield toZeroCopyBuffer(value);
         }
       }
     } finally {
@@ -621,6 +634,7 @@ export async function pipeStreamToStorageMultipart(
     sourceExtension,
     storage,
     partSizeBytes = 5 * 1024 * 1024, // 5MB standard multipart part size
+    maxTotalBytes = DEFAULT_MAX_STREAM_BYTES,
     signal,
     ownerUserId,
   } = options;
@@ -628,6 +642,7 @@ export async function pipeStreamToStorageMultipart(
   const startTime = Date.now();
   const initialHeap = process.memoryUsage().heapUsed;
   let peakHeap = initialHeap;
+  let nextHeapSampleBytes = HEAP_SAMPLE_INTERVAL_BYTES;
 
   const generator = getStreamChunkGenerator(stream);
 
@@ -642,8 +657,11 @@ export async function pipeStreamToStorageMultipart(
   }
 
   while (!firstResult.done && firstResult.value && firstResult.value.length > 0) {
-    initialChunks.push(firstResult.value);
     initialBytes += firstResult.value.length;
+    if (initialBytes > maxTotalBytes) {
+      throw new Error(`Stream payload exceeds maximum allowed size of ${maxTotalBytes} bytes.`);
+    }
+    initialChunks.push(firstResult.value);
     if (initialBytes >= SNIFF_HEADER_BYTES) {
       break;
     }
@@ -662,40 +680,63 @@ export async function pipeStreamToStorageMultipart(
   const uploadId = init.uploadId;
 
   const hasher = crypto.createHash('sha256');
-  hasher.update(initialBuffer);
-
-  let totalBytes = initialBuffer.length;
+  let totalBytes = 0;
   let partNumber = 1;
-  let currentPartChunks: Buffer[] = [initialBuffer];
-  let currentPartBytes = initialBuffer.length;
+  let currentPartChunks: Buffer[] = [];
+  let currentPartBytes = 0;
 
-  try {
-    for await (const chunk of generator) {
-      if (signal?.aborted) {
-        throw new Error('Streaming upload aborted by client signal.');
-      }
-
-      hasher.update(chunk);
-      totalBytes += chunk.length;
-      currentPartChunks.push(chunk);
-      currentPartBytes += chunk.length;
-
+  const sampleHeapIfDue = () => {
+    if (totalBytes >= nextHeapSampleBytes) {
       const curHeap = process.memoryUsage().heapUsed;
       if (curHeap > peakHeap) {
         peakHeap = curHeap;
       }
+      nextHeapSampleBytes = totalBytes + HEAP_SAMPLE_INTERVAL_BYTES;
+    }
+  };
 
-      // When accumulated chunks reach or exceed partSizeBytes (5MB), upload part
-      if (currentPartBytes >= partSizeBytes) {
+  const appendChunkAndFlushParts = async (chunk: Buffer): Promise<void> => {
+    totalBytes += chunk.length;
+    if (totalBytes > maxTotalBytes) {
+      throw new Error(`Stream payload exceeds maximum allowed size of ${maxTotalBytes} bytes.`);
+    }
+    hasher.update(chunk);
+    sampleHeapIfDue();
+
+    let offset = 0;
+    const needed = partSizeBytes - currentPartBytes;
+    if (chunk.length >= needed) {
+      if (needed > 0) {
+        currentPartChunks.push(chunk.subarray(0, needed));
         const partBuffer = currentPartChunks.length === 1
           ? currentPartChunks[0]
           : Buffer.concat(currentPartChunks);
         await storage.uploadPart(uploadId, partNumber++, partBuffer);
-
-        // Clear references immediately to keep heap consumption bounded to O(1)
         currentPartChunks = [];
         currentPartBytes = 0;
+        offset = needed;
       }
+      while (chunk.length - offset >= partSizeBytes) {
+        await storage.uploadPart(uploadId, partNumber++, chunk.subarray(offset, offset + partSizeBytes));
+        offset += partSizeBytes;
+      }
+    }
+    if (offset < chunk.length) {
+      const tail = offset === 0 ? chunk : chunk.subarray(offset);
+      currentPartChunks.push(tail);
+      currentPartBytes += tail.length;
+    }
+  };
+
+  try {
+    await appendChunkAndFlushParts(initialBuffer);
+
+    for await (const chunk of generator) {
+      if (signal?.aborted) {
+        throw new Error('Streaming upload aborted by client signal.');
+      }
+      if (chunk.length === 0) continue;
+      await appendChunkAndFlushParts(chunk);
     }
 
     // Upload remaining trailing chunk if any, or if no parts were uploaded yet
@@ -706,6 +747,11 @@ export async function pipeStreamToStorageMultipart(
       await storage.uploadPart(uploadId, partNumber++, finalPartBuffer);
       currentPartChunks = [];
       currentPartBytes = 0;
+    }
+
+    const finalHeap = process.memoryUsage().heapUsed;
+    if (finalHeap > peakHeap) {
+      peakHeap = finalHeap;
     }
 
     const completed = await storage.completeMultipartUpload(uploadId);

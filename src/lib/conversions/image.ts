@@ -38,6 +38,7 @@ import { decodeLinearBt709 } from './sdr-linear';
 import { readStillCicp } from './still-cicp';
 import { pipelineFromBitmap, pipelineFromIcon } from './bitmap-pipeline';
 import { buildOpenXpsPackage, withPngDensity96 } from './openxps';
+import { decodeLosslessJpegStrip, readIfdNumberArray, readIfdRationalArray } from './image-lossless-jpeg';
 import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, type PixelBudget, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, asInputPixelLimitError, openInputImage, openLimitedSharp, resizedDimensions, rethrowInputPixelLimit } from './image-input-limits';
 import {
   applyOklabQuantizationAndDither,
@@ -690,139 +691,7 @@ export function demosaicBayerCfa(sensor: BayerSensorData): {
   return demosaicAmazeBayerCfa(sensor);
 }
 
-/** Refuses a lossless JPEG frame over the input limit, the RAW sensor budget, or the strip or tile that holds it. */
-function assertLosslessFrameFits(width: number, height: number, expected?: { width: number; height: number }): void {
-  assertInputPixels(width, height);
-  assertPixelBudget(width, height, RAW_SENSOR_PIXEL_BUDGET);
-  if (expected && (width > expected.width || height > expected.height)) {
-    throw new InvalidRawSensorError(
-      `Lossless JPEG frame of ${width}x${height} pixels is larger than the ${expected.width}x${expected.height} strip it is stored in.`
-    );
-  }
-}
-
-function buildLosslessHuffmanLut(huffmanCounts: number[], huffmanSymbols: number[]): Int32Array {
-  const huffLut = new Int32Array(65536).fill(-1);
-  let symbolIdx = 0, currentCode = 0;
-  for (let len = 1; len <= 16; len++) {
-    const count = huffmanCounts[len - 1] || 0;
-    const shift = 16 - len, span = 1 << shift;
-    for (let c = 0; c < count; c++) {
-      const entry = (len << 8) | ((huffmanSymbols[symbolIdx++] ?? 0) & 0xff);
-      const baseIdx = (currentCode << shift) & 0xffff;
-      huffLut.fill(entry, baseIdx, Math.min(65536, baseIdx + span));
-      currentCode++;
-    }
-    currentCode <<= 1;
-  }
-  return huffLut;
-}
-
-/**
- * Decodes a single-component lossless JPEG (ITU-T T.81 SOF3) sensor strip. The frame header is untrusted: its
- * size is checked against the input limit and the RAW sensor budget, and, when the container says how large the
- * strip or tile is (`expected`), against that size, before any sample is allocated.
- */
-export function decodeLosslessJpegStrip(
-  strip: Buffer | Uint8Array,
-  expected?: { width: number; height: number }
-): { width: number; height: number; data: Uint16Array; bpp: number } | null {
-  if (strip.length < 16) return null;
-  const buf = Buffer.isBuffer(strip) ? strip : Buffer.from(strip);
-  if (buf[0] !== 0xff || buf[1] !== 0xd8) return null;
-
-  let pos = 2, width = 0, height = 0, bpp = 16, predictor = 1, pointTransform = 0, scanStart = -1;
-  let huffmanCounts: number[] = [], huffmanSymbols: number[] = [];
-
-  while (pos < buf.length - 2) {
-    if (buf[pos] !== 0xff) { pos++; continue; }
-    const marker = buf[pos + 1];
-    pos += 2;
-    if (marker === 0xd8) continue;
-    if (marker === 0xd9) break;
-
-    const segLen = buf.readUInt16BE(pos);
-    const segDataStart = pos + 2;
-    if (marker === 0xc3) {
-      bpp = buf[segDataStart];
-      height = buf.readUInt16BE(segDataStart + 1);
-      width = buf.readUInt16BE(segDataStart + 3);
-    } else if (marker === 0xc4) {
-      const dhtPos = segDataStart + 1;
-      huffmanCounts = Array.from(buf.subarray(dhtPos, dhtPos + 16));
-      const totalSymbols = huffmanCounts.reduce((a, b) => a + b, 0);
-      huffmanSymbols = Array.from(buf.subarray(dhtPos + 16, dhtPos + 16 + totalSymbols));
-    } else if (marker === 0xda) {
-      const predPos = segDataStart + 1 + buf[segDataStart] * 2;
-      predictor = buf[predPos];
-      pointTransform = buf[predPos + 1] || 0;
-      scanStart = pos + segLen;
-      break;
-    }
-    pos += segLen;
-  }
-
-  if (width <= 0 || height <= 0 || scanStart < 0 || scanStart >= buf.length) return null;
-  assertLosslessFrameFits(width, height, expected);
-
-  const huffLut = buildLosslessHuffmanLut(huffmanCounts, huffmanSymbols);
-  let bitBuf = 0, bitCnt = 0, bytePtr = scanStart;
-  const bufLen = buf.length;
-
-  const ensureBits = (): void => {
-    bitBuf &= (1 << bitCnt) - 1;
-    while (bitCnt <= 16) {
-      let b = 0;
-      if (bytePtr < bufLen) {
-        b = buf[bytePtr++];
-        if (b === 0xff && bytePtr < bufLen && buf[bytePtr] === 0x00) bytePtr++;
-      }
-      bitBuf = (bitBuf << 8) | b;
-      bitCnt += 8;
-    }
-  };
-
-  const outputData = new Uint16Array(width * height);
-  const maxVal = (1 << bpp) - 1;
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      if (bitCnt < 16) ensureBits();
-      const entry = huffLut[(bitBuf >>> (bitCnt - 16)) & 0xffff];
-      const cat = entry >= 0 ? (bitCnt -= entry >>> 8, entry & 0xff) : (bitCnt -= 1, 0);
-
-      let diff = 0;
-      if (cat > 0) {
-        if (bitCnt < cat) ensureBits();
-        const rawBits = (bitBuf >>> (bitCnt - cat)) & ((1 << cat) - 1);
-        bitCnt -= cat;
-        diff = rawBits < 1 << (cat - 1) ? rawBits - ((1 << cat) - 1) : rawBits;
-      }
-
-      let predVal = 0;
-      if (x === 0 && y === 0) predVal = 1 << (bpp - 1 - pointTransform);
-      else if (y === 0) predVal = outputData[x - 1];
-      else if (x === 0) predVal = outputData[(y - 1) * width];
-      else {
-        const a = outputData[y * width + (x - 1)];
-        const b = outputData[(y - 1) * width + x];
-        const c = outputData[(y - 1) * width + (x - 1)];
-        if (predictor === 1) predVal = a;
-        else if (predictor === 2) predVal = b;
-        else if (predictor === 3) predVal = c;
-        else if (predictor === 4) predVal = a + b - c;
-        else if (predictor === 5) predVal = a + ((b - c) >> 1);
-        else if (predictor === 6) predVal = b + ((a - c) >> 1);
-        else if (predictor === 7) predVal = (a + b) >> 1;
-        else predVal = a;
-      }
-
-      outputData[y * width + x] = (predVal + diff) & maxVal;
-    }
-  }
-
-  return { width, height, data: outputData, bpp };
-}
+export { decodeLosslessJpegStrip };
 
 /** Slack, in bytes, allowed above the sensor size when a deflate strip is inflated (predictor rows, padding). */
 const SENSOR_INFLATE_SLACK_BYTES = 1024 * 1024;
@@ -923,62 +792,26 @@ export function decodeRawBayerSensor(
             return read32(valOff);
           };
 
-          const getNumberArray = (tagType: number, tagCount: number, offsetVal: number): number[] => {
-            const arr: number[] = [];
-            if (tagCount <= 0) return arr;
-            const itemSize = tagType === 3 ? 2 : tagType === 4 ? 4 : tagType === 1 ? 1 : 4;
-            const dataOffset = tagCount * itemSize > 4 ? read32(offsetVal) : offsetVal;
-            for (let idx = 0; idx < tagCount; idx++) {
-              const itemPos = dataOffset + idx * itemSize;
-              if (itemPos + itemSize > buffer.length) break;
-              if (tagType === 3) {
-                arr.push(read16(itemPos));
-              } else if (tagType === 4) {
-                arr.push(read32(itemPos));
-              } else if (tagType === 1) {
-                arr.push(buffer.readUInt8(itemPos));
-              } else {
-                arr.push(read32(itemPos));
-              }
-            }
-            return arr;
-          };
+          const MAX_IFD_STRIP_COUNT = 65_536;
+          const getNumberArray = (tagType: number, tagCount: number, offsetVal: number, maxCount = MAX_IFD_STRIP_COUNT): number[] =>
+            readIfdNumberArray(buffer, isLE, tagType, tagCount, offsetVal, maxCount);
 
-          const getRationalArray = (tagType: number, tagCount: number, offsetVal: number): number[] => {
-            const arr: number[] = [];
-            if (tagCount <= 0) return arr;
-            const itemSize = 8;
-            const dataOffset = tagCount * itemSize > 4 ? read32(offsetVal) : offsetVal;
-            for (let idx = 0; idx < tagCount; idx++) {
-              const itemPos = dataOffset + idx * itemSize;
-              if (itemPos + itemSize > buffer.length) break;
-              let num: number;
-              let den: number;
-              if (tagType === 10) {
-                num = isLE ? buffer.readInt32LE(itemPos) : buffer.readInt32BE(itemPos);
-                den = isLE ? buffer.readInt32LE(itemPos + 4) : buffer.readInt32BE(itemPos + 4);
-              } else {
-                num = isLE ? buffer.readUInt32LE(itemPos) : buffer.readUInt32BE(itemPos);
-                den = isLE ? buffer.readUInt32LE(itemPos + 4) : buffer.readUInt32BE(itemPos + 4);
-              }
-              arr.push(den !== 0 ? num / den : num);
-            }
-            return arr;
-          };
+          const getRationalArray = (tagType: number, tagCount: number, offsetVal: number, maxCount = 256): number[] =>
+            readIfdRationalArray(buffer, isLE, tagType, tagCount, offsetVal, maxCount);
 
           switch (tag) {
             case 256: data.width = getScalar(); break;
             case 257: data.height = getScalar(); break;
             case 258: data.bitsPerSample = getScalar(); break;
             case 259: data.compression = getScalar(); break;
-            case 273: data.stripOffsets = getNumberArray(type, count, valOff); break;
+            case 273: data.stripOffsets = getNumberArray(type, count, valOff, MAX_IFD_STRIP_COUNT); break;
             case 278: data.rowsPerStrip = getScalar(); break;
-            case 279: data.stripByteCounts = getNumberArray(type, count, valOff); break;
+            case 279: data.stripByteCounts = getNumberArray(type, count, valOff, MAX_IFD_STRIP_COUNT); break;
             case 322: data.tileWidth = getScalar(); break;
             case 323: data.tileLength = getScalar(); break;
-            case 324: data.tileOffsets = getNumberArray(type, count, valOff); break;
-            case 325: data.tileByteCounts = getNumberArray(type, count, valOff); break;
-            case 330: data.subIfds = getNumberArray(type, count, valOff); break;
+            case 324: data.tileOffsets = getNumberArray(type, count, valOff, MAX_IFD_STRIP_COUNT); break;
+            case 325: data.tileByteCounts = getNumberArray(type, count, valOff, MAX_IFD_STRIP_COUNT); break;
+            case 330: data.subIfds = getNumberArray(type, count, valOff, 256); break;
             case 33422: {
               let p = buffer.subarray(valOff, valOff + 4);
               const isBayer = (b: Uint8Array) =>
@@ -1000,7 +833,7 @@ export function decodeRawBayerSensor(
               break;
             }
             case 50710: { // DNG ActiveArea [top, left, bottom, right]
-              const nums = getNumberArray(type, count, valOff);
+              const nums = getNumberArray(type, count, valOff, 16);
               if (nums.length >= 4) {
                 data.activeArea = [nums[0], nums[1], nums[2], nums[3]];
               }
@@ -1008,11 +841,11 @@ export function decodeRawBayerSensor(
             }
             case 50714: { // DNG BlackLevel
               if (type === 5 || type === 10) {
-                const rationals = getRationalArray(type, count, valOff);
+                const rationals = getRationalArray(type, count, valOff, 256);
                 if (rationals.length === 1) data.blackLevel = rationals[0];
                 else if (rationals.length > 1) data.blackLevel = rationals;
               } else {
-                const nums = getNumberArray(type, count, valOff);
+                const nums = getNumberArray(type, count, valOff, 256);
                 if (nums.length === 1) data.blackLevel = nums[0];
                 else if (nums.length > 1) data.blackLevel = nums;
               }
@@ -1024,54 +857,54 @@ export function decodeRawBayerSensor(
             }
             case 50719: { // DNG DefaultCropOrigin [x, y]
               if (type === 5 || type === 10) {
-                const r = getRationalArray(type, count, valOff);
+                const r = getRationalArray(type, count, valOff, 16);
                 if (r.length >= 2) data.defaultCropOrigin = [Math.round(r[0]), Math.round(r[1])];
               } else {
-                const nums = getNumberArray(type, count, valOff);
+                const nums = getNumberArray(type, count, valOff, 16);
                 if (nums.length >= 2) data.defaultCropOrigin = [nums[0], nums[1]];
               }
               break;
             }
             case 50720: { // DNG DefaultCropSize [width, height]
               if (type === 5 || type === 10) {
-                const r = getRationalArray(type, count, valOff);
+                const r = getRationalArray(type, count, valOff, 16);
                 if (r.length >= 2) data.defaultCropSize = [Math.round(r[0]), Math.round(r[1])];
               } else {
-                const nums = getNumberArray(type, count, valOff);
+                const nums = getNumberArray(type, count, valOff, 16);
                 if (nums.length >= 2) data.defaultCropSize = [nums[0], nums[1]];
               }
               break;
             }
             case 50721: { // DNG ColorMatrix1
-              const rationals = getRationalArray(type, count, valOff);
+              const rationals = getRationalArray(type, count, valOff, 64);
               if (rationals.length >= 9) {
                 data.colorMatrix1 = rationals.slice(0, 9) as [number, number, number, number, number, number, number, number, number];
               }
               break;
             }
             case 50722: { // DNG ColorMatrix2
-              const rationals = getRationalArray(type, count, valOff);
+              const rationals = getRationalArray(type, count, valOff, 64);
               if (rationals.length >= 9) {
                 data.colorMatrix2 = rationals.slice(0, 9) as [number, number, number, number, number, number, number, number, number];
               }
               break;
             }
             case 50728: { // DNG AsShotNeutral
-              const rationals = getRationalArray(type, count, valOff);
+              const rationals = getRationalArray(type, count, valOff, 16);
               if (rationals.length >= 3) {
                 data.asShotNeutral = [rationals[0], rationals[1], rationals[2]];
               }
               break;
             }
             case 50738: { // DNG ForwardMatrix1 (maps camera coordinates to XYZ D50)
-              const rationals = getRationalArray(type, count, valOff);
+              const rationals = getRationalArray(type, count, valOff, 64);
               if (rationals.length >= 9) {
                 data.forwardMatrix1 = rationals.slice(0, 9) as [number, number, number, number, number, number, number, number, number];
               }
               break;
             }
             case 50739: { // DNG ForwardMatrix2 (maps camera coordinates to XYZ D50)
-              const rationals = getRationalArray(type, count, valOff);
+              const rationals = getRationalArray(type, count, valOff, 64);
               if (rationals.length >= 9) {
                 data.forwardMatrix2 = rationals.slice(0, 9) as [number, number, number, number, number, number, number, number, number];
               }

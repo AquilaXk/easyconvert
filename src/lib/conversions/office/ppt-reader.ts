@@ -309,8 +309,7 @@ interface TextContext {
 }
 
 /** The symbol font of the character at `index`: the run's symbol typeface, else its typeface, else none. */
-function symbolFontAt(block: TextBlock, index: number, fontNames: readonly string[]): string | undefined {
-  const run = block.fontRuns?.find((candidate) => index >= candidate.start && index < candidate.end);
+function symbolFontAtRun(run: CharacterFontRun | undefined, fontNames: readonly string[]): string | undefined {
   const ref = run?.symbolFontRef ?? run?.fontRef;
   return ref === undefined ? undefined : fontNames[ref];
 }
@@ -319,6 +318,8 @@ function symbolFontAt(block: TextBlock, index: number, fontNames: readonly strin
 function paragraphsOf(block: TextBlock, context: TextContext): string[] {
   const skip = new Set(block.metaPositions);
   const paragraphs: string[] = [];
+  const fontRuns = block.fontRuns;
+  let runIdx = 0;
   let line = '';
   for (let i = 0; i < block.text.length; i++) {
     const ch = block.text[i];
@@ -328,7 +329,12 @@ function paragraphsOf(block: TextBlock, context: TextContext): string[] {
       paragraphs.push(line);
       line = '';
     } else if (isSymbolFontPrivateUse(code)) {
-      line += context.symbols.character(symbolFontAt(block, i, context.fontNames), code);
+      while (fontRuns && runIdx < fontRuns.length && fontRuns[runIdx].end <= i) {
+        runIdx++;
+      }
+      const candidate = fontRuns && runIdx < fontRuns.length ? fontRuns[runIdx] : undefined;
+      const run = candidate && i >= candidate.start && i < candidate.end ? candidate : undefined;
+      line += context.symbols.character(symbolFontAtRun(run, context.fontNames), code);
     } else if (code === CH_TAB || code >= FIRST_PRINTABLE) {
       line += ch;
     }

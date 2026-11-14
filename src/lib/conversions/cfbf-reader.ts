@@ -296,6 +296,9 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
   if (!CFBF_SECTOR_SHIFTS.has(sectorShift)) {
     throw new CorruptStreamError(`Corrupt CFBF container: sector shift ${sectorShift} is neither 9 nor 12.`);
   }
+  if (miniSectorShift !== CFBF_MINI_SECTOR_SHIFT) {
+    throw new CorruptStreamError(`Corrupt CFBF container: mini sector shift ${miniSectorShift} is not ${CFBF_MINI_SECTOR_SHIFT}.`);
+  }
   const sectorSize = 1 << sectorShift; // Typically 512
   const miniSectorSize = 1 << miniSectorShift; // Typically 64
 
@@ -419,9 +422,6 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
   let miniFat: Uint32Array = new Uint32Array(0);
   let miniStreamBuffer: Buffer = Buffer.alloc(0);
   if (needsMiniStream) {
-    if (miniSectorShift !== CFBF_MINI_SECTOR_SHIFT) {
-      throw new CorruptStreamError(`Corrupt CFBF container: mini sector shift ${miniSectorShift} is not ${CFBF_MINI_SECTOR_SHIFT}.`);
-    }
     if (miniFatSectorCount > 0) {
       const addressableMiniSectors = Math.ceil(Math.min(rootEntry.streamSize, fileSectorBytes) / miniSectorSize);
       miniFat = sectorReader.readTable(firstMiniFatSector, Math.min(addressableMiniSectors, miniFatSectorCount * fatEntriesPerSector), 'structure');

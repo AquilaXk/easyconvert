@@ -568,7 +568,8 @@ function decodeZstdFrames(inputBuffer: Buffer, dictionary: ZstdParsedDictionary 
       if (ratioGuarded && exceedsZstdRatioGuard(out.length + declaredSize, src.length)) {
         throw bombRatioError(out.length + declaredSize, src.length);
       }
-      out.reserve(declaredSize + dictionaryLength);
+      out.projectedTotal = out.length + declaredSize + dictionaryLength;
+      out.reserve(declaredSize + dictionaryLength, src.length);
     }
 
     // The dictionary content sits right before the frame's output so offsets reach it directly;

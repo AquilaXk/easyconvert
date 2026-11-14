@@ -251,7 +251,7 @@
     "rule": "complexity",
     "function": "inspectZipBuffer",
     "count": 1,
-    "maxValue": 44
+    "maxValue": 35
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -279,7 +279,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 4035
+    "maxValue": 3980
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -600,13 +600,6 @@
   {
     "file": "src/lib/conversions/image.ts",
     "rule": "complexity",
-    "function": "decodeLosslessJpegStrip",
-    "count": 1,
-    "maxValue": 35
-  },
-  {
-    "file": "src/lib/conversions/image.ts",
-    "rule": "complexity",
     "function": "decodeRawBayerSensor",
     "count": 1,
     "maxValue": 110
@@ -644,25 +637,19 @@
     "rule": "max-lines-per-function",
     "function": "decodeRawBayerSensor",
     "count": 1,
-    "maxValue": 501
+    "maxValue": 465
   },
   {
     "file": "src/lib/conversions/image.ts",
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2535
+    "maxValue": 2368
   },
   {
     "file": "src/lib/conversions/image.ts",
     "rule": "no-nested-ternary",
     "function": "convertImage",
-    "count": 2
-  },
-  {
-    "file": "src/lib/conversions/image.ts",
-    "rule": "no-nested-ternary",
-    "function": "getNumberArray",
     "count": 2
   },
   {
@@ -697,7 +684,7 @@
     "rule": "max-lines-per-function",
     "function": "decode",
     "count": 1,
-    "maxValue": 398
+    "maxValue": 397
   },
   {
     "file": "src/lib/conversions/lzma-encoder-core.ts",
@@ -737,20 +724,6 @@
     "function": "decodeAudioBuffer",
     "count": 1,
     "maxValue": 45
-  },
-  {
-    "file": "src/lib/conversions/media-decoder.ts",
-    "rule": "complexity",
-    "function": "decodeFlac",
-    "count": 1,
-    "maxValue": 80
-  },
-  {
-    "file": "src/lib/conversions/media-decoder.ts",
-    "rule": "complexity",
-    "function": "decodeWav",
-    "count": 1,
-    "maxValue": 32
   },
   {
     "file": "src/lib/conversions/media-ffmpeg-args.ts",
@@ -1470,13 +1443,6 @@
     "function": "multiPeriodLoop",
     "count": 1,
     "maxValue": 8
-  },
-  {
-    "file": "src/lib/conversions/xz-format.ts",
-    "rule": "complexity",
-    "function": "unpackXzStream",
-    "count": 1,
-    "maxValue": 36
   },
   {
     "file": "src/lib/conversions/zip-writer.ts",

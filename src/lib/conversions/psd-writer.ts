@@ -94,8 +94,8 @@ function packBitsBound(length: number): number {
  * Encodes `row` as PackBits into `out` and returns the byte count written. A run of 2 or more equal bytes is
  * `257 - run` followed by the byte; other bytes are copied as literal runs of up to 128 (count byte `n - 1`).
  */
-function packBitsRow(row: Uint8Array, out: Uint8Array): number {
-  let written = 0;
+function packBitsRow(row: Uint8Array, out: Uint8Array, outOffset = 0): number {
+  let written = outOffset;
   let i = 0;
   const length = row.length;
   while (i < length) {
@@ -114,7 +114,7 @@ function packBitsRow(row: Uint8Array, out: Uint8Array): number {
     out.set(row.subarray(start, i), written);
     written += i - start;
   }
-  return written;
+  return written - outOffset;
 }
 
 /** Big-endian planes of one channel, rows stacked: plane byte (y, x*bytesPerSample + k). */
@@ -178,15 +178,23 @@ interface PackedChannel {
 
 function packChannel(plane: Uint8Array, width: number, height: number, bytesPerSample: number): PackedChannel {
   const rowBytes = width * bytesPerSample;
-  const scratch = new Uint8Array(packBitsBound(rowBytes));
+  const rowBound = packBitsBound(rowBytes);
   const counts = Buffer.alloc(height * BYTES_PER_U16);
-  const chunks: Buffer[] = [];
+  let out = new Uint8Array(Math.max(rowBound, height * rowBytes + rowBound));
+  let totalWritten = 0;
   for (let y = 0; y < height; y += 1) {
-    const written = packBitsRow(plane.subarray(y * rowBytes, (y + 1) * rowBytes), scratch);
+    if (totalWritten + rowBound > out.length) {
+      let nextCap = out.length * 2;
+      while (nextCap < totalWritten + rowBound) nextCap *= 2;
+      const next = new Uint8Array(nextCap);
+      next.set(out.subarray(0, totalWritten));
+      out = next;
+    }
+    const written = packBitsRow(plane.subarray(y * rowBytes, (y + 1) * rowBytes), out, totalWritten);
     counts.writeUInt16BE(written, y * BYTES_PER_U16);
-    chunks.push(Buffer.from(scratch.subarray(0, written)));
+    totalWritten += written;
   }
-  return { counts, rows: Buffer.concat(chunks) };
+  return { counts, rows: Buffer.from(out.buffer, out.byteOffset, totalWritten) };
 }
 
 function u16(value: number): Buffer {
