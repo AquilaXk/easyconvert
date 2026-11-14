@@ -4,7 +4,8 @@
  * Implements strict sanitization against SVG-based Stored XSS, XXE, and script injection vectors:
  * - Strips DOCTYPE declarations and external entity definitions.
  * - Strips <script>, <foreignObject>, <iframe>, <object>, <embed> tags (both self-closing and block).
- * - Strips inline event handlers (onload, onclick, onerror, on*).
+ * - Strips inline event handlers (onload, onclick, onerror, on*) and the form attributes action and formaction.
+ * - Strips every processing instruction but the XML declaration at the start (<?xml-stylesheet?> loads a style sheet).
  * - Sanitizes dangerous URI schemes (javascript:, vbscript:, data:text/html) in href/xlink:href/src attributes.
  * - Preserves authentic vector geometry (path, rect, circle, g, svg, text, defs, use, etc.).
  *
@@ -47,6 +48,15 @@ const DANGEROUS_URI_PREFIXES = [
   '//',
 ] as const;
 
+/**
+ * The only `data:` URIs a link may carry (after normalization): a raster picture. Any other type is active content or markup that a
+ * viewer may parse (`data:text/xml`, `data:application/xhtml+xml`), and an `<image>` takes an embedded SVG through its own path.
+ */
+const RASTER_DATA_URI = /^data:image\/(?:png|jpeg|gif|webp)(?:;[a-z0-9=._+-]+)*,/;
+const DATA_URI_PREFIX = 'data:';
+/** Attributes of an HTML form, which no SVG element has: they send a submission to an address. */
+const FORM_ATTRIBUTES = new Set(['action', 'formaction']);
+
 /** Animation elements that can retarget an attribute (including event handlers and links) at run time. */
 const ANIMATION_ELEMENTS = new Set(['set', 'animate', 'animatetransform', 'animatemotion']);
 /** Animation attributes carrying the value(s) written into the targeted attribute. */
@@ -66,7 +76,7 @@ const PRESENTATION_URL_ATTRIBUTES = new Set([
 ]);
 
 /** Elements removed together with their content when a matching close tag exists. */
-const PAIRED_DANGEROUS_ELEMENTS = ['script', 'foreignObject', 'iframe', 'object', 'embed'] as const;
+const PAIRED_DANGEROUS_ELEMENTS = ['script', 'foreignObject', 'iframe', 'object', 'embed', 'form'] as const;
 /** Elements removed as a single opening tag. */
 const VOID_DANGEROUS_ELEMENTS = ['meta', 'link', '!ENTITY'] as const;
 
@@ -122,6 +132,8 @@ const CDATA_OPEN = '<![CDATA[';
 const CDATA_CLOSE = ']]>';
 const PI_OPEN = '<?';
 const PI_CLOSE = '?>';
+const XML_DECLARATION_OPEN = '<?xml';
+const BYTE_ORDER_MARK = 0xfeff;
 /** Predefined XML entities mapped to their code points. */
 const XML_PREDEFINED_ENTITIES = new Map<string, number>([
   ['amp', 0x26],
@@ -168,6 +180,11 @@ function isScriptUri(normalized: string): boolean {
 /** Takes a URI after entity decoding, whitespace/control removal and lowercasing. */
 function isDangerousUri(normalized: string): boolean {
   return DANGEROUS_URI_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
+/** The same for what a link (href, src) may point to: also refuses every `data:` URI that is not a raster picture. */
+function isDangerousLinkUri(normalized: string): boolean {
+  return isDangerousUri(normalized) || (normalized.startsWith(DATA_URI_PREFIX) && !RASTER_DATA_URI.test(normalized));
 }
 
 function normalizeUriText(raw: string): string {
@@ -324,6 +341,50 @@ function stripDoctype(src: string): string {
   if (copied === 0 && parts.length === 0) return src;
   parts.push(src.slice(copied));
   return parts.join('');
+}
+
+/**
+ * Removes every processing instruction in linear time, except an XML declaration at the very start of the document: a
+ * `<?xml-stylesheet?>` makes a viewer load a style sheet, and no other instruction belongs in a picture. An unterminated
+ * instruction is removed through the end of input. Comments, CDATA sections and tags are stepped over, so the text of an
+ * attribute value or a comment that merely holds `<?` is left alone.
+ */
+function stripProcessingInstructions(src: string): string {
+  const parts: string[] = [];
+  let copied = 0;
+  let search = 0;
+
+  for (;;) {
+    const lt = src.indexOf('<', search);
+    if (lt === -1) break;
+    if (!src.startsWith(PI_OPEN, lt)) {
+      const skipTo = skipNonTagMarkup(src, lt);
+      if (skipTo !== -1) {
+        search = skipTo;
+      } else {
+        search = isTagNameStart(src, lt + 1) ? readTag(src, lt).end : lt + 1;
+      }
+      continue;
+    }
+    const close = src.indexOf(PI_CLOSE, lt + PI_OPEN.length);
+    const end = close === -1 ? src.length : close + PI_CLOSE.length;
+    if (!isXmlDeclarationAt(src, lt)) {
+      parts.push(src.slice(copied, lt));
+      copied = end;
+    }
+    search = end;
+  }
+
+  if (copied === 0 && parts.length === 0) return src;
+  parts.push(src.slice(copied));
+  return parts.join('');
+}
+
+/** True for `<?xml` followed by white space or the end of the instruction, at the start of the document (a byte order mark may come first). */
+function isXmlDeclarationAt(src: string, lt: number): boolean {
+  if (lt !== 0 && !(lt === 1 && src.charCodeAt(0) === BYTE_ORDER_MARK)) return false;
+  const afterTarget = lt + XML_DECLARATION_OPEN.length;
+  return src.startsWith(XML_DECLARATION_OPEN, lt) && (isWhitespaceAt(src, afterTarget) || src.startsWith(PI_CLOSE, afterTarget));
 }
 
 /**
@@ -833,10 +894,11 @@ function skipNonTagMarkup(src: string, lt: number): number {
   return -1;
 }
 
-function isEventHandlerName(attributeName: string): boolean {
+/** True for an on* event handler or a form attribute (`action`, `formaction`), by its local name whatever the prefix. */
+function isForbiddenAttributeName(attributeName: string): boolean {
   const lowered = attributeName.replace(/^["'=]+/, '').toLowerCase();
   const local = lowered.slice(lowered.lastIndexOf(':') + 1);
-  return local.length > EVENT_PREFIX.length && local.startsWith(EVENT_PREFIX);
+  return (local.length > EVENT_PREFIX.length && local.startsWith(EVENT_PREFIX)) || FORM_ATTRIBUTES.has(local);
 }
 
 function localNameOf(qualified: string): string {
@@ -877,10 +939,10 @@ function hasExternalReference(raw: string): boolean {
  * True when any `;`-separated item of an animation value is a dangerous URI. Entities are decoded before
  * splitting so an encoded `;` (`&#59;`) cannot hide the item boundary.
  */
-function hasDangerousUriItem(raw: string): boolean {
+function hasDangerousUriItem(raw: string, isDangerous: (normalized: string) => boolean = isDangerousUri): boolean {
   return decodeHtmlEntities(raw)
     .split(ANIMATION_VALUE_SEPARATOR)
-    .some((item) => isDangerousUri(normalizeUriText(item)));
+    .some((item) => isDangerous(normalizeUriText(item)));
 }
 
 /** True when any `;`-separated item of an animation value is a script-capable URI, whatever attribute it targets. */
@@ -906,17 +968,17 @@ function isHostileAnimation(tag: TagToken): boolean {
   const target = tag.attributes.find((attribute) => attribute.name.toLowerCase() === 'attributename');
   if (target === undefined) return hasAnimationValue(tag, hasScriptUriItem);
   const targetName = localNameOf(normalizeUriText(target.value));
-  if (isEventHandlerName(targetName)) return true;
+  if (isForbiddenAttributeName(targetName)) return true;
   if (targetName === STYLE_ATTRIBUTE) return hasAnimationValue(tag, isHostileStyleValue);
   if (PRESENTATION_URL_ATTRIBUTES.has(targetName)) {
     return hasAnimationValue(tag, (value) => hasExternalReference(value) || hasScriptUriItem(value));
   }
-  if (LINK_ATTRIBUTES.has(targetName)) return hasAnimationValue(tag, hasDangerousUriItem);
+  if (LINK_ATTRIBUTES.has(targetName)) return hasAnimationValue(tag, (value) => hasDangerousUriItem(value, isDangerousLinkUri));
   return hasAnimationValue(tag, hasScriptUriItem);
 }
 
 /**
- * Removes every on* attribute (and every animation element retargeting one) from every tag in linear time, wherever the attribute sits in the tag
+ * Removes every on* and form attribute (and every animation element retargeting one) from every tag in linear time, wherever the attribute sits in the tag
  * (after whitespace, '/', or the closing quote of the previous value). Text outside tags is untouched.
  */
 function stripEventHandlerAttributes(src: string): string {
@@ -944,7 +1006,7 @@ function stripEventHandlerAttributes(src: string): string {
       continue;
     }
     for (const attribute of tag.attributes) {
-      if (!isEventHandlerName(attribute.name)) continue;
+      if (!isForbiddenAttributeName(attribute.name)) continue;
       let removeStart = attribute.start;
       while (removeStart > copied && isWhitespaceAt(src, removeStart - 1)) removeStart--;
       parts.push(src.slice(copied, removeStart));
@@ -1050,7 +1112,7 @@ function neutralizedAttribute(
       const rewritten = sanitizeEmbeddedSvgHref(attribute, depth, budget);
       return rewritten === null || rewritten === originalText ? null : rewritten;
     }
-    return isDangerousUri(normalizedUri) ? 'href="#"' : null;
+    return isDangerousLinkUri(normalizedUri) ? 'href="#"' : null;
   }
   if (ANIMATION_VALUE_ATTRIBUTES.has(local)) {
     return hasDangerousUriItem(attribute.value) ? `${local}="#"` : null;
@@ -1107,7 +1169,7 @@ function rewriteAttributes(src: string, depth: number, budget: EmbeddedSvgBudget
  * One pass of dangerous markup removal; callers repeat until stable to defeat split-opener tricks.
  */
 function stripDangerousMarkupPass(input: string): string {
-  let result = stripDoctype(input);
+  let result = stripProcessingInstructions(stripDoctype(input));
   for (const name of PAIRED_DANGEROUS_ELEMENTS) result = stripElement(result, name, true);
   for (const name of VOID_DANGEROUS_ELEMENTS) result = stripElement(result, name, false);
   return stripEventHandlerAttributes(result);
