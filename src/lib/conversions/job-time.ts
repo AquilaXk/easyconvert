@@ -9,6 +9,8 @@
  * `bindJobLimits` removes them from request options and installs the job's own.
  */
 
+import { PLAN_PROCESSING_MINUTES } from '../plan-limits';
+
 export const JOB_DEADLINE_AT = Symbol.for('easyconvert.jobDeadlineAt');
 
 export interface JobDeadlined {
@@ -43,6 +45,46 @@ export function clampToJobRemaining(options: object | undefined, limitMs: number
  */
 export function stageTimeoutMs(options: ({ timeoutMs?: number } & JobDeadlined) | undefined, defaultMs: number, now: number = Date.now()): number {
   return clampToJobRemaining(options, options?.timeoutMs || defaultMs, now);
+}
+
+/**
+ * The limit of a stage that works through the pages of one document, one process or one encode for each page. `defaultMs` and `maxMs`
+ * are what a stage without pages would have (its default and its ceiling, see `stageTimeoutMs`) and still bound the time of one process
+ * of the stage. The loop as a whole gets `perPageMs` for each page once that is more than `defaultMs`, up to `pagedMaxMs`.
+ */
+export interface PagedStage {
+  defaultMs: number;
+  maxMs: number;
+  perPageMs: number;
+  pagedMaxMs: number;
+}
+
+/**
+ * The page-loop stages of PDF conversion (SVG, EPS and re-encoded raster pages). A page costs 113 ms on four cores and about 450 ms on
+ * one for the AVIF encoder of a scanned page, the slowest step measured, so 2 s a page is more than four times what one core needs; the
+ * ceiling is the longest job of any tier (`PLAN_PROCESSING_MINUTES.paid`), and the job's own deadline cuts the loop first.
+ */
+export const PAGE_LOOP_STAGE: PagedStage = {
+  defaultMs: 45_000,
+  maxMs: 120_000,
+  perPageMs: 2_000,
+  pagedMaxMs: PLAN_PROCESSING_MINUTES.paid * 60_000,
+};
+
+/**
+ * The limit of a whole page loop over `pages` pages: the stage default, or `perPageMs` for each page when that is more, never above
+ * `pagedMaxMs`, held to the time the job has left. A server-set `options.timeoutMs` is the limit as it is for every stage, under `maxMs`
+ * and the job's time, whatever the pages. A page count that is not a positive number counts as one page.
+ */
+export function pagedStageTimeoutMs(
+  options: ({ timeoutMs?: number } & JobDeadlined) | undefined,
+  pages: number,
+  stage: PagedStage,
+  now: number = Date.now()
+): number {
+  if (options?.timeoutMs) return clampToJobRemaining(options, Math.min(options.timeoutMs, stage.maxMs), now);
+  const counted = Number.isFinite(pages) && pages > 1 ? pages : 1;
+  return clampToJobRemaining(options, Math.min(Math.max(stage.defaultMs, counted * stage.perPageMs), stage.pagedMaxMs), now);
 }
 
 /**

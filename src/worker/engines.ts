@@ -1,4 +1,4 @@
-import { stageTimeoutMs } from '../lib/conversions/job-time';
+import { PAGE_LOOP_STAGE, pagedStageTimeoutMs, stageTimeoutMs } from '../lib/conversions/job-time';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -1442,17 +1442,20 @@ async function renderPdfToSvgWithPoppler(
     filterOutputFile: (f) => f.endsWith('.svg'),
     missingOutputError: 'pdftocairo execution completed without producing any output SVG files',
     renderPages: async (tempDir, inputPath, intervals) => {
-      const deadline = Date.now() + timeout;
+      const pages = pagesOfIntervals(intervals);
+      // The pages give the loop its limit; one process keeps the limit of the stage.
+      const loopTimeout = pagedStageTimeoutMs(options, pages.length, PAGE_LOOP_STAGE);
+      const deadline = Date.now() + loopTimeout;
       // One process for each page, several at once: a long document is drawn by the cores that are there, as its PNG pages are.
       await runBounded(
-        pagesOfIntervals(intervals).map((p) => async () => {
+        pages.map((p) => async () => {
           const remaining = deadline - Date.now();
-          if (remaining <= 0) throw new SandboxedTimeoutError(timeout);
+          if (remaining <= 0) throw new SandboxedTimeoutError(loopTimeout);
           const pageSvgPath = path.join(tempDir, `page-${p}.svg`);
           const args = ['-svg', '-f', String(p), '-l', String(p), inputPath, pageSvgPath];
           await executeSandboxedBinary(pdftocairoBin, args, {
             cwd: tempDir, workDir: tempDir, readDirs: [inputPath],
-            timeoutMs: remaining,
+            timeoutMs: Math.min(remaining, timeout),
             maxBuffer,
             networkIsolated: true,
             signal: options.signal,
@@ -1503,8 +1506,8 @@ export async function convertWithNativePoppler(
 const EPS_TARGET = 'eps';
 const PNG_FORMAT = 'png';
 /** Poppler tools: default and ceiling for the run time, and for the bytes read from a tool's output pipes. */
-const POPPLER_DEFAULT_TIMEOUT_MS = 45_000;
-const POPPLER_MAX_TIMEOUT_MS = 120_000;
+const POPPLER_DEFAULT_TIMEOUT_MS = PAGE_LOOP_STAGE.defaultMs;
+const POPPLER_MAX_TIMEOUT_MS = PAGE_LOOP_STAGE.maxMs;
 const POPPLER_DEFAULT_MAX_BUFFER_BYTES = 100 * 1024 * 1024;
 const POPPLER_MAX_BUFFER_BYTES = 500 * 1024 * 1024;
 
@@ -1550,8 +1553,8 @@ async function reencodeRenderedPages(
   context: ChainOutputContext,
   pagesAtOnce = 1
 ): Promise<WorkerConversionResult> {
+  // One encode keeps the limit of the stage; the loop over the pages gets the limit the pages give it.
   const timeout = Math.min(stageTimeoutMs(context.options, POPPLER_DEFAULT_TIMEOUT_MS), POPPLER_MAX_TIMEOUT_MS);
-  const deadline = Date.now() + timeout;
   try {
     if (!rendered.filename.endsWith('.zip')) {
       return await persistChainOutput(await encode(rendered.buffer, rendered.filename, timeout), targetExtension, context);
@@ -1560,14 +1563,16 @@ async function reencodeRenderedPages(
     const entryNames = Object.keys(pages.files)
       .filter((name) => !pages.files[name].dir)
       .sort((a, b) => a.localeCompare(b));
+    const loopTimeout = pagedStageTimeoutMs(context.options, entryNames.length, PAGE_LOOP_STAGE);
+    const deadline = Date.now() + loopTimeout;
     const encoded = new Array<ZipFile>(entryNames.length);
     const renderedSuffix = `.${renderedExtension}`;
     await runBounded(entryNames.map((entryName, index) => async () => {
       const remaining = deadline - Date.now();
-      if (remaining <= 0) throw new SandboxedTimeoutError(timeout);
+      if (remaining <= 0) throw new SandboxedTimeoutError(loopTimeout);
       const stem = entryName.endsWith(renderedSuffix) ? entryName.slice(0, -renderedSuffix.length) : entryName;
       const page = await pages.files[entryName].async('nodebuffer');
-      encoded[index] = { name: `${stem}.${targetExtension}`, data: await encode(page, entryName, remaining) };
+      encoded[index] = { name: `${stem}.${targetExtension}`, data: await encode(page, entryName, Math.min(remaining, timeout)) };
     }), pagesAtOnce);
     return await persistChainFile('zip', context, (outputPath) => writeDeflatedZipFile(outputPath, encoded));
   } finally {
@@ -1643,11 +1648,12 @@ async function convertPdfToPostScript(
   const timeout = Math.min(stageTimeoutMs(options, POPPLER_DEFAULT_TIMEOUT_MS), POPPLER_MAX_TIMEOUT_MS);
   const maxBuffer = Math.min(options.maxBufferBytes || POPPLER_DEFAULT_MAX_BUFFER_BYTES, POPPLER_MAX_BUFFER_BYTES);
   const isEps = tgt === EPS_TARGET;
-  const deadline = Date.now() + timeout;
+  // The one run of a PostScript file has the stage limit; the runs of the EPS pages share the limit their count gives them (set below).
+  const stage = { limit: timeout, deadline: Date.now() + timeout };
   const run = (tempDir: string, inputPath: string, args: string[]) => {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new SandboxedTimeoutError(timeout);
-    return executeSandboxedBinary(pdftopsBin, args, { cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: remaining, maxBuffer, networkIsolated: true, signal: options.signal });
+    const remaining = stage.deadline - Date.now();
+    if (remaining <= 0) throw new SandboxedTimeoutError(stage.limit);
+    return executeSandboxedBinary(pdftopsBin, args, { cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: Math.min(remaining, timeout), maxBuffer, networkIsolated: true, signal: options.signal });
   };
 
   return executePopplerRender({
@@ -1663,7 +1669,10 @@ async function convertPdfToPostScript(
     missingOutputError: `pdftops execution completed without producing any .${tgt} output`,
     renderPages: async (tempDir, inputPath, intervals) => {
       if (isEps) {
-        await writeEpsPages(pagesOfIntervals(intervals), tempDir, inputPath, (dir, args) => run(dir, inputPath, args), pageRenderProcesses());
+        const epsPages = pagesOfIntervals(intervals);
+        stage.limit = pagedStageTimeoutMs(options, epsPages.length, PAGE_LOOP_STAGE);
+        stage.deadline = Date.now() + stage.limit;
+        await writeEpsPages(epsPages, tempDir, inputPath, (dir, args) => run(dir, inputPath, args), pageRenderProcesses());
         return;
       }
       if (intervals.length !== 1) {
