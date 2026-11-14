@@ -1,4 +1,5 @@
-import { PAGE_LOOP_STAGE, pagedStageTimeoutMs, stageTimeoutMs } from '../lib/conversions/job-time';
+import { PAGE_LOOP_STAGE, stageTimeoutMs } from '../lib/conversions/job-time';
+import { pageLoopBudget, type PageLoopBudget } from './page-loop-budget';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -71,7 +72,6 @@ import {
   executeSandboxedBinary, OFFICE_PIPE_DIR,
   rethrowSandboxUnavailable,
   SandboxedMemoryLimitError,
-  SandboxedTimeoutError,
   SandboxedProcessError,
   SandboxedBufferLimitError,
 } from './sandbox';
@@ -1443,19 +1443,16 @@ async function renderPdfToSvgWithPoppler(
     missingOutputError: 'pdftocairo execution completed without producing any output SVG files',
     renderPages: async (tempDir, inputPath, intervals) => {
       const pages = pagesOfIntervals(intervals);
-      // The pages give the loop its limit; one process keeps the limit of the stage.
-      const loopTimeout = pagedStageTimeoutMs(options, pages.length, PAGE_LOOP_STAGE);
-      const deadline = Date.now() + loopTimeout;
+      const budget = pageLoopBudget(options, pages.length, timeout);
       // One process for each page, several at once: a long document is drawn by the cores that are there, as its PNG pages are.
       await runBounded(
         pages.map((p) => async () => {
-          const remaining = deadline - Date.now();
-          if (remaining <= 0) throw new SandboxedTimeoutError(loopTimeout);
+          const remaining = budget.remainingMs();
           const pageSvgPath = path.join(tempDir, `page-${p}.svg`);
           const args = ['-svg', '-f', String(p), '-l', String(p), inputPath, pageSvgPath];
           await executeSandboxedBinary(pdftocairoBin, args, {
             cwd: tempDir, workDir: tempDir, readDirs: [inputPath],
-            timeoutMs: Math.min(remaining, timeout),
+            timeoutMs: remaining,
             maxBuffer,
             networkIsolated: true,
             signal: options.signal,
@@ -1553,7 +1550,6 @@ async function reencodeRenderedPages(
   context: ChainOutputContext,
   pagesAtOnce = 1
 ): Promise<WorkerConversionResult> {
-  // One encode keeps the limit of the stage; the loop over the pages gets the limit the pages give it.
   const timeout = Math.min(stageTimeoutMs(context.options, POPPLER_DEFAULT_TIMEOUT_MS), POPPLER_MAX_TIMEOUT_MS);
   try {
     if (!rendered.filename.endsWith('.zip')) {
@@ -1563,16 +1559,14 @@ async function reencodeRenderedPages(
     const entryNames = Object.keys(pages.files)
       .filter((name) => !pages.files[name].dir)
       .sort((a, b) => a.localeCompare(b));
-    const loopTimeout = pagedStageTimeoutMs(context.options, entryNames.length, PAGE_LOOP_STAGE);
-    const deadline = Date.now() + loopTimeout;
+    const budget = pageLoopBudget(context.options, entryNames.length, timeout);
     const encoded = new Array<ZipFile>(entryNames.length);
     const renderedSuffix = `.${renderedExtension}`;
     await runBounded(entryNames.map((entryName, index) => async () => {
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) throw new SandboxedTimeoutError(loopTimeout);
+      const remaining = budget.remainingMs();
       const stem = entryName.endsWith(renderedSuffix) ? entryName.slice(0, -renderedSuffix.length) : entryName;
       const page = await pages.files[entryName].async('nodebuffer');
-      encoded[index] = { name: `${stem}.${targetExtension}`, data: await encode(page, entryName, Math.min(remaining, timeout)) };
+      encoded[index] = { name: `${stem}.${targetExtension}`, data: await encode(page, entryName, remaining) };
     }), pagesAtOnce);
     return await persistChainFile('zip', context, (outputPath) => writeDeflatedZipFile(outputPath, encoded));
   } finally {
@@ -1648,13 +1642,8 @@ async function convertPdfToPostScript(
   const timeout = Math.min(stageTimeoutMs(options, POPPLER_DEFAULT_TIMEOUT_MS), POPPLER_MAX_TIMEOUT_MS);
   const maxBuffer = Math.min(options.maxBufferBytes || POPPLER_DEFAULT_MAX_BUFFER_BYTES, POPPLER_MAX_BUFFER_BYTES);
   const isEps = tgt === EPS_TARGET;
-  // The one run of a PostScript file has the stage limit; the runs of the EPS pages share the limit their count gives them (set below).
-  const stage = { limit: timeout, deadline: Date.now() + timeout };
-  const run = (tempDir: string, inputPath: string, args: string[]) => {
-    const remaining = stage.deadline - Date.now();
-    if (remaining <= 0) throw new SandboxedTimeoutError(stage.limit);
-    return executeSandboxedBinary(pdftopsBin, args, { cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: Math.min(remaining, timeout), maxBuffer, networkIsolated: true, signal: options.signal });
-  };
+  const run = (tempDir: string, inputPath: string, args: string[], budget: PageLoopBudget) =>
+    executeSandboxedBinary(pdftopsBin, args, { cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: budget.remainingMs(), maxBuffer, networkIsolated: true, signal: options.signal });
 
   return executePopplerRender({
     sandboxPrefix: 'easyconvert-poppler-ps-',
@@ -1670,16 +1659,15 @@ async function convertPdfToPostScript(
     renderPages: async (tempDir, inputPath, intervals) => {
       if (isEps) {
         const epsPages = pagesOfIntervals(intervals);
-        stage.limit = pagedStageTimeoutMs(options, epsPages.length, PAGE_LOOP_STAGE);
-        stage.deadline = Date.now() + stage.limit;
-        await writeEpsPages(epsPages, tempDir, inputPath, (dir, args) => run(dir, inputPath, args), pageRenderProcesses());
+        const budget = pageLoopBudget(options, epsPages.length, timeout);
+        await writeEpsPages(epsPages, tempDir, inputPath, (dir, args) => run(dir, inputPath, args, budget), pageRenderProcesses());
         return;
       }
       if (intervals.length !== 1) {
         throw new InvalidPageRangeError('PostScript output holds one run of consecutive pages: select a single range such as 2-4.');
       }
       const { start: first, end: last } = intervals[0];
-      await run(tempDir, inputPath, ['-f', String(first), '-l', String(last), inputPath, path.join(tempDir, `output.${tgt}`)]);
+      await run(tempDir, inputPath, ['-f', String(first), '-l', String(last), inputPath, path.join(tempDir, `output.${tgt}`)], pageLoopBudget(options, 1, timeout));
     },
   });
 }

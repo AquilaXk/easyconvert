@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { bindJobLimits, pagedStageTimeoutMs, PAGE_LOOP_STAGE } from '../src/lib/conversions/job-time';
+import { pageLoopBudget } from '../src/worker/page-loop-budget';
+import { SandboxedTimeoutError } from '../src/worker/sandbox';
 
 /**
  * A stage that works through the pages of one document (the re-encoding of rendered pages, the drawing of SVG and EPS pages) is limited by
@@ -44,5 +46,21 @@ describe('pagedStageTimeoutMs', () => {
     for (const pages of [0, -4, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(pagedStageTimeoutMs(undefined, pages, PAGE_LOOP_STAGE, NOW)).toBe(45 * SECOND);
     }
+  });
+});
+
+describe('pageLoopBudget', () => {
+  it('hands each process the time the loop has left, never more than the stage limit of one process', () => {
+    const budget = pageLoopBudget(undefined, 600, 45 * SECOND);
+    expect(budget.remainingMs()).toBe(45 * SECOND);
+    const short = pageLoopBudget(bindJobLimits({}, { signal, deadlineAt: Date.now() + 8 * SECOND }), 600, 45 * SECOND);
+    expect(short.remainingMs()).toBeLessThanOrEqual(8 * SECOND);
+    expect(short.remainingMs()).toBeGreaterThan(7 * SECOND);
+  });
+
+  it('throws the sandbox timeout, naming the limit of the loop, once that has passed', async () => {
+    const budget = pageLoopBudget({ timeoutMs: 5 }, 600, 45 * SECOND);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(() => budget.remainingMs()).toThrow(new SandboxedTimeoutError(5));
   });
 });

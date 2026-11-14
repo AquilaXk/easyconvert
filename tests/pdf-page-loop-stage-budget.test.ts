@@ -59,7 +59,7 @@ for (const target of ['svg', 'bmp', 'eps']) {
     async () => {
       const { dispatchConversion } = await import('../src/lib/conversions/dispatch');
       seen.force = 0;
-      await expect(dispatchConversion(await document(), 'pdf', target, {}, 'long.pdf')).rejects.toThrow();
+      await expect(dispatchConversion(await document(), 'pdf', target, {}, 'long.pdf')).rejects.toThrow(/timed out|time limit/);
     },
     NATIVE_TIMEOUT_MS
   );
