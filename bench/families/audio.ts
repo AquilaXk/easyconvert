@@ -152,6 +152,14 @@ const parseFlac = numberRecord(['bytes', 'exact']);
 /** Our side failed to convert a public sample; the sample's rows say so instead of ending the run. */
 class OursConversionError extends Error {}
 
+/**
+ * The cut WAV files carry no tags. The reference encodes run with `-map_metadata -1`, and the product copies the tags of its
+ * source into the file it writes (OpusTags, FLAC comments), as ffmpeg does by default: the title, artist, album, comment, date,
+ * genre and track of an EBU track are about 235 bytes, which is +0.157 kbit/s on a 12 s cut and +1.3 % of the 12 kbit/s telephone
+ * rate. The rows compare the codecs, so the source has nothing to copy (tests/media-opus-source-tags.test.ts pins the copy itself).
+ */
+const NO_SOURCE_TAGS: readonly string[] = ['-map_metadata', '-1'];
+
 /** The PCM WAV file of a sample: the generated file itself, a track cut to its first seconds, or an edge case built from tracks. */
 async function sourceWav(ctx: FamilyContext, sample: AudioSample, ffmpeg: string, made: Map<string, string | null>): Promise<string | null> {
   if (sample.remote === null && sample.edge === null) return ctx.corpusPath(sample.file);
@@ -162,7 +170,7 @@ async function sourceWav(ctx: FamilyContext, sample: AudioSample, ffmpeg: string
   if (sample.remote !== null) {
     const track = await ctx.remote(sample.remote);
     if (track === null) wav = null;
-    else runTool(ffmpeg, [...base, '-i', track, '-t', String(PUBLIC_SECONDS), '-c:a', sample.bitDepth === 24 ? 'pcm_s24le' : 'pcm_s16le', output]);
+    else runTool(ffmpeg, [...base, '-i', track, '-t', String(PUBLIC_SECONDS), ...NO_SOURCE_TAGS, '-c:a', sample.bitDepth === 24 ? 'pcm_s24le' : 'pcm_s16le', output]);
   } else if (sample.edge !== null) {
     const inputs: string[] = [];
     for (const id of sample.edge.inputs) {
@@ -171,7 +179,7 @@ async function sourceWav(ctx: FamilyContext, sample: AudioSample, ffmpeg: string
       if (path === null) wav = null;
       else inputs.push('-i', path);
     }
-    if (wav !== null) runTool(ffmpeg, [...base, ...(sample.edge.inputs.length > 0 ? inputs : []), ...sample.edge.args, output]);
+    if (wav !== null) runTool(ffmpeg, [...base, ...inputs, ...(inputs.length > 0 ? NO_SOURCE_TAGS : []), ...sample.edge.args, output]);
   }
   made.set(sample.file, wav);
   return wav;
