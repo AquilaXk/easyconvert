@@ -10,6 +10,11 @@ export interface StoredResponse {
   headers: Record<string, string>;
   body: string;
   isBase64?: boolean;
+  /**
+   * Set when the answer was too large to keep (`IDEMPOTENCY_MAX_STORED_BODY_BYTES`): the size of the body in bytes, which the record
+   * does not hold (`body` is empty). A repeat is told so in place of the answer.
+   */
+  omittedBodyBytes?: number;
 }
 
 export interface IdempotencyRecord {
@@ -135,13 +140,26 @@ export function computeFingerprint(
   method: string,
   route: string,
   bodyWithoutFile: unknown,
-  fileStreamSha256: string = ''
+  fileStreamSha256: string = '',
+  rawResponse: boolean = false
 ): string {
   const normalizedMethod = method.toUpperCase();
   const normalizedRoute = normalizeRoutePath(route);
   const canonicalBody = canonicalJSON(bodyWithoutFile ?? {});
-  const payload = `${normalizedMethod}:${normalizedRoute}:${canonicalBody}:${fileStreamSha256}`;
+  // The way the answer is asked for is part of the request: the raw bytes and the JSON of one conversion are different answers.
+  // A request for JSON adds nothing, so the fingerprints that were recorded before this flag existed still match.
+  const payload = `${normalizedMethod}:${normalizedRoute}:${canonicalBody}:${fileStreamSha256}${rawResponse ? ':raw' : ''}`;
   return crypto.createHash('sha256').update(payload).digest('hex');
+}
+
+/** Whether the request asks for the bytes of a result in place of a JSON answer: `Accept: application/octet-stream` or `?raw=true`. */
+export function wantsRawResponse(req: Request): boolean {
+  if (req.headers.get('accept') === 'application/octet-stream') return true;
+  try {
+    return new URL(req.url).searchParams.get('raw') === 'true';
+  } catch {
+    return false;
+  }
 }
 
 /**

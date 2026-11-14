@@ -9,11 +9,21 @@ import {
   computeFingerprint,
   compareCodeUnits,
   hashStream,
+  wantsRawResponse,
   AcquireResult,
+  StoredResponse,
 } from './idempotency';
 
 export const IDEMPOTENCY_KEY_REUSED_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/idempotency-key-reused';
 export const IDEMPOTENCY_KEY_IN_FLIGHT_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/idempotency-key-in-flight';
+export const IDEMPOTENCY_RESPONSE_NOT_KEPT_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/idempotency-response-not-kept';
+
+/**
+ * The most body bytes of an answer that the store keeps. Every record sits in memory for 24 hours (Redis runs with a memory limit and
+ * no eviction, so one large record makes every write fail, the accounts and billing included), and an answer is replayed to a client
+ * that lost it, which needs the reference to the result and not the result: a stored file is fetched by its id or its download URL.
+ */
+export const IDEMPOTENCY_MAX_STORED_BODY_BYTES = 256 * 1024;
 
 /** How long the lock of a key lasts, which is also the longest a request that crashed holds its key. */
 const LOCK_TTL_MS = 60_000;
@@ -173,6 +183,7 @@ export function handleAcquireOutcome(
 
   if (acquireResult.status === 'completed') {
     const stored = acquireResult.response;
+    if (stored.omittedBodyBytes !== undefined) return responseNotKept(stored, instanceUri);
     const headers = new Headers(stored.headers);
     headers.set('Idempotent-Replayed', 'true');
     const isNullBodyStatus =
@@ -191,6 +202,44 @@ export function handleAcquireOutcome(
   return null;
 }
 
+/** The answer to a repeat whose first answer was too large to keep: the request ran once, and the result is fetched by its id. */
+function responseNotKept(stored: StoredResponse, instanceUri: string): NextResponse {
+  const fileId = stored.headers['x-file-id'];
+  return createProblemDetailsResponse(
+    409,
+    `The first request with this idempotency key was completed, and its answer of ${stored.omittedBodyBytes} bytes is too large to replay.` +
+      (fileId ? ` Fetch the result with the file id ${fileId}.` : ' Fetch the result from the files of the account.'),
+    instanceUri,
+    'Conflict',
+    IDEMPOTENCY_RESPONSE_NOT_KEPT_PROBLEM_TYPE,
+    { 'Idempotent-Replayed': 'true' },
+    undefined,
+    { originalStatus: stored.status, ...(fileId ? { fileId } : {}) }
+  );
+}
+
+/**
+ * The part of an answer that the store keeps. A JSON answer that carries its result inline (`dataUri`) is kept without it when it
+ * does not fit: the result is stored under the download URL the answer names, so the replay is still an answer the client can use.
+ * Any other answer over the limit is kept as its size only.
+ */
+function storableBody(body: string, isBase64: boolean, byteLength: number): { body: string; isBase64: boolean; omittedBodyBytes?: number } {
+  if (byteLength <= IDEMPOTENCY_MAX_STORED_BODY_BYTES) return { body, isBase64 };
+  if (!isBase64) {
+    try {
+      const parsed: unknown = JSON.parse(body);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) && typeof (parsed as { dataUri?: unknown }).dataUri === 'string') {
+        const { dataUri: _inline, ...rest } = parsed as Record<string, unknown>;
+        const slim = JSON.stringify(rest);
+        if (Buffer.byteLength(slim) <= IDEMPOTENCY_MAX_STORED_BODY_BYTES) return { body: slim, isBase64 };
+      }
+    } catch {
+      // Not JSON: kept as its size only.
+    }
+  }
+  return { body: '', isBase64, omittedBodyBytes: byteLength };
+}
+
 /**
  * Stores a successful or client-error response in the idempotency store.
  */
@@ -207,15 +256,13 @@ export async function storeCompletedResponse(
     !contentType.includes('text') &&
     !contentType.includes('problem');
 
-  let bodyStr: string;
-  let isBase64 = false;
-
+  let kept: ReturnType<typeof storableBody>;
   if (isBinary) {
     const buf = Buffer.from(await clonedRes.arrayBuffer());
-    bodyStr = buf.toString('base64');
-    isBase64 = true;
+    kept = storableBody(buf.length <= IDEMPOTENCY_MAX_STORED_BODY_BYTES ? buf.toString('base64') : '', true, buf.length);
   } else {
-    bodyStr = await clonedRes.text();
+    const text = await clonedRes.text();
+    kept = storableBody(text, false, Buffer.byteLength(text));
   }
 
   const headersRecord: Record<string, string> = {};
@@ -231,8 +278,7 @@ export async function storeCompletedResponse(
     {
       status: res.status,
       headers: headersRecord,
-      body: bodyStr,
-      isBase64,
+      ...kept,
     },
     86400000
   );
@@ -286,7 +332,7 @@ export async function acquireIdempotency(
 
   const { bodyWithoutFile, fileSha256 } =
     parsedBody === undefined ? await extractFingerprintData(req.clone()) : { bodyWithoutFile: parsedBody, fileSha256: '' };
-  const fingerprint = computeFingerprint(req.method, instanceUri, bodyWithoutFile, fileSha256);
+  const fingerprint = computeFingerprint(req.method, instanceUri, bodyWithoutFile, fileSha256, wantsRawResponse(req));
   const scopedKey = buildScopedKey(userId, instanceUri, rawKey);
   const activeStore = store || getIdempotencyStore();
 
