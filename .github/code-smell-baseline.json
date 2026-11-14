@@ -29,14 +29,14 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 149
+    "maxValue": 148
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",
     "rule": "max-lines-per-function",
     "function": "POST",
     "count": 1,
-    "maxValue": 391
+    "maxValue": 384
   },
   {
     "file": "src/app/api/v1/uploads/[[...id]]/route.ts",
@@ -1886,12 +1886,6 @@
   {
     "file": "src/lib/queue/bullmq-engine.ts",
     "rule": "@typescript-eslint/no-explicit-any",
-    "function": "getJobs",
-    "count": 2
-  },
-  {
-    "file": "src/lib/queue/bullmq-engine.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
     "function": "handleJobFailure",
     "count": 1
   },
@@ -1926,7 +1920,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2317
+    "maxValue": 2299
   },
   {
     "file": "src/lib/queue/conversion-queue.ts",

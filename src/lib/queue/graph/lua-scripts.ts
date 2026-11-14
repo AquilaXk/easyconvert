@@ -23,14 +23,15 @@ if redis.call('EXISTS', KEYS[1]) == 1 then
   return redis.error_reply('Graph already exists: ' .. ARGV[1])
 end
 
+local nodes = cjson.decode(ARGV[3])
 local fields = cjson.decode(ARGV[2])
 for k, v in pairs(fields) do
   redis.call('HSET', KEYS[1], k, tostring(v))
 end
-redis.call('HSET', KEYS[1], 'graphId', ARGV[1], 'status', 'running', 'completedNodes', '0', 'failedNodes', '0')
+redis.call('HSET', KEYS[1], 'graphId', ARGV[1], 'status', 'running', 'completedNodes', '0', 'failedNodes', '0', 'remainingNodes', tostring(#nodes))
 
 local ready = {}
-for _, n in ipairs(cjson.decode(ARGV[3])) do
+for _, n in ipairs(nodes) do
   redis.call('HSET', KEYS[2], n.id, tostring(n.inDegree))
   redis.call('HSET', KEYS[3], n.id, cjson.encode(n.children or {}))
   local initialStatus = (n.inDegree == 0) and 'waiting' or 'pending'
@@ -127,7 +128,13 @@ for _, childId in ipairs(cjson.decode(redis.call('HGET', KEYS[3], ARGV[1]) or '[
 end
 
 local status = 'running'
-if allTerminal(KEYS[4]) then
+local terminal = false
+if redis.call('HGET', KEYS[1], 'remainingNodes') then
+  terminal = redis.call('HINCRBY', KEYS[1], 'remainingNodes', -1) <= 0
+else
+  terminal = allTerminal(KEYS[4])
+end
+if terminal then
   status = 'completed'
   redis.call('HSET', KEYS[1], 'status', status, 'finishedOn', ARGV[3])
 end
@@ -162,7 +169,7 @@ redis.call('HSET', KEYS[3], ARGV[1], cjson.encode(nodeState))
 redis.call('HINCRBY', KEYS[1], 'failedNodes', 1)
 
 if (redis.call('HGET', KEYS[1], 'policy') or 'fail_fast') == 'fail_fast' then
-  redis.call('HSET', KEYS[1], 'status', 'failed', 'failedReason', ARGV[2], 'finishedOn', ARGV[3])
+  redis.call('HSET', KEYS[1], 'status', 'failed', 'failedReason', ARGV[2], 'finishedOn', ARGV[3], 'remainingNodes', '0')
   local cancelled = {}
   local all = redis.call('HGETALL', KEYS[3])
   for i = 1, #all, 2 do
@@ -179,6 +186,7 @@ end
 
 -- continue policy: skip every descendant that has not run yet.
 local skipped = {}
+local terminalDelta = 1
 local queue = { ARGV[1] }
 local visited = { [ARGV[1]] = true }
 while #queue > 0 do
@@ -193,13 +201,20 @@ while #queue > 0 do
         redis.call('HSET', KEYS[3], childId, cjson.encode(s))
         redis.call('LREM', KEYS[4], 0, childId)
         table.insert(skipped, childId)
+        terminalDelta = terminalDelta + 1
       end
     end
   end
 end
 
 local status = 'running'
-if allTerminal(KEYS[3]) then
+local terminal = false
+if redis.call('HGET', KEYS[1], 'remainingNodes') then
+  terminal = redis.call('HINCRBY', KEYS[1], 'remainingNodes', -terminalDelta) <= 0
+else
+  terminal = allTerminal(KEYS[3])
+end
+if terminal then
   status = 'completed'
   redis.call('HSET', KEYS[1], 'status', status, 'finishedOn', ARGV[3])
 end
@@ -215,7 +230,7 @@ local status = redis.call('HGET', KEYS[1], 'status')
 if status ~= 'running' then
   return { 0, status or 'missing', '[]' }
 end
-redis.call('HSET', KEYS[1], 'status', 'cancelled', 'failedReason', ARGV[1], 'finishedOn', ARGV[2])
+redis.call('HSET', KEYS[1], 'status', 'cancelled', 'failedReason', ARGV[1], 'finishedOn', ARGV[2], 'remainingNodes', '0')
 redis.call('DEL', KEYS[3])
 local cancelled = {}
 local all = redis.call('HGETALL', KEYS[2])

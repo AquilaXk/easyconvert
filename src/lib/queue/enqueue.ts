@@ -124,10 +124,11 @@ function base64ByteLength(encoded: string): number {
  * undefined when the object cannot be sized, which gives the job the maximum deadline of its tier.
  */
 export async function trustedInputBytes(
-  input: { storageKey?: string; inputBufferBase64?: string },
-  storage: IStorageBackend
+  input: { storageKey?: string; inputBufferBase64?: string; knownStorageSize?: number },
+  storage: Pick<IStorageBackend, 'stat'>
 ): Promise<number | undefined> {
   if (input.storageKey) {
+    if (input.knownStorageSize !== undefined) return input.knownStorageSize;
     const stat = await storage.stat(input.storageKey);
     return stat?.size;
   }

@@ -202,15 +202,52 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
     const graph = record.graph;
     const graphMeta = graphNodeJobMetadata(record);
 
-    for (const nodeId of ready) {
+    const readyNodes = ready.map((nodeId) => {
       const node = Object.hasOwn(graph.nodes, nodeId) ? graph.nodes[nodeId] : undefined;
       if (!node) {
         throw new GraphStateCorruptError(`Graph ${graphId} has a corrupt scheduler record: the outbox names node "${nodeId}", which the graph does not define.`);
       }
-      const inputArtifacts = await this.getNodeOutputs(graphId, getNodeInputs(node));
-      await this.enqueueNode(graphId, nodeId, node, graphMeta, inputArtifacts);
-      await this.redisClient.lrem(k.outbox, 1, nodeId);
+      return { nodeId, node, inputs: getNodeInputs(node) };
+    });
+
+    const allInputIds = Array.from(new Set(readyNodes.flatMap((entry) => entry.inputs)));
+    const outputsByNode = new Map<NodeId, string[]>();
+    if (allInputIds.length > 0) {
+      const values = await this.redisClient.hmget(k.outputs, ...allInputIds);
+      allInputIds.forEach((inputId, index) => {
+        const raw = values[index];
+        outputsByNode.set(inputId, raw ? parseStoredList<string>(graphId, 'a node output list', raw) : []);
+      });
     }
+
+    const removeFromOutbox = async (nodeIds: readonly string[]): Promise<void> => {
+      if (nodeIds.length === 0) return;
+      if (nodeIds.length === 1 || typeof this.redisClient.pipeline !== 'function') {
+        for (const nodeId of nodeIds) {
+          await this.redisClient.lrem(k.outbox, 1, nodeId);
+        }
+        return;
+      }
+      const pipeline = this.redisClient.pipeline();
+      for (const nodeId of nodeIds) pipeline.lrem(k.outbox, 1, nodeId);
+      await this.execFailClosed(pipeline, nodeIds.length);
+    };
+
+    const enqueued: string[] = [];
+    try {
+      for (const { nodeId, node, inputs } of readyNodes) {
+        const inputArtifacts =
+          inputs.length === 0
+            ? []
+            : Array.from(new Set(inputs.flatMap((inputId) => outputsByNode.get(inputId) ?? [])));
+        await this.enqueueNode(graphId, nodeId, node, graphMeta, inputArtifacts);
+        enqueued.push(nodeId);
+      }
+    } catch (err) {
+      await removeFromOutbox(enqueued).catch(() => undefined);
+      throw err;
+    }
+    await removeFromOutbox(enqueued);
     return ready.length;
   }
 

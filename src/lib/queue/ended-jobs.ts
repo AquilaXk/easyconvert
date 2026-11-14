@@ -3,6 +3,8 @@ import { pipelineReplies } from '../redis/pipeline-replies';
 import { deadLetterKeys, trimDeadLettersBefore } from './dead-letters';
 import { REMOVE_DEAD_LETTERS_LUA_SCRIPT, REMOVE_JOB_DEAD_LETTERS_LUA_SCRIPT, REMOVE_JOB_LUA_SCRIPT, REPLACE_ENDED_JOB_DATA_LUA_SCRIPT } from './lua-scripts';
 import { ownerOf } from './stored-job';
+import { removeFromUserIndices } from './queue-queries';
+import { ALL_JOB_STATES, userByStateKeys } from './user-job-list';
 
 /**
  * Which ended jobs a queue keeps, as BullMQ's KeepJobs (src/interfaces/keep-jobs.ts): those that ended at most `age`
@@ -84,7 +86,7 @@ async function deleteEndedJob(
 ): Promise<void> {
   await client.srem(stateKey, id);
   await client.del(keys.jobKey(id));
-  if (userId) await client.zrem(keys.userJobsKey(userId), id);
+  if (userId) await removeFromUserIndices(client, keys.userJobsKey(userId), id);
 }
 
 /** The ids of the set one SSCAN call asks for, and so how many jobs are read in one pipeline. */
@@ -224,9 +226,13 @@ async function removeProcessedJobs(
     else staying.add(id);
   });
   const removal = client.pipeline();
-  if (foreign.length > 0) removal.zrem(index, ...foreign);
+  if (foreign.length > 0) {
+    removal.zrem(index, ...foreign);
+    for (const bk of userByStateKeys(index)) removal.zrem(bk, ...foreign);
+  }
   for (const { id } of toRemove) removal.eval(REMOVE_JOB_LUA_SCRIPT, keys.stateKeys.length + 2, keys.jobKey(id), ...keys.stateKeys, index, id);
-  const answers = (await pipelineReplies(removal)).slice(foreign.length > 0 ? 1 : 0);
+  const prefixReplies = foreign.length > 0 ? 1 + ALL_JOB_STATES.length : 0;
+  const answers = (await pipelineReplies(removal)).slice(prefixReplies);
   const cleared: string[] = [];
   toRemove.forEach(({ id, unknownState }, at) => {
     if (Number(answers[at]) === 1 || unknownState) cleared.push(id);
@@ -258,7 +264,7 @@ export async function forgetUserJobs(client: Redis, keys: QueueKeySpace, userId:
     for (const id of batch.cleared) clearedJobIds.add(id);
   }
   await removeDeadLetters(client, keys, userId, processed, clearedJobIds);
-  if (left.length === 0) await client.del(index);
+  if (left.length === 0) await client.del(index, ...userByStateKeys(index));
   return left;
 }
 

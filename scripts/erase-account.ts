@@ -11,6 +11,7 @@ import { resetLoginAttempts } from '../src/lib/auth/login-rate-limiter';
 import { allConversionQueues, conversionQueue } from '../src/lib/queue/conversion-queue';
 import { graphScheduler } from '../src/lib/queue/graph/scheduler';
 import { CANCELLABLE_JOB_STATES, DEFAULT_QUEUE_KEY_PREFIX, HEARTBEAT_INTERVAL_MS, type JobState } from '../src/lib/queue/bullmq-engine';
+import { userByStateKeys } from '../src/lib/queue/user-job-list';
 import { storageProvider } from '../src/lib/storage';
 import { tusEngine } from '../src/lib/storage/tus-engine';
 import { credentialsVault } from '../src/lib/storage/credentials-vault';
@@ -217,8 +218,12 @@ async function accountTaggedKeys(userId: string, context: TaggedKeyContext = {})
   for (const qPrefix of queuePrefixes) {
     candidates.add(`${qPrefix}user_graphs:{${userId}}`);
     for (const qName of queueNames) {
+      const userJobsKey = `${qPrefix}{${qName}}:user_jobs:${userId}`;
       candidates.add(`${qPrefix}{${qName}}:user_inflight:${userId}`);
-      candidates.add(`${qPrefix}{${qName}}:user_jobs:${userId}`);
+      candidates.add(userJobsKey);
+      for (const byStateKey of userByStateKeys(userJobsKey)) {
+        candidates.add(byStateKey);
+      }
     }
   }
 

@@ -22,7 +22,7 @@ import { generateJobId } from '@/lib/queue/bullmq-engine';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { CredentialsVaultPersistenceError } from '@/lib/storage/credentials-vault';
 import { storeUploadedBuffer } from '@/lib/api/completed-upload';
-import { readObjectHeader } from '@/lib/storage/object-header';
+import { OBJECT_HEADER_BYTES, readObjectRange } from '@/lib/storage/object-header';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject, spoofCheckRefusal } from '@/lib/security/file-guard';
 import { resolveEffectiveWebhook } from '@/lib/security/ssrf';
@@ -77,17 +77,38 @@ const GRAPH_WITHOUT_CONVERSION_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}graph-without
 const GRAPH_WITHOUT_CONVERSION_DETAIL = 'The graph has no conversion: a job needs at least one node that converts, between its imports and its exports.';
 
 /** The refusal of a job whose stored files the caller may not use, or that a graph reads over the limit of the caller's plan; undefined when every stored file passes. */
+type ObjectStatResult = Awaited<ReturnType<typeof s3Storage.stat>>;
+type StatFn = (key: string) => ObjectStatResult | Promise<ObjectStatResult>;
+
+function createStatMemo(stat: StatFn = (key) => s3Storage.stat(key)): StatFn {
+  const cache = new Map<string, Promise<ObjectStatResult>>();
+  return (key: string) => {
+    let pending = cache.get(key);
+    if (!pending) {
+      pending = Promise.resolve()
+        .then(() => stat(key))
+        .catch((err: unknown) => {
+          cache.delete(key);
+          throw err;
+        });
+      cache.set(key, pending);
+    }
+    return pending;
+  };
+}
+
 async function storedInputRefusal(
   storageKey: string | undefined,
   graph: JobGraph | undefined,
-  caller: PlanCaller & { id: string }
+  caller: PlanCaller & { id: string },
+  statKey: StatFn = (key) => s3Storage.stat(key)
 ): Promise<{ status: number; message: string; title: string } | undefined> {
   const graphKeys = graph ? graphInputKeys(normalizeGraphNodes(graph)) : [];
   const keys = Array.from(new Set(storageKey ? [...graphKeys, storageKey] : graphKeys)).filter(
     (key) => !isInlineInputKey(key)
   );
   if (keys.length > 0) {
-    const allowed = await Promise.all(keys.map((key) => mayUseStorageKeyAsJobInput(key, caller.id)));
+    const allowed = await Promise.all(keys.map((key) => mayUseStorageKeyAsJobInput(key, caller.id, statKey)));
     if (allowed.some((ok) => !ok)) {
       return { status: 404, message: STORAGE_OBJECT_NOT_FOUND, title: 'Not Found' };
     }
@@ -96,7 +117,7 @@ async function storedInputRefusal(
   if (uniqueGraphKeys.length > 0) {
     const plan = planOfCaller(caller);
     const limit = maxFileBytes(plan);
-    const infos = await Promise.all(uniqueGraphKeys.map((key) => s3Storage.stat(key)));
+    const infos = await Promise.all(uniqueGraphKeys.map((key) => statKey(key)));
     for (const info of infos) {
       if (info && info.size > limit) {
         return { status: 413, message: fileTooLargeMessage(plan, info.size, isBillingConfigured()), title: 'Payload Too Large' };
@@ -150,14 +171,21 @@ function collectStoredInputChecks(input: {
 type StoredInputVerdict = { size: number } | { refusal: { status: number; message: string; title: string } };
 
 /** Checks that a stored upload exists, fits the plan, and starts with the bytes its extension declares. A spoofed file throws. */
-async function verifyStoredInput(check: StoredInputCheck, plan: ReturnType<typeof planOfCaller>): Promise<StoredInputVerdict> {
+async function verifyStoredInput(
+  check: StoredInputCheck,
+  plan: ReturnType<typeof planOfCaller>,
+  statKey: StatFn = (key) => s3Storage.stat(key)
+): Promise<StoredInputVerdict> {
   const refuse = (status: number, message: string, title: string): StoredInputVerdict => ({ refusal: { status, message, title } });
-  const info = await s3Storage.stat(check.key);
+  const info = await statKey(check.key);
   if (!info) return refuse(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
   if (info.size > maxFileBytes(plan)) return refuse(413, fileTooLargeMessage(plan, info.size, isBillingConfigured()), 'Payload Too Large');
   if (s3Storage.kind === 'remote') {
-    // The object lives in the object store: check its first bytes without downloading the rest.
-    const header = await readObjectHeader(s3Storage, check.key);
+    // Reuse `info.size` from the memoized stat instead of triggering a second stat inside `readObjectHeader`.
+    const header =
+      info.size === 0
+        ? Buffer.alloc(0)
+        : await readObjectRange(s3Storage, check.key, 0, Math.min(info.size, OBJECT_HEADER_BYTES));
     if (!header) return refuse(400, 'Stored object is unavailable.', 'Storage File Missing');
     await assertNotSpoofedObject(s3Storage, check.key, info.size, header, check.ext, check.filename);
     return { size: info.size };
@@ -295,6 +323,21 @@ async function namedTasksGraph(
   }
   const translation = namedTasksToJobGraph(namedTasks, uploadKeys);
   return translation.ok ? { graph: translation.graph } : { response: namedTaskProblem(instanceUri, translation.errors) };
+}
+
+async function verifyAllStoredInputs(
+  params: Parameters<typeof collectStoredInputChecks>[0],
+  plan: ReturnType<typeof planOfCaller>,
+  statKey: StatFn
+): Promise<{ refusal?: { status: number; message: string; title: string }; primarySize?: number }> {
+  const storedChecks = collectStoredInputChecks(params);
+  const results = await Promise.all(storedChecks.map((check) => verifyStoredInput(check, plan, statKey)));
+  let primarySize: number | undefined;
+  for (const [i, result] of results.entries()) {
+    if ('refusal' in result) return { refusal: result.refusal };
+    if (storedChecks[i].primary) primarySize = result.size;
+  }
+  return { primarySize };
 }
 
 export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
@@ -623,8 +666,10 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       );
     }
 
+    const statKey = createStatMemo();
+
     // Authorize a caller-supplied key, and hold every stored file of a graph to the plan limit, before anything reads the object.
-    const inputRefusal = await storedInputRefusal(storageKey, graph, auth.user);
+    const inputRefusal = await storedInputRefusal(storageKey, graph, auth.user, statKey);
     if (inputRefusal) return await fail(inputRefusal.status, inputRefusal.message, inputRefusal.title);
 
     const callerPlan = planOfCaller(auth.user);
@@ -651,23 +696,13 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         assertNotSpoofedFile(decodedBuf, sourceDef.extension, originalFilename);
       }
 
-      const storedChecks = collectStoredInputChecks({
-        storageKey,
-        graph,
-        sourceDef,
-        originalFilename,
-        hasInlineBytes: Boolean(uploadedBuffer || inputBufferBase64),
-      });
-
-      const results = await Promise.all(storedChecks.map((check) => verifyStoredInput(check, callerPlan)));
-      for (const [i, result] of results.entries()) {
-        if ('refusal' in result) {
-          return await fail(result.refusal.status, result.refusal.message, result.refusal.title);
-        }
-        if (storedChecks[i].primary && !fileSize) {
-          fileSize = result.size;
-        }
-      }
+      const verification = await verifyAllStoredInputs(
+        { storageKey, graph, sourceDef, originalFilename, hasInlineBytes: Boolean(uploadedBuffer || inputBufferBase64) },
+        callerPlan,
+        statKey
+      );
+      if (verification.refusal) return await fail(verification.refusal.status, verification.refusal.message, verification.refusal.title);
+      if (!fileSize && verification.primarySize !== undefined) fileSize = verification.primarySize;
     } catch (err: any) {
       const refusal = spoofCheckRefusal(err);
       if (refusal) return await fail(refusal.status, err.message, refusal.title);
@@ -719,6 +754,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       tasks,
       namedTasks: namedTasks !== undefined,
       input: { storageKey, uploadedBuffer, fileMeta, inputBufferBase64 },
+      statStorageKey: statKey,
       webhookUrl: effectiveWebhookUrl,
       webhookSecret: effectiveWebhookSecret,
       webhookKeyId,
@@ -897,6 +933,7 @@ interface ReservedSubmission {
   /** The graph was submitted as named tasks (`tasks` is an object), so its job answers each task by name. */
   namedTasks: boolean;
   input: SubmittedInput;
+  statStorageKey?: StatFn;
   webhookUrl?: string;
   webhookSecret?: string;
   webhookKeyId?: string;
@@ -973,7 +1010,10 @@ async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit)
 
   // Resolve resource class and scheduling priority from the size of the input as the server knows it: the `fileSize` of a JSON body is
   // the client's own figure (absent, or any number), and only stands in when the input cannot be sized.
-  const inputBytes = await trustedInputBytes({ storageKey, inputBufferBase64 }, s3Storage);
+  const inputBytes = await trustedInputBytes(
+    { storageKey, inputBufferBase64, knownStorageSize: submission.input.uploadedBuffer?.length },
+    { stat: submission.statStorageKey ?? ((key) => s3Storage.stat(key)) }
+  );
   const routedBytes = inputBytes ?? fileSize;
   const resClass = resolveResourceClass(sourceDef.id, targetDef.id, routedBytes, options);
   // Enqueue conversion job to the appropriate resource-class queue

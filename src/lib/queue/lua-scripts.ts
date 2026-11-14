@@ -3,6 +3,50 @@
  * its keys in KEYS and its values in ARGV, as the comment at its top lists them.
  */
 
+const USER_STATE_INDEX_LUA_FUNCTIONS = `
+local function queuePrefixFromSuffixKey(key, suffix)
+  local at = #key - #suffix + 1
+  if at >= 1 and string.sub(key, at) == suffix then
+    return string.sub(key, 1, at - 1)
+  end
+  return nil
+end
+
+local function byStateOwnerAndScore(jobKey, queuePrefix, jobId)
+  if not queuePrefix then return nil, nil end
+  local raw = redis.call('HGET', jobKey, 'data')
+  if not raw or raw == '' then return nil, nil end
+  local ok, decoded = pcall(cjson.decode, raw)
+  if not ok or type(decoded) ~= 'table' then return nil, nil end
+  local uid = decoded.userId
+  if type(uid) ~= 'string' or uid == '' then return nil, nil end
+  local score = tonumber(redis.call('ZSCORE', queuePrefix .. ':user_jobs:' .. uid, jobId))
+  if not score then
+    score = tonumber(redis.call('HGET', jobKey, 'timestamp')) or 0
+  end
+  return uid, score
+end
+
+local function syncByState(queuePrefix, jobKey, jobId, oldState, newState)
+  local uid, score = byStateOwnerAndScore(jobKey, queuePrefix, jobId)
+  if not uid then return end
+  if oldState then
+    redis.call('ZREM', queuePrefix .. ':by_state:' .. uid .. ':' .. oldState, jobId)
+  end
+  if newState then
+    redis.call('ZADD', queuePrefix .. ':by_state:' .. uid .. ':' .. newState, score, jobId)
+  end
+end
+
+local function removeFromAllByState(queuePrefix, jobKey, jobId)
+  local uid = byStateOwnerAndScore(jobKey, queuePrefix, jobId)
+  if not uid then return end
+  for _, st in ipairs({ 'waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled' }) do
+    redis.call('ZREM', queuePrefix .. ':by_state:' .. uid .. ':' .. st, jobId)
+  end
+end
+`;
+
 export const ADD_JOB_LUA_SCRIPT = `
 -- KEYS[1]: job hash key
 -- KEYS[2]: waitingKey (ZSET)
@@ -46,6 +90,11 @@ end
 
 if ARGV[6] ~= '' and KEYS[4] ~= '' then
   redis.call('ZADD', KEYS[4], tonumber(ARGV[5]), ARGV[1])
+  local prefix = string.match(KEYS[4], '^(.*):user_jobs:')
+  if prefix then
+    local initialState = ARGV[2] == '1' and 'delayed' or 'waiting'
+    redis.call('ZADD', prefix .. ':by_state:' .. ARGV[6] .. ':' .. initialState, tonumber(ARGV[5]), ARGV[1])
+  end
 end
 
 return { 1 }
@@ -58,6 +107,8 @@ export const PROMOTE_DELAYED_JOBS_LUA_SCRIPT = `
 -- ARGV[1]: current timestamp in milliseconds
 -- ARGV[2]: max batch size
 -- ARGV[3]: eventsChannel (optional)
+${USER_STATE_INDEX_LUA_FUNCTIONS}
+local queuePrefix = queuePrefixFromSuffixKey(KEYS[1], ':delayed')
 local due = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1], 'LIMIT', 0, tonumber(ARGV[2] or 50))
 local promoted = {}
 
@@ -96,6 +147,7 @@ if due and #due > 0 then
       local score = prioRank * 1000000000000 + (tonumber(ARGV[1]) % 1000000000000)
       redis.call('ZADD', KEYS[2], score, id)
       redis.call('HSET', KEYS[3] .. id, 'state', 'waiting')
+      syncByState(queuePrefix, KEYS[3] .. id, id, 'delayed', 'waiting')
       table.insert(promoted, id)
       if ARGV[3] and ARGV[3] ~= '' then
         local waitingPayload = cjson.encode({ event = 'waiting', jobId = id })
@@ -115,6 +167,8 @@ export const POP_NEXT_WAITING_JOB_LUA_SCRIPT = `
 -- ARGV[1]: processedOn timestamp in milliseconds
 -- ARGV[2]: heartbeat TTL in milliseconds
 -- ARGV[3]: attempt token of the new attempt
+${USER_STATE_INDEX_LUA_FUNCTIONS}
+local queuePrefix = queuePrefixFromSuffixKey(KEYS[2], ':active')
 
 -- Auto-migrate waitingKey from list to zset if needed
 local t = redis.call('TYPE', KEYS[1])
@@ -149,6 +203,7 @@ while true do
     redis.call('SADD', KEYS[2], jobId)
     redis.call('HSET', jobKey, 'state', 'active', 'processedOn', ARGV[1], 'attemptToken', ARGV[3])
     redis.call('SET', KEYS[4] .. jobId, ARGV[1], 'PX', ARGV[2])
+    syncByState(queuePrefix, jobKey, jobId, 'waiting', 'active')
     return redis.call('HGETALL', jobKey)
   end
 end
@@ -166,6 +221,7 @@ export const CANCEL_JOB_LUA_SCRIPT = `
 -- ARGV[3]: finishedOn timestamp in milliseconds
 -- ARGV[4]: log line to append
 -- Returns 0 unless the job is waiting, delayed, or active; otherwise { previousState, job hash }.
+${USER_STATE_INDEX_LUA_FUNCTIONS}
 local state = redis.call('HGET', KEYS[1], 'state')
 if state ~= 'waiting' and state ~= 'delayed' and state ~= 'active' then
   return 0
@@ -191,6 +247,7 @@ if rawLogs and rawLogs ~= '' then
 end
 table.insert(logs, ARGV[4])
 redis.call('HSET', KEYS[1], 'state', 'cancelled', 'failedReason', ARGV[2], 'finishedOn', ARGV[3], 'logs', cjson.encode(logs))
+syncByState(queuePrefixFromSuffixKey(KEYS[2], ':waiting'), KEYS[1], ARGV[1], state, 'cancelled')
 return { state, redis.call('HGETALL', KEYS[1]) }
 `;
 
@@ -209,6 +266,8 @@ export const REQUEUE_JOB_LUA_SCRIPT = `
 -- ARGV[7]: priorityScore (score for waiting ZSET)
 -- Returns 1 after moving the job from active to waiting/delayed, or 0 when it is no longer active
 -- or another attempt owns it.
+${USER_STATE_INDEX_LUA_FUNCTIONS}
+local queuePrefix = queuePrefixFromSuffixKey(KEYS[2], ':active')
 if redis.call('HGET', KEYS[1], 'state') ~= 'active' or redis.call('HGET', KEYS[1], 'attemptToken') ~= ARGV[6] then
   return 0
 end
@@ -218,6 +277,7 @@ local delayMs = tonumber(ARGV[4])
 if delayMs > 0 then
   redis.call('ZADD', KEYS[4], tonumber(ARGV[5]) + delayMs, ARGV[1])
   redis.call('HSET', KEYS[1], 'state', 'delayed', 'attemptsMade', ARGV[2], 'failedReason', ARGV[3])
+  syncByState(queuePrefix, KEYS[1], ARGV[1], 'active', 'delayed')
 else
   local t = redis.call('TYPE', KEYS[3])
   local typeName = (type(t) == 'table' and t.ok) or t
@@ -231,6 +291,7 @@ else
   local score = tonumber(ARGV[7]) or 1000000000000000
   redis.call('ZADD', KEYS[3], score, ARGV[1])
   redis.call('HSET', KEYS[1], 'state', 'waiting', 'attemptsMade', ARGV[2], 'failedReason', ARGV[3])
+  syncByState(queuePrefix, KEYS[1], ARGV[1], 'active', 'waiting')
 end
 return 1
 `;
@@ -261,6 +322,7 @@ export const COMPLETE_JOB_LUA_SCRIPT = `
 -- Returns 1 after moving the job from active to completed, or 0 when it is no longer active
 -- or another attempt owns it. A retry by the attempt that already completed the job also
 -- returns 1, so a commit whose reply was lost is not reported as refused.
+${USER_STATE_INDEX_LUA_FUNCTIONS}
 local state = redis.call('HGET', KEYS[1], 'state')
 local ownsAttempt = redis.call('HGET', KEYS[1], 'attemptToken') == ARGV[6]
 if state == 'completed' and ownsAttempt then
@@ -269,13 +331,16 @@ end
 if state ~= 'active' or not ownsAttempt then
   return 0
 end
+local queuePrefix = queuePrefixFromSuffixKey(KEYS[2], ':active')
 redis.call('SREM', KEYS[2], ARGV[1])
 redis.call('DEL', KEYS[4])
 if ARGV[5] == '1' then
+  syncByState(queuePrefix, KEYS[1], ARGV[1], 'active', nil)
   redis.call('DEL', KEYS[1])
 else
   redis.call('SADD', KEYS[3], ARGV[1])
   redis.call('HSET', KEYS[1], 'state', 'completed', 'finishedOn', ARGV[2], 'progress', '100', 'returnvalue', ARGV[3], 'attemptsMade', ARGV[4])
+  syncByState(queuePrefix, KEYS[1], ARGV[1], 'active', 'completed')
 end
 return 1
 `;
@@ -297,12 +362,15 @@ export const FAIL_JOB_LUA_SCRIPT = `
 -- ARGV[10]: refusal code of the failure's error class, or '' (absent from a caller older than the field)
 -- Returns 1 after moving the job from active to failed, or 0 when it is no longer active
 -- or another attempt owns it.
+${USER_STATE_INDEX_LUA_FUNCTIONS}
 if redis.call('HGET', KEYS[1], 'state') ~= 'active' or redis.call('HGET', KEYS[1], 'attemptToken') ~= ARGV[7] then
   return 0
 end
+local queuePrefix = queuePrefixFromSuffixKey(KEYS[2], ':active')
 redis.call('SREM', KEYS[2], ARGV[1])
 redis.call('DEL', KEYS[4])
 if ARGV[6] == '1' then
+  syncByState(queuePrefix, KEYS[1], ARGV[1], 'active', nil)
   redis.call('DEL', KEYS[1])
 else
   redis.call('SADD', KEYS[3], ARGV[1])
@@ -318,6 +386,7 @@ else
     table.insert(fields, ARGV[10])
   end
   redis.call('HSET', KEYS[1], unpack(fields))
+  syncByState(queuePrefix, KEYS[1], ARGV[1], 'active', 'failed')
 end
 return 1
 `;
@@ -366,6 +435,8 @@ export const RECOVER_STALLED_JOBS_LUA_SCRIPT = `
 -- Active jobs without a live heartbeat lost their worker. The stalled attempt counts as made:
 -- the job returns to waiting while attempts remain, otherwise it fails.
 -- Returns { requeued ids, failed ids }.
+${USER_STATE_INDEX_LUA_FUNCTIONS}
+local queuePrefix = queuePrefixFromSuffixKey(KEYS[1], ':active')
 local requeued = {}
 local failed = {}
 
@@ -408,10 +479,12 @@ for _, jobId in ipairs(activeIds) do
         local ts = tonumber(rawTs) or tonumber(ARGV[1])
         local score = prioRank * 1000000000000 + (ts % 1000000000000)
         redis.call('ZADD', KEYS[2], score, jobId)
+        syncByState(queuePrefix, jobKey, jobId, 'active', 'waiting')
         table.insert(requeued, jobId)
       else
         redis.call('HSET', jobKey, 'state', 'failed', 'attemptsMade', attemptsMade, 'failedReason', ARGV[2], 'finishedOn', ARGV[1])
         redis.call('SADD', KEYS[3], jobId)
+        syncByState(queuePrefix, jobKey, jobId, 'active', 'failed')
         table.insert(failed, jobId)
       end
     end
@@ -621,6 +694,7 @@ export const REMOVE_JOB_LUA_SCRIPT = `
 -- ARGV[1]: job id
 -- Returns 1 after removing the job, 0 when it is active (its attempt is still running) or unknown.
 ${DEAD_LETTER_LUA_FUNCTIONS}
+${USER_STATE_INDEX_LUA_FUNCTIONS}
 local state = redis.call('HGET', KEYS[1], 'state')
 if state == 'active' then
   return 0
@@ -644,6 +718,38 @@ for i = 4, 7 do
   redis.call('SREM', KEYS[i], ARGV[1])
 end
 redis.call('ZREM', KEYS[8], ARGV[1])
+removeFromAllByState(queuePrefixFromSuffixKey(KEYS[2], ':waiting'), KEYS[1], ARGV[1])
 redis.call('DEL', KEYS[1])
 return 1
+`;
+
+export const OLDEST_WAITING_SINCE_LUA_SCRIPT = `
+-- KEYS[1]: waitingKey
+-- ARGV[1]: now ms
+-- ARGV[2]: PRIORITY_SCORE_BAND (1000000000000)
+-- ARGV[3]: MAX_WAITING_BANDS (10)
+-- Returns oldest wait duration in ms, or nil when no job waits.
+local t = redis.call('TYPE', KEYS[1])
+local typeName = (type(t) == 'table' and t.ok) or t
+if typeName ~= 'zset' then
+  return nil
+end
+local now = tonumber(ARGV[1])
+local bandSize = tonumber(ARGV[2])
+local maxBands = tonumber(ARGV[3])
+local from = '-inf'
+local longestWait = nil
+for _ = 1, maxBands do
+  local head = redis.call('ZRANGEBYSCORE', KEYS[1], from, '+inf', 'WITHSCORES', 'LIMIT', 0, 1)
+  if not head or #head < 2 then
+    break
+  end
+  local score = tonumber(head[2])
+  local wait = (((now % bandSize) - (score % bandSize)) + bandSize) % bandSize
+  if longestWait == nil or wait > longestWait then
+    longestWait = wait
+  end
+  from = tostring((math.floor(score / bandSize) + 1) * bandSize)
+end
+return longestWait
 `;
