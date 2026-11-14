@@ -162,12 +162,22 @@ function sameKey(offered: Buffer, expected: Buffer): boolean {
 }
 
 /** Starts the server on 127.0.0.1 with a random port; `close` ends it and every connection. */
+/**
+ * A fresh ed25519 key pair that ssh2 can read back. Its generator now and then writes a key its own parser refuses (seen once
+ * on a CI runner), so a pair that does not parse is made again, a few times at most.
+ */
+function readableKeyPair(): { pair: ReturnType<typeof utils.generateKeyPairSync>; parsed: Exclude<ReturnType<typeof utils.parseKey>, Error | Error[]> } {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const pair = utils.generateKeyPairSync('ed25519');
+    const parsed = utils.parseKey(pair.public);
+    if (!(parsed instanceof Error) && !Array.isArray(parsed)) return { pair, parsed };
+  }
+  throw new Error('the stub could not read its own key pair');
+}
+
 export async function startSftpStub(): Promise<SftpStub> {
-  const client = utils.generateKeyPairSync('ed25519');
-  const host = utils.generateKeyPairSync('ed25519');
-  const clientPublic = utils.parseKey(client.public);
-  const hostPublic = utils.parseKey(host.public);
-  if (clientPublic instanceof Error || hostPublic instanceof Error) throw new Error('the stub could not read its own key pair');
+  const { pair: client, parsed: clientPublic } = readableKeyPair();
+  const { pair: host, parsed: hostPublic } = readableKeyPair();
   const expectedClientKey = Buffer.from(clientPublic.getPublicSSH());
 
   const stub: SftpStub = {
