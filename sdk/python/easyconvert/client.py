@@ -55,6 +55,10 @@ def _checked(response: Response[Any]) -> Any:
     return response.parsed
 
 
+def _origin(url: httpx2.URL) -> tuple[str, str, int | None]:
+    return (url.scheme, url.host, url.port)
+
+
 class EasyConvertClient:
     def __init__(self, api_key: str, base_url: str = DEFAULT_BASE_URL, timeout: float = DEFAULT_TIMEOUT_SECONDS):
         if not api_key or not api_key.strip():
@@ -127,8 +131,14 @@ class EasyConvertClient:
             time.sleep(interval)
 
     def download(self, download_url: str) -> bytes:
-        """Downloads the bytes of a finished conversion from the ``download_url`` of its result."""
-        response = self.generated.get_httpx_client().get(download_url)
+        """Downloads the bytes of a finished conversion from the ``download_url`` of its result. The API key goes only to
+        the origin of the base URL: a link to another origin is fetched without it."""
+        client = self.generated.get_httpx_client()
+        url = client.base_url.join(download_url)
+        if _origin(url) == _origin(client.base_url):
+            response = client.get(url)
+        else:
+            response = httpx2.get(url, timeout=client.timeout)
         if response.status_code >= HTTP_ERROR_FLOOR:
             raise EasyConvertApiError(response.status_code, None)
         return response.content

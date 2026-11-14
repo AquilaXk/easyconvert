@@ -75,6 +75,7 @@ function multipartBody(fields: object, filename: string | undefined): FormData {
 export class EasyConvertClient {
   readonly api: Client<paths>;
   private readonly baseUrl: string;
+  private readonly baseOrigin: string;
   private readonly authorization: string;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
@@ -83,6 +84,7 @@ export class EasyConvertClient {
     const apiKey = config.apiKey?.trim();
     if (!apiKey) throw new Error('EasyConvertClient needs an API key');
     this.baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
+    this.baseOrigin = new URL(this.baseUrl).origin;
     this.authorization = `Bearer ${apiKey}`;
     this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchImpl = config.fetch ?? fetch;
@@ -146,10 +148,14 @@ export class EasyConvertClient {
     }
   }
 
-  /** Downloads the bytes of a finished conversion from the `downloadUrl` of its result. */
+  /**
+   * Downloads the bytes of a finished conversion from the `downloadUrl` of its result. The API key goes only to the origin of the
+   * base URL: a link to another origin (a result held in storage of its own) is fetched without it.
+   */
   async download(downloadUrl: string): Promise<ArrayBuffer> {
-    const response = await this.fetchImpl(new URL(downloadUrl, this.baseUrl), {
-      headers: { Authorization: this.authorization },
+    const url = new URL(downloadUrl, this.baseUrl);
+    const response = await this.fetchImpl(url, {
+      headers: url.origin === this.baseOrigin ? { Authorization: this.authorization } : {},
       signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!response.ok) {

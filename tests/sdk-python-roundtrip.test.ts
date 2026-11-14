@@ -39,11 +39,13 @@ sys.path.insert(0, sys.argv[1])
 from easyconvert import EasyConvertApiError, EasyConvertClient
 
 client = EasyConvertClient(api_key=sys.argv[3], base_url=sys.argv[2])
+other_origin = sys.argv[4]
 converted = client.convert(b"a,b\\n1,2\\n", "json", filename="a.csv", options={"quality": 80})
 queued = client.convert(b"x", "json", respond_async=True, webhook_url="https://hooks.example.test/in", webhook_secret="whsec_test")
 job = client.create_job(b"x", "json", filename="a.csv")
 done = client.wait_for_job(job.job_id, interval=0.01)
 data = client.download(done.result.download_url)
+foreign = client.download(other_origin + "/api/storage/file/out-key")
 try:
     client.get_job("missing")
     failure = None
@@ -54,11 +56,16 @@ print(json.dumps({
     "queued": [queued.job_id, queued.status_url],
     "job": [job.job_id, done.status.value, done.result.download_url],
     "download": list(data),
+    "foreign_download": list(foreign),
     "failure": failure,
 }))
 `;
 
 const requests: { url: string; headers: http.IncomingHttpHeaders; body: string }[] = [];
+/** The requests that reached a second server: another port is another origin, however alike the address. */
+const foreignRequests: http.IncomingHttpHeaders[] = [];
+let otherServer: http.Server;
+let otherOrigin: string;
 let jobPolls = 0;
 let server: http.Server;
 let baseUrl: string;
@@ -95,18 +102,28 @@ beforeAll(async () => {
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  otherServer = http.createServer((req, res) => {
+    foreignRequests.push(req.headers);
+    reply(res, 200, RESULT_BYTES, 'application/octet-stream');
+  });
+  await new Promise<void>((resolve) => otherServer.listen(0, '127.0.0.1', resolve));
+  otherOrigin = `http://127.0.0.1:${(otherServer.address() as AddressInfo).port}`;
 });
 
-afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
+afterAll(async () => {
+  await new Promise<void>((resolve) => otherServer.close(() => resolve()));
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+});
 
 describe.skipIf(python === undefined)('the Python client over a stub server', () => {
   it('converts, queues, polls and downloads through the generated package', async () => {
-    const { stdout } = await promisify(execFile)(python!, ['-I', '-B', '-c', SCRIPT, SDK_PYTHON_DIR, baseUrl, API_KEY]);
+    const { stdout } = await promisify(execFile)(python!, ['-I', '-B', '-c', SCRIPT, SDK_PYTHON_DIR, baseUrl, API_KEY, otherOrigin]);
     expect(JSON.parse(stdout)).toEqual({
       converted: ['f1', 'json'],
       queued: ['job_1', '/api/v1/jobs/job_1'],
       job: ['job_1', 'completed', '/api/storage/file/out-key'],
       download: [...RESULT_BYTES],
+      foreign_download: [...RESULT_BYTES],
       failure: [404, 'No such job.'],
     });
     const [sync, queued] = requests;
@@ -116,5 +133,8 @@ describe.skipIf(python === undefined)('the Python client over a stub server', ()
     expect(sync.body).toContain('{"quality": 80}');
     expect(queued.headers.prefer).toBe('respond-async');
     expect(queued.body).toContain('whsec_test');
+    expect(requests.find((request) => request.url === '/api/storage/file/out-key')?.headers.authorization).toBe(`Bearer ${API_KEY}`);
+    expect(foreignRequests).toHaveLength(1);
+    expect(foreignRequests[0]).not.toHaveProperty('authorization');
   }, 60_000);
 });
