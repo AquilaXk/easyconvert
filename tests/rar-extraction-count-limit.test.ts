@@ -22,10 +22,17 @@ beforeAll(() => {
   fs.writeFileSync(
     script,
     `#!/bin/sh
+if [ -f "${workDir}/link-denied-mode" ]; then
+  case "$1" in
+    lb) printf 'wanted.txt\\nlink.txt\\n' ;;
+    x) echo wanted > wanted.txt; echo 'ERROR: Cannot create symbolic link link.txt' >&2; exit 2 ;;
+  esac
+  exit 0
+fi
 if [ -f "${workDir}/symlink-mode" ]; then
   case "$1" in
     lb) printf 'wanted.txt\\nlink.txt\\n' ;;
-    x) echo wanted > wanted.txt; ln -s /etc/passwd link.txt ;;
+    x) echo wanted > wanted.txt; ln -s /etc/passwd link.txt || { echo 'Cannot create symbolic link link.txt' >&2; exit 2; } ;;
   esac
   exit 0
 fi
@@ -54,11 +61,25 @@ describe('the file count of an RAR extraction', () => {
     expect(() => extractRarArchive(rar, { limits: CALLER_LIMITS })).toThrow(/file count exceeds limit of 1000/);
   });
 
+  it('refuses the archive with the link sentence when unrar cannot write the link, instead of reading the stored entries', () => {
+    const marker = path.join(workDir, 'link-denied-mode');
+    fs.writeFileSync(marker, '1');
+    try {
+      expect(() => extractRarArchive(rar, { limits: CALLER_LIMITS })).toThrow(
+        'Archive contains symbolic links, which are not permitted for security reasons'
+      );
+    } finally {
+      fs.rmSync(marker, { force: true });
+    }
+  });
+
   it('lets an extraction within the count return the selected entry', () => {
     const files = extractRarArchive(rar, { limits: { ...CALLER_LIMITS, MAX_FILES: 2_000 }, entries: ['wanted.txt'] });
     expect(files.map((file) => file.filename)).toEqual(['wanted.txt']);
   });
 
+  // Where the sandbox may not make links (Landlock without MAKE_SYM on Linux) unrar fails to write it and exits with an error, which
+  // refuses the archive with the same sentence; elsewhere the link is written and the walk of the directory refuses it.
   it('refuses an archive whose extraction writes a symbolic link', () => {
     const marker = path.join(workDir, 'symlink-mode');
     fs.writeFileSync(marker, '1');

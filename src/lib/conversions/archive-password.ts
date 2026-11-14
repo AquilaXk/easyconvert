@@ -346,3 +346,17 @@ export function assertListingShowsEncryption(
 export function sevenZipEncryptionCheckInput(): Buffer {
   return sevenZipReadPasswordInput(undefined);
 }
+
+/** The sentence `extractRarArchive` refuses a link with, whether unrar wrote the link or could not. */
+export const SYMBOLIC_LINKS_REFUSED_MESSAGE = 'Archive contains symbolic links, which are not permitted for security reasons';
+
+/**
+ * The refusal of an archive whose link unrar could not write. The sandbox may not make links (Landlock without MAKE_SYM), so unrar
+ * stops with "Cannot create symbolic link" where it once wrote the link that the walk of the directory refused: the archive is
+ * refused the same way, instead of falling through to the stored-entry reader, which would hand the link's target out as a file.
+ */
+export function unrarLinkRefusal(err: unknown): ConversionFailedError | null {
+  const stderr = (err as { stderr?: Buffer | string } | null)?.stderr;
+  const text = Buffer.isBuffer(stderr) ? stderr.toString('utf-8') : (stderr ?? '');
+  return /cannot create symbolic link/i.test(text) ? new ConversionFailedError(SYMBOLIC_LINKS_REFUSED_MESSAGE) : null;
+}

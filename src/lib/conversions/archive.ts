@@ -111,7 +111,7 @@ import {
 import { compressWithNativeXz, decompressWithNativeXz } from './xz-native';
 import {
   SEVEN_ZIP_ASK_PASSWORD_SWITCH,
-  archivePasswordError,
+  archivePasswordError, unrarLinkRefusal,
   archiveFailureStderr,
   assertArchivePasswordSafe,
   assertListingShowsEncryption,
@@ -1786,7 +1786,7 @@ export function extractRarArchive(
             ? execFileSyncWithPasswordStdin(resolved.binary, resolved.args, { ...unrarOptions, input: Buffer.from(`${options.password}\n`, 'utf-8') })
             : execFileSyncConfined(resolved.binary, resolved.args, unrarOptions);
         } catch (err) {
-          throw archivePasswordError(err, { password: options.password, label: 'RAR archive', tool: 'unrar' }) ?? err;
+          throw archivePasswordError(err, { password: options.password, label: 'RAR archive', tool: 'unrar' }) ?? unrarLinkRefusal(err) ?? err;
         }
       };
       // unrar writes an entry that climbs out of the directory, or is absolute, below the directory instead, so the stored names
