@@ -15,6 +15,7 @@
   "tests/api-key-client-ip-allowlist.test.ts": 0,
   "tests/api-key-hash-pepper.test.ts": 0.1,
   "tests/api-key-integrity-and-rotation.test.ts": 0.1,
+  "tests/api-key-limit.test.ts": 0.5,
   "tests/api-key-pepper-rotation.test.ts": 0.1,
   "tests/api-key-scope-hardening.test.ts": 0.1,
   "tests/api-request-validation.test.ts": 0.9,

@@ -51,6 +51,10 @@ export const keyPaths = {
           'Terms of service not accepted (`terms_not_accepted`) or accepted in an earlier version (`terms_outdated`), or key settings out of range (`invalid_key_settings`).',
           ['terms_not_accepted', 'terms_outdated', 'invalid_key_settings']
         ),
+        '409': createCodedErrorResponse(
+          'The account holds the most active API keys it may (`key_limit_reached`); revoke one and create the key again.',
+          ['key_limit_reached']
+        ),
       },
     },
   },

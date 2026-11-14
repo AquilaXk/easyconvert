@@ -1659,6 +1659,7 @@
       "terms_outdated": "The terms of service changed after this page was opened. Reload the page, then accept them again.",
       "invalid_key_settings": "Check the key's settings: a name, scope, address list or expiry date is not valid.",
       "invalid_grace_period": "Choose a grace period between 0 seconds and 7 days.",
+      "key_limit_reached": "Your account already holds the most active API keys it may. Revoke a key you no longer use, then create a new one.",
       "key_create_failed": "Could not create the API key. Try again in a moment."
     },
     "billing": {

@@ -4132,6 +4132,21 @@ export interface operations {
                     };
                 };
             };
+            /** @description The account holds the most active API keys it may (`key_limit_reached`); revoke one and create the key again. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"] & {
+                        /**
+                         * @description The cause of the refusal, stable across releases.
+                         * @enum {string}
+                         */
+                        code?: "key_limit_reached";
+                    };
+                };
+            };
         };
     };
     revokeApiKey: {
