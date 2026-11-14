@@ -925,3 +925,35 @@ describe('Topological Reading Order Sort for Multi-Column Documents & Sandwich P
     });
   });
 });
+
+describe('Reading order of a page turned by two degrees', () => {
+  // A line 1920 px long turned by 2 degrees rises or falls by 67 px, so the axis-aligned box of a 44 px line is 111 px high:
+  // more than twice the line pitch of 48 px. The tolerance that decides whether two boxes are one row must come from the
+  // text's own height, which the word boxes give, or neighbouring lines meet in one row and the left ends come first.
+  const TURN = (2 * Math.PI) / 180;
+  const LINE_WIDTH = 1920;
+  const TEXT_HEIGHT = 44;
+  const PITCH = 48;
+
+  function turnedLine(index: number): OcrLineBlock {
+    const drop = LINE_WIDTH * Math.tan(TURN);
+    const top = 300 + index * PITCH;
+    const left = 370 - index * 2;
+    const words = [0, 1, 2].map((k) => ({
+      text: `w${index}${k}`,
+      bbox: { x: left + k * 600, y: top + (k * 600 * drop) / LINE_WIDTH, width: 500, height: TEXT_HEIGHT + 12 },
+    }));
+    return {
+      text: words.map((w) => w.text).join(' '),
+      bbox: { x: left, y: top, width: LINE_WIDTH, height: TEXT_HEIGHT + drop },
+      words,
+      baseline: { x0: left, y0: top + TEXT_HEIGHT, x1: left + LINE_WIDTH, y1: top + TEXT_HEIGHT + drop },
+    };
+  }
+
+  it('keeps the lines of a turned page in order when the line boxes are taller than the pitch', () => {
+    const lines = Array.from({ length: 10 }, (_, i) => turnedLine(i));
+    const shuffled = [5, 2, 8, 0, 9, 4, 1, 7, 3, 6].map((i) => lines[i]);
+    expect(sortLineBlocksTopological(shuffled).map((b) => b.text)).toEqual(lines.map((b) => b.text));
+  });
+});
