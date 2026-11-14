@@ -101,7 +101,7 @@ import {
 } from './raw-decoded-tiff';
 import { dataCorruptedWarning, decoderStderrDetail, decoderWarningOffset } from './raw-decoder-report';
 import {
-  RAW_DECODE_DEFAULT_TIMEOUT_MS, RAW_DECODE_FLAGS, RAW_DECODE_MAX_TIMEOUT_MS, RAW_DECODE_MEMORY_LIMIT_MB, RAW_DECODE_UNRECOGNIZED_PATTERN, rawDecoderFor,
+  RAW_DECODE_DEFAULT_TIMEOUT_MS, RAW_DECODE_FLAGS, RAW_DECODE_MAX_TIMEOUT_MS, RAW_DECODE_MEMORY_LIMIT_MB, RAW_DECODE_UNRECOGNIZED_PATTERN, rawDecoderFor, decodeWithSnapshotFallback,
 } from './raw-decode-settings';
 import { SEVEN_ZIP_BINARY_CANDIDATES } from '../lib/conversions/archive';
 import { sanitizeLeafFilename } from '../lib/conversions/archive-extraction-safety';
@@ -1743,19 +1743,17 @@ export async function convertWithNativeRaw(
   return withConversionWarnings(() => withSandboxDir('easyconvert-raw-', async (tempDir) => {
     const { inputPath } = resolveInputContext(input, src, tempDir);
     assertRawSensorPixels(inputPath);
-    const decoder = rawDecoderFor(src, inputPath, dcrawBin, () => resolveBinary(BINARY_PATHS.dcrawEmuHe, process.env.DCRAW_EMU_HE_PATH));
+    const snapshotDecoder = () => resolveBinary(BINARY_PATHS.dcrawEmuHe, process.env.DCRAW_EMU_HE_PATH);
+    const decoder = rawDecoderFor(src, inputPath, dcrawBin, snapshotDecoder);
     const decodedPath = path.join(tempDir, 'decoded.tiff');
     let decoderStderr = '';
+    const decode = (program: string) => executeSandboxedBinary(program, [...RAW_DECODE_FLAGS, '-Z', decodedPath, inputPath], {
+      cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: timeout,
+      maxBuffer: options.maxBufferBytes || 100 * 1024 * 1024, maxFileSize: RAW_DECODE_MAX_OUTPUT_BYTES,
+      memoryLimitMb: RAW_DECODE_MEMORY_LIMIT_MB, networkIsolated: true, signal: options.signal,
+    });
     try {
-      const run = await executeSandboxedBinary(decoder, [...RAW_DECODE_FLAGS, '-Z', decodedPath, inputPath], {
-        cwd: tempDir, workDir: tempDir, readDirs: [inputPath],
-        timeoutMs: timeout,
-        maxBuffer: options.maxBufferBytes || 100 * 1024 * 1024,
-        maxFileSize: RAW_DECODE_MAX_OUTPUT_BYTES,
-        memoryLimitMb: RAW_DECODE_MEMORY_LIMIT_MB,
-        networkIsolated: true,
-        signal: options.signal,
-      });
+      const run = await decodeWithSnapshotFallback(decode, decoder, snapshotDecoder);
       decoderStderr = run.stderr.toString('utf-8').trim();
     } catch (err) {
       if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {

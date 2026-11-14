@@ -4,8 +4,9 @@
 # `src/decoders/nikonhe.cpp`, came with "LibRaw snapshot 202611" (2026-11-04). LibRaw is licensed under the LGPL-2.1 or the CDDL-1.0 at the
 # user's choice. The program is built from the unmodified source of one commit, linked statically against the library built in the
 # same tree (so it needs only the C, C++ and OpenMP libraries of the image) and used only as a separate program, for the NEF
-# files named above and for no other file: it is never linked into the application, and every other camera file keeps the
-# distribution's LibRaw. The source is fetched by commit hash and the commit is checked before anything in it is built.
+# files named above and for a camera file that the distribution's LibRaw answers with "Unsupported file format" (the Sony ILCE-7M5 is
+# listed since 2026-05-21, "Support Sony ILCE-7M5"; 0.22.3 does not list it): it is never linked into the application, and every other
+# camera file keeps the distribution's LibRaw. The source is fetched by commit hash and the commit is checked before anything in it is built.
 #
 # The pin is the commit of 2026-11-08 at the head of `master` when it was chosen: the snapshot commit (4d9bd21acdf3, 2026-11-04) plus the
 # changes up to then. Bump LIBRAW_HE_COMMIT when a release carrying the decoder (0.23) is the distribution's, and then drop this script;
@@ -51,7 +52,7 @@ install -m 0755 bin/dcraw_emu "$INSTALL_DIR/bin/dcraw_emu"
 # The Debian-style name, so the image collects it into /licenses with the system notices.
 cat COPYRIGHT LICENSE.CDDL LICENSE.LGPL > "$INSTALL_DIR/share/doc/libraw-he/copyright"
 chmod 0644 "$INSTALL_DIR/share/doc/libraw-he/copyright"
-printf 'LibRaw development snapshot 202611, unmodified, commit %s of %s\nLGPL-2.1 or CDDL-1.0; built with Makefile.dist as a separate program, used only for Nikon NEF files with High Efficiency compression\n' "$LIBRAW_HE_COMMIT" "$LIBRAW_HE_URL" > "$INSTALL_DIR/share/doc/libraw-he/SOURCE"
+printf 'LibRaw development snapshot 202611, unmodified, commit %s of %s\nLGPL-2.1 or CDDL-1.0; built with Makefile.dist as a separate program, used only for Nikon NEF files with High Efficiency compression and for camera files that the distribution LibRaw does not recognise\n' "$LIBRAW_HE_COMMIT" "$LIBRAW_HE_URL" > "$INSTALL_DIR/share/doc/libraw-he/SOURCE"
 chmod 0644 "$INSTALL_DIR/share/doc/libraw-he/SOURCE"
 
 if [ "$(id -u)" -eq 0 ] && [ "$INSTALL_DIR" != "/usr/local" ]; then

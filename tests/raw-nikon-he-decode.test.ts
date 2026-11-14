@@ -85,6 +85,14 @@ function decoderStub(name: string, picture: string, stderr = ''): string {
   return script;
 }
 
+/** A stand-in for the `dcraw_emu` of a LibRaw that does not list the camera: it prints LibRaw's words and exits 1 without a picture. */
+function unlistedCameraStub(name: string): string {
+  const script = path.join(stubDirectory, `${name}.sh`);
+  writeFileSync(script, '#!/bin/sh\nfor input; do :; done\necho "Cannot open $input: Unsupported file format or not RAW file" >&2\nexit 1\n');
+  chmodSync(script, 0o755);
+  return script;
+}
+
 /** Which stand-in developed the result of a conversion, by the size of its picture; the error when the conversion failed. */
 async function developedBy(result: unknown): Promise<Stub | Error> {
   if (result instanceof Error) return result;
@@ -150,6 +158,34 @@ describe('which dcraw_emu develops a NEF', () => {
     );
     expect(error).toBeInstanceOf(RawDecodeError);
     expect((error as RawDecodeError).message).toMatch(/Native RAW decoder reported a problem with the \.nef file: .*data corrupted at 4275203/);
+  });
+});
+
+describe('a camera the distribution LibRaw does not list', () => {
+  const stub = (picture: Stub) => {
+    const file = path.join(stubDirectory, `${picture}-unlisted.tiff`);
+    writeFileSync(file, stubPicture(SIZES[picture]));
+    return decoderStub(`${picture}-unlisted`, file);
+  };
+  const convertArw = (distro: string, snapshot: string) =>
+    withBinaryAt('DCRAW_EMU_PATH', distro, () =>
+      withBinaryAt('DCRAW_EMU_HE_PATH', snapshot, () => dispatchConversion(buildNef({ tag: 0x93, value: LOSSLESS_COMPRESSION }), 'arw', 'png', {}, 'a7.arw').catch((error: unknown) => error))
+    );
+
+  it('is developed once by the pinned snapshot after the distribution build says "Unsupported file format"', async () => {
+    expect(await developedBy(await convertArw(unlistedCameraStub('unlisted'), stub('he')))).toBe('he');
+  });
+
+  it('keeps the distribution picture, and does not run the snapshot, for a camera the distribution build reads', async () => {
+    expect(await developedBy(await convertArw(stub('distro'), unlistedCameraStub('never-run')))).toBe('distro');
+  });
+
+  it('refuses with the unrecognised-file error when the snapshot does not list the camera either, or is not installed', async () => {
+    const both = await convertArw(unlistedCameraStub('unlisted-a'), unlistedCameraStub('unlisted-b'));
+    expect(both).toBeInstanceOf(RawDecodeError);
+    expect((both as RawDecodeError).unrecognized).toBe(true);
+    const alone = await withMissingBinary('DCRAW_EMU_HE_PATH', () => withBinaryAt('DCRAW_EMU_PATH', unlistedCameraStub('unlisted-c'), () => dispatchConversion(buildNef({ tag: 0x93, value: LOSSLESS_COMPRESSION }), 'arw', 'png', {}, 'a7.arw').catch((error: unknown) => error)));
+    expect(alone).toBeInstanceOf(RawDecodeError);
   });
 });
 
