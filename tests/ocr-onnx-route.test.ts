@@ -84,25 +84,39 @@ const ENGLISH_READING: OcrResult = {
 };
 
 describe('English pages are read by Tesseract and, when it reads them poorly, a second time by the ONNX engine', () => {
-  beforeEach(() => {
-    vi.stubEnv('EASYCONVERT_OCR_ONNX_ENGLISH', 'auto');
-  });
   afterEach(() => {
     vi.unstubAllEnvs();
   });
 
   const goodPage = (): Buffer => fs.readFileSync(path.join(__dirname, 'fixtures/ocr/en_a__clean300.png'));
 
-  it('reads English with Tesseract alone unless the second reading was switched on, or the engine as a whole was switched off', async () => {
+  it('reads English with Tesseract alone when the second reading was switched off, or the engine as a whole', async () => {
     helper.recognize.mockRejectedValue(new Error('the helper must not be asked'));
     vi.stubEnv('EASYCONVERT_OCR_ONNX_ENGLISH', 'off');
-    await recognizePage(page, 'eng', { detectOrientation: false });
-    vi.stubEnv('EASYCONVERT_OCR_ONNX_ENGLISH', '');
     await recognizePage(page, 'eng', { detectOrientation: false });
     vi.stubEnv('EASYCONVERT_OCR_ONNX_ENGLISH', 'auto');
     vi.stubEnv('EASYCONVERT_OCR_ONNX', 'off');
     await recognizePage(page, 'eng', { detectOrientation: false });
     expect(helper.recognize).not.toHaveBeenCalled();
+  });
+
+  it('goes through the gate of the page: a refused second reading leaves Tesseract\'s reading, an allowed one is the one that is timed', async () => {
+    helper.recognize.mockResolvedValue(ENGLISH_READING);
+    const refusing = { run: vi.fn(async () => null) };
+    const kept = await recognizePage(page, 'eng', { detectOrientation: false, rescue: refusing });
+    expect(kept.enginePath).not.toBe('onnx');
+    expect(refusing.run).toHaveBeenCalledTimes(1);
+    expect(helper.recognize).not.toHaveBeenCalled();
+    let allowed = 0;
+    const allowing = {
+      run: async <T,>(task: () => Promise<T>): Promise<T | null> => {
+        allowed++;
+        return task();
+      },
+    };
+    const read = await recognizePage(page, 'eng', { detectOrientation: false, rescue: allowing });
+    expect(read.enginePath).toBe('onnx');
+    expect(allowed).toBe(1);
   });
 
   it('does not ask the helper for a page that Tesseract read well', async () => {

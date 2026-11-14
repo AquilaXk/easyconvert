@@ -19,6 +19,24 @@ export const OCR_ALLOWANCE_PAGES = 3;
 export const OCR_PAGE_GUARD_PAGES = 6;
 /** Share of a job's own deadline the OCR may use, so that the refusal arrives before the deadline and the output can still be written. */
 export const OCR_JOB_DEADLINE_SHARE = 0.9;
+/**
+ * What a document may spend on second readings by the ONNX engine (policy decision 299), as a share of the time the document has
+ * run (5%), plus a start allowance (3 s). A second reading is an extra beside the Tesseract readings that the budget was measured on, and on a
+ * document that Tesseract scores low on most pages (a scanned form) it found less text than Tesseract on five of six pages, so the
+ * spend is capped instead of left to the number of pages that score low.
+ */
+export const OCR_RESCUE_SHARE = 0.05;
+export const OCR_RESCUE_ALLOWANCE_MS = 3_000;
+/** A second reading is not started when the document has less than this many page budgets left. */
+export const OCR_RESCUE_MIN_REMAINING_PAGES = 3;
+/**
+ * No second reading is started while a page of the document has been at its own work for this share of its limit: the reading takes
+ * CPU from the page workers, and a page that is that far on is the one that it would push over (a form that Tesseract reads in 55 s
+ * of the 60 s allowed ran past the limit when readings of other pages ran beside it).
+ */
+export const OCR_RESCUE_SLOW_PAGE_SHARE = 0.4;
+/** What a second reading is assumed to cost until one has been timed. */
+const OCR_RESCUE_FIRST_GUESS_MS = 3_000;
 /** Longest delay a timer takes. */
 const MAX_TIMER_MS = 2_147_483_647;
 
@@ -45,6 +63,16 @@ export function ocrDocumentBudgetMs(pages: number, jobDeadlineMs?: number): numb
 }
 
 /**
+ * What a page may ask of its document for a second reading by the ONNX engine. `run` starts the reading when the document can
+ * afford it and answers null when it cannot (the page keeps its Tesseract reading); while the reading runs the page's own time limit
+ * stands still, since the time a reading waits for the engine and the CPU other pages take from it are not the page's own work. The
+ * document's budget and the job's deadline keep counting.
+ */
+export interface OcrRescueGate {
+  run<T>(task: () => Promise<T>): Promise<T | null>;
+}
+
+/**
  * The time one document's OCR has left, and the guard of each page. A page is checked before it starts and raced
  * against the time left and against its own limit, so a page that never ends does not hold the document to the
  * engine's own timeouts (60 s to render, 120 s per reading); its work is left to those timeouts and its result is
@@ -56,6 +84,10 @@ export class OcrWorkBudget {
   private readonly pageLimitMs = ocrPageBudgetMs() * OCR_PAGE_GUARD_PAGES;
   private pagesRead = 0;
   private readonly cancellation = new AbortController();
+  private readonly pagesInFlight = new Set<{ startedAt: number; pausedMs: number; pausedAt: number | null }>();
+  private rescueSpentMs = 0;
+  private rescuesStarted = 0;
+  private rescuesRunning = 0;
 
   /**
    * @param jobSignal the job's own signal (its deadline, a cancel): when it fires the document is over like when a page is
@@ -91,32 +123,90 @@ export class OcrWorkBudget {
     );
   }
 
+  /** Whether one more second reading fits in the share of the document's time that they may take, and in the time it has left. */
+  private canRescue(): boolean {
+    const elapsed = performance.now() - this.startedAt;
+    if (this.remainingMs() < OCR_RESCUE_MIN_REMAINING_PAGES * ocrPageBudgetMs()) return false;
+    const now = performance.now();
+    for (const page of this.pagesInFlight) {
+      const own = now - page.startedAt - page.pausedMs;
+      if (page.pausedAt === null && own >= OCR_RESCUE_SLOW_PAGE_SHARE * this.pageLimitMs) return false;
+    }
+    const finished = this.rescuesStarted - this.rescuesRunning;
+    const typical = finished > 0 ? this.rescueSpentMs / finished : OCR_RESCUE_FIRST_GUESS_MS;
+    return this.rescueSpentMs + (this.rescuesRunning + 1) * typical <= OCR_RESCUE_ALLOWANCE_MS + OCR_RESCUE_SHARE * elapsed;
+  }
+
+  private rescueGate(pause: () => void, resume: () => void): OcrRescueGate {
+    return {
+      run: async <T,>(task: () => Promise<T>): Promise<T | null> => {
+        if (!this.canRescue()) return null;
+        const started = performance.now();
+        this.rescuesStarted++;
+        this.rescuesRunning++;
+        pause();
+        try {
+          return await task();
+        } finally {
+          resume();
+          this.rescuesRunning--;
+          this.rescueSpentMs += performance.now() - started;
+        }
+      },
+    };
+  }
+
   /**
    * Runs the work of one page, which gets a signal that fires as soon as any page of the document is refused or
    * fails: the document is over then, and the pages still being drawn or read stop at their next stage and give
-   * their place in the engine to the next job instead of finishing work nobody waits for.
+   * their place in the engine to the next job instead of finishing work nobody waits for. It also gets the gate of
+   * its second readings (`OcrRescueGate`).
    * @throws OcrWorkLimitError (413) when the document has used up its budget, or the page takes more than its own limit.
    */
-  async guardPage<T>(pageNumber: number, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  async guardPage<T>(pageNumber: number, work: (signal: AbortSignal, rescue: OcrRescueGate) => Promise<T>): Promise<T> {
     const signal = this.cancellation.signal;
     signal.throwIfAborted();
-    const remaining = this.remainingMs();
     let timer: NodeJS.Timeout | undefined;
     let onOver: (() => void) | undefined;
+    let clock: { startedAt: number; pausedMs: number; pausedAt: number | null } | undefined;
     try {
-      if (remaining <= 0) throw this.documentError();
-      const documentIsNearer = remaining <= this.pageLimitMs;
+      if (this.remainingMs() <= 0) throw this.documentError();
       // The page also ends when the document is over (a refused page, or the job's own signal), even when its work
       // does not look at the signal.
       const over = new Promise<never>((_, reject) => {
         onOver = () => reject(signal.reason);
         signal.addEventListener('abort', onOver, { once: true });
       });
+      let expire: (error: OcrWorkLimitError) => void = () => undefined;
       const expired = new Promise<never>((_, reject) => {
-        const delay = Math.min(MAX_TIMER_MS, Math.ceil(documentIsNearer ? remaining : this.pageLimitMs));
-        timer = setTimeout(() => reject(documentIsNearer ? this.documentError() : this.pageError(pageNumber)), delay);
+        expire = reject;
       });
-      const pending = work(signal);
+      // The page's own time: the time since it started, less the time a second reading of it was running. The timer is set again when
+      // that reading starts and ends, and it fires for whichever of the page limit and the document's time is nearer.
+      const own = { startedAt: performance.now(), pausedMs: 0, pausedAt: null as number | null };
+      clock = own;
+      this.pagesInFlight.add(own);
+      const arm = (): void => {
+        clearTimeout(timer);
+        const remaining = this.remainingMs();
+        const pageRemaining = own.pausedAt === null ? this.pageLimitMs - (performance.now() - own.startedAt - own.pausedMs) : Infinity;
+        const documentIsNearer = remaining <= pageRemaining;
+        const delay = Math.min(MAX_TIMER_MS, Math.max(1, Math.ceil(documentIsNearer ? remaining : pageRemaining)));
+        timer = setTimeout(() => expire(documentIsNearer ? this.documentError() : this.pageError(pageNumber)), delay);
+      };
+      const rescue = this.rescueGate(
+        () => {
+          own.pausedAt = performance.now();
+          arm();
+        },
+        () => {
+          own.pausedMs += performance.now() - (own.pausedAt ?? performance.now());
+          own.pausedAt = null;
+          arm();
+        }
+      );
+      arm();
+      const pending = work(signal, rescue);
       pending.catch(() => undefined);
       const result = await Promise.race([pending, expired, over]);
       this.pagesRead++;
@@ -127,6 +217,7 @@ export class OcrWorkBudget {
     } finally {
       clearTimeout(timer);
       if (onOver) signal.removeEventListener('abort', onOver);
+      if (clock) this.pagesInFlight.delete(clock);
     }
   }
 }

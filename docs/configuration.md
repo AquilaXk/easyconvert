@@ -332,7 +332,7 @@ Generate a secret with `openssl rand -hex 32`.
 | --- | --- | --- | --- | --- |
 | `QPDF_RUNNER` | one of `auto`, `off` (any case) | `auto` | no | web, worker |
 | `EASYCONVERT_OCR_ONNX` | one of `auto`, `off` (any case) | `auto` | no | web, worker |
-| `EASYCONVERT_OCR_ONNX_ENGLISH` | one of `auto`, `off` (any case) | `off` | no | web, worker |
+| `EASYCONVERT_OCR_ONNX_ENGLISH` | one of `auto`, `off` (any case) | `auto` | no | web, worker |
 | `FFMPEG_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `FFPROBE_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `FLUIDSYNTH_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
@@ -385,7 +385,7 @@ Generate a secret with `openssl rand -hex 32`.
 
 - `QPDF_RUNNER`: Whether the qpdf jobs of the PDF operations run in a child of `qpdf-runner` (native/qpdf-runner) that has libqpdf loaded already, each in a user and network namespace of its own, instead of starting the `qpdf` program. `auto` (the default) uses the runner when it is installed and starts, and starts the program otherwise (and for any job the runner declines or cannot isolate). `off` always starts the program.
 - `EASYCONVERT_OCR_ONNX`: Whether Korean pages (`kor`, `kor+eng`) are read by the ONNX OCR engine (PP-OCRv5 models in a sandboxed helper process, `src/lib/conversions/ocr-onnx-helper.ts`). `auto` (the default) uses it when the models, the `onnxruntime-node` package and the helper program are present, and reads Korean with Tesseract otherwise (the result carries `engineFallback`). `off` always reads Korean with Tesseract, and also switches off `EASYCONVERT_OCR_ONNX_ENGLISH`.
-- `EASYCONVERT_OCR_ONNX_ENGLISH`: Whether an English page that Tesseract still reads below a score of 0.75 after both of its preparations is read again by the ONNX OCR engine with the English recognizer (policy decision 299), which needs the files `rec-eng.onnx` and `dict-eng.txt` of the model directory beside those of Korean. `off` (the default) leaves English to Tesseract; `auto` reads such a page again when the engine is usable and keeps the Tesseract reading when it is not. A second reading costs a page its share of the page time limit, and a document that Tesseract scores low on most pages (a scanned form) may run past it.
+- `EASYCONVERT_OCR_ONNX_ENGLISH`: Whether an English page that Tesseract still reads below a score of 0.75 after both of its preparations is read again by the ONNX OCR engine with the English recognizer (policy decision 299), which needs the files `rec-eng.onnx` and `dict-eng.txt` of the model directory beside those of Korean. `auto` (the default) reads such a page again when the engine is usable and keeps the Tesseract reading when it is not; `off` leaves English to Tesseract. The second readings of a document are limited to 5% of the time it has run (plus 3 s), and the time a second reading takes does not count against the time limit of its page.
 - `FFMPEG_PATH`: Path of the ffmpeg executable; searched in the standard locations when unset.
 - `FFPROBE_PATH`: Path of the ffprobe executable.
 - `FLUIDSYNTH_PATH`: Path of the FluidSynth `fluidsynth` executable that renders MIDI files to WAV; searched in the standard locations when unset.

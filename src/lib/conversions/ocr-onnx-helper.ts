@@ -138,9 +138,9 @@ export function onnxOcrSwitchedOff(): boolean {
   return (process.env[ONNX_OCR_SWITCH_ENV] ?? '').trim().toLowerCase() === 'off';
 }
 
-/** Whether a page that Tesseract reads poorly is read again by the ONNX English recognizer: off unless `EASYCONVERT_OCR_ONNX_ENGLISH=auto` (policy decision 299). */
+/** Whether a page that Tesseract reads poorly is read again by the ONNX English recognizer: on unless `EASYCONVERT_OCR_ONNX_ENGLISH` or `EASYCONVERT_OCR_ONNX` is `off` (policy decision 299). */
 export function onnxEnglishSecondReadingOn(): boolean {
-  return (process.env[ONNX_OCR_ENGLISH_ENV] ?? '').trim().toLowerCase() === 'auto' && !onnxOcrSwitchedOff();
+  return (process.env[ONNX_OCR_ENGLISH_ENV] ?? '').trim().toLowerCase() !== 'off' && !onnxOcrSwitchedOff();
 }
 
 function modelFiles(recognizer: OnnxRecognizer): string[] {

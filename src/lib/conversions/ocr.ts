@@ -29,7 +29,7 @@ import {
 } from './ocr-pdf-combiner';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-sandwich';
 import { openPdfPageRenderer } from './pdf-page-render';
-import { OcrWorkBudget } from './ocr-work-budget';
+import { OcrWorkBudget, type OcrRescueGate } from './ocr-work-budget';
 import {
   fallbackReadsMore,
   OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN,
@@ -206,11 +206,13 @@ export async function recognizeRenderedPdfPages(
     const bandsAllowed = indices.length < 2 && options.parallelBands !== false && concurrency > 1;
     const budget = new OcrWorkBudget(indices.length, options.jobDeadlineMs, options.signal);
     const recognized = await mapWithConcurrency(indices, concurrency, (index) =>
-      budget.guardPage(renderer.plan.pageNumbers[index], async (signal) => {
+      budget.guardPage(renderer.plan.pageNumbers[index], async (signal, rescue) => {
         const rendered = await renderer.render(index, signal);
         // A page that was refused while it was being drawn costs no reading.
         signal.throwIfAborted();
-        const result = await performOcr(rendered.image, options.language, OCR_PREPROCESS_STEPS, options.detectOrientation, bandsAllowed, signal);
+        // As performOcr, with the gate of the page's second readings.
+        const recognizedPage = await recognizePage(rendered.image, options.language, { steps: OCR_PREPROCESS_STEPS, detectOrientation: options.detectOrientation, parallelBands: bandsAllowed, signal, rescue });
+        const result = calibrateOcrResult(recognizedPage.result, recognizedPage.enginePath);
         signal.throwIfAborted();
         const engineMarkup = options.engineMarkup ? await readEngineMarkup(rendered.image, options.language, options.engineMarkup, signal) : undefined;
         return { pageNumber: rendered.pageNumber, result: { ...result, pageRender: rendered.page, ...(engineMarkup ? { engineMarkup } : {}) } };
@@ -275,7 +277,7 @@ export interface OcrRecognitionOptions {
   /**
    * Which engine reads the page. Left out, a Korean page (`kor`, or `kor+eng`) is read by the ONNX engine in a sandboxed helper
    * (ocr-onnx-helper.ts) and every other page by Tesseract (an English page that Tesseract reads poorly gets a second reading by the
-   * ONNX engine when EASYCONVERT_OCR_ONNX_ENGLISH=auto); when the ONNX engine cannot be used the page is read by Tesseract and
+   * ONNX engine unless EASYCONVERT_OCR_ONNX_ENGLISH is off); when the ONNX engine cannot be used the page is read by Tesseract and
    * the result says so (`engineFallback`). `onnx` demands the ONNX engine and fails with OcrEngineUnavailableError without it;
    * `wasm`, `cli` and `neural` are the Tesseract paths (`cli` skips the WebAssembly engine and reads with the native tool; `neural`
    * is the Korean post-corrected Tesseract path) and never use the ONNX engine.
@@ -297,6 +299,11 @@ export interface OcrRecognitionOptions {
    * still waiting for a worker is dropped and a running one is interrupted. The signal's reason is thrown.
    */
   signal?: AbortSignal;
+  /**
+   * The page's gate for a second reading by the ONNX engine (see OcrRescueGate): the reading runs only when the document can afford
+   * it and does not count against the page's own time limit. Left out, as for a single image, the reading is not limited.
+   */
+  rescue?: OcrRescueGate;
 }
 
 const TESSERACT_CLI_CANDIDATES = ['/usr/bin/tesseract', '/usr/local/bin/tesseract', '/opt/homebrew/bin/tesseract'];
@@ -343,7 +350,7 @@ export async function recognizePage(
   language: string = 'auto',
   options: OcrRecognitionOptions = {}
 ): Promise<RecognizedPage> {
-  const { steps = OCR_PREPROCESS_STEPS, enginePath, detectOrientation, parallelBands, signal } = options;
+  const { steps = OCR_PREPROCESS_STEPS, enginePath, detectOrientation, parallelBands, signal, rescue } = options;
   const requested = resolveOcrLanguages(language);
   const requestedLanguage = requested.joined;
   // The Tesseract data is looked for when Tesseract reads the page: a page the ONNX engine reads needs none of it.
@@ -392,7 +399,13 @@ export async function recognizePage(
         sayOnnxFallbackOnce(err);
       }
     }
-    const onnxSecondReading = secondReading && tesseractLang === requestedLanguage ? () => recognizeOnnxAttempt(imageBuffer, requestedLanguage, onnxRecognizer, quarterTurn, signal) : undefined;
+    const onnxSecondReading =
+      secondReading && tesseractLang === requestedLanguage
+        ? (): Promise<RecognizedPage | null> => {
+            const read = (): Promise<RecognizedPage> => recognizeOnnxAttempt(imageBuffer, requestedLanguage, onnxRecognizer, quarterTurn, signal);
+            return rescue ? rescue.run(read) : read();
+          }
+        : undefined;
     return recognizeAttempt({ imageBuffer, steps, quarterTurn, tesseractLang, languageData: languageData(), enginePath: enginePath === 'onnx' ? undefined : enginePath, language, parallelBands, onnxSecondReading, signal });
   };
   const first = await attempt(0, requestedLanguage, requestedData);
@@ -476,7 +489,7 @@ interface RecognitionAttempt {
   language: string;
   parallelBands?: boolean;
   /** Reads the page with the ONNX engine, for the second reading of a page that Tesseract read poorly; absent when the request has none. */
-  onnxSecondReading?: () => Promise<RecognizedPage>;
+  onnxSecondReading?: () => Promise<RecognizedPage | null>;
   signal?: AbortSignal;
 }
 
@@ -545,10 +558,11 @@ async function recognizeAttempt(attempt: RecognitionAttempt): Promise<Recognized
  * noisy pages, tables and low-resolution scans that Tesseract reads badly, and its reading is kept only when it recognizes at least as much
  * confident text as Tesseract's.
  */
-async function readSecondTimeWithOnnx(read: () => Promise<RecognizedPage>, tesseract: RecognizedPage, signal?: AbortSignal): Promise<RecognizedPage | null> {
+async function readSecondTimeWithOnnx(read: () => Promise<RecognizedPage | null>, tesseract: RecognizedPage, signal?: AbortSignal): Promise<RecognizedPage | null> {
   signal?.throwIfAborted();
   try {
     const onnx = await read();
+    if (onnx === null) return null;
     return readingEvidence(onnx.result) >= readingEvidence(tesseract.result) * OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN ? onnx : null;
   } catch (err) {
     rethrowSandboxUnavailable(err);

@@ -584,17 +584,12 @@ const SCHEMA_ENTRIES = [
     'Whether Korean pages (`kor`, `kor+eng`) are read by the ONNX OCR engine (PP-OCRv5 models in a sandboxed helper process, `src/lib/conversions/ocr-onnx-helper.ts`). `auto` (the default) uses it when the models, the `onnxruntime-node` package and the helper program are present, and reads Korean with Tesseract otherwise (the result carries `engineFallback`). `off` always reads Korean with Tesseract, and also switches off `EASYCONVERT_OCR_ONNX_ENGLISH`.',
     BOTH
   ),
-  {
-    name: 'EASYCONVERT_OCR_ONNX_ENGLISH',
-    area: 'tools',
-    description:
-      'Whether an English page that Tesseract still reads below a score of 0.75 after both of its preparations is read again by the ONNX OCR engine with the English recognizer (policy decision 299), which needs the files `rec-eng.onnx` and `dict-eng.txt` of the model directory beside those of Korean. `off` (the default) leaves English to Tesseract; `auto` reads such a page again when the engine is usable and keeps the Tesseract reading when it is not. A second reading costs a page its share of the page time limit, and a document that Tesseract scores low on most pages (a scanned form) may run past it.',
-    kind: { type: 'enum', values: ['auto', 'off'], caseInsensitive: true },
-    default: 'off',
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  } as const satisfies VariableSpec,
+  autoOffSetting(
+    'EASYCONVERT_OCR_ONNX_ENGLISH',
+    'tools',
+    'Whether an English page that Tesseract still reads below a score of 0.75 after both of its preparations is read again by the ONNX OCR engine with the English recognizer (policy decision 299), which needs the files `rec-eng.onnx` and `dict-eng.txt` of the model directory beside those of Korean. `auto` (the default) reads such a page again when the engine is usable and keeps the Tesseract reading when it is not; `off` leaves English to Tesseract. The second readings of a document are limited to 5% of the time it has run (plus 3 s), and the time a second reading takes does not count against the time limit of its page.',
+    BOTH
+  ),
   {
     name: 'HTML_IMAGE_FETCH',
     area: 'security',
