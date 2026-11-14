@@ -119,6 +119,14 @@ describe('forms of the inputs', () => {
     expect(appearanceOf(1)).toEqual({ content: expect.stringContaining('/Helv_1 12 Tf'), fontKeys: ['Helv_1'] });
   });
 
+  it('writes the default appearance of the second input on a field that took it from its /AcroForm, with the renamed font', async () => {
+    const doc = await mergedDocument([await resourceFormPdf(StandardFonts.Helvetica, 'one'), await resourceFormPdf(StandardFonts.CourierBold, 'two')]);
+    const daOf = (fieldName: string): string | undefined => lookupString(doc, doc.getForm().getField(fieldName).acroField.dict.get(PDFName.of('DA')));
+    // The first field keeps inheriting /Helv from the /AcroForm; the second would inherit it too and draw with Helvetica, not Courier.
+    expect(daOf('f')).toBeUndefined();
+    expect(daOf('f+1')).toBe('/Helv_1 12 Tf 0 g');
+  });
+
   it('leaves a field alone when no other input has its name', async () => {
     const plain = await textPdf('plain', 1);
     const doc = await mergedDocument([await alice(), await bytesOf(plain)]);

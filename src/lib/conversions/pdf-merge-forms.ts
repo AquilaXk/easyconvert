@@ -13,7 +13,8 @@
  * the other file, because it may copy one page many times; here every input is copied once with one copier (pdf-merge-object-copier.ts), so
  * the fields are the copies already and the second copy is left out. qpdf also calls `fixCopiedAnnotations` once for each page, which splits a
  * field that has widgets on two pages into two fields; here the fields of all the pages of an input are collected first and added together.
- * Changes for this repository are in other files and other commits, each with its reason in its message.
+ * Not from qpdf: `writeInheritedDefaultAppearance` (see its comment), the one change to the algorithm. Other changes for this repository are
+ * in other files and other commits, each with its reason in its message.
  */
 import { deflateSync } from 'node:zlib';
 import { decodePDFRawStream, PDFBool, PDFDict, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFRef, PDFString } from 'pdf-lib';
@@ -192,6 +193,7 @@ export class FormMerge {
       // document-level /DR. To avoid having the field's /DR point to information that we are not maintaining, just reset it to that if it
       // exists. Empirical evidence suggests that many readers ignore /DR at the field level.
       if (obj.has(name('DR'))) obj.set(name('DR'), drRef);
+      this.writeInheritedDefaultAppearance(obj, state);
       if (textAt(this.context, obj.get(name('DA'))) !== undefined && state.renames.size > 0) this.adjustDefaultAppearances(obj, state.renames);
     }
   }
@@ -212,6 +214,16 @@ export class FormMerge {
       const q = numberAt(this.context, acroForm.get(name('Q'))) ?? 0;
       if (q !== state.fromDefaultQ) obj.set(name('Q'), PDFNumber.of(state.fromDefaultQ));
     }
+  }
+
+  /**
+   * Not in qpdf. Once the /DR has had a resource renamed, a field that takes its /DA from the /AcroForm of its input gets that /DA written
+   * on it, so that `adjustDefaultAppearances` can rename the font in it. Left alone, the field would inherit the output's /DA, which
+   * names the old resource and so the font of another input, when the two /DA strings are equal.
+   */
+  private writeInheritedDefaultAppearance(obj: PDFDict, state: ForeignFormState): void {
+    if (state.renames.size === 0 || state.fromDefaultDa === '' || this.index.inheritable(obj, 'DA') !== undefined) return;
+    obj.set(name('DA'), textObject(state.fromDefaultDa));
   }
 
   /**
