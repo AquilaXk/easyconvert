@@ -743,6 +743,7 @@
   "tests/ocr-preprocess-threads.test.ts": 0.1,
   "tests/ocr-preprocess.test.ts": 3.6,
   "tests/ocr-rescue-gate.test.ts": 0.2,
+  "tests/ocr-rescue-trigger.test.ts": 0.2,
   "tests/ocr-scan-pdf-oracle.test.ts": 2.8,
   "tests/ocr-skew-work.test.ts": 1.2,
   "tests/ocr-small-crops.test.ts": 7.3,

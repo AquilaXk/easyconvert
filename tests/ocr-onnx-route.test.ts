@@ -36,7 +36,9 @@ const READING: OcrResult = {
 let page: Buffer;
 beforeEach(async () => {
   helper.recognize.mockReset();
-  page = await sharp({ create: { width: 64, height: 32, channels: 3, background: '#fff' } }).png().toBuffer();
+  // A stand-in page with a mark Tesseract reads no text from: a page without ink is not read a second time (imageHasInk).
+  const blankPage = await sharp({ create: { width: 64, height: 32, channels: 3, background: '#fff' } }).png().toBuffer();
+  page = await sharp(blankPage).composite([{ input: { create: { width: 3, height: 3, channels: 3, background: '#000' } }, left: 30, top: 14 }]).png().toBuffer();
 });
 
 describe('Korean pages are read by the ONNX engine by default', () => {

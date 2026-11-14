@@ -401,8 +401,10 @@ export async function recognizePage(
     }
     const onnxSecondReading =
       secondReading && tesseractLang === requestedLanguage
-        ? (): Promise<RecognizedPage | null> => {
+        ? async (): Promise<RecognizedPage | null> => {
             const read = (): Promise<RecognizedPage> => recognizeOnnxAttempt(imageBuffer, requestedLanguage, onnxRecognizer, quarterTurn, signal);
+            // A page without ink (a blank page) holds no text for the detector either: starting the engine would only cost its load.
+            if (!(await imageHasInk(imageBuffer))) return null;
             return rescue ? rescue.run(read) : read();
           }
         : undefined;
@@ -460,6 +462,18 @@ async function recognizeOnnxAttempt(imageBuffer: Buffer, language: string, recog
 /** How well a page was read, 0..1: the mean raw word score weighted by characters; 0 when no word was read. */
 function readingQuality(result: OcrResult): number {
   return characterWeightedConfidence(result.lineBlocks ?? []) ?? 0;
+}
+
+/** The spread between the darkest and the lightest value of a channel under which a picture is taken as one flat colour (no ink). */
+const BLANK_IMAGE_MAX_SPREAD = 24;
+
+/**
+ * Whether a page image holds any mark: some channel spans more than BLANK_IMAGE_MAX_SPREAD between its darkest and lightest pixel.
+ * A blank scan or an empty rendered page is one flat colour with a little noise.
+ */
+export async function imageHasInk(image: Buffer): Promise<boolean> {
+  const { channels } = await sharp(image).stats();
+  return channels.some((channel) => channel.max - channel.min > BLANK_IMAGE_MAX_SPREAD);
 }
 
 /** Whether a first reading is poor enough that the page may be turned or in another script. */
