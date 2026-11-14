@@ -27,13 +27,17 @@ beforeEach(() => {
   resetLoginRateLimiterStore();
 });
 
+/** The terms the squatter ticked when they registered: an earlier version than the one in force. */
+const SQUATTERS_TERMS = '2020-01-01';
+
 async function passwordAccountAt(emailVerified: boolean) {
   const { hash, salt } = await hashPassword(SQUATTER_PASSWORD);
-  return redisUserStore.createUser({ email: ADDRESS, name: 'Squatter', provider: 'email', passwordHash: hash, salt, emailVerified, acceptedTermsVersion: TERMS_VERSION });
+  return redisUserStore.createUser({ email: ADDRESS, name: 'Squatter', provider: 'email', passwordHash: hash, salt, emailVerified, acceptedTermsVersion: SQUATTERS_TERMS });
 }
 
-async function signInWithGoogle(cookie = ''): Promise<Response> {
-  const session = await createOAuthSession();
+/** A Google sign-in that carries the acceptance of the terms in force, as the register tab of the page sends it, unless `acceptedTermsVersion` says otherwise. */
+async function signInWithGoogle(cookie = '', acceptedTermsVersion: string | null = TERMS_VERSION): Promise<Response> {
+  const session = await createOAuthSession({ acceptedTermsVersion: acceptedTermsVersion ?? undefined });
   return googleCallback(
     new NextRequest(`http://localhost:3000/api/auth/google/callback?code=mock_code_${session.state}&state=${session.state}`, {
       headers: { cookie: `${OAUTH_STATE_COOKIE_NAME}=${session.state}${cookie ? `; ${cookie}` : ''}` },
@@ -66,6 +70,28 @@ describe('a Google sign-in for the address of an account that was never verified
     expect(record).toMatchObject({ provider: 'google', emailVerified: true });
     expect(record.passwordHash || record.salt).toBeFalsy();
     expect((await getSessionFromRequest(new NextRequest('http://localhost:3000/x', { headers: { cookie: sessionCookieOf(response) } })))?.id).toBe(squatter.id);
+  });
+
+  it('records the terms the owner accepted with this sign-in, not the ones the squatter ticked', async () => {
+    const squatter = await passwordAccountAt(false);
+
+    await signInWithGoogle();
+
+    expect((await redisUserStore.findById(squatter.id))?.acceptedTermsVersion).toBe(TERMS_VERSION);
+  });
+
+  it('sends the owner who did not accept the terms to sign-up, as a new Google account is, and takes nothing over', async () => {
+    const squatter = await passwordAccountAt(false);
+    const { key } = await squattersSetup(squatter.id);
+
+    const response = await signInWithGoogle('', null);
+
+    expect(response.headers.get('location')).toContain('/auth?tab=register&error=terms_required');
+    expect(response.headers.getSetCookie().some((entry) => entry.startsWith('easyconvert_session='))).toBe(false);
+    const record = (await redisUserStore.findById(squatter.id))!;
+    expect(record).toMatchObject({ provider: 'email', passwordHash: squatter.passwordHash, acceptedTermsVersion: SQUATTERS_TERMS });
+    expect(record.emailVerified).not.toBe(true);
+    expect((await redisKeyStore.verifyApiKey(key.secretKey)).valid).toBe(true);
   });
 
   it('ends the sessions of the squatter and refuses their password', async () => {

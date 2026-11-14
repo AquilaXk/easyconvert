@@ -21,6 +21,11 @@ function redirectTo(origin: string, locale: AppLocale, pathname: string, search 
   return NextResponse.redirect(new URL(`${getPathname({ locale, href: pathname })}${search}`, origin));
 }
 
+/** The answer for a Google sign-in that did not accept the terms in force: back to the sign-up tab, which asks for them. */
+function redirectToSignUpForTerms(origin: string, locale: AppLocale, refusal: NonNullable<ReturnType<typeof termsRefusal>>): NextResponse {
+  return redirectTo(origin, locale, '/auth', `?tab=register&error=${refusal === 'terms_outdated' ? 'terms_outdated' : 'terms_required'}`);
+}
+
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const oauthError = searchParams.get('error');
@@ -69,10 +74,7 @@ export async function GET(req: NextRequest) {
 
     if (!userRecord) {
       const termsRefused = termsRefusal(oauthSession.acceptedTermsVersion);
-      if (termsRefused) {
-        const error = termsRefused === 'terms_outdated' ? 'terms_outdated' : 'terms_required';
-        return redirectTo(origin, locale, '/auth', `?tab=register&error=${error}`);
-      }
+      if (termsRefused) return redirectToSignUpForTerms(origin, locale, termsRefused);
       userRecord = await redisUserStore.createUser({
         email: googleProfile.email,
         name: googleProfile.name,
@@ -91,7 +93,10 @@ export async function GET(req: NextRequest) {
     } else if (!isEmailVerified(userRecord)) {
       // Nobody proved this address to the account that holds it, and Google just proved it to this sign-in: the account is the
       // registrant's squat on the owner's address, so the owner takes it over instead of being refused.
-      userRecord = await handOverUnverifiedAccount(userRecord.id, { avatarUrl: googleProfile.picture || userRecord.avatarUrl });
+      // The terms the registrant accepted are not the owner's: the owner accepts them with this sign-in, as a new Google account does, before anything is taken over.
+      const termsRefused = termsRefusal(oauthSession.acceptedTermsVersion);
+      if (termsRefused) return redirectToSignUpForTerms(origin, locale, termsRefused);
+      userRecord = await handOverUnverifiedAccount(userRecord.id, { avatarUrl: googleProfile.picture || userRecord.avatarUrl, acceptedTermsVersion: TERMS_VERSION });
     } else {
       // Pre-account hijacking protection: prevent silent takeover of verified email/password accounts
       const currentSessionUser = await getSessionFromRequest(req);

@@ -153,6 +153,12 @@ Certain format conversions require specialized external command-line utilities. 
 - **What was taken as a decision, not as code**: a sign-up answers an existing address like a new one; no session for it; an existing account is not updated by a second sign-up; the limits on the mails of an address. The verification token itself is the one of entry 181 (256 random bits, HMAC under the pepper, single use).
 - **Compliance**: both licences ask for their notice when code is copied; none is, so nothing is added to `NOTICE`. The repository is Apache-2.0.
 
+### 2.25 Credit holds, refunds and grants read in permissively licensed billing code (no code taken)
+- **Role**: entry 298 of `docs/policy-decisions.md` decides what a refund does to package credits that a running conversion holds. The reference code below was read for its behaviour only; no line of it, and no test of it, is in this repository, so `NOTICE` has no entry for it.
+- **Sources** (shallow clones at the commits named, read 2026-11-14): `polarsource/polar` at `3e66e0f3658b7986230c42eefdcc9e831a5c0b85` (Apache License 2.0), `server/polar/refund/service.py` (SHA-256 `a1b31452c1f8c721071507c8b32b2e0662b76052cbff32e92821fbb1c6ecf5f4`: `_on_created`, `_on_succeeded`); `openmeterio/openmeter` at `a2571d5f0cbecfe2892b01f1c22df9c318a16ab9` (Apache License 2.0), `openmeter/credit/grant.go` (SHA-256 `e85650c2a0022ed66579bb2ea30b2c92a77231b819d7cd5443e5055bc3e8f9f8`) and `openmeter/credit/grant/grant.go` (SHA-256 `19e1b6295840813fb427fd56531e251d93c8cf3f163278116d057bc5553efc8f`: the voided grant and its effective period).
+- **What was found**: the first revokes the benefits an order granted when a refund asks for it and keeps no balance with reservations in flight. The second ends a grant at the time it is voided and computes the balance from usage events after the fact, so it has no credits held by running work either. Neither answers what a refund does to credits a running job holds, so the debt that is paid when held credits return is our own rule.
+- **Compliance**: both licences ask for their notice when code is copied; none is, so nothing is added to `NOTICE`. The repository is Apache-2.0.
+
 ---
 
 ## 3. LGPL Relinking & On-Premises Container Images
