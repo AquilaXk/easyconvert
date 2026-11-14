@@ -85,7 +85,7 @@ import { HTML_FORMAT, HTML_SOURCES, planTextPdfRoute } from './text-pdf-route';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, findOfficeOutput, getMimeType, handOffOutput, inProcessOutputPath, internalFallbackResult, preserveOutput, resolveInputContext, resolveOfficeInputContext, withPageNumbers, withSandboxDir, writeOutputSegments, readRawInputBuffer } from './worker-output';
-import { DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
+import { DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, renderScratchPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { InputPixelLimitError } from '../lib/conversions/image-input-limits';
 import { checkOpenedPdfRasterPageBudget } from '../lib/conversions/pdf-access';
@@ -1378,6 +1378,7 @@ async function renderPdfToImageWithPoppler(
     return null;
   }
 
+  const writePngBatch = options.intermediateRaster === true ? renderScratchPngBatch : renderPngBatch;
   return executePopplerRender({
     sandboxPrefix: 'easyconvert-poppler-img-',
     tgt,
@@ -1394,7 +1395,7 @@ async function renderPdfToImageWithPoppler(
       const throughPage = ppmBatchPages(dpi);
       const sandbox = { cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal };
       const prefix = path.join(tempDir, 'page');
-      const done = renderPngBatch(pdftoppmBin, tempDir, dpi, sandbox, buildPdftoppmArgs(tgt, options, 1, throughPage, inputPath, prefix), { start: 1, end: throughPage });
+      const done = writePngBatch(pdftoppmBin, tempDir, dpi, sandbox, buildPdftoppmArgs(tgt, options, 1, throughPage, inputPath, prefix), { start: 1, end: throughPage });
       return { throughPage, done };
     },
     renderPages: async (tempDir, inputPath, intervals, early) => {
@@ -1407,7 +1408,7 @@ async function renderPdfToImageWithPoppler(
       const batches = intervals.flatMap((interval) => splitIntoBatches(Math.max(interval.start, drawnEarly + 1), interval.end, batchPages));
       const draw = (batch: PageBatch): Promise<void> => {
         const args = buildPdftoppmArgs(tgt, options, batch.start, batch.end, inputPath, prefix);
-        return isPng ? renderPngBatch(pdftoppmBin, tempDir, dpi, sandbox, args, batch) : runPdftoppm(pdftoppmBin, args, sandbox);
+        return isPng ? writePngBatch(pdftoppmBin, tempDir, dpi, sandbox, args, batch) : runPdftoppm(pdftoppmBin, args, sandbox);
       };
       await runBounded(batches.map((batch) => () => draw(batch)), pageRenderProcesses(), early?.done);
     },
@@ -1538,14 +1539,16 @@ async function persistChainFile(
 
 /**
  * Re-encodes every page Poppler rendered. A single page is one file; several pages arrive as the ZIP of per-page
- * files every Poppler route returns, and leave as a ZIP with the same entry names and the new extension.
+ * files every Poppler route returns, and leave as a ZIP with the same entry names and the new extension; `pagesAtOnce`
+ * pages are encoded at a time, and the entries stay in the order of the rendered ones.
  */
 async function reencodeRenderedPages(
   rendered: WorkerConversionResult,
   renderedExtension: string,
   targetExtension: string,
   encode: (page: Buffer, entryName: string, remainingMs: number) => Promise<Buffer>,
-  context: ChainOutputContext
+  context: ChainOutputContext,
+  pagesAtOnce = 1
 ): Promise<WorkerConversionResult> {
   const timeout = Math.min(stageTimeoutMs(context.options, POPPLER_DEFAULT_TIMEOUT_MS), POPPLER_MAX_TIMEOUT_MS);
   const deadline = Date.now() + timeout;
@@ -1557,17 +1560,15 @@ async function reencodeRenderedPages(
     const entryNames = Object.keys(pages.files)
       .filter((name) => !pages.files[name].dir)
       .sort((a, b) => a.localeCompare(b));
-    const encoded: ZipFile[] = [];
+    const encoded = new Array<ZipFile>(entryNames.length);
     const renderedSuffix = `.${renderedExtension}`;
-    for (const entryName of entryNames) {
+    await runBounded(entryNames.map((entryName, index) => async () => {
       const remaining = deadline - Date.now();
-      if (remaining <= 0) {
-        throw new SandboxedTimeoutError(timeout);
-      }
+      if (remaining <= 0) throw new SandboxedTimeoutError(timeout);
       const stem = entryName.endsWith(renderedSuffix) ? entryName.slice(0, -renderedSuffix.length) : entryName;
       const page = await pages.files[entryName].async('nodebuffer');
-      encoded.push({ name: `${stem}.${targetExtension}`, data: await encode(page, entryName, remaining) });
-    }
+      encoded[index] = { name: `${stem}.${targetExtension}`, data: await encode(page, entryName, remaining) };
+    }), pagesAtOnce);
     return await persistChainFile('zip', context, (outputPath) => writeDeflatedZipFile(outputPath, encoded));
   } finally {
     // The intermediate pages are an implementation detail of this chain: never leave them on disk.
@@ -1593,15 +1594,14 @@ async function convertPdfToEncodedRaster(
   originalFilename: string,
   context: ChainOutputContext
 ): Promise<WorkerConversionResult | null> {
-  const rendered = await convertWithNativePoppler(input, 'pdf', PNG_FORMAT, intermediateOptions(options), originalFilename);
+  const rendered = await convertWithNativePoppler(input, 'pdf', PNG_FORMAT, { ...intermediateOptions(options), intermediateRaster: true }, originalFilename);
   if (!rendered) return null;
-  const pageOptions = encoderOptions(options);
   return reencodeRenderedPages(
     rendered,
     PNG_FORMAT,
     tgt,
-    async (page, entryName, remainingMs) => (await convertImage(page, tgt, { ...pageOptions, timeoutMs: remainingMs }, entryName, PNG_FORMAT)).buffer,
-    context
+    async (page, entryName, remainingMs) => (await convertImage(page, tgt, { ...encoderOptions(options), timeoutMs: remainingMs }, entryName, PNG_FORMAT)).buffer,
+    context, pageRenderProcesses()
   );
 }
 

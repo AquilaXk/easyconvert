@@ -34,6 +34,11 @@ export interface WorkerEngineOptions extends ConversionOptions {
    * the request schema has no such field.
    */
   keepEmbeddedExcelObjects?: boolean;
+  /**
+   * The PNG pages of a PDF are an intermediate that an image encoder reads and drops (the pages of a PDF written as BMP, GIF, WebP or AVIF),
+   * so they are written with the cheap setting. Set by the worker's chain; the request schema has no such field.
+   */
+  intermediateRaster?: boolean;
 }
 
 export interface WorkerConversionResult extends ConversionResult {

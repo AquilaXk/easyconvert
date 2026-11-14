@@ -397,17 +397,30 @@ async function splitFiles(workspace: QpdfWorkspace, options: PdfSplitOptions, bu
     return parts;
   }
   const every = options.everyNPages === undefined ? 1 : splitEvery(options);
-  if (inputBytes >= PAGE_COUNT_CHECK_MIN_BYTES) {
-    const pages = await pageCountOf(workspace, action, signal);
-    const parts = Math.ceil(pages / every);
-    if (parts > MAX_SPLIT_PARTS) throw tooManyParts(`${pages} pages in parts of ${every} would write ${parts} parts`);
-  }
-  await withDirectoryBudget(
+  // The page count runs beside the cut: a count that finds too many parts stops the cut, which has written a few parts at most by then.
+  const stop = new AbortController();
+  const stopped = signal ? AbortSignal.any([stop.signal, signal]) : stop.signal;
+  const cut = withDirectoryBudget(
     workspace.dir,
     budget,
     (watched) => runQpdf(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, `--split-pages=${every}`, workspace.inputPath, SPLIT_OUTPUT_TEMPLATE], action, signal: watched }),
-    signal
+    stopped
   );
+  // A cut that fails while the count is under way is reported after it, not as an unhandled rejection.
+  const cutEnded = cut.then(() => undefined, () => undefined);
+  try {
+    if (inputBytes >= PAGE_COUNT_CHECK_MIN_BYTES) {
+      const pages = await pageCountOf(workspace, action, stopped);
+      const parts = Math.ceil(pages / every);
+      if (parts > MAX_SPLIT_PARTS) throw tooManyParts(`${pages} pages in parts of ${every} would write ${parts} parts`);
+    }
+    await cut;
+  } catch (error) {
+    stop.abort();
+    // The cut ends before the workspace is removed under it; the refusal that stopped it is the one reported.
+    await cutEnded;
+    throw error;
+  }
   const names = fs
     .readdirSync(workspace.dir)
     .filter((name) => name.startsWith(SPLIT_PART_PREFIX))
