@@ -155,7 +155,7 @@ describe('jobs that read from and write to the customer store', () => {
     const state = await ended(jobId);
 
     expect(Object.values(state.nodes).map((node) => node.error).filter(Boolean)).toEqual([]);
-    expect(state.status).toBe('completed');
+    expect(state.status, `graph ended ${JSON.stringify(state)}`).toBe('completed');
     const written = s3.objects.get('converted/people.json');
     expect(written?.contentType).toBe('application/json');
     expect((JSON.parse(written!.body.toString()) as Array<{ name: string }>).map((row) => row.name)).toEqual(['Alice', 'Bob']);
@@ -183,7 +183,7 @@ describe('jobs that read from and write to the customer store', () => {
     await scheduler.initGraph(graphId, sealGraph(graphId, graph as never), { ownerUserId: userId, webhookUrl: 'https://hooks.example.com/job', webhookSecret: 'whsec_byos_inline' });
     const state = await ended(graphId);
 
-    expect(state.status).toBe('completed');
+    expect(state.status, `graph ended ${JSON.stringify(state)}`).toBe('completed');
     expect(s3.objects.has('o/people.json')).toBe(true);
     await vi.waitFor(() => expect(dispatched).toHaveBeenCalled());
     const payloads = JSON.stringify(dispatched.mock.calls.map((call) => call[2]));
@@ -207,7 +207,7 @@ describe('jobs that read from and write to the customer store', () => {
     const { jobId } = JSON.parse(accepted);
     const state = await ended(jobId);
 
-    expect(state.status).toBe('completed');
+    expect(state.status, `graph ended ${JSON.stringify(state)}`).toBe('completed');
     expect(s3.objects.has('o/people.json')).toBe(true);
     expectNoSecret('job view', (await view(jobId)).text);
     expectNoSecret('graph state', JSON.stringify(state));
@@ -228,7 +228,7 @@ describe('jobs that read from and write to the customer store', () => {
     expect(res.status).toBe(202);
     const state = await ended((await res.json()).jobId);
 
-    expect(state.status).toBe('completed');
+    expect(state.status, `graph ended ${JSON.stringify(state)}`).toBe('completed');
     expect([...s3.objects.keys()].filter((key) => key.startsWith('out/')).sort()).toEqual(['out/a.json', 'out/b.json', 'out/c.json']);
   }, GRAPH_TIMEOUT_MS + 10_000);
 
@@ -389,7 +389,7 @@ describe('jobs that read from and write to the customer store', () => {
       const state = await ended(jobId);
 
       expect(Object.values(state.nodes).map((node) => node.error).filter(Boolean)).toEqual([]);
-      expect(state.status).toBe('completed');
+      expect(state.status, `graph ended ${JSON.stringify(state)}`).toBe('completed');
       const written = sftp.files.get(`${DATA}/out/people.json`);
       expect((JSON.parse(written!.toString()) as Array<{ name: string }>).map((row) => row.name)).toEqual(['Alice', 'Bob']);
       expectNoSecret('job view', (await view(jobId)).text, [sftp.clientPrivateKey.split('\n')[1]]);
@@ -415,7 +415,7 @@ describe('jobs that read from and write to the customer store', () => {
       expectNoSecret('the acceptance', accepted, [privateKeyLine, ...NO_SECRETS]);
       const state = await ended(JSON.parse(accepted).jobId);
 
-      expect(state.status).toBe('completed');
+      expect(state.status, `graph ended ${JSON.stringify(state)}`).toBe('completed');
       expect([...s3.objects.keys()].sort()).toEqual(['from-sftp/a.json', 'from-sftp/b.json']);
       expect(sftp.log.connections).toBeGreaterThan(2);
       expectNoSecret('graph state', JSON.stringify(state), [privateKeyLine, ...NO_SECRETS]);
