@@ -76,6 +76,7 @@ const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
   RtfHoldsNoTextError: 'conversion_failed',
   SvgFontFormatError: 'conversion_failed',
   SvgPathDataError: 'conversion_failed',
+  SandboxOutputKindError: 'conversion_failed',
   SvgSanitizationError: 'conversion_failed',
   TooManyMediaStreamsError: 'conversion_failed',
   UnknownArtifactFormatError: 'conversion_failed',
