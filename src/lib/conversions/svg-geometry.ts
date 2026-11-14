@@ -577,10 +577,24 @@ function parseCompoundSelector(text: string, rule: string): CompoundSelector {
   return { type, classes, id: ids[0] ?? null, specificity: [ids.length, classes.length, type ? 1 : 0] };
 }
 
+/** The stylesheet with each comment, from its opening to the next closing, replaced by a space, in one pass; a comment that is never closed stays as text. */
+function withoutCssComments(css: string): string {
+  const out: string[] = [];
+  let pos = 0;
+  for (let start = css.indexOf('/*', pos); start !== -1; start = css.indexOf('/*', pos)) {
+    const close = css.indexOf('*/', start + 2);
+    if (close === -1) break;
+    out.push(css.slice(pos, start), ' ');
+    pos = close + 2;
+  }
+  out.push(css.slice(pos));
+  return out.join('');
+}
+
 /** Parses <style> text; anything beyond the supported subset throws, naming the rule. */
 function parseStylesheet(css: string): CssRule[] {
   // CSS comments are dropped; CDO/CDC tokens (<!-- -->) are ignorable in a stylesheet.
-  const text = css.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/<!--|-->/g, ' ');
+  const text = withoutCssComments(css).replace(/<!--|-->/g, ' ');
   const rules: CssRule[] = [];
   let rest = text.trim();
   while (rest.length > 0) {

@@ -128,12 +128,23 @@ async function readGenericEbookText(input: Buffer, src: string): Promise<string>
   if (src === 'oeb') {
     // An OEB 1.x package names its documents in separate files; the project's single-file package carries its text in <text>.
     const xml = input.toString('utf-8');
-    const body = /<text>\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*<\/text>/.exec(xml)?.[1]?.trim();
+    const body = oebCdataText(xml);
     if (!body) throw new ConversionFailedError('The OEB package holds no text: its content documents are separate files that a single file cannot carry.');
     return body;
   }
   if (src === 'pml') return readPmlText(input);
   throw new ConversionFailedError(`Reading .${src} files is not supported.`);
+}
+
+/** The text of the first `<text><![CDATA[ ... ]]></text>` of an OEB package, trimmed. One closing search serves every opening: with none after the first, none follows a later one. */
+function oebCdataText(xml: string): string | undefined {
+  const opening = /<text>\s*<!\[CDATA\[/g;
+  const closing = /\]\]>\s*<\/text>/g;
+  const start = opening.exec(xml);
+  if (start === null) return undefined;
+  closing.lastIndex = opening.lastIndex;
+  const end = closing.exec(xml);
+  return end === null ? undefined : xml.slice(opening.lastIndex, end.index).trim();
 }
 
 export async function convertGenericEbookSource(inputBuffer: Buffer, src: string, tgt: string, options: ConversionOptions, baseName: string): Promise<ConversionResult> {

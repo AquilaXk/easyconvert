@@ -728,24 +728,95 @@ function meshTooLarge(what: string, limit: number): PayloadLimitError {
   return new PayloadLimitError(`The 3D mesh holds more than ${limit} ${what}, the most that is read.`);
 }
 
-const ASCII_STL_FACET = /facet\s+normal\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)[\s\S]*?vertex\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)[\s\S]*?vertex\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)[\s\S]*?vertex\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)/g;
+/** Reads the blank-separated words of a text one at a time, with no copy of the text and no array of the words. */
+class StlWords {
+  private pos = 0;
+  private start = 0;
 
-/** The facets of an ASCII STL, or null when it has none. @throws PayloadLimitError (413) past MAX_MESH_TRIANGLES facets. */
+  constructor(private readonly text: string) {}
+
+  /** Moves to the next word; false at the end of the text. */
+  next(): boolean {
+    const { text } = this;
+    while (this.pos < text.length && text.charCodeAt(this.pos) <= 32) this.pos++;
+    if (this.pos >= text.length) return false;
+    this.start = this.pos;
+    while (this.pos < text.length && text.charCodeAt(this.pos) > 32) this.pos++;
+    return true;
+  }
+
+  mark(): number {
+    return this.pos;
+  }
+
+  reset(mark: number): void {
+    this.pos = mark;
+  }
+
+  /** Whether the current word is `keyword`. */
+  is(keyword: string): boolean {
+    return this.pos - this.start === keyword.length && this.text.startsWith(keyword, this.start);
+  }
+
+  /** The number that the next word spells (digits, `.`, `e`, `E`, `+`, `-`), or null, in which case that word is left unread. */
+  number(): number | null {
+    const before = this.pos;
+    if (!this.next()) return null;
+    for (let i = this.start; i < this.pos; i++) {
+      const code = this.text.charCodeAt(i);
+      const spelled = (code >= 48 && code <= 57) || code === 46 || code === 101 || code === 69 || code === 43 || code === 45;
+      if (!spelled) {
+        this.pos = before;
+        return null;
+      }
+    }
+    return parseFloat(this.text.slice(this.start, this.pos));
+  }
+
+  /** Three numbers in a row, or null with the words read on from the first that is not a number. */
+  triple(): [number, number, number] | null {
+    const x = this.number();
+    const y = x === null ? null : this.number();
+    const z = y === null ? null : this.number();
+    return z === null ? null : [x as number, y as number, z];
+  }
+}
+
+/**
+ * The facets of an ASCII STL, or null when it has none: `facet normal n n n`, then the next three `vertex x y z` lines
+ * wherever they stand, read in one pass over the words. @throws PayloadLimitError (413) past MAX_MESH_TRIANGLES facets.
+ */
 function parseAsciiStl(text: string, name: string): CadMesh3D | null {
   const vertices: [number, number, number][] = [];
   const faces: [number, number, number][] = [];
   const normals: [number, number, number][] = [];
-  const facetRegex = new RegExp(ASCII_STL_FACET);
-  let match: RegExpExecArray | null;
-  while ((match = facetRegex.exec(text)) !== null) {
-    if (faces.length >= MAX_MESH_TRIANGLES) throw meshTooLarge('triangles', MAX_MESH_TRIANGLES);
-    normals.push([parseFloat(match[1]), parseFloat(match[2]), parseFloat(match[3])]);
-    const vStart = vertices.length;
-    vertices.push([parseFloat(match[4]), parseFloat(match[5]), parseFloat(match[6])]);
-    vertices.push([parseFloat(match[7]), parseFloat(match[8]), parseFloat(match[9])]);
-    vertices.push([parseFloat(match[10]), parseFloat(match[11]), parseFloat(match[12])]);
-    faces.push([vStart, vStart + 1, vStart + 2]);
+  const words = new StlWords(text);
+  let normal: [number, number, number] | null = null;
+  let corners = 0;
+  while (words.next()) {
+    if (normal === null) {
+      if (!words.is('facet')) continue;
+      const afterFacet = words.mark();
+      if (!words.next() || !words.is('normal')) {
+        // The word after `facet` may start the next facet, so it is read again.
+        words.reset(afterFacet);
+        continue;
+      }
+      normal = words.triple();
+    } else if (words.is('vertex')) {
+      const corner = words.triple();
+      if (corner === null) continue;
+      vertices.push(corner);
+      if (++corners < 3) continue;
+      if (faces.length >= MAX_MESH_TRIANGLES) throw meshTooLarge('triangles', MAX_MESH_TRIANGLES);
+      normals.push(normal);
+      const vStart = vertices.length - 3;
+      faces.push([vStart, vStart + 1, vStart + 2]);
+      normal = null;
+      corners = 0;
+    }
   }
+  vertices.length = faces.length * 3; // the corners of a facet that the text leaves unfinished
   return vertices.length > 0 ? { name, vertices, faces, normals } : null;
 }
 
