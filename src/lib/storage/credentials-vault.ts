@@ -368,11 +368,11 @@ export class CredentialsVault {
   }
 
   /**
-   * Retrieves and decrypts customer storage credentials by reference.
-   * Optionally enforces tenancy boundary by verifying matching userId.
+   * Retrieves and decrypts customer storage credentials by reference, for their owner only: a missing or empty
+   * `userId` opens nothing, so no caller reads a credential by its reference alone.
    */
-  async get(credentialRef: string, userId?: string): Promise<CustomerStorageCredentials | null> {
-    if (!credentialRef?.startsWith('cred_')) {
+  async get(credentialRef: string, userId: string | undefined): Promise<CustomerStorageCredentials | null> {
+    if (!userId || !credentialRef?.startsWith('cred_')) {
       return null;
     }
 
@@ -384,14 +384,14 @@ export class CredentialsVault {
       return null;
     }
 
-    // Expiration check
-    if (envelope.expiresAt && Date.now() > envelope.expiresAt) {
-      await this.delete(credentialRef);
+    // Tenancy isolation boundary, before anything is done to the credential.
+    if (envelope.userId !== userId) {
       return null;
     }
 
-    // Tenancy isolation boundary
-    if (userId && envelope.userId !== userId) {
+    // Expiration check
+    if (envelope.expiresAt && Date.now() > envelope.expiresAt) {
+      await this.delete(credentialRef);
       return null;
     }
 
