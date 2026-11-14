@@ -48,6 +48,7 @@ describe.skipIf(!REDIS_URL)('the node jobs of an ended graph, on a real Redis se
         refuseNodeJobsAfter: (count) => {
           storeAtMost = count;
         },
+        storedNodeJobs: () => stored,
         failNodeJobCancels: (times) => {
           failures = times;
           return () => tries;

@@ -100,6 +100,12 @@ export interface IGraphScheduler {
    * job redelivered after the node completed), which the worker then leaves alone.
    */
   onNodeStarted(graphId: string, nodeId: NodeId): Promise<boolean>;
+  /**
+   * Queues the ready nodes of graph `graphId` that no job was stored for yet: the ones a completion recorded but could not queue
+   * (its first try threw after the store took the completion), and the ones a failed start left behind. The queue keeps one job per
+   * node id, so a repeat adds none. Rejects when a job cannot be stored.
+   */
+  queueReadyNodes(graphId: string): Promise<unknown>;
   onNodeCompleted(
     graphId: string,
     nodeId: NodeId,

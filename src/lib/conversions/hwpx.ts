@@ -4,11 +4,35 @@ import { openPackage } from './package-access';
 import { readZipEntryText } from './zip-entry-reader';
 import { ConversionOptions, ConversionResult, CorruptStreamError } from '../types';
 import { assertWellFormedXml } from './xml-wellformed';
+import { withoutElements } from './office/xml-without';
+import { safeDecodeXmlEntities, safeExtractXmlElements, type SafeXmlElement } from './safe-xml-scanner';
 import { escapeXmlQuoted } from '../text/escape';
 import { HwpDocument, HwpParagraph, HwpTable, buildHwpCompoundFile, legacyHwpModel, parseHwpDocument, convertHwpDocument } from './hwp';
 
 function escapeXml(str?: string | null): string {
   return str ? escapeXmlQuoted(String(str)) : '';
+}
+
+/** The inflate budget bounds a part, so no element count cuts a long document short (the scanner's default stops at 50,000). */
+const HWPX_MAX_ELEMENTS = Number.POSITIVE_INFINITY;
+
+/** The elements with this local name that carry the `hp` prefix or none, in document order; self-closing ones included, found in one linear scan. */
+function hwpxElements(xml: string, local: string, prefixes: readonly (string | undefined)[] = [undefined, 'hp']): SafeXmlElement[] {
+  return safeExtractXmlElements(xml, local, { maxElements: HWPX_MAX_ELEMENTS }).filter((element) => prefixes.includes(element.prefix));
+}
+
+/** The text of the `t` runs in a fragment: tags inside a run dropped, entities decoded, runs joined by a space. */
+function hwpxRunsText(xml: string): string {
+  return hwpxElements(xml, 't')
+    .map((run) => safeDecodeXmlEntities(run.content.replace(/<[^>]+>/g, '')).trim())
+    .filter(Boolean)
+    .join(' ');
+}
+
+/** The text of the first Dublin Core element of a package file (`dc:`, `opf:` or no prefix), or undefined when it has none. */
+function hwpxMetadata(xml: string, local: string): string | undefined {
+  const [first] = hwpxElements(xml, local, [undefined, 'dc', 'opf']);
+  return first === undefined ? undefined : safeDecodeXmlEntities(first.content).trim();
 }
 
 /**
@@ -79,14 +103,9 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
   const hpfFile = zip.file('Contents/content.hpf') || zip.file('content.hpf');
   if (hpfFile) {
     const hpfXml = await readZipEntryText(hpfFile, { budget });
-    const titleMatch = hpfXml.match(/<(?:dc:|opf:)?title[^>]*>([\s\S]*?)<\/(?:dc:|opf:)?title>/i);
-    if (titleMatch) title = titleMatch[1].trim();
-
-    const creatorMatch = hpfXml.match(/<(?:dc:|opf:)?creator[^>]*>([\s\S]*?)<\/(?:dc:|opf:)?creator>/i);
-    if (creatorMatch) author = creatorMatch[1].trim();
-
-    const dateMatch = hpfXml.match(/<(?:dc:|opf:)?date[^>]*>([\s\S]*?)<\/(?:dc:|opf:)?date>/i);
-    if (dateMatch) date = dateMatch[1].trim();
+    title = hwpxMetadata(hpfXml, 'title');
+    author = hwpxMetadata(hpfXml, 'creator');
+    date = hwpxMetadata(hpfXml, 'date');
   }
 
   // 3. Section / BodyText Extraction
@@ -118,32 +137,11 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
     const secXml = await readZipEntryText(zip.files[sFile], { budget });
     assertWellFormedXml(sFile, secXml, 'HWPX');
 
-    // Extract tables (<hp:tbl> ... </hp:tbl>)
-    const tblRegex = /<(?:hp:)?tbl\b[\s\S]*?<\/(?:hp:)?tbl>/gi;
-    let tMatch: RegExpExecArray | null;
-    while ((tMatch = tblRegex.exec(secXml)) !== null) {
-      const tblXml = tMatch[0];
+    // Extract tables (<hp:tbl> ... </hp:tbl>); the outermost tables only, the rows and cells of a nested one belong to its cell.
+    for (const table of hwpxElements(secXml, 'tbl')) {
       const rows: string[][] = [];
-
-      const trRegex = /<(?:hp:)?tr\b[\s\S]*?<\/(?:hp:)?tr>/gi;
-      let trMatch: RegExpExecArray | null;
-      while ((trMatch = trRegex.exec(tblXml)) !== null) {
-        const trXml = trMatch[0];
-        const cells: string[] = [];
-
-        const tcRegex = /<(?:hp:)?tc\b[\s\S]*?<\/(?:hp:)?tc>/gi;
-        let tcMatch: RegExpExecArray | null;
-        while ((tcMatch = tcRegex.exec(trXml)) !== null) {
-          const tcXml = tcMatch[0];
-          // Extract text runs inside cell
-          const tTags = tcXml.match(/<(?:hp:)?t\b[^>]*>([\s\S]*?)<\/(?:hp:)?t>/gi) || [];
-          const cellText = tTags
-            .map((t) => t.replace(/<[^>]+>/g, '').trim())
-            .filter(Boolean)
-            .join(' ');
-          cells.push(cellText);
-        }
-
+      for (const row of hwpxElements(table.raw, 'tr')) {
+        const cells = hwpxElements(row.raw, 'tc').map((cell) => hwpxRunsText(cell.content));
         if (cells.length > 0) {
           rows.push(cells);
         }
@@ -159,24 +157,15 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
       }
     }
 
-    // Extract document-level paragraphs (<hp:p> ... </hp:p>)
-    // Strip table blocks first to avoid capturing nested table cell paragraphs
-    const secXmlWithoutTables = secXml.replace(/<(?:hp:)?tbl\b[\s\S]*?<\/(?:hp:)?tbl>/gi, '');
-    const pRegex = /<(?:hp:)?p\b([^>]*?)>([\s\S]*?)<\/(?:hp:)?p>/gi;
-    let pMatch: RegExpExecArray | null;
-    while ((pMatch = pRegex.exec(secXmlWithoutTables)) !== null) {
-      const pAttrs = pMatch[1];
-      const pBody = pMatch[2];
-
-      // Avoid double-counting table cell paragraphs if they are nested
-      // But if there are standalone paragraphs, capture them
-      const isHeadingAttr = /styleID="1"|heading="true"/i.test(pAttrs);
-
-      const tTags = pBody.match(/<(?:hp:)?t\b[^>]*>([\s\S]*?)<\/(?:hp:)?t>/gi) || [];
-      const text = tTags
-        .map((t) => t.replace(/<[^>]+>/g, '').trim())
-        .filter(Boolean)
-        .join(' ');
+    // Extract document-level paragraphs (<hp:p> ... </hp:p>); the table blocks are cut out first so that the paragraphs of their cells are not counted twice.
+    const secXmlWithoutTables = withoutElements(withoutElements(secXml, 'hp:tbl'), 'tbl');
+    for (const paragraph of hwpxElements(secXmlWithoutTables, 'p')) {
+      const pBody = paragraph.content;
+      const isHeadingAttr = Object.entries(paragraph.attrs).some(([key, value]) => {
+        const name = key.toLowerCase();
+        return (name === 'styleid' && value === '1') || (name === 'heading' && value.toLowerCase() === 'true');
+      });
+      const text = hwpxRunsText(pBody);
 
       if (text) {
         const isHeading = isHeadingAttr || (paragraphs.length === 0 && text.length < 80);

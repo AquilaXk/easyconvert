@@ -51,6 +51,22 @@ function parseBatchOptions(optionsRaw: string | null, instanceUri: string): { op
   return problem ? { problem } : { options: parsed };
 }
 
+/** The target format of each file name (and of `default`) from the `targetFormats` field: a JSON object whose values are strings. */
+function parseTargetFormats(raw: string | null): { map: Map<string, string> } | { problem: NextResponse } {
+  if (!raw) return { map: new Map() };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { problem: NextResponse.json({ success: false, error: 'Invalid JSON for targetFormats map.' }, { status: 400 }) };
+  }
+  const entries = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? Object.entries(parsed) : undefined;
+  if (!entries || entries.some(([, format]) => typeof format !== 'string')) {
+    return { problem: NextResponse.json({ success: false, error: 'The "targetFormats" field must be a JSON object whose values are strings.' }, { status: 400 }) };
+  }
+  return { map: new Map(entries as Array<[string, string]>) };
+}
+
 /** The files and fields of a batch request, or the refusal for a malformed body or an empty file list. */
 async function readBatchForm(
   req: NextRequest,
@@ -131,17 +147,11 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('conve
       }
     }
 
-    let targetFormatsMap: Record<string, string> = {};
-    if (targetFormatsRaw) {
-      try {
-        targetFormatsMap = JSON.parse(targetFormatsRaw);
-      } catch {
-        return NextResponse.json(
-          { success: false, error: 'Invalid JSON for targetFormats map.' },
-          { status: 400 }
-        );
-      }
+    const parsedTargets = parseTargetFormats(targetFormatsRaw);
+    if ('problem' in parsedTargets) {
+      return parsedTargets.problem;
     }
+    const targetFormatsMap = parsedTargets.map;
 
     const parsedOptions = parseBatchOptions(optionsRaw, instanceUri);
     if ('problem' in parsedOptions) {
@@ -154,7 +164,7 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('conve
     for (const file of files) {
       const detected = detectFormatFromFilename(file.name);
       if (!detected) continue;
-      const targetFormat = targetFormatsMap[file.name] || targetFormatsMap['default'] || detected.targetFormats[0];
+      const targetFormat = targetFormatsMap.get(file.name) || targetFormatsMap.get('default') || detected.targetFormats[0];
       if (!targetFormat) continue;
       planned.push({ file, extension: detected.extension, targetFormat });
     }

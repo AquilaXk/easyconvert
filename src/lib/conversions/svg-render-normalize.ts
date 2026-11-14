@@ -1,6 +1,7 @@
 import { ABSOLUTE_LENGTH_UNITS } from './svg-length';
 import { CHAR_SLASH, XML_NAME_PATTERN, endOfTag, skipNonElementMarkup } from './svg-xml';
 import { escapeMarkupAttribute } from '../text/escape';
+import { safeExtractXmlElements } from './safe-xml-scanner';
 
 // ============================================================================
 // SVG rendering normalization (96-dpi physical units & child clip-path union)
@@ -130,7 +131,7 @@ function normalizeSvgPhysicalLengths(svg: string): string {
   return parts.join('');
 }
 
-const CLIP_PATH_BLOCK_PATTERN = /<clipPath\b([^>]*)>([\s\S]*?)<\/clipPath\s*>/gi;
+const CLIP_PATH_TAG = 'clipPath';
 const CHILD_CLIP_PATH_URL_PATTERN = /\bclip-path\s*=\s*(?:"\s*url\(\s*#([^)\s"']+)\s*\)\s*"|'\s*url\(\s*#([^)\s"']+)\s*\)\s*')/gi;
 const ATTR_ID_PATTERN = /\bid\s*=\s*(?:"([^"]+)"|'([^']+)')/i;
 const ATTR_CLIP_UNITS_PATTERN = /\bclipPathUnits\s*=\s*(?:"([^"]+)"|'([^']+)')/i;
@@ -194,9 +195,13 @@ function lowerChildClipPathsToMasks(svg: string): string {
   const blocks: ClipBlock[] = [];
   const referencedInsideClipPath = new Set<string>();
 
-  for (const match of svg.matchAll(CLIP_PATH_BLOCK_PATTERN)) {
-    const openAttrs = match[1] ?? '';
-    const inner = match[2] ?? '';
+  // One linear scan: a self-closing <clipPath/> has no child to lower and ends where it is written, so it cannot swallow what follows it.
+  const clipPaths = safeExtractXmlElements(svg, CLIP_PATH_TAG, { maxElements: Number.POSITIVE_INFINITY });
+  for (const element of clipPaths) {
+    const closingAt = element.raw.lastIndexOf(`</${CLIP_PATH_TAG}`);
+    if (element.prefix !== undefined || closingAt < 0) continue;
+    const inner = element.content;
+    const openAttrs = element.raw.slice(1 + CLIP_PATH_TAG.length, closingAt - inner.length - 1);
     const idMatch = ATTR_ID_PATTERN.exec(openAttrs);
     const id = (idMatch?.[1] ?? idMatch?.[2] ?? '').trim();
     let hasClippedChild = false;
@@ -209,9 +214,9 @@ function lowerChildClipPathsToMasks(svg: string): string {
     }
     if (id && SAFE_XML_ID_PATTERN.test(id)) {
       blocks.push({
-        fullMatch: match[0],
-        start: match.index ?? 0,
-        end: (match.index ?? 0) + match[0].length,
+        fullMatch: element.raw,
+        start: element.startIndex,
+        end: element.endIndex,
         id,
         openAttrs,
         inner,

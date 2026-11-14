@@ -5,6 +5,7 @@ import { readZipEntryBytes, readZipEntryText } from '../zip-entry-reader';
 import { ConversionFailedError, PayloadLimitError } from '../../types';
 import { EncryptedOfficeDocumentError } from './legacy-office-errors';
 import { assertWellFormedXml } from '../xml-wellformed';
+import { withoutElements } from './xml-without';
 import { MAX_MIMETYPE_ENTRY_BYTES, PARAGRAPH_SEPARATOR } from './text-constants';
 
 export async function extractTextFromOdt(buffer: Buffer): Promise<string> {
@@ -22,7 +23,7 @@ const ODF_MANIFEST_PATH = 'META-INF/manifest.xml';
 
 /** The text of one text:p or text:h element: spaces, tabs and line breaks (text:s, text:tab, text:line-break) are characters. */
 function odfParagraphText(content: string): string {
-  const withoutNotes = content.replace(/<text:note\b[^>]*>[\s\S]*?<\/text:note>/g, '');
+  const withoutNotes = withoutElements(content, 'text:note');
   const spaced = withoutNotes
     .replace(/<text:line-break\s*\/>/g, '\n')
     .replace(/<text:tab\s*\/>/g, '\t')

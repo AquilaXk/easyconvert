@@ -5,6 +5,7 @@ import JSZip from 'jszip';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedTargetError, EngineUnavailableError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
 import { unconvertibleOfficeTarget } from './native-engine-pairs';
+import { removeHtmlOpenings, replaceHtmlElements } from './html-markdown-tags';
 import {
   convertOffice,
   extractTextFromRtf,
@@ -833,19 +834,22 @@ function stripAngleTags(html: string): string {
   return out.join('');
 }
 
+/** The inline and heading elements that the Markdown text pass rewrites, in the order they are applied. */
+const HTML_MARKDOWN_ELEMENTS: ReadonlyArray<readonly [name: string, wrap: (content: string) => string]> = [
+  ['h1', (content) => `# ${content}\n\n`],
+  ['h2', (content) => `## ${content}\n\n`],
+  ['h3', (content) => `### ${content}\n\n`],
+  ['strong', (content) => `**${content}**`],
+  ['b', (content) => `**${content}**`],
+  ['em', (content) => `*${content}*`],
+  ['i', (content) => `*${content}*`],
+  ['code', (content) => `\`${content}\``],
+];
+
 function htmlToMarkdown(html: string): string {
-  const cleaned = withoutHtmlRawElement(withoutHtmlRawElement(html, 'script'), 'style')
-    .replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, '# $1\n\n')
-    .replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, '## $1\n\n')
-    .replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, '### $1\n\n')
-    .replace(/<strong[^>]*>([\s\S]*?)<\/strong>/gi, '**$1**')
-    .replace(/<b[^>]*>([\s\S]*?)<\/b>/gi, '**$1**')
-    .replace(/<em[^>]*>([\s\S]*?)<\/em>/gi, '*$1*')
-    .replace(/<i[^>]*>([\s\S]*?)<\/i>/gi, '*$1*')
-    .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, '`$1`')
-    .replace(/<br\s*[\/]?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<p[^>]*>/gi, '');
+  let cleaned = withoutHtmlRawElement(withoutHtmlRawElement(html, 'script'), 'style');
+  for (const [name, wrap] of HTML_MARKDOWN_ELEMENTS) cleaned = replaceHtmlElements(cleaned, name, wrap);
+  cleaned = removeHtmlOpenings(cleaned.replace(/<br\s*[\/]?>/gi, '\n').replace(/<\/p>/gi, '\n\n'), 'p');
   return stripAngleTags(cleaned).trim();
 }
 

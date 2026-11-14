@@ -102,6 +102,7 @@ import {
   type SpannedArchiveMetadata,
 } from './archive-split';
 import {
+  SandboxedBufferLimitError,
   executeSandboxedBinary,
   resolveSandboxedCommand,
   rethrowSandboxUnavailable, execFileSyncConfined,
@@ -3268,37 +3269,32 @@ function inspectTarBuffer(buffer: Buffer, format = 'tar'): InspectionBody {
   };
 }
 
-async function inspectArchiveVia7zCli(
-  buffer: Buffer,
-  format: '7z' | 'rar',
-  p7z: string,
-  password?: string
-): Promise<InspectionBody> {
+async function inspectArchiveVia7zCli(buffer: Buffer, format: '7z' | 'rar', p7z: string, password?: string, signal?: AbortSignal): Promise<InspectionBody> {
   const tmpDir = os.tmpdir();
   const token = crypto.randomBytes(8).toString('hex');
   const workDir = path.join(tmpDir, `easyconvert_${format}_inspect_${Date.now()}_${token}`);
   fs.mkdirSync(workDir, { recursive: true });
   try {
     const archivePath = path.join(workDir, `archive.${format}`);
-    fs.writeFileSync(archivePath, buffer);
+    await fs.promises.writeFile(archivePath, buffer);
 
     // A password is answered on stdin (never in argv); without one, 7-Zip's prompt reads an empty answer.
-    const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', '-ba', archivePath], {
-      networkIsolated: true, workDir,
-    });
-
+    // The run is asynchronous: a listing may take seconds, and the web process serves other requests meanwhile.
     let stdoutStr = '';
     try {
-      const out = execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
+      const out = await executeSandboxedBinary(p7z, ['l', '-slt', '-ba', archivePath], {
         cwd: workDir,
-        env: getSanitizedEnvironment({}, true, workDir),
-        timeout: SEVEN_ZIP_LISTING_TIMEOUT_MS,
-        input: sevenZipReadPasswordInput(password),
+        workDir,
+        networkIsolated: true,
+        timeoutMs: SEVEN_ZIP_LISTING_TIMEOUT_MS,
+        stdin: sevenZipReadPasswordInput(password),
         maxBuffer: listingBufferLimit(ARCHIVE_SECURITY_LIMITS),
+        signal,
       });
-      stdoutStr = out.toString('utf-8');
+      stdoutStr = out.stdout.toString('utf-8');
     } catch (err: any) {
-      if (err?.code === 'ENOBUFS') {
+      if (signal?.aborted) throw err;
+      if (err instanceof SandboxedBufferLimitError || err?.code === 'ENOBUFS') {
         throw new UnsafeArchiveError(
           'entry-count',
           `Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`
@@ -3382,13 +3378,10 @@ async function inspectArchiveVia7zCli(
   }
 }
 
-async function inspect7zBuffer(
-  buffer: Buffer,
-  password?: string
-): Promise<InspectionBody> {
+async function inspect7zBuffer(buffer: Buffer, password?: string, signal?: AbortSignal): Promise<InspectionBody> {
   const p7z = get7zBinaryPath();
   if (p7z) {
-    return await inspectArchiveVia7zCli(buffer, '7z', p7z, password);
+    return await inspectArchiveVia7zCli(buffer, '7z', p7z, password, signal);
   }
 
   // Pure TS fallback for 7z inspection. With a password the in-process AES coder opens an encrypted header itself.
@@ -3429,10 +3422,7 @@ async function inspect7zBuffer(
   };
 }
 
-async function inspectRarBuffer(
-  buffer: Buffer,
-  password?: string
-): Promise<InspectionBody> {
+async function inspectRarBuffer(buffer: Buffer, password?: string, signal?: AbortSignal): Promise<InspectionBody> {
   // Fast byte-level inspection for RAR header encryption (MHD_PASSWORD flag)
   if (buffer.length >= 14) {
     const isRar4 =
@@ -3456,7 +3446,7 @@ async function inspectRarBuffer(
 
   const p7z = get7zBinaryPath();
   if (p7z) {
-    return await inspectArchiveVia7zCli(buffer, 'rar', p7z, password);
+    return await inspectArchiveVia7zCli(buffer, 'rar', p7z, password, signal);
   }
 
   // Pure TS fallback for RAR inspection
@@ -3553,7 +3543,7 @@ function unreadableArchiveSource(src: string): ConversionFailedError {
  */
 export async function inspectArchive(
   archiveBuffer: Buffer,
-  options: { filename?: string; password?: string } = {}
+  options: { filename?: string; password?: string; signal?: AbortSignal } = {}
 ): Promise<ArchiveInspectResponse> {
   const body = await inspectArchiveEntries(archiveBuffer, options);
   const safety = summarizeInspectionSafety(body.entries);
@@ -3571,7 +3561,7 @@ export async function inspectArchive(
 
 async function inspectArchiveEntries(
   archiveBuffer: Buffer,
-  options: { filename?: string; password?: string } = {}
+  options: { filename?: string; password?: string; signal?: AbortSignal } = {}
 ): Promise<InspectionBody> {
   if (!archiveBuffer || archiveBuffer.length === 0) {
     throw new ConversionFailedError('Archive buffer is empty.');
@@ -3584,12 +3574,12 @@ async function inspectArchiveEntries(
 
   // 2. 7z
   if (isSevenZipArchive(archiveBuffer)) {
-    return await inspect7zBuffer(archiveBuffer, options.password);
+    return await inspect7zBuffer(archiveBuffer, options.password, options.signal);
   }
 
   // 3. RAR
   if (isRarArchive(archiveBuffer)) {
-    return await inspectRarBuffer(archiveBuffer, options.password);
+    return await inspectRarBuffer(archiveBuffer, options.password, options.signal);
   }
 
   // 4. Compressed TAR wrappers: GZ, BZ2, ZST, XZ
@@ -3637,8 +3627,8 @@ async function inspectArchiveEntries(
 
   const hint = options.filename ? path.extname(options.filename).toLowerCase() : '';
   if (hint === '.zip') return inspectZipBuffer(archiveBuffer);
-  if (hint === '.7z') return await inspect7zBuffer(archiveBuffer, options.password);
-  if (hint === '.rar') return await inspectRarBuffer(archiveBuffer, options.password);
+  if (hint === '.7z') return await inspect7zBuffer(archiveBuffer, options.password, options.signal);
+  if (hint === '.rar') return await inspectRarBuffer(archiveBuffer, options.password, options.signal);
   if (hint === '.tar') return inspectTarBuffer(archiveBuffer, 'tar');
 
   throw new ConversionFailedError('Unsupported or unrecognized archive format for inspection.');

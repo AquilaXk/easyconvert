@@ -16,7 +16,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 37
+    "maxValue": 35
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",
@@ -279,7 +279,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 4048
+    "maxValue": 4038
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -583,13 +583,6 @@
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "parseHwpxDocument",
     "count": 1
-  },
-  {
-    "file": "src/lib/conversions/hwpx.ts",
-    "rule": "complexity",
-    "function": "parseHwpxDocument",
-    "count": 1,
-    "maxValue": 36
   },
   {
     "file": "src/lib/conversions/image.ts",

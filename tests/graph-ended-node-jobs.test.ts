@@ -30,6 +30,7 @@ describe('the node jobs of an ended graph, with the in-memory scheduler and queu
         refuseNodeJobsAfter: (count) => {
           storeAtMost = count;
         },
+        storedNodeJobs: () => stored,
         failNodeJobCancels: (failures) => {
           const tries = new Map<string, number>();
           for (const queue of allConversionQueues) {
