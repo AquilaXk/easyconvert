@@ -43,25 +43,45 @@ const FIELD_STOP = 0;
 /** Bytes a boolean takes as a list element (as a struct field its value rides in the field header). */
 const LIST_BOOLEAN_ELEMENT_BYTES = 1;
 const DOUBLE_BYTES = 8;
+const INITIAL_WRITER_CAPACITY = 256;
+const SAFE_ZIGZAG_NUMBER_MAX = 0x3ffffffffffff;
+const SAFE_ZIGZAG_NUMBER_MIN = -0x4000000000000;
+const UINT32_LIMIT = 0xffffffff;
 
 export class CompactProtocolWriter {
-  private chunks: Buffer[] = [];
+  private buf: Uint8Array = new Uint8Array(INITIAL_WRITER_CAPACITY);
+  private len = 0;
   private lastFieldIdStack: number[] = [0];
+
+  private ensure(extra: number): void {
+    const needed = this.len + extra;
+    if (needed <= this.buf.length) return;
+    let nextCap = this.buf.length;
+    while (nextCap < needed) nextCap *= 2;
+    const next = new Uint8Array(nextCap);
+    next.set(this.buf.subarray(0, this.len));
+    this.buf = next;
+  }
+
+  private writeByte(byte: number): void {
+    this.ensure(1);
+    this.buf[this.len++] = byte;
+  }
 
   writeFieldBegin(fieldId: number, type: number) {
     const lastId = this.lastFieldIdStack[this.lastFieldIdStack.length - 1];
     const delta = fieldId - lastId;
     if (delta > 0 && delta <= MAX_FIELD_DELTA) {
-      this.chunks.push(Buffer.from([(delta << NIBBLE_BITS) | type]));
+      this.writeByte((delta << NIBBLE_BITS) | type);
     } else {
-      this.chunks.push(Buffer.from([type]));
+      this.writeByte(type);
       this.writeI16(fieldId);
     }
     this.lastFieldIdStack[this.lastFieldIdStack.length - 1] = fieldId;
   }
 
   writeFieldStop() {
-    this.chunks.push(Buffer.from([FIELD_STOP]));
+    this.writeByte(FIELD_STOP);
   }
 
   writeStructBegin() {
@@ -73,14 +93,34 @@ export class CompactProtocolWriter {
   }
 
   writeVarint(n: number | bigint) {
+    if (typeof n === 'number') {
+      if (n >= 0 && n <= UINT32_LIMIT) {
+        this.ensure(5);
+        let val = n >>> 0;
+        while (val >= VARINT_CONTINUATION) {
+          this.buf[this.len++] = (val & VARINT_PAYLOAD_MASK) | VARINT_CONTINUATION;
+          val >>>= VARINT_PAYLOAD_BITS;
+        }
+        this.buf[this.len++] = val & VARINT_PAYLOAD_MASK;
+        return;
+      }
+      if (n > UINT32_LIMIT && Number.isSafeInteger(n)) {
+        this.ensure(VARINT_MAX_BYTES);
+        let val = n;
+        while (val >= VARINT_CONTINUATION) {
+          this.buf[this.len++] = (val % (VARINT_PAYLOAD_MASK + 1)) | VARINT_CONTINUATION;
+          val = Math.floor(val / (VARINT_PAYLOAD_MASK + 1));
+        }
+        this.buf[this.len++] = val;
+        return;
+      }
+    }
     let val = typeof n === 'bigint' ? n : BigInt(n);
-    const parts: number[] = [];
     while (val >= VARINT_CONTINUATION_BIG) {
-      parts.push(Number(val & VARINT_PAYLOAD_MASK_BIG) | VARINT_CONTINUATION);
+      this.writeByte(Number(val & VARINT_PAYLOAD_MASK_BIG) | VARINT_CONTINUATION);
       val >>= VARINT_PAYLOAD_BITS_BIG;
     }
-    parts.push(Number(val & VARINT_PAYLOAD_MASK_BIG));
-    this.chunks.push(Buffer.from(parts));
+    this.writeByte(Number(val & VARINT_PAYLOAD_MASK_BIG));
   }
 
   writeZigzag(n: number) {
@@ -98,6 +138,10 @@ export class CompactProtocolWriter {
   }
 
   writeI64(n: bigint | number) {
+    if (typeof n === 'number' && Number.isInteger(n) && n >= SAFE_ZIGZAG_NUMBER_MIN && n <= SAFE_ZIGZAG_NUMBER_MAX) {
+      this.writeVarint(n >= 0 ? n * 2 : -n * 2 - 1);
+      return;
+    }
     this.writeZigzag64(typeof n === 'bigint' ? n : BigInt(n));
   }
 
@@ -107,24 +151,30 @@ export class CompactProtocolWriter {
 
   writeBinary(buf: Uint8Array) {
     this.writeVarint(buf.length);
-    this.chunks.push(Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength));
+    this.ensure(buf.length);
+    this.buf.set(buf, this.len);
+    this.len += buf.length;
   }
 
   writeString(str: string) {
-    this.writeBinary(Buffer.from(str, 'utf-8'));
+    const byteLen = Buffer.byteLength(str, 'utf8');
+    this.writeVarint(byteLen);
+    this.ensure(byteLen);
+    Buffer.from(this.buf.buffer, this.buf.byteOffset, this.buf.byteLength).write(str, this.len, byteLen, 'utf8');
+    this.len += byteLen;
   }
 
   writeListBegin(elemType: number, size: number) {
     if (size < SHORT_LIST_LIMIT) {
-      this.chunks.push(Buffer.from([(size << NIBBLE_BITS) | elemType]));
+      this.writeByte((size << NIBBLE_BITS) | elemType);
     } else {
-      this.chunks.push(Buffer.from([LIST_LONG_FORM_HEADER | elemType]));
+      this.writeByte(LIST_LONG_FORM_HEADER | elemType);
       this.writeVarint(size);
     }
   }
 
   toBuffer(): Buffer {
-    return Buffer.concat(this.chunks);
+    return Buffer.from(this.buf.subarray(0, this.len));
   }
 }
 

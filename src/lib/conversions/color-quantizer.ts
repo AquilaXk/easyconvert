@@ -245,9 +245,9 @@ interface Histogram {
 }
 
 const HISTOGRAM_COUNTS = new Uint32Array(HISTOGRAM_BINS);
-const HISTOGRAM_SUMS_R = new Uint32Array(HISTOGRAM_BINS);
-const HISTOGRAM_SUMS_G = new Uint32Array(HISTOGRAM_BINS);
-const HISTOGRAM_SUMS_B = new Uint32Array(HISTOGRAM_BINS);
+const HISTOGRAM_SUMS_R = new Float64Array(HISTOGRAM_BINS);
+const HISTOGRAM_SUMS_G = new Float64Array(HISTOGRAM_BINS);
+const HISTOGRAM_SUMS_B = new Float64Array(HISTOGRAM_BINS);
 
 /**
  * Pixels counted by one call of `countColours`. A call that runs for hundreds of milliseconds depends on the engine replacing its loop

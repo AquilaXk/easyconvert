@@ -1,15 +1,17 @@
 import { deleteAuthTokensOfUser } from '../src/lib/auth/auth-email-token-store';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { billingMonthWindow, calendarMonthWindow, dayWindow } from '../src/lib/api-keys/quota-window';
 import { isEntitlingStatus } from '../src/lib/billing/entitlement';
 import { subscriptionStore } from '../src/lib/billing/subscription-store';
 import type { SubscriptionRecord } from '../src/lib/billing/types';
 import { getWebhookSecretStore } from '../src/lib/api-keys/webhook-secret-store';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { resetLoginAttempts } from '../src/lib/auth/login-rate-limiter';
-import { conversionQueue } from '../src/lib/queue/conversion-queue';
+import { allConversionQueues, conversionQueue } from '../src/lib/queue/conversion-queue';
 import { graphScheduler } from '../src/lib/queue/graph/scheduler';
-import { CANCELLABLE_JOB_STATES, HEARTBEAT_INTERVAL_MS, type JobState } from '../src/lib/queue/bullmq-engine';
+import { CANCELLABLE_JOB_STATES, DEFAULT_QUEUE_KEY_PREFIX, HEARTBEAT_INTERVAL_MS, type JobState } from '../src/lib/queue/bullmq-engine';
+import { userByStateKeys } from '../src/lib/queue/user-job-list';
 import { storageProvider } from '../src/lib/storage';
 import { tusEngine } from '../src/lib/storage/tus-engine';
 import { credentialsVault } from '../src/lib/storage/credentials-vault';
@@ -40,9 +42,14 @@ export interface AccountErasureOutcome {
 }
 
 const MAX_JOBS_PER_RUN = 10_000;
-const SCAN_COUNT = 500;
-/** Keys one DEL names: a command with tens of thousands of arguments is refused by the client and blocks the server. */
+/** Keys one DEL or EXISTS batch names: a command with tens of thousands of arguments is refused by the client and blocks the server. */
 const DELETE_BATCH = 500;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const QUOTA_HISTORY_DAYS = 40;
+const QUOTA_HISTORY_MONTHS = 3;
+const UPLOAD_COMPLETION_PREFIX = 'upload-completion/';
+const RECEIPT_READ_BATCH = 50;
+const WEBHOOK_JOB_STATES: readonly JobState[] = ['waiting', 'delayed', 'completed', 'failed', 'cancelled'];
 /**
  * How long the erasure waits after it cancelled a job that was running. A cancelled job leaves the store at once, but the worker
  * that runs it learns of it at its next heartbeat (HEARTBEAT_INTERVAL_MS) and may write one more output until it stops, so the files
@@ -64,18 +71,163 @@ async function findAccount(idOrEmail: string) {
   return idOrEmail.includes('@') ? redisUserStore.findByEmail(idOrEmail) : redisUserStore.findById(idOrEmail);
 }
 
-async function accountTaggedKeys(userId: string): Promise<string[]> {
+type RedisClientLike = NonNullable<ReturnType<typeof redisKeyStore.getRedisClient>>;
+
+interface TaggedKeyContext {
+  apiKeyIds?: readonly string[];
+  uploadSessionIds?: readonly string[];
+  tusSessionIds?: readonly string[];
+  periodEnd?: number;
+}
+
+function quotaWindowKeys(periodEnd?: number): string[] {
+  const now = Date.now();
+  const keys = new Set<string>();
+  for (let d = 0; d <= QUOTA_HISTORY_DAYS; d++) {
+    keys.add(dayWindow(now - d * DAY_MS).key);
+  }
+  const today = new Date(now);
+  for (let m = 0; m <= QUOTA_HISTORY_MONTHS; m++) {
+    keys.add(calendarMonthWindow(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - m, 1)).key);
+  }
+  if (periodEnd !== undefined) {
+    const currentBilling = billingMonthWindow(periodEnd, now);
+    if (currentBilling) keys.add(currentBilling.key);
+    const priorBilling = billingMonthWindow(periodEnd, now - 32 * DAY_MS);
+    if (priorBilling) keys.add(priorBilling.key);
+  }
+  return [...keys];
+}
+
+async function filterExistingKeys(client: RedisClientLike, candidates: Iterable<string>): Promise<string[]> {
+  const unique = [...new Set(candidates)];
+  if (unique.length === 0) return [];
+  const present: string[] = [];
+  const hasPipeline = typeof (client as { pipeline?: unknown }).pipeline === 'function';
+  for (let at = 0; at < unique.length; at += DELETE_BATCH) {
+    const batch = unique.slice(at, at + DELETE_BATCH);
+    if (hasPipeline) {
+      const pipeline = client.pipeline();
+      for (const key of batch) pipeline.exists(key);
+      const replies = await pipeline.exec();
+      if (!replies) throw new Error('Redis pipeline returned null while checking account keys');
+      for (let i = 0; i < batch.length; i++) {
+        const [err, count] = replies[i] ?? [];
+        if (err) throw err;
+        if (Number(count) > 0) present.push(batch[i]!);
+      }
+    } else {
+      const counts = await Promise.all(batch.map((key) => client.exists(key)));
+      for (let i = 0; i < batch.length; i++) {
+        if (Number(counts[i]) > 0) present.push(batch[i]!);
+      }
+    }
+  }
+  return present.sort((a, b) => a.localeCompare(b));
+}
+
+async function accountTaggedKeys(userId: string, context: TaggedKeyContext = {}): Promise<string[]> {
   const client = redisKeyStore.getRedisClient();
   if (!client) return [];
-  const pattern = `*{${userId.replace(/[*?[\]\\]/g, '\\$&')}}*`;
-  const keys: string[] = [];
-  let cursor = '0';
-  do {
-    const [next, batch] = await client.scan(cursor, 'MATCH', pattern, 'COUNT', SCAN_COUNT);
-    keys.push(...batch);
-    cursor = next;
-  } while (cursor !== '0');
-  return keys.sort((a, b) => a.localeCompare(b));
+  const prefix = redisKeyStore.getPrefix?.() ?? 'easyconvert:';
+  const safeUser = userId.replace(/[{}]/g, '_');
+  const candidates = new Set<string>();
+  const maybeClient = client as Partial<Pick<RedisClientLike, 'zrange' | 'smembers' | 'get'>>;
+
+  const apiKeyIds = context.apiKeyIds ?? (await redisKeyStore.listApiKeys(userId)).map((key) => key.id);
+  for (const keyId of apiKeyIds) {
+    candidates.add(`${prefix}apikeys:${keyId}`);
+    candidates.add(`${prefix}rate:apikey:${keyId}`);
+    candidates.add(`webhook:sec:{${safeUser}}:${keyId}`);
+  }
+
+  const userFilesKey = `${prefix}user_files:{${userId}}`;
+  candidates.add(userFilesKey);
+  if (typeof maybeClient.zrange === 'function') {
+    const fileIds = await maybeClient.zrange(userFilesKey, '0', '-1');
+    for (const fileId of fileIds) candidates.add(`${prefix}user_file:{${userId}}:${fileId}`);
+  }
+  for (const file of await redisKeyStore.listUserFiles(userId)) {
+    candidates.add(`${prefix}user_file:{${userId}}:${file.id}`);
+  }
+
+  candidates.add(`${prefix}usage:{${userId}}`);
+  for (const windowKey of quotaWindowKeys(context.periodEnd)) {
+    candidates.add(`${prefix}usage:{${userId}}:${windowKey}`);
+    candidates.add(`${prefix}leases:{${userId}}:${windowKey}`);
+    candidates.add(`${prefix}held:{${userId}}:${windowKey}`);
+    candidates.add(`${prefix}limits:{${userId}}:${windowKey}`);
+  }
+
+  for (const suffix of ['', ':plist', ':pholds', ':debt', ':log', ':txns', ':adj']) {
+    candidates.add(`${prefix}credits:{${userId}}${suffix}`);
+  }
+
+  const uploadBuckets = [`uploads:${userId}`, userId];
+  for (const bucket of uploadBuckets) {
+    const bucketKey = `${prefix}upload-budget:{${bucket}}`;
+    candidates.add(bucketKey);
+    if (typeof maybeClient.get === 'function') {
+      const raw = await maybeClient.get(bucketKey);
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw) as { open?: Record<string, { uploadId?: unknown }> };
+          if (parsed.open && typeof parsed.open === 'object') {
+            for (const [openId, entry] of Object.entries(parsed.open)) {
+              candidates.add(`${prefix}upload-budget-link:${openId}`);
+              if (entry && typeof entry.uploadId === 'string') {
+                candidates.add(`${prefix}upload-budget-link:${entry.uploadId}`);
+              }
+            }
+          }
+        } catch {
+          // ignore malformed upload budget JSON
+        }
+      }
+    }
+    const linksKey = `${prefix}upload-budget-links:{${bucket}}`;
+    candidates.add(linksKey);
+    if (typeof maybeClient.smembers === 'function') {
+      for (const uploadId of await maybeClient.smembers(linksKey)) {
+        candidates.add(`${prefix}upload-budget-link:${uploadId}`);
+      }
+    }
+  }
+  for (const sessionId of [...(context.uploadSessionIds ?? []), ...(context.tusSessionIds ?? [])]) {
+    candidates.add(`${prefix}upload-budget-link:${sessionId}`);
+  }
+
+  candidates.add(`vault:user:{${safeUser}}`);
+  candidates.add(`${prefix}vault:user:{${safeUser}}`);
+  candidates.add(`easyconvert:webhook:dlq:owner:{${userId}}`);
+
+  const secEndpointsKey = `webhook:sec-endpoints:{${safeUser}}`;
+  candidates.add(secEndpointsKey);
+  if (typeof maybeClient.smembers === 'function') {
+    for (const targetId of await maybeClient.smembers(secEndpointsKey)) {
+      candidates.add(`webhook:sec:{${safeUser}}:${targetId}`);
+    }
+  }
+
+  candidates.add(`${prefix}rate:${userId}`);
+  candidates.add(`${prefix}user_keys:${userId}`);
+  candidates.add(`${prefix}user_graphs:{${userId}}`);
+
+  const queueNames = new Set(['conversions', ...allConversionQueues.map((q) => q.name)]);
+  const queuePrefixes = new Set([DEFAULT_QUEUE_KEY_PREFIX, `${prefix}queue:`]);
+  for (const qPrefix of queuePrefixes) {
+    candidates.add(`${qPrefix}user_graphs:{${userId}}`);
+    for (const qName of queueNames) {
+      const userJobsKey = `${qPrefix}{${qName}}:user_jobs:${userId}`;
+      candidates.add(`${qPrefix}{${qName}}:user_inflight:${userId}`);
+      candidates.add(userJobsKey);
+      for (const byStateKey of userByStateKeys(userJobsKey)) {
+        candidates.add(byStateKey);
+      }
+    }
+  }
+
+  return filterExistingKeys(client, candidates);
 }
 
 /**
@@ -85,7 +237,8 @@ async function accountTaggedKeys(userId: string): Promise<string[]> {
 async function accountStoredKeys(
   userId: string,
   jobIds: readonly string[],
-  graphIds: readonly string[]
+  graphIds: readonly string[],
+  ledgerKeys?: readonly string[]
 ): Promise<string[]> {
   const prefixes = [
     `conversions/${userId}/`,
@@ -93,7 +246,7 @@ async function accountStoredKeys(
     ...graphIds.map((id) => `results/${id}/`),
   ];
   const ledger = getRetentionLedger();
-  const keys = ledger.allKeys ? await ledger.allKeys() : (await ledger.liveRecords()).map((record) => record.key);
+  const keys = ledgerKeys ?? (ledger.allKeys ? await ledger.allKeys() : (await ledger.liveRecords()).map((record) => record.key));
   const owned = keys.filter((key) => prefixes.some((prefix) => key.startsWith(prefix)));
   const named = (await redisKeyStore.listUserFiles(userId)).flatMap((file) => (file.storageKey ? [file.storageKey] : []));
   const history: string[] = [];
@@ -101,31 +254,61 @@ async function accountStoredKeys(
   return [...new Set([...owned, ...history])].sort((a, b) => a.localeCompare(b));
 }
 
+async function forgetUploadCompletionReceipts(
+  ledger: ReturnType<typeof getRetentionLedger>,
+  ledgerKeys: readonly string[],
+  userId: string
+): Promise<void> {
+  const receiptKeys = ledgerKeys.filter((key) => key.startsWith(UPLOAD_COMPLETION_PREFIX));
+  for (let at = 0; at < receiptKeys.length; at += RECEIPT_READ_BATCH) {
+    const batch = receiptKeys.slice(at, at + RECEIPT_READ_BATCH);
+    const records = ledger.getMany
+      ? await ledger.getMany(batch)
+      : await Promise.all(batch.map((key) => ledger.get(key)));
+    for (let i = 0; i < batch.length; i++) {
+      if (records[i]?.completion?.ownerUserId === userId) {
+        await ledger.forget(batch[i]!);
+      }
+    }
+  }
+}
+
 /** What erasing the account `idOrEmail` deletes, or undefined when there is no such account. Changes nothing. */
 export async function planAccountErasure(idOrEmail: string): Promise<AccountErasurePlan | undefined> {
   const account = await findAccount(idOrEmail);
   if (!account) return undefined;
   const userId = account.id;
-  const [keys, credentialIds, graphIds, jobs, letters, taggedKeys, subscription, packageCredits] = await Promise.all([
+  const [keys, credentialIds, graphIds, jobs, letters, subscription, packageCredits, tusSessionIds, uploadSessionIds] = await Promise.all([
     redisKeyStore.listApiKeys(userId),
     credentialsVault.listByUser(userId),
     graphScheduler.graphsOfUser(userId),
     conversionQueue.getJobsByUser(userId, undefined, MAX_JOBS_PER_RUN, 0),
     webhookDispatcher.getDlqPage(userId, { includeExpired: true, limit: 1 }),
-    accountTaggedKeys(userId),
     subscriptionStore.findByUser(userId),
     redisKeyStore.packageBalance(userId),
+    tusEngine.sessionsOfOwner(userId),
+    storageProvider.uploadSessionsOfOwner?.(userId) ?? Promise.resolve([]),
+  ]);
+  const apiKeyIds = keys.map((key) => key.id);
+  const [taggedKeys, storedKeys] = await Promise.all([
+    accountTaggedKeys(userId, {
+      apiKeyIds,
+      tusSessionIds,
+      uploadSessionIds,
+      periodEnd: subscription?.currentPeriodEnd,
+    }),
+    accountStoredKeys(userId, jobs.map((job) => job.id), graphIds),
   ]);
   return {
     userId,
     email: account.email,
-    apiKeyIds: keys.map((key) => key.id),
+    apiKeyIds,
     credentialIds,
     graphIds,
     jobs: jobs.map((job) => ({ id: job.id, state: job.state })),
-    tusSessionIds: await tusEngine.sessionsOfOwner(userId),
-    uploadSessionIds: (await storageProvider.uploadSessionsOfOwner?.(userId)) ?? [],
-    storedKeys: await accountStoredKeys(userId, jobs.map((job) => job.id), graphIds),
+    tusSessionIds,
+    uploadSessionIds,
+    storedKeys,
     deadLetters: letters.total,
     subscription,
     packageCredits,
@@ -217,10 +400,12 @@ export async function eraseAccount(plan: AccountErasurePlan, options: AccountEra
     await storageProvider.deleteByPrefix?.(`intermediate/${graphId}/`);
   }
   const ledger = getRetentionLedger();
-  for (const key of await accountStoredKeys(userId, work.jobs.map((job) => job.id), work.graphIds)) {
+  const ledgerKeys = ledger.allKeys ? await ledger.allKeys() : (await ledger.liveRecords()).map((record) => record.key);
+  for (const key of await accountStoredKeys(userId, work.jobs.map((job) => job.id), work.graphIds, ledgerKeys)) {
     await Promise.resolve(storageProvider.deleteObject(key)).catch(() => false);
     await ledger.forget(key);
   }
+  await forgetUploadCompletionReceipts(ledger, ledgerKeys, userId);
   await storageProvider.deleteByPrefix?.(`conversions/${userId}/`);
   const left = (await conversionQueue.forgetUser?.(userId, new Set(work.jobs.map((job) => job.id)))) ?? [];
   if (left.length > 0) return { runningJobIds: left };
@@ -229,24 +414,36 @@ export async function eraseAccount(plan: AccountErasurePlan, options: AccountEra
   await webhookDispatcher.clearDlq(userId, { strict: true });
   await redisKeyStore.forgetUsage(userId);
   const client = redisKeyStore.getRedisClient();
-  if (client) await deleteKeysInBatches(client, await accountTaggedKeys(userId));
+  if (client) {
+    await deleteKeysInBatches(
+      client,
+      await accountTaggedKeys(userId, {
+        apiKeyIds: [...keyIds],
+        uploadSessionIds: plan.uploadSessionIds,
+        tusSessionIds: plan.tusSessionIds,
+        periodEnd: plan.subscription?.currentPeriodEnd,
+      })
+    );
+  }
   await deleteAuthTokensOfUser(userId);
   await subscriptionStore.forgetUser(userId);
   await forgetFailedLogins(plan.email);
   await redisUserStore.deleteUser(userId);
-  // An event that landed between the first deletion and the account's own can have written the record and its index again.
+  // An active webhook or billing event that ran before `deleteUser` may have written a retry, dead letter, or subscription index.
+  await removeWebhookDeliveries(userId);
+  await webhookDispatcher.clearDlq(userId, { strict: true });
   await subscriptionStore.forgetUser(userId);
   return { runningJobIds: [] };
 }
 
 /**
- * Removes the deliveries of `userId` that wait or are delayed for a retry in the webhook queue: each holds the address and the
- * sealed secret of the account and would be sent after the erasure. One that is running is dropped by the worker, which finds
- * the account gone before it sends again or writes a dead letter.
+ * Removes the deliveries of `userId` across queued and ended states in the webhook queue: each holds the address and the
+ * sealed secret of the account and would persist or be sent after the erasure. One that is running is dropped by the worker,
+ * which finds the account gone before it sends again or writes a dead letter.
  */
 async function removeWebhookDeliveries(userId: string): Promise<void> {
   const queue = webhookDispatcher.getQueue();
-  for (const job of await queue.getJobs(['waiting', 'delayed'])) {
+  for (const job of await queue.getJobs([...WEBHOOK_JOB_STATES])) {
     if (job.data.options?.ownerUserId === userId) await queue.remove(job.id);
   }
 }

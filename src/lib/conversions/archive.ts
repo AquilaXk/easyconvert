@@ -54,13 +54,13 @@ import { inspectLzSource, isRarArchive, isSevenZipArchive, isZipArchive, sniffLz
 import { InflateBudget, inflateRawSalvage } from './bounded-inflate';
 import { resolveArchiveCompressionLevel } from './archive-compression-level';
 import { singleStreamPayload } from './archive-single-stream';
-import { RAR4_FILE_FLAG_UNICODE, decodeRar4FileName } from './archive-rar4-name';
+import { RAR4_FILE_FLAG_UNICODE, decodeRar4FileName, readRar4BlockHeader } from './archive-rar4-name';
 import { canonicalEntryPath, encryptedStagedName, safeCanonicalArchivePath, validateEntryPath } from './archive-entry-path';
 import { gzipInBlocks } from './deflate-blocks';
 import { createZipBuffer, deflaterRunningAhead, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
 import { decodeLzma, decodeLzma2 } from './lzma-decoder';
 import { packXzStream, unpackXzStream } from './xz-format';
-import { readZipDirectory, readZipFiles, zipDirectoryHasEncryptedEntry, type ZipDirectory } from './archive-zip-reader';
+import { readZipCentralDirectoryLocation, readZipDirectory, readZipFiles, trySalvageZipLocalHeader, zipDirectoryHasEncryptedEntry, type ZipDirectory } from './archive-zip-reader';
 import { AesKeyCache, AesKeyMissingError, aesKeyRequestOf } from './archive-sevenzip-aes';
 import { createSevenZipFolderDecoder } from './archive-sevenzip-coders';
 import {
@@ -1732,6 +1732,12 @@ export function getUnrarBinaryPath(): string | null {
   return null;
 }
 
+function assertArchiveFileCount(count: number, maxFiles: number): void {
+  if (count >= maxFiles) {
+    throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${maxFiles}`);
+  }
+}
+
 export function extractRarArchive(
   rarBuffer: Buffer,
   options: { password?: string; entries?: string[]; limits?: ArchiveExtractionLimits } = {}
@@ -1866,22 +1872,19 @@ export function extractRarArchive(
   let totalUncompressedSize = 0;
 
   while (offset + 7 <= rarBuffer.length) {
-    const headType = rarBuffer[offset + 2];
-    const headSize = rarBuffer.readUInt16LE(offset + 5);
-    if (headSize < 7 || offset + headSize > rarBuffer.length) break;
-
-    if (headType === 0x7b) {
+    const block = readRar4BlockHeader(rarBuffer, offset);
+    if (!block) break;
+    if (block.headType === 0x7b) {
       // ENDARC_HEAD
       break;
     }
 
-    if (headType === 0x74 && offset + 32 <= rarBuffer.length) {
+    if (block.headType === 0x74) {
       if (files.length >= limits.MAX_FILES) {
         throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${limits.MAX_FILES}`);
       }
 
-      const packSize = rarBuffer.readUInt32LE(offset + 7);
-      const unpSize = rarBuffer.readUInt32LE(offset + 11);
+      const { headFlags, headSize, packSize, unpSize, nameStart, nextOffset } = block;
       const fileCrc = rarBuffer.readUInt32LE(offset + 16);
       const method = rarBuffer[offset + 25];
       const nameSize = rarBuffer.readUInt16LE(offset + 26);
@@ -1900,9 +1903,8 @@ export function extractRarArchive(
         );
       }
 
-      if (offset + 32 + nameSize <= rarBuffer.length) {
-        const headFlags = rarBuffer.readUInt16LE(offset + 3);
-        const filename = decodeRar4FileName(rarBuffer.subarray(offset + 32, offset + 32 + nameSize), (headFlags & RAR4_FILE_FLAG_UNICODE) !== 0);
+      if (nameStart + nameSize <= rarBuffer.length) {
+        const filename = decodeRar4FileName(rarBuffer.subarray(nameStart, nameStart + nameSize), (headFlags & RAR4_FILE_FLAG_UNICODE) !== 0);
         const sanitizedName = canonicalEntryPath(filename);
         const dataOffset = offset + headSize;
 
@@ -1930,9 +1932,11 @@ export function extractRarArchive(
           files.push({ filename: sanitizedName, buffer: fileBuf });
         }
       }
-      offset += headSize + packSize;
+      if (nextOffset <= offset) break;
+      offset = nextOffset;
     } else {
-      offset += headSize;
+      if (block.nextOffset <= offset) break;
+      offset = block.nextOffset;
     }
   }
 
@@ -2932,22 +2936,6 @@ export function getZipBinaryPath(): string | null {
   return null;
 }
 
-/** A bomb guard or an unsafe entry name: the salvage of a damaged ZIP skips an unreadable record but never swallows these. */
-function isRefusal(err: unknown): boolean {
-  return err instanceof DecompressionLimitError || err instanceof UnsafeArchiveError;
-}
-
-/**
- * The name to salvage a local record under, or null for a record whose name is garbled (empty or holding a control character), which
- * the salvage skips like any other unreadable record. A name that climbs out of the directory or is absolute is refused.
- */
-function salvagedRecordName(rawName: string): string | null {
-  const { path: name, error } = validateEntryPath(rawName);
-  if (error === null) return name || path.basename(rawName);
-  if (error.reason === 'invalid-entry-name') return null;
-  throw error;
-}
-
 /**
  * Repairs a damaged or truncated ZIP archive.
  * First attempts sandboxed `zip -FF <in> --out <out> -q -y`.
@@ -3002,11 +2990,15 @@ export async function repairZipArchive(
   // salvages recoverable uncompressed or deflated streams, and rebuilds Central Directory.
   const salvagedFiles: { filename: string; buffer: Buffer }[] = [];
   // The salvaged entries share the limits extraction applies: the size cap and the ratio to the damaged archive.
-  const salvageBudget = new InflateBudget(
-    unpackedBytesCap(zipBuffer.length, ARCHIVE_SECURITY_LIMITS)
-  );
+  const salvageBudget = new InflateBudget(unpackedBytesCap(zipBuffer.length, ARCHIVE_SECURITY_LIMITS));
+  const MAX_REPAIR_INFLATE_TRIALS = 64;
+  const trialState = { count: 0 };
   const salvageDeflate = async (data: Buffer, entryName: string): Promise<Buffer | null> => {
-    const salvage = await inflateRawSalvage(data, { label: `ZIP entry '${entryName}'`, budget: salvageBudget });
+    const salvage = await inflateRawSalvage(data, {
+      label: `ZIP entry '${entryName}'`,
+      budget: salvageBudget,
+      maxOutputLength: salvageBudget.limit,
+    });
     return salvage.endedCleanly || salvage.data.length > 0 ? salvage.data : null;
   };
   let pos = 0;
@@ -3014,45 +3006,14 @@ export async function repairZipArchive(
     const nextPos = zipBuffer.indexOf(PK_LOCAL_HEADER_MAGIC, pos);
     if (nextPos === -1 || nextPos + 30 > zipBuffer.length) break;
     pos = nextPos;
-    try {
-      const compMethod = zipBuffer.readUInt16LE(pos + 8);
-      const compSize = zipBuffer.readUInt32LE(pos + 18);
-      const uncompSize = zipBuffer.readUInt32LE(pos + 22);
-      const nameLen = zipBuffer.readUInt16LE(pos + 26);
-      const extraLen = zipBuffer.readUInt16LE(pos + 28);
-
-      const dataStart = pos + 30 + nameLen + extraLen;
-      if (pos + 30 + nameLen <= zipBuffer.length && dataStart <= zipBuffer.length) {
-        const rawName = zipBuffer.toString('utf-8', pos + 30, pos + 30 + nameLen);
-        const cleanName = salvagedRecordName(rawName);
-
-        let rawChunk: Buffer | null = null;
-        if (compSize > 0 && dataStart + compSize <= zipBuffer.length) {
-          rawChunk = zipBuffer.subarray(dataStart, dataStart + compSize);
-        } else {
-          const nextPk = zipBuffer.indexOf(PK_ANY_HEADER_MAGIC, dataStart);
-          const endSlice = nextPk !== -1 ? nextPk : zipBuffer.length;
-          rawChunk = zipBuffer.subarray(dataStart, endSlice);
-        }
-
-        if (cleanName && rawChunk && rawChunk.length > 0) {
-          let uncompressed: Buffer | null = null;
-          if (compMethod === 0) {
-            uncompressed = Buffer.from(rawChunk);
-          } else if (compMethod === 8) {
-            uncompressed = await salvageDeflate(rawChunk, cleanName);
-          }
-          if (uncompressed && (uncompSize === 0 || uncompressed.length === uncompSize || compSize === 0)) {
-            salvagedFiles.push({ filename: cleanName, buffer: uncompressed });
-            pos = dataStart + (compSize > 0 ? compSize : rawChunk.length);
-            continue;
-          }
-        }
-      }
-    } catch (err) {
-      if (isRefusal(err)) throw err;
+    const step = await trySalvageZipLocalHeader(zipBuffer, pos, trialState, MAX_REPAIR_INFLATE_TRIALS, salvageDeflate);
+    if (step) {
+      assertArchiveFileCount(salvagedFiles.length, ARCHIVE_SECURITY_LIMITS.MAX_FILES);
+      salvagedFiles.push(step.entry);
+      pos = step.nextPos;
+    } else {
+      pos += 4;
     }
-    pos += 4;
   }
 
   if (salvagedFiles.length === 0) {
@@ -3063,7 +3024,6 @@ export async function repairZipArchive(
 }
 
 const PK_LOCAL_HEADER_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
-const PK_ANY_HEADER_MAGIC = Buffer.from([0x50, 0x4b]);
 const UNIX_FILE_TYPE_MASK = 0o170000;
 const UNIX_SYMLINK_TYPE = 0o120000;
 const ZIP_UNIX_HOST = 3;
@@ -3094,28 +3054,9 @@ function inspectZipBuffer(buffer: Buffer): InspectionBody {
   let isEncryptedArchive = false;
 
   if (eocdOffset !== -1) {
-    let cdOffset = buffer.readUInt32LE(eocdOffset + 16);
-
-    // Check for Zip64 EOCD locator (0x07064b50)
-    if (eocdOffset >= 20) {
-      const locPos = eocdOffset - 20;
-      if (
-        buffer[locPos] === 0x50 &&
-        buffer[locPos + 1] === 0x4b &&
-        buffer[locPos + 2] === 0x06 &&
-        buffer[locPos + 3] === 0x07
-      ) {
-        const zip64EocdOffset = Number(buffer.readBigUInt64LE(locPos + 8));
-        if (
-          zip64EocdOffset + 56 <= buffer.length &&
-          buffer[zip64EocdOffset] === 0x50 &&
-          buffer[zip64EocdOffset + 1] === 0x4b &&
-          buffer[zip64EocdOffset + 2] === 0x06 &&
-          buffer[zip64EocdOffset + 3] === 0x06
-        ) {
-          cdOffset = Number(buffer.readBigUInt64LE(zip64EocdOffset + 48));
-        }
-      }
+    const { declaredEntries, cdOffset } = readZipCentralDirectoryLocation(buffer, eocdOffset);
+    if (declaredEntries > ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
+      assertArchiveFileCount(ARCHIVE_SECURITY_LIMITS.MAX_FILES, ARCHIVE_SECURITY_LIMITS.MAX_FILES);
     }
 
     let pos = cdOffset;
@@ -3126,6 +3067,7 @@ function inspectZipBuffer(buffer: Buffer): InspectionBody {
       buffer[pos + 2] === 0x01 &&
       buffer[pos + 3] === 0x02
     ) {
+      assertArchiveFileCount(entries.length, ARCHIVE_SECURITY_LIMITS.MAX_FILES);
       const flags = buffer.readUInt16LE(pos + 8);
       const isEncrypted = (flags & 1) !== 0;
       if (isEncrypted) isEncryptedArchive = true;
@@ -3196,6 +3138,7 @@ function inspectZipBuffer(buffer: Buffer): InspectionBody {
     while (pos + 30 <= buffer.length) {
       const nextPos = buffer.indexOf(PK_LOCAL_HEADER_MAGIC, pos);
       if (nextPos === -1 || nextPos + 30 > buffer.length) break;
+      assertArchiveFileCount(entries.length, ARCHIVE_SECURITY_LIMITS.MAX_FILES);
       pos = nextPos;
       const flags = buffer.readUInt16LE(pos + 6);
       const isEncrypted = (flags & 1) !== 0;
@@ -3468,24 +3411,24 @@ async function inspectRarBuffer(buffer: Buffer, password?: string, signal?: Abor
   let isArchiveEncrypted = false;
 
   while (offset + 7 <= buffer.length) {
-    const headType = buffer[offset + 2];
-    const headFlags = buffer.readUInt16LE(offset + 3);
-    const headSize = buffer.readUInt16LE(offset + 5);
-    if (headSize < 7 || offset + headSize > buffer.length) break;
-
-    if (headType === 0x7b) {
+    const block = readRar4BlockHeader(buffer, offset);
+    if (!block) break;
+    if (block.headType === 0x7b) {
       break;
     }
 
-    if (headType === 0x74 && offset + 32 <= buffer.length) {
-      const packSize = buffer.readUInt32LE(offset + 7);
-      const unpSize = buffer.readUInt32LE(offset + 11);
+    if (block.headType === 0x74) {
+      if (entries.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
+        throw new DecompressionLimitError(
+          `Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`
+        );
+      }
+      const { headFlags, packSize, unpSize, nameStart, nextOffset } = block;
       const fileCrc = buffer.readUInt32LE(offset + 16);
       const nameSize = buffer.readUInt16LE(offset + 26);
       const isEnc = (headFlags & 0x0004) !== 0;
       if (isEnc) isArchiveEncrypted = true;
 
-      const nameStart = offset + 32;
       const rawName = nameStart + nameSize <= buffer.length
         ? decodeRar4FileName(buffer.subarray(nameStart, nameStart + nameSize), (headFlags & RAR4_FILE_FLAG_UNICODE) !== 0)
         : 'unknown';
@@ -3499,9 +3442,11 @@ async function inspectRarBuffer(buffer: Buffer, password?: string, signal?: Abor
         crc32: fileCrc.toString(16).padStart(8, '0'),
       });
 
-      offset += headSize + packSize;
+      if (nextOffset <= offset) break;
+      offset = nextOffset;
     } else {
-      offset += headSize;
+      if (block.nextOffset <= offset) break;
+      offset = block.nextOffset;
     }
   }
 

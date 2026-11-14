@@ -5,7 +5,14 @@ import { redactForOutput, redactText } from '../security/redact';
 import { maskFailure, maskServerText } from '../security/server-paths';
 import { refusalCodeOf, type ConversionRefusalCode } from '../refusal-codes';
 import { classifyJobFailure } from './job-failure';
-import { readUserJobs } from './user-job-list';
+import { countUserJobs, readUserJobs } from './user-job-list';
+import {
+  collectQueueJobIds,
+  readOldestWaitingSince,
+  readQueueJobCounts,
+  removeFromUserIndices,
+  type QueueStateKeys,
+} from './queue-queries';
 import { applyStoredJobFields, flatHashToRecord, ownerOf, parseStoredJson, readJobHashes } from './stored-job';
 import {
   ADD_JOB_LUA_SCRIPT,
@@ -293,6 +300,7 @@ export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   getJob(id: string): Promise<Job<T, R> | undefined>;
   getJobs(types: JobState[]): Promise<Job<T, R>[]>;
   getJobsByUser(userId: string, states?: JobState[], limit?: number, offset?: number, options?: UserJobsOptions): Promise<Job<T, R>[]>;
+  countJobsByUser?(userId: string, states?: JobState[], cap?: number, options?: UserJobsOptions): Promise<number>;
   getJobCounts(): Promise<JobCounts>;
   /**
    * When the job that has waited longest in this queue (delayed jobs do not count) began to wait, in milliseconds since the
@@ -499,6 +507,28 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
     }
     matching.sort((a, b) => b.timestamp - a.timestamp);
     return matching.slice(offset, offset + limit);
+  }
+
+  async countJobsByUser(
+    userId: string,
+    states?: JobState[],
+    cap: number = 100,
+    options: UserJobsOptions = {}
+  ): Promise<number> {
+    if (cap <= 0) return 0;
+    const ids = this.userJobs.get(userId);
+    if (!ids || ids.length === 0) return 0;
+    const validStates = states && states.length > 0 ? new Set(states) : null;
+    let count = 0;
+    for (let i = ids.length - 1; i >= 0; i--) {
+      const job = this.jobs.get(ids[i]);
+      if (!job) continue;
+      if ((!validStates || validStates.has(job.state)) && !(options.excludeGraphNodes && isGraphNode(job))) {
+        count += 1;
+        if (count >= cap) return count;
+      }
+    }
+    return count;
   }
 
   async getJobCounts(): Promise<JobCounts> {
@@ -1303,7 +1333,13 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         if (payload.event && payload.jobId) {
           this.markLocalEvent(payload.event, payload.jobId);
         }
-        if (typeof this.redisClient.publish === 'function') {
+        if (typeof this.redisClient.pipeline === 'function' && payload.jobId) {
+          const serialized = JSON.stringify(payload);
+          const pipe = this.redisClient.pipeline();
+          pipe.publish(this.eventsChannel, serialized);
+          pipe.publish(this.getJobEventsChannel(payload.jobId), serialized);
+          await pipe.exec();
+        } else if (typeof this.redisClient.publish === 'function') {
           const serialized = JSON.stringify(payload);
           await this.redisClient.publish(this.eventsChannel, serialized);
           if (payload.jobId) {
@@ -1649,41 +1685,16 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     return this.memoryFallback.getJob(id);
   }
 
+  private get stateKeysForQueries(): QueueStateKeys {
+    return { waitingKey: this.waitingKey, delayedKey: this.delayedKey, activeKey: this.activeKey, completedKey: this.completedKey, failedKey: this.failedKey, cancelledKey: this.cancelledKey };
+  }
+
   async getJobs(types: JobState[], start = 0, end = -1): Promise<Job<T, R>[]> {
     if (this.redisClient) {
       await this.assertRedisConnected();
       try {
         const redis = this.redisClient;
-        const lists = await Promise.all(
-          types.map(async (type): Promise<string[]> => {
-            if (type === 'waiting') {
-              let list: string[] = [];
-              if (typeof redis.zrange === 'function') {
-                try {
-                  list = await redis.zrange(this.waitingKey, 0, -1 as any);
-                } catch (err) {
-                  rethrowUnlessWrongType(err);
-                }
-              }
-              if ((!list || list.length === 0) && typeof redis.lrange === 'function') {
-                try {
-                  const legacyList = await redis.lrange(this.waitingKey, 0, -1);
-                  if (legacyList && legacyList.length > 0) list = legacyList;
-                } catch (err) {
-                  rethrowUnlessWrongType(err);
-                }
-              }
-              return list || [];
-            }
-            if (type === 'delayed') return await redis.zrange(this.delayedKey, 0, -1 as any);
-            if (type === 'active') return await redis.smembers(this.activeKey);
-            if (type === 'completed') return await redis.smembers(this.completedKey);
-            if (type === 'failed') return await redis.smembers(this.failedKey);
-            if (type === 'cancelled') return await redis.smembers(this.cancelledKey);
-            return [];
-          })
-        );
-        const uniqueIds = Array.from(new Set(lists.flat()));
+        const uniqueIds = await collectQueueJobIds(redis, this.stateKeysForQueries, types, rethrowUnlessWrongType);
         let slicedIds = uniqueIds;
         if (end >= 0) slicedIds = uniqueIds.slice(start, end + 1);
         else if (start > 0) slicedIds = uniqueIds.slice(start);
@@ -1700,43 +1711,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     if (this.redisClient) {
       await this.assertRedisConnected();
       try {
-        const getWaitingCount = async (): Promise<number> => {
-          if (!this.redisClient) return 0;
-          if (typeof this.redisClient.zcard === 'function') {
-            try {
-              const count = await this.redisClient.zcard(this.waitingKey);
-              if (typeof count === 'number' && !Number.isNaN(count)) return count;
-            } catch (err) {
-              rethrowUnlessWrongType(err);
-            }
-          }
-          if (typeof this.redisClient.llen === 'function') {
-            try {
-              const count = await this.redisClient.llen(this.waitingKey);
-              if (typeof count === 'number' && !Number.isNaN(count)) return count;
-            } catch (err) {
-              rethrowUnlessWrongType(err);
-            }
-          }
-          return 0;
-        };
-
-        const [waiting, active, completed, failed, delayed, cancelled] = await Promise.all([
-          getWaitingCount(),
-          this.redisClient.scard(this.activeKey),
-          this.redisClient.scard(this.completedKey),
-          this.redisClient.scard(this.failedKey),
-          this.redisClient.zcard(this.delayedKey),
-          this.redisClient.scard(this.cancelledKey),
-        ]);
-        return {
-          waiting: waiting || 0,
-          active: active || 0,
-          completed: completed || 0,
-          failed: failed || 0,
-          delayed: delayed || 0,
-          cancelled: cancelled || 0,
-        };
+        return await readQueueJobCounts(this.redisClient, this.stateKeysForQueries, rethrowUnlessWrongType);
       } catch (err) {
         throw this.toQueueUnavailable(err);
       }
@@ -1749,25 +1724,13 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     if (!redis) return this.memoryFallback.oldestWaitingSince();
     await this.assertRedisConnected();
     try {
-      const now = Date.now();
-      // The head of the whole set is the best-ranked job, not the longest waiting, so the head of each priority band is read.
-      // The time of a score is its time of day modulo the band, from which the wait follows without reading the job.
-      let longestWait: number | undefined;
-      let from = '-inf';
-      for (let band = 0; band < MAX_WAITING_BANDS; band++) {
-        let head: string[] = [];
-        try {
-          head = await redis.zrangebyscore(this.waitingKey, from, '+inf', 'WITHSCORES', 'LIMIT', 0, 1);
-        } catch (err) {
-          rethrowUnlessWrongType(err);
-        }
-        if (head.length < 2) break;
-        const score = Number(head[1]);
-        const wait = (((now % PRIORITY_SCORE_BAND) - (score % PRIORITY_SCORE_BAND)) + PRIORITY_SCORE_BAND) % PRIORITY_SCORE_BAND;
-        longestWait = Math.max(longestWait ?? 0, wait);
-        from = String((Math.floor(score / PRIORITY_SCORE_BAND) + 1) * PRIORITY_SCORE_BAND);
-      }
-      return longestWait === undefined ? undefined : now - longestWait;
+      return await readOldestWaitingSince(
+        redis,
+        this.waitingKey,
+        PRIORITY_SCORE_BAND,
+        MAX_WAITING_BANDS,
+        rethrowUnlessWrongType
+      );
     } catch (err) {
       throw this.toQueueUnavailable(err);
     }
@@ -1799,6 +1762,17 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       }
     }
     return this.memoryFallback.getJobsByUser(userId, states, limit, offset, options);
+  }
+
+  async countJobsByUser(userId: string, states?: JobState[], cap: number = 100, options: UserJobsOptions = {}): Promise<number> {
+    if (cap <= 0) return 0;
+    if (!this.redisClient) return this.memoryFallback.countJobsByUser(userId, states, cap, options);
+    await this.assertRedisConnected();
+    try {
+      return await countUserJobs(this.redisClient, { indexKey: this.getUserJobsKey(userId), jobKeyPrefix: this.getJobKey(''), states, cap, excludeGraphNodes: options.excludeGraphNodes });
+    } catch (err) {
+      throw this.toQueueUnavailable(err);
+    }
   }
 
   /**
@@ -2028,7 +2002,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       const userId = ownerOf(job.data);
       if (keep.count === 0) {
         await removeStoredJob(client, this.keySpace, job.id);
-        if (userId) await client.zrem(this.getUserJobsKey(userId), job.id);
+        if (userId) await removeFromUserIndices(client, this.getUserJobsKey(userId), job.id);
         return;
       }
       await dropEndedData(client, this.keySpace, job.id, job.opts?.removeDataOnFinish);
@@ -2276,16 +2250,24 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     }
 
     const failedJobs: Job<T, R>[] = [];
-    for (const jobId of failedIds) {
-      const job = await this.getJob(jobId);
-      if (!job) {
-        console.error(`[DistributedBullMQAdapter:${this.name}] Stalled job ${jobId} vanished before DLQ transfer.`);
-        continue;
+    if (failedIds.length > 0) {
+      const resolvedJobs = this.redisClient
+        ? (await readJobHashes(this.redisClient, failedIds.map((id) => this.getJobKey(id)))).map((hash) =>
+            hash.id ? this.hashToJob(hash) : undefined
+          )
+        : await Promise.all(failedIds.map((jobId) => this.getJob(jobId)));
+      for (let i = 0; i < failedIds.length; i++) {
+        const jobId = failedIds[i];
+        const job = resolvedJobs[i];
+        if (!job) {
+          console.error(`[DistributedBullMQAdapter:${this.name}] Stalled job ${jobId} vanished before DLQ transfer.`);
+          continue;
+        }
+        await this.moveToDlq(job, STALLED_JOB_FAILURE_REASON);
+        await this.keepEndedJobs(job, 'failed', keepJobsOf(job.opts?.removeOnFail));
+        failedJobs.push(job);
+        await this.publishEvent({ event: 'failed', jobId: job.id, error: STALLED_JOB_FAILURE_REASON });
       }
-      await this.moveToDlq(job, STALLED_JOB_FAILURE_REASON);
-      await this.keepEndedJobs(job, 'failed', keepJobsOf(job.opts?.removeOnFail));
-      failedJobs.push(job);
-      await this.publishEvent({ event: 'failed', jobId: job.id, error: STALLED_JOB_FAILURE_REASON });
     }
     if (failedJobs.length > 0) {
       console.warn(

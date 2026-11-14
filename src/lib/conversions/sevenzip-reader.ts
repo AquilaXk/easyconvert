@@ -267,14 +267,14 @@ function readFolder(reader: HeaderReader): { folder: SevenZipFolder; outStreams:
     if ((flags & CODER_FLAG_ALTERNATIVES) !== 0) {
       throw new UnsupportedArchiveMethodError('Unsupported 7z coder: alternative methods are reserved');
     }
-    const codecId = Buffer.from(reader.bytesOf(flags & CODER_ID_SIZE_MASK));
+    const codecId = reader.bytesOf(flags & CODER_ID_SIZE_MASK);
     let numInStreams = 1;
     let numOutStreams = 1;
     if ((flags & CODER_FLAG_COMPLEX) !== 0) {
       numInStreams = reader.count(MAX_STREAMS_PER_CODER, 'coder input stream');
       numOutStreams = reader.count(MAX_STREAMS_PER_CODER, 'coder output stream');
     }
-    const properties = (flags & CODER_FLAG_ATTRIBUTES) !== 0 ? Buffer.from(reader.bytesOf(reader.number())) : Buffer.alloc(0);
+    const properties = (flags & CODER_FLAG_ATTRIBUTES) !== 0 ? reader.bytesOf(reader.number()) : Buffer.alloc(0);
     coders.push({ codecId, properties, numInStreams, numOutStreams });
     totalIn += numInStreams;
     totalOut += numOutStreams;
@@ -582,7 +582,7 @@ function unpackFolders(
     for (let stream = 0; stream < folder.packedStreamCount; stream += 1) {
       const packSize = streams.packSizes[packIndex++];
       if (packOffset + packSize > packEnd) throw corrupt('truncated pack stream');
-      packed.push(Buffer.from(archive.subarray(packOffset, packOffset + packSize)));
+      packed.push(archive.subarray(packOffset, packOffset + packSize));
       packOffset += packSize;
     }
 
@@ -677,7 +677,7 @@ export function readSevenZipArchive(
     let offset = 0;
     const encrypted = usesAes(folder);
     for (const substream of folder.substreams) {
-      pieces.push({ data: Buffer.from(folderData[folderIndex].subarray(offset, offset + substream.size)), crc: substream.crc, encrypted });
+      pieces.push({ data: folderData[folderIndex].subarray(offset, offset + substream.size), crc: substream.crc, encrypted });
       offset += substream.size;
     }
   });

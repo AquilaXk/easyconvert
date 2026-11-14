@@ -88,6 +88,8 @@ export function parseLzmaPropertiesByte(byte: number): LzmaProperties {
   return { lc, lp, pb };
 }
 
+const MATCH_STEP_HEADROOM = 273;
+
 /** Decoder state that outlives one LZMA2 chunk. */
 export class LzmaDecoder {
   private lc = 0;
@@ -141,13 +143,35 @@ export class LzmaDecoder {
     this.outPos += length;
   }
 
-  private ensure(extra: number): void {
+  private ensure(extra: number, capLimit = this.outLimit): void {
     const needed = this.outPos + extra;
     if (needed > this.outLimit) throw new DecompressionLimitError(`Archive bomb detected: LZMA output exceeds the limit of ${this.outLimit} bytes`);
     if (needed <= this.out.length) return;
-    const grown = new Uint8Array(Math.min(this.outLimit, Math.max(needed, this.out.length * 2)));
+    const grown = new Uint8Array(Math.min(this.outLimit, Math.max(needed, Math.min(capLimit, Math.max(this.out.length * 2, 65536)))));
     grown.set(this.out.subarray(0, this.outPos));
     this.out = grown;
+  }
+
+  private assertProduceWithinLimit(produce: number): void {
+    if (this.outPos + produce > this.outLimit) {
+      throw new DecompressionLimitError(`Archive bomb detected: LZMA output exceeds the limit of ${this.outLimit} bytes`);
+    }
+  }
+
+  private growDecodeOutput(outPos: number, effectiveCap: number): Uint8Array {
+    this.outPos = outPos;
+    this.ensure(Math.min(MATCH_STEP_HEADROOM, effectiveCap - outPos), effectiveCap);
+    return this.out;
+  }
+
+  private copyMatch(out: Uint8Array, outPos: number, rep0: number, len: number): number {
+    const from = outPos - rep0 - 1;
+    if (len >= MATCH_BLOCK_COPY_MIN && rep0 + 1 >= len) {
+      out.copyWithin(outPos, from, from + len);
+      return outPos + len;
+    }
+    for (let k = 0; k < len; k++) out[outPos + k] = out[from + k];
+    return outPos + len;
   }
 
   /**
@@ -157,20 +181,22 @@ export class LzmaDecoder {
   decode(src: Uint8Array, start: number, end: number, produce: number, allowEndMarker: boolean): number {
     if (end - start < RC_INIT_BYTES) throw corrupt('truncated range coder header');
     if (src[start] !== 0) throw corrupt('range coder header must start with a zero byte');
-    this.ensure(produce);
+    this.assertProduceWithinLimit(produce);
     let inPos = start + 1;
     let code = ((src[inPos] << 24) | (src[inPos + 1] << 16) | (src[inPos + 2] << 8) | src[inPos + 3]) ^ CODE_BIAS;
     inPos += 4;
     let range = RANGE_FULL;
 
     const probs = this.probs;
-    const out = this.out;
+    let out = this.out;
     const lc = this.lc;
     const lpMask = (1 << this.lp) - 1;
     const pbMask = (1 << this.pb) - 1;
     const dictStart = this.dictStart;
     let outPos = this.outPos;
     const target = outPos + produce;
+    const effectiveCap = Math.min(this.outLimit, target);
+    let safeLimit = out.length >= effectiveCap ? target : Math.max(0, out.length - MATCH_STEP_HEADROOM);
     let state = this.state;
     let rep0 = this.rep0;
     let rep1 = this.rep1;
@@ -180,6 +206,10 @@ export class LzmaDecoder {
     // `bit` decodes one bit with the probability at probs[index]; written out in each place that needs it so that the
     // range coder registers stay in locals.
     while (outPos < target) {
+      if (outPos >= safeLimit) {
+        out = this.growDecodeOutput(outPos, effectiveCap);
+        safeLimit = out.length >= effectiveCap ? target : Math.max(0, out.length - MATCH_STEP_HEADROOM);
+      }
       // Positions count from the last dictionary reset (LZMA2 restarts them there).
       const posState = (outPos - dictStart) & pbMask;
       let index = IS_MATCH + (state << 4) + posState;
@@ -556,14 +586,7 @@ export class LzmaDecoder {
       if (rep0 >= outPos - dictStart) throw corrupt('a distance reaches before the start of the dictionary');
       const remaining = target - outPos;
       if (len > remaining) throw corrupt('a match runs past the end of the chunk');
-      const from = outPos - rep0 - 1;
-      if (len >= MATCH_BLOCK_COPY_MIN && rep0 + 1 >= len) {
-        out.copyWithin(outPos, from, from + len);
-        outPos += len;
-      } else {
-        for (let k = 0; k < len; k++) out[outPos + k] = out[from + k];
-        outPos += len;
-      }
+      outPos = this.copyMatch(out, outPos, rep0, len);
     }
 
     if (inPos > end) throw corrupt('input overrun');
@@ -599,7 +622,8 @@ export function lzma2DictionaryByte(dictSize: number): number {
 export function decodeLzma(input: Uint8Array, props: Uint8Array, unpackSize: number, maxOutput: number): Uint8Array {
   if (props.length < 5) throw corrupt('the properties header needs 5 bytes');
   if (unpackSize > maxOutput) throw new DecompressionLimitError(`Archive bomb detected: unpack size (${unpackSize}) exceeds limit of ${maxOutput} bytes`);
-  const decoder = new LzmaDecoder(unpackSize, maxOutput);
+  const initialCapacity = Math.min(unpackSize, Math.max(65536, input.length * 4), 1048576);
+  const decoder = new LzmaDecoder(initialCapacity, maxOutput);
   decoder.setProperties(parseLzmaPropertiesByte(props[0]));
   decoder.resetState();
   decoder.decode(input, 0, input.length, unpackSize, true);
@@ -634,7 +658,12 @@ export function decodeLzma2At(
   maxOutput: number,
   expectedSize?: number
 ): { output: Uint8Array; end: number } {
-  const initial = expectedSize !== undefined ? Math.min(expectedSize, maxOutput) : Math.min((input.length - start) * 4, maxOutput);
+  if (expectedSize !== undefined && expectedSize > maxOutput) {
+    throw new DecompressionLimitError(`Archive bomb detected: LZMA2 output (${expectedSize}) exceeds limit of ${maxOutput} bytes`);
+  }
+  const compressedLen = Math.max(0, input.length - start);
+  const estimate = expectedSize !== undefined ? expectedSize : compressedLen * 4;
+  const initial = Math.min(estimate, Math.max(65536, compressedLen * 4), 1048576);
   const decoder = new LzmaDecoder(Math.max(initial, 0), maxOutput);
   let pos = start;
   let needDictionaryReset = true;

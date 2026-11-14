@@ -27,6 +27,10 @@ const SIDE_SELECTOR_BITS = 2;
 const SIDE_FIELD_BITS: readonly number[] = [9, 13, 18, 30];
 const RATIO_BITS = 3;
 const U32_SELECTOR_BITS = 2;
+const WORD_BITS = 32;
+const BIT_SPLIT_LOW_BITS = 16;
+const HALF_WORD_RADIX = 65_536;
+const BITS_PER_BYTE = 8;
 /** The aspect ratios a header can name instead of the width (18181-1): width = height * numerator / denominator. */
 const ASPECT_RATIOS: readonly (readonly [number, number])[] = [[1, 1], [12, 10], [4, 3], [3, 2], [16, 9], [5, 4], [2, 1]];
 
@@ -38,6 +42,9 @@ export type U32Choice = number | { bits: number; offset: number };
 /** Reads fields of a bit string, least significant bit first; a read past its end is a header that cannot be decoded. */
 export class BitReader {
   private position = 0;
+  private bytePos = 0;
+  private bitBuf = 0;
+  private bitCount = 0;
 
   constructor(private readonly bytes: Uint8Array) {}
 
@@ -63,11 +70,22 @@ export class BitReader {
   }
 
   read(count: number): number {
-    if (this.position + count > this.bytes.length * 8) throw headerError();
-    let value = 0;
-    for (let i = 0; i < count; i += 1, this.position += 1) {
-      value += ((this.bytes[this.position >> 3] >> (this.position & 7)) & 1) * 2 ** i;
+    if (this.position + count > this.bytes.length * BITS_PER_BYTE) throw headerError();
+    if (count <= 0) return 0;
+    if (count > 25) {
+      const lo = this.read(BIT_SPLIT_LOW_BITS);
+      const hi = this.read(count - BIT_SPLIT_LOW_BITS);
+      return hi * HALF_WORD_RADIX + lo;
     }
+    while (this.bitCount < count) {
+      this.bitBuf = (this.bitBuf | (this.bytes[this.bytePos++] << this.bitCount)) >>> 0;
+      this.bitCount += BITS_PER_BYTE;
+    }
+    const mask = -1 >>> (WORD_BITS - count);
+    const value = (this.bitBuf & mask) >>> 0;
+    this.bitBuf >>>= count;
+    this.bitCount -= count;
+    this.position += count;
     return value;
   }
 

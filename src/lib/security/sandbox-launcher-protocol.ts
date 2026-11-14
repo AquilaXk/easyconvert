@@ -11,6 +11,12 @@ import type { BufferLimitKind, SandboxedRlimitsOptions, SandboxFileScope, Unshar
 export const FRAME_PREFIX_BYTES = 8;
 /** A header is a few hundred bytes of JSON; one this long is not from the peer. */
 export const MAX_HEADER_BYTES = 1024 * 1024;
+/** Maximum allowed total frame size (header + payload) to prevent unbounded allocation / skip DoS. */
+export const MAX_FRAME_BYTES = 256 * 1024 * 1024;
+const HELPER_FD_SUFFIX_PATTERN = /^\d{1,9}$/;
+
+/** A peer that sent something that is not a frame or exceeded protocol size bounds. */
+export class LauncherProtocolError extends Error {}
 
 /** The options of one run that cross the pipe: everything executeSandboxedBinary takes except what is a stream or a callback. */
 export interface LaunchedRunOptions extends SandboxFileScope {
@@ -41,7 +47,8 @@ export function helperFilePath(workerPid: number, fd: number): string {
 
 /** Whether `candidate` is a file of the process `workerPid` named by helperFilePath: the only paths a helper opens for its parent. */
 export function isHelperFilePath(candidate: string, workerPid: number): boolean {
-  return new RegExp(`^/proc/${workerPid}/fd/\\d{1,9}$`).test(candidate);
+  const prefix = `/proc/${workerPid}/fd/`;
+  return candidate.startsWith(prefix) && HELPER_FD_SUFFIX_PATTERN.test(candidate.slice(prefix.length));
 }
 
 export type LauncherRequest =
@@ -107,10 +114,18 @@ export interface Frame<T> {
 /** The parts of a frame to write one after another; the payload parts are the caller's buffers, not copies. */
 export function encodeFrame(header: LauncherRequest | LauncherReply, ...payload: Buffer[]): Buffer[] {
   const json = Buffer.from(JSON.stringify(header), 'utf8');
+  if (json.length > MAX_HEADER_BYTES) {
+    throw new LauncherProtocolError(`Frame header length (${json.length}) exceeds MAX_HEADER_BYTES (${MAX_HEADER_BYTES}).`);
+  }
   const parts = payload.filter((part) => part.length > 0);
+  const payloadBytes = parts.reduce((sum, part) => sum + part.length, 0);
+  const totalBytes = FRAME_PREFIX_BYTES + json.length + payloadBytes;
+  if (payloadBytes > MAX_FRAME_BYTES || totalBytes > MAX_FRAME_BYTES) {
+    throw new LauncherProtocolError(`Frame total length (${totalBytes}) exceeds MAX_FRAME_BYTES (${MAX_FRAME_BYTES}).`);
+  }
   const prefix = Buffer.allocUnsafe(FRAME_PREFIX_BYTES + json.length);
   prefix.writeUInt32BE(json.length, 0);
-  prefix.writeUInt32BE(parts.reduce((sum, part) => sum + part.length, 0), 4);
+  prefix.writeUInt32BE(payloadBytes, 4);
   json.copy(prefix, FRAME_PREFIX_BYTES);
   return [prefix, ...parts];
 }
@@ -118,9 +133,6 @@ export function encodeFrame(header: LauncherRequest | LauncherReply, ...payload:
 export function isBadFrame<T>(frame: Frame<T> | BadFrame): frame is BadFrame {
   return 'bad' in frame;
 }
-
-/** A peer that sent something that is not a frame. */
-export class LauncherProtocolError extends Error {}
 
 /** A frame that could not be read: its header was too long or not JSON. `id` is the request it belongs to, when that can be told. */
 export interface BadFrame {
@@ -163,13 +175,21 @@ export class FrameReader<T> {
         const joined = this.join();
         const headerBytes = joined.readUInt32BE(0);
         const payloadBytes = joined.readUInt32BE(4);
+        const totalBytes = FRAME_PREFIX_BYTES + headerBytes + payloadBytes;
+        if (payloadBytes > MAX_FRAME_BYTES || totalBytes > MAX_FRAME_BYTES) {
+          this.chunks = [];
+          this.total = 0;
+          this.needed = 0;
+          this.skipping = 0;
+          throw new LauncherProtocolError(`Frame length (${totalBytes}) exceeds MAX_FRAME_BYTES (${MAX_FRAME_BYTES}).`);
+        }
         if (headerBytes > MAX_HEADER_BYTES) {
           const seen = joined.subarray(FRAME_PREFIX_BYTES, Math.min(joined.length, FRAME_PREFIX_BYTES + ID_SEARCH_BYTES));
           frames.push({ bad: true, id: idOf(seen), reason: 'frame header too long' });
-          this.skipping = FRAME_PREFIX_BYTES + headerBytes + payloadBytes;
+          this.skipping = totalBytes;
           continue;
         }
-        this.needed = FRAME_PREFIX_BYTES + headerBytes + payloadBytes;
+        this.needed = totalBytes;
       }
       if (this.total < this.needed) break;
       const joined = this.join();

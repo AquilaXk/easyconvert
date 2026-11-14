@@ -37,7 +37,7 @@ const BZ_INITIAL_UNUSED_COST = 15;
 const BZ_PEEK_BITS = 20;
 const BZ_ORIG_PTR_BITS = 24;
 const BZ_CRC_ROTATE_SHIFT = 31;
-const HALF_WORD_MASK = 0xffff;
+const WORD_BITS = 32;
 /** Symbol counts below which the encoder uses 2, 3, 4 and 5 coding tables (6 above), as the reference does. */
 const BZ_TREE_COUNT_THRESHOLDS = [200, 600, 1200, 2400];
 const BZ_BYTE_MASK = 0xff;
@@ -99,21 +99,27 @@ class BitWriter {
     this.buffer = next;
   }
 
-  /** Writes the low `width` bits of `value`, MSB first. */
+  /** Writes the low `width` bits of `value`, MSB first (1 <= width <= 32). */
   writeBits(value: number, width: number): void {
-    if (width > HALF_WORD_BITS) {
-      this.writeBits(value >>> HALF_WORD_BITS, width - HALF_WORD_BITS);
-      this.writeBits(value & HALF_WORD_MASK, HALF_WORD_BITS);
+    const total = this.accBits + width;
+    if (total < WORD_BITS) {
+      const masked = width === 0 ? 0 : value & (-1 >>> (WORD_BITS - width));
+      this.acc = ((this.acc << width) | masked) >>> 0;
+      this.accBits = total;
       return;
     }
-    this.acc = (this.acc << width) | (value & ((1 << width) - 1));
-    this.accBits += width;
-    while (this.accBits >= BYTE_BITS) {
-      if (this.bytePos >= this.buffer.length) this.grow();
-      this.accBits -= BYTE_BITS;
-      this.buffer[this.bytePos++] = (this.acc >>> this.accBits) & BZ_BYTE_MASK;
-    }
-    this.acc &= (1 << this.accBits) - 1;
+    const room = WORD_BITS - this.accBits;
+    const rem = total - WORD_BITS;
+    const topPart = (value >>> rem) & (-1 >>> (WORD_BITS - room));
+    const word = ((room === WORD_BITS ? 0 : this.acc << room) | topPart) >>> 0;
+    if (this.bytePos + 4 > this.buffer.length) this.grow();
+    this.buffer[this.bytePos] = (word >>> 24) & BZ_BYTE_MASK;
+    this.buffer[this.bytePos + 1] = (word >>> 16) & BZ_BYTE_MASK;
+    this.buffer[this.bytePos + 2] = (word >>> 8) & BZ_BYTE_MASK;
+    this.buffer[this.bytePos + 3] = word & BZ_BYTE_MASK;
+    this.bytePos += 4;
+    this.accBits = rem;
+    this.acc = rem === 0 ? 0 : (value & (-1 >>> (WORD_BITS - rem))) >>> 0;
   }
 
   writeByte(value: number): void {
@@ -122,7 +128,16 @@ class BitWriter {
 
   finish(): Buffer {
     if (this.accBits > 0) {
-      this.writeBits(0, BYTE_BITS - this.accBits);
+      if (this.bytePos + 4 > this.buffer.length) this.grow();
+      while (this.accBits >= BYTE_BITS) {
+        this.accBits -= BYTE_BITS;
+        this.buffer[this.bytePos++] = (this.acc >>> this.accBits) & BZ_BYTE_MASK;
+      }
+      if (this.accBits > 0) {
+        this.buffer[this.bytePos++] = (this.acc << (BYTE_BITS - this.accBits)) & BZ_BYTE_MASK;
+        this.accBits = 0;
+        this.acc = 0;
+      }
     }
     return Buffer.from(this.buffer.subarray(0, this.bytePos));
   }
@@ -137,7 +152,13 @@ class BitWriter {
     const bitLength = this.bitLength;
     const bytes = new Uint8Array(Math.ceil(bitLength / BYTE_BITS));
     bytes.set(this.buffer.subarray(0, this.bytePos));
-    if (this.accBits > 0) bytes[this.bytePos] = (this.acc << (BYTE_BITS - this.accBits)) & BZ_BYTE_MASK;
+    let rem = this.accBits;
+    let dst = this.bytePos;
+    while (rem >= BYTE_BITS) {
+      rem -= BYTE_BITS;
+      bytes[dst++] = (this.acc >>> rem) & BZ_BYTE_MASK;
+    }
+    if (rem > 0) bytes[dst] = (this.acc << (BYTE_BITS - rem)) & BZ_BYTE_MASK;
     return { bytes, bitLength };
   }
 
@@ -355,19 +376,11 @@ function encodeBlock(bw: BitWriter, rle1Block: Uint8Array, blockCrc: number, wor
       continue;
     }
     if (zeroRun > 0) flushZeroRun();
-    let pos = 1;
-    let prev = mtf[0];
-    let cur = mtf[1];
-    mtf[1] = prev;
-    while (cur !== target) {
-      pos++;
-      prev = cur;
-      cur = mtf[pos];
-      mtf[pos] = prev;
-    }
-    mtf[0] = cur;
-    symbols[symCount++] = pos + 1;
-    symFreq[pos + 1]++;
+    const idx = mtf.indexOf(target, 1);
+    mtf.copyWithin(1, 0, idx);
+    mtf[0] = target;
+    symbols[symCount++] = idx + 1;
+    symFreq[idx + 1]++;
   }
   if (zeroRun > 0) flushZeroRun();
   symbols[symCount++] = eob;
@@ -450,11 +463,13 @@ function encodeBlock(bw: BitWriter, rle1Block: Uint8Array, blockCrc: number, wor
   // Selectors, MTF-coded and written in unary.
   bw.writeBits(numTrees, BZ_TREE_COUNT_BITS);
   bw.writeBits(numSelectors, BZ_SELECTOR_COUNT_BITS);
-  const selectorMtf = Array.from({ length: numTrees }, (_, i) => i);
+  const selectorMtf = new Uint8Array(numTrees);
+  for (let i = 0; i < numTrees; i++) selectorMtf[i] = i;
   for (let g = 0; g < numSelectors; g++) {
-    const idx = selectorMtf.indexOf(selectors[g]);
-    selectorMtf.splice(idx, 1);
-    selectorMtf.unshift(selectors[g]);
+    const sel = selectors[g];
+    const idx = selectorMtf.indexOf(sel);
+    selectorMtf.copyWithin(1, 0, idx);
+    selectorMtf[0] = sel;
     for (let k = 0; k < idx; k++) bw.writeBits(1, 1);
     bw.writeBits(0, 1);
   }

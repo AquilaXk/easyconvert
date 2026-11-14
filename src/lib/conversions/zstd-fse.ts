@@ -109,23 +109,40 @@ export class ForwardBitReader {
   public bitPos = 0;
   private readonly buf: Uint8Array;
   private readonly start: number;
+  private readonly end: number;
   private readonly totalBits: number;
 
   constructor(buf: Uint8Array, start: number, end: number) {
     this.buf = buf;
     this.start = start;
+    this.end = end;
     this.totalBits = (end - start) * BITS_PER_BYTE;
   }
 
-  public peek(n: number): number {
-    let value = 0;
-    for (let i = 0; i < n; i++) {
-      const bit = this.bitPos + i;
-      if (bit < this.totalBits) {
-        value |= ((this.buf[this.start + (bit >> 3)] >> (bit & 7)) & 1) << i;
-      }
+  private peekAt(pos: number, n: number): number {
+    if (pos >= this.totalBits || pos < 0) return 0;
+    const byteIdx = pos >> 3;
+    const shift = pos & 7;
+    const abs = this.start + byteIdx;
+    const buf = this.buf;
+    if (abs + 3 < this.end) {
+      const word = (buf[abs] | (buf[abs + 1] << 8) | (buf[abs + 2] << 16) | (buf[abs + 3] << 24)) >>> 0;
+      return (word >>> shift) & ((1 << n) - 1);
     }
-    return value;
+    let word = buf[abs];
+    if (abs + 1 < this.end) word |= buf[abs + 1] << 8;
+    if (abs + 2 < this.end) word |= buf[abs + 2] << 16;
+    return ((word >>> 0) >>> shift) & ((1 << n) - 1);
+  }
+
+  public peek(n: number): number {
+    if (n === 0) return 0;
+    if (n > BITS_PER_FIELD_CHUNK) {
+      const lo = this.peekAt(this.bitPos, BITS_PER_FIELD_CHUNK);
+      const hi = this.peekAt(this.bitPos + BITS_PER_FIELD_CHUNK, n - BITS_PER_FIELD_CHUNK);
+      return hi * FIELD_CHUNK_RADIX + lo;
+    }
+    return this.peekAt(this.bitPos, n);
   }
 
   public skip(n: number): void {

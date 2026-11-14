@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { redactForOutput, redactText } from '../security/redact';
 import { fetch as undiciFetch, Agent } from 'undici';
-import { createSsrfSafeAgent, validateUrlForSsrf } from '../security/ssrf';
+import { createSsrfSafeAgent, isSsrfBlockedError, validateUrlForSsrf } from '../security/ssrf';
 import type { WebhookDlqEntry } from './types';
 import { WebhookDlqStore, type DlqPage, type DlqPageOptions } from './webhook-dlq-store';
 import { redisKeyStore } from './redis-key-store';
@@ -459,7 +459,9 @@ export class WebhookDispatcher {
     } catch (err: unknown) {
       const attemptDuration = Date.now() - attemptStart;
       const errMsg = this.formatFetchError(err);
-      const statusAction = classifyWebhookStatus(undefined, errMsg);
+      const statusAction = isSsrfBlockedError(err)
+        ? 'dlq_immediate'
+        : classifyWebhookStatus(undefined, errMsg);
       return {
         attemptEntry: {
           attemptNumber: attempt,
@@ -960,6 +962,14 @@ export class WebhookDispatcher {
         };
         await this.saveToDlq(dlqEntry).catch(() => {});
       }
+      return {
+        ...attemptResult,
+        totalAttempts: job.data.attempts.length,
+        attempts: job.data.attempts,
+      };
+    }
+
+    if (await this.isOwnerErased(options)) {
       return {
         ...attemptResult,
         totalAttempts: job.data.attempts.length,

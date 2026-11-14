@@ -443,7 +443,13 @@ describe.skipIf(!process.env.REDIS_URL)('erasing an account that owns a record o
     needles.push(session.id);
     await issueAuthToken('reset', { userId: user.id, email: user.email });
     for (let i = 0; i < LOGIN_MAX_FAILED_ATTEMPTS_PER_EMAIL; i++) await recordFailedLogin('203.0.113.9', user.email);
-    for (let i = 0; i < 1_200; i++) await client.set(`easyconvert:probe:{${user.id}}:${i}`, '1');
+    const safeTag = user.id.replace(/[{}]/g, '_');
+    const bulkPipe = client.pipeline();
+    for (let i = 0; i < 1_200; i++) {
+      bulkPipe.sadd(`webhook:sec-endpoints:{${safeTag}}`, `probe_${i}`);
+      bulkPipe.set(`webhook:sec:{${safeTag}}:probe_${i}`, '1');
+    }
+    await bulkPipe.exec();
 
     expect((await recordsNaming(needles)).length).toBeGreaterThan(10);
 

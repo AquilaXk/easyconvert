@@ -42,7 +42,7 @@ export async function verifyPassword(password: string, storedHash: string, salt:
         return;
       }
 
-      const inputBuffer = Buffer.from(derivedKey.toString('hex'), 'hex');
+      const inputBuffer = derivedKey;
       const storedBuffer = Buffer.from(storedHash, 'hex');
 
       if (inputBuffer.length !== storedBuffer.length) {

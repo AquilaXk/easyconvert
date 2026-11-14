@@ -71,6 +71,7 @@ interface OpenUpload {
   day?: string;
   idleUntil: number;
   expiresAt: number;
+  uploadId?: string;
 }
 
 /** What one link import has charged in all, and until when the record keeps it. */
@@ -273,16 +274,21 @@ async function reserveIn(
     return result.record;
   });
   if (refusal) return { refusal };
+  let boundUploadId: string | undefined;
   return {
     reservation: {
       bind: async (uploadId, expiresAt) => {
+        boundUploadId = uploadId;
         await store.update(bucket, (current) => {
           const entry = current?.open[id];
-          return entry && current ? { ...current, open: { ...current.open, [id]: { ...entry, expiresAt, idleUntil: Math.min(entry.idleUntil, expiresAt) } } } : undefined;
+          return entry && current ? { ...current, open: { ...current.open, [id]: { ...entry, uploadId, expiresAt, idleUntil: Math.min(entry.idleUntil, expiresAt) } } } : undefined;
         });
         await store.link(uploadId, { bucket, reservation: id, plan }, expiresAt);
       },
-      release: () => store.update(bucket, (current) => current && closeUpload(current, id, 'aborted')),
+      release: async () => {
+        await store.update(bucket, (current) => current && closeUpload(current, id, 'aborted'));
+        if (boundUploadId) await store.unlink?.(boundUploadId, bucket);
+      },
     },
   };
 }
@@ -504,7 +510,11 @@ export async function bytesBroughtInToday(callerUserId: string): Promise<number>
   return currentRecord(await activeStore().read(callerUserId), getUtcDateKey(), Date.now()).bytes;
 }
 
-/** Ends the reservation of the session `uploadId`: completed keeps its bytes charged, aborted returns them. */
-export function endUploadReservation(uploadId: string, outcome: 'completed' | 'aborted'): Promise<void> {
-  return changeReservation(uploadId, (record, id) => closeUpload(record, id, outcome));
+/** Ends the reservation of the session `uploadId`: completed keeps its bytes charged, aborted returns them, and the link key is removed. */
+export async function endUploadReservation(uploadId: string, outcome: 'completed' | 'aborted'): Promise<void> {
+  const store = activeStore();
+  const ref = await store.lookup(uploadId);
+  if (!ref) return;
+  await store.update(ref.bucket, (current) => current && closeUpload(current, ref.reservation, outcome));
+  await store.unlink?.(uploadId, ref.bucket);
 }

@@ -47,6 +47,77 @@ function readZigzagLeb128(page: Buffer, start: number, column: string): { value:
   return { value: (u >> 1n) ^ -(u & 1n), next };
 }
 
+interface DeltaMiniBlock32Context {
+  page: Buffer;
+  pos: number;
+  bw: number;
+  take: number;
+  minDelta: bigint;
+  current: bigint;
+  bitWidthLimit: 32 | 64;
+  values: BigInt64Array;
+  outIdx: number;
+}
+
+function unpackDeltaMiniBlock32(ctx: DeltaMiniBlock32Context): bigint {
+  const { page, pos, bw, take, minDelta, bitWidthLimit, values, outIdx } = ctx;
+  let { current } = ctx;
+  if (bitWidthLimit === 32) {
+    let cur32 = Number(current) | 0;
+    const minDelta32 = Number(minDelta) | 0;
+    if (bw === 0) {
+      for (let i = 0; i < take; i++) {
+        cur32 = (cur32 + minDelta32) | 0;
+        values[outIdx + i] = BigInt(cur32);
+      }
+      return BigInt(cur32);
+    }
+    const mask = -1 >>> (32 - bw);
+    let bitPos = 0;
+    for (let i = 0; i < take; i++) {
+      let byteIdx = pos + (bitPos >>> 3);
+      const bitOffset = bitPos & 7;
+      let raw = page[byteIdx++] >>> bitOffset;
+      let bitsFilled = BITS_PER_BYTE - bitOffset;
+      while (bitsFilled < bw) {
+        raw |= page[byteIdx++] << bitsFilled;
+        bitsFilled += BITS_PER_BYTE;
+      }
+      const delta = (raw & mask) >>> 0;
+      cur32 = (cur32 + minDelta32 + delta) | 0;
+      values[outIdx + i] = BigInt(cur32);
+      bitPos += bw;
+    }
+    return BigInt(cur32);
+  }
+
+  if (bw === 0) {
+    for (let i = 0; i < take; i++) {
+      current = BigInt.asIntN(bitWidthLimit, current + minDelta);
+      values[outIdx + i] = current;
+    }
+    return current;
+  }
+
+  const mask = -1 >>> (32 - bw);
+  let bitPos = 0;
+  for (let i = 0; i < take; i++) {
+    let byteIdx = pos + (bitPos >>> 3);
+    const bitOffset = bitPos & 7;
+    let raw = page[byteIdx++] >>> bitOffset;
+    let bitsFilled = BITS_PER_BYTE - bitOffset;
+    while (bitsFilled < bw) {
+      raw |= page[byteIdx++] << bitsFilled;
+      bitsFilled += BITS_PER_BYTE;
+    }
+    const delta = (raw & mask) >>> 0;
+    current = BigInt.asIntN(bitWidthLimit, current + minDelta + BigInt(delta));
+    values[outIdx + i] = current;
+    bitPos += bw;
+  }
+  return current;
+}
+
 /**
  * Decodes a DELTA_BINARY_PACKED stream of `count` integers (32-bit or 64-bit two's-complement wrapping).
  */
@@ -121,11 +192,9 @@ export function decodeDeltaBinaryPacked(
         throw new ParquetFormatError(`Corrupted Parquet file: truncated delta miniblock data in column '${column}'`);
       }
       const take = Math.min(valuesPerMiniBlock, count - outIdx);
-      if (bw === 0) {
-        for (let i = 0; i < take; i++) {
-          current = BigInt.asIntN(bitWidthLimit, current + minDelta);
-          values[outIdx++] = current;
-        }
+      if (bw <= 32) {
+        current = unpackDeltaMiniBlock32({ page, pos, bw, take, minDelta, current, bitWidthLimit, values, outIdx });
+        outIdx += take;
       } else {
         const mask = (1n << BigInt(bw)) - 1n;
         let bitPos = 0;

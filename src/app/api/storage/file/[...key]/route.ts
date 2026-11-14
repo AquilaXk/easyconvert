@@ -37,12 +37,27 @@ function decodeStorageKey(rawKey: string): string | undefined {
 }
 
 /**
- * Whether `key` names a file a client may fetch and who owns it (`resolveObjectOwnership`, which refuses every key no
- * writer of the server produces), and the object stored under it. Storage is asked only about a key that resolved.
+ * Resolves ownership and denies unauthorized callers BEFORE probing storage (`stat`), so callers who do not own a key
+ * never trigger remote `HEAD` / disk `stat` calls.
  */
-async function lookUp(key: string) {
+async function authorizeAndStat(
+  req: NextRequest,
+  key: string,
+  notFound: () => NextResponse
+): Promise<
+  | { resolved: false; denied?: undefined; stored?: undefined }
+  | { resolved: true; denied: NextResponse; stored?: undefined }
+  | { resolved: true; denied?: undefined; stored: Awaited<ReturnType<typeof s3Storage.stat>> }
+> {
   const ownership = await resolveObjectOwnership(key);
-  return { ownership, stored: ownership.resolved ? await s3Storage.stat(key) : undefined };
+  if (!ownership.resolved) {
+    return { resolved: false };
+  }
+  const denied = await denyUnlessOwner(req, ownership.ownerUserId, STORAGE_DOWNLOAD_SCOPE, notFound);
+  if (denied) {
+    return { resolved: true, denied };
+  }
+  return { resolved: true, stored: await s3Storage.stat(key) };
 }
 
 export async function GET(
@@ -67,14 +82,22 @@ export async function GET(
 
   const instanceUri = req.nextUrl?.pathname || '/api/storage/file';
   let resolvedKey = fullKey;
-  let found;
+  let stored: Awaited<ReturnType<typeof s3Storage.stat>> = null;
+  let ownershipResolved = false;
   try {
-    found = await lookUp(fullKey);
-    if (!found.stored && rawKey !== fullKey) {
-      const literal = await lookUp(rawKey);
-      if (literal.stored) {
-        resolvedKey = rawKey;
-        found = literal;
+    const primary = await authorizeAndStat(req, fullKey, notFound);
+    if (primary.denied) return primary.denied;
+    ownershipResolved = primary.resolved;
+    stored = primary.stored ?? null;
+    if (!stored && rawKey !== fullKey) {
+      const literal = await authorizeAndStat(req, rawKey, notFound);
+      if (literal.denied) return literal.denied;
+      if (literal.resolved) {
+        ownershipResolved = true;
+        if (literal.stored) {
+          resolvedKey = rawKey;
+          stored = literal.stored;
+        }
       }
     }
   } catch (err: unknown) {
@@ -83,13 +106,8 @@ export async function GET(
     throw err;
   }
 
-  const { ownership, stored } = found;
-  if (!ownership.resolved) {
+  if (!ownershipResolved) {
     return notFound();
-  }
-  const denied = await denyUnlessOwner(req, ownership.ownerUserId, STORAGE_DOWNLOAD_SCOPE, notFound);
-  if (denied) {
-    return denied;
   }
 
   // A result the retention rule deleted answers 410 to its owner, also in the moments before the sweep removes the object.

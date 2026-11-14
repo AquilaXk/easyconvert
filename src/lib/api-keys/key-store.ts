@@ -80,6 +80,19 @@ export function apiKeyHashCandidates(secret: string): ApiKeyHashCandidates {
   return { hashes: Array.from(new Set(candidates)), currentHash };
 }
 
+/** Compares `candidateHashes` against `storedHash` in constant time per equal-length digest without short-circuiting. */
+export function timingSafeHashMatch(candidateHashes: readonly string[], storedHash: string): boolean {
+  const storedBuf = Buffer.from(storedHash, 'utf8');
+  let matched = false;
+  for (const candidate of candidateHashes) {
+    const candBuf = Buffer.from(candidate, 'utf8');
+    if (candBuf.length === storedBuf.length && crypto.timingSafeEqual(candBuf, storedBuf)) {
+      matched = true;
+    }
+  }
+  return matched;
+}
+
 export function getUtcDateKey(): string {
   return dayWindow(Date.now()).key;
 }
@@ -90,13 +103,15 @@ export type ApiKeyVerification = { valid: boolean; key?: ApiKey; user?: User; er
 export class KeyStore {
   protected static sharedKeys = new Map<string, ApiKey>();
   protected static sharedKeyHashIndex = new Map<string, string>();
+  protected static sharedPreviousKeysByHash = new Map<string, string>();
   protected static sharedDailyUsage = new Map<string, number>();
   protected static sharedUserFiles = new Map<string, UserConversionFile>();
   protected static sharedTokenBuckets = new Map<string, { tokens: number; lastRefill: number }>();
   protected static sharedInitialized = false;
 
   protected readonly keys: Map<string, ApiKey>;
-  protected readonly keyHashIndex: Map<string, string>; // hash -> keyId
+  protected readonly keyHashIndex: Map<string, string>; // current keyHash -> keyId
+  protected readonly previousKeysByHash: Map<string, string>; // previousKeyHash -> keyId
   protected readonly dailyUsage: Map<string, number>; // userId:YYYY-MM-DD -> count
   protected readonly userFiles: Map<string, UserConversionFile>; // fileId -> file
   protected readonly tokenBuckets: Map<string, { tokens: number; lastRefill: number }>;
@@ -114,6 +129,7 @@ export class KeyStore {
     if (isolated) {
       this.keys = new Map();
       this.keyHashIndex = new Map();
+      this.previousKeysByHash = new Map();
       this.dailyUsage = new Map();
       this.userFiles = new Map();
       this.tokenBuckets = new Map();
@@ -121,6 +137,7 @@ export class KeyStore {
     } else {
       this.keys = KeyStore.sharedKeys;
       this.keyHashIndex = KeyStore.sharedKeyHashIndex;
+      this.previousKeysByHash = KeyStore.sharedPreviousKeysByHash;
       this.dailyUsage = KeyStore.sharedDailyUsage;
       this.userFiles = KeyStore.sharedUserFiles;
       this.tokenBuckets = KeyStore.sharedTokenBuckets;
@@ -133,13 +150,14 @@ export class KeyStore {
     if (existing) {
       this.keyHashIndex.delete(existing.keyHash);
       if (existing.previousKeyHash) {
+        this.previousKeysByHash.delete(existing.previousKeyHash);
         this.keyHashIndex.delete(existing.previousKeyHash);
       }
     }
     this.keys.set(key.id, key);
     this.keyHashIndex.set(key.keyHash, key.id);
     if (key.previousKeyHash) {
-      this.keyHashIndex.set(key.previousKeyHash, key.id);
+      this.previousKeysByHash.set(key.previousKeyHash, key.id);
     }
   }
 
@@ -249,16 +267,9 @@ export class KeyStore {
 
   private lookupKeyId(candidateHashes: readonly string[]): string | undefined {
     for (const keyHash of candidateHashes) {
-      const keyId = this.keyHashIndex.get(keyHash);
+      const keyId = this.keyHashIndex.get(keyHash) ?? this.previousKeysByHash.get(keyHash);
       if (keyId) {
         return keyId;
-      }
-    }
-    for (const key of this.keys.values()) {
-      if (key.previousKeyHash && candidateHashes.includes(key.previousKeyHash)) {
-        if (!key.graceExpiresAt || Date.now() <= key.graceExpiresAt) {
-          return key.id;
-        }
       }
     }
     return undefined;
@@ -305,11 +316,12 @@ export class KeyStore {
     if (!key.previousKeyHash || key.previousKeyHash === currentHash) {
       return secretMigrated;
     }
+    this.previousKeysByHash.delete(key.previousKeyHash);
     if (key.previousKeyHash !== key.keyHash) {
       this.keyHashIndex.delete(key.previousKeyHash);
     }
     key.previousKeyHash = currentHash;
-    this.keyHashIndex.set(currentHash, key.id);
+    this.previousKeysByHash.set(currentHash, key.id);
     return true;
   }
 
@@ -347,9 +359,9 @@ export class KeyStore {
       return { valid: false, error: 'Invalid or non-existent API key' };
     }
 
-    const matchedCurrentKey = candidates.hashes.includes(key.keyHash);
+    const matchedCurrentKey = timingSafeHashMatch(candidates.hashes, key.keyHash);
     const matchedPreviousKey =
-      !matchedCurrentKey && Boolean(key.previousKeyHash && candidates.hashes.includes(key.previousKeyHash));
+      !matchedCurrentKey && Boolean(key.previousKeyHash && timingSafeHashMatch(candidates.hashes, key.previousKeyHash));
     if (!matchedCurrentKey && !matchedPreviousKey) {
       return { valid: false, error: 'Invalid or non-existent API key' };
     }
@@ -433,15 +445,19 @@ export class KeyStore {
     const graceExpiresAt = Date.now() + gracePeriodSeconds * 1000;
 
     const outgoingPreviousHash = key.previousKeyHash;
-    if (outgoingPreviousHash && outgoingPreviousHash !== key.keyHash && outgoingPreviousHash !== newKeyHash) {
-      this.keyHashIndex.delete(outgoingPreviousHash);
+    if (outgoingPreviousHash) {
+      this.previousKeysByHash.delete(outgoingPreviousHash);
+      if (outgoingPreviousHash !== key.keyHash && outgoingPreviousHash !== newKeyHash) {
+        this.keyHashIndex.delete(outgoingPreviousHash);
+      }
     }
+    this.keyHashIndex.delete(key.keyHash);
     key.previousKeyHash = key.keyHash;
     key.graceExpiresAt = graceExpiresAt;
     key.keyHash = newKeyHash;
     key.prefix = prefix;
 
-    this.keyHashIndex.set(key.previousKeyHash, key.id);
+    this.previousKeysByHash.set(key.previousKeyHash, key.id);
     this.keyHashIndex.set(newKeyHash, key.id);
     this.persist();
 
@@ -530,6 +546,7 @@ export class KeyStore {
     this.keys.delete(keyId);
     this.keyHashIndex.delete(key.keyHash);
     if (key.previousKeyHash) {
+      this.previousKeysByHash.delete(key.previousKeyHash);
       this.keyHashIndex.delete(key.previousKeyHash);
     }
     this.tokenBuckets.delete(`apikey:${keyId}`);
@@ -695,6 +712,7 @@ export class KeyStore {
   public resetStore() {
     this.keys.clear();
     this.keyHashIndex.clear();
+    this.previousKeysByHash.clear();
     this.dailyUsage.clear();
     this.userFiles.clear();
     this.tokenBuckets.clear();

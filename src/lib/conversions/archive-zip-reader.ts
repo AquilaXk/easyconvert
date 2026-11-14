@@ -1,3 +1,4 @@
+import path from 'node:path';
 import zlib from 'node:zlib';
 import {
   ArchivePasswordRequiredError,
@@ -5,6 +6,7 @@ import {
   DecompressionLimitError,
   UnsupportedArchiveMethodError,
 } from '../types';
+import { validateEntryPath } from './archive-entry-path';
 import {
   exceedsArchiveRatio,
   assertSafeArchiveEntryName,
@@ -669,4 +671,83 @@ export async function readZipFiles(
 ): Promise<{ filename: string; buffer: Buffer }[]> {
   const entries = await readZipEntries(buf, directory, options);
   return entries.map(({ filename, buffer }) => ({ filename, buffer }));
+}
+
+const PK_ANY_HEADER_MAGIC = Buffer.from([0x50, 0x4b]);
+
+export async function trySalvageZipLocalHeader(
+  zipBuffer: Buffer,
+  pos: number,
+  trialState: { count: number },
+  maxTrials: number,
+  salvageDeflate: (data: Buffer, entryName: string) => Promise<Buffer | null>
+): Promise<{ entry: { filename: string; buffer: Buffer }; nextPos: number } | null> {
+  try {
+    const compMethod = zipBuffer.readUInt16LE(pos + 8);
+    const compSize = zipBuffer.readUInt32LE(pos + 18);
+    const uncompSize = zipBuffer.readUInt32LE(pos + 22);
+    const nameLen = zipBuffer.readUInt16LE(pos + 26);
+    const extraLen = zipBuffer.readUInt16LE(pos + 28);
+    const dataStart = pos + LOCAL_HEADER_BYTES + nameLen + extraLen;
+    if (pos + LOCAL_HEADER_BYTES + nameLen > zipBuffer.length || dataStart > zipBuffer.length) return null;
+
+    const rawName = zipBuffer.toString('utf-8', pos + LOCAL_HEADER_BYTES, pos + LOCAL_HEADER_BYTES + nameLen);
+    const { path: validated, error } = validateEntryPath(rawName);
+    let cleanName: string | null = null;
+    if (error === null) cleanName = validated || path.basename(rawName);
+    else if (error.reason !== 'invalid-entry-name') throw error;
+    if (!cleanName) return null;
+
+    let rawChunk: Buffer;
+    if (compSize > 0 && dataStart + compSize <= zipBuffer.length) {
+      rawChunk = zipBuffer.subarray(dataStart, dataStart + compSize);
+    } else {
+      const nextPk = zipBuffer.indexOf(PK_ANY_HEADER_MAGIC, dataStart);
+      rawChunk = zipBuffer.subarray(dataStart, nextPk !== -1 ? nextPk : zipBuffer.length);
+    }
+    if (rawChunk.length === 0) return null;
+
+    let uncompressed: Buffer | null = null;
+    if (compMethod === 0) uncompressed = Buffer.from(rawChunk);
+    else if (compMethod === 8) {
+      if (trialState.count >= maxTrials) return null;
+      trialState.count++;
+      uncompressed = await salvageDeflate(rawChunk, cleanName);
+    }
+    if (!uncompressed || (uncompSize !== 0 && uncompressed.length !== uncompSize && compSize !== 0)) return null;
+    return {
+      entry: { filename: cleanName, buffer: uncompressed },
+      nextPos: dataStart + (compSize > 0 ? compSize : rawChunk.length),
+    };
+  } catch (err) {
+    if (err instanceof DecompressionLimitError || err instanceof UnsafeArchiveError) throw err;
+    return null;
+  }
+}
+
+/** Reads standard or Zip64 EOCD entry count and central directory offset. */
+export function readZipCentralDirectoryLocation(
+  buffer: Buffer,
+  eocdOffset: number
+): { declaredEntries: number; cdOffset: number } {
+  const declaredEntries = buffer.readUInt16LE(eocdOffset + 10);
+  const cdOffset = buffer.readUInt32LE(eocdOffset + 16);
+  if (eocdOffset < 20 || buffer.readUInt32LE(eocdOffset - 20) !== 0x07064b50) {
+    return { declaredEntries, cdOffset };
+  }
+
+  const zip64EocdOffset = Number(buffer.readBigUInt64LE(eocdOffset - 12));
+  if (
+    buffer.length < 56 ||
+    zip64EocdOffset < 0 ||
+    zip64EocdOffset > buffer.length - 56 ||
+    buffer.readUInt32LE(zip64EocdOffset) !== 0x06064b50
+  ) {
+    return { declaredEntries, cdOffset };
+  }
+
+  return {
+    declaredEntries: Number(buffer.readBigUInt64LE(zip64EocdOffset + 32)),
+    cdOffset: Number(buffer.readBigUInt64LE(zip64EocdOffset + 48)),
+  };
 }

@@ -2,6 +2,9 @@ import os from 'node:os';
 import zlib from 'node:zlib';
 import { ConversionFailedError } from '../types';
 import { getCpuPool, runCpuTask } from '../workers/cpu-pool';
+import { adler32, combineAdler32 } from './deflate-blocks';
+
+export { combineAdler32 };
 
 /**
  * Parallel writer for 16-bit photographic PNGs (PNG Third Edition, W3C, sections 7 and 12.8).
@@ -28,7 +31,6 @@ const BYTES_PER_SAMPLE = 2;
 const ZLIB_HEADER = Uint8Array.of(0x78, 0x9c);
 const IHDR_BYTES = 13;
 const COLOUR_TYPE_OF_CHANNELS: Readonly<Record<number, number>> = { 1: 0, 2: 4, 3: 2, 4: 6 };
-const ADLER_BASE = 65521;
 const ADLER_BYTES = 4;
 const BAND_ROWS_TARGET = 128;
 const MAX_BANDS = 16;
@@ -75,29 +77,6 @@ export interface PngBandResult {
 
 function png16Failure(message: string): ConversionFailedError {
   return new ConversionFailedError(`16-bit PNG: ${message}`);
-}
-
-/**
- * Adler-32 of `bytes`, from the trailer of a zlib stream of stored blocks: the library computes it at memory speed, where a
- * loop in script costs as much as the compression of the same bytes.
- */
-function adler32(bytes: Uint8Array): number {
-  const stream = zlib.deflateSync(bytes, { level: 0 });
-  return stream.readUInt32BE(stream.length - ADLER_BYTES);
-}
-
-/** Adler-32 of two consecutive runs from the sums of each (the combination zlib uses; `length2` is the second run's length). */
-export function combineAdler32(adler1: number, adler2: number, length2: number): number {
-  const remainder = length2 % ADLER_BASE;
-  let sum1 = adler1 & 0xffff;
-  let sum2 = (remainder * sum1) % ADLER_BASE;
-  sum1 += (adler2 & 0xffff) + ADLER_BASE - 1;
-  sum2 += ((adler1 >>> 16) & 0xffff) + ((adler2 >>> 16) & 0xffff) + ADLER_BASE - remainder;
-  if (sum1 >= ADLER_BASE) sum1 -= ADLER_BASE;
-  if (sum1 >= ADLER_BASE) sum1 -= ADLER_BASE;
-  if (sum2 >= ADLER_BASE * 2) sum2 -= ADLER_BASE * 2;
-  if (sum2 >= ADLER_BASE) sum2 -= ADLER_BASE;
-  return ((sum2 << 16) | sum1) >>> 0;
 }
 
 /** Rows of one picture filtered by the same filter type are cheapest for Sub, Up and Average; Paeth is chosen when it saves at least 1%. */

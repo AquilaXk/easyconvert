@@ -224,6 +224,32 @@ if existing then return 2 end
 return 1
 `;
 
+/**
+ * Sets or replaces only the primary encrypted secret atomically, preserving `createdAt`, `rotatedAt`, and any active grace-period
+ * `previousEncrypted` / `previousExpiresAt` written by concurrent rotations.
+ * KEYS[1] record. ARGV[1] primaryEncrypted, ARGV[2] now.
+ */
+export const SET_PRIMARY_WEBHOOK_SECRET_LUA = `
+local raw = redis.call('GET', KEYS[1])
+local now = tonumber(ARGV[2])
+local record = { primaryEncrypted = ARGV[1], createdAt = now }
+if raw then
+  local ok, existing = pcall(cjson.decode, raw)
+  if ok and type(existing) == 'table' then
+    record.createdAt = existing.createdAt or now
+    if existing.rotatedAt ~= nil then record.rotatedAt = existing.rotatedAt end
+    if existing.previousEncrypted ~= nil then record.previousEncrypted = existing.previousEncrypted end
+    if existing.previousExpiresAt ~= nil then record.previousExpiresAt = existing.previousExpiresAt end
+  end
+end
+local pttl = redis.call('PTTL', KEYS[1])
+redis.call('SET', KEYS[1], cjson.encode(record))
+if pttl and pttl > 0 then
+  redis.call('PEXPIRE', KEYS[1], pttl)
+end
+return 1
+`;
+
 export class InMemoryWebhookSecretStore implements WebhookSecretStore {
   private readonly store = new Map<string, StoredWebhookSecretRecord>();
   /** The record keys of the endpoint targets of each owner (the Redis index set). */
@@ -269,6 +295,8 @@ export class InMemoryWebhookSecretStore implements WebhookSecretStore {
 
     this.store.set(key, {
       primaryEncrypted,
+      ...(existing?.previousEncrypted !== undefined ? { previousEncrypted: existing.previousEncrypted } : {}),
+      ...(existing?.previousExpiresAt !== undefined ? { previousExpiresAt: existing.previousExpiresAt } : {}),
       createdAt: existing?.createdAt || now,
       rotatedAt: existing?.rotatedAt,
     });
@@ -379,22 +407,8 @@ export class RedisWebhookSecretStore implements WebhookSecretStore {
   ): Promise<void> {
     const key = buildSecretStorageKey(ownerUserId, targetId);
     const primaryEncrypted = encryptWebhookSecret(secret);
-    const existingRaw = await this.redis.get(key);
-    let existing: StoredWebhookSecretRecord | undefined;
-    if (existingRaw) {
-      try {
-        existing = JSON.parse(existingRaw);
-      } catch {}
-    }
     const now = this.clock();
-
-    const record: StoredWebhookSecretRecord = {
-      primaryEncrypted,
-      createdAt: existing?.createdAt || now,
-      rotatedAt: existing?.rotatedAt,
-    };
-
-    await this.redis.set(key, JSON.stringify(record));
+    await this.redis.eval(SET_PRIMARY_WEBHOOK_SECRET_LUA, 1, key, primaryEncrypted, String(now));
   }
 
   public async seedPrimarySecretIfAbsent(ownerUserId: string, targetId: string, secret: string): Promise<boolean> {

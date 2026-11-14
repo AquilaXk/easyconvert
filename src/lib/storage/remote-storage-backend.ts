@@ -37,7 +37,7 @@ import type {
   StoredObject,
   UploadSessionInfo,
 } from './oci-storage';
-import type { ListedUpload, ObjectHead, S3ObjectClient } from './s3-object-client';
+import type { GetObjectResult, ListedUpload, ObjectHead, S3ObjectClient } from './s3-object-client';
 
 /**
  * Job storage on an S3-compatible object store (OCI Object Storage in production): the
@@ -569,51 +569,75 @@ export class RemoteStorageBackend implements IStorageBackend {
     return head;
   }
 
-  async getObject(key: string): Promise<StoredObject | undefined> {
-    const head = await this.liveHead(key);
-    if (!head) return undefined;
-
-    if (head.size <= REMOTE_INLINE_OBJECT_MAX_BYTES) {
-      const got = await this.client.getObject(key);
-      if (!got) return undefined;
-      const chunks: Buffer[] = [];
-      for await (const chunk of got.stream) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      }
-      return this.toStoredObject(head, { buffer: Buffer.concat(chunks) });
+  /** Live object stream and head from a single GET, or undefined when missing, unaddressable, or expired. */
+  private async liveGet(
+    key: string,
+    range?: { start: number; end: number }
+  ): Promise<GetObjectResult | undefined> {
+    let got: GetObjectResult | null;
+    try {
+      got = await this.client.getObject(key, range);
+    } catch (err) {
+      // A key the store cannot address (for example one with ".." segments) names no object.
+      if (err instanceof StorageInvalidKeyError) return undefined;
+      throw err;
     }
-    return this.toStoredObject(head, { filePath: await this.stageToScratch(key, head.size), staged: true });
+    if (!got) return undefined;
+    if (isObjectExpired(got, Date.now())) {
+      got.stream.destroy();
+      await this.client.deleteObject(key).catch(() => undefined);
+      return undefined;
+    }
+    return got;
   }
 
-  /** Downloads an object to a private scratch file so engines can read it by path. */
-  private async stageToScratch(key: string, size: number): Promise<string> {
-    if (size > REMOTE_STAGED_OBJECT_MAX_BYTES) {
+  async getObject(key: string): Promise<StoredObject | undefined> {
+    const got = await this.liveGet(key);
+    if (!got) return undefined;
+
+    if (got.size <= REMOTE_INLINE_OBJECT_MAX_BYTES) {
+      const chunks: Buffer[] = [];
+      try {
+        for await (const chunk of got.stream) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        }
+      } catch (err) {
+        got.stream.destroy();
+        throw err;
+      }
+      return this.toStoredObject(got, { buffer: Buffer.concat(chunks) });
+    }
+    return this.toStoredObject(got, { filePath: await this.stageToScratch(key, got), staged: true });
+  }
+
+  /** Downloads a pre-fetched object stream to a private scratch file so engines can read it by path. */
+  private async stageToScratch(key: string, got: GetObjectResult): Promise<string> {
+    if (got.size > REMOTE_STAGED_OBJECT_MAX_BYTES) {
+      got.stream.destroy();
       throw new StorageAdapterError(
-        `Object of ${size} bytes exceeds the ${REMOTE_STAGED_OBJECT_MAX_BYTES} byte staging limit`,
+        `Object of ${got.size} bytes exceeds the ${REMOTE_STAGED_OBJECT_MAX_BYTES} byte staging limit`,
         this.providerName
       );
     }
-    await fs.promises.mkdir(this.scratchDir, { recursive: true, mode: STAGED_DIR_MODE });
-    await this.sweepStaleScratch();
-    const got = await this.client.getObject(key);
-    if (!got) {
-      throw new StorageAdapterError(`Object "${key}" disappeared while it was being staged`, this.providerName);
-    }
-    const target = path.join(this.scratchDir, `${crypto.randomUUID()}${STAGED_FILE_SUFFIX}`);
+    let target: string | undefined;
     try {
+      await fs.promises.mkdir(this.scratchDir, { recursive: true, mode: STAGED_DIR_MODE });
+      await this.sweepStaleScratch();
+      target = path.join(this.scratchDir, `${crypto.randomUUID()}${STAGED_FILE_SUFFIX}`);
       await pipeline(got.stream, fs.createWriteStream(target, { mode: STAGED_FILE_MODE }));
       const written = (await fs.promises.stat(target)).size;
-      if (written !== size) {
+      if (written !== got.size) {
         throw new StorageAdapterError(
-          `Staged ${written} bytes of "${key}" but the object has ${size} bytes`,
+          `Staged ${written} bytes of "${key}" but the object has ${got.size} bytes`,
           this.providerName
         );
       }
+      return target;
     } catch (err) {
-      await fs.promises.rm(target, { force: true }).catch(() => undefined);
+      got.stream.destroy();
+      if (target) await fs.promises.rm(target, { force: true }).catch(() => undefined);
       throw err;
     }
-    return target;
   }
 
   /** Removes staged files that outlived any plausible job. */
@@ -645,20 +669,8 @@ export class RemoteStorageBackend implements IStorageBackend {
   }
 
   async openReadStream(key: string, range?: { start: number; end: number }): Promise<NodeJS.ReadableStream | null> {
-    let got: Awaited<ReturnType<S3ObjectClient['getObject']>>;
-    try {
-      got = await this.client.getObject(key, range);
-    } catch (err) {
-      if (err instanceof StorageInvalidKeyError) return null;
-      throw err;
-    }
-    if (!got) return null;
-    if (isObjectExpired(got, Date.now())) {
-      got.stream.destroy();
-      await this.client.deleteObject(key).catch(() => undefined);
-      return null;
-    }
-    return got.stream;
+    const got = await this.liveGet(key, range);
+    return got ? got.stream : null;
   }
 
   getObjectStream(key: string, range?: { start: number; end: number }): Promise<NodeJS.ReadableStream | null> {

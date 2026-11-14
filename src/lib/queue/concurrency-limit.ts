@@ -47,6 +47,9 @@ export function syncSlotsInUse(): number {
 }
 
 async function queuedJobs(userId: string, limit: number): Promise<number> {
+  if (typeof conversionQueue.countJobsByUser === 'function') {
+    return conversionQueue.countJobsByUser(userId, [...IN_FLIGHT_STATES], limit);
+  }
   const jobs = await conversionQueue.getJobsByUser(userId, [...IN_FLIGHT_STATES], limit, 0);
   return jobs.length;
 }

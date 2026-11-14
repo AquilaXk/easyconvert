@@ -361,15 +361,30 @@ class HwpModelReader {
     // Extended control characters pair, in order, with the control records below the paragraph.
     const anchors = text.controls.filter((control) => control.extended);
     const placed = new Map<HwpTextControl, { index: number; id: string; end: number }>();
-    const used = new Set<number>();
+    const controlBuckets = new Map<string, { indices: number[]; head: number }>();
+    for (let position = 0; position < controls.length; position += 1) {
+      const id = controls[position].id;
+      let bucket = controlBuckets.get(id);
+      if (!bucket) {
+        bucket = { indices: [], head: 0 };
+        controlBuckets.set(id, bucket);
+      }
+      bucket.indices.push(position);
+    }
+    const used = new Uint8Array(controls.length);
     for (const anchor of anchors) {
-      const match = controls.find((control, position) => !used.has(position) && control.id === anchor.id);
-      if (match) {
-        used.add(controls.indexOf(match));
-        placed.set(anchor, match);
+      if (anchor.id === null) continue;
+      const bucket = controlBuckets.get(anchor.id);
+      if (bucket && bucket.head < bucket.indices.length) {
+        const matchPos = bucket.indices[bucket.head++];
+        used[matchPos] = 1;
+        placed.set(anchor, controls[matchPos]);
       }
     }
-    const unplaced = controls.filter((_control, position) => !used.has(position));
+    const unplaced: { index: number; id: string; end: number }[] = [];
+    for (let position = 0; position < controls.length; position += 1) {
+      if (used[position] === 0) unplaced.push(controls[position]);
+    }
 
     const role = this.roleOf(shapeId, styleId);
     const inlines: Inline[] = [];
@@ -593,15 +608,29 @@ class HwpModelReader {
     }
     out.appendAll(captions.blocks);
     if (rowCount === 0 || columnCount === 0 || cells.length === 0) return;
+    const cellsByRow = new Map<number, typeof cells>();
+    for (const entry of cells) {
+      let bucket = cellsByRow.get(entry.row);
+      if (!bucket) {
+        bucket = [];
+        cellsByRow.set(entry.row, bucket);
+      }
+      bucket.push(entry);
+    }
     const rows: TableDraftCell[][] = [];
     for (let row = 0; row < rowCount; row += 1) {
-      const inRow = cells.filter((entry) => entry.row === row).sort((a, b) => a.column - b.column);
+      const inRow = (cellsByRow.get(row) ?? []).sort((a, b) => a.column - b.column);
       // Two cells at one address cannot both be drawn; the first stays.
       const seen = new Set<number>();
-      const unique = inRow.filter((entry) => !seen.has(entry.column) && seen.add(entry.column));
+      const unique: TableDraftCell[] = [];
       const header = repeatHeader && row === 0;
-      for (const entry of unique) entry.cell.header = header;
-      rows.push(unique.map((entry) => entry.cell));
+      for (const entry of inRow) {
+        if (seen.has(entry.column)) continue;
+        seen.add(entry.column);
+        entry.cell.header = header;
+        unique.push(entry.cell);
+      }
+      rows.push(unique);
     }
     out.table({ rows, columnCount });
   }
@@ -627,18 +656,32 @@ class HwpModelReader {
     return run;
   }
 
-  /** Splits `text[from, to)` at the character shape boundaries. */
+  /** Splits `text[from, to)` at the character shape boundaries in linear time. */
   private textRuns(text: string, from: number, to: number, shapeRuns: readonly { position: number; shape: number }[], offsetOfUnit: Uint32Array): TextRun[] {
-    const starts = shapeRuns.map((run) => ({ offset: offsetOfUnit[Math.min(run.position, offsetOfUnit.length - 1)], shape: run.shape }));
+    if (to <= from) return [];
+    const maxOffsetIdx = offsetOfUnit.length - 1;
+    const starts: { offset: number; shape: number; order: number }[] = [];
+    let isSorted = true;
+    for (let i = 0; i < shapeRuns.length; i += 1) {
+      const run = shapeRuns[i];
+      const offset = offsetOfUnit[run.position < maxOffsetIdx ? run.position : maxOffsetIdx];
+      if (i > 0 && offset < starts[i - 1].offset) isSorted = false;
+      starts.push({ offset, shape: run.shape, order: i });
+    }
+    if (!isSorted) {
+      starts.sort((a, b) => a.offset - b.offset || a.order - b.order);
+    }
+
     const runs: TextRun[] = [];
     let at = from;
+    let runIdx = 0;
+    let current = -1;
     while (at < to) {
-      let current = -1;
-      let next = to;
-      for (const start of starts) {
-        if (start.offset <= at) current = start.shape;
-        else if (start.offset < next) next = start.offset;
+      while (runIdx < starts.length && starts[runIdx].offset <= at) {
+        current = starts[runIdx].shape;
+        runIdx += 1;
       }
+      const next = runIdx < starts.length && starts[runIdx].offset < to ? starts[runIdx].offset : to;
       runs.push({ text: text.slice(at, next), shapeId: current });
       at = next;
     }

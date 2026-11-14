@@ -196,8 +196,18 @@ export async function checkLoginRateLimit(
   return { allowed: true, retryAfterSeconds: 0 };
 }
 
+export const FIXED_WINDOW_INCR_LUA = `
+local count = redis.call('INCR', KEYS[1])
+local ttl = redis.call('TTL', KEYS[1])
+if count == 1 or ttl < 0 then
+  redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
+  ttl = tonumber(ARGV[1])
+end
+return { count, ttl }
+`;
+
 /**
- * Increments failed login attempt counters for the IP and email.
+ * Increments failed login attempt counters for the IP and email using an atomic fixed window.
  */
 export async function recordFailedLogin(ip: string | null, email: string): Promise<void> {
   const normEmail = email ? email.toLowerCase().trim() : '';
@@ -209,21 +219,26 @@ export async function recordFailedLogin(ip: string | null, email: string): Promi
 
   if (redis) {
     try {
-      const pipeline = redis.pipeline();
+      const counters: Array<{ key: string; windowSeconds: number }> = [];
       if (normEmail) {
-        const emailKey = `${prefix}login_attempts:email:${normEmail}`;
-        pipeline.incr(emailKey);
-        pipeline.expire(emailKey, LOGIN_WINDOW_SECONDS);
+        counters.push({ key: `${prefix}login_attempts:email:${normEmail}`, windowSeconds: LOGIN_WINDOW_SECONDS });
       }
       if (normIp) {
-        const ipKey = `${prefix}login_attempts:ip:${normIp}`;
-        pipeline.incr(ipKey);
-        pipeline.expire(ipKey, LOGIN_WINDOW_SECONDS);
+        counters.push({ key: `${prefix}login_attempts:ip:${normIp}`, windowSeconds: LOGIN_WINDOW_SECONDS });
       }
       if (useGlobal) {
-        const globalKey = `${prefix}login_attempts:${GLOBAL_ATTEMPTS_KEY}`;
-        pipeline.incr(globalKey);
-        pipeline.expire(globalKey, LOGIN_GLOBAL_WINDOW_SECONDS);
+        counters.push({ key: `${prefix}login_attempts:${GLOBAL_ATTEMPTS_KEY}`, windowSeconds: LOGIN_GLOBAL_WINDOW_SECONDS });
+      }
+      if (typeof redis.eval === 'function') {
+        for (const counter of counters) {
+          await redis.eval(FIXED_WINDOW_INCR_LUA, 1, counter.key, String(counter.windowSeconds));
+        }
+        return;
+      }
+      const pipeline = redis.pipeline();
+      for (const counter of counters) {
+        pipeline.incr(counter.key);
+        pipeline.expire(counter.key, counter.windowSeconds);
       }
       await pipeline.exec();
       return;

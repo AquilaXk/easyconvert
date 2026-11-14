@@ -93,9 +93,10 @@ export async function resolveObjectOwnership(key: string): Promise<ObjectOwnersh
  */
 export async function mayUseStorageKeyAsJobInput(
   key: string,
-  callerUserId: string | undefined
+  callerUserId: string | undefined,
+  statKey: (key: string) => unknown = (k) => storageProvider.stat(k)
 ): Promise<boolean> {
-  if (!(await storageProvider.stat(key)) || (await isResultDeleted(key))) {
+  if (!(await statKey(key)) || (await isResultDeleted(key))) {
     return false;
   }
   if (isUploadKey(key)) {

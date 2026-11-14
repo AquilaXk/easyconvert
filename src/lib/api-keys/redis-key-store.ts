@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { redisUserStore } from '../auth/redis-user-store';
 import { AuthStoreUnavailableError, failClosed } from '../auth/store-unavailable';
-import { KeyStore, type ApiKeyVerification, apiKeyHashCandidates } from './key-store';
+import { KeyStore, type ApiKeyVerification, apiKeyHashCandidates, timingSafeHashMatch } from './key-store';
 import { quotaAllowanceOf } from './quota-window';
 import type {
   ApiKey,
@@ -57,6 +57,8 @@ export interface RedisKeyStoreOptions {
 
 /** How long a request burst counter lives after the last request it counted, unless the caller sets `ttlSeconds`. */
 export const TOKEN_BUCKET_TTL_SECONDS = 3600;
+const MAX_TOKEN_BUCKETS = 50_000;
+const TOKEN_BUCKET_SWEEP_INTERVAL_MS = 60_000;
 
 export interface TokenBucketOptions {
   capacity?: number;
@@ -110,6 +112,7 @@ export class RedisKeyStore extends KeyStore {
   private redisClient: Redis | null = null;
   /** The history of converted files in Redis, made once for the client it was made with. */
   private fileHistoryOf: { client: Redis; history: RedisUserFileHistory } | undefined;
+  private nextTokenBucketSweepAt = 0;
 
   constructor(
     keyPrefixOrOptions: string | RedisKeyStoreOptions = 'easyconvert:',
@@ -574,9 +577,9 @@ export class RedisKeyStore extends KeyStore {
     const key = JSON.parse(hashData.data) as ApiKey;
     key.status = (hashData.status as 'active' | 'revoked') || key.status;
 
-    const matchedCurrentKey = candidates.hashes.includes(key.keyHash);
+    const matchedCurrentKey = timingSafeHashMatch(candidates.hashes, key.keyHash);
     const matchedPreviousKey =
-      !matchedCurrentKey && Boolean(key.previousKeyHash && candidates.hashes.includes(key.previousKeyHash));
+      !matchedCurrentKey && Boolean(key.previousKeyHash && timingSafeHashMatch(candidates.hashes, key.previousKeyHash));
     if (!matchedCurrentKey && !matchedPreviousKey) {
       return null;
     }
@@ -632,19 +635,12 @@ export class RedisKeyStore extends KeyStore {
       staleIds.add(keyId);
     }
     for (const h of candidates.hashes) {
-      const mappedId = this.keyHashIndex.get(h);
+      const mappedId = this.keyHashIndex.get(h) ?? this.previousKeysByHash.get(h);
       if (mappedId) {
         staleIds.add(mappedId);
       }
       this.keyHashIndex.delete(h);
-    }
-    for (const [id, localKey] of this.keys.entries()) {
-      if (
-        candidates.hashes.includes(localKey.keyHash) ||
-        (localKey.previousKeyHash && candidates.hashes.includes(localKey.previousKeyHash))
-      ) {
-        staleIds.add(id);
-      }
+      this.previousKeysByHash.delete(h);
     }
     await Promise.all(Array.from(staleIds, (staleId) => this.syncKeyFromRedis(staleId)));
   }
@@ -715,6 +711,7 @@ export class RedisKeyStore extends KeyStore {
       } else if (existing) {
         this.keyHashIndex.delete(existing.keyHash);
         if (existing.previousKeyHash) {
+          this.previousKeysByHash.delete(existing.previousKeyHash);
           this.keyHashIndex.delete(existing.previousKeyHash);
         }
         this.keys.delete(keyId);
@@ -882,6 +879,7 @@ export class RedisKeyStore extends KeyStore {
   public override resetStore() {
     this.memoryLedger.clear();
     this.tokenBuckets.clear();
+    this.nextTokenBucketSweepAt = 0;
     super.resetStore();
   }
 
@@ -984,14 +982,18 @@ export class RedisKeyStore extends KeyStore {
     }
 
     // In-memory token bucket
+    const ttlMs = ttl * 1000;
     let state = this.tokenBuckets.get(identifier);
     if (!state) {
+      this.sweepOrEvictTokenBuckets(now, ttlMs, true);
       state = { tokens: capacity, lastRefill: now };
     } else {
+      this.sweepOrEvictTokenBuckets(now, ttlMs, false);
       const elapsed = Math.max(0, now - state.lastRefill);
       const replenished = refillRate > 0 ? (elapsed / 1000) * refillRate : 0;
       state.tokens = Math.min(capacity, state.tokens + replenished);
       state.lastRefill = now;
+      this.tokenBuckets.delete(identifier);
     }
 
     if (state.tokens >= cost) {
@@ -1011,6 +1013,22 @@ export class RedisKeyStore extends KeyStore {
         remainingTokens: Math.floor(state.tokens),
         retryAfterMs,
       };
+    }
+  }
+
+  private sweepOrEvictTokenBuckets(now: number, ttlMs: number, ensureSlot: boolean): void {
+    if (now >= this.nextTokenBucketSweepAt || (ensureSlot && this.tokenBuckets.size >= MAX_TOKEN_BUCKETS)) {
+      this.nextTokenBucketSweepAt = now + TOKEN_BUCKET_SWEEP_INTERVAL_MS;
+      for (const [k, entry] of this.tokenBuckets.entries()) {
+        if (now - entry.lastRefill > ttlMs) {
+          this.tokenBuckets.delete(k);
+        }
+      }
+    }
+    while (ensureSlot && this.tokenBuckets.size >= MAX_TOKEN_BUCKETS) {
+      const oldestKey = this.tokenBuckets.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.tokenBuckets.delete(oldestKey);
     }
   }
 }

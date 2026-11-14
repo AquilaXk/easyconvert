@@ -226,11 +226,14 @@ export class ZstdOutputBuffer {
     this.hardLimit = hardLimit;
   }
 
-  /** Reserves exactly `extra` more bytes when nothing has been written yet; otherwise grows normally. */
-  public reserve(extra: number): void {
+  /** Reserves initial capacity (capped against inflated headers when compressedLen is given); otherwise grows exponentially. */
+  public reserve(extra: number, compressedLen?: number): void {
     if (this.length === 0 && extra > this.data.length) {
       if (extra > this.hardLimit) throw new DecompressionLimitError('Zstandard output exceeds the decoder size limit.');
-      this.data = new Uint8Array(extra);
+      const capped = compressedLen !== undefined
+        ? Math.min(extra, Math.max(65536, compressedLen * 4), 1048576)
+        : extra;
+      this.data = new Uint8Array(capped);
       return;
     }
     this.ensure(extra);

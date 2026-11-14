@@ -125,9 +125,9 @@ export function isPasswordHandlingUnavailable(err: unknown, password: string | u
   return Boolean(password) && err instanceof EngineUnavailableError && err.engineName === QPDF_ENGINE_NAME;
 }
 
-function removeQuietly(filePath: string): void {
+async function removeQuietly(filePath: string): Promise<void> {
   try {
-    fs.rmSync(filePath, { force: true });
+    await fs.promises.rm(filePath, { force: true });
   } catch {
     // The job sandbox directory is removed by its owner as well; never mask the real outcome.
   }
@@ -162,15 +162,24 @@ async function runQpdfWithPassword(
   // The size of the decrypted copy is watched from here and qpdf is stopped when it passes the limit. A file size limit on
   // the process (prlimit) would hold it exactly, but needs a wrapper process to be started before qpdf is.
   const overrun = new AbortController();
+  let statInFlight = false;
   const watch = setInterval(() => {
-    try {
-      if (fs.statSync(output.path).size > output.maxBytes) overrun.abort(new SandboxedBufferLimitError(output.maxBytes, 'file-size'));
-    } catch {
-      // The copy is not there yet, or already removed: nothing to measure.
-    }
+    if (statInFlight) return;
+    statInFlight = true;
+    void fs.promises
+      .stat(output.path)
+      .then((stat) => {
+        if (stat.size > output.maxBytes) overrun.abort(new SandboxedBufferLimitError(output.maxBytes, 'file-size'));
+      })
+      .catch(() => {
+        // The copy is not there yet, or already removed: nothing to measure.
+      })
+      .finally(() => {
+        statInFlight = false;
+      });
   }, OUTPUT_WATCH_INTERVAL_MS);
   try {
-    fs.writeFileSync(passwordFile, password, { mode: PRIVATE_FILE_MODE, flag: 'wx' });
+    await fs.promises.writeFile(passwordFile, password, { mode: PRIVATE_FILE_MODE, flag: 'wx' });
     return await launchQpdf(qpdf, buildArgs(passwordFile), {
       cwd: request.tempDir,
       workDir: request.tempDir,
@@ -188,7 +197,7 @@ async function runQpdfWithPassword(
   } finally {
     clearInterval(watch);
     // The credential must not outlive qpdf, even while the rendering step still runs.
-    removeQuietly(passwordFile);
+    await removeQuietly(passwordFile);
   }
 }
 
@@ -251,7 +260,8 @@ export async function pdfPageTreeLoops(request: PdfDecryptRequest & { password: 
 }
 
 async function decryptIntoFile(qpdf: string, request: PdfDecryptRequest, password: string, decryptedPath: string, nonce: string): Promise<void> {
-  const maxFileSize = Math.max(fs.statSync(request.inputPath).size * QPDF_OUTPUT_SIZE_FACTOR, QPDF_MIN_OUTPUT_BYTES);
+  const inputStat = await fs.promises.stat(request.inputPath);
+  const maxFileSize = Math.max(inputStat.size * QPDF_OUTPUT_SIZE_FACTOR, QPDF_MIN_OUTPUT_BYTES);
   await runQpdfWithPassword(
     qpdf,
     request,
@@ -317,7 +327,7 @@ export async function readPdfAccess(request: PdfDecryptRequest & { password: str
  */
 export async function decryptPdfToBuffer(request: PdfDecryptRequest & { password: string }): Promise<Buffer> {
   const qpdf = requireQpdf(request.password);
-  const inputBytes = fs.statSync(request.inputPath).size;
+  const inputBytes = (await fs.promises.stat(request.inputPath)).size;
   const maxOutputBytes = Math.max(inputBytes * QPDF_OUTPUT_SIZE_FACTOR, QPDF_MIN_OUTPUT_BYTES);
   const result = await runQpdfWithStdinPassword(
     qpdf,
@@ -372,14 +382,15 @@ export async function withDecryptedPdf<T>(
   request: PdfDecryptRequest,
   operation: (readablePdfPath: string) => Promise<T>
 ): Promise<T> {
-  const guarded = (readablePdfPath: string, bytes: Buffer = fs.readFileSync(readablePdfPath)): Promise<T> => {
+  const guarded = async (readablePdfPath: string, preloaded?: Buffer): Promise<T> => {
+    const bytes = preloaded ?? (await fs.promises.readFile(readablePdfPath));
     assertPdfJbig2WithinLimits(bytes);
     return operation(readablePdfPath);
   };
   if (request.password) {
     return withQpdfDecryptedPdf({ ...request, password: request.password }, (readablePath) => guarded(readablePath));
   }
-  const input = fs.readFileSync(request.inputPath);
+  const input = await fs.promises.readFile(request.inputPath);
   return isEncrypted(input) ? withQpdfDecryptedPdf({ ...request, password: '' }, (readablePath) => guarded(readablePath)) : guarded(request.inputPath, input);
 }
 
@@ -407,10 +418,10 @@ export async function withQpdfDecryptedPdf<T>(
   const decryptedPath = path.join(request.tempDir, `decrypted-${nonce}.pdf`);
   try {
     // Create the plaintext copy owner-only before qpdf writes into it.
-    fs.writeFileSync(decryptedPath, '', { mode: PRIVATE_FILE_MODE, flag: 'wx' });
+    await fs.promises.writeFile(decryptedPath, '', { mode: PRIVATE_FILE_MODE, flag: 'wx' });
     await decryptIntoFile(qpdf, request, request.password, decryptedPath, nonce);
     return await operation(decryptedPath);
   } finally {
-    removeQuietly(decryptedPath);
+    await removeQuietly(decryptedPath);
   }
 }

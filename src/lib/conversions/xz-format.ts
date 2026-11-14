@@ -408,6 +408,47 @@ function parseIndex(buf: Uint8Array, offset: number, size: number): IndexRecord[
   return records;
 }
 
+interface DecodedXzBlock {
+  output: Uint8Array;
+  record: IndexRecord;
+  nextPos: number;
+}
+
+function decodeXzBlock(
+  buf: Uint8Array,
+  pos: number,
+  checkType: number,
+  checkBytes: number,
+  maxRemaining: number,
+  maxOutput: number
+): DecodedXzBlock {
+  const block = parseBlockHeader(buf, pos);
+  if (block.uncompressedSize !== undefined && block.uncompressedSize > maxRemaining) {
+    throw new DecompressionLimitError(`Archive bomb detected: XZ output exceeds the limit of ${maxOutput} bytes`);
+  }
+  const dataStart = pos + block.size;
+  const decoded = decodeLzma2At(buf, dataStart, maxRemaining, block.uncompressedSize);
+  undoFilters(block.filters, decoded.output);
+  const compressedSize = decoded.end - dataStart;
+  if (block.compressedSize !== undefined && block.compressedSize !== compressedSize) {
+    throw xzError('block compressed size mismatch');
+  }
+  const padding = pad4(compressedSize);
+  let cursor = decoded.end;
+  for (let i = 0; i < padding; i++) {
+    if (cursor + i >= buf.length || buf[cursor + i] !== 0) throw xzError('block padding is not zero');
+  }
+  cursor += padding;
+  if (cursor + checkBytes > buf.length) throw xzError('truncated block check');
+  verifyCheck(checkType, decoded.output, buf.subarray(cursor, cursor + checkBytes));
+  cursor += checkBytes;
+  return {
+    output: decoded.output,
+    record: { unpaddedSize: block.size + compressedSize + checkBytes, uncompressedSize: decoded.output.length },
+    nextPos: cursor,
+  };
+}
+
 /**
  * Decodes every stream of an .xz file and returns the concatenated payload. Checks the stream header and footer, every
  * block header, the index against what was decoded, and each block's check. The output never exceeds `maxOutput`.
@@ -442,24 +483,12 @@ export function unpackXzStream(buf: Uint8Array, maxOutput: number): Buffer {
     for (;;) {
       if (pos >= buf.length) throw xzError('truncated block header');
       if (buf[pos] === INDEX_INDICATOR) break;
-      const block = parseBlockHeader(buf, pos);
-      const dataStart = pos + block.size;
-      const decoded = decodeLzma2At(buf, dataStart, maxOutput - total, block.uncompressedSize);
-      undoFilters(block.filters, decoded.output);
-      const compressedSize = decoded.end - dataStart;
-      if (block.compressedSize !== undefined && block.compressedSize !== compressedSize) throw xzError('block compressed size mismatch');
-      const padding = pad4(compressedSize);
-      let cursor = decoded.end;
-      for (let i = 0; i < padding; i++) if (cursor + i >= buf.length || buf[cursor + i] !== 0) throw xzError('block padding is not zero');
-      cursor += padding;
-      if (cursor + checkBytes > buf.length) throw xzError('truncated block check');
-      verifyCheck(checkType, decoded.output, buf.subarray(cursor, cursor + checkBytes));
-      cursor += checkBytes;
-      records.push({ unpaddedSize: block.size + compressedSize + checkBytes, uncompressedSize: decoded.output.length });
+      const decoded = decodeXzBlock(buf, pos, checkType, checkBytes, maxOutput - total, maxOutput);
+      records.push(decoded.record);
       streamOutputs.push(decoded.output);
       total += decoded.output.length;
       if (total > maxOutput) throw new DecompressionLimitError(`Archive bomb detected: XZ output exceeds the limit of ${maxOutput} bytes`);
-      pos = cursor;
+      pos = decoded.nextPos;
     }
 
     // Index, then the footer.

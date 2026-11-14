@@ -300,11 +300,7 @@ export function getQueueForJob(
 export async function getJobAcrossQueues(
   jobId: string
 ): Promise<Job<ConversionJobData, ConversionJobResult> | undefined> {
-  for (const q of allConversionQueues) {
-    const job = await q.getJob(jobId);
-    if (job) return job;
-  }
-  return undefined;
+  return conversionQueue.getJob(jobId);
 }
 
 /**
@@ -314,34 +310,26 @@ export async function cancelJobAcrossQueues(
   jobId: string,
   reason: string = 'Cancelled by user'
 ): Promise<boolean> {
-  for (const q of allConversionQueues) {
-    const cancelled = await q.cancelJob(jobId, reason);
-    if (cancelled) return true;
-  }
-  return false;
+  return conversionQueue.cancelJob(jobId, reason);
 }
 
 // Transparent cross-queue lookup delegation on default conversionQueue
 const origConversionQueueGetJob = conversionQueue.getJob.bind(conversionQueue);
 conversionQueue.getJob = async (id: string) => {
-  const direct = await origConversionQueueGetJob(id);
-  if (direct) return direct;
-  for (const q of Object.values(resourceQueues)) {
-    const found = await q.getJob(id);
-    if (found) return found;
-  }
-  return undefined;
+  const results = await Promise.all([
+    origConversionQueueGetJob(id),
+    ...Object.values(resourceQueues).map((q) => q.getJob(id)),
+  ]);
+  return results.find(Boolean);
 };
 
 const origConversionQueueCancelJob = conversionQueue.cancelJob.bind(conversionQueue);
 conversionQueue.cancelJob = async (id: string, reason?: string) => {
-  const direct = await origConversionQueueCancelJob(id, reason);
-  if (direct) return true;
-  for (const q of Object.values(resourceQueues)) {
-    const cancelled = await q.cancelJob(id, reason);
-    if (cancelled) return true;
-  }
-  return false;
+  const cancelled = await Promise.all([
+    origConversionQueueCancelJob(id, reason),
+    ...Object.values(resourceQueues).map((q) => q.cancelJob(id, reason)),
+  ]);
+  return cancelled.includes(true);
 };
 
 const origConversionQueueGetJobCounts = conversionQueue.getJobCounts.bind(conversionQueue);
@@ -485,6 +473,27 @@ conversionQueue.getJobsByUser = async (userId: string, states?: import('./bullmq
     }
   }
   return unique.slice(offset, offset + limit);
+};
+
+const origConversionQueueCountJobsByUser = conversionQueue.countJobsByUser?.bind(conversionQueue);
+conversionQueue.countJobsByUser = async (
+  userId: string,
+  states?: import('./bullmq-engine').JobState[],
+  cap: number = 100,
+  options?: import('./bullmq-engine').UserJobsOptions
+) => {
+  if (cap <= 0) return 0;
+  const counts = await Promise.all([
+    origConversionQueueCountJobsByUser
+      ? origConversionQueueCountJobsByUser(userId, states, cap, options)
+      : origConversionQueueGetJobsByUser(userId, states, cap, 0, options).then((jobs) => jobs.length),
+    ...Object.values(resourceQueues).map((q) =>
+      q.countJobsByUser
+        ? q.countJobsByUser(userId, states, cap, options)
+        : q.getJobsByUser(userId, states, cap, 0, options).then((jobs) => jobs.length)
+    ),
+  ]);
+  return Math.min(cap, counts.reduce((sum, count) => sum + count, 0));
 };
 
 // Forward lifecycle events from resource queues to default conversionQueue

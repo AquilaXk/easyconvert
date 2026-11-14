@@ -66,7 +66,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     );
   }
 
-  if (typeof totalSize !== 'number' || !Number.isFinite(totalSize) || totalSize < 0) {
+  if (typeof totalSize !== 'number' || !Number.isSafeInteger(totalSize) || totalSize < 1) {
     return createProblemDetailsResponse(
       400,
       'Missing or invalid "totalSize" in initiation payload.',

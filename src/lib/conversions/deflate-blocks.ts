@@ -64,11 +64,41 @@ const ZLIB_HEADER_BEST = Uint8Array.of(0x78, 0xda);
 const ZLIB_HEADER_DEFAULT = Uint8Array.of(0x78, 0x9c);
 const ZLIB_HEADER_FASTEST = Uint8Array.of(0x78, 0x01);
 const ADLER_BYTES = 4;
+const ADLER_BASE = 65521;
+const ADLER_CHUNK_BYTES = 2 * 1024 * 1024;
 
-/** Adler-32 of `bytes`, from the trailer of a zlib stream of stored blocks: the library computes it at memory speed, where a loop in script costs as much as a compression of the same bytes. */
-function adler32(bytes: Uint8Array): number {
+/** Adler-32 of two consecutive runs from the sums of each (the combination zlib uses; `length2` is the second run's length). */
+export function combineAdler32(adler1: number, adler2: number, length2: number): number {
+  const remainder = length2 % ADLER_BASE;
+  let sum1 = adler1 & 0xffff;
+  let sum2 = (remainder * sum1) % ADLER_BASE;
+  sum1 += (adler2 & 0xffff) + ADLER_BASE - 1;
+  sum2 += ((adler1 >>> 16) & 0xffff) + ((adler2 >>> 16) & 0xffff) + ADLER_BASE - remainder;
+  if (sum1 >= ADLER_BASE) sum1 -= ADLER_BASE;
+  if (sum1 >= ADLER_BASE) sum1 -= ADLER_BASE;
+  if (sum2 >= ADLER_BASE * 2) sum2 -= ADLER_BASE * 2;
+  if (sum2 >= ADLER_BASE) sum2 -= ADLER_BASE;
+  return ((sum2 << 16) | sum1) >>> 0;
+}
+
+function adler32Chunk(bytes: Uint8Array): number {
   const stream = zlib.deflateSync(bytes, { level: 0 });
   return stream.readUInt32BE(stream.length - ADLER_BYTES);
+}
+
+/**
+ * Adler-32 of `bytes`, from the trailer of a zlib stream of stored blocks processed in at most 2 MiB chunks so native C++
+ * SIMD runs without duplicating large buffers.
+ */
+export function adler32(bytes: Uint8Array): number {
+  if (bytes.length <= ADLER_CHUNK_BYTES) return adler32Chunk(bytes);
+  let combined = adler32Chunk(bytes.subarray(0, ADLER_CHUNK_BYTES));
+  for (let offset = ADLER_CHUNK_BYTES; offset < bytes.length; offset += ADLER_CHUNK_BYTES) {
+    const end = Math.min(bytes.length, offset + ADLER_CHUNK_BYTES);
+    const chunk = bytes.subarray(offset, end);
+    combined = combineAdler32(combined, adler32Chunk(chunk), chunk.length);
+  }
+  return combined;
 }
 
 function zlibHeader(level: number): Uint8Array {
