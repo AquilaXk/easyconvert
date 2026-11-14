@@ -60,9 +60,9 @@ export interface PagedStage {
 }
 
 /**
- * The page-loop stages of PDF conversion (SVG, EPS and re-encoded raster pages). A page costs 113 ms on four cores and about 450 ms on
- * one for the AVIF encoder of a scanned page, the slowest step measured, so 2 s a page is more than four times what one core needs; the
- * ceiling is the longest job of any tier (`PLAN_PROCESSING_MINUTES.paid`), and the job's own deadline cuts the loop first.
+ * The page-loop stages of PDF conversion (SVG, EPS and re-encoded raster pages). The slowest step measured is the AVIF encoder on
+ * scanned pages: 352 pages took 62 s on four cores, about 0.7 s of CPU a page, so one core needs 0.7 s a page and 2 s a page is about
+ * three times that. The ceiling is the longest job of any tier (`PLAN_PROCESSING_MINUTES.paid`); the job's own deadline cuts the loop first.
  */
 export const PAGE_LOOP_STAGE: PagedStage = {
   defaultMs: 45_000,
