@@ -13,8 +13,9 @@
  * window: `usage` is its count, `leases` a sorted set of the live reservations scored by the time their lease ends, `held` a hash of
  * the window units each one holds, `limits` a hash of the limit of the window each was made under. Of the owner, whatever window a
  * script is given: `pool` the package balance, `plist` a sorted set of the reservations that hold package units scored by the time
- * their lease ends, `pholds` a hash of those units. Then `extensions`, a hash of what each extension of one reservation holds, and
- * `log`, the list of recent charges; a script on the window alone is given the first seven. Every script first gives back the units of
+ * their lease ends, `pholds` a hash of those units, `debt` the package credits that a refund found held by a reservation and that are
+ * taken back when those units return (see the revoke script). Then `extensions`, a hash of what each extension of one reservation
+ * holds, and `log`, the list of recent charges; a script on the window alone is given the first eight. Every script first gives back the units of
  * each lease that ended (`reclaim`): the window's from the window it was given, the package's from the owner's own list, so the
  * package units of a holder that died come back at the first script that touches the owner's balance, also when the window of its
  * reservation is not the window of that script (midnight, a new subscription period). No script acts on a lease that ended. `now` is the clock of
@@ -24,10 +25,53 @@
  * reservation that outlives midnight still ends on its own window. A count that is gone (its window ended) and a balance that was
  * never made are not made again by a refund. Every key of an owner carries the owner's hash tag, so each script stays in one slot.
  */
+/**
+ * The package side of the leases, for every script that touches the balance: it needs the locals `pool`, `plist`, `pholds`, `debt`
+ * and `now`. Units that return to the balance (a lease that ended, a rollback, a settle to fewer credits) first pay the debt of a
+ * refund that found them held, and only the rest is spendable again.
+ */
+const PACKAGE_FUNCTIONS = `
+local function heldPackage()
+  local total = 0
+  for _, packed in ipairs(redis.call('HVALS', pholds)) do total = total + tonumber(packed) end
+  return total
+end
+local function returnToPool(units)
+  local owed = tonumber(redis.call('GET', debt) or '0')
+  if owed > 0 and units > 0 then
+    local paid = math.min(owed, units)
+    if paid == owed then redis.call('DEL', debt) else redis.call('DECRBY', debt, paid) end
+    units = units - paid
+  end
+  if units > 0 and redis.call('EXISTS', pool) == 1 then
+    redis.call('INCRBY', pool, units)
+  end
+end
+-- Units that stay charged are not returned, so the debt cannot be more than what the live reservations still hold.
+local function capDebt()
+  local owed = tonumber(redis.call('GET', debt) or '0')
+  if owed > 0 then
+    local held = heldPackage()
+    if owed > held then
+      if held > 0 then redis.call('SET', debt, held) else redis.call('DEL', debt) end
+    end
+  end
+end
+local function reclaimPackage()
+  for _, id in ipairs(redis.call('ZRANGEBYSCORE', plist, '-inf', now)) do
+    local packed = tonumber(redis.call('HGET', pholds, id) or '0')
+    redis.call('HDEL', pholds, id)
+    redis.call('ZREM', plist, id)
+    returnToPool(packed)
+  end
+end
+`;
+
 const LEASE_FUNCTIONS = `
-local usage, leases, held, limits, pool, plist, pholds, extensions, log = KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5], KEYS[6], KEYS[7], KEYS[8], KEYS[9]
+local usage, leases, held, limits, pool, plist, pholds, debt, extensions, log = KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5], KEYS[6], KEYS[7], KEYS[8], KEYS[9], KEYS[10]
 local time = redis.call('TIME')
 local now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
+${PACKAGE_FUNCTIONS}
 local function reclaim()
   for _, id in ipairs(redis.call('ZRANGEBYSCORE', leases, '-inf', now)) do
     local units = tonumber(redis.call('HGET', held, id) or '0')
@@ -38,14 +82,7 @@ local function reclaim()
       redis.call('DECRBY', usage, units)
     end
   end
-  for _, id in ipairs(redis.call('ZRANGEBYSCORE', plist, '-inf', now)) do
-    local packed = tonumber(redis.call('HGET', pholds, id) or '0')
-    redis.call('HDEL', pholds, id)
-    redis.call('ZREM', plist, id)
-    if packed > 0 and redis.call('EXISTS', pool) == 1 then
-      redis.call('INCRBY', pool, packed)
-    end
-  end
+  reclaimPackage()
 end
 local function keep(key, untilMs)
   if redis.call('PTTL', key) < untilMs - now then
@@ -167,9 +204,12 @@ local dPackage = newPackage - fromPackage
 if dWindow ~= 0 and redis.call('EXISTS', usage) == 1 then
   redis.call('INCRBY', usage, dWindow)
 end
-if dPackage ~= 0 and redis.call('EXISTS', pool) == 1 then
+if dPackage < 0 then
+  returnToPool(-dPackage)
+elseif dPackage > 0 and redis.call('EXISTS', pool) == 1 then
   redis.call('DECRBY', pool, dPackage)
 end
+capDebt()
 if ARGV[4] ~= '' and newWindow + newPackage > 0 then
   local entry = cjson.decode(ARGV[4])
   entry.at = now
@@ -182,10 +222,26 @@ end
 return {1, newWindow + newPackage - held_total, short}
 `;
 
-/** The window's count and the package balance, once the leases that ended gave their units back. */
+/**
+ * The window's count, the package balance and the package credits held by reservations in flight that no refund claims, once the
+ * leases that ended gave their units back.
+ */
 export const USED_QUOTA_LUA_SCRIPT = `
 ${LEASE_FUNCTIONS}
-return {tonumber(redis.call('GET', usage) or '0'), tonumber(redis.call('GET', pool) or '0')}
+local owed = tonumber(redis.call('GET', debt) or '0')
+return {tonumber(redis.call('GET', usage) or '0'), tonumber(redis.call('GET', pool) or '0'), math.max(0, heldPackage() - owed)}
+`;
+
+/** The package balance and the package credits held in flight that no refund claims, once the leases that ended gave their units back. */
+export const PACKAGE_STANDING_LUA_SCRIPT = `
+-- KEYS[1]: the package balance  KEYS[2]: the leases that hold package units  KEYS[3]: the units they hold  KEYS[4]: the debt
+local pool, plist, pholds, debt = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
+local time = redis.call('TIME')
+local now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
+${PACKAGE_FUNCTIONS}
+reclaimPackage()
+local owed = tonumber(redis.call('GET', debt) or '0')
+return {tonumber(redis.call('GET', pool) or '0'), math.max(0, heldPackage() - owed)}
 `;
 
 export const DEDUCT_QUOTA_LUA_SCRIPT = `
@@ -322,20 +378,29 @@ return {1, redis.call('INCRBY', KEYS[1], tonumber(ARGV[2]))}
 /**
  * Takes back the unused credits of a refunded or charged-back package payment, once for each adjustment id: a full refund takes back
  * all that is left of the payment's credits, a partial one the share of them that the amount is of what was paid (rounded down). A
- * payment's credits are never taken back twice and never more than the balance holds, so the balance does not go below zero; what
- * the balance no longer holds was spent and is reported as unrecovered.
+ * payment's credits are never taken back twice and never more than the balance holds, so the balance does not go below zero. What the
+ * balance does not hold is either held by a reservation in flight or spent. The held part, up to the units the reservations still
+ * hold beyond the debt of earlier refunds, is recorded as a debt of the account and the payment counts it as taken back: those units
+ * pay it when they return to the balance (a rollback, a lease that ended, a settle to fewer credits), so a refund during a
+ * reservation that then rolls back does not leave the refunded credits spendable. The rest was spent and is reported as unrecovered.
  */
 export const REVOKE_PACKAGE_LUA_SCRIPT = `
 -- KEYS[1]: the package balance  KEYS[2]: the account's payments  KEYS[3]: the adjustments already applied (a hash of adjustment id to credits taken)
+-- KEYS[4]: the leases that hold package units  KEYS[5]: the units they hold  KEYS[6]: the debt
 -- ARGV[1]: transaction id  ARGV[2]: adjustment id  ARGV[3]: the amount returned (lowest unit, text)  ARGV[4]: 1 for a full refund, else 0
--- Returns {1 applied | 0 adjustment already applied | -1 payment unknown, credits taken back, credits owed and already spent}
+-- Returns {1 applied | 0 adjustment already applied | -1 payment unknown, credits taken back now, credits owed and already spent, credits taken back when held units return}
+local pool, plist, pholds, debt = KEYS[1], KEYS[4], KEYS[5], KEYS[6]
 local raw = redis.call('HGET', KEYS[2], ARGV[1])
 if not raw then
-  return {-1, 0, 0}
+  return {-1, 0, 0, 0}
 end
 if redis.call('HEXISTS', KEYS[3], ARGV[2]) == 1 then
-  return {0, 0, 0}
+  return {0, 0, 0, 0}
 end
+local time = redis.call('TIME')
+local now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
+${PACKAGE_FUNCTIONS}
+reclaimPackage()
 local payment = cjson.decode(raw)
 local left = payment.credits - payment.revoked
 local paid = tonumber(payment.paid) or 0
@@ -344,14 +409,18 @@ if ARGV[4] ~= '1' then
   want = 0
   if paid > 0 then want = math.min(left, math.floor(payment.credits * (tonumber(ARGV[3]) or 0) / paid)) end
 end
-local take = math.min(want, tonumber(redis.call('GET', KEYS[1]) or '0'))
+local take = math.min(want, tonumber(redis.call('GET', pool) or '0'))
 if take > 0 then
-  redis.call('DECRBY', KEYS[1], take)
+  redis.call('DECRBY', pool, take)
 end
-payment.revoked = payment.revoked + take
+local deferred = math.min(want - take, math.max(0, heldPackage() - tonumber(redis.call('GET', debt) or '0')))
+if deferred > 0 then
+  redis.call('INCRBY', debt, deferred)
+end
+payment.revoked = payment.revoked + take + deferred
 redis.call('HSET', KEYS[2], ARGV[1], cjson.encode(payment))
-redis.call('HSET', KEYS[3], ARGV[2], take)
-return {1, take, want - take}
+redis.call('HSET', KEYS[3], ARGV[2], take + deferred)
+return {1, take, want - take - deferred, deferred}
 `;
 
 export const RECORD_VERIFIED_KEY_LUA_SCRIPT = `

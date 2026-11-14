@@ -44,9 +44,11 @@ describe('the credit ledger on Redis Cluster', () => {
     await ledger.commit(reservationId);
     await ledger.renew(reservationId, 90_000);
     await ledger.extend(reservationId, 'ext', 1, 10);
+    await ledger.revokePackage(OWNER, { transactionId: 'txn', adjustmentId: 'adj', amount: '1', full: true });
+    await ledger.packageStanding(OWNER);
 
     const scripts = calls.filter((call) => call.command === 'eval');
-    expect(scripts).toHaveLength(5);
+    expect(scripts).toHaveLength(7);
     for (const call of scripts) expect(slotsOf(call).size, call.keys.join(' ')).toBe(1);
   });
 
@@ -61,6 +63,7 @@ describe('the credit ledger on Redis Cluster', () => {
         'prefix:credits:txnowner:txn_two',
         `prefix:credits:{${OWNER}}`,
         `prefix:credits:{${OWNER}}:adj`,
+        `prefix:credits:{${OWNER}}:debt`,
         `prefix:credits:{${OWNER}}:log`,
         `prefix:credits:{${OWNER}}:pholds`,
         `prefix:credits:{${OWNER}}:plist`,

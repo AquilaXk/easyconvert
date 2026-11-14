@@ -19,8 +19,8 @@ export async function creditPackagePurchase(purchase: PackagePurchase, userId: s
 export type PackageRefundResult = 'revoked' | 'duplicate' | 'unknown_transaction';
 
 /**
- * Takes back the unused credits of a refunded or charged-back package payment (never below a zero balance) and logs what it took
- * and what was already spent. The payment is found by its transaction id in the index the credit wrote.
+ * Takes back the unused credits of a refunded or charged-back package payment (never below a zero balance) and logs what it took,
+ * what conversions in flight hold (taken back when they end) and what was already spent. The payment is found by its transaction id in the index the credit wrote.
  */
 export async function refundPackagePurchase(refund: PackageRefund, store: RedisKeyStore = redisKeyStore): Promise<PackageRefundResult> {
   const userId = await store.packageTransactionOwner(refund.transactionId);
@@ -29,6 +29,7 @@ export async function refundPackagePurchase(refund: PackageRefund, store: RedisK
   if (outcome.status !== 'revoked') return outcome.status === 'duplicate' ? 'duplicate' : 'unknown_transaction';
   console.warn(
     `[billing] ${refund.action} ${refund.adjustmentId} of package payment ${refund.transactionId}: took back ${outcome.revoked} credits of account ${userId}` +
+      (outcome.deferred > 0 ? `, ${outcome.deferred} more are held by conversions in flight and are taken back when they end` : '') +
       (outcome.unrecovered > 0 ? `, ${outcome.unrecovered} more were owed and are already spent` : '')
   );
   return 'revoked';

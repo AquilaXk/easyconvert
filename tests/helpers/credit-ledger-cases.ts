@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RedisKeyStore } from '../../src/lib/api-keys/redis-key-store';
 import { RECENT_CHARGES, RESERVATION_LEASE } from '../../src/lib/api-keys/reservation-ledger';
 import { FREE_DAILY_CREDITS } from '../../src/lib/plan-limits';
@@ -213,7 +213,7 @@ export function itKeepsCredits(controls: CreditCaseControls): void {
     const full = (adjustmentId: string) => store().revokePackage(owner, { transactionId: 'txn_a', adjustmentId, amount: '2000', full: true });
     const part = (adjustmentId: string, amount: string) => store().revokePackage(owner, { transactionId: 'txn_a', adjustmentId, amount, full: false });
 
-    expect(await part('adj_1', '500')).toEqual({ status: 'revoked', revoked: 250, unrecovered: 0 });
+    expect(await part('adj_1', '500')).toEqual({ status: 'revoked', revoked: 250, unrecovered: 0, deferred: 0 });
     expect(await store().packageBalance(owner)).toBe(750);
     expect(await part('adj_1', '500')).toEqual({ status: 'duplicate' });
     expect(await store().packageBalance(owner)).toBe(750);
@@ -222,11 +222,87 @@ export function itKeepsCredits(controls: CreditCaseControls): void {
     const id = await reserve(DAY + 600);
     await store().commitQuota(id);
     expect(await store().packageBalance(owner)).toBe(150);
-    expect(await full('adj_2')).toEqual({ status: 'revoked', revoked: 150, unrecovered: 600 });
+    expect(await full('adj_2')).toEqual({ status: 'revoked', revoked: 150, unrecovered: 600, deferred: 0 });
     expect(await store().packageBalance(owner)).toBe(0);
     // What was owed and spent stays owed: a later refund of the same payment finds nothing to take back.
-    expect(await full('adj_3')).toEqual({ status: 'revoked', revoked: 0, unrecovered: 600 });
+    expect(await full('adj_3')).toEqual({ status: 'revoked', revoked: 0, unrecovered: 600, deferred: 0 });
     expect(await store().revokePackage(owner, { transactionId: 'txn_unknown', adjustmentId: 'adj_x', amount: '1', full: true })).toEqual({ status: 'unknown-transaction' });
+  });
+
+  describe('a refund while package credits are held by a reservation in flight', () => {
+    const full = (transactionId: string, adjustmentId: string) => store().revokePackage(owner, { transactionId, adjustmentId, amount: '1000', full: true });
+
+    it('takes the held credits back when the reservation rolls back, and not the credits of the next payment', async () => {
+      await grant(100, 'txn_a');
+      const id = await reserve(DAY + 40);
+      expect(await usage()).toMatchObject({ packageCredits: 60 });
+      // 60 are in the balance, 40 are held: the 60 go now, the 40 are owed.
+      const refund = await full('txn_a', 'adj_1');
+      expect(await store().rollbackQuota(id)).toBe(true);
+      expect(await store().packageBalance(owner)).toBe(0);
+      expect(await usage()).toMatchObject({ usedToday: 0, packageCredits: 0, remaining: DAY });
+      expect(refund).toEqual({ status: 'revoked', revoked: 60, unrecovered: 0, deferred: 40 });
+      // The debt is paid: the credits of a later payment are whole, and a later refund of the first payment finds nothing left.
+      await grant(30, 'txn_b');
+      const next = await reserve(DAY + 10);
+      await store().rollbackQuota(next);
+      expect(await store().packageBalance(owner)).toBe(30);
+      expect(await full('txn_a', 'adj_2')).toEqual({ status: 'revoked', revoked: 0, unrecovered: 0, deferred: 0 });
+    });
+
+    it('takes the held credits back when the lease of the reservation ends', async () => {
+      await grant(100, 'txn_a');
+      await reserve(DAY + 40);
+      const refund = await full('txn_a', 'adj_1');
+      await controls.advance(RESERVATION_LEASE.provisionalMs + 1000);
+      expect(await usage()).toMatchObject({ usedToday: 0, packageCredits: 0 });
+      expect(refund).toMatchObject({ revoked: 60, deferred: 40 });
+    });
+
+    it('takes only what a settle gives back, and the rest when the reservation ends', async () => {
+      await grant(100, 'txn_a');
+      const id = await reserve(DAY + 40);
+      const refund = await full('txn_a', 'adj_1');
+      // The conversion used 25 of the 40 package credits: 15 come back, all of them owed.
+      expect(await store().settleQuota(id, DAY + 25)).toMatchObject({ success: true, difference: -15 });
+      expect(await store().packageBalance(owner)).toBe(0);
+      expect(refund).toMatchObject({ revoked: 60, deferred: 40 });
+    });
+
+    it('lets a conversion that commits keep the credits it held, and owes nothing after it', async () => {
+      await grant(100, 'txn_a');
+      const id = await reserve(DAY + 40);
+      expect(await full('txn_a', 'adj_1')).toMatchObject({ revoked: 60, deferred: 40 });
+      expect(await store().commitQuota(id)).toBe(true);
+      // The 40 were spent, so there is nothing left to take: the credits of a later payment and its rollback are whole.
+      await grant(30, 'txn_b');
+      await store().rollbackQuota(await reserve(DAY + 10));
+      expect(await store().packageBalance(owner)).toBe(30);
+    });
+
+    it('owes no more than the reservations in flight hold: credits that were spent stay unrecovered', async () => {
+      await grant(100, 'txn_a');
+      await store().commitQuota(await reserve(DAY + 50));
+      const id = await reserve(10);
+      // 40 are in the balance, 10 are held and 50 were spent.
+      const refund = await full('txn_a', 'adj_1');
+      await store().rollbackQuota(id);
+      expect(await store().packageBalance(owner)).toBe(0);
+      expect(refund).toEqual({ status: 'revoked', revoked: 40, unrecovered: 50, deferred: 10 });
+    });
+
+    it('counts an account whose credits are all held as a payer, but not one whose held credits are owed back', async () => {
+      await grant(100, 'txn_a');
+      await reserve(DAY + 100);
+      // Nothing is spendable now, and the account is still a payer.
+      expect(await usage()).toMatchObject({ tier: 'paid', packageCredits: 0, remaining: 0 });
+      expect((await store().withCreditTier({ id: owner, tier: 'free' })).tier).toBe('paid');
+      expect(await store().reserveQuota(owner, 0)).toMatchObject({ allowed: false, remaining: 0 });
+
+      expect(await full('txn_a', 'adj_1')).toMatchObject({ revoked: 0, deferred: 100 });
+      expect(await usage()).toMatchObject({ tier: 'free' });
+      expect((await store().withCreditTier({ id: owner, tier: 'free' })).tier).toBe('free');
+    });
   });
 
   it('keeps the newest charges of an account, at most the limit, newest first', async () => {

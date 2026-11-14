@@ -4,6 +4,7 @@ import { JOB_DEADLINE_CEILING_MS } from '../config/schema';
 import {
   EXTEND_QUOTA_LUA_SCRIPT,
   GRANT_PACKAGE_LUA_SCRIPT,
+  PACKAGE_STANDING_LUA_SCRIPT,
   RENEW_QUOTA_LUA_SCRIPT,
   RESERVE_QUOTA_LUA_SCRIPT,
   REVOKE_PACKAGE_LUA_SCRIPT,
@@ -61,17 +62,24 @@ export interface ChargeOptions {
   note?: ChargeNote;
 }
 
-/** What the ledger holds of one owner: the window's count and the package balance. */
+/**
+ * What the ledger holds of one owner: the window's count, the package balance (what can be spent now) and the package credits that
+ * reservations in flight hold, net of what refunds claim from them (what makes an account a payer while it spends them).
+ */
 export interface LedgerCounts {
   used: number;
   packageCredits: number;
+  packageHeld: number;
 }
 
 /** What a package payment did to the balance: credited once, or already credited. */
 export type PackageGrantOutcome = 'granted' | 'duplicate';
 
-/** What a refund of a package payment did: the credits taken back, the credits that were owed back and are already spent, or why nothing was taken. */
-export type PackageRevokeOutcome = { status: 'revoked'; revoked: number; unrecovered: number } | { status: 'duplicate' } | { status: 'unknown-transaction' };
+/**
+ * What a refund of a package payment did: the credits taken back now, the credits that were owed back and are already spent, the credits
+ * that reservations in flight hold and that are taken back when those units return, or why nothing was taken.
+ */
+export type PackageRevokeOutcome = { status: 'revoked'; revoked: number; unrecovered: number; deferred: number } | { status: 'duplicate' } | { status: 'unknown-transaction' };
 
 /** A refund of a package payment: the amount returned in the lowest unit of the currency, and whether it is the whole payment. */
 export interface PackageRefundRequest {
@@ -118,8 +126,10 @@ export interface ReservationLedger {
   rememberTransactionOwner(transactionId: string, owner: string): Promise<void>;
   /** The account a package payment was credited to, or null. */
   transactionOwner(transactionId: string): Promise<string | null>;
-  /** The package balance of `owner`. */
+  /** The package balance of `owner`: what can be spent now. */
   packageBalance(owner: string): Promise<number>;
+  /** The package balance of `owner` and the package credits held by reservations in flight, net of what refunds claim from them. */
+  packageStanding(owner: string): Promise<{ balance: number; held: number }>;
   /** Deletes the package balance, payments, adjustments, charges and payment index entries of `owner`; the erasure of an account calls it. */
   forgetPackages(owner: string): Promise<void>;
 }
@@ -140,7 +150,7 @@ export function parseReservationId(reservationId: string): { userId: string; day
 const EXTENSION_STATUS: Readonly<Record<string, QuotaExtension['status']>> = { '1': 'extended', '0': 'does-not-fit', '-1': 'no-reservation' };
 
 /** The keys every step on one reservation is given: those of its window, the package balance, its extensions and the list of charges. */
-type ReservationKeys = [usage: string, leases: string, held: string, limits: string, pool: string, packageLeases: string, packageHolds: string, extensions: string, log: string];
+type ReservationKeys = [usage: string, leases: string, held: string, limits: string, pool: string, packageLeases: string, packageHolds: string, packageDebt: string, extensions: string, log: string];
 
 /** How many recent charges an owner keeps; the settle script trims its list to this. */
 export const RECENT_CHARGES = 50;
@@ -154,18 +164,23 @@ export class RedisReservationLedger implements ReservationLedger {
 
   /**
    * The keys of `owner`'s `window`: its count, its leases, the units they hold from it and the limit each was made under; then the
-   * owner's own: the package balance and the leases that hold package units, which a script reclaims whichever window it is given.
+   * owner's own: the package balance, the leases that hold package units (which a script reclaims whichever window it is given), the
+   * units they hold and the debt of refunds that found them held.
    */
-  private windowKeys(owner: string, window: string): [string, string, string, string, string, string, string] {
+  private windowKeys(owner: string, window: string): [string, string, string, string, string, string, string, string] {
     return [
       `${this.prefix}usage:{${owner}}:${window}`,
       `${this.prefix}leases:{${owner}}:${window}`,
       `${this.prefix}held:{${owner}}:${window}`,
       `${this.prefix}limits:{${owner}}:${window}`,
       this.poolKey(owner),
-      `${this.prefix}credits:{${owner}}:plist`,
-      `${this.prefix}credits:{${owner}}:pholds`,
+      ...this.packageLeaseKeys(owner),
     ];
+  }
+
+  /** The owner's package leases, the units they hold and the debt of refunds that found them held. */
+  private packageLeaseKeys(owner: string): [string, string, string] {
+    return [`${this.prefix}credits:{${owner}}:plist`, `${this.prefix}credits:{${owner}}:pholds`, `${this.prefix}credits:{${owner}}:debt`];
   }
 
   private poolKey(owner: string): string {
@@ -208,7 +223,7 @@ export class RedisReservationLedger implements ReservationLedger {
 
   async reserve(request: Parameters<ReservationLedger['reserve']>[0]) {
     const args = [request.units, request.limit, request.reservationId, request.leaseMs, request.dayLeftMs];
-    const [allowed, remaining] = (await this.redis.eval(RESERVE_QUOTA_LUA_SCRIPT, 7, ...this.windowKeys(request.owner, request.day), ...args)) as [number, number];
+    const [allowed, remaining] = (await this.redis.eval(RESERVE_QUOTA_LUA_SCRIPT, 8, ...this.windowKeys(request.owner, request.day), ...args)) as [number, number];
     return { allowed: Number(allowed) === 1, remaining: Number(remaining) };
   }
 
@@ -237,8 +252,8 @@ export class RedisReservationLedger implements ReservationLedger {
   }
 
   async used(owner: string, day: string): Promise<LedgerCounts> {
-    const [used, packageCredits] = (await this.redis.eval(USED_QUOTA_LUA_SCRIPT, 7, ...this.windowKeys(owner, day))) as [number, number];
-    return { used: Number(used), packageCredits: Number(packageCredits) };
+    const [used, packageCredits, packageHeld] = (await this.redis.eval(USED_QUOTA_LUA_SCRIPT, 8, ...this.windowKeys(owner, day))) as [number, number, number];
+    return { used: Number(used), packageCredits: Number(packageCredits), packageHeld: Number(packageHeld) };
   }
 
   async grantPackage(owner: string, grant: PackageGrant): Promise<PackageGrantOutcome> {
@@ -247,9 +262,9 @@ export class RedisReservationLedger implements ReservationLedger {
   }
 
   async revokePackage(owner: string, refund: PackageRefundRequest): Promise<PackageRevokeOutcome> {
-    const reply = (await this.redis.eval(REVOKE_PACKAGE_LUA_SCRIPT, 3, this.poolKey(owner), this.transactionsKey(owner), this.adjustmentsKey(owner), refund.transactionId, refund.adjustmentId, refund.amount, refund.full ? 1 : 0)) as [number, number, number];
+    const reply = (await this.redis.eval(REVOKE_PACKAGE_LUA_SCRIPT, 6, this.poolKey(owner), this.transactionsKey(owner), this.adjustmentsKey(owner), ...this.packageLeaseKeys(owner), refund.transactionId, refund.adjustmentId, refund.amount, refund.full ? 1 : 0)) as [number, number, number, number];
     const status = Number(reply[0]);
-    if (status === 1) return { status: 'revoked', revoked: Number(reply[1]), unrecovered: Number(reply[2]) };
+    if (status === 1) return { status: 'revoked', revoked: Number(reply[1]), unrecovered: Number(reply[2]), deferred: Number(reply[3]) };
     return { status: status === 0 ? 'duplicate' : 'unknown-transaction' };
   }
 
@@ -270,10 +285,15 @@ export class RedisReservationLedger implements ReservationLedger {
     return Number((await this.redis.get(this.poolKey(owner))) ?? 0);
   }
 
+  async packageStanding(owner: string): Promise<{ balance: number; held: number }> {
+    const [balance, held] = (await this.redis.eval(PACKAGE_STANDING_LUA_SCRIPT, 4, this.poolKey(owner), ...this.packageLeaseKeys(owner))) as [number, number];
+    return { balance: Number(balance), held: Number(held) };
+  }
+
   async forgetPackages(owner: string): Promise<void> {
     const transactionIds = await this.redis.hkeys(this.transactionsKey(owner));
     // The keys of the account share one slot; the payment index keys carry no tag, so each goes in a command of its own (Redis Cluster refuses a DEL over two slots).
-    await this.redis.del(this.poolKey(owner), this.logKey(owner), this.transactionsKey(owner), this.adjustmentsKey(owner), `${this.prefix}credits:{${owner}}:plist`, `${this.prefix}credits:{${owner}}:pholds`);
+    await this.redis.del(this.poolKey(owner), this.logKey(owner), this.transactionsKey(owner), this.adjustmentsKey(owner), ...this.packageLeaseKeys(owner));
     for (const id of transactionIds) await this.redis.del(`${this.prefix}credits:txnowner:${id}`);
   }
 }
@@ -296,6 +316,8 @@ interface HeldReservation {
 /** What this process holds of one owner's package credits, as the keys of `credits:{owner}` do in Redis. */
 interface MemoryPackages {
   balance: number;
+  /** The credits of refunds that found them held by a reservation in flight: the units that return to the balance pay it first. */
+  debt: number;
   payments: Map<string, { credits: number; paid: string; revoked: number; at: number }>;
   adjustments: Map<string, number>;
   charges: ChargeEntry[];
@@ -341,8 +363,8 @@ export class MemoryReservationLedger implements ReservationLedger {
     for (const [id, reservation] of this.reservations) {
       if (reservation.leaseUntil > now) continue;
       this.charge(reservation.dateKey, -reservation.units);
-      this.chargePackage(reservation.owner, -reservation.packed);
       this.reservations.delete(id);
+      this.returnPackage(reservation.owner, reservation.packed);
       reclaimed++;
     }
     if (reclaimed > 0) this.persist();
@@ -361,6 +383,29 @@ export class MemoryReservationLedger implements ReservationLedger {
     const held = this.packages.get(owner);
     if (held === undefined || difference === 0) return;
     held.balance = Math.max(0, held.balance - difference);
+  }
+
+  /** Gives package units that a reservation held back to `owner`: the debt of refunds that found them held first, the balance with the rest. */
+  private returnPackage(owner: string, units: number): void {
+    const held = this.packages.get(owner);
+    if (held === undefined || units <= 0) return;
+    const paid = Math.min(held.debt, units);
+    held.debt -= paid;
+    held.balance += units - paid;
+  }
+
+  /** The package credits that live reservations of `owner` hold. */
+  private heldPackage(owner: string): number {
+    let total = 0;
+    for (const reservation of this.reservations.values()) {
+      if (reservation.owner === owner) total += reservation.packed;
+    }
+    return total;
+  }
+
+  /** The held credits that no refund claims. */
+  private unclaimedHeld(owner: string): number {
+    return Math.max(0, this.heldPackage(owner) - (this.packages.get(owner)?.debt ?? 0));
   }
 
   private balanceOf(owner: string): number {
@@ -401,7 +446,11 @@ export class MemoryReservationLedger implements ReservationLedger {
       uncharged = more - addWindow - addPackage;
     }
     this.charge(reservation.dateKey, window - reservation.units);
-    this.chargePackage(reservation.owner, packed - reservation.packed);
+    if (packed < reservation.packed) this.returnPackage(reservation.owner, reservation.packed - packed);
+    else this.chargePackage(reservation.owner, packed - reservation.packed);
+    // Units that stay charged are not returned, so the debt cannot be more than what the live reservations still hold.
+    const owing = this.packages.get(reservation.owner);
+    if (owing) owing.debt = Math.min(owing.debt, this.heldPackage(reservation.owner));
     if (charge.note && window + packed > 0) {
       const held = this.packages.get(reservation.owner) ?? this.newPackages(reservation.owner);
       held.charges.unshift({ ...charge.note, at: Date.now(), credits: window + packed, fromPackage: packed, ...(uncharged > 0 ? { uncharged } : {}) });
@@ -412,7 +461,7 @@ export class MemoryReservationLedger implements ReservationLedger {
   }
 
   private newPackages(owner: string): MemoryPackages {
-    const created: MemoryPackages = { balance: 0, payments: new Map(), adjustments: new Map(), charges: [] };
+    const created: MemoryPackages = { balance: 0, debt: 0, payments: new Map(), adjustments: new Map(), charges: [] };
     this.packages.set(owner, created);
     return created;
   }
@@ -478,7 +527,7 @@ export class MemoryReservationLedger implements ReservationLedger {
 
   async used(owner: string, day: string): Promise<LedgerCounts> {
     this.reclaim();
-    return { used: this.counts.get(`${owner}:${day}`) ?? 0, packageCredits: this.balanceOf(owner) };
+    return { used: this.counts.get(`${owner}:${day}`) ?? 0, packageCredits: this.balanceOf(owner), packageHeld: this.unclaimedHeld(owner) };
   }
 
   async grantPackage(owner: string, grant: PackageGrant): Promise<PackageGrantOutcome> {
@@ -490,6 +539,7 @@ export class MemoryReservationLedger implements ReservationLedger {
   }
 
   async revokePackage(owner: string, refund: PackageRefundRequest): Promise<PackageRevokeOutcome> {
+    this.reclaim();
     const held = this.packages.get(owner);
     const payment = held?.payments.get(refund.transactionId);
     if (!held || !payment) return { status: 'unknown-transaction' };
@@ -500,9 +550,11 @@ export class MemoryReservationLedger implements ReservationLedger {
     const want = refund.full ? left : share;
     const take = Math.min(want, held.balance);
     held.balance -= take;
-    payment.revoked += take;
-    held.adjustments.set(refund.adjustmentId, take);
-    return { status: 'revoked', revoked: take, unrecovered: want - take };
+    const deferred = Math.min(want - take, this.unclaimedHeld(owner));
+    held.debt += deferred;
+    payment.revoked += take + deferred;
+    held.adjustments.set(refund.adjustmentId, take + deferred);
+    return { status: 'revoked', revoked: take, unrecovered: want - take - deferred, deferred };
   }
 
   async recentCharges(owner: string): Promise<ChargeEntry[]> {
@@ -519,6 +571,11 @@ export class MemoryReservationLedger implements ReservationLedger {
 
   async packageBalance(owner: string): Promise<number> {
     return this.balanceOf(owner);
+  }
+
+  async packageStanding(owner: string): Promise<{ balance: number; held: number }> {
+    this.reclaim();
+    return { balance: this.balanceOf(owner), held: this.unclaimedHeld(owner) };
   }
 
   async forgetPackages(owner: string): Promise<void> {
