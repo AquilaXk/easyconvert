@@ -34,10 +34,11 @@ export async function revokeStandingAccess(userId: string): Promise<void> {
  * Hands an account whose address was never verified to the person who just proved the address with Google, which vouches for it
  * (docs/policy-decisions.md, entry 297): the registrant's password goes first, so they cannot sign in while the account is
  * cleaned; then their sessions and what they set up (`revokeStandingAccess`); the address is marked verified and the account linked
- * to Google last. A step that fails leaves the account unverified, so the next sign-in takes this same path again and cleans again,
- * as the password reset does (`/api/auth/password-reset/confirm`). `linked` is what the sign-in adds to the record.
+ * to Google last, and the terms it records as accepted are the owner's own, given with the sign-in, not the registrant's. A step
+ * that fails leaves the account unverified, so the next sign-in takes this same path again and cleans again, as the password reset
+ * does (`/api/auth/password-reset/confirm`). `linked` is what the sign-in adds to the record.
  */
-export async function handOverUnverifiedAccount(userId: string, linked: Partial<Pick<UserRecord, 'avatarUrl'>>): Promise<UserRecord> {
+export async function handOverUnverifiedAccount(userId: string, linked: Pick<UserRecord, 'acceptedTermsVersion'> & Partial<Pick<UserRecord, 'avatarUrl'>>): Promise<UserRecord> {
   if (!(await redisUserStore.updateUser(userId, { passwordHash: '', salt: '' }))) throw new Error('The account to hand over does not exist.');
   await revokeAllUserSessions(userId);
   await revokeStandingAccess(userId);
