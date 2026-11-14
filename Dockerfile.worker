@@ -92,8 +92,9 @@ RUN /tmp/install-libredwg.sh /opt/libredwg
 # Nikon NEF files with High Efficiency (HE, HE*) compression, which no released LibRaw reads (0.22.3 and earlier; Debian 13 packages
 # 0.21.4). LibRaw is LGPL-2.1 or CDDL-1.0 at the user's choice, and the decoder, `src/decoders/nikonhe.cpp`, is in the development
 # branch since "snapshot 202611". The program is built here from the unmodified source of one commit, fetched by its hash and checked
-# in scripts/install-libraw-he.sh, as a separate program that the worker runs sandboxed for those NEF files only (every other camera
-# file keeps the distribution's LibRaw) and that nothing links into the application. The stage fails the build if the program does not start.
+# in scripts/install-libraw-he.sh, as a separate program that the worker runs sandboxed for those NEF files and for a camera file that the
+# distribution's LibRaw does not recognise (the Sony ILCE-7M5; every other camera file keeps the distribution's LibRaw) and that nothing
+# links into the application. The stage fails the build if the program does not start.
 FROM ${NODE_IMAGE} AS librawhe
 
 RUN apt-get update \
@@ -482,7 +483,7 @@ COPY --from=libredwg /opt/libredwg/share/doc/libredwg /usr/share/doc/libredwg
 RUN dwg2dxf --version
 
 # Pinned LibRaw snapshot for Nikon High Efficiency NEF files (built in the librawhe stage), installed beside the distribution's LibRaw as
-# `dcraw_emu_he`; the worker runs it for those files only. Its licence texts go to /usr/share/doc/libraw-he/copyright, which the notices step
+# `dcraw_emu_he`; the worker runs it for those NEF files and for a camera file the distribution's LibRaw does not recognise. Its licence texts go to /usr/share/doc/libraw-he/copyright, which the notices step
 # below collects into /licenses with the system packages; the SOURCE file names the commit it was built from.
 COPY --from=librawhe /opt/libraw-he/bin/dcraw_emu /usr/local/bin/dcraw_emu_he
 COPY --from=librawhe /opt/libraw-he/share/doc/libraw-he /usr/share/doc/libraw-he

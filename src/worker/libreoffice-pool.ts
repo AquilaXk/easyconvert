@@ -1,4 +1,4 @@
-import { stageTimeoutMs } from '../lib/conversions/job-time';
+import { OFFICE_STAGE, sizedStageTimeoutMs, stageTimeoutMs } from '../lib/conversions/job-time';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -23,6 +23,7 @@ import {
   assertAllowedLibreOfficeFilter,
   buildPdfExportFilterData,
 } from '../lib/conversions/pdf-export-options';
+import { readZipDirectory } from '../lib/conversions/archive-zip-reader';
 import { officeInputFilterArgs } from '../lib/conversions/office/legacy-import-filter';
 import { officeSuiteApplication, type OfficeSuiteApplication } from '../lib/conversions/office/office-suite-sources';
 import { availableCpus } from '../lib/workers/available-cpus';
@@ -159,6 +160,37 @@ const LIBREOFFICE_TARGET_NAMES: Readonly<Record<string, string>> = { odd: 'otg',
 /** PDF export filter of the LibreOffice component that opens a source format (the word processor for a format no component is named for). */
 function pdfExportFilterName(sourceFormat: string): string {
   return PDF_EXPORT_FILTER_OF_APPLICATION[officeSuiteApplication(sourceFormat) ?? 'writer'];
+}
+
+/** `PK\x03\x04`, the first four bytes of a ZIP package. */
+const ZIP_SIGNATURE = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+
+/** The first `length` bytes of a file. */
+function readFileHead(file: string, length: number): Buffer {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const head = Buffer.alloc(length);
+    fs.readSync(fd, head, 0, length, 0);
+    return head;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * The size the office suite's work follows: the bytes of the file it reads (which a staged input may reach by a link), or, for a ZIP package
+ * (docx, xlsx, pptx, odt), the bytes its entries declare when that is more, because a text package is a fraction of the XML the suite parses.
+ */
+export function officeInputBytes(inputPath: string): number {
+  const file = fs.realpathSync(inputPath);
+  const fileBytes = fs.statSync(file).size;
+  if (fileBytes < ZIP_SIGNATURE.length || !readFileHead(file, ZIP_SIGNATURE.length).equals(ZIP_SIGNATURE)) return fileBytes;
+  try {
+    const { entries } = readZipDirectory(fs.readFileSync(file), { MAX_FILES: Number.MAX_SAFE_INTEGER });
+    return Math.max(fileBytes, entries.reduce((sum, entry) => sum + entry.uncompressedSize, 0));
+  } catch {
+    return fileBytes;
+  }
 }
 
 /**
@@ -748,7 +780,7 @@ export class LibreOfficePoolManager {
       // what one job changed in the profile (or a macro or link setting a document managed to set) does not reach the next.
       this.resetProfile(worker.userProfileDir);
 
-      const timeout = Math.min(stageTimeoutMs(options, 45000), 120000);
+      const timeout = sizedStageTimeoutMs(options, officeInputBytes(inputPath), OFFICE_STAGE);
       const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
 
       const convertArgs = [

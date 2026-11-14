@@ -72,9 +72,24 @@ export const PAGE_LOOP_STAGE: PagedStage = {
 };
 
 /**
+ * The limit of a stage whose work is known before it runs: `defaultMs` for a small one, `needMs` when that is more, never above `ceilingMs`,
+ * held to the time the job has left. A server-set `options.timeoutMs` is the limit as it is for every stage, under `maxMs` and the job's
+ * time, whatever the work.
+ */
+function grownStageTimeoutMs(
+  options: ({ timeoutMs?: number } & JobDeadlined) | undefined,
+  stage: { defaultMs: number; maxMs: number },
+  needMs: number,
+  ceilingMs: number,
+  now: number
+): number {
+  if (options?.timeoutMs) return clampToJobRemaining(options, Math.min(options.timeoutMs, stage.maxMs), now);
+  return clampToJobRemaining(options, Math.min(Math.max(stage.defaultMs, needMs), ceilingMs), now);
+}
+
+/**
  * The limit of a whole page loop over `pages` pages: the stage default, or `perPageMs` for each page when that is more, never above
- * `pagedMaxMs`, held to the time the job has left. A server-set `options.timeoutMs` is the limit as it is for every stage, under `maxMs`
- * and the job's time, whatever the pages. A page count that is not a positive number counts as one page.
+ * `pagedMaxMs`, held to the time the job has left. A page count that is not a positive number counts as one page.
  */
 export function pagedStageTimeoutMs(
   options: ({ timeoutMs?: number } & JobDeadlined) | undefined,
@@ -82,9 +97,50 @@ export function pagedStageTimeoutMs(
   stage: PagedStage,
   now: number = Date.now()
 ): number {
-  if (options?.timeoutMs) return clampToJobRemaining(options, Math.min(options.timeoutMs, stage.maxMs), now);
   const counted = Number.isFinite(pages) && pages > 1 ? pages : 1;
-  return clampToJobRemaining(options, Math.min(Math.max(stage.defaultMs, counted * stage.perPageMs), stage.pagedMaxMs), now);
+  return grownStageTimeoutMs(options, stage, counted * stage.perPageMs, stage.pagedMaxMs, now);
+}
+
+/**
+ * A stage that is one process on one input, whose time follows the size of that input: the office suite reading a document and writing
+ * another. `defaultMs` and `maxMs` are what the stage has without a size (a server-set `timeoutMs` stays under `maxMs`); the stage gets
+ * `perMegabyteMs` for each megabyte of its input once that is more than `defaultMs`, up to `sizedMaxMs`.
+ */
+export interface SizedStage {
+  defaultMs: number;
+  maxMs: number;
+  perMegabyteMs: number;
+  sizedMaxMs: number;
+}
+
+const BYTES_PER_MEGABYTE = 1024 * 1024;
+
+/**
+ * The office suite stage (one `soffice` run on the input of the route). The run is not bounded by pages, which are known only after it:
+ * its time follows the bytes of its input, 60 s for each megabyte, with 120 s as the least. Measured on the corpus files that the
+ * 45 s limit refused (docs/policy-decisions.md): a spreadsheet of 6.3 MB needs 130 s (20 s a megabyte), 3.3 MB needs 38 s, and one of
+ * 0.6 MB needs 65 s (110 s a megabyte, which the 120 s least covers). The ceiling is the longest job of any tier; the job's own
+ * deadline cuts the run first.
+ */
+export const OFFICE_STAGE: SizedStage = {
+  defaultMs: 120_000,
+  maxMs: 120_000,
+  perMegabyteMs: 60_000,
+  sizedMaxMs: PLAN_PROCESSING_MINUTES.paid * 60_000,
+};
+
+/**
+ * The limit of one stage on an input of `bytes` bytes: the stage default, or `perMegabyteMs` for each megabyte when that is more, never
+ * above `sizedMaxMs`, held to the time the job has left. A size that is not a positive number counts as no size.
+ */
+export function sizedStageTimeoutMs(
+  options: ({ timeoutMs?: number } & JobDeadlined) | undefined,
+  bytes: number,
+  stage: SizedStage,
+  now: number = Date.now()
+): number {
+  const counted = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+  return grownStageTimeoutMs(options, stage, (counted / BYTES_PER_MEGABYTE) * stage.perMegabyteMs, stage.sizedMaxMs, now);
 }
 
 /**
