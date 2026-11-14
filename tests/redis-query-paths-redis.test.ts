@@ -259,6 +259,31 @@ describe.skipIf(!REDIS_URL)('the Redis query paths on a real Redis server', () =
       expect(trips.evalKeyCounts.filter((count) => count === 8)).toHaveLength(60);
       expect(trips.evalKeyCounts.filter((count) => count !== 8)).toEqual([1]);
     });
+
+    it('takes the removed job out of the per-state sets of its owner and of no other user, without a third read of the job', async () => {
+      const keys = keySpace(`${prefix}by-state:`);
+      const stem = `${prefix}by-state:{q}:by_state:`;
+      const client = connect();
+      await seed(keys, {
+        jobs: [
+          { id: 'mine', data: { userId: USER }, state: 'failed' },
+          { id: 'theirs', data: { userId: OTHER }, state: 'failed' },
+        ],
+        letters: [],
+      });
+      await admin.zadd(`${stem}${USER}:failed`, '1', 'mine');
+      await admin.zadd(`${stem}${OTHER}:failed`, '1', 'theirs');
+      await admin.zadd(`${stem}${USER}:cancelled`, '1', 'mine');
+      const reads = await admin.info('commandstats').then((text) => Number(/cmdstat_hget:calls=(\d+)/.exec(text)?.[1] ?? 0));
+
+      expect(await removeStoredJob(client, keys, 'mine')).toBe(true);
+
+      expect(await admin.keys(`${stem}*`)).toEqual([`${stem}${OTHER}:failed`]);
+      expect(await admin.zrange(`${stem}${OTHER}:failed`, '0', '-1')).toEqual(['theirs']);
+      // The owner read in JavaScript and the state read by the script; the script does not read the job a third time.
+      const after = await admin.info('commandstats').then((text) => Number(/cmdstat_hget:calls=(\d+)/.exec(text)?.[1] ?? 0));
+      expect(after - reads).toBe(2);
+    });
   });
 
   describe('DistributedBullMQAdapter.getJobs', () => {
