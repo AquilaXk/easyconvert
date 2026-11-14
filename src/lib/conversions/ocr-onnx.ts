@@ -25,6 +25,17 @@ export const ONNX_OCR_DETECTOR_FILE = 'det.onnx';
 export const ONNX_OCR_RECOGNIZER_FILE = 'rec.onnx';
 export const ONNX_OCR_DICTIONARY_FILE = 'dict.txt';
 
+/**
+ * The line recognizers of the model directory. The detector is shared; Korean keeps the file names the first version used, and the other
+ * recognizers (the PP-OCRv5 English and Latin mobile models) sit beside it under their own names.
+ */
+export type OnnxRecognizer = 'kor' | 'eng' | 'latin';
+export const ONNX_RECOGNIZER_FILES: Readonly<Record<OnnxRecognizer, { model: string; dictionary: string }>> = {
+  kor: { model: ONNX_OCR_RECOGNIZER_FILE, dictionary: ONNX_OCR_DICTIONARY_FILE },
+  eng: { model: 'rec-eng.onnx', dictionary: 'dict-eng.txt' },
+  latin: { model: 'rec-latin.onnx', dictionary: 'dict-latin.txt' },
+};
+
 /** Detector input is scaled so that its short side is at least this (small scans are enlarged) ... */
 export const ONNX_DETECTOR_MIN_SIDE = 736;
 /** ... and its long side at most this (large scans are reduced); the larger the input, the slower the detector. */
@@ -75,8 +86,10 @@ const ONNX_RUNTIME_PACKAGE: string = 'onnxruntime-node';
 export interface OnnxOcrOptions {
   /** Directory holding `det.onnx`, `rec.onnx` and `dict.txt`; defaults to the directory named by `EASYCONVERT_OCR_ONNX_DIR`. */
   modelDir?: string;
-  /** The language the result is labelled with (`kor`, or `kor+eng` for a page that names both); the recognizer reads Hangul and Latin either way. */
+  /** The language the result is labelled with (`kor`, or `kor+eng` for a page that names both); the Korean recognizer reads Hangul and Latin either way. */
   language?: string;
+  /** Which line recognizer reads the page; default Korean. */
+  recognizer?: OnnxRecognizer;
   /** Threads of one inference; defaults to the CPUs available to the process. */
   threads?: number;
   detectorMinSide?: number;
@@ -672,27 +685,64 @@ export function setInColumns(boxes: RotatedBox[], pageWidth: number): boolean {
 
 // --- engine -----------------------------------------------------------------------------------------------------
 
+interface LoadedRecognizer {
+  session: OrtSession;
+  characters: string[];
+}
+
 interface LoadedModels {
   ort: OnnxRuntime;
   detector: OrtSession;
-  recognizer: OrtSession;
-  characters: string[];
+  /** Recognizers are loaded when a page first asks for one: a helper that reads Korean never pays for the English model. */
+  recognizers: Map<OnnxRecognizer, Promise<LoadedRecognizer>>;
+  options: Record<string, unknown>;
+  modelDir: string;
   key: string;
 }
 
 let loaded: Promise<LoadedModels> | null = null;
 
-async function loadModels(modelDir: string, threads: number, runtime?: OnnxRuntime): Promise<LoadedModels> {
+function modelFile(modelDir: string, name: string): string {
+  const file = path.join(modelDir, name);
+  if (!fs.existsSync(file)) throw new OcrEngineUnavailableError(`The ONNX OCR model file '${name}' is missing from '${modelDir}'.`);
+  return file;
+}
+
+async function loadRecognizer(models: LoadedModels, kind: OnnxRecognizer): Promise<LoadedRecognizer> {
+  const files = ONNX_RECOGNIZER_FILES[kind];
+  const model = modelFile(models.modelDir, files.model);
+  const dictionaryFile = modelFile(models.modelDir, files.dictionary);
+  const session = await models.ort.InferenceSession.create(model, models.options);
+  const dictionary = fs.readFileSync(dictionaryFile, 'utf8').split('\n');
+  if (dictionary[dictionary.length - 1] === '') dictionary.pop();
+  // The recognizer's last class is the space the reference appends to the dictionary.
+  return { session, characters: [...dictionary, ' '] };
+}
+
+/** The recognizer of `kind`, loaded on first use; a failed load is not kept, so a file that appears later is found. */
+async function recognizerOf(models: LoadedModels, kind: OnnxRecognizer): Promise<LoadedRecognizer> {
+  let entry = models.recognizers.get(kind);
+  if (!entry) {
+    entry = loadRecognizer(models, kind);
+    models.recognizers.set(kind, entry);
+    entry.catch(() => models.recognizers.delete(kind));
+  }
+  try {
+    return await entry;
+  } catch (err) {
+    if (err instanceof OcrEngineUnavailableError) throw err;
+    throw new OcrEngineUnavailableError(`The ONNX OCR models could not be loaded: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function loadModels(modelDir: string, threads: number, runtime?: OnnxRuntime, recognizer: OnnxRecognizer = 'kor'): Promise<LoadedModels & { recognizer: LoadedRecognizer }> {
   const key = `${modelDir}|${threads}`;
   if (loaded) {
     const current = await loaded;
-    if (current.key === key) return current;
+    if (current.key === key) return { ...current, recognizer: await recognizerOf(current, recognizer) };
     await releaseOnnxOcr();
   }
-  const files = [ONNX_OCR_DETECTOR_FILE, ONNX_OCR_RECOGNIZER_FILE, ONNX_OCR_DICTIONARY_FILE].map((name) => path.join(modelDir, name));
-  for (const file of files) {
-    if (!fs.existsSync(file)) throw new OcrEngineUnavailableError(`The ONNX OCR model file '${path.basename(file)}' is missing from '${modelDir}'.`);
-  }
+  const detectorFile = modelFile(modelDir, ONNX_OCR_DETECTOR_FILE);
   let ort: OnnxRuntime;
   try {
     ort = runtime ?? ((await import(/* webpackIgnore: true */ ONNX_RUNTIME_PACKAGE)) as OnnxRuntime);
@@ -703,20 +753,16 @@ async function loadModels(modelDir: string, threads: number, runtime?: OnnxRunti
   // arena kept the peak of one page (about 1.45 GB against 0.9 GB for a 2000 x 1460 page on the measurement set).
   const options = { executionProviders: ['cpu'], intraOpNumThreads: threads, interOpNumThreads: 1, graphOptimizationLevel: 'all', enableCpuMemArena: false, enableMemPattern: false };
   const promise = (async (): Promise<LoadedModels> => {
-    const [detector, recognizer] = await Promise.all([
-      ort.InferenceSession.create(files[0], options),
-      ort.InferenceSession.create(files[1], options),
-    ]);
-    const dictionary = fs.readFileSync(files[2], 'utf8').split('\n');
-    if (dictionary[dictionary.length - 1] === '') dictionary.pop();
-    // The recognizer's last class is the space the reference appends to the dictionary.
-    return { ort, detector, recognizer, characters: [...dictionary, ' '], key };
+    const detector = await ort.InferenceSession.create(detectorFile, options);
+    return { ort, detector, recognizers: new Map(), options, modelDir, key };
   })();
   loaded = promise;
   try {
-    return await promise;
+    const models = await promise;
+    return { ...models, recognizer: await recognizerOf(models, recognizer) };
   } catch (err) {
     loaded = null;
+    if (err instanceof OcrEngineUnavailableError) throw err;
     throw new OcrEngineUnavailableError(`The ONNX OCR models could not be loaded: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
@@ -727,16 +773,17 @@ export async function releaseOnnxOcr(): Promise<void> {
   loaded = null;
   if (!current) return;
   try {
-    const { detector, recognizer } = await current;
-    await Promise.all([detector.release?.(), recognizer.release?.()]);
+    const { detector, recognizers } = await current;
+    const sessions = await Promise.allSettled([...recognizers.values()]);
+    await Promise.all([detector.release?.(), ...sessions.flatMap((r) => (r.status === 'fulfilled' ? [r.value.session.release?.()] : []))]);
   } catch {
     // a load that failed holds nothing to release
   }
 }
 
 /** Loads the sessions now (the helper does this before it says it is ready) with the thread count the pages will be read with. */
-export async function warmOnnxOcr(modelDir: string, threads: number, runtime?: OnnxRuntime): Promise<void> {
-  await loadModels(modelDir, threads, runtime);
+export async function warmOnnxOcr(modelDir: string, threads: number, runtime?: OnnxRuntime, recognizer: OnnxRecognizer = 'kor'): Promise<void> {
+  await loadModels(modelDir, threads, runtime, recognizer);
 }
 
 /** Whether the engine could run here: the package resolves and the model directory is complete. */
@@ -765,8 +812,9 @@ export async function recognizeOnnxInput(input: OnnxPageInput, options: OnnxOcrO
   if (!modelDir) throw new OcrEngineUnavailableError(`The ONNX OCR engine needs a model directory (${ONNX_OCR_MODEL_DIR_ENV}).`);
   const { signal } = options;
   const { rgb, width, height } = input;
-  const models = await loadModels(modelDir, options.threads ?? availableCpus(), options.runtime);
+  const models = await loadModels(modelDir, options.threads ?? availableCpus(), options.runtime, options.recognizer);
   const { ort } = models;
+  const { session: recognizerSession, characters: alphabet } = models.recognizer;
 
   // Detector: the page scaled to the detector's size, then one probability map of the same size.
   const plan = input.detector;
@@ -806,15 +854,15 @@ export async function recognizeOnnxInput(input: OnnxPageInput, options: OnnxOcrO
         }
       }
     });
-    const output = await models.recognizer.run({
-      [models.recognizer.inputNames[0]]: new ort.Tensor('float32', data, [batch.length, 3, RECOGNIZER_HEIGHT, batchWidth]),
+    const output = await recognizerSession.run({
+      [recognizerSession.inputNames[0]]: new ort.Tensor('float32', data, [batch.length, 3, RECOGNIZER_HEIGHT, batchWidth]),
     });
     const logits = Object.values(output)[0];
     const [, steps, classes] = logits.dims;
     batch.forEach((index, slot) => {
       // Only the steps of the line's own width are read; the zero padding after it would decode to blanks anyway.
       const own = Math.max(1, Math.min(steps, Math.ceil((crops[index].width / batchWidth) * steps)));
-      const decoded = decodeCtc(logits.data, slot * steps * classes, own, classes, models.characters);
+      const decoded = decodeCtc(logits.data, slot * steps * classes, own, classes, alphabet);
       lines.set(index, options.recoverSpaces === false ? decoded : recoverSpaces(decoded, crops[index].data, crops[index].width));
     });
   }

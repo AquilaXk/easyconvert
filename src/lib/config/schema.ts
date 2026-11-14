@@ -581,9 +581,20 @@ const SCHEMA_ENTRIES = [
   autoOffSetting(
     'EASYCONVERT_OCR_ONNX',
     'tools',
-    'Whether Korean pages (`kor`, `kor+eng`) are read by the ONNX OCR engine (PP-OCRv5 models in a sandboxed helper process, `src/lib/conversions/ocr-onnx-helper.ts`). `auto` (the default) uses it when the models, the `onnxruntime-node` package and the helper program are present, and reads Korean with Tesseract otherwise (the result carries `engineFallback`). `off` always reads Korean with Tesseract.',
+    'Whether Korean pages (`kor`, `kor+eng`) are read by the ONNX OCR engine (PP-OCRv5 models in a sandboxed helper process, `src/lib/conversions/ocr-onnx-helper.ts`). `auto` (the default) uses it when the models, the `onnxruntime-node` package and the helper program are present, and reads Korean with Tesseract otherwise (the result carries `engineFallback`). `off` always reads Korean with Tesseract, and also switches off `EASYCONVERT_OCR_ONNX_ENGLISH`.',
     BOTH
   ),
+  {
+    name: 'EASYCONVERT_OCR_ONNX_ENGLISH',
+    area: 'tools',
+    description:
+      'Whether an English page that Tesseract still reads below a score of 0.75 after both of its preparations is read again by the ONNX OCR engine with the English recognizer (policy decision 299), which needs the files `rec-eng.onnx` and `dict-eng.txt` of the model directory beside those of Korean. `off` (the default) leaves English to Tesseract; `auto` reads such a page again when the engine is usable and keeps the Tesseract reading when it is not. A second reading costs a page its share of the page time limit, and a document that Tesseract scores low on most pages (a scanned form) may run past it.',
+    kind: { type: 'enum', values: ['auto', 'off'], caseInsensitive: true },
+    default: 'off',
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  } as const satisfies VariableSpec,
   {
     name: 'HTML_IMAGE_FETCH',
     area: 'security',
@@ -1439,7 +1450,7 @@ const SCHEMA_ENTRIES = [
   toolPath('RSVG_CONVERT_PATH', 'Path of the librsvg `rsvg-convert` executable that writes an SVG as a vector PDF.', BOTH),
   toolPath('TESSERACT_PATH', 'Path of the `tesseract` executable.', BOTH),
   toolResourcePath('TESSDATA_PREFIX', 'Directory of the Tesseract language data.', BOTH),
-  toolResourcePath('EASYCONVERT_OCR_ONNX_DIR', 'Directory of the ONNX Korean OCR models (`det.onnx`, `rec.onnx`, `dict.txt`); `/opt/ocr-onnx` (the worker image) when unset. Installed by `scripts/install-onnx-ocr-models.sh`.', BOTH),
+  toolResourcePath('EASYCONVERT_OCR_ONNX_DIR', 'Directory of the ONNX OCR models (`det.onnx`; `rec.onnx` and `dict.txt` for Korean, `rec-eng.onnx` and `dict-eng.txt` for English); `/opt/ocr-onnx` (the worker image) when unset. Installed by `scripts/install-onnx-ocr-models.sh`.', BOTH),
   toolPath('VERAPDF_PATH', 'Path of the `verapdf` executable that validates PDF/A output.', BOTH),
   toolPath('QPDF_PATH', 'Path of the `qpdf` executable that encrypts PDF output.', BOTH),
   toolPath('FC_LIST_PATH', 'Path of the fontconfig `fc-list` executable.', BOTH),

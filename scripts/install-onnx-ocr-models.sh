@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Installs the models of the ONNX Korean OCR engine (src/lib/conversions/ocr-onnx.ts): the PP-OCRv5 mobile text detector, the PP-OCRv5
-# Korean mobile line recognizer and the recognizer's character list. The weights are PaddleOCR's (Apache-2.0), converted to ONNX and
+# Installs the models of the ONNX OCR engine (src/lib/conversions/ocr-onnx.ts): the PP-OCRv5 mobile text detector, the PP-OCRv5
+# Korean and English mobile line recognizers and each recognizer's character list. The weights are PaddleOCR's (Apache-2.0), converted to ONNX and
 # published by the RapidOCR project (Apache-2.0) at a tagged release; they are data read by onnxruntime, never code that runs. Each file is
-# verified against a fixed SHA-256 before it is copied, and the three are written under the names the engine reads (det.onnx, rec.onnx,
-# dict.txt) beside a NOTICE that says where they come from and under which licence.
+# verified against a fixed SHA-256 before it is copied, and the five are written under the names the engine reads (det.onnx, rec.onnx,
+# dict.txt for Korean, rec-eng.onnx and dict-eng.txt for English) beside a NOTICE that says where they come from and under which licence.
 #
 # The licence texts that travel with the models and the runtime are installed beside them under <install-dir>/licenses, each checked against a
 # fixed SHA-256 and taken from a tagged commit, not a branch: the MIT text of onnxruntime and its ThirdPartyNotices.txt (the notices of the libraries
@@ -11,12 +11,12 @@
 # Apache-2.0 texts of PaddleOCR (the weights) and RapidOCR (the conversion). Neither of those two projects has a NOTICE file; the NOTICE written here
 # says where the models come from. Dockerfile.worker copies them to /licenses.
 #
-# Bump ONNX_OCR_RELEASE and the three digests together, and run tests/ocr-onnx-real.test.ts with the new files before moving the pin. Bump
+# Bump ONNX_OCR_RELEASE and the five digests together, and run tests/ocr-onnx-real.test.ts with the new files before moving the pin. Bump
 # ORT_COMMIT (the commit of the tag of the onnxruntime-node version in package.json) and its two digests with that package.
 #
 # Usage: install-onnx-ocr-models.sh [install-dir]   (default /opt/ocr-onnx; needs curl and sha256sum)
 # With ONNX_OCR_DOWNLOADS set (CI), a download kept there from an earlier run is used when its digest still matches, and a fresh one is
-# kept there for the next run; the digest is checked on every use either way. The files are about 18 MB in all.
+# kept there for the next run; the digest is checked on every use either way. The files are about 26 MB in all.
 set -euo pipefail
 
 ONNX_OCR_RELEASE="v3.10.0"
@@ -27,6 +27,10 @@ REC_PATH="onnx/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile.onnx"
 REC_SHA256="cd6e2ea50f6943ca7271eb8c56a877a5a90720b7047fe9c41a2e541a25773c9b"
 DICT_PATH="paddle/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile/ppocrv5_korean_dict.txt"
 DICT_SHA256="a88071c68c01707489baa79ebe0405b7beb5cca229f4fc94cc3ef992328802d7"
+EN_REC_PATH="onnx/PP-OCRv5/rec/en_PP-OCRv5_rec_mobile.onnx"
+EN_REC_SHA256="c3461add59bb4323ecba96a492ab75e06dda42467c9e3d0c18db5d1d21924be8"
+EN_DICT_PATH="paddle/PP-OCRv5/rec/en_PP-OCRv5_rec_mobile/ppocrv5_en_dict.txt"
+EN_DICT_SHA256="e025a66d31f327ba0c232e03f407ae8d105e1e709e7ccb3f408aa778c24e70d6"
 ORT_VERSION="1.31.1"
 ORT_COMMIT="6af1a932e2286d5c58166085d24c68783033edee"
 ORT_LICENSE_SHA256="2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c"
@@ -83,6 +87,8 @@ install_file() {
 install_file "$DET_PATH" "$DET_SHA256" det.onnx
 install_file "$REC_PATH" "$REC_SHA256" rec.onnx
 install_file "$DICT_PATH" "$DICT_SHA256" dict.txt
+install_file "$EN_REC_PATH" "$EN_REC_SHA256" rec-eng.onnx
+install_file "$EN_DICT_PATH" "$EN_DICT_SHA256" dict-eng.txt
 
 install_from "https://raw.githubusercontent.com/microsoft/onnxruntime/${ORT_COMMIT}/LICENSE" "$ORT_LICENSE_SHA256" licenses/onnxruntime.LICENSE
 install_from "https://raw.githubusercontent.com/microsoft/onnxruntime/${ORT_COMMIT}/ThirdPartyNotices.txt" "$ORT_NOTICES_SHA256" licenses/onnxruntime.ThirdPartyNotices.txt
@@ -90,17 +96,21 @@ install_from "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/${PADDLEO
 install_from "https://raw.githubusercontent.com/RapidAI/RapidOCR/${RAPIDOCR_COMMIT}/LICENSE" "$RAPIDOCR_LICENSE_SHA256" licenses/rapidocr.LICENSE
 
 cat > "${INSTALL_DIR}/NOTICE" <<NOTICE
-ONNX Korean OCR models
+ONNX OCR models
 
-det.onnx   PP-OCRv5 mobile text detector (ch_PP-OCRv5_det_mobile)      sha256 ${DET_SHA256}
-rec.onnx   PP-OCRv5 Korean mobile text recognizer                      sha256 ${REC_SHA256}
-dict.txt   the recognizer's character list                             sha256 ${DICT_SHA256}
+det.onnx        PP-OCRv5 mobile text detector (ch_PP-OCRv5_det_mobile)   sha256 ${DET_SHA256}
+rec.onnx        PP-OCRv5 Korean mobile text recognizer                   sha256 ${REC_SHA256}
+dict.txt        the Korean recognizer's character list                   sha256 ${DICT_SHA256}
+rec-eng.onnx    PP-OCRv5 English mobile text recognizer                  sha256 ${EN_REC_SHA256}
+dict-eng.txt    the English recognizer's character list                  sha256 ${EN_DICT_SHA256}
 
 The weights are PaddleOCR's (PaddlePaddle authors, Apache License 2.0). The ONNX files and the character list are the conversion
 published by the RapidOCR project (Apache License 2.0), release ${ONNX_OCR_RELEASE}:
   ${ONNX_OCR_BASE}/${DET_PATH}
   ${ONNX_OCR_BASE}/${REC_PATH}
   ${ONNX_OCR_BASE}/${DICT_PATH}
+  ${ONNX_OCR_BASE}/${EN_REC_PATH}
+  ${ONNX_OCR_BASE}/${EN_DICT_PATH}
 They are read as data by onnxruntime ${ORT_VERSION} (MIT, Microsoft Corporation), whose native library is statically built from libraries that
 have notices of their own.
 

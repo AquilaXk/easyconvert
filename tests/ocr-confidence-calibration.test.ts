@@ -166,6 +166,7 @@ describe('the committed tables', () => {
     ['kor', 'wasm'],
     ['kor', 'cli'],
     ['kor', 'onnx'],
+    ['eng', 'onnx'],
   ];
 
   for (const [language, enginePath] of combinations) {
@@ -182,7 +183,8 @@ describe('the committed tables', () => {
     });
   }
 
-  it('gives the ONNX engine its Korean table whatever languages the request named', () => {
+  it('gives the ONNX engine its Korean table whatever languages the request named, and English alone its own', () => {
+    expect(calibrationTableFor('eng', 'onnx')).toEqual(committedTable('eng', 'onnx'));
     expect(calibrationTableFor('kor+eng', 'onnx')).toEqual(committedTable('kor', 'onnx'));
     expect(calibrationTableFor('kor', 'onnx')).toEqual(committedTable('kor', 'onnx'));
     expect(calibrationTableFor('kor', 'neural')).toEqual(committedTable('kor', 'neural'));
@@ -325,22 +327,24 @@ describe('held-out expected calibration error', () => {
     );
   }
 
-  const modelsMissing = skipUnless(
-    'the ONNX OCR models and runtime',
-    onnxOcrUnavailableReason() === null
-  );
-  it.skipIf(modelsMissing)(
-    `kor on the onnx path is within ${MAX_HELD_OUT_ECE} on pages and noise the fit never saw`,
-    async () => {
-      const { calibrated, raw } = await heldOutWords('kor', 'onnx');
-      expect(calibrated.length).toBeGreaterThan(900);
-      const calibratedError = expectedCalibrationError(calibrated, ECE_BINS);
-      const rawError = expectedCalibrationError(raw, ECE_BINS);
-      expect(calibratedError).toBeLessThanOrEqual(MAX_HELD_OUT_ECE);
-      expect(calibratedError).toBeLessThanOrEqual(rawError + 0.01);
-    },
-    TEST_TIMEOUT_MS
-  );
+  for (const language of ['kor', 'eng'] as const) {
+    const modelsMissing = skipUnless(
+      `the ONNX OCR models and runtime for ${language}`,
+      onnxOcrUnavailableReason(undefined, language === 'eng' ? 'eng' : 'kor') === null
+    );
+    it.skipIf(modelsMissing)(
+      `${language} on the onnx path is within ${MAX_HELD_OUT_ECE} on pages and noise the fit never saw`,
+      async () => {
+        const { calibrated, raw } = await heldOutWords(language, 'onnx');
+        expect(calibrated.length).toBeGreaterThan(900);
+        const calibratedError = expectedCalibrationError(calibrated, ECE_BINS);
+        const rawError = expectedCalibrationError(raw, ECE_BINS);
+        expect(calibratedError).toBeLessThanOrEqual(MAX_HELD_OUT_ECE);
+        expect(calibratedError).toBeLessThanOrEqual(rawError + 0.01);
+      },
+      TEST_TIMEOUT_MS
+    );
+  }
 
   oracleTest(
     'performOcr returns every word with a confidence in 0..1 and says the result is calibrated',

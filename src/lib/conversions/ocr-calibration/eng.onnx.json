@@ -1,0 +1,54 @@
+{
+  "language": "eng",
+  "enginePath": "onnx",
+  "x": [
+    0.552892,
+    0.8733,
+    0.964946,
+    0.9951,
+    0.998954,
+    0.999411,
+    0.999571,
+    0.999784,
+    0.999884,
+    0.99994
+  ],
+  "y": [
+    0.219512,
+    0.735849,
+    0.880342,
+    0.89899,
+    0.942029,
+    0.982143,
+    0.989796,
+    0.993179,
+    0.994624,
+    1
+  ],
+  "provenance": {
+    "method": "Isotonic regression (pool-adjacent-violators) of word correctness on the raw word score; words are labelled by Levenshtein alignment to the drawn text.",
+    "engine": "onnxruntime-node 1.31.1, PP-OCRv5 mobile detector and English mobile recognizer",
+    "languageData": "rec-eng.onnx sha256:c3461add59bb4323",
+    "fittedOn": {
+      "pages": [
+        "en_a",
+        "en_b",
+        "en_c"
+      ],
+      "degradations": [
+        "clean300",
+        "dpi60",
+        "blur",
+        "noise-1",
+        "noise-2",
+        "heavy-noise-1",
+        "heavy-noise-2",
+        "faded",
+        "dpi100noise"
+      ],
+      "words": 2364,
+      "correctWords": 2282
+    },
+    "generator": "tests/helpers/fit-ocr-calibration.mts"
+  }
+}

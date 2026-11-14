@@ -1,3 +1,4 @@
+import { ONNX_RECOGNIZER_FILES, type OnnxRecognizer } from './ocr-onnx';
 import type { OcrResult } from './ocr-pdf-combiner';
 
 /**
@@ -21,6 +22,7 @@ export interface OnnxRunRequest {
   height: number;
   detector: { width: number; height: number };
   language: string;
+  recognizer: OnnxRecognizer;
   recoverSpaces: boolean;
 }
 
@@ -89,6 +91,7 @@ export function validateRunRequest(request: OnnxRunRequest, payloadBytes: number
   if (request.type !== 'run' || !whole(request.id) || !whole(request.width) || !whole(request.height)) return 'the request is malformed';
   if (!request.detector || !whole(request.detector.width) || !whole(request.detector.height)) return 'the request is malformed';
   if (typeof request.language !== 'string' || request.language.length > 64 || typeof request.recoverSpaces !== 'boolean') return 'the request is malformed';
+  if (!Object.hasOwn(ONNX_RECOGNIZER_FILES, request.recognizer)) return 'the request names an unknown recognizer';
   if (request.width * request.height > MAX_PAGE_PIXELS) return 'the page has too many pixels';
   if (request.detector.width * request.detector.height > MAX_DETECTOR_PIXELS) return 'the detector input has too many pixels';
   if (payloadBytes !== 3 * (request.width * request.height + request.detector.width * request.detector.height)) return 'the payload does not match the sizes';

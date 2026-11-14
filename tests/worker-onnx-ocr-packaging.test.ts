@@ -59,7 +59,7 @@ describe('the ocronnx stage of the worker image', () => {
 
 describe('the install script of the ONNX OCR models', () => {
   it('pins every model file and every licence file by SHA-256, and the licence texts by the commit of a tag', () => {
-    for (const name of ['DET_SHA256', 'REC_SHA256', 'DICT_SHA256', 'ORT_LICENSE_SHA256', 'ORT_NOTICES_SHA256', 'PADDLEOCR_LICENSE_SHA256', 'RAPIDOCR_LICENSE_SHA256']) {
+    for (const name of ['DET_SHA256', 'REC_SHA256', 'DICT_SHA256', 'EN_REC_SHA256', 'EN_DICT_SHA256', 'ORT_LICENSE_SHA256', 'ORT_NOTICES_SHA256', 'PADDLEOCR_LICENSE_SHA256', 'RAPIDOCR_LICENSE_SHA256']) {
       expect(pin(name), name).toMatch(SHA256);
     }
     for (const name of ['ORT_COMMIT', 'PADDLEOCR_COMMIT', 'RAPIDOCR_COMMIT']) expect(pin(name), name).toMatch(COMMIT);
@@ -82,7 +82,7 @@ describe('the install script of the ONNX OCR models', () => {
   });
 
   it('does not say that the licence of onnxruntime is in the npm package or in THIRD_PARTY_NOTICES', () => {
-    const section = /### 2\.18 ONNX Korean OCR[\s\S]*?(?=\n### |\n---)/.exec(LICENSING)?.[0] ?? '';
+    const section = /### 2\.18 ONNX OCR[\s\S]*?(?=\n### |\n---)/.exec(LICENSING)?.[0] ?? '';
     expect(section).not.toBe('');
     expect(section).not.toMatch(/node_modules\/onnxruntime-node\/LICENSE/);
     expect(section).toContain('ships neither a `LICENSE` nor the third-party notices');
