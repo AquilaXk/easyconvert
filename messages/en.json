@@ -1545,6 +1545,7 @@
       "part-in-flight": "A part of this upload is still being received. Try again in a moment.",
       "idempotency-key-reused": "This is the same request with different contents. Start again.",
       "idempotency-key-in-flight": "The same request is still being processed. Try again in a moment.",
+      "idempotency-response-not-kept": "This request was already processed, but its answer was too large to keep. Download the result from your file list.",
       "client-ip-trust-unconfigured": "The service is temporarily unavailable. Try again shortly.",
       "byos-invalid-endpoint": "The storage endpoint cannot be used. Check its address and try again.",
       "byos-provider-unavailable": "This storage provider cannot be connected yet. Choose another provider.",
