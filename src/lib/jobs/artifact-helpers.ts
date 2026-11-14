@@ -1,4 +1,5 @@
-import { PDFDocument } from 'pdf-lib';
+import type { PDFDocument } from 'pdf-lib';
+import { PdfMerge } from '@/lib/conversions/pdf-merge';
 import { loadPdfDocument, openPdfForEditing, PDF_LIB_OBJECTS_PER_TICK } from '@/lib/conversions/pdf-access';
 import { PARSER_LOOP_REFUSAL, withMendedPageTree } from '@/lib/conversions/pdf-postprocess/mend-page-tree';
 
@@ -9,6 +10,8 @@ export interface PdfMergeAccess {
   confirmEditRights?: boolean;
   /** Stops the merge between two inputs when it fires: a merge in this process cannot be stopped inside one input. */
   signal?: AbortSignal;
+  /** The file names of the inputs, by position. An input with a name gets a top-level bookmark of that name (without a `.pdf` extension). */
+  names?: ReadonlyArray<string | null | undefined>;
 }
 
 /** The input as a document whose pages can be listed; the parser meets a page tree that loops while it lists them. */
@@ -27,7 +30,7 @@ async function readMergeInput(plain: Buffer): Promise<PDFDocument> {
  * The merged output is not encrypted.
  */
 export async function mergePdfBuffers(buffers: Buffer[], access: PdfMergeAccess = {}): Promise<Buffer> {
-  const mergedPdf = await PDFDocument.create();
+  const merge = await PdfMerge.create();
   for (const [index, buf] of buffers.entries()) {
     access.signal?.throwIfAborted();
     const plain = await openPdfForEditing(buf, 'merge', {
@@ -37,11 +40,8 @@ export async function mergePdfBuffers(buffers: Buffer[], access: PdfMergeAccess 
     });
     // A page tree that loops overflows the parser's stack; the input is read again from the mended tree.
     const doc = await withMendedPageTree(plain, readMergeInput, PARSER_LOOP_REFUSAL);
-    const copiedPages = await mergedPdf.copyPages(doc, doc.getPageIndices());
-    for (const page of copiedPages) {
-      mergedPdf.addPage(page);
-    }
+    merge.append(doc, access.names?.[index] ?? undefined);
   }
-  const mergedBytes = await mergedPdf.save({ objectsPerTick: PDF_LIB_OBJECTS_PER_TICK });
+  const mergedBytes = await merge.finish().save({ objectsPerTick: PDF_LIB_OBJECTS_PER_TICK });
   return Buffer.from(mergedBytes);
 }

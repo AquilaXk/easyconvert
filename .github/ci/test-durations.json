@@ -846,6 +846,7 @@
   "tests/pdf-layout-paragraph-builder.test.ts": 0.6,
   "tests/pdf-layout-units.test.ts": 2.1,
   "tests/pdf-lib-load-limits.test.ts": 1.4,
+  "tests/pdf-merge-forms-outlines.test.ts": 2,
   "tests/pdf-object-stream-leading-white.test.ts": 5.1,
   "tests/pdf-ocr-encrypted-edit-gate.test.ts": 3.1,
   "tests/pdf-ocr-no-text.test.ts": 2.3,
