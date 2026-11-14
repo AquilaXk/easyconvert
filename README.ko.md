@@ -120,7 +120,7 @@ curl -X POST "https://convert.aquilaxk.site/api/v1/convert?raw=true" \
 - `POST /api/convert`, `POST /api/convert/batch`(ZIP 묶음): 동기 변환이에요.
 - `GET /api/formats`: 포맷 레지스트리 조회예요. 선택 쿼리 파라미터는 `category`, `search`예요.
 - `POST /api/fetch-url`: 원격 URL 가져오기예요. 본문은 `{"url": "https://example.com/asset.png"}`예요.
-- `POST /api/queue/jobs`에 `{"filename": "model.step", "targetFormat": "stl", "storageKey": "...", "fileSize": 1048576, "options": {}}`를 보내면 작업을 제출해요. `GET /api/queue/jobs/:id`로 상태를 조회하고(`?stream=true`는 Server-Sent Events), `DELETE /api/queue/jobs/:id`로 취소하고, `GET /api/queue/stats`로 큐 지표를 봐요.
+- `POST /api/queue/jobs`에 `{"filename": "model.step", "targetFormat": "stl", "storageKey": "...", "fileSize": 1048576, "options": {}}`를 보내면 작업을 제출해요. `GET /api/queue/jobs/:id`로 상태를 조회하고(`?stream=true`는 Server-Sent Events), `DELETE /api/queue/jobs/:id`로 취소하고, `GET /api/queue/stats`로 큐 지표를 봐요(웹 서비스의 루프백 포트에서만 되고, 프록시는 이 경로를 넘기지 않아요).
 - `POST /api/storage/multipart`의 `action` 값은 아래와 같아요.
   - `initiate`: JSON 본문 `{"filename": "archive.zip", "mimeType": "application/zip", "totalSize": 104857600}`(선택 `partSize`, 작업 전달 때는 `contentType`과 `fileSize`)을 보내면 `uploadId`, `key`, `partSize`, `totalParts`, `expiresAt`을 돌려줘요.
   - `chunk`: `?action=chunk&uploadId=...&partNumber=1`에 `application/octet-stream` 본문과 `Content-Length`를 보내요.

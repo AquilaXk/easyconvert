@@ -120,7 +120,7 @@ Callers without an account have a daily limit (policy decision 16 in [docs/polic
 - `POST /api/convert` and `POST /api/convert/batch` (ZIP bundling): synchronous conversion.
 - `GET /api/formats`: format registry, with optional `category` and `search` query parameters.
 - `POST /api/fetch-url`: remote ingestion, body `{"url": "https://example.com/asset.png"}`.
-- `POST /api/queue/jobs` with `{"filename": "model.step", "targetFormat": "stl", "storageKey": "...", "fileSize": 1048576, "options": {}}`: submit a job. `GET /api/queue/jobs/:id` polls it (`?stream=true` streams Server-Sent Events), `DELETE /api/queue/jobs/:id` cancels it, and `GET /api/queue/stats` reports queue metrics.
+- `POST /api/queue/jobs` with `{"filename": "model.step", "targetFormat": "stl", "storageKey": "...", "fileSize": 1048576, "options": {}}`: submit a job. `GET /api/queue/jobs/:id` polls it (`?stream=true` streams Server-Sent Events), `DELETE /api/queue/jobs/:id` cancels it, and `GET /api/queue/stats` reports queue metrics (the loopback port of the web service only; the proxy does not forward it).
 - `POST /api/storage/multipart` with `action` set to:
   - `initiate`: JSON body `{"filename": "archive.zip", "mimeType": "application/zip", "totalSize": 104857600}` (optional `partSize`, or `contentType` and `fileSize` on job handoff). Returns `uploadId`, `key`, `partSize`, `totalParts`, and `expiresAt`.
   - `chunk`: `?action=chunk&uploadId=...&partNumber=1` with a raw `application/octet-stream` body and `Content-Length`.
