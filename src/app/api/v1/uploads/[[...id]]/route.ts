@@ -212,7 +212,7 @@ async function handleInitiateUpload(
     return createProblemDetailsResponse(400, 'Missing or invalid "filename" in request body.', instanceUri);
   }
 
-  if (typeof totalSize !== 'number' || !Number.isFinite(totalSize) || totalSize < 0) {
+  if (typeof totalSize !== 'number' || !Number.isSafeInteger(totalSize) || totalSize < 1) {
     return createProblemDetailsResponse(400, 'Missing or invalid "totalSize" in request body.', instanceUri);
   }
 

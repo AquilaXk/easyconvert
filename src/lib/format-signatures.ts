@@ -19,7 +19,11 @@ export const HEADER_WINDOW_BYTES = 64 * 1024;
 
 /** Whether `buf` holds the bytes of `prefix` at `offset`. */
 export function startsWithBytes(buf: Uint8Array, prefix: readonly number[], offset = 0): boolean {
-  return prefix.every((byte, index) => buf[offset + index] === byte);
+  if (offset + prefix.length > buf.length) return false;
+  for (let i = 0; i < prefix.length; i++) {
+    if (buf[offset + i] !== prefix[i]) return false;
+  }
+  return true;
 }
 
 /** The prolog is ASCII; every byte maps to one character, whatever the rest of the file holds. */
@@ -73,14 +77,36 @@ const XML_PROLOG_ITEMS: readonly { open: string; close: string }[] = [
 const DOCTYPE_OPEN = '<!doctype';
 const ELEMENT_NAME = /^<([A-Za-z_][\w.-]*)[\s/>]/;
 
-/** Index after the doctype that opens at `from`, past its internal subset when it has one; -1 when it is not closed. */
+/** Index after the doctype that opens at `from`, past quotes, comments, and its internal subset; -1 when unclosed. */
 function skipDoctype(text: string, from: number): number {
-  const subsetOpen = text.indexOf('[', from);
-  const declarationEnd = text.indexOf('>', from);
-  if (subsetOpen === -1 || (declarationEnd !== -1 && declarationEnd < subsetOpen)) return declarationEnd === -1 ? -1 : declarationEnd + 1;
-  const subsetEnd = text.indexOf(']', subsetOpen);
-  const end = subsetEnd === -1 ? -1 : text.indexOf('>', subsetEnd);
-  return end === -1 ? -1 : end + 1;
+  let i = from + DOCTYPE_OPEN.length;
+  let inSubset = false;
+  let quote = '';
+  while (i < text.length) {
+    const ch = text[i];
+    if (quote !== '') {
+      if (ch === quote) quote = '';
+      i++;
+      continue;
+    }
+    if (inSubset && text.startsWith('<!--', i)) {
+      const commentEnd = text.indexOf('-->', i + 4);
+      if (commentEnd === -1) return -1;
+      i = commentEnd + 3;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (!inSubset && ch === '[') {
+      inSubset = true;
+    } else if (inSubset && ch === ']') {
+      inSubset = false;
+    } else if (!inSubset && ch === '>') {
+      return i + 1;
+    }
+    i++;
+  }
+  return -1;
 }
 
 /** Index after the prolog item (declaration, comment or doctype) at `at`, or -1 when none starts there or it is not closed. */
@@ -278,6 +304,18 @@ const FIXED_SIGNATURES: readonly { mime: string; prefix: readonly number[] }[] =
   { mime: 'application/x-dosexec', prefix: [0x4d, 0x5a] },
 ];
 
+type FixedSignatureEntry = { mime: string; prefix: readonly number[] };
+const FIXED_SIGNATURES_BY_FIRST_BYTE: (FixedSignatureEntry[] | undefined)[] = Array.from({ length: 256 }, () => undefined);
+for (const entry of FIXED_SIGNATURES) {
+  const first = entry.prefix[0];
+  let bucket = FIXED_SIGNATURES_BY_FIRST_BYTE[first];
+  if (!bucket) {
+    bucket = [];
+    FIXED_SIGNATURES_BY_FIRST_BYTE[first] = bucket;
+  }
+  bucket.push(entry);
+}
+
 const ZSTD_SKIPPABLE_HEADER_BYTES = 8;
 const ZSTD_SKIPPABLE_FIRST_BYTE_MASK = 0xf0;
 const ZSTD_SKIPPABLE_FIRST_BYTE_PREFIX = 0x50;
@@ -346,8 +384,12 @@ export function refusedWithoutSignature(ext: string, buf: Uint8Array): boolean {
 
 /** The MIME type of the first fixed signature the buffer opens with; undefined when it opens with none. */
 export function sniffFixedSignature(buf: Uint8Array): string | undefined {
-  const fixed = FIXED_SIGNATURES.find(({ prefix }) => startsWithBytes(buf, prefix))?.mime;
-  if (fixed !== undefined) return fixed;
+  if (buf.length === 0) return undefined;
+  const bucket = FIXED_SIGNATURES_BY_FIRST_BYTE[buf[0]];
+  if (bucket !== undefined) {
+    const fixed = bucket.find(({ prefix }) => startsWithBytes(buf, prefix))?.mime;
+    if (fixed !== undefined) return fixed;
+  }
   if (isZstdSkippableFrame(buf)) return 'application/zstd';
   if (isBiffStream(buf)) return 'application/vnd.ms-excel';
   return undefined;
@@ -653,22 +695,57 @@ function hasValidPalmDbName(buf: Uint8Array): boolean {
   return true;
 }
 
-function hasPalmDbSignature(buf: Uint8Array, signatures: ReadonlySet<string>): boolean {
-  if (buf.length < PALM_PDB_HEADER_BYTES || !hasValidPalmDbName(buf) || isLotusWordPro(buf)) return false;
-  if (NON_PALM_ASCII_PREFIXES.some((prefix) => startsWithBytes(buf, prefix))) return false;
-  if (LATIN1.decode(buf.subarray(0, PALM_PDB_HEADER_BYTES)).includes(PDF_HEADER) || sniffFixedSignature(buf) !== undefined || isDjvu(buf)) return false;
-  if (dataView(buf).getUint32(PALM_PDB_NEXT_RECORD_LIST_OFFSET, false) !== 0) return false;
+const MACHO_THIN_MAGICS: ReadonlySet<number> = new Set([0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe]);
+const MACHO_FAT_MAGICS: ReadonlySet<number> = new Set([0xcafebabe, 0xcafebabf]);
+const MACHO_FAT_HEADER_MIN_BYTES = 12;
+const MACHO_FAT_MAX_ARCHES = 20;
+const MACHO_APPLE_CPU_TYPES: ReadonlySet<number> = new Set([7, 12, 18, 0x01000007, 0x0100000c, 0x01000012]);
+
+/**
+ * True when `buf` starts with a Mach-O thin or Universal binary header.
+ * For 0xCAFEBABE / 0xCAFEBABF (0xCAFEBABE is shared with Java `.class`), verifies `1 <= nfat_arch <= 20` and an Apple CPU type at offset 8.
+ */
+export function isMachO(buf: Uint8Array): boolean {
+  if (buf.length < 4) return false;
+  const view = dataView(buf);
+  const magic = view.getUint32(0, false);
+  if (MACHO_THIN_MAGICS.has(magic)) return true;
+  if (!MACHO_FAT_MAGICS.has(magic) || buf.length < MACHO_FAT_HEADER_MIN_BYTES) return false;
+  const nfatArch = view.getUint32(4, false);
+  const firstCpuType = view.getUint32(8, false);
+  return nfatArch >= 1 && nfatArch <= MACHO_FAT_MAX_ARCHES && MACHO_APPLE_CPU_TYPES.has(firstCpuType);
+}
+
+function readPalmDbType(buf: Uint8Array, skipAlreadyChecked = false): string | undefined {
+  if (buf.length < PALM_PDB_HEADER_BYTES || !hasValidPalmDbName(buf)) return undefined;
+  if (!skipAlreadyChecked && isLotusWordPro(buf)) return undefined;
+  if (NON_PALM_ASCII_PREFIXES.some((prefix) => startsWithBytes(buf, prefix))) return undefined;
+  if (
+    LATIN1.decode(buf.subarray(0, PALM_PDB_HEADER_BYTES)).includes(PDF_HEADER) ||
+    sniffFixedSignature(buf) !== undefined ||
+    (!skipAlreadyChecked && isDjvu(buf))
+  ) {
+    return undefined;
+  }
+  if (dataView(buf).getUint32(PALM_PDB_NEXT_RECORD_LIST_OFFSET, false) !== 0) return undefined;
   const numRecords = (buf[PALM_PDB_NUM_RECORDS_OFFSET] << 8) | buf[PALM_PDB_NUM_RECORDS_OFFSET + 1];
-  if (numRecords < 1) return false;
-  return signatures.has(LATIN1.decode(buf.subarray(PALM_PDB_TYPE_OFFSET, PALM_PDB_TYPE_OFFSET + PALM_PDB_TYPE_BYTES)));
+  if (numRecords < 1) return undefined;
+  return LATIN1.decode(buf.subarray(PALM_PDB_TYPE_OFFSET, PALM_PDB_TYPE_OFFSET + PALM_PDB_TYPE_BYTES));
 }
 
 function isPalmDocPdb(buf: Uint8Array): boolean {
-  return hasPalmDbSignature(buf, PALM_PDB_SIGNATURES);
+  const palmType = readPalmDbType(buf);
+  return palmType !== undefined && PALM_PDB_SIGNATURES.has(palmType);
 }
 
 function isMobiPalmDb(buf: Uint8Array): boolean {
-  return hasPalmDbSignature(buf, PALM_MOBI_SIGNATURES);
+  const palmType = readPalmDbType(buf);
+  return palmType !== undefined && PALM_MOBI_SIGNATURES.has(palmType);
+}
+
+function isAnyPalmDb(buf: Uint8Array): boolean {
+  const palmType = readPalmDbType(buf, true);
+  return palmType !== undefined && (PALM_PDB_SIGNATURES.has(palmType) || PALM_MOBI_SIGNATURES.has(palmType));
 }
 
 const PALM_DB_EXTENSIONS: ReadonlySet<string> = new Set(['pdb', 'mobi', 'azw', 'azw3', 'azw4', 'prc']);
@@ -714,6 +791,7 @@ const OWN_SIGNATURE_CHECKS: Readonly<Record<string, (buf: Uint8Array) => boolean
 };
 
 export function ownSignatureVerdict(ext: string, buf: Uint8Array, sniffed?: string): boolean | undefined {
+  if (isMachO(buf)) return false;
   if (Object.hasOwn(OWN_SIGNATURE_CHECKS, ext)) {
     if (sniffed !== undefined && PALM_DB_EXTENSIONS.has(ext)) return false;
     return OWN_SIGNATURE_CHECKS[ext](buf);
@@ -725,7 +803,7 @@ export function ownSignatureVerdict(ext: string, buf: Uint8Array, sniffed?: stri
     isDjvu(buf) ||
     isLotusWordPro(buf) ||
     isSonyLrf(buf) ||
-    (sniffed === undefined && (isPalmDocPdb(buf) || isMobiPalmDb(buf))) ||
+    (sniffed === undefined && isAnyPalmDb(buf)) ||
     startsWithBytes(buf, WORDPERFECT_MAGIC) ||
     (startsWithBytes(buf, CFBF_MAGIC) && isNonOfficeCompoundFile(buf));
   return isForeignOwnSignature ? false : undefined;

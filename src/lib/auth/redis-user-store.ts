@@ -36,6 +36,7 @@ return 1
 
 export const UPDATE_USER_LUA_SCRIPT = `
 -- KEYS[1]: user record key
+-- KEYS[2]: session version counter key
 -- ARGV[1]: serialized partial updates JSON
 -- ARGV[2]: current timestamp
 local raw = redis.call('GET', KEYS[1])
@@ -46,6 +47,10 @@ local user = cjson.decode(raw)
 local updates = cjson.decode(ARGV[1])
 for k, v in pairs(updates) do
   user[k] = v
+end
+local liveVersion = tonumber(redis.call('GET', KEYS[2]))
+if liveVersion and (tonumber(user["sessionVersion"]) or 1) < liveVersion then
+  user["sessionVersion"] = liveVersion
 end
 user["updatedAt"] = tonumber(ARGV[2])
 local updatedRaw = cjson.encode(user)
@@ -70,11 +75,25 @@ return updatedRaw
 `;
 
 export const RAISE_SESSION_VERSION_LUA = `
--- KEYS[1]: session version key; ARGV[1]: the version every issued token already carries at least
+-- KEYS[1]: session version key
+-- KEYS[2]: user record key
+-- ARGV[1]: the version every issued token already carries at least (floor)
+-- ARGV[2]: current timestamp (ms)
 local current = tonumber(redis.call('GET', KEYS[1])) or 1
-local base = math.max(current, tonumber(ARGV[1]))
+local base = math.max(current, tonumber(ARGV[1]) or 1)
+local rawUser = redis.call('GET', KEYS[2])
+local user = nil
+if rawUser then
+  user = cjson.decode(rawUser)
+  base = math.max(base, tonumber(user["sessionVersion"]) or 1)
+end
 local nextVersion = base + 1
 redis.call('SET', KEYS[1], nextVersion)
+if user then
+  user["sessionVersion"] = nextVersion
+  user["updatedAt"] = tonumber(ARGV[2])
+  redis.call('SET', KEYS[2], cjson.encode(user))
+end
 return nextVersion
 `;
 
@@ -295,10 +314,12 @@ export class RedisUserStore {
     if (this.redisClient) {
       try {
         const userKey = `${this.keyPrefix}${id}`;
+        const versionKey = `${this.keyPrefix}session_version:${id}`;
         const updatedRaw = await this.redisClient.eval(
           UPDATE_USER_LUA_SCRIPT,
-          1,
+          2,
           userKey,
+          versionKey,
           JSON.stringify(updates),
           String(Date.now())
         );
@@ -311,11 +332,15 @@ export class RedisUserStore {
 
     const existing = this.distributedUsers.get(id);
     if (!existing) return null;
+    const liveVersion = this.userSessionVersions.get(id);
     const updated: UserRecord = {
       ...existing,
       ...updates,
       updatedAt: Date.now(),
     };
+    if (liveVersion !== undefined && (updated.sessionVersion ?? 1) < liveVersion) {
+      updated.sessionVersion = liveVersion;
+    }
     this.distributedUsers.set(id, updated);
     return updated;
   }
@@ -401,16 +426,28 @@ export class RedisUserStore {
     let nextVersion = floor + 1;
     if (this.redisClient) {
       try {
-        const key = `${this.keyPrefix}session_version:${userId}`;
-        nextVersion = Number(await this.redisClient.eval(RAISE_SESSION_VERSION_LUA, 1, key, String(floor)));
+        const versionKey = `${this.keyPrefix}session_version:${userId}`;
+        const userKey = `${this.keyPrefix}${userId}`;
+        nextVersion = Number(
+          await this.redisClient.eval(
+            RAISE_SESSION_VERSION_LUA,
+            2,
+            versionKey,
+            userKey,
+            String(floor),
+            String(Date.now())
+          )
+        );
       } catch (err) {
         return failClosed('RedisUserStore', 'incrementSessionVersion', err);
       }
+      this.userSessionVersions.set(userId, nextVersion);
+      return nextVersion;
     }
 
     this.userSessionVersions.set(userId, nextVersion);
 
-    // Sync user record if it exists
+    // Sync user record if it exists in local memory mode
     await this.updateUser(userId, { sessionVersion: nextVersion });
     return nextVersion;
   }
@@ -434,8 +471,7 @@ export class RedisUserStore {
       return this.userSessionVersions.get(userId)!;
     }
 
-    const user = await this.findById(userId);
-    return user?.sessionVersion || 1;
+    return this.distributedUsers.get(userId)?.sessionVersion || 1;
   }
 
   /**

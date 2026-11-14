@@ -248,14 +248,38 @@ function ssrfBlockedError(message: string): NodeJS.ErrnoException {
   return err;
 }
 
-const MAX_CAUSE_DEPTH = 5;
+const MAX_CAUSE_DEPTH = 8;
 
-/** Whether `err`, or an error it names as its cause, is the refusal of the connect-time lookup (`ssrfSafeLookup`): a fetch reports it as `fetch failed`. */
+/** Whether `err`, or an error nested in `cause` or `AggregateError.errors`, is the connect-time SSRF refusal (`ESSRFBLOCKED`). */
 export function isSsrfBlockedError(err: unknown): boolean {
-  let current: unknown = err;
-  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current instanceof Error; depth++) {
-    if ((current as NodeJS.ErrnoException).code === 'ESSRFBLOCKED') return true;
-    current = current.cause;
+  const queue: Array<{ value: unknown; depth: number }> = [{ value: err, depth: 0 }];
+  const visited = new Set<unknown>();
+
+  while (queue.length > 0) {
+    const item = queue.shift()!;
+    const current = item.value;
+    if (!current || typeof current !== 'object' || visited.has(current)) {
+      continue;
+    }
+    visited.add(current);
+
+    if (current instanceof Error && (current as NodeJS.ErrnoException).code === 'ESSRFBLOCKED') {
+      return true;
+    }
+
+    if (item.depth >= MAX_CAUSE_DEPTH) {
+      continue;
+    }
+    const nextDepth = item.depth + 1;
+    if (current instanceof Error && current.cause !== undefined) {
+      queue.push({ value: current.cause, depth: nextDepth });
+    }
+    const nestedErrors = (current as { errors?: unknown }).errors;
+    if (Array.isArray(nestedErrors)) {
+      for (const nested of nestedErrors) {
+        queue.push({ value: nested, depth: nextDepth });
+      }
+    }
   }
   return false;
 }

@@ -46,6 +46,7 @@ const DANGEROUS_URI_PREFIXES = [
   'file:',
   'ftp:',
   '//',
+  '/',
 ] as const;
 
 /**
@@ -1175,18 +1176,34 @@ function stripDangerousMarkupPass(input: string): string {
   return stripEventHandlerAttributes(result);
 }
 
+const HTML_ENTITY_PATTERN = /&(?:#x([0-9a-fA-F]+);|#([0-9]+);|(quot|apos|lt|gt|amp);)/gi;
+const NAMED_HTML_ENTITIES: Readonly<Record<string, string>> = {
+  quot: '"',
+  apos: "'",
+  lt: '<',
+  gt: '>',
+  amp: '&',
+};
+
 /**
- * Decodes standard and numerical HTML entities (hex and decimal).
+ * Decodes standard and numerical HTML entities (hex and decimal) in a single linear pass.
  */
 export function decodeHtmlEntities(str: string): string {
-  return str
-    .replace(/&#x([0-9a-fA-F]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-    .replace(/&#([0-9]+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
-    .replace(/&quot;/gi, '"')
-    .replace(/&apos;/gi, "'")
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&amp;/gi, '&');
+  return str.replace(HTML_ENTITY_PATTERN, (full, hex?: string, dec?: string, named?: string) => {
+    if (named) {
+      return NAMED_HTML_ENTITIES[named.toLowerCase()] ?? full;
+    }
+    const codePoint = hex ? Number.parseInt(hex, 16) : Number.parseInt(dec!, 10);
+    if (
+      !Number.isFinite(codePoint) ||
+      codePoint <= 0 ||
+      codePoint > MAX_CODE_POINT ||
+      (codePoint >= SURROGATE_MIN && codePoint <= SURROGATE_MAX)
+    ) {
+      return '\uFFFD';
+    }
+    return String.fromCodePoint(codePoint);
+  });
 }
 
 /** How much of a payload `isSvg` inspects: large binary images must not be decoded into strings. */

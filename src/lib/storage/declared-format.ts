@@ -1,10 +1,26 @@
 import path from 'node:path';
 import { FORMAT_REGISTRY, getFormatByExtension } from '../registry';
+import type { FormatDefinition } from '../types';
 
 /** Problem type returned with HTTP 400 when an upload does not name a format the platform knows. */
 export const UNKNOWN_FORMAT_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/unknown-format';
 
 const GENERIC_MIME_TYPE = 'application/octet-stream';
+
+const MIME_TO_FORMAT_MAP: ReadonlyMap<string, FormatDefinition> = (() => {
+  const map = new Map<string, FormatDefinition>();
+  for (const format of Object.values(FORMAT_REGISTRY)) {
+    if (!map.has(format.mimeType)) {
+      map.set(format.mimeType, format);
+    }
+  }
+  return map;
+})();
+
+/** Looks up the first registered format whose canonical MIME type matches `mimeType` in O(1) time. */
+export function findFormatByMimeType(mimeType: string): FormatDefinition | undefined {
+  return MIME_TO_FORMAT_MAP.get(mimeType);
+}
 
 /**
  * An upload names no format the registry knows, so there is nothing its content can be checked
@@ -38,7 +54,7 @@ export function resolveDeclaredFormat(filename: string | undefined, mimeType: st
 
   const bareMime = mimeType?.split(';')[0].toLowerCase().trim();
   if (bareMime && bareMime !== GENERIC_MIME_TYPE) {
-    const byMime = Object.values(FORMAT_REGISTRY).find((format) => format.mimeType === bareMime);
+    const byMime = findFormatByMimeType(bareMime);
     if (byMime) {
       return byMime.extension;
     }

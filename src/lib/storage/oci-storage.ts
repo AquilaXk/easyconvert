@@ -585,6 +585,7 @@ export class OciObjectStorageService implements IStorageBackend {
   }
 
   deleteByPrefix(prefix: string): number {
+    if (!prefix) return 0;
     let count = 0;
     for (const key of Array.from(this.objects.keys())) {
       if (key.startsWith(prefix)) {
@@ -593,14 +594,7 @@ export class OciObjectStorageService implements IStorageBackend {
         }
       }
     }
-    for (const key of Array.from(globalSharedObjects.keys())) {
-      if (key.startsWith(prefix)) {
-        if (this.deleteObject(key)) {
-          count++;
-        }
-      }
-    }
-    return count;
+    return count + globalSharedObjects.deleteByPrefix(prefix);
   }
 
   /**

@@ -317,8 +317,8 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
         eval: async (script: string, numKeys: number, ...args: any[]) => {
           evalCalls.push({ script, numKeys, args });
           if (script === UPDATE_USER_LUA_SCRIPT) {
-            const updates = JSON.parse(args[1]);
-            const updated = { ...mockUser, ...updates, updatedAt: Number(args[2]) };
+            const updates = JSON.parse(args[numKeys]);
+            const updated = { ...mockUser, ...updates, updatedAt: Number(args[numKeys + 1]) };
             return JSON.stringify(updated);
           }
           if (script === RECORD_CONVERSION_LUA_SCRIPT) {

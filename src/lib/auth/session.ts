@@ -148,7 +148,8 @@ export async function getSessionFromToken(token: string): Promise<User | null> {
 
   // A token older than the account's session version is a revoked session. A token without the claim is older than any
   // version (every token this server issues carries it), so it is refused instead of skipping the check.
-  const currentVersion = userRecord.sessionVersion ?? 1;
+  const liveSessionVersion = await redisUserStore.getSessionVersion(payload.sub);
+  const currentVersion = Math.max(userRecord.sessionVersion ?? 1, liveSessionVersion);
   if ((payload.sessionVersion ?? 0) < currentVersion) {
     return null;
   }

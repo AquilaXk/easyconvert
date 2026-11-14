@@ -359,6 +359,37 @@ export class SharedObjectStore extends Map<string, StoredObject> {
     return memDeleted || diskDeleted;
   }
 
+  /** Removes every object in memory or on disk under `storageDir` whose key begins with `prefix`. */
+  public deleteByPrefix(prefix: string): number {
+    if (!prefix) return 0;
+    const matched = new Set<string>();
+    for (const key of super.keys()) {
+      if (key.startsWith(prefix)) matched.add(key);
+    }
+    try {
+      if (fs.existsSync(this.storageDir)) {
+        for (const name of fs.readdirSync(this.storageDir)) {
+          if (!name.endsWith('.meta.json')) continue;
+          try {
+            const meta = JSON.parse(fs.readFileSync(path.join(this.storageDir, name), 'utf-8')) as Partial<ObjectRecord>;
+            if (typeof meta.key === 'string' && meta.key.startsWith(prefix)) {
+              matched.add(meta.key);
+            }
+          } catch {
+            // ignore corrupt or concurrently deleted metadata file
+          }
+        }
+      }
+    } catch {
+      // ignore storage directory read errors
+    }
+    let count = 0;
+    for (const key of matched) {
+      if (this.delete(key)) count++;
+    }
+    return count;
+  }
+
   public override clear(): void {
     super.clear();
     try {

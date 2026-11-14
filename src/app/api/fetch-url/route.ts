@@ -7,6 +7,7 @@ import {
   MAX_REDIRECTS,
   validateUrlForSsrf,
   createSsrfSafeAgent,
+  isSsrfBlockedError,
 } from '@/lib/security/ssrf';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { declaredBodyBytes, withLinkImportMeter, type DeclaredOverflow, type LinkImportMeter, type MeterVerdict } from '@/lib/api-keys/anonymous-upload-budget';
@@ -79,7 +80,7 @@ async function fetchFollowingRedirects(url: URL, ssrfAgent: ReturnType<typeof cr
       })) as unknown as Response;
     } catch (fetchErr: unknown) {
       const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
-      if (msg.includes('SSRF blocked') || msg.includes('restricted')) {
+      if (isSsrfBlockedError(fetchErr) || msg.includes('SSRF blocked') || msg.includes('restricted')) {
         return { refusal: refusal(403, 'address_blocked', 'Requests to internal/private addresses are blocked.') };
       }
       throw fetchErr;

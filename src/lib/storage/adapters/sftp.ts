@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { Readable, pipeline } from 'node:stream';
+import { Readable, Transform, pipeline } from 'node:stream';
 import { promisify } from 'node:util';
 import type { SftpCredentials } from '../credentials-vault';
 import {
@@ -188,8 +188,13 @@ export class SftpStorageAdapter implements IStorageAdapter {
   async uploadStream(
     remotePath: string,
     stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
-    options?: { contentType?: string; size?: number }
+    options?: { contentType?: string; size?: number; maxBytes?: number }
   ): Promise<StorageAdapterMetadata> {
+    const maxBytes = Math.min(options?.maxBytes ?? SFTP_MAX_SPOOL_BYTES, SFTP_MAX_SPOOL_BYTES);
+    if (options?.size !== undefined && options.size > maxBytes) {
+      throw new StorageSizeLimitError(maxBytes, this.providerName);
+    }
+
     const address = await this.resolveAllowedAddress();
     const resolved = resolveRemotePath(this.basePath, remotePath);
 
@@ -205,7 +210,32 @@ export class SftpStorageAdapter implements IStorageAdapter {
         nodeStream = stream;
       }
 
-      await streamPipeline(nodeStream, fs.createWriteStream(localTmp));
+      const providerName = this.providerName;
+      let spooledBytes = 0;
+      const limitTransform = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          spooledBytes += chunk.byteLength;
+          if (spooledBytes > maxBytes) {
+            callback(new StorageSizeLimitError(maxBytes, providerName));
+            return;
+          }
+          callback(null, chunk);
+        },
+      });
+      const outStream = fs.createWriteStream(localTmp);
+      try {
+        await streamPipeline(nodeStream, limitTransform, outStream);
+      } catch (err) {
+        const destroyable = nodeStream as unknown as { destroy?: () => void };
+        if (typeof destroyable.destroy === 'function') {
+          destroyable.destroy();
+        }
+        outStream.destroy();
+        try {
+          fs.rmSync(localTmp, { force: true });
+        } catch {}
+        throw err;
+      }
       const stats = fs.statSync(localTmp);
 
       await this.runSftpBatch(address, batchScript);

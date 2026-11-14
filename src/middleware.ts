@@ -53,6 +53,9 @@ interface EdgeRateBucket {
 const edgeIpBuckets = new Map<string, EdgeRateBucket>();
 const EDGE_BUCKET_CAPACITY = 60;
 const EDGE_REFILL_RATE = 10; // 10 tokens per second
+const MAX_EDGE_IP_BUCKETS = 50_000;
+const EDGE_BUCKET_TTL_MS = 60_000;
+let nextEdgeSweepAt = 0;
 
 // Degraded mode: when no client can be attributed every request shares ONE bucket, so it is sized for the
 // whole site's traffic rather than for a single client. It still bounds a flood, but it is not per-client
@@ -67,14 +70,20 @@ interface EdgeBucketLimits {
 const PER_CLIENT_LIMITS: EdgeBucketLimits = { capacity: EDGE_BUCKET_CAPACITY, refillRate: EDGE_REFILL_RATE };
 const SHARED_LIMITS: EdgeBucketLimits = { capacity: EDGE_SHARED_BUCKET_CAPACITY, refillRate: EDGE_SHARED_REFILL_RATE };
 
-function cleanExpiredEdgeBuckets() {
-  const now = Date.now();
-  if (edgeIpBuckets.size > 5000) {
-    for (const [ip, bucket] of edgeIpBuckets.entries()) {
-      if (now - bucket.lastRefill > 60000) {
-        edgeIpBuckets.delete(ip);
-      }
+function cleanExpiredEdgeBuckets(now: number): void {
+  if (now < nextEdgeSweepAt && edgeIpBuckets.size < MAX_EDGE_IP_BUCKETS) {
+    return;
+  }
+  nextEdgeSweepAt = now + EDGE_BUCKET_TTL_MS;
+  for (const [ip, bucket] of edgeIpBuckets.entries()) {
+    if (now - bucket.lastRefill > EDGE_BUCKET_TTL_MS) {
+      edgeIpBuckets.delete(ip);
     }
+  }
+  while (edgeIpBuckets.size >= MAX_EDGE_IP_BUCKETS) {
+    const oldestKey = edgeIpBuckets.keys().next().value;
+    if (oldestKey === undefined) break;
+    edgeIpBuckets.delete(oldestKey);
   }
 }
 
@@ -88,15 +97,20 @@ const BILLING_WEBHOOK_BUCKET_KEY = 'route:billing-webhook';
 const BILLING_SIGNATURE_HEADER = 'paddle-signature';
 
 function checkEdgeIpRateLimit(bucketKey: string, limits: EdgeBucketLimits): { allowed: boolean; retryAfterSec: number } {
-  cleanExpiredEdgeBuckets();
   const now = Date.now();
   let bucket = edgeIpBuckets.get(bucketKey);
 
   if (!bucket) {
+    cleanExpiredEdgeBuckets(now);
     bucket = { tokens: limits.capacity - 1, lastRefill: now };
     edgeIpBuckets.set(bucketKey, bucket);
     return { allowed: true, retryAfterSec: 0 };
   }
+
+  // LRU refresh in insertion-ordered Map
+  edgeIpBuckets.delete(bucketKey);
+  edgeIpBuckets.set(bucketKey, bucket);
+  if (now >= nextEdgeSweepAt) cleanExpiredEdgeBuckets(now);
 
   const elapsedSec = (now - bucket.lastRefill) / 1000;
   bucket.tokens = Math.min(limits.capacity, bucket.tokens + elapsedSec * limits.refillRate);
@@ -286,6 +300,74 @@ function isLocalePrefixedApiPath(pathname: string): boolean {
   return (routing.locales as readonly string[]).includes(first) && second === 'api';
 }
 
+function csrfForbiddenResponse(pathname: string, detail: string): NextResponse {
+  return problemResponse(
+    403,
+    'https://api.easyconvert.io/problems/forbidden',
+    'Forbidden',
+    detail,
+    pathname
+  );
+}
+
+function extractRequestOriginHeader(request: NextRequest, fallbackToRawReferer: boolean): string | null {
+  const originHeader = request.headers.get('origin');
+  if (originHeader) return originHeader;
+  const refererHeader = request.headers.get('referer');
+  if (!refererHeader) return null;
+  try {
+    return new URL(refererHeader).origin;
+  } catch {
+    return fallbackToRawReferer ? refererHeader : null;
+  }
+}
+
+function checkMutationCsrf(request: NextRequest, pathname: string): NextResponse | null {
+  const hasAmbientSession = hasSessionCookie(request.cookies);
+  const authHeader = request.headers.get('authorization');
+  const hasApiKey =
+    Boolean(request.headers.get('x-api-key')) ||
+    Boolean(authHeader?.startsWith('Bearer ec_live_'));
+
+  // If request relies on ambient browser credentials (cookies) without an explicit API key:
+  if (hasAmbientSession && !hasApiKey) {
+    const incomingOrigin = extractRequestOriginHeader(request, false);
+    if (!incomingOrigin) {
+      return csrfForbiddenResponse(
+        pathname,
+        'Cross-site request forgery detected: missing Origin/Referer on cookie-authenticated mutation.'
+      );
+    }
+    if (!isOriginAllowed(incomingOrigin, request)) {
+      return csrfForbiddenResponse(
+        pathname,
+        `Cross-site request forgery detected: untrusted origin "${incomingOrigin}".`
+      );
+    }
+    return null;
+  }
+
+  // Unauthenticated browser cross-site POST/PUT/PATCH/DELETE guard (Fetch Metadata + Origin/Referer)
+  if (!hasApiKey && pathname !== BILLING_WEBHOOK_PATH && !hasAmbientSession) {
+    const secFetchSite = request.headers.get('sec-fetch-site')?.toLowerCase().trim();
+    if (secFetchSite === 'cross-site') {
+      return csrfForbiddenResponse(
+        pathname,
+        'Cross-site request forgery detected: untrusted Sec-Fetch-Site "cross-site".'
+      );
+    }
+    const incomingOrigin = extractRequestOriginHeader(request, true);
+    if (incomingOrigin !== null && !isOriginAllowed(incomingOrigin, request)) {
+      return csrfForbiddenResponse(
+        pathname,
+        `Cross-site request forgery detected: untrusted origin "${incomingOrigin}".`
+      );
+    }
+  }
+
+  return null;
+}
+
 export function middleware(request: NextRequest): NextResponse | Promise<NextResponse> {
   const pathname = request.nextUrl.pathname;
 
@@ -378,62 +460,10 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
   const bodyCheck = requestBodyVerdict(request.nextUrl, request.headers);
   if (bodyCheck && !('countUpTo' in bodyCheck)) return bodyProblem(bodyCheck.status, bodyCheck.detail, pathname);
 
-  // 3. CSRF Protection for Cookie-Authenticated State Mutations
+  // 3. CSRF Protection for Cookie-Authenticated & Browser Cross-Site State Mutations
   if (MUTATING_METHODS.has(request.method.toUpperCase())) {
-    const hasAmbientSession = hasSessionCookie(request.cookies);
-    const authHeader = request.headers.get('authorization');
-    const hasApiKey =
-      Boolean(request.headers.get('x-api-key')) ||
-      Boolean(authHeader?.startsWith('Bearer ec_live_'));
-
-    // If request relies on ambient browser credentials (cookies) without an explicit API key:
-    if (hasAmbientSession && !hasApiKey) {
-      const originHeader = request.headers.get('origin');
-      const refererHeader = request.headers.get('referer');
-
-      let incomingOrigin: string | null = null;
-      if (originHeader) {
-        incomingOrigin = originHeader;
-      } else if (refererHeader) {
-        try {
-          incomingOrigin = new URL(refererHeader).origin;
-        } catch {
-          incomingOrigin = null;
-        }
-      }
-
-      if (!incomingOrigin) {
-        return new NextResponse(
-          JSON.stringify({
-            type: 'https://api.easyconvert.io/problems/forbidden',
-            title: 'Forbidden',
-            status: 403,
-            detail: 'Cross-site request forgery detected: missing Origin/Referer on cookie-authenticated mutation.',
-            instance: pathname,
-          }),
-          {
-            status: 403,
-            headers: { 'Content-Type': 'application/problem+json' },
-          }
-        );
-      }
-
-      if (!isOriginAllowed(incomingOrigin, request)) {
-        return new NextResponse(
-          JSON.stringify({
-            type: 'https://api.easyconvert.io/problems/forbidden',
-            title: 'Forbidden',
-            status: 403,
-            detail: `Cross-site request forgery detected: untrusted origin "${incomingOrigin}".`,
-            instance: pathname,
-          }),
-          {
-            status: 403,
-            headers: { 'Content-Type': 'application/problem+json' },
-          }
-        );
-      }
-    }
+    const csrfRefusal = checkMutationCsrf(request, pathname);
+    if (csrfRefusal) return csrfRefusal;
   }
 
   if (bodyCheck && request.body) return countedBody(request.body, bodyCheck, pathname);

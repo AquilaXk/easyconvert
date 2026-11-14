@@ -20,6 +20,7 @@ const refusal = codedRefusal<AuthErrorCode>;
 // Static dummy hash/salt to prevent email enumeration timing attacks
 const DUMMY_HASH = '0'.repeat(128);
 const DUMMY_SALT = '0'.repeat(32);
+const MAX_PASSWORD_LENGTH = 1024;
 
 export async function POST(req: NextRequest) {
   const body = await readJsonObject(req);
@@ -47,6 +48,12 @@ export async function POST(req: NextRequest) {
         rateLimit.retryAfterSeconds,
         `Too many failed login attempts. Please try again in ${rateLimit.retryAfterSeconds} seconds.`
       );
+    }
+
+    if (password.length > MAX_PASSWORD_LENGTH) {
+      await verifyPassword('invalid-length', DUMMY_HASH, DUMMY_SALT);
+      await recordFailedLogin(clientIp, email);
+      return refusal(401, 'invalid_credentials', 'Invalid email address or password.');
     }
 
     const userRecord = await redisUserStore.findByEmail(email);

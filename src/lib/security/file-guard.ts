@@ -1,6 +1,7 @@
 import fs from 'node:fs';
-import { assertNotSpoofedFile as assertSignatureMatches, FileExtensionSpoofError, FORMAT_REGISTRY } from '../registry';
+import { assertNotSpoofedFile as assertSignatureMatches, FileExtensionSpoofError } from '../registry';
 import { assertGzippedXmlRoot } from './gzipped-xml-root';
+import { findFormatByMimeType } from '../storage/declared-format';
 import { OBJECT_HEADER_BYTES, readObjectRange } from '../storage/object-header';
 import type { IStorageBackend } from '../storage/oci-storage';
 import {
@@ -16,7 +17,7 @@ import {
 } from '../compound-file-kind';
 import { OOXML_VARIANT_FAMILY } from '../conversions/ooxml-variants';
 import { EncryptedOfficeDocumentError, isUnprocessableInputError } from '../types';
-import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, startsWithBytes } from '../format-signatures';
+import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, isMachO, startsWithBytes } from '../format-signatures';
 
 const OOXML_EXTENSIONS: ReadonlySet<string> = new Set(['docx', 'xlsx', 'pptx', 'potx', ...Object.keys(OOXML_VARIANT_FAMILY)]);
 /** The two entries under the root of the compound file that holds an encrypted Office Open XML package ([MS-OFFCRYPTO] 2.1). */
@@ -63,6 +64,13 @@ export function spoofCheckStatus(error: unknown): number {
  * entry point that checks an upload calls this one, not the registry's `assertNotSpoofedFile`.
  */
 export function assertNotSpoofedFile(buffer: Buffer | Uint8Array, declaredExtensionOrFormatId: string, filename?: string): void {
+  if (isMachO(buffer)) {
+    const cleanExt = extensionOf(declaredExtensionOrFormatId);
+    const nameStr = filename ? ` for file "${filename}"` : '';
+    throw new FileExtensionSpoofError(
+      `File spoofing rejected${nameStr}: content matches executable Mach-O binary, incompatible with declared format ".${cleanExt}". Operation failed closed.`
+    );
+  }
   try {
     assertSignatureMatches(buffer, declaredExtensionOrFormatId, filename);
   } catch (error) {
@@ -185,7 +193,7 @@ export function assertNotSpoofedFilePath(
 
     let formatOrExt = declaredExtensionOrFormatId;
     if (formatOrExt.includes('/')) {
-      const found = Object.values(FORMAT_REGISTRY).find((f) => f.mimeType === formatOrExt);
+      const found = findFormatByMimeType(formatOrExt);
       if (found) {
         formatOrExt = found.extension;
       } else {

@@ -22,6 +22,7 @@ export interface BudgetStore {
   update(bucket: string, change: (current: UploadBudgetRecord | undefined) => UploadBudgetRecord | undefined): Promise<void>;
   link(uploadId: string, ref: ReservationRef, expiresAt: number): Promise<void>;
   lookup(uploadId: string): Promise<ReservationRef | undefined>;
+  unlink?(uploadId: string, bucket?: string): Promise<void>;
 }
 
 /** A record outlives its last change by two days, so a new day is never read from an old record. */
@@ -49,6 +50,10 @@ class ExpiringMap<T> {
     if (entry.expiresAt > now) return entry.value;
     this.entries.delete(key);
     return undefined;
+  }
+
+  delete(key: string): void {
+    this.entries.delete(key);
   }
 
   set(key: string, value: T, expiresAt: number, now: number): void {
@@ -88,6 +93,10 @@ export class MemoryBudgetStore implements BudgetStore {
   async lookup(uploadId: string): Promise<ReservationRef | undefined> {
     return this.links.get(uploadId, Date.now());
   }
+
+  async unlink(uploadId: string): Promise<void> {
+    this.links.delete(uploadId);
+  }
 }
 
 const MAX_UPDATE_ATTEMPTS = 8;
@@ -125,6 +134,10 @@ export class RedisBudgetStore implements BudgetStore {
     return `${this.prefix}upload-budget-link:${uploadId}`;
   }
 
+  private bucketLinksKey(bucket: string): string {
+    return `${this.prefix}upload-budget-links:{${bucket}}`;
+  }
+
   async read(bucket: string): Promise<UploadBudgetRecord | undefined> {
     return parseRecord(await this.redis.get(this.recordKey(bucket)));
   }
@@ -144,7 +157,19 @@ export class RedisBudgetStore implements BudgetStore {
   }
 
   async link(uploadId: string, ref: ReservationRef, expiresAt: number): Promise<void> {
-    await this.redis.set(this.linkKey(uploadId), JSON.stringify(ref), 'PX', Math.max(1, expiresAt - Date.now()));
+    const ttlMs = Math.max(1, expiresAt - Date.now());
+    await this.redis.set(this.linkKey(uploadId), JSON.stringify(ref), 'PX', ttlMs);
+    const linksClient = this.redis as unknown as Partial<{
+      sadd(key: string, ...members: string[]): Promise<number>;
+      pexpire(key: string, ms: number): Promise<number>;
+    }>;
+    if (typeof linksClient.sadd === 'function') {
+      const linksKey = this.bucketLinksKey(ref.bucket);
+      await linksClient.sadd(linksKey, uploadId);
+      if (typeof linksClient.pexpire === 'function') {
+        await linksClient.pexpire(linksKey, Math.max(ttlMs, RECORD_TTL_MS));
+      }
+    }
   }
 
   async lookup(uploadId: string): Promise<ReservationRef | undefined> {
@@ -152,5 +177,18 @@ export class RedisBudgetStore implements BudgetStore {
     if (raw === null) return undefined;
     const parsed = JSON.parse(raw) as ReservationRef;
     return typeof parsed.bucket === 'string' && typeof parsed.reservation === 'string' ? parsed : undefined;
+  }
+
+  async unlink(uploadId: string, bucket?: string): Promise<void> {
+    const linksClient = this.redis as unknown as Partial<{
+      del(...keys: string[]): Promise<number>;
+      srem(key: string, ...members: string[]): Promise<number>;
+    }>;
+    if (typeof linksClient.del === 'function') {
+      await linksClient.del(this.linkKey(uploadId));
+    }
+    if (bucket && typeof linksClient.srem === 'function') {
+      await linksClient.srem(this.bucketLinksKey(bucket), uploadId);
+    }
   }
 }
