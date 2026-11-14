@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bindJobLimits, pagedStageTimeoutMs, PAGE_LOOP_STAGE } from '../src/lib/conversions/job-time';
+import { bindJobLimits, OFFICE_STAGE, pagedStageTimeoutMs, PAGE_LOOP_STAGE, sizedStageTimeoutMs } from '../src/lib/conversions/job-time';
 import { pageLoopBudget } from '../src/worker/page-loop-budget';
 import { SandboxedTimeoutError } from '../src/worker/sandbox';
 
@@ -46,6 +46,36 @@ describe('pagedStageTimeoutMs', () => {
     for (const pages of [0, -4, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(pagedStageTimeoutMs(undefined, pages, PAGE_LOOP_STAGE, NOW)).toBe(45 * SECOND);
     }
+  });
+});
+
+const MEGABYTE = 1024 * 1024;
+
+describe('sizedStageTimeoutMs of the office suite run', () => {
+  it('keeps 120 s for an input of up to 2 MB, a small one included', () => {
+    expect(OFFICE_STAGE).toEqual({ defaultMs: 120 * SECOND, maxMs: 120 * SECOND, perMegabyteMs: 60 * SECOND, sizedMaxMs: 60 * 60 * SECOND });
+    for (const bytes of [0, 1, 40 * 1024, MEGABYTE, 2 * MEGABYTE]) expect(sizedStageTimeoutMs(undefined, bytes, OFFICE_STAGE, NOW)).toBe(120 * SECOND);
+  });
+
+  it('grows with the input, 60 s for each megabyte', () => {
+    expect(sizedStageTimeoutMs(undefined, 3 * MEGABYTE, OFFICE_STAGE, NOW)).toBe(180 * SECOND);
+    expect(sizedStageTimeoutMs(undefined, 7.5 * MEGABYTE, OFFICE_STAGE, NOW)).toBe(450 * SECOND);
+  });
+
+  it('never passes the absolute ceiling and is held to the time the job has left', () => {
+    expect(sizedStageTimeoutMs(undefined, 5000 * MEGABYTE, OFFICE_STAGE, NOW)).toBe(60 * 60 * SECOND);
+    expect(sizedStageTimeoutMs(deadlineIn(300 * SECOND), 40 * MEGABYTE, OFFICE_STAGE, NOW)).toBe(300 * SECOND);
+    expect(sizedStageTimeoutMs(deadlineIn(10 * SECOND), 1, OFFICE_STAGE, NOW)).toBe(10 * SECOND);
+  });
+
+  it('treats a server-set timeoutMs as the limit, under 120 s and the job time, whatever the size', () => {
+    expect(sizedStageTimeoutMs({ timeoutMs: 30 * SECOND }, 40 * MEGABYTE, OFFICE_STAGE, NOW)).toBe(30 * SECOND);
+    expect(sizedStageTimeoutMs({ timeoutMs: 900 * SECOND }, 40 * MEGABYTE, OFFICE_STAGE, NOW)).toBe(120 * SECOND);
+    expect(sizedStageTimeoutMs({ ...deadlineIn(20 * SECOND), timeoutMs: 90 * SECOND }, 40 * MEGABYTE, OFFICE_STAGE, NOW)).toBe(20 * SECOND);
+  });
+
+  it('counts a size that is not a positive number as no size', () => {
+    for (const bytes of [-5, Number.NaN, Number.POSITIVE_INFINITY]) expect(sizedStageTimeoutMs(undefined, bytes, OFFICE_STAGE, NOW)).toBe(120 * SECOND);
   });
 });
 

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import fs from 'node:fs';
+import JSZip from 'jszip';
 import path from 'node:path';
 import {
   LibreOfficePoolManager,
@@ -13,6 +14,8 @@ import {
   libreOfficePool,
 } from '../src/worker/engines';
 import { UnsupportedOptionError } from '../src/lib/types';
+import { JOB_DEADLINE_AT } from '../src/lib/conversions/job-time';
+import type { WorkerEngineOptions } from '../src/worker/worker-types';
 
 // A real soffice run includes the pool readiness probe, which takes several seconds on a loaded host.
 const REAL_SOFFICE_TIMEOUT_MS = 60_000;
@@ -393,6 +396,36 @@ describe('Pre-warmed LibreOffice worker pool', () => {
       expect(pool.getStats().readyWorkers).toBe(1);
       expect(pool.getStats().busyWorkers).toBe(0);
       expect(pool.getStats().totalJobsProcessed).toBe(1);
+    });
+
+    it('gives the run the time its input needs: 120 s for a small file, 60 s for each megabyte of a large one (of the XML of a package, not its ZIP bytes), held to the job time', async () => {
+      const limits: number[] = [];
+      const executor = vi.fn(async (_bin: string, args: string[], opts?: any) => {
+        if (!args.includes('--help')) {
+          limits.push(opts.timeoutMs);
+          fs.writeFileSync(path.join(opts.cwd, 'input.pdf'), Buffer.from('%PDF-1.7 mock output'));
+        }
+        return { stdout: Buffer.from(''), stderr: Buffer.from(''), exitCode: 0, durationMs: 1, sandboxed: true, sandboxType: 'host' as const };
+      });
+      const pool = new LibreOfficePoolManager({ maxWorkers: 1, sofficePath: '/usr/bin/soffice', enabled: true, executor });
+      activePools.push(pool);
+
+      await pool.convert(Buffer.from('small'), 'docx', 'pdf', {}, 'small.docx');
+      await pool.convert(Buffer.alloc(5 * 1024 * 1024, 1), 'docx', 'pdf', {}, 'large.docx');
+      await pool.convert(Buffer.alloc(5 * 1024 * 1024, 1), 'docx', 'pdf', { [JOB_DEADLINE_AT]: Date.now() + 200_000 } as WorkerEngineOptions, 'large.docx');
+      await pool.convert(Buffer.alloc(5 * 1024 * 1024, 1), 'docx', 'pdf', { timeoutMs: 30_000 }, 'large.docx');
+
+      const textPackage = await new JSZip().file('word/document.xml', 'a'.repeat(5 * 1024 * 1024)).generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+      expect(textPackage.length).toBeLessThan(100 * 1024);
+      await pool.convert(textPackage, 'docx', 'pdf', {}, 'text.docx');
+
+      expect(limits[0]).toBe(120_000);
+      expect(limits[1]).toBe(300_000);
+      expect(limits[2]).toBeGreaterThan(190_000);
+      expect(limits[2]).toBeLessThanOrEqual(200_000);
+      expect(limits[3]).toBe(30_000);
+      // A package that is small on disk is read by its entries: 5 MB of XML in 100 KB.
+      expect(limits[4]).toBe(300_000);
     });
 
     it('rejects command injection or invalid format characters in convert', async () => {
