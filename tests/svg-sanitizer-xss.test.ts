@@ -692,11 +692,10 @@ describe('XML entity layer before CSS matching (issue #401 entity follow-up)', (
   });
 });
 
-describe('comments, CDATA and processing instructions are not tokenized as tags (PR #402 review item 1)', () => {
+describe('comments and CDATA sections are not tokenized as tags, and processing instructions are removed (PR #402 review item 1)', () => {
   const decoys: Array<[string, string]> = [
     ['double-quote comment', '<!-- <a x=" -->'],
     ['single-quote comment', "<!-- <a x=' -->"],
-    ['processing instruction', '<?p <a x=" ?>'],
     ['CDATA', '<![CDATA[ <a x=" ]]>'],
   ];
   const targets: Array<[string, string, string]> = [
@@ -716,9 +715,9 @@ describe('comments, CDATA and processing instructions are not tokenized as tags 
     }
   }
 
-  it('still leaves attribute-looking text inside comments, CDATA and PIs untouched', () => {
+  it('still leaves attribute-looking text inside comments and CDATA untouched, and removes the processing instruction between them', () => {
     const input = `<svg><!-- <a href="javascript:1" onclick="x"/> --><?p <a href=javascript:1> ?><![CDATA[ <a style='x'/> ]]></svg>`;
-    expect(sanitizeSvgString(input)).toBe(input);
+    expect(sanitizeSvgString(input)).toBe(`<svg><!-- <a href="javascript:1" onclick="x"/> --><![CDATA[ <a style='x'/> ]]></svg>`);
   });
 
   it('rejects the HTML-only comment shorthands that XML and HTML parse differently', () => {
@@ -728,10 +727,11 @@ describe('comments, CDATA and processing instructions are not tokenized as tags 
   });
 
   it('treats an unterminated comment, PI or CDATA as running to the end of input', () => {
-    for (const opener of ['<!-- ', '<? ', '<![CDATA[ ']) {
+    for (const opener of ['<!-- ', '<![CDATA[ ']) {
       const input = `<svg>${opener}<a href="javascript:1"/>`;
       expect(sanitizeSvgString(input)).toBe(input);
     }
+    expect(sanitizeSvgString('<svg><? <a href="javascript:1"/>')).toBe('<svg>');
   });
 
   describe('termination on adversarial input', () => {

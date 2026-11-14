@@ -9,6 +9,7 @@ import { pageCountOfIntervals, type PageInterval } from '../lib/conversions/page
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
 import { Semaphore } from '../lib/workers/semaphore';
 import { ConversionFailedError, CpuTaskTimeoutError, EngineUnavailableError, InvalidPageRangeError } from '../lib/types';
+import { readSandboxOutput, sandboxOutputSize } from '../lib/security/sandbox-output';
 import { SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedTimeoutError, type SandboxedExecutionResult } from './sandbox';
 import { createConversionResult, drawnPdfTooLargeError, handOffOutput, MAX_DRAWN_PDF_BYTES_FOR_IMAGES, readRawInputBuffer, withSandboxDir } from './worker-output';
 import type { WorkerConversionResult, WorkerEngineOptions } from './worker-types';
@@ -473,7 +474,7 @@ async function drawPdf(run: DjvuRun, plan: DrawPlan, reportMs: number): Promise<
 /** The checks of the drawn PDF, which are not DjVu programs and so hold no slot: its size, and the pages the PDF tools count in it. */
 async function checkDrawnPdf(run: DjvuRun, plan: DrawPlan, pdfPath: string): Promise<void> {
   const { job } = run;
-  const size = fs.existsSync(pdfPath) ? fs.statSync(pdfPath).size : 0;
+  const size = sandboxOutputSize(pdfPath) ?? 0;
   if (size === 0) throw new ConversionFailedError(`ddjvu drew no page from the .${job.src} file.`);
   if (size > plan.maxBytes) throw drawnPdfTooLargeError('ddjvu', job.src, size, plan.maxBytes);
   const countSlice = sliceOf(run, PDF_PAGE_COUNT_TIMEOUT_MS);
@@ -543,6 +544,6 @@ export async function convertDjvu(job: DjvuJob): Promise<WorkerConversionResult 
       return createConversionResult(persistedPath, PDF_TARGET, baseNameOf(job), 'native-djvu', Date.now() - startTime);
     });
   }
-  const pdf = await withSandboxDir(TEMP_PREFIX, async (tempDir) => fs.readFileSync(await draw(tempDir)));
+  const pdf = await withSandboxDir(TEMP_PREFIX, async (tempDir) => readSandboxOutput(await draw(tempDir)));
   return job.convertPdfPages(pdf, tgt, withoutPageSelection(options), originalFilename);
 }

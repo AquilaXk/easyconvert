@@ -43,6 +43,7 @@ function answerOf(output: WebToolOutput): NextResponse {
     status: 200,
     headers: {
       'Content-Type': output.mimeType,
+      'X-Content-Type-Options': 'nosniff',
       'Content-Disposition': attachmentContentDisposition(output.filename),
       'Content-Length': output.buffer.length.toString(),
     },

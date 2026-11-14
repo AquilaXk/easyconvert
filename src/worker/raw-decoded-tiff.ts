@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { RawDecodeError } from '../lib/types';
+import { readSandboxOutput, sandboxOutputSize } from '../lib/security/sandbox-output';
 import { RAW_SENSOR_PIXEL_BUDGET, assertInputPixels, assertPixelBudget } from '../lib/conversions/image-input-limits';
 import { tiffDirectoryOffsets, withoutAbsoluteResolution } from '../lib/conversions/image-tiff-directories';
 import { pictureFileHead } from '../lib/conversions/picture-file';
@@ -180,7 +181,7 @@ export function assertDecodedRawWhole(decoded: DecodedRaw): void {
 
 /** Rejects an intermediate image whose file is shorter than its header says, before it is read. */
 export function assertCompleteDecodedImage(filePath: string, layout: DecodedTiffLayout): void {
-  if (fs.statSync(filePath).size < layout.dataOffset + layout.height * layout.rowBytes) {
+  if ((sandboxOutputSize(filePath) ?? 0) < layout.dataOffset + layout.height * layout.rowBytes) {
     throw invalid('the pixel data is shorter than its header declares');
   }
 }
@@ -191,7 +192,7 @@ export function assertCompleteDecodedImage(filePath: string, layout: DecodedTiff
  * the whole developed picture twice (75 MB for 12.5 megapixels) for the rest of the conversion.
  */
 export function readDecodedRawImage(decodedPath: string): Buffer {
-  return withoutAbsoluteResolution(fs.readFileSync(decodedPath), { inPlace: true });
+  return withoutAbsoluteResolution(readSandboxOutput(decodedPath), { inPlace: true });
 }
 
 /** Targets whose encoders read the bytes of their source themselves (character recognition), so they are given the whole picture. */

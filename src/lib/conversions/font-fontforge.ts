@@ -11,6 +11,7 @@ import {
   executeSandboxedBinary,
   rethrowSandboxUnavailable,
 } from '../../worker/sandbox';
+import { readSandboxOutputIfPresent } from '../security/sandbox-output';
 import { stageTimeoutMs, type JobDeadlined } from './job-time';
 import { resolveBinaryPath } from './pdf-postprocess/utils';
 import { isType1Format, readType1Font, type Type1Font } from './font-type1';
@@ -155,13 +156,12 @@ export async function type1ToOpenType(font: Type1Font, options: FontForgeOptions
     } catch (error) {
       throw toProgramError(error, sandboxDir, timeoutMs);
     }
-    if (!fs.existsSync(outputPath)) {
-      throw new UnprocessableFontInputError('FontForge wrote no font from this file.');
-    }
-    const size = fs.statSync(outputPath).size;
-    if (size === 0) throw new UnprocessableFontInputError('FontForge wrote an empty file.');
-    if (size >= PROGRAM_MAX_OUTPUT_BYTES) throw new UnprocessableFontInputError(OUTPUT_TOO_LARGE);
-    return checkedResult(fs.readFileSync(outputPath), font.glyphCount);
+    const converted = readSandboxOutputIfPresent(outputPath, (size) => {
+      if (size === 0) throw new UnprocessableFontInputError('FontForge wrote an empty file.');
+      if (size >= PROGRAM_MAX_OUTPUT_BYTES) throw new UnprocessableFontInputError(OUTPUT_TOO_LARGE);
+    });
+    if (converted === null) throw new UnprocessableFontInputError('FontForge wrote no font from this file.');
+    return checkedResult(converted, font.glyphCount);
   } finally {
     cleanupWorkerSandboxDir(sandboxDir);
   }

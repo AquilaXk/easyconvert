@@ -1,4 +1,4 @@
-import fs from 'node:fs';
+import { sandboxOutputSize } from '../security/sandbox-output';
 import { EmptyAudioInputError } from '../types';
 import { FFPROBE_TIMEOUT_MS, type FfprobePath, resolveFfprobeBinary } from './media-ffprobe';
 import { type MediaInput, runFfprobeAsync } from './media-process';
@@ -71,9 +71,10 @@ export async function outputSizeError(size: number, input: MediaInput, ffmpegBin
 
 /** Throws unless the run wrote a file with bytes in it. */
 export async function assertOutputWritten(outputPath: string, input: MediaInput, ffmpegBin: string, tgt: string): Promise<void> {
-  if (!fs.existsSync(outputPath)) {
+  const size = sandboxOutputSize(outputPath);
+  if (size === null) {
     throw new Error(`FFmpeg execution completed without producing expected output file "${outputPath}"`);
   }
-  const failure = await outputSizeError(fs.statSync(outputPath).size, input, ffmpegBin, tgt);
+  const failure = await outputSizeError(size, input, ffmpegBin, tgt);
   if (failure) throw failure;
 }

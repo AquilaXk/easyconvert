@@ -24,6 +24,7 @@ import {
 import { readPdfPageFrames } from './pdf-page-frames';
 import { assertPdfImagesWithinLimit } from './pdf-rasterizer';
 import { PAGE_IMAGE_MAX_PAGES, assertPageImageCount } from './page-range';
+import { readSandboxOutputAsync } from '../security/sandbox-output';
 
 /**
  * Renders PDF pages to images for OCR with Poppler's `pdftoppm`, an external executable run under the process
@@ -278,7 +279,7 @@ export async function openPdfPageRenderer(
       }
       let file: Buffer;
       try {
-        file = await fs.promises.readFile(`${outputBase}.pgm`);
+        file = await readSandboxOutputAsync(`${outputBase}.pgm`);
       } catch {
         throw new OcrEngineUnavailableError(`pdftoppm produced no image for page ${pageNumber}.`);
       } finally {

@@ -18,6 +18,7 @@ import {
 } from '../../worker/sandbox';
 import { prepareIgesForKernel } from './cad-iges-preflight';
 import { MAX_OUTPUT_NAME_CHARS } from './cad-output-name';
+import { readSandboxOutputIfPresent } from '../security/sandbox-output';
 import { stageTimeoutMs, type JobDeadlined } from './job-time';
 import { resolveBinaryPath } from './pdf-postprocess/utils';
 import { createDeflatedZipBuffer } from './zip-writer';
@@ -205,14 +206,13 @@ async function runKernel(job: KernelJob): Promise<{ model: Buffer; materials: Bu
     } catch (error) {
       throw toProgramError(error, sandboxDir, timeoutMs);
     }
-    if (!fs.existsSync(outputPath)) {
-      throw new UnprocessableCadInputError('The CAD converter wrote no model from this file.');
-    }
-    const size = fs.statSync(outputPath).size;
-    if (size === 0) throw new UnprocessableCadInputError('The CAD converter wrote an empty file.');
-    if (size >= PROGRAM_MAX_OUTPUT_BYTES) throw new UnprocessableCadInputError(OUTPUT_TOO_LARGE);
-    const materials = job.to === 'obj' && fs.existsSync(materialsPath) ? fs.readFileSync(materialsPath) : null;
-    return { model: fs.readFileSync(outputPath), materials, stem };
+    const model = readSandboxOutputIfPresent(outputPath, (size) => {
+      if (size === 0) throw new UnprocessableCadInputError('The CAD converter wrote an empty file.');
+      if (size >= PROGRAM_MAX_OUTPUT_BYTES) throw new UnprocessableCadInputError(OUTPUT_TOO_LARGE);
+    });
+    if (model === null) throw new UnprocessableCadInputError('The CAD converter wrote no model from this file.');
+    const materials = job.to === 'obj' ? readSandboxOutputIfPresent(materialsPath) : null;
+    return { model, materials, stem };
   } finally {
     cleanupWorkerSandboxDir(sandboxDir);
   }

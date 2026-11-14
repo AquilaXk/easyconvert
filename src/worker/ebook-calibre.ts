@@ -9,6 +9,7 @@ import { stageTimeoutMs } from '../lib/conversions/job-time';
 import { fitsWindows1252 } from '../lib/conversions/office/windows-1252';
 import { writeZipFile, type ZipEntryInput } from '../lib/conversions/zip-writer';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
+import { OUTPUT_READ_FLAGS, sandboxOutputSize } from '../lib/security/sandbox-output';
 import {
   ConversionFailedError,
   CpuTaskTimeoutError,
@@ -256,7 +257,7 @@ async function stageEpubOfSource(deps: CalibreDeps, request: CalibreRequest, dir
 function textFitsWindows1252(textPath: string): boolean {
   const decoder = new StringDecoder('utf8');
   const chunk = Buffer.allocUnsafe(TEXT_SCAN_CHUNK_BYTES);
-  const descriptor = fs.openSync(textPath, 'r');
+  const descriptor = fs.openSync(textPath, OUTPUT_READ_FLAGS);
   try {
     for (let read = fs.readSync(descriptor, chunk, 0, chunk.length, null); read > 0; read = fs.readSync(descriptor, chunk, 0, chunk.length, null)) {
       if (!fitsWindows1252(decoder.write(chunk.subarray(0, read)))) return false;
@@ -271,7 +272,7 @@ function textFitsWindows1252(textPath: string): boolean {
 async function pdbEncodingArguments(run: CalibreRun, bookPath: string): Promise<readonly string[]> {
   const scanPath = path.join(run.dir, TEXT_SCAN_NAME);
   await runCalibre(run, [bookPath, scanPath]);
-  if (!fs.existsSync(scanPath)) throw new ConversionFailedError(`calibre wrote no text of the .${run.request.src} file.`);
+  if (sandboxOutputSize(scanPath) === null) throw new ConversionFailedError(`calibre wrote no text of the .${run.request.src} file.`);
   const fits = textFitsWindows1252(scanPath);
   fs.rmSync(scanPath, { force: true });
   return ['--pdb-output-encoding', fits ? PDB_ENCODING_WINDOWS_1252 : PDB_ENCODING_UTF8];
@@ -279,7 +280,7 @@ async function pdbEncodingArguments(run: CalibreRun, bookPath: string): Promise<
 
 function readHead(filePath: string, length: number): Buffer {
   const head = Buffer.alloc(length);
-  const descriptor = fs.openSync(filePath, 'r');
+  const descriptor = fs.openSync(filePath, OUTPUT_READ_FLAGS);
   try {
     return head.subarray(0, fs.readSync(descriptor, head, 0, length, 0));
   } finally {
@@ -315,14 +316,15 @@ function listOebFiles(root: string): OebFile[] {
 /** The ZIP entries of the OEB files, each file opened when the writer reaches it so that no more than one is open at a time. */
 function* oebZipEntries(root: string, files: readonly OebFile[]): Generator<ZipEntryInput> {
   for (const { name, size } of files) {
-    yield { name, data: fs.createReadStream(path.join(root, name)), declaredSize: size, method: 'auto' };
+    const fd = fs.openSync(path.join(root, name), OUTPUT_READ_FLAGS);
+    yield { name, data: fs.createReadStream('', { fd }), declaredSize: size, method: 'auto' };
   }
 }
 
 /** Packs the OEB folder as one ZIP file and returns the path of the file. */
 async function packOebFolder(folder: string, run: CalibreRun): Promise<string> {
   const { src, tgt } = run.request;
-  if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) throw new ConversionFailedError(`calibre wrote no OEB folder for the .${src} file.`);
+  if (!fs.lstatSync(folder, { throwIfNoEntry: false })?.isDirectory()) throw new ConversionFailedError(`calibre wrote no OEB folder for the .${src} file.`);
   const files = listOebFiles(folder);
   if (!files.some((file) => OEB_PACKAGE_FILE.test(file.name))) throw new InvalidConversionOutputError(src, tgt);
   const destination = path.join(run.dir, `${OUTPUT_NAME}.${ZIP_FORMAT}`);
@@ -332,7 +334,7 @@ async function packOebFolder(folder: string, run: CalibreRun): Promise<string> {
 
 /** Proves that the file calibre wrote is of the format asked for (the PalmDB type and creator, the LRF magic) before it is handed out. */
 function assertOutputFormat(outputPath: string, src: string, tgt: string, signature: OutputSignature | undefined): void {
-  if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) throw new ConversionFailedError(`calibre wrote no .${tgt} file for the .${src} file.`);
+  if (!sandboxOutputSize(outputPath)) throw new ConversionFailedError(`calibre wrote no .${tgt} file for the .${src} file.`);
   if (signature === undefined) return;
   const head = readHead(outputPath, signature.offset + signature.bytes.length);
   if (!head.subarray(signature.offset).equals(signature.bytes)) throw new InvalidConversionOutputError(src, tgt);

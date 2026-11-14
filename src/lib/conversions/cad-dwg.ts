@@ -18,6 +18,7 @@ import {
   executeSandboxedBinary,
   rethrowSandboxUnavailable,
 } from '../../worker/sandbox';
+import { readSandboxOutputIfPresent } from '../security/sandbox-output';
 import { stageTimeoutMs, type JobDeadlined } from './job-time';
 import { reportConversionWarning } from './conversion-warnings';
 import { resolveBinaryPath } from './pdf-postprocess/utils';
@@ -299,13 +300,10 @@ export async function convertDwgToDxf(input: Buffer, options: DwgReaderOptions =
     } catch (error) {
       throw toReaderError(error, sandboxDir, timeoutMs);
     }
-    if (!fs.existsSync(outputPath)) {
-      throw new UnprocessableCadInputError('The DWG reader wrote no drawing from this file.');
-    }
-    if (fs.statSync(outputPath).size >= READER_MAX_OUTPUT_BYTES) {
-      throw new UnprocessableCadInputError('The drawing is larger than the DWG reader may write.');
-    }
-    const dxf = fs.readFileSync(outputPath);
+    const dxf = readSandboxOutputIfPresent(outputPath, (size) => {
+      if (size >= READER_MAX_OUTPUT_BYTES) throw new UnprocessableCadInputError('The drawing is larger than the DWG reader may write.');
+    });
+    if (dxf === null) throw new UnprocessableCadInputError('The DWG reader wrote no drawing from this file.');
     const facts = assertDxfDocument(dxf);
     if (facts.proxyEntities > 0) {
       const noun = facts.proxyEntities === 1 ? 'proxy entity' : 'proxy entities';

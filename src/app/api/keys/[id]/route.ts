@@ -3,6 +3,7 @@ import { dashboardRefusal as refusal, notFoundRefusal, resolveDashboardCaller } 
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { ALL_API_KEY_SCOPES, ApiKeyScope, ApiKeyUpdateOptions } from '@/lib/api-keys/types';
 import { toPublicApiKey } from '@/lib/api-keys/public-views';
+import { getWebhookSecretStore } from '@/lib/api-keys/webhook-secret-store';
 import { InvalidWebhookConfigError, validateWebhookUrl } from '@/lib/security/ssrf';
 
 export const dynamic = 'force-dynamic';
@@ -21,6 +22,8 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
   if (!revoked) {
     return notFoundRefusal('API key not found or not owned by the current user.');
   }
+  // The rotated secret of the key ends with it: a record left behind would be read for the key's deliveries for good.
+  await getWebhookSecretStore().deleteSecretRecord(user.id, keyId);
 
   return NextResponse.json({
     success: true,
@@ -132,6 +135,8 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
   if (!updatedKey) {
     return notFoundRefusal('API key not found, inactive, or not owned by the current user.');
   }
+  // A cleared address leaves no rotated secret behind to sign for the next address set on the key.
+  if (updates.webhookUrl === '') await getWebhookSecretStore().deleteSecretRecord(user.id, keyId);
 
   return NextResponse.json({
     success: true,

@@ -15,6 +15,7 @@ import {
 } from '../types';
 export { ConversionFailedError };
 import { rethrowSandboxUnavailable, SandboxedProcessError } from '../security/process-sandbox';
+import { readSandboxOutput, readSandboxOutputFiles, readSandboxOutputIfPresent } from '../security/sandbox-output';
 import {
   buildFfmpegArguments,
   buildHlsDashArguments,
@@ -482,7 +483,7 @@ async function executeFfmpegTranscode(
       }
     }
 
-    const outputBuffer = fs.readFileSync(outputPath);
+    const outputBuffer = readSandboxOutput(outputPath);
     const outputFailure = await outputSizeError(outputBuffer.length, input, ffmpegBin, tgt);
     if (outputFailure) throw outputFailure;
     return {
@@ -538,10 +539,10 @@ async function executeFfmpegThumbnails(
         signal: options.signal,
       });
 
-      if (!fs.existsSync(outputPath)) {
+      const partBuf = readSandboxOutputIfPresent(outputPath);
+      if (partBuf === null) {
         throw new Error(`FFmpeg thumbnail output missing for timestamp ${ts}`);
       }
-      const partBuf = fs.readFileSync(outputPath);
       if (partBuf.length === 0) {
         throw new Error(`FFmpeg thumbnail output is 0 bytes for timestamp ${ts}`);
       }
@@ -630,11 +631,8 @@ export async function packageHlsDashMedia(
       return a.localeCompare(b);
     });
 
-    for (const file of outputFiles) {
-      const filePath = path.join(outputDir, file);
-      if (fs.statSync(filePath).isFile()) {
-        parts.push({ filename: file, buffer: fs.readFileSync(filePath) });
-      }
+    for (const file of readSandboxOutputFiles(outputDir, outputFiles)) {
+      parts.push({ filename: file.name, buffer: file.bytes });
     }
 
     const zipBuffer = await createDeflatedZipBuffer(parts.map((part) => ({ name: part.filename, data: part.buffer })));

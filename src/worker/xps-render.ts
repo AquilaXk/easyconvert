@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import { ARCHIVE_SECURITY_LIMITS } from '../lib/conversions/archive';
 import type { ArchiveExtractionLimits } from '../lib/conversions/archive-extraction-safety';
@@ -10,6 +9,7 @@ import { partKey, requirePagesDrawable } from '../lib/conversions/office/xps-res
 import { boundPageImages } from '../lib/conversions/page-range';
 import { writeZipFile } from '../lib/conversions/zip-writer';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
+import { readSandboxOutput, sandboxOutputSize } from '../lib/security/sandbox-output';
 import { ConversionFailedError, CorruptStreamError } from '../lib/types';
 import { selectsPages } from './poppler-ppm';
 import { SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError } from './sandbox';
@@ -147,7 +147,7 @@ async function writePdf(job: XpsJob, entries: readonly PackageEntry[], tempDir: 
     throw toRendererError(err, job.src, tempDir);
   }
   if (RENDERER_FAILURE_PATTERN.test(stderr)) throw rejected(job.src, stderr, tempDir);
-  const size = fs.existsSync(pdfPath) ? fs.statSync(pdfPath).size : 0;
+  const size = sandboxOutputSize(pdfPath) ?? 0;
   if (size === 0) throw new ConversionFailedError(`GhostXPS drew no page from the .${job.src} file.`);
   if (size > expected.maxBytes) throw drawnPdfTooLargeError('GhostXPS', job.src, size, expected.maxBytes);
   const pageTimeoutMs = Math.min(stageTimeoutMs(job.options, PAGE_COUNT_DEFAULT_TIMEOUT_MS), PAGE_COUNT_MAX_TIMEOUT_MS);
@@ -185,7 +185,7 @@ export async function convertXps(job: XpsJob): Promise<WorkerConversionResult | 
     });
   }
   const pdf = await withSandboxDir(TEMP_PREFIX, async (tempDir) =>
-    fs.readFileSync(await writePdf(job, entries, tempDir, { maxBytes: MAX_DRAWN_PDF_BYTES_FOR_IMAGES, pageCount }))
+    readSandboxOutput(await writePdf(job, entries, tempDir, { maxBytes: MAX_DRAWN_PDF_BYTES_FOR_IMAGES, pageCount }))
   );
   return job.convertPdfPages(pdf, tgt, options, originalFilename);
 }

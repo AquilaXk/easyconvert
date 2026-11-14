@@ -98,10 +98,15 @@
 #define LANDLOCK_ACCESS_FS_READ_DIR (1ULL << 3)
 #define LANDLOCK_ACCESS_FS_REMOVE_FILE (1ULL << 5)
 #define LANDLOCK_ACCESS_FS_MAKE_SOCK (1ULL << 9)
+#define LANDLOCK_ACCESS_FS_MAKE_SYM (1ULL << 12)
 #define LANDLOCK_ACCESS_FS_REFER (1ULL << 13)
 #define LANDLOCK_ACCESS_FS_TRUNCATE (1ULL << 14)
 /* Every file right of Landlock version 3 (bits 0 to 14: execute, write, read, list, remove, make, refer, truncate). */
 #define LANDLOCK_ACCESS_FS_ALL_V3 ((1ULL << 15) - 1)
+/* What a confined program may do below a --write directory: every right but making a symbolic link. The host reads and writes what the program
+   left there, and a link at an output path would make it open another file of the host; no engine of the worker makes a link in its job
+   directory. Hard links stay (REFER), and the rights to read, write and make files are untouched. */
+#define CONFINE_WRITE_ACCESS (LANDLOCK_ACCESS_FS_ALL_V3 & ~LANDLOCK_ACCESS_FS_MAKE_SYM)
 /* The rights that a rule on something that is not a directory may name. */
 #define LANDLOCK_ACCESS_FS_FILE_RIGHTS (LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_TRUNCATE)
 /* What a confined program gets of the system, of /dev, and of its own /proc entries. */
@@ -245,7 +250,7 @@ static int make_ruleset(const struct confinement *confine, int keep_proc) {
     failed = failed || (keep_proc ? allow_below(ruleset, "/proc", 0, CONFINE_DEVICE_ACCESS) != 0 : allow_entries(ruleset, "/proc", 1, CONFINE_DEVICE_ACCESS) != 0);
     for (int i = 0; !failed && i < confine->read_count; i++) failed = allow_below(ruleset, confine->read_dirs[i], 0, CONFINE_READ_ACCESS) != 0;
     for (int i = 0; !failed && i < confine->socket_count; i++) failed = allow_below(ruleset, confine->socket_dirs[i], 0, SOCKET_ACCESS) != 0;
-    for (int i = 0; !failed && i < confine->write_count; i++) failed = allow_below(ruleset, confine->write_dirs[i], 0, LANDLOCK_ACCESS_FS_ALL_V3) != 0;
+    for (int i = 0; !failed && i < confine->write_count; i++) failed = allow_below(ruleset, confine->write_dirs[i], 0, CONFINE_WRITE_ACCESS) != 0;
   }
   if (failed) {
     hide_failure = "a rule could not be added";

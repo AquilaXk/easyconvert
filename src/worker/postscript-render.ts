@@ -5,6 +5,7 @@ import { ConversionFailedError } from '../lib/types';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
 import { compressPpmPage, exceedsPpmPageLimit, PPM_PAGE_MAX_BYTES, ppmPageEnd, resolvePdfRasterDpi, selectsPages } from './poppler-ppm';
+import { readSandboxOutput, sandboxOutputSize } from '../lib/security/sandbox-output';
 import { createConversionResult, handOffOutput, readDrawnPdfForImages, resolveInputContext, withSandboxDir, writeOutputSegments } from './worker-output';
 import { ghostscriptPdfArguments, ghostscriptRasterArguments, siblingGhostscript, skipsGarbageCollection } from './postscript-gs';
 import {
@@ -118,7 +119,7 @@ async function writePdf(job: PostScriptJob, ghostscript: string | null, run: Run
   } catch (err) {
     throw toInterpreterError(err, job.src, run.tempDir);
   }
-  if (!fs.existsSync(pdfPath) || fs.statSync(pdfPath).size === 0) {
+  if (!sandboxOutputSize(pdfPath)) {
     throw new ConversionFailedError(`The PostScript interpreter drew no page from the .${job.src} file.`);
   }
 }
@@ -152,8 +153,9 @@ async function renderEpsToPng(job: PostScriptJob, ghostscript: string, limits: L
       throw toInterpreterError(err, EPS_SOURCE, tempDir);
     }
     // A host without file-size limits lets the page grow past it: the size is checked before the page is read.
-    if (!fs.existsSync(pagePath) || exceedsPpmPageLimit(fs.statSync(pagePath).size)) return null;
-    return fs.readFileSync(pagePath);
+    const pageBytes = sandboxOutputSize(pagePath);
+    if (pageBytes === null || exceedsPpmPageLimit(pageBytes)) return null;
+    return readSandboxOutput(pagePath);
   });
   if (rendered === null || rendered.length === 0 || ppmPageEnd(rendered) !== rendered.length) return null;
   const png = await compressPpmPage(rendered, dpi);

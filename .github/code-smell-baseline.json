@@ -279,7 +279,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 4038
+    "maxValue": 4035
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -2161,7 +2161,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2348
+    "maxValue": 2347
   },
   {
     "file": "src/worker/engines.ts",

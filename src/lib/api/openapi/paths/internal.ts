@@ -847,6 +847,7 @@ export const internalPaths = {
     get: {
       ...INTERNAL,
       summary: 'Get Queue Statistics',
+      description: 'For the operator on the host: the proxy of the deployment does not forward this path, so only the loopback port of the web service answers it.',
       operationId: 'getQueueStats',
       security: PUBLIC_ACCESS,
       responses: {

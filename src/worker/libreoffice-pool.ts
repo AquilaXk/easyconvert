@@ -5,7 +5,8 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { createWorkerSandboxDir } from './sandbox';
 import { readPersistedOutput } from './persisted-output';
-import { stagedOutputPath } from '../lib/storage/temp-file';
+import { assertRegularFileSync, stagedOutputPath } from '../lib/storage/temp-file';
+import { readSandboxOutputIfPresent } from '../lib/security/sandbox-output';
 import { findOfficeOutput, getMimeType, resolveOfficeInputContext } from './worker-output';
 import {
   executeSandboxedBinary,
@@ -218,6 +219,11 @@ export class LibreOfficePoolManager {
   private executor: SandboxedProcessRunner;
   private readinessProbe: boolean;
   private readinessCheck: { sofficePath: string; promise: Promise<void>; failedAt: number | null } | null = null;
+  /**
+   * The profile the readiness probe left after its conversion of a fixed text: initialised by the suite itself and never opened by a
+   * job, so it holds nothing of any document. Every job starts from a copy of it (`resetProfile`).
+   */
+  private profileTemplate: { sofficePath: string; dir: string } | null = null;
 
   private isShuttingDown = false;
   private totalJobsProcessed = 0;
@@ -252,6 +258,7 @@ export class LibreOfficePoolManager {
   public setSofficePath(path: string | null): void {
     if (path !== this.sofficePath) {
       this.readinessCheck = null;
+      this.discardProfileTemplate();
     }
     this.sofficePath = path;
     this.enabled = path !== null;
@@ -445,17 +452,41 @@ export class LibreOfficePoolManager {
         const detail = err instanceof Error ? err.message : String(err);
         throw new EngineUnavailableError(LIBREOFFICE_POOL_ENGINE_NAME, `readiness probe failed: ${detail}`);
       }
-      const produced = fs.existsSync(outputPath) ? fs.readFileSync(outputPath) : null;
+      const produced = readSandboxOutputIfPresent(outputPath);
       if (produced?.subarray(0, PDF_MAGIC.length).toString('latin1') !== PDF_MAGIC) {
         throw new EngineUnavailableError(
           LIBREOFFICE_POOL_ENGINE_NAME,
           'readiness probe exited without producing a PDF document'
         );
       }
+      this.discardProfileTemplate();
+      this.profileTemplate = { sofficePath, dir: profileDir };
+      profileDir = undefined;
     } finally {
       if (profileDir) fs.rmSync(profileDir, { recursive: true, force: true });
       if (workDir) fs.rmSync(workDir, { recursive: true, force: true });
     }
+  }
+
+  private discardProfileTemplate(): void {
+    if (this.profileTemplate !== null) fs.rmSync(this.profileTemplate.dir, { recursive: true, force: true });
+    this.profileTemplate = null;
+  }
+
+  /**
+   * Puts the profile of a slot back to what a first job finds: removed whole, then copied from the template (about 0.5 MB in 100 files, 5 ms
+   * where a first start of the suite on an empty profile takes 0.35 s more), then the fixed settings. Jobs of different accounts share a
+   * slot and its profile is a directory the suite may write to, so nothing one job left in it (a changed setting, a file, a link that
+   * the host's next write would follow) reaches the next. `rmSync` unlinks a link and never follows it, and the copy keeps links as
+   * links. A slot without a template (an injected runner, no probe) starts from the fixed settings alone.
+   */
+  private resetProfile(profileDir: string): void {
+    fs.rmSync(profileDir, { recursive: true, force: true });
+    const template = this.profileTemplate;
+    if (template !== null && template.sofficePath === this.sofficePath && fs.existsSync(template.dir)) {
+      fs.cpSync(template.dir, profileDir, { recursive: true, dereference: false, verbatimSymlinks: true });
+    }
+    writeOfficeProfile(profileDir);
   }
 
   /**
@@ -658,6 +689,7 @@ export class LibreOfficePoolManager {
     // Without a path from the caller the output goes where every other engine stages one: the staging folder, whose sweep
     // removes what no consumer took. A folder of its own under the system temp directory was never swept.
     const persistedPath = input?.outputPath || (options as any)?.outputPath || stagedOutputPath(targetFormat);
+    assertRegularFileSync(tempOutputPath);
     fs.copyFileSync(tempOutputPath, persistedPath);
 
     const stat = fs.statSync(persistedPath);
@@ -712,9 +744,9 @@ export class LibreOfficePoolManager {
     try {
       fs.mkdirSync(jobSubdir, { recursive: true, mode: 0o700 });
       const { inputPath } = resolveOfficeInputContext(input, src, jobSubdir);
-      // The slot's profile is shared by its jobs, and the suite writes its settings back when it ends: the fixed settings are written again
-      // before every job, so what one job changed in the profile (or a macro or link setting a document managed to set) does not reach the next.
-      writeOfficeProfile(worker.userProfileDir);
+      // The slot's profile is shared by its jobs, and the suite writes its settings back when it ends: it is made again before every job, so
+      // what one job changed in the profile (or a macro or link setting a document managed to set) does not reach the next.
+      this.resetProfile(worker.userProfileDir);
 
       const timeout = Math.min(stageTimeoutMs(options, 45000), 120000);
       const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
@@ -794,6 +826,7 @@ export class LibreOfficePoolManager {
       item.reject(new Error('LibreOfficePoolManager has been shut down.'));
     }
 
+    this.discardProfileTemplate();
     // Destroy all workers
     const destroyPromises = this.workers.map((w) => this.destroyWorker(w));
     await Promise.all(destroyPromises);

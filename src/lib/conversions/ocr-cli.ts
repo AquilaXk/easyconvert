@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { readSandboxOutputAsync, SandboxOutputKindError } from '../security/sandbox-output';
 import { OcrEngineUnavailableError, SandboxUnavailableError } from '../types';
 import {
   executeSandboxedBinary,
@@ -372,14 +373,16 @@ export async function recognizeWithCli(request: CliOcrRequest): Promise<OcrResul
  * file-size limit stops a writer at exactly that many bytes, so such a file may be cut short.
  */
 async function readJobOutput(file: string, maxBytes: number, what: string): Promise<string> {
-  let size: number;
   try {
-    size = (await fs.promises.stat(file)).size;
-  } catch {
+    const bytes = await readSandboxOutputAsync(file, (size) => {
+      if (size >= maxBytes) throw new OcrEngineUnavailableError('Tesseract CLI produced more output than the allowed limit.');
+    });
+    return bytes.toString('utf-8');
+  } catch (error) {
+    if (error instanceof OcrEngineUnavailableError) throw error;
+    if (error instanceof SandboxOutputKindError) throw malformed(`the ${what} output is not a regular file.`);
     throw malformed(`the ${what} output is missing.`);
   }
-  if (size >= maxBytes) throw new OcrEngineUnavailableError('Tesseract CLI produced more output than the allowed limit.');
-  return fs.promises.readFile(file, 'utf-8');
 }
 
 /** The error a caller sees for a failed run; the CLI's own diagnostics go to the server log only. */

@@ -1,5 +1,5 @@
-import fs from 'node:fs';
 import path from 'node:path';
+import { sandboxOutputSize } from '../lib/security/sandbox-output';
 import { PayloadLimitError } from '../lib/types';
 
 /**
@@ -34,7 +34,7 @@ export async function writeEpsPages(
       nextIndex += 1;
       const pagePath = path.join(tempDir, `page-${page}.eps`);
       await run(tempDir, ['-eps', '-f', String(page), '-l', String(page), inputPath, pagePath]);
-      writtenBytes += fs.statSync(pagePath).size;
+      writtenBytes += sandboxOutputSize(pagePath) ?? 0;
       assertPostScriptPagesWithinLimit(writtenBytes);
     }
   });

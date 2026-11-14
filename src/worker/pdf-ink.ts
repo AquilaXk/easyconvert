@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
+import { readSandboxOutput } from '../lib/security/sandbox-output';
 import { ConversionFailedError } from '../lib/types';
 import { parsePpmHeader, PPM_PAGE_MAX_BYTES, runPdftoppm } from './poppler-ppm';
 import { withSandboxDir } from './worker-output';
@@ -62,7 +63,7 @@ export async function pdfFirstPageHasInk(pdf: { filePath?: string; buffer: Buffe
       networkIsolated: true,
       signal: options.signal,
     });
-    const rendered = fs.readFileSync(`${prefix}.ppm`);
+    const rendered = readSandboxOutput(`${prefix}.ppm`);
     const { width, height, dataOffset } = parsePpmHeader(rendered);
     if (rendered.length - dataOffset !== width * height * RGB_CHANNELS) {
       throw new ConversionFailedError(`The PDF renderer wrote a page image of ${rendered.length - dataOffset} bytes for a page of ${width} x ${height} pixels.`);

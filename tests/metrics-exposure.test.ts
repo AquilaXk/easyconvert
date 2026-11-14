@@ -32,6 +32,10 @@ describe('the nginx site', () => {
     }
   });
 
+  it('refuses /api/queue/stats, which reports the memory, the queue and the storage of the process and has no caller outside the host', () => {
+    expect(blocks.find((block) => block.match === '^~ /api/queue/stats')?.body.trim()).toBe('return 404;');
+  });
+
   it('forwards only to the one upstream, which is the loopback port of the web service and not a metrics port', () => {
     const upstream = /upstream easyconvert_web \{\s*server ([^;]+);/.exec(site)?.[1];
     expect(upstream).toBe('127.0.0.1:8090');

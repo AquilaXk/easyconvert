@@ -67,6 +67,17 @@ beforeAll(async () => {
 
 afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
 
+/** A second server: another port is another origin, however alike the address. */
+async function startOtherOrigin(): Promise<{ origin: string; seen: http.IncomingHttpHeaders[]; close: () => Promise<void> }> {
+  const seen: http.IncomingHttpHeaders[] = [];
+  const other = http.createServer((req, res) => {
+    seen.push(req.headers);
+    reply(res, 200, Buffer.from(RESULT_BYTES), 'application/octet-stream');
+  });
+  await new Promise<void>((resolve) => other.listen(0, '127.0.0.1', resolve));
+  return { origin: `http://127.0.0.1:${(other.address() as AddressInfo).port}`, seen, close: () => new Promise<void>((resolve) => other.close(() => resolve())) };
+}
+
 function client(): EasyConvertClient {
   return new EasyConvertClient({ apiKey: API_KEY, baseUrl });
 }
@@ -133,6 +144,22 @@ describe('the TypeScript client over a stub server', () => {
     expect(job.status).toBe('completed');
     expect(jobPolls).toBe(2);
     expect(new Uint8Array(await sdk.download(job.result!.downloadUrl!))).toEqual(RESULT_BYTES);
+  });
+
+  it('sends the API key to the origin of the base URL only: a download link to another origin gets none', async () => {
+    const elsewhere = await startOtherOrigin();
+    try {
+      const sdk = client();
+      expect(new Uint8Array(await sdk.download(`${elsewhere.origin}/api/storage/file/out-key`))).toEqual(RESULT_BYTES);
+      expect(elsewhere.seen.at(-1)).not.toHaveProperty('authorization');
+
+      await sdk.download(RESULT.downloadUrl);
+      await sdk.download(`${baseUrl}${RESULT.downloadUrl}`);
+      expect(requests.at(-1)!.headers.authorization).toBe(`Bearer ${API_KEY}`);
+      expect(requests.at(-2)!.headers.authorization).toBe(`Bearer ${API_KEY}`);
+    } finally {
+      await elsewhere.close();
+    }
   });
 
   it('raises the problem document of an error answer', async () => {
