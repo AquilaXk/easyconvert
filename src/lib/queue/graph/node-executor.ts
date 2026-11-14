@@ -508,6 +508,17 @@ function openedNode(submitted: GraphNode, jobId: string): GraphNode {
 }
 
 /**
+ * A node that completed and then lost the queueing of its ready children (the store took the completion, the next call threw, so the
+ * job failed and was delivered again) leaves them waiting with no job. The delivery finds the node completed and runs nothing, so it
+ * queues them here; the queue keeps one job per node id, so a delivery that follows a complete queueing adds none. A graph that
+ * has ended queues nothing. A node job that cannot be stored fails this delivery, which the queue delivers again.
+ */
+async function queueReadyNodesOfCompletedNode(graphId: string, nodeId: string): Promise<void> {
+  const state = await graphScheduler.getGraphState(graphId);
+  if (state?.status === 'running' && state.nodes[nodeId]?.status === 'completed') await graphScheduler.queueReadyNodes(graphId);
+}
+
+/**
  * Runs the job of a graph node unless the scheduler says the node may not run: a job whose graph has ended or whose node has ended
  * (its cancel never reached the queue, the process that would have sent it died, or it was delivered again after the node
  * completed) does nothing. No input is read, no unit held and no output written for a graph nobody waits for. The answer is the
@@ -522,6 +533,7 @@ export async function processGraphNodeJobIfAlive(
 ): Promise<ConversionJobResult> {
   const { graphId, graphNodeId: nodeId } = job.data;
   if (!(await graphScheduler.onNodeStarted(graphId!, nodeId!))) {
+    await queueReadyNodesOfCompletedNode(graphId!, nodeId!);
     await job.log(`Graph node "${nodeId}" of graph ${graphId} was not run: the graph or the node has already ended`);
     return { jobId: job.id, status: 'completed', resultKey: '', downloadUrl: '', filename: '', mimeType: '', size: 0, durationMs: 0 };
   }

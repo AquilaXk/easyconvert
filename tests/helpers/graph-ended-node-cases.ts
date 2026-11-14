@@ -26,6 +26,8 @@ export interface EndedGraphControls {
   scheduler: () => {
     scheduler: IGraphScheduler;
     refuseNodeJobsAfter: (count: number) => void;
+    /** How many node jobs the queue of the scheduler stored so far. */
+    storedNodeJobs: () => number;
     failNodeJobCancels: (failures: number) => () => ReadonlyMap<string, number>;
   };
 }
@@ -73,6 +75,8 @@ export function itLeavesTheNodeJobsOfAnEndedGraphAlone(controls: EndedGraphContr
   /** The worker side of a scheduler: the executor asks the process-wide scheduler, which here is the one under test. */
   function workersAsk(scheduler: IGraphScheduler) {
     vi.spyOn(graphScheduler, 'onNodeStarted').mockImplementation((graphId, nodeId) => scheduler.onNodeStarted(graphId, nodeId));
+    vi.spyOn(graphScheduler, 'getGraphState').mockImplementation((graphId) => scheduler.getGraphState(graphId));
+    vi.spyOn(graphScheduler, 'queueReadyNodes').mockImplementation((graphId) => scheduler.queueReadyNodes(graphId));
     return {
       completed: vi.spyOn(graphScheduler, 'onNodeCompleted').mockImplementation((...args) => scheduler.onNodeCompleted(...args)),
       failed: vi.spyOn(graphScheduler, 'onNodeFailed').mockImplementation((...args) => scheduler.onNodeFailed(...args)),
@@ -145,6 +149,47 @@ export function itLeavesTheNodeJobsOfAnEndedGraphAlone(controls: EndedGraphContr
     await scheduler.cancelGraph(graphId, 'Cancelled by its owner');
     expect(await scheduler.onNodeStarted(graphId, 'b')).toBe(false);
     expect(await scheduler.onNodeStarted(graphId, 'conv')).toBe(false);
+  });
+
+  it('queues the ready node of a completed node when the delivery that follows its failed completion finds the node completed', async () => {
+    const { scheduler, refuseNodeJobsAfter, storedNodeJobs } = controls.scheduler();
+    const graphId = `graph_redelivered_${crypto.randomBytes(6).toString('hex')}`;
+    await scheduler.initGraph(graphId, sealGraph(graphId, GRAPH), { ownerUserId: 'user-graph-ended' });
+    expect(storedNodeJobs()).toBe(2);
+    expect(await scheduler.onNodeStarted(graphId, 'a')).toBe(true);
+    // The store takes the completion of `a`, and the queue then refuses the job of `conv`, which `a` made ready.
+    refuseNodeJobsAfter(storedNodeJobs());
+    await expect(scheduler.onNodeCompleted(graphId, 'a', ['intermediate/a.json'])).rejects.toThrow();
+    expect((await scheduler.getGraphState(graphId))?.nodes.a.status).toBe('completed');
+    expect(storedNodeJobs()).toBe(2);
+
+    // The job of `a` fails with it and is delivered again, now to a queue that stores jobs.
+    refuseNodeJobsAfter(Number.POSITIVE_INFINITY);
+    workersAsk(scheduler);
+    const read = vi.spyOn(s3Storage, 'getObject');
+    const { job, logs } = nodeJobOf(graphId, 'a', GRAPH.nodes.a);
+    const result = await processGraphNodeJobIfAlive(job, undefined, s3Storage);
+
+    expect(result).toMatchObject({ jobId: job.id, status: 'completed', resultKey: '', size: 0 });
+    expect(logs.join('\n')).toContain('was not run');
+    expect(read).not.toHaveBeenCalled();
+    // The job of `conv` is stored now (a scheduler that offers every waiting node again repeats the job of `b`, which the queue keeps once).
+    expect(storedNodeJobs()).toBeGreaterThan(2);
+  });
+
+  it('queues nothing for a node whose graph has ended when its job is delivered again', async () => {
+    const { scheduler, storedNodeJobs } = controls.scheduler();
+    const graphId = `graph_redelivered_ended_${crypto.randomBytes(6).toString('hex')}`;
+    await scheduler.initGraph(graphId, sealGraph(graphId, GRAPH), { ownerUserId: 'user-graph-ended' });
+    await scheduler.onNodeStarted(graphId, 'a');
+    await scheduler.onNodeCompleted(graphId, 'a', ['intermediate/a.json']);
+    await scheduler.cancelGraph(graphId, 'Cancelled by its owner');
+    const stored = storedNodeJobs();
+    workersAsk(scheduler);
+
+    await processGraphNodeJobIfAlive(nodeJobOf(graphId, 'a', GRAPH.nodes.a).job, undefined, s3Storage);
+
+    expect(storedNodeJobs()).toBe(stored);
   });
 
   it('answers a worker that a graph no store holds has no node to run', async () => {

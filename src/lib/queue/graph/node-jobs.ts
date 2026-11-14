@@ -175,9 +175,7 @@ async function cancelAfterFailedStart(graphId: string, cancel: (reason: string) 
 }
 
 /** What finishing a failed graph start needs of the scheduler that stored the graph. */
-export interface StartingGraphScheduler extends Pick<IGraphScheduler, 'cancelGraph' | 'getGraphState'> {
-  /** Queues the ready nodes of the stored graph `graphId` that its start left unqueued. */
-  queueReadyNodes(graphId: string): Promise<unknown>;
+export interface StartingGraphScheduler extends Pick<IGraphScheduler, 'cancelGraph' | 'getGraphState' | 'queueReadyNodes'> {
   /** The `forget` step of the end of graph `graphId` (graph-end.ts `EndedGraph`). */
   forgetEndedGraph(graphId: string): Promise<void>;
   /** Cancels the queue job of one node; the node's resource-class queue when absent. */
