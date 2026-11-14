@@ -1872,7 +1872,9 @@ describe('native-engine pairs route through the dispatcher', () => {
     const run = withMissingBinary(envVar, () => dispatchConversion(input, source, target, {}, `probe.${source}`));
     await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
     await expect(run).rejects.toMatchObject({ engineName });
-  });
+    // The engines that run before the missing one are real (LibreOffice starts cold in the first such pair), so this waits as long as
+    // the other native tests: a test that times out leaves the override of the next binary set while the following tests run.
+  }, NATIVE_TIMEOUT_MS);
 
   it.skipIf(skipWithoutTools('ffmpeg')).each(subtitlePairs)(
     '%s -> %s converts with FFmpeg (needs ffmpeg)',
