@@ -492,7 +492,9 @@ describe('deploy workflow', () => {
   it('purges the edge cache after a deploy or a rollback on a hosted runner, so the purge token never reaches the production host', () => {
     const purge = workflow.jobs['purge-edge-cache'];
     expect(purge.needs).toBe('deploy');
-    expect(purge.if).toBe(workflow.jobs.deploy.if);
+    // A deploy that failed after it rolled back still served the new release for a while, so its pages are purged too; a deploy
+    // that was cancelled or skipped (the gate failed) served nothing.
+    expect(purge.if).toBe(`always() && (needs.deploy.result == 'success' || needs.deploy.result == 'failure') && ${workflow.jobs.deploy.if}`);
     expect(purge['runs-on']).toBe('ubuntu-24.04');
     expect(purge.permissions).toEqual({});
     const holders = Object.entries(workflow.jobs).filter(([, job]) => JSON.stringify(job).includes('secrets.CLOUDFLARE_'));

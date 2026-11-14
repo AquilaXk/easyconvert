@@ -346,11 +346,12 @@ jobs:
 
   # The edge cache keeps a prerendered page for as long as its `s-maxage` (a year, Next's value for a page with no revalidation), and a
   # page kept past a deploy names script chunks the new server no longer has. After a deploy or a rollback the whole zone's cache is
-  # purged. The job runs on a hosted runner, so the token never reaches the production host; it can purge the cache of one zone and do
-  # nothing else (docs/policy-decisions.md, entry 278).
+  # purged. It is purged after a deploy that failed and rolled back too, since the new release served pages while it was checked; a
+  # deploy that was cancelled or skipped served none. The job runs on a hosted runner, so the token never reaches the production host;
+  # it can purge the cache of one zone and do nothing else (docs/policy-decisions.md, entry 278).
   purge-edge-cache:
     needs: deploy
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    if: always() && (needs.deploy.result == 'success' || needs.deploy.result == 'failure') && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
