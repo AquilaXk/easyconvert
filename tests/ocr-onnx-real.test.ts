@@ -99,10 +99,27 @@ describe.skipIf(modelsMissing)('the ONNX Korean engine with the real models', ()
     expect(page.result.language).toBe('kor+eng');
   }, TIMEOUT_MS);
 
-  it('leaves an English page to Tesseract', async () => {
+  it('leaves an English page that Tesseract reads well to Tesseract', async () => {
     const english = fs.readFileSync(path.join(FIXTURES, 'en_a__clean300.png'));
     const page = await recognizePage(english, 'eng', { detectOrientation: false });
     expect(page.enginePath).not.toBe('onnx');
+  }, TIMEOUT_MS);
+
+  it('reads a table with ruling lines when the English recognizer is demanded, where Tesseract keeps a few words of it', async () => {
+    const table = fs.readFileSync(path.join(FIXTURES, 'table_ruled.png'));
+    const tesseract = await recognizePage(table, 'eng', { detectOrientation: false, enginePath: 'wasm' });
+    const page = await recognizePage(table, 'eng', { detectOrientation: false, enginePath: 'onnx' });
+    expect(page.enginePath).toBe('onnx');
+    expect(page.result.engineFallback).toBeUndefined();
+    expect(characterError(truth('table_ruled'), page.result.text)).toBeLessThan(0.02);
+    expect(characterError(truth('table_ruled'), tesseract.result.text)).toBeGreaterThan(0.1);
+  }, TIMEOUT_MS);
+
+  it('reads English with the English recognizer when the engine is demanded', async () => {
+    const english = fs.readFileSync(path.join(FIXTURES, 'en_a__clean300.png'));
+    const page = await recognizePage(english, 'eng', { detectOrientation: false, enginePath: 'onnx' });
+    expect(page.enginePath).toBe('onnx');
+    expect(characterError(truth('en_a'), page.result.text.replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"'))).toBeLessThan(0.01);
   }, TIMEOUT_MS);
 
   it('keeps one helper for the pages of a burst and ends it with the pool', async () => {

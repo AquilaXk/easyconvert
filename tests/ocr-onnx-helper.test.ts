@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -18,7 +20,7 @@ import {
   validateRunRequest,
   type OnnxRunRequest,
 } from '../src/lib/conversions/ocr-onnx-protocol';
-import { koreanOnnxLanguages } from '../src/lib/conversions/ocr-onnx-route';
+import { koreanOnnxLanguages, onnxSecondReadingRecognizer } from '../src/lib/conversions/ocr-onnx-route';
 
 const FAKE_CHILD = path.join(__dirname, 'helpers', 'fake-onnx-child.cjs');
 const entryFor = (mode: string) => ({ binary: process.execPath, args: [FAKE_CHILD, `--mode=${mode}`] });
@@ -38,7 +40,7 @@ afterEach(() => {
 });
 
 describe('the ONNX OCR helper protocol', () => {
-  const request: OnnxRunRequest = { type: 'run', id: 1, width: 2, height: 2, detector: { width: 2, height: 2 }, language: 'kor', recoverSpaces: true };
+  const request: OnnxRunRequest = { type: 'run', id: 1, width: 2, height: 2, detector: { width: 2, height: 2 }, language: 'kor', recognizer: 'kor', recoverSpaces: true };
 
   it('reassembles a frame that arrives in pieces and two frames that arrive together', () => {
     const bytes = Buffer.concat(encodeFrame(request, Buffer.alloc(24, 7)));
@@ -65,6 +67,9 @@ describe('the ONNX OCR helper protocol', () => {
     expect(validateRunRequest({ ...request, width: 0 }, 0)).toMatch(/malformed/);
     expect(validateRunRequest({ ...request, width: 1.5 }, 0)).toMatch(/malformed/);
     expect(validateRunRequest({ ...request, language: 5 as unknown as string }, 24)).toMatch(/malformed/);
+    expect(validateRunRequest({ ...request, recognizer: 'eng' }, 3 * (4 + 4))).toBeNull();
+    expect(validateRunRequest({ ...request, recognizer: 'toString' as unknown as 'kor' }, 3 * (4 + 4))).toMatch(/unknown recognizer/);
+    expect(validateRunRequest({ ...request, recognizer: undefined as unknown as 'kor' }, 3 * (4 + 4))).toMatch(/unknown recognizer/);
     expect(validateRunRequest({ ...request, width: MAX_PAGE_PIXELS, height: 2 }, 0)).toMatch(/too many/);
   });
 });
@@ -109,8 +114,24 @@ describe('where the ONNX engine is used', () => {
     expect(koreanOnnxLanguages(['kor', 'eng'])).toBe(true);
     expect(koreanOnnxLanguages(['eng', 'kor'])).toBe(true);
     expect(koreanOnnxLanguages(['eng'])).toBe(false);
+    expect(onnxSecondReadingRecognizer(['eng'])).toBe('eng');
     expect(koreanOnnxLanguages(['kor', 'jpn'])).toBe(false);
     expect(koreanOnnxLanguages(['kor', 'deu'])).toBe(false);
+    expect(onnxSecondReadingRecognizer(['deu'])).toBeNull();
+    expect(onnxSecondReadingRecognizer(['eng', 'deu'])).toBeNull();
+  });
+
+  it('asks for the files of the recognizer it needs: English is missing where Korean is present', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-onnx-dir-'));
+    try {
+      for (const name of ['det.onnx', 'rec.onnx', 'dict.txt']) fs.writeFileSync(path.join(dir, name), 'x');
+      expect(onnxOcrUnavailableReason(dir, 'kor')?.reason).not.toBe('models-missing');
+      expect(onnxOcrUnavailableReason(dir, 'eng')).toMatchObject({ reason: 'models-missing', message: expect.stringContaining('rec-eng.onnx') });
+      for (const name of ['rec-eng.onnx', 'dict-eng.txt']) fs.writeFileSync(path.join(dir, name), 'x');
+      expect(onnxOcrUnavailableReason(dir, 'eng')?.reason).not.toBe('models-missing');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('says why it is unavailable: switched off, models missing', () => {

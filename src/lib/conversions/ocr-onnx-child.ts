@@ -47,7 +47,7 @@ async function run(request: OnnxRunRequest, payload: Buffer): Promise<void> {
         rgb: payload.subarray(0, pagePixels),
         detector: { width: request.detector.width, height: request.detector.height, rgb: payload.subarray(pagePixels) },
       },
-      { modelDir, threads, language: request.language, recoverSpaces: request.recoverSpaces }
+      { modelDir, threads, language: request.language, recognizer: request.recognizer, recoverSpaces: request.recoverSpaces }
     );
     send({ type: 'result', id: request.id, result });
   } catch (error) {

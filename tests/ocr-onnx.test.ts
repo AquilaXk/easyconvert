@@ -365,6 +365,8 @@ describe('ONNX OCR pipeline with stand-in models', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-onnx-ocr-'));
     for (const name of ['det.onnx', 'rec.onnx']) fs.writeFileSync(path.join(dir, name), 'stand-in');
     fs.writeFileSync(path.join(dir, 'dict.txt'), '가\n나\n');
+    fs.writeFileSync(path.join(dir, 'rec-eng.onnx'), 'stand-in');
+    fs.writeFileSync(path.join(dir, 'dict-eng.txt'), 'a\nb\n');
   });
   afterAll(async () => {
     await releaseOnnxOcr();
@@ -437,6 +439,29 @@ describe('ONNX OCR pipeline with stand-in models', () => {
     await recognizePageOnnx(page, { modelDir: dir, runtime, threads: 1, detectorMinSide: 32, detectorMaxSide: 128 });
     expect(recognizerWidths).toEqual([cropLine(new Uint8Array(128 * 64 * 3), 128, 64, widenLineEnds(box)).width]);
     expect(recognizerWidths[0]).toBeGreaterThan(Math.ceil((48 * box.width) / box.height));
+  });
+
+  it('reads with the recognizer and the character list the request names, and keeps both loaded', async () => {
+    const page = await sharp({ create: { width: 128, height: 64, channels: 3, background: '#fff' } }).png().toBuffer();
+    const options = { modelDir: dir, runtime, threads: 1, detectorMinSide: 32, detectorMaxSide: 128 };
+    expect((await recognizePageOnnx(page, { ...options, recognizer: 'eng' })).text).toBe('ab');
+    expect((await recognizePageOnnx(page, options)).text).toBe('가나');
+    expect((await recognizePageOnnx(page, { ...options, recognizer: 'eng' })).text).toBe('ab');
+  });
+
+  it('refuses a recognizer whose files are not in the directory, and still reads with the others', async () => {
+    const partial = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-onnx-ocr-partial-'));
+    try {
+      for (const name of ['det.onnx', 'rec.onnx']) fs.writeFileSync(path.join(partial, name), 'stand-in');
+      fs.writeFileSync(path.join(partial, 'dict.txt'), '가\n나\n');
+      const page = await sharp({ create: { width: 128, height: 64, channels: 3, background: '#fff' } }).png().toBuffer();
+      const options = { modelDir: partial, runtime, threads: 1, detectorMinSide: 32, detectorMaxSide: 128 };
+      await expect(recognizePageOnnx(page, { ...options, recognizer: 'eng' })).rejects.toThrow(/rec-eng\.onnx.*missing/);
+      expect((await recognizePageOnnx(page, options)).text).toBe('가나');
+    } finally {
+      await releaseOnnxOcr();
+      fs.rmSync(partial, { recursive: true, force: true });
+    }
   });
 
   it('stops before the first stage when the signal is already aborted', async () => {

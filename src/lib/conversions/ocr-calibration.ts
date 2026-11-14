@@ -3,6 +3,7 @@ import type { OcrLineBlock, OcrResult, OcrWord } from './ocr-pdf-combiner';
 import engWasm from './ocr-calibration/eng.wasm.json';
 import engCli from './ocr-calibration/eng.cli.json';
 import engNeural from './ocr-calibration/eng.neural.json';
+import engOnnx from './ocr-calibration/eng.onnx.json';
 import korWasm from './ocr-calibration/kor.wasm.json';
 import korCli from './ocr-calibration/kor.cli.json';
 import korNeural from './ocr-calibration/kor.neural.json';
@@ -47,6 +48,7 @@ const TABLES: ReadonlyArray<CalibrationTable> = [
   engWasm as CalibrationTable,
   engCli as CalibrationTable,
   engNeural as CalibrationTable,
+  engOnnx as CalibrationTable,
   korWasm as CalibrationTable,
   korCli as CalibrationTable,
   korNeural as CalibrationTable,
@@ -80,8 +82,8 @@ const TABLE_BY_KEY = new Map<string, CalibrationTable>(
 /** The table for a recognition language (such as `eng`) and engine path, or null when none was fitted. */
 export function calibrationTableFor(language: string | undefined, enginePath: OcrEnginePath): CalibrationTable | null {
   if (!language) return null;
-  // The ONNX engine reads Hangul and Latin with one recognizer whatever languages the request named (`kor`, `kor+eng`).
-  if (enginePath === 'onnx') return TABLE_BY_KEY.get('kor/onnx') ?? null;
+  // The Korean recognizer reads Hangul and Latin whatever languages the request named (`kor`, `kor+eng`); English alone has its own.
+  if (enginePath === 'onnx') return TABLE_BY_KEY.get(language === 'eng' ? 'eng/onnx' : 'kor/onnx') ?? null;
   return TABLE_BY_KEY.get(`${language}/${enginePath}`) ?? null;
 }
 

@@ -17,10 +17,10 @@ import { Semaphore } from '../workers/semaphore';
 import { prepareOnnxInput, type OnnxPrepareOptions } from './ocr-onnx-input';
 import {
   ONNX_OCR_DETECTOR_FILE,
-  ONNX_OCR_DICTIONARY_FILE,
   ONNX_OCR_MODEL_DIR_ENV,
-  ONNX_OCR_RECOGNIZER_FILE,
+  ONNX_RECOGNIZER_FILES,
   type OnnxPageInput,
+  type OnnxRecognizer,
 } from './ocr-onnx';
 import { encodeFrame, FrameReader, type OnnxReply, type OnnxRunRequest } from './ocr-onnx-protocol';
 import { ocrQueue } from './ocr-cli';
@@ -47,6 +47,7 @@ import type { OcrBBox, OcrLineBlock, OcrResult, OcrWord } from './ocr-pdf-combin
  */
 
 export const ONNX_OCR_SWITCH_ENV = 'EASYCONVERT_OCR_ONNX';
+export const ONNX_OCR_ENGLISH_ENV = 'EASYCONVERT_OCR_ONNX_ENGLISH';
 /** The directory the worker image keeps the models in; EASYCONVERT_OCR_ONNX_DIR names another one. */
 export const ONNX_OCR_DEFAULT_MODEL_DIR = '/opt/ocr-onnx';
 
@@ -137,8 +138,18 @@ export function onnxOcrSwitchedOff(): boolean {
   return (process.env[ONNX_OCR_SWITCH_ENV] ?? '').trim().toLowerCase() === 'off';
 }
 
-function modelsPresent(dir: string): boolean {
-  return [ONNX_OCR_DETECTOR_FILE, ONNX_OCR_RECOGNIZER_FILE, ONNX_OCR_DICTIONARY_FILE].every((name) => fs.existsSync(path.join(dir, name)));
+/** Whether a page that Tesseract reads poorly is read again by the ONNX English recognizer: on unless `EASYCONVERT_OCR_ONNX_ENGLISH` or `EASYCONVERT_OCR_ONNX` is `off` (policy decision 302). */
+export function onnxEnglishSecondReadingOn(): boolean {
+  return (process.env[ONNX_OCR_ENGLISH_ENV] ?? '').trim().toLowerCase() !== 'off' && !onnxOcrSwitchedOff();
+}
+
+function modelFiles(recognizer: OnnxRecognizer): string[] {
+  const { model, dictionary } = ONNX_RECOGNIZER_FILES[recognizer];
+  return [ONNX_OCR_DETECTOR_FILE, model, dictionary];
+}
+
+function modelsPresent(dir: string, recognizer: OnnxRecognizer): boolean {
+  return modelFiles(recognizer).every((name) => fs.existsSync(path.join(dir, name)));
 }
 
 function runtimePresent(): boolean {
@@ -175,9 +186,9 @@ function resolveChildEntry(): ChildEntry | null {
 }
 
 /** Why the engine cannot be used here, or null when a helper can be started. Cheap: files and a module lookup. */
-export function onnxOcrUnavailableReason(modelDir: string = onnxOcrModelDirectory()): { reason: OnnxOcrUnavailableReason; message: string } | null {
+export function onnxOcrUnavailableReason(modelDir: string = onnxOcrModelDirectory(), recognizer: OnnxRecognizer = 'kor'): { reason: OnnxOcrUnavailableReason; message: string } | null {
   if (onnxOcrSwitchedOff()) return { reason: 'switched-off', message: `The ONNX OCR engine is switched off (${ONNX_OCR_SWITCH_ENV}=off).` };
-  if (!modelsPresent(modelDir)) return { reason: 'models-missing', message: `The ONNX OCR models (${ONNX_OCR_DETECTOR_FILE}, ${ONNX_OCR_RECOGNIZER_FILE}, ${ONNX_OCR_DICTIONARY_FILE}) are not in '${modelDir}'.` };
+  if (!modelsPresent(modelDir, recognizer)) return { reason: 'models-missing', message: `The ONNX OCR models (${modelFiles(recognizer).join(', ')}) are not in '${modelDir}'.` };
   if (!runtimePresent()) return { reason: 'runtime-missing', message: "The ONNX OCR engine needs the 'onnxruntime-node' package, which is not installed." };
   if (!resolveChildEntry()) return { reason: 'helper-missing', message: `The ONNX OCR helper (${CHILD_FILE}.js) is not built; run "npm run build:ocr-onnx-child".` };
   return null;
@@ -351,14 +362,14 @@ class OnnxHelper {
   }
 
   /** Reads one page; rejects with OnnxOcrFailedError when the helper is lost, too slow or too large, and with the signal's reason when it aborts. */
-  async read(input: OnnxPageInput, language: string, recoverSpaces: boolean, timeoutMs: number, signal?: AbortSignal): Promise<OnnxReply> {
+  async read(input: OnnxPageInput, language: string, recognizer: OnnxRecognizer, recoverSpaces: boolean, timeoutMs: number, signal?: AbortSignal): Promise<OnnxReply> {
     if (this.ended) throw new OnnxOcrFailedError('helper-lost', 'The OCR helper had ended before the page was sent.');
     this.busy = true;
     this.ref();
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = null;
     const id = this.nextId++;
-    const request: OnnxRunRequest = { type: 'run', id, width: input.width, height: input.height, detector: { width: input.detector.width, height: input.detector.height }, language, recoverSpaces };
+    const request: OnnxRunRequest = { type: 'run', id, width: input.width, height: input.height, detector: { width: input.detector.width, height: input.detector.height }, language, recognizer, recoverSpaces };
     const payload = Buffer.concat([input.rgb, input.detector.rgb]);
     let onAbort: (() => void) | undefined;
     let timer: NodeJS.Timeout | undefined;
@@ -505,11 +516,11 @@ export class OnnxOcrPool {
   }
 
   /** Reads one prepared page with the next free helper. */
-  async read(input: OnnxPageInput, options: { language: string; recoverSpaces?: boolean; signal?: AbortSignal }): Promise<OcrResult> {
+  async read(input: OnnxPageInput, options: { language: string; recognizer?: OnnxRecognizer; recoverSpaces?: boolean; signal?: AbortSignal }): Promise<OcrResult> {
     return this.slots.run(async () => {
       options.signal?.throwIfAborted();
       const helper = await this.acquire(options.signal);
-      const reply = await helper.read(input, options.language, options.recoverSpaces !== false, this.options.pageTimeoutMs ?? ONNX_PAGE_TIMEOUT_MS, options.signal);
+      const reply = await helper.read(input, options.language, options.recognizer ?? 'kor', options.recoverSpaces !== false, this.options.pageTimeoutMs ?? ONNX_PAGE_TIMEOUT_MS, options.signal);
       if (reply.type === 'error') {
         if (reply.kind === 'unavailable') throw new OnnxOcrUnavailableError('helper-not-starting', `The ONNX OCR helper could not read: ${reply.message}`);
         throw new OnnxOcrFailedError('rejected', `The ONNX OCR helper could not read the page: ${reply.message}`);
@@ -614,6 +625,8 @@ export function checkedResult(raw: unknown, width: number, height: number, langu
 
 export interface OnnxPageOptions extends OnnxPrepareOptions {
   language: string;
+  /** Which line recognizer reads the page; default Korean. */
+  recognizer?: OnnxRecognizer;
   recoverSpaces?: boolean;
   signal?: AbortSignal;
 }
@@ -624,7 +637,7 @@ export interface OnnxPageOptions extends OnnxPrepareOptions {
  * used here, OnnxOcrFailedError when the helper failed on this page, and the errors of decoding an image as the other engines do.
  */
 export async function recognizePageWithOnnxHelper(imageBuffer: Buffer, options: OnnxPageOptions, pool: OnnxOcrPool = getSharedOnnxOcrPool()): Promise<OcrResult> {
-  const unavailable = onnxOcrUnavailableReason();
+  const unavailable = onnxOcrUnavailableReason(undefined, options.recognizer);
   if (unavailable) throw new OnnxOcrUnavailableError(unavailable.reason, unavailable.message);
   const input = await prepareOnnxInput(imageBuffer, options);
   options.signal?.throwIfAborted();

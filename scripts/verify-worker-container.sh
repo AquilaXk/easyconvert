@@ -496,8 +496,8 @@ fi
 # 200 x 60 image, which the detector reads and the recogniser then reads whole (an image of up to 100 pixels with no box is one line). The check passes
 # when a result frame comes back, so session creation AND an inference of both models ran under this container's seccomp profile; a refused system call
 # of the runtime shows in the first bytes of the helper's standard error, which are printed on failure.
-if [ ! -s /opt/ocr-onnx/rec.onnx ] || [ ! -f "$APP_DIR/dist/ocr-onnx-child.js" ]; then
-  fail "the ONNX OCR models (/opt/ocr-onnx) or the helper ($APP_DIR/dist/ocr-onnx-child.js) are missing: Korean pages are read by Tesseract"
+if [ ! -s /opt/ocr-onnx/rec.onnx ] || [ ! -s /opt/ocr-onnx/rec-eng.onnx ] || [ ! -s /opt/ocr-onnx/dict-eng.txt ] || [ ! -f "$APP_DIR/dist/ocr-onnx-child.js" ]; then
+  fail "the ONNX OCR models (/opt/ocr-onnx) or the helper ($APP_DIR/dist/ocr-onnx-child.js) are missing: Korean pages and the second reading of English pages are read by Tesseract"
 else
   cat > "$work_dir/onnx-probe.js" <<'PROBE'
 const { spawn } = require('node:child_process');
@@ -531,7 +531,7 @@ child.stdout.on('data', (chunk) => {
     out = out.subarray(8 + headerBytes + payloadBytes);
     if (header.type === 'ready' && !sent) {
       sent = true;
-      child.stdin.write(frame({ type: 'run', id: 1, width: 200, height: 60, detector: { width: 320, height: 96 }, language: 'kor', recoverSpaces: true }, Buffer.alloc(3 * (200 * 60 + 320 * 96), 255)));
+      child.stdin.write(frame({ type: 'run', id: 1, width: 200, height: 60, detector: { width: 320, height: 96 }, language: 'kor', recognizer: 'kor', recoverSpaces: true }, Buffer.alloc(3 * (200 * 60 + 320 * 96), 255)));
     } else if (header.type === 'result') {
       clearTimeout(timer);
       finish(Array.isArray(header.result && header.result.lineBlocks) ? 'ONNX-OK' : 'ONNX-FAIL a result without lines');

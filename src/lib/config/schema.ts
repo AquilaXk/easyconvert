@@ -581,7 +581,13 @@ const SCHEMA_ENTRIES = [
   autoOffSetting(
     'EASYCONVERT_OCR_ONNX',
     'tools',
-    'Whether Korean pages (`kor`, `kor+eng`) are read by the ONNX OCR engine (PP-OCRv5 models in a sandboxed helper process, `src/lib/conversions/ocr-onnx-helper.ts`). `auto` (the default) uses it when the models, the `onnxruntime-node` package and the helper program are present, and reads Korean with Tesseract otherwise (the result carries `engineFallback`). `off` always reads Korean with Tesseract.',
+    'Whether Korean pages (`kor`, `kor+eng`) are read by the ONNX OCR engine (PP-OCRv5 models in a sandboxed helper process, `src/lib/conversions/ocr-onnx-helper.ts`). `auto` (the default) uses it when the models, the `onnxruntime-node` package and the helper program are present, and reads Korean with Tesseract otherwise (the result carries `engineFallback`). `off` always reads Korean with Tesseract, and also switches off `EASYCONVERT_OCR_ONNX_ENGLISH`.',
+    BOTH
+  ),
+  autoOffSetting(
+    'EASYCONVERT_OCR_ONNX_ENGLISH',
+    'tools',
+    'Whether an English page that Tesseract still reads below a score of 0.75 after both of its preparations is read again by the ONNX OCR engine with the English recognizer (policy decision 302), which needs the files `rec-eng.onnx` and `dict-eng.txt` of the model directory beside those of Korean. `auto` (the default) reads such a page again when the engine is usable and keeps the Tesseract reading when it is not; `off` leaves English to Tesseract. The second readings of a document are limited to 5% of the time it has run (plus 3 s), and the time a second reading takes does not count against the time limit of its page.',
     BOTH
   ),
   {
@@ -1305,7 +1311,7 @@ const SCHEMA_ENTRIES = [
   intLimit('EASYCONVERT_PDF_TEXT_DEADLINE_MS', 'Milliseconds the PDF text extraction may run before it is stopped.', INT32_MAX, 60_000),
   intLimit(
     'EASYCONVERT_OCR_PAGE_BUDGET_MS',
-    'Milliseconds of work the text recognition (OCR) of one page of a scanned PDF may cost. A document may take three page budgets plus one for each page it reads, so a long scan is never cut at a fixed time, and never more than 90 percent of the job\'s own deadline when it has one; a single page that takes six page budgets is refused too. A document or page over its limit is refused with HTTP 413.',
+    'Milliseconds of work the text recognition (OCR) of one page of a scanned PDF may cost. A document may take three page budgets plus one for each page it reads, so a long scan is never cut at a fixed time, and never more than 90 percent of the job\'s own deadline when it has one; a single page that takes eighteen page budgets (180 s at the default) is refused too. A document or page over its limit is refused with HTTP 413.',
     INT32_MAX,
     10_000
   ),
@@ -1439,7 +1445,7 @@ const SCHEMA_ENTRIES = [
   toolPath('RSVG_CONVERT_PATH', 'Path of the librsvg `rsvg-convert` executable that writes an SVG as a vector PDF.', BOTH),
   toolPath('TESSERACT_PATH', 'Path of the `tesseract` executable.', BOTH),
   toolResourcePath('TESSDATA_PREFIX', 'Directory of the Tesseract language data.', BOTH),
-  toolResourcePath('EASYCONVERT_OCR_ONNX_DIR', 'Directory of the ONNX Korean OCR models (`det.onnx`, `rec.onnx`, `dict.txt`); `/opt/ocr-onnx` (the worker image) when unset. Installed by `scripts/install-onnx-ocr-models.sh`.', BOTH),
+  toolResourcePath('EASYCONVERT_OCR_ONNX_DIR', 'Directory of the ONNX OCR models (`det.onnx`; `rec.onnx` and `dict.txt` for Korean, `rec-eng.onnx` and `dict-eng.txt` for English); `/opt/ocr-onnx` (the worker image) when unset. Installed by `scripts/install-onnx-ocr-models.sh`.', BOTH),
   toolPath('VERAPDF_PATH', 'Path of the `verapdf` executable that validates PDF/A output.', BOTH),
   toolPath('QPDF_PATH', 'Path of the `qpdf` executable that encrypts PDF output.', BOTH),
   toolPath('FC_LIST_PATH', 'Path of the fontconfig `fc-list` executable.', BOTH),

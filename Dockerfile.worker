@@ -311,10 +311,10 @@ COPY native/tmpfile-redirect/ /src/tmpfile-redirect/
 RUN /src/tmpfile-redirect/build.sh /usr/local/lib/libeasyconvert-tmpfile.so
 
 # ==============================================================================
-# Stage 4b, second part: Models of the ONNX Korean OCR engine
+# Stage 4b, second part: Models of the ONNX OCR engine
 # ==============================================================================
-# The PP-OCRv5 mobile detector and Korean recognizer (PaddleOCR weights, Apache-2.0, converted to ONNX by RapidOCR, Apache-2.0) and the
-# recognizer's character list, 18 MB in all, each pinned by SHA-256 in scripts/install-onnx-ocr-models.sh, which checks it before it is
+# The PP-OCRv5 mobile detector and the Korean and English recognizers (PaddleOCR weights, Apache-2.0, converted to ONNX by RapidOCR,
+# Apache-2.0) and each recognizer's character list, 26 MB in all (the English recognizer and its list are 7.9 MB), each pinned by SHA-256 in scripts/install-onnx-ocr-models.sh, which checks it before it is
 # copied. They are data that onnxruntime reads in a sandboxed helper process (docs/policy-decisions.md, entries 230 and 246).
 FROM ${NODE_IMAGE} AS ocronnx
 
@@ -599,10 +599,10 @@ COPY --from=qpdfrunner /usr/local/bin/pid-init /usr/local/bin/pid-init
 COPY --from=qpdfrunner /usr/local/lib/libeasyconvert-tmpfile.so /usr/local/lib/libeasyconvert-tmpfile.so
 RUN pid-init 2>&1 | grep -q '^usage: pid-init'
 
-# Models of the ONNX Korean OCR engine, at the fixed directory the worker reads (src/lib/conversions/ocr-onnx-helper.ts). The engine runs in a
-# sandboxed helper process; without these files Korean pages are read by Tesseract and the result says so.
+# Models of the ONNX OCR engine, at the fixed directory the worker reads (src/lib/conversions/ocr-onnx-helper.ts). The engine runs in a
+# sandboxed helper process; without these files Korean pages, and English pages that Tesseract read poorly, are read by Tesseract alone.
 COPY --from=ocronnx /opt/ocr-onnx /opt/ocr-onnx
-RUN test -s /opt/ocr-onnx/det.onnx && test -s /opt/ocr-onnx/rec.onnx && test -s /opt/ocr-onnx/dict.txt
+RUN test -s /opt/ocr-onnx/det.onnx && test -s /opt/ocr-onnx/rec.onnx && test -s /opt/ocr-onnx/dict.txt && test -s /opt/ocr-onnx/rec-eng.onnx && test -s /opt/ocr-onnx/dict-eng.txt
 
 # MIDI renderer: FluidSynth (LGPL, run unmodified as a separate sandboxed program) turns a Standard MIDI File into sound with the General MIDI
 # SoundFont of timgm6mb-soundfont (6 MB, GPL-2 data that the program only reads), which the Debian alternatives link default-GM.sf2 names.
