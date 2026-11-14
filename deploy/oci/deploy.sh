@@ -8,7 +8,7 @@
 #   deploy.sh budget                           print the per-service limits derived from the two budget knobs
 #   deploy.sh guard                            exit 1 and log a warning when the scratch mount is missing or a disk is nearly full
 #   deploy.sh sweep                            delete scratch temp files and job staging entries older than two hours, from inside
-#                                              the worker image
+#                                              the worker image (run it only while the worker is stopped: it shares /tmp with it)
 #   deploy.sh deploy <image-ref>               pull, pin by digest, read the smoke label, start, check health, the smoke (one conversion, and
 #                                              the convert route refusing a request it has parsed) and the canonical host of the pages,
 #                                              roll back on failure, prune old images (<image-ref> is main or sha-<40 hex characters>)
@@ -500,7 +500,13 @@ deploy() {
 
   compose "$release" config --quiet || die "the compose file does not accept this env secret"
   origin="$(release_origin "$release")" || die "Compose could not resolve the origin of the web service"
-  child compose "$release" run --rm --no-deps --entrypoint sh worker -c "$SCRATCH_SWEEP" || log "scratch sweep skipped"
+  # The sweep shares /tmp with the worker of the release this one replaces, which keeps files it made when it started (the profile
+  # template of the office pool) untouched for days, so it runs once that worker has stopped.
+  if [ -z "$previous" ] || child compose "$previous" stop worker; then
+    child compose "$release" run --rm --no-deps --entrypoint sh worker -c "$SCRATCH_SWEEP" || log "scratch sweep skipped"
+  else
+    log "the worker of the previous release did not stop: scratch sweep skipped"
+  fi
 
   if start_release "$release" && canonical_host_matches "$origin" && public_probe_refused "$origin"; then
     trap '' INT TERM
