@@ -5,6 +5,7 @@ import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { fileSizeLimitProblem } from '@/lib/api/file-size-limit';
 import { UPLOAD_PART_MAX_BYTES } from '@/lib/plan-limits';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
+import { reserveSessionBudget, undoOpening } from '@/lib/api/upload-session-budget';
 import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
 import { storageProvider } from '@/lib/storage';
 
@@ -22,6 +23,9 @@ interface DirectUploadInitiateBody {
   partSize?: number;
   totalParts?: number;
 }
+
+/** The sentence for a requested part size under the smallest, in a file of more than one part: every part but the last must reach it. */
+const PART_SIZE_TOO_SMALL = `"partSize" must be at least ${MIN_PART_SIZE / (1024 * 1024)} MiB unless the file fits in one part.`;
 
 function computeChosenPartSize(totalSize: number, requestedPartSize?: number): number {
   if (requestedPartSize && requestedPartSize > 0) {
@@ -74,6 +78,10 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const tooLarge = fileSizeLimitProblem(auth.user, totalSize, instanceUri);
   if (tooLarge) return tooLarge;
 
+  if (body.partSize !== undefined && body.partSize > 0 && body.partSize < MIN_PART_SIZE && totalSize > body.partSize) {
+    return createProblemDetailsResponse(400, PART_SIZE_TOO_SMALL, instanceUri, 'Bad Request');
+  }
+
   const chosenPartSize = computeChosenPartSize(totalSize, body.partSize);
   const totalParts = Math.max(1, Math.ceil(totalSize / chosenPartSize));
 
@@ -96,7 +104,10 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     );
   }
 
-  // 3. Initiate the multipart upload session
+  // 3. Reserve the declared size in the caller's upload budget, then initiate the multipart upload session
+  const budget = await reserveSessionBudget(auth.user, totalSize, instanceUri);
+  if ('refused' in budget) return budget.refused;
+  const abort = (uploadId: string) => storageProvider.abortMultipartUpload(uploadId);
   let session;
   try {
     session = await storageProvider.initiateMultipartUpload(
@@ -106,7 +117,9 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
       auth.user.id,
       chosenPartSize
     );
+    await budget.reservation.bind(session.uploadId, session.expiresAt);
   } catch (err: unknown) {
+    await undoOpening(budget.reservation, session?.uploadId, abort);
     return (
       storageErrorResponse(err, instanceUri) ??
       createProblemDetailsResponse(
@@ -134,6 +147,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
       })
     );
   } catch (err: unknown) {
+    await undoOpening(budget.reservation, session.uploadId, abort);
     return (
       storageErrorResponse(err, instanceUri) ??
       createProblemDetailsResponse(500, 'Failed to presign the upload parts.', instanceUri, 'Internal Server Error')

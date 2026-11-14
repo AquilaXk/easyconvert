@@ -48,14 +48,14 @@
     "file": "src/app/api/v1/uploads/[[...id]]/route.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "POST",
-    "count": 2
+    "count": 1
   },
   {
     "file": "src/app/api/v1/uploads/[[...id]]/route.ts",
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 39
+    "maxValue": 33
   },
   {
     "file": "src/app/api/v1/uploads/direct/complete/route.ts",

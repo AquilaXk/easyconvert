@@ -31,8 +31,10 @@ import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { fileSizeLimitProblem, partBodyProblem } from '@/lib/api/file-size-limit';
 import { LARGEST_PLAN_FILE_BYTES } from '@/lib/plan-limits';
 import type { User } from '@/lib/auth/types';
+import type { UploadReservation } from '@/lib/api-keys/anonymous-upload-budget';
 import { storageErrorResponse, uploadSessionNotFoundResponse } from '@/lib/api/storage-error-response';
 import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
+import { closeSessionBudget, reserveSessionBudget, undoOpening } from '@/lib/api/upload-session-budget';
 import { forgetUploadParts, receivePart, type PartStore } from '@/lib/storage/part-admission';
 import { declaredPartBytes, partFailureResponse, uploadErrorResponse, type UploadErrorContext } from '@/lib/api/part-response';
 import { POST as directPostHandler } from '../direct/route';
@@ -229,26 +231,62 @@ async function handleInitiateUpload(
 
   const pregenLimit = Math.min(totalParts, MAX_PREGENERATED_PART_URLS);
 
-  // Against an object store the session is a signed token that carries the declared size, part
-  // size and owner: part URLs exist only for the declared parts and the object's key is unique.
-  if (storageProvider.kind === 'remote' && storageProvider.generatePresignedUploadPartUrl) {
-    const remoteSession = await storageProvider.initiateMultipartUpload(filename, mimeType, totalSize, userId, chosenPartSize);
-    const remoteUrls = await Promise.all(
-      Array.from({ length: pregenLimit }, async (_, idx) =>
-        storageProvider.generatePresignedUploadPartUrl!(remoteSession.key, remoteSession.uploadId, idx + 1, PART_URL_TTL_SECONDS)
-      )
-    );
-    return NextResponse.json({
-      success: true,
-      uploadId: remoteSession.uploadId,
-      key: remoteSession.key,
-      partSize: remoteSession.partSize,
-      totalParts: remoteSession.totalParts,
-      expiresAt: remoteSession.expiresAt,
-      presignedUrls: remoteUrls,
-    });
+  // The declared size is held in the caller's upload budget until the session ends.
+  const budget = await reserveSessionBudget(user, totalSize, instanceUri);
+  if ('refused' in budget) return budget.refused;
+  const opening: Opening = { reservation: budget.reservation };
+  try {
+    // Against an object store the session is a signed token that carries the declared size, part
+    // size and owner: part URLs exist only for the declared parts and the object's key is unique.
+    if (storageProvider.kind === 'remote' && storageProvider.generatePresignedUploadPartUrl) {
+      return await openRemoteUpload({ filename, mimeType, totalSize, chosenPartSize, pregenLimit, userId }, opening);
+    }
+    return await openLocalUpload({ filename, mimeType, totalSize, chosenPartSize, totalParts, pregenLimit, userId }, opening);
+  } catch (error) {
+    await undoOpening(budget.reservation, opening.uploadId, (uploadId) => storageProvider.abortMultipartUpload?.(uploadId));
+    throw error;
   }
+}
 
+/** An opening in progress: its budget reservation, and the session once the store made it. */
+interface Opening {
+  reservation: UploadReservation;
+  uploadId?: string;
+}
+
+interface OpenParams {
+  filename: string;
+  mimeType: string;
+  totalSize: number;
+  chosenPartSize: number;
+  pregenLimit: number;
+  userId: string;
+}
+
+async function openRemoteUpload({ filename, mimeType, totalSize, chosenPartSize, pregenLimit, userId }: OpenParams, opening: Opening): Promise<Response> {
+  const remoteSession = await storageProvider.initiateMultipartUpload(filename, mimeType, totalSize, userId, chosenPartSize);
+  opening.uploadId = remoteSession.uploadId;
+  await opening.reservation.bind(remoteSession.uploadId, remoteSession.expiresAt);
+  const remoteUrls = await Promise.all(
+    Array.from({ length: pregenLimit }, async (_, idx) =>
+      storageProvider.generatePresignedUploadPartUrl!(remoteSession.key, remoteSession.uploadId, idx + 1, PART_URL_TTL_SECONDS)
+    )
+  );
+  return NextResponse.json({
+    success: true,
+    uploadId: remoteSession.uploadId,
+    key: remoteSession.key,
+    partSize: remoteSession.partSize,
+    totalParts: remoteSession.totalParts,
+    expiresAt: remoteSession.expiresAt,
+    presignedUrls: remoteUrls,
+  });
+}
+
+async function openLocalUpload(
+  { filename, mimeType, totalSize, chosenPartSize, totalParts, pregenLimit, userId }: OpenParams & { totalParts: number },
+  opening: Opening
+): Promise<Response> {
   if (!(objectStorage instanceof LocalFsStorage)) {
     throw new Error('Multipart uploads need local storage or an object store that presigns part URLs.');
   }
@@ -259,6 +297,8 @@ async function handleInitiateUpload(
     { contentType: mimeType, filename: safeFilename },
     { ownerUserId: userId, totalSize }
   );
+  opening.uploadId = session.uploadId;
+  await opening.reservation.bind(session.uploadId, session.expiresAt);
 
   const presignedUrls = await Promise.all(
     Array.from({ length: pregenLimit }, (_, idx) =>
@@ -326,6 +366,7 @@ async function completeRemoteUpload(
   }
 
   const completed = await storageProvider.completeMultipartUpload(uploadId, parts);
+  await closeSessionBudget(uploadId, 'completed');
   const stored = await storageProvider.stat(completed.key);
   if (stored?.size !== session.totalSize) {
     await storageProvider.deleteObject(completed.key);
@@ -371,6 +412,7 @@ async function completeLocalUpload(
 
   const completedObject = await objectStorage.completeMultipart(session.key, session.uploadId, parts);
   forgetUploadParts(session.uploadId);
+  await closeSessionBudget(session.uploadId, 'completed');
 
   const unrecorded = await recordCompletedUpload(storageProvider, completedObject.key, instanceUri);
   if (unrecorded) return unrecorded;
@@ -412,6 +454,7 @@ async function handleAbortUpload(
       return uploadSessionNotFoundResponse(instanceUri);
     }
     const abortedRemote = (await storageProvider.abortMultipartUpload?.(uploadId)) ?? false;
+    await closeSessionBudget(uploadId, 'aborted');
     return NextResponse.json({ success: true, aborted: abortedRemote });
   }
 
@@ -421,6 +464,7 @@ async function handleAbortUpload(
   }
   const aborted = await objectStorage.abortMultipart(session.key, session.uploadId);
   forgetUploadParts(session.uploadId);
+  await closeSessionBudget(session.uploadId, 'aborted');
   return NextResponse.json({ success: true, aborted });
 }
 
@@ -472,6 +516,28 @@ function isNewTusUpload(req: NextRequest): boolean {
   if (req.nextUrl?.pathname.includes('/direct')) return false;
   const action = req.nextUrl?.searchParams.get('action');
   return !action || action === 'initiate';
+}
+
+/** The answer to a creation-with-upload whose first chunk the engine refused: its own status for a checksum mismatch, else a problem. */
+function creationChunkErrorResponse(err: unknown, instanceUri: string): Response {
+  const tusHeaders = { 'Tus-Resumable': TUS_RESUMABLE_VERSION };
+  if (err instanceof TusChecksumMismatchError) {
+    return new NextResponse('Checksum Mismatch', { status: 460, headers: createTusHeaders() });
+  }
+  if (
+    err instanceof TusInvalidChecksumHeaderError ||
+    err instanceof TusUnsupportedChecksumAlgorithmError ||
+    err instanceof TusUploadExceededLengthError
+  ) {
+    return createProblemDetailsResponse(400, err.message, instanceUri, undefined, undefined, tusHeaders);
+  }
+  if (err instanceof UnknownDeclaredFormatError) {
+    return createProblemDetailsResponse(400, err.message, instanceUri, 'Unknown Format', UNKNOWN_FORMAT_PROBLEM_TYPE, tusHeaders);
+  }
+  const storageProblem = storageErrorResponse(err, instanceUri, tusHeaders);
+  if (storageProblem) return storageProblem;
+  const message = err instanceof Error && err.message ? err.message : 'Error processing creation-with-upload chunk';
+  return createProblemDetailsResponse(400, message, instanceUri, undefined, undefined, tusHeaders);
 }
 
 export const POST = admittingNewFiles(async function POST(
@@ -544,12 +610,23 @@ export const POST = admittingNewFiles(async function POST(
 
   const metadataHeader = req.headers.get('upload-metadata') || undefined;
 
+  // The declared length is held in the caller's upload budget until the session ends.
+  const budget = await reserveSessionBudget(auth.user, uploadLength, instanceUri);
+  if ('refused' in budget) {
+    budget.refused.headers.set('Tus-Resumable', TUS_RESUMABLE_VERSION);
+    return budget.refused;
+  }
+  let createdId: string | undefined;
+  const takeBack = () => undoOpening(budget.reservation, createdId, (id) => tusEngine.terminateSession(id));
+
   try {
     const session = await tusEngine.createSession({
       uploadLength,
       metadataHeader,
       ownerUserId: auth.user.id,
     });
+    createdId = session.id;
+    await budget.reservation.bind(session.id, session.expiresAt);
 
     const isTusSubpath = req.nextUrl?.pathname?.includes('/api/v1/uploads/tus');
     const basePath = isTusSubpath ? '/api/v1/uploads/tus' : '/api/v1/uploads';
@@ -572,37 +649,11 @@ export const POST = admittingNewFiles(async function POST(
         currentOffset = chunkResult.newOffset;
         if (chunkResult.isComplete) {
           completedStorageKey = chunkResult.session.key;
+          await closeSessionBudget(session.id, 'completed');
         }
-      } catch (err: any) {
-        await tusEngine.terminateSession(session.id);
-        if (err instanceof TusChecksumMismatchError) {
-          return new NextResponse('Checksum Mismatch', { status: 460, headers: createTusHeaders() });
-        }
-        if (err instanceof TusInvalidChecksumHeaderError || err instanceof TusUnsupportedChecksumAlgorithmError) {
-          return createProblemDetailsResponse(400, err.message, instanceUri, undefined, undefined, {
-            'Tus-Resumable': TUS_RESUMABLE_VERSION,
-          });
-        }
-        if (err instanceof TusUploadExceededLengthError) {
-          return createProblemDetailsResponse(400, err.message, instanceUri, undefined, undefined, {
-            'Tus-Resumable': TUS_RESUMABLE_VERSION,
-          });
-        }
-        if (err instanceof UnknownDeclaredFormatError) {
-          return createProblemDetailsResponse(400, err.message, instanceUri, 'Unknown Format', UNKNOWN_FORMAT_PROBLEM_TYPE, {
-            'Tus-Resumable': TUS_RESUMABLE_VERSION,
-          });
-        }
-        const storageProblem = storageErrorResponse(err, instanceUri, { 'Tus-Resumable': TUS_RESUMABLE_VERSION });
-        if (storageProblem) return storageProblem;
-        return createProblemDetailsResponse(
-          400,
-          err?.message || 'Error processing creation-with-upload chunk',
-          instanceUri,
-          undefined,
-          undefined,
-          { 'Tus-Resumable': TUS_RESUMABLE_VERSION }
-        );
+      } catch (err: unknown) {
+        await takeBack();
+        return creationChunkErrorResponse(err, instanceUri);
       }
     }
 
@@ -619,6 +670,7 @@ export const POST = admittingNewFiles(async function POST(
 
     return new NextResponse(null, { status: 201, headers });
   } catch (err: any) {
+    await takeBack();
     if (err instanceof TusInvalidMetadataError) {
       return createProblemDetailsResponse(400, err.message, instanceUri, undefined, undefined, {
         'Tus-Resumable': TUS_RESUMABLE_VERSION,
@@ -777,6 +829,7 @@ export async function PATCH(
     if (result.isComplete) {
       headers.set('EasyConvert-Storage-Key', result.session.key);
       headers.set('X-Storage-Key', result.session.key);
+      await closeSessionBudget(sessionId, 'completed');
     }
 
     return new NextResponse(null, { status: 204, headers });
@@ -870,6 +923,7 @@ export async function DELETE(
   }
 
   const deleted = await tusEngine.terminateSession(sessionId);
+  await closeSessionBudget(sessionId, 'aborted');
   if (!deleted) {
     return new NextResponse('Upload Not Found', { status: 404, headers: createTusHeaders() });
   }

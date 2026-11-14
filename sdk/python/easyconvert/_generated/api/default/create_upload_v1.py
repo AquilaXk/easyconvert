@@ -74,6 +74,11 @@ def _parse_response(
 
         return response_413
 
+    if response.status_code == 429:
+        response_429 = ProblemDetails.from_dict(response.json())
+
+        return response_429
+
     if response.status_code == 460:
         response_460 = response.text
         return response_460

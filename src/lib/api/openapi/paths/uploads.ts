@@ -8,6 +8,10 @@ import {
   PLAN_FILE_LIMIT_DESCRIPTION,
 } from '../shared';
 
+/** The 429 of a session that would pass the open-upload budget of the caller's plan (docs/policy-decisions.md, entry 296). */
+const OPEN_UPLOADS_DESCRIPTION =
+  'The caller holds the most uploads it may have open at once, or the open uploads would declare more bytes than its plan allows (problem type `https://api.easyconvert.io/problems/upload-budget-exceeded`, with `refusal` `open-uploads` or `open-bytes`, the number as `limit` or `limitBytes`, and `plan`). Complete or abort an upload, then try again.';
+
 const TUS_VERSION = '1.0.0';
 const TUS_CHUNK_MEDIA_TYPE = 'application/offset+octet-stream';
 
@@ -107,6 +111,7 @@ export const uploadPaths = {
         '403': createProblemResponse('API key lacks the "convert:write" scope.'),
         '412': tusPlainText('Unsupported `Tus-Resumable` version.'),
         '413': createProblemResponse(`${PLAN_FILE_LIMIT_DESCRIPTION} \`Tus-Max-Size\` is the largest limit of any plan; the limit of the caller's plan applies.`),
+        '429': createProblemResponse(OPEN_UPLOADS_DESCRIPTION),
         '460': tusPlainText('First chunk does not match `Upload-Checksum`.'),
       },
     },
@@ -199,7 +204,7 @@ export const uploadPaths = {
         filename: { type: 'string' },
         totalSize: { type: 'integer', minimum: 0, description: 'Total size in bytes (at most 10 GiB).' },
         mimeType: { type: 'string', default: 'application/octet-stream' },
-        partSize: { type: 'integer', description: 'Requested part size in bytes; at most 10,000 parts are allowed.' },
+        partSize: { type: 'integer', description: 'Requested part size in bytes: at least 5 MiB unless the file fits in one part (every part but the last must reach it), and at most 10,000 parts are allowed.' },
       }, ['filename', 'totalSize']),
       responses: {
         '200': createJsonResponse('Upload created with presigned part URLs.', {
@@ -223,6 +228,7 @@ export const uploadPaths = {
         '400': createProblemResponse('Missing filename or invalid size.'),
         '401': createProblemResponse('Authentication required.'),
         '413': createProblemResponse(`${PLAN_FILE_LIMIT_DESCRIPTION} Or: the upload needs more parts than the part-count limit.`),
+        '429': createProblemResponse(OPEN_UPLOADS_DESCRIPTION),
       },
     },
   },

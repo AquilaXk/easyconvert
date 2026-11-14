@@ -225,6 +225,7 @@ export async function eraseAccount(plan: AccountErasurePlan, options: AccountEra
   const left = (await conversionQueue.forgetUser?.(userId, new Set(work.jobs.map((job) => job.id)))) ?? [];
   if (left.length > 0) return { runningJobIds: left };
 
+  await removeWebhookDeliveries(userId);
   await webhookDispatcher.clearDlq(userId, { strict: true });
   await redisKeyStore.forgetUsage(userId);
   const client = redisKeyStore.getRedisClient();
@@ -238,12 +239,24 @@ export async function eraseAccount(plan: AccountErasurePlan, options: AccountEra
   return { runningJobIds: [] };
 }
 
+/**
+ * Removes the deliveries of `userId` that wait or are delayed for a retry in the webhook queue: each holds the address and the
+ * sealed secret of the account and would be sent after the erasure. One that is running is dropped by the worker, which finds
+ * the account gone before it sends again or writes a dead letter.
+ */
+async function removeWebhookDeliveries(userId: string): Promise<void> {
+  const queue = webhookDispatcher.getQueue();
+  for (const job of await queue.getJobs(['waiting', 'delayed'])) {
+    if (job.data.options?.ownerUserId === userId) await queue.remove(job.id);
+  }
+}
+
 /** Deletes the failed-login counters of `email`; a Redis that does not answer fails the erasure (the limiter's own reset falls back to memory). */
 async function forgetFailedLogins(email: string): Promise<void> {
   const redis = redisUserStore.getRedisClient();
   // The key the login limiter writes (`login_attempts:email:<lower-cased address>` under the user store's prefix).
   if (redis) await redis.del(`${redisUserStore.getKeyPrefix()}login_attempts:email:${email.toLowerCase().trim()}`);
-  await resetLoginAttempts(null, email);
+  await resetLoginAttempts(email);
 }
 
 /** The subscription record is deleted here; the payment provider keeps the customer and keeps charging an active subscription until it is canceled there. */

@@ -492,7 +492,9 @@ describe('deploy workflow', () => {
   it('purges the edge cache after a deploy or a rollback on a hosted runner, so the purge token never reaches the production host', () => {
     const purge = workflow.jobs['purge-edge-cache'];
     expect(purge.needs).toBe('deploy');
-    expect(purge.if).toBe(workflow.jobs.deploy.if);
+    // A deploy that failed after it rolled back still served the new release for a while, so its pages are purged too; a deploy
+    // that was cancelled or skipped (the gate failed) served nothing.
+    expect(purge.if).toBe(`always() && (needs.deploy.result == 'success' || needs.deploy.result == 'failure') && ${workflow.jobs.deploy.if}`);
     expect(purge['runs-on']).toBe('ubuntu-24.04');
     expect(purge.permissions).toEqual({});
     const holders = Object.entries(workflow.jobs).filter(([, job]) => JSON.stringify(job).includes('secrets.CLOUDFLARE_'));
@@ -961,6 +963,8 @@ case "$1" in
         i=0; while [ "$i" -lt "$count" ]; do echo "container-$service-$i-$(basename "$dir")"; i=$((i+1)); done ;;
       *" exec "*)
         for f in $STUB_FAIL_EXEC; do case "$dir" in *"$f"*) exit 1 ;; esac; done ;;
+      *" stop "*)
+        [ -z "\${STUB_FAIL_STOP:-}" ] || exit 1 ;;
       *" up "*)
         for f in $STUB_HANG_UP; do case "$dir" in *"$f"*) echo $$ > "$STUB_HANG_MARK"; exec sleep 20 ;; esac; done
         for f in $STUB_FAIL_UP; do case "$dir" in *"$f"*) exit 1 ;; esac; done ;;
@@ -1108,6 +1112,42 @@ exit 0`
     expect(releases()).toEqual([good]);
     const ups = calls().filter((call) => / up -d /.test(call));
     expect(ups.at(-1)).toContain(good);
+  });
+
+  describe('the scratch sweep', () => {
+    // The sweep runs in a one-off worker container that shares /tmp with the running worker. That worker keeps files it made when it
+    // started (the profile template of the office pool) untouched for days, so the sweep, which removes what is older than two hours,
+    // would take them from a worker that still serves jobs.
+    const sweepCall = (list: string[]): number => list.findIndex((call) => / run --rm .*find \/tmp /.test(call));
+    const upCall = (list: string[]): number => list.findIndex((call) => / up -d /.test(call));
+
+    it('runs only after the worker of the release it replaces has stopped, and before the new release starts', () => {
+      expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+      const previous = currentRelease();
+      const already = calls().length;
+      expect(run(['deploy', ref('b')], { env: hostEnv() }).status).toBe(0);
+      const second = calls().slice(already);
+      const stop = second.findIndex((call) => / stop worker/.test(call) && call.includes(previous));
+      expect(stop).toBeGreaterThanOrEqual(0);
+      expect(stop).toBeLessThan(sweepCall(second));
+      expect(sweepCall(second)).toBeLessThan(upCall(second));
+    });
+
+    it('has no worker to stop on a first deploy and still runs before the stack starts', () => {
+      expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+      expect(calls().some((call) => / stop worker/.test(call))).toBe(false);
+      expect(sweepCall(calls())).toBeGreaterThanOrEqual(0);
+      expect(sweepCall(calls())).toBeLessThan(upCall(calls()));
+    });
+
+    it('is skipped, and the deploy goes on, when the previous worker does not stop', () => {
+      expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+      const already = calls().length;
+      const result = run(['deploy', ref('b')], { env: hostEnv({ STUB_FAIL_STOP: '1' }) });
+      expect(result.status, result.stderr).toBe(0);
+      expect(sweepCall(calls().slice(already))).toBe(-1);
+      expect(result.stderr).toContain('scratch sweep skipped');
+    });
   });
 
   it('rolls back when the stack starts but the health check never passes', () => {

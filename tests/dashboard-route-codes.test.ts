@@ -199,6 +199,7 @@ describe('a dashboard route', () => {
       'invalid_grace_period',
       'invalid_key_settings',
       'key_create_failed',
+      'key_limit_reached',
       'terms_not_accepted',
       'terms_outdated',
     ]);

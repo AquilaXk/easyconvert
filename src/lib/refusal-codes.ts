@@ -63,7 +63,7 @@ export type BillingRefusalCode = (typeof BILLING_REFUSAL_CODES)[number];
 /**
  * Why a route of the dashboard (`/api/account/files/**`, `/api/keys/**`, `/api/webhooks/dlq/**`) refused, where its status
  * cannot say it: a key without the `*` scope a route requires, a key requested without accepting the terms in force, key
- * settings or a grace period out of range, or a key that could not be made. The access check (401, 403, 429, 503) and an unknown id (404) are worded by their status.
+ * settings or a grace period out of range, an account that holds its most active keys, or a key that could not be made. The access check (401, 403, 429, 503) and an unknown id (404) are worded by their status.
  */
 export const DASHBOARD_REFUSAL_CODES = [
   'admin_scope_required',
@@ -71,6 +71,7 @@ export const DASHBOARD_REFUSAL_CODES = [
   'terms_outdated',
   'invalid_key_settings',
   'invalid_grace_period',
+  'key_limit_reached',
   'key_create_failed',
 ] as const;
 

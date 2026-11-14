@@ -14,12 +14,12 @@ import { isNoSuchUploadError, uploadSessionNotFoundResponse } from '@/lib/api/st
 import { STORAGE_OBJECT_NOT_FOUND, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
 import { fileSizeLimitProblem, partBodyProblem } from '@/lib/api/file-size-limit';
 import { respondOnce } from '@/lib/api/with-idempotency';
-import { UPLOAD_PART_MAX_BYTES } from '@/lib/plan-limits';
+import { UPLOAD_PART_MAX_BYTES, planOfCaller, type Plan } from '@/lib/plan-limits';
 import { isAnonymousUserId, isUnattributedAnonymous, mayUseUploadSession, uploadOwnerOf } from '@/lib/auth/anonymous-identity';
 import {
   OPEN_UPLOAD_IDLE_MS,
   endUploadReservation,
-  reserveAnonymousUpload,
+  reserveUploadBudget,
   resumeUploadReservation,
 } from '@/lib/api-keys/anonymous-upload-budget';
 import { unattributedTransferRefusal, uploadBudgetRefusalResponse } from '@/lib/api/upload-budget-response';
@@ -217,7 +217,7 @@ async function jobStartRefusal(user: User, instanceUri: string): Promise<NextRes
 
 /**
  * Opens an upload session: the declared size is held to the plan limit and the part size to the bounds of a part, a
- * job must be able to start for the caller, and an anonymous caller's budget must have room for the declared size.
+ * job must be able to start for the caller, and the caller's upload budget must have room for the declared size.
  */
 async function openSession({ storage, user, instanceUri, body }: ActionContext): Promise<Response> {
   if (isUnattributedAnonymous(user.id)) return unattributedTransferRefusal(instanceUri);
@@ -233,8 +233,8 @@ async function openSession({ storage, user, instanceUri, body }: ActionContext):
   const blocked = await jobStartRefusal(user, instanceUri);
   if (blocked) return blocked;
 
-  const reserved = await reserveAnonymousUpload(user.id, totalSize, Date.now() + OPEN_UPLOAD_IDLE_MS);
-  if ('refusal' in reserved) return uploadBudgetRefusalResponse(reserved.refusal, instanceUri);
+  const reserved = await reserveUploadBudget(user, totalSize, Date.now() + OPEN_UPLOAD_IDLE_MS);
+  if ('refusal' in reserved) return uploadBudgetRefusalResponse(reserved.refusal, instanceUri, planOfCaller(user));
   let uploadId: string | undefined;
   try {
     const initResult = await storage.initiateMultipartUpload(
@@ -309,10 +309,10 @@ function unexpectedFailure(error: unknown, action: string, sessionBound: boolean
  * Keeps a session counted as open while its parts arrive, or refuses a part of an idle session past the most open ones.
  * A budget that cannot be reached does not refuse the part: its bytes were reserved when the session opened.
  */
-async function openSessionRefusal(uploadId: string, instanceUri: string): Promise<NextResponse | null> {
+async function openSessionRefusal(uploadId: string, instanceUri: string, plan: Plan): Promise<NextResponse | null> {
   try {
     const refusal = await resumeUploadReservation(uploadId);
-    return refusal ? uploadBudgetRefusalResponse(refusal, instanceUri) : null;
+    return refusal ? uploadBudgetRefusalResponse(refusal, instanceUri, plan) : null;
   } catch (error) {
     console.warn(`[multipart] Could not note the activity of an upload; the part is taken:`, error);
     return null;
@@ -333,7 +333,7 @@ async function storePart({ req, storage, user, instanceUri }: ActionContext): Pr
   const partNumber = parsePartNumber(partNumberRaw);
   if (partNumber === undefined) return badRequest(`Invalid part number: ${partNumberRaw}`, instanceUri);
   if (!req.body) return badRequest('Chunk payload is empty (0 bytes).', instanceUri);
-  const budgetRefusal = await openSessionRefusal(uploadId, instanceUri);
+  const budgetRefusal = await openSessionRefusal(uploadId, instanceUri, planOfCaller(user));
   if (budgetRefusal) return budgetRefusal;
 
   try {

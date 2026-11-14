@@ -128,7 +128,7 @@ describe('global failed-login counter for unattributed clients', () => {
 
   it('is not cleared by a successful login of one account', async () => {
     await failAcrossAccounts(null, EXPECTED_GLOBAL_THRESHOLD);
-    await resetLoginAttempts(null, 'victim0@example.com');
+    await resetLoginAttempts('victim0@example.com');
     expect((await checkLoginRateLimit(null, 'fresh@example.com')).reason).toBe('global');
   });
 

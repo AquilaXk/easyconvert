@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
+import { closeSessionBudget } from '@/lib/api/upload-session-budget';
 import { storageProvider } from '@/lib/storage';
 import { forgetUploadParts } from '@/lib/storage/part-admission';
 
@@ -85,6 +86,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     return storageErrorResponse(err, instanceUri) ?? internalError(instanceUri);
   }
   forgetUploadParts(uploadId);
+  await closeSessionBudget(uploadId, 'aborted');
   if (!aborted) {
     return createProblemDetailsResponse(
       404,

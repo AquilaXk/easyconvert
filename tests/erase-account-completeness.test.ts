@@ -18,6 +18,7 @@ import { registerCompletedUpload, saveRetainedResult } from '../src/lib/storage/
 import { tusEngine } from '../src/lib/storage/tus-engine';
 import { TERMS_VERSION } from '../src/lib/legal/documents';
 import type { WebhookDlqEntry } from '../src/lib/api-keys/types';
+import type { WebhookJobData } from '../src/lib/api-keys/webhook-dispatcher';
 
 /** The wait asked for in a case where nothing runs: an erasure that waits for it takes at least this long. */
 const IDLE_DRAIN_HANG_GUARD_MS = 30_000;
@@ -453,4 +454,38 @@ describe.skipIf(!process.env.REDIS_URL)('erasing an account that owns a record o
     expect(await storageProvider.getObject(uploadKey)).toBeUndefined();
     expect(await storageProvider.getObject(graphResult)).toBeUndefined();
   }, 60_000);
+});
+
+describe('the webhook deliveries of an erased account', () => {
+  function delivery(ownerUserId: string): WebhookJobData {
+    return {
+      deliveryId: `wh_erase_${crypto.randomBytes(4).toString('hex')}`,
+      targetUrl: 'https://93.184.215.14/hook',
+      event: 'job.completed',
+      data: { jobId: 'j' },
+      secret: '',
+      options: { ownerUserId },
+      attemptNumber: 1,
+      attempts: [],
+      createdAt: Date.now(),
+    };
+  }
+
+  it('removes the waiting and delayed ones and leaves the deliveries of other accounts', async () => {
+    const gone = await newAccount('hooks-gone');
+    const kept = await newAccount('hooks-kept');
+    const queue = webhookDispatcher.getQueue();
+    const waiting = await queue.add('webhook:delivery', delivery(gone.id));
+    const delayed = await queue.add('webhook:delivery', delivery(gone.id), { delay: 60 * 60 * 1000 });
+    const others = await queue.add('webhook:delivery', delivery(kept.id));
+    try {
+      await eraseAccount((await planAccountErasure(gone.id))!, { drainMs: 0 });
+
+      expect(await queue.getJob(waiting.id)).toBeUndefined();
+      expect(await queue.getJob(delayed.id)).toBeUndefined();
+      expect(await queue.getJob(others.id)).toBeDefined();
+    } finally {
+      await queue.remove(others.id);
+    }
+  });
 });

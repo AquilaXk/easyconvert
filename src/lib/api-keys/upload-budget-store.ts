@@ -1,5 +1,6 @@
 import type { Redis } from 'ioredis';
 import { compareAndSetWithRetry } from '../redis/compare-and-set';
+import type { Plan } from '../plan-limits';
 import type { UploadBudgetRecord } from './anonymous-upload-budget';
 
 /**
@@ -9,10 +10,11 @@ import type { UploadBudgetRecord } from './anonymous-upload-budget';
  * changes it between two awaits, so concurrent requests never lose a change.
  */
 
-/** Where the reservation of an upload session is: its address bucket and its entry there. */
+/** Where the reservation of an upload session is: its bucket (an address, or an account's open uploads) and its entry there, and the plan whose policy governs it (absent: anonymous). */
 export interface ReservationRef {
   bucket: string;
   reservation: string;
+  plan?: Plan;
 }
 
 export interface BudgetStore {

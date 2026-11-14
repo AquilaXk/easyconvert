@@ -8,6 +8,7 @@ from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.create_api_key_body import CreateApiKeyBody
 from ...models.create_api_key_response_400 import CreateApiKeyResponse400
+from ...models.create_api_key_response_409 import CreateApiKeyResponse409
 from ...types import Response
 
 
@@ -32,7 +33,7 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx2.Response
-) -> Any | CreateApiKeyResponse400 | None:
+) -> Any | CreateApiKeyResponse400 | CreateApiKeyResponse409 | None:
     if response.status_code == 200:
         response_200 = cast(Any, None)
         return response_200
@@ -42,6 +43,11 @@ def _parse_response(
 
         return response_400
 
+    if response.status_code == 409:
+        response_409 = CreateApiKeyResponse409.from_dict(response.json())
+
+        return response_409
+
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
     else:
@@ -50,7 +56,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx2.Response
-) -> Response[Any | CreateApiKeyResponse400]:
+) -> Response[Any | CreateApiKeyResponse400 | CreateApiKeyResponse409]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -63,7 +69,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: CreateApiKeyBody,
-) -> Response[Any | CreateApiKeyResponse400]:
+) -> Response[Any | CreateApiKeyResponse400 | CreateApiKeyResponse409]:
     """Create API Key
 
      Generates a new API key with custom name, CIDR restrictions, granular scopes, expiration date, and
@@ -77,7 +83,7 @@ def sync_detailed(
         httpx2.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | CreateApiKeyResponse400]
+        Response[Any | CreateApiKeyResponse400 | CreateApiKeyResponse409]
     """
 
     kwargs = _get_kwargs(
@@ -95,7 +101,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: CreateApiKeyBody,
-) -> Any | CreateApiKeyResponse400 | None:
+) -> Any | CreateApiKeyResponse400 | CreateApiKeyResponse409 | None:
     """Create API Key
 
      Generates a new API key with custom name, CIDR restrictions, granular scopes, expiration date, and
@@ -109,7 +115,7 @@ def sync(
         httpx2.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | CreateApiKeyResponse400
+        Any | CreateApiKeyResponse400 | CreateApiKeyResponse409
     """
 
     return sync_detailed(
@@ -122,7 +128,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: CreateApiKeyBody,
-) -> Response[Any | CreateApiKeyResponse400]:
+) -> Response[Any | CreateApiKeyResponse400 | CreateApiKeyResponse409]:
     """Create API Key
 
      Generates a new API key with custom name, CIDR restrictions, granular scopes, expiration date, and
@@ -136,7 +142,7 @@ async def asyncio_detailed(
         httpx2.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | CreateApiKeyResponse400]
+        Response[Any | CreateApiKeyResponse400 | CreateApiKeyResponse409]
     """
 
     kwargs = _get_kwargs(
@@ -152,7 +158,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: CreateApiKeyBody,
-) -> Any | CreateApiKeyResponse400 | None:
+) -> Any | CreateApiKeyResponse400 | CreateApiKeyResponse409 | None:
     """Create API Key
 
      Generates a new API key with custom name, CIDR restrictions, granular scopes, expiration date, and
@@ -166,7 +172,7 @@ async def asyncio(
         httpx2.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | CreateApiKeyResponse400
+        Any | CreateApiKeyResponse400 | CreateApiKeyResponse409
     """
 
     return (

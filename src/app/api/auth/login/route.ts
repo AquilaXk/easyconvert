@@ -60,7 +60,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Reset attempt counters on successful login
-    await resetLoginAttempts(clientIp, email);
+    await resetLoginAttempts(email);
 
     const user = redisUserStore.sanitizeUser(userRecord);
     const token = createSessionToken(user);

@@ -264,31 +264,24 @@ export async function recordFailedLogin(ip: string | null, email: string): Promi
 }
 
 /**
- * Resets failed login attempt counters after a successful authentication.
+ * Resets the failed login counter of `email` after a successful sign-in. The per-address counter stays: a client that
+ * owns one account would otherwise clear its count of guesses against other accounts with every sign-in of its own.
  */
-export async function resetLoginAttempts(ip: string | null, email: string): Promise<void> {
+export async function resetLoginAttempts(email: string): Promise<void> {
   const normEmail = email ? email.toLowerCase().trim() : '';
-  const normIp = normalizeLoginIp(ip);
+  if (!normEmail) return;
 
   const redis = redisUserStore.getRedisClient();
-  const prefix = redisUserStore.getKeyPrefix();
-
   if (redis) {
     try {
-      const keysToDelete: string[] = [];
-      if (normEmail) keysToDelete.push(`${prefix}login_attempts:email:${normEmail}`);
-      if (normIp) keysToDelete.push(`${prefix}login_attempts:ip:${normIp}`);
-      if (keysToDelete.length > 0) {
-        await redis.del(...keysToDelete);
-      }
+      await redis.del(`${redisUserStore.getKeyPrefix()}login_attempts:email:${normEmail}`);
       return;
     } catch {
       // Fallback
     }
   }
 
-  if (normEmail) inMemoryAttempts.delete(`email:${normEmail}`);
-  if (normIp) inMemoryAttempts.delete(`ip:${normIp}`);
+  inMemoryAttempts.delete(`email:${normEmail}`);
 }
 
 async function consumeRedisFixedWindow(

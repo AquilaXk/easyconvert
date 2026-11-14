@@ -99,6 +99,8 @@ from .create_api_key_body import CreateApiKeyBody
 from .create_api_key_body_scopes_item import CreateApiKeyBodyScopesItem
 from .create_api_key_response_400 import CreateApiKeyResponse400
 from .create_api_key_response_400_code import CreateApiKeyResponse400Code
+from .create_api_key_response_409 import CreateApiKeyResponse409
+from .create_api_key_response_409_code import CreateApiKeyResponse409Code
 from .create_direct_upload_v1_body import CreateDirectUploadV1Body
 from .create_direct_upload_v1_response_200 import CreateDirectUploadV1Response200
 from .create_direct_upload_v1_response_200_parts_item import (
@@ -398,6 +400,8 @@ __all__ = (
     "CreateApiKeyBodyScopesItem",
     "CreateApiKeyResponse400",
     "CreateApiKeyResponse400Code",
+    "CreateApiKeyResponse409",
+    "CreateApiKeyResponse409Code",
     "CreateDirectUploadV1Body",
     "CreateDirectUploadV1Response200",
     "CreateDirectUploadV1Response200PartsItem",

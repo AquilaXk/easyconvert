@@ -893,7 +893,7 @@ export const internalPaths = {
         '409': createProblemResponse('`discard` of an upload a job reads, or a repeat of an `Idempotency-Key` that is still running.'),
         '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
         '413': createProblemResponse(`${PLAN_FILE_LIMIT_DESCRIPTION} Or: a part is over 64 MiB, or would bring the upload past its \`totalSize\` with the parts stored and on the way.`),
-        '429': createProblemResponse('No conversion could start for the caller now (the daily quota or the conversions in progress), or an anonymous visitor has 2 uploads open or has declared 2 GiB today.'),
+        '429': createProblemResponse('No conversion could start for the caller now (the daily quota or the conversions in progress), or an anonymous visitor has 2 uploads open or has declared 2 GiB today, or an account holds the most uploads its plan allows open (5 free, 25 paid) or has them declare more than 2 GiB (free) or 20 GiB (paid) between them.'),
         '503': createProblemResponse('A part, a completion or an abort could not reach the store or the budget; send it again after `Retry-After`. Or: uploads without an account are off because no proxy is declared (`TRUSTED_PROXIES`).'),
       },
     },

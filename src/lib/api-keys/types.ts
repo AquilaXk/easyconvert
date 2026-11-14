@@ -3,6 +3,9 @@ import type { QuotaPeriod } from '../plan-limits';
 
 export type ApiKeyScope = 'convert:read' | 'convert:write' | 'storage:download' | '*';
 
+/** The most active (not revoked) API keys an account holds at once (docs/policy-decisions.md, entry 296). */
+export const MAX_ACTIVE_API_KEYS = 20;
+
 export const ALL_API_KEY_SCOPES: ApiKeyScope[] = [
   'convert:read',
   'convert:write',

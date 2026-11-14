@@ -2,6 +2,9 @@ import { redisKeyStore } from '../api-keys/redis-key-store';
 import { webhookDispatcher } from '../api-keys/webhook-dispatcher';
 import { getWebhookSecretStore } from '../api-keys/webhook-secret-store';
 import { credentialsVault } from '../storage/credentials-vault';
+import { redisUserStore } from './redis-user-store';
+import { revokeAllUserSessions } from './session';
+import type { UserRecord } from './types';
 
 /** The rounds that look again for a key made while the earlier rounds deleted: a key of the account can make another until it is gone. */
 const SWEEP_ROUNDS = 3;
@@ -25,4 +28,20 @@ export async function revokeStandingAccess(userId: string): Promise<void> {
   }
   await webhookDispatcher.clearDlq(userId, { strict: true });
   for (const credentialRef of await credentialsVault.listByUser(userId)) await credentialsVault.delete(credentialRef, userId);
+}
+
+/**
+ * Hands an account whose address was never verified to the person who just proved the address with Google, which vouches for it
+ * (docs/policy-decisions.md, entry 297): the registrant's password goes first, so they cannot sign in while the account is
+ * cleaned; then their sessions and what they set up (`revokeStandingAccess`); the address is marked verified and the account linked
+ * to Google last. A step that fails leaves the account unverified, so the next sign-in takes this same path again and cleans again,
+ * as the password reset does (`/api/auth/password-reset/confirm`). `linked` is what the sign-in adds to the record.
+ */
+export async function handOverUnverifiedAccount(userId: string, linked: Partial<Pick<UserRecord, 'avatarUrl'>>): Promise<UserRecord> {
+  if (!(await redisUserStore.updateUser(userId, { passwordHash: '', salt: '' }))) throw new Error('The account to hand over does not exist.');
+  await revokeAllUserSessions(userId);
+  await revokeStandingAccess(userId);
+  const handedOver = await redisUserStore.updateUser(userId, { ...linked, provider: 'google', emailVerified: true });
+  if (!handedOver) throw new Error('The account to hand over does not exist.');
+  return handedOver;
 }
