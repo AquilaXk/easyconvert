@@ -590,6 +590,23 @@ export class CredentialsVault {
     return results;
   }
 
+  private async readManyValues(redis: Redis, keys: readonly string[], preferMget: boolean): Promise<(string | null)[]> {
+    if (keys.length === 0) return [];
+    const isCluster = Boolean((redis as { isCluster?: unknown }).isCluster);
+    if (preferMget && !isCluster && typeof redis.mget === 'function') {
+      return redis.mget(keys as string[]);
+    }
+    if (typeof (redis as { pipeline?: unknown }).pipeline === 'function') {
+      const pipeline = redis.pipeline();
+      for (const k of keys) pipeline.get(k);
+      return (await pipelineReplies(pipeline)) as (string | null)[];
+    }
+    if (typeof redis.mget === 'function') {
+      return redis.mget(...keys);
+    }
+    return Promise.all(keys.map((k) => redis.get(k)));
+  }
+
   /**
    * The summaries of the credentials of `userId`: from the index and the credentials themselves, not the vault of every user, once
    * the index is known to be complete; while a process is still building it, from a scan of the vault, so a listing is never short.
@@ -599,7 +616,7 @@ export class CredentialsVault {
     const complete = await this.ensureUserIndex(redis);
     const ids = complete ? await redis.smembers(key) : await this.scanIdsOfUser(redis, userId);
     if (ids.length === 0) return [];
-    const raws = await redis.mget(ids.map((id) => `${VAULT_PREFIX}${id}`));
+    const raws = await this.readManyValues(redis, ids.map((id) => `${VAULT_PREFIX}${id}`), true);
     const results: CredentialSummary[] = [];
     const stale: string[] = [];
     raws.forEach((raw, position) => {
@@ -673,8 +690,9 @@ export class CredentialsVault {
       const [next, keys] = await redis.scan(cursor, 'MATCH', `${VAULT_PREFIX}*`, 'COUNT', SCAN_BATCH);
       cursor = next;
       if (keys.length === 0) continue;
+      const raws = await this.readManyValues(redis, keys, false);
       const pipeline = redis.pipeline();
-      for (const raw of await redis.mget(keys)) {
+      for (const raw of raws) {
         const envelope = raw ? parseEnvelope(raw) : undefined;
         if (envelope) pipeline.sadd(userIndexKey(envelope.userId), envelope.id);
       }
@@ -690,7 +708,7 @@ export class CredentialsVault {
       const [next, keys] = await redis.scan(cursor, 'MATCH', `${VAULT_PREFIX}*`, 'COUNT', SCAN_BATCH);
       cursor = next;
       if (keys.length === 0) continue;
-      const raws = typeof redis.mget === 'function' ? await redis.mget(...keys) : await Promise.all(keys.map((key) => redis.get(key)));
+      const raws = await this.readManyValues(redis, keys, false);
       for (const raw of raws) {
         const envelope = raw ? parseEnvelope(raw) : undefined;
         if (envelope?.userId === userId) ids.add(envelope.id);
@@ -714,12 +732,13 @@ export class CredentialsVault {
   }
 
   /**
-   * The ids of the credentials of `userId` for an erasure, which never depends on the index being complete: those found by scanning
-   * the vault, and those the index names that still exist (a damaged record names no user, only the index finds it).
+   * The ids of the credentials of `userId` for an erasure: reads the user's `O(K_user)` index when `ensureUserIndex` confirms
+   * the index is complete, or scans the vault while another process is still building it, verifying key existence via pipeline.
    */
   private async redisIdsOfUser(redis: Redis, userId: string): Promise<string[]> {
     try {
-      const ids = new Set(await this.scanIdsOfUser(redis, userId));
+      const complete = await this.ensureUserIndex(redis);
+      const ids = complete ? new Set<string>() : new Set(await this.scanIdsOfUser(redis, userId));
       const indexed = await redis.smembers(userIndexKey(userId));
       if (indexed.length > 0) {
         const pipeline = redis.pipeline();

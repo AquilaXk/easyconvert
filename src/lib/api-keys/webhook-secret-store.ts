@@ -90,7 +90,12 @@ export interface WebhookSecretStore {
 }
 
 const ENCRYPTION_PREFIX = 'enc:wh:v1:';
+const ENCRYPTION_PREFIX_V2 = 'enc:wh:v2:';
 let kekWarningEmitted = false;
+
+function hasWebhookEncryptedPrefix(value: string): boolean {
+  return value.startsWith(ENCRYPTION_PREFIX) || value.startsWith(ENCRYPTION_PREFIX_V2);
+}
 
 export function getWebhookKek(): Buffer {
   const kek = process.env.WEBHOOK_SECRET_KEK;
@@ -113,28 +118,38 @@ export function getWebhookKek(): Buffer {
 
 /**
  * Encrypts a webhook secret with AES-256-GCM envelope encryption.
+ * When `aad` is provided, binds the ciphertext to the owner+target record key (`enc:wh:v2:`).
  */
-export function encryptWebhookSecret(plainSecret: string): string {
-  if (plainSecret.startsWith(ENCRYPTION_PREFIX)) {
+export function encryptWebhookSecret(plainSecret: string, aad?: string): string {
+  if (hasWebhookEncryptedPrefix(plainSecret)) {
     return plainSecret;
   }
   const key = getWebhookKek();
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  if (aad !== undefined) {
+    cipher.setAAD(Buffer.from(aad, 'utf8'));
+  }
   const encrypted = Buffer.concat([cipher.update(plainSecret, 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
+  const prefix = aad !== undefined ? ENCRYPTION_PREFIX_V2 : ENCRYPTION_PREFIX;
 
-  return `${ENCRYPTION_PREFIX}${iv.toString('base64')}:${tag.toString('base64')}:${encrypted.toString('base64')}`;
+  return `${prefix}${iv.toString('base64')}:${tag.toString('base64')}:${encrypted.toString('base64')}`;
 }
 
 /**
  * Decrypts an AES-256-GCM encrypted webhook secret.
  */
-export function decryptWebhookSecret(cipherText: string): string {
-  if (!cipherText.startsWith(ENCRYPTION_PREFIX)) {
+export function decryptWebhookSecret(cipherText: string, aad?: string): string {
+  if (!hasWebhookEncryptedPrefix(cipherText)) {
     return cipherText;
   }
-  const payload = cipherText.substring(ENCRYPTION_PREFIX.length);
+  const isV2 = cipherText.startsWith(ENCRYPTION_PREFIX_V2);
+  if (isV2 && aad === undefined) {
+    throw new Error('[WebhookSecretStore] AAD is required to decrypt enc:wh:v2 payload.');
+  }
+  const prefixLength = isV2 ? ENCRYPTION_PREFIX_V2.length : ENCRYPTION_PREFIX.length;
+  const payload = cipherText.substring(prefixLength);
   const parts = payload.split(':');
   if (parts.length !== 3) {
     throw new Error('[WebhookSecretStore] Malformed encrypted payload structure.');
@@ -147,6 +162,9 @@ export function decryptWebhookSecret(cipherText: string): string {
   const enc = Buffer.from(encB64, 'base64');
 
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+  if (isV2 && aad !== undefined) {
+    decipher.setAAD(Buffer.from(aad, 'utf8'));
+  }
   decipher.setAuthTag(tag);
   const decrypted = Buffer.concat([decipher.update(enc), decipher.final()]);
   return decrypted.toString('utf8');
@@ -268,10 +286,10 @@ export class InMemoryWebhookSecretStore implements WebhookSecretStore {
     const stored = this.store.get(key);
     if (!stored) return null;
 
-    const primary = decryptWebhookSecret(stored.primaryEncrypted);
+    const primary = decryptWebhookSecret(stored.primaryEncrypted, key);
     let previous: string | undefined;
     if (stored.previousEncrypted) {
-      previous = decryptWebhookSecret(stored.previousEncrypted);
+      previous = decryptWebhookSecret(stored.previousEncrypted, key);
     }
 
     return {
@@ -289,7 +307,7 @@ export class InMemoryWebhookSecretStore implements WebhookSecretStore {
     secret: string
   ): Promise<void> {
     const key = buildSecretStorageKey(ownerUserId, targetId);
-    const primaryEncrypted = encryptWebhookSecret(secret);
+    const primaryEncrypted = encryptWebhookSecret(secret, key);
     const existing = this.store.get(key);
     const now = this.clock();
 
@@ -305,7 +323,7 @@ export class InMemoryWebhookSecretStore implements WebhookSecretStore {
   public async seedPrimarySecretIfAbsent(ownerUserId: string, targetId: string, secret: string): Promise<boolean> {
     const key = buildSecretStorageKey(ownerUserId, targetId);
     if (this.store.has(key)) return false;
-    this.store.set(key, { primaryEncrypted: encryptWebhookSecret(secret), createdAt: this.clock() });
+    this.store.set(key, { primaryEncrypted: encryptWebhookSecret(secret, key), createdAt: this.clock() });
     return true;
   }
 
@@ -327,7 +345,7 @@ export class InMemoryWebhookSecretStore implements WebhookSecretStore {
     }
 
     const newSecret = generateWebhookSecret();
-    const newEncrypted = encryptWebhookSecret(newSecret);
+    const newEncrypted = encryptWebhookSecret(newSecret, key);
 
     this.store.set(key, {
       primaryEncrypted: newEncrypted,
@@ -382,10 +400,10 @@ export class RedisWebhookSecretStore implements WebhookSecretStore {
 
     try {
       const stored = JSON.parse(raw) as StoredWebhookSecretRecord;
-      const primary = decryptWebhookSecret(stored.primaryEncrypted);
+      const primary = decryptWebhookSecret(stored.primaryEncrypted, key);
       let previous: string | undefined;
       if (stored.previousEncrypted) {
-        previous = decryptWebhookSecret(stored.previousEncrypted);
+        previous = decryptWebhookSecret(stored.previousEncrypted, key);
       }
 
       return {
@@ -406,14 +424,15 @@ export class RedisWebhookSecretStore implements WebhookSecretStore {
     secret: string
   ): Promise<void> {
     const key = buildSecretStorageKey(ownerUserId, targetId);
-    const primaryEncrypted = encryptWebhookSecret(secret);
+    const primaryEncrypted = encryptWebhookSecret(secret, key);
     const now = this.clock();
     await this.redis.eval(SET_PRIMARY_WEBHOOK_SECRET_LUA, 1, key, primaryEncrypted, String(now));
   }
 
   public async seedPrimarySecretIfAbsent(ownerUserId: string, targetId: string, secret: string): Promise<boolean> {
-    const record: StoredWebhookSecretRecord = { primaryEncrypted: encryptWebhookSecret(secret), createdAt: this.clock() };
-    return (await this.redis.set(buildSecretStorageKey(ownerUserId, targetId), JSON.stringify(record), 'NX')) === 'OK';
+    const key = buildSecretStorageKey(ownerUserId, targetId);
+    const record: StoredWebhookSecretRecord = { primaryEncrypted: encryptWebhookSecret(secret, key), createdAt: this.clock() };
+    return (await this.redis.set(key, JSON.stringify(record), 'NX')) === 'OK';
   }
 
   public async rotateSecret(
@@ -435,7 +454,7 @@ export class RedisWebhookSecretStore implements WebhookSecretStore {
         2,
         key,
         buildEndpointIndexKey(ownerUserId),
-        encryptWebhookSecret(newSecret),
+        encryptWebhookSecret(newSecret, key),
         String(now),
         String(expiresAt),
         isEndpoint ? '1' : '0',

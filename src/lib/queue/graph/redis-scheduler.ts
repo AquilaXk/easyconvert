@@ -325,7 +325,7 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
       error,
       String(Date.now()),
       errorCode
-    )) as [number, string, string, string, string?, string?, string?];
+    )) as [number, string, string, string, string?, string?, string?, string?];
 
     const graphStatus = parseGraphStatus(graphId, raw[1]);
     const cancelledNodeIds = parseStoredList<NodeId>(graphId, 'the cancelled node list', raw[2]);
@@ -378,12 +378,13 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
       k.outbox,
       reason,
       String(Date.now())
-    )) as [number, string, string, string?, string?];
+    )) as [number, string, string, string?, string?, string?, string?];
 
     if (Number(raw[0]) !== 1) {
       return false;
     }
-    await finishGraph(this.endedGraph(graphId, raw[3], raw[4]), { outcome: { status: 'cancelled' }, reservation: { kind: 'rollback' } }, async (state) => {
+    const reservation = raw[6] === '1' ? reservationEnd(graphId, raw[5]) : { kind: 'rollback' as const };
+    await finishGraph(this.endedGraph(graphId, raw[3], raw[4]), { outcome: { status: 'cancelled' }, reservation }, async (state) => {
       for (const nid of parseStoredList<NodeId>(graphId, 'the cancelled node list', raw[2])) {
         await cancelGraphNodeJobOrLog(graphId, nid, state?.graph.nodes[nid] as GraphNode | undefined, reason, this.cancelNode);
       }
@@ -535,7 +536,10 @@ function reservationEnd(graphId: string, raw: unknown): ReservationEnd {
  */
 function recordedFailureEnd(graphId: string, raw: readonly unknown[], error: string): GraphEnd | undefined {
   if (Number(raw[0]) !== 1) return undefined;
-  if (raw[1] === 'failed') return { outcome: { status: 'failed', error }, reservation: { kind: 'rollback' } };
+  if (raw[1] === 'failed') {
+    const reservation = raw[7] === '1' ? reservationEnd(graphId, raw[4]) : { kind: 'rollback' as const };
+    return { outcome: { status: 'failed', error }, reservation };
+  }
   if (raw[1] === 'completed') return { outcome: { status: 'completed' }, reservation: reservationEnd(graphId, raw[4]) };
   return undefined;
 }

@@ -15,14 +15,14 @@ const HTTP_CONFLICT = 409;
 const KEY_LIMIT_MESSAGE = `An account holds at most ${MAX_ACTIVE_API_KEYS} active API keys. Revoke a key you no longer use, then create a new one.`;
 
 async function activeKeyCount(userId: string): Promise<number> {
-  return (await redisKeyStore.listApiKeys(userId)).filter((key) => key.status === 'active').length;
+  return (await redisKeyStore.listApiKeys(userId, { decryptSecrets: false })).filter((key) => key.status === 'active').length;
 }
 
 export async function GET(req: NextRequest) {
   const auth = await resolveDashboardCaller(req, MANAGE_KEYS);
   if ('refused' in auth) return auth.refused;
 
-  const keys = await redisKeyStore.listApiKeys(auth.user.id);
+  const keys = await redisKeyStore.listApiKeys(auth.user.id, { decryptSecrets: false });
   return NextResponse.json({
     success: true,
     keys: keys.map(toPublicApiKey),

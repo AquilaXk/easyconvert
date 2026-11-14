@@ -89,6 +89,41 @@ async function deleteEndedJob(
   if (userId) await removeFromUserIndices(client, keys.userJobsKey(userId), id);
 }
 
+async function deleteEndedJobsBatch(
+  client: Redis,
+  keys: QueueKeySpace,
+  stateKey: string,
+  jobs: readonly { id: string; userId: string | undefined }[]
+): Promise<void> {
+  if (jobs.length === 0) return;
+  if (typeof (client as { pipeline?: unknown }).pipeline === 'function') {
+    const pipe = client.pipeline();
+    const ids = jobs.map((job) => job.id);
+    pipe.srem(stateKey, ...ids);
+    for (const id of ids) pipe.del(keys.jobKey(id));
+    const byUser = new Map<string, string[]>();
+    for (const job of jobs) {
+      if (!job.userId) continue;
+      let owned = byUser.get(job.userId);
+      if (!owned) {
+        owned = [];
+        byUser.set(job.userId, owned);
+      }
+      owned.push(job.id);
+    }
+    for (const [uid, ownedIds] of byUser) {
+      const userIndex = keys.userJobsKey(uid);
+      pipe.zrem(userIndex, ...ownedIds);
+      for (const bk of userByStateKeys(userIndex)) pipe.zrem(bk, ...ownedIds);
+    }
+    await pipelineReplies(pipe);
+    return;
+  }
+  for (const job of jobs) {
+    await deleteEndedJob(client, keys, stateKey, job.id, job.userId);
+  }
+}
+
 /** The ids of the set one SSCAN call asks for, and so how many jobs are read in one pipeline. */
 const ENDED_SCAN_COUNT = 500;
 
@@ -117,15 +152,38 @@ async function removeSetEntriesBefore(
     const [next, scanned] = await client.sscan(stateKey, cursor, 'COUNT', String(ENDED_SCAN_COUNT));
     cursor = next;
     // SSCAN may name an id twice.
-    for (const { id, finishedOnRaw, dataRaw } of await readEndedFields(client, keys, [...new Set(scanned)])) {
-      if (finishedOnRaw === null && dataRaw === null && (await client.exists(keys.jobKey(id))) === 0) {
-        await client.srem(stateKey, id);
-      } else if (removed.length < limit && isFinishedBy(finishedOnRaw, threshold)) {
-        await deleteEndedJob(client, keys, stateKey, id, ownerOf(parsedData(dataRaw)));
-        removed.push(id);
+    const fields = await readEndedFields(client, keys, [...new Set(scanned)]);
+    const missingCandidates = fields.filter((f) => f.finishedOnRaw === null && f.dataRaw === null);
+    const missingIds = new Set<string>();
+    if (missingCandidates.length > 0) {
+      if (typeof (client as { pipeline?: unknown }).pipeline === 'function') {
+        const check = client.pipeline();
+        for (const { id } of missingCandidates) check.exists(keys.jobKey(id));
+        const replies = await pipelineReplies(check);
+        missingCandidates.forEach(({ id }, idx) => {
+          if (Number(replies[idx]) === 0) missingIds.add(id);
+        });
+      } else {
+        for (const { id } of missingCandidates) {
+          if ((await client.exists(keys.jobKey(id))) === 0) missingIds.add(id);
+        }
+      }
+    }
+    const staleIds: string[] = [];
+    const toDelete: { id: string; userId: string | undefined }[] = [];
+    for (const { id, finishedOnRaw, dataRaw } of fields) {
+      if (missingIds.has(id)) {
+        staleIds.push(id);
+      } else if (removed.length + toDelete.length < limit && isFinishedBy(finishedOnRaw, threshold)) {
+        toDelete.push({ id, userId: ownerOf(parsedData(dataRaw)) });
       } else if (Number(finishedOnRaw) > 0) {
         oldest = Math.min(oldest, Number(finishedOnRaw));
       }
+    }
+    if (staleIds.length > 0) await client.srem(stateKey, ...staleIds);
+    if (toDelete.length > 0) {
+      await deleteEndedJobsBatch(client, keys, stateKey, toDelete);
+      for (const { id } of toDelete) removed.push(id);
     }
     if (cursor !== '0' && removed.length >= limit) return { removed, oldestKeptFinishedOn: undefined };
   } while (cursor !== '0');
@@ -172,9 +230,7 @@ export async function keepNewestEnded(client: Redis, keys: QueueKeySpace, stateK
     userId: ownerOf(parsedData(dataRaw)),
   }));
   ended.sort((a, b) => b.finishedOn - a.finishedOn);
-  for (const job of ended.slice(count)) {
-    await deleteEndedJob(client, keys, stateKey, job.id, job.userId);
-  }
+  await deleteEndedJobsBatch(client, keys, stateKey, ended.slice(count));
 }
 
 /**

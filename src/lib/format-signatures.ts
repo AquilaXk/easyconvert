@@ -75,7 +75,7 @@ const XML_PROLOG_ITEMS: readonly { open: string; close: string }[] = [
   { open: '<!--', close: '-->' },
 ];
 const DOCTYPE_OPEN = '<!doctype';
-const ELEMENT_NAME = /^<([A-Za-z_][\w.-]*)[\s/>]/;
+const ELEMENT_NAME = /<([A-Za-z_][\w.-]*)[\s/>]/y;
 
 /** Index after the doctype that opens at `from`, past quotes, comments, and its internal subset; -1 when unclosed. */
 function skipDoctype(text: string, from: number): number {
@@ -133,7 +133,8 @@ export function xmlRootElementName(head: Uint8Array): string | undefined {
     if (next === -1) break;
     at = next;
   }
-  return ELEMENT_NAME.exec(text.slice(at))?.[1].toLowerCase();
+  ELEMENT_NAME.lastIndex = at;
+  return ELEMENT_NAME.exec(text)?.[1].toLowerCase();
 }
 
 /**

@@ -70,8 +70,14 @@ if redis.call('EXISTS', KEYS[1]) == 1 then
   return { 0, redis.call('HGETALL', KEYS[1]) }
 end
 
-for i = 9, #ARGV, 2 do
-  redis.call('HSET', KEYS[1], ARGV[i], ARGV[i + 1])
+for i = 9, #ARGV, 64 do
+  local last = math.min(#ARGV, i + 63)
+  if (last - i + 1) % 2 == 1 then
+    last = last - 1
+  end
+  if last >= i then
+    redis.call('HSET', KEYS[1], unpack(ARGV, i, last))
+  end
 end
 
 if ARGV[2] == '1' then
@@ -127,7 +133,7 @@ if typeName == 'list' then
     if rawOpts and rawOpts ~= '' then
       local ok, opts = pcall(cjson.decode, rawOpts)
       if ok and type(opts) == 'table' and tonumber(opts.priority) and tonumber(opts.priority) > 0 then
-        prioRank = tonumber(opts.priority)
+        prioRank = math.max(1, math.min(8191, math.floor(tonumber(opts.priority))))
       end
     end
     local rawTs = redis.call('HGET', KEYS[3] .. itemId, 'timestamp')
@@ -145,7 +151,7 @@ if due and #due > 0 then
       if rawOpts and rawOpts ~= '' then
         local ok, opts = pcall(cjson.decode, rawOpts)
         if ok and type(opts) == 'table' and tonumber(opts.priority) and tonumber(opts.priority) > 0 then
-          prioRank = tonumber(opts.priority)
+          prioRank = math.max(1, math.min(8191, math.floor(tonumber(opts.priority))))
         end
       end
       local score = prioRank * 1000000000000 + (tonumber(ARGV[1]) % 1000000000000)
@@ -186,7 +192,7 @@ if typeName == 'list' then
     if rawOpts and rawOpts ~= '' then
       local ok, opts = pcall(cjson.decode, rawOpts)
       if ok and type(opts) == 'table' and tonumber(opts.priority) and tonumber(opts.priority) > 0 then
-        prioRank = tonumber(opts.priority)
+        prioRank = math.max(1, math.min(8191, math.floor(tonumber(opts.priority))))
       end
     end
     local rawTs = redis.call('HGET', KEYS[3] .. itemId, 'timestamp')
@@ -471,7 +477,7 @@ for _, jobId in ipairs(activeIds) do
             maxAttempts = tonumber(opts.attempts)
           end
           if tonumber(opts.priority) and tonumber(opts.priority) > 0 then
-            prioRank = tonumber(opts.priority)
+            prioRank = math.max(1, math.min(8191, math.floor(tonumber(opts.priority))))
           end
         end
       end
@@ -749,7 +755,13 @@ for _ = 1, maxBands do
     break
   end
   local score = tonumber(head[2])
-  local wait = (((now % bandSize) - (score % bandSize)) + bandSize) % bandSize
+  local rawDiff = (now % bandSize) - (score % bandSize)
+  local wait
+  if rawDiff < 0 and rawDiff >= -60000 then
+    wait = 0
+  else
+    wait = (rawDiff + bandSize) % bandSize
+  end
   if longestWait == nil or wait > longestWait then
     longestWait = wait
   end

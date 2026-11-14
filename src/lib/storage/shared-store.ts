@@ -91,27 +91,75 @@ export async function commitObjectFile(paths: ObjectPaths, sourcePath: string, r
   await syncDirectory(path.dirname(paths.binPath));
 }
 
+/** Default byte budget for cached file-backed buffers held in memory per `SharedObjectStore` instance (128 MiB). */
+export const DEFAULT_MAX_SHARED_CACHE_BYTES = 128 * 1024 * 1024;
+const MAX_META_KEY_CACHE_ENTRIES = 32_768;
+const ATTACH_BUFFER_CACHE = Symbol('SharedObjectStore.attachBufferCache');
+
+interface BufferCacheHooks {
+  get(key: string): Buffer | undefined;
+  put(key: string, buffer: Buffer): void;
+}
+
+type CacheBindableStoredObject = StoredObject & {
+  [ATTACH_BUFFER_CACHE]?: (hooks: BufferCacheHooks) => void;
+};
+
 /** The object of `record` whose bytes are the file `binPath`, read into memory only when asked and within the in-memory limit. */
 export function fileBackedObject(record: ObjectRecord, binPath: string): StoredObject {
   let cachedBuffer: Buffer | null = null;
-  return {
+  let hooks: BufferCacheHooks | null = null;
+  const obj: CacheBindableStoredObject = {
     ...recordOf(record),
     filePath: binPath,
     get buffer(): Buffer {
       if (record.size > getMaxInMemoryBytes()) {
         throw new PayloadTooLargeForMemoryError(undefined, { size: record.size, limit: getMaxInMemoryBytes() });
       }
-      if (cachedBuffer) return cachedBuffer;
-      if (fs.existsSync(binPath)) {
-        cachedBuffer = fs.readFileSync(binPath);
+      if (hooks) {
+        const fromPool = hooks.get(record.key);
+        if (fromPool) return fromPool;
+      } else if (cachedBuffer) {
         return cachedBuffer;
+      }
+      if (fs.existsSync(binPath)) {
+        const buf = fs.readFileSync(binPath);
+        if (hooks) {
+          hooks.put(record.key, buf);
+        } else {
+          cachedBuffer = buf;
+        }
+        return buf;
       }
       throw new StoredObjectMissingError(undefined, { key: record.key, filePath: binPath });
     },
     set buffer(b: Buffer) {
-      cachedBuffer = b;
+      if (hooks) {
+        hooks.put(record.key, b);
+      } else {
+        cachedBuffer = b;
+      }
     },
   };
+  Object.defineProperty(obj, ATTACH_BUFFER_CACHE, {
+    enumerable: false,
+    configurable: false,
+    writable: false,
+    value: (nextHooks: BufferCacheHooks) => {
+      hooks = nextHooks;
+      if (cachedBuffer) {
+        const existing = cachedBuffer;
+        cachedBuffer = null;
+        hooks.put(record.key, existing);
+      }
+    },
+  });
+  return obj;
+}
+
+export interface SharedObjectStoreOptions {
+  storageDir?: string;
+  maxCachedBytes?: number;
 }
 
 /**
@@ -121,12 +169,75 @@ export function fileBackedObject(record: ObjectRecord, binPath: string): StoredO
  */
 export class SharedObjectStore extends Map<string, StoredObject> {
   private readonly storageDir: string;
+  private readonly maxCachedBytes: number;
+  private readonly bufferCache = new Map<string, Buffer>();
+  private cachedBytes = 0;
+  private readonly metaKeyCache = new Map<string, { mtimeMs: number; size: number; key: string }>();
+  private readonly cacheHooks: BufferCacheHooks;
 
-  constructor() {
+  constructor(options?: SharedObjectStoreOptions) {
     super();
     // The directory is created by the first write, so importing this module (which happens under
     // an object-store driver too) never touches the disk.
-    this.storageDir = resolveLocalStorageDir();
+    this.storageDir = options?.storageDir || resolveLocalStorageDir();
+    this.maxCachedBytes = Math.max(0, options?.maxCachedBytes ?? DEFAULT_MAX_SHARED_CACHE_BYTES);
+    this.cacheHooks = {
+      get: (key) => {
+        const hit = this.bufferCache.get(key);
+        if (!hit) return undefined;
+        this.bufferCache.delete(key);
+        this.bufferCache.set(key, hit);
+        return hit;
+      },
+      put: (key, buffer) => {
+        this.evictCachedBuffer(key);
+        if (buffer.byteLength > this.maxCachedBytes) return;
+        while (this.cachedBytes + buffer.byteLength > this.maxCachedBytes && this.bufferCache.size > 0) {
+          const oldestKey = this.bufferCache.keys().next().value;
+          if (oldestKey === undefined) break;
+          this.evictCachedBuffer(oldestKey);
+        }
+        this.bufferCache.set(key, buffer);
+        this.cachedBytes += buffer.byteLength;
+      },
+    };
+  }
+
+  public getCachedBufferBytes(): number {
+    return this.cachedBytes;
+  }
+
+  private evictCachedBuffer(key: string): void {
+    const prev = this.bufferCache.get(key);
+    if (prev !== undefined) {
+      this.bufferCache.delete(key);
+      this.cachedBytes = Math.max(0, this.cachedBytes - prev.byteLength);
+    }
+  }
+
+  private bindCacheHooks(value: StoredObject): void {
+    (value as CacheBindableStoredObject)[ATTACH_BUFFER_CACHE]?.(this.cacheHooks);
+  }
+
+  private rememberMetaKey(metaPath: string, key: string): void {
+    const name = path.basename(metaPath);
+    try {
+      const st = fs.statSync(metaPath);
+      if (!this.metaKeyCache.has(name) && this.metaKeyCache.size >= MAX_META_KEY_CACHE_ENTRIES) {
+        const oldest = this.metaKeyCache.keys().next().value;
+        if (oldest !== undefined) this.metaKeyCache.delete(oldest);
+      }
+      this.metaKeyCache.set(name, { mtimeMs: st.mtimeMs, size: st.size, key });
+    } catch {
+      this.metaKeyCache.delete(name);
+    }
+  }
+
+  /** Drops the in-process metadata and cached buffer for `key` without unlinking disk files (used when another driver sweeps disk). */
+  public evictInMemory(key: string): void {
+    super.delete(key);
+    this.evictCachedBuffer(key);
+    this.metaKeyCache.delete(path.basename(this.getPathsForKey(key).metaPath));
   }
 
   public getStorageDir(): string {
@@ -160,6 +271,9 @@ export class SharedObjectStore extends Map<string, StoredObject> {
       writeFileAtomicSync(paths.binPath, value.buffer);
     }
     writeRecord(paths, recordOf(value));
+    this.evictCachedBuffer(key);
+    this.bindCacheHooks(value);
+    this.rememberMetaKey(paths.metaPath, key);
     super.set(key, value);
     return this;
   }
@@ -169,6 +283,9 @@ export class SharedObjectStore extends Map<string, StoredObject> {
     const paths = this.getPathsForKey(key);
     await commitObjectFile(paths, sourcePath, record, signal);
     const stored = fileBackedObject(record, paths.binPath);
+    this.evictCachedBuffer(key);
+    this.bindCacheHooks(stored);
+    this.rememberMetaKey(paths.metaPath, key);
     super.set(key, stored);
     return stored;
   }
@@ -184,7 +301,7 @@ export class SharedObjectStore extends Map<string, StoredObject> {
       }
       // Another process may have deleted it.
       if (!fs.existsSync(metaPath)) {
-        super.delete(key);
+        this.evictInMemory(key);
         return undefined;
       }
       return inMem;
@@ -201,6 +318,8 @@ export class SharedObjectStore extends Map<string, StoredObject> {
       return undefined;
     }
     const reconstructed = fileBackedObject(record, binPath);
+    this.bindCacheHooks(reconstructed);
+    this.rememberMetaKey(metaPath, key);
     super.set(key, reconstructed);
     return reconstructed;
   }
@@ -340,7 +459,9 @@ export class SharedObjectStore extends Map<string, StoredObject> {
 
   public override delete(key: string): boolean {
     const memDeleted = super.delete(key);
+    this.evictCachedBuffer(key);
     const { metaPath, binPath } = this.getPathsForKey(key);
+    this.metaKeyCache.delete(path.basename(metaPath));
     let diskDeleted = false;
 
     try {
@@ -359,6 +480,26 @@ export class SharedObjectStore extends Map<string, StoredObject> {
     return memDeleted || diskDeleted;
   }
 
+  private readCachedMetaKey(name: string): string | undefined {
+    const metaPath = path.join(this.storageDir, name);
+    try {
+      const st = fs.statSync(metaPath);
+      const cached = this.metaKeyCache.get(name);
+      if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached.key;
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as Partial<ObjectRecord>;
+      if (typeof meta.key !== 'string') return undefined;
+      if (!this.metaKeyCache.has(name) && this.metaKeyCache.size >= MAX_META_KEY_CACHE_ENTRIES) {
+        const oldest = this.metaKeyCache.keys().next().value;
+        if (oldest !== undefined) this.metaKeyCache.delete(oldest);
+      }
+      this.metaKeyCache.set(name, { mtimeMs: st.mtimeMs, size: st.size, key: meta.key });
+      return meta.key;
+    } catch {
+      this.metaKeyCache.delete(name);
+      return undefined;
+    }
+  }
+
   /** Removes every object in memory or on disk under `storageDir` whose key begins with `prefix`. */
   public deleteByPrefix(prefix: string): number {
     if (!prefix) return 0;
@@ -370,14 +511,8 @@ export class SharedObjectStore extends Map<string, StoredObject> {
       if (fs.existsSync(this.storageDir)) {
         for (const name of fs.readdirSync(this.storageDir)) {
           if (!name.endsWith('.meta.json')) continue;
-          try {
-            const meta = JSON.parse(fs.readFileSync(path.join(this.storageDir, name), 'utf-8')) as Partial<ObjectRecord>;
-            if (typeof meta.key === 'string' && meta.key.startsWith(prefix)) {
-              matched.add(meta.key);
-            }
-          } catch {
-            // ignore corrupt or concurrently deleted metadata file
-          }
+          const entryKey = this.readCachedMetaKey(name);
+          if (entryKey && entryKey.startsWith(prefix)) matched.add(entryKey);
         }
       }
     } catch {
@@ -392,6 +527,9 @@ export class SharedObjectStore extends Map<string, StoredObject> {
 
   public override clear(): void {
     super.clear();
+    this.bufferCache.clear();
+    this.cachedBytes = 0;
+    this.metaKeyCache.clear();
     try {
       if (fs.existsSync(this.storageDir)) {
         const files = fs.readdirSync(this.storageDir);

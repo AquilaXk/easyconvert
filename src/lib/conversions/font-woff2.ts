@@ -540,7 +540,21 @@ export async function encodeWoff2ContainerAsync(
 ): Promise<Buffer> {
   const tableBytes = input.reduce((sum, table) => sum + table.data.length, 0);
   if (tableBytes >= WOFF2_POOL_MIN_TABLE_BYTES) {
-    const bytes = await runCpuTask<Uint8Array>('woff2', { flavor, tables: input.map((table) => ({ tag: table.tag, data: table.data })) }, { signal: options.signal });
+    const slab = new Uint8Array(tableBytes);
+    let cursor = 0;
+    const packedTables: Woff2InputTable[] = new Array(input.length);
+    for (let i = 0; i < input.length; i++) {
+      const table = input[i];
+      const len = table.data.byteLength;
+      slab.set(table.data, cursor);
+      packedTables[i] = { tag: table.tag, data: slab.subarray(cursor, cursor + len) };
+      cursor += len;
+    }
+    const bytes = await runCpuTask<Uint8Array>(
+      'woff2',
+      { flavor, tables: packedTables },
+      { signal: options.signal, transfer: [slab.buffer] }
+    );
     return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   }
   const prepared = prepareWoff2Container(flavor, input);
@@ -684,7 +698,7 @@ function finishWoff2Container(prepared: PreparedWoff2, compressed: Buffer): Buff
   out.writeUInt32BE(compressed.length, HEADER_COMPRESSED_SIZE_AT);
   out.writeUInt16BE(WOFF2_MAJOR_VERSION, HEADER_MAJOR_VERSION_AT);
   out.writeUInt16BE(WOFF2_MINOR_VERSION, HEADER_MINOR_VERSION_AT);
-  Buffer.from(directory).copy(out, HEADER_BYTES);
+  out.set(directory, HEADER_BYTES);
   compressed.copy(out, HEADER_BYTES + directory.length);
   return out;
 }

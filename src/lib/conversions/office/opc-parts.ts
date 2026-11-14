@@ -1,6 +1,6 @@
 import type JSZip from 'jszip';
 import { PayloadLimitError } from '../../types';
-import { safeExtractXmlElements, type SafeXmlElement } from '../safe-xml-scanner';
+import { SafeXmlDepthExceededError, safeExtractXmlElements, type SafeXmlElement } from '../safe-xml-scanner';
 import { readZipEntryText, type ZipEntryReadOptions } from '../zip-entry-reader';
 import { resolveZipPath } from './zip-path';
 
@@ -41,16 +41,31 @@ export type RelationshipFilter = (id: string, type: string, external: boolean) =
  * one past `limit` with `refusal`: the scanner's own limit of 50,000 elements would end the list there without a word. The scan
  * stops at that element, so a part that holds millions costs the time of `limit` of them.
  */
-export function streamElementsWithin(xml: string, tagName: string, limit: number, refusal: string, onElement: (element: SafeXmlElement) => void): void {
+export function streamElementsWithin(
+  xml: string,
+  tagName: string,
+  limit: number,
+  refusal: string,
+  onElement: (element: SafeXmlElement) => void,
+  options?: { failOnMaxDepth?: boolean },
+): void {
   let taken = 0;
-  safeExtractXmlElements(xml, tagName, {
-    maxElements: limit + 1,
-    onElement: (element) => {
-      taken += 1;
-      if (taken > limit) throw new PayloadLimitError(refusal);
-      onElement(element);
-    },
-  });
+  try {
+    safeExtractXmlElements(xml, tagName, {
+      maxElements: limit + 1,
+      failOnMaxDepth: options?.failOnMaxDepth,
+      onElement: (element) => {
+        taken += 1;
+        if (taken > limit) throw new PayloadLimitError(refusal);
+        onElement(element);
+      },
+    });
+  } catch (err) {
+    if (err instanceof SafeXmlDepthExceededError) {
+      throw new PayloadLimitError(err.message);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -70,7 +85,12 @@ export function streamFirstElements(xml: string, tagName: string, limit: number,
 }
 
 /** Hands each `Relationship` of a relationships part to `onRelationship`, counting them against `allowance`; the one past it is refused (413). */
-export function forEachRelationship(xml: string, allowance: RelationshipAllowance, onRelationship: (relationship: SafeXmlElement) => void): void {
+export function forEachRelationship(
+  xml: string,
+  allowance: RelationshipAllowance,
+  onRelationship: (relationship: SafeXmlElement) => void,
+  options?: { failOnMaxDepth?: boolean },
+): void {
   let scanned = 0;
   try {
     streamElementsWithin(
@@ -81,7 +101,8 @@ export function forEachRelationship(xml: string, allowance: RelationshipAllowanc
       (relationship) => {
         scanned += 1;
         onRelationship(relationship);
-      }
+      },
+      options,
     );
   } finally {
     allowance.remaining -= scanned;

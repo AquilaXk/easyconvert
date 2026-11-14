@@ -812,7 +812,8 @@ function readSelectors(reader: BitReader, numTrees: number): Uint8Array {
   if (numSelectors < 1) throw bzError('block has no selectors');
   const stored = Math.min(numSelectors, BZ_MAX_SELECTORS);
   const selectors = new Uint8Array(stored);
-  const order = Array.from({ length: numTrees }, (_, i) => i);
+  const order = new Uint8Array(numTrees);
+  for (let t = 0; t < numTrees; t++) order[t] = t;
   for (let i = 0; i < numSelectors; i++) {
     let j = 0;
     while (reader.readBit() === 1) {
@@ -820,8 +821,10 @@ function readSelectors(reader: BitReader, numTrees: number): Uint8Array {
       if (j >= numTrees) throw bzError('selector index out of range');
     }
     const tree = order[j];
-    order.splice(j, 1);
-    order.unshift(tree);
+    if (j > 0) {
+      order.copyWithin(1, 0, j);
+      order[0] = tree;
+    }
     if (i < stored) selectors[i] = tree;
   }
   return selectors;

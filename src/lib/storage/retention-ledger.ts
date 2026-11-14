@@ -260,8 +260,8 @@ export class FileRetentionLedger implements RetentionLedger {
   }
 }
 
-/** Namespace of the retention keys in a Redis that the queue and the key store share. */
-export const RETENTION_REDIS_PREFIX = 'easyconvert:retention:';
+/** Namespace of the retention keys in a Redis that the queue and the key store share (co-located under `{retention}` for Cluster Lua/MGET). */
+export const RETENTION_REDIS_PREFIX = 'easyconvert:{retention}:';
 const REDIS_RECORD_PREFIX = `${RETENTION_REDIS_PREFIX}record:`;
 const REDIS_DUE_SET = `${RETENTION_REDIS_PREFIX}due`;
 /** Attempts of a compare-and-set before an update gives up; each failed one means another instance just wrote. */

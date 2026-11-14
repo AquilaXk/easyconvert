@@ -19,7 +19,7 @@ const SWEEP_ROUNDS = 3;
  */
 export async function revokeStandingAccess(userId: string): Promise<void> {
   for (let round = 0; round < SWEEP_ROUNDS; round++) {
-    const keys = await redisKeyStore.listApiKeys(userId);
+    const keys = await redisKeyStore.listApiKeys(userId, { decryptSecrets: false });
     if (keys.length === 0) break;
     for (const key of keys) {
       await redisKeyStore.deleteApiKey(userId, key.id);

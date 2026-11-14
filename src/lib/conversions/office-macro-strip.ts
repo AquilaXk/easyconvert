@@ -3,7 +3,7 @@ import { InflateBudget } from './bounded-inflate';
 import { declaredPackageEntries, startsWithBytes, ZIP_LOCAL_HEADER_SIGNATURE } from './package-access';
 import { newRelationshipAllowance, forEachRelationship } from './office/opc-parts';
 import { resolveZipPath } from './office/zip-path';
-import { safeExtractXmlElements, type SafeXmlElement } from './safe-xml-scanner';
+import { SafeXmlDepthExceededError, safeExtractXmlElements, type SafeXmlElement } from './safe-xml-scanner';
 import { readZipEntryBytes, readZipEntryText } from './zip-entry-reader';
 import { ConversionFailedError } from '../types';
 
@@ -105,9 +105,17 @@ function assertEntryCount(zip: JSZip): void {
   if (count > MACRO_STRIP_MAX_ENTRIES) refuseTooMany('entries', count, MACRO_STRIP_MAX_ENTRIES);
 }
 
-/** The elements of `xml` named `tagName`, refusing a part that lists more than `limit`. */
+/** The elements of `xml` named `tagName`, refusing a part that lists more than `limit` or exceeds the XML nesting depth bound. */
 function elementsWithin(xml: string, tagName: string | string[], limit: number, what: string): SafeXmlElement[] {
-  const found = safeExtractXmlElements(xml, tagName, { maxElements: limit + 1 });
+  let found: SafeXmlElement[];
+  try {
+    found = safeExtractXmlElements(xml, tagName, { maxElements: limit + 1, failOnMaxDepth: true });
+  } catch (err) {
+    if (err instanceof SafeXmlDepthExceededError) {
+      throw new ConversionFailedError(`The ${what} XML in the package is nested deeper than an office file may.`);
+    }
+    throw err;
+  }
   if (found.length > limit) refuseTooMany(what, found.length, limit);
   return found;
 }
@@ -120,6 +128,10 @@ function sourceOf(relationshipsPart: string): string {
 /** What was done to a package: nothing, its macro-enabled main content type made the plain one (no macro part), or its macro parts removed. */
 type StripOutcome = 'unchanged' | 'retyped' | 'dropped';
 
+function normalizePartName(partName: string): string {
+  return resolveZipPath('', partName).toLowerCase();
+}
+
 /** The macro parts that the content types name (by `Override`, and by `Default` extension) and those whose name says so, in one pass over the entries (lowercased). */
 function macroPartsOf(typeElements: readonly SafeXmlElement[], names: readonly string[]): Set<string> {
   const macroParts = new Set<string>();
@@ -127,7 +139,7 @@ function macroPartsOf(typeElements: readonly SafeXmlElement[], names: readonly s
   for (const element of typeElements) {
     const { ContentType: contentType, PartName: partName, Extension: extension } = element.attrs;
     if (contentType === undefined || !OOXML_MACRO_CONTENT_TYPE.test(contentType)) continue;
-    if (partName !== undefined) macroParts.add(partName.replace(/^\//, '').toLowerCase());
+    if (partName !== undefined) macroParts.add(normalizePartName(partName));
     if (extension !== undefined) macroExtensions.add(extension.toLowerCase());
   }
   for (const name of names) {
@@ -148,15 +160,20 @@ function withoutMacroRelationships(relationshipsPart: string, xml: string, macro
   const directory = sourceOf(relationshipsPart).replace(/\/?[^/]*$/, '');
   const edits: Edit[] = [];
   const removedIds: string[] = [];
-  forEachRelationship(xml, allowance, (relationship) => {
-    const { Type: type, Target: target, TargetMode: mode, Id: id } = relationship.attrs;
-    if (type === undefined || target === undefined) return;
-    const resolved = mode === 'External' ? undefined : resolveZipPath(directory, target)?.toLowerCase();
-    if (!OOXML_MACRO_RELATIONSHIP_TYPE.test(type) && !(resolved !== undefined && macroParts.has(resolved))) return;
-    if (resolved !== undefined) macroParts.add(resolved);
-    if (id !== undefined) removedIds.push(id);
-    edits.push({ start: relationship.startIndex, end: relationship.endIndex, replacement: '' });
-  });
+  forEachRelationship(
+    xml,
+    allowance,
+    (relationship) => {
+      const { Type: type, Target: target, TargetMode: mode, Id: id } = relationship.attrs;
+      if (type === undefined || target === undefined) return;
+      const resolved = mode === 'External' ? undefined : resolveZipPath(directory, target)?.toLowerCase();
+      if (!OOXML_MACRO_RELATIONSHIP_TYPE.test(type) && !(resolved !== undefined && macroParts.has(resolved))) return;
+      if (resolved !== undefined) macroParts.add(resolved);
+      if (id !== undefined) removedIds.push(id);
+      edits.push({ start: relationship.startIndex, end: relationship.endIndex, replacement: '' });
+    },
+    { failOnMaxDepth: true },
+  );
   return edits.length === 0 ? undefined : { text: applyEdits(xml, edits), removedIds };
 }
 
@@ -220,7 +237,7 @@ async function stripOoxmlMacros(zip: JSZip, budget: InflateBudget): Promise<Stri
     const { ContentType: contentType, PartName: partName, Extension: extension } = element.attrs;
     if (contentType === undefined) continue;
     const macroDefault = extension !== undefined && OOXML_MACRO_CONTENT_TYPE.test(contentType);
-    if (OOXML_MACRO_CONTENT_TYPE.test(contentType) || macroDefault || (partName !== undefined && macroParts.has(partName.replace(/^\//, '').toLowerCase()))) {
+    if (OOXML_MACRO_CONTENT_TYPE.test(contentType) || macroDefault || (partName !== undefined && macroParts.has(normalizePartName(partName)))) {
       edits.push({ start: element.startIndex, end: element.endIndex, replacement: '' });
       continue;
     }

@@ -14,7 +14,7 @@ import type { DashboardSnapshot } from './snapshot-types';
  */
 export async function loadDashboardSnapshot(user: User): Promise<DashboardSnapshot> {
   const [keys, quota, charges, files, dlqEntries] = await Promise.allSettled([
-    redisKeyStore.listApiKeys(user.id),
+    redisKeyStore.listApiKeys(user.id, { decryptSecrets: false }),
     redisKeyStore.getQuotaUsage(user.id),
     redisKeyStore.recentCharges(user.id),
     listAccountFiles(user.id),

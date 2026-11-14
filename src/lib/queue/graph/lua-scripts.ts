@@ -171,17 +171,21 @@ redis.call('HINCRBY', KEYS[1], 'failedNodes', 1)
 if (redis.call('HGET', KEYS[1], 'policy') or 'fail_fast') == 'fail_fast' then
   redis.call('HSET', KEYS[1], 'status', 'failed', 'failedReason', ARGV[2], 'finishedOn', ARGV[3], 'remainingNodes', '0')
   local cancelled = {}
+  local exported = false
   local all = redis.call('HGETALL', KEYS[3])
   for i = 1, #all, 2 do
     local s = cjson.decode(all[i + 1])
-    if s.status == 'pending' or s.status == 'waiting' or s.status == 'active' then
+    if s.status == 'completed' and type(s.op) == 'string' and string.sub(s.op, 1, 7) == 'export.' then
+      exported = true
+    elseif s.status == 'pending' or s.status == 'waiting' or s.status == 'active' then
       s.status = 'cancelled'
       redis.call('HSET', KEYS[3], all[i], cjson.encode(s))
       redis.call('LREM', KEYS[4], 0, all[i])
       table.insert(cancelled, all[i])
     end
   end
-  return { 1, 'failed', cjson.encode(cancelled), '[]', '0', redis.call('HGET', KEYS[1], 'reservationId') or '', redis.call('HGET', KEYS[1], 'inputKeys') or '[]' }
+  local units = exported and (redis.call('HGET', KEYS[1], 'accumulatedUnits') or '0') or '0'
+  return { 1, 'failed', cjson.encode(cancelled), '[]', units, redis.call('HGET', KEYS[1], 'reservationId') or '', redis.call('HGET', KEYS[1], 'inputKeys') or '[]', exported and '1' or '0' }
 end
 
 -- continue policy: skip every descendant that has not run yet.
@@ -233,16 +237,19 @@ end
 redis.call('HSET', KEYS[1], 'status', 'cancelled', 'failedReason', ARGV[1], 'finishedOn', ARGV[2], 'remainingNodes', '0')
 redis.call('DEL', KEYS[3])
 local cancelled = {}
+local exported = false
 local all = redis.call('HGETALL', KEYS[2])
 for i = 1, #all, 2 do
   local s = cjson.decode(all[i + 1])
-  if s.status == 'pending' or s.status == 'waiting' or s.status == 'active' then
+  if s.status == 'completed' and type(s.op) == 'string' and string.sub(s.op, 1, 7) == 'export.' then
+    exported = true
+  elseif s.status == 'pending' or s.status == 'waiting' or s.status == 'active' then
     s.status = 'cancelled'
     redis.call('HSET', KEYS[2], all[i], cjson.encode(s))
     table.insert(cancelled, all[i])
   end
 end
-return { 1, 'cancelled', cjson.encode(cancelled), redis.call('HGET', KEYS[1], 'reservationId') or '', redis.call('HGET', KEYS[1], 'inputKeys') or '[]' }
+return { 1, 'cancelled', cjson.encode(cancelled), redis.call('HGET', KEYS[1], 'reservationId') or '', redis.call('HGET', KEYS[1], 'inputKeys') or '[]', redis.call('HGET', KEYS[1], 'accumulatedUnits') or '0', exported and '1' or '0' }
 `;
 
 export const FORGET_ENDED_GRAPH_LUA_SCRIPT = `

@@ -386,33 +386,65 @@ function normalizeStates(states?: readonly string[]): {
   };
 }
 
-async function readIdListWindowed<J>(
+async function readZsetWindowed<J>(
   redis: Redis,
-  indexKey: string,
-  ids: string[],
+  zsetKey: string,
+  firstChunk: string[],
+  initialWindow: number,
   options: UserJobListOptions<J>,
   filterStates: readonly string[]
 ): Promise<J[]> {
   const wanted = Math.max(0, options.offset + options.limit);
   const matched: J[] = [];
-  let window = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, wanted));
-  for (let at = 0; at < ids.length && matched.length < wanted; window = Math.min(MAX_WINDOW, window * WINDOW_GROWTH)) {
-    const chunk = ids.slice(at, at + window);
-    at += chunk.length;
-    const flats = (await redis.eval(
-      LIST_USER_JOBS_LUA_SCRIPT,
-      2,
-      indexKey,
-      options.jobKeyPrefix,
-      String(chunk.length),
-      options.excludeGraphNodes ? '1' : '0',
-      ...chunk,
-      ...filterStates
-    )) as string[][];
-    for (const flat of flats) {
-      const job = options.toJob(flat);
-      if (!options.exclude?.(job)) matched.push(job);
+  const seen = new Set<string>();
+  let window = initialWindow;
+  let cursor = 0;
+  let rawChunk = firstChunk;
+
+  for (;;) {
+    if (rawChunk.length === 0) break;
+    const chunk: string[] = [];
+    for (const id of rawChunk) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        chunk.push(id);
+      }
     }
+
+    let flatsCount = 0;
+    if (chunk.length > 0) {
+      const flats = (await redis.eval(
+        LIST_USER_JOBS_LUA_SCRIPT,
+        2,
+        zsetKey,
+        options.jobKeyPrefix,
+        String(chunk.length),
+        options.excludeGraphNodes ? '1' : '0',
+        ...chunk,
+        ...filterStates
+      )) as string[][];
+      flatsCount = flats.length;
+      for (const flat of flats) {
+        const job = options.toJob(flat);
+        if (!options.exclude?.(job)) matched.push(job);
+      }
+    }
+
+    if (matched.length >= wanted || rawChunk.length < window) break;
+
+    if (chunk.length === 0 || flatsCount === chunk.length) {
+      cursor += rawChunk.length;
+    } else if (typeof (redis as { zrevrank?: unknown }).zrevrank === 'function') {
+      const lastRank = await redis.zrevrank(zsetKey, rawChunk[rawChunk.length - 1]);
+      if (typeof lastRank === 'number') {
+        cursor = lastRank + 1;
+      }
+    } else {
+      cursor += rawChunk.length;
+    }
+
+    window = Math.min(MAX_WINDOW, window * WINDOW_GROWTH);
+    rawChunk = await redis.zrevrange(zsetKey, cursor, cursor + window - 1);
   }
   return matched.slice(options.offset, wanted);
 }
@@ -468,16 +500,19 @@ export async function readUserJobs<J>(redis: Redis, options: UserJobListOptions<
   const { filtered, known, unknownOnly } = normalizeStates(options.states);
   if (unknownOnly) return [];
 
+  const wanted = Math.max(0, options.offset + options.limit);
+  const initialWindow = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, wanted));
+
   if (!filtered || known.length >= ALL_JOB_STATES.length) {
-    const ids = await redis.zrevrange(options.indexKey, 0, -1);
-    return readIdListWindowed(redis, options.indexKey, ids, options, []);
+    const firstChunk = await redis.zrevrange(options.indexKey, 0, initialWindow - 1);
+    return readZsetWindowed(redis, options.indexKey, firstChunk, initialWindow, options, []);
   }
 
   if (known.length === 1) {
     const byStateKey = userByStateKey(options.indexKey, known[0]);
-    const byStateIds = await redis.zrevrange(byStateKey, 0, -1);
-    if (byStateIds.length > 0) {
-      return readIdListWindowed(redis, byStateKey, byStateIds, options, known);
+    const firstChunk = await redis.zrevrange(byStateKey, 0, initialWindow - 1);
+    if (firstChunk.length > 0) {
+      return readZsetWindowed(redis, byStateKey, firstChunk, initialWindow, options, known);
     }
     return readViaByStateOrFallback(redis, options, known);
   }

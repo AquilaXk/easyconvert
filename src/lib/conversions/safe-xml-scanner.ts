@@ -15,9 +15,18 @@ export interface SafeXmlElement {
   endIndex: number;
 }
 
+export class SafeXmlDepthExceededError extends Error {
+  constructor(maxDepth: number) {
+    super(`XML nesting depth exceeds maximum allowed depth of ${maxDepth}.`);
+    this.name = 'SafeXmlDepthExceededError';
+  }
+}
+
 export interface SafeXmlScannerOptions {
   maxDepth?: number;
   maxElements?: number;
+  /** When true, throws SafeXmlDepthExceededError instead of truncating when XML nesting exceeds maxDepth. */
+  failOnMaxDepth?: boolean;
   /** Takes each element as it is found, in place of the returned list (which is then empty), so that a long list is not held. */
   onElement?: (element: SafeXmlElement) => void;
 }
@@ -81,10 +90,13 @@ export function safeExtractXmlAttributes(tagHeader: string): SafeXmlAttributeMap
 const SAFE_XML_SCANNER_DEFAULTS = { maxElements: 50_000, maxDepth: 64 } as const;
 
 /** The options of a scan with each default kept for an option that is absent or explicitly `undefined`. */
-function withScannerDefaults(options: SafeXmlScannerOptions): Required<Pick<SafeXmlScannerOptions, 'maxElements' | 'maxDepth'>> & Pick<SafeXmlScannerOptions, 'onElement'> {
+function withScannerDefaults(
+  options: SafeXmlScannerOptions,
+): Required<Pick<SafeXmlScannerOptions, 'maxElements' | 'maxDepth'>> & Pick<SafeXmlScannerOptions, 'onElement' | 'failOnMaxDepth'> {
   return {
     maxElements: options.maxElements ?? SAFE_XML_SCANNER_DEFAULTS.maxElements,
     maxDepth: options.maxDepth ?? SAFE_XML_SCANNER_DEFAULTS.maxDepth,
+    failOnMaxDepth: options.failOnMaxDepth,
     onElement: options.onElement,
   };
 }
@@ -120,13 +132,22 @@ class TagSearch {
   readonly startTag: string;
   readonly nextOpening: ForwardSearch;
   readonly nextClosing: ForwardSearch;
+  readonly nextComment: ForwardSearch;
+  readonly nextCdata: ForwardSearch;
   private readonly closeTag: string;
 
-  constructor(private readonly xml: string, tag: string) {
+  constructor(
+    private readonly xml: string,
+    tag: string,
+    nextComment: ForwardSearch,
+    nextCdata: ForwardSearch,
+  ) {
     this.startTag = '<' + tag;
     this.closeTag = '</' + tag;
     this.nextOpening = new ForwardSearch((from) => xml.indexOf(this.startTag, from));
     this.nextClosing = new ForwardSearch((from) => this.searchClosing(from));
+    this.nextComment = nextComment;
+    this.nextCdata = nextCdata;
   }
 
   /** The end of the closing tag that starts at `index`, past any blanks before its `>` (W3C XML 1.0 section 3.1). */
@@ -163,9 +184,30 @@ function targetSpecs(tagName: string | string[]): TargetSpec[] {
   return (Array.isArray(tagName) ? tagName : [tagName]).map((name) => ({ name, ...splitName(name) }));
 }
 
-/** Whether a name is one of the wanted ones: a wanted name with a prefix must match whole, one without matches the local part. */
-function matchesTarget(specs: TargetSpec[], tag: string, local: string): boolean {
-  return specs.some((spec) => (spec.prefix ? tag === spec.name : local === spec.local));
+const CHAR_COLON = 58;
+
+function spanEquals(xml: string, start: number, end: number, target: string): boolean {
+  if (end - start !== target.length) return false;
+  return xml.startsWith(target, start);
+}
+
+/** Zero-allocation check whether `xml[nameStart..nameEnd)` matches any TargetSpec before slicing tag strings. */
+function matchesTargetSpan(specs: readonly TargetSpec[], xml: string, nameStart: number, nameEnd: number): boolean {
+  let colon = NOT_FOUND;
+  for (let i = nameStart; i < nameEnd; i++) {
+    if (xml.charCodeAt(i) === CHAR_COLON) {
+      colon = i;
+      break;
+    }
+  }
+  const localStart = colon === NOT_FOUND ? nameStart : colon + 1;
+  for (let i = 0; i < specs.length; i++) {
+    const spec = specs[i]!;
+    if (spec.prefix ? spanEquals(xml, nameStart, nameEnd, spec.name) : spanEquals(xml, localStart, nameEnd, spec.local)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** The index that ends the name of the opening tag at `lt`. */
@@ -214,11 +256,10 @@ function afterMarker(xml: string, marker: string, from: number): number {
   return at === NOT_FOUND ? xml.length : at + marker.length;
 }
 
-/** The position after a comment or a CDATA section that starts at `at`, or -1 when none does. */
-function skipCommentOrCdata(xml: string, at: number): number {
-  if (xml.startsWith('<!--', at)) return afterMarker(xml, '-->', at + 4);
-  if (xml.startsWith('<![CDATA[', at)) return afterMarker(xml, ']]>', at + 9);
-  return NOT_FOUND;
+function earliestOf(a: number, b: number): number {
+  if (a === NOT_FOUND) return b;
+  if (b === NOT_FOUND) return a;
+  return Math.min(a, b);
 }
 
 /**
@@ -228,7 +269,8 @@ function skipCommentOrCdata(xml: string, at: number): number {
 function nestedOpeningClose(xml: string, open: number, startTagLength: number): number {
   const code = xml.charCodeAt(open + startTagLength);
   if (!(code === CHAR_GT || code === CHAR_SLASH || code <= 32)) return NOT_FOUND;
-  return xml.indexOf('>', open);
+  const close = headerCloseFrom(xml, open + startTagLength);
+  return close < xml.length ? close : NOT_FOUND;
 }
 
 interface ElementEnd {
@@ -248,15 +290,23 @@ function findElementEnd(xml: string, tag: TagSearch, headerClose: number, maxDep
   let depth = 0;
   let searchPos = headerClose + 1;
   while (searchPos < xml.length) {
-    const skipped = skipCommentOrCdata(xml, searchPos);
-    if (skipped !== NOT_FOUND) {
-      searchPos = skipped;
-      continue;
-    }
+    const comment = tag.nextComment.next(searchPos);
+    const cdata = tag.nextCdata.next(searchPos);
+    const earliestNonCode = earliestOf(comment, cdata);
+
     const closing = tag.nextClosing.next(searchPos);
     if (closing === NOT_FOUND) return null;
 
     const opening = tag.nextOpening.next(searchPos);
+    const earliestTag = opening === NOT_FOUND ? closing : Math.min(opening, closing);
+    if (earliestNonCode !== NOT_FOUND && earliestNonCode < earliestTag) {
+      searchPos =
+        earliestNonCode === comment
+          ? afterMarker(xml, '-->', earliestNonCode + 4)
+          : afterMarker(xml, ']]>', earliestNonCode + 9);
+      continue;
+    }
+
     if (opening === NOT_FOUND || opening >= closing) {
       if (depth === 0) return { contentEnd: closing, end: tag.closingEnd(closing) };
       depth--;
@@ -287,11 +337,14 @@ export function safeExtractXmlElements(
   options: SafeXmlScannerOptions = {}
 ): SafeXmlElement[] {
   const results: SafeXmlElement[] = [];
-  const { maxElements, maxDepth, onElement } = withScannerDefaults(options);
+  const { maxElements, maxDepth, failOnMaxDepth, onElement } = withScannerDefaults(options);
   let found = 0;
   const take = onElement ?? ((element: SafeXmlElement): void => void results.push(element));
   const specs = targetSpecs(tagName);
   const searches = new Map<string, TagSearch>();
+  const sharedComments = new ForwardSearch((from) => xml.indexOf('<!--', from));
+  const sharedCdata = new ForwardSearch((from) => xml.indexOf('<![CDATA[', from));
+  let outerDepth = 0;
 
   let pos = 0;
   while (pos < xml.length && found < maxElements) {
@@ -299,28 +352,39 @@ export function safeExtractXmlElements(
     if (lt === NOT_FOUND) break;
     const skipped = skipNonElement(xml, lt);
     if (skipped !== NOT_FOUND) {
+      if (failOnMaxDepth && xml.charCodeAt(lt + 1) === CHAR_SLASH && outerDepth > 0) {
+        outerDepth--;
+      }
       pos = skipped;
       continue;
     }
 
     const tagEnd = tagNameEnd(xml, lt);
-    const currentTag = xml.slice(lt + 1, tagEnd);
-    const { local, prefix } = splitName(currentTag);
     const headerClose = headerCloseFrom(xml, tagEnd);
     if (headerClose >= xml.length) break;
-    if (!matchesTarget(specs, currentTag, local)) {
+    const slash = selfClosingSlash(xml, lt, headerClose);
+    if (!matchesTargetSpan(specs, xml, lt + 1, tagEnd)) {
+      if (failOnMaxDepth && slash === NOT_FOUND) {
+        outerDepth++;
+        if (outerDepth > maxDepth) throw new SafeXmlDepthExceededError(maxDepth);
+      }
       pos = headerClose + 1;
       continue;
     }
 
-    const slash = selfClosingSlash(xml, lt, headerClose);
+    const currentTag = xml.slice(lt + 1, tagEnd);
+    const { local, prefix } = splitName(currentTag);
     let end = headerClose + 1;
     let contentEnd = lt;
     if (slash === NOT_FOUND) {
       let tag = searches.get(currentTag);
-      if (!tag) searches.set(currentTag, (tag = new TagSearch(xml, currentTag)));
-      const element = findElementEnd(xml, tag, headerClose, maxDepth);
-      if (element === TOO_DEEP) return results;
+      if (!tag) searches.set(currentTag, (tag = new TagSearch(xml, currentTag, sharedComments, sharedCdata)));
+      const remainingDepth = failOnMaxDepth ? Math.max(0, maxDepth - outerDepth) : maxDepth;
+      const element = findElementEnd(xml, tag, headerClose, remainingDepth);
+      if (element === TOO_DEEP) {
+        if (failOnMaxDepth) throw new SafeXmlDepthExceededError(maxDepth);
+        return results;
+      }
       if (element === null) {
         pos = headerClose + 1;
         continue;

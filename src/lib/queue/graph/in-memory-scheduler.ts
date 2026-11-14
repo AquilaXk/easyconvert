@@ -217,7 +217,8 @@ export class InMemoryGraphScheduler implements IGraphScheduler, StartingGraphSch
     if (data.state.policy === 'fail_fast') {
       recordEnd(data.state, 'failed', error);
       const stopped = cancelUnended(data.state, ['completed', 'failed', 'cancelled']);
-      const cancelledJobIds = await finishGraph(endedGraph(data), { outcome: { status: 'failed', error }, reservation: { kind: 'rollback' } }, async () => {
+      const reservation = hasCompletedExport(data.state) ? { kind: 'settle' as const, units: data.accumulatedUnits } : { kind: 'rollback' as const };
+      const cancelledJobIds = await finishGraph(endedGraph(data), { outcome: { status: 'failed', error }, reservation }, async () => {
         const cancelled: string[] = [];
         for (const nid of stopped) {
           if (await cancelGraphNodeJobOrLog(graphId, nid, data.state.graph.nodes[nid], `Graph failed due to node ${nodeId}`)) cancelled.push(graphNodeJobId(graphId, nid));
@@ -288,7 +289,8 @@ export class InMemoryGraphScheduler implements IGraphScheduler, StartingGraphSch
     const data = this.graphs.get(graphId);
     if (!data || !recordEnd(data.state, 'cancelled', reason)) return false;
     const stopped = cancelUnended(data.state, ['completed', 'failed', 'skipped']);
-    await finishGraph(endedGraph(data), { outcome: { status: 'cancelled' }, reservation: { kind: 'rollback' } }, async () => {
+    const reservation = hasCompletedExport(data.state) ? { kind: 'settle' as const, units: data.accumulatedUnits } : { kind: 'rollback' as const };
+    await finishGraph(endedGraph(data), { outcome: { status: 'cancelled' }, reservation }, async () => {
       for (const nid of stopped) await cancelGraphNodeJobOrLog(graphId, nid, data.state.graph.nodes[nid], reason);
     });
     return true;
@@ -363,6 +365,11 @@ function cancelUnended(state: GraphExecutionState, ended: readonly NodeExecution
 /** The end of the completed graph of `data`, settled to the units its nodes charged. */
 function completedEnd(data: InternalGraphData): GraphEnd {
   return { outcome: { status: 'completed' }, reservation: { kind: 'settle', units: data.accumulatedUnits } };
+}
+
+/** Whether any export node of `state` already finished delivering its output. */
+function hasCompletedExport(state: GraphExecutionState): boolean {
+  return Object.values(state.nodes).some((n) => n.status === 'completed' && n.op.startsWith('export.'));
 }
 
 /** Whether every node of `state` ended, by completing, failing or being skipped. */

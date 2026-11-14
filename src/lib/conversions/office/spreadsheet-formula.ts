@@ -1,4 +1,91 @@
-import { ConversionFailedError } from '../../types';
+import { ConversionFailedError, PayloadLimitError } from '../../types';
+
+/** Maximum cells expanded in a single formula range (`A1:Z1000` = 26,000; full sheet `A1:XFD1048576` = 17.18B is refused). */
+export const MAX_FORMULA_RANGE_CELLS = 100_000;
+/** Maximum total range cells expanded across one workbook/sheet formula evaluation pass. */
+export const MAX_TOTAL_FORMULA_RANGE_CELLS = 250_000;
+/** ECMA-376 SpreadsheetML maximum row and column indices (`XFD1048576`). */
+const MAX_EXCEL_ROW = 1_048_576;
+const MAX_EXCEL_COL = 16_384;
+
+function colLettersToNum(col: string): number {
+  let c = 0;
+  for (let i = 0; i < col.length; i++) {
+    const code = col.charCodeAt(i) & ~32;
+    c = c * 26 + (code - 64);
+  }
+  return c;
+}
+
+function colNumToLetters(n: number): string {
+  let s = '';
+  let temp = n;
+  while (temp > 0) {
+    s = String.fromCharCode(65 + ((temp - 1) % 26)) + s;
+    temp = Math.floor((temp - 1) / 26);
+  }
+  return s;
+}
+
+function parseValidatedRangeBounds(
+  col1: string,
+  row1Str: string,
+  col2: string,
+  row2Str: string,
+): { minC: number; maxC: number; minR: number; maxR: number; cellCount: number } {
+  const c1 = colLettersToNum(col1);
+  const c2 = colLettersToNum(col2);
+  const r1 = Number.parseInt(row1Str, 10);
+  const r2 = Number.parseInt(row2Str, 10);
+  const minC = Math.min(c1, c2);
+  const maxC = Math.max(c1, c2);
+  const minR = Math.min(r1, r2);
+  const maxR = Math.max(r1, r2);
+  if (
+    !Number.isFinite(minR) ||
+    !Number.isFinite(maxR) ||
+    minR < 1 ||
+    minC < 1 ||
+    maxR > MAX_EXCEL_ROW ||
+    maxC > MAX_EXCEL_COL
+  ) {
+    throw new PayloadLimitError(
+      `Spreadsheet range ${col1}${row1Str}:${col2}${row2Str} exceeds ECMA-376 grid bounds (${MAX_EXCEL_COL}x${MAX_EXCEL_ROW}).`,
+    );
+  }
+  const cellCount = (maxR - minR + 1) * (maxC - minC + 1);
+  if (cellCount > MAX_FORMULA_RANGE_CELLS) {
+    throw new PayloadLimitError(
+      `Spreadsheet formula range ${col1}${row1Str}:${col2}${row2Str} spans ${cellCount} cells, exceeding limit of ${MAX_FORMULA_RANGE_CELLS}.`,
+    );
+  }
+  return { minC, maxC, minR, maxR, cellCount };
+}
+
+function parseCellCoord(cleanRef: string): { col: number; row: number } | null {
+  let i = 0;
+  while (i < cleanRef.length) {
+    const code = cleanRef.charCodeAt(i);
+    if (code >= 65 && code <= 90) i++;
+    else break;
+  }
+  if (i === 0 || i > 3 || i === cleanRef.length || cleanRef.length - i > 7) return null;
+  const col = colLettersToNum(cleanRef.slice(0, i));
+  let row = 0;
+  for (let j = i; j < cleanRef.length; j++) {
+    const d = cleanRef.charCodeAt(j) - 48;
+    if (d < 0 || d > 9) return null;
+    row = row * 10 + d;
+  }
+  if (col < 1 || col > MAX_EXCEL_COL || row < 1 || row > MAX_EXCEL_ROW) return null;
+  return { col, row };
+}
+
+const STICKY_NUM_RE = /(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/y;
+const STICKY_RANGE_RE = /(\$?[A-Za-z]{1,3})(\$?)([0-9]{1,7}):(\$?[A-Za-z]{1,3})(\$?)([0-9]{1,7})/y;
+const STICKY_OVERSIZE_RANGE_RE = /\$?[A-Za-z]+\$?[0-9]+:\$?[A-Za-z]+\$?[0-9]+/y;
+const STICKY_CELL_RE = /(\$?[A-Za-z]{1,3})(\$?)([0-9]{1,7})/y;
+const STICKY_IDENT_RE = /[A-Za-z_][A-Za-z0-9_.]*/y;
 
 export type CellResolver = (cellRef: string) => any;
 
@@ -38,6 +125,8 @@ function lookupGridOf(tableArg: unknown, singleArrayAs: 'column' | 'row'): unkno
 }
 
 export class SpreadsheetFormulaEvaluator {
+  private evaluatedRangeCells = 0;
+
   constructor(private cellLookup: CellResolver) {}
 
   public evaluate(formula: string): any {
@@ -185,7 +274,8 @@ export class SpreadsheetFormulaEvaluator {
           if (typeof val === 'string' && val.startsWith('#')) {
             isErr = true;
           }
-        } catch {
+        } catch (err) {
+          if (err instanceof PayloadLimitError) throw err;
           isErr = true;
         }
         consume('COMMA');
@@ -214,36 +304,36 @@ export class SpreadsheetFormulaEvaluator {
 
   public resolveRange2D(rangeStr: string): any[][] {
     const [start, end] = rangeStr.split(':');
-    const match1 = start.match(/^(\$?)([A-Za-z]+)(\$?)([0-9]+)$/);
-    const match2 = end.match(/^(\$?)([A-Za-z]+)(\$?)([0-9]+)$/);
-    if (!match1 || !match2) return [];
+    const match1 = start?.match(/^(\$?)([A-Za-z]{1,3})(\$?)([0-9]{1,7})$/);
+    const match2 = end?.match(/^(\$?)([A-Za-z]{1,3})(\$?)([0-9]{1,7})$/);
+    if (!match1 || !match2) {
+      throw new PayloadLimitError(`Spreadsheet formula range ${rangeStr} is outside valid cell bounds.`);
+    }
 
-    const colToNum = (s: string): number => {
-      let c = 0;
-      for (let i = 0; i < s.length; i++) c = c * 26 + (s.charCodeAt(i) - 64);
-      return c;
-    };
+    const { minC, maxC, minR, maxR, cellCount } = parseValidatedRangeBounds(
+      match1[2].toUpperCase(),
+      match1[4],
+      match2[2].toUpperCase(),
+      match2[4],
+    );
+    if (this.evaluatedRangeCells + cellCount > MAX_TOTAL_FORMULA_RANGE_CELLS) {
+      throw new PayloadLimitError(
+        `Spreadsheet formulas exceed cumulative range cell budget of ${MAX_TOTAL_FORMULA_RANGE_CELLS}.`,
+      );
+    }
+    this.evaluatedRangeCells += cellCount;
 
-    const c1 = colToNum(match1[2].toUpperCase());
-    const r1 = Number.parseInt(match1[4], 10);
-    const c2 = colToNum(match2[2].toUpperCase());
-    const r2 = Number.parseInt(match2[4], 10);
-    const minC = Math.min(c1, c2), maxC = Math.max(c1, c2);
-    const minR = Math.min(r1, r2), maxR = Math.max(r1, r2);
+    const width = maxC - minC + 1;
+    const colNames = new Array<string>(width);
+    for (let i = 0; i < width; i++) colNames[i] = colNumToLetters(minC + i);
 
-    const rows: any[][] = [];
+    const rows = new Array<any[]>(maxR - minR + 1);
     for (let r = minR; r <= maxR; r++) {
-      const row: any[] = [];
-      for (let c = minC; c <= maxC; c++) {
-        let colName = '';
-        let temp = c;
-        while (temp > 0) {
-          colName = String.fromCharCode(65 + ((temp - 1) % 26)) + colName;
-          temp = Math.floor((temp - 1) / 26);
-        }
-        row.push(this.cellLookup(`${colName}${r}`));
+      const row = new Array<any>(width);
+      for (let i = 0; i < width; i++) {
+        row[i] = this.cellLookup(`${colNames[i]}${r}`);
       }
-      rows.push(row);
+      rows[r - minR] = row;
     }
     return rows;
   }
@@ -498,36 +588,85 @@ export class SpreadsheetFormulaEvaluator {
     }
   }
 
+  private static readStringToken(expr: string, start: number): { val: string; next: number } {
+    let str = '';
+    let i = start + 1;
+    while (i < expr.length) {
+      if (expr[i] !== '"') {
+        str += expr[i++];
+        continue;
+      }
+      if (i + 1 < expr.length && expr[i + 1] === '"') {
+        str += '"';
+        i += 2;
+        continue;
+      }
+      i++;
+      break;
+    }
+    return { val: str, next: i };
+  }
+
+  private static readComparisonToken(expr: string, start: number): { val: string; next: number } {
+    const ch = expr[start]!;
+    const nextCh = expr[start + 1];
+    if ((ch === '<' && (nextCh === '>' || nextCh === '=')) || (ch === '>' && nextCh === '=')) {
+      return { val: ch + nextCh, next: start + 2 };
+    }
+    return { val: ch, next: start + 1 };
+  }
+
+  private static readWordOrRefToken(expr: string, i: number): { token: FormulaToken; next: number } | null {
+    STICKY_RANGE_RE.lastIndex = i;
+    const rangeMatch = STICKY_RANGE_RE.exec(expr);
+    if (rangeMatch) {
+      const afterRange = expr[i + rangeMatch[0].length];
+      if (!afterRange || !/[A-Za-z0-9_]/.test(afterRange)) {
+        return { token: { type: 'RANGE', val: rangeMatch[0] }, next: i + rangeMatch[0].length };
+      }
+    }
+    STICKY_OVERSIZE_RANGE_RE.lastIndex = i;
+    if (STICKY_OVERSIZE_RANGE_RE.exec(expr)) {
+      throw new PayloadLimitError(`Spreadsheet formula range at offset ${i} exceeds ECMA-376 grid bounds.`);
+    }
+    STICKY_CELL_RE.lastIndex = i;
+    const cellMatch = STICKY_CELL_RE.exec(expr);
+    if (cellMatch) {
+      const nextChar = expr[i + cellMatch[0].length];
+      if (nextChar !== '(' && (!nextChar || !/[A-Za-z0-9_.]/.test(nextChar))) {
+        return { token: { type: 'CELL_REF', val: cellMatch[0] }, next: i + cellMatch[0].length };
+      }
+    }
+    STICKY_IDENT_RE.lastIndex = i;
+    const fnMatch = STICKY_IDENT_RE.exec(expr);
+    if (!fnMatch) return null;
+    const str = fnMatch[0];
+    const next = i + str.length;
+    if (expr[next] === '(') return { token: { type: 'FUNCTION', val: str }, next };
+    const upper = str.toUpperCase();
+    if (upper === 'TRUE' || upper === 'FALSE') return { token: { type: 'BOOLEAN', val: upper === 'TRUE' }, next };
+    return { token: { type: 'CELL_REF', val: str }, next };
+  }
+
   private tokenize(expr: string): FormulaToken[] {
     const tokens: FormulaToken[] = [];
     let i = 0;
     while (i < expr.length) {
-      const ch = expr[i];
-      if (/\s/.test(ch)) { i++; continue; }
+      const ch = expr[i]!;
+      if (ch <= ' ') { i++; continue; }
       if (ch === '(') { tokens.push({ type: 'LPAREN', val: '(' }); i++; continue; }
       if (ch === ')') { tokens.push({ type: 'RPAREN', val: ')' }); i++; continue; }
       if (ch === ',') { tokens.push({ type: 'COMMA', val: ',' }); i++; continue; }
       if (ch === '"') {
-        let str = '';
-        i++;
-        while (i < expr.length) {
-          if (expr[i] === '"') {
-            if (i + 1 < expr.length && expr[i + 1] === '"') { str += '"'; i += 2; }
-            else { i++; break; }
-          } else { str += expr[i++]; }
-        }
-        tokens.push({ type: 'STRING', val: str });
+        const parsed = SpreadsheetFormulaEvaluator.readStringToken(expr, i);
+        tokens.push({ type: 'STRING', val: parsed.val });
+        i = parsed.next;
         continue;
       }
       if (ch === '<' || ch === '>' || ch === '=') {
-        let op = ch;
-        if (i + 1 < expr.length && ((ch === '<' && (expr[i + 1] === '>' || expr[i + 1] === '=')) || (ch === '>' && expr[i + 1] === '='))) {
-          op += expr[i + 1];
-          i += 2;
-        } else {
-          i++;
-        }
-        tokens.push({ type: 'OP_COMP', val: op });
+        const parsed = SpreadsheetFormulaEvaluator.readComparisonToken(expr, i);
+        tokens.push({ type: 'OP_COMP', val: parsed.val });
+        i = parsed.next;
         continue;
       }
       if ('+-*/^%&'.includes(ch)) {
@@ -535,38 +674,17 @@ export class SpreadsheetFormulaEvaluator {
         i++;
         continue;
       }
-      if (/[0-9]/.test(ch) || (ch === '.' && /[0-9]/.test(expr[i + 1]))) {
-        const match = expr.slice(i).match(/^[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?/)!;
-        tokens.push({ type: 'NUMBER', val: Number.parseFloat(match[0]) });
-        i += match[0].length;
+      STICKY_NUM_RE.lastIndex = i;
+      const numMatch = STICKY_NUM_RE.exec(expr);
+      if (numMatch) {
+        tokens.push({ type: 'NUMBER', val: Number.parseFloat(numMatch[0]) });
+        i += numMatch[0].length;
         continue;
       }
-      const rangeMatch = expr.slice(i).match(/^(\$?[A-Za-z]+)(\$?)([0-9]+):(\$?[A-Za-z]+)(\$?)([0-9]+)/);
-      if (rangeMatch) {
-        tokens.push({ type: 'RANGE', val: rangeMatch[0] });
-        i += rangeMatch[0].length;
-        continue;
-      }
-      const cellMatch = expr.slice(i).match(/^(\$?[A-Za-z]+)(\$?)([0-9]+)/);
-      if (cellMatch && expr[i + cellMatch[0].length] !== '(') {
-        tokens.push({ type: 'CELL_REF', val: cellMatch[0] });
-        i += cellMatch[0].length;
-        continue;
-      }
-      const fnMatch = expr.slice(i).match(/^[A-Za-z_][A-Za-z0-9_.]*/);
-      if (fnMatch) {
-        const str = fnMatch[0];
-        const nextChar = expr[i + str.length];
-        if (nextChar === '(') {
-          tokens.push({ type: 'FUNCTION', val: str });
-        } else if (str.toUpperCase() === 'TRUE') {
-          tokens.push({ type: 'BOOLEAN', val: true });
-        } else if (str.toUpperCase() === 'FALSE') {
-          tokens.push({ type: 'BOOLEAN', val: false });
-        } else {
-          tokens.push({ type: 'CELL_REF', val: str });
-        }
-        i += str.length;
+      const wordToken = SpreadsheetFormulaEvaluator.readWordOrRefToken(expr, i);
+      if (wordToken) {
+        tokens.push(wordToken.token);
+        i = wordToken.next;
         continue;
       }
       throw new Error(`Unexpected character: "${ch}" at index ${i}`);
@@ -612,69 +730,135 @@ export class SpreadsheetDagEngine {
     return this.evaluateWithDag(this.formulaCells, rows);
   }
 
+  private static extractFormulaReferences(formula: string): {
+    cells: string[];
+    ranges: Array<{ minC: number; maxC: number; minR: number; maxR: number; cellCount: number }>;
+  } {
+    if (!formula) return { cells: [], ranges: [] };
+    if (formula.startsWith('=')) formula = formula.slice(1);
+    const stripped = formula.replace(/"(?:[^"\\]|\\.)*"/g, '');
+    const ranges: Array<{ minC: number; maxC: number; minR: number; maxR: number; cellCount: number }> = [];
+    let totalRangeCells = 0;
+
+    const rangeRegex = /(\$?)([A-Za-z]+)(\$?)([0-9]+)\s*:\s*(\$?)([A-Za-z]+)(\$?)([0-9]+)/g;
+    let rMatch: RegExpExecArray | null;
+    while ((rMatch = rangeRegex.exec(stripped)) !== null) {
+      if (rMatch[2].length > 3 || rMatch[6].length > 3 || rMatch[4].length > 7 || rMatch[8].length > 7) {
+        throw new PayloadLimitError(`Spreadsheet formula range ${rMatch[0]} exceeds ECMA-376 grid bounds.`);
+      }
+      const bounds = parseValidatedRangeBounds(
+        rMatch[2].toUpperCase(),
+        rMatch[4],
+        rMatch[6].toUpperCase(),
+        rMatch[8],
+      );
+      totalRangeCells += bounds.cellCount;
+      if (totalRangeCells > MAX_TOTAL_FORMULA_RANGE_CELLS) {
+        throw new PayloadLimitError(
+          `Spreadsheet formula exceeds cumulative range cell budget of ${MAX_TOTAL_FORMULA_RANGE_CELLS}.`,
+        );
+      }
+      ranges.push(bounds);
+    }
+
+    const strippedWithoutRanges = stripped.replace(rangeRegex, ' ');
+    const cellSet = new Set<string>();
+    const cellRegex = /\b(\$?)([A-Za-z]{1,3})(\$?)([0-9]{1,7})\b/g;
+    let cMatch: RegExpExecArray | null;
+    while ((cMatch = cellRegex.exec(strippedWithoutRanges)) !== null) {
+      let afterIdx = cMatch.index + cMatch[0].length;
+      while (afterIdx < strippedWithoutRanges.length && strippedWithoutRanges.charCodeAt(afterIdx) <= 32) {
+        afterIdx++;
+      }
+      if (strippedWithoutRanges[afterIdx] === '(') continue;
+      cellSet.add(`${cMatch[2].toUpperCase()}${cMatch[4]}`);
+    }
+
+    return { cells: Array.from(cellSet), ranges };
+  }
+
   /**
    * Extracts dependent cell references and ranges from formula expression.
    */
   public static extractDependencies(formula: string): string[] {
-    if (!formula) return [];
-    if (formula.startsWith('=')) formula = formula.slice(1);
-    // Remove string literals to avoid false positives
-    const stripped = formula.replace(/"(?:[^"\\]|\\.)*"/g, '');
-    const refs = new Set<string>();
-
-    const colToNum = (s: string): number => {
-      let c = 0;
-      for (let i = 0; i < s.length; i++) c = c * 26 + (s.charCodeAt(i) - 64);
-      return c;
-    };
-    const numToCol = (n: number): string => {
-      let s = '';
-      let temp = n;
-      while (temp > 0) {
-        s = String.fromCharCode(65 + ((temp - 1) % 26)) + s;
-        temp = Math.floor((temp - 1) / 26);
-      }
-      return s;
-    };
-
-    // 1. Ranges like A1:B5 or $A$1:$B$5 (supporting whitespace around colon)
-    const rangeRegex = /(\$?)([A-Za-z]{1,3})(\$?)([0-9]+)\s*:\s*(\$?)([A-Za-z]{1,3})(\$?)([0-9]+)/g;
-    let rMatch: RegExpExecArray | null;
-    while ((rMatch = rangeRegex.exec(stripped)) !== null) {
-      const c1 = rMatch[2].toUpperCase();
-      const row1 = parseInt(rMatch[4], 10);
-      const c2 = rMatch[6].toUpperCase();
-      const row2 = parseInt(rMatch[8], 10);
-
-      const startC = Math.min(colToNum(c1), colToNum(c2));
-      const endC = Math.max(colToNum(c1), colToNum(c2));
-      const startR = Math.min(row1, row2);
-      const endR = Math.max(row1, row2);
-
-      for (let r = startR; r <= endR; r++) {
-        for (let c = startC; c <= endC; c++) {
-          refs.add(`${numToCol(c)}${r}`);
+    const { cells, ranges } = SpreadsheetDagEngine.extractFormulaReferences(formula);
+    const refs = new Set<string>(cells);
+    for (const { minC, maxC, minR, maxR } of ranges) {
+      const width = maxC - minC + 1;
+      const cols = new Array<string>(width);
+      for (let i = 0; i < width; i++) cols[i] = colNumToLetters(minC + i);
+      for (let r = minR; r <= maxR; r++) {
+        for (let i = 0; i < width; i++) {
+          refs.add(`${cols[i]}${r}`);
         }
       }
     }
+    return Array.from(refs);
+  }
 
-    // Replace all extracted ranges with spaces to avoid duplicate endpoint matches
-    const strippedWithoutRanges = stripped.replace(rangeRegex, ' ');
-
-    // 2. Individual cell references like A1, $B$2
-    const cellRegex = /\b(\$?)([A-Za-z]{1,3})(\$?)([0-9]+)\b/g;
-    let cMatch: RegExpExecArray | null;
-    while ((cMatch = cellRegex.exec(strippedWithoutRanges)) !== null) {
-      const afterIdx = cMatch.index + cMatch[0].length;
-      const afterStr = strippedWithoutRanges.slice(afterIdx).trimStart();
-      if (afterStr.startsWith('(')) {
-        continue; // Function name
-      }
-      const ref = `${cMatch[2].toUpperCase()}${cMatch[4]}`;
-      refs.add(ref);
+  private static buildFormulaDag(formulaCells: FormulaCellInfo[]): {
+    formulaMap: Map<string, FormulaCellInfo>;
+    inDegree: Map<string, number>;
+    reverseDeps: Map<string, Set<string>>;
+  } {
+    const formulaMap = new Map<string, FormulaCellInfo>();
+    const formulaCoords: Array<{ ref: string; col: number; row: number }> = [];
+    for (const fc of formulaCells) {
+      if (!fc.ref) continue;
+      const cleanRef = fc.ref.toUpperCase();
+      formulaMap.set(cleanRef, fc);
+      const coord = parseCellCoord(cleanRef);
+      if (coord) formulaCoords.push({ ref: cleanRef, col: coord.col, row: coord.row });
     }
 
-    return Array.from(refs);
+    const inDegree = new Map<string, number>();
+    const reverseDeps = new Map<string, Set<string>>();
+    let totalRangeCells = 0;
+    for (const [ref, fc] of formulaMap.entries()) {
+      const { cells, ranges } = SpreadsheetDagEngine.extractFormulaReferences(fc.formula);
+      const depsForCell = new Set<string>();
+      for (const r of cells) {
+        if (formulaMap.has(r)) depsForCell.add(r);
+      }
+      for (const range of ranges) {
+        totalRangeCells += range.cellCount;
+        if (totalRangeCells > MAX_TOTAL_FORMULA_RANGE_CELLS) {
+          throw new PayloadLimitError(
+            `Spreadsheet formulas exceed cumulative range cell budget of ${MAX_TOTAL_FORMULA_RANGE_CELLS}.`,
+          );
+        }
+        SpreadsheetDagEngine.collectCoordsInRange(formulaCoords, range, depsForCell);
+      }
+      for (const r of depsForCell) {
+        let rev = reverseDeps.get(r);
+        if (!rev) {
+          rev = new Set();
+          reverseDeps.set(r, rev);
+        }
+        rev.add(ref);
+      }
+      inDegree.set(ref, depsForCell.size);
+    }
+    return { formulaMap, inDegree, reverseDeps };
+  }
+
+  private static collectCoordsInRange(
+    formulaCoords: ReadonlyArray<{ ref: string; col: number; row: number }>,
+    range: { minC: number; maxC: number; minR: number; maxR: number },
+    out: Set<string>,
+  ): void {
+    for (let i = 0; i < formulaCoords.length; i++) {
+      const c = formulaCoords[i]!;
+      if (c.col >= range.minC && c.col <= range.maxC && c.row >= range.minR && c.row <= range.maxR) {
+        out.add(c.ref);
+      }
+    }
+  }
+
+  private static writeRowCell(rows: string[][] | undefined, fc: FormulaCellInfo | undefined, value: string): void {
+    if (rows && fc && fc.rowIdx !== undefined && fc.colIdx !== undefined && rows[fc.rowIdx]) {
+      rows[fc.rowIdx][fc.colIdx] = value;
+    }
   }
 
   /**
@@ -685,38 +869,11 @@ export class SpreadsheetDagEngine {
     formulaCells: FormulaCellInfo[],
     rows?: string[][]
   ): { evaluated: Record<string, any>; cycles: string[] } {
-    const formulaMap = new Map<string, FormulaCellInfo>();
-    for (const fc of formulaCells) {
-      if (fc.ref) {
-        formulaMap.set(fc.ref.toUpperCase(), fc);
-      }
-    }
-
-    // Build dependency graph among formula cells and compute in-degrees for Kahn's algorithm
-    const inDegree = new Map<string, number>();
-    const reverseDeps = new Map<string, Set<string>>(); // who depends on me
-    for (const [ref, fc] of formulaMap.entries()) {
-      const referenced = SpreadsheetDagEngine.extractDependencies(fc.formula);
-      let deg = 0;
-      for (const r of referenced) {
-        if (formulaMap.has(r)) {
-          deg++;
-          let rev = reverseDeps.get(r);
-          if (!rev) {
-            rev = new Set();
-            reverseDeps.set(r, rev);
-          }
-          rev.add(ref);
-        }
-      }
-      inDegree.set(ref, deg);
-    }
+    const { formulaMap, inDegree, reverseDeps } = SpreadsheetDagEngine.buildFormulaDag(formulaCells);
 
     const topoOrder: string[] = [];
     for (const [node, deg] of inDegree.entries()) {
-      if (deg === 0) {
-        topoOrder.push(node);
-      }
+      if (deg === 0) topoOrder.push(node);
     }
 
     let qHead = 0;
@@ -727,31 +884,23 @@ export class SpreadsheetDagEngine {
       for (const dep of dependents) {
         const newDeg = (inDegree.get(dep) || 1) - 1;
         inDegree.set(dep, newDeg);
-        if (newDeg === 0) {
-          topoOrder.push(dep);
-        }
+        if (newDeg === 0) topoOrder.push(dep);
       }
     }
 
-    // Any node whose in-degree did not reach 0 is part of or downstream of a cycle
     const cyclicCells: string[] = [];
     for (const [cRef, deg] of inDegree.entries()) {
       if (deg > 0) {
         cyclicCells.push(cRef);
         this.cellMap[cRef] = '#CYCLE!';
-        const fc = formulaMap.get(cRef);
-        if (fc && rows && fc.rowIdx !== undefined && fc.colIdx !== undefined && rows[fc.rowIdx]) {
-          rows[fc.rowIdx][fc.colIdx] = '#CYCLE!';
-        }
+        SpreadsheetDagEngine.writeRowCell(rows, formulaMap.get(cRef), '#CYCLE!');
       }
     }
 
-    // Evaluate in topological order
     const evaluator = new SpreadsheetFormulaEvaluator((ref) => {
       const cleanRef = ref.replace(/\$/g, '').toUpperCase();
       const val = this.cellMap[cleanRef];
-      if (val === undefined || val === null) return '';
-      return val;
+      return val === undefined || val === null ? '' : val;
     });
 
     for (const node of topoOrder) {
@@ -760,21 +909,14 @@ export class SpreadsheetDagEngine {
       try {
         const result = evaluator.evaluate(fc.formula);
         this.cellMap[node] = result;
-        const strResult = result !== null && result !== undefined ? String(result) : '';
-        if (rows && fc.rowIdx !== undefined && fc.colIdx !== undefined && rows[fc.rowIdx]) {
-          rows[fc.rowIdx][fc.colIdx] = strResult;
-        }
-      } catch {
+        SpreadsheetDagEngine.writeRowCell(rows, fc, result !== null && result !== undefined ? String(result) : '');
+      } catch (err) {
+        if (err instanceof PayloadLimitError) throw err;
         this.cellMap[node] = '#REF!';
-        if (rows && fc.rowIdx !== undefined && fc.colIdx !== undefined && rows[fc.rowIdx]) {
-          rows[fc.rowIdx][fc.colIdx] = '#REF!';
-        }
+        SpreadsheetDagEngine.writeRowCell(rows, fc, '#REF!');
       }
     }
 
-    return {
-      evaluated: this.cellMap,
-      cycles: cyclicCells,
-    };
+    return { evaluated: this.cellMap, cycles: cyclicCells };
   }
 }

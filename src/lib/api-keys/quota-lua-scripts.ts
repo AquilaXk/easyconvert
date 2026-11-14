@@ -427,6 +427,9 @@ export const RECORD_VERIFIED_KEY_LUA_SCRIPT = `
 if redis.call('EXISTS', KEYS[1]) == 0 then
   return 0
 end
+if redis.call('HGET', KEYS[1], 'status') == 'revoked' then
+  return 0
+end
 if ARGV[3] ~= '' then
   local hashField = (ARGV[6] ~= nil and ARGV[6] ~= '') and ARGV[6] or 'keyHash'
   redis.call('HSET', KEYS[1], hashField, ARGV[3], 'data', ARGV[2], 'lastUsedAt', ARGV[1])
@@ -440,5 +443,69 @@ else
   redis.call('HSET', KEYS[1], 'lastUsedAt', ARGV[1])
 end
 return 1
+`;
+
+export const REVOKE_API_KEY_LUA_SCRIPT = `
+-- KEYS[1]: apikeys:<keyId>
+-- ARGV[1]: userId  ARGV[2]: expectedKeyHash  ARGV[3]: revokedDataJson
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  return 'MISSING'
+end
+local ownerId = redis.call('HGET', KEYS[1], 'userId')
+if ownerId and ownerId ~= ARGV[1] then
+  return 'FORBIDDEN'
+end
+if ARGV[3] ~= '' and redis.call('HGET', KEYS[1], 'keyHash') == ARGV[2] then
+  redis.call('HSET', KEYS[1], 'status', 'revoked', 'data', ARGV[3])
+else
+  redis.call('HSET', KEYS[1], 'status', 'revoked')
+end
+return 'REVOKED'
+`;
+
+export const UPDATE_API_KEY_LUA_SCRIPT = `
+-- KEYS[1]: apikeys:<keyId>
+-- ARGV[1]: userId  ARGV[2]: expectedKeyHash  ARGV[3]: updatedDataJson
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  return 'INACTIVE'
+end
+if redis.call('HGET', KEYS[1], 'userId') ~= ARGV[1] then
+  return 'INACTIVE'
+end
+if redis.call('HGET', KEYS[1], 'status') ~= 'active' then
+  return 'INACTIVE'
+end
+if redis.call('HGET', KEYS[1], 'keyHash') ~= ARGV[2] then
+  return 'RETRY'
+end
+redis.call('HSET', KEYS[1], 'data', ARGV[3])
+return 'OK'
+`;
+
+export const ROTATE_API_KEY_LUA_SCRIPT = `
+-- KEYS[1]: apikeys:<keyId>  KEYS[2]: apikey_hashes
+-- ARGV[1]: userId  ARGV[2]: expectedKeyHash  ARGV[3]: newKeyHash  ARGV[4]: previousKeyHash
+-- ARGV[5]: outgoingPreviousHash  ARGV[6]: graceExpiresAt  ARGV[7]: updatedDataJson  ARGV[8]: keyId
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  return 'INACTIVE'
+end
+if redis.call('HGET', KEYS[1], 'userId') ~= ARGV[1] then
+  return 'INACTIVE'
+end
+if redis.call('HGET', KEYS[1], 'status') ~= 'active' then
+  return 'INACTIVE'
+end
+if redis.call('HGET', KEYS[1], 'keyHash') ~= ARGV[2] then
+  return 'RETRY'
+end
+redis.call('HSET', KEYS[1], 'data', ARGV[7], 'keyHash', ARGV[3], 'previousKeyHash', ARGV[4], 'graceExpiresAt', ARGV[6])
+redis.call('HSET', KEYS[2], ARGV[3], ARGV[8])
+if ARGV[4] ~= '' then
+  redis.call('HSET', KEYS[2], ARGV[4], ARGV[8])
+end
+if ARGV[5] ~= '' and ARGV[5] ~= ARGV[3] and ARGV[5] ~= ARGV[4] then
+  redis.call('HDEL', KEYS[2], ARGV[5])
+end
+return 'OK'
 `;
 

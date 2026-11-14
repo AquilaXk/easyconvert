@@ -106,14 +106,27 @@ export function applyRgbaGrayscale(input: Uint8Array): Uint8Array {
   return output;
 }
 
+const IS_LITTLE_ENDIAN = new Uint8Array(Uint32Array.of(1).buffer)[0] === 1;
+
 /**
  * Applies RGBA color inversion.
  */
 export function applyRgbaInvert(input: Uint8Array): Uint8Array {
   const output = new Uint8Array(input.byteLength);
   const len = input.byteLength;
+  let byteIndex = 0;
 
-  for (let i = 0; i < len; i += 4) {
+  if (IS_LITTLE_ENDIAN && (input.byteOffset & 3) === 0) {
+    const wordCount = len >>> 2;
+    const src32 = new Uint32Array(input.buffer, input.byteOffset, wordCount);
+    const dst32 = new Uint32Array(output.buffer, 0, wordCount);
+    for (let w = 0; w < wordCount; w++) {
+      dst32[w] = src32[w] ^ 0x00ffffff;
+    }
+    byteIndex = wordCount << 2;
+  }
+
+  for (let i = byteIndex; i < len; i += 4) {
     output[i] = 255 - input[i];
     output[i + 1] = 255 - input[i + 1];
     output[i + 2] = 255 - input[i + 2];
@@ -179,12 +192,12 @@ export function applyRgbaQuantize(
   }
 
   // Floyd-Steinberg error diffusion dithering
-  const curRowErrR = new Float32Array(width + 2);
-  const curRowErrG = new Float32Array(width + 2);
-  const curRowErrB = new Float32Array(width + 2);
-  const nextRowErrR = new Float32Array(width + 2);
-  const nextRowErrG = new Float32Array(width + 2);
-  const nextRowErrB = new Float32Array(width + 2);
+  let curRowErrR = new Float32Array(width + 2);
+  let curRowErrG = new Float32Array(width + 2);
+  let curRowErrB = new Float32Array(width + 2);
+  let nextRowErrR = new Float32Array(width + 2);
+  let nextRowErrG = new Float32Array(width + 2);
+  let nextRowErrB = new Float32Array(width + 2);
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -230,9 +243,15 @@ export function applyRgbaQuantize(
       nextRowErrB[xOffset + 1] += (errB * 1) / 16;
     }
 
-    curRowErrR.set(nextRowErrR);
-    curRowErrG.set(nextRowErrG);
-    curRowErrB.set(nextRowErrB);
+    const prevErrR = curRowErrR;
+    const prevErrG = curRowErrG;
+    const prevErrB = curRowErrB;
+    curRowErrR = nextRowErrR;
+    curRowErrG = nextRowErrG;
+    curRowErrB = nextRowErrB;
+    nextRowErrR = prevErrR;
+    nextRowErrG = prevErrG;
+    nextRowErrB = prevErrB;
     nextRowErrR.fill(0);
     nextRowErrG.fill(0);
     nextRowErrB.fill(0);
@@ -302,7 +321,7 @@ export class WasmEngine {
       u8.set(input, 0);
       this.simdKernelRan = true;
       this.simdExports.rgba_grayscale(0, input.byteLength);
-      return new Uint8Array(u8.subarray(0, input.byteLength));
+      return u8.slice(0, input.byteLength);
     }
     return applyRgbaGrayscale(input);
   }
@@ -313,7 +332,7 @@ export class WasmEngine {
       u8.set(input, 0);
       this.simdKernelRan = true;
       this.simdExports.rgba_invert(0, input.byteLength);
-      return new Uint8Array(u8.subarray(0, input.byteLength));
+      return u8.slice(0, input.byteLength);
     }
     return applyRgbaInvert(input);
   }
@@ -324,7 +343,7 @@ export class WasmEngine {
       u8.set(input, 0);
       this.simdKernelRan = true;
       this.simdExports.rgba_brightness(0, input.byteLength, delta);
-      return new Uint8Array(u8.subarray(0, input.byteLength));
+      return u8.slice(0, input.byteLength);
     }
     return applyRgbaBrightness(input, delta);
   }
@@ -386,8 +405,12 @@ export class WasmEngine {
     this.cumulativeBytes += inputBytes.byteLength;
     this.tasksCompleted += 1;
 
-    const outBuffer = new ArrayBuffer(outputBytes.byteLength);
-    new Uint8Array(outBuffer).set(outputBytes);
+    const outBuffer =
+      outputBytes.byteOffset === 0 &&
+      outputBytes.byteLength === outputBytes.buffer.byteLength &&
+      outputBytes.buffer instanceof ArrayBuffer
+        ? outputBytes.buffer
+        : outputBytes.slice().buffer;
 
     onProgress?.(100);
 

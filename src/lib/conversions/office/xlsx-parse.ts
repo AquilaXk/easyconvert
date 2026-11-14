@@ -115,6 +115,19 @@ async function readSharedStrings(zip: JSZip, budget?: InflateBudget): Promise<st
   return strings;
 }
 
+function extractCustomNumFmts(stylesXml: string, customNumFmtMap: Map<number, string>): void {
+  const numFmtsEl = safeExtractFirstXmlElement(stylesXml, 'numFmts');
+  const numFmtEls = safeExtractXmlElements(numFmtsEl ? numFmtsEl.content : stylesXml, 'numFmt');
+  for (const nfEl of numFmtEls) {
+    const rawId = nfEl.attrs.numFmtId;
+    const rawCode = nfEl.attrs.formatCode;
+    if (rawId !== undefined && rawCode !== undefined) {
+      const parsedId = Number.parseInt(rawId, 10);
+      if (!Number.isNaN(parsedId)) customNumFmtMap.set(parsedId, rawCode);
+    }
+  }
+}
+
 /**
  * Parses all worksheets from an XLSX JSZip instance, discovering sheets from workbook.xml
  * and workbook.xml.rels, resolving shared strings, NumberFormats, and formulas.
@@ -145,13 +158,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
   const stylesFile = zip.file('xl/styles.xml');
   if (stylesFile) {
     const stylesXml = await readZipEntryText(stylesFile, { budget: partOptions.budget });
-
-    // Parse custom <numFmt numFmtId="..." formatCode="..."/>
-    const numFmtRegex = /<numFmt\s+[^>]*?numFmtId="(\d+)"[^>]*?formatCode="([^"]*)"/gi;
-    let nfMatch: RegExpExecArray | null;
-    while ((nfMatch = numFmtRegex.exec(stylesXml)) !== null) {
-      customNumFmtMap.set(parseInt(nfMatch[1], 10), nfMatch[2]);
-    }
+    extractCustomNumFmts(stylesXml, customNumFmtMap);
 
     // Parse fonts: <fonts><font>...<b/>...<sz val="11"/>...<color rgb="FF0000"/></font></fonts>
     const parsedFonts: Array<{ bold?: boolean; italic?: boolean; size?: number; color?: string }> = [];

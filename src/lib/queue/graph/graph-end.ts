@@ -9,18 +9,19 @@ import { namedJobFields } from '../../jobs/named-task-report';
 /** How a graph ended: completed, failed for a reason, or cancelled. */
 export type GraphOutcome = { status: 'completed' } | { status: 'failed'; error: string } | { status: 'cancelled' };
 
-/** Removes the intermediate files of graph `graphId`. */
-async function removeIntermediateFiles(graphId: string): Promise<void> {
+/** Removes the intermediate files (and, when `purgeResults` is true, unsettled `results/` outputs) of graph `graphId`. */
+async function removeIntermediateFiles(graphId: string, purgeResults: boolean): Promise<void> {
   if (typeof storageProvider.deleteByPrefix === 'function') {
     await storageProvider.deleteByPrefix(`intermediate/${graphId}/`);
+    if (purgeResults) await storageProvider.deleteByPrefix(`results/${graphId}/`);
   }
 }
 
 /** Gives back the holds the graph took on its input files and removes its intermediate files; a failure is logged. */
-async function removeGraphFiles(graphId: string, inputKeys: readonly string[]): Promise<void> {
+async function removeGraphFiles(graphId: string, inputKeys: readonly string[], purgeResults: boolean): Promise<void> {
   try {
     await releaseInputHolds(graphId, inputKeys);
-    await removeIntermediateFiles(graphId);
+    await removeIntermediateFiles(graphId, purgeResults);
   } catch (err) {
     console.error(`[GraphScheduler] The files of graph ${graphId} could not be removed:`, err);
   }
@@ -139,7 +140,8 @@ export async function finishGraph<T>(
   const result = between && (await orLogged(graph.graphId, 'a step between its settle and its announcement failed', () => between(state)));
   if (state && end.outcome.status === 'completed') await orLogged(graph.graphId, 'its outputs could not be recorded in the file history', () => recordGraphOutputsInHistory(state));
   if (state) await notifyWebhook(state, end.outcome);
-  await removeGraphFiles(graph.graphId, graph.inputKeys);
+  const purgeUnpaidResults = end.outcome.status !== 'completed' && end.reservation.kind === 'rollback';
+  await removeGraphFiles(graph.graphId, graph.inputKeys, purgeUnpaidResults);
   await orLogged(graph.graphId, 'its state could not be set to expire', graph.forget);
   return result;
 }

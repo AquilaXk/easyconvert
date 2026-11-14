@@ -220,7 +220,8 @@ export async function readOldestWaitingSince(
     }
     if (head.length < 2) break;
     const score = Number(head[1]);
-    const wait = (((now % priorityScoreBand) - (score % priorityScoreBand)) + priorityScoreBand) % priorityScoreBand;
+    const rawDiff = (now % priorityScoreBand) - (score % priorityScoreBand);
+    const wait = rawDiff < 0 && rawDiff >= -60_000 ? 0 : (rawDiff + priorityScoreBand) % priorityScoreBand;
     longestWait = Math.max(longestWait ?? 0, wait);
     from = String((Math.floor(score / priorityScoreBand) + 1) * priorityScoreBand);
   }

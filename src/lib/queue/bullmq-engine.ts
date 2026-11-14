@@ -257,30 +257,23 @@ export interface DlqEntry<T = any> {
 
 let lastPriorityTime = 0;
 
-/** A waiting score is `priorityRank * PRIORITY_SCORE_BAND + time in the band`: each priority rank owns one band of scores. */
+/** A waiting score is `priorityRank * PRIORITY_SCORE_BAND + time in the band`: each priority rank owns one band (`<= MAX_PRIORITY_RANK` fits `Number.MAX_SAFE_INTEGER`). */
 const PRIORITY_SCORE_BAND = 1e12;
+export const MAX_PRIORITY_RANK = 8191;
 /** Most priority ranks `oldestWaitingSince` reads; the tiers use a handful. */
 const MAX_WAITING_BANDS = 16;
 
 export function getMonotonicPriorityTimestamp(): number {
   const now = Date.now();
-  if (now > lastPriorityTime) {
-    lastPriorityTime = now;
-    return now;
-  }
-  lastPriorityTime += 1;
+  lastPriorityTime = now > lastPriorityTime ? now : lastPriorityTime + 1;
   return lastPriorityTime;
 }
 
-/**
- * Calculates priority score for waiting ZSET:
- * score = priorityRank * 1e12 + (timestamp % 1e12)
- * High priority jobs (priority 1 > 2 > 0/default 1000) have lower score and execute first.
- * Strict FIFO order is preserved within the same priority level.
- */
+/** Calculates priority score `priorityRank * 1e12 + (timestamp % 1e12)` (priority 1 > 2 > default 1000, strict FIFO per rank). */
 export function calculateJobPriorityScore(priority?: number, timestamp?: number): number {
   const ts = typeof timestamp === 'number' ? timestamp : getMonotonicPriorityTimestamp();
-  const priorityRank = typeof priority === 'number' && priority > 0 ? priority : 1000;
+  const valid = typeof priority === 'number' && Number.isFinite(priority) && priority > 0;
+  const priorityRank = valid ? Math.max(1, Math.min(MAX_PRIORITY_RANK, Math.floor(priority))) : 1000;
   return priorityRank * PRIORITY_SCORE_BAND + (ts % PRIORITY_SCORE_BAND);
 }
 
@@ -1155,6 +1148,13 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   private localRecentEvents = new Set<string>();
   /** Redis mode: attempts this process is running, so a remote cancel can abort their signal. */
   private localActiveJobs = new Map<string, Job<T, R>>();
+  private readonly attemptInstancePrefix = crypto.randomBytes(ATTEMPT_TOKEN_BYTES - 4).toString('hex');
+  private attemptCounter = 0;
+
+  private nextAttemptToken(): string {
+    this.attemptCounter = (this.attemptCounter + 1) >>> 0;
+    return `${this.attemptInstancePrefix}${this.attemptCounter.toString(16).padStart(8, '0')}`;
+  }
 
   constructor(name: string, connectionOpts?: RedisConnectionOptions) {
     super();
@@ -1244,17 +1244,11 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           this.redisConnected = true;
         }
       });
-      client.on('close', () => {
-        this.redisConnected = false;
-      });
-      client.on('end', () => {
-        this.redisConnected = false;
-      });
+      client.on('close', () => { this.redisConnected = false; });
+      client.on('end', () => { this.redisConnected = false; });
       client.on('error', (_err) => {
         const s = (client as any).status;
-        if (s === 'close' || s === 'end') {
-          this.redisConnected = false;
-        }
+        if (s === 'close' || s === 'end') this.redisConnected = false;
       });
     }
   }
@@ -1967,7 +1961,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
         // 2. Atomically pop the next waiting job, mark it active under a fresh attempt token,
         //    and start its heartbeat
-        const attemptToken = crypto.randomBytes(ATTEMPT_TOKEN_BYTES).toString('hex');
+        const attemptToken = this.nextAttemptToken();
         const popped = await this.redisClient.eval(
           POP_NEXT_WAITING_JOB_LUA_SCRIPT,
           4,

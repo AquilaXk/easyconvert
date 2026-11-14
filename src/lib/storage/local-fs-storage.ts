@@ -32,7 +32,7 @@ import {
   writeFileAtomic,
   writeFlushedTemp,
 } from './temp-file';
-import { commitObjectFile, objectPathsFor, type ObjectPaths } from './shared-store';
+import { commitObjectFile, globalSharedObjects, objectPathsFor, type ObjectPaths } from './shared-store';
 
 /** Part numbers run from 1 to 10,000, as in the S3 multipart limits. */
 export const MULTIPART_MAX_PARTS = 10_000;
@@ -397,6 +397,9 @@ export class LocalFsStorage implements IObjectStorage {
         deleted = true;
       }
     } catch {}
+    if (deleted && path.resolve(this.storageDir) === path.resolve(globalSharedObjects.getStorageDir())) {
+      globalSharedObjects.evictInMemory(key);
+    }
     return deleted;
   }
 
@@ -775,6 +778,9 @@ export class LocalFsStorage implements IObjectStorage {
       }
       if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
       if (fs.existsSync(binPath)) fs.unlinkSync(binPath);
+      if (typeof meta.key === 'string' && path.resolve(this.storageDir) === path.resolve(globalSharedObjects.getStorageDir())) {
+        globalSharedObjects.evictInMemory(meta.key);
+      }
       return true;
     } catch {
       return false;

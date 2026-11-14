@@ -4,10 +4,11 @@ import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { Readable, PassThrough } from 'node:stream';
 import Redis from 'ioredis';
+import { pipelineReplies } from '../redis/pipeline-replies';
 import { readyGatedRedis } from '../redis/when-ready';
 import { localFsStorage } from './local-fs-storage';
 import { objectStorage, storageProvider } from './selected-storage';
-import { globalSharedObjects } from './shared-store';
+import { fileBackedObject, globalSharedObjects } from './shared-store';
 import { assertNotSpoofedFilePath } from '../security/file-guard';
 import { LARGEST_PLAN_FILE_BYTES } from '../plan-limits';
 import { resolveDeclaredFormat } from './declared-format';
@@ -185,10 +186,32 @@ export class RedisTusSessionStore implements TusSessionStore {
     }
   }
 
+  private ownerIndexKey(ownerUserId: string): string {
+    return `tus:owner:${ownerUserId}`;
+  }
+
+  private async readManyValues(keys: readonly string[]): Promise<(string | null)[]> {
+    if (keys.length === 0) return [];
+    if (typeof (this.redis as { pipeline?: unknown }).pipeline === 'function') {
+      const pipeline = this.redis.pipeline();
+      for (const k of keys) pipeline.get(k);
+      return (await pipelineReplies(pipeline)) as (string | null)[];
+    }
+    return Promise.all(keys.map((k) => this.redis.get(k)));
+  }
+
   async saveSession(session: TusSession, ttlSeconds: number = 86400): Promise<void> {
     const key = `${this.prefix}${session.id}`;
     const ttl = Math.max(1, Math.floor((session.expiresAt - Date.now()) / 1000));
-    await this.redis.set(key, JSON.stringify(session), 'EX', ttl || ttlSeconds);
+    const effectiveTtl = ttl || ttlSeconds;
+    await this.redis.set(key, JSON.stringify(session), 'EX', effectiveTtl);
+    if (session.ownerUserId && typeof (this.redis as { sadd?: unknown }).sadd === 'function') {
+      const ownerKey = this.ownerIndexKey(session.ownerUserId);
+      await this.redis.sadd(ownerKey, session.id);
+      if (typeof (this.redis as { expire?: unknown }).expire === 'function') {
+        await this.redis.expire(ownerKey, Math.max(86400, effectiveTtl));
+      }
+    }
   }
 
   async getSession(id: string): Promise<TusSession | null> {
@@ -198,7 +221,7 @@ export class RedisTusSessionStore implements TusSessionStore {
     try {
       const s = JSON.parse(raw) as TusSession;
       if (Date.now() > s.expiresAt) {
-        await this.redis.del(key);
+        await this.deleteSession(id);
         return null;
       }
       return s;
@@ -209,19 +232,58 @@ export class RedisTusSessionStore implements TusSessionStore {
 
   async deleteSession(id: string): Promise<boolean> {
     const key = `${this.prefix}${id}`;
+    let ownerUserId: string | undefined;
+    try {
+      const raw = await this.redis.get(key);
+      if (raw) {
+        ownerUserId = (JSON.parse(raw) as Partial<TusSession>).ownerUserId;
+      }
+    } catch {
+      // ignore malformed record
+    }
     const res = await this.redis.del(key);
+    if (ownerUserId && typeof (this.redis as { srem?: unknown }).srem === 'function') {
+      await this.redis.srem(this.ownerIndexKey(ownerUserId), id).catch(() => undefined);
+    }
     return res > 0;
   }
 
-  /** The sessions are keyed by their own id, so the owner is read from each (one SCAN pass; only the erasure of an account asks). */
+  /** Reads the owner's `tus:owner:<userId>` set via pipelined GETs, falling back to a pipelined SCAN pass for unindexed sessions. */
   async idsOfOwner(ownerUserId: string): Promise<string[]> {
+    if (typeof (this.redis as { smembers?: unknown }).smembers === 'function') {
+      const ownerKey = this.ownerIndexKey(ownerUserId);
+      const indexed = await this.redis.smembers(ownerKey);
+      if (indexed.length > 0) {
+        const raws = await this.readManyValues(indexed.map((id) => `${this.prefix}${id}`));
+        const ids: string[] = [];
+        const stale: string[] = [];
+        raws.forEach((raw, idx) => {
+          if (!raw) {
+            stale.push(indexed[idx]);
+            return;
+          }
+          try {
+            const session = JSON.parse(raw) as TusSession;
+            if (session.ownerUserId === ownerUserId) ids.push(session.id);
+            else stale.push(indexed[idx]);
+          } catch {
+            stale.push(indexed[idx]);
+          }
+        });
+        if (stale.length > 0 && typeof (this.redis as { srem?: unknown }).srem === 'function') {
+          await this.redis.srem(ownerKey, ...stale).catch(() => undefined);
+        }
+        return ids;
+      }
+    }
+
     const ids: string[] = [];
     let cursor = '0';
     do {
       const [next, keys] = await this.redis.scan(cursor, 'MATCH', `${this.prefix}*`, 'COUNT', 500);
       cursor = next;
       if (keys.length === 0) continue;
-      for (const raw of await this.redis.mget(keys)) {
+      for (const raw of await this.readManyValues(keys)) {
         if (!raw) continue;
         try {
           const session = JSON.parse(raw) as TusSession;
@@ -235,7 +297,7 @@ export class RedisTusSessionStore implements TusSessionStore {
   }
 
   async reset(): Promise<void> {
-    await clearKeysMatching(this.redis, [`${this.prefix}*`]);
+    await clearKeysMatching(this.redis, [`${this.prefix}*`, 'tus:owner:*']);
   }
 }
 
@@ -437,39 +499,22 @@ async function finalizeTusSession(session: TusSession, binPath: string): Promise
     const hash = crypto.createHash('sha256').update(String(stat.mtimeMs)).digest('hex');
     const etag = `"${hash.slice(0, 32)}"`;
 
-    const meta = {
-      key: session.key,
-      filename: session.filename,
-      contentType: session.mimeType,
-      size: session.uploadLength,
-      etag,
-      createdAt: session.createdAt,
-      expiresAt: session.expiresAt,
-    };
-    await fs.promises.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf-8');
-
-    let cachedBuffer: Buffer | null = null;
-    globalSharedObjects.set(session.key, {
-      key: session.key,
-      filename: session.filename,
-      mimeType: session.mimeType,
-      size: session.uploadLength,
-      etag,
-      uploadedAt: Date.now(),
-      expiresAt: session.expiresAt,
-      filePath: targetBinPath,
-      get buffer(): Buffer {
-        if (session.uploadLength > 32 * 1024 * 1024) {
-          throw new Error('Payload too large for memory');
-        }
-        if (cachedBuffer) return cachedBuffer;
-        if (fs.existsSync(targetBinPath)) {
-          cachedBuffer = fs.readFileSync(targetBinPath);
-          return cachedBuffer;
-        }
-        return Buffer.alloc(0);
-      },
-    });
+    const uploadedAt = Date.now();
+    globalSharedObjects.set(
+      session.key,
+      fileBackedObject(
+        {
+          key: session.key,
+          filename: session.filename,
+          mimeType: session.mimeType,
+          size: session.uploadLength,
+          etag,
+          uploadedAt,
+          expiresAt: session.expiresAt,
+        },
+        targetBinPath
+      )
+    );
   } catch {
     // Fallback if needed
     const readStream = fs.createReadStream(binPath);

@@ -177,7 +177,7 @@ describe('Zero-downtime KEY_HASH_PEPPER rotation with KEY_HASH_PEPPER_PREVIOUS',
     const persisted = JSON.parse(fs.readFileSync(keysFile, 'utf-8')) as Array<{ id: string; keyHash: string; webhookSecret?: string }>;
     const record = persisted.find((item) => item.id === key.id);
     expect(record?.keyHash).toBe(hmacSha256(PEPPER_V2, secretKey));
-    expect(record?.webhookSecret?.startsWith('enc:v1:')).toBe(true);
+    expect(record?.webhookSecret?.startsWith('enc:v2:')).toBe(true);
 
     delete process.env.KEY_HASH_PEPPER_PREVIOUS;
 
@@ -204,7 +204,7 @@ describe('Zero-downtime KEY_HASH_PEPPER rotation with KEY_HASH_PEPPER_PREVIOUS',
     const hashV2 = hmacSha256(PEPPER_V2, secretKey);
     expect(fakeRedis.hashes.get(`${prefix}apikey_hashes`)?.[hashV1]).toBe(key.id);
     const initialStored = JSON.parse(fakeRedis.hashes.get(`${prefix}apikeys:${key.id}`)?.data ?? '{}');
-    expect(initialStored.webhookSecret).toMatch(/^enc:v1:/);
+    expect(initialStored.webhookSecret).toMatch(/^enc:v2:/);
 
     process.env.KEY_HASH_PEPPER = PEPPER_V2;
     process.env.KEY_HASH_PEPPER_PREVIOUS = PEPPER_V1;

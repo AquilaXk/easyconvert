@@ -134,7 +134,11 @@ function meterStopped(verdict: Exclude<MeterVerdict, 'ok'>, importer: ImportCall
  * The body of `res`, every chunk counted by `meter`, or the refusal: a declared length past the import limit or the day
  * before a byte is read, or the verdict of the meter that stopped the body while it was read.
  */
-async function readBody(res: Response, meter: LinkImportMeter, importer: ImportCaller): Promise<{ buffer: Buffer } | { refusal: NextResponse }> {
+async function readBody(
+  res: Response,
+  meter: LinkImportMeter,
+  importer: ImportCaller
+): Promise<{ chunks: Uint8Array[]; totalBytes: number } | { refusal: NextResponse }> {
   const overflow = meter.declared(declaredBodyBytes(res.headers));
   if (overflow) {
     discardBody(res);
@@ -147,6 +151,7 @@ async function readBody(res: Response, meter: LinkImportMeter, importer: ImportC
 
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -157,6 +162,7 @@ async function readBody(res: Response, meter: LinkImportMeter, importer: ImportC
         return { refusal: meterStopped(verdict, importer) };
       }
       chunks.push(value);
+      totalBytes += value.byteLength;
     }
   } catch (streamErr: unknown) {
     await reader.cancel().catch(() => {});
@@ -164,7 +170,7 @@ async function readBody(res: Response, meter: LinkImportMeter, importer: ImportC
   }
   const verdict = await meter.charge();
   if (verdict !== 'ok') return { refusal: meterStopped(verdict, importer) };
-  return { buffer: Buffer.concat(chunks) };
+  return { chunks, totalBytes };
 }
 
 /** The name a `Content-Disposition` header gives (RFC 6266: `filename*` before `filename`), or '' when it gives none. */
@@ -174,8 +180,30 @@ function dispositionFilename(header: string | null): string {
   return name.split(/[/\\]/).pop() ?? '';
 }
 
+/** Streams buffered chunks without flattening or duplicating the payload into contiguous buffers. */
+function chunksReadableStream(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
+  let index = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      while (index < chunks.length) {
+        const next = chunks[index];
+        chunks[index] = new Uint8Array(0);
+        index += 1;
+        if (next.byteLength > 0) {
+          controller.enqueue(next);
+          return;
+        }
+      }
+      controller.close();
+    },
+    cancel() {
+      chunks.length = 0;
+    },
+  });
+}
+
 /** The imported file: its bytes, with the name the remote gave it or the last segment of its address. */
-function importedFile(res: Response, finalUrl: URL, buffer: Buffer): NextResponse {
+function importedFile(res: Response, finalUrl: URL, chunks: Uint8Array[], totalBytes: number): NextResponse {
   // Determine filename
   let filename = dispositionFilename(res.headers.get('content-disposition'));
   if (!filename) {
@@ -186,14 +214,14 @@ function importedFile(res: Response, finalUrl: URL, buffer: Buffer): NextRespons
   const contentType = res.headers.get('content-type') || 'application/octet-stream';
   filename = withExtension(filename, contentType);
 
-  return new NextResponse(new Uint8Array(buffer), {
+  return new NextResponse(chunksReadableStream(chunks), {
     status: 200,
     headers: {
       'Content-Type': contentType,
       'X-Content-Type-Options': 'nosniff',
       'X-Filename': encodeURIComponent(filename),
       'Content-Disposition': attachmentContentDisposition(filename),
-      'Content-Length': buffer.length.toString(),
+      'Content-Length': totalBytes.toString(),
     },
   });
 }
@@ -219,7 +247,7 @@ async function importFrom(
     );
   }
   const body = await readBody(res, meter, importer);
-  return 'refusal' in body ? body.refusal : importedFile(res, finalUrl, body.buffer);
+  return 'refusal' in body ? body.refusal : importedFile(res, finalUrl, body.chunks, body.totalBytes);
 }
 
 /** The 504 of an import whose remote did not send the whole file within the synchronous deadline. */

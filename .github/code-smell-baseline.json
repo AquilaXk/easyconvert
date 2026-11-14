@@ -1152,23 +1152,9 @@
   {
     "file": "src/lib/conversions/office/spreadsheet-formula.ts",
     "rule": "complexity",
-    "function": "evaluateWithDag",
-    "count": 1,
-    "maxValue": 34
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "complexity",
     "function": "executeFunction",
     "count": 1,
     "maxValue": 105
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "complexity",
-    "function": "tokenize",
-    "count": 1,
-    "maxValue": 31
   },
   {
     "file": "src/lib/conversions/office/xls-parse.ts",
@@ -1201,7 +1187,7 @@
     "rule": "complexity",
     "function": "parseAllXlsxWorksheets",
     "count": 1,
-    "maxValue": 85
+    "maxValue": 84
   },
   {
     "file": "src/lib/conversions/office/xlsx-parse.ts",
@@ -1215,7 +1201,7 @@
     "rule": "max-lines-per-function",
     "function": "parseAllXlsxWorksheets",
     "count": 1,
-    "maxValue": 273
+    "maxValue": 269
   },
   {
     "file": "src/lib/conversions/openexr-decode-piz.ts",
@@ -1920,7 +1906,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2299
+    "maxValue": 2293
   },
   {
     "file": "src/lib/queue/conversion-queue.ts",

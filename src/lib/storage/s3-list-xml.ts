@@ -9,18 +9,21 @@ export function stripEntryBlocks(xml: string, names: readonly string[]): string 
   let result = xml;
   for (const name of names) {
     const open = `<${name}>`;
-    const close = `</${name}>`;
-    let out = '';
-    let cursor = 0;
     let from = result.indexOf(open);
+    if (from === -1) continue;
+    const close = `</${name}>`;
+    const parts: string[] = [];
+    let cursor = 0;
     while (from !== -1) {
       const end = result.indexOf(close, from);
       if (end === -1) break;
-      out += result.slice(cursor, from);
+      if (from > cursor) parts.push(result.slice(cursor, from));
       cursor = end + close.length;
       from = result.indexOf(open, cursor);
     }
-    result = out + result.slice(cursor);
+    if (cursor === 0) continue;
+    if (cursor < result.length) parts.push(result.slice(cursor));
+    result = parts.join('');
   }
   return result;
 }

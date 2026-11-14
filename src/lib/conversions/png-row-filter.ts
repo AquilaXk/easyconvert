@@ -56,6 +56,14 @@ export function filterRowsByEntropy(indices: Uint8Array, width: number, height: 
   const out = Buffer.alloc(rowBytes * height);
   const histograms = new Uint32Array(FILTERS * BYTE_VALUES);
   const zeros = new Uint8Array(width);
+  const candidates = new Uint8Array((FILTERS - 1) * width);
+  const scoreTable = new Uint32Array(width + 2);
+  for (let count = 1; count <= width + 1; count += 1) {
+    scoreTable[count] = scoreOf(count);
+  }
+  const upOffset = width;
+  const avgOffset = 2 * width;
+  const paethOffset = 3 * width;
   for (let y = 0; y < height; y += 1) {
     const rowStart = y * width;
     const above = y === 0 ? zeros : indices.subarray(rowStart - width, rowStart);
@@ -68,11 +76,19 @@ export function filterRowsByEntropy(indices: Uint8Array, width: number, height: 
       const value = indices[rowStart + x];
       const up = above[x];
       nonZero |= value;
+      const subVal = (value - left) & 0xff;
+      const upVal = (value - up) & 0xff;
+      const avgVal = (value - ((left + up) >> 1)) & 0xff;
+      const paethVal = (value - paeth(left, up, upLeft)) & 0xff;
+      candidates[x] = subVal;
+      candidates[upOffset + x] = upVal;
+      candidates[avgOffset + x] = avgVal;
+      candidates[paethOffset + x] = paethVal;
       histograms[value] += 1;
-      histograms[BYTE_VALUES + ((value - left) & 0xff)] += 1;
-      histograms[2 * BYTE_VALUES + ((value - up) & 0xff)] += 1;
-      histograms[3 * BYTE_VALUES + ((value - ((left + up) >> 1)) & 0xff)] += 1;
-      histograms[4 * BYTE_VALUES + ((value - paeth(left, up, upLeft)) & 0xff)] += 1;
+      histograms[BYTE_VALUES + subVal] += 1;
+      histograms[2 * BYTE_VALUES + upVal] += 1;
+      histograms[3 * BYTE_VALUES + avgVal] += 1;
+      histograms[4 * BYTE_VALUES + paethVal] += 1;
       left = value;
       upLeft = up;
     }
@@ -85,7 +101,7 @@ export function filterRowsByEntropy(indices: Uint8Array, width: number, height: 
       let score = 0;
       for (let value = 0; value < BYTE_VALUES; value += 1) {
         const count = histograms[histogram + value];
-        if (count !== 0) score += scoreOf(count);
+        if (count !== 0) score += scoreTable[count];
       }
       if (score > bestScore) {
         bestScore = score;
@@ -93,25 +109,12 @@ export function filterRowsByEntropy(indices: Uint8Array, width: number, height: 
       }
     }
     out[target - 1] = best;
-    writeFiltered(best, indices.subarray(rowStart, rowStart + width), above, out.subarray(target, target + width));
+    if (best === FILTER_NONE) {
+      out.set(indices.subarray(rowStart, rowStart + width), target);
+    } else {
+      const candStart = (best - 1) * width;
+      out.set(candidates.subarray(candStart, candStart + width), target);
+    }
   }
   return out;
-}
-
-/** The bytes of `row` under one filter, written to `out` (as long as the row), given the row above it. */
-function writeFiltered(filter: number, row: Uint8Array, above: Uint8Array, out: Uint8Array): void {
-  let left = 0;
-  let upLeft = 0;
-  for (let x = 0; x < row.length; x += 1) {
-    const value = row[x];
-    const up = above[x];
-    let predicted = 0;
-    if (filter === FILTER_SUB) predicted = left;
-    else if (filter === FILTER_UP) predicted = up;
-    else if (filter === FILTER_AVERAGE) predicted = (left + up) >> 1;
-    else if (filter === FILTER_PAETH) predicted = paeth(left, up, upLeft);
-    out[x] = (value - predicted) & 0xff;
-    left = value;
-    upLeft = up;
-  }
 }

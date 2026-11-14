@@ -63,9 +63,11 @@ export async function deflateRawInBlocks(data: Uint8Array, level: number, blockB
 const ZLIB_HEADER_BEST = Uint8Array.of(0x78, 0xda);
 const ZLIB_HEADER_DEFAULT = Uint8Array.of(0x78, 0x9c);
 const ZLIB_HEADER_FASTEST = Uint8Array.of(0x78, 0x01);
+const ZLIB_HEADER_BYTES = 2;
 const ADLER_BYTES = 4;
 const ADLER_BASE = 65521;
-const ADLER_CHUNK_BYTES = 2 * 1024 * 1024;
+/** Largest byte count before 32-bit unsigned `s2` can overflow (`255 * n * (n + 1) / 2 + (n + 1) * (ADLER_BASE - 1) <= 0xffffffff`, Mark Adler's zlib `adler32.c`, Zlib licence). */
+const ADLER_NMAX = 5552;
 
 /** Adler-32 of two consecutive runs from the sums of each (the combination zlib uses; `length2` is the second run's length). */
 export function combineAdler32(adler1: number, adler2: number, length2: number): number {
@@ -81,24 +83,47 @@ export function combineAdler32(adler1: number, adler2: number, length2: number):
   return ((sum2 << 16) | sum1) >>> 0;
 }
 
-function adler32Chunk(bytes: Uint8Array): number {
-  const stream = zlib.deflateSync(bytes, { level: 0 });
-  return stream.readUInt32BE(stream.length - ADLER_BYTES);
-}
-
 /**
- * Adler-32 of `bytes`, from the trailer of a zlib stream of stored blocks processed in at most 2 MiB chunks so native C++
- * SIMD runs without duplicating large buffers.
+ * Pure word-unrolled Adler-32 of `bytes` (RFC 1950 §8.2; `NMAX = 5552` 16-way loop after Mark Adler's zlib `adler32.c`),
+ * computing the checksum directly in registers with zero stored-deflate buffer allocations.
  */
 export function adler32(bytes: Uint8Array): number {
-  if (bytes.length <= ADLER_CHUNK_BYTES) return adler32Chunk(bytes);
-  let combined = adler32Chunk(bytes.subarray(0, ADLER_CHUNK_BYTES));
-  for (let offset = ADLER_CHUNK_BYTES; offset < bytes.length; offset += ADLER_CHUNK_BYTES) {
-    const end = Math.min(bytes.length, offset + ADLER_CHUNK_BYTES);
-    const chunk = bytes.subarray(offset, end);
-    combined = combineAdler32(combined, adler32Chunk(chunk), chunk.length);
+  let s1 = 1;
+  let s2 = 0;
+  let pos = 0;
+  let remaining = bytes.length;
+  while (remaining > 0) {
+    let block = remaining < ADLER_NMAX ? remaining : ADLER_NMAX;
+    remaining -= block;
+    while (block >= 16) {
+      s1 += bytes[pos]; s2 += s1;
+      s1 += bytes[pos + 1]; s2 += s1;
+      s1 += bytes[pos + 2]; s2 += s1;
+      s1 += bytes[pos + 3]; s2 += s1;
+      s1 += bytes[pos + 4]; s2 += s1;
+      s1 += bytes[pos + 5]; s2 += s1;
+      s1 += bytes[pos + 6]; s2 += s1;
+      s1 += bytes[pos + 7]; s2 += s1;
+      s1 += bytes[pos + 8]; s2 += s1;
+      s1 += bytes[pos + 9]; s2 += s1;
+      s1 += bytes[pos + 10]; s2 += s1;
+      s1 += bytes[pos + 11]; s2 += s1;
+      s1 += bytes[pos + 12]; s2 += s1;
+      s1 += bytes[pos + 13]; s2 += s1;
+      s1 += bytes[pos + 14]; s2 += s1;
+      s1 += bytes[pos + 15]; s2 += s1;
+      pos += 16;
+      block -= 16;
+    }
+    while (block > 0) {
+      s1 += bytes[pos++];
+      s2 += s1;
+      block -= 1;
+    }
+    s1 %= ADLER_BASE;
+    s2 %= ADLER_BASE;
   }
-  return combined;
+  return ((s2 << 16) | s1) >>> 0;
 }
 
 function zlibHeader(level: number): Uint8Array {
@@ -108,9 +133,13 @@ function zlibHeader(level: number): Uint8Array {
 
 /** The zlib stream (RFC 1950) around the raw deflate stream of `data`: the header zlib writes for `level` (a stream of another encoder is framed as the level it is closest to) and the Adler-32 of `data`. */
 export function zlibFrame(deflated: Uint8Array, data: Uint8Array, level: number): Buffer {
-  const trailer = Buffer.alloc(ADLER_BYTES);
-  trailer.writeUInt32BE(adler32(data));
-  return Buffer.concat([zlibHeader(level), deflated, trailer]);
+  const header = zlibHeader(level);
+  const out = Buffer.allocUnsafe(ZLIB_HEADER_BYTES + deflated.length + ADLER_BYTES);
+  out[0] = header[0];
+  out[1] = header[1];
+  out.set(deflated, ZLIB_HEADER_BYTES);
+  out.writeUInt32BE(adler32(data), ZLIB_HEADER_BYTES + deflated.length);
+  return out;
 }
 
 /** One zlib stream of `data` at a zlib level (0 to 9), its deflate stream written in parallel blocks ({@link deflateRawInBlocks}) when `data` is longer than one block. */

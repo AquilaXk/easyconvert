@@ -354,7 +354,7 @@ export async function readFb2Model(xml: string, fallbackTitle: string): Promise<
     if (known !== undefined) return known;
     const base64 = binaries.get(id);
     if (base64 === undefined) return undefined;
-    const bytes = Buffer.from(base64.replace(/\s+/g, ''), 'base64');
+    const bytes = Buffer.from(base64, 'base64');
     decoded.set(id, bytes);
     return bytes;
   };

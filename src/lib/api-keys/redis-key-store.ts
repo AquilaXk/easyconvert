@@ -2,7 +2,14 @@ import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { redisUserStore } from '../auth/redis-user-store';
 import { AuthStoreUnavailableError, failClosed } from '../auth/store-unavailable';
-import { KeyStore, type ApiKeyVerification, apiKeyHashCandidates, timingSafeHashMatch } from './key-store';
+import {
+  KeyStore,
+  type ApiKeyVerification,
+  type ListApiKeysOptions,
+  apiKeyHashCandidates,
+  apiKeySecretAad,
+  timingSafeHashMatch,
+} from './key-store';
 import { quotaAllowanceOf } from './quota-window';
 import type {
   ApiKey,
@@ -25,7 +32,10 @@ import { readyGatedRedis } from '../redis/when-ready';
 import {
   DEDUCT_QUOTA_LUA_SCRIPT,
   RECORD_VERIFIED_KEY_LUA_SCRIPT,
+  REVOKE_API_KEY_LUA_SCRIPT,
+  ROTATE_API_KEY_LUA_SCRIPT,
   TOKEN_BUCKET_RATE_LIMIT_LUA_SCRIPT,
+  UPDATE_API_KEY_LUA_SCRIPT,
 } from './quota-lua-scripts';
 import {
   MemoryReservationLedger,
@@ -620,7 +630,7 @@ export class RedisKeyStore extends KeyStore {
       valid: true,
       key: {
         ...key,
-        webhookSecret: decryptSecret(key.webhookSecret),
+        webhookSecret: decryptSecret(key.webhookSecret, apiKeySecretAad(key.userId, key.id)),
       },
       user: await this.withCreditTier(redisUserStore.sanitizeUser(userRecord)),
     };
@@ -682,13 +692,42 @@ export class RedisKeyStore extends KeyStore {
     await this.syncKeyFromRedis(keyId);
     if (this.redisClient) {
       try {
+        const localBefore = this.keys.get(keyId);
+        const expectedHash = localBefore?.keyHash ?? '';
+        const revokedJson =
+          localBefore && localBefore.userId === userId
+            ? JSON.stringify({ ...localBefore, status: 'revoked' })
+            : '';
+        if (typeof (this.redisClient as { eval?: unknown }).eval === 'function') {
+          const luaRes = await this.redisClient.eval(
+            REVOKE_API_KEY_LUA_SCRIPT,
+            1,
+            `${this.keyPrefix}apikeys:${keyId}`,
+            userId,
+            expectedHash,
+            revokedJson
+          );
+          if (luaRes === 'FORBIDDEN') return false;
+          if (luaRes === 'MISSING') return super.revokeApiKey(userId, keyId);
+          if (luaRes === 'REVOKED') {
+            await super.revokeApiKey(userId, keyId);
+            return true;
+          }
+        }
         const exists = await this.redisClient.hexists(`${this.keyPrefix}apikeys:${keyId}`, 'userId');
         if (exists) {
           const ownerId = await this.redisClient.hget(`${this.keyPrefix}apikeys:${keyId}`, 'userId');
           if (ownerId && ownerId !== userId) {
             return false;
           }
-          await this.redisClient.hset(`${this.keyPrefix}apikeys:${keyId}`, 'status', 'revoked');
+          if (revokedJson) {
+            await this.redisClient.hset(`${this.keyPrefix}apikeys:${keyId}`, {
+              status: 'revoked',
+              data: revokedJson,
+            });
+          } else {
+            await this.redisClient.hset(`${this.keyPrefix}apikeys:${keyId}`, 'status', 'revoked');
+          }
         }
       } catch (err) {
         return failClosed('RedisKeyStore', 'revokeApiKey', err);
@@ -725,12 +764,43 @@ export class RedisKeyStore extends KeyStore {
     keyId: string,
     options: ApiKeyRotateOptions = {}
   ): Promise<ApiKeyRotateResult | null> {
-    await this.syncKeyFromRedis(keyId);
-    const outgoingPreviousHash = this.keys.get(keyId)?.previousKeyHash;
-    const result = await super.rotateApiKey(userId, keyId, options);
-    if (result && this.redisClient) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await this.syncKeyFromRedis(keyId);
+      const before = this.keys.get(keyId);
+      const expectedKeyHash = before?.keyHash ?? '';
+      const outgoingPreviousHash = before?.previousKeyHash;
+      const result = await super.rotateApiKey(userId, keyId, options);
+      if (!result || !this.redisClient) {
+        return result;
+      }
       try {
         const storedKey = this.keys.get(keyId) ?? result.key;
+        if (typeof (this.redisClient as { eval?: unknown }).eval === 'function') {
+          const luaRes = await this.redisClient.eval(
+            ROTATE_API_KEY_LUA_SCRIPT,
+            2,
+            `${this.keyPrefix}apikeys:${keyId}`,
+            `${this.keyPrefix}apikey_hashes`,
+            userId,
+            expectedKeyHash,
+            storedKey.keyHash,
+            storedKey.previousKeyHash || '',
+            outgoingPreviousHash || '',
+            String(result.graceExpiresAt),
+            JSON.stringify(storedKey),
+            keyId
+          );
+          if (luaRes === 'OK') {
+            return result;
+          }
+          if (luaRes === 'INACTIVE') {
+            await this.syncKeyFromRedis(keyId);
+            return null;
+          }
+          if (luaRes === 'RETRY') {
+            continue;
+          }
+        }
         await this.redisClient.hset(`${this.keyPrefix}apikeys:${keyId}`, {
           data: JSON.stringify(storedKey),
           keyHash: storedKey.keyHash,
@@ -748,11 +818,13 @@ export class RedisKeyStore extends KeyStore {
         ) {
           await this.redisClient.hdel(`${this.keyPrefix}apikey_hashes`, outgoingPreviousHash);
         }
+        return result;
       } catch (err) {
         return failClosed('RedisKeyStore', 'rotateApiKey', err);
       }
     }
-    return result;
+    await this.syncKeyFromRedis(keyId);
+    return null;
   }
 
   public override async updateApiKey(
@@ -760,17 +832,43 @@ export class RedisKeyStore extends KeyStore {
     keyId: string,
     updates: ApiKeyUpdateOptions
   ): Promise<ApiKey | null> {
-    await this.syncKeyFromRedis(keyId);
-    const updated = await super.updateApiKey(userId, keyId, updates);
-    if (updated && this.redisClient) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await this.syncKeyFromRedis(keyId);
+      const expectedKeyHash = this.keys.get(keyId)?.keyHash ?? '';
+      const updated = await super.updateApiKey(userId, keyId, updates);
+      if (!updated || !this.redisClient) {
+        return updated;
+      }
       try {
         const storedKey = this.keys.get(keyId) ?? updated;
+        if (typeof (this.redisClient as { eval?: unknown }).eval === 'function') {
+          const luaRes = await this.redisClient.eval(
+            UPDATE_API_KEY_LUA_SCRIPT,
+            1,
+            `${this.keyPrefix}apikeys:${keyId}`,
+            userId,
+            expectedKeyHash,
+            JSON.stringify(storedKey)
+          );
+          if (luaRes === 'OK') {
+            return updated;
+          }
+          if (luaRes === 'INACTIVE') {
+            await this.syncKeyFromRedis(keyId);
+            return null;
+          }
+          if (luaRes === 'RETRY') {
+            continue;
+          }
+        }
         await this.redisClient.hset(`${this.keyPrefix}apikeys:${keyId}`, 'data', JSON.stringify(storedKey));
+        return updated;
       } catch (err) {
         return failClosed('RedisKeyStore', 'updateApiKey', err);
       }
     }
-    return updated;
+    await this.syncKeyFromRedis(keyId);
+    return null;
   }
 
   public override async deleteApiKey(userId: string, keyId: string): Promise<boolean> {
@@ -805,24 +903,37 @@ export class RedisKeyStore extends KeyStore {
     return deletedInRedis || deletedLocal;
   }
 
-  public override async listApiKeys(userId: string): Promise<ApiKey[]> {
-    if (!this.redisClient) return super.listApiKeys(userId);
+  public override async listApiKeys(userId: string, options?: ListApiKeysOptions): Promise<ApiKey[]> {
+    if (!this.redisClient) return super.listApiKeys(userId, options);
+    const shouldDecrypt = options?.decryptSecrets !== false;
     try {
       const keyIds = await this.redisClient.smembers(`${this.keyPrefix}user_keys:${userId}`);
       if (keyIds.length === 0) return [];
-      const pipeline = this.redisClient.pipeline();
-      for (const id of keyIds) {
-        pipeline.hgetall(`${this.keyPrefix}apikeys:${id}`);
+      const records: Array<Record<string, string> | null> = [];
+      if (typeof (this.redisClient as { pipeline?: unknown }).pipeline === 'function') {
+        const pipeline = this.redisClient.pipeline();
+        for (const id of keyIds) {
+          pipeline.hgetall(`${this.keyPrefix}apikeys:${id}`);
+        }
+        const results = (await pipeline.exec()) ?? [];
+        for (const [err, data] of results) {
+          if (err) throw err;
+          records.push((data as Record<string, string>) ?? null);
+        }
+      } else {
+        for (const id of keyIds) {
+          records.push(await this.redisClient.hgetall(`${this.keyPrefix}apikeys:${id}`));
+        }
       }
-      const results = (await pipeline.exec()) ?? [];
       const keys: ApiKey[] = [];
-      for (const [err, data] of results) {
-        if (err) throw err;
-        if (data && typeof data === 'object' && 'data' in data) {
-          const record = data as Record<string, string>;
+      for (const record of records) {
+        if (record && typeof record === 'object' && 'data' in record) {
           const parsed = JSON.parse(record.data) as ApiKey;
           parsed.status = (record.status as 'active' | 'revoked') || parsed.status;
-          keys.push({ ...parsed, webhookSecret: decryptSecret(parsed.webhookSecret) });
+          keys.push({
+            ...parsed,
+            webhookSecret: this.resolveListedWebhookSecret(parsed, shouldDecrypt),
+          });
         }
       }
       return keys.sort((a, b) => b.createdAt - a.createdAt);

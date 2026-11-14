@@ -100,7 +100,16 @@ export function getUtcDateKey(): string {
 /** The answer of `verifyApiKey`. `serviceUnavailable` means the store could not tell: the caller answers 503, not 401. */
 export type ApiKeyVerification = { valid: boolean; key?: ApiKey; user?: User; error?: string; serviceUnavailable?: boolean };
 
+export interface ListApiKeysOptions {
+  decryptSecrets?: boolean;
+}
+
+export function apiKeySecretAad(userId: string, keyId: string): string {
+  return `apikey:${userId}:${keyId}`;
+}
+
 export class KeyStore {
+  private static readonly MAX_MIRRORED_KEYS = 4096;
   protected static sharedKeys = new Map<string, ApiKey>();
   protected static sharedKeyHashIndex = new Map<string, string>();
   protected static sharedPreviousKeysByHash = new Map<string, string>();
@@ -153,11 +162,27 @@ export class KeyStore {
         this.previousKeysByHash.delete(existing.previousKeyHash);
         this.keyHashIndex.delete(existing.previousKeyHash);
       }
+      this.keys.delete(key.id);
     }
     this.keys.set(key.id, key);
     this.keyHashIndex.set(key.keyHash, key.id);
     if (key.previousKeyHash) {
       this.previousKeysByHash.set(key.previousKeyHash, key.id);
+    }
+    if (!this.mirrorsToDisk()) {
+      while (this.keys.size > KeyStore.MAX_MIRRORED_KEYS) {
+        const oldestId = this.keys.keys().next().value;
+        if (oldestId === undefined) break;
+        const oldest = this.keys.get(oldestId);
+        this.keys.delete(oldestId);
+        if (oldest) {
+          this.keyHashIndex.delete(oldest.keyHash);
+          if (oldest.previousKeyHash) {
+            this.previousKeysByHash.delete(oldest.previousKeyHash);
+            this.keyHashIndex.delete(oldest.previousKeyHash);
+          }
+        }
+      }
     }
   }
 
@@ -236,8 +261,9 @@ export class KeyStore {
     const keyHash = hashApiKeySecret(secretKey);
     const prefix = `${secretKey.substring(0, 12)}...`;
 
+    const keyId = crypto.randomUUID();
     const key: ApiKey = {
-      id: crypto.randomUUID(),
+      id: keyId,
       userId,
       name: name.trim() || 'Default API Key',
       prefix,
@@ -247,13 +273,12 @@ export class KeyStore {
       status: 'active',
       allowedIps: options.allowedIps,
       webhookUrl: options.webhookUrl,
-      webhookSecret: encryptSecret(options.webhookSecret),
+      webhookSecret: encryptSecret(options.webhookSecret, apiKeySecretAad(userId, keyId)),
       scopes: options.scopes,
       acceptedTermsVersion: options.acceptedTermsVersion,
     };
 
-    this.keys.set(key.id, key);
-    this.keyHashIndex.set(keyHash, key.id);
+    this.upsertKeyInMemory(key);
     this.persist();
 
     return {
@@ -290,7 +315,10 @@ export class KeyStore {
     if (!key.webhookSecret) {
       return false;
     }
-    const { cipherText, reencrypted } = reencryptSecretIfNeeded(key.webhookSecret);
+    const { cipherText, reencrypted } = reencryptSecretIfNeeded(
+      key.webhookSecret,
+      apiKeySecretAad(key.userId, key.id)
+    );
     if (reencrypted) {
       key.webhookSecret = cipherText;
       return true;
@@ -391,7 +419,7 @@ export class KeyStore {
 
     const decryptedKey: ApiKey = {
       ...key,
-      webhookSecret: decryptSecret(key.webhookSecret),
+      webhookSecret: decryptSecret(key.webhookSecret, apiKeySecretAad(key.userId, key.id)),
     };
 
     return {
@@ -401,14 +429,22 @@ export class KeyStore {
     };
   }
 
-  public async listApiKeys(userId: string): Promise<ApiKey[]> {
+  protected resolveListedWebhookSecret(key: ApiKey, shouldDecrypt: boolean): string | undefined {
+    if (shouldDecrypt) {
+      return decryptSecret(key.webhookSecret, apiKeySecretAad(key.userId, key.id));
+    }
+    return key.webhookSecret ? '[redacted]' : undefined;
+  }
+
+  public async listApiKeys(userId: string, options?: ListApiKeysOptions): Promise<ApiKey[]> {
     this.ensureInitialized();
+    const shouldDecrypt = options?.decryptSecrets !== false;
     const result: ApiKey[] = [];
     for (const key of this.keys.values()) {
       if (key.userId === userId) {
         result.push({
           ...key,
-          webhookSecret: decryptSecret(key.webhookSecret),
+          webhookSecret: this.resolveListedWebhookSecret(key, shouldDecrypt),
         });
       }
     }
@@ -430,7 +466,7 @@ export class KeyStore {
     }
 
     const plainWebhookSecret = key.webhookSecret
-      ? reencryptSecretIfNeeded(key.webhookSecret)
+      ? reencryptSecretIfNeeded(key.webhookSecret, apiKeySecretAad(key.userId, key.id))
       : { plainText: undefined, cipherText: undefined, reencrypted: false };
     if (plainWebhookSecret.reencrypted) {
       key.webhookSecret = plainWebhookSecret.cipherText;
@@ -485,12 +521,13 @@ export class KeyStore {
     const nextWebhookUrl = updates.webhookUrl !== undefined ? updates.webhookUrl.trim() : undefined;
     const nextWebhookSecret = updates.webhookSecret !== undefined ? updates.webhookSecret.trim() : undefined;
 
+    const aad = apiKeySecretAad(key.userId, key.id);
     if (nextWebhookUrl !== undefined || nextWebhookSecret !== undefined) {
       const effectiveUrl = nextWebhookUrl !== undefined ? (nextWebhookUrl || undefined) : key.webhookUrl;
       const effectiveSecret =
         nextWebhookSecret !== undefined
           ? (nextWebhookSecret || undefined)
-          : decryptSecret(key.webhookSecret);
+          : decryptSecret(key.webhookSecret, aad);
       const resolved = resolveEffectiveWebhook(undefined, undefined, effectiveUrl, effectiveSecret);
       if (resolved.error) {
         throw new InvalidWebhookConfigError(resolved.error);
@@ -507,7 +544,7 @@ export class KeyStore {
       key.webhookUrl = nextWebhookUrl || undefined;
     }
     if (nextWebhookSecret !== undefined) {
-      key.webhookSecret = nextWebhookSecret ? encryptSecret(nextWebhookSecret) : undefined;
+      key.webhookSecret = nextWebhookSecret ? encryptSecret(nextWebhookSecret, aad) : undefined;
     } else {
       this.reencryptWebhookSecret(key);
     }
@@ -521,7 +558,7 @@ export class KeyStore {
     this.persist();
     return {
       ...key,
-      webhookSecret: decryptSecret(key.webhookSecret),
+      webhookSecret: decryptSecret(key.webhookSecret, aad),
     };
   }
 

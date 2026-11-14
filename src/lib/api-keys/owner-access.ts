@@ -56,7 +56,28 @@ export type ObjectOwnership =
  * An upload and the output of a graph node have no owner (capability access). A key of no namespace a writer of the
  * server produces is not resolved, so no route serves it.
  */
-export async function resolveObjectOwnership(key: string): Promise<ObjectOwnership> {
+const INTERMEDIATE_GRAPH_ID_PATTERN = /^intermediate\/([^/]+)\//;
+
+export interface OwnershipResolverDeps {
+  getJob?: (jobId: string) => Promise<{ data?: { userId?: string } } | null | undefined>;
+  graphScheduler?: {
+    getGraphState: (graphId: string) => Promise<
+      | {
+          status: string;
+          ownerUserId?: string;
+          nodes?: Record<string, { status: string; op: string }>;
+        }
+      | undefined
+    >;
+  };
+}
+
+function hasCompletedExportNode(nodes: Record<string, { status: string; op: string }> | undefined): boolean {
+  if (!nodes) return false;
+  return Object.values(nodes).some((node) => node.status === 'completed' && node.op.startsWith('export.'));
+}
+
+export async function resolveObjectOwnership(key: string, deps?: OwnershipResolverDeps): Promise<ObjectOwnership> {
   const classified = classifyStorageKey(key);
   if (classified.namespace === 'other') {
     return { resolved: false };
@@ -64,14 +85,22 @@ export async function resolveObjectOwnership(key: string): Promise<ObjectOwnersh
   if (classified.namespace === 'user-conversion') {
     return { resolved: true, ownerUserId: classified.userId };
   }
+  const readJob = deps?.getJob ?? ((jobId: string) => conversionQueue.getJob(jobId));
+  const scheduler = deps?.graphScheduler ?? graphScheduler;
   if (classified.namespace === 'job-result') {
     try {
-      const job = await conversionQueue.getJob(classified.jobId);
+      const job = await readJob(classified.jobId);
       if (job) {
         return { resolved: true, ownerUserId: job.data?.userId };
       }
-      const graphState = await graphScheduler.getGraphState(classified.jobId);
+      const graphState = await scheduler.getGraphState(classified.jobId);
       if (graphState) {
+        if (
+          (graphState.status === 'failed' || graphState.status === 'cancelled') &&
+          !hasCompletedExportNode(graphState.nodes)
+        ) {
+          return { resolved: false };
+        }
         return { resolved: true, ownerUserId: graphState.ownerUserId };
       }
       return { resolved: false };
@@ -80,6 +109,22 @@ export async function resolveObjectOwnership(key: string): Promise<ObjectOwnersh
         return { resolved: false };
       }
       throw err;
+    }
+  }
+  if (classified.namespace === 'intermediate') {
+    const match = INTERMEDIATE_GRAPH_ID_PATTERN.exec(key);
+    if (match) {
+      try {
+        const graphState = await scheduler.getGraphState(match[1]);
+        if (graphState && (graphState.status === 'failed' || graphState.status === 'cancelled')) {
+          return { resolved: false };
+        }
+      } catch (err) {
+        if (err instanceof QueueUnavailableError) {
+          return { resolved: false };
+        }
+        throw err;
+      }
     }
   }
   return { resolved: true, ownerUserId: undefined };

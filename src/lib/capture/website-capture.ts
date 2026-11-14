@@ -41,6 +41,8 @@ const MAX_TIMEOUT_MS = 180_000;
 const PROCESS_GRACE_MS = 20_000;
 const MAX_OUTPUT_BYTES = 256 * 1024 * 1024;
 const MAX_STDOUT_BYTES = 1024 * 1024;
+/** Resident memory cap enforced by the sandbox RSS monitor while RLIMIT_AS stays wide enough for Chromium's V8 cage. */
+const MAX_MEMORY_MB = 2048;
 /** Chromium reserves tens of GiB of address space and uses a few hundred MiB; the limit only stops a runaway mapping. */
 const ADDRESS_SPACE_BYTES = 192 * 1024 * 1024 * 1024;
 const PDF_MAGIC = Buffer.from('%PDF-', 'latin1');
@@ -169,6 +171,7 @@ export async function runCapture(url: URL, request: WebsiteCaptureRequest): Prom
             timeoutMs: timeoutMs + PROCESS_GRACE_MS,
             maxBuffer: MAX_STDOUT_BYTES,
             maxFileSize: MAX_OUTPUT_BYTES,
+            memoryLimitMb: MAX_MEMORY_MB,
             rlimits: { asBytes: ADDRESS_SPACE_BYTES },
             env: browserEnvironment(sandbox.sandboxDir),
             // The browser reaches the network through the gate on the loopback interface, which a network namespace of its own would hide, so it
