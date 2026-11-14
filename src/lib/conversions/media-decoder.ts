@@ -34,6 +34,31 @@ export interface DecodedAudio {
 }
 
 const UNSUPPORTED_AUDIO_MESSAGE = 'Unsupported audio format: decoder unavailable';
+
+/**
+ * Refuses a layout before any sample is decoded: no channel or no sample rate is a broken file; more channels than stereo is a
+ * file the in-process path cannot reproduce, refused as media.ts refuses it after a decode, with the engine it needs, so the
+ * job goes to the native engine and no time or memory is spent on samples first.
+ */
+function assertDecodableLayout(channels: number, sampleRate: number): void {
+  if (!Number.isInteger(channels) || channels < 1 || !Number.isFinite(sampleRate) || sampleRate <= 0) {
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+  }
+  if (channels > MAX_PURE_CHANNELS) {
+    throw new EngineUnavailableError(
+      'ffmpeg',
+      `Native FFmpeg engine is required to convert ${channels}-channel audio; the in-process engine reproduces only mono and stereo faithfully (Fail-Closed).`
+    );
+  }
+}
+/** The most channels the in-process decoders return; the targets that follow write mono or stereo only. */
+const MAX_PURE_CHANNELS = 2;
+/**
+ * The most samples (all channels) one in-process decode may produce: 64 Mi samples, 128 MiB as 16-bit, about 12 minutes of
+ * 48 kHz stereo. A FLAC frame of constant subframes is 30 bytes for 32,768 samples a channel, so without this budget a small
+ * file would expand into gigabytes before the channel check that follows the decode.
+ */
+export const MAX_PURE_DECODED_SAMPLES = 64 * 1024 * 1024;
 const WAVE_FORMAT_PCM = 1;
 const WAVE_FORMAT_IEEE_FLOAT = 3;
 
@@ -189,6 +214,7 @@ export function decodeWav(buffer: Buffer): DecodedAudio {
       throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
     }
 
+    assertDecodableLayout(channels, sampleRate);
     const samples = decodePcmBytes(buffer, dataOffset, dataSize, bitsPerSample, true, WAVE_FORMAT_PCM);
     const duration = samples.length / (channels * sampleRate);
     return {
@@ -253,6 +279,7 @@ export function decodeWav(buffer: Buffer): DecodedAudio {
     throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
+  assertDecodableLayout(channels, sampleRate);
   const samples = decodePcmBytes(buffer, dataOffset, dataSize, bitsPerSample, isRifx, audioFormat);
   const duration = samples.length / (channels * sampleRate);
   return {
@@ -379,6 +406,41 @@ function decodePcmBytes(
 /**
  * Decodes RFC 9639 compliant FLAC audio bitstreams into signed 16-bit PCM samples
  */
+/**
+ * Moves `reader` to the next FLAC frame sync code (0xFF, then 0xF8 or 0xF9), one byte at a time, and says whether one was
+ * found before the end. alignToByte alone does not move a reader that is already on a byte boundary, which is where a frame
+ * footer leaves it, so the scan steps a whole byte itself: otherwise padding or a tag after the last frame held it in place.
+ */
+function seekFrameSync(reader: BitReader, buffer: Buffer): boolean {
+  while (!reader.isEof() && reader.getBytePos() < buffer.length - 2) {
+    const b0 = buffer[reader.getBytePos()];
+    const b1 = buffer[reader.getBytePos() + 1];
+    if (b0 === 0xff && (b1 & 0xfe) === 0xf8) return true;
+    const scannedAt = reader.getBytePos();
+    reader.alignToByte();
+    if (reader.getBytePos() === scannedAt) reader.readBits(8);
+  }
+  return false;
+}
+
+/** How far a sample of each source width moves to become 16 bits: right for wider samples, left for 8-bit ones. */
+const SAMPLE_SHIFT_TO_16_BITS: Readonly<Record<number, number>> = { 8: 8, 24: -8, 32: -16 };
+
+/** The samples of one frame, channel after channel for each instant, scaled to 16 bits and clamped. */
+function interleaveFrame(channelData: readonly Int32Array[], blockSize: number, bitsPerSample: number): Int16Array {
+  const channels = channelData.length;
+  const shift = SAMPLE_SHIFT_TO_16_BITS[bitsPerSample] ?? 0;
+  const frame = new Int16Array(blockSize * channels);
+  for (let s = 0; s < blockSize; s++) {
+    for (let c = 0; c < channels; c++) {
+      const raw = channelData[c][s];
+      const val = shift < 0 ? raw >> -shift : raw << shift;
+      frame[s * channels + c] = Math.max(-32768, Math.min(32767, val));
+    }
+  }
+  return frame;
+}
+
 export function decodeFlac(buffer: Buffer): DecodedAudio {
   if (!buffer || buffer.length < 42 || buffer.toString('ascii', 0, 4) !== 'fLaC') {
     throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
@@ -419,24 +481,16 @@ export function decodeFlac(buffer: Buffer): DecodedAudio {
     if (isLast) break;
   }
 
+  assertDecodableLayout(channels, sampleRate);
+
   // 2. Decode Frames
   const reader = new BitReader(buffer, offset);
-  const outSamples: number[] = [];
+  const outChunks: Int16Array[] = [];
+  let outLength = 0;
 
   while (!reader.isEof() && reader.getBytePos() < buffer.length - 4) {
     // Scan for sync code: 14 bits 0x3FFE (0xFF, 0xF8)
-    let syncFound = false;
-    while (!reader.isEof() && reader.getBytePos() < buffer.length - 2) {
-      const b0 = buffer[reader.getBytePos()];
-      const b1 = buffer[reader.getBytePos() + 1];
-      if (b0 === 0xff && (b1 & 0xfe) === 0xf8) {
-        syncFound = true;
-        break;
-      }
-      reader.alignToByte();
-    }
-
-    if (!syncFound) break;
+    if (!seekFrameSync(reader, buffer)) break;
 
     // Read frame header
     const sync = reader.readBits(14);
@@ -478,6 +532,9 @@ export function decodeFlac(buffer: Buffer): DecodedAudio {
 
     // Determine channel topology
     const chCount = chCode <= 7 ? chCode + 1 : 2;
+    if (chCount > MAX_PURE_CHANNELS || chCount !== channels || outLength + curBlockSize * chCount > MAX_PURE_DECODED_SAMPLES) {
+      throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
+    }
     const channelData: Int32Array[] = [];
 
     // Decode Subframes
@@ -494,6 +551,10 @@ export function decodeFlac(buffer: Buffer): DecodedAudio {
       if (wastedFlag === 1) {
         wastedBits = reader.readUnary() + 1;
         subframeBps -= wastedBits;
+      }
+      // readSignedBits shifts by the width: past 31 bits a 32-bit shift wraps, and no width at all cannot carry a sample.
+      if (subframeBps < 1 || subframeBps > 31) {
+        throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
       }
 
       const channelSamples = new Int32Array(curBlockSize);
@@ -633,27 +694,25 @@ export function decodeFlac(buffer: Buffer): DecodedAudio {
       }
     }
 
-    // Interleave samples
-    for (let s = 0; s < curBlockSize; s++) {
-      for (let c = 0; c < chCount; c++) {
-        let val = channelData[c][s];
-        if (bitsPerSample === 24) val = val >> 8;
-        else if (bitsPerSample === 32) val = val >> 16;
-        else if (bitsPerSample === 8) val = val << 8;
-        outSamples.push(Math.max(-32768, Math.min(32767, val)));
-      }
-    }
+    const frameSamples = interleaveFrame(channelData, curBlockSize, bitsPerSample);
+    outChunks.push(frameSamples);
+    outLength += frameSamples.length;
 
     // Frame footer
     reader.alignToByte();
     reader.readBits(16); // CRC-16
   }
 
-  if (outSamples.length === 0) {
+  if (outLength === 0) {
     throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
-  const samples = new Int16Array(outSamples);
+  const samples = new Int16Array(outLength);
+  let written = 0;
+  for (const chunk of outChunks) {
+    samples.set(chunk, written);
+    written += chunk.length;
+  }
   const duration = samples.length / (channels * sampleRate);
   return {
     samples,

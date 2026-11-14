@@ -750,7 +750,7 @@
     "rule": "complexity",
     "function": "decodeFlac",
     "count": 1,
-    "maxValue": 83
+    "maxValue": 80
   },
   {
     "file": "src/lib/conversions/media-decoder.ts",

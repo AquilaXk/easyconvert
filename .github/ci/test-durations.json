@@ -368,6 +368,7 @@
   "tests/event-loop-budget.test.ts": 81.4,
   "tests/fb2-book-structure.test.ts": 16.1,
   "tests/file-source-menu.test.ts": 1.4,
+  "tests/flac-decoder-hostile-input.test.ts": 1.5,
   "tests/flac-encoder-coding.test.ts": 0.2,
   "tests/flac-encoder-compression.test.ts": 2.7,
   "tests/flac-encoder-lpc.test.ts": 0.3,
