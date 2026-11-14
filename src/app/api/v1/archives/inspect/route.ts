@@ -7,6 +7,10 @@ import { readJsonObject } from '@/lib/api/json-body';
 import { readMultipartForm } from '@/lib/api/multipart-body';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { fileSizeLimitProblem, withinSingleRequest } from '@/lib/api/file-size-limit';
+import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
+import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
+import { jobDeadlineMs, syncDeadlineMs } from '@/lib/queue/job-deadline';
+import { SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { STORAGE_OBJECT_NOT_FOUND, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
 import { inspectArchive } from '@/lib/conversions';
@@ -18,6 +22,8 @@ import {
 } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
+
+const MIB = 1024 * 1024;
 
 type MultipartArchive =
   | { problem: NextResponse; archiveBuffer?: undefined }
@@ -44,6 +50,30 @@ async function readMultipartArchive(req: NextRequest, instanceUri: string): Prom
   };
 }
 
+type StoredArchive =
+  | { problem: NextResponse; buffer?: undefined; filename?: undefined }
+  | { problem?: undefined; buffer: Buffer; filename: string };
+
+/** The archive stored under `storageKey`, or the problem for a key `userId` does not own, an object that is missing, or one too large to inspect. */
+async function readStoredArchive(storageKey: unknown, userId: string, instanceUri: string): Promise<StoredArchive> {
+  // Only the owner of a stored object may read it; every other caller is answered as if it did not exist.
+  const ownership = typeof storageKey === 'string' ? await resolveObjectOwnership(storageKey) : ({ resolved: false } as const);
+  if (typeof storageKey !== 'string' || !ownership.resolved || ownership.ownerUserId !== userId) {
+    return { problem: createProblemDetailsResponse(404, STORAGE_OBJECT_NOT_FOUND, instanceUri, 'Not Found') };
+  }
+  // The size is asked of the store first: a stored object is read whole, up to the 512 MiB the store allows in memory.
+  const info = await storageProvider.stat(storageKey);
+  if (info && info.size > SINGLE_REQUEST_FILE_MAX_BYTES) {
+    const detail = `The stored archive is ${Math.ceil(info.size / MIB)} MiB, over the ${SINGLE_REQUEST_FILE_MAX_BYTES / MIB} MiB that an inspection reads. Convert it with a job (POST /api/v1/jobs) instead.`;
+    return { problem: createProblemDetailsResponse(413, detail, instanceUri, 'Payload Too Large') };
+  }
+  const stored = info ? await storageProvider.getObject(storageKey) : undefined;
+  if (!stored) {
+    return { problem: createProblemDetailsResponse(404, `Storage file not found for key: "${storageKey}".`, instanceUri, 'Not Found') };
+  }
+  return { buffer: stored.buffer, filename: stored.filename };
+}
+
 export const POST = withinSingleRequest(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/archives/inspect';
 
@@ -64,6 +94,10 @@ export const POST = withinSingleRequest(async function POST(req: NextRequest) {
       headers
     );
   }
+
+  // At most as many inspections in flight as conversions: the listing runs a 7-Zip process and holds the archive in memory.
+  const slot = await acquireSyncSlot(auth.user.id, auth.user.tier);
+  if (!slot.granted) return concurrencyLimitResponse(slot.limit, instanceUri);
 
   // 2. Parse body: Multipart, JSON, or Octet-stream
   const contentType = req.headers.get('content-type') || '';
@@ -91,20 +125,8 @@ export const POST = withinSingleRequest(async function POST(req: NextRequest) {
 
       const storageKey = body.storageKey;
       if (storageKey) {
-        // Only the owner of a stored object may read it; every other caller is answered as if it did not exist.
-        const ownership = typeof storageKey === 'string' ? await resolveObjectOwnership(storageKey) : ({ resolved: false } as const);
-        if (typeof storageKey !== 'string' || !ownership.resolved || ownership.ownerUserId !== auth.user.id) {
-          return createProblemDetailsResponse(404, STORAGE_OBJECT_NOT_FOUND, instanceUri, 'Not Found');
-        }
-        const stored = await storageProvider.getObject(storageKey);
-        if (!stored) {
-          return createProblemDetailsResponse(
-            404,
-            `Storage file not found for key: "${storageKey}".`,
-            instanceUri,
-            'Not Found'
-          );
-        }
+        const stored = await readStoredArchive(storageKey, auth.user.id, instanceUri);
+        if (stored.problem) return stored.problem;
         archiveBuffer = stored.buffer;
         filename = filename || stored.filename;
       } else {
@@ -143,12 +165,18 @@ export const POST = withinSingleRequest(async function POST(req: NextRequest) {
     const tooLarge = fileSizeLimitProblem(auth.user, archiveBuffer.length, instanceUri);
     if (tooLarge) return tooLarge;
 
-    const inspection = await inspectArchive(archiveBuffer, { filename, password });
+    const archive = archiveBuffer;
+    const deadlineMs = syncDeadlineMs(jobDeadlineMs({ tier: auth.user.tier, family: 'bytes', inputBytes: archive.length }));
+    const inspection = await runUnderDeadline(req, deadlineMs, (limits) =>
+      inspectArchive(archive, { filename, password, signal: limits.signal })
+    );
     return NextResponse.json({
       success: true,
       ...inspection,
     });
   } catch (err: any) {
+    const deadlineProblem = deadlineErrorResponse(err, instanceUri);
+    if (deadlineProblem) return deadlineProblem;
     const storageProblem = storageErrorResponse(err, instanceUri);
     if (storageProblem) return storageProblem;
     if (err instanceof ArchiveEncryptedHeaderError) {
@@ -189,5 +217,7 @@ export const POST = withinSingleRequest(async function POST(req: NextRequest) {
 
     console.error('[archives/inspect] Unexpected failure:', err);
     return createProblemDetailsResponse(500, 'Failed to inspect archive.', instanceUri, 'Internal Server Error');
+  } finally {
+    slot.release();
   }
 });
