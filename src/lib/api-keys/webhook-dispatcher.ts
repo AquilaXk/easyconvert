@@ -5,6 +5,7 @@ import { createSsrfSafeAgent, validateUrlForSsrf } from '../security/ssrf';
 import type { WebhookDlqEntry } from './types';
 import { WebhookDlqStore, type DlqPage, type DlqPageOptions } from './webhook-dlq-store';
 import { redisKeyStore } from './redis-key-store';
+import { redisUserStore } from '../auth/redis-user-store';
 import { getWebhookSecretStore, requireWebhookTargetId } from './webhook-secret-store';
 import { decryptSecret, encryptSecret } from './secret-encryption';
 import { openWebhookSecret, sealWebhookSecret } from '../security/sealed-webhook-secret';
@@ -895,10 +896,18 @@ export class WebhookDispatcher {
     return queue.add('webhook:delivery', jobData as any, { ...WEBHOOK_JOB_OPTIONS });
   }
 
+  /** Whether the delivery belongs to an account that was erased: it is neither sent nor kept as a dead letter. */
+  private async isOwnerErased({ ownerUserId }: WebhookDispatchOptions): Promise<boolean> {
+    return ownerUserId !== undefined && (await redisUserStore.findById(ownerUserId)) === null;
+  }
+
   private async processQueuedJob(
     job: Job<WebhookJobData, WebhookDispatchResult>
   ): Promise<WebhookDispatchResult> {
     const { targetUrl, event, data, options = {} } = job.data;
+    if (await this.isOwnerErased(options)) {
+      return { id: job.data.deliveryId, url: targetUrl, event, success: false, skipped: true, totalAttempts: 0, durationMs: 0, attempts: [] };
+    }
     const secret = openWebhookSecret(job.data.secret, job.data.deliveryId);
     const attemptResult = await this.dispatch(targetUrl, event, data, secret, {
       ...options,
@@ -926,7 +935,8 @@ export class WebhookDispatcher {
     const maxRetries = options.maxRetries || 6;
 
     if (action === 'dlq_immediate' || job.data.attempts.length >= maxRetries) {
-      if (!options.skipDlq) {
+      // The account may have been erased while the attempt ran, after the check above.
+      if (!options.skipDlq && !(await this.isOwnerErased(options))) {
         const lastError = job.data.attempts.at(-1)?.error;
         const dlqEntry: WebhookDlqEntry = {
           id: `dlq_${job.data.deliveryId}`,

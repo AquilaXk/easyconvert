@@ -1293,6 +1293,7 @@
   "tests/webhook-dlq-retention.test.ts": 0,
   "tests/webhook-empty-secret-fail-closed.test.ts": 0,
   "tests/webhook-first-rotation-keeps-secret.test.ts": 0,
+  "tests/webhook-owner-erased.test.ts": 0.2,
   "tests/webhook-rotate-authorization.test.ts": 0.2,
   "tests/webhook-rotated-secret-jobs.test.ts": 0.6,
   "tests/webhook-rotation-and-durable-retry.test.ts": 0.1,
