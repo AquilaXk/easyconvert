@@ -1241,6 +1241,8 @@
   "tests/table-raster-canvas-limit.test.ts": 3,
   "tests/text-escape.test.ts": 0.4,
   "tests/text-input-legacy-encodings.test.ts": 11.9,
+  "tests/text-office-direct.test.ts": 30,
+  "tests/text-pdf-render.test.ts": 1,
   "tests/text-source-utf16.test.ts": 0,
   "tests/theme-toggle-sync.test.ts": 0.1,
   "tests/third-party-notices.test.ts": 3,

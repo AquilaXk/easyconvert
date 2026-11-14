@@ -18,6 +18,7 @@ import {
   type PaletteTaskPayload,
   type QuantizeTaskPayload,
 } from '../conversions/color-quantizer';
+import { PLAIN_TEXT_PDF_TASK, drawPlainTextPdfOnThread, type PlainTextPdfPayload } from '../conversions/text-pdf-render';
 import zlib from 'node:zlib';
 
 /**
@@ -166,6 +167,13 @@ export const CPU_TASK_HANDLERS: Record<string, CpuTaskHandler> = {
     const scanlines = filterPng16Scanlines(payload.width, payload.height, payload.rgb16);
     const idat = zlib.deflateSync(scanlines, { level: payload.level ?? PNG16_DEFAULT_LEVEL });
     return transferableBytes(assemblePng16(payload.width, payload.height, idat, payload.iccProfile));
+  },
+
+  [PLAIN_TEXT_PDF_TASK]: async (raw): Promise<HandlerResult> => {
+    const outcome = await drawPlainTextPdfOnThread(raw as PlainTextPdfPayload);
+    if (!('pdf' in outcome)) return { result: outcome };
+    const pdf = transferableBytes(outcome.pdf);
+    return { result: { ...outcome, pdf: pdf.result }, transfer: pdf.transfer };
   },
 
   pngBand: (raw): HandlerResult => {

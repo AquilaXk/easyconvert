@@ -167,8 +167,12 @@ export function legacyOfficeImportFilter(format: string, inputPath: string): str
   }
 }
 
-/** The `soffice` arguments naming the import filter of the file at `inputPath` declared as `format`: the filter of its generation for a legacy format, else the one of the declared format (see officeImportFilterArgs). */
-export function officeInputFilterArgs(format: string, inputPath: string): string[] {
+/**
+ * The `soffice` arguments naming the import filter of the file at `inputPath` declared as `format`: `filterOverride` when the worker names one,
+ * else the filter of its generation for a legacy format, else the one of the declared format (see officeImportFilterArgs).
+ */
+export function officeInputFilterArgs(format: string, inputPath: string, filterOverride?: string): string[] {
+  if (filterOverride !== undefined) return [`--infilter=${filterOverride}`];
   if (!GENERATION_DEPENDENT_FORMATS.has(format.toLowerCase())) return officeImportFilterArgs(format);
   const filter = legacyOfficeImportFilter(format, inputPath);
   return filter === undefined ? [] : [`--infilter=${filter}`];

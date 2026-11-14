@@ -39,6 +39,11 @@ export interface WorkerEngineOptions extends ConversionOptions {
    * so they are written with the cheap setting. Set by the worker's chain; the request schema has no such field.
    */
   intermediateRaster?: boolean;
+  /**
+   * The import filter the office suite opens the source with (`soffice --infilter=<name>:<options>`), over the one its source format names.
+   * Set by the worker for a plain text file it hands to the suite as it is (`TEXT_IMPORT_FILTER`); the request schema has no such field.
+   */
+  officeImportFilter?: string;
 }
 
 export interface WorkerConversionResult extends ConversionResult {

@@ -16,12 +16,30 @@ export function sourceBytesAsText(input: Buffer, format: string): string {
   if (format === 'msg') return outlookMessageText(readOutlookMessage(input));
   if (BOM_DECLARED_TEXT_SOURCES.has(format) && UTF16_ENCODINGS.has(detectTextInputEncoding(input))) {
     const text = decodeTextInput(input);
-    // Text in UTF-16 has no U+0000; a binary file behind a FE FF mark decodes into them, as it has null bytes as UTF-8.
-    if (text.includes('\u0000')) {
-      throw new ConversionFailedError(`Binary null bytes detected in source format '.${format}': fail-closed against mojibake corruption.`);
-    }
+    assertNoNullCharacter(text, format);
     return text;
   }
   assertReadableAsText(input, format);
   return input.toString('utf-8');
+}
+
+/** Text in UTF-16 has no U+0000; a binary file behind a FE FF mark decodes into them, as it has null bytes as UTF-8. */
+function assertNoNullCharacter(text: string, format: string): void {
+  if (text.includes('\u0000')) {
+    throw new ConversionFailedError(`Binary null bytes detected in source format '.${format}': fail-closed against mojibake corruption.`);
+  }
+}
+
+/**
+ * The refusal of `sourceBytesAsText` for a text file that is not handed to the reader as a whole: the first bytes of a source that is
+ * declared as text, read the way that function reads them (a UTF-16 mark decodes the head, any other head is checked for a binary
+ * container and for null bytes). The head of a UTF-16 file may end inside a character, which the decoder here does not refuse.
+ */
+export function assertTextSourceHead(head: Buffer, format: string): void {
+  const encoding = detectTextInputEncoding(head);
+  if (BOM_DECLARED_TEXT_SOURCES.has(format) && UTF16_ENCODINGS.has(encoding)) {
+    assertNoNullCharacter(new TextDecoder(encoding).decode(head), format);
+    return;
+  }
+  assertReadableAsText(head, format);
 }

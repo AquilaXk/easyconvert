@@ -23,6 +23,7 @@ import { metafileFrameDocument } from '../lib/conversions/office/metafile-frame-
 import { isEmptyMetafile, metafileLeadingBytes, readMetafilePage, type MetafileFormat } from '../lib/conversions/office/metafile-page-frame';
 import { CFBF_MAGIC, PRE_OLE2_WORD_SIGNATURES, isBiffStream } from '../lib/format-signatures';
 import { startsWithBytes } from '../lib/conversions/package-access';
+import { assertTextSourceHead } from '../lib/conversions/office/text-source';
 import { pdfFirstPageHasInk } from './pdf-ink';
 import { selectsPages } from './poppler-ppm';
 import { SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedTimeoutError, rethrowSandboxUnavailable } from './sandbox';
@@ -395,6 +396,25 @@ export function isMarkupPageImagePair(src: string, tgt: string): boolean {
   return PAGE_IMAGE_SOURCES.has(src) && PAGE_IMAGE_TARGETS.has(tgt);
 }
 
+/** The text file the office suite is handed as it is, and the targets it writes from it (`convertTextFileDirectly`). */
+const PLAIN_TEXT_SOURCE = 'txt';
+const TEXT_DIRECT_TARGETS: ReadonlySet<string> = new Set([WORD_97_TARGET, RTF_TARGET]);
+/**
+ * Plain text opened by the office suite as UTF-8: the load properties `FilterName: Text (encoded)` and `FilterOptions: utf8` that
+ * `jodconverter-core/src/main/resources/document-formats.json` of jodconverter/jodconverter (Apache-2.0, commit 98db3424cda6388fae709cc8e9d63cef2008a222)
+ * sets for a `.txt` file, in the form of the `--infilter` argument of `soffice`. A byte order mark that names UTF-16 is read by the filter itself.
+ */
+export const TEXT_IMPORT_FILTER = 'Text (encoded):utf8';
+/**
+ * A text file this long goes to the office suite as it is. Written as a DOCX first, a text with long runs of lines between two blank
+ * lines is one paragraph of thousands of line breaks, which the suite lays out in time that grows faster than the text (a 263 KB file of
+ * 25,009 lines took 4.2 s as a DOCX and 0.9 s read directly; 563 KB 21 s and 0.8 s; 1.2 MB 46 s and 2.2 s), and Word opens as one paragraph.
+ * Below it both ways take about a second and the converter's DOCX is kept, so the text of a short file keeps its paragraphs, fonts and page of before.
+ */
+export const TEXT_DIRECT_MIN_BYTES = 128 * 1024;
+/** Bytes of a text file read to refuse a binary one before the office suite opens it. */
+const TEXT_HEAD_BYTES = 64 * 1024;
+
 /**
  * The format the in-process converter writes first for a target that only the office suite writes, or undefined when the pair has
  * no such bridge: a Word 97-2003 file from a Hangul document, a text, markup or PDF source (through its DOCX), RTF from a text or
@@ -413,7 +433,8 @@ export function bridgeFormat(src: string, tgt: string): string | undefined {
  * file with its `MS Word 97` or `Rich Text Format` filter, the way every Word document is written in a legacy format.
  * The converter's own `.doc` is a Rich Text stream under the `.doc` name, which no Word 97-2003 reader and no signature check takes
  * for a compound file. The DOCX never goes to the output path of the request, which only the export writes. An HTML page is read by the
- * converter and not by the suite, so that the pictures it names are fetched through the converter's guarded session.
+ * converter and not by the suite, so that the pictures it names are fetched through the converter's guarded session. A plain text file of
+ * `TEXT_DIRECT_MIN_BYTES` or more is the exception: the suite reads it as it is (`convertTextFileDirectly`).
  */
 export async function convertBridgedTarget(
   deps: OfficeSuiteRouteDeps,
@@ -423,6 +444,7 @@ export async function convertBridgedTarget(
   const { input, src, tgt, options, originalFilename } = request;
   const bridge = bridgeFormat(src, tgt);
   if (bridge === undefined) return convertDirectly();
+  if (isLongPlainText(input, src, tgt)) return convertTextFileDirectly(deps, request);
   const requestedOutput = Buffer.isBuffer(input) ? undefined : input.outputPath;
   const source: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? input : { ...input, outputPath: undefined };
   const docx = await deps.convert(source, src, bridge, { ...options, libreOfficeFilter: undefined, inProcessFallback: undefined }, originalFilename);
@@ -440,6 +462,31 @@ export async function convertBridgedTarget(
   } finally {
     deps.discardOutput(docx.filePath, input, options);
   }
+}
+
+/** Whether the pair is a plain text file of `TEXT_DIRECT_MIN_BYTES` or more written as Word 97-2003 or RTF. */
+function isLongPlainText(input: Buffer | WorkerVfsPayload, src: string, tgt: string): boolean {
+  return src === PLAIN_TEXT_SOURCE && TEXT_DIRECT_TARGETS.has(tgt) && inputSize(input) >= TEXT_DIRECT_MIN_BYTES;
+}
+
+/**
+ * A long plain text file written as `.doc` or `.rtf` by the office suite alone: the suite reads the text file with its text filter
+ * (`TEXT_IMPORT_FILTER`) and exports it, where the DOCX route would have the converter write the whole text as a package first. The
+ * file is checked as the converter checks it (`assertTextSourceHead`: a binary container or a null byte is refused before the suite
+ * sees it), the text is never held in this process, and the output path of the request is the suite's.
+ */
+async function convertTextFileDirectly(deps: OfficeSuiteRouteDeps, request: OfficeSuiteRequest): Promise<WorkerConversionResult> {
+  const { input, src, tgt, options, originalFilename } = request;
+  assertTextSourceHead(leadingBytes(input, TEXT_HEAD_BYTES), src);
+  let written: WorkerConversionResult | null;
+  try {
+    written = await deps.writeWithOfficeSuite(input, src, tgt, { ...options, officeImportFilter: TEXT_IMPORT_FILTER, throwOnUnavailable: true }, originalFilename);
+  } catch (err) {
+    rethrowSandboxUnavailable(err);
+    throw err;
+  }
+  if (!written) throw new EngineUnavailableError('soffice', `LibreOffice produced no .${tgt} file for the .${src} source`);
+  return written;
 }
 
 /**
