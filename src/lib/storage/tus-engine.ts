@@ -248,8 +248,13 @@ export class RedisTusSessionStore implements TusSessionStore {
     return res > 0;
   }
 
-  /** Reads the owner's `tus:owner:<userId>` set via pipelined GETs, falling back to a pipelined SCAN pass for unindexed sessions. */
+  /**
+   * The sessions of an owner: those its `tus:owner:<userId>` set names, read with pipelined GETs, and always also one pipelined SCAN pass.
+   * The set only knows the sessions made since it exists, and the erasure of an account (the only caller) must not miss an older one; a
+   * SCAN that fails fails the call, so the erasure stops with the account and its uploads still there.
+   */
   async idsOfOwner(ownerUserId: string): Promise<string[]> {
+    const indexedIds: string[] = [];
     if (typeof (this.redis as { smembers?: unknown }).smembers === 'function') {
       const ownerKey = this.ownerIndexKey(ownerUserId);
       const indexed = await this.redis.smembers(ownerKey);
@@ -273,7 +278,7 @@ export class RedisTusSessionStore implements TusSessionStore {
         if (stale.length > 0 && typeof (this.redis as { srem?: unknown }).srem === 'function') {
           await this.redis.srem(ownerKey, ...stale).catch(() => undefined);
         }
-        return ids;
+        indexedIds.push(...ids);
       }
     }
 
@@ -293,7 +298,7 @@ export class RedisTusSessionStore implements TusSessionStore {
         }
       }
     } while (cursor !== '0');
-    return ids;
+    return [...new Set([...indexedIds, ...ids])];
   }
 
   async reset(): Promise<void> {
