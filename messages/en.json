@@ -1565,6 +1565,8 @@
       "quota-short": "This job needs {required, plural, one {# credit} other {# credits}}, and {left, plural, one {# is} other {# are}} left today.",
       "quota-short-month": "This job needs {required, plural, one {# credit} other {# credits}}, and {left, plural, one {# is} other {# are}} left this period.",
       "open-uploads": "Without an account, up to {limit} uploads may be open at once. Finish or cancel one, then try again.",
+      "account-open-uploads": "On your plan, up to {limit} uploads may be open at once. Finish or cancel one, then try again.",
+      "open-bytes": "On your plan, the uploads open at once may total {limit}. Finish or cancel one, then try again.",
       "daily-bytes": "Without an account, uploads and link imports may total {limit} a day. Try again tomorrow.",
       "daily-import-bytes": "On your plan, link imports may total {limit} a day. Try again tomorrow.",
       "imports-larger-than-left": "This file is larger than the {limit} left today for link imports. Try again tomorrow."

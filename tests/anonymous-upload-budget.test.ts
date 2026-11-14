@@ -205,9 +205,10 @@ describe('a visitor opens at most two uploads at once and declares at most 2 GiB
     expect((await initiate(from('2001:db8:5:7::1'), MIB)).status).toBe(200);
   });
 
-  it('does not meter an account', async () => {
+  it('meters an account by its open uploads, not by the day: tests/account-upload-budget.test.ts holds the limits of each plan', async () => {
     const own = await account();
-    for (let i = 0; i < 3; i++) expect((await initiate(own, GIB)).status).toBe(200);
+    for (let i = 0; i < 2; i++) expect((await initiate(own, GIB)).status).toBe(200);
+    expect((await initiate(own, GIB)).status).toBe(429);
   });
 
   it('turns uploads without an account off while no proxy attributes requests, and says which setting turns them on', async () => {

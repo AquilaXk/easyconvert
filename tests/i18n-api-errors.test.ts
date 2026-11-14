@@ -108,6 +108,23 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
     expect(korean).not.toContain('계정 없이');
   });
 
+  it("words an account's open uploads by its plan's number of sessions and its declared bytes, in both locales", async () => {
+    const sessions = await bodyOf(uploadBudgetRefusalResponse('open-uploads', '/api/v1/uploads', 'paid'));
+    expect(sessions.body).toMatchObject({ refusal: 'open-uploads', limit: 25, plan: 'paid' });
+    expect(worded(useProblemWording, 'en', sessions.body, sessions.status)).toBe('On your plan, up to 25 uploads may be open at once. Finish or cancel one, then try again.');
+    const koreanSessions = worded(useProblemWording, 'ko', sessions.body, sessions.status);
+    expectKorean(koreanSessions, 'account open uploads');
+    expect(koreanSessions).toContain('25');
+    expect(koreanSessions).not.toContain('계정 없이');
+
+    const bytes = await bodyOf(uploadBudgetRefusalResponse('open-bytes', '/api/v1/uploads', 'free'));
+    expect(bytes.body).toMatchObject({ refusal: 'open-bytes', limitBytes: 2 * 1024 ** 3, plan: 'free' });
+    expect(worded(useProblemWording, 'en', bytes.body, bytes.status)).toBe('On your plan, the uploads open at once may total 2 GB. Finish or cancel one, then try again.');
+    const koreanBytes = worded(useProblemWording, 'ko', bytes.body, bytes.status);
+    expectKorean(koreanBytes, 'open bytes');
+    expect(koreanBytes).toContain('2 GB');
+  });
+
   /** The 429 of a job that needs `requiredUnits` conversions when `remaining` of a free account's day are left. */
   async function conversionsShort(requiredUnits: number, remaining: number) {
     const usage = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CREDITS, usedToday: FREE_DAILY_CREDITS - remaining, remaining, resetAt: Date.now() , packageCredits: 0};

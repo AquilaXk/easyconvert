@@ -1,11 +1,12 @@
 import type { NextResponse } from 'next/server';
 import { createProblemDetailsResponse } from './problem-details';
 import {
-  ANONYMOUS_OPEN_UPLOADS_MAX,
   budgetRefusalDetail,
   dailyBudgetBytes,
   dailyLimitReachedDetail,
   largerThanLeftDetail,
+  openUploadBytesMax,
+  openUploadsMax,
   type UploadRefusal,
 } from '../api-keys/anonymous-upload-budget';
 import { HTTP_SERVICE_UNAVAILABLE, HTTP_TOO_MANY_REQUESTS } from '../refusal-codes';
@@ -28,9 +29,16 @@ function budgetRefusal(detail: string, instanceUri: string, facts: Record<string
   return createProblemDetailsResponse(HTTP_TOO_MANY_REQUESTS, detail, instanceUri, 'Too Many Requests', UPLOAD_BUDGET_PROBLEM_TYPE, undefined, undefined, facts);
 }
 
+/** The number a refusal of the byte budget names, as fields beside the English detail. */
+function refusalFacts(refusal: UploadRefusal, plan: Plan): Record<string, number | string> {
+  if (refusal === 'open-uploads') return plan === 'anonymous' ? { limit: openUploadsMax(plan) } : { limit: openUploadsMax(plan), plan };
+  if (refusal === 'open-bytes') return { limitBytes: openUploadBytesMax(plan), plan };
+  return dailyLimitFacts(plan);
+}
+
 /** The 429 of an upload or a link import the budget of a caller of `plan` refuses, naming the bound and its number. */
 export function uploadBudgetRefusalResponse(refusal: UploadRefusal, instanceUri: string, plan: Plan = 'anonymous'): NextResponse {
-  const facts = refusal === 'open-uploads' ? { limit: ANONYMOUS_OPEN_UPLOADS_MAX } : dailyLimitFacts(plan);
+  const facts = refusalFacts(refusal, plan);
   return budgetRefusal(budgetRefusalDetail(refusal, plan), instanceUri, { refusal, ...facts });
 }
 

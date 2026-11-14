@@ -1,20 +1,21 @@
 import crypto from 'node:crypto';
 import { isAnonymousUserId, isUnattributedAnonymous } from '../auth/anonymous-identity';
 import { formatBytes } from '../format-bytes';
-import { PLAN_PHRASE, maxFileBytes, type Plan } from '../plan-limits';
+import { PLAN_CONCURRENCY, PLAN_PHRASE, maxFileBytes, planOfCaller, type Plan, type PlanCaller } from '../plan-limits';
 import { getUtcDateKey } from './key-store';
 import { redisKeyStore } from './redis-key-store';
 import { MemoryBudgetStore, RedisBudgetStore, type BudgetStore } from './upload-budget-store';
 
 /**
- * What a caller may bring onto the server each UTC day (docs/policy-decisions.md, entries 15 and 137). An anonymous
- * address bucket has at most ANONYMOUS_OPEN_UPLOADS_MAX upload sessions open at once, and ANONYMOUS_DAILY_UPLOAD_BYTES
- * for its uploads in parts and link imports together. An account has `dailyBudgetBytes` of its plan for link imports;
- * its uploads are not metered here, because each one opens only while the account has a conversion left and a job
- * slot. The declared size of an upload is reserved when the session opens, returned when it is aborted or its session
- * expires, and kept when it completes. A link import starts only while its day has bytes left, and the bytes it receives
- * are charged as they arrive, in batches of at most LINK_IMPORT_METER_BATCH_BYTES, so it stops once the day passes its
- * budget.
+ * What a caller may bring onto the server (docs/policy-decisions.md, entries 15, 137 and 296). An anonymous address bucket
+ * has at most ANONYMOUS_OPEN_UPLOADS_MAX upload sessions open at once, and ANONYMOUS_DAILY_UPLOAD_BYTES each UTC day for its
+ * uploads in parts and link imports together. An account has `dailyBudgetBytes` of its plan each day for link imports, and
+ * for its uploads at most `openUploadsMax` sessions open at once that declare `openUploadBytesMax` bytes between them: the
+ * disk of every session that did not end, whatever the account does with it later. The declared size of an upload is
+ * reserved when the session opens, returned when it is aborted or its session expires, and kept when it completes (an
+ * account's is kept in no day: its session only stops counting). A link import starts only while its day has bytes left, and
+ * the bytes it receives are charged as they arrive, in batches of at most LINK_IMPORT_METER_BATCH_BYTES, so it stops once the
+ * day passes its budget.
  *
  * The state of a bucket is one record changed by the pure functions below and written whole by its store
  * (upload-budget-store.ts): in Redis beside the quota counters, or in this process when the quota store has no Redis.
@@ -29,6 +30,19 @@ export function dailyBudgetBytes(plan: Plan): number {
 }
 
 export const ANONYMOUS_OPEN_UPLOADS_MAX = 2;
+
+/**
+ * The most upload sessions an account holds open at once: its conversions in flight (entries 16 and 285: 5 on the free plan, 25
+ * on the paid one), since an upload opens only while a job could start for it (entry 137).
+ */
+export function openUploadsMax(plan: Plan): number {
+  return plan === 'anonymous' ? ANONYMOUS_OPEN_UPLOADS_MAX : PLAN_CONCURRENCY[plan];
+}
+
+/** The most bytes the open sessions of an account declare between them: two files at the limit of its plan (2 GiB free, 20 GiB paid), the figure entry 137 gave the daily budget. */
+export function openUploadBytesMax(plan: Plan): number {
+  return dailyBudgetBytes(plan);
+}
 export const ANONYMOUS_DAILY_UPLOAD_BYTES = dailyBudgetBytes('anonymous');
 /** An open session that received no part for this long stops counting as open; its bytes stay reserved until it expires. */
 export const OPEN_UPLOAD_IDLE_MS = 60 * 60 * 1000;
@@ -53,8 +67,8 @@ const RESERVATION_ID_BYTES = 12;
 
 interface OpenUpload {
   bytes: number;
-  /** The UTC day the bytes were charged to; they are returned only to that day. */
-  day: string;
+  /** The UTC day the bytes were charged to; they are returned only to that day. Absent for a session whose bytes no day is charged. */
+  day?: string;
   idleUntil: number;
   expiresAt: number;
 }
@@ -74,15 +88,19 @@ export interface UploadBudgetRecord {
 }
 
 /**
- * Why the byte budget refuses: too many uploads open at once, or the bytes of the day used already by what was received and
- * what open uploads reserved. A link import is refused only for the second.
+ * Why the byte budget refuses: too many uploads open at once, the bytes of the day used already by what was received and what
+ * open uploads reserved (an anonymous bucket), or the bytes the open uploads declare between them (an account). A link import is
+ * refused only for `daily-bytes`.
  */
-export type UploadRefusal = 'open-uploads' | 'daily-bytes';
+export type UploadRefusal = 'open-uploads' | 'daily-bytes' | 'open-bytes';
 
 interface BudgetPolicy {
   maxOpenUploads: number;
-  dailyBytes: number;
   idleMs: number;
+  /** The bytes of a day the uploads and imports of the bucket may total; absent when an upload is charged to no day. */
+  dailyBytes?: number;
+  /** The most bytes the open uploads declare between them; absent when only the day bounds them. */
+  openBytes?: number;
 }
 
 const POLICY: BudgetPolicy = {
@@ -90,6 +108,12 @@ const POLICY: BudgetPolicy = {
   dailyBytes: ANONYMOUS_DAILY_UPLOAD_BYTES,
   idleMs: OPEN_UPLOAD_IDLE_MS,
 };
+
+/** The policy of a bucket of `plan`: an account's uploads are bound by what is open at once, an anonymous bucket's by its day. */
+function policyOf(plan: Plan | undefined): BudgetPolicy {
+  if (plan === undefined || plan === 'anonymous') return POLICY;
+  return { maxOpenUploads: openUploadsMax(plan), openBytes: openUploadBytesMax(plan), idleMs: OPEN_UPLOAD_IDLE_MS };
+}
 
 function emptyRecord(day: string): UploadBudgetRecord {
   return { day, bytes: 0, open: {} };
@@ -101,7 +125,7 @@ function withoutUpload(record: UploadBudgetRecord, id: string, refund: boolean):
   if (!entry) return record;
   const open = { ...record.open };
   delete open[id];
-  const returned = refund && entry.day === record.day ? entry.bytes : 0;
+  const returned = refund && entry.day !== undefined && entry.day === record.day ? entry.bytes : 0;
   return { ...record, bytes: Math.max(0, record.bytes - returned), open };
 }
 
@@ -130,6 +154,11 @@ function openCount(record: UploadBudgetRecord, now: number): number {
   return Object.values(record.open).filter((entry) => entry.idleUntil > now).length;
 }
 
+/** The bytes the sessions of `record` declare between them. */
+function openBytes(record: UploadBudgetRecord): number {
+  return Object.values(record.open).reduce((total, entry) => total + entry.bytes, 0);
+}
+
 /** Reserves `bytes` for a new session `id`, or names the bound it would pass. */
 export function reserveUpload(
   record: UploadBudgetRecord | undefined,
@@ -138,14 +167,16 @@ export function reserveUpload(
 ): { record: UploadBudgetRecord } | { refusal: UploadRefusal } {
   const current = currentRecord(record, request.day, request.now);
   if (openCount(current, request.now) >= policy.maxOpenUploads) return { refusal: 'open-uploads' };
-  if (current.bytes + request.bytes > policy.dailyBytes) return { refusal: 'daily-bytes' };
+  const chargedToDay = policy.dailyBytes !== undefined;
+  if (policy.dailyBytes !== undefined && current.bytes + request.bytes > policy.dailyBytes) return { refusal: 'daily-bytes' };
+  if (policy.openBytes !== undefined && openBytes(current) + request.bytes > policy.openBytes) return { refusal: 'open-bytes' };
   const entry: OpenUpload = {
     bytes: request.bytes,
-    day: request.day,
+    day: chargedToDay ? request.day : undefined,
     idleUntil: Math.min(request.now + policy.idleMs, request.expiresAt),
     expiresAt: request.expiresAt,
   };
-  return { record: { ...current, bytes: current.bytes + request.bytes, open: { ...current.open, [request.id]: entry } } };
+  return { record: { ...current, bytes: current.bytes + (chargedToDay ? request.bytes : 0), open: { ...current.open, [request.id]: entry } } };
 }
 
 /**
@@ -177,12 +208,17 @@ function activeStore(): BudgetStore {
 }
 
 /**
- * Whether uploads of `callerUserId` are metered: an anonymous caller attributed to an address. The shared identity of
- * unattributed callers is refused uploads and link imports before it gets here; an account's link imports are metered by
- * `withLinkImportMeter`, and its uploads are bounded by its conversions and job slots.
+ * Whether uploads of an anonymous `callerUserId` are metered: when it is attributed to an address. The shared identity of
+ * unattributed callers is refused uploads and link imports before it gets here. An account's uploads are metered in a bucket
+ * of their own, apart from its link imports, which `withLinkImportMeter` meters.
  */
 function isMetered(callerUserId: string): boolean {
   return isAnonymousUserId(callerUserId) && !isUnattributedAnonymous(callerUserId);
+}
+
+/** Where the open uploads of an account are recorded: apart from the day of its link imports, which they do not charge. */
+function accountUploadBucket(userId: string): string {
+  return `uploads:${userId}`;
 }
 
 /** A reservation taken before the session exists; `bind` names the session it holds, `release` gives it up. */
@@ -203,13 +239,32 @@ export async function reserveAnonymousUpload(
   provisionalExpiresAt: number
 ): Promise<{ reservation: UploadReservation } | { refusal: UploadRefusal }> {
   if (!isMetered(callerUserId)) return { reservation: UNMETERED };
+  return reserveIn(callerUserId, 'anonymous', bytes, provisionalExpiresAt);
+}
+
+/** Reserves the declared `bytes` of a new session of `caller`, whether it is an account or an anonymous visitor. */
+export function reserveUploadBudget(
+  caller: PlanCaller & { id: string },
+  bytes: number,
+  provisionalExpiresAt: number
+): Promise<{ reservation: UploadReservation } | { refusal: UploadRefusal }> {
+  const plan = planOfCaller(caller);
+  return plan === 'anonymous' ? reserveAnonymousUpload(caller.id, bytes, provisionalExpiresAt) : reserveIn(accountUploadBucket(caller.id), plan, bytes, provisionalExpiresAt);
+}
+
+async function reserveIn(
+  bucket: string,
+  plan: Plan,
+  bytes: number,
+  provisionalExpiresAt: number
+): Promise<{ reservation: UploadReservation } | { refusal: UploadRefusal }> {
   const store = activeStore();
-  const bucket = callerUserId;
+  const policy = policyOf(plan);
   const id = crypto.randomBytes(RESERVATION_ID_BYTES).toString('hex');
   let refusal: UploadRefusal | undefined;
   await store.update(bucket, (current) => {
     const now = Date.now();
-    const result = reserveUpload(current, { id, bytes, day: getUtcDateKey(), now, expiresAt: provisionalExpiresAt });
+    const result = reserveUpload(current, { id, bytes, day: getUtcDateKey(), now, expiresAt: provisionalExpiresAt }, policy);
     if ('refusal' in result) {
       refusal = result.refusal;
       return undefined;
@@ -225,7 +280,7 @@ export async function reserveAnonymousUpload(
           const entry = current?.open[id];
           return entry && current ? { ...current, open: { ...current.open, [id]: { ...entry, expiresAt, idleUntil: Math.min(entry.idleUntil, expiresAt) } } } : undefined;
         });
-        await store.link(uploadId, { bucket, reservation: id }, expiresAt);
+        await store.link(uploadId, { bucket, reservation: id, plan }, expiresAt);
       },
       release: () => store.update(bucket, (current) => current && closeUpload(current, id, 'aborted')),
     },
@@ -235,12 +290,12 @@ export async function reserveAnonymousUpload(
 /** Applies `change` to the reservation of the session `uploadId`; undefined from `change` writes nothing. */
 async function changeReservation(
   uploadId: string,
-  change: (record: UploadBudgetRecord, id: string) => UploadBudgetRecord | undefined
+  change: (record: UploadBudgetRecord, id: string, plan: Plan) => UploadBudgetRecord | undefined
 ): Promise<void> {
   const store = activeStore();
   const ref = await store.lookup(uploadId);
   if (!ref) return;
-  await store.update(ref.bucket, (current) => current && change(current, ref.reservation));
+  await store.update(ref.bucket, (current) => current && change(current, ref.reservation, ref.plan ?? 'anonymous'));
 }
 
 /**
@@ -249,8 +304,8 @@ async function changeReservation(
  */
 export async function resumeUploadReservation(uploadId: string): Promise<UploadRefusal | undefined> {
   let refusal: UploadRefusal | undefined;
-  await changeReservation(uploadId, (record, id) => {
-    const resumed = resumeUpload(record, id, Date.now());
+  await changeReservation(uploadId, (record, id, plan) => {
+    const resumed = resumeUpload(record, id, Date.now(), policyOf(plan));
     refusal = 'refusal' in resumed ? resumed.refusal : undefined;
     return 'refusal' in resumed ? undefined : resumed.record;
   });
@@ -414,7 +469,11 @@ export async function withLinkImportMeter<T>(
 /** The English sentence of a refusal of the budget of a caller of `plan`: what it may bring in, and when it may again. */
 export function budgetRefusalDetail(refusal: UploadRefusal, plan: Plan): string {
   if (refusal === 'open-uploads') {
-    return `Up to ${ANONYMOUS_OPEN_UPLOADS_MAX} uploads may be open at once without an account. Finish or cancel one, then try again.`;
+    const where = plan === 'anonymous' ? 'without an account' : `on ${PLAN_PHRASE[plan]}`;
+    return `Up to ${openUploadsMax(plan)} uploads may be open at once ${where}. Finish or cancel one, then try again.`;
+  }
+  if (refusal === 'open-bytes') {
+    return `The uploads open at once may declare ${formatBytes(openUploadBytesMax(plan))} in all on ${PLAN_PHRASE[plan]}. Finish or cancel one, then try again.`;
   }
   return `${dailyAllowance(plan)} The limit resets at midnight UTC.`;
 }

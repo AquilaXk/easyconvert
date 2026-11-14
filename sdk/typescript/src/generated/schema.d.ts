@@ -3279,6 +3279,16 @@ export interface operations {
                     "application/json": components["schemas"]["ProblemDetails"];
                 };
             };
+            /** @description The caller holds the most uploads it may have open at once, or the open uploads would declare more bytes than its plan allows (problem type `https://api.easyconvert.io/problems/upload-budget-exceeded`, with `refusal` `open-uploads` or `open-bytes`, the number as `limit` or `limitBytes`, and `plan`). Complete or abort an upload, then try again. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
             /** @description First chunk does not match `Upload-Checksum`. */
             460: {
                 headers: {
@@ -3596,6 +3606,16 @@ export interface operations {
             };
             /** @description Payload Too Large: the file is over the limit of the caller's plan (1 GiB for anonymous callers and accounts). The detail states the size and the limit. Or: the upload needs more parts than the part-count limit. */
             413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The caller holds the most uploads it may have open at once, or the open uploads would declare more bytes than its plan allows (problem type `https://api.easyconvert.io/problems/upload-budget-exceeded`, with `refusal` `open-uploads` or `open-bytes`, the number as `limit` or `limitBytes`, and `plan`). Complete or abort an upload, then try again. */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

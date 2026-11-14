@@ -3,6 +3,7 @@ import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { recordCompletedUpload } from '@/lib/api/completed-upload';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
+import { closeSessionBudget } from '@/lib/api/upload-session-budget';
 import { storageProvider } from '@/lib/storage';
 import { readObjectHeader } from '@/lib/storage/object-header';
 import { forgetUploadParts } from '@/lib/storage/part-admission';
@@ -117,6 +118,7 @@ export async function POST(req: NextRequest) {
     );
   }
   forgetUploadParts(uploadId);
+  await closeSessionBudget(uploadId, 'completed');
 
   // Parts can reach the store past this application's size limits, and parts stored side by side
   // can add up to more than was declared, so the assembled object must be exactly the declared size.
