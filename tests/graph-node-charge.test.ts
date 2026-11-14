@@ -7,7 +7,6 @@ const NOTHING_OPTIMIZED: never[] = [];
 
 describe('what a graph node charges once it ended', () => {
   const PER_INPUT_OPERATIONS = [
-    'convert',
     'ocr',
     'thumbnail',
     'media.package',
@@ -24,6 +23,13 @@ describe('what a graph node charges once it ended', () => {
 
   it.each(PER_INPUT_OPERATIONS)('charges a %s node, which makes one output of each input, one unit for each output', (op) => {
     expect(graphNodeCharge(op, { outputs: 3, optimizations: NOTHING_OPTIMIZED })).toBe(3);
+  });
+
+  it('charges a convert node the credits of the class of each input, and its minutes beyond the first once', () => {
+    const product = { outputs: 3, optimizations: NOTHING_OPTIMIZED };
+    expect(graphNodeCharge('convert', product, { inputClassCredits: [2, 1, 4], processingMs: 30_000 })).toBe(7);
+    expect(graphNodeCharge('convert', product, { inputClassCredits: [2, 1, 4], processingMs: 130_000 })).toBe(9);
+    expect(graphNodeCharge('convert', { outputs: 0, optimizations: NOTHING_OPTIMIZED }, { inputClassCredits: [2], processingMs: 130_000 })).toBe(0);
   });
 
   it('charges an optimize node one unit for each output it made smaller', () => {

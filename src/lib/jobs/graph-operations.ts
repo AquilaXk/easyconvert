@@ -119,21 +119,25 @@ export interface GraphNodeProduct {
   optimizations: ReadonlyArray<{ optimized: boolean }>;
 }
 
-/** What a node's charge is made of besides the number of outputs: the credits of one conversion's class, and how long the node ran. */
+/**
+ * What a node's charge is made of besides the number of outputs: the credits of the class of each input of a `convert` node, in input
+ * order (a `convert` node makes one output of each input), and how long the node ran.
+ */
 export interface GraphNodeCredits {
-  creditsEach: number;
+  inputClassCredits: readonly number[];
   processingMs: number;
 }
 
 /**
- * The credits a node of `op` charges once it completed with `product`: a node charged per output charges the credits of its class for
- * each output (`creditsEach`, 1 for every operation but `convert`), and a `convert` node that made outputs adds one credit for every started
- * minute it ran beyond the first (docs/policy-decisions.md, entry 285).
+ * The credits a node of `op` charges once it completed with `product`: a node charged per output charges one credit for each output,
+ * a `convert` node the credits of the class of each of its inputs, and a `convert` node that made outputs adds one credit for every
+ * started minute it ran beyond the first (docs/policy-decisions.md, entry 285).
  */
-export function graphNodeCharge(op: string | undefined, product: GraphNodeProduct, credits: GraphNodeCredits = { creditsEach: 1, processingMs: 0 }): number {
+export function graphNodeCharge(op: string | undefined, product: GraphNodeProduct, credits: GraphNodeCredits = { inputClassCredits: [], processingMs: 0 }): number {
   switch (chargeRuleOf(op)) {
     case 'per-output':
-      return product.outputs * credits.creditsEach + (op === 'convert' && product.outputs > 0 ? minuteSurcharge(credits.processingMs) : 0);
+      if (op !== 'convert') return product.outputs;
+      return product.outputs > 0 ? credits.inputClassCredits.reduce((sum, each) => sum + each, 0) + minuteSurcharge(credits.processingMs) : 0;
     case 'per-gained-output':
       return product.optimizations.filter((o) => o.optimized).length;
     case 'once':

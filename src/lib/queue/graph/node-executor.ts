@@ -541,13 +541,13 @@ export async function processGraphNodeJobIfAlive(
 }
 
 /**
- * The credits a node charges when it ends: a `convert` node charges the cost of the class of its conversion (the format of its first
- * input and its target) for each output and its own minutes beyond the first; every other operation one credit for each output, as the
- * rule of its operation says (docs/policy-decisions.md, entry 285).
+ * The credits a node charges when it ends: a `convert` node charges the cost of the class of each input's conversion (the format of
+ * that input and its target) and its own minutes beyond the first; every other operation one credit for each output, as the rule of
+ * its operation says (docs/policy-decisions.md, entry 285).
  */
 function nodeCharge(node: { op?: string; targetFormat?: string }, inputArtifacts: readonly string[], product: GraphNodeProduct, processingMs: number): number {
-  const creditsEach = node.op === 'convert' ? baseCredits(path.extname(inputArtifacts[0] ?? '').slice(1), node.targetFormat ?? '') : 1;
-  return graphNodeCharge(node.op, product, { creditsEach, processingMs });
+  const inputClassCredits = node.op === 'convert' ? inputArtifacts.map((key) => baseCredits(path.extname(key).slice(1), node.targetFormat ?? '')) : [];
+  return graphNodeCharge(node.op, product, { inputClassCredits, processingMs });
 }
 
 export async function processGraphNodeJob(

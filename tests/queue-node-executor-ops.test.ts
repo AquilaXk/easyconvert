@@ -1,10 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import sharp from 'sharp';
 import { PDFDocument } from 'pdf-lib';
 import type { Job } from '@/lib/queue/bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '@/lib/types';
 import { ConversionFailedError } from '@/lib/types';
 import { processGraphNodeJob } from '@/lib/queue/graph/node-executor';
+import { graphScheduler } from '@/lib/queue/graph/scheduler';
+import type { ConversionEnginePort } from '@/lib/queue/engine-port';
 import { s3Storage } from '@/lib/storage/s3-storage';
 
 const ARTIFACT_TTL_MS = 60 * 60 * 1000;
@@ -162,6 +164,39 @@ describe('queue node executor operations', () => {
       });
       expect(parsed.Image.ImageWidth).toBe(SOURCE_WIDTH);
       expect(parsed.Image.ImageHeight).toBe(SOURCE_HEIGHT);
+    });
+  });
+
+  describe('convert node charge', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    const PDF_BYTES = Buffer.from('%PDF-1.4\n');
+    const stubEngine: ConversionEnginePort = {
+      name: 'stub',
+      convert: async () => ({ buffer: PDF_BYTES, size: PDF_BYTES.length, mimeType: 'application/pdf', filename: 'out.pdf' }),
+    };
+
+    /** The credits the node told the scheduler it charged. */
+    async function chargedBy(inputs: string[]): Promise<number> {
+      vi.restoreAllMocks();
+      const completed = vi.spyOn(graphScheduler, 'onNodeCompleted').mockResolvedValue({ graphCompleted: false } as never);
+      await processGraphNodeJob(nodeJob({ op: 'convert', targetFormat: 'pdf' }, inputs), stubEngine, s3Storage);
+      expect(completed).toHaveBeenCalledTimes(1);
+      return completed.mock.calls[0][3] as number;
+    }
+
+    it('charges each input at the class of its own format, not every input at the class of the first', async () => {
+      const word = seed('letter.docx', Buffer.from('docx'), 'application/octet-stream');
+      const picture = seed('photo.png', await sourcePng(), 'image/png');
+      // A Word file to PDF costs 2, a picture to PDF 1: 3 in all, whichever input comes first.
+      expect(await chargedBy([word, picture])).toBe(3);
+      expect(await chargedBy([picture, word])).toBe(3);
+    });
+
+    it('charges the class of the one input of a node with one input', async () => {
+      expect(await chargedBy([seed('letter.docx', Buffer.from('docx'), 'application/octet-stream')])).toBe(2);
     });
   });
 
