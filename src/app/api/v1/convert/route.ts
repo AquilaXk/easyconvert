@@ -529,6 +529,7 @@ function answerOfConversion(req: NextRequest, a: ConversionAnswer): NextResponse
       status: 200,
       headers: {
         'Content-Type': conversionResult.mimeType,
+        'X-Content-Type-Options': 'nosniff',
         'Content-Disposition': attachmentContentDisposition(a.outFileName),
         'X-Conversion-Time-Ms': a.durationMs.toString(),
         'X-File-Id': a.fileId,

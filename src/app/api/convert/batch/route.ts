@@ -326,6 +326,7 @@ async function convertPlanned(
     status: 200,
     headers: {
       'Content-Type': 'application/zip',
+      'X-Content-Type-Options': 'nosniff',
       'Content-Disposition': 'attachment; filename="easyconvert_batch.zip"',
       'Content-Length': zipResult.size.toString(),
     },

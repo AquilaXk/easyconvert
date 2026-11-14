@@ -189,6 +189,7 @@ function importedFile(res: Response, finalUrl: URL, buffer: Buffer): NextRespons
     status: 200,
     headers: {
       'Content-Type': contentType,
+      'X-Content-Type-Options': 'nosniff',
       'X-Filename': encodeURIComponent(filename),
       'Content-Disposition': attachmentContentDisposition(filename),
       'Content-Length': buffer.length.toString(),

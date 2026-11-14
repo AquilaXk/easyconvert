@@ -266,6 +266,7 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
       status: 200,
       headers: {
         'Content-Type': result.mimeType,
+        'X-Content-Type-Options': 'nosniff',
         'Content-Disposition': attachmentContentDisposition(result.filename),
         'Content-Length': result.size.toString(),
         'X-Conversion-Time-Ms': (Date.now() - startTime).toString(),
