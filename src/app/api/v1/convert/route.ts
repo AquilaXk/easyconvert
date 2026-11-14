@@ -10,6 +10,7 @@ import { fileSentAsText, formText, isMultipartBody, readMultipartForm } from '@/
 import type { User } from '@/lib/auth/types';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
+import { sanitizeNodeOutputFilename } from '@/lib/queue/graph/node-jobs';
 import { handOffConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { stripEngineControls } from '@/lib/conversions/job-time';
 import { conversionDeadlineMs, syncDeadlineMs } from '@/lib/queue/job-deadline';
@@ -38,6 +39,7 @@ import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-stre
 import { recordCompletedUpload } from '@/lib/api/completed-upload';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext, releaseKey, replyUnderKey } from '@/lib/api/with-idempotency';
+import { wantsRawResponse } from '@/lib/api/idempotency';
 import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import { resolveEngineChoice } from '@/worker/engine-registry';
 import {
@@ -471,7 +473,8 @@ async function convertReserved(c: ReservedConversion, unit: ReservedUnit): Promi
   const baseName = file.name.replace(/\.[^/.]+$/, '');
   // Multi-page results (one image per page) come back as a ZIP whatever the requested target is.
   const outExtension = conversionResult.mimeType === ZIP_MIME_TYPE ? 'zip' : targetDef.extension || targetDef.id;
-  const outFileName = `${baseName}.${outExtension}`;
+  // The name is the caller's: one path leaf, so that it cannot place the stored result outside its own key prefix.
+  const outFileName = sanitizeNodeOutputFilename(`${baseName}.${outExtension}`, `output.${outExtension}`);
   const storageKey = `conversions/${user.id}/${Date.now()}_${outFileName}`;
   await saveRetainedResult(storageProvider, storageKey, outputBuffer, conversionResult.mimeType, outFileName);
 
@@ -520,7 +523,7 @@ function answerOfConversion(req: NextRequest, a: ConversionAnswer): NextResponse
   const { conversionResult, rateLimitHeaders } = a;
   const outputBuffer = conversionResult.buffer;
   // Check if raw binary is requested (Zero-Heap: skip base64 serialization completely)
-  const wantsRaw = req.headers.get('accept') === 'application/octet-stream' || req.nextUrl.searchParams.get('raw') === 'true';
+  const wantsRaw = wantsRawResponse(req);
   if (wantsRaw) {
     return new NextResponse(new Uint8Array(outputBuffer), {
       status: 200,

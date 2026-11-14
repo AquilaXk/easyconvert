@@ -86,6 +86,10 @@ describe('POST /api/v1/convert in the OpenAPI document', () => {
     const route = fs.readFileSync(path.join(ROOT, 'src', 'app', 'api', 'v1', 'convert', 'route.ts'), 'utf-8');
     expect(route).toContain("req.headers.get('prefer')");
     expect(route).toContain("includes('respond-async')");
-    expect(route).toContain("searchParams.get('raw') === 'true'");
+    // The one reader of the raw switch is shared with the fingerprint of an idempotent request.
+    expect(route).toContain('wantsRawResponse(req)');
+    const reader = fs.readFileSync(path.join(ROOT, 'src', 'lib', 'api', 'idempotency.ts'), 'utf-8');
+    expect(reader).toContain("searchParams.get('raw') === 'true'");
+    expect(reader).toContain("req.headers.get('accept') === 'application/octet-stream'");
   });
 });
