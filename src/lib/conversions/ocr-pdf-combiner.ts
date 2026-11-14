@@ -28,7 +28,7 @@ import {
 import { combineWordMerge, mergeWordsWithPageText, type OcrWordMerge } from './ocr-word-merge';
 import type { OcrOrientation } from './ocr-osd';
 import { resolveImageDpi, type ImageDpi } from './ocr-dpi';
-import { mapOcrResultToSource } from './ocr-geometry';
+import { mapOcrResultToSource, rowTolerantHeight } from './ocr-geometry';
 import { unrotatedPageGeometry, unrotatedPageScale, type RenderedPdfPage } from './pdf-page-geometry';
 import { placeWords, writeTextLayer } from './ocr-text-layer';
 import { embedImagePlan, type PdfImagePlan } from './pdf-image-xobject';
@@ -667,7 +667,7 @@ export function sortLineBlocksTopological(
         let placed = false;
         for (const cluster of clusters) {
           const rep = cluster[0];
-          const lineTol = Math.max(3, Math.min(pair.geo.bbox.height, rep.geo.bbox.height) * 0.45);
+          const lineTol = Math.max(3, Math.min(rowTolerantHeight(pair.geo, hasSkew), rowTolerantHeight(rep.geo, hasSkew)) * 0.45);
           if (Math.abs(pair.geo.bbox.y - rep.geo.bbox.y) <= lineTol) {
             cluster.push(pair);
             placed = true;

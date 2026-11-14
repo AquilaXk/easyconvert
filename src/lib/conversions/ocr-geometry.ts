@@ -368,3 +368,20 @@ export function normaliseLeafPageCatalogWithLib(doc: PDFDocument, lib: PdfLeafCa
   }
   return pagesEntry instanceof lib.PDFPageTree;
 }
+
+/** A line is at most this much taller than the middle one of its words: a word without ascenders or descenders is shorter than the line. */
+const WORD_TO_LINE_HEIGHT = 1.25;
+
+/**
+ * The height a block's line has for deciding whether two blocks share a row. On a turned page the box of a long line is
+ * the enclosing box of a tilted strip and is taller by the line's length times the tilt (67 px for 1,920 px at two degrees,
+ * more than a line pitch), so it is cut to the height of the block's own words, which are short enough to be nearly upright.
+ */
+export function rowTolerantHeight(block: OcrLineBlock, turned: boolean): number {
+  const height = block.bbox.height;
+  if (!turned) return height;
+  const heights = (block.words ?? []).map((w) => w?.bbox?.height).filter((h): h is number => Number.isFinite(h) && h > 0);
+  if (heights.length === 0) return height;
+  heights.sort((a, b) => a - b);
+  return Math.min(height, heights[heights.length >> 1] * WORD_TO_LINE_HEIGHT);
+}
