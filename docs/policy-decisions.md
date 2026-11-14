@@ -9063,15 +9063,18 @@ Security
   - **Erasing an account removes its waiting and delayed deliveries from the webhook queue**, and the worker drops a delivery whose owner no longer exists: before it sends, and before it writes a dead letter that names the owner.
   - **A deploy sweeps the worker scratch after it stopped the worker of the release it replaces**, and skips the sweep when that worker does not stop. A first deploy has no worker to stop.
   - **The edge cache is purged after a deploy that succeeded or failed**, not after one that was cancelled or skipped.
+  - **`POST /api/v1/uploads/direct` refuses a part size under 5 MiB with 400 when the file has more than one part**, since every part but the last must reach the size S3 and the other object stores take as the smallest. A file that fits in the one part may name any part size. The part size a client names is never raised silently: a client that slices its file before it reads the answer would send parts the session does not expect.
+  - **A part URL of the local driver names the route that takes parts.** `LocalFsStorage.presignPart` returned a URL of `/api/storage/multipart` with PUT, a route that only takes POST (405). It now writes the URL of `/api/v1/uploads/direct/part`, absolute like the other drivers', with its expiry in milliseconds as that route checks it.
 - **Why**:
   - **Nothing bounded the keys of an account.** Each key is a hash entry and a record in Redis for good, so one account could grow the store without limit. 20 leaves a key for each service and environment of a person, and a spare for a rotation.
   - **A sign-in of an account the client owns cleared the count of its guesses against other accounts.** Ten guesses at other people's accounts, one sign-in of its own, ten more.
   - **A delivery in the queue holds the address and the sealed secret of the account** and would be sent after the erasure, and a failed one would write a dead letter that no erasure removes.
   - **The sweep shares `/tmp` with the running worker**, which keeps the profile template of its office pool there untouched for days; the sweep removes what is older than two hours, so it took the template from a worker that still served jobs. Restricting the sweep to files would not have helped, since the template is files.
+  - **A part size the client names is held to the minimum.** An undersized part is refused by the object stores at completion, after the client sent every byte; refusing it at the opening costs nothing.
   - **The new release served pages while it was checked**, so a failed deploy that rolled back left pages of the failed release in the edge cache.
 - **Trade-offs**:
   - **An account at 20 keys has to revoke one first**, and the revoked ones stay in the list until deleted.
   - **The worker is down from the stop of the old one until the new one starts** (the length of the sweep and the start), where the replaced container stopped at the start only. Web requests are served throughout.
   - **`deploy.sh sweep` run by hand on a running stack still takes the template**; the docs say to run it while the worker is stopped.
-- **Verified by**: `tests/api-key-limit.test.ts`, `tests/login-success-keeps-ip-counter.test.ts`, `tests/webhook-owner-erased.test.ts`, `tests/erase-account-completeness.test.ts`, `tests/oci-deploy.test.ts` (each red on the previous commit).
+- **Verified by**: `tests/api-key-limit.test.ts`, `tests/login-success-keeps-ip-counter.test.ts`, `tests/webhook-owner-erased.test.ts`, `tests/erase-account-completeness.test.ts`, `tests/oci-deploy.test.ts`, `tests/upload-part-urls-and-part-size.test.ts` (each red on the previous commit).
 - **Revisit when**: a plan needs more keys, or the office pool keeps its template outside `/tmp`.

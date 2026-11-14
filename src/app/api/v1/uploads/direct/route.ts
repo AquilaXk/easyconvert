@@ -23,6 +23,9 @@ interface DirectUploadInitiateBody {
   totalParts?: number;
 }
 
+/** The sentence for a requested part size under the smallest, in a file of more than one part: every part but the last must reach it. */
+const PART_SIZE_TOO_SMALL = `"partSize" must be at least ${MIN_PART_SIZE / (1024 * 1024)} MiB unless the file fits in one part.`;
+
 function computeChosenPartSize(totalSize: number, requestedPartSize?: number): number {
   if (requestedPartSize && requestedPartSize > 0) {
     return Math.min(requestedPartSize, MAX_PART_SIZE);
@@ -73,6 +76,10 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
 
   const tooLarge = fileSizeLimitProblem(auth.user, totalSize, instanceUri);
   if (tooLarge) return tooLarge;
+
+  if (body.partSize !== undefined && body.partSize > 0 && body.partSize < MIN_PART_SIZE && totalSize > body.partSize) {
+    return createProblemDetailsResponse(400, PART_SIZE_TOO_SMALL, instanceUri, 'Bad Request');
+  }
 
   const chosenPartSize = computeChosenPartSize(totalSize, body.partSize);
   const totalParts = Math.max(1, Math.ceil(totalSize / chosenPartSize));

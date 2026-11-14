@@ -17,7 +17,7 @@ import type {
 import { StorageSigningSecretMissingError } from './errors';
 import { StorageInputError, StorageServiceError } from './adapters/adapter-interface';
 import { lazySingleton } from './lazy-singleton';
-import { isProductionRuntime, LOCAL_PARTS_SUBDIR, resolveLocalStorageDir, resolveSigningSecret } from './storage-config';
+import { isProductionRuntime, LOCAL_DIRECT_PART_PATH, LOCAL_PARTS_SUBDIR, resolveAppBaseUrl, resolveLocalStorageDir, resolveSigningSecret } from './storage-config';
 import { resolveDeclaredFormat } from './declared-format';
 import { assertNotSpoofedFilePath } from '../security/file-guard';
 import { LARGEST_PLAN_FILE_BYTES, UPLOAD_PART_MAX_BYTES } from '../plan-limits';
@@ -488,6 +488,10 @@ export class LocalFsStorage implements IObjectStorage {
     }
   }
 
+  /**
+   * The URL of one part on `LOCAL_DIRECT_PART_PATH`, the route that takes parts with PUT and verifies the URL with the signing secret
+   * (`S3ObjectStorageService.generatePresignedHmacPartUrl` writes the same URL). The expiry is in milliseconds, as that route checks it.
+   */
   async presignPart(
     key: string,
     uploadId: string,
@@ -496,14 +500,14 @@ export class LocalFsStorage implements IObjectStorage {
   ): Promise<StoragePresignedUrlResult> {
     this.sessionDirFor(uploadId);
     assertPartNumber(partNumber);
-    const expiresAt = Math.floor(Date.now() / 1000) + expiresInSeconds;
+    const expiresAt = Date.now() + expiresInSeconds * 1000;
     const stringToSign = `PUT\n${key}\n${uploadId}\n${partNumber}\n${expiresAt}`;
     const signature = crypto
       .createHmac('sha256', this.signingSecret)
       .update(stringToSign)
       .digest('hex');
 
-    const url = `/api/storage/multipart?key=${encodeURIComponent(key)}&uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}&expiresAt=${expiresAt}&signature=${signature}`;
+    const url = `${resolveAppBaseUrl()}${LOCAL_DIRECT_PART_PATH}?uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}&key=${encodeURIComponent(key)}&expiresAt=${expiresAt}&signature=${signature}`;
     return {
       url,
       expiresAt,
@@ -734,9 +738,9 @@ export class LocalFsStorage implements IObjectStorage {
     uploadId?: string,
     partNumber?: number
   ): boolean {
-    if (Math.floor(Date.now() / 1000) > expiresAt) return false;
-
     const upperMethod = method.toUpperCase();
+    // A part URL carries its expiry in milliseconds (`presignPart`), a download URL in seconds (`presignGet`).
+    if ((upperMethod === 'PUT' ? Date.now() : Math.floor(Date.now() / 1000)) > expiresAt) return false;
     if (upperMethod === 'PUT' && !isLocalUploadId(uploadId)) return false;
     const stringToSign =
       upperMethod === 'PUT'

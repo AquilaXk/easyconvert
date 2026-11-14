@@ -169,11 +169,11 @@ describe('Presigned Direct Multipart Upload (WP-22)', () => {
     it('completes multipart direct upload through presigned URLs with exact byte and checksum fidelity', async () => {
       const auth = sessionHeaders(userA);
 
-      // Generate 3 chunks of deterministic data
-      const chunk1 = crypto.randomBytes(64 * 1024); // 64 KiB
+      // Generate 3 chunks: two of the smallest part size, which every part but the last must reach, and a shorter last one
+      const chunk1 = crypto.randomBytes(5 * 1024 * 1024); // 5 MiB
       // Random leading bytes now and then spell a known signature (two bytes of JPEG or gzip), which the format check refuses as a spoof.
       chunk1.fill(0, 0, 512);
-      const chunk2 = crypto.randomBytes(64 * 1024); // 64 KiB
+      const chunk2 = crypto.randomBytes(5 * 1024 * 1024); // 5 MiB
       const chunk3 = crypto.randomBytes(32 * 1024); // 32 KiB
       const fullBuffer = Buffer.concat([chunk1, chunk2, chunk3]);
       const totalSize = fullBuffer.length;
@@ -187,7 +187,7 @@ describe('Presigned Direct Multipart Upload (WP-22)', () => {
           filename: 'archive_payload.tar',
           mimeType: 'application/x-tar',
           totalSize,
-          partSize: 64 * 1024,
+          partSize: 5 * 1024 * 1024,
         }),
       });
 

@@ -199,7 +199,7 @@ export const uploadPaths = {
         filename: { type: 'string' },
         totalSize: { type: 'integer', minimum: 0, description: 'Total size in bytes (at most 10 GiB).' },
         mimeType: { type: 'string', default: 'application/octet-stream' },
-        partSize: { type: 'integer', description: 'Requested part size in bytes; at most 10,000 parts are allowed.' },
+        partSize: { type: 'integer', description: 'Requested part size in bytes: at least 5 MiB unless the file fits in one part (every part but the last must reach it), and at most 10,000 parts are allowed.' },
       }, ['filename', 'totalSize']),
       responses: {
         '200': createJsonResponse('Upload created with presigned part URLs.', {

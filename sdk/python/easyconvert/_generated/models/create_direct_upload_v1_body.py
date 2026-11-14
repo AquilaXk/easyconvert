@@ -19,7 +19,8 @@ class CreateDirectUploadV1Body:
         filename (str):
         total_size (int): Total size in bytes (at most 10 GiB).
         mime_type (str | Unset):  Default: 'application/octet-stream'.
-        part_size (int | Unset): Requested part size in bytes; at most 10,000 parts are allowed.
+        part_size (int | Unset): Requested part size in bytes: at least 5 MiB unless the file fits in one part (every
+            part but the last must reach it), and at most 10,000 parts are allowed.
     """
 
     filename: str

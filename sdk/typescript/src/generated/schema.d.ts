@@ -3548,7 +3548,7 @@ export interface operations {
                     totalSize: number;
                     /** @default application/octet-stream */
                     mimeType?: string;
-                    /** @description Requested part size in bytes; at most 10,000 parts are allowed. */
+                    /** @description Requested part size in bytes: at least 5 MiB unless the file fits in one part (every part but the last must reach it), and at most 10,000 parts are allowed. */
                     partSize?: number;
                 };
             };
