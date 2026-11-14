@@ -587,6 +587,7 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
         cyclicOle2[6] = 0x1a;
         cyclicOle2[7] = 0xe1;
         cyclicOle2.writeUInt16LE(9, 30); // Sector size 512 bytes
+        cyclicOle2.writeUInt16LE(6, 32); // Mini sector size 64 bytes, the only size [MS-CFB] allows
         cyclicOle2.writeUInt32LE(1, 44); // 1 SAT sector
         cyclicOle2.writeUInt32LE(1, 48); // Dir stream start at sector 1 (sector 0 holds the FAT)
         cyclicOle2.writeUInt32LE(0, 76); // MSAT[0] at sector 0
