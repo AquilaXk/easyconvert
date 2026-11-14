@@ -38,9 +38,13 @@ local function syncByState(queuePrefix, jobKey, jobId, oldState, newState)
   end
 end
 
-local function removeFromAllByState(queuePrefix, jobKey, jobId)
-  local uid = byStateOwnerAndScore(jobKey, queuePrefix, jobId)
-  if not uid then return end
+-- The caller passes the job's user index (<queuePrefix>:user_jobs:<uid>), so the owner is read from its name and the job hash is not read.
+local function removeFromAllByState(queuePrefix, userIndexKey, jobId)
+  if not queuePrefix then return end
+  local owned = queuePrefix .. ':user_jobs:'
+  if string.sub(userIndexKey, 1, #owned) ~= owned then return end
+  local uid = string.sub(userIndexKey, #owned + 1)
+  if uid == '' then return end
   for _, st in ipairs({ 'waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled' }) do
     redis.call('ZREM', queuePrefix .. ':by_state:' .. uid .. ':' .. st, jobId)
   end
@@ -718,7 +722,7 @@ for i = 4, 7 do
   redis.call('SREM', KEYS[i], ARGV[1])
 end
 redis.call('ZREM', KEYS[8], ARGV[1])
-removeFromAllByState(queuePrefixFromSuffixKey(KEYS[2], ':waiting'), KEYS[1], ARGV[1])
+removeFromAllByState(queuePrefixFromSuffixKey(KEYS[2], ':waiting'), KEYS[8], ARGV[1])
 redis.call('DEL', KEYS[1])
 return 1
 `;
