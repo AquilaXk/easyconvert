@@ -4,7 +4,7 @@
     python3 tests/fixtures/ocr/generate_ruled_table.py
 
 Requires Pillow and the DejaVu Sans font. Tesseract reads this page as a few confident words and loses the rest, which is what the
-English second reading of the ONNX engine is tested on (docs/policy-decisions.md, entry 299).
+English second reading of the ONNX engine is tested on (docs/policy-decisions.md, entry 302).
 """
 import os
 

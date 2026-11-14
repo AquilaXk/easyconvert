@@ -7,7 +7,7 @@ import type { OcrEngineFallback } from './ocr-pdf-combiner';
  * at most English beside it with the Korean PP-OCRv5 recognizer (Hangul, Latin letters, digits and punctuation); a request that names
  * another language (`kor+jpn`, `kor+deu`) needs that language's own data and stays with Tesseract, as every page of a language without
  * Korean does. English alone is read by Tesseract first and gets the English recognizer only as the second reading of a page that
- * Tesseract read poorly (policy decision 299).
+ * Tesseract read poorly (policy decision 302).
  */
 
 const ONNX_LANGUAGES: ReadonlySet<string> = new Set(['kor', 'eng']);

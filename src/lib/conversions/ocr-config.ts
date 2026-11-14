@@ -119,7 +119,7 @@ export const OCR_ALTERNATIVE_TRIGGER_QUALITY = 0.9;
 export const OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN = 1;
 /**
  * A page that Tesseract still reads at a character-weighted confidence below this after both of its alternative preparations is read a
- * second time by the ONNX engine (policy decision 299): the pages of heavy noise and the grids it cannot segment, which score 0.3 to 0.71
+ * second time by the ONNX engine (policy decision 302): the pages of heavy noise and the grids it cannot segment, which score 0.3 to 0.71
  * and which the preparations do not repair. Above it the ONNX reading found the same words as Tesseract's on the long scans measured, at
  * a cost of one reading more.
  */

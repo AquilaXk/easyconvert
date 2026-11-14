@@ -1,15 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { OCR_PAGE_BUDGET_ENV, OcrWorkBudget, OcrWorkLimitError } from '../src/lib/conversions/ocr-work-budget';
+import { OCR_PAGE_BUDGET_ENV, OCR_PAGE_GUARD_PAGES, OcrWorkBudget, OcrWorkLimitError } from '../src/lib/conversions/ocr-work-budget';
 
 /**
- * The second reading of a page by the ONNX engine (policy decision 299) is an extra beside the Tesseract readings that the page
+ * The second reading of a page by the ONNX engine (policy decision 302) is an extra beside the Tesseract readings that the page
  * budget was measured on. The gate it goes through keeps it from costing another page its limit: the page's own time stands still
  * while its reading runs, and a document may spend only 5% of its time (and a start allowance of 3 s) on them. The clock is faked, so
  * the figures are the ones of the rule and not of the machine.
  */
 
 const PAGE_BUDGET_MS = 10_000;
-const PAGE_LIMIT_MS = 6 * PAGE_BUDGET_MS;
+const PAGE_LIMIT_MS = OCR_PAGE_GUARD_PAGES * PAGE_BUDGET_MS;
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });

@@ -15,12 +15,17 @@ export const OCR_PAGE_BUDGET_MS = 10_000;
 export const OCR_PAGE_BUDGET_ENV = 'EASYCONVERT_OCR_PAGE_BUDGET_MS';
 /** Start-up allowance of a document, in page budgets: opening the PDF, starting the engine and loading language data. */
 export const OCR_ALLOWANCE_PAGES = 3;
-/** One page may take this many page budgets (render, and every reading of it) before it is refused as pathological. */
-export const OCR_PAGE_GUARD_PAGES = 6;
+/**
+ * One page may take this many page budgets (render, and every reading of it) before it is refused as pathological: 180 s at the default
+ * budget, the `tesseract_timeout` of OCRmyPDF (ocrmypdf/OCRmyPDF, MPL-2.0, commit 3343116ba204c99c9fee762d538dc1b668711bfb; behaviour only,
+ * policy decision 302). It was 6 budgets, 60 s, and a form that Tesseract reads in 55 s on its own failed the conversion on a busy
+ * machine. The document's budget and the job's deadline are unchanged, so a long document still ends at its time.
+ */
+export const OCR_PAGE_GUARD_PAGES = 18;
 /** Share of a job's own deadline the OCR may use, so that the refusal arrives before the deadline and the output can still be written. */
 export const OCR_JOB_DEADLINE_SHARE = 0.9;
 /**
- * What a document may spend on second readings by the ONNX engine (policy decision 299), as a share of the time the document has
+ * What a document may spend on second readings by the ONNX engine (policy decision 302), as a share of the time the document has
  * run (5%), plus a start allowance (3 s). A second reading is an extra beside the Tesseract readings that the budget was measured on, and on a
  * document that Tesseract scores low on most pages (a scanned form) it found less text than Tesseract on five of six pages, so the
  * spend is capped instead of left to the number of pages that score low.
@@ -32,7 +37,7 @@ export const OCR_RESCUE_MIN_REMAINING_PAGES = 3;
 /**
  * No second reading is started while a page of the document has been at its own work for this share of its limit: the reading takes
  * CPU from the page workers, and a page that is that far on is the one that it would push over (a form that Tesseract reads in 55 s
- * of the 60 s allowed ran past the limit when readings of other pages ran beside it).
+ * ran past the limit of 60 s that a page had when readings of other pages ran beside it). The share follows the page limit.
  */
 export const OCR_RESCUE_SLOW_PAGE_SHARE = 0.4;
 /** What a second reading is assumed to cost until one has been timed. */

@@ -37,11 +37,14 @@ const PATHOLOGICAL_PAGE = 5;
 /** Page budgets (ms) of the cases: generous for the cheap case, tight for the slow ones. */
 const CHEAP_PAGE_BUDGET_MS = 3_000;
 const SLOW_PAGE_BUDGET_MS = 500;
-/** Large enough that the limit of one page (6 budgets, 12 s) is past the reserve of the job, even for pages slowed by a loaded host. */
+/** Large enough that the limit of one page (18 budgets, 36 s) is past the reserve of the job, even for pages slowed by a loaded host. */
 const DEADLINE_PAGE_BUDGET_MS = 2_000;
-/** A slow page takes 5.2 page budgets to draw: under its own limit of 6, but 4 pages at a time cost more than the budget of each. */
+/** A slow page takes 5.2 page budgets to draw: under its own limit of 18, but 4 pages at a time cost more than the budget of each. */
 const SLOW_PAGE_RENDER_MS = 2_200;
 const MIXED_PAGE_BUDGET_MS = 2_000;
+/** The limit of one page is 18 budgets, so a document is long enough for it to come before the document's budget (3 + pages) only from 16 pages on. */
+const LONG_DOCUMENT_PAGES = 40;
+const LONG_DOCUMENT_PAGE_BUDGET_MS = 1_000;
 const SLACK_MS = 12_000;
 /** A timer may fire a few milliseconds before the clock this test reads reaches the delay. */
 const TIMER_EARLY_MS = 50;
@@ -161,14 +164,14 @@ describe('the OCR budget scales with the pages', () => {
     async () => {
       requireTessdata('eng');
       await warmEngine();
-      vi.stubEnv(OCR_PAGE_BUDGET_ENV, String(MIXED_PAGE_BUDGET_MS));
+      vi.stubEnv(OCR_PAGE_BUDGET_ENV, String(LONG_DOCUMENT_PAGE_BUDGET_MS));
       mocks.renderer = (pageCount) => fakeRenderer(pageCount, (index) => (index + 1 === PATHOLOGICAL_PAGE ? NEVER_MS : 0));
-      const pageLimit = OCR_PAGE_GUARD_PAGES * MIXED_PAGE_BUDGET_MS;
-      expect(pageLimit).toBeLessThan(ocrDocumentBudgetMs(MIXED_PAGES));
+      const pageLimit = OCR_PAGE_GUARD_PAGES * LONG_DOCUMENT_PAGE_BUDGET_MS;
+      expect(pageLimit).toBeLessThan(ocrDocumentBudgetMs(LONG_DOCUMENT_PAGES));
       const { largeResult } = await expectNoHangOnInput(
         'one page that never ends',
         (input: Buffer) => outcomeOf(recognizeRenderedPdfPages(input, undefined, {})),
-        Buffer.alloc(MIXED_PAGES),
+        Buffer.alloc(LONG_DOCUMENT_PAGES),
         pageLimit + SLACK_MS
       );
       expect(largeResult).toBeInstanceOf(OcrWorkLimitError);

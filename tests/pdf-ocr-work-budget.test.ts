@@ -56,7 +56,8 @@ describe('the OCR work budget of one document', () => {
     // 4.4 s at most on a 12-core machine. Twice the worst page, so that a slower, shared runner stays inside.
     expect(OCR_PAGE_BUDGET_MS).toBe(10_000);
     expect(OCR_PAGE_BUDGET_MS).toBeGreaterThanOrEqual(2 * 4_400);
-    expect(OCR_PAGE_GUARD_PAGES * OCR_PAGE_BUDGET_MS).toBeLessThanOrEqual(60_000);
+    // 180 s, the default `tesseract_timeout` of OCRmyPDF: a page of 55 s on its own (a form) stays well inside it.
+    expect(OCR_PAGE_GUARD_PAGES * OCR_PAGE_BUDGET_MS).toBe(180_000);
   });
 
   it('grows with the pages of the document, by an allowance and one page budget for each', () => {
