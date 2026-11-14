@@ -119,7 +119,7 @@ describe('Adversarial Deep Review Hardening & Optimizations', () => {
           sealGraph(graphId, {
             failurePolicy: 'fail_fast',
             nodes: {
-              n_in: { op: 'import.upload', inputKey: 'uploads/in.txt' },
+              n_in: { op: 'import.upload', storageKey: 'uploads/in.txt' },
               n_conv: { op: 'convert', input: 'n_in', targetFormat: 'pdf' },
               n_exp_ok: { op: 'export.url', input: 'n_conv' },
               n_exp_fail: { op: 'export.url', input: 'n_conv' },
@@ -146,7 +146,7 @@ describe('Adversarial Deep Review Hardening & Optimizations', () => {
           sealGraph(cancelGraphId, {
             failurePolicy: 'fail_fast',
             nodes: {
-              n_in: { op: 'import.upload', inputKey: 'uploads/in.txt' },
+              n_in: { op: 'import.upload', storageKey: 'uploads/in.txt' },
               n_conv: { op: 'convert', input: 'n_in', targetFormat: 'pdf' },
               n_exp_ok: { op: 'export.url', input: 'n_conv' },
               n_slow: { op: 'convert', input: 'n_conv', targetFormat: 'txt' },
@@ -185,7 +185,7 @@ describe('Adversarial Deep Review Hardening & Optimizations', () => {
           sealGraph(graphId, {
             failurePolicy: 'fail_fast',
             nodes: {
-              n_in: { op: 'import.upload', inputKey: 'uploads/in.txt' },
+              n_in: { op: 'import.upload', storageKey: 'uploads/in.txt' },
               n_conv: { op: 'convert', input: 'n_in', targetFormat: 'pdf' },
               n_exp: { op: 'export.url', input: 'n_conv' },
             },
@@ -588,7 +588,7 @@ describe('Adversarial Deep Review Hardening & Optimizations', () => {
       expect(encodedBySystem.status).toBe(0);
       expect(Buffer.compare(decompressBzip2(encodedBySystem.stdout), sample)).toBe(0);
 
-      const bz = compressBzip2(sample, 1);
+      const bz = compressBzip2(sample);
       const decodedBySystem = cp.spawnSync('bzip2', ['-d', '-c'], { input: bz });
       expect(decodedBySystem.error).toBeUndefined();
       expect(decodedBySystem.status).toBe(0);
