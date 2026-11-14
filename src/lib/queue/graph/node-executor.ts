@@ -811,7 +811,7 @@ export async function processGraphNodeJob(
           const pdfBuffers = inputs.map((stored) => stored.buffer);
           const mergedBuf = await mergePdfBuffers(pdfBuffers, {
             passwords: await mergePasswordsFor(graphId, node, inputArtifacts),
-            confirmEditRights: node.options?.confirmEditRights, signal: attemptSignal,
+            confirmEditRights: node.options?.confirmEditRights, signal: attemptSignal, names: inputs.map((stored) => stored.filename),
           });
           const outFilename = 'merged.pdf';
           const outKey = nodeOutputKey('intermediate', graphId, nodeId, 0, outFilename);

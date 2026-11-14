@@ -303,7 +303,7 @@ export async function runWebTool(tool: WebTool, files: readonly WebToolFile[], o
   const base = path.parse(first.name).name;
   switch (tool) {
     case 'merge':
-      return fileOutput('merged.pdf', 'application/pdf', await mergePdfBuffers(files.map((file) => file.buffer), { signal }));
+      return fileOutput('merged.pdf', 'application/pdf', await mergePdfBuffers(files.map((file) => file.buffer), { signal, names: files.map((file) => file.name) }));
     case 'archive-create':
       return createArchive(files, options.format ?? DEFAULT_ARCHIVE_FORMAT, signal);
     case 'archive-extract':
