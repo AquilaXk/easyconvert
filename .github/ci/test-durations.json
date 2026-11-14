@@ -661,6 +661,7 @@
   "tests/media-opus-channel-layout.test.ts": 55.4,
   "tests/media-opus-over-full-scale-peak.test.ts": 3.2,
   "tests/media-opus-source-rate.test.ts": 29.8,
+  "tests/media-opus-source-tags.test.ts": 2.0,
   "tests/media-oracle-decode.test.ts": 4.4,
   "tests/media-package-graph-node.test.ts": 4.2,
   "tests/media-qsv-device-gating.test.ts": 3.2,
