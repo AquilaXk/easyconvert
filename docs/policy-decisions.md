@@ -348,6 +348,7 @@ Security
 297. [A Google sign-in takes over an account whose address was never verified: the registrant's password, sessions, keys and webhooks go](#297-a-google-sign-in-takes-over-an-account-whose-address-was-never-verified-the-registrants-password-sessions-keys-and-webhooks-go)
 298. [Batch D of the external review: a refund claims the package credits that a running conversion holds, a payer whose credits are all held is still a payer, a graph convert node charges each input at its own class, and a Google takeover records the owner's own acceptance of the terms](#298-batch-d-of-the-external-review-a-refund-claims-the-package-credits-that-a-running-conversion-holds-a-payer-whose-credits-are-all-held-is-still-a-payer-a-graph-convert-node-charges-each-input-at-its-own-class-and-a-google-takeover-records-the-owners-own-acceptance-of-the-terms)
 300. [A camera file that the distribution's LibRaw does not list is developed once by the pinned LibRaw snapshot](#300-a-camera-file-that-the-distributions-libraw-does-not-list-is-developed-once-by-the-pinned-libraw-snapshot)
+301. [The office suite run gets a time limit that follows the size of its input, and the page chain of an office document stops overriding the limits of its stages](#301-the-office-suite-run-gets-a-time-limit-that-follows-the-size-of-its-input-and-the-page-chain-of-an-office-document-stops-overriding-the-limits-of-its-stages)
 
 ---
 
@@ -9152,3 +9153,51 @@ Security
   - **Moving the pin**: it already has the body.
 - **Verified by**: `tests/raw-nikon-he-decode.test.ts` (stand-in decoders: the snapshot develops what the distribution's program refuses as unsupported, the distribution's picture stands and the snapshot is not run for a camera it reads, and the refusal stands when the snapshot refuses too or is absent; the first is red on the previous commit), `tests/worker-libraw-he-packaging.test.ts`, the real file on the testbed as above.
 - **Revisit when**: the distribution's LibRaw lists the body (0.23 or later: drop the stage with entry 195), the pin moves, or a file shows the unsupported answer for a camera the snapshot decodes wrongly.
+
+## 301. The office suite run gets a time limit that follows the size of its input, and the page chain of an office document stops overriding the limits of its stages
+
+- **Status**: Implemented, decided 2026-11-15 (QA decision: fix the refusals of the nightly real-world corpus of 2026-11-13 that a longer limit removes; the time limits are group 1 of three, and the next step that entry 293 names for LibreOffice); nothing is deployed.
+- **Decision**:
+  - **One run of the office suite gets `max(120 s, 60 s for each megabyte of its input)`, held to the time the job has left and to 60 minutes** (`sizedStageTimeoutMs`, `OFFICE_STAGE`, `src/lib/conversions/job-time.ts`). It was 45 s, at most 120 s. It applies to the pooled run (`LibreOfficePoolManager.convert`) and to the standalone run (`runHeadlessOffice`). The job deadline (5 minutes for the free plan, 60 for a paid one, entry 285) cuts the run first whenever it is shorter.
+  - **The size is that of the file the suite reads, or, for a ZIP package (a Word, Excel or PowerPoint file of the new generation, an ODF file), the bytes its entries declare when that is more** (`officeInputBytes`, `src/worker/libreoffice-pool.ts`, from the central directory only). A text document written as DOCX for its conversion is a few megabytes of ZIP and tens of megabytes of XML, which is what the suite parses. A server-set `timeoutMs` stays the limit it was (at most 120 s).
+  - **The page chain of an office document no longer sets `timeoutMs` of 120 s for its stages** (`withOfficePageChainLimits`, `src/worker/office-suite-route.ts`). A server-set `timeoutMs` is the limit of a whole stage whatever the work (entry 293), so the 120 s held the loop over the 85 pages of `govdocs1-000728.ppt` to 120 s while entry 293 gives it 170 s: the 7,195 ms of the nightly refusal were what was left of that 120 s after the loop ran for 113 s. The suite's run now takes its limit from the size above and the drawing of the pages from the page count; one Poppler process keeps the stage default of 45 s, as for a PDF that is uploaded.
+  - **Unchanged**: the error (`CpuTaskTimeoutError`, 422, refusal code `timeout`), the 500-page limit of a request to images, the pool's slot and profile handling, and the limit of one process in a page loop.
+- **Why**:
+  - **The corpus refused 11 jobs, one for each of 11 files, at 45 s of the suite** (`txt` to `doc` and `rtf`, `xls` to `ods` and `pdf`, `doc` to `pdf`) and one at 7.2 s. A text file written as `.doc` or `.rtf` is read by the in-process writer into a DOCX first, and the suite then exports that package (entries 158 and 283): `govdocs1-000624.txt` (1.2 MB) takes 53 s on an idle testbed, where the suite reads the same text file straight in 5 s. The spreadsheets are 20 to 110 s of the suite on a loaded runner (a 6.3 MB workbook took 130 s at a load of 6 on 4 cores, 42 s idle).
+  - **Time follows the input and not the pages, because the pages are known only after the run.** What the reference service sets here: its formats API names LibreOffice 26.8.0 for `txt` to `doc`, `txt` to `rtf` and `ppt` to `eps`, and an `office` engine (2.1) for `xls` to `ods`, `xls` to `pdf` and `doc` to `pdf`; its published processing limit is 5 minutes on the free plan and none on paid plans (entry 293), so no per-run limit of 45 s exists there. The converters that wrap LibreOffice in open source (JODConverter 120 s a task, unoserver none by default, Gotenberg 30 s for a whole request) all fix the limit, as entry 293 read; none sizes it, so nothing is copied from them and the rule follows the shape of entry 293.
+  - **The rates**: the measured need of one run is 20 s a megabyte for the 6.3 MB workbook and 11 s for a 3.3 MB one, and 110 s a megabyte for a 0.6 MB workbook that takes 65 s under load (what the 120 s least covers). 60 s a megabyte is three times the large ones; the least covers the small ones.
+- **Measured** (Lima testbed, aarch64, 4 CPUs, base and head alternately, each run started only while no other timing job ran and the load was under 1.5; the job deadline of the free plan, 300 s; the output of each pair is the same size):
+
+  | File to target | Size | Base | Head |
+  |---|---|---|---|
+  | small `tiny.txt` to `doc` | 33 bytes | 1.15 s | 0.96 s |
+  | `govdocs1-000728.ppt` to `pdf` | 403 KB | 1.05 s | 1.01 s |
+  | `govdocs1-000624.txt` to `doc` | 1.2 MB | refused at 45.8 s | 53.5 s |
+  | `govdocs1-001449.txt` to `doc` | 2.6 MB | refused at 45.9 s | 49.6 s |
+  | `govdocs1-000658.txt` to `doc` | 7.4 MB | refused at 46.3 s | refused at the job deadline (298.7 s); with a 30-minute deadline it converts in 612 s |
+  | `govdocs1-000666.txt` to `rtf` | 563 KB | 24.0 s | 24.1 s |
+  | `govdocs1-001593.txt` to `rtf` | 2.3 MB | 44.4 s (the limit is 45 s) | 41.0 s |
+  | `govdocs1-000053.xls` to `ods` | 6.3 MB | 42.0 s | 43.0 s |
+  | `govdocs1-001700.xls` to `ods` | 3.3 MB | 30.6 s | 31.3 s |
+  | `office-spreadsheet-53446.xls` to `ods` | 1.8 MB | 19.3, 20.4, 19.1 s | 21.7, 17.1, 22.7 s |
+  | `office-spreadsheet-florida_data.ashx.xls` to `ods` | 589 KB | 21.5, 24.2, 26.6 s | 27.2, 23.0, 27.1 s |
+  | `govdocs1-009496.xls` to `pdf` | 3.1 MB | 27.0 s | 25.1 s |
+  | `govdocs1-004565.doc` to `pdf` | 6.7 MB | refused at 45.8 s | 55.2 s |
+  | `govdocs1-000728.ppt` to `eps` (85 pages) | 403 KB | 78.7 s | 73.1 s |
+  | `govdocs1-003702.pdf` to `ppt` | 1.8 MB | 8.5, 8.8 s | 8.6, 8.0 s |
+  | `govdocs1-010383.rtf` to `png` (4,874 pages) | 8.1 MB | refused 413 at 35.5 s | refused 413 at 33.0 s |
+  | `office-spreadsheet-poc-shared-strings.xlsx` to `jpg` | 110 KB | refused at 121.1 s | refused at 120.7 s |
+
+  Three earlier runs of `govdocs1-003702.pdf` to `ppt` (base 9.3, 8.9, 8.5 s; head 14.4, 11.4, 12.4 s) ran while another job loaded the testbed in the head's turns, and are left out; the runs above started with no other timing job running and ended with none. On an idle testbed the base also converts most of these files (the 45 s limit is crossed by the ones above); the nightly runs jobs in parallel on a loaded runner, where the same runs take longer and were refused (the direct run of the 589 KB workbook took 65 s at a load of 6, 22 s idle). The `ppt` to `eps` and the `rtf` to `png` rows show that the chain keeps the 413 of the page limit and the loop of the pages.
+- **Trade-offs**:
+  - **A run of the suite that hangs now holds its worker slot for 120 s, not 45 s**, and up to the job deadline for a large input. The deadline bounds it (5 minutes for the free plan), and a document that is read at once and then spins is no more likely in a large file than in a small one.
+  - **One Poppler process in the chain is held to 45 s, not 120 s.** A single `pdftoppm` batch or `pdftops` page that takes longer than 45 s is refused (the pages of the corpus take 0.1 to 5 s). The chain's own 413 refusal of a document of 4,874 pages is unchanged (`govdocs1-010383.rtf`, above).
+  - **The declared sizes of a ZIP are the writer's word**: a package that claims 10 GB makes the limit the job's time. The job deadline is the same bound the hang had before.
+  - **A text file whose DOCX is slow for the suite is not made fast.** `govdocs1-000658.txt` (7.4 MB) needs more than the free plan's 5 minutes in the suite as a DOCX, where the text file straight in takes 15 s; the route through the DOCX is the one of entries 158 and 283, and a direct text import of the suite would end the wait. It is listed in `TODO.md`.
+  - **`office-spreadsheet-poc-shared-strings.xlsx`** stays refused at 120 s: it is a crafted workbook whose shared strings expand without end, and the limit of the size rule is its 110 KB.
+- **Alternatives rejected**:
+  - **120 s for every run, no size rule**: the 6.3 MB workbook needs 130 s on a loaded runner, and a larger one more.
+  - **Counting cells for a spreadsheet**: a count of the cells of an `.xls` needs the BIFF records read; bytes and the declared XML size are free and the rates above hold with them.
+  - **Raising `OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS`** (the old 120 s of the chain): it would keep the override that holds the page loop at 120 s.
+- **Verified by**: `tests/stage-page-budget.test.ts` (`OFFICE_STAGE` and the rule: 120 s up to 2 MB, 60 s a megabyte after, the 60-minute ceiling, the job time, the server-set limit, a size that is not a number), `tests/libreoffice-pool-manager.test.ts` (the limit the pool hands the executor for a small file, a large one, a package of 5 MB of XML in under 100 KB, a job deadline and a server-set limit), `tests/document-page-images.test.ts` (the chain sets no `timeoutMs`; the loop of the 85 pages of a presentation gets 170 s, red on the previous commit with 120 s), the office and stage suites that ran before (`tests/job-deadline*.test.ts`, `tests/libreoffice-*.test.ts`, `tests/office-*.test.ts`).
+- **Revisit when**: a document of a size that the rate under-counts reaches the job deadline (a spreadsheet with a few cells and a large sheet area, or a deck that is mostly pictures), the suite reads text straight in for `txt` to `doc` and `rtf` (the DOCX of entries 158 and 283 goes away for it), or a runner without free cores reads 60 s a megabyte as too short.

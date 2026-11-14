@@ -1,4 +1,4 @@
-import { PAGE_LOOP_STAGE, stageTimeoutMs } from '../lib/conversions/job-time';
+import { OFFICE_STAGE, PAGE_LOOP_STAGE, sizedStageTimeoutMs, stageTimeoutMs } from '../lib/conversions/job-time';
 import { pageLoopBudget, type PageLoopBudget } from './page-loop-budget';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -132,7 +132,7 @@ import {
   walkArchiveTreePaths,
 } from '../lib/conversions/archive-password';
 import { resolveArchiveCompressionLevel } from '../lib/conversions/archive-compression-level';
-import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter, standaloneProfileArguments } from './libreoffice-pool';
+import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, officeInputBytes, resolveLibreOfficeFilter, standaloneProfileArguments } from './libreoffice-pool';
 import { BUILT_IN_ENGINE, engineAllowsRoute, type EngineId } from '../lib/conversions/engine-ids';
 
 export { EngineUnavailableError, InvalidPageRangeError, ComplexScriptRequiresNativeEngineError };
@@ -413,7 +413,7 @@ async function runHeadlessOffice(
   try {
     return await withSandboxDir('easyconvert-office-', async (tempDir) => {
       const { inputPath } = resolveOfficeInputContext(input, src, tempDir);
-      const timeout = Math.min(stageTimeoutMs(options, 45000), 120000);
+      const timeout = sizedStageTimeoutMs(options, officeInputBytes(inputPath), OFFICE_STAGE);
       const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
 
       await executeSandboxedBinary(
