@@ -414,6 +414,7 @@
   "tests/frontend-wcag-responsive.test.ts": 0.5,
   "tests/gif-writer-lzw.test.ts": 1.4,
   "tests/github-slug.test.ts": 0,
+  "tests/google-signin-unverified-account.test.ts": 0.5,
   "tests/graph-ended-node-jobs-redis.test.ts": 0,
   "tests/graph-ended-node-jobs.test.ts": 2.2,
   "tests/graph-export-url-stream.test.ts": 0,

@@ -345,6 +345,7 @@ Security
 294. [An archive inspection is bounded like a conversion, a replayed answer keeps no large body, and the XML and HTML readers scan once](#294-an-archive-inspection-is-bounded-like-a-conversion-a-replayed-answer-keeps-no-large-body-and-the-xml-and-html-readers-scan-once)
 295. [A sandboxed program cannot make a link and the host reads its output without following one; the office slot profile is made again per job; SVG, queue statistics, SDK download, webhook secret and vault fixes](#295-a-sandboxed-program-cannot-make-a-link-and-the-host-reads-its-output-without-following-one-the-office-slot-profile-is-made-again-per-job-svg-queue-statistics-sdk-download-webhook-secret-and-vault-fixes)
 296. [Batch C of the external review: the open uploads of an account have a budget, an account holds at most 20 active API keys, a sign-in clears only its email counter, an erased account loses its queued webhook deliveries, the scratch sweep waits for the stopped worker, and the cache purge follows a failed deploy](#296-batch-c-of-the-external-review-the-open-uploads-of-an-account-have-a-budget-an-account-holds-at-most-20-active-api-keys-a-sign-in-clears-only-its-email-counter-an-erased-account-loses-its-queued-webhook-deliveries-the-scratch-sweep-waits-for-the-stopped-worker-and-the-cache-purge-follows-a-failed-deploy)
+297. [A Google sign-in takes over an account whose address was never verified: the registrant's password, sessions, keys and webhooks go](#297-a-google-sign-in-takes-over-an-account-whose-address-was-never-verified-the-registrants-password-sessions-keys-and-webhooks-go)
 
 ---
 
@@ -9082,3 +9083,21 @@ Security
   - **`deploy.sh sweep` run by hand on a running stack still takes the template**; the docs say to run it while the worker is stopped.
 - **Verified by**: `tests/api-key-limit.test.ts`, `tests/login-success-keeps-ip-counter.test.ts`, `tests/webhook-owner-erased.test.ts`, `tests/erase-account-completeness.test.ts`, `tests/oci-deploy.test.ts`, `tests/upload-part-urls-and-part-size.test.ts`, `tests/account-upload-budget.test.ts` (each red on the previous commit; the last on each of the four routes), `tests/i18n-api-errors.test.ts` (the wording).
 - **Revisit when**: a plan needs more keys, or the office pool keeps its template outside `/tmp`.
+
+## 297. A Google sign-in takes over an account whose address was never verified: the registrant's password, sessions, keys and webhooks go
+
+- **Status**: Implemented, decided 2026-11-14 (QA decision: fix the findings of the external review that the lead verified, batch C); nothing is deployed.
+- **Decision**:
+  - **A Google sign-in for the address of a password account that was never verified takes the account over** (`handOverUnverifiedAccount`, `src/lib/auth/standing-access.ts`, called by `/api/auth/google/callback`). In this order: the password and its salt are removed, every session of the account ends, its API keys (deleted, with the secret of each webhook), its failed webhook deliveries and its saved storage credentials go (`revokeStandingAccess`, the path of a password reset of such an account, entry 288), and then the account is marked verified and linked to Google. The sign-in that follows opens that account.
+  - **A step that fails leaves the account unverified**, so the next Google sign-in takes the same path and cleans again; the answer of the failed one is `oauth_exchange_failed`.
+  - **A verified password account keeps the answer it had**: `account_linking_required`, unless the browser is signed in to that account, in which case Google is linked to it.
+- **Why**:
+  - **Google had already proved the address** (`exchangeGoogleCode` refuses a profile whose `email_verified` is not true), and the account had not: whoever registered it typed an address they may not own. Refusing the owner with `account_linking_required` left them without a way in, since they do not know a password they never set, and left the squatter's password, keys and webhooks in place for the day the owner used the account some other way (the pre-hijacking attack class, Sudhodanan and Paverd, USENIX Security 2022, whose countermeasure is to end the unverified credentials once the address is proved by other means).
+  - **The cleaning is the same as the one a password reset does** for such an account, so the two ways an owner can prove the address end in the same state.
+  - **The two libraries read for this do not take the account over.** Better Auth (MIT, `packages/better-auth/src/oauth2/link-account.ts`) refuses to link a provider to a local account whose email is unverified (`requireLocalEmailVerified`, on by default; the code path that linked it anyway only set `emailVerified`), and Auth.js (ISC, `packages/core/src/lib/actions/callback/handle-login.ts`) refuses unless `allowDangerousEmailAccountLinking` is set, and then links without ending the existing credentials. Neither removes a squatter's credentials, so no code of them is copied; the order and the steps follow entry 288.
+- **Trade-offs**:
+  - **A person who registered an account with their own address, never confirmed it, and then signs in with Google loses the password they set.** Their keys and webhooks go too. They can set a password again with a reset or sign in with Google.
+  - **Files and history the account made stay with it** and belong to the owner, as after a reset.
+- **Verified by**: `tests/google-signin-unverified-account.test.ts` (red on the previous commit: the sign-in was refused), `tests/session-oauth-and-csrf.test.ts` (the verified account is still refused), `tests/reset-takeover-cleanup.test.ts`.
+- **Revisit when**: the application links more providers than Google, or an account can hold both a password and a provider.
+

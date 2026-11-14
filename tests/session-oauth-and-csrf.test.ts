@@ -378,13 +378,14 @@ describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
     });
 
 
-    it('requires explicit authenticated session to link Google to an existing email/password account', async () => {
+    it('requires explicit authenticated session to link Google to an existing verified email/password account', async () => {
       // 1. Create existing user with email/password
       const passwordData = await hashPassword('ExistingPassword123!');
       const existingUser = await redisUserStore.createUser({
         email: 'dev.sandbox@example.com',
         name: 'Existing User',
         provider: 'email',
+        emailVerified: true,
         passwordHash: passwordData.hash,
         salt: passwordData.salt,
       });

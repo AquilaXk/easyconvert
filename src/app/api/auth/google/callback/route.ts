@@ -5,7 +5,9 @@ import {
   getAppOrigin,
   OAUTH_STATE_COOKIE_NAME,
 } from '@/lib/auth/oauth';
+import { isEmailVerified } from '@/lib/auth/email-verified';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
+import { handOverUnverifiedAccount } from '@/lib/auth/standing-access';
 import { AuthStoreUnavailableError } from '@/lib/auth/store-unavailable';
 import { createSessionToken, createSessionCookie, getSessionFromRequest } from '@/lib/auth/session';
 import { getPathname } from '@/i18n/navigation';
@@ -86,8 +88,12 @@ export async function GET(req: NextRequest) {
           avatarUrl: googleProfile.picture,
         })) || userRecord;
       }
+    } else if (!isEmailVerified(userRecord)) {
+      // Nobody proved this address to the account that holds it, and Google just proved it to this sign-in: the account is the
+      // registrant's squat on the owner's address, so the owner takes it over instead of being refused.
+      userRecord = await handOverUnverifiedAccount(userRecord.id, { avatarUrl: googleProfile.picture || userRecord.avatarUrl });
     } else {
-      // Pre-account hijacking protection: prevent silent takeover of email/password accounts
+      // Pre-account hijacking protection: prevent silent takeover of verified email/password accounts
       const currentSessionUser = await getSessionFromRequest(req);
       if (currentSessionUser && currentSessionUser.id === userRecord.id) {
         userRecord = (await redisUserStore.updateUser(userRecord.id, {

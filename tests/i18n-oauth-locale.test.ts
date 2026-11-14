@@ -43,7 +43,7 @@ describe('the Google sign-in keeps the language it started in', () => {
   });
 
   it('sends a refusal back to the sign-in page of that language', async () => {
-    await redisUserStore.createUser({ email: 'dev.sandbox@example.com', name: 'Existing', tier: 'free', provider: 'email' });
+    await redisUserStore.createUser({ email: 'dev.sandbox@example.com', name: 'Existing', tier: 'free', provider: 'email', emailVerified: true });
     expect(await signInFrom('?locale=ko')).toBe('/ko/auth?error=account_linking_required&email=dev.sandbox%40example.com');
   });
 
