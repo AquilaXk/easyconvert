@@ -342,6 +342,8 @@ describe('Phase 1-A: API Key Scope Integrity, Redis Revocation Sync & Rotation',
           const s = memorySetMap.get(key);
           return s ? Array.from(s) : [];
         }),
+        // The only script a key check runs is the package standing of its owner (balance, credits held): this owner has bought none.
+        eval: vi.fn(async () => [0, 0]),
       } as any;
 
       // Instance A and Instance B are two separate server instances sharing the same Redis cluster
