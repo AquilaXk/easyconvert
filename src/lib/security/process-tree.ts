@@ -34,7 +34,7 @@ import fs from 'node:fs';
  */
 
 /**
- * The processes a run started, for the resident-memory watch of the sandbox (docs/policy-decisions.md, entry 308).
+ * The processes a run started, for the resident-memory watch of the sandbox (docs/policy-decisions.md, entry 309).
  *
  * `descendantPids` is a TypeScript translation of the traversal of `Process.children(recursive=True)` in `psutil/__init__.py` of
  * giampaolo/psutil (tag v7.2.2, commit 9eea97dd6f1d16ea33f5144c8925f1ce7a0688e1), BSD-3-Clause, Copyright (c) 2009, Jay Loden, Dave

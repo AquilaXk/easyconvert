@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { directoryGrowth, watchDirectoryGrowth } from '../src/worker/directory-growth-watch';
 
-/** The watch of a job directory (docs/policy-decisions.md, entry 308): the bytes of the files and the number of entries, links not followed. */
+/** The watch of a job directory (docs/policy-decisions.md, entry 309): the bytes of the files and the number of entries, links not followed. */
 
 let dir: string;
 beforeEach(() => {
