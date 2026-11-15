@@ -89,9 +89,9 @@ function spaced(word: string): string {
   return [...word].join(URL_IGNORED_CHARS);
 }
 
-/** An external target: an http(s)/file/ftp scheme, or a network-path reference (`//`, `/\\`, `\\/`, `\\\\`). */
+/** An external or script target: an http(s)/file/ftp/javascript/vbscript scheme, or a network-path reference (`//`, `/\\`, `\\/`, `\\\\`). */
 const EXTERNAL_TARGET_SOURCE =
-  `(?:${['https', 'http', 'file', 'ftp'].map(spaced).join('|')})${URL_IGNORED_CHARS}:` +
+  `(?:${['https', 'http', 'file', 'ftp', 'javascript', 'vbscript'].map(spaced).join('|')})${URL_IGNORED_CHARS}:` +
   `|[/\\\\]${URL_IGNORED_CHARS}[/\\\\]`;
 /** Sticky: tested at the position right after the opening parenthesis of url()/src(). */
 const EXTERNAL_FUNCTION_TARGET = new RegExp(`\\s*(?:['"]\\s*)?(?:${EXTERNAL_TARGET_SOURCE})`, 'iy');
@@ -105,7 +105,6 @@ const CHAR_OPEN_PAREN = 0x28;
 const CHAR_CLOSE_PAREN = 0x29;
 const CSS_EXPRESSION_PROBE = /expression\s*\(/i;
 const SCRIPT_URI_PROBE = 'javascript:';
-const CSS_IMPORT_RULE = /@import[^;]*;?/gi;
 
 const CHAR_TAB = 0x09;
 const CHAR_LF = 0x0a;
@@ -256,44 +255,108 @@ function findCloseTag(lower: string, lowerName: string, from: number): [number, 
 }
 
 /**
- * Removes every `<name ...>` or `<prefix:name ...>` element in linear time. Paired elements are removed
- * through their close tag; an opener without a close tag is removed alone; an opening tag that never
+ * Removes every `<name ...>` or `<prefix:name ...>` element in linear time. Paired elements match nested
+ * openers and closers with an explicit stack so an inner close tag never terminates an outer element early,
+ * orphan close tags are stripped, an opener without a close tag is removed alone, and an opening tag that never
  * terminates is removed through the end of input (fail closed).
  */
 function stripElement(src: string, name: string, paired: boolean): string {
   const lowerName = lowerKeepingLength(name);
   const lower = lowerKeepingLength(src);
-  const parts: string[] = [];
-  let copied = 0;
+
+  if (!paired) {
+    const parts: string[] = [];
+    let copied = 0;
+    let search = 0;
+    for (;;) {
+      const nameIndex = lower.indexOf(lowerName, search);
+      if (nameIndex === -1) break;
+      const start = tagOpenBefore(lower, nameIndex, false);
+      const afterName = nameIndex + lowerName.length;
+      if (start < copied || isWordCharAt(src, afterName)) {
+        search = nameIndex + 1;
+        continue;
+      }
+      parts.push(src.slice(copied, start));
+      const tagEnd = findTagEnd(src, afterName);
+      if (tagEnd === -1) {
+        copied = src.length;
+        break;
+      }
+      copied = tagEnd;
+      search = tagEnd;
+    }
+    if (copied === 0 && parts.length === 0) return src;
+    parts.push(src.slice(copied));
+    return parts.join('');
+  }
+
+  const tokenStarts: number[] = [];
+  const tokenEnds: number[] = [];
+  const tokenIsClose: boolean[] = [];
   let search = 0;
-  let closeMissing = false;
+  let cursorBound = 0;
 
   for (;;) {
     const nameIndex = lower.indexOf(lowerName, search);
     if (nameIndex === -1) break;
-    const start = tagOpenBefore(lower, nameIndex, false);
     const afterName = nameIndex + lowerName.length;
-    if (start < copied || isWordCharAt(src, afterName)) {
-      search = nameIndex + 1;
+    const openStart = tagOpenBefore(lower, nameIndex, false);
+    if (openStart >= cursorBound && !isWordCharAt(src, afterName)) {
+      const tagEnd = findTagEnd(src, afterName);
+      if (tagEnd === -1) {
+        tokenStarts.push(openStart);
+        tokenEnds.push(src.length);
+        tokenIsClose.push(false);
+        break;
+      }
+      tokenStarts.push(openStart);
+      tokenEnds.push(tagEnd);
+      tokenIsClose.push(false);
+      cursorBound = tagEnd;
+      search = tagEnd;
       continue;
     }
-    parts.push(src.slice(copied, start));
-    const tagEnd = findTagEnd(src, afterName);
-    if (tagEnd === -1) {
-      copied = src.length;
-      break;
+    const closeStart = tagOpenBefore(lower, nameIndex, true);
+    if (closeStart >= cursorBound) {
+      let end = afterName;
+      while (end < lower.length && isWhitespaceAt(lower, end)) end++;
+      if (lower[end] === '>') {
+        tokenStarts.push(closeStart);
+        tokenEnds.push(end + 1);
+        tokenIsClose.push(true);
+        cursorBound = end + 1;
+        search = end + 1;
+        continue;
+      }
     }
-    let removeEnd = tagEnd;
-    if (paired && !closeMissing) {
-      const close = findCloseTag(lower, lowerName, tagEnd);
-      if (close === null) closeMissing = true;
-      else removeEnd = close[1];
-    }
-    copied = removeEnd;
-    search = removeEnd;
+    search = nameIndex + 1;
   }
 
-  if (copied === 0 && parts.length === 0) return src;
+  if (tokenStarts.length === 0) return src;
+
+  const spanEnds = new Int32Array(tokenStarts.length).fill(-1);
+  const openStack: number[] = [];
+  for (let t = 0; t < tokenStarts.length; t++) {
+    if (!tokenIsClose[t]) {
+      spanEnds[t] = tokenEnds[t];
+      if (tokenEnds[t] < src.length) openStack.push(t);
+    } else if (openStack.length > 0) {
+      const openerIdx = openStack.pop()!;
+      spanEnds[openerIdx] = tokenEnds[t];
+    } else {
+      spanEnds[t] = tokenEnds[t];
+    }
+  }
+
+  const parts: string[] = [];
+  let copied = 0;
+  for (let t = 0; t < tokenStarts.length; t++) {
+    const removeEnd = spanEnds[t];
+    if (removeEnd === -1 || tokenStarts[t] < copied) continue;
+    parts.push(src.slice(copied, tokenStarts[t]));
+    copied = removeEnd;
+  }
   parts.push(src.slice(copied));
   return parts.join('');
 }
@@ -501,11 +564,41 @@ class DecodeBuffer {
       escaped: this.escaped.subarray(0, this.count),
     };
   }
+
+  /** True when the decoded units just emitted spell an ASCII `url` identifier token (CSS Syntax Level 3 §4.3.3). */
+  endsWithUrlIdent(): boolean {
+    if (this.count < 3) return false;
+    const u = this.units[this.count - 3] | ASCII_CASE_OFFSET;
+    const r = this.units[this.count - 2] | ASCII_CASE_OFFSET;
+    const l = this.units[this.count - 1] | ASCII_CASE_OFFSET;
+    if (u !== 0x75 || r !== 0x72 || l !== 0x6c) return false;
+    if (this.count === 3) return true;
+    if (this.escaped[this.count - 4] === 1) return false;
+    const prev = this.units[this.count - 4];
+    const isIdent =
+      (prev >= CHAR_DIGIT_0 && prev <= CHAR_DIGIT_9) ||
+      (prev >= ASCII_UPPER_A && prev <= ASCII_UPPER_Z) ||
+      (prev >= CHAR_LOWER_A && prev <= 0x7a) ||
+      prev === 0x5f ||
+      prev === 0x2d ||
+      prev >= 0x80;
+    return !isIdent;
+  }
+}
+
+function startsQuotedUrlArg(css: string, afterOpenParen: number): boolean {
+  let k = afterOpenParen;
+  while (k < css.length && isCssWhitespaceCode(css.charCodeAt(k))) k++;
+  if (k >= css.length) return false;
+  const code = css.charCodeAt(k);
+  return code === CHAR_DOUBLE_QUOTE || code === CHAR_SINGLE_QUOTE;
 }
 
 /**
  * Decodes CSS comments and escapes (CSS Syntax 4.3.7) in one linear pass so keywords can be matched the way a
- * CSS parser sees them. Returns null when the text has neither, so the caller can match the original directly.
+ * CSS parser sees them, honouring quoted strings (`<string-token>` / `<bad-string-token>`, CSS Syntax 4.3.4) and
+ * unquoted `url(...)` tokens (`<url-token>` / `<bad-url-token>`, CSS Syntax 4.3.6 & 4.3.14) so comment markers or
+ * stray quotes inside literals cannot mask later rules. Returns null when the text has neither `\` nor `/*`.
  * Escapes that decode to NUL, a surrogate or a code point above U+10FFFF throw (fail closed).
  */
 function decodeCss(css: string): DecodedCss | null {
@@ -513,15 +606,26 @@ function decodeCss(css: string): DecodedCss | null {
   const length = css.length;
   const out = new DecodeBuffer(length);
 
+  let quote = 0;
+  let inUnquotedUrl = false;
   let i = 0;
   while (i < length) {
     const code = css.charCodeAt(i);
-    if (code === CHAR_SLASH && css.charCodeAt(i + 1) === CHAR_STAR) {
+    if (quote === 0 && !inUnquotedUrl && code === CHAR_SLASH && css.charCodeAt(i + 1) === CHAR_STAR) {
       const close = css.indexOf('*/', i + 2);
       i = close === -1 ? length : close + 2;
       continue;
     }
     if (code !== CHAR_BACKSLASH) {
+      if (quote !== 0) {
+        if (code === quote || isCssNewlineCode(code)) quote = 0;
+      } else if (inUnquotedUrl) {
+        if (code === CHAR_CLOSE_PAREN) inUnquotedUrl = false;
+      } else if (code === CHAR_DOUBLE_QUOTE || code === CHAR_SINGLE_QUOTE) {
+        quote = code;
+      } else if (code === CHAR_OPEN_PAREN && out.endsWithUrlIdent() && !startsQuotedUrlArg(css, i + 1)) {
+        inUnquotedUrl = true;
+      }
       out.push(code, i, i + 1);
       i++;
       continue;
@@ -681,20 +785,54 @@ function collectExternalReferenceEdits(text: string, escaped: Uint8Array | null)
     }
     EXTERNAL_FUNCTION_TARGET.lastIndex = argsStart;
     if (!EXTERNAL_FUNCTION_TARGET.test(text)) continue;
-    const close = text.indexOf(')', argsStart);
-    scanned = close === -1 ? text.length : close + 1;
+    scanned = findClosingParen(text, argsStart, escaped);
     edits.push({ start: match.index, end: scanned, replacement: 'none' });
+  }
+  return edits;
+}
+
+const CSS_IMPORT_KEYWORD = /@import/gi;
+const CHAR_CLOSE_BRACE = 0x7d;
+
+/** Finds the end of an `@import` rule starting at `from`, skipping `;` inside quotes or parentheses. */
+function findImportRuleEnd(text: string, from: number, escaped: Uint8Array | null): number {
+  let quote = 0;
+  let parenDepth = 0;
+  for (let i = from; i < text.length; i++) {
+    if (escaped !== null && escaped[i] === 1) continue;
+    const code = text.charCodeAt(i);
+    if (quote !== 0) {
+      if (code === quote || isCssNewlineCode(code)) quote = 0;
+    } else if (code === CHAR_DOUBLE_QUOTE || code === CHAR_SINGLE_QUOTE) {
+      quote = code;
+    } else if (code === CHAR_OPEN_PAREN) {
+      parenDepth++;
+    } else if (code === CHAR_CLOSE_PAREN) {
+      if (parenDepth > 0) parenDepth--;
+    } else if (parenDepth === 0 && code === CHAR_SEMICOLON) {
+      return i + 1;
+    } else if (parenDepth === 0 && code === CHAR_CLOSE_BRACE) {
+      return i;
+    }
+  }
+  return text.length;
+}
+
+function collectImportEdits(text: string, escaped: Uint8Array | null): CssEdit[] {
+  const edits: CssEdit[] = [];
+  let scanned = 0;
+  for (const match of text.matchAll(CSS_IMPORT_KEYWORD)) {
+    if (match.index < scanned) continue;
+    const end = findImportRuleEnd(text, match.index + match[0].length, escaped);
+    edits.push({ start: match.index, end, replacement: '' });
+    scanned = end;
   }
   return edits;
 }
 
 /** Finds the `@import` rules and external references in already decoded CSS. */
 function collectCssEdits(text: string, escaped: Uint8Array | null): CssEdit[] {
-  const imports = [...text.matchAll(CSS_IMPORT_RULE)].map((match) => ({
-    start: match.index,
-    end: match.index + match[0].length,
-    replacement: '',
-  }));
+  const imports = collectImportEdits(text, escaped);
   const edits: CssEdit[] = [];
   let lastEnd = 0;
   for (const edit of [...imports, ...collectExternalReferenceEdits(text, escaped)].sort((a, b) => a.start - b.start)) {

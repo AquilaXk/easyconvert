@@ -1,5 +1,5 @@
 import zlib from 'node:zlib';
-import { ConversionFailedError } from '../types';
+import { ConversionFailedError, PayloadLimitError } from '../types';
 import { copyYielding, CPU_POOL_MIN_BYTES, runCpuTask } from '../workers/cpu-pool';
 
 /**
@@ -17,6 +17,8 @@ const COLOUR_TYPE_RGB = 2;
 const IHDR_BYTES = 13;
 const CHUNK_OVERHEAD_BYTES = 12;
 const PNG_MAX_DIMENSION = 0x7fffffff;
+/** PNG Third Edition §5.3 chunk length cap (2^31 - 1) and Node zlib kMaxInt32 single-stream limit. */
+export const PNG16_MAX_SCANLINE_BYTES = 0x7fff_ffff;
 /** The deflate level of the IDAT stream; the level that the image library's default encoder pass is compared at. */
 export const PNG16_DEFAULT_LEVEL = 8;
 
@@ -37,10 +39,16 @@ function png16Failure(message: string): ConversionFailedError {
   return new ConversionFailedError(`16-bit PNG: ${message}`);
 }
 
-/** Checks the dimensions against the sample array before anything is allocated. */
+/** Checks the dimensions against the sample array and stream byte limit before anything is allocated. */
 export function assertPng16Dimensions(width: number, height: number, sampleCount: number): void {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > PNG_MAX_DIMENSION || height > PNG_MAX_DIMENSION) {
     throw png16Failure(`invalid dimensions ${width}x${height}`);
+  }
+  const scanlineBytes = height * (width * BYTES_PER_PIXEL + 1);
+  if (scanlineBytes > PNG16_MAX_SCANLINE_BYTES) {
+    throw new PayloadLimitError(
+      `16-bit PNG scanline payload (${scanlineBytes} bytes for ${width}x${height}) exceeds the ${PNG16_MAX_SCANLINE_BYTES}-byte stream limit.`
+    );
   }
   if (sampleCount !== width * height * SAMPLES_PER_PIXEL) {
     throw png16Failure(`sample count ${sampleCount} does not match ${width}x${height} RGB`);

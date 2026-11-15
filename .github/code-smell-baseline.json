@@ -279,7 +279,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3980
+    "maxValue": 3949
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -644,7 +644,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2368
+    "maxValue": 2364
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -1165,16 +1165,10 @@
   },
   {
     "file": "src/lib/conversions/office/xlsx-convert.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "convertXlsxSource",
-    "count": 3
-  },
-  {
-    "file": "src/lib/conversions/office/xlsx-convert.ts",
     "rule": "complexity",
     "function": "convertXlsxSource",
     "count": 1,
-    "maxValue": 36
+    "maxValue": 35
   },
   {
     "file": "src/lib/conversions/office/xlsx-parse.ts",

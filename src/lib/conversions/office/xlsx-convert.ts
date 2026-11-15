@@ -17,6 +17,26 @@ import { extractRowsForOffice } from './sheet-extract';
 /** Columns above which a worksheet is drawn on a landscape page. */
 const WORKSHEET_LANDSCAPE_COLUMNS = 6;
 
+function setOwnDataProp<T>(target: Record<string, T>, key: string, value: T): void {
+  if (key === '__proto__') {
+    Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
+  } else {
+    target[key] = value;
+  }
+}
+
+function worksheetRowsToJson(rows: string[][]): Array<Record<string, string>> | string[][] {
+  if (rows.length <= 1) return rows;
+  const headers = rows[0];
+  return rows.slice(1).map((row) => {
+    const obj: Record<string, string> = {};
+    headers.forEach((h, i) => {
+      setOwnDataProp(obj, h || `column_${i + 1}`, row[i] || '');
+    });
+    return obj;
+  });
+}
+
 /**
  * Draws worksheets as tables: the workbook title goes into the PDF metadata, each sheet name becomes an
  * outline entry, and every row and column is drawn (see renderPdfTables).
@@ -97,20 +117,7 @@ export async function convertXlsxSource(
     }
 
     if (tgt === 'json') {
-      let outputJson: any;
-      if (targetRows.length > 1) {
-        const headers = targetRows[0];
-        outputJson = targetRows.slice(1).map((row) => {
-          const obj: Record<string, string> = {};
-          headers.forEach((h, i) => {
-            obj[h || `column_${i + 1}`] = row[i] || '';
-          });
-          return obj;
-        });
-      } else {
-        outputJson = targetRows;
-      }
-      const buffer = Buffer.from(JSON.stringify(outputJson, null, 2), 'utf-8');
+      const buffer = Buffer.from(JSON.stringify(worksheetRowsToJson(targetRows), null, 2), 'utf-8');
       return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
     }
 
@@ -214,36 +221,14 @@ export async function convertXlsxSource(
 
   // XLSX -> JSON
   if (tgt === 'json') {
-    let outputJson: any;
+    let outputJson: unknown;
     if (allSheets.length <= 1) {
-      if (primaryRows.length > 1) {
-        const headers = primaryRows[0];
-        outputJson = primaryRows.slice(1).map((row) => {
-          const obj: Record<string, string> = {};
-          headers.forEach((h, i) => {
-            obj[h || `column_${i + 1}`] = row[i] || '';
-          });
-          return obj;
-        });
-      } else {
-        outputJson = primaryRows;
-      }
+      outputJson = worksheetRowsToJson(primaryRows);
     } else {
-      const sheetsObj: Record<string, any[]> = {};
-      allSheets.forEach((s) => {
-        if (s.rows.length > 1) {
-          const headers = s.rows[0];
-          sheetsObj[s.name] = s.rows.slice(1).map((row) => {
-            const obj: Record<string, string> = {};
-            headers.forEach((h, i) => {
-              obj[h || `column_${i + 1}`] = row[i] || '';
-            });
-            return obj;
-          });
-        } else {
-          sheetsObj[s.name] = s.rows;
-        }
-      });
+      const sheetsObj: Record<string, unknown> = {};
+      for (const s of allSheets) {
+        setOwnDataProp(sheetsObj, s.name, worksheetRowsToJson(s.rows));
+      }
       outputJson = sheetsObj;
     }
     const buffer = Buffer.from(JSON.stringify(outputJson, null, 2), 'utf-8');

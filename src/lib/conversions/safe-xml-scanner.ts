@@ -58,6 +58,14 @@ function quotedValueEnd(text: string, from: number, quote: string): number {
   return close === NOT_FOUND ? text.length : close;
 }
 
+function setXmlAttribute(attrs: SafeXmlAttributeMap, key: string, value: string): void {
+  if (key === '__proto__') {
+    Object.defineProperty(attrs, key, { value, enumerable: true, writable: true, configurable: true });
+  } else {
+    attrs[key] = value;
+  }
+}
+
 /**
  * Linearly extracts XML attributes from an opening tag header in O(N) time with zero regex backtracking.
  */
@@ -74,14 +82,14 @@ export function safeExtractXmlAttributes(tagHeader: string): SafeXmlAttributeMap
     i = skipBlanks(tagHeader, keyEnd);
 
     if (tagHeader[i] !== '=') {
-      if (key) attrs[key] = 'true';
+      if (key) setXmlAttribute(attrs, key, 'true');
       continue;
     }
     i = skipBlanks(tagHeader, i + 1);
     const quote = tagHeader[i] === '"' || tagHeader[i] === "'" ? tagHeader[i] : '';
     const valueStart = quote ? i + 1 : i;
     const valueEnd = quote ? quotedValueEnd(tagHeader, valueStart, quote) : wordEnd(tagHeader, valueStart, false);
-    attrs[key] = safeDecodeXmlEntities(tagHeader.slice(valueStart, valueEnd));
+    if (key) setXmlAttribute(attrs, key, safeDecodeXmlEntities(tagHeader.slice(valueStart, valueEnd)));
     i = quote && valueEnd < tagHeader.length ? valueEnd + 1 : valueEnd;
   }
   return attrs;

@@ -141,8 +141,10 @@ import {
   type ZstdDictionaryStreamOptions,
 } from './zstd-dict';
 import { readSandboxOutput, readSandboxOutputAsync, readSandboxOutputIfPresent } from '../security/sandbox-output';
+import { matchArchiveGlob } from './archive-glob';
 
 export {
+  matchArchiveGlob,
   canonicalEntryPath,
   compressZstd,
   decompressZstd,
@@ -267,39 +269,6 @@ function renameDuplicateArchiveEntries<T extends { filename: string }>(files: T[
   }
 
   return result;
-}
-
-const ARCHIVE_GLOB_CACHE_MAX = 512;
-const archiveGlobRegexCache = new Map<string, RegExp | null>();
-
-function getCachedArchiveGlobRegex(normPattern: string): RegExp | null {
-  const cached = archiveGlobRegexCache.get(normPattern);
-  if (cached !== undefined) return cached;
-  const regexStr = `^${normPattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '___GLOB_STAR_STAR___').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]').replace(/___GLOB_STAR_STAR___/g, '.*')}$`;
-  let compiled: RegExp | null = null;
-  try { compiled = new RegExp(regexStr); } catch {}
-  if (archiveGlobRegexCache.size >= ARCHIVE_GLOB_CACHE_MAX) {
-    const oldest = archiveGlobRegexCache.keys().next().value;
-    if (oldest !== undefined) archiveGlobRegexCache.delete(oldest);
-  }
-  archiveGlobRegexCache.set(normPattern, compiled);
-  return compiled;
-}
-
-/** Evaluates whether an archive entry path matches any of the provided glob patterns. */
-export function matchArchiveGlob(filePath: string, patterns?: string[]): boolean {
-  if (!patterns || patterns.length === 0) return true;
-  const normalizedPath = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
-  const baseName = path.basename(normalizedPath);
-  for (const pattern of patterns) {
-    if (!pattern) continue;
-    const normPattern = pattern.replace(/\\/g, '/').replace(/^\/+/, '');
-    if (normalizedPath === normPattern || baseName === normPattern) return true;
-    const target = normPattern.includes('/') ? normalizedPath : baseName;
-    const regex = getCachedArchiveGlobRegex(normPattern);
-    if (regex && (regex.test(target) || regex.test(normalizedPath))) return true;
-  }
-  return false;
 }
 
 /**

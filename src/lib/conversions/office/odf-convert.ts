@@ -88,7 +88,13 @@ export async function convertOdsSource(
       jsonArray = rows.slice(1).map((row) => {
         const obj: Record<string, string> = {};
         headers.forEach((h, i) => {
-          obj[h || `col_${i + 1}`] = row[i] || '';
+          const key = h || `col_${i + 1}`;
+          const value = row[i] || '';
+          if (key === '__proto__') {
+            Object.defineProperty(obj, key, { value, enumerable: true, writable: true, configurable: true });
+          } else {
+            obj[key] = value;
+          }
         });
         return obj;
       });

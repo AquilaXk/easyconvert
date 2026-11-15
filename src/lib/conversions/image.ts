@@ -7,7 +7,7 @@ import { encodePostscript } from './image-postscript';
 import { assertAnimationBudget, assertOutputPixels, outputSideOf } from './image-limits';
 import { flattenColour, isNeutralColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground, staysGrey } from './image-background';
 import { buildTiffOptions } from './image-tiff-options';
-import { encodePsd, PSD_MAX_SIDE, type PsdChannels } from './psd-writer';
+import { assertPsdTargetDimensions, encodePsd, type PsdChannels } from './psd-writer';
 import { decodeBmp, encodeBmp8 } from './bmp';
 import { jpegPipelineOf } from './image-jpeg-pipeline';
 import { buildJpegPdf, planJpegPassthrough } from './pdf-jpeg-passthrough';
@@ -1469,17 +1469,13 @@ const PROFILE_PRESERVING_SPACES: ReadonlySet<string> = new Set(['srgb', 'rgb16']
  */
 async function encodePsdFromPipeline(pipeline: Sharp, options: ConversionOptions): Promise<Buffer> {
   const source = await metadataOf(pipeline);
+  const sixteenBit = source.depth === SHARP_SIXTEEN_BIT_DEPTH;
   if (source.width !== undefined && source.height !== undefined) {
     const swapsSides = (source.orientation ?? 1) >= FIRST_QUARTER_TURN_ORIENTATION;
     const upright = swapsSides ? { width: source.height, height: source.width } : { width: source.width, height: source.height };
     const target = resizedDimensions(upright.width, upright.height, options);
-    if (Math.max(target.width, target.height) > PSD_MAX_SIDE) {
-      throw new UnsupportedOptionError(
-        `A PSD file holds at most ${PSD_MAX_SIDE} pixels on a side; the picture would be ${target.width} x ${target.height}. Use a smaller size; PSB output is not supported.`
-      );
-    }
+    assertPsdTargetDimensions(target.width, target.height, source.hasAlpha ? 4 : 3, sixteenBit ? 16 : 8);
   }
-  const sixteenBit = source.depth === SHARP_SIXTEEN_BIT_DEPTH;
   const { data, info } = await pipeline
     .toColourspace(sixteenBit ? 'rgb16' : 'srgb')
     .raw({ depth: sixteenBit ? 'ushort' : 'uchar' })

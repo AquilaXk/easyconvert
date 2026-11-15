@@ -224,15 +224,19 @@ function leadingSecret(callerSecret: string, record: { primary: string; previous
   return !callerSecret || callerSecret === record.primary || callerSecret === record.previous ? record.primary : callerSecret;
 }
 
+const NATIVE_GLOBAL_FETCH = globalThis.fetch;
+
 export class WebhookDispatcher {
   private readonly deliveryHistory: WebhookDispatchResult[] = [];
   private readonly maxHistorySize = 100;
   private readonly inMemoryDlq = new Map<string, WebhookDlqEntry>();
   private readonly dlq = new WebhookDlqStore(this.inMemoryDlq, () => redisKeyStore.getRedisClient(), WEBHOOK_DLQ_RETENTION_MS);
   private readonly ssrfAgent: Agent;
+  private readonly customFetch?: typeof undiciFetch;
 
-  constructor(customAgent?: Agent) {
+  constructor(customAgent?: Agent, customFetch?: typeof undiciFetch) {
     this.ssrfAgent = customAgent || createSsrfSafeAgent();
+    this.customFetch = customFetch;
   }
 
   public async close(): Promise<void> {
@@ -428,13 +432,21 @@ export class WebhookDispatcher {
     let timer: NodeJS.Timeout | null = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const fetchFn = (globalThis.fetch || undiciFetch) as unknown as typeof undiciFetch;
+      const currentGlobalFetch = globalThis.fetch;
+      const useReplacedGlobalFetch =
+        !this.customFetch &&
+        typeof currentGlobalFetch === 'function' &&
+        currentGlobalFetch !== NATIVE_GLOBAL_FETCH;
+      const fetchFn = (
+        this.customFetch ??
+        (useReplacedGlobalFetch ? currentGlobalFetch : undiciFetch)
+      ) as unknown as typeof undiciFetch;
       const response = await fetchFn(targetUrl, {
         method: 'POST',
         headers,
         body: bodyString,
         redirect: 'manual',
-        dispatcher: this.ssrfAgent,
+        ...(useReplacedGlobalFetch ? {} : { dispatcher: this.ssrfAgent }),
         signal: controller.signal,
       });
 

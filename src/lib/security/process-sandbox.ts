@@ -783,6 +783,18 @@ export function confinedDirectory(directory: string, what: string): string {
   return resolved;
 }
 
+/** A directory a run uses for local AF_UNIX IPC (such as LibreOffice's `/tmp/OSL_PIPE_*`, policy entry 248): absolute, without NUL, and never `/`. */
+export function confinedSocketDirectory(directory: string, what: string): string {
+  if (typeof directory !== 'string' || !path.isAbsolute(directory) || directory.includes('\0')) {
+    throw sandboxUnavailable(`The ${what} of a sandboxed run must be an absolute path without NUL (got ${JSON.stringify(directory)}); the program is not started.`);
+  }
+  const resolved = path.resolve(directory);
+  if (resolved === path.parse(resolved).root) {
+    throw sandboxUnavailable(`The ${what} of a sandboxed run cannot be the filesystem root (${resolved}); the program is not started.`);
+  }
+  return resolved;
+}
+
 /**
  * The pid-init options that confine the files of a run to its directories (see SandboxFileScope), or none when the run is not to be
  * confined: the operator turned it off, or the run did not name its directory and STRICT_SANDBOX is off, or this host cannot (said once by
@@ -814,7 +826,7 @@ function confinementOf(
   const writable = [...(scope.workDir === null ? [] : [confinedDirectory(scope.workDir, 'workDir')]), ...(scope.writeDirs ?? []).map((directory) => confinedDirectory(directory, 'write directory'))];
   // The program itself is read and run wherever it is installed (a tool the operator keeps outside the system paths); its libraries are the system's.
   const readable = [...(scope.readDirs ?? []), ...(path.isAbsolute(program) ? [program] : [])].map((directory) => confinedDirectory(directory, 'read directory'));
-  const sockets = (scope.socketDirs ?? []).map((directory) => path.resolve(directory));
+  const sockets = (scope.socketDirs ?? []).map((directory) => confinedSocketDirectory(directory, 'socket directory'));
   return ['--confine', ...(strict ? ['--require'] : []), ...writable.flatMap((directory) => ['--write', directory]), ...readable.flatMap((directory) => ['--read', directory]), ...sockets.flatMap((directory) => ['--sockets', directory])];
 }
 

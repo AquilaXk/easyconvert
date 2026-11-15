@@ -245,6 +245,8 @@ describe.skipIf(skipUnless('unprivileged namespaces, pid-init and Landlock versi
           expect(() => resolveSandboxedCommand('/bin/true', [], { networkIsolated: true, workDir })).toThrow(/directory of one job/);
         }
         expect(() => resolveSandboxedCommand('/bin/true', [], { networkIsolated: true, workDir: 'relative/dir' })).toThrow(/absolute path/);
+        expect(() => resolveSandboxedCommand('/bin/true', [], { networkIsolated: true, workDir: own, socketDirs: ['/'] })).toThrow(/filesystem root/);
+        expect(() => resolveSandboxedCommand('/bin/true', [], { networkIsolated: true, workDir: own, socketDirs: ['relative/socket'] })).toThrow(/absolute path/);
       },
       TEST_TIMEOUT_MS
     );

@@ -1,4 +1,4 @@
-import { ConversionFailedError, UnsupportedOptionError } from '../types';
+import { ConversionFailedError, PayloadLimitError, UnsupportedOptionError } from '../types';
 
 /**
  * Flat Adobe Photoshop (PSD, version 1) writer, after "Adobe Photoshop File Formats Specification".
@@ -11,10 +11,14 @@ import { ConversionFailedError, UnsupportedOptionError } from '../types';
 
 /** A PSD (version 1) holds 1 to 30000 pixels per side. */
 export const PSD_MAX_SIDE = 30_000;
+/** Maximum raw interleaved sample bytes accepted in process (1 GiB, covering 100 MP 16-bit RGBA while bounding PSD v1 32-bit sections). */
+export const PSD_MAX_RAW_BYTES = 1024 * 1024 * 1024;
+const PSD_MAX_OUTPUT_BYTES = 0x7fff_ff00;
 
 const PSD_HEADER_BYTES = 26;
 const PSD_VERSION = 1;
 const PSD_COLOR_MODE_RGB = 3;
+const PSD_COMPRESSION_RAW = 0;
 const PSD_COMPRESSION_RLE = 1;
 const PACKBITS_MAX_RUN = 128;
 const PACKBITS_MAX_LITERAL = 128;
@@ -57,15 +61,30 @@ export interface PsdPicture {
   densityPpi?: number;
 }
 
-function assertPicture(picture: PsdPicture): void {
-  const { width, height, channels, depth } = picture;
-  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
-    throw new ConversionFailedError(`PSD encoding needs a positive integer size; the picture is ${width} x ${height}.`);
-  }
+export function assertPsdTargetDimensions(
+  width: number,
+  height: number,
+  channels: PsdChannels,
+  depth: PsdDepth
+): number {
   if (width > PSD_MAX_SIDE || height > PSD_MAX_SIDE) {
     throw new UnsupportedOptionError(
       `A PSD file holds at most ${PSD_MAX_SIDE} pixels on a side; the picture is ${width} x ${height}. Use a smaller size; PSB output is not supported.`
     );
+  }
+  const expected = width * height * channels * (depth / 8);
+  if (expected > PSD_MAX_RAW_BYTES) {
+    throw new PayloadLimitError(
+      `PSD encoding requires ${expected} bytes of raw pixels (${width} x ${height}), exceeding the ${PSD_MAX_RAW_BYTES}-byte in-process limit.`
+    );
+  }
+  return expected;
+}
+
+function assertPicture(picture: PsdPicture): void {
+  const { width, height, channels, depth } = picture;
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
+    throw new ConversionFailedError(`PSD encoding needs a positive integer size; the picture is ${width} x ${height}.`);
   }
   if (channels !== 3 && channels !== 4) {
     throw new ConversionFailedError(`PSD encoding needs 3 or 4 channels; the picture has ${channels}.`);
@@ -73,7 +92,7 @@ function assertPicture(picture: PsdPicture): void {
   if (depth !== 8 && depth !== 16) {
     throw new ConversionFailedError(`PSD encoding supports 8 and 16 bits per channel; the picture has ${depth}.`);
   }
-  const expected = width * height * channels * (depth / 8);
+  const expected = assertPsdTargetDimensions(width, height, channels, depth);
   if (picture.samples.length !== expected) {
     throw new ConversionFailedError(`PSD encoding needs ${expected} bytes of pixels, got ${picture.samples.length}.`);
   }
@@ -171,12 +190,15 @@ function blendAgainstWhite(picture: PsdPicture): Uint8Array {
 }
 
 interface PackedChannel {
-  /** Per-row byte counts (2 bytes each) followed by the packed rows. */
+  compression: typeof PSD_COMPRESSION_RAW | typeof PSD_COMPRESSION_RLE;
+  /** Per-row byte counts (2 bytes each) when RLE-compressed; empty when raw. */
   counts: Buffer;
   rows: Buffer;
+  rawPlane: Buffer;
 }
 
 function packChannel(plane: Uint8Array, width: number, height: number, bytesPerSample: number): PackedChannel {
+  const rawPlane = Buffer.from(plane.buffer, plane.byteOffset, plane.byteLength);
   const rowBytes = width * bytesPerSample;
   const rowBound = packBitsBound(rowBytes);
   const counts = Buffer.alloc(height * BYTES_PER_U16);
@@ -191,10 +213,19 @@ function packChannel(plane: Uint8Array, width: number, height: number, bytesPerS
       out = next;
     }
     const written = packBitsRow(plane.subarray(y * rowBytes, (y + 1) * rowBytes), out, totalWritten);
+    if (written > U16_MAX) {
+      // PSD v1 stores RLE scanline byte counts as uint16; fall back to spec compression 0 (Raw Data) when a 16-bit row expands past 65,535 bytes.
+      return { compression: PSD_COMPRESSION_RAW, counts: Buffer.alloc(0), rows: rawPlane, rawPlane };
+    }
     counts.writeUInt16BE(written, y * BYTES_PER_U16);
     totalWritten += written;
   }
-  return { counts, rows: Buffer.from(out.buffer, out.byteOffset, totalWritten) };
+  return {
+    compression: PSD_COMPRESSION_RLE,
+    counts,
+    rows: Buffer.from(out.buffer, out.byteOffset, totalWritten),
+    rawPlane,
+  };
 }
 
 function u16(value: number): Buffer {
@@ -247,7 +278,7 @@ function layerInfoBody(picture: PsdPicture): Buffer {
     { id: 2, index: 2 },
   ];
   const packed = order.map((c) => packChannel(channelPlane(picture, c.index, null), width, height, bytesPerSample));
-  const channelData = packed.map((p) => Buffer.concat([u16(PSD_COMPRESSION_RLE), p.counts, p.rows]));
+  const channelData = packed.map((p) => Buffer.concat([u16(p.compression), p.counts, p.rows]));
 
   const rect = Buffer.alloc(4 * BYTES_PER_U32);
   rect.writeInt32BE(0, 0);
@@ -312,14 +343,19 @@ export function encodePsd(picture: PsdPicture): Buffer {
   for (let c = 0; c < channels; c += 1) {
     packed.push(packChannel(channelPlane(picture, c, merged), width, height, bytesPerSample));
   }
-  // Image data: one compression word, every channel's row counts, then every channel's rows.
-  return Buffer.concat([
+  const mergedRaw = packed.some((p) => p.compression === PSD_COMPRESSION_RAW);
+  const parts: Buffer[] = [
     header,
     u32(0), // colour mode data
     imageResources(picture),
     layerAndMaskSection(picture),
-    u16(PSD_COMPRESSION_RLE),
-    ...packed.map((p) => p.counts),
-    ...packed.map((p) => p.rows),
-  ]);
+    u16(mergedRaw ? PSD_COMPRESSION_RAW : PSD_COMPRESSION_RLE),
+    ...(mergedRaw ? packed.map((p) => p.rawPlane) : [...packed.map((p) => p.counts), ...packed.map((p) => p.rows)]),
+  ];
+  let totalBytes = 0;
+  for (const part of parts) totalBytes += part.length;
+  if (totalBytes > PSD_MAX_OUTPUT_BYTES) {
+    throw new PayloadLimitError(`PSD output size (${totalBytes} bytes) exceeds the ${PSD_MAX_OUTPUT_BYTES}-byte buffer limit.`);
+  }
+  return Buffer.concat(parts, totalBytes);
 }
