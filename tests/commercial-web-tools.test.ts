@@ -228,6 +228,27 @@ describe('Commercial Web Tools (13 tools)', () => {
       expect(resultFile.key).toMatch(new RegExp(`^conversions/${ownerUser.id}/[0-9a-f-]{36}_merged\\.pdf$`));
       expect(await storageProvider.stat(keyA)).toBeNull();
       expect(await storageProvider.stat(keyB)).toBeNull();
+      expect(await storageProvider.stat(resultFile.key!)).not.toBeNull();
+
+      // Owner DELETE on a completed job erases the stored output artifact and removes the job state.
+      const ownerDelete = await deleteToolJobRoute(
+        new NextRequest(`http://localhost/api/tools/jobs/${jobId}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${ownerKey.secretKey}` },
+        }),
+        { params: Promise.resolve({ id: jobId }) }
+      );
+      expect(ownerDelete.status).toBe(200);
+      expect((await ownerDelete.json()).message).toBe('Job deleted.');
+      expect(await storageProvider.stat(resultFile.key!)).toBeNull();
+
+      const afterDeleteGet = await getToolJobRoute(
+        new NextRequest(`http://localhost/api/tools/jobs/${jobId}`, {
+          headers: { Authorization: `Bearer ${ownerKey.secretKey}` },
+        }),
+        { params: Promise.resolve({ id: jobId }) }
+      );
+      expect(afterDeleteGet.status).toBe(404);
     });
   });
 });

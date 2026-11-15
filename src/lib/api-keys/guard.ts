@@ -635,6 +635,7 @@ export async function holdBaseCredits(unit: ReservedUnit, user: User, baseCredit
 
 const NO_RESERVATION: ReservedUnit = {
   commit: async () => undefined,
+  settle: async () => undefined,
   hold: async () => ({ status: 'extended' }),
   handOff: (work) => work.start(undefined),
 };
@@ -671,6 +672,9 @@ export async function withReservedUnit<T>(reservationId: string | undefined, run
   const unit: ReservedUnit = {
     commit: async (charge) => {
       if (release()) await redisKeyStore.commitQuota(reservationId, charge && chargeOptionsOf(charge));
+    },
+    settle: async (charge) => {
+      if (release()) await redisKeyStore.settleQuota(reservationId, charge.base, chargeOptionsOf(charge));
     },
     hold: async (extensionId, credits) => (held ? redisKeyStore.extendQuota(reservationId, extensionId, credits) : { status: 'no-reservation' }),
     handOff: async (work) => {

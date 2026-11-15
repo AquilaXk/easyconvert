@@ -86,3 +86,12 @@ export async function cancelToolJob(jobId: string): Promise<ToolJobState | null>
   await saveToolJob(updated);
   return updated;
 }
+
+export async function deleteToolJob(jobId: string): Promise<void> {
+  const redis = redisKeyStore.getRedisClient();
+  if (redis) {
+    await redis.del(redisKeyOf(jobId));
+    return;
+  }
+  localStore().delete(jobId);
+}

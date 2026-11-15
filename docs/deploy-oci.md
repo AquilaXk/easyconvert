@@ -48,7 +48,7 @@ Do these once per host, in this order. No step needs a secret value written in t
    sudo install -m 0440 deploy/oci/easyconvert-deploy.sudoers /etc/sudoers.d/easyconvert-deploy
    sudo gpasswd -d easyconvert-deploy docker
    ```
-   This restricts `easyconvert-deploy` to running only `/opt/easyconvert/bin/deploy.sh deploy *`, `rollback *`, and `reconcile *` as root with `NOPASSWD`.
+   This restricts `easyconvert-deploy` to running only `/opt/easyconvert/bin/deploy.sh deploy *`, `rollback`, and `reconcile` as root with `NOPASSWD`.
 2. **Scratch file system** (done). Uploads, results and every temporary file live on one file system of a fixed size, so a full scratch gives "no space left" to EasyConvert and never to the host. It is a file on the existing data volume, reserved up front:
    ```
    base=/var/lib/easysubway-data/easyconvert

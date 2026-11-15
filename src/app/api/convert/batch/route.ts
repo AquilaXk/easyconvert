@@ -425,8 +425,13 @@ async function convertPlanned(ctx: ConvertPlannedContext): Promise<NextResponse>
 
   const zipResult = await createZipArchive(convertedFiles, defaultOptions, 'easyconvert_batch.zip');
 
-  // Charge credits only for successfully converted files
-  await unit.commit({ kind: 'batch', base: plannedCredits(successfulPlanned), processingMs });
+  // Charge credits only for successfully converted files (refunding unused held units on partial failures)
+  const batchCharge = { kind: 'batch' as const, base: plannedCredits(successfulPlanned), processingMs };
+  if (failures.length > 0) {
+    await unit.settle(batchCharge);
+  } else {
+    await unit.commit(batchCharge);
+  }
 
   const headers = new Headers({
     'Content-Type': 'application/zip',

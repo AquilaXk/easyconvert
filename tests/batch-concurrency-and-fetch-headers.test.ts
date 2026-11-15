@@ -1,9 +1,12 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, it, expect, beforeAll } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as batchPost } from '../src/app/api/convert/batch/route';
 import { POST as fetchUrlPost } from '../src/app/api/fetch-url/route';
 import { createSessionToken } from '../src/lib/auth/session';
 import { userStore } from '../src/lib/auth/user-store';
+import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 
 let authHeaders: Record<string, string>;
 
@@ -39,6 +42,40 @@ describe('Batch Concurrency & Fetch-URL Custom Headers', () => {
       expect(res.status).toBe(400);
       const data = await res.json();
       expect(data.error).toContain('The "onError" field must be either "fail" or "continue".');
+    });
+
+    it('settles only succeeded file credits and refunds failed file credits when onError is continue', async () => {
+      const partialUser = userStore.sanitizeUser(
+        await userStore.createUser({
+          email: `batch_partial_${Date.now()}@test.io`,
+          name: 'Partial Batch User',
+          tier: 'free',
+          emailVerified: true,
+        })
+      );
+      const beforeUsage = await redisKeyStore.getQuotaUsage(partialUser.id);
+      expect(beforeUsage.remaining).toBe(beforeUsage.dailyLimit);
+
+      const formData = new FormData();
+      formData.append('files', new Blob(['Hello batch world'], { type: 'text/plain' }), 'good.txt');
+      formData.append('files', new Blob(['not a valid png payload'], { type: 'image/png' }), 'bad.png');
+      formData.append('targetFormats', JSON.stringify({ 'good.txt': 'html', 'bad.png': 'jpg' }));
+      formData.append('onError', 'continue');
+
+      const req = new NextRequest('https://easyconvert.test/api/convert/batch', {
+        method: 'POST',
+        headers: {
+          Cookie: `easyconvert_session=${createSessionToken(partialUser)}`,
+        },
+        body: formData,
+      });
+
+      const res = await batchPost(req);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('X-Batch-Failed-Count')).toBe('1');
+
+      const afterUsage = await redisKeyStore.getQuotaUsage(partialUser.id);
+      expect(beforeUsage.remaining - afterUsage.remaining).toBe(1);
     });
   });
 
@@ -114,6 +151,20 @@ describe('Batch Concurrency & Fetch-URL Custom Headers', () => {
       const data = await res.json();
       expect(res.status).toBe(400);
       expect(data.code).toBe('invalid_headers');
+    });
+  });
+
+  describe('deploy/oci/easyconvert-deploy.sudoers subcommand matching', () => {
+    it('allows no-arg rollback and reconcile without requiring a trailing argument token', () => {
+      const sudoers = fs.readFileSync(
+        path.resolve(__dirname, '..', 'deploy', 'oci', 'easyconvert-deploy.sudoers'),
+        'utf-8'
+      );
+      expect(sudoers).toContain('/opt/easyconvert/bin/deploy.sh deploy *');
+      expect(sudoers).toContain('/opt/easyconvert/bin/deploy.sh rollback,');
+      expect(sudoers).toMatch(/\/opt\/easyconvert\/bin\/deploy\.sh reconcile\s*$/m);
+      expect(sudoers).not.toContain('rollback *');
+      expect(sudoers).not.toContain('reconcile *');
     });
   });
 });

@@ -248,23 +248,33 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
         return;
       }
       await saveToolJob({ ...initialState, status: 'running', progress: 25 });
-      const files: WebToolFile[] = parsed.inlineFiles
-        ? parsed.inlineFiles
-        : await Promise.all(
-            (parsed.storedRefs ?? []).map(async (ref) => {
-              const stored = await s3Storage.getObject(ref.key);
-              if (!stored) throw new Error('Input storage object missing.');
-              return { name: ref.name, buffer: stored.buffer };
-            })
-          );
-      if (!parsed.inlineFiles) assertToolInput(parsed.toolName, files);
-      const output = await runWebTool(parsed.toolName, files, options);
+      const stagedReleases: Array<() => Promise<void> | void> = [];
+      let output: WebToolOutput;
+      let firstFileName = 'output';
+      try {
+        const files: WebToolFile[] = parsed.inlineFiles
+          ? parsed.inlineFiles
+          : await Promise.all(
+              (parsed.storedRefs ?? []).map(async (ref) => {
+                const stored = await s3Storage.getObject(ref.key);
+                if (!stored) throw new Error('Input storage object missing.');
+                const maybeRelease = (stored as { release?: () => Promise<void> | void }).release;
+                if (typeof maybeRelease === 'function') stagedReleases.push(() => maybeRelease.call(stored));
+                return { name: ref.name, buffer: stored.buffer };
+              })
+            );
+        firstFileName = files[0]?.name ?? 'output';
+        if (!parsed.inlineFiles) assertToolInput(parsed.toolName, files);
+        output = await runWebTool(parsed.toolName, files, options);
+      } finally {
+        await Promise.all(stagedReleases.map((fn) => Promise.resolve().then(fn).catch(() => undefined)));
+      }
       const afterRun = await getToolJob(jobId);
       if (afterRun?.status === 'cancelled') {
         await cleanupTemporaryUploads(parsed.storedRefs);
         return;
       }
-      const storedResult = await storeToolOutput(output, caller, parsed.toolName, files[0]?.name ?? 'output', options);
+      const storedResult = await storeToolOutput(output, caller, parsed.toolName, firstFileName, options);
       await cleanupTemporaryUploads(parsed.storedRefs);
       await saveToolJob({ ...initialState, status: 'completed', progress: 100, result: storedResult });
       await reserved.commit({ from: parsed.toolName, base: 1, processingMs: Date.now() - initialState.createdAt });

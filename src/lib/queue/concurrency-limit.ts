@@ -50,7 +50,7 @@ return 1
 `;
 
 export function syncSlotKey(userId: string): string {
-  return `sync_slots:{${userId}}`;
+  return `${redisKeyStore.getPrefix()}sync_slots:{${userId}}`;
 }
 
 let customRedisClient: Redis | null = null;

@@ -35,6 +35,8 @@ export interface HandOff<T> {
 export interface ReservedUnit {
   /** Charges the reserved units: the conversion succeeded. `charge` says what it was and how long it ran, so that the minutes beyond the first are charged on top. */
   commit(charge?: ConversionCharge): Promise<void>;
+  /** Settles the reservation at `charge.base` credits (plus any minute surcharge), refunding unused held units on partial batch completion. */
+  settle(charge: ConversionCharge): Promise<void>;
   /**
    * Holds credits more in the reservation for the extension `extensionId` (what the extension holds in all, so a repeat adds
    * nothing): a request that reserved before it knew what the conversion is reserves one credit, and holds the rest of the cost of its

@@ -69,6 +69,10 @@ export async function countUnverifiedPasswordAccounts(): Promise<number> {
 }
 
 async function main(argv: readonly string[]): Promise<number> {
+  if (argv.includes('--dry-run') && argv.includes('--apply')) {
+    console.error('Cannot combine --dry-run and --apply.');
+    return 2;
+  }
   if (argv.includes('--dry-run') && !argv.includes('--user')) {
     const count = await countUnverifiedPasswordAccounts();
     console.log(JSON.stringify({ unverifiedPasswordAccounts: count }));
