@@ -37,6 +37,13 @@ local function removeStaleId(indexKey, id)
   end
 end
 
+local function decodeListFlags(raw)
+  local flags = tonumber(raw) or 0
+  local skipGraphNodes = (flags % 2) == 1
+  local summaryOnly = math.floor(flags / 2) == 1
+  return skipGraphNodes, summaryOnly
+end
+
 local function isGraphNodeJob(jobKey, id, skipGraphNodes)
   if not skipGraphNodes or not string.find(id, ':', 1, true) then
     return false
@@ -47,6 +54,46 @@ local function isGraphNodeJob(jobKey, id, skipGraphNodes)
   end
   local data = redis.call('HGET', jobKey, 'data')
   return data ~= false and string.find(data, '"graphId":"', 1, true) ~= nil
+end
+
+local function readJobRecord(jobKey, summaryOnly)
+  if not summaryOnly then
+    return redis.call('HGETALL', jobKey)
+  end
+  local vals = redis.call(
+    'HMGET', jobKey,
+    'id', 'name', 'state', 'progress', 'timestamp', 'processedOn', 'finishedOn',
+    'returnvalue', 'failedReason', 'failedCode', 'failedStatus', 'failedRefusalCode',
+    'userId', 'sourceFormat', 'targetFormat', 'originalFilename', 'fileSize'
+  )
+  local uid = vals[13]
+  local rawData
+  if uid == false then
+    rawData = redis.call('HGET', jobKey, 'data') or '{}'
+  else
+    local d = {}
+    if uid ~= '' then d.userId = uid end
+    if vals[14] ~= false then d.sourceFormat = vals[14] end
+    if vals[15] ~= false then d.targetFormat = vals[15] end
+    if vals[16] ~= false then d.originalFilename = vals[16] end
+    if vals[17] ~= false then d.fileSize = tonumber(vals[17]) end
+    rawData = cjson.encode(d)
+  end
+  return {
+    'id', vals[1] or '',
+    'name', vals[2] or '',
+    'state', vals[3] or 'waiting',
+    'progress', vals[4] or '0',
+    'timestamp', vals[5] or '0',
+    'processedOn', vals[6] or '',
+    'finishedOn', vals[7] or '',
+    'returnvalue', vals[8] or '',
+    'failedReason', vals[9] or '',
+    'failedCode', vals[10] or '',
+    'failedStatus', vals[11] or '',
+    'failedRefusalCode', vals[12] or '',
+    'data', rawData,
+  }
 end
 
 local function canUseByStateIndex(userJobsKey, jobKeyPrefix, prefix, uid, userTotal, wanted)
@@ -86,7 +133,7 @@ end
 export const LIST_USER_JOBS_LUA_SCRIPT = `
 ${USER_INDEX_LUA_HELPERS}
 local count = tonumber(ARGV[1])
-local skipGraphNodes = ARGV[2] == '1'
+local skipGraphNodes, summaryOnly = decodeListFlags(ARGV[2])
 local wanted = {}
 local filtered = #ARGV > count + 2
 for i = count + 3, #ARGV do wanted[ARGV[i]] = true end
@@ -99,7 +146,7 @@ for i = 3, count + 2 do
     removeStaleId(KEYS[1], id)
   elseif not filtered or wanted[state or 'waiting'] then
     if not isGraphNodeJob(key, id, skipGraphNodes) then
-      jobs[#jobs + 1] = redis.call('HGETALL', key)
+      jobs[#jobs + 1] = readJobRecord(key, summaryOnly)
     end
   end
 end
@@ -110,13 +157,13 @@ return jobs
  * Cursor-based k-way descending read across `{queue}:by_state:{userId}:{state}` ZSETs, with automatic fallback to `user_jobs`
  * for pre-migration keys or tests that mutate job hash states directly.
  * KEYS[1]: user_jobs:<uid>  KEYS[2]: job key prefix
- * ARGV[1]: '1' to skip graph node jobs  ARGV[2]: targetCount  ARGV[3]: K wanted states  ARGV[4..3+K]: wanted state names
- * ARGV[4+K]: userCursor (0-based rank)  ARGV[5+K..4+2*K]: stateCursors[1..K] (0-based ranks)
+ * ARGV[1]: bitmask flags (1 = skipGraphNodes, 2 = summaryOnly)  ARGV[2]: targetCount  ARGV[3]: K wanted states
+ * ARGV[4..3+K]: wanted state names  ARGV[4+K]: userCursor (0-based rank)  ARGV[5+K..4+2*K]: stateCursors[1..K] (0-based ranks)
  * Returns: { 'done'|'more', flats, newUserCursor, ...newStateCursors }
  */
 export const LIST_USER_JOBS_BY_STATE_LUA_SCRIPT = `
 ${USER_INDEX_LUA_HELPERS}
-local skipGraphNodes = ARGV[1] == '1'
+local skipGraphNodes, summaryOnly = decodeListFlags(ARGV[1])
 local targetCount = tonumber(ARGV[2]) or 50
 local stateCount = tonumber(ARGV[3]) or 0
 local wanted = {}
@@ -216,7 +263,7 @@ if useByState then
       stateCursors[bestIdx] = stateCursors[bestIdx] + 1
       if not seen[id] and wanted[state or 'waiting'] and not isGraphNodeJob(key, id, skipGraphNodes) then
         seen[id] = true
-        jobs[#jobs + 1] = redis.call('HGETALL', key)
+        jobs[#jobs + 1] = readJobRecord(key, summaryOnly)
       end
     end
   end
@@ -247,7 +294,7 @@ while #jobs < targetCount do
     else
       userCursor = userCursor + 1
       if wanted[state or 'waiting'] and not isGraphNodeJob(key, id, skipGraphNodes) then
-        jobs[#jobs + 1] = redis.call('HGETALL', key)
+        jobs[#jobs + 1] = readJobRecord(key, summaryOnly)
         if #jobs >= targetCount then break end
       end
     end
@@ -360,8 +407,14 @@ export interface UserJobListOptions<J> {
   toJob: (flat: string[]) => J;
   /** Leaves out the node jobs of graphs (those `exclude` rejects), before the offset and the limit apply. */
   excludeGraphNodes?: boolean;
+  /** Reads lightweight scalar summary fields via HMGET instead of transferring full HGETALL payloads/logs/stacktraces. */
+  summaryOnly?: boolean;
   /** Whether a job is left out of the list; the exact test, where the script only saves the transfer of the jobs it can tell. */
   exclude?: (job: J) => boolean;
+}
+
+function encodeListFlags(excludeGraphNodes?: boolean, summaryOnly?: boolean): string {
+  return String((excludeGraphNodes ? 1 : 0) + (summaryOnly ? 2 : 0));
 }
 
 export interface UserJobCountOptions {
@@ -423,7 +476,7 @@ async function readZsetWindowed<J>(
         zsetKey,
         options.jobKeyPrefix,
         String(chunk.length),
-        options.excludeGraphNodes ? '1' : '0',
+        encodeListFlags(options.excludeGraphNodes, options.summaryOnly),
         ...chunk,
         ...filterStates
       )) as string[][];
@@ -473,7 +526,7 @@ async function readViaByStateOrFallback<J>(
       2,
       options.indexKey,
       options.jobKeyPrefix,
-      options.excludeGraphNodes ? '1' : '0',
+      encodeListFlags(options.excludeGraphNodes, options.summaryOnly),
       String(targetCount),
       String(states.length),
       ...states,

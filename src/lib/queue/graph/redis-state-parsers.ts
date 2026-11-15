@@ -186,6 +186,80 @@ function openedWebhookSecret(graphId: string, stored: string | undefined): strin
 /** The graph hash without its node states (those are parsed one by one with `parseNodeState`). */
 export type GraphMeta = Omit<GraphExecutionState, 'nodes'>;
 
+/** Fields fetched via HMGET by `listGraphSummariesOfUser` to avoid transferring `graph`, `tasks`, `inputKeys` or decrypting `webhookSecret`. */
+export const SUMMARY_META_FIELDS = [
+  'graphId',
+  'status',
+  'policy',
+  'owner',
+  'reservationId',
+  'webhookUrl',
+  'webhookSecret',
+  'originalFilename',
+  'sourceStorageKey',
+  'sourceFormat',
+  'targetFormat',
+  'namedTasks',
+  'createdAt',
+  'finishedOn',
+  'failedReason',
+  'totalNodes',
+  'completedNodes',
+  'failedNodes',
+] as const;
+
+const EMPTY_SUMMARY_GRAPH: JobGraph = { nodes: {} };
+
+/**
+ * Validates scalar summary fields returned by `HMGET(k.graph, ...SUMMARY_META_FIELDS)`. Skips `webhookSecret` decryption
+ * and `tasks` / `graph` JSON parsing unless `namedTasks === '1'` (in which case `rawGraphDef` is validated).
+ */
+export function parseGraphSummaryMeta(
+  graphId: string,
+  values: readonly (string | null)[],
+  rawGraphDef?: string | null
+): GraphMeta {
+  const raw: Record<string, string | undefined> = {};
+  SUMMARY_META_FIELDS.forEach((field, index) => {
+    const val = values[index];
+    if (typeof val === 'string') raw[field] = val;
+  });
+
+  const policy = requireString(graphId, raw, 'policy');
+  if (!GRAPH_POLICIES.has(policy)) {
+    throw corrupt(graphId, 'field "policy" is unknown');
+  }
+  const optional = Object.fromEntries(
+    REQUIRED_META_FIELDS.map((field) => [field, optionalString(graphId, raw, field)])
+  ) as Record<(typeof REQUIRED_META_FIELDS)[number], string | undefined>;
+  const finishedOn = raw.finishedOn;
+  if (finishedOn !== undefined && finishedOn !== '' && !NON_NEGATIVE_INTEGER.test(finishedOn)) {
+    throw corrupt(graphId, 'field "finishedOn" is not a non-negative integer');
+  }
+  if (requireString(graphId, raw, 'graphId') !== graphId) {
+    throw corrupt(graphId, 'field "graphId" names a different graph');
+  }
+  const namedTasks = echoString(raw, 'namedTasks') === '1';
+
+  return {
+    graphId,
+    status: parseGraphStatus(graphId, raw.status),
+    policy: policy as GraphExecutionState['policy'],
+    ownerUserId: optional.owner,
+    originalFilename: optional.originalFilename,
+    sourceFormat: echoString(raw, 'sourceFormat'),
+    targetFormat: echoString(raw, 'targetFormat'),
+    ...(namedTasks ? { namedTasks: true } : {}),
+    createdAt: requireCount(graphId, raw, 'createdAt'),
+    finishedAt: finishedOn ? Number(finishedOn) : undefined,
+    failedReason: echoString(raw, 'failedReason'),
+    totalNodes: requireCount(graphId, raw, 'totalNodes'),
+    completedNodes: requireCount(graphId, raw, 'completedNodes'),
+    failedNodes: requireCount(graphId, raw, 'failedNodes'),
+    graph: namedTasks ? parseGraphDefinition(graphId, rawGraphDef ?? undefined) : EMPTY_SUMMARY_GRAPH,
+  };
+}
+
 /**
  * Validates the graph hash. `sourceFormat`, `targetFormat` and `tasks` only echo the submission, so
  * records written before they existed stay readable; every other field must be present.

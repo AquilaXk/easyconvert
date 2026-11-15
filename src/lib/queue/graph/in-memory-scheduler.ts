@@ -322,6 +322,10 @@ export class InMemoryGraphScheduler implements IGraphScheduler, StartingGraphSch
     return Promise.resolve(JSON.parse(JSON.stringify(owned)) as GraphExecutionState[]);
   }
 
+  listGraphSummariesOfUser(userId: string, limit: number, statuses?: readonly GraphStatus[]): Promise<GraphExecutionState[]> {
+    return this.listGraphsOfUser(userId, limit, statuses);
+  }
+
   deleteGraph(graphId: string): Promise<boolean> {
     return Promise.resolve(this.graphs.delete(graphId));
   }

@@ -223,24 +223,140 @@ export type S3XmlElement =
   | 'NextUploadIdMarker'
   | 'EncodingType';
 
+function isXmlSpaceCode(ch: number): boolean {
+  return ch === 0x20 || ch === 0x09 || ch === 0x0a || ch === 0x0d;
+}
+
+function isXmlNcNameStart(ch: number): boolean {
+  return (ch >= 0x41 && ch <= 0x5a) || (ch >= 0x61 && ch <= 0x7a) || ch === 0x5f;
+}
+
+function isXmlNcNameChar(ch: number): boolean {
+  return (
+    isXmlNcNameStart(ch) ||
+    (ch >= 0x30 && ch <= 0x39) ||
+    ch === 0x2d ||
+    ch === 0x2e
+  );
+}
+
+export interface XmlOpenTagMatch {
+  tagStart: number;
+  tagEnd: number;
+  prefix: string;
+  selfClosing: boolean;
+}
+
 /**
- * Returns the decoded text of the first `<name>text</name>` whose content has no markup, using
- * plain string search (no pattern is built from input).
+ * Finds the next opening tag matching `localName` with an optional XML namespace prefix
+ * (`<Name>`, `<s3:Name>`, `<Name xmlns="...">`) using linear character scanning without dynamic regexes.
+ */
+export function findXmlOpenTag(xml: string, localName: string, fromIndex: number = 0): XmlOpenTagMatch | undefined {
+  const len = xml.length;
+  let lt = xml.indexOf('<', fromIndex);
+  while (lt !== -1 && lt + 1 < len) {
+    const first = xml.charCodeAt(lt + 1);
+    if (first !== 0x2f && first !== 0x3f && first !== 0x21) {
+      let prefix = '';
+      let afterName = -1;
+      if (xml.startsWith(localName, lt + 1)) {
+        afterName = lt + 1 + localName.length;
+      } else if (isXmlNcNameStart(first)) {
+        let p = lt + 2;
+        while (p < len && isXmlNcNameChar(xml.charCodeAt(p))) p++;
+        if (p < len && xml.charCodeAt(p) === 0x3a && xml.startsWith(localName, p + 1)) {
+          prefix = xml.slice(lt + 1, p);
+          afterName = p + 1 + localName.length;
+        }
+      }
+      if (afterName !== -1 && afterName < len) {
+        const delim = xml.charCodeAt(afterName);
+        if (delim === 0x3e) {
+          return { tagStart: lt, tagEnd: afterName + 1, prefix, selfClosing: false };
+        }
+        if (delim === 0x2f && afterName + 1 < len && xml.charCodeAt(afterName + 1) === 0x3e) {
+          return { tagStart: lt, tagEnd: afterName + 2, prefix, selfClosing: true };
+        }
+        if (isXmlSpaceCode(delim)) {
+          let i = afterName + 1;
+          let quote = 0;
+          while (i < len) {
+            const ch = xml.charCodeAt(i);
+            if (quote !== 0) {
+              if (ch === quote) quote = 0;
+            } else if (ch === 0x22 || ch === 0x27) {
+              quote = ch;
+            } else if (ch === 0x3e) {
+              let back = i - 1;
+              while (back > afterName && isXmlSpaceCode(xml.charCodeAt(back))) back--;
+              const selfClosing = xml.charCodeAt(back) === 0x2f;
+              return { tagStart: lt, tagEnd: i + 1, prefix, selfClosing };
+            } else if (ch === 0x3c) {
+              break;
+            }
+            i++;
+          }
+        }
+      }
+    }
+    lt = xml.indexOf('<', lt + 1);
+  }
+  return undefined;
+}
+
+export function findXmlCloseTag(
+  xml: string,
+  localName: string,
+  prefix: string,
+  fromIndex: number = 0
+): { tagStart: number; tagEnd: number } | undefined {
+  const qname = prefix ? `${prefix}:${localName}` : localName;
+  const needle = `</${qname}`;
+  const len = xml.length;
+  let pos = xml.indexOf(needle, fromIndex);
+  while (pos !== -1) {
+    let i = pos + needle.length;
+    while (i < len && isXmlSpaceCode(xml.charCodeAt(i))) i++;
+    if (i < len && xml.charCodeAt(i) === 0x3e) {
+      return { tagStart: pos, tagEnd: i + 1 };
+    }
+    pos = xml.indexOf(needle, pos + 2);
+  }
+  return undefined;
+}
+
+export function hasXmlOpenTag(xml: string, localName: string): boolean {
+  return findXmlOpenTag(xml, localName, 0) !== undefined;
+}
+
+/**
+ * Returns the decoded text of the first `<name>text</name>` (with optional namespace prefix or attributes)
+ * whose content has no markup, using plain character search (no pattern is built from input).
  */
 export function readXmlElement(xml: string, name: S3XmlElement): string | undefined {
-  const open = `<${name}>`;
-  const close = `</${name}>`;
-  let from = xml.indexOf(open);
-  while (from !== -1) {
-    const start = from + open.length;
-    const nextTag = xml.indexOf('<', start);
+  let from = 0;
+  while (from < xml.length) {
+    const open = findXmlOpenTag(xml, name, from);
+    if (!open) {
+      return undefined;
+    }
+    if (open.selfClosing) {
+      return '';
+    }
+    const nextTag = xml.indexOf('<', open.tagEnd);
     if (nextTag === -1) {
       return undefined;
     }
-    if (xml.startsWith(close, nextTag)) {
-      return decodeXmlText(xml.slice(start, nextTag));
+    const qname = open.prefix ? `${open.prefix}:${name}` : name;
+    const closePrefix = `</${qname}`;
+    if (xml.startsWith(closePrefix, nextTag)) {
+      let endIdx = nextTag + closePrefix.length;
+      while (endIdx < xml.length && isXmlSpaceCode(xml.charCodeAt(endIdx))) endIdx++;
+      if (endIdx < xml.length && xml.charCodeAt(endIdx) === 0x3e) {
+        return decodeXmlText(xml.slice(open.tagEnd, nextTag));
+      }
     }
-    from = xml.indexOf(open, start);
+    from = open.tagEnd;
   }
   return undefined;
 }
@@ -1156,7 +1272,7 @@ export class S3StorageAdapter implements IStorageAdapter {
       replayable: true,
       readBody: true,
     });
-    const etag = text?.includes(COMPLETE_RESULT_ELEMENT) ? readXmlElement(text, 'ETag') : undefined;
+    const etag = text && hasXmlOpenTag(text, 'CompleteMultipartUploadResult') ? readXmlElement(text, 'ETag') : undefined;
     if (!etag) {
       throw new StorageServiceError(
         'CompleteMultipartUpload answered without a result ETag; completion is unconfirmed',

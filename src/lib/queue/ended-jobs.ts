@@ -1,7 +1,14 @@
 import type Redis from 'ioredis';
 import { pipelineReplies } from '../redis/pipeline-replies';
 import { deadLetterKeys, trimDeadLettersBefore } from './dead-letters';
-import { REMOVE_DEAD_LETTERS_LUA_SCRIPT, REMOVE_JOB_DEAD_LETTERS_LUA_SCRIPT, REMOVE_JOB_LUA_SCRIPT, REPLACE_ENDED_JOB_DATA_LUA_SCRIPT } from './lua-scripts';
+import {
+  KEEP_NEWEST_ENDED_LUA_SCRIPT,
+  REMOVE_AGED_ENDED_LUA_SCRIPT,
+  REMOVE_DEAD_LETTERS_LUA_SCRIPT,
+  REMOVE_JOB_DEAD_LETTERS_LUA_SCRIPT,
+  REMOVE_JOB_LUA_SCRIPT,
+  REPLACE_ENDED_JOB_DATA_LUA_SCRIPT,
+} from './lua-scripts';
 import { ownerOf } from './stored-job';
 import { removeFromUserIndices } from './queue-queries';
 import { ALL_JOB_STATES, userByStateKeys } from './user-job-list';
@@ -116,6 +123,12 @@ function isFinishedBy(finishedOnRaw: string | null, threshold: number): boolean 
   return finishedOn > 0 && finishedOn <= threshold;
 }
 
+function queuePrefixOf(keys: QueueKeySpace): string {
+  const waitingKey = keys.stateKeys[0];
+  const suffix = ':waiting';
+  return waitingKey.endsWith(suffix) ? waitingKey.slice(0, -suffix.length) : '';
+}
+
 async function deleteEndedJob(
   client: Redis,
   keys: QueueKeySpace,
@@ -124,7 +137,11 @@ async function deleteEndedJob(
   userId: string | undefined
 ): Promise<void> {
   await client.srem(stateKey, id);
-  await client.del(keys.jobKey(id));
+  if (typeof (client as { zrem?: unknown }).zrem === 'function') {
+    await client.zrem(`${stateKey}:by_time`, id);
+  }
+  const jobKey = keys.jobKey(id);
+  await client.del(jobKey, `${jobKey}:logs`);
   if (userId) await removeFromUserIndices(client, keys.userJobsKey(userId), id);
 }
 
@@ -139,7 +156,13 @@ async function deleteEndedJobsBatch(
     const pipe = client.pipeline();
     const ids = jobs.map((job) => job.id);
     pipe.srem(stateKey, ...ids);
-    for (const id of ids) pipe.del(keys.jobKey(id));
+    if (typeof (pipe as { zrem?: unknown }).zrem === 'function') {
+      pipe.zrem(`${stateKey}:by_time`, ...ids);
+    }
+    for (const id of ids) {
+      const jobKey = keys.jobKey(id);
+      pipe.del(jobKey, `${jobKey}:logs`);
+    }
     const byUser = new Map<string, string[]>();
     for (const job of jobs) {
       if (!job.userId) continue;
@@ -165,6 +188,8 @@ async function deleteEndedJobsBatch(
 
 /** The ids of the set one SSCAN call asks for, and so how many jobs are read in one pipeline. */
 const ENDED_SCAN_COUNT = 500;
+/** Max expired ended jobs removed in a single ZSET Lua step so Redis never blocks on large expirations. */
+const ENDED_ZSET_STEP = 1000;
 
 /** What a pass over the ended jobs of one state found: the ids it removed, and the finish time of the oldest job it left. */
 export interface EndedScan {
@@ -183,7 +208,48 @@ async function removeSetEntriesBefore(
   threshold: number,
   limit: number
 ): Promise<EndedScan> {
+  if (typeof (client as { scard?: unknown }).scard === 'function' && (await client.scard(stateKey)) === 0) {
+    return { removed: [], oldestKeptFinishedOn: Number.POSITIVE_INFINITY };
+  }
   const removed: string[] = [];
+  if (typeof (client as { eval?: unknown }).eval === 'function') {
+    const byTimeKey = `${stateKey}:by_time`;
+    const jobKeyPrefix = keys.jobKey('');
+    const queuePrefix = queuePrefixOf(keys);
+    let synced = true;
+    while (removed.length < limit) {
+      const stepLimit = Math.min(ENDED_ZSET_STEP, limit - removed.length);
+      const reply = await client.eval(
+        REMOVE_AGED_ENDED_LUA_SCRIPT,
+        2,
+        stateKey,
+        byTimeKey,
+        String(threshold),
+        String(stepLimit),
+        jobKeyPrefix,
+        queuePrefix
+      );
+      if (!Array.isArray(reply)) {
+        synced = false;
+        break;
+      }
+      const [batchIds, oldestRaw] = reply as [string[], string];
+      for (const id of batchIds) removed.push(id);
+      if (oldestRaw === 'inf') {
+        return { removed, oldestKeptFinishedOn: Number.POSITIVE_INFINITY };
+      }
+      if (oldestRaw !== '') {
+        return { removed, oldestKeptFinishedOn: Number(oldestRaw) };
+      }
+      if (removed.length >= limit) {
+        return { removed, oldestKeptFinishedOn: undefined };
+      }
+    }
+    if (synced) {
+      return { removed, oldestKeptFinishedOn: undefined };
+    }
+  }
+
   let oldest = Number.POSITIVE_INFINITY;
   let cursor = '0';
   do {
@@ -264,6 +330,20 @@ export async function removeEndedBefore(
 export async function keepNewestEnded(client: Redis, keys: QueueKeySpace, stateKey: string, count: number): Promise<void> {
   if (typeof (client as { scard?: unknown }).scard === 'function' && (await client.scard(stateKey)) <= count) {
     return;
+  }
+  if (typeof (client as { eval?: unknown }).eval === 'function') {
+    const trimmed = Number(
+      await client.eval(
+        KEEP_NEWEST_ENDED_LUA_SCRIPT,
+        2,
+        stateKey,
+        `${stateKey}:by_time`,
+        String(count),
+        keys.jobKey(''),
+        queuePrefixOf(keys)
+      )
+    );
+    if (Number.isFinite(trimmed) && trimmed >= 0) return;
   }
   const ids = await client.smembers(stateKey);
   if (ids.length <= count) return;

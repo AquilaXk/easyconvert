@@ -60,9 +60,20 @@ export async function addDeadLetter(client: Redis, dlqKey: string, entry: DlqEnt
   await client.eval(ADD_DEAD_LETTER_LUA_SCRIPT, 1, dlqKey, JSON.stringify(entry), String(timestamp), jobId, userId);
 }
 
-/** Removes every letter, of both layouts; answers how many there were. */
+/** Removes every letter, of both layouts, in bounded steps so large DLQs never block Redis; answers how many there were. */
 export async function purgeDeadLetters(client: Redis, dlqKey: string): Promise<number> {
-  return Number(await client.eval(PURGE_DEAD_LETTERS_LUA_SCRIPT, 1, dlqKey));
+  let total = 0;
+  for (;;) {
+    const reply = await client.eval(PURGE_DEAD_LETTERS_LUA_SCRIPT, 1, dlqKey, String(TRIM_STEP));
+    if (!Array.isArray(reply)) {
+      return total + (Number(reply) || 0);
+    }
+    const [removed, remaining] = reply as [number, number];
+    total += Number(removed) || 0;
+    if ((Number(remaining) || 0) <= 0 || (Number(removed) || 0) === 0) {
+      return total;
+    }
+  }
 }
 
 /** Removes the letters recorded at or before `cutoff` (milliseconds), a bounded step at a time. */

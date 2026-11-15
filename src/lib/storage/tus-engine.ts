@@ -132,6 +132,14 @@ export interface TusSessionStore {
   saveSession(session: TusSession, ttlSeconds?: number): Promise<void>;
   getSession(id: string): Promise<TusSession | null>;
   deleteSession(id: string): Promise<boolean>;
+  /** Serializes concurrent operations on `id` across distributed API replicas when backed by Redis. */
+  withSessionLock?<T>(id: string, fn: () => Promise<T>): Promise<T>;
+  /** Persists staged chunk bytes (`[0, newOffset)`) for cross-replica TUS resumption before finalization. */
+  syncStagedBytes?(id: string, binPath: string, previousOffset: number, newOffset: number, ttlSeconds: number): Promise<void>;
+  /** Hydrates local `binPath` up to `expectedOffset` when a subsequent `PATCH` lands on another replica. */
+  hydrateStagedFile?(id: string, binPath: string, expectedOffset: number): Promise<number>;
+  /** Deletes intermediate cross-replica staged bytes once finalized or terminated. */
+  deleteStagedBytes?(id: string): Promise<void>;
   /** The ids of the sessions `ownerUserId` has open, for the erasure of an account. */
   idsOfOwner?(ownerUserId: string): Promise<string[]>;
   reset?(): Promise<void>;
@@ -167,6 +175,26 @@ export class InMemoryTusSessionStore implements TusSessionStore {
   }
 }
 
+const TUS_LOCK_TTL_MS = 30_000;
+const TUS_LOCK_RENEW_MS = 10_000;
+const TUS_LOCK_WAIT_MS = 15_000;
+const TUS_STAGE_SLICE_BYTES = 1024 * 1024;
+const MAX_REDIS_STAGED_UPLOAD_BYTES = 128 * 1024 * 1024;
+
+const TUS_RENEW_LOCK_LUA = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
+return 0
+`;
+
+const TUS_RELEASE_LOCK_LUA = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+`;
+
 export class RedisTusSessionStore implements TusSessionStore {
   private readonly redis: Redis;
   private readonly prefix: string = 'tus:session:';
@@ -188,6 +216,149 @@ export class RedisTusSessionStore implements TusSessionStore {
 
   private ownerIndexKey(ownerUserId: string): string {
     return `tus:owner:${ownerUserId}`;
+  }
+
+  private lockKey(id: string): string {
+    return `tus:lock:${id}`;
+  }
+
+  private stageChunksKey(id: string): string {
+    return `tus:stage:${id}`;
+  }
+
+  private stageLengthKey(id: string): string {
+    return `tus:stage:len:${id}`;
+  }
+
+  async withSessionLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    if (
+      typeof (this.redis as { set?: unknown }).set !== 'function' ||
+      typeof (this.redis as { eval?: unknown }).eval !== 'function'
+    ) {
+      return fn();
+    }
+    const key = this.lockKey(id);
+    const token = crypto.randomBytes(16).toString('hex');
+    const deadline = Date.now() + TUS_LOCK_WAIT_MS;
+    let attempt = 0;
+    for (;;) {
+      const acquired = await this.redis.set(key, token, 'PX', TUS_LOCK_TTL_MS, 'NX');
+      if (acquired === 'OK') break;
+      if (Date.now() >= deadline) {
+        throw new StorageServiceError(
+          `Timed out acquiring distributed TUS session lock for "${id}"`,
+          'tus',
+          { retryable: true }
+        );
+      }
+      const waitMs = Math.min(100, 15 * 2 ** Math.min(attempt, 3)) + (attempt % 7);
+      attempt += 1;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+
+    const renewTimer = setInterval(() => {
+      void this.redis.eval(TUS_RENEW_LOCK_LUA, 1, key, token, String(TUS_LOCK_TTL_MS)).catch(() => undefined);
+    }, TUS_LOCK_RENEW_MS);
+    if (typeof renewTimer.unref === 'function') renewTimer.unref();
+
+    try {
+      return await fn();
+    } finally {
+      clearInterval(renewTimer);
+      await this.redis.eval(TUS_RELEASE_LOCK_LUA, 1, key, token).catch(() => undefined);
+    }
+  }
+
+  async syncStagedBytes(
+    id: string,
+    binPath: string,
+    previousOffset: number,
+    newOffset: number,
+    ttlSeconds: number
+  ): Promise<void> {
+    if (
+      newOffset <= 0 ||
+      newOffset > MAX_REDIS_STAGED_UPLOAD_BYTES ||
+      typeof (this.redis as { rpush?: unknown }).rpush !== 'function'
+    ) {
+      return;
+    }
+    const chunksKey = this.stageChunksKey(id);
+    const lenKey = this.stageLengthKey(id);
+    const effectiveTtl = Math.max(60, Math.floor(ttlSeconds));
+    const currentLen = Number((await this.redis.get(lenKey)) || '0');
+    let writeFrom = previousOffset;
+    if (currentLen !== previousOffset) {
+      await this.redis.del(chunksKey, lenKey);
+      writeFrom = 0;
+    }
+    const handle = await fs.promises.open(binPath, 'r');
+    try {
+      let cursor = writeFrom;
+      while (cursor < newOffset) {
+        const sliceLen = Math.min(TUS_STAGE_SLICE_BYTES, newOffset - cursor);
+        const buf = Buffer.allocUnsafe(sliceLen);
+        const { bytesRead } = await handle.read(buf, 0, sliceLen, cursor);
+        if (bytesRead <= 0) break;
+        const payload = bytesRead === sliceLen ? buf : buf.subarray(0, bytesRead);
+        await this.redis.rpush(chunksKey, payload.toString('base64'));
+        cursor += bytesRead;
+      }
+      await this.redis.set(lenKey, String(cursor), 'EX', effectiveTtl);
+      if (typeof (this.redis as { expire?: unknown }).expire === 'function') {
+        await this.redis.expire(chunksKey, effectiveTtl);
+      }
+    } finally {
+      await handle.close();
+    }
+  }
+
+  async hydrateStagedFile(id: string, binPath: string, expectedOffset: number): Promise<number> {
+    if (expectedOffset <= 0) {
+      await fs.promises.mkdir(path.dirname(binPath), { recursive: true });
+      await fs.promises.writeFile(binPath, Buffer.alloc(0));
+      return 0;
+    }
+    if (typeof (this.redis as { lrange?: unknown }).lrange !== 'function') {
+      return fs.promises.stat(binPath).then((st) => st.size, () => 0);
+    }
+    const stagedLen = Number((await this.redis.get(this.stageLengthKey(id))) || '0');
+    if (stagedLen < expectedOffset) {
+      return fs.promises.stat(binPath).then((st) => st.size, () => 0);
+    }
+    await fs.promises.mkdir(path.dirname(binPath), { recursive: true });
+    const tempPath = `${binPath}.${crypto.randomBytes(6).toString('hex')}.hydrate`;
+    const handle = await fs.promises.open(tempPath, 'w');
+    let written = 0;
+    try {
+      const chunksKey = this.stageChunksKey(id);
+      const batchSize = 8;
+      for (let idx = 0; written < expectedOffset; idx += batchSize) {
+        const items = await this.redis.lrange(chunksKey, idx, idx + batchSize - 1);
+        if (items.length === 0) break;
+        for (const encoded of items) {
+          if (written >= expectedOffset) break;
+          const decoded = Buffer.from(encoded, 'base64');
+          const needed = Math.min(decoded.length, expectedOffset - written);
+          await handle.write(decoded, 0, needed, written);
+          written += needed;
+        }
+      }
+    } finally {
+      await handle.close();
+    }
+    if (written !== expectedOffset) {
+      await fs.promises.rm(tempPath, { force: true });
+      return fs.promises.stat(binPath).then((st) => st.size, () => 0);
+    }
+    await fs.promises.rename(tempPath, binPath);
+    return written;
+  }
+
+  async deleteStagedBytes(id: string): Promise<void> {
+    if (typeof (this.redis as { del?: unknown }).del === 'function') {
+      await this.redis.del(this.stageChunksKey(id), this.stageLengthKey(id)).catch(() => undefined);
+    }
   }
 
   private async readManyValues(keys: readonly string[]): Promise<(string | null)[]> {
@@ -242,6 +413,7 @@ export class RedisTusSessionStore implements TusSessionStore {
       // ignore malformed record
     }
     const res = await this.redis.del(key);
+    await this.deleteStagedBytes(id);
     if (ownerUserId && typeof (this.redis as { srem?: unknown }).srem === 'function') {
       await this.redis.srem(this.ownerIndexKey(ownerUserId), id).catch(() => undefined);
     }
@@ -302,7 +474,7 @@ export class RedisTusSessionStore implements TusSessionStore {
   }
 
   async reset(): Promise<void> {
-    await clearKeysMatching(this.redis, [`${this.prefix}*`, 'tus:owner:*']);
+    await clearKeysMatching(this.redis, [`${this.prefix}*`, 'tus:owner:*', 'tus:lock:*', 'tus:stage:*']);
   }
 }
 
@@ -703,13 +875,25 @@ export class TusEngine {
       return null;
     }
 
-    // Sync uploadOffset with real byte size on disk
+    // Sync uploadOffset with real byte size on disk when local staging is authoritative (or ahead of shared store)
     if (fs.existsSync(binPath)) {
       const stat = await fs.promises.stat(binPath);
-      session.uploadOffset = stat.size;
+      if (!this.sessionStore.hydrateStagedFile || stat.size >= session.uploadOffset) {
+        session.uploadOffset = stat.size;
+      }
     }
 
     return session;
+  }
+
+  private async runSessionExclusive<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    return this.lockManager.runExclusive(id, async () => {
+      const store = this.sessionStore;
+      if (store.withSessionLock) {
+        return store.withSessionLock(id, fn);
+      }
+      return fn();
+    });
   }
 
   async appendChunk(
@@ -718,7 +902,8 @@ export class TusEngine {
     stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
     checksumHeader?: string | null
   ): Promise<AppendChunkResult> {
-    return this.lockManager.runExclusive(id, async () => {
+    return this.runSessionExclusive(id, async () => {
+      this.ensureDirectory();
       const session = await this.getSession(id);
       if (!session) {
         throw new TusNotFoundError(id);
@@ -733,6 +918,18 @@ export class TusEngine {
       }
 
       const { infoPath, binPath } = this.getPaths(id);
+      if (clientOffset > 0 && this.sessionStore.hydrateStagedFile) {
+        const localBytes = await fs.promises.stat(binPath).then((st) => st.size, () => -1);
+        if (localBytes < clientOffset) {
+          const hydrated = await this.sessionStore.hydrateStagedFile(id, binPath, clientOffset);
+          if (hydrated !== clientOffset) {
+            session.uploadOffset = Math.max(0, hydrated);
+            await this.sessionStore.saveSession(session);
+            await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+            throw new TusStagedSizeMismatchError(Math.max(0, hydrated), session.uploadLength);
+          }
+        }
+      }
       const nodeReadable = this.toNodeReadable(stream);
 
       const parsedChecksum = parseChecksumHeader(checksumHeader);
@@ -818,6 +1015,7 @@ export class TusEngine {
           await recordTusUpload(session.key);
           // The upload is stored and recorded now, wherever the store is; the staged copy would only occupy the local disk a second time.
           await fs.promises.rm(binPath, { force: true });
+          await this.sessionStore.deleteStagedBytes?.(id);
         } catch (err) {
           // The upload was not taken: rewind the last chunk so the client can resend it.
           session.completed = false;
@@ -827,6 +1025,9 @@ export class TusEngine {
           await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
           throw err;
         }
+      } else if (newOffset > 0 && this.sessionStore.syncStagedBytes) {
+        const remainingTtl = Math.max(60, Math.floor((session.expiresAt - Date.now()) / 1000));
+        await this.sessionStore.syncStagedBytes(id, binPath, clientOffset, newOffset, remainingTtl);
       }
 
       await this.sessionStore.saveSession(session);
@@ -842,9 +1043,10 @@ export class TusEngine {
 
   async terminateSession(id: string): Promise<boolean> {
     if (!isTusId(id)) return false;
-    return this.lockManager.runExclusive(id, async () => {
+    return this.runSessionExclusive(id, async () => {
       const { infoPath, binPath } = this.getPaths(id);
       const storeDeleted = await this.sessionStore.deleteSession(id);
+      await this.sessionStore.deleteStagedBytes?.(id);
       let fileDeleted = false;
       try {
         if (fs.existsSync(infoPath)) {

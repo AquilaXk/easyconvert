@@ -1,6 +1,36 @@
+/*
+ * taskforcesh/bullmq, MIT License
+ *
+ * Copyright (c) 2018 BullForce Labs AB and contributors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 /**
- * Atomic Lua scripts for the job hashes and state sets of a Redis queue (src/lib/queue/bullmq-engine.ts). Each script takes
- * its keys in KEYS and its values in ARGV, as the comment at its top lists them.
+ * Atomic Lua scripts for the job hashes, bounded log lists, and time/state indices of a Redis queue
+ * (src/lib/queue/bullmq-engine.ts). Each script takes its keys in KEYS and its values in ARGV, as the comment at its top lists them.
+ *
+ * `TRIM_ENDED_BY_COUNT_LUA_SCRIPT`, `REMOVE_AGED_ENDED_LUA_SCRIPT`, and `APPEND_JOB_LOG_LUA_SCRIPT` adapt the ZSET-bounded
+ * retention and `RPUSH` + `LTRIM` log cap of `taskforcesh/bullmq` (commit b460173561b15e8340011cee439fd19680acacca, MIT):
+ * - src/commands/includes/removeJobsByMaxCount.lua (SHA-256 2f51a4bd01105138cf32f5f1a72616cb63f6fdb2c7d0b138d0006c2d6966c2c4)
+ * - src/commands/includes/removeJobsByMaxAge.lua   (SHA-256 0472931a0b4cfe5f490e09d543b2806cf2c69c5426691109422b68d72307fc69)
+ * - src/commands/addLog-2.lua                      (SHA-256 0d12136752ac2bbafa9702d30bd381acb111599e598e96f85d7c416a23d9e6d2)
  */
 
 const USER_STATE_INDEX_LUA_FUNCTIONS = `
@@ -244,18 +274,13 @@ redis.call('ZREM', KEYS[3], ARGV[1])
 redis.call('SREM', KEYS[4], ARGV[1])
 redis.call('DEL', KEYS[6])
 redis.call('SADD', KEYS[5], ARGV[1])
-local logs = {}
-local rawLogs = redis.call('HGET', KEYS[1], 'logs')
-if rawLogs and rawLogs ~= '' then
-  local ok, decoded = pcall(cjson.decode, rawLogs)
-  if ok and type(decoded) == 'table' then
-    logs = decoded
-  end
-end
-table.insert(logs, ARGV[4])
-redis.call('HSET', KEYS[1], 'state', 'cancelled', 'failedReason', ARGV[2], 'finishedOn', ARGV[3], 'logs', cjson.encode(logs))
+redis.call('ZADD', KEYS[5] .. ':by_time', tonumber(ARGV[3]) or 0, ARGV[1])
+local logsKey = KEYS[1] .. ':logs'
+redis.call('RPUSH', logsKey, ARGV[4])
+redis.call('LTRIM', logsKey, -1000, -1)
+redis.call('HSET', KEYS[1], 'state', 'cancelled', 'failedReason', ARGV[2], 'finishedOn', ARGV[3])
 syncByState(queuePrefixFromSuffixKey(KEYS[2], ':waiting'), KEYS[1], ARGV[1], state, 'cancelled')
-return { state, redis.call('HGETALL', KEYS[1]) }
+return { state, redis.call('HGETALL', KEYS[1]), redis.call('LRANGE', logsKey, 0, -1) }
 `;
 
 export const REQUEUE_JOB_LUA_SCRIPT = `
@@ -343,9 +368,11 @@ redis.call('SREM', KEYS[2], ARGV[1])
 redis.call('DEL', KEYS[4])
 if ARGV[5] == '1' then
   syncByState(queuePrefix, KEYS[1], ARGV[1], 'active', nil)
-  redis.call('DEL', KEYS[1])
+  redis.call('ZREM', KEYS[3] .. ':by_time', ARGV[1])
+  redis.call('DEL', KEYS[1], KEYS[1] .. ':logs')
 else
   redis.call('SADD', KEYS[3], ARGV[1])
+  redis.call('ZADD', KEYS[3] .. ':by_time', tonumber(ARGV[2]) or 0, ARGV[1])
   redis.call('HSET', KEYS[1], 'state', 'completed', 'finishedOn', ARGV[2], 'progress', '100', 'returnvalue', ARGV[3], 'attemptsMade', ARGV[4])
   syncByState(queuePrefix, KEYS[1], ARGV[1], 'active', 'completed')
 end
@@ -378,9 +405,11 @@ redis.call('SREM', KEYS[2], ARGV[1])
 redis.call('DEL', KEYS[4])
 if ARGV[6] == '1' then
   syncByState(queuePrefix, KEYS[1], ARGV[1], 'active', nil)
-  redis.call('DEL', KEYS[1])
+  redis.call('ZREM', KEYS[3] .. ':by_time', ARGV[1])
+  redis.call('DEL', KEYS[1], KEYS[1] .. ':logs')
 else
   redis.call('SADD', KEYS[3], ARGV[1])
+  redis.call('ZADD', KEYS[3] .. ':by_time', tonumber(ARGV[2]) or 0, ARGV[1])
   local fields = { 'state', 'failed', 'finishedOn', ARGV[2], 'failedReason', ARGV[3], 'stacktrace', ARGV[4], 'attemptsMade', ARGV[5] }
   if ARGV[8] ~= '' then
     table.insert(fields, 'failedCode')
@@ -422,13 +451,43 @@ export const UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT = `
 -- KEYS[1]: job hash key
 -- ARGV[1]: attempt token of the caller
 -- ARGV[2]: progress
--- ARGV[3]: JSON logs
--- Returns 1 after writing progress and logs for the owning active attempt, or 0 otherwise.
+-- ARGV[3]: optional JSON logs (legacy callers)
+-- Returns 1 after writing progress for the owning active attempt, or 0 otherwise.
 if redis.call('HGET', KEYS[1], 'state') ~= 'active' or redis.call('HGET', KEYS[1], 'attemptToken') ~= ARGV[1] then
   return 0
 end
-redis.call('HSET', KEYS[1], 'progress', ARGV[2], 'logs', ARGV[3])
+if ARGV[3] and ARGV[3] ~= '' then
+  redis.call('HSET', KEYS[1], 'progress', ARGV[2], 'logs', ARGV[3])
+else
+  redis.call('HSET', KEYS[1], 'progress', ARGV[2])
+end
 return 1
+`;
+
+/**
+ * Appends one log line to a dedicated Redis LIST (<jobKey>:logs) with bounded LTRIM retention,
+ * eliminating O(L^2) JSON re-serialization inside the job hash (adapted from BullMQ addLog-2.lua, MIT).
+ */
+export const APPEND_JOB_LOG_LUA_SCRIPT = `
+-- KEYS[1]: job hash key
+-- KEYS[2]: job logs list key (<jobKey>:logs)
+-- ARGV[1]: attempt token of the caller ('' when called outside an active attempt)
+-- ARGV[2]: log line
+-- ARGV[3]: keepLogs cap (default 1000)
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  return -1
+end
+if ARGV[1] ~= '' then
+  if redis.call('HGET', KEYS[1], 'state') ~= 'active' or redis.call('HGET', KEYS[1], 'attemptToken') ~= ARGV[1] then
+    return 0
+  end
+end
+local count = redis.call('RPUSH', KEYS[2], ARGV[2])
+local keepLogs = tonumber(ARGV[3]) or 1000
+if keepLogs > 0 then
+  redis.call('LTRIM', KEYS[2], -keepLogs, -1)
+end
+return count
 `;
 
 export const RECOVER_STALLED_JOBS_LUA_SCRIPT = `
@@ -491,6 +550,7 @@ for _, jobId in ipairs(activeIds) do
       else
         redis.call('HSET', jobKey, 'state', 'failed', 'attemptsMade', attemptsMade, 'failedReason', ARGV[2], 'finishedOn', ARGV[1])
         redis.call('SADD', KEYS[3], jobId)
+        redis.call('ZADD', KEYS[3] .. ':by_time', tonumber(ARGV[1]) or 0, jobId)
         syncByState(queuePrefix, jobKey, jobId, 'active', 'failed')
         table.insert(failed, jobId)
       end
@@ -584,18 +644,48 @@ addLetter(KEYS[1], ARGV[1], ARGV[2], ARGV[3], ARGV[4])
 return 1
 `;
 
-/** Removes every dead letter, of both layouts, in one step, so a letter added meanwhile is never lost uncounted; answers how many it removed. */
+/**
+ * Removes dead letters of both layouts. When ARGV[1] (step limit) is given, removes at most that many entries and returns
+ * { removed, remaining } so large DLQs never block Redis's single-threaded loop; when omitted, purges all and returns count.
+ */
 export const PURGE_DEAD_LETTERS_LUA_SCRIPT = `
 -- KEYS[1]: dead-letter key
+-- ARGV[1]: optional step limit
 ${DEAD_LETTER_LUA_FUNCTIONS}
-local count = redis.call('LLEN', KEYS[1])
-redis.call('DEL', KEYS[1])
-for _, id in ipairs(redis.call('ZRANGE', KEYS[1] .. ':order', 0, -1)) do
-  removeLetter(KEYS[1], id)
-  count = count + 1
+local stepLimit = tonumber(ARGV[1])
+if not stepLimit or stepLimit <= 0 then
+  local count = redis.call('LLEN', KEYS[1])
+  redis.call('DEL', KEYS[1])
+  for _, id in ipairs(redis.call('ZRANGE', KEYS[1] .. ':order', 0, -1)) do
+    removeLetter(KEYS[1], id)
+    count = count + 1
+  end
+  redis.call('DEL', KEYS[1] .. ':seq')
+  return count
 end
-redis.call('DEL', KEYS[1] .. ':seq')
-return count
+local removed = 0
+local listLen = redis.call('LLEN', KEYS[1])
+if listLen > 0 then
+  if listLen <= stepLimit then
+    redis.call('DEL', KEYS[1])
+    removed = listLen
+  else
+    redis.call('LTRIM', KEYS[1], stepLimit, -1)
+    removed = stepLimit
+  end
+end
+if removed < stepLimit then
+  local batchIds = redis.call('ZRANGE', KEYS[1] .. ':order', 0, stepLimit - removed - 1)
+  for _, id in ipairs(batchIds) do
+    removeLetter(KEYS[1], id)
+    removed = removed + 1
+  end
+end
+local remaining = redis.call('LLEN', KEYS[1]) + redis.call('ZCARD', KEYS[1] .. ':order')
+if remaining == 0 then
+  redis.call('DEL', KEYS[1] .. ':seq')
+end
+return { removed, remaining }
 `;
 
 /** Removes the letters with the ids in ARGV, and answers how many it was given. A damaged index (an id whose hash is gone) leaves the order set too. */
@@ -689,6 +779,110 @@ end
 return removed
 `;
 
+const ENDED_RETENTION_LUA_HELPERS = `
+local ENDED_ALL_STATES = { 'waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled' }
+
+local function ownerOfEndedJobHash(jobKey)
+  local uid = redis.call('HGET', jobKey, 'userId')
+  if uid ~= false then
+    if uid ~= '' then return uid end
+    return nil
+  end
+  local raw = redis.call('HGET', jobKey, 'data')
+  if not raw or raw == '' then return nil end
+  local ok, decoded = pcall(cjson.decode, raw)
+  if ok and type(decoded) == 'table' and type(decoded.userId) == 'string' and decoded.userId ~= '' then
+    return decoded.userId
+  end
+  return nil
+end
+
+local function removeEndedJobRecord(stateKey, byTimeKey, jobKeyPrefix, queuePrefix, id)
+  local jobKey = jobKeyPrefix .. id
+  local uid = ownerOfEndedJobHash(jobKey)
+  redis.call('SREM', stateKey, id)
+  redis.call('ZREM', byTimeKey, id)
+  redis.call('DEL', jobKey, jobKey .. ':logs')
+  if uid and queuePrefix ~= '' then
+    redis.call('ZREM', queuePrefix .. ':user_jobs:' .. uid, id)
+    for _, st in ipairs(ENDED_ALL_STATES) do
+      redis.call('ZREM', queuePrefix .. ':by_state:' .. uid .. ':' .. st, id)
+    end
+  end
+end
+`;
+
+/**
+ * Keeps at most ARGV[1] newest ended jobs in KEYS[1] using its companion finish-time ZSET KEYS[2] (<stateKey>:by_time),
+ * adapted from BullMQ removeJobsByMaxCount.lua (MIT). Returns -1 when KEYS[2] is out of sync with KEYS[1] (e.g. legacy/raw SADD).
+ */
+export const KEEP_NEWEST_ENDED_LUA_SCRIPT = `
+-- KEYS[1]: stateKey (completed or failed SET)
+-- KEYS[2]: byTimeKey (<stateKey>:by_time ZSET)
+-- ARGV[1]: maxCount to keep
+-- ARGV[2]: jobKeyPrefix (<prefix>{<queue>}:job:)
+-- ARGV[3]: queuePrefix (<prefix>{<queue>})
+${ENDED_RETENTION_LUA_HELPERS}
+local setCount = redis.call('SCARD', KEYS[1])
+local maxCount = tonumber(ARGV[1]) or 0
+if setCount <= maxCount then
+  return 0
+end
+local zCount = redis.call('ZCARD', KEYS[2])
+if zCount ~= setCount then
+  return -1
+end
+local excess = redis.call('ZREVRANGE', KEYS[2], maxCount, -1)
+for _, id in ipairs(excess) do
+  removeEndedJobRecord(KEYS[1], KEYS[2], ARGV[2], ARGV[3], id)
+end
+return #excess
+`;
+
+/**
+ * Removes up to ARGV[2] ended jobs whose finish-time score in KEYS[2] (<stateKey>:by_time) is <= ARGV[1],
+ * adapted from BullMQ removeJobsByMaxAge.lua (MIT). Returns false when KEYS[2] is out of sync with KEYS[1] so callers fall back to SSCAN.
+ */
+export const REMOVE_AGED_ENDED_LUA_SCRIPT = `
+-- KEYS[1]: stateKey (completed, failed, or cancelled SET)
+-- KEYS[2]: byTimeKey (<stateKey>:by_time ZSET)
+-- ARGV[1]: threshold timestamp in ms
+-- ARGV[2]: step limit
+-- ARGV[3]: jobKeyPrefix (<prefix>{<queue>}:job:)
+-- ARGV[4]: queuePrefix (<prefix>{<queue>})
+${ENDED_RETENTION_LUA_HELPERS}
+local setCount = redis.call('SCARD', KEYS[1])
+if setCount == 0 then
+  return { {}, 'inf' }
+end
+local zCount = redis.call('ZCARD', KEYS[2])
+if zCount ~= setCount then
+  return false
+end
+local limit = tonumber(ARGV[2]) or 1000
+local threshold = tonumber(ARGV[1]) or 0
+local due = redis.call('ZRANGEBYSCORE', KEYS[2], '-inf', ARGV[1], 'LIMIT', 0, limit)
+for _, id in ipairs(due) do
+  removeEndedJobRecord(KEYS[1], KEYS[2], ARGV[3], ARGV[4], id)
+end
+local oldest = redis.call('ZRANGE', KEYS[2], 0, 0, 'WITHSCORES')
+if not oldest or #oldest < 2 then
+  return { due, 'inf' }
+end
+local oldestScore = tonumber(oldest[2]) or 0
+if #due == 0 then
+  local hFin = tonumber(redis.call('HGET', ARGV[3] .. oldest[1], 'finishedOn'))
+  if hFin and hFin ~= oldestScore then
+    redis.call('ZADD', KEYS[2], hFin, oldest[1])
+    return false
+  end
+end
+if #due >= limit and oldestScore <= threshold then
+  return { due, '' }
+end
+return { due, tostring(oldestScore) }
+`;
+
 /**
  * Removes a job that is not active from every state it can be in, as BullMQ's removeJob-2.lua does, and with the dead-letter key
  * (KEYS[9]) the letters of the job.
@@ -709,6 +903,10 @@ end
 if KEYS[9] and KEYS[9] ~= '' then
   removeLettersOfJob(KEYS[9], ARGV[1])
   removeListedLettersOfJob(KEYS[9], ARGV[1])
+end
+redis.call('DEL', KEYS[1] .. ':logs')
+for i = 5, 7 do
+  redis.call('ZREM', KEYS[i] .. ':by_time', ARGV[1])
 end
 if not state then
   return 0

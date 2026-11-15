@@ -16,6 +16,7 @@ import {
 import { applyStoredJobFields, flatHashToRecord, ownerOf, parseStoredJson, readJobHashes } from './stored-job';
 import {
   ADD_JOB_LUA_SCRIPT,
+  APPEND_JOB_LOG_LUA_SCRIPT,
   POP_NEXT_WAITING_JOB_LUA_SCRIPT,
   CANCEL_JOB_LUA_SCRIPT,
   REQUEUE_JOB_LUA_SCRIPT,
@@ -128,6 +129,9 @@ export function generateJobId(): string {
 /** Random bytes in a Redis attempt token, which fences writes from stale attempts. */
 const ATTEMPT_TOKEN_BYTES = 16;
 
+/** Maximum log lines retained per job in memory and in Redis (<jobKey>:logs LIST). */
+export const MAX_JOB_LOGS = 1000;
+
 export class Job<T = any, R = any> {
   id: string;
   name: string;
@@ -158,6 +162,7 @@ export class Job<T = any, R = any> {
 
   private emitter: EventEmitter;
   private onUpdateHook?: (job: Job<T, R>) => Promise<void> | void;
+  private onLogHook?: (job: Job<T, R>, entry: string) => Promise<void> | void;
 
   /**
    * Abort controller of the current processing attempt. The worker replaces it when each attempt
@@ -179,7 +184,8 @@ export class Job<T = any, R = any> {
     data: T,
     opts: JobOptions = {},
     emitter: EventEmitter,
-    onUpdateHook?: (job: Job<T, R>) => Promise<void> | void
+    onUpdateHook?: (job: Job<T, R>) => Promise<void> | void,
+    onLogHook?: (job: Job<T, R>, entry: string) => Promise<void> | void
   ) {
     this.id = id;
     this.name = name;
@@ -192,6 +198,7 @@ export class Job<T = any, R = any> {
     this.timestamp = Date.now();
     this.emitter = emitter;
     this.onUpdateHook = onUpdateHook;
+    this.onLogHook = onLogHook;
     if (this.opts.delay && this.opts.delay > 0) {
       this.state = 'delayed';
     }
@@ -210,7 +217,14 @@ export class Job<T = any, R = any> {
   async log(row: string): Promise<void> {
     const entry = `[${new Date().toISOString()}] ${maskServerText(row)}`;
     this.logs.push(entry);
-    if (this.onUpdateHook) {
+    if (this.logs.length > MAX_JOB_LOGS) {
+      this.logs.splice(0, this.logs.length - MAX_JOB_LOGS);
+    }
+    if (this.onLogHook) {
+      try {
+        await this.onLogHook(this, entry);
+      } catch {}
+    } else if (this.onUpdateHook) {
       try {
         await this.onUpdateHook(this);
       } catch {}
@@ -276,9 +290,14 @@ export function calculateJobPriorityScore(priority?: number, timestamp?: number)
   return priorityRank * PRIORITY_SCORE_BAND + (ts % PRIORITY_SCORE_BAND);
 }
 
-/** What a list of the jobs of a user leaves out: `excludeGraphNodes` drops the node jobs of graphs before `offset` and `limit` apply. */
+/**
+ * What a list of the jobs of a user leaves out:
+ * - `excludeGraphNodes` drops the node jobs of graphs before `offset` and `limit` apply.
+ * - `summaryOnly` reads scalar summary fields via `HMGET` instead of `HGETALL`, skipping inline payloads, logs, and stacktraces.
+ */
 export interface UserJobsOptions {
   excludeGraphNodes?: boolean;
+  summaryOnly?: boolean;
 }
 
 function isGraphNode(job: { data?: unknown }): boolean {
@@ -1463,9 +1482,65 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     job._abortAttempt(new JobCancelledError(reason));
   }
 
+  private readonly persistProgressHook = async (j: Job<T, R>): Promise<void> => {
+    if (!this.redisClient || !this.redisConnected) return;
+    try {
+      if (typeof this.redisClient.eval === 'function' && j._attemptToken) {
+        await this.redisClient.eval(
+          UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT,
+          1,
+          this.getJobKey(j.id),
+          j._attemptToken,
+          String(j.progress)
+        );
+      } else if (typeof this.redisClient.eval === 'function') {
+        await this.redisClient.hset(this.getJobKey(j.id), 'progress', String(j.progress));
+      } else {
+        await this.redisClient.hset(
+          this.getJobKey(j.id),
+          'progress',
+          String(j.progress),
+          'logs',
+          JSON.stringify(j.logs)
+        );
+      }
+      await this.publishEvent({ event: 'progress', jobId: j.id, progress: j.progress });
+    } catch {}
+  };
+
+  private readonly persistLogHook = async (j: Job<T, R>, entry: string): Promise<void> => {
+    if (!this.redisClient || !this.redisConnected) return;
+    try {
+      if (typeof this.redisClient.eval === 'function') {
+        const jobKey = this.getJobKey(j.id);
+        await this.redisClient.eval(
+          APPEND_JOB_LOG_LUA_SCRIPT,
+          2,
+          jobKey,
+          `${jobKey}:logs`,
+          j._attemptToken ?? '',
+          entry,
+          String(MAX_JOB_LOGS)
+        );
+      } else {
+        await this.redisClient.hset(
+          this.getJobKey(j.id),
+          'progress',
+          String(j.progress),
+          'logs',
+          JSON.stringify(j.logs)
+        );
+      }
+    } catch {}
+  };
+
   private jobToHash(job: Job<T, R>): Record<string, string> {
-    const graphId = (job.data as { graphId?: unknown } | undefined)?.graphId;
-    return {
+    const rawData =
+      typeof job.data === 'object' && job.data !== null && !Array.isArray(job.data)
+        ? (job.data as Record<string, unknown>)
+        : {};
+    const graphId = rawData.graphId;
+    const hash: Record<string, string> = {
       id: job.id,
       name: job.name,
       data: JSON.stringify(job.data ?? {}),
@@ -1486,6 +1561,13 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       stacktrace: JSON.stringify(job.stacktrace || []),
       logs: JSON.stringify(job.logs || []),
     };
+    if (typeof rawData.sourceFormat === 'string') hash.sourceFormat = rawData.sourceFormat;
+    if (typeof rawData.targetFormat === 'string') hash.targetFormat = rawData.targetFormat;
+    if (typeof rawData.originalFilename === 'string') hash.originalFilename = rawData.originalFilename;
+    if (typeof rawData.fileSize === 'number' && Number.isFinite(rawData.fileSize)) {
+      hash.fileSize = String(rawData.fileSize);
+    }
+    return hash;
   }
 
   private hashToJob(raw: Record<string, string>): Job<T, R> {
@@ -1510,36 +1592,17 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       parsedData,
       parsedOpts,
       this,
-      async (j) => {
-        if (this.redisClient && this.redisConnected) {
-          try {
-            if (j._attemptToken) {
-              // A running attempt writes only while it still owns the job.
-              await this.redisClient.eval(
-                UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT,
-                1,
-                this.getJobKey(j.id),
-                j._attemptToken,
-                String(j.progress),
-                JSON.stringify(j.logs)
-              );
-            } else {
-              await this.redisClient.hset(
-                this.getJobKey(j.id),
-                'progress',
-                String(j.progress),
-                'logs',
-                JSON.stringify(j.logs)
-              );
-            }
-            await this.publishEvent({ event: 'progress', jobId: j.id, progress: j.progress });
-          } catch {}
-        }
-      }
+      this.persistProgressHook,
+      this.persistLogHook
     );
 
     applyStoredJobFields(job, raw);
     return job;
+  }
+
+  private mergeListLogs(job: Job<T, R>, listLogs: readonly string[] | undefined): void {
+    if (!Array.isArray(listLogs) || listLogs.length === 0) return;
+    job.logs = job.logs.length > 0 ? [...job.logs, ...listLogs].slice(-MAX_JOB_LOGS) : [...listLogs];
   }
 
   async add(name: string, data: T, opts: JobOptions = {}): Promise<Job<T, R>> {
@@ -1555,31 +1618,15 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       const priorityScore = calculateJobPriorityScore(opts.priority, now);
 
       if (typeof this.redisClient.eval === 'function') {
-        const jobInstance = new Job<T, R>(id, name, data, opts, this, async (j) => {
-          if (this.redisClient && this.redisConnected) {
-            try {
-              if (j._attemptToken) {
-                await this.redisClient.eval(
-                  UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT,
-                  1,
-                  this.getJobKey(j.id),
-                  j._attemptToken,
-                  String(j.progress),
-                  JSON.stringify(j.logs)
-                );
-              } else {
-                await this.redisClient.hset(
-                  this.getJobKey(j.id),
-                  'progress',
-                  String(j.progress),
-                  'logs',
-                  JSON.stringify(j.logs)
-                );
-              }
-              await this.publishEvent({ event: 'progress', jobId: j.id, progress: j.progress });
-            } catch {}
-          }
-        });
+        const jobInstance = new Job<T, R>(
+          id,
+          name,
+          data,
+          opts,
+          this,
+          this.persistProgressHook,
+          this.persistLogHook
+        );
 
         const hash = this.jobToHash(jobInstance);
         const flatHash: string[] = [];
@@ -1627,19 +1674,15 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           } catch {}
         }
 
-        const job = new Job<T, R>(id, name, data, opts, this, async (j) => {
-          if (this.redisClient && this.redisConnected) {
-            try {
-              await this.redisClient.hset(
-                this.getJobKey(j.id),
-                'progress',
-                String(j.progress),
-                'logs',
-                JSON.stringify(j.logs)
-              );
-            } catch {}
-          }
-        });
+        const job = new Job<T, R>(
+          id,
+          name,
+          data,
+          opts,
+          this,
+          this.persistProgressHook,
+          this.persistLogHook
+        );
 
         const hash = this.jobToHash(job);
         await this.redisOp(() => redis.hset(this.getJobKey(id), hash));
@@ -1672,11 +1715,36 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     if (this.redisClient) {
       await this.assertRedisConnected();
       const redis = this.redisClient;
-      const raw = await this.redisOp(() => redis.hgetall(this.getJobKey(id)));
+      const jobKey = this.getJobKey(id);
+      if (typeof redis.pipeline === 'function') {
+        const pipe = redis.pipeline();
+        if (typeof (pipe as { lrange?: unknown }).lrange === 'function') {
+          const [raw, listLogs] = await this.redisOp(async () => {
+            pipe.hgetall(jobKey);
+            pipe.lrange(`${jobKey}:logs`, 0, -1);
+            const replies = (await pipe.exec()) ?? [];
+            for (const [err] of replies) if (err) throw err;
+            return [
+              replies[0]?.[1] as Record<string, string> | undefined,
+              (replies[1]?.[1] as string[] | undefined) ?? [],
+            ] as const;
+          });
+          if (!raw || !raw.id) return undefined;
+          const job = this.hashToJob(raw);
+          this.mergeListLogs(job, listLogs);
+          return job;
+        }
+      }
+      const raw = await this.redisOp(() => redis.hgetall(jobKey));
       if (!raw || !raw.id) {
         return undefined;
       }
-      return this.hashToJob(raw);
+      const job = this.hashToJob(raw);
+      if (typeof (redis as { lrange?: unknown }).lrange === 'function') {
+        const listLogs = await this.redisOp(() => redis.lrange(`${jobKey}:logs`, 0, -1));
+        this.mergeListLogs(job, listLogs);
+      }
+      return job;
     }
     return this.memoryFallback.getJob(id);
   }
@@ -1694,7 +1762,29 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         let slicedIds = uniqueIds;
         if (end >= 0) slicedIds = uniqueIds.slice(start, end + 1);
         else if (start > 0) slicedIds = uniqueIds.slice(start);
-        const hashes = await readJobHashes(redis, slicedIds.map((id) => this.getJobKey(id)));
+        if (slicedIds.length === 0) return [];
+        const jobKeys = slicedIds.map((id) => this.getJobKey(id));
+        if (typeof redis.pipeline === 'function') {
+          const pipe = redis.pipeline();
+          if (typeof (pipe as { lrange?: unknown }).lrange === 'function') {
+            for (const jk of jobKeys) {
+              pipe.hgetall(jk);
+              pipe.lrange(`${jk}:logs`, 0, -1);
+            }
+            const replies = (await pipe.exec()) ?? [];
+            for (const [err] of replies) if (err) throw err;
+            const listed: Job<T, R>[] = [];
+            for (let i = 0; i < jobKeys.length; i++) {
+              const hash = (replies[i * 2]?.[1] as Record<string, string> | undefined) ?? {};
+              if (!hash.id) continue;
+              const job = this.hashToJob(hash);
+              this.mergeListLogs(job, replies[i * 2 + 1]?.[1] as string[] | undefined);
+              listed.push(job);
+            }
+            return listed;
+          }
+        }
+        const hashes = await readJobHashes(redis, jobKeys);
         return hashes.flatMap((hash) => (hash.id ? [this.hashToJob(hash)] : []));
       } catch (err) {
         throw this.toQueueUnavailable(err);
@@ -1751,6 +1841,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           toJob: (flat) => this.hashToJob(flatHashToRecord(flat)),
           // The index names the user's jobs; a job that says it is another user's (a damaged index) is never listed.
           excludeGraphNodes: options.excludeGraphNodes,
+          summaryOnly: options.summaryOnly,
           exclude: (job) => String((job.data as { userId?: unknown } | undefined)?.userId) !== userId || (options.excludeGraphNodes === true && isGraphNode(job)),
         });
       } catch (err) {
@@ -1836,12 +1927,13 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       return false;
     }
 
-    const [previousState, rawHash] = outcome as [string, string[]];
+    const [previousState, rawHash, listLogs] = outcome as [string, string[], string[]?];
     if (previousState === 'active') {
       this.abortLocalActiveJob(id, reason);
     }
     await this.publishEvent({ event: 'cancelled', jobId: id, reason });
     const cancelled = this.hashToJob(flatHashToRecord(rawHash));
+    this.mergeListLogs(cancelled, listLogs);
     await dropEndedData(client, this.keySpace, id, cancelled.opts?.removeDataOnFinish).catch((err: unknown) => {
       console.warn(`[DistributedBullMQAdapter:${this.name}] Could not drop the ended data of job ${id}:`, err);
     });
@@ -1958,6 +2050,10 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         }
         const job = this.hashToJob(flatHashToRecord(popped as string[]));
         job._attemptToken = attemptToken;
+        if (job.attemptsMade > 0 && typeof (this.redisClient as { lrange?: unknown }).lrange === 'function') {
+          const priorLogs = await this.redisClient.lrange(`${this.getJobKey(job.id)}:logs`, 0, -1);
+          this.mergeListLogs(job, priorLogs);
+        }
         return job;
       } catch (err) {
         console.error(`[DistributedBullMQAdapter:${this.name}] Failed to pop the next waiting job:`, err);

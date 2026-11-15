@@ -14,7 +14,6 @@ import {
 import {
   AUTH_ERROR_CODES,
   BODY_LENGTH_MISMATCH_CODE,
-  COMPLETE_RESULT_ELEMENT,
   DEFAULT_CONTENT_TYPE,
   DEFAULT_MAX_ATTEMPTS,
   DEFAULT_REQUEST_TIMEOUT_MS,
@@ -42,6 +41,7 @@ import {
   declaresDtd,
   escapeXmlText,
   expectedMultipartEtag,
+  hasXmlOpenTag,
   isAbortError,
   parseS3ErrorXml,
   readChunks,
@@ -51,7 +51,7 @@ import {
   stripQuotes,
   toNodeReadable,
 } from './adapters/s3';
-import { parseListMultipartUploads, parseListObjectsPage, stripEntryBlocks, type ListedObject, type ListObjectsPage, type ListedUpload } from './s3-list-xml';
+import { extractXmlBlocks, parseListMultipartUploads, parseListObjectsPage, stripEntryBlocks, type ListedObject, type ListObjectsPage, type ListedUpload } from './s3-list-xml';
 
 export type { ListedObject, ListObjectsPage };
 import {
@@ -1235,13 +1235,7 @@ export class S3ObjectClient {
         readBody: true,
       });
       const xml = text ?? '';
-      const open = '<Part>';
-      const close = '</Part>';
-      let from = xml.indexOf(open);
-      while (from !== -1) {
-        const end = xml.indexOf(close, from);
-        if (end === -1) throw this.malformed('ListParts answer has an unterminated <Part>');
-        const block = xml.slice(from + open.length, end);
+      for (const block of extractXmlBlocks(xml, 'Part', 'ListParts', (message) => this.malformed(message))) {
         const partNumber = Number.parseInt(readXmlElement(block, 'PartNumber') ?? '', 10);
         const size = Number.parseInt(readXmlElement(block, 'Size') ?? '', 10);
         const etag = readXmlElement(block, 'ETag');
@@ -1250,7 +1244,6 @@ export class S3ObjectClient {
         }
         parts.push({ partNumber, size, etag });
         if (parts.length > S3_MAX_PARTS) throw this.malformed(`ListParts returned more than ${S3_MAX_PARTS} parts`);
-        from = xml.indexOf(open, end + close.length);
       }
       const envelope = stripEntryBlocks(xml, ['Part']);
       if (readXmlElement(envelope, 'IsTruncated') !== 'true') {
@@ -1308,7 +1301,7 @@ export class S3ObjectClient {
       replayable: true,
       readBody: true,
     });
-    const etag = text?.includes(COMPLETE_RESULT_ELEMENT) ? readXmlElement(text, 'ETag') : undefined;
+    const etag = text && hasXmlOpenTag(text, 'CompleteMultipartUploadResult') ? readXmlElement(text, 'ETag') : undefined;
     if (!etag) {
       throw new StorageServiceError(
         'CompleteMultipartUpload answered without a result ETag; completion is unconfirmed',

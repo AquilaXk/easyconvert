@@ -11,7 +11,7 @@ import type { GraphExecutionState, GraphStatus } from './graph/scheduler-types';
  * once and their jobs until the page is full.
  */
 export async function listVisibleJobs(userId: string, states: JobState[], limit: number): Promise<Job<ConversionJobData, ConversionJobResult>[]> {
-  return conversionQueue.getJobsByUser(userId, states, limit, 0, { excludeGraphNodes: true });
+  return conversionQueue.getJobsByUser(userId, states, limit, 0, { excludeGraphNodes: true, summaryOnly: true });
 }
 
 /** One entry of a list a client reads: a queue job, or a graph, which has no queue job of its own. */
@@ -51,7 +51,11 @@ export async function listVisibleWork(userId: string, states: JobState[], limit:
   const graphStatuses = graphStatusesOf(states);
   const [jobs, graphs] = await Promise.all([
     listVisibleJobs(userId, states, limit),
-    graphStatuses.length > 0 ? graphScheduler.listGraphsOfUser(userId, limit, graphStatuses) : Promise.resolve([]),
+    graphStatuses.length > 0
+      ? graphScheduler.listGraphSummariesOfUser
+        ? graphScheduler.listGraphSummariesOfUser(userId, limit, graphStatuses)
+        : graphScheduler.listGraphsOfUser(userId, limit, graphStatuses)
+      : Promise.resolve([]),
   ]);
   const work: ListedWork[] = [
     ...jobs.map((job): ListedWork => ({ kind: 'job', job, createdAt: job.timestamp })),

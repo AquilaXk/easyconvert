@@ -4,6 +4,7 @@ import path from 'node:path';
 import Redis from 'ioredis';
 import { mapWithConcurrency } from '../conversions/ocr-page-batch';
 import { compareAndSetWithRetry } from '../redis/compare-and-set';
+import { pipelineReplies } from '../redis/pipeline-replies';
 import { readyGatedRedis } from '../redis/when-ready';
 import { GONE_RECORD_MS, isSweepDue, sweepAt, type RetentionRecord } from './result-retention';
 import { resolveLocalStorageDir } from './storage-config';
@@ -102,9 +103,17 @@ class KeyedSerializer {
  * One small file per result under `<storage dir>/.retention`, replaced atomically. An update holds a lock file
  * next to the record, so the web server and the workers sharing the directory never interleave on one record.
  */
+interface CachedFileRecord {
+  ino: number;
+  mtimeMs: number;
+  size: number;
+  record: RetentionRecord | undefined;
+}
+
 export class FileRetentionLedger implements RetentionLedger {
   private readonly directory: string;
   private readonly serializer = new KeyedSerializer();
+  private readonly recordCache = new Map<string, CachedFileRecord>();
 
   constructor(storageDir: string = resolveLocalStorageDir()) {
     this.directory = path.join(storageDir, LEDGER_DIRECTORY);
@@ -123,8 +132,37 @@ export class FileRetentionLedger implements RetentionLedger {
     }
   }
 
+  private async readCachedFile(name: string): Promise<RetentionRecord | undefined> {
+    const file = path.join(this.directory, name);
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(file);
+    } catch (error) {
+      if (errorCode(error) === 'ENOENT') {
+        this.recordCache.delete(name);
+        return undefined;
+      }
+      throw error;
+    }
+    const cached = this.recordCache.get(name);
+    if (cached && cached.ino === stat.ino && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      return cached.record;
+    }
+    const record = await this.readFile(file);
+    if (record !== undefined) {
+      this.recordCache.set(name, { ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size, record });
+    } else {
+      this.recordCache.delete(name);
+    }
+    return record;
+  }
+
   async get(key: string): Promise<RetentionRecord | undefined> {
-    return this.readFile(this.pathFor(key));
+    return this.readCachedFile(path.basename(this.pathFor(key)));
+  }
+
+  async getMany(keys: readonly string[]): Promise<(RetentionRecord | undefined)[]> {
+    return mapWithConcurrency(keys, SCAN_CONCURRENCY, (key) => this.get(key));
   }
 
   /** Takes the lock file `lock`, which holds a token of this holder, and returns the token. */
@@ -196,29 +234,48 @@ export class FileRetentionLedger implements RetentionLedger {
       const temp = `${file}.${randomSuffix()}${TEMP_SUFFIX}`;
       await fs.promises.writeFile(temp, JSON.stringify(next), 'utf-8');
       await fs.promises.rename(temp, file);
+      const stat = await fs.promises.stat(file).catch(() => undefined);
+      if (stat) {
+        this.recordCache.set(path.basename(file), { ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size, record: next });
+      } else {
+        this.recordCache.delete(path.basename(file));
+      }
       return next;
     });
   }
 
   async forget(key: string): Promise<void> {
-    await this.withLock(key, (file) => fs.promises.rm(file, { force: true }));
+    await this.withLock(key, async (file) => {
+      this.recordCache.delete(path.basename(file));
+      await fs.promises.rm(file, { force: true });
+    });
   }
 
   private async listNames(): Promise<string[]> {
     try {
       return await fs.promises.readdir(this.directory);
     } catch (error) {
-      if (errorCode(error) === 'ENOENT') return [];
+      if (errorCode(error) === 'ENOENT') {
+        this.recordCache.clear();
+        return [];
+      }
       throw error;
     }
   }
 
   private async scan(): Promise<{ records: RetentionRecord[]; leftovers: string[] }> {
     const names = await this.listNames();
+    const recordNames = names.filter((name) => name.endsWith(RECORD_SUFFIX));
+    if (this.recordCache.size > recordNames.length) {
+      const active = new Set(recordNames);
+      for (const cachedName of this.recordCache.keys()) {
+        if (!active.has(cachedName)) this.recordCache.delete(cachedName);
+      }
+    }
     const records = await mapWithConcurrency(
-      names.filter((name) => name.endsWith(RECORD_SUFFIX)),
+      recordNames,
       SCAN_CONCURRENCY,
-      (name) => this.readFile(path.join(this.directory, name))
+      (name) => this.readCachedFile(name)
     );
     return {
       records: records.filter((record): record is RetentionRecord => record !== undefined),
@@ -239,7 +296,11 @@ export class FileRetentionLedger implements RetentionLedger {
     await mapWithConcurrency(
       records.filter((record) => isGoneLongAgo(record, now)),
       SCAN_CONCURRENCY,
-      (record) => fs.promises.rm(this.pathFor(record.key), { force: true })
+      async (record) => {
+        const file = this.pathFor(record.key);
+        this.recordCache.delete(path.basename(file));
+        await fs.promises.rm(file, { force: true });
+      }
     );
     await this.removeOldLeftovers(leftovers, now);
     return records
@@ -307,13 +368,33 @@ export class RedisRetentionLedger implements RetentionLedger {
     return raw === null ? undefined : parseRecord(raw);
   }
 
-  async getMany(keys: readonly string[]): Promise<(RetentionRecord | undefined)[]> {
-    const records: (RetentionRecord | undefined)[] = [];
+  private async mgetBatched(keys: readonly string[]): Promise<(string | null)[]> {
+    if (keys.length === 0) return [];
+    if (keys.length > MGET_BATCH && typeof (this.redis as { pipeline?: unknown }).pipeline === 'function') {
+      const pipe = this.redis.pipeline();
+      for (let start = 0; start < keys.length; start += MGET_BATCH) {
+        pipe.mget(keys.slice(start, start + MGET_BATCH).map((key) => this.recordKey(key)));
+      }
+      const batches = (await pipelineReplies(pipe)) as (string | null)[][];
+      const out: (string | null)[] = [];
+      for (const batch of batches) {
+        if (Array.isArray(batch)) {
+          for (const raw of batch) out.push(raw);
+        }
+      }
+      return out;
+    }
+    const out: (string | null)[] = [];
     for (let start = 0; start < keys.length; start += MGET_BATCH) {
       const raws = await this.redis.mget(keys.slice(start, start + MGET_BATCH).map((key) => this.recordKey(key)));
-      for (const raw of raws) records.push(raw === null ? undefined : parseRecord(raw));
+      for (const raw of raws) out.push(raw);
     }
-    return records;
+    return out;
+  }
+
+  async getMany(keys: readonly string[]): Promise<(RetentionRecord | undefined)[]> {
+    const raws = await this.mgetBatched(keys);
+    return raws.map((raw) => (raw === null ? undefined : parseRecord(raw)));
   }
 
   async update(
@@ -355,13 +436,11 @@ export class RedisRetentionLedger implements RetentionLedger {
   /** The due set holds exactly the keys of results not deleted yet. */
   async liveRecords(): Promise<RetentionRecord[]> {
     const keys = await this.redis.zrange(REDIS_DUE_SET, '0', '-1');
+    const raws = await this.mgetBatched(keys);
     const records: RetentionRecord[] = [];
-    for (let start = 0; start < keys.length; start += MGET_BATCH) {
-      const raws = await this.redis.mget(keys.slice(start, start + MGET_BATCH).map((key) => this.recordKey(key)));
-      for (const raw of raws) {
-        const record = raw === null ? undefined : parseRecord(raw);
-        if (record && record.goneAt === undefined) records.push(record);
-      }
+    for (const raw of raws) {
+      const record = raw === null ? undefined : parseRecord(raw);
+      if (record && record.goneAt === undefined) records.push(record);
     }
     return records;
   }

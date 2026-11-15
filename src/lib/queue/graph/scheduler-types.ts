@@ -133,6 +133,11 @@ export interface IGraphScheduler {
    * created within the retention of graph state) and then a graph at a time until the page is full, never scanning the keys.
    */
   listGraphsOfUser(userId: string, limit: number, statuses?: readonly GraphStatus[]): Promise<GraphExecutionState[]>;
+  /**
+   * Lightweight listing variant for `listVisibleWork`: reads windowed index chunks and scalar summary fields via `HMGET`,
+   * avoiding transfer/decryption of `webhookSecret`, `tasks`, and full `graph` JSON unless `namedTasks` is set.
+   */
+  listGraphSummariesOfUser?(userId: string, limit: number, statuses?: readonly GraphStatus[]): Promise<GraphExecutionState[]>;
   /** Removes every stored record of `graphId`. */
   deleteGraph(graphId: string): Promise<boolean>;
 }

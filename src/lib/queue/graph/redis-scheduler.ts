@@ -31,7 +31,15 @@ import { sealWebhookSecret } from '../../security/sealed-webhook-secret';
 import { DEFAULT_QUEUE_KEY_PREFIX } from '../bullmq-engine';
 import { GraphStateCorruptError, QueueUnavailableError } from '../../types';
 import { finishGraph, type EndedGraph, type GraphEnd, type ReservationEnd } from './graph-end';
-import { parseGraphMeta, parseGraphStatus, parseNodeStates, parseStoredCount, parseStoredList } from './redis-state-parsers';
+import {
+  SUMMARY_META_FIELDS,
+  parseGraphMeta,
+  parseGraphStatus,
+  parseGraphSummaryMeta,
+  parseNodeStates,
+  parseStoredCount,
+  parseStoredList,
+} from './redis-state-parsers';
 import { leaseToHandedOffWork, RECOVERY_UNKNOWN, type Recovery } from '../../api-keys/hand-off';
 
 export interface RedisGraphSchedulerOptions {
@@ -439,6 +447,84 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
       });
     }
     // A graph whose state expired leaves the index; the index is also pruned whenever a graph is added.
+    if (vanished.length > 0) await this.redisClient.zrem(index, ...vanished).catch(() => undefined);
+    return listed.slice(0, limit);
+  }
+
+  async listGraphSummariesOfUser(
+    userId: string,
+    limit: number,
+    statuses?: readonly GraphStatus[]
+  ): Promise<GraphExecutionState[]> {
+    if (limit <= 0) return [];
+    const index = this.userGraphsKey(userId);
+    const statusSet = statuses && new Set(statuses).size < GRAPH_STATUS_COUNT ? new Set(statuses) : null;
+    const listed: GraphExecutionState[] = [];
+    const vanished: string[] = [];
+    let cursor = 0;
+    let window = Math.min(MAX_INDEXED_GRAPHS_PER_USER, Math.max(limit, 50));
+
+    while (cursor < MAX_INDEXED_GRAPHS_PER_USER && listed.length < limit) {
+      const endRank = Math.min(MAX_INDEXED_GRAPHS_PER_USER - 1, cursor + window - 1);
+      const page = await this.redisClient.zrevrange(index, cursor, endRank);
+      if (page.length === 0) break;
+
+      const metaPipe = this.redisClient.pipeline();
+      for (const graphId of page) {
+        metaPipe.hmget(this.graphKeys(graphId).graph, ...SUMMARY_META_FIELDS);
+      }
+      const metaReplies = (await this.execFailClosed(metaPipe, page.length)) as (string | null)[][];
+
+      const matched: { graphId: string; values: (string | null)[]; needsGraphDef: boolean }[] = [];
+      for (let i = 0; i < page.length; i++) {
+        const graphId = page[i];
+        const values = metaReplies[i] ?? [];
+        if (values.every((v) => v === null)) {
+          vanished.push(graphId);
+          continue;
+        }
+        const status = values[1];
+        const owner = values[3];
+        if (owner !== userId || (statusSet && !statusSet.has(status as GraphStatus))) {
+          continue;
+        }
+        matched.push({ graphId, values, needsGraphDef: values[11] === '1' });
+        if (listed.length + matched.length >= limit) break;
+      }
+
+      if (matched.length > 0) {
+        const detailPipe = this.redisClient.pipeline();
+        let expectedReplies = 0;
+        for (const item of matched) {
+          const k = this.graphKeys(item.graphId);
+          detailPipe.hgetall(k.nodes);
+          expectedReplies += 1;
+          if (item.needsGraphDef) {
+            detailPipe.hget(k.graph, 'graph');
+            expectedReplies += 1;
+          }
+        }
+        const detailReplies = await this.execFailClosed(detailPipe, expectedReplies);
+        let replyIdx = 0;
+        for (const item of matched) {
+          const rawNodes = detailReplies[replyIdx++] as Record<string, string>;
+          const rawGraphDef = item.needsGraphDef ? (detailReplies[replyIdx++] as string | null) : null;
+          try {
+            const summaryMeta = parseGraphSummaryMeta(item.graphId, item.values, rawGraphDef);
+            const nodes = parseNodeStates(item.graphId, rawNodes ?? {}, summaryMeta.totalNodes);
+            listed.push({ ...summaryMeta, nodes });
+          } catch (err) {
+            if (!(err instanceof GraphStateCorruptError)) throw err;
+            console.error(`[GraphScheduler] Graph ${item.graphId} is left out of a list because its record is damaged:`, err);
+          }
+        }
+      }
+
+      if (page.length < endRank - cursor + 1) break;
+      cursor = endRank + 1;
+      window = Math.min(MAX_INDEXED_GRAPHS_PER_USER, window * 4);
+    }
+
     if (vanished.length > 0) await this.redisClient.zrem(index, ...vanished).catch(() => undefined);
     return listed.slice(0, limit);
   }

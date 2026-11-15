@@ -17,6 +17,8 @@ import { refusalCodeList } from '../../refusal-codes';
 import { graphNodeJobId, nodeOutputKey, sanitizeNodeOutputFilename } from './node-jobs';
 import { openUrlNodeSecrets } from './sealed-nodes';
 import { exportToCustomerStorage, importFromCustomerStorage } from './node-storage-io';
+import { mapWithConcurrency } from '../../conversions/ocr-page-batch';
+import { MAX_STITCH_BUFFER_SIZE, MultiVolumeBufferOverflowError } from '../../conversions/archive-split';
 import {
   createTarArchive,
   extractTarArchive,
@@ -884,11 +886,16 @@ export async function processGraphNodeJob(
         let effectiveFilename: string;
 
         if (inputArtifacts.length > 1) {
-          const parts = await Promise.all(inputArtifacts.map(async (k) => {
+          let cumulativeBytes = 0;
+          const parts = await mapWithConcurrency(inputArtifacts, 4, async (k) => {
             const st = await effectiveStorage.getObject(k);
             if (!st) throw new Error(`Archive artifact "${k}" not found`);
+            cumulativeBytes += st.buffer.length;
+            if (cumulativeBytes > MAX_STITCH_BUFFER_SIZE) {
+              throw new MultiVolumeBufferOverflowError(cumulativeBytes, MAX_STITCH_BUFFER_SIZE);
+            }
             return { filename: st.filename || path.basename(k), buffer: st.buffer };
-          }));
+          });
           validateMultiVolumeSequence(parts.map((p) => p.filename));
           const stitched = stitchMultiVolumeArchive(parts);
           archiveBuffer = stitched.buffer;
