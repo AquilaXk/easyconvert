@@ -3,7 +3,7 @@ import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { ARCHIVE_SECURITY_LIMITS } from '../lib/conversions/archive';
 import { MAX_DOCUMENT_INFLATE_BYTES } from '../lib/conversions/bounded-inflate';
-import { calibreEngineUnavailable } from '../lib/conversions/calibre-ebook-targets';
+import { CALIBRE_ONLY_SOURCES, calibreEngineUnavailable } from '../lib/conversions/calibre-ebook-targets';
 import { assertNoVectorImages, rewriteEpubFromModel } from '../lib/conversions/epub-rewrite';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
 import { fitsWindows1252 } from '../lib/conversions/office/windows-1252';
@@ -24,6 +24,9 @@ import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } fr
 /**
  * The Palm, Kindle, Sony and Open eBook targets (MOBI, AZW3, PDB, LRF, OEB) are written by calibre's `ebook-convert`
  * (GPL-3.0, an unmodified program started as a separate sandboxed process; nothing of calibre is copied or linked).
+ *
+ * The same program reads the CHM, LIT and TCR books that no other engine of the project reads, and writes EPUB, PDF, RTF and text from them
+ * with the defaults of its writers (docs/policy-decisions.md, "CHM, LIT and TCR books").
  *
  * The route: a source that calibre reads itself (an e-book of its own family) is handed over as it is; every other
  * source is first written as EPUB by this project's own converters (`CalibreDeps.convert`, the whole worker conversion
@@ -54,6 +57,12 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 600_000;
 /** The address space of the program: Python and Qt map far more than they use, and a 1 GiB limit still converts a short book. */
 const MEMORY_LIMIT_MB = 4096;
+/**
+ * The PDF writer draws the book with Qt WebEngine (Chromium), which reserves tens of GiB of address space for its V8 cage and starts with no
+ * page at any limit below that ("Load of clbr://internal.invalid/book/index.html failed", measured with 8, 16 and 32 GiB). A run that draws
+ * pages gets the address space the website capture gives the same engine, and keeps the 4096 MB resident limit of the memory watch.
+ */
+const PAGE_DRAWING_ADDRESS_SPACE_BYTES = 192 * 1024 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
 const DEFAULT_MAX_BUFFER_BYTES = 100 * 1024 * 1024;
 const MAX_STDERR_CHARS = 300;
@@ -74,8 +83,11 @@ const DRM_PATTERN = /\bDRMError\b|protected by DRM/i;
 const PDB_ENCODING_WINDOWS_1252 = 'cp1252';
 const PDB_ENCODING_UTF8 = 'utf-8';
 
-/** Sources calibre has an input plug-in for and that are handed to it unchanged: the Palm, Kindle and Sony families (a PRC is a Mobipocket book under its Palm name). */
-const CALIBRE_NATIVE_SOURCES: ReadonlySet<string> = new Set(['mobi', 'azw', 'azw3', 'pdb', 'lrf', 'prc']);
+/**
+ * Sources calibre has an input plug-in for and that are handed to it unchanged: the Palm, Kindle and Sony families (a PRC is a Mobipocket
+ * book under its Palm name), and the CHM, LIT and TCR books that no other engine of the project reads.
+ */
+const CALIBRE_NATIVE_SOURCES: ReadonlySet<string> = new Set(['mobi', 'azw', 'azw3', 'pdb', 'lrf', 'prc', ...CALIBRE_ONLY_SOURCES]);
 
 interface OutputSignature {
   offset: number;
@@ -84,6 +96,9 @@ interface OutputSignature {
 const PALMDB_TYPE_CREATOR_OFFSET = 60;
 const MOBIPOCKET_SIGNATURE: OutputSignature = { offset: PALMDB_TYPE_CREATOR_OFFSET, bytes: Buffer.from('BOOKMOBI', 'latin1') };
 const OEB_PACKAGE_FILE = /\.opf$/i;
+const EPUB_FIRST_ENTRY_OFFSET = 30;
+/** The first ZIP entry of an EPUB: the local header ends at byte 30, then come the name `mimetype` and its stored content. */
+const EPUB_SIGNATURE: OutputSignature = { offset: EPUB_FIRST_ENTRY_OFFSET, bytes: Buffer.from('mimetypeapplication/epub+zip', 'latin1') };
 
 /** What the route runs on: the whole worker conversion of a source into EPUB, and the clean-up of its temporary output. */
 export interface CalibreDeps {
@@ -116,6 +131,8 @@ interface CalibreTarget {
   finalize?: (outputPath: string, run: CalibreRun) => Promise<string>;
   /** The format of the delivered file, when it is not the target (the OEB folder is delivered as a ZIP). */
   deliveredAs?: string;
+  /** Whether the writer draws pages with Qt WebEngine, which needs the wide address space above. */
+  drawsPages?: boolean;
   signature?: OutputSignature;
 }
 
@@ -143,6 +160,11 @@ function calibreEnvironment(dir: string): Record<string, string> {
     XDG_DATA_HOME: home,
     XDG_RUNTIME_DIR: runtime,
     QT_QPA_PLATFORM: 'offscreen',
+    // The PDF writer's Chromium refuses to run as the root of a user namespace unless its own sandbox is off (the run is inside the worker's sandbox),
+    // and makes its shared memory in /dev/shm, where the file confinement lets a program write but not create files, so it uses its temporary
+    // directory (the same two settings as the website capture's driver, native/capture-website/capture.py).
+    QTWEBENGINE_DISABLE_SANDBOX: '1',
+    QTWEBENGINE_CHROMIUM_FLAGS: '--disable-dev-shm-usage',
     PYTHONDONTWRITEBYTECODE: '1',
     PYTHONNOUSERSITE: '1',
   };
@@ -178,6 +200,7 @@ async function runCalibre(run: CalibreRun, args: readonly string[]): Promise<voi
     maxBuffer: request.options.maxBufferBytes || DEFAULT_MAX_BUFFER_BYTES,
     maxFileSize: MAX_OUTPUT_BYTES,
     memoryLimitMb: MEMORY_LIMIT_MB,
+    ...(CALIBRE_TARGETS[request.tgt]?.drawsPages ? { rlimits: { asBytes: PAGE_DRAWING_ADDRESS_SPACE_BYTES } } : {}),
     networkIsolated: true,
     // No PID namespace of its own: the launcher of calibre's release build reads /proc/<its own id>/exe, and /proc (which the sandbox cannot remount)
     // shows the host's processes, so in a namespace it reads another process (or none) and stops with "Failed to read exe path". It keeps the user and
@@ -341,10 +364,15 @@ function assertOutputFormat(outputPath: string, src: string, tgt: string, signat
 }
 
 /**
- * The five targets. The PalmDB type and creator (bytes 60 to 67 of the Palm database header) of a Mobipocket book is `BOOKMOBI`,
+ * The targets. The PalmDB type and creator (bytes 60 to 67 of the Palm database header) of a Mobipocket book is `BOOKMOBI`,
  * of a PalmDOC book `TEXtREAd`; an LRF book starts with the UTF-16LE magic "LRF".
  */
 export const CALIBRE_TARGETS: Readonly<Record<string, CalibreTarget>> = {
+  // The four targets the in-process engine also writes: calibre writes them for the books only it reads (CHM, LIT, TCR) with the defaults of its writers.
+  epub: { args: [], signature: EPUB_SIGNATURE },
+  pdf: { args: [], drawsPages: true, signature: { offset: 0, bytes: Buffer.from('%PDF-', 'latin1') } },
+  rtf: { args: [], signature: { offset: 0, bytes: Buffer.from('{\\rtf1', 'latin1') } },
+  txt: { args: [] },
   mobi: { args: ['--mobi-file-type', 'old', '--no-inline-toc'], signature: MOBIPOCKET_SIGNATURE },
   azw3: { args: ['--no-inline-toc'], signature: MOBIPOCKET_SIGNATURE },
   pdb: {
@@ -361,7 +389,7 @@ function baseNameOf(originalFilename: string): string {
 }
 
 /**
- * Writes the source as MOBI, AZW3, PDB, LRF or OEB with calibre. `program` is the `ebook-convert` the worker found, or null
+ * Writes the source as MOBI, AZW3, PDB, LRF or OEB with calibre, or a CHM, LIT or TCR book as EPUB, PDF, RTF or text. `program` is the `ebook-convert` the worker found, or null
  * when it is not installed: the pair then fails with an unavailable engine, before the source is converted.
  */
 export async function convertWithCalibre(deps: CalibreDeps, request: CalibreRequest, program: string | null): Promise<WorkerConversionResult> {

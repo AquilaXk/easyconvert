@@ -320,6 +320,39 @@ else
   fail "calibre did not convert a text file to the five e-book targets inside the sandbox: $calibre_failure"
 fi
 
+# calibre also reads the Psion TCR books (and the Microsoft Reader and Compiled HTML Help books, which the image has no way to write) and writes EPUB,
+# PDF, RTF and text from them: it writes a TCR book from the text file, reads it back to each of the four targets as the worker starts it, and each
+# result must carry its format's signature (the ZIP entry `mimetypeapplication/epub+zip` at byte 30 for EPUB, `%PDF-`, `{\rtf1`) and the marker text.
+# The PDF writer draws with Chromium, which needs the wide address space of the website capture and no shared memory in /dev/shm.
+PDF_ADDRESS_SPACE_BYTES=$((192 * 1024 * 1024 * 1024))
+calibre_reader_failure=""
+if ! sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" env HOME="$work_dir" QT_QPA_PLATFORM=offscreen CALIBRE_CONFIG_DIRECTORY="$work_dir/calibre-config" \
+    CALIBRE_CACHE_DIRECTORY="$work_dir/calibre-cache" CALIBRE_TEMP_DIR="$work_dir/calibre-tmp" PYTHONDONTWRITEBYTECODE=1 \
+    ebook-convert "$work_dir/book.txt" "$work_dir/book.tcr" >"$work_dir/calibre.out" 2>&1; then
+  calibre_reader_failure="the TCR book was not written: $(tail -c 300 "$work_dir/calibre.out" 2>/dev/null)"
+fi
+for calibre_target in epub pdf rtf txt; do
+  [ -n "$calibre_reader_failure" ] && break
+  if ! sandboxed_as "$([ "$calibre_target" = pdf ] && echo "$PDF_ADDRESS_SPACE_BYTES" || echo "$ADDRESS_SPACE_LIMIT_BYTES")" timeout "$CONVERSION_TIMEOUT_SECONDS" \
+      env HOME="$work_dir" QT_QPA_PLATFORM=offscreen QTWEBENGINE_DISABLE_SANDBOX=1 QTWEBENGINE_CHROMIUM_FLAGS=--disable-dev-shm-usage \
+      CALIBRE_CONFIG_DIRECTORY="$work_dir/calibre-config" CALIBRE_CACHE_DIRECTORY="$work_dir/calibre-cache" CALIBRE_TEMP_DIR="$work_dir/calibre-tmp" PYTHONDONTWRITEBYTECODE=1 \
+      ebook-convert "$work_dir/book.tcr" "$work_dir/from-tcr.$calibre_target" >"$work_dir/calibre.out" 2>&1; then
+    calibre_reader_failure="the TCR book was not written as .$calibre_target: $(tail -c 300 "$work_dir/calibre.out" 2>/dev/null)"
+    break
+  fi
+  case "$calibre_target" in
+    epub) [ "$(dd if="$work_dir/from-tcr.epub" bs=1 skip=30 count=28 2>/dev/null)" = "mimetypeapplication/epub+zip" ] || calibre_reader_failure="no EPUB media type entry" ;;
+    pdf) [ "$(head -c 5 "$work_dir/from-tcr.pdf")" = '%PDF-' ] || calibre_reader_failure="no PDF header" ;;
+    rtf) [ "$(head -c 6 "$work_dir/from-tcr.rtf")" = '{\rtf1' ] || calibre_reader_failure="no RTF header" ;;
+    txt) grep -q "$MARKER_TEXT" "$work_dir/from-tcr.txt" || calibre_reader_failure="the marker text is not in the text book" ;;
+  esac
+done
+if [ -z "$calibre_reader_failure" ]; then
+  pass "calibre read a TCR book and wrote EPUB, PDF, RTF and text from it inside the sandbox"
+else
+  fail "calibre did not read a TCR book inside the sandbox: $calibre_reader_failure"
+fi
+
 if [ "${VERIFY_LIBREOFFICE:-0}" = "1" ]; then
   printf '%s\n' "$MARKER_TEXT" > "$work_dir/document.txt"
   if HOME="$work_dir" sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" soffice --headless --norestore --nofirststartwizard --nologo \

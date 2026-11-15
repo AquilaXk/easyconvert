@@ -51,13 +51,15 @@ const ENTITIES: Readonly<Record<string, string>> = { amp: '&', lt: '<', gt: '>',
 const CALIBRE_BOOK_TARGETS = ['azw3', 'mobi', 'pdb', 'lrf', 'oeb'] as const;
 type CalibreBookTarget = (typeof CALIBRE_BOOK_TARGETS)[number];
 const isCalibreBookTarget = (target: string): target is CalibreBookTarget => (CALIBRE_BOOK_TARGETS as readonly string[]).includes(target);
+/** Whether the product hands the pair to the reference tool itself: it writes the target, or reads a book that only it reads (LIT). */
+const writtenByReferenceTool = (item: BookCase): boolean => isCalibreBookTarget(item.target) || item.source === 'lit';
 /** A PDB book (PalmDOC) holds no pictures. */
 const PICTURE_TARGETS = new Set<string>(['pdf', 'epub', 'azw3', 'mobi', 'lrf', 'oeb']);
 /** Pages of the generated comic archive. */
 const COMIC_PAGES = ['photo-a.jpg', 'photo-b.png', 'lineart.png'] as const;
 
 interface BookCase {
-  source: 'epub' | 'mobi' | 'fb2' | 'prc' | 'cbz';
+  source: 'epub' | 'mobi' | 'fb2' | 'prc' | 'cbz' | 'lit';
   target: 'txt' | 'pdf' | 'epub' | 'rtf' | CalibreBookTarget;
 }
 
@@ -79,6 +81,8 @@ const CASES: readonly BookCase[] = [
   { source: 'cbz', target: 'pdf' },
   { source: 'cbz', target: 'epub' },
   ...CALIBRE_BOOK_TARGETS.map((target) => ({ source: 'cbz' as const, target })),
+  // The Microsoft Reader pairs (docs/policy-decisions.md, "CHM, LIT and TCR books"): the reference tool writes the LIT book from the EPUB, and reads it on both sides.
+  ...(['txt', 'pdf', 'epub', 'rtf', ...CALIBRE_BOOK_TARGETS] as const).map((target) => ({ source: 'lit' as const, target })),
 ];
 const caseName = (item: BookCase): string => `book.${item.source}->${item.target}`;
 /** The conversions a public book gets, by its format (the targets of the generated book's cases). */
@@ -114,7 +118,7 @@ function rowPlan(book: Book): Array<{ caseId: string; spec: MetricSpec }> {
  * the product's staging against the program reading the source directly, a ratio that has no backing measurement on the
  * runner yet (docs/policy-decisions.md, "E-book pairs added").
  */
-const measuresSpeed = (item: BookCase): boolean => !isCalibreBookTarget(item.target);
+const measuresSpeed = (item: BookCase): boolean => !writtenByReferenceTool(item);
 
 /** Headings are scored when the truth has them: the generated book, and an EPUB source (a Kindle or FictionBook file has no heading truth to read). */
 const headingsMeasured = (book: Book): boolean => book.item.source !== 'cbz' && (book.sample === null || book.sample.meta.format === 'epub');
@@ -344,7 +348,7 @@ async function runCase(ctx: FamilyContext, tools: Tools, files: BookFiles, book:
   const convertOurs = async (): Promise<Buffer> => {
     const converted = await convertWithProject(input, item.source, item.target, {}, files.filename);
     // A book of the five targets is written by the reference tool on both sides; the row measures the product's route to it. Anything else must be the in-process engine.
-    const expectedEngine = isCalibreBookTarget(item.target) ? CALIBRE_ENGINE : undefined;
+    const expectedEngine = writtenByReferenceTool(item) ? CALIBRE_ENGINE : undefined;
     if (expectedEngine === undefined ? converted.engineUsed.startsWith(NATIVE_ENGINE_PREFIX) : converted.engineUsed !== expectedEngine) {
       throw new OutputIntegrityError(`${name} ran on ${converted.engineUsed}; ${expectedEngine === undefined ? 'an ebook row compares the in-process engine with the reference tool, not a native engine with itself' : `a book of this target is written by ${expectedEngine}`}`);
     }
@@ -395,9 +399,14 @@ async function runCase(ctx: FamilyContext, tools: Tools, files: BookFiles, book:
   return rows;
 }
 
-/** The generated book in the form a source format reads: the corpus files, the MOBI under its Palm name, the pictures of the corpus bound as a comic archive. */
-async function generatedFiles(ctx: FamilyContext, source: BookCase['source'], bookTruth: Truth, comicTruth: Truth): Promise<BookFiles> {
+/** The generated book in the form a source format reads: the corpus files, the MOBI under its Palm name, the pictures of the corpus bound as a comic archive, the EPUB written as a LIT book by the reference tool. */
+async function generatedFiles(ctx: FamilyContext, tools: Tools, source: BookCase['source'], bookTruth: Truth, comicTruth: Truth): Promise<BookFiles> {
   const filename = `book.${source}`;
+  if (source === 'lit') {
+    const file = ctx.scratch(filename);
+    runTool(tools.ebookConvert, [ctx.corpusPath('ebooks/book.epub'), file], { env: CALIBRE_ENV });
+    return { file, filename, truth: bookTruth };
+  }
   if (source === 'prc') {
     // The reference tool picks its reader by the extension.
     const file = ctx.scratch(filename);
@@ -440,7 +449,7 @@ export const runEbook: FamilyRunner = async (ctx) => {
   for (const book of books) {
     const { sample } = book;
     if (sample === null) {
-      rows.push(...(await runCase(ctx, tools, await generatedFiles(ctx, book.item.source, generatedTruth, comicTruth), book, classRows)));
+      rows.push(...(await runCase(ctx, tools, await generatedFiles(ctx, tools, book.item.source, generatedTruth, comicTruth), book, classRows)));
       continue;
     }
     if (!publicFiles.has(sample.id)) {

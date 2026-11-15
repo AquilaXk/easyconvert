@@ -1,0 +1,19 @@
+E-book fixtures for tests/ebook-calibre-sources.test.ts (docs/policy-decisions.md, entry 307)
+================================================================================================
+
+book-8bit.tcr (1,811 bytes), a Psion TCR book
+  Written by calibre 8.5.0 (`ebook-convert book.txt book-8bit.tcr`) from the first 2,000 bytes of the plain text of
+  `opf-lorem-ipsum-090.lit`, the Open Preservation Foundation format corpus (CC0 1.0, commit 366f068cec399d0cdfd61fa473de3ab6dc858098,
+  ebooks/calibre 0.9.0/lorem-ipsum.lit; the text is "Variatio Ipsius" and lorem ipsum). No TCR book of a third party was found
+  (bench/realworld/format-coverage-exceptions.json). calibre's TCR writer fails on the whole text of that book (4.4 KB) with
+  `bytes must be in range(0, 256)`, so the book holds the first 2,000 bytes. The test decodes the container with a reader written from
+  its layout (the signature `!!8-Bit!!`, a dictionary of 256 length-prefixed strings, the text as one dictionary index per byte).
+
+hostile-links.chm (5,257 bytes), a Compiled HTML Help file whose first page links to a file of the host
+  Hand-assembled uncompressed CHM (ITSF version 3, one PMGL listing chunk, content section 0 only) by generators/mkchm-links.py, the layout of
+  tests/fixtures/archive-sources/generators/mkchm.py, with a #SYSTEM file (start page, table of contents), a two-entry table of contents
+  and two pages. The first page names /etc/hosts as a picture, a style sheet and a link: by a relative path with twelve `..` segments, by a
+  `file:///` URL and by an absolute path. Python 3.12: `python3 -I generators/mkchm-links.py` (run in this directory, with an `out/` directory).
+  Read back with chmlib (python3-chm): and by calibre 8.5.0 and 7.6.0.
+
+rocketbook-calibre-9.17-rich.rb: see docs/policy-decisions.md and tests/rocketbook-real-samples.test.ts.

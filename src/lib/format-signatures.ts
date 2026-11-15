@@ -644,6 +644,10 @@ const LOTUS_WORD_PRO_MAGICS: readonly (readonly number[])[] = [
 ];
 const WORDPERFECT_MAGIC = [0xff, 0x57, 0x50, 0x43];
 const SONY_LRF_MAGIC = [0x4c, 0x00, 0x52, 0x00, 0x46, 0x00, 0x00, 0x00];
+/** `ITSF`: the header of a Compiled HTML Help (ITS) file; `ITOLITLS`: a Microsoft Reader book; `!!8-Bit!!`: a Psion TCR book. */
+const CHM_MAGIC = [0x49, 0x54, 0x53, 0x46];
+const MS_READER_LIT_MAGIC = [0x49, 0x54, 0x4f, 0x4c, 0x49, 0x54, 0x4c, 0x53];
+const PSION_TCR_MAGIC = [0x21, 0x21, 0x38, 0x2d, 0x42, 0x69, 0x74, 0x21, 0x21];
 const PALM_PDB_NAME_BYTES = 32;
 const PALM_PDB_TYPE_OFFSET = 60;
 const PALM_PDB_TYPE_BYTES = 8;
@@ -680,6 +684,10 @@ function isWordPerfect(buf: Uint8Array): boolean {
 
 function isSonyLrf(buf: Uint8Array): boolean {
   return startsWithBytes(buf, SONY_LRF_MAGIC);
+}
+
+function startsWith(magic: readonly number[]): (buf: Uint8Array) => boolean {
+  return (buf) => startsWithBytes(buf, magic);
 }
 
 function hasValidPalmDbName(buf: Uint8Array): boolean {
@@ -782,6 +790,9 @@ const OWN_SIGNATURE_CHECKS: Readonly<Record<string, (buf: Uint8Array) => boolean
   lwp: isLotusWordPro,
   wpd: isWordPerfect,
   lrf: isSonyLrf,
+  chm: startsWith(CHM_MAGIC),
+  lit: startsWith(MS_READER_LIT_MAGIC),
+  tcr: startsWith(PSION_TCR_MAGIC),
   pdb: isPalmDocPdb,
   mobi: isMobiPalmDb,
   azw: isMobiPalmDb,

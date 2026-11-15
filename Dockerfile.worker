@@ -640,6 +640,27 @@ RUN scratch="$(mktemp -d)" \
     && find "${scratch}/book.oeb" -name '*.opf' | grep -q . \
     && rm -rf "${scratch}"
 
+# E-book reader for the Psion TCR, Microsoft Reader and Compiled HTML Help books (calibre, installed above): the build fails unless its CHM reader (the
+# `python3-chm` module the package depends on) loads, and unless calibre writes a TCR book from a text file and reads it back to EPUB, PDF, RTF and text,
+# each with its format's signature (the ZIP entry `mimetypeapplication/epub+zip` at byte 30, `%PDF-`, `{\rtf1`) and the text. The PDF writer draws with
+# Chromium, which refuses to run as root without its sandbox switched off and makes shared memory in /dev/shm unless it is told not to (the worker's run
+# sets both, and gives it the wide address space the website capture gives the same engine).
+RUN scratch="$(mktemp -d)" \
+    && mkdir "${scratch}/config" "${scratch}/cache" "${scratch}/tmp" \
+    && python3 -c 'import chm.chm' \
+    && printf 'Hello\n' > "${scratch}/book.txt" \
+    && export HOME="${scratch}" QT_QPA_PLATFORM=offscreen QTWEBENGINE_DISABLE_SANDBOX=1 QTWEBENGINE_CHROMIUM_FLAGS=--disable-dev-shm-usage CALIBRE_CONFIG_DIRECTORY="${scratch}/config" \
+        CALIBRE_CACHE_DIRECTORY="${scratch}/cache" CALIBRE_TEMP_DIR="${scratch}/tmp" \
+    && timeout 120 ebook-convert "${scratch}/book.txt" "${scratch}/book.tcr" > /dev/null \
+    && for target in epub pdf rtf txt; do \
+        timeout 120 ebook-convert "${scratch}/book.tcr" "${scratch}/book-from-tcr.${target}" > /dev/null || exit 1; \
+    done \
+    && test "$(dd if="${scratch}/book-from-tcr.epub" bs=1 skip=30 count=28 2> /dev/null)" = "mimetypeapplication/epub+zip" \
+    && test "$(head -c 5 "${scratch}/book-from-tcr.pdf")" = '%PDF-' \
+    && test "$(head -c 6 "${scratch}/book-from-tcr.rtf")" = '{\rtf1' \
+    && grep -q Hello "${scratch}/book-from-tcr.txt" \
+    && rm -rf "${scratch}"
+
 # Website capture (src/lib/capture/website-capture.ts): the page is drawn by Qt WebEngine (Chromium), which calibre's dependencies already put in this image
 # (libqt6webenginecore6 and python3-pyqt6.qtwebengine; nothing is added), driven by our own script as a separate sandboxed process whose only route to the
 # network is the gate proxy of the worker. The build fails unless the browser starts without a display and draws a page, from a `data:` URL that needs no

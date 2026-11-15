@@ -12,10 +12,8 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'pages->ppt',
   'pdf->emf', 'pdf->wmf',
   'txt->tex',
-  'chm->azw3', 'chm->epub', 'chm->lrf', 'chm->mobi', 'chm->oeb', 'chm->pdb', 'chm->pdf', 'chm->rtf', 'chm->txt',
-  'lit->azw3', 'lit->epub', 'lit->lrf', 'lit->mobi', 'lit->oeb', 'lit->pdb', 'lit->pdf', 'lit->rtf', 'lit->txt',
+  // Entry 307: the calibre of the image (8.5.0) reads no SNB file, its reader compares the byte names of the archive with text names, so these nine stay withdrawn.
   'snb->azw3', 'snb->epub', 'snb->lrf', 'snb->mobi', 'snb->oeb', 'snb->pdb', 'snb->pdf', 'snb->rtf', 'snb->txt',
-  'tcr->azw3', 'tcr->epub', 'tcr->lrf', 'tcr->mobi', 'tcr->oeb', 'tcr->pdb', 'tcr->pdf', 'tcr->rtf', 'tcr->txt',
   'key->doc', 'key->xls',
   'pot->emf', 'pot->xps',
   'potx->emf', 'potx->xps',

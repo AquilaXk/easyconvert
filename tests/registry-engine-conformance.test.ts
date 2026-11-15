@@ -31,7 +31,7 @@ import { buildPfa, buildPfb, rectangleGlyph } from './helpers/type1-builder';
 import { buildPatchExr, buildPatchUltraHdr } from './helpers/hdr-test-images';
 import { buildWordBinary } from './helpers/word-binary-builder';
 import { buildMobi, buildMobiFromBytes } from './helpers/mobi-builder';
-import { isCalibreEbookTarget } from '../src/lib/conversions/calibre-ebook-targets';
+import { isCalibreOnlyPair } from '../src/lib/conversions/calibre-ebook-targets';
 import { buildAzw4, textPdf } from './helpers/print-replica-builder';
 import { loadConformanceDurations, partOfKey, planConformanceParts } from '../scripts/ci-conformance-parts.mjs';
 import { buildPptBinary } from './helpers/ppt-binary-builder';
@@ -264,7 +264,7 @@ const FIRST_PART_ONLY_TESTS: readonly RegExp[] = [
   /^has an intact sample for every RAW/,
   /^has a validator for every target/,
   /^lists only pairs the registry advertises/,
-  /^lists every registry pair that ends in a calibre target/,
+  /^lists every registry pair that calibre converts/,
 ];
 /** A test that converts one pair is named `<source> -> <target> ...`. */
 const PAIR_TEST_NAME = /^(\S+) -> (\S+) /;
@@ -652,6 +652,10 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   prc: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   azw4: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   cbc: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  // calibre reads these books (no other engine does) and writes every target of the table of the e-book formats.
+  chm: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
+  lit: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
+  tcr: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
   doc: ['jpg', 'png', 'rtf'],
   docm: ['doc', 'jpg', 'png', 'rtf'],
   docx: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
@@ -1039,7 +1043,7 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     cbz: ['cbr'],
     cdr: ['emf', 'wmf'],
     cgm: ['emf', 'wmf'],
-    chm: ['azw3', 'epub', 'html', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
+    chm: ['html'],
     dbf: ['json', 'tsv'],
     dds: ['tga'],
     dif: ['json', 'tsv'],
@@ -1057,7 +1061,6 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     html: ['tex'],
     ibooks: ['epub', 'pdf', 'txt'],
     key: ['doc', 'xls'],
-    lit: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     md: ['rst', 'tex'],
     mobi: ['docx'],
     msg: ['eml'],
@@ -1082,7 +1085,6 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     slk: ['tsv'],
     snb: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     sxd: ['odp', 'pptx'],
-    tcr: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     txt: ['tex'],
     webp: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma'],
     wk1: ['tsv'],
@@ -1573,7 +1575,7 @@ describe('native-engine pairs route through the dispatcher', () => {
   );
   const allPartPairs = allNativePairs.filter(([source, target]) => inPart(`${source}->${target}`));
   /** The pairs that end in a calibre target are proven by the missing-engine suite below and by tests/ebook-calibre-writers.test.ts, not by the LibreOffice and Poppler suites. */
-  const pairs = allPartPairs.filter(([source, target]) => !isCalibreEbookTarget(target) && !isSubtitleFormat(source));
+  const pairs = allPartPairs.filter(([source, target]) => !isCalibreOnlyPair(source, target) && !isSubtitleFormat(source));
   /** The subtitle pairs are FFmpeg's: the sandbox, the file checks and the independent read-back are proven by tests/subtitle-pairs.test.ts. */
   const subtitlePairs = allPartPairs.filter(([source]) => isSubtitleFormat(source));
   const authorable = ([source]: [string, string]) => !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source) && !XPS_SOURCES.has(source) && !DJVU_SOURCES.has(source);
@@ -1592,7 +1594,7 @@ describe('native-engine pairs route through the dispatcher', () => {
 
   /** Native engine (and the environment variable that points to it) that converts a pair. */
   function engineOf(source: string, target: string): { envVar: string; engineName: string } {
-    if (isCalibreEbookTarget(target)) return { envVar: 'EBOOK_CONVERT_PATH', engineName: 'ebook-convert' };
+    if (isCalibreOnlyPair(source, target)) return { envVar: 'EBOOK_CONVERT_PATH', engineName: 'ebook-convert' };
     if (isSubtitleFormat(source)) return { envVar: 'FFMPEG_PATH', engineName: 'ffmpeg' };
     if (POSTSCRIPT_SOURCES.has(source)) return { envVar: 'PS2PDF_PATH', engineName: 'ps2pdf' };
     if (XPS_SOURCES.has(source)) return { envVar: 'GXPS_PATH', engineName: 'gxps' };
@@ -1772,6 +1774,12 @@ describe('native-engine pairs route through the dispatcher', () => {
         return zipOf({ 'index.txt': 'Probe paragraph.' });
       case 'oeb':
         return Buffer.from(OEB_PROBE_PACKAGE);
+      case 'chm':
+        return Buffer.concat([Buffer.from('ITSF', 'latin1'), Buffer.alloc(124)]);
+      case 'lit':
+        return Buffer.concat([Buffer.from('ITOLITLS', 'latin1'), Buffer.alloc(120)]);
+      case 'tcr':
+        return Buffer.concat([Buffer.from('!!8-Bit!!', 'latin1'), Buffer.alloc(120)]);
       default:
         return undefined;
     }
@@ -1860,9 +1868,9 @@ describe('native-engine pairs route through the dispatcher', () => {
   });
 
   // skip-ok: part selection: the sharded run executes each of these once, in part 1.
-  it.runIf(IS_FIRST_PART)('lists every registry pair that ends in a calibre target, so that none is left to the in-process probe', () => {
+  it.runIf(IS_FIRST_PART)('lists every registry pair that calibre converts, so that none is left to the in-process probe', () => {
     const listed = new Set(allNativePairs.map(([source, target]) => `${source}->${target}`));
-    const advertised = Object.entries(FORMAT_REGISTRY).flatMap(([source, def]) => def.targetFormats.filter(isCalibreEbookTarget).map((target) => `${source}->${target}`));
+    const advertised = Object.entries(FORMAT_REGISTRY).flatMap(([source, def]) => def.targetFormats.filter((target) => isCalibreOnlyPair(source, target)).map((target) => `${source}->${target}`));
     expect(advertised.filter((pair) => !listed.has(pair))).toEqual([]);
   });
 

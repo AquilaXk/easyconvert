@@ -12,7 +12,7 @@ import {
   UnsupportedTargetError,
 } from '../types';
 import { SandboxedTimeoutError } from '../security/process-sandbox';
-import { isCalibreEbookTarget } from './calibre-ebook-targets';
+import { isCalibreOnlyPair } from './calibre-ebook-targets';
 import { requiresNativeEngine } from './native-engine-pairs';
 import { BUILT_IN_ENGINE, type EngineId } from './engine-ids';
 import { checkFfmpeg } from './media';
@@ -75,7 +75,7 @@ function assertAdvertised(src: string, tgt: string, options: WorkerEngineOptions
  */
 function toEngineUnavailable(err: unknown, src: string, tgt: string): unknown {
   // A render of a document or PDF that outruns its tool's limit is deterministic: a typed refusal, not a retried crash.
-  if (err instanceof SandboxedTimeoutError && (TIMEOUT_TYPED_SOURCES.has(src) || isCalibreEbookTarget(tgt))) {
+  if (err instanceof SandboxedTimeoutError && (TIMEOUT_TYPED_SOURCES.has(src) || isCalibreOnlyPair(src, tgt))) {
     return new CpuTaskTimeoutError(`.${src} to .${tgt} conversion`, err.timeoutMs);
   }
   if (err instanceof ComplexScriptRequiresNativeEngineError) {

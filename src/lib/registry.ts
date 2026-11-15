@@ -944,7 +944,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/x-ms-reader',
     category: 'ebook',
     description: 'Microsoft Reader compressed ebook format.',
-    targetFormats: ['zip'],
+    targetFormats: ['zip', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
   },
   lrf: {
     id: 'lrf',
@@ -989,7 +989,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/x-tcr',
     category: 'ebook',
     description: 'Psion Series 3 palmtop computer compressed ebook format.',
-    targetFormats: ['zip'],
+    targetFormats: ['zip', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
   },
   chm: {
     id: 'chm',
@@ -998,7 +998,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/vnd.ms-htmlhelp',
     category: 'ebook',
     description: 'Microsoft Compiled HTML Help documentation and online book file.',
-    targetFormats: ['zip'],
+    targetFormats: ['zip', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
   },
   djv: {
     id: 'djv',

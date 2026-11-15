@@ -38,7 +38,7 @@ import { isX3f } from '../lib/conversions/raw-x3f';
 import { decodeRawInThread } from './raw-decode-host';
 import { encode16BitTiff } from '../lib/conversions/raw-hdr';
 import { isSvgPageTarget, withSvgPageEncoder } from './svg-page-encoders';
-import { isCalibreEbookTarget } from '../lib/conversions/calibre-ebook-targets';
+import { isCalibreOnlyPair } from '../lib/conversions/calibre-ebook-targets';
 import { runWithImageFetchSession } from '../lib/conversions/html-image-fetch';
 import { assertConversionOptionsObject } from '../lib/conversions/options-guard';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath } from '../lib/security/file-guard';
@@ -1948,7 +1948,7 @@ const OFFICE_SUITE_DEPS: OfficeSuiteRouteDeps = {
 };
 
 /**
- * One conversion of the request's image session. A target only calibre writes goes to `ebook-convert`; a format only the office
+ * One conversion of the request's image session. A target only calibre writes, or a book only calibre reads, goes to `ebook-convert`; a format only the office
  * suite reads goes to a target it does not write through an interchange file, a table written as `.xls` through an XLSX workbook;
  * any other conversion runs the engines, and a legacy Office document that the strict in-process reader refuses is then tried by
  * the office suite.
@@ -1964,7 +1964,7 @@ async function convertWithOfficeSuiteRoutes(
   options.signal?.throwIfAborted();
   const request = { input, src: validateFormat(sourceFormat), tgt: validateFormat(targetFormat), options, originalFilename };
   if (isSubtitlePair(request.src, request.tgt)) return convertSubtitle(request, resolveBinary(BINARY_PATHS.ffmpeg, process.env.FFMPEG_PATH), assertNotSpoofedFileVfs);
-  if (isCalibreEbookTarget(request.tgt)) {
+  if (isCalibreOnlyPair(request.src, request.tgt)) {
     assertNotSpoofedFileVfs(input, request.src, originalFilename);
     return convertWithCalibre(OFFICE_SUITE_DEPS, request, resolveBinary(BINARY_PATHS.ebookConvert, process.env.EBOOK_CONVERT_PATH));
   }

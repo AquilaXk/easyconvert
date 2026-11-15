@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import pkg from '../../package.json';
 import { FORMAT_REGISTRY } from '../lib/registry';
 import { executeSandboxedBinary, SandboxedProcessError } from '../lib/security/process-sandbox';
-import { isCalibreEbookTarget } from '../lib/conversions/calibre-ebook-targets';
+import { isCalibreOnlyPair } from '../lib/conversions/calibre-ebook-targets';
 import { BUILT_IN_ENGINE, ENGINE_IDS, ENGINE_NAMES, isEngineId, type EngineId } from '../lib/conversions/engine-ids';
 import { requiresNativeEngine } from '../lib/conversions/native-engine-pairs';
 import { isArchiveRoutePair, isMediaRoutePair } from '../lib/conversions/route-formats';
@@ -54,10 +54,10 @@ const PDF_TEXT_TARGETS: ReadonlySet<string> = new Set(['txt', 'text']);
 /** Text and markup sources the in-process converter renders to PDF unless the text needs the office suite's layout. */
 const HTML_SOURCES: ReadonlySet<string> = new Set(['html', 'htm']);
 
-/** FFmpeg reads and writes subtitles, and calibre writes the ebook targets: routes no other engine has. */
+/** FFmpeg reads and writes subtitles, and calibre writes the ebook targets and reads the books no other engine reads: routes no other engine has. */
 function subtitleOrEbookProgram(src: string, tgt: string): EngineId | undefined {
   if (isSubtitlePair(src, tgt)) return 'ffmpeg';
-  return isCalibreEbookTarget(tgt) ? 'calibre' : undefined;
+  return isCalibreOnlyPair(src, tgt) ? 'calibre' : undefined;
 }
 
 /** The office suite writes an interchange file, a Word 97 or RTF file bridged from a document, or a BIFF8 workbook; Poppler draws the page images of a text source. */
