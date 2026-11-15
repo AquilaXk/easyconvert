@@ -2,6 +2,7 @@ import type { PDFDict, PDFDocument, PDFStream } from 'pdf-lib';
 import { PayloadLimitError } from '../types';
 import { assertInputPixels } from './image-input-limits';
 import { normaliseLeafPageCatalogWithLib } from './ocr-geometry';
+import { mapWithConcurrency } from './ocr-page-batch';
 import { loadPdfLibDocument } from './pdf-lib-load';
 import { pdfjsImageToPng } from './pdf-rasterizer';
 import type { OperatorListLike } from './pdf-text-content';
@@ -233,6 +234,9 @@ export async function preloadImageReader(): Promise<void> {
   await import('pdf-lib');
 }
 
+/** Pictures of one page that are waited for and encoded at the same time: the threads the image library runs on (libuv's four) and no more, so a page holds that many decoded pictures at once. */
+const PICTURE_ENCODES_AT_ONCE = 4;
+
 /** The file of a picture: the PDF's own JPEG stream, or a PNG of the pixels pdf.js decoded. */
 interface PictureFile {
   data: Uint8Array;
@@ -291,9 +295,14 @@ export class ImageExtractor {
       candidates !== null &&
       candidates.length === images.length &&
       candidates.every((candidate, index) => candidate.pixelWidth === images[index].pixelWidth && candidate.pixelHeight === images[index].pixelHeight);
-    for (const [index, image] of images.entries()) {
+    // The PNG of a picture is made on the image library's threads, and its call costs about a millisecond whatever the size: a page with
+    // dozens of small pictures took that millisecond for each one when they were made one after another.
+    const files = await mapWithConcurrency(images, PICTURE_ENCODES_AT_ONCE, async (image, index): Promise<PictureFile | null> => {
       const passthrough = aligned ? candidates[index].jpeg : null;
-      const file: PictureFile | null = passthrough ? { data: passthrough, format: 'jpeg' } : await this.pictureOf(sources[index], pools, image);
+      return passthrough ? { data: passthrough, format: 'jpeg' } : this.pictureOf(sources[index], pools, image);
+    });
+    for (const [index, image] of images.entries()) {
+      const file = files[index];
       if (file === null) continue;
       this.take(file.data.length);
       image.data = file.data;
