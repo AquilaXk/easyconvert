@@ -63,7 +63,7 @@ describe('F-26a: S3 XML parser namespace-prefix & attribute tolerance', () => {
         etag: 'etag123',
       },
     ]);
-    expect(readXmlElement('<s3:Empty attr="1"/>', 'Empty')).toBe('');
+    expect(readXmlElement('<s3:Key attr="1"/>', 'Key')).toBe('');
 
     const multipartXml = `<?xml version="1.0" encoding="UTF-8"?>
       <ns0:ListMultipartUploadsResult xmlns:ns0="http://s3.amazonaws.com/doc/2006-03-01/">
@@ -191,10 +191,12 @@ describe('F-26b: multi-volume archive.extract bounded concurrency and stitch byt
       'g_mv_ok:ext',
       'graph-node',
       {
+        jobId: 'g_mv_ok:ext',
         sourceFormat: 'zip',
         targetFormat: 'bin',
         originalFilename: splitParts[0].name,
         fileSize: zipBuf.length,
+        options: {},
         graphId: 'g_mv_ok',
         graphNodeId: 'ext',
         graphNode: { op: 'archive.extract', input: 'imp' },
@@ -235,10 +237,12 @@ describe('F-26b: multi-volume archive.extract bounded concurrency and stitch byt
       'g_mv_over:ext',
       'graph-node',
       {
+        jobId: 'g_mv_over:ext',
         sourceFormat: 'zip',
         targetFormat: 'bin',
         originalFilename: splitParts[0].name,
         fileSize: MAX_STITCH_BUFFER_SIZE + 2048,
+        options: {},
         graphId: 'g_mv_over',
         graphNodeId: 'ext',
         graphNode: { op: 'archive.extract', input: 'imp' },
@@ -538,11 +542,13 @@ describe.skipIf(!REDIS_URL)('F-05, F-06, F-07, F-08: Real Redis distributed TUS,
 
     const inline64k = Buffer.alloc(48 * 1024, 0x61).toString('base64');
     const added = await adapter.add('convert', {
+      jobId: 'job_u_list_1',
       userId: 'u_list',
       sourceFormat: 'png',
       targetFormat: 'webp',
       originalFilename: 'hero.png',
       fileSize: 49152,
+      options: {},
       inputBufferBase64: inline64k,
     });
     const popped = await adapter._popNextWaiting();

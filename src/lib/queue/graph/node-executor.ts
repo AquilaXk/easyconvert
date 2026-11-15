@@ -45,9 +45,6 @@ import {
 } from '../../conversions/archive-extraction-safety';
 import { isWrapperSource, unpackWrapperSource } from '../../conversions/archive-wrapper-sources';
 import { decompressZstdNative } from '../../conversions/zstd-native';
-import { mapWithConcurrency } from '../../conversions/ocr-page-batch';
-
-const INTERMEDIATE_PDF_CONCURRENCY = 4;
 import { openPasswordOption } from '../option-secrets';
 import { OPTIMIZERS, getOptimizer, type OptimizerRegistry } from '../../conversions/optimizers';
 import {
@@ -96,6 +93,7 @@ import { deadlineBoundEngine, jobDeadlineAt } from '../job-deadline';
 import { JOB_DEADLINE_AT, remainingJobMs, stripEngineControls } from '../../conversions/job-time';
 
 const INTERMEDIATE_TTL_MS = 24 * 60 * 60 * 1000;
+const INTERMEDIATE_PDF_CONCURRENCY = 4;
 
 /** A tar written as .tar.gz at the compression level of the node's options, without holding the event loop; stopped if the attempt ended. */
 async function gzipArchive(tar: Buffer, compressionLevel: unknown, attemptSignal: AbortSignal): Promise<Buffer> {
