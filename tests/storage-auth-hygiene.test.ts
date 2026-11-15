@@ -513,7 +513,7 @@ describe('Batch 2: Storage Lifecycle, Adapter SSRF/Credential Guards & Auth Hygi
       const mockRedis = {
         eval: vi.fn(async (script: string, numKeys: number, ...args: unknown[]) => {
           evalCalls.push({ script, numKeys, args });
-          return numKeys === 4 ? 'DELETED' : 1;
+          return numKeys === 4 ? 'DELETED' : 'CREATED';
         }),
         hset: vi.fn(async () => 1),
         hdel: vi.fn(async () => 1),

@@ -467,8 +467,9 @@ export class RedisKeyStore extends KeyStore {
         const keyPrefix = this.keyPrefix;
         const dataJson = JSON.stringify(key);
         const prevHash = key.previousKeyHash || '';
+        let createdViaLua = false;
         if (typeof (this.redisClient as { eval?: unknown }).eval === 'function') {
-          await this.redisClient.eval(
+          const luaRes = await this.redisClient.eval(
             CREATE_API_KEY_LUA_SCRIPT,
             3,
             `${keyPrefix}apikeys:${key.id}`,
@@ -481,7 +482,9 @@ export class RedisKeyStore extends KeyStore {
             prevHash,
             dataJson
           );
-        } else {
+          createdViaLua = luaRes === 'CREATED';
+        }
+        if (!createdViaLua) {
           await this.redisClient.hset(`${keyPrefix}apikeys:${key.id}`, {
             id: key.id,
             userId: key.userId,
@@ -899,6 +902,7 @@ export class RedisKeyStore extends KeyStore {
     let deletedInRedis = false;
     if (this.redisClient) {
       try {
+        let handledViaLua = false;
         if (typeof (this.redisClient as { eval?: unknown }).eval === 'function') {
           const outcome = await this.redisClient.eval(
             DELETE_API_KEY_LUA_SCRIPT,
@@ -914,9 +918,13 @@ export class RedisKeyStore extends KeyStore {
           if (outcome === 'FORBIDDEN') {
             return false;
           }
-          this.tokenBuckets.delete(`apikey:${keyId}`);
-          deletedInRedis = outcome === 'DELETED';
-        } else {
+          if (outcome === 'DELETED' || outcome === 'MISSING') {
+            this.tokenBuckets.delete(`apikey:${keyId}`);
+            deletedInRedis = outcome === 'DELETED';
+            handledViaLua = true;
+          }
+        }
+        if (!handledViaLua) {
           const keyData = await this.redisClient.hgetall(`${this.keyPrefix}apikeys:${keyId}`);
           const ownerId = keyData.userId ?? localKey?.userId;
           if (ownerId !== userId) {

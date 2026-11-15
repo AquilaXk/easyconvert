@@ -515,7 +515,7 @@ export const CREATE_API_KEY_LUA_SCRIPT = `
 redis.call('HSET', KEYS[1], 'id', ARGV[1], 'userId', ARGV[2], 'status', ARGV[3], 'keyHash', ARGV[4], 'previousKeyHash', ARGV[5], 'data', ARGV[6])
 redis.call('HSET', KEYS[2], ARGV[4], ARGV[1])
 redis.call('SADD', KEYS[3], ARGV[1])
-return 1
+return 'CREATED'
 `;
 
 export const DELETE_API_KEY_LUA_SCRIPT = `
