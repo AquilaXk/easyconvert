@@ -6,6 +6,7 @@ import { MAX_DOCUMENT_INFLATE_BYTES } from '../lib/conversions/bounded-inflate';
 import { CALIBRE_ONLY_SOURCES, calibreEngineUnavailable } from '../lib/conversions/calibre-ebook-targets';
 import { assertNoVectorImages, rewriteEpubFromModel } from '../lib/conversions/epub-rewrite';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
+import { watchDirectoryGrowth } from './directory-growth-watch';
 import { fitsWindows1252 } from '../lib/conversions/office/windows-1252';
 import { writeZipFile, type ZipEntryInput } from '../lib/conversions/zip-writer';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
@@ -78,6 +79,16 @@ const TEXT_SCAN_CHUNK_BYTES = 1024 * 1024;
 /** Largest e-book handed to calibre, as it is or as the EPUB of another source: the budget of one document everywhere else. */
 const MAX_BOOK_BYTES = MAX_DOCUMENT_INFLATE_BYTES;
 const MAX_OEB_FILES = ARCHIVE_SECURITY_LIMITS.MAX_FILES;
+/**
+ * What the job directory may hold while calibre runs: the book, what calibre unpacks from it (a CHM is extracted whole before it is read) and what it
+ * writes. The per-file limit of the run bounds one file only. The sum is bounded by a floor plus a multiple of the book (a container of text unpacks to
+ * a few times its size; 64 times is a hostile ratio), and never by more than the output limit plus four times the largest book that is accepted.
+ */
+const DIRECTORY_FLOOR_BYTES = 64 * 1024 * 1024;
+const DIRECTORY_EXPANSION_FACTOR = 64;
+const DIRECTORY_CEILING_BYTES = MAX_OUTPUT_BYTES + 4 * MAX_BOOK_BYTES;
+const DIRECTORY_MAX_ENTRIES = ARCHIVE_SECURITY_LIMITS.MAX_FILES;
+const directoryLimitBytes = (bookBytes: number): number => Math.min(DIRECTORY_CEILING_BYTES, DIRECTORY_FLOOR_BYTES + DIRECTORY_EXPANSION_FACTOR * bookBytes);
 const MAX_OEB_BYTES = MAX_DOCUMENT_INFLATE_BYTES;
 const DRM_PATTERN = /\bDRMError\b|protected by DRM/i;
 const PDB_ENCODING_WINDOWS_1252 = 'cp1252';
@@ -122,6 +133,8 @@ interface CalibreRun {
   request: CalibreRequest;
   limitMs: number;
   deadlineAt: number;
+  /** The most the job directory may hold during a run (`directoryLimitBytes` of the staged book). */
+  directoryBytes: number;
 }
 
 /** How a target is written: its options, what is decided from the book first, what is made of calibre's output, and what the file must start with. */
@@ -141,8 +154,15 @@ function runTimeoutMs(options: WorkerEngineOptions): number {
   return Math.min(stageTimeoutMs(options, DEFAULT_TIMEOUT_MS), MAX_TIMEOUT_MS);
 }
 
+/**
+ * The PDF writer's Chromium refuses to run as the root of a user namespace unless its own sandbox is off (the run is inside the worker's sandbox),
+ * and makes its shared memory in /dev/shm, where the file confinement lets a program write but not create files, so it uses its temporary
+ * directory (the same two settings as the website capture's driver, native/capture-website/capture.py). Only a run that draws pages gets them.
+ */
+const CHROMIUM_IN_SANDBOX_ENVIRONMENT: Readonly<Record<string, string>> = { QTWEBENGINE_DISABLE_SANDBOX: '1', QTWEBENGINE_CHROMIUM_FLAGS: '--disable-dev-shm-usage' };
+
 /** The directories and settings calibre gets: all inside the job directory, so no plug-in, setting or cache of another job or of the host reaches it. */
-function calibreEnvironment(dir: string): Record<string, string> {
+function calibreEnvironment(dir: string, drawsPages: boolean): Record<string, string> {
   const home = path.join(dir, 'home');
   const temp = path.join(dir, 'tmp');
   const config = path.join(dir, 'config');
@@ -160,13 +180,9 @@ function calibreEnvironment(dir: string): Record<string, string> {
     XDG_DATA_HOME: home,
     XDG_RUNTIME_DIR: runtime,
     QT_QPA_PLATFORM: 'offscreen',
-    // The PDF writer's Chromium refuses to run as the root of a user namespace unless its own sandbox is off (the run is inside the worker's sandbox),
-    // and makes its shared memory in /dev/shm, where the file confinement lets a program write but not create files, so it uses its temporary
-    // directory (the same two settings as the website capture's driver, native/capture-website/capture.py).
-    QTWEBENGINE_DISABLE_SANDBOX: '1',
-    QTWEBENGINE_CHROMIUM_FLAGS: '--disable-dev-shm-usage',
     PYTHONDONTWRITEBYTECODE: '1',
     PYTHONNOUSERSITE: '1',
+    ...(drawsPages ? CHROMIUM_IN_SANDBOX_ENVIRONMENT : {}),
   };
 }
 
@@ -195,6 +211,7 @@ async function runCalibre(run: CalibreRun, args: readonly string[]): Promise<voi
   const { request } = run;
   const remainingMs = run.deadlineAt - Date.now();
   if (remainingMs <= 0) throw new CpuTaskTimeoutError(`.${request.src} to .${request.tgt} conversion`, run.limitMs);
+  const growth = new AbortController();
   const limits: LaunchedExecutionOptions = {
     timeoutMs: remainingMs,
     maxBuffer: request.options.maxBufferBytes || DEFAULT_MAX_BUFFER_BYTES,
@@ -207,17 +224,23 @@ async function runCalibre(run: CalibreRun, args: readonly string[]): Promise<voi
     // network namespaces, the resource limits and the process group kill (docs/policy-decisions.md, entry 203), and pid-init still hides the /proc entries
     // of the other runs from it (entry 208).
     sandboxOptions: { pidNamespace: false },
-    signal: request.options.signal,
+    signal: request.options.signal ? AbortSignal.any([request.options.signal, growth.signal]) : growth.signal,
     cwd: run.dir,
     workDir: run.dir,
     env: run.environment,
     expectedOutputBytes: EXPECTED_PIPED_OUTPUT_BYTES,
   };
+  const stopWatching = watchDirectoryGrowth(run.dir, { maxBytes: run.directoryBytes, maxEntries: DIRECTORY_MAX_ENTRIES }, () => growth.abort());
   try {
     await launchSandboxedBinary(run.program, [...args], limits);
   } catch (err) {
+    if (growth.signal.aborted && !request.options.signal?.aborted) {
+      throw new PayloadLimitError(`calibre wrote more than ${run.directoryBytes} bytes or ${DIRECTORY_MAX_ENTRIES} files while it converted the .${request.src} file.`);
+    }
     rethrowSandboxUnavailable(err);
     throw toCalibreError(err, run);
+  } finally {
+    stopWatching();
   }
 }
 
@@ -400,7 +423,7 @@ export async function convertWithCalibre(deps: CalibreDeps, request: CalibreRequ
   return withSandboxDir(TEMP_PREFIX, async (dir) => {
     const bookPath = CALIBRE_NATIVE_SOURCES.has(src) ? stageNativeBook(input, src, dir) : await stageEpubOfSource(deps, request, dir);
     const limitMs = runTimeoutMs(options);
-    const run: CalibreRun = { program, dir, environment: calibreEnvironment(dir), request, limitMs, deadlineAt: Date.now() + limitMs };
+    const run: CalibreRun = { program, dir, environment: calibreEnvironment(dir, target.drawsPages === true), request, limitMs, deadlineAt: Date.now() + limitMs, directoryBytes: directoryLimitBytes(fs.statSync(bookPath).size) };
     const outputPath = path.join(dir, `${OUTPUT_NAME}.${tgt}`);
     const extraArguments = (await target.prepare?.(run, bookPath)) ?? [];
     await runCalibre(run, [bookPath, outputPath, ...target.args, ...extraArguments]);

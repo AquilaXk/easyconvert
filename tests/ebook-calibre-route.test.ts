@@ -266,14 +266,42 @@ describe('the calibre route against a stand-in program', () => {
     }
   );
 
-  it('starts calibre with Chromium told not to use its own sandbox or /dev/shm, which the sandbox of the worker does not allow it', async () => {
+  it.each([
+    ['pdf', '1', '--disable-dev-shm-usage'],
+    ['txt', undefined, undefined],
+    ['epub', undefined, undefined],
+    ['mobi', undefined, undefined],
+  ])('starts calibre for .%s with Chromium told not to use its own sandbox or /dev/shm only when it draws pages (%s, %s)', async (target, sandbox, flags) => {
     setScannedText('unused');
-    const result = await convertWithCalibre(deps(), request('tcr', 'pdf', Buffer.from('tcr book bytes')), fakeProgram(validOutput()));
+    const result = await convertWithCalibre(deps(), request('tcr', target, Buffer.from('tcr book bytes')), fakeProgram(validOutput()));
     const [run] = runsOf();
-    expect(run.env.QTWEBENGINE_DISABLE_SANDBOX).toBe('1');
-    expect(run.env.QTWEBENGINE_CHROMIUM_FLAGS).toBe('--disable-dev-shm-usage');
+    expect(run.env.QTWEBENGINE_DISABLE_SANDBOX).toBe(sandbox);
+    expect(run.env.QTWEBENGINE_CHROMIUM_FLAGS).toBe(flags);
     fs.rmSync(result.filePath as string, { force: true });
   });
+
+  it('stops a run whose files outgrow the job directory limit, and kills the program', async () => {
+    // A book of 15 bytes may hold 64 MiB and what the program unpacks from it; this one writes a file of 8 MiB every 100 ms.
+    const pidFile = path.join(workDir, 'grower.pid');
+    const program = fakeProgram(`
+      fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+      let n = 0;
+      setInterval(() => { fs.writeFileSync('unpacked-' + n++, Buffer.alloc(8 * 1024 * 1024, 1)); }, 100);
+    `);
+    const failure = await convertWithCalibre(deps(), request('chm', 'txt', Buffer.from('chm book bytes')), program).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PayloadLimitError);
+    expect((failure as Error).message).toMatch(/^calibre wrote more than \d+ bytes or \d+ files while it converted the \.chm file\.$/);
+    expect(await endsWithin(Number(fs.readFileSync(pidFile, 'utf-8')), PROCESS_END_WAIT_MS)).toBe(true);
+  }, 30_000);
+
+  it('does not stop a run that stays under the limit', async () => {
+    setScannedText('unused');
+    const program = fakeProgram(`fs.writeFileSync('unpacked', Buffer.alloc(8 * 1024 * 1024, 1));\n${validOutput()}`);
+    const result = await convertWithCalibre(deps(), request('chm', 'epub', Buffer.from('chm book bytes')), program);
+    expect(result.engineUsed).toBe('native-calibre');
+    fs.rmSync(result.filePath as string, { force: true });
+  });
+
 
   it('gives calibre a configuration, cache and temporary directory of the job, no network and no secret of the worker', async () => {
     const program = fakeProgram(validOutput());
