@@ -11,7 +11,7 @@
 #   2. executing a file from /tmp fails with EACCES (noexec)
 #   3. the process holds no cap_sys_admin (kernel view; `capsh --print` too when it is installed)
 #   4. a child in the sandbox's namespaces cannot connect to the Redis port while the parent can
-#   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; fluidsynth for MIDI; FontForge for a Type 1 font; calibre for a MOBI book; LibreOffice with VERIFY_LIBREOFFICE=1)
+#   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; fluidsynth for MIDI; FontForge for a Type 1 font; calibre for a MOBI book; pandoc for a LaTeX file; LibreOffice with VERIFY_LIBREOFFICE=1)
 #   6. libdeflate-gzip (the deflate encoder for ZIP and gzip payloads past 4 MiB) is installed and round-trips inside the sandbox
 #   7. lbzip2 (the bzip2 encoder for tar.bz2 targets of up to two blocks) is installed and round-trips inside the sandbox
 #   8. qpdf-runner (the qpdf jobs of the PDF operations) runs a job in a user and network namespace of its own under this container's seccomp profile
@@ -318,6 +318,52 @@ if [ -z "$calibre_failure" ]; then
   pass "calibre converted a text file to MOBI, AZW3, PDB, LRF and OEB books inside the sandbox"
 else
   fail "calibre did not convert a text file to the five e-book targets inside the sandbox: $calibre_failure"
+fi
+
+# calibre also reads the Psion TCR books (and the Microsoft Reader and Compiled HTML Help books, which the image has no way to write) and writes EPUB,
+# PDF, RTF and text from them: it writes a TCR book from the text file, reads it back to each of the four targets as the worker starts it, and each
+# result must carry its format's signature (the ZIP entry `mimetypeapplication/epub+zip` at byte 30 for EPUB, `%PDF-`, `{\rtf1`) and the marker text.
+# The PDF writer draws with Chromium, which needs the wide address space of the website capture and no shared memory in /dev/shm.
+PDF_ADDRESS_SPACE_BYTES=$((192 * 1024 * 1024 * 1024))
+calibre_reader_failure=""
+if ! sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" env HOME="$work_dir" QT_QPA_PLATFORM=offscreen CALIBRE_CONFIG_DIRECTORY="$work_dir/calibre-config" \
+    CALIBRE_CACHE_DIRECTORY="$work_dir/calibre-cache" CALIBRE_TEMP_DIR="$work_dir/calibre-tmp" PYTHONDONTWRITEBYTECODE=1 \
+    ebook-convert "$work_dir/book.txt" "$work_dir/book.tcr" >"$work_dir/calibre.out" 2>&1; then
+  calibre_reader_failure="the TCR book was not written: $(tail -c 300 "$work_dir/calibre.out" 2>/dev/null)"
+fi
+for calibre_target in epub pdf rtf txt; do
+  [ -n "$calibre_reader_failure" ] && break
+  if ! sandboxed_as "$([ "$calibre_target" = pdf ] && echo "$PDF_ADDRESS_SPACE_BYTES" || echo "$ADDRESS_SPACE_LIMIT_BYTES")" timeout "$CONVERSION_TIMEOUT_SECONDS" \
+      env HOME="$work_dir" QT_QPA_PLATFORM=offscreen QTWEBENGINE_DISABLE_SANDBOX=1 QTWEBENGINE_CHROMIUM_FLAGS=--disable-dev-shm-usage \
+      CALIBRE_CONFIG_DIRECTORY="$work_dir/calibre-config" CALIBRE_CACHE_DIRECTORY="$work_dir/calibre-cache" CALIBRE_TEMP_DIR="$work_dir/calibre-tmp" PYTHONDONTWRITEBYTECODE=1 \
+      ebook-convert "$work_dir/book.tcr" "$work_dir/from-tcr.$calibre_target" >"$work_dir/calibre.out" 2>&1; then
+    calibre_reader_failure="the TCR book was not written as .$calibre_target: $(tail -c 300 "$work_dir/calibre.out" 2>/dev/null)"
+    break
+  fi
+  case "$calibre_target" in
+    epub) [ "$(dd if="$work_dir/from-tcr.epub" bs=1 skip=30 count=28 2>/dev/null)" = "mimetypeapplication/epub+zip" ] || calibre_reader_failure="no EPUB media type entry" ;;
+    pdf) [ "$(head -c 5 "$work_dir/from-tcr.pdf")" = '%PDF-' ] || calibre_reader_failure="no PDF header" ;;
+    rtf) [ "$(head -c 6 "$work_dir/from-tcr.rtf")" = '{\rtf1' ] || calibre_reader_failure="no RTF header" ;;
+    txt) grep -q "$MARKER_TEXT" "$work_dir/from-tcr.txt" || calibre_reader_failure="the marker text is not in the text book" ;;
+  esac
+done
+if [ -z "$calibre_reader_failure" ]; then
+  pass "calibre read a TCR book and wrote EPUB, PDF, RTF and text from it inside the sandbox"
+else
+  fail "calibre did not read a TCR book inside the sandbox: $calibre_reader_failure"
+fi
+
+# pandoc writes LaTeX from Markdown and reStructuredText from Markdown: it converts a Markdown file to each started as the worker starts it
+# (`--sandbox`, the job's home and temporary directories in the scratch directory), under the address space limit of the other programs; the
+# LaTeX must open with the section command pandoc writes for the heading, and the reStructuredText with the heading and its underline.
+printf '# %s\n\nA *line*.\n' "$MARKER_TEXT" > "$work_dir/book.md"
+if sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" env HOME="$work_dir" TMPDIR="$work_dir" LANG=C.UTF-8 pandoc --sandbox --from markdown --to latex --output "$work_dir/book.tex" "$work_dir/book.md" >"$work_dir/pandoc.out" 2>&1 \
+  && sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" env HOME="$work_dir" TMPDIR="$work_dir" LANG=C.UTF-8 pandoc --sandbox --from markdown --to rst --output "$work_dir/book.rst" "$work_dir/book.md" >>"$work_dir/pandoc.out" 2>&1 \
+  && [ "$(head -n 1 "$work_dir/book.tex")" = "\\section{$MARKER_TEXT}\\label{$(printf '%s' "$MARKER_TEXT" | tr 'A-Z' 'a-z')}" ] \
+  && [ "$(head -n 1 "$work_dir/book.rst")" = "$MARKER_TEXT" ] && grep -q '^====' "$work_dir/book.rst"; then
+  pass "pandoc converted a Markdown file to LaTeX and reStructuredText inside the sandbox"
+else
+  fail "pandoc did not convert a Markdown file inside the sandbox: $(tail -c 300 "$work_dir/pandoc.out" 2>/dev/null)"
 fi
 
 if [ "${VERIFY_LIBREOFFICE:-0}" = "1" ]; then

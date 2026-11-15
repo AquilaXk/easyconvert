@@ -3,9 +3,10 @@ import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { ARCHIVE_SECURITY_LIMITS } from '../lib/conversions/archive';
 import { MAX_DOCUMENT_INFLATE_BYTES } from '../lib/conversions/bounded-inflate';
-import { calibreEngineUnavailable } from '../lib/conversions/calibre-ebook-targets';
+import { CALIBRE_ONLY_SOURCES, calibreEngineUnavailable } from '../lib/conversions/calibre-ebook-targets';
 import { assertNoVectorImages, rewriteEpubFromModel } from '../lib/conversions/epub-rewrite';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
+import { watchDirectoryGrowth } from './directory-growth-watch';
 import { fitsWindows1252 } from '../lib/conversions/office/windows-1252';
 import { writeZipFile, type ZipEntryInput } from '../lib/conversions/zip-writer';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
@@ -24,6 +25,9 @@ import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } fr
 /**
  * The Palm, Kindle, Sony and Open eBook targets (MOBI, AZW3, PDB, LRF, OEB) are written by calibre's `ebook-convert`
  * (GPL-3.0, an unmodified program started as a separate sandboxed process; nothing of calibre is copied or linked).
+ *
+ * The same program reads the CHM, LIT and TCR books that no other engine of the project reads, and writes EPUB, PDF, RTF and text from them
+ * with the defaults of its writers (docs/policy-decisions.md, "CHM, LIT and TCR books").
  *
  * The route: a source that calibre reads itself (an e-book of its own family) is handed over as it is; every other
  * source is first written as EPUB by this project's own converters (`CalibreDeps.convert`, the whole worker conversion
@@ -54,6 +58,12 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 600_000;
 /** The address space of the program: Python and Qt map far more than they use, and a 1 GiB limit still converts a short book. */
 const MEMORY_LIMIT_MB = 4096;
+/**
+ * The PDF writer draws the book with Qt WebEngine (Chromium), which reserves tens of GiB of address space for its V8 cage and starts with no
+ * page at any limit below that ("Load of clbr://internal.invalid/book/index.html failed", measured with 8, 16 and 32 GiB). A run that draws
+ * pages gets the address space the website capture gives the same engine, and keeps the 4096 MB resident limit of the memory watch.
+ */
+const PAGE_DRAWING_ADDRESS_SPACE_BYTES = 192 * 1024 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
 const DEFAULT_MAX_BUFFER_BYTES = 100 * 1024 * 1024;
 const MAX_STDERR_CHARS = 300;
@@ -69,13 +79,26 @@ const TEXT_SCAN_CHUNK_BYTES = 1024 * 1024;
 /** Largest e-book handed to calibre, as it is or as the EPUB of another source: the budget of one document everywhere else. */
 const MAX_BOOK_BYTES = MAX_DOCUMENT_INFLATE_BYTES;
 const MAX_OEB_FILES = ARCHIVE_SECURITY_LIMITS.MAX_FILES;
+/**
+ * What the job directory may hold while calibre runs: the book, what calibre unpacks from it (a CHM is extracted whole before it is read) and what it
+ * writes. The per-file limit of the run bounds one file only. The sum is bounded by a floor plus a multiple of the book (a container of text unpacks to
+ * a few times its size; 64 times is a hostile ratio), and never by more than the output limit plus four times the largest book that is accepted.
+ */
+const DIRECTORY_FLOOR_BYTES = 64 * 1024 * 1024;
+const DIRECTORY_EXPANSION_FACTOR = 64;
+const DIRECTORY_CEILING_BYTES = MAX_OUTPUT_BYTES + 4 * MAX_BOOK_BYTES;
+const DIRECTORY_MAX_ENTRIES = ARCHIVE_SECURITY_LIMITS.MAX_FILES;
+const directoryLimitBytes = (bookBytes: number): number => Math.min(DIRECTORY_CEILING_BYTES, DIRECTORY_FLOOR_BYTES + DIRECTORY_EXPANSION_FACTOR * bookBytes);
 const MAX_OEB_BYTES = MAX_DOCUMENT_INFLATE_BYTES;
 const DRM_PATTERN = /\bDRMError\b|protected by DRM/i;
 const PDB_ENCODING_WINDOWS_1252 = 'cp1252';
 const PDB_ENCODING_UTF8 = 'utf-8';
 
-/** Sources calibre has an input plug-in for and that are handed to it unchanged: the Palm, Kindle and Sony families (a PRC is a Mobipocket book under its Palm name). */
-const CALIBRE_NATIVE_SOURCES: ReadonlySet<string> = new Set(['mobi', 'azw', 'azw3', 'pdb', 'lrf', 'prc']);
+/**
+ * Sources calibre has an input plug-in for and that are handed to it unchanged: the Palm, Kindle and Sony families (a PRC is a Mobipocket
+ * book under its Palm name), and the CHM, LIT and TCR books that no other engine of the project reads.
+ */
+const CALIBRE_NATIVE_SOURCES: ReadonlySet<string> = new Set(['mobi', 'azw', 'azw3', 'pdb', 'lrf', 'prc', ...CALIBRE_ONLY_SOURCES]);
 
 interface OutputSignature {
   offset: number;
@@ -84,6 +107,9 @@ interface OutputSignature {
 const PALMDB_TYPE_CREATOR_OFFSET = 60;
 const MOBIPOCKET_SIGNATURE: OutputSignature = { offset: PALMDB_TYPE_CREATOR_OFFSET, bytes: Buffer.from('BOOKMOBI', 'latin1') };
 const OEB_PACKAGE_FILE = /\.opf$/i;
+const EPUB_FIRST_ENTRY_OFFSET = 30;
+/** The first ZIP entry of an EPUB: the local header ends at byte 30, then come the name `mimetype` and its stored content. */
+const EPUB_SIGNATURE: OutputSignature = { offset: EPUB_FIRST_ENTRY_OFFSET, bytes: Buffer.from('mimetypeapplication/epub+zip', 'latin1') };
 
 /** What the route runs on: the whole worker conversion of a source into EPUB, and the clean-up of its temporary output. */
 export interface CalibreDeps {
@@ -107,6 +133,8 @@ interface CalibreRun {
   request: CalibreRequest;
   limitMs: number;
   deadlineAt: number;
+  /** The most the job directory may hold during a run (`directoryLimitBytes` of the staged book). */
+  directoryBytes: number;
 }
 
 /** How a target is written: its options, what is decided from the book first, what is made of calibre's output, and what the file must start with. */
@@ -116,6 +144,8 @@ interface CalibreTarget {
   finalize?: (outputPath: string, run: CalibreRun) => Promise<string>;
   /** The format of the delivered file, when it is not the target (the OEB folder is delivered as a ZIP). */
   deliveredAs?: string;
+  /** Whether the writer draws pages with Qt WebEngine, which needs the wide address space above. */
+  drawsPages?: boolean;
   signature?: OutputSignature;
 }
 
@@ -124,8 +154,15 @@ function runTimeoutMs(options: WorkerEngineOptions): number {
   return Math.min(stageTimeoutMs(options, DEFAULT_TIMEOUT_MS), MAX_TIMEOUT_MS);
 }
 
+/**
+ * The PDF writer's Chromium refuses to run as the root of a user namespace unless its own sandbox is off (the run is inside the worker's sandbox),
+ * and makes its shared memory in /dev/shm, where the file confinement lets a program write but not create files, so it uses its temporary
+ * directory (the same two settings as the website capture's driver, native/capture-website/capture.py). Only a run that draws pages gets them.
+ */
+const CHROMIUM_IN_SANDBOX_ENVIRONMENT: Readonly<Record<string, string>> = { QTWEBENGINE_DISABLE_SANDBOX: '1', QTWEBENGINE_CHROMIUM_FLAGS: '--disable-dev-shm-usage' };
+
 /** The directories and settings calibre gets: all inside the job directory, so no plug-in, setting or cache of another job or of the host reaches it. */
-function calibreEnvironment(dir: string): Record<string, string> {
+function calibreEnvironment(dir: string, drawsPages: boolean): Record<string, string> {
   const home = path.join(dir, 'home');
   const temp = path.join(dir, 'tmp');
   const config = path.join(dir, 'config');
@@ -145,6 +182,7 @@ function calibreEnvironment(dir: string): Record<string, string> {
     QT_QPA_PLATFORM: 'offscreen',
     PYTHONDONTWRITEBYTECODE: '1',
     PYTHONNOUSERSITE: '1',
+    ...(drawsPages ? CHROMIUM_IN_SANDBOX_ENVIRONMENT : {}),
   };
 }
 
@@ -173,28 +211,36 @@ async function runCalibre(run: CalibreRun, args: readonly string[]): Promise<voi
   const { request } = run;
   const remainingMs = run.deadlineAt - Date.now();
   if (remainingMs <= 0) throw new CpuTaskTimeoutError(`.${request.src} to .${request.tgt} conversion`, run.limitMs);
+  const growth = new AbortController();
   const limits: LaunchedExecutionOptions = {
     timeoutMs: remainingMs,
     maxBuffer: request.options.maxBufferBytes || DEFAULT_MAX_BUFFER_BYTES,
     maxFileSize: MAX_OUTPUT_BYTES,
     memoryLimitMb: MEMORY_LIMIT_MB,
+    ...(CALIBRE_TARGETS[request.tgt]?.drawsPages ? { rlimits: { asBytes: PAGE_DRAWING_ADDRESS_SPACE_BYTES } } : {}),
     networkIsolated: true,
     // No PID namespace of its own: the launcher of calibre's release build reads /proc/<its own id>/exe, and /proc (which the sandbox cannot remount)
     // shows the host's processes, so in a namespace it reads another process (or none) and stops with "Failed to read exe path". It keeps the user and
     // network namespaces, the resource limits and the process group kill (docs/policy-decisions.md, entry 203), and pid-init still hides the /proc entries
     // of the other runs from it (entry 208).
     sandboxOptions: { pidNamespace: false },
-    signal: request.options.signal,
+    signal: request.options.signal ? AbortSignal.any([request.options.signal, growth.signal]) : growth.signal,
     cwd: run.dir,
     workDir: run.dir,
     env: run.environment,
     expectedOutputBytes: EXPECTED_PIPED_OUTPUT_BYTES,
   };
+  const stopWatching = watchDirectoryGrowth(run.dir, { maxBytes: run.directoryBytes, maxEntries: DIRECTORY_MAX_ENTRIES }, () => growth.abort());
   try {
     await launchSandboxedBinary(run.program, [...args], limits);
   } catch (err) {
+    if (growth.signal.aborted && !request.options.signal?.aborted) {
+      throw new PayloadLimitError(`calibre wrote more than ${run.directoryBytes} bytes or ${DIRECTORY_MAX_ENTRIES} files while it converted the .${request.src} file.`);
+    }
     rethrowSandboxUnavailable(err);
     throw toCalibreError(err, run);
+  } finally {
+    stopWatching();
   }
 }
 
@@ -341,10 +387,15 @@ function assertOutputFormat(outputPath: string, src: string, tgt: string, signat
 }
 
 /**
- * The five targets. The PalmDB type and creator (bytes 60 to 67 of the Palm database header) of a Mobipocket book is `BOOKMOBI`,
+ * The targets. The PalmDB type and creator (bytes 60 to 67 of the Palm database header) of a Mobipocket book is `BOOKMOBI`,
  * of a PalmDOC book `TEXtREAd`; an LRF book starts with the UTF-16LE magic "LRF".
  */
 export const CALIBRE_TARGETS: Readonly<Record<string, CalibreTarget>> = {
+  // The four targets the in-process engine also writes: calibre writes them for the books only it reads (CHM, LIT, TCR) with the defaults of its writers.
+  epub: { args: [], signature: EPUB_SIGNATURE },
+  pdf: { args: [], drawsPages: true, signature: { offset: 0, bytes: Buffer.from('%PDF-', 'latin1') } },
+  rtf: { args: [], signature: { offset: 0, bytes: Buffer.from('{\\rtf1', 'latin1') } },
+  txt: { args: [] },
   mobi: { args: ['--mobi-file-type', 'old', '--no-inline-toc'], signature: MOBIPOCKET_SIGNATURE },
   azw3: { args: ['--no-inline-toc'], signature: MOBIPOCKET_SIGNATURE },
   pdb: {
@@ -361,7 +412,7 @@ function baseNameOf(originalFilename: string): string {
 }
 
 /**
- * Writes the source as MOBI, AZW3, PDB, LRF or OEB with calibre. `program` is the `ebook-convert` the worker found, or null
+ * Writes the source as MOBI, AZW3, PDB, LRF or OEB with calibre, or a CHM, LIT or TCR book as EPUB, PDF, RTF or text. `program` is the `ebook-convert` the worker found, or null
  * when it is not installed: the pair then fails with an unavailable engine, before the source is converted.
  */
 export async function convertWithCalibre(deps: CalibreDeps, request: CalibreRequest, program: string | null): Promise<WorkerConversionResult> {
@@ -372,7 +423,7 @@ export async function convertWithCalibre(deps: CalibreDeps, request: CalibreRequ
   return withSandboxDir(TEMP_PREFIX, async (dir) => {
     const bookPath = CALIBRE_NATIVE_SOURCES.has(src) ? stageNativeBook(input, src, dir) : await stageEpubOfSource(deps, request, dir);
     const limitMs = runTimeoutMs(options);
-    const run: CalibreRun = { program, dir, environment: calibreEnvironment(dir), request, limitMs, deadlineAt: Date.now() + limitMs };
+    const run: CalibreRun = { program, dir, environment: calibreEnvironment(dir, target.drawsPages === true), request, limitMs, deadlineAt: Date.now() + limitMs, directoryBytes: directoryLimitBytes(fs.statSync(bookPath).size) };
     const outputPath = path.join(dir, `${OUTPUT_NAME}.${tgt}`);
     const extraArguments = (await target.prepare?.(run, bookPath)) ?? [];
     await runCalibre(run, [bookPath, outputPath, ...target.args, ...extraArguments]);

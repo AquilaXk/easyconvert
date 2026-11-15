@@ -603,7 +603,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'text/plain',
     category: 'document',
     description: 'Standard unformatted plain text document.',
-    targetFormats: ['pdf', 'docx', 'html', 'md', 'epub', 'pptx', 'zip', 'odt', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'xps', 'hwp', 'hwpx', 'doc', 'jpg', 'png', 'rtf'],
+    targetFormats: ['pdf', 'docx', 'html', 'md', 'epub', 'pptx', 'zip', 'odt', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'xps', 'hwp', 'hwpx', 'doc', 'jpg', 'png', 'rtf', 'tex'],
     optionsSchema: { orientation: true },
   },
   text: {
@@ -622,7 +622,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'text/markdown',
     category: 'document',
     description: 'Lightweight markup language with plain-text formatting syntax.',
-    targetFormats: ['html', 'pdf', 'docx', 'txt', 'epub', 'pptx', 'odp', 'odt', 'zip', 'md', 'hwp', 'hwpx', 'doc', 'jpg', 'png', 'rtf'],
+    targetFormats: ['html', 'pdf', 'docx', 'txt', 'epub', 'pptx', 'odp', 'odt', 'zip', 'md', 'hwp', 'hwpx', 'doc', 'jpg', 'png', 'rtf', 'rst', 'tex'],
     optionsSchema: { orientation: true },
   },
   html: {
@@ -632,7 +632,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'text/html',
     category: 'document',
     description: 'HyperText Markup Language - Standard document format for web pages.',
-    targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'odt', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'hwp', 'hwpx', 'doc', 'jpg', 'png', 'rtf'],
+    targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'odt', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'hwp', 'hwpx', 'doc', 'jpg', 'png', 'rtf', 'tex'],
     optionsSchema: { orientation: true },
   },
   htm: {
@@ -944,7 +944,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/x-ms-reader',
     category: 'ebook',
     description: 'Microsoft Reader compressed ebook format.',
-    targetFormats: ['zip'],
+    targetFormats: ['zip', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
   },
   lrf: {
     id: 'lrf',
@@ -989,7 +989,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/x-tcr',
     category: 'ebook',
     description: 'Psion Series 3 palmtop computer compressed ebook format.',
-    targetFormats: ['zip'],
+    targetFormats: ['zip', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
   },
   chm: {
     id: 'chm',
@@ -998,7 +998,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/vnd.ms-htmlhelp',
     category: 'ebook',
     description: 'Microsoft Compiled HTML Help documentation and online book file.',
-    targetFormats: ['zip'],
+    targetFormats: ['zip', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
   },
   djv: {
     id: 'djv',

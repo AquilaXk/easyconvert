@@ -159,6 +159,7 @@ import {
 import { getXzBinaryPath } from './xz-native';
 
 import { withConversionWarnings } from './conversion-warnings';
+import { assertNotPandocPair } from './pandoc-pairs';
 import { encodeBmp8 } from './bmp';
 import {
   performOcr,
@@ -363,6 +364,7 @@ export async function convertFile(
   originalFilename: string
 ): Promise<ConversionResult> {
   assertNotSubtitlePair(sourceFormat, targetFormat);
+  assertNotPandocPair(sourceFormat, targetFormat);
   return await withConversionWarnings(() => convertFileInScope(inputBuffer, sourceFormat, targetFormat, options, originalFilename));
 }
 

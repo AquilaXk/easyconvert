@@ -1,6 +1,6 @@
 import { ConversionOptions, ConversionResult, EngineUnavailableError, UnsupportedTargetError } from '../../types';
 import { officeReadingFormat } from './office-suite-sources';
-import { calibreEngineUnavailable, isCalibreEbookTarget } from '../calibre-ebook-targets';
+import { calibreEngineUnavailable, isCalibreEbookTarget, isCalibreOnlyPair } from '../calibre-ebook-targets';
 import { loadFontCoverageIndex } from '../pdf-fonts';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantToPlainFormat } from '../ooxml-variants';
 import { buildOpenXpsPackage } from '../openxps';
@@ -220,6 +220,9 @@ export async function convertOffice(
   const tgt = targetFormat.toLowerCase();
   if (isCalibreEbookTarget(tgt)) {
     throw calibreEngineUnavailable(`Writing .${tgt} needs the native ebook-convert (calibre) engine; the in-process engine has no writer for it.`);
+  }
+  if (isCalibreOnlyPair(src, tgt)) {
+    throw calibreEngineUnavailable(`Reading .${src} needs the native ebook-convert (calibre) engine; the in-process engine has no reader for it.`);
   }
   // PDF and raster writers draw text with installed fonts found through the coverage index.
   await loadFontCoverageIndex();

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { pipeline } from 'node:stream';
 import { observeSandboxSpawnFailure } from '../metrics/instruments';
 import { SandboxUnavailableError } from '../types';
+import { getProcessTreeRssMb } from './process-tree';
 
 export interface SandboxEnvironment {
   isContainer: boolean;
@@ -1307,7 +1308,7 @@ export async function executeSandboxedBinary(
     if (effectiveMemoryLimitMb && effectiveMemoryLimitMb > 0) {
       memoryInterval = setInterval(() => {
         if (!proc.pid || isSettled) return;
-        const rssMb = getProcessRssMb(memoryWatchPid(proc.pid, resolvedCmd.levelsAboveProgram));
+        const rssMb = getProcessTreeRssMb(memoryWatchPid(proc.pid, resolvedCmd.levelsAboveProgram), getProcessRssMb);
         if (rssMb !== null && rssMb > effectiveMemoryLimitMb) stopWith(new SandboxedMemoryLimitError(effectiveMemoryLimitMb));
       }, 50);
     }

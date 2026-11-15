@@ -179,6 +179,7 @@ describe('classifying changed paths', () => {
     ['the LibreDWG install script', 'scripts/install-libredwg.sh', ['cad']],
     ['the veraPDF install script', 'scripts/install-verapdf.sh', ['pdf-ops']],
     ['the oxipng install script', 'scripts/install-oxipng.sh', ['image']],
+    ['the pandoc install script', 'scripts/install-pandoc.sh', ['document']],
     ['the oxipng notices', 'scripts/oxipng-notices/THIRD-PARTY-NOTICES', ['image']],
     ['the quantizr pixel quantiser', 'scripts/quantizr-pixels/src/main.rs', ['image']],
     ['the quantizr pixel quantiser lock file', 'scripts/quantizr-pixels/Cargo.lock', ['image']],

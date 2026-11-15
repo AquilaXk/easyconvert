@@ -27,6 +27,7 @@ const NATIVE_ENGINE_USED: Readonly<Record<EngineId, readonly string[]>> = {
   ghostxps: ['native-xps'],
   djvulibre: ['native-djvu'],
   calibre: ['native-calibre'],
+  pandoc: ['native-pandoc'],
   librsvg: ['native-svg'],
   libraw: ['native-raw'],
 };

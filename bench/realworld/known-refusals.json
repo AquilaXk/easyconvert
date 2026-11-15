@@ -225,5 +225,12 @@
     "detail": "^ConversionFailedError: The DjVu document is indirect: ",
     "reason": "The 89 bytes are the index of an indirect document: a directory that names eight page files (page0001.djvu to page0008.djvu) which the corpus does not hold (djvudump: 'Document directory (indirect, 8 files 8 pages)'). ddjvu 3.5.28 answers \"Failed to open 'page0001.djvu'\" and \"Cannot access page 1\" on it, so there is no page to draw; the converter refuses it before the program starts, because the program would read such files from the directory next to the input (tests/djvu-render.test.ts).",
     "issue": 783
+  },
+  {
+    "file": "mspack-encints-32bit-both.chm",
+    "source": "chm",
+    "detail": "^ConversionFailedError: calibre could not convert the \\.chm file to \\.[a-z0-9]+: AttributeError: 'NoneType' object has no attribute 'lstrip'$",
+    "reason": "The 4,292 bytes are a test file of the libmspack suite for 32-bit encoded integers in the directory: it names no start page and no contents file (`home` and `topics` of the CHM reader are `None`), and calibre's CHM reader stops on the missing name (`base.lstrip` of `None`, calibre 7.6.0 and 8.5.0 alike) before it reads a page. The route answers with the typed 400 error (tests/ebook-calibre-sources.test.ts).",
+    "issue": 783
   }
 ]

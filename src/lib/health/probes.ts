@@ -79,6 +79,7 @@ const ADVISORY_BINARIES: ReadonlyArray<readonly [string, NativeBinaryName]> = [
   ['7z', 'p7zip'],
   ['dcraw_emu', 'dcrawEmu'],
   ['ebook-convert', 'ebookConvert'],
+  ['pandoc', 'pandoc'],
 ];
 
 function isRedisConfigured(): boolean {

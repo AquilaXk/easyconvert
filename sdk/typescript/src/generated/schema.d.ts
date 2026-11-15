@@ -1836,7 +1836,7 @@ export interface components {
              * @description The id a request names in `options.engine`. Stable across releases.
              * @enum {string}
              */
-            id: "easyconvert" | "libreoffice" | "ffmpeg" | "poppler" | "7zip" | "ghostscript" | "ghostxps" | "djvulibre" | "calibre" | "librsvg" | "libraw";
+            id: "easyconvert" | "libreoffice" | "ffmpeg" | "poppler" | "7zip" | "ghostscript" | "ghostxps" | "djvulibre" | "calibre" | "pandoc" | "librsvg" | "libraw";
             /** @description Display name of the engine. */
             name: string;
             /** @description Whether the program of the engine is installed on this deployment (the in-process converter always is). */
@@ -1846,7 +1846,7 @@ export interface components {
         };
         PairEngine: {
             /** @enum {string} */
-            id: "easyconvert" | "libreoffice" | "ffmpeg" | "poppler" | "7zip" | "ghostscript" | "ghostxps" | "djvulibre" | "calibre" | "librsvg" | "libraw";
+            id: "easyconvert" | "libreoffice" | "ffmpeg" | "poppler" | "7zip" | "ghostscript" | "ghostxps" | "djvulibre" | "calibre" | "pandoc" | "librsvg" | "libraw";
             name: string;
             /** @description The installed version of the engine; the only version a request may name. */
             version?: string;
@@ -3164,7 +3164,7 @@ export interface operations {
                 /** @description Target format extension: with `source`, one pair; alone, every source that converts to it. */
                 target?: string;
                 /** @description Keeps the pairs that list this engine. */
-                engine?: "easyconvert" | "libreoffice" | "ffmpeg" | "poppler" | "7zip" | "ghostscript" | "ghostxps" | "djvulibre" | "calibre" | "librsvg" | "libraw";
+                engine?: "easyconvert" | "libreoffice" | "ffmpeg" | "poppler" | "7zip" | "ghostscript" | "ghostxps" | "djvulibre" | "calibre" | "pandoc" | "librsvg" | "libraw";
             };
             header?: never;
             path?: never;

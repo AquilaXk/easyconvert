@@ -85,7 +85,7 @@ function fakeProgram(behavior: string): string {
   const script = `#!${process.execPath}
 const fs = require('node:fs');
 const [input, output, ...rest] = process.argv.slice(2);
-const env = Object.fromEntries(['HOME', 'TMPDIR', 'CALIBRE_CONFIG_DIRECTORY', 'CALIBRE_CACHE_DIRECTORY', 'CALIBRE_TEMP_DIR', 'QT_QPA_PLATFORM', 'HTTPS_PROXY', 'EBOOK_CONVERT_PATH', 'DATABASE_URL', 'SECRET_TOKEN'].map((name) => [name, process.env[name]]));
+const env = Object.fromEntries(['HOME', 'TMPDIR', 'CALIBRE_CONFIG_DIRECTORY', 'CALIBRE_CACHE_DIRECTORY', 'CALIBRE_TEMP_DIR', 'QT_QPA_PLATFORM', 'QTWEBENGINE_DISABLE_SANDBOX', 'QTWEBENGINE_CHROMIUM_FLAGS', 'HTTPS_PROXY', 'EBOOK_CONVERT_PATH', 'DATABASE_URL', 'SECRET_TOKEN'].map((name) => [name, process.env[name]]));
 fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), env }) + '\\n');
 ${behavior}
 `;
@@ -103,6 +103,9 @@ function validOutput(): string {
 const heads = { mobi: [60, 'BOOKMOBI'], azw3: [60, 'BOOKMOBI'], pdb: [60, 'TEXtREAd'] };
 const target = output.split('.').pop();
 if (target === 'txt') fs.copyFileSync(${JSON.stringify(fakeTextPath())}, output);
+else if (target === 'epub') { const book = Buffer.alloc(80); book.write('PK\\x03\\x04', 0, 'latin1'); book.write('mimetypeapplication/epub+zip', 30, 'latin1'); fs.writeFileSync(output, book); }
+else if (target === 'pdf') fs.writeFileSync(output, '%PDF-1.4\\n%%EOF\\n');
+else if (target === 'rtf') fs.writeFileSync(output, '{\\\\rtf1\\\\ansi A book.}');
 else if (target === 'oeb') { fs.mkdirSync(output + '/OEBPS', { recursive: true }); fs.writeFileSync(output + '/content.opf', '<package/>'); fs.writeFileSync(output + '/OEBPS/c1.xhtml', '<html/>'); }
 else if (target === 'lrf') fs.writeFileSync(output, Buffer.from([0x4c, 0, 0x52, 0, 0x46, 0, 0, 0, 1, 2, 3]));
 else { const [at, magic] = heads[target]; const book = Buffer.alloc(80); book.write(magic, at, 'latin1'); fs.writeFileSync(output, book); }
@@ -244,6 +247,62 @@ describe('the calibre route against a stand-in program', () => {
     fs.rmSync(result.filePath as string, { force: true });
   });
 
+  it.each(['chm', 'lit', 'tcr'].flatMap((src) => ['epub', 'pdf', 'rtf', 'txt', 'mobi'].map((tgt) => [src, tgt])))(
+    'hands the .%s book to calibre as it is and has calibre write the .%s with the defaults of its writer',
+    async (src, target) => {
+      setScannedText('A book of a few words.');
+      const program = fakeProgram(validOutput());
+      const converters = deps();
+      const result = await convertWithCalibre(converters, request(src, target, Buffer.from(`${src} book bytes`)), program);
+      expect(converters.converted).toEqual([]);
+      const [run] = runsOf();
+      expect(runsOf()).toHaveLength(1);
+      expect(path.basename(run.args[0])).toBe(`book.${src}`);
+      expect(path.basename(run.args[1])).toBe(`converted.${target}`);
+      expect(run.args.slice(2)).toEqual(target === 'mobi' ? ['--mobi-file-type', 'old', '--no-inline-toc'] : []);
+      expect(result.engineUsed).toBe('native-calibre');
+      expect(result.filename).toBe(`book.${target}`);
+      fs.rmSync(result.filePath as string, { force: true });
+    }
+  );
+
+  it.each([
+    ['pdf', '1', '--disable-dev-shm-usage'],
+    ['txt', undefined, undefined],
+    ['epub', undefined, undefined],
+    ['mobi', undefined, undefined],
+  ])('starts calibre for .%s with Chromium told not to use its own sandbox or /dev/shm only when it draws pages (%s, %s)', async (target, sandbox, flags) => {
+    setScannedText('unused');
+    const result = await convertWithCalibre(deps(), request('tcr', target, Buffer.from('tcr book bytes')), fakeProgram(validOutput()));
+    const [run] = runsOf();
+    expect(run.env.QTWEBENGINE_DISABLE_SANDBOX).toBe(sandbox);
+    expect(run.env.QTWEBENGINE_CHROMIUM_FLAGS).toBe(flags);
+    fs.rmSync(result.filePath as string, { force: true });
+  });
+
+  it('stops a run whose files outgrow the job directory limit, and kills the program', async () => {
+    // A book of 15 bytes may hold 64 MiB and what the program unpacks from it; this one writes a file of 8 MiB every 100 ms.
+    const pidFile = path.join(workDir, 'grower.pid');
+    const program = fakeProgram(`
+      fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+      let n = 0;
+      setInterval(() => { fs.writeFileSync('unpacked-' + n++, Buffer.alloc(8 * 1024 * 1024, 1)); }, 100);
+    `);
+    const failure = await convertWithCalibre(deps(), request('chm', 'txt', Buffer.from('chm book bytes')), program).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PayloadLimitError);
+    expect((failure as Error).message).toMatch(/^calibre wrote more than \d+ bytes or \d+ files while it converted the \.chm file\.$/);
+    expect(await endsWithin(Number(fs.readFileSync(pidFile, 'utf-8')), PROCESS_END_WAIT_MS)).toBe(true);
+  }, 30_000);
+
+  it('does not stop a run that stays under the limit', async () => {
+    setScannedText('unused');
+    const program = fakeProgram(`fs.writeFileSync('unpacked', Buffer.alloc(8 * 1024 * 1024, 1));\n${validOutput()}`);
+    const result = await convertWithCalibre(deps(), request('chm', 'epub', Buffer.from('chm book bytes')), program);
+    expect(result.engineUsed).toBe('native-calibre');
+    fs.rmSync(result.filePath as string, { force: true });
+  });
+
+
   it('gives calibre a configuration, cache and temporary directory of the job, no network and no secret of the worker', async () => {
     const program = fakeProgram(validOutput());
     setScannedText('unused');
@@ -366,6 +425,22 @@ describe('the calibre route against a stand-in program', () => {
     const failure = await convertWithCalibre(deps(), request('txt', target), program).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(InvalidConversionOutputError);
     expect((failure as Error).message).toBe(`The conversion of the .txt file to .${target} produced bytes that are not a .${target} file.`);
+  });
+
+  it.each([
+    ['epub', 'a ZIP whose first entry is not the media type', `fs.writeFileSync(output, 'PK\\x03\\x04' + 'x'.repeat(80));`],
+    ['pdf', 'text for a PDF', `fs.writeFileSync(output, 'plain text, not a PDF');`],
+    ['rtf', 'a PDF for an RTF', `fs.writeFileSync(output, '%PDF-1.4');`],
+  ])('refuses a .%s of a TCR book that calibre writes as %s', async (target, _what, behavior) => {
+    const failure = await convertWithCalibre(deps(), request('tcr', target, Buffer.from('tcr book bytes')), fakeProgram(behavior)).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(InvalidConversionOutputError);
+    expect((failure as Error).message).toBe(`The conversion of the .tcr file to .${target} produced bytes that are not a .${target} file.`);
+  });
+
+  it('refuses a text book that calibre leaves empty, which is what its readers do for a file they cannot read', async () => {
+    const failure = await convertWithCalibre(deps(), request('lit', 'txt', Buffer.from('lit book bytes')), fakeProgram(`fs.writeFileSync(output, '');`)).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ConversionFailedError);
+    expect((failure as Error).message).toBe('calibre wrote no .txt file for the .lit file.');
   });
 
   it('refuses a run that wrote no file, and an OEB folder with no package', async () => {
