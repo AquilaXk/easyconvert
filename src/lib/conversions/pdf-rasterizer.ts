@@ -2,6 +2,7 @@ import sharp from 'sharp';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { ConversionFailedError } from '../types';
 import { InputPixelLimitError, assertInputPixels, maxInputPixels } from './image-input-limits';
+import { encodePdfPicturePng } from './pdf-text-png';
 import { readEnclosingDictionary, readWindowEntries, type DictionaryValue, type EnclosingDictionary } from './pdf-image-dictionary';
 
 // pdfjs-dist needs Promise.withResolvers and ArrayBuffer.prototype.transferToFixedLength, which Node.js 20 lacks.
@@ -194,7 +195,7 @@ async function paintedImageObject(pdfjs: any, page: any, opList: any, index: num
 
 /** PNG of a decoded pdfjs image object (grayscale, RGB or RGBA), or undefined when the object holds no pixels. */
 export async function pdfjsImageToPng(imgObj: unknown): Promise<{ png: Buffer; width: number; height: number } | undefined> {
-  const image = await imageObjectToPng(imgObj, 0, PNG_DEFAULT_DENSITY);
+  const image = await imageObjectToPng(imgObj, 0, PNG_DEFAULT_DENSITY, SMALL_PICTURE_MAX_BYTES);
   return image ? { png: image.buffer, width: image.width, height: image.height } : undefined;
 }
 
@@ -225,12 +226,23 @@ function rawSamplesOf(imgObj: any, width: number, height: number): { rawData: Bu
   return { rawData: bytes(), channels: 3 };
 }
 
-/** Extracts one decoded image object as a PNG at the target density, or undefined when the object holds no pixels. */
-async function imageObjectToPng(imgObj: any, pageNumber: number, targetDpi: number): Promise<ExtractedPdfImage | undefined> {
+/**
+ * Pictures of at most this many sample bytes are written by `encodePdfPicturePng` and not by the image library: deflating them takes less than
+ * the library's fixed cost for a call (see `pdf-text-png.ts`; 32 KiB is 100 x 100 pixels of RGB, deflated in about 0.2 ms).
+ */
+const SMALL_PICTURE_MAX_BYTES = 32 * 1024;
+
+/**
+ * Extracts one decoded image object as a PNG at the target density, or undefined when the object holds no pixels. A picture of
+ * at most `inlineMaxBytes` sample bytes is written in this thread.
+ */
+async function imageObjectToPng(imgObj: any, pageNumber: number, targetDpi: number, inlineMaxBytes = 0): Promise<ExtractedPdfImage | undefined> {
   if (!imgObj?.data || !imgObj.width || !imgObj.height) return undefined;
   const { width, height } = imgObj;
   assertInputPixels(width, height);
   const { rawData, channels } = rawSamplesOf(imgObj, width, height);
+  const small = rawData.length <= inlineMaxBytes ? encodePdfPicturePng(width, height, channels, rawData, targetDpi) : null;
+  if (small) return { pageNumber, buffer: small, width, height };
   // Normalize density to target DPI (e.g. 300 DPI) for OCR fidelity
   const buffer = await sharp(rawData, { raw: { width, height, channels } })
     .withMetadata({ density: targetDpi })

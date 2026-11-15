@@ -73,6 +73,32 @@ describe('the pictures of a page are attached when pdf.js delivers them', () => 
     expect(images[0].format).toBe('png');
   });
 
+  it('waits for the pictures of a page side by side, at most four at a time, and attaches them in the order they are placed', async () => {
+    const count = 9;
+    const ids = Array.from({ length: count }, (_unused, index) => `img_p0_${index}`);
+    let waiting = 0;
+    let mostWaiting = 0;
+    const table = lateTable(Object.fromEntries(ids.map((id, index) => [id, decodedRgb(index * 20)])), DELIVERY_DELAY_MS);
+    const counted = {
+      has: table.has,
+      get: (id: string, callback?: Waiter) => {
+        if (callback === undefined) return table.get(id);
+        waiting++;
+        mostWaiting = Math.max(mostWaiting, waiting);
+        return table.get(id, (data) => {
+          waiting--;
+          callback(data);
+        });
+      },
+    };
+    const images = ids.map(() => placement());
+    await new ImageExtractor(new Uint8Array(0)).attach(0, { objs: counted, commonObjs: lateTable({}, DELIVERY_DELAY_MS) }, images, ids.map((objId) => ({ objId })));
+    expect(mostWaiting).toBeGreaterThan(1);
+    expect(mostWaiting).toBeLessThanOrEqual(4);
+    const shades = await Promise.all(images.map(async (image) => (await sharp(Buffer.from(image.data!)).raw().toBuffer())[0]));
+    expect(shades).toEqual(ids.map((_unused, index) => index * 20));
+  });
+
   it('leaves out a picture pdf.js could not decode, the same on every run', async () => {
     const images = [placement()];
     const page = { objs: lateTable({ img_p0_1: null }, DELIVERY_DELAY_MS), commonObjs: lateTable({}, DELIVERY_DELAY_MS) };
