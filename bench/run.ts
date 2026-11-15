@@ -45,6 +45,7 @@ const FAMILY_SET: ReadonlySet<string> = new Set(FAMILIES);
 const REPORTED_TOOLS = [
   'ffmpeg',
   'ffprobe',
+  LIBVMAF_PSEUDO_TOOL,
   'cwebp',
   'dwebp',
   'avifenc',
@@ -223,7 +224,6 @@ function describeRow(row: BenchRow): string {
 function toolsOf(resolve: ReturnType<typeof defaultResolver>): Record<string, string | null> {
   const tools: Record<string, string | null> = {};
   for (const tool of REPORTED_TOOLS) tools[tool] = toolVersion(tool, resolve(tool));
-  tools.libvmaf = resolve(LIBVMAF_PSEUDO_TOOL) ? 'ffmpeg filter present' : null;
   return tools;
 }
 

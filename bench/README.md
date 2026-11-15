@@ -22,7 +22,7 @@ parity" below).
 `ORACLE_STRICT_MODE=1` turns a missing reference tool from an explicit skip (listed in the report) into a failure. The data and
 font families also need Python (`python3`) with pyarrow, DuckDB, openpyxl and fontTools, which CI installs pinned (`.github/actions/ci-setup`);
 the reference tools of the new families are listed in the table below, and the report's `tools` field records the version of each.
-`ssimulacra2` and libvmaf are optional metrics and are only reported when installed.
+`ssimulacra2` and VMAF are optional metrics and are only reported when installed. VMAF is scored by the standalone `vmaf` program of libvmaf (Netflix release 3.2.1, BSD-2-Clause-Patent, built-in model `vmaf_v0.6.1`, the default of libvmaf's own tools) on 8-bit 4:2:0 y4m copies that ffmpeg decodes from the two files; CI installs it with `scripts/install-vmaf.sh` (pinned by SHA-256, cached), and it is measurement-only, not part of the product image.
 
 The vector, CAD and office parts of the corpus are written by `bench/corpus/generate-vector-cad.ts` and `generate-office.ts`, each with the ground truth its family scores against (`bench/corpus/PROVENANCE.md`); `tests/bench-corpus-generators.test.ts` checks that the committed files are what the generators write. The RAW rows read the public-domain samples of `tests/fixtures/raw/manifest.json` (`npm run fixtures:raw`), checked against their SHA-256; a missing sample is a skipped row, and a failure under `ORACLE_STRICT_MODE=1`.
 

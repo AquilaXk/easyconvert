@@ -39,6 +39,31 @@ describe('missing reference tools: skip versus strict failure', () => {
   });
 });
 
+describe('the libvmaf pseudo tool is the standalone vmaf program', () => {
+  let work: string;
+  beforeAll(() => {
+    work = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-vmaf-tool-'));
+    fs.writeFileSync(path.join(work, 'vmaf'), '#!/bin/sh\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(work, 'ffmpeg'), '#!/bin/sh\n', { mode: 0o755 });
+  });
+  afterAll(() => fs.rmSync(work, { recursive: true, force: true }));
+
+  it('resolves to the vmaf program, not to an ffmpeg with the filter', () => {
+    expect(defaultResolver({ BENCH_TOOL_DIRS: work } as unknown as NodeJS.ProcessEnv)('libvmaf')).toBe(path.join(work, 'vmaf'));
+  });
+
+  it('is absent when only ffmpeg is installed', () => {
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-vmaf-empty-'));
+    try {
+      fs.copyFileSync(path.join(work, 'ffmpeg'), path.join(empty, 'ffmpeg'));
+      fs.chmodSync(path.join(empty, 'ffmpeg'), 0o755);
+      expect(defaultResolver({ BENCH_TOOL_DIRS: empty } as unknown as NodeJS.ProcessEnv)('libvmaf')).toBeNull();
+    } finally {
+      fs.rmSync(empty, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('the reference avifenc is the worker\'s encoder when it is installed', () => {
   let work: string;
   const install = (dir: string, name: string): string => {

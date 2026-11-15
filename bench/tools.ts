@@ -64,6 +64,7 @@ const VERSION_ARGS: Readonly<Record<string, readonly string[]>> = {
   dwebp: ['-version'],
   avifenc: ['--version'],
   avifdec: ['--version'],
+  libvmaf: ['--version'],
   djxl: ['--version'],
   magick: ['-version'],
   zstd: ['--version'],
@@ -102,6 +103,7 @@ const VERSION_TIMEOUT_MS = 20_000;
 const VERSION_LINE_LIMIT = 200;
 
 export const TESSDATA_PSEUDO_TOOL = 'tessdata-eng';
+/** Resolves to the standalone `vmaf` program of libvmaf (the Netflix release), which scores two y4m files. */
 export const LIBVMAF_PSEUDO_TOOL = 'libvmaf';
 /** Resolves to python3 when the olefile package (OLE2 container access) imports in isolated mode. */
 export const OLEFILE_PSEUDO_TOOL = 'python3-olefile';
@@ -167,8 +169,7 @@ export function defaultResolver(env: NodeJS.ProcessEnv = process.env): Resolver 
       const python = defaultResolver(env)('python3');
       found = python && pythonImports(python, PYTHON_LIBRARY_OF[tool]) ? python : null;
     } else if (tool === LIBVMAF_PSEUDO_TOOL) {
-      const ffmpeg = defaultResolver(env)('ffmpeg');
-      found = ffmpeg && ffmpegHasFilter(ffmpeg, 'libvmaf') ? ffmpeg : null;
+      found = defaultResolver(env)('vmaf');
     } else {
       const names = CANDIDATES[tool] ?? [tool];
       const dirs = searchDirs(env);
@@ -193,13 +194,6 @@ export function defaultResolver(env: NodeJS.ProcessEnv = process.env): Resolver 
 export function pythonImports(python: string, moduleName: string): boolean {
   const run = spawnSync(python, ['-I', '-c', `import ${moduleName}`], { timeout: VERSION_TIMEOUT_MS });
   return run.status === 0;
-}
-
-/** Whether `ffmpeg -filters` lists `filter`. */
-export function ffmpegHasFilter(ffmpeg: string, filter: string): boolean {
-  const run = spawnSync(ffmpeg, ['-hide_banner', '-filters'], { encoding: 'utf8', timeout: VERSION_TIMEOUT_MS });
-  if (run.status !== 0) return false;
-  return new RegExp(`^\\s*\\S+\\s+${filter}\\s`, 'm').test(run.stdout);
 }
 
 export function toolVersion(tool: string, binary: string | null): string | null {

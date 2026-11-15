@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { OutputIntegrityError, ToolRunError } from './errors';
 import { measureLoudness, measureSsimPsnr, probeFile } from '../tests/helpers/ffmpeg-measure';
@@ -81,16 +82,29 @@ export function pictureQuality(ffmpeg: string, distorted: string, reference: str
   return measureSsimPsnr(ffmpeg, distorted, reference);
 }
 
-/** VMAF pooled mean of a distorted video against its reference, via ffmpeg's libvmaf filter. */
-export function measureVmaf(ffmpeg: string, distorted: string, reference: string): number {
-  const run = spawnSync(
-    ffmpeg,
-    ['-hide_banner', '-nostdin', '-i', distorted, '-i', reference, '-lavfi', '[0:v]format=yuv420p[d];[1:v]format=yuv420p[r];[d][r]libvmaf', '-f', 'null', '-'],
-    { encoding: 'utf8', timeout: TOOL_TIMEOUT_MS, maxBuffer: TOOL_MAX_BUFFER_BYTES }
-  );
-  const match = /VMAF score:\s*([0-9.]+)/.exec(run.stderr ?? '');
-  if (run.status !== 0 || !match) throw new ToolRunError(`libvmaf printed no score: ${(run.stderr ?? '').slice(-400)}`);
-  return Number.parseFloat(match[1]);
+/** Model of the pooled VMAF score: the default of libvmaf's own tools, compiled into the `vmaf` program. */
+const VMAF_MODEL = 'version=vmaf_v0.6.1';
+
+/**
+ * VMAF pooled mean of a distorted video against its reference. Both are decoded by ffmpeg to 8-bit 4:2:0 y4m files and scored by
+ * the standalone `vmaf` program with the default model.
+ */
+export function measureVmaf(vmaf: string, ffmpeg: string, distorted: string, reference: string): number {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-vmaf-'));
+  try {
+    const decoded = [distorted, reference].map((file, index) => {
+      const y4m = path.join(dir, `${index}.y4m`);
+      runTool(ffmpeg, ['-hide_banner', '-nostdin', '-v', 'error', '-y', '-i', file, '-pix_fmt', 'yuv420p', '-an', y4m]);
+      return y4m;
+    });
+    const scores = path.join(dir, 'scores.json');
+    runTool(vmaf, ['--reference', decoded[1], '--distorted', decoded[0], '--model', VMAF_MODEL, '--json', '--output', scores, '--quiet']);
+    const mean: unknown = (JSON.parse(fs.readFileSync(scores, 'utf8')) as { pooled_metrics?: { vmaf?: { mean?: unknown } } }).pooled_metrics?.vmaf?.mean;
+    if (typeof mean !== 'number' || !Number.isFinite(mean)) throw new ToolRunError(`vmaf wrote no pooled mean in ${scores}`);
+    return mean;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /** ssimulacra2 score of `distorted` against `reference`, from the standalone executable. */

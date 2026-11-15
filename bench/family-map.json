@@ -166,6 +166,10 @@
       "match": "^scripts/(install-quantizr-pixels\\.sh$|quantizr-pixels/)"
     },
     {
+      "families": ["video"],
+      "match": "^scripts/install-vmaf\\.sh$"
+    },
+    {
       "families": ["video", "audio"],
       "match": "^scripts/(install-ffmpeg\\.sh$|ffmpeg-patches/)"
     },

@@ -166,7 +166,7 @@ export const runVideo: FamilyRunner = async (ctx) => {
                 const refFile = ctx.scratch(`ref-crf${crf}.${codec.target}`);
                 referenceEncode(crf, refFile);
                 const { file, ...measured } = measure(refFile);
-                return withVmaf && vmafBinary !== null ? { ...measured, vmaf: measureVmaf(vmafBinary, file, clipFile) } : measured;
+                return withVmaf && vmafBinary !== null ? { ...measured, vmaf: measureVmaf(vmafBinary, ffmpeg, file, clipFile) } : measured;
               }
             );
             reference.push(point);
@@ -193,7 +193,7 @@ export const runVideo: FamilyRunner = async (ctx) => {
           }
 
           if (vmafBinary !== null && referenceVmaf !== null) {
-            rows.push(measuredRow('video', caseName, SPEC.vmaf, measureVmaf(vmafBinary, o.file, clipFile), referenceVmaf, codec.tool));
+            rows.push(measuredRow('video', caseName, SPEC.vmaf, measureVmaf(vmafBinary, ffmpeg, o.file, clipFile), referenceVmaf, codec.tool));
           } else if (!vmafPlan.ok) {
             rows.push(skippedRow('video', caseName, SPEC.vmaf, codec.tool, 'optional-tool', vmafPlan.reason));
           }
