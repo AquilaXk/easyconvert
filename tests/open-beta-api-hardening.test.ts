@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
-import { PHASE_PRODUCTION_BUILD, PHASE_PRODUCTION_SERVER } from 'next/constants.js';
+import { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD, PHASE_PRODUCTION_SERVER } from 'next/constants.js';
 import JSZip from 'jszip';
 import loadNextConfig from '../next.config.mjs';
 
@@ -295,7 +295,18 @@ describe('Open Beta API boundary error classification (400 / 502 / 504 instead o
         expect(csp).toContain("object-src 'none'");
         expect(csp).toContain('https://cdn.paddle.com');
         expect(csp).toContain('https://*.paddle.com');
+        expect(csp).not.toContain("'unsafe-eval'");
       }
     );
+
+    it('permits unsafe-eval and HMR websocket connections only in PHASE_DEVELOPMENT_SERVER', async () => {
+      const cfg = await loadNextConfig(PHASE_DEVELOPMENT_SERVER);
+      const rules = await cfg.headers?.();
+      const [rule] = rules!;
+      const headerMap = new Map(rule.headers.map((h: { key: string; value: string }) => [h.key, h.value]));
+      const csp = headerMap.get('Content-Security-Policy') ?? '';
+      expect(csp).toContain("'unsafe-eval'");
+      expect(csp).toContain('ws: wss:');
+    });
   });
 });
