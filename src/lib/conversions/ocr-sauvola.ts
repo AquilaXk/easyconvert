@@ -104,6 +104,7 @@ interface RowWindow {
   /** Window columns [left[x], right[x]) of every pixel x, clipped at the border. */
   left: Int32Array;
   right: Int32Array;
+  half: number;
   k: number;
   dynamicRange: number;
 }
@@ -120,7 +121,7 @@ function thresholdRow(
   window: RowWindow
 ): void {
   const { sum, sumSquares, stride } = ring;
-  const { left, right, k, dynamicRange } = window;
+  const { left, right, half, k, dynamicRange } = window;
   const topSlot = (top % ring.rows) * stride;
   const bottomSlot = (bottom % ring.rows) * stride;
   const rows = bottom - top;
@@ -128,10 +129,37 @@ function thresholdRow(
   const invDynamicRange = 1 / dynamicRange;
   const oneMinusK = 1 - k;
   const kOverDynamicRange = k * invDynamicRange;
-  for (let x = 0; x < width; x++) {
-    const x0 = left[x];
-    const x1 = right[x];
-    const invArea = 1 / (rows * (x1 - x0));
+
+  const thresholdClippedSpan = (startX: number, endX: number): void => {
+    for (let x = startX; x < endX; x++) {
+      const x0 = left[x];
+      const x1 = right[x];
+      const invArea = 1 / (rows * (x1 - x0));
+      const total = (sum[bottomSlot + x1] - sum[topSlot + x1] - sum[bottomSlot + x0] + sum[topSlot + x0]) >>> 0;
+      const squares =
+        (sumSquares[bottomSlot + x1] - sumSquares[topSlot + x1] - sumSquares[bottomSlot + x0] + sumSquares[topSlot + x0]) >>> 0;
+      const mean = total * invArea;
+      const variance = squares * invArea - mean * mean;
+      const deviation = variance > 0 ? Math.sqrt(variance) : 0;
+      const threshold = mean * (oneMinusK + kOverDynamicRange * deviation);
+      out[base + x] = gray[base + x] <= threshold ? SAUVOLA_INK : SAUVOLA_PAPER;
+    }
+  };
+
+  if (width <= 2 * half) {
+    thresholdClippedSpan(0, width);
+    return;
+  }
+
+  const interiorStart = half;
+  const interiorEnd = width - half;
+  thresholdClippedSpan(0, interiorStart);
+
+  const fullWindowWidth = 2 * half + 1;
+  const invArea = 1 / (rows * fullWindowWidth);
+  for (let x = interiorStart; x < interiorEnd; x++) {
+    const x0 = x - half;
+    const x1 = x + half + 1;
     // Cumulative sums and squared sums wrap modulo 2^32 on large pages; the largest 255x255 window
     // sum of squares is 255 * 255 * 255^2 = 4,228,250,625 < 2^32, so reducing the four-term
     // difference modulo 2^32 (>>> 0) recovers both exact window sums in 32-bit unsigned lanes.
@@ -144,6 +172,8 @@ function thresholdRow(
     const threshold = mean * (oneMinusK + kOverDynamicRange * deviation);
     out[base + x] = gray[base + x] <= threshold ? SAUVOLA_INK : SAUVOLA_PAPER;
   }
+
+  thresholdClippedSpan(interiorEnd, width);
 }
 
 /**
@@ -174,7 +204,7 @@ export async function sauvolaBinarize(
     stride,
     rows: ringRows,
   };
-  const window: RowWindow = { left: new Int32Array(width), right: new Int32Array(width), k, dynamicRange };
+  const window: RowWindow = { left: new Int32Array(width), right: new Int32Array(width), half, k, dynamicRange };
   for (let x = 0; x < width; x++) {
     window.left[x] = Math.max(0, x - half);
     window.right[x] = Math.min(width, x + half + 1);

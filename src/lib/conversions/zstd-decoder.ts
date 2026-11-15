@@ -32,6 +32,29 @@ import {
 /**
  * RFC 8878 compressed-block decoder: literals section (raw, RLE, Huffman, treeless) and
  * sequences section (predefined, RLE, FSE-compressed and repeat table modes).
+ *
+ * Word-level backward bitstream loads (`streamBits`) and overlapping match expansion follow
+ * `facebook/zstd` (`lib/common/bitstream.h`, commit `a599a71c4cf5d142ffce772c0d16a5a7b755d83c`,
+ * SHA-256 `52d428dc22a263cbb7fc9f31c633466b2c45e15abb9ecafa36d5c50016c98074`, BSD-3-Clause):
+ *
+ * BSD License
+ * For Zstandard software
+ * Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+ * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the
+ * following conditions are met:
+ *  * Redistributions of source code must retain the above copyright notice, this list of conditions and the following
+ *    disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the
+ *    following disclaimer in the documentation and/or other materials provided with the distribution.
+ *  * Neither the name Facebook, nor Meta, nor the names of its contributors may be used to endorse or promote products
+ *    derived from this software without specific prior written permission.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+ * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+ * USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 const LITERALS_RAW = 0;
@@ -414,10 +437,10 @@ const OFFSET_EXTRA_BITS_RADIX = 2 ** OFFSET_EXTRA_BITS_SPLIT;
  * Equivalent to ReverseBitReader's field read; inlined by the JIT into the sequence loop. Bytes past the end of the
  * stream can enter the 32-bit window only above bit pos + n, which the mask drops.
  */
-function streamBits(src: Uint8Array, base: number, pos: number, n: number): number {
+function streamBits(src: Uint8Array, srcView: DataView, base: number, pos: number, n: number): number {
   const at = base + (pos >> 3);
   if (pos >= 0 && at + 3 < src.length) {
-    return ((src[at] | (src[at + 1] << 8) | (src[at + 2] << 16) | (src[at + 3] << 24)) >>> (pos & 7)) & ((1 << n) - 1);
+    return (srcView.getUint32(at, true) >>> (pos & 7)) & ((1 << n) - 1);
   }
   let word = 0;
   for (let k = 0; k < 4; k++) {
@@ -426,6 +449,40 @@ function streamBits(src: Uint8Array, base: number, pos: number, n: number): numb
     word |= byte << (8 * k);
   }
   return (word >>> (pos & 7)) & ((1 << n) - 1);
+}
+
+function copyZstdMatch(
+  data: Uint8Array,
+  dataView: DataView,
+  dataLength: number,
+  outLen: number,
+  offset: number,
+  matchLen: number
+): void {
+  const from = outLen - offset;
+  if (offset >= matchLen) {
+    if (matchLen <= SHORT_COPY_LIMIT && outLen + matchLen + WORD_BYTES <= dataLength) {
+      for (let k = 0; k < matchLen; k += WORD_BYTES) dataView.setUint32(outLen + k, dataView.getUint32(from + k, true), true);
+    } else {
+      data.copyWithin(outLen, from, from + matchLen);
+    }
+    return;
+  }
+  if (offset === 1) {
+    data.fill(data[from], outLen, outLen + matchLen);
+    return;
+  }
+  if (offset >= WORD_BYTES && matchLen < LONG_COPY_LIMIT && outLen + matchLen + WORD_BYTES <= dataLength) {
+    for (let k = 0; k < matchLen; k += WORD_BYTES) dataView.setUint32(outLen + k, dataView.getUint32(from + k, true), true);
+    return;
+  }
+  data.copyWithin(outLen, from, from + offset);
+  let copied = offset;
+  while (copied < matchLen) {
+    const step = copied <= matchLen - copied ? copied : matchLen - copied;
+    data.copyWithin(outLen + copied, outLen, outLen + step);
+    copied += step;
+  }
 }
 
 /**
@@ -496,6 +553,7 @@ export function decodeCompressedBlock(
   const dataLength = data.length;
   const dataView = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const literalView = new DataView(literals.buffer, literals.byteOffset, literals.byteLength);
+  const srcView = new DataView(src.buffer, src.byteOffset, src.byteLength);
   let outLen = out.length;
   let litPos = 0;
   let rep1 = state.rep1;
@@ -526,24 +584,24 @@ export function decodeCompressedBlock(
       ofValue = 1;
     } else if (ofCode <= WINDOW_FIELD_BITS_MAX) {
       bitsLeft -= ofCode;
-      ofValue = (1 << ofCode) + streamBits(src, streamBase, bitsLeft, ofCode);
+      ofValue = (1 << ofCode) + streamBits(src, srcView, streamBase, bitsLeft, ofCode);
     } else {
       bitsLeft -= ofCode;
-      const low = streamBits(src, streamBase, bitsLeft, OFFSET_EXTRA_BITS_SPLIT);
-      const high = streamBits(src, streamBase, bitsLeft + OFFSET_EXTRA_BITS_SPLIT, ofCode - OFFSET_EXTRA_BITS_SPLIT);
+      const low = streamBits(src, srcView, streamBase, bitsLeft, OFFSET_EXTRA_BITS_SPLIT);
+      const high = streamBits(src, srcView, streamBase, bitsLeft + OFFSET_EXTRA_BITS_SPLIT, ofCode - OFFSET_EXTRA_BITS_SPLIT);
       ofValue = 2 ** ofCode + high * OFFSET_EXTRA_BITS_RADIX + low;
     }
     const mlBits = ML_BITS_TABLE[mlCode];
     let matchLen = ML_BASELINE_TABLE[mlCode];
     if (mlBits > 0) {
       bitsLeft -= mlBits;
-      matchLen += streamBits(src, streamBase, bitsLeft, mlBits);
+      matchLen += streamBits(src, srcView, streamBase, bitsLeft, mlBits);
     }
     const llBits = LL_BITS_TABLE[llCode];
     let litLen = LL_BASELINE_TABLE[llCode];
     if (llBits > 0) {
       bitsLeft -= llBits;
-      litLen += streamBits(src, streamBase, bitsLeft, llBits);
+      litLen += streamBits(src, srcView, streamBase, bitsLeft, llBits);
     }
 
     let offset: number;
@@ -577,13 +635,13 @@ export function decodeCompressedBlock(
     if (i < lastSequence) {
       const llUpdateBits = llNbBits[llState];
       bitsLeft -= llUpdateBits;
-      llState = llBase[llState] + (llUpdateBits > 0 ? streamBits(src, streamBase, bitsLeft, llUpdateBits) : 0);
+      llState = llBase[llState] + (llUpdateBits > 0 ? streamBits(src, srcView, streamBase, bitsLeft, llUpdateBits) : 0);
       const mlUpdateBits = mlNbBits[mlState];
       bitsLeft -= mlUpdateBits;
-      mlState = mlBase[mlState] + (mlUpdateBits > 0 ? streamBits(src, streamBase, bitsLeft, mlUpdateBits) : 0);
+      mlState = mlBase[mlState] + (mlUpdateBits > 0 ? streamBits(src, srcView, streamBase, bitsLeft, mlUpdateBits) : 0);
       const ofUpdateBits = ofNbBits[ofState];
       bitsLeft -= ofUpdateBits;
-      ofState = ofBase[ofState] + (ofUpdateBits > 0 ? streamBits(src, streamBase, bitsLeft, ofUpdateBits) : 0);
+      ofState = ofBase[ofState] + (ofUpdateBits > 0 ? streamBits(src, srcView, streamBase, bitsLeft, ofUpdateBits) : 0);
     }
     if (bitsLeft < 0) zstdFail('Malformed Zstandard sequences: bitstream over-read.');
 
@@ -591,32 +649,21 @@ export function decodeCompressedBlock(
       zstdFail('Corrupt Zstandard block: decoded size exceeds the block maximum or declared content size.');
     }
     if (litPos + litLen > litTotal) zstdFail('Corrupt Zstandard sequence: literal length exceeds available literals.');
-    if (litLen < SHORT_COPY_LIMIT) {
-      if (litPos + litLen + WORD_BYTES <= litTotal && outLen + litLen + WORD_BYTES <= dataLength) {
+    if (litLen > 0) {
+      if (litLen < SHORT_COPY_LIMIT && litPos + litLen + WORD_BYTES <= litTotal && outLen + litLen + WORD_BYTES <= dataLength) {
         // Whole words: the bytes written past the run are overwritten by what follows.
         for (let k = 0; k < litLen; k += WORD_BYTES) dataView.setUint32(outLen + k, literalView.getUint32(litPos + k, true), true);
       } else {
-        for (let k = 0; k < litLen; k++) data[outLen + k] = literals[litPos + k];
+        data.set(literals.subarray(litPos, litPos + litLen), outLen);
       }
-    } else {
-      data.set(literals.subarray(litPos, litPos + litLen), outLen);
+      litPos += litLen;
+      outLen += litLen;
     }
-    litPos += litLen;
-    outLen += litLen;
 
     if (offset > outLen - availableHistoryBase || offset > windowLimit) {
       zstdFail(`Corrupt Zstandard sequence: offset ${offset} exceeds the available window.`);
     }
-    const from = outLen - offset;
-    if (offset >= matchLen && matchLen >= LONG_COPY_LIMIT) {
-      data.copyWithin(outLen, from, from + matchLen);
-    } else if (offset >= WORD_BYTES && outLen + matchLen + WORD_BYTES <= dataLength) {
-      // A chunk of four bytes reads only bytes that are final once the chunk before it is written, also when the match
-      // overlaps itself; the bytes written past the match are overwritten by what follows.
-      for (let k = 0; k < matchLen; k += WORD_BYTES) dataView.setUint32(outLen + k, dataView.getUint32(from + k, true), true);
-    } else {
-      for (let k = 0; k < matchLen; k++) data[outLen + k] = data[from + k];
-    }
+    copyZstdMatch(data, dataView, dataLength, outLen, offset, matchLen);
     outLen += matchLen;
   }
   if (bitsLeft !== 0) zstdFail('Malformed Zstandard sequences: bitstream not fully consumed.');

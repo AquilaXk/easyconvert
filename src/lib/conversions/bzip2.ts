@@ -4,6 +4,29 @@
  *
  * Format reference: bzip2 1.0.x stream layout (stream header, 900k-style blocks with initial RLE1,
  * BWT, MTF + RUNA/RUNB zero-run coding, multi-table Huffman with selectors, block and stream CRCs).
+ *
+ * Multi-byte bitstream refill in `BitReader` follows the word-refill discipline of `facebook/zstd`
+ * (`lib/common/bitstream.h`, commit `a599a71c4cf5d142ffce772c0d16a5a7b755d83c`,
+ * SHA-256 `52d428dc22a263cbb7fc9f31c633466b2c45e15abb9ecafa36d5c50016c98074`, BSD-3-Clause):
+ *
+ * BSD License
+ * For Zstandard software
+ * Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+ * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the
+ * following conditions are met:
+ *  * Redistributions of source code must retain the above copyright notice, this list of conditions and the following
+ *    disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the
+ *    following disclaimer in the documentation and/or other materials provided with the distribution.
+ *  * Neither the name Facebook, nor Meta, nor the names of its contributors may be used to endorse or promote products
+ *    derived from this software without specific prior written permission.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+ * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+ * USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 import { CorruptStreamError, DecompressionLimitError } from '../types';
@@ -189,27 +212,46 @@ class BitReader {
   }
 
   private fill(): void {
+    const d = this.data;
+    const len = d.length;
+    if (this.bitCnt <= BYTE_BITS && this.pos + 3 <= len) {
+      const p = this.pos;
+      this.bitBuf = ((this.bitBuf << 24) | (d[p] << 16) | (d[p + 1] << 8) | d[p + 2]) >>> 0;
+      this.pos = p + 3;
+      this.bitCnt += 24;
+      return;
+    }
+    if (this.bitCnt <= HALF_WORD_BITS && this.pos + 2 <= len) {
+      const p = this.pos;
+      this.bitBuf = ((this.bitBuf << 16) | (d[p] << 8) | d[p + 1]) >>> 0;
+      this.pos = p + 2;
+      this.bitCnt += 16;
+      return;
+    }
     while (this.bitCnt <= BIT_BUFFER_REFILL_THRESHOLD) {
       let byte = 0;
-      if (this.pos < this.data.length) {
-        byte = this.data[this.pos++];
+      if (this.pos < len) {
+        byte = d[this.pos++];
       } else {
         this.padBits += BYTE_BITS;
       }
-      this.bitBuf = (this.bitBuf << BYTE_BITS) | byte;
+      this.bitBuf = ((this.bitBuf << BYTE_BITS) | byte) >>> 0;
       this.bitCnt += BYTE_BITS;
     }
   }
 
   /** Returns the next `n` (<= 24) bits without consuming them; bits past the end read as zero. */
   peek(n: number): number {
-    this.fill();
+    if (n === 0) return 0;
+    if (this.bitCnt < n) this.fill();
     return this.bitBuf >>> (this.bitCnt - n);
   }
 
   consume(n: number): void {
-    this.bitCnt -= n;
-    this.bitBuf &= (1 << this.bitCnt) - 1;
+    if (n > 0) {
+      this.bitCnt -= n;
+      this.bitBuf = this.bitCnt === 0 ? 0 : (this.bitBuf & (0xffffffff >>> (WORD_BITS - this.bitCnt))) >>> 0;
+    }
     if (this.padBits > this.bitCnt) {
       throw bzError('unexpected end of data (truncated stream)');
     }

@@ -1,3 +1,4 @@
+import { Readable } from 'node:stream';
 import type { Sharp } from 'sharp';
 import { executeSandboxedBinary, rethrowSandboxUnavailable, SandboxedProcessError } from '../security/process-sandbox';
 import type { ConversionOptions } from '../types';
@@ -86,7 +87,7 @@ export async function quantizePixels(rgba: Buffer, width: number, height: number
   header.writeUInt32LE(height, COUNT_BYTES);
   try {
     const run = await executeSandboxedBinary(program, ['--colors', String(request.colours), '--dither', String(request.dither), '--target-psnr', String(QUANTIZR_TARGET_PSNR)], {
-      stdin: Buffer.concat([header, rgba]),
+      stdin: Readable.from([header, rgba], { objectMode: false }),
       // A filter on standard input and output: it touches no file.
       workDir: null,
       timeoutMs: QUANTIZR_TIMEOUT_MS,
@@ -131,7 +132,9 @@ export async function writeIndexedPng(picture: IndexedPicture, template: Buffer,
   const colours = picture.palette.length / RGBA_CHANNELS;
   if (!Number.isInteger(colours) || colours < 1 || colours > MAX_COLOURS) throw new Error(`The palette of ${picture.palette.length} bytes does not hold 1 to ${MAX_COLOURS} entries.`);
   if (indices.length !== width * height) throw new Error(`The ${indices.length} indices do not make a ${width} x ${height} picture.`);
-  if (indices.some((index) => index >= colours)) throw new Error(`An index points past the ${colours} palette entries.`);
+  if (colours < MAX_COLOURS && indices.some((index) => index >= colours)) {
+    throw new Error(`An index points past the ${colours} palette entries.`);
+  }
   const depth = bitDepthOf(colours);
   const { picture: arranged, stream } = await deflateIndexedPicture(picture, depth, signal);
 

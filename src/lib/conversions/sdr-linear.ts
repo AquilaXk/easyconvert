@@ -84,6 +84,15 @@ function decodingFor(meta: Metadata, cicp: Cicp | null): Decoding {
   return srgb;
 }
 
+function viewUint16Samples(data: Uint8Array, sampleCount: number): Uint16Array {
+  if ((data.byteOffset & 1) === 0) {
+    return new Uint16Array(data.buffer, data.byteOffset, sampleCount);
+  }
+  const aligned = new Uint8Array(sampleCount * 2);
+  aligned.set(data.subarray(0, sampleCount * 2));
+  return new Uint16Array(aligned.buffer, 0, sampleCount);
+}
+
 /**
  * Decodes the pipeline's picture (already oriented, resized and flattened) to linear Rec. 709 floats. The caller
  * has checked the output size against its float budget; this checks the decoded size against the HDR budget.
@@ -103,16 +112,15 @@ export async function decodeLinearBt709(pipeline: Sharp, meta: Metadata, cicp: C
     throw new ConversionFailedError(`Expected 3 colour channels per pixel but the decoded image has ${info.channels}`);
   }
   const levels = deep ? SIXTEEN_BIT_LEVELS : BYTE_LEVELS;
-  const tables = decoding.curves.map((curve) => curveTable(curve, levels));
+  const [t0, t1, t2] = decoding.curves.map((curve) => curveTable(curve, levels));
   const [m0, m1, m2, m3, m4, m5, m6, m7, m8] = decoding.matrix;
   const samples = info.width * info.height * RGB_CHANNELS;
   const rgb = new Float32Array(samples);
-  const wide = deep ? new Uint16Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.length)) : null;
-  const read = (i: number): number => (wide ? wide[i] : data[i]);
+  const src: Uint16Array | Buffer = deep ? viewUint16Samples(data, samples) : data;
   for (let i = 0; i < samples; i += RGB_CHANNELS) {
-    const r = tables[0][read(i)];
-    const g = tables[1][read(i + 1)];
-    const b = tables[2][read(i + 2)];
+    const r = t0[src[i]];
+    const g = t1[src[i + 1]];
+    const b = t2[src[i + 2]];
     rgb[i] = m0 * r + m1 * g + m2 * b;
     rgb[i + 1] = m3 * r + m4 * g + m5 * b;
     rgb[i + 2] = m6 * r + m7 * g + m8 * b;

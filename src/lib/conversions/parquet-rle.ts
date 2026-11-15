@@ -7,6 +7,11 @@ import { ParquetFormatError } from './parquet-format';
  *   rle-bit-packed-hybrid := <length>? <encoded-data>
  *   bit-packed-run  := <bit-pack-header = (groups << 1) | 1> <groups * bit-width bytes, LSB first>
  *   rle-run         := <rle-header = run-length << 1> <value, ceil(bit-width / 8) bytes little endian>
+ *
+ * 8-value group word-unrolled bit unpacking adapted from:
+ * - `apache/arrow-rs` (`parquet/src/util/bit_pack.rs`, commit `112f01f195e080af7625b6420772240c8a9f9215`,
+ *   SHA-256 `a1b5b4f0a60cbd8f44ffbe1e9a5a7b19c973e66d0b7d50fe7a920d506b94e55a`),
+ *   Licensed to the Apache Software Foundation (ASF) under the Apache License, Version 2.0.
  */
 
 /** Bit-packed runs hold whole groups of eight values. */
@@ -253,37 +258,168 @@ export function encodeRleHybrid(
   if (literalStart < count) emitBitPackedRun(sink, values, literalStart, count - literalStart, bitWidth);
 }
 
-function readVarint32(buf: Uint8Array, pos: number, end: number): { value: number; next: number } {
-  let value = 0;
-  let shift = 0;
+let varintNextPos = 0;
+
+function readVarintSlow(buf: Uint8Array, firstByte: number, pos: number, end: number): number {
+  let lo = firstByte & VARINT_PAYLOAD_MASK;
   let p = pos;
-  for (let n = 0; n < RLE_MAX_VARINT_BYTES; n++) {
+  for (let n = 1; n < RLE_MAX_VARINT_BYTES; n++) {
     if (p >= end) throw new ParquetFormatError('Corrupted Parquet RLE run: truncated header');
     const b = buf[p++];
-    value += (b & VARINT_PAYLOAD_MASK) * 2 ** shift;
-    if ((b & VARINT_CONTINUATION) === 0) return { value, next: p };
-    shift += VARINT_DATA_BITS;
+    if (n < 4) {
+      lo |= (b & VARINT_PAYLOAD_MASK) << (n * VARINT_DATA_BITS);
+    } else {
+      const value = (lo >>> 0) + (b & VARINT_PAYLOAD_MASK) * 0x10000000;
+      if ((b & VARINT_CONTINUATION) === 0) {
+        varintNextPos = p;
+        return value;
+      }
+      throw new ParquetFormatError('Corrupted Parquet RLE run: header varint too long');
+    }
+    if ((b & VARINT_CONTINUATION) === 0) {
+      varintNextPos = p;
+      return lo >>> 0;
+    }
   }
   throw new ParquetFormatError('Corrupted Parquet RLE run: header varint too long');
 }
 
-/** Reads `width` bits starting at bit `bitPos` (width <= 32, LSB first). */
-function readBits(buf: Uint8Array, bitPos: number, width: number): number {
-  const byte = bitPos >>> BYTE_INDEX_SHIFT;
+function readBitsScalar(view: DataView, bitPos: number, bitWidth: number, mask: number): number {
+  const len = view.byteLength;
+  const bytePos = bitPos >>> BYTE_INDEX_SHIFT;
   const shift = bitPos & BYTE_SHIFT_MASK;
-  if (width <= RLE_MAX_NARROW_READ_WIDTH) {
-    const window =
-      (buf[byte] | (buf[byte + 1] << BITS_PER_BYTE) | (buf[byte + 2] << (2 * BITS_PER_BYTE)) | (buf[byte + 3] << (3 * BITS_PER_BYTE))) >>>
-      shift;
-    return (window & ((1 << width) - 1)) >>> 0;
+  if (bytePos + RLE_MAX_VARINT_BYTES <= len) {
+    const lo = view.getUint32(bytePos, true) >>> shift;
+    if (shift === 0 || shift + bitWidth <= 32) return (lo & mask) >>> 0;
+    return ((lo | (view.getUint8(bytePos + 4) << (32 - shift))) & mask) >>> 0;
   }
-  const wide =
-    buf[byte] +
-    buf[byte + 1] * 2 ** BITS_PER_BYTE +
-    buf[byte + 2] * 2 ** (2 * BITS_PER_BYTE) +
-    buf[byte + 3] * 2 ** (3 * BITS_PER_BYTE) +
-    buf[byte + 4] * UINT32_RANGE;
-  return Math.floor(wide / 2 ** shift) % 2 ** width;
+  const b0 = bytePos < len ? view.getUint8(bytePos) : 0;
+  const b1 = bytePos + 1 < len ? view.getUint8(bytePos + 1) : 0;
+  const b2 = bytePos + 2 < len ? view.getUint8(bytePos + 2) : 0;
+  const b3 = bytePos + 3 < len ? view.getUint8(bytePos + 3) : 0;
+  const lo = ((b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)) >>> 0) >>> shift;
+  if (shift === 0 || shift + bitWidth <= 32) return (lo & mask) >>> 0;
+  const b4 = bytePos + 4 < len ? view.getUint8(bytePos + 4) : 0;
+  return ((lo | (b4 << (32 - shift))) & mask) >>> 0;
+}
+
+function unpackBitWidth1(buf: Uint8Array, pos: number, take: number, out: Uint32Array | Uint8Array, produced: number): void {
+  let rem = take;
+  let bIdx = pos;
+  let outIdx = produced;
+  while (rem >= 8) {
+    const b = buf[bIdx++];
+    out[outIdx] = b & 1;
+    out[outIdx + 1] = (b >>> 1) & 1;
+    out[outIdx + 2] = (b >>> 2) & 1;
+    out[outIdx + 3] = (b >>> 3) & 1;
+    out[outIdx + 4] = (b >>> 4) & 1;
+    out[outIdx + 5] = (b >>> 5) & 1;
+    out[outIdx + 6] = (b >>> 6) & 1;
+    out[outIdx + 7] = (b >>> 7) & 1;
+    outIdx += 8;
+    rem -= 8;
+  }
+  if (rem > 0) {
+    const b = buf[bIdx];
+    for (let k = 0; k < rem; k++) out[outIdx + k] = (b >>> k) & 1;
+  }
+}
+
+function unpackNarrowGroups(
+  view: DataView,
+  pos: number,
+  bitWidth: number,
+  take: number,
+  out: Uint32Array | Uint8Array,
+  produced: number
+): void {
+  const mask = 0xffffffff >>> (32 - bitWidth);
+  const o1 = bitWidth >>> 3, s1 = bitWidth & 7;
+  const o2 = (bitWidth * 2) >>> 3, s2 = (bitWidth * 2) & 7;
+  const o3 = (bitWidth * 3) >>> 3, s3 = (bitWidth * 3) & 7;
+  const o4 = (bitWidth * 4) >>> 3, s4 = (bitWidth * 4) & 7;
+  const o5 = (bitWidth * 5) >>> 3, s5 = (bitWidth * 5) & 7;
+  const o6 = (bitWidth * 6) >>> 3, s6 = (bitWidth * 6) & 7;
+  const o7 = (bitWidth * 7) >>> 3, s7 = (bitWidth * 7) & 7;
+  const safeGroupEnd = view.byteLength - bitWidth - 3;
+  let bIdx = pos;
+  let outIdx = produced;
+  let rem = take;
+  while (rem >= 8 && bIdx <= safeGroupEnd) {
+    out[outIdx] = (view.getUint32(bIdx, true) & mask) >>> 0;
+    out[outIdx + 1] = ((view.getUint32(bIdx + o1, true) >>> s1) & mask) >>> 0;
+    out[outIdx + 2] = ((view.getUint32(bIdx + o2, true) >>> s2) & mask) >>> 0;
+    out[outIdx + 3] = ((view.getUint32(bIdx + o3, true) >>> s3) & mask) >>> 0;
+    out[outIdx + 4] = ((view.getUint32(bIdx + o4, true) >>> s4) & mask) >>> 0;
+    out[outIdx + 5] = ((view.getUint32(bIdx + o5, true) >>> s5) & mask) >>> 0;
+    out[outIdx + 6] = ((view.getUint32(bIdx + o6, true) >>> s6) & mask) >>> 0;
+    out[outIdx + 7] = ((view.getUint32(bIdx + o7, true) >>> s7) & mask) >>> 0;
+    bIdx += bitWidth;
+    outIdx += 8;
+    rem -= 8;
+  }
+  if (rem > 0) {
+    const bitBase = bIdx * BITS_PER_BYTE;
+    for (let k = 0; k < rem; k++) {
+      out[outIdx + k] = readBitsScalar(view, bitBase + k * bitWidth, bitWidth, mask);
+    }
+  }
+}
+
+function readWideAt(view: DataView, bytePos: number, shift: number, bitWidth: number, mask: number): number {
+  const lo = view.getUint32(bytePos, true) >>> shift;
+  if (shift === 0 || shift + bitWidth <= 32) return (lo & mask) >>> 0;
+  return ((lo | (view.getUint8(bytePos + 4) << (32 - shift))) & mask) >>> 0;
+}
+
+function unpackWideGroups(
+  view: DataView,
+  pos: number,
+  bitWidth: number,
+  take: number,
+  out: Uint32Array | Uint8Array,
+  produced: number
+): void {
+  const mask = 0xffffffff >>> (32 - bitWidth);
+  const o1 = bitWidth >>> 3, s1 = bitWidth & 7;
+  const o2 = (bitWidth * 2) >>> 3, s2 = (bitWidth * 2) & 7;
+  const o3 = (bitWidth * 3) >>> 3, s3 = (bitWidth * 3) & 7;
+  const o4 = (bitWidth * 4) >>> 3, s4 = (bitWidth * 4) & 7;
+  const o5 = (bitWidth * 5) >>> 3, s5 = (bitWidth * 5) & 7;
+  const o6 = (bitWidth * 6) >>> 3, s6 = (bitWidth * 6) & 7;
+  const o7 = (bitWidth * 7) >>> 3, s7 = (bitWidth * 7) & 7;
+  const safeGroupEnd = view.byteLength - bitWidth - 4;
+  let bIdx = pos;
+  let outIdx = produced;
+  let rem = take;
+  while (rem >= 8 && bIdx <= safeGroupEnd) {
+    out[outIdx] = (view.getUint32(bIdx, true) & mask) >>> 0;
+    out[outIdx + 1] = readWideAt(view, bIdx + o1, s1, bitWidth, mask);
+    out[outIdx + 2] = readWideAt(view, bIdx + o2, s2, bitWidth, mask);
+    out[outIdx + 3] = readWideAt(view, bIdx + o3, s3, bitWidth, mask);
+    out[outIdx + 4] = readWideAt(view, bIdx + o4, s4, bitWidth, mask);
+    out[outIdx + 5] = readWideAt(view, bIdx + o5, s5, bitWidth, mask);
+    out[outIdx + 6] = readWideAt(view, bIdx + o6, s6, bitWidth, mask);
+    out[outIdx + 7] = readWideAt(view, bIdx + o7, s7, bitWidth, mask);
+    bIdx += bitWidth;
+    outIdx += 8;
+    rem -= 8;
+  }
+  if (rem > 0) {
+    const bitBase = bIdx * BITS_PER_BYTE;
+    for (let k = 0; k < rem; k++) {
+      out[outIdx + k] = readBitsScalar(view, bitBase + k * bitWidth, bitWidth, mask);
+    }
+  }
+}
+
+function readRleValue(buf: Uint8Array, pos: number, valueBytes: number): number {
+  if (valueBytes === 0) return 0;
+  if (valueBytes === 1) return buf[pos];
+  if (valueBytes === 2) return buf[pos] | (buf[pos + 1] << 8);
+  if (valueBytes === 3) return buf[pos] | (buf[pos + 1] << 8) | (buf[pos + 2] << 16);
+  return (buf[pos] | (buf[pos + 1] << 8) | (buf[pos + 2] << 16) | (buf[pos + 3] << 24)) >>> 0;
 }
 
 /**
@@ -302,14 +438,19 @@ export function decodeRleHybrid(
     throw new ParquetFormatError(`Corrupted Parquet RLE stream: unsupported bit width ${bitWidth}`);
   }
   if (count > out.length) throw new ParquetFormatError('Corrupted Parquet RLE stream: output too small');
-  const valueBytes = Math.ceil(bitWidth / BITS_PER_BYTE);
+  const valueBytes = (bitWidth + 7) >>> BYTE_INDEX_SHIFT;
+  const view = bitWidth >= 2 ? new DataView(buf.buffer, buf.byteOffset, buf.byteLength) : null;
   let pos = start;
   let produced = 0;
   while (produced < count) {
-    const header = readVarint32(buf, pos, end);
-    pos = header.next;
-    if ((header.value & BIT_PACKED_FLAG) === BIT_PACKED_FLAG) {
-      const groups = Math.floor(header.value / 2);
+    if (pos >= end) throw new ParquetFormatError('Corrupted Parquet RLE run: truncated header');
+    let headerVal = buf[pos++];
+    if (headerVal >= VARINT_CONTINUATION) {
+      headerVal = readVarintSlow(buf, headerVal, pos, end);
+      pos = varintNextPos;
+    }
+    if ((headerVal & BIT_PACKED_FLAG) === BIT_PACKED_FLAG) {
+      const groups = Math.floor(headerVal / 2);
       const runValues = groups * RLE_GROUP_VALUES;
       const runBytes = groups * bitWidth;
       if (pos + runBytes > end) throw new ParquetFormatError('Corrupted Parquet RLE stream: truncated bit-packed run');
@@ -317,75 +458,30 @@ export function decodeRleHybrid(
       if (bitWidth === 0) {
         out.fill(0, produced, produced + take);
       } else if (bitWidth === 1) {
-        let rem = take;
-        let bIdx = pos;
-        let outIdx = produced;
-        while (rem >= 8) {
-          const b = buf[bIdx++];
-          out[outIdx] = b & 1;
-          out[outIdx + 1] = (b >>> 1) & 1;
-          out[outIdx + 2] = (b >>> 2) & 1;
-          out[outIdx + 3] = (b >>> 3) & 1;
-          out[outIdx + 4] = (b >>> 4) & 1;
-          out[outIdx + 5] = (b >>> 5) & 1;
-          out[outIdx + 6] = (b >>> 6) & 1;
-          out[outIdx + 7] = (b >>> 7) & 1;
-          outIdx += 8;
-          rem -= 8;
-        }
-        if (rem > 0) {
-          const b = buf[bIdx];
-          for (let k = 0; k < rem; k++) out[outIdx + k] = (b >>> k) & 1;
-        }
+        unpackBitWidth1(buf, pos, take, out, produced);
+      } else if (bitWidth === 8) {
+        out.set(buf.subarray(pos, pos + take), produced);
+      } else if (bitWidth === 16) {
+        const dv = view as DataView;
+        for (let k = 0, b = pos; k < take; k++, b += 2) out[produced + k] = dv.getUint16(b, true);
+      } else if (bitWidth === 32) {
+        const dv = view as DataView;
+        for (let k = 0, b = pos; k < take; k++, b += 4) out[produced + k] = dv.getUint32(b, true);
       } else if (bitWidth <= RLE_MAX_NARROW_READ_WIDTH) {
-        const bitBase = pos * BITS_PER_BYTE;
-        const mask = (1 << bitWidth) - 1;
-        const safeByteLimit = end - 4;
-        for (let k = 0; k < take; k++) {
-          const bitPos = bitBase + k * bitWidth;
-          const byte = bitPos >>> BYTE_INDEX_SHIFT;
-          if (byte <= safeByteLimit) {
-            const shift = bitPos & BYTE_SHIFT_MASK;
-            const window =
-              (buf[byte] |
-                (buf[byte + 1] << BITS_PER_BYTE) |
-                (buf[byte + 2] << (2 * BITS_PER_BYTE)) |
-                (buf[byte + 3] << (3 * BITS_PER_BYTE))) >>>
-              shift;
-            out[produced + k] = (window & mask) >>> 0;
-          } else {
-            out[produced + k] = readBitsSafe(buf, bitPos, bitWidth, end);
-          }
-        }
+        unpackNarrowGroups(view as DataView, pos, bitWidth, take, out, produced);
       } else {
-        const bitBase = pos * BITS_PER_BYTE;
-        for (let k = 0; k < take; k++) {
-          out[produced + k] = readBitsSafe(buf, bitBase + k * bitWidth, bitWidth, end);
-        }
+        unpackWideGroups(view as DataView, pos, bitWidth, take, out, produced);
       }
       produced += take;
       pos += runBytes;
     } else {
-      const runLength = header.value / 2;
+      const runLength = headerVal / 2;
       if (pos + valueBytes > end) throw new ParquetFormatError('Corrupted Parquet RLE stream: truncated RLE run');
-      let value = 0;
-      for (let b = 0; b < valueBytes; b++) value += buf[pos + b] * 2 ** (b * BITS_PER_BYTE);
+      const value = readRleValue(buf, pos, valueBytes);
       pos += valueBytes;
       const take = Math.min(runLength, count - produced);
       out.fill(value, produced, produced + take);
       produced += take;
     }
   }
-}
-
-/** readBits with a guard for the 4-5 byte look-ahead window at the tail of the buffer. */
-function readBitsSafe(buf: Uint8Array, bitPos: number, width: number, end: number): number {
-  const lastByte = (bitPos + width - 1) >>> BYTE_INDEX_SHIFT;
-  if (lastByte >= end) throw new ParquetFormatError('Corrupted Parquet RLE stream: truncated bit-packed values');
-  const byte = bitPos >>> BYTE_INDEX_SHIFT;
-  // Bytes past `end` read as zero via a bounded window copy.
-  if (byte + RLE_MAX_VARINT_BYTES <= end) return readBits(buf, bitPos, width);
-  const window = new Uint8Array(RLE_MAX_VARINT_BYTES);
-  for (let i = 0; i < RLE_MAX_VARINT_BYTES && byte + i < end; i++) window[i] = buf[byte + i];
-  return readBits(window, bitPos - byte * BITS_PER_BYTE, width);
 }

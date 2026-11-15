@@ -5,6 +5,25 @@
  * row for the first) with the pass, horizontal and vertical modes of T.6 clause 2.2, and runs use the white and
  * black terminating and make-up code tables of T.4 (Tables 2 and 3), which T.6 reuses. The strip ends with the
  * EOFB code (two EOL codes). The output is a PDF `/CCITTFaxDecode` stream with `/K -1`, `/BlackIs1 false`.
+ *
+ * Word-level 32-bit big-endian transition scanning (`changingElements`) follows ITU-T T.6 / `DanBloomberg/leptonica`
+ * (commit `cb453c2f020b0186e68e6e2e14a09734777644f8`, BSD-2-Clause):
+ *
+ * Copyright (C) 2001-2020 Leptonica.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the
+ * following conditions are met:
+ * 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following
+ *    disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the
+ *    following disclaimer in the documentation and/or other materials provided with the distribution.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED.  IN NO EVENT SHALL ANY CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+ * OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 /** Bits in a byte, for the packed-raster arithmetic. */
@@ -173,22 +192,49 @@ function putRun(sink: BitSink, length: number, black: boolean): void {
   sink.put((black ? BLACK_TERMINATING : WHITE_TERMINATING)[remaining]);
 }
 
+const WORD_BITS = 32;
+const WHITE_WORD = 0xffffffff;
+const TOP_BIT = 0x80000000;
+
 /**
  * Lists the changing elements of a row (T.6 clause 2.1): the position of each pixel whose colour differs from
- * the pixel before it, the pixel before the first being white. Returns how many were found; the list ends with
- * `width` sentinels so a lookup past the last change reads the end of the row.
+ * the pixel before it, the pixel before the first being white (`prevBit = 1`). Returns how many were found; the
+ * list ends with `width` sentinels so a lookup past the last change reads the end of the row.
  */
-function changingElements(row: Uint8Array, width: number, out: Int32Array): number {
+function changingElements(
+  data: Uint8Array,
+  view: DataView,
+  rowByteOffset: number,
+  width: number,
+  out: Int32Array
+): number {
   let count = 0;
-  let black = false;
+  let prevBit = 1;
   let x = 0;
-  while (x < width) {
-    // A byte equal to the current run's fill byte carries no change, so whole bytes are skipped.
-    if (x % BITS_PER_BYTE === 0 && x + BITS_PER_BYTE <= width && row[x / BITS_PER_BYTE] === (black ? BLACK_BYTE : WHITE_BYTE)) {
-      x += BITS_PER_BYTE;
+  while (x + WORD_BITS <= width) {
+    const word = view.getUint32(rowByteOffset + (x >>> BYTE_SHIFT), false);
+    if (word === (prevBit === 1 ? WHITE_WORD : 0)) {
+      x += WORD_BITS;
       continue;
     }
-    const pixelIsBlack = ((row[x >> BYTE_SHIFT] >> (BITS_PER_BYTE - 1 - (x & BIT_INDEX_MASK))) & 1) === 0;
+    let diff = (word ^ (((word >>> 1) | (prevBit << 31)) >>> 0)) >>> 0;
+    while (diff !== 0) {
+      const lead = Math.clz32(diff);
+      out[count++] = x + lead;
+      diff = (diff ^ (TOP_BIT >>> lead)) >>> 0;
+    }
+    prevBit = word & 1;
+    x += WORD_BITS;
+  }
+  let black = prevBit === 0;
+  while (x < width) {
+    if ((x & BIT_INDEX_MASK) === 0 && x + BITS_PER_BYTE <= width) {
+      if (data[rowByteOffset + (x >>> BYTE_SHIFT)] === (black ? BLACK_BYTE : WHITE_BYTE)) {
+        x += BITS_PER_BYTE;
+        continue;
+      }
+    }
+    const pixelIsBlack = ((data[rowByteOffset + (x >>> BYTE_SHIFT)] >> (BITS_PER_BYTE - 1 - (x & BIT_INDEX_MASK))) & 1) === 0;
     if (pixelIsBlack !== black) {
       out[count++] = x;
       black = pixelIsBlack;
@@ -230,8 +276,9 @@ export function encodeCcittG4(raster: BitonalRaster, maxBytes: number): Uint8Arr
   reference[1] = width;
   reference[2] = width;
 
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   for (let y = 0; y < height; y++) {
-    const currentCount = changingElements(data.subarray(y * rowBytes, (y + 1) * rowBytes), width, current);
+    const currentCount = changingElements(data, view, y * rowBytes, width, current);
     codeRow(sink, current, currentCount, reference, referenceCount, width);
     if (sink.overflowed) return null;
     [reference, current] = [current, reference];

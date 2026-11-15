@@ -1,40 +1,11 @@
 import { ConversionFailedError, CorruptStreamError, DecompressionLimitError } from '../types';
 import { InflateBudget, MAX_STREAM_INFLATE_BYTES, inflatePdfFlate } from './bounded-inflate';
 import { CidWidthReader } from './pdf-cid-widths';
+import { PREDICTOR_PNG_MAX, PREDICTOR_PNG_MIN, PREDICTOR_TIFF, type PredictorParams, decodeAscii85, decodeAsciiHex, predictorRowBytes, undoPredictor } from './pdf-filters';
 import {
-  PREDICTOR_PNG_MAX,
-  PREDICTOR_PNG_MIN,
-  PREDICTOR_TIFF,
-  type PredictorParams,
-  decodeAscii85,
-  decodeAsciiHex,
-  predictorRowBytes,
-  undoPredictor,
-} from './pdf-filters';
-import {
-  type PdfArray,
-  type PdfDict,
-  type PdfName,
-  type PdfOpaque,
-  type PdfRef,
-  type PdfValue,
-  MAX_GENERATION_DIGITS,
-  MAX_OBJECT_NUMBER_DIGITS,
-  PdfStructureError,
-  CHAR_LF,
-  CHAR_CR,
-  CHAR_LESS,
-  isArray,
-  isDict,
-  isDigit,
-  isName,
-  isRef,
-  isRegular,
-  decodeNameEscapes,
-  isWhite,
-  parseValue,
-  skipValue,
-  skipWhite,
+  type PdfArray, type PdfDict, type PdfName, type PdfOpaque, type PdfRef, type PdfValue,
+  MAX_GENERATION_DIGITS, MAX_OBJECT_NUMBER_DIGITS, PdfStructureError, CHAR_LF, CHAR_CR, CHAR_LESS,
+  isArray, isDict, isDigit, isName, isRef, isRegular, decodeNameEscapes, isWhite, parseValue, skipValue, skipWhite,
 } from './pdf-values';
 export { MAX_PDF_PARSE_DEPTH, PdfStructureError, parseValue, skipWhite } from './pdf-values';
 export type { PdfArray, PdfDict, PdfName, PdfOpaque, PdfRef, PdfValue } from './pdf-values';
@@ -230,16 +201,22 @@ export type PdfReading = 'preferred' | 'last' | 'first' | 'scan';
 
 /** How a fetch of an object the cross-reference lists fails in pdf.js: `entry` is an `XRefEntryException`, which makes pdf.js read the file by scanning it. */
 type FetchFault = 'entry' | 'format';
+interface ScanSnapshot {
+  text: string; lastIndex: Map<number, PdfObjectEntry>; firstIndex: Map<number, PdfObjectEntry>;
+  objectStreams: PdfObjectEntry[]; libDecodedStreams: PdfObjectEntry[]; objectCount: number;
+  superseded: boolean; encrypted: boolean; rootRef: PdfRef | null;
+}
 
 export class PdfDocument {
   /** True when the trailer names an Encrypt dictionary; streams are then ciphertext this reader cannot decode. */
   encrypted = false;
-
   private readonly text: string;
   private index = new Map<number, PdfObjectEntry>();
-  private readonly objectStreams: PdfObjectEntry[] = [];
+  private readonly firstScanIndex = new Map<number, PdfObjectEntry>();
+  private scanSnapshot: ScanSnapshot | null = null;
+  private readonly objectStreams: PdfObjectEntry[];
   /** Streams whose /Type is ObjStm, XRef or a reference, in file order: the ones pdf-lib may decode while it loads a file. */
-  private readonly libDecodedStreams: PdfObjectEntry[] = [];
+  private readonly libDecodedStreams: PdfObjectEntry[];
   /** Streams whose /Length is an object the scan had not reached yet; see `applyLaterLengths`. */
   private readonly laterLengths: PdfObjectEntry[] = [];
   private readonly objectStreamTexts: string[] = [];
@@ -273,19 +250,39 @@ export class PdfDocument {
   /** Inline images of each form XObject's content, by object number, so that a form drawn many times is tokenised once. */
   private readonly formInlineImages = new Map<number, number>();
 
-  /**
-   * @param skipUndecodable leave streams alone that use a filter or predictor this reader does not decode, instead of
-   * refusing the document: for callers that only check limits and leave the reading to another reader.
-   */
+  /** @param skipUndecodable leave streams alone that use a filter or predictor this reader does not decode. */
   constructor(
     private readonly buffer: Buffer,
     private readonly budget: InflateBudget = new InflateBudget(),
     private readonly skipUndecodable = false,
-    private readonly reading: PdfReading = 'preferred'
+    private readonly reading: PdfReading = 'preferred',
+    snapshot?: ScanSnapshot
   ) {
+    if (snapshot !== undefined) {
+      this.text = snapshot.text;
+      this.index = new Map(reading === 'first' ? snapshot.firstIndex : snapshot.lastIndex);
+      this.objectStreams = snapshot.objectStreams;
+      this.libDecodedStreams = snapshot.libDecodedStreams;
+      this.objectCount = snapshot.objectCount;
+      this.superseded = snapshot.superseded;
+      this.encrypted = snapshot.encrypted;
+      this.rootRef = snapshot.rootRef;
+      if (reading !== 'scan') this.expandObjectStreams();
+      this.parsed.clear();
+      return;
+    }
     this.text = buffer.toString('latin1');
+    this.objectStreams = [];
+    this.libDecodedStreams = [];
     this.scan();
     this.applyLaterLengths();
+    if (reading === 'preferred' && this.superseded) {
+      this.scanSnapshot = {
+        text: this.text, lastIndex: new Map(this.index), firstIndex: this.firstScanIndex,
+        objectStreams: this.objectStreams, libDecodedStreams: this.libDecodedStreams,
+        objectCount: this.objectCount, superseded: this.superseded, encrypted: this.encrypted, rootRef: this.rootRef,
+      };
+    }
     const crossReference = reading === 'preferred' ? this.followCrossReference() : null;
     if (reading !== 'scan') this.expandObjectStreams();
     // The definition the cross-reference leads to is the one pdf.js reads, whatever the file has after it.
@@ -326,7 +323,8 @@ export class PdfDocument {
   otherReadings(): PdfDocument[] {
     if (!this.uncertain) return [];
     const readings: PdfReading[] = this.followedCrossReference ? ['last', 'first'] : ['first'];
-    return readings.map((r) => new PdfDocument(this.buffer, new InflateBudget(), this.skipUndecodable, r));
+    const snapshot = this.scanSnapshot ?? undefined;
+    return readings.map((r) => new PdfDocument(this.buffer, new InflateBudget(), this.skipUndecodable, r, snapshot));
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -401,6 +399,12 @@ export class PdfDocument {
   private scanObject(header: { num: number; gen: number }, seq: number, bodyFrom: number): number {
     const { entry, resume, laterLength } = this.defineObject(header, seq, bodyFrom);
     this.register(entry);
+    if (this.reading === 'preferred') {
+      const prevFirst = this.firstScanIndex.get(entry.num);
+      if (!prevFirst || entry.seq < prevFirst.seq) {
+        this.firstScanIndex.set(entry.num, entry);
+      }
+    }
     if (laterLength) this.laterLengths.push(entry);
     if (entry.stream) {
       const dict = entry.stream.dict;
@@ -475,18 +479,31 @@ export class PdfDocument {
   private applyLaterLengths(): void {
     for (const entry of this.laterLengths) {
       const stream = entry.stream as StreamSpan;
-      const end = this.endAtLength(stream.rawStart, this.directLength(stream.dict));
-      if (end !== -1) stream.rawEnd = end;
+      const lastEnd = this.endAtLength(stream.rawStart, this.directLength(stream.dict));
+      if (this.reading === 'preferred' && this.superseded) {
+        const firstEnd = this.endAtLength(stream.rawStart, this.directLengthFrom(stream.dict, this.firstScanIndex));
+        if (firstEnd !== lastEnd && this.firstScanIndex.get(entry.num) === entry) {
+          this.firstScanIndex.set(entry.num, {
+            ...entry,
+            stream: { ...stream, rawEnd: firstEnd === -1 ? stream.rawEnd : firstEnd },
+          });
+        }
+      }
+      if (lastEnd !== -1) stream.rawEnd = lastEnd;
     }
   }
 
   private directLength(dict: PdfDict): number | null {
+    return this.directLengthFrom(dict, this.index);
+  }
+
+  private directLengthFrom(dict: PdfDict, sourceIndex: ReadonlyMap<number, PdfObjectEntry>): number | null {
     const raw = dict.entries.get('Length');
     if (typeof raw === 'number') return Number.isInteger(raw) && raw >= 0 ? raw : null;
     if (!isRef(raw)) return null;
     // Objects are still being indexed, so the length object is not cached. Only its leading integer
     // is read: a length object is a bare integer, and anything longer must not be parsed per stream.
-    const target = this.index.get(raw.num);
+    const target = sourceIndex.get(raw.num);
     if (!target || target.stream) return null;
     return leadingInteger(target.source, target.start);
   }

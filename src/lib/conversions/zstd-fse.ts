@@ -4,6 +4,29 @@ import { ZSTD_FSE_ACCURACY_LOG_MIN as ZSTD_FSE_MIN_LOG } from './zstd-tables';
 /**
  * Finite State Entropy (FSE) primitives for RFC 8878 section 4.1: bit streams, table
  * description reading/writing, count normalization, and decode/encode table construction.
+ *
+ * Word-level 32-bit bitstream loads follow `facebook/zstd` (`lib/common/bitstream.h`,
+ * commit `a599a71c4cf5d142ffce772c0d16a5a7b755d83c`,
+ * SHA-256 `52d428dc22a263cbb7fc9f31c633466b2c45e15abb9ecafa36d5c50016c98074`, BSD-3-Clause):
+ *
+ * BSD License
+ * For Zstandard software
+ * Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+ * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the
+ * following conditions are met:
+ *  * Redistributions of source code must retain the above copyright notice, this list of conditions and the following
+ *    disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the
+ *    following disclaimer in the documentation and/or other materials provided with the distribution.
+ *  * Neither the name Facebook, nor Meta, nor the names of its contributors may be used to endorse or promote products
+ *    derived from this software without specific prior written permission.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+ * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+ * USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 const BITS_PER_BYTE = 8;
@@ -39,6 +62,7 @@ export function highBit32(value: number): number {
 export class ReverseBitReader {
   public bitsLeft: number;
   private readonly buf: Uint8Array;
+  private readonly view: DataView;
   private readonly start: number;
   private readonly end: number;
 
@@ -47,6 +71,7 @@ export class ReverseBitReader {
     const last = buf[end - 1];
     if (last === 0) zstdFail('Malformed Zstandard bitstream: missing end mark.');
     this.buf = buf;
+    this.view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     this.start = start;
     this.end = end;
     this.bitsLeft = (end - 1 - start) * BITS_PER_BYTE + highBit32(last);
@@ -64,9 +89,7 @@ export class ReverseBitReader {
     const shift = pos & 7;
     const fast = this.start + byteIdx;
     if (pos >= 0 && fast + 3 < this.end) {
-      const buf = this.buf;
-      const fastWord = (buf[fast] | (buf[fast + 1] << 8) | (buf[fast + 2] << 16) | (buf[fast + 3] << 24)) >>> 0;
-      return (fastWord >>> shift) & ((1 << n) - 1);
+      return (this.view.getUint32(fast, true) >>> shift) & ((1 << n) - 1);
     }
     const b0 = this.byteAt(byteIdx);
     const b1 = this.byteAt(byteIdx + 1);
@@ -108,12 +131,14 @@ export class ReverseBitReader {
 export class ForwardBitReader {
   public bitPos = 0;
   private readonly buf: Uint8Array;
+  private readonly view: DataView;
   private readonly start: number;
   private readonly end: number;
   private readonly totalBits: number;
 
   constructor(buf: Uint8Array, start: number, end: number) {
     this.buf = buf;
+    this.view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     this.start = start;
     this.end = end;
     this.totalBits = (end - start) * BITS_PER_BYTE;
@@ -124,11 +149,10 @@ export class ForwardBitReader {
     const byteIdx = pos >> 3;
     const shift = pos & 7;
     const abs = this.start + byteIdx;
-    const buf = this.buf;
     if (abs + 3 < this.end) {
-      const word = (buf[abs] | (buf[abs + 1] << 8) | (buf[abs + 2] << 16) | (buf[abs + 3] << 24)) >>> 0;
-      return (word >>> shift) & ((1 << n) - 1);
+      return (this.view.getUint32(abs, true) >>> shift) & ((1 << n) - 1);
     }
+    const buf = this.buf;
     let word = buf[abs];
     if (abs + 1 < this.end) word |= buf[abs + 1] << 8;
     if (abs + 2 < this.end) word |= buf[abs + 2] << 16;

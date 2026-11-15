@@ -173,6 +173,98 @@ export function predictorRowBytes(params: PredictorParams): number {
   return Math.ceil((params.colors * params.bitsPerComponent * params.columns) / BITS_PER_BYTE);
 }
 
+function undoTiffPredictor(data: Buffer, rowBytes: number, bytesPerPixel: number, bitsPerComponent: number): Buffer {
+  const out = Buffer.from(data);
+  if (bitsPerComponent === 16) {
+    for (let rowStart = 0; rowStart < out.length; rowStart += rowBytes) {
+      const rowEnd = Math.min(rowStart + rowBytes, out.length);
+      for (let i = rowStart + bytesPerPixel; i + 2 <= rowEnd; i += 2) {
+        const sum = out.readUInt16BE(i) + out.readUInt16BE(i - bytesPerPixel);
+        out.writeUInt16BE(sum & 0xffff, i);
+      }
+    }
+    return out;
+  }
+  for (let rowStart = 0; rowStart < out.length; rowStart += rowBytes) {
+    const rowEnd = Math.min(rowStart + rowBytes, out.length);
+    for (let i = rowStart + bytesPerPixel; i < rowEnd; i++) {
+      out[i] = (out[i] + out[i - bytesPerPixel]) & 0xff;
+    }
+  }
+  return out;
+}
+
+interface PngRowSlice {
+  data: Buffer;
+  out: Buffer;
+  inStart: number;
+  outStart: number;
+  width: number;
+  rowBytes: number;
+  bytesPerPixel: number;
+}
+
+function unfilterPngSubRow(row: PngRowSlice): void {
+  const { data, out, inStart, outStart, width, bytesPerPixel } = row;
+  const head = Math.min(width, bytesPerPixel);
+  for (let i = 0; i < head; i++) out[outStart + i] = data[inStart + i];
+  for (let i = head; i < width; i++) {
+    out[outStart + i] = (data[inStart + i] + out[outStart + i - bytesPerPixel]) & 0xff;
+  }
+}
+
+function unfilterPngUpRow(row: PngRowSlice): void {
+  const { data, out, inStart, outStart, width, rowBytes } = row;
+  if (outStart === 0) {
+    data.copy(out, 0, inStart, inStart + width);
+    return;
+  }
+  const prevStart = outStart - rowBytes;
+  for (let i = 0; i < width; i++) {
+    out[outStart + i] = (data[inStart + i] + out[prevStart + i]) & 0xff;
+  }
+}
+
+function unfilterPngAverageRow(row: PngRowSlice): void {
+  const { data, out, inStart, outStart, width, rowBytes, bytesPerPixel } = row;
+  const head = Math.min(width, bytesPerPixel);
+  if (outStart === 0) {
+    for (let i = 0; i < head; i++) out[i] = data[inStart + i];
+    for (let i = head; i < width; i++) {
+      out[i] = (data[inStart + i] + (out[i - bytesPerPixel] >> 1)) & 0xff;
+    }
+    return;
+  }
+  const prevStart = outStart - rowBytes;
+  for (let i = 0; i < head; i++) {
+    out[outStart + i] = (data[inStart + i] + (out[prevStart + i] >> 1)) & 0xff;
+  }
+  for (let i = head; i < width; i++) {
+    out[outStart + i] = (data[inStart + i] + ((out[outStart + i - bytesPerPixel] + out[prevStart + i]) >> 1)) & 0xff;
+  }
+}
+
+function unfilterPngPaethRow(row: PngRowSlice): void {
+  const { data, out, inStart, outStart, width, rowBytes, bytesPerPixel } = row;
+  if (outStart === 0) {
+    unfilterPngSubRow(row);
+    return;
+  }
+  const head = Math.min(width, bytesPerPixel);
+  const prevStart = outStart - rowBytes;
+  for (let i = 0; i < head; i++) {
+    out[outStart + i] = (data[inStart + i] + out[prevStart + i]) & 0xff;
+  }
+  for (let i = head; i < width; i++) {
+    const predicted = paeth(
+      out[outStart + i - bytesPerPixel],
+      out[prevStart + i],
+      out[prevStart + i - bytesPerPixel]
+    );
+    out[outStart + i] = (data[inStart + i] + predicted) & 0xff;
+  }
+}
+
 /**
  * Reverses a FlateDecode predictor (section 7.4.4.4). PNG predictors read the filter byte that leads
  * each row; TIFF predictor 2 adds the sample one pixel to the left, for 8 and 16 bits per component.
@@ -183,44 +275,38 @@ export function undoPredictor(data: Buffer, params: PredictorParams, label: stri
   const bytesPerPixel = Math.max(1, Math.ceil((params.colors * params.bitsPerComponent) / BITS_PER_BYTE));
 
   if (params.predictor === PREDICTOR_TIFF) {
-    const out = Buffer.from(data);
-    const step = params.bitsPerComponent === 16 ? 2 : 1;
-    for (let rowStart = 0; rowStart < out.length; rowStart += rowBytes) {
-      const rowEnd = Math.min(rowStart + rowBytes, out.length);
-      for (let i = rowStart + bytesPerPixel; i + step <= rowEnd; i += step) {
-        if (step === 2) {
-          const sum = out.readUInt16BE(i) + out.readUInt16BE(i - bytesPerPixel);
-          out.writeUInt16BE(sum & 0xffff, i);
-        } else {
-          out[i] = (out[i] + out[i - bytesPerPixel]) & 0xff;
-        }
-      }
-    }
-    return out;
+    return undoTiffPredictor(data, rowBytes, bytesPerPixel, params.bitsPerComponent);
   }
 
   const stride = rowBytes + 1;
   const fullRows = Math.floor(data.length / stride);
   const tail = data.length - fullRows * stride - 1; // bytes of a last, incomplete row
-  const out = Buffer.alloc(fullRows * rowBytes + Math.max(0, tail));
+  const out = Buffer.allocUnsafe(fullRows * rowBytes + Math.max(0, tail));
   const rows = fullRows + (tail > 0 ? 1 : 0);
+  const slice: PngRowSlice = { data, out, inStart: 0, outStart: 0, width: 0, rowBytes, bytesPerPixel };
   for (let r = 0; r < rows; r++) {
     const filter = data[r * stride];
-    const width = r < fullRows ? rowBytes : tail;
-    const inStart = r * stride + 1;
-    const outStart = r * rowBytes;
-    if (filter > PNG_FILTER_PAETH) throw new CorruptStreamError(`${label} has PNG predictor filter type ${filter}.`);
-    for (let i = 0; i < width; i++) {
-      const raw = data[inStart + i];
-      const left = i >= bytesPerPixel ? out[outStart + i - bytesPerPixel] : 0;
-      const up = r > 0 ? out[outStart - rowBytes + i] : 0;
-      const upLeft = r > 0 && i >= bytesPerPixel ? out[outStart - rowBytes + i - bytesPerPixel] : 0;
-      let predicted = 0;
-      if (filter === PNG_FILTER_SUB) predicted = left;
-      else if (filter === PNG_FILTER_UP) predicted = up;
-      else if (filter === PNG_FILTER_AVERAGE) predicted = (left + up) >> 1;
-      else if (filter === PNG_FILTER_PAETH) predicted = paeth(left, up, upLeft);
-      out[outStart + i] = (raw + (filter === PNG_FILTER_NONE ? 0 : predicted)) & 0xff;
+    slice.width = r < fullRows ? rowBytes : tail;
+    slice.inStart = r * stride + 1;
+    slice.outStart = r * rowBytes;
+    switch (filter) {
+      case PNG_FILTER_NONE:
+        data.copy(out, slice.outStart, slice.inStart, slice.inStart + slice.width);
+        break;
+      case PNG_FILTER_SUB:
+        unfilterPngSubRow(slice);
+        break;
+      case PNG_FILTER_UP:
+        unfilterPngUpRow(slice);
+        break;
+      case PNG_FILTER_AVERAGE:
+        unfilterPngAverageRow(slice);
+        break;
+      case PNG_FILTER_PAETH:
+        unfilterPngPaethRow(slice);
+        break;
+      default:
+        throw new CorruptStreamError(`${label} has PNG predictor filter type ${filter}.`);
     }
   }
   return out;

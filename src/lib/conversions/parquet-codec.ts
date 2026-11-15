@@ -7,6 +7,32 @@ import { decompressZstd } from './zstd';
  * Page compression for Parquet column chunks (the codec applies to each page body).
  * ZSTD compression needs a runtime that ships zstd in node:zlib (Node 22.15+/23.8+); older
  * runtimes can still read ZSTD pages through the in-repo decoder but cannot write them.
+ *
+ * Raw and Hadoop-framed LZ4 block decompression match `lz4/lz4` (`lib/lz4.c`,
+ * commit `6b589e8053bd9c524138d78adec78fcaefa35cab`,
+ * SHA-256 `6befbbafe8d8f2fe6a8cb2d04572c3adb9a7fd01a00179f9bdf1a598616c6c52`, BSD-2-Clause):
+ *
+ * LZ4 Library
+ * Copyright (c) 2011-2020, Yann Collet
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without modification,
+ * are permitted provided that the following conditions are met:
+ * * Redistributions of source code must retain the above copyright notice, this
+ *   list of conditions and the following disclaimer.
+ * * Redistributions in binary form must reproduce the above copyright notice, this
+ *   list of conditions and the following disclaimer in the documentation and/or
+ *   other materials provided with the distribution.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ * ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 /** zstd level used when writing (the library default). */
@@ -82,73 +108,124 @@ function gunzip(data: Buffer, expectedBytes: number): Buffer {
   }
 }
 
+function copyLz4Match(out: Buffer, outPos: number, offset: number, matchLen: number): void {
+  const matchPos = outPos - offset;
+  if (offset >= matchLen) {
+    out.copyWithin(outPos, matchPos, matchPos + matchLen);
+    return;
+  }
+  if (offset === 1) {
+    out.fill(out[matchPos], outPos, outPos + matchLen);
+    return;
+  }
+  out.copyWithin(outPos, matchPos, matchPos + offset);
+  let copied = offset;
+  while (copied < matchLen) {
+    const step = copied <= matchLen - copied ? copied : matchLen - copied;
+    out.copyWithin(outPos + copied, outPos, outPos + step);
+    copied += step;
+  }
+}
+
 /**
- * Decompresses an LZ4 raw block (Parquet LZ4_RAW codec) into a buffer of `expectedBytes` bytes.
+ * Decodes one raw LZ4 block `src[srcStart..srcEnd)` directly into `out[outStart..outStart + expectedBytes)`.
+ * Throws `ParquetFormatError` unless every byte in `[outStart, outStart + expectedBytes)` is written, so a caller
+ * using `Buffer.allocUnsafe(expectedBytes)` can never expose uninitialized memory.
  */
-export function decompressLz4Raw(data: Buffer, expectedBytes: number): Buffer {
+function decodeLz4RawInto(
+  src: Buffer,
+  srcStart: number,
+  srcEnd: number,
+  out: Buffer,
+  outStart: number,
+  expectedBytes: number
+): void {
   if (expectedBytes === 0) {
-    if (data.length !== 0) {
+    if (srcStart !== srcEnd) {
       throw new ParquetFormatError('Corrupted Parquet page: non-empty LZ4_RAW block for 0 uncompressed bytes');
     }
-    return Buffer.alloc(0);
+    return;
   }
-  const out = Buffer.alloc(expectedBytes);
-  let pos = 0;
-  let outPos = 0;
-  while (pos < data.length) {
-    const token = data[pos++];
+  const outLimit = outStart + expectedBytes;
+  let pos = srcStart;
+  let outPos = outStart;
+  while (pos < srcEnd) {
+    const token = src[pos++];
     let literalLen = token >>> LZ4_TOKEN_SHIFT;
     if (literalLen === LZ4_EXTENDED_LENGTH) {
       for (;;) {
-        if (pos >= data.length) {
+        if (pos >= srcEnd) {
           throw new ParquetFormatError('Corrupted Parquet page: truncated LZ4_RAW literal length');
         }
-        const extra = data[pos++];
+        const extra = src[pos++];
         literalLen += extra;
         if (extra !== LZ4_CONTINUATION_BYTE) break;
       }
     }
-    if (pos + literalLen > data.length || outPos + literalLen > expectedBytes) {
+    if (pos + literalLen > srcEnd || outPos + literalLen > outLimit) {
       throw new ParquetFormatError('Corrupted Parquet page: LZ4_RAW literal exceeds bounds');
     }
-    data.copy(out, outPos, pos, pos + literalLen);
+    if (literalLen <= 16) {
+      for (let i = 0; i < literalLen; i++) out[outPos + i] = src[pos + i];
+    } else {
+      src.copy(out, outPos, pos, pos + literalLen);
+    }
     pos += literalLen;
     outPos += literalLen;
-    if (pos === data.length) break;
+    if (pos === srcEnd) break;
 
-    if (pos + LZ4_OFFSET_BYTES > data.length) {
+    if (pos + LZ4_OFFSET_BYTES > srcEnd) {
       throw new ParquetFormatError('Corrupted Parquet page: truncated LZ4_RAW match offset');
     }
-    const offset = data.readUInt16LE(pos);
+    const offset = src[pos] | (src[pos + 1] << 8);
     pos += LZ4_OFFSET_BYTES;
-    if (offset === 0 || offset > outPos) {
+    if (offset === 0 || offset > outPos - outStart) {
       throw new ParquetFormatError(`Corrupted Parquet page: invalid LZ4_RAW match offset ${offset}`);
     }
     let matchLen = (token & LZ4_TOKEN_MASK) + LZ4_MIN_MATCH;
     if ((token & LZ4_TOKEN_MASK) === LZ4_EXTENDED_LENGTH) {
       for (;;) {
-        if (pos >= data.length) {
+        if (pos >= srcEnd) {
           throw new ParquetFormatError('Corrupted Parquet page: truncated LZ4_RAW match length');
         }
-        const extra = data[pos++];
+        const extra = src[pos++];
         matchLen += extra;
         if (extra !== LZ4_CONTINUATION_BYTE) break;
       }
     }
-    if (outPos + matchLen > expectedBytes) {
+    if (outPos + matchLen > outLimit) {
       throw new ParquetFormatError('Corrupted Parquet page: LZ4_RAW match exceeds declared size');
     }
-    let matchSrc = outPos - offset;
-    for (let i = 0; i < matchLen; i++) {
-      out[outPos++] = out[matchSrc++];
-    }
+    copyLz4Match(out, outPos, offset, matchLen);
+    outPos += matchLen;
   }
-  if (outPos !== expectedBytes) {
+  if (outPos !== outLimit) {
     throw new ParquetFormatError(
-      `Corrupted Parquet page: LZ4_RAW page decoded to ${outPos} bytes, header declares ${expectedBytes}`
+      `Corrupted Parquet page: LZ4_RAW page decoded to ${outPos - outStart} bytes, header declares ${expectedBytes}`
     );
   }
+}
+
+function decompressLz4RawSlice(data: Buffer, start: number, end: number, expectedBytes: number): Buffer {
+  if (expectedBytes < 0) {
+    throw new ParquetFormatError(`Corrupted Parquet page: negative LZ4_RAW size ${expectedBytes}`);
+  }
+  if (expectedBytes === 0) {
+    if (start !== end) {
+      throw new ParquetFormatError('Corrupted Parquet page: non-empty LZ4_RAW block for 0 uncompressed bytes');
+    }
+    return Buffer.alloc(0);
+  }
+  const out = Buffer.allocUnsafe(expectedBytes);
+  decodeLz4RawInto(data, start, end, out, 0, expectedBytes);
   return out;
+}
+
+/**
+ * Decompresses an LZ4 raw block (Parquet LZ4_RAW codec) into a buffer of `expectedBytes` bytes.
+ */
+export function decompressLz4Raw(data: Buffer, expectedBytes: number): Buffer {
+  return decompressLz4RawSlice(data, 0, data.length, expectedBytes);
 }
 
 const HADOOP_LZ4_PREFIX_BYTES = 8;
@@ -159,18 +236,24 @@ const HADOOP_LZ4_PREFIX_BYTES = 8;
  * that way or a block does not decode to its declared size, so the caller can try a bare raw block.
  * A block that declares more than the bytes still allowed by the page size is never allocated.
  */
-function decodeLz4Hadoop(data: Buffer, expectedBytes: number): Buffer | null {
-  const out = Buffer.alloc(expectedBytes);
-  let pos = 0;
+function decodeLz4HadoopSlice(data: Buffer, start: number, end: number, expectedBytes: number): Buffer | null {
+  if (expectedBytes < 0) return null;
+  if (expectedBytes === 0) return start === end ? Buffer.alloc(0) : null;
+  if (end - start < HADOOP_LZ4_PREFIX_BYTES) return null;
+  const firstBlock = data.readUInt32BE(start);
+  const firstCompressed = data.readUInt32BE(start + 4);
+  if (firstBlock > expectedBytes || firstCompressed > end - start - HADOOP_LZ4_PREFIX_BYTES) return null;
+  const out = Buffer.allocUnsafe(expectedBytes);
+  let pos = start;
   let outPos = 0;
-  while (pos < data.length) {
-    if (data.length - pos < HADOOP_LZ4_PREFIX_BYTES) return null;
+  while (pos < end) {
+    if (end - pos < HADOOP_LZ4_PREFIX_BYTES) return null;
     const blockBytes = data.readUInt32BE(pos);
     const compressedBytes = data.readUInt32BE(pos + 4);
     pos += HADOOP_LZ4_PREFIX_BYTES;
-    if (blockBytes > expectedBytes - outPos || compressedBytes > data.length - pos) return null;
+    if (blockBytes > expectedBytes - outPos || compressedBytes > end - pos) return null;
     try {
-      decompressLz4Raw(data.subarray(pos, pos + compressedBytes), blockBytes).copy(out, outPos);
+      decodeLz4RawInto(data, pos, pos + compressedBytes, out, outPos, blockBytes);
     } catch (blockError) {
       if (blockError instanceof ParquetFormatError) return null;
       throw blockError;
@@ -186,7 +269,7 @@ function decodeLz4Hadoop(data: Buffer, expectedBytes: number): Buffer | null {
  * block, as parquet-mr and Arrow read it. The page's declared size bounds both attempts.
  */
 export function decompressLz4(data: Buffer, expectedBytes: number): Buffer {
-  return decodeLz4Hadoop(data, expectedBytes) ?? decompressLz4Raw(data, expectedBytes);
+  return decodeLz4HadoopSlice(data, 0, data.length, expectedBytes) ?? decompressLz4RawSlice(data, 0, data.length, expectedBytes);
 }
 
 /**
@@ -272,6 +355,12 @@ export function decompressPageSlice(
       );
     }
     return out;
+  }
+  if (codec === CompressionCodec.LZ4_RAW) {
+    return decompressLz4RawSlice(data, start, end, expectedBytes);
+  }
+  if (codec === CompressionCodec.LZ4) {
+    return decodeLz4HadoopSlice(data, start, end, expectedBytes) ?? decompressLz4RawSlice(data, start, end, expectedBytes);
   }
   return decompressPage(codec, data.subarray(start, end), expectedBytes);
 }

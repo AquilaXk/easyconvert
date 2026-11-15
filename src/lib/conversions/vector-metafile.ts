@@ -361,11 +361,39 @@ function writeEmfBounds(rec: Buffer, points: PlanPoint[], scale: number): void {
   rec.writeInt32LE(Math.round(bounds.maxY / scale), 20);
 }
 
+function writeEmfRingBounds(rec: Buffer, rings: PlanPoint[][], scale: number): void {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let r = 0; r < rings.length; r++) {
+    const ring = rings[r];
+    for (let i = 0; i < ring.length; i++) {
+      const pt = ring[i];
+      if (pt.x < minX) minX = pt.x;
+      if (pt.y < minY) minY = pt.y;
+      if (pt.x > maxX) maxX = pt.x;
+      if (pt.y > maxY) maxY = pt.y;
+    }
+  }
+  if (!Number.isFinite(minX)) {
+    minX = 0;
+    minY = 0;
+    maxX = 0;
+    maxY = 0;
+  }
+  rec.writeInt32LE(Math.round(minX / scale), 8);
+  rec.writeInt32LE(Math.round(minY / scale), 12);
+  rec.writeInt32LE(Math.round(maxX / scale), 16);
+  rec.writeInt32LE(Math.round(maxY / scale), 20);
+}
+
 function writePoints16(rec: Buffer, at: number, points: PlanPoint[]): void {
-  points.forEach((pt, i) => {
+  for (let i = 0; i < points.length; i++) {
+    const pt = points[i];
     rec.writeInt16LE(toInt16(pt.x), at + i * 4);
     rec.writeInt16LE(toInt16(pt.y), at + i * 4 + 2);
-  });
+  }
 }
 
 /** EMR_POLYGON16 / EMR_POLYLINE16 (MS-EMF 2.3.5.35 / 2.3.5.37). */
@@ -379,16 +407,22 @@ function emfPoly16(type: number, points: PlanPoint[], scale: number): Buffer {
 
 /** EMR_POLYPOLYGON16 (MS-EMF 2.3.5.31): one fill area made of several rings. */
 function emfPolyPolygon16(rings: PlanPoint[][], scale: number): Buffer {
-  const all = rings.flat();
+  let totalPoints = 0;
+  for (let i = 0; i < rings.length; i++) totalPoints += rings[i].length;
   const rec = emfRecord(
     EMR_POLYPOLYGON16,
-    EMF_POLYPOLY16_HEADER_SIZE + EMF_COUNT_SIZE * rings.length + EMF_POINT16_SIZE * all.length
+    EMF_POLYPOLY16_HEADER_SIZE + EMF_COUNT_SIZE * rings.length + EMF_POINT16_SIZE * totalPoints
   );
-  writeEmfBounds(rec, all, scale);
+  writeEmfRingBounds(rec, rings, scale);
   rec.writeUInt32LE(rings.length, 24);
-  rec.writeUInt32LE(all.length, 28);
-  rings.forEach((r, i) => rec.writeUInt32LE(r.length, 32 + i * 4));
-  writePoints16(rec, 32 + 4 * rings.length, all);
+  rec.writeUInt32LE(totalPoints, 28);
+  let pointOffset = 32 + 4 * rings.length;
+  for (let i = 0; i < rings.length; i++) {
+    const ring = rings[i];
+    rec.writeUInt32LE(ring.length, 32 + i * 4);
+    writePoints16(rec, pointOffset, ring);
+    pointOffset += EMF_POINT16_SIZE * ring.length;
+  }
   return rec;
 }
 
@@ -463,6 +497,22 @@ function buildEmfHeader(width: number, height: number, totalFileSize: number, to
   return headerRec;
 }
 
+function assembleMetafile(headers: readonly Buffer[], records: readonly Buffer[], totalBytes: number): Buffer {
+  const out = Buffer.allocUnsafe(totalBytes);
+  let offset = 0;
+  for (let i = 0; i < headers.length; i++) {
+    const buf = headers[i];
+    buf.copy(out, offset);
+    offset += buf.length;
+  }
+  for (let i = 0; i < records.length; i++) {
+    const buf = records[i];
+    buf.copy(out, offset);
+    offset += buf.length;
+  }
+  return out;
+}
+
 /**
  * Encodes an SVG document into a genuine Win32 Enhanced Metafile (EMF) binary buffer.
  */
@@ -487,10 +537,11 @@ export function encodeEmf(svgBuffer: Buffer): Buffer {
   records.push(eofRec);
 
   const bodySize = totalLength(records);
-  assertOutputSize(EMF_HEADER_SIZE + bodySize, 'EMF');
-  const headerRec = buildEmfHeader(width, height, EMF_HEADER_SIZE + bodySize, records.length + 1);
+  const totalBytes = EMF_HEADER_SIZE + bodySize;
+  assertOutputSize(totalBytes, 'EMF');
+  const headerRec = buildEmfHeader(width, height, totalBytes, records.length + 1);
 
-  return Buffer.concat([headerRec, ...records]);
+  return assembleMetafile([headerRec], records, totalBytes);
 }
 
 // ============================================================================
@@ -595,12 +646,21 @@ function wmfPoly(fnCode: number, points: PlanPoint[]): Buffer {
 
 /** META_POLYPOLYGON (MS-WMF 2.3.3.16): one fill area made of several rings. */
 function wmfPolyPolygon(rings: PlanPoint[][]): Buffer {
-  rings.forEach((r) => assertWmfPointCount(r.length));
-  const all = rings.flat();
-  const rec = wmfRecord(META_POLYPOLYGON, WMF_POLY_HEADER_WORDS + rings.length + WMF_POINT_WORDS * all.length);
+  let totalPoints = 0;
+  for (let i = 0; i < rings.length; i++) {
+    const len = rings[i].length;
+    assertWmfPointCount(len);
+    totalPoints += len;
+  }
+  const rec = wmfRecord(META_POLYPOLYGON, WMF_POLY_HEADER_WORDS + rings.length + WMF_POINT_WORDS * totalPoints);
   rec.writeUInt16LE(toUnsigned(rings.length, UINT16_MAX, 'WMF polygon count'), 6);
-  rings.forEach((r, i) => rec.writeUInt16LE(r.length, 8 + i * 2));
-  writePoints16(rec, 8 + 2 * rings.length, all);
+  let pointOffset = 8 + 2 * rings.length;
+  for (let i = 0; i < rings.length; i++) {
+    const ring = rings[i];
+    rec.writeUInt16LE(ring.length, 8 + i * 2);
+    writePoints16(rec, pointOffset, ring);
+    pointOffset += 4 * ring.length;
+  }
   return rec;
 }
 
@@ -731,9 +791,10 @@ export function encodeWmf(svgBuffer: Buffer): Buffer {
   stdHeader.writeUInt32LE(maxRecordWords, 12);
   stdHeader.writeUInt16LE(0, 16);
 
-  assertOutputSize(WMF_PLACEABLE_HEADER_SIZE + WMF_HEADER_WORDS * BYTES_PER_WORD + stdBytes, 'WMF');
+  const totalBytes = WMF_PLACEABLE_HEADER_SIZE + WMF_HEADER_WORDS * BYTES_PER_WORD + stdBytes;
+  assertOutputSize(totalBytes, 'WMF');
   const aldusHeader = buildAldusHeader(logicalWidth, logicalHeight, space.unitsPerInch);
-  return Buffer.concat([aldusHeader, stdHeader, ...records]);
+  return assembleMetafile([aldusHeader, stdHeader], records, totalBytes);
 }
 
 // ============================================================================

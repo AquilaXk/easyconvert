@@ -1,4 +1,5 @@
 import { inflateSync } from 'node:zlib';
+import { getFloat16DecodeTable } from './float16';
 import { OpenExrDecodeError } from './openexr-decode-error';
 import { decodePizBlock, PizWorkspace } from './openexr-decode-piz';
 
@@ -99,7 +100,6 @@ const RLE_REPEAT_BASE = 1;
 const PREDICTOR_BIAS = 128;
 const BYTE_MODULUS_MASK = 0xff;
 const WORD_MASK = 0xffff;
-const HALF_VALUES = 1 << 16;
 const BYTE_SHIFT_8 = 8;
 const BYTE_SHIFT_16 = 16;
 const BYTE_SHIFT_24 = 24;
@@ -152,33 +152,6 @@ function unsupported(message: string): never {
 
 function tooLarge(message: string): never {
   throw new OpenExrDecodeError(`OpenEXR too large: ${message}`, 'too-large');
-}
-
-let halfToFloatTable: Float32Array | undefined;
-
-/** IEEE 754 binary16 to binary32 for every bit pattern, built once. */
-function getHalfTable(): Float32Array {
-  if (halfToFloatTable) return halfToFloatTable;
-  const table = new Float32Array(HALF_VALUES);
-  const HALF_MANTISSA_BITS = 10;
-  const HALF_EXPONENT_MASK = 0x1f;
-  const HALF_EXPONENT_BIAS = 15;
-  const HALF_MANTISSA_SCALE = 1 << HALF_MANTISSA_BITS;
-  const SIGN_BIT = 0x8000;
-  for (let bits = 0; bits < HALF_VALUES; bits++) {
-    const sign = (bits & SIGN_BIT) !== 0 ? -1 : 1;
-    const exponent = (bits >> HALF_MANTISSA_BITS) & HALF_EXPONENT_MASK;
-    const mantissa = bits & (HALF_MANTISSA_SCALE - 1);
-    if (exponent === 0) {
-      table[bits] = sign * 2 ** (1 - HALF_EXPONENT_BIAS) * (mantissa / HALF_MANTISSA_SCALE);
-    } else if (exponent === HALF_EXPONENT_MASK) {
-      table[bits] = mantissa === 0 ? sign * Infinity : Number.NaN;
-    } else {
-      table[bits] = sign * 2 ** (exponent - HALF_EXPONENT_BIAS) * (1 + mantissa / HALF_MANTISSA_SCALE);
-    }
-  }
-  halfToFloatTable = table;
-  return table;
 }
 
 // --- Header ---------------------------------------------------------------------------------
@@ -617,7 +590,7 @@ interface Scatter {
 
 /** Copies the selected colour channels of one uncompressed block into the interleaved RGB output. */
 function scatterBlock(block: Buffer, scatter: Scatter, x0: number, y0: number, blockWidth: number, rows: number): void {
-  const halves = getHalfTable();
+  const halves = getFloat16DecodeTable();
   const lineBytes = blockWidth * scatter.bytesPerPixel;
   for (let line = 0; line < rows; line++) {
     const lineStart = line * lineBytes;

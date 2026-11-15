@@ -80,12 +80,17 @@ const DECODE_CHUNK_MAX_BYTES = 16 * 1024 * 1024;
 const DECODE_CHUNK_UNDECLARED_BYTES = 1024 * 1024;
 const DECODER_WINDOW_LOG_MAX = Math.log2(ZSTD_DECODER_WINDOW_SIZE_MAX);
 const BUFFER_TOO_LARGE_CODE = 'ERR_BUFFER_TOO_LARGE';
+const FHD_RESERVED_OR_UNUSED_MASK = 0x18;
+/** Low 32 bits of `XXH64("", 0)` (RFC 8878 §3.1.1) in unsigned little-endian integer form. */
+const EMPTY_CONTENT_CHECKSUM_U32LE = 0x51d8e999;
 
 interface FrameSpan {
   start: number;
   end: number;
   /** Content size the header declares, or null when it carries none. */
   declaredSize: number | null;
+  /** True when header, raw empty block(s), and optional XXH64 checksum prove a 0-byte frame without C round-trip. */
+  verifiedEmpty: boolean;
 }
 
 export interface ZstdNativeOptions {
@@ -152,9 +157,17 @@ function skippableFrameEnd(src: Buffer, offset: number): number {
 }
 
 /** Offset just past the blocks (and the content checksum, if the frame has one) of the frame whose header ends at `offset`. */
-function dataFrameEnd(src: Buffer, header: ZstdFrameHeader, headerEnd: number): number {
+function dataFrameEnd(
+  src: Buffer,
+  frameStart: number,
+  header: ZstdFrameHeader,
+  headerEnd: number
+): { end: number; verifiedEmpty: boolean } {
   let offset = headerEnd;
   let isLast = false;
+  let emptyCandidate =
+    (src[frameStart + MAGIC_BYTES] & FHD_RESERVED_OR_UNUSED_MASK) === 0 &&
+    (header.frameContentSize === null || header.frameContentSize === 0);
   while (!isLast) {
     if (offset + BLOCK_HEADER_BYTES > src.length) {
       throw new ConversionFailedError('Malformed Zstandard frame: truncated block header.');
@@ -170,17 +183,23 @@ function dataFrameEnd(src: Buffer, header: ZstdFrameHeader, headerEnd: number): 
     if (blockSize > ZSTD_BLOCK_SIZE_MAX) {
       throw new ConversionFailedError('Malformed Zstandard block: size exceeds the block maximum.');
     }
+    if (blockType !== BLOCK_TYPE_RAW || blockSize !== 0) {
+      emptyCandidate = false;
+    }
     const payloadBytes = blockType === BLOCK_TYPE_RLE ? RLE_BLOCK_PAYLOAD_BYTES : blockSize;
     if (offset + payloadBytes > src.length) {
       throw new ConversionFailedError(`Malformed Zstandard ${blockTypeName(blockType)} block: truncated data.`);
     }
     offset += payloadBytes;
   }
-  if (!header.contentChecksumFlag) return offset;
+  if (!header.contentChecksumFlag) return { end: offset, verifiedEmpty: emptyCandidate };
   if (offset + CONTENT_CHECKSUM_BYTES > src.length) {
     throw new ConversionFailedError('Malformed Zstandard frame: missing content checksum.');
   }
-  return offset + CONTENT_CHECKSUM_BYTES;
+  if (emptyCandidate && src.readUInt32LE(offset) !== EMPTY_CONTENT_CHECKSUM_U32LE) {
+    emptyCandidate = false;
+  }
+  return { end: offset + CONTENT_CHECKSUM_BYTES, verifiedEmpty: emptyCandidate };
 }
 
 function blockTypeName(blockType: number): string {
@@ -217,8 +236,8 @@ function scanFrames(src: Buffer): FrameSpan[] {
     if (header.dictionaryId !== 0) {
       throw new ConversionFailedError(`Zstandard frame requires dictionary ${header.dictionaryId}; use the dictionary decoder.`);
     }
-    const end = dataFrameEnd(src, header, offset + header.headerSize);
-    frames.push({ start: offset, end, declaredSize: header.frameContentSize });
+    const { end, verifiedEmpty } = dataFrameEnd(src, offset, header, offset + header.headerSize);
+    frames.push({ start: offset, end, declaredSize: header.frameContentSize, verifiedEmpty });
     offset = end;
   }
   return frames;
@@ -302,6 +321,7 @@ export async function decompressZstdNative(input: Buffer, options: ZstdNativeOpt
   for (const span of frames) {
     throwIfAborted(options.signal);
     if (span.declaredSize !== null) assertDeclaredSizeWithinBound(produced, span.declaredSize, bound);
+    if (span.verifiedEmpty) continue;
     const decoded = await raceAbort(decodeFrame(input.subarray(span.start, span.end), span, bound.bytes - produced, bound), options.signal);
     if (span.declaredSize !== null && decoded.length !== span.declaredSize) {
       throw new ConversionFailedError(`Zstandard frame content size mismatch: header declares ${span.declaredSize}, decoded ${decoded.length}.`);
@@ -310,5 +330,6 @@ export async function decompressZstdNative(input: Buffer, options: ZstdNativeOpt
     if (produced > bound.bytes) throw bombError(bound);
     outputs.push(decoded);
   }
+  if (outputs.length === 0) return Buffer.alloc(0);
   return outputs.length === 1 ? outputs[0] : Buffer.concat(outputs, produced);
 }

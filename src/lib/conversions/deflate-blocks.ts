@@ -1,3 +1,4 @@
+import os from 'node:os';
 import zlib from 'node:zlib';
 import { inflateChunkHint } from './archive-zip-reader';
 
@@ -46,18 +47,36 @@ function deflatePiece(piece: Uint8Array, level: number, dictionary: Uint8Array |
   });
 }
 
-/** Raw deflate stream of `data` at a zlib level (0 to 9), in blocks of `blockBytes`; a buffer of at most one block is compressed in one piece. */
+/**
+ * Raw deflate stream of `data` at a zlib level (0 to 9), in blocks of `blockBytes`; a buffer of at most one block is
+ * compressed in one piece. In-flight `DeflateRaw` state count is bounded by `os.availableParallelism()` (matching
+ * `madler/pigz` worker-pool bounding and `bzip2.ts`), preserving exact block order and byte-identical output.
+ */
 export async function deflateRawInBlocks(data: Uint8Array, level: number, blockBytes = DEFLATE_BLOCK_BYTES): Promise<Buffer> {
   const pieces = Math.max(1, Math.ceil(data.length / blockBytes));
   if (pieces === 1) return deflatePiece(data, level, undefined, true);
-  const jobs: Promise<Buffer>[] = [];
-  for (let index = 0; index < pieces; index++) {
-    const start = index * blockBytes;
-    const end = Math.min(data.length, start + blockBytes);
-    const dictionary = index === 0 ? undefined : data.subarray(Math.max(0, start - DICTIONARY_BYTES), start);
-    jobs.push(deflatePiece(data.subarray(start, end), level, dictionary, index === pieces - 1));
-  }
-  return Buffer.concat(await Promise.all(jobs));
+  const results = new Array<Buffer>(pieces);
+  const concurrency = Math.max(1, Math.min(pieces, os.availableParallelism()));
+  let nextIndex = 0;
+  const runWorker = async (): Promise<void> => {
+    for (;;) {
+      const index = nextIndex++;
+      if (index >= pieces) return;
+      const start = index * blockBytes;
+      const end = Math.min(data.length, start + blockBytes);
+      const dictionary = index === 0 ? undefined : data.subarray(Math.max(0, start - DICTIONARY_BYTES), start);
+      try {
+        results[index] = await deflatePiece(data.subarray(start, end), level, dictionary, index === pieces - 1);
+      } catch (err) {
+        nextIndex = pieces;
+        throw err;
+      }
+    }
+  };
+  const workers: Promise<void>[] = [];
+  for (let w = 0; w < concurrency; w++) workers.push(runWorker());
+  await Promise.all(workers);
+  return Buffer.concat(results);
 }
 
 const ZLIB_HEADER_BEST = Uint8Array.of(0x78, 0xda);

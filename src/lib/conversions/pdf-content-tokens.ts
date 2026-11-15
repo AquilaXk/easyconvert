@@ -1,7 +1,9 @@
 /** Lexical reading of a PDF content stream (ISO 32000-1 section 7.8.2), shared by the stream guard and the structure reader. */
 
-const WHITESPACE = new Set([0x00, 0x09, 0x0a, 0x0c, 0x0d, 0x20]);
-const DELIMITERS = new Set([0x28, 0x29, 0x3c, 0x3e, 0x5b, 0x5d, 0x7b, 0x7d, 0x2f, 0x25]);
+const CLASS_REGULAR = 0;
+const CLASS_WHITESPACE = 1;
+const CLASS_DELIMITER = 2;
+
 const CHAR_OPEN_PAREN = 0x28;
 const CHAR_CLOSE_PAREN = 0x29;
 const CHAR_BACKSLASH = 0x5c;
@@ -10,6 +12,21 @@ const CHAR_SLASH = 0x2f;
 const CHAR_PERCENT = 0x25;
 const CHAR_LINE_FEED = 0x0a;
 const CHAR_CARRIAGE_RETURN = 0x0d;
+
+const CHAR_CLASS: Uint8Array = (() => {
+  const table = new Uint8Array(256);
+  for (const code of [0x00, 0x09, 0x0a, 0x0c, 0x0d, 0x20]) {
+    table[code] = CLASS_WHITESPACE;
+  }
+  for (const code of [0x28, 0x29, 0x3c, 0x3e, 0x5b, 0x5d, 0x7b, 0x7d, 0x2f, 0x25]) {
+    table[code] = CLASS_DELIMITER;
+  }
+  return table;
+})();
+
+function isRegularCode(code: number): boolean {
+  return code >= 256 || CHAR_CLASS[code] === CLASS_REGULAR;
+}
 
 /** Index just past a literal string that starts at `start` (ISO 32000-1 section 7.3.4.2: nested parentheses, escapes). */
 function skipLiteralString(content: string, start: number): number {
@@ -41,7 +58,8 @@ export function forEachContentToken(content: string, onToken: (token: string, st
   let index = 0;
   while (index < content.length) {
     const code = content.charCodeAt(index);
-    if (WHITESPACE.has(code)) {
+    const charClass = code < 256 ? CHAR_CLASS[code] : CLASS_REGULAR;
+    if (charClass === CLASS_WHITESPACE) {
       index++;
     } else if (code === CHAR_PERCENT) {
       while (index < content.length && content.charCodeAt(index) !== CHAR_LINE_FEED && content.charCodeAt(index) !== CHAR_CARRIAGE_RETURN) index++;
@@ -50,14 +68,14 @@ export function forEachContentToken(content: string, onToken: (token: string, st
     } else if (code === CHAR_LESS && content.charCodeAt(index + 1) !== CHAR_LESS) {
       const close = content.indexOf('>', index);
       index = close < 0 ? content.length : close + 1;
-    } else if (DELIMITERS.has(code)) {
+    } else if (charClass === CLASS_DELIMITER) {
       index++;
       if (code === CHAR_SLASH) {
-        while (index < content.length && !WHITESPACE.has(content.charCodeAt(index)) && !DELIMITERS.has(content.charCodeAt(index))) index++;
+        while (index < content.length && isRegularCode(content.charCodeAt(index))) index++;
       }
     } else {
       const start = index;
-      while (index < content.length && !WHITESPACE.has(content.charCodeAt(index)) && !DELIMITERS.has(content.charCodeAt(index))) index++;
+      while (index < content.length && isRegularCode(content.charCodeAt(index))) index++;
       const token = content.slice(start, index);
       if (token === 'ID') index = skipInlineImage(content, index);
       if (onToken(token, start, index) === true) return;

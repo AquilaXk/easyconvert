@@ -83,10 +83,17 @@ const SPLINE_PERIODIC_FLAG = 2;
 const SPLINE_FRAME_VERTEX_FLAG = 16;
 const NUMBER = (value: string): number => Number.parseFloat(value);
 
-/** The pairs of one entity (or table entry, or block header) as parallel arrays: group codes and their values. */
+/** Contiguous section-level storage for group-code pairs so individual entities do not allocate JS arrays. */
+interface GroupTable {
+  readonly codes: Int32Array;
+  readonly values: readonly string[];
+}
+
+/** One entity, table entry, or block header as a `[start, end)` slice into its section's `GroupTable`. */
 interface GroupRecord {
-  codes: number[];
-  values: string[];
+  readonly table: GroupTable;
+  readonly start: number;
+  readonly end: number;
 }
 
 interface Affine {
@@ -168,8 +175,47 @@ function groupCode(line: string): number {
  */
 function readRecords(text: string): { section: string; records: GroupRecord[] }[] {
   const sections: { section: string; records: GroupRecord[] }[] = [];
-  let current: { section: string; records: GroupRecord[] } | null = null;
-  let record: GroupRecord | null = null;
+  let sectionName = '';
+  let sectionCodes: Int32Array | null = null;
+  let sectionValues: string[] | null = null;
+  let sectionSpans: Array<{ start: number; end: number }> | null = null;
+  let pairCount = 0;
+  let activeRecordStart = -1;
+
+  const appendPair = (code: number, value: string): void => {
+    if (!sectionCodes || !sectionValues) return;
+    if (pairCount >= sectionCodes.length) {
+      const grown = new Int32Array(sectionCodes.length * 2);
+      grown.set(sectionCodes);
+      sectionCodes = grown;
+    }
+    sectionCodes[pairCount] = code;
+    sectionValues.push(value);
+    pairCount++;
+  };
+
+  const finishSection = (): void => {
+    if (!sectionCodes || !sectionValues || !sectionSpans) return;
+    if (activeRecordStart >= 0) {
+      sectionSpans.push({ start: activeRecordStart, end: pairCount });
+      activeRecordStart = -1;
+    }
+    const table: GroupTable = {
+      codes: sectionCodes.subarray(0, pairCount),
+      values: sectionValues,
+    };
+    const records: GroupRecord[] = new Array<GroupRecord>(sectionSpans.length);
+    for (let i = 0; i < sectionSpans.length; i++) {
+      const span = sectionSpans[i];
+      records[i] = { table, start: span.start, end: span.end };
+    }
+    sections.push({ section: sectionName, records });
+    sectionCodes = null;
+    sectionValues = null;
+    sectionSpans = null;
+    pairCount = 0;
+  };
+
   let at = 0;
   const length = text.length;
   while (at < length) {
@@ -185,29 +231,38 @@ function readRecords(text: string): { section: string; records: GroupRecord[] }[
     const value = trimmedSlice(text, valueStart, valueEnd);
     if (code === 0) {
       if (value === 'SECTION') {
-        current = { section: '', records: [] };
-        record = null;
+        sectionName = '';
+        sectionCodes = new Int32Array(64);
+        sectionValues = [];
+        sectionSpans = [];
+        pairCount = 0;
+        activeRecordStart = -1;
       } else if (value === 'ENDSEC') {
-        if (current) sections.push(current);
-        current = null;
-        record = null;
-      } else if (current) {
-        record = { codes: [code], values: [value] };
-        current.records.push(record);
+        finishSection();
+      } else if (sectionSpans) {
+        if (activeRecordStart >= 0) {
+          sectionSpans.push({ start: activeRecordStart, end: pairCount });
+        }
+        activeRecordStart = pairCount;
+        appendPair(code, value);
       }
-    } else if (record) {
-      record.codes.push(code);
-      record.values.push(value);
-    } else if (current && code === 2 && current.section === '') {
-      current.section = value;
+    } else if (activeRecordStart >= 0) {
+      appendPair(code, value);
+    } else if (sectionSpans && code === 2 && sectionName === '') {
+      sectionName = value;
     }
   }
   return sections;
 }
 
+const recordType = (record: GroupRecord): string => record.table.values[record.start];
+
 const first = (record: GroupRecord, code: number): string | undefined => {
-  const at = record.codes.indexOf(code);
-  return at < 0 ? undefined : record.values[at];
+  const { codes, values } = record.table;
+  for (let i = record.start; i < record.end; i++) {
+    if (codes[i] === code) return values[i];
+  }
+  return undefined;
 };
 /** A group value as a number; a value that is not a finite number is a damaged drawing, never a coordinate. */
 function finite(value: string, code: number): number {
@@ -215,15 +270,9 @@ function finite(value: string, code: number): number {
   if (!Number.isFinite(parsed)) throw new CadGeometryError(`The DXF holds "${value.slice(0, 24)}" in group ${code}, which is not a finite number`);
   return parsed;
 }
-const num = (record: GroupRecord, code: number, fallback: number): number => {
-  const raw = first(record, code);
-  return raw === undefined ? fallback : finite(raw, code);
-};
-const all = (record: GroupRecord, code: number): number[] => {
-  const found: number[] = [];
-  for (let i = 0; i < record.codes.length; i++) if (record.codes[i] === code) found.push(finite(record.values[i], code));
-  return found;
-};
+const numRaw = (raw: string | undefined, code: number, fallback: number): number =>
+  raw === undefined ? fallback : finite(raw, code);
+const num = (record: GroupRecord, code: number, fallback: number): number => numRaw(first(record, code), code, fallback);
 /** An angle in degrees reduced into [0, 360), so arithmetic on it stays exact however large the file states it. */
 const turnDegrees = (degrees: number): number => ((degrees % DEGREES_PER_TURN) + DEGREES_PER_TURN) % DEGREES_PER_TURN;
 /** The same for an angle in radians. */
@@ -262,23 +311,53 @@ function bulgeArc(p0: Point, p1: Point, bulge: number): Point[] {
   return arc;
 }
 
-interface Vertex {
-  point: Point;
-  bulge: number;
+function transformCoords(t: Affine, x: number, y: number): Point {
+  return t === IDENTITY ? [x, y] : [t.a * x + t.c * y + t.e, t.b * x + t.d * y + t.f];
 }
 
-function polylinePoints(vertices: Vertex[], closed: boolean, chargePoints: (count: number) => void): Point[] {
+interface PolylineBuffer {
+  xs: Float64Array;
+  ys: Float64Array;
+  bulges: Float64Array;
+  count: number;
+  closed: boolean;
+}
+
+function buildPolylinePoints(
+  poly: PolylineBuffer,
+  t: Affine,
+  chargePoints: (count: number) => void
+): Point[] {
+  const { xs, ys, bulges, count, closed } = poly;
+  const segments = closed ? count : count - 1;
+  if (segments <= 0) {
+    const fallback: Point[] = new Array<Point>(count);
+    for (let i = 0; i < count; i++) fallback[i] = transformCoords(t, xs[i], ys[i]);
+    return fallback;
+  }
   const points: Point[] = [];
-  const segments = closed ? vertices.length : vertices.length - 1;
   for (let i = 0; i < segments; i++) {
-    const from = vertices[i];
-    const to = vertices[(i + 1) % vertices.length];
-    const piece = bulgeArc(from.point, to.point, from.bulge);
+    const next = i + 1 === count ? 0 : i + 1;
+    const x0 = xs[i];
+    const y0 = ys[i];
+    const x1 = xs[next];
+    const y1 = ys[next];
+    const bulge = bulges[i];
+    if (bulge === 0 || (x0 === x1 && y0 === y1)) {
+      chargePoints(2);
+      if (i === 0) points.push(transformCoords(t, x0, y0));
+      points.push(transformCoords(t, x1, y1));
+      continue;
+    }
+    const piece = bulgeArc([x0, y0], [x1, y1], bulge);
     // Charged as it is made, so a polyline of thousands of bulged vertices stops at the budget and not after it.
     chargePoints(piece.length);
-    for (const point of i === 0 ? piece : piece.slice(1)) points.push(point);
+    for (let j = i === 0 ? 0 : 1; j < piece.length; j++) {
+      const pt = piece[j];
+      points.push(transformCoords(t, pt[0], pt[1]));
+    }
   }
-  return points.length > 0 ? points : vertices.map((vertex) => vertex.point);
+  return points;
 }
 
 function sampleEllipse(centre: Point, major: Point, ratio: number, start: number, end: number): Point[] {
@@ -355,8 +434,8 @@ function sampleSpline(record: GroupRecord): Point[] {
   const fitX: number[] = [];
   const fitY: number[] = [];
   const stated: number[] = [];
-  const { codes, values } = record;
-  for (let i = 0; i < codes.length; i++) {
+  const { codes, values } = record.table;
+  for (let i = record.start + 1; i < record.end; i++) {
     const c = codes[i];
     if (c === 71) {
       if (rawDegree === undefined) rawDegree = values[i];
@@ -422,7 +501,7 @@ function readLayers(sections: { section: string; records: GroupRecord[] }[]): La
   for (const section of sections) {
     if (section.section !== 'TABLES') continue;
     for (const record of section.records) {
-      if (record.values[0] !== 'LAYER') continue;
+      if (recordType(record) !== 'LAYER') continue;
       const name = first(record, 2);
       if (name === undefined) continue;
       const frozen = (Math.trunc(num(record, 70, 0)) & LAYER_FROZEN_FLAG) !== 0;
@@ -437,7 +516,7 @@ function readStyles(sections: { section: string; records: GroupRecord[] }[]): Re
   for (const section of sections) {
     if (section.section !== 'TABLES') continue;
     for (const record of section.records) {
-      if (record.values[0] !== 'STYLE') continue;
+      if (recordType(record) !== 'STYLE') continue;
       const name = first(record, 2);
       const width = num(record, 41, 1);
       if (name !== undefined && width > 0) styles.set(name.toUpperCase(), width);
@@ -446,39 +525,37 @@ function readStyles(sections: { section: string; records: GroupRecord[] }[]): Re
   return styles;
 }
 
-/** A POLYLINE record is followed by its VERTEX records and SEQEND; they are read as one entity. */
-function groupPolylines(records: GroupRecord[]): Array<{ record: GroupRecord; vertices: GroupRecord[] }> {
-  const entities: Array<{ record: GroupRecord; vertices: GroupRecord[] }> = [];
-  let open: { record: GroupRecord; vertices: GroupRecord[] } | null = null;
-  for (const record of records) {
-    const type = record.values[0];
-    if (type === 'POLYLINE') {
-      open = { record, vertices: [] };
-      entities.push(open);
-    } else if (type === 'VERTEX' && open) {
-      open.vertices.push(record);
-    } else if (type === 'SEQEND') {
-      open = null;
-    } else {
-      open = null;
-      entities.push({ record, vertices: [] });
-    }
-  }
-  return entities;
-}
-
 function mtextColumnWidth(record: GroupRecord): number | undefined {
   if (first(record, 48) !== undefined) {
     const direct = num(record, 48, 0);
     if (direct > 0) return direct;
   }
-  for (let i = 0; i + 1 < record.codes.length; i++) {
-    if (record.codes[i] === 1070 && Math.trunc(finite(record.values[i], 1070)) === 48 && record.codes[i + 1] === 1040) {
-      const xdataWidth = finite(record.values[i + 1], 1040);
+  const { codes, values } = record.table;
+  for (let i = record.start + 1; i + 1 < record.end; i++) {
+    if (codes[i] === 1070 && Math.trunc(finite(values[i], 1070)) === 48 && codes[i + 1] === 1040) {
+      const xdataWidth = finite(values[i + 1], 1040);
       if (xdataWidth > 0) return xdataWidth;
     }
   }
   return undefined;
+}
+
+function buildMtextColumnWidths(records: GroupRecord[]): Map<string, number> | null {
+  let columnWidths: Map<string, number> | null = null;
+  for (let r = 0; r < records.length; r++) {
+    const record = records[r];
+    if (recordType(record) !== 'MTEXT') continue;
+    const colWidth = mtextColumnWidth(record);
+    if (colWidth === undefined) continue;
+    if (!columnWidths) columnWidths = new Map<string, number>();
+    const handle = first(record, 5);
+    if (handle !== undefined) columnWidths.set(handle, colWidth);
+    const { codes, values } = record.table;
+    for (let i = record.start + 1; i < record.end; i++) {
+      if (codes[i] === 1005) columnWidths.set(values[i], colWidth);
+    }
+  }
+  return columnWidths;
 }
 
 function wrapMtextLines(lines: string[], height: number, boxWidth: number, widthFactor = 1): string[] {
@@ -532,12 +609,33 @@ class Builder {
   private visits = 0;
   private strokePoints = 0;
   private textCharacters = 0;
+  private polyX = new Float64Array(64);
+  private polyY = new Float64Array(64);
+  private polyBulge = new Float64Array(64);
 
   constructor(
     private readonly blocks: ReadonlyMap<string, Block>,
     private readonly layers: Layers,
     private readonly styles: ReadonlyMap<string, number>
   ) {}
+
+  private ensurePolyCapacity(index: number): void {
+    if (index < this.polyX.length) return;
+    const nextCap = this.polyX.length * 2;
+    const grownX = new Float64Array(nextCap);
+    const grownY = new Float64Array(nextCap);
+    const grownBulge = new Float64Array(nextCap);
+    grownX.set(this.polyX);
+    grownY.set(this.polyY);
+    grownBulge.set(this.polyBulge);
+    this.polyX = grownX;
+    this.polyY = grownY;
+    this.polyBulge = grownBulge;
+  }
+
+  private isHiddenLayer(rawLayer: string | undefined): boolean {
+    return this.layers.hidden.size > 0 && this.layers.hidden.has(rawLayer ?? '0');
+  }
 
   /** Entities visited and block copies made, across every nested INSERT. */
   private charge(count: number): void {
@@ -561,100 +659,244 @@ class Builder {
     this.add({ kind: 'poly', points: t === IDENTITY ? points : points.map((p) => apply(t, p)), closed });
   }
 
+  private emitPolyline(count: number, closed: boolean, t: Affine): void {
+    if (count <= 1) return;
+    const points = buildPolylinePoints(
+      { xs: this.polyX, ys: this.polyY, bulges: this.polyBulge, count, closed },
+      t,
+      (charged) => this.chargePoints(charged)
+    );
+    if (points.length >= 2) this.add({ kind: 'poly', points, closed });
+  }
+
   entities(records: GroupRecord[], t: Affine, depth: number): void {
-    const columnWidths = new Map<string, number>();
-    for (const record of records) {
-      if (record.values[0] !== 'MTEXT') continue;
-      const colWidth = mtextColumnWidth(record);
-      if (colWidth === undefined) continue;
-      const handle = first(record, 5);
-      if (handle !== undefined) columnWidths.set(handle, colWidth);
-      for (let i = 0; i < record.codes.length; i++) {
-        if (record.codes[i] === 1005) columnWidths.set(record.values[i], colWidth);
-      }
-    }
-    for (const { record, vertices } of groupPolylines(records)) {
+    const columnWidths = buildMtextColumnWidths(records);
+    let idx = 0;
+    while (idx < records.length) {
+      const record = records[idx++];
+      const type = recordType(record);
+      if (type === 'SEQEND') continue;
       this.charge(1);
-      const colWidth = record.values[0] === 'MTEXT' ? columnWidths.get(first(record, 5) ?? '') : undefined;
-      this.entity(record, vertices, t, depth, colWidth);
+      if (type === 'POLYLINE') {
+        const vertexStart = idx;
+        while (idx < records.length && recordType(records[idx]) === 'VERTEX') idx++;
+        const vertexEnd = idx;
+        if (idx < records.length && recordType(records[idx]) === 'SEQEND') idx++;
+        this.polylineEntity(record, records, vertexStart, vertexEnd, t);
+        continue;
+      }
+      const colWidth = type === 'MTEXT' && columnWidths ? columnWidths.get(first(record, 5) ?? '') : undefined;
+      this.entity(record, t, depth, colWidth);
     }
   }
 
-  private entity(record: GroupRecord, vertices: GroupRecord[], t: Affine, depth: number, columnWidth?: number): void {
-    const type = record.values[0];
-    if (this.layers.hidden.has(first(record, 8) ?? '0')) return;
-    const at: Point = [num(record, 10, 0), num(record, 20, 0)];
-    const similar = similarity(t);
-    switch (type) {
+  private entity(record: GroupRecord, t: Affine, depth: number, columnWidth?: number): void {
+    switch (recordType(record)) {
       case 'LINE':
-        this.add({ kind: 'line', a: apply(t, at), b: apply(t, [num(record, 11, 0), num(record, 21, 0)]) });
+        this.lineEntity(record, t);
         return;
-      case 'CIRCLE': {
-        const radius = num(record, 40, 0);
-        if (!(radius > 0)) return;
-        if (similar) this.add({ kind: 'circle', centre: apply(t, at), radius: radius * similar.scale });
-        else this.curve(sampleArc(at, radius, 0, FULL_TURN), true, t);
+      case 'CIRCLE':
+        this.circleEntity(record, t);
         return;
-      }
-      case 'ARC': {
-        const radius = num(record, 40, 0);
-        if (!(radius > 0)) return;
-        const start = turnDegrees(num(record, 50, 0)) * DEGREES;
-        const sweep = sweepOf(start, turnDegrees(num(record, 51, DEGREES_PER_TURN)) * DEGREES);
-        if (similar) this.add({ kind: 'arc', centre: apply(t, at), radius: radius * similar.scale, start: start + similar.rotation, end: start + similar.rotation + sweep });
-        else this.curve(sampleArc(at, radius, start, sweep), false, t);
+      case 'ARC':
+        this.arcEntity(record, t);
         return;
-      }
-      case 'LWPOLYLINE': {
-        const list: Vertex[] = [];
-        for (let i = 0; i < record.codes.length; i++) {
-          const code = record.codes[i];
-          if (code === 10) list.push({ point: [finite(record.values[i], 10), 0], bulge: 0 });
-          else if (code === 20 && list.length > 0) list[list.length - 1].point = [list[list.length - 1].point[0], finite(record.values[i], 20)];
-          else if (code === 42 && list.length > 0) list[list.length - 1].bulge = finite(record.values[i], 42);
-        }
-        const closed = (Math.trunc(num(record, 70, 0)) & POLYLINE_CLOSED_FLAG) !== 0;
-        if (list.length > 1) this.curve(polylinePoints(list, closed, (count) => this.chargePoints(count)), closed, t);
+      case 'LWPOLYLINE':
+        this.lwPolylineEntity(record, t);
         return;
-      }
-      case 'POLYLINE': {
-        const list: Vertex[] = vertices
-          .filter((vertex) => (Math.trunc(num(vertex, 70, 0)) & SPLINE_FRAME_VERTEX_FLAG) === 0)
-          .map((vertex) => ({ point: [num(vertex, 10, 0), num(vertex, 20, 0)] as Point, bulge: num(vertex, 42, 0) }));
-        const closed = (Math.trunc(num(record, 70, 0)) & POLYLINE_CLOSED_FLAG) !== 0;
-        if (list.length > 1) this.curve(polylinePoints(list, closed, (count) => this.chargePoints(count)), closed, t);
+      case 'ELLIPSE':
+        this.ellipseEntity(record, t);
         return;
-      }
-      case 'ELLIPSE': {
-        const ratio = num(record, 40, 1);
-        const major: Point = [num(record, 11, 0), num(record, 21, 0)];
-        if (!(ratio > 0) || (major[0] === 0 && major[1] === 0)) return;
-        this.curve(sampleEllipse(at, major, ratio, turnRadians(num(record, 41, 0)), turnRadians(num(record, 42, FULL_TURN))), false, t);
+      case 'SPLINE':
+        this.splineEntity(record, t);
         return;
-      }
-      case 'SPLINE': {
-        const periodic = (Math.trunc(num(record, 70, 0)) & SPLINE_PERIODIC_FLAG) !== 0;
-        const points = sampleSpline(record);
-        this.curve(points, periodic && points.length > 2 && Math.hypot(points[0][0] - points[points.length - 1][0], points[0][1] - points[points.length - 1][1]) < 1e-9, t);
-        return;
-      }
       case 'INSERT':
-        this.insert(record, at, t, depth);
+        this.insertEntity(record, t, depth);
         return;
-      case 'DIMENSION': {
-        const name = first(record, 2);
-        const block = name === undefined ? undefined : this.blocks.get(name);
-        if (block && depth < MAX_BLOCK_DEPTH) this.entities(block.records, compose(t, { ...IDENTITY, e: -block.base[0], f: -block.base[1] }), depth + 1);
+      case 'DIMENSION':
+        this.dimensionEntity(record, t, depth);
         return;
-      }
       case 'TEXT':
-        this.text(record, t);
+        if (!this.isHiddenLayer(first(record, 8))) this.text(record, t);
         return;
       case 'MTEXT':
-        this.mtext(record, at, t, columnWidth);
+        if (!this.isHiddenLayer(first(record, 8))) this.mtext(record, [num(record, 10, 0), num(record, 20, 0)], t, columnWidth);
         return;
       default:
     }
+  }
+
+  private lineEntity(record: GroupRecord, t: Affine): void {
+    const { codes, values } = record.table;
+    let raw8: string | undefined;
+    let raw10: string | undefined;
+    let raw20: string | undefined;
+    let raw11: string | undefined;
+    let raw21: string | undefined;
+    for (let i = record.start + 1; i < record.end; i++) {
+      const c = codes[i];
+      if (c === 8 && raw8 === undefined) raw8 = values[i];
+      else if (c === 10 && raw10 === undefined) raw10 = values[i];
+      else if (c === 20 && raw20 === undefined) raw20 = values[i];
+      else if (c === 11 && raw11 === undefined) raw11 = values[i];
+      else if (c === 21 && raw21 === undefined) raw21 = values[i];
+    }
+    if (this.isHiddenLayer(raw8)) return;
+    const x0 = numRaw(raw10, 10, 0);
+    const y0 = numRaw(raw20, 20, 0);
+    const x1 = numRaw(raw11, 11, 0);
+    const y1 = numRaw(raw21, 21, 0);
+    this.add({ kind: 'line', a: transformCoords(t, x0, y0), b: transformCoords(t, x1, y1) });
+  }
+
+  private circleEntity(record: GroupRecord, t: Affine): void {
+    const { codes, values } = record.table;
+    let raw8: string | undefined;
+    let raw10: string | undefined;
+    let raw20: string | undefined;
+    let raw40: string | undefined;
+    for (let i = record.start + 1; i < record.end; i++) {
+      const c = codes[i];
+      if (c === 8 && raw8 === undefined) raw8 = values[i];
+      else if (c === 10 && raw10 === undefined) raw10 = values[i];
+      else if (c === 20 && raw20 === undefined) raw20 = values[i];
+      else if (c === 40 && raw40 === undefined) raw40 = values[i];
+    }
+    if (this.isHiddenLayer(raw8)) return;
+    const at: Point = [numRaw(raw10, 10, 0), numRaw(raw20, 20, 0)];
+    const radius = numRaw(raw40, 40, 0);
+    if (!(radius > 0)) return;
+    const similar = similarity(t);
+    if (similar) this.add({ kind: 'circle', centre: apply(t, at), radius: radius * similar.scale });
+    else this.curve(sampleArc(at, radius, 0, FULL_TURN), true, t);
+  }
+
+  private arcEntity(record: GroupRecord, t: Affine): void {
+    const { codes, values } = record.table;
+    let raw8: string | undefined;
+    let raw10: string | undefined;
+    let raw20: string | undefined;
+    let raw40: string | undefined;
+    let raw50: string | undefined;
+    let raw51: string | undefined;
+    for (let i = record.start + 1; i < record.end; i++) {
+      const c = codes[i];
+      if (c === 8 && raw8 === undefined) raw8 = values[i];
+      else if (c === 10 && raw10 === undefined) raw10 = values[i];
+      else if (c === 20 && raw20 === undefined) raw20 = values[i];
+      else if (c === 40 && raw40 === undefined) raw40 = values[i];
+      else if (c === 50 && raw50 === undefined) raw50 = values[i];
+      else if (c === 51 && raw51 === undefined) raw51 = values[i];
+    }
+    if (this.isHiddenLayer(raw8)) return;
+    const at: Point = [numRaw(raw10, 10, 0), numRaw(raw20, 20, 0)];
+    const radius = numRaw(raw40, 40, 0);
+    if (!(radius > 0)) return;
+    const start = turnDegrees(numRaw(raw50, 50, 0)) * DEGREES;
+    const sweep = sweepOf(start, turnDegrees(numRaw(raw51, 51, DEGREES_PER_TURN)) * DEGREES);
+    const similar = similarity(t);
+    if (similar) this.add({ kind: 'arc', centre: apply(t, at), radius: radius * similar.scale, start: start + similar.rotation, end: start + similar.rotation + sweep });
+    else this.curve(sampleArc(at, radius, start, sweep), false, t);
+  }
+
+  private lwPolylineEntity(record: GroupRecord, t: Affine): void {
+    if (this.isHiddenLayer(first(record, 8))) return;
+    const { codes, values } = record.table;
+    let raw70: string | undefined;
+    let count = 0;
+    for (let i = record.start + 1; i < record.end; i++) {
+      const code = codes[i];
+      if (code === 70 && raw70 === undefined) {
+        raw70 = values[i];
+      } else if (code === 10) {
+        this.ensurePolyCapacity(count);
+        this.polyX[count] = finite(values[i], 10);
+        this.polyY[count] = 0;
+        this.polyBulge[count] = 0;
+        count++;
+      } else if (code === 20) {
+        const yVal = finite(values[i], 20);
+        if (count > 0) this.polyY[count - 1] = yVal;
+      } else if (code === 42) {
+        const bVal = finite(values[i], 42);
+        if (count > 0) this.polyBulge[count - 1] = bVal;
+      }
+    }
+    const closed = (Math.trunc(numRaw(raw70, 70, 0)) & POLYLINE_CLOSED_FLAG) !== 0;
+    this.emitPolyline(count, closed, t);
+  }
+
+  private polylineEntity(
+    record: GroupRecord,
+    records: GroupRecord[],
+    vertexStart: number,
+    vertexEnd: number,
+    t: Affine
+  ): void {
+    if (this.isHiddenLayer(first(record, 8))) return;
+    void num(record, 10, 0);
+    void num(record, 20, 0);
+    let count = 0;
+    for (let vIdx = vertexStart; vIdx < vertexEnd; vIdx++) {
+      const vertex = records[vIdx];
+      const { codes, values } = vertex.table;
+      let raw70: string | undefined;
+      let raw10: string | undefined;
+      let raw20: string | undefined;
+      let raw42: string | undefined;
+      for (let i = vertex.start + 1; i < vertex.end; i++) {
+        const c = codes[i];
+        if (c === 70 && raw70 === undefined) raw70 = values[i];
+        else if (c === 10 && raw10 === undefined) raw10 = values[i];
+        else if (c === 20 && raw20 === undefined) raw20 = values[i];
+        else if (c === 42 && raw42 === undefined) raw42 = values[i];
+      }
+      if ((Math.trunc(numRaw(raw70, 70, 0)) & SPLINE_FRAME_VERTEX_FLAG) !== 0) continue;
+      this.ensurePolyCapacity(count);
+      this.polyX[count] = numRaw(raw10, 10, 0);
+      this.polyY[count] = numRaw(raw20, 20, 0);
+      this.polyBulge[count] = numRaw(raw42, 42, 0);
+      count++;
+    }
+    const closed = (Math.trunc(num(record, 70, 0)) & POLYLINE_CLOSED_FLAG) !== 0;
+    this.emitPolyline(count, closed, t);
+  }
+
+  private ellipseEntity(record: GroupRecord, t: Affine): void {
+    if (this.isHiddenLayer(first(record, 8))) return;
+    const at: Point = [num(record, 10, 0), num(record, 20, 0)];
+    const ratio = num(record, 40, 1);
+    const major: Point = [num(record, 11, 0), num(record, 21, 0)];
+    if (!(ratio > 0) || (major[0] === 0 && major[1] === 0)) return;
+    this.curve(sampleEllipse(at, major, ratio, turnRadians(num(record, 41, 0)), turnRadians(num(record, 42, FULL_TURN))), false, t);
+  }
+
+  private splineEntity(record: GroupRecord, t: Affine): void {
+    if (this.isHiddenLayer(first(record, 8))) return;
+    const periodic = (Math.trunc(num(record, 70, 0)) & SPLINE_PERIODIC_FLAG) !== 0;
+    const points = sampleSpline(record);
+    const closed =
+      periodic &&
+      points.length > 2 &&
+      Math.hypot(points[0][0] - points[points.length - 1][0], points[0][1] - points[points.length - 1][1]) < 1e-9;
+    this.curve(points, closed, t);
+  }
+
+  private dimensionEntity(record: GroupRecord, t: Affine, depth: number): void {
+    if (this.isHiddenLayer(first(record, 8))) return;
+    void num(record, 10, 0);
+    void num(record, 20, 0);
+    const name = first(record, 2);
+    const block = name === undefined ? undefined : this.blocks.get(name);
+    if (block && depth < MAX_BLOCK_DEPTH) {
+      this.entities(block.records, compose(t, { ...IDENTITY, e: -block.base[0], f: -block.base[1] }), depth + 1);
+    }
+  }
+
+  private insertEntity(record: GroupRecord, t: Affine, depth: number): void {
+    if (this.isHiddenLayer(first(record, 8))) return;
+    const at: Point = [num(record, 10, 0), num(record, 20, 0)];
+    this.insert(record, at, t, depth);
   }
 
   private insert(record: GroupRecord, at: Point, t: Affine, depth: number): void {
@@ -767,7 +1009,14 @@ class Builder {
 
   private mtext(record: GroupRecord, at: Point, t: Affine, columnWidth?: number): void {
     const height = num(record, 40, 0);
-    const raw = `${record.values.filter((_, i) => record.codes[i] === 3).join('')}${first(record, 1) ?? ''}`;
+    const { codes, values } = record.table;
+    let raw = '';
+    let tail: string | undefined;
+    for (let i = record.start + 1; i < record.end; i++) {
+      if (codes[i] === 3) raw += values[i];
+      else if (codes[i] === 1 && tail === undefined) tail = values[i];
+    }
+    if (tail !== undefined) raw += tail;
     if (!(height > 0) || raw.trim() === '') return;
     const stripped = plainMtextLines(raw).map((line) => line.trimEnd());
     if (stripped.every((line) => line.length === 0)) return;
@@ -889,7 +1138,7 @@ export function parseDxfDrawing(dxf: string): DxfDrawing {
     if (section.section !== 'BLOCKS') continue;
     let current: { name: string; block: Block } | null = null;
     for (const record of section.records) {
-      const type = record.values[0];
+      const type = recordType(record);
       if (type === 'BLOCK') {
         const name = first(record, 2);
         const isXref = (Math.trunc(num(record, 70, 0)) & (BLOCK_XREF_FLAG | BLOCK_XREF_OVERLAY_FLAG)) !== 0;

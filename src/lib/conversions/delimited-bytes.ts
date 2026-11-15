@@ -12,6 +12,24 @@ import { PARQUET_MAX_COLUMNS } from './parquet-format';
  * quotes or wrapped in quotes with doubled inner quotes, and every record as wide as the header. Anything else
  * (another encoding, a stray quote, a ragged record, mixed line breaks) throws {@link DelimitedBytesUnsupported}, and
  * the caller reads the file with the general reader, which also owns every error message.
+ *
+ * SWAR structural byte classification (`lowByteBias = 0x0e0e0e0e` + delimiter/quote XOR masks) and bounded per-cell
+ * quote unescaping follow:
+ * - `simdjson/simdjson` (commit `a0d5ad9798f9e51706399b649929dafb91d9b714`, Apache-2.0)
+ * - `BurntSushi/rust-csv` (`csv-core/src/reader.rs`, commit `05612e87e6e92910d40d7214b70952b8434fef9b`,
+ *   SHA-256 `f6afc1ff07b4bcc50aa609b758a3a15f777f1985c89f97739e0de4745057b308`, MIT):
+ *   Copyright (c) 2015 Andrew Gallant
+ *   Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+ *   documentation files (the "Software"), to deal in the Software without restriction, including without limitation
+ *   the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and
+ *   to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+ *   The above copyright notice and this permission notice shall be included in all copies or substantial portions of
+ *   the Software.
+ *   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+ *   THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ *   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+ *   CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ *   IN THE SOFTWARE.
  */
 
 export class DelimitedBytesUnsupported extends Error {
@@ -173,9 +191,15 @@ const sharedHeaderStarts = new Int32Array(PARQUET_MAX_COLUMNS + 1);
 const sharedHeaderLengths = new Int32Array(PARQUET_MAX_COLUMNS + 1);
 let sharedChunkStarts = new Int32Array(INITIAL_CHUNK_ROWS * 16);
 let sharedChunkLengths = new Int32Array(INITIAL_CHUNK_ROWS * 16);
+const INITIAL_QUOTE_SCRATCH_BYTES = 256;
+const RETAINED_CHUNK_BYTE_SCRATCH = 256 * 1024;
+let sharedChunkByteScratch: Buffer | null = null;
 
 /** Gives back cell-offset scratch that a large row group grew past its initial size, so it is not held until exit. */
 export function releaseChunkScratch(): void {
+  if (sharedChunkByteScratch && sharedChunkByteScratch.length > RETAINED_CHUNK_BYTE_SCRATCH) {
+    sharedChunkByteScratch = null;
+  }
   if (sharedChunkStarts.length <= INITIAL_CHUNK_ROWS * 16) return;
   sharedChunkStarts = new Int32Array(INITIAL_CHUNK_ROWS * 16);
   sharedChunkLengths = new Int32Array(INITIAL_CHUNK_ROWS * 16);
@@ -186,19 +210,33 @@ export function chunkScratchLength(): number {
   return sharedChunkStarts.length;
 }
 
+function unescapeCellBytes(src: Uint8Array, rawStart: number, dst: Uint8Array, dstStart: number, collapsedLen: number): void {
+  let r = rawStart;
+  let w = dstStart;
+  const dstEnd = dstStart + collapsedLen;
+  while (w < dstEnd) {
+    const b = src[r++];
+    dst[w++] = b;
+    if (b === QUOTE) r++;
+  }
+}
+
 export class DelimitedByteScanner {
-  /** The input, or a private copy of it once a cell with doubled quotes had to be collapsed in place. */
+  /** The input bytes. */
   data: Buffer;
   /** Cells per record. */
   width = 0;
   /** Column names, as the general reader names them (a leading BOM stripped, repeated names suffixed). */
   header: string[] = [];
   private pos: number;
-  private owned = false;
-  private pending: { starts: Int32Array; lengths: Int32Array; bytes: number } | null = null;
+  private pending: { starts: Int32Array; lengths: Int32Array; bytes: number; hasEscaped: boolean } | null = null;
   private view: DataView;
   /** Bytes of the cells of the record {@link readCells} read last. */
   private recordBytes = 0;
+  /** Whether the record {@link readCells} read last contained at least one doubled-quote escape (`starts[i] < 0`). */
+  private recordHasEscaped = false;
+  /** Growable per-cell scratch buffer used to unescape quoted cells without copying `this.data`. */
+  private quoteScratch: Uint8Array | null = null;
 
   private constructor(
     data: Buffer,
@@ -229,6 +267,18 @@ export class DelimitedByteScanner {
     return scanner;
   }
 
+  private unescapeToScratch(rawStart: number, collapsedLen: number): Uint8Array {
+    let scratch = this.quoteScratch;
+    if (!scratch || scratch.length < collapsedLen) {
+      let cap = scratch ? scratch.length : INITIAL_QUOTE_SCRATCH_BYTES;
+      while (cap < collapsedLen) cap *= 2;
+      scratch = new Uint8Array(cap);
+      this.quoteScratch = scratch;
+    }
+    unescapeCellBytes(this.data, rawStart, scratch, 0, collapsedLen);
+    return scratch.subarray(0, collapsedLen);
+  }
+
   private readHeader(autoDetected: boolean): void {
     const starts = sharedHeaderStarts;
     const lengths = sharedHeaderLengths;
@@ -237,7 +287,16 @@ export class DelimitedByteScanner {
     if (count > PARQUET_MAX_COLUMNS) unsupported('more columns than a Parquet file holds');
     if (autoDetected && count < 2) unsupported('a one-column table, whose delimiter the general reader detects');
     const names: string[] = [];
-    for (let i = 0; i < count; i++) names.push(this.data.toString('utf8', starts[i], starts[i] + lengths[i]));
+    for (let i = 0; i < count; i++) {
+      const start = starts[i];
+      const len = lengths[i];
+      if (start >= 0) {
+        names.push(this.data.toString('utf8', start, start + len));
+      } else {
+        const unescaped = this.unescapeToScratch(~start, len);
+        names.push(Buffer.from(unescaped.buffer, unescaped.byteOffset, unescaped.byteLength).toString('utf8'));
+      }
+    }
     this.width = count;
     this.header = renameDuplicateHeaders(names);
   }
@@ -248,18 +307,20 @@ export class DelimitedByteScanner {
    * {@link recordBytes} is left holding the bytes of its cells.
    */
   private readCells(starts: Int32Array, lengths: Int32Array, base: number, limit: number, atMost = false): number {
-    let data = this.data;
+    const data = this.data;
     const size = data.length;
     const delimiter = this.delimiter;
-    // The scan reads four bytes at a time with the zero-byte tests of "Bit Twiddling Hacks" (`haszero(v)` and
-    // `hasless(x, n)`): a word gets a high bit at every byte below 0x23 (control characters, space, `!` and the quote) or
-    // equal to the delimiter, and the lowest of those bits is exact. The constants are literals of this function because the
-    // optimizer folds a literal into the arithmetic, and reads a module-level constant as a loaded Number.
+    // The scan reads four bytes at a time with SWAR zero-byte / byte-below tests:
+    // - `lowByteBias = 0x0e0e0e0e` flags bytes `< 0x0e` (including LF 0x0a and CR 0x0d) while allowing ASCII space
+    //   (`0x20`) and `!` (`0x21`) to pass at full 4-byte word speed.
+    // - `delimXored` and `quoteXored` flag exact matches with `delimiter` and `"` (`0x22`).
     const byteOnes = 0x01010101;
-    const lowByteBias = 0x23232323;
+    const lowByteBias = 0x0e0e0e0e;
+    const quoteWord = 0x22222222;
     const byteHighBits = 0x80808080 | 0;
     const delimiterWord = delimiter * byteOnes;
     const lastWordStart = size - 4;
+    const view = this.view;
     let pos = this.pos;
     for (;;) {
       if (pos >= size) {
@@ -268,39 +329,49 @@ export class DelimitedByteScanner {
       }
       let column = 0;
       let bytes = 0;
+      let hasEscaped = false;
       for (;;) {
         const cellStart = pos;
-        let valueStart = cellStart;
-        let valueEnd: number;
+        let encodedStart: number;
+        let cellLen: number;
         // The byte that ends the cell (a delimiter, a line break), or -1 at the end of the input.
         let ender: number;
         let next: number;
         if (cellStart < size && data[cellStart] === QUOTE) {
           let scan = cellStart + 1;
-          let escaped = false;
+          let escapedQuotes = 0;
           for (;;) {
             while (scan < size && data[scan] !== QUOTE) scan++;
             if (scan >= size) return unsupported('an unterminated quoted cell');
             if (data[scan + 1] === QUOTE) {
-              escaped = true;
+              escapedQuotes++;
               scan += 2;
               continue;
             }
             break;
           }
-          valueStart++;
-          valueEnd = escaped ? this.collapseQuotes(valueStart, scan) : scan;
-          data = this.data;
+          const rawStart = cellStart + 1;
+          cellLen = scan - rawStart - escapedQuotes;
+          if (escapedQuotes > 0) {
+            encodedStart = ~rawStart;
+            hasEscaped = true;
+          } else {
+            encodedStart = rawStart;
+          }
           next = scan + 1;
           ender = next < size ? data[next] : -1;
         } else {
-          const view = this.view;
           let scan = cellStart;
           for (;;) {
             while (scan <= lastWordStart) {
               const word = view.getInt32(scan, true);
-              const xored = word ^ delimiterWord;
-              const flagged = (((word - lowByteBias) & ~word) | ((xored - byteOnes) & ~xored)) & byteHighBits;
+              const delimXored = word ^ delimiterWord;
+              const quoteXored = word ^ quoteWord;
+              const flagged =
+                (((word - lowByteBias) & ~word) |
+                  ((delimXored - byteOnes) & ~delimXored) |
+                  ((quoteXored - byteOnes) & ~quoteXored)) &
+                byteHighBits;
               if (flagged !== 0) {
                 scan += (31 - Math.clz32(flagged & -flagged)) >> 3; // bits below the lowest flag, as bytes
                 break;
@@ -316,14 +387,15 @@ export class DelimitedByteScanner {
             if (ender === QUOTE) return unsupported('a quote inside an unquoted cell');
             scan++;
           }
-          valueEnd = scan;
+          encodedStart = cellStart;
+          cellLen = scan - cellStart;
           next = scan;
         }
 
         if (column >= limit) return unsupported('a record wider than the header');
-        starts[base + column] = valueStart;
-        lengths[base + column] = valueEnd - valueStart;
-        bytes += valueEnd - valueStart;
+        starts[base + column] = encodedStart;
+        lengths[base + column] = cellLen;
+        bytes += cellLen;
         column++;
         if (ender === delimiter) {
           pos = next + 1;
@@ -346,24 +418,45 @@ export class DelimitedByteScanner {
       this.pos = pos;
       if (!atMost && column !== limit) return unsupported('a record narrower than the header');
       this.recordBytes = bytes;
+      this.recordHasEscaped = hasEscaped;
       return column;
     }
   }
 
-  /** Rewrites the quoted cell [start, end) with its doubled quotes collapsed, in place; returns the new end. */
-  private collapseQuotes(start: number, end: number): number {
-    if (!this.owned) {
-      this.data = Buffer.from(this.data);
-      this.view = viewOf(this.data);
-      this.owned = true;
+  /**
+   * Materializes only the cell bytes of the current chunk into reusable scratch when at least one cell in the chunk
+   * contained doubled quotes, leaving `this.data` untouched and avoiding a full-input copy.
+   */
+  private materializeEscapedChunk(rows: number, starts: Int32Array, lengths: Int32Array, totalCellBytes: number): CellChunk {
+    const cellCount = rows * this.width;
+    let needed = Math.max(totalCellBytes + BYTES_PER_LENGTH_PREFIX, 16);
+    let buf = sharedChunkByteScratch;
+    if (!buf || buf.length < needed) {
+      let cap = buf ? buf.length : Math.max(4096, needed);
+      while (cap < needed) cap *= 2;
+      buf = Buffer.allocUnsafe(cap);
+      sharedChunkByteScratch = buf;
     }
-    const data = this.data;
-    let write = start;
-    for (let read = start; read < end; read++) {
-      data[write++] = data[read];
-      if (data[read] === QUOTE) read++;
+    const src = this.data;
+    let writePos = 0;
+    for (let i = 0; i < cellCount; i++) {
+      const s = starts[i];
+      const len = lengths[i];
+      starts[i] = writePos;
+      if (len === 0) continue;
+      if (s >= 0) {
+        if (len <= 24) {
+          for (let k = 0; k < len; k++) buf[writePos + k] = src[s + k];
+        } else {
+          src.copy(buf, writePos, s, s + len);
+        }
+      } else {
+        unescapeCellBytes(src, ~s, buf, writePos, len);
+      }
+      writePos += len;
     }
-    return write;
+    const slice = buf.subarray(0, writePos);
+    return { data: slice, view: viewOf(slice), rows, starts, lengths };
   }
 
   /**
@@ -382,10 +475,12 @@ export class DelimitedByteScanner {
     let lengths = sharedChunkLengths;
     let rows = 0;
     let bytes = 0;
+    let chunkHasEscaped = false;
     if (this.pending) {
       starts.set(this.pending.starts);
       lengths.set(this.pending.lengths);
       bytes = this.pending.bytes;
+      chunkHasEscaped = this.pending.hasEscaped;
       rows = 1;
       this.pending = null;
     }
@@ -407,13 +502,19 @@ export class DelimitedByteScanner {
           starts: starts.slice(base, base + width),
           lengths: lengths.slice(base, base + width),
           bytes: rowBytes,
+          hasEscaped: this.recordHasEscaped,
         };
         break;
       }
+      if (this.recordHasEscaped) chunkHasEscaped = true;
       rows++;
       bytes += rowBytes;
     }
     if (rows === 0) return null;
+    if (chunkHasEscaped) {
+      const totalCellBytes = bytes - rows * width * BYTES_PER_LENGTH_PREFIX;
+      return this.materializeEscapedChunk(rows, starts, lengths, totalCellBytes);
+    }
     return { data: this.data, view: this.view, rows, starts, lengths };
   }
 }

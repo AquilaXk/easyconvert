@@ -19,8 +19,12 @@ const GRID_CELLS_PER_AXIS = 20;
 const GRID_MARGIN = 0.05;
 /** Relative slack on the grid's candidate bound, so rounding never drops a point that ties the limit. */
 const GRID_BOUND_SLACK = 1e-9;
+const GRID_BOUND_ABS_SLACK = 1e-24;
 /** Rounding slack on the neighbour bound, so that a point exactly on it is still measured. */
 const NEIGHBOUR_BOUND_SLACK = 1e-12;
+/** Query count at which the exact candidate voxel grid is built lazily when not already enabled. */
+const AUTO_GRID_QUERY_THRESHOLD = 4096;
+const AUTO_GRID_MIN_POINTS = 32;
 /** A traversal stack of this size covers the deepest tree `KD_TREE_MAX_POINTS` points can make, five times over. */
 const STACK_SIZE = 64;
 const NO_NODE = -1;
@@ -32,21 +36,52 @@ function intervalGap(value: number, lo: number, hi: number): number {
   return 0;
 }
 
+/** In-place quickselect (`nth_element`) partitioning `order[start..end)` around `target` by `(coords[p*3+axis], p)`. */
+function selectAxisMedian(coords: Float64Array, order: Int32Array, start: number, end: number, target: number, axis: number): void {
+  let lo = start;
+  let hi = end - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    const pivotIdx = order[mid];
+    const pivotVal = coords[pivotIdx * DIMENSIONS + axis];
+    order[mid] = order[hi];
+    order[hi] = pivotIdx;
+    let store = lo;
+    for (let i = lo; i < hi; i += 1) {
+      const idx = order[i];
+      const val = coords[idx * DIMENSIONS + axis];
+      if (val < pivotVal || (val === pivotVal && idx < pivotIdx)) {
+        order[i] = order[store];
+        order[store] = idx;
+        store += 1;
+      }
+    }
+    order[hi] = order[store];
+    order[store] = pivotIdx;
+    if (store === target) return;
+    if (store < target) lo = store + 1;
+    else hi = store - 1;
+  }
+}
+
 export class KdTree3 {
   readonly size: number;
   /** Squared distance of the point the last `nearestIndex` call returned. */
   lastDistance2 = Infinity;
   private readonly coords: Float64Array;
-  /** Per node: the point it holds (index into the input), its split axis and its two children. */
+  /** Per node (SoA in preorder DFS layout): point index, node coordinates, split axis, and child indices. */
   private readonly point: Int32Array;
+  private readonly nodeX: Float64Array;
+  private readonly nodeY: Float64Array;
+  private readonly nodeZ: Float64Array;
   private readonly axis: Uint8Array;
   private readonly left: Int32Array;
   private readonly right: Int32Array;
   private readonly root: number;
   private nextNode = 0;
+  private ungriddedQueries = 0;
   private readonly stackNode = new Int32Array(STACK_SIZE);
   private readonly stackDistance = new Float64Array(STACK_SIZE);
-  private readonly query = new Float64Array(DIMENSIONS);
   /** For each point, the other points in increasing distance from it (built on the first hinted query). */
   private neighbours: Uint16Array | null = null;
   private neighbourDistance: Float64Array | null = null;
@@ -67,6 +102,9 @@ export class KdTree3 {
     this.coords = new Float64Array(count * DIMENSIONS);
     for (let i = 0; i < count * DIMENSIONS; i += 1) this.coords[i] = points[i];
     this.point = new Int32Array(count);
+    this.nodeX = new Float64Array(count);
+    this.nodeY = new Float64Array(count);
+    this.nodeZ = new Float64Array(count);
     this.axis = new Uint8Array(count);
     this.left = new Int32Array(count).fill(NO_NODE);
     this.right = new Int32Array(count).fill(NO_NODE);
@@ -77,6 +115,7 @@ export class KdTree3 {
 
   private build(order: Int32Array, start: number, end: number): number {
     if (start >= end) return NO_NODE;
+    const c = this.coords;
     // Split on the axis along which the points of this range are spread widest.
     let bestAxis = 0;
     let bestSpread = -1;
@@ -84,7 +123,7 @@ export class KdTree3 {
       let lo = Infinity;
       let hi = -Infinity;
       for (let i = start; i < end; i += 1) {
-        const v = this.coords[order[i] * DIMENSIONS + d];
+        const v = c[order[i] * DIMENSIONS + d];
         if (v < lo) lo = v;
         if (v > hi) hi = v;
       }
@@ -93,13 +132,16 @@ export class KdTree3 {
         bestAxis = d;
       }
     }
-    const axis = bestAxis;
-    order.subarray(start, end).sort((a, b) => this.coords[a * DIMENSIONS + axis] - this.coords[b * DIMENSIONS + axis] || a - b);
     const mid = (start + end) >> 1;
+    selectAxisMedian(c, order, start, end, mid, bestAxis);
+    const p = order[mid];
     const node = this.nextNode;
     this.nextNode += 1;
-    this.point[node] = order[mid];
-    this.axis[node] = axis;
+    this.point[node] = p;
+    this.nodeX[node] = c[p * DIMENSIONS];
+    this.nodeY[node] = c[p * DIMENSIONS + 1];
+    this.nodeZ[node] = c[p * DIMENSIONS + 2];
+    this.axis[node] = bestAxis;
     this.left[node] = this.build(order, start, mid);
     this.right[node] = this.build(order, mid + 1, end);
     return node;
@@ -201,7 +243,9 @@ export class KdTree3 {
       }
     }
     const start = new Uint32Array(cells * cells * cells + 1);
-    const lists: number[] = [];
+    let listCap = Math.max(cells * cells * cells * 4, n);
+    let listBuf = new Uint16Array(listCap);
+    let listLen = 0;
     const nearest2 = new Float64Array(n);
     for (let cx = 0; cx < cells; cx += 1) {
       const xBase = cx * n;
@@ -216,14 +260,22 @@ export class KdTree3 {
             const far = farX2[xBase + i] + farY2[yBase + i] + farZ2[zBase + i];
             if (far < limit) limit = far;
           }
-          const bound = limit * (1 + GRID_BOUND_SLACK);
-          for (let i = 0; i < n; i += 1) if (nearest2[i] <= bound) lists.push(i);
-          start[(cx * cells + cy) * cells + cz + 1] = lists.length;
+          const bound = limit * (1 + GRID_BOUND_SLACK) + GRID_BOUND_ABS_SLACK;
+          if (listLen + n > listCap) {
+            listCap = Math.max(listCap * 2, listLen + n);
+            const grown = new Uint16Array(listCap);
+            grown.set(listBuf.subarray(0, listLen));
+            listBuf = grown;
+          }
+          for (let i = 0; i < n; i += 1) {
+            if (nearest2[i] <= bound) listBuf[listLen++] = i;
+          }
+          start[(cx * cells + cy) * cells + cz + 1] = listLen;
         }
       }
     }
     this.gridStart = start;
-    this.gridList = Uint16Array.from(lists);
+    this.gridList = listBuf.subarray(0, listLen);
   }
 
   /** The candidates of the grid cell holding (x, y, z), or -1 when the point lies outside the grid. */
@@ -279,6 +331,14 @@ export class KdTree3 {
    */
   nearestIndex(x: number, y: number, z: number, hint: number = -1, otherHint: number = -1): number {
     const c = this.coords;
+    if (
+      this.gridStart === null &&
+      this.size >= AUTO_GRID_MIN_POINTS &&
+      this.size <= NEIGHBOUR_TABLE_MAX_POINTS &&
+      ++this.ungriddedQueries >= AUTO_GRID_QUERY_THRESHOLD
+    ) {
+      this.enableGrid();
+    }
     if (this.gridStart !== null) {
       const cell = this.cellOf(x, y, z);
       if (cell >= 0) {
@@ -317,14 +377,22 @@ export class KdTree3 {
         return this.nearestFromHint(x, y, z, start);
       }
     }
-    const query = this.query;
-    query[0] = x;
-    query[1] = y;
-    query[2] = z;
+    return this.nearestByTree(x, y, z, hint);
+  }
+
+  private nearestByTree(x: number, y: number, z: number, hint: number): number {
+    const c = this.coords;
+    const nodeX = this.nodeX;
+    const nodeY = this.nodeY;
+    const nodeZ = this.nodeZ;
+    const point = this.point;
+    const axisArr = this.axis;
+    const leftArr = this.left;
+    const rightArr = this.right;
+    const stackNode = this.stackNode;
+    const stackDistance = this.stackDistance;
     let bestIndex = -1;
     let bestDistance = Infinity;
-    // A caller that looks up neighbouring pixels passes the last answer: it is usually the next one, and
-    // starting from its distance lets the search discard almost every branch.
     if (hint >= 0 && hint < this.size) {
       const dx = x - c[hint * DIMENSIONS];
       const dy = y - c[hint * DIMENSIONS + 1];
@@ -332,35 +400,39 @@ export class KdTree3 {
       bestIndex = hint;
       bestDistance = dx * dx + dy * dy + dz * dz;
     }
-    this.stackNode[0] = this.root;
-    this.stackDistance[0] = 0;
+    stackNode[0] = this.root;
+    stackDistance[0] = 0;
     let top = 1;
     while (top > 0) {
       top -= 1;
-      let node = this.stackNode[top];
-      // The far side of a split is only worth visiting while its splitting plane is not farther than the best point
-      // (a plane at exactly that distance can hold a point of equal distance and lower index).
-      if (this.stackDistance[top] > bestDistance) continue;
+      let node = stackNode[top];
+      if (stackDistance[top] > bestDistance) continue;
       while (node !== NO_NODE) {
-        const p = this.point[node];
-        const dx = x - c[p * DIMENSIONS];
-        const dy = y - c[p * DIMENSIONS + 1];
-        const dz = z - c[p * DIMENSIONS + 2];
+        const nx = nodeX[node];
+        const ny = nodeY[node];
+        const nz = nodeZ[node];
+        const dx = x - nx;
+        const dy = y - ny;
+        const dz = z - nz;
         const d2 = dx * dx + dy * dy + dz * dz;
+        const p = point[node];
         if (d2 < bestDistance || (d2 === bestDistance && p < bestIndex)) {
           bestDistance = d2;
           bestIndex = p;
         }
-        const axis = this.axis[node];
-        const delta = query[axis] - c[p * DIMENSIONS + axis];
+        const ax = axisArr[node];
+        let delta = dz;
+        if (ax === 0) delta = dx;
+        else if (ax === 1) delta = dy;
         const goesLeft = delta < 0;
-        const far = goesLeft ? this.right[node] : this.left[node];
-        if (far !== NO_NODE && top < STACK_SIZE) {
-          this.stackNode[top] = far;
-          this.stackDistance[top] = delta * delta;
+        const far = goesLeft ? rightArr[node] : leftArr[node];
+        const delta2 = delta * delta;
+        if (far !== NO_NODE && delta2 <= bestDistance && top < STACK_SIZE) {
+          stackNode[top] = far;
+          stackDistance[top] = delta2;
           top += 1;
         }
-        node = goesLeft ? this.left[node] : this.right[node];
+        node = goesLeft ? leftArr[node] : rightArr[node];
       }
     }
     this.lastDistance2 = bestDistance;

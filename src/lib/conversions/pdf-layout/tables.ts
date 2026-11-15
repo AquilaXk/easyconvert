@@ -123,23 +123,62 @@ function uniqueSorted(values: number[]): number[] {
 interface Grid {
   xs: number[];
   ys: number[];
-  horizontal: Segment[];
-  vertical: Segment[];
+  /** Sorted, disjoint `[start, end]` pairs per `ys[r]` for horizontal lines within `2 * LINE_TOLERANCE`. */
+  horizontalSpans: Float64Array[];
+  /** Sorted, disjoint `[start, end]` pairs per `xs[c]` for vertical lines within `2 * LINE_TOLERANCE`. */
+  verticalSpans: Float64Array[];
 }
 
-/** Whether a line at coordinate `at` covers the stretch [from, to] of a grid edge. */
-function covers(lines: Segment[], at: number, from: number, to: number): boolean {
-  const length = to - from;
-  let covered = 0;
-  const near = lines.filter((line) => Math.abs(line.at - at) <= LINE_TOLERANCE * 2);
-  const spans = near.map((line) => [Math.max(line.from, from), Math.min(line.to, to)]).filter(([a, b]) => b > a).sort((a, b) => a[0] - b[0]);
-  let reach = from;
-  for (const [a, b] of spans) {
-    if (b <= reach) continue;
-    covered += b - Math.max(a, reach);
-    reach = b;
+const EMPTY_SPANS = new Float64Array(0);
+
+function mergeSpansAt(lines: Segment[], at: number, budget: LayoutBudget): Float64Array {
+  budget.tick(lines.length);
+  const near: Segment[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.to > line.from && Math.abs(line.at - at) <= LINE_TOLERANCE * 2) {
+      near.push(line);
+    }
   }
-  return covered >= EDGE_COVERAGE * length;
+  if (near.length === 0) return EMPTY_SPANS;
+  near.sort((a, b) => a.from - b.from);
+  const pairs: number[] = [];
+  let curFrom = near[0].from;
+  let curTo = near[0].to;
+  for (let i = 1; i < near.length; i++) {
+    const seg = near[i];
+    if (seg.from <= curTo) {
+      if (seg.to > curTo) curTo = seg.to;
+    } else {
+      pairs.push(curFrom, curTo);
+      curFrom = seg.from;
+      curTo = seg.to;
+    }
+  }
+  pairs.push(curFrom, curTo);
+  return Float64Array.from(pairs);
+}
+
+/** Whether pre-merged intervals at a grid coordinate cover `[from, to]` by at least `EDGE_COVERAGE`. */
+function coversIntervals(intervals: Float64Array, from: number, to: number, budget: LayoutBudget): boolean {
+  budget.tick();
+  const pairCount = intervals.length >>> 1;
+  if (pairCount === 0) return false;
+  let low = 0;
+  let high = pairCount;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (intervals[(mid << 1) + 1] <= from) low = mid + 1;
+    else high = mid;
+  }
+  let covered = 0;
+  for (let k = low; k < pairCount; k++) {
+    const a = intervals[k << 1];
+    if (a >= to) break;
+    const b = intervals[(k << 1) + 1];
+    covered += (b < to ? b : to) - (a > from ? a : from);
+  }
+  return covered >= EDGE_COVERAGE * (to - from);
 }
 
 interface GridCell {
@@ -150,7 +189,7 @@ interface GridCell {
 }
 
 /** Merged cells of a grid: a cell extends over every edge no line covers. */
-function gridCells(grid: Grid): GridCell[] {
+function gridCells(grid: Grid, budget: LayoutBudget): GridCell[] {
   const rows = grid.ys.length - 1;
   const cols = grid.xs.length - 1;
   const taken = Array.from({ length: rows }, () => new Array<boolean>(cols).fill(false));
@@ -159,12 +198,19 @@ function gridCells(grid: Grid): GridCell[] {
     for (let c = 0; c < cols; c++) {
       if (taken[r][c]) continue;
       let colSpan = 1;
-      while (c + colSpan < cols && !taken[r][c + colSpan] && !covers(grid.vertical, grid.xs[c + colSpan], grid.ys[r], grid.ys[r + 1])) colSpan++;
+      while (
+        c + colSpan < cols &&
+        !taken[r][c + colSpan] &&
+        !coversIntervals(grid.verticalSpans[c + colSpan], grid.ys[r], grid.ys[r + 1], budget)
+      ) {
+        colSpan++;
+      }
       let rowSpan = 1;
       while (r + rowSpan < rows) {
         let open = true;
+        const rowSpans = grid.horizontalSpans[r + rowSpan];
         for (let k = c; k < c + colSpan && open; k++) {
-          if (taken[r + rowSpan][k] || covers(grid.horizontal, grid.ys[r + rowSpan], grid.xs[k], grid.xs[k + 1])) open = false;
+          if (taken[r + rowSpan][k] || coversIntervals(rowSpans, grid.xs[k], grid.xs[k + 1], budget)) open = false;
         }
         if (!open) break;
         rowSpan++;
@@ -193,12 +239,12 @@ export interface LatticeResult {
   remaining: PdfContentItem[];
 }
 
-function gridOf(horizontal: Segment[], vertical: Segment[]): Grid {
+function gridOf(xs: number[], ys: number[], horizontal: Segment[], vertical: Segment[], budget: LayoutBudget): Grid {
   return {
-    xs: uniqueSorted(vertical.map((line) => line.at)),
-    ys: uniqueSorted(horizontal.map((line) => line.at)),
-    horizontal,
-    vertical,
+    xs,
+    ys,
+    horizontalSpans: ys.map((y) => mergeSpansAt(horizontal, y, budget)),
+    verticalSpans: xs.map((x) => mergeSpansAt(vertical, x, budget)),
   };
 }
 
@@ -247,10 +293,12 @@ export function detectLatticeTables(
   let remaining = items;
   let tableNumber = 0;
   for (const group of groups.values()) {
-    const grid = gridOf(group.h, group.v);
-    if (grid.xs.length < MIN_GRID_COLUMN_LINES || grid.ys.length < MIN_GRID_ROW_LINES) continue;
-    if (grid.xs.length > PDF_LAYOUT_MAX_GRID_LINES || grid.ys.length > PDF_LAYOUT_MAX_GRID_LINES) continue;
-    if ((grid.xs.length - 1) * (grid.ys.length - 1) > PDF_LAYOUT_MAX_TABLE_CELLS) continue;
+    const xs = uniqueSorted(group.v.map((line) => line.at));
+    const ys = uniqueSorted(group.h.map((line) => line.at));
+    if (xs.length < MIN_GRID_COLUMN_LINES || ys.length < MIN_GRID_ROW_LINES) continue;
+    if (xs.length > PDF_LAYOUT_MAX_GRID_LINES || ys.length > PDF_LAYOUT_MAX_GRID_LINES) continue;
+    if ((xs.length - 1) * (ys.length - 1) > PDF_LAYOUT_MAX_TABLE_CELLS) continue;
+    const grid = gridOf(xs, ys, group.h, group.v, budget);
     tableNumber++;
     const table = buildLattice(grid, remaining, fonts, budget, pageNumber, tableNumber);
     if (table === null) continue;
@@ -270,7 +318,7 @@ function buildLattice(
 ): { table: DetectedTable; remaining: PdfContentItem[] } | null {
   const rows = grid.ys.length - 1;
   const cols = grid.xs.length - 1;
-  const cells = gridCells(grid);
+  const cells = gridCells(grid, budget);
   const owner = Array.from({ length: rows }, () => new Array<number>(cols).fill(-1));
   cells.forEach((cell, index) => {
     for (let r = cell.row; r < cell.row + cell.rowSpan; r++) for (let c = cell.col; c < cell.col + cell.colSpan; c++) owner[r][c] = index;

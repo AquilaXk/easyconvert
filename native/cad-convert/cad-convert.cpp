@@ -253,8 +253,9 @@ std::uint64_t edgeKey(std::uint32_t a, std::uint32_t b) { return (static_cast<st
 
 // Whether the third corner lies on the line through the first two, within the kernel's linear tolerance.
 bool isOnALine(const gp_Pnt& a, const gp_Pnt& b, const gp_Pnt& c) {
-  const gp_Vec ab(a, b), ac(a, c);
-  return ab.Crossed(ac).Magnitude() <= Precision::Confusion() * ab.Magnitude();
+  const gp_Vec ab(a, b), ac(a, c), bc(b, c);
+  const double longest = std::max(ab.Magnitude(), std::max(ac.Magnitude(), bc.Magnitude()));
+  return longest <= Precision::Confusion() || ab.Crossed(ac).Magnitude() <= Precision::Confusion() * longest;
 }
 
 // A compound of one planar face per triangle, built as FreeCAD's TopoShape::setFaces builds it (src/Mod/Part/App/TopoShape.cpp:3341):
@@ -295,7 +296,7 @@ TopoDS_Compound meshToFaces(const MeshData& mesh, int& skipped) {
     const gp_Pnt pa(mesh.vertices[3 * a], mesh.vertices[3 * a + 1], mesh.vertices[3 * a + 2]);
     const gp_Pnt pb(mesh.vertices[3 * b], mesh.vertices[3 * b + 1], mesh.vertices[3 * b + 2]);
     const gp_Pnt pc(mesh.vertices[3 * c], mesh.vertices[3 * c + 1], mesh.vertices[3 * c + 2]);
-    if (pa.IsEqual(pb, Precision::Approximation()) || pa.IsEqual(pc, Precision::Approximation()) || isOnALine(pa, pb, pc)) {
+    if (pa.IsEqual(pb, Precision::Approximation()) || pa.IsEqual(pc, Precision::Approximation()) || pb.IsEqual(pc, Precision::Approximation()) || isOnALine(pa, pb, pc)) {
       ++skipped;
       continue;
     }
@@ -411,7 +412,7 @@ double largestExtent(const TopoDS_Shape& shape) {
 void meshFaces(const TopoDS_Shape& shape) {
   const double extent = largestExtent(shape);
   if (!(extent > 0.0) || !std::isfinite(extent)) fail(kExitNothing, "no-surfaces", "the model has no extent to mesh");
-  BRepMesh_IncrementalMesh mesher(shape, extent * kLinearDeflectionOfExtent, Standard_False, kAngularDeflectionRadians, Standard_False);
+  BRepMesh_IncrementalMesh mesher(shape, extent * kLinearDeflectionOfExtent, Standard_False, kAngularDeflectionRadians, Standard_True);
   (void)mesher;
 }
 
@@ -469,13 +470,25 @@ void writeStl(const std::vector<Triangle>& triangles, const std::string& path, c
   out.write(header, sizeof header);
   const std::uint32_t count = static_cast<std::uint32_t>(triangles.size());
   out.write(reinterpret_cast<const char*>(&count), sizeof count);
+  constexpr std::size_t kStlTriangleBytes = 50;
+  constexpr std::size_t kStlBatchTriangles = 1024;
+  std::vector<char> batch(kStlTriangleBytes * kStlBatchTriangles);
+  std::size_t buffered = 0;
   for (const Triangle& triangle : triangles) {
     float normal[3];
     normalOf(triangle, normal);
     const std::uint16_t attribute = 0;
-    out.write(reinterpret_cast<const char*>(normal), sizeof normal);
-    out.write(reinterpret_cast<const char*>(triangle.vertex), sizeof triangle.vertex);
-    out.write(reinterpret_cast<const char*>(&attribute), sizeof attribute);
+    char* dst = batch.data() + buffered * kStlTriangleBytes;
+    std::memcpy(dst, normal, sizeof normal);
+    std::memcpy(dst + sizeof normal, triangle.vertex, sizeof triangle.vertex);
+    std::memcpy(dst + sizeof normal + sizeof triangle.vertex, &attribute, sizeof attribute);
+    if (++buffered == kStlBatchTriangles) {
+      out.write(batch.data(), static_cast<std::streamsize>(batch.size()));
+      buffered = 0;
+    }
+  }
+  if (buffered > 0) {
+    out.write(batch.data(), static_cast<std::streamsize>(buffered * kStlTriangleBytes));
   }
   if (!out) fail(kExitFailed, "write", "the STL file could not be written");
 }

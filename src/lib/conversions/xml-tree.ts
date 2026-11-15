@@ -27,6 +27,20 @@ export type XmlNode = XmlElement | string;
 /** Local name of an element that carries character data whose whitespace is significant. */
 const TEXT_BEARING: ReadonlySet<string> = new Set(['t', 'delText', 'instrText']);
 
+/** Shared immutable empty attribute map so elements without attributes allocate no Map or Object.values array. */
+const EMPTY_ATTRS: ReadonlyMap<string, string> = (() => {
+  const empty = new Map<string, string>();
+  const immutable = (): never => {
+    throw new TypeError('XmlElement.attrs is immutable');
+  };
+  Object.defineProperties(empty, {
+    set: { value: immutable },
+    delete: { value: immutable },
+    clear: { value: immutable },
+  });
+  return Object.freeze(empty);
+})();
+
 function isBlank(text: string): boolean {
   for (let index = 0; index < text.length; index += 1) {
     const code = text.charCodeAt(index);
@@ -62,12 +76,16 @@ export function parseXmlTree(xml: string, partName: string, packageLabel: string
     if (count > XML_TREE_MAX_ELEMENTS) {
       throw new PayloadLimitError(`${partName} holds more than ${XML_TREE_MAX_ELEMENTS} elements.`);
     }
-    const attrs = new Map<string, string>();
-    for (const attribute of Object.values(tag.attributes)) {
+    let attrs: Map<string, string> | null = null;
+    const rawAttrs = tag.attributes;
+    for (const key in rawAttrs) {
+      if (!Object.prototype.hasOwnProperty.call(rawAttrs, key)) continue;
+      const attribute = rawAttrs[key];
+      if (!attrs) attrs = new Map<string, string>();
       if (attribute.uri !== '') attrs.set(`{${attribute.uri}}${attribute.local}`, attribute.value);
       if (!attrs.has(attribute.local)) attrs.set(attribute.local, attribute.value);
     }
-    const element: XmlElement = { uri: tag.uri, local: tag.local, children: [], attrs, parent: current };
+    const element: XmlElement = { uri: tag.uri, local: tag.local, children: [], attrs: attrs ?? EMPTY_ATTRS, parent: current };
     if (current) current.children.push(element);
     else root = element;
     current = element;

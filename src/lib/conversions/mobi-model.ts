@@ -43,7 +43,12 @@ interface TocEntry {
   label: string;
 }
 
-const textOfMarkup = (markup: string): string => markup.replace(/<[^<>]*>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim();
+const MARKUP_TEXT_GAPS = /(?:<[^<>]*>|&nbsp;|\s)+/gi;
+const MOBI_HTML_REWRITE = /<img\b[^<>]*>|<\/?mbp:[^<>]*>/gi;
+const IMG_RECINDEX = /\brecindex\s*=\s*["']?0*(\d+)["']?/i;
+const LABEL_HTML_ESCAPE = /[&<]/g;
+
+const textOfMarkup = (markup: string): string => markup.replace(MARKUP_TEXT_GAPS, ' ').trim();
 
 /**
  * The table of contents page of a book: the run of `filepos` links that starts where the guide says the page does, at the
@@ -95,7 +100,10 @@ function withChapterHeadings(markup: string): string {
     seen.add(entry.position);
     const element = elementAt(markup, lower, entry.position);
     if (element) edits.push({ start: entry.position, end: element.end, replacement: `<h${HEADING_LEVEL}>${element.inner}</h${HEADING_LEVEL}>` });
-    else edits.push({ start: entry.position, end: entry.position, replacement: `<h${HEADING_LEVEL}>${entry.label.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</h${HEADING_LEVEL}>` });
+    else {
+      const escapedLabel = entry.label.replace(LABEL_HTML_ESCAPE, (ch) => (ch === '&' ? '&amp;' : '&lt;'));
+      edits.push({ start: entry.position, end: entry.position, replacement: `<h${HEADING_LEVEL}>${escapedLabel}</h${HEADING_LEVEL}>` });
+    }
   }
   // The page is left to the navigation document the writer builds; a link of it that points into itself names no chapter.
   edits.sort((a, b) => a.start - b.start);
@@ -116,15 +124,19 @@ function withChapterHeadings(markup: string): string {
 
 /** Plain XHTML for the HTML reader: pictures named by `src`, the MOBI-only elements removed. */
 function toHtml(markup: string): string {
-  return markup
-    .replace(/<img\b[^<>]*>/gi, (tag) => tag.replace(/\brecindex\s*=\s*["']?0*(\d+)["']?/i, `src="${IMAGE_SOURCE_PREFIX}$1"`))
-    .replace(/<\/?mbp:[^<>]*>/gi, '');
+  return markup.replace(MOBI_HTML_REWRITE, (tag) => {
+    const second = tag.charCodeAt(1);
+    if (second === 0x69 || second === 0x49) {
+      return tag.replace(IMG_RECINDEX, `src="${IMAGE_SOURCE_PREFIX}$1"`);
+    }
+    return '';
+  });
 }
 
 function decodeMarkup(book: MobiBook, latin1: string): string {
   const bytes = Buffer.from(latin1, 'latin1');
   const text = book.encoding === ENCODING_UTF8 ? bytes.toString('utf-8') : decodeWindows1252(bytes);
-  return text.replace(/\0/g, '');
+  return text.indexOf('\0') >= 0 ? text.replace(/\0/g, '') : text;
 }
 
 /** The first picture of the book, when its first block is one. */
