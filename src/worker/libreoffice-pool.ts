@@ -226,7 +226,7 @@ export function resolveLibreOfficeFilter(
  */
 export function standaloneProfileArguments(tempDir: string, options: WorkerEngineOptions, sourceFormat: string, inputPath: string): string[] {
   writeOfficeProfile(`${tempDir}/user`, { keepEmbeddedExcelObjects: options.keepEmbeddedExcelObjects });
-  return [`-env:UserInstallation=file://${tempDir}/user`, ...officeInputFilterArgs(sourceFormat, inputPath)];
+  return [`-env:UserInstallation=file://${tempDir}/user`, ...officeInputFilterArgs(sourceFormat, inputPath, options.officeImportFilter)];
 }
 
 /**
@@ -789,7 +789,7 @@ export class LibreOfficePoolManager {
         '--nofirststartwizard',
         '--nologo',
         `-env:UserInstallation=file://${worker.userProfileDir}`,
-        ...officeInputFilterArgs(src, inputPath),
+        ...officeInputFilterArgs(src, inputPath, options.officeImportFilter),
         '--convert-to',
         filterSpec,
         '--outdir',

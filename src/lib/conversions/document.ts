@@ -42,7 +42,8 @@ import { documentToMarkdown } from './document-model/markdown';
 import { rethrowInputPixelLimit } from './image-input-limits';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-sandwich';
 import { characterWeightedConfidence } from './ocr-calibration';
-import { renderPdfBlocks, type PdfBlock } from './pdf-blocks';
+import { renderPdfBlocks } from './pdf-blocks';
+import { renderPlainTextPdf } from './text-pdf-render';
 import { canDrawInPdf, loadFontCoverageIndex } from './pdf-fonts';
 import { parseHtmlToPdfBlocks } from './html-blocks';
 import { decodeHtmlInput } from './html-encoding';
@@ -879,21 +880,6 @@ const STRICT_TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md']);
 const HTML_SOURCE_FORMATS: ReadonlySet<string> = new Set(['html', 'htm']);
 const TEX_SOURCE_FORMATS: ReadonlySet<string> = new Set(['tex', 'latex']);
 const MARKDOWN_SOURCE_FORMAT = 'md';
-const FORM_FEED = '\f';
-
-/** Plain text as preformatted blocks; a form feed starts a new page. */
-function plainTextToPdfBlocks(text: string): PdfBlock[] {
-  const blocks: PdfBlock[] = [];
-  text
-    .replace(/^\ufeff/, '')
-    .split(FORM_FEED)
-    .forEach((page, index) => {
-      if (index > 0) blocks.push({ kind: 'pageBreak' });
-      blocks.push({ kind: 'preformatted', text: page });
-    });
-  return blocks;
-}
-
 /**
  * Renders text, Markdown or HTML to PDF in-process. The page holds only the document content,
  * drawn with embedded fonts that cover every character (EngineUnavailableError otherwise).
@@ -904,21 +890,14 @@ async function generatePdfFromText(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  let blocks: PdfBlock[];
-  let title = baseName;
-  let warnings: string[] = [];
-  if (HTML_SOURCE_FORMATS.has(sourceType) || sourceType === MARKDOWN_SOURCE_FORMAT) {
-    // Markdown goes through the escaping renderer: raw HTML and `<...>` text stay literal.
-    const html = sourceType === MARKDOWN_SOURCE_FORMAT ? markdownToSafeHtml(text, baseName) : text;
-    const parsed = await parseHtmlToPdfBlocks(html, { requireResources: options.requireResources, signal: options.signal });
-    blocks = parsed.blocks;
-    title = parsed.title || baseName;
-    warnings = parsed.warnings;
-  } else {
-    blocks = plainTextToPdfBlocks(text);
+  if (!HTML_SOURCE_FORMATS.has(sourceType) && sourceType !== MARKDOWN_SOURCE_FORMAT) {
+    const plain = await renderPlainTextPdf({ text, orientation: options.orientation, title: baseName }, options.signal);
+    return { buffer: plain, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: plain.length };
   }
-
-  const buffer = await renderPdfBlocks(blocks, { orientation: options.orientation, title });
+  // Markdown goes through the escaping renderer: raw HTML and `<...>` text stay literal.
+  const html = sourceType === MARKDOWN_SOURCE_FORMAT ? markdownToSafeHtml(text, baseName) : text;
+  const { blocks, title: parsedTitle, warnings } = await parseHtmlToPdfBlocks(html, { requireResources: options.requireResources, signal: options.signal });
+  const buffer = await renderPdfBlocks(blocks, { orientation: options.orientation, title: parsedTitle || baseName });
   return {
     buffer,
     mimeType: 'application/pdf',
