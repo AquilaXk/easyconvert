@@ -16,7 +16,7 @@
     "raw": { "bench": "raw" },
     "vector": { "bench": "vector" },
     "vectorize": { "bench": "vectorize" },
-    "hdr-image": { "bench": null }
+    "hdr-image": { "bench": "hdr-image" }
   },
   "rules": [
     {
@@ -219,7 +219,7 @@
     },
     {
       "families": ["hdr-image"],
-      "match": "^src/lib/conversions/(float16|hdr-image|hdr-tonemap|openexr-[^/]*)\\.ts$"
+      "match": "^bench/families/hdr-image\\.ts$|^src/lib/conversions/(float16|hdr-image|hdr-tonemap|openexr-[^/]*)\\.ts$"
     },
     {
       "families": ["raw"],

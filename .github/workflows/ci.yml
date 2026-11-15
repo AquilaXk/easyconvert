@@ -100,7 +100,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
-          ALL_BENCH_FAMILIES: image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font,cad,raw,vector,vectorize
+          ALL_BENCH_FAMILIES: image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font,cad,raw,vector,vectorize,hdr-image
         run: |
           families=""
           unmapped=""

@@ -27,7 +27,7 @@ import {
 const ROOT = path.resolve(__dirname, '..');
 const MAP = loadFamilyMap();
 const classify = (...paths: string[]): ReturnType<typeof classifyPaths> => classifyPaths(paths, MAP);
-const BENCH_FAMILIES: readonly string[] = ['image', 'video', 'audio', 'ocr', 'document', 'compression', 'pdf-ops', 'data', 'ebook', 'font', 'cad', 'raw', 'vector', 'vectorize'];
+const BENCH_FAMILIES: readonly string[] = ['image', 'video', 'audio', 'ocr', 'document', 'compression', 'pdf-ops', 'data', 'ebook', 'font', 'cad', 'raw', 'vector', 'vectorize', 'hdr-image'];
 const benchEntries = Object.fromEntries(BENCH_FAMILIES.map((name) => [name, { bench: name }]));
 
 describe('the map', () => {
@@ -49,9 +49,9 @@ describe('the map', () => {
     for (const family of FAMILIES) expect(MAP.families.get(family)).toBe(family);
   });
 
-  it('lists the conversion families that still have no reference-compared rows', () => {
+  it('leaves no conversion family without reference-compared rows', () => {
     const unbenchmarked = [...MAP.families].filter(([, bench]) => bench === null).map(([name]) => name).sort();
-    expect(unbenchmarked).toEqual(['hdr-image']);
+    expect(unbenchmarked).toEqual([]);
   });
 
   it('has a quick subset for every family, and every named case exists in the recorded baseline', () => {
@@ -128,7 +128,7 @@ describe('classifying changed paths', () => {
     ['the PDF decryption of the worker', 'src/worker/pdf-decrypt.ts', ['pdf-ops'], []],
     ['the PDF merge of the workflow graph', 'src/lib/jobs/artifact-helpers.ts', ['pdf-ops'], []],
     ['a vector file', 'src/lib/conversions/svg-geometry.ts', ['vector'], []],
-    ['an HDR file', 'src/lib/conversions/openexr-decode.ts', [], ['hdr-image']],
+    ['an HDR file', 'src/lib/conversions/openexr-decode.ts', ['hdr-image'], []],
   ])('maps %s', (_name, file, benchmarked, unmapped) => {
     expect(classify(file)).toEqual({ benchmarked, unmapped, unclassified: [] });
   });
@@ -325,7 +325,7 @@ describe('the command the changes job runs', () => {
   it('prints the three lists the workflow reads', () => {
     const result = run('src/lib/conversions/zstd.ts\nsrc/lib/conversions/openexr-decode.ts\nREADME.md\n');
     expect(result.status).toBe(0);
-    expect(result.stdout.split('\n').filter(Boolean)).toEqual(['families=compression', 'unmapped=hdr-image', 'unclassified=']);
+    expect(result.stdout.split('\n').filter(Boolean)).toEqual(['families=compression,hdr-image', 'unmapped=', 'unclassified=']);
   });
 
   it('prints empty lists for a change outside the conversion code', () => {

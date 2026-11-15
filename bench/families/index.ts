@@ -8,6 +8,7 @@ import { runDocument } from './document';
 import { runDocumentPublic } from './document-public';
 import { runEbook } from './ebook';
 import { runFont } from './font';
+import { runHdrImage } from './hdr-image';
 import { runImage } from './image';
 import { runOcr } from './ocr';
 import { runPdfOps } from './pdf-ops';
@@ -33,4 +34,5 @@ export const FAMILY_RUNNERS: Record<Family, FamilyRunner> = {
   raw: runRaw,
   vector: runVector,
   vectorize: runVectorize,
+  'hdr-image': runHdrImage,
 };

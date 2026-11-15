@@ -46,6 +46,7 @@ describe('the quick subsets', () => {
     expect(QUICK_SUBSET['pdf-ops']).toBeNull();
     expect(QUICK_SUBSET.cad).toBeNull();
     expect(QUICK_SUBSET.vector).toBeNull();
+    expect(QUICK_SUBSET['hdr-image']).toBeNull();
     expect(QUICK_SUBSET.raw).toBeNull();
   });
 });

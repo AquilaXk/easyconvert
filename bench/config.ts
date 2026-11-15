@@ -87,6 +87,7 @@ export const QUICK_SUBSET: Readonly<Record<string, readonly string[] | null>> = 
   raw: null,
   vector: null,
   vectorize: null,
+  'hdr-image': null,
 };
 
 /**

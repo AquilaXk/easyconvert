@@ -17771,6 +17771,186 @@
       "delta": null,
       "ratio": 7.417092170510878
     },
+    "hdr-image/scanline-piz-float.exr->exr/lossless_exact": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "hdr-image/scanline-piz-float.exr->exr/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 100,
+      "delta": 0,
+      "ratio": null
+    },
+    "hdr-image/scanline-piz-float.exr->exr/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 9.05696582050748
+    },
+    "hdr-image/scanline-piz-float.exr->png/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 100,
+      "delta": 46.395894,
+      "ratio": null
+    },
+    "hdr-image/scanline-piz-float.exr->png/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.0005020000000000024,
+      "ratio": null
+    },
+    "hdr-image/scanline-piz-float.exr->png/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 15.633340497994723
+    },
+    "hdr-image/scanline-piz-half-wide-values.exr->exr/lossless_exact": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 1,
+      "ratio": null
+    },
+    "hdr-image/scanline-piz-half-wide-values.exr->exr/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 100,
+      "delta": 82.28636767022311,
+      "ratio": null
+    },
+    "hdr-image/scanline-piz-half-wide-values.exr->exr/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 4.825840347539687
+    },
+    "hdr-image/scanline-piz-half-wide-values.exr->png/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 100,
+      "delta": 41.902365,
+      "ratio": null
+    },
+    "hdr-image/scanline-piz-half-wide-values.exr->png/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.0008070000000000022,
+      "ratio": null
+    },
+    "hdr-image/scanline-piz-half-wide-values.exr->png/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 5.955917417303764
+    },
+    "hdr-image/tiled-zip-half-one-level.exr->exr/lossless_exact": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 1,
+      "ratio": null
+    },
+    "hdr-image/tiled-zip-half-one-level.exr->exr/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 100,
+      "delta": 81.83037271405503,
+      "ratio": null
+    },
+    "hdr-image/tiled-zip-half-one-level.exr->exr/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 14.967288973991192
+    },
+    "hdr-image/tiled-zip-half-one-level.exr->png/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 100,
+      "delta": 47.277255,
+      "ratio": null
+    },
+    "hdr-image/tiled-zip-half-one-level.exr->png/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.0005260000000000264,
+      "ratio": null
+    },
+    "hdr-image/tiled-zip-half-one-level.exr->png/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 21.020833710668764
+    },
     "image/class-alpha->avif/bd_rate_psnr": {
       "direction": "lower",
       "tolerance": {

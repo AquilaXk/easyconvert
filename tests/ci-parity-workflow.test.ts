@@ -316,7 +316,7 @@ describe('the step that maps changed paths to families', () => {
    * `laterMain`, main gets a commit of those files after the pull request was cut, and the event names that commit as the
    * base: the merge under test was still made with the older one.
    */
-  function outputs(files: string[], options: { event?: string; baseSha?: string | null; laterMain?: string[] } = {}): { status: number; outputs: Record<string, string> } {
+  function outputs(files: string[], options: { event?: string; baseSha?: string | null; laterMain?: string[]; unmappedFamily?: string } = {}): { status: number; outputs: Record<string, string> } {
     const origin = mkdtempSync(path.join(tmpdir(), 'ci-families-origin-'));
     const checkout = mkdtempSync(path.join(tmpdir(), 'ci-families-checkout-'));
     temps.push(origin, checkout);
@@ -327,6 +327,12 @@ describe('the step that maps changed paths to families', () => {
     mkdirSync(path.join(origin, 'bench'), { recursive: true });
     cpSync(path.join(ROOT, 'scripts', 'ci-parity-families.mjs'), path.join(origin, 'scripts', 'ci-parity-families.mjs'));
     cpSync(path.join(ROOT, 'bench', 'family-map.json'), path.join(origin, 'bench', 'family-map.json'));
+    if (options.unmappedFamily) {
+      const mapPath = path.join(origin, 'bench', 'family-map.json');
+      const mapJson = JSON.parse(readFileSync(mapPath, 'utf-8')) as { families: Record<string, { bench: string | null }> };
+      mapJson.families[options.unmappedFamily] = { bench: null };
+      writeFileSync(mapPath, `${JSON.stringify(mapJson, null, 2)}\n`);
+    }
     writeFileSync(path.join(origin, 'README.md'), 'base\n');
     sh('git', ['add', '.'], origin);
     sh('git', [...identity, 'commit', '-q', '-m', 'base'], origin);
@@ -366,17 +372,18 @@ describe('the step that maps changed paths to families', () => {
 
   only('measures the family of a changed conversion file, and nothing for a change outside the conversion code', () => {
     expect(outputs(['src/lib/conversions/zstd-encoder.ts']).outputs).toEqual({ families: 'compression', unmapped: '', changed: 'true' });
+    expect(outputs(['src/lib/conversions/openexr-decode.ts']).outputs).toEqual({ families: 'hdr-image', unmapped: '', changed: 'true' });
     expect(outputs(['src/lib/conversions/image.ts', 'src/lib/conversions/media-encoder.ts']).outputs).toEqual({ families: 'image,video,raw,vectorize', unmapped: '', changed: 'true' });
     expect(outputs(['src/app/page.tsx', 'docs/guide.md', 'tests/a.test.ts']).outputs).toEqual({ families: '', unmapped: '', changed: 'false' });
   });
 
   only('reports a changed family with no bench rows, so the parity jobs can fail it', () => {
-    expect(outputs(['src/lib/conversions/openexr-decode.ts']).outputs).toEqual({ families: '', unmapped: 'hdr-image', changed: 'true' });
-    expect(outputs(['src/lib/conversions/openexr-decode.ts', 'src/lib/conversions/ocr.ts']).outputs).toEqual({ families: 'ocr', unmapped: 'hdr-image', changed: 'true' });
+    expect(outputs(['src/lib/conversions/openexr-decode.ts'], { unmappedFamily: 'hdr-image' }).outputs).toEqual({ families: '', unmapped: 'hdr-image', changed: 'true' });
+    expect(outputs(['src/lib/conversions/openexr-decode.ts', 'src/lib/conversions/ocr.ts'], { unmappedFamily: 'hdr-image' }).outputs).toEqual({ families: 'ocr', unmapped: 'hdr-image', changed: 'true' });
   });
 
   only('measures every family when the dispatcher changes', () => {
-    expect(outputs(['src/lib/conversions/dispatch.ts']).outputs.families).toBe('image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font,cad,raw,vector,vectorize');
+    expect(outputs(['src/lib/conversions/dispatch.ts']).outputs.families).toBe('image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font,cad,raw,vector,vectorize,hdr-image');
   });
 
   only('fails the job on a conversion file that no rule classifies', () => {
@@ -393,7 +400,7 @@ describe('the step that maps changed paths to families', () => {
   });
 
   only('fails open without a comparable base commit: a pull request with no base, and a push with no or an all-zero before', () => {
-    const everything = { families: 'image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font,cad,raw,vector,vectorize', unmapped: '', changed: 'true' };
+    const everything = { families: 'image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font,cad,raw,vector,vectorize,hdr-image', unmapped: '', changed: 'true' };
     expect(outputs([], { baseSha: null }).outputs).toEqual(everything);
     expect(outputs([], { event: 'push', baseSha: null }).outputs).toEqual(everything);
     expect(outputs([], { event: 'push', baseSha: '0'.repeat(40) }).outputs).toEqual(everything);
@@ -500,7 +507,7 @@ describe('the nightly run', () => {
     expect(speedJob.if).toBe("inputs.ab_base_ref == ''");
     const ab = nightly.jobs['bench-ab-speed'];
     expect(ab.if).toBe("inputs.ab_base_ref != ''");
-    expect((ab as unknown as { strategy: { matrix: { family: string[] } } }).strategy.matrix.family).toEqual(['image', 'video', 'audio', 'ocr', 'document', 'compression', 'pdf-ops', 'data', 'ebook', 'font', 'cad', 'raw', 'vector', 'vectorize']);
+    expect((ab as unknown as { strategy: { matrix: { family: string[] } } }).strategy.matrix.family).toEqual(['image', 'video', 'audio', 'ocr', 'document', 'compression', 'pdf-ops', 'data', 'ebook', 'font', 'cad', 'raw', 'vector', 'vectorize', 'hdr-image']);
     expect(stepNamed(ab, 'Check out the commit to compare with').run).toContain('bash scripts/ab-base-dependencies.sh false');
     const measure = stepNamed(ab, 'Measure the speed rows against that commit');
     expect(measure.env).toMatchObject({ ORACLE_STRICT_MODE: '1', BENCH_BASE_ROOT: 'ab-base', FAMILY: '${{ matrix.family }}' });
