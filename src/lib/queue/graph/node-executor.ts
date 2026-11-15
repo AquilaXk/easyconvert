@@ -880,37 +880,7 @@ export async function processGraphNodeJob(
           throw new Error(`archive.extract node "${nodeId}" has no input artifact`);
         }
 
-        let archiveBuffer: Buffer;
-        let effectiveFilename: string;
-
-        if (inputArtifacts.length > 1) {
-          let cumulativeBytes = 0;
-          const parts = await mapWithConcurrency(inputArtifacts, 4, async (k) => {
-            const st = await effectiveStorage.getObject(k);
-            if (!st) throw new Error(`Archive artifact "${k}" not found`);
-            cumulativeBytes += st.buffer.length;
-            if (cumulativeBytes > MAX_STITCH_BUFFER_SIZE) {
-              throw new MultiVolumeBufferOverflowError(cumulativeBytes, MAX_STITCH_BUFFER_SIZE);
-            }
-            return { filename: st.filename || path.basename(k), buffer: st.buffer };
-          });
-          validateMultiVolumeSequence(parts.map((p) => p.filename));
-          const stitched = stitchMultiVolumeArchive(parts);
-          archiveBuffer = stitched.buffer;
-          effectiveFilename = stitched.baseFilename;
-        } else {
-          const archiveKey = inputArtifacts[0];
-          const stored = await effectiveStorage.getObject(archiveKey);
-          if (!stored) {
-            throw new Error(`Archive artifact "${archiveKey}" not found`);
-          }
-          effectiveFilename = stored.filename || archiveKey;
-          if (isSplitArchive(effectiveFilename)) {
-            validateMultiVolumeSequence([effectiveFilename]);
-          }
-          archiveBuffer = stored.buffer;
-        }
-
+        const { archiveBuffer, effectiveFilename } = await loadArchiveExtractSource(inputArtifacts, effectiveStorage);
         const extracted = await extractGraphArchiveEntries(effectiveFilename, archiveBuffer, node.entries, undefined, archiveExtractOptionsOf(node, attemptSignal));
 
         for (const [index, f] of extracted.entries()) {
@@ -1108,6 +1078,37 @@ export interface GraphArchiveExtractOptions {
   collisionPolicy?: 'error' | 'overwrite' | 'rename';
   entries?: string[];
   signal?: AbortSignal;
+}
+
+async function loadArchiveExtractSource(
+  inputArtifacts: string[],
+  storage: IStorageBackend
+): Promise<{ archiveBuffer: Buffer; effectiveFilename: string }> {
+  if (inputArtifacts.length > 1) {
+    let cumulativeBytes = 0;
+    const parts = await mapWithConcurrency(inputArtifacts, 4, async (k) => {
+      const st = await storage.getObject(k);
+      if (!st) throw new Error(`Archive artifact "${k}" not found`);
+      cumulativeBytes += st.buffer.length;
+      if (cumulativeBytes > MAX_STITCH_BUFFER_SIZE) {
+        throw new MultiVolumeBufferOverflowError(cumulativeBytes, MAX_STITCH_BUFFER_SIZE);
+      }
+      return { filename: st.filename || path.basename(k), buffer: st.buffer };
+    });
+    validateMultiVolumeSequence(parts.map((p) => p.filename));
+    const stitched = stitchMultiVolumeArchive(parts);
+    return { archiveBuffer: stitched.buffer, effectiveFilename: stitched.baseFilename };
+  }
+  const archiveKey = inputArtifacts[0];
+  const stored = await storage.getObject(archiveKey);
+  if (!stored) {
+    throw new Error(`Archive artifact "${archiveKey}" not found`);
+  }
+  const effectiveFilename = stored.filename || archiveKey;
+  if (isSplitArchive(effectiveFilename)) {
+    validateMultiVolumeSequence([effectiveFilename]);
+  }
+  return { archiveBuffer: stored.buffer, effectiveFilename };
 }
 
 function archiveExtractOptionsOf(

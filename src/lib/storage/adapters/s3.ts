@@ -247,6 +247,53 @@ export interface XmlOpenTagMatch {
   selfClosing: boolean;
 }
 
+function matchXmlElementNameAt(
+  xml: string,
+  localName: string,
+  lt: number
+): { prefix: string; afterName: number } | undefined {
+  const len = xml.length;
+  const first = xml.charCodeAt(lt + 1);
+  if (first === 0x2f || first === 0x3f || first === 0x21) return undefined;
+  if (xml.startsWith(localName, lt + 1)) {
+    return { prefix: '', afterName: lt + 1 + localName.length };
+  }
+  if (!isXmlNcNameStart(first)) return undefined;
+  let p = lt + 2;
+  while (p < len && isXmlNcNameChar(xml.charCodeAt(p))) p++;
+  if (p < len && xml.charCodeAt(p) === 0x3a && xml.startsWith(localName, p + 1)) {
+    return { prefix: xml.slice(lt + 1, p), afterName: p + 1 + localName.length };
+  }
+  return undefined;
+}
+
+function scanXmlOpenTagAttributes(
+  xml: string,
+  lt: number,
+  afterName: number,
+  prefix: string
+): XmlOpenTagMatch | undefined {
+  const len = xml.length;
+  let i = afterName + 1;
+  let quote = 0;
+  while (i < len) {
+    const ch = xml.charCodeAt(i);
+    if (quote !== 0) {
+      if (ch === quote) quote = 0;
+    } else if (ch === 0x22 || ch === 0x27) {
+      quote = ch;
+    } else if (ch === 0x3e) {
+      let back = i - 1;
+      while (back > afterName && isXmlSpaceCode(xml.charCodeAt(back))) back--;
+      return { tagStart: lt, tagEnd: i + 1, prefix, selfClosing: xml.charCodeAt(back) === 0x2f };
+    } else if (ch === 0x3c) {
+      return undefined;
+    }
+    i++;
+  }
+  return undefined;
+}
+
 /**
  * Finds the next opening tag matching `localName` with an optional XML namespace prefix
  * (`<Name>`, `<s3:Name>`, `<Name xmlns="...">`) using linear character scanning without dynamic regexes.
@@ -255,48 +302,19 @@ export function findXmlOpenTag(xml: string, localName: string, fromIndex: number
   const len = xml.length;
   let lt = xml.indexOf('<', fromIndex);
   while (lt !== -1 && lt + 1 < len) {
-    const first = xml.charCodeAt(lt + 1);
-    if (first !== 0x2f && first !== 0x3f && first !== 0x21) {
-      let prefix = '';
-      let afterName = -1;
-      if (xml.startsWith(localName, lt + 1)) {
-        afterName = lt + 1 + localName.length;
-      } else if (isXmlNcNameStart(first)) {
-        let p = lt + 2;
-        while (p < len && isXmlNcNameChar(xml.charCodeAt(p))) p++;
-        if (p < len && xml.charCodeAt(p) === 0x3a && xml.startsWith(localName, p + 1)) {
-          prefix = xml.slice(lt + 1, p);
-          afterName = p + 1 + localName.length;
-        }
+    const matched = matchXmlElementNameAt(xml, localName, lt);
+    if (matched && matched.afterName < len) {
+      const { prefix, afterName } = matched;
+      const delim = xml.charCodeAt(afterName);
+      if (delim === 0x3e) {
+        return { tagStart: lt, tagEnd: afterName + 1, prefix, selfClosing: false };
       }
-      if (afterName !== -1 && afterName < len) {
-        const delim = xml.charCodeAt(afterName);
-        if (delim === 0x3e) {
-          return { tagStart: lt, tagEnd: afterName + 1, prefix, selfClosing: false };
-        }
-        if (delim === 0x2f && afterName + 1 < len && xml.charCodeAt(afterName + 1) === 0x3e) {
-          return { tagStart: lt, tagEnd: afterName + 2, prefix, selfClosing: true };
-        }
-        if (isXmlSpaceCode(delim)) {
-          let i = afterName + 1;
-          let quote = 0;
-          while (i < len) {
-            const ch = xml.charCodeAt(i);
-            if (quote !== 0) {
-              if (ch === quote) quote = 0;
-            } else if (ch === 0x22 || ch === 0x27) {
-              quote = ch;
-            } else if (ch === 0x3e) {
-              let back = i - 1;
-              while (back > afterName && isXmlSpaceCode(xml.charCodeAt(back))) back--;
-              const selfClosing = xml.charCodeAt(back) === 0x2f;
-              return { tagStart: lt, tagEnd: i + 1, prefix, selfClosing };
-            } else if (ch === 0x3c) {
-              break;
-            }
-            i++;
-          }
-        }
+      if (delim === 0x2f && afterName + 1 < len && xml.charCodeAt(afterName + 1) === 0x3e) {
+        return { tagStart: lt, tagEnd: afterName + 2, prefix, selfClosing: true };
+      }
+      if (isXmlSpaceCode(delim)) {
+        const scanned = scanXmlOpenTagAttributes(xml, lt, afterName, prefix);
+        if (scanned) return scanned;
       }
     }
     lt = xml.indexOf('<', lt + 1);

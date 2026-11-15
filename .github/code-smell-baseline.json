@@ -359,13 +359,6 @@
   },
   {
     "file": "src/lib/conversions/cad-dxf.ts",
-    "rule": "complexity",
-    "function": "entity",
-    "count": 1,
-    "maxValue": 34
-  },
-  {
-    "file": "src/lib/conversions/cad-dxf.ts",
     "rule": "max-params",
     "function": "nurbsPoint",
     "count": 1,
@@ -877,34 +870,6 @@
     "maxValue": 53
   },
   {
-    "file": "src/lib/conversions/office/docx-pdf.ts",
-    "rule": "complexity",
-    "function": "renderTable",
-    "count": 1,
-    "maxValue": 46
-  },
-  {
-    "file": "src/lib/conversions/office/docx-pdf.ts",
-    "rule": "max-depth",
-    "function": "renderTable",
-    "count": 1,
-    "maxValue": 6
-  },
-  {
-    "file": "src/lib/conversions/office/docx-pdf.ts",
-    "rule": "max-lines-per-function",
-    "function": "generatePdfFromDocx",
-    "count": 2,
-    "maxValue": 308
-  },
-  {
-    "file": "src/lib/conversions/office/docx-pdf.ts",
-    "rule": "max-lines-per-function",
-    "function": "renderTable",
-    "count": 1,
-    "maxValue": 254
-  },
-  {
     "file": "src/lib/conversions/office/drawingml-shapes.ts",
     "rule": "complexity",
     "function": "parseDrawingMlShapes",
@@ -1171,33 +1136,6 @@
     "maxValue": 35
   },
   {
-    "file": "src/lib/conversions/office/xlsx-parse.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parseAllXlsxWorksheets",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office/xlsx-parse.ts",
-    "rule": "complexity",
-    "function": "parseAllXlsxWorksheets",
-    "count": 1,
-    "maxValue": 84
-  },
-  {
-    "file": "src/lib/conversions/office/xlsx-parse.ts",
-    "rule": "max-depth",
-    "function": "parseAllXlsxWorksheets",
-    "count": 1,
-    "maxValue": 6
-  },
-  {
-    "file": "src/lib/conversions/office/xlsx-parse.ts",
-    "rule": "max-lines-per-function",
-    "function": "parseAllXlsxWorksheets",
-    "count": 1,
-    "maxValue": 269
-  },
-  {
     "file": "src/lib/conversions/openexr-decode-piz.ts",
     "rule": "max-params",
     "function": "waveletDecode",
@@ -1429,7 +1367,7 @@
     "rule": "complexity",
     "function": "decodeCompressedBlock",
     "count": 1,
-    "maxValue": 46
+    "maxValue": 40
   },
   {
     "file": "src/lib/conversions/zstd-decoder.ts",
@@ -1880,7 +1818,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2273
+    "maxValue": 2251
   },
   {
     "file": "src/lib/queue/conversion-queue.ts",
@@ -1923,14 +1861,14 @@
     "rule": "complexity",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 81
+    "maxValue": 77
   },
   {
     "file": "src/lib/queue/graph/node-executor.ts",
     "rule": "max-lines-per-function",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 388
+    "maxValue": 365
   },
   {
     "file": "src/lib/queue/node-processor.ts",

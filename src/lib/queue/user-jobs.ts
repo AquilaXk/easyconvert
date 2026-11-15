@@ -43,6 +43,18 @@ export function graphProcessedOn(graph: GraphExecutionState): number | undefined
   return started.length > 0 ? Math.min(...started) : undefined;
 }
 
+async function listMatchingGraphs(
+  userId: string,
+  limit: number,
+  graphStatuses: GraphStatus[]
+): Promise<GraphExecutionState[]> {
+  if (graphStatuses.length === 0) return [];
+  if (graphScheduler.listGraphSummariesOfUser) {
+    return graphScheduler.listGraphSummariesOfUser(userId, limit, graphStatuses);
+  }
+  return graphScheduler.listGraphsOfUser(userId, limit, graphStatuses);
+}
+
 /**
  * The newest `limit` jobs and graphs of `userId` in `states`, newest first. The queues are read once (see `listVisibleJobs`) and
  * so is the index of the user's graphs (`listGraphsOfUser`), each for the page asked for, then the two are merged by creation time.
@@ -51,11 +63,7 @@ export async function listVisibleWork(userId: string, states: JobState[], limit:
   const graphStatuses = graphStatusesOf(states);
   const [jobs, graphs] = await Promise.all([
     listVisibleJobs(userId, states, limit),
-    graphStatuses.length > 0
-      ? graphScheduler.listGraphSummariesOfUser
-        ? graphScheduler.listGraphSummariesOfUser(userId, limit, graphStatuses)
-        : graphScheduler.listGraphsOfUser(userId, limit, graphStatuses)
-      : Promise.resolve([]),
+    listMatchingGraphs(userId, limit, graphStatuses),
   ]);
   const work: ListedWork[] = [
     ...jobs.map((job): ListedWork => ({ kind: 'job', job, createdAt: job.timestamp })),

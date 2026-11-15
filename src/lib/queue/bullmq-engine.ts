@@ -13,7 +13,16 @@ import {
   removeFromUserIndices,
   type QueueStateKeys,
 } from './queue-queries';
-import { applyStoredJobFields, flatHashToRecord, ownerOf, parseStoredJson, readJobHashes } from './stored-job';
+import {
+  applyStoredJobFields,
+  flatHashToRecord,
+  mergeStoredJobLogs,
+  ownerOf,
+  readJobHashes,
+  readStoredJobsWithLogs,
+  readStoredJobWithLogs,
+  serializeJobToHash,
+} from './stored-job';
 import {
   ADD_JOB_LUA_SCRIPT,
   APPEND_JOB_LOG_LUA_SCRIPT,
@@ -184,8 +193,12 @@ export class Job<T = any, R = any> {
     data: T,
     opts: JobOptions = {},
     emitter: EventEmitter,
-    onUpdateHook?: (job: Job<T, R>) => Promise<void> | void,
-    onLogHook?: (job: Job<T, R>, entry: string) => Promise<void> | void
+    hooks?:
+      | ((job: Job<T, R>) => Promise<void> | void)
+      | {
+          onUpdate?: (job: Job<T, R>) => Promise<void> | void;
+          onLog?: (job: Job<T, R>, entry: string) => Promise<void> | void;
+        }
   ) {
     this.id = id;
     this.name = name;
@@ -197,8 +210,12 @@ export class Job<T = any, R = any> {
     };
     this.timestamp = Date.now();
     this.emitter = emitter;
-    this.onUpdateHook = onUpdateHook;
-    this.onLogHook = onLogHook;
+    if (typeof hooks === 'function') {
+      this.onUpdateHook = hooks;
+    } else if (hooks) {
+      this.onUpdateHook = hooks.onUpdate;
+      this.onLogHook = hooks.onLog;
+    }
     if (this.opts.delay && this.opts.delay > 0) {
       this.state = 'delayed';
     }
@@ -1485,24 +1502,13 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   private readonly persistProgressHook = async (j: Job<T, R>): Promise<void> => {
     if (!this.redisClient || !this.redisConnected) return;
     try {
+      const jobKey = this.getJobKey(j.id);
       if (typeof this.redisClient.eval === 'function' && j._attemptToken) {
-        await this.redisClient.eval(
-          UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT,
-          1,
-          this.getJobKey(j.id),
-          j._attemptToken,
-          String(j.progress)
-        );
+        await this.redisClient.eval(UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT, 1, jobKey, j._attemptToken, String(j.progress));
       } else if (typeof this.redisClient.eval === 'function') {
-        await this.redisClient.hset(this.getJobKey(j.id), 'progress', String(j.progress));
+        await this.redisClient.hset(jobKey, 'progress', String(j.progress));
       } else {
-        await this.redisClient.hset(
-          this.getJobKey(j.id),
-          'progress',
-          String(j.progress),
-          'logs',
-          JSON.stringify(j.logs)
-        );
+        await this.redisClient.hset(jobKey, 'progress', String(j.progress), 'logs', JSON.stringify(j.logs));
       }
       await this.publishEvent({ event: 'progress', jobId: j.id, progress: j.progress });
     } catch {}
@@ -1511,63 +1517,21 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   private readonly persistLogHook = async (j: Job<T, R>, entry: string): Promise<void> => {
     if (!this.redisClient || !this.redisConnected) return;
     try {
+      const jobKey = this.getJobKey(j.id);
       if (typeof this.redisClient.eval === 'function') {
-        const jobKey = this.getJobKey(j.id);
-        await this.redisClient.eval(
-          APPEND_JOB_LOG_LUA_SCRIPT,
-          2,
-          jobKey,
-          `${jobKey}:logs`,
-          j._attemptToken ?? '',
-          entry,
-          String(MAX_JOB_LOGS)
-        );
+        await this.redisClient.eval(APPEND_JOB_LOG_LUA_SCRIPT, 2, jobKey, `${jobKey}:logs`, j._attemptToken ?? '', entry, String(MAX_JOB_LOGS));
       } else {
-        await this.redisClient.hset(
-          this.getJobKey(j.id),
-          'progress',
-          String(j.progress),
-          'logs',
-          JSON.stringify(j.logs)
-        );
+        await this.redisClient.hset(jobKey, 'progress', String(j.progress), 'logs', JSON.stringify(j.logs));
       }
     } catch {}
   };
 
+  private get persistenceHooks() {
+    return { onUpdate: this.persistProgressHook, onLog: this.persistLogHook };
+  }
+
   private jobToHash(job: Job<T, R>): Record<string, string> {
-    const rawData =
-      typeof job.data === 'object' && job.data !== null && !Array.isArray(job.data)
-        ? (job.data as Record<string, unknown>)
-        : {};
-    const graphId = rawData.graphId;
-    const hash: Record<string, string> = {
-      id: job.id,
-      name: job.name,
-      data: JSON.stringify(job.data ?? {}),
-      userId: ownerOf(job.data) ?? '',
-      isGraphNode: typeof graphId === 'string' && graphId.length > 0 ? '1' : '0',
-      opts: JSON.stringify(job.opts ?? {}),
-      progress: String(job.progress),
-      state: job.state,
-      attemptsMade: String(job.attemptsMade),
-      timestamp: String(job.timestamp),
-      processedOn: job.processedOn ? String(job.processedOn) : '',
-      finishedOn: job.finishedOn ? String(job.finishedOn) : '',
-      returnvalue: job.returnvalue !== undefined ? JSON.stringify(job.returnvalue) : '',
-      failedReason: job.failedReason || '',
-      failedCode: job.failedCode || '',
-      failedStatus: job.failedStatus === undefined ? '' : String(job.failedStatus),
-      failedRefusalCode: job.failedRefusalCode ?? '',
-      stacktrace: JSON.stringify(job.stacktrace || []),
-      logs: JSON.stringify(job.logs || []),
-    };
-    if (typeof rawData.sourceFormat === 'string') hash.sourceFormat = rawData.sourceFormat;
-    if (typeof rawData.targetFormat === 'string') hash.targetFormat = rawData.targetFormat;
-    if (typeof rawData.originalFilename === 'string') hash.originalFilename = rawData.originalFilename;
-    if (typeof rawData.fileSize === 'number' && Number.isFinite(rawData.fileSize)) {
-      hash.fileSize = String(rawData.fileSize);
-    }
-    return hash;
+    return serializeJobToHash(job);
   }
 
   private hashToJob(raw: Record<string, string>): Job<T, R> {
@@ -1586,23 +1550,9 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       parsedOpts.deadlineAt = Math.min(parsedOpts.deadlineAt ?? Number.POSITIVE_INFINITY, claimedDeadline);
     }
 
-    const job = new Job<T, R>(
-      raw.id,
-      raw.name || '',
-      parsedData,
-      parsedOpts,
-      this,
-      this.persistProgressHook,
-      this.persistLogHook
-    );
-
+    const job = new Job<T, R>(raw.id, raw.name || '', parsedData, parsedOpts, this, this.persistenceHooks);
     applyStoredJobFields(job, raw);
     return job;
-  }
-
-  private mergeListLogs(job: Job<T, R>, listLogs: readonly string[] | undefined): void {
-    if (!Array.isArray(listLogs) || listLogs.length === 0) return;
-    job.logs = job.logs.length > 0 ? [...job.logs, ...listLogs].slice(-MAX_JOB_LOGS) : [...listLogs];
   }
 
   async add(name: string, data: T, opts: JobOptions = {}): Promise<Job<T, R>> {
@@ -1618,16 +1568,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       const priorityScore = calculateJobPriorityScore(opts.priority, now);
 
       if (typeof this.redisClient.eval === 'function') {
-        const jobInstance = new Job<T, R>(
-          id,
-          name,
-          data,
-          opts,
-          this,
-          this.persistProgressHook,
-          this.persistLogHook
-        );
-
+        const jobInstance = new Job<T, R>(id, name, data, opts, this, this.persistenceHooks);
         const hash = this.jobToHash(jobInstance);
         const flatHash: string[] = [];
         for (const [k, v] of Object.entries(hash)) {
@@ -1674,16 +1615,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           } catch {}
         }
 
-        const job = new Job<T, R>(
-          id,
-          name,
-          data,
-          opts,
-          this,
-          this.persistProgressHook,
-          this.persistLogHook
-        );
-
+        const job = new Job<T, R>(id, name, data, opts, this, this.persistenceHooks);
         const hash = this.jobToHash(job);
         await this.redisOp(() => redis.hset(this.getJobKey(id), hash));
 
@@ -1715,36 +1647,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     if (this.redisClient) {
       await this.assertRedisConnected();
       const redis = this.redisClient;
-      const jobKey = this.getJobKey(id);
-      if (typeof redis.pipeline === 'function') {
-        const pipe = redis.pipeline();
-        if (typeof (pipe as { lrange?: unknown }).lrange === 'function') {
-          const [raw, listLogs] = await this.redisOp(async () => {
-            pipe.hgetall(jobKey);
-            pipe.lrange(`${jobKey}:logs`, 0, -1);
-            const replies = (await pipe.exec()) ?? [];
-            for (const [err] of replies) if (err) throw err;
-            return [
-              replies[0]?.[1] as Record<string, string> | undefined,
-              (replies[1]?.[1] as string[] | undefined) ?? [],
-            ] as const;
-          });
-          if (!raw || !raw.id) return undefined;
-          const job = this.hashToJob(raw);
-          this.mergeListLogs(job, listLogs);
-          return job;
-        }
-      }
-      const raw = await this.redisOp(() => redis.hgetall(jobKey));
-      if (!raw || !raw.id) {
-        return undefined;
-      }
-      const job = this.hashToJob(raw);
-      if (typeof (redis as { lrange?: unknown }).lrange === 'function') {
-        const listLogs = await this.redisOp(() => redis.lrange(`${jobKey}:logs`, 0, -1));
-        this.mergeListLogs(job, listLogs);
-      }
-      return job;
+      return this.redisOp(() => readStoredJobWithLogs(redis, this.getJobKey(id), MAX_JOB_LOGS, (raw) => this.hashToJob(raw)));
     }
     return this.memoryFallback.getJob(id);
   }
@@ -1764,28 +1667,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         else if (start > 0) slicedIds = uniqueIds.slice(start);
         if (slicedIds.length === 0) return [];
         const jobKeys = slicedIds.map((id) => this.getJobKey(id));
-        if (typeof redis.pipeline === 'function') {
-          const pipe = redis.pipeline();
-          if (typeof (pipe as { lrange?: unknown }).lrange === 'function') {
-            for (const jk of jobKeys) {
-              pipe.hgetall(jk);
-              pipe.lrange(`${jk}:logs`, 0, -1);
-            }
-            const replies = (await pipe.exec()) ?? [];
-            for (const [err] of replies) if (err) throw err;
-            const listed: Job<T, R>[] = [];
-            for (let i = 0; i < jobKeys.length; i++) {
-              const hash = (replies[i * 2]?.[1] as Record<string, string> | undefined) ?? {};
-              if (!hash.id) continue;
-              const job = this.hashToJob(hash);
-              this.mergeListLogs(job, replies[i * 2 + 1]?.[1] as string[] | undefined);
-              listed.push(job);
-            }
-            return listed;
-          }
-        }
-        const hashes = await readJobHashes(redis, jobKeys);
-        return hashes.flatMap((hash) => (hash.id ? [this.hashToJob(hash)] : []));
+        return await readStoredJobsWithLogs(redis, jobKeys, MAX_JOB_LOGS, (raw) => this.hashToJob(raw));
       } catch (err) {
         throw this.toQueueUnavailable(err);
       }
@@ -1933,7 +1815,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     }
     await this.publishEvent({ event: 'cancelled', jobId: id, reason });
     const cancelled = this.hashToJob(flatHashToRecord(rawHash));
-    this.mergeListLogs(cancelled, listLogs);
+    mergeStoredJobLogs(cancelled, listLogs, MAX_JOB_LOGS);
     await dropEndedData(client, this.keySpace, id, cancelled.opts?.removeDataOnFinish).catch((err: unknown) => {
       console.warn(`[DistributedBullMQAdapter:${this.name}] Could not drop the ended data of job ${id}:`, err);
     });
@@ -2052,7 +1934,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         job._attemptToken = attemptToken;
         if (job.attemptsMade > 0 && typeof (this.redisClient as { lrange?: unknown }).lrange === 'function') {
           const priorLogs = await this.redisClient.lrange(`${this.getJobKey(job.id)}:logs`, 0, -1);
-          this.mergeListLogs(job, priorLogs);
+          mergeStoredJobLogs(job, priorLogs, MAX_JOB_LOGS);
         }
         return job;
       } catch (err) {
