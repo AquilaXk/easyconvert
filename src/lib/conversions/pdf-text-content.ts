@@ -63,6 +63,7 @@ const SYMBOL_BULLETS: ReadonlyMap<number, string> = new Map([
   [0xf0a8, '□'],
   [0xf06e, '■'],
   [0xf09f, '•'],
+  [0xf8f4, '\u23aa'],
 ]);
 
 type Matrix = [number, number, number, number, number, number];

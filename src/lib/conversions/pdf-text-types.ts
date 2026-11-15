@@ -244,6 +244,10 @@ export interface PdfContentShape {
   strokeWidth?: number;
   /** Opacity of the fill below one. */
   alpha?: number;
+  /** Opacity of the stroke below one. */
+  strokeAlpha?: number;
+  /** Whether the outline is drawn dashed. */
+  dashed?: boolean;
   /** Segments of a `path` as pdf.js encodes them (a move, line, cubic curve, quadratic curve or close code, then its coordinates), in the viewport. */
   path?: number[];
   /** The place in the paint order of the page, shared with its rules and images. */

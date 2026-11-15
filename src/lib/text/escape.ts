@@ -32,3 +32,6 @@ export function escapeXmlQuoted(text: string): string {
 export function escapeHtmlQuoted(text: string): string {
   return text.replace(QUOTED_SPECIALS, (character) => HTML_QUOTED_ENTITIES[character]);
 }
+
+/** Alias for `escapeXmlQuoted` commonly used in XML writers. */
+export const escapeXmlText = escapeXmlQuoted;

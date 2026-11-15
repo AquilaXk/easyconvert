@@ -9,7 +9,7 @@ import { decodeWithOpenJpeg } from './image-openjpeg-cli';
 import { usesOldStyleJpeg, withSortedTiffTags } from './image-tiff-directories';
 import { writesProgramPalette } from './image-content';
 import { pngQualityAsPalette } from './image-encoder-defaults';
-import { markedForOptimiser, withOptimisedPng } from './png-optimise';
+import { markedForOptimiser, wantsPngOptimiser, withOptimisedPng } from './png-optimise';
 
 /**
  * Which still-image sources the image library cannot read itself, and which command-line decoder reads each. The
@@ -118,10 +118,17 @@ export async function convertImageSource(
   if (external === null) {
     // A PNG written from a PNG is a compression of it (entries 198 and 213), so the encoder writes the cheapest file and the lossless
     // optimiser has the last word (entries 232 and 247), except for an indexed file that quantizr-pixels writes with its own deflater (entry 258).
-    const compresses = sourceFormat === 'png' && targetFormat.toLowerCase() === 'png';
+    const isPngTarget = targetFormat.toLowerCase() === 'png';
+    const compresses = sourceFormat === 'png' && isPngTarget;
     const converted = await convertImage(readable, targetFormat, compresses ? markedForOptimiser(options) : options, originalFilename, sourceFormat);
     // The palette a quality stands for (pngQualityAsPalette, applied inside convertImage) decides as an explicit palette does.
-    return compresses && !writesProgramPalette(pngQualityAsPalette(sourceFormat, targetFormat, options)) ? withOptimisedPng(converted, { signal: options.signal }) : converted;
+    const shouldOptimise = (compresses || (isPngTarget && wantsPngOptimiser(options))) &&
+      !writesProgramPalette(pngQualityAsPalette(sourceFormat, targetFormat, options));
+    return shouldOptimise ? withOptimisedPng(converted, { signal: options.signal }) : converted;
   }
-  return convertImage(external.buffer, targetFormat, options, originalFilename, external.format);
+  const isPngTarget = targetFormat.toLowerCase() === 'png';
+  const converted = await convertImage(external.buffer, targetFormat, options, originalFilename, external.format);
+  const shouldOptimise = isPngTarget && wantsPngOptimiser(options) &&
+    !writesProgramPalette(pngQualityAsPalette(external.format, targetFormat, options));
+  return shouldOptimise ? withOptimisedPng(converted, { signal: options.signal }) : converted;
 }

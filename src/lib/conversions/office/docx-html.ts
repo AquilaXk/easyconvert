@@ -1,5 +1,51 @@
-import { type DocxBlockElement, type DocxParagraph, type DocxTable } from './types';
+import { type DocxBlockElement, type DocxParagraph, type DocxTable, type DocxTableCell } from './types';
 import { escapeMarkupAttribute } from '../../text/escape';
+
+function formatCellBorders(borders?: DocxTableCell['borders']): string {
+  if (!borders) return 'border:1px solid #E1E4EE;';
+  let css = '';
+  if (borders.top && borders.top.style !== 'none') {
+    css += `border-top:${borders.top.size || 1}pt ${borders.top.style || 'solid'} ${borders.top.color || '#CCD2FC'};`;
+  }
+  if (borders.bottom && borders.bottom.style !== 'none') {
+    css += `border-bottom:${borders.bottom.size || 1}pt ${borders.bottom.style || 'solid'} ${borders.bottom.color || '#CCD2FC'};`;
+  }
+  if (borders.left && borders.left.style !== 'none') {
+    css += `border-left:${borders.left.size || 1}pt ${borders.left.style || 'solid'} ${borders.left.color || '#CCD2FC'};`;
+  }
+  if (borders.right && borders.right.style !== 'none') {
+    css += `border-right:${borders.right.size || 1}pt ${borders.right.style || 'solid'} ${borders.right.color || '#CCD2FC'};`;
+  }
+  return css || 'border:1px solid #E1E4EE;';
+}
+
+function renderStructuredRow(
+  sRow: DocxTableCell[],
+  rIdx: number,
+  renderTable: (tbl: DocxTable) => string
+): string {
+  let rowHtml = '<tr>\n';
+  for (const cell of sRow) {
+    if (cell.rowSpan === 0) continue;
+    const tag = cell.isHeader || rIdx === 0 ? 'th' : 'td';
+    let cellStyle = 'padding:8px;text-align:left;';
+    if (cell.shading && cell.shading !== 'auto') {
+      cellStyle += `background-color:#${cell.shading};`;
+    } else if (tag === 'th') {
+      cellStyle += 'background:#F0F2FE;color:#1F2340;';
+    }
+    cellStyle += formatCellBorders(cell.borders);
+    const colSpanAttr = cell.colSpan && cell.colSpan > 1 ? ` colspan="${cell.colSpan}"` : '';
+    const rowSpanAttr = cell.rowSpan && cell.rowSpan > 1 ? ` rowspan="${cell.rowSpan}"` : '';
+    let cellInner = escapeMarkupAttribute(cell.text).replace(/\n/g, '<br/>');
+    if (cell.nestedTable) {
+      cellInner += (cellInner ? '<br/>' : '') + renderTable(cell.nestedTable);
+    }
+    rowHtml += `  <${tag}${colSpanAttr}${rowSpanAttr} style="${cellStyle}">${cellInner}</${tag}>\n`;
+  }
+  rowHtml += '</tr>\n';
+  return rowHtml;
+}
 
 export function generateHtmlFromDocx(
   paragraphs: DocxParagraph[],
@@ -46,43 +92,9 @@ export function generateHtmlFromDocx(
     let tblHtml = `<table border="1" cellpadding="8" cellspacing="0" style="${tblStyle}">\n`;
 
     if (tbl.structuredRows && tbl.structuredRows.length > 0) {
-      tbl.structuredRows.forEach((sRow, rIdx) => {
-        tblHtml += '<tr>\n';
-        sRow.forEach((cell) => {
-          if (cell.rowSpan === 0) return; // Skip cells vertically merged from previous row
-          const tag = cell.isHeader || rIdx === 0 ? 'th' : 'td';
-          let cellStyle = 'padding:8px;text-align:left;';
-          if (cell.shading && cell.shading !== 'auto') {
-            cellStyle += `background-color:#${cell.shading};`;
-          } else if (tag === 'th') {
-            cellStyle += 'background:#F0F2FE;color:#1F2340;';
-          }
-          if (cell.borders) {
-            if (cell.borders.top && cell.borders.top.style !== 'none') {
-              cellStyle += `border-top:${cell.borders.top.size || 1}pt ${cell.borders.top.style || 'solid'} ${cell.borders.top.color || '#CCD2FC'};`;
-            }
-            if (cell.borders.bottom && cell.borders.bottom.style !== 'none') {
-              cellStyle += `border-bottom:${cell.borders.bottom.size || 1}pt ${cell.borders.bottom.style || 'solid'} ${cell.borders.bottom.color || '#CCD2FC'};`;
-            }
-            if (cell.borders.left && cell.borders.left.style !== 'none') {
-              cellStyle += `border-left:${cell.borders.left.size || 1}pt ${cell.borders.left.style || 'solid'} ${cell.borders.left.color || '#CCD2FC'};`;
-            }
-            if (cell.borders.right && cell.borders.right.style !== 'none') {
-              cellStyle += `border-right:${cell.borders.right.size || 1}pt ${cell.borders.right.style || 'solid'} ${cell.borders.right.color || '#CCD2FC'};`;
-            }
-          } else {
-            cellStyle += 'border:1px solid #E1E4EE;';
-          }
-          const colSpanAttr = cell.colSpan && cell.colSpan > 1 ? ` colspan="${cell.colSpan}"` : '';
-          const rowSpanAttr = cell.rowSpan && cell.rowSpan > 1 ? ` rowspan="${cell.rowSpan}"` : '';
-          let cellInner = escapeMarkupAttribute(cell.text).replace(/\n/g, '<br/>');
-          if (cell.nestedTable) {
-            cellInner += (cellInner ? '<br/>' : '') + renderTable(cell.nestedTable);
-          }
-          tblHtml += `  <${tag}${colSpanAttr}${rowSpanAttr} style="${cellStyle}">${cellInner}</${tag}>\n`;
-        });
-        tblHtml += '</tr>\n';
-      });
+      for (let rIdx = 0; rIdx < tbl.structuredRows.length; rIdx += 1) {
+        tblHtml += renderStructuredRow(tbl.structuredRows[rIdx], rIdx, renderTable);
+      }
     } else {
       tbl.rows.forEach((row, rIdx) => {
         tblHtml += '<tr>\n';

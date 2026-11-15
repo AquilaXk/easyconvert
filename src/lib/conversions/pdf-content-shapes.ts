@@ -77,6 +77,8 @@ export interface ShapeState {
   stroke: number | null;
   lineWidth: number;
   fillAlpha: number;
+  strokeAlpha?: number;
+  dashed?: boolean;
 }
 
 interface Viewport {
@@ -205,6 +207,7 @@ export class ShapeCollector {
     // A line is a rule, and the rule collector draws it.
     if (!item || item instanceof LTLine) return [false, false];
     const box = { x0: item.x0, y0: item.y0, x1: item.x1, y1: item.y1 };
+    if (box.x0 === box.x1 && box.y0 === box.y1) return [false, false];
     if (item instanceof LTRect) {
       // A rectangle's stroke is four rules.
       if (fill !== undefined) this.addRectangle(box, fill, state.fillAlpha, z);
@@ -223,6 +226,8 @@ export class ShapeCollector {
         ...(fill === undefined ? {} : { fill }),
         ...(stroke === undefined ? {} : { stroke, strokeWidth: strokeWidthOf(state) }),
         ...(fill !== undefined && state.fillAlpha < 1 ? { alpha: state.fillAlpha } : {}),
+        ...(state.strokeAlpha !== undefined && state.strokeAlpha < 1 ? { strokeAlpha: state.strokeAlpha } : {}),
+        ...(state.dashed ? { dashed: true } : {}),
         path: loop ? closed(path) : path,
       },
       z

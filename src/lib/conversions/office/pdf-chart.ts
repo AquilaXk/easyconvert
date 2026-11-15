@@ -22,15 +22,254 @@ const PIE_LEGEND_SHARE = 0.45;
 
 const PIE_LEGEND_FONT_SIZE = 7.5;
 
+export interface PdfChartRenderOptions {
+  hasUnicodeFont?: boolean;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+}
+
+interface ResolvedChartParams {
+  hasUnicodeFont: boolean;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+}
+
+function resolveChartParams(
+  opt?: boolean | PdfChartRenderOptions,
+  x?: number,
+  y?: number,
+  w?: number,
+  h?: number
+): ResolvedChartParams {
+  if (typeof opt === 'object' && opt !== null) {
+    return {
+      hasUnicodeFont: opt.hasUnicodeFont ?? false,
+      x: opt.x ?? x,
+      y: opt.y ?? y,
+      width: opt.width ?? w,
+      height: opt.height ?? h,
+    };
+  }
+  return { hasUnicodeFont: opt === true, x, y, width: w, height: h };
+}
+
+interface PlotContext {
+  doc: PDFKit.PDFDocument;
+  chart: OpenXmlChartData;
+  plotLeft: number;
+  plotTop: number;
+  plotRight: number;
+  plotBottom: number;
+  pw: number;
+  ph: number;
+  maxVal: number;
+  hasUnicodeFont: boolean;
+  allVals: number[];
+  startX: number;
+  chartWidth: number;
+}
+
+function renderBarPlot(ctx: PlotContext): void {
+  const { doc, chart, plotLeft, plotBottom, pw, ph, maxVal, hasUnicodeFont } = ctx;
+  const numCats = Math.max(1, chart.categories.length);
+  const catWidth = pw / numCats;
+  const numSeries = Math.max(1, chart.series.length);
+  const barWidth = Math.max(3, (catWidth * 0.7) / numSeries);
+
+  chart.categories.forEach((cat, cIdx) => {
+    chart.series.forEach((s, sIdx) => {
+      const val = s.values[cIdx] || 0;
+      const bHeight = Math.max(0, (val / maxVal) * ph);
+      const bx = plotLeft + cIdx * catWidth + catWidth * 0.15 + sIdx * barWidth;
+      const by = plotBottom - bHeight;
+      const color = CHART_PALETTE[sIdx % CHART_PALETTE.length];
+      doc.rect(bx, by, Math.max(1, barWidth - 1), bHeight).fill(color);
+    });
+    doc.fillColor('#4D536B').fontSize(7.5);
+    renderSafePdfText(
+      doc,
+      cat,
+      hasUnicodeFont,
+      { width: catWidth, align: 'center', lineBreak: false },
+      plotLeft + cIdx * catWidth,
+      plotBottom + 6
+    );
+  });
+}
+
+function renderLinePlot(ctx: PlotContext): void {
+  const { doc, chart, plotLeft, plotBottom, pw, ph, maxVal, hasUnicodeFont } = ctx;
+  const numCats = Math.max(1, chart.categories.length);
+  const catStep = pw / Math.max(1, numCats - 1);
+
+  chart.series.forEach((s, sIdx) => {
+    const color = CHART_PALETTE[sIdx % CHART_PALETTE.length];
+    const pts: Array<{ x: number; y: number }> = [];
+    s.values.forEach((val, vIdx) => {
+      const px = plotLeft + vIdx * catStep;
+      const py = plotBottom - Math.max(0, (val / maxVal) * ph);
+      pts.push({ x: px, y: py });
+    });
+    if (pts.length > 1) {
+      doc.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) {
+        doc.lineTo(pts[i].x, pts[i].y);
+      }
+      doc.lineWidth(1.8).strokeColor(color).stroke();
+    }
+    pts.forEach((p) => {
+      doc.circle(p.x, p.y, 2.5).fill(color);
+    });
+  });
+
+  chart.categories.forEach((cat, cIdx) => {
+    doc.fillColor('#4D536B').fontSize(7.5);
+    renderSafePdfText(
+      doc,
+      cat,
+      hasUnicodeFont,
+      { width: catStep, align: 'center', lineBreak: false },
+      plotLeft + cIdx * catStep - catStep / 2,
+      plotBottom + 6
+    );
+  });
+}
+
+function renderAreaPlot(ctx: PlotContext): void {
+  const { doc, chart, plotLeft, plotBottom, pw, ph, maxVal, hasUnicodeFont } = ctx;
+  const numCats = Math.max(1, chart.categories.length);
+  const catStep = pw / Math.max(1, numCats - 1);
+
+  chart.series.forEach((s, sIdx) => {
+    const color = CHART_PALETTE[sIdx % CHART_PALETTE.length];
+    const pts: Array<{ x: number; y: number }> = [];
+    s.values.forEach((val, vIdx) => {
+      const px = plotLeft + vIdx * catStep;
+      const py = plotBottom - Math.max(0, (val / maxVal) * ph);
+      pts.push({ x: px, y: py });
+    });
+    if (pts.length > 1) {
+      doc.save();
+      doc.moveTo(plotLeft, plotBottom);
+      pts.forEach((p) => doc.lineTo(p.x, p.y));
+      doc.lineTo(plotLeft + (s.values.length - 1) * catStep, plotBottom);
+      doc.closePath();
+      doc.fillColor(color).fillOpacity(0.3).fill();
+      doc.restore();
+
+      doc.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) {
+        doc.lineTo(pts[i].x, pts[i].y);
+      }
+      doc.lineWidth(1.8).strokeColor(color).stroke();
+    }
+  });
+
+  chart.categories.forEach((cat, cIdx) => {
+    doc.fillColor('#4D536B').fontSize(7.5);
+    renderSafePdfText(
+      doc,
+      cat,
+      hasUnicodeFont,
+      { width: catStep, align: 'center', lineBreak: false },
+      plotLeft + cIdx * catStep - catStep / 2,
+      plotBottom + 6
+    );
+  });
+}
+
+function renderCircularPlot(ctx: PlotContext, legendLabels: string[], legendHeights: number[], legendWidth: number): void {
+  const { doc, chart, plotLeft, plotTop, pw, ph, allVals, startX, chartWidth, hasUnicodeFont } = ctx;
+  const pieWidth = pw * (1 - PIE_LEGEND_SHARE);
+  const cx = plotLeft + pieWidth / 2;
+  const cy = plotTop + ph / 2;
+  const radius = (Math.min(pieWidth, ph) / 2) * 0.8;
+  const rInner = chart.type === 'doughnut' ? radius * 0.55 : 0;
+  const total = allVals.reduce((a, b) => a + b, 0) || 1;
+  let startAngle = -Math.PI / 2;
+
+  allVals.forEach((val, vIdx) => {
+    const sliceAngle = (val / total) * 2 * Math.PI;
+    const endAngle = startAngle + sliceAngle;
+    const color = CHART_PALETTE[vIdx % CHART_PALETTE.length];
+
+    doc.save();
+    if (sliceAngle >= 2 * Math.PI - 0.001) {
+      if (rInner > 0) {
+        doc.circle(cx, cy, radius).fill(color);
+        doc.circle(cx, cy, rInner).fill('#F8F9FE');
+      } else {
+        doc.circle(cx, cy, radius).fill(color);
+      }
+    } else {
+      const steps = Math.max(8, Math.ceil(sliceAngle / 0.1));
+      if (rInner > 0) {
+        doc.moveTo(cx + radius * Math.cos(startAngle), cy + radius * Math.sin(startAngle));
+        for (let step = 0; step <= steps; step++) {
+          const theta = startAngle + (step / steps) * sliceAngle;
+          doc.lineTo(cx + radius * Math.cos(theta), cy + radius * Math.sin(theta));
+        }
+        for (let step = steps; step >= 0; step--) {
+          const theta = startAngle + (step / steps) * sliceAngle;
+          doc.lineTo(cx + rInner * Math.cos(theta), cy + rInner * Math.sin(theta));
+        }
+        doc.closePath();
+        doc.fillColor(color).fill();
+      } else {
+        doc.moveTo(cx, cy);
+        for (let step = 0; step <= steps; step++) {
+          const theta = startAngle + (step / steps) * sliceAngle;
+          doc.lineTo(cx + radius * Math.cos(theta), cy + radius * Math.sin(theta));
+        }
+        doc.closePath();
+        doc.fillColor(color).fill();
+      }
+    }
+    doc.restore();
+    startAngle = endAngle;
+  });
+
+  let legendY = plotTop;
+  const legendX = startX + chartWidth * (1 - PIE_LEGEND_SHARE);
+  legendLabels.forEach((label, index) => {
+    doc.rect(legendX, legendY + 1, 8, 8).fill(CHART_PALETTE[index % CHART_PALETTE.length]);
+    doc.fillColor('#4D536B').fontSize(PIE_LEGEND_FONT_SIZE);
+    renderSafePdfText(doc, label, hasUnicodeFont, { width: legendWidth }, legendX + 12, legendY);
+    legendY += legendHeights[index];
+  });
+}
+
 export function renderPdfChart(
   doc: PDFKit.PDFDocument,
   chart: OpenXmlChartData,
-  hasUnicodeFont: boolean,
+  options?: PdfChartRenderOptions
+): void;
+export function renderPdfChart(
+  doc: PDFKit.PDFDocument,
+  chart: OpenXmlChartData,
+  hasUnicodeFontOrOptions?: boolean | PdfChartRenderOptions,
   x?: number,
   y?: number,
   width?: number,
   height?: number
+): void;
+export function renderPdfChart(
+  ...args: [
+    PDFKit.PDFDocument,
+    OpenXmlChartData,
+    (boolean | PdfChartRenderOptions)?,
+    number?,
+    number?,
+    number?,
+    number?,
+  ]
 ): void {
+  const [doc, chart, opt, legacyX, legacyY, legacyWidth, legacyHeight] = args;
+  const { hasUnicodeFont, x, y, width, height } = resolveChartParams(opt, legacyX, legacyY, legacyWidth, legacyHeight);
   const startX = x !== undefined ? x : 50;
   const chartWidth = width !== undefined ? width : doc.page.width - 100;
   const circularChart = chart.type === 'pie' || chart.type === 'doughnut';
@@ -39,7 +278,6 @@ export function renderPdfChart(
   doc.fontSize(PIE_LEGEND_FONT_SIZE);
   const legendHeights = legendLabels.map((label) => Math.max(PIE_LEGEND_FONT_SIZE + 4, measurePdfTextHeight(doc, label, { width: legendWidth }) + 4));
   const legendHeight = legendHeights.reduce((sum, h) => sum + h, 0);
-  // A chart whose size the caller did not give grows to hold the names of all its slices.
   const chartHeight = height !== undefined ? height : Math.max(220, legendHeight + (chart.title ? 40 : 26));
 
   if (y === undefined && doc.y + chartHeight > doc.page.height - 60) {
@@ -47,23 +285,13 @@ export function renderPdfChart(
   }
   const startY = y !== undefined ? y : doc.y;
 
-  // Chart container background & border
   doc.rect(startX, startY, chartWidth, chartHeight).fillAndStroke('#F8F9FE', '#CCD2FC');
 
-  // Title
   if (chart.title) {
     doc.fillColor('#1F2340').fontSize(11);
-    renderSafePdfText(
-      doc,
-      chart.title,
-      hasUnicodeFont,
-      { width: chartWidth - 20, align: 'center' },
-      startX + 10,
-      startY + 8
-    );
+    renderSafePdfText(doc, chart.title, hasUnicodeFont, { width: chartWidth - 20, align: 'center' }, startX + 10, startY + 8);
   }
 
-  // Plot dimensions
   const titleH = chart.title ? 26 : 12;
   const plotLeft = startX + 45;
   const plotRight = startX + chartWidth - 25;
@@ -74,21 +302,11 @@ export function renderPdfChart(
 
   const allVals = chart.series.flatMap((s) => s.values);
   const dataMax = Math.max(1, ...allVals);
-  const circular = chart.type === 'pie' || chart.type === 'doughnut';
-  // Charts with axes scale to a rounded top value and label it, as every chart with a value axis does.
-  const ticks = circular ? [] : niceAxisTicks(dataMax);
+  const ticks = circularChart ? [] : niceAxisTicks(dataMax);
   const maxVal = ticks.length > 0 ? ticks[ticks.length - 1] : dataMax;
 
-  // Axes
-  doc
-    .moveTo(plotLeft, plotTop)
-    .lineTo(plotLeft, plotBottom)
-    .lineTo(plotRight, plotBottom)
-    .lineWidth(1)
-    .strokeColor('#CCD2FC')
-    .stroke();
+  doc.moveTo(plotLeft, plotTop).lineTo(plotLeft, plotBottom).lineTo(plotRight, plotBottom).lineWidth(1).strokeColor('#CCD2FC').stroke();
 
-  // Gridlines and the value axis labels
   const gridSteps = ticks.length > 1 ? ticks.length - 1 : 3;
   for (let i = 0; i <= gridSteps; i++) {
     const gy = plotBottom - (i / gridSteps) * ph;
@@ -99,168 +317,32 @@ export function renderPdfChart(
     }
   }
 
+  const plotCtx: PlotContext = {
+    doc,
+    chart,
+    plotLeft,
+    plotTop,
+    plotRight,
+    plotBottom,
+    pw,
+    ph,
+    maxVal,
+    hasUnicodeFont,
+    allVals,
+    startX,
+    chartWidth,
+  };
+
   if (chart.type === 'bar') {
-    const numCats = Math.max(1, chart.categories.length);
-    const catWidth = pw / numCats;
-    const numSeries = Math.max(1, chart.series.length);
-    const barWidth = Math.max(3, (catWidth * 0.7) / numSeries);
-
-    chart.categories.forEach((cat, cIdx) => {
-      chart.series.forEach((s, sIdx) => {
-        const val = s.values[cIdx] || 0;
-        const bHeight = Math.max(0, (val / maxVal) * ph);
-        const bx = plotLeft + cIdx * catWidth + catWidth * 0.15 + sIdx * barWidth;
-        const by = plotBottom - bHeight;
-        const color = CHART_PALETTE[sIdx % CHART_PALETTE.length];
-        doc.rect(bx, by, Math.max(1, barWidth - 1), bHeight).fill(color);
-      });
-      doc.fillColor('#4D536B').fontSize(7.5);
-      renderSafePdfText(
-        doc,
-        cat,
-        hasUnicodeFont,
-        { width: catWidth, align: 'center', lineBreak: false },
-        plotLeft + cIdx * catWidth,
-        plotBottom + 6
-      );
-    });
+    renderBarPlot(plotCtx);
   } else if (chart.type === 'line' || chart.type === 'scatter') {
-    const numCats = Math.max(1, chart.categories.length);
-    const catStep = pw / Math.max(1, numCats - 1);
-
-    chart.series.forEach((s, sIdx) => {
-      const color = CHART_PALETTE[sIdx % CHART_PALETTE.length];
-      const pts: Array<{ x: number; y: number }> = [];
-      s.values.forEach((val, vIdx) => {
-        const px = plotLeft + vIdx * catStep;
-        const py = plotBottom - Math.max(0, (val / maxVal) * ph);
-        pts.push({ x: px, y: py });
-      });
-      if (pts.length > 1) {
-        doc.moveTo(pts[0].x, pts[0].y);
-        for (let i = 1; i < pts.length; i++) {
-          doc.lineTo(pts[i].x, pts[i].y);
-        }
-        doc.lineWidth(1.8).strokeColor(color).stroke();
-      }
-      pts.forEach((p) => {
-        doc.circle(p.x, p.y, 2.5).fill(color);
-      });
-    });
-
-    chart.categories.forEach((cat, cIdx) => {
-      doc.fillColor('#4D536B').fontSize(7.5);
-      renderSafePdfText(
-        doc,
-        cat,
-        hasUnicodeFont,
-        { width: catStep, align: 'center', lineBreak: false },
-        plotLeft + cIdx * catStep - catStep / 2,
-        plotBottom + 6
-      );
-    });
+    renderLinePlot(plotCtx);
   } else if (chart.type === 'area') {
-    const numCats = Math.max(1, chart.categories.length);
-    const catStep = pw / Math.max(1, numCats - 1);
-
-    chart.series.forEach((s, sIdx) => {
-      const color = CHART_PALETTE[sIdx % CHART_PALETTE.length];
-      const pts: Array<{ x: number; y: number }> = [];
-      s.values.forEach((val, vIdx) => {
-        const px = plotLeft + vIdx * catStep;
-        const py = plotBottom - Math.max(0, (val / maxVal) * ph);
-        pts.push({ x: px, y: py });
-      });
-      if (pts.length > 1) {
-        doc.save();
-        doc.moveTo(plotLeft, plotBottom);
-        pts.forEach((p) => doc.lineTo(p.x, p.y));
-        doc.lineTo(plotLeft + (s.values.length - 1) * catStep, plotBottom);
-        doc.closePath();
-        doc.fillColor(color).fillOpacity(0.3).fill();
-        doc.restore();
-
-        doc.moveTo(pts[0].x, pts[0].y);
-        for (let i = 1; i < pts.length; i++) {
-          doc.lineTo(pts[i].x, pts[i].y);
-        }
-        doc.lineWidth(1.8).strokeColor(color).stroke();
-      }
-    });
-
-    chart.categories.forEach((cat, cIdx) => {
-      doc.fillColor('#4D536B').fontSize(7.5);
-      renderSafePdfText(
-        doc,
-        cat,
-        hasUnicodeFont,
-        { width: catStep, align: 'center', lineBreak: false },
-        plotLeft + cIdx * catStep - catStep / 2,
-        plotBottom + 6
-      );
-    });
-  } else if (chart.type === 'pie' || chart.type === 'doughnut') {
-    const pieWidth = pw * (1 - PIE_LEGEND_SHARE);
-    const cx = plotLeft + pieWidth / 2;
-    const cy = plotTop + ph / 2;
-    const radius = (Math.min(pieWidth, ph) / 2) * 0.8;
-    const rInner = chart.type === 'doughnut' ? radius * 0.55 : 0;
-    const total = allVals.reduce((a, b) => a + b, 0) || 1;
-    let startAngle = -Math.PI / 2;
-
-    allVals.forEach((val, vIdx) => {
-      const sliceAngle = (val / total) * 2 * Math.PI;
-      const endAngle = startAngle + sliceAngle;
-      const color = CHART_PALETTE[vIdx % CHART_PALETTE.length];
-
-      doc.save();
-      if (sliceAngle >= 2 * Math.PI - 0.001) {
-        if (rInner > 0) {
-          doc.circle(cx, cy, radius).fill(color);
-          doc.circle(cx, cy, rInner).fill('#F8F9FE');
-        } else {
-          doc.circle(cx, cy, radius).fill(color);
-        }
-      } else {
-        const steps = Math.max(8, Math.ceil(sliceAngle / 0.1));
-        if (rInner > 0) {
-          doc.moveTo(cx + radius * Math.cos(startAngle), cy + radius * Math.sin(startAngle));
-          for (let step = 0; step <= steps; step++) {
-            const theta = startAngle + (step / steps) * sliceAngle;
-            doc.lineTo(cx + radius * Math.cos(theta), cy + radius * Math.sin(theta));
-          }
-          for (let step = steps; step >= 0; step--) {
-            const theta = startAngle + (step / steps) * sliceAngle;
-            doc.lineTo(cx + rInner * Math.cos(theta), cy + rInner * Math.sin(theta));
-          }
-          doc.closePath();
-          doc.fillColor(color).fill();
-        } else {
-          doc.moveTo(cx, cy);
-          for (let step = 0; step <= steps; step++) {
-            const theta = startAngle + (step / steps) * sliceAngle;
-            doc.lineTo(cx + radius * Math.cos(theta), cy + radius * Math.sin(theta));
-          }
-          doc.closePath();
-          doc.fillColor(color).fill();
-        }
-      }
-      doc.restore();
-      startAngle = endAngle;
-    });
-
-    // The name of each slice, beside the swatch of its colour.
-    let legendY = plotTop;
-    const legendX = startX + chartWidth * (1 - PIE_LEGEND_SHARE);
-    legendLabels.forEach((label, index) => {
-      doc.rect(legendX, legendY + 1, 8, 8).fill(CHART_PALETTE[index % CHART_PALETTE.length]);
-      doc.fillColor('#4D536B').fontSize(PIE_LEGEND_FONT_SIZE);
-      renderSafePdfText(doc, label, hasUnicodeFont, { width: legendWidth }, legendX + 12, legendY);
-      legendY += legendHeights[index];
-    });
+    renderAreaPlot(plotCtx);
+  } else if (circularChart) {
+    renderCircularPlot(plotCtx, legendLabels, legendHeights, legendWidth);
   }
 
-  // The titles of the axes: the value axis above its labels, the category axis below the category labels.
   if (chart.valueAxisTitle) {
     doc.fillColor('#4D536B').fontSize(7.5);
     renderSafePdfText(doc, chart.valueAxisTitle, hasUnicodeFont, { width: chartWidth - 20, lineBreak: false }, startX + 10, plotTop - 11);
@@ -270,7 +352,6 @@ export function renderPdfChart(
     renderSafePdfText(doc, chart.categoryAxisTitle, hasUnicodeFont, { width: pw, align: 'center', lineBreak: false }, plotLeft, plotBottom + 17);
   }
 
-  // Draw legend if multiple series
   if (chart.series.length > 1) {
     let lx = plotLeft;
     const ly = startY + chartHeight - 8;

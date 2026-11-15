@@ -22,6 +22,11 @@ import { findDecoderTool, loggableDiagnostic } from './image-decoder-tools';
  */
 export const OPTIMISE_PNG_RESULT = Symbol.for('easyconvert.optimisePngResult');
 
+/** Whether the options request the lossless PNG optimiser. */
+export function wantsPngOptimiser(options: ConversionOptions): boolean {
+  return (options as { optimizePng?: boolean }).optimizePng === true;
+}
+
 /** Whether the conversion is a PNG written from a PNG (see `OPTIMISE_PNG_RESULT`). */
 export function isMarkedForOptimiser(options: ConversionOptions): boolean {
   return (options as Record<symbol, unknown>)[OPTIMISE_PNG_RESULT] === true;
@@ -85,8 +90,18 @@ const CHANNELS_OF_COLOUR_TYPE: Readonly<Record<number, number>> = { 0: 1, 2: 3, 
  * index is one) is handed to the optimiser: both ends are PNG, the program is installed, and the picture is within its size limit. The
  * encoder then writes the cheapest file the optimiser can read, since it inflates the file and writes every row again.
  */
-export function optimiserFollows(source: string, target: string, width: number, height: number, bytesPerPixel: number, palette: boolean): boolean {
-  if (source !== 'png' || target !== 'png' || findOxipng() === null) return false;
+export function optimiserFollows(
+  source: string,
+  target: string,
+  width: number,
+  height: number,
+  bytesPerPixel: number,
+  palette: boolean,
+  allowAnySource?: boolean
+): boolean;
+export function optimiserFollows(...args: [string, string, number, number, number, boolean, boolean?]): boolean {
+  const [source, target, width, height, bytesPerPixel, palette, allowAnySource = false] = args;
+  if ((!allowAnySource && source !== 'png') || target !== 'png' || findOxipng() === null) return false;
   return height * (width * bytesPerPixel + 1) <= (palette ? OXIPNG_MAX_PALETTE_RAW_BYTES : OXIPNG_MAX_FULL_COLOUR_RAW_BYTES);
 }
 

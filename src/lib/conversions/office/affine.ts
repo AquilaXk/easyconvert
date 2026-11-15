@@ -56,15 +56,63 @@ function nonZeroOr(value: number, fallback: number): number {
   return value !== 0 ? value : fallback;
 }
 
+export interface GroupTransformParams {
+  off: { x: number; y: number };
+  ext: { cx: number; cy: number };
+  chOff?: { x: number; y: number };
+  chExt?: { cx: number; cy: number };
+  rot?: number; // in degrees clockwise
+  flipH?: boolean;
+  flipV?: boolean;
+}
+
+export function computeGroupTransformMatrix(params: GroupTransformParams): Matrix2D;
 export function computeGroupTransformMatrix(
   off: { x: number; y: number },
   ext: { cx: number; cy: number },
   chOff: { x: number; y: number },
   chExt: { cx: number; cy: number },
-  rot: number = 0, // in degrees clockwise
-  flipH: boolean = false,
-  flipV: boolean = false
+  rot?: number,
+  flipH?: boolean,
+  flipV?: boolean
+): Matrix2D;
+export function computeGroupTransformMatrix(
+  ...args: [
+    GroupTransformParams | { x: number; y: number },
+    { cx: number; cy: number }?,
+    { x: number; y: number }?,
+    { cx: number; cy: number }?,
+    number?,
+    boolean?,
+    boolean?,
+  ]
 ): Matrix2D {
+  let off: { x: number; y: number };
+  let ext: { cx: number; cy: number };
+  let chOff: { x: number; y: number };
+  let chExt: { cx: number; cy: number };
+  let rot = 0;
+  let flipH = false;
+  let flipV = false;
+
+  const first = args[0];
+  if ('off' in first && 'ext' in first) {
+    off = first.off;
+    ext = first.ext;
+    chOff = first.chOff ?? off;
+    chExt = first.chExt ?? ext;
+    rot = first.rot ?? 0;
+    flipH = first.flipH ?? false;
+    flipV = first.flipV ?? false;
+  } else {
+    off = first as { x: number; y: number };
+    ext = args[1]!;
+    chOff = args[2] ?? off;
+    chExt = args[3] ?? ext;
+    rot = args[4] ?? 0;
+    flipH = args[5] ?? false;
+    flipV = args[6] ?? false;
+  }
   const chw = nonZeroOr(chExt.cx, nonZeroOr(ext.cx, 1));
   const chh = nonZeroOr(chExt.cy, nonZeroOr(ext.cy, 1));
   const gw = ext.cx;
@@ -165,15 +213,15 @@ export function parseGroupTransform(
     }
   }
 
-  const matrix = computeGroupTransformMatrix(
-    { x: gx, y: gy },
-    { cx: gw, cy: gh },
-    { x: chx, y: chy },
-    { cx: chw, cy: chh },
+  const matrix = computeGroupTransformMatrix({
+    off: { x: gx, y: gy },
+    ext: { cx: gw, cy: gh },
+    chOff: { x: chx, y: chy },
+    chExt: { cx: chw, cy: chh },
     rot,
     flipH,
-    flipV
-  );
+    flipV,
+  });
 
   return { matrix, gx, gy, gw, gh, chx, chy, chw, chh, rot, flipH, flipV };
 }
@@ -217,15 +265,15 @@ export function computeTransformedElementBounds(
     if (xfrmEl.attrs.flipV === '1' || xfrmEl.attrs.flipV === 'true') flipV = true;
   }
 
-  const localMatrix = computeGroupTransformMatrix(
-    { x: rawX, y: rawY },
-    { cx: rawW, cy: rawH },
-    { x: rawX, y: rawY },
-    { cx: rawW, cy: rawH },
+  const localMatrix = computeGroupTransformMatrix({
+    off: { x: rawX, y: rawY },
+    ext: { cx: rawW, cy: rawH },
+    chOff: { x: rawX, y: rawY },
+    chExt: { cx: rawW, cy: rawH },
     rot,
     flipH,
-    flipV
-  );
+    flipV,
+  });
   const worldMatrix = multiplyMatrix(parentMatrix, localMatrix);
 
   const centerWorld = transformPoint(worldMatrix, rawX + rawW / 2, rawY + rawH / 2);

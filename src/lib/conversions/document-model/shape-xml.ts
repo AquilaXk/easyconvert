@@ -79,7 +79,11 @@ export { extentOf };
 
 /** The children of a shape's `spPr`: its place, geometry, fill and outline. */
 export function shapeProperties(shape: PdfContentShape, scale: SlideScale, tag = 'p:spPr'): string {
-  const line = shape.stroke === undefined ? '<a:ln><a:noFill/></a:ln>' : `<a:ln w="${Math.max(scale.length(shape.strokeWidth ?? 0), 1)}">${solidFill(shape.stroke)}</a:ln>`;
+  const dash = shape.dashed ? '<a:prstDash val="dash"/>' : '';
+  const line =
+    shape.stroke === undefined
+      ? '<a:ln><a:noFill/></a:ln>'
+      : `<a:ln w="${Math.max(scale.length(shape.strokeWidth ?? 0), 1)}">${solidFill(shape.stroke, shape.strokeAlpha)}${dash}</a:ln>`;
   const fill = shape.fill === undefined ? '<a:noFill/>' : solidFill(shape.fill, shape.alpha);
   if (shape.kind === 'rect' || !shape.path) {
     return (
@@ -121,6 +125,8 @@ export function wordShapeAnchor(shape: PageShape, drawingId: number): string {
     ...(shape.fill === undefined ? {} : { fill: Number.parseInt(shape.fill, HEX_RADIX) }),
     ...(shape.stroke === undefined ? {} : { stroke: Number.parseInt(shape.stroke, HEX_RADIX), strokeWidth: shape.strokeWidthPt ?? 0 }),
     ...(shape.alpha === undefined ? {} : { alpha: shape.alpha }),
+    ...(shape.strokeAlpha === undefined ? {} : { strokeAlpha: shape.strokeAlpha }),
+    ...(shape.dashed ? { dashed: true } : {}),
     ...(shape.path === undefined ? {} : { path: shape.path }),
     z: drawingId,
   };

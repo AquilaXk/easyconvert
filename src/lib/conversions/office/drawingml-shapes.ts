@@ -14,6 +14,278 @@ import { escapeMarkupAttribute } from '../../text/escape';
  */
 const MAX_DRAWINGML_GROUP_DEPTH = 16;
 
+interface ShapeTransformResult {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
+  flipH: boolean;
+  flipV: boolean;
+  origX: number;
+  origY: number;
+  origW: number;
+  origH: number;
+  worldMatrix: Matrix2D;
+  isParentTransformed: boolean;
+}
+
+export function parseShapeTransform(spXml: string, parentMatrix: Matrix2D): ShapeTransformResult {
+  const xfrmEl = safeExtractFirstXmlElement(spXml, 'a:xfrm');
+  let x = 0;
+  let y = 0;
+  let width = 100;
+  let height = 60;
+  let rotation = 0;
+  let flipH = false;
+  let flipV = false;
+  if (xfrmEl) {
+    const rotVal = xfrmEl.attrs.rot;
+    if (rotVal) rotation = Number.parseInt(rotVal, 10) / 60000;
+    if (xfrmEl.attrs.flipH === '1' || xfrmEl.attrs.flipH === 'true') flipH = true;
+    if (xfrmEl.attrs.flipV === '1' || xfrmEl.attrs.flipV === 'true') flipV = true;
+
+    const offEl = safeExtractFirstXmlElement(xfrmEl.content, 'a:off');
+    if (offEl && offEl.attrs.x && offEl.attrs.y) {
+      x = Math.round(Number.parseInt(offEl.attrs.x, 10) / 12700);
+      y = Math.round(Number.parseInt(offEl.attrs.y, 10) / 12700);
+    }
+    const extEl = safeExtractFirstXmlElement(xfrmEl.content, 'a:ext');
+    if (extEl && extEl.attrs.cx && extEl.attrs.cy) {
+      width = Math.max(1, Math.round(Number.parseInt(extEl.attrs.cx, 10) / 12700));
+      height = Math.max(1, Math.round(Number.parseInt(extEl.attrs.cy, 10) / 12700));
+    }
+  }
+
+  const origX = x;
+  const origY = y;
+  const origW = width;
+  const origH = height;
+
+  const localShapeMatrix = computeGroupTransformMatrix({
+    off: { x, y },
+    ext: { cx: width, cy: height },
+    chOff: { x, y },
+    chExt: { cx: width, cy: height },
+    rot: rotation,
+    flipH,
+    flipV,
+  });
+  const worldMatrix = multiplyMatrix(parentMatrix, localShapeMatrix);
+
+  const isParentTransformed =
+    Math.abs(parentMatrix[0] - 1) > 1e-4 ||
+    Math.abs(parentMatrix[1]) > 1e-4 ||
+    Math.abs(parentMatrix[2]) > 1e-4 ||
+    Math.abs(parentMatrix[3] - 1) > 1e-4 ||
+    Math.abs(parentMatrix[4]) > 1e-4 ||
+    Math.abs(parentMatrix[5]) > 1e-4;
+
+  if (isParentTransformed) {
+    const centerWorld = transformPoint(worldMatrix, x + width / 2, y + height / 2);
+    const worldW = Math.max(1, Math.round(Math.hypot(worldMatrix[0], worldMatrix[1]) * width));
+    const worldH = Math.max(1, Math.round(Math.hypot(worldMatrix[2], worldMatrix[3]) * height));
+    const worldRot = Math.round((Math.atan2(worldMatrix[1], worldMatrix[0]) * 180) / Math.PI);
+    x = Math.round(centerWorld.x - worldW / 2);
+    y = Math.round(centerWorld.y - worldH / 2);
+    width = worldW;
+    height = worldH;
+    rotation = worldRot;
+  }
+
+  return { x, y, width, height, rotation, flipH, flipV, origX, origY, origW, origH, worldMatrix, isParentTransformed };
+}
+
+interface CustomPathParams {
+  origX: number;
+  origY: number;
+  sx: number;
+  sy: number;
+  parentMatrix: Matrix2D;
+  isParentTransformed: boolean;
+}
+
+function parseCustomPathSegment(cmdEl: SafeXmlElement, p: CustomPathParams): string | null {
+  const { origX, origY, sx, sy, parentMatrix, isParentTransformed } = p;
+  const cmdName = cmdEl.localName.toLowerCase();
+  const mapPt = (rawPx: number, rawPy: number): { x: number; y: number } => {
+    if (isParentTransformed) {
+      const res = transformPoint(parentMatrix, rawPx, rawPy);
+      return { x: Math.round(res.x), y: Math.round(res.y) };
+    }
+    return { x: Math.round(rawPx), y: Math.round(rawPy) };
+  };
+
+  if (cmdName === 'moveto' || cmdName === 'lnto') {
+    const ptEl = safeExtractFirstXmlElement(cmdEl.content, 'a:pt');
+    if (ptEl?.attrs.x && ptEl.attrs.y) {
+      const rawPx = origX + Number.parseInt(ptEl.attrs.x, 10) * sx;
+      const rawPy = origY + Number.parseInt(ptEl.attrs.y, 10) * sy;
+      const pt = mapPt(rawPx, rawPy);
+      return `${cmdName === 'moveto' ? 'M' : 'L'} ${pt.x} ${pt.y}`;
+    }
+  } else if (cmdName === 'cubicbezto' || cmdName === 'quadbezto') {
+    const ptEls = safeExtractXmlElements(cmdEl.content, 'a:pt');
+    const pts: string[] = [];
+    for (const pt of ptEls) {
+      if (pt.attrs.x && pt.attrs.y) {
+        const rawPx = origX + Number.parseInt(pt.attrs.x, 10) * sx;
+        const rawPy = origY + Number.parseInt(pt.attrs.y, 10) * sy;
+        const mapped = mapPt(rawPx, rawPy);
+        pts.push(`${mapped.x} ${mapped.y}`);
+      }
+    }
+    const needed = cmdName === 'cubicbezto' ? 3 : 2;
+    if (pts.length >= needed) {
+      return `${cmdName === 'cubicbezto' ? 'C' : 'Q'} ${pts.slice(0, needed).join(', ')}`;
+    }
+  } else if (cmdName === 'close') {
+    return 'Z';
+  }
+  return null;
+}
+
+function parseCustomGeometrySvg(
+  custEl: SafeXmlElement,
+  origW: number,
+  origH: number,
+  params: Omit<CustomPathParams, 'sx' | 'sy'>
+): string {
+  const pathEl = safeExtractFirstXmlElement(custEl.content, 'a:path');
+  if (!pathEl) return '';
+  const pw = pathEl.attrs.w ? Number.parseInt(pathEl.attrs.w, 10) : origW;
+  const ph = pathEl.attrs.h ? Number.parseInt(pathEl.attrs.h, 10) : origH;
+  const sx = origW / (pw || 1);
+  const sy = origH / (ph || 1);
+  const fullParams: CustomPathParams = { ...params, sx, sy };
+  const cmdTags = ['a:moveTo', 'a:lnTo', 'a:cubicBezTo', 'a:quadBezTo', 'a:arcTo', 'a:close'];
+  const cmdEls = safeExtractXmlElements(pathEl.content, cmdTags);
+  const dParts: string[] = [];
+  for (const cmdEl of cmdEls) {
+    const seg = parseCustomPathSegment(cmdEl, fullParams);
+    if (seg) dParts.push(seg);
+  }
+  return dParts.join(' ');
+}
+
+export function parseSingleShapeXml(spXml: string, parentMatrix: Matrix2D): DrawingMlShape | null {
+  const tf = parseShapeTransform(spXml, parentMatrix);
+  let { x, y, width, height, rotation, flipH, flipV } = tf;
+  const { origX, origY, origW, origH, worldMatrix, isParentTransformed } = tf;
+
+  if (
+    spXml.includes('<c:chart') ||
+    spXml.includes('<c:plotArea') ||
+    spXml.includes('<c:chartSpace>')
+  ) {
+    const chartData = parseOpenXmlChart(spXml);
+    if (chartData) {
+      const chartSvg = renderChartToSvg(chartData, width, height);
+      return {
+        type: 'chart',
+        geomType: 'preset',
+        presetGeom: 'rect',
+        x,
+        y,
+        width,
+        height,
+        rotation: rotation || undefined,
+        flipH: flipH || undefined,
+        flipV: flipV || undefined,
+        fillColor: 'none',
+        strokeColor: 'none',
+        strokeWidth: 0,
+        text: chartData.title || `${chartData.type} chart`,
+        chart: chartData,
+        chartSvg,
+        transformMatrix: worldMatrix,
+      };
+    }
+  }
+
+  let fillColor = '#5C6BC0';
+  let strokeColor = '#1F2340';
+  let strokeWidth = 1;
+
+  if (spXml.includes('<a:noFill/>') || spXml.includes('<a:noFill />')) {
+    fillColor = 'none';
+  } else {
+    const solidFillColor = safeFindColor(spXml, ['a:solidFill']);
+    if (solidFillColor) fillColor = solidFillColor;
+  }
+
+  const lnEl = safeExtractFirstXmlElement(spXml, 'a:ln');
+  if (lnEl) {
+    if (lnEl.attrs.w) strokeWidth = Math.max(0.5, Math.round(parseInt(lnEl.attrs.w, 10) / 12700));
+    const lnClr = safeFindColor(lnEl.content);
+    if (lnClr) strokeColor = lnClr;
+  }
+
+  const initialVars: Record<string, number> = {
+    w: width,
+    h: height,
+    l: x,
+    t: y,
+    r: x + width,
+    b: y + height,
+    hc: width / 2,
+    vc: height / 2,
+    ss: Math.min(width, height),
+    ls: Math.max(width, height),
+  };
+  const guides = parseDrawingMlGuides(spXml, initialVars);
+  const avEl = safeExtractFirstXmlElement(spXml, 'a:avLst');
+  const adjustValues = avEl ? parseDrawingMlGuides(avEl.raw, {}) : undefined;
+
+  let geomType: 'preset' | 'custom' = 'preset';
+  let presetGeom = 'rect';
+  let svgPath = '';
+
+  const prstEl = safeExtractFirstXmlElement(spXml, 'a:prstGeom');
+  const custEl = safeExtractFirstXmlElement(spXml, 'a:custGeom');
+
+  if (custEl) {
+    geomType = 'custom';
+    svgPath = parseCustomGeometrySvg(custEl, origW, origH, { origX, origY, parentMatrix, isParentTransformed });
+    if (isParentTransformed && svgPath) {
+      rotation = 0;
+      flipH = false;
+      flipV = false;
+    }
+  } else if (prstEl && prstEl.attrs.prst) {
+    geomType = 'preset';
+    presetGeom = prstEl.attrs.prst.toLowerCase();
+  }
+
+  const tEls = safeExtractXmlElements(spXml, 'a:t');
+  const text = tEls
+    .map((t) => safeDecodeXmlEntities(t.content.replace(/<[^>]+>/g, '')).trim())
+    .filter(Boolean)
+    .join(' ');
+
+  return {
+    type: geomType === 'custom' ? 'custom' : presetGeom,
+    geomType,
+    presetGeom,
+    customPath: svgPath || undefined,
+    svgPath,
+    x,
+    y,
+    width,
+    height,
+    rotation: rotation || undefined,
+    flipH: flipH || undefined,
+    flipV: flipV || undefined,
+    fillColor,
+    strokeColor,
+    strokeWidth,
+    text: text || undefined,
+    adjustValues,
+    guides: Object.keys(guides).length > Object.keys(initialVars).length ? guides : undefined,
+    transformMatrix: worldMatrix,
+  };
+}
+
 export function parseDrawingMlShapes(
   xml: string,
   parentMatrix: Matrix2D = identityMatrix(),
@@ -69,257 +341,8 @@ export function parseDrawingMlShapes(
       continue;
     }
 
-    const spXml = item.xml;
-    // 1. Transform: <a:xfrm rot="..." flipH="..." flipV="..."> <a:off x="..." y="..."/> <a:ext cx="..." cy="..."/>
-    const xfrmEl = safeExtractFirstXmlElement(spXml, 'a:xfrm');
-    let x = 0,
-      y = 0,
-      width = 100,
-      height = 60,
-      rotation = 0,
-      flipH = false,
-      flipV = false;
-    if (xfrmEl) {
-      const rotVal = xfrmEl.attrs.rot;
-      if (rotVal) rotation = Number.parseInt(rotVal, 10) / 60000;
-      if (xfrmEl.attrs.flipH === '1' || xfrmEl.attrs.flipH === 'true') flipH = true;
-      if (xfrmEl.attrs.flipV === '1' || xfrmEl.attrs.flipV === 'true') flipV = true;
-
-      const offEl = safeExtractFirstXmlElement(xfrmEl.content, 'a:off');
-      if (offEl && offEl.attrs.x && offEl.attrs.y) {
-        x = Math.round(Number.parseInt(offEl.attrs.x, 10) / 12700);
-        y = Math.round(Number.parseInt(offEl.attrs.y, 10) / 12700);
-      }
-      const extEl = safeExtractFirstXmlElement(xfrmEl.content, 'a:ext');
-      if (extEl && extEl.attrs.cx && extEl.attrs.cy) {
-        width = Math.max(1, Math.round(Number.parseInt(extEl.attrs.cx, 10) / 12700));
-        height = Math.max(1, Math.round(Number.parseInt(extEl.attrs.cy, 10) / 12700));
-      }
-    }
-
-    const origX = x;
-    const origY = y;
-    const origW = width;
-    const origH = height;
-
-    const localShapeMatrix = computeGroupTransformMatrix(
-      { x, y },
-      { cx: width, cy: height },
-      { x, y },
-      { cx: width, cy: height },
-      rotation,
-      flipH,
-      flipV
-    );
-    const worldMatrix = multiplyMatrix(parentMatrix, localShapeMatrix);
-
-    const isParentTransformed =
-      Math.abs(parentMatrix[0] - 1) > 1e-4 ||
-      Math.abs(parentMatrix[1]) > 1e-4 ||
-      Math.abs(parentMatrix[2]) > 1e-4 ||
-      Math.abs(parentMatrix[3] - 1) > 1e-4 ||
-      Math.abs(parentMatrix[4]) > 1e-4 ||
-      Math.abs(parentMatrix[5]) > 1e-4;
-
-    if (isParentTransformed) {
-      const centerWorld = transformPoint(worldMatrix, x + width / 2, y + height / 2);
-      const worldW = Math.max(1, Math.round(Math.hypot(worldMatrix[0], worldMatrix[1]) * width));
-      const worldH = Math.max(1, Math.round(Math.hypot(worldMatrix[2], worldMatrix[3]) * height));
-      const worldRot = Math.round((Math.atan2(worldMatrix[1], worldMatrix[0]) * 180) / Math.PI);
-      x = Math.round(centerWorld.x - worldW / 2);
-      y = Math.round(centerWorld.y - worldH / 2);
-      width = worldW;
-      height = worldH;
-      rotation = worldRot;
-    }
-
-    // Check if shape contains an embedded chart
-    if (
-      spXml.includes('<c:chart') ||
-      spXml.includes('<c:plotArea') ||
-      spXml.includes('<c:chartSpace>')
-    ) {
-      const chartData = parseOpenXmlChart(spXml);
-      if (chartData) {
-        const chartSvg = renderChartToSvg(chartData, width, height);
-        shapes.push({
-          type: 'chart',
-          geomType: 'preset',
-          presetGeom: 'rect',
-          x,
-          y,
-          width,
-          height,
-          rotation: rotation || undefined,
-          flipH: flipH || undefined,
-          flipV: flipV || undefined,
-          fillColor: 'none',
-          strokeColor: 'none',
-          strokeWidth: 0,
-          text: chartData.title || `${chartData.type} chart`,
-          chart: chartData,
-          chartSvg,
-          transformMatrix: worldMatrix,
-        });
-        continue;
-      }
-    }
-
-    // 2. Fills and Lines
-    let fillColor = '#5C6BC0';
-    let strokeColor = '#1F2340';
-    let strokeWidth = 1;
-
-    if (spXml.includes('<a:noFill/>') || spXml.includes('<a:noFill />')) {
-      fillColor = 'none';
-    } else {
-      const solidFillColor = safeFindColor(spXml, ['a:solidFill']);
-      if (solidFillColor) fillColor = solidFillColor;
-    }
-
-    const lnEl = safeExtractFirstXmlElement(spXml, 'a:ln');
-    if (lnEl) {
-      if (lnEl.attrs.w) strokeWidth = Math.max(0.5, Math.round(parseInt(lnEl.attrs.w, 10) / 12700));
-      const lnClr = safeFindColor(lnEl.content);
-      if (lnClr) strokeColor = lnClr;
-    }
-
-    // 3. Guides & Adjust Values (<a:avLst>, <a:gdLst>)
-    const initialVars: Record<string, number> = {
-      w: width,
-      h: height,
-      l: x,
-      t: y,
-      r: x + width,
-      b: y + height,
-      hc: width / 2,
-      vc: height / 2,
-      ss: Math.min(width, height),
-      ls: Math.max(width, height),
-    };
-    const guides = parseDrawingMlGuides(spXml, initialVars);
-    const avEl = safeExtractFirstXmlElement(spXml, 'a:avLst');
-    const adjustValues = avEl ? parseDrawingMlGuides(avEl.raw, {}) : undefined;
-
-    // 4. Geometry (Preset vs Custom)
-    let geomType: 'preset' | 'custom' = 'preset';
-    let presetGeom = 'rect';
-    let svgPath = '';
-
-    const prstEl = safeExtractFirstXmlElement(spXml, 'a:prstGeom');
-    const custEl = safeExtractFirstXmlElement(spXml, 'a:custGeom');
-
-    if (custEl) {
-      geomType = 'custom';
-      const pathEl = safeExtractFirstXmlElement(custEl.content, 'a:path');
-      if (pathEl) {
-        const pw = pathEl.attrs.w ? Number.parseInt(pathEl.attrs.w, 10) : origW;
-        const ph = pathEl.attrs.h ? Number.parseInt(pathEl.attrs.h, 10) : origH;
-        const sx = origW / (pw || 1);
-        const sy = origH / (ph || 1);
-
-        const dParts: string[] = [];
-        const cmdTags = ['a:moveTo', 'a:lnTo', 'a:cubicBezTo', 'a:quadBezTo', 'a:arcTo', 'a:close'];
-        const cmdEls = safeExtractXmlElements(pathEl.content, cmdTags);
-        for (const cmdEl of cmdEls) {
-          const cmdName = cmdEl.localName.toLowerCase();
-          const mapPt = (rawPx: number, rawPy: number): { x: number; y: number } => {
-            if (isParentTransformed) {
-              const res = transformPoint(parentMatrix, rawPx, rawPy);
-              return { x: Math.round(res.x), y: Math.round(res.y) };
-            }
-            return { x: Math.round(rawPx), y: Math.round(rawPy) };
-          };
-
-          if (cmdName === 'moveto') {
-            const ptEl = safeExtractFirstXmlElement(cmdEl.content, 'a:pt');
-            if (ptEl && ptEl.attrs.x && ptEl.attrs.y) {
-              const rawPx = origX + Number.parseInt(ptEl.attrs.x, 10) * sx;
-              const rawPy = origY + Number.parseInt(ptEl.attrs.y, 10) * sy;
-              const p = mapPt(rawPx, rawPy);
-              dParts.push(`M ${p.x} ${p.y}`);
-            }
-          } else if (cmdName === 'lnto') {
-            const ptEl = safeExtractFirstXmlElement(cmdEl.content, 'a:pt');
-            if (ptEl && ptEl.attrs.x && ptEl.attrs.y) {
-              const rawPx = origX + Number.parseInt(ptEl.attrs.x, 10) * sx;
-              const rawPy = origY + Number.parseInt(ptEl.attrs.y, 10) * sy;
-              const p = mapPt(rawPx, rawPy);
-              dParts.push(`L ${p.x} ${p.y}`);
-            }
-          } else if (cmdName === 'cubicbezto') {
-            const ptEls = safeExtractXmlElements(cmdEl.content, 'a:pt');
-            const pts: string[] = [];
-            for (const pt of ptEls) {
-              if (pt.attrs.x && pt.attrs.y) {
-                const rawPx = origX + Number.parseInt(pt.attrs.x, 10) * sx;
-                const rawPy = origY + Number.parseInt(pt.attrs.y, 10) * sy;
-                const p = mapPt(rawPx, rawPy);
-                pts.push(`${p.x} ${p.y}`);
-              }
-            }
-            if (pts.length >= 3) {
-              dParts.push(`C ${pts[0]}, ${pts[1]}, ${pts[2]}`);
-            }
-          } else if (cmdName === 'quadbezto') {
-            const ptEls = safeExtractXmlElements(cmdEl.content, 'a:pt');
-            const pts: string[] = [];
-            for (const pt of ptEls) {
-              if (pt.attrs.x && pt.attrs.y) {
-                const rawPx = origX + Number.parseInt(pt.attrs.x, 10) * sx;
-                const rawPy = origY + Number.parseInt(pt.attrs.y, 10) * sy;
-                const p = mapPt(rawPx, rawPy);
-                pts.push(`${p.x} ${p.y}`);
-              }
-            }
-            if (pts.length >= 2) {
-              dParts.push(`Q ${pts[0]}, ${pts[1]}`);
-            }
-          } else if (cmdName === 'close') {
-            dParts.push('Z');
-          }
-        }
-        svgPath = dParts.join(' ');
-        if (isParentTransformed) {
-          rotation = 0;
-          flipH = false;
-          flipV = false;
-        }
-      }
-    } else if (prstEl && prstEl.attrs.prst) {
-      geomType = 'preset';
-      presetGeom = prstEl.attrs.prst.toLowerCase();
-    }
-
-    // 5. Text inside shape
-    const tEls = safeExtractXmlElements(spXml, 'a:t');
-    const text = tEls
-      .map((t) => safeDecodeXmlEntities(t.content.replace(/<[^>]+>/g, '')).trim())
-      .filter(Boolean)
-      .join(' ');
-
-    shapes.push({
-      type: geomType === 'custom' ? 'custom' : presetGeom,
-      geomType,
-      presetGeom,
-      customPath: svgPath || undefined,
-      svgPath,
-      x,
-      y,
-      width,
-      height,
-      rotation: rotation || undefined,
-      flipH: flipH || undefined,
-      flipV: flipV || undefined,
-      fillColor,
-      strokeColor,
-      strokeWidth,
-      text: text || undefined,
-      adjustValues,
-      guides:
-        Object.keys(guides).length > Object.keys(initialVars).length ? guides : undefined,
-      transformMatrix: worldMatrix,
-    });
+    const spShape = parseSingleShapeXml(item.xml, parentMatrix);
+    if (spShape) shapes.push(spShape);
   }
 
   return shapes;

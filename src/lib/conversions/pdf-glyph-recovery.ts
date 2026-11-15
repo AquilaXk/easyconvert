@@ -1,7 +1,7 @@
 import { glyphNameToText, isDingbatsFontName } from './pdf-glyph-names';
 import { SPECIAL_PRIVATE_USE_SYMBOLS } from './pdf-glyph-list-pdfjs';
 import { PdfTextGeometryError } from './pdf-text-types';
-import { isSymbolFontName, mapSymbolFontCharacter } from './symbol-font-map';
+import { isSymbolFontName, mapCorporatePuaSymbol, mapSymbolFontCharacter } from './symbol-font-map';
 
 /**
  * Text for the glyphs pdfjs gives no Unicode value for. pdfjs reads a font's /ToUnicode map first and then the names of
@@ -71,6 +71,8 @@ function isPrivateUse(codePoint: number): boolean {
 
 /** The character pdf.js gives a private-use character of the Adobe set in its place, or undefined when it has none. */
 function specialPrivateUse(codePoint: number): string | undefined {
+  const corporate = mapCorporatePuaSymbol(codePoint);
+  if (corporate !== undefined) return corporate;
   const equivalent = SPECIAL_PRIVATE_USE_SYMBOLS[codePoint];
   return equivalent === undefined ? undefined : String.fromCodePoint(equivalent);
 }

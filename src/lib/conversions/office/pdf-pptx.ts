@@ -89,7 +89,7 @@ const EMPTY_GROUP =
   '<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>';
 
 /** A page as the writer places it: its size and what stands on it, in page points with the origin at the top left. */
-interface SlidePage {
+export interface SlidePage {
   width: number;
   height: number;
   images: PdfContentImage[];
@@ -371,7 +371,7 @@ function relationships(entries: readonly { id: string; type: string; target: str
 const MEDIA_TYPES = { jpeg: { extension: 'jpeg', mime: 'image/jpeg' }, png: { extension: 'png', mime: 'image/png' } } as const;
 
 /** Writes the presentation of the pages. */
-async function writePackage(pages: readonly SlidePage[], fonts: ReadonlyMap<string, PdfContentFont>, title: string): Promise<Buffer> {
+export async function writePackage(pages: readonly SlidePage[], fonts: ReadonlyMap<string, PdfContentFont>, title: string): Promise<Buffer> {
   if (pages.length === 0) throw new ConversionFailedError('The PDF has no pages to put on slides.');
   const slide = slideSizeOf(pages[0]);
   const zip = new JSZip();

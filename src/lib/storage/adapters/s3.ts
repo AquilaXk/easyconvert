@@ -23,6 +23,7 @@ import {
   signS3Request,
 } from '../s3-sigv4';
 import { OutboundRequestBlockedError, safeFetch } from '../../security/safe-fetch';
+import { escapeXmlText } from '../../text/escape';
 import { isPrivateOrRestrictedHost, isSsrfBlockedError, validateUrlForSsrf } from '../../security/ssrf';
 
 const MIB = 1024 * 1024;
@@ -122,13 +123,6 @@ const XML_CHAR_BMP_HIGH_FIRST = 0xe000;
 const XML_CHAR_BMP_HIGH_LAST = 0xfffd;
 const XML_CHAR_SUPPLEMENTARY_FIRST = 0x10000;
 const XML_CHAR_SUPPLEMENTARY_LAST = 0x10ffff;
-const XML_ESCAPES: ReadonlyMap<string, string> = new Map([
-  ['&', '&amp;'],
-  ['<', '&lt;'],
-  ['>', '&gt;'],
-  ['"', '&quot;'],
-  ["'", '&apos;'],
-]);
 export const ERROR_ELEMENT_PATTERN = /<Error\b/;
 /** S3 never sends a DTD; a document declaring one (or an entity) is refused instead of interpreted. */
 const DTD_DECLARATION_PATTERN = /<!(?:DOCTYPE|ENTITY)/i;
@@ -201,9 +195,7 @@ export function decodeXmlText(text: string): string {
   });
 }
 
-export function escapeXmlText(text: string): string {
-  return text.replace(/[&<>"']/g, (ch) => XML_ESCAPES.get(ch) ?? ch);
-}
+export { escapeXmlText };
 
 /** The only S3 response elements the adapter reads. */
 export type S3XmlElement =

@@ -88,6 +88,10 @@ export interface PageShape {
   strokeWidthPt?: number;
   /** Fill opacity below one. */
   alpha?: number;
+  /** Stroke opacity below one. */
+  strokeAlpha?: number;
+  /** Whether the outline is drawn dashed. */
+  dashed?: boolean;
   /** The segments of a `path`, as pdf.js encodes them, relative to the corner of the box. */
   path?: number[];
   /** `y` counts from the top of the page and not from the paragraph. */

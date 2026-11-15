@@ -25,6 +25,64 @@ export const SYMBOL_FONT_FIRST_CODE = 0x20;
 export const SYMBOL_FONT_LAST_CODE = 0xff;
 export const SYMBOL_FONT_PRIVATE_USE_BASE = 0xf000;
 
+/**
+ * Adobe Corporate Use Subarea in PUA (0xF600..0xF8FF, 768 entries).
+ * Ported from mozilla/pdf.js src/core/unicode.js (commit 03bced24e422f9b7c58dfbb1a9765d25729b4ed4,
+ * lines 21-63, Apache-2.0).
+ */
+export const CORPORATE_PUA_START = 0xf600;
+export const CORPORATE_PUA_END = 0xf8ff;
+export const CORPORATE_PUA_COUNT = CORPORATE_PUA_END - CORPORATE_PUA_START + 1; // 768
+
+export const CORPORATE_PUA_SYMBOL_LUT = (() => {
+  const t = new Uint16Array(CORPORATE_PUA_COUNT);
+  const set = (pua: number, unicode: number): void => {
+    t[pua - CORPORATE_PUA_START] = unicode;
+  };
+  // 29 corporate PUA symbol mappings from mozilla/pdf.js SpecialPUASymbols
+  set(0xf8e9, 0x00a9); // copyrightsans
+  set(0xf6d9, 0x00a9); // copyrightserif
+  set(0xf8e8, 0x00ae); // registersans
+  set(0xf6da, 0x00ae); // registerserif
+  set(0xf8ea, 0x2122); // trademarksans
+  set(0xf6db, 0x2122); // trademarkserif
+  set(0xf8e5, 0x203e); // radicalex
+  set(0xf8e6, 0x23d0); // arrowvertex
+  set(0xf8e7, 0x23af); // arrowhorizex
+  set(0xf8f4, 0x23aa); // braceex
+  set(0xf8f5, 0x23ae); // integralex
+  set(0xf8f1, 0x23a7); // bracelefttp
+  set(0xf8f2, 0x23a8); // braceleftmid
+  set(0xf8f3, 0x23a9); // braceleftbt
+  set(0xf8fc, 0x23ab); // bracerighttp
+  set(0xf8fd, 0x23ac); // bracerightmid
+  set(0xf8fe, 0x23ad); // bracerightbt
+  set(0xf8ee, 0x23a1); // bracketlefttp
+  set(0xf8ef, 0x23a2); // bracketleftex
+  set(0xf8f0, 0x23a3); // bracketleftbt
+  set(0xf8f9, 0x23a4); // bracketrighttp
+  set(0xf8fa, 0x23a5); // bracketrightex
+  set(0xf8fb, 0x23a6); // bracketrightbt
+  set(0xf8eb, 0x239b); // parenlefttp
+  set(0xf8ec, 0x239c); // parenleftex
+  set(0xf8ed, 0x239d); // parenleftbt
+  set(0xf8f6, 0x239e); // parenrighttp
+  set(0xf8f7, 0x239f); // parenrightex
+  set(0xf8f8, 0x23a0); // parenrightbt
+  // Adobe Corporate PUA Euro
+  set(0xf8a0, 0x20ac); // euro
+  return t;
+})();
+
+/** Maps an Adobe corporate-use PUA symbol code point (0xF600..0xF8FF) to its standard Unicode character. */
+export function mapCorporatePuaSymbol(codePoint: number): string | undefined {
+  if (codePoint >= CORPORATE_PUA_START && codePoint <= CORPORATE_PUA_END) {
+    const mapped = CORPORATE_PUA_SYMBOL_LUT[codePoint - CORPORATE_PUA_START];
+    if (mapped !== 0) return String.fromCodePoint(mapped);
+  }
+  return undefined;
+}
+
 /** `code:codepoint` pairs, both in hexadecimal. */
 const SYMBOL =
   '20:0020 21:0021 22:2200 23:0023 24:2203 25:0025 26:0026 27:220B 28:0028 29:0029 2A:2217 2B:002B ' +
@@ -177,16 +235,23 @@ export function isSymbolFontName(fontName: string): boolean {
 
 /** Whether the code point lies in the private-use range symbol-font characters are stored at. */
 export function isSymbolFontPrivateUse(codePoint: number): boolean {
-  return codePoint >= SYMBOL_FONT_PRIVATE_USE_BASE + SYMBOL_FONT_FIRST_CODE && codePoint <= SYMBOL_FONT_PRIVATE_USE_BASE + SYMBOL_FONT_LAST_CODE;
+  return (
+    (codePoint >= SYMBOL_FONT_PRIVATE_USE_BASE + SYMBOL_FONT_FIRST_CODE && codePoint <= SYMBOL_FONT_PRIVATE_USE_BASE + SYMBOL_FONT_LAST_CODE) ||
+    codePoint === 0xf8f4 ||
+    (codePoint >= CORPORATE_PUA_START && codePoint <= CORPORATE_PUA_END && CORPORATE_PUA_SYMBOL_LUT[codePoint - CORPORATE_PUA_START] !== 0)
+  );
 }
 
 /**
- * The Unicode character a private-use code point (U+F020-U+F0FF) depicts in the named symbol font, or undefined when
- * the font is not a symbol font or its glyph for that code has no Unicode counterpart.
+ * The Unicode character a private-use code point (U+F020-U+F0FF or corporate PUA U+F600-U+F8FF) depicts in the named symbol font,
+ * or undefined when the font is not a symbol font or its glyph for that code has no Unicode counterpart.
  */
 export function mapSymbolFontCharacter(fontName: string, codePoint: number): string | undefined {
   const key = tableKey(fontName);
   if (key === undefined || !isSymbolFontPrivateUse(codePoint)) return undefined;
+  if (codePoint === 0xf8f4) return '\u23AA';
+  const corporate = mapCorporatePuaSymbol(codePoint);
+  if (corporate !== undefined) return corporate;
   return TABLES.get(key)?.get(codePoint - SYMBOL_FONT_PRIVATE_USE_BASE);
 }
 

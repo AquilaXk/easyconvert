@@ -53,7 +53,7 @@ describe('private-use characters', () => {
   it('are read from the table of a symbol font and left out for any other font', () => {
     expect(recoverUnmappedGlyphs('', { name: 'ABCDEF+Symbol' })).toEqual({ text: 'α', unmapped: 0 });
     expect(recoverUnmappedGlyphs('', { name: 'Arial' })).toEqual({ text: '', unmapped: 1 });
-    expect(recoverUnmappedGlyphs('', { name: 'cmex10' })).toEqual({ text: '', unmapped: 2 });
+    expect(recoverUnmappedGlyphs('\uF701\uF0FF', { name: 'cmex10' })).toEqual({ text: '', unmapped: 2 });
   });
 
   it('are read as the character pdf.js draws them as when the Adobe set gives one, in any font', () => {
@@ -61,11 +61,12 @@ describe('private-use characters', () => {
     expect(recoverUnmappedGlyphs('', { name: 'CMEX10', type: 'Type1' })).toEqual({ text: '⎛⎜⎝', unmapped: 0 });
     expect(recoverUnmappedGlyphs('', { name: 'ABCDEF+Symbol' })).toEqual({ text: '⎧⎨⎩', unmapped: 0 });
     expect(recoverUnmappedGlyphs('', { name: 'cmex10', composite: true })).toEqual({ text: '©®™', unmapped: 0 });
+    expect(recoverUnmappedGlyphs('', { name: 'cmex10' })).toEqual({ text: '⎪', unmapped: 0 });
   });
 
   it('keep the symbol font table first, and leave out the Adobe private-use characters pdf.js has no character for', () => {
     expect(recoverUnmappedGlyphs('', { name: 'Symbol' }).text).toBe('α');
-    expect(recoverUnmappedGlyphs('', { name: 'CMEX10' })).toEqual({ text: '', unmapped: 3 });
+    expect(recoverUnmappedGlyphs('\uF701', { name: 'CMEX10' })).toEqual({ text: '', unmapped: 3 });
   });
 
   it('are read from the name of the code when a font names the glyph by an Adobe private-use name', () => {

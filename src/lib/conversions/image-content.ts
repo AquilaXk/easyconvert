@@ -1,7 +1,7 @@
 import type { Metadata, PngOptions, Sharp } from 'sharp';
 import type { ConversionOptions } from '../types';
 import { resizedDimensions } from './image-input-limits';
-import { isMarkedForOptimiser, optimiserFollows } from './png-optimise';
+import { isMarkedForOptimiser, optimiserFollows, wantsPngOptimiser } from './png-optimise';
 import { findQuantizr } from './png-palette-quantizer';
 
 /**
@@ -325,10 +325,11 @@ const SIXTEEN_BIT_DEPTH = 'ushort';
 /** Whether the PNG written for `meta` (the input, before the resize of `options`) is rewritten by the optimiser, as a palette picture or as full colour. */
 function followedByOptimiser(source: string, fmt: string, meta: Metadata | undefined, options: ConversionOptions, palette: boolean): boolean {
   if (meta === undefined || meta.width === undefined || meta.height === undefined) return false;
-  if (!isMarkedForOptimiser(options)) return false;
+  const wants = isMarkedForOptimiser(options) || wantsPngOptimiser(options);
+  if (!wants) return false;
   const size = resizedDimensions(meta.width, meta.height, options);
   const bytesPerPixel = palette ? PALETTE_INDEX_BYTES : (meta.channels ?? RGB_CHANNELS + 1) * (meta.depth === SIXTEEN_BIT_DEPTH ? 2 : 1);
-  return optimiserFollows(source, fmt, size.width, size.height, bytesPerPixel, palette);
+  return optimiserFollows(source, fmt, size.width, size.height, bytesPerPixel, palette, wantsPngOptimiser(options));
 }
 
 /** The deflate level of an indexed PNG: `normal`, or the level for a file the optimiser rewrites. */

@@ -161,9 +161,12 @@ export const SPECIAL_PRIVATE_USE_SYMBOLS: Readonly<Record<number, number>> = {
   63194: 0x00ae, // registerserif (0xF6DA) => registered
   63722: 0x2122, // trademarksans (0xF8EA) => trademark
   63195: 0x2122, // trademarkserif (0xF6DB) => trademark
+  63717: 0x203e, // radicalex (0xF8E5) => overline
   63718: 0x23d0, // arrowvertex (0xF8E6)
   63719: 0x23af, // arrowhorizex (0xF8E7)
+  63732: 0x23aa, // braceex (0xF8F4)
   63733: 0x23ae, // integralex (0xF8F5)
+  63648: 0x20ac, // euro (0xF8A0)
   63729: 0x23a7, // bracelefttp (0xF8F1)
   63730: 0x23a8, // braceleftmid (0xF8F2)
   63731: 0x23a9, // braceleftbt (0xF8F3)

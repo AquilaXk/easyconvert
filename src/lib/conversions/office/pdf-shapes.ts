@@ -4,15 +4,224 @@ import { adjustHexBrightness } from './chart-svg';
 import { renderSafePdfText } from './pdf-text';
 import { renderPdfChart } from './pdf-chart';
 
+export interface SinglePdfShapeOptions {
+  hasUnicodeFont?: boolean;
+  posX: number;
+  posY: number;
+  sw: number;
+  sh: number;
+}
+
+interface ShapeDrawBounds {
+  posX: number;
+  posY: number;
+  sw: number;
+  sh: number;
+  cx: number;
+  cy: number;
+  hasStroke: boolean;
+  strokeColor: string;
+  strokeWidth: number;
+}
+
+function drawArrowOrCallout(doc: PDFKit.PDFDocument, s: DrawingMlShape, geom: string, b: ShapeDrawBounds): boolean {
+  const { posX, posY, sw, sh } = b;
+  if (geom === 'rightarrow') {
+    const headRatio = getShapeAdjustRatio(s, 'adj1', 0.4);
+    const shaftThick = getShapeAdjustRatio(s, 'adj2', 0.5);
+    const shaftX = posX + sw * (1 - headRatio);
+    const yTop = posY + (sh * (1 - shaftThick)) / 2;
+    const yBottom = posY + sh - (sh * (1 - shaftThick)) / 2;
+    doc.polygon(
+      [posX, yTop],
+      [shaftX, yTop],
+      [shaftX, posY],
+      [posX + sw, posY + sh * 0.5],
+      [shaftX, posY + sh],
+      [shaftX, yBottom],
+      [posX, yBottom]
+    );
+    return true;
+  }
+  if (geom === 'leftrightarrow') {
+    const headRatio = getShapeAdjustRatio(s, 'adj1', 0.25);
+    const shaftThick = getShapeAdjustRatio(s, 'adj2', 0.5);
+    const leftHead = posX + sw * headRatio;
+    const rightHead = posX + sw * (1 - headRatio);
+    const yTop = posY + (sh * (1 - shaftThick)) / 2;
+    const yBottom = posY + sh - (sh * (1 - shaftThick)) / 2;
+    doc.polygon(
+      [posX, posY + sh * 0.5],
+      [leftHead, posY],
+      [leftHead, yTop],
+      [rightHead, yTop],
+      [rightHead, posY],
+      [posX + sw, posY + sh * 0.5],
+      [rightHead, posY + sh],
+      [rightHead, yBottom],
+      [leftHead, yBottom],
+      [leftHead, posY + sh]
+    );
+    return true;
+  }
+  if (geom === 'chevron') {
+    const depthRatio = getShapeAdjustRatio(s, 'adj', 0.25);
+    const dX = sw * depthRatio;
+    doc.polygon(
+      [posX, posY],
+      [posX + sw - dX, posY],
+      [posX + sw, posY + sh * 0.5],
+      [posX + sw - dX, posY + sh],
+      [posX, posY + sh],
+      [posX + dX, posY + sh * 0.5]
+    );
+    return true;
+  }
+  if (geom === 'wedgerectcallout') {
+    const tailX = posX + sw * getShapeAdjustRatio(s, 'adj1', 0.3);
+    const tailY = posY + sh * getShapeAdjustRatio(s, 'adj2', 1.0);
+    doc.polygon(
+      [posX, posY],
+      [posX + sw, posY],
+      [posX + sw, posY + sh * 0.75],
+      [posX + sw * 0.55, posY + sh * 0.75],
+      [tailX, tailY],
+      [posX + sw * 0.38, posY + sh * 0.75],
+      [posX, posY + sh * 0.75]
+    );
+    return true;
+  }
+  return false;
+}
+
+function drawPresetShape(doc: PDFKit.PDFDocument, s: DrawingMlShape, geom: string, b: ShapeDrawBounds): void {
+  if (drawArrowOrCallout(doc, s, geom, b)) return;
+  const { posX, posY, sw, sh, cx, cy, hasStroke, strokeColor, strokeWidth } = b;
+  switch (geom) {
+    case 'ellipse':
+    case 'circle':
+      doc.ellipse(posX + sw / 2, posY + sh / 2, sw / 2, sh / 2);
+      break;
+    case 'roundrect': {
+      const hasGuides = s.guides?.rx !== undefined || s.guides?.r !== undefined || s.adjustValues?.adj !== undefined;
+      const defaultRadius = hasGuides ? Math.min(sw, sh) * getShapeAdjustRatio(s, 'adj', 0.15) : Math.min(8, sw * 0.15);
+      const rx = getGuideValue(s, 'rx', getGuideValue(s, 'r', defaultRadius));
+      doc.roundedRect(posX, posY, sw, sh, rx);
+      break;
+    }
+    case 'triangle':
+      doc.polygon([posX + sw / 2, posY], [posX + sw, posY + sh], [posX, posY + sh]);
+      break;
+    case 'diamond':
+    case 'flowchartdecision':
+      doc.polygon(
+        [posX + sw / 2, posY],
+        [posX + sw, posY + sh / 2],
+        [posX + sw / 2, posY + sh],
+        [posX, posY + sh / 2]
+      );
+      break;
+    case 'line':
+      doc.moveTo(posX, posY).lineTo(posX + sw, posY + sh);
+      break;
+    case 'cube': {
+      const cd = Math.min(sw, sh) * getShapeAdjustRatio(s, 'adj', 0.2);
+      const fill = s.fillColor || '#5C6BC0';
+      const topFill = adjustHexBrightness(fill, 1.2);
+      const rightFill = adjustHexBrightness(fill, 0.8);
+
+      // Top face
+      doc.polygon(
+        [posX, posY + cd],
+        [posX + cd, posY],
+        [posX + sw, posY],
+        [posX + sw - cd, posY + cd]
+      );
+      if (topFill && topFill !== 'none') doc.fill(topFill);
+      if (hasStroke) doc.lineWidth(strokeWidth).stroke(strokeColor);
+
+      // Right face
+      doc.polygon(
+        [posX + sw - cd, posY + cd],
+        [posX + sw, posY],
+        [posX + sw, posY + sh - cd],
+        [posX + sw - cd, posY + sh]
+      );
+      if (rightFill && rightFill !== 'none') doc.fill(rightFill);
+      if (hasStroke) doc.lineWidth(strokeWidth).stroke(strokeColor);
+
+      // Front face
+      doc.rect(posX, posY + cd, sw - cd, sh - cd);
+      if (fill && fill !== 'none') doc.fill(fill);
+      if (hasStroke) doc.lineWidth(strokeWidth).stroke(strokeColor);
+      break;
+    }
+    case 'star5': {
+      const rOuter = Math.min(sw, sh) / 2;
+      const rInner = rOuter * 0.4;
+      const pts: Array<[number, number]> = [];
+      for (let i = 0; i < 10; i++) {
+        const angle = (i * Math.PI) / 5 - Math.PI / 2;
+        const r = i % 2 === 0 ? rOuter : rInner;
+        pts.push([cx + r * Math.cos(angle), cy + r * Math.sin(angle)]);
+      }
+      if (pts.length > 0) doc.polygon(...pts);
+      break;
+    }
+    case 'flowchartprocess':
+    case 'rect':
+    default:
+      doc.rect(posX, posY, sw, sh);
+      break;
+  }
+}
+
+function resolveSingleShapeOptions(
+  opt?: boolean | SinglePdfShapeOptions,
+  x = 0,
+  y = 0,
+  w = 0,
+  h = 0
+): { hasUnicodeFont: boolean; posX: number; posY: number; sw: number; sh: number } {
+  if (typeof opt === 'object' && opt !== null) {
+    return {
+      hasUnicodeFont: opt.hasUnicodeFont ?? false,
+      posX: opt.posX,
+      posY: opt.posY,
+      sw: opt.sw,
+      sh: opt.sh,
+    };
+  }
+  return { hasUnicodeFont: opt === true, posX: x, posY: y, sw: w, sh: h };
+}
+
 export function renderSinglePdfShape(
   doc: PDFKit.PDFDocument,
   s: DrawingMlShape,
-  hasUnicodeFont: boolean,
-  posX: number,
-  posY: number,
-  sw: number,
-  sh: number
+  options: SinglePdfShapeOptions
+): void;
+export function renderSinglePdfShape(
+  doc: PDFKit.PDFDocument,
+  s: DrawingMlShape,
+  hasUnicodeFontOrOptions: boolean | SinglePdfShapeOptions,
+  posX?: number,
+  posY?: number,
+  sw?: number,
+  sh?: number
+): void;
+export function renderSinglePdfShape(
+  ...args: [
+    PDFKit.PDFDocument,
+    DrawingMlShape,
+    boolean | SinglePdfShapeOptions,
+    number?,
+    number?,
+    number?,
+    number?,
+  ]
 ): void {
+  const [doc, s, opt, legacyPosX, legacyPosY, legacySw, legacySh] = args;
+  const { hasUnicodeFont, posX, posY, sw, sh } = resolveSingleShapeOptions(opt, legacyPosX, legacyPosY, legacySw, legacySh);
   doc.save();
   const cx = posX + sw / 2;
   const cy = posY + sh / 2;
@@ -34,148 +243,7 @@ export function renderSinglePdfShape(
       doc.rect(posX, posY, sw, sh);
     }
   } else {
-    switch (geom) {
-      case 'ellipse':
-      case 'circle':
-        doc.ellipse(posX + sw / 2, posY + sh / 2, sw / 2, sh / 2);
-        break;
-      case 'roundrect': {
-        const hasGuides = s.guides?.rx !== undefined || s.guides?.r !== undefined || s.adjustValues?.adj !== undefined;
-        const defaultRadius = hasGuides ? Math.min(sw, sh) * getShapeAdjustRatio(s, 'adj', 0.15) : Math.min(8, sw * 0.15);
-        const rx = getGuideValue(s, 'rx', getGuideValue(s, 'r', defaultRadius));
-        doc.roundedRect(posX, posY, sw, sh, rx);
-        break;
-      }
-      case 'triangle':
-        doc.polygon([posX + sw / 2, posY], [posX + sw, posY + sh], [posX, posY + sh]);
-        break;
-      case 'diamond':
-      case 'flowchartdecision':
-        doc.polygon(
-          [posX + sw / 2, posY],
-          [posX + sw, posY + sh / 2],
-          [posX + sw / 2, posY + sh],
-          [posX, posY + sh / 2]
-        );
-        break;
-      case 'line':
-        doc.moveTo(posX, posY).lineTo(posX + sw, posY + sh);
-        break;
-      case 'rightarrow': {
-        const headRatio = getShapeAdjustRatio(s, 'adj1', 0.4);
-        const shaftThick = getShapeAdjustRatio(s, 'adj2', 0.5);
-        const shaftX = posX + sw * (1 - headRatio);
-        const yTop = posY + (sh * (1 - shaftThick)) / 2;
-        const yBottom = posY + sh - (sh * (1 - shaftThick)) / 2;
-        doc.polygon(
-          [posX, yTop],
-          [shaftX, yTop],
-          [shaftX, posY],
-          [posX + sw, posY + sh * 0.5],
-          [shaftX, posY + sh],
-          [shaftX, yBottom],
-          [posX, yBottom]
-        );
-        break;
-      }
-      case 'leftrightarrow': {
-        const headRatio = getShapeAdjustRatio(s, 'adj1', 0.25);
-        const shaftThick = getShapeAdjustRatio(s, 'adj2', 0.5);
-        const leftHead = posX + sw * headRatio;
-        const rightHead = posX + sw * (1 - headRatio);
-        const yTop = posY + (sh * (1 - shaftThick)) / 2;
-        const yBottom = posY + sh - (sh * (1 - shaftThick)) / 2;
-        doc.polygon(
-          [posX, posY + sh * 0.5],
-          [leftHead, posY],
-          [leftHead, yTop],
-          [rightHead, yTop],
-          [rightHead, posY],
-          [posX + sw, posY + sh * 0.5],
-          [rightHead, posY + sh],
-          [rightHead, yBottom],
-          [leftHead, yBottom],
-          [leftHead, posY + sh]
-        );
-        break;
-      }
-      case 'chevron': {
-        const depthRatio = getShapeAdjustRatio(s, 'adj', 0.25);
-        const dX = sw * depthRatio;
-        doc.polygon(
-          [posX, posY],
-          [posX + sw - dX, posY],
-          [posX + sw, posY + sh * 0.5],
-          [posX + sw - dX, posY + sh],
-          [posX, posY + sh],
-          [posX + dX, posY + sh * 0.5]
-        );
-        break;
-      }
-      case 'cube': {
-        const cd = Math.min(sw, sh) * getShapeAdjustRatio(s, 'adj', 0.2);
-        const fill = s.fillColor || '#5C6BC0';
-        const topFill = adjustHexBrightness(fill, 1.2);
-        const rightFill = adjustHexBrightness(fill, 0.8);
-
-        // Top face
-        doc.polygon(
-          [posX, posY + cd],
-          [posX + cd, posY],
-          [posX + sw, posY],
-          [posX + sw - cd, posY + cd]
-        );
-        if (topFill && topFill !== 'none') doc.fill(topFill);
-        if (hasStroke) doc.lineWidth(strokeWidth).stroke(strokeColor);
-
-        // Right face
-        doc.polygon(
-          [posX + sw - cd, posY + cd],
-          [posX + sw, posY],
-          [posX + sw, posY + sh - cd],
-          [posX + sw - cd, posY + sh]
-        );
-        if (rightFill && rightFill !== 'none') doc.fill(rightFill);
-        if (hasStroke) doc.lineWidth(strokeWidth).stroke(strokeColor);
-
-        // Front face
-        doc.rect(posX, posY + cd, sw - cd, sh - cd);
-        if (fill && fill !== 'none') doc.fill(fill);
-        if (hasStroke) doc.lineWidth(strokeWidth).stroke(strokeColor);
-        break;
-      }
-      case 'wedgerectcallout': {
-        const tailX = posX + sw * getShapeAdjustRatio(s, 'adj1', 0.3);
-        const tailY = posY + sh * getShapeAdjustRatio(s, 'adj2', 1.0);
-        doc.polygon(
-          [posX, posY],
-          [posX + sw, posY],
-          [posX + sw, posY + sh * 0.75],
-          [posX + sw * 0.55, posY + sh * 0.75],
-          [tailX, tailY],
-          [posX + sw * 0.38, posY + sh * 0.75],
-          [posX, posY + sh * 0.75]
-        );
-        break;
-      }
-      case 'star5': {
-        const rOuter = Math.min(sw, sh) / 2;
-        const rInner = rOuter * 0.4;
-        const pts: Array<[number, number]> = [];
-        for (let i = 0; i < 10; i++) {
-          const angle = (i * Math.PI) / 5 - Math.PI / 2;
-          const r = i % 2 === 0 ? rOuter : rInner;
-          pts.push([cx + r * Math.cos(angle), cy + r * Math.sin(angle)]);
-        }
-        if (pts.length > 0) doc.polygon(...pts);
-        break;
-      }
-      case 'flowchartprocess':
-      case 'rect':
-      default:
-        doc.rect(posX, posY, sw, sh);
-        break;
-    }
+    drawPresetShape(doc, s, geom, { posX, posY, sw, sh, cx, cy, hasStroke, strokeColor, strokeWidth });
   }
 
   if (geom !== 'cube') {
@@ -234,15 +302,13 @@ export function renderPdfDrawingShapes(
 
   for (const s of shapes) {
     if (s.chart) {
-      renderPdfChart(
-        doc,
-        s.chart,
+      renderPdfChart(doc, s.chart, {
         hasUnicodeFont,
-        startX + (s.x - minX) * scale,
-        baseY + (s.y - minY) * scale,
-        s.width * scale,
-        s.height * scale
-      );
+        x: startX + (s.x - minX) * scale,
+        y: baseY + (s.y - minY) * scale,
+        width: s.width * scale,
+        height: s.height * scale,
+      });
       continue;
     }
 
@@ -250,7 +316,7 @@ export function renderPdfDrawingShapes(
     const posY = baseY + (s.y - minY) * scale;
     const sw = s.width * scale;
     const sh = s.height * scale;
-    renderSinglePdfShape(doc, s, hasUnicodeFont, posX, posY, sw, sh);
+    renderSinglePdfShape(doc, s, { hasUnicodeFont, posX, posY, sw, sh });
   }
 
   doc.y = baseY + drawHeight * scale + 15;

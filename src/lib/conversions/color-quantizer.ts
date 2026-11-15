@@ -16,6 +16,7 @@
  * Everything works on typed arrays; no object is allocated per pixel.
  */
 
+import os from 'node:os';
 import { ConversionFailedError } from '../types';
 import { BLUE_NOISE_SIDE, blueNoiseCentred } from './blue-noise-mask';
 import { COLOUR_MEMO_LAB_STRIDE, ColourMemo } from './image-colour-memo';
@@ -46,7 +47,7 @@ export const QUANT_MAX_COLORS = 256;
 /** Bits of each channel the histogram keeps: 32 x 32 x 32 bins. */
 export const QUANT_HISTOGRAM_BITS = 5;
 /** k-means passes over the histogram; the refinement usually settles in fewer. */
-export const QUANT_MAX_ITERATIONS = 16;
+export const QUANT_MAX_ITERATIONS = 18;
 /** k-means stops when no centroid moves more than this in Oklab (about a twentieth of a just-noticeable difference). */
 export const QUANT_CONVERGENCE_DELTA = 1e-4;
 /** A pixel with less alpha than this is transparent when transparency is kept (GIF has one transparent index). */
@@ -162,6 +163,185 @@ export function findNearestColorIndexOklab(target: OklabColor, paletteOklab: Okl
   return bestIdx;
 }
 
+/**
+ * 3D Inverse Colormap with Heckbert's box-pruning criterion (`minmaxdist`).
+ *
+ * Subdivides RGB space into 32 x 32 x 32 = 32,768 subboxes of 8 x 8 x 8 RGB cubes.
+ * On first query to a box, computes min and max squared Euclidean distances to all
+ * palette entries. Prunes any entry whose minimum distance exceeds the smallest maximum
+ * distance (`minmaxdist`). If exactly 1 candidate survives, lookups are O(1) with zero
+ * distance calculations; if multiple survive, only those candidates are evaluated in
+ * ascending palette index order, with strictly `<` tie breaking.
+ *
+ * Source: mozilla/mozjpeg (IJG / BSD-3-Clause), commit 08265790774cd0714832c9e675522acbe5581437,
+ * jquant2.c lines 628-754 (`find_nearby_colors`).
+ */
+export class PaletteInverseCmap {
+  readonly size: number;
+  private readonly pr: Uint8Array;
+  private readonly pg: Uint8Array;
+  private readonly pb: Uint8Array;
+  private readonly cells = new Int32Array(32768).fill(-1);
+  private pool = new Uint16Array(2048);
+  private poolLength = 0;
+  private readonly minDistScratch: Int32Array;
+  private readonly candidatesScratch: Uint16Array;
+
+  constructor(palette: Uint8Array, size: number) {
+    if (!Number.isInteger(size) || size < 1 || size > QUANT_MAX_COLORS || palette.length < size * RGB_STRIDE) {
+      throw new RangeError(`PaletteInverseCmap requires 1 to ${QUANT_MAX_COLORS} palette colours, got ${size}.`);
+    }
+    this.size = size;
+    this.pr = new Uint8Array(size);
+    this.pg = new Uint8Array(size);
+    this.pb = new Uint8Array(size);
+    for (let i = 0; i < size; i += 1) {
+      this.pr[i] = palette[i * RGB_STRIDE];
+      this.pg[i] = palette[i * RGB_STRIDE + 1];
+      this.pb[i] = palette[i * RGB_STRIDE + 2];
+    }
+    this.minDistScratch = new Int32Array(size);
+    this.candidatesScratch = new Uint16Array(size);
+  }
+
+  private fillCell(cellIndex: number, r0: number, g0: number, b0: number): number {
+    const { size, pr, pg, pb, minDistScratch, candidatesScratch } = this;
+    const r1 = r0 + 7;
+    const g1 = g0 + 7;
+    const b1 = b0 + 7;
+    const centerR = (r0 + r1) >> 1;
+    const centerG = (g0 + g1) >> 1;
+    const centerB = (b0 + b1) >> 1;
+
+    let minmaxdist = 0x7fffffff;
+
+    for (let i = 0; i < size; i += 1) {
+      const x = pr[i];
+      let dMinR = 0;
+      let dMaxR = 0;
+      if (x < r0) {
+        dMinR = r0 - x;
+        dMaxR = r1 - x;
+      } else if (x > r1) {
+        dMinR = x - r1;
+        dMaxR = x - r0;
+      } else {
+        dMaxR = x <= centerR ? r1 - x : x - r0;
+      }
+
+      const y = pg[i];
+      let dMinG = 0;
+      let dMaxG = 0;
+      if (y < g0) {
+        dMinG = g0 - y;
+        dMaxG = g1 - y;
+      } else if (y > g1) {
+        dMinG = y - g1;
+        dMaxG = y - g0;
+      } else {
+        dMaxG = y <= centerG ? g1 - y : y - g0;
+      }
+
+      const z = pb[i];
+      let dMinB = 0;
+      let dMaxB = 0;
+      if (z < b0) {
+        dMinB = b0 - z;
+        dMaxB = b1 - z;
+      } else if (z > b1) {
+        dMinB = z - b1;
+        dMaxB = z - b0;
+      } else {
+        dMaxB = z <= centerB ? b1 - z : z - b0;
+      }
+
+      const minD = dMinR * dMinR + dMinG * dMinG + dMinB * dMinB;
+      const maxD = dMaxR * dMaxR + dMaxG * dMaxG + dMaxB * dMaxB;
+      minDistScratch[i] = minD;
+      if (maxD < minmaxdist) {
+        minmaxdist = maxD;
+      }
+    }
+
+    let count = 0;
+    for (let i = 0; i < size; i += 1) {
+      if (minDistScratch[i] <= minmaxdist) {
+        candidatesScratch[count] = i;
+        count += 1;
+      }
+    }
+
+    if (count === 1) {
+      const winner = candidatesScratch[0];
+      this.cells[cellIndex] = winner;
+      return winner;
+    }
+
+    if (this.poolLength + count + 1 > this.pool.length) {
+      const nextCap = Math.max(this.pool.length * 2, this.poolLength + count + 1024);
+      const nextPool = new Uint16Array(nextCap);
+      nextPool.set(this.pool);
+      this.pool = nextPool;
+    }
+
+    const poolOffset = this.poolLength;
+    this.pool[poolOffset] = count;
+    for (let k = 0; k < count; k += 1) {
+      this.pool[poolOffset + 1 + k] = candidatesScratch[k];
+    }
+    this.poolLength += count + 1;
+
+    const cellVal = -(poolOffset + 2);
+    this.cells[cellIndex] = cellVal;
+    return cellVal;
+  }
+
+  nearest(r: number, g: number, b: number): number {
+    const cr = Math.max(0, Math.min(BYTE_MAX, r | 0));
+    const cg = Math.max(0, Math.min(BYTE_MAX, g | 0));
+    const cb = Math.max(0, Math.min(BYTE_MAX, b | 0));
+
+    const br = cr >> 3;
+    const bg = cg >> 3;
+    const bb = cb >> 3;
+    const cellIndex = (br << 10) | (bg << 5) | bb;
+
+    let cellVal = this.cells[cellIndex];
+    if (cellVal === -1) {
+      cellVal = this.fillCell(cellIndex, br << 3, bg << 3, bb << 3);
+    }
+    if (cellVal >= 0) {
+      return cellVal;
+    }
+
+    const poolOffset = -cellVal - 2;
+    const pool = this.pool;
+    const count = pool[poolOffset];
+    let bestIdx = pool[poolOffset + 1];
+
+    const { pr, pg, pb } = this;
+    const dr0 = cr - pr[bestIdx];
+    const dg0 = cg - pg[bestIdx];
+    const db0 = cb - pb[bestIdx];
+    let bestDist = dr0 * dr0 + dg0 * dg0 + db0 * db0;
+    if (bestDist === 0) return bestIdx;
+
+    for (let k = 1; k < count; k += 1) {
+      const idx = pool[poolOffset + 1 + k];
+      const dr = cr - pr[idx];
+      const dg = cg - pg[idx];
+      const db = cb - pb[idx];
+      const dist = dr * dr + dg * dg + db * db;
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestIdx = idx;
+        if (dist === 0) break;
+      }
+    }
+    return bestIdx;
+  }
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Palette construction
 // ---------------------------------------------------------------------------------------------------------------
@@ -256,12 +436,34 @@ const HISTOGRAM_SUMS_B = new Float64Array(HISTOGRAM_BINS);
  */
 const HISTOGRAM_CHUNK_PIXELS = 1 << 16;
 
+const IS_LITTLE_ENDIAN = os.endianness() === 'LE';
+
 /** Adds the pixels from `from` up to `to` to the histogram tables. */
 function countColours(pixels: ArrayLike<number>, from: number, to: number, ignoreTransparent: boolean): void {
   const counts = HISTOGRAM_COUNTS;
   const sumsR = HISTOGRAM_SUMS_R;
   const sumsG = HISTOGRAM_SUMS_G;
   const sumsB = HISTOGRAM_SUMS_B;
+  if (
+    (pixels instanceof Uint8Array || pixels instanceof Uint8ClampedArray) &&
+    (pixels.byteOffset & 3) === 0 &&
+    IS_LITTLE_ENDIAN
+  ) {
+    const u32 = new Uint32Array(pixels.buffer, pixels.byteOffset, pixels.byteLength >>> 2);
+    for (let p = from; p < to; p += 1) {
+      const val = u32[p];
+      if (ignoreTransparent && (val >>> 24) < QUANT_ALPHA_THRESHOLD) continue;
+      const r = val & 0xff;
+      const g = (val >>> 8) & 0xff;
+      const b = (val >>> 16) & 0xff;
+      const bin = ((r >> HISTOGRAM_SHIFT) << (2 * QUANT_HISTOGRAM_BITS)) | ((g >> HISTOGRAM_SHIFT) << QUANT_HISTOGRAM_BITS) | (b >> HISTOGRAM_SHIFT);
+      counts[bin] += 1;
+      sumsR[bin] += r;
+      sumsG[bin] += g;
+      sumsB[bin] += b;
+    }
+    return;
+  }
   for (let p = from; p < to; p += 1) {
     const i = p * RGBA_STRIDE;
     if (ignoreTransparent && pixels[i + 3] < QUANT_ALPHA_THRESHOLD) continue;

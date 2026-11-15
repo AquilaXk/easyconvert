@@ -10,16 +10,12 @@ import {
   ConversionFailedError,
   ArchiveEncryptionUnavailableError,
   ArchiveNotEncryptedError,
-  UnsupportedOptionError,
-  EngineUnavailableError,
-  InvalidPageRangeError, isTypedRefusal,
-  ComplexScriptRequiresNativeEngineError,
-  MediaPackagingOptions,
-  UnsupportedTargetError,
-  RawDecodeError, UnsupportedRawCompressionError, InvalidRawSensorError,
+  UnsupportedOptionError, EngineUnavailableError, InvalidPageRangeError, isTypedRefusal, ComplexScriptRequiresNativeEngineError,
+  MediaPackagingOptions, UnsupportedTargetError, RawDecodeError, UnsupportedRawCompressionError, InvalidRawSensorError,
   RawEngineRequiredError, PdfPasswordRequiredError, PayloadLimitError,
 } from '../lib/types';
 import { convertFile, convertImage } from '../lib/conversions';
+import { wantsPngOptimiser, withOptimisedPng } from '../lib/conversions/png-optimise';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertDrawingPackage, assertOfficeEmbeddedImagesWithinLimit, officeInputWithoutMacros } from './office-input-checks';
 import { BIFF8_TARGET, asUnreadableDocument, convertBridgedTarget, convertMarkupPageImages, convertThroughInterchange, convertXlsTarget, interchangeNeeded, retryRefusedLegacyDocument, withEmbeddedWorkbookRetry, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageChainLimits, type OfficeSuiteRouteDeps } from './office-suite-route';
@@ -1683,6 +1679,7 @@ export async function convertWithNativeRaw(
       cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: timeout,
       maxBuffer: options.maxBufferBytes || 100 * 1024 * 1024, maxFileSize: RAW_DECODE_MAX_OUTPUT_BYTES,
       memoryLimitMb: RAW_DECODE_MEMORY_LIMIT_MB, networkIsolated: true, signal: options.signal,
+      env: src === 'raf' ? { ...((options as { env?: Record<string, string> }).env ?? {}), OMP_NUM_THREADS: '1' } : (options as { env?: Record<string, string> }).env,
     });
     try {
       const run = await decodeWithSnapshotFallback(decode, decoder, snapshotDecoder);
@@ -1712,7 +1709,10 @@ export async function convertWithNativeRaw(
     assertCompleteDecodedImage(decodedPath, layout);
     assertDecodedRawWhole({ src, inputPath, decodedPath, layout, warned: corruptedAt !== null });
 
-    const converted = await convertImage(developedRawPicture(decodedPath, layout, tgt), tgt, options, originalFilename, 'tiff');
+    let converted = await convertImage(developedRawPicture(decodedPath, layout, tgt), tgt, options, originalFilename, 'tiff');
+    if (tgt === 'png' && wantsPngOptimiser(options)) {
+      converted = await withOptimisedPng(converted, { signal: options.signal });
+    }
     const tempOutputPath = path.join(tempDir, `output.${tgt}`);
     fs.writeFileSync(tempOutputPath, converted.buffer);
     const persistedPath = preserveOutput(tempOutputPath, tgt, options, Buffer.isBuffer(input) ? undefined : input);

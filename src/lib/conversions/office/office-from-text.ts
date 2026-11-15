@@ -8,6 +8,8 @@ import { plainTextModel } from '../document-model/plain';
 import { documentToEpub } from '../document-model/epub';
 import { documentToDocx } from '../document-model/docx';
 import { escapeXmlQuoted } from '../../text/escape';
+import { writePackage, type SlidePage } from './pdf-pptx';
+import type { PdfContentFont } from '../pdf-text-types';
 
 /**
  * Generates authentic HWP 5.0 CFBF compound document from text and markdown tables
@@ -202,168 +204,58 @@ export async function generateDocxFromText(
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
+const LINES_PER_SLIDE = 14;
+const LETTER_WIDTH_PT = 612;
+const LETTER_HEIGHT_PT = 792;
+
 /**
- * Generates OpenXML PPTX Presentation Archive
+ * Generates OpenXML PPTX Presentation Archive from plain/markdown text
  */
 export async function generatePptxFromText(
   text: string,
-  sourceType: string,
-  options: ConversionOptions,
+  _sourceType: string,
+  _options: ConversionOptions,
   title: string
 ): Promise<Buffer> {
   if (text.trim() === '') throw new ConversionFailedError('There is no text to put on slides.');
-  const zip = new JSZip();
 
-  // Split text into slides based on markdown headings, dividers, or paragraph groups
-  const slideTexts: { title: string; bullets: string[] }[] = [];
-  const rawSections = text.split(/(?:^|\n)(?:---|# Slide \d+|## Slide \d+)/i).filter((s) => s.trim().length > 0);
+  const lines = text.split(/\r?\n/);
+  const slidePages: SlidePage[] = [];
+  let currentLines: string[] = [];
 
-  if (rawSections.length > 1) {
-    rawSections.forEach((sec, idx) => {
-      const lines = sec.split(/\r?\n/).filter((l) => l.trim().length > 0);
-      const slideTitle = lines[0]?.replace(/^[#\s]+/, '').trim() || `Slide ${idx + 1}`;
-      const bullets = lines.slice(1).map((l) => l.replace(/^[-*•\s]+/, '').trim());
-      slideTexts.push({ title: slideTitle, bullets });
-    });
-  } else {
-    // Single section: split by lines into logical slides of 4-5 bullet points
-    const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
-    const mainTitle = lines[0]?.replace(/^[#\s]+/, '').trim() || title;
-    const bodyLines = lines.slice(1).map((l) => l.replace(/^[-*•\s]+/, '').trim());
-
-    slideTexts.push({
-      title: mainTitle,
-      bullets: bodyLines.slice(0, 5),
-    });
-
-    for (let j = 5; j < bodyLines.length; j += 5) {
-      slideTexts.push({
-        title: `${mainTitle} (Cont.)`,
-        bullets: bodyLines.slice(j, j + 5),
+  const flushSlide = () => {
+    if (currentLines.length > 0) {
+      slidePages.push({
+        width: LETTER_WIDTH_PT,
+        height: LETTER_HEIGHT_PT,
+        images: [],
+        rules: [],
+        shapes: [],
+        blocks: [],
+        plainText: currentLines.join('\n'),
       });
+      currentLines = [];
+    }
+  };
+
+  for (const line of lines) {
+    const isHeading = line.startsWith('#') || line.startsWith('---');
+    if (isHeading && currentLines.length > 0) {
+      flushSlide();
+    }
+    currentLines.push(line);
+    if (currentLines.length >= LINES_PER_SLIDE) {
+      flushSlide();
     }
   }
+  flushSlide();
 
+  if (slidePages.length === 0) {
+    throw new ConversionFailedError('There is no text to put on slides.');
+  }
 
-  // [Content_Types].xml
-  let contentTypesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
-`;
-
-  slideTexts.forEach((_, idx) => {
-    contentTypesXml += `  <Override PartName="/ppt/slides/slide${idx + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>\n`;
-  });
-  contentTypesXml += `</Types>`;
-  zip.file('[Content_Types].xml', contentTypesXml);
-
-  // _rels/.rels
-  zip.file(
-    '_rels/.rels',
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
-</Relationships>`
-  );
-
-  // ppt/_rels/presentation.xml.rels
-  let presRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-`;
-  slideTexts.forEach((_, idx) => {
-    presRelsXml += `  <Relationship Id="rId${idx + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${idx + 1}.xml"/>\n`;
-  });
-  presRelsXml += `</Relationships>`;
-  zip.file('ppt/_rels/presentation.xml.rels', presRelsXml);
-
-  // ppt/presentation.xml
-  let presXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
-  <p:sldIdLst>
-`;
-  slideTexts.forEach((_, idx) => {
-    presXml += `    <p:sldId id="${256 + idx}" r:id="rId${idx + 1}"/>\n`;
-  });
-  presXml += `  </p:sldIdLst>
-  <p:sldSz cx="9144000" cy="5143500"/>
-</p:presentation>`;
-  zip.file('ppt/presentation.xml', presXml);
-
-  // Individual slides
-  slideTexts.forEach((slide, idx) => {
-    let bulletsXml = '';
-    slide.bullets.forEach((b) => {
-      bulletsXml += `
-        <a:p>
-          <a:pPr lvl="0"/>
-          <a:r>
-            <a:rPr lang="en-US" sz="1800">
-              <a:solidFill><a:srgbClr val="4D536B"/></a:solidFill>
-            </a:rPr>
-            <a:t>${escapeXmlQuoted(b)}</a:t>
-          </a:r>
-        </a:p>`;
-    });
-
-    const slideXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
-  <p:cSld>
-    <p:spTree>
-      <p:nvGrpSpPr>
-        <p:cNvPr id="1" name=""/>
-        <p:cNvGrpSpPr/>
-        <p:nvPr/>
-      </p:nvGrpSpPr>
-      <p:grpSpPr/>
-      <!-- Slide Title Shape -->
-      <p:sp>
-        <p:nvSpPr>
-          <p:cNvPr id="2" name="Title 1"/>
-          <p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr>
-          <p:nvPr><p:ph type="title"/></p:nvPr>
-        </p:nvSpPr>
-        <p:spPr>
-          <a:xfrm><a:off x="685800" y="609600"/><a:ext cx="7772400" cy="1143000"/></a:xfrm>
-        </p:spPr>
-        <p:txBody>
-          <a:bodyPr/>
-          <a:lstStyle/>
-          <a:p>
-            <a:r>
-              <a:rPr lang="en-US" sz="3200" b="1">
-                <a:solidFill><a:srgbClr val="5C6BC0"/></a:solidFill>
-              </a:rPr>
-              <a:t>${escapeXmlQuoted(slide.title)}</a:t>
-            </a:r>
-          </a:p>
-        </p:txBody>
-      </p:sp>
-      <!-- Content Bullets Shape -->
-      <p:sp>
-        <p:nvSpPr>
-          <p:cNvPr id="3" name="Content 2"/>
-          <p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr>
-          <p:nvPr><p:ph idx="1"/></p:nvPr>
-        </p:nvSpPr>
-        <p:spPr>
-          <a:xfrm><a:off x="685800" y="1981200"/><a:ext cx="7772400" cy="2800000"/></a:xfrm>
-        </p:spPr>
-        <p:txBody>
-          <a:bodyPr/>
-          <a:lstStyle/>
-          ${bulletsXml}
-        </p:txBody>
-      </p:sp>
-    </p:spTree>
-  </p:cSld>
-</p:sld>`;
-
-    zip.file(`ppt/slides/slide${idx + 1}.xml`, slideXml);
-  });
-
-  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  const fonts = new Map<string, PdfContentFont>();
+  return writePackage(slidePages, fonts, title || 'Presentation');
 }
 
 /** Sources whose extracted text is Markdown (headings, lists, tables), read as such when writing an EPUB or DOCX. */

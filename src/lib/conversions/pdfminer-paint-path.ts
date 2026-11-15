@@ -280,6 +280,7 @@ export class PDFLayoutAnalyzer {
         this.paint_path(gstate, stroke, fill, evenodd, subpath);
       }
     } else {
+      if (!/[lcyv]/.test(shape)) return;
       // Although the 'h' command does not not literally provide a
       // point-position, its position is (by definition) equal to the
       // subpath's starting point.
