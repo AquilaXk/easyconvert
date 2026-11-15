@@ -91,6 +91,14 @@ export function resetHardwareAccelerationCache(): void {
   encoderListCache.clear();
 }
 
+export function hasCachedHardwareProbe(
+  ffmpegPath?: string | null,
+  env: HardwareProbeEnvironment = {}
+): boolean {
+  const cached = hwCapabilityCache.get(`${ffmpegPath ?? ''}\0${env.drmDir ?? ''}`);
+  return cached !== undefined && Date.now() - cached.probedAt < PROBE_CACHE_TTL_MS;
+}
+
 /** Names of the encoders `ffmpeg -encoders` lists, cached per binary; empty when the binary cannot be run. */
 export function probeSupportedEncoders(ffmpegPath: string | null | undefined): ReadonlySet<string> {
   if (!ffmpegPath || !fs.existsSync(ffmpegPath)) {

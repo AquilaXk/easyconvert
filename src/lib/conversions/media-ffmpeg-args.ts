@@ -83,6 +83,7 @@ export type { FfprobePath };
 export { isTwoPassRequested } from './media-ffmpeg-container-args';
 export type { TwoPassStage } from './media-ffmpeg-container-args';
 export {
+  hasCachedHardwareProbe,
   probeHardwareAcceleration,
   probeSupportedEncoders,
   resetHardwareAccelerationCache,

@@ -17778,7 +17778,7 @@
         "rel": 0
       },
       "ours": 1,
-      "delta": 0,
+      "delta": 1,
       "ratio": null
     },
     "hdr-image/scanline-piz-float.exr->exr/psnr": {
@@ -17808,7 +17808,7 @@
         "rel": 0
       },
       "ours": 100,
-      "delta": 46.395894,
+      "delta": 46.555775,
       "ratio": null
     },
     "hdr-image/scanline-piz-float.exr->png/ssim": {
@@ -17818,7 +17818,7 @@
         "rel": 0
       },
       "ours": 1,
-      "delta": 0.0005020000000000024,
+      "delta": 0.0005119999999999569,
       "ratio": null
     },
     "hdr-image/scanline-piz-float.exr->png/throughput": {
@@ -17838,7 +17838,7 @@
         "rel": 0
       },
       "ours": 1,
-      "delta": 1,
+      "delta": 0,
       "ratio": null
     },
     "hdr-image/scanline-piz-half-wide-values.exr->exr/psnr": {
@@ -17848,7 +17848,7 @@
         "rel": 0
       },
       "ours": 100,
-      "delta": 82.28636767022311,
+      "delta": 0,
       "ratio": null
     },
     "hdr-image/scanline-piz-half-wide-values.exr->exr/throughput": {
@@ -17868,7 +17868,7 @@
         "rel": 0
       },
       "ours": 100,
-      "delta": 41.902365,
+      "delta": 41.869196,
       "ratio": null
     },
     "hdr-image/scanline-piz-half-wide-values.exr->png/ssim": {
@@ -17878,7 +17878,7 @@
         "rel": 0
       },
       "ours": 1,
-      "delta": 0.0008070000000000022,
+      "delta": 0.0008059999999999734,
       "ratio": null
     },
     "hdr-image/scanline-piz-half-wide-values.exr->png/throughput": {
@@ -17898,7 +17898,7 @@
         "rel": 0
       },
       "ours": 1,
-      "delta": 1,
+      "delta": 0,
       "ratio": null
     },
     "hdr-image/tiled-zip-half-one-level.exr->exr/psnr": {
@@ -17908,7 +17908,7 @@
         "rel": 0
       },
       "ours": 100,
-      "delta": 81.83037271405503,
+      "delta": 0,
       "ratio": null
     },
     "hdr-image/tiled-zip-half-one-level.exr->exr/throughput": {
@@ -17928,7 +17928,7 @@
         "rel": 0
       },
       "ours": 100,
-      "delta": 47.277255,
+      "delta": 46.544132,
       "ratio": null
     },
     "hdr-image/tiled-zip-half-one-level.exr->png/ssim": {
@@ -17938,7 +17938,7 @@
         "rel": 0
       },
       "ours": 1,
-      "delta": 0.0005260000000000264,
+      "delta": 0.0005119999999999569,
       "ratio": null
     },
     "hdr-image/tiled-zip-half-one-level.exr->png/throughput": {

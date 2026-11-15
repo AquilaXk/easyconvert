@@ -7,6 +7,8 @@ import { dispatchConversion, materializeResultForTest } from '../src/lib/convers
 import { convertMedia } from '../src/lib/conversions/media';
 import {
   buildFfmpegArguments,
+  hasCachedHardwareProbe,
+  probeSupportedEncoders,
   resetHardwareAccelerationCache,
 } from '../src/lib/conversions/media-ffmpeg-args';
 import { openMediaInput } from '../src/lib/conversions/media-process';
@@ -68,15 +70,13 @@ describe('Track B P0 adversarial hardening regressions', () => {
   describe('F-01: media hardware gating, CRF fidelity, NVENC flags, and default originalFilename', () => {
     it('gates videotoolbox behind explicit gpuAcceleration: true while still probing hardware once for default options', async () => {
       const dir = makeTempDir('f01-vt-');
-      const logFile = path.join(dir, 'ffmpeg.log');
       const ffmpegStub = writeStubExecutable(
         dir,
         'ffmpeg',
         [
-          `printf '%s\\n' "$*" >> "${logFile}"`,
           'case " $* " in',
           '  *" -encoders "*)',
-          '    printf " V....D libx264\\n V....D h264_videotoolbox\\n V....D hevc_videotoolbox\\n A....D aac\\n"',
+          '    printf " V....D libx264\\n V....D h264_videotoolbox\\n V....D hevc_videotoolbox\\n V....D f01_probe_sentinel\\n A....D aac\\n"',
           '    exit 0 ;;',
           'esac',
           'exit 0',
@@ -93,7 +93,13 @@ describe('Track B P0 adversarial hardening regressions', () => {
       );
       const cvIdxDefault = defaultArgs.indexOf('-c:v');
       expect(defaultArgs[cvIdxDefault + 1]).toBe('libx264');
-      expect(fs.existsSync(logFile)).toBe(true);
+      expect(hasCachedHardwareProbe(ffmpegStub)).toBe(true);
+
+      // Replace the stub with a silent exit-0 script without clearing the probe cache:
+      // runFfmpegSync runs inside a read-only bwrap mount on Linux (workDir: null), so
+      // checking the cached sentinel proves buildFfmpegArguments probed ffmpegStub once.
+      writeStubExecutable(dir, 'ffmpeg', 'exit 0');
+      expect(probeSupportedEncoders(ffmpegStub).has('f01_probe_sentinel')).toBe(true);
 
       if (process.platform === 'darwin') {
         const gpuArgs = await buildFfmpegArguments(
