@@ -76,12 +76,52 @@ describe('what a tool run is called and starts with', () => {
     expect(defaultToolOptions('archive-create')).toEqual({ format: 'zip' });
     expect(defaultToolOptions('rotate')).toEqual({ rotate: { rotation: 90 } });
     expect(defaultToolOptions('split')).toEqual({});
-    expect([...TOOLS_WITH_OPTIONS].sort()).toEqual(['archive-create', 'rotate', 'split']);
+    expect([...TOOLS_WITH_OPTIONS].sort()).toEqual([
+      'archive-create',
+      'archive-extract',
+      'archive-inspect',
+      'delete-pages',
+      'extract-pages',
+      'protect',
+      'reorder-pages',
+      'rotate',
+      'split',
+      'unlock',
+      'watermark',
+    ]);
   });
 
   it('has a page for each tool at its own path', () => {
-    const paths = ['merge-pdf', 'create-zip-archive', 'extract-zip-archive', 'split-pdf', 'rotate-pdf'].map((slug) => parseConverterSlug(slug)?.canonicalPath);
-    expect(paths).toEqual(['/merge-pdf', '/create-zip-archive', '/extract-zip-archive', '/split-pdf', '/rotate-pdf']);
+    const paths = [
+      'merge-pdf',
+      'create-zip-archive',
+      'extract-zip-archive',
+      'split-pdf',
+      'rotate-pdf',
+      'protect-pdf',
+      'unlock-pdf',
+      'watermark-pdf',
+      'extract-pdf-pages',
+      'delete-pdf-pages',
+      'reorder-pdf-pages',
+      'inspect-archive',
+      'repair-zip',
+    ].map((slug) => parseConverterSlug(slug)?.canonicalPath);
+    expect(paths).toEqual([
+      '/merge-pdf',
+      '/create-zip-archive',
+      '/extract-zip-archive',
+      '/split-pdf',
+      '/rotate-pdf',
+      '/protect-pdf',
+      '/unlock-pdf',
+      '/watermark-pdf',
+      '/extract-pdf-pages',
+      '/delete-pdf-pages',
+      '/reorder-pdf-pages',
+      '/inspect-archive',
+      '/repair-zip',
+    ]);
     expect(WEB_TOOLS).toHaveLength(paths.length);
   });
 });
@@ -130,11 +170,13 @@ describe('the files a run would be turned away with', () => {
     expect(buttonNamed('Merge')!.disabled).toBe(true);
   });
 
-  it('are named before they are sent: files together over one request', async () => {
+  it('dispatches files together over 64 MiB as an async multipart tool job', async () => {
     const host = await mountSlug(ConverterPageView, 'merge-pdf');
     await inQueue(host, [claimed('a.pdf', 40 * MIB), claimed('b.pdf', 40 * MIB)]);
-    expect(summary()).toBe('A run takes up to 64 MB in total');
-    expect(buttonNamed('Merge')!.disabled).toBe(true);
+    expect(buttonNamed('Merge')!.disabled).toBe(false);
+    buttonNamed('Merge')!.click();
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0].url).toBe('/api/tools/jobs');
   });
 
   it('are named before they are sent: a file with nothing in it', async () => {

@@ -52,6 +52,10 @@ function DocumentAndSecurityGroup({ visible, options, onChange }: Readonly<Modal
           canConfigureLayout={visible.canConfigureLayout}
           canConfigureOcr={visible.canConfigureOcr}
           ocrAlwaysEnabled={visible.ocrAlwaysEnabled}
+          canConfigurePdfOptimize={visible.canConfigurePdfOptimize}
+          canConfigurePdfa={visible.canConfigurePdfa}
+          canConfigurePdfWatermark={visible.canConfigurePdfWatermark}
+          canConfigurePdfProtect={visible.canConfigurePdfProtect}
         />
       )}
       {visible.passwordMode && (

@@ -2,9 +2,9 @@
 
 - Repository: https://github.com/disposable-email-domains/disposable-email-domains
 - Path: `disposable_email_blocklist.conf`, `LICENSE.txt`
-- Commit: `ba992a0b4c867db3ff39605696bb7de9fbb2e11f`
-- Fetched: 2026-11-13
-- Domains: 10181
+- Commit: `cecb78fa408e59479fe5c3968ee16627ff11746a`
+- Fetched: 2026-11-15
+- Domains: 10234
 - Licence: CC0 1.0 Universal (public domain dedication, `LICENSE.txt`)
 
 The list is vendored whole so that the server never reads the network for it. `src/lib/auth/disposable-email-domains.generated.ts` is

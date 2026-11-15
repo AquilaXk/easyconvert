@@ -30,10 +30,53 @@ export async function applyEmailConfirmation(change: EmailConfirmation): Promise
   if (updated?.emailVerified !== true) throw new Error(`The address of ${change.email} was not confirmed.`);
 }
 
+/** Scans and counts all password accounts without emailVerified. Does not mutate Redis. */
+export async function countUnverifiedPasswordAccounts(): Promise<number> {
+  const client = redisUserStore.getRedisClient();
+  let count = 0;
+  if (client) {
+    const prefix = redisUserStore.getKeyPrefix();
+    let cursor = '0';
+    do {
+      const [nextCursor, keys] = await client.scan(cursor, 'MATCH', `${prefix}usr_*`, 'COUNT', 100);
+      cursor = nextCursor;
+      if (keys.length > 0) {
+        const values = await client.mget(keys);
+        for (const val of values) {
+          if (!val) continue;
+          try {
+            const user = JSON.parse(val) as UserRecord;
+            if (user.provider === 'email' && user.emailVerified !== true) {
+              count++;
+            }
+          } catch {
+            // ignore malformed
+          }
+        }
+      }
+    } while (cursor !== '0');
+  } else {
+    const memStore = (redisUserStore as unknown as { inMemoryStore?: Map<string, UserRecord> }).inMemoryStore;
+    if (memStore) {
+      for (const user of memStore.values()) {
+        if (user.provider === 'email' && user.emailVerified !== true) {
+          count++;
+        }
+      }
+    }
+  }
+  return count;
+}
+
 async function main(argv: readonly string[]): Promise<number> {
+  if (argv.includes('--dry-run') && !argv.includes('--user')) {
+    const count = await countUnverifiedPasswordAccounts();
+    console.log(JSON.stringify({ unverifiedPasswordAccounts: count }));
+    return 0;
+  }
   const idOrEmail = argv.includes('--user') ? argv[argv.indexOf('--user') + 1] : undefined;
   if (!idOrEmail) {
-    console.error('Usage: confirm-account-email --user <account id or email> [--apply]');
+    console.error('Usage: confirm-account-email --user <account id or email> [--apply] | --dry-run');
     return 2;
   }
   const change = await planEmailConfirmation(idOrEmail);

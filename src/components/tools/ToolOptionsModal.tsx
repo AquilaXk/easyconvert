@@ -89,10 +89,156 @@ function RotateSection({ options, onChange, t }: Readonly<SectionProps>) {
   );
 }
 
+function ProtectSection({ options, onChange, t }: Readonly<SectionProps>) {
+  const protect = options.protect ?? {};
+  const setProtect = (patch: Partial<NonNullable<WebToolOptions['protect']>>) =>
+    onChange({ ...options, protect: { ...protect, ...patch } });
+
+  return (
+    <section className="space-y-4">
+      <div>
+        <label htmlFor="tool-protect-user" className={LABEL_CLASS}>{t('protect.userPassword')}</label>
+        <input
+          id="tool-protect-user" type="password" autoComplete="off" value={protect.userPassword ?? ''}
+          onChange={(e) => setProtect({ userPassword: e.target.value || undefined })}
+          className={INPUT_CLASS}
+        />
+      </div>
+      <div>
+        <label htmlFor="tool-protect-owner" className={LABEL_CLASS}>{t('protect.ownerPassword')}</label>
+        <input
+          id="tool-protect-owner" type="password" autoComplete="off" value={protect.ownerPassword ?? ''}
+          onChange={(e) => setProtect({ ownerPassword: e.target.value || undefined })}
+          className={INPUT_CLASS}
+        />
+      </div>
+      <div>
+        <label htmlFor="tool-protect-keylength" className={LABEL_CLASS}>{t('protect.keyLength')}</label>
+        <select
+          id="tool-protect-keylength"
+          value={protect.keyLength ?? 256}
+          onChange={(e) => setProtect({ keyLength: Number(e.target.value) as 128 | 256 })}
+          className={SELECT_CLASS}
+        >
+          <option value={256}>{t('protect.key256')}</option>
+          <option value={128}>{t('protect.key128')}</option>
+        </select>
+      </div>
+    </section>
+  );
+}
+
+function UnlockSection({ options, onChange, t }: Readonly<SectionProps>) {
+  const unlock = options.unlock ?? {};
+  return (
+    <section className="space-y-4">
+      <div>
+        <label htmlFor="tool-unlock-pass" className={LABEL_CLASS}>{t('unlock.password')}</label>
+        <input
+          id="tool-unlock-pass" type="password" autoComplete="off" value={unlock.password ?? options.password ?? ''}
+          onChange={(e) => onChange({ ...options, unlock: { ...unlock, password: e.target.value || undefined }, password: e.target.value || undefined })}
+          className={INPUT_CLASS}
+        />
+      </div>
+      <label className="flex items-center gap-3 min-h-[44px] text-sm text-ink cursor-pointer">
+        <input
+          type="checkbox"
+          checked={unlock.confirmEditRights ?? options.confirmEditRights ?? false}
+          onChange={(e) => onChange({ ...options, unlock: { ...unlock, confirmEditRights: e.target.checked }, confirmEditRights: e.target.checked })}
+          className="size-4"
+        />
+        {t('unlock.confirmRights')}
+      </label>
+    </section>
+  );
+}
+
+function WatermarkSection({ options, onChange, t }: Readonly<SectionProps>) {
+  const watermark = options.watermark ?? {};
+  const setWatermark = (patch: Partial<NonNullable<WebToolOptions['watermark']>>) =>
+    onChange({ ...options, watermark: { ...watermark, ...patch } });
+  return (
+    <section className="space-y-4">
+      <div>
+        <label htmlFor="tool-wm-text" className={LABEL_CLASS}>{t('watermark.text')}</label>
+        <input
+          id="tool-wm-text" type="text" autoComplete="off" value={watermark.text ?? 'CONFIDENTIAL'}
+          onChange={(e) => setWatermark({ text: e.target.value })}
+          className={INPUT_CLASS}
+        />
+      </div>
+      <div>
+        <label htmlFor="tool-wm-opacity" className={LABEL_CLASS}>{t('watermark.opacity')}</label>
+        <input
+          id="tool-wm-opacity" type="number" min={0} max={1} step={0.1} value={watermark.opacity ?? 0.3}
+          onChange={(e) => setWatermark({ opacity: Number(e.target.value) })}
+          className={INPUT_CLASS}
+        />
+      </div>
+    </section>
+  );
+}
+
+function PageRangeSection({ options, onChange, t }: Readonly<SectionProps>) {
+  return (
+    <section className="space-y-3">
+      <div>
+        <label htmlFor="tool-pages-input" className={LABEL_CLASS}>{t('pages.label')}</label>
+        <input
+          id="tool-pages-input" type="text" autoComplete="off" value={options.pages ?? ''}
+          placeholder={t('pages.hint')} onChange={(e) => onChange({ ...options, pages: e.target.value || undefined })}
+          className={INPUT_CLASS}
+        />
+        <p className="mt-1.5 text-xs text-ink-3">{t('pages.help')}</p>
+      </div>
+    </section>
+  );
+}
+
+function ReorderPagesSection({ options, onChange, t }: Readonly<SectionProps>) {
+  const currentOrder = Array.isArray(options.order) ? options.order.join(',') : (options.order ?? '');
+  return (
+    <section className="space-y-3">
+      <div>
+        <label htmlFor="tool-order-input" className={LABEL_CLASS}>{t('order.label')}</label>
+        <input
+          id="tool-order-input" type="text" autoComplete="off" value={currentOrder}
+          placeholder={t('order.hint')} onChange={(e) => onChange({ ...options, order: e.target.value || undefined })}
+          className={INPUT_CLASS}
+        />
+        <p className="mt-1.5 text-xs text-ink-3">{t('order.help')}</p>
+      </div>
+    </section>
+  );
+}
+
+function PasswordOnlySection({ options, onChange, t }: Readonly<SectionProps>) {
+  return (
+    <section className="space-y-3">
+      <div>
+        <label htmlFor="tool-pass-input" className={LABEL_CLASS}>{t('password.label')}</label>
+        <input
+          id="tool-pass-input" type="password" autoComplete="off" value={options.password ?? ''}
+          placeholder={t('password.hint')} onChange={(e) => onChange({ ...options, password: e.target.value || undefined })}
+          className={INPUT_CLASS}
+        />
+      </div>
+    </section>
+  );
+}
+
 const SECTIONS: Partial<Record<WebTool, (props: Readonly<SectionProps>) => React.ReactElement>> = {
   'archive-create': ArchiveSection,
+  'archive-extract': PasswordOnlySection,
+  'archive-inspect': PasswordOnlySection,
   split: SplitSection,
   rotate: RotateSection,
+  protect: ProtectSection,
+  unlock: UnlockSection,
+  watermark: WatermarkSection,
+  'extract-pages': PageRangeSection,
+  'delete-pages': PageRangeSection,
+  'reorder-pages': ReorderPagesSection,
 };
 
 interface ToolOptionsModalProps {

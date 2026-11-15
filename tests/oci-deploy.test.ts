@@ -754,7 +754,7 @@ describe('env allowlist', () => {
   });
 
   it('lists nothing that the compose file does not read', () => {
-    const known = new Set([...referenced, ...passedThrough, 'EASYCONVERT_BUDGET_CPUS', 'EASYCONVERT_BUDGET_MEMORY_GB']);
+    const known = new Set([...referenced, ...passedThrough, 'EASYCONVERT_BUDGET_CPUS', 'EASYCONVERT_BUDGET_MEMORY_GB', 'COMPOSE_PROFILES']);
     expect(allowlist.filter((name) => !known.has(name))).toEqual([]);
   });
 });

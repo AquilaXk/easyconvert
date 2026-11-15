@@ -97,6 +97,7 @@ export interface FormatDefinition {
 export interface ConversionOptions {
   // Image options
   quality?: number;
+  optimizePng?: boolean;
   width?: number;
   height?: number;
   fit?: 'cover' | 'contain' | 'fill' | 'inside' | 'outside';

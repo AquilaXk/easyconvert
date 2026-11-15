@@ -28,6 +28,14 @@ export const TOOL_ROUTES = [
   { key: 'convertToPdfA', href: '/pdfa-converter' },
   { key: 'archiveCreate', href: '/create-zip-archive' },
   { key: 'archiveExtract', href: '/extract-zip-archive' },
+  { key: 'protectPdf', href: '/protect-pdf' },
+  { key: 'unlockPdf', href: '/unlock-pdf' },
+  { key: 'watermarkPdf', href: '/watermark-pdf' },
+  { key: 'extractPdfPages', href: '/extract-pdf-pages' },
+  { key: 'deletePdfPages', href: '/delete-pdf-pages' },
+  { key: 'reorderPdfPages', href: '/reorder-pdf-pages' },
+  { key: 'inspectArchive', href: '/inspect-archive' },
+  { key: 'repairZip', href: '/repair-zip' },
 ] as const satisfies readonly SiteLink[];
 
 export const PRIMARY_LINKS = [

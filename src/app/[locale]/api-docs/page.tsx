@@ -2,6 +2,8 @@ import ApiDocsPageView from '@/components/pages/ApiDocsPageView';
 import PageMessages from '@/i18n/PageMessages';
 import { localizedPageMetadata, resolvePageLocale, type LocaleParams } from '@/i18n/page';
 
+export const dynamic = 'force-dynamic';
+
 export function generateMetadata({ params }: { params: LocaleParams }) {
   return localizedPageMetadata(params, 'apiDocs', '/api-docs');
 }

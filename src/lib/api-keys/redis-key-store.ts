@@ -226,12 +226,34 @@ export class RedisKeyStore extends KeyStore {
     }
   }
 
+  private readonly standingCache = new Map<string, { standing: { balance: number; held: number }; expiresAt: number }>();
+
+  public clearStandingCache(userId?: string): void {
+    if (userId) {
+      this.standingCache.delete(userId);
+    } else {
+      this.standingCache.clear();
+    }
+  }
+
   /** `user` with the paid tier when its package balance, or the package credits that work in flight holds, is above zero: packages are held beside the account, so the tier of the record does not say. Throws `AuthStoreUnavailableError` when the balance cannot be read. */
   public async withCreditTier<T extends { id: string; tier: UserTier }>(user: T): Promise<T> {
     if (user.tier === 'paid') return user;
     try {
-      const { balance, held } = await this.ledger().packageStanding(user.id);
-      return balance + held > 0 ? { ...user, tier: 'paid' } : user;
+      const now = performance.now();
+      const cached = this.standingCache.get(user.id);
+      let standing: { balance: number; held: number };
+      if (cached && cached.expiresAt > now) {
+        standing = cached.standing;
+      } else {
+        standing = await this.ledger().packageStanding(user.id);
+        if (this.standingCache.size >= 4096) {
+          const first = this.standingCache.keys().next().value;
+          if (first) this.standingCache.delete(first);
+        }
+        this.standingCache.set(user.id, { standing, expiresAt: now + 1000 });
+      }
+      return standing.balance + standing.held > 0 ? { ...user, tier: 'paid' } : user;
     } catch (error) {
       // The balance decides the tier of who a caller is, so a store that cannot answer is a 503 here, as for the account store, never a 500 or a guess.
       return failClosed('RedisKeyStore', 'withCreditTier', error);
@@ -269,6 +291,7 @@ export class RedisKeyStore extends KeyStore {
 
   /** Adds the credits of a paid package payment to the account, once for each transaction id, and remembers whose payment it is for refunds. */
   public async creditPackage(userId: string, grant: PackageGrant): Promise<PackageGrantOutcome> {
+    this.clearStandingCache(userId);
     const outcome = await this.ledger().grantPackage(userId, grant);
     await this.ledger().rememberTransactionOwner(grant.transactionId, userId);
     return outcome;
@@ -281,6 +304,7 @@ export class RedisKeyStore extends KeyStore {
 
   /** Takes back the unused credits of a refunded package payment, once for each adjustment. */
   public async revokePackage(userId: string, refund: PackageRefundRequest): Promise<PackageRevokeOutcome> {
+    this.clearStandingCache(userId);
     return this.ledger().revokePackage(userId, refund);
   }
 
@@ -387,6 +411,7 @@ export class RedisKeyStore extends KeyStore {
       const reservationId = reservationIdOf(userId, day);
       const request = { owner: userId, day, dayLeftMs: window.endsAt - Date.now(), reservationId, units, limit, leaseMs: RESERVATION_LEASE.provisionalMs };
       const reserved = await this.ledger().reserve(request);
+      this.clearStandingCache(userId);
       return reserved.allowed ? { allowed: true, reservationId, remaining: reserved.remaining } : { allowed: false, remaining: Math.max(0, reserved.remaining) };
     } catch (err) {
       console.error('[RedisKeyStore] Redis reserveQuota failed:', err);
@@ -428,6 +453,7 @@ export class RedisKeyStore extends KeyStore {
    */
   private async endReservation<T>(action: string, reservationId: string, step: (ledger: ReservationLedger) => Promise<T>): Promise<T | undefined> {
     if (!reservationId || typeof reservationId !== 'string') return undefined;
+    this.clearStandingCache();
     try {
       return await step(this.ledger());
     } catch (err) {

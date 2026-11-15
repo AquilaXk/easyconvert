@@ -121,7 +121,8 @@ function computeMediaCaps(
   const hasAudioSource = sourceCategory === 'video' || sourceCategory === 'audio';
   const showAudio =
     (targetCategory === 'audio' && tgt !== 'dss') || (targetCategory === 'video' && hasAudioSource);
-  return { showVideo, showVideoCodec, showImage, showAudio };
+  const canConfigureOptimizePng = tgt === 'png';
+  return { showVideo, showVideoCodec, showImage, showAudio, canConfigureOptimizePng };
 }
 
 function canSelectSourcePages(
@@ -153,8 +154,29 @@ function computeDocumentCaps(
   const canConfigureLayout = canConfigurePdfOrientation(src, tgt, sourceCategory);
   const canConfigureOcr = (src === 'pdf' || sourceCategory === 'image') && OCR_TARGETS.has(tgt);
   const ocrAlwaysEnabled = tgt === 'hocr' || tgt === 'alto';
-  const showDocument = canSelectPages || canConfigureLayout || canConfigureOcr;
-  return { canSelectPages, canConfigureLayout, canConfigureOcr, ocrAlwaysEnabled, showDocument };
+  const canConfigurePdfOptimize = src === 'pdf' && tgt === 'pdf';
+  const canConfigurePdfa = tgt === 'pdf';
+  const canConfigurePdfWatermark = tgt === 'pdf';
+  const canConfigurePdfProtect = tgt === 'pdf';
+  const showDocument =
+    canSelectPages ||
+    canConfigureLayout ||
+    canConfigureOcr ||
+    canConfigurePdfOptimize ||
+    canConfigurePdfa ||
+    canConfigurePdfWatermark ||
+    canConfigurePdfProtect;
+  return {
+    canSelectPages,
+    canConfigureLayout,
+    canConfigureOcr,
+    ocrAlwaysEnabled,
+    canConfigurePdfOptimize,
+    canConfigurePdfa,
+    canConfigurePdfWatermark,
+    canConfigurePdfProtect,
+    showDocument,
+  };
 }
 
 function canConfigureTableDelimiter(
@@ -211,6 +233,9 @@ function applySanitizedImageOptions(
   options: ConversionOptions,
   visible: VisibleOptionsSections
 ): void {
+  if (visible.canConfigureOptimizePng && options.optimizePng !== undefined) {
+    next.optimizePng = options.optimizePng;
+  }
   if (!visible.showImage) return;
   if (options.width !== undefined) next.width = options.width;
   if (options.height !== undefined) next.height = options.height;
@@ -246,7 +271,22 @@ function applySanitizedOcrOptions(
 }
 
 function applySanitizedPdfaOptions(next: ConversionOptions, options: ConversionOptions, visible: VisibleOptionsSections): void {
-  if (options.pdfa && visible.tgt === 'pdf') next.pdfa = options.pdfa;
+  if (visible.canConfigurePdfa && options.pdfa) next.pdfa = options.pdfa;
+}
+
+function applySanitizedPdfOptimizeOptions(next: ConversionOptions, options: ConversionOptions, visible: VisibleOptionsSections): void {
+  if (visible.canConfigurePdfOptimize && options.optimize?.profile) {
+    next.optimize = { profile: options.optimize.profile };
+  }
+}
+
+function applySanitizedWatermarkAndProtectOptions(next: ConversionOptions, options: ConversionOptions, visible: VisibleOptionsSections): void {
+  if (visible.canConfigurePdfWatermark && options.watermark?.text?.trim()) {
+    next.watermark = options.watermark;
+  }
+  if (visible.canConfigurePdfProtect && options.protect && (!options.pdfa || !options.pdfa.conformance)) {
+    next.protect = options.protect;
+  }
 }
 
 function applySanitizedDocumentOptions(
@@ -265,6 +305,8 @@ function applySanitizedDocumentOptions(
   }
   applySanitizedOcrOptions(next, options, visible);
   applySanitizedPdfaOptions(next, options, visible);
+  applySanitizedPdfOptimizeOptions(next, options, visible);
+  applySanitizedWatermarkAndProtectOptions(next, options, visible);
 }
 
 function hasForbiddenPasswordChars(value: string): boolean {

@@ -2,7 +2,7 @@
  * Single source of truth for job graph node operations: the canonical names the node executor
  * runs, the legacy spellings accepted at the API and rewritten to them, and per-operation rules.
  */
-import { minuteSurcharge } from '../billing/credits';
+import { baseCredits, minuteSurcharge } from '../billing/credits';
 
 export const GRAPH_OPERATIONS = [
   'import.upload',
@@ -158,9 +158,67 @@ function declaredInputCount(input: string | string[] | undefined): number {
  * charged per output one for each input it declares (the most it charges when each input holds one file), a `once` node
  * one, a `free` node none.
  */
-export function graphNodeReservedUnits(node: { op?: string; input?: string | string[] }): number {
+function staticallyKnownOutputFormat(upstreamNode: Record<string, unknown> | undefined): string | undefined {
+  if (!upstreamNode) return undefined;
+  const op = typeof upstreamNode.op === 'string' ? upstreamNode.op : undefined;
+  if (!op) return undefined;
+  if (typeof upstreamNode.targetFormat === 'string' && upstreamNode.targetFormat) {
+    return upstreamNode.targetFormat.toLowerCase();
+  }
+  if (op === 'ocr' || op.startsWith('pdf.')) return 'pdf';
+  if (op === 'metadata') return 'json';
+  if (op === 'archive.create' || op === 'media.package' || op === 'pdf.split-pages') return 'zip';
+
+  const nameCandidate =
+    (typeof upstreamNode.filename === 'string' && upstreamNode.filename) ||
+    (typeof upstreamNode.key === 'string' && upstreamNode.key) ||
+    (typeof upstreamNode.url === 'string' && upstreamNode.url.split('?')[0].split('#')[0].split('/').pop()) ||
+    undefined;
+
+  if (nameCandidate) {
+    const ext = nameCandidate.split('.').pop()?.toLowerCase();
+    if (ext && ext !== nameCandidate) return ext;
+  }
+  return undefined;
+}
+
+function convertNodeReservedUnits(
+  node: { op?: string; input?: string | string[]; targetFormat?: string; [key: string]: unknown },
+  allNodes?: Readonly<Record<string, Record<string, unknown>>>
+): number {
+  if (!allNodes || !node.targetFormat) return declaredInputCount(node.input);
+  let inputs: string[] = [];
+  if (Array.isArray(node.input)) {
+    inputs = node.input;
+  } else if (typeof node.input === 'string') {
+    inputs = [node.input];
+  }
+  if (inputs.length === 0) return 0;
+  let sum = 0;
+  for (const inputKey of inputs) {
+    const upstream = allNodes[inputKey];
+    const sourceExt = staticallyKnownOutputFormat(upstream);
+    sum += sourceExt ? baseCredits(sourceExt, node.targetFormat) : 1;
+  }
+  return sum;
+}
+
+/**
+ * The units a node of `op` that names `input` reserves when its graph is submitted, by the rule it is charged by: a node
+ * charged per output one for each input it declares (the most it charges when each input holds one file), a `once` node
+ * one, a `free` node none.
+ */
+export function graphNodeReservedUnits(
+  node: { op?: string; input?: string | string[]; targetFormat?: string; [key: string]: unknown },
+  allNodes?: Readonly<Record<string, Record<string, unknown>>>
+): number {
   const rule = chargeRuleOf(node.op);
-  if (rule === 'per-output' || rule === 'per-gained-output') return declaredInputCount(node.input);
+  if (rule === 'per-output' || rule === 'per-gained-output') {
+    if (node.op === 'convert' && allNodes) {
+      return convertNodeReservedUnits(node, allNodes);
+    }
+    return declaredInputCount(node.input);
+  }
   return rule === 'once' ? 1 : 0;
 }
 
@@ -177,9 +235,12 @@ export function isChargedPerOutput(op: string | undefined): boolean {
  * The units a graph of `nodes` reserves when it is submitted (`graphNodeReservedUnits`). A node whose inputs hold more
  * files than it declares adds the rest to the reservation when it starts.
  */
-export function graphReservationUnits(nodes: Readonly<Record<string, { op?: string; input?: string | string[] }>>): number {
+export function graphReservationUnits(
+  nodes: Readonly<Record<string, { op?: string; input?: string | string[]; targetFormat?: string; [key: string]: unknown }>>
+): number {
   let units = 0;
-  for (const node of Object.values(nodes)) units += graphNodeReservedUnits(node);
+  const allNodes = nodes as Readonly<Record<string, Record<string, unknown>>>;
+  for (const node of Object.values(nodes)) units += graphNodeReservedUnits(node, allNodes);
   return units;
 }
 

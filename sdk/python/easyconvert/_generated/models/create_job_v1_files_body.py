@@ -18,12 +18,14 @@ T = TypeVar("T", bound="CreateJobV1FilesBody")
 class CreateJobV1FilesBody:
     """
     Attributes:
-        target_format (str): Target format extension. With `tasks`, the final task determines the output format.
         file (File | Unset): Source input file binary, up to 32 MiB in the request. A larger file is uploaded through
             `/api/v1/uploads` and named by `storageKey`.
+        target_format (str | Unset): Target format extension. With `tasks` or `graph`, the graph or final task
+            determines the output format.
         source_format (str | Unset): Source format extension.
         storage_key (str | Unset): Key of an object from the multipart upload API (`uploads/...`), or an output owned by
             the caller (`conversions/{userId}/...`, `results/{jobId}/...`). Any other key returns 404.
+        upload_id (str | Unset): Identifier of a completed resumable upload session from `/api/v1/uploads`.
         options (str | Unset): JSON-serialized conversion options (e.g. quality, resolution, delimiter). Document
             options: `layout` (PDF to TXT: keep the physical layout), `imageDpi` and `jpegQuality` (Office to PDF: opt-in
             image compression), and `pdfa` or `pdfStandard` (PDF/A output, validated with veraPDF; a request that names no
@@ -31,34 +33,41 @@ class CreateJobV1FilesBody:
         tasks (str | Unset): JSON-serialized array of sequential pipeline tasks: [{ name, operation, targetFormat,
             options }], or a JSON-serialized object of named tasks (a task graph) keyed by task name, as `tasks` of the JSON
             body.
+        graph (str | Unset): JSON-serialized processing graph specification with typed nodes and directed edges.
         webhook_url (str | Unset): Destination URL for job events.
         webhook_secret (str | Unset): Secret used for HMAC-SHA256 signature.
     """
 
-    target_format: str
     file: File | Unset = UNSET
+    target_format: str | Unset = UNSET
     source_format: str | Unset = UNSET
     storage_key: str | Unset = UNSET
+    upload_id: str | Unset = UNSET
     options: str | Unset = UNSET
     tasks: str | Unset = UNSET
+    graph: str | Unset = UNSET
     webhook_url: str | Unset = UNSET
     webhook_secret: str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        target_format = self.target_format
-
         file: FileTypes | Unset = UNSET
         if not isinstance(self.file, Unset):
             file = self.file.to_tuple()
+
+        target_format = self.target_format
 
         source_format = self.source_format
 
         storage_key = self.storage_key
 
+        upload_id = self.upload_id
+
         options = self.options
 
         tasks = self.tasks
+
+        graph = self.graph
 
         webhook_url = self.webhook_url
 
@@ -66,21 +75,23 @@ class CreateJobV1FilesBody:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "targetFormat": target_format,
-            }
-        )
+        field_dict.update({})
         if file is not UNSET:
             field_dict["file"] = file
+        if target_format is not UNSET:
+            field_dict["targetFormat"] = target_format
         if source_format is not UNSET:
             field_dict["sourceFormat"] = source_format
         if storage_key is not UNSET:
             field_dict["storageKey"] = storage_key
+        if upload_id is not UNSET:
+            field_dict["uploadId"] = upload_id
         if options is not UNSET:
             field_dict["options"] = options
         if tasks is not UNSET:
             field_dict["tasks"] = tasks
+        if graph is not UNSET:
+            field_dict["graph"] = graph
         if webhook_url is not UNSET:
             field_dict["webhookUrl"] = webhook_url
         if webhook_secret is not UNSET:
@@ -91,12 +102,13 @@ class CreateJobV1FilesBody:
     def to_multipart(self) -> types.RequestFiles:
         files: types.RequestFiles = []
 
-        files.append(
-            ("targetFormat", (None, str(self.target_format).encode(), "text/plain"))
-        )
-
         if not isinstance(self.file, Unset):
             files.append(("file", self.file.to_tuple()))
+
+        if not isinstance(self.target_format, Unset):
+            files.append(
+                ("targetFormat", (None, str(self.target_format).encode(), "text/plain"))
+            )
 
         if not isinstance(self.source_format, Unset):
             files.append(
@@ -108,11 +120,19 @@ class CreateJobV1FilesBody:
                 ("storageKey", (None, str(self.storage_key).encode(), "text/plain"))
             )
 
+        if not isinstance(self.upload_id, Unset):
+            files.append(
+                ("uploadId", (None, str(self.upload_id).encode(), "text/plain"))
+            )
+
         if not isinstance(self.options, Unset):
             files.append(("options", (None, str(self.options).encode(), "text/plain")))
 
         if not isinstance(self.tasks, Unset):
             files.append(("tasks", (None, str(self.tasks).encode(), "text/plain")))
+
+        if not isinstance(self.graph, Unset):
+            files.append(("graph", (None, str(self.graph).encode(), "text/plain")))
 
         if not isinstance(self.webhook_url, Unset):
             files.append(
@@ -135,8 +155,6 @@ class CreateJobV1FilesBody:
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         d = dict(src_dict)
-        target_format = d.pop("targetFormat")
-
         _file = d.pop("file", UNSET)
         file: File | Unset
         if isinstance(_file, Unset):
@@ -144,25 +162,33 @@ class CreateJobV1FilesBody:
         else:
             file = File(payload=BytesIO(_file))
 
+        target_format = d.pop("targetFormat", UNSET)
+
         source_format = d.pop("sourceFormat", UNSET)
 
         storage_key = d.pop("storageKey", UNSET)
 
+        upload_id = d.pop("uploadId", UNSET)
+
         options = d.pop("options", UNSET)
 
         tasks = d.pop("tasks", UNSET)
+
+        graph = d.pop("graph", UNSET)
 
         webhook_url = d.pop("webhookUrl", UNSET)
 
         webhook_secret = d.pop("webhookSecret", UNSET)
 
         create_job_v1_files_body = cls(
-            target_format=target_format,
             file=file,
+            target_format=target_format,
             source_format=source_format,
             storage_key=storage_key,
+            upload_id=upload_id,
             options=options,
             tasks=tasks,
+            graph=graph,
             webhook_url=webhook_url,
             webhook_secret=webhook_secret,
         )

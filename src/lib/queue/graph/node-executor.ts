@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { baseCredits } from '../../billing/credits';
+import { baseCredits, minuteSurcharge } from '../../billing/credits';
 import { Readable } from 'node:stream';
 import JSZip from 'jszip';
 import type { Job } from '../bullmq-engine';
@@ -225,6 +225,7 @@ interface NodeContext {
   storage: IStorageBackend;
   engine: ConversionEnginePort;
   attemptSignal: AbortSignal;
+  fileDurations?: number[];
 }
 
 async function convertGraphNodeInputs(
@@ -249,7 +250,9 @@ async function convertGraphNodeInputs(
     const srcExt = artifactExtension(stored.filename, inputKey);
     const safeInputName = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), `input.${srcExt}`);
     const source = spec.prepare ? await spec.prepare({ buffer: stored.buffer, srcExt, name: safeInputName }) : { buffer: stored.buffer, srcExt, options: spec.options };
+    const fileStart = Date.now();
     const convRes = await context.engine.convert(source.buffer, source.srcExt, spec.targetFormat, source.options, safeInputName);
+    context.fileDurations?.push(Date.now() - fileStart);
     keys.push(
       await saveIntermediateNodeOutput(
         context.storage,
@@ -314,6 +317,7 @@ async function runCaptureNode(context: NodeContext, node: GraphNode & { op: 'cap
     ),
   ];
 }
+
 
 /** A metadata node: the report of its first input, as `metadata.json`. */
 async function runMetadataNode(context: NodeContext): Promise<string[]> {
@@ -544,9 +548,31 @@ export async function processGraphNodeJobIfAlive(
  * that input and its target) and its own minutes beyond the first; every other operation one credit for each output, as the rule of
  * its operation says (docs/policy-decisions.md, entry 285).
  */
-function nodeCharge(node: { op?: string; targetFormat?: string }, inputArtifacts: readonly string[], product: GraphNodeProduct, processingMs: number): number {
-  const inputClassCredits = node.op === 'convert' ? inputArtifacts.map((key) => baseCredits(path.extname(key).slice(1), node.targetFormat ?? '')) : [];
-  return graphNodeCharge(node.op, product, { inputClassCredits, processingMs });
+async function nodeCharge(
+  node: { op?: string; targetFormat?: string },
+  inputArtifacts: readonly string[],
+  product: GraphNodeProduct,
+  processingMs: number,
+  storage?: IStorageBackend,
+  perFileDurations?: readonly number[]
+): Promise<number> {
+  let inputClassCredits: number[] = [];
+  if (node.op === 'convert') {
+    inputClassCredits = await Promise.all(
+      inputArtifacts.map(async (key) => {
+        let filename: string | undefined;
+        if (storage) {
+          const stored = await storage.getObject(key).catch(() => undefined);
+          filename = stored?.filename;
+        }
+        const ext = artifactExtension(filename, key);
+        return baseCredits(ext, node.targetFormat ?? '');
+      })
+    );
+  }
+  const durations = perFileDurations && perFileDurations.length > 0 ? perFileDurations : [processingMs];
+  const surcharge = product.outputs > 0 ? durations.reduce((sum, ms) => sum + minuteSurcharge(ms), 0) : 0;
+  return graphNodeCharge(node.op, product, { inputClassCredits, processingMs: 0 }) + surcharge;
 }
 
 export async function processGraphNodeJob(
@@ -569,7 +595,7 @@ export async function processGraphNodeJob(
     const node = openedNode(job.data.graphNode as GraphNode, graphNodeJobId(graphId, nodeId));
     const effectiveStorage: IStorageBackend = scope.storage;
     let outputKeys: string[] = [];
-    const optimizations: NonNullable<ConversionJobResult['optimizations']> = [];
+    const optimizations: NonNullable<ConversionJobResult['optimizations']> = [], fileDurations: number[] = [];
     const effectiveEngine = recordingConversions(deadlineBoundEngine(engine || dispatchEngine, job));
     await job.log(`Executing graph node "${nodeId}" (op: ${node.op}) in graph ${graphId}`);
     await job.updateProgress(10);
@@ -606,7 +632,7 @@ export async function processGraphNodeJob(
 
         outputKeys.push(
           ...(await convertGraphNodeInputs(
-            { graphId, nodeId, inputArtifacts, storage: effectiveStorage, engine: effectiveEngine, attemptSignal },
+            { graphId, nodeId, inputArtifacts, storage: effectiveStorage, engine: effectiveEngine, attemptSignal, fileDurations },
             { targetFormat: node.targetFormat, options: node.options || {}, fallbackFilename: `output.${node.targetFormat}` }
           ))
         );
@@ -617,7 +643,7 @@ export async function processGraphNodeJob(
       case 'ocr': {
         outputKeys.push(
           ...(await convertGraphNodeInputs(
-            { graphId, nodeId, inputArtifacts, storage: effectiveStorage, engine: effectiveEngine, attemptSignal },
+            { graphId, nodeId, inputArtifacts, storage: effectiveStorage, engine: effectiveEngine, attemptSignal, fileDurations },
             { targetFormat: 'pdf', options: { ...(node.options || {}), ocrEnabled: true }, fallbackFilename: 'ocr.pdf' }
           ))
         );
@@ -665,7 +691,7 @@ export async function processGraphNodeJob(
         const packaging: MediaPackagingOptions = node.options?.packaging ?? { format: DEFAULT_PACKAGING_FORMAT };
         outputKeys.push(
           ...(await convertGraphNodeInputs(
-            { graphId, nodeId, inputArtifacts, storage: effectiveStorage, engine: effectiveEngine, attemptSignal },
+            { graphId, nodeId, inputArtifacts, storage: effectiveStorage, engine: effectiveEngine, attemptSignal, fileDurations },
             {
               targetFormat: packaging.format,
               options: { ...(node.options || {}), packaging },
@@ -931,7 +957,7 @@ export async function processGraphNodeJob(
     // cancel or takeover), so the node is never recorded as completed.
     attemptSignal.throwIfAborted();
     const outputs = [...new Set(outputKeys)];
-    await graphScheduler.onNodeCompleted(graphId, nodeId, outputs, nodeCharge(node, inputArtifacts, { outputs: outputs.length, optimizations }, durationMs));
+    await graphScheduler.onNodeCompleted(graphId, nodeId, outputs, await nodeCharge(node, inputArtifacts, { outputs: outputs.length, optimizations }, durationMs, effectiveStorage, fileDurations));
 
     return {
       jobId: job.id,

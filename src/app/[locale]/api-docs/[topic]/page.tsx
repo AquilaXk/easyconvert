@@ -9,6 +9,7 @@ import { resolvePageLocale } from '@/i18n/page';
 
 type TopicParams = Promise<{ locale: string; topic: string }>;
 
+export const dynamic = 'force-dynamic';
 export const dynamicParams = false;
 
 export function generateStaticParams() {

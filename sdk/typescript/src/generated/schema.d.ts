@@ -2843,16 +2843,20 @@ export interface operations {
                      * @description Source input file binary, up to 32 MiB in the request. A larger file is uploaded through `/api/v1/uploads` and named by `storageKey`.
                      */
                     file?: string;
-                    /** @description Target format extension. With `tasks`, the final task determines the output format. */
-                    targetFormat: string;
+                    /** @description Target format extension. With `tasks` or `graph`, the graph or final task determines the output format. */
+                    targetFormat?: string;
                     /** @description Source format extension. */
                     sourceFormat?: string;
                     /** @description Key of an object from the multipart upload API (`uploads/...`), or an output owned by the caller (`conversions/{userId}/...`, `results/{jobId}/...`). Any other key returns 404. */
                     storageKey?: string;
+                    /** @description Identifier of a completed resumable upload session from `/api/v1/uploads`. */
+                    uploadId?: string;
                     /** @description JSON-serialized conversion options (e.g. quality, resolution, delimiter). Document options: `layout` (PDF to TXT: keep the physical layout), `imageDpi` and `jpegQuality` (Office to PDF: opt-in image compression), and `pdfa` or `pdfStandard` (PDF/A output, validated with veraPDF; a request that names no level is answered at pdfa-2b). */
                     options?: string;
                     /** @description JSON-serialized array of sequential pipeline tasks: [{ name, operation, targetFormat, options }], or a JSON-serialized object of named tasks (a task graph) keyed by task name, as `tasks` of the JSON body. */
                     tasks?: string;
+                    /** @description JSON-serialized processing graph specification with typed nodes and directed edges. */
+                    graph?: string;
                     /**
                      * Format: uri
                      * @description Destination URL for job events.

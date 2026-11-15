@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import JSZip from 'jszip';
+import { streamZipReadable } from '@/lib/archive/streaming-zip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
 import { executeItemConversion } from '@/lib/client-converter';
@@ -149,12 +149,19 @@ async function downloadCompletedBundle(items: ConversionQueueItem[], prefix: str
         return { item, blob: await res.blob() };
       })
   );
-  const zip = new JSZip();
   const used = new Set<string>();
-  for (const { item, blob } of resolvedEntries) {
-    zip.file(buildUniqueArchiveName(item.name, item.targetFormat, used), blob);
+  async function* generateEntries() {
+    for (const { item, blob } of resolvedEntries) {
+      yield {
+        name: buildUniqueArchiveName(item.name, item.targetFormat, used),
+        data: blob,
+        size: blob.size,
+      };
+    }
   }
-  const zipUrl = URL.createObjectURL(await zip.generateAsync({ type: 'blob' }));
+  const stream = streamZipReadable(generateEntries());
+  const zipBlob = await new Response(stream).blob();
+  const zipUrl = URL.createObjectURL(zipBlob);
   const anchor = document.createElement('a');
   anchor.href = zipUrl;
   anchor.download = `${prefix}_${Date.now()}.zip`;

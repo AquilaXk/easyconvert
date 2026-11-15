@@ -6,7 +6,7 @@ import {
   rotatePdfPages,
   splitPdfPages,
 } from '../conversions';
-import { ARCHIVE_SECURITY_LIMITS } from '../conversions/archive';
+import { ARCHIVE_SECURITY_LIMITS, inspectArchive, repairZipArchive } from '../conversions/archive';
 import { ARCHIVE_COMPRESSION_LEVEL_DEFAULT } from '../conversions/archive-compression-level';
 import { gzipInBlocks } from '../conversions/deflate-blocks';
 import type { ArchiveExtractionLimits } from '../conversions/archive-extraction-safety';
@@ -28,9 +28,18 @@ import {
   type WebToolOptions,
 } from './tool-names';
 import type { ConversionRefusalCode } from '../refusal-codes';
-import { ConversionFailedError, type PdfRotateOptions } from '../types';
-
-
+import {
+  ConversionFailedError,
+  type ArchiveInspectResponse,
+  type PdfProtectOptions,
+  type PdfRotateOptions,
+  type PdfRotationDegrees,
+  type PdfWatermarkOptions,
+} from '../types';
+import { protectPdf } from '../conversions/pdf-postprocess/protect';
+import { unlockPdf } from '../conversions/pdf-postprocess/unlock';
+import { applyPdfWatermark } from '../conversions/pdf-postprocess/watermark';
+import { deletePdfPages, extractPdfPages, reorderPdfPages } from '../conversions/pdf-postprocess/page-ops';
 
 /** The refusals of a tool run that no engine error names; a code is the key of a sentence in the interface. */
 export type WebToolRefusalCode = Extract<
@@ -66,7 +75,8 @@ export interface ExtractedEntry {
 
 export type WebToolOutput =
   | { kind: 'file'; filename: string; mimeType: string; buffer: Buffer }
-  | { kind: 'entries'; entries: ExtractedEntry[] };
+  | { kind: 'entries'; entries: ExtractedEntry[] }
+  | { kind: 'inspection'; inspection: ArchiveInspectResponse };
 
 const ARCHIVE_INPUT_EXTENSIONS = [
   'zip',
@@ -93,7 +103,19 @@ const OPAQUE_MIME_TYPE = 'application/octet-stream';
 const DEFAULT_ARCHIVE_FORMAT = 'zip';
 
 /** The tools that take exactly one file. */
-const SINGLE_FILE_TOOLS: ReadonlySet<WebTool> = new Set<WebTool>(['archive-extract', 'split', 'rotate']);
+const SINGLE_FILE_TOOLS: ReadonlySet<WebTool> = new Set<WebTool>([
+  'archive-extract',
+  'split',
+  'rotate',
+  'protect',
+  'unlock',
+  'watermark',
+  'extract-pages',
+  'delete-pages',
+  'reorder-pages',
+  'archive-inspect',
+  'zip-repair',
+]);
 
 function extensionOfName(name: string): string {
   const lower = name.toLowerCase();
@@ -127,15 +149,24 @@ function refuseFileCount(tool: WebTool, count: number): void {
 
 const pdfExtensionOf = (name: string): string | undefined => (extensionOfName(name) === PDF_EXTENSION ? PDF_EXTENSION : undefined);
 
+function expectedExtension(tool: WebTool, name: string): { extension?: string; kind: string } {
+  if (tool === 'zip-repair') {
+    const ext = extensionOfName(name);
+    return { extension: ext === 'zip' ? 'zip' : undefined, kind: 'a ZIP archive' };
+  }
+  if (tool === 'archive-extract' || tool === 'archive-inspect') {
+    return { extension: archiveExtensionOf(name), kind: 'an archive (ZIP, 7Z, RAR, TAR or TAR.GZ)' };
+  }
+  return { extension: pdfExtensionOf(name), kind: 'a PDF' };
+}
+
 function refuseUnreadableInput(tool: WebTool, file: WebToolFile): void {
   if (file.buffer.length === 0) {
     throw new WebToolRefusal(HTTP_BAD_REQUEST, 'empty_file', `The file "${file.name}" is empty.`);
   }
   if (tool === 'archive-create') return;
-  const isExtract = tool === 'archive-extract';
-  const extension = isExtract ? archiveExtensionOf(file.name) : pdfExtensionOf(file.name);
+  const { extension, kind } = expectedExtension(tool, file.name);
   if (extension === undefined) {
-    const kind = isExtract ? 'an archive (ZIP, 7Z, RAR, TAR or TAR.GZ)' : 'a PDF';
     throw new WebToolRefusal(HTTP_BAD_REQUEST, 'unsupported_input', `The file "${file.name}" is not ${kind}.`);
   }
   try {
@@ -157,10 +188,8 @@ export function assertToolUploadMetadata(tool: WebTool, uploads: readonly { name
       throw new WebToolRefusal(HTTP_BAD_REQUEST, 'empty_file', `The file "${file.name}" is empty.`);
     }
     if (tool === 'archive-create') continue;
-    const isExtract = tool === 'archive-extract';
-    const extension = isExtract ? archiveExtensionOf(file.name) : pdfExtensionOf(file.name);
+    const { extension, kind } = expectedExtension(tool, file.name);
     if (extension === undefined) {
-      const kind = isExtract ? 'an archive (ZIP, 7Z, RAR, TAR or TAR.GZ)' : 'a PDF';
       throw new WebToolRefusal(HTTP_BAD_REQUEST, 'unsupported_input', `The file "${file.name}" is not ${kind}.`);
     }
   }
@@ -189,28 +218,124 @@ function pageSpecOf(value: unknown, name: string): string | undefined {
   return value;
 }
 
-function splitOptionsOf(value: unknown): WebToolOptions {
-  if (value === undefined) return {};
-  if (!isPlainObject(value)) refuseOptions('"split" must be an object.');
-  const { everyNPages } = value;
-  if (everyNPages !== undefined && (typeof everyNPages !== 'number' || !Number.isInteger(everyNPages))) refuseOptions('"split.everyNPages" must be a whole number.');
-  return { split: { ranges: pageSpecOf(value.ranges, 'split.ranges'), everyNPages: everyNPages as number | undefined } };
+function splitOptionsOf(value: unknown, top: Record<string, unknown>): WebToolOptions {
+  if (value !== undefined && !isPlainObject(value)) refuseOptions('"split" must be an object.');
+  const target = isPlainObject(value) ? value : top;
+  const { ranges, everyNPages } = target;
+  if (everyNPages !== undefined && (typeof everyNPages !== 'number' || !Number.isInteger(everyNPages))) {
+    refuseOptions('"split.everyNPages" must be a whole number.');
+  }
+  const result: WebToolOptions = {
+    split: { ranges: pageSpecOf(ranges, 'split.ranges'), everyNPages: everyNPages as number | undefined },
+  };
+  if (typeof top.password === 'string') result.password = top.password;
+  if (top.confirmEditRights === true) result.confirmEditRights = true;
+  return result;
 }
 
-function rotateOptionsOf(value: unknown): WebToolOptions {
-  if (!isPlainObject(value)) refuseOptions('"rotate" must be an object with a "rotation".');
-  if (value.rotations !== undefined) refuseOptions('"rotate.rotations" is not taken here; give one "rotation" and its "pages".');
-  const { rotation } = value;
-  if (rotation !== 90 && rotation !== 180 && rotation !== 270) refuseOptions('"rotate.rotation" must be 90, 180 or 270.');
-  return { rotate: { rotation, pages: pageSpecOf(value.pages, 'rotate.pages') } };
+function parseRotationsList(list: unknown[]): Array<{ rotation: PdfRotationDegrees; pages?: string }> {
+  return list.map((item, idx) => {
+    if (!isPlainObject(item)) refuseOptions(`"rotate.rotations[${idx}]" must be an object.`);
+    if (typeof item.angle !== 'number') {
+      refuseOptions('The web tool takes one rotation and its pages.');
+    }
+    const rot = item.angle;
+    if (rot !== 90 && rot !== 180 && rot !== 270) {
+      refuseOptions(`"rotate.rotations[${idx}].angle" must be 90, 180 or 270.`);
+    }
+    return { rotation: rot as PdfRotationDegrees, pages: pageSpecOf(item.pages, `rotate.rotations[${idx}].pages`) };
+  });
+}
+
+function rotateOptionsOf(value: unknown, top: Record<string, unknown>): WebToolOptions {
+  if (value !== undefined && !isPlainObject(value)) refuseOptions('"rotate" must be an object.');
+  const target = isPlainObject(value) ? value : top;
+  if (Array.isArray(target.rotations)) {
+    const result: WebToolOptions = {
+      rotate: { rotations: parseRotationsList(target.rotations) },
+    };
+    if (typeof top.password === 'string') result.password = top.password;
+    if (top.confirmEditRights === true) result.confirmEditRights = true;
+    return result;
+  }
+  const rotation = target.rotation ?? 90;
+  if (rotation !== 90 && rotation !== 180 && rotation !== 270) {
+    refuseOptions('"rotate.rotation" must be 90, 180 or 270.');
+  }
+  const result: WebToolOptions = {
+    rotate: { rotation: rotation as PdfRotationDegrees, pages: pageSpecOf(target.pages, 'rotate.pages') },
+  };
+  if (typeof top.password === 'string') result.password = top.password;
+  if (top.confirmEditRights === true) result.confirmEditRights = true;
+  return result;
+}
+
+function protectOptionsOf(value: unknown, top: Record<string, unknown>): WebToolOptions {
+  const target = isPlainObject(value) ? value : top;
+  const keyLength = target.keyLength ?? 256;
+  if (keyLength !== 128 && keyLength !== 256) refuseOptions('"protect.keyLength" must be 128 or 256.');
+  return {
+    protect: {
+      userPassword: typeof target.userPassword === 'string' ? target.userPassword : undefined,
+      ownerPassword: typeof target.ownerPassword === 'string' ? target.ownerPassword : undefined,
+      keyLength: keyLength as 128 | 256,
+      permissions: isPlainObject(target.permissions) ? (target.permissions as PdfProtectOptions['permissions']) : undefined,
+    },
+    password: typeof top.password === 'string' ? top.password : undefined,
+    confirmEditRights: top.confirmEditRights === true,
+  };
+}
+
+function unlockOptionsOf(value: unknown, top: Record<string, unknown>): WebToolOptions {
+  const target = isPlainObject(value) ? value : top;
+  let password: string | undefined;
+  if (typeof target.password === 'string') {
+    password = target.password;
+  } else if (typeof top.password === 'string') {
+    password = top.password;
+  }
+  const confirmEditRights = target.confirmEditRights === true || top.confirmEditRights === true;
+  return { unlock: { password, confirmEditRights }, password, confirmEditRights };
+}
+
+function watermarkOptionsOf(value: unknown, top: Record<string, unknown>): WebToolOptions {
+  const target = isPlainObject(value) ? value : top;
+  return {
+    watermark: {
+      text: typeof target.text === 'string' ? target.text : 'CONFIDENTIAL',
+      fontSize: typeof target.fontSize === 'number' ? target.fontSize : undefined,
+      fontColor: typeof target.fontColor === 'string' ? target.fontColor : undefined,
+      opacity: typeof target.opacity === 'number' ? target.opacity : undefined,
+      rotation: typeof target.rotation === 'number' ? target.rotation : undefined,
+      position: typeof target.position === 'string' ? (target.position as PdfWatermarkOptions['position']) : undefined,
+      layer: target.layer === 'under' ? 'under' : 'over',
+      pages: pageSpecOf(target.pages, 'watermark.pages'),
+    },
+    password: typeof top.password === 'string' ? top.password : undefined,
+    confirmEditRights: top.confirmEditRights === true,
+  };
+}
+
+function pageOpsOptionsOf(tool: 'extract-pages' | 'delete-pages' | 'reorder-pages', value: unknown, top: Record<string, unknown>): WebToolOptions {
+  const target = isPlainObject(value) ? value : top;
+  const password = typeof top.password === 'string' ? top.password : undefined;
+  const confirmEditRights = top.confirmEditRights === true;
+  if (tool === 'reorder-pages') {
+    const rawOrder = target.order ?? top.order;
+    return { reorderPages: { order: Array.isArray(rawOrder) ? (rawOrder as number[]) : String(rawOrder ?? '1') }, password, confirmEditRights };
+  }
+  const pages = pageSpecOf(target.pages ?? top.pages, `${tool}.pages`) ?? '1';
+  return tool === 'extract-pages'
+    ? { extractPages: { pages }, password, confirmEditRights }
+    : { deletePages: { pages }, password, confirmEditRights };
 }
 
 /**
  * The options of a request, as much of them as the tool reads: the field is bounded, and only the keys of the tool are
- * copied, so nothing else the body names (a list of rotations, an engine control) reaches an engine.
+ * copied, so nothing else the body names reaches an engine.
  */
 export function parseToolOptions(tool: WebTool, raw: string | undefined): WebToolOptions {
-  if (!raw) return tool === 'rotate' ? rotateOptionsOf(undefined) : {};
+  if (!raw) return tool === 'rotate' ? rotateOptionsOf(undefined, {}) : {};
   if (raw.length > MAX_TOOL_OPTIONS_CHARS) refuseOptions(`The "options" field may be at most ${MAX_TOOL_OPTIONS_CHARS} characters.`);
   let parsed: unknown;
   try {
@@ -226,9 +351,27 @@ export function parseToolOptions(tool: WebTool, raw: string | undefined): WebToo
       return { format };
     }
     case 'split':
-      return splitOptionsOf(parsed.split);
+      return splitOptionsOf(parsed.split, parsed);
     case 'rotate':
-      return rotateOptionsOf(parsed.rotate);
+      return rotateOptionsOf(parsed.rotate, parsed);
+    case 'protect':
+      return protectOptionsOf(parsed.protect, parsed);
+    case 'unlock':
+      return unlockOptionsOf(parsed.unlock, parsed);
+    case 'watermark':
+      return watermarkOptionsOf(parsed.watermark, parsed);
+    case 'extract-pages':
+    case 'delete-pages':
+    case 'reorder-pages':
+      return pageOpsOptionsOf(tool, parsed[tool], parsed);
+    case 'archive-inspect':
+      return { archiveInspect: { password: typeof parsed.password === 'string' ? parsed.password : undefined }, password: typeof parsed.password === 'string' ? parsed.password : undefined };
+    case 'archive-extract':
+    case 'merge': {
+      const result: WebToolOptions = {};
+      if (typeof parsed.password === 'string') result.password = parsed.password;
+      return result;
+    }
     default:
       return {};
   }
@@ -246,7 +389,6 @@ async function createArchive(files: readonly WebToolFile[], format: string, sign
   return fileOutput(filename, mimeType, format === 'tar.gz' ? await gzipInBlocks(tar, ARCHIVE_COMPRESSION_LEVEL_DEFAULT) : tar);
 }
 
-/** The names an unpacked archive lists: the leaf of each entry, kept clear of the others, as the job graph names its outputs. */
 /** The caps of an extraction for an answer: the entries and the inflated bytes the answer lists, counted as they are unpacked. */
 export const WEB_EXTRACTION_LIMITS: ArchiveExtractionLimits = {
   MAX_FILES: MAX_EXTRACTED_ENTRIES,
@@ -259,9 +401,9 @@ function tooLargeToList(): WebToolRefusal {
 }
 
 /** The files of an archive, unpacked under the caps of the answer; a TAR that passes them is a 413 as the other formats are. */
-async function unpacked(archive: WebToolFile, signal?: AbortSignal): Promise<{ filename: string; buffer: Buffer }[]> {
+async function unpacked(archive: WebToolFile, password?: string, signal?: AbortSignal): Promise<{ filename: string; buffer: Buffer }[]> {
   try {
-    return await extractGraphArchiveEntries(archive.name, archive.buffer, undefined, WEB_EXTRACTION_LIMITS, { signal });
+    return await extractGraphArchiveEntries(archive.name, archive.buffer, password, WEB_EXTRACTION_LIMITS, { signal });
   } catch (error) {
     if (error instanceof ConversionFailedError && error.message.startsWith('Archive bomb detected')) throw tooLargeToList();
     throw error;
@@ -293,25 +435,66 @@ function listedEntries(extracted: readonly { filename: string; buffer: Buffer }[
 }
 
 /**
- * Runs `tool` on `files`, already checked by `assertToolInput`, with the code of the job graph node of the same name. `signal`
- * stops the engines that take one (the qpdf and 7-Zip programs, and a merge between two inputs); the others finish what they
- * started, which is why the route holds its slot until this settles. Engine errors (a page range the document does not have, an
- * unsafe archive, a PDF that needs a password) pass through to the route.
+ * Runs `tool` on `files`, already checked by `assertToolInput`, with the code of the job graph node of the same name.
  */
-export async function runWebTool(tool: WebTool, files: readonly WebToolFile[], options: WebToolOptions, signal?: AbortSignal): Promise<WebToolOutput> {
+export async function runWebTool(
+  tool: WebTool,
+  files: readonly WebToolFile[],
+  options: WebToolOptions,
+  signal?: AbortSignal
+): Promise<WebToolOutput> {
   const [first] = files;
   const base = path.parse(first.name).name;
+  const access = {
+    password: options.password ?? options.unlock?.password,
+    confirmEditRights: options.confirmEditRights ?? options.unlock?.confirmEditRights,
+    signal,
+  };
   switch (tool) {
     case 'merge':
-      return fileOutput('merged.pdf', 'application/pdf', await mergePdfBuffers(files.map((file) => file.buffer), { signal, names: files.map((file) => file.name) }));
+      return fileOutput(
+        'merged.pdf',
+        'application/pdf',
+        await mergePdfBuffers(files.map((file) => file.buffer), {
+          signal,
+          names: files.map((file) => file.name),
+          confirmEditRights: access.confirmEditRights,
+          passwords: access.password ? files.map(() => access.password!) : undefined,
+        })
+      );
     case 'archive-create':
       return createArchive(files, options.format ?? DEFAULT_ARCHIVE_FORMAT, signal);
     case 'archive-extract':
-      return { kind: 'entries', entries: listedEntries(await unpacked(first, signal)) };
+      return { kind: 'entries', entries: listedEntries(await unpacked(first, options.password, signal)) };
     case 'split':
-      return fileOutput(`${base}-split.zip`, 'application/zip', await splitPdfPages(first.buffer, options.split, {}, base, signal));
+      return fileOutput(`${base}-split.zip`, 'application/zip', await splitPdfPages(first.buffer, options.split, access, base, signal));
     case 'rotate':
-      return fileOutput(`${base}-rotated.pdf`, 'application/pdf', await rotatePdfPages(first.buffer, options.rotate as PdfRotateOptions, {}, signal));
+      return fileOutput(`${base}-rotated.pdf`, 'application/pdf', await rotatePdfPages(first.buffer, options.rotate as PdfRotateOptions, access, signal));
+    case 'protect':
+      return fileOutput(`${base}-protected.pdf`, 'application/pdf', await protectPdf(first.buffer, options.protect as PdfProtectOptions, access));
+    case 'unlock':
+      return fileOutput(`${base}-unlocked.pdf`, 'application/pdf', await unlockPdf(first.buffer, access));
+    case 'watermark':
+      return fileOutput(`${base}-watermarked.pdf`, 'application/pdf', await applyPdfWatermark(first.buffer, options.watermark as PdfWatermarkOptions, access));
+    case 'extract-pages':
+      return fileOutput(`${base}-extracted.pdf`, 'application/pdf', await extractPdfPages(first.buffer, options.extractPages?.pages ?? options.pages ?? '1', access));
+    case 'delete-pages':
+      return fileOutput(`${base}-deleted.pdf`, 'application/pdf', await deletePdfPages(first.buffer, options.deletePages?.pages ?? options.pages ?? '1', access));
+    case 'reorder-pages': {
+      const rawOrder = options.reorderPages?.order ?? options.order ?? '1';
+      const order = Array.isArray(rawOrder) ? rawOrder.join(',') : String(rawOrder);
+      return fileOutput(`${base}-reordered.pdf`, 'application/pdf', await reorderPdfPages(first.buffer, { order }, access));
+    }
+    case 'archive-inspect': {
+      const inspection = await inspectArchive(first.buffer, {
+        filename: first.name,
+        password: options.archiveInspect?.password ?? options.password,
+        signal,
+      });
+      return { kind: 'inspection', inspection };
+    }
+    case 'zip-repair':
+      return fileOutput(`${base}-repaired.zip`, 'application/zip', await repairZipArchive(first.buffer));
   }
 }
 

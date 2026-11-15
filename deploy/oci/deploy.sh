@@ -181,6 +181,14 @@ compose() { # compose <release-dir> <args...>
   local profiles=()
   if ! grep -q '^REDIS_URL=' "$dir/.env"; then profiles+=(--profile redis); fi
   if [ -n "$(env_value "$dir/.env" ALERTMANAGER_WEBHOOK_URL)" ]; then profiles+=(--profile monitoring); fi
+  local extra_profiles="$(env_value "$dir/.env" COMPOSE_PROFILES)"
+  if [ -n "$extra_profiles" ]; then
+    IFS=',' read -ra extra_arr <<< "$extra_profiles"
+    for p in "${extra_arr[@]}"; do
+      p="$(echo "$p" | xargs)"
+      if [ -n "$p" ]; then profiles+=(--profile "$p"); fi
+    done
+  fi
   docker compose --project-name easyconvert --project-directory "$dir" --env-file "$dir/.env" \
     -f "$dir/docker-compose.prod.yml" "${profiles[@]}" "$@"
 }

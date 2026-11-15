@@ -11,6 +11,16 @@ import { storagePaths } from './paths/storage';
 import { uploadPaths } from './paths/uploads';
 import { webhookPaths } from './paths/webhooks';
 
+function mergePaths(...maps: Array<Record<string, Record<string, unknown>>>): Record<string, Record<string, unknown>> {
+  const merged: Record<string, Record<string, unknown>> = {};
+  for (const map of maps) {
+    for (const [pathname, operations] of Object.entries(map)) {
+      merged[pathname] = { ...(merged[pathname] ?? {}), ...operations };
+    }
+  }
+  return merged;
+}
+
 /**
  * Builds the OpenAPI 3.1 document, the single source for API reference docs and SDKs. `info.termsOfService` must be an absolute
  * URL (OpenAPI 3.1, Info Object), so it is resolved against the configured public origin, never the request's Host. The plan limits in
@@ -41,15 +51,15 @@ export function buildOpenApiDocument() {
       },
     ],
     security: [{ ApiKeyAuth: [] }, { BearerAuth: [] }],
-    paths: {
-      ...conversionPaths,
-      ...uploadPaths,
-      ...storagePaths,
-      ...keyPaths,
-      ...billingPaths,
-      ...webhookPaths,
-      ...internalPaths,
-    },
+    paths: mergePaths(
+      conversionPaths,
+      uploadPaths,
+      storagePaths,
+      keyPaths,
+      billingPaths,
+      webhookPaths,
+      internalPaths,
+    ),
     webhooks: webhookEvents,
     components,
   };

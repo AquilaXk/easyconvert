@@ -2,6 +2,13 @@
   "apiDocs": {
     "metaTitle": "{topic} | EasyConvert API documentation",
     "toc": "On this page",
+    "namedTasks": {
+      "heading": "Named-Task Job Workflows",
+      "lead": "Execute multi-step conversion pipelines and Directed Acyclic Graphs (DAGs) using the tasks dictionary on POST /api/v1/jobs.",
+      "requestTitle": "Request tasks map",
+      "responseTitle": "Response tasks report",
+      "refusalsTitle": "Typed 422 refusal problems"
+    },
     "nav": {
       "label": "API documentation",
       "menu": "Documentation menu",
@@ -845,6 +852,46 @@
         "fileInputLabel": "Select a PDF to rotate",
         "heading": "Select the PDF to rotate",
         "selectFile": "Select File"
+      },
+      "protectPdf": {
+        "fileInputLabel": "Select a PDF to protect",
+        "heading": "Select the PDF to protect",
+        "selectFile": "Select File"
+      },
+      "unlockPdf": {
+        "fileInputLabel": "Select a PDF to unlock",
+        "heading": "Select the PDF to unlock",
+        "selectFile": "Select File"
+      },
+      "watermarkPdf": {
+        "fileInputLabel": "Select a PDF to watermark",
+        "heading": "Select the PDF to watermark",
+        "selectFile": "Select File"
+      },
+      "extractPdfPages": {
+        "fileInputLabel": "Select a PDF to extract pages from",
+        "heading": "Select the PDF to extract pages from",
+        "selectFile": "Select File"
+      },
+      "deletePdfPages": {
+        "fileInputLabel": "Select a PDF to delete pages from",
+        "heading": "Select the PDF to delete pages from",
+        "selectFile": "Select File"
+      },
+      "reorderPdfPages": {
+        "fileInputLabel": "Select a PDF to reorder pages",
+        "heading": "Select the PDF to reorder pages",
+        "selectFile": "Select File"
+      },
+      "archiveInspect": {
+        "fileInputLabel": "Select an archive to inspect",
+        "heading": "Select the archive to inspect",
+        "selectFile": "Select File"
+      },
+      "zipRepair": {
+        "fileInputLabel": "Select a damaged ZIP archive to repair",
+        "heading": "Select the damaged ZIP archive",
+        "selectFile": "Select File"
       }
     },
     "dropzone": {
@@ -1049,7 +1096,8 @@
         "inside": "Fit Inside"
       },
       "quality": "Quality",
-      "stripMetadata": "Strip EXIF, GPS, and camera metadata"
+      "stripMetadata": "Strip EXIF, GPS, and camera metadata",
+      "optimizePng": "Lossless PNG optimization"
     },
     "video": {
       "heading": "Video settings",
@@ -1117,7 +1165,39 @@
         "deu": "German",
         "fra": "French",
         "spa": "Spanish"
-      }
+      },
+      "pdfOptimize": "PDF Optimization",
+      "pdfOptimizeAuto": "Standard",
+      "pdfOptimizeProfiles": {
+        "web": "Web (150 DPI, balanced)",
+        "print": "Print (300 DPI, high quality)",
+        "archive": "Archive (Lossless)",
+        "max": "Maximum compression (72 DPI)"
+      },
+      "pdfa": "PDF/A Conformance",
+      "pdfaAuto": "None",
+      "pdfaProfiles": {
+        "pdfa-1b": "PDF/A-1b (Basic visual preservation)",
+        "pdfa-2b": "PDF/A-2b (Visual preservation, transparencies)",
+        "pdfa-3b": "PDF/A-3b (Visual preservation, file attachments)"
+      },
+      "watermark": "PDF Watermark",
+      "watermarkText": "Watermark Text",
+      "watermarkTextPlaceholder": "CONFIDENTIAL, DRAFT, etc.",
+      "watermarkPosition": "Position",
+      "watermarkLayer": "Layer",
+      "watermarkLayerOver": "Over content",
+      "watermarkLayerUnder": "Under content",
+      "protect": "PDF Protection",
+      "protectUserPassword": "User Password (to open)",
+      "protectOwnerPassword": "Permissions Password",
+      "protectKeyLength": "Encryption Key Length",
+      "protectPdfaConflict": "Protection is disabled when PDF/A conformance is selected (ISO 19005 requirement).",
+      "protectPermissions": "Permissions",
+      "protectPermPrint": "Allow printing",
+      "protectPermModify": "Allow modifications",
+      "protectPermCopy": "Allow copying text/images",
+      "protectPermAnnotate": "Allow annotations"
     },
     "password": {
       "zipConstraint": "ZIP passwords support up to 99 printable ASCII characters.",
@@ -1259,7 +1339,15 @@
       "archive-create": "Create archive",
       "archive-extract": "Extract",
       "split": "Split",
-      "rotate": "Rotate"
+      "rotate": "Rotate",
+      "protect": "Protect",
+      "unlock": "Unlock",
+      "watermark": "Watermark",
+      "extract-pages": "Extract pages",
+      "delete-pages": "Delete pages",
+      "reorder-pages": "Reorder pages",
+      "archive-inspect": "Inspect archive",
+      "zip-repair": "Repair ZIP"
     },
     "running": "Working on it",
     "cancel": "Cancel",
@@ -1312,6 +1400,36 @@
         "pagesLabel": "Pages",
         "pagesHint": "All pages",
         "pagesHelp": "Leave empty to turn every page. For example 1-3,5"
+      },
+      "protect": {
+        "userPassword": "Open password",
+        "ownerPassword": "Owner password",
+        "keyLength": "Key length",
+        "key128": "128-bit AES",
+        "key256": "256-bit AES"
+      },
+      "unlock": {
+        "password": "Password",
+        "confirmRights": "I have the right to edit this document"
+      },
+      "watermark": {
+        "text": "Watermark text",
+        "opacity": "Opacity",
+        "position": "Position"
+      },
+      "pages": {
+        "label": "Page numbers or ranges",
+        "hint": "1-3,5",
+        "help": "Comma-separated page numbers or ranges."
+      },
+      "order": {
+        "label": "Page order",
+        "hint": "3,1,2",
+        "help": "New order of pages, separated by commas."
+      },
+      "password": {
+        "label": "Password",
+        "hint": "Password (if encrypted)"
       }
     }
   },
@@ -1332,6 +1450,14 @@
     "convertToPdfA": "Convert to PDF/A",
     "archiveCreate": "Create Archive",
     "archiveExtract": "Extract Archive",
+    "protectPdf": "Protect PDF",
+    "unlockPdf": "Unlock PDF",
+    "watermarkPdf": "Watermark PDF",
+    "extractPdfPages": "Extract PDF Pages",
+    "deletePdfPages": "Delete PDF Pages",
+    "reorderPdfPages": "Reorder PDF Pages",
+    "inspectArchive": "Inspect Archive",
+    "repairZip": "Repair ZIP",
     "formats": "Formats",
     "apiDocs": "API Docs",
     "dashboard": "Dashboard",
@@ -1440,6 +1566,38 @@
     "rotatePdf": {
       "title": "Rotate PDF",
       "description": "Turn the pages of a PDF the way you need."
+    },
+    "protectPdf": {
+      "title": "Protect PDF",
+      "description": "Add user or owner passwords and permissions to a PDF document online."
+    },
+    "unlockPdf": {
+      "title": "Unlock PDF",
+      "description": "Remove password protection and restrictions from a PDF document online."
+    },
+    "watermarkPdf": {
+      "title": "Watermark PDF",
+      "description": "Add text or image watermarks to PDF pages online."
+    },
+    "extractPdfPages": {
+      "title": "Extract PDF Pages",
+      "description": "Extract selected pages from a PDF into a new PDF document online."
+    },
+    "deletePdfPages": {
+      "title": "Delete PDF Pages",
+      "description": "Remove selected pages from a PDF document online."
+    },
+    "reorderPdfPages": {
+      "title": "Reorder PDF Pages",
+      "description": "Rearrange and reorder pages in a PDF document online."
+    },
+    "archiveInspect": {
+      "title": "Inspect Archive",
+      "description": "View metadata, entries, and integrity details of an archive without downloading."
+    },
+    "zipRepair": {
+      "title": "Repair ZIP",
+      "description": "Recover and repair corrupt or damaged ZIP archives online."
     },
     "saveWebsiteAsPdf": {
       "title": "Save Website as PDF",

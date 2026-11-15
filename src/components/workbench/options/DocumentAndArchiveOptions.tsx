@@ -29,6 +29,10 @@ export interface DocumentOptionsSectionProps extends SectionProps {
   canConfigureLayout: boolean;
   canConfigureOcr: boolean;
   ocrAlwaysEnabled?: boolean;
+  canConfigurePdfOptimize?: boolean;
+  canConfigurePdfa?: boolean;
+  canConfigurePdfWatermark?: boolean;
+  canConfigurePdfProtect?: boolean;
 }
 
 function OcrOptionsFields({
@@ -82,6 +86,141 @@ function OcrOptionsFields({
   );
 }
 
+function PdfOptimizeAndPdfaFields({
+  options,
+  onChange,
+  canConfigurePdfOptimize,
+  canConfigurePdfa,
+}: Readonly<SectionProps & { canConfigurePdfOptimize?: boolean; canConfigurePdfa?: boolean }>) {
+  const t = useTranslations('options.document');
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      {canConfigurePdfOptimize && (
+        <div>
+          <label htmlFor="opt-pdf-optimize" className={LABEL_CLASS}>{t('pdfOptimize')}</label>
+          <select
+            id="opt-pdf-optimize"
+            value={options.optimize?.profile ?? ''}
+            onChange={(e) =>
+              onChange({
+                ...options,
+                optimize: e.target.value ? { profile: e.target.value as 'web' | 'print' | 'archive' | 'max' } : undefined,
+              })
+            }
+            className={SELECT_CLASS}
+          >
+            <option value="">{t('pdfOptimizeAuto')}</option>
+            <option value="web">{t('pdfOptimizeProfiles.web')}</option>
+            <option value="print">{t('pdfOptimizeProfiles.print')}</option>
+            <option value="archive">{t('pdfOptimizeProfiles.archive')}</option>
+            <option value="max">{t('pdfOptimizeProfiles.max')}</option>
+          </select>
+        </div>
+      )}
+      {canConfigurePdfa && (
+        <div>
+          <label htmlFor="opt-pdf-pdfa" className={LABEL_CLASS}>{t('pdfa')}</label>
+          <select
+            id="opt-pdf-pdfa"
+            value={options.pdfa?.conformance ?? ''}
+            onChange={(e) =>
+              onChange({
+                ...options,
+                pdfa: e.target.value ? { conformance: e.target.value as 'pdfa-1b' | 'pdfa-2b' | 'pdfa-3b' } : undefined,
+                ...(e.target.value ? { protect: undefined } : {}),
+              })
+            }
+            className={SELECT_CLASS}
+          >
+            <option value="">{t('pdfaAuto')}</option>
+            <option value="pdfa-1b">{t('pdfaProfiles.pdfa-1b')}</option>
+            <option value="pdfa-2b">{t('pdfaProfiles.pdfa-2b')}</option>
+            <option value="pdfa-3b">{t('pdfaProfiles.pdfa-3b')}</option>
+          </select>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PdfWatermarkFields({ options, onChange }: Readonly<SectionProps>) {
+  const t = useTranslations('options.document');
+  const wm = options.watermark ?? {};
+  return (
+    <div className="space-y-3 pt-2 border-t border-rule">
+      <h4 className="text-xs font-semibold text-ink-2 uppercase tracking-wider">{t('watermark')}</h4>
+      <div>
+        <label htmlFor="opt-pdf-wm-text" className={LABEL_CLASS}>{t('watermarkText')}</label>
+        <input
+          id="opt-pdf-wm-text"
+          type="text"
+          value={wm.text ?? ''}
+          onChange={(e) =>
+            onChange({
+              ...options,
+              watermark: e.target.value ? { ...wm, text: e.target.value } : undefined,
+            })
+          }
+          placeholder={t('watermarkTextPlaceholder')}
+          className={INPUT_CLASS}
+        />
+      </div>
+    </div>
+  );
+}
+
+function PdfProtectFields({ options, onChange, pdfaActive }: Readonly<SectionProps & { pdfaActive: boolean }>) {
+  const t = useTranslations('options.document');
+  const protect = options.protect ?? {};
+  if (pdfaActive) {
+    return (
+      <div className="pt-2 border-t border-rule">
+        <h4 className="text-xs font-semibold text-ink-2 uppercase tracking-wider">{t('protect')}</h4>
+        <p className="mt-1 text-xs text-ink-3">{t('protectPdfaConflict')}</p>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-3 pt-2 border-t border-rule">
+      <h4 className="text-xs font-semibold text-ink-2 uppercase tracking-wider">{t('protect')}</h4>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label htmlFor="opt-pdf-protect-user" className={LABEL_CLASS}>{t('protectUserPassword')}</label>
+          <input
+            id="opt-pdf-protect-user"
+            type="password"
+            autoComplete="off"
+            value={protect.userPassword ?? ''}
+            onChange={(e) =>
+              onChange({
+                ...options,
+                protect: { ...protect, userPassword: e.target.value || undefined },
+              })
+            }
+            className={INPUT_CLASS}
+          />
+        </div>
+        <div>
+          <label htmlFor="opt-pdf-protect-owner" className={LABEL_CLASS}>{t('protectOwnerPassword')}</label>
+          <input
+            id="opt-pdf-protect-owner"
+            type="password"
+            autoComplete="off"
+            value={protect.ownerPassword ?? ''}
+            onChange={(e) =>
+              onChange({
+                ...options,
+                protect: { ...protect, ownerPassword: e.target.value || undefined },
+              })
+            }
+            className={INPUT_CLASS}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function DocumentOptionsSection({
   options,
   onChange,
@@ -89,8 +228,13 @@ export function DocumentOptionsSection({
   canConfigureLayout,
   canConfigureOcr,
   ocrAlwaysEnabled = false,
+  canConfigurePdfOptimize,
+  canConfigurePdfa,
+  canConfigurePdfWatermark,
+  canConfigurePdfProtect,
 }: Readonly<DocumentOptionsSectionProps>) {
   const t = useTranslations('options.document');
+  const pdfaActive = Boolean(options.pdfa?.conformance);
   return (
     <section className="space-y-4">
       <h3 className={SECTION_HEADING_CLASS}>{t('heading')}</h3>
@@ -131,6 +275,16 @@ export function DocumentOptionsSection({
           )}
         </div>
       )}
+      {(canConfigurePdfOptimize || canConfigurePdfa) && (
+        <PdfOptimizeAndPdfaFields
+          options={options}
+          onChange={onChange}
+          canConfigurePdfOptimize={canConfigurePdfOptimize}
+          canConfigurePdfa={canConfigurePdfa}
+        />
+      )}
+      {canConfigurePdfWatermark && <PdfWatermarkFields options={options} onChange={onChange} />}
+      {canConfigurePdfProtect && <PdfProtectFields options={options} onChange={onChange} pdfaActive={pdfaActive} />}
       {canConfigureOcr && (
         <OcrOptionsFields options={options} onChange={onChange} ocrAlwaysEnabled={ocrAlwaysEnabled} />
       )}

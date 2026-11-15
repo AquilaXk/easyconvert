@@ -164,4 +164,298 @@ export class EasyConvertClient {
     }
     return response.arrayBuffer();
   }
+
+  /** Queues a graph processing job and returns its id and status url. */
+  async createGraphJob(params: {
+    graph: Record<string, unknown> | string;
+    webhookUrl?: string;
+    webhookSecret?: string;
+  }): Promise<{ jobId: string; statusUrl: string }> {
+    const graphObj = typeof params.graph === 'string' ? JSON.parse(params.graph) : params.graph;
+    const body = {
+      graph: graphObj,
+      webhookUrl: params.webhookUrl,
+      webhookSecret: params.webhookSecret,
+    };
+    const response = await this.fetchImpl(new URL('/api/v1/jobs', this.baseUrl), {
+      method: 'POST',
+      headers: {
+        Authorization: this.authorization,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    if (!response.ok) {
+      const problem = (await response.json().catch(() => undefined)) as ProblemDetails | undefined;
+      throw new EasyConvertApiError(response.status, problem);
+    }
+    const data = (await response.json()) as { jobId: string; statusUrl: string };
+    return { jobId: data.jobId, statusUrl: data.statusUrl };
+  }
+
+  /** Resumable upload via TUS 1.0 protocol in chunks. */
+  async uploadTus(
+    file: Blob,
+    options: { filename?: string; mimeType?: string; chunkSize?: number } = {},
+  ): Promise<{ uploadId: string; storageKey?: string; location: string }> {
+    const totalSize = file.size;
+    const metadataParts: string[] = [];
+    const filename = options.filename ?? (file instanceof File ? file.name : 'upload.bin');
+    const toB64 = (s: string) => (typeof btoa !== 'undefined' ? btoa(s) : Buffer.from(s).toString('base64'));
+    metadataParts.push(`filename ${toB64(filename)}`);
+    if (options.mimeType || file.type) {
+      metadataParts.push(`filetype ${toB64(options.mimeType || file.type)}`);
+    }
+
+    const initRes = await this.fetchImpl(new URL('/api/v1/uploads', this.baseUrl), {
+      method: 'POST',
+      headers: {
+        Authorization: this.authorization,
+        'Tus-Resumable': '1.0.0',
+        'Upload-Length': String(totalSize),
+        'Upload-Metadata': metadataParts.join(','),
+      },
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    if (!initRes.ok && initRes.status !== 201) {
+      const problem = (await initRes.json().catch(() => undefined)) as ProblemDetails | undefined;
+      throw new EasyConvertApiError(initRes.status, problem);
+    }
+    const location = initRes.headers.get('Location') || '';
+    const uploadId = location.split('/').pop() || '';
+    let storageKey = initRes.headers.get('Storage-Key') || undefined;
+
+    const chunkSize = options.chunkSize ?? 5 * 1024 * 1024;
+    let offset = 0;
+    while (offset < totalSize) {
+      const end = Math.min(offset + chunkSize, totalSize);
+      const chunk = file.slice(offset, end);
+      const patchUrl = new URL(location, this.baseUrl);
+      const patchRes = await this.fetchImpl(patchUrl, {
+        method: 'PATCH',
+        headers: {
+          Authorization: this.authorization,
+          'Tus-Resumable': '1.0.0',
+          'Upload-Offset': String(offset),
+          'Content-Type': 'application/offset+octet-stream',
+        },
+        body: chunk,
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+      if (!patchRes.ok && patchRes.status !== 204) {
+        const problem = (await patchRes.json().catch(() => undefined)) as ProblemDetails | undefined;
+        throw new EasyConvertApiError(patchRes.status, problem);
+      }
+      const newOffset = patchRes.headers.get('Upload-Offset');
+      offset = newOffset ? parseInt(newOffset, 10) : end;
+      if (patchRes.headers.get('Storage-Key')) {
+        storageKey = patchRes.headers.get('Storage-Key') || undefined;
+      }
+    }
+    return { uploadId, storageKey, location };
+  }
+
+  /** Direct multipart upload via presigned / direct upload URLs. */
+  async uploadMultipart(
+    file: Blob,
+    options: { filename?: string; partSize?: number } = {},
+  ): Promise<{ storageKey: string; uploadId: string }> {
+    const filename = options.filename ?? (file instanceof File ? file.name : 'upload.bin');
+    const initRes = await this.fetchImpl(new URL('/api/v1/uploads/direct', this.baseUrl), {
+      method: 'POST',
+      headers: {
+        Authorization: this.authorization,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        filename,
+        totalSize: file.size,
+        partSize: options.partSize,
+      }),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    if (!initRes.ok) {
+      const problem = (await initRes.json().catch(() => undefined)) as ProblemDetails | undefined;
+      throw new EasyConvertApiError(initRes.status, problem);
+    }
+    const initData = (await initRes.json()) as {
+      uploadId: string;
+      storageKey: string;
+      partSize: number;
+      partUrls: Array<{ partNumber: number; url: string }>;
+    };
+
+    const parts: Array<{ partNumber: number; etag: string }> = [];
+    for (const partInfo of initData.partUrls) {
+      const start = (partInfo.partNumber - 1) * initData.partSize;
+      const end = Math.min(start + initData.partSize, file.size);
+      const chunk = file.slice(start, end);
+      const putRes = await this.fetchImpl(new URL(partInfo.url, this.baseUrl), {
+        method: 'PUT',
+        headers: {
+          'Content-Length': String(chunk.size),
+        },
+        body: chunk,
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+      if (!putRes.ok) {
+        throw new EasyConvertApiError(putRes.status, undefined);
+      }
+      const etag = putRes.headers.get('ETag') || `"${partInfo.partNumber}"`;
+      parts.push({ partNumber: partInfo.partNumber, etag });
+    }
+
+    const completeRes = await this.fetchImpl(new URL('/api/v1/uploads/direct/complete', this.baseUrl), {
+      method: 'POST',
+      headers: {
+        Authorization: this.authorization,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        uploadId: initData.uploadId,
+        parts,
+      }),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    if (!completeRes.ok) {
+      const problem = (await completeRes.json().catch(() => undefined)) as ProblemDetails | undefined;
+      throw new EasyConvertApiError(completeRes.status, problem);
+    }
+    const completeData = (await completeRes.json()) as { storageKey?: string };
+    return { storageKey: completeData.storageKey ?? initData.storageKey, uploadId: initData.uploadId };
+  }
+
+  /** Inspects archive structure and encryption without unpacking. */
+  async inspectArchive(
+    params: { file?: Blob; storageKey?: string; filename?: string; password?: string },
+  ): Promise<Record<string, unknown>> {
+    let res: Response;
+    if (params.file) {
+      const formData = new FormData();
+      formData.append('file', params.file, params.filename ?? (params.file instanceof File ? params.file.name : 'archive.zip'));
+      if (params.password) formData.append('password', params.password);
+      res = await this.fetchImpl(new URL('/api/v1/archive/inspect', this.baseUrl), {
+        method: 'POST',
+        headers: { Authorization: this.authorization },
+        body: formData,
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } else if (params.storageKey) {
+      res = await this.fetchImpl(new URL('/api/v1/archive/inspect', this.baseUrl), {
+        method: 'POST',
+        headers: {
+          Authorization: this.authorization,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          storageKey: params.storageKey,
+          filename: params.filename,
+          password: params.password,
+        }),
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } else {
+      throw new Error('inspectArchive requires either file or storageKey');
+    }
+    if (!res.ok) {
+      const problem = (await res.json().catch(() => undefined)) as ProblemDetails | undefined;
+      throw new EasyConvertApiError(res.status, problem);
+    }
+    return (await res.json()) as Record<string, unknown>;
+  }
+
+  /** Registers encrypted storage credentials. */
+  async createCredential(params: {
+    providerType: 's3' | 'sftp';
+    credentials: Record<string, unknown>;
+    name?: string;
+    ttlSeconds?: number;
+  }): Promise<{ credentialRef: string; providerType: string; name?: string; expiresAt?: number }> {
+    const res = await this.fetchImpl(new URL('/api/v1/storage/credentials', this.baseUrl), {
+      method: 'POST',
+      headers: {
+        Authorization: this.authorization,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(params),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    if (!res.ok) {
+      const problem = (await res.json().catch(() => undefined)) as ProblemDetails | undefined;
+      throw new EasyConvertApiError(res.status, problem);
+    }
+    return (await res.json()) as { credentialRef: string; providerType: string; name?: string; expiresAt?: number };
+  }
+
+  /** Lists registered storage credentials (references only). */
+  async listCredentials(): Promise<{ credentials: Array<Record<string, unknown>> }> {
+    const res = await this.fetchImpl(new URL('/api/v1/storage/credentials', this.baseUrl), {
+      method: 'GET',
+      headers: { Authorization: this.authorization },
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    if (!res.ok) {
+      const problem = (await res.json().catch(() => undefined)) as ProblemDetails | undefined;
+      throw new EasyConvertApiError(res.status, problem);
+    }
+    return (await res.json()) as { credentials: Array<Record<string, unknown>> };
+  }
+
+  /** Deletes registered storage credentials by reference. */
+  async deleteCredential(id: string): Promise<void> {
+    const res = await this.fetchImpl(new URL(`/api/v1/storage/credentials/${encodeURIComponent(id)}`, this.baseUrl), {
+      method: 'DELETE',
+      headers: { Authorization: this.authorization },
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    if (!res.ok) {
+      const problem = (await res.json().catch(() => undefined)) as ProblemDetails | undefined;
+      throw new EasyConvertApiError(res.status, problem);
+    }
+  }
+
+  /** Verifies incoming HMAC-SHA256 webhook signature. */
+  static async verifyWebhookSignature(
+    payload: string,
+    signature: string,
+    timestamp: number,
+    secret: string,
+    toleranceSeconds = 300,
+  ): Promise<boolean> {
+    const now = Math.floor(Date.now() / 1000);
+    if (Math.abs(now - timestamp) > toleranceSeconds) {
+      return false;
+    }
+    const cleanSig = signature.replace(/^sha256=/, '').trim();
+    const message = `${timestamp}.${payload}`;
+    let expectedHex = '';
+    if (typeof globalThis.crypto?.subtle !== 'undefined') {
+      const enc = new TextEncoder();
+      const key = await globalThis.crypto.subtle.importKey(
+        'raw',
+        enc.encode(secret),
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign'],
+      );
+      const sigBuffer = await globalThis.crypto.subtle.sign('HMAC', key, enc.encode(message));
+      expectedHex = Array.from(new Uint8Array(sigBuffer))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+    } else {
+      try {
+        const cryptoMod = await import('node:crypto');
+        expectedHex = cryptoMod.createHmac('sha256', secret).update(message).digest('hex');
+      } catch {
+        return false;
+      }
+    }
+    if (cleanSig.length !== expectedHex.length) return false;
+    let mismatch = 0;
+    for (let i = 0; i < cleanSig.length; i++) {
+      mismatch |= cleanSig.charCodeAt(i) ^ expectedHex.charCodeAt(i);
+    }
+    return mismatch === 0;
+  }
 }

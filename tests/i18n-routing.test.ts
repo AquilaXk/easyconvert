@@ -200,7 +200,7 @@ describe('API routes are not locale routed', () => {
     for (const pathname of ['/', '/ko', '/png-to-jpg', '/ko/png-to-jpg', '/api-docs', '/ko/api-docs', '/api/health', '/api/v1/jobs']) {
       expect(matched(pathname), pathname).toBe(true);
     }
-    const assets = ['/_next/static/chunks/main.js', '/_vercel/insights', '/favicon.ico', '/icon.svg', '/apple-icon.png'];
+    const assets = ['/_next/static/chunks/main.js', '/_vercel/insights', '/favicon.ico', '/icon.svg', '/apple-icon.png', '/robots.txt', '/sitemap.xml'];
     for (const pathname of [...assets, ...publicPaths()]) {
       expect(matched(pathname), pathname).toBe(false);
     }
@@ -208,7 +208,7 @@ describe('API routes are not locale routed', () => {
 
   it('routes non-asset dotted paths and bare /api through the locale middleware so they answer 404 without a NoFallbackError', async () => {
     const probes = [
-      '/robots.txt', '/foo.html', '/wp-login.php', '/.env', '/.git/config', '/xmlrpc.php', '/backup.zip', '/backup.tar.gz',
+      '/foo.html', '/wp-login.php', '/.env', '/.git/config', '/xmlrpc.php', '/backup.zip', '/backup.tar.gz',
       '/index.html', '/a.JS', '/robots.TXT', '/zip-to-tar.gzip', '/zip-to-tar.gz.php', '/zip-to-x.tar.gz', '/ZIP-to-TAR.GZIP', '/api',
     ];
     for (const pathname of probes) {

@@ -43,7 +43,12 @@ Do these once per host, in this order. No step needs a secret value written in t
    ```
    Membership of the `docker` group is root-equivalent on this host, so who can send a job to this user's runner matters. The runner takes only jobs that ask for its one label, `easyconvert-production` (step 3). In this repository only the deploy job asks for it, and that job runs only when started by hand on `main`, in the environment of step 4, after QA approves it. Any workflow file can name the label, though, including one on another branch or in a pull request from a fork. The fork setting of step 4 holds every workflow run of an outside contributor's pull request until it is approved, so read the workflow files of such a pull request before approving its run.
 
-   **Residual trust.** Until the runner is narrowed, whoever can push a workflow file to this repository, and whoever approves the run of a fork's pull request, can run code as root-equivalent on the shared host. Today that is the owner alone. Narrowing the runner to a `sudoers` rule that allows only `deploy.sh deploy`, `rollback` and `reconcile`, so that the runner user leaves the `docker` group, is a row of the hardening backlog (#761); do it before anyone else gets write access.
+   **Residual trust and runner least privilege (#761, `easyconvert-deploy.sudoers`).** Until the runner is narrowed, whoever can push a workflow file to this repository, and whoever approves the run of a fork's pull request, can run code as root-equivalent on the shared host. Today that is the owner alone. To narrow the runner user and eliminate the residual trust of the `docker` group (#761), install `deploy/oci/easyconvert-deploy.sudoers` into `/etc/sudoers.d/easyconvert-deploy`:
+   ```bash
+   sudo install -m 0440 deploy/oci/easyconvert-deploy.sudoers /etc/sudoers.d/easyconvert-deploy
+   sudo gpasswd -d easyconvert-deploy docker
+   ```
+   This restricts `easyconvert-deploy` to running only `/opt/easyconvert/bin/deploy.sh deploy *`, `rollback *`, and `reconcile *` as root with `NOPASSWD`.
 2. **Scratch file system** (done). Uploads, results and every temporary file live on one file system of a fixed size, so a full scratch gives "no space left" to EasyConvert and never to the host. It is a file on the existing data volume, reserved up front:
    ```
    base=/var/lib/easysubway-data/easyconvert

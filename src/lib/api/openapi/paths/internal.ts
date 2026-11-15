@@ -187,7 +187,7 @@ const TOOL_FILES_PROPERTY = (description: string) => ({
 });
 
 /** What a tool answers with: the media types of the file, or the JSON listing of an unpacked archive. */
-type ToolAnswer = { description: string; mediaTypes: string[] } | { description: string; listing: true };
+type ToolAnswer = { description: string; mediaTypes: string[] } | { description: string; listing: true } | { description: string; inspection: true };
 
 /** What each web tool takes and answers, in the order of `WEB_TOOLS`. */
 const TOOL_DOCS: Record<WebTool, { summary: string; operationId: string; description: string; files: string; options: string; answer: ToolAnswer }> = {
@@ -231,6 +231,91 @@ const TOOL_DOCS: Record<WebTool, { summary: string; operationId: string; descrip
     options: 'JSON `{"rotate": {"rotation": 90 | 180 | 270, "pages": "1-3,5"}}`; every page when `pages` is left out.',
     answer: { description: 'The rotated PDF.', mediaTypes: ['application/pdf'] },
   },
+  protect: {
+    summary: 'Protect a PDF (Web Application)',
+    operationId: 'toolProtectInternal',
+    description: `Encrypts one PDF document with user and owner passwords and configurable permissions. Runs the code of the \`pdf.protect\` job graph node. ${TOOL_RUN_NOTE}`,
+    files: 'The one PDF to protect.',
+    options: 'JSON with userPassword, ownerPassword, keyLength (128 or 256), permissions.',
+    answer: { description: 'The protected PDF.', mediaTypes: ['application/pdf'] },
+  },
+  unlock: {
+    summary: 'Unlock a PDF (Web Application)',
+    operationId: 'toolUnlockInternal',
+    description: `Removes password protection and restrictions from one PDF document. Runs the code of the \`pdf.unlock\` job graph node. ${TOOL_RUN_NOTE}`,
+    files: 'The one PDF to unlock.',
+    options: 'JSON with password and confirmEditRights.',
+    answer: { description: 'The unlocked PDF.', mediaTypes: ['application/pdf'] },
+  },
+  watermark: {
+    summary: 'Watermark a PDF (Web Application)',
+    operationId: 'toolWatermarkInternal',
+    description: `Applies text or image watermarks across PDF document pages. Runs the code of the \`pdf.watermark\` job graph node. ${TOOL_RUN_NOTE}`,
+    files: 'The one PDF to watermark.',
+    options: 'JSON with text, fontSize, fontColor, opacity, rotation, position, layer, pages.',
+    answer: { description: 'The watermarked PDF.', mediaTypes: ['application/pdf'] },
+  },
+  'extract-pages': {
+    summary: 'Extract PDF Pages (Web Application)',
+    operationId: 'toolExtractPagesInternal',
+    description: `Extracts specified pages from one PDF into a single PDF. Runs the code of the \`pdf.extract-pages\` job graph node. ${TOOL_RUN_NOTE}`,
+    files: 'The one PDF to extract pages from.',
+    options: 'JSON with pages specification (e.g. "1-3,5").',
+    answer: { description: 'The extracted PDF.', mediaTypes: ['application/pdf'] },
+  },
+  'delete-pages': {
+    summary: 'Delete PDF Pages (Web Application)',
+    operationId: 'toolDeletePagesInternal',
+    description: `Removes specified pages from one PDF document. Runs the code of the \`pdf.delete-pages\` job graph node. ${TOOL_RUN_NOTE}`,
+    files: 'The one PDF to delete pages from.',
+    options: 'JSON with pages specification to remove.',
+    answer: { description: 'The trimmed PDF.', mediaTypes: ['application/pdf'] },
+  },
+  'reorder-pages': {
+    summary: 'Reorder PDF Pages (Web Application)',
+    operationId: 'toolReorderPagesInternal',
+    description: `Rearranges page order of one PDF document. Runs the code of the \`pdf.reorder-pages\` job graph node. ${TOOL_RUN_NOTE}`,
+    files: 'The one PDF to reorder.',
+    options: 'JSON with order specification (comma-separated or number array).',
+    answer: { description: 'The reordered PDF.', mediaTypes: ['application/pdf'] },
+  },
+  'archive-inspect': {
+    summary: 'Inspect Archive (Web Application)',
+    operationId: 'toolArchiveInspectInternal',
+    description: `Inspects entries and metadata of an archive without unpacking all bytes. ${TOOL_RUN_NOTE}`,
+    files: 'The one archive to inspect.',
+    options: 'JSON with optional password.',
+    answer: { description: 'The inspection report.', inspection: true },
+  },
+  'zip-repair': {
+    summary: 'Repair ZIP Archive (Web Application)',
+    operationId: 'toolZipRepairInternal',
+    description: `Recovers readable entries from damaged or truncated ZIP archives. ${TOOL_RUN_NOTE}`,
+    files: 'The one ZIP archive to repair.',
+    options: 'Unused.',
+    answer: { description: 'The repaired ZIP archive.', mediaTypes: ['application/zip'] },
+  },
+};
+
+const TOOL_INSPECTION_SCHEMA = {
+  type: 'object',
+  required: ['success', 'inspection'],
+  properties: {
+    success: { type: 'boolean', enum: [true] },
+    inspection: {
+      type: 'object',
+      properties: {
+        format: { type: 'string' },
+        totalEntries: { type: 'integer' },
+        totalUncompressedBytes: { type: 'integer' },
+        totalCompressedBytes: { type: 'integer' },
+        isEncrypted: { type: 'boolean' },
+        extractable: { type: 'boolean' },
+        unextractableReasons: { type: 'array', items: { type: 'string' } },
+        entries: { type: 'array', items: { type: 'object' } },
+      },
+    },
+  },
 };
 
 const TOOL_LISTING_SCHEMA = {
@@ -242,25 +327,32 @@ const TOOL_LISTING_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        required: ['name', 'size', 'mimeType', 'data'],
+        required: ['name', 'size', 'mimeType'],
         properties: {
           name: { type: 'string', description: 'The leaf of the entry name, never a path.' },
           size: { type: 'integer' },
           mimeType: { type: 'string' },
           data: { type: 'string', format: 'byte', description: 'The bytes of the file, base64.' },
+          url: { type: 'string', description: 'The download URL of the extracted file.' },
+          key: { type: 'string', description: 'The storage key of the extracted file.' },
         },
       },
     },
   },
 };
 
-const toolAnswer = (answer: ToolAnswer) =>
-  'listing' in answer
-    ? { description: answer.description, content: { 'application/json': { schema: TOOL_LISTING_SCHEMA } } }
-    : {
-        description: answer.description,
-        content: Object.fromEntries(answer.mediaTypes.map((type) => [type, { schema: { type: 'string', format: 'binary' } }])),
-      };
+const toolAnswer = (answer: ToolAnswer) => {
+  if ('listing' in answer) {
+    return { description: answer.description, content: { 'application/json': { schema: TOOL_LISTING_SCHEMA } } };
+  }
+  if ('inspection' in answer) {
+    return { description: answer.description, content: { 'application/json': { schema: TOOL_INSPECTION_SCHEMA } } };
+  }
+  return {
+    description: answer.description,
+    content: Object.fromEntries(answer.mediaTypes.map((type) => [type, { schema: { type: 'string', format: 'binary' } }])),
+  };
+};
 
 const toolPath = (tool: WebTool) => {
   const doc = TOOL_DOCS[tool];
@@ -620,6 +712,7 @@ export const internalPaths = {
         files: { type: 'array', items: { type: 'string', format: 'binary' }, description: `Up to ${formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES)} in total, the most one request carries.` },
         targetFormats: { type: 'string', description: 'JSON map of filename to target format; `default` applies to the rest.' },
         options: { type: 'string', description: CONVERT_OPTIONS_DESCRIPTION },
+        onError: { type: 'string', enum: ['fail', 'continue'], description: 'Failure policy: "fail" aborts on first failure, "continue" bundles successes and returns _failures.json.' },
       }, ['files']),
       responses: {
         '200': binaryResponse('ZIP archive of converted files.', 'application/zip'),
@@ -657,7 +750,18 @@ export const internalPaths = {
         required: true,
         content: {
           'application/json': {
-            schema: { type: 'object', required: ['url'], properties: { url: { type: 'string', format: 'uri' } } },
+            schema: {
+              type: 'object',
+              required: ['url'],
+              properties: {
+                url: { type: 'string', format: 'uri' },
+                headers: {
+                  type: 'object',
+                  additionalProperties: { type: 'string' },
+                  description: 'Optional request headers forwarded to remote host (up to 16, forbidden/hop-by-hop headers excluded).',
+                },
+              },
+            },
           },
         },
       },
@@ -861,6 +965,69 @@ export const internalPaths = {
       },
     },
   },
+  '/api/storage/bundle': {
+    post: {
+      ...INTERNAL,
+      summary: 'Stream Storage Files as ZIP Archive',
+      description: 'Bundles multiple stored files into a streaming ZIP archive on caller request without buffering in memory.',
+      operationId: 'bundleStorageFiles',
+      security: [...requireScope('storage:download'), {}],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['files'],
+              properties: {
+                files: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    required: ['key', 'name'],
+                    properties: {
+                      key: { type: 'string', description: 'Storage key of the file.' },
+                      name: { type: 'string', description: 'Target filename inside the ZIP.' },
+                    },
+                  },
+                },
+                archiveName: { type: 'string', description: 'Name of the generated ZIP file.' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Streaming ZIP archive containing requested files.',
+          content: {
+            'application/zip': { schema: { type: 'string', format: 'binary' } },
+          },
+        },
+        '400': createErrorResponse('Invalid request body or files array.'),
+        '401': createErrorResponse('Authentication required.'),
+        '403': createErrorResponse('Caller does not own one of the files.'),
+        '404': createErrorResponse('One or more files not found.'),
+      },
+    },
+  },
+  '/api/storage/file/{key}': {
+    delete: {
+      ...INTERNAL,
+      summary: 'Delete Retained Storage File',
+      description: 'Deletes a retained conversion output or capability file immediately on caller request.',
+      operationId: 'deleteRetainedStorageFile',
+      security: [...requireScope('storage:download'), {}],
+      parameters: [createPathParameter('key', 'URL-encoded storage key, as returned in downloadUrl.')],
+      responses: {
+        '200': createJsonResponse('File deleted.', { success: { type: 'boolean' }, message: { type: 'string' } }),
+        '401': createErrorResponse('Authentication required.'),
+        '403': createErrorResponse('Forbidden.'),
+        '404': createErrorResponse('File not found or owned by another user.'),
+        '500': createErrorResponse('Storage error.'),
+      },
+    },
+  },
   '/api/storage/multipart': {
     post: {
       ...INTERNAL,
@@ -949,6 +1116,75 @@ export const internalPaths = {
       operationId: 'getOpenApiDocumentJsonV1',
       security: PUBLIC_ACCESS,
       responses: openApiDocumentResponse,
+    },
+  },
+  '/api/tools/jobs': {
+    post: {
+      ...INTERNAL,
+      summary: 'Submit Async Multipart Tool Job',
+      description: 'Accepts files >64 MiB and dispatches an asynchronous worker tool job.',
+      operationId: 'createToolJobInternal',
+      security: ANONYMOUS_OR_SCOPE('convert:write'),
+      requestBody: multipartBody(
+        {
+          files: TOOL_FILES_PROPERTY('Files for the tool job.'),
+          tool: { type: 'string', description: 'The web tool name.' },
+          options: { type: 'string', description: 'JSON stringified tool options.' },
+        },
+        ['files', 'tool']
+      ),
+      responses: {
+        '201': createJsonResponse('Tool job queued.', {
+          success: { type: 'boolean' },
+          id: { type: 'string' },
+          status: { type: 'string' },
+        }),
+        '400': createErrorResponse('Invalid request.'),
+        '401': createErrorResponse('Unauthorized.'),
+        '413': createProblemResponse('Payload too large.'),
+        '415': createErrorResponse('Unsupported media type.'),
+        '429': createTooManyRequestsResponse(''),
+        '500': createErrorResponse('Server error.'),
+      },
+    },
+  },
+  '/api/tools/jobs/{id}': {
+    get: {
+      ...INTERNAL,
+      summary: 'Get Tool Job Status',
+      description: 'Returns the status and result of an async tool job.',
+      operationId: 'getToolJobInternal',
+      security: ANONYMOUS_OR_SCOPE('convert:read'),
+      parameters: [createPathParameter('id', 'Job identifier.')],
+      responses: {
+        '200': createJsonResponse('Tool job state.', {
+          success: { type: 'boolean' },
+          id: { type: 'string' },
+          status: { type: 'string' },
+          progress: { type: 'number' },
+          result: { type: 'object' },
+        }),
+        '401': createErrorResponse('Unauthorized.'),
+        '404': createErrorResponse('Job not found.'),
+        '500': createErrorResponse('Server error.'),
+      },
+    },
+    delete: {
+      ...INTERNAL,
+      summary: 'Cancel Tool Job',
+      description: 'Cancels an in-flight tool job.',
+      operationId: 'cancelToolJobInternal',
+      security: ANONYMOUS_OR_SCOPE('convert:write'),
+      parameters: [createPathParameter('id', 'Job identifier.')],
+      responses: {
+        '200': createJsonResponse('Tool job cancelled.', {
+          success: { type: 'boolean' },
+          message: { type: 'string' },
+        }),
+        '401': createErrorResponse('Unauthorized.'),
+        '404': createErrorResponse('Job not found.'),
+        '500': createErrorResponse('Server error.'),
+      },
     },
   },
   ...toolPaths,

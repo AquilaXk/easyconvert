@@ -225,7 +225,6 @@ export const conversionPaths = {
           'multipart/form-data': {
             schema: {
               type: 'object',
-              required: ['targetFormat'],
               properties: {
                 file: {
                   type: 'string',
@@ -234,17 +233,25 @@ export const conversionPaths = {
                 },
                 targetFormat: {
                   type: 'string',
-                  description: 'Target format extension. With `tasks`, the final task determines the output format.',
+                  description: 'Target format extension. With `tasks` or `graph`, the graph or final task determines the output format.',
                 },
                 sourceFormat: { type: 'string', description: 'Source format extension.' },
                 storageKey: {
                   type: 'string',
                   description: 'Key of an object from the multipart upload API (`uploads/...`), or an output owned by the caller (`conversions/{userId}/...`, `results/{jobId}/...`). Any other key returns 404.',
                 },
+                uploadId: {
+                  type: 'string',
+                  description: 'Identifier of a completed resumable upload session from `/api/v1/uploads`.',
+                },
                 options: { type: 'string', description: CONVERT_OPTIONS_DESCRIPTION },
                 tasks: {
                   type: 'string',
                   description: 'JSON-serialized array of sequential pipeline tasks: [{ name, operation, targetFormat, options }], or a JSON-serialized object of named tasks (a task graph) keyed by task name, as `tasks` of the JSON body.',
+                },
+                graph: {
+                  type: 'string',
+                  description: 'JSON-serialized processing graph specification with typed nodes and directed edges.',
                 },
                 webhookUrl: { type: 'string', format: 'uri', description: 'Destination URL for job events.' },
                 webhookSecret: { type: 'string', description: 'Secret used for HMAC-SHA256 signature.' },

@@ -31,6 +31,14 @@ export const PAGE_TOOL_SLUGS = {
   archiveExtract: 'extract-zip-archive',
   splitPdf: 'split-pdf',
   rotatePdf: 'rotate-pdf',
+  protectPdf: 'protect-pdf',
+  unlockPdf: 'unlock-pdf',
+  watermarkPdf: 'watermark-pdf',
+  extractPdfPages: 'extract-pdf-pages',
+  deletePdfPages: 'delete-pdf-pages',
+  reorderPdfPages: 'reorder-pdf-pages',
+  archiveInspect: 'inspect-archive',
+  zipRepair: 'repair-zip',
 } as const;
 export type PageToolKind = keyof typeof PAGE_TOOL_SLUGS;
 
@@ -40,6 +48,14 @@ const PAGE_TOOL_FORMATS: Readonly<Record<PageToolKind, string>> = {
   archiveExtract: 'zip',
   splitPdf: 'pdf',
   rotatePdf: 'pdf',
+  protectPdf: 'pdf',
+  unlockPdf: 'pdf',
+  watermarkPdf: 'pdf',
+  extractPdfPages: 'pdf',
+  deletePdfPages: 'pdf',
+  reorderPdfPages: 'pdf',
+  archiveInspect: 'zip',
+  zipRepair: 'zip',
 };
 
 export type SlugInfoType =
@@ -99,6 +115,14 @@ export function canonicalPathOf(copy: SlugCopy): string {
     case 'archiveExtract':
     case 'splitPdf':
     case 'rotatePdf':
+    case 'protectPdf':
+    case 'unlockPdf':
+    case 'watermarkPdf':
+    case 'extractPdfPages':
+    case 'deletePdfPages':
+    case 'reorderPdfPages':
+    case 'archiveInspect':
+    case 'zipRepair':
       return `/${PAGE_TOOL_SLUGS[copy.kind]}`;
     case 'saveWebsiteAsPdf':
       return '/save-website-as-pdf';

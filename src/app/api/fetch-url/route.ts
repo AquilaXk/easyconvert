@@ -79,8 +79,64 @@ async function classifySsrfOrDnsRefusal(url: URL): Promise<NextResponse> {
   return refusal(502, 'fetch_failed', 'Failed to resolve remote host.');
 }
 
-async function fetchFollowingRedirects(url: URL, ssrfAgent: ReturnType<typeof createSsrfSafeAgent>, signal: AbortSignal): Promise<RemoteAnswer> {
+const FORBIDDEN_HEADERS = new Set([
+  'host',
+  'connection',
+  'content-length',
+  'transfer-encoding',
+  'keep-alive',
+  'te',
+  'upgrade',
+  'trailer',
+  'proxy-authorization',
+  'proxy-authenticate',
+  'cookie',
+  'set-cookie',
+  'origin',
+  'referer',
+]);
+
+const HEADER_NAME_REGEX = /^[!#$%&'*+\-.^_`|~0-9a-zA-Z]+$/;
+const HEADER_VALUE_REGEX = /^[\t\x20-\x7E\x80-\xFF]*$/;
+
+function validateCustomHeaders(raw: unknown): { headers?: Record<string, string>; refusal?: NextResponse } {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { refusal: refusal(400, 'invalid_headers' as UrlImportErrorCode, 'Custom headers must be a JSON object.') };
+  }
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (entries.length > 16) {
+    return { refusal: refusal(400, 'invalid_headers' as UrlImportErrorCode, 'At most 16 custom headers are allowed.') };
+  }
+  const sanitized: Record<string, string> = {};
+  for (const [key, value] of entries) {
+    if (typeof value !== 'string') {
+      return { refusal: refusal(400, 'invalid_headers' as UrlImportErrorCode, `Header "${key}" value must be a string.`) };
+    }
+    const lowerKey = key.toLowerCase().trim();
+    if (!HEADER_NAME_REGEX.test(lowerKey)) {
+      return { refusal: refusal(400, 'invalid_headers' as UrlImportErrorCode, `Invalid header name "${key}".`) };
+    }
+    if (!HEADER_VALUE_REGEX.test(value)) {
+      return { refusal: refusal(400, 'invalid_headers' as UrlImportErrorCode, `Invalid header value for "${key}".`) };
+    }
+    if (FORBIDDEN_HEADERS.has(lowerKey)) {
+      return { refusal: refusal(400, 'invalid_headers' as UrlImportErrorCode, `Header "${key}" is not permitted.`) };
+    }
+    sanitized[lowerKey] = value;
+  }
+  return { headers: sanitized };
+}
+
+async function fetchFollowingRedirects(
+  url: URL,
+  ssrfAgent: ReturnType<typeof createSsrfSafeAgent>,
+  signal: AbortSignal,
+  customHeaders?: Record<string, string>
+): Promise<RemoteAnswer> {
   let currentUrl = url;
+  const currentHeaders = { ...(customHeaders ?? {}) };
+
   for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
     const isValid = await validateUrlForSsrf(currentUrl);
     if (!isValid) {
@@ -97,6 +153,7 @@ async function fetchFollowingRedirects(url: URL, ssrfAgent: ReturnType<typeof cr
         redirect: 'manual',
         headers: {
           'User-Agent': 'EasyConvert-Universal-Ingestion/1.0',
+          ...currentHeaders,
         },
       })) as unknown as Response;
     } catch (fetchErr: unknown) {
@@ -124,14 +181,19 @@ async function fetchFollowingRedirects(url: URL, ssrfAgent: ReturnType<typeof cr
     if (redirectCount === MAX_REDIRECTS) {
       return { refusal: refusal(502, 'too_many_redirects', 'Too many redirects encountered.') };
     }
+    let nextUrl: URL;
     try {
-      currentUrl = new URL(location, currentUrl);
+      nextUrl = new URL(location, currentUrl);
     } catch {
       return { refusal: refusal(502, 'invalid_redirect', 'Invalid redirect location URL.') };
     }
-    if (currentUrl.protocol !== 'http:' && currentUrl.protocol !== 'https:') {
+    if (nextUrl.protocol !== 'http:' && nextUrl.protocol !== 'https:') {
       return { refusal: refusal(400, 'unsupported_scheme', 'Only HTTP and HTTPS URLs are permitted.') };
     }
+    if (nextUrl.origin !== currentUrl.origin) {
+      delete currentHeaders['authorization'];
+    }
+    currentUrl = nextUrl;
   }
   return { refusal: refusal(502, 'fetch_failed', 'Failed to fetch remote URL') };
 }
@@ -255,13 +317,13 @@ function importedFile(res: Response, finalUrl: URL, chunks: Uint8Array[], totalB
 
 /** Imports the file at `url`: follows its redirects, refuses an error answer, and reads the body. */
 async function importFrom(
-  url: URL,
+  target: { url: URL; headers?: Record<string, string> },
   ssrfAgent: ReturnType<typeof createSsrfSafeAgent>,
   signal: AbortSignal,
   meter: LinkImportMeter,
   importer: ImportCaller
 ): Promise<NextResponse> {
-  const answer = await fetchFollowingRedirects(url, ssrfAgent, signal);
+  const answer = await fetchFollowingRedirects(target.url, ssrfAgent, signal, target.headers);
   if ('refusal' in answer) return answer.refusal;
   const { res, finalUrl } = answer;
   if (!res.ok) {
@@ -284,10 +346,10 @@ function importTimedOut(timeoutMs: number): NextResponse {
 }
 
 /** The link a request names, or the refusal of a body that names none the server may fetch. */
-async function importTarget(req: NextRequest): Promise<URL | NextResponse> {
+async function importTarget(req: NextRequest): Promise<{ url: URL; headers?: Record<string, string> } | NextResponse> {
   const body = await readJsonObject(req);
   if (!body) return refusal(400, 'invalid_json', 'Invalid JSON request payload.');
-  const { url } = body;
+  const { url, headers } = body;
   if (!url || typeof url !== 'string') return refusal(400, 'url_required', 'URL is required.');
   let parsedUrl: URL;
   try {
@@ -298,7 +360,9 @@ async function importTarget(req: NextRequest): Promise<URL | NextResponse> {
   if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
     return refusal(400, 'unsupported_scheme', 'Only HTTP and HTTPS URLs are permitted.');
   }
-  return parsedUrl;
+  const headerValidation = validateCustomHeaders(headers);
+  if (headerValidation.refusal) return headerValidation.refusal;
+  return { url: parsedUrl, headers: headerValidation.headers };
 }
 
 export const POST = admittingNewFiles(async function POST(req: NextRequest) {
@@ -334,7 +398,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const ssrfAgent = createSsrfSafeAgent();
   try {
     const target = await importTarget(req);
-    if (!(target instanceof URL)) return target;
+    if ('status' in target) return target;
     const importer: ImportCaller = { caller, plan: planOfCaller(caller), instanceUri };
     // The whole import, headers and body, runs under the synchronous deadline (SYNC_DEADLINE_MAX_MS). An import that
     // ended is charged before the answer; one cut off is charged once it has stopped reading, without holding the answer.

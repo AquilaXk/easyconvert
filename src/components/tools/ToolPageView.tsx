@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useRef, useState } from 'react';
-import JSZip from 'jszip';
+import { streamZipReadable } from '@/lib/archive/streaming-zip';
 import { useTranslations } from 'next-intl';
 import { ArrowDown, ArrowUp, CircleCheck, Download, Loader2, Package, Sliders, X } from 'lucide-react';
 import Header from '@/components/Header';
@@ -21,6 +21,7 @@ import { maxFileBytes, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
 import { toolInputProblem, type ToolResult, type ToolResultFile } from '@/lib/tools/tool-client';
 import { MAX_TOOL_FILES, MIN_MERGE_FILES, TOOLS_WITH_OPTIONS, type WebTool } from '@/lib/tools/tool-names';
 import ToolOptionsModal from './ToolOptionsModal';
+import { PdfPageGrid, formatPageRanges } from './PdfPageGrid';
 
 const ROW_CLASS = 'rounded-xs border border-rule bg-surface px-4 py-3.5 sm:px-6 flex items-center gap-4 min-w-0';
 const ICON_BUTTON_CLASS =
@@ -28,6 +29,7 @@ const ICON_BUTTON_CLASS =
 const SECONDARY_BUTTON_CLASS =
   'transition-colors min-h-[44px] md:min-h-[40px] px-3.5 rounded-xs border border-rule bg-canvas text-sm font-medium text-ink hover:border-rule-strong cursor-pointer';
 const DOWNLOAD_CLASS = 'btn-primary inline-flex items-center justify-center gap-1.5 min-h-[44px] md:min-h-9 px-4 rounded-xs text-sm font-medium';
+const INPUT_CLASS = 'w-full rounded-xs border border-rule bg-canvas px-3 py-2 text-sm text-ink placeholder:text-ink-4 outline-none focus:border-accent focus:ring-1 focus:ring-accent';
 
 const extensionOf = (name: string): string => (/\.tar\.gz$/i.test(name) ? 'tar.gz' : (name.split('.').pop() ?? '').toLowerCase());
 
@@ -50,15 +52,24 @@ interface FileRowProps {
   tooLarge: string | null;
   onMove: (delta: -1 | 1) => void;
   onRemove: () => void;
+  onDragStart?: (index: number) => void;
+  onDragOver?: (e: React.DragEvent) => void;
+  onDrop?: (index: number) => void;
 }
 
 /** One file of the list: its type tile, name and size, the arrows that order it, and the button that takes it out. */
-function FileRow({ item, position, count, movable, locked, tooLarge, onMove, onRemove }: Readonly<FileRowProps>) {
+function FileRow({ item, position, count, movable, locked, tooLarge, onMove, onRemove, onDragStart, onDragOver, onDrop }: Readonly<FileRowProps>) {
   const t = useTranslations('tools.row');
   const formatBytes = useFormatBytes();
   const { name } = item.file;
   return (
-    <div className="flex flex-col gap-2">
+    <div
+      draggable={movable && !locked}
+      onDragStart={() => onDragStart?.(position)}
+      onDragOver={onDragOver}
+      onDrop={() => onDrop?.(position)}
+      className="flex flex-col gap-2"
+    >
       <div className={ROW_CLASS}>
         <div className="size-11 flex items-center justify-center rounded-xs bg-sunken shrink-0">
           <FormatIcon format={extensionOf(name)} className="size-6 text-ink-3" />
@@ -106,8 +117,96 @@ function ResultRow({ file, label }: Readonly<{ file: ToolResultFile; label: stri
   );
 }
 
+interface InspectionEntry {
+  path?: string;
+  name?: string;
+  size?: number;
+  compressedSize?: number;
+  encrypted?: boolean;
+}
+
+function ArchiveInspectionPanel({ inspection, file }: Readonly<{ inspection: Record<string, unknown>; file: ToolResultFile }>) {
+  const [filter, setFilter] = useState('');
+  const formatBytes = useFormatBytes();
+  const format = String(inspection.format ?? 'Archive').toUpperCase();
+  const encrypted = Boolean(inspection.encrypted);
+  const totalEntries = Number(inspection.totalEntries ?? (Array.isArray(inspection.entries) ? inspection.entries.length : 0));
+  const uncompressedBytes = Number(inspection.uncompressedBytes ?? 0);
+  const compressedBytes = Number(inspection.compressedBytes ?? 0);
+  const ratio = uncompressedBytes > 0 && compressedBytes > 0
+    ? `${Math.max(0, Math.round((1 - compressedBytes / uncompressedBytes) * 100))}%`
+    : '-';
+
+  const rawEntries = (Array.isArray(inspection.entries) ? inspection.entries : []) as InspectionEntry[];
+  const entries = filter.trim()
+    ? rawEntries.filter((e) => (e.path ?? e.name ?? '').toLowerCase().includes(filter.toLowerCase()))
+    : rawEntries;
+
+  return (
+    <section aria-label="Archive Inspection Summary" className="mt-8 space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-xs border border-rule bg-surface">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="px-2.5 py-1 text-xs font-semibold rounded-xs bg-accent-soft text-accent-ink">{format}</span>
+          <span className={`px-2.5 py-1 text-xs font-semibold rounded-xs ${encrypted ? 'bg-danger-soft text-danger' : 'bg-sunken text-ink-2'}`}>
+            {encrypted ? 'Encrypted' : 'Not Encrypted'}
+          </span>
+          <span className="text-sm text-ink-2 tabular-nums">Entries: <strong>{totalEntries}</strong></span>
+          {uncompressedBytes > 0 && (
+            <span className="text-sm text-ink-2 tabular-nums">Size: <strong>{formatBytes(uncompressedBytes)}</strong></span>
+          )}
+          {ratio !== '-' && (
+            <span className="text-sm text-ink-2 tabular-nums">Compression: <strong>{ratio}</strong></span>
+          )}
+        </div>
+        <a href={file.url} download={file.name} className={DOWNLOAD_CLASS}>
+          <Download aria-hidden="true" className="size-4" /><span>Download JSON</span>
+        </a>
+      </div>
+
+      {rawEntries.length > 0 && (
+        <div className="rounded-xs border border-rule bg-surface overflow-hidden">
+          <div className="p-3 border-b border-rule">
+            <input
+              type="text"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter archive entries..."
+              className={INPUT_CLASS}
+            />
+          </div>
+          <div className="max-h-72 overflow-y-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-sunken/50 text-ink-3 border-b border-rule font-medium">
+                <tr>
+                  <th className="p-2.5">Path</th>
+                  <th className="p-2.5 text-right">Size</th>
+                  <th className="p-2.5 text-right">Compressed</th>
+                  <th className="p-2.5 text-center">Encrypted</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-rule/50">
+                {entries.map((entry, idx) => (
+                  <tr key={idx} className="hover:bg-sunken/30">
+                    <td className="p-2.5 font-mono text-ink truncate max-w-xs" title={entry.path ?? entry.name}>{entry.path ?? entry.name}</td>
+                    <td className="p-2.5 text-right tabular-nums text-ink-2">{entry.size !== undefined ? formatBytes(entry.size) : '-'}</td>
+                    <td className="p-2.5 text-right tabular-nums text-ink-3">{entry.compressedSize !== undefined ? formatBytes(entry.compressedSize) : '-'}</td>
+                    <td className="p-2.5 text-center text-ink-3">{entry.encrypted ? '🔒' : '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ResultList({ result }: Readonly<{ result: ToolResult }>) {
   const t = useTranslations('tools.result');
+  if (result.kind === 'inspection') {
+    return <ArchiveInspectionPanel inspection={result.inspection} file={result.file} />;
+  }
   const files = result.kind === 'file' ? [result.file] : result.entries;
   return (
     <section aria-label={t('label')} className="mt-8">
@@ -119,11 +218,40 @@ function ResultList({ result }: Readonly<{ result: ToolResult }>) {
   );
 }
 
-/** Every file of an unpacked archive in one ZIP, built in the browser from what the server listed. */
+/** Every file of an unpacked archive in one ZIP, streamed with client-zip or bundled via /api/storage/bundle. */
 async function zipOfEntries(entries: readonly ToolResultFile[]): Promise<Blob> {
-  const zip = new JSZip();
-  await Promise.all(entries.map(async (entry) => zip.file(entry.name, await (await fetch(entry.url)).blob())));
-  return zip.generateAsync({ type: 'blob' });
+  const hasKeys = entries.length > 0 && entries.every((e) => Boolean(e.key));
+  if (hasKeys) {
+    try {
+      const res = await fetch('/api/storage/bundle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          files: entries.map((e) => ({ key: e.key!, name: e.name })),
+          archiveName: 'files.zip',
+        }),
+      });
+      if (res.ok) return await res.blob();
+    } catch {
+      // Fall through to browser streaming
+    }
+  }
+
+  async function* generateEntries() {
+    for (const entry of entries) {
+      const res = await fetch(entry.url);
+      if (!res.ok) throw new Error(`Could not fetch "${entry.name}"`);
+      const blob = await res.blob();
+      yield {
+        name: entry.name,
+        data: blob,
+        size: blob.size,
+      };
+    }
+  }
+
+  const stream = streamZipReadable(generateEntries());
+  return await new Response(stream).blob();
 }
 
 interface ToolBarProps {
@@ -215,6 +343,68 @@ function ToolBar({ summary, failure, busy, done, canRun, actionLabel, addMore, h
   );
 }
 
+function usePdfOrganizerState(tool: WebTool, run: ReturnType<typeof useToolRun>, done: boolean) {
+  const [pageRotations, setPageRotations] = useState<Record<number, number>>({});
+  const isSinglePdf = run.items.length === 1 && (run.items[0].file.type === 'application/pdf' || run.items[0].file.name.toLowerCase().endsWith('.pdf'));
+  const isPdfPageTool = tool === 'split' || tool === 'extract-pages' || tool === 'delete-pages' || tool === 'reorder-pages' || tool === 'rotate';
+  const showPdfOrganizer = isSinglePdf && isPdfPageTool && !done;
+
+  const handlePdfOrderChange = (order: number[]) => {
+    if (tool === 'reorder-pages') run.setOptions({ ...run.options, order });
+  };
+
+  const handlePdfSelectionChange = (pages: number[]) => {
+    const rangeStr = formatPageRanges(pages);
+    if (tool === 'extract-pages' || tool === 'delete-pages') {
+      run.setOptions({ ...run.options, pages: rangeStr });
+    } else if (tool === 'split') {
+      run.setOptions({ ...run.options, split: { ...run.options.split, ranges: rangeStr } });
+    }
+  };
+
+  const handlePdfRotatePage = (pageNum: number) => {
+    setPageRotations((prev) => {
+      const nextAngle = (((prev[pageNum] ?? 0) + 90) % 360) as 0 | 90 | 180 | 270;
+      const nextMap = { ...prev, [pageNum]: nextAngle };
+      const rotationGroups: Array<{ angle: 90 | 180 | 270; pages?: string }> = [];
+      for (const ang of [90, 180, 270] as const) {
+        const pages = Object.entries(nextMap).filter(([, a]) => a === ang).map(([p]) => Number(p));
+        if (pages.length > 0) rotationGroups.push({ angle: ang, pages: formatPageRanges(pages) });
+      }
+      run.setOptions({ ...run.options, rotations: rotationGroups });
+      return nextMap;
+    });
+  };
+
+  return { showPdfOrganizer, pageRotations, handlePdfOrderChange, handlePdfSelectionChange, handlePdfRotatePage };
+}
+
+interface SummaryParams {
+  running: boolean;
+  done: boolean;
+  needsMore: boolean;
+  oversize: boolean;
+  problem: string | null;
+  emptyRanges: boolean;
+  leftOut: string;
+  count: number;
+  t: (key: string, args?: Record<string, unknown>) => string;
+  formatBytes: (bytes: number) => string;
+}
+
+function resolveSummary({ running, done, needsMore, oversize, problem, emptyRanges, leftOut, count, t, formatBytes }: SummaryParams): string {
+  if (running) return t('running');
+  if (done) return t('status.done');
+  if (needsMore) return t('status.needTwo');
+  if (oversize) return t('status.oversize');
+  if (problem === 'tooMany') return t('status.tooMany', { max: MAX_TOOL_FILES });
+  if (problem === 'tooLarge') return t('status.tooLarge', { size: formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES) });
+  if (problem === 'empty') return t('status.empty');
+  if (emptyRanges) return t('status.needRanges');
+  if (leftOut) return leftOut;
+  return t('status.ready', { count });
+}
+
 /** A page of a tool that works on several files or on the pages of one: the title and the upload card, then the files, the options and one run. */
 export default function ToolPageView({ tool, operation, title, description, dailyLimit }: Readonly<ToolPageViewProps>) {
   const t = useTranslations('tools');
@@ -225,6 +415,7 @@ export default function ToolPageView({ tool, operation, title, description, dail
   const fileTooLarge = useFileTooLargeMessage();
   const failureWording = useConversionFailureWording();
   const [optionsOpen, setOptionsOpen] = useState(false);
+  const [draggedRowIndex, setDraggedRowIndex] = useState<number | null>(null);
 
   const limit = maxFileBytes(plan);
   const running = run.phase === 'running';
@@ -235,21 +426,20 @@ export default function ToolPageView({ tool, operation, title, description, dail
   const problem = toolInputProblem(run.items.map((item) => item.file));
   const canRun = run.items.length > 0 && !running && !done && !oversize && !needsMore && !emptyRanges && problem === null;
 
-  const problemWording = {
-    tooMany: () => t('status.tooMany', { max: MAX_TOOL_FILES }),
-    tooLarge: () => t('status.tooLarge', { size: formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES) }),
-    empty: () => t('status.empty'),
-  } as const;
-  const leftOut = [run.skipped > 0 ? t('status.skipped', { count: run.skipped }) : null, run.surplus > 0 ? t('status.surplus', { count: run.surplus }) : null].filter(Boolean).join(' ');
+  const { showPdfOrganizer, pageRotations, handlePdfOrderChange, handlePdfSelectionChange, handlePdfRotatePage } =
+    usePdfOrganizerState(tool, run, done);
 
-  let summary = t('status.ready', { count: run.items.length });
-  if (running) summary = t('running');
-  else if (done) summary = t('status.done');
-  else if (needsMore) summary = t('status.needTwo');
-  else if (oversize) summary = t('status.oversize');
-  else if (problem) summary = problemWording[problem]();
-  else if (emptyRanges) summary = t('status.needRanges');
-  else if (leftOut) summary = leftOut;
+  const handleRowDrop = (targetIndex: number) => {
+    if (draggedRowIndex === null || draggedRowIndex === targetIndex) return;
+    run.reorder(draggedRowIndex, targetIndex);
+    setDraggedRowIndex(null);
+  };
+
+  const leftOut = [run.skipped > 0 ? t('status.skipped', { count: run.skipped }) : null, run.surplus > 0 ? t('status.surplus', { count: run.surplus }) : null].filter(Boolean).join(' ');
+  const summary = resolveSummary({
+    running, done, needsMore, oversize, problem, emptyRanges, leftOut,
+    count: run.items.length, t, formatBytes,
+  });
 
   return (
     <div className="flex flex-col min-h-screen">
@@ -285,10 +475,26 @@ export default function ToolPageView({ tool, operation, title, description, dail
                       item={item} position={position} count={run.items.length} movable={!isSingleFileTool(tool)} locked={running}
                       tooLarge={item.file.size > limit ? fileTooLarge(plan, item.file.size) : null}
                       onMove={(delta) => run.move(item.id, delta)} onRemove={() => run.remove(item.id)}
+                      onDragStart={() => setDraggedRowIndex(position)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={() => handleRowDrop(position)}
                     />
                   </li>
                 ))}
               </ul>
+              {showPdfOrganizer && (
+                <div className="mt-6 p-4 rounded-xs border border-rule bg-surface">
+                  <h2 className="text-sm font-semibold text-ink-2 mb-3">Page Organizer</h2>
+                  <PdfPageGrid
+                    file={run.items[0].file}
+                    tool={tool}
+                    pageRotations={pageRotations}
+                    onOrderChange={handlePdfOrderChange}
+                    onSelectionChange={handlePdfSelectionChange}
+                    onRotatePage={handlePdfRotatePage}
+                  />
+                </div>
+              )}
               {run.result && <ResultList result={run.result} />}
             </div>
             <ToolBar

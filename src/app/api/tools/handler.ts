@@ -15,6 +15,9 @@ import { refusalCodeOf } from '@/lib/refusal-codes';
 import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import { codedRefusal, createProblemDetailsResponse } from '@/lib/api/problem-details';
 import type { User } from '@/lib/auth/types';
+import { storageProvider as s3Storage } from '@/lib/storage';
+import { saveRetainedResult } from '@/lib/storage/retention-service';
+import { sanitizeNodeOutputFilename } from '@/lib/queue/graph/node-jobs';
 import {
   assertToolInput,
   assertToolUploadMetadata,
@@ -29,15 +32,36 @@ import {
 const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
 const MULTIPART_REQUIRED = 'The request body must be multipart/form-data.';
 
-function answerOf(output: WebToolOutput): NextResponse {
+async function answerOf(output: WebToolOutput, caller: User): Promise<NextResponse> {
   if (output.kind === 'entries') {
-    const entries = output.entries.map((entry) => ({
-      name: entry.name,
-      size: entry.size,
-      mimeType: entry.mimeType,
-      data: entry.buffer.toString('base64'),
-    }));
+    const entries = await Promise.all(
+      output.entries.map(async (entry, index) => {
+        const safeName = sanitizeNodeOutputFilename(entry.name, `file_${index + 1}`);
+        const storageKey = `conversions/${caller.id}/${Date.now()}_${index}_${safeName}`;
+        try {
+          await saveRetainedResult(s3Storage, storageKey, entry.buffer, entry.mimeType, safeName);
+          return {
+            name: entry.name,
+            size: entry.size,
+            mimeType: entry.mimeType,
+            key: storageKey,
+            url: `/api/storage/file/${encodeURIComponent(storageKey)}`,
+            data: entry.buffer.toString('base64'),
+          };
+        } catch {
+          return {
+            name: entry.name,
+            size: entry.size,
+            mimeType: entry.mimeType,
+            data: entry.buffer.toString('base64'),
+          };
+        }
+      })
+    );
     return NextResponse.json({ success: true, entries });
+  }
+  if (output.kind === 'inspection') {
+    return NextResponse.json({ success: true, inspection: output.inspection });
   }
   return new NextResponse(new Uint8Array(output.buffer), {
     status: 200,
@@ -102,7 +126,7 @@ async function runTool(req: NextRequest, caller: User, tool: WebTool, unit: Rese
       return work;
     });
     // The answer is built before the unit is committed, so an answer that cannot be built is not charged.
-    const answer = answerOf(output);
+    const answer = await answerOf(output, caller);
     await unit.commit({ from: tool, base: 1, processingMs: Date.now() - toolStartedAt });
     return answer;
   } catch (error: unknown) {

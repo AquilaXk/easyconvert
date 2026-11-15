@@ -72,7 +72,7 @@ function parseTargetFormats(raw: string | null): { map: Map<string, string> } | 
 async function readBatchForm(
   req: NextRequest,
   instanceUri: string
-): Promise<{ files: File[]; targetFormatsRaw: string | null; optionsRaw: string | null } | { refusal: Response }> {
+): Promise<{ files: File[]; targetFormatsRaw: string | null; optionsRaw: string | null; onError: 'fail' | 'continue' } | { refusal: Response }> {
   const body = await readMultipartForm(req);
   if (body.malformed) {
     return { refusal: createProblemDetailsResponse(400, 'Invalid or malformed multipart/form-data body.', instanceUri, 'Bad Request') };
@@ -81,10 +81,23 @@ async function readBatchForm(
   if (files.length === 0) {
     return { refusal: NextResponse.json({ success: false, error: 'No files provided for batch conversion.' }, { status: 400 }) };
   }
+  const onErrorRaw = body.form.get('onError');
+  let onError: 'fail' | 'continue' = 'fail';
+  if (onErrorRaw !== null) {
+    const val = String(onErrorRaw).trim().toLowerCase();
+    if (val === 'continue') {
+      onError = 'continue';
+    } else if (val === 'fail') {
+      onError = 'fail';
+    } else {
+      return { refusal: NextResponse.json({ success: false, error: 'The "onError" field must be either "fail" or "continue".' }, { status: 400 }) };
+    }
+  }
   return {
     files,
     targetFormatsRaw: body.form.get('targetFormats') as string | null,
     optionsRaw: body.form.get('options') as string | null,
+    onError,
   };
 }
 
@@ -180,7 +193,7 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('conve
     if ('refusal' in form) {
       return form.refusal;
     }
-    const { files, targetFormatsRaw, optionsRaw } = form;
+    const { files, targetFormatsRaw, optionsRaw, onError } = form;
     trace.bytes = files.reduce((total, f) => total + f.size, 0);
 
     const sizeProblem = validateBatchFileSizes(files, auth.user, instanceUri);
@@ -210,8 +223,16 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('conve
     if (!unit.reserved) return conversionRefusalResponse(unit.refusal, instanceUri);
     const caller = auth.user;
     return await withReservedUnit(unit.reservationId, (reserved) =>
-      convertPlanned(req, caller, planned, defaultOptions, reserved, (work) => {
-        running = work.catch(() => undefined);
+      convertPlanned({
+        req,
+        caller,
+        planned,
+        defaultOptions,
+        unit: reserved,
+        onErrorPolicy: onError,
+        onRunningWork: (work) => {
+          running = work.catch(() => undefined);
+        },
       })
     );
   } catch (error: unknown) {
@@ -262,9 +283,25 @@ interface PlannedFile {
   targetFormat: string;
 }
 
+type FileConversionResult =
+  | { status: 'success'; filename: string; buffer: Buffer; durationMs: number }
+  | { status: 'failed'; filename: string; error: string };
+
+const BATCH_CONCURRENCY = 4;
+
 /** The credits a batch reserves: the cost of the class of each planned file. */
 function plannedCredits(planned: readonly PlannedFile[]): number {
   return planned.reduce((total, item) => total + baseCredits(item.extension, item.targetFormat), 0);
+}
+
+interface ConvertPlannedContext {
+  req: NextRequest;
+  caller: User;
+  planned: PlannedFile[];
+  defaultOptions: ConversionOptions;
+  unit: ReservedUnit;
+  onErrorPolicy: 'fail' | 'continue';
+  onRunningWork?: (work: Promise<unknown>) => void;
 }
 
 /**
@@ -272,14 +309,8 @@ function plannedCredits(planned: readonly PlannedFile[]): number {
  * the class of each file in the archive, and the minutes each file ran beyond the first; a file of an unknown format was never
  * planned, so it reserved nothing.
  */
-async function convertPlanned(
-  req: NextRequest,
-  caller: User,
-  planned: PlannedFile[],
-  defaultOptions: ConversionOptions,
-  unit: ReservedUnit,
-  onRunningWork?: (work: Promise<unknown>) => void
-): Promise<NextResponse> {
+async function convertPlanned(ctx: ConvertPlannedContext): Promise<NextResponse> {
+  const { req, caller, planned, defaultOptions, unit, onErrorPolicy, onRunningWork } = ctx;
   // One deadline for the whole batch: the files' deadlines added up, never above the maximum of the tier.
   const batchDeadlineMs = syncDeadlineMs(Math.min(
     planned.reduce(
@@ -296,69 +327,119 @@ async function convertPlanned(
     tierMaxDeadlineMs(caller.tier)
   ));
 
-  const convertedFiles: { filename: string; buffer: Buffer }[] = [];
-  const usedNames = new Set<string>();
-  const processingMs: number[] = [];
+  const results: FileConversionResult[] = new Array(planned.length);
 
   // Nothing to convert needs no deadline, and the route answers it below.
   await runUnderDeadline(req, Math.max(batchDeadlineMs, 1), async (limits) => {
-    const work = (async () => {
-      for (const { file, extension, targetFormat } of planned) {
+    let nextIndex = 0;
+    let abortError: unknown = null;
+
+    const worker = async () => {
+      while (nextIndex < planned.length) {
+        if (abortError !== null) return;
         limits.signal.throwIfAborted();
-        const arrayBuffer = await file.arrayBuffer();
-        const inputBuffer = Buffer.from(arrayBuffer);
+        const idx = nextIndex++;
+        const { file, extension, targetFormat } = planned[idx];
 
-        assertNotSpoofedFile(inputBuffer, extension, file.name);
+        try {
+          const arrayBuffer = await file.arrayBuffer();
+          const inputBuffer = Buffer.from(arrayBuffer);
 
-        const startedAt = Date.now();
-        const result = await dispatchConversion(
-          inputBuffer,
-          extension,
-          targetFormat,
-          bindJobLimits(defaultOptions, limits),
-          file.name
-        );
-        processingMs.push(Date.now() - startedAt);
+          assertNotSpoofedFile(inputBuffer, extension, file.name);
 
-        let finalName = result.filename;
-        let counter = 1;
-        while (usedNames.has(finalName)) {
-          const ext = finalName.includes('.') ? `.${finalName.split('.').pop()}` : '';
-          const nameWithoutExt = finalName.replace(/\.[^/.]+$/, '');
-          finalName = `${nameWithoutExt} (${counter})${ext}`;
-          counter++;
+          const startedAt = Date.now();
+          const result = await dispatchConversion(
+            inputBuffer,
+            extension,
+            targetFormat,
+            bindJobLimits(defaultOptions, limits),
+            file.name
+          );
+          results[idx] = {
+            status: 'success',
+            filename: result.filename,
+            buffer: result.buffer,
+            durationMs: Date.now() - startedAt,
+          };
+        } catch (itemErr: unknown) {
+          if (onErrorPolicy === 'fail') {
+            abortError = itemErr;
+            throw itemErr;
+          }
+          results[idx] = {
+            status: 'failed',
+            filename: file.name,
+            error: itemErr instanceof Error ? itemErr.message : String(itemErr),
+          };
         }
-        usedNames.add(finalName);
-
-        convertedFiles.push({
-          filename: finalName,
-          buffer: result.buffer,
-        });
       }
-    })();
+    };
+
+    const workerCount = Math.min(BATCH_CONCURRENCY, planned.length);
+    const work = Promise.all(Array.from({ length: workerCount }, () => worker()));
     onRunningWork?.(work);
     await work;
   });
 
+  const convertedFiles: { filename: string; buffer: Buffer }[] = [];
+  const failures: { filename: string; error: string }[] = [];
+  const usedNames = new Set<string>();
+  const processingMs: number[] = [];
+  const successfulPlanned: PlannedFile[] = [];
+
+  for (let i = 0; i < planned.length; i++) {
+    const res = results[i];
+    if (!res) continue;
+    if (res.status === 'success') {
+      let finalName = res.filename;
+      let counter = 1;
+      while (usedNames.has(finalName)) {
+        const ext = finalName.includes('.') ? `.${finalName.split('.').pop()}` : '';
+        const nameWithoutExt = finalName.replace(/\.[^/.]+$/, '');
+        finalName = `${nameWithoutExt} (${counter})${ext}`;
+        counter++;
+      }
+      usedNames.add(finalName);
+
+      convertedFiles.push({ filename: finalName, buffer: res.buffer });
+      successfulPlanned.push(planned[i]);
+      processingMs.push(res.durationMs);
+    } else {
+      failures.push({ filename: res.filename, error: res.error });
+    }
+  }
+
   if (convertedFiles.length === 0) {
     return NextResponse.json(
-      { success: false, error: 'No files were successfully converted in batch.' },
+      { success: false, error: 'No files were successfully converted in batch.', failures },
       { status: 400 }
     );
   }
 
+  if (failures.length > 0) {
+    convertedFiles.push({
+      filename: '_failures.json',
+      buffer: Buffer.from(JSON.stringify(failures, null, 2)),
+    });
+  }
+
   const zipResult = await createZipArchive(convertedFiles, defaultOptions, 'easyconvert_batch.zip');
 
-  // Every planned file was converted: a file that fails ends the batch, so the reserved units are what it used.
-  await unit.commit({ kind: 'batch', base: plannedCredits(planned), processingMs });
+  // Charge credits only for successfully converted files
+  await unit.commit({ kind: 'batch', base: plannedCredits(successfulPlanned), processingMs });
+
+  const headers = new Headers({
+    'Content-Type': 'application/zip',
+    'X-Content-Type-Options': 'nosniff',
+    'Content-Disposition': 'attachment; filename="easyconvert_batch.zip"',
+    'Content-Length': zipResult.size.toString(),
+  });
+  if (failures.length > 0) {
+    headers.set('X-Batch-Failed-Count', String(failures.length));
+  }
 
   return new NextResponse(new Uint8Array(zipResult.buffer), {
     status: 200,
-    headers: {
-      'Content-Type': 'application/zip',
-      'X-Content-Type-Options': 'nosniff',
-      'Content-Disposition': 'attachment; filename="easyconvert_batch.zip"',
-      'Content-Length': zipResult.size.toString(),
-    },
+    headers,
   });
 }

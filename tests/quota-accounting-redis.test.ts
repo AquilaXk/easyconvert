@@ -391,7 +391,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       const ends: Array<[() => void, number]> = [
         [() => remoteFile(CSV), 200],
         [() => vi.mocked(undiciFetch).mockImplementation(async () => new Response('gone', { status: 404 }) as never), 400],
-        [() => vi.mocked(undiciFetch).mockRejectedValue(new Error('socket hang up')), 500],
+        [() => vi.mocked(undiciFetch).mockRejectedValue(new Error('socket hang up')), 502],
       ];
       for (const [arrange, status] of ends) {
         arrange();

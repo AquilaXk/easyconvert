@@ -14,13 +14,28 @@ export type ToolPhase = 'idle' | 'running' | 'done' | 'failed';
 
 const PDF_NAME = /\.pdf$/i;
 const ARCHIVE_NAME = /\.(zip|7z|rar|tar|tar\.gz|tgz)$/i;
+const ZIP_NAME = /\.zip$/i;
 /** The tools that take one file: a new file replaces the one before. */
-const SINGLE_FILE_TOOLS: ReadonlySet<WebTool> = new Set<WebTool>(['archive-extract', 'split', 'rotate']);
+const SINGLE_FILE_TOOLS: ReadonlySet<WebTool> = new Set<WebTool>([
+  'archive-extract',
+  'split',
+  'rotate',
+  'protect',
+  'unlock',
+  'watermark',
+  'extract-pages',
+  'delete-pages',
+  'reorder-pages',
+  'archive-inspect',
+  'zip-repair',
+]);
 
-/** Whether `tool` takes a file of this name: PDFs for the PDF tools, archives for extract, anything for create. */
+/** Whether `tool` takes a file of this name: PDFs for the PDF tools, archives for extract/inspect, zip for repair, anything for create. */
 export function toolAccepts(tool: WebTool, name: string): boolean {
   if (tool === 'archive-create') return true;
-  return (tool === 'archive-extract' ? ARCHIVE_NAME : PDF_NAME).test(name);
+  if (tool === 'zip-repair') return ZIP_NAME.test(name);
+  if (tool === 'archive-extract' || tool === 'archive-inspect') return ARCHIVE_NAME.test(name);
+  return PDF_NAME.test(name);
 }
 
 export function isSingleFileTool(tool: WebTool): boolean {
@@ -92,6 +107,18 @@ export function useToolRun(tool: WebTool) {
     });
   };
 
+  const reorder = (from: number, to: number) => {
+    stop();
+    forget();
+    setItems((current) => {
+      if (from < 0 || to < 0 || from >= current.length || to >= current.length || from === to) return current;
+      const next = [...current];
+      const [item] = next.splice(from, 1);
+      next.splice(to, 0, item);
+      return next;
+    });
+  };
+
   const clear = () => {
     stop();
     forget();
@@ -136,5 +163,5 @@ export function useToolRun(tool: WebTool) {
     }
   };
 
-  return { items, options, phase, result, failure, skipped, surplus, add, remove, move, clear, cancel, setOptions: changeOptions, run };
+  return { items, options, phase, result, failure, skipped, surplus, add, remove, move, reorder, clear, cancel, setOptions: changeOptions, run };
 }

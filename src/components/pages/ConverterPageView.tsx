@@ -40,6 +40,22 @@ function toolOf(kind: ParsedSlug['copy']['kind']): WebTool | undefined {
       return 'split';
     case 'rotatePdf':
       return 'rotate';
+    case 'protectPdf':
+      return 'protect';
+    case 'unlockPdf':
+      return 'unlock';
+    case 'watermarkPdf':
+      return 'watermark';
+    case 'extractPdfPages':
+      return 'extract-pages';
+    case 'deletePdfPages':
+      return 'delete-pages';
+    case 'reorderPdfPages':
+      return 'reorder-pages';
+    case 'archiveInspect':
+      return 'archive-inspect';
+    case 'zipRepair':
+      return 'zip-repair';
     default:
       return undefined;
   }
