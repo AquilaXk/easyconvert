@@ -210,8 +210,46 @@ export class CompactProtocolReader {
     );
   }
 
+  readVarint32(): number {
+    const start = this.offset;
+    const len = this.buf.length;
+    if (start >= len) {
+      throw new ParquetFormatError(`Truncated Thrift payload: unexpected EOF reading varint at offset ${start}`);
+    }
+    const b0 = this.buf[start];
+    if ((b0 & VARINT_CONTINUATION) === 0) {
+      this.offset = start + 1;
+      return b0;
+    }
+    let result = b0 & VARINT_PAYLOAD_MASK;
+    let pos = start + 1;
+    let shift = 7;
+    while (shift < 28) {
+      if (pos >= len) {
+        this.offset = pos;
+        throw new ParquetFormatError(`Truncated Thrift payload: unexpected EOF reading varint at offset ${pos}`);
+      }
+      const b = this.buf[pos++];
+      result |= (b & VARINT_PAYLOAD_MASK) << shift;
+      if ((b & VARINT_CONTINUATION) === 0) {
+        this.offset = pos;
+        return result >>> 0;
+      }
+      shift += 7;
+    }
+    if (pos < len) {
+      const b4 = this.buf[pos];
+      if ((b4 & 0xf0) === 0) {
+        this.offset = pos + 1;
+        return ((result | ((b4 & 0x0f) << 28)) >>> 0);
+      }
+    }
+    this.offset = start;
+    return Number(this.readVarint());
+  }
+
   readZigzag32(): number {
-    const n = Number(this.readVarint());
+    const n = this.readVarint32();
     return (n >>> 1) ^ -(n & 1);
   }
 
@@ -221,7 +259,7 @@ export class CompactProtocolReader {
   }
 
   readString(): string {
-    const len = Number(this.readVarint());
+    const len = this.readVarint32();
     if (len < 0 || this.offset + len > this.buf.length) {
       throw new ParquetFormatError(`Truncated Thrift payload: string length ${len} exceeds buffer boundary`);
     }
@@ -231,7 +269,7 @@ export class CompactProtocolReader {
   }
 
   readBinary(): Buffer {
-    const len = Number(this.readVarint());
+    const len = this.readVarint32();
     if (len < 0 || this.offset + len > this.buf.length) {
       throw new ParquetFormatError(`Truncated Thrift payload: binary length ${len} exceeds buffer boundary`);
     }
@@ -278,7 +316,7 @@ export class CompactProtocolReader {
     const elemType = b & NIBBLE_MASK;
     let size = sizeHigh;
     if (sizeHigh === NIBBLE_MASK) {
-      size = Number(this.readVarint());
+      size = this.readVarint32();
     }
     const remainingBytes = this.buf.length - this.offset;
     if (size < 0 || size > remainingBytes + 1) {

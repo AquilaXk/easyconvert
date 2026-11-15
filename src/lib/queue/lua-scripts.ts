@@ -14,11 +14,14 @@ end
 
 local function byStateOwnerAndScore(jobKey, queuePrefix, jobId)
   if not queuePrefix then return nil, nil end
-  local raw = redis.call('HGET', jobKey, 'data')
-  if not raw or raw == '' then return nil, nil end
-  local ok, decoded = pcall(cjson.decode, raw)
-  if not ok or type(decoded) ~= 'table' then return nil, nil end
-  local uid = decoded.userId
+  local uid = redis.call('HGET', jobKey, 'userId')
+  if uid == false then
+    local raw = redis.call('HGET', jobKey, 'data')
+    if not raw or raw == '' then return nil, nil end
+    local ok, decoded = pcall(cjson.decode, raw)
+    if not ok or type(decoded) ~= 'table' then return nil, nil end
+    uid = decoded.userId
+  end
   if type(uid) ~= 'string' or uid == '' then return nil, nil end
   local score = tonumber(redis.call('ZSCORE', queuePrefix .. ':user_jobs:' .. uid, jobId))
   if not score then
@@ -110,6 +113,55 @@ end
 return { 1 }
 `;
 
+const WAITING_AND_DELAYED_LUA_HELPERS = `
+local function parsePriorityRank(rawOpts)
+  if rawOpts and rawOpts ~= '' then
+    local ok, opts = pcall(cjson.decode, rawOpts)
+    if ok and type(opts) == 'table' and tonumber(opts.priority) and tonumber(opts.priority) > 0 then
+      return math.max(1, math.min(8191, math.floor(tonumber(opts.priority))))
+    end
+  end
+  return 1000
+end
+
+local function migrateWaitingListToZset(waitingKey, jobPrefix, fallbackTs)
+  local t = redis.call('TYPE', waitingKey)
+  local typeName = (type(t) == 'table' and t.ok) or t
+  if typeName ~= 'list' then return end
+  local items = redis.call('LRANGE', waitingKey, 0, -1)
+  redis.call('DEL', waitingKey)
+  for _, itemId in ipairs(items) do
+    local prioRank = parsePriorityRank(redis.call('HGET', jobPrefix .. itemId, 'opts'))
+    local ts = tonumber(redis.call('HGET', jobPrefix .. itemId, 'timestamp')) or tonumber(fallbackTs)
+    redis.call('ZADD', waitingKey, prioRank * 1000000000000 + (ts % 1000000000000), itemId)
+  end
+end
+
+local function promoteDueDelayed(delayedKey, waitingKey, jobPrefix, queuePrefix, nowRaw, batchRaw, eventsChannel)
+  local due = redis.call('ZRANGEBYSCORE', delayedKey, 0, nowRaw, 'LIMIT', 0, tonumber(batchRaw or 50))
+  if not due or #due == 0 then
+    return 0
+  end
+  migrateWaitingListToZset(waitingKey, jobPrefix, nowRaw)
+  local promoted = 0
+  local nowNum = tonumber(nowRaw)
+  for _, id in ipairs(due) do
+    if redis.call('ZREM', delayedKey, id) > 0 then
+      local prioRank = parsePriorityRank(redis.call('HGET', jobPrefix .. id, 'opts'))
+      local score = prioRank * 1000000000000 + (nowNum % 1000000000000)
+      redis.call('ZADD', waitingKey, score, id)
+      redis.call('HSET', jobPrefix .. id, 'state', 'waiting')
+      syncByState(queuePrefix, jobPrefix .. id, id, 'delayed', 'waiting')
+      promoted = promoted + 1
+      if eventsChannel and eventsChannel ~= '' then
+        redis.call('PUBLISH', eventsChannel, cjson.encode({ event = 'waiting', jobId = id }))
+      end
+    end
+  end
+  return promoted
+end
+`;
+
 export const PROMOTE_DELAYED_JOBS_LUA_SCRIPT = `
 -- KEYS[1]: delayedKey
 -- KEYS[2]: waitingKey
@@ -118,55 +170,10 @@ export const PROMOTE_DELAYED_JOBS_LUA_SCRIPT = `
 -- ARGV[2]: max batch size
 -- ARGV[3]: eventsChannel (optional)
 ${USER_STATE_INDEX_LUA_FUNCTIONS}
+${WAITING_AND_DELAYED_LUA_HELPERS}
 local queuePrefix = queuePrefixFromSuffixKey(KEYS[1], ':delayed')
-local due = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1], 'LIMIT', 0, tonumber(ARGV[2] or 50))
-local promoted = {}
-
-local t = redis.call('TYPE', KEYS[2])
-local typeName = (type(t) == 'table' and t.ok) or t
-if typeName == 'list' then
-  local items = redis.call('LRANGE', KEYS[2], 0, -1)
-  redis.call('DEL', KEYS[2])
-  for _, itemId in ipairs(items) do
-    local rawOpts = redis.call('HGET', KEYS[3] .. itemId, 'opts')
-    local prioRank = 1000
-    if rawOpts and rawOpts ~= '' then
-      local ok, opts = pcall(cjson.decode, rawOpts)
-      if ok and type(opts) == 'table' and tonumber(opts.priority) and tonumber(opts.priority) > 0 then
-        prioRank = math.max(1, math.min(8191, math.floor(tonumber(opts.priority))))
-      end
-    end
-    local rawTs = redis.call('HGET', KEYS[3] .. itemId, 'timestamp')
-    local ts = tonumber(rawTs) or tonumber(ARGV[1])
-    local score = prioRank * 1000000000000 + (ts % 1000000000000)
-    redis.call('ZADD', KEYS[2], score, itemId)
-  end
-end
-
-if due and #due > 0 then
-  for i, id in ipairs(due) do
-    if redis.call('ZREM', KEYS[1], id) > 0 then
-      local rawOpts = redis.call('HGET', KEYS[3] .. id, 'opts')
-      local prioRank = 1000
-      if rawOpts and rawOpts ~= '' then
-        local ok, opts = pcall(cjson.decode, rawOpts)
-        if ok and type(opts) == 'table' and tonumber(opts.priority) and tonumber(opts.priority) > 0 then
-          prioRank = math.max(1, math.min(8191, math.floor(tonumber(opts.priority))))
-        end
-      end
-      local score = prioRank * 1000000000000 + (tonumber(ARGV[1]) % 1000000000000)
-      redis.call('ZADD', KEYS[2], score, id)
-      redis.call('HSET', KEYS[3] .. id, 'state', 'waiting')
-      syncByState(queuePrefix, KEYS[3] .. id, id, 'delayed', 'waiting')
-      table.insert(promoted, id)
-      if ARGV[3] and ARGV[3] ~= '' then
-        local waitingPayload = cjson.encode({ event = 'waiting', jobId = id })
-        redis.call('PUBLISH', ARGV[3], waitingPayload)
-      end
-    end
-  end
-end
-return #promoted
+migrateWaitingListToZset(KEYS[2], KEYS[3], ARGV[1])
+return promoteDueDelayed(KEYS[1], KEYS[2], KEYS[3], queuePrefix, ARGV[1], ARGV[2], ARGV[3])
 `;
 
 export const POP_NEXT_WAITING_JOB_LUA_SCRIPT = `
@@ -174,36 +181,26 @@ export const POP_NEXT_WAITING_JOB_LUA_SCRIPT = `
 -- KEYS[2]: activeKey
 -- KEYS[3]: job key prefix (e.g. prefix:{queue}:job:)
 -- KEYS[4]: heartbeat key prefix (e.g. prefix:{queue}:heartbeat:)
+-- KEYS[5]: delayedKey (optional: promotes due delayed jobs in the same round trip)
 -- ARGV[1]: processedOn timestamp in milliseconds
 -- ARGV[2]: heartbeat TTL in milliseconds
 -- ARGV[3]: attempt token of the new attempt
+-- ARGV[4]: delayed promotion batch size (optional, defaults to 50)
+-- ARGV[5]: eventsChannel (optional)
 ${USER_STATE_INDEX_LUA_FUNCTIONS}
+${WAITING_AND_DELAYED_LUA_HELPERS}
 local queuePrefix = queuePrefixFromSuffixKey(KEYS[2], ':active')
 
--- Auto-migrate waitingKey from list to zset if needed
-local t = redis.call('TYPE', KEYS[1])
-local typeName = (type(t) == 'table' and t.ok) or t
-if typeName == 'list' then
-  local items = redis.call('LRANGE', KEYS[1], 0, -1)
-  redis.call('DEL', KEYS[1])
-  for _, itemId in ipairs(items) do
-    local rawOpts = redis.call('HGET', KEYS[3] .. itemId, 'opts')
-    local prioRank = 1000
-    if rawOpts and rawOpts ~= '' then
-      local ok, opts = pcall(cjson.decode, rawOpts)
-      if ok and type(opts) == 'table' and tonumber(opts.priority) and tonumber(opts.priority) > 0 then
-        prioRank = math.max(1, math.min(8191, math.floor(tonumber(opts.priority))))
-      end
-    end
-    local rawTs = redis.call('HGET', KEYS[3] .. itemId, 'timestamp')
-    local ts = tonumber(rawTs) or tonumber(ARGV[1])
-    local score = prioRank * 1000000000000 + (ts % 1000000000000)
-    redis.call('ZADD', KEYS[1], score, itemId)
-  end
+if KEYS[5] and KEYS[5] ~= '' then
+  promoteDueDelayed(KEYS[5], KEYS[1], KEYS[3], queuePrefix, ARGV[1], ARGV[4], ARGV[5])
 end
 
 while true do
-  local popped = redis.call('ZPOPMIN', KEYS[1])
+  local ok, popped = pcall(redis.call, 'ZPOPMIN', KEYS[1])
+  if not ok then
+    migrateWaitingListToZset(KEYS[1], KEYS[3], ARGV[1])
+    popped = redis.call('ZPOPMIN', KEYS[1])
+  end
   if not popped or #popped == 0 then
     return false
   end

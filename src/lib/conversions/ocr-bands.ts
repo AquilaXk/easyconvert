@@ -46,6 +46,9 @@ export interface OcrBand {
   paragraphBreakAfter: boolean;
 }
 
+const IS_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+const PAPER_HIGH_BITS_MASK = 0x80808080 | 0;
+
 /** Counts the dark pixels of every row and every column of an 8-bit gray page. */
 export function measureInk(gray: Uint8Array, width: number, height: number): OcrInkProfile {
   if (gray.length !== width * height) {
@@ -53,10 +56,50 @@ export function measureInk(gray: Uint8Array, width: number, height: number): Ocr
   }
   const rows = new Uint32Array(height);
   const columns = new Uint32Array(width);
+  const alignedStart = (gray.byteOffset + 3) & ~3;
+  const alignedBytes = Math.max(0, ((gray.byteOffset + gray.byteLength) & ~3) - alignedStart);
+  const words = IS_LITTLE_ENDIAN && alignedBytes >= 4
+    ? new Uint32Array(gray.buffer, alignedStart, alignedBytes >>> 2)
+    : null;
+  const wordsBaseByte = alignedStart - gray.byteOffset;
+
   for (let y = 0; y < height; y++) {
     const base = y * width;
     let count = 0;
-    for (let x = 0; x < width; x++) {
+    let x = 0;
+    if (words !== null && width >= 8) {
+      const lead = (4 - ((gray.byteOffset + base) & 3)) & 3;
+      const headEnd = Math.min(width, lead);
+      for (; x < headEnd; x++) {
+        if (gray[base + x] < OCR_BAND_INK_LEVEL) {
+          count++;
+          columns[x]++;
+        }
+      }
+      let wordIdx = (base + x - wordsBaseByte) >>> 2;
+      const wordLimit = x + ((width - x) & ~3);
+      for (; x < wordLimit; x += 4, wordIdx++) {
+        const w = words[wordIdx];
+        if ((~w & PAPER_HIGH_BITS_MASK) === 0) continue;
+        if ((w & 0x00000080) === 0) {
+          count++;
+          columns[x]++;
+        }
+        if ((w & 0x00008000) === 0) {
+          count++;
+          columns[x + 1]++;
+        }
+        if ((w & 0x00800000) === 0) {
+          count++;
+          columns[x + 2]++;
+        }
+        if ((w & 0x80000000) === 0) {
+          count++;
+          columns[x + 3]++;
+        }
+      }
+    }
+    for (; x < width; x++) {
       if (gray[base + x] < OCR_BAND_INK_LEVEL) {
         count++;
         columns[x]++;

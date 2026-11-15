@@ -41,6 +41,10 @@ local function isGraphNodeJob(jobKey, id, skipGraphNodes)
   if not skipGraphNodes or not string.find(id, ':', 1, true) then
     return false
   end
+  local flag = redis.call('HGET', jobKey, 'isGraphNode')
+  if flag ~= false then
+    return flag == '1'
+  end
   local data = redis.call('HGET', jobKey, 'data')
   return data ~= false and string.find(data, '"graphId":"', 1, true) ~= nil
 end

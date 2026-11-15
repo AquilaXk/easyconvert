@@ -137,21 +137,26 @@ export function encodeImaBlock(
 ): void {
   const { channels, samplesPerBlock } = format;
   out.fill(0, 0, format.blockAlign);
-  const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
   for (let c = 0; c < channels; c++) {
     const state = states[c];
-    state.predictor = pcm[c];
-    view.setInt16(IMA_CHANNEL_HEADER_BYTES * c, state.predictor, true);
-    out[IMA_CHANNEL_HEADER_BYTES * c + 2] = state.stepIndex;
+    const predictor = pcm[c];
+    state.predictor = predictor;
+    const hdrOff = IMA_CHANNEL_HEADER_BYTES * c;
+    out[hdrOff] = predictor & 0xff;
+    out[hdrOff + 1] = (predictor >> 8) & 0xff;
+    out[hdrOff + 2] = state.stepIndex;
   }
   const codesStart = IMA_CHANNEL_HEADER_BYTES * channels;
   for (let n = 1; n < samplesPerBlock; n++) {
-    const group = Math.floor((n - 1) / IMA_SAMPLES_PER_GROUP);
-    const within = (n - 1) % IMA_SAMPLES_PER_GROUP;
+    const sampleIdx = n - 1;
+    const group = sampleIdx >> 3;
+    const within = sampleIdx & 7;
+    const shift = (within & 1) << 2;
+    const byteOffsetInGroup = within >> 1;
     for (let c = 0; c < channels; c++) {
       const code = encodeSample(n < count ? pcm[n * channels + c] : 0, states[c]);
-      const at = codesStart + (group * channels + c) * IMA_GROUP_BYTES + (within >> 1);
-      out[at] |= within % 2 === 0 ? code : code << IMA_BITS_PER_SAMPLE;
+      const at = codesStart + (group * channels + c) * IMA_GROUP_BYTES + byteOffsetInGroup;
+      out[at] |= code << shift;
     }
   }
 }
@@ -159,25 +164,40 @@ export function encodeImaBlock(
 /** Decodes one block into `out` (`samplesPerBlock * channels` interleaved samples). */
 export function decodeImaBlock(block: Uint8Array, format: ImaFormat, out: Int16Array): void {
   const { channels, samplesPerBlock } = format;
-  const view = new DataView(block.buffer, block.byteOffset, block.byteLength);
-  const states: ImaChannelState[] = [];
+  let pred0 = 0;
+  let step0 = 0;
+  let pred1 = 0;
+  let step1 = 0;
   for (let c = 0; c < channels; c++) {
-    const stepIndex = block[IMA_CHANNEL_HEADER_BYTES * c + 2];
+    const hdrOff = IMA_CHANNEL_HEADER_BYTES * c;
+    const stepIndex = block[hdrOff + 2];
     if (stepIndex > IMA_MAX_STEP_INDEX) {
       throw new CorruptStreamError(`An IMA ADPCM block has step index ${stepIndex}, above ${IMA_MAX_STEP_INDEX}.`);
     }
-    states.push({ predictor: view.getInt16(IMA_CHANNEL_HEADER_BYTES * c, true), stepIndex });
-    out[c] = states[c].predictor;
+    const predictor = ((block[hdrOff] | (block[hdrOff + 1] << 8)) << 16) >> 16;
+    if (c === 0) {
+      pred0 = predictor;
+      step0 = stepIndex;
+    } else {
+      pred1 = predictor;
+      step1 = stepIndex;
+    }
+    out[c] = predictor;
   }
   const codesStart = IMA_CHANNEL_HEADER_BYTES * channels;
   const groups = (samplesPerBlock - 1) / IMA_SAMPLES_PER_GROUP;
+  const state0: ImaChannelState = { predictor: pred0, stepIndex: step0 };
+  const state1: ImaChannelState = { predictor: pred1, stepIndex: step1 };
   for (let g = 0; g < groups; g++) {
+    const baseSample = 1 + g * IMA_SAMPLES_PER_GROUP;
     for (let c = 0; c < channels; c++) {
+      const state = c === 0 ? state0 : state1;
       const at = codesStart + (g * channels + c) * IMA_GROUP_BYTES;
-      for (let k = 0; k < IMA_SAMPLES_PER_GROUP; k++) {
-        const byte = block[at + (k >> 1)];
-        const code = k % 2 === 0 ? byte & NIBBLE_MASK : byte >> IMA_BITS_PER_SAMPLE;
-        out[(1 + g * IMA_SAMPLES_PER_GROUP + k) * channels + c] = decodeSample(code, states[c]);
+      for (let b = 0; b < IMA_GROUP_BYTES; b++) {
+        const byte = block[at + b];
+        const k0 = b << 1;
+        out[(baseSample + k0) * channels + c] = decodeSample(byte & NIBBLE_MASK, state);
+        out[(baseSample + k0 + 1) * channels + c] = decodeSample((byte >> IMA_BITS_PER_SAMPLE) & NIBBLE_MASK, state);
       }
     }
   }

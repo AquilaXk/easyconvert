@@ -514,12 +514,36 @@ function trackDurationInMovie(plan: TrackPlan): number {
   return presentedMovieTicks(plan) + startDelayMovieTicks(plan);
 }
 
-function trakBox(plan: TrackPlan, chunks: ChunkPlan[], trackIndex: number, chunkOffsets: number[]): Uint8Array {
+interface PreparedTrack {
+  tkhd: Uint8Array;
+  mdhd: Uint8Array;
+  hdlr: Uint8Array;
+  mediaHeader: Uint8Array;
+  dinf: Uint8Array;
+  stsd: Uint8Array;
+  stts: Uint8Array;
+  stss: Uint8Array[];
+  stsc: Uint8Array;
+  stsz: Uint8Array;
+  edts: Uint8Array | undefined;
+}
+
+function packFlatRuns(runs: ReadonlyArray<readonly [number, number]>): Uint8Array {
+  const out = new Uint8Array(runs.length * 8);
+  const view = new DataView(out.buffer);
+  for (let i = 0; i < runs.length; i++) {
+    view.setUint32(i * 8, runs[i][0]);
+    view.setUint32(i * 8 + 4, runs[i][1]);
+  }
+  return out;
+}
+
+function prepareTrack(plan: TrackPlan, chunks: ChunkPlan[], trackIndex: number): PreparedTrack {
   const isVideo = plan.kind === 'video';
   const tkhd = fullBox(
     'tkhd', 0, TKHD_FLAGS_ENABLED_IN_MOVIE,
     u32(0), u32(0), u32(plan.trackId), u32(0), u32(trackDurationInMovie(plan)),
-    new Array(8).fill(0), u16(0), u16(0), u16(isVideo ? 0 : 0x100), u16(0),
+    new Uint8Array(8), u16(0), u16(0), u16(isVideo ? 0 : 0x100), u16(0),
     IDENTITY_MATRIX.flatMap((value) => u32(value)),
     u32(plan.width * 0x10000), u32(plan.height * 0x10000)
   );
@@ -529,37 +553,68 @@ function trakBox(plan: TrackPlan, chunks: ChunkPlan[], trackIndex: number, chunk
       ? fullBox('mdhd', 1, 0, u64(0), u64(0), u32(plan.timescale), u64(durationTicks), u16(UNDETERMINED_LANGUAGE), u16(0))
       : fullBox('mdhd', 0, 0, u32(0), u32(0), u32(plan.timescale), u32(durationTicks), u16(UNDETERMINED_LANGUAGE), u16(0));
   const hdlr = fullBox(
-    'hdlr', 0, 0, u32(0), ascii(isVideo ? 'vide' : 'soun'), new Array(12).fill(0),
+    'hdlr', 0, 0, u32(0), ascii(isVideo ? 'vide' : 'soun'), new Uint8Array(12),
     ascii(isVideo ? 'VideoHandler' : 'SoundHandler'), [0]
   );
   const mediaHeader = isVideo
-    ? fullBox('vmhd', 0, 1, new Array(8).fill(0))
+    ? fullBox('vmhd', 0, 1, new Uint8Array(8))
     : fullBox('smhd', 0, 0, u16(0), u16(0));
   const dinf = box('dinf', fullBox('dref', 0, 0, u32(1), fullBox('url ', 0, 1)));
 
-  const durationRuns = runLengths(plan.samples.map((sample) => sample.duration));
-  const stts = fullBox('stts', 0, 0, u32(durationRuns.length), packU32(durationRuns.flat()));
-  const stsz = fullBox('stsz', 0, 0, u32(0), u32(plan.samples.length), packU32(plan.samples.map((sample) => sample.size)));
-
-  const ownChunks = chunks.filter((chunk) => chunk.track === trackIndex);
-  const chunkRuns = runLengths(ownChunks.map((chunk) => chunk.count));
-  let chunkNumber = 1;
-  const stscValues: number[] = [];
-  for (const [runChunks, samplesPerChunk] of chunkRuns) {
-    stscValues.push(chunkNumber, samplesPerChunk, 1);
-    chunkNumber += runChunks;
+  const durations = new Array<number>(plan.samples.length);
+  const stszPayload = new Uint8Array(plan.samples.length * 4);
+  const stszView = new DataView(stszPayload.buffer);
+  const syncNumbers: number[] = [];
+  for (let i = 0; i < plan.samples.length; i++) {
+    const sample = plan.samples[i];
+    durations[i] = sample.duration;
+    stszView.setUint32(i * 4, sample.size);
+    if (!plan.allKey && sample.key) syncNumbers.push(i + 1);
   }
-  const stsc = fullBox('stsc', 0, 0, u32(chunkRuns.length), packU32(stscValues));
-  const stco = fullBox('stco', 0, 0, u32(chunkOffsets.length), packU32(chunkOffsets));
 
-  const syncNumbers = plan.samples.flatMap((sample, index) => (sample.key ? [index + 1] : []));
+  const durationRuns = runLengths(durations);
+  const stts = fullBox('stts', 0, 0, u32(durationRuns.length), packFlatRuns(durationRuns));
+  const stsz = fullBox('stsz', 0, 0, u32(0), u32(plan.samples.length), stszPayload);
+
+  const ownCounts: number[] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    if (chunks[i].track === trackIndex) ownCounts.push(chunks[i].count);
+  }
+  const chunkRuns = runLengths(ownCounts);
+  let chunkNumber = 1;
+  const stscPayload = new Uint8Array(chunkRuns.length * 12);
+  const stscView = new DataView(stscPayload.buffer);
+  for (let i = 0; i < chunkRuns.length; i++) {
+    stscView.setUint32(i * 12, chunkNumber);
+    stscView.setUint32(i * 12 + 4, chunkRuns[i][1]);
+    stscView.setUint32(i * 12 + 8, 1);
+    chunkNumber += chunkRuns[i][0];
+  }
+  const stsc = fullBox('stsc', 0, 0, u32(chunkRuns.length), stscPayload);
   const stss = plan.allKey ? [] : [fullBox('stss', 0, 0, u32(syncNumbers.length), packU32(syncNumbers))];
+  const stsd = fullBox('stsd', 0, 0, u32(1), plan.entry);
 
-  const stbl = box('stbl', fullBox('stsd', 0, 0, u32(1), plan.entry), stts, ...stss, stsc, stsz, stco);
-  const minf = box('minf', mediaHeader, dinf, stbl);
-  const mdia = box('mdia', mdhd, hdlr, minf);
-  const edts = elstBox(plan);
-  return box('trak', tkhd, ...(edts ? [edts] : []), mdia);
+  return {
+    tkhd,
+    mdhd,
+    hdlr,
+    mediaHeader,
+    dinf,
+    stsd,
+    stts,
+    stss,
+    stsc,
+    stsz,
+    edts: elstBox(plan),
+  };
+}
+
+function assembleTrackBox(prepared: PreparedTrack, chunkOffsets: number[]): Uint8Array {
+  const stco = fullBox('stco', 0, 0, u32(chunkOffsets.length), packU32(chunkOffsets));
+  const stbl = box('stbl', prepared.stsd, prepared.stts, ...prepared.stss, prepared.stsc, prepared.stsz, stco);
+  const minf = box('minf', prepared.mediaHeader, prepared.dinf, stbl);
+  const mdia = box('mdia', prepared.mdhd, prepared.hdlr, minf);
+  return box('trak', prepared.tkhd, ...(prepared.edts ? [prepared.edts] : []), mdia);
 }
 
 function ftypBox(input: Mp4MuxInput, codecBrands: string[]): Uint8Array {
@@ -587,6 +642,13 @@ export function muxMp4(input: Mp4MuxInput): Uint8Array {
 
   const chunks = planChunks(plans);
   const ftyp = ftypBox(input, codecBrands);
+  const preparedTracks = plans.map((plan, index) => prepareTrack(plan, chunks, index));
+  const duration = Math.max(...plans.map(trackDurationInMovie));
+  const mvhd = fullBox(
+    'mvhd', 0, 0,
+    u32(0), u32(0), u32(MOVIE_TIMESCALE), u32(duration), u32(0x10000), u16(0x100), new Uint8Array(10),
+    IDENTITY_MATRIX.flatMap((value) => u32(value)), new Uint8Array(24), u32(plans.length + 1)
+  );
 
   const build = (mdatDataStart: number): { moov: Uint8Array; end: number } => {
     let cursor = mdatDataStart;
@@ -595,13 +657,7 @@ export function muxMp4(input: Mp4MuxInput): Uint8Array {
       offsetsByTrack[chunk.track].push(cursor);
       cursor += chunk.bytes;
     }
-    const duration = Math.max(...plans.map(trackDurationInMovie));
-    const mvhd = fullBox(
-      'mvhd', 0, 0,
-      u32(0), u32(0), u32(MOVIE_TIMESCALE), u32(duration), u32(0x10000), u16(0x100), new Array(10).fill(0),
-      IDENTITY_MATRIX.flatMap((value) => u32(value)), new Array(24).fill(0), u32(plans.length + 1)
-    );
-    const moov = box('moov', mvhd, ...plans.map((plan, index) => trakBox(plan, chunks, index, offsetsByTrack[index])));
+    const moov = box('moov', mvhd, ...preparedTracks.map((prepared, index) => assembleTrackBox(prepared, offsetsByTrack[index])));
     return { moov, end: cursor };
   };
 

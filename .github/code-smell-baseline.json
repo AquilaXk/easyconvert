@@ -993,13 +993,13 @@
     "rule": "complexity",
     "function": "parsePptxSlideSceneGraph",
     "count": 1,
-    "maxValue": 121
+    "maxValue": 117
   },
   {
     "file": "src/lib/conversions/office/pptx-scene.ts",
     "rule": "max-depth",
     "function": "parsePptxSlideSceneGraph",
-    "count": 17,
+    "count": 15,
     "maxValue": 9
   },
   {
@@ -1007,7 +1007,7 @@
     "rule": "max-lines-per-function",
     "function": "parsePptxSlideSceneGraph",
     "count": 1,
-    "maxValue": 473
+    "maxValue": 472
   },
   {
     "file": "src/lib/conversions/office/pptx-scene.ts",
@@ -1372,13 +1372,6 @@
   {
     "file": "src/lib/conversions/raw-hdr.ts",
     "rule": "complexity",
-    "function": "demosaicRcdBayerCfa",
-    "count": 1,
-    "maxValue": 50
-  },
-  {
-    "file": "src/lib/conversions/raw-hdr.ts",
-    "rule": "complexity",
     "function": "processFloat32LinearPipeline",
     "count": 1,
     "maxValue": 40
@@ -1395,13 +1388,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 1818
-  },
-  {
-    "file": "src/lib/conversions/raw-hdr.ts",
-    "rule": "no-nested-ternary",
-    "function": "demosaicRcdBayerCfa",
-    "count": 4
+    "maxValue": 1570
   },
   {
     "file": "src/lib/conversions/raw-x3f.ts",
@@ -1884,13 +1871,6 @@
   {
     "file": "src/lib/queue/bullmq-engine.ts",
     "rule": "max-depth",
-    "function": "_popNextWaiting",
-    "count": 1,
-    "maxValue": 6
-  },
-  {
-    "file": "src/lib/queue/bullmq-engine.ts",
-    "rule": "max-depth",
     "function": "checkAndProcess",
     "count": 2,
     "maxValue": 7
@@ -1900,7 +1880,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2293
+    "maxValue": 2273
   },
   {
     "file": "src/lib/queue/conversion-queue.ts",

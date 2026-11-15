@@ -3,9 +3,10 @@ import Redis from 'ioredis';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RedisIdempotencyStore } from '../src/lib/api/idempotency';
 import { DistributedBullMQAdapter } from '../src/lib/queue/bullmq-engine';
-import { forgetUserJobs, removeStoredJob, type QueueKeySpace } from '../src/lib/queue/ended-jobs';
+import { forgetUserJobs, keepNewestEnded, removeStoredJob, scanEndedBefore, type QueueKeySpace } from '../src/lib/queue/ended-jobs';
 import { ownerOf } from '../src/lib/queue/stored-job';
-import { RedisGraphScheduler } from '../src/lib/queue/graph';
+import { RedisGraphScheduler, type GraphNode, type JobGraph } from '../src/lib/queue/graph';
+import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 import { clearKeysMatching } from '../src/lib/redis/clear-keys';
 
 /**
@@ -377,6 +378,83 @@ describe.skipIf(!REDIS_URL)('the Redis query paths on a real Redis server', () =
       } finally {
         await admin.del('idem:query-paths-1', 'idem:query-paths-2');
       }
+    });
+  });
+
+  describe('single-RTT delayed pop, scalar job flags, SCARD ended short-circuit, and linear DAG failure BFS', () => {
+    it('promotes due delayed jobs and pops in 1 EVAL command, stores userId/isGraphNode scalars, and short-circuits keepNewestEnded via SCARD', async () => {
+      const client = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
+      const adapter = new DistributedBullMQAdapter<{ userId?: string; graphId?: string; tag: string }, string>('q1', {
+        redisClient: client,
+        keyPrefix: prefix,
+      });
+      try {
+        const delayed = await adapter.add('convert', { userId: 'u_fast', graphId: 'g_1', tag: 'd1' }, { delay: 15, jobId: 'g_1:n1' });
+        const rawHash = await admin.hgetall(`${prefix}{q1}:job:${delayed.id}`);
+        expect(rawHash.userId).toBe('u_fast');
+        expect(rawHash.isGraphNode).toBe('1');
+
+        await new Promise((r) => setTimeout(r, 25));
+
+        const trips = countTrips();
+        const popped = await adapter._popNextWaiting();
+        expect(popped?.id).toBe(delayed.id);
+        expect(trips.names.filter((name) => name === 'eval')).toHaveLength(1);
+        vi.restoreAllMocks();
+
+        await adapter._onJobCompleted(popped!, 'ok');
+        const keys: QueueKeySpace = {
+          jobKey: (id) => `${prefix}{q1}:job:${id}`,
+          userJobsKey: (uid) => `${prefix}{q1}:user_jobs:${uid ?? 'none'}`,
+          dlqKey: `${prefix}{q1}:dlq`,
+          stateKeys: [
+            `${prefix}{q1}:waiting`,
+            `${prefix}{q1}:delayed`,
+            `${prefix}{q1}:active`,
+            `${prefix}{q1}:completed`,
+            `${prefix}{q1}:failed`,
+            `${prefix}{q1}:cancelled`,
+          ],
+        };
+        const scardTrips = countTrips();
+        await keepNewestEnded(client, keys, `${prefix}{q1}:completed`, 5);
+        expect(scardTrips.names).toContain('scard');
+        expect(scardTrips.names).not.toContain('smembers');
+        vi.restoreAllMocks();
+
+        const agedScan = await scanEndedBefore(client, keys, `${prefix}{q1}:completed`, Date.now() + 1000, 10, false);
+        expect(agedScan.removed).toEqual([delayed.id]);
+      } finally {
+        await adapter.close();
+      }
+    });
+
+    it('skips deep descendant chains under continue failure policy in RedisGraphScheduler', async () => {
+      const client = connect();
+      const enqueuedNodes: string[] = [];
+      const scheduler = new RedisGraphScheduler({
+        redisClient: client,
+        keyPrefix: prefix,
+        enqueueNode: async (_gid, nodeId) => {
+          enqueuedNodes.push(nodeId);
+        },
+        cancelNode: async () => false,
+      });
+      const chainLen = 60;
+      const nodes: Record<string, GraphNode> = {
+        n0: { op: 'import.upload', storageKey: 'uploads/test/in.txt' },
+      };
+      for (let i = 1; i < chainLen; i++) {
+        nodes[`n${i}`] = { op: 'convert', input: `n${i - 1}`, targetFormat: 'pdf' };
+      }
+      const graph: JobGraph = { failurePolicy: 'continue', nodes };
+      const created = await scheduler.initGraph('g_chain', sealGraph('g_chain', graph), { ownerUserId: 'u_dag' });
+      expect(created.status).toBe('running');
+      expect(enqueuedNodes).toEqual(['n0']);
+
+      const outcome = await scheduler.onNodeFailed('g_chain', 'n0', 'bad source');
+      expect(outcome.graphStatus).toBe('completed');
+      expect(outcome.skippedNodeIds).toHaveLength(chainLen - 1);
     });
   });
 });

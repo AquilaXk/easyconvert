@@ -51,6 +51,23 @@ export interface VisualSlide {
   backgroundColor?: string;
 }
 
+const SEEN_SLIDE_TEXTS = new WeakMap<string[], Set<string>>();
+
+function seenSlideTexts(texts: string[]): Set<string> {
+  let seen = SEEN_SLIDE_TEXTS.get(texts);
+  if (!seen) {
+    seen = new Set(texts);
+    SEEN_SLIDE_TEXTS.set(texts, seen);
+  }
+  return seen;
+}
+
+function pushUniqueSlideText(texts: string[], seen: Set<string>, value: string): void {
+  if (!value || seen.has(value)) return;
+  seen.add(value);
+  texts.push(value);
+}
+
 /**
  * Recursively parses DrawingML 2D scene graph for a PPTX slide, accumulating
  * affine transform matrices (M_world = M_parent * M_local) for nested <p:grpSp>,
@@ -67,6 +84,7 @@ export async function parsePptxSlideSceneGraph(
   media: PptxMedia = new PptxMedia()
 ): Promise<VisualSlideShape[]> {
   const shapes: VisualSlideShape[] = [];
+  const seenTexts = seenSlideTexts(texts);
 
   const groupElements = safeExtractXmlElements(xml, 'p:grpSp');
   const gfElements = safeExtractXmlElements(xml, 'p:graphicFrame');
@@ -148,9 +166,7 @@ export async function parsePptxSlideSceneGraph(
               if (clean) cellTexts.push(clean);
             }
             const cellText = cellTexts.join(' ');
-            if (cellText && !texts.includes(cellText)) {
-              texts.push(cellText);
-            }
+            pushUniqueSlideText(texts, seenTexts, cellText);
 
             const tcPrEl = safeExtractFirstXmlElement(tcXml, 'a:tcPr');
             let cellFill: string | undefined;
@@ -216,7 +232,7 @@ export async function parsePptxSlideSceneGraph(
                 const t = tEls.map((el) => safeDecodeXmlEntities(el.content).trim()).filter(Boolean).join(' ');
                 if (t) {
                   nodeTexts.push(t);
-                  if (!texts.includes(t)) texts.push(t);
+                  pushUniqueSlideText(texts, seenTexts, t);
                 }
               }
             }
@@ -536,7 +552,7 @@ export async function parsePptxSlideSceneGraph(
         if (textMatches.length > 0) {
           shapeText = textMatches.join(' ');
           for (const tm of textMatches) {
-            if (!texts.includes(tm)) texts.push(tm);
+            pushUniqueSlideText(texts, seenTexts, tm);
           }
         }
       }

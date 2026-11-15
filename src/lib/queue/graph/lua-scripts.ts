@@ -193,8 +193,10 @@ local skipped = {}
 local terminalDelta = 1
 local queue = { ARGV[1] }
 local visited = { [ARGV[1]] = true }
-while #queue > 0 do
-  local curr = table.remove(queue, 1)
+local head = 1
+while head <= #queue do
+  local curr = queue[head]
+  head = head + 1
   for _, childId in ipairs(cjson.decode(redis.call('HGET', KEYS[2], curr) or '[]')) do
     if not visited[childId] then
       visited[childId] = true

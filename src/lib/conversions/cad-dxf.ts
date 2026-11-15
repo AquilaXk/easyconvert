@@ -1061,9 +1061,12 @@ export function dxfDrawingToSvg(drawing: DxfDrawing, title: string): string {
         elements.push(`<path d="${arcPath(stroke, flip, 1, fmt)}" />`);
         break;
       case 'poly': {
-        let points = '';
-        for (const point of stroke.points) points += `${points === '' ? '' : ' '}${fmt(point[0])},${fmt(-point[1])}`;
-        elements.push(`<${stroke.closed ? 'polygon' : 'polyline'} points="${points}" />`);
+        const coords = new Array<string>(stroke.points.length);
+        for (let i = 0; i < stroke.points.length; i++) {
+          const point = stroke.points[i];
+          coords[i] = `${fmt(point[0])},${fmt(-point[1])}`;
+        }
+        elements.push(`<${stroke.closed ? 'polygon' : 'polyline'} points="${coords.join(' ')}" />`);
       }
     }
   }
@@ -1111,9 +1114,12 @@ export async function renderDxfDrawingToPdf(drawing: DxfDrawing): Promise<Buffer
           doc.path(arcPath(stroke, map, scale, exact)).stroke();
           break;
         case 'poly': {
-          const points = stroke.points.map(map);
-          doc.moveTo(points[0][0], points[0][1]);
-          for (const point of points.slice(1)) doc.lineTo(point[0], point[1]);
+          const firstPt = map(stroke.points[0]);
+          doc.moveTo(firstPt[0], firstPt[1]);
+          for (let i = 1; i < stroke.points.length; i++) {
+            const pt = map(stroke.points[i]);
+            doc.lineTo(pt[0], pt[1]);
+          }
           if (stroke.closed) doc.closePath();
           doc.stroke();
           break;

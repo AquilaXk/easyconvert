@@ -47,29 +47,68 @@ export interface QueueKeySpace {
   stateKeys: readonly [string, string, string, string, string, string];
 }
 
+interface EndedFieldRow {
+  id: string;
+  finishedOnRaw: string | null;
+  userIdRaw: string | null;
+  stateRaw: string | null;
+}
+
 async function readEndedFields(
   client: Redis,
   keys: QueueKeySpace,
   ids: readonly string[]
-): Promise<{ id: string; finishedOnRaw: string | null; dataRaw: string | null }[]> {
+): Promise<EndedFieldRow[]> {
   if (ids.length === 0) return [];
   if (typeof client.pipeline === 'function') {
     const pipeline = client.pipeline();
-    for (const id of ids) pipeline.hmget(keys.jobKey(id), 'finishedOn', 'data');
+    for (const id of ids) pipeline.hmget(keys.jobKey(id), 'finishedOn', 'userId', 'state');
     const results = (await pipeline.exec()) ?? [];
     return ids.map((id, index) => {
       const [err, row] = results[index] ?? [];
       if (err) throw err;
-      const [finishedOnRaw = null, dataRaw = null] = Array.isArray(row) ? (row as (string | null)[]) : [];
-      return { id, finishedOnRaw, dataRaw };
+      const [finishedOnRaw = null, userIdRaw = null, stateRaw = null] = Array.isArray(row) ? (row as (string | null)[]) : [];
+      return { id, finishedOnRaw, userIdRaw, stateRaw };
     });
   }
   return Promise.all(
     ids.map(async (id) => {
-      const [finishedOnRaw = null, dataRaw = null] = await client.hmget(keys.jobKey(id), 'finishedOn', 'data');
-      return { id, finishedOnRaw, dataRaw };
+      const [finishedOnRaw = null, userIdRaw = null, stateRaw = null] = await client.hmget(
+        keys.jobKey(id),
+        'finishedOn',
+        'userId',
+        'state'
+      );
+      return { id, finishedOnRaw, userIdRaw, stateRaw };
     })
   );
+}
+
+async function resolveEndedJobOwners(
+  client: Redis,
+  keys: QueueKeySpace,
+  candidates: readonly { id: string; userIdRaw: string | null }[]
+): Promise<{ id: string; userId: string | undefined }[]> {
+  const legacyIndices: number[] = [];
+  const resolved = candidates.map(({ id, userIdRaw }, idx) => {
+    if (userIdRaw === null) legacyIndices.push(idx);
+    return { id, userId: userIdRaw && userIdRaw.length > 0 ? userIdRaw : undefined };
+  });
+  if (legacyIndices.length === 0) return resolved;
+  if (typeof (client as { pipeline?: unknown }).pipeline === 'function') {
+    const pipe = client.pipeline();
+    for (const idx of legacyIndices) pipe.hget(keys.jobKey(candidates[idx].id), 'data');
+    const rawPayloads = await pipelineReplies(pipe);
+    legacyIndices.forEach((candidateIdx, replyIdx) => {
+      const raw = rawPayloads[replyIdx];
+      resolved[candidateIdx].userId = ownerOf(parsedData(typeof raw === 'string' ? raw : null));
+    });
+    return resolved;
+  }
+  for (const idx of legacyIndices) {
+    resolved[idx].userId = ownerOf(parsedData(await client.hget(keys.jobKey(candidates[idx].id), 'data')));
+  }
+  return resolved;
 }
 
 function isFinishedBy(finishedOnRaw: string | null, threshold: number): boolean {
@@ -153,7 +192,7 @@ async function removeSetEntriesBefore(
     cursor = next;
     // SSCAN may name an id twice.
     const fields = await readEndedFields(client, keys, [...new Set(scanned)]);
-    const missingCandidates = fields.filter((f) => f.finishedOnRaw === null && f.dataRaw === null);
+    const missingCandidates = fields.filter((f) => f.finishedOnRaw === null && f.userIdRaw === null && f.stateRaw === null);
     const missingIds = new Set<string>();
     if (missingCandidates.length > 0) {
       if (typeof (client as { pipeline?: unknown }).pipeline === 'function') {
@@ -170,18 +209,19 @@ async function removeSetEntriesBefore(
       }
     }
     const staleIds: string[] = [];
-    const toDelete: { id: string; userId: string | undefined }[] = [];
-    for (const { id, finishedOnRaw, dataRaw } of fields) {
+    const dueCandidates: { id: string; userIdRaw: string | null }[] = [];
+    for (const { id, finishedOnRaw, userIdRaw } of fields) {
       if (missingIds.has(id)) {
         staleIds.push(id);
-      } else if (removed.length + toDelete.length < limit && isFinishedBy(finishedOnRaw, threshold)) {
-        toDelete.push({ id, userId: ownerOf(parsedData(dataRaw)) });
+      } else if (removed.length + dueCandidates.length < limit && isFinishedBy(finishedOnRaw, threshold)) {
+        dueCandidates.push({ id, userIdRaw });
       } else if (Number(finishedOnRaw) > 0) {
         oldest = Math.min(oldest, Number(finishedOnRaw));
       }
     }
     if (staleIds.length > 0) await client.srem(stateKey, ...staleIds);
-    if (toDelete.length > 0) {
+    if (dueCandidates.length > 0) {
+      const toDelete = await resolveEndedJobOwners(client, keys, dueCandidates);
       await deleteEndedJobsBatch(client, keys, stateKey, toDelete);
       for (const { id } of toDelete) removed.push(id);
     }
@@ -222,15 +262,19 @@ export async function removeEndedBefore(
 
 /** Removes the jobs of the set `stateKey` beyond the `count` that ended last, with their entry in their user's index. */
 export async function keepNewestEnded(client: Redis, keys: QueueKeySpace, stateKey: string, count: number): Promise<void> {
+  if (typeof (client as { scard?: unknown }).scard === 'function' && (await client.scard(stateKey)) <= count) {
+    return;
+  }
   const ids = await client.smembers(stateKey);
   if (ids.length <= count) return;
-  const ended = (await readEndedFields(client, keys, ids)).map(({ id, finishedOnRaw, dataRaw }) => ({
+  const ended = (await readEndedFields(client, keys, ids)).map(({ id, finishedOnRaw, userIdRaw }) => ({
     id,
     finishedOn: Number(finishedOnRaw || 0),
-    userId: ownerOf(parsedData(dataRaw)),
+    userIdRaw,
   }));
   ended.sort((a, b) => b.finishedOn - a.finishedOn);
-  await deleteEndedJobsBatch(client, keys, stateKey, ended.slice(count));
+  const toDelete = await resolveEndedJobOwners(client, keys, ended.slice(count));
+  await deleteEndedJobsBatch(client, keys, stateKey, toDelete);
 }
 
 /**

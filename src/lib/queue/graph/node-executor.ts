@@ -43,6 +43,9 @@ import {
 } from '../../conversions/archive-extraction-safety';
 import { isWrapperSource, unpackWrapperSource } from '../../conversions/archive-wrapper-sources';
 import { decompressZstdNative } from '../../conversions/zstd-native';
+import { mapWithConcurrency } from '../../conversions/ocr-page-batch';
+
+const INTERMEDIATE_PDF_CONCURRENCY = 4;
 import { openPasswordOption } from '../option-secrets';
 import { OPTIMIZERS, getOptimizer, type OptimizerRegistry } from '../../conversions/optimizers';
 import {
@@ -176,26 +179,24 @@ async function processIntermediatePdfArtifacts(
   attemptSignal: AbortSignal,
   transformFn: (buf: Buffer) => Promise<Buffer>
 ): Promise<string[]> {
-  return Promise.all(
-    inputKeys.map(async (inputKey, index) => {
-      attemptSignal.throwIfAborted();
-      const stored = await storage.getObject(inputKey);
-      if (!stored) {
-        throw new Error(`Input artifact "${inputKey}" not found in storage`);
+  return mapWithConcurrency(inputKeys, INTERMEDIATE_PDF_CONCURRENCY, async (inputKey, index) => {
+    attemptSignal.throwIfAborted();
+    const stored = await storage.getObject(inputKey);
+    if (!stored) {
+      throw new Error(`Input artifact "${inputKey}" not found in storage`);
+    }
+    const transformedBuf = await transformFn(stored.buffer);
+    return saveIntermediateNodeOutput(
+      storage,
+      { graphId, nodeId, index },
+      {
+        buffer: transformedBuf,
+        mimeType: registryMimeType('pdf'),
+        filename: stored.filename || path.basename(inputKey),
+        fallbackFilename: 'output.pdf',
       }
-      const transformedBuf = await transformFn(stored.buffer);
-      return saveIntermediateNodeOutput(
-        storage,
-        { graphId, nodeId, index },
-        {
-          buffer: transformedBuf,
-          mimeType: registryMimeType('pdf'),
-          filename: stored.filename || path.basename(inputKey),
-          fallbackFilename: 'output.pdf',
-        }
-      );
-    })
-  );
+    );
+  });
 }
 
 /** A PDF node's result when it is not the input's document under the input's name (a split returns a ZIP). */
@@ -366,27 +367,25 @@ async function processIntermediatePdfParts(
   attemptSignal: AbortSignal,
   transformFn: (buf: Buffer, inputFilename: string) => Promise<PdfNodeOutput>
 ): Promise<string[]> {
-  return Promise.all(
-    inputKeys.map(async (inputKey, index) => {
-      attemptSignal.throwIfAborted();
-      const stored = await storage.getObject(inputKey);
-      if (!stored) {
-        throw new Error(`Input artifact "${inputKey}" not found in storage`);
+  return mapWithConcurrency(inputKeys, INTERMEDIATE_PDF_CONCURRENCY, async (inputKey, index) => {
+    attemptSignal.throwIfAborted();
+    const stored = await storage.getObject(inputKey);
+    if (!stored) {
+      throw new Error(`Input artifact "${inputKey}" not found in storage`);
+    }
+    const safeInputName = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), 'document.pdf');
+    const output = await transformFn(stored.buffer, safeInputName);
+    return saveIntermediateNodeOutput(
+      storage,
+      { graphId, nodeId, index },
+      {
+        buffer: output.buffer,
+        mimeType: registryMimeType(output.formatId),
+        filename: output.filename,
+        fallbackFilename: `output.${output.formatId}`,
       }
-      const safeInputName = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), 'document.pdf');
-      const output = await transformFn(stored.buffer, safeInputName);
-      return saveIntermediateNodeOutput(
-        storage,
-        { graphId, nodeId, index },
-        {
-          buffer: output.buffer,
-          mimeType: registryMimeType(output.formatId),
-          filename: output.filename,
-          fallbackFilename: `output.${output.formatId}`,
-        }
-      );
-    })
-  );
+    );
+  });
 }
 
 /** The `pages` a page-selecting PDF node needs; a node without them has nothing to select. */

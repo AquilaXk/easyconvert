@@ -405,6 +405,7 @@ async function writePackage(pages: readonly SlidePage[], fonts: ReadonlyMap<stri
       slideXml.plainText(page.plainText, page);
     } else {
       const tables = page.blocks.flatMap((block) => (block.kind === 'table' && isUniformlyRuled(block.table, page.rules) ? [block.table] : []));
+      const tableSet = new Set(tables);
       const rules = page.rules.filter((rule) => rule.inShape !== true && !tables.some((table) => ruleInside(rule, table.box)));
       // Pictures, shapes and rules go in the order the page paints them, so a band drawn over a picture stays over it.
       const painted: { z: number; draw: () => void }[] = [
@@ -414,7 +415,7 @@ async function writePackage(pages: readonly SlidePage[], fonts: ReadonlyMap<stri
       ];
       for (const { draw } of painted.sort((a, b) => a.z - b.z)) draw();
       for (const block of page.blocks) {
-        if (block.kind === 'table' && tables.includes(block.table)) slideXml.table(block.table, fonts, borderOf(block.table, page.rules));
+        if (block.kind === 'table' && tableSet.has(block.table)) slideXml.table(block.table, fonts, borderOf(block.table, page.rules));
         else if (block.kind === 'table') for (const line of linesOfTable(block.table)) slideXml.line(line, fonts);
         else if (block.kind === 'paragraph') for (const line of block.paragraph.lines) slideXml.line(line, fonts);
       }

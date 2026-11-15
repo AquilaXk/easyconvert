@@ -16,7 +16,6 @@ import {
 import { applyStoredJobFields, flatHashToRecord, ownerOf, parseStoredJson, readJobHashes } from './stored-job';
 import {
   ADD_JOB_LUA_SCRIPT,
-  PROMOTE_DELAYED_JOBS_LUA_SCRIPT,
   POP_NEXT_WAITING_JOB_LUA_SCRIPT,
   CANCEL_JOB_LUA_SCRIPT,
   REQUEUE_JOB_LUA_SCRIPT,
@@ -1465,10 +1464,13 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   }
 
   private jobToHash(job: Job<T, R>): Record<string, string> {
+    const graphId = (job.data as { graphId?: unknown } | undefined)?.graphId;
     return {
       id: job.id,
       name: job.name,
       data: JSON.stringify(job.data ?? {}),
+      userId: ownerOf(job.data) ?? '',
+      isGraphNode: typeof graphId === 'string' && graphId.length > 0 ? '1' : '0',
       opts: JSON.stringify(job.opts ?? {}),
       progress: String(job.progress),
       state: job.state,
@@ -1934,44 +1936,22 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   async _popNextWaiting(): Promise<Job<T, R> | undefined> {
     if (this.redisClient && this.redisConnected) {
       try {
-        // 1. Promote due delayed jobs atomically
+        // Atomically promote due delayed jobs, pop the next waiting job, mark it active under a fresh attempt token,
+        // and start its heartbeat in one round trip.
         const now = Date.now();
-        try {
-          await this.redisClient.eval(
-            PROMOTE_DELAYED_JOBS_LUA_SCRIPT,
-            3,
-            this.delayedKey,
-            this.waitingKey,
-            `${this.keyPrefix}{${this.name}}:job:`,
-            now.toString(),
-            '50'
-          );
-        } catch {
-          const dueDelayed = await this.redisClient.zrangebyscore(this.delayedKey, 0, now);
-          if (dueDelayed && dueDelayed.length > 0) {
-            for (const delayedId of dueDelayed) {
-              const removed = await this.redisClient.zrem(this.delayedKey, delayedId);
-              if (Number(removed) > 0) {
-                await this.redisClient.rpush(this.waitingKey, delayedId);
-                await this.redisClient.hset(this.getJobKey(delayedId), 'state', 'waiting');
-              }
-            }
-          }
-        }
-
-        // 2. Atomically pop the next waiting job, mark it active under a fresh attempt token,
-        //    and start its heartbeat
         const attemptToken = this.nextAttemptToken();
         const popped = await this.redisClient.eval(
           POP_NEXT_WAITING_JOB_LUA_SCRIPT,
-          4,
+          5,
           this.waitingKey,
           this.activeKey,
           this.jobKeyPrefix,
           this.heartbeatKeyPrefix,
+          this.delayedKey,
           String(now),
           String(STALL_TIMEOUT_MS),
-          attemptToken
+          attemptToken,
+          '50'
         );
         if (!Array.isArray(popped) || popped.length === 0) {
           return undefined;

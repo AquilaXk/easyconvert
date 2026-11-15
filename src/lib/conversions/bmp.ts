@@ -299,6 +299,60 @@ function indexedRowsToRgba(
   }
 }
 
+const IS_LITTLE_ENDIAN_HOST = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+
+function bgra32RowsToRgba(buf: Buffer, at: number, header: BmpHeader, out: Buffer, hasAlphaMask: boolean): boolean {
+  const { width, rows, topDown } = header;
+  const stride = width * RGBA_CHANNELS;
+  let alphaBits = 0;
+  if (IS_LITTLE_ENDIAN_HOST && ((buf.byteOffset + at) & 3) === 0 && (out.byteOffset & 3) === 0) {
+    const src32 = new Uint32Array(buf.buffer, buf.byteOffset + at, (rows * stride) >>> 2);
+    const dst32 = new Uint32Array(out.buffer, out.byteOffset, width * rows);
+    for (let stored = 0; stored < rows; stored += 1) {
+      const y = topDown ? stored : rows - 1 - stored;
+      let s = stored * width;
+      let d = y * width;
+      if (hasAlphaMask) {
+        for (let x = 0; x < width; x += 1) {
+          const px = src32[s + x];
+          alphaBits |= px & 0xff000000;
+          dst32[d + x] = ((px & 0xff00ff00) | ((px & 0x00ff0000) >>> 16) | ((px & 0x000000ff) << 16)) >>> 0;
+        }
+      } else {
+        for (let x = 0; x < width; x += 1) {
+          const px = src32[s + x];
+          dst32[d + x] = ((px & 0x0000ff00) | ((px & 0x00ff0000) >>> 16) | ((px & 0x000000ff) << 16) | 0xff000000) >>> 0;
+        }
+      }
+    }
+    if (hasAlphaMask && alphaBits === 0 && header.compression === BI_RGB) {
+      for (let i = 0; i < dst32.length; i += 1) dst32[i] = (dst32[i] | 0xff000000) >>> 0;
+      return false;
+    }
+    return hasAlphaMask;
+  }
+  for (let stored = 0; stored < rows; stored += 1) {
+    const y = topDown ? stored : rows - 1 - stored;
+    let p = at + stored * stride;
+    let o = y * stride;
+    for (let x = 0; x < width; x += 1) {
+      out[o] = buf[p + 2];
+      out[o + 1] = buf[p + 1];
+      out[o + 2] = buf[p];
+      const a = hasAlphaMask ? buf[p + 3] : BYTE_MAX;
+      out[o + 3] = a;
+      alphaBits |= a;
+      p += RGBA_CHANNELS;
+      o += RGBA_CHANNELS;
+    }
+  }
+  if (hasAlphaMask && alphaBits === 0 && header.compression === BI_RGB) {
+    for (let o = 3; o < out.length; o += RGBA_CHANNELS) out[o] = BYTE_MAX;
+    return false;
+  }
+  return hasAlphaMask;
+}
+
 function trueColourRowsToRgba(buf: Buffer, at: number, header: BmpHeader, out: Buffer): boolean {
   const { width, rows, bitCount, topDown, masks } = header;
   const stride = rowStride(bitCount, width);
@@ -320,6 +374,15 @@ function trueColourRowsToRgba(buf: Buffer, at: number, header: BmpHeader, out: B
     return false;
   }
   const m = masks as ChannelMasks;
+  if (
+    bitCount === 32 &&
+    m.r === 0x00ff0000 &&
+    m.g === 0x0000ff00 &&
+    m.b === 0x000000ff &&
+    (m.a === 0 || m.a === 0xff000000)
+  ) {
+    return bgra32RowsToRgba(buf, at, header, out, m.a !== 0);
+  }
   const red = channelTable(m.r);
   const green = channelTable(m.g);
   const blue = channelTable(m.b);
@@ -413,6 +476,22 @@ function expandRle(buf: Buffer, start: number, end: number, header: BmpHeader): 
 
 function rleToRgba(indices: Uint8Array, header: BmpHeader, palette: Uint32Array, out: Buffer): void {
   const pixels = header.width * header.rows;
+  if (IS_LITTLE_ENDIAN_HOST && (out.byteOffset & 3) === 0) {
+    const packedPalette = new Uint32Array(palette.length);
+    for (let c = 0; c < palette.length; c += 1) {
+      const rgb = palette[c];
+      packedPalette[c] = (((rgb >>> 16) & BYTE_MAX) | (rgb & 0x0000ff00) | ((rgb & BYTE_MAX) << 16) | 0xff000000) >>> 0;
+    }
+    const dst32 = new Uint32Array(out.buffer, out.byteOffset, pixels);
+    for (let i = 0; i < pixels; i += 1) {
+      const index = indices[i];
+      if (index >= packedPalette.length) {
+        fail(`a pixel uses colour index ${index}, but the colour table has ${packedPalette.length} entries.`);
+      }
+      dst32[i] = packedPalette[index];
+    }
+    return;
+  }
   for (let i = 0; i < pixels; i += 1) {
     const index = indices[i];
     if (index >= palette.length) fail(`a pixel uses colour index ${index}, but the colour table has ${palette.length} entries.`);

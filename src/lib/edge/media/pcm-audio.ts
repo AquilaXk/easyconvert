@@ -20,6 +20,7 @@ const BYTES_S16 = 2;
 const BYTES_S24 = 3;
 const BYTES_S32 = 4;
 const BYTES_F32 = 4;
+const IS_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
 function readS24(view: DataView, offset: number): number {
   // Sign comes from the top byte; the low 24 bits sit above bit 8 of the result.
@@ -51,22 +52,35 @@ export function pcmBlockToAudioData(codec: string, bytes: Uint8Array, channels: 
   }
   const frames = bytes.byteLength / frameBytes;
   const count = frames * channels;
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
   if (codec === 'pcm-s16') {
     const data = new Int16Array(count);
-    for (let i = 0; i < count; i++) data[i] = view.getInt16(i * BYTES_S16, true);
+    if (IS_LITTLE_ENDIAN) {
+      new Uint8Array(data.buffer).set(bytes);
+    } else {
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      for (let i = 0; i < count; i++) data[i] = view.getInt16(i * BYTES_S16, true);
+    }
     return { format: 's16', data, frames };
   }
   if (codec === 'pcm-f32') {
     const data = new Float32Array(count);
-    for (let i = 0; i < count; i++) data[i] = view.getFloat32(i * BYTES_F32, true);
+    if (IS_LITTLE_ENDIAN) {
+      new Uint8Array(data.buffer).set(bytes);
+    } else {
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      for (let i = 0; i < count; i++) data[i] = view.getFloat32(i * BYTES_F32, true);
+    }
     return { format: 'f32', data, frames };
   }
   const data = new Int32Array(count);
   if (codec === 'pcm-s24') {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     for (let i = 0; i < count; i++) data[i] = readS24(view, i * BYTES_S24);
+  } else if (IS_LITTLE_ENDIAN) {
+    new Uint8Array(data.buffer).set(bytes);
   } else {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     for (let i = 0; i < count; i++) data[i] = view.getInt32(i * BYTES_S32, true);
   }
   return { format: 's32', data, frames };
