@@ -13,8 +13,15 @@ export const KD_TREE_MAX_POINTS = 4096;
  * queries that come with a hint.
  */
 const NEIGHBOUR_TABLE_MAX_POINTS = 512;
-/** Cells per axis of the candidate grid: 20 x 20 x 20 cells of about one palette spacing for a 256-colour palette. */
-const GRID_CELLS_PER_AXIS = 20;
+/**
+ * Bits and cells per axis of the lazy Heckbert `minmaxdist` inverse-colormap grid (`32 x 32 x 32 = 32,768` subboxes),
+ * adapted from Paul Heckbert (SIGGRAPH '82) and `find_nearby_colors` in `mozilla/mozjpeg` `jquant2.c` lines 628-754
+ * (commit `08265790774cd0714832c9e675522acbe5581437`, IJG / BSD-3-Clause; based in part on the work of the Independent
+ * JPEG Group, Copyright (C) 1991-1996 Thomas G. Lane, Copyright (C) 2009-2023 D. R. Commander).
+ */
+const GRID_BITS = 5;
+const GRID_CELLS_PER_AXIS = 1 << GRID_BITS;
+const GRID_TOTAL_CELLS = 1 << (GRID_BITS * DIMENSIONS);
 /** Share of the extent added around the points' box, so queries slightly outside it still land in a cell. */
 const GRID_MARGIN = 0.05;
 /** Relative slack on the grid's candidate bound, so rounding never drops a point that ties the limit. */
@@ -22,9 +29,9 @@ const GRID_BOUND_SLACK = 1e-9;
 const GRID_BOUND_ABS_SLACK = 1e-24;
 /** Rounding slack on the neighbour bound, so that a point exactly on it is still measured. */
 const NEIGHBOUR_BOUND_SLACK = 1e-12;
-/** Query count at which the exact candidate voxel grid is built lazily when not already enabled. */
-const AUTO_GRID_QUERY_THRESHOLD = 4096;
-const AUTO_GRID_MIN_POINTS = 32;
+/** Query count at which the lazy 32x32x32 candidate grid is enabled automatically when not already active. */
+const AUTO_GRID_QUERY_THRESHOLD = 512;
+const AUTO_GRID_MIN_POINTS = 16;
 /** A traversal stack of this size covers the deepest tree `KD_TREE_MAX_POINTS` points can make, five times over. */
 const STACK_SIZE = 64;
 const NO_NODE = -1;
@@ -69,6 +76,9 @@ export class KdTree3 {
   /** Squared distance of the point the last `nearestIndex` call returned. */
   lastDistance2 = Infinity;
   private readonly coords: Float64Array;
+  private readonly ptX: Float64Array;
+  private readonly ptY: Float64Array;
+  private readonly ptZ: Float64Array;
   /** Per node (SoA in preorder DFS layout): point index, node coordinates, split axis, and child indices. */
   private readonly point: Int32Array;
   private readonly nodeX: Float64Array;
@@ -87,11 +97,19 @@ export class KdTree3 {
   private neighbourDistance: Float64Array | null = null;
   /** The coordinates of the same neighbours, laid out in the same order, so a scan reads memory in sequence. */
   private neighbourCoords: Float64Array | null = null;
-  /** Candidate grid (see `enableGrid`): corner of its box, cells per unit length, and each cell's candidate points. */
+  /** Lazy 32x32x32 Heckbert `minmaxdist` grid: `-1` unvisited, `>= 0` single winner, `<= -2` `-(poolOffset + 2)`. */
   private readonly gridLow = new Float64Array(DIMENSIONS);
   private readonly gridScale = new Float64Array(DIMENSIONS);
-  private gridStart: Uint32Array | null = null;
-  private gridList: Uint16Array | null = null;
+  private gridCells: Int32Array | null = null;
+  private gridNearX2: Float64Array | null = null;
+  private gridFarX2: Float64Array | null = null;
+  private gridNearY2: Float64Array | null = null;
+  private gridFarY2: Float64Array | null = null;
+  private gridNearZ2: Float64Array | null = null;
+  private gridFarZ2: Float64Array | null = null;
+  private gridScratchNear: Float64Array | null = null;
+  private gridPool: Uint16Array | null = null;
+  private gridPoolLen = 0;
 
   /** `points` is x, y, z interleaved; `count` points are read from it. */
   constructor(points: ArrayLike<number>, count: number) {
@@ -100,7 +118,20 @@ export class KdTree3 {
     }
     this.size = count;
     this.coords = new Float64Array(count * DIMENSIONS);
-    for (let i = 0; i < count * DIMENSIONS; i += 1) this.coords[i] = points[i];
+    this.ptX = new Float64Array(count);
+    this.ptY = new Float64Array(count);
+    this.ptZ = new Float64Array(count);
+    for (let i = 0; i < count; i += 1) {
+      const x = points[i * DIMENSIONS];
+      const y = points[i * DIMENSIONS + 1];
+      const z = points[i * DIMENSIONS + 2];
+      this.coords[i * DIMENSIONS] = x;
+      this.coords[i * DIMENSIONS + 1] = y;
+      this.coords[i * DIMENSIONS + 2] = z;
+      this.ptX[i] = x;
+      this.ptY[i] = y;
+      this.ptZ[i] = z;
+    }
     this.point = new Int32Array(count);
     this.nodeX = new Float64Array(count);
     this.nodeY = new Float64Array(count);
@@ -183,15 +214,12 @@ export class KdTree3 {
   }
 
   /**
-   * Builds a grid over the bounding box of the points that lists, for each cell, every point that can be the
-   * nearest one for some location in that cell. A point p qualifies unless it is farther from the cell than the
-   * nearest point is from the cell's farthest corner: such a p loses to that point for every location in the
-   * cell. The lists are therefore complete, and a query inside the box measures only its cell's few candidates
-   * and still returns the exact nearest point. Building costs a few tens of milliseconds, so it pays off for
-   * rasters of hundreds of thousands of queries.
+   * Enables a lazy 32x32x32 Heckbert `minmaxdist` candidate grid over the bounding box of the points.
+   * Only the 1D axis distance tables (`32 * n`) are precomputed upfront (< 0.05 ms); each 3D subbox is populated
+   * on first hit, storing a single-winner index directly (`>= 0`) for O(1) lookup or a compact slice in `gridPool`.
    */
   enableGrid(): void {
-    if (this.gridStart !== null || this.size > NEIGHBOUR_TABLE_MAX_POINTS) return;
+    if (this.gridCells !== null || this.size > NEIGHBOUR_TABLE_MAX_POINTS) return;
     const n = this.size;
     const c = this.coords;
     const cells = GRID_CELLS_PER_AXIS;
@@ -216,6 +244,7 @@ export class KdTree3 {
     const farY2 = new Float64Array(cells * n);
     const nearZ2 = new Float64Array(cells * n);
     const farZ2 = new Float64Array(cells * n);
+    const { ptX, ptY, ptZ } = this;
     for (let cell = 0; cell < cells; cell += 1) {
       const x0 = low[0] + cell * edge[0];
       const y0 = low[1] + cell * edge[1];
@@ -225,9 +254,9 @@ export class KdTree3 {
       const z1 = z0 + edge[2];
       const base = cell * n;
       for (let i = 0; i < n; i += 1) {
-        const px = c[i * DIMENSIONS];
-        const py = c[i * DIMENSIONS + 1];
-        const pz = c[i * DIMENSIONS + 2];
+        const px = ptX[i];
+        const py = ptY[i];
+        const pz = ptZ[i];
         const nx = intervalGap(px, x0, x1);
         const ny = intervalGap(py, y0, y1);
         const nz = intervalGap(pz, z0, z1);
@@ -242,50 +271,71 @@ export class KdTree3 {
         farZ2[base + i] = fz * fz;
       }
     }
-    const start = new Uint32Array(cells * cells * cells + 1);
-    let listCap = Math.max(cells * cells * cells * 4, n);
-    let listBuf = new Uint16Array(listCap);
-    let listLen = 0;
-    const nearest2 = new Float64Array(n);
-    for (let cx = 0; cx < cells; cx += 1) {
-      const xBase = cx * n;
-      for (let cy = 0; cy < cells; cy += 1) {
-        const yBase = cy * n;
-        for (let cz = 0; cz < cells; cz += 1) {
-          const zBase = cz * n;
-          let limit = Infinity;
-          for (let i = 0; i < n; i += 1) {
-            const near = nearX2[xBase + i] + nearY2[yBase + i] + nearZ2[zBase + i];
-            nearest2[i] = near;
-            const far = farX2[xBase + i] + farY2[yBase + i] + farZ2[zBase + i];
-            if (far < limit) limit = far;
-          }
-          const bound = limit * (1 + GRID_BOUND_SLACK) + GRID_BOUND_ABS_SLACK;
-          if (listLen + n > listCap) {
-            listCap = Math.max(listCap * 2, listLen + n);
-            const grown = new Uint16Array(listCap);
-            grown.set(listBuf.subarray(0, listLen));
-            listBuf = grown;
-          }
-          for (let i = 0; i < n; i += 1) {
-            if (nearest2[i] <= bound) listBuf[listLen++] = i;
-          }
-          start[(cx * cells + cy) * cells + cz + 1] = listLen;
-        }
-      }
-    }
-    this.gridStart = start;
-    this.gridList = listBuf.subarray(0, listLen);
+    this.gridNearX2 = nearX2;
+    this.gridFarX2 = farX2;
+    this.gridNearY2 = nearY2;
+    this.gridFarY2 = farY2;
+    this.gridNearZ2 = nearZ2;
+    this.gridFarZ2 = farZ2;
+    this.gridScratchNear = new Float64Array(n);
+    this.gridPool = new Uint16Array(Math.max(2048, n * 8));
+    this.gridPoolLen = 0;
+    this.gridCells = new Int32Array(GRID_TOTAL_CELLS).fill(-1);
   }
 
-  /** The candidates of the grid cell holding (x, y, z), or -1 when the point lies outside the grid. */
-  private cellOf(x: number, y: number, z: number): number {
-    const cells = GRID_CELLS_PER_AXIS;
-    const gx = (x - this.gridLow[0]) * this.gridScale[0];
-    const gy = (y - this.gridLow[1]) * this.gridScale[1];
-    const gz = (z - this.gridLow[2]) * this.gridScale[2];
-    if (!(gx >= 0 && gx < cells && gy >= 0 && gy < cells && gz >= 0 && gz < cells)) return -1;
-    return (Math.trunc(gx) * cells + Math.trunc(gy)) * cells + Math.trunc(gz);
+  private fillGridCell(cell: number, cx: number, cy: number, cz: number): number {
+    const n = this.size;
+    const nearX2 = this.gridNearX2 as Float64Array;
+    const farX2 = this.gridFarX2 as Float64Array;
+    const nearY2 = this.gridNearY2 as Float64Array;
+    const farY2 = this.gridFarY2 as Float64Array;
+    const nearZ2 = this.gridNearZ2 as Float64Array;
+    const farZ2 = this.gridFarZ2 as Float64Array;
+    const nearest2 = this.gridScratchNear as Float64Array;
+    const xBase = cx * n;
+    const yBase = cy * n;
+    const zBase = cz * n;
+    let limit = Infinity;
+    for (let i = 0; i < n; i += 1) {
+      const near = nearX2[xBase + i] + nearY2[yBase + i] + nearZ2[zBase + i];
+      nearest2[i] = near;
+      const far = farX2[xBase + i] + farY2[yBase + i] + farZ2[zBase + i];
+      if (far < limit) limit = far;
+    }
+    const bound = limit * (1 + GRID_BOUND_SLACK) + GRID_BOUND_ABS_SLACK;
+    let count = 0;
+    let singleWinner = 0;
+    for (let i = 0; i < n; i += 1) {
+      if (nearest2[i] <= bound) {
+        singleWinner = i;
+        count += 1;
+      }
+    }
+    const gridCells = this.gridCells as Int32Array;
+    if (count === 1) {
+      gridCells[cell] = singleWinner;
+      return singleWinner;
+    }
+    let pool = this.gridPool as Uint16Array;
+    if (this.gridPoolLen + count + 1 > pool.length) {
+      const grown = new Uint16Array(Math.max(pool.length * 2, this.gridPoolLen + count + 1024));
+      grown.set(pool.subarray(0, this.gridPoolLen));
+      pool = grown;
+      this.gridPool = pool;
+    }
+    const offset = this.gridPoolLen;
+    pool[offset] = count;
+    let k = 1;
+    for (let i = 0; i < n; i += 1) {
+      if (nearest2[i] <= bound) {
+        pool[offset + k] = i;
+        k += 1;
+      }
+    }
+    this.gridPoolLen = offset + count + 1;
+    const encoded = -(offset + 2);
+    gridCells[cell] = encoded;
+    return encoded;
   }
 
   /**
@@ -330,27 +380,46 @@ export class KdTree3 {
    * for speed only), `otherHint` a second one. The squared distance is left in `lastDistance2`.
    */
   nearestIndex(x: number, y: number, z: number, hint: number = -1, otherHint: number = -1): number {
-    const c = this.coords;
     if (
-      this.gridStart === null &&
+      this.gridCells === null &&
       this.size >= AUTO_GRID_MIN_POINTS &&
       this.size <= NEIGHBOUR_TABLE_MAX_POINTS &&
       ++this.ungriddedQueries >= AUTO_GRID_QUERY_THRESHOLD
     ) {
       this.enableGrid();
     }
-    if (this.gridStart !== null) {
-      const cell = this.cellOf(x, y, z);
-      if (cell >= 0) {
-        const list = this.gridList as Uint16Array;
-        const end = this.gridStart[cell + 1];
-        let found = -1;
-        let foundDistance = Infinity;
-        for (let m = this.gridStart[cell]; m < end; m += 1) {
-          const p = list[m];
-          const dx = x - c[p * DIMENSIONS];
-          const dy = y - c[p * DIMENSIONS + 1];
-          const dz = z - c[p * DIMENSIONS + 2];
+    if (this.gridCells !== null) {
+      const gx = (x - this.gridLow[0]) * this.gridScale[0];
+      const gy = (y - this.gridLow[1]) * this.gridScale[1];
+      const gz = (z - this.gridLow[2]) * this.gridScale[2];
+      if (gx >= 0 && gx < GRID_CELLS_PER_AXIS && gy >= 0 && gy < GRID_CELLS_PER_AXIS && gz >= 0 && gz < GRID_CELLS_PER_AXIS) {
+        const cx = gx | 0;
+        const cy = gy | 0;
+        const cz = gz | 0;
+        const cell = (cx << 10) | (cy << 5) | cz;
+        let entry = this.gridCells[cell];
+        if (entry === -1) entry = this.fillGridCell(cell, cx, cy, cz);
+        const { ptX, ptY, ptZ } = this;
+        if (entry >= 0) {
+          const dx = x - ptX[entry];
+          const dy = y - ptY[entry];
+          const dz = z - ptZ[entry];
+          this.lastDistance2 = dx * dx + dy * dy + dz * dz;
+          return entry;
+        }
+        const pool = this.gridPool as Uint16Array;
+        const offset = -entry - 2;
+        const end = offset + 1 + pool[offset];
+        let found = pool[offset + 1];
+        const dx0 = x - ptX[found];
+        const dy0 = y - ptY[found];
+        const dz0 = z - ptZ[found];
+        let foundDistance = dx0 * dx0 + dy0 * dy0 + dz0 * dz0;
+        for (let m = offset + 2; m < end; m += 1) {
+          const p = pool[m];
+          const dx = x - ptX[p];
+          const dy = y - ptY[p];
+          const dz = z - ptZ[p];
           const d2 = dx * dx + dy * dy + dz * dz;
           if (d2 < foundDistance) {
             foundDistance = d2;
@@ -361,6 +430,7 @@ export class KdTree3 {
         return found;
       }
     }
+    const c = this.coords;
     if (hint >= 0 && hint < this.size && this.size <= NEIGHBOUR_TABLE_MAX_POINTS && this.size > 1) {
       if (this.neighbours !== null || otherHint >= 0) {
         let start = hint;

@@ -82,9 +82,10 @@ function standIns(suite: () => Promise<WorkerConversionResult | null> = async ()
   return { deps, suiteCalls, converted, discarded };
 }
 
-const textOf = (bytes: number): Buffer => Buffer.from('a line of plain text\n'.repeat(Math.ceil(bytes / 21)).slice(0, bytes));
+const SAMPLE_BYTES = 128 * 1024;
+const textOf = (bytes: number): Buffer => Buffer.from('a line of plain text\n'.repeat(Math.ceil(Math.max(bytes, 1) / 21)).slice(0, bytes));
 const request = (overrides: Partial<OfficeSuiteRequest> = {}): OfficeSuiteRequest => ({
-  input: textOf(TEXT_DIRECT_MIN_BYTES),
+  input: textOf(SAMPLE_BYTES),
   src: 'txt',
   tgt: WORD_TARGET,
   options: {},
@@ -96,36 +97,29 @@ const neverDirectly = async (): Promise<WorkerConversionResult> => {
 };
 
 describe('the route of a plain text file written as Word 97-2003 or RTF', () => {
-  it.each([WORD_TARGET, RTF_TARGET])('hands a file of the limit to the office suite as it is for %s, with the text filter, and writes no DOCX', async (target) => {
-    const { deps, suiteCalls, converted, discarded } = standIns();
-    const input = textOf(TEXT_DIRECT_MIN_BYTES);
-    const answer = await convertBridgedTarget(deps, request({ input, tgt: target }), neverDirectly);
-    expect(answer.filePath).toBe('/out/text.doc');
-    expect(converted).toEqual([]);
-    expect(discarded).toEqual([]);
-    expect(suiteCalls).toHaveLength(1);
-    expect(suiteCalls[0].input).toBe(input);
-    expect(suiteCalls[0]).toMatchObject({ src: 'txt', target, options: { officeImportFilter: TEXT_IMPORT_FILTER, throwOnUnavailable: true } });
+  it.each([WORD_TARGET, RTF_TARGET])('hands a plain text file of any size to the office suite as it is for %s, with the text filter, and writes no DOCX', async (target) => {
+    for (const size of [0, 12, 4096, SAMPLE_BYTES - 1, SAMPLE_BYTES]) {
+      const { deps, suiteCalls, converted, discarded } = standIns();
+      const input = textOf(size);
+      const answer = await convertBridgedTarget(deps, request({ input, tgt: target }), neverDirectly);
+      expect(answer.filePath).toBe('/out/text.doc');
+      expect(converted).toEqual([]);
+      expect(discarded).toEqual([]);
+      expect(suiteCalls).toHaveLength(1);
+      expect(suiteCalls[0].input).toBe(input);
+      expect(suiteCalls[0]).toMatchObject({ src: 'txt', target, options: { officeImportFilter: TEXT_IMPORT_FILTER, throwOnUnavailable: true } });
+    }
+    expect(TEXT_DIRECT_MIN_BYTES).toBe(0);
   });
 
   it('names the text filter and its UTF-8 option as the load properties of a .txt file in JODConverter', () => {
     expect(TEXT_IMPORT_FILTER).toBe('Text (encoded):utf8');
   });
 
-  it.each([WORD_TARGET, RTF_TARGET])('keeps the DOCX for a file one byte under the limit for %s', async (target) => {
-    const { deps, suiteCalls, converted, discarded } = standIns();
-    await convertBridgedTarget(deps, request({ input: textOf(TEXT_DIRECT_MIN_BYTES - 1), tgt: target }), neverDirectly);
-    expect(converted).toEqual([{ src: 'txt', target: DOCX_FORMAT }]);
-    expect(suiteCalls).toHaveLength(1);
-    expect(suiteCalls[0]).toMatchObject({ src: DOCX_FORMAT, target });
-    expect(suiteCalls[0].options.officeImportFilter).toBeUndefined();
-    expect(discarded).toEqual(['/tmp/text.docx']);
-  });
-
   it('measures a file on disk by its size, and passes the output path of the request on to the suite', async () => {
     const dir = scratch();
     const inputPath = path.join(dir, 'big.txt');
-    fs.writeFileSync(inputPath, textOf(TEXT_DIRECT_MIN_BYTES));
+    fs.writeFileSync(inputPath, textOf(SAMPLE_BYTES));
     const { deps, suiteCalls, converted } = standIns();
     const payload: WorkerVfsPayload = { inputPath, outputPath: path.join(dir, 'out.doc') };
     await convertBridgedTarget(deps, request({ input: payload }), neverDirectly);
@@ -135,7 +129,7 @@ describe('the route of a plain text file written as Word 97-2003 or RTF', () => 
 
   it.each(['md', 'rst', 'html', 'htm'])('leaves a long %s source on the DOCX route', async (src) => {
     const { deps, suiteCalls, converted } = standIns();
-    await convertBridgedTarget(deps, request({ src, input: textOf(TEXT_DIRECT_MIN_BYTES * 2) }), neverDirectly);
+    await convertBridgedTarget(deps, request({ src, input: textOf(SAMPLE_BYTES * 2) }), neverDirectly);
     expect(converted).toEqual([{ src, target: DOCX_FORMAT }]);
     expect(suiteCalls[0]).toMatchObject({ src: DOCX_FORMAT });
   });
@@ -150,26 +144,26 @@ describe('the route of a plain text file written as Word 97-2003 or RTF', () => 
 
   it('refuses a binary container behind the name .txt before the suite sees it', async () => {
     const { deps, suiteCalls } = standIns();
-    const zip = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), textOf(TEXT_DIRECT_MIN_BYTES)]);
+    const zip = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), textOf(SAMPLE_BYTES)]);
     await expect(convertBridgedTarget(deps, request({ input: zip }), neverDirectly)).rejects.toBeInstanceOf(ConversionFailedError);
     expect(suiteCalls).toEqual([]);
   });
 
   it('refuses a file with a null byte in its first 4 KiB', async () => {
     const { deps, suiteCalls } = standIns();
-    const input = textOf(TEXT_DIRECT_MIN_BYTES);
+    const input = textOf(SAMPLE_BYTES);
     input[100] = 0;
     await expect(convertBridgedTarget(deps, request({ input }), neverDirectly)).rejects.toThrow(/Binary null bytes/);
     expect(suiteCalls).toEqual([]);
   });
 
   it('reads a file with a UTF-16 mark as text and refuses binary data behind that mark', async () => {
-    const utf16 = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(textOf(TEXT_DIRECT_MIN_BYTES).toString('utf8'), 'utf16le')]);
+    const utf16 = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(textOf(SAMPLE_BYTES).toString('utf8'), 'utf16le')]);
     const accepted = standIns();
     await convertBridgedTarget(accepted.deps, request({ input: utf16 }), neverDirectly);
     expect(accepted.suiteCalls).toHaveLength(1);
 
-    const binary = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.alloc(TEXT_DIRECT_MIN_BYTES)]);
+    const binary = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.alloc(SAMPLE_BYTES)]);
     const refused = standIns();
     await expect(convertBridgedTarget(refused.deps, request({ input: binary }), neverDirectly)).rejects.toThrow(/Binary null bytes/);
     expect(refused.suiteCalls).toEqual([]);

@@ -174,7 +174,8 @@ export function findNearestColorIndexOklab(target: OklabColor, paletteOklab: Okl
  * ascending palette index order, with strictly `<` tie breaking.
  *
  * Source: mozilla/mozjpeg (IJG / BSD-3-Clause), commit 08265790774cd0714832c9e675522acbe5581437,
- * jquant2.c lines 628-754 (`find_nearby_colors`).
+ * jquant2.c lines 628-754 (`find_nearby_colors`). Based in part on the work of the Independent
+ * JPEG Group (Copyright (C) 1991-1996, Thomas G. Lane; Copyright (C) 2009-2023, D. R. Commander).
  */
 export class PaletteInverseCmap {
   readonly size: number;

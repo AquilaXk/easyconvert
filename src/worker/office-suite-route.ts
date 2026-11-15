@@ -406,12 +406,10 @@ const TEXT_DIRECT_TARGETS: ReadonlySet<string> = new Set([WORD_97_TARGET, RTF_TA
  */
 export const TEXT_IMPORT_FILTER = 'Text (encoded):utf8';
 /**
- * A text file this long goes to the office suite as it is. Written as a DOCX first, a text with long runs of lines between two blank
- * lines is one paragraph of thousands of line breaks, which the suite lays out in time that grows faster than the text (a 263 KB file of
- * 25,009 lines took 4.2 s as a DOCX and 0.9 s read directly; 563 KB 21 s and 0.8 s; 1.2 MB 46 s and 2.2 s), and Word opens as one paragraph.
- * Below it both ways take about a second and the converter's DOCX is kept, so the text of a short file keeps its paragraphs, fonts and page of before.
+ * Every plain text file written as `.doc` or `.rtf` goes directly to the office suite (`TEXT_IMPORT_FILTER`),
+ * eliminating the 128 KiB typography/margin cliff of entry 306 and matching JODConverter's plain-text load rule.
  */
-export const TEXT_DIRECT_MIN_BYTES = 128 * 1024;
+export const TEXT_DIRECT_MIN_BYTES = 0;
 /** Bytes of a text file read to refuse a binary one before the office suite opens it. */
 const TEXT_HEAD_BYTES = 64 * 1024;
 
