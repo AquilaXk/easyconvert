@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs the pinned pandoc release program, the converter of Markdown, plain text and HTML to LaTeX and of Markdown to reStructuredText
-# (entry 308 of docs/policy-decisions.md). pandoc (John MacFarlane and contributors) is GPL-2.0-or-later; the program is the project's own
+# (entry 309 of docs/policy-decisions.md). pandoc (John MacFarlane and contributors) is GPL-2.0-or-later; the program is the project's own
 # statically linked Linux release from its release page, used unmodified and only as a separate program that the worker starts in the
 # process sandbox: it is never linked into the application and no code of it is copied. The archive and the licence files are each verified
 # against a fixed SHA-256 before anything in them runs or is copied, and the licence files come from the tagged commit, not a branch.

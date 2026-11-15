@@ -176,7 +176,7 @@ RUN /tmp/install-oxipng.sh /opt/oxipng
 # ==============================================================================
 # Stage 3b-pandoc: Pinned pandoc (Markdown, plain text and HTML to LaTeX; Markdown to reStructuredText)
 # ==============================================================================
-# The four pairs md to tex and rst, html to tex and txt to tex (entry 308). pandoc is GPL-2.0-or-later; the program is the project's own
+# The four pairs md to tex and rst, html to tex and txt to tex (entry 309). pandoc is GPL-2.0-or-later; the program is the project's own
 # statically linked release for this architecture, pinned by SHA-256 in scripts/install-pandoc.sh and used unmodified, as a separate sandboxed
 # process; nothing links it into the application and no code of it is copied. Debian ships a pandoc package of the same version that depends
 # on shared libraries and a data package; the pinned release is the program the reference runs. The image grows by about 160 MB: the program is

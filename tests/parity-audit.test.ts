@@ -9,7 +9,7 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   // Entry 183: a Pages document has no export to a presentation, and the metafile writers refuse the pictures that real PDF pages hold.
   'pages->ppt',
   'pdf->emf', 'pdf->wmf',
-  // Entry 307: the calibre of the image (8.5.0) reads no SNB file, its reader compares the byte names of the archive with text names, so these nine stay withdrawn.
+  // Entry 308: the calibre of the image (8.5.0) reads no SNB file, its reader compares the byte names of the archive with text names, so these nine stay withdrawn.
   'snb->azw3', 'snb->epub', 'snb->lrf', 'snb->mobi', 'snb->oeb', 'snb->pdb', 'snb->pdf', 'snb->rtf', 'snb->txt',
   'key->doc', 'key->xls',
   'pot->emf', 'pot->xps',

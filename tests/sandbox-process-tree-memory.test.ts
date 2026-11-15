@@ -5,7 +5,7 @@ import { descendantPids, getProcessTreeRssMb } from '../src/lib/security/process
 import { runWithoutFileConfinement } from './helpers/unconfined-files';
 
 /**
- * The memory limit of a sandboxed run holds for the program and everything it started (docs/policy-decisions.md, entry 309): a program
+ * The memory limit of a sandboxed run holds for the program and everything it started (docs/policy-decisions.md, entry 308): a program
  * that keeps the memory in a child (the renderer of a browser, a helper process) is stopped by the sum, not missed because the parent is small.
  */
 
