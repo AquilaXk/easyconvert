@@ -8,6 +8,7 @@
 import Papa from 'papaparse';
 import yaml from 'js-yaml';
 import { detectDelimiter, nominalDelimiter, parseDelimitedRecords } from '../../conversions/delimited-detect';
+import { FORMULA_TRIGGER } from '../../conversions/delimited-rules';
 
 export interface PureDataResult {
   data: Uint8Array;
@@ -18,6 +19,73 @@ export interface PureDataResult {
 
 export interface PureDataOptions {
   delimiter?: string;
+  escapeFormulas?: boolean;
+}
+
+const MAX_YAML_ALIAS_COUNT = 100;
+const YAML_EXPANSION_FACTOR = 10;
+const YAML_MIN_EXPANDED_VALUES = 100_000;
+const MAX_YAML_DEPTH = 128;
+
+function assertBoundedYamlExpansion(root: unknown, maxValues: number): void {
+  const stack: Array<{ node: unknown; depth: number; ancestors: Set<object> }> = [
+    { node: root, depth: 0, ancestors: new Set() },
+  ];
+  let expanded = 0;
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    expanded++;
+    if (expanded > maxValues) {
+      throw new Error(`alias expansion exceeds value limit (${maxValues})`);
+    }
+    const { node, depth, ancestors } = frame;
+    if (typeof node !== 'object' || node === null) continue;
+    if (ancestors.has(node)) {
+      throw new Error('circular alias reference detected');
+    }
+    if (depth >= MAX_YAML_DEPTH) {
+      throw new Error(`nesting depth exceeds limit (${MAX_YAML_DEPTH})`);
+    }
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(node);
+    const children = Array.isArray(node) ? node : Object.values(node);
+    for (let i = children.length - 1; i >= 0; i--) {
+      stack.push({ node: children[i], depth: depth + 1, ancestors: nextAncestors });
+    }
+  }
+}
+
+function loadBoundedYaml(textContent: string): unknown {
+  let aliases = 0;
+  let sourceNodes = 0;
+  const loaded = yaml.load(textContent, {
+    listener(op, state) {
+      if (op !== 'open') return;
+      sourceNodes++;
+      if (state.input.charCodeAt(state.position) === 0x2a) {
+        aliases++;
+        if (aliases > MAX_YAML_ALIAS_COUNT) {
+          throw new Error(`alias count exceeds limit (${MAX_YAML_ALIAS_COUNT})`);
+        }
+      }
+    },
+  });
+  if (aliases > 0) {
+    const maxExpanded = Math.max(YAML_MIN_EXPANDED_VALUES, sourceNodes * YAML_EXPANSION_FACTOR);
+    assertBoundedYamlExpansion(loaded, maxExpanded);
+  }
+  return loaded;
+}
+
+function unparseDelimited(
+  arrayData: Record<string, unknown>[],
+  delimiter: string,
+  options: PureDataOptions
+): string {
+  return Papa.unparse(arrayData, {
+    delimiter,
+    escapeFormulae: options.escapeFormulas === false ? false : FORMULA_TRIGGER,
+  });
 }
 
 const SUPPORTED_DATA_SOURCES = new Set(['csv', 'tsv', 'tab', 'json', 'yaml', 'yml']);
@@ -78,7 +146,7 @@ export function convertPureData(
     }
   } else if (src === 'yaml' || src === 'yml') {
     try {
-      intermediate = yaml.load(textContent);
+      intermediate = loadBoundedYaml(textContent);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Invalid YAML';
       throw new Error(`YAML parsing failed: ${msg}`);
@@ -109,7 +177,7 @@ export function convertPureData(
     } else {
       arrayData = [];
     }
-    outputText = Papa.unparse(arrayData, { delimiter: targetDelim });
+    outputText = unparseDelimited(arrayData, targetDelim, options);
   } else if (tgt === 'txt') {
     outputText =
       typeof intermediate === 'string'

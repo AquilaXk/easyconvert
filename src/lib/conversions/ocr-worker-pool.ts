@@ -135,12 +135,18 @@ function assertTraineddataIntact(spec: OcrWorkerSpec): void {
  * Latency: reuse only helps warm workers. A page that has to start a worker pays the full start
  * (about the same as before pooling, 1.0-1.08x); later pages on that worker are roughly 0.75x.
  */
+interface QueuedWaiter {
+  key: string;
+  signal?: AbortSignal;
+  wake: () => void;
+}
+
 export class OcrWorkerPool {
   readonly limits: Required<OcrWorkerPoolOptions>;
   private readonly entries = new Set<PoolEntry>();
   private readonly creating = new Map<string, number>();
   private readonly pendingStarts = new Set<(reason: Error) => void>();
-  private waiters: Array<() => void> = [];
+  private waiters: QueuedWaiter[] = [];
   private closing = false;
 
   constructor(options: OcrWorkerPoolOptions = {}) {
@@ -281,9 +287,7 @@ export class OcrWorkerPool {
     let timer: NodeJS.Timeout | undefined;
     try {
       const shutdownError = new OcrEngineUnavailableError('The OCR worker pool was shut down.');
-      const woken = this.waiters;
-      this.waiters = [];
-      for (const wake of woken) wake();
+      this.wakeAll();
       // A start that finishes later is terminated by startEntry, so none is waited for.
       for (const abort of [...this.pendingStarts]) abort(shutdownError);
       const live = [...this.entries];
@@ -342,8 +346,12 @@ export class OcrWorkerPool {
   private async acquire(spec: OcrWorkerSpec, signal?: AbortSignal): Promise<PoolEntry> {
     const key = keyFor(spec);
     let queued = false;
+    let wokenByPool = false;
     for (;;) {
-      signal?.throwIfAborted();
+      if (signal?.aborted) {
+        if (wokenByPool) this.wake();
+        throw signal.reason;
+      }
       if (this.closing) {
         throw new OcrEngineUnavailableError('The OCR worker pool is shutting down.');
       }
@@ -353,7 +361,7 @@ export class OcrWorkerPool {
       if (this.countFor(key) < this.limits.maxWorkersPerKey) {
         if (this.size >= this.limits.maxWorkersTotal) {
           const victim = this.findIdleOtherKey(key);
-          if (victim) await this.discard(victim);
+          if (victim) await this.discard(victim, false);
         }
         if (this.size < this.limits.maxWorkersTotal) {
           return this.startEntry(key, spec);
@@ -366,18 +374,22 @@ export class OcrWorkerPool {
         );
       }
       queued = true;
-      await new Promise<void>((resolve) => {
+      wokenByPool = await new Promise<boolean>((resolve) => {
+        const entry: QueuedWaiter = {
+          key,
+          signal,
+          wake: () => {
+            signal?.removeEventListener('abort', leave);
+            resolve(true);
+          },
+        };
         const leave = (): void => {
           signal?.removeEventListener('abort', leave);
-          const index = this.waiters.indexOf(wake);
+          const index = this.waiters.indexOf(entry);
           if (index >= 0) this.waiters.splice(index, 1);
-          resolve();
+          resolve(false);
         };
-        const wake = (): void => {
-          signal?.removeEventListener('abort', leave);
-          resolve();
-        };
-        this.waiters.push(wake);
+        this.waiters.push(entry);
         signal?.addEventListener('abort', leave, { once: true });
       });
     }
@@ -399,6 +411,7 @@ export class OcrWorkerPool {
       );
     });
     const started = this.createWorker(spec, health);
+    let claimed = false;
     try {
       const worker = await Promise.race([started, aborted, timedOut]);
       const entry: PoolEntry = { key, worker, health, jobs: 0, busy: true, idleTimer: null, abort: null };
@@ -408,6 +421,7 @@ export class OcrWorkerPool {
       }
       this.entries.add(entry);
       entry.worker.worker?.ref?.();
+      claimed = true;
       return entry;
     } catch (err) {
       // An abandoned start may still finish; its worker must not outlive the request.
@@ -422,7 +436,7 @@ export class OcrWorkerPool {
       const remaining = (this.creating.get(key) ?? 1) - 1;
       if (remaining > 0) this.creating.set(key, remaining);
       else this.creating.delete(key);
-      this.wake();
+      if (!claimed) this.wake();
     }
   }
 
@@ -471,11 +485,11 @@ export class OcrWorkerPool {
     this.wake();
   }
 
-  private async discard(entry: PoolEntry): Promise<void> {
+  private async discard(entry: PoolEntry, wakeWaiter = true): Promise<void> {
     this.clearIdleTimer(entry);
     const known = this.entries.delete(entry);
     if (known) await this.terminateQuietly(entry.worker);
-    this.wake();
+    if (wakeWaiter) this.wake();
   }
 
   private async terminateQuietly(worker: OcrPooledWorker): Promise<void> {
@@ -493,10 +507,39 @@ export class OcrWorkerPool {
     }
   }
 
+  private canServeKey(key: string): boolean {
+    for (const entry of this.entries) {
+      if (entry.key === key && !entry.busy && !entry.health.failed) return true;
+    }
+    if (this.countFor(key) >= this.limits.maxWorkersPerKey) return false;
+    return this.size < this.limits.maxWorkersTotal || this.findIdleOtherKey(key) !== undefined;
+  }
+
+  private wakeAll(): void {
+    const woken = this.waiters.splice(0);
+    for (const waiter of woken) waiter.wake();
+  }
+
   private wake(): void {
-    const woken = this.waiters;
-    this.waiters = [];
-    for (const resolve of woken) resolve();
+    if (this.closing) {
+      this.wakeAll();
+      return;
+    }
+    let idx = 0;
+    while (idx < this.waiters.length) {
+      const candidate = this.waiters[idx];
+      if (candidate.signal?.aborted) {
+        this.waiters.splice(idx, 1);
+        candidate.wake();
+        continue;
+      }
+      if (this.canServeKey(candidate.key)) {
+        this.waiters.splice(idx, 1);
+        candidate.wake();
+        return;
+      }
+      idx++;
+    }
   }
 }
 

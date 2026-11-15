@@ -2,8 +2,10 @@ import { ConversionFailedError, PayloadLimitError } from '../../types';
 
 /** Maximum cells expanded in a single formula range (`A1:Z1000` = 26,000; full sheet `A1:XFD1048576` = 17.18B is refused). */
 export const MAX_FORMULA_RANGE_CELLS = 100_000;
-/** Maximum total range cells expanded across one workbook/sheet formula evaluation pass. */
+/** Maximum unique range cells expanded across one workbook/sheet formula evaluation pass. */
 export const MAX_TOTAL_FORMULA_RANGE_CELLS = 250_000;
+/** Maximum formula cells evaluated in a single DAG pass. */
+export const MAX_FORMULA_CELLS = 50_000;
 /** ECMA-376 SpreadsheetML maximum row and column indices (`XFD1048576`). */
 const MAX_EXCEL_ROW = 1_048_576;
 const MAX_EXCEL_COL = 16_384;
@@ -116,6 +118,156 @@ interface FormulaToken {
  * The table argument of VLOOKUP and INDEX as rows: a two-dimensional range keeps its rows, an array of arrays is
  * the rows, any other array is one column (VLOOKUP) or one row (INDEX), and a single value is a one-cell table.
  */
+interface ExactLookupIndex {
+  byLower: Map<string, number>;
+  byFiniteNum: Map<number, number>;
+}
+
+const RANGE_FLAT_CACHE = new WeakMap<object, unknown[]>();
+const GRID_WIDTH_CACHE = new WeakMap<object, number>();
+const GRID_FIRST_COL_INDEX_CACHE = new WeakMap<object, ExactLookupIndex>();
+const ARRAY_EXACT_INDEX_CACHE = new WeakMap<object, ExactLookupIndex>();
+
+function canonicalRangeKey(bounds: { minC: number; minR: number; maxC: number; maxR: number }): string {
+  return `${bounds.minC}:${bounds.minR}:${bounds.maxC}:${bounds.maxR}`;
+}
+
+function arrayMin(nums: readonly number[]): number {
+  let min = nums[0]!;
+  for (let i = 1; i < nums.length; i++) {
+    if (nums[i]! < min) min = nums[i]!;
+  }
+  return min;
+}
+
+function arrayMax(nums: readonly number[]): number {
+  let max = nums[0]!;
+  for (let i = 1; i < nums.length; i++) {
+    if (nums[i]! > max) max = nums[i]!;
+  }
+  return max;
+}
+
+function maxGridWidth(grid: ReadonlyArray<ReadonlyArray<unknown>>): number {
+  const cached = GRID_WIDTH_CACHE.get(grid);
+  if (cached !== undefined) return cached;
+  let max = 0;
+  for (let i = 0; i < grid.length; i++) {
+    const len = grid[i]!.length;
+    if (len > max) max = len;
+  }
+  return max;
+}
+
+function getCachedFlatRange(r2d: ReadonlyArray<ReadonlyArray<unknown>>): unknown[] {
+  let flat = RANGE_FLAT_CACHE.get(r2d);
+  if (flat) return flat;
+  const rows = r2d.length;
+  const cols = rows > 0 ? r2d[0]!.length : 0;
+  flat = new Array<unknown>(rows * cols);
+  let k = 0;
+  for (let r = 0; r < rows; r++) {
+    const row = r2d[r]!;
+    for (let c = 0; c < row.length; c++) {
+      flat[k++] = row[c];
+    }
+  }
+  RANGE_FLAT_CACHE.set(r2d, flat);
+  return flat;
+}
+
+function indexColumnEntry(index: ExactLookupIndex, cellVal: unknown, rowIdx: number): void {
+  if (cellVal === undefined || cellVal === null) return;
+  const lower = String(cellVal).toLowerCase();
+  if (!index.byLower.has(lower)) {
+    index.byLower.set(lower, rowIdx);
+  }
+  const trimmed = lower.trim();
+  if (trimmed === '') return;
+  const num = Number(trimmed);
+  if (Number.isFinite(num)) {
+    const norm = num === 0 ? 0 : num;
+    if (!index.byFiniteNum.has(norm)) {
+      index.byFiniteNum.set(norm, rowIdx);
+    }
+  }
+}
+
+function buildGridFirstColIndex(grid: ReadonlyArray<ReadonlyArray<unknown>>): ExactLookupIndex {
+  const index: ExactLookupIndex = { byLower: new Map(), byFiniteNum: new Map() };
+  for (let r = 0; r < grid.length; r++) {
+    indexColumnEntry(index, grid[r]?.[0], r);
+  }
+  return index;
+}
+
+function buildArrayExactIndex(arr: ReadonlyArray<unknown>): ExactLookupIndex {
+  const index: ExactLookupIndex = { byLower: new Map(), byFiniteNum: new Map() };
+  for (let i = 0; i < arr.length; i++) {
+    indexColumnEntry(index, arr[i], i);
+  }
+  return index;
+}
+
+function lookupExactIndexCandidate(index: ExactLookupIndex, lookupVal: unknown): number | 'fallback' {
+  const lower = String(lookupVal).toLowerCase();
+  const trimmed = lower.trim();
+  if (trimmed === 'infinity' || trimmed === '+infinity' || trimmed === '-infinity') {
+    return 'fallback';
+  }
+  const strHit = index.byLower.get(lower);
+  let numHit: number | undefined;
+  if (trimmed !== '') {
+    const num = Number(trimmed);
+    if (Number.isFinite(num)) {
+      numHit = index.byFiniteNum.get(num === 0 ? 0 : num);
+    }
+  }
+  if (strHit !== undefined && numHit !== undefined) return Math.min(strHit, numHit);
+  if (strHit !== undefined) return strHit;
+  return numHit ?? -1;
+}
+
+function findExactGridRow(
+  grid: ReadonlyArray<ReadonlyArray<unknown>>,
+  lookupVal: unknown,
+  isCellMatch: (cellVal: unknown, targetVal: unknown) => boolean,
+): number {
+  if (grid.length >= 4) {
+    let index = GRID_FIRST_COL_INDEX_CACHE.get(grid);
+    if (!index) {
+      index = buildGridFirstColIndex(grid);
+      GRID_FIRST_COL_INDEX_CACHE.set(grid, index);
+    }
+    const hit = lookupExactIndexCandidate(index, lookupVal);
+    if (hit !== 'fallback') return hit;
+  }
+  for (let r = 0; r < grid.length; r++) {
+    if (isCellMatch(grid[r]?.[0], lookupVal)) return r;
+  }
+  return -1;
+}
+
+function findExactArrayIndex(
+  arr: ReadonlyArray<unknown>,
+  lookupVal: unknown,
+  isCellMatch: (cellVal: unknown, targetVal: unknown) => boolean,
+): number {
+  if (arr.length >= 4) {
+    let index = ARRAY_EXACT_INDEX_CACHE.get(arr);
+    if (!index) {
+      index = buildArrayExactIndex(arr);
+      ARRAY_EXACT_INDEX_CACHE.set(arr, index);
+    }
+    const hit = lookupExactIndexCandidate(index, lookupVal);
+    if (hit !== 'fallback') return hit;
+  }
+  for (let i = 0; i < arr.length; i++) {
+    if (isCellMatch(arr[i], lookupVal)) return i;
+  }
+  return -1;
+}
+
 function lookupGridOf(tableArg: unknown, singleArrayAs: 'column' | 'row'): unknown[][] {
   const range = (tableArg as { _range2D?: unknown[][] } | null | undefined)?._range2D;
   if (range) return range;
@@ -124,10 +276,39 @@ function lookupGridOf(tableArg: unknown, singleArrayAs: 'column' | 'row'): unkno
   return [[tableArg]];
 }
 
+interface CachedRangeEntry {
+  minC: number;
+  maxC: number;
+  minR: number;
+  maxR: number;
+  rows: unknown[][];
+}
+
 export class SpreadsheetFormulaEvaluator {
   private evaluatedRangeCells = 0;
+  private seenRangeKeys = new Set<string>();
+  private range2DCache = new Map<string, CachedRangeEntry>();
 
   constructor(private cellLookup: CellResolver) {}
+
+  public invalidateCell(ref: string): void {
+    if (this.range2DCache.size === 0) return;
+    const coord = parseCellCoord(ref.replace(/\$/g, '').toUpperCase());
+    if (!coord) {
+      this.range2DCache.clear();
+      return;
+    }
+    for (const [key, entry] of this.range2DCache.entries()) {
+      if (
+        coord.col >= entry.minC &&
+        coord.col <= entry.maxC &&
+        coord.row >= entry.minR &&
+        coord.row <= entry.maxR
+      ) {
+        this.range2DCache.delete(key);
+      }
+    }
+  }
 
   public evaluate(formula: string): any {
     if (formula.startsWith('=')) formula = formula.slice(1);
@@ -250,7 +431,7 @@ export class SpreadsheetFormulaEvaluator {
       if (t.type === 'RANGE') {
         consume();
         const r2d = this.resolveRange2D(t.val);
-        const flat = r2d.flat();
+        const flat = getCachedFlatRange(r2d);
         (flat as any)._range2D = r2d;
         (flat as any)._isRange = true;
         return flat;
@@ -310,18 +491,27 @@ export class SpreadsheetFormulaEvaluator {
       throw new PayloadLimitError(`Spreadsheet formula range ${rangeStr} is outside valid cell bounds.`);
     }
 
-    const { minC, maxC, minR, maxR, cellCount } = parseValidatedRangeBounds(
+    const bounds = parseValidatedRangeBounds(
       match1[2].toUpperCase(),
       match1[4],
       match2[2].toUpperCase(),
       match2[4],
     );
-    if (this.evaluatedRangeCells + cellCount > MAX_TOTAL_FORMULA_RANGE_CELLS) {
-      throw new PayloadLimitError(
-        `Spreadsheet formulas exceed cumulative range cell budget of ${MAX_TOTAL_FORMULA_RANGE_CELLS}.`,
-      );
+    const { minC, maxC, minR, maxR, cellCount } = bounds;
+    const rangeKey = canonicalRangeKey(bounds);
+    const cached = this.range2DCache.get(rangeKey);
+    if (cached) {
+      return cached.rows;
     }
-    this.evaluatedRangeCells += cellCount;
+    if (!this.seenRangeKeys.has(rangeKey)) {
+      if (this.evaluatedRangeCells + cellCount > MAX_TOTAL_FORMULA_RANGE_CELLS) {
+        throw new PayloadLimitError(
+          `Spreadsheet formulas exceed cumulative range cell budget of ${MAX_TOTAL_FORMULA_RANGE_CELLS}.`,
+        );
+      }
+      this.seenRangeKeys.add(rangeKey);
+      this.evaluatedRangeCells += cellCount;
+    }
 
     const width = maxC - minC + 1;
     const colNames = new Array<string>(width);
@@ -335,11 +525,13 @@ export class SpreadsheetFormulaEvaluator {
       }
       rows[r - minR] = row;
     }
+    GRID_WIDTH_CACHE.set(rows, width);
+    this.range2DCache.set(rangeKey, { minC, maxC, minR, maxR, rows });
     return rows;
   }
 
   private resolveRange(rangeStr: string): any[] {
-    return this.resolveRange2D(rangeStr).flat();
+    return getCachedFlatRange(this.resolveRange2D(rangeStr));
   }
 
   private executeFunction(name: string, args: any[]): any {
@@ -397,12 +589,12 @@ export class SpreadsheetFormulaEvaluator {
       case 'MIN': {
         const nums = flattenNumbers(args);
         if (typeof nums === 'string') return nums;
-        return nums.length === 0 ? 0 : Math.min(...nums);
+        return nums.length === 0 ? 0 : arrayMin(nums);
       }
       case 'MAX': {
         const nums = flattenNumbers(args);
         if (typeof nums === 'string') return nums;
-        return nums.length === 0 ? 0 : Math.max(...nums);
+        return nums.length === 0 ? 0 : arrayMax(nums);
       }
       case 'IF': {
         const cond = Boolean(args[0]);
@@ -464,16 +656,13 @@ export class SpreadsheetFormulaEvaluator {
         const grid: any[][] = lookupGridOf(tableArg, 'column');
 
         if (grid.length === 0 || colIdx < 1) return '#REF!';
-        const maxCols = Math.max(...grid.map((r) => r.length));
+        const maxCols = maxGridWidth(grid);
         if (colIdx > maxCols) return '#REF!';
 
         if (!rangeLookup) {
-          // Exact match
-          for (let r = 0; r < grid.length; r++) {
-            const cellVal = grid[r][0];
-            if (isCellMatch(cellVal, lookupVal)) {
-              return colIdx - 1 < grid[r].length ? grid[r][colIdx - 1] : '';
-            }
+          const matchedRow = findExactGridRow(grid, lookupVal, isCellMatch);
+          if (matchedRow >= 0 && matchedRow < grid.length) {
+            return colIdx - 1 < grid[matchedRow].length ? grid[matchedRow][colIdx - 1] : '';
           }
           return '#N/A';
         } else {
@@ -550,10 +739,9 @@ export class SpreadsheetFormulaEvaluator {
         const matchType = args.length > 2 ? Number(args[2]) : 1;
 
         if (matchType === 0) {
-          for (let i = 0; i < arr.length; i++) {
-            if (isCellMatch(arr[i], lookupVal)) {
-              return i + 1;
-            }
+          const matchedIdx = findExactArrayIndex(arr, lookupVal, isCellMatch);
+          if (matchedIdx >= 0 && matchedIdx < arr.length) {
+            return matchedIdx + 1;
           }
           return '#N/A';
         } else if (matchType === 1) {
@@ -738,6 +926,7 @@ export class SpreadsheetDagEngine {
     if (formula.startsWith('=')) formula = formula.slice(1);
     const stripped = formula.replace(/"(?:[^"\\]|\\.)*"/g, '');
     const ranges: Array<{ minC: number; maxC: number; minR: number; maxR: number; cellCount: number }> = [];
+    const seenRanges = new Set<string>();
     let totalRangeCells = 0;
 
     const rangeRegex = /(\$?)([A-Za-z]+)(\$?)([0-9]+)\s*:\s*(\$?)([A-Za-z]+)(\$?)([0-9]+)/g;
@@ -752,13 +941,17 @@ export class SpreadsheetDagEngine {
         rMatch[6].toUpperCase(),
         rMatch[8],
       );
-      totalRangeCells += bounds.cellCount;
-      if (totalRangeCells > MAX_TOTAL_FORMULA_RANGE_CELLS) {
-        throw new PayloadLimitError(
-          `Spreadsheet formula exceeds cumulative range cell budget of ${MAX_TOTAL_FORMULA_RANGE_CELLS}.`,
-        );
+      const rangeKey = canonicalRangeKey(bounds);
+      if (!seenRanges.has(rangeKey)) {
+        seenRanges.add(rangeKey);
+        totalRangeCells += bounds.cellCount;
+        if (totalRangeCells > MAX_TOTAL_FORMULA_RANGE_CELLS) {
+          throw new PayloadLimitError(
+            `Spreadsheet formula exceeds cumulative range cell budget of ${MAX_TOTAL_FORMULA_RANGE_CELLS}.`,
+          );
+        }
+        ranges.push(bounds);
       }
-      ranges.push(bounds);
     }
 
     const strippedWithoutRanges = stripped.replace(rangeRegex, ' ');
@@ -801,6 +994,11 @@ export class SpreadsheetDagEngine {
     inDegree: Map<string, number>;
     reverseDeps: Map<string, Set<string>>;
   } {
+    if (formulaCells.length > MAX_FORMULA_CELLS) {
+      throw new PayloadLimitError(
+        `Spreadsheet contains ${formulaCells.length} formulas, exceeding limit of ${MAX_FORMULA_CELLS}.`,
+      );
+    }
     const formulaMap = new Map<string, FormulaCellInfo>();
     const formulaCoords: Array<{ ref: string; col: number; row: number }> = [];
     for (const fc of formulaCells) {
@@ -813,6 +1011,7 @@ export class SpreadsheetDagEngine {
 
     const inDegree = new Map<string, number>();
     const reverseDeps = new Map<string, Set<string>>();
+    const seenRanges = new Set<string>();
     let totalRangeCells = 0;
     for (const [ref, fc] of formulaMap.entries()) {
       const { cells, ranges } = SpreadsheetDagEngine.extractFormulaReferences(fc.formula);
@@ -821,11 +1020,15 @@ export class SpreadsheetDagEngine {
         if (formulaMap.has(r)) depsForCell.add(r);
       }
       for (const range of ranges) {
-        totalRangeCells += range.cellCount;
-        if (totalRangeCells > MAX_TOTAL_FORMULA_RANGE_CELLS) {
-          throw new PayloadLimitError(
-            `Spreadsheet formulas exceed cumulative range cell budget of ${MAX_TOTAL_FORMULA_RANGE_CELLS}.`,
-          );
+        const rangeKey = canonicalRangeKey(range);
+        if (!seenRanges.has(rangeKey)) {
+          seenRanges.add(rangeKey);
+          totalRangeCells += range.cellCount;
+          if (totalRangeCells > MAX_TOTAL_FORMULA_RANGE_CELLS) {
+            throw new PayloadLimitError(
+              `Spreadsheet formulas exceed cumulative range cell budget of ${MAX_TOTAL_FORMULA_RANGE_CELLS}.`,
+            );
+          }
         }
         SpreadsheetDagEngine.collectCoordsInRange(formulaCoords, range, depsForCell);
       }
@@ -909,10 +1112,12 @@ export class SpreadsheetDagEngine {
       try {
         const result = evaluator.evaluate(fc.formula);
         this.cellMap[node] = result;
+        evaluator.invalidateCell(node);
         SpreadsheetDagEngine.writeRowCell(rows, fc, result !== null && result !== undefined ? String(result) : '');
       } catch (err) {
         if (err instanceof PayloadLimitError) throw err;
         this.cellMap[node] = '#REF!';
+        evaluator.invalidateCell(node);
         SpreadsheetDagEngine.writeRowCell(rows, fc, '#REF!');
       }
     }

@@ -265,7 +265,7 @@ export async function convertMedia(
   sourceFormat: string,
   targetFormat: string,
   options: ConversionOptions = {},
-  originalFilename: string
+  originalFilename = 'input'
 ): Promise<ConversionResult> {
   const baseName = originalFilename.replace(/\.[^/.]+$/, '');
   const src = sourceFormat.toLowerCase();

@@ -7,6 +7,11 @@ import { encodeWoff2Container, type Woff2InputTable } from '../conversions/font-
 import { encodePngBand, type PngBandPayload } from '../conversions/png-photo-bands';
 import { assemblePng16, filterPng16Scanlines, PNG16_DEFAULT_LEVEL } from '../conversions/png16';
 import { runDemosaicTiles, type DemosaicTilesPayload } from '../conversions/raw-demosaic-tiles';
+import {
+  dispatchDemosaicOnSupervisor,
+  shutdownSupervisedTilePool,
+  type DemosaicDispatchPayload,
+} from '../conversions/raw-demosaic-threads';
 import { deriveSevenZipKey, SEVENZIP_KDF_TASK, type AesKeyRequest } from '../conversions/archive-sevenzip-aes';
 import {
   quantizeTaskTransfer,
@@ -108,6 +113,17 @@ export const CPU_TASK_HANDLERS: Record<string, CpuTaskHandler> = {
 
   demosaicTiles: (raw): HandlerResult => {
     runDemosaicTiles(raw as DemosaicTilesPayload);
+    return { result: null, silent: true };
+  },
+
+  demosaicDispatch: (raw): HandlerResult => {
+    dispatchDemosaicOnSupervisor(raw as DemosaicDispatchPayload);
+    return { result: null, silent: true };
+  },
+
+  demosaicShutdown: (): HandlerResult => {
+    shutdownSupervisedTilePool();
+    setImmediate(() => process.exit(0));
     return { result: null, silent: true };
   },
 

@@ -144,6 +144,25 @@ const VP9_DEFAULT_CRF = 30;
 const AV1_DEFAULT_CRF = 32;
 const SVT_AV1_PRESET_PATTERN = /^\d{1,2}$/;
 
+const NVENC_PRESET_MAP: Readonly<Record<string, string>> = {
+  ultrafast: 'p1',
+  superfast: 'p2',
+  veryfast: 'p2',
+  faster: 'p3',
+  fast: 'p3',
+  medium: 'p4',
+  slow: 'p5',
+  slower: 'p6',
+  veryslow: 'p7',
+  p1: 'p1',
+  p2: 'p2',
+  p3: 'p3',
+  p4: 'p4',
+  p5: 'p5',
+  p6: 'p6',
+  p7: 'p7',
+};
+
 /** x264/x265 preset: the caller's, if it is on the allow-list, otherwise the default. */
 function resolveX26xPreset(requested: string | undefined): string {
   if (requested === undefined) return X26X_DEFAULT_PRESET;
@@ -151,6 +170,16 @@ function resolveX26xPreset(requested: string | undefined): string {
     throw new InvalidMediaOptionError(`Invalid x264/x265 preset '${requested}'. Allowed: ${[...X26X_PRESETS].join(', ')}.`);
   }
   return requested;
+}
+
+/** NVENC preset (FFmpeg libavcodec/nvenc.c p1..p7), mapped from x264/x265 names or passed through. */
+function resolveNvencPreset(requested: string | undefined): string {
+  if (requested === undefined) return 'p4';
+  const mapped = NVENC_PRESET_MAP[requested.toLowerCase()];
+  if (!mapped) {
+    throw new InvalidMediaOptionError(`Invalid NVENC preset '${requested}'. Allowed: ${[...X26X_PRESETS, 'p1..p7'].join(', ')}.`);
+  }
+  return mapped;
 }
 
 /** SVT-AV1 preset: an integer 0 to 13 given as the request's preset, otherwise the default. */
@@ -827,14 +856,14 @@ async function planVideo(ctx: BuildContext, stage: VideoStageInput): Promise<Vid
   assertCrfRange(codec, rateControl);
 
   // Bit Depth and HDR Gate (before encoder selection, independent of available hardware)
-  // Hardware encoders receive no -profile:v and may only accept 8-bit surfaces (VAAPI uploads
-  // nv12, h264_qsv takes nv12), so a 10-bit profile always takes the software encoder path.
+  // Hardware surfaces upload 8-bit nv12 (VAAPI, h264_qsv), so a 10-bit profile always takes the software path.
   const tenBit = TEN_BIT_PROFILES.has((videoOpts?.profile || '').toLowerCase());
   const hdrToSdr = await planHdrToSdr(ctx, codec, tenBit, stage.mapping.inputLayout);
 
-  // Two-pass needs the software encoders' pass logs, so it never selects a hardware encoder.
-  const hardware = !options.disableHwaccel && !tenBit && !stage.twoPass && HARDWARE_ENCODER_TARGETS.has(tgt)
-    ? chooseHardwareEncoder(probeHardwareAcceleration(ffmpegBin), codec, driDevice)
+  // Two-pass needs the software encoders' pass logs, and explicit CRF without gpuAcceleration keeps x264/x265 RD control.
+  const explicitSoftwareCrf = rateControl?.mode === 'crf' && options.gpuAcceleration !== true;
+  const hardware = !options.disableHwaccel && !explicitSoftwareCrf && !tenBit && !stage.twoPass && HARDWARE_ENCODER_TARGETS.has(tgt)
+    ? chooseHardwareEncoder(probeHardwareAcceleration(ffmpegBin), codec, driDevice, options.gpuAcceleration === true)
     : undefined;
 
   if (stage.twoPass) {
@@ -943,13 +972,14 @@ async function planHdrToSdr(
 function chooseHardwareEncoder(
   hw: HardwareAccelerationCapabilities,
   codec: VideoCodecName,
-  driDevice: string | null
+  driDevice: string | null,
+  allowVideotoolbox: boolean
 ): HardwareEncoderKind | undefined {
   if (codec !== 'h264' && codec !== 'hevc') return undefined;
   const hasEncoder = (kind: HardwareEncoderKind) => hw.supportedEncoders.has(`${codec}_${kind}`);
   if (hw.nvenc && hasEncoder('nvenc')) return 'nvenc';
   if (hw.vaapi && driDevice && hasEncoder('vaapi')) return 'vaapi';
-  if (hw.videotoolbox && hasEncoder('videotoolbox')) return 'videotoolbox';
+  if (allowVideotoolbox && hw.videotoolbox && hasEncoder('videotoolbox')) return 'videotoolbox';
   if (codec === 'h264' && hw.qsv && hasEncoder('qsv')) return 'qsv';
   return undefined;
 }
@@ -1146,6 +1176,23 @@ function addWebmEncoderArgs(ctx: BuildContext, plan: VideoPlan): void {
   }
 }
 
+function hasLegacyVideoBitrate(options: ConversionOptions): boolean {
+  return typeof options.videoBitrate === 'number' && Number.isFinite(options.videoBitrate) && options.videoBitrate > 0;
+}
+
+function addH26xProfileAndLevelArgs(
+  outputArgs: string[],
+  codec: VideoCodecName,
+  videoOpts: ConversionOptions['video']
+): void {
+  if (videoOpts?.profile) {
+    outputArgs.push('-profile:v', videoOpts.profile.toLowerCase());
+  }
+  if (codec === 'h264' && videoOpts?.level) {
+    outputArgs.push('-level', videoOpts.level);
+  }
+}
+
 /** H.264 and HEVC: the hardware encoder the plan chose, else the software one. */
 function addH26xEncoderArgs(ctx: BuildContext, plan: VideoPlan): void {
   const { options, globalArgs, outputArgs } = ctx;
@@ -1155,32 +1202,37 @@ function addH26xEncoderArgs(ctx: BuildContext, plan: VideoPlan): void {
   const defaultCrf = isH264 ? '23' : '26';
   const defaultVaapiQp = isH264 ? '24' : '26';
   const crfVal = rateControl?.mode === 'crf' ? String(rateControl.crf) : defaultCrf;
+  const qualityControlled = rateControl?.mode === 'crf' || (!rateControl && !hasLegacyVideoBitrate(options));
 
   if (hardware === 'nvenc') {
-    outputArgs.push('-c:v', `${codec}_nvenc`, '-preset', videoOpts?.preset || 'p4');
-    if (rateControl?.mode === 'crf' || !rateControl) {
-      outputArgs.push('-cq', crfVal);
+    outputArgs.push('-c:v', `${codec}_nvenc`, '-preset', resolveNvencPreset(videoOpts?.preset));
+    if (qualityControlled) {
+      outputArgs.push('-rc', 'vbr', '-cq', crfVal, '-b:v', '0');
     }
+    addH26xProfileAndLevelArgs(outputArgs, codec, videoOpts);
   } else if (hardware === 'vaapi' && driDevice) {
     globalArgs.push('-vaapi_device', driDevice);
     outputArgs.push('-filter_hw_device', driDevice, '-c:v', `${codec}_vaapi`);
     if (rateControl?.mode === 'crf') {
       outputArgs.push('-qp', String(rateControl.crf));
-    } else if (!rateControl) {
+    } else if (!rateControl && !hasLegacyVideoBitrate(options)) {
       outputArgs.push('-qp', defaultVaapiQp);
     }
+    addH26xProfileAndLevelArgs(outputArgs, codec, videoOpts);
   } else if (hardware === 'videotoolbox') {
     outputArgs.push('-c:v', `${codec}_videotoolbox`);
     if (rateControl?.mode === 'crf') {
       outputArgs.push('-q:v', String(Math.max(1, Math.min(100, Math.round(100 - rateControl.crf * 1.5)))));
-    } else if (!rateControl) {
+    } else if (!rateControl && !hasLegacyVideoBitrate(options)) {
       outputArgs.push('-q:v', '65');
     }
+    addH26xProfileAndLevelArgs(outputArgs, codec, videoOpts);
   } else if (isH264 && hardware === 'qsv') {
     outputArgs.push('-c:v', 'h264_qsv');
-    if (rateControl?.mode === 'crf' || !rateControl) {
+    if (qualityControlled) {
       outputArgs.push('-global_quality', crfVal);
     }
+    addH26xProfileAndLevelArgs(outputArgs, codec, videoOpts);
   } else {
     addSoftwareH26xArgs(ctx, plan, crfVal);
   }
@@ -1194,12 +1246,7 @@ function addSoftwareH26xArgs(ctx: BuildContext, plan: VideoPlan, crfVal: string)
   if (rateControl?.mode === 'crf' || !rateControl) {
     outputArgs.push('-crf', crfVal);
   }
-  if (videoOpts?.profile) {
-    outputArgs.push('-profile:v', videoOpts.profile.toLowerCase());
-  }
-  if (codec === 'h264' && videoOpts?.level) {
-    outputArgs.push('-level', videoOpts.level);
-  }
+  addH26xProfileAndLevelArgs(outputArgs, codec, videoOpts);
   // Both passes of a two-pass encode must agree, and an encode held to a bitrate estimates its rate worse
   // with more threads; neither is given a count.
   const unconstrained = bitrateControlArgs(rateControl, options, codec).length === 0;

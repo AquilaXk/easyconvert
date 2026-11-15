@@ -671,18 +671,22 @@ export const DEMOSAIC_CONTROL_ERROR_LENGTH = 2;
 export const DEMOSAIC_CONTROL_LENGTH = 4;
 export const DEMOSAIC_ERROR_TEXT_BYTES = 1024;
 
+/** Atomically records the first tile failure message into the shared error buffer. */
+export function recordDemosaicFailure(control: Int32Array, errorText: Uint8Array, message: string): void {
+  const text = new TextEncoder().encode(message).subarray(0, DEMOSAIC_ERROR_TEXT_BYTES);
+  if (Atomics.compareExchange(control, DEMOSAIC_CONTROL_FAILED, 0, 1) === 0) {
+    errorText.set(text);
+    Atomics.store(control, DEMOSAIC_CONTROL_ERROR_LENGTH, text.length);
+  }
+}
+
 /** Runs a payload on the calling (worker) thread and reports through its control block. */
 export function runDemosaicTiles(payload: DemosaicTilesPayload): void {
   const { job, firstRow, step, control, errorText } = payload;
   try {
     runTileRows(job, firstRow, step);
   } catch (error) {
-    const text = new TextEncoder().encode(error instanceof Error ? error.message : String(error)).subarray(0, DEMOSAIC_ERROR_TEXT_BYTES);
-    // Only the first failure writes its message.
-    if (Atomics.add(control, DEMOSAIC_CONTROL_FAILED, 1) === 0) {
-      errorText.set(text);
-      Atomics.store(control, DEMOSAIC_CONTROL_ERROR_LENGTH, text.length);
-    }
+    recordDemosaicFailure(control, errorText, error instanceof Error ? error.message : String(error));
   } finally {
     Atomics.add(control, DEMOSAIC_CONTROL_DONE, 1);
     Atomics.notify(control, DEMOSAIC_CONTROL_DONE);

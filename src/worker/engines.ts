@@ -143,142 +143,79 @@ export type { WorkerVfsPayload, WorkerEngineOptions, WorkerConversionResult } fr
 
 // Fixed standard locations for native CLI binaries (hardened against injection)
 const BINARY_PATHS: Record<string, string[]> = {
-  soffice: [
-    ...(process.env.SOFFICE_PATH ? [process.env.SOFFICE_PATH] : []),
-    '/usr/bin/soffice',
-    '/usr/local/bin/soffice',
-    '/opt/homebrew/bin/soffice',
-    '/Applications/LibreOffice.app/Contents/MacOS/soffice',
-  ],
-  ffmpeg: [
-    ...(process.env.FFMPEG_PATH ? [process.env.FFMPEG_PATH] : []),
-    '/usr/bin/ffmpeg',
-    '/usr/local/bin/ffmpeg',
-    '/opt/homebrew/bin/ffmpeg',
-  ],
-  // Same names and order as the library (7zz first, then the p7zip names). 7zr reads 7z only, and
-  // the worker also needs zip, tar and rar, so it is not a candidate here.
-  p7zip: [
-    ...(process.env.P7ZIP_PATH ? [process.env.P7ZIP_PATH] : []),
-    ...SEVEN_ZIP_BINARY_CANDIDATES.filter((candidate) => !candidate.endsWith('/7zr')),
-  ],
-  ffprobe: [
-    ...(process.env.FFPROBE_PATH ? [process.env.FFPROBE_PATH] : []),
-    '/usr/bin/ffprobe',
-    '/usr/local/bin/ffprobe',
-    '/opt/homebrew/bin/ffprobe',
-  ],
-  pdfinfo: [
-    ...(process.env.PDFINFO_PATH ? [process.env.PDFINFO_PATH] : []),
-    '/usr/bin/pdfinfo',
-    '/usr/local/bin/pdfinfo',
-    '/opt/homebrew/bin/pdfinfo',
-  ],
-  pdftoppm: [
-    ...(process.env.PDFTOPPM_PATH ? [process.env.PDFTOPPM_PATH] : []),
-    '/usr/bin/pdftoppm',
-    '/usr/local/bin/pdftoppm',
-    '/opt/homebrew/bin/pdftoppm',
-  ],
-  pdftocairo: [
-    ...(process.env.PDFTOCAIRO_PATH ? [process.env.PDFTOCAIRO_PATH] : []),
-    '/usr/bin/pdftocairo',
-    '/usr/local/bin/pdftocairo',
-    '/opt/homebrew/bin/pdftocairo',
-  ],
-  pdftotext: [
-    ...(process.env.PDFTOTEXT_PATH ? [process.env.PDFTOTEXT_PATH] : []),
-    '/usr/bin/pdftotext',
-    '/usr/local/bin/pdftotext',
-    '/opt/homebrew/bin/pdftotext',
-  ],
-  pdftops: [
-    ...(process.env.PDFTOPS_PATH ? [process.env.PDFTOPS_PATH] : []),
-    '/usr/bin/pdftops',
-    '/usr/local/bin/pdftops',
-    '/opt/homebrew/bin/pdftops',
-  ],
-  rsvgConvert: [
-    ...(process.env.RSVG_CONVERT_PATH ? [process.env.RSVG_CONVERT_PATH] : []),
-    '/usr/bin/rsvg-convert',
-    '/usr/local/bin/rsvg-convert',
-    '/opt/homebrew/bin/rsvg-convert',
-  ],
-  dcrawEmu: [
-    ...(process.env.DCRAW_EMU_PATH ? [process.env.DCRAW_EMU_PATH] : []),
-    '/usr/bin/dcraw_emu',
-    '/usr/local/bin/dcraw_emu',
-    '/opt/homebrew/bin/dcraw_emu',
-  ],
+  soffice: [...(process.env.SOFFICE_PATH ? [process.env.SOFFICE_PATH] : []), '/usr/bin/soffice', '/usr/local/bin/soffice', '/opt/homebrew/bin/soffice', '/Applications/LibreOffice.app/Contents/MacOS/soffice'],
+  ffmpeg: [...(process.env.FFMPEG_PATH ? [process.env.FFMPEG_PATH] : []), '/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/opt/homebrew/bin/ffmpeg'],
+  // Same names and order as the library (7zz first, then the p7zip names). 7zr reads 7z only, and the worker also needs zip, tar and rar, so it is not a candidate here.
+  p7zip: [...(process.env.P7ZIP_PATH ? [process.env.P7ZIP_PATH] : []), ...SEVEN_ZIP_BINARY_CANDIDATES.filter((candidate) => !candidate.endsWith('/7zr'))],
+  ffprobe: [...(process.env.FFPROBE_PATH ? [process.env.FFPROBE_PATH] : []), '/usr/bin/ffprobe', '/usr/local/bin/ffprobe', '/opt/homebrew/bin/ffprobe'],
+  pdfinfo: [...(process.env.PDFINFO_PATH ? [process.env.PDFINFO_PATH] : []), '/usr/bin/pdfinfo', '/usr/local/bin/pdfinfo', '/opt/homebrew/bin/pdfinfo'],
+  pdftoppm: [...(process.env.PDFTOPPM_PATH ? [process.env.PDFTOPPM_PATH] : []), '/usr/bin/pdftoppm', '/usr/local/bin/pdftoppm', '/opt/homebrew/bin/pdftoppm'],
+  pdftocairo: [...(process.env.PDFTOCAIRO_PATH ? [process.env.PDFTOCAIRO_PATH] : []), '/usr/bin/pdftocairo', '/usr/local/bin/pdftocairo', '/opt/homebrew/bin/pdftocairo'],
+  pdftotext: [...(process.env.PDFTOTEXT_PATH ? [process.env.PDFTOTEXT_PATH] : []), '/usr/bin/pdftotext', '/usr/local/bin/pdftotext', '/opt/homebrew/bin/pdftotext'],
+  pdftops: [...(process.env.PDFTOPS_PATH ? [process.env.PDFTOPS_PATH] : []), '/usr/bin/pdftops', '/usr/local/bin/pdftops', '/opt/homebrew/bin/pdftops'],
+  rsvgConvert: [...(process.env.RSVG_CONVERT_PATH ? [process.env.RSVG_CONVERT_PATH] : []), '/usr/bin/rsvg-convert', '/usr/local/bin/rsvg-convert', '/opt/homebrew/bin/rsvg-convert'],
+  dcrawEmu: [...(process.env.DCRAW_EMU_PATH ? [process.env.DCRAW_EMU_PATH] : []), '/usr/bin/dcraw_emu', '/usr/local/bin/dcraw_emu', '/opt/homebrew/bin/dcraw_emu'],
   dcrawEmuHe: [...(process.env.DCRAW_EMU_HE_PATH ? [process.env.DCRAW_EMU_HE_PATH] : []), '/usr/local/bin/dcraw_emu_he', '/opt/libraw-he/bin/dcraw_emu'],
-  ps2pdf: [
-    ...(process.env.PS2PDF_PATH ? [process.env.PS2PDF_PATH] : []),
-    '/usr/bin/ps2pdf',
-    '/usr/local/bin/ps2pdf',
-    '/opt/homebrew/bin/ps2pdf',
-  ],
+  ps2pdf: [...(process.env.PS2PDF_PATH ? [process.env.PS2PDF_PATH] : []), '/usr/bin/ps2pdf', '/usr/local/bin/ps2pdf', '/opt/homebrew/bin/ps2pdf'],
   gxps: [...(process.env.GXPS_PATH ? [process.env.GXPS_PATH] : []), '/usr/local/bin/gxps', '/usr/bin/gxps', '/opt/homebrew/bin/gxps'],
   ddjvu: [...(process.env.DDJVU_PATH ? [process.env.DDJVU_PATH] : []), '/usr/local/bin/ddjvu', '/usr/bin/ddjvu', '/opt/homebrew/bin/ddjvu'],
   ebookConvert: [...(process.env.EBOOK_CONVERT_PATH ? [process.env.EBOOK_CONVERT_PATH] : []), '/usr/bin/ebook-convert', '/usr/local/bin/ebook-convert', '/opt/homebrew/bin/ebook-convert'],
   pandoc: [...(process.env.PANDOC_PATH ? [process.env.PANDOC_PATH] : []), '/usr/local/bin/pandoc', '/usr/bin/pandoc', '/opt/homebrew/bin/pandoc'],
-  tesseract: [
-    ...(process.env.TESSERACT_PATH ? [process.env.TESSERACT_PATH] : []),
-    '/usr/bin/tesseract',
-    '/usr/local/bin/tesseract',
-    '/opt/homebrew/bin/tesseract',
-  ],
+  tesseract: [...(process.env.TESSERACT_PATH ? [process.env.TESSERACT_PATH] : []), '/usr/bin/tesseract', '/usr/local/bin/tesseract', '/opt/homebrew/bin/tesseract'],
 };
 
 const SAFE_ALPHANUMERIC_REGEX = /^[a-zA-Z0-9.-]{1,16}$/;
 
 function validateFormat(format: string): string {
   const sanitized = format.trim().toLowerCase();
-  if (!SAFE_ALPHANUMERIC_REGEX.test(sanitized)) {
-    throw new Error(`Invalid format identifier: "${format}"`);
-  }
+  if (!SAFE_ALPHANUMERIC_REGEX.test(sanitized)) throw new Error(`Invalid format identifier: "${format}"`);
   return sanitized;
+}
+
+const BINARY_CACHE_TTL_MS = 60_000;
+const SYSTEM_BINARY_PREFIXES = ['/usr/', '/opt/', '/bin/', '/Applications/'];
+const resolvedBinaryCache = new Map<string, { resolved: string | null; expiresAt: number }>();
+
+/** Clears cached native binary locations for dynamic environment overrides. */
+export function resetNativeBinaryCache(): void { resolvedBinaryCache.clear(); }
+
+function isCachedBinaryValid(resolved: string): boolean {
+  return SYSTEM_BINARY_PREFIXES.some((prefix) => resolved.startsWith(prefix)) || fs.existsSync(resolved);
 }
 
 function resolveBinary(candidates: string[], envOverride?: string): string | null {
   const usable = (candidate: string): boolean => path.isAbsolute(candidate) && fs.existsSync(candidate);
-  if (envOverride !== undefined && envOverride !== '' && envOverride !== 'undefined') return usable(envOverride) ? envOverride : null;
-  return candidates.find(usable) ?? null;
+  const now = Date.now();
+  if (envOverride !== undefined && envOverride !== '' && envOverride !== 'undefined') {
+    const overrideKey = `override\0${envOverride}`;
+    const cached = resolvedBinaryCache.get(overrideKey);
+    if (cached && cached.expiresAt > now && cached.resolved !== null && isCachedBinaryValid(cached.resolved)) return cached.resolved;
+    const found = usable(envOverride) ? envOverride : null;
+    if (found !== null) resolvedBinaryCache.set(overrideKey, { resolved: found, expiresAt: now + BINARY_CACHE_TTL_MS });
+    else resolvedBinaryCache.delete(overrideKey);
+    return found;
+  }
+  const cacheKey = `${candidates.join('|')}\0${process.env.PATH ?? ''}`;
+  const cached = resolvedBinaryCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    if (cached.resolved === null) return null;
+    if (isCachedBinaryValid(cached.resolved)) return cached.resolved;
+  }
+  const found = candidates.find(usable) ?? null;
+  resolvedBinaryCache.set(cacheKey, { resolved: found, expiresAt: now + BINARY_CACHE_TTL_MS });
+  return found;
 }
 
 /** Native CLIs a health check can ask about, keyed as in BINARY_PATHS. */
 export type NativeBinaryName =
-  | 'soffice'
-  | 'ffmpeg'
-  | 'ffprobe'
-  | 'p7zip'
-  | 'pdftoppm'
-  | 'pdftotext'
-  | 'tesseract'
-  | 'ps2pdf'
-  | 'gxps'
-  | 'ddjvu'
-  | 'rsvgConvert'
-  | 'dcrawEmu'
-  | 'dcrawEmuHe'
-  | 'ebookConvert' | 'pandoc';
+  | 'soffice' | 'ffmpeg' | 'ffprobe' | 'p7zip' | 'pdftoppm' | 'pdftotext' | 'tesseract'
+  | 'ps2pdf' | 'gxps' | 'ddjvu' | 'rsvgConvert' | 'dcrawEmu' | 'dcrawEmuHe' | 'ebookConvert' | 'pandoc';
 
 /** The environment variable that overrides each native CLI's location. */
 const NATIVE_BINARY_ENV_VARS: Readonly<Record<NativeBinaryName, string>> = {
-  soffice: 'SOFFICE_PATH',
-  ffmpeg: 'FFMPEG_PATH',
-  ffprobe: 'FFPROBE_PATH',
-  p7zip: 'P7ZIP_PATH',
-  pdftoppm: 'PDFTOPPM_PATH',
-  pdftotext: 'PDFTOTEXT_PATH',
-  tesseract: 'TESSERACT_PATH',
-  ps2pdf: 'PS2PDF_PATH',
-  gxps: 'GXPS_PATH',
-  ddjvu: 'DDJVU_PATH',
-  rsvgConvert: 'RSVG_CONVERT_PATH',
-  dcrawEmu: 'DCRAW_EMU_PATH',
-  dcrawEmuHe: 'DCRAW_EMU_HE_PATH',
-  ebookConvert: 'EBOOK_CONVERT_PATH',
-  pandoc: 'PANDOC_PATH',
+  soffice: 'SOFFICE_PATH', ffmpeg: 'FFMPEG_PATH', ffprobe: 'FFPROBE_PATH', p7zip: 'P7ZIP_PATH', pdftoppm: 'PDFTOPPM_PATH',
+  pdftotext: 'PDFTOTEXT_PATH', tesseract: 'TESSERACT_PATH', ps2pdf: 'PS2PDF_PATH', gxps: 'GXPS_PATH', ddjvu: 'DDJVU_PATH',
+  rsvgConvert: 'RSVG_CONVERT_PATH', dcrawEmu: 'DCRAW_EMU_PATH', dcrawEmuHe: 'DCRAW_EMU_HE_PATH', ebookConvert: 'EBOOK_CONVERT_PATH', pandoc: 'PANDOC_PATH',
 };
 
 /**
@@ -1907,9 +1844,72 @@ async function convertTextPdfWithHeadlessOffice(
   return convertWithHeadlessOffice(stagedInput, HTML_FORMAT, 'pdf', options, originalFilename);
 }
 
-/** Whether text output holds any character other than whitespace (form feeds from empty pages count as blank). */
-function hasNonWhitespaceText(buffer: Buffer): boolean {
-  return buffer.toString('utf-8').trim().length > 0;
+function utf8WhitespaceSpan(buf: Uint8Array, i: number): number {
+  const b0 = buf[i];
+  if (b0 === 0x20 || (b0 >= 0x09 && b0 <= 0x0d)) return 1;
+  const rem = buf.length - i;
+  if (b0 === 0xc2 && rem >= 2 && buf[i + 1] === 0xa0) return 2;
+  if (rem < 3) return 0;
+  const b1 = buf[i + 1];
+  const b2 = buf[i + 2];
+  if (b0 === 0xef && b1 === 0xbb && b2 === 0xbf) return 3;
+  if (b0 === 0xe3 && b1 === 0x80 && b2 === 0x80) return 3;
+  if (b0 === 0xe1 && b1 === 0x9a && b2 === 0x80) return 3;
+  if (b0 !== 0xe2) return 0;
+  if (b1 === 0x81 && b2 === 0x9f) return 3;
+  if (b1 !== 0x80) return 0;
+  return (b2 >= 0x80 && b2 <= 0x8a) || b2 === 0xa8 || b2 === 0xa9 || b2 === 0xaf ? 3 : 0;
+}
+
+/** Whether UTF-8 text bytes hold any non-whitespace character in O(1) memory (form feeds and BOM count as blank). */
+export function hasNonWhitespaceBytes(buf: Uint8Array): boolean {
+  let i = 0;
+  while (i < buf.length) {
+    const span = utf8WhitespaceSpan(buf, i);
+    if (span === 0) return true;
+    i += span;
+  }
+  return false;
+}
+
+function hasNonWhitespaceOutput(res: WorkerConversionResult): boolean {
+  if (!res.filePath) return hasNonWhitespaceBytes(res.buffer);
+  const fd = fs.openSync(res.filePath, 'r');
+  const chunk = Buffer.allocUnsafe(4096);
+  let carry = 0;
+  try {
+    for (;;) {
+      const read = fs.readSync(fd, chunk, carry, chunk.length - carry, null);
+      const total = carry + read;
+      if (total === 0) return false;
+      const view = chunk.subarray(0, total);
+      const limit = read === 0 ? total : Math.max(0, total - 2);
+      let i = 0;
+      while (i < limit) {
+        const span = utf8WhitespaceSpan(view, i);
+        if (span === 0) return true;
+        i += span;
+      }
+      if (read === 0) return hasNonWhitespaceBytes(view.subarray(i));
+      carry = total - i;
+      if (carry > 0) chunk.copyWithin(0, i, total);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function attachFallbackChain(
+  result: WorkerConversionResult,
+  fallbackChain: string[] | undefined,
+  metadata?: WorkerConversionResult['metadata']
+): WorkerConversionResult {
+  const descriptors = Object.getOwnPropertyDescriptors(result);
+  descriptors.fallbackChain = { value: fallbackChain, writable: true, enumerable: true, configurable: true };
+  if (metadata !== undefined) {
+    descriptors.metadata = { value: metadata, writable: true, enumerable: true, configurable: true };
+  }
+  return Object.create(Object.getPrototypeOf(result), descriptors) as WorkerConversionResult;
 }
 
 /** Deletes an engine's temporary output file unless it is the destination the caller asked for. */
@@ -2055,11 +2055,11 @@ async function convertWithinImageSession(
         const inProcessPdf = isNativeTextPdf && HTML_SOURCES.has(src) ? await inProcessPdfInsteadOfOverflow(officeRes, { input, src, options, originalFilename }, startTime) : null;
         if (inProcessPdf) return inProcessPdf;
         const stagedWarnings = isNativeTextPdf ? (textPdfRoute?.stagedWarnings ?? []) : [];
-        return {
-          ...officeRes,
-          ...(stagedWarnings.length > 0 ? { metadata: { ...officeRes.metadata, warnings: stagedWarnings } } : {}),
-          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
-        };
+        return attachFallbackChain(
+          officeRes,
+          fallbackChain.length > 0 ? fallbackChain : undefined,
+          stagedWarnings.length > 0 ? { ...officeRes.metadata, warnings: stagedWarnings } : undefined
+        );
       }
     } catch (err) {
       rethrowSandboxUnavailable(err);
@@ -2110,10 +2110,10 @@ async function convertWithinImageSession(
           ? await convertPdfToHtml(intermediatePdf.buffer, nativeOptions, originalFilename, input, intermediatePdf.engineUsed)
           : await convertPdfPagesWithNativeTools(popplerInput, tgt, withOfficePageChainLimits(src, nativeOptions), originalFilename);
         if (popplerRes) {
-          return {
-            ...popplerRes,
-            fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
-          };
+          return attachFallbackChain(
+            popplerRes,
+            fallbackChain.length > 0 ? fallbackChain : undefined
+          );
         }
       }
     } catch (err) {
@@ -2139,10 +2139,10 @@ async function convertWithinImageSession(
     try {
       const sensorRes = await convertWithInProcessRawSensor(input, src, tgt, nativeOptions, originalFilename);
       if (sensorRes) {
-        return {
-          ...sensorRes,
-          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
-        };
+        return attachFallbackChain(
+          sensorRes,
+          fallbackChain.length > 0 ? fallbackChain : undefined
+        );
       }
     } catch (err) {
       if (err instanceof RawDecodeError && err.unrecognized && options.allowEmbeddedPreview) {
@@ -2159,10 +2159,10 @@ async function convertWithinImageSession(
     try {
       const svgRes = await convertWithNativeSvg(input, src, tgt, nativeOptions, originalFilename);
       if (svgRes) {
-        return {
-          ...svgRes,
-          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
-        };
+        return attachFallbackChain(
+          svgRes,
+          fallbackChain.length > 0 ? fallbackChain : undefined
+        );
       }
     } catch (err) {
       rethrowSandboxUnavailable(err);
@@ -2180,7 +2180,7 @@ async function convertWithinImageSession(
   if (fixedPageRoute) {
     try {
       const pageRes = await convertWithFixedPageRoute(fixedPageRoute, { input, src, tgt, options: nativeOptions, originalFilename });
-      if (pageRes) return { ...pageRes, fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined };
+      if (pageRes) return attachFallbackChain(pageRes, fallbackChain.length > 0 ? fallbackChain : undefined);
     } catch (err) {
       rethrowSandboxUnavailable(err);
       if (err instanceof EngineUnavailableError) {
@@ -2199,10 +2199,10 @@ async function convertWithinImageSession(
     try {
       const rawRes = await convertWithNativeRaw(input, src, tgt, nativeOptions, originalFilename);
       if (rawRes) {
-        return {
-          ...rawRes,
-          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
-        };
+        return attachFallbackChain(
+          rawRes,
+          fallbackChain.length > 0 ? fallbackChain : undefined
+        );
       }
     } catch (err) {
       rethrowSandboxUnavailable(err);
@@ -2224,10 +2224,10 @@ async function convertWithinImageSession(
     try {
       const ffmpegRes = await convertWithNativeFfmpeg(input, src, tgt, nativeOptions, originalFilename);
       if (ffmpegRes) {
-        return {
-          ...ffmpegRes,
-          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
-        };
+        return attachFallbackChain(
+          ffmpegRes,
+          fallbackChain.length > 0 ? fallbackChain : undefined
+        );
       }
     } catch (err) {
       rethrowSandboxUnavailable(err);
@@ -2245,7 +2245,7 @@ async function convertWithinImageSession(
   if (plan.poppler) {
     try {
       const popplerRes = plan.pdfTextTarget ? await convertWithNativePoppler(input, src, tgt, nativeOptions, originalFilename) : await convertPdfPagesWithNativeTools(input, tgt, nativeOptions, originalFilename);
-      if (popplerRes && plan.pdfTextTarget && inProcessAllowed(options) && !hasNonWhitespaceText(popplerRes.buffer)) {
+      if (popplerRes && plan.pdfTextTarget && inProcessAllowed(options) && !hasNonWhitespaceOutput(popplerRes)) {
         // No text layer: scanned pages need the in-process engine's OCR. Drop the empty output first.
         discardPersistedOutput(popplerRes.filePath, input, options);
         if (options.password) {
@@ -2256,10 +2256,10 @@ async function convertWithinImageSession(
         }
         fallbackChain.push('native-poppler: pdftotext found no text layer');
       } else if (popplerRes) {
-        return {
-          ...popplerRes,
-          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
-        };
+        return attachFallbackChain(
+          popplerRes,
+          fallbackChain.length > 0 ? fallbackChain : undefined
+        );
       }
     } catch (err) {
       rethrowSandboxUnavailable(err);
@@ -2282,10 +2282,10 @@ async function convertWithinImageSession(
     try {
       const p7zRes = await convertWithNative7z(input, src, tgt, nativeOptions, originalFilename);
       if (p7zRes) {
-        return {
-          ...p7zRes,
-          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
-        };
+        return attachFallbackChain(
+          p7zRes,
+          fallbackChain.length > 0 ? fallbackChain : undefined
+        );
       }
     } catch (err) {
       rethrowSandboxUnavailable(err);

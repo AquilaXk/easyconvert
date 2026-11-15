@@ -57,6 +57,59 @@ export function isPureCanvasConvertible(sourceFormat: string, targetFormat: stri
   return SUPPORTED_CANVAS_SOURCES.has(src) && SUPPORTED_CANVAS_TARGETS.has(tgt);
 }
 
+const MAX_BMP_SIDE = 32_768;
+const MAX_BMP_FILE_BYTES = 512 * 1024 * 1024;
+
+interface CanvasDrawGeometry {
+  canvasW: number;
+  canvasH: number;
+  drawX: number;
+  drawY: number;
+  drawW: number;
+  drawH: number;
+}
+
+function computeCanvasDrawGeometry(
+  srcW: number,
+  srcH: number,
+  options: PureCanvasOptions
+): CanvasDrawGeometry {
+  if (options.width && !options.height) {
+    const canvasW = Math.max(1, Math.round(options.width));
+    const canvasH = Math.max(1, Math.round((srcH * canvasW) / srcW));
+    return { canvasW, canvasH, drawX: 0, drawY: 0, drawW: canvasW, drawH: canvasH };
+  }
+  if (!options.width && options.height) {
+    const canvasH = Math.max(1, Math.round(options.height));
+    const canvasW = Math.max(1, Math.round((srcW * canvasH) / srcH));
+    return { canvasW, canvasH, drawX: 0, drawY: 0, drawW: canvasW, drawH: canvasH };
+  }
+  if (!options.width || !options.height) {
+    return { canvasW: srcW, canvasH: srcH, drawX: 0, drawY: 0, drawW: srcW, drawH: srcH };
+  }
+
+  const boxW = Math.max(1, Math.round(options.width));
+  const boxH = Math.max(1, Math.round(options.height));
+  const fit = options.fit || 'contain';
+
+  if (fit === 'fill') {
+    return { canvasW: boxW, canvasH: boxH, drawX: 0, drawY: 0, drawW: boxW, drawH: boxH };
+  }
+  if (fit === 'outside' || fit === 'inside') {
+    const scale = fit === 'outside' ? Math.max(boxW / srcW, boxH / srcH) : Math.min(boxW / srcW, boxH / srcH);
+    const canvasW = Math.max(1, Math.round(srcW * scale));
+    const canvasH = Math.max(1, Math.round(srcH * scale));
+    return { canvasW, canvasH, drawX: 0, drawY: 0, drawW: canvasW, drawH: canvasH };
+  }
+
+  const scale = fit === 'cover' ? Math.max(boxW / srcW, boxH / srcH) : Math.min(boxW / srcW, boxH / srcH);
+  const drawW = Math.round(srcW * scale);
+  const drawH = Math.round(srcH * scale);
+  const drawX = Math.round((boxW - drawW) / 2);
+  const drawY = Math.round((boxH - drawH) / 2);
+  return { canvasW: boxW, canvasH: boxH, drawX, drawY, drawW, drawH };
+}
+
 /**
  * Encodes RGBA image pixel data to Windows Bitmap (BMP) using pure TypedArray.
  */
@@ -66,7 +119,16 @@ export function encodeBmpFromImageData(imageData: {
   data: Uint8ClampedArray | Uint8Array;
 }): Uint8Array {
   const { width, height, data } = imageData;
-  if (!data || width <= 0 || height <= 0) {
+  if (
+    !data ||
+    !Number.isInteger(width) ||
+    !Number.isInteger(height) ||
+    width <= 0 ||
+    height <= 0 ||
+    width > MAX_BMP_SIDE ||
+    height > MAX_BMP_SIDE ||
+    data.length < width * height * 4
+  ) {
     throw new Error('Invalid image dimensions or pixel data for BMP encoding.');
   }
   // Each row is padded to a 4-byte boundary
@@ -75,6 +137,9 @@ export function encodeBmpFromImageData(imageData: {
   const fileHeaderSize = 14;
   const infoHeaderSize = 40;
   const totalFileSize = fileHeaderSize + infoHeaderSize + pixelArraySize;
+  if (!Number.isSafeInteger(totalFileSize) || totalFileSize > MAX_BMP_FILE_BYTES) {
+    throw new Error('Invalid image dimensions or BMP output exceeds maximum byte budget.');
+  }
 
   const out = new Uint8Array(totalFileSize);
   const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
@@ -147,50 +212,11 @@ export async function convertPureCanvas(
   const blob = input instanceof Blob ? input : new Blob([input as any], { type: srcMime });
 
   const bitmap = await createImageBitmap(blob);
-  const srcW = bitmap.width;
-  const srcH = bitmap.height;
-
-  let canvasW = srcW;
-  let canvasH = srcH;
-  let drawX = 0;
-  let drawY = 0;
-  let drawW = srcW;
-  let drawH = srcH;
-
-  const fit = options.fit || 'contain';
-
-  if (options.width && !options.height) {
-    canvasW = Math.max(1, Math.round(options.width));
-    canvasH = Math.max(1, Math.round((srcH * canvasW) / srcW));
-    drawW = canvasW;
-    drawH = canvasH;
-  } else if (!options.width && options.height) {
-    canvasH = Math.max(1, Math.round(options.height));
-    canvasW = Math.max(1, Math.round((srcW * canvasH) / srcH));
-    drawW = canvasW;
-    drawH = canvasH;
-  } else if (options.width && options.height) {
-    canvasW = Math.max(1, Math.round(options.width));
-    canvasH = Math.max(1, Math.round(options.height));
-
-    if (fit === 'fill') {
-      drawW = canvasW;
-      drawH = canvasH;
-    } else if (fit === 'cover') {
-      const scale = Math.max(canvasW / srcW, canvasH / srcH);
-      drawW = Math.round(srcW * scale);
-      drawH = Math.round(srcH * scale);
-      drawX = Math.round((canvasW - drawW) / 2);
-      drawY = Math.round((canvasH - drawH) / 2);
-    } else {
-      // 'contain' or 'inside'
-      const scale = Math.min(canvasW / srcW, canvasH / srcH);
-      drawW = Math.round(srcW * scale);
-      drawH = Math.round(srcH * scale);
-      drawX = Math.round((canvasW - drawW) / 2);
-      drawY = Math.round((canvasH - drawH) / 2);
-    }
-  }
+  const { canvasW, canvasH, drawX, drawY, drawW, drawH } = computeCanvasDrawGeometry(
+    bitmap.width,
+    bitmap.height,
+    options
+  );
 
   let canvas: HTMLCanvasElement | OffscreenCanvas;
   let ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null = null;

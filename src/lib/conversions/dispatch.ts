@@ -1,5 +1,6 @@
 // First import on purpose: the flag must be set before any WebAssembly instance exists (docs/policy-decisions.md, entry 115).
 import './wasm-import-wrappers';
+import { constants as bufferConstants } from 'node:buffer';
 import fs from 'node:fs';
 import { FORMAT_REGISTRY } from '../registry';
 import {
@@ -8,6 +9,7 @@ import {
   EngineUnavailableError,
   OcrEngineUnavailableError,
   OcrLanguageUnknownError,
+  PayloadLimitError,
   RawEngineRequiredError,
   UnsupportedTargetError,
 } from '../types';
@@ -92,14 +94,30 @@ function toEngineUnavailable(err: unknown, src: string, tgt: string): unknown {
   return err;
 }
 
+const MAX_FS_READ_BUFFER_BYTES = 0x7fff_ffff;
+const MAX_IN_MEMORY_OUTPUT_BYTES = Math.min(bufferConstants.MAX_LENGTH, MAX_FS_READ_BUFFER_BYTES);
+
 /** Reads a native engine's temporary output into memory and deletes the file. */
 function materialize(result: WorkerConversionResult): WorkerConversionResult {
   const filePath = result.filePath;
   if (!filePath) return result;
-  const buffer = result.buffer;
+  const fileBytes = fs.statSync(filePath).size;
+  if (fileBytes > MAX_IN_MEMORY_OUTPUT_BYTES) {
+    fs.rmSync(filePath, { force: true });
+    throw new PayloadLimitError(
+      `Converted output is ${fileBytes} bytes, which exceeds the ${MAX_IN_MEMORY_OUTPUT_BYTES}-byte in-memory Buffer limit.`
+    );
+  }
+  const buffer = fs.readFileSync(filePath);
   fs.rmSync(filePath, { force: true });
-  return { ...result, buffer, size: buffer.length, filePath: undefined };
+  const descriptors = Object.getOwnPropertyDescriptors(result);
+  descriptors.buffer = { value: buffer, writable: true, enumerable: true, configurable: true };
+  descriptors.size = { value: buffer.length, writable: true, enumerable: true, configurable: true };
+  descriptors.filePath = { value: undefined, writable: true, enumerable: true, configurable: true };
+  return Object.create(Object.getPrototypeOf(result), descriptors) as WorkerConversionResult;
 }
+
+export { materialize as materializeResultForTest };
 
 /** Engines that are LibreOffice: their PDF export can write PDF/A in the same pass. */
 const SOFFICE_ENGINES: ReadonlySet<string> = new Set(['native-soffice', 'native-soffice-pool']);
@@ -150,6 +168,20 @@ function workerOptionsFor(src: string, tgt: string, options: WorkerEngineOptions
   return chosen === BUILT_IN_ENGINE ? { ...options, disableNativeEngine: true } : options;
 }
 
+/** Clones a result while preserving any lazy `buffer` getter on disk-backed outputs. */
+function cloneWithEngineFields(
+  result: WorkerConversionResult,
+  engine: EngineId,
+  engineVersion: string | undefined
+): WorkerConversionResult {
+  const descriptors = Object.getOwnPropertyDescriptors(result);
+  descriptors.engine = { value: engine, writable: true, enumerable: true, configurable: true };
+  if (engineVersion !== undefined) {
+    descriptors.engineVersion = { value: engineVersion, writable: true, enumerable: true, configurable: true };
+  }
+  return Object.create(Object.getPrototypeOf(result), descriptors) as WorkerConversionResult;
+}
+
 /** The result with the engine that converted and its installed version, as the formats API names them. */
 async function withEngine(
   result: WorkerConversionResult,
@@ -161,7 +193,7 @@ async function withEngine(
   const ffmpegRanInProcess = !workerOptions.disableNativeEngine && checkFfmpeg();
   const engine = chosen ?? engineOfResult(src, tgt, result.engineUsed, ffmpegRanInProcess);
   const engineVersion = await installedEngineVersion(engine);
-  return { ...result, engine, ...(engineVersion === undefined ? {} : { engineVersion }) };
+  return cloneWithEngineFields(result, engine, engineVersion);
 }
 
 /**

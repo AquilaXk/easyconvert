@@ -511,11 +511,18 @@ export class LibreOfficePoolManager {
    * the host's next write would follow) reaches the next. `rmSync` unlinks a link and never follows it, and the copy keeps links as
    * links. A slot without a template (an injected runner, no probe) starts from the fixed settings alone.
    */
-  private resetProfile(profileDir: string): void {
-    fs.rmSync(profileDir, { recursive: true, force: true });
+  private async resetProfile(profileDir: string): Promise<void> {
+    await fs.promises.rm(profileDir, { recursive: true, force: true });
     const template = this.profileTemplate;
-    if (template !== null && template.sofficePath === this.sofficePath && fs.existsSync(template.dir)) {
-      fs.cpSync(template.dir, profileDir, { recursive: true, dereference: false, verbatimSymlinks: true });
+    if (template !== null && template.sofficePath === this.sofficePath) {
+      const hasTemplate = await fs.promises.access(template.dir).then(() => true, () => false);
+      if (hasTemplate) {
+        await fs.promises.cp(template.dir, profileDir, {
+          recursive: true,
+          dereference: false,
+          verbatimSymlinks: true,
+        });
+      }
     }
     writeOfficeProfile(profileDir);
   }
@@ -698,14 +705,10 @@ export class LibreOfficePoolManager {
   private async destroyWorker(worker: LibreOfficeWorker): Promise<void> {
     worker.state = 'DEAD';
     try {
-      if (fs.existsSync(worker.userProfileDir)) {
-        fs.rmSync(worker.userProfileDir, { recursive: true, force: true });
-      }
+      await fs.promises.rm(worker.userProfileDir, { recursive: true, force: true });
     } catch {}
     try {
-      if (fs.existsSync(worker.workDir)) {
-        fs.rmSync(worker.workDir, { recursive: true, force: true });
-      }
+      await fs.promises.rm(worker.workDir, { recursive: true, force: true });
     } catch {}
   }
 
@@ -773,11 +776,11 @@ export class LibreOfficePoolManager {
     const jobSubdir = path.join(worker.workDir, `job_${crypto.randomUUID().slice(0, 8)}`);
 
     try {
-      fs.mkdirSync(jobSubdir, { recursive: true, mode: 0o700 });
+      await fs.promises.mkdir(jobSubdir, { recursive: true, mode: 0o700 });
       const { inputPath } = resolveOfficeInputContext(input, src, jobSubdir);
       // The slot's profile is shared by its jobs, and the suite writes its settings back when it ends: it is made again before every job, so
       // what one job changed in the profile (or a macro or link setting a document managed to set) does not reach the next.
-      this.resetProfile(worker.userProfileDir);
+      await this.resetProfile(worker.userProfileDir);
 
       const timeout = sizedStageTimeoutMs(options, officeInputBytes(inputPath), OFFICE_STAGE);
       const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
@@ -836,9 +839,7 @@ export class LibreOfficePoolManager {
       throw err;
     } finally {
       try {
-        if (fs.existsSync(jobSubdir)) {
-          fs.rmSync(jobSubdir, { recursive: true, force: true });
-        }
+        await fs.promises.rm(jobSubdir, { recursive: true, force: true });
       } catch {}
       await this.releaseWorker(worker, hasError);
     }
@@ -850,18 +851,20 @@ export class LibreOfficePoolManager {
   public async shutdown(): Promise<void> {
     this.isShuttingDown = true;
 
-    // Reject queued jobs
-    while (this.queue.length > 0) {
-      const item = this.queue.shift()!;
+    const queued = this.queue.splice(0, this.queue.length);
+    for (const item of queued) {
       clearTimeout(item.timer);
-      item.reject(new Error('LibreOfficePoolManager has been shut down.'));
     }
 
     this.discardProfileTemplate();
-    // Destroy all workers
+    // Destroy all workers before rejecting queued promises so callers awaiting shutdown() attach handlers in the same microtask turn.
     const destroyPromises = this.workers.map((w) => this.destroyWorker(w));
     await Promise.all(destroyPromises);
     this.workers = [];
+
+    for (const item of queued) {
+      item.reject(new Error('LibreOfficePoolManager has been shut down.'));
+    }
   }
 
   /**
