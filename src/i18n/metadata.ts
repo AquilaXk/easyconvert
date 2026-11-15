@@ -7,7 +7,7 @@ import { routing, type AppLocale } from './routing';
  * web image's build requires). Without one, as in tests and `next dev`, the alternate and canonical links stay root-relative.
  */
 export function siteMetadataBase(): URL | undefined {
-  const origin = process.env.APP_ORIGIN || process.env.NEXT_PUBLIC_APP_URL;
+  const origin = process.env.APP_ORIGIN || process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL;
   if (!origin && process.env.NODE_ENV === 'production' && process.env.NEXT_PHASE !== 'phase-production-build') {
     throw new Error('APP_ORIGIN must be configured in production runtime.');
   }

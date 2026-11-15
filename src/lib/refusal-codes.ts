@@ -8,6 +8,7 @@ export const URL_IMPORT_ERROR_CODES = [
   'invalid_json',
   'url_required',
   'invalid_url',
+  'invalid_headers',
   'unsupported_scheme',
   'address_blocked',
   'redirect_without_location',

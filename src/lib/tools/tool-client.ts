@@ -1,7 +1,8 @@
 import { ConversionFailedError } from '../types';
 import { serverRefusal } from '../conversion-failure';
-import { SINGLE_REQUEST_FILE_MAX_BYTES } from '../plan-limits';
+import { SINGLE_REQUEST_FILE_MAX_BYTES, UPLOAD_PART_MAX_BYTES } from '../plan-limits';
 import { MAX_TOOL_FILES, type WebTool, type WebToolOptions } from './tool-names';
+import type { StoredToolJobResult } from './tool-job-store';
 
 /** A file of a tool's answer, ready to download from `url`. */
 export interface ToolResultFile {
@@ -27,13 +28,14 @@ interface ListedEntry {
 }
 
 const DEFAULT_ARCHIVE_FORMAT = 'zip';
+const MULTIPART_URL = '/api/storage/multipart';
 
 /** Why the server would refuse the files of a run, found before they are sent. */
 export type ToolInputProblem = 'tooMany' | 'empty';
 
 /**
  * What the server's checks (`assertToolInput`) would refuse about files on the page, so that a run is not uploaded to be turned
- * away: more files than a run takes, and a file with nothing in it. Files >64 MiB are dispatched as async tool jobs.
+ * away: more files than a run takes, and a file with nothing in it. Files >64 MiB are uploaded in parts and dispatched as async tool jobs.
  */
 export function toolInputProblem(files: readonly { size: number }[]): ToolInputProblem | null {
   if (files.length > MAX_TOOL_FILES) return 'tooMany';
@@ -88,22 +90,160 @@ function bytesOfBase64(data: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
+function toClientToolResult(stored: StoredToolJobResult): ToolResult {
+  if (stored.kind === 'file') {
+    return { kind: 'file', file: stored.file };
+  }
+  if (stored.kind === 'entries') {
+    return {
+      kind: 'entries',
+      entries: stored.entries.map((entry) => ({
+        name: entry.name,
+        size: entry.size,
+        key: entry.key,
+        url: entry.url,
+      })),
+    };
+  }
+  const blob = new Blob([JSON.stringify(stored.inspection, null, 2)], { type: 'application/json' });
+  return {
+    kind: 'inspection',
+    inspection: stored.inspection,
+    file: { name: stored.name, size: blob.size, url: urlOf(blob) },
+  };
+}
+
+async function uploadToolFileInParts(file: File, signal?: AbortSignal): Promise<{ key: string; name: string }> {
+  let activeUploadId: string | undefined;
+  try {
+    const initRes = await fetch(`${MULTIPART_URL}?action=initiate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+      body: JSON.stringify({
+        filename: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        totalSize: file.size,
+        partSize: UPLOAD_PART_MAX_BYTES,
+      }),
+      signal,
+    });
+    const initBody = (await initRes.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!initRes.ok) throw serverRefusal(initBody, initRes.status, 'Failed starting multipart upload.');
+    const uploadId = String(initBody.uploadId ?? '');
+    if (!uploadId) throw new ConversionFailedError('Multipart upload did not return an uploadId.');
+    activeUploadId = uploadId;
+    const partBytes = typeof initBody.partSize === 'number' && initBody.partSize > 0 ? initBody.partSize : UPLOAD_PART_MAX_BYTES;
+
+    const parts: Array<{ partNumber: number; etag: string }> = [];
+    for (let start = 0; start < file.size; start += partBytes) {
+      const partNumber = parts.length + 1;
+      const chunkRes = await fetch(
+        `${MULTIPART_URL}?action=chunk&uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: file.slice(start, start + partBytes),
+          signal,
+        }
+      );
+      const chunkBody = (await chunkRes.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!chunkRes.ok) throw serverRefusal(chunkBody, chunkRes.status, `Failed uploading part ${partNumber}.`);
+      parts.push({ partNumber, etag: String(chunkBody.etag ?? '') });
+    }
+
+    const completeRes = await fetch(`${MULTIPART_URL}?action=complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+      body: JSON.stringify({ uploadId, parts }),
+      signal,
+    });
+    const completeBody = (await completeRes.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!completeRes.ok) throw serverRefusal(completeBody, completeRes.status, 'Failed completing multipart upload.');
+    activeUploadId = undefined;
+    const key = String(completeBody.key ?? '');
+    if (!key) throw new ConversionFailedError('Multipart completion did not return a storage key.');
+    return { key, name: file.name };
+  } catch (err) {
+    if (activeUploadId) {
+      void fetch(`${MULTIPART_URL}?action=abort`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uploadId: activeUploadId }),
+        keepalive: true,
+      }).catch(() => undefined);
+    }
+    throw err;
+  }
+}
+
 async function pollToolJob(jobId: string, signal?: AbortSignal): Promise<ToolResult> {
   let delay = 100;
-  while (!signal?.aborted) {
-    await new Promise((resolve) => setTimeout(resolve, delay));
-    const res = await fetch(`/api/tools/jobs/${jobId}`, { signal });
-    if (!res.ok) throw serverRefusal(await res.json().catch(() => ({})), res.status, 'Failed polling tool job.');
-    const data = (await res.json()) as { status: string; result?: ToolResultFile; error?: string };
-    if (data.status === 'completed' && data.result) {
-      return { kind: 'file', file: data.result };
+  try {
+    while (!signal?.aborted) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      const res = await fetch(`/api/tools/jobs/${encodeURIComponent(jobId)}`, { signal });
+      if (!res.ok) throw serverRefusal(await res.json().catch(() => ({})), res.status, 'Failed polling tool job.');
+      const data = (await res.json()) as {
+        status: string;
+        result?: ToolResultFile;
+        toolResult?: StoredToolJobResult;
+        error?: string;
+      };
+      if (data.status === 'completed') {
+        if (data.toolResult) return toClientToolResult(data.toolResult);
+        if (data.result) return { kind: 'file', file: data.result };
+      }
+      if (data.status === 'failed' || data.status === 'cancelled') {
+        throw new ConversionFailedError(data.error || 'Tool job failed.');
+      }
+      delay = Math.min(delay * 1.5, 1000);
     }
-    if (data.status === 'failed') {
-      throw new ConversionFailedError(data.error || 'Tool job failed.');
+    throw new ConversionFailedError('Tool job cancelled.');
+  } catch (err) {
+    if (signal?.aborted) {
+      void fetch(`/api/tools/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE', keepalive: true }).catch(() => undefined);
     }
-    delay = Math.min(delay * 1.5, 1000);
+    throw err;
   }
-  throw new ConversionFailedError('Tool job cancelled.');
+}
+
+async function runMultipartToolJob(
+  tool: WebTool,
+  files: readonly File[],
+  options: WebToolOptions,
+  signal?: AbortSignal
+): Promise<ToolResult> {
+  const uploaded: Array<{ key: string; name: string }> = [];
+  try {
+    for (const file of files) {
+      uploaded.push(await uploadToolFileInParts(file, signal));
+    }
+    const res = await fetch('/api/tools/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tool, files: uploaded, options }),
+      signal,
+    });
+    const body = (await res.json().catch(() => ({}))) as {
+      id?: string;
+      result?: ToolResultFile;
+      toolResult?: StoredToolJobResult;
+    };
+    if (!res.ok) throw serverRefusal(body, res.status, 'The tool job failed on the server.');
+    if (body.toolResult) return toClientToolResult(body.toolResult);
+    if (body.result) return { kind: 'file', file: body.result };
+    return pollToolJob(String(body.id), signal);
+  } catch (err) {
+    for (const item of uploaded) {
+      void fetch(`${MULTIPART_URL}?action=discard`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: item.key }),
+        keepalive: true,
+      }).catch(() => undefined);
+    }
+    throw err;
+  }
 }
 
 /** Runs `tool` on `files` on the server (one conversion of the day's allowance) and turns its answer into files to download. */
@@ -113,19 +253,14 @@ export async function runToolRequest(
   options: WebToolOptions,
   signal?: AbortSignal
 ): Promise<ToolResult> {
+  const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+  if (totalBytes > SINGLE_REQUEST_FILE_MAX_BYTES) {
+    return runMultipartToolJob(tool, files, options, signal);
+  }
+
   const form = new FormData();
   for (const file of files) form.append('files', file);
   form.append('options', JSON.stringify(options));
-
-  const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
-  if (totalBytes > SINGLE_REQUEST_FILE_MAX_BYTES) {
-    form.append('tool', tool);
-    const res = await fetch('/api/tools/jobs', { method: 'POST', body: form, signal });
-    if (!res.ok) throw serverRefusal(await res.json().catch(() => ({})), res.status, 'The tool job failed on the server.');
-    const data = (await res.json()) as { id: string; status: string; result?: ToolResultFile };
-    if (data.result) return { kind: 'file', file: data.result };
-    return pollToolJob(data.id, signal);
-  }
 
   const res = await fetch(`/api/tools/${tool}`, { method: 'POST', body: form, signal });
   if (!res.ok) throw serverRefusal(await res.json().catch(() => ({})), res.status, 'The tool failed on the server.');
@@ -158,9 +293,12 @@ export async function runToolRequest(
 
 /** Frees the download URLs of a result. */
 export function releaseToolResult(result: ToolResult): void {
+  const revokeIfBlob = (url: string) => {
+    if (url.startsWith('blob:')) URL.revokeObjectURL(url);
+  };
   if (result.kind === 'file' || result.kind === 'inspection') {
-    URL.revokeObjectURL(result.file.url);
+    revokeIfBlob(result.file.url);
   } else {
-    for (const file of result.entries) URL.revokeObjectURL(file.url);
+    for (const file of result.entries) revokeIfBlob(file.url);
   }
 }

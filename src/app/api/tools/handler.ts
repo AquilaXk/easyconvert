@@ -37,7 +37,7 @@ async function answerOf(output: WebToolOutput, caller: User): Promise<NextRespon
     const entries = await Promise.all(
       output.entries.map(async (entry, index) => {
         const safeName = sanitizeNodeOutputFilename(entry.name, `file_${index + 1}`);
-        const storageKey = `conversions/${caller.id}/${Date.now()}_${index}_${safeName}`;
+        const storageKey = `conversions/${caller.id}/${crypto.randomUUID()}_${safeName}`;
         try {
           await saveRetainedResult(s3Storage, storageKey, entry.buffer, entry.mimeType, safeName);
           return {
@@ -46,7 +46,6 @@ async function answerOf(output: WebToolOutput, caller: User): Promise<NextRespon
             mimeType: entry.mimeType,
             key: storageKey,
             url: `/api/storage/file/${encodeURIComponent(storageKey)}`,
-            data: entry.buffer.toString('base64'),
           };
         } catch {
           return {

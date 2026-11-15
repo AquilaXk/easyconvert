@@ -823,25 +823,11 @@
     "count": 1
   },
   {
-    "file": "src/lib/conversions/office/affine.ts",
-    "rule": "max-params",
-    "function": "computeGroupTransformMatrix",
-    "count": 1,
-    "maxValue": 7
-  },
-  {
     "file": "src/lib/conversions/office/biff-chart.ts",
     "rule": "complexity",
     "function": "readChartRecord",
     "count": 1,
     "maxValue": 31
-  },
-  {
-    "file": "src/lib/conversions/office/docx-html.ts",
-    "rule": "complexity",
-    "function": "renderTable",
-    "count": 1,
-    "maxValue": 34
   },
   {
     "file": "src/lib/conversions/office/docx-parse.ts",
@@ -859,30 +845,9 @@
   {
     "file": "src/lib/conversions/office/drawingml-shapes.ts",
     "rule": "complexity",
-    "function": "parseDrawingMlShapes",
-    "count": 1,
-    "maxValue": 81
-  },
-  {
-    "file": "src/lib/conversions/office/drawingml-shapes.ts",
-    "rule": "complexity",
     "function": "renderSingleShapeSvg",
     "count": 1,
     "maxValue": 77
-  },
-  {
-    "file": "src/lib/conversions/office/drawingml-shapes.ts",
-    "rule": "max-depth",
-    "function": "parseDrawingMlShapes",
-    "count": 8,
-    "maxValue": 7
-  },
-  {
-    "file": "src/lib/conversions/office/drawingml-shapes.ts",
-    "rule": "max-lines-per-function",
-    "function": "parseDrawingMlShapes",
-    "count": 1,
-    "maxValue": 275
   },
   {
     "file": "src/lib/conversions/office/ebook-convert.ts",
@@ -899,34 +864,6 @@
     "maxValue": 31
   },
   {
-    "file": "src/lib/conversions/office/pdf-chart.ts",
-    "rule": "complexity",
-    "function": "renderPdfChart",
-    "count": 1,
-    "maxValue": 31
-  },
-  {
-    "file": "src/lib/conversions/office/pdf-chart.ts",
-    "rule": "max-params",
-    "function": "renderPdfChart",
-    "count": 1,
-    "maxValue": 7
-  },
-  {
-    "file": "src/lib/conversions/office/pdf-shapes.ts",
-    "rule": "complexity",
-    "function": "renderSinglePdfShape",
-    "count": 1,
-    "maxValue": 53
-  },
-  {
-    "file": "src/lib/conversions/office/pdf-shapes.ts",
-    "rule": "max-params",
-    "function": "renderSinglePdfShape",
-    "count": 1,
-    "maxValue": 7
-  },
-  {
     "file": "src/lib/conversions/office/pml-reader.ts",
     "rule": "complexity",
     "function": "pmlToText",
@@ -939,34 +876,6 @@
     "function": "readCharacterFontRuns",
     "count": 1,
     "maxValue": 32
-  },
-  {
-    "file": "src/lib/conversions/office/pptx-scene.ts",
-    "rule": "complexity",
-    "function": "parsePptxSlideSceneGraph",
-    "count": 1,
-    "maxValue": 117
-  },
-  {
-    "file": "src/lib/conversions/office/pptx-scene.ts",
-    "rule": "max-depth",
-    "function": "parsePptxSlideSceneGraph",
-    "count": 15,
-    "maxValue": 9
-  },
-  {
-    "file": "src/lib/conversions/office/pptx-scene.ts",
-    "rule": "max-lines-per-function",
-    "function": "parsePptxSlideSceneGraph",
-    "count": 1,
-    "maxValue": 472
-  },
-  {
-    "file": "src/lib/conversions/office/pptx-scene.ts",
-    "rule": "max-params",
-    "function": "parsePptxSlideSceneGraph",
-    "count": 1,
-    "maxValue": 8
   },
   {
     "file": "src/lib/conversions/office/spreadsheet-format.ts",

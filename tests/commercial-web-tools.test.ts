@@ -128,4 +128,106 @@ describe('Commercial Web Tools (13 tools)', () => {
       }
     });
   });
+
+  describe('async tool jobs route (/api/tools/jobs) ownership and stored keys', () => {
+    it('executes an async tool job from stored upload keys and enforces owner isolation (404 IDOR check)', async () => {
+      const { NextRequest } = await import('next/server');
+      const { PDFDocument } = await import('pdf-lib');
+      const { storageProvider } = await import('../src/lib/storage');
+      const { redisKeyStore } = await import('../src/lib/api-keys/redis-key-store');
+      const { redisUserStore } = await import('../src/lib/auth/redis-user-store');
+      const { POST: createToolJob } = await import('../src/app/api/tools/jobs/route');
+      const { GET: getToolJobRoute, DELETE: deleteToolJobRoute } = await import('../src/app/api/tools/jobs/[id]/route');
+
+      const docA = await PDFDocument.create();
+      docA.addPage([200, 200]);
+      const bufA = Buffer.from(await docA.save());
+      const docB = await PDFDocument.create();
+      docB.addPage([200, 200]);
+      const bufB = Buffer.from(await docB.save());
+
+      const keyA = `uploads/${crypto.randomUUID()}_a.pdf`;
+      const keyB = `uploads/${crypto.randomUUID()}_b.pdf`;
+      await storageProvider.saveObject(keyA, bufA, 'application/pdf', 'a.pdf');
+      await storageProvider.saveObject(keyB, bufB, 'application/pdf', 'b.pdf');
+
+      const ownerUser = await redisUserStore.createUser({
+        name: 'Owner',
+        email: `owner-${crypto.randomUUID()}@example.test`,
+        passwordHash: 'hash',
+        emailVerified: true,
+      });
+      const intruderUser = await redisUserStore.createUser({
+        name: 'Intruder',
+        email: `intruder-${crypto.randomUUID()}@example.test`,
+        passwordHash: 'hash',
+        emailVerified: true,
+      });
+      const ownerKey = await redisKeyStore.generateApiKey(ownerUser.id, 'owner', { scopes: ['convert:write', 'convert:read'] });
+      const intruderKey = await redisKeyStore.generateApiKey(intruderUser.id, 'intruder', { scopes: ['convert:write', 'convert:read'] });
+
+      const createReq = new NextRequest('http://localhost/api/tools/jobs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerKey.secretKey}`,
+        },
+        body: JSON.stringify({
+          tool: 'merge',
+          files: [
+            { key: keyA, name: 'a.pdf' },
+            { key: keyB, name: 'b.pdf' },
+          ],
+          options: {},
+        }),
+      });
+
+      const createRes = await createToolJob(createReq);
+      expect(createRes.status).toBe(201);
+      const { id: jobId } = (await createRes.json()) as { id: string };
+      expect(jobId).toMatch(/^[0-9a-f-]{36}$/i);
+
+      // Intruder GET and DELETE must receive 404 (not 200 or 403) so owned job IDs cannot be probed or cancelled.
+      const intruderGet = await getToolJobRoute(
+        new NextRequest(`http://localhost/api/tools/jobs/${jobId}`, {
+          headers: { Authorization: `Bearer ${intruderKey.secretKey}` },
+        }),
+        { params: Promise.resolve({ id: jobId }) }
+      );
+      expect(intruderGet.status).toBe(404);
+
+      const intruderDelete = await deleteToolJobRoute(
+        new NextRequest(`http://localhost/api/tools/jobs/${jobId}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${intruderKey.secretKey}` },
+        }),
+        { params: Promise.resolve({ id: jobId }) }
+      );
+      expect(intruderDelete.status).toBe(404);
+
+      // Owner polls until completed and verifies temporary upload keys were cleaned up.
+      let completedBody: Record<string, unknown> | undefined;
+      for (let attempt = 0; attempt < 40; attempt++) {
+        const ownerGet = await getToolJobRoute(
+          new NextRequest(`http://localhost/api/tools/jobs/${jobId}`, {
+            headers: { Authorization: `Bearer ${ownerKey.secretKey}` },
+          }),
+          { params: Promise.resolve({ id: jobId }) }
+        );
+        expect(ownerGet.status).toBe(200);
+        const body = (await ownerGet.json()) as Record<string, unknown>;
+        if (body.status === 'completed') {
+          completedBody = body;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(completedBody?.status).toBe('completed');
+      const resultFile = completedBody?.result as { key?: string; size: number; url: string };
+      expect(resultFile.size).toBeGreaterThan(100);
+      expect(resultFile.key).toMatch(new RegExp(`^conversions/${ownerUser.id}/[0-9a-f-]{36}_merged\\.pdf$`));
+      expect(await storageProvider.stat(keyA)).toBeNull();
+      expect(await storageProvider.stat(keyB)).toBeNull();
+    });
+  });
 });

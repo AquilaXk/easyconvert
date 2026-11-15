@@ -294,6 +294,9 @@ describe('OSS Kernels & Office Enhancements', () => {
       );
       expect(dashedProps).toContain('a:prstDash val="dash"');
       expect(dashedProps).toContain('a:alpha val="50000"');
+      expect(dashedProps !== solidProps).toBe(true);
+      expect(dashedProps.includes('<a:prstDash val="dash"/>')).toBe(true);
+      expect(dashedProps.includes('<a:alpha val="50000"/>')).toBe(true);
     });
   });
 

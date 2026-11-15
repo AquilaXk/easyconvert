@@ -174,6 +174,7 @@ export class RedisKeyStore extends KeyStore {
 
   public setRedisClient(client: Redis | null): void {
     this.redisClient = client;
+    this.clearStandingCache();
   }
 
   public getPrefix(): string {
@@ -240,7 +241,7 @@ export class RedisKeyStore extends KeyStore {
   public async withCreditTier<T extends { id: string; tier: UserTier }>(user: T): Promise<T> {
     if (user.tier === 'paid') return user;
     try {
-      const now = performance.now();
+      const now = Date.now();
       const cached = this.standingCache.get(user.id);
       let standing: { balance: number; held: number };
       if (cached && cached.expiresAt > now) {
@@ -434,6 +435,7 @@ export class RedisKeyStore extends KeyStore {
     const extension: QuotaExtension = named
       ? await this.ledger().extend(reservationId, extensionId, units, (await quotaAllowanceOf(named.userId)).limit)
       : { status: 'no-reservation' };
+    if (named) this.clearStandingCache(named.userId);
     if (extension.status === 'no-reservation') console.warn(`[RedisKeyStore] Extension ${extensionId} found no live reservation ${reservationId}`);
     return extension;
   }
@@ -1072,6 +1074,7 @@ export class RedisKeyStore extends KeyStore {
   }
 
   public override async forgetUsage(userId: string): Promise<number> {
+    this.clearStandingCache(userId);
     this.memoryLedger.forgetOwner(userId);
     await this.ledger().forgetPackages(userId);
     for (const key of this.tokenBuckets.keys()) {

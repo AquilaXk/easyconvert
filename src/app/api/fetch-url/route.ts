@@ -94,34 +94,46 @@ const FORBIDDEN_HEADERS = new Set([
   'set-cookie',
   'origin',
   'referer',
+  'x-real-ip',
 ]);
 
 const HEADER_NAME_REGEX = /^[!#$%&'*+\-.^_`|~0-9a-zA-Z]+$/;
 const HEADER_VALUE_REGEX = /^[\t\x20-\x7E\x80-\xFF]*$/;
+const MAX_HEADER_NAME_LENGTH = 64;
+const MAX_HEADER_VALUE_LENGTH = 2048;
+
+function isForbiddenCustomHeader(lowerKey: string): boolean {
+  return (
+    FORBIDDEN_HEADERS.has(lowerKey) ||
+    lowerKey.startsWith('proxy-') ||
+    lowerKey.startsWith('sec-') ||
+    lowerKey.startsWith('x-forwarded-')
+  );
+}
 
 function validateCustomHeaders(raw: unknown): { headers?: Record<string, string>; refusal?: NextResponse } {
   if (raw === undefined || raw === null) return {};
   if (typeof raw !== 'object' || Array.isArray(raw)) {
-    return { refusal: refusal(400, 'invalid_headers' as UrlImportErrorCode, 'Custom headers must be a JSON object.') };
+    return { refusal: refusal(400, 'invalid_headers', 'Custom headers must be a JSON object.') };
   }
   const entries = Object.entries(raw as Record<string, unknown>);
   if (entries.length > 16) {
-    return { refusal: refusal(400, 'invalid_headers' as UrlImportErrorCode, 'At most 16 custom headers are allowed.') };
+    return { refusal: refusal(400, 'invalid_headers', 'At most 16 custom headers are allowed.') };
   }
   const sanitized: Record<string, string> = {};
   for (const [key, value] of entries) {
     if (typeof value !== 'string') {
-      return { refusal: refusal(400, 'invalid_headers' as UrlImportErrorCode, `Header "${key}" value must be a string.`) };
+      return { refusal: refusal(400, 'invalid_headers', `Header "${key}" value must be a string.`) };
     }
     const lowerKey = key.toLowerCase().trim();
-    if (!HEADER_NAME_REGEX.test(lowerKey)) {
-      return { refusal: refusal(400, 'invalid_headers' as UrlImportErrorCode, `Invalid header name "${key}".`) };
+    if (lowerKey.length === 0 || lowerKey.length > MAX_HEADER_NAME_LENGTH || !HEADER_NAME_REGEX.test(lowerKey)) {
+      return { refusal: refusal(400, 'invalid_headers', `Invalid header name "${key}".`) };
     }
-    if (!HEADER_VALUE_REGEX.test(value)) {
-      return { refusal: refusal(400, 'invalid_headers' as UrlImportErrorCode, `Invalid header value for "${key}".`) };
+    if (value.length > MAX_HEADER_VALUE_LENGTH || !HEADER_VALUE_REGEX.test(value)) {
+      return { refusal: refusal(400, 'invalid_headers', `Invalid header value for "${key}".`) };
     }
-    if (FORBIDDEN_HEADERS.has(lowerKey)) {
-      return { refusal: refusal(400, 'invalid_headers' as UrlImportErrorCode, `Header "${key}" is not permitted.`) };
+    if (isForbiddenCustomHeader(lowerKey)) {
+      return { refusal: refusal(400, 'invalid_headers', `Header "${key}" is not permitted.`) };
     }
     sanitized[lowerKey] = value;
   }

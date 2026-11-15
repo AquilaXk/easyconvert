@@ -19,23 +19,43 @@ const MIB = 1024 * 1024;
 
 interface ToolCall {
   url: string;
+  body?: unknown;
   signal: AbortSignal | undefined;
   settle: (response: Response) => void;
 }
 
 let calls: ToolCall[] = [];
+let multipartCalls: string[] = [];
 let revoked: string[] = [];
 let nextUrl = 0;
 
-/** The page's fetch: the session answers 401, a blob URL answers its bytes, and a tool run waits until the test answers it. */
+/** The page's fetch: the session answers 401, a blob URL answers its bytes, multipart chunking succeeds in parts, and a tool run waits until the test answers it. */
 function stubServer(): void {
   calls = [];
+  multipartCalls = [];
   revoked = [];
   nextUrl = 0;
-  const sessionAndBlobs = async (url: string) => (url.startsWith('blob:') ? new Response('bytes') : new Response(JSON.stringify({ success: false }), { status: 401 }));
+  let uploadSeq = 0;
+  const sessionAndBlobs = async (url: string, init?: RequestInit) => {
+    if (url.startsWith('/api/storage/multipart')) {
+      multipartCalls.push(url);
+      if (url.includes('action=initiate')) {
+        return new Response(JSON.stringify({ uploadId: `up-${++uploadSeq}`, partSize: 16 * MIB }), { status: 200 });
+      }
+      if (url.includes('action=chunk')) {
+        return new Response(JSON.stringify({ etag: `etag-${multipartCalls.length}` }), { status: 200 });
+      }
+      if (url.includes('action=complete')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { uploadId?: string };
+        return new Response(JSON.stringify({ key: `uploads/${body.uploadId ?? 'u'}` }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    }
+    return url.startsWith('blob:') ? new Response('bytes') : new Response(JSON.stringify({ success: false }), { status: 401 });
+  };
   vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
-    if (!String(url).startsWith('/api/tools/')) return sessionAndBlobs(String(url));
-    return new Promise<Response>((resolve) => calls.push({ url: String(url), signal: init?.signal ?? undefined, settle: resolve }));
+    if (!String(url).startsWith('/api/tools/')) return sessionAndBlobs(String(url), init);
+    return new Promise<Response>((resolve) => calls.push({ url: String(url), body: init?.body, signal: init?.signal ?? undefined, settle: resolve }));
   }));
   URL.createObjectURL = vi.fn(() => `blob:test/${++nextUrl}`);
   URL.revokeObjectURL = vi.fn((url: string) => { revoked.push(url); });
@@ -176,7 +196,17 @@ describe('the files a run would be turned away with', () => {
     expect(buttonNamed('Merge')!.disabled).toBe(false);
     buttonNamed('Merge')!.click();
     await vi.waitFor(() => expect(calls).toHaveLength(1));
+    expect(multipartCalls.filter((u) => u.includes('action=initiate'))).toHaveLength(2);
+    expect(multipartCalls.filter((u) => u.includes('action=chunk'))).toHaveLength(6);
+    expect(multipartCalls.filter((u) => u.includes('action=complete'))).toHaveLength(2);
     expect(calls[0].url).toBe('/api/tools/jobs');
+    expect(JSON.parse(String(calls[0].body))).toMatchObject({
+      tool: 'merge',
+      files: [
+        { key: 'uploads/up-1', name: 'a.pdf' },
+        { key: 'uploads/up-2', name: 'b.pdf' },
+      ],
+    });
   });
 
   it('are named before they are sent: a file with nothing in it', async () => {

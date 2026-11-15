@@ -66,7 +66,7 @@ const UPLOADS_ROUTE = /^\/api\/v1\/uploads(?:\/tus)?\/?$/;
 const DIRECT_UPLOADS_ROUTE = '/api/v1/uploads/direct';
 const DIRECT_PART_ROUTE = '/api/v1/uploads/direct/part';
 /** Routes whose body is a multipart form when it carries a file and JSON otherwise. */
-const FORM_OR_JSON_ROUTES: readonly string[] = ['/api/queue/jobs', '/api/v1/jobs'];
+const FORM_OR_JSON_ROUTES: readonly string[] = ['/api/queue/jobs', '/api/tools/jobs', '/api/v1/jobs'];
 
 function isUnder(pathname: string, route: string): boolean {
   return pathname === route || pathname.startsWith(`${route}/`);

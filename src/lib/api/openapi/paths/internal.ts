@@ -1121,18 +1121,44 @@ export const internalPaths = {
   '/api/tools/jobs': {
     post: {
       ...INTERNAL,
-      summary: 'Submit Async Multipart Tool Job',
-      description: 'Accepts files >64 MiB and dispatches an asynchronous worker tool job.',
+      summary: 'Submit Async Tool Job',
+      description: 'Accepts multipart-uploaded storage keys (for >64 MiB files) or multipart/form-data and dispatches an asynchronous tool job.',
       operationId: 'createToolJobInternal',
       security: ANONYMOUS_OR_SCOPE('convert:write'),
-      requestBody: multipartBody(
-        {
-          files: TOOL_FILES_PROPERTY('Files for the tool job.'),
-          tool: { type: 'string', description: 'The web tool name.' },
-          options: { type: 'string', description: 'JSON stringified tool options.' },
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['tool', 'files'],
+              properties: {
+                tool: { type: 'string', description: 'The web tool name.' },
+                files: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    required: ['key', 'name'],
+                    properties: {
+                      key: { type: 'string', description: 'Completed multipart upload storage key.' },
+                      name: { type: 'string', description: 'Original filename.' },
+                    },
+                  },
+                },
+                options: { type: 'object', additionalProperties: true, description: 'Tool options.' },
+              },
+            },
+          },
+          ...multipartBody(
+            {
+              files: TOOL_FILES_PROPERTY('Files for the tool job.'),
+              tool: { type: 'string', description: 'The web tool name.' },
+              options: { type: 'string', description: 'JSON stringified tool options.' },
+            },
+            ['files', 'tool']
+          ).content,
         },
-        ['files', 'tool']
-      ),
+      },
       responses: {
         '201': createJsonResponse('Tool job queued.', {
           success: { type: 'boolean' },

@@ -9,6 +9,7 @@ import { POST as archiveExtractRoute } from '../src/app/api/tools/archive-extrac
 import { POST as splitRoute } from '../src/app/api/tools/split/route';
 import { POST as rotateRoute } from '../src/app/api/tools/rotate/route';
 import { POST as convertRoute } from '../src/app/api/convert/route';
+import { storageProvider } from '../src/lib/storage';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
@@ -186,7 +187,10 @@ describe('extract archive', () => {
     expect(res.status).toBe(200);
     const { entries } = await res.json();
     expect(entries.map((entry: { name: string; size: number }) => [entry.name, entry.size])).toEqual([['a.txt', 5], ['b.txt', 4]]);
-    expect(Buffer.from(entries[1].data, 'base64').toString()).toBe('beta');
+    expect(entries[1].data).toBeUndefined();
+    expect(entries[1].url).toMatch(/^\/api\/storage\/file\//);
+    const stored = await storageProvider.getObject(entries[1].key);
+    expect(stored?.buffer.toString()).toBe('beta');
     expect(await client.remaining()).toBe(before - 1);
   });
 

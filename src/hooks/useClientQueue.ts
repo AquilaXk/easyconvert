@@ -140,14 +140,55 @@ export function buildQueuedFileItem(file: File, effectiveDefault?: string, opera
   };
 }
 
+function storedKeyOfResultUrl(url: string): string | null {
+  if (!url.startsWith('/api/storage/file/')) return null;
+  const raw = url.slice('/api/storage/file/'.length).split('?')[0];
+  if (!raw) return null;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function triggerZipAnchorDownload(zipUrl: string, archiveName: string): string {
+  const anchor = document.createElement('a');
+  anchor.href = zipUrl;
+  anchor.download = archiveName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  return zipUrl;
+}
+
 async function downloadCompletedBundle(items: ConversionQueueItem[], prefix: string): Promise<string> {
+  const readyItems = items.filter((item): item is ConversionQueueItem & { resultUrl: string } => Boolean(item.resultUrl));
+  const archiveName = `${prefix}_${Date.now()}.zip`;
+  const serverKeys = readyItems.map((item) => storedKeyOfResultUrl(item.resultUrl));
+  if (readyItems.length > 0 && serverKeys.every((key): key is string => Boolean(key))) {
+    const used = new Set<string>();
+    const res = await fetch('/api/storage/bundle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        archiveName,
+        files: readyItems.map((item, idx) => ({
+          key: serverKeys[idx]!,
+          name: buildUniqueArchiveName(item.name, item.targetFormat, used),
+        })),
+      }),
+    });
+    if (res.ok) {
+      const zipBlob = await res.blob();
+      return triggerZipAnchorDownload(URL.createObjectURL(zipBlob), archiveName);
+    }
+  }
+
   const resolvedEntries = await Promise.all(
-    items
-      .filter((item): item is ConversionQueueItem & { resultUrl: string } => Boolean(item.resultUrl))
-      .map(async (item) => {
-        const res = await fetch(item.resultUrl);
-        return { item, blob: await res.blob() };
-      })
+    readyItems.map(async (item) => {
+      const res = await fetch(item.resultUrl);
+      return { item, blob: await res.blob() };
+    })
   );
   const used = new Set<string>();
   async function* generateEntries() {
@@ -161,14 +202,7 @@ async function downloadCompletedBundle(items: ConversionQueueItem[], prefix: str
   }
   const stream = streamZipReadable(generateEntries());
   const zipBlob = await new Response(stream).blob();
-  const zipUrl = URL.createObjectURL(zipBlob);
-  const anchor = document.createElement('a');
-  anchor.href = zipUrl;
-  anchor.download = `${prefix}_${Date.now()}.zip`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  return zipUrl;
+  return triggerZipAnchorDownload(URL.createObjectURL(zipBlob), archiveName);
 }
 
 function isRunning(item: ConversionQueueItem): boolean {
