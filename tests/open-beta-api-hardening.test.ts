@@ -96,8 +96,8 @@ describe('Open Beta API boundary error classification (400 / 502 / 504 instead o
     it('maps per-hop 12 s header timeout to 504 fetch_timeout instead of 500', async () => {
       vi.useFakeTimers();
       vi.mocked(validateUrlForSsrf).mockResolvedValueOnce(true);
-      vi.mocked(undiciFetch).mockImplementationOnce(((_url, init) => {
-        const sig = init?.signal as AbortSignal | undefined;
+      vi.mocked(undiciFetch).mockImplementationOnce(((_url: unknown, init?: { signal?: AbortSignal | null }) => {
+        const sig = init?.signal ?? undefined;
         return new Promise((_resolve, reject) => {
           sig?.addEventListener(
             'abort',
@@ -228,7 +228,7 @@ describe('Open Beta API boundary error classification (400 / 502 / 504 instead o
         },
         body: truncatedStream(chunk, 'Premature close'),
         duplex: 'half',
-      } as RequestInit);
+      } as ConstructorParameters<typeof NextRequest>[1]);
 
       const res = await convertPost(req);
       expect(res.status).toBe(400);
@@ -246,7 +246,7 @@ describe('Open Beta API boundary error classification (400 / 502 / 504 instead o
         },
         body: truncatedStream(chunk, 'Premature close'),
         duplex: 'half',
-      } as RequestInit);
+      } as ConstructorParameters<typeof NextRequest>[1]);
 
       const res = await inspectArchivePost(req);
       expect(res.status).toBe(400);
@@ -264,7 +264,7 @@ describe('Open Beta API boundary error classification (400 / 502 / 504 instead o
         },
         body: truncatedStream(chunk, 'aborted'),
         duplex: 'half',
-      } as RequestInit);
+      } as ConstructorParameters<typeof NextRequest>[1]);
 
       const res = await inspectArchivePost(req);
       expect(res.status).toBe(400);

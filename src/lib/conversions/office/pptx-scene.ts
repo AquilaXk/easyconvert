@@ -1,12 +1,12 @@
 import JSZip from 'jszip';
 import { PptxMedia } from './pptx-media';
-import { safeDecodeXmlEntities, safeExtractXmlElements } from '../safe-xml-scanner';
+import { type SafeXmlElement, safeDecodeXmlEntities, safeExtractXmlElements } from '../safe-xml-scanner';
 import { resolveZipPath } from './zip-path';
 import { readZipEntryText } from '../zip-entry-reader';
 import sharp from 'sharp';
 import { openLimitedSharp, rethrowInputPixelLimit } from '../image-input-limits';
 import { type OpenXmlChartData } from './types';
-import { type Matrix2D, computeTransformedElementBounds, multiplyMatrix, parseGroupTransform, transformPoint } from './affine';
+import { type Matrix2D, computeTransformedElementBounds, identityMatrix, multiplyMatrix, parseGroupTransform, transformPoint } from './affine';
 import { safeExtractFirstXmlElement, safeFindColor } from './xml-helpers';
 import { parseOpenXmlChart } from './chart-parse';
 import { renderChartToSvg } from './chart-svg';

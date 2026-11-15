@@ -33,7 +33,7 @@ describe('immediate server-side deletion of stored outputs (anonymous and signed
 
     await saveRetainedResult(storageProvider, key, Buffer.from('RIFF....WEBPVP8 '), 'image/webp', 'converted.webp');
     vi.spyOn(conversionQueue, 'getJob').mockImplementation(async (id: string) =>
-      id === jobId ? ({ id: jobId, data: { userId: 'anon:203.0.113.10' } } as never) : null
+      id === jobId ? ({ id: jobId, data: { userId: 'anon:203.0.113.10' } } as never) : undefined
     );
 
     const getBefore = await storageFileRoute.GET(

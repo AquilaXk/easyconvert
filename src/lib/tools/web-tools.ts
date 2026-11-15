@@ -403,7 +403,7 @@ function tooLargeToList(): WebToolRefusal {
 /** The files of an archive, unpacked under the caps of the answer; a TAR that passes them is a 413 as the other formats are. */
 async function unpacked(archive: WebToolFile, password?: string, signal?: AbortSignal): Promise<{ filename: string; buffer: Buffer }[]> {
   try {
-    return await extractGraphArchiveEntries(archive.name, archive.buffer, password, WEB_EXTRACTION_LIMITS, { signal });
+    return await extractGraphArchiveEntries(archive.name, archive.buffer, { password, signal }, WEB_EXTRACTION_LIMITS);
   } catch (error) {
     if (error instanceof ConversionFailedError && error.message.startsWith('Archive bomb detected')) throw tooLargeToList();
     throw error;

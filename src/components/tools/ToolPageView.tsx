@@ -120,19 +120,22 @@ function ResultRow({ file, label }: Readonly<{ file: ToolResultFile; label: stri
 interface InspectionEntry {
   path?: string;
   name?: string;
+  uncompressedSize?: number;
   size?: number;
   compressedSize?: number;
+  isEncrypted?: boolean;
   encrypted?: boolean;
 }
 
-function ArchiveInspectionPanel({ inspection, file }: Readonly<{ inspection: Record<string, unknown>; file: ToolResultFile }>) {
+function ArchiveInspectionPanel({ inspection, file }: Readonly<{ inspection: Extract<ToolResult, { kind: 'inspection' }>['inspection']; file: ToolResultFile }>) {
   const [filter, setFilter] = useState('');
   const formatBytes = useFormatBytes();
-  const format = String(inspection.format ?? 'Archive').toUpperCase();
-  const encrypted = Boolean(inspection.encrypted);
+  const raw = inspection as unknown as Record<string, unknown>;
+  const format = String(inspection.format || 'Archive').toUpperCase();
+  const encrypted = Boolean(inspection.isEncrypted ?? raw.encrypted);
   const totalEntries = Number(inspection.totalEntries ?? (Array.isArray(inspection.entries) ? inspection.entries.length : 0));
-  const uncompressedBytes = Number(inspection.uncompressedBytes ?? 0);
-  const compressedBytes = Number(inspection.compressedBytes ?? 0);
+  const uncompressedBytes = Number(inspection.totalUncompressedBytes ?? raw.uncompressedBytes ?? 0);
+  const compressedBytes = Number(inspection.totalCompressedBytes ?? raw.compressedBytes ?? 0);
   const ratio = uncompressedBytes > 0 && compressedBytes > 0
     ? `${Math.max(0, Math.round((1 - compressedBytes / uncompressedBytes) * 100))}%`
     : '-';
@@ -185,14 +188,18 @@ function ArchiveInspectionPanel({ inspection, file }: Readonly<{ inspection: Rec
                 </tr>
               </thead>
               <tbody className="divide-y divide-rule/50">
-                {entries.map((entry, idx) => (
-                  <tr key={idx} className="hover:bg-sunken/30">
-                    <td className="p-2.5 font-mono text-ink truncate max-w-xs" title={entry.path ?? entry.name}>{entry.path ?? entry.name}</td>
-                    <td className="p-2.5 text-right tabular-nums text-ink-2">{entry.size !== undefined ? formatBytes(entry.size) : '-'}</td>
-                    <td className="p-2.5 text-right tabular-nums text-ink-3">{entry.compressedSize !== undefined ? formatBytes(entry.compressedSize) : '-'}</td>
-                    <td className="p-2.5 text-center text-ink-3">{entry.encrypted ? '🔒' : '-'}</td>
-                  </tr>
-                ))}
+                {entries.map((entry, idx) => {
+                  const entrySize = entry.uncompressedSize ?? entry.size;
+                  const entryEncrypted = entry.isEncrypted ?? entry.encrypted;
+                  return (
+                    <tr key={idx} className="hover:bg-sunken/30">
+                      <td className="p-2.5 font-mono text-ink truncate max-w-xs" title={entry.path ?? entry.name}>{entry.path ?? entry.name}</td>
+                      <td className="p-2.5 text-right tabular-nums text-ink-2">{entrySize !== undefined ? formatBytes(entrySize) : '-'}</td>
+                      <td className="p-2.5 text-right tabular-nums text-ink-3">{entry.compressedSize !== undefined ? formatBytes(entry.compressedSize) : '-'}</td>
+                      <td className="p-2.5 text-center text-ink-3">{entryEncrypted ? 'Yes' : '-'}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -371,7 +378,10 @@ function usePdfOrganizerState(tool: WebTool, run: ReturnType<typeof useToolRun>,
         const pages = Object.entries(nextMap).filter(([, a]) => a === ang).map(([p]) => Number(p));
         if (pages.length > 0) rotationGroups.push({ angle: ang, pages: formatPageRanges(pages) });
       }
-      run.setOptions({ ...run.options, rotations: rotationGroups });
+      run.setOptions({
+        ...run.options,
+        rotate: rotationGroups.length > 0 ? { rotations: rotationGroups } : { rotation: 90 },
+      });
       return nextMap;
     });
   };
@@ -388,7 +398,7 @@ interface SummaryParams {
   emptyRanges: boolean;
   leftOut: string;
   count: number;
-  t: (key: string, args?: Record<string, unknown>) => string;
+  t: ReturnType<typeof useTranslations<'tools'>>;
   formatBytes: (bytes: number) => string;
 }
 

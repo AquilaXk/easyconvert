@@ -339,7 +339,8 @@ function dispatch(thread: PooledThread, queued: QueuedJob): void {
     settle(thread, (job) => {
       if (reply.ok) {
         if (reply.textBytes) {
-          const json = Buffer.from(reply.textBytes).toString('utf-8');
+          const bytes = reply.textBytes instanceof ArrayBuffer ? new Uint8Array(reply.textBytes) : reply.textBytes;
+          const json = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('utf-8');
           job.resolve(deserializeJobResult(json));
         } else if (reply.result) {
           job.resolve(reply.result);

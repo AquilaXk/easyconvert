@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest';
 import sharp from 'sharp';
 import {
   PaletteInverseCmap,
-  type RgbaPalette,
   quantizeImage,
 } from '../src/lib/conversions/color-quantizer';
+
+type RgbaPalette = Array<[number, number, number, number]>;
 import {
   mapCorporatePuaSymbol,
   CORPORATE_PUA_START,
@@ -182,7 +183,7 @@ describe('OSS Kernels & Office Enhancements', () => {
         rgba[i * 4 + 2] = (i * 29) % 256;
         rgba[i * 4 + 3] = 255;
       }
-      const result = quantizeImage(rgba, width, height, 16, 'none');
+      const result = quantizeImage(rgba, width, height, 16, { dither: 'none' });
       expect(result.palette.length).toBeGreaterThan(0);
       expect(result.indices.length).toBe(width * height);
     });
@@ -208,7 +209,7 @@ describe('OSS Kernels & Office Enhancements', () => {
     });
 
     it('recovers unmapped glyphs including braceex U+F8F4', () => {
-      const recovered = recoverUnmappedGlyphs('\uF8F4');
+      const recovered = recoverUnmappedGlyphs('\uF8F4', { name: 'Symbol' });
       expect(recovered.text).toBe('\u23AA');
       expect(recovered.unmapped).toBe(0);
     });
@@ -216,8 +217,8 @@ describe('OSS Kernels & Office Enhancements', () => {
 
   describe('Task 3: Lossless PNG Optimiser Option', () => {
     it('identifies wantsPngOptimiser correctly', () => {
-      expect(wantsPngOptimiser({ optimizePng: true } as any)).toBe(true);
-      expect(wantsPngOptimiser({ optimizePng: false } as any)).toBe(false);
+      expect(wantsPngOptimiser({ optimizePng: true })).toBe(true);
+      expect(wantsPngOptimiser({ optimizePng: false })).toBe(false);
       expect(wantsPngOptimiser({})).toBe(false);
     });
 
@@ -246,7 +247,7 @@ describe('OSS Kernels & Office Enhancements', () => {
   describe('Task 5: PDF Shapes & PPTX Writer', () => {
     it('generates standards-compliant PPTX package from text with pagination', async () => {
       const text = Array.from({ length: 30 }, (_, i) => `Line ${i + 1} of document text content.`).join('\n');
-      const pptxBuffer = await generatePptxFromText(text);
+      const pptxBuffer = await generatePptxFromText(text, 'txt', {}, 'Test Slides');
       expect(pptxBuffer).toBeInstanceOf(Buffer);
       expect(pptxBuffer.length).toBeGreaterThan(1000);
       expect(pptxBuffer[0]).toBe(0x50);

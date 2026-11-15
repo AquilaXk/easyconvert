@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { graphReservationUnits } from '../src/lib/jobs/graph-operations';
 import { baseCredits } from '../src/lib/billing/credits';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
-import type { UserTier } from '../src/lib/types';
 
 describe('Graph admission class pricing & graphReservationUnits', () => {
   it('reserves baseCredits when source format is statically known from upstream import filename', () => {
@@ -63,7 +62,7 @@ describe('1-second standing cache in withCreditTier', () => {
     try {
       redisKeyStore.clearStandingCache(fakeUserId);
 
-      const user = { id: fakeUserId, tier: 'free' as UserTier };
+      const user = { id: fakeUserId, tier: 'free' as const };
 
       // Call 1: misses cache, queries ledger
       const res1 = await redisKeyStore.withCreditTier(user);

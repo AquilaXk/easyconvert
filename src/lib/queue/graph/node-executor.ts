@@ -562,8 +562,12 @@ async function nodeCharge(
       inputArtifacts.map(async (key) => {
         let filename: string | undefined;
         if (storage) {
-          const stored = await storage.getObject(key).catch(() => undefined);
-          filename = stored?.filename;
+          try {
+            const stored = await storage.getObject(key);
+            filename = stored?.filename;
+          } catch {
+            filename = undefined;
+          }
         }
         const ext = artifactExtension(filename, key);
         return baseCredits(ext, node.targetFormat ?? '');

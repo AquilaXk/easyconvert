@@ -30,7 +30,7 @@ const HONOURED = [
  * `fit` belongs here and is checked against a resize separately.
  */
 const NOT_ABOUT_MEDIA = [
-  'quality', 'fit', 'stripMetadata', 'background', 'dpi', 'layout', 'colorDepth', 'colors', 'palette', 'dither',
+  'quality', 'optimizePng', 'fit', 'stripMetadata', 'background', 'dpi', 'layout', 'colorDepth', 'colors', 'palette', 'dither',
   'quantizer', 'ditherMethod', 'useWebGpu', 'gpuAcceleration', 'falseColorSuppression', 'allowEmbeddedPreview',
   'demosaicMethod', 'kelvin', 'tint', 'highlightReconstruction', 'targetColorSpace', 'outputDepth', 'gainMap', 'tiffCompression', 'kernel',
   'outputUnit', 'vectorize', 'page', 'pages', 'multiPageOutput',

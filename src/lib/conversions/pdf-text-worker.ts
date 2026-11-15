@@ -10,7 +10,7 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { ConversionFailedError } from '../types';
 import { analyzePdfPagesInProcess } from './pdf-text-geometry';
-import { pdfTextFailureKindOf, type PdfTextJob } from './pdf-text-types';
+import { pdfTextFailureKindOf, type PdfTextJob, type PdfTextJobResult } from './pdf-text-types';
 import { preloadImageReader } from './pdf-text-images';
 import { warmupPdf } from './pdf-text-warmup';
 

@@ -241,12 +241,7 @@ function toggleSelection(pageNumber: number, selected?: number[], onChange?: (p:
   onChange(next);
 }
 
-interface PdfJsDocProxy {
-  getPage: (pageNum: number) => Promise<{
-    getViewport: (opts: { scale: number }) => { width: number; height: number };
-    render: (params: { canvasContext: CanvasRenderingContext2D; viewport: { width: number; height: number } }) => { promise: Promise<unknown> };
-  }>;
-}
+type PdfJsDocProxy = Awaited<ReturnType<typeof import('pdfjs-dist/legacy/build/pdf.mjs')['getDocument']>['promise']>;
 
 async function renderThumbnail(doc: PdfJsDocProxy, pageNum: number, onRendered: (url: string) => void): Promise<void> {
   try {
@@ -257,7 +252,7 @@ async function renderThumbnail(doc: PdfJsDocProxy, pageNum: number, onRendered: 
     canvas.height = viewport.height;
     const ctx = canvas.getContext('2d');
     if (ctx) {
-      await page.render({ canvasContext: ctx, viewport }).promise;
+      await page.render({ canvas, canvasContext: ctx, viewport }).promise;
       onRendered(canvas.toDataURL('image/jpeg', 0.8));
     }
   } catch {

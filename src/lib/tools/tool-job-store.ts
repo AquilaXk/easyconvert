@@ -1,10 +1,11 @@
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
+import type { ArchiveInspectResponse } from '@/lib/types';
 import type { WebTool } from './tool-names';
 
 export type StoredToolJobResult =
   | { kind: 'file'; file: { name: string; size: number; url: string; key?: string } }
   | { kind: 'entries'; entries: Array<{ name: string; size: number; mimeType: string; url: string; key: string }> }
-  | { kind: 'inspection'; inspection: Record<string, unknown>; name: string };
+  | { kind: 'inspection'; inspection: ArchiveInspectResponse; name: string };
 
 export interface ToolJobState {
   id: string;

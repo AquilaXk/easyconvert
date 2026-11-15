@@ -1,4 +1,4 @@
-import { ConversionFailedError } from '../types';
+import { ConversionFailedError, type ArchiveInspectResponse } from '../types';
 import { serverRefusal } from '../conversion-failure';
 import { SINGLE_REQUEST_FILE_MAX_BYTES, UPLOAD_PART_MAX_BYTES } from '../plan-limits';
 import { MAX_TOOL_FILES, type WebTool, type WebToolOptions } from './tool-names';
@@ -16,7 +16,7 @@ export interface ToolResultFile {
 export type ToolResult =
   | { kind: 'file'; file: ToolResultFile }
   | { kind: 'entries'; entries: ToolResultFile[] }
-  | { kind: 'inspection'; inspection: Record<string, unknown>; file: ToolResultFile };
+  | { kind: 'inspection'; inspection: ArchiveInspectResponse; file: ToolResultFile };
 
 interface ListedEntry {
   name: string;
@@ -278,8 +278,8 @@ export async function runToolRequest(
     };
   }
   if (tool === 'archive-inspect') {
-    const json = await res.json();
-    const inspectionData = (json.inspection ?? json) as Record<string, unknown>;
+    const json = (await res.json()) as { inspection?: ArchiveInspectResponse } & ArchiveInspectResponse;
+    const inspectionData = json.inspection ?? json;
     const blob = new Blob([JSON.stringify(inspectionData, null, 2)], { type: 'application/json' });
     return {
       kind: 'inspection',
