@@ -218,15 +218,53 @@ export function itKeepsCredits(controls: CreditCaseControls): void {
     expect(await part('adj_1', '500')).toEqual({ status: 'duplicate' });
     expect(await store().packageBalance(owner)).toBe(750);
 
-    // 600 of the 750 are spent: the rest of the payment is owed, and only the 150 left are taken back.
+    // 600 of the 750 are spent: the 150 left are taken back now, and the 600 spent are booked once as debt on the payment.
     const id = await reserve(DAY + 600);
     await store().commitQuota(id);
     expect(await store().packageBalance(owner)).toBe(150);
     expect(await full('adj_2')).toEqual({ status: 'revoked', revoked: 150, unrecovered: 600, deferred: 0 });
     expect(await store().packageBalance(owner)).toBe(0);
-    // What was owed and spent stays owed: a later refund of the same payment finds nothing to take back.
-    expect(await full('adj_3')).toEqual({ status: 'revoked', revoked: 0, unrecovered: 600, deferred: 0 });
+    expect(await store().packageDebt(owner)).toBe(600);
+    // All 1,000 credits of txn_a have now been accounted for (250 + 150 taken + 600 booked as debt): a later adjustment finds 0 left.
+    expect(await full('adj_3')).toEqual({ status: 'revoked', revoked: 0, unrecovered: 0, deferred: 0 });
+    expect(await store().packageDebt(owner)).toBe(600);
     expect(await store().revokePackage(owner, { transactionId: 'txn_unknown', adjustmentId: 'adj_x', amount: '1', full: true })).toEqual({ status: 'unknown-transaction' });
+  });
+
+  it('carries spent refunded credits forward as debt against subsequent package grants and commutes across webhook order', async () => {
+    await grant(1000, 'txn_1', '2000');
+    await store().commitQuota(await reserve(DAY + 600));
+    expect(await store().revokePackage(owner, { transactionId: 'txn_1', adjustmentId: 'adj_1', amount: '2000', full: true })).toEqual({
+      status: 'revoked',
+      revoked: 400,
+      unrecovered: 600,
+      deferred: 0,
+    });
+    expect(await store().packageBalance(owner)).toBe(0);
+    expect(await store().packageDebt(owner)).toBe(600);
+
+    // First follow-up grant (400) pays down part of the 600 debt; spendable balance stays 0, never negative.
+    expect(await grant(400, 'txn_2', '1000')).toBe('granted');
+    expect(await store().packageBalance(owner)).toBe(0);
+    expect(await store().packageDebt(owner)).toBe(200);
+    expect((await store().withCreditTier({ id: owner, tier: 'free' })).tier).toBe('free');
+
+    // Second follow-up grant (500) clears the remaining 200 debt and credits the remaining 300 to the spendable pool.
+    expect(await grant(500, 'txn_3', '1200')).toBe('granted');
+    expect(await store().packageBalance(owner)).toBe(300);
+    expect(await store().packageDebt(owner)).toBe(0);
+    expect((await store().withCreditTier({ id: owner, tier: 'free' })).tier).toBe('paid');
+  });
+
+  it('records and clears a chargeback billing hold on the account and forgets it with the account', async () => {
+    expect(await store().hasBillingHold(owner)).toBe(false);
+    await store().setBillingHold(owner, 'adj_cb_1');
+    expect(await store().hasBillingHold(owner)).toBe(true);
+    await store().clearBillingHold(owner);
+    expect(await store().hasBillingHold(owner)).toBe(false);
+    await store().setBillingHold(owner, 'adj_cb_2');
+    await store().forgetUsage(owner);
+    expect(await store().hasBillingHold(owner)).toBe(false);
   });
 
   describe('a refund while package credits are held by a reservation in flight', () => {
@@ -269,15 +307,20 @@ export function itKeepsCredits(controls: CreditCaseControls): void {
       expect(refund).toMatchObject({ revoked: 60, deferred: 40 });
     });
 
-    it('lets a conversion that commits keep the credits it held, and owes nothing after it', async () => {
+    it('lets an in-flight conversion that commits finish, then carries the spent refunded credits as debt into the next grant', async () => {
       await grant(100, 'txn_a');
       const id = await reserve(DAY + 40);
       expect(await full('txn_a', 'adj_1')).toMatchObject({ revoked: 60, deferred: 40 });
       expect(await store().commitQuota(id)).toBe(true);
-      // The 40 were spent, so there is nothing left to take: the credits of a later payment and its rollback are whole.
+      expect(await store().packageDebt(owner)).toBe(40);
+      // The 40 committed credits were refunded, so a 30-credit grant pays down 30 of the 40 debt first, and a 25-credit grant clears the last 10 and leaves 15.
       await grant(30, 'txn_b');
-      await store().rollbackQuota(await reserve(DAY + 10));
-      expect(await store().packageBalance(owner)).toBe(30);
+      expect(await store().packageBalance(owner)).toBe(0);
+      expect(await store().packageDebt(owner)).toBe(10);
+      await grant(25, 'txn_c');
+      await store().rollbackQuota(await reserve(15));
+      expect(await store().packageBalance(owner)).toBe(15);
+      expect(await store().packageDebt(owner)).toBe(0);
     });
 
     it('owes no more than the reservations in flight hold: credits that were spent stay unrecovered', async () => {

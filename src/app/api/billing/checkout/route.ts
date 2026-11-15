@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { alreadySubscribed, billingUnavailable, guardingStore, invalidProduct, providerFailed } from '@/lib/api/billing-refusal';
+import { alreadySubscribed, billingHold, billingUnavailable, guardingStore, invalidProduct, providerFailed } from '@/lib/api/billing-refusal';
+import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { readJsonObject } from '@/lib/api/json-body';
 import { codedRefusal } from '@/lib/api/problem-details';
 import { readSessionOrRefusal } from '@/lib/auth/session-refusal';
@@ -37,6 +38,8 @@ export async function POST(req: NextRequest) {
 
     const product = productOf(await readJsonObject(req));
     if (!product) return invalidProduct();
+
+    if (await redisKeyStore.hasBillingHold(user.id)) return billingHold();
 
     if (product.kind === 'subscription') {
       const existing = await subscriptionStore.findByUser(user.id);

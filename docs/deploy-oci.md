@@ -11,6 +11,8 @@ One host, one Compose project named `easyconvert`, started only by the deploy wo
 | `web` | `ghcr.io/aquilaxk/easyconvert-web@sha256:...` | `127.0.0.1:8090` | Next.js server, API, synchronous conversions up to 100 MiB |
 | `worker` | `ghcr.io/aquilaxk/easyconvert-worker@sha256:...` | none | Queue worker for every queue, 4 jobs at a time |
 | `redis` | `redis:7.4-alpine@sha256:...` | none | Queue, users, API keys, quotas. Password (in a 0600 file on the container's tmpfs, not in argv), internal network |
+| `prometheus` | `prom/prometheus:v2.55.1@sha256:...` | none | Optional (`--profile monitoring`, enabled when `ALERTMANAGER_WEBHOOK_URL` is set). Scrapes `web:9464` and `worker:9465` on the internal network and evaluates `deploy/oci/prometheus-alerts.yml` |
+| `alertmanager` | `prom/alertmanager:v0.27.0@sha256:...` | none | Optional (`--profile monitoring`). Routes `severity=page` alerts to `ALERTMANAGER_WEBHOOK_URL` (written to a 0600 file on tmpfs, not in argv) |
 
 The host nginx terminates TLS for `convert.aquilaxk.site` and proxies to `127.0.0.1:8090`. The CDN in front of the origin is the only client the firewall lets reach port 443.
 
@@ -22,6 +24,8 @@ The host nginx terminates TLS for `convert.aquilaxk.site` and proxies to `127.0.
 | `deploy/oci/apparmor-easyconvert` | AppArmor profile of the web and worker containers |
 | `deploy/oci/deploy.sh` | Deploy, rollback, reconcile, guard and sweep, run by the workflow (needs bash 4.4 or later; the host has 5.2) |
 | `deploy/oci/env-allowlist.txt` | The keys the env secret may carry |
+| `deploy/oci/prometheus.yml` | Internal Prometheus scrape and alerting config for `web:9464` and `worker:9465` |
+| `deploy/oci/alertmanager.yml` | Alertmanager routing config for `deploy/oci/prometheus-alerts.yml` |
 | `.github/workflows/deploy-oci.yml` | Image build on main, the promotion of a build whose CI passed, and the manual deploy |
 | `CHANGELOG.md` | The changelog; each deploy gets a short hand-written release note ("Releases" below) |
 
@@ -73,6 +77,7 @@ Do these once per host, in this order. No step needs a secret value written in t
    | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Only if sign-in with Google is enabled |
 | `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_PORT`, `MAIL_FROM` | Only if password reset and email verification are enabled: the host, the full account address, an application password, the port (587 by default) and the sender (the account by default) |
    | `EASYCONVERT_BUDGET_CPUS`, `EASYCONVERT_BUDGET_MEMORY_GB` | Optional budget, defaults 3.5 and 20 |
+   | `ALERTMANAGER_WEBHOOK_URL` | Optional. Webhook URL receiving paging alerts from `deploy/oci/prometheus-alerts.yml`; setting it enables `--profile monitoring` (`easyconvert-prometheus` + `easyconvert-alertmanager`) |
    | `STORAGE_DRIVER`, `S3_*`, `OCI_*`, `REDIS_URL` | Left out at launch. See "Scaling later" |
 
    The workflow keeps only the keys listed in `deploy/oci/env-allowlist.txt`. The job log is public. A dropped line is named there by its line number and never by any of its text, because a line that looks like a key can be the tail of a secret that a line break split off (the padding of a base64 value is upper case and ends in `=`). The image variables are not on the list, so the secret cannot replace the digests that the deploy pins.

@@ -476,6 +476,13 @@ export function createConversionRunners(ctx: QueueMutationContext) {
   return { handleConvertAll };
 }
 
+/** Immediately deletes a server-stored result (`/api/storage/file/...`) when the caller discards a completed queue item. */
+export function releaseStoredResultUrl(url?: string): void {
+  if (!url?.startsWith('/api/storage/file/')) return;
+  if (typeof fetch !== 'function') return;
+  void fetch(url, { method: 'DELETE', keepalive: true }).catch(() => undefined);
+}
+
 const updateQueueState = (
   ref: React.MutableRefObject<ConversionQueueItem[]>,
   setter: React.Dispatch<React.SetStateAction<ConversionQueueItem[]>>,
@@ -508,9 +515,13 @@ export function useClientQueue(options?: UseClientQueueOptions) {
     if (mountedRef.current) setInFlightCount(inFlightIdsRef.current.size);
   };
   const revokeBlobUrl = (url?: string) => {
-    if (!url?.startsWith('blob:')) return;
-    URL.revokeObjectURL(url);
-    blobUrlsRef.current.delete(url);
+    if (!url) return;
+    if (url.startsWith('blob:')) {
+      URL.revokeObjectURL(url);
+      blobUrlsRef.current.delete(url);
+      return;
+    }
+    releaseStoredResultUrl(url);
   };
   const isItemBusy = (i: ConversionQueueItem) =>
     isRunning(i) || inFlightIdsRef.current.has(i.id);

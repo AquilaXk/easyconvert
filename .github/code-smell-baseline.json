@@ -6,19 +6,6 @@
     "count": 2
   },
   {
-    "file": "src/app/api/v1/archives/inspect/route.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "POST",
-    "count": 1
-  },
-  {
-    "file": "src/app/api/v1/archives/inspect/route.ts",
-    "rule": "complexity",
-    "function": "POST",
-    "count": 1,
-    "maxValue": 35
-  },
-  {
     "file": "src/app/api/v1/jobs/route.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "POST",

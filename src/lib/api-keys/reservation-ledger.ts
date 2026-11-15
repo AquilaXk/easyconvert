@@ -128,9 +128,17 @@ export interface ReservationLedger {
   transactionOwner(transactionId: string): Promise<string | null>;
   /** The package balance of `owner`: what can be spent now. */
   packageBalance(owner: string): Promise<number>;
+  /** The package credit debt of `owner` carried forward from spent refunded or charged-back package credits. */
+  packageDebt(owner: string): Promise<number>;
   /** The package balance of `owner` and the package credits held by reservations in flight, net of what refunds claim from them. */
   packageStanding(owner: string): Promise<{ balance: number; held: number }>;
-  /** Deletes the package balance, payments, adjustments, charges and payment index entries of `owner`; the erasure of an account calls it. */
+  /** Places an account-level checkout hold (e.g. after an approved payment chargeback). */
+  setBillingHold(owner: string, reason: string): Promise<void>;
+  /** Clears an account-level checkout hold. */
+  clearBillingHold(owner: string): Promise<void>;
+  /** Whether `owner` currently has an active checkout hold. */
+  hasBillingHold(owner: string): Promise<boolean>;
+  /** Deletes the package balance, payments, adjustments, charges, hold and payment index entries of `owner`; the erasure of an account calls it. */
   forgetPackages(owner: string): Promise<void>;
 }
 
@@ -199,6 +207,14 @@ export class RedisReservationLedger implements ReservationLedger {
     return `${this.prefix}credits:{${owner}}:adj`;
   }
 
+  private debtKey(owner: string): string {
+    return `${this.prefix}credits:{${owner}}:debt`;
+  }
+
+  private holdKey(owner: string): string {
+    return `${this.prefix}credits:{${owner}}:hold`;
+  }
+
   /** The keys of the reservation `reservationId`; undefined for an id of another form. */
   private keysOf(reservationId: string): ReservationKeys | undefined {
     const named = parseReservationId(reservationId);
@@ -257,7 +273,17 @@ export class RedisReservationLedger implements ReservationLedger {
   }
 
   async grantPackage(owner: string, grant: PackageGrant): Promise<PackageGrantOutcome> {
-    const reply = (await this.redis.eval(GRANT_PACKAGE_LUA_SCRIPT, 2, this.poolKey(owner), this.transactionsKey(owner), grant.transactionId, grant.credits, grant.paid, grant.at)) as [number, number];
+    const reply = (await this.redis.eval(
+      GRANT_PACKAGE_LUA_SCRIPT,
+      3,
+      this.poolKey(owner),
+      this.transactionsKey(owner),
+      this.debtKey(owner),
+      grant.transactionId,
+      grant.credits,
+      grant.paid,
+      grant.at
+    )) as [number, number];
     return Number(reply[0]) === 1 ? 'granted' : 'duplicate';
   }
 
@@ -285,15 +311,38 @@ export class RedisReservationLedger implements ReservationLedger {
     return Number((await this.redis.get(this.poolKey(owner))) ?? 0);
   }
 
+  async packageDebt(owner: string): Promise<number> {
+    return Number((await this.redis.get(this.debtKey(owner))) ?? 0);
+  }
+
   async packageStanding(owner: string): Promise<{ balance: number; held: number }> {
     const [balance, held] = (await this.redis.eval(PACKAGE_STANDING_LUA_SCRIPT, 4, this.poolKey(owner), ...this.packageLeaseKeys(owner))) as [number, number];
     return { balance: Number(balance), held: Number(held) };
   }
 
+  async setBillingHold(owner: string, reason: string): Promise<void> {
+    await this.redis.set(this.holdKey(owner), reason);
+  }
+
+  async clearBillingHold(owner: string): Promise<void> {
+    await this.redis.del(this.holdKey(owner));
+  }
+
+  async hasBillingHold(owner: string): Promise<boolean> {
+    return (await this.redis.get(this.holdKey(owner))) !== null;
+  }
+
   async forgetPackages(owner: string): Promise<void> {
     const transactionIds = await this.redis.hkeys(this.transactionsKey(owner));
     // The keys of the account share one slot; the payment index keys carry no tag, so each goes in a command of its own (Redis Cluster refuses a DEL over two slots).
-    await this.redis.del(this.poolKey(owner), this.logKey(owner), this.transactionsKey(owner), this.adjustmentsKey(owner), ...this.packageLeaseKeys(owner));
+    await this.redis.del(
+      this.poolKey(owner),
+      this.logKey(owner),
+      this.transactionsKey(owner),
+      this.adjustmentsKey(owner),
+      this.holdKey(owner),
+      ...this.packageLeaseKeys(owner)
+    );
     for (const id of transactionIds) await this.redis.del(`${this.prefix}credits:txnowner:${id}`);
   }
 }
@@ -316,8 +365,9 @@ interface HeldReservation {
 /** What this process holds of one owner's package credits, as the keys of `credits:{owner}` do in Redis. */
 interface MemoryPackages {
   balance: number;
-  /** The credits of refunds that found them held by a reservation in flight: the units that return to the balance pay it first. */
+  /** The credits of refunds not yet covered by returned held units or subsequent package grants. */
   debt: number;
+  hold?: string;
   payments: Map<string, { credits: number; paid: string; revoked: number; at: number }>;
   adjustments: Map<string, number>;
   charges: ChargeEntry[];
@@ -448,9 +498,6 @@ export class MemoryReservationLedger implements ReservationLedger {
     this.charge(reservation.dateKey, window - reservation.units);
     if (packed < reservation.packed) this.returnPackage(reservation.owner, reservation.packed - packed);
     else this.chargePackage(reservation.owner, packed - reservation.packed);
-    // Units that stay charged are not returned, so the debt cannot be more than what the live reservations still hold.
-    const owing = this.packages.get(reservation.owner);
-    if (owing) owing.debt = Math.min(owing.debt, this.heldPackage(reservation.owner));
     if (charge.note && window + packed > 0) {
       const held = this.packages.get(reservation.owner) ?? this.newPackages(reservation.owner);
       held.charges.unshift({ ...charge.note, at: Date.now(), credits: window + packed, fromPackage: packed, ...(uncharged > 0 ? { uncharged } : {}) });
@@ -534,7 +581,9 @@ export class MemoryReservationLedger implements ReservationLedger {
     const held = this.packages.get(owner) ?? this.newPackages(owner);
     if (held.payments.has(grant.transactionId)) return 'duplicate';
     held.payments.set(grant.transactionId, { credits: grant.credits, paid: grant.paid, revoked: 0, at: grant.at });
-    held.balance += grant.credits;
+    const paidDebt = Math.min(grant.credits, held.debt);
+    held.debt -= paidDebt;
+    held.balance += grant.credits - paidDebt;
     return 'granted';
   }
 
@@ -550,11 +599,12 @@ export class MemoryReservationLedger implements ReservationLedger {
     const want = refund.full ? left : share;
     const take = Math.min(want, held.balance);
     held.balance -= take;
-    const deferred = Math.min(want - take, this.unclaimedHeld(owner));
-    held.debt += deferred;
-    payment.revoked += take + deferred;
-    held.adjustments.set(refund.adjustmentId, take + deferred);
-    return { status: 'revoked', revoked: take, unrecovered: want - take - deferred, deferred };
+    const short = want - take;
+    const deferred = Math.min(short, this.unclaimedHeld(owner));
+    held.debt += short;
+    payment.revoked += want;
+    held.adjustments.set(refund.adjustmentId, want);
+    return { status: 'revoked', revoked: take, unrecovered: short - deferred, deferred };
   }
 
   async recentCharges(owner: string): Promise<ChargeEntry[]> {
@@ -573,9 +623,27 @@ export class MemoryReservationLedger implements ReservationLedger {
     return this.balanceOf(owner);
   }
 
+  async packageDebt(owner: string): Promise<number> {
+    return this.packages.get(owner)?.debt ?? 0;
+  }
+
   async packageStanding(owner: string): Promise<{ balance: number; held: number }> {
     this.reclaim();
     return { balance: this.balanceOf(owner), held: this.unclaimedHeld(owner) };
+  }
+
+  async setBillingHold(owner: string, reason: string): Promise<void> {
+    const held = this.packages.get(owner) ?? this.newPackages(owner);
+    held.hold = reason;
+  }
+
+  async clearBillingHold(owner: string): Promise<void> {
+    const held = this.packages.get(owner);
+    if (held) delete held.hold;
+  }
+
+  async hasBillingHold(owner: string): Promise<boolean> {
+    return Boolean(this.packages.get(owner)?.hold);
   }
 
   async forgetPackages(owner: string): Promise<void> {

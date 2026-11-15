@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { Readable } from 'node:stream';
 import { denyUnlessOwner, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
+import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
+import { isAnonymousUserId } from '@/lib/auth/anonymous-identity';
 import { attachmentContentDisposition } from '@/lib/api/content-disposition';
 import { parseByteRange, satisfiedContentRange, unsatisfiedContentRange } from '@/lib/api/http-range';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { deliveryTrackedStream } from '@/lib/api/delivery-stream';
-import { deleteResult, recordServed, resultAvailability } from '@/lib/storage/retention-service';
+import { deleteResult, eraseOwnedFile, recordServed, resultAvailability } from '@/lib/storage/retention-service';
 import { isRetainedKey, type RetentionReason } from '@/lib/storage/result-retention';
 
 export const dynamic = 'force-dynamic';
@@ -45,9 +47,9 @@ async function authorizeAndStat(
   key: string,
   notFound: () => NextResponse
 ): Promise<
-  | { resolved: false; denied?: undefined; stored?: undefined }
-  | { resolved: true; denied: NextResponse; stored?: undefined }
-  | { resolved: true; denied?: undefined; stored: Awaited<ReturnType<typeof s3Storage.stat>> }
+  | { resolved: false; denied?: undefined; stored?: undefined; ownerUserId?: undefined }
+  | { resolved: true; denied: NextResponse; stored?: undefined; ownerUserId?: string }
+  | { resolved: true; denied?: undefined; stored: Awaited<ReturnType<typeof s3Storage.stat>>; ownerUserId: string | undefined }
 > {
   const ownership = await resolveObjectOwnership(key);
   if (!ownership.resolved) {
@@ -55,9 +57,9 @@ async function authorizeAndStat(
   }
   const denied = await denyUnlessOwner(req, ownership.ownerUserId, STORAGE_DOWNLOAD_SCOPE, notFound);
   if (denied) {
-    return { resolved: true, denied };
+    return { resolved: true, denied, ownerUserId: ownership.ownerUserId };
   }
-  return { resolved: true, stored: await s3Storage.stat(key) };
+  return { resolved: true, stored: await s3Storage.stat(key), ownerUserId: ownership.ownerUserId };
 }
 
 export async function GET(
@@ -195,4 +197,91 @@ async function noteDelivery(key: string, range: { first: number; last: number; s
   } catch (error) {
     console.error(`[StorageDownload] Could not record the delivery of "${key}":`, error);
   }
+}
+
+/**
+ * Immediately deletes a stored output and its retention metadata on caller request:
+ * - Anonymous outputs (`results/<jobId>/...`, `uploads/...`) use capability-URL authorization matching `GET`.
+ * - User-owned outputs require the owning user's session (with Origin check) or `storage:download` API key, and also remove
+ *   any matching dashboard file-history entry so the account view reflects deletion immediately.
+ */
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: Promise<{ key: string[] }> }
+) {
+  const { key: keySegments } = await params;
+  const rawKey = Array.isArray(keySegments) ? keySegments.join('/') : keySegments;
+  const fullKey = decodeStorageKey(rawKey) ?? rawKey;
+  const notFound = () =>
+    NextResponse.json(
+      { success: false, error: `Object not found for key: "${fullKey}"` },
+      { status: 404, headers: { 'Cache-Control': PRIVATE_NO_STORE } }
+    );
+
+  const instanceUri = req.nextUrl?.pathname || '/api/storage/file';
+  let resolvedKey = fullKey;
+  let stored: Awaited<ReturnType<typeof s3Storage.stat>> = null;
+  let ownershipResolved = false;
+  let ownerUserId: string | undefined;
+  try {
+    const primary = await authorizeAndStat(req, fullKey, notFound);
+    if (primary.denied) return primary.denied;
+    ownershipResolved = primary.resolved;
+    stored = primary.stored ?? null;
+    ownerUserId = primary.ownerUserId;
+    if (!stored && rawKey !== fullKey) {
+      const literal = await authorizeAndStat(req, rawKey, notFound);
+      if (literal.denied) return literal.denied;
+      if (literal.resolved) {
+        ownershipResolved = true;
+        if (literal.stored) {
+          resolvedKey = rawKey;
+          stored = literal.stored;
+          ownerUserId = literal.ownerUserId;
+        }
+      }
+    }
+  } catch (err: unknown) {
+    const problem = storageErrorResponse(err, instanceUri);
+    if (problem) return problem;
+    throw err;
+  }
+
+  if (!ownershipResolved) {
+    return notFound();
+  }
+
+  const availability = await resultAvailability(resolvedKey);
+  if (!stored && !availability) {
+    return notFound();
+  }
+
+  try {
+    await eraseOwnedFile(s3Storage, resolvedKey);
+  } catch (err: unknown) {
+    const problem = storageErrorResponse(err, instanceUri);
+    if (problem) return problem;
+    throw err;
+  }
+
+  if (ownerUserId && !isAnonymousUserId(ownerUserId)) {
+    const expectedPath = `/api/storage/file/${resolvedKey}`;
+    const files = await redisKeyStore.listUserFiles(ownerUserId).catch(() => []);
+    for (const entry of files) {
+      let decodedUrl = entry.downloadUrl;
+      try {
+        decodedUrl = decodeURIComponent(entry.downloadUrl);
+      } catch {
+        // Keep raw URL when percent-decoding fails.
+      }
+      if (entry.storageKey === resolvedKey || decodedUrl === expectedPath) {
+        await redisKeyStore.deleteUserFile(ownerUserId, entry.id).catch(() => false);
+      }
+    }
+  }
+
+  return NextResponse.json(
+    { success: true, message: 'File removed.' },
+    { status: 200, headers: { 'Cache-Control': PRIVATE_NO_STORE } }
+  );
 }

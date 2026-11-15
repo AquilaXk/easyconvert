@@ -162,4 +162,44 @@ describe('deploy/oci/prometheus-alerts.yml and runbook links', () => {
       expect(sloDoc).toContain(`operations/alerts.md#${anchor}`);
     }
   });
+
+  it('wires deploy/oci/prometheus.yml and deploy/oci/alertmanager.yml to web:9464, worker:9465 and the alert rule file', () => {
+    const promConfig = parse(read('deploy/oci/prometheus.yml')) as {
+      rule_files?: string[];
+      alerting?: { alertmanagers?: Array<{ static_configs?: Array<{ targets?: string[] }> }> };
+      scrape_configs?: Array<{
+        job_name: string;
+        metrics_path?: string;
+        static_configs?: Array<{ targets?: string[] }>;
+        dns_sd_configs?: Array<{ names?: string[]; type?: string; port?: number }>;
+      }>;
+    };
+    expect(promConfig.rule_files).toEqual(['/etc/prometheus/prometheus-alerts.yml']);
+    expect(promConfig.alerting?.alertmanagers?.[0]?.static_configs?.[0]?.targets).toEqual(['alertmanager:9093']);
+
+    const webJob = promConfig.scrape_configs?.find((job) => job.job_name === 'easyconvert-web');
+    expect(webJob?.static_configs?.[0]?.targets).toEqual(['web:9464']);
+
+    const workerJob = promConfig.scrape_configs?.find((job) => job.job_name === 'easyconvert-worker');
+    expect(workerJob?.dns_sd_configs?.[0]).toMatchObject({
+      type: 'A',
+      port: 9465,
+      names: expect.arrayContaining(['worker', 'worker-light', 'worker-cpu', 'worker-memory', 'worker-gpu']),
+    });
+
+    const amConfig = parse(read('deploy/oci/alertmanager.yml')) as {
+      route?: { receiver?: string; routes?: Array<{ matchers?: string[]; receiver?: string }> };
+      receivers?: Array<{ name: string; webhook_configs?: Array<{ url_file?: string; url?: string }> }>;
+    };
+    expect(amConfig.route?.receiver).toBe('paging-webhook');
+    expect(amConfig.route?.routes?.[0]).toMatchObject({
+      matchers: ['severity = "page"'],
+      receiver: 'paging-webhook',
+    });
+    expect(amConfig.receivers?.[0]).toMatchObject({
+      name: 'paging-webhook',
+      webhook_configs: [{ url_file: '/tmp/webhook_url', send_resolved: true }],
+    });
+    expect(amConfig.receivers?.[0]?.webhook_configs?.[0]?.url).toBeUndefined();
+  });
 });

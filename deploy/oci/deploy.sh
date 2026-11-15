@@ -180,6 +180,7 @@ compose() { # compose <release-dir> <args...>
   local dir="$1"; shift
   local profiles=()
   if ! grep -q '^REDIS_URL=' "$dir/.env"; then profiles+=(--profile redis); fi
+  if [ -n "$(env_value "$dir/.env" ALERTMANAGER_WEBHOOK_URL)" ]; then profiles+=(--profile monitoring); fi
   docker compose --project-name easyconvert --project-directory "$dir" --env-file "$dir/.env" \
     -f "$dir/docker-compose.prod.yml" "${profiles[@]}" "$@"
 }
@@ -480,9 +481,10 @@ deploy() {
   release="$HOME_DIR/releases/$(date -u +%Y%m%dT%H%M%SZ)-$ref"
   PENDING_RELEASE="$release"
   trap 'cancelled "$previous" "$release"' INT TERM
-  mkdir -p "$release/docker"
+  mkdir -p "$release/docker" "$release/deploy/oci"
   cp "$source_dir/docker-compose.prod.yml" "$release/"
   cp "$source_dir/docker/seccomp-worker.json" "$release/docker/"
+  cp "$source_dir/deploy/oci/prometheus.yml" "$source_dir/deploy/oci/prometheus-alerts.yml" "$source_dir/deploy/oci/alertmanager.yml" "$release/deploy/oci/"
   printf 'EASYCONVERT_WORKER_IMAGE=%s\nEASYCONVERT_WEB_IMAGE=%s\n' "$worker" "$web" > "$release/images.env"
 
   (

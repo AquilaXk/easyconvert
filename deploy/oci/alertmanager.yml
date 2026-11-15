@@ -1,0 +1,25 @@
+# Production Alertmanager configuration for EasyConvert (docs/slo.md, docs/operations/alerts.md).
+# The receiver URL is written to /tmp/webhook_url (mode 0600 on tmpfs) from ALERTMANAGER_WEBHOOK_URL at container start,
+# keeping webhook tokens out of argv (`ps`, `docker top`) and out of tracked files.
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: paging-webhook
+  group_by:
+    - alertname
+    - family
+    - queue
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - severity = "page"
+      receiver: paging-webhook
+
+receivers:
+  - name: paging-webhook
+    webhook_configs:
+      - url_file: /tmp/webhook_url
+        send_resolved: true

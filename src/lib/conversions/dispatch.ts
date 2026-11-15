@@ -64,9 +64,16 @@ function isTaskDrivenMediaTarget(src: string, tgt: string, options: WorkerEngine
   return false;
 }
 
+export function canConvertPair(sourceFormat: string, targetFormat: string, options: WorkerEngineOptions = {}): boolean {
+  const src = normalizeFormat(sourceFormat);
+  const tgt = normalizeFormat(targetFormat);
+  if (!src || !tgt) return false;
+  const def = Object.hasOwn(FORMAT_REGISTRY, src) ? FORMAT_REGISTRY[src] : undefined;
+  return Boolean(def && (def.targetFormats.includes(tgt) || isTaskDrivenMediaTarget(src, tgt, options)));
+}
+
 function assertAdvertised(src: string, tgt: string, options: WorkerEngineOptions): void {
-  const def = FORMAT_REGISTRY[src];
-  if (def?.targetFormats.includes(tgt) || isTaskDrivenMediaTarget(src, tgt, options)) return;
+  if (canConvertPair(src, tgt, options)) return;
   throw new UnsupportedTargetError(`Unsupported conversion from .${src} to .${tgt}: the pair is not offered`);
 }
 

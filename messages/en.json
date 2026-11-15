@@ -1667,6 +1667,7 @@
     "billing": {
       "billing_unavailable": "Credits cannot be bought yet.",
       "billing_provider_failed": "Could not reach the payment service. Try again in a moment.",
+      "billing_hold": "Purchases are paused on this account due to a payment dispute. Contact support to restore billing.",
       "already_subscribed": "You already have a subscription of this size. Choose another size, or change or cancel it under Manage subscription.",
       "no_subscription": "You do not have a subscription.",
       "invalid_signature": "The request could not be verified.",

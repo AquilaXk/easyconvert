@@ -476,12 +476,12 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
 }
 
 export const config = {
-  // API routes, and every path that is not a framework internal or a static asset in `public/` or `src/app/`. Dotted paths
-  // that are not static assets (`/robots.txt`, `/foo.html`, `/wp-login.php`, `/.env`, `/.git/config`) and bare `/api` go
+  // API routes, and every path that is not a framework internal, a metadata crawler file, or a static asset in `public/` or `src/app/`.
+  // Other dotted paths (`/foo.html`, `/wp-login.php`, `/.env`, `/.git/config`, `/ko/robots.txt`) and bare `/api` go
   // through `pageLocaleAnswer`, so `src/app/[locale]/[slug]/page.tsx` and `src/app/[locale]/[...rest]/page.tsx` answer them
   // 404 without reaching `src/app/[locale]/page.tsx` with an unknown `locale` parameter (`NoFallbackError`).
   matcher: [
     '/api/:path*',
-    '/((?!api/|_next/|_vercel/|fonts/|format-icons/|favicon\\.ico$|icon\\.svg$|apple-icon\\.png$|sample\\.pdf$).*)',
+    '/((?!api/|_next/|_vercel/|fonts/|format-icons/|favicon\\.ico$|icon\\.svg$|apple-icon\\.png$|sample\\.pdf$|robots\\.txt$|sitemap\\.xml$).*)',
   ],
 };

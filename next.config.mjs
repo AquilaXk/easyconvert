@@ -1,5 +1,22 @@
 import { PHASE_PRODUCTION_SERVER } from 'next/constants.js';
 
+const PAGE_CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob: https://cdn.paddle.com https://*.paddle.com",
+  "style-src 'self' 'unsafe-inline' https://cdn.paddle.com https://*.paddle.com",
+  "img-src 'self' data: blob: https:",
+  "media-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self' blob: https://*.paddle.com",
+  "worker-src 'self' blob:",
+  "child-src 'self' blob: https://*.paddle.com",
+  "frame-src 'self' https://*.paddle.com",
+  "frame-ancestors 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+].join('; ');
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -15,6 +32,19 @@ const nextConfig = {
     // This is SINGLE_REQUEST_BODY_MAX_BYTES of src/lib/plan-limits.ts (65 MiB: the largest single request, which is
     // also a part of an upload in parts and its framing); tests/next-config-body-limit.test.ts holds the two together.
     middlewareClientMaxBodySize: 65 * 1024 * 1024,
+  },
+  async headers() {
+    return [
+      {
+        source: '/((?!api/|_assets/).*)',
+        headers: [
+          { key: 'Content-Security-Policy', value: PAGE_CONTENT_SECURITY_POLICY },
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+        ],
+      },
+    ];
   },
   async rewrites() {
     return [

@@ -52,6 +52,7 @@ export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];
 export const BILLING_REFUSAL_CODES = [
   'billing_unavailable',
   'billing_provider_failed',
+  'billing_hold',
   'invalid_product',
   'already_subscribed',
   'no_subscription',

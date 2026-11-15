@@ -1,20 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { createZipArchive } from '@/lib/conversions';
-import { dispatchConversion } from '@/lib/conversions/dispatch';
+import { canConvertPair, dispatchConversion } from '@/lib/conversions/dispatch';
 import { conversionDeadlineMs, syncDeadlineMs, tierMaxDeadlineMs } from '@/lib/queue/job-deadline';
 import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
 import { bindJobLimits } from '@/lib/conversions/job-time';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { fileSizeLimitProblem, withinSingleRequest } from '@/lib/api/file-size-limit';
-import { detectFormatFromFilename } from '@/lib/registry';
+import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
 import { assertNotSpoofedFile, spoofCheckRefusal } from '@/lib/security/file-guard';
 import { refusalCodeOf } from '@/lib/refusal-codes';
 import {
   ConversionOptions,
   ArchiveEntryCollisionError,
   PdfPostprocessError,
+  UnsupportedTargetError,
   WorkerOutputMissingError,
   WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
@@ -87,6 +88,54 @@ async function readBatchForm(
   };
 }
 
+function normalizeTargetFormat(raw: string): string {
+  const cleaned = raw.toLowerCase().replace(/^\./, '').trim();
+  if (!cleaned) return '';
+  return getFormatByExtension(cleaned)?.extension ?? cleaned;
+}
+
+function validateBatchFileSizes(files: readonly File[], user: User, instanceUri: string): NextResponse | null {
+  for (const file of files) {
+    if (file.size === 0) {
+      return NextResponse.json(
+        { success: false, error: `Batch payload contains empty file "${file.name}". File buffer has 0 bytes.` },
+        { status: 400 }
+      );
+    }
+    const oversize = fileSizeLimitProblem(user, file.size, instanceUri);
+    if (oversize) return oversize;
+  }
+  return null;
+}
+
+function planBatchFiles(
+  files: readonly File[],
+  targetFormatsMap: ReadonlyMap<string, string>,
+  defaultOptions: ConversionOptions
+): PlannedFile[] {
+  const planned: PlannedFile[] = [];
+  for (const file of files) {
+    const detected = detectFormatFromFilename(file.name);
+    if (!detected) continue;
+    if (targetFormatsMap.has(file.name)) {
+      const targetFormat = normalizeTargetFormat(targetFormatsMap.get(file.name) ?? '');
+      if (!targetFormat || !canConvertPair(detected.extension, targetFormat, defaultOptions)) {
+        throw new UnsupportedTargetError(
+          `Unsupported conversion from .${detected.extension} to .${targetFormat || '(empty)'}: the pair is not offered`
+        );
+      }
+      planned.push({ file, extension: detected.extension, targetFormat });
+      continue;
+    }
+    const fallbackRaw = targetFormatsMap.get('default') ?? detected.targetFormats[0] ?? '';
+    const targetFormat = normalizeTargetFormat(fallbackRaw);
+    if (targetFormat && canConvertPair(detected.extension, targetFormat, defaultOptions)) {
+      planned.push({ file, extension: detected.extension, targetFormat });
+    }
+  }
+  return planned;
+}
+
 export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('convert/batch', async function POST(req: NextRequest, trace: ConversionTrace) {
   const instanceUri = req.nextUrl?.pathname || '/api/convert/batch';
   // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
@@ -134,24 +183,13 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('conve
     const { files, targetFormatsRaw, optionsRaw } = form;
     trace.bytes = files.reduce((total, f) => total + f.size, 0);
 
-    for (const f of files) {
-      if (f.size === 0) {
-        return NextResponse.json(
-          { success: false, error: `Batch payload contains empty file "${f.name}". File buffer has 0 bytes.` },
-          { status: 400 }
-        );
-      }
-      const oversize = fileSizeLimitProblem(auth.user, f.size, instanceUri);
-      if (oversize) {
-        return oversize;
-      }
-    }
+    const sizeProblem = validateBatchFileSizes(files, auth.user, instanceUri);
+    if (sizeProblem) return sizeProblem;
 
     const parsedTargets = parseTargetFormats(targetFormatsRaw);
     if ('problem' in parsedTargets) {
       return parsedTargets.problem;
     }
-    const targetFormatsMap = parsedTargets.map;
 
     const parsedOptions = parseBatchOptions(optionsRaw, instanceUri);
     if ('problem' in parsedOptions) {
@@ -160,18 +198,10 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('conve
     const defaultOptions = parsedOptions.options;
     trace.keepPrivate(files.map((f) => f.name), defaultOptions);
 
-    const planned: PlannedFile[] = [];
-    for (const file of files) {
-      const detected = detectFormatFromFilename(file.name);
-      if (!detected) continue;
-      const targetFormat = targetFormatsMap.get(file.name) || targetFormatsMap.get('default') || detected.targetFormats[0];
-      if (!targetFormat) continue;
-      planned.push({ file, extension: detected.extension, targetFormat });
-    }
-
+    const planned = planBatchFiles(files, parsedTargets.map, defaultOptions);
     if (planned.length === 0) {
       return NextResponse.json(
-        { success: false, error: 'No convertible files matched the target format.' },
+        { success: false, code: 'unsupported_pair', error: 'No convertible files matched the target format.' },
         { status: 400 }
       );
     }

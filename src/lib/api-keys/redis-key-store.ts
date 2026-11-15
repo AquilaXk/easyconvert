@@ -243,6 +243,30 @@ export class RedisKeyStore extends KeyStore {
     return this.ledger().packageBalance(userId);
   }
 
+  /** The package credit debt of `userId` carried forward from spent refunded or charged-back package credits. */
+  public async packageDebt(userId: string): Promise<number> {
+    return this.ledger().packageDebt(userId);
+  }
+
+  /** Places an account-level checkout hold (e.g. after an approved payment chargeback). */
+  public async setBillingHold(userId: string, reason: string): Promise<void> {
+    return this.ledger().setBillingHold(userId, reason);
+  }
+
+  /** Clears an account-level checkout hold. */
+  public async clearBillingHold(userId: string): Promise<void> {
+    return this.ledger().clearBillingHold(userId);
+  }
+
+  /** Whether `userId` has an active checkout hold; fails closed via `AuthStoreUnavailableError` if Redis cannot answer. */
+  public async hasBillingHold(userId: string): Promise<boolean> {
+    try {
+      return await this.ledger().hasBillingHold(userId);
+    } catch (error) {
+      return failClosed('RedisKeyStore', 'hasBillingHold', error);
+    }
+  }
+
   /** Adds the credits of a paid package payment to the account, once for each transaction id, and remembers whose payment it is for refunds. */
   public async creditPackage(userId: string, grant: PackageGrant): Promise<PackageGrantOutcome> {
     const outcome = await this.ledger().grantPackage(userId, grant);

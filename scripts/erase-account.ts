@@ -159,7 +159,7 @@ async function accountTaggedKeys(userId: string, context: TaggedKeyContext = {})
     candidates.add(`${prefix}limits:{${userId}}:${windowKey}`);
   }
 
-  for (const suffix of ['', ':plist', ':pholds', ':debt', ':log', ':txns', ':adj']) {
+  for (const suffix of ['', ':plist', ':pholds', ':debt', ':hold', ':log', ':txns', ':adj']) {
     candidates.add(`${prefix}credits:{${userId}}${suffix}`);
   }
 

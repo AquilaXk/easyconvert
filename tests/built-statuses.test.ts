@@ -17,7 +17,7 @@ const SCRIPT = path.resolve(__dirname, '..', 'scripts', 'check-built-statuses.mj
 const run = promisify(execFile);
 const servers: Server[] = [];
 
-const PAGES = new Set(['/pdf-to-jpg', '/ko/pdf-to-jpg', '/api-docs', '/pricing', '/auth']);
+const PAGES = new Set(['/robots.txt', '/sitemap.xml', '/pdf-to-jpg', '/ko/pdf-to-jpg', '/api-docs', '/pricing', '/auth']);
 // The account page redirects to the dashboard, and the dashboard sends a visitor without a session to the login page.
 const REDIRECTS = new Set(['/account', '/dashboard/api-keys']);
 
@@ -89,6 +89,9 @@ describe('the built server answers a path the site does not offer with 404 and a
     ['a page with a space after it under /en redirected to the page', { answers: { '/en/pdf-to-jpg ': 307 } }, '/en/pdf-to-jpg%20'],
     ['a page with a space after it under /KO redirected to the page', { answers: { '/KO/pdf-to-jpg ': 307 } }, '/KO/pdf-to-jpg%20'],
     ['a file path answered 500', { answers: { '/robots.txt': 500 } }, '/robots.txt'],
+    ['robots.txt answered 404', { answers: { '/robots.txt': 404 } }, '/robots.txt'],
+    ['sitemap.xml answered 404', { answers: { '/sitemap.xml': 404 } }, '/sitemap.xml'],
+    ['localized /ko/robots.txt answered 200', { answers: { '/ko/robots.txt': 200 } }, '/ko/robots.txt'],
     ['a dotted name answered 500', { answers: { '/foo.html': 500 } }, '/foo.html'],
     ['a dotted probe answered 200', { answers: { '/wp-login.php': 200 } }, '/wp-login.php'],
     ['a dotfile path answered 500', { answers: { '/.env': 500 } }, '/.env'],

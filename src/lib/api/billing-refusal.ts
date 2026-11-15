@@ -4,6 +4,7 @@ import type { BillingRefusalCode } from '@/lib/refusal-codes';
 import { authStoreUnavailableRefusal, codedRefusal } from './problem-details';
 
 const HTTP_BAD_REQUEST = 400;
+const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 const HTTP_BAD_GATEWAY = 502;
@@ -14,6 +15,10 @@ const refusal = codedRefusal<BillingRefusalCode>;
 /** What every paid route answers while billing is not fully configured: nothing can be bought or managed. */
 export const billingUnavailable = (): NextResponse =>
   refusal(HTTP_SERVICE_UNAVAILABLE, 'billing_unavailable', 'Paid plans are not available on this server.');
+
+/** Refuses new checkouts on an account that has an unresolved chargeback hold. */
+export const billingHold = (): NextResponse =>
+  refusal(HTTP_FORBIDDEN, 'billing_hold', 'Purchases are paused on this account due to a payment dispute. Contact support to restore billing.');
 
 export const invalidProduct = (): NextResponse =>
   refusal(HTTP_BAD_REQUEST, 'invalid_product', 'Choose a package or a subscription that is on sale: "kind" is "package" or "subscription" and "credits" is one of its sizes.');

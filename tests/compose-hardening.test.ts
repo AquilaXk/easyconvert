@@ -213,7 +213,7 @@ describe('compose files carry no default for secrets, keys or cloud identifiers'
     expect(text).toMatch(/STORAGE_DRIVER: \$\{STORAGE_DRIVER:-local\}/);
     expect(text).toMatch(/STORAGE_SIGNING_SECRET: \$\{STORAGE_SIGNING_SECRET:\?/);
     expect(text).toMatch(/JOB_SECRET_KEK: \$\{JOB_SECRET_KEK:\?/);
-    expect(Object.keys(prod.services).sort()).toEqual(['redis', 'web', ...WORKER_SERVICES].sort());
+    expect(Object.keys(prod.services).sort()).toEqual(['alertmanager', 'prometheus', 'redis', 'web', ...WORKER_SERVICES].sort());
     for (const name of ['web', ...WORKER_SERVICES]) {
       const env = environmentOf(prod.services[name]);
       expect(env.NODE_ENV, name).toBe('production');

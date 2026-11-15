@@ -26,11 +26,15 @@ export async function refundPackagePurchase(refund: PackageRefund, store: RedisK
   const userId = await store.packageTransactionOwner(refund.transactionId);
   if (!userId) return 'unknown_transaction';
   const outcome = await store.revokePackage(userId, { transactionId: refund.transactionId, adjustmentId: refund.adjustmentId, amount: refund.amount, full: refund.full });
-  if (outcome.status !== 'revoked') return outcome.status === 'duplicate' ? 'duplicate' : 'unknown_transaction';
+  if (outcome.status === 'unknown-transaction') return 'unknown_transaction';
+  if (refund.action === 'chargeback') {
+    await store.setBillingHold(userId, `${refund.action}:${refund.adjustmentId}`);
+  }
+  if (outcome.status === 'duplicate') return 'duplicate';
   console.warn(
     `[billing] ${refund.action} ${refund.adjustmentId} of package payment ${refund.transactionId}: took back ${outcome.revoked} credits of account ${userId}` +
       (outcome.deferred > 0 ? `, ${outcome.deferred} more are held by conversions in flight and are taken back when they end` : '') +
-      (outcome.unrecovered > 0 ? `, ${outcome.unrecovered} more were owed and are already spent` : '')
+      (outcome.unrecovered > 0 ? `, ${outcome.unrecovered} more were owed and are already spent (carried as debt)` : '')
   );
   return 'revoked';
 }

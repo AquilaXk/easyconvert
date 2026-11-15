@@ -1,3 +1,4 @@
+import dns from 'node:dns';
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { fetch as undiciFetch } from 'undici';
@@ -7,6 +8,8 @@ import {
   MAX_REDIRECTS,
   validateUrlForSsrf,
   createSsrfSafeAgent,
+  isBlockedIp,
+  isPrivateOrRestrictedHost,
   isSsrfBlockedError,
 } from '@/lib/security/ssrf';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
@@ -58,12 +61,30 @@ function discardBody(res: Response): void {
 /** The answer of the remote after its redirects were followed, each hop checked against the SSRF rules, or the refusal. */
 type RemoteAnswer = { res: Response; finalUrl: URL } | { refusal: NextResponse };
 
+/** Distinguishes an internal/restricted SSRF target (403) from an unresolvable public host (502). */
+async function classifySsrfOrDnsRefusal(url: URL): Promise<NextResponse> {
+  const rawHostname = url.hostname.toLowerCase();
+  const hostname = rawHostname.startsWith('[') && rawHostname.endsWith(']') ? rawHostname.slice(1, -1) : rawHostname;
+  if (isPrivateOrRestrictedHost(hostname)) {
+    return refusal(403, 'address_blocked', 'Requests to internal/private addresses are blocked.');
+  }
+  try {
+    const addresses = await dns.promises.lookup(hostname, { all: true });
+    if (addresses && addresses.length > 0 && addresses.some((addr) => isBlockedIp(addr.address))) {
+      return refusal(403, 'address_blocked', 'Requests to internal/private addresses are blocked.');
+    }
+  } catch {
+    return refusal(502, 'fetch_failed', 'Failed to resolve remote host.');
+  }
+  return refusal(502, 'fetch_failed', 'Failed to resolve remote host.');
+}
+
 async function fetchFollowingRedirects(url: URL, ssrfAgent: ReturnType<typeof createSsrfSafeAgent>, signal: AbortSignal): Promise<RemoteAnswer> {
   let currentUrl = url;
   for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
     const isValid = await validateUrlForSsrf(currentUrl);
     if (!isValid) {
-      return { refusal: refusal(403, 'address_blocked', 'Requests to internal/private addresses are blocked.') };
+      return { refusal: await classifySsrfOrDnsRefusal(currentUrl) };
     }
 
     const controller = new AbortController();
@@ -83,7 +104,11 @@ async function fetchFollowingRedirects(url: URL, ssrfAgent: ReturnType<typeof cr
       if (isSsrfBlockedError(fetchErr) || msg.includes('SSRF blocked') || msg.includes('restricted')) {
         return { refusal: refusal(403, 'address_blocked', 'Requests to internal/private addresses are blocked.') };
       }
-      throw fetchErr;
+      if (signal.aborted) throw fetchErr;
+      if (controller.signal.aborted) {
+        return { refusal: importTimedOut(HEADERS_TIMEOUT_MS) };
+      }
+      return { refusal: refusal(502, 'fetch_failed', 'Failed to fetch remote URL.') };
     } finally {
       clearTimeout(timeout);
     }
@@ -137,7 +162,8 @@ function meterStopped(verdict: Exclude<MeterVerdict, 'ok'>, importer: ImportCall
 async function readBody(
   res: Response,
   meter: LinkImportMeter,
-  importer: ImportCaller
+  importer: ImportCaller,
+  signal: AbortSignal
 ): Promise<{ chunks: Uint8Array[]; totalBytes: number } | { refusal: NextResponse }> {
   const overflow = meter.declared(declaredBodyBytes(res.headers));
   if (overflow) {
@@ -166,7 +192,8 @@ async function readBody(
     }
   } catch (streamErr: unknown) {
     await reader.cancel().catch(() => {});
-    throw streamErr;
+    if (signal.aborted) throw streamErr;
+    return { refusal: refusal(502, 'fetch_failed', 'Failed to read response body from remote server.') };
   }
   const verdict = await meter.charge();
   if (verdict !== 'ok') return { refusal: meterStopped(verdict, importer) };
@@ -246,7 +273,7 @@ async function importFrom(
       { remoteStatus: res.status }
     );
   }
-  const body = await readBody(res, meter, importer);
+  const body = await readBody(res, meter, importer, signal);
   return 'refusal' in body ? body.refusal : importedFile(res, finalUrl, body.chunks, body.totalBytes);
 }
 

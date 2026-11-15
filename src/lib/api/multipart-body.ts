@@ -4,8 +4,8 @@ import { RequestAbortedError } from '../types';
 /** Whether a request declares a `multipart/form-data` body. */
 export const isMultipartBody = (req: NextRequest): boolean => (req.headers.get('content-type') ?? '').toLowerCase().includes('multipart/form-data');
 
-/** A multipart body read whole: its form, or the parser's error for a body that is not well-formed multipart. */
-export type MultipartRead = { form: FormData; malformed?: undefined } | { malformed: TypeError; form?: undefined };
+/** A multipart body read whole: its form, or the parser/stream error for a body that is truncated or not well-formed multipart. */
+export type MultipartRead = { form: FormData; malformed?: undefined } | { malformed: Error; form?: undefined };
 
 const parsedMultipartCache = new WeakMap<Request, Promise<MultipartRead>>();
 
@@ -14,8 +14,7 @@ async function parseMultipartOnce(req: NextRequest): Promise<MultipartRead> {
     return { form: await req.formData() };
   } catch (error: unknown) {
     if (req.signal.aborted) throw new RequestAbortedError({ cause: error });
-    if (error instanceof TypeError) return { malformed: error };
-    throw error;
+    return { malformed: error instanceof Error ? error : new Error(String(error)) };
   }
 }
 

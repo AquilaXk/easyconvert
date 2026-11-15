@@ -210,10 +210,34 @@ describe('docker-compose.prod.yml resource budget', () => {
     expect(mebibytes(worker.mem_limit) / jobs).toBeGreaterThanOrEqual(3.3 * 1024);
   });
 
-  it('starts only redis, web and worker by default; the classes and the GPU worker need a profile', () => {
+  it('starts only redis, web and worker by default; the classes, monitoring and the GPU worker need a profile', () => {
     const always = Object.entries(compose.services).filter(([, service]) => !service.profiles).map(([name]) => name);
     expect(always.sort()).toEqual(['web', 'worker']);
     expect(compose.services.redis.profiles).toEqual(['redis']);
+    expect(compose.services.prometheus.profiles).toEqual(['monitoring']);
+    expect(compose.services.alertmanager.profiles).toEqual(['monitoring']);
+  });
+
+  it('hardens prometheus and alertmanager as non-root read-only containers with digest-pinned images and no published ports', () => {
+    for (const name of ['prometheus', 'alertmanager'] as const) {
+      const service = compose.services[name];
+      expect(service.ports, name).toBeUndefined();
+      expect(service.read_only, name).toBe(true);
+      expect(service.cap_drop, name).toEqual(['ALL']);
+      expect(service.security_opt, name).toEqual(['no-new-privileges:true']);
+      expect(service.user, name).toBe('65534:65534');
+      expect(service.oom_score_adj, name).toBe(500);
+      expect(service.image, name).toMatch(/^prom\/(prometheus|alertmanager):v[0-9.]+@sha256:[0-9a-f]{64}$/);
+      expect(Number(defaultOf(service.cpus)), name).toBeGreaterThan(0);
+      expect(service.memswap_limit, name).toBe(service.mem_limit);
+      expect(service.cpu_shares, name).toBeLessThan(1024);
+    }
+    expect(compose.services.prometheus.networks).toEqual(['backend']);
+    expect(compose.services.alertmanager.networks).toEqual(['backend', 'egress']);
+    const amCommand = (compose.services.alertmanager.command ?? []).join(' ');
+    expect(amCommand).toContain('umask 077;');
+    expect(amCommand).toContain('> /tmp/webhook_url;');
+    expect(amCommand).not.toContain('--webhook.url');
   });
 });
 
@@ -1087,10 +1111,22 @@ exit 0`
     expect(statSync(path.join(release, '.env')).mode & 0o777).toBe(0o600);
     expect(existsSync(path.join(release, 'docker-compose.prod.yml'))).toBe(true);
     expect(existsSync(path.join(release, 'docker', 'seccomp-worker.json'))).toBe(true);
+    expect(existsSync(path.join(release, 'deploy', 'oci', 'prometheus.yml'))).toBe(true);
+    expect(existsSync(path.join(release, 'deploy', 'oci', 'prometheus-alerts.yml'))).toBe(true);
+    expect(existsSync(path.join(release, 'deploy', 'oci', 'alertmanager.yml'))).toBe(true);
     expect(calls().some((call) => / up -d --wait .*--remove-orphans/.test(call))).toBe(true);
     expect(calls().some((call) => call.includes('--profile redis'))).toBe(true);
+    expect(calls().some((call) => call.includes('--profile monitoring'))).toBe(false);
     expect(calls().some((call) => call.startsWith('curl') && call.includes('http://127.0.0.1:8090/api/health'))).toBe(true);
     expect(result.stderr).not.toContain('redis-password-value');
+  });
+
+  it('enables the monitoring profile automatically when ALERTMANAGER_WEBHOOK_URL is set without logging the webhook URL', () => {
+    writeFileSync(envFile, `${ENV_BODY}\nALERTMANAGER_WEBHOOK_URL=https://hooks.example.test/services/secret-token-123\n`);
+    const result = run(['deploy', ref('9')], { env: hostEnv() });
+    expect(result.status, result.stderr).toBe(0);
+    expect(calls().some((call) => call.includes('--profile monitoring') && / up -d --wait/.test(call))).toBe(true);
+    expect(result.stderr).not.toContain('secret-token-123');
   });
 
   it('lets a setting in the env file win over the value derived from the budget, and uses an external Redis without starting this one', () => {

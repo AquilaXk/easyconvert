@@ -555,8 +555,9 @@ describe('the webhook route and package payments', () => {
     expect(await balance(user.id)).toBe(0);
   });
 
-  it('takes back a chargeback, and leaves a refund that waits for approval or was rejected', async () => {
+  it('takes back a chargeback, blocks further checkouts with 403 billing_hold, and leaves a refund that waits for approval or was rejected', async () => {
     const user = await account();
+    const cookie = await cookieOf(user);
     await webhook(purchase({ customData: await checkoutOf(user, 500), items: [{ priceId: 'pri_package_500_fixture' }] }));
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     expect((await json(await webhook(refund({ status: 'pending_approval' })))).result).toBe('ignored');
@@ -564,6 +565,25 @@ describe('the webhook route and package payments', () => {
     expect(await balance(user.id)).toBe(500);
     expect((await json(await webhook(refund({ adjustmentId: 'cb', action: 'chargeback' })))).result).toBe('applied');
     expect(await balance(user.id)).toBe(0);
+
+    const blockedPkg = await startCheckout(post('/api/billing/checkout', cookie, { kind: 'package', credits: 1000 }));
+    expect({ status: blockedPkg.status, code: (await json(blockedPkg)).code }).toEqual({ status: 403, code: 'billing_hold' });
+    const blockedSub = await startCheckout(post('/api/billing/checkout', cookie, { kind: 'subscription', credits: 1000 }));
+    expect({ status: blockedSub.status, code: (await json(blockedSub)).code }).toEqual({ status: 403, code: 'billing_hold' });
+  });
+
+  it('deducts spent refunded package credits from the next package purchase automatically', async () => {
+    const user = await account();
+    const customData = await checkoutOf(user, 1000);
+    await webhook(purchase({ customData }));
+    const spent = await redisKeyStore.reserveQuota(user.id, FREE_DAILY_CREDITS + 300);
+    await redisKeyStore.commitQuota(spent.reservationId!);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await webhook(refund());
+    expect(await balance(user.id)).toBe(0);
+
+    await webhook(purchase({ eventId: 'topup', transactionId: `${TXN()}_topup`, customData, items: [{ priceId: 'pri_package_500_fixture' }] }));
+    expect(await balance(user.id)).toBe(200);
   });
 
   it('ignores the refund of a payment this server never credited', async () => {

@@ -1992,6 +1992,7 @@
     "billing": {
       "billing_unavailable": "크레딧은 아직 구매할 수 없습니다.",
       "billing_provider_failed": "결제 서비스에 연결하지 못했습니다. 잠시 후 다시 시도하세요.",
+      "billing_hold": "결제 분쟁으로 이 계정의 구매가 일시 중지되었습니다. 결제를 복구하려면 지원팀에 문의하세요.",
       "already_subscribed": "이미 같은 크기의 구독을 쓰고 있습니다. 다른 크기를 선택하거나 구독 관리에서 변경하거나 해지하세요.",
       "no_subscription": "구독 중인 요금제가 없습니다.",
       "invalid_signature": "요청을 확인하지 못했습니다.",
