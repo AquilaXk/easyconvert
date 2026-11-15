@@ -859,6 +859,31 @@ local zCount = redis.call('ZCARD', KEYS[2])
 if zCount ~= setCount then
   return false
 end
+local function syncSample(sample)
+  for i = 1, #sample, 2 do
+    local member = sample[i]
+    local score = tonumber(sample[i + 1]) or 0
+    local jobKey = ARGV[3] .. member
+    local hFinRaw = redis.call('HGET', jobKey, 'finishedOn')
+    if hFinRaw == false then
+      if redis.call('EXISTS', jobKey) == 0 then
+        redis.call('SREM', KEYS[1], member)
+        redis.call('ZREM', KEYS[2], member)
+      end
+    else
+      local hFin = tonumber(hFinRaw)
+      if hFin and hFin ~= score then
+        redis.call('ZADD', KEYS[2], hFin, member)
+      end
+    end
+  end
+end
+if zCount <= 256 then
+  syncSample(redis.call('ZRANGE', KEYS[2], 0, -1, 'WITHSCORES'))
+else
+  syncSample(redis.call('ZRANGE', KEYS[2], 0, 15, 'WITHSCORES'))
+  syncSample(redis.call('ZRANGE', KEYS[2], -16, -1, 'WITHSCORES'))
+end
 local limit = tonumber(ARGV[2]) or 1000
 local threshold = tonumber(ARGV[1]) or 0
 local due = redis.call('ZRANGEBYSCORE', KEYS[2], '-inf', ARGV[1], 'LIMIT', 0, limit)
@@ -870,13 +895,6 @@ if not oldest or #oldest < 2 then
   return { due, 'inf' }
 end
 local oldestScore = tonumber(oldest[2]) or 0
-if #due == 0 then
-  local hFin = tonumber(redis.call('HGET', ARGV[3] .. oldest[1], 'finishedOn'))
-  if hFin and hFin ~= oldestScore then
-    redis.call('ZADD', KEYS[2], hFin, oldest[1])
-    return false
-  end
-end
 if #due >= limit and oldestScore <= threshold then
   return { due, '' }
 end
