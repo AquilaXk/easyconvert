@@ -3,11 +3,21 @@
     "metaTitle": "{topic} | EasyConvert API documentation",
     "toc": "On this page",
     "namedTasks": {
-      "heading": "Named-Task Job Workflows",
-      "lead": "Execute multi-step conversion pipelines and Directed Acyclic Graphs (DAGs) using the tasks dictionary on POST /api/v1/jobs.",
-      "requestTitle": "Request tasks map",
-      "responseTitle": "Response tasks report",
-      "refusalsTitle": "Typed 422 refusal problems"
+      "heading": "Named tasks",
+      "lead": "Send a tasks object to POST /api/v1/jobs to run several steps in one job and read each step's result by name.",
+      "requestTitle": "Request tasks object",
+      "requestLead": "Each key in <code>tasks</code> names a step, its operation and the earlier step it reads from.",
+      "responseTitle": "Job response",
+      "responseLead": "Polling <code>GET /api/v1/jobs/'{id}'</code> reports the status and output key of each named task.",
+      "refusalsTitle": "422 validation errors",
+      "refusalsLead": "Invalid task graphs are refused with HTTP 422 Problem Details:",
+      "refusals": {
+        "unknownInput": "A task names an input step that is not in tasks.",
+        "cycle": "Tasks depend on one another in a loop.",
+        "invalidName": "A task name uses characters outside letters, digits, hyphens and underscores.",
+        "countExceeded": "The job lists more tasks than the account limit allows.",
+        "withoutConversion": "The job has no conversion or tool step."
+      }
     },
     "nav": {
       "label": "API documentation",
