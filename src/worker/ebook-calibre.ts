@@ -59,11 +59,11 @@ const MAX_TIMEOUT_MS = 600_000;
 /** The address space of the program: Python and Qt map far more than they use, and a 1 GiB limit still converts a short book. */
 const MEMORY_LIMIT_MB = 4096;
 /**
- * The PDF writer draws the book with Qt WebEngine (Chromium), which reserves tens of GiB of address space for its V8 cage and starts with no
- * page at any limit below that ("Load of clbr://internal.invalid/book/index.html failed", measured with 8, 16 and 32 GiB). A run that draws
- * pages gets the address space the website capture gives the same engine, and keeps the 4096 MB resident limit of the memory watch.
+ * The PDF writer draws the book with Qt WebEngine (Chromium), which reserves tens of GiB of address space on arm64 and ~1.4 TiB per V8
+ * sandbox on x86_64 (calibre 9.15.0), starting no page or stalling printToPdf when RLIMIT_AS squeezes its cages across parallel chapter
+ * renderers. A run that draws pages gets 2 TiB of virtual address space and keeps the 4096 MB resident limit of the process-tree watch.
  */
-const PAGE_DRAWING_ADDRESS_SPACE_BYTES = 192 * 1024 * 1024 * 1024;
+const PAGE_DRAWING_ADDRESS_SPACE_BYTES = 2048 * 1024 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
 const DEFAULT_MAX_BUFFER_BYTES = 100 * 1024 * 1024;
 const MAX_STDERR_CHARS = 300;
@@ -156,10 +156,28 @@ function runTimeoutMs(options: WorkerEngineOptions): number {
 
 /**
  * The PDF writer's Chromium refuses to run as the root of a user namespace unless its own sandbox is off (the run is inside the worker's sandbox),
- * and makes its shared memory in /dev/shm, where the file confinement lets a program write but not create files, so it uses its temporary
- * directory (the same two settings as the website capture's driver, native/capture-website/capture.py). Only a run that draws pages gets them.
+ * makes its shared memory in /dev/shm unless told to use its temporary directory, and drops calibre's own `--webEngineArgs --disable-gpu`
+ * whenever QTWEBENGINE_CHROMIUM_FLAGS is set (`calibre.gui2.ensure_app`). Restoring `--disable-gpu` plus the headless flags of
+ * `native/capture-website/capture.py` and disabling D-Bus prevents GPU/DRM/bus hangs on headless runners. Only a run that draws pages gets them.
  */
-const CHROMIUM_IN_SANDBOX_ENVIRONMENT: Readonly<Record<string, string>> = { QTWEBENGINE_DISABLE_SANDBOX: '1', QTWEBENGINE_CHROMIUM_FLAGS: '--disable-dev-shm-usage' };
+export const CHROMIUM_IN_SANDBOX_FLAGS = [
+  '--no-sandbox',
+  '--disable-gpu',
+  '--disable-dev-shm-usage',
+  '--disable-background-networking',
+  '--disable-component-update',
+  '--disable-sync',
+  '--disable-domain-reliability',
+  '--dns-prefetch-disable',
+  '--mute-audio',
+  '--no-first-run',
+].join(' ');
+
+const CHROMIUM_IN_SANDBOX_ENVIRONMENT: Readonly<Record<string, string>> = {
+  QTWEBENGINE_DISABLE_SANDBOX: '1',
+  QTWEBENGINE_CHROMIUM_FLAGS: CHROMIUM_IN_SANDBOX_FLAGS,
+  DBUS_SESSION_BUS_ADDRESS: 'disabled:',
+};
 
 /** The directories and settings calibre gets: all inside the job directory, so no plug-in, setting or cache of another job or of the host reaches it. */
 function calibreEnvironment(dir: string, drawsPages: boolean): Record<string, string> {

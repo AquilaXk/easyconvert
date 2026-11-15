@@ -11,6 +11,7 @@ import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
 import { FORMAT_REGISTRY, getFormatByExtension } from '../src/lib/registry';
 import { CALIBRE_EBOOK_TARGETS } from '../src/lib/conversions/calibre-ebook-targets';
+import { requiresNativeEngine } from '../src/lib/conversions/native-engine-pairs';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { extractTextWithExternalPdftotext } from './helpers/differential-oracle';
 import { sofficeConvert } from './helpers/soffice-convert';
@@ -312,7 +313,7 @@ describe('the targets the in-process engine writes from plain text only', () => 
   it('are the targets it offers for a text file and not for a Word document, which is why a refused document reaches them through its text', () => {
     const fromText = getFormatByExtension('txt')?.targetFormats ?? [];
     const fromWordDocument = new Set(getFormatByExtension('docx')?.targetFormats);
-    const notFromWordDocument = fromText.filter((target) => !fromWordDocument.has(target) && target !== 'docx');
+    const notFromWordDocument = fromText.filter((target) => !fromWordDocument.has(target) && target !== 'docx' && !requiresNativeEngine('txt', target));
     expect([...notFromWordDocument].sort()).toEqual([...TEXT_ONLY_TARGETS].sort());
     // The Palm, Sony and Open eBook targets are offered for a Word document as well: calibre writes them from any source.
     expect([...CALIBRE_EBOOK_TARGETS].filter((target) => !fromWordDocument.has(target))).toEqual([]);

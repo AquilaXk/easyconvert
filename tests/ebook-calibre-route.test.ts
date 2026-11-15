@@ -10,7 +10,7 @@ import { requiresNativeEngine } from '../src/lib/conversions/native-engine-pairs
 import { CALIBRE_EBOOK_TARGETS } from '../src/lib/conversions/calibre-ebook-targets';
 import { writeEbookTargetFromText } from '../src/lib/conversions/office';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
-import { CALIBRE_TARGETS, convertWithCalibre, type CalibreDeps, type CalibreRequest } from '../src/worker/ebook-calibre';
+import { CALIBRE_TARGETS, CHROMIUM_IN_SANDBOX_FLAGS, convertWithCalibre, type CalibreDeps, type CalibreRequest } from '../src/worker/ebook-calibre';
 import {
   ConversionFailedError,
   CpuTaskTimeoutError,
@@ -85,7 +85,7 @@ function fakeProgram(behavior: string): string {
   const script = `#!${process.execPath}
 const fs = require('node:fs');
 const [input, output, ...rest] = process.argv.slice(2);
-const env = Object.fromEntries(['HOME', 'TMPDIR', 'CALIBRE_CONFIG_DIRECTORY', 'CALIBRE_CACHE_DIRECTORY', 'CALIBRE_TEMP_DIR', 'QT_QPA_PLATFORM', 'QTWEBENGINE_DISABLE_SANDBOX', 'QTWEBENGINE_CHROMIUM_FLAGS', 'HTTPS_PROXY', 'EBOOK_CONVERT_PATH', 'DATABASE_URL', 'SECRET_TOKEN'].map((name) => [name, process.env[name]]));
+const env = Object.fromEntries(['HOME', 'TMPDIR', 'CALIBRE_CONFIG_DIRECTORY', 'CALIBRE_CACHE_DIRECTORY', 'CALIBRE_TEMP_DIR', 'QT_QPA_PLATFORM', 'QTWEBENGINE_DISABLE_SANDBOX', 'QTWEBENGINE_CHROMIUM_FLAGS', 'DBUS_SESSION_BUS_ADDRESS', 'HTTPS_PROXY', 'EBOOK_CONVERT_PATH', 'DATABASE_URL', 'SECRET_TOKEN'].map((name) => [name, process.env[name]]));
 fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), env }) + '\\n');
 ${behavior}
 `;
@@ -267,16 +267,17 @@ describe('the calibre route against a stand-in program', () => {
   );
 
   it.each([
-    ['pdf', '1', '--disable-dev-shm-usage'],
-    ['txt', undefined, undefined],
-    ['epub', undefined, undefined],
-    ['mobi', undefined, undefined],
-  ])('starts calibre for .%s with Chromium told not to use its own sandbox or /dev/shm only when it draws pages (%s, %s)', async (target, sandbox, flags) => {
+    ['pdf', '1', CHROMIUM_IN_SANDBOX_FLAGS, 'disabled:'],
+    ['txt', undefined, undefined, undefined],
+    ['epub', undefined, undefined, undefined],
+    ['mobi', undefined, undefined, undefined],
+  ])('starts calibre for .%s with Chromium headless sandbox flags only when it draws pages (%s)', async (target, sandbox, flags, dbus) => {
     setScannedText('unused');
     const result = await convertWithCalibre(deps(), request('tcr', target, Buffer.from('tcr book bytes')), fakeProgram(validOutput()));
     const [run] = runsOf();
     expect(run.env.QTWEBENGINE_DISABLE_SANDBOX).toBe(sandbox);
     expect(run.env.QTWEBENGINE_CHROMIUM_FLAGS).toBe(flags);
+    expect(run.env.DBUS_SESSION_BUS_ADDRESS).toBe(dbus);
     fs.rmSync(result.filePath as string, { force: true });
   });
 

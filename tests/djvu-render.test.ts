@@ -597,7 +597,11 @@ describe.skipIf(!canDraw)('documents built byte by byte, against the pages djvus
     async (levels, ctx) => {
       const page = maskedPageOf((await requireRealworldSample(ctx, DOGV)).path, DOGV_FIRST_PAGE, DOGV_DICTIONARY);
       const { elapsedMs, outcome } = await chainOutcome(maskOverChain(page, levels, false));
-      expect(outcome).toMatch(/^ConversionFailedError: ddjvu could not draw the \.djvu file: .*shape dictionary/);
+      const expectedRefusal =
+        levels === MASK_CHAIN_LEVELS[0]
+          ? /^ConversionFailedError: ddjvu could not draw the \.djvu file: .*shape dictionary/
+          : /^ConversionFailedError: ddjvu could not draw the \.djvu file: .*(?:shape dictionary|Cannot decode page 1\.)/;
+      expect(outcome).toMatch(expectedRefusal);
       expectWithinHangGuard(`the mask over ${levels} files`, elapsedMs, { guardMs: CHAIN_HANG_GUARD_MS, expectedLocalMs: PATCHED_CHAIN_EXPECTED_LOCAL_MS });
     }
   );

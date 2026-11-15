@@ -324,7 +324,7 @@ fi
 # PDF, RTF and text from them: it writes a TCR book from the text file, reads it back to each of the four targets as the worker starts it, and each
 # result must carry its format's signature (the ZIP entry `mimetypeapplication/epub+zip` at byte 30 for EPUB, `%PDF-`, `{\rtf1`) and the marker text.
 # The PDF writer draws with Chromium, which needs the wide address space of the website capture and no shared memory in /dev/shm.
-PDF_ADDRESS_SPACE_BYTES=$((192 * 1024 * 1024 * 1024))
+PDF_ADDRESS_SPACE_BYTES=$((2048 * 1024 * 1024 * 1024))
 calibre_reader_failure=""
 if ! sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" env HOME="$work_dir" QT_QPA_PLATFORM=offscreen CALIBRE_CONFIG_DIRECTORY="$work_dir/calibre-config" \
     CALIBRE_CACHE_DIRECTORY="$work_dir/calibre-cache" CALIBRE_TEMP_DIR="$work_dir/calibre-tmp" PYTHONDONTWRITEBYTECODE=1 \
@@ -334,7 +334,7 @@ fi
 for calibre_target in epub pdf rtf txt; do
   [ -n "$calibre_reader_failure" ] && break
   if ! sandboxed_as "$([ "$calibre_target" = pdf ] && echo "$PDF_ADDRESS_SPACE_BYTES" || echo "$ADDRESS_SPACE_LIMIT_BYTES")" timeout "$CONVERSION_TIMEOUT_SECONDS" \
-      env HOME="$work_dir" QT_QPA_PLATFORM=offscreen QTWEBENGINE_DISABLE_SANDBOX=1 QTWEBENGINE_CHROMIUM_FLAGS=--disable-dev-shm-usage \
+      env HOME="$work_dir" QT_QPA_PLATFORM=offscreen QTWEBENGINE_DISABLE_SANDBOX=1 QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu --disable-dev-shm-usage" DBUS_SESSION_BUS_ADDRESS=disabled: \
       CALIBRE_CONFIG_DIRECTORY="$work_dir/calibre-config" CALIBRE_CACHE_DIRECTORY="$work_dir/calibre-cache" CALIBRE_TEMP_DIR="$work_dir/calibre-tmp" PYTHONDONTWRITEBYTECODE=1 \
       ebook-convert "$work_dir/book.tcr" "$work_dir/from-tcr.$calibre_target" >"$work_dir/calibre.out" 2>&1; then
     calibre_reader_failure="the TCR book was not written as .$calibre_target: $(tail -c 300 "$work_dir/calibre.out" 2>/dev/null)"

@@ -1342,6 +1342,12 @@ export async function executeSandboxedBinary(
       stopWith(spawnFailureError(err));
     });
 
+    // When a run opts out of its own PID namespace (or runs on a host without one), a background child in the process group
+    // that inherited stdout/stderr pipes would keep `close` from firing after the main program has already exited.
+    proc.on('exit', () => {
+      if (!isSettled) killProcessGroup(proc.pid, 'SIGKILL');
+    });
+
     proc.on('close', (code, signal) => {
       // Read before settling: settling closes the descriptor.
       const headroom = options.stdoutHeadroomBytes ?? 0;

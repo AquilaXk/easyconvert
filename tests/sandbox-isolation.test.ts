@@ -307,6 +307,25 @@ describe.skipIf(skipUnless('unprivileged user, network and PID namespaces (unsha
         },
         TEST_TIMEOUT_MS
       );
+
+      it(
+        'ends a child in the process group that still holds stdout/stderr open when a run without a PID namespace exits',
+        async () => {
+          const holder = `
+            require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, ${SIBLING_LIFETIME_MS})', '${LEFTOVER_MARKER}'], { stdio: 'inherit' }).unref();
+            process.stdout.write('done');
+          `;
+          const run = await executeSandboxedBinary(process.execPath, ['-e', holder], {
+            timeoutMs: CHILD_TIMEOUT_MS,
+            sandboxOptions: { pidNamespace: false },
+          });
+          expect(run.stdout.toString('utf-8')).toBe('done');
+          const deadline = Date.now() + SIBLING_START_WAIT_MS;
+          while (findMarkedPids(LEFTOVER_MARKER).length > 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+          expect(findMarkedPids(LEFTOVER_MARKER)).toEqual([]);
+        },
+        TEST_TIMEOUT_MS
+      );
     });
   }
 );
