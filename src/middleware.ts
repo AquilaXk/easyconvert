@@ -200,8 +200,13 @@ function isOriginAllowed(incomingOrigin: string, request: NextRequest): boolean 
 
     // 1. The configured APP_ORIGIN / NEXT_PUBLIC_APP_URL
     const envAppOrigin = process.env.APP_ORIGIN || process.env.NEXT_PUBLIC_APP_URL;
-    if (envAppOrigin && incomingUrl.origin === new URL(envAppOrigin).origin) {
-      return true;
+    if (envAppOrigin) {
+      if (incomingUrl.origin === new URL(envAppOrigin).origin) {
+        return true;
+      }
+      if (production) {
+        return false;
+      }
     }
 
     // Past the configured origin, production takes HTTPS origins only.

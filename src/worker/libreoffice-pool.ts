@@ -23,7 +23,7 @@ import {
   assertAllowedLibreOfficeFilter,
   buildPdfExportFilterData,
 } from '../lib/conversions/pdf-export-options';
-import { readZipDirectory } from '../lib/conversions/archive-zip-reader';
+import { readZipUncompressedTotalFromFile } from '../lib/conversions/archive-zip-tail';
 import { officeInputFilterArgs } from '../lib/conversions/office/legacy-import-filter';
 import { officeSuiteApplication, type OfficeSuiteApplication } from '../lib/conversions/office/office-suite-sources';
 import { availableCpus } from '../lib/workers/available-cpus';
@@ -186,8 +186,7 @@ export function officeInputBytes(inputPath: string): number {
   const fileBytes = fs.statSync(file).size;
   if (fileBytes < ZIP_SIGNATURE.length || !readFileHead(file, ZIP_SIGNATURE.length).equals(ZIP_SIGNATURE)) return fileBytes;
   try {
-    const { entries } = readZipDirectory(fs.readFileSync(file), { MAX_FILES: Number.MAX_SAFE_INTEGER });
-    return Math.max(fileBytes, entries.reduce((sum, entry) => sum + entry.uncompressedSize, 0));
+    return Math.max(fileBytes, readZipUncompressedTotalFromFile(file, fileBytes));
   } catch {
     return fileBytes;
   }

@@ -8,7 +8,14 @@ import {
   StorageNotFoundError,
   StorageAuthenticationError,
 } from './adapter-interface';
-import { adapterDispatcher, guardedRequest, assertAdapterUrlSafe, readErrorText, releaseDispatcher } from './http-guard';
+import {
+  adapterDispatcher,
+  assertAdapterUrlSafe,
+  guardedRequest,
+  parseCleanBaseEndpointUrl,
+  readErrorText,
+  releaseDispatcher,
+} from './http-guard';
 
 const AZURE_REST_VERSION = '2023-11-03';
 
@@ -61,6 +68,7 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
     this.sasToken = credentials.sasToken ? stripLeadingSlashes(credentials.sasToken.replace(/^\?/, '')) : undefined;
 
     if (credentials.customEndpoint) {
+      parseCleanBaseEndpointUrl(credentials.customEndpoint, this.providerName);
       this.baseUrl = stripTrailingSlashes(credentials.customEndpoint);
     } else {
       this.baseUrl = `https://${this.storageAccount}.blob.core.windows.net`;

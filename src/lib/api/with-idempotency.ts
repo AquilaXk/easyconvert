@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
+import { isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import {
   IdempotencyStore,
@@ -309,6 +310,31 @@ export interface AcquireIdempotencyOptions {
    * which only matters for an answer that is stored, and a caller does that only for actions that refuse such a body.
    */
   parsedBody?: unknown;
+  /** Pre-parsed multipart FormData (or `null` when malformed) so callers do not clone and parse multipart bodies twice. */
+  multipartForm?: FormData | null;
+}
+
+async function resolveFingerprintInput(
+  req: NextRequest | Request,
+  { parsedBody, multipartForm }: Pick<AcquireIdempotencyOptions, 'parsedBody' | 'multipartForm'>
+): Promise<{ bodyWithoutFile: unknown; fileSha256: string }> {
+  if (multipartForm !== undefined) {
+    if (multipartForm === null) return { bodyWithoutFile: {}, fileSha256: '' };
+    return extractFormDataFingerprint(multipartForm);
+  }
+  if (parsedBody !== undefined) {
+    return { bodyWithoutFile: parsedBody, fileSha256: '' };
+  }
+  if (isMultipartBody(req as NextRequest)) {
+    try {
+      const m = await readMultipartForm(req as NextRequest);
+      if (m.malformed) return { bodyWithoutFile: {}, fileSha256: '' };
+      return await extractFormDataFingerprint(m.form);
+    } catch {
+      return { bodyWithoutFile: {}, fileSha256: '' };
+    }
+  }
+  return extractFingerprintData(req.clone());
 }
 
 /** Acquires idempotency lock or returns early replay/conflict response. */
@@ -317,7 +343,7 @@ export async function acquireIdempotency(
   userId: string,
   rawKey: string,
   instanceUri: string,
-  { store, parsedBody }: AcquireIdempotencyOptions = {}
+  { store, parsedBody, multipartForm }: AcquireIdempotencyOptions = {}
 ): Promise<AcquireIdempotencyResult> {
   if (!isValidIdempotencyKey(rawKey)) {
     return {
@@ -330,8 +356,7 @@ export async function acquireIdempotency(
     };
   }
 
-  const { bodyWithoutFile, fileSha256 } =
-    parsedBody === undefined ? await extractFingerprintData(req.clone()) : { bodyWithoutFile: parsedBody, fileSha256: '' };
+  const { bodyWithoutFile, fileSha256 } = await resolveFingerprintInput(req, { parsedBody, multipartForm });
   const fingerprint = computeFingerprint(req.method, instanceUri, bodyWithoutFile, fileSha256, wantsRawResponse(req));
   const scopedKey = buildScopedKey(userId, instanceUri, rawKey);
   const activeStore = store || getIdempotencyStore();

@@ -509,3 +509,33 @@ end
 return 'OK'
 `;
 
+export const CREATE_API_KEY_LUA_SCRIPT = `
+-- KEYS[1]: apikeys:<keyId>  KEYS[2]: apikey_hashes  KEYS[3]: user_keys:<userId>
+-- ARGV[1]: id  ARGV[2]: userId  ARGV[3]: status  ARGV[4]: keyHash  ARGV[5]: previousKeyHash  ARGV[6]: dataJson
+redis.call('HSET', KEYS[1], 'id', ARGV[1], 'userId', ARGV[2], 'status', ARGV[3], 'keyHash', ARGV[4], 'previousKeyHash', ARGV[5], 'data', ARGV[6])
+redis.call('HSET', KEYS[2], ARGV[4], ARGV[1])
+redis.call('SADD', KEYS[3], ARGV[1])
+return 1
+`;
+
+export const DELETE_API_KEY_LUA_SCRIPT = `
+-- KEYS[1]: apikeys:<keyId>  KEYS[2]: apikey_hashes  KEYS[3]: user_keys:<userId>  KEYS[4]: rate:apikey:<keyId>
+-- ARGV[1]: userId  ARGV[2]: keyId  ARGV[3]: localOwnerId
+local ownerId = redis.call('HGET', KEYS[1], 'userId')
+local effectiveOwner = ownerId or (ARGV[3] ~= '' and ARGV[3] or false)
+if effectiveOwner ~= ARGV[1] then
+  return 'FORBIDDEN'
+end
+local keyHash = redis.call('HGET', KEYS[1], 'keyHash')
+local prevHash = redis.call('HGET', KEYS[1], 'previousKeyHash')
+if keyHash and keyHash ~= '' then
+  redis.call('HDEL', KEYS[2], keyHash)
+end
+if prevHash and prevHash ~= '' then
+  redis.call('HDEL', KEYS[2], prevHash)
+end
+redis.call('SREM', KEYS[3], ARGV[2])
+redis.call('DEL', KEYS[1], KEYS[4])
+return ownerId and 'DELETED' or 'MISSING'
+`;
+

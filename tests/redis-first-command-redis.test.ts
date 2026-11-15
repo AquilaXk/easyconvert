@@ -4,6 +4,7 @@ import { RedisIdempotencyStore } from '../src/lib/api/idempotency';
 import { RedisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { RedisUserStore } from '../src/lib/auth/redis-user-store';
 import { CredentialsVault } from '../src/lib/storage/credentials-vault';
+import { readyGatedRedis } from '../src/lib/redis/when-ready';
 import { RedisTusSessionStore, type TusSession } from '../src/lib/storage/tus-engine';
 
 /**
@@ -116,5 +117,21 @@ describe.skipIf(!REDIS_URL)('first Redis command after construction', () => {
     closers.push(() => vault.delete(ref, userId));
 
     expect(await probe.exists(`vault:cred:${ref}`)).toBe(1);
+  });
+
+  it('waits for connection readiness before flushing pipeline().exec() on a cold client', async () => {
+    const raw = new Redis(REDIS_URL as string, { lazyConnect: true, enableOfflineQueue: false });
+    const gated = readyGatedRedis(raw);
+    closers.push(() => gated.quit());
+    const key = uniqueId('pipe-cold');
+
+    const pipe = gated.pipeline();
+    pipe.incr(key);
+    pipe.expire(key, 60);
+    const replies = await pipe.exec();
+
+    expect(replies?.[0]?.[0]).toBeNull();
+    expect(replies?.[0]?.[1]).toBe(1);
+    expect(await probe.get(key)).toBe('1');
   });
 });

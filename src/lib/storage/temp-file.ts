@@ -39,7 +39,7 @@ export const CONCURRENT_COPIES = 2;
 
 const copySlots = new Semaphore(CONCURRENT_COPIES);
 const reportedRemovalFailures = new Set<string>();
-const STAGED_OUTPUT_PREFIX = 'easyconvert-out-';
+export const STAGED_OUTPUT_PREFIX = 'easyconvert-out-';
 /** The time a staged name was given at: `<prefix><epoch ms>-<random>`. */
 const STAGED_NAME_TIME = /-(\d{13,})-/;
 /** Words of lowercase letters and digits, each with a letter, each ended by a dash: no part of it reads as STAGED_NAME_TIME. */
@@ -174,7 +174,8 @@ export async function syncFile(filePath: string): Promise<number> {
  * CONCURRENT_COPIES at once; returns its path. The copy runs in libuv's thread pool, so the event loop keeps its heartbeat.
  * A `signal` that aborts ends the wait for a slot, or fails the copy once it is made. Nothing is left on failure.
  */
-async function copyBeside(sourcePath: string, finalPath: string, signal?: AbortSignal): Promise<string> {
+export async function copyBeside(sourcePath: string, finalPath: string, signal?: AbortSignal): Promise<string> {
+  await fs.promises.mkdir(path.dirname(finalPath), { recursive: true });
   return copySlots.run(async () => {
     const tempPath = uniqueTempPath(finalPath, 'tmp');
     let stopTouching = (): void => undefined;
@@ -329,6 +330,11 @@ export function stagedOutputPath(extension: string): string {
 function stagedNameTime(name: string): number | undefined {
   const match = STAGED_NAME_TIME.exec(name);
   return match ? Number(match[1]) : undefined;
+}
+
+export function stagedOutputCreatedAt(name: string): number | undefined {
+  if (!name.startsWith(STAGED_OUTPUT_PREFIX)) return undefined;
+  return stagedNameTime(name);
 }
 
 /** Removes the job directories and outputs of the local driver's staging folder that a stopped worker left, by the time in their names. */

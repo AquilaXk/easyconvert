@@ -10,7 +10,16 @@ import {
   StorageInvalidKeyError,
 } from './adapter-interface';
 import { assertValidObjectKey } from '../s3-sigv4';
-import { adapterDispatcher, guardedRequest, assertAdapterUrlSafe, readErrorText, releaseDispatcher, readJsonBody } from './http-guard';
+import {
+  adapterDispatcher,
+  assertAdapterUrlSafe,
+  guardedRequest,
+  isTrustedGcsOAuthEndpoint,
+  parseCleanBaseEndpointUrl,
+  readErrorText,
+  readJsonBody,
+  releaseDispatcher,
+} from './http-guard';
 
 /** The object name of a remote path: dot segments are refused, as the other adapters and the S3 client do. */
 function toObjectName(remotePath: string): string {
@@ -23,6 +32,12 @@ function toObjectName(remotePath: string): string {
   return name;
 }
 
+function stripTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 47) end--;
+  return s.slice(0, end);
+}
+
 export class GcsStorageAdapter implements IStorageAdapter {
   readonly providerName = 'gcs';
   private readonly endpoint: string;
@@ -32,7 +47,18 @@ export class GcsStorageAdapter implements IStorageAdapter {
 
   constructor(private readonly credentials: GcsCredentials) {
     this.bucket = credentials.bucket;
-    this.endpoint = credentials.endpoint || 'https://storage.googleapis.com';
+    const rawEndpoint = credentials.endpoint || 'https://storage.googleapis.com';
+    const parsedEndpoint = parseCleanBaseEndpointUrl(rawEndpoint, this.providerName);
+    const hasOAuthMaterial = Boolean(
+      credentials.serviceAccountKeyJson || credentials.clientEmail || credentials.privateKey
+    );
+    if (hasOAuthMaterial && !isTrustedGcsOAuthEndpoint(parsedEndpoint)) {
+      throw new StorageAdapterError(
+        'GCS service-account credentials may only be sent to storage.googleapis.com',
+        this.providerName
+      );
+    }
+    this.endpoint = stripTrailingSlashes(rawEndpoint);
   }
 
   private assertSsrfSafe(urlStr: string): Promise<void> {

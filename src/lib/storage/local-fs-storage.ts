@@ -765,24 +765,43 @@ export class LocalFsStorage implements IObjectStorage {
     }
   }
 
-  private sweepFileIfExpired(file: string, now: number): boolean {
+  private metaExpiryCache = new Map<string, { mtimeMs: number; size: number; expiresAt: number; key?: string }>();
+
+  private async sweepFileIfExpired(file: string, now: number): Promise<boolean> {
     if (!file.endsWith('.meta.json')) return false;
 
     const metaPath = path.join(this.storageDir, file);
     const binPath = path.join(this.storageDir, file.replace(/\.meta\.json$/, '.bin'));
     try {
-      const raw = fs.readFileSync(metaPath, 'utf-8');
-      const meta = JSON.parse(raw);
-      if (!meta.expiresAt || now <= meta.expiresAt) {
+      const stat = await fs.promises.stat(metaPath);
+      let cached = this.metaExpiryCache.get(file);
+      if (!cached || cached.mtimeMs !== stat.mtimeMs || cached.size !== stat.size) {
+        const raw = await fs.promises.readFile(metaPath, 'utf-8');
+        const meta = JSON.parse(raw) as { expiresAt?: unknown; key?: unknown };
+        cached = {
+          mtimeMs: stat.mtimeMs,
+          size: stat.size,
+          expiresAt: typeof meta.expiresAt === 'number' ? meta.expiresAt : 0,
+          key: typeof meta.key === 'string' ? meta.key : undefined,
+        };
+        if (!this.metaExpiryCache.has(file) && this.metaExpiryCache.size >= 32_768) {
+          const oldest = this.metaExpiryCache.keys().next().value;
+          if (oldest !== undefined) this.metaExpiryCache.delete(oldest);
+        }
+        this.metaExpiryCache.set(file, cached);
+      }
+      if (!cached.expiresAt || now <= cached.expiresAt) {
         return false;
       }
-      if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
-      if (fs.existsSync(binPath)) fs.unlinkSync(binPath);
-      if (typeof meta.key === 'string' && path.resolve(this.storageDir) === path.resolve(globalSharedObjects.getStorageDir())) {
-        globalSharedObjects.evictInMemory(meta.key);
+      this.metaExpiryCache.delete(file);
+      await fs.promises.rm(metaPath, { force: true });
+      await fs.promises.rm(binPath, { force: true });
+      if (cached.key && path.resolve(this.storageDir) === path.resolve(globalSharedObjects.getStorageDir())) {
+        globalSharedObjects.evictInMemory(cached.key);
       }
       return true;
     } catch {
+      this.metaExpiryCache.delete(file);
       return false;
     }
   }
@@ -794,11 +813,10 @@ export class LocalFsStorage implements IObjectStorage {
   public async sweepExpiredObjects(now: number = Date.now()): Promise<number> {
     const sessions = await sweepByNameTime(this.partsDir, sessionCreatedAt, MULTIPART_SESSION_TTL_MS + LEFTOVER_AGE_MS, now);
     try {
-      if (!fs.existsSync(this.storageDir)) return sessions;
-      const files = fs.readdirSync(this.storageDir);
+      const files = await fs.promises.readdir(this.storageDir);
       let swept = sessions;
       for (const file of files) {
-        if (this.sweepFileIfExpired(file, now)) {
+        if (await this.sweepFileIfExpired(file, now)) {
           swept++;
         }
       }

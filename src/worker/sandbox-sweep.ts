@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { JOB_STAGING_MAX_AGE_MS, STAGED_OUTPUT_PREFIX, stagedOutputCreatedAt } from '../lib/storage/temp-file';
 import { isOwnedWorkerSandboxDir, touchOwnedWorkerSandboxDirs } from './sandbox';
 
 /**
@@ -58,6 +59,20 @@ export function sweepWorkerSandboxDirs(options: SandboxSweepOptions = {}): strin
     return removed;
   }
   for (const name of names) {
+    if (name.startsWith(STAGED_OUTPUT_PREFIX)) {
+      const created = stagedOutputCreatedAt(name);
+      if (created === undefined || now - created <= JOB_STAGING_MAX_AGE_MS) continue;
+      const full = path.join(directory, name);
+      try {
+        const stat = fs.lstatSync(full);
+        if (!stat.isFile() || (uid !== undefined && stat.uid !== uid)) continue;
+        fs.rmSync(full, { force: true });
+        removed.push(name);
+      } catch {
+        // gone already, or not ours to remove
+      }
+      continue;
+    }
     if (!WORKER_SANDBOX_DIR_NAME.test(name)) continue;
     const full = path.join(directory, name);
     if (isOwnedWorkerSandboxDir(full)) continue;

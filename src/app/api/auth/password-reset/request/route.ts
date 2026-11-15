@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { codedRefusal } from '@/lib/api/problem-details';
+import { authStoreUnavailableRefusal, codedRefusal, serverFault } from '@/lib/api/problem-details';
+import { AuthStoreUnavailableError } from '@/lib/auth/store-unavailable';
 import { readJsonObject } from '@/lib/api/json-body';
 import { isPlainMailbox } from '@/lib/auth/mailbox';
 import { isPasswordAccount, queueAccountMail } from '@/lib/auth/account-mail';
@@ -35,7 +36,13 @@ export async function POST(req: NextRequest) {
   const resolvedIp = resolveAuthClientIp(req);
   if ('refused' in resolvedIp) return resolvedIp.refused;
 
-  const limit = await consumeMailLinkRateLimit('reset-request', resolvedIp.clientIp, email);
+  let limit;
+  try {
+    limit = await consumeMailLinkRateLimit('reset-request', resolvedIp.clientIp, email);
+  } catch (err: unknown) {
+    if (err instanceof AuthStoreUnavailableError) return authStoreUnavailableRefusal(err);
+    return serverFault('auth/password-reset', err, 'Password reset failed on the server.');
+  }
   if (!limit.allowed) {
     return authRateLimitRefusal(
       limit.retryAfterSeconds,

@@ -6,8 +6,24 @@ import { receivePart } from '@/lib/storage/part-admission';
 import { declaredPartBytes, partFailureResponse } from '@/lib/api/part-response';
 import type { IStorageBackend } from '@/lib/storage/oci-storage';
 import { verifySigV4QueryUrl } from '@/lib/storage/sigv4-presigner';
+import { LOCAL_EMULATION_ACCESS_KEY_ID, LOCAL_EMULATION_REGION } from '@/lib/storage/storage-config';
 
 export const dynamic = 'force-dynamic';
+
+const SINGLE_VALUE_QUERY_PARAMS = [
+  'uploadId',
+  'partNumber',
+  'key',
+  'signature',
+  'expiresAt',
+  'expires',
+  'X-Amz-Algorithm',
+  'X-Amz-Credential',
+  'X-Amz-Date',
+  'X-Amz-Expires',
+  'X-Amz-SignedHeaders',
+  'X-Amz-Signature',
+] as const;
 
 /** A backend that receives parts on this application and verifies the URLs it issued itself. */
 type PartReceivingStorage = IStorageBackend &
@@ -32,6 +48,17 @@ export async function PUT(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/uploads/direct/part';
   const { searchParams } = req.nextUrl;
 
+  for (const paramName of SINGLE_VALUE_QUERY_PARAMS) {
+    if (searchParams.getAll(paramName).length > 1) {
+      return createProblemDetailsResponse(
+        400,
+        `Duplicate "${paramName}" query parameter is not permitted.`,
+        instanceUri,
+        'Bad Request'
+      );
+    }
+  }
+
   const uploadId = searchParams.get('uploadId');
   const partNumberStr = searchParams.get('partNumber');
 
@@ -44,8 +71,8 @@ export async function PUT(req: NextRequest) {
     );
   }
 
-  const partNumber = Number.parseInt(partNumberStr, 10);
-  if (!Number.isFinite(partNumber) || partNumber < 1 || partNumber > 10000) {
+  const partNumber = /^\d+$/.test(partNumberStr) ? Number.parseInt(partNumberStr, 10) : Number.NaN;
+  if (!Number.isSafeInteger(partNumber) || partNumber < 1 || partNumber > 10000) {
     return createProblemDetailsResponse(
       400,
       'Invalid "partNumber". Must be an integer between 1 and 10000.',
@@ -103,7 +130,12 @@ export async function PUT(req: NextRequest) {
       expectedMethod: 'PUT',
       headers: headersRecord,
     });
-    if (!sigv4.valid) {
+    if (
+      !sigv4.valid ||
+      sigv4.accessKeyId !== LOCAL_EMULATION_ACCESS_KEY_ID ||
+      sigv4.region !== LOCAL_EMULATION_REGION ||
+      sigv4.service !== 's3'
+    ) {
       return createProblemDetailsResponse(
         403,
         sigv4.reason || 'Invalid or expired SigV4 presigned signature.',

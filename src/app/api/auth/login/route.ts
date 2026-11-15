@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyPassword } from '@/lib/auth/crypto';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
-import { codedRefusal, serverFault } from '@/lib/api/problem-details';
+import { authStoreUnavailableRefusal, codedRefusal, serverFault } from '@/lib/api/problem-details';
+import { AuthStoreUnavailableError } from '@/lib/auth/store-unavailable';
 import { readJsonObject } from '@/lib/api/json-body';
 import {
   authRateLimitRefusal,
@@ -82,6 +83,7 @@ export async function POST(req: NextRequest) {
     response.headers.set('Set-Cookie', cookieHeader);
     return response;
   } catch (err: unknown) {
+    if (err instanceof AuthStoreUnavailableError) return authStoreUnavailableRefusal(err);
     return serverFault('auth/login', err, 'Sign-in failed on the server.');
   }
 }

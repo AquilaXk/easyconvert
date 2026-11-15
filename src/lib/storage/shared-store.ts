@@ -11,6 +11,7 @@ import {
 } from './errors';
 import { resolveLocalStorageDir } from './storage-config';
 import {
+  copyBeside,
   isTempFileName,
   LEFTOVER_AGE_MS,
   removeLeftover,
@@ -83,6 +84,32 @@ export async function commitObjectFile(paths: ObjectPaths, sourcePath: string, r
     fs.rmSync(paths.metaPath, { force: true });
     fs.renameSync(staged, paths.binPath);
     strayBytes = paths.binPath;
+    fs.renameSync(recordTemp, paths.metaPath);
+  } catch (error) {
+    await Promise.all([strayBytes, recordTemp].map((stray) => (stray === undefined ? undefined : fs.promises.rm(stray, { force: true }))));
+    throw error;
+  }
+  await syncDirectory(path.dirname(paths.binPath));
+}
+
+/**
+ * Copies the regular file at `sourcePath` into `paths` without removing `sourcePath`, using bounded async copy and atomic
+ * rename of both bytes and metadata record. Used when the caller must retain `sourcePath` until a follow-up ledger write succeeds.
+ */
+export async function commitCopiedObjectFile(paths: ObjectPaths, sourcePath: string, record: ObjectRecord, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  const staged = path.resolve(sourcePath) === paths.binPath ? paths.binPath : await copyBeside(sourcePath, paths.binPath, signal);
+  const inPlace = staged === paths.binPath;
+  let recordTemp: string | undefined;
+  let strayBytes = inPlace ? undefined : staged;
+  try {
+    recordTemp = await writeFlushedTemp(paths.metaPath, JSON.stringify(recordOf(record)));
+    signal?.throwIfAborted();
+    fs.rmSync(paths.metaPath, { force: true });
+    if (!inPlace) {
+      fs.renameSync(staged, paths.binPath);
+      strayBytes = paths.binPath;
+    }
     fs.renameSync(recordTemp, paths.metaPath);
   } catch (error) {
     await Promise.all([strayBytes, recordTemp].map((stray) => (stray === undefined ? undefined : fs.promises.rm(stray, { force: true }))));
@@ -282,6 +309,18 @@ export class SharedObjectStore extends Map<string, StoredObject> {
   public async storeFile(key: string, sourcePath: string, record: ObjectRecord, signal?: AbortSignal): Promise<StoredObject> {
     const paths = this.getPathsForKey(key);
     await commitObjectFile(paths, sourcePath, record, signal);
+    const stored = fileBackedObject(record, paths.binPath);
+    this.evictCachedBuffer(key);
+    this.bindCacheHooks(stored);
+    this.rememberMetaKey(paths.metaPath, key);
+    super.set(key, stored);
+    return stored;
+  }
+
+  /** Copies `sourcePath` into the storage directory as `key`, keeping `sourcePath` intact until the caller removes it. */
+  public async storeCopiedFile(key: string, sourcePath: string, record: ObjectRecord, signal?: AbortSignal): Promise<StoredObject> {
+    const paths = this.getPathsForKey(key);
+    await commitCopiedObjectFile(paths, sourcePath, record, signal);
     const stored = fileBackedObject(record, paths.binPath);
     this.evictCachedBuffer(key);
     this.bindCacheHooks(stored);

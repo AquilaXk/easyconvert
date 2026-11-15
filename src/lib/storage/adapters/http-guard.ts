@@ -2,6 +2,7 @@ import { Agent, request, type Dispatcher } from 'undici';
 import { StorageAdapterError, StorageSsrfError, StorageTimeoutError } from './adapter-interface';
 import { ssrfSafeLookup, validateUrlForSsrf } from '../../security/ssrf';
 import { ADAPTER_BODY_CAP_BYTES, ADAPTER_HEADERS_TIMEOUT_MS, ADAPTER_RESPONSE_TIMEOUT_MS } from './http-limits';
+export { ADAPTER_BODY_CAP_BYTES, ADAPTER_HEADERS_TIMEOUT_MS, ADAPTER_RESPONSE_TIMEOUT_MS };
 
 /**
  * What the HTTP adapters (WebDAV, Azure Blob, GCS) share: an endpoint is reached over TLS and only when it resolves to
@@ -40,6 +41,33 @@ export function assertTlsEndpoint(url: URL, provider: string): void {
   }
 }
 
+/** Parses a customer-supplied base endpoint URL and rejects embedded credentials, query strings, or fragments without echoing the raw URL. */
+export function parseCleanBaseEndpointUrl(rawUrl: string, provider: string, invalidMessage?: string): URL {
+  if (typeof rawUrl !== 'string' || rawUrl.length === 0) {
+    throw new StorageAdapterError(invalidMessage ?? `Invalid ${provider} endpoint URL`, provider);
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new StorageAdapterError(invalidMessage ?? `Invalid ${provider} endpoint URL`, provider);
+  }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new StorageAdapterError(
+      `Invalid ${provider} endpoint URL: embedded credentials, query parameters, and fragments are not permitted`,
+      provider
+    );
+  }
+  return parsed;
+}
+
+/** Whether `url` names the canonical Google Cloud Storage API host (or a development-allowlisted local test server). */
+export function isTrustedGcsOAuthEndpoint(url: URL): boolean {
+  if (isDevAllowlistedEndpoint(url)) return true;
+  const host = url.host.toLowerCase();
+  return url.protocol === 'https:' && (host === 'storage.googleapis.com' || host.endsWith('.storage.googleapis.com'));
+}
+
 /**
  * Refuses a URL before any request: it has to be https and resolve only to public addresses, unless the server's
  * development allowlist names its host. The connection is pinned again at connect time (`adapterDispatcher`).
@@ -48,8 +76,8 @@ export async function assertAdapterUrlSafe(urlStr: string, provider: string): Pr
   let url: URL;
   try {
     url = new URL(urlStr);
-  } catch (err) {
-    throw new StorageAdapterError('The storage endpoint does not form a valid URL', provider, err);
+  } catch {
+    throw new StorageAdapterError('The storage endpoint does not form a valid URL', provider);
   }
   if (isDevAllowlistedEndpoint(url)) return;
   assertTlsEndpoint(url, provider);
@@ -60,7 +88,7 @@ export async function assertAdapterUrlSafe(urlStr: string, provider: string): Pr
 
 /** A connection agent that pins every connection to a public address (a development-allowlisted host is not pinned). */
 export function adapterDispatcher(urlStr: string): Agent {
-  const timeouts = { headersTimeout: ADAPTER_HEADERS_TIMEOUT_MS };
+  const timeouts = { headersTimeout: ADAPTER_HEADERS_TIMEOUT_MS, bodyTimeout: ADAPTER_RESPONSE_TIMEOUT_MS };
   if (isDevAllowlistedEndpoint(new URL(urlStr))) return new Agent(timeouts);
   return new Agent({ ...timeouts, connect: { lookup: ssrfSafeLookup } });
 }

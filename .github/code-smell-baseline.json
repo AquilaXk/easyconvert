@@ -1957,7 +1957,7 @@
     "rule": "complexity",
     "function": "processNodeJob",
     "count": 1,
-    "maxValue": 62
+    "maxValue": 49
   },
   {
     "file": "src/lib/queue/node-processor.ts",

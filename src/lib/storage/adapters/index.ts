@@ -17,7 +17,7 @@ import { WebDavStorageAdapter } from './webdav';
 import { SftpStorageAdapter, isSftpDevAllowlisted } from './sftp';
 import { S3StorageAdapter } from './s3';
 import { isPrivateOrRestrictedHost } from '../../security/ssrf';
-import { assertTlsEndpoint, isDevAllowlistedEndpoint } from './http-guard';
+import { assertTlsEndpoint, isDevAllowlistedEndpoint, isTrustedGcsOAuthEndpoint, parseCleanBaseEndpointUrl } from './http-guard';
 
 /**
  * Providers whose adapter has no network client yet. Registration and every import/export
@@ -28,13 +28,7 @@ export const UNAVAILABLE_STORAGE_PROVIDERS: ReadonlySet<string> = new Set<string
 const GCS_BUCKET_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,220}[a-z0-9])?$/i;
 
 function validateHttpEndpointSyntax(rawUrl: string, provider: string, invalidMessage?: string): URL {
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    // neither the text nor the parse error (which keeps its input) is echoed: the URL may carry userinfo or a SAS token
-    throw new StorageAdapterError(invalidMessage ?? `Invalid ${provider} endpoint URL`, provider);
-  }
+  const parsed = parseCleanBaseEndpointUrl(rawUrl, provider, invalidMessage);
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new StorageSsrfError(rawUrl, provider);
   }
@@ -71,6 +65,12 @@ export function validateCredentials(credentials: CustomerStorageCredentials): vo
       }
       if (credentials.endpoint) {
         validateExternalEndpointUrl(credentials.endpoint, 'gcs');
+        if (
+          (credentials.serviceAccountKeyJson || (credentials.clientEmail && credentials.privateKey)) &&
+          !isTrustedGcsOAuthEndpoint(new URL(credentials.endpoint))
+        ) {
+          throw new StorageAdapterError('GCS service-account credentials may only be used with storage.googleapis.com', 'gcs');
+        }
       }
       break;
     }

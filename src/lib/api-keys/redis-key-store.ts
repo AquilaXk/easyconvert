@@ -30,7 +30,9 @@ import { isIpInCidr, isIpAllowed } from './ip-utils';
 import { resolveRetentionPolicy } from '../storage/result-retention';
 import { readyGatedRedis } from '../redis/when-ready';
 import {
+  CREATE_API_KEY_LUA_SCRIPT,
   DEDUCT_QUOTA_LUA_SCRIPT,
+  DELETE_API_KEY_LUA_SCRIPT,
   RECORD_VERIFIED_KEY_LUA_SCRIPT,
   REVOKE_API_KEY_LUA_SCRIPT,
   ROTATE_API_KEY_LUA_SCRIPT,
@@ -463,17 +465,34 @@ export class RedisKeyStore extends KeyStore {
       try {
         const key = this.keys.get(result.key.id) ?? result.key;
         const keyPrefix = this.keyPrefix;
-        const hashPayload = {
-          id: key.id,
-          userId: key.userId,
-          status: key.status,
-          keyHash: key.keyHash,
-          previousKeyHash: key.previousKeyHash || '',
-          data: JSON.stringify(key),
-        };
-        await this.redisClient.hset(`${keyPrefix}apikeys:${key.id}`, hashPayload);
-        await this.redisClient.hset(`${keyPrefix}apikey_hashes`, key.keyHash, key.id);
-        await this.redisClient.sadd(`${keyPrefix}user_keys:${userId}`, key.id);
+        const dataJson = JSON.stringify(key);
+        const prevHash = key.previousKeyHash || '';
+        if (typeof (this.redisClient as { eval?: unknown }).eval === 'function') {
+          await this.redisClient.eval(
+            CREATE_API_KEY_LUA_SCRIPT,
+            3,
+            `${keyPrefix}apikeys:${key.id}`,
+            `${keyPrefix}apikey_hashes`,
+            `${keyPrefix}user_keys:${userId}`,
+            key.id,
+            key.userId,
+            key.status,
+            key.keyHash,
+            prevHash,
+            dataJson
+          );
+        } else {
+          await this.redisClient.hset(`${keyPrefix}apikeys:${key.id}`, {
+            id: key.id,
+            userId: key.userId,
+            status: key.status,
+            keyHash: key.keyHash,
+            previousKeyHash: prevHash,
+            data: dataJson,
+          });
+          await this.redisClient.hset(`${keyPrefix}apikey_hashes`, key.keyHash, key.id);
+          await this.redisClient.sadd(`${keyPrefix}user_keys:${userId}`, key.id);
+        }
       } catch (err) {
         // A key that only this process knows would verify here and nowhere else: it is not issued.
         this.keys.delete(result.key.id);
@@ -880,21 +899,40 @@ export class RedisKeyStore extends KeyStore {
     let deletedInRedis = false;
     if (this.redisClient) {
       try {
-        const keyData = await this.redisClient.hgetall(`${this.keyPrefix}apikeys:${keyId}`);
-        const ownerId = keyData.userId ?? localKey?.userId;
-        if (ownerId !== userId) {
-          return false;
+        if (typeof (this.redisClient as { eval?: unknown }).eval === 'function') {
+          const outcome = await this.redisClient.eval(
+            DELETE_API_KEY_LUA_SCRIPT,
+            4,
+            `${this.keyPrefix}apikeys:${keyId}`,
+            `${this.keyPrefix}apikey_hashes`,
+            `${this.keyPrefix}user_keys:${userId}`,
+            `${this.keyPrefix}rate:apikey:${keyId}`,
+            userId,
+            keyId,
+            localKey?.userId ?? ''
+          );
+          if (outcome === 'FORBIDDEN') {
+            return false;
+          }
+          this.tokenBuckets.delete(`apikey:${keyId}`);
+          deletedInRedis = outcome === 'DELETED';
+        } else {
+          const keyData = await this.redisClient.hgetall(`${this.keyPrefix}apikeys:${keyId}`);
+          const ownerId = keyData.userId ?? localKey?.userId;
+          if (ownerId !== userId) {
+            return false;
+          }
+          if (keyData.keyHash) {
+            await this.redisClient.hdel(`${this.keyPrefix}apikey_hashes`, keyData.keyHash);
+          }
+          if (keyData.previousKeyHash) {
+            await this.redisClient.hdel(`${this.keyPrefix}apikey_hashes`, keyData.previousKeyHash);
+          }
+          await this.redisClient.srem(`${this.keyPrefix}user_keys:${userId}`, keyId);
+          await this.redisClient.del(`${this.keyPrefix}apikeys:${keyId}`, `${this.keyPrefix}rate:apikey:${keyId}`);
+          this.tokenBuckets.delete(`apikey:${keyId}`);
+          deletedInRedis = Boolean(keyData.userId);
         }
-        if (keyData.keyHash) {
-          await this.redisClient.hdel(`${this.keyPrefix}apikey_hashes`, keyData.keyHash);
-        }
-        if (keyData.previousKeyHash) {
-          await this.redisClient.hdel(`${this.keyPrefix}apikey_hashes`, keyData.previousKeyHash);
-        }
-        await this.redisClient.srem(`${this.keyPrefix}user_keys:${userId}`, keyId);
-        await this.redisClient.del(`${this.keyPrefix}apikeys:${keyId}`, `${this.keyPrefix}rate:apikey:${keyId}`);
-        this.tokenBuckets.delete(`apikey:${keyId}`);
-        deletedInRedis = Boolean(keyData.userId);
       } catch (err) {
         return failClosed('RedisKeyStore', 'deleteApiKey', err);
       }

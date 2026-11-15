@@ -7,7 +7,8 @@ import { isAuthMailEnabled, mailLocale } from '@/lib/auth/mail-config';
 import { mailBudgetLeft } from '@/lib/auth/mail-budget';
 import { holdUntil } from '@/lib/auth/opaque-response';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
-import { codedRefusal, serverFault } from '@/lib/api/problem-details';
+import { authStoreUnavailableRefusal, codedRefusal, serverFault } from '@/lib/api/problem-details';
+import { AuthStoreUnavailableError } from '@/lib/auth/store-unavailable';
 import { readJsonObject } from '@/lib/api/json-body';
 import {
   authRateLimitRefusal,
@@ -129,6 +130,7 @@ export async function POST(req: NextRequest) {
     await holdUntil(startedAt);
     return NextResponse.json({ success: true }, { status: 202 });
   } catch (err: unknown) {
+    if (err instanceof AuthStoreUnavailableError) return authStoreUnavailableRefusal(err);
     return serverFault('auth/register', err, 'Registration failed on the server.');
   }
 }

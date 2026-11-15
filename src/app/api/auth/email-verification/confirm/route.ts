@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { codedRefusal, serverFault } from '@/lib/api/problem-details';
+import { authStoreUnavailableRefusal, codedRefusal, serverFault } from '@/lib/api/problem-details';
+import { AuthStoreUnavailableError } from '@/lib/auth/store-unavailable';
 import { readJsonObject } from '@/lib/api/json-body';
 import { consumeAuthToken, isAuthTokenShape } from '@/lib/auth/auth-email-token-store';
 import { authRateLimitRefusal, consumeMailLinkRateLimit, resolveAuthClientIp } from '@/lib/auth/login-rate-limiter';
@@ -21,16 +22,16 @@ export async function POST(req: NextRequest) {
   const resolvedIp = resolveAuthClientIp(req);
   if ('refused' in resolvedIp) return resolvedIp.refused;
 
-  const limit = await consumeMailLinkRateLimit('verify-confirm', resolvedIp.clientIp, null);
-  if (!limit.allowed) {
-    return authRateLimitRefusal(
-      limit.retryAfterSeconds,
-      `Too many attempts. Please try again in ${limit.retryAfterSeconds} seconds.`,
-      'mail_rate_limited'
-    );
-  }
-
   try {
+    const limit = await consumeMailLinkRateLimit('verify-confirm', resolvedIp.clientIp, null);
+    if (!limit.allowed) {
+      return authRateLimitRefusal(
+        limit.retryAfterSeconds,
+        `Too many attempts. Please try again in ${limit.retryAfterSeconds} seconds.`,
+        'mail_rate_limited'
+      );
+    }
+
     const subject = isAuthTokenShape(body.token) ? await consumeAuthToken('verify', body.token) : null;
     const record = subject ? await redisUserStore.findById(subject.userId) : null;
     if (!subject || !record || record.email !== subject.email) {
@@ -39,6 +40,7 @@ export async function POST(req: NextRequest) {
     await redisUserStore.updateUser(record.id, { emailVerified: true });
     return NextResponse.json({ success: true });
   } catch (err: unknown) {
+    if (err instanceof AuthStoreUnavailableError) return authStoreUnavailableRefusal(err);
     return serverFault('auth/email-verification', err, 'Email verification failed on the server.');
   }
 }

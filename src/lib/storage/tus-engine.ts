@@ -8,7 +8,7 @@ import { pipelineReplies } from '../redis/pipeline-replies';
 import { readyGatedRedis } from '../redis/when-ready';
 import { localFsStorage } from './local-fs-storage';
 import { objectStorage, storageProvider } from './selected-storage';
-import { fileBackedObject, globalSharedObjects } from './shared-store';
+import { commitCopiedObjectFile, globalSharedObjects } from './shared-store';
 import { assertNotSpoofedFilePath } from '../security/file-guard';
 import { LARGEST_PLAN_FILE_BYTES } from '../plan-limits';
 import { resolveDeclaredFormat } from './declared-format';
@@ -491,35 +491,27 @@ async function finalizeTusSession(session: TusSession, binPath: string): Promise
     return;
   }
 
-  const { metaPath, binPath: targetBinPath } = localFsStorage.getPathsForKey(session.key);
+  const paths = localFsStorage.getPathsForKey(session.key);
   try {
-    const parentDir = path.dirname(targetBinPath);
-    if (!fs.existsSync(parentDir)) {
-      fs.mkdirSync(parentDir, { recursive: true });
-    }
-    // Zero-copy OS file copy
-    fs.copyFileSync(binPath, targetBinPath);
-
-    const stat = await fs.promises.stat(binPath);
-    const hash = crypto.createHash('sha256').update(String(stat.mtimeMs)).digest('hex');
-    const etag = `"${hash.slice(0, 32)}"`;
-
     const uploadedAt = Date.now();
-    globalSharedObjects.set(
-      session.key,
-      fileBackedObject(
-        {
-          key: session.key,
-          filename: session.filename,
-          mimeType: session.mimeType,
-          size: session.uploadLength,
-          etag,
-          uploadedAt,
-          expiresAt: session.expiresAt,
-        },
-        targetBinPath
-      )
-    );
+    const etagHash = crypto
+      .createHash('sha256')
+      .update(`${session.id}:${session.key}:${session.uploadLength}:${uploadedAt}:${crypto.randomBytes(16).toString('hex')}`)
+      .digest('hex');
+    const record = {
+      key: session.key,
+      filename: session.filename,
+      mimeType: session.mimeType,
+      size: session.uploadLength,
+      etag: `"${etagHash.slice(0, 32)}"`,
+      uploadedAt,
+      expiresAt: session.expiresAt,
+    };
+    if (path.resolve(paths.binPath) === path.resolve(globalSharedObjects.objectPath(session.key))) {
+      await globalSharedObjects.storeCopiedFile(session.key, binPath, record);
+    } else {
+      await commitCopiedObjectFile(paths, binPath, record);
+    }
   } catch {
     // Fallback if needed
     const readStream = fs.createReadStream(binPath);

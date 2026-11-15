@@ -122,6 +122,53 @@ async function discardResultOfAbortedAttempt(
   signal.throwIfAborted();
 }
 
+function cleanupProcessorAttemptFiles(params: {
+  jobId: string;
+  intermediateFilePaths: string[];
+  lastProducedResult?: EngineResult;
+  conversionSucceeded: boolean;
+  attemptSignal?: AbortSignal;
+  savedFilePath?: string;
+}): void {
+  const keptPath = params.conversionSucceeded && !params.attemptSignal?.aborted ? params.savedFilePath : undefined;
+  for (const p of params.intermediateFilePaths) {
+    if (p === keptPath) continue;
+    try {
+      fs.rmSync(p, { force: true });
+    } catch {}
+  }
+  if (params.lastProducedResult?.filePath && params.lastProducedResult.filePath !== keptPath) {
+    discardConversionOutput(params.jobId, params.lastProducedResult);
+  }
+}
+
+async function logConversionDiagnostics(
+  job: Job<ConversionJobData, ConversionJobResult>,
+  engineName: string,
+  finalResult: EngineResult,
+  startTime: number
+): Promise<void> {
+  await job.log(
+    `[${engineName}] Conversion completed via [${finalResult.engineUsed || engineName}] in ${finalResult.executionTimeMs || Date.now() - startTime}ms. Size: ${finalResult.size} bytes`
+  );
+  if (finalResult.skippedLinks && finalResult.skippedLinks.length > 0) {
+    await job.log(
+      `[${engineName}] Skipped ${finalResult.skippedLinks.length} link entries: ${finalResult.skippedLinks.join(', ')}`
+    );
+  }
+  const warnings = finalResult.metadata?.warnings;
+  if (Array.isArray(warnings)) {
+    for (const warning of warnings) {
+      if (typeof warning === 'string') await job.log(`[${engineName}] Warning: ${warning}`);
+    }
+  }
+  if (finalResult.fallbackChain && finalResult.fallbackChain.length > 0) {
+    for (const step of finalResult.fallbackChain) {
+      await job.log(`[${engineName}] Engine fallback: ${step}`);
+    }
+  }
+}
+
 /**
  * Canonical unified node processor.
  * Routes graph node jobs, multi-stage task pipelines, and single conversions
@@ -158,6 +205,7 @@ export async function processNodeJob(
   let conversionSucceeded = false;
   let failure: unknown;
   let lastProducedResult: EngineResult | undefined;
+  let savedFilePath: string | undefined;
   const intermediateFilePaths: string[] = [];
 
   try {
@@ -216,7 +264,7 @@ export async function processNodeJob(
       let currentFilename = job.data.originalFilename;
 
       for (let i = 0; i < job.data.tasks.length; i++) {
-        attemptSignal.throwIfAborted();
+        attemptSignal?.throwIfAborted();
         const task = job.data.tasks[i];
         const taskProgress = Math.round(20 + ((i + 1) / job.data.tasks.length) * 60);
         const stageTarget = task.targetFormat || (
@@ -281,7 +329,7 @@ export async function processNodeJob(
         } catch {}
       }
     } else {
-      attemptSignal.throwIfAborted();
+      attemptSignal?.throwIfAborted();
       const conversionOptions: ConversionOptions & { signal?: AbortSignal } = {
         ...openPasswordOption(job.data.options, job.id),
         signal: attemptSignal,
@@ -297,28 +345,10 @@ export async function processNodeJob(
     }
 
     await job.updateProgress(75);
-    await job.log(
-      `[${engine.name}] Conversion completed via [${finalResult.engineUsed || engine.name}] in ${finalResult.executionTimeMs || Date.now() - startTime}ms. Size: ${finalResult.size} bytes`
-    );
-    if (finalResult.skippedLinks && finalResult.skippedLinks.length > 0) {
-      await job.log(
-        `[${engine.name}] Skipped ${finalResult.skippedLinks.length} link entries: ${finalResult.skippedLinks.join(', ')}`
-      );
-    }
-    const warnings = finalResult.metadata?.warnings;
-    if (Array.isArray(warnings)) {
-      for (const warning of warnings) {
-        if (typeof warning === 'string') await job.log(`[${engine.name}] Warning: ${warning}`);
-      }
-    }
-    if (finalResult.fallbackChain && finalResult.fallbackChain.length > 0) {
-      for (const step of finalResult.fallbackChain) {
-        await job.log(`[${engine.name}] Engine fallback: ${step}`);
-      }
-    }
+    await logConversionDiagnostics(job, engine.name, finalResult, startTime);
 
     // 3. Save the output with the undelivered time as its lifetime: it is deleted soon after its first complete download.
-    if (attemptSignal.aborted) {
+    if (attemptSignal?.aborted) {
       if (lastProducedResult) {
         discardConversionOutput(job.id, lastProducedResult);
       }
@@ -338,7 +368,10 @@ export async function processNodeJob(
             attemptSignal
           )
         : await storage.saveObject(resultKey, finalResult.buffer, finalResult.mimeType, finalResult.filename, undeliveredTtlMs);
-    await discardResultOfAbortedAttempt(storage, resultKey, written, attemptSignal);
+    savedFilePath = written.filePath;
+    if (attemptSignal) {
+      await discardResultOfAbortedAttempt(storage, resultKey, written, attemptSignal);
+    }
 
     await registerStoredResult(storage, resultKey);
 
@@ -373,16 +406,14 @@ export async function processNodeJob(
     failure = err;
     throw err;
   } finally {
-    if (attemptSignal.aborted) {
-      for (const p of intermediateFilePaths) {
-        try {
-          fs.rmSync(p, { force: true });
-        } catch {}
-      }
-      if (lastProducedResult) {
-        discardConversionOutput(job.id, lastProducedResult);
-      }
-    }
+    cleanupProcessorAttemptFiles({
+      jobId: job.id,
+      intermediateFilePaths,
+      lastProducedResult,
+      conversionSucceeded,
+      attemptSignal,
+      savedFilePath,
+    });
     if (inputBufferForShredding) {
       secureShredBuffer(inputBufferForShredding, 2);
     }

@@ -92,6 +92,16 @@ export function readyGatedRedis(client: Redis): Redis {
     get(target, property) {
       const value: unknown = Reflect.get(target, property, target);
       if (typeof value !== 'function') return value;
+      if (property === 'pipeline' || property === 'multi') {
+        return (...args: unknown[]) => {
+          const chain = (value as (...a: unknown[]) => { exec?: (...ea: unknown[]) => Promise<unknown> }).apply(target, args);
+          if (chain && typeof chain.exec === 'function') {
+            const origExec = chain.exec.bind(chain);
+            chain.exec = (...execArgs: unknown[]) => whenReady(target).then(() => origExec(...execArgs));
+          }
+          return chain;
+        };
+      }
       if (UNGATED_METHODS.has(property) || property in EventEmitter.prototype) return value.bind(target);
       return (...args: unknown[]) => whenReady(target).then(() => value.apply(target, args));
     },

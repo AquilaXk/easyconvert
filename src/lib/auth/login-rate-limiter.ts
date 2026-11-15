@@ -10,6 +10,7 @@ import {
 } from '../security/client-ip';
 import { sha256 } from './crypto';
 import { redisUserStore } from './redis-user-store';
+import { failClosed } from './store-unavailable';
 
 const authRefusal = codedRefusal<AuthErrorCode>;
 const HTTP_SERVICE_UNAVAILABLE = 503;
@@ -161,8 +162,8 @@ export async function checkLoginRateLimit(
       }
 
       return { allowed: true, retryAfterSeconds: 0 };
-    } catch {
-      // Fallback to in-memory on Redis error
+    } catch (err) {
+      return failClosed('LoginRateLimiter', 'checkLoginRateLimit', err);
     }
   }
 
@@ -240,10 +241,13 @@ export async function recordFailedLogin(ip: string | null, email: string): Promi
         pipeline.incr(counter.key);
         pipeline.expire(counter.key, counter.windowSeconds);
       }
-      await pipeline.exec();
+      const results = await pipeline.exec();
+      if (!results || results.some(([err]) => err !== null)) {
+        throw new Error('Redis login rate-limit pipeline failed');
+      }
       return;
-    } catch {
-      // Fallback
+    } catch (err) {
+      return failClosed('LoginRateLimiter', 'recordFailedLogin', err);
     }
   }
 
@@ -291,8 +295,8 @@ export async function resetLoginAttempts(email: string): Promise<void> {
     try {
       await redis.del(`${redisUserStore.getKeyPrefix()}login_attempts:email:${normEmail}`);
       return;
-    } catch {
-      // Fallback
+    } catch (err) {
+      return failClosed('LoginRateLimiter', 'resetLoginAttempts', err);
     }
   }
 
@@ -306,6 +310,13 @@ async function consumeRedisFixedWindow(
   maxAttempts: number,
   reason: 'email' | 'ip' | 'global'
 ): Promise<LoginRateLimitCheckResult | null> {
+  if (typeof redis.eval === 'function') {
+    const raw = (await redis.eval(FIXED_WINDOW_INCR_LUA, 1, key, String(windowSeconds))) as [number, number];
+    const count = Number(raw?.[0] ?? 0);
+    const ttlRaw = Number(raw?.[1] ?? windowSeconds);
+    const retryAfterSeconds = ttlRaw < 0 ? windowSeconds : Math.max(1, ttlRaw);
+    return count > maxAttempts ? { allowed: false, retryAfterSeconds, reason } : null;
+  }
   const pipeline = redis.pipeline();
   pipeline.set(key, 0, 'EX', windowSeconds, 'NX');
   pipeline.incr(key);
@@ -362,7 +373,9 @@ export async function consumeRegistrationRateLimit(
       }
 
       return { allowed: true, retryAfterSeconds: 0 };
-    } catch {}
+    } catch (err) {
+      return failClosed('LoginRateLimiter', 'consumeRegistrationRateLimit', err);
+    }
   }
 
   cleanStaleAttempts();
@@ -479,15 +492,16 @@ async function consumeLimits(limits: readonly MailLimit[]): Promise<LoginRateLim
   const redis = redisUserStore.getRedisClient();
   const prefix = redisUserStore.getKeyPrefix();
   for (const limit of limits) {
-    let blocked: LoginRateLimitCheckResult | null | undefined;
+    let blocked: LoginRateLimitCheckResult | null;
     if (redis) {
       try {
         blocked = await consumeRedisFixedWindow(redis, `${prefix}${limit.key}`, limit.windowSeconds, limit.max, limit.reason);
-      } catch {
-        blocked = undefined;
+      } catch (err) {
+        return failClosed('LoginRateLimiter', 'consumeLimits', err);
       }
+    } else {
+      blocked = memoryWindow(limit.key, limit.max, limit.windowSeconds, limit.reason);
     }
-    if (blocked === undefined) blocked = memoryWindow(limit.key, limit.max, limit.windowSeconds, limit.reason);
     if (blocked) return blocked;
   }
   return { allowed: true, retryAfterSeconds: 0 };

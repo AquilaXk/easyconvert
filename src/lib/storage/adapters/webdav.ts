@@ -7,7 +7,14 @@ import {
   StorageNotFoundError,
   StorageAuthenticationError,
 } from './adapter-interface';
-import { adapterDispatcher, guardedRequest, assertAdapterUrlSafe, readErrorText, releaseDispatcher } from './http-guard';
+import {
+  adapterDispatcher,
+  assertAdapterUrlSafe,
+  guardedRequest,
+  parseCleanBaseEndpointUrl,
+  readErrorText,
+  releaseDispatcher,
+} from './http-guard';
 
 function stripTrailingSlashes(s: string): string {
   let end = s.length;
@@ -47,6 +54,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
   private readonly authHeader?: string;
 
   constructor(credentials: WebDavCredentials) {
+    parseCleanBaseEndpointUrl(credentials.url, this.providerName);
     let base = stripTrailingSlashes(credentials.url);
     if (credentials.basePath) {
       const cleanBase = stripSlashes(credentials.basePath);

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { codedRefusal } from '@/lib/api/problem-details';
+import { authStoreUnavailableRefusal, codedRefusal, serverFault } from '@/lib/api/problem-details';
+import { AuthStoreUnavailableError } from '@/lib/auth/store-unavailable';
 import { readJsonObject } from '@/lib/api/json-body';
 import { isEmailVerified, isPasswordAccount, queueAccountMail } from '@/lib/auth/account-mail';
 import { authRateLimitRefusal, consumeMailLinkRateLimit, resolveAuthClientIp } from '@/lib/auth/login-rate-limiter';
@@ -26,7 +27,13 @@ export async function POST(req: NextRequest) {
   const resolvedIp = resolveAuthClientIp(req);
   if ('refused' in resolvedIp) return resolvedIp.refused;
 
-  const limit = await consumeMailLinkRateLimit('verify-resend', resolvedIp.clientIp, user.id);
+  let limit;
+  try {
+    limit = await consumeMailLinkRateLimit('verify-resend', resolvedIp.clientIp, user.id);
+  } catch (err: unknown) {
+    if (err instanceof AuthStoreUnavailableError) return authStoreUnavailableRefusal(err);
+    return serverFault('auth/email-verification', err, 'Email verification failed on the server.');
+  }
   if (!limit.allowed) {
     return authRateLimitRefusal(
       limit.retryAfterSeconds,

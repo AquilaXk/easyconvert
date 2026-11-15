@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { codedRefusal, serverFault } from '@/lib/api/problem-details';
+import { authStoreUnavailableRefusal, codedRefusal, serverFault } from '@/lib/api/problem-details';
+import { AuthStoreUnavailableError } from '@/lib/auth/store-unavailable';
 import { readJsonObject } from '@/lib/api/json-body';
 import { isEmailVerified, isPasswordAccount } from '@/lib/auth/account-mail';
 import { consumeAuthToken, isAuthTokenShape } from '@/lib/auth/auth-email-token-store';
@@ -44,16 +45,16 @@ export async function POST(req: NextRequest) {
     return refusal(400, 'password_length', 'Password must be between 8 and 1024 characters in length.');
   }
 
-  const limit = await consumeMailLinkRateLimit('reset-confirm', clientIp, null);
-  if (!limit.allowed) {
-    return authRateLimitRefusal(
-      limit.retryAfterSeconds,
-      `Too many attempts. Please try again in ${limit.retryAfterSeconds} seconds.`,
-      'mail_rate_limited'
-    );
-  }
-
   try {
+    const limit = await consumeMailLinkRateLimit('reset-confirm', clientIp, null);
+    if (!limit.allowed) {
+      return authRateLimitRefusal(
+        limit.retryAfterSeconds,
+        `Too many attempts. Please try again in ${limit.retryAfterSeconds} seconds.`,
+        'mail_rate_limited'
+      );
+    }
+
     const subject = isAuthTokenShape(body.token) ? await consumeAuthToken('reset', body.token) : null;
     const record = subject ? await redisUserStore.findById(subject.userId) : null;
     if (!subject || !record || record.email !== subject.email || !isPasswordAccount(record)) {
@@ -82,6 +83,7 @@ export async function POST(req: NextRequest) {
     for (const cleared of clearSessionCookies()) response.headers.append('Set-Cookie', cleared);
     return response;
   } catch (err: unknown) {
+    if (err instanceof AuthStoreUnavailableError) return authStoreUnavailableRefusal(err);
     return serverFault('auth/password-reset', err, 'Password reset failed on the server.');
   }
 }

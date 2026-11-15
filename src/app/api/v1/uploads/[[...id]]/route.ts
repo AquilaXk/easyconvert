@@ -119,6 +119,11 @@ function resolveSessionId(params?: UploadRouteParams): string | null {
   return params.id[0];
 }
 
+function parseStrictUploadLength(raw: string): number {
+  const trimmed = raw.trim();
+  return /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : Number.NaN;
+}
+
 /**
  * The caller's own session on local disk. An id this store did not generate, a missing session and
  * another user's session are all undefined, so each is answered like a missing one.
@@ -598,8 +603,8 @@ export const POST = admittingNewFiles(async function POST(
     });
   }
 
-  const uploadLength = Number.parseInt(uploadLengthHeader, 10);
-  if (!Number.isFinite(uploadLength) || uploadLength < 0) {
+  const uploadLength = parseStrictUploadLength(uploadLengthHeader);
+  if (!Number.isSafeInteger(uploadLength) || uploadLength < 1) {
     return createProblemDetailsResponse(400, 'Invalid "Upload-Length" header value.', instanceUri, undefined, undefined, {
       'Tus-Resumable': TUS_RESUMABLE_VERSION,
     });
