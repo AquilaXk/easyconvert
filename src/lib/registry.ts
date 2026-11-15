@@ -603,7 +603,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'text/plain',
     category: 'document',
     description: 'Standard unformatted plain text document.',
-    targetFormats: ['pdf', 'docx', 'html', 'md', 'epub', 'pptx', 'zip', 'odt', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'xps', 'hwp', 'hwpx', 'doc', 'jpg', 'png', 'rtf'],
+    targetFormats: ['pdf', 'docx', 'html', 'md', 'epub', 'pptx', 'zip', 'odt', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'xps', 'hwp', 'hwpx', 'doc', 'jpg', 'png', 'rtf', 'tex'],
     optionsSchema: { orientation: true },
   },
   text: {
@@ -622,7 +622,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'text/markdown',
     category: 'document',
     description: 'Lightweight markup language with plain-text formatting syntax.',
-    targetFormats: ['html', 'pdf', 'docx', 'txt', 'epub', 'pptx', 'odp', 'odt', 'zip', 'md', 'hwp', 'hwpx', 'doc', 'jpg', 'png', 'rtf'],
+    targetFormats: ['html', 'pdf', 'docx', 'txt', 'epub', 'pptx', 'odp', 'odt', 'zip', 'md', 'hwp', 'hwpx', 'doc', 'jpg', 'png', 'rtf', 'rst', 'tex'],
     optionsSchema: { orientation: true },
   },
   html: {
@@ -632,7 +632,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'text/html',
     category: 'document',
     description: 'HyperText Markup Language - Standard document format for web pages.',
-    targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'odt', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'hwp', 'hwpx', 'doc', 'jpg', 'png', 'rtf'],
+    targetFormats: ['pdf', 'docx', 'txt', 'md', 'epub', 'zip', 'odt', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'hwp', 'hwpx', 'doc', 'jpg', 'png', 'rtf', 'tex'],
     optionsSchema: { orientation: true },
   },
   htm: {

@@ -39,6 +39,7 @@ import { decodeRawInThread } from './raw-decode-host';
 import { encode16BitTiff } from '../lib/conversions/raw-hdr';
 import { isSvgPageTarget, withSvgPageEncoder } from './svg-page-encoders';
 import { isCalibreOnlyPair } from '../lib/conversions/calibre-ebook-targets';
+import { isPandocPair } from '../lib/conversions/pandoc-pairs';
 import { runWithImageFetchSession } from '../lib/conversions/html-image-fetch';
 import { assertConversionOptionsObject } from '../lib/conversions/options-guard';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath } from '../lib/security/file-guard';
@@ -80,6 +81,7 @@ import { convertPostScript, type PostScriptJob } from './postscript-render';
 import { convertDjvu } from './djvu-render';
 import { convertXps, type XpsJob } from './xps-render';
 import { convertWithCalibre } from './ebook-calibre';
+import { convertWithPandoc } from './pandoc-route';
 import { convertSubtitle, isSubtitlePair } from './subtitle-route';
 import { renderSvgAsPdf } from './svg-render';
 import { HTML_FORMAT, HTML_SOURCES, planTextPdfRoute } from './text-pdf-route';
@@ -218,6 +220,7 @@ const BINARY_PATHS: Record<string, string[]> = {
   gxps: [...(process.env.GXPS_PATH ? [process.env.GXPS_PATH] : []), '/usr/local/bin/gxps', '/usr/bin/gxps', '/opt/homebrew/bin/gxps'],
   ddjvu: [...(process.env.DDJVU_PATH ? [process.env.DDJVU_PATH] : []), '/usr/local/bin/ddjvu', '/usr/bin/ddjvu', '/opt/homebrew/bin/ddjvu'],
   ebookConvert: [...(process.env.EBOOK_CONVERT_PATH ? [process.env.EBOOK_CONVERT_PATH] : []), '/usr/bin/ebook-convert', '/usr/local/bin/ebook-convert', '/opt/homebrew/bin/ebook-convert'],
+  pandoc: [...(process.env.PANDOC_PATH ? [process.env.PANDOC_PATH] : []), '/usr/local/bin/pandoc', '/usr/bin/pandoc', '/opt/homebrew/bin/pandoc'],
   tesseract: [
     ...(process.env.TESSERACT_PATH ? [process.env.TESSERACT_PATH] : []),
     '/usr/bin/tesseract',
@@ -237,18 +240,9 @@ function validateFormat(format: string): string {
 }
 
 function resolveBinary(candidates: string[], envOverride?: string): string | null {
-  if (envOverride !== undefined && envOverride !== '' && envOverride !== 'undefined') {
-    if (path.isAbsolute(envOverride) && fs.existsSync(envOverride)) {
-      return envOverride;
-    }
-    return null;
-  }
-  for (const candidate of candidates) {
-    if (path.isAbsolute(candidate) && fs.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-  return null;
+  const usable = (candidate: string): boolean => path.isAbsolute(candidate) && fs.existsSync(candidate);
+  if (envOverride !== undefined && envOverride !== '' && envOverride !== 'undefined') return usable(envOverride) ? envOverride : null;
+  return candidates.find(usable) ?? null;
 }
 
 /** Native CLIs a health check can ask about, keyed as in BINARY_PATHS. */
@@ -266,7 +260,7 @@ export type NativeBinaryName =
   | 'rsvgConvert'
   | 'dcrawEmu'
   | 'dcrawEmuHe'
-  | 'ebookConvert';
+  | 'ebookConvert' | 'pandoc';
 
 /** The environment variable that overrides each native CLI's location. */
 const NATIVE_BINARY_ENV_VARS: Readonly<Record<NativeBinaryName, string>> = {
@@ -284,6 +278,7 @@ const NATIVE_BINARY_ENV_VARS: Readonly<Record<NativeBinaryName, string>> = {
   dcrawEmu: 'DCRAW_EMU_PATH',
   dcrawEmuHe: 'DCRAW_EMU_HE_PATH',
   ebookConvert: 'EBOOK_CONVERT_PATH',
+  pandoc: 'PANDOC_PATH',
 };
 
 /**
@@ -1948,7 +1943,7 @@ const OFFICE_SUITE_DEPS: OfficeSuiteRouteDeps = {
 };
 
 /**
- * One conversion of the request's image session. A target only calibre writes, or a book only calibre reads, goes to `ebook-convert`; a format only the office
+ * One conversion of the request's image session. A target only calibre writes, or a book only calibre reads, goes to `ebook-convert`; a text pair pandoc writes goes to `pandoc`; a format only the office
  * suite reads goes to a target it does not write through an interchange file, a table written as `.xls` through an XLSX workbook;
  * any other conversion runs the engines, and a legacy Office document that the strict in-process reader refuses is then tried by
  * the office suite.
@@ -1968,6 +1963,7 @@ async function convertWithOfficeSuiteRoutes(
     assertNotSpoofedFileVfs(input, request.src, originalFilename);
     return convertWithCalibre(OFFICE_SUITE_DEPS, request, resolveBinary(BINARY_PATHS.ebookConvert, process.env.EBOOK_CONVERT_PATH));
   }
+  if (isPandocPair(request.src, request.tgt)) return convertWithPandoc(request, resolveBinary(BINARY_PATHS.pandoc, process.env.PANDOC_PATH), assertNotSpoofedFileVfs);
   const interchange = interchangeNeeded(request.src, request.tgt, isPdfChainTarget(request.tgt) || ARCHIVE_TARGET_FORMATS.has(request.tgt));
   // An interchange file and an .xls are written by the office suite or the table writers, which have not checked the declared source.
   if (interchange !== undefined || request.tgt === BIFF8_TARGET) assertNotSpoofedFileVfs(input, request.src, originalFilename);

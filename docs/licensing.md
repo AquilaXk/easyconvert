@@ -174,6 +174,11 @@ Certain format conversions require specialized external command-line utilities. 
 - **What differs from the original**: only the form. JODConverter sets the properties through the office API; here they are the command line argument, and they apply to the two targets above, not to every text file the suite opens. Nothing else of the project is used.
 - **Compliance**: the repository is Apache-2.0 too, so the licence text of `LICENSE` travels with the file; `NOTICE` names the constant, its origin and the copyright holders. JODConverter's `NOTICE` adds no further terms for the part used. Later changes to the constant are separate commits of this repository.
 
+### 2.28 pandoc (GPL-2.0-or-later)
+- **Role**: writes LaTeX from Markdown, plain text and HTML, and reStructuredText from Markdown (`src/worker/pandoc-route.ts`; entry 308 of `docs/policy-decisions.md`). When the program is absent the four pairs answer HTTP 503.
+- **Process Isolation**: `pandoc` is the project's own statically linked release program for the architecture (`scripts/install-pandoc.sh`, pinned by SHA-256 together with the licence text and the copyright notice of the tagged commit), installed unmodified and executed as a separate process in the process sandbox with `--sandbox` (no file read but the input), no network access and limits on time, memory and output size. Nothing links it into the application and no source of it is incorporated or modified. The text of the source goes to the program as a file of the job and the result comes back as a file.
+- **Compliance**: pandoc is GPL-2.0-or-later (John MacFarlane and contributors); running an unmodified, separate GPL executable keeps EasyConvert's own code outside the GPL, as for Ghostscript and calibre. The worker image carries the licence text (`/licenses/pandoc.copyright`), the copyright notice of the project, which lists the libraries linked into the program (`/licenses/pandoc.COPYRIGHT`), and a `SOURCE` note (`/licenses/pandoc.SOURCE`) that names the release archive, its SHA-256 and the commit, so the corresponding source is the tagged commit named there. The program is one statically linked binary that holds the code of its Haskell dependencies; their licence texts are not generated here (see `TODO.md`).
+
 ---
 
 ## 3. LGPL Relinking & On-Premises Container Images

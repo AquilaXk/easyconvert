@@ -12,6 +12,7 @@ export const ENGINE_NAMES = {
   ghostxps: 'GhostXPS',
   djvulibre: 'DjVuLibre',
   calibre: 'calibre',
+  pandoc: 'pandoc',
   librsvg: 'librsvg',
   libraw: 'LibRaw',
 } as const;

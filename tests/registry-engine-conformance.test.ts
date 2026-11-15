@@ -32,6 +32,7 @@ import { buildPatchExr, buildPatchUltraHdr } from './helpers/hdr-test-images';
 import { buildWordBinary } from './helpers/word-binary-builder';
 import { buildMobi, buildMobiFromBytes } from './helpers/mobi-builder';
 import { isCalibreOnlyPair } from '../src/lib/conversions/calibre-ebook-targets';
+import { isPandocPair } from '../src/lib/conversions/pandoc-pairs';
 import { buildAzw4, textPdf } from './helpers/print-replica-builder';
 import { loadConformanceDurations, partOfKey, planConformanceParts } from '../scripts/ci-conformance-parts.mjs';
 import { buildPptBinary } from './helpers/ppt-binary-builder';
@@ -264,7 +265,7 @@ const FIRST_PART_ONLY_TESTS: readonly RegExp[] = [
   /^has an intact sample for every RAW/,
   /^has a validator for every target/,
   /^lists only pairs the registry advertises/,
-  /^lists every registry pair that calibre converts/,
+  /^lists every registry pair that calibre or pandoc converts/,
 ];
 /** A test that converts one pair is named `<source> -> <target> ...`. */
 const PAIR_TEST_NAME = /^(\S+) -> (\S+) /;
@@ -663,13 +664,13 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   dotx: ['doc', 'jpg', 'png', 'rtf'],
   eps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   htm: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
-  html: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
+  html: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf', 'tex'],
   htmlz: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   json: ['xls'],
   jsonl: ['xls'],
   key: ['html', 'jpg', 'pdf', 'png', 'ppt', 'pptx'],
   lrf: ['azw3', 'mobi', 'oeb', 'pdb'],
-  md: ['doc', 'jpg', 'png', 'rtf'],
+  md: ['doc', 'jpg', 'png', 'rst', 'rtf', 'tex'],
   mobi: ['azw3', 'lrf', 'oeb', 'pdb'],
   ndjson: ['xls'],
   djv: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
@@ -697,7 +698,7 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   rst: ['rtf'],
   rtf: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png'],
   tsv: ['xls'],
-  txt: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
+  txt: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf', 'tex'],
   txtz: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   xls: ['jpg', 'png'],
   xlsm: ['jpg', 'png', 'xls'],
@@ -1058,10 +1059,8 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     eps: ['emf', 'wmf'],
     fods: ['json'],
     gif: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma'],
-    html: ['tex'],
     ibooks: ['epub', 'pdf', 'txt'],
     key: ['doc', 'xls'],
-    md: ['rst', 'tex'],
     mobi: ['docx'],
     msg: ['eml'],
     numbers: ['doc', 'ppt', 'tsv'],
@@ -1085,7 +1084,6 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     slk: ['tsv'],
     snb: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     sxd: ['odp', 'pptx'],
-    txt: ['tex'],
     webp: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma'],
     wk1: ['tsv'],
     wks: ['tsv'],
@@ -1575,7 +1573,7 @@ describe('native-engine pairs route through the dispatcher', () => {
   );
   const allPartPairs = allNativePairs.filter(([source, target]) => inPart(`${source}->${target}`));
   /** The pairs that end in a calibre target are proven by the missing-engine suite below and by tests/ebook-calibre-writers.test.ts, not by the LibreOffice and Poppler suites. */
-  const pairs = allPartPairs.filter(([source, target]) => !isCalibreOnlyPair(source, target) && !isSubtitleFormat(source));
+  const pairs = allPartPairs.filter(([source, target]) => !isCalibreOnlyPair(source, target) && !isPandocPair(source, target) && !isSubtitleFormat(source));
   /** The subtitle pairs are FFmpeg's: the sandbox, the file checks and the independent read-back are proven by tests/subtitle-pairs.test.ts. */
   const subtitlePairs = allPartPairs.filter(([source]) => isSubtitleFormat(source));
   const authorable = ([source]: [string, string]) => !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source) && !XPS_SOURCES.has(source) && !DJVU_SOURCES.has(source);
@@ -1595,6 +1593,7 @@ describe('native-engine pairs route through the dispatcher', () => {
   /** Native engine (and the environment variable that points to it) that converts a pair. */
   function engineOf(source: string, target: string): { envVar: string; engineName: string } {
     if (isCalibreOnlyPair(source, target)) return { envVar: 'EBOOK_CONVERT_PATH', engineName: 'ebook-convert' };
+    if (isPandocPair(source, target)) return { envVar: 'PANDOC_PATH', engineName: 'pandoc' };
     if (isSubtitleFormat(source)) return { envVar: 'FFMPEG_PATH', engineName: 'ffmpeg' };
     if (POSTSCRIPT_SOURCES.has(source)) return { envVar: 'PS2PDF_PATH', engineName: 'ps2pdf' };
     if (XPS_SOURCES.has(source)) return { envVar: 'GXPS_PATH', engineName: 'gxps' };
@@ -1868,9 +1867,9 @@ describe('native-engine pairs route through the dispatcher', () => {
   });
 
   // skip-ok: part selection: the sharded run executes each of these once, in part 1.
-  it.runIf(IS_FIRST_PART)('lists every registry pair that calibre converts, so that none is left to the in-process probe', () => {
+  it.runIf(IS_FIRST_PART)('lists every registry pair that calibre or pandoc converts, so that none is left to the in-process probe', () => {
     const listed = new Set(allNativePairs.map(([source, target]) => `${source}->${target}`));
-    const advertised = Object.entries(FORMAT_REGISTRY).flatMap(([source, def]) => def.targetFormats.filter((target) => isCalibreOnlyPair(source, target)).map((target) => `${source}->${target}`));
+    const advertised = Object.entries(FORMAT_REGISTRY).flatMap(([source, def]) => def.targetFormats.filter((target) => isCalibreOnlyPair(source, target) || isPandocPair(source, target)).map((target) => `${source}->${target}`));
     expect(advertised.filter((pair) => !listed.has(pair))).toEqual([]);
   });
 

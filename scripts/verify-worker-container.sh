@@ -11,7 +11,7 @@
 #   2. executing a file from /tmp fails with EACCES (noexec)
 #   3. the process holds no cap_sys_admin (kernel view; `capsh --print` too when it is installed)
 #   4. a child in the sandbox's namespaces cannot connect to the Redis port while the parent can
-#   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; fluidsynth for MIDI; FontForge for a Type 1 font; calibre for a MOBI book; LibreOffice with VERIFY_LIBREOFFICE=1)
+#   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; fluidsynth for MIDI; FontForge for a Type 1 font; calibre for a MOBI book; pandoc for a LaTeX file; LibreOffice with VERIFY_LIBREOFFICE=1)
 #   6. libdeflate-gzip (the deflate encoder for ZIP and gzip payloads past 4 MiB) is installed and round-trips inside the sandbox
 #   7. lbzip2 (the bzip2 encoder for tar.bz2 targets of up to two blocks) is installed and round-trips inside the sandbox
 #   8. qpdf-runner (the qpdf jobs of the PDF operations) runs a job in a user and network namespace of its own under this container's seccomp profile
@@ -351,6 +351,19 @@ if [ -z "$calibre_reader_failure" ]; then
   pass "calibre read a TCR book and wrote EPUB, PDF, RTF and text from it inside the sandbox"
 else
   fail "calibre did not read a TCR book inside the sandbox: $calibre_reader_failure"
+fi
+
+# pandoc writes LaTeX from Markdown and reStructuredText from Markdown: it converts a Markdown file to each started as the worker starts it
+# (`--sandbox`, the job's home and temporary directories in the scratch directory), under the address space limit of the other programs; the
+# LaTeX must open with the section command pandoc writes for the heading, and the reStructuredText with the heading and its underline.
+printf '# %s\n\nA *line*.\n' "$MARKER_TEXT" > "$work_dir/book.md"
+if sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" env HOME="$work_dir" TMPDIR="$work_dir" LANG=C.UTF-8 pandoc --sandbox --from markdown --to latex --output "$work_dir/book.tex" "$work_dir/book.md" >"$work_dir/pandoc.out" 2>&1 \
+  && sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" env HOME="$work_dir" TMPDIR="$work_dir" LANG=C.UTF-8 pandoc --sandbox --from markdown --to rst --output "$work_dir/book.rst" "$work_dir/book.md" >>"$work_dir/pandoc.out" 2>&1 \
+  && [ "$(head -n 1 "$work_dir/book.tex")" = "\\section{$MARKER_TEXT}\\label{$(printf '%s' "$MARKER_TEXT" | tr 'A-Z' 'a-z')}" ] \
+  && [ "$(head -n 1 "$work_dir/book.rst")" = "$MARKER_TEXT" ] && grep -q '^====' "$work_dir/book.rst"; then
+  pass "pandoc converted a Markdown file to LaTeX and reStructuredText inside the sandbox"
+else
+  fail "pandoc did not convert a Markdown file inside the sandbox: $(tail -c 300 "$work_dir/pandoc.out" 2>/dev/null)"
 fi
 
 if [ "${VERIFY_LIBREOFFICE:-0}" = "1" ]; then

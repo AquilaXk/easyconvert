@@ -5,9 +5,9 @@ import { InvalidConversionOutputError } from '../types';
 import { readZipEntryBytes } from './zip-entry-reader';
 
 /** Targets whose bytes are text a reader opens as such. */
-const TEXT_TARGETS: ReadonlySet<string> = new Set(['txt', 'md', 'csv', 'tsv', 'html']);
+const TEXT_TARGETS: ReadonlySet<string> = new Set(['txt', 'md', 'csv', 'tsv', 'html', 'tex', 'rst']);
 /** Text targets that are empty when the input held nothing to write; HTML always carries a page skeleton. */
-const CONTENT_TARGETS: ReadonlySet<string> = new Set(['txt', 'md', 'csv', 'tsv']);
+const CONTENT_TARGETS: ReadonlySet<string> = new Set(['txt', 'md', 'csv', 'tsv', 'tex', 'rst']);
 
 /** Leading bytes of the binary containers an engine can hand back instead of text: ZIP, OLE compound file, 7z, PDF, gzip. */
 const BINARY_CONTAINER_SIGNATURES: readonly Buffer[] = [

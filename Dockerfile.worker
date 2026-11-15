@@ -174,6 +174,23 @@ COPY scripts/oxipng-notices/THIRD-PARTY-NOTICES /tmp/oxipng-notices/THIRD-PARTY-
 RUN /tmp/install-oxipng.sh /opt/oxipng
 
 # ==============================================================================
+# Stage 3b-pandoc: Pinned pandoc (Markdown, plain text and HTML to LaTeX; Markdown to reStructuredText)
+# ==============================================================================
+# The four pairs md to tex and rst, html to tex and txt to tex (entry 308). pandoc is GPL-2.0-or-later; the program is the project's own
+# statically linked release for this architecture, pinned by SHA-256 in scripts/install-pandoc.sh and used unmodified, as a separate sandboxed
+# process; nothing links it into the application and no code of it is copied. Debian ships a pandoc package of the same version that depends
+# on shared libraries and a data package; the pinned release is the program the reference runs. The image grows by about 160 MB: the program is
+# one statically linked file. It carries its licence text, its copyright notice (which lists the libraries linked into it) and a note that
+# names the archive and its digest. Without it the four pairs answer 503.
+FROM ${NODE_IMAGE} AS pandoc
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/install-pandoc.sh /tmp/install-pandoc.sh
+RUN /tmp/install-pandoc.sh /opt/pandoc
+
+# ==============================================================================
 # Stage 3b'': Pinned avifenc (AVIF encoder)
 # ==============================================================================
 # Every AVIF the worker writes from a picture file. avifenc is the command-line encoder of libavif (BSD-2-Clause) and drives libaom, the
@@ -535,6 +552,16 @@ COPY --from=oxipng /opt/oxipng/bin/oxipng /usr/local/bin/oxipng
 COPY --from=oxipng /opt/oxipng/share/doc/oxipng /usr/share/doc/oxipng
 RUN oxipng --version
 
+# Markdown, plain text and HTML to LaTeX, and Markdown to reStructuredText (the pandoc stage). Its licence text goes to /usr/share/doc/pandoc/copyright,
+# which the notices step below collects into /licenses with the system packages; COPYRIGHT beside it lists the libraries linked into the program, and
+# the SOURCE file names the archive and its digest. The build fails unless the program converts a Markdown file to LaTeX under the options of the
+# worker's route (`--sandbox`, no file read but the input).
+COPY --from=pandoc /opt/pandoc/bin/pandoc /usr/local/bin/pandoc
+COPY --from=pandoc /opt/pandoc/share/doc/pandoc /usr/share/doc/pandoc
+RUN printf '# Title\n\nA *line*.\n' > /tmp/pandoc-check.md \
+    && test "$(pandoc --sandbox --from markdown --to latex /tmp/pandoc-check.md | head -n 1)" = '\section{Title}\label{title}' \
+    && rm -f /tmp/pandoc-check.md
+
 # AVIF encoder (the avifenc stage): the pinned build the worker finds first, beside the distribution's /usr/bin/avifenc, which it falls back to.
 # Its licence texts go to /usr/share/doc/avifenc, which the notices step below collects into /licenses; the SOURCE file names the archives
 # and their digests. The build fails unless the program writes an AVIF file for an 8 x 8 PNG with a black square, written here as bytes.
@@ -727,6 +754,8 @@ RUN cp /usr/share/doc/quantizr-pixels/SOURCE /licenses/quantizr-pixels.SOURCE
 RUN cp /usr/share/doc/quantizr-pixels/THIRD-PARTY-NOTICES /licenses/quantizr-pixels.THIRD-PARTY-NOTICES
 RUN cp /usr/share/doc/oxipng/SOURCE /licenses/oxipng.SOURCE
 RUN cp /usr/share/doc/oxipng/THIRD-PARTY-NOTICES /licenses/oxipng.THIRD-PARTY-NOTICES
+RUN cp /usr/share/doc/pandoc/SOURCE /licenses/pandoc.SOURCE
+RUN cp /usr/share/doc/pandoc/COPYRIGHT /licenses/pandoc.COPYRIGHT
 # The ONNX OCR engine: the MIT text and the third-party notices of onnxruntime (the npm package ships neither), the Apache-2.0 texts of the PaddleOCR
 # weights and the RapidOCR conversion, and the NOTICE that names the models (installed beside them by scripts/install-onnx-ocr-models.sh).
 RUN cd /opt/ocr-onnx/licenses && for f in *; do cp "$f" "/licenses/onnx-ocr.$f" || exit 1; done && cp /opt/ocr-onnx/NOTICE /licenses/onnx-ocr.NOTICE

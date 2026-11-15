@@ -1,5 +1,6 @@
 import { EngineUnavailableError, UnsupportedTargetError } from '../types';
 import { isCalibreOnlyPair } from './calibre-ebook-targets';
+import { isPandocPair } from './pandoc-pairs';
 
 /**
  * Pairs that only a native engine converts: the in-process engine has no code path for them.
@@ -60,9 +61,9 @@ function normalizeFormat(format: string): string {
   return format.toLowerCase().replace(/^\./, '').trim();
 }
 
-/** Whether a pair can only be converted by a native engine: the pairs listed above, every pair that ends in a format only calibre writes, and every pair of a book only calibre reads. */
+/** Whether a pair can only be converted by a native engine: the pairs listed above, every pair that ends in a format only calibre writes, and every pair of a book only calibre reads, and the text pairs pandoc writes (LaTeX and reStructuredText). */
 export function requiresNativeEngine(sourceFormat: string, targetFormat: string): boolean {
-  return NATIVE_ENGINE_ONLY_PAIRS.has(`${normalizeFormat(sourceFormat)}->${normalizeFormat(targetFormat)}`) || isCalibreOnlyPair(normalizeFormat(sourceFormat), normalizeFormat(targetFormat));
+  return NATIVE_ENGINE_ONLY_PAIRS.has(`${normalizeFormat(sourceFormat)}->${normalizeFormat(targetFormat)}`) || isCalibreOnlyPair(normalizeFormat(sourceFormat), normalizeFormat(targetFormat)) || isPandocPair(normalizeFormat(sourceFormat), normalizeFormat(targetFormat));
 }
 
 /**

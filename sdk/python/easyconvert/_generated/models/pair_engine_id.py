@@ -12,6 +12,7 @@ class PairEngineId(StrEnum):
     LIBRAW = "libraw"
     LIBREOFFICE = "libreoffice"
     LIBRSVG = "librsvg"
+    PANDOC = "pandoc"
     POPPLER = "poppler"
     VALUE_4 = "7zip"
 

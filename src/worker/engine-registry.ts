@@ -3,6 +3,7 @@ import pkg from '../../package.json';
 import { FORMAT_REGISTRY } from '../lib/registry';
 import { executeSandboxedBinary, SandboxedProcessError } from '../lib/security/process-sandbox';
 import { isCalibreOnlyPair } from '../lib/conversions/calibre-ebook-targets';
+import { isPandocPair } from '../lib/conversions/pandoc-pairs';
 import { BUILT_IN_ENGINE, ENGINE_IDS, ENGINE_NAMES, isEngineId, type EngineId } from '../lib/conversions/engine-ids';
 import { requiresNativeEngine } from '../lib/conversions/native-engine-pairs';
 import { isArchiveRoutePair, isMediaRoutePair } from '../lib/conversions/route-formats';
@@ -54,9 +55,10 @@ const PDF_TEXT_TARGETS: ReadonlySet<string> = new Set(['txt', 'text']);
 /** Text and markup sources the in-process converter renders to PDF unless the text needs the office suite's layout. */
 const HTML_SOURCES: ReadonlySet<string> = new Set(['html', 'htm']);
 
-/** FFmpeg reads and writes subtitles, and calibre writes the ebook targets and reads the books no other engine reads: routes no other engine has. */
+/** FFmpeg reads and writes subtitles, calibre writes the ebook targets and reads the books no other engine reads, and pandoc writes LaTeX and reStructuredText: routes no other engine has. */
 function subtitleOrEbookProgram(src: string, tgt: string): EngineId | undefined {
   if (isSubtitlePair(src, tgt)) return 'ffmpeg';
+  if (isPandocPair(src, tgt)) return 'pandoc';
   return isCalibreOnlyPair(src, tgt) ? 'calibre' : undefined;
 }
 
@@ -125,7 +127,7 @@ function converterConverts(src: string, tgt: string, program: EngineId | undefin
   if (program === 'libraw') return IN_PROCESS_RAW_SENSOR_FORMATS.has(src);
   // The in-process converter reads the text layer of a PDF, but draws no page: page images, SVG and PostScript need Poppler.
   if (program === 'poppler') return src === PDF_SOURCE_FORMAT && PDF_TEXT_TARGETS.has(tgt);
-  if (program === 'calibre' || program === 'ghostscript' || program === 'ghostxps' || program === 'djvulibre') return false;
+  if (program === 'calibre' || program === 'pandoc' || program === 'ghostscript' || program === 'ghostxps' || program === 'djvulibre') return false;
   if (program === '7zip') return isInProcessArchiveSource(src);
   return true;
 }
@@ -195,6 +197,7 @@ const VERSION_PROBES: Readonly<Record<ProbedEngineId, VersionProbe>> = {
   ghostxps: { binary: 'gxps', args: ['-h'], pattern: new RegExp(`Version: ${VERSION_NUMBER}`) },
   djvulibre: { binary: 'ddjvu', args: ['-help'], pattern: new RegExp(`DjVuLibre-${VERSION_NUMBER}`) },
   calibre: { binary: 'ebookConvert', args: ['--version'], pattern: new RegExp(`calibre ${VERSION_NUMBER}`) },
+  pandoc: { binary: 'pandoc', args: ['--version'], pattern: new RegExp(`^pandoc ${VERSION_NUMBER}`) },
   librsvg: { binary: 'rsvgConvert', args: ['--version'], pattern: new RegExp(`version ${VERSION_NUMBER}`) },
 };
 
