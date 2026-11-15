@@ -1385,6 +1385,35 @@
       "startOver": "Start over",
       "downloadName": "Download {name}"
     },
+    "organizer": {
+      "heading": "Page organizer",
+      "hintSelect": "Click thumbnails (Shift+click for ranges) to choose pages",
+      "hintRotate": "Click the rotate icon on any page to set individual angles",
+      "hintReorder": "Drag thumbnails or use the arrows to reorder pages",
+      "selectedCount": "{count} selected",
+      "pageLabel": "p. {page}",
+      "pageAlt": "Page {page}",
+      "rotate90": "Rotate page {page} by 90°",
+      "moveEarlier": "Move page {page} earlier",
+      "moveLater": "Move page {page} later"
+    },
+    "inspection": {
+      "summaryLabel": "Archive inspection summary",
+      "encrypted": "Encrypted",
+      "unencrypted": "Not encrypted",
+      "extractable": "Ready to extract",
+      "blocked": "Blocked entries",
+      "entriesCount": "Entries: {count}",
+      "uncompressedSize": "Uncompressed: {size}",
+      "compressionRatio": "Saved: {ratio}",
+      "downloadJson": "Download JSON",
+      "filterPlaceholder": "Filter archive paths...",
+      "colPath": "Path",
+      "colSize": "Uncompressed",
+      "colCompressed": "Compressed",
+      "colEncrypted": "Encrypted",
+      "yes": "Yes"
+    },
     "options": {
       "label": "{tool} options",
       "format": {
@@ -1397,6 +1426,8 @@
       "split": {
         "label": "How to split",
         "every": "Split every page",
+        "everyN": "Split every N pages",
+        "everyNLabel": "Pages per file",
         "ranges": "Split by ranges",
         "rangesLabel": "Page ranges",
         "rangesHint": "1-3,5",
@@ -1416,7 +1447,11 @@
         "ownerPassword": "Owner password",
         "keyLength": "Key length",
         "key128": "128-bit AES",
-        "key256": "256-bit AES"
+        "key256": "256-bit AES",
+        "permissions": "Allowed actions",
+        "permPrint": "Allow printing",
+        "permCopy": "Allow copying text and graphics",
+        "permModify": "Allow document modifications"
       },
       "unlock": {
         "password": "Password",
@@ -1425,7 +1460,14 @@
       "watermark": {
         "text": "Watermark text",
         "opacity": "Opacity",
-        "position": "Position"
+        "position": "Position",
+        "posCenter": "Center",
+        "posTile": "Tiled grid",
+        "posTopRight": "Top right",
+        "posBottomRight": "Bottom right",
+        "rotation": "Angle (degrees)",
+        "pages": "Pages",
+        "pagesHint": "All pages (e.g. 1-3,5)"
       },
       "pages": {
         "label": "Page numbers or ranges",

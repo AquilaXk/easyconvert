@@ -128,11 +128,13 @@ interface InspectionEntry {
 }
 
 function ArchiveInspectionPanel({ inspection, file }: Readonly<{ inspection: Extract<ToolResult, { kind: 'inspection' }>['inspection']; file: ToolResultFile }>) {
+  const t = useTranslations('tools.inspection');
   const [filter, setFilter] = useState('');
   const formatBytes = useFormatBytes();
   const raw = inspection as unknown as Record<string, unknown>;
   const format = String(inspection.format || 'Archive').toUpperCase();
   const encrypted = Boolean(inspection.isEncrypted ?? raw.encrypted);
+  const extractable = inspection.extractable !== false;
   const totalEntries = Number(inspection.totalEntries ?? (Array.isArray(inspection.entries) ? inspection.entries.length : 0));
   const uncompressedBytes = Number(inspection.totalUncompressedBytes ?? raw.uncompressedBytes ?? 0);
   const compressedBytes = Number(inspection.totalCompressedBytes ?? raw.compressedBytes ?? 0);
@@ -146,34 +148,37 @@ function ArchiveInspectionPanel({ inspection, file }: Readonly<{ inspection: Ext
     : rawEntries;
 
   return (
-    <section aria-label="Archive Inspection Summary" className="mt-8 space-y-4">
+    <section aria-label={t('summaryLabel')} className="mt-8 space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-xs border border-rule bg-surface">
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="px-2.5 py-1 text-xs font-semibold rounded-xs bg-accent-soft text-accent-ink">{format}</span>
-          <span className={`px-2.5 py-1 text-xs font-semibold rounded-xs ${encrypted ? 'bg-danger-soft text-danger' : 'bg-sunken text-ink-2'}`}>
-            {encrypted ? 'Encrypted' : 'Not Encrypted'}
+        <div className="flex flex-wrap items-center gap-2.5">
+          <span className="px-2.5 py-1 text-xs font-semibold rounded-xs bg-accent-soft text-accent-ink border border-accent-edge">{format}</span>
+          <span className={`px-2.5 py-1 text-xs font-semibold rounded-xs border ${encrypted ? 'bg-danger-soft text-danger border-danger-edge' : 'bg-sunken text-ink-2 border-rule'}`}>
+            {encrypted ? t('encrypted') : t('unencrypted')}
           </span>
-          <span className="text-sm text-ink-2 tabular-nums">Entries: <strong>{totalEntries}</strong></span>
+          <span className={`px-2.5 py-1 text-xs font-semibold rounded-xs border ${extractable ? 'bg-success-soft text-success border-success-edge' : 'bg-warning-soft text-warning border-warning-edge'}`}>
+            {extractable ? t('extractable') : t('blocked')}
+          </span>
+          <span className="text-sm text-ink-2 tabular-nums font-medium">{t('entriesCount', { count: totalEntries })}</span>
           {uncompressedBytes > 0 && (
-            <span className="text-sm text-ink-2 tabular-nums">Size: <strong>{formatBytes(uncompressedBytes)}</strong></span>
+            <span className="text-sm text-ink-2 tabular-nums">{t('uncompressedSize', { size: formatBytes(uncompressedBytes) })}</span>
           )}
           {ratio !== '-' && (
-            <span className="text-sm text-ink-2 tabular-nums">Compression: <strong>{ratio}</strong></span>
+            <span className="text-sm text-ink-2 tabular-nums">{t('compressionRatio', { ratio })}</span>
           )}
         </div>
         <a href={file.url} download={file.name} className={DOWNLOAD_CLASS}>
-          <Download aria-hidden="true" className="size-4" /><span>Download JSON</span>
+          <Download aria-hidden="true" className="size-4" /><span>{t('downloadJson')}</span>
         </a>
       </div>
 
       {rawEntries.length > 0 && (
         <div className="rounded-xs border border-rule bg-surface overflow-hidden">
-          <div className="p-3 border-b border-rule">
+          <div className="p-3 border-b border-rule bg-sunken/30">
             <input
               type="text"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filter archive entries..."
+              placeholder={t('filterPlaceholder')}
               className={INPUT_CLASS}
             />
           </div>
@@ -181,10 +186,10 @@ function ArchiveInspectionPanel({ inspection, file }: Readonly<{ inspection: Ext
             <table className="w-full text-left text-xs">
               <thead className="bg-sunken/50 text-ink-3 border-b border-rule font-medium">
                 <tr>
-                  <th className="p-2.5">Path</th>
-                  <th className="p-2.5 text-right">Size</th>
-                  <th className="p-2.5 text-right">Compressed</th>
-                  <th className="p-2.5 text-center">Encrypted</th>
+                  <th className="p-2.5">{t('colPath')}</th>
+                  <th className="p-2.5 text-right">{t('colSize')}</th>
+                  <th className="p-2.5 text-right">{t('colCompressed')}</th>
+                  <th className="p-2.5 text-center">{t('colEncrypted')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-rule/50">
@@ -196,7 +201,7 @@ function ArchiveInspectionPanel({ inspection, file }: Readonly<{ inspection: Ext
                       <td className="p-2.5 font-mono text-ink truncate max-w-xs" title={entry.path ?? entry.name}>{entry.path ?? entry.name}</td>
                       <td className="p-2.5 text-right tabular-nums text-ink-2">{entrySize !== undefined ? formatBytes(entrySize) : '-'}</td>
                       <td className="p-2.5 text-right tabular-nums text-ink-3">{entry.compressedSize !== undefined ? formatBytes(entry.compressedSize) : '-'}</td>
-                      <td className="p-2.5 text-center text-ink-3">{entryEncrypted ? 'Yes' : '-'}</td>
+                      <td className="p-2.5 text-center text-ink-3">{entryEncrypted ? t('yes') : '-'}</td>
                     </tr>
                   );
                 })}
@@ -351,6 +356,7 @@ function ToolBar({ summary, failure, busy, done, canRun, actionLabel, addMore, h
 }
 
 function usePdfOrganizerState(tool: WebTool, run: ReturnType<typeof useToolRun>, done: boolean) {
+  const [selectedPages, setSelectedPages] = useState<number[]>([]);
   const [pageRotations, setPageRotations] = useState<Record<number, number>>({});
   const isSinglePdf = run.items.length === 1 && (run.items[0].file.type === 'application/pdf' || run.items[0].file.name.toLowerCase().endsWith('.pdf'));
   const isPdfPageTool = tool === 'split' || tool === 'extract-pages' || tool === 'delete-pages' || tool === 'reorder-pages' || tool === 'rotate';
@@ -361,11 +367,12 @@ function usePdfOrganizerState(tool: WebTool, run: ReturnType<typeof useToolRun>,
   };
 
   const handlePdfSelectionChange = (pages: number[]) => {
+    setSelectedPages(pages);
     const rangeStr = formatPageRanges(pages);
     if (tool === 'extract-pages' || tool === 'delete-pages') {
       run.setOptions({ ...run.options, pages: rangeStr });
     } else if (tool === 'split') {
-      run.setOptions({ ...run.options, split: { ...run.options.split, ranges: rangeStr } });
+      run.setOptions({ ...run.options, split: { ...run.options.split, ranges: rangeStr || undefined } });
     }
   };
 
@@ -386,7 +393,13 @@ function usePdfOrganizerState(tool: WebTool, run: ReturnType<typeof useToolRun>,
     });
   };
 
-  return { showPdfOrganizer, pageRotations, handlePdfOrderChange, handlePdfSelectionChange, handlePdfRotatePage };
+  return { showPdfOrganizer, selectedPages, pageRotations, handlePdfOrderChange, handlePdfSelectionChange, handlePdfRotatePage };
+}
+
+function organizerHintOf(tool: WebTool, t: ReturnType<typeof useTranslations<'tools'>>): string {
+  if (tool === 'rotate') return t('organizer.hintRotate');
+  if (tool === 'reorder-pages') return t('organizer.hintReorder');
+  return t('organizer.hintSelect');
 }
 
 interface SummaryParams {
@@ -436,7 +449,7 @@ export default function ToolPageView({ tool, operation, title, description, dail
   const problem = toolInputProblem(run.items.map((item) => item.file));
   const canRun = run.items.length > 0 && !running && !done && !oversize && !needsMore && !emptyRanges && problem === null;
 
-  const { showPdfOrganizer, pageRotations, handlePdfOrderChange, handlePdfSelectionChange, handlePdfRotatePage } =
+  const { showPdfOrganizer, selectedPages, pageRotations, handlePdfOrderChange, handlePdfSelectionChange, handlePdfRotatePage } =
     usePdfOrganizerState(tool, run, done);
 
   const handleRowDrop = (targetIndex: number) => {
@@ -494,10 +507,21 @@ export default function ToolPageView({ tool, operation, title, description, dail
               </ul>
               {showPdfOrganizer && (
                 <div className="mt-6 p-4 rounded-xs border border-rule bg-surface">
-                  <h2 className="text-sm font-semibold text-ink-2 mb-3">Page Organizer</h2>
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                    <div>
+                      <h2 className="text-sm font-semibold text-ink">{t('organizer.heading')}</h2>
+                      <p className="text-xs text-ink-3 mt-0.5">{organizerHintOf(tool, t)}</p>
+                    </div>
+                    {selectedPages.length > 0 && (
+                      <span className="px-2.5 py-1 text-xs font-semibold tabular-nums rounded-xs bg-accent-soft text-accent-ink border border-accent-edge">
+                        {t('organizer.selectedCount', { count: selectedPages.length })}
+                      </span>
+                    )}
+                  </div>
                   <PdfPageGrid
                     file={run.items[0].file}
                     tool={tool}
+                    selectedPages={selectedPages}
                     pageRotations={pageRotations}
                     onOrderChange={handlePdfOrderChange}
                     onSelectionChange={handlePdfSelectionChange}

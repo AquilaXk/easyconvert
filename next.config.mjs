@@ -21,9 +21,9 @@ function pageContentSecurityPolicy(isDevServer) {
   ].join('; ');
 }
 
+/** @type {(isDevServer: boolean) => import('next').NextConfig} */
 function buildNextConfig(isDevServer) {
   const csp = pageContentSecurityPolicy(isDevServer);
-  /** @type {import('next').NextConfig} */
   return {
     reactStrictMode: true,
     outputFileTracing: false,

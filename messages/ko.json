@@ -1385,6 +1385,35 @@
       "startOver": "처음부터",
       "downloadName": "{name} 내려받기"
     },
+    "organizer": {
+      "heading": "페이지 구성",
+      "hintSelect": "썸네일을 클릭해 페이지를 선택하세요 (Shift+클릭으로 연속 선택)",
+      "hintRotate": "각 페이지의 회전 아이콘을 눌러 개별 각도를 지정할 수 있습니다",
+      "hintReorder": "썸네일을 드래그하거나 화살표 버튼으로 순서를 바꿀 수 있습니다",
+      "selectedCount": "{count}개 선택됨",
+      "pageLabel": "{page}쪽",
+      "pageAlt": "{page}페이지",
+      "rotate90": "{page}페이지 90° 회전",
+      "moveEarlier": "{page}페이지 앞으로 이동",
+      "moveLater": "{page}페이지 뒤로 이동"
+    },
+    "inspection": {
+      "summaryLabel": "압축 파일 검사 요약",
+      "encrypted": "암호화됨",
+      "unencrypted": "암호 없음",
+      "extractable": "압축 해제 가능",
+      "blocked": "차단된 항목 포함",
+      "entriesCount": "항목 {count}개",
+      "uncompressedSize": "원본 크기 {size}",
+      "compressionRatio": "절감률 {ratio}",
+      "downloadJson": "JSON 받기",
+      "filterPlaceholder": "파일 경로 검색...",
+      "colPath": "경로",
+      "colSize": "원본 크기",
+      "colCompressed": "압축 크기",
+      "colEncrypted": "암호화",
+      "yes": "예"
+    },
     "options": {
       "label": "{tool} 옵션",
       "format": {
@@ -1397,6 +1426,8 @@
       "split": {
         "label": "나누는 방법",
         "every": "페이지마다 나누기",
+        "everyN": "N페이지 단위로 나누기",
+        "everyNLabel": "파일당 페이지 수",
         "ranges": "범위로 나누기",
         "rangesLabel": "페이지 범위",
         "rangesHint": "1-3,5",
@@ -1416,7 +1447,11 @@
         "ownerPassword": "소유자 암호",
         "keyLength": "암호화 방식",
         "key128": "128비트 AES",
-        "key256": "256비트 AES"
+        "key256": "256비트 AES",
+        "permissions": "허용 권한",
+        "permPrint": "인쇄 허용",
+        "permCopy": "텍스트·이미지 복사 허용",
+        "permModify": "문서 수정 허용"
       },
       "unlock": {
         "password": "암호",
@@ -1425,7 +1460,14 @@
       "watermark": {
         "text": "워터마크 텍스트",
         "opacity": "투명도",
-        "position": "위치"
+        "position": "위치",
+        "posCenter": "가운데",
+        "posTile": "전체 반복 배치",
+        "posTopRight": "오른쪽 위",
+        "posBottomRight": "오른쪽 아래",
+        "rotation": "회전 각도(°)",
+        "pages": "적용 페이지",
+        "pagesHint": "모든 페이지 (예: 1-3,5)"
       },
       "pages": {
         "label": "페이지 번호 또는 범위",

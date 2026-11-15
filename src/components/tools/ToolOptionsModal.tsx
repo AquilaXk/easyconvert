@@ -34,19 +34,34 @@ function ArchiveSection({ options, onChange, t }: Readonly<SectionProps>) {
 
 function SplitSection({ options, onChange, t }: Readonly<SectionProps>) {
   const byRanges = options.split?.ranges !== undefined;
+  const byEveryN = !byRanges && options.split?.everyNPages !== undefined;
   return (
     <section className="space-y-3">
       <fieldset>
         <legend className={LABEL_CLASS}>{t('split.label')}</legend>
         <label className={RADIO_ROW}>
-          <input type="radio" name="tool-split-mode" checked={!byRanges} onChange={() => onChange({ ...options, split: {} })} className="size-4" />
+          <input type="radio" name="tool-split-mode" checked={!byRanges && !byEveryN} onChange={() => onChange({ ...options, split: {} })} className="size-4" />
           {t('split.every')}
         </label>
         <label className={RADIO_ROW}>
           <input type="radio" name="tool-split-mode" checked={byRanges} onChange={() => onChange({ ...options, split: { ranges: '' } })} className="size-4" />
           {t('split.ranges')}
         </label>
+        <label className={RADIO_ROW}>
+          <input type="radio" name="tool-split-mode" checked={byEveryN} onChange={() => onChange({ ...options, split: { everyNPages: 2 } })} className="size-4" />
+          {t('split.everyN')}
+        </label>
       </fieldset>
+      {byEveryN && (
+        <div>
+          <label htmlFor="tool-split-every-n" className={LABEL_CLASS}>{t('split.everyNLabel')}</label>
+          <input
+            id="tool-split-every-n" type="number" min={1} max={1000} value={options.split?.everyNPages ?? 2}
+            onChange={(e) => onChange({ ...options, split: { everyNPages: Math.max(1, Number(e.target.value) || 1) } })}
+            className={INPUT_CLASS}
+          />
+        </div>
+      )}
       {byRanges && (
         <div>
           <label htmlFor="tool-split-ranges" className={LABEL_CLASS}>{t('split.rangesLabel')}</label>
@@ -91,26 +106,31 @@ function RotateSection({ options, onChange, t }: Readonly<SectionProps>) {
 
 function ProtectSection({ options, onChange, t }: Readonly<SectionProps>) {
   const protect = options.protect ?? {};
+  const perms = protect.permissions ?? {};
   const setProtect = (patch: Partial<NonNullable<WebToolOptions['protect']>>) =>
     onChange({ ...options, protect: { ...protect, ...patch } });
+  const setPerm = (patch: Partial<NonNullable<NonNullable<WebToolOptions['protect']>['permissions']>>) =>
+    setProtect({ permissions: { ...perms, ...patch } });
 
   return (
     <section className="space-y-4">
-      <div>
-        <label htmlFor="tool-protect-user" className={LABEL_CLASS}>{t('protect.userPassword')}</label>
-        <input
-          id="tool-protect-user" type="password" autoComplete="off" value={protect.userPassword ?? ''}
-          onChange={(e) => setProtect({ userPassword: e.target.value || undefined })}
-          className={INPUT_CLASS}
-        />
-      </div>
-      <div>
-        <label htmlFor="tool-protect-owner" className={LABEL_CLASS}>{t('protect.ownerPassword')}</label>
-        <input
-          id="tool-protect-owner" type="password" autoComplete="off" value={protect.ownerPassword ?? ''}
-          onChange={(e) => setProtect({ ownerPassword: e.target.value || undefined })}
-          className={INPUT_CLASS}
-        />
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label htmlFor="tool-protect-user" className={LABEL_CLASS}>{t('protect.userPassword')}</label>
+          <input
+            id="tool-protect-user" type="password" autoComplete="off" value={protect.userPassword ?? ''}
+            onChange={(e) => setProtect({ userPassword: e.target.value || undefined })}
+            className={INPUT_CLASS}
+          />
+        </div>
+        <div>
+          <label htmlFor="tool-protect-owner" className={LABEL_CLASS}>{t('protect.ownerPassword')}</label>
+          <input
+            id="tool-protect-owner" type="password" autoComplete="off" value={protect.ownerPassword ?? ''}
+            onChange={(e) => setProtect({ ownerPassword: e.target.value || undefined })}
+            className={INPUT_CLASS}
+          />
+        </div>
       </div>
       <div>
         <label htmlFor="tool-protect-keylength" className={LABEL_CLASS}>{t('protect.keyLength')}</label>
@@ -124,6 +144,21 @@ function ProtectSection({ options, onChange, t }: Readonly<SectionProps>) {
           <option value={128}>{t('protect.key128')}</option>
         </select>
       </div>
+      <fieldset className="pt-2 border-t border-rule space-y-1">
+        <legend className={LABEL_CLASS}>{t('protect.permissions')}</legend>
+        <label className={RADIO_ROW}>
+          <input type="checkbox" checked={perms.print !== 'none'} onChange={(e) => setPerm({ print: e.target.checked ? 'full' : 'none' })} className="size-4" />
+          {t('protect.permPrint')}
+        </label>
+        <label className={RADIO_ROW}>
+          <input type="checkbox" checked={perms.extract !== false} onChange={(e) => setPerm({ extract: e.target.checked })} className="size-4" />
+          {t('protect.permCopy')}
+        </label>
+        <label className={RADIO_ROW}>
+          <input type="checkbox" checked={perms.modify === 'all'} onChange={(e) => setPerm({ modify: e.target.checked ? 'all' : 'none' })} className="size-4" />
+          {t('protect.permModify')}
+        </label>
+      </fieldset>
     </section>
   );
 }
@@ -167,13 +202,48 @@ function WatermarkSection({ options, onChange, t }: Readonly<SectionProps>) {
           className={INPUT_CLASS}
         />
       </div>
-      <div>
-        <label htmlFor="tool-wm-opacity" className={LABEL_CLASS}>{t('watermark.opacity')}</label>
-        <input
-          id="tool-wm-opacity" type="number" min={0} max={1} step={0.1} value={watermark.opacity ?? 0.3}
-          onChange={(e) => setWatermark({ opacity: Number(e.target.value) })}
-          className={INPUT_CLASS}
-        />
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label htmlFor="tool-wm-position" className={LABEL_CLASS}>{t('watermark.position')}</label>
+          <select
+            id="tool-wm-position"
+            value={watermark.position ?? 'center'}
+            onChange={(e) => setWatermark({ position: e.target.value as NonNullable<WebToolOptions['watermark']>['position'] })}
+            className={SELECT_CLASS}
+          >
+            <option value="center">{t('watermark.posCenter')}</option>
+            <option value="tile">{t('watermark.posTile')}</option>
+            <option value="top-right">{t('watermark.posTopRight')}</option>
+            <option value="bottom-right">{t('watermark.posBottomRight')}</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="tool-wm-opacity" className={LABEL_CLASS}>{t('watermark.opacity')}</label>
+          <input
+            id="tool-wm-opacity" type="number" min={0.05} max={1} step={0.05} value={watermark.opacity ?? 0.3}
+            onChange={(e) => setWatermark({ opacity: Number(e.target.value) })}
+            className={INPUT_CLASS}
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label htmlFor="tool-wm-rotation" className={LABEL_CLASS}>{t('watermark.rotation')}</label>
+          <input
+            id="tool-wm-rotation" type="number" min={-180} max={180} step={15} value={watermark.rotation ?? -45}
+            onChange={(e) => setWatermark({ rotation: Number(e.target.value) })}
+            className={INPUT_CLASS}
+          />
+        </div>
+        <div>
+          <label htmlFor="tool-wm-pages" className={LABEL_CLASS}>{t('watermark.pages')}</label>
+          <input
+            id="tool-wm-pages" type="text" autoComplete="off" value={watermark.pages ?? ''}
+            placeholder={t('watermark.pagesHint')}
+            onChange={(e) => setWatermark({ pages: e.target.value || undefined })}
+            className={INPUT_CLASS}
+          />
+        </div>
       </div>
     </section>
   );

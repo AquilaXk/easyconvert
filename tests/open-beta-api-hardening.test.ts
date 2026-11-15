@@ -305,8 +305,17 @@ describe('Open Beta API boundary error classification (400 / 502 / 504 instead o
       const [rule] = rules!;
       const headerMap = new Map(rule.headers.map((h: { key: string; value: string }) => [h.key, h.value]));
       const csp = headerMap.get('Content-Security-Policy') ?? '';
-      expect(csp).toContain("'unsafe-eval'");
-      expect(csp).toContain('ws: wss:');
+      const directives = new Map(
+        csp.split('; ').map((entry) => {
+          const spaceIdx = entry.indexOf(' ');
+          return [entry.slice(0, spaceIdx), entry.slice(spaceIdx + 1)];
+        })
+      );
+      expect(directives.get('script-src')).toBe(
+        "'self' 'unsafe-inline' 'wasm-unsafe-eval' 'unsafe-eval' blob: https://cdn.paddle.com https://*.paddle.com"
+      );
+      expect(directives.get('connect-src')).toBe("'self' ws: wss: blob: https://*.paddle.com");
+      expect(directives.get('object-src')).toBe("'none'");
     });
   });
 });
