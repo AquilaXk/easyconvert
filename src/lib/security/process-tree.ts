@@ -45,10 +45,16 @@ import fs from 'node:fs';
  */
 
 const PS_TIMEOUT_MS = 1000;
+/**
+ * Most processes the walk visits for one run. A real run of a program with helper processes (a browser) has tens; a tree past this is a fork
+ * bomb or a program the limits were not made for, and the walk would cost the worker more every tick the longer it grew. A tree over the cap is
+ * reported as over any memory limit (the run is stopped), not walked on.
+ */
+export const MAX_TREE_PIDS = 4096;
 const KIB_PER_MIB = 1024;
 
-/** The pid and its descendants: the pids reached from `rootPid` through `childrenOf`, the root first. */
-export function descendantPids(rootPid: number, childrenOf: (pid: number) => readonly number[]): number[] {
+/** The pid and its descendants: the pids reached from `rootPid` through `childrenOf`, the root first; null when more than `maxPids` are reached. */
+export function descendantPids(rootPid: number, childrenOf: (pid: number) => readonly number[], maxPids = MAX_TREE_PIDS): number[] | null {
   const seen = new Set<number>();
   const stack = [rootPid];
   while (stack.length > 0) {
@@ -56,6 +62,7 @@ export function descendantPids(rootPid: number, childrenOf: (pid: number) => rea
     // Pids can be reused while the table is read, so a cycle is possible; a pid is visited once.
     if (seen.has(pid)) continue;
     seen.add(pid);
+    if (seen.size > maxPids) return null;
     for (const child of childrenOf(pid)) stack.push(child);
   }
   return [...seen];
@@ -92,7 +99,7 @@ function sumResidentMb(pids: readonly number[], residentMb: (pid: number) => num
 }
 
 /** The resident size of a process and all its descendants through one `ps` call, for a host without /proc; null when `ps` fails. */
-function psTreeMb(pid: number): number | null {
+function psTreeMb(pid: number, maxPids: number): number | null {
   let out: string;
   try {
     out = execFileSync('ps', ['-axo', 'pid=,ppid=,rss='], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: PS_TIMEOUT_MS, env: { PATH: '/bin:/usr/bin', NODE_ENV: process.env.NODE_ENV ?? 'production' } as NodeJS.ProcessEnv });
@@ -107,15 +114,19 @@ function psTreeMb(pid: number): number | null {
     rssKb.set(id, rss);
     children.set(parent, [...(children.get(parent) ?? []), id]);
   }
-  return rssKb.has(pid) ? descendantPids(pid, (id) => children.get(id) ?? []).reduce((sum, id) => sum + (rssKb.get(id) ?? 0), 0) / KIB_PER_MIB : null;
+  if (!rssKb.has(pid)) return null;
+  const tree = descendantPids(pid, (id) => children.get(id) ?? [], maxPids);
+  return tree === null ? Number.POSITIVE_INFINITY : tree.reduce((sum, id) => sum + (rssKb.get(id) ?? 0), 0) / KIB_PER_MIB;
 }
 
 /**
  * The resident memory of a process and everything it started, in MB. A program that keeps a renderer or a worker in a child (a browser, a
- * Python program with helper processes) is held to its limit by the sum, not by the size of the parent alone. Shared pages count once for
+ * Python program with helper processes) is held to its limit by the sum, not by the size of the parent alone. A tree of more than `maxPids`
+ * processes answers infinity, so the caller stops the run (it fails closed). Shared pages count once for
  * each process that maps them, so the sum is an upper bound.
  */
-export function getProcessTreeRssMb(pid: number, residentMb: (pid: number) => number | null): number | null {
-  if (process.platform !== 'linux') return psTreeMb(pid);
-  return sumResidentMb(descendantPids(pid, linuxChildren), residentMb);
+export function getProcessTreeRssMb(pid: number, residentMb: (pid: number) => number | null, maxPids = MAX_TREE_PIDS): number | null {
+  if (process.platform !== 'linux') return psTreeMb(pid, maxPids);
+  const tree = descendantPids(pid, linuxChildren, maxPids);
+  return tree === null ? Number.POSITIVE_INFINITY : sumResidentMb(tree, residentMb);
 }
