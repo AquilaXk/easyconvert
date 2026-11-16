@@ -4,7 +4,7 @@ import { getTranslations } from 'next-intl/server';
 import ConverterPageView from '@/components/pages/ConverterPageView';
 import { localizeSlugCopy } from '@/components/converter/slug-copy';
 import PageMessages from '@/i18n/PageMessages';
-import { localeAlternates, socialMetadata, webApplicationJsonLd } from '@/i18n/metadata';
+import { localeAlternates, socialMetadata } from '@/i18n/metadata';
 import { resolvePageLocale } from '@/i18n/page';
 import { parseConverterSlug, type ParsedSlug } from '@/lib/slug-parser';
 import { getAnonymousDailyLimit } from '@/lib/plan-limits';
@@ -40,27 +40,13 @@ export default async function ConverterPage({ params }: Readonly<ConverterPagePr
   const { slug } = await params;
   const locale = await resolvePageLocale(params);
   const parsed = pageSlug(slug);
-  let jsonLd: string | null = null;
-  if (!parsed.isInfoPage) {
-    const [tSlug, tMeta] = await Promise.all([
-      getTranslations({ locale, namespace: 'slugPages' }),
-      getTranslations({ locale, namespace: 'meta.converter' }),
-    ]);
-    const copy = localizeSlugCopy(tSlug, parsed, locale);
-    jsonLd = webApplicationJsonLd({
-      locale,
-      pathname: parsed.canonicalPath,
-      name: tMeta('title', { title: copy.title }),
-      description: copy.description,
-    });
-  }
-
   return (
-    <>
-      {jsonLd && <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd }} />}
-      <PageMessages page="converter" formatIds={[parsed.sourceFormat, parsed.targetFormat]}>
-        <ConverterPageView parsed={parsed} dailyLimit={getAnonymousDailyLimit()} />
-      </PageMessages>
-    </>
+    <PageMessages
+      page="converter"
+      formatIds={[parsed.sourceFormat, parsed.targetFormat]}
+      webAppJsonLd={parsed.isInfoPage ? undefined : { kind: 'converter', locale, parsed }}
+    >
+      <ConverterPageView parsed={parsed} dailyLimit={getAnonymousDailyLimit()} />
+    </PageMessages>
   );
 }
