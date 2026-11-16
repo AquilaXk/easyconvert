@@ -110,7 +110,7 @@ export default function Header({ initialUser }: Readonly<{ initialUser?: Session
 
   return (
     <header data-sticky-header className="bg-surface/80 backdrop-blur-xl text-ink border-b border-rule sticky top-0 z-40 h-[var(--header-height)]">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-full flex items-center justify-between gap-4">
+      <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-full flex items-center justify-between gap-4">
         <div className="flex items-center gap-6 min-w-0">
           <Link
             href="/"
@@ -121,7 +121,7 @@ export default function Header({ initialUser }: Readonly<{ initialUser?: Session
           </Link>
 
           <nav aria-label={t('primaryNavLabel')} className="hidden lg:flex items-center gap-1 whitespace-nowrap">
-            <div className="relative" ref={toolsContainerRef}>
+            <div ref={toolsContainerRef}>
               <button
                 ref={toolsButtonRef}
                 type="button"
@@ -141,7 +141,7 @@ export default function Header({ initialUser }: Readonly<{ initialUser?: Session
               </button>
 
               {isToolsOpen && (
-                <div className="absolute top-full left-0 mt-2 max-w-[calc(100dvw-2rem)] w-[920px] rounded-xs bg-surface text-ink border border-rule shadow-elev-2 p-5 z-50 whitespace-normal">
+                <div className="absolute top-full left-4 sm:left-6 lg:left-8 mt-1 w-[min(920px,calc(100%-4rem))] rounded-xs bg-surface text-ink border border-rule shadow-elev-2 p-5 z-50 whitespace-normal">
                   <div className="grid grid-cols-12 gap-7">
                     <div className="col-span-4 min-w-0">
                       <Link
