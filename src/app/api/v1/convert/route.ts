@@ -24,6 +24,7 @@ import { conversionWarningsFields, conversionWarningsHeaders } from '@/lib/api/c
 import { droppedStreamsFields, droppedStreamsHeaders } from '@/lib/api/dropped-streams';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
+import { ALTO_SNIFF_BYTES, promoteAltoXmlSource } from '@/lib/conversions/ocr-alto-sniff';
 import { assertNotSpoofedFile, spoofCheckStatus } from '@/lib/security/file-guard';
 import { resolveEffectiveWebhook } from '@/lib/security/ssrf';
 import { storageProvider } from '@/lib/storage';
@@ -89,7 +90,7 @@ type ParsedConvertForm =
   | { facts: RequestFacts; data: ValidatedConvertInput; problem?: undefined };
 
 /** The validated input of a convert request, or the problem answer for the first thing wrong with it, with the facts read on the way. */
-function parseConvertFormData(formData: FormData, instanceUri: string, headers: Record<string, string>): ParsedConvertForm {
+async function parseConvertFormData(formData: FormData, instanceUri: string, headers: Record<string, string>): Promise<ParsedConvertForm> {
   const facts: RequestFacts = {};
   const badRequest = (detail: string): ParsedConvertForm => ({
     facts,
@@ -116,20 +117,25 @@ function parseConvertFormData(formData: FormData, instanceUri: string, headers: 
   const targetFormat = targetFormatEntry.trim();
 
   const sourceFormatParam = formData.get('sourceFormat');
-  let sourceDef = typeof sourceFormatParam === 'string' ? getFormatByExtension(sourceFormatParam) : undefined;
-  sourceDef ??= detectFormatFromFilename(file.name);
+  const explicitSource = typeof sourceFormatParam === 'string' && sourceFormatParam.trim() ? sourceFormatParam.trim() : undefined;
+  let sourceDef = explicitSource ? getFormatByExtension(explicitSource) : undefined;
+  sourceDef ??= detectFormatFromFilename((file as File).name);
+  if (!explicitSource && sourceDef?.id === 'xml') {
+    const prefix = new Uint8Array(await file.slice(0, ALTO_SNIFF_BYTES).arrayBuffer());
+    sourceDef = promoteAltoXmlSource(sourceDef, undefined, targetFormat, prefix);
+  }
 
   if (!sourceDef) {
-    return badRequest(`Could not identify source format for file "${file.name}".`);
+    return badRequest(`Could not identify source format for file "${(file as File).name}".`);
   }
-  facts.source = sourceDef.extension;
+  facts.source = sourceDef.id;
 
   const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
   const targetDef = getFormatByExtension(tgt);
   if (!targetDef) {
     return badRequest(`Unsupported target format "${targetFormat}".`);
   }
-  facts.target = targetDef.extension;
+  facts.target = targetDef.id;
 
   if (!sourceDef.targetFormats.includes(tgt) && !sourceDef.targetFormats.includes(targetDef.id)) {
     return badRequest(`Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`);
@@ -221,7 +227,7 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
       return reply(createProblemDetailsResponse(HTTP_BAD_REQUEST, 'The request body is not well-formed multipart/form-data.', instanceUri, undefined, undefined, rateLimitHeaders));
     }
     const formData = body.form;
-    const validation = parseConvertFormData(formData, instanceUri, rateLimitHeaders);
+    const validation = await parseConvertFormData(formData, instanceUri, rateLimitHeaders);
     Object.assign(trace, validation.facts);
     if (!validation.data) return reply(validation.problem);
 

@@ -358,6 +358,7 @@ conversionQueue.getJobs = async (types) => {
 };
 
 const origConversionQueuePopNextWaiting = conversionQueue._popNextWaiting?.bind(conversionQueue);
+conversionQueue._popOwnWaiting = origConversionQueuePopNextWaiting;
 conversionQueue._popNextWaiting = async () => {
   const direct = await origConversionQueuePopNextWaiting?.();
   if (direct) return direct;
@@ -553,6 +554,30 @@ export function stopEndedRecordSweep(): void {
 // 2. Worker Lifecycle Management (Producer/Consumer Decoupled)
 let workerInstance: Worker<ConversionJobData, ConversionJobResult> | null = null;
 
+const FAST_QUEUE_NAMES: ReadonlySet<string> = new Set([conversionQueue.name, resourceQueues.light.name]);
+const HEAVY_QUEUE_NAMES: ReadonlySet<string> = new Set([
+  resourceQueues.cpu.name,
+  resourceQueues.memory.name,
+  resourceQueues.gpu.name,
+]);
+
+/**
+ * Reserves one concurrency slot for `default` and `light` jobs when a unified worker serves both fast and heavy
+ * queues with `concurrency >= 2`, preventing head-of-line blocking behind long CPU/memory jobs.
+ */
+export function fastLaneReservationOptions(
+  queues: readonly IQueueEngine<ConversionJobData, ConversionJobResult>[],
+  concurrency: number
+): Pick<WorkerOptions, 'heavyQueueNames' | 'maxHeavyConcurrency'> {
+  const hasFast = queues.some((q) => FAST_QUEUE_NAMES.has(q.name));
+  const hasHeavy = queues.some((q) => HEAVY_QUEUE_NAMES.has(q.name));
+  if (!hasFast || !hasHeavy || concurrency < 2) return {};
+  return {
+    heavyQueueNames: HEAVY_QUEUE_NAMES,
+    maxHeavyConcurrency: Math.max(1, concurrency - 1),
+  };
+}
+
 export interface StartConversionWorkerOptions extends WorkerOptions {
   queues?: IQueueEngine<ConversionJobData, ConversionJobResult>[];
 }
@@ -565,10 +590,16 @@ export function startConversionWorker(
   }
   const queuesToSubscribe =
     opts.queues || (allConversionQueues as IQueueEngine<ConversionJobData, ConversionJobResult>[]);
+  const concurrency = opts.concurrency || 5;
   const worker = new Worker<ConversionJobData, ConversionJobResult>(
     queuesToSubscribe,
     processConversionJob,
-    { concurrency: opts.concurrency || 5, defaultTimeoutMs: legacyJobTimeoutMs }
+    {
+      concurrency,
+      defaultTimeoutMs: legacyJobTimeoutMs,
+      ...fastLaneReservationOptions(queuesToSubscribe, concurrency),
+      ...opts,
+    }
   );
   attachJobLifecycleListeners(worker);
   attachInputCleanupOnCompletion(worker);

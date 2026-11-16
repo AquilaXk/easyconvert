@@ -417,18 +417,23 @@ function applySanitizedAudioOptions(
   }
 }
 
+function trimBoundaryText(value: string | number | undefined): string | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : undefined;
+  return value?.trim() || undefined;
+}
+
 function applySanitizedTrimOptions(
   next: ConversionOptions,
   options: ConversionOptions,
   visible: VisibleOptionsSections
 ): void {
   if (!visible.showVideo && !visible.showAudio) return;
-  const start = options.trim?.start?.trim();
-  const end = options.trim?.end?.trim();
-  if (!start && !end) return;
+  const start = trimBoundaryText(options.trim?.start);
+  const end = trimBoundaryText(options.trim?.end);
+  if (start === undefined && end === undefined) return;
   next.trim = {
-    ...(start ? { start } : {}),
-    ...(end ? { end } : {}),
+    ...(start !== undefined ? { start } : {}),
+    ...(end !== undefined ? { end } : {}),
   };
 }
 

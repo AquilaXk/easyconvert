@@ -638,8 +638,8 @@ export const ConversionOptionsSchema = {
     trim: {
       type: 'object',
       properties: {
-        start: { type: 'string', description: 'Start time offset (HH:MM:SS.mmm or seconds).' },
-        end: { type: 'string', description: 'End time offset (HH:MM:SS.mmm or seconds).' },
+        start: { oneOf: [{ type: 'string' }, { type: 'number', minimum: 0 }], description: 'Start time offset (`HH:MM:SS.mmm` timestamp string or non-negative seconds as string or number).' },
+        end: { oneOf: [{ type: 'string' }, { type: 'number', minimum: 0 }], description: 'End time offset (`HH:MM:SS.mmm` timestamp string or non-negative seconds as string or number).' },
       },
       description: 'Temporal clipping boundaries.',
     },

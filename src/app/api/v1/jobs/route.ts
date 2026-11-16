@@ -24,6 +24,7 @@ import { CredentialsVaultPersistenceError } from '@/lib/storage/credentials-vaul
 import { storeUploadedBuffer } from '@/lib/api/completed-upload';
 import { OBJECT_HEADER_BYTES, readObjectRange } from '@/lib/storage/object-header';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
+import { ALTO_SNIFF_BYTES, promoteAltoXmlSource } from '@/lib/conversions/ocr-alto-sniff';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject, spoofCheckRefusal } from '@/lib/security/file-guard';
 import { resolveEffectiveWebhook } from '@/lib/security/ssrf';
 import { ConversionOptions, JobStatus, PipelineTask, JobGraph, QueueUnavailableError, typedFailureOf } from '@/lib/types';
@@ -125,6 +126,30 @@ async function storedInputRefusal(
     }
   }
   return undefined;
+}
+
+interface JobSourceLookupInput {
+  explicitSource: string | undefined;
+  originalFilename: string;
+  targetFormat: string;
+  skipAutoAlto: boolean;
+  uploadedBuffer: Buffer | null | undefined;
+  inputBufferBase64: string | undefined;
+  storageKey: string | undefined;
+}
+
+async function resolveJobSourceDef(input: JobSourceLookupInput): Promise<FormatDefinition | undefined> {
+  const sourceDef = (input.explicitSource ? getFormatByExtension(input.explicitSource) : undefined) ?? detectFormatFromFilename(input.originalFilename);
+  if (input.explicitSource || input.skipAutoAlto || sourceDef?.id !== 'xml') return sourceDef;
+  let prefix: Uint8Array | undefined;
+  if (input.uploadedBuffer) {
+    prefix = input.uploadedBuffer.subarray(0, ALTO_SNIFF_BYTES);
+  } else if (input.inputBufferBase64) {
+    prefix = Buffer.from(input.inputBufferBase64.slice(0, 5600), 'base64');
+  } else if (input.storageKey) {
+    prefix = (await readObjectRange(s3Storage, input.storageKey, 0, ALTO_SNIFF_BYTES).catch(() => undefined)) ?? undefined;
+  }
+  return promoteAltoXmlSource(sourceDef, undefined, input.targetFormat, prefix);
 }
 
 interface StoredInputCheck {
@@ -675,8 +700,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     const callerPlan = planOfCaller(auth.user);
 
     // Resolve source format definition
-    let sourceDef = sourceFormatParam ? getFormatByExtension(sourceFormatParam) : undefined;
-    sourceDef ??= detectFormatFromFilename(originalFilename);
+    let sourceDef = await resolveJobSourceDef({ explicitSource: sourceFormatParam, originalFilename, targetFormat, skipAutoAlto: Boolean(tasks || graph), uploadedBuffer, inputBufferBase64, storageKey });
 
     if (!sourceDef && hasImportUrl && graph) {
       ({ sourceDef, originalFilename } = graphSourceWithoutFile(graph, originalFilename));

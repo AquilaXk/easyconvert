@@ -62,9 +62,16 @@ export interface VideoEncodingOptions {
   scale?: VideoScaleOptions;
 }
 
+export type MediaTrimBoundary = string | number;
+
 export interface MediaTrimOptions {
-  start?: string;
-  end?: string;
+  start?: MediaTrimBoundary;
+  end?: MediaTrimBoundary;
+}
+
+export function hasTrimBoundary(value: MediaTrimBoundary | undefined): boolean {
+  if (typeof value === 'number') return Number.isFinite(value);
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 export type AudioCodec = 'aac' | 'mp3' | 'opus' | 'flac' | 'vorbis' | 'pcm_s16le';

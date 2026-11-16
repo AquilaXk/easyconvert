@@ -6,6 +6,7 @@ import { handOffConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { stripEngineControls } from '@/lib/conversions/job-time';
 import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-limit';
 import { detectFormatFromFilename } from '@/lib/registry';
+import { ALTO_SNIFF_BYTES, promoteAltoXmlSource } from '@/lib/conversions/ocr-alto-sniff';
 import { ConversionOptions } from '@/lib/types';
 import { storageProvider } from '@/lib/storage';
 import { storeUploadedBuffer } from '@/lib/api/completed-upload';
@@ -156,6 +157,14 @@ async function inputSpoofProblem(request: JobRequest, sourceFormat: string): Pro
 /** What the request resolves to once its input is authorized and checked. */
 type PreparedJobInput = { refusal: Response } | { sourceFormat: string; inputBytes: number | undefined };
 
+async function readQueueJobXmlPrefix(request: JobRequest): Promise<Uint8Array | undefined> {
+  if (request.inputBufferBase64) return Buffer.from(request.inputBufferBase64.slice(0, 5600), 'base64');
+  if (!request.storageKey) return undefined;
+  return readObjectHeader(storageProvider, request.storageKey)
+    .then((header) => header?.subarray(0, ALTO_SNIFF_BYTES))
+    .catch(() => undefined);
+}
+
 /** Authorizes the stored key, identifies the format, enforces the plan size limit and the spoof check. */
 async function prepareJobInput(user: User, request: JobRequest, instanceUri: string): Promise<PreparedJobInput> {
   const { targetFormat, storageKey, inputBufferBase64 } = request;
@@ -169,16 +178,20 @@ async function prepareJobInput(user: User, request: JobRequest, instanceUri: str
     return { refusal: failJson(400, 'Missing required parameter: "targetFormat"') };
   }
 
-  const detected = detectFormatFromFilename(request.originalFilename);
+  let detected = detectFormatFromFilename(request.originalFilename);
   if (!detected) return { refusal: unknownSourceProblem(request.originalFilename, instanceUri) };
+  if (detected.id === 'xml') {
+    const prefix = await readQueueJobXmlPrefix(request);
+    detected = promoteAltoXmlSource(detected, undefined, targetFormat, prefix) ?? detected;
+  }
 
   const inputBytes = await trustedInputBytes({ storageKey, inputBufferBase64 }, storageProvider);
   const oversize = fileSizeLimitProblem(user, inputBytes, instanceUri);
   if (oversize) return { refusal: oversize };
 
-  const spoofed = await inputSpoofProblem(request, detected.extension);
+  const spoofed = await inputSpoofProblem(request, detected.id);
   if (spoofed) return { refusal: spoofed };
-  return { sourceFormat: detected.extension, inputBytes };
+  return { sourceFormat: detected.id, inputBytes };
 }
 
 /** Queues the job, which then owns the unit: the worker commits it or gives it back when the job ends. */

@@ -114,7 +114,7 @@ describe('the language table', () => {
         .split('\n')
         .slice(1)
         .map((line) => line.trim())
-        .filter((line) => line !== '' && line !== 'osd');
+        .filter((line) => line !== '' && line !== 'osd' && line !== 'snum');
       expect(installed.length).toBeGreaterThan(0);
       const known = new Set(OCR_LANGUAGES.map((language) => language.traineddata));
       expect(installed.filter((name) => !known.has(name))).toEqual([]);

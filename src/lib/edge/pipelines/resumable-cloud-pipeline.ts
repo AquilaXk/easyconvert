@@ -23,7 +23,9 @@ export interface ResumableHooks {
 }
 
 export interface ResumableTiming {
-  /** Pause between two reads of the job. */
+  /** First pause before the second read of the job; each further read multiplies by 1.5 up to `pollIntervalMs`. */
+  initialPollIntervalMs?: number;
+  /** Steady-state pause between two reads of the job. */
   pollIntervalMs: number;
   /** First pause before a request is sent again; each further attempt doubles it. */
   retryDelayMs: number;
@@ -40,7 +42,11 @@ export interface ResumableTiming {
  */
 export const PART_IN_FLIGHT_WAIT_MS = 5 * 60 * 1000;
 
+const DEFAULT_INITIAL_POLL_INTERVAL_MS = 150;
+const POLL_BACKOFF_FACTOR = 1.5;
+
 const DEFAULT_RESUMABLE_TIMING: ResumableTiming = {
+  initialPollIntervalMs: DEFAULT_INITIAL_POLL_INTERVAL_MS,
   pollIntervalMs: 1000,
   retryDelayMs: 1000,
   maxWaitMs: 2 * 60 * 60 * 1000,
@@ -352,6 +358,7 @@ async function startJob(
 /** Reads the job until it ends; returns the result of a job that completed. */
 async function waitForResult(jobId: string, call: CallState, hooks: ResumableHooks, timing: ResumableTiming): Promise<ResumableConversionResult> {
   const giveUpAt = Date.now() + timing.maxWaitMs;
+  let pollDelayMs = Math.min(timing.initialPollIntervalMs ?? DEFAULT_INITIAL_POLL_INTERVAL_MS, timing.pollIntervalMs);
   for (;;) {
     const res = await sendWithRetry(
       () => fetch(`${JOBS_URL}/${encodeURIComponent(jobId)}`, { cache: 'no-store', signal: hooks.signal }),
@@ -374,7 +381,8 @@ async function waitForResult(jobId: string, call: CallState, hooks: ResumableHoo
     if (Date.now() >= giveUpAt) {
       throw new ConversionFailureError('The conversion did not finish in time. Try again.', { code: 'jobTimedOut' });
     }
-    await sleep(timing.pollIntervalMs, hooks.signal);
+    await sleep(pollDelayMs, hooks.signal);
+    pollDelayMs = Math.min(Math.round(pollDelayMs * POLL_BACKOFF_FACTOR), timing.pollIntervalMs);
   }
 }
 

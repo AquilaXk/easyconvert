@@ -11,6 +11,7 @@ import {
   attachJobLifecycleListeners,
   attachInputCleanupOnCompletion,
   defaultQueueOwnJobCounts,
+  fastLaneReservationOptions,
   startEndedRecordSweep,
 } from '../lib/queue/conversion-queue';
 import { Worker, Job, IQueueEngine, JobCancelledError } from '../lib/queue/bullmq-engine';
@@ -243,7 +244,12 @@ export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
       }
     }
   },
-  { concurrency: config.concurrency, defaultTimeoutMs: legacyJobTimeoutMs, stuckProcessorMs: workerConfig.JOB_STUCK_RECYCLE_MS }
+  {
+    concurrency: config.concurrency,
+    defaultTimeoutMs: legacyJobTimeoutMs,
+    stuckProcessorMs: workerConfig.JOB_STUCK_RECYCLE_MS,
+    ...fastLaneReservationOptions(subscribedQueues, config.concurrency),
+  }
 );
 
 // A conversion that ignored its abort at the job deadline cannot be stopped from inside the process: the worker

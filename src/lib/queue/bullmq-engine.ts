@@ -342,6 +342,7 @@ export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   forgetUser?(userId: string, processed: ReadonlySet<string>): Promise<string[]>;
   close(): Promise<void>;
   _popNextWaiting?(): Promise<Job<T, R> | undefined> | Job<T, R> | undefined;
+  _popOwnWaiting?(): Promise<Job<T, R> | undefined> | Job<T, R> | undefined;
   /** Moves an active job back to waiting/delayed. Returns false when the job is no longer active. */
   _requeue?(job: Job<T, R>, delayMs?: number): Promise<boolean> | boolean;
   /** Records completion. Returns false when the job is no longer active (for example, it was cancelled). */
@@ -747,36 +748,22 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
 
 export interface WorkerOptions {
   concurrency?: number;
-  /**
-   * Timeout for a job that carries none (queued before deadlines existed), resolved when the attempt starts. A
-   * worker of conversion jobs sets it to the maximum deadline of the job owner's tier.
-   */
+  /** Timeout for a job that carries none (queued before deadlines existed), resolved when the attempt starts. */
   defaultTimeoutMs?: (job: Job<any, any>) => Promise<number | undefined> | number | undefined;
-  /**
-   * Milliseconds an aborted processor may stay unsettled before the worker emits `stuck`; the owner of the process
-   * is expected to recycle it, since nothing else can stop work that ignores its signal. Default 30 000.
-   */
+  /** Milliseconds an aborted processor may stay unsettled before the worker emits `stuck` (default 30 000). */
   stuckProcessorMs?: number;
+  /** Queue names sharing a capped sub-pool (`maxHeavyConcurrency`) so fast queues keep at least one open slot. */
+  heavyQueueNames?: ReadonlySet<string>;
+  maxHeavyConcurrency?: number;
 }
 
-/** Default for `WorkerOptions.stuckProcessorMs`. */
 export const DEFAULT_STUCK_PROCESSOR_MS = 30_000;
-
 export type Processor<T, R> = (job: Job<T, R>) => Promise<R>;
 
-export function calculateBackoffWithJitter(
-  attempt: number,
-  baseDelayMs: number = 1000,
-  maxDelayMs: number = 30000
-): number {
-  const exponential = baseDelayMs * Math.pow(2, Math.max(0, attempt - 1));
-  const capped = Math.min(exponential, maxDelayMs);
+export function calculateBackoffWithJitter(attempt: number, baseDelayMs: number = 1000, maxDelayMs: number = 30000): number {
+  const capped = Math.min(baseDelayMs * Math.pow(2, Math.max(0, attempt - 1)), maxDelayMs);
   const minFloor = Math.max(10, Math.floor(baseDelayMs * 0.25));
-  if (capped <= minFloor) {
-    return capped;
-  }
-  const jitter = crypto.randomInt(minFloor, capped + 1);
-  return Math.min(capped, jitter);
+  return capped <= minFloor ? capped : Math.min(capped, crypto.randomInt(minFloor, capped + 1));
 }
 
 /** An attempt whose job was cancelled or taken over by another attempt must not record anything. */
@@ -790,6 +777,9 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
   private processor: Processor<T, R>;
   private concurrency: number;
   private activeCount: number = 0;
+  private heavyActiveCount: number = 0;
+  private readonly heavyQueueNames?: ReadonlySet<string>;
+  private readonly maxHeavyConcurrency: number;
   private isRunning: boolean = true;
   private pollingTimer?: NodeJS.Timeout;
   private stalledSweepTimer?: NodeJS.Timeout;
@@ -817,6 +807,8 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     this.name = queueList[0].name;
     this.processor = processor;
     this.concurrency = opts.concurrency || 5;
+    this.heavyQueueNames = opts.heavyQueueNames;
+    this.maxHeavyConcurrency = opts.maxHeavyConcurrency ?? this.concurrency;
     this.defaultTimeoutMs = opts.defaultTimeoutMs;
     this.stuckProcessorMs = opts.stuckProcessorMs ?? DEFAULT_STUCK_PROCESSOR_MS;
 
@@ -856,6 +848,23 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
   private isProcessing: boolean = false;
   private hasPendingCheck: boolean = false;
 
+  private async popNextEligibleJob(): Promise<{ job: Job<T, R>; queue: IQueueEngine<T, R>; isHeavy: boolean } | undefined> {
+    const useOwnPop = this.queues.length > 1;
+    for (const q of this.queues) {
+      const isHeavy = this.heavyQueueNames?.has(q.name) ?? false;
+      if (isHeavy && this.heavyActiveCount >= this.maxHeavyConcurrency) continue;
+      const pop = useOwnPop && q._popOwnWaiting ? q._popOwnWaiting.bind(q) : q._popNextWaiting?.bind(q);
+      if (!pop) continue;
+      try {
+        const job = await pop();
+        if (job) return { job, queue: q, isHeavy };
+      } catch {
+        continue;
+      }
+    }
+    return undefined;
+  }
+
   private async checkAndProcess(): Promise<void> {
     if (!this.isRunning) return;
     if (this.isProcessing) {
@@ -868,28 +877,12 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
       do {
         this.hasPendingCheck = false;
         while (this.isRunning && this.activeCount < this.concurrency) {
-          let poppedJob: Job<T, R> | undefined;
-          let sourceQueue: IQueueEngine<T, R> | undefined;
-
-          for (const q of this.queues) {
-            try {
-              if (q._popNextWaiting) {
-                const j = await q._popNextWaiting();
-                if (j) {
-                  poppedJob = j;
-                  sourceQueue = q;
-                  break;
-                }
-              }
-            } catch {
-              continue;
-            }
-          }
-
-          if (!poppedJob || !sourceQueue) break;
+          const picked = await this.popNextEligibleJob();
+          if (!picked) break;
 
           this.activeCount++;
-          const running = poppedJob;
+          if (picked.isHeavy) this.heavyActiveCount++;
+          const { job: running, queue: sourceQueue, isHeavy } = picked;
           void this.executeJob(running, sourceQueue)
             .catch((err) => {
               console.error(`[Worker:${this.name}] Unhandled executeJob error:`, err);
@@ -898,6 +891,7 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
               // A processor that ignored its abort is still running: its slot is free only when it settles.
               await this.unsettledProcessors.get(running);
               this.activeCount--;
+              if (isHeavy) this.heavyActiveCount--;
               this.checkAndProcess();
             });
         }

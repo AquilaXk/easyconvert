@@ -136,14 +136,14 @@ env_value() { # env_value <file> <key>
 }
 
 # One knob, two numbers: EASYCONVERT_BUDGET_CPUS and EASYCONVERT_BUDGET_MEMORY_GB (the whole stack). The shares follow the launch
-# split of 3.5 cpus and 20 GiB: Redis 0.2 cpu and 0.5 GiB, the web 23% of the cpus and 27.5% of the memory, the worker the rest. The
+# split of 3.5 cpus and 20 GiB: Redis 0.2 cpu and 0.5 GiB, the web 34% of the cpus and 27.5% of the memory, the worker the rest. The
 # worker runs one job per 3.4 GiB (the share docker-compose.yml gives each of 3 jobs in 10 GiB, the figure the input limits of
 # src/lib/conversions are sized for) and at most two jobs per cpu.
 budget() { # budget <cpus> <memory GiB>, empty for the launch default
   local cpus="${1:-3.5}" mem_gib="${2:-20}"
   awk -v c="$cpus" -v m="$mem_gib" 'BEGIN {
     if (c !~ /^[0-9]+(\.[0-9]+)?$/ || m !~ /^[0-9]+(\.[0-9]+)?$/ || c < 1.5 || m < 6) { print "budget needs at least 1.5 cpus and 6 GiB" > "/dev/stderr"; exit 1 }
-    redis_cpu = 0.2; web_cpu = int(c * 0.23 * 10 + 0.5) / 10; if (web_cpu < 0.5) web_cpu = 0.5
+    redis_cpu = 0.2; web_cpu = int(c * 0.34 * 10 + 0.5) / 10; if (web_cpu < 0.5) web_cpu = 0.5
     worker_cpu = int((c - redis_cpu - web_cpu) * 10 + 0.5) / 10
     total_mib = int(m * 1024); redis_mib = 512; web_mib = int(m * 1024 * 0.275); worker_mib = total_mib - redis_mib - web_mib
     jobs = int(worker_mib / 1024 / 3.4); cap = int(worker_cpu * 2 + 0.999); if (cap < jobs) jobs = cap; if (jobs < 1) jobs = 1

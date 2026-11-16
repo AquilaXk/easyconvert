@@ -553,13 +553,49 @@ function subtitleExtractionArguments(ctx: BuildContext, outputPath: string): str
   return [...globalArgs, ...inputArgs, ...outputArgs, outputPath];
 }
 
+const FFMPEG_NON_NEGATIVE_TIME = /^(?:\d+(?:\.\d+)?(?:s|ms|us)?|\d+:[0-5]\d(?::[0-5]\d)?(?:\.\d+)?)$/;
+
+function parseTrimSeconds(text: string): number | undefined {
+  if (text.endsWith('ms')) return Number(text.slice(0, -2)) / 1000;
+  if (text.endsWith('us')) return Number(text.slice(0, -2)) / 1_000_000;
+  if (text.endsWith('s')) return Number(text.slice(0, -1));
+  if (!text.includes(':')) return Number(text);
+  const parts = text.split(':').map(Number);
+  return parts.reduce((acc, part) => acc * 60 + part, 0);
+}
+
+function formatTrimBoundary(value: string | number | undefined, field: 'start' | 'end'): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new InvalidMediaOptionError(`Trim ${field} must be a non-negative finite number.`);
+    }
+    return String(value);
+  }
+  const text = value.trim();
+  if (text === '') return undefined;
+  if (!FFMPEG_NON_NEGATIVE_TIME.test(text)) {
+    throw new InvalidMediaOptionError(`Invalid trim ${field} timestamp "${text}".`);
+  }
+  return text;
+}
+
 function addTrimInputArgs(ctx: BuildContext): void {
   const { options, inputArgs } = ctx;
-  if (options.trim?.start) {
-    inputArgs.push('-ss', options.trim.start);
+  const start = formatTrimBoundary(options.trim?.start, 'start');
+  const end = formatTrimBoundary(options.trim?.end, 'end');
+  if (start !== undefined && end !== undefined) {
+    const startSec = parseTrimSeconds(start);
+    const endSec = parseTrimSeconds(end);
+    if (startSec !== undefined && endSec !== undefined && Number.isFinite(startSec) && Number.isFinite(endSec) && endSec <= startSec) {
+      throw new InvalidMediaOptionError('Trim end must be greater than trim start.');
+    }
   }
-  if (options.trim?.end) {
-    inputArgs.push('-to', options.trim.end);
+  if (start !== undefined) {
+    inputArgs.push('-ss', start);
+  }
+  if (end !== undefined) {
+    inputArgs.push('-to', end);
   }
 }
 
@@ -802,7 +838,8 @@ function addChapterArgs(ctx: BuildContext, chapters: StreamLayout['chapters']): 
     // that is offset back by the start, which leaves each chapter on the frame it marked.
     chapterInput = inputArgs.filter((arg) => arg === '-i').length;
     inputArgs.push('-itsoffset', chapters.startTimeSec.toFixed(CHAPTER_OFFSET_DECIMALS));
-    if (options.trim?.start) inputArgs.push('-ss', options.trim.start);
+    const chapterTrimStart = formatTrimBoundary(options.trim?.start, 'start');
+    if (chapterTrimStart !== undefined) inputArgs.push('-ss', chapterTrimStart);
     inputArgs.push(...mediaInputArgs(input));
   }
   outputArgs.push('-map_metadata', '0', '-map_chapters', String(chapterInput));

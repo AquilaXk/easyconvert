@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Self, TypeVar
+from typing import Any, Self, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -17,18 +17,28 @@ class ConversionOptionsTrim:
     """Temporal clipping boundaries.
 
     Attributes:
-        start (str | Unset): Start time offset (HH:MM:SS.mmm or seconds).
-        end (str | Unset): End time offset (HH:MM:SS.mmm or seconds).
+        start (float | str | Unset): Start time offset (`HH:MM:SS.mmm` timestamp string or non-negative seconds as
+            string or number).
+        end (float | str | Unset): End time offset (`HH:MM:SS.mmm` timestamp string or non-negative seconds as string or
+            number).
     """
 
-    start: str | Unset = UNSET
-    end: str | Unset = UNSET
+    start: float | str | Unset = UNSET
+    end: float | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        start = self.start
+        start: float | str | Unset
+        if isinstance(self.start, Unset):
+            start = UNSET
+        else:
+            start = self.start
 
-        end = self.end
+        end: float | str | Unset
+        if isinstance(self.end, Unset):
+            end = UNSET
+        else:
+            end = self.end
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -43,9 +53,20 @@ class ConversionOptionsTrim:
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         d = dict(src_dict)
-        start = d.pop("start", UNSET)
 
-        end = d.pop("end", UNSET)
+        def _parse_start(data: object) -> float | str | Unset:
+            if isinstance(data, Unset):
+                return data
+            return cast(float | str | Unset, data)
+
+        start = _parse_start(d.pop("start", UNSET))
+
+        def _parse_end(data: object) -> float | str | Unset:
+            if isinstance(data, Unset):
+                return data
+            return cast(float | str | Unset, data)
+
+        end = _parse_end(d.pop("end", UNSET))
 
         conversion_options_trim = cls(
             start=start,

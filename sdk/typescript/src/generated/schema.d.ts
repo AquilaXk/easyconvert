@@ -913,10 +913,10 @@ export interface components {
             };
             /** @description Temporal clipping boundaries. */
             trim?: {
-                /** @description Start time offset (HH:MM:SS.mmm or seconds). */
-                start?: string;
-                /** @description End time offset (HH:MM:SS.mmm or seconds). */
-                end?: string;
+                /** @description Start time offset (`HH:MM:SS.mmm` timestamp string or non-negative seconds as string or number). */
+                start?: string | number;
+                /** @description End time offset (`HH:MM:SS.mmm` timestamp string or non-negative seconds as string or number). */
+                end?: string | number;
             };
             /** @description Subtitle rendering and stream management options. Subtitles come from a stream of the input, chosen with `streamIndex`; an external subtitle file is not accepted, and `input` answers 400. */
             subtitles?: {

@@ -803,6 +803,7 @@
   "tests/openapi-pdfa-contract.test.ts": 0,
   "tests/openapi-route-parity.test.ts": 0.2,
   "tests/openapi-web-tools-contract.test.ts": 0.4,
+  "tests/openbeta-commercial-polish.test.ts": 0.1,
   "tests/openexr-decode.test.ts": 3.9,
   "tests/openxps-image-dimensions.test.ts": 0.2,
   "tests/operations-alerts.test.ts": 0,

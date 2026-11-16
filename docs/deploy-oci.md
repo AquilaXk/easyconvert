@@ -130,8 +130,8 @@ On 4 OCPU and 24 GB that is about 0.2 OCPU on average, peaks near 1.9 OCPU, and 
 
 | Service | CPU limit | Memory limit | Why |
 | --- | --- | --- | --- |
-| `worker` | 2.5 | 14 GiB | 4 jobs. The input limits are sized for about 3.4 GiB per job (a memory-class worker in `docker-compose.yml` has 14 GiB), so office, video and large raster jobs fit. At most 2 jobs per cpu |
-| `web` | 0.8 | 5.5 GiB | Synchronous conversions run in this process (up to 100 MiB per request) |
+| `worker` | 2.1 | 14 GiB | 4 jobs. The input limits are sized for about 3.4 GiB per job (a memory-class worker in `docker-compose.yml` has 14 GiB), so office, video and large raster jobs fit. At most 2 jobs per cpu |
+| `web` | 1.2 | 5.5 GiB | Page SSR, multipart uploads and synchronous conversions run in this process (up to 100 MiB per request) |
 | `redis` | 0.2 | 512 MiB | `maxmemory 256mb`, no eviction, plus the append-only rewrite |
 | Total | 3.5 | 20 GiB | Leaves 0.5 OCPU and 4 GiB for the other service and the system |
 

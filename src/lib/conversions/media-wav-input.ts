@@ -1,4 +1,5 @@
 import type { ConversionOptions } from '../types';
+import { hasTrimBoundary } from '../media-options';
 import { type FfmpegVersion, probeFfmpegBuild } from './media-process';
 import { isAudioOnlyTarget } from './media-audio-targets';
 import { readWavPcmInfo, type WavPcmInfo } from './wav-header';
@@ -115,7 +116,7 @@ export function addWavPacketSize(
   outputArgs: readonly string[],
   ffmpegBin: string | null | undefined
 ): void {
-  if (wav === null || !ffmpegBin || options.trim?.start || options.trim?.end) return;
+  if (wav === null || !ffmpegBin || hasTrimBoundary(options.trim?.start) || hasTrimBoundary(options.trim?.end)) return;
   if (!packetSizeKeepsSamples(outputArgs, wav)) return;
   if (!wavPacketSizeKeepsOutput(probeFfmpegBuild(ffmpegBin).version)) return;
   const bytes = wavPacketBytes(wav.dataBytes);

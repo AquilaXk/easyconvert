@@ -8,6 +8,7 @@ import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { withinSingleRequest } from '@/lib/api/file-size-limit';
 import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
+import { ALTO_SNIFF_BYTES, promoteAltoXmlSource } from '@/lib/conversions/ocr-alto-sniff';
 import { assertNotSpoofedFile, spoofCheckStatus } from '@/lib/security/file-guard';
 import {
   ConversionOptions,
@@ -91,7 +92,36 @@ function conversionErrorResponse(error: unknown, instanceUri: string): NextRespo
   return refusal(typed.status, typed.code, message);
 }
 
-/** The format of the uploaded file: the `sourceFormat` the request names, else the one its file name's extension names. */
+async function resolveWebConvertPair(
+  file: File,
+  explicitSource: string | undefined,
+  targetFormat: string
+): Promise<{ refusal: NextResponse; sourceId?: string } | { detectedDef: FormatDefinition; targetId: string }> {
+  let detectedDef = sourceFormatOf(file.name, explicitSource);
+  if (!explicitSource && detectedDef?.id === 'xml') {
+    const prefix = new Uint8Array(await file.slice(0, ALTO_SNIFF_BYTES).arrayBuffer());
+    detectedDef = promoteAltoXmlSource(detectedDef, undefined, targetFormat, prefix);
+  }
+  if (!detectedDef) {
+    return {
+      refusal: refusal(400, 'unknown_format', `Could not determine file format from filename "${file.name}". Ensure it has a valid extension.`),
+    };
+  }
+  const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
+  const targetDef = getFormatByExtension(tgt);
+  const availableDefs = getAvailableTargetFormats(detectedDef.id);
+  if (!targetDef || !availableDefs.some((d) => d.id === targetDef.id || d.extension === tgt)) {
+    return {
+      sourceId: detectedDef.id,
+      refusal: refusal(
+        400,
+        'unsupported_pair',
+        `Cannot convert from ${detectedDef.name} (.${detectedDef.extension}) to target format .${tgt}. Available targets: ${availableDefs.map((d) => d.id).join(', ')}`
+      ),
+    };
+  }
+  return { detectedDef, targetId: targetDef.id };
+}
 function sourceFormatOf(fileName: string, sourceFormatParam: string | undefined): FormatDefinition | undefined {
   const named = sourceFormatParam ? getFormatByExtension(sourceFormatParam) : undefined;
   const detected = named ?? detectFormatFromFilename(fileName);
@@ -170,24 +200,16 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
       return refusal(400, 'target_required', 'Missing required "targetFormat" parameter.');
     }
 
-    const detectedDef = sourceFormatOf(file.name, formText(formData, 'sourceFormat'));
-    if (!detectedDef) {
-      return refusal(400, 'unknown_format', `Could not determine file format from filename "${file.name}". Ensure it has a valid extension.`);
+    const resolved = await resolveWebConvertPair(file, formText(formData, 'sourceFormat')?.trim() || undefined, targetFormat);
+    if ('refusal' in resolved) {
+      if (resolved.sourceId) trace.source = resolved.sourceId;
+      return resolved.refusal;
     }
-    trace.source = detectedDef.extension;
-
-    const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
-    const availableTargets = getAvailableTargetFormats(detectedDef.extension).map((d) => d.extension);
-    if (!availableTargets.includes(tgt)) {
-      return refusal(
-        400,
-        'unsupported_pair',
-        `Cannot convert from ${detectedDef.name} (.${detectedDef.extension}) to target format .${tgt}. Available targets: ${availableTargets.join(', ')}`
-      );
-    }
+    const { detectedDef, targetId } = resolved;
+    trace.source = detectedDef.id;
 
     // The unit was reserved for one credit before the formats were known; the rest of the cost of this pair is held now.
-    const base = baseCredits(detectedDef.extension, tgt);
+    const base = baseCredits(detectedDef.id, targetId);
     const short = await holdBaseCredits(unit, caller, base);
     if (short) return conversionRefusalResponse(short, instanceUri);
 
@@ -228,7 +250,7 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
 
     // Validate file integrity against spoofed extensions fail-closed
     try {
-      assertNotSpoofedFile(inputBuffer, detectedDef.extension, file.name);
+      assertNotSpoofedFile(inputBuffer, detectedDef.id, file.name);
     } catch (err: unknown) {
       trace.cause = err;
       return refusal(spoofCheckStatus(err), refusalCodeOf(err) ?? 'spoofed_file', (err instanceof Error && err.message) || 'File spoofing detected.');
@@ -238,8 +260,8 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
     const deadlineMs = syncDeadlineMs(
       conversionDeadlineMs({
         tier: caller.tier,
-        sourceFormat: detectedDef.extension,
-        targetFormat: tgt,
+        sourceFormat: detectedDef.id,
+        targetFormat: targetId,
         inputBytes: inputBuffer.length,
       })
     );
@@ -249,8 +271,8 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
       result = await runUnderDeadline(req, deadlineMs, (limits) =>
         dispatchConversion(
           inputBuffer,
-          detectedDef.extension,
-          tgt,
+          detectedDef.id,
+          targetId,
           bindJobLimits(options, limits),
           file.name
         )
@@ -275,7 +297,7 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
         ...conversionWarningsHeaders(result),
       },
     });
-    await unit.commit({ from: detectedDef.extension, to: tgt, base, processingMs: Date.now() - conversionStartedAt });
+    await unit.commit({ from: detectedDef.id, to: targetId, base, processingMs: Date.now() - conversionStartedAt });
     return answer;
   } catch (error: unknown) {
     trace.cause = error;

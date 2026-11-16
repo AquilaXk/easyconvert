@@ -143,11 +143,11 @@ function TrimRangeFields({ options, onChange, prefix }: Readonly<SectionProps & 
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
       <div>
         <label htmlFor={startId} className={LABEL_CLASS}>{t('start')}</label>
-        <input id={startId} type="text" value={options.trim?.start || ''} onChange={(e) => updateTrim('start', e.target.value)} placeholder="00:00:00" className={INPUT_CLASS} />
+        <input id={startId} type="text" value={options.trim?.start !== undefined ? String(options.trim.start) : ''} onChange={(e) => updateTrim('start', e.target.value)} placeholder="00:00:00" className={INPUT_CLASS} />
       </div>
       <div>
         <label htmlFor={endId} className={LABEL_CLASS}>{t('end')}</label>
-        <input id={endId} type="text" value={options.trim?.end || ''} onChange={(e) => updateTrim('end', e.target.value)} placeholder="00:01:30" className={INPUT_CLASS} />
+        <input id={endId} type="text" value={options.trim?.end !== undefined ? String(options.trim.end) : ''} onChange={(e) => updateTrim('end', e.target.value)} placeholder="00:01:30" className={INPUT_CLASS} />
       </div>
     </div>
   );

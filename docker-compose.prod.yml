@@ -17,7 +17,7 @@
 # Budget. The knob is EASYCONVERT_BUDGET_CPUS and EASYCONVERT_BUDGET_MEMORY_GB in the env file (defaults 3.5 and 20); deploy/oci/deploy.sh
 # derives the per-service values below from them (`deploy.sh budget`) and writes only the ones the env file does not set itself. The
 # defaults written here are what the derivation gives for 3.5 cpus and 20 GB, so the file also runs without the script:
-#   worker 2.5 cpus, 14g, 4 jobs; web 0.8 cpus, 5632m; redis 0.2 cpus, 512m. Total 3.5 cpus, 20 GB.
+#   worker 2.1 cpus, 14g, 4 jobs; web 1.2 cpus, 5632m; redis 0.2 cpus, 512m. Total 3.5 cpus, 20 GB.
 #
 # Scaling later (docs/deploy-oci.md, "Scaling later"): web and worker share nothing but Redis (REDIS_URL) and the storage driver's root,
 # so the shape below does not tie them to one host. REDIS_URL set in the env file uses that Redis and leaves the local one off; a
@@ -207,7 +207,7 @@ services:
         required: false
     ports:
       - "127.0.0.1:${EASYCONVERT_WEB_PORT:-8090}:3000"
-    cpus: ${EASYCONVERT_WEB_CPUS:-0.8}
+    cpus: ${EASYCONVERT_WEB_CPUS:-1.2}
     cpu_shares: 512
     mem_limit: ${EASYCONVERT_WEB_MEMORY:-5632m}
     memswap_limit: ${EASYCONVERT_WEB_MEMORY:-5632m}
@@ -266,7 +266,7 @@ services:
     <<: *worker
     deploy:
       replicas: ${EASYCONVERT_WORKER_REPLICAS:-1}
-    cpus: ${EASYCONVERT_WORKER_CPUS:-2.5}
+    cpus: ${EASYCONVERT_WORKER_CPUS:-2.1}
     mem_limit: ${EASYCONVERT_WORKER_MEMORY:-14g}
     memswap_limit: ${EASYCONVERT_WORKER_MEMORY:-14g}
     environment:
