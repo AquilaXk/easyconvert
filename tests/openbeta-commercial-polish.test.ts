@@ -373,6 +373,10 @@ describe('Open Beta commercial readiness polish (entry 318)', () => {
       ]) {
         expect(dockerfile).toContain(pkg);
       }
+      // Setting QTWEBENGINE_CHROMIUM_FLAGS drops calibre's own --disable-gpu flag, so Dockerfile.worker must pass --disable-gpu explicitly.
+      for (const match of dockerfile.matchAll(/QTWEBENGINE_CHROMIUM_FLAGS=("[^"]+"|[^\s\\]+)/g)) {
+        expect(match[1]).toContain('--disable-gpu');
+      }
     });
   });
 });

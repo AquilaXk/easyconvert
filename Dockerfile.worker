@@ -685,7 +685,9 @@ RUN scratch="$(mktemp -d)" \
     && mkdir "${scratch}/config" "${scratch}/cache" "${scratch}/tmp" \
     && python3 -c 'import chm.chm' \
     && printf 'Hello\n' > "${scratch}/book.txt" \
-    && export HOME="${scratch}" QT_QPA_PLATFORM=offscreen QTWEBENGINE_DISABLE_SANDBOX=1 QTWEBENGINE_CHROMIUM_FLAGS=--disable-dev-shm-usage CALIBRE_CONFIG_DIRECTORY="${scratch}/config" \
+    && export HOME="${scratch}" QT_QPA_PLATFORM=offscreen QTWEBENGINE_DISABLE_SANDBOX=1 \
+        QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu --disable-dev-shm-usage" DBUS_SESSION_BUS_ADDRESS=disabled: \
+        CALIBRE_CONFIG_DIRECTORY="${scratch}/config" \
         CALIBRE_CACHE_DIRECTORY="${scratch}/cache" CALIBRE_TEMP_DIR="${scratch}/tmp" \
     && timeout 120 ebook-convert "${scratch}/book.txt" "${scratch}/book.tcr" > /dev/null \
     && for target in epub pdf rtf txt; do \
