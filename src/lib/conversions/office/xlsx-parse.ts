@@ -339,6 +339,202 @@ function handleCellText(cell: ActiveCellState, text: string): void {
   }
 }
 
+const XML_PARSE_CHUNK_CHARS = 65_536;
+const XML_TAG_BOUNDARY_LOOKAHEAD = 4_096;
+
+function isXmlSpace(c: number): boolean {
+  return c === 0x20 || c === 0x09 || c === 0x0a || c === 0x0d;
+}
+
+function isAsciiXmlNameStart(c: number): boolean {
+  return (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a) || c === 0x5f || c === 0x3a;
+}
+
+function isAsciiXmlNameChar(c: number): boolean {
+  return isAsciiXmlNameStart(c) || (c >= 0x30 && c <= 0x39) || c === 0x2d || c === 0x2e;
+}
+
+function scanAsciiXmlNameEnd(xml: string, from: number, len: number): number {
+  if (from >= len || !isAsciiXmlNameStart(xml.charCodeAt(from))) return -1;
+  let i = from + 1;
+  while (i < len && isAsciiXmlNameChar(xml.charCodeAt(i))) i++;
+  return i;
+}
+
+function sameSlice(xml: string, a0: number, a1: number, b0: number, b1: number): boolean {
+  const n = a1 - a0;
+  if (n !== b1 - b0) return false;
+  for (let k = 0; k < n; k++) {
+    if (xml.charCodeAt(a0 + k) !== xml.charCodeAt(b0 + k)) return false;
+  }
+  return true;
+}
+
+function matchesStringAt(xml: string, start: number, end: number, expected: string): boolean {
+  if (end - start !== expected.length) return false;
+  for (let k = 0; k < expected.length; k++) {
+    if (xml.charCodeAt(start + k) !== expected.charCodeAt(k)) return false;
+  }
+  return true;
+}
+
+function skipXmlSpaces(xml: string, from: number, len: number): number {
+  let i = from;
+  while (i < len && isXmlSpace(xml.charCodeAt(i))) i++;
+  return i;
+}
+
+function scanXmlAttrValueEnd(xml: string, from: number, len: number, quote: number): number {
+  let i = from;
+  while (i < len) {
+    const c = xml.charCodeAt(i);
+    if (c === quote) return i + 1;
+    if (c === 0x3c || c === 0x26 || c >= 0x7f || (c < 0x20 && !isXmlSpace(c))) return -1;
+    i++;
+  }
+  return -1;
+}
+
+function parseFastCloseTag(xml: string, from: number, len: number, stack: string[]): number {
+  if (stack.length === 0) return -1;
+  const nameEnd = scanAsciiXmlNameEnd(xml, from, len);
+  if (nameEnd < 0) return -1;
+  const expected = stack[stack.length - 1];
+  if (!matchesStringAt(xml, from, nameEnd, expected)) return -1;
+  const afterWs = skipXmlSpaces(xml, nameEnd, len);
+  if (afterWs >= len || xml.charCodeAt(afterWs) !== 0x3e) return -1;
+  stack.pop();
+  return afterWs + 1;
+}
+
+interface FastAttrTracker {
+  first0: number;
+  first1: number;
+  seen: Set<string> | null;
+}
+
+function recordFastAttribute(xml: string, start: number, end: number, tracker: FastAttrTracker): boolean {
+  if (tracker.first0 < 0) {
+    tracker.first0 = start;
+    tracker.first1 = end;
+    return true;
+  }
+  if (tracker.seen === null) {
+    if (sameSlice(xml, tracker.first0, tracker.first1, start, end)) return false;
+    tracker.seen = new Set([xml.slice(tracker.first0, tracker.first1), xml.slice(start, end)]);
+    return true;
+  }
+  const attrName = xml.slice(start, end);
+  if (tracker.seen.has(attrName)) return false;
+  tracker.seen.add(attrName);
+  return true;
+}
+
+function parseFastOpenTag(xml: string, from: number, len: number, stack: string[]): number | 'depth' {
+  if (stack.length === 0) return -1;
+  if (stack.length >= XML_TREE_MAX_DEPTH) return 'depth';
+  const nameEnd = scanAsciiXmlNameEnd(xml, from, len);
+  if (nameEnd < 0) return -1;
+  let i = nameEnd;
+  const tracker: FastAttrTracker = { first0: -1, first1: -1, seen: null };
+
+  while (i < len) {
+    const c = xml.charCodeAt(i);
+    if (c === 0x3e) {
+      stack.push(xml.slice(from, nameEnd));
+      return i + 1;
+    }
+    if (c === 0x2f) return i + 1 < len && xml.charCodeAt(i + 1) === 0x3e ? i + 2 : -1;
+    if (!isXmlSpace(c)) return -1;
+    i = skipXmlSpaces(xml, i + 1, len);
+    if (i >= len) return -1;
+    const next = xml.charCodeAt(i);
+    if (next === 0x3e) {
+      stack.push(xml.slice(from, nameEnd));
+      return i + 1;
+    }
+    if (next === 0x2f) return i + 1 < len && xml.charCodeAt(i + 1) === 0x3e ? i + 2 : -1;
+    const attrEnd = scanAsciiXmlNameEnd(xml, i, len);
+    if (attrEnd < 0 || !recordFastAttribute(xml, i, attrEnd, tracker)) return -1;
+    const eqPos = skipXmlSpaces(xml, attrEnd, len);
+    if (eqPos >= len || xml.charCodeAt(eqPos) !== 0x3d) return -1;
+    const quotePos = skipXmlSpaces(xml, eqPos + 1, len);
+    if (quotePos >= len) return -1;
+    const quote = xml.charCodeAt(quotePos);
+    if (quote !== 0x22 && quote !== 0x27) return -1;
+    const valEnd = scanXmlAttrValueEnd(xml, quotePos + 1, len, quote);
+    if (valEnd < 0) return -1;
+    i = valEnd;
+  }
+  return -1;
+}
+
+/**
+ * Zero-allocation ASCII XML 1.0 well-formedness scanner for the tail of a worksheet after `</sheetData>`
+ * once `XLSX_MAX_RANGES_PER_WORKBOOK` annotations have already been collected. Any non-ASCII character,
+ * entity reference, comment, CDATA, PI, or syntax error falls back to `saxes` for exact diagnostics.
+ */
+function fastVerifyXmlTail(xml: string, from: number, openTags: readonly { name: string }[]): 'ok' | 'depth' | 'fallback' {
+  const stack = openTags.map((t) => t.name);
+  if (stack.length === 0) return 'fallback';
+  const len = xml.length;
+  let i = from;
+
+  while (i < len && stack.length > 0) {
+    const c = xml.charCodeAt(i);
+    if (c === 0x3c) {
+      if (i + 1 >= len) return 'fallback';
+      const c1 = xml.charCodeAt(i + 1);
+      if (c1 === 0x21 || c1 === 0x3f) return 'fallback';
+      if (c1 === 0x2f) {
+        const next = parseFastCloseTag(xml, i + 2, len, stack);
+        if (next < 0) return 'fallback';
+        i = next;
+      } else {
+        const next = parseFastOpenTag(xml, i + 1, len, stack);
+        if (next === 'depth') return 'depth';
+        if (next < 0) return 'fallback';
+        i = next;
+      }
+      continue;
+    }
+    if (c === 0x26 || c === 0x5d || c >= 0x7f || (c < 0x20 && !isXmlSpace(c))) return 'fallback';
+    i++;
+  }
+
+  if (stack.length !== 0) return 'fallback';
+  return skipXmlSpaces(xml, i, len) === len ? 'ok' : 'fallback';
+}
+
+function streamWorksheetXmlChunks(
+  parser: SaxesParser,
+  sheetXml: string,
+  partPath: string,
+  canUseTailScanner: (offset: number) => boolean,
+  disableTailScanner: () => void
+): void {
+  const parserWithTags = parser as unknown as { tags: readonly { name: string }[] };
+  let offset = 0;
+  while (offset < sheetXml.length) {
+    let end = Math.min(sheetXml.length, offset + XML_PARSE_CHUNK_CHARS);
+    if (end < sheetXml.length) {
+      const gt = sheetXml.indexOf('>', end);
+      if (gt !== -1 && gt - end <= XML_TAG_BOUNDARY_LOOKAHEAD) end = gt + 1;
+    }
+    parser.write(sheetXml.slice(offset, end));
+    offset = end;
+    if (offset < sheetXml.length && canUseTailScanner(offset)) {
+      const verdict = fastVerifyXmlTail(sheetXml, offset, parserWithTags.tags);
+      if (verdict === 'depth') {
+        throw new PayloadLimitError(`${partPath} nests elements deeper than ${XML_TREE_MAX_DEPTH} levels.`);
+      }
+      if (verdict === 'ok') return;
+      disableTailScanner();
+    }
+  }
+  parser.close();
+}
+
 /**
  * Single-pass event-driven worksheet XML parser using `saxes`. Validates XML 1.0 well-formedness,
  * nesting depth, row/column/materialised-cell/expanded-text bounds, column widths, inline/shared/formatted
@@ -433,6 +629,9 @@ function parseWorksheetXml(
     });
   });
 
+  let tailFastPathEligible = false;
+  let lastCloseTagEnd = -1;
+
   parser.on('opentag', (tag) => {
     depth += 1;
     if (depth > XML_TREE_MAX_DEPTH) {
@@ -460,11 +659,15 @@ function parseWorksheetXml(
         annotationsUsed += 1;
         recordSheetAnnotation(local, attrs, mergedRanges, rawLinks, wantedIds);
       }
+      if (hasSheetData && afterSheetData && annotationsUsed >= allowance) {
+        tailFastPathEligible = true;
+      }
     }
   });
 
   parser.on('closetag', (tag) => {
     depth -= 1;
+    lastCloseTagEnd = parser.position;
     const local = localXmlName(tag.name);
     if (cell.active) {
       if (local === 'c' && cell.rPhDepth === 0 && !cell.inIs) closeCell();
@@ -475,7 +678,10 @@ function parseWorksheetXml(
       structuredRows.push(currentRowStructured);
     } else if (local === 'sheetData' && sheetDataDepth > 0) {
       sheetDataDepth -= 1;
-      if (sheetDataDepth === 0) afterSheetData = true;
+      if (sheetDataDepth === 0) {
+        afterSheetData = true;
+        if (annotationsUsed >= allowance) tailFastPathEligible = true;
+      }
     } else if (inFirstCols && local === 'cols') {
       inFirstCols = false;
     }
@@ -487,7 +693,15 @@ function parseWorksheetXml(
   parser.on('text', onCharData);
   parser.on('cdata', onCharData);
 
-  parser.write(sheetXml).close();
+  streamWorksheetXmlChunks(
+    parser,
+    sheetXml,
+    partPath,
+    (offset) => tailFastPathEligible && lastCloseTagEnd === offset,
+    () => {
+      tailFastPathEligible = false;
+    }
+  );
   budgets.rangesHeld += annotationsUsed;
 
   if (formulaCells.length > 0) {

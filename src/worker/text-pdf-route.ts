@@ -6,8 +6,10 @@ import { decodeTextInput, readTextFileCharacters } from '../lib/conversions/text
 import { markdownToSafeHtml } from '../lib/conversions/markdown-pdf';
 import { stageHtmlForNativeEngine } from '../lib/conversions/html-native-staging';
 import type { HtmlResourcePolicy } from '../lib/conversions/html-omitted-resources';
-import { parseHwpDocument } from '../lib/conversions/hwp';
+import { convertHwpDocument, parseHwpDocument, type HwpDocument } from '../lib/conversions/hwp';
+import { redrawAsPng } from '../lib/conversions/image-to-png';
 import { convertFile } from '../lib/conversions';
+import { sanitizeSvgString } from '../lib/security/svg-sanitizer';
 import { readRawInputBuffer } from './worker-output';
 import type { WorkerVfsPayload } from './worker-types';
 import { escapeMarkupText } from '../lib/text/escape';
@@ -51,18 +53,28 @@ export interface TextPdfRoute {
 }
 
 /** The text whose scripts decide the PDF route: the file's characters, or the HWP document text. */
-function textForPdfRouting(input: Buffer | WorkerVfsPayload, src: string): string {
+function textForPdfRouting(input: Buffer | WorkerVfsPayload, src: string): { text: string; parsedHwp?: HwpDocument } {
   if (src === 'hwp') {
-    const hwp = parseHwpDocument(readRawInputBuffer(input));
-    return [...hwp.paragraphs.map((p) => p.text), ...hwp.tables.flatMap((t) => t.rows.flat())].join('\n');
+    const parsedHwp = parseHwpDocument(readRawInputBuffer(input));
+    const text = [...parsedHwp.paragraphs.map((p) => p.text), ...parsedHwp.tables.flatMap((t) => t.rows.flat())].join('\n');
+    return { text, parsedHwp };
   }
-  if (HTML_SOURCES.has(src)) return decodeHtmlInput(readRawInputBuffer(input));
+  if (HTML_SOURCES.has(src)) return { text: decodeHtmlInput(readRawInputBuffer(input)) };
   const filePath = !Buffer.isBuffer(input) && !input.inputBuffer ? input.inputPath : undefined;
   if (STREAMED_TEXT_SOURCES.has(src) && filePath && fs.existsSync(filePath)) {
-    return readTextFileCharacters(filePath, TEXT_SCAN_CHUNK_BYTES);
+    return { text: readTextFileCharacters(filePath, TEXT_SCAN_CHUNK_BYTES) };
   }
   const raw = readRawInputBuffer(input);
-  return decodeTextInput(raw);
+  return { text: decodeTextInput(raw) };
+}
+
+async function normalizeHwpModelSvgImages(doc: HwpDocument): Promise<void> {
+  for (const image of doc.model.images) {
+    if (image.format !== 'svg') continue;
+    const cleanSvg = sanitizeSvgString(Buffer.from(image.data).toString('utf-8'));
+    image.data = await redrawAsPng(Buffer.from(cleanSvg, 'utf-8'), 'image/svg+xml');
+    image.format = 'png';
+  }
 }
 
 /**
@@ -82,7 +94,7 @@ export async function planTextPdfRoute(
 ): Promise<TextPdfRoute | null> {
   if (tgt !== 'pdf' || !TEXT_PDF_SOURCES.has(src)) return null;
   await loadFontCoverageIndex();
-  const text = textForPdfRouting(input, src);
+  const { text, parsedHwp } = textForPdfRouting(input, src);
   const complexScript = hasComplexTextScript(text);
   const cjk = hasCjkScript(text);
   if (complexScript || cjk) {
@@ -95,7 +107,7 @@ export async function planTextPdfRoute(
   const route = policy.forceNative ? { complexScript, preferNative: true, orientation } : planTextPdfEngine(src, text, complexScript, cjk, orientation);
   if (!route.preferNative || (src === PLAIN_TEXT_SOURCE && !route.orientation)) return route;
   // Staged here, before LibreOffice is tried, so a refused reference is a 400 and never a fallback.
-  const staged = await stageTextPdfHtml(input, src, originalFilename, route.orientation, policy);
+  const staged = await stageTextPdfHtml(input, src, originalFilename, route.orientation, policy, parsedHwp);
   return { ...route, stagedHtml: staged.html, stagedWarnings: staged.warnings };
 }
 
@@ -109,18 +121,22 @@ async function stageTextPdfHtml(
   src: string,
   originalFilename: string,
   orientation?: PageOrientation,
-  policy: HtmlResourcePolicy = {}
+  policy: HtmlResourcePolicy = {},
+  parsedHwp?: HwpDocument
 ): Promise<{ html: Buffer; warnings: string[] }> {
-  const raw = readRawInputBuffer(input);
   let html: string;
   if (HTML_SOURCES.has(src)) {
-    html = decodeHtmlInput(raw);
+    html = decodeHtmlInput(readRawInputBuffer(input));
   } else if (src === PLAIN_TEXT_SOURCE) {
-    html = plainTextToHtml(decodeTextInput(raw));
+    html = plainTextToHtml(decodeTextInput(readRawInputBuffer(input)));
   } else if (src === MARKDOWN_SOURCE) {
-    html = markdownToSafeHtml(decodeTextInput(raw), originalFilename.replace(/\.[^/.]+$/, ''));
+    html = markdownToSafeHtml(decodeTextInput(readRawInputBuffer(input)), originalFilename.replace(/\.[^/.]+$/, ''));
+  } else if (parsedHwp) {
+    await normalizeHwpModelSvgImages(parsedHwp);
+    const baseName = originalFilename.replace(/\.[^/.]+$/, '') || 'document';
+    html = (await convertHwpDocument(parsedHwp, HTML_FORMAT, {}, baseName)).buffer.toString('utf-8');
   } else {
-    html = (await convertFile(raw, src, HTML_FORMAT, {}, originalFilename)).buffer.toString('utf-8');
+    html = (await convertFile(readRawInputBuffer(input), src, HTML_FORMAT, {}, originalFilename)).buffer.toString('utf-8');
   }
   // Appended last so it overrides any @page rule of the document.
   const pageSize = orientation ? `\n<style>@page { size: ${PAGE_SIZE_CSS[orientation]}; }</style>\n` : '';

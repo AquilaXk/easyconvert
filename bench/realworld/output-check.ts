@@ -153,7 +153,7 @@ async function oebArchiveProblem(buffer: Buffer, emptyInput: boolean): Promise<s
   if ('problem' in archive) return archive.problem;
   const { entries } = archive;
   if (!entries.some((entry) => hasExtension(entry.name, 'opf'))) return 'oeb archive has no .opf package';
-  const pages = entries.filter((entry) => /\.x?html$/i.test(entry.name));
+  const pages = entries.filter((entry) => /\.x?html?$/i.test(entry.name));
   if (pages.length === 0) return 'oeb archive has no XHTML content document';
   const markup = (await Promise.all(pages.map((page) => page.async('string')))).join(' ');
   const hasText = wordsOfMarkup(markup) !== '';

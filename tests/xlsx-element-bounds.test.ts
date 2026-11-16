@@ -109,6 +109,16 @@ describe('merged ranges of a worksheet', () => {
     const converted = await convertFile(await workbookWith(mergeCells(MILLIONS)), 'xlsx', 'csv', {}, 'book.xlsx');
     expect(converted.buffer.toString('utf-8').trim()).toBe('a');
   }, 60_000);
+
+  it('still refuses malformed XML or excessive nesting placed past the merged-range bound', async () => {
+    const brokenTail = `${mergeCells(XLSX_MAX_RANGES_PER_WORKBOOK + 5_000).slice(0, -'</mergeCells>'.length)}<mergeCell ref="A1" ref="B2"/></mergeCells>`;
+    await expect(parseAllXlsxWorksheets(await workbookWith(brokenTail))).rejects.toThrow(/not well-formed XML/);
+
+    const deepOpen = Array.from({ length: 260 }, () => '<ext>').join('');
+    const deepClose = Array.from({ length: 260 }, () => '</ext>').join('');
+    const deepTail = `${mergeCells(XLSX_MAX_RANGES_PER_WORKBOOK + 5_000)}${deepOpen}${deepClose}`;
+    await expect(parseAllXlsxWorksheets(await workbookWith(deepTail))).rejects.toBeInstanceOf(PayloadLimitError);
+  }, 60_000);
 });
 
 describe('hyperlinks of a worksheet', () => {

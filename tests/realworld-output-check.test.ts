@@ -655,8 +655,9 @@ describe('an OEB book delivered as a ZIP', () => {
     expect(await oebProblem(archive)).toBeNull();
   });
 
-  it('is accepted when the content document is in a folder and named .html', async () => {
+  it('is accepted when the content document is in a folder and named .html or .htm', async () => {
     expect(await oebProblem(await zipOf({ 'book/content.opf': OPF, 'book/part1.html': XHTML }))).toBeNull();
+    expect(await oebProblem(await zipOf({ 'book/content.opf': OPF, 'book/topic1.htm': XHTML }))).toBeNull();
   });
 
   it('is refused without an OPF package', async () => {

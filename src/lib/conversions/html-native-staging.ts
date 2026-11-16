@@ -1,5 +1,6 @@
 import sharp, { type Metadata } from 'sharp';
 import { ConversionFailedError } from '../types';
+import { assertBmpHeaderWithinLimit, decodeBmp } from './bmp';
 import { scanCss } from './css-references';
 import {
   HTML_IMAGE_CAPS,
@@ -133,8 +134,9 @@ const FRAGMENT_PREFIX = '#';
 const ANCHOR_SCHEME = /^(?:https?|mailto):/i;
 const ASCII_WHITESPACE = /[ \t\n\f\r]+/g;
 
-/** Image data: base64 PNG, JPEG or GIF; the decoded bytes must start with that format's signature. */
-const IMAGE_DATA_URI = /^data:image\/(png|jpeg|gif);base64,/i;
+/** Image data: base64 PNG, JPEG, GIF, BMP, WebP or TIFF; BMP, WebP and TIFF are redrawn as PNG before LibreOffice reads them. */
+const IMAGE_DATA_URI = /^data:image\/(png|jpeg|gif|bmp|webp|tiff);base64,/i;
+const TRANSCODED_RASTER_FORMATS: ReadonlySet<string> = new Set(['bmp', 'webp', 'tiff']);
 const BASE64_PAYLOAD = /^[A-Za-z0-9+/]*={0,2}$/;
 /** Base64 characters enough for the longest signature (16 characters decode to 12 bytes). */
 const SIGNATURE_BASE64_LENGTH = 16;
@@ -142,18 +144,28 @@ const IMAGE_SIGNATURES: ReadonlyMap<string, readonly Buffer[]> = new Map([
   ['png', [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])]],
   ['jpeg', [Buffer.from([0xff, 0xd8, 0xff])]],
   ['gif', [Buffer.from('GIF87a', 'latin1'), Buffer.from('GIF89a', 'latin1')]],
+  ['bmp', [Buffer.from('BM', 'latin1')]],
+  ['tiff', [Buffer.from([0x49, 0x49, 0x2a, 0x00]), Buffer.from([0x4d, 0x4d, 0x00, 0x2a])]],
 ]);
 const MAX_REFERENCE_PREVIEW = 80;
+const HTML_BMP_PIXEL_BUDGET = { maxPixels: MAX_IMAGE_PIXELS, scope: 'HTML embedded image' } as const;
 
-/** Base64 PNG, JPEG or GIF data whose decoded bytes start with the declared format's signature. */
+function matchesRasterSignature(format: string, head: Buffer): boolean {
+  if (format === 'webp') {
+    return head.length >= 12 && head.subarray(0, 4).toString('latin1') === 'RIFF' && head.subarray(8, 12).toString('latin1') === 'WEBP';
+  }
+  const signatures = IMAGE_SIGNATURES.get(format) ?? [];
+  return signatures.some((signature) => head.length >= signature.length && head.subarray(0, signature.length).equals(signature));
+}
+
+/** Base64 raster image data whose decoded bytes start with the declared format's signature. */
 function isEmbeddedRasterImage(url: string): boolean {
   const match = IMAGE_DATA_URI.exec(url);
   if (!match) return false;
   const payload = url.slice(match[0].length).replace(ASCII_WHITESPACE, '');
   if (!BASE64_PAYLOAD.test(payload)) return false;
   const head = Buffer.from(payload.slice(0, SIGNATURE_BASE64_LENGTH), 'base64');
-  const signatures = IMAGE_SIGNATURES.get(asciiLowerCase(match[1])) ?? [];
-  return signatures.some((signature) => head.subarray(0, signature.length).equals(signature));
+  return matchesRasterSignature(asciiLowerCase(match[1]), head);
 }
 
 /** Whether an `<a href>` target stays a link: the document itself, a fragment, or an http, https or mailto address. */
@@ -209,33 +221,75 @@ function checkedStyleSheet(element: HtmlElement, omitted: OmittedContent, images
 }
 
 /** The bytes and declared format of a checked image data: URI. */
-function imageData(url: string): { bytes: Buffer; format: string } {
+function imageData(url: string): { url: string; bytes: Buffer; format: string } {
   const match = IMAGE_DATA_URI.exec(url) as RegExpExecArray;
-  return { bytes: Buffer.from(url.slice(match[0].length).replace(ASCII_WHITESPACE, ''), 'base64'), format: asciiLowerCase(match[1]) };
+  return {
+    url,
+    bytes: Buffer.from(url.slice(match[0].length).replace(ASCII_WHITESPACE, ''), 'base64'),
+    format: asciiLowerCase(match[1]),
+  };
+}
+
+function inspectEmbeddedDimensions(bytes: Buffer, format: string): Promise<{ width: number; height: number }> {
+  if (format === 'bmp') {
+    try {
+      return Promise.resolve(assertBmpHeaderWithinLimit(bytes, HTML_BMP_PIXEL_BUDGET));
+    } catch (err) {
+      return Promise.reject(new ConversionFailedError(`HTML embedded image could not be read: ${(err as Error).message}`));
+    }
+  }
+  return sharp(bytes, { limitInputPixels: false })
+    .metadata()
+    .then(
+      (metadata: Metadata) => {
+        const width = metadata.width ?? 0;
+        const height = metadata.height ?? 0;
+        if (metadata.format !== format || width <= 0 || height <= 0) {
+          throw new ConversionFailedError(`HTML embedded image is not a valid ${format.toUpperCase()} image`);
+        }
+        return { width, height };
+      },
+      (err: unknown) => {
+        throw new ConversionFailedError(`HTML embedded image could not be read: ${(err as Error).message}`);
+      }
+    );
+}
+
+async function decodeOrTranscodeEmbeddedImage(bytes: Buffer, format: string): Promise<string | null> {
+  try {
+    if (format === 'bmp') {
+      const decoded = decodeBmp(bytes, HTML_BMP_PIXEL_BUDGET);
+      const rawPipeline = sharp(decoded.raw, {
+        raw: { width: decoded.width, height: decoded.height, channels: decoded.channels },
+      });
+      const png = await (decoded.hasAlpha ? rawPipeline : rawPipeline.removeAlpha()).png().toBuffer();
+      return `data:image/png;base64,${png.toString('base64')}`;
+    }
+    const decoder = sharp(bytes, { limitInputPixels: MAX_IMAGE_PIXELS });
+    if (TRANSCODED_RASTER_FORMATS.has(format)) {
+      const png = await decoder.rotate().toColourspace('srgb').png().toBuffer();
+      return `data:image/png;base64,${png.toString('base64')}`;
+    }
+    await decoder.raw().toBuffer();
+    return null;
+  } catch (err) {
+    throw new ConversionFailedError(`HTML embedded image could not be decoded: ${(err as Error).message}`);
+  }
 }
 
 /**
  * Proves every image LibreOffice will read decodes as the format it declares, within the
- * in-process renderer's limits: headers first (format, size, pixel budget), then one full decode.
+ * in-process renderer's limits: headers first (format, size, pixel budget), then one full decode,
+ * rewriting BMP, WebP and TIFF data: URIs to PNG so LibreOffice draws them identically.
  */
-async function verifyEmbeddedImages(urls: ReadonlySet<string>): Promise<void> {
+async function verifyEmbeddedImages(staged: string, urls: ReadonlySet<string>): Promise<string> {
   if (urls.size > MAX_IMAGES_PER_DOCUMENT) {
     throw new ConversionFailedError(`HTML embeds ${urls.size} images; at most ${MAX_IMAGES_PER_DOCUMENT} per document are converted`);
   }
   const images = Array.from(urls, imageData);
   let totalPixels = 0;
   for (const { bytes, format } of images) {
-    let metadata: Metadata;
-    try {
-      metadata = await sharp(bytes, { limitInputPixels: false }).metadata();
-    } catch (err) {
-      throw new ConversionFailedError(`HTML embedded image could not be read: ${(err as Error).message}`);
-    }
-    const width = metadata.width ?? 0;
-    const height = metadata.height ?? 0;
-    if (metadata.format !== format || width <= 0 || height <= 0) {
-      throw new ConversionFailedError(`HTML embedded image is not a valid ${format.toUpperCase()} image`);
-    }
+    const { width, height } = await inspectEmbeddedDimensions(bytes, format);
     if (width * height > MAX_IMAGE_PIXELS) {
       throw new ConversionFailedError(`HTML embedded image is ${width}x${height} pixels, above the ${MAX_IMAGE_PIXELS}-pixel limit`);
     }
@@ -244,13 +298,12 @@ async function verifyEmbeddedImages(urls: ReadonlySet<string>): Promise<void> {
   if (totalPixels > MAX_DOCUMENT_IMAGE_PIXELS) {
     throw new ConversionFailedError(`HTML embeds images totalling ${totalPixels} pixels, above the ${MAX_DOCUMENT_IMAGE_PIXELS}-pixel limit per document`);
   }
-  for (const { bytes } of images) {
-    try {
-      await sharp(bytes, { limitInputPixels: MAX_IMAGE_PIXELS }).raw().toBuffer();
-    } catch (err) {
-      throw new ConversionFailedError(`HTML embedded image could not be decoded: ${(err as Error).message}`);
-    }
+  let rewritten = staged;
+  for (const { url, bytes, format } of images) {
+    const pngDataUri = await decodeOrTranscodeEmbeddedImage(bytes, format);
+    if (pngDataUri !== null) rewritten = rewritten.replaceAll(url, pngDataUri);
   }
+  return rewritten;
 }
 
 /** The staged document and the warnings for what was left out of it: images one by one, then elements and references. */
@@ -474,7 +527,6 @@ export async function stageHtmlForNativeEngine(html: string, policy: HtmlResourc
   const omitted = new OmittedExternalImages();
   await loadExternalImages(document.root, policy, omitted, HTML_IMAGE_CAPS);
   const writer = new StagedHtmlWriter(document.title);
-  const staged = writer.write(document.root);
-  await verifyEmbeddedImages(writer.images);
+  const staged = await verifyEmbeddedImages(writer.write(document.root), writer.images);
   return { html: staged, warnings: [...omitted.warnings(), ...writer.omitted.warnings()] };
 }
