@@ -272,8 +272,8 @@ describe('Prior invisible OCR (3 Tr) layer stripping and ocrMode=redo (ocr-strip
       expect(extracted.toUpperCase()).toContain('FRESH');
       expect(extracted).toContain('7741');
 
-      // Direct createLosslessSandwichPdfFromPdf in 'force' mode also strips prior 3 Tr layers without stacking 2x
-      const forcedOnce = await createLosslessSandwichPdfFromPdf(
+      // Direct createLosslessSandwichPdfFromPdf in 'redo' mode strips prior 3 Tr layers, whereas default leaves both readable
+      const redoneDirect = await createLosslessSandwichPdfFromPdf(
         staleSandwich,
         new Map([
           [
@@ -299,11 +299,11 @@ describe('Prior invisible OCR (3 Tr) layer stripping and ocrMode=redo (ocr-strip
             },
           ],
         ]),
-        { ocrMode: 'force' }
+        { ocrMode: 'redo' }
       );
-      const forcedText = extractPdfText(forcedOnce);
-      expect(forcedText).not.toContain('STALE');
-      expect(forcedText).toContain('REPLACED CLEAN 8888');
+      const redoneText = extractPdfText(redoneDirect);
+      expect(redoneText).not.toContain('STALE');
+      expect(redoneText).toContain('REPLACED CLEAN 8888');
     },
     TIMEOUT_MS
   );
