@@ -36,17 +36,17 @@ function ToolMenuSection({
   const Icon = GROUP_ICONS[groupKey];
   return (
     <div className="flex flex-col min-w-0">
-      <div className="flex items-center gap-2.5 mb-1.5">
-        <Icon aria-hidden={true} className="size-4 text-ink-3 shrink-0" />
-        <span className="flex-1 pb-2 border-b border-rule text-sm font-medium text-ink truncate">{tGroups(groupKey)}</span>
+      <div className="w-full flex items-center gap-1.5 px-2.5 py-1.5 mb-1.5 border-b border-rule">
+        <Icon aria-hidden={true} className="size-4 me-1 text-ink-3 shrink-0" />
+        <span className="text-sm font-semibold text-ink truncate">{tGroups(groupKey)}</span>
       </div>
-      <ul className={columns === 2 ? 'ps-[26px] grid grid-cols-2 gap-x-5 gap-y-0.5' : 'ps-[26px] flex flex-col gap-0.5'}>
+      <ul className={columns === 2 ? 'ps-9 grid grid-cols-2 gap-x-5 gap-y-0.5' : 'ps-9 flex flex-col gap-0.5'}>
         {links.map((tool) => (
           <li key={tool.key} className="min-w-0">
             <Link
               href={tool.href}
               onClick={onSelect}
-              className="w-full min-h-[32px] px-2 -mx-2 py-1.5 rounded-xs text-sm font-medium text-ink-2 hover:text-ink hover:bg-sunken/50 inline-flex items-center transition-colors"
+              className="w-full min-h-[32px] px-2 -mx-2 py-1.5 rounded-xs text-sm font-medium text-ink-3 hover:text-ink hover:bg-sunken/50 inline-flex items-center transition-colors"
             >
               {tLinks(tool.key as Parameters<typeof tLinks>[0])}
             </Link>

@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useTranslations, type Messages } from 'next-intl';
-import { ChevronDown, Moon, Sun, X } from 'lucide-react';
+import { Archive, ArrowRightLeft, ChevronDown, FileText, Minimize2, Moon, Sun, X } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useModalDialog } from '@/hooks/useModalDialog';
 import { useThemeToggle } from '@/hooks/useThemeToggle';
@@ -11,9 +11,16 @@ import type { SessionUser } from '@/lib/viewer-plan';
 import BrandLogo from './BrandLogo';
 import UserNav from './UserNav';
 import LanguageSwitcher from './LanguageSwitcher';
-import { API_LINKS, primaryLinksFor, TOOL_GROUPS, type SiteLink } from './site-links';
+import { API_LINKS, primaryLinksFor, TOOL_GROUPS, type SiteLink, type ToolGroup } from './site-links';
 
 type LabelledLink = SiteLink & { key: keyof Messages['siteLinks'] };
+
+const GROUP_ICONS: Readonly<Record<ToolGroup['key'], React.ComponentType<{ className?: string; 'aria-hidden'?: boolean }>>> = {
+  converters: ArrowRightLeft,
+  pdfTools: FileText,
+  archives: Archive,
+  compressImages: Minimize2,
+};
 
 const FOCUSABLE = 'a[href], button:not([disabled]), select, input, [tabindex]:not([tabindex="-1"])';
 const ROW_CLASS =
@@ -41,6 +48,66 @@ function trapFocus(event: KeyboardEvent<HTMLDialogElement>, onEscape: () => void
   }
 }
 
+function MobileToolSubgroup({
+  groupKey,
+  label,
+  prependHomeLabel,
+  links,
+  onNavigate,
+}: Readonly<{
+  groupKey: ToolGroup['key'];
+  label: string;
+  prependHomeLabel?: string;
+  links: readonly SiteLink[];
+  onNavigate: () => void;
+}>) {
+  const tLinks = useTranslations('siteLinks');
+  const [groupOpen, setGroupOpen] = useState(true);
+  const Icon = GROUP_ICONS[groupKey];
+  const subId = `mobile-tools-${groupKey}`;
+  return (
+    <div>
+      <button
+        type="button"
+        aria-expanded={groupOpen}
+        aria-controls={subId}
+        onClick={() => setGroupOpen((v) => !v)}
+        className="min-h-[44px] w-full px-2.5 inline-flex items-center justify-between gap-2 rounded-xs text-sm font-semibold text-ink hover:bg-sunken transition-colors cursor-pointer"
+      >
+        <span className="inline-flex items-center gap-2 min-w-0">
+          <Icon aria-hidden={true} className="size-4 text-ink-3 shrink-0" />
+          <span className="truncate">{label}</span>
+        </span>
+        <ChevronDown aria-hidden={true} className={`size-4 text-ink-3 shrink-0 transition-transform duration-150 ${groupOpen ? 'rotate-180' : ''}`} />
+      </button>
+      <ul id={subId} hidden={!groupOpen} className="ms-[18px] border-s border-rule ps-3 py-0.5">
+        {prependHomeLabel && (
+          <li>
+            <Link
+              href="/"
+              onClick={onNavigate}
+              className="min-h-[44px] w-full px-2.5 inline-flex items-center rounded-xs text-sm font-medium text-ink-3 hover:text-ink hover:bg-sunken transition-colors"
+            >
+              {prependHomeLabel}
+            </Link>
+          </li>
+        )}
+        {links.map((link) => (
+          <li key={link.key}>
+            <Link
+              href={link.href}
+              onClick={onNavigate}
+              className="min-h-[44px] w-full px-2.5 inline-flex items-center rounded-xs text-sm font-medium text-ink-3 hover:text-ink hover:bg-sunken transition-colors"
+            >
+              {tLinks(link.key as keyof Messages['siteLinks'])}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function CollapsibleToolGroups({
   id,
   label,
@@ -48,7 +115,6 @@ function CollapsibleToolGroups({
 }: Readonly<{ id: string; label: string; onNavigate: () => void }>) {
   const tHeader = useTranslations('header');
   const tGroups = useTranslations('header.toolGroups');
-  const tLinks = useTranslations('siteLinks');
   const [open, setOpen] = useState(false);
   return (
     <div>
@@ -57,28 +123,21 @@ function CollapsibleToolGroups({
         aria-expanded={open}
         aria-controls={id}
         onClick={() => setOpen((value) => !value)}
-        className={`${ROW_CLASS} justify-between cursor-pointer`}
+        className={`${ROW_CLASS} justify-between cursor-pointer ${open ? 'text-ink' : ''}`}
       >
         <span>{label}</span>
         <ChevronDown aria-hidden="true" className={`size-5 transition-transform duration-150 ${open ? 'rotate-180' : ''}`} />
       </button>
-      <div id={id} hidden={!open} className="ms-3 border-s border-rule ps-2 space-y-2 py-1">
-        <Link href="/" onClick={onNavigate} className={`${ROW_CLASS} text-sm font-semibold`}>
-          {tHeader('fileConverterTitle')}
-        </Link>
-        {TOOL_GROUPS.map((group) => (
-          <div key={group.key}>
-            <p className="px-3 pt-1.5 pb-0.5 text-xs font-semibold text-ink-3">{tGroups(group.key)}</p>
-            <ul>
-              {group.links.map((link) => (
-                <li key={link.key}>
-                  <Link href={link.href} onClick={onNavigate} className={`${ROW_CLASS} text-sm`}>
-                    {tLinks(link.key as keyof Messages['siteLinks'])}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </div>
+      <div id={id} hidden={!open} className="ms-3.5 border-s border-rule ps-2 space-y-1 py-1">
+        {TOOL_GROUPS.map((group, idx) => (
+          <MobileToolSubgroup
+            key={group.key}
+            groupKey={group.key}
+            label={tGroups(group.key)}
+            prependHomeLabel={idx === 0 ? tHeader('fileConverterTitle') : undefined}
+            links={group.links}
+            onNavigate={onNavigate}
+          />
         ))}
       </div>
     </div>
