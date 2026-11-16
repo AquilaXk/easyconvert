@@ -435,15 +435,6 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         tesseract-ocr-eng \
         tesseract-ocr-kor \
         tesseract-ocr-jpn \
-        tesseract-ocr-chi-sim \
-        tesseract-ocr-chi-tra \
-        tesseract-ocr-deu \
-        tesseract-ocr-fra \
-        tesseract-ocr-spa \
-        tesseract-ocr-por \
-        tesseract-ocr-ita \
-        tesseract-ocr-rus \
-        tesseract-ocr-vie \
         qpdf \
         ghostscript \
         librsvg2-bin \
@@ -685,9 +676,7 @@ RUN scratch="$(mktemp -d)" \
     && mkdir "${scratch}/config" "${scratch}/cache" "${scratch}/tmp" \
     && python3 -c 'import chm.chm' \
     && printf 'Hello\n' > "${scratch}/book.txt" \
-    && export HOME="${scratch}" QT_QPA_PLATFORM=offscreen QTWEBENGINE_DISABLE_SANDBOX=1 \
-        QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu --disable-dev-shm-usage" DBUS_SESSION_BUS_ADDRESS=disabled: \
-        CALIBRE_CONFIG_DIRECTORY="${scratch}/config" \
+    && export HOME="${scratch}" QT_QPA_PLATFORM=offscreen QTWEBENGINE_DISABLE_SANDBOX=1 QTWEBENGINE_CHROMIUM_FLAGS=--disable-dev-shm-usage CALIBRE_CONFIG_DIRECTORY="${scratch}/config" \
         CALIBRE_CACHE_DIRECTORY="${scratch}/cache" CALIBRE_TEMP_DIR="${scratch}/tmp" \
     && timeout 120 ebook-convert "${scratch}/book.txt" "${scratch}/book.tcr" > /dev/null \
     && for target in epub pdf rtf txt; do \
@@ -741,6 +730,22 @@ RUN node -e "const ort = require('onnxruntime-node'); if (typeof ort.InferenceSe
 RUN mkdir -p /shared/storage /tmp /home/easyconvert \
     && chown -R easyconvert:easyconvert /app /shared/storage /tmp /home/easyconvert \
     && chmod 0750 /tmp /shared/storage /home/easyconvert
+
+# 3b. Additional global Tesseract tessdata_fast language packs (Apache-2.0; installed in their own layer so base engine layers stay cached,
+# and before step 4 so /usr/share/doc/tesseract-ocr-*/copyright and dpkg-query tool-versions.txt record every language package).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        tesseract-ocr-chi-sim \
+        tesseract-ocr-chi-tra \
+        tesseract-ocr-deu \
+        tesseract-ocr-fra \
+        tesseract-ocr-spa \
+        tesseract-ocr-por \
+        tesseract-ocr-ita \
+        tesseract-ocr-rus \
+        tesseract-ocr-vie \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 # 4. Copy system copyright notices and third-party notices
 RUN mkdir -p /licenses \

@@ -180,6 +180,7 @@ function reconcile(pages: (Listed[] | Error | 'hang')[], options: ReconcileOptio
 }
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'], now: NOW });
   run = crypto.randomUUID().slice(0, 8);
   redisUserStore.resetStore();
   redisKeyStore.resetStore();
@@ -194,6 +195,7 @@ afterEach(async () => {
     await redisUserStore.deleteUser(userId);
   }
   vi.restoreAllMocks();
+  vi.useRealTimers();
   getBillingProvider.mockReset();
 });
 
