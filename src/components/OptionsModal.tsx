@@ -7,9 +7,9 @@ import { ConversionOptions } from '@/lib/types';
 import { useModalDialog } from '@/hooks/useModalDialog';
 import {
   computeVisibleSections,
-  DEFAULT_OPTIONS,
   getPasswordValidationError,
   sanitizeOptionsForPair,
+  startingOptionsFor,
   type VisibleOptionsSections,
 } from './workbench/options/options-capabilities';
 import { VectorizeOptionsSection } from './vectorize/VectorizeOptionsSection';
@@ -20,8 +20,6 @@ import {
   DocumentOptionsSection,
   ImageOptionsSection,
   PasswordOptionsSection,
-  PdfProtectSection,
-  PdfWatermarkSection,
   VideoOptionsSection,
 } from './workbench/OptionsSections';
 
@@ -29,6 +27,7 @@ export interface OptionsModalProps {
   filename: string;
   sourceFormat: string;
   targetFormat: string;
+  operation?: string;
   initialOptions: ConversionOptions;
   onSave: (options: ConversionOptions) => void;
   onClose: () => void;
@@ -41,7 +40,6 @@ interface ModalSectionGroupProps {
 }
 
 function DocumentAndSecurityGroup({ visible, options, onChange }: Readonly<ModalSectionGroupProps>) {
-  const pdfaActive = Boolean(options.pdfa?.conformance);
   return (
     <>
       {visible.showImage && (
@@ -58,12 +56,6 @@ function DocumentAndSecurityGroup({ visible, options, onChange }: Readonly<Modal
           canConfigurePdfOptimize={visible.canConfigurePdfOptimize}
           canConfigurePdfa={visible.canConfigurePdfa}
         />
-      )}
-      {visible.canConfigurePdfWatermark && (
-        <PdfWatermarkSection options={options} onChange={onChange} />
-      )}
-      {visible.canConfigurePdfProtect && (
-        <PdfProtectSection options={options} onChange={onChange} pdfaActive={pdfaActive} />
       )}
       {visible.passwordMode && (
         <PasswordOptionsSection
@@ -110,18 +102,25 @@ function MediaAndDataGroup({ visible, options, onChange }: Readonly<ModalSection
   );
 }
 
+function resolveEffectiveOperation(operation: string | undefined, initialOptions: ConversionOptions): string | undefined {
+  if (operation) return operation;
+  if (initialOptions.pdfa !== undefined) return 'pdfa';
+  return initialOptions.optimize?.profile ? 'compress' : undefined;
+}
+
 export default function OptionsModal({
-  filename, sourceFormat, targetFormat, initialOptions, onSave, onClose,
+  filename, sourceFormat, targetFormat, operation, initialOptions, onSave, onClose,
 }: Readonly<OptionsModalProps>) {
   const t = useTranslations('options.modal');
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const effectiveOperation = resolveEffectiveOperation(operation, initialOptions);
   const [options, setOptions] = useState<ConversionOptions>(() =>
     sanitizeOptionsForPair(initialOptions, sourceFormat, targetFormat)
   );
 
   useModalDialog(dialogRef, true, onClose);
 
-  const visible = computeVisibleSections(sourceFormat, targetFormat);
+  const visible = computeVisibleSections(sourceFormat, targetFormat, effectiveOperation);
   const targetLabel = targetFormat ? targetFormat.toUpperCase() : t('targetFallback');
   const hasInvalidPassword =
     getPasswordValidationError(sourceFormat, targetFormat, options.password) !== null;
@@ -171,7 +170,7 @@ export default function OptionsModal({
       <div className="px-5 sm:px-6 py-4 bg-sunken/50 border-t border-rule rounded-b-xs flex items-center justify-between gap-3">
         <button
           type="button"
-          onClick={() => setOptions({ ...DEFAULT_OPTIONS })}
+          onClick={() => setOptions(startingOptionsFor(effectiveOperation, sourceFormat, targetFormat))}
           className="transition-colors min-h-[44px] px-4 rounded-xs border border-rule text-sm font-medium text-ink-2 hover:text-ink hover:border-accent cursor-pointer"
         >
           {t('reset')}

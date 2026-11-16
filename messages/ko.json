@@ -2,24 +2,6 @@
   "apiDocs": {
     "metaTitle": "{topic} | EasyConvert API 문서",
     "toc": "이 페이지의 내용",
-    "namedTasks": {
-      "heading": "이름 붙인 단계",
-      "lead": "POST /api/v1/jobs에 tasks 객체를 보내 여러 단계를 한 작업으로 실행하고 이름별로 결과를 확인합니다.",
-      "requestTitle": "요청 tasks 객체",
-      "requestLead": "<code>tasks</code>의 각 키는 단계 이름과 실행할 작업, 입력으로 쓸 이전 단계를 지정합니다.",
-      "responseTitle": "작업 응답",
-      "responseLead": "<code>GET /api/v1/jobs/'{id}'</code>를 조회하면 각 단계의 상태와 결과 파일 키를 돌려줍니다.",
-      "refusalsTitle": "422 검증 오류",
-      "refusalsLead": "잘못된 단계 구성은 HTTP 422 Problem Details로 거부됩니다.",
-      "refusalCode": "오류 코드",
-      "refusals": {
-        "unknownInput": "tasks에 없는 단계 이름을 input으로 지정했습니다.",
-        "cycle": "단계들이 서로 순환 참조하고 있습니다.",
-        "invalidName": "단계 이름에 영문, 숫자, 하이픈, 밑줄 밖의 문자가 들어 있습니다.",
-        "countExceeded": "단계 수가 계정 한도를 넘었습니다.",
-        "withoutConversion": "변환이나 도구 단계가 하나도 없습니다."
-      }
-    },
     "nav": {
       "label": "API 문서",
       "menu": "문서 메뉴",
@@ -805,6 +787,8 @@
     "primaryNavLabel": "메인 메뉴",
     "mobileNavLabel": "모바일 메인 메뉴",
     "tools": "도구",
+    "fileConverterTitle": "파일 변환기",
+    "fileConverterDescription": "문서, 이미지, 오디오, 동영상, 압축 파일 등 300개 이상의 형식을 변환합니다.",
     "toolGroups": {
       "converters": "변환기",
       "pdfTools": "PDF 도구",
@@ -1098,8 +1082,7 @@
         "inside": "안쪽에 맞춤"
       },
       "quality": "압축 품질",
-      "stripMetadata": "EXIF, GPS, 카메라 메타데이터 제거",
-      "optimizePng": "PNG 파일 크기 최적화"
+      "stripMetadata": "EXIF, GPS, 카메라 메타데이터 제거"
     },
     "video": {
       "heading": "동영상 스트림 설정",
@@ -1177,29 +1160,11 @@
         "max": "최대 압축 (72 DPI)"
       },
       "pdfa": "PDF/A 적합성",
-      "pdfaAuto": "사용 안 함",
       "pdfaProfiles": {
         "pdfa-1b": "PDF/A-1b",
-        "pdfa-2b": "PDF/A-2b (투명도 지원)",
-        "pdfa-3b": "PDF/A-3b (내장 파일 포함)"
-      },
-      "watermark": "PDF 워터마크",
-      "watermarkText": "워터마크 텍스트",
-      "watermarkTextPlaceholder": "기밀, 초안 등",
-      "watermarkPosition": "위치",
-      "watermarkLayer": "레이어",
-      "watermarkLayerOver": "본문 위",
-      "watermarkLayerUnder": "본문 아래",
-      "protect": "PDF 보안",
-      "protectUserPassword": "사용자 비밀번호(열기)",
-      "protectOwnerPassword": "권한 비밀번호",
-      "protectKeyLength": "암호화 키 길이",
-      "protectPdfaConflict": "PDF/A 표준 규격(ISO 19005)에 따라 PDF/A 적합성을 선택하면 암호화 보안을 적용할 수 없습니다.",
-      "protectPermissions": "권한",
-      "protectPermPrint": "인쇄 허용",
-      "protectPermModify": "수정 허용",
-      "protectPermCopy": "복사 허용",
-      "protectPermAnnotate": "주석 작성 허용"
+        "pdfa-2b": "PDF/A-2b",
+        "pdfa-3b": "PDF/A-3b"
+      }
     },
     "password": {
       "zipConstraint": "ZIP 비밀번호는 영문, 숫자, 기호, 공백으로 최대 99자까지 쓸 수 있습니다.",

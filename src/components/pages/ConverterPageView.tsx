@@ -155,6 +155,7 @@ function ConversionPageView({ parsed, dailyLimit }: Readonly<{ parsed: ParsedSlu
               void handleDownloadAllZip();
             }}
             isConverting={isConverting}
+            operation={operation}
             zipError={zipError}
             onDismissZipError={dismissZipError}
           />

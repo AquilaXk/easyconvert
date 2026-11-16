@@ -26,6 +26,7 @@ export interface ConversionQueueProps {
   onImportFile: (file: File) => void;
   onDownloadAllZip: () => void;
   isConverting: boolean;
+  operation?: string;
   zipError?: boolean;
   onDismissZipError?: () => void;
 }
@@ -235,7 +236,7 @@ function deriveQueueViewState(
 export default function ConversionQueue({
   items, onRemoveItem, onClearAll, onUpdateTargetFormat, onUpdateAllTargets,
   onUpdateOptions, onConvertAll, onAddMoreFiles, onImportFile, onDownloadAllZip,
-  isConverting, zipError, onDismissZipError,
+  isConverting, operation, zipError, onDismissZipError,
 }: Readonly<ConversionQueueProps>) {
   const t = useTranslations('queue');
   const [batchTargetLabel, setBatchTargetLabel] = useState<string>('');
@@ -287,7 +288,7 @@ export default function ConversionQueue({
         <OptionsModal
           key={`${currentOptionsItem.id}:${currentOptionsItem.sourceFormat}:${currentOptionsItem.targetFormat}`}
           filename={currentOptionsItem.name} sourceFormat={currentOptionsItem.sourceFormat}
-          targetFormat={currentOptionsItem.targetFormat} initialOptions={currentOptionsItem.options}
+          targetFormat={currentOptionsItem.targetFormat} operation={operation} initialOptions={currentOptionsItem.options}
           onSave={(opts) => { onUpdateOptions(currentOptionsItem.id, opts); setActiveOptionsModalId(null); }}
           onClose={() => setActiveOptionsModalId(null)}
         />

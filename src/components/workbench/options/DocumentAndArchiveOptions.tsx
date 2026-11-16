@@ -120,17 +120,15 @@ function PdfOptimizeAndPdfaFields({
           <label htmlFor="opt-pdf-pdfa" className={LABEL_CLASS}>{t('pdfa')}</label>
           <select
             id="opt-pdf-pdfa"
-            value={options.pdfa?.conformance ?? ''}
+            value={options.pdfa?.conformance ?? 'pdfa-2b'}
             onChange={(e) =>
               onChange({
                 ...options,
-                pdfa: e.target.value ? { conformance: e.target.value as 'pdfa-1b' | 'pdfa-2b' | 'pdfa-3b' } : undefined,
-                ...(e.target.value ? { protect: undefined } : {}),
+                pdfa: { conformance: e.target.value as 'pdfa-1b' | 'pdfa-2b' | 'pdfa-3b' },
               })
             }
             className={SELECT_CLASS}
           >
-            <option value="">{t('pdfaAuto')}</option>
             <option value="pdfa-1b">{t('pdfaProfiles.pdfa-1b')}</option>
             <option value="pdfa-2b">{t('pdfaProfiles.pdfa-2b')}</option>
             <option value="pdfa-3b">{t('pdfaProfiles.pdfa-3b')}</option>
@@ -138,84 +136,6 @@ function PdfOptimizeAndPdfaFields({
         </div>
       )}
     </div>
-  );
-}
-
-export function PdfWatermarkSection({ options, onChange }: Readonly<SectionProps>) {
-  const t = useTranslations('options.document');
-  const wm = options.watermark ?? {};
-  return (
-    <section className="space-y-4">
-      <h3 className={SECTION_HEADING_CLASS}>{t('watermark')}</h3>
-      <div>
-        <label htmlFor="opt-pdf-wm-text" className={LABEL_CLASS}>{t('watermarkText')}</label>
-        <input
-          id="opt-pdf-wm-text"
-          type="text"
-          value={wm.text ?? ''}
-          onChange={(e) =>
-            onChange({
-              ...options,
-              watermark: e.target.value ? { ...wm, text: e.target.value } : undefined,
-            })
-          }
-          placeholder={t('watermarkTextPlaceholder')}
-          className={INPUT_CLASS}
-        />
-      </div>
-    </section>
-  );
-}
-
-export function PdfProtectSection({ options, onChange, pdfaActive }: Readonly<SectionProps & { pdfaActive: boolean }>) {
-  const t = useTranslations('options.document');
-  const protect = options.protect ?? {};
-  if (pdfaActive) {
-    return (
-      <section className="space-y-2">
-        <h3 className={SECTION_HEADING_CLASS}>{t('protect')}</h3>
-        <p className="text-xs text-ink-3">{t('protectPdfaConflict')}</p>
-      </section>
-    );
-  }
-  return (
-    <section className="space-y-4">
-      <h3 className={SECTION_HEADING_CLASS}>{t('protect')}</h3>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div>
-          <label htmlFor="opt-pdf-protect-user" className={LABEL_CLASS}>{t('protectUserPassword')}</label>
-          <input
-            id="opt-pdf-protect-user"
-            type="password"
-            autoComplete="off"
-            value={protect.userPassword ?? ''}
-            onChange={(e) =>
-              onChange({
-                ...options,
-                protect: { ...protect, userPassword: e.target.value || undefined },
-              })
-            }
-            className={INPUT_CLASS}
-          />
-        </div>
-        <div>
-          <label htmlFor="opt-pdf-protect-owner" className={LABEL_CLASS}>{t('protectOwnerPassword')}</label>
-          <input
-            id="opt-pdf-protect-owner"
-            type="password"
-            autoComplete="off"
-            value={protect.ownerPassword ?? ''}
-            onChange={(e) =>
-              onChange({
-                ...options,
-                protect: { ...protect, ownerPassword: e.target.value || undefined },
-              })
-            }
-            className={INPUT_CLASS}
-          />
-        </div>
-      </div>
-    </section>
   );
 }
 

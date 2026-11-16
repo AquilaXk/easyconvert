@@ -2,24 +2,6 @@
   "apiDocs": {
     "metaTitle": "{topic} | EasyConvert API documentation",
     "toc": "On this page",
-    "namedTasks": {
-      "heading": "Named tasks",
-      "lead": "Send a tasks object to POST /api/v1/jobs to run several steps in one job and read each step's result by name.",
-      "requestTitle": "Request tasks object",
-      "requestLead": "Each key in <code>tasks</code> names a step, its operation and the earlier step it reads from.",
-      "responseTitle": "Job response",
-      "responseLead": "Polling <code>GET /api/v1/jobs/'{id}'</code> reports the status and output key of each named task.",
-      "refusalsTitle": "422 validation errors",
-      "refusalsLead": "Invalid task graphs are refused with HTTP 422 Problem Details:",
-      "refusalCode": "Code",
-      "refusals": {
-        "unknownInput": "A task names an input step that is not in tasks.",
-        "cycle": "Tasks depend on one another in a loop.",
-        "invalidName": "A task name uses characters outside letters, digits, hyphens and underscores.",
-        "countExceeded": "The job lists more tasks than the account limit allows.",
-        "withoutConversion": "The job has no conversion or tool step."
-      }
-    },
     "nav": {
       "label": "API documentation",
       "menu": "Documentation menu",
@@ -805,6 +787,8 @@
     "primaryNavLabel": "Primary",
     "mobileNavLabel": "Mobile primary",
     "tools": "Tools",
+    "fileConverterTitle": "File Converter",
+    "fileConverterDescription": "Convert between 300+ formats: documents, images, audio, video and archives.",
     "toolGroups": {
       "converters": "Converters",
       "pdfTools": "PDF Tools",
@@ -1098,8 +1082,7 @@
         "inside": "Fit Inside"
       },
       "quality": "Quality",
-      "stripMetadata": "Strip EXIF, GPS, and camera metadata",
-      "optimizePng": "Optimize PNG file size"
+      "stripMetadata": "Strip EXIF, GPS, and camera metadata"
     },
     "video": {
       "heading": "Video settings",
@@ -1177,29 +1160,11 @@
         "max": "Maximum compression (72 DPI)"
       },
       "pdfa": "PDF/A Conformance",
-      "pdfaAuto": "None",
       "pdfaProfiles": {
         "pdfa-1b": "PDF/A-1b",
-        "pdfa-2b": "PDF/A-2b (transparency)",
-        "pdfa-3b": "PDF/A-3b (embedded files)"
-      },
-      "watermark": "PDF Watermark",
-      "watermarkText": "Watermark Text",
-      "watermarkTextPlaceholder": "CONFIDENTIAL, DRAFT, etc.",
-      "watermarkPosition": "Position",
-      "watermarkLayer": "Layer",
-      "watermarkLayerOver": "Over content",
-      "watermarkLayerUnder": "Under content",
-      "protect": "PDF Protection",
-      "protectUserPassword": "User Password (to open)",
-      "protectOwnerPassword": "Permissions Password",
-      "protectKeyLength": "Encryption Key Length",
-      "protectPdfaConflict": "Protection is disabled when PDF/A conformance is selected (ISO 19005 requirement).",
-      "protectPermissions": "Permissions",
-      "protectPermPrint": "Allow printing",
-      "protectPermModify": "Allow modifications",
-      "protectPermCopy": "Allow copying text/images",
-      "protectPermAnnotate": "Allow annotations"
+        "pdfa-2b": "PDF/A-2b",
+        "pdfa-3b": "PDF/A-3b"
+      }
     },
     "password": {
       "zipConstraint": "ZIP passwords support up to 99 printable ASCII characters.",

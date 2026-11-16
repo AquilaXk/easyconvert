@@ -46,6 +46,7 @@ function CollapsibleToolGroups({
   label,
   onNavigate,
 }: Readonly<{ id: string; label: string; onNavigate: () => void }>) {
+  const tHeader = useTranslations('header');
   const tGroups = useTranslations('header.toolGroups');
   const tLinks = useTranslations('siteLinks');
   const [open, setOpen] = useState(false);
@@ -62,6 +63,9 @@ function CollapsibleToolGroups({
         <ChevronDown aria-hidden="true" className={`size-5 transition-transform duration-150 ${open ? 'rotate-180' : ''}`} />
       </button>
       <div id={id} hidden={!open} className="ms-3 border-s border-rule ps-2 space-y-2 py-1">
+        <Link href="/" onClick={onNavigate} className={`${ROW_CLASS} text-sm font-semibold`}>
+          {tHeader('fileConverterTitle')}
+        </Link>
         {TOOL_GROUPS.map((group) => (
           <div key={group.key}>
             <p className="px-3 pt-1.5 pb-0.5 text-xs font-semibold text-ink-3">{tGroups(group.key)}</p>

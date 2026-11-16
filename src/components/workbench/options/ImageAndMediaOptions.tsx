@@ -202,20 +202,6 @@ export function ImageOptionsSection({ options, onChange, targetFormat }: Readonl
         <input id="opt-strip-metadata" type="checkbox" checked={Boolean(options.stripMetadata)} onChange={(e) => onChange({ ...options, stripMetadata: e.target.checked ? true : undefined })} className="size-4 cursor-pointer" />
         <label htmlFor="opt-strip-metadata" className="text-sm text-ink cursor-pointer select-none">{t('stripMetadata')}</label>
       </div>
-      {targetFormat.toLowerCase() === 'png' && (
-        <div className="flex items-center gap-3 min-h-[44px]">
-          <input
-            id="opt-optimize-png"
-            type="checkbox"
-            checked={Boolean(options.optimizePng)}
-            onChange={(e) => onChange({ ...options, optimizePng: e.target.checked ? true : undefined })}
-            className="size-4 cursor-pointer"
-          />
-          <label htmlFor="opt-optimize-png" className="text-sm text-ink cursor-pointer select-none">
-            {t('optimizePng')}
-          </label>
-        </div>
-      )}
     </section>
   );
 }

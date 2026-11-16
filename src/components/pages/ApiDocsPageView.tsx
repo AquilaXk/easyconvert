@@ -8,7 +8,6 @@ import IntroductionGuide from '@/components/api-docs/IntroductionGuide';
 import OperationSection from '@/components/api-docs/OperationSection';
 import QuickstartGuide from '@/components/api-docs/QuickstartGuide';
 import TableOfContents, { type TocItem } from '@/components/api-docs/TableOfContents';
-import NamedTasksSection from '@/components/api-docs/NamedTasksSection';
 import TopicNav from '@/components/api-docs/TopicNav';
 import { API_DOC_TOPIC_BY_SLUG, type ApiDocTopicSlug } from '@/components/api-docs/topics';
 import { siteMetadataBase } from '@/i18n/metadata';
@@ -28,17 +27,8 @@ export default function ApiDocsPageView({ topic }: Readonly<{ topic: ApiDocTopic
     body = <QuickstartGuide origin={origin} />;
     toc = guideToc(QUICKSTART_SECTIONS, (id) => t(`quickstart.headings.${id}` as 'quickstart.headings.create-a-key'));
   } else {
-    const isJobs = topic === 'jobs';
-    body = (
-      <>
-        {operations.map((operation) => <OperationSection key={operation.anchor} operation={operation} origin={origin} />)}
-        {isJobs && <NamedTasksSection />}
-      </>
-    );
+    body = operations.map((operation) => <OperationSection key={operation.anchor} operation={operation} origin={origin} />);
     toc = operations.map((operation) => ({ id: operation.anchor, label: t(`operations.${operation.anchor}.title`) }));
-    if (isJobs) {
-      toc.push({ id: 'named-tasks', label: t('namedTasks.heading') });
-    }
   }
 
   return (

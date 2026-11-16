@@ -403,3 +403,43 @@ describe('download all of an unpacked archive', () => {
     await vi.waitFor(() => expect(bar().querySelector('[role=alert]')?.textContent).toBe('Could not build the ZIP archive.'));
   });
 });
+
+describe('operation-scoped conversion OptionsModal', () => {
+  const rowOptionsButton = () =>
+    [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.trim() === 'Options')!;
+
+  it('keeps ordinary jpg-to-pdf OptionsModal free of PDF/A, PDF optimization, watermark, and encryption controls', async () => {
+    const host = await mountSlug(ConverterPageView, 'jpg-to-pdf');
+    await inQueue(host, [new File(['jpeg-bytes'], 'photo.jpg', { type: 'image/jpeg' })]);
+    await vi.waitFor(() => expect(rowOptionsButton()).toBeDefined());
+    rowOptionsButton().click();
+    await vi.waitFor(() => expect(document.querySelector('dialog')).not.toBeNull());
+    expect(document.querySelector('#opt-doc-orientation')).not.toBeNull();
+    expect(document.querySelector('#opt-pdf-pdfa')).toBeNull();
+    expect(document.querySelector('#opt-pdf-optimize')).toBeNull();
+    expect(document.querySelector('dialog input[type=password]')).toBeNull();
+  });
+
+  it('exposes PDF/A conformance on pdfa-converter (defaulting to PDF/A-2b) and PDF optimization on compress-pdf only', async () => {
+    const pdfaHost = await mountSlug(ConverterPageView, 'pdfa-converter');
+    await inQueue(pdfaHost, [pdf('archive.pdf')]);
+    await vi.waitFor(() => expect(rowOptionsButton()).toBeDefined());
+    rowOptionsButton().click();
+    const pdfaSelect = await vi.waitFor(() => {
+      const el = document.querySelector<HTMLSelectElement>('#opt-pdf-pdfa');
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    expect(pdfaSelect.value).toBe('pdfa-2b');
+    expect(document.querySelector('#opt-pdf-optimize')).toBeNull();
+  });
+
+  it('exposes PDF optimization profiles on compress-pdf without PDF/A conformance', async () => {
+    const compressHost = await mountSlug(ConverterPageView, 'compress-pdf');
+    await inQueue(compressHost, [pdf('scan.pdf')]);
+    await vi.waitFor(() => expect(rowOptionsButton()).toBeDefined());
+    rowOptionsButton().click();
+    await vi.waitFor(() => expect(document.querySelector('#opt-pdf-optimize')).not.toBeNull());
+    expect(document.querySelector('#opt-pdf-pdfa')).toBeNull();
+  });
+});
