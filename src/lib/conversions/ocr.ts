@@ -28,6 +28,7 @@ import {
   OcrEngineFallback,
 } from './ocr-pdf-combiner';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-sandwich';
+import { hasUncoveredRuledTableInk } from './ocr-ruled-table';
 import { openPdfPageRenderer } from './pdf-page-render';
 import { OcrWorkBudget, type OcrRescueGate } from './ocr-work-budget';
 import {
@@ -535,6 +536,10 @@ async function recognizeAttempt(attempt: RecognitionAttempt): Promise<Recognized
     plain.prepared.unevenBackground >= OCR_UNEVEN_BACKGROUND_RATIO ||
     readingQuality(plain.page.result) < qualityTrigger;
   if (!needed) {
+    if (attempt.onnxSecondReading && plain.uncoveredRuledTable) {
+      const onnxPage = await readSecondTimeWithOnnx(attempt.onnxSecondReading, plain.page, signal);
+      if (onnxPage) return onnxPage;
+    }
     return plain.page;
   }
   const alternatives: OcrPreprocessSteps[] = [];
@@ -560,7 +565,10 @@ async function recognizeAttempt(attempt: RecognitionAttempt): Promise<Recognized
     }
   }
   // What Tesseract's two preparations could not repair (a page of noise, a table it cannot segment) is read by the ONNX engine.
-  if (attempt.onnxSecondReading && readingQuality(best.page.result) < OCR_ONNX_RESCUE_QUALITY) {
+  if (
+    attempt.onnxSecondReading &&
+    (readingQuality(best.page.result) < OCR_ONNX_RESCUE_QUALITY || best.uncoveredRuledTable)
+  ) {
     const onnxPage = await readSecondTimeWithOnnx(attempt.onnxSecondReading, best.page, signal);
     if (onnxPage) return onnxPage;
   }
@@ -597,7 +605,7 @@ function readingEvidence(result: OcrResult): number {
 async function readPreparedPage(
   attempt: RecognitionAttempt,
   steps: OcrPreprocessSteps
-): Promise<{ page: RecognizedPage; prepared: OcrPreprocessResult }> {
+): Promise<{ page: RecognizedPage; prepared: OcrPreprocessResult; uncoveredRuledTable: boolean }> {
   const { imageBuffer, quarterTurn, tesseractLang, enginePath, language, signal } = attempt;
   signal?.throwIfAborted();
   const localLangPath = attempt.languageData.dir;
@@ -695,6 +703,8 @@ async function readPreparedPage(
           },
           prepared.geometry
         ));
+        const uncoveredRuledTable =
+          attempt.onnxSecondReading !== undefined && hasUncoveredRuledTableInk(ocrInput, lineBlocks);
         return {
           page: withPreparation(
             { result, enginePath: resolveOcrEnginePath(enginePath, 'wasm') },
@@ -703,6 +713,7 @@ async function readPreparedPage(
             bandsRead
           ),
           prepared,
+          uncoveredRuledTable,
         };
       }
     } catch (err: unknown) {
@@ -722,27 +733,29 @@ async function readPreparedPage(
   const tesseractCli = findTesseractCli();
   signal?.throwIfAborted();
   if (tesseractCli) {
-    const result = trimOverreachingWords(
-      mapOcrResultToSource(
-        await recognizeWithCli({
-          cliPath: tesseractCli,
-          tessdataDir: localLangPath,
-          tesseractLang,
-          image: ocrInput,
-          imageHeight: inputHeight,
-          textRows: inputTextRows,
-          signal,
-        }),
-        prepared.geometry
-      )
-    );
+    const cliResult = await recognizeWithCli({
+      cliPath: tesseractCli,
+      tessdataDir: localLangPath,
+      tesseractLang,
+      image: ocrInput,
+      imageHeight: inputHeight,
+      textRows: inputTextRows,
+      signal,
+    });
+    const uncoveredRuledTable =
+      attempt.onnxSecondReading !== undefined && hasUncoveredRuledTableInk(ocrInput, cliResult.lineBlocks ?? []);
+    const result = trimOverreachingWords(mapOcrResultToSource(cliResult, prepared.geometry));
     const page = withPreparation(
       { result, enginePath: resolveOcrEnginePath(enginePath, 'cli') },
       prepared,
       localLangPath,
       1
     );
-    return { page: fallback ? { ...page, result: { ...page.result, engineFallback: fallback } } : page, prepared };
+    return {
+      page: fallback ? { ...page, result: { ...page.result, engineFallback: fallback } } : page,
+      prepared,
+      uncoveredRuledTable,
+    };
   }
 
   throw new OcrEngineUnavailableError(
@@ -1015,7 +1028,7 @@ export async function performSmartMultiPagePdfOcr(
 
   const finalPdfBuffer =
     pageOcrResults.size > 0
-      ? await createLosslessSandwichPdfFromPdf(pdfBuffer, pageOcrResults)
+      ? await createLosslessSandwichPdfFromPdf(pdfBuffer, pageOcrResults, { ocrMode })
       : pdfBuffer;
 
   const combinedOcrResult = assembleCombinedOcrResult(pageOcrResults, pageAnalyses);

@@ -139,9 +139,13 @@ async function openPdfForRebuild(inputBuffer: Buffer, openedBytes: Buffer, optio
   return options.ocrEnabled ? openedBytes : openPdfForRebuilding(inputBuffer, 'unlock', editAccessOf(options));
 }
 
-async function synthesizeSearchablePdf(pdf: Buffer, pageOcrResults: Map<number, OcrResult>): Promise<Buffer> {
+async function synthesizeSearchablePdf(
+  pdf: Buffer,
+  pageOcrResults: Map<number, OcrResult>,
+  ocrMode?: string
+): Promise<Buffer> {
   try {
-    return await createLosslessSandwichPdfFromPdf(pdf, pageOcrResults);
+    return await createLosslessSandwichPdfFromPdf(pdf, pageOcrResults, { ocrMode });
   } catch (pdfErr) {
     const reason = pdfErr instanceof Error && pdfErr.message ? pdfErr.message : 'Synthesis error';
     throw new ConversionFailedError(`PDF OCR failed: Failed to synthesize lossless searchable PDF: ${reason}`);
@@ -568,7 +572,7 @@ export async function convertDocument(
         }
 
         if (pageOcrResults.size > 0) {
-          const searchablePdf = await synthesizeSearchablePdf(await openPdfForRebuild(inputBuffer, pdfBytes, options), pageOcrResults);
+          const searchablePdf = await synthesizeSearchablePdf(await openPdfForRebuild(inputBuffer, pdfBytes, options), pageOcrResults, ocrMode);
           return {
             buffer: searchablePdf,
             mimeType: 'application/pdf',

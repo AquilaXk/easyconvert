@@ -365,6 +365,7 @@ Security
 314. [Open Beta launch readiness: spent package credit debt carry-forward and chargeback checkout holds, uniform retention with immediate output deletion, SEO sitemaps, API boundary refusal codes, page CSP headers, and production Prometheus alerting](#314-open-beta-launch-readiness-spent-package-credit-debt-carry-forward-and-chargeback-checkout-holds-uniform-retention-with-immediate-output-deletion-seo-sitemaps-api-boundary-refusal-codes-page-csp-headers-and-production-prometheus-alerting)
 315. [Reference-aligned web tools expansion (10 tools), grouped Tools popover, streaming ZIP and multipart async tool jobs, graph admission class pricing and `withCreditTier` standing cache, Redis sync concurrency leases, Heckbert inverse colormap grid, corporate PUA glyph LUT, and plain-text Office routing](#315-reference-aligned-web-tools-expansion-10-tools-grouped-tools-popover-streaming-zip-and-multipart-async-tool-jobs-graph-admission-class-pricing-and-withcredittier-standing-cache-redis-sync-concurrency-leases-heckbert-inverse-colormap-grid-corporate-pua-glyph-lut-and-plain-text-office-routing)
 316. [Embedded BMP, WebP, and TIFF `data:` raster transcoding in LibreOffice HTML staging, single-parse HWP PDF routing, zero-allocation XLSX tail XML well-formedness scan, and OEB `.htm` real-world validation](#316-embedded-bmp-webp-and-tiff-data-raster-transcoding-in-libreoffice-html-staging-single-parse-hwp-pdf-routing-zero-allocation-xlsx-tail-xml-well-formedness-scan-and-oeb-htm-real-world-validation)
+317. [Uncovered glyph-ink ONNX rescue for ruled OCR tables and prior `3 Tr` invisible-text stripping on PDF OCR `redo` and `force`](#317-uncovered-glyph-ink-onnx-rescue-for-ruled-ocr-tables-and-prior-3-tr-invisible-text-stripping-on-pdf-ocr-redo-and-force)
 
 ---
 
@@ -9725,3 +9726,26 @@ Security
   - **Passing raw `data:image/bmp;base64,...` through to LibreOffice without transcoding**: `sharp` on Linux/macOS does not decode BMP headers without ImageMagick delegates, and opaque RGBA rewrites without `.removeAlpha()` emit redundant PDF `/SMask` streams.
 - **Verified by**: `tests/hwp-bmp-html-staging.test.ts`, `tests/html-native-staging.test.ts`, `tests/html-pdf-external-resources.test.ts`, `tests/hwp-real-documents.test.ts`, `tests/xlsx-element-bounds.test.ts`, `tests/xlsx-element-bounds.perf.test.ts`, `tests/realworld-output-check.test.ts`, and `tests/realworld-corpus.test.ts`.
 - **Revisit when**: LibreOffice Writer's HTML filter or `sharp` adds native zero-copy BMP metadata/decode support across all supported platforms.
+
+
+## 317. Uncovered glyph-ink ONNX rescue for ruled OCR tables and prior `3 Tr` invisible-text stripping on PDF OCR `redo` and `force`
+
+- **Date**: 2026-11-16
+- **Status**: Accepted (QA request: open-source quality audit across conversion, tools, and OCR following live deep OCR testing; refines entry 302)
+- **Decision**:
+  1. **Ruled-table uncovered glyph-ink trigger for the ONNX English second reading (`src/lib/conversions/ocr-ruled-table.ts`, `src/lib/conversions/ocr.ts`)**:
+     - Following the run-length rule/glyph separation model of Leptonica (`DanBloomberg/leptonica`, BSD-2-Clause, `src/linefind.c` and `src/pageseg.c`; implemented over `P4`/`P5`/`P6` Netpbm buffers with zero C code copied) and the `PP-OCRv5` recognizer (`PaddlePaddle/PaddleOCR`, Apache-2.0, `rec-eng.onnx`), `readPreparedPage` evaluates `hasUncoveredRuledTableInk(ocrInput, lineBlocks)` when an ONNX second reading is available.
+     - The detector requires at least `3` horizontal ruling bands (`>= max(120 px, 25% page width)`) and `2` vertical ruling bands (`>= max(48 px, 35% grid height)`), masks out `±3 px` around each rule, tiles Tesseract's recognized word boxes (`±6 px` pad) onto a `4x4` bitmap, and counts short-run (`2..max(48 px, 8% page width)`) character ink inside the grid. Only when `totalInk >= 150 px` and `(totalInk - coveredInk) / totalInk >= 0.25` does `recognizeAttempt` invoke `readSecondTimeWithOnnx` directly without running redundant Tesseract rescale/binarize passes.
+  2. **Prior `3 Tr` invisible OCR text-layer stripping on PDF sandwich rebuilds (`src/lib/conversions/ocr-strip-invisible-text.ts`, `src/lib/conversions/ocr-pdf-sandwich.ts`, `src/lib/conversions/document.ts`)**:
+     - Following the `--redo-ocr` behaviour of OCRmyPDF (`ocrmypdf/OCRmyPDF`, MPL-2.0, behaviour only; zero MPL code copied) and ISO 32000-1 §7.8.2 and §9.3.6 (`3 Tr` invisible text rendering mode), `createLosslessSandwichPdfFromPdf` strips existing `BT ... ET` blocks whose text-showing operators (`Tj`, `TJ`, `'`, `"`) all execute under `3 Tr` before writing the new OCR sandwich layer, bounded by a `32 MiB` decompressed content-stream budget (`DecompressionLimitError`).
+     - In `ocrMode: 'redo'`, pages whose content streams contain visible text (`0..2 Tr`) and zero `3 Tr` invisible OCR blocks retain their born-digital vector text stream without receiving a duplicate sandwich layer, while `ocrMode: 'force'` strips prior `3 Tr` layers and writes the new OCR layer across every page.
+  3. **CI shard duration table refresh (`.github/ci/test-durations.json`)**:
+     - Refreshed `.github/ci/test-durations.json` from the six shard JSON reports of `CI` run `43843326482` plus `tests/ocr-ruled-table-and-redo.test.ts` via `node scripts/ci-test-shards.mjs --update`.
+- **Why**:
+  - Live deep OCR testing on `https://convert.aquilaxk.site` confirmed two gaps: (1) `table_ruled.png -> pdf` returned `Word F1 = 55.70%` (`CER = 65.69%`) because Tesseract `PSM 3` skipped ruled cells while scoring `0.95` confidence (`>= 0.75` `OCR_ONNX_RESCUE_QUALITY`) on the few recognized rows, leaving the installed `/opt/ocr-onnx/rec-eng.onnx` model unused; and (2) `ocrMode: 'redo'` stacked duplicate `3 Tr` text layers on previously OCR'd scans and duplicated text on born-digital pages of hybrid PDFs.
+- **Trade-offs**:
+  - `hasUncoveredRuledTableInk` adds `< 1 ms` per English page (exiting after a single horizontal-rule row scan on unruled pages) and zero image bytes (`/opt/ocr-onnx/rec-eng.onnx` is already present from entry 302). Ruled form pages whose text Tesseract already read (`uncovered < 25%`) do not trigger the ONNX helper.
+- **Alternatives rejected**:
+  - **Triggering ONNX on ruling-line counts alone**: rejected in entry 302 because ruled forms that Tesseract already read well incurred `+35%` wall time for identical words.
+- **Verified by**: `tests/ocr-ruled-table-and-redo.test.ts`, `tests/edge-ocr-browser-imports.test.ts`, `tests/ocr-onnx-route.test.ts`, `tests/ocr-fidelity-and-formats.test.ts`, and `tests/ci-test-shards.test.ts`.
+- **Revisit when**: multi-script ruled tables outside `eng` and `kor` (`kor` already uses ONNX first) are added to the image's language pack.
