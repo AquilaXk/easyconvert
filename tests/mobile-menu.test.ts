@@ -4,6 +4,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TOOL_ROUTES } from '../src/components/site-links';
 import { testMessages } from './helpers/intl-messages';
 
 vi.mock('next/navigation', async (importOriginal) => ({
@@ -76,7 +77,7 @@ describe('the mobile menu', () => {
     await act(async () => tools.click());
     expect(tools.getAttribute('aria-expanded')).toBe('true');
     expect(sheet.querySelector('#mobile-menu-tools')?.hasAttribute('hidden')).toBe(false);
-    expect(sheet.querySelectorAll('#mobile-menu-tools a')).toHaveLength(16);
+    expect(sheet.querySelectorAll('#mobile-menu-tools a')).toHaveLength(TOOL_ROUTES.length + 1);
   });
 
   it('gives focus to the sheet itself on open, so no focus ring lands on the logo link', async () => {

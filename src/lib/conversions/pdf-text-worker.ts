@@ -22,24 +22,22 @@ interface Request {
   job: PdfTextJob;
 }
 
-function serializeResult(result: PdfTextJobResult): string {
-  const serializable = {
-    analyses: result.analyses,
-    geometry: Array.from(result.geometry.entries()),
-    content: result.content.map((page) => ({
-      ...page,
-      images: page.images.map((img) => {
-        if (!img.data) return img;
-        return {
-          ...img,
-          dataBase64: Buffer.from(img.data).toString('base64'),
-          data: undefined,
-        };
-      }),
-    })),
-    fonts: result.fonts,
-  };
-  return JSON.stringify(serializable);
+function collectTransferables(result: PdfTextJobResult): ArrayBuffer[] {
+  const seen = new Set<ArrayBuffer>();
+  for (const page of result.content) {
+    for (const img of page.images) {
+      const data = img.data;
+      if (
+        data &&
+        data.buffer instanceof ArrayBuffer &&
+        data.byteOffset === 0 &&
+        data.byteLength === data.buffer.byteLength
+      ) {
+        seen.add(data.buffer);
+      }
+    }
+  }
+  return Array.from(seen);
 }
 
 async function run({ bytes, job }: Request): Promise<void> {
@@ -47,10 +45,7 @@ async function run({ bytes, job }: Request): Promise<void> {
   if (!port) return;
   try {
     const result = await analyzePdfPagesInProcess(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength), job);
-    const json = serializeResult(result);
-    const encoded = Buffer.from(json, 'utf8');
-    const textBytes = encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
-    port.postMessage({ ok: true, textBytes }, [textBytes]);
+    port.postMessage({ ok: true, result }, collectTransferables(result));
   } catch (error) {
     const message = error instanceof ConversionFailedError ? error.message : `PDF text extraction failed: ${String(error)}`;
     port.postMessage({ ok: false, message, kind: pdfTextFailureKindOf(error) });

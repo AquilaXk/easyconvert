@@ -1679,7 +1679,7 @@ export async function convertWithNativeRaw(
       cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: timeout,
       maxBuffer: options.maxBufferBytes || 100 * 1024 * 1024, maxFileSize: RAW_DECODE_MAX_OUTPUT_BYTES,
       memoryLimitMb: RAW_DECODE_MEMORY_LIMIT_MB, networkIsolated: true, signal: options.signal,
-      env: src === 'raf' ? { ...((options as { env?: Record<string, string> }).env ?? {}), OMP_NUM_THREADS: '1' } : (options as { env?: Record<string, string> }).env,
+      ...(src === 'raf' ? { env: { OMP_NUM_THREADS: '1' } } : {}),
     });
     try {
       const run = await decodeWithSnapshotFallback(decode, decoder, snapshotDecoder);

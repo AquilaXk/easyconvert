@@ -368,6 +368,103 @@ function relationships(entries: readonly { id: string; type: string; target: str
   return `${XML_DECLARATION}<Relationships xmlns="${REL_NAMESPACE}">${items}</Relationships>`;
 }
 
+function addPptxPackageScaffold(
+  zip: JSZip,
+  slideCount: number,
+  slide: { cx: number; cy: number },
+  title: string,
+  mediaDefaults: string
+): void {
+  const slideEntries = Array.from({ length: slideCount }, (_, idx) => `<p:sldId id="${256 + idx}" r:id="rId${idx + 3}"/>`);
+  const slideOverrides = Array.from(
+    { length: slideCount },
+    (_, idx) => `<Override PartName="/ppt/slides/slide${idx + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`
+  ).join('');
+  zip.file(
+    '[Content_Types].xml',
+    `${XML_DECLARATION}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>${mediaDefaults}` +
+      '<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>' +
+      '<Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>' +
+      '<Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>' +
+      '<Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>' +
+      slideOverrides +
+      '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/></Types>'
+  );
+  zip.file(
+    '_rels/.rels',
+    `${XML_DECLARATION}<Relationships xmlns="${REL_NAMESPACE}"><Relationship Id="rId1" Type="${REL_TYPE}/officeDocument" Target="ppt/presentation.xml"/>` +
+      '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/></Relationships>'
+  );
+  zip.file(
+    'docProps/core.xml',
+    `${XML_DECLARATION}<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>${escapeXmlText(title)}</dc:title></cp:coreProperties>`
+  );
+  zip.file(
+    'ppt/presentation.xml',
+    `${XML_DECLARATION}<p:presentation ${NAMESPACES}><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst><p:sldIdLst>${slideEntries.join('')}</p:sldIdLst>` +
+      `<p:sldSz cx="${slide.cx}" cy="${slide.cy}"/><p:notesSz cx="6858000" cy="9144000"/></p:presentation>`
+  );
+  zip.file(
+    'ppt/_rels/presentation.xml.rels',
+    relationships([
+      { id: 'rId1', type: 'slideMaster', target: 'slideMasters/slideMaster1.xml' },
+      { id: 'rId2', type: 'theme', target: 'theme/theme1.xml' },
+      ...Array.from({ length: slideCount }, (_, idx) => ({ id: `rId${idx + 3}`, type: 'slide', target: `slides/slide${idx + 1}.xml` })),
+    ])
+  );
+  zip.file('ppt/slideMasters/slideMaster1.xml', MASTER_XML);
+  zip.file(
+    'ppt/slideMasters/_rels/slideMaster1.xml.rels',
+    relationships([
+      { id: 'rId1', type: 'slideLayout', target: '../slideLayouts/slideLayout1.xml' },
+      { id: 'rId2', type: 'theme', target: '../theme/theme1.xml' },
+    ])
+  );
+  zip.file('ppt/slideLayouts/slideLayout1.xml', LAYOUT_XML);
+  zip.file('ppt/slideLayouts/_rels/slideLayout1.xml.rels', relationships([{ id: 'rId1', type: 'slideMaster', target: '../slideMasters/slideMaster1.xml' }]));
+  zip.file('ppt/theme/theme1.xml', THEME_XML);
+}
+
+export interface TitledSlide {
+  title: string;
+  bullets: readonly string[];
+}
+
+function titledSlideXml(slide: TitledSlide): string {
+  const titleShape =
+    '<p:sp><p:nvSpPr><p:cNvPr id="2" name="Title 1"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>' +
+    '<p:spPr><a:xfrm><a:off x="685800" y="609600"/><a:ext cx="7772400" cy="1143000"/></a:xfrm></p:spPr>' +
+    `<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="en-US" sz="3200" b="1"><a:solidFill><a:srgbClr val="5C6BC0"/></a:solidFill></a:rPr><a:t>${escapeXmlText(slide.title)}</a:t></a:r></a:p></p:txBody></p:sp>`;
+  if (slide.bullets.length === 0) {
+    return `${XML_DECLARATION}<p:sld ${NAMESPACES}><p:cSld><p:spTree>${EMPTY_GROUP}${titleShape}</p:spTree></p:cSld></p:sld>`;
+  }
+  const bulletsXml = slide.bullets
+    .map(
+      (bullet) =>
+        `<a:p><a:pPr lvl="0"/><a:r><a:rPr lang="en-US" sz="1800"><a:solidFill><a:srgbClr val="4D536B"/></a:solidFill></a:rPr><a:t>${escapeXmlText(bullet)}</a:t></a:r></a:p>`
+    )
+    .join('');
+  const bodyShape =
+    '<p:sp><p:nvSpPr><p:cNvPr id="3" name="Content 2"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph idx="1"/></p:nvPr></p:nvSpPr>' +
+    '<p:spPr><a:xfrm><a:off x="685800" y="1981200"/><a:ext cx="7772400" cy="2800000"/></a:xfrm></p:spPr>' +
+    `<p:txBody><a:bodyPr/><a:lstStyle/>${bulletsXml}</p:txBody></p:sp>`;
+  return `${XML_DECLARATION}<p:sld ${NAMESPACES}><p:cSld><p:spTree>${EMPTY_GROUP}${titleShape}${bodyShape}</p:spTree></p:cSld></p:sld>`;
+}
+
+/** Writes an ECMA-376 16:9 presentation from titled bullet slides. */
+export async function writeTitledSlidePackage(slides: readonly TitledSlide[], title: string): Promise<Buffer> {
+  if (slides.length === 0) throw new ConversionFailedError('There is no text to put on slides.');
+  const zip = new JSZip();
+  const slideRel = relationships([{ id: 'rId1', type: 'slideLayout', target: '../slideLayouts/slideLayout1.xml' }]);
+  slides.forEach((slide, idx) => {
+    const number = idx + 1;
+    zip.file(`ppt/slides/slide${number}.xml`, titledSlideXml(slide));
+    zip.file(`ppt/slides/_rels/slide${number}.xml.rels`, slideRel);
+  });
+  addPptxPackageScaffold(zip, slides.length, { cx: 9_144_000, cy: 5_143_500 }, title, '');
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+}
+
 const MEDIA_TYPES = { jpeg: { extension: 'jpeg', mime: 'image/jpeg' }, png: { extension: 'png', mime: 'image/png' } } as const;
 
 /** Writes the presentation of the pages. */
@@ -379,7 +476,6 @@ export async function writePackage(pages: readonly SlidePage[], fonts: ReadonlyM
   const mediaOf = new Map<Uint8Array, { name: string; mime: string }>();
   const mediaNames: string[] = [];
 
-  const slideEntries: string[] = [];
   pages.forEach((page, index) => {
     const number = index + 1;
     const relations: { id: string; type: string; target: string }[] = [{ id: 'rId1', type: 'slideLayout', target: '../slideLayouts/slideLayout1.xml' }];
@@ -422,53 +518,10 @@ export async function writePackage(pages: readonly SlidePage[], fonts: ReadonlyM
     }
     zip.file(`ppt/slides/slide${number}.xml`, slideXml.toXml());
     zip.file(`ppt/slides/_rels/slide${number}.xml.rels`, relationships(relations));
-    slideEntries.push(`<p:sldId id="${255 + number}" r:id="rId${number + 2}"/>`);
   });
 
   const mediaDefaults = [...new Set([...mediaOf.values()].map((media) => `<Default Extension="${media.name.split('.')[1]}" ContentType="${media.mime}"/>`))].join('');
-  zip.file(
-    '[Content_Types].xml',
-    `${XML_DECLARATION}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>${mediaDefaults}` +
-      '<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>' +
-      '<Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>' +
-      '<Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>' +
-      '<Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>' +
-      pages.map((_, index) => `<Override PartName="/ppt/slides/slide${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`).join('') +
-      '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/></Types>'
-  );
-  zip.file(
-    '_rels/.rels',
-    `${XML_DECLARATION}<Relationships xmlns="${REL_NAMESPACE}"><Relationship Id="rId1" Type="${REL_TYPE}/officeDocument" Target="ppt/presentation.xml"/>` +
-      '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/></Relationships>'
-  );
-  zip.file(
-    'docProps/core.xml',
-    `${XML_DECLARATION}<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>${escapeXmlText(title)}</dc:title></cp:coreProperties>`
-  );
-  zip.file(
-    'ppt/presentation.xml',
-    `${XML_DECLARATION}<p:presentation ${NAMESPACES}><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst><p:sldIdLst>${slideEntries.join('')}</p:sldIdLst>` +
-      `<p:sldSz cx="${slide.cx}" cy="${slide.cy}"/><p:notesSz cx="6858000" cy="9144000"/></p:presentation>`
-  );
-  zip.file(
-    'ppt/_rels/presentation.xml.rels',
-    relationships([
-      { id: 'rId1', type: 'slideMaster', target: 'slideMasters/slideMaster1.xml' },
-      { id: 'rId2', type: 'theme', target: 'theme/theme1.xml' },
-      ...pages.map((_, index) => ({ id: `rId${index + 3}`, type: 'slide', target: `slides/slide${index + 1}.xml` })),
-    ])
-  );
-  zip.file('ppt/slideMasters/slideMaster1.xml', MASTER_XML);
-  zip.file(
-    'ppt/slideMasters/_rels/slideMaster1.xml.rels',
-    relationships([
-      { id: 'rId1', type: 'slideLayout', target: '../slideLayouts/slideLayout1.xml' },
-      { id: 'rId2', type: 'theme', target: '../theme/theme1.xml' },
-    ])
-  );
-  zip.file('ppt/slideLayouts/slideLayout1.xml', LAYOUT_XML);
-  zip.file('ppt/slideLayouts/_rels/slideLayout1.xml.rels', relationships([{ id: 'rId1', type: 'slideMaster', target: '../slideMasters/slideMaster1.xml' }]));
-  zip.file('ppt/theme/theme1.xml', THEME_XML);
+  addPptxPackageScaffold(zip, pages.length, slide, title, mediaDefaults);
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 

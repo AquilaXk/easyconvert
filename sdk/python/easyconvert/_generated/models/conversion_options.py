@@ -69,6 +69,8 @@ class ConversionOptions:
     Attributes:
         quality (int | Unset): Image/lossy output quality factor (1-100). When omitted each codec uses its own default:
             JPEG 85, WebP 80, AVIF 60.
+        optimize_png (bool | Unset): Run lossless oxipng optimization on the encoded PNG output while preserving exact
+            pixel values.
         width (int | Unset): Target image width in pixels.
         height (int | Unset): Target image height in pixels.
         fit (Fit | Unset): Image resize fit strategy.
@@ -247,6 +249,7 @@ class ConversionOptions:
     """
 
     quality: int | Unset = UNSET
+    optimize_png: bool | Unset = UNSET
     width: int | Unset = UNSET
     height: int | Unset = UNSET
     fit: Fit | Unset = UNSET
@@ -362,6 +365,8 @@ class ConversionOptions:
         )
 
         quality = self.quality
+
+        optimize_png = self.optimize_png
 
         width = self.width
 
@@ -692,6 +697,8 @@ class ConversionOptions:
         field_dict.update({})
         if quality is not UNSET:
             field_dict["quality"] = quality
+        if optimize_png is not UNSET:
+            field_dict["optimizePng"] = optimize_png
         if width is not UNSET:
             field_dict["width"] = width
         if height is not UNSET:
@@ -929,6 +936,8 @@ class ConversionOptions:
 
         d = dict(src_dict)
         quality = d.pop("quality", UNSET)
+
+        optimize_png = d.pop("optimizePng", UNSET)
 
         width = d.pop("width", UNSET)
 
@@ -1418,6 +1427,7 @@ class ConversionOptions:
 
         conversion_options = cls(
             quality=quality,
+            optimize_png=optimize_png,
             width=width,
             height=height,
             fit=fit,

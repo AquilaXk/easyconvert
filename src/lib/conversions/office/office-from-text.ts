@@ -8,8 +8,7 @@ import { plainTextModel } from '../document-model/plain';
 import { documentToEpub } from '../document-model/epub';
 import { documentToDocx } from '../document-model/docx';
 import { escapeXmlQuoted } from '../../text/escape';
-import { writePackage, type SlidePage } from './pdf-pptx';
-import type { PdfContentFont } from '../pdf-text-types';
+import { writeTitledSlidePackage, type TitledSlide } from './pdf-pptx';
 
 /**
  * Generates authentic HWP 5.0 CFBF compound document from text and markdown tables
@@ -205,8 +204,21 @@ export async function generateDocxFromText(
 }
 
 const LINES_PER_SLIDE = 14;
-const LETTER_WIDTH_PT = 612;
-const LETTER_HEIGHT_PT = 792;
+const SLIDE_SECTION_DIVIDER = /(?:^|\r?\n)(?:[ \t]*---+[ \t]*(?:\r?\n|$)|# Slide \d+\b[^\r\n]*|## Slide \d+\b[^\r\n]*)/i;
+
+function paginateSlideSection(slideTitle: string, bullets: readonly string[]): TitledSlide[] {
+  if (bullets.length <= LINES_PER_SLIDE) {
+    return [{ title: slideTitle, bullets }];
+  }
+  const pages: TitledSlide[] = [{ title: slideTitle, bullets: bullets.slice(0, LINES_PER_SLIDE) }];
+  for (let offset = LINES_PER_SLIDE; offset < bullets.length; offset += LINES_PER_SLIDE) {
+    pages.push({
+      title: `${slideTitle} (Cont.)`,
+      bullets: bullets.slice(offset, offset + LINES_PER_SLIDE),
+    });
+  }
+  return pages;
+}
 
 /**
  * Generates OpenXML PPTX Presentation Archive from plain/markdown text
@@ -219,43 +231,23 @@ export async function generatePptxFromText(
 ): Promise<Buffer> {
   if (text.trim() === '') throw new ConversionFailedError('There is no text to put on slides.');
 
-  const lines = text.split(/\r?\n/);
-  const slidePages: SlidePage[] = [];
-  let currentLines: string[] = [];
+  const rawSections = text.split(SLIDE_SECTION_DIVIDER).filter((section) => section.trim().length > 0);
+  const slides: TitledSlide[] = [];
 
-  const flushSlide = () => {
-    if (currentLines.length > 0) {
-      slidePages.push({
-        width: LETTER_WIDTH_PT,
-        height: LETTER_HEIGHT_PT,
-        images: [],
-        rules: [],
-        shapes: [],
-        blocks: [],
-        plainText: currentLines.join('\n'),
-      });
-      currentLines = [];
-    }
-  };
+  rawSections.forEach((section, idx) => {
+    const lines = section.split(/\r?\n/).filter((line) => line.trim().length > 0);
+    if (lines.length === 0) return;
+    const fallbackTitle = rawSections.length > 1 ? `Slide ${idx + 1}` : title || 'Presentation';
+    const slideTitle = lines[0]?.replace(/^[#\s]+/, '').trim() || fallbackTitle;
+    const bullets = lines.slice(1).map((line) => line.replace(/^[-*•\s]+/, '').trim());
+    slides.push(...paginateSlideSection(slideTitle, bullets));
+  });
 
-  for (const line of lines) {
-    const isHeading = line.startsWith('#') || line.startsWith('---');
-    if (isHeading && currentLines.length > 0) {
-      flushSlide();
-    }
-    currentLines.push(line);
-    if (currentLines.length >= LINES_PER_SLIDE) {
-      flushSlide();
-    }
-  }
-  flushSlide();
-
-  if (slidePages.length === 0) {
+  if (slides.length === 0) {
     throw new ConversionFailedError('There is no text to put on slides.');
   }
 
-  const fonts = new Map<string, PdfContentFont>();
-  return writePackage(slidePages, fonts, title || 'Presentation');
+  return writeTitledSlidePackage(slides, title || 'Presentation');
 }
 
 /** Sources whose extracted text is Markdown (headings, lists, tables), read as such when writing an EPUB or DOCX. */

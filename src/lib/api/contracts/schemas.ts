@@ -61,6 +61,11 @@ export const ConversionOptionsSchema = {
       description:
         'Image/lossy output quality factor (1-100). When omitted each codec uses its own default: JPEG 85, WebP 80, AVIF 60.',
     },
+    optimizePng: {
+      type: 'boolean',
+      description:
+        'Run lossless oxipng optimization on the encoded PNG output while preserving exact pixel values.',
+    },
     width: {
       type: 'integer',
       minimum: 1,

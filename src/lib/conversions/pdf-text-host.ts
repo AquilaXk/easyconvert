@@ -93,43 +93,8 @@ type WorkerEntry = { kind: 'compiled'; file: string } | { kind: 'source'; bootst
 interface WorkerReply {
   ok: boolean;
   result?: PdfTextJobResult;
-  textBytes?: ArrayBuffer | Uint8Array;
   message?: string;
   kind?: PdfTextFailureKind;
-}
-
-interface SerializedJobResult {
-  analyses?: PdfTextJobResult['analyses'];
-  geometry?: [number, unknown][];
-  content?: PdfTextJobResult['content'];
-  fonts?: PdfTextJobResult['fonts'];
-}
-
-function deserializeJobResult(json: string): PdfTextJobResult {
-  const parsed = JSON.parse(json) as SerializedJobResult;
-  const geometry = new Map(parsed.geometry ?? []) as PdfTextJobResult['geometry'];
-  const imageCache = new Map<string, Uint8Array>();
-  const content = (parsed.content || []).map((page) => ({
-    ...page,
-    images: (page.images || []).map((img: { dataBase64?: string } & (typeof page.images)[number]) => {
-      if (img.dataBase64) {
-        let cached = imageCache.get(img.dataBase64);
-        if (!cached) {
-          const buf = Buffer.from(img.dataBase64, 'base64');
-          cached = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-          imageCache.set(img.dataBase64, cached);
-        }
-        return { ...img, data: cached, dataBase64: undefined };
-      }
-      return img;
-    }),
-  }));
-  return {
-    analyses: parsed.analyses ?? [],
-    geometry,
-    content,
-    fonts: parsed.fonts ?? [],
-  };
 }
 
 interface ActiveJob {
@@ -337,19 +302,8 @@ function dispatch(thread: PooledThread, queued: QueuedJob): void {
   }, deadlineMs);
   const onReply = (reply: WorkerReply): void => {
     settle(thread, (job) => {
-      if (reply.ok) {
-        if (reply.textBytes) {
-          const bytes = reply.textBytes instanceof ArrayBuffer ? new Uint8Array(reply.textBytes) : reply.textBytes;
-          const json = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('utf-8');
-          job.resolve(deserializeJobResult(json));
-        } else if (reply.result) {
-          job.resolve(reply.result);
-        } else {
-          job.reject(pdfTextFailure(reply.kind, 'PDF text extraction produced no result.'));
-        }
-      } else {
-        job.reject(pdfTextFailure(reply.kind, reply.message ?? 'PDF text extraction failed.'));
-      }
+      if (reply.ok && reply.result) job.resolve(reply.result);
+      else job.reject(pdfTextFailure(reply.kind, reply.message ?? 'PDF text extraction failed.'));
     });
     release(thread);
   };

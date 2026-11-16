@@ -24,7 +24,7 @@ export const OPTIMISE_PNG_RESULT = Symbol.for('easyconvert.optimisePngResult');
 
 /** Whether the options request the lossless PNG optimiser. */
 export function wantsPngOptimiser(options: ConversionOptions): boolean {
-  return (options as { optimizePng?: boolean }).optimizePng === true;
+  return options.optimizePng === true;
 }
 
 /** Whether the conversion is a PNG written from a PNG (see `OPTIMISE_PNG_RESULT`). */

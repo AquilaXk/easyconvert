@@ -684,6 +684,8 @@ export interface components {
         ConversionOptions: {
             /** @description Image/lossy output quality factor (1-100). When omitted each codec uses its own default: JPEG 85, WebP 80, AVIF 60. */
             quality?: number;
+            /** @description Run lossless oxipng optimization on the encoded PNG output while preserving exact pixel values. */
+            optimizePng?: boolean;
             /** @description Target image width in pixels. */
             width?: number;
             /** @description Target image height in pixels. */

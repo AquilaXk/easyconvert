@@ -62,25 +62,14 @@ function MobileToolSubgroup({
   onNavigate: () => void;
 }>) {
   const tLinks = useTranslations('siteLinks');
-  const [groupOpen, setGroupOpen] = useState(true);
   const Icon = GROUP_ICONS[groupKey];
-  const subId = `mobile-tools-${groupKey}`;
   return (
     <div>
-      <button
-        type="button"
-        aria-expanded={groupOpen}
-        aria-controls={subId}
-        onClick={() => setGroupOpen((v) => !v)}
-        className="min-h-[44px] w-full px-2.5 inline-flex items-center justify-between gap-2 rounded-xs text-sm font-semibold text-ink hover:bg-sunken transition-colors cursor-pointer"
-      >
-        <span className="inline-flex items-center gap-2 min-w-0">
-          <Icon aria-hidden={true} className="size-4 text-ink-3 shrink-0" />
-          <span className="truncate">{label}</span>
-        </span>
-        <ChevronDown aria-hidden={true} className={`size-4 text-ink-3 shrink-0 transition-transform duration-150 ${groupOpen ? 'rotate-180' : ''}`} />
-      </button>
-      <ul id={subId} hidden={!groupOpen} className="ms-[18px] border-s border-rule ps-3 py-0.5">
+      <div className="min-h-[36px] w-full px-2.5 inline-flex items-center gap-2 text-sm font-semibold text-ink">
+        <Icon aria-hidden={true} className="size-4 text-ink-3 shrink-0" />
+        <span className="truncate">{label}</span>
+      </div>
+      <ul className="ms-[18px] border-s border-rule ps-3 py-0.5">
         {prependHomeLabel && (
           <li>
             <Link
