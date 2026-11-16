@@ -282,6 +282,7 @@ export function useDashboardController(initial?: DashboardSnapshot) {
     usage: keys.refresh,
     files: filesAndDlq.fetchUserFiles,
     dlq: filesAndDlq.fetchDlqEntries,
+    security: async () => undefined,
   };
   const readersRef = useRef({ ...readers, all: [keys.refresh, filesAndDlq.fetchUserFiles, filesAndDlq.fetchDlqEntries] });
   readersRef.current = { ...readers, all: [keys.refresh, filesAndDlq.fetchUserFiles, filesAndDlq.fetchDlqEntries] };

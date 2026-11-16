@@ -1,7 +1,7 @@
 import React, { useRef } from 'react';
 import Image from 'next/image';
 import { useFormatter, useTranslations } from 'next-intl';
-import { FileText, Key, Layers, LogOut, Send, Shield } from 'lucide-react';
+import { FileText, Key, Layers, Lock, LogOut, Send, Shield } from 'lucide-react';
 import type { User } from '@/lib/auth/types';
 import type { DashboardTab } from './dashboard-types';
 import { useTierLabel } from '../i18n/format';
@@ -31,6 +31,7 @@ export function DashboardHeader({
     files: null,
     dlq: null,
     usage: null,
+    security: null,
   });
 
   const tabs: Array<{
@@ -44,6 +45,7 @@ export function DashboardHeader({
     { id: 'files', label: t('tabs.files'), icon: FileText, badge: filesCount },
     { id: 'dlq', label: t('tabs.dlq'), icon: Send, badge: dlqCount, badgeDanger: true },
     { id: 'usage', label: t('tabs.usage'), icon: Layers },
+    { id: 'security', label: t('tabs.security'), icon: Lock },
   ];
 
   const handleTabKeyDown = (

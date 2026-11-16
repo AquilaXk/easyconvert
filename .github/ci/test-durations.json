@@ -2,6 +2,7 @@
   "tests/a11y-axe.test.ts": 3.7,
   "tests/account-file-delete.test.ts": 0.1,
   "tests/account-file-history-redis.test.ts": 0,
+  "tests/account-security-and-quota-ui.test.ts": 0.4,
   "tests/account-upload-budget.test.ts": 1.5,
   "tests/advanced-conversions-boost.test.ts": 1.3,
   "tests/adversarial-deep-review-fixes.test.ts": 0.3,

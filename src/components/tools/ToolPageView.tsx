@@ -9,6 +9,7 @@ import { usePublishedHeight } from '@/components/ConversionQueue';
 import HeroDropzoneCard from '@/components/workbench/HeroDropzoneCard';
 import FileSourceButton from '@/components/workbench/FileSourceButton';
 import { FormatIcon } from '@/components/workbench/FormatIcon';
+import { QuotaExhaustedActions } from '@/components/workbench/QuotaExhaustedActions';
 import { MAIN_FILE_INPUT_ID, useHeroUpload, type HeroOperation } from '@/components/hero/useHeroUpload';
 import { useFileTooLargeMessage, useFormatBytes } from '@/components/i18n/format';
 import { useConversionFailureWording } from '@/components/i18n/error-wording';
@@ -16,6 +17,7 @@ import { isSingleFileTool, useToolRun, type ToolFileItem } from '@/hooks/useTool
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import { streamZipReadable } from '@/lib/archive/streaming-zip';
 import { warnBrowserFailure } from '@/lib/browser-failure';
+import type { ConversionFailure } from '@/lib/conversion-failure';
 import { downloadBlob } from '@/lib/download-blob';
 import { maxFileBytes, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
 import { toolInputProblem, type ToolResult, type ToolResultFile } from '@/lib/tools/tool-client';
@@ -166,6 +168,7 @@ async function zipOfEntries(entries: readonly ToolResultFile[]): Promise<Blob> {
 interface ToolBarProps {
   summary: string;
   failure: string | null;
+  rawFailure: ConversionFailure | null;
   busy: boolean;
   done: boolean;
   canRun: boolean;
@@ -182,7 +185,7 @@ interface ToolBarProps {
 }
 
 /** The bar pinned to the bottom of the viewport while files are on screen, as the converter's queue has it. */
-function ToolBar({ summary, failure, busy, done, canRun, actionLabel, addMore, hasOptions, entries, onAdd, onImport, onOptions, onRun, onCancel, onStartOver }: Readonly<ToolBarProps>) {
+function ToolBar({ summary, failure, rawFailure, busy, done, canRun, actionLabel, addMore, hasOptions, entries, onAdd, onImport, onOptions, onRun, onCancel, onStartOver }: Readonly<ToolBarProps>) {
   const t = useTranslations('queue');
   const tTool = useTranslations('tools');
   const tRow = useTranslations('queue.row');
@@ -222,7 +225,12 @@ function ToolBar({ summary, failure, busy, done, canRun, actionLabel, addMore, h
             {busy && <Loader2 aria-hidden="true" className="size-4 shrink-0 animate-spin" />}
             <output aria-live="polite">{summary}</output>
           </p>
-          {failure && <p role="alert" className="mt-1 text-xs text-danger">{failure}</p>}
+          {failure && (
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+              <p role="alert" className="text-xs text-danger">{failure}</p>
+              <QuotaExhaustedActions failure={rawFailure} />
+            </div>
+          )}
           {bundleFailed && <p role="alert" className="mt-1 text-xs text-danger">{zipFailed}</p>}
         </div>
         <div className="flex flex-col md:flex-row md:items-center gap-2.5">
@@ -378,7 +386,7 @@ export default function ToolPageView({ tool, operation, title, description, dail
               {run.result && <ResultList result={run.result} />}
             </div>
             <ToolBar
-              summary={summary} failure={run.failure ? failureWording(run.failure) : null} busy={running} done={done} canRun={canRun}
+              summary={summary} failure={run.failure ? failureWording(run.failure) : null} rawFailure={run.failure} busy={running} done={done} canRun={canRun}
               actionLabel={t(`actions.${tool}`)} addMore={!isSingleFileTool(tool)} hasOptions={TOOLS_WITH_OPTIONS.has(tool)}
               entries={run.result?.kind === 'entries' ? run.result.entries : null}
               onAdd={() => document.getElementById(MAIN_FILE_INPUT_ID)?.click()} onImport={(file) => run.add([file])}

@@ -216,6 +216,20 @@ export function useBillingErrorWording(): (payload: unknown, status: number, fal
   );
 }
 
+/** Whether `failure` is a daily/monthly credit quota or upload-budget refusal where sign-up or plan upgrade applies. */
+export function isQuotaOrBudgetExhausted(failure: ConversionFailure | null | undefined): boolean {
+  if (!failure) return false;
+  if (failure.code === 'jobFailed') {
+    return failure.refusalCode === 'quota_exceeded' || failure.refusalCode === 'import_budget_exceeded';
+  }
+  if (failure.code !== 'server') return false;
+  if (failure.problem.code === 'quota_exceeded' || failure.problem.code === 'import_budget_exceeded') return true;
+  const type = textField(failure.problem, 'type');
+  if (type === undefined) return false;
+  const name = problemNameOfType(type);
+  return name === 'quota-exceeded' || name === 'upload-budget-exceeded';
+}
+
 /**
  * The wording of a conversion that failed in the queue: a server refusal by its `code` or problem type, a failed job by the
  * refusal code its worker recorded, else as a failed job.

@@ -10,6 +10,7 @@ import { ApiKeysPanel } from '@/components/dashboard/ApiKeysPanel';
 import { JobsHistoryPanel } from '@/components/dashboard/JobsHistoryPanel';
 import { WebhooksPanel } from '@/components/dashboard/WebhooksPanel';
 import { AccountQuotaPanel } from '@/components/dashboard/AccountQuotaPanel';
+import { AccountSecurityPanel } from '@/components/dashboard/AccountSecurityPanel';
 import { EmailVerificationNotice } from '@/components/dashboard/EmailVerificationNotice';
 import { countsAsAnonymousForConversions } from '@/lib/auth/email-verified';
 import { useDashboardController } from '@/components/dashboard/useDashboardController';
@@ -136,6 +137,8 @@ export default function DashboardPageView({ initial }: Readonly<{ initial?: Dash
                 quotaUnavailable={countsAsAnonymousForConversions(user)}
               />
             )}
+
+            {activeTab === 'security' && <AccountSecurityPanel user={user} />}
           </>
         )}
       </main>

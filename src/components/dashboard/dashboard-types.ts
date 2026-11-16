@@ -1,6 +1,6 @@
 import type { AccountFile } from '@/lib/dashboard/snapshot-types';
 
-export type DashboardTab = 'api' | 'files' | 'dlq' | 'usage';
+export type DashboardTab = 'api' | 'files' | 'dlq' | 'usage' | 'security';
 
 export type KeyExpiryOption = '30d' | '60d' | '90d' | '1y' | 'never';
 

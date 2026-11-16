@@ -372,7 +372,8 @@
         "api": "API keys",
         "files": "Converted files",
         "dlq": "Failed webhooks",
-        "usage": "Usage and limits"
+        "usage": "Usage and limits",
+        "security": "Security"
       }
     },
     "files": {
@@ -554,6 +555,37 @@
         "pair": "{from} to {to}",
         "fromPackage": "{count, number} from your package",
         "uncharged": "{count, number} owed and not charged"
+      }
+    },
+    "security": {
+      "heading": "Security settings",
+      "intro": "Manage your sign-in password and account deletion.",
+      "password": {
+        "heading": "Password",
+        "intro": "Changing your password signs out every other session on your account.",
+        "oauthNotice": "You sign in with Google. Manage your password in your Google account settings.",
+        "currentLabel": "Current password",
+        "newLabel": "New password (8+ characters)",
+        "confirmLabel": "Confirm new password",
+        "submit": "Update password",
+        "submitting": "Updating…",
+        "saved": "Your password was updated.",
+        "missing": "Enter your current password and a new password.",
+        "tooShort": "Use at least 8 characters for the new password.",
+        "mismatch": "The new passwords do not match."
+      },
+      "delete": {
+        "heading": "Delete account",
+        "intro": "Account deletion is permanent and cannot be undone. All API keys, webhooks, retained files and usage records are erased immediately, and any active subscription is canceled.",
+        "open": "Delete account",
+        "close": "Close delete account dialog",
+        "passwordLabel": "Current password",
+        "confirmEmailLabel": "Confirm account email ({email})",
+        "confirmPhraseLabel": "Type <code>DELETE</code> to confirm",
+        "confirm": "Permanently delete account",
+        "confirming": "Deleting…",
+        "cancel": "Cancel",
+        "draining": "Active conversions were stopped. Select Permanently delete account again in a few seconds."
       }
     },
     "guide": {
@@ -1740,6 +1772,10 @@
       "clientOnlyBlocked": "{source} → {target} can only be converted on the server, and this file is set to convert in the browser only.",
       "edgeFailedFirst": "The browser tried first and could not convert it.",
       "zipFailed": "Could not build the ZIP archive."
+    },
+    "quotaActions": {
+      "signIn": "Sign in",
+      "viewPlans": "Buy credits"
     },
     "urlImport": {
       "url_required": "Enter the link of a file.",

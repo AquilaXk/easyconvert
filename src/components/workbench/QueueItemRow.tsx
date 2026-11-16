@@ -3,6 +3,7 @@
 import React from 'react';
 import { useTranslations } from 'next-intl';
 import { ArrowRight, ChevronDown, Download, Sliders, X } from 'lucide-react';
+import type { ConversionFailure } from '@/lib/conversion-failure';
 import { ConversionQueueItem } from '@/lib/types';
 import { getAvailableTargetFormats, FORMAT_REGISTRY } from '@/lib/registry';
 import { maxFileBytes } from '@/lib/plan-limits';
@@ -12,6 +13,7 @@ import { useConversionFailureWording } from '../i18n/error-wording';
 import { getPasswordValidationError } from './options/options-capabilities';
 import { FormatIcon } from './FormatIcon';
 import FormatPickerButton from './FormatPickerButton';
+import { QuotaExhaustedActions } from './QuotaExhaustedActions';
 
 export interface QueueItemRowProps {
   item: ConversionQueueItem;
@@ -52,10 +54,14 @@ function rowState(item: ConversionQueueItem, isBusy: boolean, isBlocked: boolean
 }
 
 /** The error line under a row, as the reference draws it: a failure badge when the conversion ran, then the reason. */
-function RowError({ message, ranAndFailed }: Readonly<{ message: string; ranAndFailed: boolean }>) {
+function RowError({
+  message,
+  ranAndFailed,
+  failure,
+}: Readonly<{ message: string; ranAndFailed: boolean; failure?: ConversionFailure }>) {
   const t = useTranslations('queue.row');
   return (
-    <div className="col-span-full border-t border-rule pt-3 flex items-center gap-2.5 min-w-0">
+    <div className="col-span-full border-t border-rule pt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 min-w-0">
       {ranAndFailed && (
         <span className="shrink-0 inline-flex items-center px-2 py-1 rounded-xs bg-danger-soft text-danger border border-danger-edge text-xs font-medium uppercase tracking-wider">
           {t('failed')}
@@ -64,6 +70,7 @@ function RowError({ message, ranAndFailed }: Readonly<{ message: string; ranAndF
       <p role="alert" className="min-w-0 text-sm text-ink">
         {message}
       </p>
+      {ranAndFailed && <QuotaExhaustedActions failure={failure} />}
     </div>
   );
 }
@@ -204,7 +211,7 @@ export default function QueueItemRow({
         <X aria-hidden="true" className="size-4" />
       </button>
 
-      {rowError && <RowError message={rowError} ranAndFailed={!isBlocked} />}
+      {rowError && <RowError message={rowError} ranAndFailed={!isBlocked} failure={item.error} />}
     </div>
   );
 }
