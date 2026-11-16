@@ -1,4 +1,4 @@
-import { ConversionFailedError, type ArchiveInspectResponse } from '../types';
+import { ConversionFailedError } from '../types';
 import { serverRefusal } from '../conversion-failure';
 import { SINGLE_REQUEST_FILE_MAX_BYTES, UPLOAD_PART_MAX_BYTES } from '../plan-limits';
 import { MAX_TOOL_FILES, type WebTool, type WebToolOptions } from './tool-names';
@@ -12,11 +12,10 @@ export interface ToolResultFile {
   key?: string;
 }
 
-/** What a run answered: one file (a merge, an archive, the parts of a split, a rotated PDF), the files of an unpacked archive, or an inspection summary. */
+/** What a run answered: one file (a merge, an archive, the parts of a split, a rotated PDF) or the files of an unpacked archive. */
 export type ToolResult =
   | { kind: 'file'; file: ToolResultFile }
-  | { kind: 'entries'; entries: ToolResultFile[] }
-  | { kind: 'inspection'; inspection: ArchiveInspectResponse; file: ToolResultFile };
+  | { kind: 'entries'; entries: ToolResultFile[] };
 
 interface ListedEntry {
   name: string;
@@ -67,12 +66,6 @@ export function resultNameOf(tool: WebTool, firstFileName: string, options: WebT
       return `${base}-extracted.pdf`;
     case 'delete-pages':
       return `${base}-deleted.pdf`;
-    case 'reorder-pages':
-      return `${base}-reordered.pdf`;
-    case 'archive-inspect':
-      return `${base}-inspection.json`;
-    case 'zip-repair':
-      return `${base}-repaired.zip`;
   }
 }
 
@@ -94,22 +87,14 @@ function toClientToolResult(stored: StoredToolJobResult): ToolResult {
   if (stored.kind === 'file') {
     return { kind: 'file', file: stored.file };
   }
-  if (stored.kind === 'entries') {
-    return {
-      kind: 'entries',
-      entries: stored.entries.map((entry) => ({
-        name: entry.name,
-        size: entry.size,
-        key: entry.key,
-        url: entry.url,
-      })),
-    };
-  }
-  const blob = new Blob([JSON.stringify(stored.inspection, null, 2)], { type: 'application/json' });
   return {
-    kind: 'inspection',
-    inspection: stored.inspection,
-    file: { name: stored.name, size: blob.size, url: urlOf(blob) },
+    kind: 'entries',
+    entries: stored.entries.map((entry) => ({
+      name: entry.name,
+      size: entry.size,
+      key: entry.key,
+      url: entry.url,
+    })),
   };
 }
 
@@ -277,16 +262,6 @@ export async function runToolRequest(
       })),
     };
   }
-  if (tool === 'archive-inspect') {
-    const json = (await res.json()) as { inspection?: ArchiveInspectResponse } & ArchiveInspectResponse;
-    const inspectionData = json.inspection ?? json;
-    const blob = new Blob([JSON.stringify(inspectionData, null, 2)], { type: 'application/json' });
-    return {
-      kind: 'inspection',
-      inspection: inspectionData,
-      file: { name: resultNameOf(tool, files[0].name, options), size: blob.size, url: urlOf(blob) },
-    };
-  }
   const blob = await res.blob();
   return { kind: 'file', file: { name: resultNameOf(tool, files[0].name, options), size: blob.size, url: urlOf(blob) } };
 }
@@ -296,7 +271,7 @@ export function releaseToolResult(result: ToolResult): void {
   const revokeIfBlob = (url: string) => {
     if (url.startsWith('blob:')) URL.revokeObjectURL(url);
   };
-  if (result.kind === 'file' || result.kind === 'inspection') {
+  if (result.kind === 'file') {
     revokeIfBlob(result.file.url);
   } else {
     for (const file of result.entries) revokeIfBlob(file.url);

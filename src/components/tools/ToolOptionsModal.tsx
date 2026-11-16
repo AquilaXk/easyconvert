@@ -5,7 +5,7 @@ import { useTranslations } from 'next-intl';
 import { X } from 'lucide-react';
 import { useModalDialog } from '@/hooks/useModalDialog';
 import { defaultToolOptions, type WebTool, type WebToolOptions } from '@/lib/tools/tool-names';
-import { INPUT_CLASS, LABEL_CLASS, SELECT_CLASS } from '../workbench/options/section-primitives';
+import { INPUT_CLASS, LABEL_CLASS, SECTION_HEADING_CLASS, SELECT_CLASS } from '../workbench/options/section-primitives';
 
 /** Each archive format and the key of its label: a key cannot hold a dot. */
 const ARCHIVE_FORMATS = [['zip', 'zip'], ['7z', '7z'], ['tar', 'tar'], ['tar.gz', 'tarGz']] as const;
@@ -113,53 +113,55 @@ function ProtectSection({ options, onChange, t }: Readonly<SectionProps>) {
     setProtect({ permissions: { ...perms, ...patch } });
 
   return (
-    <section className="space-y-4">
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div>
-          <label htmlFor="tool-protect-user" className={LABEL_CLASS}>{t('protect.userPassword')}</label>
-          <input
-            id="tool-protect-user" type="password" autoComplete="off" value={protect.userPassword ?? ''}
-            onChange={(e) => setProtect({ userPassword: e.target.value || undefined })}
-            className={INPUT_CLASS}
-          />
+    <>
+      <section className="space-y-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label htmlFor="tool-protect-user" className={LABEL_CLASS}>{t('protect.userPassword')}</label>
+            <input
+              id="tool-protect-user" type="password" autoComplete="off" value={protect.userPassword ?? ''}
+              onChange={(e) => setProtect({ userPassword: e.target.value || undefined })}
+              className={INPUT_CLASS}
+            />
+          </div>
+          <div>
+            <label htmlFor="tool-protect-owner" className={LABEL_CLASS}>{t('protect.ownerPassword')}</label>
+            <input
+              id="tool-protect-owner" type="password" autoComplete="off" value={protect.ownerPassword ?? ''}
+              onChange={(e) => setProtect({ ownerPassword: e.target.value || undefined })}
+              className={INPUT_CLASS}
+            />
+          </div>
         </div>
         <div>
-          <label htmlFor="tool-protect-owner" className={LABEL_CLASS}>{t('protect.ownerPassword')}</label>
-          <input
-            id="tool-protect-owner" type="password" autoComplete="off" value={protect.ownerPassword ?? ''}
-            onChange={(e) => setProtect({ ownerPassword: e.target.value || undefined })}
-            className={INPUT_CLASS}
-          />
+          <label htmlFor="tool-protect-keylength" className={LABEL_CLASS}>{t('protect.keyLength')}</label>
+          <select
+            id="tool-protect-keylength"
+            value={protect.keyLength ?? 256}
+            onChange={(e) => setProtect({ keyLength: Number(e.target.value) as 128 | 256 })}
+            className={SELECT_CLASS}
+          >
+            <option value={256}>{t('protect.key256')}</option>
+            <option value={128}>{t('protect.key128')}</option>
+          </select>
         </div>
-      </div>
-      <div>
-        <label htmlFor="tool-protect-keylength" className={LABEL_CLASS}>{t('protect.keyLength')}</label>
-        <select
-          id="tool-protect-keylength"
-          value={protect.keyLength ?? 256}
-          onChange={(e) => setProtect({ keyLength: Number(e.target.value) as 128 | 256 })}
-          className={SELECT_CLASS}
-        >
-          <option value={256}>{t('protect.key256')}</option>
-          <option value={128}>{t('protect.key128')}</option>
-        </select>
-      </div>
-      <fieldset className="pt-2 border-t border-rule space-y-1">
-        <legend className={LABEL_CLASS}>{t('protect.permissions')}</legend>
+      </section>
+      <section className="space-y-1">
+        <h3 className={SECTION_HEADING_CLASS}>{t('protect.permissions')}</h3>
         <label className={RADIO_ROW}>
-          <input type="checkbox" checked={perms.print !== 'none'} onChange={(e) => setPerm({ print: e.target.checked ? 'full' : 'none' })} className="size-4" />
-          {t('protect.permPrint')}
+          <input type="checkbox" checked={perms.print !== 'none'} onChange={(e) => setPerm({ print: e.target.checked ? 'full' : 'none' })} className="size-4 cursor-pointer" />
+          <span className="select-none">{t('protect.permPrint')}</span>
         </label>
         <label className={RADIO_ROW}>
-          <input type="checkbox" checked={perms.extract !== false} onChange={(e) => setPerm({ extract: e.target.checked })} className="size-4" />
-          {t('protect.permCopy')}
+          <input type="checkbox" checked={perms.extract !== false} onChange={(e) => setPerm({ extract: e.target.checked })} className="size-4 cursor-pointer" />
+          <span className="select-none">{t('protect.permCopy')}</span>
         </label>
         <label className={RADIO_ROW}>
-          <input type="checkbox" checked={perms.modify === 'all'} onChange={(e) => setPerm({ modify: e.target.checked ? 'all' : 'none' })} className="size-4" />
-          {t('protect.permModify')}
+          <input type="checkbox" checked={perms.modify === 'all'} onChange={(e) => setPerm({ modify: e.target.checked ? 'all' : 'none' })} className="size-4 cursor-pointer" />
+          <span className="select-none">{t('protect.permModify')}</span>
         </label>
-      </fieldset>
-    </section>
+      </section>
+    </>
   );
 }
 
@@ -175,14 +177,14 @@ function UnlockSection({ options, onChange, t }: Readonly<SectionProps>) {
           className={INPUT_CLASS}
         />
       </div>
-      <label className="flex items-center gap-3 min-h-[44px] text-sm text-ink cursor-pointer">
+      <label className={RADIO_ROW}>
         <input
           type="checkbox"
           checked={unlock.confirmEditRights ?? options.confirmEditRights ?? false}
           onChange={(e) => onChange({ ...options, unlock: { ...unlock, confirmEditRights: e.target.checked }, confirmEditRights: e.target.checked })}
-          className="size-4"
+          className="size-4 cursor-pointer"
         />
-        {t('unlock.confirmRights')}
+        <span className="select-none">{t('unlock.confirmRights')}</span>
       </label>
     </section>
   );
@@ -197,8 +199,9 @@ function WatermarkSection({ options, onChange, t }: Readonly<SectionProps>) {
       <div>
         <label htmlFor="tool-wm-text" className={LABEL_CLASS}>{t('watermark.text')}</label>
         <input
-          id="tool-wm-text" type="text" autoComplete="off" value={watermark.text ?? 'CONFIDENTIAL'}
-          onChange={(e) => setWatermark({ text: e.target.value })}
+          id="tool-wm-text" type="text" autoComplete="off" value={watermark.text ?? ''}
+          placeholder={t('watermark.textHint')}
+          onChange={(e) => setWatermark({ text: e.target.value || undefined })}
           className={INPUT_CLASS}
         />
       </div>
@@ -265,23 +268,6 @@ function PageRangeSection({ options, onChange, t }: Readonly<SectionProps>) {
   );
 }
 
-function ReorderPagesSection({ options, onChange, t }: Readonly<SectionProps>) {
-  const currentOrder = Array.isArray(options.order) ? options.order.join(',') : (options.order ?? '');
-  return (
-    <section className="space-y-3">
-      <div>
-        <label htmlFor="tool-order-input" className={LABEL_CLASS}>{t('order.label')}</label>
-        <input
-          id="tool-order-input" type="text" autoComplete="off" value={currentOrder}
-          placeholder={t('order.hint')} onChange={(e) => onChange({ ...options, order: e.target.value || undefined })}
-          className={INPUT_CLASS}
-        />
-        <p className="mt-1.5 text-xs text-ink-3">{t('order.help')}</p>
-      </div>
-    </section>
-  );
-}
-
 function PasswordOnlySection({ options, onChange, t }: Readonly<SectionProps>) {
   return (
     <section className="space-y-3">
@@ -300,7 +286,6 @@ function PasswordOnlySection({ options, onChange, t }: Readonly<SectionProps>) {
 const SECTIONS: Partial<Record<WebTool, (props: Readonly<SectionProps>) => React.ReactElement>> = {
   'archive-create': ArchiveSection,
   'archive-extract': PasswordOnlySection,
-  'archive-inspect': PasswordOnlySection,
   split: SplitSection,
   rotate: RotateSection,
   protect: ProtectSection,
@@ -308,7 +293,6 @@ const SECTIONS: Partial<Record<WebTool, (props: Readonly<SectionProps>) => React
   watermark: WatermarkSection,
   'extract-pages': PageRangeSection,
   'delete-pages': PageRangeSection,
-  'reorder-pages': ReorderPagesSection,
 };
 
 interface ToolOptionsModalProps {
@@ -340,7 +324,7 @@ export default function ToolOptionsModal({ tool, toolName, initialOptions, onSav
           <X className="w-4 h-4" />
         </button>
       </div>
-      <div className="px-5 sm:px-6 py-5 max-h-[70dvh] overflow-y-auto">
+      <div className="px-5 sm:px-6 py-5 space-y-6 max-h-[70dvh] overflow-y-auto divide-y divide-rule [&>section:not(:first-child)]:pt-5">
         {Section && <Section options={options} onChange={setOptions} t={t} />}
       </div>
       <div className="px-5 sm:px-6 py-4 bg-sunken/50 border-t border-rule rounded-b-xs flex items-center justify-between gap-3">

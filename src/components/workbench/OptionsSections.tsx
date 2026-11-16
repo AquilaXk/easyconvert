@@ -23,6 +23,8 @@ export {
   DataOptionsSection,
   DocumentOptionsSection,
   PasswordOptionsSection,
+  PdfProtectSection,
+  PdfWatermarkSection,
   type DataOptionsSectionProps,
   type DocumentOptionsSectionProps,
   type PasswordOptionsSectionProps,

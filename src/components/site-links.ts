@@ -11,31 +11,60 @@ export interface SiteLink {
   href: Href;
 }
 
+export interface ToolGroup {
+  key: 'converters' | 'pdfTools' | 'archives' | 'compressImages';
+  links: readonly SiteLink[];
+}
+
+export const TOOL_GROUPS = [
+  {
+    key: 'converters',
+    links: [
+      { key: 'pdfConverter', href: '/pdf-converter' },
+      { key: 'imageConverter', href: '/image-converter' },
+      { key: 'videoConverter', href: '/video-converter' },
+      { key: 'audioConverter', href: '/audio-converter' },
+      { key: 'archiveConverter', href: '/archive-converter' },
+      { key: 'spreadsheetConverter', href: '/spreadsheet-converter' },
+    ],
+  },
+  {
+    key: 'pdfTools',
+    links: [
+      { key: 'convertToPdfA', href: '/pdfa-converter' },
+      { key: 'compressPdf', href: '/compress-pdf' },
+      { key: 'mergePdf', href: '/merge-pdf' },
+      { key: 'splitPdf', href: '/split-pdf' },
+      { key: 'rotatePdf', href: '/rotate-pdf' },
+      { key: 'extractPdfPages', href: '/extract-pdf-pages' },
+      { key: 'deletePdfPages', href: '/delete-pdf-pages' },
+      { key: 'protectPdf', href: '/protect-pdf' },
+      { key: 'unlockPdf', href: '/unlock-pdf' },
+      { key: 'watermarkPdf', href: '/watermark-pdf' },
+      { key: 'pdfOcr', href: '/pdf-ocr' },
+    ],
+  },
+  {
+    key: 'archives',
+    links: [
+      { key: 'archiveCreate', href: '/create-zip-archive' },
+      { key: 'archiveExtract', href: '/extract-zip-archive' },
+    ],
+  },
+  {
+    key: 'compressImages',
+    links: [
+      { key: 'compressPng', href: '/compress-png' },
+      { key: 'compressJpg', href: '/compress-jpg' },
+    ],
+  },
+] as const satisfies readonly ToolGroup[];
+
 export const TOOL_ROUTES = [
-  { key: 'pdfConverter', href: '/pdf-converter' },
-  { key: 'imageConverter', href: '/image-converter' },
-  { key: 'videoConverter', href: '/video-converter' },
-  { key: 'audioConverter', href: '/audio-converter' },
-  { key: 'archiveConverter', href: '/archive-converter' },
-  { key: 'spreadsheetConverter', href: '/spreadsheet-converter' },
-  { key: 'pdfOcr', href: '/pdf-ocr' },
-  { key: 'compressPdf', href: '/compress-pdf' },
-  { key: 'compressPng', href: '/compress-png' },
-  { key: 'compressJpg', href: '/compress-jpg' },
-  { key: 'mergePdf', href: '/merge-pdf' },
-  { key: 'splitPdf', href: '/split-pdf' },
-  { key: 'rotatePdf', href: '/rotate-pdf' },
-  { key: 'convertToPdfA', href: '/pdfa-converter' },
-  { key: 'archiveCreate', href: '/create-zip-archive' },
-  { key: 'archiveExtract', href: '/extract-zip-archive' },
-  { key: 'protectPdf', href: '/protect-pdf' },
-  { key: 'unlockPdf', href: '/unlock-pdf' },
-  { key: 'watermarkPdf', href: '/watermark-pdf' },
-  { key: 'extractPdfPages', href: '/extract-pdf-pages' },
-  { key: 'deletePdfPages', href: '/delete-pdf-pages' },
-  { key: 'reorderPdfPages', href: '/reorder-pdf-pages' },
-  { key: 'inspectArchive', href: '/inspect-archive' },
-  { key: 'repairZip', href: '/repair-zip' },
+  ...TOOL_GROUPS[0].links,
+  ...TOOL_GROUPS[1].links,
+  ...TOOL_GROUPS[2].links,
+  ...TOOL_GROUPS[3].links,
 ] as const satisfies readonly SiteLink[];
 
 export const PRIMARY_LINKS = [

@@ -59,9 +59,6 @@ async function answerOf(output: WebToolOutput, caller: User): Promise<NextRespon
     );
     return NextResponse.json({ success: true, entries });
   }
-  if (output.kind === 'inspection') {
-    return NextResponse.json({ success: true, inspection: output.inspection });
-  }
   return new NextResponse(new Uint8Array(output.buffer), {
     status: 200,
     headers: {

@@ -146,9 +146,6 @@ export function localizeSlugCopy(t: SlugCopyTranslator, parsed: ParsedSlug, loca
     case 'watermarkPdf':
     case 'extractPdfPages':
     case 'deletePdfPages':
-    case 'reorderPdfPages':
-    case 'archiveInspect':
-    case 'zipRepair':
       return { title: t(`${copy.kind}.title`), description: t(`${copy.kind}.description`) };
     case 'saveWebsiteAsPdf':
       return { title: t('saveWebsiteAsPdf.title'), description: t('saveWebsiteAsPdf.description') };

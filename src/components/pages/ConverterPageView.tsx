@@ -50,12 +50,6 @@ function toolOf(kind: ParsedSlug['copy']['kind']): WebTool | undefined {
       return 'extract-pages';
     case 'deletePdfPages':
       return 'delete-pages';
-    case 'reorderPdfPages':
-      return 'reorder-pages';
-    case 'archiveInspect':
-      return 'archive-inspect';
-    case 'zipRepair':
-      return 'zip-repair';
     default:
       return undefined;
   }

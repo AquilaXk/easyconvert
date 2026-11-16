@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { assertToolInput, parseToolOptions, runWebTool, WebToolRefusal } from '../src/lib/tools/web-tools';
 import { WEB_TOOLS } from '../src/lib/tools/tool-names';
 
-describe('Commercial Web Tools (13 tools)', () => {
-  it('includes all 13 tools in WEB_TOOLS', () => {
+describe('Commercial Web Tools (10 reference-aligned tools)', () => {
+  it('includes the 10 reference-aligned tools in WEB_TOOLS', () => {
     expect(WEB_TOOLS).toEqual([
       'merge',
       'archive-create',
@@ -15,15 +15,12 @@ describe('Commercial Web Tools (13 tools)', () => {
       'watermark',
       'extract-pages',
       'delete-pages',
-      'reorder-pages',
-      'archive-inspect',
-      'zip-repair',
     ]);
   });
 
   describe('file type constraints', () => {
     it('refuses non-PDF files for PDF tools', () => {
-      const pdfTools = ['protect', 'unlock', 'watermark', 'extract-pages', 'delete-pages', 'reorder-pages'] as const;
+      const pdfTools = ['protect', 'unlock', 'watermark', 'extract-pages', 'delete-pages'] as const;
       for (const tool of pdfTools) {
         expect(() =>
           assertToolInput(tool, [{ name: 'test.docx', buffer: Buffer.from('hello') }])
@@ -31,15 +28,9 @@ describe('Commercial Web Tools (13 tools)', () => {
       }
     });
 
-    it('refuses non-zip files for zip-repair', () => {
+    it('refuses non-archive files for archive-extract', () => {
       expect(() =>
-        assertToolInput('zip-repair', [{ name: 'test.tar.gz', buffer: Buffer.from('hello') }])
-      ).toThrow(WebToolRefusal);
-    });
-
-    it('accepts archives for archive-inspect', () => {
-      expect(() =>
-        assertToolInput('archive-inspect', [{ name: 'test.docx', buffer: Buffer.from('hello') }])
+        assertToolInput('archive-extract', [{ name: 'test.docx', buffer: Buffer.from('hello') }])
       ).toThrow(WebToolRefusal);
     });
   });
@@ -107,24 +98,21 @@ describe('Commercial Web Tools (13 tools)', () => {
 
       const del = parseToolOptions('delete-pages', JSON.stringify({ pages: '1,3' }));
       expect(del.deletePages?.pages).toBe('1,3');
-
-      const reorder = parseToolOptions('reorder-pages', JSON.stringify({ order: [3, 1, 2] }));
-      expect(reorder.reorderPages?.order).toEqual([3, 1, 2]);
     });
   });
 
   describe('execution on sample archives', () => {
-    it('runs archive-inspect on a sample zip buffer', async () => {
+    it('runs archive-extract on a sample zip buffer', async () => {
       const AdmZip = (await import('adm-zip')).default;
       const zip = new AdmZip();
       zip.addFile('sample.txt', Buffer.from('hello world content'));
       const buffer = zip.toBuffer();
 
-      const output = await runWebTool('archive-inspect', [{ name: 'test.zip', buffer }], {});
-      expect(output.kind).toBe('inspection');
-      if (output.kind === 'inspection') {
-        expect(output.inspection.totalEntries).toBe(1);
-        expect(output.inspection.extractable).toBe(true);
+      const output = await runWebTool('archive-extract', [{ name: 'test.zip', buffer }], {});
+      expect(output.kind).toBe('entries');
+      if (output.kind === 'entries') {
+        expect(output.entries).toHaveLength(1);
+        expect(output.entries[0].name).toBe('sample.txt');
       }
     });
   });

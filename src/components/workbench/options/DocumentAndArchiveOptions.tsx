@@ -31,8 +31,6 @@ export interface DocumentOptionsSectionProps extends SectionProps {
   ocrAlwaysEnabled?: boolean;
   canConfigurePdfOptimize?: boolean;
   canConfigurePdfa?: boolean;
-  canConfigurePdfWatermark?: boolean;
-  canConfigurePdfProtect?: boolean;
 }
 
 function OcrOptionsFields({
@@ -143,12 +141,12 @@ function PdfOptimizeAndPdfaFields({
   );
 }
 
-function PdfWatermarkFields({ options, onChange }: Readonly<SectionProps>) {
+export function PdfWatermarkSection({ options, onChange }: Readonly<SectionProps>) {
   const t = useTranslations('options.document');
   const wm = options.watermark ?? {};
   return (
-    <div className="space-y-3 pt-2 border-t border-rule">
-      <h4 className="text-xs font-semibold text-ink-2 uppercase tracking-wider">{t('watermark')}</h4>
+    <section className="space-y-4">
+      <h3 className={SECTION_HEADING_CLASS}>{t('watermark')}</h3>
       <div>
         <label htmlFor="opt-pdf-wm-text" className={LABEL_CLASS}>{t('watermarkText')}</label>
         <input
@@ -165,24 +163,24 @@ function PdfWatermarkFields({ options, onChange }: Readonly<SectionProps>) {
           className={INPUT_CLASS}
         />
       </div>
-    </div>
+    </section>
   );
 }
 
-function PdfProtectFields({ options, onChange, pdfaActive }: Readonly<SectionProps & { pdfaActive: boolean }>) {
+export function PdfProtectSection({ options, onChange, pdfaActive }: Readonly<SectionProps & { pdfaActive: boolean }>) {
   const t = useTranslations('options.document');
   const protect = options.protect ?? {};
   if (pdfaActive) {
     return (
-      <div className="pt-2 border-t border-rule">
-        <h4 className="text-xs font-semibold text-ink-2 uppercase tracking-wider">{t('protect')}</h4>
-        <p className="mt-1 text-xs text-ink-3">{t('protectPdfaConflict')}</p>
-      </div>
+      <section className="space-y-2">
+        <h3 className={SECTION_HEADING_CLASS}>{t('protect')}</h3>
+        <p className="text-xs text-ink-3">{t('protectPdfaConflict')}</p>
+      </section>
     );
   }
   return (
-    <div className="space-y-3 pt-2 border-t border-rule">
-      <h4 className="text-xs font-semibold text-ink-2 uppercase tracking-wider">{t('protect')}</h4>
+    <section className="space-y-4">
+      <h3 className={SECTION_HEADING_CLASS}>{t('protect')}</h3>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label htmlFor="opt-pdf-protect-user" className={LABEL_CLASS}>{t('protectUserPassword')}</label>
@@ -217,7 +215,7 @@ function PdfProtectFields({ options, onChange, pdfaActive }: Readonly<SectionPro
           />
         </div>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -230,11 +228,8 @@ export function DocumentOptionsSection({
   ocrAlwaysEnabled = false,
   canConfigurePdfOptimize,
   canConfigurePdfa,
-  canConfigurePdfWatermark,
-  canConfigurePdfProtect,
 }: Readonly<DocumentOptionsSectionProps>) {
   const t = useTranslations('options.document');
-  const pdfaActive = Boolean(options.pdfa?.conformance);
   return (
     <section className="space-y-4">
       <h3 className={SECTION_HEADING_CLASS}>{t('heading')}</h3>
@@ -283,8 +278,6 @@ export function DocumentOptionsSection({
           canConfigurePdfa={canConfigurePdfa}
         />
       )}
-      {canConfigurePdfWatermark && <PdfWatermarkFields options={options} onChange={onChange} />}
-      {canConfigurePdfProtect && <PdfProtectFields options={options} onChange={onChange} pdfaActive={pdfaActive} />}
       {canConfigureOcr && (
         <OcrOptionsFields options={options} onChange={onChange} ocrAlwaysEnabled={ocrAlwaysEnabled} />
       )}

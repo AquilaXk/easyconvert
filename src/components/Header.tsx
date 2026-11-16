@@ -2,16 +2,60 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useTranslations } from 'next-intl';
-import { Sun, Moon, ChevronDown, Menu } from 'lucide-react';
+import { Sun, Moon, ChevronDown, Menu, ArrowRightLeft, FileText, Archive, Minimize2 } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useThemeToggle } from '@/hooks/useThemeToggle';
 import BrandLogo from './BrandLogo';
 import UserNav from './UserNav';
 import MobileMenu from './MobileMenu';
 import LanguageSwitcher from './LanguageSwitcher';
-import { primaryLinksFor, TOOL_ROUTES } from './site-links';
+import { primaryLinksFor, TOOL_GROUPS, type SiteLink, type ToolGroup } from './site-links';
 import { useViewerAccount } from '@/hooks/useViewerPlan';
 import type { SessionUser } from '@/lib/viewer-plan';
+
+const GROUP_ICONS: Readonly<Record<ToolGroup['key'], React.ComponentType<{ className?: string; 'aria-hidden'?: boolean }>>> = {
+  converters: ArrowRightLeft,
+  pdfTools: FileText,
+  archives: Archive,
+  compressImages: Minimize2,
+};
+
+function ToolMenuSection({
+  groupKey,
+  links,
+  columns = 1,
+  onSelect,
+}: Readonly<{
+  groupKey: ToolGroup['key'];
+  links: readonly SiteLink[];
+  columns?: 1 | 2;
+  onSelect: () => void;
+}>) {
+  const tGroups = useTranslations('header.toolGroups');
+  const tLinks = useTranslations('siteLinks');
+  const Icon = GROUP_ICONS[groupKey];
+  return (
+    <div className="flex flex-col min-w-0">
+      <div className="flex items-center gap-2 pb-2 mb-1.5 border-b border-rule">
+        <Icon aria-hidden={true} className="size-4 text-ink-3 shrink-0" />
+        <span className="text-sm font-medium text-ink truncate">{tGroups(groupKey)}</span>
+      </div>
+      <ul className={columns === 2 ? 'grid grid-cols-2 gap-x-6 gap-y-0.5' : 'flex flex-col gap-0.5'}>
+        {links.map((tool) => (
+          <li key={tool.key} className="min-w-0">
+            <Link
+              href={tool.href}
+              onClick={onSelect}
+              className="w-full min-h-[36px] px-2 py-1.5 rounded-xs text-sm font-medium text-ink-2 hover:text-ink hover:bg-sunken/50 inline-flex items-center transition-colors"
+            >
+              {tLinks(tool.key as Parameters<typeof tLinks>[0])}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 export default function Header({ initialUser }: Readonly<{ initialUser?: SessionUser }> = {}) {
   const t = useTranslations('header');
@@ -97,18 +141,33 @@ export default function Header({ initialUser }: Readonly<{ initialUser?: Session
               </button>
 
               {isToolsOpen && (
-                <div className="absolute top-full left-0 mt-2 max-w-[calc(100dvw-2rem)] w-[380px] rounded-md bg-surface text-ink border border-rule shadow-elev-1 p-3 z-50">
-                  <div className="grid grid-cols-2 gap-1">
-                    {TOOL_ROUTES.map((tool) => (
-                      <Link
-                        key={tool.key}
-                        href={tool.href}
-                        onClick={() => setIsToolsOpen(false)}
-                        className="min-h-[44px] sm:min-h-[40px] px-2.5 py-2 rounded-xs text-xs font-medium text-ink-2 hover:text-ink hover:bg-sunken/50 inline-flex items-center transition-colors"
-                      >
-                        {tLinks(tool.key)}
-                      </Link>
-                    ))}
+                <div className="absolute top-full left-0 mt-2 max-w-[calc(100dvw-2rem)] w-[680px] rounded-xs bg-surface text-ink border border-rule shadow-elev-2 p-4 z-50">
+                  <div className="grid grid-cols-3 gap-6">
+                    <ToolMenuSection
+                      groupKey={TOOL_GROUPS[0].key}
+                      links={TOOL_GROUPS[0].links}
+                      onSelect={() => setIsToolsOpen(false)}
+                    />
+                    <div className="col-span-2 flex flex-col gap-5 min-w-0">
+                      <ToolMenuSection
+                        groupKey={TOOL_GROUPS[1].key}
+                        links={TOOL_GROUPS[1].links}
+                        columns={2}
+                        onSelect={() => setIsToolsOpen(false)}
+                      />
+                      <div className="grid grid-cols-2 gap-6">
+                        <ToolMenuSection
+                          groupKey={TOOL_GROUPS[2].key}
+                          links={TOOL_GROUPS[2].links}
+                          onSelect={() => setIsToolsOpen(false)}
+                        />
+                        <ToolMenuSection
+                          groupKey={TOOL_GROUPS[3].key}
+                          links={TOOL_GROUPS[3].links}
+                          onSelect={() => setIsToolsOpen(false)}
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}

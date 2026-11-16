@@ -16,9 +16,6 @@ export const WEB_TOOLS = [
   'watermark',
   'extract-pages',
   'delete-pages',
-  'reorder-pages',
-  'archive-inspect',
-  'zip-repair',
 ] as const;
 export type WebTool = (typeof WEB_TOOLS)[number];
 
@@ -83,13 +80,9 @@ export interface WebToolOptions {
   };
   extractPages?: { pages?: string; password?: string; confirmEditRights?: boolean };
   deletePages?: { pages?: string; password?: string; confirmEditRights?: boolean };
-  reorderPages?: { order?: string | number[]; password?: string; confirmEditRights?: boolean };
-  archiveInspect?: { password?: string };
-  zipRepair?: Record<string, unknown>;
   password?: string;
   confirmEditRights?: boolean;
   pages?: string;
-  order?: string | number[];
 }
 
 /** The options a tool runs with until the person changes them: ZIP, every page for a split, a quarter turn for a rotation. */
@@ -103,11 +96,9 @@ export function defaultToolOptions(tool: WebTool): WebToolOptions {
 export const TOOLS_WITH_OPTIONS: ReadonlySet<WebTool> = new Set<WebTool>([
   'archive-create',
   'archive-extract',
-  'archive-inspect',
   'delete-pages',
   'extract-pages',
   'protect',
-  'reorder-pages',
   'rotate',
   'split',
   'unlock',

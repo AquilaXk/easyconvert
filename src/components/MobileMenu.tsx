@@ -11,7 +11,7 @@ import type { SessionUser } from '@/lib/viewer-plan';
 import BrandLogo from './BrandLogo';
 import UserNav from './UserNav';
 import LanguageSwitcher from './LanguageSwitcher';
-import { API_LINKS, primaryLinksFor, TOOL_ROUTES, type SiteLink } from './site-links';
+import { API_LINKS, primaryLinksFor, TOOL_GROUPS, type SiteLink } from './site-links';
 
 type LabelledLink = SiteLink & { key: keyof Messages['siteLinks'] };
 
@@ -41,7 +41,45 @@ function trapFocus(event: KeyboardEvent<HTMLDialogElement>, onEscape: () => void
   }
 }
 
-/** A group of links under a heading that expands and collapses, like the reference's Tools and API rows. */
+function CollapsibleToolGroups({
+  id,
+  label,
+  onNavigate,
+}: Readonly<{ id: string; label: string; onNavigate: () => void }>) {
+  const tGroups = useTranslations('header.toolGroups');
+  const tLinks = useTranslations('siteLinks');
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen((value) => !value)}
+        className={`${ROW_CLASS} justify-between cursor-pointer`}
+      >
+        <span>{label}</span>
+        <ChevronDown aria-hidden="true" className={`size-5 transition-transform duration-150 ${open ? 'rotate-180' : ''}`} />
+      </button>
+      <div id={id} hidden={!open} className="ms-3 border-s border-rule ps-2 space-y-2 py-1">
+        {TOOL_GROUPS.map((group) => (
+          <div key={group.key}>
+            <p className="px-3 pt-1.5 pb-0.5 text-xs font-semibold text-ink-3">{tGroups(group.key)}</p>
+            <ul>
+              {group.links.map((link) => (
+                <li key={link.key}>
+                  <Link href={link.href} onClick={onNavigate} className={`${ROW_CLASS} text-sm`}>
+                    {tLinks(link.key as keyof Messages['siteLinks'])}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 function CollapsibleLinks({
   id,
   label,
@@ -126,7 +164,7 @@ export default function MobileMenu({
 
       <div className="px-4 py-4 space-y-4">
         <nav aria-label={t('mobileNavLabel')} className="flex flex-col gap-0.5">
-          <CollapsibleLinks id="mobile-menu-tools" label={t('tools')} links={TOOL_ROUTES} onNavigate={onClose} />
+          <CollapsibleToolGroups id="mobile-menu-tools" label={t('tools')} onNavigate={onClose} />
           <CollapsibleLinks id="mobile-menu-api" label={t('api')} links={API_LINKS} onNavigate={onClose} />
           {primaryLinksFor(signedIn).filter((item) => item.key !== 'apiDocs').map((item) => (
             <Link key={item.key} href={item.href} onClick={onClose} className={ROW_CLASS}>

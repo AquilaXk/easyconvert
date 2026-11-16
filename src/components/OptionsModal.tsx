@@ -20,6 +20,8 @@ import {
   DocumentOptionsSection,
   ImageOptionsSection,
   PasswordOptionsSection,
+  PdfProtectSection,
+  PdfWatermarkSection,
   VideoOptionsSection,
 } from './workbench/OptionsSections';
 
@@ -39,6 +41,7 @@ interface ModalSectionGroupProps {
 }
 
 function DocumentAndSecurityGroup({ visible, options, onChange }: Readonly<ModalSectionGroupProps>) {
+  const pdfaActive = Boolean(options.pdfa?.conformance);
   return (
     <>
       {visible.showImage && (
@@ -54,9 +57,13 @@ function DocumentAndSecurityGroup({ visible, options, onChange }: Readonly<Modal
           ocrAlwaysEnabled={visible.ocrAlwaysEnabled}
           canConfigurePdfOptimize={visible.canConfigurePdfOptimize}
           canConfigurePdfa={visible.canConfigurePdfa}
-          canConfigurePdfWatermark={visible.canConfigurePdfWatermark}
-          canConfigurePdfProtect={visible.canConfigurePdfProtect}
         />
+      )}
+      {visible.canConfigurePdfWatermark && (
+        <PdfWatermarkSection options={options} onChange={onChange} />
+      )}
+      {visible.canConfigurePdfProtect && (
+        <PdfProtectSection options={options} onChange={onChange} pdfaActive={pdfaActive} />
       )}
       {visible.passwordMode && (
         <PasswordOptionsSection

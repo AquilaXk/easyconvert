@@ -14,7 +14,6 @@ export type ToolPhase = 'idle' | 'running' | 'done' | 'failed';
 
 const PDF_NAME = /\.pdf$/i;
 const ARCHIVE_NAME = /\.(zip|7z|rar|tar|tar\.gz|tgz)$/i;
-const ZIP_NAME = /\.zip$/i;
 /** The tools that take one file: a new file replaces the one before. */
 const SINGLE_FILE_TOOLS: ReadonlySet<WebTool> = new Set<WebTool>([
   'archive-extract',
@@ -25,16 +24,12 @@ const SINGLE_FILE_TOOLS: ReadonlySet<WebTool> = new Set<WebTool>([
   'watermark',
   'extract-pages',
   'delete-pages',
-  'reorder-pages',
-  'archive-inspect',
-  'zip-repair',
 ]);
 
-/** Whether `tool` takes a file of this name: PDFs for the PDF tools, archives for extract/inspect, zip for repair, anything for create. */
+/** Whether `tool` takes a file of this name: PDFs for the PDF tools, archives for extract, anything for create. */
 export function toolAccepts(tool: WebTool, name: string): boolean {
   if (tool === 'archive-create') return true;
-  if (tool === 'zip-repair') return ZIP_NAME.test(name);
-  if (tool === 'archive-extract' || tool === 'archive-inspect') return ARCHIVE_NAME.test(name);
+  if (tool === 'archive-extract') return ARCHIVE_NAME.test(name);
   return PDF_NAME.test(name);
 }
 

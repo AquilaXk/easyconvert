@@ -3,5 +3,3 @@ declare module '*.md?raw' {
   const text: string;
   export default text;
 }
-
-declare module 'pdfjs-dist/legacy/build/pdf.worker.mjs';

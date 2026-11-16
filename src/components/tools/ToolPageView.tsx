@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useRef, useState } from 'react';
-import { streamZipReadable } from '@/lib/archive/streaming-zip';
 import { useTranslations } from 'next-intl';
 import { ArrowDown, ArrowUp, CircleCheck, Download, Loader2, Package, Sliders, X } from 'lucide-react';
 import Header from '@/components/Header';
@@ -15,13 +14,13 @@ import { useFileTooLargeMessage, useFormatBytes } from '@/components/i18n/format
 import { useConversionFailureWording } from '@/components/i18n/error-wording';
 import { isSingleFileTool, useToolRun, type ToolFileItem } from '@/hooks/useToolRun';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
+import { streamZipReadable } from '@/lib/archive/streaming-zip';
 import { warnBrowserFailure } from '@/lib/browser-failure';
 import { downloadBlob } from '@/lib/download-blob';
 import { maxFileBytes, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
 import { toolInputProblem, type ToolResult, type ToolResultFile } from '@/lib/tools/tool-client';
-import { MAX_TOOL_FILES, MIN_MERGE_FILES, TOOLS_WITH_OPTIONS, type WebTool } from '@/lib/tools/tool-names';
+import { MAX_TOOL_FILES, MIN_MERGE_FILES, TOOLS_WITH_OPTIONS, type WebTool, type WebToolOptions } from '@/lib/tools/tool-names';
 import ToolOptionsModal from './ToolOptionsModal';
-import { PdfPageGrid, formatPageRanges } from './PdfPageGrid';
 
 const ROW_CLASS = 'rounded-xs border border-rule bg-surface px-4 py-3.5 sm:px-6 flex items-center gap-4 min-w-0';
 const ICON_BUTTON_CLASS =
@@ -29,7 +28,6 @@ const ICON_BUTTON_CLASS =
 const SECONDARY_BUTTON_CLASS =
   'transition-colors min-h-[44px] md:min-h-[40px] px-3.5 rounded-xs border border-rule bg-canvas text-sm font-medium text-ink hover:border-rule-strong cursor-pointer';
 const DOWNLOAD_CLASS = 'btn-primary inline-flex items-center justify-center gap-1.5 min-h-[44px] md:min-h-9 px-4 rounded-xs text-sm font-medium';
-const INPUT_CLASS = 'w-full rounded-xs border border-rule bg-canvas px-3 py-2 text-sm text-ink placeholder:text-ink-4 outline-none focus:border-accent focus:ring-1 focus:ring-accent';
 
 const extensionOf = (name: string): string => (/\.tar\.gz$/i.test(name) ? 'tar.gz' : (name.split('.').pop() ?? '').toLowerCase());
 
@@ -117,108 +115,8 @@ function ResultRow({ file, label }: Readonly<{ file: ToolResultFile; label: stri
   );
 }
 
-interface InspectionEntry {
-  path?: string;
-  name?: string;
-  uncompressedSize?: number;
-  size?: number;
-  compressedSize?: number;
-  isEncrypted?: boolean;
-  encrypted?: boolean;
-}
-
-function ArchiveInspectionPanel({ inspection, file }: Readonly<{ inspection: Extract<ToolResult, { kind: 'inspection' }>['inspection']; file: ToolResultFile }>) {
-  const t = useTranslations('tools.inspection');
-  const [filter, setFilter] = useState('');
-  const formatBytes = useFormatBytes();
-  const raw = inspection as unknown as Record<string, unknown>;
-  const format = String(inspection.format || 'Archive').toUpperCase();
-  const encrypted = Boolean(inspection.isEncrypted ?? raw.encrypted);
-  const extractable = inspection.extractable !== false;
-  const totalEntries = Number(inspection.totalEntries ?? (Array.isArray(inspection.entries) ? inspection.entries.length : 0));
-  const uncompressedBytes = Number(inspection.totalUncompressedBytes ?? raw.uncompressedBytes ?? 0);
-  const compressedBytes = Number(inspection.totalCompressedBytes ?? raw.compressedBytes ?? 0);
-  const ratio = uncompressedBytes > 0 && compressedBytes > 0
-    ? `${Math.max(0, Math.round((1 - compressedBytes / uncompressedBytes) * 100))}%`
-    : '-';
-
-  const rawEntries = (Array.isArray(inspection.entries) ? inspection.entries : []) as InspectionEntry[];
-  const entries = filter.trim()
-    ? rawEntries.filter((e) => (e.path ?? e.name ?? '').toLowerCase().includes(filter.toLowerCase()))
-    : rawEntries;
-
-  return (
-    <section aria-label={t('summaryLabel')} className="mt-8 space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-xs border border-rule bg-surface">
-        <div className="flex flex-wrap items-center gap-2.5">
-          <span className="px-2.5 py-1 text-xs font-semibold rounded-xs bg-accent-soft text-accent-ink border border-accent-edge">{format}</span>
-          <span className={`px-2.5 py-1 text-xs font-semibold rounded-xs border ${encrypted ? 'bg-danger-soft text-danger border-danger-edge' : 'bg-sunken text-ink-2 border-rule'}`}>
-            {encrypted ? t('encrypted') : t('unencrypted')}
-          </span>
-          <span className={`px-2.5 py-1 text-xs font-semibold rounded-xs border ${extractable ? 'bg-success-soft text-success border-success-edge' : 'bg-warning-soft text-warning border-warning-edge'}`}>
-            {extractable ? t('extractable') : t('blocked')}
-          </span>
-          <span className="text-sm text-ink-2 tabular-nums font-medium">{t('entriesCount', { count: totalEntries })}</span>
-          {uncompressedBytes > 0 && (
-            <span className="text-sm text-ink-2 tabular-nums">{t('uncompressedSize', { size: formatBytes(uncompressedBytes) })}</span>
-          )}
-          {ratio !== '-' && (
-            <span className="text-sm text-ink-2 tabular-nums">{t('compressionRatio', { ratio })}</span>
-          )}
-        </div>
-        <a href={file.url} download={file.name} className={DOWNLOAD_CLASS}>
-          <Download aria-hidden="true" className="size-4" /><span>{t('downloadJson')}</span>
-        </a>
-      </div>
-
-      {rawEntries.length > 0 && (
-        <div className="rounded-xs border border-rule bg-surface overflow-hidden">
-          <div className="p-3 border-b border-rule bg-sunken/30">
-            <input
-              type="text"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              placeholder={t('filterPlaceholder')}
-              className={INPUT_CLASS}
-            />
-          </div>
-          <div className="max-h-72 overflow-y-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-sunken/50 text-ink-3 border-b border-rule font-medium">
-                <tr>
-                  <th className="p-2.5">{t('colPath')}</th>
-                  <th className="p-2.5 text-right">{t('colSize')}</th>
-                  <th className="p-2.5 text-right">{t('colCompressed')}</th>
-                  <th className="p-2.5 text-center">{t('colEncrypted')}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-rule/50">
-                {entries.map((entry, idx) => {
-                  const entrySize = entry.uncompressedSize ?? entry.size;
-                  const entryEncrypted = entry.isEncrypted ?? entry.encrypted;
-                  return (
-                    <tr key={idx} className="hover:bg-sunken/30">
-                      <td className="p-2.5 font-mono text-ink truncate max-w-xs" title={entry.path ?? entry.name}>{entry.path ?? entry.name}</td>
-                      <td className="p-2.5 text-right tabular-nums text-ink-2">{entrySize !== undefined ? formatBytes(entrySize) : '-'}</td>
-                      <td className="p-2.5 text-right tabular-nums text-ink-3">{entry.compressedSize !== undefined ? formatBytes(entry.compressedSize) : '-'}</td>
-                      <td className="p-2.5 text-center text-ink-3">{entryEncrypted ? t('yes') : '-'}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
-
 function ResultList({ result }: Readonly<{ result: ToolResult }>) {
   const t = useTranslations('tools.result');
-  if (result.kind === 'inspection') {
-    return <ArchiveInspectionPanel inspection={result.inspection} file={result.file} />;
-  }
   const files = result.kind === 'file' ? [result.file] : result.entries;
   return (
     <section aria-label={t('label')} className="mt-8">
@@ -230,7 +128,7 @@ function ResultList({ result }: Readonly<{ result: ToolResult }>) {
   );
 }
 
-/** Every file of an unpacked archive in one ZIP, streamed with client-zip or bundled via /api/storage/bundle. */
+/** Every file of an unpacked archive in one ZIP, streamed via /api/storage/bundle or client-zip. */
 async function zipOfEntries(entries: readonly ToolResultFile[]): Promise<Blob> {
   const hasKeys = entries.length > 0 && entries.every((e) => Boolean(e.key));
   if (hasKeys) {
@@ -262,8 +160,7 @@ async function zipOfEntries(entries: readonly ToolResultFile[]): Promise<Blob> {
     }
   }
 
-  const stream = streamZipReadable(generateEntries());
-  return await new Response(stream).blob();
+  return await new Response(streamZipReadable(generateEntries())).blob();
 }
 
 interface ToolBarProps {
@@ -355,51 +252,27 @@ function ToolBar({ summary, failure, busy, done, canRun, actionLabel, addMore, h
   );
 }
 
-function usePdfOrganizerState(tool: WebTool, run: ReturnType<typeof useToolRun>, done: boolean) {
-  const [selectedPages, setSelectedPages] = useState<number[]>([]);
-  const [pageRotations, setPageRotations] = useState<Record<number, number>>({});
-  const isSinglePdf = run.items.length === 1 && (run.items[0].file.type === 'application/pdf' || run.items[0].file.name.toLowerCase().endsWith('.pdf'));
-  const isPdfPageTool = tool === 'split' || tool === 'extract-pages' || tool === 'delete-pages' || tool === 'reorder-pages' || tool === 'rotate';
-  const showPdfOrganizer = isSinglePdf && isPdfPageTool && !done;
+type MissingOptionKey = 'needRanges' | 'needPassword' | 'needUnlockPassword' | 'needWatermark' | 'needPages';
 
-  const handlePdfOrderChange = (order: number[]) => {
-    if (tool === 'reorder-pages') run.setOptions({ ...run.options, order });
-  };
-
-  const handlePdfSelectionChange = (pages: number[]) => {
-    setSelectedPages(pages);
-    const rangeStr = formatPageRanges(pages);
-    if (tool === 'extract-pages' || tool === 'delete-pages') {
-      run.setOptions({ ...run.options, pages: rangeStr });
-    } else if (tool === 'split') {
-      run.setOptions({ ...run.options, split: { ...run.options.split, ranges: rangeStr || undefined } });
-    }
-  };
-
-  const handlePdfRotatePage = (pageNum: number) => {
-    setPageRotations((prev) => {
-      const nextAngle = (((prev[pageNum] ?? 0) + 90) % 360) as 0 | 90 | 180 | 270;
-      const nextMap = { ...prev, [pageNum]: nextAngle };
-      const rotationGroups: Array<{ angle: 90 | 180 | 270; pages?: string }> = [];
-      for (const ang of [90, 180, 270] as const) {
-        const pages = Object.entries(nextMap).filter(([, a]) => a === ang).map(([p]) => Number(p));
-        if (pages.length > 0) rotationGroups.push({ angle: ang, pages: formatPageRanges(pages) });
-      }
-      run.setOptions({
-        ...run.options,
-        rotate: rotationGroups.length > 0 ? { rotations: rotationGroups } : { rotation: 90 },
-      });
-      return nextMap;
-    });
-  };
-
-  return { showPdfOrganizer, selectedPages, pageRotations, handlePdfOrderChange, handlePdfSelectionChange, handlePdfRotatePage };
-}
-
-function organizerHintOf(tool: WebTool, t: ReturnType<typeof useTranslations<'tools'>>): string {
-  if (tool === 'rotate') return t('organizer.hintRotate');
-  if (tool === 'reorder-pages') return t('organizer.hintReorder');
-  return t('organizer.hintSelect');
+function missingOptionKeyOf(tool: WebTool, options: WebToolOptions): MissingOptionKey | null {
+  if (tool === 'split' && options.split?.ranges !== undefined && options.split.ranges.trim() === '') {
+    return 'needRanges';
+  }
+  if (tool === 'protect') {
+    const hasPass = Boolean(options.protect?.userPassword?.trim() || options.protect?.ownerPassword?.trim());
+    return hasPass ? null : 'needPassword';
+  }
+  if (tool === 'unlock') {
+    const hasPass = Boolean((options.unlock?.password ?? options.password)?.trim());
+    return hasPass ? null : 'needUnlockPassword';
+  }
+  if (tool === 'watermark') {
+    return options.watermark?.text?.trim() ? null : 'needWatermark';
+  }
+  if (tool === 'extract-pages' || tool === 'delete-pages') {
+    return options.pages?.trim() ? null : 'needPages';
+  }
+  return null;
 }
 
 interface SummaryParams {
@@ -408,14 +281,14 @@ interface SummaryParams {
   needsMore: boolean;
   oversize: boolean;
   problem: string | null;
-  emptyRanges: boolean;
+  missingOption: MissingOptionKey | null;
   leftOut: string;
   count: number;
   t: ReturnType<typeof useTranslations<'tools'>>;
   formatBytes: (bytes: number) => string;
 }
 
-function resolveSummary({ running, done, needsMore, oversize, problem, emptyRanges, leftOut, count, t, formatBytes }: SummaryParams): string {
+function resolveSummary({ running, done, needsMore, oversize, problem, missingOption, leftOut, count, t, formatBytes }: SummaryParams): string {
   if (running) return t('running');
   if (done) return t('status.done');
   if (needsMore) return t('status.needTwo');
@@ -423,7 +296,7 @@ function resolveSummary({ running, done, needsMore, oversize, problem, emptyRang
   if (problem === 'tooMany') return t('status.tooMany', { max: MAX_TOOL_FILES });
   if (problem === 'tooLarge') return t('status.tooLarge', { size: formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES) });
   if (problem === 'empty') return t('status.empty');
-  if (emptyRanges) return t('status.needRanges');
+  if (missingOption) return t(`status.${missingOption}`);
   if (leftOut) return leftOut;
   return t('status.ready', { count });
 }
@@ -445,12 +318,9 @@ export default function ToolPageView({ tool, operation, title, description, dail
   const done = run.phase === 'done';
   const oversize = run.items.some((item) => item.file.size > limit);
   const needsMore = tool === 'merge' && run.items.length < MIN_MERGE_FILES;
-  const emptyRanges = tool === 'split' && run.options.split?.ranges !== undefined && run.options.split.ranges.trim() === '';
+  const missingOption = missingOptionKeyOf(tool, run.options);
   const problem = toolInputProblem(run.items.map((item) => item.file));
-  const canRun = run.items.length > 0 && !running && !done && !oversize && !needsMore && !emptyRanges && problem === null;
-
-  const { showPdfOrganizer, selectedPages, pageRotations, handlePdfOrderChange, handlePdfSelectionChange, handlePdfRotatePage } =
-    usePdfOrganizerState(tool, run, done);
+  const canRun = run.items.length > 0 && !running && !done && !oversize && !needsMore && missingOption === null && problem === null;
 
   const handleRowDrop = (targetIndex: number) => {
     if (draggedRowIndex === null || draggedRowIndex === targetIndex) return;
@@ -460,7 +330,7 @@ export default function ToolPageView({ tool, operation, title, description, dail
 
   const leftOut = [run.skipped > 0 ? t('status.skipped', { count: run.skipped }) : null, run.surplus > 0 ? t('status.surplus', { count: run.surplus }) : null].filter(Boolean).join(' ');
   const summary = resolveSummary({
-    running, done, needsMore, oversize, problem, emptyRanges, leftOut,
+    running, done, needsMore, oversize, problem, missingOption, leftOut,
     count: run.items.length, t, formatBytes,
   });
 
@@ -505,30 +375,6 @@ export default function ToolPageView({ tool, operation, title, description, dail
                   </li>
                 ))}
               </ul>
-              {showPdfOrganizer && (
-                <div className="mt-6 p-4 rounded-xs border border-rule bg-surface">
-                  <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-                    <div>
-                      <h2 className="text-sm font-semibold text-ink">{t('organizer.heading')}</h2>
-                      <p className="text-xs text-ink-3 mt-0.5">{organizerHintOf(tool, t)}</p>
-                    </div>
-                    {selectedPages.length > 0 && (
-                      <span className="px-2.5 py-1 text-xs font-semibold tabular-nums rounded-xs bg-accent-soft text-accent-ink border border-accent-edge">
-                        {t('organizer.selectedCount', { count: selectedPages.length })}
-                      </span>
-                    )}
-                  </div>
-                  <PdfPageGrid
-                    file={run.items[0].file}
-                    tool={tool}
-                    selectedPages={selectedPages}
-                    pageRotations={pageRotations}
-                    onOrderChange={handlePdfOrderChange}
-                    onSelectionChange={handlePdfSelectionChange}
-                    onRotatePage={handlePdfRotatePage}
-                  />
-                </div>
-              )}
               {run.result && <ResultList result={run.result} />}
             </div>
             <ToolBar

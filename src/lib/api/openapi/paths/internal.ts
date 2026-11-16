@@ -187,7 +187,7 @@ const TOOL_FILES_PROPERTY = (description: string) => ({
 });
 
 /** What a tool answers with: the media types of the file, or the JSON listing of an unpacked archive. */
-type ToolAnswer = { description: string; mediaTypes: string[] } | { description: string; listing: true } | { description: string; inspection: true };
+type ToolAnswer = { description: string; mediaTypes: string[] } | { description: string; listing: true };
 
 /** What each web tool takes and answers, in the order of `WEB_TOOLS`. */
 const TOOL_DOCS: Record<WebTool, { summary: string; operationId: string; description: string; files: string; options: string; answer: ToolAnswer }> = {
@@ -271,51 +271,6 @@ const TOOL_DOCS: Record<WebTool, { summary: string; operationId: string; descrip
     options: 'JSON with pages specification to remove.',
     answer: { description: 'The trimmed PDF.', mediaTypes: ['application/pdf'] },
   },
-  'reorder-pages': {
-    summary: 'Reorder PDF Pages (Web Application)',
-    operationId: 'toolReorderPagesInternal',
-    description: `Rearranges page order of one PDF document. Runs the code of the \`pdf.reorder-pages\` job graph node. ${TOOL_RUN_NOTE}`,
-    files: 'The one PDF to reorder.',
-    options: 'JSON with order specification (comma-separated or number array).',
-    answer: { description: 'The reordered PDF.', mediaTypes: ['application/pdf'] },
-  },
-  'archive-inspect': {
-    summary: 'Inspect Archive (Web Application)',
-    operationId: 'toolArchiveInspectInternal',
-    description: `Inspects entries and metadata of an archive without unpacking all bytes. ${TOOL_RUN_NOTE}`,
-    files: 'The one archive to inspect.',
-    options: 'JSON with optional password.',
-    answer: { description: 'The inspection report.', inspection: true },
-  },
-  'zip-repair': {
-    summary: 'Repair ZIP Archive (Web Application)',
-    operationId: 'toolZipRepairInternal',
-    description: `Recovers readable entries from damaged or truncated ZIP archives. ${TOOL_RUN_NOTE}`,
-    files: 'The one ZIP archive to repair.',
-    options: 'Unused.',
-    answer: { description: 'The repaired ZIP archive.', mediaTypes: ['application/zip'] },
-  },
-};
-
-const TOOL_INSPECTION_SCHEMA = {
-  type: 'object',
-  required: ['success', 'inspection'],
-  properties: {
-    success: { type: 'boolean', enum: [true] },
-    inspection: {
-      type: 'object',
-      properties: {
-        format: { type: 'string' },
-        totalEntries: { type: 'integer' },
-        totalUncompressedBytes: { type: 'integer' },
-        totalCompressedBytes: { type: 'integer' },
-        isEncrypted: { type: 'boolean' },
-        extractable: { type: 'boolean' },
-        unextractableReasons: { type: 'array', items: { type: 'string' } },
-        entries: { type: 'array', items: { type: 'object' } },
-      },
-    },
-  },
 };
 
 const TOOL_LISTING_SCHEMA = {
@@ -344,9 +299,6 @@ const TOOL_LISTING_SCHEMA = {
 const toolAnswer = (answer: ToolAnswer) => {
   if ('listing' in answer) {
     return { description: answer.description, content: { 'application/json': { schema: TOOL_LISTING_SCHEMA } } };
-  }
-  if ('inspection' in answer) {
-    return { description: answer.description, content: { 'application/json': { schema: TOOL_INSPECTION_SCHEMA } } };
   }
   return {
     description: answer.description,

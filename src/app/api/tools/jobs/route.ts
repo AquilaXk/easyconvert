@@ -11,7 +11,6 @@ import { storageProvider as s3Storage } from '@/lib/storage';
 import { isUploadKey } from '@/lib/storage/key-namespace';
 import { sanitizeNodeOutputFilename } from '@/lib/queue/graph/node-jobs';
 import { MAX_TOOL_FILES, WEB_TOOLS, type WebTool } from '@/lib/tools/tool-names';
-import { resultNameOf } from '@/lib/tools/tool-client';
 import { getToolJob, saveToolJob, type StoredToolJobResult, type ToolJobState } from '@/lib/tools/tool-job-store';
 import {
   assertToolInput,
@@ -38,13 +37,7 @@ interface ParsedToolJobInputs {
   storedRefs?: StoredInputFileRef[];
 }
 
-async function storeToolOutput(
-  output: WebToolOutput,
-  caller: User,
-  toolName: WebTool,
-  firstFileName: string,
-  options: ReturnType<typeof parseToolOptions>
-): Promise<StoredToolJobResult> {
+async function storeToolOutput(output: WebToolOutput, caller: User): Promise<StoredToolJobResult> {
   if (output.kind === 'file') {
     const safeName = sanitizeNodeOutputFilename(output.filename, 'output.bin');
     const storageKey = `conversions/${caller.id}/${crypto.randomUUID()}_${safeName}`;
@@ -59,28 +52,21 @@ async function storeToolOutput(
       },
     };
   }
-  if (output.kind === 'entries') {
-    const entries = await Promise.all(
-      output.entries.map(async (entry, index) => {
-        const safeName = sanitizeNodeOutputFilename(entry.name, `file_${index + 1}`);
-        const storageKey = `conversions/${caller.id}/${crypto.randomUUID()}_${safeName}`;
-        await saveRetainedResult(s3Storage, storageKey, entry.buffer, entry.mimeType, safeName);
-        return {
-          name: entry.name,
-          size: entry.size,
-          mimeType: entry.mimeType,
-          key: storageKey,
-          url: `/api/storage/file/${encodeURIComponent(storageKey)}`,
-        };
-      })
-    );
-    return { kind: 'entries', entries };
-  }
-  return {
-    kind: 'inspection',
-    inspection: output.inspection,
-    name: resultNameOf(toolName, firstFileName, options),
-  };
+  const entries = await Promise.all(
+    output.entries.map(async (entry, index) => {
+      const safeName = sanitizeNodeOutputFilename(entry.name, `file_${index + 1}`);
+      const storageKey = `conversions/${caller.id}/${crypto.randomUUID()}_${safeName}`;
+      await saveRetainedResult(s3Storage, storageKey, entry.buffer, entry.mimeType, safeName);
+      return {
+        name: entry.name,
+        size: entry.size,
+        mimeType: entry.mimeType,
+        key: storageKey,
+        url: `/api/storage/file/${encodeURIComponent(storageKey)}`,
+      };
+    })
+  );
+  return { kind: 'entries', entries };
 }
 
 async function parseMultipartJobInputs(
@@ -250,7 +236,6 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
       await saveToolJob({ ...initialState, status: 'running', progress: 25 });
       const stagedReleases: Array<() => Promise<void> | void> = [];
       let output: WebToolOutput;
-      let firstFileName = 'output';
       try {
         const files: WebToolFile[] = parsed.inlineFiles
           ? parsed.inlineFiles
@@ -263,7 +248,6 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
                 return { name: ref.name, buffer: stored.buffer };
               })
             );
-        firstFileName = files[0]?.name ?? 'output';
         if (!parsed.inlineFiles) assertToolInput(parsed.toolName, files);
         output = await runWebTool(parsed.toolName, files, options);
       } finally {
@@ -274,7 +258,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
         await cleanupTemporaryUploads(parsed.storedRefs);
         return;
       }
-      const storedResult = await storeToolOutput(output, caller, parsed.toolName, firstFileName, options);
+      const storedResult = await storeToolOutput(output, caller);
       await cleanupTemporaryUploads(parsed.storedRefs);
       await saveToolJob({ ...initialState, status: 'completed', progress: 100, result: storedResult });
       await reserved.commit({ from: parsed.toolName, base: 1, processingMs: Date.now() - initialState.createdAt });

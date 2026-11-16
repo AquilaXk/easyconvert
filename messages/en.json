@@ -11,6 +11,7 @@
       "responseLead": "Polling <code>GET /api/v1/jobs/'{id}'</code> reports the status and output key of each named task.",
       "refusalsTitle": "422 validation errors",
       "refusalsLead": "Invalid task graphs are refused with HTTP 422 Problem Details:",
+      "refusalCode": "Code",
       "refusals": {
         "unknownInput": "A task names an input step that is not in tasks.",
         "cycle": "Tasks depend on one another in a loop.",
@@ -804,6 +805,12 @@
     "primaryNavLabel": "Primary",
     "mobileNavLabel": "Mobile primary",
     "tools": "Tools",
+    "toolGroups": {
+      "converters": "Converters",
+      "pdfTools": "PDF Tools",
+      "archives": "Archives",
+      "compressImages": "Compress Images"
+    },
     "menuLabel": "Navigation menu",
     "openMenu": "Open menu",
     "closeMenu": "Close menu",
@@ -886,21 +893,6 @@
       "deletePdfPages": {
         "fileInputLabel": "Select a PDF to delete pages from",
         "heading": "Select the PDF to delete pages from",
-        "selectFile": "Select File"
-      },
-      "reorderPdfPages": {
-        "fileInputLabel": "Select a PDF to reorder pages",
-        "heading": "Select the PDF to reorder pages",
-        "selectFile": "Select File"
-      },
-      "archiveInspect": {
-        "fileInputLabel": "Select an archive to inspect",
-        "heading": "Select the archive to inspect",
-        "selectFile": "Select File"
-      },
-      "zipRepair": {
-        "fileInputLabel": "Select a damaged ZIP archive to repair",
-        "heading": "Select the damaged ZIP archive",
         "selectFile": "Select File"
       }
     },
@@ -1107,7 +1099,7 @@
       },
       "quality": "Quality",
       "stripMetadata": "Strip EXIF, GPS, and camera metadata",
-      "optimizePng": "Lossless PNG optimization"
+      "optimizePng": "Optimize PNG file size"
     },
     "video": {
       "heading": "Video settings",
@@ -1179,17 +1171,17 @@
       "pdfOptimize": "PDF Optimization",
       "pdfOptimizeAuto": "Standard",
       "pdfOptimizeProfiles": {
-        "web": "Web (150 DPI, balanced)",
-        "print": "Print (300 DPI, high quality)",
-        "archive": "Archive (Lossless)",
+        "web": "Web (150 DPI)",
+        "print": "Print (300 DPI)",
+        "archive": "Archive",
         "max": "Maximum compression (72 DPI)"
       },
       "pdfa": "PDF/A Conformance",
       "pdfaAuto": "None",
       "pdfaProfiles": {
-        "pdfa-1b": "PDF/A-1b (Basic visual preservation)",
-        "pdfa-2b": "PDF/A-2b (Visual preservation, transparencies)",
-        "pdfa-3b": "PDF/A-3b (Visual preservation, file attachments)"
+        "pdfa-1b": "PDF/A-1b",
+        "pdfa-2b": "PDF/A-2b (transparency)",
+        "pdfa-3b": "PDF/A-3b (embedded files)"
       },
       "watermark": "PDF Watermark",
       "watermarkText": "Watermark Text",
@@ -1354,10 +1346,7 @@
       "unlock": "Unlock",
       "watermark": "Watermark",
       "extract-pages": "Extract pages",
-      "delete-pages": "Delete pages",
-      "reorder-pages": "Reorder pages",
-      "archive-inspect": "Inspect archive",
-      "zip-repair": "Repair ZIP"
+      "delete-pages": "Delete pages"
     },
     "running": "Working on it",
     "cancel": "Cancel",
@@ -1369,6 +1358,10 @@
       "surplus": "{count, plural, one {# more file was left out because this tool takes one file at a time} other {# more files were left out because this tool takes one file at a time}}",
       "oversize": "Some files are too large to add",
       "needRanges": "Enter the page ranges to split by",
+      "needPassword": "Enter a password in Options",
+      "needUnlockPassword": "Enter the PDF password in Options",
+      "needWatermark": "Enter watermark text in Options",
+      "needPages": "Enter the page range in Options",
       "empty": "Some files are empty",
       "tooMany": "A run takes up to {max} files",
       "tooLarge": "A run takes up to {size} in total"
@@ -1384,35 +1377,6 @@
       "files": "{count, plural, one {# file} other {# files}}",
       "startOver": "Start over",
       "downloadName": "Download {name}"
-    },
-    "organizer": {
-      "heading": "Page organizer",
-      "hintSelect": "Click thumbnails (Shift+click for ranges) to choose pages",
-      "hintRotate": "Click the rotate icon on any page to set individual angles",
-      "hintReorder": "Drag thumbnails or use the arrows to reorder pages",
-      "selectedCount": "{count} selected",
-      "pageLabel": "p. {page}",
-      "pageAlt": "Page {page}",
-      "rotate90": "Rotate page {page} by 90°",
-      "moveEarlier": "Move page {page} earlier",
-      "moveLater": "Move page {page} later"
-    },
-    "inspection": {
-      "summaryLabel": "Archive inspection summary",
-      "encrypted": "Encrypted",
-      "unencrypted": "Not encrypted",
-      "extractable": "Ready to extract",
-      "blocked": "Blocked entries",
-      "entriesCount": "Entries: {count}",
-      "uncompressedSize": "Uncompressed: {size}",
-      "compressionRatio": "Saved: {ratio}",
-      "downloadJson": "Download JSON",
-      "filterPlaceholder": "Filter archive paths...",
-      "colPath": "Path",
-      "colSize": "Uncompressed",
-      "colCompressed": "Compressed",
-      "colEncrypted": "Encrypted",
-      "yes": "Yes"
     },
     "options": {
       "label": "{tool} options",
@@ -1459,6 +1423,7 @@
       },
       "watermark": {
         "text": "Watermark text",
+        "textHint": "CONFIDENTIAL",
         "opacity": "Opacity",
         "position": "Position",
         "posCenter": "Center",
@@ -1473,11 +1438,6 @@
         "label": "Page numbers or ranges",
         "hint": "1-3,5",
         "help": "Comma-separated page numbers or ranges."
-      },
-      "order": {
-        "label": "Page order",
-        "hint": "3,1,2",
-        "help": "New order of pages, separated by commas."
       },
       "password": {
         "label": "Password",
@@ -1507,9 +1467,6 @@
     "watermarkPdf": "Watermark PDF",
     "extractPdfPages": "Extract PDF Pages",
     "deletePdfPages": "Delete PDF Pages",
-    "reorderPdfPages": "Reorder PDF Pages",
-    "inspectArchive": "Inspect Archive",
-    "repairZip": "Repair ZIP",
     "formats": "Formats",
     "apiDocs": "API Docs",
     "dashboard": "Dashboard",
@@ -1638,18 +1595,6 @@
     "deletePdfPages": {
       "title": "Delete PDF Pages",
       "description": "Remove selected pages from a PDF document online."
-    },
-    "reorderPdfPages": {
-      "title": "Reorder PDF Pages",
-      "description": "Rearrange and reorder pages in a PDF document online."
-    },
-    "archiveInspect": {
-      "title": "Inspect Archive",
-      "description": "View metadata, entries, and integrity details of an archive without downloading."
-    },
-    "zipRepair": {
-      "title": "Repair ZIP",
-      "description": "Recover and repair corrupt or damaged ZIP archives online."
     },
     "saveWebsiteAsPdf": {
       "title": "Save Website as PDF",

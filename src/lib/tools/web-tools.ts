@@ -6,7 +6,7 @@ import {
   rotatePdfPages,
   splitPdfPages,
 } from '../conversions';
-import { ARCHIVE_SECURITY_LIMITS, inspectArchive, repairZipArchive } from '../conversions/archive';
+import { ARCHIVE_SECURITY_LIMITS } from '../conversions/archive';
 import { ARCHIVE_COMPRESSION_LEVEL_DEFAULT } from '../conversions/archive-compression-level';
 import { gzipInBlocks } from '../conversions/deflate-blocks';
 import type { ArchiveExtractionLimits } from '../conversions/archive-extraction-safety';
@@ -30,7 +30,6 @@ import {
 import type { ConversionRefusalCode } from '../refusal-codes';
 import {
   ConversionFailedError,
-  type ArchiveInspectResponse,
   type PdfProtectOptions,
   type PdfRotateOptions,
   type PdfRotationDegrees,
@@ -39,7 +38,7 @@ import {
 import { protectPdf } from '../conversions/pdf-postprocess/protect';
 import { unlockPdf } from '../conversions/pdf-postprocess/unlock';
 import { applyPdfWatermark } from '../conversions/pdf-postprocess/watermark';
-import { deletePdfPages, extractPdfPages, reorderPdfPages } from '../conversions/pdf-postprocess/page-ops';
+import { deletePdfPages, extractPdfPages } from '../conversions/pdf-postprocess/page-ops';
 
 /** The refusals of a tool run that no engine error names; a code is the key of a sentence in the interface. */
 export type WebToolRefusalCode = Extract<
@@ -75,8 +74,7 @@ export interface ExtractedEntry {
 
 export type WebToolOutput =
   | { kind: 'file'; filename: string; mimeType: string; buffer: Buffer }
-  | { kind: 'entries'; entries: ExtractedEntry[] }
-  | { kind: 'inspection'; inspection: ArchiveInspectResponse };
+  | { kind: 'entries'; entries: ExtractedEntry[] };
 
 const ARCHIVE_INPUT_EXTENSIONS = [
   'zip',
@@ -112,9 +110,6 @@ const SINGLE_FILE_TOOLS: ReadonlySet<WebTool> = new Set<WebTool>([
   'watermark',
   'extract-pages',
   'delete-pages',
-  'reorder-pages',
-  'archive-inspect',
-  'zip-repair',
 ]);
 
 function extensionOfName(name: string): string {
@@ -150,11 +145,7 @@ function refuseFileCount(tool: WebTool, count: number): void {
 const pdfExtensionOf = (name: string): string | undefined => (extensionOfName(name) === PDF_EXTENSION ? PDF_EXTENSION : undefined);
 
 function expectedExtension(tool: WebTool, name: string): { extension?: string; kind: string } {
-  if (tool === 'zip-repair') {
-    const ext = extensionOfName(name);
-    return { extension: ext === 'zip' ? 'zip' : undefined, kind: 'a ZIP archive' };
-  }
-  if (tool === 'archive-extract' || tool === 'archive-inspect') {
+  if (tool === 'archive-extract') {
     return { extension: archiveExtensionOf(name), kind: 'an archive (ZIP, 7Z, RAR, TAR or TAR.GZ)' };
   }
   return { extension: pdfExtensionOf(name), kind: 'a PDF' };
@@ -316,14 +307,10 @@ function watermarkOptionsOf(value: unknown, top: Record<string, unknown>): WebTo
   };
 }
 
-function pageOpsOptionsOf(tool: 'extract-pages' | 'delete-pages' | 'reorder-pages', value: unknown, top: Record<string, unknown>): WebToolOptions {
+function pageOpsOptionsOf(tool: 'extract-pages' | 'delete-pages', value: unknown, top: Record<string, unknown>): WebToolOptions {
   const target = isPlainObject(value) ? value : top;
   const password = typeof top.password === 'string' ? top.password : undefined;
   const confirmEditRights = top.confirmEditRights === true;
-  if (tool === 'reorder-pages') {
-    const rawOrder = target.order ?? top.order;
-    return { reorderPages: { order: Array.isArray(rawOrder) ? (rawOrder as number[]) : String(rawOrder ?? '1') }, password, confirmEditRights };
-  }
   const pages = pageSpecOf(target.pages ?? top.pages, `${tool}.pages`) ?? '1';
   return tool === 'extract-pages'
     ? { extractPages: { pages }, password, confirmEditRights }
@@ -362,18 +349,13 @@ export function parseToolOptions(tool: WebTool, raw: string | undefined): WebToo
       return watermarkOptionsOf(parsed.watermark, parsed);
     case 'extract-pages':
     case 'delete-pages':
-    case 'reorder-pages':
       return pageOpsOptionsOf(tool, parsed[tool], parsed);
-    case 'archive-inspect':
-      return { archiveInspect: { password: typeof parsed.password === 'string' ? parsed.password : undefined }, password: typeof parsed.password === 'string' ? parsed.password : undefined };
     case 'archive-extract':
     case 'merge': {
       const result: WebToolOptions = {};
       if (typeof parsed.password === 'string') result.password = parsed.password;
       return result;
     }
-    default:
-      return {};
   }
 }
 
@@ -480,21 +462,6 @@ export async function runWebTool(
       return fileOutput(`${base}-extracted.pdf`, 'application/pdf', await extractPdfPages(first.buffer, options.extractPages?.pages ?? options.pages ?? '1', access));
     case 'delete-pages':
       return fileOutput(`${base}-deleted.pdf`, 'application/pdf', await deletePdfPages(first.buffer, options.deletePages?.pages ?? options.pages ?? '1', access));
-    case 'reorder-pages': {
-      const rawOrder = options.reorderPages?.order ?? options.order ?? '1';
-      const order = Array.isArray(rawOrder) ? rawOrder.join(',') : String(rawOrder);
-      return fileOutput(`${base}-reordered.pdf`, 'application/pdf', await reorderPdfPages(first.buffer, { order }, access));
-    }
-    case 'archive-inspect': {
-      const inspection = await inspectArchive(first.buffer, {
-        filename: first.name,
-        password: options.archiveInspect?.password ?? options.password,
-        signal,
-      });
-      return { kind: 'inspection', inspection };
-    }
-    case 'zip-repair':
-      return fileOutput(`${base}-repaired.zip`, 'application/zip', await repairZipArchive(first.buffer));
   }
 }
 

@@ -99,11 +99,9 @@ describe('what a tool run is called and starts with', () => {
     expect([...TOOLS_WITH_OPTIONS].sort()).toEqual([
       'archive-create',
       'archive-extract',
-      'archive-inspect',
       'delete-pages',
       'extract-pages',
       'protect',
-      'reorder-pages',
       'rotate',
       'split',
       'unlock',
@@ -123,9 +121,6 @@ describe('what a tool run is called and starts with', () => {
       'watermark-pdf',
       'extract-pdf-pages',
       'delete-pdf-pages',
-      'reorder-pdf-pages',
-      'inspect-archive',
-      'repair-zip',
     ].map((slug) => parseConverterSlug(slug)?.canonicalPath);
     expect(paths).toEqual([
       '/merge-pdf',
@@ -138,11 +133,14 @@ describe('what a tool run is called and starts with', () => {
       '/watermark-pdf',
       '/extract-pdf-pages',
       '/delete-pdf-pages',
-      '/reorder-pdf-pages',
-      '/inspect-archive',
-      '/repair-zip',
     ]);
     expect(WEB_TOOLS).toHaveLength(paths.length);
+  });
+
+  it('keeps non-reference archive-inspect, zip-repair, and reorder-pdf-pages out of web tool slugs', () => {
+    expect(parseConverterSlug('inspect-archive')).toBeNull();
+    expect(parseConverterSlug('repair-zip')).toBeNull();
+    expect(parseConverterSlug('reorder-pdf-pages')).toBeNull();
   });
 });
 
@@ -331,6 +329,19 @@ describe('a split by ranges with no range', () => {
     [...document.querySelectorAll<HTMLButtonElement>('dialog button')].find((button) => button.textContent?.trim() === 'Apply Options')!.click();
     await vi.waitFor(() => expect(summary()).toBe('Enter the page ranges to split by'));
     expect(buttonNamed('Split')!.disabled).toBe(true);
+  });
+
+  it.each([
+    ['protect-pdf', 'Protect', 'Enter a password in Options'],
+    ['unlock-pdf', 'Unlock', 'Enter the PDF password in Options'],
+    ['watermark-pdf', 'Watermark', 'Enter watermark text in Options'],
+    ['extract-pdf-pages', 'Extract pages', 'Enter the page range in Options'],
+    ['delete-pdf-pages', 'Delete pages', 'Enter the page range in Options'],
+  ] as const)('guides the visitor on %s until the required option is entered', async (slug, actionName, expectedStatus) => {
+    const host = await mountSlug(ConverterPageView, slug);
+    await inQueue(host, [pdf('book.pdf')]);
+    await vi.waitFor(() => expect(summary()).toBe(expectedStatus));
+    expect(buttonNamed(actionName)!.disabled).toBe(true);
   });
 });
 

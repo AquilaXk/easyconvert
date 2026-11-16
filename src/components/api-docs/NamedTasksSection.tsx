@@ -68,14 +68,24 @@ export default function NamedTasksSection() {
 
       <h3 className={DOC.operationH3}>{t('refusalsTitle')}</h3>
       <p className={DOC.p}>{t('refusalsLead')}</p>
-      <ul className="my-4 divide-y divide-rule border border-rule rounded-xs bg-surface text-sm">
-        {REFUSALS.map((item) => (
-          <li key={item.code} className="p-3">
-            <code className="font-mono text-xs font-semibold text-danger">{item.code}</code>
-            <p className="text-xs text-ink-3 mt-0.5">{t(`refusals.${item.key}`)}</p>
-          </li>
-        ))}
-      </ul>
+      <div className={DOC.tableWrap}>
+        <table className="w-full border-collapse">
+          <thead>
+            <tr>
+              <th scope="col" className={`${DOC.th} w-56`}>{t('refusalCode')}</th>
+              <th scope="col" className={DOC.th}>{tOp('meaning')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {REFUSALS.map((item) => (
+              <tr key={item.code} className="[&:last-child>td]:border-b-0">
+                <td className={`${DOC.td} font-mono`}><code className={DOC.smallCode}>{item.code}</code></td>
+                <td className={DOC.td}>{t(`refusals.${item.key}`)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }

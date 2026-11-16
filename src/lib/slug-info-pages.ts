@@ -36,9 +36,6 @@ export const PAGE_TOOL_SLUGS = {
   watermarkPdf: 'watermark-pdf',
   extractPdfPages: 'extract-pdf-pages',
   deletePdfPages: 'delete-pdf-pages',
-  reorderPdfPages: 'reorder-pdf-pages',
-  archiveInspect: 'inspect-archive',
-  zipRepair: 'repair-zip',
 } as const;
 export type PageToolKind = keyof typeof PAGE_TOOL_SLUGS;
 
@@ -53,9 +50,6 @@ const PAGE_TOOL_FORMATS: Readonly<Record<PageToolKind, string>> = {
   watermarkPdf: 'pdf',
   extractPdfPages: 'pdf',
   deletePdfPages: 'pdf',
-  reorderPdfPages: 'pdf',
-  archiveInspect: 'zip',
-  zipRepair: 'zip',
 };
 
 export type SlugInfoType =
@@ -120,9 +114,6 @@ export function canonicalPathOf(copy: SlugCopy): string {
     case 'watermarkPdf':
     case 'extractPdfPages':
     case 'deletePdfPages':
-    case 'reorderPdfPages':
-    case 'archiveInspect':
-    case 'zipRepair':
       return `/${PAGE_TOOL_SLUGS[copy.kind]}`;
     case 'saveWebsiteAsPdf':
       return '/save-website-as-pdf';

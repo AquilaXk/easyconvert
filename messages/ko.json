@@ -11,6 +11,7 @@
       "responseLead": "<code>GET /api/v1/jobs/'{id}'</code>를 조회하면 각 단계의 상태와 결과 파일 키를 돌려줍니다.",
       "refusalsTitle": "422 검증 오류",
       "refusalsLead": "잘못된 단계 구성은 HTTP 422 Problem Details로 거부됩니다.",
+      "refusalCode": "오류 코드",
       "refusals": {
         "unknownInput": "tasks에 없는 단계 이름을 input으로 지정했습니다.",
         "cycle": "단계들이 서로 순환 참조하고 있습니다.",
@@ -804,6 +805,12 @@
     "primaryNavLabel": "메인 메뉴",
     "mobileNavLabel": "모바일 메인 메뉴",
     "tools": "도구",
+    "toolGroups": {
+      "converters": "변환기",
+      "pdfTools": "PDF 도구",
+      "archives": "압축 파일",
+      "compressImages": "이미지 압축"
+    },
     "menuLabel": "메뉴",
     "openMenu": "메뉴 열기",
     "closeMenu": "메뉴 닫기",
@@ -886,21 +893,6 @@
       "deletePdfPages": {
         "fileInputLabel": "페이지를 삭제할 PDF 선택",
         "heading": "페이지를 삭제할 PDF를 선택하세요",
-        "selectFile": "파일 선택"
-      },
-      "reorderPdfPages": {
-        "fileInputLabel": "순서를 바꿀 PDF 선택",
-        "heading": "순서를 바꿀 PDF를 선택하세요",
-        "selectFile": "파일 선택"
-      },
-      "archiveInspect": {
-        "fileInputLabel": "검사할 압축 파일 선택",
-        "heading": "검사할 압축 파일을 선택하세요",
-        "selectFile": "파일 선택"
-      },
-      "zipRepair": {
-        "fileInputLabel": "복구할 손상된 ZIP 파일 선택",
-        "heading": "손상된 ZIP 파일을 선택하세요",
         "selectFile": "파일 선택"
       }
     },
@@ -1107,7 +1099,7 @@
       },
       "quality": "압축 품질",
       "stripMetadata": "EXIF, GPS, 카메라 메타데이터 제거",
-      "optimizePng": "무손실 PNG 최적화"
+      "optimizePng": "PNG 파일 크기 최적화"
     },
     "video": {
       "heading": "동영상 스트림 설정",
@@ -1179,17 +1171,17 @@
       "pdfOptimize": "PDF 최적화",
       "pdfOptimizeAuto": "기본값",
       "pdfOptimizeProfiles": {
-        "web": "웹 (150 DPI, 균형)",
-        "print": "인쇄 (300 DPI, 고화질)",
-        "archive": "보관 (무손실)",
+        "web": "웹 (150 DPI)",
+        "print": "인쇄 (300 DPI)",
+        "archive": "문서 보관용",
         "max": "최대 압축 (72 DPI)"
       },
       "pdfa": "PDF/A 적합성",
       "pdfaAuto": "사용 안 함",
       "pdfaProfiles": {
-        "pdfa-1b": "PDF/A-1b (시각적 보존 기본)",
-        "pdfa-2b": "PDF/A-2b (시각적 보존 및 투명도)",
-        "pdfa-3b": "PDF/A-3b (시각적 보존 및 파일 첨부)"
+        "pdfa-1b": "PDF/A-1b",
+        "pdfa-2b": "PDF/A-2b (투명도 지원)",
+        "pdfa-3b": "PDF/A-3b (내장 파일 포함)"
       },
       "watermark": "PDF 워터마크",
       "watermarkText": "워터마크 텍스트",
@@ -1354,10 +1346,7 @@
       "unlock": "암호 해제",
       "watermark": "워터마크 추가",
       "extract-pages": "페이지 추출",
-      "delete-pages": "페이지 삭제",
-      "reorder-pages": "페이지 순서 변경",
-      "archive-inspect": "압축 파일 검사",
-      "zip-repair": "ZIP 복구"
+      "delete-pages": "페이지 삭제"
     },
     "running": "처리 중입니다",
     "cancel": "취소",
@@ -1369,6 +1358,10 @@
       "surplus": "이 도구는 파일을 하나씩만 처리해서 {count}개는 제외했습니다",
       "oversize": "올릴 수 없는 파일이 있습니다",
       "needRanges": "나눌 페이지 범위를 입력하세요",
+      "needPassword": "옵션에서 암호를 입력하세요",
+      "needUnlockPassword": "옵션에서 문서 암호를 입력하세요",
+      "needWatermark": "옵션에서 워터마크 텍스트를 입력하세요",
+      "needPages": "옵션에서 페이지 범위를 입력하세요",
       "empty": "내용이 없는 파일이 있습니다",
       "tooMany": "한 번에 파일 {max}개까지 처리할 수 있습니다",
       "tooLarge": "한 번에 합쳐서 {size}까지 처리할 수 있습니다"
@@ -1384,35 +1377,6 @@
       "files": "파일 {count}개",
       "startOver": "처음부터",
       "downloadName": "{name} 내려받기"
-    },
-    "organizer": {
-      "heading": "페이지 구성",
-      "hintSelect": "썸네일을 클릭해 페이지를 선택하세요 (Shift+클릭으로 연속 선택)",
-      "hintRotate": "각 페이지의 회전 아이콘을 눌러 개별 각도를 지정할 수 있습니다",
-      "hintReorder": "썸네일을 드래그하거나 화살표 버튼으로 순서를 바꿀 수 있습니다",
-      "selectedCount": "{count}개 선택됨",
-      "pageLabel": "{page}쪽",
-      "pageAlt": "{page}페이지",
-      "rotate90": "{page}페이지 90° 회전",
-      "moveEarlier": "{page}페이지 앞으로 이동",
-      "moveLater": "{page}페이지 뒤로 이동"
-    },
-    "inspection": {
-      "summaryLabel": "압축 파일 검사 요약",
-      "encrypted": "암호화됨",
-      "unencrypted": "암호 없음",
-      "extractable": "압축 해제 가능",
-      "blocked": "차단된 항목 포함",
-      "entriesCount": "항목 {count}개",
-      "uncompressedSize": "원본 크기 {size}",
-      "compressionRatio": "절감률 {ratio}",
-      "downloadJson": "JSON 받기",
-      "filterPlaceholder": "파일 경로 검색...",
-      "colPath": "경로",
-      "colSize": "원본 크기",
-      "colCompressed": "압축 크기",
-      "colEncrypted": "암호화",
-      "yes": "예"
     },
     "options": {
       "label": "{tool} 옵션",
@@ -1459,6 +1423,7 @@
       },
       "watermark": {
         "text": "워터마크 텍스트",
+        "textHint": "기밀, 초안 등",
         "opacity": "투명도",
         "position": "위치",
         "posCenter": "가운데",
@@ -1473,11 +1438,6 @@
         "label": "페이지 번호 또는 범위",
         "hint": "1-3,5",
         "help": "쉼표로 나눈 페이지 번호나 범위입니다."
-      },
-      "order": {
-        "label": "페이지 순서",
-        "hint": "3,1,2",
-        "help": "쉼표로 나눈 새 페이지 순서입니다."
       },
       "password": {
         "label": "암호",
@@ -1507,9 +1467,6 @@
     "watermarkPdf": "PDF 워터마크",
     "extractPdfPages": "PDF 페이지 추출",
     "deletePdfPages": "PDF 페이지 삭제",
-    "reorderPdfPages": "PDF 페이지 순서 변경",
-    "inspectArchive": "압축 파일 검사",
-    "repairZip": "ZIP 복구",
     "formats": "파일 형식",
     "apiDocs": "API 문서",
     "dashboard": "대시보드",
@@ -1633,23 +1590,11 @@
     },
     "extractPdfPages": {
       "title": "PDF 페이지 추출",
-      "description": "PDF에서 원하는 페이지만 골라 새 문서로 추출합니다."
+      "description": "PDF에서 선택한 페이지만 새 문서로 추출합니다."
     },
     "deletePdfPages": {
       "title": "PDF 페이지 삭제",
       "description": "PDF에서 필요 없는 페이지를 온라인에서 삭제합니다."
-    },
-    "reorderPdfPages": {
-      "title": "PDF 페이지 순서 변경",
-      "description": "PDF의 페이지 순서를 온라인에서 원하는 대로 바꿉니다."
-    },
-    "archiveInspect": {
-      "title": "압축 파일 검사",
-      "description": "압축을 풀지 않고 파일 목록과 무결성 정보를 온라인에서 확인합니다."
-    },
-    "zipRepair": {
-      "title": "ZIP 복구",
-      "description": "손상되었거나 깨진 ZIP 압축 파일을 온라인에서 복구합니다."
     },
     "saveWebsiteAsPdf": {
       "title": "웹사이트 PDF 저장",
