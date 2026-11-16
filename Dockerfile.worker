@@ -673,15 +673,17 @@ RUN scratch="$(mktemp -d)" \
 # Chromium, which refuses to run as root without its sandbox switched off and makes shared memory in /dev/shm unless it is told not to (the worker's run
 # sets both, and gives it the wide address space the website capture gives the same engine).
 RUN scratch="$(mktemp -d)" \
-    && mkdir "${scratch}/config" "${scratch}/cache" "${scratch}/tmp" \
+    && install -d -o easyconvert -g easyconvert -m 0700 "${scratch}" "${scratch}/config" "${scratch}/cache" "${scratch}/tmp" "${scratch}/runtime" \
     && python3 -c 'import chm.chm' \
     && printf 'Hello\n' > "${scratch}/book.txt" \
-    && export HOME="${scratch}" QT_QPA_PLATFORM=offscreen QTWEBENGINE_DISABLE_SANDBOX=1 QTWEBENGINE_CHROMIUM_FLAGS=--disable-dev-shm-usage CALIBRE_CONFIG_DIRECTORY="${scratch}/config" \
-        CALIBRE_CACHE_DIRECTORY="${scratch}/cache" CALIBRE_TEMP_DIR="${scratch}/tmp" \
-    && timeout 120 ebook-convert "${scratch}/book.txt" "${scratch}/book.tcr" > /dev/null \
-    && for target in epub pdf rtf txt; do \
-        timeout 120 ebook-convert "${scratch}/book.tcr" "${scratch}/book-from-tcr.${target}" > /dev/null || exit 1; \
-    done \
+    && chown easyconvert:easyconvert "${scratch}/book.txt" \
+    && runuser -u easyconvert -- env HOME="${scratch}" TMPDIR="${scratch}/tmp" XDG_RUNTIME_DIR="${scratch}/runtime" \
+        XDG_CONFIG_HOME="${scratch}/config" XDG_CACHE_HOME="${scratch}/cache" XDG_DATA_HOME="${scratch}" \
+        QT_QPA_PLATFORM=offscreen QTWEBENGINE_DISABLE_SANDBOX=1 \
+        QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu --disable-dev-shm-usage --disable-background-networking --disable-component-update --disable-sync --disable-domain-reliability --dns-prefetch-disable --mute-audio --no-first-run" \
+        DBUS_SESSION_BUS_ADDRESS=disabled: \
+        CALIBRE_CONFIG_DIRECTORY="${scratch}/config" CALIBRE_CACHE_DIRECTORY="${scratch}/cache" CALIBRE_TEMP_DIR="${scratch}/tmp" \
+        sh -c 'timeout 120 ebook-convert "$1/book.txt" "$1/book.tcr" >"$1/calibre.log" 2>&1 && for target in epub pdf rtf txt; do timeout 120 ebook-convert "$1/book.tcr" "$1/book-from-tcr.${target}" >>"$1/calibre.log" 2>&1 || { tail -n 50 "$1/calibre.log" >&2; exit 1; }; done' _ "${scratch}" \
     && test "$(dd if="${scratch}/book-from-tcr.epub" bs=1 skip=30 count=28 2> /dev/null)" = "mimetypeapplication/epub+zip" \
     && test "$(head -c 5 "${scratch}/book-from-tcr.pdf")" = '%PDF-' \
     && test "$(head -c 6 "${scratch}/book-from-tcr.rtf")" = '{\rtf1' \
@@ -726,12 +728,7 @@ COPY --chown=easyconvert:easyconvert scripts/worker-healthcheck.js ./scripts/wor
 # The ONNX runtime must load here (the image's libc, the binding of its architecture); the engine itself is checked by scripts/verify-worker-container.sh.
 RUN node -e "const ort = require('onnxruntime-node'); if (typeof ort.InferenceSession.create !== 'function') process.exit(1)"
 
-# 3. Create strictly permissioned scratch directories
-RUN mkdir -p /shared/storage /tmp /home/easyconvert \
-    && chown -R easyconvert:easyconvert /app /shared/storage /tmp /home/easyconvert \
-    && chmod 0750 /tmp /shared/storage /home/easyconvert
-
-# 3b. Additional global Tesseract tessdata_fast language packs (Apache-2.0; installed in their own layer so base engine layers stay cached,
+# 2b. Additional global Tesseract tessdata_fast language packs (Apache-2.0; installed before step 3 chmods /tmp to 0750 so _apt can write temp files,
 # and before step 4 so /usr/share/doc/tesseract-ocr-*/copyright and dpkg-query tool-versions.txt record every language package).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -746,6 +743,11 @@ RUN apt-get update \
         tesseract-ocr-vie \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# 3. Create strictly permissioned scratch directories
+RUN mkdir -p /shared/storage /tmp /home/easyconvert \
+    && chown -R easyconvert:easyconvert /app /shared/storage /tmp /home/easyconvert \
+    && chmod 0750 /tmp /shared/storage /home/easyconvert
 
 # 4. Copy system copyright notices and third-party notices
 RUN mkdir -p /licenses \
