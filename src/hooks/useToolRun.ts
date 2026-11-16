@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { conversionFailureOf, type ConversionFailure } from '@/lib/conversion-failure';
+import { useBeforeUnloadWhileBusy } from '@/lib/queue-session-persistence';
 import { releaseToolResult, runToolRequest, type ToolResult } from '@/lib/tools/tool-client';
 import { defaultToolOptions, type WebTool, type WebToolOptions } from '@/lib/tools/tool-names';
 
@@ -52,6 +53,7 @@ export function useToolRun(tool: WebTool) {
   const [surplus, setSurplus] = useState(0);
   const controller = useRef<AbortController | null>(null);
   const shown = useRef<ToolResult | null>(null);
+  useBeforeUnloadWhileBusy(phase === 'running');
 
   /** Ends the run in flight: its request is aborted, so its answer can no longer replace what the page shows. */
   const stop = () => {

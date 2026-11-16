@@ -1,6 +1,7 @@
 import { ConversionQueueItem } from './types';
 import { tryProcessClientEdgeOcr } from './edge-ocr';
 import { resolveConversionTier, resolveTierAfterEdgeFailure, ConversionTier } from './edge/tier-router';
+import { isInAppWebView } from './edge/mobile-browser-guard';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported, encodeBmpFromImageData } from './edge/pure/pure-canvas';
 import { warnBrowserFailure } from './browser-failure';
@@ -80,16 +81,11 @@ function describeEdgeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/**
- * Attempts to process the conversion item directly in client edge memory (Tiers L0, L1, L2, L3).
- * Returns conversion result on success or null if server pipeline should be used.
- */
 export async function tryProcessClientEdge(
   item: ConversionQueueItem,
   onProgress?: (progress: number) => void
 ): Promise<ClientEdgeResult | null> {
-  // If user explicitly opted out of client-edge processing
-  if (item.options.clientEdgeMode === false || typeof window === 'undefined') {
+  if (item.options.clientEdgeMode === false || typeof window === 'undefined' || (item.options.clientEdgeMode !== true && isInAppWebView())) {
     return null;
   }
 
@@ -625,19 +621,12 @@ export async function executeItemConversion(
     return;
   }
 
-  // 3. Server-side conversion pipeline: one request, or for a file too large for one request an upload in parts and a
-  // job (entry 137); the retention rule of entry 125 deletes the input and the result.
-  const inParts = needsUploadInParts(item.file.size);
+  const inParts = needsUploadInParts(item.file.size) || isInAppWebView();
   try {
-    // One request sends the file and waits for the result: its conversion stage starts at once and has no measure of progress.
     if (!inParts) callbacks.onStage?.('converting');
     const serverOptions = serverOptionsFor(item.sourceFormat, item.targetFormat, item.options);
     const cloudRes = inParts
-      ? await executeResumableCloudConversion(item.file, item.targetFormat, serverOptions, {
-          onProgress: callbacks.onProgress,
-          onStage: callbacks.onStage,
-          signal,
-        })
+      ? await executeResumableCloudConversion(item.file, item.targetFormat, serverOptions, { onProgress: callbacks.onProgress, onStage: callbacks.onStage, signal })
       : await executeServerlessCloudFallback(item.file, item.targetFormat, serverOptions, signal);
     const answer = answerOfCompression(item, cloudRes);
     callbacks.onSuccess(answer.url, answer.size, false, inParts ? CLOUD_PARTS_TIER_NAME : CLOUD_TIER_NAME, escalation, answer.unchanged);

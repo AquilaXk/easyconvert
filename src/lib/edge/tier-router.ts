@@ -1,13 +1,4 @@
-/**
- * Tier Capability Router & Runtime Probing Engine
- *
- * Implements 5-Tier Adaptive Edge routing across:
- * - Level 0: Pure Isomorphic Fast-Path (0 MB Wasm, pure TS/Audio/Canvas)
- * - Level 1: WebCodecs Hardware Media (GPU/VPU)
- * - Level 2: Zero-COOP SIMD Wasm (Wasm-vips, Tesseract OCR, pdf-lib)
- * - Level 3: OPFS Streaming VFS (100MB+ ~ GB large files)
- * - Level 4: Serverless API Fallback (Cloud)
- */
+/** 5-Tier Adaptive Edge capability router and runtime probing engine (L0..L4). */
 
 import { ConversionOptions } from '../types';
 import { isImageCompression } from '../image-compression';
@@ -18,6 +9,7 @@ import { isPureAudioConvertible } from './pure/pure-audio';
 import { isPureCanvasConvertible, isCanvasSupported } from './pure/pure-canvas';
 import { EdgeUnsupportedError } from './workers/worker-errors';
 import { OPFS_MAX_FILE_BYTES } from './opfs/limits';
+import { fitsOpfsStream, isMobileConstrainedBrowser, MOBILE_CONSTRAINED_MAX_BYTES } from './mobile-browser-guard';
 
 export type ConversionTier = 'L0' | 'L1' | 'L1A' | 'L2' | 'L3' | 'L4';
 
@@ -468,14 +460,9 @@ export function evaluateMicroVMOffload(
     };
   }
 
-  // 6. Low-spec device heuristics
-  const cores =
-    capabilities?.hardwareConcurrency ??
-    (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined);
-  const memoryGb =
-    capabilities?.deviceMemory ??
-    (typeof navigator !== 'undefined' ? (navigator as any).deviceMemory : undefined);
-
+  // 6. Low-spec and mobile-constrained device heuristics
+  const cores = capabilities?.hardwareConcurrency ?? (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined);
+  const memoryGb = capabilities?.deviceMemory ?? (typeof navigator !== 'undefined' ? (navigator as any).deviceMemory : undefined);
   const isLowSpec =
     (cores !== undefined && cores <= MICROVM_PAYLOAD_BUDGETS.LOW_SPEC_CONCURRENCY_THRESHOLD) ||
     (memoryGb !== undefined && memoryGb < MICROVM_PAYLOAD_BUDGETS.LOW_SPEC_MEMORY_GB_THRESHOLD);
@@ -486,6 +473,14 @@ export function evaluateMicroVMOffload(
       category: 'low-spec',
       reason: `Low-spec client device (${cores ?? 'unknown'} cores, ${memoryGb ?? 'unknown'}GB RAM) offloading payload to isolated MicroVM to prevent tab OOM crash`,
       budgetLimit: MICROVM_PAYLOAD_BUDGETS.LOW_SPEC_PAYLOAD_MAX_BYTES,
+    };
+  }
+  if (isMobileConstrainedBrowser(memoryGb) && fileSize > MOBILE_CONSTRAINED_MAX_BYTES) {
+    return {
+      shouldOffload: true,
+      category: 'low-spec',
+      reason: 'Mobile browser per-tab memory guard offloading payload to server to prevent tab Jetsam crash',
+      budgetLimit: MOBILE_CONSTRAINED_MAX_BYTES,
     };
   }
 
@@ -554,7 +549,7 @@ export function resolveConversionTier(
   // 2. High-volume streaming file (> 100 MB)
   const isLargeFile = fileSize > 100 * 1024 * 1024;
   const opfsAvailable = capabilities?.hasOpfsSyncAccess ?? checkOpfsSupport();
-  const fitsOpfs = fileSize <= OPFS_MAX_FILE_BYTES;
+  const fitsOpfs = fitsOpfsStream(fileSize, OPFS_MAX_FILE_BYTES, capabilities?.deviceMemory);
   const isOpfsEligible = isLargeFile && fitsOpfs && opfsAvailable && isOpfsStreamingSupported(src, tgt, options);
 
   if (isLargeFile) {

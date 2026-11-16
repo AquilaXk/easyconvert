@@ -325,4 +325,14 @@ export class PaddleBillingProvider implements BillingProvider {
     const own = session.urls.subscriptions.find((entry) => entry.id === subscription.providerSubscriptionId);
     return { url: session.urls.general.overview, ...(own ? { cancelUrl: own.cancelSubscription } : {}) };
   }
+
+  async cancelSubscription(subscription: SubscriptionRecord): Promise<void> {
+    if (subscription.status === 'canceled') return;
+    try {
+      await this.paddle.subscriptions.cancel(subscription.providerSubscriptionId, { effectiveFrom: 'immediately' });
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'subscription_update_when_canceled') return;
+      throw error;
+    }
+  }
 }

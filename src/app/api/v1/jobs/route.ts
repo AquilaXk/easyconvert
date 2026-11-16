@@ -20,6 +20,7 @@ import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-li
 import { resolveResourceClass, tierToPriority } from '@/lib/queue/resource-class';
 import { generateJobId } from '@/lib/queue/bullmq-engine';
 import { storageProvider as s3Storage } from '@/lib/storage';
+import { deleteResult } from '@/lib/storage/retention-service';
 import { CredentialsVaultPersistenceError } from '@/lib/storage/credentials-vault';
 import { storeUploadedBuffer } from '@/lib/api/completed-upload';
 import { OBJECT_HEADER_BYTES, readObjectRange } from '@/lib/storage/object-header';
@@ -830,22 +831,25 @@ interface SubmittedInput {
 }
 
 /**
- * The input a job or graph reads: a key it named, or the input sent in the request body, stored. A multipart file is always
- * stored; an inline base64 input is stored only for a graph, which reads every input from storage, and a single job keeps it
- * in its data. Only a submission that passed every check and holds its units gets here, so a refused request stores nothing.
+ * The input a job or graph reads: a key it named, or the input sent in the request body (multipart or inline base64), stored
+ * in the object store so Redis never holds multi-megabyte file payloads. Only a submission that passed every check and holds
+ * its units gets here, so a refused request stores nothing.
  */
 async function storedRequestInput(
   input: SubmittedInput,
-  graph: JobGraph | undefined,
   file: { filename: string; mimeType: string },
   ownerUserId: string
-): Promise<{ storageKey?: string; inputBufferBase64?: string }> {
+): Promise<{ storageKey?: string; knownBytes?: number; spilledKey?: string }> {
   const { storageKey, uploadedBuffer, fileMeta, inputBufferBase64 } = input;
-  if (storageKey) return { storageKey, inputBufferBase64 };
-  if (uploadedBuffer && fileMeta) return { storageKey: await storeRequestInput(uploadedBuffer, fileMeta, ownerUserId), inputBufferBase64 };
-  if (!graph || !inputBufferBase64) return { inputBufferBase64 };
+  if (storageKey) return { storageKey };
+  if (uploadedBuffer && fileMeta) {
+    const key = await storeRequestInput(uploadedBuffer, fileMeta, ownerUserId);
+    return { storageKey: key, knownBytes: uploadedBuffer.length, spilledKey: key };
+  }
+  if (!inputBufferBase64) return {};
   const decoded = Buffer.from(inputBufferBase64, 'base64');
-  return { storageKey: await storeRequestInput(decoded, { name: file.filename || 'input', type: file.mimeType, size: decoded.length }, ownerUserId) };
+  const key = await storeRequestInput(decoded, { name: file.filename || 'input', type: file.mimeType, size: decoded.length }, ownerUserId);
+  return { storageKey: key, knownBytes: decoded.length, spilledKey: key };
 }
 
 /** The nodes of a graph with each import.upload node that names the request's own input (`inline`) reading `storageKey`. */
@@ -984,101 +988,93 @@ function creditsToReserve(graph: JobGraph | undefined, graphUnits: number, sourc
 async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit): Promise<NextResponse> {
   const { user, sourceDef, targetDef, originalFilename, fileSize, options, graph } = submission;
   const answered = { sourceFormat: sourceDef.id, targetFormat: targetDef.id, originalFilename };
-  const { storageKey, inputBufferBase64 } = await storedRequestInput(submission.input, graph, { filename: originalFilename, mimeType: sourceDef.mimeType }, user.id);
+  const { storageKey, knownBytes, spilledKey } = await storedRequestInput(submission.input, { filename: originalFilename, mimeType: sourceDef.mimeType }, user.id);
 
-  // A graph (including legacy linear tasks) runs only through the graph scheduler, which
-  // enqueues each node; a separate conversion job would run the pipeline a second time.
-  if (graph) {
-    graph.nodes = storageKey ? withInlineInputStored(normalizeGraphNodes(graph), storageKey) : normalizeGraphNodes(graph);
-    const graphId = generateJobId();
-    // Sealed before the hand-off, so a secret that cannot be sealed gives the unit back at once.
-    const sealedGraph = sealGraph(graphId, graph as unknown as SchedulerJobGraph);
-    const graphState = await withGraphInputsHeld(graphId, graph.nodes, () =>
-      unit.handOff({
-        start: (reservationId) =>
-          graphScheduler.initGraph(graphId, sealedGraph, {
-            ownerUserId: user.id,
-            reservationId,
-            webhookUrl: submission.webhookUrl,
-            webhookSecret: submission.webhookSecret,
-            webhookKeyId: submission.webhookKeyId,
-            originalFilename,
-            sourceStorageKey: storageKey,
-            sourceFormat: sourceDef.id,
-            targetFormat: targetDef.id,
-            tasks: submission.tasks,
-            namedTasks: submission.namedTasks,
-          }),
-        recover: () => graphScheduler.recoverStart(graphId),
-      })
+  try {
+    // A graph (including legacy linear tasks) runs only through the graph scheduler, which
+    // enqueues each node; a separate conversion job would run the pipeline a second time.
+    if (graph) {
+      graph.nodes = storageKey ? withInlineInputStored(normalizeGraphNodes(graph), storageKey) : normalizeGraphNodes(graph);
+      const graphId = generateJobId();
+      // Sealed before the hand-off, so a secret that cannot be sealed gives the unit back at once.
+      const sealedGraph = sealGraph(graphId, graph as unknown as SchedulerJobGraph);
+      const graphState = await withGraphInputsHeld(graphId, graph.nodes, () =>
+        unit.handOff({
+          start: (reservationId) =>
+            graphScheduler.initGraph(graphId, sealedGraph, {
+              ownerUserId: user.id,
+              reservationId,
+              webhookUrl: submission.webhookUrl,
+              webhookSecret: submission.webhookSecret,
+              webhookKeyId: submission.webhookKeyId,
+              originalFilename,
+              sourceStorageKey: storageKey,
+              sourceFormat: sourceDef.id,
+              targetFormat: targetDef.id,
+              tasks: submission.tasks,
+              namedTasks: submission.namedTasks,
+            }),
+          recover: () => graphScheduler.recoverStart(graphId),
+        })
+      );
+      const nodesResponse = Object.fromEntries(
+        Object.entries(graphState.nodes).map(([nid, ns]) => [nid, { status: ns.status, outputs: ns.outputs || [] }])
+      );
+      return NextResponse.json(
+        {
+          success: true,
+          jobId: graphId,
+          status: graphState.status,
+          statusUrl: `/api/v1/jobs/${graphId}`,
+          createdAt: graphState.createdAt,
+          reservationId: graphState.reservationId,
+          ...answered,
+          graph: redactForOutput(graphState.graph),
+          nodes: nodesResponse,
+          ...(submission.namedTasks ? namedJobFields(graphState) : {}),
+        },
+        { status: 202 }
+      );
+    }
+
+    // Resolve resource class and scheduling priority from the size of the input as the server knows it: the `fileSize` of a JSON body is
+    // the client's own figure (absent, or any number), and only stands in when the input cannot be sized.
+    const inputBytes = await trustedInputBytes(
+      { storageKey, knownStorageSize: knownBytes },
+      { stat: submission.statStorageKey ?? ((key) => s3Storage.stat(key)) }
     );
-    const nodesResponse = Object.fromEntries(
-      Object.entries(graphState.nodes).map(([nid, ns]) => [nid, { status: ns.status, outputs: ns.outputs || [] }])
-    );
-    return NextResponse.json(
+    const routedBytes = inputBytes ?? fileSize;
+    const resClass = resolveResourceClass(sourceDef.id, targetDef.id, routedBytes, options);
+    // Enqueue conversion job to the appropriate resource-class queue
+    const job = await handOffConversionJob(
+      unit,
+      getQueueForResourceClass(resClass),
       {
-        success: true,
-        jobId: graphId,
-        status: graphState.status,
-        statusUrl: `/api/v1/jobs/${graphId}`,
-        createdAt: graphState.createdAt,
-        reservationId: graphState.reservationId,
-        ...answered,
-        graph: redactForOutput(graphState.graph),
-        nodes: nodesResponse,
-        ...(submission.namedTasks ? namedJobFields(graphState) : {}),
+        jobId: '',
+        originalFilename,
+        sourceFormat: sourceDef.id,
+        targetFormat: targetDef.id,
+        fileSize: routedBytes,
+        storageKey,
+        options: stripEngineControls(options),
+        webhookUrl: submission.webhookUrl,
+        webhookSecret: submission.webhookSecret,
+        webhookKeyId: submission.webhookKeyId,
+        userId: user.id,
+        resourceClass: resClass,
       },
+      { attempts: 3, backoff: { type: 'exponential', delay: 1000 }, priority: tierToPriority(user.tier) },
+      { tier: user.tier, inputBytes }
+    );
+
+    return NextResponse.json(
+      { success: true, jobId: job.id, status: job.state, statusUrl: `/api/v1/jobs/${job.id}`, createdAt: job.timestamp, reservationId: job.data.reservationId, ...answered },
       { status: 202 }
     );
+  } catch (err) {
+    if (spilledKey) await deleteResult(s3Storage, spilledKey).catch(() => undefined);
+    throw err;
   }
-
-  // Resolve resource class and scheduling priority from the size of the input as the server knows it: the `fileSize` of a JSON body is
-  // the client's own figure (absent, or any number), and only stands in when the input cannot be sized.
-  const inputBytes = await trustedInputBytes(
-    { storageKey, inputBufferBase64, knownStorageSize: submission.input.uploadedBuffer?.length },
-    { stat: submission.statStorageKey ?? ((key) => s3Storage.stat(key)) }
-  );
-  const routedBytes = inputBytes ?? fileSize;
-  const resClass = resolveResourceClass(sourceDef.id, targetDef.id, routedBytes, options);
-  // Enqueue conversion job to the appropriate resource-class queue
-  const job = await handOffConversionJob(
-    unit,
-    getQueueForResourceClass(resClass),
-    {
-      jobId: '',
-      originalFilename,
-      sourceFormat: sourceDef.id,
-      targetFormat: targetDef.id,
-      fileSize: routedBytes,
-      storageKey,
-      inputBufferBase64,
-      options: stripEngineControls(options),
-      webhookUrl: submission.webhookUrl,
-      webhookSecret: submission.webhookSecret,
-      webhookKeyId: submission.webhookKeyId,
-      userId: user.id,
-      resourceClass: resClass,
-    },
-    {
-      attempts: 3,
-      backoff: { type: 'exponential', delay: 1000 },
-      priority: tierToPriority(user.tier),
-    },
-    { tier: user.tier, inputBytes }
-  );
-
-  return NextResponse.json(
-    {
-      success: true,
-      jobId: job.id,
-      status: job.state,
-      statusUrl: `/api/v1/jobs/${job.id}`,
-      createdAt: job.timestamp,
-      reservationId: job.data.reservationId,
-      ...answered,
-    },
-    { status: 202 }
-  );
 }
 
 export async function GET(req: NextRequest) {
@@ -1087,18 +1083,9 @@ export async function GET(req: NextRequest) {
 
 async function listJobs(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/jobs';
-
-  // Guard check: Authenticate API key or user session with 'convert:read' scope
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:read' });
   if (!auth.authorized || !auth.user) {
-    return createProblemDetailsResponse(
-      auth.status ?? 401,
-      auth.error ?? 'Unauthorized',
-      instanceUri,
-      undefined,
-      auth.problemType,
-      authErrorHeaders(auth)
-    );
+    return createProblemDetailsResponse(auth.status ?? 401, auth.error ?? 'Unauthorized', instanceUri, undefined, auth.problemType, authErrorHeaders(auth));
   }
 
   const { searchParams } = new URL(req.url);

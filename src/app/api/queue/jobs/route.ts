@@ -9,6 +9,7 @@ import { detectFormatFromFilename } from '@/lib/registry';
 import { ALTO_SNIFF_BYTES, promoteAltoXmlSource } from '@/lib/conversions/ocr-alto-sniff';
 import { ConversionOptions } from '@/lib/types';
 import { storageProvider } from '@/lib/storage';
+import { deleteResult } from '@/lib/storage/retention-service';
 import { storeUploadedBuffer } from '@/lib/api/completed-upload';
 import { readObjectHeader } from '@/lib/storage/object-header';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject, spoofCheckRefusal } from '@/lib/security/file-guard';
@@ -196,6 +197,7 @@ async function prepareJobInput(user: User, request: JobRequest, instanceUri: str
 
 /** Queues the job, which then owns the unit: the worker commits it or gives it back when the job ends. */
 async function queueJob(req: NextRequest, user: User, unit: ReservedUnit, instanceUri: string): Promise<Response> {
+  let spilledKey: string | undefined;
   try {
     // At most five conversions in flight (queued plus running) for an anonymous or free caller.
     const room = await mayEnqueue(user.id, user.tier);
@@ -204,13 +206,33 @@ async function queueJob(req: NextRequest, user: User, unit: ReservedUnit, instan
     const parsed = await readJobRequest(req, instanceUri, user.id);
     if ('refusal' in parsed) return parsed.refusal;
     const request = parsed.request;
+    if (request.uploadedInline && request.storageKey) spilledKey = request.storageKey;
 
     const prepared = await prepareJobInput(user, request, instanceUri);
-    if ('refusal' in prepared) return prepared.refusal;
+    if ('refusal' in prepared) {
+      if (spilledKey) await deleteResult(storageProvider, spilledKey).catch(() => undefined);
+      return prepared.refusal;
+    }
 
     // The unit was reserved for one credit before the formats were known; the rest of the cost of this pair is held now.
     const short = await holdBaseCredits(unit, user, baseCredits(prepared.sourceFormat, request.targetFormat));
-    if (short) return conversionRefusalResponse(short, instanceUri);
+    if (short) {
+      if (spilledKey) await deleteResult(storageProvider, spilledKey).catch(() => undefined);
+      return conversionRefusalResponse(short, instanceUri);
+    }
+
+    let storageKey = request.storageKey;
+    if (!storageKey && request.inputBufferBase64) {
+      const decoded = Buffer.from(request.inputBufferBase64, 'base64');
+      const mimeType = detectFormatFromFilename(request.originalFilename)?.mimeType ?? 'application/octet-stream';
+      storageKey = await storeUploadedBuffer(
+        storageProvider,
+        decoded,
+        { name: request.originalFilename || 'input', type: mimeType, size: decoded.length },
+        user.id
+      );
+      spilledKey = storageKey;
+    }
 
     const job = await handOffConversionJob(
       unit,
@@ -220,9 +242,8 @@ async function queueJob(req: NextRequest, user: User, unit: ReservedUnit, instan
         originalFilename: request.originalFilename,
         sourceFormat: prepared.sourceFormat,
         targetFormat: request.targetFormat,
-        fileSize: request.fileSize,
-        storageKey: request.storageKey,
-        inputBufferBase64: request.inputBufferBase64,
+        fileSize: prepared.inputBytes ?? request.fileSize,
+        storageKey,
         options: stripEngineControls(request.options),
         userId: user.id,
       },
@@ -242,6 +263,7 @@ async function queueJob(req: NextRequest, user: User, unit: ReservedUnit, instan
       queue: conversionQueue.name,
     });
   } catch (error: unknown) {
+    if (spilledKey) await deleteResult(storageProvider, spilledKey).catch(() => undefined);
     const queueProblem = queueErrorResponse(error, instanceUri);
     if (queueProblem) return queueProblem;
     const storageProblem = storageErrorResponse(error, instanceUri);

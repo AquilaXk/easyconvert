@@ -1,5 +1,8 @@
-import PricingPageView from '@/components/pages/PricingPageView';
+import { getTranslations } from 'next-intl/server';
+import { PRICING_FAQ_ITEMS } from '@/components/billing/PricingFaq';
+import PricingPageView, { pricingLimitValues } from '@/components/pages/PricingPageView';
 import PageMessages from '@/i18n/PageMessages';
+import { serializeJsonLd } from '@/i18n/metadata';
 import { localizedPageMetadata, resolvePageLocale, type LocaleParams } from '@/i18n/page';
 import { readPublicBillingConfig } from '@/lib/billing/config';
 import { getAnonymousDailyLimit } from '@/lib/plan-limits';
@@ -13,10 +16,28 @@ export function generateMetadata({ params }: { params: LocaleParams }) {
 }
 
 export default async function PricingPage({ params }: Readonly<{ params: LocaleParams }>) {
-  await resolvePageLocale(params);
+  const locale = await resolvePageLocale(params);
+  const anonymousDaily = getAnonymousDailyLimit();
+  const values = pricingLimitValues(anonymousDaily);
+  const tPricing = await getTranslations({ locale, namespace: 'pricing' });
+  const faqJsonLd = serializeJsonLd({
+    '@context': 'https://schema.org',
+    '@type': 'FAQPage',
+    mainEntity: PRICING_FAQ_ITEMS.map((item) => ({
+      '@type': 'Question',
+      name: tPricing(`faq.${item}.question`),
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: tPricing(`faq.${item}.answer`, values),
+      },
+    })),
+  });
   return (
-    <PageMessages page="pricing">
-      <PricingPageView anonymousDaily={getAnonymousDailyLimit()} billing={readPublicBillingConfig()} />
-    </PageMessages>
+    <>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: faqJsonLd }} />
+      <PageMessages page="pricing">
+        <PricingPageView anonymousDaily={anonymousDaily} billing={readPublicBillingConfig()} />
+      </PageMessages>
+    </>
   );
 }

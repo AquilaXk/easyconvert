@@ -5,6 +5,11 @@ import { streamZipReadable } from '@/lib/archive/streaming-zip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
 import { executeItemConversion } from '@/lib/client-converter';
+import {
+  persistCompletedServerQueue,
+  restoreCompletedServerQueue,
+  useBeforeUnloadWhileBusy,
+} from '@/lib/queue-session-persistence';
 import { warnBrowserFailure } from '@/lib/browser-failure';
 import { getViewerMaxFileBytes } from '@/lib/viewer-plan';
 import type { HeroOperation } from '@/components/hero/useHeroUpload';
@@ -519,30 +524,20 @@ export function createConversionRunners(ctx: QueueMutationContext) {
 
 /** Immediately deletes a server-stored result (`/api/storage/file/...`) when the caller discards a completed queue item. */
 export function releaseStoredResultUrl(url?: string): void {
-  if (!url?.startsWith('/api/storage/file/')) return;
-  if (typeof fetch !== 'function') return;
+  if (!url?.startsWith('/api/storage/file/') || typeof fetch !== 'function') return;
   void fetch(url, { method: 'DELETE', keepalive: true }).catch(() => undefined);
 }
 
-const updateQueueState = (
-  ref: React.MutableRefObject<ConversionQueueItem[]>,
-  setter: React.Dispatch<React.SetStateAction<ConversionQueueItem[]>>,
-  action: React.SetStateAction<ConversionQueueItem[]>
-) => {
-  const next = typeof action === 'function' ? action(ref.current) : action;
-  ref.current = next;
-  setter(next);
-};
-
 export function useClientQueue(options?: UseClientQueueOptions) {
-  // The queue owns the page's read of the session: its rows only follow the plan.
   useRefreshViewerPlan();
   useViewerPlan();
+  const persistScope = options?.bundlePrefix || 'workbench';
   const [queue, setQueue] = useState<ConversionQueueItem[]>([]);
   const [inFlightCount, setInFlightCount] = useState(0);
   const [isBatchRunning, setIsBatchRunning] = useState(false);
   const [zipError, setZipError] = useState(false);
   const queueRef = useRef<ConversionQueueItem[]>(queue);
+  const hydratedRef = useRef(false);
   const generationRef = useRef<Map<string, number>>(new Map());
   const inFlightIdsRef = useRef<Set<string>>(new Set());
   const abortersRef = useRef<Map<string, AbortController>>(new Map());
@@ -551,7 +546,19 @@ export function useClientQueue(options?: UseClientQueueOptions) {
   const mountedRef = useRef(true);
   const batchGenRef = useRef(0);
   const batchRunningRef = useRef(false);
-  const updateQueue: React.Dispatch<React.SetStateAction<ConversionQueueItem[]>> = (a) => updateQueueState(queueRef, setQueue, a);
+  const updateQueue: React.Dispatch<React.SetStateAction<ConversionQueueItem[]>> = (a) => {
+    const next = typeof a === 'function' ? a(queueRef.current) : a;
+    queueRef.current = next;
+    setQueue(next);
+    if (hydratedRef.current) persistCompletedServerQueue(next, persistScope);
+  };
+  useEffect(() => {
+    if (hydratedRef.current) return;
+    hydratedRef.current = true;
+    const restored = queueRef.current.length === 0 ? restoreCompletedServerQueue(persistScope) : [];
+    if (restored.length > 0) { queueRef.current = restored; setQueue(restored); }
+  }, [persistScope]);
+  useBeforeUnloadWhileBusy(inFlightCount > 0 || isBatchRunning);
   const syncInFlight = () => {
     if (mountedRef.current) setInFlightCount(inFlightIdsRef.current.size);
   };

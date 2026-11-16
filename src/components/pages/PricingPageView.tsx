@@ -22,7 +22,7 @@ const LIMIT_ROWS = ['daily', 'fileSize', 'concurrent', 'processing', 'deletion']
 const FEATURE_ROWS = ['formats', 'api', 'noCard'] as const;
 
 /** The limits of the plans and the credit costs, read from `plan-limits` and `credits` so that the figures on the page are the ones the server enforces. */
-function limitValues(anonymousDaily: number) {
+export function pricingLimitValues(anonymousDaily: number) {
   return {
     daily: FREE_DAILY_CREDITS,
     anonymous: anonymousDaily,
@@ -42,7 +42,7 @@ function limitValues(anonymousDaily: number) {
 /** The pricing page: the free plan with its limits, a package and a subscription of the volume the visitor picks, Enterprise, the credits each conversion uses, and the questions about them (packages and subscriptions read "coming soon" until billing is configured, as `billing` says). */
 export default function PricingPageView({ anonymousDaily, billing }: Readonly<{ anonymousDaily: number; billing: PublicBillingConfig | null }>) {
   const t = useTranslations('pricing');
-  const values = limitValues(anonymousDaily);
+  const values = pricingLimitValues(anonymousDaily);
   const freeCard = (
     <section aria-labelledby="free-plan-heading" className="rounded-md border border-rule bg-surface p-6 sm:p-8 md:p-6 flex flex-col">
       <h2 id="free-plan-heading" className="text-xl text-ink">{t('plan.name')}</h2>

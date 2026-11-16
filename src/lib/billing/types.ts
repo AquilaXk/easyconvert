@@ -149,4 +149,6 @@ export interface BillingProvider {
   listSubscriptions(options: { perPage: number; signal: AbortSignal }): AsyncGenerator<ListedSubscription[], void, void>;
   /** A link for the subscriber to update the payment method and to cancel. */
   createPortalLink(subscription: SubscriptionRecord): Promise<{ url: string; cancelUrl?: string }>;
+  /** Cancels a recurring subscription immediately at the payment provider before the account is erased. */
+  cancelSubscription(subscription: SubscriptionRecord): Promise<void>;
 }

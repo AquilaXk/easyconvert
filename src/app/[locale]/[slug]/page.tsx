@@ -4,7 +4,7 @@ import { getTranslations } from 'next-intl/server';
 import ConverterPageView from '@/components/pages/ConverterPageView';
 import { localizeSlugCopy } from '@/components/converter/slug-copy';
 import PageMessages from '@/i18n/PageMessages';
-import { localeAlternates } from '@/i18n/metadata';
+import { localeAlternates, socialMetadata, webApplicationJsonLd } from '@/i18n/metadata';
 import { resolvePageLocale } from '@/i18n/page';
 import { parseConverterSlug, type ParsedSlug } from '@/lib/slug-parser';
 import { getAnonymousDailyLimit } from '@/lib/plan-limits';
@@ -27,21 +27,40 @@ export async function generateMetadata({ params }: ConverterPageProps): Promise<
     getTranslations({ locale, namespace: 'meta.converter' }),
   ]);
   const copy = localizeSlugCopy(tSlug, parsed, locale);
+  const title = tMeta('title', { title: copy.title });
   return {
-    title: tMeta('title', { title: copy.title }),
+    title,
     description: copy.description,
     alternates: localeAlternates(locale, parsed.canonicalPath),
+    ...socialMetadata(locale, parsed.canonicalPath, title, copy.description),
   };
 }
 
 export default async function ConverterPage({ params }: Readonly<ConverterPageProps>) {
   const { slug } = await params;
-  await resolvePageLocale(params);
+  const locale = await resolvePageLocale(params);
   const parsed = pageSlug(slug);
+  let jsonLd: string | null = null;
+  if (!parsed.isInfoPage) {
+    const [tSlug, tMeta] = await Promise.all([
+      getTranslations({ locale, namespace: 'slugPages' }),
+      getTranslations({ locale, namespace: 'meta.converter' }),
+    ]);
+    const copy = localizeSlugCopy(tSlug, parsed, locale);
+    jsonLd = webApplicationJsonLd({
+      locale,
+      pathname: parsed.canonicalPath,
+      name: tMeta('title', { title: copy.title }),
+      description: copy.description,
+    });
+  }
 
   return (
-    <PageMessages page="converter" formatIds={[parsed.sourceFormat, parsed.targetFormat]}>
-      <ConverterPageView parsed={parsed} dailyLimit={getAnonymousDailyLimit()} />
-    </PageMessages>
+    <>
+      {jsonLd && <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd }} />}
+      <PageMessages page="converter" formatIds={[parsed.sourceFormat, parsed.targetFormat]}>
+        <ConverterPageView parsed={parsed} dailyLimit={getAnonymousDailyLimit()} />
+      </PageMessages>
+    </>
   );
 }

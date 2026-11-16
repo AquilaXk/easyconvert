@@ -218,6 +218,7 @@
   "tests/client-ip-unattributed-mode.test.ts": 2.4,
   "tests/color-quantizer-hilbert.test.ts": 1.3,
   "tests/colour-tags.test.ts": 0.6,
+  "tests/commercial-ready-hardening.test.ts": 1.2,
   "tests/commercial-web-tools.test.ts": 0.2,
   "tests/compare-and-set.test.ts": 0,
   "tests/compiled-worker-entry.test.ts": 0.1,

@@ -533,6 +533,84 @@ export const internalPaths = {
       },
     },
   },
+  '/api/auth/account': {
+    delete: {
+      ...INTERNAL,
+      summary: 'Delete Account',
+      description:
+        'Permanently erases the signed-in account, API keys, webhooks, stored files, jobs and quota records after re-verifying credentials (`password` for password accounts, `confirmEmail` for OAuth accounts) and immediately canceling any active recurring subscription at the payment provider.',
+      operationId: 'deleteAccount',
+      security: SESSION_ONLY,
+      requestBody: jsonBody(
+        {
+          confirm: { type: 'string', enum: ['DELETE'] },
+          password: { type: 'string', minLength: 1, maxLength: 1024 },
+          confirmEmail: { type: 'string', format: 'email' },
+        },
+        ['confirm']
+      ),
+      responses: {
+        '200': {
+          ...opaqueAccepted('Account erased.'),
+          headers: sessionCookieHeader,
+        },
+        '400': createCodedErrorResponse(
+          'Invalid JSON, missing confirmation or credentials, wrong confirmation email, or a client address the forwarding headers do not name.',
+          ['invalid_json', 'missing_fields', 'invalid_email', 'client_address_unknown']
+        ),
+        '401': createCodedErrorResponse('Authentication required or invalid current password.', ['invalid_credentials']),
+        '409': createErrorResponse('Active conversions were cancelled and are stopping; retry in a few seconds.'),
+        '429': {
+          ...createProblemResponse('Too many failed attempts (problem type `rate-limited`, `code` "login_locked", the wait in `retryAfterSeconds`); see `Retry-After`.'),
+          headers: { 'Retry-After': { schema: { type: 'integer' } } },
+        },
+        '500': createErrorResponse('Account deletion failed on the server (fixed `error`, no `code`).'),
+        '502': createCodedErrorResponse('Payment provider failed while canceling an active subscription.', ['billing_provider_failed']),
+        '503': createCodedErrorResponse(
+          'Auth store, billing configuration, or client-IP trust configuration is unavailable; see `Retry-After`.',
+          ['auth_store_unavailable', 'billing_unavailable', 'client_ip_unconfigured']
+        ),
+      },
+    },
+  },
+  '/api/auth/password-change': {
+    post: {
+      ...INTERNAL,
+      summary: 'Change Password',
+      description:
+        'Changes the password of the signed-in password account after verifying its current password, revokes every earlier session (`sessionVersion`), and issues a fresh session cookie.',
+      operationId: 'changePassword',
+      security: SESSION_ONLY,
+      requestBody: jsonBody(
+        {
+          currentPassword: { type: 'string', minLength: 1, maxLength: 1024 },
+          newPassword: { type: 'string', minLength: 8, maxLength: 1024 },
+        },
+        ['currentPassword', 'newPassword']
+      ),
+      responses: {
+        '200': {
+          ...opaqueAccepted('Password changed.'),
+          headers: sessionCookieHeader,
+        },
+        '400': createCodedErrorResponse(
+          'Invalid JSON, missing passwords, new password length out of range, an account without password sign-in, or a client address the forwarding headers do not name.',
+          ['invalid_json', 'missing_fields', 'password_length', 'invalid_credentials', 'client_address_unknown']
+        ),
+        '401': createCodedErrorResponse('Authentication required or incorrect current password.', ['invalid_credentials']),
+        '404': createErrorResponse('Account not found.'),
+        '429': {
+          ...createProblemResponse('Too many failed attempts (problem type `rate-limited`, `code` "login_locked", the wait in `retryAfterSeconds`); see `Retry-After`.'),
+          headers: { 'Retry-After': { schema: { type: 'integer' } } },
+        },
+        '500': createErrorResponse('Password change failed on the server (fixed `error`, no `code`).'),
+        '503': createCodedErrorResponse(
+          'Auth store or client-IP trust configuration is unavailable; see `Retry-After`.',
+          ['auth_store_unavailable', 'client_ip_unconfigured']
+        ),
+      },
+    },
+  },
   '/api/auth/password-reset': {
     get: {
       ...INTERNAL,
