@@ -266,7 +266,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3949
+    "maxValue": 3946
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -1707,7 +1707,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2245
+    "maxValue": 2226
   },
   {
     "file": "src/lib/queue/conversion-queue.ts",
@@ -1764,7 +1764,7 @@
     "rule": "complexity",
     "function": "processNodeJob",
     "count": 1,
-    "maxValue": 49
+    "maxValue": 47
   },
   {
     "file": "src/lib/queue/node-processor.ts",
@@ -1874,12 +1874,6 @@
   {
     "file": "src/lib/storage/tus-engine.ts",
     "rule": "@typescript-eslint/no-explicit-any",
-    "function": "appendChunk",
-    "count": 1
-  },
-  {
-    "file": "src/lib/storage/tus-engine.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
     "function": "toNodeReadable",
     "count": 3
   },
@@ -1908,7 +1902,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2341
+    "maxValue": 2339
   },
   {
     "file": "src/worker/engines.ts",

@@ -62,6 +62,8 @@ const MAX_OUTPUT_BYTES = 1024 * 1024 * 1024;
 const BOOT_TIMEOUT_MS = 10_000;
 const DEFAULT_RUN_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
+/** Consecutive setup declines with zero completed runs indicate a host kernel/AppArmor blocking userns; trip into backoff. */
+const UNISOLATED_HOST_SETUP_FAILURE_LIMIT = 8;
 const BYTES_PER_MB = 1024 * 1024;
 const SIGKILL = 9;
 const SIGSEGV = 11;
@@ -274,6 +276,8 @@ interface RunnerJob {
 
 class RunnerHost extends HelperHost<RunnerJob> {
   private readonly reader = new ReplyReader();
+  private hostRanCount = 0;
+  private consecutiveSetupFailures = 0;
   version = '';
 
   constructor(binary: string) {
@@ -348,6 +352,8 @@ class RunnerHost extends HelperHost<RunnerJob> {
     const { options } = pending;
     switch (result.kind) {
       case KIND_EXITED:
+        this.hostRanCount++;
+        this.consecutiveSetupFailures = 0;
         if (result.exitStatus === 0 && result.signal === 0) {
           const sandbox = detectSandboxEnvironment();
           pending.resolve({
@@ -363,15 +369,27 @@ class RunnerHost extends HelperHost<RunnerJob> {
         }
         return;
       case KIND_TIMEOUT:
+        this.hostRanCount++;
+        this.consecutiveSetupFailures = 0;
         pending.reject(new SandboxedTimeoutError(options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS));
         return;
       case KIND_OUTPUT_LIMIT:
+        this.hostRanCount++;
+        this.consecutiveSetupFailures = 0;
         pending.reject(new SandboxedBufferLimitError(options.maxBuffer ?? DEFAULT_MAX_BUFFER_BYTES));
         return;
       case KIND_CANCELLED:
+        this.hostRanCount++;
+        this.consecutiveSetupFailures = 0;
         pending.reject(new Error('The operation was aborted'));
         return;
       case KIND_SETUP:
+        this.consecutiveSetupFailures++;
+        pending.reject(new RunnerDeclined(result.stderr.toString('utf8') || `setup failed (${result.kind})`));
+        if (this.hostRanCount === 0 && this.consecutiveSetupFailures >= UNISOLATED_HOST_SETUP_FAILURE_LIMIT) {
+          this.stop(true);
+        }
+        return;
       case KIND_REJECTED:
       default:
         pending.reject(new RunnerDeclined(result.stderr.toString('utf8') || `setup failed (${result.kind})`));
@@ -448,9 +466,16 @@ function runnerCanTake(binary: string, options: LaunchedExecutionOptions): boole
  * those of the usual way, which also starts the job whenever the runner declines it or cannot isolate it.
  */
 export async function launchQpdf(binary: string, args: string[], options: LaunchedExecutionOptions = {}): Promise<SandboxedExecutionResult> {
-  const current = slot.ready;
-  if (!current) void slot.start();
-  if (!current || !qpdfRunnerEnabled() || !runnerCanTake(binary, options)) {
+  if (!qpdfRunnerEnabled() || !runnerCanTake(binary, options)) {
+    fallbackCount++;
+    return launchSandboxedBinary(binary, args, options);
+  }
+  let current = slot.ready;
+  if (!current) {
+    await slot.start();
+    current = slot.ready;
+  }
+  if (!current) {
     fallbackCount++;
     return launchSandboxedBinary(binary, args, options);
   }

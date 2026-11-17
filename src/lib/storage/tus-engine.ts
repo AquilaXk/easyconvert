@@ -940,6 +940,235 @@ export class TusEngine {
     });
   }
 
+  private async ensureStagedTailReady(
+    id: string,
+    session: TusSession,
+    infoPath: string,
+    binPath: string,
+    expectedLocalTailOffset: number,
+    initialFlushed: number
+  ): Promise<void> {
+    if (expectedLocalTailOffset > 0 && this.sessionStore.hydrateStagedFile) {
+      const localBytes = await fs.promises.stat(binPath).then((st) => st.size, () => -1);
+      if (localBytes < expectedLocalTailOffset) {
+        const hydrated = await this.sessionStore.hydrateStagedFile(id, binPath, expectedLocalTailOffset);
+        if (hydrated !== expectedLocalTailOffset) {
+          const actualTotal = initialFlushed + Math.max(0, hydrated);
+          session.uploadOffset = actualTotal;
+          await this.sessionStore.saveSession(session);
+          await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+          throw new TusStagedSizeMismatchError(actualTotal, session.uploadLength);
+        }
+      }
+      return;
+    }
+    if (expectedLocalTailOffset === 0) {
+      await fs.promises.writeFile(binPath, Buffer.alloc(0));
+    }
+  }
+
+  private async streamChunkToStaging(params: {
+    session: TusSession;
+    binPath: string;
+    clientOffset: number;
+    expectedLocalTailOffset: number;
+    initialFlushed: number;
+    isRemoteMultipart: boolean;
+    stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>;
+    checksumHeader?: string | null;
+  }): Promise<number> {
+    const { session, binPath, clientOffset, expectedLocalTailOffset, initialFlushed, isRemoteMultipart, stream, checksumHeader } = params;
+    const existingProbe = session.headerProbeBase64 ? Buffer.from(session.headerProbeBase64, 'base64') : Buffer.alloc(0);
+    const probeChunks: Buffer[] = existingProbe.length > 0 ? [existingProbe] : [];
+    let probeLength = existingProbe.length;
+    if (isRemoteMultipart && initialFlushed === 0 && probeLength < expectedLocalTailOffset) {
+      const prefixOnDisk = await fs.promises.readFile(binPath);
+      const needed = Math.min(TUS_MAGIC_PROBE_BYTES - probeLength, prefixOnDisk.length);
+      if (needed > 0) {
+        probeChunks.push(prefixOnDisk.subarray(0, needed));
+        probeLength += needed;
+      }
+    }
+
+    const parsedChecksum = parseChecksumHeader(checksumHeader);
+    const checksumHasher = parsedChecksum ? crypto.createHash(parsedChecksum.algo) : null;
+    const passThrough = new PassThrough();
+    let chunkBytes = 0;
+    let limitExceeded = false;
+
+    passThrough.on('data', (chunk: Buffer | string) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const offsetBeforeChunk = clientOffset + chunkBytes;
+      chunkBytes += buf.length;
+      if (clientOffset + chunkBytes > session.uploadLength) {
+        limitExceeded = true;
+        passThrough.destroy(new TusUploadExceededLengthError(clientOffset + chunkBytes, session.uploadLength));
+        return;
+      }
+      if (isRemoteMultipart && offsetBeforeChunk < TUS_MAGIC_PROBE_BYTES && probeLength < TUS_MAGIC_PROBE_BYTES) {
+        const needed = Math.min(TUS_MAGIC_PROBE_BYTES - probeLength, buf.length);
+        if (needed > 0) {
+          probeChunks.push(Buffer.from(buf.subarray(0, needed)));
+          probeLength += needed;
+        }
+      }
+      checksumHasher?.update(buf);
+    });
+
+    try {
+      await pipeline(this.toNodeReadable(stream), passThrough, fs.createWriteStream(binPath, { flags: 'a' }));
+    } catch (err) {
+      rollbackChunk(binPath, expectedLocalTailOffset);
+      if (limitExceeded) throw new TusUploadExceededLengthError(clientOffset + chunkBytes, session.uploadLength);
+      throw err;
+    }
+
+    if (checksumHasher && parsedChecksum && checksumHasher.digest('base64') !== parsedChecksum.expectedDigest) {
+      rollbackChunk(binPath, expectedLocalTailOffset);
+      throw new TusChecksumMismatchError();
+    }
+    if (isRemoteMultipart && probeChunks.length > 0) {
+      session.headerProbeBase64 = Buffer.concat(probeChunks, probeLength).toString('base64');
+    }
+    return chunkBytes;
+  }
+
+  private async rewindSessionToClientOffset(
+    session: TusSession,
+    infoPath: string,
+    binPath: string,
+    rollbackBytes: number,
+    clientOffset: number
+  ): Promise<void> {
+    session.completed = false;
+    rollbackChunk(binPath, rollbackBytes);
+    session.uploadOffset = clientOffset;
+    await this.sessionStore.saveSession(session);
+    await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+  }
+
+  private async completeRemoteMultipartTus(params: {
+    id: string;
+    session: TusSession;
+    infoPath: string;
+    binPath: string;
+    clientOffset: number;
+    expectedLocalTailOffset: number;
+    initialFlushed: number;
+    newTailBytes: number;
+  }): Promise<void> {
+    const { id, session, infoPath, binPath, clientOffset, expectedLocalTailOffset, initialFlushed, newTailBytes } = params;
+    session.completed = true;
+    try {
+      await assertStagedSize(binPath, newTailBytes);
+    } catch (err) {
+      session.completed = false;
+      const actualTail = err instanceof TusStagedSizeMismatchError ? err.stagedBytes : expectedLocalTailOffset;
+      session.uploadOffset = initialFlushed + Math.min(actualTail, expectedLocalTailOffset);
+      await this.sessionStore.saveSession(session);
+      await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+      throw new TusStagedSizeMismatchError(initialFlushed + actualTail, session.uploadLength);
+    }
+
+    try {
+      const declaredFormat = resolveDeclaredFormat(session.filename, session.mimeType);
+      const probeBuffer = session.headerProbeBase64
+        ? Buffer.from(session.headerProbeBase64, 'base64')
+        : await fs.promises.readFile(binPath);
+      assertNotSpoofedFile(probeBuffer, declaredFormat, session.filename);
+    } catch (err) {
+      await this.rewindSessionToClientOffset(session, infoPath, binPath, expectedLocalTailOffset, clientOffset);
+      throw err;
+    }
+
+    const savedParts = [...(session.remoteParts ?? [])];
+    const savedFlushed = session.remoteFlushedBytes ?? 0;
+    try {
+      const tailBuffer = newTailBytes > 0 ? await fs.promises.readFile(binPath) : Buffer.alloc(0);
+      const parts = [...savedParts];
+      for (let cursor = 0; cursor < tailBuffer.length; cursor += TUS_REMOTE_PART_BYTES) {
+        const partBuf = tailBuffer.subarray(cursor, Math.min(tailBuffer.length, cursor + TUS_REMOTE_PART_BYTES));
+        const uploaded = await storageProvider.uploadPart(session.remoteUploadId!, parts.length + 1, partBuf);
+        parts.push({ partNumber: uploaded.partNumber, etag: uploaded.etag, size: uploaded.size });
+      }
+      session.remoteParts = parts;
+      session.remoteFlushedBytes = session.uploadLength;
+      await storageProvider.completeMultipartUpload(session.remoteUploadId!, parts);
+      await recordTusUpload(session.key);
+      await fs.promises.rm(binPath, { force: true });
+      await this.sessionStore.deleteStagedBytes?.(id);
+    } catch (err) {
+      session.remoteParts = savedParts;
+      session.remoteFlushedBytes = savedFlushed;
+      await this.rewindSessionToClientOffset(session, infoPath, binPath, expectedLocalTailOffset, clientOffset);
+      throw err;
+    }
+  }
+
+  private async flushIntermediateRemoteMultipartTus(
+    id: string,
+    session: TusSession,
+    binPath: string,
+    expectedLocalTailOffset: number,
+    initialFlushed: number,
+    newTailBytes: number
+  ): Promise<void> {
+    const remainingTtl = Math.max(60, Math.floor((session.expiresAt - Date.now()) / 1000));
+    if (newTailBytes < TUS_REMOTE_PART_BYTES) {
+      if (newTailBytes > 0 && this.sessionStore.syncStagedBytes) {
+        await this.sessionStore.syncStagedBytes(id, binPath, expectedLocalTailOffset, newTailBytes, remainingTtl);
+      }
+      return;
+    }
+    const fullBuffer = await fs.promises.readFile(binPath);
+    const parts = [...(session.remoteParts ?? [])];
+    let cursor = 0;
+    let flushedNow = initialFlushed;
+    while (fullBuffer.length - cursor >= TUS_REMOTE_PART_BYTES) {
+      const partBuf = fullBuffer.subarray(cursor, cursor + TUS_REMOTE_PART_BYTES);
+      const uploaded = await storageProvider.uploadPart(session.remoteUploadId!, parts.length + 1, partBuf);
+      parts.push({ partNumber: uploaded.partNumber, etag: uploaded.etag, size: uploaded.size });
+      cursor += TUS_REMOTE_PART_BYTES;
+      flushedNow += TUS_REMOTE_PART_BYTES;
+    }
+    const leftover = fullBuffer.subarray(cursor);
+    await fs.promises.writeFile(binPath, leftover);
+    session.remoteParts = parts;
+    session.remoteFlushedBytes = flushedNow;
+    await this.sessionStore.replaceStagedTailBytes?.(id, leftover, remainingTtl);
+  }
+
+  private async completeLocalStagedTus(
+    id: string,
+    session: TusSession,
+    infoPath: string,
+    binPath: string,
+    clientOffset: number
+  ): Promise<void> {
+    session.completed = true;
+    try {
+      await assertStagedSize(binPath, session.uploadLength);
+    } catch (err) {
+      session.completed = false;
+      session.uploadOffset = err instanceof TusStagedSizeMismatchError ? Math.min(err.stagedBytes, clientOffset) : clientOffset;
+      await this.sessionStore.saveSession(session);
+      await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+      throw err;
+    }
+
+    try {
+      const declaredFormat = resolveDeclaredFormat(session.filename, session.mimeType);
+      assertNotSpoofedFilePath(binPath, declaredFormat, session.filename);
+      await finalizeTusSession(session, binPath);
+      await recordTusUpload(session.key);
+      await fs.promises.rm(binPath, { force: true });
+      await this.sessionStore.deleteStagedBytes?.(id);
+    } catch (err) {
+      await this.rewindSessionToClientOffset(session, infoPath, binPath, clientOffset, clientOffset);
+      throw err;
+    }
+  }
+
   async appendChunk(
     id: string,
     clientOffset: number,
@@ -949,248 +1178,56 @@ export class TusEngine {
     return this.runSessionExclusive(id, async () => {
       this.ensureDirectory();
       const session = await this.getSession(id);
-      if (!session) {
-        throw new TusNotFoundError(id);
-      }
-
-      if (session.completed) {
-        throw new Error(`Upload session "${id}" is already completed`);
-      }
-
-      if (session.uploadOffset !== clientOffset) {
-        throw new TusOffsetMismatchError(session.uploadOffset);
-      }
+      if (!session) throw new TusNotFoundError(id);
+      if (session.completed) throw new Error(`Upload session "${id}" is already completed`);
+      if (session.uploadOffset !== clientOffset) throw new TusOffsetMismatchError(session.uploadOffset);
 
       const { infoPath, binPath } = this.getPaths(id);
       const isRemoteMultipart = Boolean(session.remoteUploadId);
       const initialFlushed = isRemoteMultipart ? (session.remoteFlushedBytes ?? 0) : 0;
       const expectedLocalTailOffset = clientOffset - initialFlushed;
 
-      if (expectedLocalTailOffset > 0 && this.sessionStore.hydrateStagedFile) {
-        const localBytes = await fs.promises.stat(binPath).then((st) => st.size, () => -1);
-        if (localBytes < expectedLocalTailOffset) {
-          const hydrated = await this.sessionStore.hydrateStagedFile(id, binPath, expectedLocalTailOffset);
-          if (hydrated !== expectedLocalTailOffset) {
-            const actualTotal = initialFlushed + Math.max(0, hydrated);
-            session.uploadOffset = actualTotal;
-            await this.sessionStore.saveSession(session);
-            await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
-            throw new TusStagedSizeMismatchError(actualTotal, session.uploadLength);
-          }
-        }
-      } else if (expectedLocalTailOffset === 0) {
-        await fs.promises.writeFile(binPath, Buffer.alloc(0));
-      }
-
-      const existingProbe = session.headerProbeBase64
-        ? Buffer.from(session.headerProbeBase64, 'base64')
-        : Buffer.alloc(0);
-      const probeChunks: Buffer[] = existingProbe.length > 0 ? [existingProbe] : [];
-      let probeLength = existingProbe.length;
-      if (isRemoteMultipart && initialFlushed === 0 && probeLength < expectedLocalTailOffset && expectedLocalTailOffset > 0) {
-        const prefixOnDisk = await fs.promises.readFile(binPath);
-        const needed = Math.min(TUS_MAGIC_PROBE_BYTES - probeLength, prefixOnDisk.length);
-        if (needed > 0) {
-          probeChunks.push(prefixOnDisk.subarray(0, needed));
-          probeLength += needed;
-        }
-      }
-
-      const nodeReadable = this.toNodeReadable(stream);
-
-      const parsedChecksum = parseChecksumHeader(checksumHeader);
-      let checksumHasher: crypto.Hash | null = null;
-      if (parsedChecksum) {
-        checksumHasher = crypto.createHash(parsedChecksum.algo);
-      }
-
-      const passThrough = new PassThrough();
-      let chunkBytes = 0;
-      let limitExceeded = false;
-
-      passThrough.on('data', (chunk: Buffer | string) => {
-        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        const offsetBeforeChunk = clientOffset + chunkBytes;
-        chunkBytes += buf.length;
-        if (clientOffset + chunkBytes > session.uploadLength) {
-          limitExceeded = true;
-          passThrough.destroy(
-            new TusUploadExceededLengthError(clientOffset + chunkBytes, session.uploadLength)
-          );
-          return;
-        }
-        if (isRemoteMultipart && offsetBeforeChunk < TUS_MAGIC_PROBE_BYTES && probeLength < TUS_MAGIC_PROBE_BYTES) {
-          const needed = Math.min(TUS_MAGIC_PROBE_BYTES - probeLength, buf.length);
-          if (needed > 0) {
-            probeChunks.push(Buffer.from(buf.subarray(0, needed)));
-            probeLength += needed;
-          }
-        }
-        if (checksumHasher) {
-          checksumHasher.update(buf);
-        }
+      await this.ensureStagedTailReady(id, session, infoPath, binPath, expectedLocalTailOffset, initialFlushed);
+      const chunkBytes = await this.streamChunkToStaging({
+        session,
+        binPath,
+        clientOffset,
+        expectedLocalTailOffset,
+        initialFlushed,
+        isRemoteMultipart,
+        stream,
+        checksumHeader,
       });
-
-      const fileWriteStream = fs.createWriteStream(binPath, { flags: 'a' });
-
-      try {
-        await pipeline(nodeReadable, passThrough, fileWriteStream);
-      } catch (err: any) {
-        rollbackChunk(binPath, expectedLocalTailOffset);
-        if (limitExceeded) {
-          throw new TusUploadExceededLengthError(clientOffset + chunkBytes, session.uploadLength);
-        }
-        throw err;
-      }
-
-      if (checksumHasher && parsedChecksum) {
-        const computedBase64 = checksumHasher.digest('base64');
-        if (computedBase64 !== parsedChecksum.expectedDigest) {
-          rollbackChunk(binPath, expectedLocalTailOffset);
-          throw new TusChecksumMismatchError();
-        }
-      }
-
-      if (isRemoteMultipart && probeChunks.length > 0) {
-        session.headerProbeBase64 = Buffer.concat(probeChunks, probeLength).toString('base64');
-      }
 
       const newOffset = clientOffset + chunkBytes;
       const newTailBytes = expectedLocalTailOffset + chunkBytes;
       session.uploadOffset = newOffset;
+      const isComplete = newOffset === session.uploadLength;
 
-      let isComplete = false;
       if (isRemoteMultipart && session.remoteUploadId) {
-        const remainingTtl = Math.max(60, Math.floor((session.expiresAt - Date.now()) / 1000));
-        if (newOffset === session.uploadLength) {
-          isComplete = true;
-          session.completed = true;
-          try {
-            await assertStagedSize(binPath, newTailBytes);
-          } catch (err) {
-            session.completed = false;
-            const actualTail = err instanceof TusStagedSizeMismatchError ? err.stagedBytes : expectedLocalTailOffset;
-            session.uploadOffset = initialFlushed + Math.min(actualTail, expectedLocalTailOffset);
-            await this.sessionStore.saveSession(session);
-            await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
-            throw new TusStagedSizeMismatchError(initialFlushed + actualTail, session.uploadLength);
-          }
-
-          try {
-            const declaredFormat = resolveDeclaredFormat(session.filename, session.mimeType);
-            const probeBuffer = session.headerProbeBase64
-              ? Buffer.from(session.headerProbeBase64, 'base64')
-              : await fs.promises.readFile(binPath);
-            assertNotSpoofedFile(probeBuffer, declaredFormat, session.filename);
-          } catch (err) {
-            session.completed = false;
-            rollbackChunk(binPath, expectedLocalTailOffset);
-            session.uploadOffset = clientOffset;
-            await this.sessionStore.saveSession(session);
-            await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
-            throw err;
-          }
-
-          const savedPartsBeforeFinal = [...(session.remoteParts ?? [])];
-          const savedFlushedBeforeFinal = session.remoteFlushedBytes ?? 0;
-          try {
-            const tailBuffer = newTailBytes > 0 ? await fs.promises.readFile(binPath) : Buffer.alloc(0);
-            const parts = [...savedPartsBeforeFinal];
-            let cursor = 0;
-            while (cursor < tailBuffer.length) {
-              const sliceLen = Math.min(TUS_REMOTE_PART_BYTES, tailBuffer.length - cursor);
-              const partBuf = tailBuffer.subarray(cursor, cursor + sliceLen);
-              const nextPartNumber = parts.length + 1;
-              const uploaded = await storageProvider.uploadPart(session.remoteUploadId, nextPartNumber, partBuf);
-              parts.push({ partNumber: uploaded.partNumber, etag: uploaded.etag, size: uploaded.size });
-              cursor += sliceLen;
-            }
-            session.remoteParts = parts;
-            session.remoteFlushedBytes = session.uploadLength;
-            await storageProvider.completeMultipartUpload(session.remoteUploadId, parts);
-            await recordTusUpload(session.key);
-            await fs.promises.rm(binPath, { force: true });
-            await this.sessionStore.deleteStagedBytes?.(id);
-          } catch (err) {
-            session.completed = false;
-            session.remoteParts = savedPartsBeforeFinal;
-            session.remoteFlushedBytes = savedFlushedBeforeFinal;
-            rollbackChunk(binPath, expectedLocalTailOffset);
-            session.uploadOffset = clientOffset;
-            await this.sessionStore.saveSession(session);
-            await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
-            throw err;
-          }
+        if (isComplete) {
+          await this.completeRemoteMultipartTus({
+            id,
+            session,
+            infoPath,
+            binPath,
+            clientOffset,
+            expectedLocalTailOffset,
+            initialFlushed,
+            newTailBytes,
+          });
         } else {
-          // Intermediate chunk on remote multipart: flush completed 8 MiB slices directly to S3 and keep only `< 8 MiB` tail.
-          if (newTailBytes >= TUS_REMOTE_PART_BYTES) {
-            const fullBuffer = await fs.promises.readFile(binPath);
-            const parts = [...(session.remoteParts ?? [])];
-            let cursor = 0;
-            let flushedNow = initialFlushed;
-            while (fullBuffer.length - cursor >= TUS_REMOTE_PART_BYTES) {
-              const partBuf = fullBuffer.subarray(cursor, cursor + TUS_REMOTE_PART_BYTES);
-              const nextPartNumber = parts.length + 1;
-              const uploaded = await storageProvider.uploadPart(session.remoteUploadId, nextPartNumber, partBuf);
-              parts.push({ partNumber: uploaded.partNumber, etag: uploaded.etag, size: uploaded.size });
-              cursor += TUS_REMOTE_PART_BYTES;
-              flushedNow += TUS_REMOTE_PART_BYTES;
-            }
-            const leftover = fullBuffer.subarray(cursor);
-            await fs.promises.writeFile(binPath, leftover);
-            session.remoteParts = parts;
-            session.remoteFlushedBytes = flushedNow;
-            if (this.sessionStore.replaceStagedTailBytes) {
-              await this.sessionStore.replaceStagedTailBytes(id, leftover, remainingTtl);
-            }
-          } else if (newTailBytes > 0 && this.sessionStore.syncStagedBytes) {
-            await this.sessionStore.syncStagedBytes(id, binPath, expectedLocalTailOffset, newTailBytes, remainingTtl);
-          }
+          await this.flushIntermediateRemoteMultipartTus(
+            id,
+            session,
+            binPath,
+            expectedLocalTailOffset,
+            initialFlushed,
+            newTailBytes
+          );
         }
-      } else if (newOffset === session.uploadLength) {
-        isComplete = true;
-        session.completed = true;
-
-        // What was staged must be the whole upload before anything is read from it or stored: a file of another size (lost or
-        // appended to out of order) is refused, and the client continues from what the staged file really holds.
-        try {
-          await assertStagedSize(binPath, session.uploadLength);
-        } catch (err) {
-          session.completed = false;
-          session.uploadOffset = err instanceof TusStagedSizeMismatchError ? Math.min(err.stagedBytes, clientOffset) : clientOffset;
-          await this.sessionStore.saveSession(session);
-          await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
-          throw err;
-        }
-
-        // Verify first 64 KiB magic bytes (assertNotSpoofedFilePath) against the declared format
-        try {
-          const declaredFormat = resolveDeclaredFormat(session.filename, session.mimeType);
-          assertNotSpoofedFilePath(binPath, declaredFormat, session.filename);
-        } catch (err) {
-          session.completed = false;
-          rollbackChunk(binPath, clientOffset);
-          session.uploadOffset = clientOffset;
-          await this.sessionStore.saveSession(session);
-          await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
-          throw err;
-        }
-
-        try {
-          await finalizeTusSession(session, binPath);
-          await recordTusUpload(session.key);
-          // The upload is stored and recorded now, wherever the store is; the staged copy would only occupy the local disk a second time.
-          await fs.promises.rm(binPath, { force: true });
-          await this.sessionStore.deleteStagedBytes?.(id);
-        } catch (err) {
-          // The upload was not taken: rewind the last chunk so the client can resend it.
-          session.completed = false;
-          rollbackChunk(binPath, clientOffset);
-          session.uploadOffset = clientOffset;
-          await this.sessionStore.saveSession(session);
-          await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
-          throw err;
-        }
+      } else if (isComplete) {
+        await this.completeLocalStagedTus(id, session, infoPath, binPath, clientOffset);
       } else if (newOffset > 0 && this.sessionStore.syncStagedBytes) {
         const remainingTtl = Math.max(60, Math.floor((session.expiresAt - Date.now()) / 1000));
         await this.sessionStore.syncStagedBytes(id, binPath, clientOffset, newOffset, remainingTtl);
@@ -1198,12 +1235,7 @@ export class TusEngine {
 
       await this.sessionStore.saveSession(session);
       await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
-
-      return {
-        newOffset,
-        isComplete,
-        session,
-      };
+      return { newOffset, isComplete, session };
     });
   }
 

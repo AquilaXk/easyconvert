@@ -268,6 +268,38 @@ async function create(
   return readBody(res, action);
 }
 
+function readPresignedUrls(body: Body): Readonly<Record<string, string>> | undefined {
+  const raw = body.presignedPartUrls;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const urls: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === 'string' && value.length > 0) urls[key] = value;
+  }
+  return Object.keys(urls).length > 0 ? urls : undefined;
+}
+
+async function trySendDirectPresignedPart(
+  presignedUrl: string,
+  partNumber: number,
+  bytes: Blob,
+  signal: AbortSignal | undefined
+): Promise<PartReceipt | null> {
+  try {
+    const res = await fetch(presignedUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: bytes,
+      signal,
+    });
+    if (!res.ok) return null;
+    const etag = res.headers.get('etag')?.trim() ?? '';
+    return etag ? { partNumber, etag } : null;
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    return null;
+  }
+}
+
 async function sendPart(
   uploadId: string,
   partNumber: number,
@@ -310,10 +342,20 @@ async function uploadInParts(file: File, call: CallState, hooks: ResumableHooks,
   call.stage = { kind: 'uploading', uploadId };
   throwIfAborted(signal);
   const partBytes = typeof opened.partSize === 'number' && opened.partSize > 0 ? opened.partSize : UPLOAD_PART_MAX_BYTES;
+  const presignedUrls = readPresignedUrls(opened);
+  let allowDirectPresign = Boolean(presignedUrls);
 
   const receipts: PartReceipt[] = [];
   for (let start = 0; start < file.size; start += partBytes) {
-    receipts.push(await sendPart(uploadId, receipts.length + 1, file.slice(start, start + partBytes), signal, timing));
+    const partNumber = receipts.length + 1;
+    const slice = file.slice(start, start + partBytes);
+    const directUrl = allowDirectPresign ? presignedUrls?.[String(partNumber)] : undefined;
+    let receipt: PartReceipt | null = null;
+    if (directUrl) {
+      receipt = await trySendDirectPresignedPart(directUrl, partNumber, slice, signal);
+      if (!receipt) allowDirectPresign = false;
+    }
+    receipts.push(receipt ?? (await sendPart(uploadId, partNumber, slice, signal, timing)));
     hooks.onProgress(Math.round((Math.min(start + partBytes, file.size) / file.size) * UPLOAD_PROGRESS_END));
   }
 

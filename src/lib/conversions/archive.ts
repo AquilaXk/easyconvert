@@ -2547,17 +2547,10 @@ async function createNative7zArchive(plan: SevenZipPlan, p7z: string, signal: Ab
         signal,
       });
     try {
-      await withCpuThreadBudget(Math.max(1, Math.min(4, availableCpus())), (threads) =>
-        run(
-          [
-            'a', '-y', '-bd', '-t7z', '-m0=lzma2', `-mx=${plan.compressionLevel}`,
-            plan.isSolid ? '-ms=on' : '-ms=off', `-mmt=${threads}`,
-            // Timestamps would record when the staging files were written.
-            '-mtm=off', '-mtc=off', '-mta=off',
-            outPath, '.',
-          ],
-          stagingDir
-        )
+      // Timestamps would record when the staging files were written.
+      const baseArgs = ['a', '-y', '-bd', '-t7z', '-m0=lzma2', `-mx=${plan.compressionLevel}`, plan.isSolid ? '-ms=on' : '-ms=off'];
+      await withCpuThreadBudget(Math.max(1, Math.min(4, availableCpus())), (t) =>
+        run([...baseArgs, `-mmt=${t}`, '-mtm=off', '-mtc=off', '-mta=off', outPath, '.'], stagingDir)
       );
     } catch (err) {
       if (signal?.aborted) throw err;

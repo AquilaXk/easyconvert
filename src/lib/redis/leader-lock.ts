@@ -23,7 +23,7 @@ export async function withRedisLeaderLock(
   lockName: string,
   leaseTtlMs: number,
   holdAfterSuccessMs: number,
-  task: () => Promise<void>
+  task: () => Promise<unknown>
 ): Promise<boolean> {
   const token = crypto.randomUUID();
   const now = Date.now();

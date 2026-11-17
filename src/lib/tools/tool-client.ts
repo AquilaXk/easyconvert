@@ -98,6 +98,58 @@ function toClientToolResult(stored: StoredToolJobResult): ToolResult {
   };
 }
 
+function extractPresignedUrls(initBody: Record<string, unknown>): Readonly<Record<string, string>> | undefined {
+  const raw = initBody.presignedPartUrls;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const urls: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === 'string' && value.length > 0) urls[key] = value;
+  }
+  return Object.keys(urls).length > 0 ? urls : undefined;
+}
+
+async function uploadToolPartDirect(
+  presignedUrl: string,
+  partNumber: number,
+  slice: Blob,
+  signal?: AbortSignal
+): Promise<{ partNumber: number; etag: string } | null> {
+  try {
+    const res = await fetch(presignedUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: slice,
+      signal,
+    });
+    if (!res.ok) return null;
+    const etag = res.headers.get('etag')?.trim() ?? '';
+    return etag ? { partNumber, etag } : null;
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    return null;
+  }
+}
+
+async function uploadToolPartChunk(
+  uploadId: string,
+  partNumber: number,
+  slice: Blob,
+  signal?: AbortSignal
+): Promise<{ partNumber: number; etag: string }> {
+  const chunkRes = await fetch(
+    `${MULTIPART_URL}?action=chunk&uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: slice,
+      signal,
+    }
+  );
+  const chunkBody = (await chunkRes.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!chunkRes.ok) throw serverRefusal(chunkBody, chunkRes.status, `Failed uploading part ${partNumber}.`);
+  return { partNumber, etag: String(chunkBody.etag ?? '') };
+}
+
 async function uploadToolFileInParts(file: File, signal?: AbortSignal): Promise<{ key: string; name: string }> {
   let activeUploadId: string | undefined;
   try {
@@ -118,22 +170,20 @@ async function uploadToolFileInParts(file: File, signal?: AbortSignal): Promise<
     if (!uploadId) throw new ConversionFailedError('Multipart upload did not return an uploadId.');
     activeUploadId = uploadId;
     const partBytes = typeof initBody.partSize === 'number' && initBody.partSize > 0 ? initBody.partSize : UPLOAD_PART_MAX_BYTES;
+    const presignedUrls = extractPresignedUrls(initBody);
+    let allowDirectPresign = Boolean(presignedUrls);
 
     const parts: Array<{ partNumber: number; etag: string }> = [];
     for (let start = 0; start < file.size; start += partBytes) {
       const partNumber = parts.length + 1;
-      const chunkRes = await fetch(
-        `${MULTIPART_URL}?action=chunk&uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: file.slice(start, start + partBytes),
-          signal,
-        }
-      );
-      const chunkBody = (await chunkRes.json().catch(() => ({}))) as Record<string, unknown>;
-      if (!chunkRes.ok) throw serverRefusal(chunkBody, chunkRes.status, `Failed uploading part ${partNumber}.`);
-      parts.push({ partNumber, etag: String(chunkBody.etag ?? '') });
+      const slice = file.slice(start, start + partBytes);
+      const directUrl = allowDirectPresign ? presignedUrls?.[String(partNumber)] : undefined;
+      let receipt: { partNumber: number; etag: string } | null = null;
+      if (directUrl) {
+        receipt = await uploadToolPartDirect(directUrl, partNumber, slice, signal);
+        if (!receipt) allowDirectPresign = false;
+      }
+      parts.push(receipt ?? (await uploadToolPartChunk(uploadId, partNumber, slice, signal)));
     }
 
     const completeRes = await fetch(`${MULTIPART_URL}?action=complete`, {

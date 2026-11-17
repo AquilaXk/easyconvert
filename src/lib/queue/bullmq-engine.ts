@@ -1208,51 +1208,22 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         this.initPubSub();
       }
     } else {
-      const port =
-        connectionOpts?.port || (process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379);
-      const baseOpts = {
-        lazyConnect: true,
-        enableOfflineQueue: false,
-        maxRetriesPerRequest: 1,
-      };
-
-      if (connectionOpts?.url) {
+      const port = connectionOpts?.port || (process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379);
+      const baseOpts = { lazyConnect: true, enableOfflineQueue: false, maxRetriesPerRequest: 1 };
+      const initClient = (factory: () => Redis) => {
         try {
-          this.redisClient = new Redis(connectionOpts.url, baseOpts);
-          this.setupConnectionTracking(this.redisClient);
-          this.redisClient.connect().catch(() => {
-            this.redisConnected = false;
-          });
-        } catch {
-          this.redisConnected = false;
-        }
-      } else if (connectionOpts?.host) {
-        try {
-          this.redisClient = new Redis({
-            host: connectionOpts.host,
-            port,
-            ...baseOpts,
-          });
-          this.setupConnectionTracking(this.redisClient);
-          this.redisClient.connect().catch(() => {
-            this.redisConnected = false;
-          });
-        } catch {
-          this.redisConnected = false;
-        }
-      } else if (hasConfiguredRedis()) {
-        try {
-          this.redisClient = createConfiguredRedisClient(baseOpts);
+          this.redisClient = factory();
           this.setupConnectionTracking(this.redisClient);
           if (typeof (this.redisClient as { connect?: unknown }).connect === 'function') {
-            this.redisClient.connect().catch(() => {
-              this.redisConnected = false;
-            });
+            this.redisClient.connect().catch(() => { this.redisConnected = false; });
           }
         } catch {
           this.redisConnected = false;
         }
-      }
+      };
+      if (connectionOpts?.url) initClient(() => new Redis(connectionOpts.url!, baseOpts));
+      else if (connectionOpts?.host) initClient(() => new Redis({ host: connectionOpts.host, port, ...baseOpts }));
+      else if (hasConfiguredRedis()) initClient(() => createConfiguredRedisClient(baseOpts));
     }
   }
 

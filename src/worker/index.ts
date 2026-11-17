@@ -25,7 +25,7 @@ import { registerLiveWorkerHeartbeat, unregisterLiveWorkerHeartbeat } from '../l
 import { killProcessGroup } from '../lib/security/process-sandbox';
 import { libreOfficePool, probeNativeEngines } from './engines';
 import { startWorkerSandboxSweep, stopWorkerSandboxSweep } from './sandbox-sweep';
-import { stopQpdfRunner } from '../lib/conversions/pdf-postprocess/qpdf-runner';
+import { startQpdfRunner, stopQpdfRunner } from '../lib/conversions/pdf-postprocess/qpdf-runner';
 import { shutdownPdfTextThreads } from '../lib/conversions/pdf-text-host';
 import { assertSealingKeyConfigured } from '../lib/security/job-secret-seal';
 import { getFfmpegPath } from '../lib/conversions/media';
@@ -221,6 +221,9 @@ console.log(
 // Resolve the native binaries and probe ffmpeg's hardware encoders once at startup. The probe is
 // synchronous and cached per binary, so jobs hit the cache instead of blocking the event loop.
 probeNativeEngines();
+if (process.env.NODE_ENV !== 'test') {
+  void startQpdfRunner();
+}
 
 export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
   subscribedQueues,

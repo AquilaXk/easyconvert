@@ -37,6 +37,8 @@ export const dynamic = 'force-dynamic';
 const MAX_PART_BYTES = UPLOAD_PART_MAX_BYTES;
 /** The smallest part an object store takes for a part that is not the last (the S3 rule). */
 const MIN_PART_BYTES = 5 * 1024 * 1024;
+/** Maximum part count pre-signed eagerly in `?action=initiate` (up to 8 GiB at 64 MiB parts). */
+const DIRECT_PRESIGN_MAX_PARTS = 128;
 const HTTP_FORBIDDEN = 403;
 const ANONYMOUS_PRESIGN_REFUSED =
   'An upload without an account sends its parts through action=chunk, which holds them to the size it declared; it gets no signed part link.';
@@ -215,6 +217,34 @@ async function jobStartRefusal(user: User, instanceUri: string): Promise<NextRes
   return room.allowed ? null : concurrencyLimitResponse(room.limit, instanceUri);
 }
 
+async function buildInitialPresignedPartUrls(
+  storage: MultipartCapableStorage,
+  user: User,
+  initResult: { uploadId: string; key: string; totalParts?: number }
+): Promise<Record<string, string> | undefined> {
+  if (
+    storage.kind !== 'remote' ||
+    isAnonymousUserId(user.id) ||
+    typeof storage.generatePresignedUploadUrl !== 'function' ||
+    typeof initResult.totalParts !== 'number' ||
+    initResult.totalParts < 1 ||
+    initResult.totalParts > DIRECT_PRESIGN_MAX_PARTS
+  ) {
+    return undefined;
+  }
+  const urls: Record<string, string> = {};
+  for (let partNumber = 1; partNumber <= initResult.totalParts; partNumber++) {
+    const signed = await storage.generatePresignedUploadUrl(
+      initResult.key,
+      partNumber,
+      initResult.uploadId,
+      PART_URL_TTL_SECONDS
+    );
+    urls[String(partNumber)] = signed.url;
+  }
+  return urls;
+}
+
 /**
  * Opens an upload session: the declared size is held to the plan limit and the part size to the bounds of a part, a
  * job must be able to start for the caller, and the caller's upload budget must have room for the declared size.
@@ -245,8 +275,11 @@ async function openSession({ storage, user, instanceUri, body }: ActionContext):
       partSize as number | undefined
     );
     uploadId = initResult.uploadId;
+    const presignedPartUrls = await buildInitialPresignedPartUrls(storage, user, initResult);
     await reserved.reservation.bind(initResult.uploadId, initResult.expiresAt);
-    return NextResponse.json({ success: true, ...initResult });
+    return NextResponse.json(
+      presignedPartUrls ? { success: true, ...initResult, presignedPartUrls } : { success: true, ...initResult }
+    );
   } catch (error) {
     // Nothing the failed opening made stays: the session is aborted and the budget given back, each whatever the other
     // does, and the answer names the opening's own error. A session whose abort failed ends when it expires.

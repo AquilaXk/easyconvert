@@ -170,6 +170,20 @@ async function logConversionDiagnostics(
   }
 }
 
+function dispatchSpecializedNodeJob(
+  job: Job<ConversionJobData, ConversionJobResult>,
+  baseEngine: ConversionEnginePort,
+  rootStorage: IStorageBackend
+): Promise<ConversionJobResult> | null {
+  if (job.data?.graphId && job.data?.graphNodeId && job.data?.graphNode) {
+    return processGraphNodeJobIfAlive(job, baseEngine, rootStorage);
+  }
+  if (job.data?.toolJob) {
+    return processQueuedToolJob(job, rootStorage);
+  }
+  return null;
+}
+
 /**
  * Canonical unified node processor.
  * Routes graph node jobs, multi-stage task pipelines, and single conversions
@@ -180,13 +194,8 @@ export async function processNodeJob(
   baseEngine: ConversionEnginePort = dispatchEngine,
   rootStorage: IStorageBackend = storageProvider
 ): Promise<ConversionJobResult> {
-  // If this job is part of an orchestrated DAG JobGraph, route directly to the graph node executor
-  if (job.data?.graphId && job.data?.graphNodeId && job.data?.graphNode) {
-    return processGraphNodeJobIfAlive(job, baseEngine, rootStorage);
-  }
-  if (job.data?.toolJob) {
-    return processQueuedToolJob(job, rootStorage);
-  }
+  const specialized = dispatchSpecializedNodeJob(job, baseEngine, rootStorage);
+  if (specialized) return specialized;
   // Every conversion of the job runs under the job's deadline.
   const engine = deadlineBoundEngine(baseEngine, job);
 

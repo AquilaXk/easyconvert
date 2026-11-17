@@ -96,23 +96,26 @@ function disconnectCachedRedis(): void {
   }
 }
 
+function redisProbeKey(): string {
+  const mode = resolveRedisMode();
+  if (mode === 'sentinel') {
+    return `sentinel:${process.env.REDIS_SENTINELS ?? ''}:${process.env.REDIS_SENTINEL_NAME ?? ''}`;
+  }
+  if (mode === 'cluster') {
+    return `cluster:${process.env.REDIS_CLUSTER_NODES ?? ''}`;
+  }
+  const url = process.env.REDIS_URL;
+  if (url) return `url:${url}`;
+  const port = process.env.REDIS_PORT ? Number.parseInt(process.env.REDIS_PORT, 10) : DEFAULT_REDIS_PORT;
+  return `host:${process.env.REDIS_HOST ?? ''}:${port}`;
+}
+
 async function probeRedis(): Promise<ProbeResult> {
   if (!isRedisConfigured()) {
     disconnectCachedRedis();
     return { status: 'not_configured' };
   }
-  const mode = resolveRedisMode();
-  const url = process.env.REDIS_URL;
-  const host = process.env.REDIS_HOST;
-  const port = process.env.REDIS_PORT ? Number.parseInt(process.env.REDIS_PORT, 10) : DEFAULT_REDIS_PORT;
-  const key =
-    mode === 'sentinel'
-      ? `sentinel:${process.env.REDIS_SENTINELS ?? ''}:${process.env.REDIS_SENTINEL_NAME ?? ''}`
-      : mode === 'cluster'
-      ? `cluster:${process.env.REDIS_CLUSTER_NODES ?? ''}`
-      : url
-      ? `url:${url}`
-      : `host:${host ?? ''}:${port}`;
+  const key = redisProbeKey();
 
   if (cachedRedisClient !== null && cachedRedisClient.key === key && cachedRedisClient.client.status === 'ready') {
     try {

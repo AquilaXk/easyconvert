@@ -6,6 +6,7 @@ import { ConversionFailedError, UnsupportedOptionError } from '../lib/types';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
 import { readSandboxOutput, sandboxOutputSize } from '../lib/security/sandbox-output';
 import { availableCpus } from '../lib/workers/available-cpus';
+import { withCpuThreadBudget } from '../lib/workers/cpu-thread-budget';
 import { SandboxedBufferLimitError, type SandboxedExecutionResult } from './sandbox';
 
 /**
@@ -63,6 +64,10 @@ export interface PageBatch {
 /** Processes one request may draw pages with: the cores this process may use, at most `PAGE_RENDER_MAX_PROCESSES`. */
 export function pageRenderProcesses(cores: number = availableCpus()): number {
   return Math.max(1, Math.min(cores, PAGE_RENDER_MAX_PROCESSES));
+}
+
+export function withPageRenderLanes<T>(fn: (lanes: number) => Promise<T>): Promise<T> {
+  return withCpuThreadBudget(pageRenderProcesses(), fn);
 }
 
 /** Splits the pages of an interval into batches of at most `size` consecutive pages. */
