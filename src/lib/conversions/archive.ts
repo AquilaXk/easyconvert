@@ -82,7 +82,9 @@ import {
   type LzmaCompressOptions,
   type LzmaCompressResult,
 } from './lzma-encoder';
-import { CPU_POOL_MAX, CPU_POOL_MIN_BYTES, CPU_POOL_TASK_TIMEOUT_MS, getCpuPool } from '../workers/cpu-pool';
+import { availableCpus } from '../workers/available-cpus';
+import { CPU_POOL_MIN_BYTES, CPU_POOL_TASK_TIMEOUT_MS, getCpuPool } from '../workers/cpu-pool';
+import { withCpuThreadBudget } from '../workers/cpu-thread-budget';
 import {
   isSplitArchive,
   parseSplitArchivePart,
@@ -2545,15 +2547,17 @@ async function createNative7zArchive(plan: SevenZipPlan, p7z: string, signal: Ab
         signal,
       });
     try {
-      await run(
-        [
-          'a', '-y', '-bd', '-t7z', '-m0=lzma2', `-mx=${plan.compressionLevel}`,
-          plan.isSolid ? '-ms=on' : '-ms=off', `-mmt=${CPU_POOL_MAX}`,
-          // Timestamps would record when the staging files were written.
-          '-mtm=off', '-mtc=off', '-mta=off',
-          outPath, '.',
-        ],
-        stagingDir
+      await withCpuThreadBudget(Math.max(1, Math.min(4, availableCpus())), (threads) =>
+        run(
+          [
+            'a', '-y', '-bd', '-t7z', '-m0=lzma2', `-mx=${plan.compressionLevel}`,
+            plan.isSolid ? '-ms=on' : '-ms=off', `-mmt=${threads}`,
+            // Timestamps would record when the staging files were written.
+            '-mtm=off', '-mtc=off', '-mta=off',
+            outPath, '.',
+          ],
+          stagingDir
+        )
       );
     } catch (err) {
       if (signal?.aborted) throw err;

@@ -1,4 +1,6 @@
 import { SandboxedProcessError, type SandboxedExecutionResult } from '../security/process-sandbox';
+import { availableCpus } from '../workers/available-cpus';
+import { withCpuThreadBudget } from '../workers/cpu-thread-budget';
 import { explainFfmpegFailure, partialDecodeIn } from './media-decode-failures';
 import { type FfmpegRunOptions, runFfmpeg } from './media-process';
 
@@ -65,26 +67,46 @@ const RETRY_RULES: readonly RetryRule[] = [withFlacBlockSize, withOpusRearLayout
  * tool FFmpeg lacks is refused: its output holds only a part of the stream. An encoder that refuses to start for a reason one
  * of the rules above knows is started again with that rule's change. Every other failure is passed on unchanged.
  */
+function capContendedFfmpegThreads(args: string[], leasedThreads: number): string[] {
+  const threadsIdx = args.indexOf('-threads');
+  if (threadsIdx === -1 || threadsIdx + 1 >= args.length) return args;
+  const requested = Number(args[threadsIdx + 1]);
+  if (!Number.isInteger(requested) || leasedThreads >= requested) return args;
+  // x265 at 3 frame threads is non-deterministic (see media-encoder-threads.ts); step down to 2 under contention.
+  const effective = args.includes('libx265') && leasedThreads === 3 ? 2 : Math.max(1, leasedThreads);
+  const next = args.slice();
+  next[threadsIdx + 1] = String(effective);
+  return next;
+}
+
 export async function runFfmpegTranscode(
   ffmpegBin: string,
   args: string[],
   options: FfmpegRunOptions
 ): Promise<SandboxedExecutionResult> {
-  let attempt = args;
-  let result: SandboxedExecutionResult | undefined;
-  for (let restarts = 0; result === undefined; restarts += 1) {
-    try {
-      result = await runFfmpeg(ffmpegBin, attempt, options);
-    } catch (error) {
-      if (!(error instanceof SandboxedProcessError)) throw error;
-      const adjusted = restarts < MAX_RESTARTS ? firstAdjustment(attempt, error.stderr) : undefined;
-      if (adjusted === undefined) throw explainFfmpegFailure(error.stderr) ?? error;
-      attempt = adjusted;
+  const threadsIdx = args.indexOf('-threads');
+  const requestedThreads =
+    threadsIdx !== -1 && threadsIdx + 1 < args.length && Number.isInteger(Number(args[threadsIdx + 1]))
+      ? Number(args[threadsIdx + 1])
+      : Math.max(1, Math.min(4, availableCpus()));
+
+  return withCpuThreadBudget(requestedThreads, async (leasedThreads) => {
+    let attempt = capContendedFfmpegThreads(args, leasedThreads);
+    let result: SandboxedExecutionResult | undefined;
+    for (let restarts = 0; result === undefined; restarts += 1) {
+      try {
+        result = await runFfmpeg(ffmpegBin, attempt, options);
+      } catch (error) {
+        if (!(error instanceof SandboxedProcessError)) throw error;
+        const adjusted = restarts < MAX_RESTARTS ? firstAdjustment(attempt, error.stderr) : undefined;
+        if (adjusted === undefined) throw explainFfmpegFailure(error.stderr) ?? error;
+        attempt = adjusted;
+      }
     }
-  }
-  const refusal = partialDecodeIn(result.stderr.toString('utf8'));
-  if (refusal !== undefined) throw refusal;
-  return result;
+    const refusal = partialDecodeIn(result.stderr.toString('utf8'));
+    if (refusal !== undefined) throw refusal;
+    return result;
+  });
 }
 
 /** The arguments of the next attempt for a failed run, or undefined when no rule applies (exported for its test). */

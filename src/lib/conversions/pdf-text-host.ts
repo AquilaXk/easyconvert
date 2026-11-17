@@ -4,7 +4,7 @@ import { setFlagsFromString } from 'node:v8';
 import { createRequire } from 'node:module';
 import { Worker } from 'node:worker_threads';
 import { EngineUnavailableError } from '../types';
-import { availableCpus } from '../workers/available-cpus';
+import { availableCpus, availableMemoryBytes } from '../workers/available-cpus';
 import { olderThanSource } from '../workers/compiled-worker';
 import {
   PDF_TEXT_DEADLINE_ENV,
@@ -72,8 +72,8 @@ const WORKER_FILE = 'pdf-text-worker';
 const ENGINE_NAME = 'pdf-text-thread';
 /** Built at run time so the Next.js bundler does not follow it: only the source-mode thread needs tsx. */
 const TSX_REGISTER_SPECIFIER = ['tsx', 'cjs', 'api'].join('/');
-/** Most threads at once; further jobs wait for one. */
-const MAX_POOL = 4;
+/** Most threads at once on high-core hosts (bounded by 1 GiB per isolate); further jobs wait for one. */
+export const PDF_TEXT_MAX_POOL = 16;
 /** A thread that has read this many documents is replaced, which bounds what a leak in the reader can accumulate. */
 const RECYCLE_AFTER_JOBS = 100;
 /** The replacement of a thread is started this many jobs before the thread is due, to be warm when it is. */
@@ -131,8 +131,16 @@ export function pdfTextDeadlineMs(): number {
   return Number.isInteger(override) && override > 0 ? override : PDF_TEXT_DEADLINE_MS;
 }
 
+export function defaultPdfTextPoolLimit(
+  cores: number = availableCpus(),
+  memoryBytes: number = availableMemoryBytes()
+): number {
+  const memoryBound = Math.max(1, Math.floor(memoryBytes / (THREAD_HEAP_LIMIT_MB * 1024 * 1024)));
+  return Math.max(1, Math.min(PDF_TEXT_MAX_POOL, cores, memoryBound));
+}
+
 function poolLimit(): number {
-  return Math.max(1, Math.min(MAX_POOL, availableCpus()));
+  return defaultPdfTextPoolLimit();
 }
 
 function resolveWorkerEntry(): WorkerEntry {

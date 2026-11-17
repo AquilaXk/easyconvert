@@ -17,7 +17,7 @@ import {
 } from '../types';
 import { Woff2LimitError } from '../conversions/font-woff2-primitives';
 import { CONVERSION_REFUSAL_CODES, isCodeOf, type ConversionRefusalCode } from '../refusal-codes';
-import { availableCpus } from './available-cpus';
+import { availableCpus, availableMemoryBytes } from './available-cpus';
 import { olderThanSource } from './compiled-worker';
 
 /**
@@ -29,8 +29,9 @@ import { olderThanSource } from './compiled-worker';
  * replaced on demand), and a task past its time limit is terminated and fails with a typed error.
  */
 
-/** Most threads the shared pool starts. */
-export const CPU_POOL_MAX = 4;
+/** Most threads the shared pool starts on high-core hosts (bounded by 1 GiB of process memory per isolate). */
+export const CPU_POOL_MAX = 16;
+export const CPU_POOL_MEMORY_PER_THREAD_BYTES = 1024 * 1024 * 1024;
 /** Tasks that may wait for a free thread before further submissions are refused. */
 export const CPU_POOL_QUEUE_MAX = 64;
 /** A task running longer than this is terminated. */
@@ -165,8 +166,12 @@ export function spawnCpuWorker(entry: WorkerEntry = resolveCpuWorkerEntry()): Wo
   return worker;
 }
 
-function defaultPoolSize(): number {
-  return Math.max(1, Math.min(availableCpus() - 1, CPU_POOL_MAX));
+export function defaultCpuPoolSize(
+  cores: number = availableCpus(),
+  memoryBytes: number = availableMemoryBytes()
+): number {
+  const memoryBound = Math.max(1, Math.floor(memoryBytes / CPU_POOL_MEMORY_PER_THREAD_BYTES));
+  return Math.max(1, Math.min(cores - 1, memoryBound, CPU_POOL_MAX));
 }
 
 export class CpuPool {
@@ -181,7 +186,7 @@ export class CpuPool {
   private closed = false;
 
   constructor(options: CpuPoolOptions = {}) {
-    this.size = options.size ?? defaultPoolSize();
+    this.size = options.size ?? defaultCpuPoolSize();
     this.queueMax = options.queueMax ?? CPU_POOL_QUEUE_MAX;
     this.taskTimeoutMs = options.taskTimeoutMs ?? CPU_POOL_TASK_TIMEOUT_MS;
     this.idleMs = options.idleMs ?? CPU_POOL_IDLE_MS;

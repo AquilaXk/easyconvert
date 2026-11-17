@@ -1,6 +1,5 @@
-import os from 'node:os';
 import sharp from 'sharp';
-import { availableCpus, parseCgroupCpuMax, parseCgroupV1CpuQuota } from '../workers/available-cpus';
+import { availableCpus, availableMemoryBytes, parseCgroupCpuMax, parseCgroupV1CpuQuota } from '../workers/available-cpus';
 
 export { availableCpus, parseCgroupCpuMax, parseCgroupV1CpuQuota };
 
@@ -69,9 +68,7 @@ export function imageThreadsFor(cores: number, memoryBytes: number = Number.POSI
 
 /** The memory this process may use: the container limit when there is one, else the machine's. */
 export function memoryLimitBytes(): number {
-  const constrained = typeof process.constrainedMemory === 'function' ? process.constrainedMemory() : 0;
-  const total = os.totalmem();
-  return constrained > 0 ? Math.min(constrained, total) : total;
+  return availableMemoryBytes();
 }
 
 /**

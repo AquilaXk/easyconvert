@@ -4,6 +4,7 @@ import {
   CPU_POOL_MAX,
   CPU_POOL_QUEUE_MAX,
   CpuPool,
+  defaultCpuPoolSize,
   runCpuTask,
   shutdownCpuPool,
   type CpuPoolOptions,
@@ -34,9 +35,13 @@ afterEach(async () => {
 });
 
 describe('CpuPool', () => {
-  it('sizes the shared pool within its documented bounds', () => {
-    expect(CPU_POOL_MAX).toBeGreaterThanOrEqual(1);
-    expect(CPU_POOL_QUEUE_MAX).toBeGreaterThanOrEqual(1);
+  it('sizes the shared pool within its documented bounds across low-core and high-core hosts', () => {
+    expect(CPU_POOL_MAX).toBe(16);
+    expect(CPU_POOL_QUEUE_MAX).toBe(64);
+    expect(defaultCpuPoolSize(4, 20 * 1024 ** 3)).toBe(3);
+    expect(defaultCpuPoolSize(16, 32 * 1024 ** 3)).toBe(15);
+    expect(defaultCpuPoolSize(32, 64 * 1024 ** 3)).toBe(16);
+    expect(defaultCpuPoolSize(32, 4 * 1024 ** 3)).toBe(4);
   });
 
   it('runs a task and returns its result', async () => {

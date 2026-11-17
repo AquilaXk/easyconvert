@@ -107,3 +107,13 @@ export function availableCpus(options?: AvailableCpusOptions): number {
   const quota = readCgroupQuota(options);
   return quota !== null ? Math.max(1, Math.min(host, quota)) : host;
 }
+
+/**
+ * Reads the memory ceiling available to this process in bytes: the container cgroup limit exposed by
+ * `process.constrainedMemory()` when present and positive, bounded by `os.totalmem()`.
+ */
+export function availableMemoryBytes(): number {
+  const constrained = typeof process.constrainedMemory === 'function' ? process.constrainedMemory() : 0;
+  const total = os.totalmem();
+  return constrained > 0 ? Math.min(constrained, total) : total;
+}

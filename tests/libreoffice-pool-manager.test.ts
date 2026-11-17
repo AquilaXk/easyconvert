@@ -6,6 +6,7 @@ import {
   LibreOfficePoolManager,
   LibreOfficePoolTimeoutError,
   WorkerLifecycleState,
+  defaultLibreOfficeMaxWorkers,
   resolveLibreOfficeFilter,
 } from '../src/worker/libreoffice-pool';
 import {
@@ -565,6 +566,43 @@ describe('Pre-warmed LibreOffice worker pool', () => {
 
       // 8. Non-PDF target formats pass through untouched
       expect(resolveLibreOfficeFilter('html', 'docx')).toBe('html');
+    });
+  });
+
+  describe('6. Scale-Up Elastic Bounds & Gotenberg-Style Idle Slot Supervision', () => {
+    it('scales default maxWorkers with cores and per-slot memory ceiling up to 12', () => {
+      expect(defaultLibreOfficeMaxWorkers(2, 14 * 1024 ** 3)).toBe(2);
+      expect(defaultLibreOfficeMaxWorkers(4, 14 * 1024 ** 3)).toBe(4);
+      expect(defaultLibreOfficeMaxWorkers(16, 32 * 1024 ** 3)).toBe(12);
+      expect(defaultLibreOfficeMaxWorkers(32, 6 * 1024 ** 3)).toBe(4);
+    });
+
+    it('reclaims idle extra worker slots above minWorkers after idleShutdownTimeoutMs', async () => {
+      const pool = new LibreOfficePoolManager({
+        minWorkers: 1,
+        maxWorkers: 3,
+        idleShutdownTimeoutMs: 60,
+        enabled: true,
+      });
+      activePools.push(pool);
+
+      const w1 = await pool.acquireWorker();
+      const w2 = await pool.acquireWorker();
+      const w3 = await pool.acquireWorker();
+      expect(pool.getStats().totalWorkers).toBe(3);
+
+      const dir2 = w2.userProfileDir;
+      const dir3 = w3.userProfileDir;
+      await pool.releaseWorker(w1);
+      await pool.releaseWorker(w2);
+      await pool.releaseWorker(w3);
+      expect(pool.getStats().readyWorkers).toBe(3);
+
+      await vi.waitFor(() => {
+        expect(pool.getStats().totalWorkers).toBe(1);
+      }, { timeout: 2000 });
+      expect(pool.getStats().readyWorkers).toBe(1);
+      expect(fs.existsSync(dir2) && fs.existsSync(dir3)).toBe(false);
     });
   });
 });

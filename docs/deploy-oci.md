@@ -248,7 +248,7 @@ The shape keeps the launch on one host and does not block growth. The web and th
    - **Redis.** Run Redis on its own host and set `REDIS_URL` in the secret (read in `src/lib/queue/bullmq-engine.ts`, `src/lib/health/probes.ts`, `src/lib/api-keys/redis-key-store.ts`). The compose file then leaves its own Redis off.
    - **Workers.** Add hosts that run `docker-compose.prod.yml` with the same `REDIS_URL` and storage driver and start only `worker`. They join the same queues, and the stalled-job sweep (`STALLED_SWEEP_INTERVAL_MS` in `bullmq-engine.ts`) re-queues the jobs of a host that disappears.
    - **Web.** Put more than one origin behind the CDN. Every web host needs the same `JWT_SECRET`, `KEY_HASH_PEPPER` and the shared Redis. Client addresses stay correct as long as each host's nginx overwrites `X-Forwarded-For` as the site file does (`docs/client-ip-trust.md`).
-3. **Open prerequisite.** Issue #691. The free-caller concurrency limit (`src/lib/queue/concurrency-limit.ts`) counts synchronous conversions per web process, and its check is not atomic. With two web hosts a caller can hold the limit on each. Make it a shared Redis counter before the second web host takes traffic.
+3. **Cross-instance concurrency.** Free-caller synchronous concurrency (`src/lib/queue/concurrency-limit.ts`, policy entry 315) is enforced atomically across all Web replicas via a shared Redis sorted-set lease (`sync_slots`), and multi-origin Web deployments can set `WEB_EXECUTION_MODE=queue-only` so Web nodes act as pure control-plane dispatchers.
 
 ## Cost
 
@@ -273,4 +273,4 @@ Every resource below exists already or is free, so this deployment adds no cost.
 - #900 operations runbook (this page is its deploy and rollback part; [docs/operations/](operations/README.md) has the backup, restore, incident and alert pages).
 - #564 configuration checked at start-up (the required secrets above).
 - #665 retention policy and delete on delivery (policy entry 125, and the retention keys of the env secret).
-- #691 atomic free-caller concurrency across instances (before a second web host).
+- #691 atomic free-caller concurrency across instances (implemented via Redis sorted-set leases in policy entry 315).

@@ -1,6 +1,7 @@
 import { executeSandboxedBinary, rethrowSandboxUnavailable, SandboxedBufferLimitError, SandboxedProcessError } from '../security/process-sandbox';
 import type { ConversionOptions, ConversionResult } from '../types';
 import { availableCpus } from '../workers/available-cpus';
+import { withCpuThreadBudget } from '../workers/cpu-thread-budget';
 import { findDecoderTool, loggableDiagnostic } from './image-decoder-tools';
 
 /**
@@ -140,21 +141,24 @@ export async function optimisePng(png: Buffer, options: OptimiseOptions = {}): P
   if (header === null || header.decodedBytes > (header.palette ? OXIPNG_MAX_PALETTE_RAW_BYTES : OXIPNG_MAX_FULL_COLOUR_RAW_BYTES)) return png;
   const raw = header.decodedBytes;
   try {
-    const result = await executeSandboxedBinary(
-      program,
-      ['-q', ...argumentsOf(header), '--threads', String(Math.max(1, Math.min(OXIPNG_MAX_THREADS, availableCpus()))), '--timeout', String(OXIPNG_SOFT_TIMEOUT_SECONDS), '--stdout', '-'],
-      {
-        stdin: png,
-        // A filter on standard input and output: it touches no file.
-        workDir: null,
-        timeoutMs: OXIPNG_TIMEOUT_MS,
-        // The program writes the input back when it finds nothing smaller: one byte more than the input is the most a good run writes.
-        maxBuffer: png.length + 1,
-        spoolStdout: true,
-        memoryLimitMb: Math.min(MEMORY_LIMIT_MAX_MB, MEMORY_BASE_MB + Math.ceil(raw / BYTES_PER_MB) * MEMORY_PER_RAW_MB),
-        networkIsolated: true,
-        signal: options.signal,
-      }
+    const desiredThreads = Math.max(1, Math.min(OXIPNG_MAX_THREADS, availableCpus()));
+    const result = await withCpuThreadBudget(desiredThreads, (threads) =>
+      executeSandboxedBinary(
+        program,
+        ['-q', ...argumentsOf(header), '--threads', String(threads), '--timeout', String(OXIPNG_SOFT_TIMEOUT_SECONDS), '--stdout', '-'],
+        {
+          stdin: png,
+          // A filter on standard input and output: it touches no file.
+          workDir: null,
+          timeoutMs: OXIPNG_TIMEOUT_MS,
+          // The program writes the input back when it finds nothing smaller: one byte more than the input is the most a good run writes.
+          maxBuffer: png.length + 1,
+          spoolStdout: true,
+          memoryLimitMb: Math.min(MEMORY_LIMIT_MAX_MB, MEMORY_BASE_MB + Math.ceil(raw / BYTES_PER_MB) * MEMORY_PER_RAW_MB),
+          networkIsolated: true,
+          signal: options.signal,
+        }
+      )
     );
     const optimised = result.stdout;
     return optimised.length > 0 && optimised.length < png.length && optimised.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE) ? optimised : png;

@@ -337,9 +337,9 @@ describe('PDF pages as PNG through PPM', () => {
 });
 
 describe('how many pages are drawn at once', () => {
-  it('is the cores this process may use, at most four, never fewer than one', () => {
-    expect([0, 1, 2, 3, 4, 8, 64].map((cores) => pageRenderProcesses(cores))).toEqual([1, 1, 2, 3, 4, 4, 4]);
-    expect(PAGE_RENDER_MAX_PROCESSES).toBe(4);
+  it('is the cores this process may use, at most eight, never fewer than one', () => {
+    expect([0, 1, 2, 3, 4, 8, 64].map((cores) => pageRenderProcesses(cores))).toEqual([1, 1, 2, 3, 4, 8, 8]);
+    expect(PAGE_RENDER_MAX_PROCESSES).toBe(8);
   });
 });
 

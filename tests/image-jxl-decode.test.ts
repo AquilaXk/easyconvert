@@ -331,11 +331,13 @@ describe('the decoder program', () => {
     await expect(convertWithStub('printf x > elsewhere; ln -s elsewhere out.png')).rejects.toMatchObject(refusal);
   });
 
-  it('is run on the file and the name the decoder expects, with two threads, in a private directory that is removed afterwards', async () => {
+  it('is run on the file and the name the decoder expects, with bounded threads, in a private directory that is removed afterwards', async () => {
     const log = path.join(stubDir, `args-${stubCount}.log`);
     await convertWithStub(`printf '%s\\n' "$@" > '${log}'; pwd >> '${log}'; exit 1`).catch(() => undefined);
     const lines = fs.readFileSync(log, 'utf8').split('\n').filter((line) => line !== '');
-    expect(lines.slice(0, 4)).toEqual(['in.jxl', 'out.png', '--num_threads=2', '--quiet']);
+    expect(lines.slice(0, 2)).toEqual(['in.jxl', 'out.png']);
+    expect(lines[2]).toMatch(/^--num_threads=[1-4]$/);
+    expect(lines[3]).toBe('--quiet');
     expect(path.basename(lines[4])).toMatch(/^easyconvert-decode-/);
     expect(fs.existsSync(lines[4])).toBe(false);
   });

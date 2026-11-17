@@ -12,6 +12,7 @@ import {
 import { launchSandboxedBinary } from '../security/sandbox-launcher';
 import { ConversionFailedError, EngineUnavailableError, PayloadLimitError, SERVER_FAULT_STATUS } from '../types';
 import { availableCpus } from '../workers/available-cpus';
+import { withCpuThreadBudget } from '../workers/cpu-thread-budget';
 import { isAvif } from './avif-colour';
 import { avifSpeedFor, type AvifBitdepth, type AvifEncoder, type AvifPlaneLayout } from './image-encoder-defaults';
 
@@ -254,7 +255,12 @@ function encoderThreads(): number {
  * applies to the colour planes only (the alpha plane keeps the encoder's PSNR tuning). Reading the picture from a
  * path and writing to a path in the private directory keeps every file name fixed.
  */
-export function avifencArguments(request: AvifCliRequest, inputPath: string, outputPath: string): string[] {
+export function avifencArguments(
+  request: AvifCliRequest,
+  inputPath: string,
+  outputPath: string,
+  threads: number = encoderThreads()
+): string[] {
   if (!Number.isInteger(request.quality) || request.quality < AVIFENC_QUALITY_MIN || request.quality > AVIFENC_QUALITY_MAX) {
     throw new ConversionFailedError(`Cannot encode the image as .avif (the quality must be a whole number from ${AVIFENC_QUALITY_MIN} to ${AVIFENC_QUALITY_MAX})`);
   }
@@ -271,7 +277,7 @@ export function avifencArguments(request: AvifCliRequest, inputPath: string, out
     '-s',
     String(avifSpeedFor(request.effort)),
     '-j',
-    String(encoderThreads()),
+    String(Math.max(1, Math.min(AVIFENC_MAX_THREADS, Math.floor(threads)))),
   ];
   if (request.ignoreColourChunks) args.push('--ignore-icc');
   if (request.ignoreXmp) args.push('--ignore-xmp');
@@ -459,7 +465,8 @@ export async function encodeAvifWithCli(avifenc: string, request: AvifCliRequest
   const outputPath = path.join(jobDir, AVIFENC_OUTPUT_NAME);
   let removeSynchronously = false;
   try {
-    const args = avifencArguments(request, inputPath, outputPath);
+    // Validate quality before writing the scratch input or acquiring a thread lease.
+    avifencArguments(request, inputPath, outputPath);
     try {
       const write = { flag: 'wx', mode: PRIVATE_FILE_MODE };
       if (request.png.length <= AVIFENC_SYNC_IO_MAX_BYTES) fs.writeFileSync(inputPath, request.png, write);
@@ -469,18 +476,20 @@ export async function encodeAvifWithCli(avifenc: string, request: AvifCliRequest
     }
     try {
       // Started from the launcher helper when this process is large enough that the helper's start is cheaper than a fork of it (entry 91).
-      await launchSandboxedBinary(avifenc, args, {
-        expectedOutputBytes: AVIFENC_EXPECTED_STDOUT_BYTES,
-        cwd: jobDir,
-        workDir: jobDir,
-        timeoutMs,
-        maxBuffer: AVIFENC_MAX_DIAGNOSTIC_BYTES,
-        maxFileSize: maxOutputBytes,
-        memoryLimitMb: AVIFENC_MEMORY_LIMIT_MB,
-        rlimits: { asBytes: AVIFENC_ADDRESS_SPACE_MB * BYTES_PER_MB },
-        networkIsolated: true,
-        signal: request.signal,
-      });
+      await withCpuThreadBudget(encoderThreads(), (leasedThreads) =>
+        launchSandboxedBinary(avifenc, avifencArguments(request, inputPath, outputPath, leasedThreads), {
+          expectedOutputBytes: AVIFENC_EXPECTED_STDOUT_BYTES,
+          cwd: jobDir,
+          workDir: jobDir,
+          timeoutMs,
+          maxBuffer: AVIFENC_MAX_DIAGNOSTIC_BYTES,
+          maxFileSize: maxOutputBytes,
+          memoryLimitMb: AVIFENC_MEMORY_LIMIT_MB,
+          rlimits: { asBytes: AVIFENC_ADDRESS_SPACE_MB * BYTES_PER_MB },
+          networkIsolated: true,
+          signal: request.signal,
+        })
+      );
     } catch (err) {
       throw describeFailure(err, timeoutMs);
     }

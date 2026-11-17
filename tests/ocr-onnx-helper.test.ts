@@ -101,12 +101,14 @@ describe('checking a helper reply', () => {
 });
 
 describe('where the ONNX engine is used', () => {
-  it('sizes the helpers by the cores', () => {
+  it('sizes the helpers by the cores and optional container memory ceiling', () => {
     expect(onnxHelperPlan(1)).toEqual({ helpers: 1, threads: 1 });
     expect(onnxHelperPlan(2)).toEqual({ helpers: 1, threads: 2 });
     expect(onnxHelperPlan(4)).toEqual({ helpers: 1, threads: 4 });
     expect(onnxHelperPlan(6)).toEqual({ helpers: 2, threads: 3 });
-    expect(onnxHelperPlan(64)).toEqual({ helpers: 3, threads: 6 });
+    expect(onnxHelperPlan(64)).toEqual({ helpers: 8, threads: 6 });
+    expect(onnxHelperPlan(64, 7 * 1024 ** 3)).toEqual({ helpers: 2, threads: 6 });
+    expect(onnxHelperPlan(64, 32 * 1024 ** 3)).toEqual({ helpers: 8, threads: 6 });
   });
 
   it('takes a request that names Korean and at most English', () => {

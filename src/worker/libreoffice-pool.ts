@@ -26,7 +26,8 @@ import {
 import { readZipUncompressedTotalFromFile } from '../lib/conversions/archive-zip-tail';
 import { officeInputFilterArgs } from '../lib/conversions/office/legacy-import-filter';
 import { officeSuiteApplication, type OfficeSuiteApplication } from '../lib/conversions/office/office-suite-sources';
-import { availableCpus } from '../lib/workers/available-cpus';
+import { availableCpus, availableMemoryBytes } from '../lib/workers/available-cpus';
+import { withCpuThreadBudget } from '../lib/workers/cpu-thread-budget';
 import { writeOfficeProfile } from './libreoffice-profile';
 import type { WorkerEngineOptions, WorkerConversionResult } from './engines';
 
@@ -51,6 +52,22 @@ export const LIBREOFFICE_READINESS_TIMEOUT_MAX_MS = 40_000;
 
 /** How long a failed readiness probe is remembered before the next job may probe again. */
 export const LIBREOFFICE_READINESS_FAILURE_TTL_MS = 60_000;
+
+/**
+ * Elastic ceiling and per-slot memory budget on high-core hosts, plus Gotenberg-style (`pkg/gotenberg/supervisor.go:85-106`, MIT)
+ * idle shutdown supervision for extra slots above `minWorkers`.
+ */
+export const LIBREOFFICE_POOL_MAX_WORKERS_CEILING = 12;
+export const LIBREOFFICE_SLOT_MEMORY_BYTES = 1536 * 1024 * 1024;
+export const LIBREOFFICE_IDLE_SHUTDOWN_TIMEOUT_MS = 5 * 60_000;
+
+export function defaultLibreOfficeMaxWorkers(
+  cores: number = availableCpus(),
+  memoryBytes: number = availableMemoryBytes()
+): number {
+  const memoryBound = Math.max(1, Math.floor(memoryBytes / LIBREOFFICE_SLOT_MEMORY_BYTES));
+  return Math.max(1, Math.min(LIBREOFFICE_POOL_MAX_WORKERS_CEILING, cores, memoryBound));
+}
 
 const DECIMAL_INTEGER_REGEX = /^\d+$/;
 
@@ -103,6 +120,8 @@ export interface LibreOfficePoolOptions {
   minWorkers?: number;
   maxJobsPerWorker?: number;
   acquireTimeoutMs?: number;
+  /** Idle time (ms) after which extra READY slots above `minWorkers` are reclaimed (`0` disables). */
+  idleShutdownTimeoutMs?: number;
   sofficePath?: string | null;
   enabled?: boolean;
   executor?: SandboxedProcessRunner;
@@ -245,11 +264,13 @@ export class LibreOfficePoolManager {
   private minWorkers: number;
   private maxJobsPerWorker: number;
   private acquireTimeoutMs: number;
+  private idleShutdownTimeoutMs: number;
   private sofficePath: string | null;
   private enabled: boolean;
   private executor: SandboxedProcessRunner;
   private readinessProbe: boolean;
   private readinessCheck: { sofficePath: string; promise: Promise<void>; failedAt: number | null } | null = null;
+  private idleTimers = new Map<string, NodeJS.Timeout>();
   /**
    * The profile the readiness probe left after its conversion of a fixed text: initialised by the suite itself and never opened by a
    * job, so it holds nothing of any document. Every job starts from a copy of it (`resetProfile`).
@@ -261,15 +282,43 @@ export class LibreOfficePoolManager {
   private spawningWorkers = 0;
 
   constructor(options: LibreOfficePoolOptions = {}) {
-    const cpus = availableCpus();
-    this.maxWorkers = options.maxWorkers ?? Math.max(1, Math.min(4, cpus));
+    this.maxWorkers = options.maxWorkers ?? defaultLibreOfficeMaxWorkers();
     this.minWorkers = options.minWorkers ?? Math.min(1, this.maxWorkers);
     this.maxJobsPerWorker = options.maxJobsPerWorker ?? 150;
     this.acquireTimeoutMs = options.acquireTimeoutMs ?? 30000;
+    this.idleShutdownTimeoutMs = options.idleShutdownTimeoutMs ?? LIBREOFFICE_IDLE_SHUTDOWN_TIMEOUT_MS;
     this.sofficePath = options.sofficePath ?? null;
     this.enabled = options.enabled ?? (this.sofficePath !== null);
     this.executor = options.executor ?? executeSandboxedBinary;
     this.readinessProbe = options.readinessProbe ?? this.executor === executeSandboxedBinary;
+  }
+
+  private clearIdleTimer(workerId: string): void {
+    const timer = this.idleTimers.get(workerId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.idleTimers.delete(workerId);
+    }
+  }
+
+  private armIdleTimer(worker: LibreOfficeWorker): void {
+    this.clearIdleTimer(worker.id);
+    if (this.idleShutdownTimeoutMs <= 0 || this.isShuttingDown || this.workers.length <= this.minWorkers) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.idleTimers.delete(worker.id);
+      if (this.isShuttingDown || worker.state !== 'READY' || this.queue.length > 0 || this.workers.length <= this.minWorkers) {
+        return;
+      }
+      const idx = this.workers.findIndex((candidate) => candidate.id === worker.id);
+      if (idx !== -1) {
+        this.workers.splice(idx, 1);
+      }
+      void this.destroyWorker(worker);
+    }, this.idleShutdownTimeoutMs);
+    timer.unref?.();
+    this.idleTimers.set(worker.id, timer);
   }
 
   public isEnabled(): boolean {
@@ -541,6 +590,7 @@ export class LibreOfficePoolManager {
     // 1. Look for already READY worker
     const readyWorker = this.workers.find((w) => w.state === 'READY');
     if (readyWorker) {
+      this.clearIdleTimer(readyWorker.id);
       readyWorker.state = 'BUSY';
       readyWorker.lastUsedAt = Date.now();
       return readyWorker;
@@ -640,15 +690,19 @@ export class LibreOfficePoolManager {
     if (this.queue.length > 0) {
       const next = this.queue.shift()!;
       clearTimeout(next.timer);
+      this.clearIdleTimer(worker.id);
       worker.state = 'BUSY';
       next.resolve(worker);
+      return;
     }
+    this.armIdleTimer(worker);
   }
 
   /**
    * Recycles a worker by safely cleaning up its resources and replacing it.
    */
   public async recycleWorker(worker: LibreOfficeWorker): Promise<void> {
+    this.clearIdleTimer(worker.id);
     worker.state = 'RECYCLING';
     await this.destroyWorker(worker);
 
@@ -659,6 +713,12 @@ export class LibreOfficePoolManager {
     }
 
     if (this.isShuttingDown) return;
+
+    // Only spawn an immediate replacement when below minWorkers or when jobs are queued;
+    // otherwise let demand scale back up organically (Gotenberg IdleShutdownTimeout model).
+    if (this.workers.length + this.spawningWorkers >= this.minWorkers && this.queue.length === 0) {
+      return;
+    }
 
     // Spawn a fresh replacement worker
     this.spawningWorkers++;
@@ -676,6 +736,8 @@ export class LibreOfficePoolManager {
         clearTimeout(next.timer);
         replacement.state = 'BUSY';
         next.resolve(replacement);
+      } else {
+        this.armIdleTimer(replacement);
       }
     } catch (err) {
       console.warn('[LibreOfficePoolManager] Warning: failed to spawn replacement worker:', err);
@@ -703,6 +765,7 @@ export class LibreOfficePoolManager {
    * Cleans up directories and marks worker DEAD.
    */
   private async destroyWorker(worker: LibreOfficeWorker): Promise<void> {
+    this.clearIdleTimer(worker.id);
     worker.state = 'DEAD';
     try {
       await fs.promises.rm(worker.userProfileDir, { recursive: true, force: true });
@@ -799,23 +862,25 @@ export class LibreOfficePoolManager {
         inputPath,
       ];
 
-      await this.executor(
-        this.sofficePath,
-        convertArgs,
-        {
-          cwd: jobSubdir,
-          // The directory of this job alone, and the profile of the slot: the other jobs of the slot keep theirs.
-          workDir: jobSubdir,
-          writeDirs: [worker.userProfileDir],
-          // The input of a file of the store is a link to it, which the ruleset reads through to the file.
-          readDirs: [fs.realpathSync(inputPath)],
-          socketDirs: [OFFICE_PIPE_DIR],
-          timeoutMs: timeout,
-          maxBuffer,
-          env: { HOME: jobSubdir, TMPDIR: jobSubdir, SAL_USE_VCLPLUGIN: 'svp' },
-          networkIsolated: true,
-          signal: options.signal,
-        }
+      await withCpuThreadBudget(1, () =>
+        this.executor(
+          this.sofficePath!,
+          convertArgs,
+          {
+            cwd: jobSubdir,
+            // The directory of this job alone, and the profile of the slot: the other jobs of the slot keep theirs.
+            workDir: jobSubdir,
+            writeDirs: [worker.userProfileDir],
+            // The input of a file of the store is a link to it, which the ruleset reads through to the file.
+            readDirs: [fs.realpathSync(inputPath)],
+            socketDirs: [OFFICE_PIPE_DIR],
+            timeoutMs: timeout,
+            maxBuffer,
+            env: { HOME: jobSubdir, TMPDIR: jobSubdir, SAL_USE_VCLPLUGIN: 'svp' },
+            networkIsolated: true,
+            signal: options.signal,
+          }
+        )
       );
 
       const produced = findOfficeOutput(jobSubdir);
@@ -850,6 +915,10 @@ export class LibreOfficePoolManager {
    */
   public async shutdown(): Promise<void> {
     this.isShuttingDown = true;
+    for (const timer of this.idleTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.idleTimers.clear();
 
     const queued = this.queue.splice(0, this.queue.length);
     for (const item of queued) {

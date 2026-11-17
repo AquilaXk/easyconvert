@@ -11,7 +11,7 @@ import {
   resolveSandboxedCommand,
 } from '../security/process-sandbox';
 import { OcrEngineUnavailableError } from '../types';
-import { availableCpus } from '../workers/available-cpus';
+import { availableCpus, availableMemoryBytes } from '../workers/available-cpus';
 import { olderThanSource } from '../workers/compiled-worker';
 import { Semaphore } from '../workers/semaphore';
 import { prepareOnnxInput, type OnnxPrepareOptions } from './ocr-onnx-input';
@@ -119,13 +119,24 @@ export interface OnnxHelperPlan {
   threads: number;
 }
 
+export const ONNX_MAX_HELPERS = 8;
+export const ONNX_MAX_HELPER_THREADS = 6;
+/** Memory budget reserved per helper when sizing from container memory (2x helper RSS cap so helpers stay <= 50% of RAM). */
+export const ONNX_HELPER_MEMORY_BUDGET_BYTES = ONNX_HELPER_RSS_LIMIT_MB * 2 * 1024 * 1024;
+
 /**
  * How many helpers run at once and how many threads each reads with, for `cpus` available cores: three cores or more to a helper
- * (a helper reads a page about as fast with 3 threads as with 4, and each holds 0.7 GB), at most three helpers, at most six threads.
+ * (a helper reads a page about as fast with 3 threads as with 4, and each holds 0.7 GB), at most eight helpers, at most six threads,
+ * additionally bounded by `memoryBytes` when provided so helpers never exceed half the container memory ceiling.
  */
-export function onnxHelperPlan(cpus: number = availableCpus()): OnnxHelperPlan {
-  const helpers = Math.max(1, Math.min(3, Math.floor(cpus / 3)));
-  return { helpers, threads: Math.max(1, Math.min(6, Math.floor(cpus / helpers))) };
+export function onnxHelperPlan(cpus: number = availableCpus(), memoryBytes?: number): OnnxHelperPlan {
+  const cpuHelpers = Math.max(1, Math.min(ONNX_MAX_HELPERS, Math.floor(cpus / 3)));
+  const memoryHelpers =
+    memoryBytes !== undefined && Number.isFinite(memoryBytes) && memoryBytes > 0
+      ? Math.max(1, Math.floor(memoryBytes / ONNX_HELPER_MEMORY_BUDGET_BYTES))
+      : ONNX_MAX_HELPERS;
+  const helpers = Math.max(1, Math.min(cpuHelpers, memoryHelpers));
+  return { helpers, threads: Math.max(1, Math.min(ONNX_MAX_HELPER_THREADS, Math.floor(cpus / helpers))) };
 }
 
 // --- Availability ---------------------------------------------------------------------------------------------------
@@ -464,7 +475,7 @@ export class OnnxOcrPool {
   private retryAfter = 0;
 
   constructor(private readonly options: OnnxOcrPoolOptions = {}) {
-    this.plan = options.plan ?? onnxHelperPlan();
+    this.plan = options.plan ?? onnxHelperPlan(availableCpus(), availableMemoryBytes());
     this.slots = new Semaphore(this.plan.helpers, ocrQueue(MAX_QUEUED_PAGES, 'ONNX OCR pages'));
   }
 

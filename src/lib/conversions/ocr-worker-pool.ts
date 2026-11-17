@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Worker as TesseractWorker } from 'tesseract.js';
 import { OcrEngineUnavailableError } from '../types';
+import { availableCpus, availableMemoryBytes } from '../workers/available-cpus';
 import { TRAINEDDATA_HEADER_PROBE_BYTES, isValidTraineddataHeader } from './ocr-language-data';
 
 /**
@@ -9,8 +10,18 @@ import { TRAINEDDATA_HEADER_PROBE_BYTES, isValidTraineddataHeader } from './ocr-
  * alone). Four let one page's bands (see ocr-bands.ts) be read side by side.
  */
 export const OCR_POOL_MAX_WORKERS_PER_KEY = 4;
-/** Workers kept across all language sets; the least recently idle one is evicted for another set. */
+/** Minimum workers kept across language sets; high-core, high-memory hosts scale up to `OCR_POOL_MAX_WORKERS_CEILING`. */
 export const OCR_POOL_MAX_WORKERS_TOTAL = 4;
+export const OCR_POOL_MAX_WORKERS_CEILING = 16;
+export const OCR_POOL_MEMORY_PER_WORKER_BYTES = 512 * 1024 * 1024;
+
+export function defaultOcrPoolMaxWorkersTotal(
+  cores: number = availableCpus(),
+  memoryBytes: number = availableMemoryBytes()
+): number {
+  const memoryBound = Math.max(1, Math.floor(memoryBytes / OCR_POOL_MEMORY_PER_WORKER_BYTES));
+  return Math.max(OCR_POOL_MAX_WORKERS_TOTAL, Math.min(OCR_POOL_MAX_WORKERS_CEILING, cores, memoryBound));
+}
 /** An idle worker is terminated after this long without a job. */
 export const OCR_POOL_IDLE_TTL_MS = 60_000;
 /** Jobs allowed to queue for a free worker before further requests are rejected. */
@@ -152,7 +163,7 @@ export class OcrWorkerPool {
   constructor(options: OcrWorkerPoolOptions = {}) {
     this.limits = {
       maxWorkersPerKey: options.maxWorkersPerKey ?? OCR_POOL_MAX_WORKERS_PER_KEY,
-      maxWorkersTotal: options.maxWorkersTotal ?? OCR_POOL_MAX_WORKERS_TOTAL,
+      maxWorkersTotal: options.maxWorkersTotal ?? defaultOcrPoolMaxWorkersTotal(),
       idleTtlMs: options.idleTtlMs ?? OCR_POOL_IDLE_TTL_MS,
       maxWaiters: options.maxWaiters ?? OCR_POOL_MAX_WAITERS,
       maxJobsPerWorker: options.maxJobsPerWorker ?? OCR_POOL_MAX_JOBS_PER_WORKER,

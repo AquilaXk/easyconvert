@@ -27,10 +27,10 @@ export const DIRECT_RENDER_BATCH_PAGES = PPM_BATCH_MAX_PAGES;
 /**
  * Most `pdftoppm` processes one request runs at once. Poppler's rasteriser has one thread and no option for more, so the
  * pages of a document are drawn by one process per batch of pages (the way the common PDF-to-image libraries split a
- * document). Four is the count at which a 4-core machine is full: six processes were no faster than four (19.1 s against
- * 18.3 s for 85 slides). The raw pages in flight stay below `PAGE_RENDER_MAX_PROCESSES * PPM_BATCH_BYTES`.
+ * document). High-core hosts scale up to 8 concurrent page batches while concurrent jobs coordinate through
+ * `sharedCpuThreadBudget`; raw pages in flight stay below `PAGE_RENDER_MAX_PROCESSES * PPM_BATCH_BYTES` (384 MiB).
  */
-export const PAGE_RENDER_MAX_PROCESSES = 4;
+export const PAGE_RENDER_MAX_PROCESSES = 8;
 const LETTER_WIDTH_INCHES = 8.5;
 const LETTER_HEIGHT_INCHES = 11;
 const RGB_CHANNELS = 3;

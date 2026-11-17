@@ -85,6 +85,7 @@ import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } fr
 import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, findOfficeOutput, getMimeType, handOffOutput, inProcessOutputPath, internalFallbackResult, preserveOutput, resolveInputContext, resolveOfficeInputContext, withPageNumbers, withSandboxDir, writeOutputSegments, readRawInputBuffer } from './worker-output';
 import { DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, renderScratchPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
+import { withCpuThreadBudget } from '../lib/workers/cpu-thread-budget';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { InputPixelLimitError } from '../lib/conversions/image-input-limits';
 import { checkOpenedPdfRasterPageBudget } from '../lib/conversions/pdf-access';
@@ -1337,7 +1338,9 @@ async function renderPdfToImageWithPoppler(
         const args = buildPdftoppmArgs(tgt, options, batch.start, batch.end, inputPath, prefix);
         return isPng ? writePngBatch(pdftoppmBin, tempDir, dpi, sandbox, args, batch) : runPdftoppm(pdftoppmBin, args, sandbox);
       };
-      await runBounded(batches.map((batch) => () => draw(batch)), pageRenderProcesses(), early?.done);
+      await withCpuThreadBudget(pageRenderProcesses(), (lanes) =>
+        runBounded(batches.map((batch) => () => draw(batch)), lanes, early?.done)
+      );
     },
   });
 }
@@ -1372,20 +1375,22 @@ async function renderPdfToSvgWithPoppler(
       const pages = pagesOfIntervals(intervals);
       const budget = pageLoopBudget(options, pages.length, timeout);
       // One process for each page, several at once: a long document is drawn by the cores that are there, as its PNG pages are.
-      await runBounded(
-        pages.map((p) => async () => {
-          const remaining = budget.remainingMs();
-          const pageSvgPath = path.join(tempDir, `page-${p}.svg`);
-          const args = ['-svg', '-f', String(p), '-l', String(p), inputPath, pageSvgPath];
-          await executeSandboxedBinary(pdftocairoBin, args, {
-            cwd: tempDir, workDir: tempDir, readDirs: [inputPath],
-            timeoutMs: remaining,
-            maxBuffer,
-            networkIsolated: true,
-            signal: options.signal,
-          });
-        }),
-        pageRenderProcesses()
+      await withCpuThreadBudget(pageRenderProcesses(), (lanes) =>
+        runBounded(
+          pages.map((p) => async () => {
+            const remaining = budget.remainingMs();
+            const pageSvgPath = path.join(tempDir, `page-${p}.svg`);
+            const args = ['-svg', '-f', String(p), '-l', String(p), inputPath, pageSvgPath];
+            await executeSandboxedBinary(pdftocairoBin, args, {
+              cwd: tempDir, workDir: tempDir, readDirs: [inputPath],
+              timeoutMs: remaining,
+              maxBuffer,
+              networkIsolated: true,
+              signal: options.signal,
+            });
+          }),
+          lanes
+        )
       );
     },
   });
@@ -1522,12 +1527,14 @@ async function convertPdfToEncodedRaster(
 ): Promise<WorkerConversionResult | null> {
   const rendered = await convertWithNativePoppler(input, 'pdf', PNG_FORMAT, { ...intermediateOptions(options), intermediateRaster: true }, originalFilename);
   if (!rendered) return null;
-  return reencodeRenderedPages(
-    rendered,
-    PNG_FORMAT,
-    tgt,
-    async (page, entryName, remainingMs) => (await convertImage(page, tgt, { ...encoderOptions(options), timeoutMs: remainingMs }, entryName, PNG_FORMAT)).buffer,
-    context, pageRenderProcesses()
+  return withCpuThreadBudget(pageRenderProcesses(), (lanes) =>
+    reencodeRenderedPages(
+      rendered,
+      PNG_FORMAT,
+      tgt,
+      async (page, entryName, remainingMs) => (await convertImage(page, tgt, { ...encoderOptions(options), timeoutMs: remainingMs }, entryName, PNG_FORMAT)).buffer,
+      context, lanes
+    )
   );
 }
 
@@ -1587,7 +1594,9 @@ async function convertPdfToPostScript(
       if (isEps) {
         const epsPages = pagesOfIntervals(intervals);
         const budget = pageLoopBudget(options, epsPages.length, timeout);
-        await writeEpsPages(epsPages, tempDir, inputPath, (dir, args) => run(dir, inputPath, args, budget), pageRenderProcesses());
+        await withCpuThreadBudget(pageRenderProcesses(), (lanes) =>
+          writeEpsPages(epsPages, tempDir, inputPath, (dir, args) => run(dir, inputPath, args, budget), lanes)
+        );
         return;
       }
       if (intervals.length !== 1) {

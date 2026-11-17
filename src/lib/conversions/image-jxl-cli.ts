@@ -1,5 +1,7 @@
 import path from 'node:path';
 import { executeSandboxedBinary, SandboxedProcessError } from '../security/process-sandbox';
+import { availableCpus } from '../workers/available-cpus';
+import { withCpuThreadBudget } from '../workers/cpu-thread-budget';
 import {
   DECODER_MAX_DIAGNOSTIC_BYTES,
   DECODER_MEMORY_LIMIT_MB,
@@ -33,7 +35,7 @@ import { MAX_DECODED_ANIMATION_BYTES } from './image-limits';
 export const DJXL_PATH_ENV = 'DJXL_PATH';
 const DJXL_EXECUTABLE_NAMES = ['djxl'] as const;
 const JXL_LABEL = 'JPEG XL';
-const DJXL_THREADS = '--num_threads=2';
+export const DJXL_MAX_THREADS = 4;
 /** The decoder takes the kind of file from the bytes; the output format from the name. */
 const INPUT_FILE = 'in.jxl';
 
@@ -51,16 +53,19 @@ export { declaredJxlSize };
 
 /** Runs `djxl` on the picture in `jobDir`, which writes `output` there. */
 function runDjxl(djxl: string, jobDir: string, output: string, maxOutputBytes: number, signal?: AbortSignal): Promise<unknown> {
-  return executeSandboxedBinary(djxl, [INPUT_FILE, output, DJXL_THREADS, '--quiet'], {
-    cwd: jobDir,
-    workDir: jobDir,
-    timeoutMs: DECODER_TIMEOUT_MS,
-    maxBuffer: DECODER_MAX_DIAGNOSTIC_BYTES,
-    maxFileSize: maxOutputBytes,
-    memoryLimitMb: DECODER_MEMORY_LIMIT_MB,
-    networkIsolated: true,
-    signal,
-  });
+  const desiredThreads = Math.max(1, Math.min(DJXL_MAX_THREADS, availableCpus()));
+  return withCpuThreadBudget(desiredThreads, (threads) =>
+    executeSandboxedBinary(djxl, [INPUT_FILE, output, `--num_threads=${threads}`, '--quiet'], {
+      cwd: jobDir,
+      workDir: jobDir,
+      timeoutMs: DECODER_TIMEOUT_MS,
+      maxBuffer: DECODER_MAX_DIAGNOSTIC_BYTES,
+      maxFileSize: maxOutputBytes,
+      memoryLimitMb: DECODER_MEMORY_LIMIT_MB,
+      networkIsolated: true,
+      signal,
+    })
+  );
 }
 
 /**
