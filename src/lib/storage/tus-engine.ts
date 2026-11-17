@@ -751,6 +751,7 @@ export class TusEngine {
 
   private lastSweepAt = 0;
   private inFlightSweep: Promise<number> | null = null;
+  private readonly localTailMarkers = new Map<string, string>();
 
   /** Starts `sweepExpired` unless one ran in the last ten minutes; its failure never fails the upload being created. */
   private sweepExpiredOften(): void {
@@ -943,8 +944,8 @@ export class TusEngine {
     });
   }
 
-  private async writeLocalTailState(binPath: string, flushedBytes: number, tailBytes: number): Promise<void> {
-    await fs.promises.writeFile(`${binPath}.state`, `${flushedBytes}:${tailBytes}`, 'utf-8').catch(() => undefined);
+  private setLocalTailMarker(id: string, flushedBytes: number, tailBytes: number): void {
+    this.localTailMarkers.set(id, `${flushedBytes}:${tailBytes}`);
   }
 
   private async ensureStagedTailReady(
@@ -957,10 +958,8 @@ export class TusEngine {
   ): Promise<void> {
     if (expectedLocalTailOffset > 0 && this.sessionStore.hydrateStagedFile) {
       const expectedMarker = `${initialFlushed}:${expectedLocalTailOffset}`;
-      const [localBytes, localMarker] = await Promise.all([
-        fs.promises.stat(binPath).then((st) => st.size, () => -1),
-        fs.promises.readFile(`${binPath}.state`, 'utf-8').catch(() => ''),
-      ]);
+      const localBytes = await fs.promises.stat(binPath).then((st) => st.size, () => -1);
+      const localMarker = this.localTailMarkers.get(id) ?? '';
       if (localBytes !== expectedLocalTailOffset || localMarker !== expectedMarker) {
         const hydrated = await this.sessionStore.hydrateStagedFile(id, binPath, expectedLocalTailOffset);
         if (hydrated !== expectedLocalTailOffset) {
@@ -970,13 +969,13 @@ export class TusEngine {
           await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
           throw new TusStagedSizeMismatchError(actualTotal, session.uploadLength);
         }
-        await this.writeLocalTailState(binPath, initialFlushed, expectedLocalTailOffset);
+        this.setLocalTailMarker(id, initialFlushed, expectedLocalTailOffset);
       }
       return;
     }
     if (expectedLocalTailOffset === 0) {
       await fs.promises.writeFile(binPath, Buffer.alloc(0));
-      await this.writeLocalTailState(binPath, initialFlushed, 0);
+      this.setLocalTailMarker(id, initialFlushed, 0);
     }
   }
 
@@ -1109,7 +1108,7 @@ export class TusEngine {
       await storageProvider.completeMultipartUpload(session.remoteUploadId!, parts);
       await recordTusUpload(session.key);
       await fs.promises.rm(binPath, { force: true });
-      await fs.promises.rm(`${binPath}.state`, { force: true });
+      this.localTailMarkers.delete(id);
       await this.sessionStore.deleteStagedBytes?.(id);
     } catch (err) {
       session.remoteParts = savedParts;
@@ -1129,7 +1128,7 @@ export class TusEngine {
   ): Promise<void> {
     const remainingTtl = Math.max(60, Math.floor((session.expiresAt - Date.now()) / 1000));
     if (newTailBytes < TUS_REMOTE_PART_BYTES) {
-      await this.writeLocalTailState(binPath, initialFlushed, newTailBytes);
+      this.setLocalTailMarker(id, initialFlushed, newTailBytes);
       if (newTailBytes > 0 && this.sessionStore.syncStagedBytes) {
         await this.sessionStore.syncStagedBytes(id, binPath, expectedLocalTailOffset, newTailBytes, remainingTtl);
       }
@@ -1148,7 +1147,7 @@ export class TusEngine {
     }
     const leftover = fullBuffer.subarray(cursor);
     await fs.promises.writeFile(binPath, leftover);
-    await this.writeLocalTailState(binPath, flushedNow, leftover.length);
+    this.setLocalTailMarker(id, flushedNow, leftover.length);
     session.remoteParts = parts;
     session.remoteFlushedBytes = flushedNow;
     await this.sessionStore.replaceStagedTailBytes?.(id, leftover, remainingTtl);
@@ -1178,7 +1177,7 @@ export class TusEngine {
       await finalizeTusSession(session, binPath);
       await recordTusUpload(session.key);
       await fs.promises.rm(binPath, { force: true });
-      await fs.promises.rm(`${binPath}.state`, { force: true });
+      this.localTailMarkers.delete(id);
       await this.sessionStore.deleteStagedBytes?.(id);
     } catch (err) {
       await this.rewindSessionToClientOffset(session, infoPath, binPath, clientOffset, clientOffset);
@@ -1246,7 +1245,7 @@ export class TusEngine {
       } else if (isComplete) {
         await this.completeLocalStagedTus(id, session, infoPath, binPath, clientOffset);
       } else if (newOffset > 0 && this.sessionStore.syncStagedBytes) {
-        await this.writeLocalTailState(binPath, 0, newOffset);
+        this.setLocalTailMarker(id, 0, newOffset);
         const remainingTtl = Math.max(60, Math.floor((session.expiresAt - Date.now()) / 1000));
         await this.sessionStore.syncStagedBytes(id, binPath, clientOffset, newOffset, remainingTtl);
       }
@@ -1272,7 +1271,7 @@ export class TusEngine {
       }
       const storeDeleted = await this.sessionStore.deleteSession(id);
       await this.sessionStore.deleteStagedBytes?.(id);
-      await fs.promises.rm(`${binPath}.state`, { force: true }).catch(() => undefined);
+      this.localTailMarkers.delete(id);
       let fileDeleted = false;
       try {
         if (fs.existsSync(infoPath)) {
