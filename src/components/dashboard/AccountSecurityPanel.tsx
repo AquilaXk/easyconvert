@@ -11,13 +11,14 @@ import { applySessionChange } from '@/lib/viewer-plan';
 import { useAuthErrorWording, useBillingErrorWording } from '../i18n/error-wording';
 
 const FIELD_CLASS =
-  'mt-1.5 w-full min-h-[44px] px-3.5 py-2 rounded-sm bg-canvas border border-rule-strong text-sm text-ink';
+  'mt-1.5 w-full min-h-[44px] px-3.5 py-2 rounded-sm bg-canvas border border-rule-strong text-base sm:text-sm text-ink';
 const PRIMARY_BTN_CLASS =
-  'btn-primary min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-sm text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
+  'btn-primary min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-sm text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
 const DANGER_BTN_CLASS =
-  'min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-sm bg-danger-soft text-danger border border-danger-edge text-sm font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
+  'min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-sm bg-danger-soft text-danger border border-danger-edge text-sm font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
 const SECONDARY_BTN_CLASS =
-  'min-h-[44px] inline-flex items-center justify-center px-4 py-2 rounded-sm border border-rule text-ink text-sm font-semibold hover:bg-sunken disabled:opacity-50 cursor-pointer';
+  'min-h-[44px] inline-flex items-center justify-center px-4 py-2 rounded-sm border border-rule text-ink text-sm font-medium hover:bg-sunken disabled:opacity-50 cursor-pointer';
+const LABEL_CLASS = 'block text-xs font-medium text-ink-2';
 const MIN_NEW_PASSWORD_LENGTH = 8;
 const CONFIRM_DELETE_TOKEN = 'DELETE';
 
@@ -86,7 +87,7 @@ function PasswordForm() {
   return (
     <form onSubmit={(e) => void submit(e)} className="max-w-md space-y-4">
       <div>
-        <label htmlFor="account-current-password" className="block text-xs font-semibold text-ink">
+        <label htmlFor="account-current-password" className={LABEL_CLASS}>
           {t('currentLabel')}
         </label>
         <input
@@ -99,7 +100,7 @@ function PasswordForm() {
         />
       </div>
       <div>
-        <label htmlFor="account-new-password" className="block text-xs font-semibold text-ink">
+        <label htmlFor="account-new-password" className={LABEL_CLASS}>
           {t('newLabel')}
         </label>
         <input
@@ -112,7 +113,7 @@ function PasswordForm() {
         />
       </div>
       <div>
-        <label htmlFor="account-confirm-password" className="block text-xs font-semibold text-ink">
+        <label htmlFor="account-confirm-password" className={LABEL_CLASS}>
           {t('confirmLabel')}
         </label>
         <input
@@ -216,7 +217,7 @@ function DeleteAccountDialog({
       <div className="p-6 space-y-4">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h2 id="account-delete-dialog-title" className="text-lg font-bold text-ink">
+            <h2 id="account-delete-dialog-title" className="text-base font-semibold text-ink">
               {t('heading')}
             </h2>
             <p className="mt-1 text-xs sm:text-sm text-ink-2">{t('intro')}</p>
@@ -234,7 +235,7 @@ function DeleteAccountDialog({
 
         <form onSubmit={(e) => void submit(e)} className="space-y-4">
           <div>
-            <label htmlFor="account-delete-credential" className="block text-xs font-semibold text-ink">
+            <label htmlFor="account-delete-credential" className={LABEL_CLASS}>
               {isGoogle ? t('confirmEmailLabel', { email: user.email }) : t('passwordLabel')}
             </label>
             <input
@@ -247,8 +248,8 @@ function DeleteAccountDialog({
             />
           </div>
           <div>
-            <label htmlFor="account-delete-phrase" className="block text-xs font-semibold text-ink">
-              {t.rich('confirmPhraseLabel', { code: (chunks) => <code className="font-mono font-bold">{chunks}</code> })}
+            <label htmlFor="account-delete-phrase" className={LABEL_CLASS}>
+              {t.rich('confirmPhraseLabel', { code: (chunks) => <code className="font-mono font-semibold text-ink">{chunks}</code> })}
             </label>
             <input
               id="account-delete-phrase"
@@ -303,7 +304,7 @@ export function AccountSecurityPanel({ user }: Readonly<{ user: User }>) {
 
         <section aria-labelledby="account-password-heading" className="p-5 rounded-md border border-rule space-y-4">
           <div>
-            <h3 id="account-password-heading" className="flex items-center gap-2 text-sm font-bold text-ink">
+            <h3 id="account-password-heading" className="flex items-center gap-2 text-sm font-semibold text-ink">
               <Lock aria-hidden="true" className="w-4 h-4 text-accent-ink" />
               <span>{t('password.heading')}</span>
             </h3>
@@ -316,7 +317,7 @@ export function AccountSecurityPanel({ user }: Readonly<{ user: User }>) {
 
         <section aria-labelledby="account-delete-heading" className="p-5 rounded-md border border-danger-edge bg-surface space-y-4">
           <div>
-            <h3 id="account-delete-heading" className="flex items-center gap-2 text-sm font-bold text-ink">
+            <h3 id="account-delete-heading" className="flex items-center gap-2 text-sm font-semibold text-ink">
               <Trash2 aria-hidden="true" className="w-4 h-4 text-danger" />
               <span>{t('delete.heading')}</span>
             </h3>

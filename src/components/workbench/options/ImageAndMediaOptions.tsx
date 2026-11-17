@@ -193,7 +193,7 @@ export function ImageOptionsSection({ options, onChange, targetFormat }: Readonl
       </div>
       <div>
         <div className="flex items-center justify-between mb-1.5">
-          <label htmlFor="opt-image-quality" className="text-xs font-semibold text-ink">{t('quality')}</label>
+          <label htmlFor="opt-image-quality" className="text-xs font-medium text-ink-2">{t('quality')}</label>
           <span className="text-xs font-mono text-accent-ink">{effectiveQuality}%</span>
         </div>
         <input id="opt-image-quality" type="range" min={1} max={100} value={effectiveQuality} onChange={(e) => onChange({ ...options, quality: Number(e.target.value) })} className={RANGE_CLASS} style={rangeFill(effectiveQuality, 1, 100)} />
@@ -391,7 +391,7 @@ export function AudioOptionsSection({ options, onChange, includeTrim, targetForm
       </div>
       <div>
         <div className="flex items-center justify-between mb-1.5">
-          <label htmlFor="opt-audio-volume" className="text-xs font-semibold text-ink">{t('gain')}</label>
+          <label htmlFor="opt-audio-volume" className="text-xs font-medium text-ink-2">{t('gain')}</label>
           <span className="text-xs font-mono text-accent-ink">{volumeValue}%</span>
         </div>
         <input

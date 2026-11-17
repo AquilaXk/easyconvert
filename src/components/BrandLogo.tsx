@@ -120,7 +120,7 @@ export default function BrandLogo({ size = 'md', showText = true, className = ''
     <div className={`inline-flex items-center gap-2.5 select-none ${className}`}>
       <BrandIcon size={resolved.pixelSize} className={iconClassName} decorative={showText} />
       {showText && (
-        <span className={`font-sans tracking-tight font-extrabold transition-colors flex items-center leading-none ${resolved.textClass} text-ink`}>
+        <span className={`font-sans tracking-tight font-bold transition-colors flex items-center leading-none ${resolved.textClass} text-ink`}>
           EasyConvert
         </span>
       )}

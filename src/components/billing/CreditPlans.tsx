@@ -22,7 +22,7 @@ const VOLUMES = [...new Set<number>([...PACKAGE_SIZES, ...SUBSCRIPTION_SIZES])].
 const DEFAULT_VOLUME = 1000;
 
 const BUTTON =
-  'mt-5 min-h-[44px] inline-flex items-center justify-center self-start px-5 text-sm font-semibold rounded-sm bg-accent text-on-accent hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:opacity-50';
+  'mt-5 min-h-[44px] inline-flex items-center justify-center self-start px-5 text-sm font-medium rounded-sm bg-accent text-on-accent hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:opacity-50';
 const CARD = 'rounded-md border border-rule bg-surface p-6 sm:p-8 md:p-6 flex flex-col';
 
 /** The subscription size a volume buys: the smallest subscription is larger than the smallest package, so that volume takes the smallest one. */
@@ -52,13 +52,13 @@ function VolumeSelector({ volume, onChange }: Readonly<{ volume: number; onChang
   const format = useFormatter();
   return (
     <fieldset className="mb-6">
-      <legend className="text-sm font-semibold text-ink">{t('label')}</legend>
+      <legend className="text-sm font-medium text-ink-2">{t('label')}</legend>
       <p className="mt-1 text-sm text-ink-3">{t('hint')}</p>
       <div className="mt-3 flex flex-wrap gap-2">
         {VOLUMES.map((step) => (
           <label key={step} className="relative">
             <input type="radio" name="credit-volume" value={step} checked={step === volume} onChange={() => onChange(step)} className="peer sr-only" />
-            <span className="inline-flex min-h-[44px] min-w-[4.5rem] cursor-pointer items-center justify-center rounded-sm border border-rule px-4 text-sm font-semibold text-ink-2 hover:border-accent peer-checked:border-accent peer-checked:bg-accent peer-checked:text-on-accent peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent">
+            <span className="inline-flex min-h-[44px] min-w-[4.5rem] cursor-pointer items-center justify-center rounded-sm border border-rule px-4 text-sm font-medium tabular-nums text-ink-2 hover:border-accent peer-checked:border-accent peer-checked:bg-accent peer-checked:text-on-accent peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent">
               {format.number(step)}
             </span>
           </label>
@@ -97,11 +97,11 @@ function FeatureList({ lines }: Readonly<{ lines: readonly string[] }>) {
 function PriceLines({ price, credits, once }: Readonly<{ price: PlanPrice | undefined; credits: number; once: boolean }>) {
   const t = useTranslations('billing');
   const locale = useLocale();
-  if (!price) return <p className="mt-4 min-h-9 text-3xl font-semibold text-ink" />;
+  if (!price) return <p className="mt-4 min-h-9 text-3xl font-semibold tabular-nums text-ink" />;
   const perCredit = new Intl.NumberFormat(locale, { style: 'currency', currency: price.currency, minimumFractionDigits: 3, maximumFractionDigits: 4 }).format(price.amount / credits);
   return (
     <>
-      <p className="mt-4 min-h-9 text-3xl font-semibold text-ink">{t(once ? 'price.once' : `price.${price.interval ?? 'other'}`, { price: price.formatted })}</p>
+      <p className="mt-4 min-h-9 text-3xl font-semibold tabular-nums text-ink">{t(once ? 'price.once' : `price.${price.interval ?? 'other'}`, { price: price.formatted })}</p>
       <p className="mt-1 text-sm text-ink-3">{t('perCredit', { price: perCredit })}</p>
     </>
   );
@@ -204,7 +204,7 @@ function ComingSoonBadge({ status }: Readonly<{ status: PublicBillingConfig | nu
   const t = useTranslations('billing');
   if (status !== null) return null;
   return (
-    <span className="inline-flex items-center px-2 py-0.5 rounded-sm text-xs font-bold bg-accent-soft text-accent-ink border border-accent-edge">
+    <span className="inline-flex items-center px-2 py-0.5 rounded-sm text-xs font-medium bg-accent-soft text-accent-ink border border-accent-edge">
       {t('comingSoon')}
     </span>
   );

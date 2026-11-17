@@ -14,7 +14,7 @@ function KeyExpirationBadge({ expiresAt }: Readonly<{ expiresAt?: number }>) {
   }
   if (now > expiresAt) {
     return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold bg-danger-soft text-danger border border-danger-edge">
+      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium bg-danger-soft text-danger border border-danger-edge">
         {t('expired')}
       </span>
     );
@@ -24,7 +24,7 @@ function KeyExpirationBadge({ expiresAt }: Readonly<{ expiresAt?: number }>) {
   if (msRemaining <= sevenDaysMs) {
     const daysRemaining = Math.max(1, Math.ceil(msRemaining / (86400 * 1000)));
     return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold bg-warning-soft text-warning border border-warning-edge">
+      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium bg-warning-soft text-warning border border-warning-edge">
         {t('expiringIn', { days: daysRemaining })}
       </span>
     );
@@ -70,26 +70,26 @@ export function ApiKeysTable({
     <div className="overflow-x-auto max-w-full">
       <table className="w-full text-left text-sm">
         <thead>
-          <tr className="border-b border-rule text-ink-3 text-xs uppercase">
-            <th scope="col" className="pb-3 pr-4 font-semibold">
+          <tr className="border-b border-rule text-ink-3 text-xs">
+            <th scope="col" className="pb-3 pr-4 font-medium">
               {t('columns.name')}
             </th>
-            <th scope="col" className="pb-3 pr-4 font-semibold">
+            <th scope="col" className="pb-3 pr-4 font-medium">
               {t('columns.prefix')}
             </th>
-            <th scope="col" className="pb-3 pr-4 font-semibold">
+            <th scope="col" className="pb-3 pr-4 font-medium">
               {t('columns.created')}
             </th>
-            <th scope="col" className="pb-3 pr-4 font-semibold">
+            <th scope="col" className="pb-3 pr-4 font-medium">
               {t('columns.expires')}
             </th>
-            <th scope="col" className="pb-3 pr-4 font-semibold">
+            <th scope="col" className="pb-3 pr-4 font-medium">
               {t('columns.lastUsed')}
             </th>
-            <th scope="col" className="pb-3 pr-4 font-semibold">
+            <th scope="col" className="pb-3 pr-4 font-medium">
               {t('columns.status')}
             </th>
-            <th scope="col" className="pb-3 font-semibold text-right">
+            <th scope="col" className="pb-3 font-medium text-right">
               {t('columns.actions')}
             </th>
           </tr>

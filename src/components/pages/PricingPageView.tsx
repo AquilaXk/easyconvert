@@ -47,10 +47,10 @@ export default function PricingPageView({ anonymousDaily, billing }: Readonly<{ 
     <section aria-labelledby="free-plan-heading" className="rounded-md border border-rule bg-surface p-6 sm:p-8 md:p-6 flex flex-col">
       <h2 id="free-plan-heading" className="text-xl text-ink">{t('plan.name')}</h2>
       <p className="mt-1 text-sm leading-relaxed text-ink-3 md:min-h-12">{t('plan.tagline')}</p>
-      <p className="mt-4 text-3xl font-semibold text-ink">{t('plan.price')}</p>
+      <p className="mt-4 text-3xl font-semibold tabular-nums text-ink">{t('plan.price')}</p>
       <Link
         href={{ pathname: '/auth', query: { tab: 'register' } }}
-        className="mt-5 min-h-[44px] inline-flex items-center justify-center self-start px-5 text-sm font-semibold rounded-sm bg-accent text-on-accent hover:opacity-90 transition-opacity"
+        className="mt-5 min-h-[44px] inline-flex items-center justify-center self-start px-5 text-sm font-medium rounded-sm bg-accent text-on-accent hover:opacity-90 transition-opacity"
       >
         {t('plan.cta')}
       </Link>
@@ -126,7 +126,7 @@ export default function PricingPageView({ anonymousDaily, billing }: Readonly<{ 
             <p className="mt-3 text-sm leading-relaxed text-ink-3">{t('cta.body', values)}</p>
             <Link
               href="/"
-              className="mt-5 min-h-[44px] inline-flex items-center gap-2 px-5 text-sm font-semibold rounded-sm bg-accent text-on-accent hover:opacity-90 transition-opacity"
+              className="mt-5 min-h-[44px] inline-flex items-center gap-2 px-5 text-sm font-medium rounded-sm bg-accent text-on-accent hover:opacity-90 transition-opacity"
             >
               <span>{t('cta.button')}</span>
               <ArrowRight aria-hidden="true" className="size-4" />

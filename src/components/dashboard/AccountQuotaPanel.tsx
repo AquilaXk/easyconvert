@@ -48,7 +48,7 @@ export function AccountQuotaPanel({ user, quota, apiKeys, charges, quotaUnavaila
               {t('intro')}
             </p>
           </div>
-          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-xs font-bold uppercase tracking-wider bg-accent-soft text-accent-ink border border-accent-edge self-start sm:self-auto">
+          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-xs font-medium bg-accent-soft text-accent-ink border border-accent-edge self-start sm:self-auto">
             <Shield className="w-3.5 h-3.5" />
             {t('tier', { tier: tierLabel(user.tier) })}
           </span>
@@ -56,14 +56,14 @@ export function AccountQuotaPanel({ user, quota, apiKeys, charges, quotaUnavaila
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="p-4 rounded-md border border-rule">
-            <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
+            <div className="text-xs font-medium text-ink-3">
               {t(monthly ? 'quotaMonth' : 'quota')}
             </div>
             {quotaUnavailable ? (
               <p className="mt-1.5 text-sm text-ink-2">{tQuota('unavailable')}</p>
             ) : (
               <>
-                <div className="mt-1.5 text-2xl font-bold text-ink">
+                <div className="mt-1.5 text-2xl font-semibold tabular-nums text-ink">
                   {format.number(usedToday)} / {format.number(dailyLimit)}
                 </div>
                 <p className="mt-1 text-xs text-ink-2">
@@ -74,10 +74,10 @@ export function AccountQuotaPanel({ user, quota, apiKeys, charges, quotaUnavaila
           </div>
 
           <div className="p-4 rounded-md border border-rule">
-            <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
+            <div className="text-xs font-medium text-ink-3">
               {t('package')}
             </div>
-            <div className="mt-1.5 flex items-center gap-2 text-2xl font-bold text-ink">
+            <div className="mt-1.5 flex items-center gap-2 text-2xl font-semibold tabular-nums text-ink">
               <Coins className="w-5 h-5 text-accent-ink" />
               <span>{format.number(packageCredits)}</span>
             </div>
@@ -87,10 +87,10 @@ export function AccountQuotaPanel({ user, quota, apiKeys, charges, quotaUnavaila
           </div>
 
           <div className="p-4 rounded-md border border-rule">
-            <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
+            <div className="text-xs font-medium text-ink-3">
               {t('activeKeys')}
             </div>
-            <div className="mt-1.5 flex items-center gap-2 text-2xl font-bold text-ink">
+            <div className="mt-1.5 flex items-center gap-2 text-2xl font-semibold tabular-nums text-ink">
               <Key className="w-5 h-5 text-accent-ink" />
               <span>{activeKeyCount}</span>
             </div>
@@ -100,10 +100,10 @@ export function AccountQuotaPanel({ user, quota, apiKeys, charges, quotaUnavaila
           </div>
 
           <div className="p-4 rounded-md border border-rule">
-            <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
+            <div className="text-xs font-medium text-ink-3">
               {t('reset')}
             </div>
-            <div className="mt-1.5 flex items-center gap-2 text-2xl font-bold text-ink">
+            <div className="mt-1.5 flex items-center gap-2 text-2xl font-semibold tabular-nums text-ink">
               <Clock className="w-5 h-5 text-accent-ink" />
               <span>{monthly && quota?.resetAt ? format.dateTime(new Date(quota.resetAt), { year: 'numeric', month: 'short', day: 'numeric' }) : '00:00 UTC'}</span>
             </div>
@@ -123,7 +123,7 @@ export function AccountQuotaPanel({ user, quota, apiKeys, charges, quotaUnavaila
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
           <div className="p-5 rounded-md border border-rule space-y-2.5">
-            <h3 className="text-sm font-bold text-ink">
+            <h3 className="text-sm font-semibold text-ink">
               {t('workbench.heading')}
             </h3>
             <ul className="space-y-2 text-xs sm:text-sm text-ink-2">
@@ -139,7 +139,7 @@ export function AccountQuotaPanel({ user, quota, apiKeys, charges, quotaUnavaila
           </div>
 
           <div className="p-5 rounded-md border border-rule space-y-2.5">
-            <h3 className="text-sm font-bold text-ink">
+            <h3 className="text-sm font-semibold text-ink">
               {t('api.heading')}
             </h3>
             <ul className="space-y-2 text-xs sm:text-sm text-ink-2">
@@ -158,7 +158,7 @@ export function AccountQuotaPanel({ user, quota, apiKeys, charges, quotaUnavaila
         <div className="pt-2 flex flex-wrap items-center gap-3">
           <Link
             href="/api-docs"
-            className="btn-primary min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-sm text-sm font-semibold"
+            className="btn-primary min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-sm text-sm font-medium"
           >
             <Code2 className="w-4 h-4" />
             <span>{t('reference')}</span>

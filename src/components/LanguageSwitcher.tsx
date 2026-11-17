@@ -40,7 +40,7 @@ function LanguageLinks({ query }: Readonly<{ query: string }>) {
               lang={target}
               aria-current={isCurrent ? 'true' : undefined}
               className={`min-h-[44px] px-2.5 inline-flex items-center rounded-sm text-sm transition-colors ${
-                isCurrent ? 'font-semibold text-ink' : 'font-medium text-ink-2 hover:text-ink'
+                isCurrent ? 'font-medium text-ink' : 'font-normal text-ink-3 hover:text-ink'
               }`}
             >
               {LANGUAGE_NAMES[target]}

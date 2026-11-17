@@ -109,13 +109,17 @@ describe('the Korean copy keeps one register and one set of terms', () => {
   // The register follows the reference converters' Korean pages (entries 273 and 274): labels, 합니다체 descriptions and
   // ~하세요 prompts. 해요체 and the stiff 하십시오체 of machine translation stay out. The one named exception is a FAQ
   // question, which keeps the "~나요?" form the reference converters use for their questions.
-  it('uses 합니다체 and ~하세요, never 해요체 or 하십시오체 endings', () => {
+  it('uses 합니다체 and ~하세요, never 해요체, ~해 주세요/~해 보세요 or 하십시오체 endings, and keeps informational pages declarative', () => {
     // A FAQ question keeps the "~나요?" form every Korean converter site uses for its questions.
     const faqQuestion = /^pricing\.faq\.[a-z]+\.question$/;
-    const informal = /(?:[하되해돼어아예에려져줘봐와써네죠나까]|이에)요(?=[.!?)]|\s|$)/;
+    const informal = /(?:[하되해돼어아예에려져줘봐와써네죠나까]|이에|주세|보세)요(?=[.!?)]|\s|$)/;
     const formal = /(?:십시오|십시요|하소서)(?![가-힣])/;
+    const infoEntry = /^(?:infoPages|slugPages\.info)\./;
     expect(
       koreanEntries.filter(([key, text]) => !faqQuestion.test(key) && (informal.test(text) || formal.test(text))).map(([key]) => key)
+    ).toEqual([]);
+    expect(
+      koreanEntries.filter(([key, text]) => infoEntry.test(key) && /세요(?=[.!?)]|\s|$)/.test(text)).map(([key]) => key)
     ).toEqual([]);
   });
 

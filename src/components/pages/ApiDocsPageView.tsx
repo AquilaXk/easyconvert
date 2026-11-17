@@ -42,8 +42,8 @@ export default function ApiDocsPageView({ topic }: Readonly<{ topic: ApiDocTopic
           </div>
           <main id="main-content" className="lg:col-span-8 min-w-0 text-ink">
             <div className="border-b border-rule py-8">
-              <p className="mb-2.5 text-sm font-semibold text-accent-ink">{t(`nav.groups.${entry.group}`)}</p>
-              <h1 className="text-3xl sm:text-4xl font-bold text-ink text-pretty">{t(`topics.${topic}.title`)}</h1>
+              <p className="mb-2.5 text-sm font-medium text-accent-ink">{t(`nav.groups.${entry.group}`)}</p>
+              <h1 className="text-3xl sm:text-4xl text-ink text-pretty">{t(`topics.${topic}.title`)}</h1>
               <p className="mt-4 text-lg text-ink-3 text-pretty">{t(`topics.${topic}.lead`)}</p>
             </div>
             <div className="mt-8 pb-24">{body}</div>

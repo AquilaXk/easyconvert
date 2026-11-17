@@ -69,12 +69,12 @@ export function JobsHistoryPanel({
         <div className="overflow-x-auto max-w-full">
           <table className="w-full text-left text-sm">
             <thead>
-              <tr className="border-b border-rule text-ink-3 text-xs uppercase">
-                <th className="pb-3 pr-4 font-semibold">{t('columns.name')}</th>
-                <th className="pb-3 pr-4 font-semibold">{t('columns.format')}</th>
-                <th className="pb-3 pr-4 font-semibold">{t('columns.size')}</th>
-                <th className="pb-3 pr-4 font-semibold">{t('columns.ttl')}</th>
-                <th className="pb-3 font-semibold text-right">{t('columns.actions')}</th>
+              <tr className="border-b border-rule text-ink-3 text-xs">
+                <th className="pb-3 pr-4 font-medium">{t('columns.name')}</th>
+                <th className="pb-3 pr-4 font-medium">{t('columns.format')}</th>
+                <th className="pb-3 pr-4 font-medium">{t('columns.size')}</th>
+                <th className="pb-3 pr-4 font-medium">{t('columns.ttl')}</th>
+                <th className="pb-3 font-medium text-right">{t('columns.actions')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-rule">

@@ -141,10 +141,10 @@ export function IntegrationGuide({ sampleKeyDisplay, apiOrigin }: Readonly<Integ
                 tabIndex={isSelected ? 0 : -1}
                 onClick={() => setCodeTab(tab)}
                 onKeyDown={(event) => handleTabKeyDown(event, tab)}
-                className={`min-h-[44px] px-3 py-1.5 text-xs font-semibold rounded-sm transition-colors ${
+                className={`min-h-[44px] px-3 py-1.5 text-xs rounded-sm transition-colors ${
                   isSelected
-                    ? 'bg-surface text-accent-ink'
-                    : 'text-ink-2 hover:text-ink'
+                    ? 'bg-surface text-ink font-medium shadow-elev-1'
+                    : 'text-ink-3 hover:text-ink font-normal'
                 }`}
               >
                 {TAB_LABELS[tab]}
@@ -167,7 +167,7 @@ export function IntegrationGuide({ sampleKeyDisplay, apiOrigin }: Readonly<Integ
           type="button"
           onClick={handleCopySnippet}
           aria-label={t('copyLabel', { language: TAB_LABELS[codeTab] })}
-          className="min-w-[44px] min-h-[44px] absolute top-2 right-2 inline-flex items-center justify-center gap-1.5 px-2.5 rounded-sm bg-surface hover:bg-canvas border border-rule text-ink-2 hover:text-ink text-xs font-semibold transition-colors"
+          className="min-w-[44px] min-h-[44px] absolute top-2 right-2 inline-flex items-center justify-center gap-1.5 px-2.5 rounded-sm bg-surface hover:bg-canvas border border-rule text-ink-2 hover:text-ink text-xs font-medium transition-colors"
         >
           {copiedSnippet ? (
             <>

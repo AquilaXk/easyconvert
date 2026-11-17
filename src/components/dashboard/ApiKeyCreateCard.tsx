@@ -117,12 +117,12 @@ export function CreateApiKeyForm({
   const t = useTranslations('dashboard.keys');
   return (
     <div className="mb-6 p-5 rounded-md border border-rule">
-      <h3 className="text-sm font-bold text-ink mb-4">{t('createHeading')}</h3>
+      <h3 className="text-sm font-semibold text-ink mb-4">{t('createHeading')}</h3>
       <form onSubmit={onSubmit} className="space-y-4">
         <div>
           <label
             htmlFor="new-key-name-input"
-            className="block text-xs font-semibold text-ink-2 mb-1.5"
+            className="block text-xs font-medium text-ink-2 mb-1.5"
           >
             {t('name')}
           </label>
@@ -139,7 +139,7 @@ export function CreateApiKeyForm({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <fieldset className="border-0 p-0 m-0 min-w-0">
-            <legend className="block text-xs font-semibold text-ink-2 mb-2">
+            <legend className="block text-xs font-medium text-ink-2 mb-2">
               {t('scopesLegend')}
             </legend>
             <div className="space-y-1.5">

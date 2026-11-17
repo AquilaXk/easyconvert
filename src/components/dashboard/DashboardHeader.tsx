@@ -77,7 +77,7 @@ export function DashboardHeader({
     <>
       <div className="mb-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-5">
         <div className="flex items-center gap-4 min-w-0">
-          <div className="w-14 h-14 rounded-md bg-accent text-on-accent flex items-center justify-center text-xl font-bold shrink-0 overflow-hidden">
+          <div className="w-14 h-14 rounded-md bg-accent text-on-accent flex items-center justify-center text-xl font-semibold shrink-0 overflow-hidden">
             {user.avatarUrl ? (
               <Image
                 src={user.avatarUrl}
@@ -97,7 +97,7 @@ export function DashboardHeader({
               <h1 className="text-2xl sm:text-3xl text-ink">
                 {t('heading')}
               </h1>
-              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-sm text-xs font-bold uppercase tracking-wider bg-accent-soft text-accent-ink border border-accent-edge">
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-sm text-xs font-medium bg-accent-soft text-accent-ink border border-accent-edge">
                 <Shield className="w-3.5 h-3.5" aria-hidden="true" />
                 <span>{t('tier', { tier: tierLabel(user.tier) })}</span>
               </span>
@@ -109,7 +109,7 @@ export function DashboardHeader({
               <span>
                 {t.rich('provider', {
                   provider: t(`providers.${user.provider}`),
-                  strong: (chunks) => <strong>{chunks}</strong>,
+                  strong: (chunks) => <strong className="font-medium text-ink-2">{chunks}</strong>,
                 })}
               </span>
               <span aria-hidden="true">&bull;</span>
@@ -121,7 +121,7 @@ export function DashboardHeader({
         <button
           type="button"
           onClick={onLogout}
-          className="min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-sm border border-rule text-ink-2 hover:text-ink hover:bg-sunken text-sm font-semibold transition-colors"
+          className="min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-sm border border-rule text-ink-2 hover:text-ink hover:bg-sunken text-sm font-medium transition-colors"
         >
           <LogOut className="w-4 h-4" />
           <span>{t('signOut')}</span>
@@ -150,10 +150,10 @@ export function DashboardHeader({
               type="button"
               onClick={() => onSelectTab(tab.id)}
               onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
-              className={`min-h-[44px] flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors whitespace-nowrap ${
+              className={`min-h-[44px] flex items-center gap-2 px-4 py-2.5 text-sm border-b-2 transition-colors whitespace-nowrap ${
                 isSelected
-                  ? 'border-accent text-accent-ink'
-                  : 'border-transparent text-ink-2 hover:text-ink'
+                  ? 'border-accent text-accent-ink font-medium'
+                  : 'border-transparent text-ink-3 hover:text-ink font-normal'
               }`}
             >
               <Icon className="w-4 h-4" />
@@ -162,8 +162,8 @@ export function DashboardHeader({
                 <span
                   className={
                     tab.badgeDanger
-                      ? 'ml-1 px-2 py-0.5 text-xs rounded-sm bg-danger-soft text-danger font-bold border border-danger-edge'
-                      : 'ml-1 px-2 py-0.5 text-xs rounded-sm bg-accent-soft text-accent-ink font-semibold'
+                      ? 'ml-1 px-2 py-0.5 text-xs rounded-sm bg-danger-soft text-danger font-medium border border-danger-edge'
+                      : 'ml-1 px-2 py-0.5 text-xs rounded-sm bg-accent-soft text-accent-ink font-medium'
                   }
                 >
                   {tab.badge}

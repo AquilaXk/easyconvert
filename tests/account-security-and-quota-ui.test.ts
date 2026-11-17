@@ -26,6 +26,9 @@ vi.mock('../src/i18n/navigation', () => ({
 }));
 
 const { AccountSecurityPanel } = await import('../src/components/dashboard/AccountSecurityPanel');
+const { DashboardHeader } = await import('../src/components/dashboard/DashboardHeader');
+const { default: BrandLogo } = await import('../src/components/BrandLogo');
+const { ContactContent } = await import('../src/components/converter/info-page-sections');
 const { default: QueueItemRow } = await import('../src/components/workbench/QueueItemRow');
 
 const EMAIL_USER: User = {
@@ -298,5 +301,45 @@ describe('QuotaExhaustedActions on QueueItemRow', () => {
       'en'
     );
     expect(container.querySelectorAll('a')).toHaveLength(0);
+  });
+});
+
+describe('Typography weight hierarchy and Korean contact register', () => {
+  it('distinguishes active tab (font-medium) from inactive tabs (font-normal) and keeps BrandLogo within 400..700', () => {
+    mount(
+      createElement(
+        'div',
+        null,
+        createElement(BrandLogo),
+        createElement(DashboardHeader, {
+          user: EMAIL_USER,
+          activeTab: 'security',
+          filesCount: 3,
+          dlqCount: 2,
+          onSelectTab: () => undefined,
+          onLogout: () => undefined,
+        })
+      ),
+      'ko'
+    );
+
+    const tabs = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    expect(tabs).toHaveLength(5);
+    const active = tabs.find((tab) => tab.getAttribute('aria-selected') === 'true')!;
+    const inactive = tabs.filter((tab) => tab.getAttribute('aria-selected') === 'false');
+    expect(active.className).toContain('font-medium');
+    expect(active.className).not.toContain('font-semibold');
+    for (const tab of inactive) {
+      expect(tab.className).toContain('font-normal');
+      expect(tab.className).not.toContain('font-semibold');
+    }
+    expect(container.innerHTML).not.toContain('font-extrabold');
+  });
+
+  it('renders /ko/contact copy in declarative 합니다체 without ~요 endings or 팀 mentions', () => {
+    mount(createElement(ContactContent), 'ko');
+    const text = container.textContent ?? '';
+    expect(text).toContain('받습니다.');
+    expect(text).not.toMatch(/세요|팀/);
   });
 });

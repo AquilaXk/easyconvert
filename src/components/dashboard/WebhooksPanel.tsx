@@ -48,7 +48,7 @@ export function WebhooksPanel({
                 {t('heading')}
               </h2>
               {entries.length > 0 && (
-                <span className="px-2.5 py-0.5 rounded-sm text-xs font-bold bg-danger-soft text-danger border border-danger-edge">
+                <span className="px-2.5 py-0.5 rounded-sm text-xs font-medium bg-danger-soft text-danger border border-danger-edge">
                   {t('failedCount', { count: entries.length })}
                 </span>
               )}
@@ -63,7 +63,7 @@ export function WebhooksPanel({
               type="button"
               onClick={onRefresh}
               disabled={loading}
-              className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-sm border border-rule text-xs font-semibold hover:bg-sunken transition-colors"
+              className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-sm border border-rule text-xs font-medium hover:bg-sunken transition-colors"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
               <span>{t('refresh')}</span>
@@ -72,7 +72,7 @@ export function WebhooksPanel({
               <button
                 type="button"
                 onClick={onClearAll}
-                className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-sm border border-danger-edge text-danger text-xs font-semibold hover:bg-danger-soft transition-colors"
+                className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-sm border border-danger-edge text-danger text-xs font-medium hover:bg-danger-soft transition-colors"
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>{t('clear')}</span>
@@ -109,13 +109,13 @@ export function WebhooksPanel({
           <div className="overflow-x-auto max-w-full">
             <table className="w-full text-left text-sm">
               <thead>
-                <tr className="border-b border-rule text-ink-3 text-xs uppercase">
-                  <th className="pb-3 pr-4 font-semibold">{t('columns.event')}</th>
-                  <th className="pb-3 pr-4 font-semibold">{t('columns.target')}</th>
-                  <th className="pb-3 pr-4 font-semibold">{t('columns.status')}</th>
-                  <th className="pb-3 pr-4 font-semibold">{t('columns.failedAt')}</th>
-                  <th className="pb-3 pr-4 font-semibold">{t('columns.retries')}</th>
-                  <th className="pb-3 font-semibold text-right">{t('columns.actions')}</th>
+                <tr className="border-b border-rule text-ink-3 text-xs">
+                  <th className="pb-3 pr-4 font-medium">{t('columns.event')}</th>
+                  <th className="pb-3 pr-4 font-medium">{t('columns.target')}</th>
+                  <th className="pb-3 pr-4 font-medium">{t('columns.status')}</th>
+                  <th className="pb-3 pr-4 font-medium">{t('columns.failedAt')}</th>
+                  <th className="pb-3 pr-4 font-medium">{t('columns.retries')}</th>
+                  <th className="pb-3 font-medium text-right">{t('columns.actions')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-rule">
@@ -127,7 +127,7 @@ export function WebhooksPanel({
                       className="hover:bg-sunken/50"
                     >
                       <td className="py-3.5 pr-4 whitespace-nowrap">
-                        <span className="font-mono text-xs font-semibold text-accent-ink">
+                        <span className="font-mono text-xs font-medium text-accent-ink">
                           {entry.event}
                         </span>
                       </td>
@@ -139,7 +139,7 @@ export function WebhooksPanel({
                       </td>
                       <td className="py-3.5 pr-4 whitespace-nowrap">
                         <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded-sm text-xs font-semibold border ${
+                          className={`inline-flex items-center px-2 py-0.5 rounded-sm text-xs font-medium border ${
                             isReplayed
                               ? 'bg-success-soft text-success border-success-edge'
                               : 'bg-danger-soft text-danger border-danger-edge'
@@ -169,7 +169,7 @@ export function WebhooksPanel({
                             onClick={() => onReplay(entry.id)}
                             disabled={replayingId === entry.id}
                             aria-label={t('replayLabel', { id: entry.id })}
-                            className="btn-primary min-h-[44px] inline-flex items-center gap-1.5 px-3 rounded-sm text-xs font-semibold disabled:opacity-60"
+                            className="btn-primary min-h-[44px] inline-flex items-center gap-1.5 px-3 rounded-sm text-xs font-medium disabled:opacity-60"
                           >
                             {replayingId === entry.id ? (
                               <Loader2 className="w-3.5 h-3.5 animate-spin" />

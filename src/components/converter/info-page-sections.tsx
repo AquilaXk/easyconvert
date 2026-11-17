@@ -42,7 +42,7 @@ export function PolicySections({
               <div>
                 <a
                   href="mailto:support@aquilaxk.site?subject=Accessibility%20Feedback"
-                  className="min-h-[44px] inline-flex items-center gap-1.5 text-sm font-semibold text-accent-ink hover:underline rounded-md"
+                  className="min-h-[44px] inline-flex items-center gap-1.5 text-sm font-medium text-accent-ink hover:underline rounded-md"
                 >
                   {t('accessibility.feedback.link')}
                 </a>
@@ -91,7 +91,7 @@ export function ContactContent() {
       </div>
 
       <div className="border-t border-rule pt-6 space-y-1">
-        <h3 className="font-medium text-ink">{t('email.heading')}</h3>
+        <h3 className="text-sm font-semibold text-ink">{t('email.heading')}</h3>
         <p className="text-ink-3">{t('email.body')}</p>
         <a href={`mailto:${SUPPORT_EMAIL}`} className="inline-block text-accent-ink hover:underline">
           {SUPPORT_EMAIL}
@@ -99,7 +99,7 @@ export function ContactContent() {
       </div>
 
       <div className="border-t border-rule pt-6 space-y-1">
-        <h3 className="font-medium text-ink">{t('bugs.heading')}</h3>
+        <h3 className="text-sm font-semibold text-ink">{t('bugs.heading')}</h3>
         <p className="text-ink-3">{t('bugs.body')}</p>
         <a href={`mailto:${SUPPORT_EMAIL}?subject=Bug%20Report`} className="inline-block text-accent-ink hover:underline">
           {t('bugs.link')}

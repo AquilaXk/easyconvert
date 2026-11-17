@@ -20,9 +20,9 @@ export function rangeFill(value: number, min: number, max: number): CSSPropertie
 }
 
 export const LABEL_CLASS =
-  'block text-xs font-semibold text-ink mb-1.5';
+  'block text-xs font-medium text-ink-2 mb-1.5';
 
-export const SECTION_HEADING_CLASS = 'text-sm font-bold text-ink mb-4';
+export const SECTION_HEADING_CLASS = 'text-sm font-semibold text-ink mb-3';
 
 export function parseOptionalPositiveInt(raw: string): number | undefined {
   if (!raw.trim()) return undefined;

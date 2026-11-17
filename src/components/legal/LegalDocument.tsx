@@ -10,13 +10,13 @@ const PROSE_CLASS = [
   '[&_p]:mt-4 [&_a]:text-accent-ink [&_a]:underline [&_strong]:font-semibold',
   '[&_ul]:mt-4 [&_ul]:list-disc [&_ul]:pl-6 [&_li]:mt-1.5',
   '[&_table]:mt-4 [&_table]:w-full [&_table]:text-sm [&_table]:border-collapse',
-  '[&_th]:border [&_th]:border-rule [&_th]:px-3 [&_th]:py-2 [&_th]:text-left [&_th]:font-semibold',
+  '[&_th]:border [&_th]:border-rule [&_th]:px-3 [&_th]:py-2 [&_th]:text-left [&_th]:font-medium [&_th]:text-ink-2',
   '[&_td]:border [&_td]:border-rule [&_td]:px-3 [&_td]:py-2 [&_td]:align-top [&_td]:[overflow-wrap:anywhere]',
   '[&_code]:font-mono [&_code]:text-sm [&_code]:break-all',
 ].join(' ');
 
 const SECTION_CLASS =
-  '[&_h2]:scroll-mt-24 [&_h2]:mt-12 [&_h2]:text-2xl [&_h2]:font-bold [&_h2]:text-ink [&_h2:first-child]:mt-0';
+  '[&_h2]:scroll-mt-24 [&_h2]:mt-12 [&_h2]:text-xl sm:[&_h2]:text-2xl [&_h2]:font-semibold [&_h2]:text-ink [&_h2:first-child]:mt-0';
 
 /** A legal page: its version date above the title, the introduction, then the list of its sections beside them. */
 export function LegalDocument({ id, locale }: Readonly<{ id: LegalDocumentId; locale: AppLocale }>) {
@@ -32,7 +32,7 @@ export function LegalDocument({ id, locale }: Readonly<{ id: LegalDocumentId; lo
         <p className="text-sm font-medium text-ink-3">
           <time dateTime={version}>{t('effective', { date: effective })}</time>
         </p>
-        <h1 className="mt-2 text-3xl sm:text-4xl font-bold text-ink">{page.title}</h1>
+        <h1 className="mt-2 text-3xl sm:text-4xl text-ink">{page.title}</h1>
         <div className={`${PROSE_CLASS} text-lg text-ink-2`} dangerouslySetInnerHTML={{ __html: page.introHtml }} />
       </header>
 

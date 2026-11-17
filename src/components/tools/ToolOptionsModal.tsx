@@ -336,7 +336,7 @@ export default function ToolOptionsModal({ tool, toolName, initialOptions, onSav
         </button>
         <button
           type="button" onClick={() => { onSave(options); onClose(); }}
-          className="btn-primary min-h-[44px] px-5 rounded-xs text-sm font-semibold cursor-pointer"
+          className="btn-primary min-h-[44px] px-5 rounded-xs text-sm font-medium cursor-pointer"
         >
           {tModal('apply')}
         </button>

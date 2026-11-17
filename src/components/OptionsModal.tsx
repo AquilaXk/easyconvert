@@ -179,7 +179,7 @@ export default function OptionsModal({
           type="button"
           disabled={hasInvalidPassword}
           onClick={handleApply}
-          className="btn-primary min-h-[44px] px-5 rounded-xs text-sm font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="btn-primary min-h-[44px] px-5 rounded-xs text-sm font-medium cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {t('apply')}
         </button>

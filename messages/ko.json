@@ -76,7 +76,7 @@
         "file-size": "파일 크기"
       },
       "lead1": "EasyConvert API 버전 1(<code>/api/v1</code> 아래 경로)의 문서입니다. 파일과 대상 형식을 보내면 변환된 파일을 돌려받습니다.",
-      "lead2": "이 페이지에서는 기본 URL, 인증, 오류, 한도를 설명합니다. 엔드포인트는 메뉴에 있습니다. 첫 요청을 보내려면 <quickstart>빠른 시작</quickstart>을 따라 해 보세요.",
+      "lead2": "이 페이지에서는 기본 URL, 인증, 오류, 한도를 설명합니다. 엔드포인트는 메뉴에 있습니다. 첫 요청 예시는 <quickstart>빠른 시작</quickstart>에서 확인합니다.",
       "lead3": "모든 엔드포인트는 <openapi>OpenAPI 문서</openapi>(JSON)에도 있습니다. API 클라이언트나 코드 생성기가 이 문서를 읽을 수 있습니다.",
       "baseUrl": "API의 기본 URL은 <code>{origin}</code>입니다. 이 문서의 모든 경로는 여기서 시작합니다. 예를 들면 <code>{origin}/api/v1/convert</code>입니다.",
       "authentication": "요청에 API 키를 담습니다. 키가 필요 없는 엔드포인트는 해당 페이지에 적혀 있습니다.",
@@ -585,12 +585,12 @@
         "confirm": "영구 삭제 확인",
         "confirming": "삭제 중…",
         "cancel": "취소",
-        "draining": "진행 중인 변환 작업을 중단했습니다. 몇 초 뒤 영구 삭제 확인을 다시 눌러 주세요."
+        "draining": "진행 중인 변환 작업을 중단했습니다. 몇 초 뒤 다시 삭제할 수 있습니다."
       }
     },
     "guide": {
       "heading": "연동 안내",
-      "intro": "권한 범위를 지정한 API 키로 변환 요청을 보내세요.",
+      "intro": "권한 범위를 지정한 API 키로 변환 요청을 보냅니다.",
       "languageLabel": "SDK 언어",
       "copyLabel": "{language} 연동 예시 복사",
       "copied": "복사됨",
@@ -1014,21 +1014,21 @@
       },
       "feedback": {
         "heading": "의견 보내기",
-        "body": "EasyConvert 페이지나 API 도구에서 접근성 문제를 발견하면 팀에 알려 주세요. 문제를 재현해 해결하겠습니다.",
+        "body": "EasyConvert 페이지나 API 도구에서 접근성 문제를 발견하면 아래 이메일로 제보할 수 있습니다. 재현 후 수정합니다.",
         "link": "support@aquilaxk.site (접근성 의견)"
       }
     },
     "contact": {
-      "heading": "문의하기",
-      "intro": "지원 형식, 변환 결과, API 연동에 대한 질문을 보내세요.",
+      "heading": "이메일 문의",
+      "intro": "서비스 이용 질문과 기술 문의를 아래 주소로 받습니다.",
       "email": {
         "heading": "지원 이메일",
-        "body": "기술 문의, API 질문, 의견을 이메일로 보내세요."
+        "body": "일반 문의, API 연동 질문, 요금제 문의를 접수합니다."
       },
       "bugs": {
         "heading": "버그 신고",
-        "body": "예상과 다른 결과를 발견하면 재현 방법과 민감하지 않은 예시 파일을 이메일로 보내세요.",
-        "link": "문제 신고하기"
+        "body": "변환 오류는 재현 순서와 민감하지 않은 예시 파일을 함께 보내면 확인합니다.",
+        "link": "버그 신고 메일 보내기"
       }
     }
   },
@@ -1483,7 +1483,7 @@
     "info": {
       "contact": {
         "title": "문의",
-        "description": "질문이나 의견은 팀에 직접 문의하세요."
+        "description": "지원 형식, 변환 결과, API 연동, 계정과 결제 문의를 이메일로 받습니다."
       },
       "about": {
         "title": "서비스 소개",

@@ -4,16 +4,16 @@ import { apiDocsHref, type ApiDocTopicSlug } from './topics';
 
 export const DOC = {
   p: 'my-5 leading-7 text-pretty',
-  h2: 'text-2xl font-bold text-ink mt-12 mb-6',
-  h3: 'text-xl font-bold text-ink mt-8 mb-3',
-  operationH3: 'text-lg font-bold text-ink mt-6 mb-2',
+  h2: 'text-2xl font-semibold text-ink mt-12 mb-6',
+  h3: 'text-lg font-semibold text-ink mt-8 mb-3',
+  operationH3: 'text-base font-semibold text-ink mt-6 mb-2',
   code: 'px-1.5 py-0.5 text-sm font-mono font-medium rounded-xs border border-rule bg-sunken text-ink',
   smallCode: 'px-1 py-px text-xs font-mono font-medium rounded-xs border border-rule bg-sunken text-ink',
   link: 'font-medium text-accent-ink border-b border-transparent hover:border-accent-ink transition-colors',
   list: 'list-disc ps-6 my-5 marker:text-rule-strong',
   listItem: 'my-1.5 ps-1.5 leading-7',
   tableWrap: 'relative my-5 overflow-x-auto rounded-xs border border-rule',
-  th: 'py-3 px-4 text-left text-sm font-semibold bg-sunken border-b border-rule',
+  th: 'py-2.5 px-4 text-left text-xs font-medium text-ink-3 bg-sunken border-b border-rule',
   td: 'py-3 px-4 text-sm align-top border-b border-rule',
 } as const;
 

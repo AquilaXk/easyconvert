@@ -16,11 +16,11 @@ function QuotaSummaryStrip({ quota }: Readonly<{ quota: QuotaUsage }>) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
       <div className="border-t border-rule pt-5">
-        <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
+        <div className="text-xs font-medium text-ink-3">
           {t(monthly ? 'usedMonth' : 'used')}
         </div>
         <div className="mt-2 flex items-baseline gap-2">
-          <span className="text-2xl sm:text-3xl font-bold text-accent-ink">
+          <span className="text-2xl sm:text-3xl font-semibold tabular-nums text-accent-ink">
             {format.number(usedToday)}
           </span>
           <span className="text-ink-3 text-sm">
@@ -36,10 +36,10 @@ function QuotaSummaryStrip({ quota }: Readonly<{ quota: QuotaUsage }>) {
       </div>
 
       <div className="border-t border-rule pt-5">
-        <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
+        <div className="text-xs font-medium text-ink-3">
           {t('remaining')}
         </div>
-        <div className="mt-2 text-2xl sm:text-3xl font-bold text-ink">
+        <div className="mt-2 text-2xl sm:text-3xl font-semibold tabular-nums text-ink">
           {format.number(quota.remaining)}{' '}
           <span className="text-sm font-normal text-ink-3">{t('callsLeft')}</span>
         </div>
@@ -49,10 +49,10 @@ function QuotaSummaryStrip({ quota }: Readonly<{ quota: QuotaUsage }>) {
       </div>
 
       <div className="border-t border-rule pt-5">
-        <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
+        <div className="text-xs font-medium text-ink-3">
           {t(monthly ? 'resetMonth' : 'reset')}
         </div>
-        <div className="mt-2 flex items-center gap-2 text-xl font-bold text-ink">
+        <div className="mt-2 flex items-center gap-2 text-xl font-semibold tabular-nums text-ink">
           <Clock className="w-5 h-5 text-accent-ink" aria-hidden="true" />
           <span>{monthly ? format.dateTime(new Date(quota.resetAt), { year: 'numeric', month: 'short', day: 'numeric' }) : '00:00 UTC'}</span>
         </div>
@@ -69,7 +69,7 @@ function QuotaUnavailableStrip() {
   const t = useTranslations('dashboard.quota');
   return (
     <div className="border-t border-rule pt-5">
-      <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">{t('used')}</div>
+      <div className="text-xs font-medium text-ink-3">{t('used')}</div>
       <p className="mt-2 text-sm text-ink-2">{t('unavailable')}</p>
     </div>
   );

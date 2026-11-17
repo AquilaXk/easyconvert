@@ -49,7 +49,7 @@ export function SubscriptionPanel() {
 
   return (
     <section aria-labelledby="subscription-heading" className="p-5 rounded-md border border-rule space-y-2.5">
-      <h3 id="subscription-heading" className="flex items-center gap-2 text-sm font-bold text-ink">
+      <h3 id="subscription-heading" className="flex items-center gap-2 text-sm font-semibold text-ink">
         <CreditCard aria-hidden="true" className="w-4 h-4 text-accent-ink" />
         {t('heading')}
       </h3>
@@ -61,7 +61,7 @@ export function SubscriptionPanel() {
             type="button"
             disabled={busy}
             onClick={() => void manage()}
-            className="btn-primary min-h-[44px] inline-flex items-center px-4 py-2 rounded-sm text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            className="btn-primary min-h-[44px] inline-flex items-center px-4 py-2 rounded-sm text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
           >
             {t('manage')}
           </button>
@@ -74,7 +74,7 @@ export function SubscriptionPanel() {
       ) : (
         <>
           <p className="text-sm text-ink-2">{t('none')}</p>
-          <Link href="/pricing" className="inline-flex min-h-[44px] items-center text-sm font-semibold text-accent-ink underline underline-offset-2">
+          <Link href="/pricing" className="inline-flex min-h-[44px] items-center text-sm font-medium text-accent-ink underline underline-offset-2">
             {t('plans')}
           </Link>
         </>

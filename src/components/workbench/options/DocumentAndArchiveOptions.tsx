@@ -341,7 +341,7 @@ export function ArchiveOptionsSection({ options, onChange }: Readonly<SectionPro
       <h3 className={SECTION_HEADING_CLASS}>{t('heading')}</h3>
       <div>
         <div className="flex items-center justify-between mb-1.5">
-          <label htmlFor="opt-archive-compression" className="text-xs font-semibold text-ink">
+          <label htmlFor="opt-archive-compression" className="text-xs font-medium text-ink-2">
             {t('level')}
           </label>
           <span className="text-xs font-mono text-accent-ink">{t('levelValue', { level })}</span>

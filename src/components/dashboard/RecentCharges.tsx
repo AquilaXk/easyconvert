@@ -17,7 +17,7 @@ export function RecentCharges({ charges }: Readonly<{ charges: readonly ChargeEn
   const format = useFormatter();
   return (
     <section aria-labelledby="recent-charges-heading" className="p-5 rounded-md border border-rule space-y-3">
-      <h3 id="recent-charges-heading" className="text-sm font-bold text-ink">
+      <h3 id="recent-charges-heading" className="text-sm font-semibold text-ink">
         {t('heading')}
       </h3>
       {charges.length === 0 ? (
@@ -26,10 +26,10 @@ export function RecentCharges({ charges }: Readonly<{ charges: readonly ChargeEn
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead>
-              <tr className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
-                <th scope="col" className="py-2 pr-4 font-semibold">{t('when')}</th>
-                <th scope="col" className="py-2 pr-4 font-semibold">{t('what')}</th>
-                <th scope="col" className="py-2 text-right font-semibold">{t('credits')}</th>
+              <tr className="border-b border-rule text-xs text-ink-3">
+                <th scope="col" className="py-2 pr-4 font-medium">{t('when')}</th>
+                <th scope="col" className="py-2 pr-4 font-medium">{t('what')}</th>
+                <th scope="col" className="py-2 text-right font-medium">{t('credits')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-rule">

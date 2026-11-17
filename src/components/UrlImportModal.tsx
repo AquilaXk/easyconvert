@@ -110,7 +110,7 @@ export default function UrlImportModal({
         <div>
           <label
             htmlFor="url-input"
-            className="block text-xs font-semibold text-ink mb-1.5"
+            className="block text-xs font-medium text-ink-2 mb-1.5"
           >
             {t('label')}
           </label>
@@ -143,7 +143,7 @@ export default function UrlImportModal({
           <button
             type="submit"
             disabled={loading || !url.trim()}
-            className="btn-primary min-h-[44px] px-5 inline-flex items-center gap-2 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed rounded-xs cursor-pointer"
+            className="btn-primary min-h-[44px] px-5 inline-flex items-center gap-2 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed rounded-xs cursor-pointer"
           >
             {loading ? (
               <>
