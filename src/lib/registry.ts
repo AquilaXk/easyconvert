@@ -1481,7 +1481,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/avif',
     category: 'image',
     description: 'Next-generation AV1 Image File Format delivering state-of-the-art compression.',
-    targetFormats: ['png', 'jpg', 'webp', 'tiff', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'hocr', 'alto'],
+    targetFormats: ['png', 'jpg', 'webp', 'tiff', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'hocr', 'alto', 'svg'],
     optionsSchema: { quality: true, fit: true, background: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   tiff: {
@@ -1541,7 +1541,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/x-icon',
     category: 'image',
     description: 'Icon format used for website favicons and application icons.',
-    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff'],
+    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg'],
     optionsSchema: { background: true, ocrEnabled: true, ocrLanguage: true },
   },
   cur: {
@@ -1551,7 +1551,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/x-icon',
     category: 'image',
     description: 'Windows mouse cursor graphic format.',
-    targetFormats: ['png', 'ico', 'webp'],
+    targetFormats: ['png', 'ico', 'webp', 'svg'],
   },
   heic: {
     id: 'heic',
@@ -1560,7 +1560,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/heic',
     category: 'image',
     description: 'High Efficiency Image Container format adopted by modern Apple iOS cameras.',
-    targetFormats: ['jpg', 'png', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff'],
+    targetFormats: ['jpg', 'png', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg'],
     optionsSchema: { background: true, quality: true, ocrEnabled: true, ocrLanguage: true },
   },
   heif: {
@@ -1570,7 +1570,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/heif',
     category: 'image',
     description: 'High Efficiency Image File Format standardized by MPEG.',
-    targetFormats: ['jpg', 'png', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff'],
+    targetFormats: ['jpg', 'png', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg'],
     optionsSchema: { background: true, quality: true, ocrEnabled: true, ocrLanguage: true },
   },
   jxl: {
@@ -1580,7 +1580,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/jxl',
     category: 'image',
     description: 'JPEG XL (ISO/IEC 18181) image, lossy or lossless, with wide colour, high bit depth, transparency and animation.',
-    targetFormats: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'tiff', 'webp'],
+    targetFormats: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'tiff', 'webp', 'svg'],
     optionsSchema: { background: true, quality: true },
   },
   psd: {
@@ -1590,7 +1590,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/vnd.adobe.photoshop',
     category: 'image',
     description: 'Adobe Photoshop layered raster graphics document.',
-    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'tiff', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd'],
+    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'tiff', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'svg'],
     optionsSchema: { background: true, ocrEnabled: true, ocrLanguage: true },
   },
   psb: {
@@ -1728,7 +1728,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/x-tga',
     category: 'image',
     description: 'Truevision Advanced Raster Graphics Adapter image format.',
-    targetFormats: ['png', 'jpg', 'webp', 'bmp', 'zip', 'pdf', 'avif', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff'],
+    targetFormats: ['png', 'jpg', 'webp', 'bmp', 'zip', 'pdf', 'avif', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg'],
   },
   pcx: {
     id: 'pcx',
@@ -1746,7 +1746,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/x-portable-anymap',
     category: 'image',
     description: 'Netpbm portable anymap graphic file.',
-    targetFormats: ['png', 'jpg', 'webp', 'zip'],
+    targetFormats: ['png', 'jpg', 'webp', 'zip', 'svg'],
   },
   pbm: {
     id: 'pbm',
@@ -1755,7 +1755,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/x-portable-bitmap',
     category: 'image',
     description: 'Netpbm 1-bit monochrome bitmap format.',
-    targetFormats: ['png', 'jpg', 'bmp', 'zip'],
+    targetFormats: ['png', 'jpg', 'bmp', 'zip', 'svg'],
   },
   pgm: {
     id: 'pgm',
@@ -1764,7 +1764,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/x-portable-graymap',
     category: 'image',
     description: 'Netpbm 8-bit or 16-bit grayscale image format.',
-    targetFormats: ['png', 'jpg', 'webp', 'zip'],
+    targetFormats: ['png', 'jpg', 'webp', 'zip', 'svg'],
   },
   ppm: {
     id: 'ppm',
@@ -1773,7 +1773,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/x-portable-pixmap',
     category: 'image',
     description: 'Netpbm 24-bit full RGB color pixmap format.',
-    targetFormats: ['png', 'jpg', 'webp', 'zip', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff'],
+    targetFormats: ['png', 'jpg', 'webp', 'zip', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'svg'],
   },
   wbmp: {
     id: 'wbmp',
@@ -1811,7 +1811,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/jpeg',
     category: 'image',
     description: 'Standard JPEG File Interchange Format.',
-    targetFormats: ['png', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'ps', 'psd', 'tiff'],
+    targetFormats: ['png', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'ps', 'psd', 'tiff', 'svg'],
   },
   jp2: {
     id: 'jp2',
@@ -2717,7 +2717,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/x-icns',
     category: 'image',
     description: 'Apple macOS application icon container supporting 16x16 to 1024x1024 Retina.',
-    targetFormats: ['png'],
+    targetFormats: ['png', 'svg'],
     optionsSchema: { background: true},
   },
   mos: {

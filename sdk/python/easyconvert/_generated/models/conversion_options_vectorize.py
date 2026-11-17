@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Self, TypeVar
+from typing import Any, Self, TypeVar, cast
 
 from attrs import define as _attrs_define
 
+from ..models.clustering_of_vectorize import ClusteringOfVectorize
+from ..models.hierarchical_of_vectorize import HierarchicalOfVectorize
 from ..models.mode_of_vectorize import ModeOfVectorize
 from ..models.preset_of_vectorize import PresetOfVectorize
 from ..types import UNSET, Unset
@@ -15,33 +17,70 @@ T = TypeVar("T", bound="ConversionOptionsVectorize")
 
 @_attrs_define
 class ConversionOptionsVectorize:
-    """PNG, JPEG, WebP, GIF, BMP or TIFF to SVG: how the picture is traced into shapes. Only the values you set are sent to
-    the tracer, and they override the preset. An animated GIF or WebP and a multi-page TIFF are traced from their first
-    frame.
+    """Raster image to SVG vector tracing options. Only the values you set are sent to the tracer (overriding the preset),
+    with --optimize 2 enabled by default. Animated GIF/WebP and multi-page TIFF/ICO/PSD files are traced from their
+    primary/first frame.
 
         Attributes:
             preset (PresetOfVectorize | Unset): Start from settings tuned for the input: bw for black and white line art,
                 poster for flat graphics with few colours, photo for photographs.
+            clustering (ClusteringOfVectorize | Unset): Region segmentation algorithm: color-cluster (default), bw (binary
+                line art), or watershed (volume-extinction hierarchy).
+            hierarchical (HierarchicalOfVectorize | Unset): Layer composition: stacked (default) overlaps layers bottom-to-
+                top; cutout builds a seam-free gapless topological mosaic.
             mode (ModeOfVectorize | Unset): Curve fitting: spline (default) draws smooth curves, polygon straight edges,
                 pixel keeps the pixel edges (for pixel art).
             filter_speckle (int | Unset): Discard patches smaller than this size in pixels (0 to 128, default 4). Raise it
                 to remove noise from scans and JPEG artefacts.
             color_precision (int | Unset): Significant bits per RGB channel (1 to 8, default 6). Lower values give fewer
                 colours and flatter shapes.
+            gradient_step (int | Unset): Colour difference between gradient layers (0 to 255, default 16). Higher values
+                merge subtle gradients into fewer layers.
+            watershed_detail (int | Unset): Watershed hierarchy cut level (0 to 255, default 128). Higher values keep finer
+                regions.
             simplify (float | Unset): Refit curves with the fewest segments that stay within this distance in pixels (try 1
                 to 2.5). Fewer nodes and a smaller file. Off by default.
+            path_precision (int | Unset): Decimal places in SVG path coordinates (0 to 8, default 2).
+            max_colors (int | Unset): Quantize the traced regions to at most this many colours in OKLab (1 to 256) and merge
+                adjacent same-colour layers.
+            palette (list[str] | Unset): Snap traced regions in OKLab to this fixed list of #RRGGBB hex colours (up to 64
+                entries) and merge adjacent same-colour layers.
+            adaptive (bool | Unset): Use Bradley–Roth integral-image adaptive binary thresholding to preserve strokes under
+                uneven lighting and shadows.
+            threshold (int | Unset): Fixed binary intensity cutoff (0 to 255, default 128) when adaptive thresholding is
+                off.
+            optimize (int | Unset): Output optimisation level (0 to 2, default 2): 0 raw absolute paths, 1 quantize and
+                cleanup, 2 <g fill> grouping, H/V/S shorthands and SVGO path/colour compaction.
     """
 
     preset: PresetOfVectorize | Unset = UNSET
+    clustering: ClusteringOfVectorize | Unset = UNSET
+    hierarchical: HierarchicalOfVectorize | Unset = UNSET
     mode: ModeOfVectorize | Unset = UNSET
     filter_speckle: int | Unset = UNSET
     color_precision: int | Unset = UNSET
+    gradient_step: int | Unset = UNSET
+    watershed_detail: int | Unset = UNSET
     simplify: float | Unset = UNSET
+    path_precision: int | Unset = UNSET
+    max_colors: int | Unset = UNSET
+    palette: list[str] | Unset = UNSET
+    adaptive: bool | Unset = UNSET
+    threshold: int | Unset = UNSET
+    optimize: int | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         preset: str | Unset = UNSET
         if not isinstance(self.preset, Unset):
             preset = self.preset.value
+
+        clustering: str | Unset = UNSET
+        if not isinstance(self.clustering, Unset):
+            clustering = self.clustering.value
+
+        hierarchical: str | Unset = UNSET
+        if not isinstance(self.hierarchical, Unset):
+            hierarchical = self.hierarchical.value
 
         mode: str | Unset = UNSET
         if not isinstance(self.mode, Unset):
@@ -51,21 +90,59 @@ class ConversionOptionsVectorize:
 
         color_precision = self.color_precision
 
+        gradient_step = self.gradient_step
+
+        watershed_detail = self.watershed_detail
+
         simplify = self.simplify
+
+        path_precision = self.path_precision
+
+        max_colors = self.max_colors
+
+        palette: list[str] | Unset = UNSET
+        if not isinstance(self.palette, Unset):
+            palette = self.palette
+
+        adaptive = self.adaptive
+
+        threshold = self.threshold
+
+        optimize = self.optimize
 
         field_dict: dict[str, Any] = {}
 
         field_dict.update({})
         if preset is not UNSET:
             field_dict["preset"] = preset
+        if clustering is not UNSET:
+            field_dict["clustering"] = clustering
+        if hierarchical is not UNSET:
+            field_dict["hierarchical"] = hierarchical
         if mode is not UNSET:
             field_dict["mode"] = mode
         if filter_speckle is not UNSET:
             field_dict["filterSpeckle"] = filter_speckle
         if color_precision is not UNSET:
             field_dict["colorPrecision"] = color_precision
+        if gradient_step is not UNSET:
+            field_dict["gradientStep"] = gradient_step
+        if watershed_detail is not UNSET:
+            field_dict["watershedDetail"] = watershed_detail
         if simplify is not UNSET:
             field_dict["simplify"] = simplify
+        if path_precision is not UNSET:
+            field_dict["pathPrecision"] = path_precision
+        if max_colors is not UNSET:
+            field_dict["maxColors"] = max_colors
+        if palette is not UNSET:
+            field_dict["palette"] = palette
+        if adaptive is not UNSET:
+            field_dict["adaptive"] = adaptive
+        if threshold is not UNSET:
+            field_dict["threshold"] = threshold
+        if optimize is not UNSET:
+            field_dict["optimize"] = optimize
 
         return field_dict
 
@@ -79,6 +156,20 @@ class ConversionOptionsVectorize:
         else:
             preset = PresetOfVectorize(_preset)
 
+        _clustering = d.pop("clustering", UNSET)
+        clustering: ClusteringOfVectorize | Unset
+        if isinstance(_clustering, Unset):
+            clustering = UNSET
+        else:
+            clustering = ClusteringOfVectorize(_clustering)
+
+        _hierarchical = d.pop("hierarchical", UNSET)
+        hierarchical: HierarchicalOfVectorize | Unset
+        if isinstance(_hierarchical, Unset):
+            hierarchical = UNSET
+        else:
+            hierarchical = HierarchicalOfVectorize(_hierarchical)
+
         _mode = d.pop("mode", UNSET)
         mode: ModeOfVectorize | Unset
         if isinstance(_mode, Unset):
@@ -90,14 +181,40 @@ class ConversionOptionsVectorize:
 
         color_precision = d.pop("colorPrecision", UNSET)
 
+        gradient_step = d.pop("gradientStep", UNSET)
+
+        watershed_detail = d.pop("watershedDetail", UNSET)
+
         simplify = d.pop("simplify", UNSET)
+
+        path_precision = d.pop("pathPrecision", UNSET)
+
+        max_colors = d.pop("maxColors", UNSET)
+
+        palette = cast(list[str], d.pop("palette", UNSET))
+
+        adaptive = d.pop("adaptive", UNSET)
+
+        threshold = d.pop("threshold", UNSET)
+
+        optimize = d.pop("optimize", UNSET)
 
         conversion_options_vectorize = cls(
             preset=preset,
+            clustering=clustering,
+            hierarchical=hierarchical,
             mode=mode,
             filter_speckle=filter_speckle,
             color_precision=color_precision,
+            gradient_step=gradient_step,
+            watershed_detail=watershed_detail,
             simplify=simplify,
+            path_precision=path_precision,
+            max_colors=max_colors,
+            palette=palette,
+            adaptive=adaptive,
+            threshold=threshold,
+            optimize=optimize,
         )
 
         return conversion_options_vectorize

@@ -91,8 +91,8 @@ describe('the tracer is handed the pixels it traces', () => {
     expect(given.length).toBe(8 + 7 * 5 * 4);
     expect([...given.subarray(8, 12)]).toEqual([200, 200, 200, 255]);
     const args = fs.readFileSync(pixels.arguments, 'utf8').trim().split('\n');
-    expect(args.slice(0, 4)).toEqual(['--preset', 'photo', '--filter-speckle', '9']);
-    expect(args.slice(4).filter((_, index) => index % 2 === 0)).toEqual(['--input', '--output']);
+    expect(args.slice(0, 6)).toEqual(['--preset', 'photo', '--filter-speckle', '9', '--optimize', '2']);
+    expect(args.slice(6).filter((_, index) => index % 2 === 0)).toEqual(['--input', '--output']);
   });
 
   it('falls back to the release program, which gets a PNG, when vtracer-pixels is not there', async () => {
@@ -122,7 +122,14 @@ describe('the tracer is handed the pixels it traces', () => {
 });
 
 describe.skipIf(!haveBoth)('vtracer-pixels and the release program', () => {
-  const OPTION_SETS: VectorizeOptions[] = [{}, { preset: 'bw' }, { preset: 'photo', mode: 'polygon' }, { preset: 'poster', filterSpeckle: 0, mode: 'pixel' }, { colorPrecision: 3, simplify: 1.5 }];
+  const OPTION_SETS: VectorizeOptions[] = [
+    {},
+    { preset: 'bw', adaptive: true },
+    { preset: 'photo', mode: 'polygon', hierarchical: 'cutout' },
+    { preset: 'poster', filterSpeckle: 0, mode: 'pixel', maxColors: 6 },
+    { colorPrecision: 3, gradientStep: 24, simplify: 1.5, pathPrecision: 3 },
+    { clustering: 'watershed', watershedDetail: 96, hierarchical: 'cutout' },
+  ];
 
   it.each(PICTURES)('write the same bytes of SVG for %s, with every option set', async (_name, source, encode) => {
     const picture = await encode();

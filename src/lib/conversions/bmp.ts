@@ -632,8 +632,8 @@ export function decodeBmp(buf: Buffer, budget?: PixelBudget): DecodedBmp {
 }
 
 /** Decodes a headerless DIB (the form inside ICO and CUR files) to 8-bit RGBA. */
-export function decodeDib(buf: Buffer, options: DibOptions = {}): DecodedBmp {
-  return decodeBitmap(buf, 0, null, options);
+export function decodeDib(buf: Buffer, options: DibOptions = {}, budget?: PixelBudget): DecodedBmp {
+  return decodeBitmap(buf, 0, null, options, budget);
 }
 
 /** 72 dpi in pixels per metre, the resolution the encoder declares. */

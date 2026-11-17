@@ -139,13 +139,61 @@ interface Trace {
   hasCurves: boolean;
 }
 
+const NAMED_FILL_HEX: Readonly<Record<string, string>> = {
+  azure: '#F0FFFF',
+  beige: '#F5F5DC',
+  bisque: '#FFE4C4',
+  brown: '#A52A2A',
+  coral: '#FF7F50',
+  gold: '#FFD700',
+  gray: '#808080',
+  green: '#008000',
+  indigo: '#4B0082',
+  ivory: '#FFFFF0',
+  khaki: '#F0E68C',
+  linen: '#FAF0E6',
+  maroon: '#800000',
+  navy: '#000080',
+  olive: '#808000',
+  orange: '#FFA500',
+  orchid: '#DA70D6',
+  peru: '#CD853F',
+  pink: '#FFC0CB',
+  plum: '#DDA0DD',
+  purple: '#800080',
+  red: '#FF0000',
+  salmon: '#FA8072',
+  sienna: '#A0522D',
+  silver: '#C0C0C0',
+  snow: '#FFFAFA',
+  tan: '#D2B48C',
+  teal: '#008080',
+  tomato: '#FF6347',
+  violet: '#EE82EE',
+  wheat: '#F5DEB3',
+};
+
+function expandSvgFill(raw: string): string | null {
+  if (/^#[0-9A-Fa-f]{6}$/.test(raw)) return raw.toUpperCase();
+  if (/^#[0-9A-Fa-f]{3}$/.test(raw)) {
+    const [, r, g, b] = raw.toUpperCase();
+    return `#${r}${r}${g}${g}${b}${b}`;
+  }
+  return NAMED_FILL_HEX[raw.toLowerCase()] ?? null;
+}
+
 function traceOf(svg: Buffer): Trace {
   const text = svg.toString('utf8');
   const commands = (text.match(/ d="[^"]*"/g) ?? []).join('');
+  const fills = new Set<string>();
+  for (const match of text.matchAll(/fill="([^"]+)"/g)) {
+    const hex = expandSvgFill(match[1]);
+    if (hex !== null) fills.add(hex);
+  }
   return {
     bytes: svg.length,
     paths: (text.match(/<path\b/g) ?? []).length,
-    fills: new Set((text.match(/fill="#[0-9A-Fa-f]{6}"/g) ?? []).map((fill) => fill.slice(6, 13).toUpperCase())),
+    fills,
     hasCurves: /[CcSs]/.test(commands),
   };
 }
@@ -159,8 +207,31 @@ const near = (hex: string, colour: { r: number; g: number; b: number }, within: 
 };
 
 describe('the raster to SVG pairs', () => {
-  it('are offered for exactly the raster inputs the reference serves with the same engine', () => {
-    const traced = ['bmp', 'gif', 'jpeg', 'jpg', 'png', 'tif', 'tiff', 'webp'];
+  it('are offered for all 22 supported still-image and icon inputs', () => {
+    const traced = [
+      'avif',
+      'bmp',
+      'cur',
+      'gif',
+      'heic',
+      'heif',
+      'icns',
+      'ico',
+      'jpeg',
+      'jfif',
+      'jpg',
+      'jxl',
+      'pbm',
+      'pgm',
+      'png',
+      'pnm',
+      'ppm',
+      'psd',
+      'tga',
+      'tif',
+      'tiff',
+      'webp',
+    ].sort();
     expect([...VECTORIZE_SOURCES].sort()).toEqual(traced);
     for (const source of traced) expect(FORMAT_REGISTRY[source].targetFormats).toContain('svg');
   });
@@ -188,18 +259,20 @@ describe('the tracer program, as the wrapper sees it', () => {
     const gif = await sharp(frames, { raw: { width: 16, height: 32, channels: 3, pageHeight: 16 } }).gif().toBuffer();
     await withTracer(program, () => vectorize(gif, 'gif', { preset: 'photo', colorPrecision: 3, simplify: 1.5 }));
     const args = fs.readFileSync(`${seen}.args`, 'utf8').trim().split('\n');
-    expect(args.slice(0, -4)).toEqual(['--preset', 'photo', '--color-precision', '3', '--simplify', '1.5']);
+    expect(args.slice(0, -4)).toEqual(['--preset', 'photo', '--color-precision', '3', '--simplify', '1.5', '--optimize', '2']);
     expect([args.at(-4), args.at(-2)]).toEqual(['--input', '--output']);
     const staged = await sharp(fs.readFileSync(`${seen}.png`)).raw().toBuffer({ resolveWithObject: true });
     expect(staged.info).toMatchObject({ format: 'raw', width: 16, height: 16, channels: 4 });
     expect([...staged.data.subarray(0, 4)]).toEqual([0, 0, 0, 255]);
   });
 
-  it('sends no option flag when the request sets none, so the engine defaults apply', async () => {
+  it('defaults --optimize to 2 when the request sets none, and lets an explicit optimize override it', async () => {
     const seen = path.join(tmpDir('vtracer-seen-'), 'args');
     const program = standIn(`printf '%s\\n' "$@" > '${seen}'\nprintf '%s' '${MINIMAL_SVG}' > "$out"`);
     await withTracer(program, () => vectorize(clean));
-    expect(fs.readFileSync(seen, 'utf8').trim().split('\n').filter((arg) => arg.startsWith('--'))).toEqual(['--input', '--output']);
+    expect(fs.readFileSync(seen, 'utf8').trim().split('\n').slice(0, -4)).toEqual(['--optimize', '2']);
+    await withTracer(program, () => vectorize(clean, 'png', { optimize: 1 }));
+    expect(fs.readFileSync(seen, 'utf8').trim().split('\n').slice(0, -4)).toEqual(['--optimize', '1']);
   });
 
   it('returns the SVG the program wrote without scripts, event handlers or external references', async () => {
@@ -328,11 +401,21 @@ describe('inputs refused before the program starts', () => {
   it.each<[string, unknown]>([
     ['an unknown preset', { preset: 'sketch' }],
     ['an unknown mode', { mode: 'bezier' }],
+    ['an unknown hierarchical mode', { hierarchical: 'layered' }],
+    ['an unknown clustering mode', { clustering: 'kmeans' }],
     ['a speckle filter past 128', { filterSpeckle: 129 }],
     ['a fractional speckle filter', { filterSpeckle: 2.5 }],
     ['a colour precision of 0', { colorPrecision: 0 }],
+    ['a gradient step past 255', { gradientStep: 256 }],
+    ['a path precision past 8 (preventing powi NaN overflow)', { pathPrecision: 9 }],
+    ['a watershed detail past 255', { watershedDetail: 256 }],
+    ['a maxColors of 0', { maxColors: 0 }],
+    ['a maxColors past 256', { maxColors: 257 }],
+    ['an empty palette', { palette: [] }],
+    ['a malformed hex entry in palette', { palette: ['red'] }],
     ['a tolerance of 0', { simplify: 0 }],
-    ['an option of another tracer', { gradientStep: 16 }],
+    ['an optimize level past 2', { optimize: 3 }],
+    ['an option of another tracer', { turdsize: 16 }],
     ['options that are not an object', 'photo'],
   ])('refuses %s as an unsupported option (400)', async (_name, raw) => {
     const { program, ran } = started();
@@ -478,7 +561,9 @@ describe.skipIf(!haveTracer)('the pinned tracer', () => {
       expect(response.status, source).toBe(200);
       expect(response.headers.get('content-type'), source).toContain('image/svg+xml');
       const svg = Buffer.from(await response.arrayBuffer());
-      expect(svg.toString('utf8'), source).toContain(`width="${WIDTH}" height="${HEIGHT}"`);
+      const svgText = svg.toString('utf8');
+      expect(svgText, source).toContain(`width="${WIDTH}" height="${HEIGHT}"`);
+      expect(svgText, source).toContain(`viewBox="0 0 ${WIDTH} ${HEIGHT}"`);
       const fills = [...traceOf(svg).fills];
       expect(fills.some((fill) => near(fill, RED, 24)), `${source}: ${fills.join(' ')}`).toBe(true);
       expect(fills.some((fill) => near(fill, BLUE, 24)), `${source}: ${fills.join(' ')}`).toBe(true);
@@ -531,10 +616,29 @@ describe.skipIf(!haveTracer)('the pinned tracer', () => {
     it('an explicit value overrides the preset', async () => {
       expect((await traced({ preset: 'photo', filterSpeckle: 0 })).paths).toBeGreaterThan((await traced({ preset: 'photo' })).paths);
     });
+
+    it('default optimize=2 writes a smaller SVG than optimize=1 with the same shape count', async () => {
+      const opt1 = await traced({ optimize: 1 });
+      expect(base.paths).toBe(opt1.paths);
+      expect(base.bytes).toBeLessThan(opt1.bytes);
+    });
+
+    it('maxColors and palette bound the output colours as requested', async () => {
+      expect((await traced({ maxColors: 4 })).fills.size).toBeLessThanOrEqual(4);
+      const snapped = await traced({ palette: ['#FF0000', '#000080', '#FFFFFF'] });
+      for (const fill of snapped.fills) {
+        expect(['#FF0000', '#000080', '#FFFFFF']).toContain(fill);
+      }
+    });
+
+    it('cutout mosaic composes shapes without overlapping stacked backdrops', async () => {
+      const mosaic = await traced({ hierarchical: 'cutout' });
+      expect(mosaic.paths).toBeGreaterThan(0);
+    });
   });
 
   it('refuses noise traced with every shape kept, once its SVG passes the output limit, with a typed 413', async () => {
-    const side = 800;
+    const side = 1000;
     const noise = await sharp(seededNoise(side, side, 3, 11), { raw: { width: side, height: side, channels: 3 } }).png().toBuffer();
     const failure = await captureError(() => vectorize(noise, 'png', { preset: 'poster', filterSpeckle: 0, mode: 'pixel' }));
     expect(failure).toBeInstanceOf(PayloadLimitError);

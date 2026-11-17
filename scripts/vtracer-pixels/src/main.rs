@@ -4,6 +4,10 @@
 //! I/O and argument parsing. Everything else is delegated to
 //! [`vtracer::Config`] / [`vtracer::Pipeline`].
 
+mod fast_frontend;
+mod fast_svg;
+
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -88,8 +92,8 @@ struct Args {
     #[arg(long, value_name = "TOLERANCE", value_parser = parse_simplify_tolerance)]
     simplify: Option<f64>,
 
-    /// Decimal places to use in path coordinates.
-    #[arg(long)]
+    /// Decimal places to use in path coordinates (0..=8).
+    #[arg(long, value_parser = clap::value_parser!(u32).range(0..=8))]
     path_precision: Option<u32>,
 
     /// Fixed palette: comma-separated hex colors, e.g. '#112233,#445566'.
@@ -124,8 +128,8 @@ struct Args {
     #[arg(long)]
     adaptive_t: Option<f64>,
 
-    /// Watershed clustering: hierarchy cut level (default 128; higher = more regions, uncapped).
-    #[arg(long, value_parser = clap::value_parser!(u32))]
+    /// Watershed clustering: hierarchy cut level (0..=255, default 128; higher = more regions).
+    #[arg(long, value_parser = clap::value_parser!(u32).range(0..=255))]
     watershed_detail: Option<u32>,
 }
 
@@ -296,9 +300,25 @@ fn run() -> Result<(), String> {
         .ok_or("no output path given (positional or --output)")?;
 
     let config = build_config(&args)?;
-    let pipeline = config.build().map_err(|e| e.to_string())?;
+    let mut pipeline = config.build().map_err(|e| e.to_string())?;
     let img = read_image(input)?;
-    let svg = pipeline.to_svg(&img).map_err(|e| e.to_string())?;
+    let doc = if config.clustering == Clustering::ColorCluster {
+        let placeholder = ColorImage {
+            pixels: Vec::new(),
+            width: img.width,
+            height: img.height,
+        };
+        pipeline.frontend = Box::new(fast_frontend::OwnedColorClusterFrontend {
+            image: RefCell::new(Some(img)),
+            color_precision_loss: 8 - config.color_precision,
+            layer_difference: config.layer_difference,
+            good_min_area: config.filter_speckle * config.filter_speckle,
+        });
+        pipeline.run(&placeholder).map_err(|e| e.to_string())?
+    } else {
+        pipeline.run(&img).map_err(|e| e.to_string())?
+    };
+    let svg = fast_svg::write_svg_bytes(&pipeline.writer, &doc);
     std::fs::write(output, svg).map_err(|e| format!("cannot write output file: {e}"))?;
     Ok(())
 }

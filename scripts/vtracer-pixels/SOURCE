@@ -17,8 +17,12 @@ holds the upstream file with the input step only, each later commit is one chang
   Cargo.lock                       -> Cargo.lock    the upstream lockfile pruned by cargo to the packages this program builds; the
       versions and checksums of the crates are upstream's.
 
-Additions of ours, each one commit: [profile.release] panic = "abort" and lto = "thin" in Cargo.toml; the mimalloc allocator
+Additions of ours: [profile.release] panic = "abort" and lto = "thin" in Cargo.toml; the mimalloc allocator
 (mimalloc 0.1.52 and libmimalloc-sys 0.1.49 from crates.io, MIT, NOTICE-mimalloc) in Cargo.toml and src/main.rs; the pixel-count
-bound MAX_PIXELS in read_image. None of them changes the SVG: it is byte for byte what vtracer's own program writes for the same pixels.
+bound MAX_PIXELS in read_image, and bounded ranges on --path-precision (0..=8) and --watershed-detail (0..=255); src/fast_frontend.rs
+(derived from crates/vtracer/src/frontend/{color_cluster.rs,keying.rs} at the tagged commit: zero-copy ColorImage handoff and a
+single-pass 64-byte [u64; 8] bitset lookup for find_unused_color); and src/fast_svg.rs (derived from crates/vtracer/src/svg.rs at
+the tagged commit: zero-allocation stack-buffer coordinate/command formatting into a single preallocated Vec<u8>). None of them
+changes the SVG: it is byte for byte what vtracer's own program writes for the same pixels.
 
 The library crates are not copied: vtracer, visioncortex and flo_curves come from crates.io at the versions and checksums of Cargo.lock.

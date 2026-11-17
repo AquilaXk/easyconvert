@@ -180,9 +180,17 @@ describe('the preset and mode radio lists', () => {
   it('makes each list one radio group, so the arrow keys move within it, and names the group by its label', async () => {
     const { container } = await mount({});
     const names = [...container.querySelectorAll('[role="radiogroup"]')].map((group) => new Set([...group.querySelectorAll('input[type="radio"]')].map((radio) => radio.getAttribute('name'))));
-    expect(names.map((set) => set.size)).toEqual([1, 1]);
-    expect(new Set(names.flatMap((set) => [...set])).size).toBe(2);
+    expect(names.map((set) => set.size)).toEqual([1, 1, 1]);
+    expect(new Set(names.flatMap((set) => [...set])).size).toBe(3);
     expect(radiosOf(container, 'Preset')).toHaveLength(4);
+    expect(radiosOf(container, 'Layering')).toHaveLength(2);
+    expect(chosen(container, 'Layering')).toBe('stacked');
+  });
+
+  it('sends cutout layering when chosen', async () => {
+    const run = await mount({});
+    choose(run.container, 'Layering', 'cutout');
+    await vi.waitFor(() => expect(lastVectorize(run)).toEqual({ hierarchical: 'cutout' }));
   });
 });
 
@@ -205,12 +213,14 @@ describe('the Advanced disclosure', () => {
     }
   });
 
-  it('opens on click to the three fields and closes again', async () => {
+  it('opens on click to the advanced controls and closes again', async () => {
     const run = await mount({});
     await expand(run);
     const controlled = disclosure(run.container).getAttribute('aria-controls') ?? '';
-    expect(byId(run.container, controlled)?.querySelectorAll('input[type="range"]')).toHaveLength(2);
+    expect(byId(run.container, controlled)?.querySelectorAll('input[type="range"]')).toHaveLength(4);
+    expect(byId(run.container, 'opt-vectorize-max-colors')).not.toBeNull();
     expect(byId(run.container, 'opt-vectorize-simplify')).not.toBeNull();
+    expect(byId(run.container, 'opt-vectorize-adaptive')).not.toBeNull();
     disclosure(run.container).click();
     await vi.waitFor(() => expect(disclosure(run.container).getAttribute('aria-expanded')).toBe('false'));
     expect(run.container.querySelector('input[type="range"]')).toBeNull();

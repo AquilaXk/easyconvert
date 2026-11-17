@@ -734,16 +734,34 @@ export interface components {
             tiffCompression?: components["schemas"]["TiffCompression"];
             toneMap?: components["schemas"]["ToneMap"];
             outputUnit?: components["schemas"]["OutputUnit"];
-            /** @description PNG, JPEG, WebP, GIF, BMP or TIFF to SVG: how the picture is traced into shapes. Only the values you set are sent to the tracer, and they override the preset. An animated GIF or WebP and a multi-page TIFF are traced from their first frame. */
+            /** @description Raster image to SVG vector tracing options. Only the values you set are sent to the tracer (overriding the preset), with --optimize 2 enabled by default. Animated GIF/WebP and multi-page TIFF/ICO/PSD files are traced from their primary/first frame. */
             vectorize?: {
                 preset?: components["schemas"]["PresetOfVectorize"];
+                clustering?: components["schemas"]["ClusteringOfVectorize"];
+                hierarchical?: components["schemas"]["HierarchicalOfVectorize"];
                 mode?: components["schemas"]["ModeOfVectorize"];
                 /** @description Discard patches smaller than this size in pixels (0 to 128, default 4). Raise it to remove noise from scans and JPEG artefacts. */
                 filterSpeckle?: number;
                 /** @description Significant bits per RGB channel (1 to 8, default 6). Lower values give fewer colours and flatter shapes. */
                 colorPrecision?: number;
+                /** @description Colour difference between gradient layers (0 to 255, default 16). Higher values merge subtle gradients into fewer layers. */
+                gradientStep?: number;
+                /** @description Watershed hierarchy cut level (0 to 255, default 128). Higher values keep finer regions. */
+                watershedDetail?: number;
                 /** @description Refit curves with the fewest segments that stay within this distance in pixels (try 1 to 2.5). Fewer nodes and a smaller file. Off by default. */
                 simplify?: number;
+                /** @description Decimal places in SVG path coordinates (0 to 8, default 2). */
+                pathPrecision?: number;
+                /** @description Quantize the traced regions to at most this many colours in OKLab (1 to 256) and merge adjacent same-colour layers. */
+                maxColors?: number;
+                /** @description Snap traced regions in OKLab to this fixed list of #RRGGBB hex colours (up to 64 entries) and merge adjacent same-colour layers. */
+                palette?: string[];
+                /** @description Use Bradley–Roth integral-image adaptive binary thresholding to preserve strokes under uneven lighting and shadows. */
+                adaptive?: boolean;
+                /** @description Fixed binary intensity cutoff (0 to 255, default 128) when adaptive thresholding is off. */
+                threshold?: number;
+                /** @description Output optimisation level (0 to 2, default 2): 0 raw absolute paths, 1 quantize and cleanup, 2 <g fill> grouping, H/V/S shorthands and SVGO path/colour compaction. */
+                optimize?: number;
             };
             /** @description Single target page or frame index (1-indexed): the PDF page to rasterize, or the frame of a multi-frame image (animated GIF/WebP, multi-page TIFF or HEIF) to convert to a single-image output. */
             page?: number;
@@ -2050,6 +2068,16 @@ export interface components {
          * @enum {string}
          */
         PresetOfVectorize: "bw" | "poster" | "photo";
+        /**
+         * @description Region segmentation algorithm: color-cluster (default), bw (binary line art), or watershed (volume-extinction hierarchy).
+         * @enum {string}
+         */
+        ClusteringOfVectorize: "color-cluster" | "bw" | "watershed";
+        /**
+         * @description Layer composition: stacked (default) overlaps layers bottom-to-top; cutout builds a seam-free gapless topological mosaic.
+         * @enum {string}
+         */
+        HierarchicalOfVectorize: "stacked" | "cutout";
         /**
          * @description Curve fitting: spline (default) draws smooth curves, polygon straight edges, pixel keeps the pixel edges (for pixel art).
          * @enum {string}

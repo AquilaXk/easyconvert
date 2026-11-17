@@ -13,12 +13,17 @@ import {
 } from '@/components/workbench/options/section-primitives';
 import {
   COLOR_PRECISION_RANGE,
+  DEFAULT_VECTORIZE_HIERARCHICAL,
   DEFAULT_VECTORIZE_MODE,
   FILTER_SPECKLE_RANGE,
+  GRADIENT_STEP_RANGE,
+  MAX_COLORS_RANGE,
+  PATH_PRECISION_RANGE,
   pickVectorizeFields,
   TOLERANCE_EXCLUSIVE_MINIMUM,
   vectorizeDefaults,
   vectorizeOptionApplies,
+  VECTORIZE_HIERARCHICALS,
   VECTORIZE_MODES,
   VECTORIZE_PRESETS,
   type IntegerRange,
@@ -92,9 +97,7 @@ interface NumberInputProps {
   max?: number;
   step: number;
   value: number | undefined;
-  /** The value a typed text sets. */
   typedValue: (text: string) => number | undefined;
-  /** The value to bring a typed text to on leaving the field, or null to leave it. */
   settle?: (text: string) => number | null;
   onChange: (value: number | undefined) => void;
 }
@@ -132,26 +135,23 @@ function NumberInput({ id, label, unit, helpId, placeholder, disabled, min, max,
         placeholder={placeholder}
         onChange={(e) => type(e.target.value)}
         onBlur={leave}
-        className={`${INPUT_CLASS} pr-10 ${NO_SPIN_CLASS} ${DISABLED_CLASS}`}
+        className={`${INPUT_CLASS} pr-12 ${NO_SPIN_CLASS} ${DISABLED_CLASS}`}
       />
       <span className="pointer-events-none absolute inset-y-0 right-3.5 flex items-center text-xs text-ink-3">{unit}</span>
     </div>
   );
 }
 
-/** The whole number a text sets in the range, or null while it sets none. */
 function parseInteger(text: string, range: IntegerRange): number | null {
   const value = Number(text);
   return /^\d+$/.test(text) && value >= range.min && value <= range.max ? value : null;
 }
 
-/** The whole number in the range nearest to a typed number, or null for a text that is not a number. */
 function clampNumber(text: string, range: IntegerRange): number | null {
   const value = Number(text);
   return text.trim() && Number.isFinite(value) ? Math.min(range.max, Math.max(range.min, Math.round(value))) : null;
 }
 
-/** The tolerance a text sets, any number above TOLERANCE_EXCLUSIVE_MINIMUM, or null while it sets none. */
 function parseTolerance(text: string): number | null {
   const value = Number(text);
   return text.trim() && Number.isFinite(value) && value > TOLERANCE_EXCLUSIVE_MINIMUM ? value : null;
@@ -160,12 +160,10 @@ function parseTolerance(text: string): number | null {
 interface RangeFieldProps {
   text: FieldText;
   range: IntegerRange;
-  /** Always a whole number in the range: the value the person set, or what the engine uses without it. */
   value: number;
   onChange: (value: number) => void;
 }
 
-/** A slider and a number field that move each other. A number typed past the range is brought inside it on leaving the field. */
 function RangeField({ text, range, value, onChange }: Readonly<RangeFieldProps>) {
   const helpId = `${text.id}-help`;
   return (
@@ -206,15 +204,46 @@ function RangeField({ text, range, value, onChange }: Readonly<RangeFieldProps>)
   );
 }
 
-interface ToleranceFieldProps {
+interface OptionalIntegerFieldProps {
   text: FieldText;
+  range: IntegerRange;
   placeholder: string;
-  /** Undefined while the field holds no tolerance. */
   value: number | undefined;
   onChange: (value: number | undefined) => void;
 }
 
-/** A field for a distance above zero, empty while the option is off. */
+function OptionalIntegerField({ text, range, placeholder, value, onChange }: Readonly<OptionalIntegerFieldProps>) {
+  const helpId = `${text.id}-help`;
+  return (
+    <div>
+      <label htmlFor={text.id} className={LABEL_CLASS}>{text.label}</label>
+      <NumberInput
+        id={text.id}
+        label={text.label}
+        unit={text.unit}
+        helpId={helpId}
+        placeholder={placeholder}
+        disabled={text.disabled}
+        min={range.min}
+        max={range.max}
+        step={1}
+        value={value}
+        typedValue={(typed) => (typed.trim() === '' ? undefined : (parseInteger(typed, range) ?? value))}
+        settle={(typed) => (typed.trim() === '' ? null : clampNumber(typed, range))}
+        onChange={onChange}
+      />
+      <p id={helpId} className={HELP_CLASS}>{text.help}</p>
+    </div>
+  );
+}
+
+interface ToleranceFieldProps {
+  text: FieldText;
+  placeholder: string;
+  value: number | undefined;
+  onChange: (value: number | undefined) => void;
+}
+
 function ToleranceField({ text, placeholder, value, onChange }: Readonly<ToleranceFieldProps>) {
   const helpId = `${text.id}-help`;
   return (
@@ -238,50 +267,91 @@ function ToleranceField({ text, placeholder, value, onChange }: Readonly<Toleran
   );
 }
 
-/** The range as the values a hint names it with. */
+interface ToggleFieldProps {
+  id: string;
+  label: string;
+  help: string;
+  disabled: boolean;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}
+
+function ToggleField({ id, label, help, disabled, checked, onChange }: Readonly<ToggleFieldProps>) {
+  const helpId = `${id}-help`;
+  return (
+    <div className="sm:col-span-2">
+      <label htmlFor={id} className={`inline-flex items-center gap-2.5 cursor-pointer ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}>
+        <input
+          id={id}
+          type="checkbox"
+          checked={checked}
+          disabled={disabled}
+          aria-describedby={helpId}
+          onChange={(e) => onChange(e.target.checked)}
+          className={`h-4 w-4 rounded accent-accent cursor-pointer ${DISABLED_CLASS}`}
+        />
+        <span className="text-sm font-medium text-ink">{label}</span>
+      </label>
+      <p id={helpId} className={HELP_CLASS}>{help}</p>
+    </div>
+  );
+}
+
 const limits = ({ min, max }: IntegerRange) => ({ min, max });
 
-/** The fields under the Advanced disclosure, in the order they are shown; the disclosure opens when the options set one of them. */
-const ADVANCED_FIELDS = [
-  { key: 'filterSpeckle', id: 'opt-vectorize-filter-speckle', unit: 'unitPixels', range: FILTER_SPECKLE_RANGE },
-  { key: 'colorPrecision', id: 'opt-vectorize-color-precision', unit: 'unitBits', range: COLOR_PRECISION_RANGE },
-  { key: 'simplify', id: 'opt-vectorize-simplify', unit: 'unitPixels' },
+const ADVANCED_KEYS = [
+  'filterSpeckle',
+  'colorPrecision',
+  'gradientStep',
+  'maxColors',
+  'simplify',
+  'pathPrecision',
+  'adaptive',
 ] as const;
 
-type AdvancedKey = (typeof ADVANCED_FIELDS)[number]['key'];
 type PresetChoice = 'none' | (typeof VECTORIZE_PRESETS)[number];
 
 /**
  * The tracer options of a raster to SVG pair: only the values a person changes are sent, so the preset decides the rest. A field the
- * engine ignores for the chosen preset or mode is greyed out with the reason.
+ * engine ignores for the chosen preset or mode is greyed out with the reason while retaining typed values across mode switches.
  */
 export function VectorizeOptionsSection({ options, onChange }: Readonly<SectionProps>) {
   const t = useTranslations('options.vectorize');
   const current = options.vectorize ?? {};
-  const [advancedOpen, setAdvancedOpen] = useState(() => ADVANCED_FIELDS.some(({ key }) => current[key] !== undefined));
+  const [advancedOpen, setAdvancedOpen] = useState(() => ADVANCED_KEYS.some((key) => current[key] !== undefined));
   const advancedId = useId();
   const defaults = vectorizeDefaults(current.preset);
-  // The values stay as typed while the engine ignores them, so switching back restores them; the queue item keeps only what it reads.
+
   const update = (patch: VectorizeOptions) => onChange({ ...options, vectorize: pickVectorizeFields({ ...current, ...patch }) });
+
   const presetChoices: ReadonlyArray<Choice<PresetChoice>> = [
     { value: 'none', label: t('presetChoices.none') },
     ...VECTORIZE_PRESETS.map((preset) => ({ value: preset, label: t(`presetChoices.${preset}`), description: t(`presetDescriptions.${preset}`) })),
   ];
   const modeChoices = VECTORIZE_MODES.map((mode) => ({ value: mode, label: t(`modeChoices.${mode}`), description: t(`modeDescriptions.${mode}`) }));
-  const words: Record<AdvancedKey, { label: string; hint: string; ignored?: string }> = {
-    filterSpeckle: { label: t('filterSpeckle'), hint: t('filterSpeckleHint', limits(FILTER_SPECKLE_RANGE)) },
-    colorPrecision: { label: t('colorPrecision'), hint: t('colorPrecisionHint', limits(COLOR_PRECISION_RANGE)), ignored: t('colorPrecisionNotApplied') },
-    simplify: { label: t('simplify'), hint: t('simplifyHint'), ignored: t('simplifyNotApplied') },
+  const hierarchicalChoices = VECTORIZE_HIERARCHICALS.map((h) => ({
+    value: h,
+    label: t(`hierarchicalChoices.${h}`),
+    description: t(`hierarchicalDescriptions.${h}`),
+  }));
+
+  const makeText = (
+    key: 'filterSpeckle' | 'colorPrecision' | 'gradientStep' | 'maxColors' | 'simplify' | 'pathPrecision',
+    id: string,
+    unitKey: 'unitPixels' | 'unitBits' | 'unitStep' | 'unitColors' | 'unitDecimals',
+    hint: string,
+    ignored?: string
+  ): FieldText => {
+    const applies = vectorizeOptionApplies(key, current);
+    return { id, label: t(key), unit: t(unitKey), help: applies ? hint : (ignored ?? hint), disabled: !applies };
   };
-  const fieldText = (field: (typeof ADVANCED_FIELDS)[number]): FieldText => {
-    const applies = vectorizeOptionApplies(field.key, current);
-    const { label, hint, ignored } = words[field.key];
-    return { id: field.id, label, unit: t(field.unit), help: applies ? hint : (ignored ?? hint), disabled: !applies };
-  };
+
+  const adaptiveApplies = vectorizeOptionApplies('adaptive', current);
+
   return (
     <section className="space-y-4">
       <h3 className={SECTION_HEADING_CLASS}>{t('heading')}</h3>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-6 gap-y-4">
         <ChoiceList
           label={t('preset')}
           choices={presetChoices}
@@ -293,6 +363,12 @@ export function VectorizeOptionsSection({ options, onChange }: Readonly<SectionP
           choices={modeChoices}
           selected={current.mode ?? DEFAULT_VECTORIZE_MODE}
           onSelect={(mode) => update({ mode })}
+        />
+        <ChoiceList
+          label={t('hierarchical')}
+          choices={hierarchicalChoices}
+          selected={current.hierarchical ?? DEFAULT_VECTORIZE_HIERARCHICAL}
+          onSelect={(hierarchical) => update({ hierarchical })}
         />
       </div>
       <button
@@ -307,25 +383,69 @@ export function VectorizeOptionsSection({ options, onChange }: Readonly<SectionP
       </button>
       {advancedOpen && (
         <div id={advancedId} className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
-          {ADVANCED_FIELDS.map((field) =>
-            'range' in field ? (
-              <RangeField
-                key={field.key}
-                text={fieldText(field)}
-                range={field.range}
-                value={current[field.key] ?? defaults[field.key]}
-                onChange={(value) => update({ [field.key]: value })}
-              />
-            ) : (
-              <ToleranceField
-                key={field.key}
-                text={fieldText(field)}
-                placeholder={t('simplifyOff')}
-                value={current[field.key]}
-                onChange={(value) => update({ [field.key]: value })}
-              />
-            )
-          )}
+          <RangeField
+            text={makeText('filterSpeckle', 'opt-vectorize-filter-speckle', 'unitPixels', t('filterSpeckleHint', limits(FILTER_SPECKLE_RANGE)))}
+            range={FILTER_SPECKLE_RANGE}
+            value={current.filterSpeckle ?? defaults.filterSpeckle}
+            onChange={(filterSpeckle) => update({ filterSpeckle })}
+          />
+          <RangeField
+            text={makeText(
+              'colorPrecision',
+              'opt-vectorize-color-precision',
+              'unitBits',
+              t('colorPrecisionHint', limits(COLOR_PRECISION_RANGE)),
+              t('colorPrecisionNotApplied')
+            )}
+            range={COLOR_PRECISION_RANGE}
+            value={current.colorPrecision ?? defaults.colorPrecision}
+            onChange={(colorPrecision) => update({ colorPrecision })}
+          />
+          <RangeField
+            text={makeText(
+              'gradientStep',
+              'opt-vectorize-gradient-step',
+              'unitStep',
+              t('gradientStepHint', limits(GRADIENT_STEP_RANGE)),
+              t('gradientStepNotApplied')
+            )}
+            range={GRADIENT_STEP_RANGE}
+            value={current.gradientStep ?? defaults.gradientStep}
+            onChange={(gradientStep) => update({ gradientStep })}
+          />
+          <OptionalIntegerField
+            text={makeText(
+              'maxColors',
+              'opt-vectorize-max-colors',
+              'unitColors',
+              t('maxColorsHint', limits(MAX_COLORS_RANGE)),
+              t('maxColorsNotApplied')
+            )}
+            range={MAX_COLORS_RANGE}
+            placeholder={t('maxColorsOff')}
+            value={current.maxColors}
+            onChange={(maxColors) => update({ maxColors })}
+          />
+          <ToleranceField
+            text={makeText('simplify', 'opt-vectorize-simplify', 'unitPixels', t('simplifyHint'), t('simplifyNotApplied'))}
+            placeholder={t('simplifyOff')}
+            value={current.simplify}
+            onChange={(simplify) => update({ simplify })}
+          />
+          <RangeField
+            text={makeText('pathPrecision', 'opt-vectorize-path-precision', 'unitDecimals', t('pathPrecisionHint', limits(PATH_PRECISION_RANGE)))}
+            range={PATH_PRECISION_RANGE}
+            value={current.pathPrecision ?? defaults.pathPrecision}
+            onChange={(pathPrecision) => update({ pathPrecision })}
+          />
+          <ToggleField
+            id="opt-vectorize-adaptive"
+            label={t('adaptive')}
+            help={adaptiveApplies ? t('adaptiveHint') : t('adaptiveNotApplied')}
+            disabled={!adaptiveApplies}
+            checked={current.adaptive === true}
+            onChange={(checked) => update({ adaptive: checked ? true : undefined })}
+          />
         </div>
       )}
     </section>

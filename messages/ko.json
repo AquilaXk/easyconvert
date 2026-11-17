@@ -1266,19 +1266,43 @@
         "polygon": "곧은 모서리로 그립니다.",
         "pixel": "픽셀 경계를 그대로 살립니다. 픽셀 아트에 알맞습니다."
       },
+      "hierarchical": "레이어 구성",
+      "hierarchicalChoices": {
+        "stacked": "겹침",
+        "cutout": "컷아웃"
+      },
+      "hierarchicalDescriptions": {
+        "stacked": "아래부터 면을 겹쳐 쌓습니다.",
+        "cutout": "인접 경계를 공유해 틈새 없는 모자이크로 만듭니다."
+      },
       "advanced": "고급 설정",
       "fieldWithUnit": "{field}({unit})",
       "unitPixels": "px",
       "unitBits": "비트",
+      "unitStep": "단계",
+      "unitColors": "색",
+      "unitDecimals": "자리",
       "filterSpeckle": "잡티 제거",
       "filterSpeckleHint": "이 크기보다 작은 조각은 버립니다({min}~{max}픽셀). 스캔이나 JPEG 노이즈를 없애려면 값을 올리세요.",
       "colorPrecision": "색 정밀도",
       "colorPrecisionHint": "RGB 채널마다 쓰는 유효 비트 수입니다({min}~{max}). 값을 낮추면 색이 줄고 면이 단순해집니다.",
       "colorPrecisionNotApplied": "흑백 선화 프리셋은 두 색으로만 그려서 적용되지 않습니다.",
+      "gradientStep": "그라데이션 간격",
+      "gradientStepHint": "그라데이션 층을 나누는 색상 차이입니다({min}~{max}). 값을 올리면 완만한 그라데이션이 한 면으로 합쳐집니다.",
+      "gradientStepNotApplied": "색상 클러스터 방식에만 적용됩니다.",
+      "maxColors": "최대 색상 수",
+      "maxColorsOff": "제한 없음",
+      "maxColorsHint": "OKLab 색공간에서 출력 팔레트를 이 색상 수 이하로 줄이고 인접한 같은 색 면을 합칩니다({min}~{max}).",
+      "maxColorsNotApplied": "흑백 방식이거나 고정 팔레트가 지정된 경우에는 적용되지 않습니다.",
       "simplify": "단순화",
       "simplifyOff": "사용 안 함",
       "simplifyHint": "이 거리(픽셀) 안에서 곡선을 가장 적은 점으로 맞춥니다. 1에서 2.5 사이로 넣으면 파일이 작아집니다.",
-      "simplifyNotApplied": "스플라인 곡선 방식에만 적용됩니다."
+      "simplifyNotApplied": "스플라인 곡선 방식에만 적용됩니다.",
+      "pathPrecision": "좌표 소수 자리",
+      "pathPrecisionHint": "SVG 경로 좌표를 기록할 소수점 아래 자리수입니다({min}~{max}).",
+      "adaptive": "적응형 흑백 임계값",
+      "adaptiveHint": "그림자나 조명 얼룩이 있는 스캔본에서 지역 평균 밝기를 기준으로 선을 선명하게 분리합니다.",
+      "adaptiveNotApplied": "흑백 선화 방식에만 적용됩니다."
     }
   },
   "plans": {

@@ -108,9 +108,9 @@ class ConversionOptions:
         output_unit (OutputUnit | Unset): Length unit of the result of a STEP or IGES conversion to STEP, IGES, STL or
             OBJ (default mm). STL and OBJ have no unit field, so the choice decides what their numbers mean: pick the unit
             your slicer or viewer expects. STEP and IGES results declare the unit they are written in.
-        vectorize (ConversionOptionsVectorize | Unset): PNG, JPEG, WebP, GIF, BMP or TIFF to SVG: how the picture is
-            traced into shapes. Only the values you set are sent to the tracer, and they override the preset. An animated
-            GIF or WebP and a multi-page TIFF are traced from their first frame.
+        vectorize (ConversionOptionsVectorize | Unset): Raster image to SVG vector tracing options. Only the values you
+            set are sent to the tracer (overriding the preset), with --optimize 2 enabled by default. Animated GIF/WebP and
+            multi-page TIFF/ICO/PSD files are traced from their primary/first frame.
         page (int | Unset): Single target page or frame index (1-indexed): the PDF page to rasterize, or the frame of a
             multi-frame image (animated GIF/WebP, multi-page TIFF or HEIF) to convert to a single-image output.
         pages (str | Unset): Page range expression for multi-page documents (e.g. "1-3,5", "2-", "-4").

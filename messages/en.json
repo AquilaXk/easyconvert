@@ -1266,19 +1266,43 @@
         "polygon": "Straight edges.",
         "pixel": "Preserve pixel edges, for pixel art."
       },
+      "hierarchical": "Layering",
+      "hierarchicalChoices": {
+        "stacked": "stacked",
+        "cutout": "cutout"
+      },
+      "hierarchicalDescriptions": {
+        "stacked": "Overlapping layers in paint order.",
+        "cutout": "Gapless mosaic with shared borders."
+      },
       "advanced": "Advanced",
       "fieldWithUnit": "{field} ({unit})",
       "unitPixels": "px",
       "unitBits": "bit",
+      "unitStep": "step",
+      "unitColors": "colors",
+      "unitDecimals": "dp",
       "filterSpeckle": "Filter Speckle",
       "filterSpeckleHint": "Discards patches smaller than this size in pixels ({min} to {max}). Raise it to remove noise from scans and JPEG artifacts.",
       "colorPrecision": "Color Precision",
       "colorPrecisionHint": "Significant bits per RGB channel ({min} to {max}). Lower values give fewer colors and flatter shapes.",
       "colorPrecisionNotApplied": "The black and white preset traces two colors, so this does not apply.",
+      "gradientStep": "Gradient Step",
+      "gradientStepHint": "Color difference between gradient layers ({min} to {max}). Higher values merge subtle gradients into fewer shapes.",
+      "gradientStepNotApplied": "Applies only to color-cluster tracing.",
+      "maxColors": "Max Colors",
+      "maxColorsOff": "Unlimited",
+      "maxColorsHint": "Caps the output palette in OKLab ({min} to {max}) and merges adjacent shapes of the same color.",
+      "maxColorsNotApplied": "Does not apply in black and white mode or when a fixed palette is set.",
       "simplify": "Simplify",
       "simplifyOff": "Off",
       "simplifyHint": "Fits curves within this distance in pixels with as few nodes as possible. Try 1 to 2.5 for a smaller file.",
-      "simplifyNotApplied": "Applies only to the spline mode."
+      "simplifyNotApplied": "Applies only to the spline mode.",
+      "pathPrecision": "Path Precision",
+      "pathPrecisionHint": "Decimal places written for path coordinates ({min} to {max}).",
+      "adaptive": "Adaptive Lighting Threshold",
+      "adaptiveHint": "Uses Bradley–Roth local thresholding to preserve dark strokes across shadowed scans and uneven lighting.",
+      "adaptiveNotApplied": "Applies only to black and white tracing."
     }
   },
   "plans": {

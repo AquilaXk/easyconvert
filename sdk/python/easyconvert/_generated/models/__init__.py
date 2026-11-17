@@ -16,6 +16,7 @@ from .audio_sample_rate import AudioSampleRate
 from .cancel_job_v1_response_200 import CancelJobV1Response200
 from .channels_of_audio import ChannelsOfAudio
 from .clear_webhook_dlq_response_200 import ClearWebhookDlqResponse200
+from .clustering_of_vectorize import ClusteringOfVectorize
 from .codec_of_audio import CodecOfAudio
 from .codec_of_video import CodecOfVideo
 from .collision_policy import CollisionPolicy
@@ -150,6 +151,7 @@ from .get_quota_usage_response_200_charges_item_kind import (
     GetQuotaUsageResponse200ChargesItemKind,
 )
 from .get_webhook_dlq_entry_response_200 import GetWebhookDlqEntryResponse200
+from .hierarchical_of_vectorize import HierarchicalOfVectorize
 from .image_type_of_watermark import ImageTypeOfWatermark
 from .inspect_archive_v1_files_body import InspectArchiveV1FilesBody
 from .inspect_archive_v1_json_body import InspectArchiveV1JsonBody
@@ -341,6 +343,7 @@ __all__ = (
     "CancelJobV1Response200",
     "ChannelsOfAudio",
     "ClearWebhookDlqResponse200",
+    "ClusteringOfVectorize",
     "CodecOfAudio",
     "CodecOfVideo",
     "CollisionPolicy",
@@ -437,6 +440,7 @@ __all__ = (
     "GetQuotaUsageResponse200ChargesItem",
     "GetQuotaUsageResponse200ChargesItemKind",
     "GetWebhookDlqEntryResponse200",
+    "HierarchicalOfVectorize",
     "ImageTypeOfWatermark",
     "InspectArchiveV1FilesBody",
     "InspectArchiveV1JsonBody",

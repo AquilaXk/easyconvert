@@ -1,5 +1,6 @@
 import { ConversionFailedError } from '../types';
 import { BmpDecodeError, decodeDib, type DecodedBmp } from './bmp';
+import type { PixelBudget } from './image-input-limits';
 
 /**
  * Icon containers: ICO and CUR (Microsoft icon directory, each entry a PNG or a headerless DIB with an AND
@@ -106,12 +107,12 @@ function chooseEntry(entries: IcoEntry[], request: IconSizeRequest | undefined):
  * Decodes the best image of an ICO or CUR file. PNG entries are returned as the PNG bytes for the image
  * library; DIB entries are decoded here to RGBA, with transparency from the 32-bit alpha or the AND mask.
  */
-export function decodeIco(buf: Buffer, request?: IconSizeRequest): DecodedIcon {
+export function decodeIco(buf: Buffer, request?: IconSizeRequest, budget?: PixelBudget): DecodedIcon {
   const entry = chooseEntry(readDirectory(buf), request);
   const data = buf.subarray(entry.offset, entry.offset + entry.size);
   if (data.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) return { kind: 'png', png: data };
   try {
-    return { kind: 'raster', bitmap: decodeDib(data, { icon: true }) };
+    return { kind: 'raster', bitmap: decodeDib(data, { icon: true }, budget) };
   } catch (err) {
     if (err instanceof BmpDecodeError) {
       throw new IcoDecodeError(`Invalid ICO file: image ${entry.index + 1} is neither PNG nor a valid DIB (${err.message}).`);
