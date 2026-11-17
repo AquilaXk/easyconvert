@@ -1,4 +1,5 @@
 import Redis, { ReplyError } from 'ioredis';
+import { isClusterRedis, scanClusterSafe } from '../../redis/cluster-ops';
 import type { GraphNode, NodeId } from './types';
 import { getNodeInputs } from './validate-graph';
 import {
@@ -410,22 +411,24 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
   async graphsOfUser(userId: string): Promise<string[]> {
     const prefix = `${this.keyPrefix}graph:{`;
     const graphIds = new Set<string>();
-    let cursor = '0';
-    do {
-      const [next, keys] = await this.redisClient.scan(cursor, 'MATCH', `${prefix}*}`, 'COUNT', 500);
+    const cluster = isClusterRedis(this.redisClient);
+    for await (const keys of scanClusterSafe(this.redisClient, `${prefix}*}`, 500)) {
       const validKeys = keys.filter((key) => key.endsWith('}'));
-      if (validKeys.length > 0) {
+      if (validKeys.length === 0) continue;
+      let owners: Array<string | null>;
+      if (cluster) {
+        owners = await Promise.all(validKeys.map((key) => this.redisClient.hget(key, 'owner')));
+      } else {
         const pipeline = this.redisClient.pipeline();
         for (const key of validKeys) pipeline.hget(key, 'owner');
-        const owners = await this.execFailClosed(pipeline, validKeys.length);
-        for (let i = 0; i < validKeys.length; i++) {
-          if (owners[i] === userId) {
-            graphIds.add(validKeys[i].slice(prefix.length, -1));
-          }
+        owners = (await this.execFailClosed(pipeline, validKeys.length)) as Array<string | null>;
+      }
+      for (let i = 0; i < validKeys.length; i++) {
+        if (owners[i] === userId) {
+          graphIds.add(validKeys[i].slice(prefix.length, -1));
         }
       }
-      cursor = next;
-    } while (cursor !== '0');
+    }
     return [...graphIds].sort((a, b) => a.localeCompare(b));
   }
 

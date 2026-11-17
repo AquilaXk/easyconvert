@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { redisUserStore } from '../auth/redis-user-store';
 import { AuthStoreUnavailableError, failClosed } from '../auth/store-unavailable';
+import { resolveRedisMode } from '../redis/client-factory';
+import { deleteKeysClusterSafe, hasRedisHashTag, isClusterRedis } from '../redis/cluster-ops';
 import {
   KeyStore,
   type ApiKeyVerification,
@@ -131,15 +133,15 @@ export class RedisKeyStore extends KeyStore {
   private nextTokenBucketSweepAt = 0;
 
   constructor(
-    keyPrefixOrOptions: string | RedisKeyStoreOptions = 'easyconvert:',
+    keyPrefixOrOptions?: string | RedisKeyStoreOptions,
     isolated = false
   ) {
-    let prefix = 'easyconvert:';
+    const defaultPrefix = resolveRedisMode() === 'cluster' ? 'easyconvert:{keys}:' : 'easyconvert:';
+    let prefix = defaultPrefix;
     let isIsolated = isolated;
     let client: Redis | undefined = undefined;
 
-    if (typeof keyPrefixOrOptions === 'object') {
-      prefix = keyPrefixOrOptions.keyPrefix || 'easyconvert:';
+    if (typeof keyPrefixOrOptions === 'object' && keyPrefixOrOptions !== null) {
       isIsolated = keyPrefixOrOptions.isolated ?? isolated;
       client = keyPrefixOrOptions.redisClient;
       if (!client) {
@@ -149,9 +151,14 @@ export class RedisKeyStore extends KeyStore {
           port: keyPrefixOrOptions.redisPort,
         });
       }
-    } else {
+      const clusterDefault = isClusterRedis(client) ? 'easyconvert:{keys}:' : defaultPrefix;
+      prefix = keyPrefixOrOptions.keyPrefix || clusterDefault;
+    } else if (typeof keyPrefixOrOptions === 'string') {
       prefix = keyPrefixOrOptions;
       client = connectFromEnvironment({});
+    } else {
+      client = connectFromEnvironment({});
+      if (isClusterRedis(client)) prefix = 'easyconvert:{keys}:';
     }
 
     super(isIsolated);
@@ -161,6 +168,14 @@ export class RedisKeyStore extends KeyStore {
       ? new MemoryReservationLedger(this.dailyUsage, persist)
       : (RedisKeyStore.sharedLedger ??= new MemoryReservationLedger(this.dailyUsage, persist));
     this.redisClient = client ?? null;
+  }
+
+  private canEvalMultiKey(): boolean {
+    return Boolean(
+      this.redisClient &&
+        typeof (this.redisClient as { eval?: unknown }).eval === 'function' &&
+        (!isClusterRedis(this.redisClient) || hasRedisHashTag(this.keyPrefix))
+    );
   }
 
   public getRedisClient(): Redis | null {
@@ -524,7 +539,7 @@ export class RedisKeyStore extends KeyStore {
         const dataJson = JSON.stringify(key);
         const prevHash = key.previousKeyHash || '';
         let createdViaLua = false;
-        if (typeof (this.redisClient as { eval?: unknown }).eval === 'function') {
+        if (this.canEvalMultiKey()) {
           const luaRes = await this.redisClient.eval(
             CREATE_API_KEY_LUA_SCRIPT,
             3,
@@ -596,7 +611,7 @@ export class RedisKeyStore extends KeyStore {
     hashArgs: { hashFieldArg: string; newHashArg: string; oldHashArg: string }
   ): Promise<void> {
     if (!this.redisClient) return;
-    if (typeof (this.redisClient as { eval?: unknown }).eval === 'function') {
+    if (this.canEvalMultiKey()) {
       await this.redisClient.eval(
         RECORD_VERIFIED_KEY_LUA_SCRIPT,
         2,
@@ -853,7 +868,7 @@ export class RedisKeyStore extends KeyStore {
       }
       try {
         const storedKey = this.keys.get(keyId) ?? result.key;
-        if (typeof (this.redisClient as { eval?: unknown }).eval === 'function') {
+        if (this.canEvalMultiKey()) {
           const luaRes = await this.redisClient.eval(
             ROTATE_API_KEY_LUA_SCRIPT,
             2,
@@ -959,7 +974,7 @@ export class RedisKeyStore extends KeyStore {
     if (this.redisClient) {
       try {
         let handledViaLua = false;
-        if (typeof (this.redisClient as { eval?: unknown }).eval === 'function') {
+        if (this.canEvalMultiKey()) {
           const outcome = await this.redisClient.eval(
             DELETE_API_KEY_LUA_SCRIPT,
             4,
@@ -993,7 +1008,10 @@ export class RedisKeyStore extends KeyStore {
             await this.redisClient.hdel(`${this.keyPrefix}apikey_hashes`, keyData.previousKeyHash);
           }
           await this.redisClient.srem(`${this.keyPrefix}user_keys:${userId}`, keyId);
-          await this.redisClient.del(`${this.keyPrefix}apikeys:${keyId}`, `${this.keyPrefix}rate:apikey:${keyId}`);
+          await deleteKeysClusterSafe(this.redisClient, [
+            `${this.keyPrefix}apikeys:${keyId}`,
+            `${this.keyPrefix}rate:apikey:${keyId}`,
+          ]);
           this.tokenBuckets.delete(`apikey:${keyId}`);
           deletedInRedis = Boolean(keyData.userId);
         }

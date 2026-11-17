@@ -5,6 +5,7 @@ import { pipeline } from 'node:stream/promises';
 import { Readable, PassThrough } from 'node:stream';
 import type Redis from 'ioredis';
 import { createConfiguredRedisClient, hasConfiguredRedis } from '../redis/client-factory';
+import { isClusterRedis, scanClusterSafe } from '../redis/cluster-ops';
 import { pipelineReplies } from '../redis/pipeline-replies';
 import { readyGatedRedis } from '../redis/when-ready';
 import { localFsStorage } from './local-fs-storage';
@@ -144,6 +145,8 @@ export interface AppendChunkResult {
 export interface TusSessionStore {
   saveSession(session: TusSession, ttlSeconds?: number): Promise<void>;
   getSession(id: string): Promise<TusSession | null>;
+  /** Reads the raw session record without deleting expired records first, so `terminateSession` can abort remote S3 uploads. */
+  peekSession?(id: string): Promise<TusSession | null>;
   deleteSession(id: string): Promise<boolean>;
   /** Serializes concurrent operations on `id` across distributed API replicas when backed by Redis. */
   withSessionLock?<T>(id: string, fn: () => Promise<T>): Promise<T>;
@@ -175,6 +178,11 @@ export class InMemoryTusSessionStore implements TusSessionStore {
       return null;
     }
     return { ...s };
+  }
+
+  async peekSession(id: string): Promise<TusSession | null> {
+    const s = this.sessions.get(id);
+    return s ? { ...s } : null;
   }
 
   async deleteSession(id: string): Promise<boolean> {
@@ -234,11 +242,11 @@ export class RedisTusSessionStore implements TusSessionStore {
   }
 
   private stageChunksKey(id: string): string {
-    return `tus:stage:${id}`;
+    return `tus:stage:{${id}}:chunks`;
   }
 
   private stageLengthKey(id: string): string {
-    return `tus:stage:len:${id}`;
+    return `tus:stage:{${id}}:len`;
   }
 
   async withSessionLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
@@ -393,7 +401,7 @@ export class RedisTusSessionStore implements TusSessionStore {
 
   private async readManyValues(keys: readonly string[]): Promise<(string | null)[]> {
     if (keys.length === 0) return [];
-    if (typeof (this.redis as { pipeline?: unknown }).pipeline === 'function') {
+    if (!isClusterRedis(this.redis) && typeof (this.redis as { pipeline?: unknown }).pipeline === 'function') {
       const pipeline = this.redis.pipeline();
       for (const k of keys) pipeline.get(k);
       return (await pipelineReplies(pipeline)) as (string | null)[];
@@ -415,20 +423,27 @@ export class RedisTusSessionStore implements TusSessionStore {
     }
   }
 
-  async getSession(id: string): Promise<TusSession | null> {
-    const key = `${this.prefix}${id}`;
-    const raw = await this.redis.get(key);
+  async peekSession(id: string): Promise<TusSession | null> {
+    const raw = await this.redis.get(`${this.prefix}${id}`);
     if (!raw) return null;
     try {
-      const s = JSON.parse(raw) as TusSession;
-      if (Date.now() > s.expiresAt) {
-        await this.deleteSession(id);
-        return null;
-      }
-      return s;
+      return JSON.parse(raw) as TusSession;
     } catch {
       return null;
     }
+  }
+
+  async getSession(id: string): Promise<TusSession | null> {
+    const s = await this.peekSession(id);
+    if (!s) return null;
+    if (Date.now() > s.expiresAt) {
+      if (s.remoteUploadId && !s.completed) {
+        await Promise.resolve(storageProvider.abortMultipartUpload(s.remoteUploadId)).catch(() => undefined);
+      }
+      await this.deleteSession(id);
+      return null;
+    }
+    return s;
   }
 
   async deleteSession(id: string): Promise<boolean> {
@@ -485,11 +500,7 @@ export class RedisTusSessionStore implements TusSessionStore {
     }
 
     const ids: string[] = [];
-    let cursor = '0';
-    do {
-      const [next, keys] = await this.redis.scan(cursor, 'MATCH', `${this.prefix}*`, 'COUNT', 500);
-      cursor = next;
-      if (keys.length === 0) continue;
+    for await (const keys of scanClusterSafe(this.redis, `${this.prefix}*`, 500)) {
       for (const raw of await this.readManyValues(keys)) {
         if (!raw) continue;
         try {
@@ -499,7 +510,7 @@ export class RedisTusSessionStore implements TusSessionStore {
           // A record that is not a session names no owner.
         }
       }
-    } while (cursor !== '0');
+    }
     return [...new Set([...indexedIds, ...ids])];
   }
 
@@ -893,38 +904,30 @@ export class TusEngine {
     if (!isTusId(id)) return null;
     const { infoPath, binPath } = this.getPaths(id);
     let session = await this.sessionStore.getSession(id);
+    const loadedFromSharedStore = Boolean(session && this.sessionStore.hydrateStagedFile);
 
-    if (!session) {
-      if (fs.existsSync(infoPath)) {
-        try {
-          const raw = await fs.promises.readFile(infoPath, 'utf-8');
-          session = JSON.parse(raw);
-          if (session) {
-            await this.sessionStore.saveSession(session);
-          }
-        } catch {
-          return null;
-        }
+    if (!session && fs.existsSync(infoPath)) {
+      try {
+        const raw = await fs.promises.readFile(infoPath, 'utf-8');
+        session = JSON.parse(raw);
+        if (session) await this.sessionStore.saveSession(session);
+      } catch {
+        return null;
       }
     }
 
-    if (!session) {
-      return null;
-    }
+    if (!session) return null;
 
     if (Date.now() > session.expiresAt) {
       await this.terminateSession(id);
       return null;
     }
 
-    // Sync uploadOffset with real byte size on disk when local staging is authoritative (or ahead of shared store)
-    if (fs.existsSync(binPath)) {
+    // Only advance uploadOffset from local disk when no distributed store is authoritative (prevents stale local tail inflation).
+    if (!loadedFromSharedStore && fs.existsSync(binPath)) {
       const stat = await fs.promises.stat(binPath);
       const flushed = session.remoteUploadId ? (session.remoteFlushedBytes ?? 0) : 0;
-      const totalLocalOffset = flushed + stat.size;
-      if (!this.sessionStore.hydrateStagedFile || totalLocalOffset >= session.uploadOffset) {
-        session.uploadOffset = totalLocalOffset;
-      }
+      session.uploadOffset = flushed + stat.size;
     }
 
     return session;
@@ -940,6 +943,10 @@ export class TusEngine {
     });
   }
 
+  private async writeLocalTailState(binPath: string, flushedBytes: number, tailBytes: number): Promise<void> {
+    await fs.promises.writeFile(`${binPath}.state`, `${flushedBytes}:${tailBytes}`, 'utf-8').catch(() => undefined);
+  }
+
   private async ensureStagedTailReady(
     id: string,
     session: TusSession,
@@ -949,8 +956,12 @@ export class TusEngine {
     initialFlushed: number
   ): Promise<void> {
     if (expectedLocalTailOffset > 0 && this.sessionStore.hydrateStagedFile) {
-      const localBytes = await fs.promises.stat(binPath).then((st) => st.size, () => -1);
-      if (localBytes < expectedLocalTailOffset) {
+      const expectedMarker = `${initialFlushed}:${expectedLocalTailOffset}`;
+      const [localBytes, localMarker] = await Promise.all([
+        fs.promises.stat(binPath).then((st) => st.size, () => -1),
+        fs.promises.readFile(`${binPath}.state`, 'utf-8').catch(() => ''),
+      ]);
+      if (localBytes !== expectedLocalTailOffset || localMarker !== expectedMarker) {
         const hydrated = await this.sessionStore.hydrateStagedFile(id, binPath, expectedLocalTailOffset);
         if (hydrated !== expectedLocalTailOffset) {
           const actualTotal = initialFlushed + Math.max(0, hydrated);
@@ -959,11 +970,13 @@ export class TusEngine {
           await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
           throw new TusStagedSizeMismatchError(actualTotal, session.uploadLength);
         }
+        await this.writeLocalTailState(binPath, initialFlushed, expectedLocalTailOffset);
       }
       return;
     }
     if (expectedLocalTailOffset === 0) {
       await fs.promises.writeFile(binPath, Buffer.alloc(0));
+      await this.writeLocalTailState(binPath, initialFlushed, 0);
     }
   }
 
@@ -1096,6 +1109,7 @@ export class TusEngine {
       await storageProvider.completeMultipartUpload(session.remoteUploadId!, parts);
       await recordTusUpload(session.key);
       await fs.promises.rm(binPath, { force: true });
+      await fs.promises.rm(`${binPath}.state`, { force: true });
       await this.sessionStore.deleteStagedBytes?.(id);
     } catch (err) {
       session.remoteParts = savedParts;
@@ -1115,6 +1129,7 @@ export class TusEngine {
   ): Promise<void> {
     const remainingTtl = Math.max(60, Math.floor((session.expiresAt - Date.now()) / 1000));
     if (newTailBytes < TUS_REMOTE_PART_BYTES) {
+      await this.writeLocalTailState(binPath, initialFlushed, newTailBytes);
       if (newTailBytes > 0 && this.sessionStore.syncStagedBytes) {
         await this.sessionStore.syncStagedBytes(id, binPath, expectedLocalTailOffset, newTailBytes, remainingTtl);
       }
@@ -1133,6 +1148,7 @@ export class TusEngine {
     }
     const leftover = fullBuffer.subarray(cursor);
     await fs.promises.writeFile(binPath, leftover);
+    await this.writeLocalTailState(binPath, flushedNow, leftover.length);
     session.remoteParts = parts;
     session.remoteFlushedBytes = flushedNow;
     await this.sessionStore.replaceStagedTailBytes?.(id, leftover, remainingTtl);
@@ -1162,6 +1178,7 @@ export class TusEngine {
       await finalizeTusSession(session, binPath);
       await recordTusUpload(session.key);
       await fs.promises.rm(binPath, { force: true });
+      await fs.promises.rm(`${binPath}.state`, { force: true });
       await this.sessionStore.deleteStagedBytes?.(id);
     } catch (err) {
       await this.rewindSessionToClientOffset(session, infoPath, binPath, clientOffset, clientOffset);
@@ -1229,6 +1246,7 @@ export class TusEngine {
       } else if (isComplete) {
         await this.completeLocalStagedTus(id, session, infoPath, binPath, clientOffset);
       } else if (newOffset > 0 && this.sessionStore.syncStagedBytes) {
+        await this.writeLocalTailState(binPath, 0, newOffset);
         const remainingTtl = Math.max(60, Math.floor((session.expiresAt - Date.now()) / 1000));
         await this.sessionStore.syncStagedBytes(id, binPath, clientOffset, newOffset, remainingTtl);
       }
@@ -1243,12 +1261,18 @@ export class TusEngine {
     if (!isTusId(id)) return false;
     return this.runSessionExclusive(id, async () => {
       const { infoPath, binPath } = this.getPaths(id);
-      const existing = await this.sessionStore.getSession(id).catch(() => null);
+      let existing = await (this.sessionStore.peekSession?.(id) ?? this.sessionStore.getSession(id)).catch(() => null);
+      if (!existing && fs.existsSync(infoPath)) {
+        existing = await fs.promises
+          .readFile(infoPath, 'utf-8')
+          .then((raw) => JSON.parse(raw) as TusSession, () => null);
+      }
       if (existing?.remoteUploadId && !existing.completed) {
         await Promise.resolve(storageProvider.abortMultipartUpload(existing.remoteUploadId)).catch(() => undefined);
       }
       const storeDeleted = await this.sessionStore.deleteSession(id);
       await this.sessionStore.deleteStagedBytes?.(id);
+      await fs.promises.rm(`${binPath}.state`, { force: true }).catch(() => undefined);
       let fileDeleted = false;
       try {
         if (fs.existsSync(infoPath)) {

@@ -68,6 +68,13 @@ export function sealPasswordOption<T>(options: T, jobId: string): T {
     const protect = sealProtectPasswords(options.protect, SEALED_PASSWORDS_KEY, jobId);
     if (protect !== options.protect) sealed = { ...sealed, protect };
   }
+  if (isRecord(options.unlock) && hasSecretPassword(options.unlock.password)) {
+    const { password: unlockPassword, ...unlockRest } = options.unlock;
+    sealed = {
+      ...sealed,
+      unlock: { ...unlockRest, [SEALED_PASSWORD_KEY]: sealJobSecret(unlockPassword as string, jobId) },
+    };
+  }
   sealed = sealProtectPasswords(sealed, SEALED_PROTECT_KEY, jobId);
   return sealed as T;
 }
@@ -91,6 +98,10 @@ export function openPasswordOption<T>(options: T, jobId: string): T {
   }
   if (isRecord(opened.protect)) {
     opened = { ...opened, protect: openProtectPasswords(opened.protect, SEALED_PASSWORDS_KEY, jobId) };
+  }
+  if (isRecord(opened.unlock) && typeof opened.unlock[SEALED_PASSWORD_KEY] === 'string') {
+    const { [SEALED_PASSWORD_KEY]: sealedUnlock, ...unlockRest } = opened.unlock;
+    opened = { ...opened, unlock: { ...unlockRest, password: unsealJobSecret(sealedUnlock as string, jobId) } };
   }
   return openProtectPasswords(opened, SEALED_PROTECT_KEY, jobId) as T;
 }

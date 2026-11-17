@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type { Job } from '../queue/bullmq-engine';
 import { JobCancelledError } from '../queue/bullmq-engine';
+import { isFinalFailure } from '../queue/job-failure';
 import { sanitizeNodeOutputFilename } from '../queue/graph/node-jobs';
 import { openPasswordOption } from '../queue/option-secrets';
 import type { IStorageBackend } from '../storage/oci-storage';
@@ -160,9 +161,7 @@ async function handleQueuedToolFailure(
     throw err instanceof JobCancelledError ? err : new JobCancelledError('Tool job cancelled');
   }
 
-  const maxAttempts = job.opts?.attempts ?? 1;
-  const willRetry = job.attemptsMade + 1 < maxAttempts;
-  if (!willRetry) {
+  if (isFinalFailure(job, err)) {
     await cleanupQueuedToolUploads(rootStorage, cleanupKeys);
     if (!isTransientWait) {
       const latest = await getToolJob(job.id);

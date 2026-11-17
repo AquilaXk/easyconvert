@@ -337,7 +337,12 @@ function offeredList(ids: readonly string[]): string {
  * request names neither, so the pair's default runs as it always did. A named engine whose program is not installed is the
  * missing-tool answer (503), as for any engine.
  */
-export async function resolveEngineChoice(source: string, target: string, options: EngineChoiceOptions): Promise<EngineChoice | undefined> {
+export async function resolveEngineChoice(
+  source: string,
+  target: string,
+  options: EngineChoiceOptions,
+  validation: { checkLocalInstall?: boolean } = {}
+): Promise<EngineChoice | undefined> {
   const { engine, engineVersion } = options;
   if (engine === undefined && engineVersion === undefined) return undefined;
   const offered = enginesForPair(source, target).map((entry) => entry.id);
@@ -348,8 +353,10 @@ export async function resolveEngineChoice(source: string, target: string, option
     const known = isEngineId(engine) ? `Engine '${engine}' does not convert` : `'${engine}' is not an engine that converts`;
     throw new EngineNotOfferedError(`${known} .${source} to .${target}; one of ${offeredList(offered)} does.`, offered);
   }
-  if (!isEngineInstalled(engine)) throw new EngineUnavailableError(ENGINE_NAMES[engine], 'the program is not installed on this deployment');
-  await assertInstalledVersion(engine, engineVersion);
+  if (validation.checkLocalInstall !== false) {
+    if (!isEngineInstalled(engine)) throw new EngineUnavailableError(ENGINE_NAMES[engine], 'the program is not installed on this deployment');
+    await assertInstalledVersion(engine, engineVersion);
+  }
   return { engine };
 }
 
@@ -366,12 +373,17 @@ async function assertInstalledVersion(engine: EngineId, requested: string | unde
  * The check of a request that cannot say its pair yet (a graph node reads the file an earlier node writes): the engine must be one
  * of the catalogue and the version the installed one. Whether the pair lists the engine is checked when the node runs.
  */
-export async function checkEngineNamed(options: EngineChoiceOptions): Promise<void> {
+export async function checkEngineNamed(
+  options: EngineChoiceOptions,
+  validation: { checkLocalInstall?: boolean } = {}
+): Promise<void> {
   const { engine, engineVersion } = options;
   if (engine === undefined && engineVersion === undefined) return;
   if (engine === undefined || !isEngineId(engine)) {
     throw new EngineNotOfferedError(`${engine === undefined ? 'engineVersion needs an engine' : `'${engine}' is not an engine`}: name one of ${ENGINE_IDS.join(', ')}.`, ENGINE_IDS);
   }
-  await assertInstalledVersion(engine, engineVersion);
+  if (validation.checkLocalInstall !== false) {
+    await assertInstalledVersion(engine, engineVersion);
+  }
 }
 

@@ -1269,49 +1269,40 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       if (typeof this.redisClient.duplicate === 'function') {
         if (!this.subClient) {
           this.subClient = this.redisClient.duplicate();
-          this.subClient.subscribe(this.eventsChannel).catch(() => {});
+          this.subClient.on?.('error', () => undefined);
+          const subscribeEvents = () => { this.subClient?.subscribe(this.eventsChannel).catch(() => {}); };
+          this.subClient.on?.('ready', subscribeEvents);
+          const subStatus = (this.subClient as { status?: string }).status;
+          if (subStatus === 'wait' && typeof (this.subClient as { connect?: unknown }).connect === 'function') {
+            this.subClient.connect().catch(() => {});
+          } else if (subStatus === 'ready' || subStatus === undefined) {
+            subscribeEvents();
+          }
           this.subClient.on('message', (_chan, msg) => {
             try {
               const payload = JSON.parse(msg);
-              const eventKey = `${payload.event}:${payload.jobId}`;
-              if (this.localRecentEvents.has(eventKey)) {
-                return;
-              }
+              if (this.localRecentEvents.has(`${payload.event}:${payload.jobId}`)) return;
               if (payload.event === 'waiting') {
                 this.emit('waiting');
-              } else if (payload.event === 'progress' && payload.jobId) {
-                const localJob = this.localActiveJobs.get(payload.jobId);
-                if (localJob) {
-                  localJob.progress = Number(payload.progress || 0);
-                  this.emit('progress', localJob, localJob.progress);
-                } else {
-                  this.emit('progress', { id: payload.jobId, progress: Number(payload.progress || 0), state: 'active' }, Number(payload.progress || 0));
-                }
-              } else if (payload.event === 'completed' && payload.jobId) {
-                const localJob = this.localActiveJobs.get(payload.jobId);
-                if (localJob) {
-                  localJob.state = 'completed';
-                  localJob.progress = 100;
-                  localJob.returnvalue = payload.result;
-                  this.emit('completed', localJob, payload.result);
-                } else {
-                  this.emit('completed', { id: payload.jobId, state: 'completed', progress: 100, returnvalue: payload.result }, payload.result);
-                }
-              } else if (payload.event === 'failed' && payload.jobId) {
-                const localJob = this.localActiveJobs.get(payload.jobId);
-                if (localJob) {
-                  localJob.state = 'failed';
-                  localJob.failedReason = payload.error;
-                  this.emit('failed', localJob, payload.error);
-                } else {
-                  this.emit('failed', { id: payload.jobId, state: 'failed', failedReason: payload.error }, payload.error);
-                }
-              } else if (payload.event === 'cancelled' && typeof payload.jobId === 'string') {
+                return;
+              }
+              if (payload.event === 'cancelled' && typeof payload.jobId === 'string') {
                 this.abortLocalActiveJob(payload.jobId, String(payload.reason ?? ''));
-                this.emit(`telemetry:${payload.jobId}`, {
-                  event: 'cancelled',
-                  data: { jobId: payload.jobId, state: 'cancelled', error: payload.reason },
-                });
+                this.emit(`telemetry:${payload.jobId}`, { event: 'cancelled', data: { jobId: payload.jobId, state: 'cancelled', error: payload.reason } });
+                return;
+              }
+              if (!payload.jobId) return;
+              const localJob = this.localActiveJobs.get(payload.jobId);
+              if (payload.event === 'progress') {
+                const prog = Number(payload.progress || 0);
+                if (localJob) localJob.progress = prog;
+                this.emit('progress', localJob ?? { id: payload.jobId, progress: prog, state: 'active' }, prog);
+              } else if (payload.event === 'completed') {
+                if (localJob) Object.assign(localJob, { state: 'completed', progress: 100, returnvalue: payload.result });
+                this.emit('completed', localJob ?? { id: payload.jobId, state: 'completed', progress: 100, returnvalue: payload.result }, payload.result);
+              } else if (payload.event === 'failed') {
+                if (localJob) Object.assign(localJob, { state: 'failed', failedReason: payload.error });
+                this.emit('failed', localJob ?? { id: payload.jobId, state: 'failed', failedReason: payload.error }, payload.error);
               }
             } catch {}
           });

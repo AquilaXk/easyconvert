@@ -95,8 +95,10 @@ export function createConfiguredRedisClient(baseOptions: RedisOptions = {}, env:
       throw new Error('ioredis Cluster constructor is unavailable in this runtime.');
     }
     return new ClusterCtor(nodes, {
-      enableReadyCheck: true,
+      lazyConnect: baseOptions.lazyConnect ?? false,
+      enableReadyCheck: baseOptions.enableReadyCheck ?? true,
       enableOfflineQueue: baseOptions.enableOfflineQueue ?? false,
+      ...(baseOptions.retryStrategy ? { clusterRetryStrategy: baseOptions.retryStrategy } : {}),
       redisOptions: {
         ...baseOptions,
         ...(password !== undefined ? { password } : {}),

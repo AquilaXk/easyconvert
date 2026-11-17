@@ -1,4 +1,5 @@
 import { redisKeyStore } from '../api-keys/redis-key-store';
+import { deleteKeysClusterSafe, isClusterRedis } from '../redis/cluster-ops';
 import { billingMonthWindow, calendarMonthWindow, dayWindow } from '../api-keys/quota-window';
 import { allConversionQueues } from '../queue/conversion-queue';
 import { DEFAULT_QUEUE_KEY_PREFIX } from '../queue/bullmq-engine';
@@ -22,11 +23,9 @@ export interface TaggedKeyContext {
   periodEnd?: number;
 }
 
-/** Deletes `keys` in commands of at most DELETE_BATCH keys. */
+/** Deletes `keys` in commands of at most DELETE_BATCH keys (single-key routed when connected to Redis Cluster). */
 export async function deleteKeysInBatches(client: { del(...keys: string[]): Promise<number> }, keys: readonly string[]): Promise<void> {
-  for (let at = 0; at < keys.length; at += DELETE_BATCH) {
-    await client.del(...keys.slice(at, at + DELETE_BATCH));
-  }
+  await deleteKeysClusterSafe(client, keys, { batchSize: DELETE_BATCH });
 }
 
 function quotaWindowKeys(periodEnd?: number): string[] {
@@ -66,7 +65,7 @@ async function filterExistingKeys(client: RedisClientLike, candidates: Iterable<
   const unique = [...new Set(candidates)];
   if (unique.length === 0) return [];
   const present: string[] = [];
-  const hasPipeline = typeof (client as { pipeline?: unknown }).pipeline === 'function';
+  const hasPipeline = !isClusterRedis(client) && typeof (client as { pipeline?: unknown }).pipeline === 'function';
   for (let at = 0; at < unique.length; at += DELETE_BATCH) {
     const batch = unique.slice(at, at + DELETE_BATCH);
     if (hasPipeline) {

@@ -6,6 +6,7 @@ import { mapWithConcurrency } from '../conversions/ocr-page-batch';
 import { compareAndSetWithRetry } from '../redis/compare-and-set';
 import { pipelineReplies } from '../redis/pipeline-replies';
 import { createConfiguredRedisClient, hasConfiguredRedis } from '../redis/client-factory';
+import { scanClusterSafe } from '../redis/cluster-ops';
 import { readyGatedRedis } from '../redis/when-ready';
 import { GONE_RECORD_MS, isSweepDue, sweepAt, type RetentionRecord } from './result-retention';
 import { resolveLocalStorageDir } from './storage-config';
@@ -448,12 +449,9 @@ export class RedisRetentionLedger implements RetentionLedger {
 
   async allKeys(): Promise<string[]> {
     const keys = new Set<string>(await this.redis.zrange(REDIS_DUE_SET, '0', '-1'));
-    let cursor = '0';
-    do {
-      const [next, batch] = await this.redis.scan(cursor, 'MATCH', `${REDIS_RECORD_PREFIX}*`, 'COUNT', 500);
+    for await (const batch of scanClusterSafe(this.redis, `${REDIS_RECORD_PREFIX}*`, 500)) {
       for (const recordKey of batch) keys.add(recordKey.slice(REDIS_RECORD_PREFIX.length));
-      cursor = next;
-    } while (cursor !== '0');
+    }
     return [...keys];
   }
 }

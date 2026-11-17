@@ -110,6 +110,39 @@ function redisProbeKey(): string {
   return `host:${process.env.REDIS_HOST ?? ''}:${port}`;
 }
 
+async function waitProbeClientReady(client: Redis, timeoutMs: number): Promise<void> {
+  if (typeof (client as { connect?: unknown }).connect === 'function' && client.status === 'wait') {
+    await client.connect();
+  }
+  if (client.status === 'ready' || typeof (client as { once?: unknown }).once !== 'function') {
+    return;
+  }
+  if (client.status === 'connecting' || client.status === 'reconnecting') {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new HealthProbeFailure('unreachable'));
+      }, timeoutMs);
+      timer.unref?.();
+      const onReady = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = (err: unknown) => {
+        cleanup();
+        reject(err instanceof Error ? err : new HealthProbeFailure('unreachable'));
+      };
+      const cleanup = () => {
+        clearTimeout(timer);
+        client.off?.('ready', onReady);
+        client.off?.('error', onError);
+      };
+      client.once('ready', onReady);
+      client.once('error', onError);
+    });
+  }
+}
+
 async function probeRedis(): Promise<ProbeResult> {
   if (!isRedisConfigured()) {
     disconnectCachedRedis();
@@ -143,9 +176,7 @@ async function probeRedis(): Promise<ProbeResult> {
   // A refused or reset connection is reported through the rejected command, not through an unhandled event.
   client.on('error', () => undefined);
   try {
-    if (typeof (client as { connect?: unknown }).connect === 'function' && client.status === 'wait') {
-      await client.connect();
-    }
+    await waitProbeClientReady(client, HEALTH_PROBE_TIMEOUT_MS);
     if ((await client.ping()) !== REDIS_PONG) throw new HealthProbeFailure('unreachable');
     (client as unknown as { connector?: { stream?: { unref?: () => void } } }).connector?.stream?.unref?.();
     cachedRedisClient = { key, client };

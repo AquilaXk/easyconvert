@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type Redis from 'ioredis';
 import { createConfiguredRedisClient, hasConfiguredRedis } from '../redis/client-factory';
+import { isClusterRedis, scanClusterSafe } from '../redis/cluster-ops';
 import { pipelineReplies } from '../redis/pipeline-replies';
 import { readyGatedRedis, whenReady } from '../redis/when-ready';
 import { MIN_PRODUCTION_SEALING_KEY_LENGTH, secretForms } from '../security/secret-forms';
@@ -593,8 +594,11 @@ export class CredentialsVault {
 
   private async readManyValues(redis: Redis, keys: readonly string[], preferMget: boolean): Promise<(string | null)[]> {
     if (keys.length === 0) return [];
-    const isCluster = Boolean((redis as { isCluster?: unknown }).isCluster);
-    if (preferMget && !isCluster && typeof redis.mget === 'function') {
+    const cluster = isClusterRedis(redis);
+    if (cluster) {
+      return Promise.all(keys.map((k) => redis.get(k)));
+    }
+    if (preferMget && typeof redis.mget === 'function') {
       return redis.mget(keys as string[]);
     }
     if (typeof (redis as { pipeline?: unknown }).pipeline === 'function') {
@@ -686,35 +690,33 @@ export class CredentialsVault {
   }
 
   private async indexVault(redis: Redis): Promise<void> {
-    let cursor = '0';
-    do {
-      const [next, keys] = await redis.scan(cursor, 'MATCH', `${VAULT_PREFIX}*`, 'COUNT', SCAN_BATCH);
-      cursor = next;
-      if (keys.length === 0) continue;
+    const cluster = isClusterRedis(redis);
+    for await (const keys of scanClusterSafe(redis, `${VAULT_PREFIX}*`, SCAN_BATCH)) {
       const raws = await this.readManyValues(redis, keys, false);
-      const pipeline = redis.pipeline();
-      for (const raw of raws) {
-        const envelope = raw ? parseEnvelope(raw) : undefined;
-        if (envelope) pipeline.sadd(userIndexKey(envelope.userId), envelope.id);
+      const envelopes = raws
+        .map((raw) => (raw ? parseEnvelope(raw) : undefined))
+        .filter((env): env is NonNullable<typeof env> => Boolean(env));
+      if (envelopes.length === 0) continue;
+      if (cluster) {
+        await Promise.all(envelopes.map((env) => redis.sadd(userIndexKey(env.userId), env.id)));
+      } else {
+        const pipeline = redis.pipeline();
+        for (const env of envelopes) pipeline.sadd(userIndexKey(env.userId), env.id);
+        if (pipeline.length > 0) await pipelineReplies(pipeline);
       }
-      if (pipeline.length > 0) await pipelineReplies(pipeline);
-    } while (cursor !== '0');
+    }
   }
 
   /** The ids of the credentials of `userId` by a scan of the whole vault, which needs no index. */
   private async scanIdsOfUser(redis: Redis, userId: string): Promise<string[]> {
     const ids = new Set<string>();
-    let cursor = '0';
-    do {
-      const [next, keys] = await redis.scan(cursor, 'MATCH', `${VAULT_PREFIX}*`, 'COUNT', SCAN_BATCH);
-      cursor = next;
-      if (keys.length === 0) continue;
+    for await (const keys of scanClusterSafe(redis, `${VAULT_PREFIX}*`, SCAN_BATCH)) {
       const raws = await this.readManyValues(redis, keys, false);
       for (const raw of raws) {
         const envelope = raw ? parseEnvelope(raw) : undefined;
         if (envelope?.userId === userId) ids.add(envelope.id);
       }
-    } while (cursor !== '0');
+    }
     return [...ids];
   }
 

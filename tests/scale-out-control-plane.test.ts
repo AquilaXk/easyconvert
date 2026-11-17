@@ -8,7 +8,10 @@ import { ConfigurationError, parseConfig } from '../src/lib/config';
 import {
   parseHostPortEndpoints,
   resolveRedisMode,
+  createConfiguredRedisClient,
 } from '../src/lib/redis/client-factory';
+import { deleteKeysClusterSafe, scanClusterSafe } from '../src/lib/redis/cluster-ops';
+import { sealPasswordOption, openPasswordOption } from '../src/lib/queue/option-secrets';
 import {
   resetLocalSweepLocksForTests,
   withRedisLeaderLock,
@@ -547,5 +550,165 @@ describe('Scale-Out Web control plane, S3-native TUS, leader locks, and Redis HA
     expect(anonBody.success).toBe(true);
     expect(anonBody.presignedPartUrls).toBeUndefined();
     vi.doUnmock('@/lib/storage');
+  });
+
+  it('keeps ioredis.Cluster lazyConnect in wait state and scans/deletes across all cluster master shards safely', async () => {
+    const clusterClient = createConfiguredRedisClient(
+      { lazyConnect: true, enableOfflineQueue: false, retryStrategy: () => null },
+      { REDIS_MODE: 'cluster', REDIS_CLUSTER_NODES: '127.0.0.1:7000,127.0.0.1:7001' }
+    );
+    expect((clusterClient as { status?: string }).status).toBe('wait');
+    clusterClient.disconnect();
+
+    const deletedSingleKeys: string[] = [];
+    const fakeCluster = {
+      isCluster: true,
+      nodes: () => [
+        { scan: vi.fn(async () => ['0', ['k:shard1:a', 'k:shard1:b']]) },
+        { scan: vi.fn(async () => ['0', ['k:shard2:c']]) },
+      ],
+      del: vi.fn(async (...keys: string[]) => {
+        if (keys.length > 1) throw new Error('CROSSSLOT Keys in request do not hash to the same slot');
+        deletedSingleKeys.push(keys[0]);
+        return 1;
+      }),
+    };
+
+    const collected: string[] = [];
+    for await (const batch of scanClusterSafe(fakeCluster as never, 'k:*', 100)) {
+      collected.push(...batch);
+    }
+    expect(collected.sort()).toEqual(['k:shard1:a', 'k:shard1:b', 'k:shard2:c']);
+
+    await deleteKeysClusterSafe(fakeCluster as never, collected);
+    expect(deletedSingleKeys.sort()).toEqual(['k:shard1:a', 'k:shard1:b', 'k:shard2:c']);
+  });
+
+  it('seals nested unlock.password in queued tool options and marks non-retryable tool failures as failed immediately', async () => {
+    const rawOptions = {
+      password: 'top-secret-pdf-pw',
+      confirmEditRights: true,
+      unlock: { password: 'top-secret-pdf-pw', confirmEditRights: true },
+    };
+    const sealed = sealPasswordOption(rawOptions, 'job_unlock_seal_1') as Record<string, unknown>;
+    expect(JSON.stringify(sealed)).not.toContain('top-secret-pdf-pw');
+    expect((sealed.unlock as Record<string, unknown>).password).toBeUndefined();
+    expect(typeof (sealed.unlock as Record<string, unknown>).sealedPassword).toBe('string');
+
+    const opened = openPasswordOption(sealed, 'job_unlock_seal_1') as typeof rawOptions;
+    expect(opened.password).toBe('top-secret-pdf-pw');
+    expect(opened.unlock.password).toBe('top-secret-pdf-pw');
+
+    // Non-retryable 1st-attempt failure on queued tool job must transition to failed immediately (not strand in running)
+    await registerLiveWorkerHeartbeat('test-worker-fail-1');
+    startConversionWorker({ concurrency: 2 });
+
+    const form = new FormData();
+    form.set('tool', 'unlock');
+    form.set('options', JSON.stringify({ password: 'wrong-password', confirmEditRights: true }));
+    form.append('files', new File([Buffer.from('%PDF-1.4\n%broken-xref\n%%EOF\n')], 'corrupt.pdf', { type: 'application/pdf' }));
+
+    const postRes = await postToolJob(
+      new NextRequest('http://localhost:3000/api/tools/jobs', {
+        method: 'POST',
+        headers: { 'x-forwarded-for': '203.0.113.99' },
+        body: form,
+      })
+    );
+    expect(postRes.status).toBe(201);
+    const created = (await postRes.json()) as { id: string };
+
+    await vi.waitFor(async () => {
+      const pollRes = await getToolJobRoute(
+        new NextRequest(`http://localhost:3000/api/tools/jobs/${created.id}`, {
+          method: 'GET',
+          headers: { 'x-forwarded-for': '203.0.113.99' },
+        }),
+        { params: Promise.resolve({ id: created.id }) }
+      );
+      const body = (await pollRes.json()) as { status: string; error?: string };
+      expect(body.status).toBe('failed');
+      expect(Boolean(body.error)).toBe(true);
+    }, { timeout: 10_000 });
+
+    await unregisterLiveWorkerHeartbeat('test-worker-fail-1');
+  });
+
+  it('prevents stale local TUS tail inflation on cross-replica bounce A -> B -> A and aborts expired remote S3 uploads', async () => {
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-tus-bounceA-'));
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-tus-bounceB-'));
+    const sharedStore = new SharedMemoryTusStore();
+    setTusSessionStore(sharedStore);
+
+    const assembledChunks: Buffer[] = [];
+    const abortedUploads: string[] = [];
+    const fakeRemoteBackend = {
+      ...selectedStorage.storageProvider,
+      kind: 'remote' as const,
+      providerName: 's3',
+      initiateMultipartUpload: vi.fn(async (filename: string) => ({
+        uploadId: `mp_bounce_${filename}`,
+        key: `uploads/u1/${filename}`,
+        partSize: TUS_REMOTE_PART_BYTES,
+        totalParts: 2,
+        expiresAt: Date.now() + 3600_000,
+      })),
+      uploadPart: vi.fn(async (_uploadId: string, partNumber: number, buf: Buffer) => {
+        const copy = Buffer.from(buf);
+        assembledChunks.push(copy);
+        return { partNumber, etag: `"etag-${partNumber}"`, size: copy.length };
+      }),
+      completeMultipartUpload: vi.fn(async () => ({
+        location: '/api/storage/file/uploads%2Fu1%2Fbounce.bin',
+        key: 'uploads/u1/bounce.bin',
+        size: assembledChunks.reduce((s, b) => s + b.length, 0),
+        etag: '"done"',
+      })),
+      abortMultipartUpload: vi.fn(async (uploadId: string) => {
+        abortedUploads.push(uploadId);
+        return true;
+      }),
+      stat: vi.fn(async () => ({
+        size: 12 * 1024 * 1024,
+        etag: '"done"',
+        mimeType: 'application/octet-stream',
+        filename: 'bounce.bin',
+      })),
+    };
+    vi.spyOn(selectedStorage, 'storageProvider', 'get').mockReturnValue(fakeRemoteBackend as never);
+
+    try {
+      const replicaA = new TusEngine({ tusDir: dirA });
+      const replicaB = new TusEngine({ tusDir: dirB });
+      const meta = `filename ${Buffer.from('bounce.bin').toString('base64')},filetype ${Buffer.from('application/octet-stream').toString('base64')}`;
+
+      // 12 MiB total: A gets 5 MiB (0x11), B gets 5 MiB (0x22 -> flushes 8 MiB part, 2 MiB tail), then A gets HEAD + final 2 MiB (0x33)!
+      const session = await replicaA.createSession({ uploadLength: 12 * 1024 * 1024, metadataHeader: meta, ownerUserId: 'u1' });
+      await replicaA.appendChunk(session.id, 0, Readable.from([Buffer.alloc(5 * 1024 * 1024, 0x11)]));
+      await replicaB.appendChunk(session.id, 5 * 1024 * 1024, Readable.from([Buffer.alloc(5 * 1024 * 1024, 0x22)]));
+
+      // Replica A still has its old 5 MiB file on disk, yet HEAD on Replica A MUST report 10 MiB (not 8 + 5 = 13 MiB)!
+      const headOnA = await replicaA.getSession(session.id);
+      expect(headOnA?.uploadOffset).toBe(10 * 1024 * 1024);
+
+      const finalOnA = await replicaA.appendChunk(session.id, 10 * 1024 * 1024, Readable.from([Buffer.alloc(2 * 1024 * 1024, 0x33)]));
+      expect(finalOnA.isComplete).toBe(true);
+      const fullBytes = Buffer.concat(assembledChunks);
+      expect(fullBytes.length).toBe(12 * 1024 * 1024);
+      expect(fullBytes[0]).toBe(0x11);
+      expect(fullBytes[5 * 1024 * 1024]).toBe(0x22);
+      expect(fullBytes[9 * 1024 * 1024]).toBe(0x22); // Would have been 0x11 if Replica A kept stale local tail!
+      expect(fullBytes[10 * 1024 * 1024]).toBe(0x33);
+
+      // Expired session termination must still abort remote S3 multipart upload via infoPath fallback!
+      const expiringMeta = `filename ${Buffer.from('expiring.bin').toString('base64')},filetype ${Buffer.from('application/octet-stream').toString('base64')}`;
+      const expiring = await replicaA.createSession({ uploadLength: 12 * 1024 * 1024, metadataHeader: expiringMeta, ownerUserId: 'u1' });
+      await sharedStore.deleteSession(expiring.id);
+      await replicaA.terminateSession(expiring.id);
+      expect(abortedUploads).toContain('mp_bounce_expiring.bin');
+    } finally {
+      fs.rmSync(dirA, { recursive: true, force: true });
+      fs.rmSync(dirB, { recursive: true, force: true });
+    }
   });
 });

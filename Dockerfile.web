@@ -13,7 +13,7 @@
 
 # Same pinned base as Dockerfile.worker (tests/web-image.test.ts fails when the two differ).
 ARG NODE_IMAGE=node:24.20.0-trixie-slim@sha256:50c3b2f6988dfc307b86e5301d69611af31f4789bdf232863b07d3b02fe55ae0
-ARG WORKER_IMAGE
+ARG WORKER_IMAGE=${NODE_IMAGE}
 
 # ==============================================================================
 # Stage 1: Next.js build
@@ -64,6 +64,7 @@ FROM ${NODE_IMAGE} AS webslim
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV WEB_EXECUTION_MODE=queue-only
+ENV EASYCONVERT_STORAGE_DIR=/tmp/easyconvert-storage
 
 WORKDIR /app
 
