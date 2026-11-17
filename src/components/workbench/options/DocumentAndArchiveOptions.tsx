@@ -3,8 +3,11 @@
 import React from 'react';
 import { useTranslations } from 'next-intl';
 import {
+  HELP_TEXT_CLASS,
+  INLINE_LABEL_CLASS,
   INPUT_CLASS,
   SELECT_CLASS,
+  SLIDER_VALUE_CLASS,
   RANGE_CLASS,
   rangeFill,
   LABEL_CLASS,
@@ -43,7 +46,7 @@ function OcrOptionsFields({
   return (
     <div className="space-y-3">
       {ocrAlwaysEnabled ? (
-        <p className="text-xs text-ink-2">
+        <p className="text-xs font-normal leading-relaxed text-ink-3">
           {t('ocrAutomatic')}
         </p>
       ) : (
@@ -59,9 +62,9 @@ function OcrOptionsFields({
                 ocrLanguage: e.target.checked ? options.ocrLanguage || 'eng' : undefined,
               })
             }
-            className="size-4 cursor-pointer"
+            className="size-4 accent-accent cursor-pointer"
           />
-          <label htmlFor="opt-doc-ocr" className="text-sm text-ink cursor-pointer select-none">
+          <label htmlFor="opt-doc-ocr" className="text-sm font-normal text-ink cursor-pointer select-none">
             {t('ocrEnable')}
           </label>
         </div>
@@ -274,11 +277,11 @@ export function PasswordOptionsSection({
           className={INPUT_CLASS}
         />
         {passwordError && (
-          <p id="opt-doc-password-error" role="alert" className="mt-1.5 text-xs font-medium text-danger">
+          <p id="opt-doc-password-error" role="alert" className="mt-1.5 text-xs font-medium leading-relaxed text-danger">
             {passwordError}
           </p>
         )}
-        <p id="opt-doc-password-help" className="mt-1.5 text-xs text-ink-3">{copy.helper}</p>
+        <p id="opt-doc-password-help" className={HELP_TEXT_CLASS}>{copy.helper}</p>
       </div>
     </section>
   );
@@ -341,10 +344,10 @@ export function ArchiveOptionsSection({ options, onChange }: Readonly<SectionPro
       <h3 className={SECTION_HEADING_CLASS}>{t('heading')}</h3>
       <div>
         <div className="flex items-center justify-between mb-1.5">
-          <label htmlFor="opt-archive-compression" className="text-xs font-medium text-ink-2">
+          <label htmlFor="opt-archive-compression" className={INLINE_LABEL_CLASS}>
             {t('level')}
           </label>
-          <span className="text-xs font-mono text-accent-ink">{t('levelValue', { level })}</span>
+          <span className={SLIDER_VALUE_CLASS}>{t('levelValue', { level })}</span>
         </div>
         <input id="opt-archive-compression" type="range" min={0} max={9} step={1} value={level} onChange={(e) => onChange({ ...options, compressionLevel: Number(e.target.value) })} className={RANGE_CLASS} style={rangeFill(level, 0, 9)} />
       </div>

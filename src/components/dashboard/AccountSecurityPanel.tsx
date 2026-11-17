@@ -18,7 +18,7 @@ const DANGER_BTN_CLASS =
   'min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-sm bg-danger-soft text-danger border border-danger-edge text-sm font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
 const SECONDARY_BTN_CLASS =
   'min-h-[44px] inline-flex items-center justify-center px-4 py-2 rounded-sm border border-rule text-ink text-sm font-medium hover:bg-sunken disabled:opacity-50 cursor-pointer';
-const LABEL_CLASS = 'block text-xs font-medium text-ink-2';
+const LABEL_CLASS = 'block text-sm font-medium leading-snug text-ink';
 const MIN_NEW_PASSWORD_LENGTH = 8;
 const CONFIRM_DELETE_TOKEN = 'DELETE';
 
@@ -217,10 +217,10 @@ function DeleteAccountDialog({
       <div className="p-6 space-y-4">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h2 id="account-delete-dialog-title" className="text-base font-semibold text-ink">
+            <h2 id="account-delete-dialog-title" className="text-lg font-semibold leading-snug text-ink">
               {t('heading')}
             </h2>
-            <p className="mt-1 text-xs sm:text-sm text-ink-2">{t('intro')}</p>
+            <p className="mt-1 text-sm font-normal leading-relaxed text-ink-3">{t('intro')}</p>
           </div>
           <button
             type="button"

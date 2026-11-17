@@ -5,12 +5,12 @@ import { useTranslations } from 'next-intl';
 import { X } from 'lucide-react';
 import { useModalDialog } from '@/hooks/useModalDialog';
 import { defaultToolOptions, type WebTool, type WebToolOptions } from '@/lib/tools/tool-names';
-import { INPUT_CLASS, LABEL_CLASS, SECTION_HEADING_CLASS, SELECT_CLASS } from '../workbench/options/section-primitives';
+import { HELP_TEXT_CLASS, INPUT_CLASS, LABEL_CLASS, SECTION_HEADING_CLASS, SELECT_CLASS } from '../workbench/options/section-primitives';
 
 /** Each archive format and the key of its label: a key cannot hold a dot. */
 const ARCHIVE_FORMATS = [['zip', 'zip'], ['7z', '7z'], ['tar', 'tar'], ['tar.gz', 'tarGz']] as const;
 const ROTATIONS = [90, 180, 270] as const;
-const RADIO_ROW = 'flex items-center gap-3 min-h-[44px] text-sm text-ink cursor-pointer';
+const RADIO_ROW = 'flex items-center gap-3 min-h-[44px] text-sm font-normal text-ink cursor-pointer';
 
 type Rotation = (typeof ROTATIONS)[number];
 type OptionsTranslator = ReturnType<typeof useTranslations<'tools.options'>>;
@@ -40,15 +40,15 @@ function SplitSection({ options, onChange, t }: Readonly<SectionProps>) {
       <fieldset>
         <legend className={LABEL_CLASS}>{t('split.label')}</legend>
         <label className={RADIO_ROW}>
-          <input type="radio" name="tool-split-mode" checked={!byRanges && !byEveryN} onChange={() => onChange({ ...options, split: {} })} className="size-4" />
+          <input type="radio" name="tool-split-mode" checked={!byRanges && !byEveryN} onChange={() => onChange({ ...options, split: {} })} className="size-4 accent-accent cursor-pointer" />
           {t('split.every')}
         </label>
         <label className={RADIO_ROW}>
-          <input type="radio" name="tool-split-mode" checked={byRanges} onChange={() => onChange({ ...options, split: { ranges: '' } })} className="size-4" />
+          <input type="radio" name="tool-split-mode" checked={byRanges} onChange={() => onChange({ ...options, split: { ranges: '' } })} className="size-4 accent-accent cursor-pointer" />
           {t('split.ranges')}
         </label>
         <label className={RADIO_ROW}>
-          <input type="radio" name="tool-split-mode" checked={byEveryN} onChange={() => onChange({ ...options, split: { everyNPages: 2 } })} className="size-4" />
+          <input type="radio" name="tool-split-mode" checked={byEveryN} onChange={() => onChange({ ...options, split: { everyNPages: 2 } })} className="size-4 accent-accent cursor-pointer" />
           {t('split.everyN')}
         </label>
       </fieldset>
@@ -70,7 +70,7 @@ function SplitSection({ options, onChange, t }: Readonly<SectionProps>) {
             placeholder={t('split.rangesHint')} onChange={(e) => onChange({ ...options, split: { ranges: e.target.value } })}
             className={INPUT_CLASS}
           />
-          <p className="mt-1.5 text-xs text-ink-3">{t('split.rangesHelp')}</p>
+          <p className={HELP_TEXT_CLASS}>{t('split.rangesHelp')}</p>
         </div>
       )}
     </section>
@@ -86,7 +86,7 @@ function RotateSection({ options, onChange, t }: Readonly<SectionProps>) {
         <legend className={LABEL_CLASS}>{t('rotate.label')}</legend>
         {ROTATIONS.map((degrees) => (
           <label key={degrees} className={RADIO_ROW}>
-            <input type="radio" name="tool-rotation" checked={rotation === degrees} onChange={() => setRotate({ rotation: degrees })} className="size-4" />
+            <input type="radio" name="tool-rotation" checked={rotation === degrees} onChange={() => setRotate({ rotation: degrees })} className="size-4 accent-accent cursor-pointer" />
             {t(`rotate.r${degrees}`)}
           </label>
         ))}
@@ -98,7 +98,7 @@ function RotateSection({ options, onChange, t }: Readonly<SectionProps>) {
           placeholder={t('rotate.pagesHint')} onChange={(e) => setRotate({ pages: e.target.value.trim() === '' ? undefined : e.target.value })}
           className={INPUT_CLASS}
         />
-        <p className="mt-1.5 text-xs text-ink-3">{t('rotate.pagesHelp')}</p>
+        <p className={HELP_TEXT_CLASS}>{t('rotate.pagesHelp')}</p>
       </div>
     </section>
   );
@@ -149,15 +149,15 @@ function ProtectSection({ options, onChange, t }: Readonly<SectionProps>) {
       <section className="space-y-1">
         <h3 className={SECTION_HEADING_CLASS}>{t('protect.permissions')}</h3>
         <label className={RADIO_ROW}>
-          <input type="checkbox" checked={perms.print !== 'none'} onChange={(e) => setPerm({ print: e.target.checked ? 'full' : 'none' })} className="size-4 cursor-pointer" />
+          <input type="checkbox" checked={perms.print !== 'none'} onChange={(e) => setPerm({ print: e.target.checked ? 'full' : 'none' })} className="size-4 accent-accent cursor-pointer" />
           <span className="select-none">{t('protect.permPrint')}</span>
         </label>
         <label className={RADIO_ROW}>
-          <input type="checkbox" checked={perms.extract !== false} onChange={(e) => setPerm({ extract: e.target.checked })} className="size-4 cursor-pointer" />
+          <input type="checkbox" checked={perms.extract !== false} onChange={(e) => setPerm({ extract: e.target.checked })} className="size-4 accent-accent cursor-pointer" />
           <span className="select-none">{t('protect.permCopy')}</span>
         </label>
         <label className={RADIO_ROW}>
-          <input type="checkbox" checked={perms.modify === 'all'} onChange={(e) => setPerm({ modify: e.target.checked ? 'all' : 'none' })} className="size-4 cursor-pointer" />
+          <input type="checkbox" checked={perms.modify === 'all'} onChange={(e) => setPerm({ modify: e.target.checked ? 'all' : 'none' })} className="size-4 accent-accent cursor-pointer" />
           <span className="select-none">{t('protect.permModify')}</span>
         </label>
       </section>
@@ -182,7 +182,7 @@ function UnlockSection({ options, onChange, t }: Readonly<SectionProps>) {
           type="checkbox"
           checked={unlock.confirmEditRights ?? options.confirmEditRights ?? false}
           onChange={(e) => onChange({ ...options, unlock: { ...unlock, confirmEditRights: e.target.checked }, confirmEditRights: e.target.checked })}
-          className="size-4 cursor-pointer"
+          className="size-4 accent-accent cursor-pointer"
         />
         <span className="select-none">{t('unlock.confirmRights')}</span>
       </label>
@@ -262,7 +262,7 @@ function PageRangeSection({ options, onChange, t }: Readonly<SectionProps>) {
           placeholder={t('pages.hint')} onChange={(e) => onChange({ ...options, pages: e.target.value || undefined })}
           className={INPUT_CLASS}
         />
-        <p className="mt-1.5 text-xs text-ink-3">{t('pages.help')}</p>
+        <p className={HELP_TEXT_CLASS}>{t('pages.help')}</p>
       </div>
     </section>
   );
@@ -315,8 +315,8 @@ export default function ToolOptionsModal({ tool, toolName, initialOptions, onSav
 
   return (
     <dialog ref={dialogRef} aria-labelledby="tool-options-title" className="w-full max-w-lg rounded-xs p-0 bg-surface text-ink border border-rule shadow-elev-2">
-      <div className="px-5 sm:px-6 py-4 border-b border-rule flex items-start justify-between gap-4">
-        <h2 id="tool-options-title" className="text-base font-semibold text-ink">{t('label', { tool: toolName })}</h2>
+      <div className="px-5 sm:px-6 py-4 border-b border-rule flex items-center justify-between gap-4">
+        <h2 id="tool-options-title" className="text-lg font-semibold leading-snug text-ink">{t('label', { tool: toolName })}</h2>
         <button
           type="button" aria-label={tModal('close')} onClick={onClose}
           className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-xs border border-rule text-ink-3 hover:text-ink hover:border-accent transition-colors cursor-pointer shrink-0"

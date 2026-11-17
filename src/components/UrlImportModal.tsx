@@ -84,10 +84,10 @@ export default function UrlImportModal({
     >
       <div className="px-5 py-4 border-b border-rule flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <h2 id="url-import-heading" className="text-base font-semibold text-ink">
+          <h2 id="url-import-heading" className="text-lg font-semibold leading-snug text-ink">
             {t('heading')}
           </h2>
-          <p className="text-xs text-ink-3">
+          <p className="text-sm font-normal text-ink-3 mt-1">
             {t('intro', { size: formatBytes(URL_IMPORT_MAX_BYTES) })}
           </p>
         </div>
@@ -110,7 +110,7 @@ export default function UrlImportModal({
         <div>
           <label
             htmlFor="url-input"
-            className="block text-xs font-medium text-ink-2 mb-1.5"
+            className="block text-sm font-medium leading-snug text-ink mb-1.5"
           >
             {t('label')}
           </label>
@@ -121,7 +121,7 @@ export default function UrlImportModal({
             placeholder="https://example.com/document.pdf"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            className="w-full min-h-[44px] px-3.5 text-base bg-surface/80 border border-rule-strong rounded-xs text-ink placeholder-ink-3 focus:border-accent"
+            className="w-full min-h-[44px] px-3.5 text-base md:text-sm font-normal bg-surface/80 border border-rule-strong rounded-xs text-ink placeholder-ink-3 focus:border-accent"
           />
         </div>
 

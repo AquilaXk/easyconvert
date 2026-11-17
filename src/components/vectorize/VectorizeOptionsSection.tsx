@@ -4,6 +4,7 @@ import React, { useId, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import {
+  HELP_TEXT_CLASS,
   INPUT_CLASS,
   LABEL_CLASS,
   RANGE_CLASS,
@@ -31,7 +32,6 @@ import {
 } from '@/lib/conversions/raster-vectorize-options';
 
 const SIMPLIFY_STEP = 0.1;
-const HELP_CLASS = 'mt-1.5 text-xs text-ink-3';
 const DISABLED_CLASS = 'disabled:opacity-50 disabled:cursor-not-allowed';
 const NO_SPIN_CLASS = '[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none';
 
@@ -56,7 +56,7 @@ function ChoiceList<T extends string>({ label, choices, selected, onSelect }: Re
     <div role="radiogroup" aria-labelledby={labelId}>
       <span id={labelId} className={LABEL_CLASS}>{label}</span>
       {choices.map((choice) => (
-        <label key={choice.value} className="grid grid-cols-[auto_1fr] items-center gap-x-2 py-1 cursor-pointer">
+        <label key={choice.value} className="grid grid-cols-[auto_1fr] items-center gap-x-2.5 py-1.5 cursor-pointer">
           <input
             type="radio"
             name={id}
@@ -65,11 +65,11 @@ function ChoiceList<T extends string>({ label, choices, selected, onSelect }: Re
             aria-labelledby={`${id}-${choice.value}-label`}
             aria-describedby={choice.description ? `${id}-${choice.value}-description` : undefined}
             onChange={() => onSelect(choice.value)}
-            className="h-4 w-4 accent-accent cursor-pointer"
+            className="size-4 accent-accent cursor-pointer"
           />
-          <span id={`${id}-${choice.value}-label`} className="text-sm text-ink">{choice.label}</span>
+          <span id={`${id}-${choice.value}-label`} className="text-sm font-normal leading-snug text-ink">{choice.label}</span>
           {choice.description && (
-            <span id={`${id}-${choice.value}-description`} className="col-start-2 text-xs text-ink-3">{choice.description}</span>
+            <span id={`${id}-${choice.value}-description`} className="col-start-2 mt-0.5 text-xs font-normal leading-relaxed text-ink-3">{choice.description}</span>
           )}
         </label>
       ))}
@@ -135,9 +135,9 @@ function NumberInput({ id, label, unit, helpId, placeholder, disabled, min, max,
         placeholder={placeholder}
         onChange={(e) => type(e.target.value)}
         onBlur={leave}
-        className={`${INPUT_CLASS} pr-12 ${NO_SPIN_CLASS} ${DISABLED_CLASS}`}
+        className={`${INPUT_CLASS} pr-12 tabular-nums ${NO_SPIN_CLASS} ${DISABLED_CLASS}`}
       />
-      <span className="pointer-events-none absolute inset-y-0 right-3.5 flex items-center text-xs text-ink-3">{unit}</span>
+      <span className="pointer-events-none absolute inset-y-0 right-3.5 flex items-center text-xs font-normal text-ink-3">{unit}</span>
     </div>
   );
 }
@@ -199,7 +199,7 @@ function RangeField({ text, range, value, onChange }: Readonly<RangeFieldProps>)
           />
         </div>
       </div>
-      <p id={helpId} className={HELP_CLASS}>{text.help}</p>
+      <p id={helpId} className={HELP_TEXT_CLASS}>{text.help}</p>
     </div>
   );
 }
@@ -232,7 +232,7 @@ function OptionalIntegerField({ text, range, placeholder, value, onChange }: Rea
         settle={(typed) => (typed.trim() === '' ? null : clampNumber(typed, range))}
         onChange={onChange}
       />
-      <p id={helpId} className={HELP_CLASS}>{text.help}</p>
+      <p id={helpId} className={HELP_TEXT_CLASS}>{text.help}</p>
     </div>
   );
 }
@@ -262,7 +262,7 @@ function ToleranceField({ text, placeholder, value, onChange }: Readonly<Toleran
         typedValue={(typed) => parseTolerance(typed) ?? undefined}
         onChange={onChange}
       />
-      <p id={helpId} className={HELP_CLASS}>{text.help}</p>
+      <p id={helpId} className={HELP_TEXT_CLASS}>{text.help}</p>
     </div>
   );
 }
@@ -279,20 +279,23 @@ interface ToggleFieldProps {
 function ToggleField({ id, label, help, disabled, checked, onChange }: Readonly<ToggleFieldProps>) {
   const helpId = `${id}-help`;
   return (
-    <div className="sm:col-span-2">
-      <label htmlFor={id} className={`inline-flex items-center gap-2.5 cursor-pointer ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}>
-        <input
-          id={id}
-          type="checkbox"
-          checked={checked}
-          disabled={disabled}
-          aria-describedby={helpId}
-          onChange={(e) => onChange(e.target.checked)}
-          className={`h-4 w-4 rounded accent-accent cursor-pointer ${DISABLED_CLASS}`}
-        />
-        <span className="text-sm font-medium text-ink">{label}</span>
+    <div className="sm:col-span-2 grid grid-cols-[auto_1fr] items-center gap-x-2.5">
+      <input
+        id={id}
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        aria-describedby={helpId}
+        onChange={(e) => onChange(e.target.checked)}
+        className={`size-4 accent-accent cursor-pointer ${DISABLED_CLASS}`}
+      />
+      <label
+        htmlFor={id}
+        className={`text-sm font-medium leading-snug text-ink select-none ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+      >
+        {label}
       </label>
-      <p id={helpId} className={HELP_CLASS}>{help}</p>
+      <p id={helpId} className="col-start-2 mt-1 text-xs font-normal leading-relaxed text-ink-3">{help}</p>
     </div>
   );
 }
@@ -376,7 +379,7 @@ export function VectorizeOptionsSection({ options, onChange }: Readonly<SectionP
         aria-expanded={advancedOpen}
         aria-controls={advancedOpen ? advancedId : undefined}
         onClick={() => setAdvancedOpen(!advancedOpen)}
-        className="inline-flex items-center gap-1.5 min-h-[44px] rounded-xs text-sm font-medium text-ink-2 hover:text-ink cursor-pointer"
+        className="inline-flex items-center gap-1.5 min-h-[44px] rounded-xs text-sm font-medium text-ink-2 hover:text-ink transition-colors cursor-pointer"
       >
         {t('advanced')}
         <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${advancedOpen ? 'rotate-180' : ''}`} aria-hidden="true" />

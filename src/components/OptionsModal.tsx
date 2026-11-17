@@ -139,10 +139,10 @@ export default function OptionsModal({
     >
       <div className="px-5 sm:px-6 py-4 border-b border-rule flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h2 id="options-modal-title" className="text-base font-semibold text-ink">
+          <h2 id="options-modal-title" className="text-lg font-semibold leading-snug text-ink">
             {t('heading')}
           </h2>
-          <p className="text-xs text-ink-2 mt-0.5 truncate">
+          <p className="text-sm font-normal text-ink-3 mt-1 truncate">
             {t('subtitle', { filename, src: sourceFormat.toUpperCase(), tgt: targetLabel })}
           </p>
         </div>
@@ -161,7 +161,7 @@ export default function OptionsModal({
         <DocumentAndSecurityGroup visible={visible} options={options} onChange={setOptions} />
         <MediaAndDataGroup visible={visible} options={options} onChange={setOptions} />
         {!visible.hasAny && (
-          <p className="text-sm text-ink-2">
+          <p className="text-sm font-normal leading-relaxed text-ink-2">
             {t('noOptions')}
           </p>
         )}

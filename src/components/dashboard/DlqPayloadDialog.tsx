@@ -70,11 +70,11 @@ export function DlqPayloadDialog({
           <div className="min-w-0">
             <h2
               id="dlq-payload-dialog-title"
-              className="text-base font-semibold text-ink"
+              className="text-lg font-semibold leading-snug text-ink"
             >
               {t('heading')}
             </h2>
-            <p className="text-xs text-ink-2 font-mono mt-0.5 break-all">
+            <p className="text-xs text-ink-3 font-mono mt-1 break-all">
               {entry.id} | {entry.event}
             </p>
           </div>

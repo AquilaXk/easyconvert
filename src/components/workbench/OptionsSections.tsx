@@ -1,11 +1,14 @@
 'use client';
 
 export {
+  HELP_TEXT_CLASS,
+  INLINE_LABEL_CLASS,
   INPUT_CLASS,
   LABEL_CLASS,
   parseOptionalNonNegativeInt,
   parseOptionalPositiveInt,
   SECTION_HEADING_CLASS,
+  SLIDER_VALUE_CLASS,
   type SectionProps,
 } from './options/section-primitives';
 

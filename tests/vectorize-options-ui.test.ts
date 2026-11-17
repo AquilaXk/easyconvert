@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import OptionsModal from '../src/components/OptionsModal';
+import ToolOptionsModal from '../src/components/tools/ToolOptionsModal';
 import { VectorizeOptionsSection } from '../src/components/vectorize/VectorizeOptionsSection';
 import { sanitizeOptionsForPair } from '../src/components/workbench/options/options-capabilities';
 import type { ConversionOptions } from '../src/lib/types';
@@ -479,5 +480,66 @@ describe('the options a queue item keeps', () => {
 
   it('drops the tracer options for any other pair', () => {
     expect(sanitizeOptionsForPair({ quality: 80, vectorize: { preset: 'bw' } }, 'png', 'webp')).toEqual({ quality: 80 });
+  });
+});
+
+describe('options modal five-tier typography hierarchy', () => {
+  it('orders dialog title (18px 600) > section heading (16px 600) > field/group labels (14px 500 ink) > desktop controls/choices (14px 400 ink, 16px mobile) > helper text (12px 400 ink-3)', async () => {
+    const vectorModal = await mountElement(
+      createElement(OptionsModal, {
+        filename: 'logo.png',
+        sourceFormat: 'png',
+        targetFormat: 'svg',
+        initialOptions: { vectorize: { filterSpeckle: 4 } },
+        onSave: noop,
+        onClose: noop,
+      }),
+      'ko'
+    );
+
+    const dialogTitle = byId<HTMLHeadingElement>(vectorModal, 'options-modal-title');
+    expect(dialogTitle?.className).toBe('text-lg font-semibold leading-snug text-ink');
+
+    const sectionHeading = vectorModal.querySelector('section h3');
+    expect(sectionHeading?.className).toBe('text-base font-semibold leading-snug text-ink mb-3');
+
+    const groupLabel = vectorModal.querySelector('[role="radiogroup"] > span');
+    expect(groupLabel?.className).toBe('block text-sm font-medium leading-snug text-ink mb-1.5');
+
+    const radioChoiceLabel = vectorModal.querySelector('[role="radiogroup"] label span');
+    expect(radioChoiceLabel?.className).toBe('text-sm font-normal leading-snug text-ink');
+
+    const speckleInput = byId<HTMLInputElement>(vectorModal, 'opt-vectorize-filter-speckle-value');
+    expect(speckleInput?.className).toContain('text-base');
+    expect(speckleInput?.className).toContain('md:text-sm');
+    expect(speckleInput?.className).toContain('tabular-nums');
+
+    const speckleHelp = byId<HTMLParagraphElement>(vectorModal, 'opt-vectorize-filter-speckle-help');
+    expect(speckleHelp?.className).toBe('mt-1.5 text-xs font-normal leading-relaxed text-ink-3');
+    mounted?.unmount();
+
+    const imageModal = renderDom(
+      createElement(OptionsModal, {
+        filename: 'photo.png',
+        sourceFormat: 'png',
+        targetFormat: 'webp',
+        initialOptions: { quality: 85 },
+        onSave: noop,
+        onClose: noop,
+      }),
+      'ko'
+    );
+    const toolModal = renderDom(
+      createElement(ToolOptionsModal, {
+        tool: 'protect',
+        toolName: 'PDF 잠금',
+        initialOptions: {},
+        onSave: noop,
+        onClose: noop,
+      }),
+      'ko'
+    );
+    expect(visibleText(imageModal)).toContain('85%');
+    expect(visibleText(toolModal)).toContain('PDF 잠금');
   });
 });

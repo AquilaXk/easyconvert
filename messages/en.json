@@ -1301,7 +1301,7 @@
       "pathPrecision": "Path Precision",
       "pathPrecisionHint": "Decimal places written for path coordinates ({min} to {max}).",
       "adaptive": "Adaptive Lighting Threshold",
-      "adaptiveHint": "Uses Bradley–Roth local thresholding to preserve dark strokes across shadowed scans and uneven lighting.",
+      "adaptiveHint": "Compares each pixel with local brightness to separate dark strokes across shadowed scans and uneven lighting.",
       "adaptiveNotApplied": "Applies only to black and white tracing."
     }
   },

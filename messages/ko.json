@@ -1301,7 +1301,7 @@
       "pathPrecision": "좌표 소수 자리",
       "pathPrecisionHint": "SVG 경로 좌표를 기록할 소수점 아래 자리수입니다({min}~{max}).",
       "adaptive": "적응형 흑백 임계값",
-      "adaptiveHint": "그림자나 조명 얼룩이 있는 스캔본에서 지역 평균 밝기를 기준으로 선을 선명하게 분리합니다.",
+      "adaptiveHint": "그림자나 조명 얼룩이 있는 스캔본에서 지역 평균 밝기를 기준으로 흑백 선을 분리합니다.",
       "adaptiveNotApplied": "흑백 선화 방식에만 적용됩니다."
     }
   },

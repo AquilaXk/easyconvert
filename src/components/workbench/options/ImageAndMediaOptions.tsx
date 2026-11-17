@@ -4,8 +4,10 @@ import React from 'react';
 import { useFormatter, useTranslations } from 'next-intl';
 import { AudioCodec, ConversionOptions } from '@/lib/types';
 import {
+  INLINE_LABEL_CLASS,
   INPUT_CLASS,
   SELECT_CLASS,
+  SLIDER_VALUE_CLASS,
   RANGE_CLASS,
   rangeFill,
   LABEL_CLASS,
@@ -193,14 +195,14 @@ export function ImageOptionsSection({ options, onChange, targetFormat }: Readonl
       </div>
       <div>
         <div className="flex items-center justify-between mb-1.5">
-          <label htmlFor="opt-image-quality" className="text-xs font-medium text-ink-2">{t('quality')}</label>
-          <span className="text-xs font-mono text-accent-ink">{effectiveQuality}%</span>
+          <label htmlFor="opt-image-quality" className={INLINE_LABEL_CLASS}>{t('quality')}</label>
+          <span className={SLIDER_VALUE_CLASS}>{effectiveQuality}%</span>
         </div>
         <input id="opt-image-quality" type="range" min={1} max={100} value={effectiveQuality} onChange={(e) => onChange({ ...options, quality: Number(e.target.value) })} className={RANGE_CLASS} style={rangeFill(effectiveQuality, 1, 100)} />
       </div>
       <div className="flex items-center gap-3 min-h-[44px]">
-        <input id="opt-strip-metadata" type="checkbox" checked={Boolean(options.stripMetadata)} onChange={(e) => onChange({ ...options, stripMetadata: e.target.checked ? true : undefined })} className="size-4 cursor-pointer" />
-        <label htmlFor="opt-strip-metadata" className="text-sm text-ink cursor-pointer select-none">{t('stripMetadata')}</label>
+        <input id="opt-strip-metadata" type="checkbox" checked={Boolean(options.stripMetadata)} onChange={(e) => onChange({ ...options, stripMetadata: e.target.checked ? true : undefined })} className="size-4 accent-accent cursor-pointer" />
+        <label htmlFor="opt-strip-metadata" className="text-sm font-normal text-ink cursor-pointer select-none">{t('stripMetadata')}</label>
       </div>
     </section>
   );
@@ -391,8 +393,8 @@ export function AudioOptionsSection({ options, onChange, includeTrim, targetForm
       </div>
       <div>
         <div className="flex items-center justify-between mb-1.5">
-          <label htmlFor="opt-audio-volume" className="text-xs font-medium text-ink-2">{t('gain')}</label>
-          <span className="text-xs font-mono text-accent-ink">{volumeValue}%</span>
+          <label htmlFor="opt-audio-volume" className={INLINE_LABEL_CLASS}>{t('gain')}</label>
+          <span className={SLIDER_VALUE_CLASS}>{volumeValue}%</span>
         </div>
         <input
           id="opt-audio-volume"

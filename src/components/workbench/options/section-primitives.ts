@@ -7,7 +7,7 @@ export interface SectionProps {
 }
 
 export const INPUT_CLASS =
-  'w-full min-h-[44px] px-3.5 rounded-xs text-base bg-surface/80 border border-rule-strong text-ink focus:border-accent';
+  'w-full min-h-[44px] px-3.5 rounded-xs text-base md:text-sm font-normal bg-surface/80 border border-rule-strong text-ink focus:border-accent';
 
 /** The field look without the platform arrow; `pr-9` keeps the longest option clear of the drawn chevron. */
 export const SELECT_CLASS = `${INPUT_CLASS} select-chevron pr-9`;
@@ -20,9 +20,18 @@ export function rangeFill(value: number, min: number, max: number): CSSPropertie
 }
 
 export const LABEL_CLASS =
-  'block text-xs font-medium text-ink-2 mb-1.5';
+  'block text-sm font-medium leading-snug text-ink mb-1.5';
 
-export const SECTION_HEADING_CLASS = 'text-sm font-semibold text-ink mb-3';
+export const INLINE_LABEL_CLASS =
+  'text-sm font-medium leading-snug text-ink';
+
+export const SLIDER_VALUE_CLASS =
+  'text-sm font-medium tabular-nums text-accent-ink';
+
+export const HELP_TEXT_CLASS =
+  'mt-1.5 text-xs font-normal leading-relaxed text-ink-3';
+
+export const SECTION_HEADING_CLASS = 'text-base font-semibold leading-snug text-ink mb-3';
 
 export function parseOptionalPositiveInt(raw: string): number | undefined {
   if (!raw.trim()) return undefined;

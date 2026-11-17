@@ -632,7 +632,11 @@ describe.skipIf(!haveTracer)('the pinned tracer', () => {
     });
 
     it('cutout mosaic composes shapes without overlapping stacked backdrops', async () => {
-      const mosaic = await traced({ hierarchical: 'cutout' });
+      const cutoutBuf = (await vectorize(noisy, 'png', { hierarchical: 'cutout' })).buffer;
+      const stackedBuf = (await vectorize(noisy, 'png', { hierarchical: 'stacked' })).buffer;
+      const mosaic = traceOf(cutoutBuf);
+      expect(cutoutBuf.equals(stackedBuf)).toBe(false);
+      expect(mosaic.fills).toEqual(base.fills);
       expect(mosaic.paths).toBeGreaterThan(0);
     });
   });
