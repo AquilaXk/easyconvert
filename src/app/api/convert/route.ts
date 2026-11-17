@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
-import { dispatchConversion } from '@/lib/conversions/dispatch';
+import { dispatchSyncRouteConversion } from '@/lib/queue/wait-for-job';
 import { conversionDeadlineMs, syncDeadlineMs } from '@/lib/queue/job-deadline';
 import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
 import { bindJobLimits } from '@/lib/conversions/job-time';
@@ -265,17 +265,19 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
         inputBytes: inputBuffer.length,
       })
     );
-    let result: Awaited<ReturnType<typeof dispatchConversion>>;
+    let result: Awaited<ReturnType<typeof dispatchSyncRouteConversion>>;
     const conversionStartedAt = Date.now();
     try {
       result = await runUnderDeadline(req, deadlineMs, (limits) =>
-        dispatchConversion(
+        dispatchSyncRouteConversion({
           inputBuffer,
-          detectedDef.id,
-          targetId,
-          bindJobLimits(options, limits),
-          file.name
-        )
+          sourceFormat: detectedDef.id,
+          targetFormat: targetId,
+          options: bindJobLimits(options, limits),
+          originalFilename: file.name,
+          userId: caller.id,
+          tier: caller.tier,
+        })
       );
     } catch (error: unknown) {
       trace.cause = error;

@@ -84,9 +84,11 @@ describe('no conversion job is queued without a deadline', () => {
       .sort();
     expect(callers).toEqual([
       'app/api/queue/jobs/route.ts',
+      'app/api/tools/jobs/route.ts',
       'app/api/v1/convert/route.ts',
       'app/api/v1/jobs/route.ts',
       'lib/queue/graph/node-jobs.ts',
+      'lib/queue/wait-for-job.ts',
     ]);
   });
 

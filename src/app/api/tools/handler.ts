@@ -18,11 +18,11 @@ import type { User } from '@/lib/auth/types';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { saveRetainedResult } from '@/lib/storage/retention-service';
 import { sanitizeNodeOutputFilename } from '@/lib/queue/graph/node-jobs';
+import { dispatchSyncWebTool } from '@/lib/queue/wait-for-job';
 import {
   assertToolInput,
   assertToolUploadMetadata,
   parseToolOptions,
-  runWebTool,
   WebToolRefusal,
   type WebTool,
   type WebToolFile,
@@ -117,7 +117,15 @@ async function runTool(req: NextRequest, caller: User, tool: WebTool, unit: Rese
     const deadlineMs = syncDeadlineMs(conversionDeadlineMs({ tier: caller.tier, sourceFormat: source, targetFormat: source, inputBytes: trace.bytes }));
     const output = await runUnderDeadline(req, deadlineMs, (limits) => {
       limits.signal.throwIfAborted();
-      const work = runWebTool(tool, files, options, limits.signal);
+      const work = dispatchSyncWebTool({
+        tool,
+        files,
+        options,
+        userId: caller.id,
+        tier: caller.tier,
+        signal: limits.signal,
+        deadlineAt: limits.deadlineAt,
+      });
       running = work.catch(() => undefined);
       return work;
     });

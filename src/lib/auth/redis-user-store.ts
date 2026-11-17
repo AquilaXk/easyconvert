@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
+import { createConfiguredRedisClient, hasConfiguredRedis } from '../redis/client-factory';
 import { readyGatedRedis } from '../redis/when-ready';
 import type { User, UserRecord, UserTier } from './types';
 import { failClosed } from './store-unavailable';
@@ -133,18 +134,19 @@ export class RedisUserStore {
       this.redisClient = options.redisClient;
       this.isConnectedToRedis = true;
     } else {
-      const host = options.redisHost || process.env.REDIS_HOST;
-      const url = options.redisUrl || process.env.REDIS_URL;
       const port =
         options.redisPort || (process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379);
 
       const failFast = { enableOfflineQueue: false, maxRetriesPerRequest: 1 };
       try {
-        if (url) {
-          this.redisClient = readyGatedRedis(new Redis(url, failFast));
+        if (options.redisUrl) {
+          this.redisClient = readyGatedRedis(new Redis(options.redisUrl, failFast));
           this.isConnectedToRedis = true;
-        } else if (host) {
-          this.redisClient = readyGatedRedis(new Redis({ host, port, ...failFast }));
+        } else if (options.redisHost) {
+          this.redisClient = readyGatedRedis(new Redis({ host: options.redisHost, port, ...failFast }));
+          this.isConnectedToRedis = true;
+        } else if (hasConfiguredRedis()) {
+          this.redisClient = readyGatedRedis(createConfiguredRedisClient(failFast));
           this.isConnectedToRedis = true;
         }
       } catch {

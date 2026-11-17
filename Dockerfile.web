@@ -55,7 +55,34 @@ ENV ANONYMOUS_DAILY_LIMIT=${ANONYMOUS_DAILY_LIMIT}
 RUN ./node_modules/.bin/next build && node scripts/check-built-alternates.mjs .next/server/app
 
 # ==============================================================================
-# Stage 2: Web runtime on the worker image
+# Optional Target: Stateless control-plane Web runtime (`--target webslim`)
+# Pure Node.js + Next.js without native conversion engines for multi-replica
+# clusters running with `WEB_EXECUTION_MODE=queue-only`.
+# ==============================================================================
+FROM ${NODE_IMAGE} AS webslim
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV WEB_EXECUTION_MODE=queue-only
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+COPY --from=webbuilder --chown=node:node /app/.next ./.next
+COPY --from=webbuilder --chown=node:node /app/public ./public
+COPY --chown=node:node next.config.mjs ./next.config.mjs
+
+USER node
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD node -e "fetch('http://127.0.0.1:3000/api/health/live').then((r)=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+
+CMD ["node", "node_modules/next/dist/bin/next", "start", "--hostname", "0.0.0.0", "--port", "3000"]
+
+# ==============================================================================
+# Stage 2: Web runtime on the worker image (default target)
 # ==============================================================================
 FROM ${WORKER_IMAGE} AS web
 

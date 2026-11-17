@@ -28,6 +28,7 @@ import { decryptSecret } from './secret-encryption';
 import { RedisUserFileHistory } from './user-file-history';
 import { isIpInCidr, isIpAllowed } from './ip-utils';
 import { resolveRetentionPolicy } from '../storage/result-retention';
+import { createConfiguredRedisClient, hasConfiguredRedis } from '../redis/client-factory';
 import { readyGatedRedis } from '../redis/when-ready';
 import {
   CREATE_API_KEY_LUA_SCRIPT,
@@ -95,13 +96,16 @@ interface RedisEndpoint {
 
 /** The fail-fast client for the configured Redis, connecting now and waiting for the connection before each command. */
 function connectFromEnvironment(endpoint: RedisEndpoint): Redis | undefined {
-  const url = endpoint.url || process.env.REDIS_URL;
-  const host = endpoint.host || process.env.REDIS_HOST;
-  const port = endpoint.port || (process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379);
   const failFast = { enableOfflineQueue: false, maxRetriesPerRequest: 1 };
   try {
-    if (url) return readyGatedRedis(new Redis(url, failFast));
-    if (host) return readyGatedRedis(new Redis({ host, port, ...failFast }));
+    if (endpoint.url) return readyGatedRedis(new Redis(endpoint.url, failFast));
+    if (endpoint.host) {
+      const port = endpoint.port || (process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379);
+      return readyGatedRedis(new Redis({ host: endpoint.host, port, ...failFast }));
+    }
+    if (hasConfiguredRedis()) {
+      return readyGatedRedis(createConfiguredRedisClient(failFast));
+    }
   } catch {}
   return undefined;
 }

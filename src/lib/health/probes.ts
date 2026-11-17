@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import Redis from 'ioredis';
+import type Redis from 'ioredis';
+import { createConfiguredRedisClient, hasConfiguredRedis, resolveRedisMode } from '../redis/client-factory';
 import { resolveNativeBinary, type NativeBinaryName } from '../../worker/engines';
 import { resolveLocalStorageDir } from '../storage/storage-config';
 import { memoizeVerdict } from './verdict-memo';
@@ -83,7 +84,7 @@ const ADVISORY_BINARIES: ReadonlyArray<readonly [string, NativeBinaryName]> = [
 ];
 
 function isRedisConfigured(): boolean {
-  return Boolean(process.env.REDIS_URL || process.env.REDIS_HOST);
+  return hasConfiguredRedis();
 }
 
 let cachedRedisClient: { key: string; client: Redis } | null = null;
@@ -100,10 +101,18 @@ async function probeRedis(): Promise<ProbeResult> {
     disconnectCachedRedis();
     return { status: 'not_configured' };
   }
+  const mode = resolveRedisMode();
   const url = process.env.REDIS_URL;
   const host = process.env.REDIS_HOST;
   const port = process.env.REDIS_PORT ? Number.parseInt(process.env.REDIS_PORT, 10) : DEFAULT_REDIS_PORT;
-  const key = url ? `url:${url}` : `host:${host ?? ''}:${port}`;
+  const key =
+    mode === 'sentinel'
+      ? `sentinel:${process.env.REDIS_SENTINELS ?? ''}:${process.env.REDIS_SENTINEL_NAME ?? ''}`
+      : mode === 'cluster'
+      ? `cluster:${process.env.REDIS_CLUSTER_NODES ?? ''}`
+      : url
+      ? `url:${url}`
+      : `host:${host ?? ''}:${port}`;
 
   if (cachedRedisClient !== null && cachedRedisClient.key === key && cachedRedisClient.client.status === 'ready') {
     try {
@@ -127,11 +136,13 @@ async function probeRedis(): Promise<ProbeResult> {
     commandTimeout: HEALTH_PROBE_TIMEOUT_MS,
     retryStrategy: () => null,
   };
-  const client = url ? new Redis(url, options) : new Redis({ ...options, host, port });
+  const client = createConfiguredRedisClient(options);
   // A refused or reset connection is reported through the rejected command, not through an unhandled event.
   client.on('error', () => undefined);
   try {
-    await client.connect();
+    if (typeof (client as { connect?: unknown }).connect === 'function' && client.status === 'wait') {
+      await client.connect();
+    }
     if ((await client.ping()) !== REDIS_PONG) throw new HealthProbeFailure('unreachable');
     (client as unknown as { connector?: { stream?: { unref?: () => void } } }).connector?.stream?.unref?.();
     cachedRedisClient = { key, client };

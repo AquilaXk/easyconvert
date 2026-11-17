@@ -1,4 +1,5 @@
-import Redis from 'ioredis';
+import type Redis from 'ioredis';
+import { createConfiguredRedisClient, hasConfiguredRedis } from '../../redis/client-factory';
 import type { IGraphScheduler } from './scheduler-types';
 import { InMemoryGraphScheduler } from './in-memory-scheduler';
 import { RedisGraphScheduler } from './redis-scheduler';
@@ -8,12 +9,9 @@ export * from './in-memory-scheduler';
 export * from './redis-scheduler';
 export * from './lua-scripts';
 
-/** The client of the configured Redis, like the other stores: REDIS_URL, else REDIS_HOST with REDIS_PORT, else the local one. */
+/** The client of the configured Redis (Standalone, Sentinel, or Cluster). */
 function connectFromEnvironment(): Redis {
-  const failFast = { maxRetriesPerRequest: 1, lazyConnect: true };
-  const url = process.env.REDIS_URL;
-  if (url) return new Redis(url, failFast);
-  return new Redis({ host: process.env.REDIS_HOST || '127.0.0.1', port: Number(process.env.REDIS_PORT || 6379), ...failFast });
+  return createConfiguredRedisClient({ maxRetriesPerRequest: 1, lazyConnect: true });
 }
 
 export function createGraphScheduler(options?: {
@@ -23,7 +21,7 @@ export function createGraphScheduler(options?: {
 }): IGraphScheduler {
   const shouldUseDistributed =
     options?.distributed ??
-    Boolean(options?.redisClient || process.env.REDIS_URL || process.env.REDIS_HOST);
+    Boolean(options?.redisClient || hasConfiguredRedis());
 
   if (shouldUseDistributed) {
     return new RedisGraphScheduler({

@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
-import Redis from 'ioredis';
+import type Redis from 'ioredis';
+import { createConfiguredRedisClient, hasConfiguredRedis } from '../redis/client-factory';
 import { pipelineReplies } from '../redis/pipeline-replies';
 import { readyGatedRedis, whenReady } from '../redis/when-ready';
 import { MIN_PRODUCTION_SEALING_KEY_LENGTH, secretForms } from '../security/secret-forms';
@@ -274,10 +275,10 @@ export class CredentialsVault {
   constructor(redisClient?: Redis) {
     if (redisClient) {
       this.redisClient = redisClient;
-    } else if (process.env.REDIS_URL) {
+    } else if (hasConfiguredRedis()) {
       // Failures surface on the operation that needs Redis (as a CredentialsVaultPersistenceError).
       this.redisClient = readyGatedRedis(
-        new Redis(process.env.REDIS_URL, { maxRetriesPerRequest: 1, enableOfflineQueue: false })
+        createConfiguredRedisClient({ maxRetriesPerRequest: 1, enableOfflineQueue: false })
       );
     }
   }

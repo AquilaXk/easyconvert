@@ -1,3 +1,6 @@
+import crypto from 'node:crypto';
+import type Redis from 'ioredis';
+import { redisKeyStore } from '../api-keys/redis-key-store';
 import type { UploadedPart } from '../types';
 import { PART_IN_FLIGHT_STATUS } from '../part-in-flight';
 import type { MaybePromise } from './oci-storage';
@@ -46,7 +49,26 @@ const HTTP_PAYLOAD_TOO_LARGE = 413;
 /** A ledger with no part on the way that was not used for this long is dropped; its next part reads the store again. */
 const IDLE_LEDGER_MS = 60 * 60 * 1000;
 const LEDGER_SWEEP_INTERVAL_MS = 60 * 1000;
+const DISTRIBUTED_PART_LOCK_TTL_MS = 10 * 60 * 1000;
+const DISTRIBUTED_LEDGER_TTL_SECONDS = 86_400;
 const PART_IN_FLIGHT_DETAIL = 'This part is still being received from an earlier request. Send it again once that request ends.';
+
+const RELEASE_INFLIGHT_PART_LUA = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+`;
+
+function uploadSessionDigest(uploadId: string): string {
+  return crypto.createHash('sha256').update(uploadId).digest('hex').slice(0, 32);
+}
+
+function resolveDistributedRedis(storage: PartStore, override?: Redis | null): Redis | null {
+  if (override !== undefined) return override;
+  if ((storage as { kind?: string }).kind !== 'remote') return null;
+  return redisKeyStore.getRedisClient();
+}
 
 const ledgers = new Map<string, SessionLedger>();
 let nextSweepAt = 0;
@@ -143,32 +165,83 @@ export interface PartRequest {
   /** The size the session declared when it opened. */
   totalSize: number;
   maxPartBytes: number;
+  /** Optional distributed Redis client override for multi-replica admission tests. */
+  redisClient?: Redis | null;
 }
 
 /**
  * Writes one part of a session through `storage`, admitted against the size the session declared together with every
  * part of it on the way. Throws PartRefusedError for a part the session has no room for (413) and a repeat of a part on the
- * way (503).
+ * way (503), coordinating across Web replicas via Redis when backed by remote object storage.
  */
 export async function receivePart(storage: PartStore, request: PartRequest, body: ReadableStream<Uint8Array>): Promise<UploadedPart> {
   const { uploadId, partNumber, declaredBytes, totalSize, maxPartBytes } = request;
   const ledger = ledgerOf(storage, uploadId);
   await ledger.loaded;
+
+  const redis = resolveDistributedRedis(storage, request.redisClient);
+  const digest = redis ? uploadSessionDigest(uploadId) : '';
+  const prefix = redis ? redisKeyStore.getPrefix() : '';
+  const inflightKey = redis ? `${prefix}mp:inflight:${digest}:${partNumber}` : '';
+  const sharedLedgerKey = redis ? `${prefix}mp:ledger:${digest}` : '';
+  let lockToken: string | null = null;
+
+  if (redis && typeof (redis as { hgetall?: unknown }).hgetall === 'function') {
+    const sharedSizes = await redis.hgetall(sharedLedgerKey);
+    for (const [partStr, bytesStr] of Object.entries(sharedSizes)) {
+      const pn = Number(partStr);
+      const sz = Number(bytesStr);
+      if (Number.isInteger(pn) && pn > 0 && Number.isFinite(sz) && sz >= 0) {
+        ledger.stored.set(pn, Math.max(ledger.stored.get(pn) ?? 0, sz));
+      }
+    }
+  }
+
   const admission = admit(ledger, partNumber, declaredBytes, totalSize, maxPartBytes);
   if (admission instanceof PartRefusedError) throw admission;
+
+  if (redis && typeof (redis as { set?: unknown }).set === 'function') {
+    lockToken = crypto.randomBytes(16).toString('hex');
+    const locked = await redis.set(inflightKey, lockToken, 'PX', DISTRIBUTED_PART_LOCK_TTL_MS, 'NX');
+    if (locked !== 'OK') {
+      throw new PartRefusedError(PART_IN_FLIGHT_STATUS, PART_IN_FLIGHT_DETAIL);
+    }
+    if (typeof (redis as { hset?: unknown }).hset === 'function') {
+      await redis.hset(sharedLedgerKey, String(partNumber), String(admission.maxBytes));
+      await redis.expire?.(sharedLedgerKey, DISTRIBUTED_LEDGER_TTL_SECONDS);
+    }
+  }
+
   ledger.onTheWay.set(partNumber, admission.maxBytes);
+  let committedSize: number | undefined;
   try {
     const part = await storage.uploadPartStream(uploadId, partNumber, body, admission.maxBytes, totalSize, admission.otherStoredBytes);
     ledger.stored.set(partNumber, part.size);
+    committedSize = part.size;
     return part;
   } finally {
     ledger.onTheWay.delete(partNumber);
     ledger.usedAt = Date.now();
     sweepIdleLedgers(ledger.usedAt);
+    if (redis) {
+      if (committedSize !== undefined && typeof (redis as { hset?: unknown }).hset === 'function') {
+        await redis.hset(sharedLedgerKey, String(partNumber), String(committedSize)).catch(() => undefined);
+      } else if (committedSize === undefined && typeof (redis as { hdel?: unknown }).hdel === 'function') {
+        await redis.hdel(sharedLedgerKey, String(partNumber)).catch(() => undefined);
+      }
+      if (lockToken && typeof (redis as { eval?: unknown }).eval === 'function') {
+        await redis.eval(RELEASE_INFLIGHT_PART_LUA, 1, inflightKey, lockToken).catch(() => undefined);
+      }
+    }
   }
 }
 
 /** Drops the ledger of a session that was completed or aborted. */
 export function forgetUploadParts(uploadId: string): void {
   ledgers.delete(uploadId);
+  const redis = redisKeyStore.getRedisClient();
+  if (redis && typeof (redis as { del?: unknown }).del === 'function') {
+    const sharedLedgerKey = `${redisKeyStore.getPrefix()}mp:ledger:${uploadSessionDigest(uploadId)}`;
+    void redis.del(sharedLedgerKey).catch(() => undefined);
+  }
 }

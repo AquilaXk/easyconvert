@@ -3,6 +3,7 @@ import path from 'node:path';
 import { StorageNotFoundError } from './adapters/adapter-interface';
 import { classifyStorageKey, isUploadKey } from './key-namespace';
 import type { IStorageBackend } from './oci-storage';
+import { withRedisLeaderLock } from '../redis/leader-lock';
 import { getRetentionLedger } from './retention-ledger';
 import {
   capacityEvictionOrder,
@@ -661,15 +662,35 @@ export function admitsNewFiles(storage: SweptStorage): Promise<boolean> {
 let sweepTimer: NodeJS.Timeout | undefined;
 let sweepInFlight: Promise<void> | undefined;
 
-/** One sweep: the results whose time has passed, then early deletions while the disk is too full. Warns once when it runs long. */
+const RETENTION_SWEEP_LOCK_TTL_MS = 55_000;
+const RETENTION_SWEEP_HOLD_MS = 45_000;
+
+/** One sweep: the results whose time has passed (leader-elected when remote storage is shared), then early deletions while the host's disk is too full. */
 function runSweep(storage: SweptStorage): Promise<void> {
   const slow = setTimeout(() => {
     console.warn(`[Retention] The sweep has run for ${SLOW_SWEEP_WARNING_MS} ms; the next one starts when it ends`);
   }, SLOW_SWEEP_WARNING_MS);
   slow.unref();
   return (async () => {
-    await sweepRetention(storage);
-    await evictForCapacityOnce(storage);
+    if (storage.kind === 'remote') {
+      await withRedisLeaderLock(
+        'retention-remote',
+        RETENTION_SWEEP_LOCK_TTL_MS,
+        RETENTION_SWEEP_HOLD_MS,
+        async () => {
+          await sweepRetention(storage);
+          await evictForCapacityOnce(storage);
+        }
+      );
+    } else {
+      await withRedisLeaderLock(
+        'retention-expiry',
+        RETENTION_SWEEP_LOCK_TTL_MS,
+        RETENTION_SWEEP_HOLD_MS,
+        () => sweepRetention(storage)
+      );
+      await evictForCapacityOnce(storage);
+    }
   })().finally(() => clearTimeout(slow));
 }
 

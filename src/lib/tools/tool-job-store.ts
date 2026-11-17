@@ -21,6 +21,7 @@ const TOOL_JOB_TTL_MS = TOOL_JOB_TTL_SECONDS * 1000;
 const MAX_LOCAL_TOOL_JOBS = 1000;
 
 const GLOBAL_STORE_SYMBOL = Symbol.for('easyconvert.toolJobStore');
+const GLOBAL_ABORT_SYMBOL = Symbol.for('easyconvert.toolJobAbortControllers');
 
 function localStore(): Map<string, ToolJobState> {
   const g = globalThis as unknown as Record<symbol, Map<string, ToolJobState> | undefined>;
@@ -28,6 +29,32 @@ function localStore(): Map<string, ToolJobState> {
     g[GLOBAL_STORE_SYMBOL] = new Map<string, ToolJobState>();
   }
   return g[GLOBAL_STORE_SYMBOL];
+}
+
+function localAbortMap(): Map<string, AbortController> {
+  const g = globalThis as unknown as Record<symbol, Map<string, AbortController> | undefined>;
+  if (!g[GLOBAL_ABORT_SYMBOL]) {
+    g[GLOBAL_ABORT_SYMBOL] = new Map<string, AbortController>();
+  }
+  return g[GLOBAL_ABORT_SYMBOL];
+}
+
+export function registerLocalToolAbort(jobId: string): AbortController {
+  const controller = new AbortController();
+  localAbortMap().set(jobId, controller);
+  return controller;
+}
+
+export function abortLocalToolJob(jobId: string, reason = 'Tool job cancelled'): boolean {
+  const controller = localAbortMap().get(jobId);
+  if (!controller) return false;
+  controller.abort(new Error(reason));
+  localAbortMap().delete(jobId);
+  return true;
+}
+
+export function unregisterLocalToolAbort(jobId: string): void {
+  localAbortMap().delete(jobId);
 }
 
 function sweepLocalStore(store: Map<string, ToolJobState>, now: number): void {
@@ -76,6 +103,7 @@ export async function getToolJob(jobId: string): Promise<ToolJobState | null> {
 }
 
 export async function cancelToolJob(jobId: string): Promise<ToolJobState | null> {
+  abortLocalToolJob(jobId);
   const existing = await getToolJob(jobId);
   if (!existing) return null;
   if (existing.status === 'completed' || existing.status === 'failed') {

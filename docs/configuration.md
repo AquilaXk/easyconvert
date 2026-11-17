@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 177 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 185 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -233,11 +233,27 @@ Generate a secret with `openssl rand -hex 32`.
 | `REDIS_URL` | URL with the scheme `redis` or `rediss`; secret, never logged | none | no | web, worker |
 | `REDIS_HOST` | text | none | no | web, worker |
 | `REDIS_PORT` | integer, 1 to 65535 | `6379` | no | web, worker |
+| `REDIS_MODE` | one of `standalone`, `sentinel`, `cluster` | `standalone` | no | web, worker |
+| `REDIS_SENTINELS` | text | none | no | web, worker |
+| `REDIS_SENTINEL_NAME` | text | none | no | web, worker |
+| `REDIS_SENTINEL_PASSWORD` | secret text; secret, never logged | none | no | web, worker |
+| `REDIS_CLUSTER_NODES` | text | none | no | web, worker |
+| `REDIS_PASSWORD` | secret text; secret, never logged | none | no | web, worker |
+| `REDIS_TLS` | `true` or `false` | `false` | no | web, worker |
+| `WEB_EXECUTION_MODE` | one of `hybrid`, `queue-only` | `hybrid` | no | web |
 | `EASYCONVERT_WORKER_ENABLED` | `true` or `false` | `false` | no | web |
 
 - `REDIS_URL`: Redis connection URL (`redis://` or `rediss://`, may carry a password). With neither REDIS_URL nor REDIS_HOST set, the queue and stores run in memory (development only).
 - `REDIS_HOST`: Redis host, used when REDIS_URL is not set.
 - `REDIS_PORT`: Redis port, used with REDIS_HOST.
+- `REDIS_MODE`: Redis topology mode (`standalone`, `sentinel`, or `cluster`).
+- `REDIS_SENTINELS`: Comma-separated `host:port` list of Redis Sentinel endpoints, required when `REDIS_MODE` is `sentinel`.
+- `REDIS_SENTINEL_NAME`: Redis Sentinel master group name (for example `mymaster`), required when `REDIS_MODE` is `sentinel`.
+- `REDIS_SENTINEL_PASSWORD`: Password used to authenticate with Redis Sentinel nodes when Sentinel ACLs require one.
+- `REDIS_CLUSTER_NODES`: Comma-separated `host:port` list of Redis Cluster seed nodes, required when `REDIS_MODE` is `cluster`.
+- `REDIS_PASSWORD`: Redis server password used when connecting via `REDIS_HOST`, `REDIS_SENTINELS`, or `REDIS_CLUSTER_NODES`.
+- `REDIS_TLS`: Enable TLS when connecting to Redis via `REDIS_HOST`, `REDIS_SENTINELS`, or `REDIS_CLUSTER_NODES`.
+- `WEB_EXECUTION_MODE`: How the web server runs conversion and tool requests: `hybrid` runs short synchronous requests in-process and queues async `/api/tools/jobs` whenever a live worker is present; `queue-only` dispatches every conversion and tool request to the Redis worker fleet with zero in-process engine execution.
 - `EASYCONVERT_WORKER_ENABLED`: Set to `true` to run the queue worker inside the web process (single-node use).
 
 ### Worker

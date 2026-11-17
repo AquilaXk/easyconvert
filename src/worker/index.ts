@@ -21,6 +21,7 @@ import { storageProvider as ociStorage } from '../lib/storage';
 import { startBillingReconcile, stopBillingReconcile } from '../lib/billing/reconcile';
 import { startRetentionSweep } from '../lib/storage/retention-service';
 import { processNodeJob, nativeEngine } from '../lib/queue/node-processor';
+import { registerLiveWorkerHeartbeat, unregisterLiveWorkerHeartbeat } from '../lib/queue/worker-presence';
 import { killProcessGroup } from '../lib/security/process-sandbox';
 import { libreOfficePool, probeNativeEngines } from './engines';
 import { startWorkerSandboxSweep, stopWorkerSandboxSweep } from './sandbox-sweep';
@@ -130,9 +131,11 @@ export function startHeartbeat(
     clearInterval(heartbeatTimer);
   }
   writeHeartbeatSync('healthy', filePath);
+  void registerLiveWorkerHeartbeat();
   heartbeatTimer = setInterval(() => {
     if (!isDraining) {
       writeHeartbeatSync('healthy', filePath);
+      void registerLiveWorkerHeartbeat();
     }
   }, intervalMs);
   if (typeof heartbeatTimer.unref === 'function') {
@@ -149,6 +152,7 @@ export function stopHeartbeat(filePath?: string): void {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;
   }
+  void unregisterLiveWorkerHeartbeat();
   const targetPath = filePath || getWorkerLifecycleConfig().heartbeatFilePath;
   try {
     if (fs.existsSync(targetPath)) {
@@ -323,6 +327,7 @@ export async function drainWorker(
     `[EasyConvert OCI Worker] Received ${signal}. Draining active jobs (active: ${activeJobs.size}, timeout: ${timeoutMs}ms)...`
   );
   writeHeartbeatSync('draining');
+  void unregisterLiveWorkerHeartbeat();
 
   // Stop polling for new jobs immediately while preserving lifecycle listeners
   ociWorker.pause();

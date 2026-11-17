@@ -122,10 +122,14 @@ export function sealJobDataSecrets(data: ConversionJobData, jobId: string): Conv
 
 function sealJobDataSecretsUnchecked(data: ConversionJobData, jobId: string): ConversionJobData {
   const tasks = data.tasks?.map((task) => ({ ...task, options: sealPasswordOption(task.options, jobId) }));
+  const toolJob = data.toolJob
+    ? { ...data.toolJob, options: sealPasswordOption(data.toolJob.options, jobId) }
+    : undefined;
   return {
     ...data,
     options: sealPasswordOption(data.options, jobId),
     ...(tasks === undefined ? {} : { tasks }),
+    ...(toolJob === undefined ? {} : { toolJob }),
     ...(data.webhookSecret ? { webhookSecret: sealWebhookSecret(data.webhookSecret, jobId) } : {}),
   };
 }

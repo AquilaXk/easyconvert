@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
+import { createConfiguredRedisClient, hasConfiguredRedis } from '../redis/client-factory';
 import { redactForOutput, redactText } from '../security/redact';
 import { maskFailure, maskServerText } from '../security/server-paths';
 import { refusalCodeOf, type ConversionRefusalCode } from '../refusal-codes';
@@ -1207,17 +1208,30 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         this.initPubSub();
       }
     } else {
-      const host = connectionOpts?.host || process.env.REDIS_HOST;
-      const url = connectionOpts?.url || process.env.REDIS_URL;
       const port =
         connectionOpts?.port || (process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379);
+      const baseOpts = {
+        lazyConnect: true,
+        enableOfflineQueue: false,
+        maxRetriesPerRequest: 1,
+      };
 
-      if (url) {
+      if (connectionOpts?.url) {
         try {
-          this.redisClient = new Redis(url, {
-            lazyConnect: true,
-            enableOfflineQueue: false,
-            maxRetriesPerRequest: 1,
+          this.redisClient = new Redis(connectionOpts.url, baseOpts);
+          this.setupConnectionTracking(this.redisClient);
+          this.redisClient.connect().catch(() => {
+            this.redisConnected = false;
+          });
+        } catch {
+          this.redisConnected = false;
+        }
+      } else if (connectionOpts?.host) {
+        try {
+          this.redisClient = new Redis({
+            host: connectionOpts.host,
+            port,
+            ...baseOpts,
           });
           this.setupConnectionTracking(this.redisClient);
           this.redisClient.connect().catch(() => {
@@ -1226,19 +1240,15 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         } catch {
           this.redisConnected = false;
         }
-      } else if (host) {
+      } else if (hasConfiguredRedis()) {
         try {
-          this.redisClient = new Redis({
-            host,
-            port,
-            lazyConnect: true,
-            enableOfflineQueue: false,
-            maxRetriesPerRequest: 1,
-          });
+          this.redisClient = createConfiguredRedisClient(baseOpts);
           this.setupConnectionTracking(this.redisClient);
-          this.redisClient.connect().catch(() => {
-            this.redisConnected = false;
-          });
+          if (typeof (this.redisClient as { connect?: unknown }).connect === 'function') {
+            this.redisClient.connect().catch(() => {
+              this.redisConnected = false;
+            });
+          }
         } catch {
           this.redisConnected = false;
         }
@@ -2233,7 +2243,7 @@ export function createQueueEngine<T = any, R = any>(
 ): IQueueEngine<T, R> {
   const shouldUseDistributed =
     options?.distributed ??
-    Boolean(process.env.REDIS_URL || process.env.REDIS_HOST || options?.redis?.redisClient);
+    Boolean(hasConfiguredRedis() || options?.redis?.url || options?.redis?.host || options?.redis?.redisClient);
 
   if (shouldUseDistributed) {
     return new DistributedBullMQAdapter<T, R>(name, options?.redis);

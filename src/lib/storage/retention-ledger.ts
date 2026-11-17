@@ -5,6 +5,7 @@ import Redis from 'ioredis';
 import { mapWithConcurrency } from '../conversions/ocr-page-batch';
 import { compareAndSetWithRetry } from '../redis/compare-and-set';
 import { pipelineReplies } from '../redis/pipeline-replies';
+import { createConfiguredRedisClient, hasConfiguredRedis } from '../redis/client-factory';
 import { readyGatedRedis } from '../redis/when-ready';
 import { GONE_RECORD_MS, isSweepDue, sweepAt, type RetentionRecord } from './result-retention';
 import { resolveLocalStorageDir } from './storage-config';
@@ -461,13 +462,11 @@ let activeLedger: RetentionLedger | undefined;
 
 function createRedis(): Redis {
   const options = { maxRetriesPerRequest: 2, enableOfflineQueue: false, commandTimeout: REDIS_COMMAND_TIMEOUT_MS };
-  const url = process.env.REDIS_URL;
-  if (url) return readyGatedRedis(new Redis(url, options));
-  return readyGatedRedis(new Redis({ ...options, host: process.env.REDIS_HOST, port: Number(process.env.REDIS_PORT || 6379) }));
+  return readyGatedRedis(createConfiguredRedisClient(options));
 }
 
 export function getRetentionLedger(): RetentionLedger {
-  activeLedger ??= process.env.REDIS_URL || process.env.REDIS_HOST ? new RedisRetentionLedger(createRedis()) : new FileRetentionLedger();
+  activeLedger ??= hasConfiguredRedis() ? new RedisRetentionLedger(createRedis()) : new FileRetentionLedger();
   return activeLedger;
 }
 

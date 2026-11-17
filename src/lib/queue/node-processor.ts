@@ -25,6 +25,7 @@ import { engineTraceFields } from '../api/engine-trace';
 import { conversionWarningsFields } from '../api/conversion-warnings';
 import { droppedStreamsFields } from '../api/dropped-streams';
 import { assertConversionOptionsObject } from '../conversions/options-guard';
+import { processQueuedToolJob } from '../tools/queued-tool-runner';
 import { openPasswordOption } from './option-secrets';
 
 export type { ConversionEnginePort, EngineResult, VfsPayload };
@@ -182,6 +183,9 @@ export async function processNodeJob(
   // If this job is part of an orchestrated DAG JobGraph, route directly to the graph node executor
   if (job.data?.graphId && job.data?.graphNodeId && job.data?.graphNode) {
     return processGraphNodeJobIfAlive(job, baseEngine, rootStorage);
+  }
+  if (job.data?.toolJob) {
+    return processQueuedToolJob(job, rootStorage);
   }
   // Every conversion of the job runs under the job's deadline.
   const engine = deadlineBoundEngine(baseEngine, job);

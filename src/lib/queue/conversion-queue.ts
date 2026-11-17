@@ -17,6 +17,8 @@ import { resolveResourceClass } from './resource-class';
 import { endedJobRetentionMs, legacyJobTimeoutMs } from './enqueue';
 import { graphScheduler } from './graph/scheduler';
 import { recordJobCompleted, recordJobFailed } from '../metrics/recorders';
+import { withRedisLeaderLock } from '../redis/leader-lock';
+import { registerLiveWorkerHeartbeat, unregisterLiveWorkerHeartbeat } from './worker-presence';
 
 // 1. Initialize Conversion Queue (Pluggable In-Memory or Distributed Redis/BullMQ Engine)
 export const conversionQueue: IQueueEngine<ConversionJobData, ConversionJobResult> =
@@ -92,12 +94,13 @@ export function attachJobLifecycleListeners(
       if (job.data?.reservationId) {
         try {
           // The reservation holds the credits of the pair's class; the minutes the conversion ran beyond the first are charged on top.
+          const isToolJob = Boolean(job.data.toolJob);
           await redisKeyStore.commitQuota(
             job.data.reservationId,
             chargeOptionsOf({
-              from: job.data.sourceFormat,
-              to: job.data.targetFormat,
-              base: baseCredits(job.data.sourceFormat, job.data.targetFormat),
+              from: isToolJob ? job.data.toolJob!.tool : job.data.sourceFormat,
+              to: isToolJob ? undefined : job.data.targetFormat,
+              base: isToolJob ? 1 : baseCredits(job.data.sourceFormat, job.data.targetFormat),
               processingMs: result.durationMs,
             })
           );
@@ -251,6 +254,13 @@ export function attachJobCancellationListeners(
       await releaseResultHold(job.data.storageKey, job.id);
     }
     await reportGraphNodeEnded(job, job.failedReason || 'The job was cancelled.');
+    if (job.data?.toolJob) {
+      const { cleanupQueuedToolUploads } = await import('../tools/queued-tool-runner');
+      await cleanupQueuedToolUploads(
+        storageProvider,
+        job.data.toolJob.cleanupUploadKeys ?? job.data.toolJob.storedRefs.map((ref) => ref.key)
+      ).catch(() => undefined);
+    }
     if (!job.data?.reservationId) {
       return;
     }
@@ -533,13 +543,20 @@ export async function sweepEndedRecords(): Promise<void> {
   await webhookDispatcher.purgeExpiredDlqEntries();
 }
 
+const ENDED_RECORD_SWEEP_LOCK_TTL_MS = 4 * 60 * 1000;
+const ENDED_RECORD_SWEEP_HOLD_MS = 4 * 60 * 1000;
 let endedRecordSweepTimer: NodeJS.Timeout | null = null;
 
-/** Runs `sweepEndedRecords` now and every ENDED_RECORD_SWEEP_INTERVAL_MS; a failed run is logged and the next one tries again. */
+/** Runs `sweepEndedRecords` now and every ENDED_RECORD_SWEEP_INTERVAL_MS under a distributed leader lock; a failed run is logged and the next one tries again. */
 export function startEndedRecordSweep(): void {
   if (endedRecordSweepTimer) return;
   const run = () => {
-    sweepEndedRecords().catch((err: unknown) => console.error('[ConversionQueue] The sweep of ended jobs failed:', err));
+    withRedisLeaderLock(
+      'ended-records',
+      ENDED_RECORD_SWEEP_LOCK_TTL_MS,
+      ENDED_RECORD_SWEEP_HOLD_MS,
+      () => sweepEndedRecords()
+    ).catch((err: unknown) => console.error('[ConversionQueue] The sweep of ended jobs failed:', err));
   };
   run();
   endedRecordSweepTimer = setInterval(run, ENDED_RECORD_SWEEP_INTERVAL_MS);
@@ -582,6 +599,9 @@ export interface StartConversionWorkerOptions extends WorkerOptions {
   queues?: IQueueEngine<ConversionJobData, ConversionJobResult>[];
 }
 
+const INPROC_WORKER_ID = `inproc:${process.pid}`;
+let inprocHeartbeatTimer: NodeJS.Timeout | null = null;
+
 export function startConversionWorker(
   opts: StartConversionWorkerOptions = {}
 ): Worker<ConversionJobData, ConversionJobResult> {
@@ -604,12 +624,22 @@ export function startConversionWorker(
   attachJobLifecycleListeners(worker);
   attachInputCleanupOnCompletion(worker);
   startEndedRecordSweep();
+  void registerLiveWorkerHeartbeat(INPROC_WORKER_ID);
+  inprocHeartbeatTimer = setInterval(() => {
+    void registerLiveWorkerHeartbeat(INPROC_WORKER_ID);
+  }, 5_000);
+  inprocHeartbeatTimer.unref?.();
   workerInstance = worker;
   return worker;
 }
 
 export async function stopConversionWorker(): Promise<void> {
   stopEndedRecordSweep();
+  if (inprocHeartbeatTimer) {
+    clearInterval(inprocHeartbeatTimer);
+    inprocHeartbeatTimer = null;
+  }
+  await unregisterLiveWorkerHeartbeat(INPROC_WORKER_ID);
   if (workerInstance) {
     await workerInstance.close();
     workerInstance = null;

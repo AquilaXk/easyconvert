@@ -4,6 +4,7 @@ import { isAnonymousUserId } from '@/lib/auth/anonymous-identity';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { eraseOwnedFile } from '@/lib/storage/retention-service';
+import { cancelJobAcrossQueues, conversionQueue } from '@/lib/queue/conversion-queue';
 import { cancelToolJob, deleteToolJob, getToolJob, type StoredToolJobResult, type ToolJobState } from '@/lib/tools/tool-job-store';
 
 export const dynamic = 'force-dynamic';
@@ -81,9 +82,11 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
   if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
     await Promise.all(resultKeysOf(job.result).map((key) => eraseOwnedFile(s3Storage, key).catch(() => undefined)));
     await deleteToolJob(jobId);
+    await conversionQueue.remove(jobId).catch(() => undefined);
     return NextResponse.json({ success: true, message: 'Job deleted.' });
   }
 
   await cancelToolJob(jobId);
+  await cancelJobAcrossQueues(jobId, 'Cancelled via DELETE /api/tools/jobs/[id]').catch(() => undefined);
   return NextResponse.json({ success: true, message: 'Job cancelled.' });
 }

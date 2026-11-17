@@ -17,7 +17,7 @@ import { conversionDeadlineMs, syncDeadlineMs } from '@/lib/queue/job-deadline';
 import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
 import { bindJobLimits } from '@/lib/conversions/job-time';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
-import { dispatchConversion } from '@/lib/conversions/dispatch';
+import { dispatchSyncRouteConversion } from '@/lib/queue/wait-for-job';
 import { frameMetadataFields, frameMetadataHeaders } from '@/lib/api/frame-headers';
 import { engineTraceFields, engineTraceHeaders } from '@/lib/api/engine-trace';
 import { conversionWarningsFields, conversionWarningsHeaders } from '@/lib/api/conversion-warnings';
@@ -461,13 +461,15 @@ async function convertReserved(c: ReservedConversion, unit: ReservedUnit): Promi
   );
   const conversionStartedAt = Date.now();
   const conversionResult = await runUnderDeadline(req, deadlineMs, (limits) =>
-    dispatchConversion(
+    dispatchSyncRouteConversion({
       inputBuffer,
-      sourceDef.id,
-      targetDef.id,
-      bindJobLimits(options, limits),
-      file.name
-    )
+      sourceFormat: sourceDef.id,
+      targetFormat: targetDef.id,
+      options: bindJobLimits(options, limits),
+      originalFilename: file.name,
+      userId: user.id,
+      tier: user.tier,
+    })
   );
 
   const durationMs = Date.now() - startTime;
@@ -513,7 +515,7 @@ async function convertReserved(c: ReservedConversion, unit: ReservedUnit): Promi
 }
 
 interface ConversionAnswer {
-  conversionResult: Awaited<ReturnType<typeof dispatchConversion>>;
+  conversionResult: Awaited<ReturnType<typeof dispatchSyncRouteConversion>>;
   outFileName: string;
   durationMs: number;
   fileId: string;

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { createZipArchive } from '@/lib/conversions';
-import { canConvertPair, dispatchConversion } from '@/lib/conversions/dispatch';
+import { canConvertPair } from '@/lib/conversions/dispatch';
+import { dispatchSyncRouteConversion } from '@/lib/queue/wait-for-job';
 import { conversionDeadlineMs, syncDeadlineMs, tierMaxDeadlineMs } from '@/lib/queue/job-deadline';
 import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
 import { bindJobLimits } from '@/lib/conversions/job-time';
@@ -348,13 +349,15 @@ async function convertPlanned(ctx: ConvertPlannedContext): Promise<NextResponse>
           assertNotSpoofedFile(inputBuffer, extension, file.name);
 
           const startedAt = Date.now();
-          const result = await dispatchConversion(
+          const result = await dispatchSyncRouteConversion({
             inputBuffer,
-            extension,
+            sourceFormat: extension,
             targetFormat,
-            bindJobLimits(defaultOptions, limits),
-            file.name
-          );
+            options: bindJobLimits(defaultOptions, limits),
+            originalFilename: file.name,
+            userId: caller.id,
+            tier: caller.tier,
+          });
           results[idx] = {
             status: 'success',
             filename: result.filename,

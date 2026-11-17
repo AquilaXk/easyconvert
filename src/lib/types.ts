@@ -401,6 +401,13 @@ import type { TaskNode, JobGraph, TaskDependency, GraphFailurePolicy } from './j
 import type { GraphNode, NodeId } from './queue/graph/types';
 export type { TaskNode, JobGraph, TaskDependency, GraphFailurePolicy, GraphNode, NodeId };
 
+export interface QueuedToolJobPayload {
+  tool: string;
+  options: Record<string, unknown>;
+  storedRefs: Array<{ key: string; name: string }>;
+  cleanupUploadKeys?: string[];
+}
+
 export interface ConversionJobData {
   jobId: string;
   originalFilename: string;
@@ -422,6 +429,9 @@ export interface ConversionJobData {
   graphNode?: GraphNode | TaskNode;
   inputArtifacts?: string[];
   resourceClass?: ResourceClass;
+  toolJob?: QueuedToolJobPayload;
+  /** True when a stateless `queue-only` Web route waits synchronously for this job's output and handles quota/history itself. */
+  transientSyncWait?: boolean;
 }
 
 export interface ConversionJobResult {
@@ -450,6 +460,8 @@ export interface ConversionJobResult {
   warnings?: string[];
   /** One entry per artifact an optimize node handled: whether its optimiser made it smaller, and both sizes. */
   optimizations?: Array<{ key: string; optimized: boolean; inputBytes: number; outputBytes: number }>;
+  /** Stored tool output metadata for queued `/api/tools/jobs` and `queue-only` `/api/tools/*` runs. */
+  toolResult?: unknown;
 }
 
 export class ConversionFailedError extends Error {

@@ -141,6 +141,76 @@ function billingFailures(isSet: ReadonlySet<string>, values: ReadonlyMap<string,
   return missing.map((variable) => ({ variable, rule: `is required when any other PADDLE_ variable is set: packages and subscriptions need all ${BILLING_VARIABLES.length}` }));
 }
 
+const HOST_PORT_TOKEN = /^(?:\[[0-9a-fA-F:]+\]|[A-Za-z0-9.-]+):(\d{1,5})$/;
+
+function isValidHostPortList(raw: unknown): boolean {
+  if (typeof raw !== 'string') return false;
+  const entries = raw.split(',').map((item) => item.trim()).filter(Boolean);
+  if (entries.length === 0 || entries.length > 64) return false;
+  for (const entry of entries) {
+    const match = HOST_PORT_TOKEN.exec(entry);
+    if (!match) return false;
+    const port = Number(match[1]);
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) return false;
+  }
+  return true;
+}
+
+/** Validates Redis Sentinel/Cluster topology consistency and queue-only Web requirements fail-closed. */
+function redisAndExecutionModeFailures(
+  isSet: ReadonlySet<string>,
+  values: ReadonlyMap<string, ParsedValue>,
+  production: boolean,
+  role: ProcessRole | undefined
+): ConfigFailure[] {
+  const failures: ConfigFailure[] = [];
+  const mode = values.get('REDIS_MODE') ?? 'standalone';
+
+  if (mode === 'sentinel') {
+    if (!isSet.has('REDIS_SENTINELS')) {
+      failures.push({ variable: 'REDIS_SENTINELS', rule: 'is required when REDIS_MODE is sentinel' });
+    } else if (!isValidHostPortList(values.get('REDIS_SENTINELS'))) {
+      failures.push({ variable: 'REDIS_SENTINELS', rule: 'must be a comma-separated list of host:port endpoints' });
+    }
+    if (!isSet.has('REDIS_SENTINEL_NAME')) {
+      failures.push({ variable: 'REDIS_SENTINEL_NAME', rule: 'is required when REDIS_MODE is sentinel' });
+    }
+    if (isSet.has('REDIS_CLUSTER_NODES')) {
+      failures.push({ variable: 'REDIS_CLUSTER_NODES', rule: 'must not be set when REDIS_MODE is sentinel' });
+    }
+  } else if (mode === 'cluster') {
+    if (!isSet.has('REDIS_CLUSTER_NODES')) {
+      failures.push({ variable: 'REDIS_CLUSTER_NODES', rule: 'is required when REDIS_MODE is cluster' });
+    } else if (!isValidHostPortList(values.get('REDIS_CLUSTER_NODES'))) {
+      failures.push({ variable: 'REDIS_CLUSTER_NODES', rule: 'must be a comma-separated list of host:port endpoints' });
+    }
+    for (const sentinelVar of ['REDIS_SENTINELS', 'REDIS_SENTINEL_NAME', 'REDIS_SENTINEL_PASSWORD'] as const) {
+      if (isSet.has(sentinelVar)) {
+        failures.push({ variable: sentinelVar, rule: 'must not be set when REDIS_MODE is cluster' });
+      }
+    }
+  } else {
+    for (const nonStandalone of ['REDIS_SENTINELS', 'REDIS_SENTINEL_NAME', 'REDIS_SENTINEL_PASSWORD', 'REDIS_CLUSTER_NODES'] as const) {
+      if (isSet.has(nonStandalone)) {
+        failures.push({ variable: nonStandalone, rule: 'requires REDIS_MODE to be sentinel or cluster' });
+      }
+    }
+  }
+
+  const hasRedis =
+    isSet.has('REDIS_URL') ||
+    isSet.has('REDIS_HOST') ||
+    mode === 'sentinel' ||
+    mode === 'cluster';
+  if (production && role !== 'worker' && values.get('WEB_EXECUTION_MODE') === 'queue-only' && !hasRedis) {
+    failures.push({
+      variable: 'WEB_EXECUTION_MODE',
+      rule: 'queue-only requires Redis configuration (REDIS_URL, REDIS_HOST, Sentinel, or Cluster) in production',
+    });
+  }
+  return failures;
+}
+
 /** Validates `env` against the schema without caching. Throws ConfigurationError listing every failing variable. */
 export function parseConfig(env: Env, options: LoadConfigOptions = {}): Config {
   const production = env.NODE_ENV === PRODUCTION && env.NEXT_PHASE !== PRODUCTION_BUILD_PHASE;
@@ -205,6 +275,7 @@ export function parseConfig(env: Env, options: LoadConfigOptions = {}): Config {
 
   failures.push(...strictSandboxFailures(values));
   failures.push(...billingFailures(isSet, values));
+  failures.push(...redisAndExecutionModeFailures(isSet, values, production, options.role));
 
   if (failures.length > 0) throw new ConfigurationError(failures);
   return Object.freeze(Object.fromEntries(values)) as Config;

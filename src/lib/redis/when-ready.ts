@@ -82,6 +82,9 @@ export function whenReady(client: Redis): Promise<void> {
  * waiting for `whenReady` first. Redis that is really down still fails fast: one wait, then immediate failures.
  */
 export function readyGatedRedis(client: Redis): Redis {
+  if (typeof (client as { on?: unknown }).on !== 'function') {
+    return client;
+  }
   client.on('error', connectionErrorLogger());
   // A client that is ready again ends the hold of an earlier wait that ran out, so a later short drop is waited for.
   client.on('ready', () => {

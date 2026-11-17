@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
+import { createConfiguredRedisClient, hasConfiguredRedis } from '../redis/client-factory';
 import { readyGatedRedis } from '../redis/when-ready';
 import { clearKeysMatching } from '../redis/clear-keys';
 
@@ -358,15 +359,13 @@ export class RedisIdempotencyStore implements IdempotencyStore {
     this.clock = options?.clock || (() => Date.now());
     if (options?.redisClient) {
       this.redis = options.redisClient;
+    } else if (options?.redisUrl) {
+      this.redis = readyGatedRedis(new Redis(options.redisUrl, { enableOfflineQueue: false, maxRetriesPerRequest: 1 }));
+    } else if (options?.redisHost) {
+      const port = options.redisPort || (process.env.REDIS_PORT ? Number.parseInt(process.env.REDIS_PORT, 10) : 6379);
+      this.redis = readyGatedRedis(new Redis({ host: options.redisHost, port, enableOfflineQueue: false, maxRetriesPerRequest: 1 }));
     } else {
-      const url = options?.redisUrl || process.env.REDIS_URL;
-      const host = options?.redisHost || process.env.REDIS_HOST || '127.0.0.1';
-      const port = options?.redisPort || (process.env.REDIS_PORT ? Number.parseInt(process.env.REDIS_PORT, 10) : 6379);
-      if (url) {
-        this.redis = readyGatedRedis(new Redis(url, { enableOfflineQueue: false, maxRetriesPerRequest: 1 }));
-      } else {
-        this.redis = readyGatedRedis(new Redis({ host, port, enableOfflineQueue: false, maxRetriesPerRequest: 1 }));
-      }
+      this.redis = readyGatedRedis(createConfiguredRedisClient({ enableOfflineQueue: false, maxRetriesPerRequest: 1 }));
     }
   }
 
@@ -462,15 +461,7 @@ let activeStore: IdempotencyStore | null = null;
 
 export function getIdempotencyStore(): IdempotencyStore {
   if (!activeStore) {
-    if (process.env.REDIS_URL || process.env.REDIS_HOST) {
-      try {
-        activeStore = new RedisIdempotencyStore();
-      } catch {
-        activeStore = new InMemoryIdempotencyStore();
-      }
-    } else {
-      activeStore = new InMemoryIdempotencyStore();
-    }
+    activeStore = hasConfiguredRedis() ? new RedisIdempotencyStore() : new InMemoryIdempotencyStore();
   }
   return activeStore;
 }

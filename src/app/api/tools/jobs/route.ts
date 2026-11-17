@@ -10,8 +10,20 @@ import type { User } from '@/lib/auth/types';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { isUploadKey } from '@/lib/storage/key-namespace';
 import { sanitizeNodeOutputFilename } from '@/lib/queue/graph/node-jobs';
+import { conversionQueue } from '@/lib/queue/conversion-queue';
+import { handOffConversionJob } from '@/lib/queue/enqueue';
+import { hasLiveQueueWorker, isQueueOnlyWebMode } from '@/lib/queue/worker-presence';
+import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import { MAX_TOOL_FILES, WEB_TOOLS, type WebTool } from '@/lib/tools/tool-names';
-import { getToolJob, saveToolJob, type StoredToolJobResult, type ToolJobState } from '@/lib/tools/tool-job-store';
+import {
+  deleteToolJob,
+  getToolJob,
+  registerLocalToolAbort,
+  saveToolJob,
+  unregisterLocalToolAbort,
+  type StoredToolJobResult,
+  type ToolJobState,
+} from '@/lib/tools/tool-job-store';
 import {
   assertToolInput,
   assertToolUploadMetadata,
@@ -226,10 +238,83 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   };
   await saveToolJob(initialState);
 
+  const queueOnly = isQueueOnlyWebMode();
+  const liveWorker = await hasLiveQueueWorker();
+
+  if (queueOnly || liveWorker) {
+    const stagedInlineKeys: string[] = [];
+    try {
+      await withReservedUnit(unit.reservationId, async (reserved) => {
+        if (queueOnly && !liveWorker) {
+          const { QueueUnavailableError } = await import('@/lib/types');
+          throw new QueueUnavailableError('worker-pool', 'No live conversion worker is available to process queued tool jobs.');
+        }
+
+        const storedRefs: StoredInputFileRef[] = parsed.storedRefs
+          ? [...parsed.storedRefs]
+          : await Promise.all(
+              (parsed.inlineFiles ?? []).map(async (file, index) => {
+                const safeName = sanitizeNodeOutputFilename(file.name, `input_${index + 1}.bin`);
+                const key = `uploads/${caller.id}/tool_${jobId}_${index}_${safeName}`;
+                await s3Storage.saveObject(key, file.buffer, 'application/octet-stream', safeName);
+                stagedInlineKeys.push(key);
+                return { key, name: file.name };
+              })
+            );
+
+        const cleanupKeys = [
+          ...stagedInlineKeys,
+          ...(parsed.storedRefs ?? []).map((ref) => ref.key).filter((key) => isUploadKey(key)),
+        ];
+        const totalBytes = parsed.inlineFiles
+          ? parsed.inlineFiles.reduce((sum, file) => sum + file.buffer.length, 0)
+          : (
+              await Promise.all(
+                storedRefs.map(async (ref) => (await s3Storage.stat(ref.key))?.size ?? 0)
+              )
+            ).reduce((sum, size) => sum + size, 0);
+
+        const sourceFormat =
+          parsed.toolName === 'archive-extract' || parsed.toolName === 'archive-create' ? 'zip' : 'pdf';
+
+        await handOffConversionJob(
+          reserved,
+          conversionQueue,
+          {
+            jobId,
+            originalFilename: parsed.toolName,
+            sourceFormat,
+            targetFormat: sourceFormat,
+            fileSize: totalBytes,
+            options: {},
+            userId: caller.id,
+            toolJob: {
+              tool: parsed.toolName,
+              options: (options ?? {}) as Record<string, unknown>,
+              storedRefs,
+              cleanupUploadKeys: cleanupKeys,
+            },
+          },
+          { jobId },
+          { tier: caller.tier, inputBytes: totalBytes }
+        );
+      });
+
+      return NextResponse.json({ success: true, id: jobId, status: 'queued' }, { status: 201 });
+    } catch (err: unknown) {
+      await Promise.all(
+        stagedInlineKeys.map((key) => Promise.resolve().then(() => s3Storage.deleteObject(key)).catch(() => undefined))
+      );
+      await deleteToolJob(jobId).catch(() => undefined);
+      return typedFailureProblem(err, instanceUri);
+    }
+  }
+
+  const abortController = registerLocalToolAbort(jobId);
   void withReservedUnit(unit.reservationId, async (reserved) => {
     try {
       const current = await getToolJob(jobId);
-      if (current?.status === 'cancelled') {
+      if (current?.status === 'cancelled' || abortController.signal.aborted) {
         await cleanupTemporaryUploads(parsed.storedRefs);
         return;
       }
@@ -249,12 +334,12 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
               })
             );
         if (!parsed.inlineFiles) assertToolInput(parsed.toolName, files);
-        output = await runWebTool(parsed.toolName, files, options);
+        output = await runWebTool(parsed.toolName, files, options, abortController.signal);
       } finally {
         await Promise.all(stagedReleases.map((fn) => Promise.resolve().then(fn).catch(() => undefined)));
       }
       const afterRun = await getToolJob(jobId);
-      if (afterRun?.status === 'cancelled') {
+      if (afterRun?.status === 'cancelled' || abortController.signal.aborted) {
         await cleanupTemporaryUploads(parsed.storedRefs);
         return;
       }
@@ -264,11 +349,18 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
       await reserved.commit({ from: parsed.toolName, base: 1, processingMs: Date.now() - initialState.createdAt });
     } catch (err: unknown) {
       await cleanupTemporaryUploads(parsed.storedRefs);
+      const current = await getToolJob(jobId);
+      if (current?.status === 'cancelled' || abortController.signal.aborted) {
+        await saveToolJob({ ...initialState, status: 'cancelled' }).catch(() => undefined);
+        return;
+      }
       await saveToolJob({
         ...initialState,
         status: 'failed',
         error: err instanceof Error ? err.message : String(err),
       }).catch(() => undefined);
+    } finally {
+      unregisterLocalToolAbort(jobId);
     }
   });
 
