@@ -11,6 +11,8 @@ import {
   createConfiguredRedisClient,
 } from '../src/lib/redis/client-factory';
 import { deleteKeysClusterSafe, scanClusterSafe } from '../src/lib/redis/cluster-ops';
+import { readyGatedRedis } from '../src/lib/redis/when-ready';
+import { resolveEngineChoice } from '../src/worker/engine-registry';
 import { sealPasswordOption, openPasswordOption } from '../src/lib/queue/option-secrets';
 import {
   resetLocalSweepLocksForTests,
@@ -575,13 +577,21 @@ describe('Scale-Out Web control plane, S3-native TUS, leader locks, and Redis HA
     };
 
     const collected: string[] = [];
-    for await (const batch of scanClusterSafe(fakeCluster as never, 'k:*', 100)) {
+    const proxiedCluster = readyGatedRedis(
+      Object.assign(fakeCluster, { status: 'ready', on: () => fakeCluster, off: () => fakeCluster }) as never
+    );
+    for await (const batch of scanClusterSafe(proxiedCluster, 'k:*', 100)) {
       collected.push(...batch);
     }
     expect(collected.sort()).toEqual(['k:shard1:a', 'k:shard1:b', 'k:shard2:c']);
 
-    await deleteKeysClusterSafe(fakeCluster as never, collected);
+    await deleteKeysClusterSafe(proxiedCluster as never, collected);
     expect(deletedSingleKeys.sort()).toEqual(['k:shard1:a', 'k:shard1:b', 'k:shard2:c']);
+
+    // Queue-only Web mode skips local binary installation checks while still validating pair eligibility
+    await expect(
+      resolveEngineChoice('docx', 'pdf', { engine: 'libreoffice' }, { checkLocalInstall: false })
+    ).resolves.toEqual({ engine: 'libreoffice' });
   });
 
   it('seals nested unlock.password in queued tool options and marks non-retryable tool failures as failed immediately', async () => {

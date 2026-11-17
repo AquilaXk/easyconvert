@@ -341,10 +341,16 @@ export class CredentialsVault {
         await whenReady(this.redisClient);
         const serialized = JSON.stringify(envelope);
         // The index first: an id without a credential is dropped by the next listing, a credential without an id would never be listed.
-        const pipeline = this.redisClient.pipeline().sadd(userIndexKey(userId), id);
-        if (options?.ttlSeconds) pipeline.setex(`${VAULT_PREFIX}${id}`, options.ttlSeconds, serialized);
-        else pipeline.set(`${VAULT_PREFIX}${id}`, serialized);
-        await pipelineReplies(pipeline);
+        if (isClusterRedis(this.redisClient)) {
+          await this.redisClient.sadd(userIndexKey(userId), id);
+          if (options?.ttlSeconds) await this.redisClient.setex(`${VAULT_PREFIX}${id}`, options.ttlSeconds, serialized);
+          else await this.redisClient.set(`${VAULT_PREFIX}${id}`, serialized);
+        } else {
+          const pipeline = this.redisClient.pipeline().sadd(userIndexKey(userId), id);
+          if (options?.ttlSeconds) pipeline.setex(`${VAULT_PREFIX}${id}`, options.ttlSeconds, serialized);
+          else pipeline.set(`${VAULT_PREFIX}${id}`, serialized);
+          await pipelineReplies(pipeline);
+        }
         await this.dropExpiredFromIndex(this.redisClient, userId);
       } catch (err) {
         console.error('[CredentialsVault] Redis save failed:', err);
@@ -497,7 +503,12 @@ export class CredentialsVault {
       const raw = await redis.get(`${VAULT_PREFIX}${credentialRef}`);
       if (raw === null || this.isEnvelope(raw)) return 'readable';
       if (!userId || (await redis.sismember(userIndexKey(userId), credentialRef)) !== 1) return 'kept';
-      await pipelineReplies(redis.pipeline().del(`${VAULT_PREFIX}${credentialRef}`).srem(userIndexKey(userId), credentialRef));
+      if (isClusterRedis(redis)) {
+        await redis.del(`${VAULT_PREFIX}${credentialRef}`);
+        await redis.srem(userIndexKey(userId), credentialRef);
+      } else {
+        await pipelineReplies(redis.pipeline().del(`${VAULT_PREFIX}${credentialRef}`).srem(userIndexKey(userId), credentialRef));
+      }
       return 'deleted';
     } catch (err) {
       console.error('[CredentialsVault] Redis delete failed:', err);
@@ -543,7 +554,12 @@ export class CredentialsVault {
       try {
         await whenReady(this.redisClient);
         // The credential first, then its place in the index: an id left behind is dropped by the next listing.
-        await pipelineReplies(this.redisClient.pipeline().del(`${VAULT_PREFIX}${credentialRef}`).srem(userIndexKey(envelope.userId), credentialRef));
+        if (isClusterRedis(this.redisClient)) {
+          await this.redisClient.del(`${VAULT_PREFIX}${credentialRef}`);
+          await this.redisClient.srem(userIndexKey(envelope.userId), credentialRef);
+        } else {
+          await pipelineReplies(this.redisClient.pipeline().del(`${VAULT_PREFIX}${credentialRef}`).srem(userIndexKey(envelope.userId), credentialRef));
+        }
       } catch (err) {
         console.error('[CredentialsVault] Redis delete failed:', err);
         throw new CredentialsVaultPersistenceError({ cause: err, saving: false });
@@ -656,9 +672,9 @@ export class CredentialsVault {
       const key = userIndexKey(userId);
       const ids = await redis.smembers(key);
       if (ids.length === 0) return;
-      const pipeline = redis.pipeline();
-      for (const id of ids) pipeline.exists(`${VAULT_PREFIX}${id}`);
-      const replies = (await pipelineReplies(pipeline)) as number[];
+      const replies = isClusterRedis(redis)
+        ? await Promise.all(ids.map((id) => redis.exists(`${VAULT_PREFIX}${id}`)))
+        : ((await pipelineReplies(ids.reduce((p, id) => p.exists(`${VAULT_PREFIX}${id}`), redis.pipeline()))) as number[]);
       const stale = ids.filter((_, position) => Number(replies[position]) === 0);
       if (stale.length > 0) await redis.srem(key, ...stale);
     } catch (err) {
@@ -744,9 +760,9 @@ export class CredentialsVault {
       const ids = complete ? new Set<string>() : new Set(await this.scanIdsOfUser(redis, userId));
       const indexed = await redis.smembers(userIndexKey(userId));
       if (indexed.length > 0) {
-        const pipeline = redis.pipeline();
-        for (const id of indexed) pipeline.exists(`${VAULT_PREFIX}${id}`);
-        const replies = (await pipelineReplies(pipeline)) as number[];
+        const replies = isClusterRedis(redis)
+          ? await Promise.all(indexed.map((id) => redis.exists(`${VAULT_PREFIX}${id}`)))
+          : ((await pipelineReplies(indexed.reduce((p, id) => p.exists(`${VAULT_PREFIX}${id}`), redis.pipeline()))) as number[]);
         indexed.forEach((id, position) => {
           if (Number(replies[position]) === 1) ids.add(id);
         });

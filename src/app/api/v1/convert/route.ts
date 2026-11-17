@@ -18,6 +18,7 @@ import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurren
 import { bindJobLimits } from '@/lib/conversions/job-time';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { dispatchSyncRouteConversion } from '@/lib/queue/wait-for-job';
+import { isQueueOnlyWebMode } from '@/lib/queue/worker-presence';
 import { frameMetadataFields, frameMetadataHeaders } from '@/lib/api/frame-headers';
 import { engineTraceFields, engineTraceHeaders } from '@/lib/api/engine-trace';
 import { conversionWarningsFields, conversionWarningsHeaders } from '@/lib/api/conversion-warnings';
@@ -242,7 +243,7 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
     }
 
     // An engine the pair does not list, or a version that is not installed, is refused before anything is reserved.
-    await resolveEngineChoice(sourceDef.id, targetDef.id, options);
+    await resolveEngineChoice(sourceDef.id, targetDef.id, options, { checkLocalInstall: !isQueueOnlyWebMode() });
 
     trace.keepPrivate(file.name, options);
 

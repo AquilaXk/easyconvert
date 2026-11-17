@@ -1,4 +1,5 @@
 import type Redis from 'ioredis';
+import { whenReady } from './when-ready';
 
 const SINGLE_KEY_DELETE_CONCURRENCY = 100;
 
@@ -23,10 +24,13 @@ export async function* scanClusterSafe(
   matchPattern: string,
   count = 200
 ): AsyncGenerator<string[]> {
-  const targets: Redis[] =
-    typeof (client as unknown as { nodes?: unknown }).nodes === 'function'
-      ? (client as unknown as { nodes(role: 'master'): Redis[] }).nodes('master')
-      : [client];
+  let targets: Redis[];
+  if (typeof (client as unknown as { nodes?: unknown }).nodes === 'function') {
+    await whenReady(client);
+    targets = await Promise.resolve((client as unknown as { nodes(role: 'master'): Redis[] | Promise<Redis[]> }).nodes('master'));
+  } else {
+    targets = [client];
+  }
 
   for (const node of targets) {
     let cursor = '0';

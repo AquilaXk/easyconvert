@@ -16,6 +16,7 @@ const UNGATED_METHODS = new Set<string | symbol>([
   'pipeline',
   'multi',
   'defineCommand',
+  'nodes',
 ]);
 
 interface ReadyGate {

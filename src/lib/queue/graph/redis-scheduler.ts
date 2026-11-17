@@ -472,11 +472,7 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
       const page = await this.redisClient.zrevrange(index, cursor, endRank);
       if (page.length === 0) break;
 
-      const metaPipe = this.redisClient.pipeline();
-      for (const graphId of page) {
-        metaPipe.hmget(this.graphKeys(graphId).graph, ...SUMMARY_META_FIELDS);
-      }
-      const metaReplies = (await this.execFailClosed(metaPipe, page.length)) as (string | null)[][];
+      const metaReplies = await this.readGraphSummaryMetaBatch(page);
 
       const matched: { graphId: string; values: (string | null)[]; needsGraphDef: boolean }[] = [];
       for (let i = 0; i < page.length; i++) {
@@ -496,22 +492,10 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
       }
 
       if (matched.length > 0) {
-        const detailPipe = this.redisClient.pipeline();
-        let expectedReplies = 0;
-        for (const item of matched) {
-          const k = this.graphKeys(item.graphId);
-          detailPipe.hgetall(k.nodes);
-          expectedReplies += 1;
-          if (item.needsGraphDef) {
-            detailPipe.hget(k.graph, 'graph');
-            expectedReplies += 1;
-          }
-        }
-        const detailReplies = await this.execFailClosed(detailPipe, expectedReplies);
-        let replyIdx = 0;
-        for (const item of matched) {
-          const rawNodes = detailReplies[replyIdx++] as Record<string, string>;
-          const rawGraphDef = item.needsGraphDef ? (detailReplies[replyIdx++] as string | null) : null;
+        const details = await this.readGraphSummaryDetailsBatch(matched);
+        for (let i = 0; i < matched.length; i++) {
+          const item = matched[i];
+          const { rawNodes, rawGraphDef } = details[i];
           try {
             const summaryMeta = parseGraphSummaryMeta(item.graphId, item.values, rawGraphDef);
             const nodes = parseNodeStates(item.graphId, rawNodes ?? {}, summaryMeta.totalNodes);
@@ -550,11 +534,75 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
     return results.map(([, reply]) => reply);
   }
 
+  private async runClusterSafe<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      throw err instanceof ReplyError
+        ? err
+        : new QueueUnavailableError(SCHEDULER_QUEUE_NAME, err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  private async readGraphSummaryMetaBatch(page: readonly string[]): Promise<(string | null)[][]> {
+    if (isClusterRedis(this.redisClient)) {
+      return this.runClusterSafe(() =>
+        Promise.all(page.map((graphId) => this.redisClient.hmget(this.graphKeys(graphId).graph, ...SUMMARY_META_FIELDS)))
+      );
+    }
+    const metaPipe = this.redisClient.pipeline();
+    for (const graphId of page) metaPipe.hmget(this.graphKeys(graphId).graph, ...SUMMARY_META_FIELDS);
+    return (await this.execFailClosed(metaPipe, page.length)) as (string | null)[][];
+  }
+
+  private async readGraphSummaryDetailsBatch(
+    matched: ReadonlyArray<{ graphId: string; needsGraphDef: boolean }>
+  ): Promise<Array<{ rawNodes: Record<string, string>; rawGraphDef: string | null }>> {
+    if (isClusterRedis(this.redisClient)) {
+      return this.runClusterSafe(() =>
+        Promise.all(
+          matched.map(async (item) => {
+            const k = this.graphKeys(item.graphId);
+            const [rawNodes, rawGraphDef] = await Promise.all([
+              this.redisClient.hgetall(k.nodes),
+              item.needsGraphDef ? this.redisClient.hget(k.graph, 'graph') : Promise.resolve(null),
+            ]);
+            return { rawNodes, rawGraphDef };
+          })
+        )
+      );
+    }
+    const detailPipe = this.redisClient.pipeline();
+    let expectedReplies = 0;
+    for (const item of matched) {
+      const k = this.graphKeys(item.graphId);
+      detailPipe.hgetall(k.nodes);
+      expectedReplies += 1;
+      if (item.needsGraphDef) {
+        detailPipe.hget(k.graph, 'graph');
+        expectedReplies += 1;
+      }
+    }
+    const detailReplies = await this.execFailClosed(detailPipe, expectedReplies);
+    let replyIdx = 0;
+    return matched.map((item) => ({
+      rawNodes: detailReplies[replyIdx++] as Record<string, string>,
+      rawGraphDef: item.needsGraphDef ? (detailReplies[replyIdx++] as string | null) : null,
+    }));
+  }
+
   /** The ids of `page` whose graph is of `userId` and has one of `statuses`: one pipelined read of two fields each, so the rest of a thinned page is never read whole. Gone graphs go to `vanished`. */
   private async idsOfStatus(page: readonly string[], userId: string, statuses: readonly GraphStatus[], vanished: string[]): Promise<string[]> {
-    const pipeline = this.redisClient.pipeline();
-    for (const graphId of page) pipeline.hmget(this.graphKeys(graphId).graph, 'status', 'owner');
-    const replies = await this.execFailClosed(pipeline, page.length);
+    let replies: unknown[];
+    if (isClusterRedis(this.redisClient)) {
+      replies = await this.runClusterSafe(() =>
+        Promise.all(page.map((graphId) => this.redisClient.hmget(this.graphKeys(graphId).graph, 'status', 'owner')))
+      );
+    } else {
+      const pipeline = this.redisClient.pipeline();
+      for (const graphId of page) pipeline.hmget(this.graphKeys(graphId).graph, 'status', 'owner');
+      replies = await this.execFailClosed(pipeline, page.length);
+    }
     return page.filter((graphId, position) => {
       const [status, owner] = replies[position] as (string | null)[];
       if (status === null && owner === null) {
@@ -568,12 +616,25 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
   /** The states of the graphs, all read in one round trip: undefined when one expired, null when its record is damaged (logged; the list goes on without it). */
   private async readIndexedGraphs(graphIds: readonly string[]): Promise<(GraphExecutionState | undefined | null)[]> {
     if (graphIds.length === 0) return [];
-    const pipeline = this.redisClient.pipeline();
-    for (const graphId of graphIds) {
-      const k = this.graphKeys(graphId);
-      pipeline.hgetall(k.graph).hgetall(k.nodes);
+    let replies: unknown[];
+    if (isClusterRedis(this.redisClient)) {
+      const pairs = await this.runClusterSafe(() =>
+        Promise.all(
+          graphIds.map(async (graphId) => {
+            const k = this.graphKeys(graphId);
+            return Promise.all([this.redisClient.hgetall(k.graph), this.redisClient.hgetall(k.nodes)]);
+          })
+        )
+      );
+      replies = pairs.flat();
+    } else {
+      const pipeline = this.redisClient.pipeline();
+      for (const graphId of graphIds) {
+        const k = this.graphKeys(graphId);
+        pipeline.hgetall(k.graph).hgetall(k.nodes);
+      }
+      replies = await this.execFailClosed(pipeline, graphIds.length * 2);
     }
-    const replies = await this.execFailClosed(pipeline, graphIds.length * 2);
     return graphIds.map((graphId, position) => {
       const rawGraph = replies[position * 2];
       const rawNodes = replies[position * 2 + 1];
