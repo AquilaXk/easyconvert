@@ -29,8 +29,10 @@ export async function withRedisLeaderLock(
   const now = Date.now();
   const redis = redisKeyStore.getRedisClient();
 
+  const redisStatus = (redis as { status?: string } | null)?.status;
   if (
     !redis ||
+    (redisStatus !== undefined && redisStatus !== 'ready') ||
     typeof (redis as { set?: unknown }).set !== 'function' ||
     typeof (redis as { eval?: unknown }).eval !== 'function'
   ) {

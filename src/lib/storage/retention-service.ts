@@ -683,12 +683,7 @@ function runSweep(storage: SweptStorage): Promise<void> {
         }
       );
     } else {
-      await withRedisLeaderLock(
-        'retention-expiry',
-        RETENTION_SWEEP_LOCK_TTL_MS,
-        RETENTION_SWEEP_HOLD_MS,
-        () => sweepRetention(storage)
-      );
+      await sweepRetention(storage);
       await evictForCapacityOnce(storage);
     }
   })().finally(() => clearTimeout(slow));
