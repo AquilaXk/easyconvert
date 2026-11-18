@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pandocEngineUnavailable, pandocReader, pandocWriter } from '../lib/conversions/pandoc-pairs';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
+import { safeOutputStem } from '../lib/conversions/page-range';
 import { sourceBytesAsText } from '../lib/conversions/office/text-source';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
 import { OUTPUT_READ_FLAGS, sandboxOutputSize } from '../lib/security/sandbox-output';
@@ -49,7 +50,7 @@ export interface PandocRequest {
 }
 
 function baseNameOf(originalFilename: string): string {
-  return originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  return safeOutputStem(originalFilename);
 }
 
 /** The directories and settings pandoc gets: all inside the job directory, so no data directory of the host or of another job reaches it. */

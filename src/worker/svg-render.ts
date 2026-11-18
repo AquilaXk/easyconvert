@@ -1,4 +1,5 @@
 import { stageTimeoutMs } from '../lib/conversions/job-time';
+import { safeOutputStem } from '../lib/conversions/page-range';
 import { launchSandboxedBinary } from '../lib/security/sandbox-launcher';
 import { ConversionFailedError } from '../lib/types';
 import { SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError } from './sandbox';
@@ -36,7 +37,7 @@ export interface SvgPdfJob {
 /** Writes the drawing as a PDF with the renderer in the sandbox, without network. */
 export async function renderSvgAsPdf(job: SvgPdfJob): Promise<WorkerConversionResult> {
   const { svg, renderer, input, options, originalFilename } = job;
-  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const baseName = safeOutputStem(originalFilename);
   const startTime = Date.now();
   let rendered: Buffer;
   try {

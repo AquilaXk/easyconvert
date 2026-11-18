@@ -3,6 +3,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import sharp from 'sharp';
 import { ConversionFailedError, InvalidPageRangeError, PayloadLimitError, PdfPasswordRequiredError, UnsupportedOptionError } from '../lib/types';
+import { ARCHIVE_SECURITY_LIMITS } from '../lib/conversions/archive';
 import { InputPixelLimitError } from '../lib/conversions/image-input-limits';
 import { checkOpenedPdfRasterPageBudget, openPdfForReading } from '../lib/conversions/pdf-access';
 import { renderedSizePixels, type PdfPageFrame } from '../lib/conversions/pdf-page-geometry';
@@ -20,6 +21,10 @@ import { SandboxedBufferLimitError, type SandboxedExecutionResult } from './sand
  * page instead and compresses it with the in-process encoder, which writes a PNG with the same pixels, the same
  * 8-bit RGB layout and the same pixel density.
  */
+
+/** Explicit sandbox RSS & output file size bounds enforced on Poppler utilities (`pdfinfo`, `pdftotext`, `pdftoppm`, `pdftocairo`, `pdftops`). */
+export const POPPLER_MEMORY_LIMIT_MB = 2048;
+export const POPPLER_MAX_FILE_SIZE = ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
 
 /** A page larger than this (raw RGB bytes) is rendered the way it always was, as a PNG written by Poppler. */
 export const PPM_PAGE_MAX_BYTES = 128 * 1024 * 1024;

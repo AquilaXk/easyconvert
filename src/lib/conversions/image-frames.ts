@@ -171,6 +171,7 @@ async function selectApng(
   }
   const page = singleFrameOf(requested, frames);
   if (page === FIRST_FRAME && animation.defaultIsFirstFrame) return singleSource(buffer, {}, frames, page);
+  assertAnimationBudget(width, height, page, 'The animated PNG', COMPOSED_MEMORY);
   const composer = apngAnimation(animation);
   let frame = await composer.frame(0);
   for (let index = 1; index < page; index += 1) frame = await composer.frame(index);
@@ -261,6 +262,7 @@ function selectAnimationFrames(
     };
   }
   const page = singleFrameOf(requested, frames);
+  assertAnimationBudget(meta.width ?? 0, meta.height ?? 0, page, 'The animation');
   return singleSource(buffer, { page: page - 1 }, frames, page);
 }
 

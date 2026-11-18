@@ -21,6 +21,7 @@ import {
 import { pdfFromHeader } from '../../format-signatures';
 import { loadPdfLibDocument } from '../pdf-lib-load';
 import { resolveBinaryPath } from './utils';
+import { ARCHIVE_SECURITY_LIMITS } from '../archive';
 import { DEFAULT_PDFA_CONFORMANCE, buildPdfExportFilterData } from '../pdf-export-options';
 import { normalisePdfADates } from './pdfa-dates';
 import { writeOfficeProfile } from '../../../worker/libreoffice-profile';
@@ -327,6 +328,9 @@ export async function convertToPdfA(
           cwd: workDir,
           workDir,
           socketDirs: [OFFICE_PIPE_DIR],
+          memoryLimitMb: 1536,
+          maxFileSize: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+          rlimits: { asBytes: 16 * 1024 * 1024 * 1024 },
           env: { HOME: workDir, TMPDIR: workDir, SAL_USE_VCLPLUGIN: 'svp' },
           networkIsolated: true,
         }

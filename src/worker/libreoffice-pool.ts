@@ -1,4 +1,7 @@
 import { OFFICE_STAGE, sizedStageTimeoutMs, stageTimeoutMs } from '../lib/conversions/job-time';
+import { ARCHIVE_SECURITY_LIMITS } from '../lib/conversions/archive';
+import { safeOutputStem } from '../lib/conversions/page-range';
+import { runWithDirectoryGrowthWatch } from './directory-growth-watch';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -59,6 +62,10 @@ export const LIBREOFFICE_READINESS_FAILURE_TTL_MS = 60_000;
  */
 export const LIBREOFFICE_POOL_MAX_WORKERS_CEILING = 12;
 export const LIBREOFFICE_SLOT_MEMORY_BYTES = 1536 * 1024 * 1024;
+export const LIBREOFFICE_MEMORY_LIMIT_MB = 1536;
+/** Wide virtual address space cap so LibreOffice UNO/JVM arenas do not abort while the RSS monitor enforces `LIBREOFFICE_MEMORY_LIMIT_MB`. */
+export const LIBREOFFICE_ADDRESS_SPACE_BYTES = 16 * 1024 * 1024 * 1024;
+export const LIBREOFFICE_MAX_FILE_SIZE = ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
 export const LIBREOFFICE_IDLE_SHUTDOWN_TIMEOUT_MS = 5 * 60_000;
 
 export function defaultLibreOfficeMaxWorkers(
@@ -424,6 +431,9 @@ export class LibreOfficePoolManager {
             writeDirs: [userProfileDir],
             socketDirs: [OFFICE_PIPE_DIR],
             timeoutMs: 15000,
+            memoryLimitMb: LIBREOFFICE_MEMORY_LIMIT_MB,
+            maxFileSize: LIBREOFFICE_MAX_FILE_SIZE,
+            rlimits: { asBytes: LIBREOFFICE_ADDRESS_SPACE_BYTES },
             env: { HOME: workDir, SAL_USE_VCLPLUGIN: 'svp' },
             networkIsolated: true,
           }
@@ -518,6 +528,9 @@ export class LibreOfficePoolManager {
           writeDirs: [profileDir],
           socketDirs: [OFFICE_PIPE_DIR],
           timeoutMs,
+          memoryLimitMb: LIBREOFFICE_MEMORY_LIMIT_MB,
+          maxFileSize: LIBREOFFICE_MAX_FILE_SIZE,
+          rlimits: { asBytes: LIBREOFFICE_ADDRESS_SPACE_BYTES },
           env: { HOME: workDir, SAL_USE_VCLPLUGIN: 'svp' },
           networkIsolated: true,
         });
@@ -835,7 +848,7 @@ export class LibreOfficePoolManager {
     const worker = await this.acquireWorker(stageTimeoutMs(options, this.acquireTimeoutMs), options.signal);
     let hasError = false;
     const startTime = Date.now();
-    const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+    const baseName = safeOutputStem(originalFilename);
     const jobSubdir = path.join(worker.workDir, `job_${crypto.randomUUID().slice(0, 8)}`);
 
     try {
@@ -862,25 +875,33 @@ export class LibreOfficePoolManager {
         inputPath,
       ];
 
-      await withCpuThreadBudget(1, () =>
-        this.executor(
-          this.sofficePath!,
-          convertArgs,
-          {
-            cwd: jobSubdir,
-            // The directory of this job alone, and the profile of the slot: the other jobs of the slot keep theirs.
-            workDir: jobSubdir,
-            writeDirs: [worker.userProfileDir],
-            // The input of a file of the store is a link to it, which the ruleset reads through to the file.
-            readDirs: [fs.realpathSync(inputPath)],
-            socketDirs: [OFFICE_PIPE_DIR],
-            timeoutMs: timeout,
-            maxBuffer,
-            env: { HOME: jobSubdir, TMPDIR: jobSubdir, SAL_USE_VCLPLUGIN: 'svp' },
-            networkIsolated: true,
-            signal: options.signal,
-          }
-        )
+      const diskBudgetBytes = officeInputBytes(inputPath) + LIBREOFFICE_MAX_FILE_SIZE + 64 * 1024 * 1024;
+      await runWithDirectoryGrowthWatch(
+        { root: jobSubdir, limits: { maxBytes: diskBudgetBytes, maxEntries: ARCHIVE_SECURITY_LIMITS.MAX_FILES }, label: 'LibreOffice', callerSignal: options.signal },
+        (watchSignal) =>
+          withCpuThreadBudget(1, () =>
+            this.executor(
+              this.sofficePath!,
+              convertArgs,
+              {
+                cwd: jobSubdir,
+                // The directory of this job alone, and the profile of the slot: the other jobs of the slot keep theirs.
+                workDir: jobSubdir,
+                writeDirs: [worker.userProfileDir],
+                // The input of a file of the store is a link to it, which the ruleset reads through to the file.
+                readDirs: [fs.realpathSync(inputPath)],
+                socketDirs: [OFFICE_PIPE_DIR],
+                timeoutMs: timeout,
+                maxBuffer,
+                memoryLimitMb: LIBREOFFICE_MEMORY_LIMIT_MB,
+                maxFileSize: LIBREOFFICE_MAX_FILE_SIZE,
+                rlimits: { asBytes: LIBREOFFICE_ADDRESS_SPACE_BYTES },
+                env: { HOME: jobSubdir, TMPDIR: jobSubdir, SAL_USE_VCLPLUGIN: 'svp' },
+                networkIsolated: true,
+                signal: watchSignal,
+              }
+            )
+          )
       );
 
       const produced = findOfficeOutput(jobSubdir);

@@ -228,6 +228,22 @@ function zipFailure(message: string): ConversionFailedError {
   return new ConversionFailedError(`ZIP writer: ${message}`);
 }
 
+const WINDOWS_DRIVE_PREFIX = /^[A-Za-z]:/;
+
+/** Reject Zip Slip / path traversal / absolute / backslash / NUL entry names per libarchive `_archive_write_disk_open`. */
+function assertSafeZipEntryName(name: string): void {
+  if (name.includes('\0') || name.includes('\\')) {
+    throw zipFailure('entry name contains invalid path separator or NUL byte');
+  }
+  if (name.startsWith('/') || WINDOWS_DRIVE_PREFIX.test(name)) {
+    throw zipFailure('entry name must be a relative path');
+  }
+  const withoutTrailingSlash = name.endsWith('/') ? name.slice(0, -1) : name;
+  if (withoutTrailingSlash.split('/').some((seg) => seg.length === 0 || seg === '.' || seg === '..')) {
+    throw zipFailure(`unsafe relative entry path "${name}"`);
+  }
+}
+
 function isBytes(source: ZipSource): source is Uint8Array {
   return source instanceof Uint8Array;
 }
@@ -273,6 +289,7 @@ export class ZipWriter {
     const nameBytes = Buffer.from(entry.name, 'utf8');
     if (nameBytes.length === 0) throw zipFailure('an entry has an empty name');
     if (nameBytes.length > MAX_ENTRY_NAME_BYTES) throw zipFailure(`entry name of ${nameBytes.length} bytes is too long`);
+    assertSafeZipEntryName(entry.name);
     const isDirectory = entry.name.endsWith('/');
     const when = dosDateTime(entry.mtime ?? new Date());
     const nonAscii = nameBytes.some((byte) => byte > 0x7f);

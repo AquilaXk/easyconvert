@@ -215,19 +215,27 @@ describe('the search for JBIG2 streams in a file made of the filter name', () =>
     return Buffer.from(`%PDF-1.4\n${unit.repeat(Math.floor(bytes / unit.length))}`, 'latin1');
   }
 
-  function search(file: Buffer): { pages: number; stats: Jbig2ScanStats; ms: number } {
+  function search(file: Buffer): { pages: number; stats: Jbig2ScanStats; ms: number; refused: boolean } {
     const stats: Jbig2ScanStats = { namesExamined: 0, bytesScanned: 0 };
     const started = performance.now();
-    const pages = [...declaredJbig2Pages(file, stats)].length;
-    return { pages, stats, ms: performance.now() - started };
+    let refused = false;
+    let pages = 0;
+    try {
+      pages = [...declaredJbig2Pages(file, stats)].length;
+    } catch (err) {
+      if (!(err instanceof DecompressionLimitError)) throw err;
+      refused = true;
+    }
+    return { pages, stats, ms: performance.now() - started, refused };
   }
 
   it.each(SHAPES.flatMap(([label, unit]) => [2, 20].map((mib) => [label, mib, unit] as const)))(
     'reads %s once and examines a bounded number of names in %i MB',
     (_label, mib, unit) => {
       const file = fileOf(unit, mib * MIB);
-      const { pages, stats, ms } = search(file);
+      const { pages, stats, ms, refused } = search(file);
       expect(pages).toBe(0);
+      expect(refused).toBe(unit.includes('stream'));
       expect(stats.bytesScanned).toBeGreaterThan(0);
       expect(stats.bytesScanned).toBeLessThanOrEqual(SCAN_FACTOR * file.length);
       expect(stats.namesExamined).toBeLessThanOrEqual(MAX_JBIG2_NAMES_EXAMINED);

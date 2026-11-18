@@ -206,11 +206,33 @@ export function validatePageRangeSyntax(spec: string, subject: string = DEFAULT_
 }
 
 const MIN_PAGE_DIGITS = 3;
+const MAX_LEAF_STEM_LENGTH = 120;
+// eslint-disable-next-line no-control-regex -- strip NUL and ASCII control characters from untrusted output stems
+const STEM_CONTROL_CHARS = /[\x00-\x1f\x7f]/g;
+
+/** Normalize a caller-provided stem or basename into a safe single relative segment without traversal tokens. */
+export function sanitizeLeafStem(raw: string | undefined, fallback = 'page'): string {
+  if (!raw) return fallback;
+  const leaf = (raw.replace(STEM_CONTROL_CHARS, '').split(/[/\\]/).pop() ?? '').replace(/^[A-Za-z]:/, '');
+  const cleaned = leaf
+    .replace(/\.\.+/g, '')
+    .replace(/^\.+|\.+$/g, '')
+    .slice(0, MAX_LEAF_STEM_LENGTH)
+    .replace(/\.+$/, '');
+  return cleaned.trim().length > 0 ? cleaned : fallback;
+}
+
+/** Derive a safe, extensionless display/entry stem from an untrusted `originalFilename`. */
+export function safeOutputStem(originalFilename: string | undefined, fallback = 'converted'): string {
+  if (!originalFilename) return fallback;
+  const leaf = (originalFilename.replace(STEM_CONTROL_CHARS, '').split(/[/\\]/).pop() ?? '').replace(/^[A-Za-z]:/, '');
+  return sanitizeLeafStem(leaf.replace(/\.[^.]+$/, ''), fallback);
+}
 
 /** ZIP entry name for page `pageNumber` of a multi-page output: `<name>-p001.<ext>`, padded to the last page's width. */
 export function pageEntryName(baseName: string, pageNumber: number, lastPage: number, extension: string): string {
   const padLength = Math.max(MIN_PAGE_DIGITS, String(lastPage).length);
-  return `${baseName}-p${String(pageNumber).padStart(padLength, '0')}.${extension}`;
+  return `${sanitizeLeafStem(baseName, 'page')}-p${String(pageNumber).padStart(padLength, '0')}.${extension}`;
 }
 
 const WHOLE_NUMBER_TEXT = /^-?[0-9]+$/;

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { PayloadLimitError } from '../lib/types';
 
 /**
  * Watches how much a running program writes into its job directory. The per-file size limit of a sandboxed run (RLIMIT_FSIZE) bounds one file,
@@ -77,4 +78,40 @@ export function watchDirectoryGrowth(root: string, limits: DirectoryGrowthLimits
     stopped = true;
     if (timer) clearTimeout(timer);
   };
+}
+
+export interface DirectoryGrowthRunOptions {
+  root: string;
+  limits: DirectoryGrowthLimits;
+  label: string;
+  callerSignal?: AbortSignal;
+}
+
+/** Runs `action` while bounding disk growth in `root`; throws `PayloadLimitError` if breached. */
+export async function runWithDirectoryGrowthWatch<T>(
+  options: DirectoryGrowthRunOptions,
+  action: (signal: AbortSignal) => Promise<T>
+): Promise<T> {
+  const growth = new AbortController();
+  const signal = options.callerSignal ? AbortSignal.any([options.callerSignal, growth.signal]) : growth.signal;
+  const stop = watchDirectoryGrowth(options.root, options.limits, () => growth.abort());
+  try {
+    const result = await action(signal);
+    const finalGrowth = await directoryGrowth(options.root, options.limits);
+    if (finalGrowth.exceeded) {
+      throw new PayloadLimitError(
+        `${options.label} exceeded temporary disk budget (${options.limits.maxBytes} bytes / ${options.limits.maxEntries} entries)`
+      );
+    }
+    return result;
+  } catch (err) {
+    if (growth.signal.aborted && !options.callerSignal?.aborted) {
+      throw new PayloadLimitError(
+        `${options.label} exceeded temporary disk budget (${options.limits.maxBytes} bytes / ${options.limits.maxEntries} entries)`
+      );
+    }
+    throw err;
+  } finally {
+    stop();
+  }
 }

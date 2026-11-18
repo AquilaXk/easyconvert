@@ -1,5 +1,5 @@
 import { DecompressionLimitError } from '../types';
-import { MAX_STREAM_INFLATE_BYTES } from './bounded-inflate';
+import { InflateBudget, inflatePdfFlate, MAX_STREAM_INFLATE_BYTES } from './bounded-inflate';
 
 /**
  * The decoded size of a JBIG2 stream, read from its first bytes before any tool decodes it.
@@ -11,20 +11,33 @@ import { MAX_STREAM_INFLATE_BYTES } from './bounded-inflate';
  * 45 s and the whole output limit of the sandbox before it fails. The size is known after 30 bytes, so the stream is judged by
  * the limit of every other decoded stream (`MAX_STREAM_INFLATE_BYTES`) and refused with the same 413.
  *
- * Only a stream whose first filter is JBIG2Decode is read: behind another filter (a wrapper of ASCIIHexDecode or FlateDecode)
- * the segments are not in the file as they are, and such a stream is left to the limits of the tools.
+ * Also handles ISO 32000-1 §7.3.5 `#XX` hex-escaped PDF Names and bounded `/Filter [/FlateDecode /JBIG2Decode]` chains;
+ * other pre-filters (e.g. `ASCIIHexDecode`) fall through to downstream tool limits.
  */
 
-const JBIG2_FILTER = Buffer.from('/JBIG2Decode', 'latin1');
-const FIRST_FILTER_PATTERN = /\/Filter\s*(?:\[\s*)?\/JBIG2Decode(?![A-Za-z0-9])/;
 const OBJECT_HEADER_PATTERN = /(\d+)\s+\d+\s+obj(?![a-z])/g;
 const STREAM_KEYWORD = Buffer.from('stream', 'latin1');
+const ENDSTREAM_KEYWORD = Buffer.from('endstream', 'latin1');
 const END_OBJECT_KEYWORD = Buffer.from('endobj', 'latin1');
 /** Bytes before the filter name that are searched for the object header (the dictionary of a picture is a few hundred). */
 const DICTIONARY_LOOKBACK_BYTES = 16 * 1024;
 const CHAR_CR = 0x0d;
 const CHAR_LF = 0x0a;
 const CHAR_LOWER_D = 0x64;
+const CHAR_SLASH = 0x2f;
+const CHAR_HASH = 0x23;
+const CHAR_OPEN_BRACKET = 0x5b;
+const CHAR_CLOSE_BRACKET = 0x5d;
+const CHAR_LT = 0x3c;
+const CHAR_GT = 0x3e;
+const CHAR_OPEN_PAREN = 0x28;
+const CHAR_CLOSE_PAREN = 0x29;
+const CHAR_OPEN_BRACE = 0x7b;
+const CHAR_CLOSE_BRACE = 0x7d;
+const CHAR_BACKSLASH = 0x5c;
+const CHAR_PERCENT = 0x25;
+const MAX_PDF_NAME_RAW_BYTES = 96;
+const MAX_FLATE_CHAIN_DEPTH = 8;
 
 const PAGE_INFORMATION_SEGMENT = 48;
 const PAGE_INFORMATION_BYTES = 19;
@@ -169,6 +182,142 @@ class ForwardKeywordSearch {
 interface Jbig2Stream {
   objectNumber: number;
   dataStart: number;
+  flateLayers: number;
+}
+
+function isPdfDelimiterOrSpace(b: number): boolean {
+  return (
+    b === 0x00 || b === 0x09 || b === 0x0a || b === 0x0c || b === 0x0d || b === 0x20 ||
+    b === CHAR_OPEN_PAREN || b === CHAR_CLOSE_PAREN || b === CHAR_LT || b === CHAR_GT ||
+    b === CHAR_OPEN_BRACKET || b === CHAR_CLOSE_BRACKET || b === CHAR_OPEN_BRACE || b === CHAR_CLOSE_BRACE ||
+    b === CHAR_SLASH || b === CHAR_PERCENT
+  );
+}
+
+function hexNibble(b: number): number {
+  if (b >= 0x30 && b <= 0x39) return b - 0x30;
+  const lower = b | 0x20;
+  return lower >= 0x61 && lower <= 0x66 ? lower - 0x61 + 10 : -1;
+}
+
+/** Decode an ISO 32000-1 §7.3.5 PDF Name starting at `/` with `#XX` hex escapes. */
+function readPdfName(pdf: Buffer, slashAt: number): { name: string; end: number } {
+  let i = slashAt + 1;
+  const limit = Math.min(pdf.length, i + MAX_PDF_NAME_RAW_BYTES);
+  let name = '';
+  while (i < limit && !isPdfDelimiterOrSpace(pdf[i])) {
+    if (pdf[i] === CHAR_HASH && i + 2 < pdf.length) {
+      const hi = hexNibble(pdf[i + 1]);
+      const lo = hexNibble(pdf[i + 2]);
+      if (hi >= 0 && lo >= 0) {
+        name += String.fromCharCode((hi << 4) | lo);
+        i += 3;
+        continue;
+      }
+    }
+    name += String.fromCharCode(pdf[i]);
+    i++;
+  }
+  return { name, end: i };
+}
+
+function isJbig2NameStart(pdf: Buffer, at: number): boolean {
+  if (at >= pdf.length) return false;
+  if (pdf[at] === 0x4a) return true;
+  return pdf[at] === CHAR_HASH && at + 2 < pdf.length && pdf[at + 1] === 0x34 && (pdf[at + 2] | 0x20) === 0x61;
+}
+
+function findNextJbig2Name(pdf: Buffer, from: number, stats: Jbig2ScanStats): number {
+  let pos = from;
+  while (pos < pdf.length) {
+    const slash = pdf.indexOf(CHAR_SLASH, pos);
+    if (slash < 0) {
+      stats.bytesScanned += pdf.length - from;
+      return -1;
+    }
+    if (isJbig2NameStart(pdf, slash + 1)) {
+      const { name, end } = readPdfName(pdf, slash);
+      if (name === 'JBIG2Decode' && (end >= pdf.length || isPdfDelimiterOrSpace(pdf[end]))) {
+        stats.bytesScanned += slash - from;
+        return slash;
+      }
+    }
+    pos = slash + 1;
+  }
+  stats.bytesScanned += pdf.length - from;
+  return -1;
+}
+
+function skipPdfTrivia(pdf: Buffer, pos: number, end: number): number {
+  let i = pos;
+  while (i < end) {
+    const b = pdf[i];
+    if (b === 0x00 || b === 0x09 || b === 0x0a || b === 0x0c || b === 0x0d || b === 0x20) {
+      i++;
+    } else if (b === CHAR_PERCENT) {
+      while (i < end && pdf[i] !== CHAR_LF && pdf[i] !== CHAR_CR) i++;
+    } else {
+      break;
+    }
+  }
+  return i;
+}
+
+function skipPdfLiteralString(pdf: Buffer, openAt: number, end: number): number {
+  let i = openAt + 1;
+  let depth = 1;
+  while (i < end && depth > 0) {
+    if (pdf[i] === CHAR_BACKSLASH) i += 2;
+    else if (pdf[i] === CHAR_OPEN_PAREN) { depth++; i++; }
+    else if (pdf[i] === CHAR_CLOSE_PAREN) { depth--; i++; }
+    else i++;
+  }
+  return Math.min(i, end);
+}
+
+function readFilterArray(pdf: Buffer, bracketAt: number, end: number): { chain: string[]; next: number } {
+  const chain: string[] = [];
+  let i = bracketAt + 1;
+  while (i < end) {
+    i = skipPdfTrivia(pdf, i, end);
+    if (i >= end || pdf[i] === CHAR_CLOSE_BRACKET) { i++; break; }
+    if (pdf[i] === CHAR_SLASH) {
+      const token = readPdfName(pdf, i);
+      chain.push(token.name);
+      i = token.end;
+    } else {
+      i++;
+    }
+  }
+  return { chain, next: i };
+}
+
+function extractJbig2FilterChain(pdf: Buffer, start: number, end: number): string[] | null {
+  let dictDepth = 0;
+  let i = start;
+  while (i < end) {
+    i = skipPdfTrivia(pdf, i, end);
+    if (i >= end) break;
+    const b = pdf[i];
+    if (b === CHAR_LT && i + 1 < end && pdf[i + 1] === CHAR_LT) { dictDepth++; i += 2; continue; }
+    if (b === CHAR_GT && i + 1 < end && pdf[i + 1] === CHAR_GT) { if (dictDepth > 0) dictDepth--; i += 2; continue; }
+    if (b === CHAR_OPEN_PAREN) { i = skipPdfLiteralString(pdf, i, end); continue; }
+    if (b !== CHAR_SLASH) { i++; continue; }
+    const key = readPdfName(pdf, i);
+    i = key.end;
+    if (dictDepth > 1 || key.name !== 'Filter') continue;
+    i = skipPdfTrivia(pdf, i, end);
+    if (i < end && pdf[i] === CHAR_SLASH) {
+      const val = readPdfName(pdf, i);
+      i = val.end;
+      if (val.name === 'JBIG2Decode') return [val.name];
+    } else if (i < end && pdf[i] === CHAR_OPEN_BRACKET) {
+      const { chain, next } = readFilterArray(pdf, i, end);
+      i = next;
+      if (chain.includes('JBIG2Decode')) return chain;
+    }
+  }
+  return null;
 }
 
 /** Start of the data after the `stream` keyword at `keywordAt` (one line feed, or a carriage return and a line feed). */
@@ -180,17 +329,41 @@ function streamDataStart(pdf: Buffer, keywordAt: number): number {
 }
 
 /**
- * The stream object whose dictionary, written between `regionStart` and the `stream` keyword at `keywordAt`, names JBIG2Decode
- * as its first filter. `regionStart` is never before the end of the dictionary text read for the stream before it, so the
- * text read for all the streams of a file is no more than the file.
+ * The stream object whose dictionary, written between `regionStart` and `keywordAt`, uses `JBIG2Decode` directly or behind
+ * bounded `FlateDecode` filters.
  */
 function jbig2StreamIn(pdf: Buffer, nameAt: number, regionStart: number, keywordAt: number, stats: Jbig2ScanStats): Jbig2Stream | null {
-  const dictionaryRegion = pdf.toString('latin1', Math.max(nameAt - DICTIONARY_LOOKBACK_BYTES, regionStart), keywordAt);
+  const lookbackStart = Math.max(nameAt - DICTIONARY_LOOKBACK_BYTES, regionStart);
+  const dictionaryRegion = pdf.toString('latin1', lookbackStart, keywordAt);
   stats.bytesScanned += dictionaryRegion.length;
   const headers = [...dictionaryRegion.matchAll(OBJECT_HEADER_PATTERN)];
   const header = headers[headers.length - 1];
-  if (header === undefined || !FIRST_FILTER_PATTERN.test(dictionaryRegion.slice(header.index))) return null;
-  return { objectNumber: Number(header[1]), dataStart: streamDataStart(pdf, keywordAt) };
+  if (header === undefined) return null;
+  const chain = extractJbig2FilterChain(pdf, lookbackStart + header.index + header[0].length, keywordAt);
+  const jbig2Index = chain ? chain.indexOf('JBIG2Decode') : -1;
+  if (jbig2Index < 0) return null;
+  for (let i = 0; i < jbig2Index; i++) {
+    if (chain![i] !== 'FlateDecode') return null;
+  }
+  if (jbig2Index > MAX_FLATE_CHAIN_DEPTH) {
+    throw new DecompressionLimitError(`PDF object ${header[1]} declares ${jbig2Index} FlateDecode layers before JBIG2Decode`);
+  }
+  return { objectNumber: Number(header[1]), dataStart: streamDataStart(pdf, keywordAt), flateLayers: jbig2Index };
+}
+
+function inspectJbig2Page(pdf: Buffer, stream: Jbig2Stream, budget: InflateBudget): Jbig2Page | null {
+  if (stream.flateLayers === 0) return jbig2PageAt(pdf, stream.dataStart);
+  const endAt = pdf.indexOf(ENDSTREAM_KEYWORD, stream.dataStart);
+  let current = pdf.subarray(stream.dataStart, endAt >= 0 ? endAt : pdf.length);
+  for (let layer = 0; layer < stream.flateLayers; layer++) {
+    try {
+      current = inflatePdfFlate(current, { label: `PDF object ${stream.objectNumber} JBIG2 filter`, budget });
+    } catch (err) {
+      if (err instanceof DecompressionLimitError) throw err;
+      return null;
+    }
+  }
+  return current.length > 0 ? jbig2PageAt(current, 0) : null;
 }
 
 /** A JBIG2 stream of a PDF and the page its page information segment declares. */
@@ -203,20 +376,18 @@ export interface DeclaredJbig2Page {
 }
 
 /**
- * The JBIG2 streams of `pdf` whose first filter is JBIG2Decode and whose page size is declared, in file order. One pass: the
- * names are taken in order, the next `stream` and `endobj` keywords are searched forward from them and kept, a name before
- * the keyword of a stream already looked at belongs to the same dictionary and is skipped, and a name in an object that ends
- * before any stream (or after the last stream of the file) is not a stream filter.
+ * The JBIG2 streams of `pdf` (including `#XX` hex-escaped names and `/FlateDecode` chains) in file order. Fail-closed: throws
+ * `DecompressionLimitError` if `MAX_JBIG2_NAMES_EXAMINED` is exhausted while unexamined JBIG2 names remain.
  */
 export function* declaredJbig2Pages(pdf: Buffer, stats: Jbig2ScanStats = { namesExamined: 0, bytesScanned: 0 }): Generator<DeclaredJbig2Page> {
   const streams = new ForwardKeywordSearch(pdf, STREAM_KEYWORD, stats, (at) => isStreamKeyword(pdf, at));
   const objectEnds = new ForwardKeywordSearch(pdf, END_OBJECT_KEYWORD, stats);
+  const budget = new InflateBudget();
   let resumeAt = 0;
   let regionStart = 0;
   while (stats.namesExamined < MAX_JBIG2_NAMES_EXAMINED) {
-    const nameAt = pdf.indexOf(JBIG2_FILTER, resumeAt);
+    const nameAt = findNextJbig2Name(pdf, resumeAt, stats);
     if (nameAt < 0) return;
-    stats.bytesScanned += nameAt - resumeAt;
     stats.namesExamined++;
     const keywordAt = streams.nextAtOrAfter(nameAt);
     if (keywordAt < 0) return;
@@ -228,10 +399,15 @@ export function* declaredJbig2Pages(pdf: Buffer, stats: Jbig2ScanStats = { names
     const stream = jbig2StreamIn(pdf, nameAt, regionStart, keywordAt, stats);
     resumeAt = keywordAt;
     regionStart = keywordAt;
-    const page = stream === null ? null : jbig2PageAt(pdf, stream.dataStart);
+    const page = stream === null ? null : inspectJbig2Page(pdf, stream, budget);
     if (stream !== null && page !== null) {
       yield { objectNumber: stream.objectNumber, ...page, decodedBytes: decodedBytesOf(page) };
     }
+  }
+  if (findNextJbig2Name(pdf, resumeAt, stats) >= 0) {
+    throw new DecompressionLimitError(
+      `PDF exceeds the maximum of ${MAX_JBIG2_NAMES_EXAMINED} examined JBIG2 filter names with uninspected JBIG2 entries remaining.`
+    );
   }
 }
 

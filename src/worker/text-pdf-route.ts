@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { safeOutputStem } from '../lib/conversions/page-range';
 import { hasCjkScript, hasComplexTextScript } from '../lib/conversions/ctl';
 import { assertFontCoverage, findUncoveredCodePoint, loadFontCoverageIndex } from '../lib/conversions/pdf-fonts';
 import { decodeHtmlInput } from '../lib/conversions/html-encoding';
@@ -130,10 +131,10 @@ async function stageTextPdfHtml(
   } else if (src === PLAIN_TEXT_SOURCE) {
     html = plainTextToHtml(decodeTextInput(readRawInputBuffer(input)));
   } else if (src === MARKDOWN_SOURCE) {
-    html = markdownToSafeHtml(decodeTextInput(readRawInputBuffer(input)), originalFilename.replace(/\.[^/.]+$/, ''));
+    html = markdownToSafeHtml(decodeTextInput(readRawInputBuffer(input)), safeOutputStem(originalFilename));
   } else if (parsedHwp) {
     await normalizeHwpModelSvgImages(parsedHwp);
-    const baseName = originalFilename.replace(/\.[^/.]+$/, '') || 'document';
+    const baseName = safeOutputStem(originalFilename, 'document');
     html = (await convertHwpDocument(parsedHwp, HTML_FORMAT, {}, baseName)).buffer.toString('utf-8');
   } else {
     html = (await convertFile(readRawInputBuffer(input), src, HTML_FORMAT, {}, originalFilename)).buffer.toString('utf-8');

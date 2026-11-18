@@ -6,7 +6,7 @@ import { MAX_DOCUMENT_INFLATE_BYTES } from '../lib/conversions/bounded-inflate';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
 import { renderedXpsPageParts } from '../lib/conversions/office/xps-reader';
 import { partKey, requirePagesDrawable } from '../lib/conversions/office/xps-resources';
-import { boundPageImages } from '../lib/conversions/page-range';
+import { boundPageImages, safeOutputStem } from '../lib/conversions/page-range';
 import { writeZipFile } from '../lib/conversions/zip-writer';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
 import { readSandboxOutput, sandboxOutputSize } from '../lib/security/sandbox-output';
@@ -159,7 +159,7 @@ async function writePdf(job: XpsJob, entries: readonly PackageEntry[], tempDir: 
 }
 
 function baseNameOf(job: XpsJob): string {
-  return job.originalFilename ? job.originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  return safeOutputStem(job.originalFilename);
 }
 
 /**

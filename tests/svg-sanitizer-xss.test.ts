@@ -834,9 +834,11 @@ describe('external CSS reference forms (PR #402 review item 3)', () => {
     });
   }
 
-  it('keeps local references, relative urls, data urls and local image-sets intact', () => {
+  it('keeps local #fragment references, safe raster data urls and allowlisted image-sets while neutralizing relative paths and src()', () => {
     const css = 'g{fill:url(#a);b:url(/rel/x.png);c:url("data:image/png;base64,AAAA");d:image-set("a.png" 1x,"b.png" 2x);e:image-set(url(#a) 1x);f:src(local-font)}';
-    expect(sanitizeSvgString(`<svg><style>${css}</style></svg>`)).toBe(`<svg><style>${css}</style></svg>`);
+    expect(sanitizeSvgString(`<svg><style>${css}</style></svg>`)).toBe(
+      '<svg><style>g{fill:url(#a);b:none;c:url("data:image/png;base64,AAAA");d:none;e:image-set(url(#a) 1x);f:none}</style></svg>'
+    );
   });
 
   describe('termination on adversarial CSS', () => {
@@ -937,7 +939,6 @@ describe('external references in presentation attributes (issue #403 item 1)', (
     '<rect clip-path="url(&quot;#c&quot;)" mask="url(#m)"/>',
     '<path marker-start="url(#a)" marker-mid="url(#a)" marker-end="url(#a)"/>',
     '<rect cursor="pointer"/>',
-    '<rect fill="url(/rel/x.png)" title="url(http://e/x)"/>',
   ];
 
   for (const markup of benign) {
@@ -946,6 +947,12 @@ describe('external references in presentation attributes (issue #403 item 1)', (
       expect(sanitizeSvgString(input)).toBe(input);
     });
   }
+
+  it('neutralizes relative url(/rel/x.png) on presentation attribute while leaving title untouched', () => {
+    expect(sanitizeSvgString('<svg><rect fill="url(/rel/x.png)" title="url(http://e/x)"/></svg>')).toBe(
+      '<svg><rect fill="none" title="url(http://e/x)"/></svg>'
+    );
+  });
 
   it('does not rewrite text, comments or CDATA that mention a presentation attribute', () => {
     const input = '<svg><text>fill="url(http://e/x)"</text><!-- <rect fill="url(http://e/x)"/> --></svg>';

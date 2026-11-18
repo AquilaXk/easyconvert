@@ -15,7 +15,7 @@ import { createZipArchive } from '../archive';
 import { assertPdfHeader } from '../pdf-text-document';
 import { openPdfForEditing, type PdfAccess, type PdfEditOperation } from '../pdf-access';
 import { readSandboxOutput } from '../../security/sandbox-output';
-import { validatePageRangeSyntax } from '../page-range';
+import { sanitizeLeafStem, validatePageRangeSyntax } from '../page-range';
 import { withMendedPageTree } from './mend-page-tree';
 import { QPDF_COMPACT_OUTPUT_ARGS, runQpdf, runQpdfToBuffer, withQpdfInputFile, withQpdfWorkspace, type QpdfWorkspace } from './qpdf-run';
 
@@ -338,7 +338,7 @@ function splitEvery(options: PdfSplitOptions): number {
 /** Entry name of part `index` (from 1) of `count` parts: `<name>-part001.pdf`, padded to the width of the last. */
 function partName(baseName: string, index: number, count: number): string {
   const width = Math.max(MIN_PART_DIGITS, String(count).length);
-  return `${baseName}-part${String(index).padStart(width, '0')}.pdf`;
+  return `${sanitizeLeafStem(baseName, 'document')}-part${String(index).padStart(width, '0')}.pdf`;
 }
 
 function partNumberOf(name: string): number {

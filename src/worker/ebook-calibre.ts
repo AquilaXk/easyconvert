@@ -6,6 +6,7 @@ import { MAX_DOCUMENT_INFLATE_BYTES } from '../lib/conversions/bounded-inflate';
 import { CALIBRE_ONLY_SOURCES, calibreEngineUnavailable } from '../lib/conversions/calibre-ebook-targets';
 import { assertNoVectorImages, rewriteEpubFromModel } from '../lib/conversions/epub-rewrite';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
+import { safeOutputStem } from '../lib/conversions/page-range';
 import { watchDirectoryGrowth } from './directory-growth-watch';
 import { fitsWindows1252 } from '../lib/conversions/office/windows-1252';
 import { writeZipFile, type ZipEntryInput } from '../lib/conversions/zip-writer';
@@ -426,7 +427,7 @@ export const CALIBRE_TARGETS: Readonly<Record<string, CalibreTarget>> = {
 };
 
 function baseNameOf(originalFilename: string): string {
-  return originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  return safeOutputStem(originalFilename);
 }
 
 /**

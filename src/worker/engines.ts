@@ -36,7 +36,7 @@ import { runWithImageFetchSession } from '../lib/conversions/html-image-fetch';
 import { assertConversionOptionsObject } from '../lib/conversions/options-guard';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath } from '../lib/security/file-guard';
 import { readSandboxOutput, readSandboxOutputFiles, readSandboxOutputIfPresent, sandboxOutputSize } from '../lib/security/sandbox-output';
-import { boundPageImages, pageEntryName, pagesToDraw, resolvePageIntervals } from '../lib/conversions/page-range';
+import { boundPageImages, pageEntryName, pagesToDraw, resolvePageIntervals, safeOutputStem } from '../lib/conversions/page-range';
 import { pagesOfIntervals, type PageInterval } from '../lib/conversions/page-intervals';
 import {
   buildFfmpegArguments,
@@ -77,7 +77,7 @@ import { HTML_FORMAT, HTML_SOURCES, planTextPdfRoute } from './text-pdf-route';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, findOfficeOutput, getMimeType, handOffOutput, inProcessOutputPath, internalFallbackResult, preserveOutput, resolveInputContext, resolveOfficeInputContext, withPageNumbers, withSandboxDir, writeOutputSegments, readRawInputBuffer } from './worker-output';
-import { DIRECT_RENDER_BATCH_PAGES, assertPdfBmpOutputWithinLimit, assertRasterOutputWithinLimit, ppmBatchPages, renderPngBatch, renderScratchPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, withPageRenderLanes, type PageBatch } from './poppler-ppm';
+import { DIRECT_RENDER_BATCH_PAGES, POPPLER_MAX_FILE_SIZE, POPPLER_MEMORY_LIMIT_MB, assertPdfBmpOutputWithinLimit, assertRasterOutputWithinLimit, ppmBatchPages, renderPngBatch, renderScratchPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, withPageRenderLanes, type PageBatch } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { InputPixelLimitError } from '../lib/conversions/image-input-limits';
 import { checkOpenedPdfRasterPageBudget } from '../lib/conversions/pdf-access';
@@ -109,10 +109,11 @@ import {
   sevenZipCreatePasswordInput, sevenZipEncryptionCheckInput, walkArchiveTreePaths,
 } from '../lib/conversions/archive-password';
 import { resolveArchiveCompressionLevel } from '../lib/conversions/archive-compression-level';
-import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, officeInputBytes, resolveLibreOfficeFilter, standaloneProfileArguments } from './libreoffice-pool';
+import { runWithDirectoryGrowthWatch } from './directory-growth-watch';
+import { LIBREOFFICE_ADDRESS_SPACE_BYTES, LIBREOFFICE_MAX_FILE_SIZE, LIBREOFFICE_MEMORY_LIMIT_MB, LibreOfficePoolManager, LibreOfficePoolTimeoutError, officeInputBytes, resolveLibreOfficeFilter, standaloneProfileArguments } from './libreoffice-pool';
 import { BUILT_IN_ENGINE, engineAllowsRoute, type EngineId } from '../lib/conversions/engine-ids';
 
-export { EngineUnavailableError, InvalidPageRangeError, ComplexScriptRequiresNativeEngineError };
+export { EngineUnavailableError, InvalidPageRangeError, ComplexScriptRequiresNativeEngineError, safeOutputStem };
 
 export type { WorkerVfsPayload, WorkerEngineOptions, WorkerConversionResult } from './worker-types';
 
@@ -315,7 +316,7 @@ async function runHeadlessOffice(
     }
   }
 
-  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const baseName = safeOutputStem(originalFilename);
   const startTime = Date.now();
 
   try {
@@ -323,39 +324,25 @@ async function runHeadlessOffice(
       const { inputPath } = resolveOfficeInputContext(input, src, tempDir);
       const timeout = sizedStageTimeoutMs(options, officeInputBytes(inputPath), OFFICE_STAGE);
       const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
-
-      await executeSandboxedBinary(
-        sofficeBin,
-        [
-          '--headless',
-          '--norestore',
-          '--nofirststartwizard',
-          '--nologo',
-          ...standaloneProfileArguments(tempDir, options, src, inputPath),
-          '--convert-to',
-          filterSpec,
-          '--outdir',
-          tempDir,
-          inputPath,
-        ],
-        {
-          cwd: tempDir, workDir: tempDir, readDirs: [fs.realpathSync(inputPath)], socketDirs: [OFFICE_PIPE_DIR],
-          timeoutMs: timeout,
-          maxBuffer,
-          env: { HOME: tempDir, TMPDIR: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
-          networkIsolated: true,
-          signal: options.signal,
-        }
+      const diskLimit = officeInputBytes(inputPath) + LIBREOFFICE_MAX_FILE_SIZE + 64 * 1024 * 1024;
+      await runWithDirectoryGrowthWatch(
+        { root: tempDir, limits: { maxBytes: diskLimit, maxEntries: ARCHIVE_SECURITY_LIMITS.MAX_FILES }, label: 'LibreOffice', callerSignal: options.signal },
+        (watchSignal) =>
+          executeSandboxedBinary(
+            sofficeBin,
+            ['--headless', '--norestore', '--nofirststartwizard', '--nologo', ...standaloneProfileArguments(tempDir, options, src, inputPath), '--convert-to', filterSpec, '--outdir', tempDir, inputPath],
+            {
+              cwd: tempDir, workDir: tempDir, readDirs: [fs.realpathSync(inputPath)], socketDirs: [OFFICE_PIPE_DIR],
+              timeoutMs: timeout, maxBuffer, maxFileSize: LIBREOFFICE_MAX_FILE_SIZE, memoryLimitMb: LIBREOFFICE_MEMORY_LIMIT_MB,
+              rlimits: { asBytes: LIBREOFFICE_ADDRESS_SPACE_BYTES }, env: { HOME: tempDir, TMPDIR: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
+              networkIsolated: true, signal: watchSignal,
+            }
+          )
       );
-
       const tempOutputPath = findOfficeOutput(tempDir);
-      if (tempOutputPath === undefined) {
-        throw new Error(`LibreOffice execution completed without producing expected output file for target format "${tgt}"`);
-      }
-
+      if (tempOutputPath === undefined) throw new Error(`LibreOffice execution completed without producing expected output file for target format "${tgt}"`);
       const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
       const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
-
       return createConversionResult(
         persistedPath,
         tgt,
@@ -395,7 +382,7 @@ export async function convertWithNativeFfmpeg(
     return null;
   }
 
-  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const baseName = safeOutputStem(originalFilename);
   const startTime = Date.now();
 
   try {
@@ -462,7 +449,7 @@ export async function convertWithNativeFfmpeg(
           parts.push({ filename: file.name, buffer: file.bytes });
         }
 
-        const tempZipPath = path.join(tempDir, `${baseName}-${packaging.format}.zip`);
+        const tempZipPath = path.join(tempDir, 'packaged-output.zip');
         await writeDeflatedZipFile(tempZipPath, parts.map((part) => ({ name: part.filename, data: part.buffer })));
 
         const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
@@ -799,7 +786,7 @@ export async function convertWithNative7z(
     return null;
   }
 
-  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const baseName = safeOutputStem(originalFilename);
   const startTime = Date.now();
   const timeout = Math.min(stageTimeoutMs(options, 60000), 180000);
   const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
@@ -940,6 +927,8 @@ export async function countPagesOfReadablePdf(
         cwd: tempDir, workDir: tempDir, readDirs: [inputPath],
         timeoutMs,
         maxBuffer: 10 * 1024 * 1024,
+        memoryLimitMb: POPPLER_MEMORY_LIMIT_MB,
+        maxFileSize: POPPLER_MAX_FILE_SIZE,
         networkIsolated: true,
         signal,
       });
@@ -1027,7 +1016,7 @@ async function convertPdfToTextWithPoppler(
     return null;
   }
 
-  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const baseName = safeOutputStem(originalFilename);
   try {
     return await withSandboxDir('easyconvert-poppler-txt-', async (tempDir) => {
       const { inputPath } = resolveInputContext(input, 'pdf', tempDir);
@@ -1037,13 +1026,18 @@ async function convertPdfToTextWithPoppler(
         { inputPath, tempDir, password: options.password, timeoutMs: timeout, signal: options.signal },
         async (readablePath) => {
           try {
-            await executeSandboxedBinary(pdftotextBin, [...pdftotextArgs, readablePath, tempOutputPath], {
-              cwd: tempDir, workDir: tempDir, readDirs: [readablePath],
-              timeoutMs: timeout,
-              maxBuffer,
-              networkIsolated: true,
-              signal: options.signal,
-            });
+            const diskLimit = officeInputBytes(readablePath) * 2 + POPPLER_MAX_FILE_SIZE + 64 * 1024 * 1024;
+            await runWithDirectoryGrowthWatch({ root: tempDir, limits: { maxBytes: diskLimit, maxEntries: ARCHIVE_SECURITY_LIMITS.MAX_FILES }, label: 'pdftotext', callerSignal: options.signal }, (watchSignal) =>
+              executeSandboxedBinary(pdftotextBin, [...pdftotextArgs, readablePath, tempOutputPath], {
+                cwd: tempDir, workDir: tempDir, readDirs: [readablePath],
+                timeoutMs: timeout,
+                maxBuffer,
+                memoryLimitMb: POPPLER_MEMORY_LIMIT_MB,
+                maxFileSize: POPPLER_MAX_FILE_SIZE,
+                networkIsolated: true,
+                signal: watchSignal,
+              })
+            );
           } catch (err) {
             throw toPopplerPasswordError(err) ?? toPopplerOutputLimitError(err) ?? toPopplerDamageSignal(err, options.inProcessFallback) ?? err;
           }
@@ -1159,7 +1153,7 @@ async function finalizeMultiPageOutput(params: FinalizeMultiPageParams): Promise
     data: readSandboxOutput(path.join(tempDir, item.file)),
   }));
 
-  const zipOutputPath = path.join(tempDir, `${baseName}.zip`);
+  const zipOutputPath = path.join(tempDir, 'pages-output.zip');
   await writeDeflatedZipFile(zipOutputPath, pageFiles);
 
   const persistedPath = preserveOutput(zipOutputPath, 'zip', options, vfsPayload);
@@ -1185,8 +1179,8 @@ interface PopplerRenderParams {
    * is only needed to know how many pages follow. The count is read first, every failure it reports is reported, and
    * the early run is awaited (never left running) before the job directory goes.
    */
-  startEarly?: (tempDir: string, inputPath: string) => EarlyRender | null;
-  renderPages: (tempDir: string, inputPath: string, intervals: PageInterval[], early: EarlyRender | null) => Promise<void>;
+  startEarly?: (tempDir: string, inputPath: string, signal?: AbortSignal) => EarlyRender | null;
+  renderPages: (tempDir: string, inputPath: string, intervals: PageInterval[], early: EarlyRender | null, signal?: AbortSignal) => Promise<void>;
 }
 
 /** Pages 1 to `throughPage` are being rendered by `done` (it resolves once they are on disk, and rejects as the render would). */
@@ -1209,7 +1203,7 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
   const { sandboxPrefix, singleFile, tgt, input, options, originalFilename, startTime, timeout, rasterDpi, filterOutputFile, missingOutputError, startEarly, renderPages } =
     params;
 
-  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const baseName = safeOutputStem(originalFilename);
   try {
     return await withSandboxDir(sandboxPrefix, async (tempDir) => {
       const { inputPath } = resolveInputContext(input, 'pdf', tempDir);
@@ -1223,18 +1217,24 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
           if (rasterDpi !== undefined && pdfBytes !== undefined) {
             await checkOpenedPdfRasterPageBudget(pdfBytes, (count) => pagesOfIntervals(resolveRequestedPages(options, count, !singleFile)), rasterDpi);
           }
-          const early = startEarly ? startEarly(tempDir, readablePath) : null;
-          // An early run that fails is reported where the render would have reported it, below.
-          early?.done.catch(() => undefined);
-          let requestedIntervals: PageInterval[];
-          try {
-            const pageCount = await countPagesOfReadablePdf(readablePath, tempDir, timeout, options.signal, pdfBytes);
-            requestedIntervals = resolveRequestedPages(options, pageCount, !singleFile);
-          } catch (err) {
-            await early?.done.catch(() => undefined);
-            throw err;
-          }
-          await renderPages(tempDir, readablePath, requestedIntervals, early);
+          let requestedIntervals: PageInterval[] = [];
+          const diskLimit = officeInputBytes(readablePath) * 2 + 2 * POPPLER_MAX_FILE_SIZE;
+          await runWithDirectoryGrowthWatch(
+            { root: tempDir, limits: { maxBytes: diskLimit, maxEntries: ARCHIVE_SECURITY_LIMITS.MAX_FILES }, label: 'Poppler', callerSignal: options.signal },
+            async (watchSignal) => {
+              const early = startEarly ? startEarly(tempDir, readablePath, watchSignal) : null;
+              // An early run that fails is reported where the render would have reported it, below.
+              early?.done.catch(() => undefined);
+              try {
+                const pageCount = await countPagesOfReadablePdf(readablePath, tempDir, timeout, watchSignal, pdfBytes);
+                requestedIntervals = resolveRequestedPages(options, pageCount, !singleFile);
+              } catch (err) {
+                await early?.done.catch(() => undefined);
+                throw err;
+              }
+              await renderPages(tempDir, readablePath, requestedIntervals, early, watchSignal);
+            }
+          );
 
           const files = fs.readdirSync(tempDir).filter(filterOutputFile);
           if (files.length === 0) {
@@ -1297,17 +1297,17 @@ async function renderPdfToImageWithPoppler(
     rasterDpi: dpi,
     filterOutputFile: (f) => f.startsWith('page') && !f.endsWith('.pdf'),
     missingOutputError: 'pdftoppm execution completed without producing any output images',
-    startEarly: (tempDir, inputPath) => {
+    startEarly: (tempDir, inputPath, watchSignal) => {
       if (tgt !== PNG_FORMAT || selectsPages(options) || options.multiPageOutput === 'first') return null;
       const throughPage = ppmBatchPages(dpi);
-      const sandbox = { cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal };
+      const sandbox = { cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: timeout, maxBuffer, memoryLimitMb: POPPLER_MEMORY_LIMIT_MB, maxFileSize: POPPLER_MAX_FILE_SIZE, networkIsolated: true, signal: watchSignal ?? options.signal };
       const prefix = path.join(tempDir, 'page');
       const done = writePngBatch(pdftoppmBin, tempDir, dpi, sandbox, buildPdftoppmArgs(tgt, options, 1, throughPage, inputPath, prefix), { start: 1, end: throughPage });
       return { throughPage, done };
     },
-    renderPages: async (tempDir, inputPath, intervals, early) => {
+    renderPages: async (tempDir, inputPath, intervals, early, watchSignal) => {
       const prefix = path.join(tempDir, 'page');
-      const sandbox = { cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal };
+      const sandbox = { cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: timeout, maxBuffer, memoryLimitMb: POPPLER_MEMORY_LIMIT_MB, maxFileSize: POPPLER_MAX_FILE_SIZE, networkIsolated: true, signal: watchSignal ?? options.signal };
       // Poppler draws on one thread, so the batches of pages run side by side (the early batch counted among them).
       const isPng = tgt === PNG_FORMAT;
       const batchPages = isPng ? ppmBatchPages(dpi) : DIRECT_RENDER_BATCH_PAGES;
@@ -1348,7 +1348,7 @@ async function renderPdfToSvgWithPoppler(
     timeout,
     filterOutputFile: (f) => f.endsWith('.svg'),
     missingOutputError: 'pdftocairo execution completed without producing any output SVG files',
-    renderPages: async (tempDir, inputPath, intervals) => {
+    renderPages: async (tempDir, inputPath, intervals, _early, watchSignal) => {
       const pages = pagesOfIntervals(intervals);
       const budget = pageLoopBudget(options, pages.length, timeout);
       // One process for each page, several at once: a long document is drawn by the cores that are there, as its PNG pages are.
@@ -1359,7 +1359,7 @@ async function renderPdfToSvgWithPoppler(
             const args = ['-svg', '-f', String(p), '-l', String(p), inputPath, path.join(tempDir, `page-${p}.svg`)];
             await executeSandboxedBinary(pdftocairoBin, args, {
               cwd: tempDir, workDir: tempDir, readDirs: [inputPath],
-              timeoutMs: remaining, maxBuffer, networkIsolated: true, signal: options.signal,
+              timeoutMs: remaining, maxBuffer, memoryLimitMb: POPPLER_MEMORY_LIMIT_MB, maxFileSize: POPPLER_MAX_FILE_SIZE, networkIsolated: true, signal: watchSignal ?? options.signal,
             });
           }),
           lanes
@@ -1560,8 +1560,8 @@ async function convertPdfToPostScript(
   const timeout = Math.min(stageTimeoutMs(options, POPPLER_DEFAULT_TIMEOUT_MS), POPPLER_MAX_TIMEOUT_MS);
   const maxBuffer = Math.min(options.maxBufferBytes || POPPLER_DEFAULT_MAX_BUFFER_BYTES, POPPLER_MAX_BUFFER_BYTES);
   const isEps = tgt === EPS_TARGET;
-  const run = (tempDir: string, inputPath: string, args: string[], budget: PageLoopBudget) =>
-    executeSandboxedBinary(pdftopsBin, args, { cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: budget.remainingMs(), maxBuffer, networkIsolated: true, signal: options.signal });
+  const run = (tempDir: string, inputPath: string, args: string[], budget: PageLoopBudget, watchSignal?: AbortSignal) =>
+    executeSandboxedBinary(pdftopsBin, args, { cwd: tempDir, workDir: tempDir, readDirs: [inputPath], timeoutMs: budget.remainingMs(), maxBuffer, memoryLimitMb: POPPLER_MEMORY_LIMIT_MB, maxFileSize: POPPLER_MAX_FILE_SIZE, networkIsolated: true, signal: watchSignal ?? options.signal });
 
   return executePopplerRender({
     sandboxPrefix: 'easyconvert-poppler-ps-',
@@ -1574,18 +1574,18 @@ async function convertPdfToPostScript(
     timeout,
     filterOutputFile: (f) => f.endsWith(`.${tgt}`),
     missingOutputError: `pdftops execution completed without producing any .${tgt} output`,
-    renderPages: async (tempDir, inputPath, intervals) => {
+    renderPages: async (tempDir, inputPath, intervals, _early, watchSignal) => {
       if (isEps) {
         const epsPages = pagesOfIntervals(intervals);
         const budget = pageLoopBudget(options, epsPages.length, timeout);
-        await withPageRenderLanes((lanes) => writeEpsPages(epsPages, tempDir, inputPath, (dir, args) => run(dir, inputPath, args, budget), lanes));
+        await withPageRenderLanes((lanes) => writeEpsPages(epsPages, tempDir, inputPath, (dir, args) => run(dir, inputPath, args, budget, watchSignal), lanes));
         return;
       }
       if (intervals.length !== 1) {
         throw new InvalidPageRangeError('PostScript output holds one run of consecutive pages: select a single range such as 2-4.');
       }
       const { start: first, end: last } = intervals[0];
-      await run(tempDir, inputPath, ['-f', String(first), '-l', String(last), inputPath, path.join(tempDir, `output.${tgt}`)], pageLoopBudget(options, 1, timeout));
+      await run(tempDir, inputPath, ['-f', String(first), '-l', String(last), inputPath, path.join(tempDir, `output.${tgt}`)], pageLoopBudget(options, 1, timeout), watchSignal);
     },
   });
 }
@@ -1602,7 +1602,7 @@ async function convertPdfToHtml(
   engine: WorkerConversionResult['engineUsed']
 ): Promise<WorkerConversionResult> {
   const startTime = Date.now();
-  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const baseName = safeOutputStem(originalFilename);
   const html = await convertFile(pdf, 'pdf', HTML_TARGET, encoderOptions(options), `${baseName}.pdf`);
   const body = HTML_BODY_PATTERN.exec(html.buffer.toString('utf-8'))?.[1] ?? '';
   if (body.replace(HTML_TAG_PATTERN, '').trim() === '') {
@@ -1625,7 +1625,7 @@ export async function convertPdfPagesWithNativeTools(
   const tgt = validateFormat(targetFormat);
   if (!isPdfChainTarget(tgt)) return null;
   const startTime = Date.now();
-  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const baseName = safeOutputStem(originalFilename);
   const context: ChainOutputContext = { engine: 'native-poppler', baseName, options, input, startTime };
   if (ENCODED_RASTER_TARGETS.has(tgt)) return convertPdfToEncodedRaster(input, tgt, options, originalFilename, context);
   if (isSvgPageTarget(tgt)) return convertPdfToSvgPageFormat(input, tgt, options, originalFilename, context);
@@ -1655,7 +1655,7 @@ export async function convertWithNativeRaw(
     return null;
   }
 
-  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const baseName = safeOutputStem(originalFilename);
   const startTime = Date.now();
   const timeout = Math.min(stageTimeoutMs(options, RAW_DECODE_DEFAULT_TIMEOUT_MS), RAW_DECODE_MAX_TIMEOUT_MS);
 
@@ -1798,7 +1798,7 @@ export async function convertWithInProcessRawSensor(
   const decoded = await decodeRawInThread(src as 'x3f' | 'raw', file, timeout, options.signal);
   const intermediate = encode16BitTiff(decoded.width, decoded.height, decoded.rgb16);
   const converted = await convertImage(intermediate, tgt, options, originalFilename, 'tiff');
-  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const baseName = safeOutputStem(originalFilename);
   return withSandboxDir('easyconvert-raw-', async (tempDir) => {
     const tempOutputPath = path.join(tempDir, `output.${tgt}`);
     fs.writeFileSync(tempOutputPath, converted.buffer);

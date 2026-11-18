@@ -4,7 +4,7 @@ import path from 'node:path';
 import { checkDjvuContainer } from '../lib/conversions/djvu-container';
 import { DJVUSED_MAX_OUTPUT_BYTES, DJVUSED_PAGE_COUNT_SCRIPT, DJVUSED_SIZE_SCRIPT, parseDjvusedPageCount, parseDjvusedSizes, type DjvuPageSize } from '../lib/conversions/djvu-report';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
-import { boundPageImages, resolvePageIntervals } from '../lib/conversions/page-range';
+import { boundPageImages, resolvePageIntervals, safeOutputStem } from '../lib/conversions/page-range';
 import { pageCountOfIntervals, type PageInterval } from '../lib/conversions/page-intervals';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
 import { Semaphore } from '../lib/workers/semaphore';
@@ -507,7 +507,7 @@ async function inRunSlot<T>(run: DjvuRun, task: () => Promise<T>): Promise<T> {
 }
 
 function baseNameOf(job: DjvuJob): string {
-  return job.originalFilename ? job.originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  return safeOutputStem(job.originalFilename);
 }
 
 /**

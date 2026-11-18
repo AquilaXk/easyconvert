@@ -4,7 +4,8 @@ import type { DecodedAnimation, FrameSelection } from './image-frames';
 import { assertAnimationBudget, COMPOSED_MEMORY, RGBA_BYTES_PER_PIXEL } from './image-limits';
 import { joinPostscriptPages } from './image-postscript';
 import { joinTiffPages } from './image-tiff-merge';
-import { pageEntryName } from './page-range';
+import { pageEntryName, sanitizeLeafStem } from './page-range';
+export { safeOutputStem } from './page-range';
 import { createDeflatedZipBuffer } from './zip-writer';
 import type { ConversionResult } from '../types';
 import { resizedDimensions } from './image-input-limits';
@@ -97,17 +98,18 @@ export async function packagePageOutputs(
   convertPage: (page: number) => Promise<ConversionResult>
 ): Promise<ConversionResult | null> {
   const { target, baseName, extension, frameFields } = output;
+  const safeBaseName = sanitizeLeafStem(baseName, 'page');
   if (selection.tiffPages) {
     const joined = await joinPageTiffs(selection.tiffPages, convertPage);
-    return { buffer: joined, mimeType: 'image/tiff', filename: `${baseName}.${extension}`, size: joined.length, ...frameFields };
+    return { buffer: joined, mimeType: 'image/tiff', filename: `${safeBaseName}.${extension}`, size: joined.length, ...frameFields };
   }
   if (selection.zipPages && target === POSTSCRIPT_TARGET) {
     const document = joinPostscriptPages(await convertEachPage(selection.zipPages, convertPage));
-    return { buffer: document, mimeType: 'application/postscript', filename: `${baseName}.${extension}`, size: document.length, ...frameFields };
+    return { buffer: document, mimeType: 'application/postscript', filename: `${safeBaseName}.${extension}`, size: document.length, ...frameFields };
   }
   if (selection.zipPages) {
-    const zipped = await zipPageImages(selection.zipPages, convertPage, baseName, extension);
-    return { buffer: zipped, mimeType: 'application/zip', filename: `${baseName}.zip`, size: zipped.length, ...frameFields };
+    const zipped = await zipPageImages(selection.zipPages, convertPage, safeBaseName, extension);
+    return { buffer: zipped, mimeType: 'application/zip', filename: `${safeBaseName}.zip`, size: zipped.length, ...frameFields };
   }
   return null;
 }

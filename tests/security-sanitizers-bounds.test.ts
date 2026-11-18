@@ -112,7 +112,7 @@ describe('SEC-01: SVG sanitizer CSS string/url comment smuggling and nested pair
     );
   });
 
-  it('prevents unquoted url(#x") and url(#x/*) from desynchronizing CSS quote/comment state', () => {
+  it('prevents unquoted url(#x") and url(#x/*) from desynchronizing CSS quote/comment state and neutralizes them to none', () => {
     const quoteDesync =
       '<svg><style>' +
       'a { fill: url(#x"); } ' +
@@ -122,7 +122,7 @@ describe('SEC-01: SVG sanitizer CSS string/url comment smuggling and nested pair
       '</style></svg>';
     expect(sanitizeSvgString(quoteDesync)).toBe(
       '<svg><style>' +
-        'a { fill: url(#x"); } ' +
+        'a { fill: none; } ' +
         'b::before { content: "/*"; }  ' +
         'c::after { content: "*/"; }' +
         '</style></svg>'
@@ -134,7 +134,7 @@ describe('SEC-01: SVG sanitizer CSS string/url comment smuggling and nested pair
       '@import url("https://evil.example/url-comment.css"); ' +
       '/* */' +
       '</style></svg>';
-    expect(sanitizeSvgString(commentInUrl)).toBe('<svg><style>a { fill: url(#x/*); }  /* */</style></svg>');
+    expect(sanitizeSvgString(commentInUrl)).toBe('<svg><style>a { fill: none; }  /* */</style></svg>');
   });
 
   it('terminates unclosed CSS string on unescaped newline so subsequent /*...*/ cannot mask @import', () => {

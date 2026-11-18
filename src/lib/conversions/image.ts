@@ -3,7 +3,7 @@ import sharp, { type Metadata, type OutputInfo, type ResizeOptions, type Sharp }
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedTargetError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { selectFrames, type FrameSelection, type PageResize } from './image-frames';
 import { tryDirectOcrSearchablePdf, renderOcrSearchablePdf } from './ocr-direct-pdf';
-import { encodeDecodedAnimation, packagePageOutputs } from './image-frame-output';
+import { encodeDecodedAnimation, packagePageOutputs, safeOutputStem } from './image-frame-output';
 import { encodePostscript } from './image-postscript';
 import { assertAnimationBudget, assertOutputPixels, outputSideOf } from './image-limits';
 import { flattenColour, isNeutralColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground, staysGrey } from './image-background';
@@ -1522,7 +1522,7 @@ async function convertImage(
   sourceFormat: string | undefined,
   directAvif: DirectAvifSlot
 ): Promise<ConversionResult> {
-  const baseName = (originalFilename || 'image.png').replace(/\.[^/.]+$/, '');
+  const baseName = safeOutputStem(originalFilename || 'image.png', 'image');
   const fmt = targetFormat.toLowerCase();
   const src = (sourceFormat || '').toLowerCase();
   // Checked before any early-return target (PDF, hOCR, ALTO) does work.

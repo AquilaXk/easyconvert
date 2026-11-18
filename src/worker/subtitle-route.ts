@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
+import { safeOutputStem } from '../lib/conversions/page-range';
 import { withConversionWarnings } from '../lib/conversions/conversion-warnings';
 import { openMediaInput, mediaInputArgs, runFfmpeg } from '../lib/conversions/media-process';
 import { MAX_SUBTITLE_BYTES, isSubtitlePair, prepareSubtitleInput, repairSubtitleOutput, subtitleFfmpegArguments } from '../lib/conversions/subtitle';
@@ -90,7 +91,7 @@ export async function convertSubtitle(
   }
   const { input, src, tgt, options, originalFilename } = request;
   const startTime = Date.now();
-  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const baseName = safeOutputStem(originalFilename);
   assertNotSpoofed(input, src, originalFilename);
   assertInputSizeWithinLimit(input, src);
   return await withConversionWarnings(() =>

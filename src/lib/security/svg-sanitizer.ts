@@ -82,23 +82,11 @@ const PAIRED_DANGEROUS_ELEMENTS = ['script', 'foreignObject', 'iframe', 'object'
 const VOID_DANGEROUS_ELEMENTS = ['meta', 'link', '!ENTITY'] as const;
 
 /** ASCII tab and newlines, which URL parsers drop from anywhere inside a URL. */
-const URL_IGNORED_CHARS = '[\\t\\n\\r]*';
-
-/** Matches `word` with optional ignored characters between its letters. */
-function spaced(word: string): string {
-  return [...word].join(URL_IGNORED_CHARS);
-}
-
-/** An external or script target: an http(s)/file/ftp/javascript/vbscript scheme, or a network-path reference (`//`, `/\\`, `\\/`, `\\\\`). */
-const EXTERNAL_TARGET_SOURCE =
-  `(?:${['https', 'http', 'file', 'ftp', 'javascript', 'vbscript'].map(spaced).join('|')})${URL_IGNORED_CHARS}:` +
-  `|[/\\\\]${URL_IGNORED_CHARS}[/\\\\]`;
-/** Sticky: tested at the position right after the opening parenthesis of url()/src(). */
-const EXTERNAL_FUNCTION_TARGET = new RegExp(`\\s*(?:['"]\\s*)?(?:${EXTERNAL_TARGET_SOURCE})`, 'iy');
-/** Tested on the arguments of an image-set(): an external target after the opening parenthesis, a quote, a comma or whitespace. */
-const EXTERNAL_IMAGE_SET_TARGET = new RegExp(`(?:^|[\\s'",(])(?:${EXTERNAL_TARGET_SOURCE})`, 'i');
 const CSS_URL_FUNCTION_START = /(url|src|(?:-webkit-)?image-set)\s*\(/gi;
 const IMAGE_SET_SUFFIX = 'image-set';
+const SAFE_FRAGMENT_ID = /^#[A-Za-z0-9_.:-]+$/;
+const SAFE_IMAGE_SET_DESCRIPTOR = /^(?:\d+(?:\.\d+)?(?:x|dppx|dpi|dpcm))$/i;
+const IMAGE_SET_URL_AT = /url\s*\(/iy;
 const CHAR_DOUBLE_QUOTE = 0x22;
 const CHAR_SINGLE_QUOTE = 0x27;
 const CHAR_OPEN_PAREN = 0x28;
@@ -749,7 +737,7 @@ function decodeForMatching(raw: string, cdata: boolean): DecodedCss | null {
  * Index just past the parenthesis closing the one opened right before `from`, or the end of text when it never
  * closes. Quoted strings are skipped; quotes and parentheses produced by CSS escapes are plain characters.
  */
-function findClosingParen(text: string, from: number, escaped: Uint8Array | null): number {
+function findClosingParen(text: string, from: number, escaped: Uint8Array | null, allowQuotes = true): number {
   let depth = 1;
   let quote = 0;
   for (let i = from; i < text.length; i++) {
@@ -757,7 +745,7 @@ function findClosingParen(text: string, from: number, escaped: Uint8Array | null
     const code = text.charCodeAt(i);
     if (quote !== 0) {
       if (code === quote) quote = 0;
-    } else if (code === CHAR_DOUBLE_QUOTE || code === CHAR_SINGLE_QUOTE) {
+    } else if (allowQuotes && (code === CHAR_DOUBLE_QUOTE || code === CHAR_SINGLE_QUOTE)) {
       quote = code;
     } else if (code === CHAR_OPEN_PAREN) {
       depth++;
@@ -768,25 +756,67 @@ function findClosingParen(text: string, from: number, escaped: Uint8Array | null
   return text.length;
 }
 
-/** Replacements for external url(), src() and image-set() references; a reference swallows what it contains. */
+/** Strict allowlist: clean `#fragment` IDs and safe raster `data:image/(png|jpeg|gif|webp)` URIs only. */
+function isAllowedCssTarget(text: string, from: number, to: number, escaped: Uint8Array | null): boolean {
+  const raw = text.slice(from, to), s = raw.trim();
+  if (!s) return false;
+  let token: string | null = s;
+  const q = s.charCodeAt(0), lead = raw.indexOf(s);
+  const esc = escaped !== null && (escaped[from + lead] === 1 || escaped[from + lead + s.length - 1] === 1);
+  if ((q === CHAR_DOUBLE_QUOTE || q === CHAR_SINGLE_QUOTE) && !esc && s.length >= 2 && s.charCodeAt(s.length - 1) === q) {
+    token = s.slice(1, -1).includes(s[0]) ? null : s.slice(1, -1).trim();
+  }
+  if (!token) return false;
+  if (SAFE_FRAGMENT_ID.test(token)) return true;
+  // eslint-disable-next-line no-control-regex -- strip ignored ASCII control characters before checking data URI scheme
+  const stripped = token.replace(/[\x00-\x1f\x7f]/g, ''), comma = stripped.indexOf(',');
+  return comma >= 0 && RASTER_DATA_URI.test(stripped.slice(0, comma + 1).toLowerCase()) && !/[<>"'()\\]/.test(stripped.slice(comma + 1));
+}
+function isAllowedImageSetItem(text: string, from: number, to: number, escaped: Uint8Array | null): boolean {
+  const slice = text.slice(from, to), trimmed = slice.trimStart();
+  if (!trimmed) return false;
+  let pos = from + (slice.length - trimmed.length), code = text.charCodeAt(pos);
+  if ((code === CHAR_DOUBLE_QUOTE || code === CHAR_SINGLE_QUOTE) && escaped?.[pos] !== 1) {
+    let qEnd = pos + 1;
+    while (qEnd < to && (text.charCodeAt(qEnd) !== code || escaped?.[qEnd] === 1)) qEnd++;
+    if (qEnd >= to || !isAllowedCssTarget(text, pos, qEnd + 1, escaped)) return false;
+    pos = qEnd + 1;
+  } else {
+    IMAGE_SET_URL_AT.lastIndex = pos;
+    const match = IMAGE_SET_URL_AT.exec(text), argsAt = match ? pos + match[0].length : -1;
+    const uEnd = argsAt >= 0 ? findClosingParen(text, argsAt, escaped) : -1;
+    if (uEnd < 0 || uEnd > to || text.charCodeAt(uEnd - 1) !== CHAR_CLOSE_PAREN || !isAllowedCssTarget(text, argsAt, uEnd - 1, escaped)) return false;
+    pos = uEnd;
+  }
+  const tail = text.slice(pos, to).trim();
+  return tail.length === 0 || SAFE_IMAGE_SET_DESCRIPTOR.test(tail);
+}
+function isAllowedImageSet(text: string, from: number, to: number, escaped: Uint8Array | null): boolean {
+  for (let i = from, depth = 0, quote = 0, itemStart = from; i <= to; i++) {
+    if (i === to) return quote === 0 && depth === 0 && isAllowedImageSetItem(text, itemStart, to, escaped);
+    if (escaped?.[i] === 1) continue;
+    const c = text.charCodeAt(i);
+    if (quote !== 0) { if (c === quote) quote = 0; continue; }
+    if (c === CHAR_DOUBLE_QUOTE || c === CHAR_SINGLE_QUOTE) quote = c;
+    else if (c === CHAR_OPEN_PAREN) depth++;
+    else if (c === CHAR_CLOSE_PAREN) { if (depth-- === 0) return false; }
+    else if (c === 0x2c && depth === 0) { if (!isAllowedImageSetItem(text, itemStart, i, escaped)) return false; itemStart = i + 1; }
+  }
+  return false;
+}
+/** Neutralize every url(), src(), and image-set() call outside the `#fragment` + safe raster `data:` allowlist to `none`. */
 function collectExternalReferenceEdits(text: string, escaped: Uint8Array | null): CssEdit[] {
   const edits: CssEdit[] = [];
-  let scanned = 0;
-  for (const match of text.matchAll(CSS_URL_FUNCTION_START)) {
+  for (let scanned = 0, it = text.matchAll(CSS_URL_FUNCTION_START), step = it.next(); !step.done; step = it.next()) {
+    const match = step.value;
     if (match.index < scanned) continue;
-    const argsStart = match.index + match[0].length;
-    if (match[1].toLowerCase().endsWith(IMAGE_SET_SUFFIX)) {
-      const end = findClosingParen(text, argsStart, escaped);
-      scanned = end;
-      if (EXTERNAL_IMAGE_SET_TARGET.test(text.slice(argsStart, end))) {
-        edits.push({ start: match.index, end, replacement: 'none' });
-      }
-      continue;
-    }
-    EXTERNAL_FUNCTION_TARGET.lastIndex = argsStart;
-    if (!EXTERNAL_FUNCTION_TARGET.test(text)) continue;
-    scanned = findClosingParen(text, argsStart, escaped);
-    edits.push({ start: match.index, end: scanned, replacement: 'none' });
+    const argsStart = match.index + match[0].length, isImageSet = match[1].toLowerCase().endsWith(IMAGE_SET_SUFFIX);
+    let p = argsStart;
+    while (!isImageSet && p < text.length && text.charCodeAt(p) <= CHAR_SPACE) p++;
+    const allowQuotes = isImageSet || ((text.charCodeAt(p) === CHAR_DOUBLE_QUOTE || text.charCodeAt(p) === CHAR_SINGLE_QUOTE) && escaped?.[p] !== 1);
+    const end = scanned = findClosingParen(text, argsStart, escaped, allowQuotes);
+    const ok = end > argsStart && text.charCodeAt(end - 1) === CHAR_CLOSE_PAREN && (isImageSet ? isAllowedImageSet(text, argsStart, end - 1, escaped) : isAllowedCssTarget(text, argsStart, end - 1, escaped));
+    if (!ok) edits.push({ start: match.index, end, replacement: 'none' });
   }
   return edits;
 }

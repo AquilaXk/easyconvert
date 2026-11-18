@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
+import { safeOutputStem } from '../lib/conversions/page-range';
 import { ConversionFailedError } from '../lib/types';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
@@ -164,7 +165,7 @@ async function renderEpsToPng(job: PostScriptJob, ghostscript: string, limits: L
 }
 
 function baseNameOf(job: PostScriptJob): string {
-  return job.originalFilename ? job.originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  return safeOutputStem(job.originalFilename);
 }
 
 /**
