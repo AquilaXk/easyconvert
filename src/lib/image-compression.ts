@@ -43,8 +43,17 @@ export function serverOptionsFor(sourceFormat: string, targetFormat: string, opt
  * change in the content, so the result is the person's, whatever its weight (the input would keep the metadata asked to go).
  */
 const PLAIN_COMPRESSION_OPTIONS: readonly string[] = ['quality'];
+const PLAIN_PDF_COMPRESSION_OPTIONS: readonly string[] = ['optimize'];
 
 /** Whether a compression asked for nothing but a smaller file, so that an input it cannot make smaller is the right answer. */
 export function isPlainCompression(sourceFormat: string, targetFormat: string, options: ConversionOptions): boolean {
-  return isImageCompression(sourceFormat, targetFormat) && Object.entries(options).every(([key, value]) => value === undefined || PLAIN_COMPRESSION_OPTIONS.includes(key));
+  if (isImageCompression(sourceFormat, targetFormat)) {
+    return Object.entries(options).every(([key, value]) => value === undefined || PLAIN_COMPRESSION_OPTIONS.includes(key));
+  }
+  const src = canonicalFormat(sourceFormat.toLowerCase());
+  const tgt = canonicalFormat(targetFormat.toLowerCase());
+  if (src === 'pdf' && tgt === 'pdf' && options.optimize !== undefined) {
+    return Object.entries(options).every(([key, value]) => value === undefined || PLAIN_PDF_COMPRESSION_OPTIONS.includes(key));
+  }
+  return false;
 }

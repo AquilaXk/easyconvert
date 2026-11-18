@@ -518,9 +518,29 @@ function largeFileCloudReason(opfsAvailable: boolean, fitsOpfs: boolean): string
     : 'Large file exceeds client RAM and OPFS is unavailable in this browser';
 }
 
-/** The canvas converts the pair, and the pair is not a compression: only the server encoders shrink a PNG or a JPG. */
-function canvasConverts(src: string, tgt: string): boolean {
-  return isPureCanvasConvertible(src, tgt) && !isImageCompression(src, tgt);
+import { HEX_BACKGROUND_PATTERN } from './pure/canvas-header-guard';
+
+/** The canvas converts the pair, the pair is not a compression, and the options need no server-only feature. */
+function canvasConverts(src: string, tgt: string, options: ConversionOptions): boolean {
+  return isPureCanvasConvertible(src, tgt) && !isImageCompression(src, tgt) && !hasUnsupportedCanvasOptions(options, tgt);
+}
+
+/** Options that Canvas 2D cannot apply faithfully; requests carrying them run on the server image engine. */
+function hasUnsupportedCanvasOptions(options: ConversionOptions, tgt: string): boolean {
+  return (
+    options.optimizePng === true ||
+    options.stripMetadata === false ||
+    options.kernel !== undefined ||
+    options.dpi !== undefined ||
+    options.targetColorSpace !== undefined ||
+    (options.outputDepth !== undefined && options.outputDepth > 8) ||
+    options.gainMap === true ||
+    options.toneMap !== undefined ||
+    options.page !== undefined ||
+    options.pages !== undefined ||
+    (tgt === 'png' && options.quality !== undefined) ||
+    (options.background !== undefined && !HEX_BACKGROUND_PATTERN.test(options.background.trim()))
+  );
 }
 
 /**
@@ -620,7 +640,7 @@ export function resolveConversionTier(
 
   const canvasAvailable = capabilities?.hasCanvas ?? isCanvasSupported();
   if (
-    canvasConverts(src, tgt) &&
+    canvasConverts(src, tgt, options) &&
     canvasAvailable &&
     !isWasmFilterRequested &&
     !isWebGpuRequested

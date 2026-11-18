@@ -301,6 +301,8 @@ async function processL0Conversion(
       width: item.options.width,
       height: item.options.height,
       fit: item.options.fit,
+      background: item.options.background,
+      stripMetadata: item.options.stripMetadata,
     });
     onProgress?.(95);
     const blob = res.blob || new Blob([res.data as any], { type: res.mimeType });

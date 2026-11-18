@@ -4,18 +4,25 @@ import { getTranslations } from 'next-intl/server';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import PageMessages from '@/i18n/PageMessages';
-import { localeAlternates } from '@/i18n/metadata';
+import { localeAlternates, socialMetadata } from '@/i18n/metadata';
 import { resolvePageLocale, type LocaleParams } from '@/i18n/page';
 import { LEGAL_DOCUMENTS, type LegalDocumentId } from '@/lib/legal/documents';
 import { legalPage } from '@/lib/legal/render';
 import { LegalDocument } from './LegalDocument';
 
-/** A legal page's title and description, both read from its Markdown, with its canonical URL and hreflang alternates. */
+/** A legal page's title and description, both read from its Markdown, with its canonical URL, hreflang alternates, and social cards. */
 export async function legalPageMetadata(params: LocaleParams, id: LegalDocumentId): Promise<Metadata> {
   const locale = await resolvePageLocale(params);
   const t = await getTranslations({ locale, namespace: 'meta.legal' });
   const { title, summary } = legalPage(id, locale);
-  return { title: t('title', { title }), description: summary, alternates: localeAlternates(locale, LEGAL_DOCUMENTS[id].path) };
+  const fullTitle = t('title', { title });
+  const pathname = LEGAL_DOCUMENTS[id].path;
+  return {
+    title: fullTitle,
+    description: summary,
+    alternates: localeAlternates(locale, pathname),
+    ...socialMetadata(locale, pathname, fullTitle, summary),
+  };
 }
 
 export default async function LegalDocumentPage({ params, id }: Readonly<{ params: LocaleParams; id: LegalDocumentId }>) {

@@ -464,6 +464,7 @@ export function startingOptionsFor(operation: string | undefined, sourceFormat: 
   let wanted: ConversionOptions = {};
   if (operation === 'ocr') wanted = { ocrEnabled: true };
   else if (operation === 'pdfa') wanted = { pdfa: {} };
+  else if (operation === 'compress' && sourceFormat.toLowerCase() === 'pdf') wanted = { optimize: { profile: 'web' } };
   if (!targetFormat) return { ...DEFAULT_OPTIONS, ...wanted };
   return sanitizeOptionsForPair({ ...DEFAULT_OPTIONS, ...wanted }, sourceFormat, targetFormat);
 }

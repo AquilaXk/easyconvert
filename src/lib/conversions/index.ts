@@ -55,10 +55,13 @@ import {
 import { isCfbfContainer, parseCfbf } from './cfbf-reader';
 import {
   applyPdfWatermark,
-  protectPdf,
+  compressPdf,
   convertToPdfA,
+  PDF_OPTIMIZE_PROFILES,
+  protectPdf,
 } from './pdf-postprocess';
 import { validatePdfProtectOptions } from './pdf-postprocess/protect';
+import { remainingJobMs } from './job-time';
 import {
   convertHwpx,
   parseHwpxDocument,
@@ -376,6 +379,35 @@ function officeEngineWritesSheet(src: string, tgt: string): boolean {
   return !STRUCTURED_SHEET_SOURCES.has(src) && ['ods', 'xlsx', 'xls'].includes(tgt);
 }
 
+function isDirectPdfPostProcessOnly(src: string, tgt: string, options: ConversionOptions): boolean {
+  if (src !== 'pdf' || tgt !== 'pdf' || options.ocrEnabled) return false;
+  return Boolean(
+    options.optimize !== undefined ||
+      options.watermark !== undefined ||
+      resolvePdfAConformance(options) !== null ||
+      options.protect !== undefined
+  );
+}
+
+async function convertDocumentOrDirectPdf(
+  inputBuffer: Buffer,
+  src: string,
+  tgt: string,
+  options: ConversionOptions,
+  originalFilename: string
+): Promise<ConversionResult> {
+  if (isDirectPdfPostProcessOnly(src, tgt, options)) {
+    const baseName = originalFilename.replace(/\.[^/.]+$/, '') || 'document';
+    return {
+      buffer: inputBuffer,
+      mimeType: 'application/pdf',
+      filename: `${baseName}.pdf`,
+      size: inputBuffer.length,
+    };
+  }
+  return convertDocument(inputBuffer, src, tgt, options, originalFilename);
+}
+
 async function convertFileInScope(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -531,12 +563,12 @@ async function convertFileInScope(
 
       case 'document':
       default:
-        res = await convertDocument(inputBuffer, src, tgt, options, originalFilename);
+        res = await convertDocumentOrDirectPdf(inputBuffer, src, tgt, options, originalFilename);
         break;
     }
   }
 
-  // 8. PDF Post-Processing: PDF/A, Watermark, and Protection
+  // 8. PDF Post-Processing: Watermark, Compression, PDF/A, and Protection
   if (tgt === 'pdf' || res.filename?.endsWith('.pdf')) {
     await applyPdfPostProcessing(res, options);
   }
@@ -550,6 +582,11 @@ async function convertFileInScope(
  */
 export function assertPdfPostProcessOptions(options: ConversionOptions): void {
   assertPdfExportOptions(options);
+  if (options.optimize?.profile !== undefined && !PDF_OPTIMIZE_PROFILES.includes(options.optimize.profile)) {
+    throw new UnsupportedOptionError(
+      `The PDF optimize profile must be one of ${PDF_OPTIMIZE_PROFILES.join(', ')}; got ${JSON.stringify(options.optimize.profile)}.`
+    );
+  }
   if (options.protect !== undefined) {
     validatePdfProtectOptions(options.protect);
   }
@@ -560,7 +597,7 @@ export function assertPdfPostProcessOptions(options: ConversionOptions): void {
 }
 
 /**
- * PDF post-processing shared by every conversion route: watermark, PDF/A, then protection.
+ * PDF post-processing shared by every conversion route: watermark, compression, PDF/A, then protection.
  * Updates `result.buffer` and `result.size` in place; a result without a buffer is left untouched.
  */
 export async function applyPdfPostProcessing(
@@ -572,13 +609,26 @@ export async function applyPdfPostProcessing(
   if (!Buffer.isBuffer(result.buffer)) return;
   assertPdfPostProcessOptions(options);
   const pdfaLevel = state.pdfaExported ? null : resolvePdfAConformance(options);
-  if (!options.watermark && !pdfaLevel && !options.protect) return;
+  if (!options.watermark && options.optimize === undefined && !pdfaLevel && !options.protect) return;
   let pdf = result.buffer;
   // The password and the rights confirmation of the request reach the edits, in case the PDF being edited is encrypted.
   const access = { password: options.password, confirmEditRights: options.confirmEditRights };
-  // Watermark first: any edit after the PDF/A conversion would break conformance.
+  let accessApplied = false;
+  // Watermark and compression run before PDF/A: any edit after the PDF/A conversion would break conformance.
   if (options.watermark) {
     pdf = await applyPdfWatermark(pdf, options.watermark, access);
+    accessApplied = true;
+  }
+  if (options.optimize !== undefined) {
+    const compressed = await compressPdf(
+      pdf,
+      options.optimize,
+      accessApplied ? {} : access,
+      { signal: options.signal, remainingMs: remainingJobMs(options) }
+    );
+    pdf = compressed.buffer;
+    result.metadata = { ...result.metadata, pdfOptimized: compressed.optimized };
+    accessApplied = true;
   }
   if (pdfaLevel) {
     const pdfaRes = await convertToPdfA(pdf, { ...options.pdfa, conformance: pdfaLevel });
@@ -586,7 +636,7 @@ export async function applyPdfPostProcessing(
     result.metadata = { ...result.metadata, ...pdfaMetadata(pdfaRes.pdfaValidated, pdfaRes.conformanceLevel) };
   }
   if (options.protect) {
-    pdf = await protectPdf(pdf, options.protect, access);
+    pdf = await protectPdf(pdf, options.protect, accessApplied ? {} : access);
   }
   result.buffer = pdf;
   result.size = pdf.length;

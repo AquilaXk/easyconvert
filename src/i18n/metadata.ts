@@ -3,11 +3,19 @@ import { getPathname } from './navigation';
 import { routing, type AppLocale } from './routing';
 
 export const PUBLIC_DEFAULT_ORIGIN = 'https://convert.aquilaxk.site';
-const OG_IMAGE_PATH = '/og.png';
+const OG_ROUTE_PATH = '/api/og';
+const OG_IMAGE_WIDTH = 1200;
+const OG_IMAGE_HEIGHT = 630;
 const OG_LOCALE: Readonly<Record<AppLocale, string>> = {
   en: 'en_US',
   ko: 'ko_KR',
 };
+
+/** Root-relative URL of the localized 1200x630 OpenGraph / Twitter / KakaoTalk preview card for `pathname`. */
+export function socialCardImageUrl(locale: AppLocale, pathname: string): string {
+  const params = new URLSearchParams({ locale, path: pathname });
+  return `${OG_ROUTE_PATH}?${params.toString()}`;
+}
 
 /**
  * The origin page metadata resolves its URLs against: the public origin the image is built with (`APP_ORIGIN`, which the
@@ -37,6 +45,7 @@ export function socialMetadata(
   description: string
 ): Pick<Metadata, 'openGraph' | 'twitter'> {
   const url = getPathname({ locale, href: pathname });
+  const imageUrl = socialCardImageUrl(locale, pathname);
   return {
     openGraph: {
       type: 'website',
@@ -45,13 +54,28 @@ export function socialMetadata(
       url,
       title,
       description,
-      images: [{ url: OG_IMAGE_PATH, width: 1200, height: 630, alt: 'EasyConvert' }],
+      images: [
+        {
+          url: imageUrl,
+          width: OG_IMAGE_WIDTH,
+          height: OG_IMAGE_HEIGHT,
+          type: 'image/png',
+          alt: title,
+        },
+      ],
     },
     twitter: {
       card: 'summary_large_image',
       title,
       description,
-      images: [OG_IMAGE_PATH],
+      images: [
+        {
+          url: imageUrl,
+          width: OG_IMAGE_WIDTH,
+          height: OG_IMAGE_HEIGHT,
+          alt: title,
+        },
+      ],
     },
   };
 }

@@ -8,6 +8,7 @@
 import { canvasToBlob } from '../pipelines/canvas-blob';
 import { assertEncodedBlob, canvasMimeType } from '../canvas-encoding';
 import { EdgeUnsupportedError } from '../workers/worker-errors';
+import { assertCanvasInputSupported, HEX_BACKGROUND_PATTERN } from './canvas-header-guard';
 
 export interface PureCanvasResult {
   data: Uint8Array;
@@ -23,6 +24,8 @@ export interface PureCanvasOptions {
   height?: number;
   quality?: number; // 1 - 100
   fit?: 'cover' | 'contain' | 'fill' | 'inside' | 'outside';
+  background?: string;
+  stripMetadata?: boolean;
 }
 
 const SUPPORTED_CANVAS_SOURCES = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'svg']);
@@ -208,6 +211,17 @@ export async function convertPureCanvas(
     throw new EdgeUnsupportedError('Canvas 2D image transcoding is only available in browser environments.');
   }
 
+  let customBackground: string | undefined;
+  if (options.background !== undefined) {
+    const trimmed = options.background.trim();
+    if (!HEX_BACKGROUND_PATTERN.test(trimmed)) {
+      throw new EdgeUnsupportedError('Non-hex background colour requires the server image engine.');
+    }
+    customBackground = trimmed;
+  }
+
+  await assertCanvasInputSupported(input, src, options.stripMetadata === true);
+
   const srcMime = CANVAS_MIME_MAP[src] || 'application/octet-stream';
   const blob = input instanceof Blob ? input : new Blob([input as any], { type: srcMime });
 
@@ -237,9 +251,10 @@ export async function convertPureCanvas(
   }
 
   try {
-    // Fill white background for JPEG/BMP to handle alpha transparency cleanly
-    if (tgt === 'jpg' || tgt === 'jpeg' || tgt === 'bmp') {
-      ctx.fillStyle = '#FFFFFF';
+    // Fill background for opaque targets (JPEG/BMP) or when an explicit background colour is requested
+    const isOpaqueTarget = tgt === 'jpg' || tgt === 'jpeg' || tgt === 'bmp';
+    if (isOpaqueTarget || customBackground !== undefined) {
+      ctx.fillStyle = customBackground ?? '#FFFFFF';
       ctx.fillRect(0, 0, canvasW, canvasH);
     }
 
@@ -251,8 +266,9 @@ export async function convertPureCanvas(
     bitmap.close();
   }
 
-  const quality = (options.quality ?? 85) / 100;
   const normalizedTgt = tgt === 'jpg' ? 'jpeg' : tgt;
+  const defaultQuality = normalizedTgt === 'webp' ? 80 : 85;
+  const quality = (options.quality ?? defaultQuality) / 100;
 
   if (normalizedTgt === 'bmp') {
     const imgData = ctx.getImageData(0, 0, canvasW, canvasH);

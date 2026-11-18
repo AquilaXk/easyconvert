@@ -3,7 +3,7 @@ import { notFound } from 'next/navigation';
 import { getTranslations } from 'next-intl/server';
 import ApiDocsPageView from '@/components/pages/ApiDocsPageView';
 import { API_DOC_SUBPAGES, apiDocsHref, findApiDocTopic, type ApiDocTopic } from '@/components/api-docs/topics';
-import { localeAlternates } from '@/i18n/metadata';
+import { localeAlternates, socialMetadata } from '@/i18n/metadata';
 import PageMessages from '@/i18n/PageMessages';
 import { resolvePageLocale } from '@/i18n/page';
 
@@ -26,10 +26,14 @@ export async function generateMetadata({ params }: { params: TopicParams }): Pro
   const locale = await resolvePageLocale(params);
   const topic = await topicOf(params);
   const t = await getTranslations({ locale, namespace: 'apiDocs' });
+  const pathname = apiDocsHref(topic.slug);
+  const title = t('metaTitle', { topic: t(`topics.${topic.slug}.title`) });
+  const description = t(`topics.${topic.slug}.lead`);
   return {
-    title: t('metaTitle', { topic: t(`topics.${topic.slug}.title`) }),
-    description: t(`topics.${topic.slug}.lead`),
-    alternates: localeAlternates(locale, apiDocsHref(topic.slug)),
+    title,
+    description,
+    alternates: localeAlternates(locale, pathname),
+    ...socialMetadata(locale, pathname, title, description),
   };
 }
 

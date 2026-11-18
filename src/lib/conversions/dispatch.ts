@@ -143,7 +143,9 @@ async function postProcessNativePdf(
 ): Promise<WorkerConversionResult> {
   if (tgt !== PDF_FORMAT || result.engineUsed === IN_PROCESS_ENGINE) return result;
   const exportedAs = SOFFICE_ENGINES.has(result.engineUsed) ? directPdfAExportConformance(options) : null;
-  const needsPostProcessing = Boolean(options.watermark || resolvePdfAConformance(options) || options.protect);
+  const needsPostProcessing = Boolean(
+    options.watermark || options.optimize !== undefined || resolvePdfAConformance(options) || options.protect
+  );
   if (!needsPostProcessing && !exportedAs) return result;
   const processed: WorkerConversionResult = { ...result, buffer: result.buffer };
   await applyPdfPostProcessing(processed, options, { pdfaExported: exportedAs !== null });

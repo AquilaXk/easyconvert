@@ -371,6 +371,7 @@ Security
 320. [Dedicated dashboard Security tab with modal account erasure, inline 429 quota upgrade links, and site-wide four-level font-weight hierarchy](#320-dedicated-dashboard-security-tab-with-modal-account-erasure-inline-429-quota-upgrade-links-and-site-wide-four-level-font-weight-hierarchy)
 321. [Raster-to-SVG open-source low-level and lookup optimisations: zero-copy L1 bitset keying and fixed-point `DEC_DIGITS_LUT` SVG writer in `vtracer-pixels`, 32-bit word + two-pass 3-4 Chamfer alpha decontamination, streaming SVGO path/colour compaction with `viewBox`, full `vtracer 1.0` options, and 22 raster inputs](#321-raster-to-svg-open-source-low-level-and-lookup-optimisations-zero-copy-l1-bitset-keying-and-fixed-point-dec_digits_lut-svg-writer-in-vtracer-pixels-32-bit-word--two-pass-3-4-chamfer-alpha-decontamination-streaming-svgo-pathcolour-compaction-with-viewbox-full-vtracer-10-options-and-22-raster-inputs)
 322. [Elastic scale-up thread budgeting and memory-bounded pools, stateless queue-only Web control plane with S3-native TUS and presigned multipart fast-path, Redis Sentinel and Cluster HA, and eager qpdf-runner warm-up](#322-elastic-scale-up-thread-budgeting-and-memory-bounded-pools-stateless-queue-only-web-control-plane-with-s3-native-tus-and-presigned-multipart-fast-path-redis-sentinel-and-cluster-ha-and-eager-qpdf-runner-warm-up)
+323. [End-to-end `/compress-pdf` profile wiring, Edge L0 Canvas animation/precision/metadata escalation guards, and localized `1200x630` `/api/og` social preview cards](#323-end-to-end-compress-pdf-profile-wiring-edge-l0-canvas-animationprecisionmetadata-escalation-guards-and-localized-1200x630-apiog-social-preview-cards)
 
 ---
 
@@ -9889,3 +9890,28 @@ Security
 - **Trade-offs**:
   - Single-host deployments (`WEB_EXECUTION_MODE=hybrid`, `REDIS_MODE=standalone`, `STORAGE_DRIVER=local`) keep identical runtime behaviour and resource footprint; direct presigned browser `PUT` requires bucket CORS `Access-Control-Expose-Headers: ETag` and degrades transparently to `action=chunk` without it.
 - **Verified by**: `tests/cpu-thread-budget.test.ts`, `tests/scale-out-control-plane.test.ts`, `tests/libreoffice-pool-manager.test.ts`, `tests/resumable-cloud-pipeline.test.ts`, `tests/upload-part-admission.test.ts`, `tests/config-docs-drift.test.ts`, `tests/oci-deploy.test.ts`, `tests/job-deadline-enqueue-sites.test.ts`, and `tests/qpdf-runner.test.ts` + `tests/qpdf-runner-qpdf.test.ts` (`53/53` in Ubuntu 24.04 `arm64` VM).
+
+
+## 323. End-to-end `/compress-pdf` profile wiring, Edge L0 Canvas animation/precision/metadata escalation guards, and localized `1200x630` `/api/og` social preview cards
+
+- **Date**: 2026-11-18
+- **Status**: Accepted (QA request: close real-page conversion parity gaps against the reference service and upgrade OpenGraph / Twitter / KakaoTalk social preview cards using high-star `vercel/satori` card architectures)
+- **Decision**:
+  1. **`/compress-pdf` end-to-end default profile, direct post-process routing, and `unchanged` floor (`src/components/workbench/options/options-capabilities.ts`, `src/lib/conversions/{index,dispatch}.ts`, `src/lib/image-compression.ts`)**:
+     - `startingOptionsFor('compress', 'pdf', ...)` initializes `{ optimize: { profile: 'web' } }` (`Ghostscript` `-dPDFSETTINGS=/ebook` 150 dpi preset).
+     - `convertFileInScope` skips `convertDocument` when `src === 'pdf' && tgt === 'pdf' && !options.ocrEnabled` and post-process options (`optimize`, `watermark`, `pdfa`, `protect`) are set, preventing image-only PDFs on `/compress-pdf` from falling into automatic scan OCR, and `applyPdfPostProcessing` / `postProcessNativePdf` execute `compressPdf` before `pdfa` and `protect`.
+     - `isPlainCompression` recognizes `pdf -> pdf` requests carrying only `optimize`, so `answerOfCompression` returns the original file marked `unchanged: true` whenever `compressPdf` yields no byte reduction.
+  2. **Edge L0 Canvas option gating and bounded container header escalation (`src/lib/edge/{tier-router.ts,pure/pure-canvas.ts,pure/canvas-header-guard.ts}`, `src/lib/client-converter.ts`)**:
+     - `resolveConversionTier` routes requests carrying server-only options (`optimizePng`, `stripMetadata: false`, `kernel`, `dpi`, `targetColorSpace`, `outputDepth > 8`, `gainMap`, `toneMap`, `page`/`pages`, `png` `quality`, or non-hex `background`) directly to `L4` (`sharp` / `MozJPEG` / `libwebp`), while keeping plain 8-bit sRGB raster transcoding on `L0`.
+     - `assertCanvasInputSupported` performs bounded single-pass header inspection (`<= 1 MiB` raster / `<= 8 MiB` GIF, `<= 65,536` blocks) per W3C GIF89a §§18–27, Google `libwebp` `VP8X`/`ANIM`, W3C PNG 3rd Ed. (`IHDR` bitDepth > 8, `acTL`, `iCCP`, `cICP`, `eXIf`, XMP `iTXt`/`zTXt`/`tEXt`), and ITU-T T.81 / Exif 2.32 / ICC.1 (`SOFn` >8-bit or CMYK, `APP1` Exif/XMP, `APP2` `ICC_PROFILE`/`MPF`, `APP13` IPTC), throwing `EdgeUnsupportedError` to escalate multi-frame animations, >8-bit channels, and colour-managed/tagged inputs (unless `stripMetadata === true`) to `L4`.
+     - Aligned Canvas WebP default quality to `80` (`ImageOptionsSection` / `webpOptionsFor` parity) and honoured hex `options.background` fill.
+  3. **Dynamic localized `1200x630` social preview cards (`src/lib/og/{fonts,resolve-card,render-card.tsx}`, `src/app/api/og/route.ts`, `src/i18n/metadata.ts`, `src/app/[locale]/api-docs/[topic]/page.tsx`, `src/components/legal/LegalDocumentPage.tsx`, `public/og.png`)**:
+     - Built `GET /api/og?locale=<en|ko>&path=<canonicalPath>` on `next/og` (`vercel/satori` `Apache-2.0`), following the `1200x630` (`1080x510` inner safe zone) card layout of `dubinc/dub` (`apps/web/app/api/og`) and `shadcn-ui/ui` (`apps/v4/app/og/route.tsx`) combined with reference converter format-bridge pills (`SRC -> TGT`) and the rounded-squircle prism mark of `src/components/BrandLogo.tsx`.
+     - Instantiates static `wght=400` and `wght=700` SFNT buffers once per process from `EasyConvertSans-{latin,hangul}.woff2` via `harfbuzzjs` (`harfbuzz-subset.wasm` `hb_subset_input_pin_axis_location`) and resolves copy strictly from server-side message tables and `FORMAT_REGISTRY` (`400`/`404` on invalid or unoffered paths, eliminating arbitrary text spoofing).
+     - Wired `socialMetadata` (`openGraph.images` and `twitter.images` with `1200x630`, `image/png`, localized `alt`) across all public routes including `/api-docs/[topic]` and legal pages, and regenerated `public/og.png` from the same renderer.
+- **Why**:
+  - Live browser verification revealed `/compress-pdf` omitted `options.optimize` and triggered scan OCR on image-only PDFs, Edge L0 Canvas dropped frames on animated GIF/WebP and stripped 16-bit precision and EXIF/ICC profiles, and all localized routes shared a single static English `/og.png` with an outdated square icon.
+- **Trade-offs**:
+  - Tagged JPEGs/PNGs with EXIF or ICC profiles without `stripMetadata: true` now upload to the `L4` server engine instead of running on `L0` Canvas so orientation, wide-gamut ICC profiles, and metadata are preserved faithfully.
+- **Verified by**: `tests/realpage-compress-edge-og.test.ts`, `tests/image-compression.test.ts`, `tests/phase-5-tier-router-and-webgpu.test.ts`, `tests/tool-pages.test.ts`, `tests/i18n-routing.test.ts`, and `npm run build` + `scripts/check-built-alternates.mjs`.
+
