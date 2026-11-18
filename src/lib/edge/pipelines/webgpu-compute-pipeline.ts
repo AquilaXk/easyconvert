@@ -350,10 +350,12 @@ export async function executeWebGpuCompute(
       });
 
       // 4. Staging Readback Buffer
-      readbackBuffer = device.createBuffer({
+      const stagingBuffer = device.createBuffer({
         size: bufferByteSize,
         usage: 0x0001 | 0x0008, // GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
       });
+      readbackBuffer = stagingBuffer;
+      if (!stagingBuffer) return null;
 
       const computePipeline = device.createComputePipeline({
         layout: 'auto',
@@ -382,13 +384,13 @@ export async function executeWebGpuCompute(
       passEncoder.dispatchWorkgroups(workgroupsX, workgroupsY);
       passEncoder.end();
 
-      commandEncoder.copyBufferToBuffer(outputBuffer, 0, readbackBuffer, 0, bufferByteSize);
+      commandEncoder.copyBufferToBuffer(outputBuffer, 0, stagingBuffer, 0, bufferByteSize);
       device.queue.submit([commandEncoder.finish()]);
 
-      await readbackBuffer.mapAsync(1); // GPUMapMode.READ
-      const copyArrayBuffer = readbackBuffer.getMappedRange(0, bufferByteSize);
+      await stagingBuffer.mapAsync(1); // GPUMapMode.READ
+      const copyArrayBuffer = stagingBuffer.getMappedRange(0, bufferByteSize);
       const resultArray = new Uint8Array(copyArrayBuffer.slice(0));
-      readbackBuffer.unmap();
+      stagingBuffer.unmap();
 
       return {
         width,
