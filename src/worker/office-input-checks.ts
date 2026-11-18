@@ -7,14 +7,14 @@ import { assertEmbeddableImageWithinLimit, assertInputPixels, isPngOrJpeg, rethr
 import { assertOpenDocumentGraphic, xlsHasFilePass } from '../lib/conversions/office';
 import { isEncryptedWordDocument } from '../lib/conversions/office/doc-reader';
 import { maxDocumentMediaBytes } from '../lib/conversions/office/media-limits';
-import { CFBF_MAX_FILE_BYTES } from '../lib/compound-file-kind';
+import { CFBF_MAX_FILE_BYTES, readCompoundFileRootFrom, type ByteSource } from '../lib/compound-file-kind';
 import { officeReadingFormat } from '../lib/conversions/office/office-suite-sources';
 import { stripOfficeMacros } from '../lib/conversions/office-macro-strip';
 import { ZIP_LOCAL_HEADER_SIGNATURE, assertPackageEntryCount, startsWithBytes } from '../lib/conversions/package-access';
 import { MAX_ZIP_MEDIA_BYTES, readZipEntryBytes, scanZipEntry } from '../lib/conversions/zip-entry-reader';
-import { sniffFixedSignature } from '../lib/format-signatures';
+import { CFBF_MAGIC, sniffFixedSignature } from '../lib/format-signatures';
 import { getMaxInMemoryBytes } from '../lib/storage/errors';
-import { ConversionFailedError, PayloadLimitError } from '../lib/types';
+import { CompoundFileStructureError, ConversionFailedError, PayloadLimitError } from '../lib/types';
 import type { WorkerVfsPayload } from './worker-types';
 
 /**
@@ -214,4 +214,55 @@ export function isEncryptedLegacyOffice(input: Buffer | WorkerVfsPayload, src: s
   const buffer = legacyOfficeInput(input);
   if (buffer === undefined) return false;
   return reading === 'xls' ? xlsHasFilePass(buffer) : isEncryptedWordDocument(buffer);
+}
+
+const LEGACY_COMPOUND_FORMATS: ReadonlySet<string> = new Set(['doc', 'xls', 'ppt']);
+
+function withCompoundByteSource(input: Buffer | WorkerVfsPayload, check: (head: Buffer, readRange: ByteSource) => void): void {
+  const inMemory = Buffer.isBuffer(input) ? input : input.inputBuffer;
+  if (inMemory !== undefined) {
+    check(inMemory.subarray(0, CFBF_MAGIC.length), (offset, length) =>
+      offset >= inMemory.length ? Buffer.alloc(0) : inMemory.subarray(offset, Math.min(inMemory.length, offset + length))
+    );
+    return;
+  }
+  if (Buffer.isBuffer(input) || input.inputPath === undefined) return;
+  let fd: number;
+  try {
+    fd = fs.openSync(input.inputPath, 'r');
+  } catch {
+    return;
+  }
+  try {
+    const fileSize = fs.fstatSync(fd).size;
+    const head = Buffer.alloc(Math.min(CFBF_MAGIC.length, fileSize));
+    const headBytes = head.length > 0 ? fs.readSync(fd, head, 0, head.length, 0) : 0;
+    check(head.subarray(0, headBytes), (offset, length) => {
+      if (offset >= fileSize || length <= 0) return Buffer.alloc(0);
+      const count = Math.min(length, fileSize - offset);
+      const slice = Buffer.allocUnsafe(count);
+      const read = fs.readSync(fd, slice, 0, count, offset);
+      return slice.subarray(0, read);
+    });
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Refuses an OLE2 compound file (`.doc`, `.xls`, `.ppt` and their templates) whose FAT or directory structure is
+ * destroyed before handing it to LibreOffice, which otherwise falls back to loading the corrupted binary as text/HTML
+ * and can hang or emit raw container bytes (`gd-948342.doc`). Non-compound files (Word 5 Mac, RTF/HTML under `.doc`)
+ * pass through untouched.
+ */
+export function assertLegacyCompoundFileReadable(input: Buffer | WorkerVfsPayload, src: string): void {
+  const reading = officeReadingFormat(src);
+  if (!LEGACY_COMPOUND_FORMATS.has(reading)) return;
+  withCompoundByteSource(input, (head, readRange) => {
+    if (!startsWithBytes(head, CFBF_MAGIC)) return;
+    const root = readCompoundFileRootFrom(readRange);
+    if (root.status === 'malformed') {
+      throw new CompoundFileStructureError(`Corrupt CFBF container: the .${src} file has a malformed OLE2 directory or allocation table.`);
+    }
+  });
 }

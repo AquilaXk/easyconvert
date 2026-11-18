@@ -1,6 +1,6 @@
 import type { ConversionOptions, ConversionResult } from '../types';
 import { UnsupportedTargetError } from '../types';
-import { documentToDocx } from './document-model/docx';
+import { DOCX_MAX_ANCHORED_SHAPES, documentToDocx } from './document-model/docx';
 import { documentToEpub } from './document-model/epub';
 import { documentToHtml } from './document-model/html';
 import { documentToMarkdown } from './document-model/markdown';
@@ -29,7 +29,12 @@ export async function renderModelTarget(model: DocumentModel, tgt: string, optio
       return { buffer, mimeType: 'application/epub+zip', filename: `${baseName}.epub`, size: buffer.length };
     }
     case 'docx': {
-      const buffer = await documentToDocx(model, { title: baseName, language: options.language });
+      const maxAnchoredShapes = (options as Record<symbol, unknown>)[DOCX_MAX_ANCHORED_SHAPES];
+      const buffer = await documentToDocx(model, {
+        title: baseName,
+        language: options.language,
+        ...(typeof maxAnchoredShapes === 'number' ? { maxAnchoredShapes } : {}),
+      });
       return { buffer, mimeType: DOCX_MIME, filename: `${baseName}.docx`, size: buffer.length };
     }
     case 'odt': {

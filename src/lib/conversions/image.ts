@@ -2,6 +2,7 @@ import zlib from 'node:zlib';
 import sharp, { type Metadata, type OutputInfo, type ResizeOptions, type Sharp } from 'sharp';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedTargetError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { selectFrames, type FrameSelection, type PageResize } from './image-frames';
+import { tryDirectOcrSearchablePdf, renderOcrSearchablePdf } from './ocr-direct-pdf';
 import { encodeDecodedAnimation, packagePageOutputs } from './image-frame-output';
 import { encodePostscript } from './image-postscript';
 import { assertAnimationBudget, assertOutputPixels, outputSideOf } from './image-limits';
@@ -206,19 +207,16 @@ export function encodeBmp(raw: Buffer, width: number, height: number, channels: 
   buf.writeUInt32LE(0, 50); // Important color count
 
   let offset = 54;
+  const rowWidth = width * channels;
   for (let y = height - 1; y >= 0; y--) {
+    let idx = y * rowWidth;
     for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * channels;
-      const r = raw[idx];
-      const g = raw[idx + 1];
-      const b = raw[idx + 2];
-      buf[offset++] = b; // BGR format
-      buf[offset++] = g;
-      buf[offset++] = r;
+      buf[offset++] = raw[idx + 2]; // BGR format
+      buf[offset++] = raw[idx + 1];
+      buf[offset++] = raw[idx];
+      idx += channels;
     }
-    for (let p = 0; p < padding; p++) {
-      buf[offset++] = 0;
-    }
+    offset += padding;
   }
 
   return buf;
@@ -2330,6 +2328,15 @@ async function convertImageToPdf(
     if (passthrough) return passthrough;
   }
 
+  if (options.ocrEnabled) {
+    const directOcrPdf = await tryDirectOcrSearchablePdf(activeBuffer, options, baseName, {
+      skipDirect: sourceFormat === 'svg' || isSvg(activeBuffer) || sourceFormat === 'bmp' || activeBuffer.subarray(0, 2).toString('ascii') === 'BM' || isIconContainer(activeBuffer, sourceFormat ?? ''),
+      statesDensity,
+      mapFailure: (err) => toImageFailure(err, 'pdf'),
+    });
+    if (directOcrPdf) return directOcrPdf;
+  }
+
   let decodedPages: Awaited<ReturnType<typeof decodePdfPages>>;
   try {
     decodedPages = await decodePdfPages(activeBuffer, options, sourceFormat, statesDensity);
@@ -2346,17 +2353,7 @@ async function convertImageToPdf(
         `OCR reads one page at a time but this image has ${pages.length} pages: select one with the "page" option`
       );
     }
-    const ocrResult = await performOcr(pages[0].png, options.ocrLanguage, undefined, options.ocrDetectOrientation);
-    const searchablePdf = await generateSearchablePdf(pages[0].png, ocrResult, options, baseName);
-    return {
-      buffer: searchablePdf,
-      mimeType: 'application/pdf',
-      filename: `${baseName}.pdf`,
-      size: searchablePdf.length,
-      ocrExtractedText: ocrResult.text,
-      ocrConfidence: ocrResult.confidence,
-      ...frameFields,
-    };
+    return renderOcrSearchablePdf(pages[0].png, options, baseName, statesDensity, undefined, frameFields);
   }
 
   const buffer = await assemblePicturePdf(pages, options.orientation);

@@ -36,7 +36,12 @@ describe('the origins of the pinned corpus files', () => {
     const found = mirrored(manifest);
     expect(found.length).toBeGreaterThan(0);
     for (const { url, mirrors } of found) {
-      expect(mirrors, url).toEqual([url.replace(/^https:\/\/web\.archive\.org\/web\/\d{14}id_\//, '')]);
+      const original = url.replace(/^https:\/\/web\.archive\.org\/web\/\d{14}id_\//, '');
+      expect(mirrors.at(-1), url).toBe(original);
+      for (const extra of mirrors.slice(0, -1)) {
+        expect(extra, url).toMatch(/^https:\/\/web\.archive\.org\/web\/\d{14}id_\/https:\/\//);
+        expect(extra.replace(/^https:\/\/web\.archive\.org\/web\/\d{14}id_\//, ''), url).toBe(original);
+      }
     }
   });
 });

@@ -15,10 +15,66 @@ on:
         required: true
         default: '2'
 
+permissions:
+  contents: read
+
+env:
+  # GitHub-hosted ubuntu-24.04 jobs are forcibly terminated at 360 minutes.
+  # Split longer soak durations into sequential stages of at most 288m (4.8h)
+  # so a full 24h soak completes across 5 sequential stages (5 x 288m = 24h)
+  # with >= 50m runner margin per job.
+  MAX_STAGE_SECONDS: '17280'
+
 jobs:
-  endurance-soak:
+  plan:
     runs-on: ubuntu-24.04
-    timeout-minutes: 1500 # 25 hours budget
+    timeout-minutes: 5
+    outputs:
+      stages: ${{ steps.slice.outputs.stages }}
+      target_gb: ${{ steps.slice.outputs.target_gb }}
+    steps:
+      - name: Compute sequential soak stages within GitHub 360m runner cap
+        id: slice
+        shell: bash
+        env:
+          INPUT_DURATION: ${{ github.event.inputs.duration }}
+          INPUT_TARGET_GB: ${{ github.event.inputs.target_gb }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          node -e '
+            const rawDuration = (process.env.EVENT_NAME === "schedule" || !process.env.INPUT_DURATION) ? "24h" : process.env.INPUT_DURATION.trim();
+            const match = /^(\d+(?:\.\d+)?)(h|m|s)?$/.exec(rawDuration);
+            if (!match) {
+              console.error(`Invalid soak duration: ${rawDuration}`);
+              process.exit(1);
+            }
+            const value = Number(match[1]);
+            const unit = match[2] ?? "s";
+            const totalSeconds = Math.max(1, Math.round(value * (unit === "h" ? 3600 : unit === "m" ? 60 : 1)));
+            const maxStageSeconds = Number(process.env.MAX_STAGE_SECONDS || "17280");
+            const stages = [];
+            let remaining = totalSeconds;
+            let index = 1;
+            while (remaining > 0) {
+              const sliceSec = Math.min(remaining, maxStageSeconds);
+              stages.push({ stage: index, duration: `${sliceSec}s` });
+              remaining -= sliceSec;
+              index += 1;
+            }
+            const targetGb = (process.env.INPUT_TARGET_GB || "2").trim();
+            const fs = require("node:fs");
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `stages=${JSON.stringify(stages)}\ntarget_gb=${targetGb}\n`);
+          '
+
+  endurance-soak:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        stage: ${{ fromJson(needs.plan.outputs.stages) }}
 
     steps:
       - name: Checkout repository
@@ -46,20 +102,21 @@ jobs:
             libreoffice-writer \
             libreoffice-impress
 
-      - name: Run Endurance Soak Test
+      - name: Run Endurance Soak Stage ${{ matrix.stage.stage }}
         env:
           # Lets the soak force a GC before it samples the heap.
           NODE_OPTIONS: --expose-gc
+          STAGE_DURATION: ${{ matrix.stage.duration }}
+          STAGE_TARGET_GB: ${{ needs.plan.outputs.target_gb }}
         run: |
-          SOAK_DURATION="${{ github.event.inputs.duration || '24h' }}"
-          SOAK_TARGET_GB="${{ github.event.inputs.target_gb || '2' }}"
-          echo "Starting Endurance Soak: Duration=${SOAK_DURATION}, TargetGB=${SOAK_TARGET_GB}"
-          npx tsx scripts/run-endurance-soak.ts --duration "${SOAK_DURATION}" --target-gb "${SOAK_TARGET_GB}"
+          echo "Starting Endurance Soak stage ${{ matrix.stage.stage }}: Duration=${STAGE_DURATION}, TargetGB=${STAGE_TARGET_GB}"
+          npx tsx scripts/run-endurance-soak.ts --duration "${STAGE_DURATION}" --target-gb "${STAGE_TARGET_GB}" --snapshot-interval-ms 60000
 
       - name: Upload Soak Telemetry Report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: soak-telemetry
+          name: soak-telemetry-stage-${{ matrix.stage.stage }}
           path: tests/fixtures/soak-telemetry.json
+          if-no-files-found: ignore
           retention-days: 30

@@ -1,7 +1,8 @@
 import { reportConversionWarning } from '../conversion-warnings';
 import { isSymbolFontName, isSymbolFontPrivateUse, mapSymbolFontCharacter, SYMBOL_FONT_PRIVATE_USE_BASE, symbolReplacementWarning, undrawableSymbolWarning } from '../symbol-font-map';
-import { CheckedReader, readCfbStreams, requireCfbStream } from './cfb-streams';
+import { CheckedReader, readCfbContainer, readCfbStreams, requireCfbStream } from './cfb-streams';
 import { CharacterFormatting, type CharacterFormattingLocations } from './doc-character-formatting';
+import { ConversionFailedError } from '../../types';
 import { EncryptedOfficeDocumentError, LegacyOfficeFormatError } from './legacy-office-errors';
 import { decodeWindows1252 } from './windows-1252';
 
@@ -44,6 +45,9 @@ const FIB_RG_FC_LCB_OFFSET = 154;
 const FC_LCB_PAIR_BYTES = 8;
 /** Index of the (fcClx, lcbClx) pair in FibRgFcLcb97. */
 const FC_LCB_CLX_INDEX = 33;
+/** Indexes of the (fc, lcb) pairs of the floating office art anchored shapes in main story and header ([MS-DOC] 2.5.6). */
+const FC_LCB_PLCF_SPA_MOM_INDEX = 40;
+const FC_LCB_PLCF_SPA_HDR_INDEX = 41;
 /** Indexes of the (fc, lcb) pairs of the style sheet, the character and paragraph formatting tables and the font table in FibRgFcLcb97. */
 const FC_LCB_STSH_INDEX = 1;
 const FC_LCB_PLC_BTE_CHPX_INDEX = 12;
@@ -368,6 +372,59 @@ export function isEncryptedWordDocument(buffer: Buffer): boolean {
     return hasFibSignature(word) && fibFlagsEncrypted(word.u16(FIB_FLAGS_OFFSET));
   } catch (err) {
     if (err instanceof LegacyOfficeFormatError) return false;
+    throw err;
+  }
+}
+
+function readFloatingShapeOffsets(word: CheckedReader): number[] {
+  if (!hasFibSignature(word) || word.u16(FIB_NFIB_OFFSET) < FIB_MIN_NFIB) return [];
+  if (fibFlagsEncrypted(word.u16(FIB_FLAGS_OFFSET))) return [];
+  if (word.u16(FIB_CSW_OFFSET) !== FIB_CSW_VALUE || word.u16(FIB_CSLW_OFFSET) !== FIB_CSLW_VALUE) return [];
+  const pairCount = word.u16(FIB_CB_RG_FC_LCB_OFFSET);
+  const offsets: number[] = [];
+  for (const index of [FC_LCB_PLCF_SPA_MOM_INDEX, FC_LCB_PLCF_SPA_HDR_INDEX]) {
+    if (pairCount <= index) continue;
+    const at = FIB_RG_FC_LCB_OFFSET + index * FC_LCB_PAIR_BYTES;
+    if (word.u32(at + CP_BYTES) > 0) offsets.push(at);
+  }
+  return offsets;
+}
+
+/** Whether a Word 97-2003 document declares floating anchored OfficeArt shapes (`PlcfSpaMom` / `PlcfSpaHdr`) in its FIB. */
+export function hasWordFloatingShapes(buffer: Buffer): boolean {
+  try {
+    const wordStream = requireCfbStream(readCfbStreams(buffer, LABEL), WORD_DOCUMENT_STREAM, LABEL);
+    return readFloatingShapeOffsets(new CheckedReader(wordStream, LABEL)).length > 0;
+  } catch (err) {
+    if (err instanceof ConversionFailedError) return false;
+    throw err;
+  }
+}
+
+/**
+ * Returns a copy of a Word 97-2003 binary with `(fcPlcfSpaMom, lcbPlcfSpaMom)` and `(fcPlcfSpaHdr, lcbPlcfSpaHdr)`
+ * cleared in the FIB when present, preventing LibreOffice Writer's `SwAnchoredObject::CheckCharRectAndTopOfLine`
+ * infinite loop on degenerate overlapping floating anchors, or undefined when none are declared or mappable.
+ */
+export function stripWordFloatingShapes(buffer: Buffer): Buffer | undefined {
+  try {
+    const container = readCfbContainer(buffer, LABEL);
+    const wordBytes = requireCfbStream(container.paths, WORD_DOCUMENT_STREAM, LABEL);
+    const offsets = readFloatingShapeOffsets(new CheckedReader(wordBytes, LABEL));
+    if (offsets.length === 0) return undefined;
+    const positions: number[] = [];
+    for (const pairOffset of offsets) {
+      for (let byte = 0; byte < FC_LCB_PAIR_BYTES; byte++) {
+        const position = container.streamByteOffset(WORD_DOCUMENT_STREAM, pairOffset + byte);
+        if (position === undefined || buffer[position] !== wordBytes[pairOffset + byte]) return undefined;
+        positions.push(position);
+      }
+    }
+    const stripped = Buffer.from(buffer);
+    for (const position of positions) stripped[position] = 0;
+    return stripped;
+  } catch (err) {
+    if (err instanceof ConversionFailedError) return undefined;
     throw err;
   }
 }

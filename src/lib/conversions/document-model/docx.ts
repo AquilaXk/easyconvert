@@ -34,6 +34,11 @@ import { IMAGE_MIME, bodyBlocks, cellBlocks, imagesById, notesOf, walkBlocks, wa
 
 /** Most pictures one document may carry. */
 export const DOCX_WRITER_MAX_IMAGES = 5_000;
+/** Internal option symbol capping total WordML anchored vector shapes when bridging to legacy formats. */
+export const DOCX_MAX_ANCHORED_SHAPES = Symbol('DOCX_MAX_ANCHORED_SHAPES');
+const MAX_LAYOUT_TABLE_WRAPPER_ROWS = 4;
+const MAX_LAYOUT_CELL_PARAGRAPHS = 200;
+const MAX_DOCX_TABLE_ROWS = 400;
 
 const TWIPS_PER_POINT = 20;
 const EMU_PER_POINT = 12_700;
@@ -83,6 +88,8 @@ export interface DocxWriteOptions {
   title?: string;
   /** Requested content language; validated as a BCP 47 tag. */
   language?: string;
+  /** Omit anchored DrawingML shapes when the document exceeds this count (e.g., dense vector CAD/GIS PDFs bridged to `.doc`). */
+  maxAnchoredShapes?: number;
 }
 
 const twips = (points: number): number => Math.round(points * TWIPS_PER_POINT);
@@ -213,7 +220,8 @@ class PartWriter {
   constructor(
     private readonly model: DocumentModel,
     private readonly state: PackageState,
-    private availableTwips: number
+    private availableTwips: number,
+    private readonly emitAnchoredShapes = true
   ) {}
 
   private relate(type: string, target: string, external: boolean): string {
@@ -225,11 +233,11 @@ class PartWriter {
     return id;
   }
 
-  private runXml(run: Inline, size: number | undefined, linked: boolean): string {
+  private runXml(run: Inline, size: number | undefined, linked: boolean, skipMonospaceFont = false): string {
     if (run.text === '') return '';
     const props: string[] = [];
     if (linked) props.push('<w:rStyle w:val="Hyperlink"/>');
-    if (run.monospace) props.push(`<w:rFonts w:ascii="${MONOSPACE_FONT}" w:hAnsi="${MONOSPACE_FONT}" w:cs="${MONOSPACE_FONT}"/>`);
+    if (run.monospace && !skipMonospaceFont) props.push(`<w:rFonts w:ascii="${MONOSPACE_FONT}" w:hAnsi="${MONOSPACE_FONT}" w:cs="${MONOSPACE_FONT}"/>`);
     if (run.bold) props.push('<w:b/><w:bCs/>');
     if (run.italic) props.push('<w:i/><w:iCs/>');
     if (run.strike) props.push('<w:strike/>');
@@ -264,7 +272,7 @@ class PartWriter {
     );
   }
 
-  runsXml(runs: readonly Inline[], size?: number): string {
+  runsXml(runs: readonly Inline[], size?: number, skipMonospaceFont = false): string {
     let xml = '';
     let index = 0;
     while (index < runs.length) {
@@ -285,7 +293,7 @@ class PartWriter {
         const { href } = run;
         let linkRuns = '';
         while (index < runs.length && runs[index].href === href && runs[index].image === undefined && runs[index].note === undefined && runs[index].anchor === undefined) {
-          linkRuns += this.runXml(runs[index], size, true);
+          linkRuns += this.runXml(runs[index], size, true, skipMonospaceFont);
           index += 1;
         }
         if (href.startsWith('#')) {
@@ -299,7 +307,7 @@ class PartWriter {
         }
         continue;
       } else {
-        xml += this.runXml(run, size, false);
+        xml += this.runXml(run, size, false, skipMonospaceFont);
       }
       index += 1;
     }
@@ -307,8 +315,8 @@ class PartWriter {
   }
 
   private paragraph(runs: readonly Inline[], props: ParagraphProperties, size?: number, shapes?: readonly PageShape[]): string {
-    const hanging = shapes?.map((shape) => wordShapeAnchor(shape, this.state.drawingId())).join('') ?? '';
-    return `<w:p>${paragraphProperties(props)}${hanging}${this.runsXml(runs, size)}</w:p>`;
+    const hanging = this.emitAnchoredShapes && shapes ? shapes.map((shape) => wordShapeAnchor(shape, this.state.drawingId())).join('') : '';
+    return `<w:p>${paragraphProperties(props)}${hanging}${this.runsXml(runs, size, props.style === 'Code')}</w:p>`;
   }
 
   // -------------------------------------------------------------------------------------------
@@ -390,9 +398,15 @@ class PartWriter {
             this.paragraph(item.runs, { style: 'ListParagraph', numbering: { level: Math.min(item.level, LIST_LEVELS - 1), id: block.id }, rtl: item.rtl, sectPr }),
         }));
       case 'table': {
-        const pieces: Piece[] = [{ carriesSection: false, render: () => this.tableXml(block) }];
-        // Two tables never touch, and a container never ends with a table: Word needs a paragraph between and after.
-        if (nextIsTable || last) pieces.push({ carriesSection: true, render: (sectPr?: string) => `<w:p>${paragraphProperties({ sectPr })}</w:p>` });
+        const chunks = chunkTableRows(block.rows, MAX_DOCX_TABLE_ROWS);
+        const pieces: Piece[] = [];
+        chunks.forEach((rows, chunkIndex) => {
+          pieces.push({ carriesSection: false, render: () => this.tableXml(rows === block.rows ? block : { ...block, rows }) });
+          // Two tables never touch, and a container never ends with a table: Word needs a paragraph between and after.
+          if (chunkIndex < chunks.length - 1 || nextIsTable || last) {
+            pieces.push({ carriesSection: true, render: (sectPr?: string) => `<w:p>${paragraphProperties({ sectPr })}</w:p>` });
+          }
+        });
         return pieces;
       }
       case 'image': {
@@ -443,16 +457,95 @@ function blockHoldsTable(block: Block): boolean {
   return false;
 }
 
+/** Splits tables with more than `maxRows` rows into consecutive `<w:tbl>` elements along non-merged row boundaries. */
+function chunkTableRows(rows: TableBlock['rows'], maxRows: number): Array<TableBlock['rows']> {
+  if (rows.length <= maxRows) return [rows];
+  const chunks: Array<TableBlock['rows']> = [];
+  let start = 0;
+  while (start < rows.length) {
+    let end = Math.min(rows.length, start + maxRows);
+    while (end < rows.length && rows[end].some((cell) => cell.continuation)) end++;
+    chunks.push(rows.slice(start, end));
+    start = end;
+  }
+  return chunks;
+}
+
+function countTextLines(text: string, limit: number): number {
+  let count = 1;
+  let pos = 0;
+  while (count <= limit) {
+    const next = text.indexOf('\n', pos);
+    if (next === -1) break;
+    count += 1;
+    pos = next + 1;
+  }
+  return count;
+}
+
+function countFlowParagraphs(blocks: readonly Block[], limit: number, seen = { count: 0 }): number {
+  for (const block of blocks) {
+    if (seen.count > limit) break;
+    switch (block.type) {
+      case 'list':
+        seen.count += block.items.length;
+        break;
+      case 'code':
+        seen.count += countTextLines(block.text, limit - seen.count);
+        break;
+      case 'quote':
+        countFlowParagraphs(block.blocks, limit, seen);
+        break;
+      case 'table':
+        for (const row of block.rows) {
+          for (const cell of row) {
+            if (!cell.continuation) countFlowParagraphs(cellBlocks(cell), limit, seen);
+            if (seen.count > limit) break;
+          }
+          if (seen.count > limit) break;
+        }
+        break;
+      default:
+        seen.count += 1;
+        break;
+    }
+  }
+  return seen.count;
+}
+
+function countAnchoredShapesInBlocks(blocks: readonly Block[], limit: number): number {
+  let count = 0;
+  walkBlocks(blocks, (block) => {
+    if (count > limit) return;
+    if ((block.type === 'paragraph' || block.type === 'heading') && block.shapes) {
+      count += block.shapes.length;
+    }
+  });
+  return count;
+}
+
+function isOuterLayoutWrapper(block: Block): boolean {
+  if (block.type !== 'table') return false;
+  if (block.rows.some((row) => row.some((cell) => !cell.continuation && cellBlocks(cell).some(blockHoldsTable)))) {
+    return true;
+  }
+  return (
+    block.rows.length <= MAX_LAYOUT_TABLE_WRAPPER_ROWS &&
+    block.rows.some((row) => row.some((cell) => !cell.continuation && countFlowParagraphs(cellBlocks(cell), MAX_LAYOUT_CELL_PARAGRAPHS) > MAX_LAYOUT_CELL_PARAGRAPHS))
+  );
+}
+
 /**
- * Unwraps outer layout tables (tables whose cells hold nested tables) into the blocks of their cells in row-major order,
- * leaving innermost data tables intact. LibreOffice Writer's table pagination (`SwTabFrm::Split`) stalls when a multi-page
- * `<w:tbl>` is nested inside a `<w:tc>`.
+ * Unwraps outer layout tables (tables whose cells hold nested tables, or few-row layout shells wrapping
+ * hundreds of flowing paragraphs/code lines) into the blocks of their cells in row-major order, leaving
+ * innermost data tables intact. LibreOffice Writer's table pagination (`SwTabFrm::Split`) stalls when a
+ * multi-page `<w:tbl>` is nested inside a `<w:tc>` or one row spans hundreds of pages.
  */
 function unwrapOuterLayoutTables(blocks: readonly Block[]): Block[] {
   const flat: Block[] = [];
   for (const block of blocks) {
-    if (block.type === 'table' && block.rows.some((row) => row.some((cell) => !cell.continuation && cellBlocks(cell).some(blockHoldsTable)))) {
-      for (const row of block.rows) {
+    if (isOuterLayoutWrapper(block)) {
+      for (const row of (block as TableBlock).rows) {
         for (const cell of row) {
           if (!cell.continuation) flat.push(...unwrapOuterLayoutTables(cellBlocks(cell)));
         }
@@ -681,6 +774,10 @@ function documentLists(model: DocumentModel): ListBlock[] {
   return lists;
 }
 
+function shouldEmitAnchoredShapes(model: DocumentModel, maxAnchoredShapes: number | undefined): boolean {
+  return maxAnchoredShapes === undefined || countAnchoredShapesInBlocks(bodyBlocks(model), maxAnchoredShapes) <= maxAnchoredShapes;
+}
+
 /**
  * Writes the document as a DOCX package.
  * @throws PayloadLimitError when the document carries more pictures than DOCX_WRITER_MAX_IMAGES.
@@ -722,7 +819,8 @@ export async function documentToDocx(model: DocumentModel, options: DocxWriteOpt
   const cited = numberNotes(model, state);
 
   const availableTwips = twips(model.pageWidthPt - model.margins.left - model.margins.right);
-  const documentPart = new PartWriter(model, state, availableTwips);
+  const emitAnchoredShapes = shouldEmitAnchoredShapes(model, options.maxAnchoredShapes);
+  const documentPart = new PartWriter(model, state, availableTwips, emitAnchoredShapes);
   const bodyParts: string[] = [];
   model.sections.forEach((section, sectionIndex) => {
     const last = sectionIndex === model.sections.length - 1;

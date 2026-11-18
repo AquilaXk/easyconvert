@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { dispatchConversion } from '../../src/lib/conversions/dispatch';
 import { JOB_DEADLINE_AT } from '../../src/lib/conversions/job-time';
-import { ConversionFailedError } from '../../src/lib/types';
+import { ConversionFailedError, CpuTaskTimeoutError } from '../../src/lib/types';
 import type { WorkerEngineOptions } from '../../src/worker/worker-types';
 import { outputProblem } from './output-check';
 import { exitSummary, type ErrorFacts } from './verdict';
@@ -42,8 +42,18 @@ function errorFacts(error: unknown): ErrorFacts {
 async function runJob(job: JobRequest): Promise<JobReply> {
   const started = performance.now();
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-'));
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const options: WorkerEngineOptions = job.deadlineMs === undefined ? {} : ({ [JOB_DEADLINE_AT]: Date.now() + job.deadlineMs } as WorkerEngineOptions);
+    let options: WorkerEngineOptions = {};
+    if (job.deadlineMs !== undefined) {
+      const controller = new AbortController();
+      const abortDelayMs = Math.max(1000, job.deadlineMs - 2000);
+      deadlineTimer = setTimeout(() => {
+        controller.abort(new CpuTaskTimeoutError(`.${job.format} to .${job.target} conversion`, job.deadlineMs!));
+      }, abortDelayMs);
+      deadlineTimer.unref?.();
+      options = { [JOB_DEADLINE_AT]: Date.now() + job.deadlineMs, signal: controller.signal } as WorkerEngineOptions;
+    }
     const result = await dispatchConversion(fs.readFileSync(job.path), job.format, job.target, options, job.name);
     const ms = performance.now() - started;
     const problem = await outputProblem(result.buffer, job.target, workDir, { mimeType: result.mimeType, pdfinfo: PDFINFO, identify: IDENTIFY, emptyInput: job.emptyInput === true });
@@ -55,6 +65,7 @@ async function runJob(job: JobRequest): Promise<JobReply> {
     const name = error instanceof Error ? error.name : typeof error;
     return { id: job.id, kind: 'error', ms, facts: errorFacts(error), name, message: message.slice(0, 500), exit: exitSummary(error) };
   } finally {
+    if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
     fs.rmSync(workDir, { recursive: true, force: true });
   }
 }

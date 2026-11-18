@@ -2,7 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import sharp from 'sharp';
-import { ConversionFailedError, UnsupportedOptionError } from '../lib/types';
+import { ConversionFailedError, InvalidPageRangeError, PayloadLimitError, PdfPasswordRequiredError, UnsupportedOptionError } from '../lib/types';
+import { InputPixelLimitError } from '../lib/conversions/image-input-limits';
+import { checkOpenedPdfRasterPageBudget, openPdfForReading } from '../lib/conversions/pdf-access';
+import { renderedSizePixels, type PdfPageFrame } from '../lib/conversions/pdf-page-geometry';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
 import { readSandboxOutput, sandboxOutputSize } from '../lib/security/sandbox-output';
 import { availableCpus } from '../lib/workers/available-cpus';
@@ -314,6 +317,75 @@ export function selectsPages(options: { page?: unknown; pages?: unknown }): bool
 const PDF_RASTER_DEFAULT_DPI = 150;
 const PDF_RASTER_MIN_DPI = 72;
 const PDF_RASTER_MAX_DPI = 600;
+
+const BMP_HEADER_SIZE = 54;
+const BMP_BYTES_PER_RGB_PIXEL = 3;
+const BMP_ROW_ALIGNMENT = 4;
+const BMP_PALETTE_MAX_COLORS = 256;
+
+export function assertRasterOutputWithinLimit(
+  bytes: number,
+  targetExtension: string,
+  maxTotalBytes: number,
+  multiPage: boolean
+): void {
+  if (bytes <= maxTotalBytes) return;
+  const label = multiPage ? 'Multi-page' : 'Rendered';
+  const mib = Math.round(maxTotalBytes / (1024 * 1024));
+  throw new PayloadLimitError(
+    `${label} ${targetExtension.toUpperCase()} output exceeds the ${maxTotalBytes} byte (${mib} MiB) uncompressed output limit.`
+  );
+}
+
+export function assertPdfBmpFramesWithinLimit(
+  frames: readonly PdfPageFrame[],
+  dpi: number,
+  maxTotalBytes: number,
+  options: { colorDepth?: number; palette?: unknown; colors?: number }
+): void {
+  const palette8 = options.colorDepth === 8 || Boolean(options.palette);
+  const paletteColors = palette8 ? Math.min(BMP_PALETTE_MAX_COLORS, Math.max(2, options.colors || BMP_PALETTE_MAX_COLORS)) : 0;
+  let estimatedBytes = 0;
+  for (const frame of frames) {
+    const { width: w, height: h } = renderedSizePixels(frame, dpi);
+    const rowBytes = palette8 ? w : w * BMP_BYTES_PER_RGB_PIXEL;
+    const stride = Math.ceil(rowBytes / BMP_ROW_ALIGNMENT) * BMP_ROW_ALIGNMENT;
+    estimatedBytes += BMP_HEADER_SIZE + paletteColors * BMP_ROW_ALIGNMENT + stride * h;
+    if (estimatedBytes > maxTotalBytes) {
+      const mib = Math.round(maxTotalBytes / (1024 * 1024));
+      throw new PayloadLimitError(
+        `Multi-page BMP output for ${frames.length} pages exceeds the ${maxTotalBytes} byte (${mib} MiB) uncompressed output limit. Select fewer pages with "pages", set "multiPageOutput" to "first", or lower "dpi".`
+      );
+    }
+  }
+}
+
+export async function assertPdfBmpOutputWithinLimit(
+  pdfBytes: Buffer | undefined,
+  options: { width?: number; height?: number; dpi?: number; colorDepth?: number; palette?: unknown; colors?: number; password?: string; signal?: AbortSignal },
+  selectPageNumbers: (pageCount: number) => readonly number[],
+  maxTotalBytes: number
+): Promise<void> {
+  if (pdfBytes === undefined || options.width || options.height) return;
+  const dpi = resolvePdfRasterDpi(options);
+  let budget: { frames: readonly PdfPageFrame[] } | undefined;
+  try {
+    const readablePdf = await openPdfForReading(pdfBytes, options.password, options.signal);
+    budget = await checkOpenedPdfRasterPageBudget(readablePdf, selectPageNumbers, dpi);
+  } catch (err) {
+    if (
+      err instanceof PayloadLimitError ||
+      err instanceof InputPixelLimitError ||
+      err instanceof InvalidPageRangeError ||
+      err instanceof PdfPasswordRequiredError ||
+      options.signal?.aborted
+    ) {
+      throw err;
+    }
+    return;
+  }
+  if (budget) assertPdfBmpFramesWithinLimit(budget.frames, dpi, maxTotalBytes, options);
+}
 
 /** The raster density of a PDF page image, validated against the range the API accepts. */
 export function resolvePdfRasterDpi(options: { dpi?: number }): number {

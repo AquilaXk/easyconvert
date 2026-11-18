@@ -93,6 +93,7 @@ interface PoolEntry {
   busy: boolean;
   idleTimer: NodeJS.Timeout | null;
   abort: ((reason: Error) => void) | null;
+  parametersReady?: boolean;
 }
 
 /** Workers are only shared between jobs that need the same data, engine mode and parameters. */
@@ -248,7 +249,8 @@ export class OcrWorkerPool {
   async run<T>(
     spec: OcrWorkerSpec,
     job: (recognize: OcrRecognizeFn, recognizeWith: OcrRecognizeWithFn, detect: OcrDetectFn) => Promise<T>,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    runOptions?: { skipRepeatedParameters?: boolean }
   ): Promise<T> {
     signal?.throwIfAborted();
     const entry = await this.acquire(spec, signal);
@@ -279,7 +281,12 @@ export class OcrWorkerPool {
       signal?.addEventListener('abort', onAbort, { once: true });
     });
     try {
-      const outcome = await Promise.race([this.execute(entry, spec, job), interrupted, timedOut, cancelled]);
+      const outcome = await Promise.race([
+        this.execute(entry, spec, job, runOptions?.skipRepeatedParameters === true),
+        interrupted,
+        timedOut,
+        cancelled,
+      ]);
       this.release(entry);
       return outcome;
     } catch (err) {
@@ -317,7 +324,8 @@ export class OcrWorkerPool {
   private async execute<T>(
     entry: PoolEntry,
     spec: OcrWorkerSpec,
-    job: (recognize: OcrRecognizeFn, recognizeWith: OcrRecognizeWithFn, detect: OcrDetectFn) => Promise<T>
+    job: (recognize: OcrRecognizeFn, recognizeWith: OcrRecognizeWithFn, detect: OcrDetectFn) => Promise<T>,
+    skipRepeatedParameters = false
   ): Promise<T> {
     const { worker } = entry;
     // A job that outlives its run (the timeout, the abort signal or a shutdown ended the run and terminated the worker)
@@ -327,16 +335,27 @@ export class OcrWorkerPool {
       if (!this.entries.has(entry)) throw new OcrEngineUnavailableError('The OCR worker was terminated.');
     };
     live();
-    await worker.setParameters(spec.parameters);
+    if (!skipRepeatedParameters || !entry.parametersReady) {
+      await worker.setParameters(spec.parameters);
+      entry.parametersReady = true;
+    }
     const recognizeWith: OcrRecognizeWithFn = async (overrides, image, options, output, jobId) => {
       live();
+      entry.parametersReady = false;
       await worker.setParameters({ ...spec.parameters, ...overrides });
       try {
         live();
         return await worker.recognize(image, options, output, jobId);
       } finally {
         // Put the job's own parameters back whether or not the recognition worked, while the worker is still there.
-        if (this.entries.has(entry)) await worker.setParameters(spec.parameters).catch(() => undefined);
+        if (this.entries.has(entry)) {
+          await worker.setParameters(spec.parameters).then(
+            () => {
+              entry.parametersReady = true;
+            },
+            () => undefined
+          );
+        }
       }
     };
     const detect: OcrDetectFn = (image, jobId) => {

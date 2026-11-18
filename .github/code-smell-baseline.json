@@ -592,7 +592,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2364
+    "maxValue": 2361
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -1870,7 +1870,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2339
+    "maxValue": 2332
   },
   {
     "file": "src/worker/engines.ts",

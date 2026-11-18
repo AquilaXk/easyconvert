@@ -11,7 +11,9 @@
  */
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
+import { Agent, EnvHttpProxyAgent, type Dispatcher } from 'undici';
 import { REMOTE_CACHE_DIR, REMOTE_MANIFEST_PATH } from './config';
 import { BenchArgumentError, BenchError } from './errors';
 import { retryDelayMs, retryPaced, throwIfHostBusy } from './http-retry';
@@ -35,10 +37,26 @@ const DEFAULT_RETRIES = 3;
 const MIRRORED_RETRIES = 1;
 const MAX_MIRRORS = 3;
 const REQUEST_TIMEOUT_MS = 300_000;
+const CONNECT_TIMEOUT_MS = 30_000;
+/** Give each IPv4/IPv6 family candidate 3 s to handshake instead of Node's 250 ms default for slow archive hosts. */
+const CONNECT_ATTEMPT_TIMEOUT_MS = 3000;
 const HTTP_OK = 200;
 const HTTP_PARTIAL = 206;
 const ZIP_LOCAL_HEADER_PROBE_BYTES = 30;
 const USER_AGENT = 'easyconvert-parity-bench/1.0 (+https://github.com/AquilaXk/easyconvert)';
+
+net.setDefaultAutoSelectFamilyAttemptTimeout(CONNECT_ATTEMPT_TIMEOUT_MS);
+
+let sharedDispatcher: Dispatcher | undefined;
+function corpusDispatcher(): Dispatcher {
+  if (sharedDispatcher === undefined) {
+    const hasProxy = Boolean(process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY);
+    sharedDispatcher = hasProxy
+      ? new EnvHttpProxyAgent({ connect: { timeout: CONNECT_TIMEOUT_MS } })
+      : new Agent({ connect: { timeout: CONNECT_TIMEOUT_MS } });
+  }
+  return sharedDispatcher;
+}
 
 /** A file served on its own at a URL. */
 export interface FileOrigin {
@@ -279,7 +297,13 @@ async function fetchPinned(url: string, headers: Record<string, string>, extraHo
   const remembered = redirectedTo.get(url);
   let current = remembered ?? start;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    const response = await fetch(current, { headers, redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    const requestInit: RequestInit & { dispatcher?: Dispatcher } = {
+      headers,
+      redirect: 'manual',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      dispatcher: corpusDispatcher(),
+    };
+    const response = await fetch(current, requestInit);
     if (!REDIRECT_STATUSES.has(response.status)) {
       if (response.ok) {
         if (current !== start) redirectedTo.set(url, current);

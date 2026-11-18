@@ -5,11 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import JSZip from 'jszip';
 import {
-  ConversionOptions,
-  ConversionResult,
-  ConversionFailedError,
-  ArchiveEncryptionUnavailableError,
-  ArchiveNotEncryptedError,
+  ConversionOptions, ConversionResult, ConversionFailedError, ArchiveEncryptionUnavailableError, ArchiveNotEncryptedError,
   UnsupportedOptionError, EngineUnavailableError, InvalidPageRangeError, isTypedRefusal, ComplexScriptRequiresNativeEngineError,
   MediaPackagingOptions, UnsupportedTargetError, RawDecodeError, UnsupportedRawCompressionError, InvalidRawSensorError,
   RawEngineRequiredError, PdfPasswordRequiredError, PayloadLimitError,
@@ -17,8 +13,8 @@ import {
 import { convertFile, convertImage } from '../lib/conversions';
 import { wantsPngOptimiser, withOptimisedPng } from '../lib/conversions/png-optimise';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
-import { assertDrawingPackage, assertOfficeEmbeddedImagesWithinLimit, officeInputWithoutMacros } from './office-input-checks';
-import { BIFF8_TARGET, asUnreadableDocument, convertBridgedTarget, convertMarkupPageImages, convertThroughInterchange, convertXlsTarget, interchangeNeeded, retryRefusedLegacyDocument, withEmbeddedWorkbookRetry, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageChainLimits, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { assertDrawingPackage, assertLegacyCompoundFileReadable, assertOfficeEmbeddedImagesWithinLimit, officeInputWithoutMacros } from './office-input-checks';
+import { BIFF8_TARGET, asUnreadableDocument, convertBridgedTarget, convertMarkupPageImages, convertThroughInterchange, convertXlsTarget, interchangeNeeded, retryRefusedLegacyDocument, withEmbeddedWorkbookRetry, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageChainLimits, withWordAnchoredLayoutRetry, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { writeEpsPages } from './postscript-page-limit';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { isMediaRoutePair } from '../lib/conversions/route-formats';
@@ -67,11 +63,8 @@ import { runFfmpegTranscode } from '../lib/conversions/media-ffmpeg-run';
 import { mediaReadDirs, openMediaInput, runFfmpeg } from '../lib/conversions/media-process';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from '../lib/conversions/media-two-pass';
 import {
-  executeSandboxedBinary, OFFICE_PIPE_DIR,
-  rethrowSandboxUnavailable,
-  SandboxedMemoryLimitError,
-  SandboxedProcessError,
-  SandboxedBufferLimitError,
+  executeSandboxedBinary, OFFICE_PIPE_DIR, rethrowSandboxUnavailable, SandboxedMemoryLimitError,
+  SandboxedProcessError, SandboxedTimeoutError, SandboxedBufferLimitError,
 } from './sandbox';
 import { convertPostScript, type PostScriptJob } from './postscript-render';
 import { convertDjvu } from './djvu-render';
@@ -84,7 +77,7 @@ import { HTML_FORMAT, HTML_SOURCES, planTextPdfRoute } from './text-pdf-route';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, findOfficeOutput, getMimeType, handOffOutput, inProcessOutputPath, internalFallbackResult, preserveOutput, resolveInputContext, resolveOfficeInputContext, withPageNumbers, withSandboxDir, writeOutputSegments, readRawInputBuffer } from './worker-output';
-import { DIRECT_RENDER_BATCH_PAGES, ppmBatchPages, renderPngBatch, renderScratchPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, withPageRenderLanes, type PageBatch } from './poppler-ppm';
+import { DIRECT_RENDER_BATCH_PAGES, assertPdfBmpOutputWithinLimit, assertRasterOutputWithinLimit, ppmBatchPages, renderPngBatch, renderScratchPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, withPageRenderLanes, type PageBatch } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { InputPixelLimitError } from '../lib/conversions/image-input-limits';
 import { checkOpenedPdfRasterPageBudget } from '../lib/conversions/pdf-access';
@@ -101,7 +94,7 @@ import { dataCorruptedWarning, decoderStderrDetail, decoderWarningOffset } from 
 import {
   RAW_DECODE_DEFAULT_TIMEOUT_MS, RAW_DECODE_FLAGS, RAW_DECODE_MAX_TIMEOUT_MS, RAW_DECODE_MEMORY_LIMIT_MB, RAW_DECODE_UNRECOGNIZED_PATTERN, rawDecoderFor, decodeWithSnapshotFallback,
 } from './raw-decode-settings';
-import { SEVEN_ZIP_BINARY_CANDIDATES } from '../lib/conversions/archive';
+import { ARCHIVE_SECURITY_LIMITS, SEVEN_ZIP_BINARY_CANDIDATES } from '../lib/conversions/archive';
 import { sanitizeLeafFilename } from '../lib/conversions/archive-extraction-safety';
 import { withExtractionNotes } from '../lib/conversions/archive-alternate-streams';
 import { planNativeArchiveRoute, type NativeArchiveRoute } from '../lib/conversions/archive-stream-route';
@@ -109,25 +102,11 @@ import { extractSourceArchive } from './archive-source-extraction';
 import { rarToTar, tarToBzip2, tarToGzip, tarToZip, zipToTar } from '../lib/conversions/archive-repack';
 import { tarPlanFor } from '../lib/conversions/archive-single-stream';
 import { writeDeflatedZipFile, type ZipFile } from '../lib/conversions/zip-writer';
+import { sevenZipToTar, stageTarForSevenZip, streamToTar, type ArchiveSource, type StagedTar, type StreamedArchive } from '../lib/conversions/archive-stream';
 import {
-  sevenZipToTar,
-  stageTarForSevenZip,
-  streamToTar,
-  type ArchiveSource,
-  type StagedTar,
-  type StreamedArchive,
-} from '../lib/conversions/archive-stream';
-import {
-  SEVEN_ZIP_ASK_PASSWORD_SWITCH,
-  MAX_ENCRYPTION_LISTING_BYTES,
-  archiveFailureStderr,
-  assertArchivePasswordSafe,
-  assertListingShowsEncryption,
-  assertEncryptedArchiveInputWithinLimits,
-  assertZipPasswordSupported,
-  sevenZipCreatePasswordInput,
-  sevenZipEncryptionCheckInput,
-  walkArchiveTreePaths,
+  SEVEN_ZIP_ASK_PASSWORD_SWITCH, MAX_ENCRYPTION_LISTING_BYTES, archiveFailureStderr, assertArchivePasswordSafe,
+  assertListingShowsEncryption, assertEncryptedArchiveInputWithinLimits, assertZipPasswordSupported,
+  sevenZipCreatePasswordInput, sevenZipEncryptionCheckInput, walkArchiveTreePaths,
 } from '../lib/conversions/archive-password';
 import { resolveArchiveCompressionLevel } from '../lib/conversions/archive-compression-level';
 import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, officeInputBytes, resolveLibreOfficeFilter, standaloneProfileArguments } from './libreoffice-pool';
@@ -301,6 +280,7 @@ async function runHeadlessOffice(
 ): Promise<WorkerConversionResult | null> {
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
+  assertLegacyCompoundFileReadable(input, src);
   const filterSpec = resolveLibreOfficeFilter(tgt, src, options);
   const sofficeBin = resolveBinary(BINARY_PATHS.soffice, process.env.SOFFICE_PATH);
   if (!sofficeBin) {
@@ -325,7 +305,7 @@ async function runHeadlessOffice(
     } catch (poolErr) {
       // The standalone run below needs the same sandbox the pool just failed to get.
       rethrowSandboxUnavailable(poolErr);
-      if (options.signal?.aborted || poolErr instanceof SandboxedMemoryLimitError) {
+      if (options.signal?.aborted || poolErr instanceof SandboxedMemoryLimitError || poolErr instanceof SandboxedTimeoutError) {
         throw poolErr;
       }
       if (options.throwOnUnavailable && !(poolErr instanceof LibreOfficePoolTimeoutError)) {
@@ -393,7 +373,7 @@ async function runHeadlessOffice(
     return null;
   }
 }
-export const convertWithHeadlessOffice = withMetafileInk(withMetafileFrame(withLegacyOfficeRecovery(withEmbeddedWorkbookRetry(runHeadlessOffice))), () => resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH), discardPersistedOutput);
+export const convertWithHeadlessOffice = withMetafileInk(withMetafileFrame(withLegacyOfficeRecovery(withEmbeddedWorkbookRetry(withWordAnchoredLayoutRetry(runHeadlessOffice)))), () => resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH), discardPersistedOutput);
 
 /**
  * Transcodes media using native FFmpeg with strict argument boundaries.
@@ -1478,7 +1458,9 @@ async function reencodeRenderedPages(
   const timeout = Math.min(stageTimeoutMs(context.options, POPPLER_DEFAULT_TIMEOUT_MS), POPPLER_MAX_TIMEOUT_MS);
   try {
     if (!rendered.filename.endsWith('.zip')) {
-      return await persistChainOutput(await encode(rendered.buffer, rendered.filename, timeout), targetExtension, context);
+      const pageBuffer = await encode(rendered.buffer, rendered.filename, timeout);
+      assertRasterOutputWithinLimit(pageBuffer.length, targetExtension, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE, false);
+      return await persistChainOutput(pageBuffer, targetExtension, context);
     }
     const pages = await JSZip.loadAsync(rendered.buffer);
     const entryNames = Object.keys(pages.files)
@@ -1487,11 +1469,15 @@ async function reencodeRenderedPages(
     const budget = pageLoopBudget(context.options, entryNames.length, timeout);
     const encoded = new Array<ZipFile>(entryNames.length);
     const renderedSuffix = `.${renderedExtension}`;
+    let totalEncodedBytes = 0;
     await runBounded(entryNames.map((entryName, index) => async () => {
       const remaining = budget.remainingMs();
       const stem = entryName.endsWith(renderedSuffix) ? entryName.slice(0, -renderedSuffix.length) : entryName;
       const page = await pages.files[entryName].async('nodebuffer');
-      encoded[index] = { name: `${stem}.${targetExtension}`, data: await encode(page, entryName, remaining) };
+      const pageBuffer = await encode(page, entryName, remaining);
+      totalEncodedBytes += pageBuffer.length;
+      assertRasterOutputWithinLimit(totalEncodedBytes, targetExtension, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE, true);
+      encoded[index] = { name: `${stem}.${targetExtension}`, data: pageBuffer };
     }), pagesAtOnce);
     return await persistChainFile('zip', context, (outputPath) => writeDeflatedZipFile(outputPath, encoded));
   } finally {
@@ -1518,6 +1504,13 @@ async function convertPdfToEncodedRaster(
   originalFilename: string,
   context: ChainOutputContext
 ): Promise<WorkerConversionResult | null> {
+  if (tgt === 'bmp') {
+    let pdfBytes: Buffer | undefined;
+    try { pdfBytes = loadPdfInputBuffer(input); } catch { pdfBytes = undefined; }
+    await assertPdfBmpOutputWithinLimit(
+      pdfBytes, options, (count) => pagesOfIntervals(resolveRequestedPages(options, count, true)), ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE
+    );
+  }
   const rendered = await convertWithNativePoppler(input, 'pdf', PNG_FORMAT, { ...intermediateOptions(options), intermediateRaster: true }, originalFilename);
   if (!rendered) return null;
   return withPageRenderLanes((lanes) =>

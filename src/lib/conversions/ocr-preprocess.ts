@@ -1,4 +1,4 @@
-import sharp, { type Sharp } from 'sharp';
+import sharp, { type Metadata, type Sharp } from 'sharp';
 import { OcrPreprocessFaultError } from '../types';
 import { oddWindow, sauvolaBinarize } from './ocr-sauvola';
 import { estimateSkew, lineHeightFromProfile } from './ocr-text-metrics';
@@ -165,8 +165,15 @@ function fromGray(page: GrayPage): Sharp {
   return sharp(page.data, { raw: { width: page.width, height: page.height, channels: GRAY_CHANNELS } });
 }
 
-function decodeGray(source: Buffer): Promise<GrayPage> {
-  return toGrayPage(sharp(source).rotate().flatten({ background: '#ffffff' }));
+function decodeGray(source: Buffer, meta?: Metadata): Promise<GrayPage> {
+  let pipeline = sharp(source);
+  if (meta === undefined || (meta.orientation !== undefined && meta.orientation !== 1)) {
+    pipeline = pipeline.rotate();
+  }
+  if (meta === undefined || meta.hasAlpha) {
+    pipeline = pipeline.flatten({ background: '#ffffff' });
+  }
+  return toGrayPage(pipeline);
 }
 
 async function analysisCopy(page: GrayPage): Promise<GrayPage> {
@@ -245,11 +252,11 @@ function sauvolaWindowFor(lineHeightPx: number | null): number | null {
 }
 
 /** Enlarges with a Lanczos kernel, which keeps stroke edges sharp better than bilinear or bicubic. */
-function enlarge(page: GrayPage, scale: number): Promise<GrayPage> {
+function enlarge(page: GrayPage, width: number, height: number): Promise<GrayPage> {
   return toGrayPage(
     fromGray(page).resize({
-      width: Math.round(page.width * scale),
-      height: Math.round(page.height * scale),
+      width,
+      height,
       fit: 'fill',
       kernel: sharp.kernel.lanczos3,
     })
@@ -259,6 +266,20 @@ function enlarge(page: GrayPage, scale: number): Promise<GrayPage> {
 /** Turns the page clockwise about its centre on a canvas that holds the whole result. */
 function turn(page: GrayPage, degrees: number, paper: number): Promise<GrayPage> {
   return toGrayPage(fromGray(page).rotate(degrees, { background: { r: paper, g: paper, b: paper, alpha: 1 } }));
+}
+
+/** Enlarges and levels in one libvips pipeline so no intermediate full-page buffer is materialized. */
+function enlargeAndTurn(page: GrayPage, width: number, height: number, degrees: number, paper: number): Promise<GrayPage> {
+  return toGrayPage(
+    fromGray(page)
+      .resize({
+        width,
+        height,
+        fit: 'fill',
+        kernel: sharp.kernel.lanczos3,
+      })
+      .rotate(degrees, { background: { r: paper, g: paper, b: paper, alpha: 1 } })
+  );
 }
 
 /**
@@ -279,15 +300,17 @@ interface DecodedPage {
 }
 
 /** Decodes the page upright (EXIF orientation applied) and flat on white, as 8-bit gray or RGB samples. */
-async function decodeUprightPage(source: Buffer): Promise<DecodedPage> {
-  const { space } = await sharp(source).metadata();
-  const gray = space === 'b-w' || space === 'grey16';
-  const { data, info } = await sharp(source)
-    .rotate()
-    .flatten({ background: '#ffffff' })
-    .toColourspace(gray ? 'b-w' : 'srgb')
-    .raw({ depth: 'uchar' })
-    .toBuffer({ resolveWithObject: true });
+async function decodeUprightPage(source: Buffer, precheckedMeta?: Metadata): Promise<DecodedPage> {
+  const meta = precheckedMeta ?? (await sharp(source).metadata());
+  const gray = meta.space === 'b-w' || meta.space === 'grey16';
+  let pipeline = sharp(source);
+  if (meta.orientation !== undefined && meta.orientation !== 1) {
+    pipeline = pipeline.rotate();
+  }
+  if (meta.hasAlpha) {
+    pipeline = pipeline.flatten({ background: '#ffffff' });
+  }
+  const { data, info } = await pipeline.toColourspace(gray ? 'b-w' : 'srgb').raw({ depth: 'uchar' }).toBuffer({ resolveWithObject: true });
   if (info.channels !== GRAY_CHANNELS && info.channels !== RGB_CHANNELS) {
     throw new OcrPreprocessFaultError(`Expected a gray or RGB page, decoded ${info.channels} channels.`);
   }
@@ -347,9 +370,10 @@ const preparationSlots = new Semaphore(OCR_PREPROCESS_MAX_CONCURRENCY, ocrQueue(
 export function preprocessOcrImage(
   source: Buffer,
   steps: OcrPreprocessSteps = OCR_PREPROCESS_STEPS,
-  quarterTurn: OcrQuarterTurn = 0
+  quarterTurn: OcrQuarterTurn = 0,
+  precheckedMeta?: Metadata
 ): Promise<OcrPreprocessResult> {
-  return preparationSlots.run(() => withImageThreads(() => prepare(source, steps, quarterTurn)));
+  return preparationSlots.run(() => withImageThreads(() => prepare(source, steps, quarterTurn, precheckedMeta)));
 }
 
 /**
@@ -372,12 +396,36 @@ async function turnByQuarters(page: DecodedPage, degrees: OcrQuarterTurn): Promi
   return { data, width: info.width, height: info.height, channels: page.channels };
 }
 
+async function applyScaleAndRotation(
+  page: GrayPage,
+  steps: OcrPreprocessSteps,
+  lineHeightPx: number | null,
+  skew: { degrees: number; improvement: number },
+  paper: number
+): Promise<{ page: GrayPage; scale: number; turned: boolean; scaledWidth: number; scaledHeight: number }> {
+  const scale = steps.rescale ? planRescale(lineHeightPx, page.width, page.height) : 1;
+  const scaledWidth = scale > 1 ? Math.round(page.width * scale) : page.width;
+  const scaledHeight = scale > 1 ? Math.round(page.height * scale) : page.height;
+  const trusted = Math.abs(skew.degrees) >= OCR_DESKEW_MIN_DEGREES && skew.improvement >= OCR_DESKEW_MIN_IMPROVEMENT;
+  const turned =
+    steps.deskew && trusted && turnedPixelCount(scaledWidth, scaledHeight, skew.degrees) <= OCR_PREPROCESS_MAX_PIXELS;
+  let nextPage = page;
+  if (scale > 1 && turned) {
+    nextPage = await enlargeAndTurn(nextPage, scaledWidth, scaledHeight, skew.degrees, paper);
+  } else {
+    if (scale > 1) nextPage = await enlarge(nextPage, scaledWidth, scaledHeight);
+    if (turned) nextPage = await turn(nextPage, skew.degrees, paper);
+  }
+  return { page: nextPage, scale, turned, scaledWidth, scaledHeight };
+}
+
 async function prepare(
   source: Buffer,
   steps: OcrPreprocessSteps,
-  quarterTurn: OcrQuarterTurn
+  quarterTurn: OcrQuarterTurn,
+  precheckedMeta?: Metadata
 ): Promise<OcrPreprocessResult> {
-  const meta = await sharp(source).metadata();
+  const meta = precheckedMeta ?? (await sharp(source).metadata());
   const swapped = meta.orientation !== undefined && meta.orientation >= 5;
   const width = (swapped ? meta.height : meta.width) ?? 0;
   const height = (swapped ? meta.width : meta.height) ?? 0;
@@ -387,7 +435,7 @@ async function prepare(
     unevenBackground = 0,
     binarizable = false
   ): Promise<OcrPreprocessResult> => {
-    const page = await turnByQuarters(await decodeUprightPage(source), quarterTurn);
+    const page = await turnByQuarters(await decodeUprightPage(source, meta), quarterTurn);
     return {
       image: encodeDecodedPage(page),
       textRows: await smallCropTextRows(page, page.height),
@@ -404,15 +452,15 @@ async function prepare(
   if (!enabled || width * height > OCR_PREPROCESS_MAX_PIXELS) return unchanged(null, 0);
 
   // Only the current page is referenced, so the previous stage's buffer can be freed.
-  const held = { page: await decodeGray(source) };
-  const sourceWidth = held.page.width;
-  const sourceHeight = held.page.height;
+  let page = await decodeGray(source, meta);
+  const sourceWidth = page.width;
+  const sourceHeight = page.height;
   if (quarterTurn !== 0) {
-    const turnedPage = await turnByQuarters({ ...held.page, channels: GRAY_CHANNELS }, quarterTurn);
-    held.page = { data: turnedPage.data, width: turnedPage.width, height: turnedPage.height };
+    const turnedPage = await turnByQuarters({ ...page, channels: GRAY_CHANNELS }, quarterTurn);
+    page = { data: turnedPage.data, width: turnedPage.width, height: turnedPage.height };
   }
-  const analysis = await analysisCopy(held.page);
-  const analysisScale = analysis.width / held.page.width;
+  const analysis = await analysisCopy(page);
+  const analysisScale = analysis.width / page.width;
   const unevenBackground = measureUnevenBackground(analysis);
   const rough = await sauvolaBinarize(analysis.data, analysis.width, analysis.height, {
     windowSize: OCR_ANALYSIS_WINDOW_PX,
@@ -424,15 +472,9 @@ async function prepare(
   const lineHeightPx = measured === null ? null : measured / analysisScale;
   const paper = steps.deskew ? paperLevel(analysis) : 0;
 
-  const scale = steps.rescale ? planRescale(lineHeightPx, held.page.width, held.page.height) : 1;
-  if (scale > 1) held.page = await enlarge(held.page, scale);
-  const scaledWidth = held.page.width;
-  const scaledHeight = held.page.height;
-
-  const trusted = Math.abs(skew.degrees) >= OCR_DESKEW_MIN_DEGREES && skew.improvement >= OCR_DESKEW_MIN_IMPROVEMENT;
-  const turned =
-    steps.deskew && trusted && turnedPixelCount(scaledWidth, scaledHeight, skew.degrees) <= OCR_PREPROCESS_MAX_PIXELS;
-  if (turned) held.page = await turn(held.page, skew.degrees, paper);
+  const transformed = await applyScaleAndRotation(page, steps, lineHeightPx, skew, paper);
+  page = transformed.page;
+  const { scale, turned, scaledWidth, scaledHeight } = transformed;
 
   const scaledLineHeight = lineHeightPx === null ? null : lineHeightPx * scale;
   const binarizableWindow = sauvolaWindowFor(scaledLineHeight);
@@ -443,16 +485,16 @@ async function prepare(
 
   const pixels =
     binarizeWindow === null
-      ? held.page.data
-      : await sauvolaBinarize(held.page.data, held.page.width, held.page.height, { windowSize: binarizeWindow });
+      ? page.data
+      : await sauvolaBinarize(page.data, page.width, page.height, { windowSize: binarizeWindow });
   const finalPage: DecodedPage = {
     data: Buffer.from(pixels.buffer, pixels.byteOffset, pixels.length),
-    width: held.page.width,
-    height: held.page.height,
+    width: page.width,
+    height: page.height,
     channels: GRAY_CHANNELS,
   };
   return {
-    image: encodeGrayPage(pixels, held.page.width, held.page.height),
+    image: encodeGrayPage(pixels, page.width, page.height),
     // A label is judged by its height as submitted, before it is enlarged; after a quarter turn that is its width.
     textRows: await smallCropTextRows(finalPage, quarterTurn === 90 || quarterTurn === 270 ? sourceWidth : sourceHeight),
     geometry: {
@@ -461,15 +503,15 @@ async function prepare(
       ...(quarterTurn === 0 ? {} : { quarterTurnDegrees: quarterTurn }),
       scaledWidth,
       scaledHeight,
-      outputWidth: held.page.width,
-      outputHeight: held.page.height,
+      outputWidth: page.width,
+      outputHeight: page.height,
       rotationDegrees: turned ? skew.degrees : 0,
     },
     lineHeightPx,
     skewDegrees: skew.degrees,
     unevenBackground,
     binarizable: binarizableWindow !== null,
-    ink: bandInk(pixels, held.page.width, held.page.height, scaledLineHeight),
+    ink: bandInk(pixels, page.width, page.height, scaledLineHeight),
     applied: { rescale: scale > 1, deskew: turned, binarize: binarizeWindow !== null },
   };
 }

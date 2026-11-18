@@ -1,7 +1,7 @@
 import { remainingJobMs } from './job-time';
 import fs from 'node:fs';
 import path from 'node:path';
-import sharp from 'sharp';
+import sharp, { type Metadata } from 'sharp';
 import { availableCpus } from '../workers/available-cpus';
 import { assertEncodedImageWithinLimit, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
 import {
@@ -305,6 +305,8 @@ export interface OcrRecognitionOptions {
    * it and does not count against the page's own time limit. Left out, as for a single image, the reading is not limited.
    */
   rescue?: OcrRescueGate;
+  /** Encoded image metadata already verified against input pixel limits by the caller. */
+  precheckedHeader?: Metadata;
 }
 
 const TESSERACT_CLI_CANDIDATES = ['/usr/bin/tesseract', '/usr/local/bin/tesseract', '/opt/homebrew/bin/tesseract'];
@@ -351,14 +353,16 @@ export async function recognizePage(
   language: string = 'auto',
   options: OcrRecognitionOptions = {}
 ): Promise<RecognizedPage> {
-  const { steps = OCR_PREPROCESS_STEPS, enginePath, detectOrientation, parallelBands, signal, rescue } = options;
+  const { steps = OCR_PREPROCESS_STEPS, enginePath, detectOrientation, parallelBands, signal, rescue, precheckedHeader } = options;
   const requested = resolveOcrLanguages(language);
   const requestedLanguage = requested.joined;
   // The Tesseract data is looked for when Tesseract reads the page: a page the ONNX engine reads needs none of it.
   let located: LanguageData | undefined;
   const requestedData = (): LanguageData => (located ??= locateLanguagesData(language || OCR_AUTO_LANGUAGE, requested.traineddata));
 
-  await assertEncodedImageWithinLimit(imageBuffer);
+  if (precheckedHeader === undefined) {
+    await assertEncodedImageWithinLimit(imageBuffer);
+  }
   if (detectOrientation === true) assertOrientationDetectable();
   // What the page declares about its size, for the searchable PDF; undeclared is recorded as assumed.
   const imageDpi = resolveImageDpi(imageBuffer);
@@ -409,7 +413,7 @@ export async function recognizePage(
             return rescue ? rescue.run(read) : read();
           }
         : undefined;
-    return recognizeAttempt({ imageBuffer, steps, quarterTurn, tesseractLang, languageData: languageData(), enginePath: enginePath === 'onnx' ? undefined : enginePath, language, parallelBands, onnxSecondReading, signal });
+    return recognizeAttempt({ imageBuffer, steps, quarterTurn, tesseractLang, languageData: languageData(), enginePath: enginePath === 'onnx' ? undefined : enginePath, language, parallelBands, onnxSecondReading, signal, precheckedHeader });
   };
   const first = await attempt(0, requestedLanguage, requestedData);
   if (detectOrientation === false) return finish(first, { status: 'disabled', rotationApplied: 0 });
@@ -506,6 +510,7 @@ interface RecognitionAttempt {
   /** Reads the page with the ONNX engine, for the second reading of a page that Tesseract read poorly; absent when the request has none. */
   onnxSecondReading?: () => Promise<RecognizedPage | null>;
   signal?: AbortSignal;
+  precheckedHeader?: Metadata;
 }
 
 /**
@@ -618,7 +623,7 @@ async function readPreparedPage(
   // ocr-preprocess.ts), which both engines below then read.
   let prepared: OcrPreprocessResult;
   try {
-    prepared = await preprocessOcrImage(imageBuffer, steps, quarterTurn);
+    prepared = await preprocessOcrImage(imageBuffer, steps, quarterTurn, attempt.precheckedHeader);
   } catch (err) {
     rethrowInputPixelLimit(err);
     if (err instanceof OcrPreprocessError || err instanceof OcrEngineUnavailableError) throw err;
@@ -675,7 +680,8 @@ async function readPreparedPage(
           );
           return fallbackReadsMore(0, countWords(retry.data.text)) ? retry : first;
         },
-        signal
+        signal,
+        { skipRepeatedParameters: true }
       );
 
       if (ret && ret.data) {
@@ -813,7 +819,8 @@ async function recognizeInBands(
           const read = await recognize(sliceNetpbmRows(page, band.top, band.bottom), {}, { blocks: true });
           return { text: read.data.text ?? '', blocks: read.data.blocks };
         },
-        signal
+        signal,
+        { skipRepeatedParameters: true }
       )
     )
   );
@@ -830,9 +837,10 @@ export async function generateSearchablePdf(
   scannedImageBuffer: Buffer,
   ocrResult: OcrResult,
   options: ConversionOptions = {},
-  title = 'Searchable Document'
+  title = 'Searchable Document',
+  precheckedUpright = false
 ): Promise<Buffer> {
-  const page = await uprightImage(scannedImageBuffer);
+  const page = precheckedUpright ? scannedImageBuffer : await uprightImage(scannedImageBuffer);
   // A PNG page goes into the PDF as its own compressed rows (and a bitonal one as CCITT G4) instead of being decoded
   // and compressed again; a page the plan cannot cover is decoded as before.
   const imagePlan = hasPngSignature(page) ? planPngPassthrough(page) : null;

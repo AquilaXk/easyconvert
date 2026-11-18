@@ -4,6 +4,9 @@ import { LegacyOfficeFormatError } from '../lib/conversions/office/legacy-office
 import { CFBF_MAX_FILE_BYTES } from '../lib/compound-file-kind';
 import { assertWorkbookFitsXls } from '../lib/conversions/office/xls-limits';
 import { writeTransientWorkbook } from '../lib/conversions/data';
+import { DOCX_MAX_ANCHORED_SHAPES } from '../lib/conversions/document-model/docx';
+import { remainingJobMs } from '../lib/conversions/job-time';
+import { hasWordFloatingShapes, stripWordFloatingShapes } from '../lib/conversions/office/doc-reader';
 import { readRawInputBuffer } from './worker-output';
 import { repairPptPersistIdSeed } from '../lib/conversions/office/ppt-reader';
 import { OfficePackageUnreadableError, isEncryptedLegacyOffice, legacyOfficeInput } from './office-input-checks';
@@ -228,6 +231,49 @@ export function withEmbeddedWorkbookRetry(run: OfficeSuiteRun): OfficeSuiteRun {
   };
 }
 
+const WORD_FLOATING_SHAPES_PROBE_MS = 30_000;
+const WORD_RETRY_MIN_HEADROOM_MS = 15_000;
+
+/**
+ * `run`, retried once without floating OfficeArt shape tables (`PlcfSpaMom` / `PlcfSpaHdr`) when a Word 97-2003 document
+ * stalls LibreOffice Writer's anchored-frame layout (`SwAnchoredObject::CheckCharRectAndTopOfLine` loop, e.g., `gd-908926.doc`).
+ * Documents without `PlcfSpa` declarations or finishing within `WORD_FLOATING_SHAPES_PROBE_MS` keep every floating shape.
+ * Process crashes (`SIGABRT` on damaged files) are not retried so damaged-file refusals remain unchanged.
+ */
+export function withWordAnchoredLayoutRetry(run: OfficeSuiteRun): OfficeSuiteRun {
+  return async (input, sourceFormat, targetFormat, options, originalFilename) => {
+    if (officeReadingFormat(sourceFormat) !== 'doc' || options?.signal?.aborted) {
+      return run(input, sourceFormat, targetFormat, options, originalFilename);
+    }
+    const rawBytes = legacyOfficeInput(input);
+    const hasFloatingShapes = rawBytes !== undefined && hasWordFloatingShapes(rawBytes);
+    const remaining = remainingJobMs(options);
+    const canProbeRetry =
+      hasFloatingShapes &&
+      options?.timeoutMs === undefined &&
+      (remaining === undefined || remaining >= WORD_FLOATING_SHAPES_PROBE_MS + WORD_RETRY_MIN_HEADROOM_MS);
+    const firstOptions = canProbeRetry ? { ...options, timeoutMs: WORD_FLOATING_SHAPES_PROBE_MS } : options;
+    try {
+      return await run(input, sourceFormat, targetFormat, firstOptions, originalFilename);
+    } catch (err) {
+      if (!(err instanceof SandboxedTimeoutError) || options?.signal?.aborted || rawBytes === undefined) throw err;
+      const budgetLeft = remainingJobMs(options);
+      if (budgetLeft !== undefined && budgetLeft < 1000) throw err;
+      const stripped = stripWordFloatingShapes(rawBytes);
+      if (stripped === undefined) throw err;
+      const retryInput: Buffer | WorkerVfsPayload = Buffer.isBuffer(input)
+        ? stripped
+        : { outputPath: input.outputPath, inputBuffer: stripped };
+      try {
+        return await run(retryInput, sourceFormat, targetFormat, options, originalFilename);
+      } catch {
+        options?.signal?.throwIfAborted();
+        throw err;
+      }
+    }
+  };
+}
+
 /**
  * The office suite's answer that it could not load an encrypted document: it has already tried the default password, so the
  * reader's refusal of the same file is not retried on the suite (`isEncryptedWorkbookRefusal`).
@@ -434,6 +480,8 @@ export function bridgeFormat(src: string, tgt: string): string | undefined {
  * converter and not by the suite, so that the pictures it names are fetched through the converter's guarded session. A plain text file of
  * `TEXT_DIRECT_MIN_BYTES` or more is the exception: the suite reads it as it is (`convertTextFileDirectly`).
  */
+const WORD_97_MAX_ANCHORED_SHAPES = 200;
+
 export async function convertBridgedTarget(
   deps: OfficeSuiteRouteDeps,
   request: OfficeSuiteRequest,
@@ -445,7 +493,13 @@ export async function convertBridgedTarget(
   if (isLongPlainText(input, src, tgt)) return convertTextFileDirectly(deps, request);
   const requestedOutput = Buffer.isBuffer(input) ? undefined : input.outputPath;
   const source: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? input : { ...input, outputPath: undefined };
-  const docx = await deps.convert(source, src, bridge, { ...options, libreOfficeFilter: undefined, inProcessFallback: undefined }, originalFilename);
+  const bridgeOptions: WorkerEngineOptions = {
+    ...options,
+    libreOfficeFilter: undefined,
+    inProcessFallback: undefined,
+    ...(tgt === WORD_97_TARGET ? { [DOCX_MAX_ANCHORED_SHAPES]: WORD_97_MAX_ANCHORED_SHAPES } : {}),
+  };
+  const docx = await deps.convert(source, src, bridge, bridgeOptions, originalFilename);
   try {
     const next: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? docx.buffer : { inputBuffer: docx.buffer, outputPath: requestedOutput };
     let written: WorkerConversionResult | null;

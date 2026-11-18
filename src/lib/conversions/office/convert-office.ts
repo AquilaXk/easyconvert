@@ -6,7 +6,7 @@ import { OOXML_VARIANT_FAMILY, ooxmlVariantToPlainFormat } from '../ooxml-varian
 import { buildOpenXpsPackage } from '../openxps';
 import { convertHwp } from '../hwp';
 import { extractPrintReplicaPdf } from './print-replica';
-import { documentToDocx } from '../document-model/docx';
+import { DOCX_MAX_ANCHORED_SHAPES, documentToDocx } from '../document-model/docx';
 import { pdfToEpub, readPdfForOffice } from '../pdf-office';
 import { unconvertibleOfficeTarget } from '../native-engine-pairs';
 import Papa from 'papaparse';
@@ -105,8 +105,12 @@ const TARGET_CONVERTERS: ReadonlyMap<string, FormatConverter> = new Map<string, 
   // Target is DOCX (from Markdown, HTML, TXT, PDF, RTF, etc.)
   ['docx', async (input, src, _tgt, options, baseName) => {
     // A PDF keeps the structure its layout analysis found: columns, headings, lists, tables and images.
+    const maxAnchoredShapes = (options as Record<symbol, unknown>)[DOCX_MAX_ANCHORED_SHAPES];
     const docxBuffer = src === 'pdf'
-      ? await documentToDocx(await readPdfForOffice(input, options, { images: true, colour: true }))
+      ? await documentToDocx(
+          await readPdfForOffice(input, options, { images: true, colour: true }),
+          typeof maxAnchoredShapes === 'number' ? { maxAnchoredShapes } : undefined
+        )
       : await generateDocxFromSource(input, src, options, baseName);
     return officeResult(docxBuffer, DOCX_MIME_TYPE, baseName, 'docx');
   }],
