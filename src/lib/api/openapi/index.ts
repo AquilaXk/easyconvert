@@ -33,7 +33,7 @@ export function buildOpenApiDocument() {
       title: 'EasyConvert API',
       version: '1.0.0',
       description:
-        'Converts files over HTTP: one request for a small file, a job for a large one. Operations marked `x-internal` serve the web application and are not part of the public contract.',
+        'Converts files over HTTP: one request for a small file, a job for a large one. Public `/api/v1/*` routes support wildcard CORS for Bearer/API-key requests and return IETF `RateLimit-*` quota headers. Operations marked `x-internal` serve the web application and are excluded from the public `/api/v1/openapi.json` document.',
       termsOfService: new URL(LEGAL_DOCUMENTS.terms.path, getAppOrigin()).href,
       contact: {
         name: 'EasyConvert Engineering',
@@ -64,4 +64,41 @@ export function buildOpenApiDocument() {
     components,
   };
   return JSON.parse(JSON.stringify(document).replaceAll(PLAN_FILE_LIMITS_PLACEHOLDER, planFileLimitsText())) as typeof document;
+}
+
+const OPENAPI_HTTP_METHODS = new Set(['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace']);
+
+/**
+ * Returns the public-only OpenAPI 3.1 document served at `/api/v1/openapi.json` and `/api/v1/openapi`,
+ * stripping operations marked `x-internal: true` and dropping any path item left without public operations.
+ */
+export function buildPublicOpenApiDocument() {
+  const full = buildOpenApiDocument();
+  const publicPaths: Record<string, Record<string, unknown>> = {};
+
+  for (const [pathname, pathItem] of Object.entries(full.paths)) {
+    const filtered: Record<string, unknown> = {};
+    let publicOpCount = 0;
+
+    for (const [key, value] of Object.entries(pathItem)) {
+      if (OPENAPI_HTTP_METHODS.has(key.toLowerCase())) {
+        const isInternal = typeof value === 'object' && value !== null && (value as { 'x-internal'?: unknown })['x-internal'] === true;
+        if (!isInternal) {
+          filtered[key] = value;
+          publicOpCount++;
+        }
+      } else {
+        filtered[key] = value;
+      }
+    }
+
+    if (publicOpCount > 0) {
+      publicPaths[pathname] = filtered;
+    }
+  }
+
+  return {
+    ...full,
+    paths: publicPaths,
+  };
 }

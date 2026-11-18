@@ -170,7 +170,7 @@ describe('jobs that read from and write to the customer store', () => {
 
   it('takes inline credentials, seals them, and shows them nowhere, not even in the webhook of the job', async () => {
     s3.objects.set('in/people.csv', { body: Buffer.from(CSV), contentType: 'text/csv', etag: '"x"' });
-    const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue(undefined as never);
+    const dispatched = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
     const graph = {
       nodes: {
         in: { op: 'import.s3', credentials: s3Credentials(), key: 'in/people.csv' },

@@ -80,7 +80,7 @@ export interface paths {
         put?: never;
         /**
          * Submit Asynchronous Conversion Job
-         * @description Enqueues a conversion job to the distributed Redis-backed job queue with automatic 2-phase quota reservation and optional HMAC-signed webhook callback. Requires "convert:write" scope. A graph can read from and write to the customer's own store with the nodes `import.s3`, `export.s3`, `import.sftp` and `export.sftp` (any S3-compatible endpoint, or an SFTP server). A node names a credential saved for the account (`credentialRef`, which only its owner can use) or carries the credentials (`credentials`), which are sealed when the job is accepted, opened only by the worker that runs the node, and never returned or logged. The endpoint or host must resolve to public addresses (S3 over https), and the connection goes to the address that was checked. An import takes one object or file, or at most `maxObjects` (up to 100) files of a prefix or directory, each held to the plan's file limit and the owner's daily link-import budget; an export writes each input under the `prefix` or `directory` the node names, with its content type. A node that fails names the cause in its error: `storage_credential_not_found`, `storage_access_denied`, `storage_endpoint_blocked`, `storage_object_not_found`, `storage_too_many_objects`, `input_over_limit` or `storage_unavailable` (the store did not answer after tries with a growing wait).
+         * @description Enqueues a conversion job to the distributed Redis-backed job queue with automatic 2-phase quota reservation and optional HMAC-signed webhook callback (`Retry-After`-aware delayed delivery up to 6 attempts across 30s..24h). Requires "convert:write" scope. A graph can read from and write to the customer's own store with `import.s3`, `export.s3`, `import.gcs`, `export.gcs`, `import.azure-blob`, `export.azure-blob`, `import.sftp`, `export.sftp`, `import.webdav` and `export.webdav`. A node names a credential saved for the account (`credentialRef`, which only its owner can use) or carries inline `credentials`, which are sealed when the job is accepted, opened only by the worker that runs the node, and never returned or logged. HTTP/S3/GCS/Azure/WebDAV/SFTP endpoints must resolve to public addresses over TLS/SSH, and connections are pinned to checked addresses. An import takes one object or file, or at most `maxObjects` (up to 100) files of a prefix or directory, each held to the plan's file limit and the owner's daily link-import budget; an export writes each input under the `prefix` or `directory` the node names, with its content type. A node that fails names the cause in its error: `storage_credential_not_found`, `storage_access_denied`, `storage_endpoint_blocked`, `storage_object_not_found`, `storage_too_many_objects`, `input_over_limit` or `storage_unavailable` (the store did not answer after tries with a growing wait).
          */
         post: operations["createJobV1"];
         delete?: never;
@@ -144,7 +144,7 @@ export interface paths {
         put?: never;
         /**
          * Create Resumable Upload
-         * @description Creates a tus upload session. A request body sent with `Content-Type: application/offset+octet-stream` is stored as the first chunk (creation-with-upload). When the upload is complete, the response carries the storage key to use as `storageKey` in job requests. The `action` query parameter selects a legacy local multipart flow that is not part of the public contract.
+         * @description Creates a tus upload session. A request body sent with `Content-Type: application/offset+octet-stream` is stored as the first chunk (creation-with-upload). When the upload is complete, the response carries the storage key to use as `storageKey` in job requests. The `action` query parameter also supports direct multipart actions (`initiate`, `presign` for part numbers 1..10000 beyond the initial 100 URLs, `complete`, `abort`).
          */
         post: operations["createUploadV1"];
         delete?: never;
@@ -1168,10 +1168,10 @@ export interface components {
         /** @description One task of a job made of named tasks. Each operation takes only its own fields: a field that does not belong to it answers 422. */
         NamedTask: {
             /**
-             * @description `import/url` and `import/upload` bring a file in; `convert`, `ocr`, `optimize`, `thumbnail`, `media.package`, `watermark`, `merge`, `metadata` (reads the metadata of its input into `metadata.json`), `metadata/write` (writes `options.metadata.set` into a JPEG, a PNG or a PDF), `capture/website` (only where the server has it on, see `GET /api/formats`; otherwise a 422 with the code `capture_unavailable`; draws the page at `url` as a PDF, a PNG or a JPEG, with `output_format` and `options.capture`; it takes no input and counts as a conversion), `archive/create`, `archive/extract` and the `pdf.*` page operations work on it; `export/url` ends a branch: with `url` it sends the files there, without it keeps them for download and lists their download URLs in the task result. `import/s3` and `import/sftp` bring files in from the customer's own bucket or SFTP server, and `export/s3` and `export/sftp` write the files there and list where each went in the task result; they take a saved credential (`credential_ref`) or the credentials themselves (`credentials`). A job needs at least one task that converts.
+             * @description `import/url` and `import/upload` bring a file in; `convert`, `ocr`, `optimize`, `thumbnail`, `media.package`, `watermark`, `merge`, `metadata` (reads the metadata of its input into `metadata.json`), `metadata/write` (writes `options.metadata.set` into a JPEG, a PNG or a PDF), `capture/website` (only where the server has it on, see `GET /api/formats`; otherwise a 422 with the code `capture_unavailable`; draws the page at `url` as a PDF, a PNG or a JPEG, with `output_format` and `options.capture`; it takes no input and counts as a conversion), `archive/create`, `archive/extract` and the `pdf.*` page operations work on it; `export/url` ends a branch: with `url` it sends the files there, without it keeps them for download and lists their download URLs in the task result. `import/{s3,gcs,azure-blob,sftp,webdav}` bring files in from the customer's own bucket/container/server, and `export/{s3,gcs,azure-blob,sftp,webdav}` write files there and list where each went in the task result; they take a saved credential (`credential_ref`) or inline `credentials`. A job needs at least one task that converts.
              * @enum {string}
              */
-            operation: "import/url" | "import/upload" | "archive/create" | "archive/extract" | "import/s3" | "import/sftp" | "export/s3" | "export/sftp" | "metadata/write" | "capture/website" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "export/url";
+            operation: "import/url" | "import/upload" | "archive/create" | "archive/extract" | "import/s3" | "import/gcs" | "import/azure-blob" | "import/sftp" | "import/webdav" | "export/s3" | "export/gcs" | "export/azure-blob" | "export/sftp" | "export/webdav" | "metadata/write" | "capture/website" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "export/url";
             /** @description The name of the task whose output this task reads, or a list of names. Every task but an import needs one. A `merge` needs at least 2 distinct names. */
             input?: string | string[];
             /** @description Format extension the task produces. Required by `convert`, `merge` and `archive/create`; `thumbnail` also takes it (`jpg` or `png`). */
@@ -1198,20 +1198,20 @@ export interface components {
             storage_key?: string;
             /** @description Glob patterns of the entries `archive/extract` unpacks; all when left out. */
             entries?: string[];
-            /** @description `import/s3`, `export/s3`, `import/sftp`, `export/sftp`: a credential saved for the account (the `credentialRef` that saving it answered), which only its owner can use. Name this or `credentials`, not both. A reference that is unknown, expired, of another account or of another kind answers 422. */
+            /** @description `import/{s3,gcs,azure-blob,sftp,webdav}`, `export/{s3,gcs,azure-blob,sftp,webdav}`: a credential saved for the account (`credentialRef`), which only its owner can use. Name this or `credentials`, not both. An unknown, expired, or mismatched reference answers 422. */
             credential_ref?: string;
-            /** @description The credentials sent with the task, in place of `credential_ref`: sealed when the job is accepted, opened only by the worker that runs the task, never returned or logged. The same fields as the `credentials` of a saved credential without `type`: an S3 task takes `bucket`, `accessKeyId`, `secretAccessKey` and optionally `sessionToken`, `region`, `endpoint` (https, public addresses only) and `forcePathStyle`; an SFTP task takes `host`, `username`, `privateKey` and optionally `port`, `passphrase`, `hostKey` and `basePath`. */
+            /** @description The credentials sent with the task, in place of `credential_ref`: sealed when the job is accepted, opened only by the worker that runs the task, never returned or logged. Matches the credential payload without `type` for S3, GCS, Azure Blob, SFTP, or WebDAV. */
             credentials?: Record<string, never>;
-            /** @description `import/s3`: the one object to bring in. Name `key` or `prefix`. Relative: no leading `/`, no `.` or `..` segment, at most 1024 bytes. */
+            /** @description `import/{s3,gcs,azure-blob}`: the one object to bring in. Name `key` or `prefix`. Relative: no leading `/`, no `.` or `..` segment, at most 1024 bytes. */
             key?: string;
-            /** @description `import/s3`: bring in the objects whose key starts with it (at most `max_objects`). `export/s3`: the text put before each file name, taken literally (`out/` is a folder); the bucket root when left out. */
+            /** @description `import/{s3,gcs,azure-blob}`: bring in objects whose key starts with it (at most `max_objects`). `export/{s3,gcs,azure-blob}`: literal prefix put before each file name; bucket/container root when left out. */
             prefix?: string;
-            /** @description `import/sftp`: the one file to bring in, relative to the `basePath` of the credentials. Name `path` or `directory`. */
+            /** @description `import/{sftp,webdav}`: the one file to bring in, relative to `basePath`. Name `path` or `directory`. */
             path?: string;
-            /** @description `import/sftp`: bring in the regular files of this directory (at most `max_objects`). `export/sftp`: the directory the files are written into, which must exist; the `basePath` when left out. */
+            /** @description `import/{sftp,webdav}`: bring in files of this directory (at most `max_objects`). `export/{sftp,webdav}`: target directory, relative to `basePath`. */
             directory?: string;
             /**
-             * @description `import/s3` with `prefix`, `import/sftp` with `directory`: the most files to bring in. A listing with more fails the task with `storage_too_many_objects`; nothing is cut short.
+             * @description `import/{s3,gcs,azure-blob}` with `prefix`, `import/{sftp,webdav}` with `directory`: the most files to bring in. A listing with more fails the task with `storage_too_many_objects`; nothing is cut short.
              * @default 20
              */
             max_objects?: number;
@@ -1221,7 +1221,7 @@ export interface components {
              * @description The operation the task was sent with.
              * @enum {string}
              */
-            operation: "import/url" | "import/upload" | "archive/create" | "archive/extract" | "import/s3" | "import/sftp" | "export/s3" | "export/sftp" | "metadata/write" | "capture/website" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "export/url";
+            operation: "import/url" | "import/upload" | "archive/create" | "archive/extract" | "import/s3" | "import/gcs" | "import/azure-blob" | "import/sftp" | "import/webdav" | "export/s3" | "export/gcs" | "export/azure-blob" | "export/sftp" | "export/webdav" | "metadata/write" | "capture/website" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "export/url";
             /**
              * @description `waiting` until the tasks it reads have completed, then `active`, then `completed` or `failed`. A task that did not run because a task it reads failed is `failed` too, with the code `dependency_failed`; a task the job stopped (after a failure elsewhere, or a cancel) that reads no failed task is `cancelled`.
              * @enum {string}
@@ -1269,7 +1269,7 @@ export interface components {
                      * @description Operation type for this graph node. `thumbnail` makes one picture (JPEG, PNG or WebP) of the first page, or the page `options.thumbnail.page` names, of a document, or of a frame of a video (`options.thumbnail.at`), or of an image, within `options.thumbnail.width` x `height` as `options.thumbnail.fit` places it. `metadata` reads the metadata of its first input into `metadata.json` (the `MetadataReport` schema). `metadata.write` writes `options.metadata.set` into each input, a JPEG, a PNG or a PDF, and keeps the rest of the file as it is. `capture.website` (only where the server has `CAPTURE_WEBSITE_ENABLED=true`; `GET /api/formats` says whether it is on, and where it is off the job is refused with a 422, code `capture_unavailable`, before anything is reserved) draws the public web page at `url` as a PDF, a PNG or a JPEG (`targetFormat`, `options.capture`); it takes no input, and its `url` is kept sealed.
                      * @enum {string}
                      */
-                    op: "import.upload" | "import.url" | "import.s3" | "import.sftp" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "metadata.write" | "capture.website" | "archive.create" | "archive.extract" | "export.url" | "export.s3" | "export.sftp" | "export.internal";
+                    op: "import.upload" | "import.url" | "import.s3" | "import.gcs" | "import.azure-blob" | "import.sftp" | "import.webdav" | "convert" | "ocr" | "optimize" | "thumbnail" | "media.package" | "watermark" | "pdf.watermark" | "pdf.protect" | "pdf.unlock" | "pdf.split-pages" | "pdf.extract-pages" | "pdf.delete-pages" | "pdf.reorder-pages" | "pdf.rotate-pages" | "merge" | "metadata" | "metadata.write" | "capture.website" | "archive.create" | "archive.extract" | "export.url" | "export.s3" | "export.gcs" | "export.azure-blob" | "export.sftp" | "export.webdav" | "export.internal";
                     /** @description Single upstream NodeId or array of upstream NodeIds. A merge node needs at least 2 distinct inputs. */
                     input?: string | string[];
                     /** @description Storage key for import.upload node. */
@@ -1288,9 +1288,9 @@ export interface components {
                      * @enum {string}
                      */
                     method?: "PUT" | "POST";
-                    /** @description import.s3, export.s3, import.sftp and export.sftp: a credential saved for the account (the `credentialRef` that saving it answered), which only its owner can use. Name this or `credentials`, not both. A reference that is unknown, expired, of another account or of another kind is refused with 422 at submission. */
+                    /** @description import.{s3,gcs,azure-blob,sftp,webdav} and export.{s3,gcs,azure-blob,sftp,webdav}: a credential saved for the account (`credentialRef`), which only its owner can use. Name this or `credentials`, not both. An unknown, expired, or mismatched reference is refused with 422 at submission. */
                     credentialRef?: string;
-                    /** @description import.s3, export.s3, import.sftp and export.sftp: the credentials sent with the node, in place of `credentialRef`. They are sealed when the job is accepted, opened only by the worker that runs the node, and never returned or logged. An S3 node takes `bucket`, `accessKeyId`, `secretAccessKey` (required), and `sessionToken`, `region`, `endpoint` (an https address that resolves to public IPs; any S3-compatible store) and `forcePathStyle`. An SFTP node takes `host`, `username`, `privateKey` (required; password sign-in is not supported), and `port`, `passphrase`, `hostKey` (a known_hosts line or public key the server must show) and `basePath`. A host or endpoint that is private, loopback or link-local is refused. */
+                    /** @description Inline credentials sent with a BYOS storage node in place of `credentialRef`. Sealed when the job is accepted, opened only by the worker that runs the node, and never returned or logged. S3: `bucket`, `accessKeyId`, `secretAccessKey`, optional `sessionToken`, `region`, `endpoint`, `forcePathStyle`. GCS: `bucket`, optional `projectId`, `clientEmail`, `privateKey`, `serviceAccountKeyJson`, `endpoint`. Azure Blob: `storageAccount`, `containerName`, optional `accountKey`, `sasToken`, `connectionString`, `customEndpoint`. SFTP: `host`, `username`, `privateKey`, optional `port`, `passphrase`, `hostKey`, `basePath`. WebDAV: `url`, optional `username`, `password`, `basePath`. Private, loopback, or link-local endpoints are refused. */
                     credentials?: {
                         bucket?: string;
                         accessKeyId?: string;
@@ -1299,24 +1299,35 @@ export interface components {
                         region?: string;
                         endpoint?: string;
                         forcePathStyle?: boolean;
+                        projectId?: string;
+                        clientEmail?: string;
+                        privateKey?: string;
+                        serviceAccountKeyJson?: string;
+                        storageAccount?: string;
+                        containerName?: string;
+                        accountKey?: string;
+                        sasToken?: string;
+                        connectionString?: string;
+                        customEndpoint?: string;
                         host?: string;
                         port?: number;
                         username?: string;
-                        privateKey?: string;
+                        password?: string;
                         passphrase?: string;
                         hostKey?: string;
                         basePath?: string;
+                        url?: string;
                     };
-                    /** @description import.s3: the one object to bring in. Name `key` or `prefix`. A key is relative: no leading `/`, no `.` or `..` segment, at most 1024 bytes. */
+                    /** @description import.s3, import.gcs, import.azure-blob: the single object to bring in. Name `key` or `prefix`. Relative: no leading `/`, no `.` or `..` segment, at most 1024 bytes. */
                     key?: string;
-                    /** @description import.s3: bring in the objects whose key starts with this prefix (at most `maxObjects`; a folder marker is skipped). export.s3: the text put in front of each file name, taken literally, so `out/` is a folder and `out/report-` a name prefix; left out, the files go to the bucket root. Same rules as `key`. */
+                    /** @description import.{s3,gcs,azure-blob}: bring in objects whose key starts with this prefix (at most `maxObjects`; folder markers skipped). export.{s3,gcs,azure-blob}: literal key prefix placed before each file name; left out, files go to the container/bucket root. */
                     prefix?: string;
-                    /** @description import.sftp: the one file to bring in, relative to the credential's `basePath`. Name `path` or `directory`. */
+                    /** @description import.sftp, import.webdav: the single file to bring in, relative to `basePath`. Name `path` or `directory`. */
                     path?: string;
-                    /** @description import.sftp: bring in the regular files of this directory (at most `maxObjects`; hidden files, links and sub-folders are skipped). export.sftp: the directory the files are written into, which must exist; left out, `basePath`. Relative to `basePath`; same rules as `key`. */
+                    /** @description import.{sftp,webdav}: bring in files in this directory (at most `maxObjects`; hidden files and subdirectories skipped). export.{sftp,webdav}: target directory, relative to `basePath`. */
                     directory?: string;
                     /**
-                     * @description import.s3 with `prefix`, import.sftp with `directory`: the most files to bring in. A listing with more files fails the node with `storage_too_many_objects`; nothing is cut short. Each file is held to the plan's file limit and the whole import to the owner's daily link-import budget.
+                     * @description import.{s3,gcs,azure-blob} with `prefix`, import.{sftp,webdav} with `directory`: maximum files to bring in. Exceeding `maxObjects` fails the node with `storage_too_many_objects` without truncation.
                      * @default 20
                      */
                     maxObjects?: number;
@@ -4004,7 +4015,7 @@ export interface operations {
                 "application/json": {
                     /** @enum {string} */
                     providerType: "s3" | "gcs" | "azure-blob" | "sftp" | "webdav" | "http";
-                    /** @description Provider-specific credentials; `type` must equal `providerType`. `s3` takes `bucket`, `accessKeyId`, `secretAccessKey`, and optional `region`, `sessionToken`, `endpoint` (HTTPS, public host), and `forcePathStyle` (defaults to true with a custom `endpoint`); requests are signed with AWS Signature Version 4. */
+                    /** @description Provider-specific credentials; `type` must equal `providerType`. `s3` takes `bucket`, `accessKeyId`, `secretAccessKey`, and optional `region`, `sessionToken`, `endpoint` (HTTPS, public host), and `forcePathStyle` (defaults to true with a custom `endpoint`); requests are signed with AWS Signature Version 4. `gcs` takes `bucket` and either service-account JSON (`serviceAccountKeyJson`) or `projectId`, `clientEmail`, `privateKey`, with optional `endpoint` (`storage.googleapis.com` for OAuth credentials). `azure-blob` takes `storageAccount`, `containerName`, and `accountKey`, `sasToken`, or `connectionString`, with optional `customEndpoint`. `sftp` takes `host`, `username`, `privateKey` (optional `port`, `passphrase`, `hostKey`, `basePath`). `webdav` takes public HTTPS `url` and optional `username`, `password`, `basePath`. */
                     credentials: {
                         /** @enum {string} */
                         type: "s3" | "gcs" | "azure-blob" | "sftp" | "webdav" | "http";
@@ -4769,7 +4780,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Any other status is retried with exponential backoff (408, 429, and 5xx; `Retry-After` is honored) or dead-lettered (other 4xx). */
+            /** @description Any other status is retried with durable exponential backoff (`30s, 2m, 10m, 1h, 6h, 24h` with jitter; HTTP 408, 429, and 5xx honor `Retry-After`) or moved immediately to the DLQ (other 4xx). */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -4835,7 +4846,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Any other status is retried with exponential backoff (408, 429, and 5xx; `Retry-After` is honored) or dead-lettered (other 4xx). */
+            /** @description Any other status is retried with durable exponential backoff (`30s, 2m, 10m, 1h, 6h, 24h` with jitter; HTTP 408, 429, and 5xx honor `Retry-After`) or moved immediately to the DLQ (other 4xx). */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -4913,7 +4924,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Any other status is retried with exponential backoff (408, 429, and 5xx; `Retry-After` is honored) or dead-lettered (other 4xx). */
+            /** @description Any other status is retried with durable exponential backoff (`30s, 2m, 10m, 1h, 6h, 24h` with jitter; HTTP 408, 429, and 5xx honor `Retry-After`) or moved immediately to the DLQ (other 4xx). */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -4991,7 +5002,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Any other status is retried with exponential backoff (408, 429, and 5xx; `Retry-After` is honored) or dead-lettered (other 4xx). */
+            /** @description Any other status is retried with durable exponential backoff (`30s, 2m, 10m, 1h, 6h, 24h` with jitter; HTTP 408, 429, and 5xx honor `Retry-After`) or moved immediately to the DLQ (other 4xx). */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -5060,7 +5071,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Any other status is retried with exponential backoff (408, 429, and 5xx; `Retry-After` is honored) or dead-lettered (other 4xx). */
+            /** @description Any other status is retried with durable exponential backoff (`30s, 2m, 10m, 1h, 6h, 24h` with jitter; HTTP 408, 429, and 5xx honor `Retry-After`) or moved immediately to the DLQ (other 4xx). */
             default: {
                 headers: {
                     [name: string]: unknown;

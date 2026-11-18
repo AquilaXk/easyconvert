@@ -43,7 +43,13 @@ export function sourceFormatForExport(state: GraphExecutionState, exportNodeId: 
       break;
     }
     if (node.op === 'capture.website') return 'html';
-    if (node.op === 'import.s3' || node.op === 'import.sftp') {
+    if (
+      node.op === 'import.s3' ||
+      node.op === 'import.gcs' ||
+      node.op === 'import.azure-blob' ||
+      node.op === 'import.sftp' ||
+      node.op === 'import.webdav'
+    ) {
       const fromOut = formatOfFilename(state.nodes[currentId]?.outputs?.[0] || '');
       if (fromOut) return fromOut;
       break;

@@ -13,6 +13,7 @@ import {
   type ResolvedClientIp,
 } from '@/lib/security/client-ip';
 import { requestBodyVerdict, type CountedBody } from '@/lib/api/request-body-limit';
+import { applyV1CorsHeaders, createV1PreflightResponse, isV1ApiPath } from '@/lib/api/v1-cors';
 import { hasSessionCookie } from '@/lib/auth/session-cookie';
 
 /**
@@ -373,6 +374,14 @@ function checkMutationCsrf(request: NextRequest, pathname: string): NextResponse
   return null;
 }
 
+function withV1Cors(pathname: string, outcome: NextResponse | Promise<NextResponse>): NextResponse | Promise<NextResponse> {
+  if (!isV1ApiPath(pathname)) return outcome;
+  if (outcome instanceof Promise) {
+    return outcome.then((response) => applyV1CorsHeaders(response));
+  }
+  return applyV1CorsHeaders(outcome);
+}
+
 export function middleware(request: NextRequest): NextResponse | Promise<NextResponse> {
   const pathname = request.nextUrl.pathname;
 
@@ -382,7 +391,14 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
   if (!isApiPath(pathname)) {
     return pathname === '/' ? rootLocaleAnswer(request) : pageLocaleAnswer(request);
   }
+  if (isV1ApiPath(pathname) && request.method.toUpperCase() === 'OPTIONS') {
+    return createV1PreflightResponse(pathname);
+  }
 
+  return withV1Cors(pathname, handleApiMiddleware(request, pathname));
+}
+
+function handleApiMiddleware(request: NextRequest, pathname: string): NextResponse | Promise<NextResponse> {
   const isHealthProbe = HEALTH_PATHS.has(pathname) && HEALTH_METHODS.has(request.method.toUpperCase());
 
   // Edge barrier identity. The middleware cannot see the socket peer, so attribution follows the deployment

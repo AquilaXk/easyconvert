@@ -7,17 +7,38 @@ import {
   StorageAdapterMetadata,
   StorageNotFoundError,
   StorageAuthenticationError,
+  StorageInvalidKeyError,
+  StorageListingLimitError,
+  StorageServiceError,
 } from './adapter-interface';
+import { remotePathProblem } from '../customer-storage-paths';
+import { ADAPTER_LISTING_CAP_BYTES } from './http-limits';
+import { parseAzureListBlobsXml } from './listing-xml';
 import {
   adapterDispatcher,
   assertAdapterUrlSafe,
   guardedRequest,
   parseCleanBaseEndpointUrl,
+  readBoundedBody,
   readErrorText,
   releaseDispatcher,
 } from './http-guard';
 
 const AZURE_REST_VERSION = '2023-11-03';
+const MAX_AZURE_LIST_PAGES = 20;
+const MAX_AZURE_PAGE_RESULTS = 5000;
+
+function extractConnectionStringPart(connStr: string | undefined, key: string): string | undefined {
+  if (!connStr) return undefined;
+  for (const part of connStr.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq > 0 && part.slice(0, eq).trim().toLowerCase() === key.toLowerCase()) {
+      const value = part.slice(eq + 1).trim();
+      if (value) return value;
+    }
+  }
+  return undefined;
+}
 
 /** The naming rule of an Azure storage account: it becomes the host name of the default endpoint and part of the signed resource. */
 export const AZURE_STORAGE_ACCOUNT_PATTERN = /^[a-z0-9]{3,24}$/;
@@ -64,8 +85,9 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
     }
     this.storageAccount = credentials.storageAccount;
     this.containerName = credentials.containerName;
-    this.accountKey = credentials.accountKey;
-    this.sasToken = credentials.sasToken ? stripLeadingSlashes(credentials.sasToken.replace(/^\?/, '')) : undefined;
+    this.accountKey = credentials.accountKey ?? extractConnectionStringPart(credentials.connectionString, 'AccountKey');
+    const rawSas = credentials.sasToken ?? extractConnectionStringPart(credentials.connectionString, 'SharedAccessSignature');
+    this.sasToken = rawSas ? stripLeadingSlashes(rawSas.replace(/^\?/, '')) : undefined;
 
     if (credentials.customEndpoint) {
       parseCleanBaseEndpointUrl(credentials.customEndpoint, this.providerName);
@@ -92,12 +114,20 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
     method: string,
     remotePath: string,
     headers: Record<string, string>,
-    contentLength = ''
+    contentLength = '',
+    queryParams?: Readonly<Record<string, string>>
   ): void {
     if (!this.accountKey) return;
 
-    const encodedPath = encodeSafePathSegments(remotePath, this.providerName);
-    const canonicalizedResource = `/${this.storageAccount}/${encodeURIComponent(this.containerName)}/${encodedPath}`;
+    const baseResource = remotePath
+      ? `/${this.storageAccount}/${encodeURIComponent(this.containerName)}/${encodeSafePathSegments(remotePath, this.providerName)}`
+      : `/${this.storageAccount}/${encodeURIComponent(this.containerName)}`;
+    const queryLines = queryParams
+      ? Object.keys(queryParams)
+          .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
+          .map((k) => `${k.toLowerCase()}:${queryParams[k]}`)
+      : [];
+    const canonicalizedResource = queryLines.length > 0 ? `${baseResource}\n${queryLines.join('\n')}` : baseResource;
 
     // Canonicalize x-ms-* headers in lexicographical order
     const msHeaders = Object.keys(headers)
@@ -264,6 +294,9 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
       });
 
       if (res.statusCode === 404) return null;
+      if (res.statusCode === 401 || res.statusCode === 403) {
+        throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
+      }
       if (res.statusCode < 200 || res.statusCode >= 300) return null;
 
       const lenStr = res.headers['content-length'] as string | undefined;
@@ -281,6 +314,76 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
     } finally {
       await releaseDispatcher(dispatcher);
     }
+  }
+
+  async listObjects(prefix: string, maxFiles: number): Promise<Array<{ path: string; size: number }>> {
+    const prefixProblem = remotePathProblem(prefix, { allowEmpty: true });
+    if (prefixProblem) {
+      throw new StorageInvalidKeyError(`prefix ${prefixProblem}`, this.providerName);
+    }
+    const cleanPrefix = stripLeadingSlashes(prefix);
+    const files: Array<{ path: string; size: number }> = [];
+    let marker: string | undefined;
+
+    for (let page = 0; page < MAX_AZURE_LIST_PAGES; page++) {
+      const signParams: Record<string, string> = {
+        comp: 'list',
+        maxresults: String(Math.min(MAX_AZURE_PAGE_RESULTS, Math.max(1, maxFiles) + 1)),
+        restype: 'container',
+      };
+      if (cleanPrefix) signParams.prefix = cleanPrefix;
+      if (marker) signParams.marker = marker;
+
+      const query = new URLSearchParams(signParams);
+      const querySuffix = this.sasToken ? `${query.toString()}&${this.sasToken}` : query.toString();
+      const url = `${this.baseUrl}/${encodeURIComponent(this.containerName)}?${querySuffix}`;
+      await this.assertSsrfSafe(url);
+
+      const headers: Record<string, string> = {
+        'x-ms-version': AZURE_REST_VERSION,
+        'x-ms-date': new Date().toUTCString(),
+      };
+      if (this.accountKey && !this.sasToken) {
+        this.signSharedKey('GET', '', headers, '', signParams);
+      }
+
+      const dispatcher = adapterDispatcher(url);
+      try {
+        const res = await guardedRequest(url, { method: 'GET', headers, dispatcher });
+        if (res.statusCode === 404) throw new StorageNotFoundError(cleanPrefix || this.containerName, this.providerName);
+        if (res.statusCode === 401 || res.statusCode === 403) {
+          throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
+        }
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          const errText = await readErrorText(res.body, this.providerName);
+          throw new StorageServiceError(`[AzureBlobAdapter] List failed (${res.statusCode}): ${errText}`, this.providerName, {
+            statusCode: res.statusCode,
+            retryable: res.statusCode >= 500 || res.statusCode === 429,
+          });
+        }
+
+        const { text, truncated } = await readBoundedBody(res.body, this.providerName, ADAPTER_LISTING_CAP_BYTES);
+        if (truncated) {
+          throw new StorageServiceError(`The ${this.providerName} listing answer is longer than ${ADAPTER_LISTING_CAP_BYTES} bytes`, this.providerName, {
+            retryable: false,
+          });
+        }
+        const parsed = parseAzureListBlobsXml(text);
+        for (const blob of parsed.blobs) {
+          if (!blob.name || blob.name.endsWith('/')) continue;
+          files.push({ path: blob.name, size: blob.size });
+          if (files.length > maxFiles) {
+            throw new StorageListingLimitError(maxFiles, this.providerName);
+          }
+        }
+        if (!parsed.nextMarker) return files;
+        marker = parsed.nextMarker;
+      } finally {
+        await releaseDispatcher(dispatcher);
+      }
+    }
+
+    throw new StorageServiceError(`The listing did not finish within ${MAX_AZURE_LIST_PAGES} pages`, this.providerName, { retryable: false });
   }
 
   async delete(remotePath: string): Promise<boolean> {

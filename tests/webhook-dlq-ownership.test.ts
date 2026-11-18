@@ -138,9 +138,7 @@ describe('Webhook DLQ owner scoping (#242)', () => {
 
   describe('owner capture at the dispatch call sites', () => {
     it('passes the key owner and key id for key.expiring_soon notifications', async () => {
-      const dispatchSpy = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({
-        id: 'wh_spy', url: PUBLIC_WEBHOOK_URL, event: 'key.expiring_soon', success: true, totalAttempts: 1, durationMs: 1, attempts: [],
-      });
+      const dispatchSpy = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
       const { key, secretKey } = await redisKeyStore.generateApiKey(alice.id, 'Expiring', {
         expiresAt: Date.now() + 2 * 24 * 60 * 60 * 1000,
         webhookUrl: PUBLIC_WEBHOOK_URL,
@@ -156,9 +154,7 @@ describe('Webhook DLQ owner scoping (#242)', () => {
     });
 
     it('passes the job owner for queue lifecycle webhooks', async () => {
-      const dispatchSpy = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({
-        id: 'wh_spy', url: PUBLIC_WEBHOOK_URL, event: 'job.failed', success: true, totalAttempts: 1, durationMs: 1, attempts: [],
-      });
+      const dispatchSpy = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
       const fakeWorker = new EventEmitter();
       attachJobLifecycleListeners(fakeWorker as unknown as Parameters<typeof attachJobLifecycleListeners>[0]);
 

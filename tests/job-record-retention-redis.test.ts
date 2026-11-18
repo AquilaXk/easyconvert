@@ -207,7 +207,7 @@ describe.skipIf(!REDIS_URL)('Job records after the job ends, on a real Redis ser
     });
 
     it('drop their inline input and webhook secret when they end, while the completed webhook is still signed with the secret', async () => {
-      const dispatch = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({} as never);
+      const dispatch = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
       const worker = new Worker([resourceQueues.light], async (job) => ({ jobId: job.id, status: 'completed' }) as never, { concurrency: 1 });
       attachJobLifecycleListeners(worker);
       try {

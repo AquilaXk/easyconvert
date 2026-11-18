@@ -68,7 +68,7 @@ export const uploadPaths = {
     post: {
       summary: 'Create Resumable Upload',
       description:
-        'Creates a tus upload session. A request body sent with `Content-Type: application/offset+octet-stream` is stored as the first chunk (creation-with-upload). When the upload is complete, the response carries the storage key to use as `storageKey` in job requests. The `action` query parameter selects a legacy local multipart flow that is not part of the public contract.',
+        'Creates a tus upload session. A request body sent with `Content-Type: application/offset+octet-stream` is stored as the first chunk (creation-with-upload). When the upload is complete, the response carries the storage key to use as `storageKey` in job requests. The `action` query parameter also supports direct multipart actions (`initiate`, `presign` for part numbers 1..10000 beyond the initial 100 URLs, `complete`, `abort`).',
       operationId: 'createUploadV1',
       security: requireScope('convert:write'),
       parameters: [

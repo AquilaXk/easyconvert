@@ -5,6 +5,7 @@ import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { validateApiAccess, authErrorHeaders, creditsUsedUp, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
+import { withRateLimitHeaders } from '@/lib/api/rate-limit';
 import type { User } from '@/lib/auth/types';
 import { isBillingConfigured } from '@/lib/billing/config';
 import type { FormatDefinition } from '@/lib/types';
@@ -371,16 +372,8 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 
   // 1. Guard check: Authenticate API key or user session with 'convert:write' scope
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write' });
-
   if (!auth.authorized || !auth.user) {
-    return createProblemDetailsResponse(
-      auth.status ?? 401,
-      auth.error ?? 'Unauthorized',
-      instanceUri,
-      undefined,
-      auth.problemType,
-      authErrorHeaders(auth)
-    );
+    return withRateLimitHeaders(createProblemDetailsResponse(auth.status ?? 401, auth.error ?? 'Unauthorized', instanceUri, undefined, auth.problemType, authErrorHeaders(auth)), auth.rateLimit);
   }
 
   // 1b. Idempotency Check
@@ -388,15 +381,14 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   let idempotencyCtx: IdempotencyContext | undefined;
   if (rawIdempotencyKey !== null) {
     const precheck = await acquireIdempotency(req, auth.user.id, rawIdempotencyKey, instanceUri);
-    if (precheck.response) {
-      return precheck.response;
-    }
+    if (precheck.response) return withRateLimitHeaders(precheck.response, auth.rateLimit);
     idempotencyCtx = precheck.context;
   }
 
   // Only a success is kept under the key, and the answer stands whatever the idempotency store does: a store failure after
   // a conversion was charged must not turn its success into an error the client would retry, and pay for again.
-  const reply = (res: NextResponse | Response) => replyUnderKey(idempotencyCtx, res, instanceUri);
+  const reply = async (res: NextResponse | Response) =>
+    withRateLimitHeaders(await replyUnderKey(idempotencyCtx, res, instanceUri), auth.rateLimit);
 
   const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
   if (quota.remaining <= 0) return reply(conversionRefusalResponse(creditsUsedUp(auth.user, quota, 1), instanceUri));
@@ -416,7 +408,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     const room = await mayEnqueue(auth.user.id, auth.user.tier);
     if (!room.allowed) {
       await releaseKey(idempotencyCtx, instanceUri);
-      return concurrencyLimitResponse(room.limit, instanceUri);
+      return withRateLimitHeaders(concurrencyLimitResponse(room.limit, instanceUri), auth.rateLimit);
     }
     const contentType = req.headers.get('content-type') || '';
     let originalFilename = '';
@@ -1085,7 +1077,10 @@ async function listJobs(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/jobs';
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:read' });
   if (!auth.authorized || !auth.user) {
-    return createProblemDetailsResponse(auth.status ?? 401, auth.error ?? 'Unauthorized', instanceUri, undefined, auth.problemType, authErrorHeaders(auth));
+    return withRateLimitHeaders(
+      createProblemDetailsResponse(auth.status ?? 401, auth.error ?? 'Unauthorized', instanceUri, undefined, auth.problemType, authErrorHeaders(auth)),
+      auth.rateLimit
+    );
   }
 
   const { searchParams } = new URL(req.url);
@@ -1100,44 +1095,47 @@ async function listJobs(req: NextRequest) {
   // Query indexed jobs and graphs strictly belonging to the authenticated user (Tenant Boundary Isolation)
   const userWork = await listVisibleWork(auth.user.id, requestedStates.length > 0 ? requestedStates : validStates, limit);
 
-  return NextResponse.json({
-    success: true,
-    total: userWork.length,
-    jobs: userWork.map((work) => {
-      if (work.kind === 'graph') {
-        const g = work.graph;
+  return withRateLimitHeaders(
+    NextResponse.json({
+      success: true,
+      total: userWork.length,
+      jobs: userWork.map((work) => {
+        if (work.kind === 'graph') {
+          const g = work.graph;
+          return {
+            jobId: g.graphId,
+            status: graphJobState(g.status),
+            progress: graphProgress(g),
+            sourceFormat: g.sourceFormat,
+            targetFormat: g.targetFormat,
+            originalFilename: g.originalFilename,
+            createdAt: g.createdAt,
+            processedOn: graphProcessedOn(g),
+            finishedOn: g.finishedAt,
+            failedReason: g.failedReason === undefined ? undefined : redactText(g.failedReason),
+            ...(g.namedTasks ? namedJobFields(g) : {}),
+          };
+        }
+        const j = work.job;
         return {
-          jobId: g.graphId,
-          status: graphJobState(g.status),
-          progress: graphProgress(g),
-          sourceFormat: g.sourceFormat,
-          targetFormat: g.targetFormat,
-          originalFilename: g.originalFilename,
-          createdAt: g.createdAt,
-          processedOn: graphProcessedOn(g),
-          finishedOn: g.finishedAt,
-          failedReason: g.failedReason === undefined ? undefined : redactText(g.failedReason),
-          ...(g.namedTasks ? namedJobFields(g) : {}),
+          jobId: j.id,
+          status: j.state,
+          progress: j.progress,
+          sourceFormat: j.data?.sourceFormat,
+          targetFormat: j.data?.targetFormat,
+          originalFilename: j.data?.originalFilename,
+          fileSize: j.data?.fileSize,
+          createdAt: j.timestamp,
+          processedOn: j.processedOn,
+          finishedOn: j.finishedOn,
+          failedReason: j.failedReason === undefined ? undefined : redactText(j.failedReason),
+          failedCode: j.failedCode,
+          failedStatus: j.failedStatus,
+          result: j.returnvalue,
         };
-      }
-      const j = work.job;
-      return {
-        jobId: j.id,
-        status: j.state,
-        progress: j.progress,
-        sourceFormat: j.data?.sourceFormat,
-        targetFormat: j.data?.targetFormat,
-        originalFilename: j.data?.originalFilename,
-        fileSize: j.data?.fileSize,
-        createdAt: j.timestamp,
-        processedOn: j.processedOn,
-        finishedOn: j.finishedOn,
-        failedReason: j.failedReason === undefined ? undefined : redactText(j.failedReason),
-        failedCode: j.failedCode,
-        failedStatus: j.failedStatus,
-        result: j.returnvalue,
-      };
+      }),
     }),
-  });
+    auth.rateLimit
+  );
 }
 

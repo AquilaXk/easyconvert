@@ -34,6 +34,7 @@ import { findFfprobeBinary } from '../lib/conversions/media-ffprobe';
 import { shutdownSharedOcrWorkerPool } from '../lib/conversions/ocr-worker-pool';
 import { startMetricsFromConfig } from '../lib/metrics/server';
 import { sampleQueues, type QueueSource } from '../lib/metrics/queue-sampler';
+import { webhookDispatcher } from '../lib/api-keys/webhook-dispatcher';
 
 export interface WorkerLifecycleConfig {
   concurrency: number;
@@ -276,6 +277,7 @@ ociWorker.on('stuck', (job: Job<ConversionJobData, ConversionJobResult>) => {
 // Attach 2-phase quota accounting, webhook dispatch listeners, and input cleanup
 attachJobLifecycleListeners(ociWorker);
 attachInputCleanupOnCompletion(ociWorker);
+webhookDispatcher.getWorker();
 
 /** Longest wait for the engines to stop at the end of a drain; the container's stop grace period is longer. */
 export const ENGINE_SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -371,6 +373,7 @@ export async function drainWorker(
 
   // Close worker queue subscriptions and clean up listeners after active jobs finish
   await ociWorker.close();
+  await webhookDispatcher.close();
   await shutdownSharedOcrWorkerPool();
   await shutdownEngines();
   stopWorkerSandboxSweep();

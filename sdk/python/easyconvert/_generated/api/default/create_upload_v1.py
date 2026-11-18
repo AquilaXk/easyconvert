@@ -114,7 +114,8 @@ def sync_detailed(
      Creates a tus upload session. A request body sent with `Content-Type: application/offset+octet-
     stream` is stored as the first chunk (creation-with-upload). When the upload is complete, the
     response carries the storage key to use as `storageKey` in job requests. The `action` query
-    parameter selects a legacy local multipart flow that is not part of the public contract.
+    parameter also supports direct multipart actions (`initiate`, `presign` for part numbers 1..10000
+    beyond the initial 100 URLs, `complete`, `abort`).
 
     Args:
         tus_resumable (str | Unset):
@@ -161,7 +162,8 @@ def sync(
      Creates a tus upload session. A request body sent with `Content-Type: application/offset+octet-
     stream` is stored as the first chunk (creation-with-upload). When the upload is complete, the
     response carries the storage key to use as `storageKey` in job requests. The `action` query
-    parameter selects a legacy local multipart flow that is not part of the public contract.
+    parameter also supports direct multipart actions (`initiate`, `presign` for part numbers 1..10000
+    beyond the initial 100 URLs, `complete`, `abort`).
 
     Args:
         tus_resumable (str | Unset):
@@ -203,7 +205,8 @@ async def asyncio_detailed(
      Creates a tus upload session. A request body sent with `Content-Type: application/offset+octet-
     stream` is stored as the first chunk (creation-with-upload). When the upload is complete, the
     response carries the storage key to use as `storageKey` in job requests. The `action` query
-    parameter selects a legacy local multipart flow that is not part of the public contract.
+    parameter also supports direct multipart actions (`initiate`, `presign` for part numbers 1..10000
+    beyond the initial 100 URLs, `complete`, `abort`).
 
     Args:
         tus_resumable (str | Unset):
@@ -248,7 +251,8 @@ async def asyncio(
      Creates a tus upload session. A request body sent with `Content-Type: application/offset+octet-
     stream` is stored as the first chunk (creation-with-upload). When the upload is complete, the
     response carries the storage key to use as `storageKey` in job requests. The `action` query
-    parameter selects a legacy local multipart flow that is not part of the public contract.
+    parameter also supports direct multipart actions (`initiate`, `presign` for part numbers 1..10000
+    beyond the initial 100 URLs, `complete`, `abort`).
 
     Args:
         tus_resumable (str | Unset):

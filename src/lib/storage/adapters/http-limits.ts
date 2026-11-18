@@ -3,6 +3,9 @@
 /** An error document or a metadata answer is small; a longer body is cut so a hostile endpoint cannot fill memory. */
 export const ADAPTER_BODY_CAP_BYTES = 64 * 1024;
 
+/** A directory or bucket listing XML/JSON response cap (4 MiB, aligned with S3 MAX_LISTING_BODY_BYTES). */
+export const ADAPTER_LISTING_CAP_BYTES = 4 * 1024 * 1024;
+
 /** The whole time an error or metadata body may take to arrive, so a body that trickles in does not hold the request. */
 export const ADAPTER_RESPONSE_TIMEOUT_MS = 30_000;
 

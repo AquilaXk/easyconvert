@@ -285,7 +285,7 @@ describe('queued work that takes a reservation', () => {
 
   it('charges a graph that ends after the provisional lease of its reservation would have', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+    vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
     const owner = freshOwner();
     const unit = await redisKeyStore.reserveQuota(owner, 1);
     const scheduler = new InMemoryGraphScheduler();

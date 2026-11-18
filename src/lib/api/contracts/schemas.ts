@@ -1000,14 +1000,14 @@ export const JobGraphSchema = {
             type: 'string',
             pattern: '^cred_[a-f0-9]{32}$',
             description:
-              'import.s3, export.s3, import.sftp and export.sftp: a credential saved for the account (the `credentialRef` that saving it answered), which only its owner can use. Name this or `credentials`, not both. A reference that is unknown, expired, of another account or of another kind is refused with 422 at submission.',
+              'import.{s3,gcs,azure-blob,sftp,webdav} and export.{s3,gcs,azure-blob,sftp,webdav}: a credential saved for the account (`credentialRef`), which only its owner can use. Name this or `credentials`, not both. An unknown, expired, or mismatched reference is refused with 422 at submission.',
           },
           credentials: {
             type: 'object',
             writeOnly: true,
             additionalProperties: false,
             description:
-              'import.s3, export.s3, import.sftp and export.sftp: the credentials sent with the node, in place of `credentialRef`. They are sealed when the job is accepted, opened only by the worker that runs the node, and never returned or logged. An S3 node takes `bucket`, `accessKeyId`, `secretAccessKey` (required), and `sessionToken`, `region`, `endpoint` (an https address that resolves to public IPs; any S3-compatible store) and `forcePathStyle`. An SFTP node takes `host`, `username`, `privateKey` (required; password sign-in is not supported), and `port`, `passphrase`, `hostKey` (a known_hosts line or public key the server must show) and `basePath`. A host or endpoint that is private, loopback or link-local is refused.',
+              'Inline credentials sent with a BYOS storage node in place of `credentialRef`. Sealed when the job is accepted, opened only by the worker that runs the node, and never returned or logged. S3: `bucket`, `accessKeyId`, `secretAccessKey`, optional `sessionToken`, `region`, `endpoint`, `forcePathStyle`. GCS: `bucket`, optional `projectId`, `clientEmail`, `privateKey`, `serviceAccountKeyJson`, `endpoint`. Azure Blob: `storageAccount`, `containerName`, optional `accountKey`, `sasToken`, `connectionString`, `customEndpoint`. SFTP: `host`, `username`, `privateKey`, optional `port`, `passphrase`, `hostKey`, `basePath`. WebDAV: `url`, optional `username`, `password`, `basePath`. Private, loopback, or link-local endpoints are refused.',
             properties: {
               bucket: { type: 'string' },
               accessKeyId: { type: 'string' },
@@ -1016,32 +1016,43 @@ export const JobGraphSchema = {
               region: { type: 'string' },
               endpoint: { type: 'string' },
               forcePathStyle: { type: 'boolean' },
+              projectId: { type: 'string' },
+              clientEmail: { type: 'string' },
+              privateKey: { type: 'string' },
+              serviceAccountKeyJson: { type: 'string' },
+              storageAccount: { type: 'string' },
+              containerName: { type: 'string' },
+              accountKey: { type: 'string' },
+              sasToken: { type: 'string' },
+              connectionString: { type: 'string' },
+              customEndpoint: { type: 'string' },
               host: { type: 'string' },
               port: { type: 'integer', minimum: 1, maximum: 65535 },
               username: { type: 'string' },
-              privateKey: { type: 'string' },
+              password: { type: 'string' },
               passphrase: { type: 'string' },
               hostKey: { type: 'string' },
               basePath: { type: 'string' },
+              url: { type: 'string' },
             },
           },
           key: {
             type: 'string',
-            description: 'import.s3: the one object to bring in. Name `key` or `prefix`. A key is relative: no leading `/`, no `.` or `..` segment, at most 1024 bytes.',
+            description: 'import.s3, import.gcs, import.azure-blob: the single object to bring in. Name `key` or `prefix`. Relative: no leading `/`, no `.` or `..` segment, at most 1024 bytes.',
           },
           prefix: {
             type: 'string',
             description:
-              'import.s3: bring in the objects whose key starts with this prefix (at most `maxObjects`; a folder marker is skipped). export.s3: the text put in front of each file name, taken literally, so `out/` is a folder and `out/report-` a name prefix; left out, the files go to the bucket root. Same rules as `key`.',
+              'import.{s3,gcs,azure-blob}: bring in objects whose key starts with this prefix (at most `maxObjects`; folder markers skipped). export.{s3,gcs,azure-blob}: literal key prefix placed before each file name; left out, files go to the container/bucket root.',
           },
           path: {
             type: 'string',
-            description: 'import.sftp: the one file to bring in, relative to the credential\'s `basePath`. Name `path` or `directory`.',
+            description: 'import.sftp, import.webdav: the single file to bring in, relative to `basePath`. Name `path` or `directory`.',
           },
           directory: {
             type: 'string',
             description:
-              'import.sftp: bring in the regular files of this directory (at most `maxObjects`; hidden files, links and sub-folders are skipped). export.sftp: the directory the files are written into, which must exist; left out, `basePath`. Relative to `basePath`; same rules as `key`.',
+              'import.{sftp,webdav}: bring in files in this directory (at most `maxObjects`; hidden files and subdirectories skipped). export.{sftp,webdav}: target directory, relative to `basePath`.',
           },
           maxObjects: {
             type: 'integer',
@@ -1049,7 +1060,7 @@ export const JobGraphSchema = {
             maximum: 100,
             default: 20,
             description:
-              'import.s3 with `prefix`, import.sftp with `directory`: the most files to bring in. A listing with more files fails the node with `storage_too_many_objects`; nothing is cut short. Each file is held to the plan\'s file limit and the whole import to the owner\'s daily link-import budget.',
+              'import.{s3,gcs,azure-blob} with `prefix`, import.{sftp,webdav} with `directory`: maximum files to bring in. Exceeding `maxObjects` fails the node with `storage_too_many_objects` without truncation.',
           },
           targetFormat: {
             type: 'string',

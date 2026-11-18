@@ -1,15 +1,13 @@
 import { StorageAdapterError } from '@/lib/storage/adapters/adapter-interface';
-import { createStorageAdapter } from '@/lib/storage/adapters';
+import { createStorageAdapter, validateExternalEndpointUrl } from '@/lib/storage/adapters';
 import { MAX_STORAGE_IMPORT_OBJECTS } from '@/lib/storage/customer-storage-limits';
 import { remotePathProblem } from '@/lib/storage/customer-storage-paths';
 import type { CustomerStorageCredentials } from '@/lib/storage/credentials-vault';
 import { STORAGE_EXPORT_OPERATIONS, STORAGE_IMPORT_OPERATIONS } from './graph-operations';
 
 /**
- * The shape of the nodes that read from or write to the customer's own store (`import.s3`, `export.s3`, `import.sftp`,
- * `export.sftp`), checked at submission with nothing sent to the store: credentials named by a saved reference or carried inline,
- * the key, prefix, path or directory, and the endpoint of inline credentials (TLS, a public host). A saved credential is checked
- * where the job's owner is known (`checkStorageCredentialRefs`) and again when the node runs.
+ * The shape of the nodes that read from or write to the customer's own store (`import.{s3,gcs,azure-blob,sftp,webdav}`,
+ * `export.{s3,gcs,azure-blob,sftp,webdav}`), checked at submission with nothing sent to the store.
  */
 
 export interface StorageNodeProblem {
@@ -21,16 +19,34 @@ export interface StorageNodeProblem {
 /** The saved credential references the API accepts: `cred_` and 32 hex characters, as the vault makes them. */
 export const CREDENTIAL_REF_PATTERN = /^cred_[a-f0-9]{32}$/;
 
-type StorageKind = 's3' | 'sftp';
+export type StorageKind = 's3' | 'gcs' | 'azure-blob' | 'sftp' | 'webdav';
+
+const KEY_PREFIX_KINDS: ReadonlySet<StorageKind> = new Set(['s3', 'gcs', 'azure-blob']);
+
+const STORAGE_KIND_BY_OP: Readonly<Record<string, StorageKind>> = {
+  'import.s3': 's3',
+  'export.s3': 's3',
+  'import.gcs': 'gcs',
+  'export.gcs': 'gcs',
+  'import.azure-blob': 'azure-blob',
+  'export.azure-blob': 'azure-blob',
+  'import.sftp': 'sftp',
+  'export.sftp': 'sftp',
+  'import.webdav': 'webdav',
+  'export.webdav': 'webdav',
+};
 
 const INLINE_FIELDS: Readonly<Record<StorageKind, Readonly<Record<string, 'string' | 'number' | 'boolean'>>>> = {
   s3: { bucket: 'string', accessKeyId: 'string', secretAccessKey: 'string', sessionToken: 'string', region: 'string', endpoint: 'string', forcePathStyle: 'boolean' },
+  gcs: { bucket: 'string', projectId: 'string', clientEmail: 'string', privateKey: 'string', serviceAccountKeyJson: 'string', endpoint: 'string' },
+  'azure-blob': { storageAccount: 'string', containerName: 'string', accountKey: 'string', sasToken: 'string', connectionString: 'string', customEndpoint: 'string' },
   sftp: { host: 'string', port: 'number', username: 'string', password: 'string', privateKey: 'string', passphrase: 'string', hostKey: 'string', basePath: 'string' },
+  webdav: { url: 'string', username: 'string', password: 'string', basePath: 'string' },
 };
 
 export function storageKindOf(op: string | undefined): StorageKind | undefined {
   if (op === undefined || !(STORAGE_IMPORT_OPERATIONS.has(op) || STORAGE_EXPORT_OPERATIONS.has(op))) return undefined;
-  return op.endsWith('.s3') ? 's3' : 'sftp';
+  return STORAGE_KIND_BY_OP[op];
 }
 
 function inlineCredentialProblems(at: string, kind: StorageKind, credentials: Record<string, unknown>): StorageNodeProblem[] {
@@ -49,7 +65,11 @@ function inlineCredentialProblems(at: string, kind: StorageKind, credentials: Re
     return [{ path: `${at}.privateKey`, code: 'INVALID_STORAGE_CREDENTIALS', message: 'An SFTP node signs in with a private key ("privateKey"); password sign-in is not supported.' }];
   }
   try {
-    createStorageAdapter({ type: kind, ...credentials } as unknown as CustomerStorageCredentials);
+    const creds = { type: kind, ...credentials } as unknown as CustomerStorageCredentials;
+    createStorageAdapter(creds);
+    if (creds.type === 'webdav') {
+      validateExternalEndpointUrl(creds.url, 'webdav');
+    }
   } catch (err) {
     if (!(err instanceof StorageAdapterError)) throw err;
     // the adapter's message names the endpoint with userinfo and query masked, and holds no key
@@ -105,19 +125,22 @@ function importPathProblems(at: string, node: Record<string, unknown>, single: s
 /** The problems of a storage node, by its path in the request (`nodes.<id>`); none for any other operation. */
 export function storageNodeProblems(at: string, op: string | undefined, node: Record<string, unknown>): StorageNodeProblem[] {
   const kind = storageKindOf(op);
-  if (kind === undefined) return [];
+  if (kind === undefined || op === undefined) return [];
   const problems = credentialProblems(at, kind, node);
-  if (op === 'import.s3') return [...problems, ...importPathProblems(at, node, 'key', 'prefix')];
-  if (op === 'import.sftp') return [...problems, ...importPathProblems(at, node, 'path', 'directory')];
-  const destination = kind === 's3' ? 'prefix' : 'directory';
+  if (STORAGE_IMPORT_OPERATIONS.has(op)) {
+    return KEY_PREFIX_KINDS.has(kind)
+      ? [...problems, ...importPathProblems(at, node, 'key', 'prefix')]
+      : [...problems, ...importPathProblems(at, node, 'path', 'directory')];
+  }
+  const destination = KEY_PREFIX_KINDS.has(kind) ? 'prefix' : 'directory';
   return node[destination] === undefined ? problems : [...problems, ...pathProblem(at, destination, node[destination], true)];
 }
 
 /** The key or path a single-file storage import names, which gives the job its source format and file name; none for another node or a prefix. */
 export function storageImportFileName(node: { op?: string; key?: unknown; path?: unknown }): string | undefined {
-  let name: unknown;
-  if (node.op === 'import.s3') name = node.key;
-  else if (node.op === 'import.sftp') name = node.path;
+  const kind = storageKindOf(node.op);
+  if (kind === undefined || !node.op || !STORAGE_IMPORT_OPERATIONS.has(node.op)) return undefined;
+  const name = KEY_PREFIX_KINDS.has(kind) ? node.key : node.path;
   return typeof name === 'string' && name !== '' ? name : undefined;
 }
 

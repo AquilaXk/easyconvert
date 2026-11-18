@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { withRateLimitHeaders } from '@/lib/api/rate-limit';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { closeSessionBudget } from '@/lib/api/upload-session-budget';
 import { storageProvider } from '@/lib/storage';
@@ -33,15 +34,24 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
   // 1. Guard check: Authenticate and require 'convert:write' scope
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write' });
   if (!auth.authorized || !auth.user) {
-    return createProblemDetailsResponse(
-      auth.status ?? 401,
-      auth.error ?? 'Unauthorized',
-      instanceUri,
-      undefined,
-      auth.problemType,
-      authErrorHeaders(auth)
+    return withRateLimitHeaders(
+      createProblemDetailsResponse(
+        auth.status ?? 401,
+        auth.error ?? 'Unauthorized',
+        instanceUri,
+        undefined,
+        auth.problemType,
+        authErrorHeaders(auth)
+      ),
+      auth.rateLimit
     );
   }
+
+  return withRateLimitHeaders(await deleteDirectUploadAuthorized(uploadId, instanceUri, auth.user.id), auth.rateLimit);
+}
+
+async function deleteDirectUploadAuthorized(uploadId: string, instanceUri: string, userId: string) {
+  const auth = { user: { id: userId } };
 
   if (!storageProvider.getUploadSession) {
     return createProblemDetailsResponse(

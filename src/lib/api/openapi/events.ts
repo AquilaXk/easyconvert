@@ -75,7 +75,7 @@ const deliveryResponses = {
   '410': { description: 'Endpoint gone; delivery stops without retry.' },
   default: {
     description:
-      'Any other status is retried with exponential backoff (408, 429, and 5xx; `Retry-After` is honored) or dead-lettered (other 4xx).',
+      'Any other status is retried with durable exponential backoff (`30s, 2m, 10m, 1h, 6h, 24h` with jitter; HTTP 408, 429, and 5xx honor `Retry-After`) or moved immediately to the DLQ (other 4xx).',
   },
 };
 

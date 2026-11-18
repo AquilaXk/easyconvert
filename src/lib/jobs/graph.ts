@@ -11,6 +11,7 @@ import { OPTIMIZABLE_FORMATS, hasOptimizer, optimizeUnavailableMessage } from '.
 import {
   GRAPH_OPERATION_SET,
   SOURCE_OPERATIONS,
+  STORAGE_IMPORT_OPERATIONS,
   EXPORT_OPERATIONS,
   TARGET_FORMAT_REQUIRED_OPERATIONS,
   RESTRICTED_OUTPUT_FORMATS,
@@ -556,7 +557,7 @@ export function validateJobGraph(
   if (importCount === 0) {
     errors.push({
       path: 'nodes',
-      message: 'Graph must contain at least one import node (import.upload, import.url, import.s3 or import.sftp) or a capture.website node.',
+      message: 'Graph must contain at least one import node (import.upload, import.url, import.s3, import.gcs, import.azure-blob, import.sftp or import.webdav) or a capture.website node.',
       code: 'MISSING_IMPORT_NODE',
     });
   }
@@ -564,7 +565,7 @@ export function validateJobGraph(
   if (exportCount === 0) {
     errors.push({
       path: 'nodes',
-      message: 'Graph must contain at least one export node (export.url, export.s3, export.sftp or export.internal).',
+      message: 'Graph must contain at least one export node (export.url, export.s3, export.gcs, export.azure-blob, export.sftp, export.webdav or export.internal).',
       code: 'MISSING_EXPORT_NODE',
     });
   }
@@ -686,16 +687,15 @@ export function validateJobGraph(
     errors.push(...mergeNodeProblems(nodeId, node, target, inferredFormats));
     errors.push(...storageNodeProblems(`nodes.${nodeId}`, op, node));
 
+    if (op === 'import.url' || (op !== undefined && STORAGE_IMPORT_OPERATIONS.has(op))) {
+      // a link without an extension, a prefix and a directory name no format: the files are known when the node runs
+      inferredFormats[nodeId] = extractExtension(importedName(node)) || DYNAMIC_FORMAT;
+      continue;
+    }
+
     switch (op) {
       case 'import.upload': {
         inferredFormats[nodeId] = uploadNodeFormat(node.storageKey, options);
-        break;
-      }
-      case 'import.url':
-      case 'import.s3':
-      case 'import.sftp': {
-        // a link without an extension, a prefix and a directory name no format: the files are known when the node runs
-        inferredFormats[nodeId] = extractExtension(importedName(node)) || DYNAMIC_FORMAT;
         break;
       }
       case 'capture.website': {
@@ -1066,6 +1066,7 @@ const LEGACY_PROVIDER_EXPORTS: ReadonlySet<string> = new Set([
   'export/s3',
   'export/gcs',
   'export/azure',
+  'export/azure-blob',
   'export/sftp',
   'export/webdav',
 ]);

@@ -26,6 +26,7 @@ import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import type { User } from '@/lib/auth/types';
 import { createProblemDetailsResponse, createPdfPostprocessResponse } from '@/lib/api/problem-details';
+import { DOWNLOAD_SECURITY_HEADERS } from '@/lib/api/content-disposition';
 import { loggingOutcomes, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
 import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
@@ -438,7 +439,7 @@ async function convertPlanned(ctx: ConvertPlannedContext): Promise<NextResponse>
 
   const headers = new Headers({
     'Content-Type': 'application/zip',
-    'X-Content-Type-Options': 'nosniff',
+    ...DOWNLOAD_SECURITY_HEADERS,
     'Content-Disposition': 'attachment; filename="easyconvert_batch.zip"',
     'Content-Length': zipResult.size.toString(),
   });

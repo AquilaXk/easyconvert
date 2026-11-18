@@ -88,7 +88,7 @@ describe('the start of a graph that failed, with the in-memory scheduler and sto
 
 describe('the in-memory graph scheduler', () => {
   it('completes a graph once when two of its nodes fail at the same time under continue', async () => {
-    const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue(undefined as never);
+    const dispatched = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
     try {
       const scheduler = new InMemoryGraphScheduler();
       const graphId = `graph_twice_${Date.now()}`;
@@ -129,7 +129,7 @@ describe('the end of a graph, in this process', () => {
   });
 
   it('announces the end once and removes the files when the first read of the state fails, and answers what the step between returned', async () => {
-    const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+    const dispatched = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
     const removed = vi.spyOn(storageProvider, 'deleteByPrefix').mockResolvedValue(undefined as never);
     try {
       const scheduler = new InMemoryGraphScheduler();
@@ -154,7 +154,7 @@ describe('the end of a graph, in this process', () => {
   });
 
   it('ends the holds on its inputs and removes its files, telling no webhook, when its state cannot be read twice', async () => {
-    const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+    const dispatched = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
     const removed = vi.spyOn(storageProvider, 'deleteByPrefix').mockResolvedValue(undefined as never);
     const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {

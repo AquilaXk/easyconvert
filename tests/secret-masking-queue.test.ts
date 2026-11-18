@@ -136,7 +136,7 @@ describe('graph scheduler failures', () => {
         out: { op: 'export.internal', input: 'in' },
       },
     };
-    const dispatch = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({} as never);
+    const dispatch = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
     await scheduler.initGraph(graphId, sealGraph(graphId, graph), {
       ownerUserId: 'user-mask',
       webhookUrl: 'https://hooks.example/h',

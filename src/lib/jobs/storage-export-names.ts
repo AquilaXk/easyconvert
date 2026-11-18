@@ -20,11 +20,13 @@ export function exportedFileNames(inputNames: readonly string[]): string[] {
   });
 }
 
+const PREFIX_EXPORT_OPS = new Set(['export.s3', 'export.gcs', 'export.azure-blob']);
+
 /**
- * Where the file `name` lands in the customer's store: an S3 prefix is literal (`out/` is a folder, `out/report-` a name prefix),
- * and an SFTP directory is joined with a slash.
+ * Where the file `name` lands in the customer's store: an object-store prefix (`s3`, `gcs`, `azure-blob`) is literal
+ * (`out/` is a folder, `out/report-` a name prefix), and an SFTP/WebDAV directory is joined with a slash.
  */
 export function exportDestination(op: string, prefixOrDirectory: string | undefined, name: string): string {
   const base = prefixOrDirectory ?? '';
-  return op === 'export.s3' ? `${base}${name}` : joinRemotePath(base, name);
+  return PREFIX_EXPORT_OPS.has(op) ? `${base}${name}` : joinRemotePath(base, name);
 }

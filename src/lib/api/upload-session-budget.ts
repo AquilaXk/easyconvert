@@ -1,8 +1,14 @@
 import type { NextResponse } from 'next/server';
-import { OPEN_UPLOAD_IDLE_MS, endUploadReservation, reserveUploadBudget, type UploadReservation } from '../api-keys/anonymous-upload-budget';
+import {
+  OPEN_UPLOAD_IDLE_MS,
+  endUploadReservation,
+  reserveUploadBudget,
+  resumeUploadReservation,
+  type UploadReservation,
+} from '../api-keys/anonymous-upload-budget';
 import { isUnattributedAnonymous } from '../auth/anonymous-identity';
 import type { User } from '../auth/types';
-import { planOfCaller } from '../plan-limits';
+import { planOfCaller, type Plan } from '../plan-limits';
 import { unattributedTransferRefusal, uploadBudgetRefusalResponse } from './upload-budget-response';
 
 /**
@@ -44,4 +50,30 @@ export async function closeSessionBudget(uploadId: string, outcome: 'completed' 
   await endUploadReservation(uploadId, outcome).catch((error: unknown) => {
     console.warn(`[uploads] Could not close the budget of the ${outcome} upload; it ends when the reservation expires:`, error);
   });
+}
+
+/**
+ * Renews the idle reservation window of an active upload session when parts or chunks arrive, or answers
+ * the 429 refusal when an idle session exceeded its concurrency budget. Store failures do not reject active uploads.
+ */
+export async function resumeActiveSessionBudget(
+  uploadId: string,
+  instanceUri: string,
+  plan: Plan,
+  extraHeaders?: Record<string, string>
+): Promise<NextResponse | null> {
+  try {
+    const refusal = await resumeUploadReservation(uploadId);
+    if (!refusal) return null;
+    const response = uploadBudgetRefusalResponse(refusal, instanceUri, plan);
+    if (extraHeaders) {
+      for (const [key, value] of Object.entries(extraHeaders)) {
+        response.headers.set(key, value);
+      }
+    }
+    return response;
+  } catch (error) {
+    console.warn('[uploads] Could not renew the idle window of an active upload reservation:', error);
+    return null;
+  }
 }

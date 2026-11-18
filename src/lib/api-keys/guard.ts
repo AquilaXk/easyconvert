@@ -32,6 +32,8 @@ export interface ApiAuthResult {
   retryAfterSeconds?: number;
   /** RFC 9457 problem type for the rejection when it differs from the status default (burst limit). */
   problemType?: string;
+  /** Quota usage snapshot when resolved during auth/quota verification, for consistent `RateLimit-*` response headers. */
+  rateLimit?: QuotaUsage;
 }
 
 interface AccessScopeOptions {
@@ -175,7 +177,7 @@ function checkPreExpiryNotification(key: ApiKey): void {
     }
     key.lastExpiryNotifiedAt = Date.now();
     redisKeyStore.markKeyExpiryNotified(key.id, key.lastExpiryNotifiedAt);
-    webhookDispatcher.dispatch(
+    webhookDispatcher.enqueueDelivery(
       key.webhookUrl,
       'key.expiring_soon',
       {
@@ -197,10 +199,11 @@ interface QuotaCheck {
   reservationId?: string;
   remaining?: number;
   serviceUnavailable?: boolean;
+  usage?: QuotaUsage;
 }
 
 /** Why the quota of a caller could not be reserved: the quota store is offline (503), or the conversions of the day are used up (429). */
-type QuotaRefusal = Required<Pick<ApiAuthResult, 'error' | 'status' | 'problemType'>> & Pick<ApiAuthResult, 'remaining'>;
+type QuotaRefusal = Required<Pick<ApiAuthResult, 'error' | 'status' | 'problemType'>> & Pick<ApiAuthResult, 'remaining' | 'rateLimit'>;
 
 /** The refusal of `userId` for a quota check that did not allow it. */
 function quotaRefusal(quota: QuotaCheck, userId: string): QuotaRefusal {
@@ -218,6 +221,7 @@ function quotaRefusal(quota: QuotaCheck, userId: string): QuotaRefusal {
     status: HTTP_TOO_MANY_REQUESTS,
     remaining: quota.remaining,
     problemType: QUOTA_EXCEEDED_PROBLEM_TYPE,
+    ...(quota.usage ? { rateLimit: quota.usage } : {}),
   };
 }
 
@@ -240,6 +244,7 @@ async function checkQuotaAndReserve(userId: string, need: number): Promise<Quota
         allowed: false,
         error: creditsExceeded(usage),
         remaining: reservation.remaining,
+        usage,
       };
     }
     return {
@@ -255,6 +260,7 @@ async function checkQuotaAndReserve(userId: string, need: number): Promise<Quota
     return {
       allowed: true,
       remaining: quota.remaining,
+      usage: quota,
     };
   } catch {
     return {
@@ -351,6 +357,7 @@ async function verifyKeyAccess(
     authMethod: 'api_key',
     reservationId: quota.reservationId,
     remaining: quota.remaining,
+    ...(quota.usage ? { rateLimit: quota.usage } : {}),
   };
 }
 
@@ -453,6 +460,7 @@ async function verifyAnonymousAccess(clientIp: string, need: number): Promise<Ap
     authMethod: 'session',
     reservationId: quota.reservationId,
     remaining: quota.remaining,
+    ...(quota.usage ? { rateLimit: quota.usage } : {}),
   };
 }
 
@@ -534,6 +542,7 @@ async function authenticateRequest(
       authMethod: 'session',
       reservationId: quota.reservationId,
       remaining: quota.remaining,
+      ...(quota.usage ? { rateLimit: quota.usage } : {}),
     };
   }
 

@@ -13,13 +13,13 @@ T = TypeVar("T", bound="JobGraphNodesAdditionalPropertyCredentials")
 
 @_attrs_define
 class JobGraphNodesAdditionalPropertyCredentials:
-    """import.s3, export.s3, import.sftp and export.sftp: the credentials sent with the node, in place of `credentialRef`.
-    They are sealed when the job is accepted, opened only by the worker that runs the node, and never returned or
-    logged. An S3 node takes `bucket`, `accessKeyId`, `secretAccessKey` (required), and `sessionToken`, `region`,
-    `endpoint` (an https address that resolves to public IPs; any S3-compatible store) and `forcePathStyle`. An SFTP
-    node takes `host`, `username`, `privateKey` (required; password sign-in is not supported), and `port`, `passphrase`,
-    `hostKey` (a known_hosts line or public key the server must show) and `basePath`. A host or endpoint that is
-    private, loopback or link-local is refused.
+    """Inline credentials sent with a BYOS storage node in place of `credentialRef`. Sealed when the job is accepted,
+    opened only by the worker that runs the node, and never returned or logged. S3: `bucket`, `accessKeyId`,
+    `secretAccessKey`, optional `sessionToken`, `region`, `endpoint`, `forcePathStyle`. GCS: `bucket`, optional
+    `projectId`, `clientEmail`, `privateKey`, `serviceAccountKeyJson`, `endpoint`. Azure Blob: `storageAccount`,
+    `containerName`, optional `accountKey`, `sasToken`, `connectionString`, `customEndpoint`. SFTP: `host`, `username`,
+    `privateKey`, optional `port`, `passphrase`, `hostKey`, `basePath`. WebDAV: `url`, optional `username`, `password`,
+    `basePath`. Private, loopback, or link-local endpoints are refused.
 
         Attributes:
             bucket (str | Unset):
@@ -29,13 +29,24 @@ class JobGraphNodesAdditionalPropertyCredentials:
             region (str | Unset):
             endpoint (str | Unset):
             force_path_style (bool | Unset):
+            project_id (str | Unset):
+            client_email (str | Unset):
+            private_key (str | Unset):
+            service_account_key_json (str | Unset):
+            storage_account (str | Unset):
+            container_name (str | Unset):
+            account_key (str | Unset):
+            sas_token (str | Unset):
+            connection_string (str | Unset):
+            custom_endpoint (str | Unset):
             host (str | Unset):
             port (int | Unset):
             username (str | Unset):
-            private_key (str | Unset):
+            password (str | Unset):
             passphrase (str | Unset):
             host_key (str | Unset):
             base_path (str | Unset):
+            url (str | Unset):
     """
 
     bucket: str | Unset = UNSET
@@ -45,13 +56,24 @@ class JobGraphNodesAdditionalPropertyCredentials:
     region: str | Unset = UNSET
     endpoint: str | Unset = UNSET
     force_path_style: bool | Unset = UNSET
+    project_id: str | Unset = UNSET
+    client_email: str | Unset = UNSET
+    private_key: str | Unset = UNSET
+    service_account_key_json: str | Unset = UNSET
+    storage_account: str | Unset = UNSET
+    container_name: str | Unset = UNSET
+    account_key: str | Unset = UNSET
+    sas_token: str | Unset = UNSET
+    connection_string: str | Unset = UNSET
+    custom_endpoint: str | Unset = UNSET
     host: str | Unset = UNSET
     port: int | Unset = UNSET
     username: str | Unset = UNSET
-    private_key: str | Unset = UNSET
+    password: str | Unset = UNSET
     passphrase: str | Unset = UNSET
     host_key: str | Unset = UNSET
     base_path: str | Unset = UNSET
+    url: str | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         bucket = self.bucket
@@ -68,19 +90,41 @@ class JobGraphNodesAdditionalPropertyCredentials:
 
         force_path_style = self.force_path_style
 
+        project_id = self.project_id
+
+        client_email = self.client_email
+
+        private_key = self.private_key
+
+        service_account_key_json = self.service_account_key_json
+
+        storage_account = self.storage_account
+
+        container_name = self.container_name
+
+        account_key = self.account_key
+
+        sas_token = self.sas_token
+
+        connection_string = self.connection_string
+
+        custom_endpoint = self.custom_endpoint
+
         host = self.host
 
         port = self.port
 
         username = self.username
 
-        private_key = self.private_key
+        password = self.password
 
         passphrase = self.passphrase
 
         host_key = self.host_key
 
         base_path = self.base_path
+
+        url = self.url
 
         field_dict: dict[str, Any] = {}
 
@@ -99,20 +143,42 @@ class JobGraphNodesAdditionalPropertyCredentials:
             field_dict["endpoint"] = endpoint
         if force_path_style is not UNSET:
             field_dict["forcePathStyle"] = force_path_style
+        if project_id is not UNSET:
+            field_dict["projectId"] = project_id
+        if client_email is not UNSET:
+            field_dict["clientEmail"] = client_email
+        if private_key is not UNSET:
+            field_dict["privateKey"] = private_key
+        if service_account_key_json is not UNSET:
+            field_dict["serviceAccountKeyJson"] = service_account_key_json
+        if storage_account is not UNSET:
+            field_dict["storageAccount"] = storage_account
+        if container_name is not UNSET:
+            field_dict["containerName"] = container_name
+        if account_key is not UNSET:
+            field_dict["accountKey"] = account_key
+        if sas_token is not UNSET:
+            field_dict["sasToken"] = sas_token
+        if connection_string is not UNSET:
+            field_dict["connectionString"] = connection_string
+        if custom_endpoint is not UNSET:
+            field_dict["customEndpoint"] = custom_endpoint
         if host is not UNSET:
             field_dict["host"] = host
         if port is not UNSET:
             field_dict["port"] = port
         if username is not UNSET:
             field_dict["username"] = username
-        if private_key is not UNSET:
-            field_dict["privateKey"] = private_key
+        if password is not UNSET:
+            field_dict["password"] = password
         if passphrase is not UNSET:
             field_dict["passphrase"] = passphrase
         if host_key is not UNSET:
             field_dict["hostKey"] = host_key
         if base_path is not UNSET:
             field_dict["basePath"] = base_path
+        if url is not UNSET:
+            field_dict["url"] = url
 
         return field_dict
 
@@ -133,19 +199,41 @@ class JobGraphNodesAdditionalPropertyCredentials:
 
         force_path_style = d.pop("forcePathStyle", UNSET)
 
+        project_id = d.pop("projectId", UNSET)
+
+        client_email = d.pop("clientEmail", UNSET)
+
+        private_key = d.pop("privateKey", UNSET)
+
+        service_account_key_json = d.pop("serviceAccountKeyJson", UNSET)
+
+        storage_account = d.pop("storageAccount", UNSET)
+
+        container_name = d.pop("containerName", UNSET)
+
+        account_key = d.pop("accountKey", UNSET)
+
+        sas_token = d.pop("sasToken", UNSET)
+
+        connection_string = d.pop("connectionString", UNSET)
+
+        custom_endpoint = d.pop("customEndpoint", UNSET)
+
         host = d.pop("host", UNSET)
 
         port = d.pop("port", UNSET)
 
         username = d.pop("username", UNSET)
 
-        private_key = d.pop("privateKey", UNSET)
+        password = d.pop("password", UNSET)
 
         passphrase = d.pop("passphrase", UNSET)
 
         host_key = d.pop("hostKey", UNSET)
 
         base_path = d.pop("basePath", UNSET)
+
+        url = d.pop("url", UNSET)
 
         job_graph_nodes_additional_property_credentials = cls(
             bucket=bucket,
@@ -155,13 +243,24 @@ class JobGraphNodesAdditionalPropertyCredentials:
             region=region,
             endpoint=endpoint,
             force_path_style=force_path_style,
+            project_id=project_id,
+            client_email=client_email,
+            private_key=private_key,
+            service_account_key_json=service_account_key_json,
+            storage_account=storage_account,
+            container_name=container_name,
+            account_key=account_key,
+            sas_token=sas_token,
+            connection_string=connection_string,
+            custom_endpoint=custom_endpoint,
             host=host,
             port=port,
             username=username,
-            private_key=private_key,
+            password=password,
             passphrase=passphrase,
             host_key=host_key,
             base_path=base_path,
+            url=url,
         )
 
         return job_graph_nodes_additional_property_credentials

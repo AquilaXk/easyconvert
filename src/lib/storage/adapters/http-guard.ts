@@ -106,8 +106,15 @@ export async function releaseDispatcher(dispatcher: Dispatcher): Promise<void> {
  * `request`, with a listener on the body for the error an unread body gets when its agent is destroyed
  * (`ClientDestroyedError`): nobody reads that body, and without a listener the error would end the process.
  */
-export async function guardedRequest(...args: Parameters<typeof request>): Promise<Awaited<ReturnType<typeof request>>> {
-  const res = await request(...args);
+export type GuardedRequestOptions = Omit<NonNullable<Parameters<typeof request>[1]>, 'method'> & {
+  method?: NonNullable<Parameters<typeof request>[1]>['method'] | 'PROPFIND';
+};
+
+export async function guardedRequest(
+  url: Parameters<typeof request>[0],
+  options?: GuardedRequestOptions
+): Promise<Awaited<ReturnType<typeof request>>> {
+  const res = await request(url, options as Parameters<typeof request>[1]);
   res.body.on('error', () => {});
   return res;
 }

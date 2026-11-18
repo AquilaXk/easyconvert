@@ -14,8 +14,11 @@ import {
 import { maxFileBytes, planOfCaller, type Plan } from '../../plan-limits';
 import { credentialsVault, type CustomerStorageCredentials } from '../../storage/credentials-vault';
 import { createStorageAdapter } from '../../storage/adapters';
+import { AzureBlobStorageAdapter } from '../../storage/adapters/azure-blob';
+import { GcsStorageAdapter } from '../../storage/adapters/gcs';
 import { S3StorageAdapter } from '../../storage/adapters/s3';
 import { SftpStorageAdapter } from '../../storage/adapters/sftp';
+import { WebDavStorageAdapter } from '../../storage/adapters/webdav';
 import { StorageNotFoundError, StorageSizeLimitError } from '../../storage/adapters/adapter-interface';
 import {
   StorageCredentialNotFoundError,
@@ -33,18 +36,28 @@ import { tierMaxDeadlineMs } from '../job-deadline';
 import { INTERMEDIATE_TTL_MS, meterStream } from './node-url-import';
 import { nodeOutputKey, sanitizeNodeOutputFilename } from './node-jobs';
 import { openStorageNodeCredentials } from './sealed-nodes';
-import type { ExportS3Node, ExportSftpNode, ImportS3Node, ImportSftpNode } from './types';
+import type {
+  ExportAzureBlobNode,
+  ExportGcsNode,
+  ExportS3Node,
+  ExportSftpNode,
+  ExportWebDavNode,
+  ImportAzureBlobNode,
+  ImportGcsNode,
+  ImportS3Node,
+  ImportSftpNode,
+  ImportWebDavNode,
+} from './types';
 
 /**
- * The nodes that read from and write to the customer's own store: `import.s3` and `export.s3` (any S3-compatible endpoint, over
- * the SigV4 client with the connection pinned to a public address) and `import.sftp` and `export.sftp` (the OpenSSH client, which is
- * told the one address that passed the check). Credentials come from a saved credential of the graph's owner or, sealed with the
- * node, from the request; they are opened here, in memory, and never stored back, logged or returned. A transient failure is tried
- * again with a jittered, doubling wait; a verdict on the customer's settings (credentials, endpoint, name, size) is final.
+ * The nodes that read from and write to the customer's own store (`s3`, `gcs`, `azure-blob`, `sftp`, `webdav`).
+ * HTTP/HTTPS providers pin connections to checked public addresses via `assertAdapterUrlSafe` + `adapterDispatcher`.
  */
 
-type StorageKind = 's3' | 'sftp';
-type StorageNode = ImportS3Node | ImportSftpNode | ExportS3Node | ExportSftpNode;
+type StorageKind = 's3' | 'gcs' | 'azure-blob' | 'sftp' | 'webdav';
+type ImportStorageNode = ImportS3Node | ImportGcsNode | ImportAzureBlobNode | ImportSftpNode | ImportWebDavNode;
+type ExportStorageNode = ExportS3Node | ExportGcsNode | ExportAzureBlobNode | ExportSftpNode | ExportWebDavNode;
+type StorageNode = ImportStorageNode | ExportStorageNode;
 type StorageJob = Job<ConversionJobData, ConversionJobResult>;
 
 /** Tries of one file's transfer, and the wait before the second (doubling, jittered, at most `RETRY_MAX_DELAY_MS`). */
@@ -75,6 +88,32 @@ function s3Store(adapter: S3StorageAdapter): CustomerStore {
   };
 }
 
+function gcsStore(adapter: GcsStorageAdapter): CustomerStore {
+  return {
+    list: (prefix, max) => adapter.listObjects(prefix, max),
+    size: async (key) => {
+      const head = await adapter.head(key);
+      if (!head) throw new StorageNotFoundError(key, 'gcs');
+      return head.size;
+    },
+    download: (key) => adapter.downloadStream(key),
+    upload: (key, body, meta) => adapter.uploadStream(key, body, meta),
+  };
+}
+
+function azureBlobStore(adapter: AzureBlobStorageAdapter): CustomerStore {
+  return {
+    list: (prefix, max) => adapter.listObjects(prefix, max),
+    size: async (key) => {
+      const head = await adapter.head(key);
+      if (!head) throw new StorageNotFoundError(key, 'azure-blob');
+      return head.size;
+    },
+    download: (key) => adapter.downloadStream(key),
+    upload: (key, body, meta) => adapter.uploadStream(key, body, meta),
+  };
+}
+
 function sftpStore(adapter: SftpStorageAdapter): CustomerStore {
   return {
     list: async (directory, max) => (await adapter.listDirectory(directory, max)).map((file) => ({ path: joinRemotePath(directory, file.name), size: file.size })),
@@ -88,11 +127,32 @@ function sftpStore(adapter: SftpStorageAdapter): CustomerStore {
   };
 }
 
+function webdavStore(adapter: WebDavStorageAdapter): CustomerStore {
+  return {
+    list: async (directory, max) => (await adapter.listDirectory(directory, max)).map((file) => ({ path: joinRemotePath(directory, file.name), size: file.size })),
+    size: async (remotePath) => {
+      const head = await adapter.head(remotePath);
+      if (!head) throw new StorageNotFoundError(remotePath, 'webdav');
+      return head.size;
+    },
+    download: (remotePath) => adapter.downloadStream(remotePath),
+    upload: (remotePath, body, meta) => adapter.uploadStream(remotePath, body, meta),
+  };
+}
+
+const KEY_PREFIX_KINDS: ReadonlySet<StorageKind> = new Set(['s3', 'gcs', 'azure-blob']);
+
 const KIND_OF_OPERATION: Readonly<Record<StorageNode['op'], StorageKind>> = {
   'import.s3': 's3',
   'export.s3': 's3',
+  'import.gcs': 'gcs',
+  'export.gcs': 'gcs',
+  'import.azure-blob': 'azure-blob',
+  'export.azure-blob': 'azure-blob',
   'import.sftp': 'sftp',
   'export.sftp': 'sftp',
+  'import.webdav': 'webdav',
+  'export.webdav': 'webdav',
 };
 
 /**
@@ -115,7 +175,11 @@ async function openStore(node: StorageNode, jobId: string, owner: string | undef
   const credentials = await resolveCredentials(node, jobId, owner);
   try {
     const adapter = createStorageAdapter(credentials);
-    return adapter instanceof S3StorageAdapter ? s3Store(adapter) : sftpStore(adapter as SftpStorageAdapter);
+    if (adapter instanceof S3StorageAdapter) return s3Store(adapter);
+    if (adapter instanceof GcsStorageAdapter) return gcsStore(adapter);
+    if (adapter instanceof AzureBlobStorageAdapter) return azureBlobStore(adapter);
+    if (adapter instanceof WebDavStorageAdapter) return webdavStore(adapter);
+    return sftpStore(adapter as SftpStorageAdapter);
   } catch (err) {
     throw customerStorageFailure(err);
   }
@@ -156,7 +220,7 @@ async function withTransientRetry<T>(signal: AbortSignal, run: () => Promise<T>)
   }
 }
 
-function importLimit(node: ImportS3Node | ImportSftpNode): number {
+function importLimit(node: ImportStorageNode): number {
   return Math.min(node.maxObjects ?? DEFAULT_STORAGE_IMPORT_OBJECTS, MAX_STORAGE_IMPORT_OBJECTS);
 }
 
@@ -168,15 +232,16 @@ interface RemoteFile {
 }
 
 /** The files an import node names: its one file, or the files under its prefix or directory (an empty one is a failure). */
-async function filesToImport(node: ImportS3Node | ImportSftpNode, store: CustomerStore, signal: AbortSignal): Promise<RemoteFile[]> {
-  const single = node.op === 'import.s3' ? node.key : node.path;
+async function filesToImport(node: ImportStorageNode, store: CustomerStore, signal: AbortSignal): Promise<RemoteFile[]> {
+  const usesPrefix = KEY_PREFIX_KINDS.has(KIND_OF_OPERATION[node.op]);
+  const single = usesPrefix ? (node as { key?: string }).key : (node as { path?: string }).path;
   if (single !== undefined) {
     const size = await withTransientRetry(signal, () => store.size(single));
     return [{ path: single, size, name: path.posix.basename(single) }];
   }
-  const listed = (node.op === 'import.s3' ? node.prefix : node.directory) ?? '';
+  const listed = (usesPrefix ? (node as { prefix?: string }).prefix : (node as { directory?: string }).directory) ?? '';
   const found = await withTransientRetry(signal, () => store.list(listed, importLimit(node)));
-  if (found.length === 0) throw new StorageObjectNotFoundError(`No file was found ${node.op === 'import.s3' ? 'under the prefix' : 'in the folder'} the node names.`);
+  if (found.length === 0) throw new StorageObjectNotFoundError(`No file was found ${usesPrefix ? 'under the prefix' : 'in the folder'} the node names.`);
   const root = listed === '' || listed.endsWith('/') ? listed : `${listed}/`;
   return found.map((file) => {
     const relative = file.path.startsWith(root) ? file.path.slice(root.length) : file.path;
@@ -262,13 +327,13 @@ async function importFile(
 }
 
 /**
- * Runs an `import.s3` or `import.sftp` node: the file it names, or at most `maxObjects` files of its prefix or directory (more is
- * refused, never cut short), each streamed into the graph's intermediate storage. Returns the stored keys in remote order.
+ * Runs an `import.{s3,gcs,azure-blob,sftp,webdav}` node: the file it names, or at most `maxObjects` files of its prefix or directory
+ * (more is refused, never cut short), each streamed into the graph's intermediate storage. Returns the stored keys in remote order.
  */
 export async function importFromCustomerStorage(
   job: StorageJob,
   storage: IStorageBackend,
-  node: ImportS3Node | ImportSftpNode,
+  node: ImportStorageNode,
   jobId: string
 ): Promise<string[]> {
   const { graphId, graphNodeId: nodeId, userId: owner } = job.data;
@@ -294,14 +359,13 @@ export async function importFromCustomerStorage(
 }
 
 /**
- * Runs an `export.s3` or `export.sftp` node: each input is written under the node's prefix or directory by its file name, with
- * its content type, overwriting a file of that name. A file that cannot be written fails the node after its tries; the files
- * written before it stay, and each file's outcome is in the job log. Returns the inputs, which the node hands on unchanged.
+ * Runs an `export.{s3,gcs,azure-blob,sftp,webdav}` node: each input is written under the node's prefix or directory by its file name,
+ * with its content type, overwriting a file of that name.
  */
 export async function exportToCustomerStorage(
   job: StorageJob,
   storage: IStorageBackend,
-  node: ExportS3Node | ExportSftpNode,
+  node: ExportStorageNode,
   inputKeys: string[],
   jobId: string
 ): Promise<string[]> {
@@ -314,7 +378,8 @@ export async function exportToCustomerStorage(
     stats.push(stat);
   }
   const names = exportedFileNames(stats.map((stat, index) => stat.filename || path.posix.basename(inputKeys[index])));
-  const destination = node.op === 'export.s3' ? node.prefix : node.directory;
+  const usesPrefix = KEY_PREFIX_KINDS.has(KIND_OF_OPERATION[node.op]);
+  const destination = usesPrefix ? (node as { prefix?: string }).prefix : (node as { directory?: string }).directory;
   for (const [index, inputKey] of inputKeys.entries()) {
     signal.throwIfAborted();
     const stat = stats[index];

@@ -14,7 +14,7 @@ export const NamedTaskSchema = {
       type: 'string',
       enum: NAMED_TASK_OPERATIONS,
       description:
-        '`import/url` and `import/upload` bring a file in; `convert`, `ocr`, `optimize`, `thumbnail`, `media.package`, `watermark`, `merge`, `metadata` (reads the metadata of its input into `metadata.json`), `metadata/write` (writes `options.metadata.set` into a JPEG, a PNG or a PDF), `capture/website` (only where the server has it on, see `GET /api/formats`; otherwise a 422 with the code `capture_unavailable`; draws the page at `url` as a PDF, a PNG or a JPEG, with `output_format` and `options.capture`; it takes no input and counts as a conversion), `archive/create`, `archive/extract` and the `pdf.*` page operations work on it; `export/url` ends a branch: with `url` it sends the files there, without it keeps them for download and lists their download URLs in the task result. `import/s3` and `import/sftp` bring files in from the customer\'s own bucket or SFTP server, and `export/s3` and `export/sftp` write the files there and list where each went in the task result; they take a saved credential (`credential_ref`) or the credentials themselves (`credentials`). A job needs at least one task that converts.',
+        '`import/url` and `import/upload` bring a file in; `convert`, `ocr`, `optimize`, `thumbnail`, `media.package`, `watermark`, `merge`, `metadata` (reads the metadata of its input into `metadata.json`), `metadata/write` (writes `options.metadata.set` into a JPEG, a PNG or a PDF), `capture/website` (only where the server has it on, see `GET /api/formats`; otherwise a 422 with the code `capture_unavailable`; draws the page at `url` as a PDF, a PNG or a JPEG, with `output_format` and `options.capture`; it takes no input and counts as a conversion), `archive/create`, `archive/extract` and the `pdf.*` page operations work on it; `export/url` ends a branch: with `url` it sends the files there, without it keeps them for download and lists their download URLs in the task result. `import/{s3,gcs,azure-blob,sftp,webdav}` bring files in from the customer\'s own bucket/container/server, and `export/{s3,gcs,azure-blob,sftp,webdav}` write files there and list where each went in the task result; they take a saved credential (`credential_ref`) or inline `credentials`. A job needs at least one task that converts.',
     },
     input: {
       description: 'The name of the task whose output this task reads, or a list of names. Every task but an import needs one. A `merge` needs at least 2 distinct names.',
@@ -62,29 +62,29 @@ export const NamedTaskSchema = {
     credential_ref: {
       type: 'string',
       pattern: '^cred_[a-f0-9]{32}$',
-      description: '`import/s3`, `export/s3`, `import/sftp`, `export/sftp`: a credential saved for the account (the `credentialRef` that saving it answered), which only its owner can use. Name this or `credentials`, not both. A reference that is unknown, expired, of another account or of another kind answers 422.',
+      description: '`import/{s3,gcs,azure-blob,sftp,webdav}`, `export/{s3,gcs,azure-blob,sftp,webdav}`: a credential saved for the account (`credentialRef`), which only its owner can use. Name this or `credentials`, not both. An unknown, expired, or mismatched reference answers 422.',
     },
     credentials: {
       type: 'object',
       writeOnly: true,
-      description: 'The credentials sent with the task, in place of `credential_ref`: sealed when the job is accepted, opened only by the worker that runs the task, never returned or logged. The same fields as the `credentials` of a saved credential without `type`: an S3 task takes `bucket`, `accessKeyId`, `secretAccessKey` and optionally `sessionToken`, `region`, `endpoint` (https, public addresses only) and `forcePathStyle`; an SFTP task takes `host`, `username`, `privateKey` and optionally `port`, `passphrase`, `hostKey` and `basePath`.',
+      description: 'The credentials sent with the task, in place of `credential_ref`: sealed when the job is accepted, opened only by the worker that runs the task, never returned or logged. Matches the credential payload without `type` for S3, GCS, Azure Blob, SFTP, or WebDAV.',
     },
-    key: { type: 'string', description: '`import/s3`: the one object to bring in. Name `key` or `prefix`. Relative: no leading `/`, no `.` or `..` segment, at most 1024 bytes.' },
+    key: { type: 'string', description: '`import/{s3,gcs,azure-blob}`: the one object to bring in. Name `key` or `prefix`. Relative: no leading `/`, no `.` or `..` segment, at most 1024 bytes.' },
     prefix: {
       type: 'string',
-      description: '`import/s3`: bring in the objects whose key starts with it (at most `max_objects`). `export/s3`: the text put before each file name, taken literally (`out/` is a folder); the bucket root when left out.',
+      description: '`import/{s3,gcs,azure-blob}`: bring in objects whose key starts with it (at most `max_objects`). `export/{s3,gcs,azure-blob}`: literal prefix put before each file name; bucket/container root when left out.',
     },
-    path: { type: 'string', description: '`import/sftp`: the one file to bring in, relative to the `basePath` of the credentials. Name `path` or `directory`.' },
+    path: { type: 'string', description: '`import/{sftp,webdav}`: the one file to bring in, relative to `basePath`. Name `path` or `directory`.' },
     directory: {
       type: 'string',
-      description: '`import/sftp`: bring in the regular files of this directory (at most `max_objects`). `export/sftp`: the directory the files are written into, which must exist; the `basePath` when left out.',
+      description: '`import/{sftp,webdav}`: bring in files of this directory (at most `max_objects`). `export/{sftp,webdav}`: target directory, relative to `basePath`.',
     },
     max_objects: {
       type: 'integer',
       minimum: 1,
       maximum: 100,
       default: 20,
-      description: '`import/s3` with `prefix`, `import/sftp` with `directory`: the most files to bring in. A listing with more fails the task with `storage_too_many_objects`; nothing is cut short.',
+      description: '`import/{s3,gcs,azure-blob}` with `prefix`, `import/{sftp,webdav}` with `directory`: the most files to bring in. A listing with more fails the task with `storage_too_many_objects`; nothing is cut short.',
     },
   },
 } as const;

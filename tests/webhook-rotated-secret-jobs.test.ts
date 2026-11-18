@@ -183,7 +183,7 @@ describe('the webhook of a graph that ends', () => {
     });
 
   it('names the key that owns the webhook, so its rotated secret signs graph.failed', async () => {
-    const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+    const dispatched = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
     const scheduler = new InMemoryGraphScheduler();
     const graphId = `graph_rotated_${Date.now()}`;
     await scheduler.initGraph(graphId, graph(graphId), { ownerUserId: user.id, webhookUrl: HOOK_URL, webhookSecret: STALE_SECRET, webhookKeyId: keyId });
@@ -196,7 +196,7 @@ describe('the webhook of a graph that ends', () => {
   });
 
   it('names no key for a graph with a webhook of its own', async () => {
-    const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+    const dispatched = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
     const scheduler = new InMemoryGraphScheduler();
     const graphId = `graph_own_hook_${Date.now()}`;
     await scheduler.initGraph(graphId, graph(graphId), { ownerUserId: user.id, webhookUrl: HOOK_URL, webhookSecret: 'whsec_mine' });
@@ -216,7 +216,7 @@ describe.skipIf(!process.env.REDIS_URL)('the key that owns the webhook of a grap
         failurePolicy: 'fail_fast' as const,
         nodes: { upload: { op: 'import.upload' as const, storageKey: `uploads/${graphId}/in.csv` } },
       });
-    vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+    vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
     const inherited = `graph_redis_key_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
     const own = `graph_redis_own_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
 
@@ -226,6 +226,6 @@ describe.skipIf(!process.env.REDIS_URL)('the key that owns the webhook of a grap
     expect((await graphScheduler.getGraphState(inherited))?.webhookKeyId).toBe(keyId);
     expect((await graphScheduler.getGraphState(own))?.webhookKeyId).toBeUndefined();
     await graphScheduler.onNodeFailed(inherited, 'upload', 'upload failed');
-    expect(vi.mocked(webhookDispatcher.dispatch).mock.calls[0][4]).toMatchObject({ ownerKeyId: keyId });
+    expect(vi.mocked(webhookDispatcher.enqueueDelivery).mock.calls[0][4]).toMatchObject({ ownerKeyId: keyId });
   });
 });

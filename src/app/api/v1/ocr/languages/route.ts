@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { withRateLimitHeaders } from '@/lib/api/rate-limit';
 import { listOcrLanguages } from '@/lib/conversions/ocr-language-data';
 import { OCR_MAX_LANGUAGES_PER_REQUEST } from '@/lib/conversions/ocr-languages';
 
@@ -14,17 +15,23 @@ const LANGUAGES_CACHE_CONTROL = 'private, max-age=300';
 export async function GET(req: NextRequest) {
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:read' });
   if (!auth.authorized || !auth.user) {
-    return createProblemDetailsResponse(
-      auth.status ?? 401,
-      auth.error ?? 'Unauthorized',
-      req.nextUrl?.pathname || LANGUAGES_PATH,
-      undefined,
-      auth.problemType,
-      authErrorHeaders(auth)
+    return withRateLimitHeaders(
+      createProblemDetailsResponse(
+        auth.status ?? 401,
+        auth.error ?? 'Unauthorized',
+        req.nextUrl?.pathname || LANGUAGES_PATH,
+        undefined,
+        auth.problemType,
+        authErrorHeaders(auth)
+      ),
+      auth.rateLimit
     );
   }
-  return NextResponse.json(
-    { success: true, languages: listOcrLanguages(), maxLanguagesPerRequest: OCR_MAX_LANGUAGES_PER_REQUEST },
-    { status: 200, headers: { 'Cache-Control': LANGUAGES_CACHE_CONTROL } }
+  return withRateLimitHeaders(
+    NextResponse.json(
+      { success: true, languages: listOcrLanguages(), maxLanguagesPerRequest: OCR_MAX_LANGUAGES_PER_REQUEST },
+      { status: 200, headers: { 'Cache-Control': LANGUAGES_CACHE_CONTROL } }
+    ),
+    auth.rateLimit
   );
 }

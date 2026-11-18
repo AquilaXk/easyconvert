@@ -1,1 +1,1 @@
-export { GET, dynamic } from '../../openapi.json/route';
+export { GET, dynamic } from '../openapi.json/route';

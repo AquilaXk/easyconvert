@@ -1,6 +1,12 @@
 import type { UserTier } from '@/lib/auth/types';
 import type { ConversionOptions, MediaPackagingOptions } from '@/lib/types';
-import type { S3Credentials, SftpCredentials } from '@/lib/storage/credentials-vault';
+import type {
+  AzureBlobCredentials,
+  GcsCredentials,
+  S3Credentials,
+  SftpCredentials,
+  WebDavCredentials,
+} from '@/lib/storage/credentials-vault';
 
 export type NodeId = string;
 
@@ -24,7 +30,10 @@ export interface ImportUrlNode {
 
 /** The credentials a customer-storage node submits inline: those of a saved credential, without `type`, which the operation gives. */
 export type InlineS3Credentials = Omit<S3Credentials, 'type'>;
+export type InlineGcsCredentials = Omit<GcsCredentials, 'type'>;
+export type InlineAzureBlobCredentials = Omit<AzureBlobCredentials, 'type'>;
 export type InlineSftpCredentials = Omit<SftpCredentials, 'type'>;
+export type InlineWebDavCredentials = Omit<WebDavCredentials, 'type'>;
 
 /**
  * Where a customer-storage node gets its credentials: `credentialRef` names a saved credential of the graph's owner, or
@@ -45,9 +54,33 @@ export interface ImportS3Node extends CustomerStorageAuth<InlineS3Credentials> {
   maxObjects?: number;
 }
 
+/** Brings in one object (`key`) or the objects under a key prefix (`prefix`, at most `maxObjects`) of the customer's GCS bucket. */
+export interface ImportGcsNode extends CustomerStorageAuth<InlineGcsCredentials> {
+  op: 'import.gcs';
+  key?: string;
+  prefix?: string;
+  maxObjects?: number;
+}
+
+/** Brings in one object (`key`) or the objects under a key prefix (`prefix`, at most `maxObjects`) of the customer's Azure Blob container. */
+export interface ImportAzureBlobNode extends CustomerStorageAuth<InlineAzureBlobCredentials> {
+  op: 'import.azure-blob';
+  key?: string;
+  prefix?: string;
+  maxObjects?: number;
+}
+
 /** Brings in one file (`path`) or the files of a directory (`directory`, at most `maxObjects`) of the customer's SFTP server. */
 export interface ImportSftpNode extends CustomerStorageAuth<InlineSftpCredentials> {
   op: 'import.sftp';
+  path?: string;
+  directory?: string;
+  maxObjects?: number;
+}
+
+/** Brings in one file (`path`) or the files of a directory (`directory`, at most `maxObjects`) of the customer's WebDAV server. */
+export interface ImportWebDavNode extends CustomerStorageAuth<InlineWebDavCredentials> {
+  op: 'import.webdav';
   path?: string;
   directory?: string;
   maxObjects?: number;
@@ -60,9 +93,30 @@ export interface ExportS3Node extends CustomerStorageAuth<InlineS3Credentials> {
   prefix?: string;
 }
 
+/** Writes each input as `prefix` followed by its file name into the customer's GCS bucket. */
+export interface ExportGcsNode extends CustomerStorageAuth<InlineGcsCredentials> {
+  op: 'export.gcs';
+  input: NodeId | NodeId[];
+  prefix?: string;
+}
+
+/** Writes each input as `prefix` followed by its file name into the customer's Azure Blob container. */
+export interface ExportAzureBlobNode extends CustomerStorageAuth<InlineAzureBlobCredentials> {
+  op: 'export.azure-blob';
+  input: NodeId | NodeId[];
+  prefix?: string;
+}
+
 /** Writes each input into `directory` of the customer's SFTP server. */
 export interface ExportSftpNode extends CustomerStorageAuth<InlineSftpCredentials> {
   op: 'export.sftp';
+  input: NodeId | NodeId[];
+  directory?: string;
+}
+
+/** Writes each input into `directory` of the customer's WebDAV server. */
+export interface ExportWebDavNode extends CustomerStorageAuth<InlineWebDavCredentials> {
+  op: 'export.webdav';
   input: NodeId | NodeId[];
   directory?: string;
 }
@@ -233,7 +287,10 @@ export type GraphNode =
   | ImportUrlNode
   | CaptureWebsiteNode
   | ImportS3Node
+  | ImportGcsNode
+  | ImportAzureBlobNode
   | ImportSftpNode
+  | ImportWebDavNode
   | ConvertNode
   | OcrNode
   | OptimizeNode
@@ -255,7 +312,10 @@ export type GraphNode =
   | ArchiveExtractNode
   | ExportUrlNode
   | ExportS3Node
+  | ExportGcsNode
+  | ExportAzureBlobNode
   | ExportSftpNode
+  | ExportWebDavNode
   | ExportInternalNode;
 
 export interface JobGraph {

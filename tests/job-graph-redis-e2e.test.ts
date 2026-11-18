@@ -226,7 +226,7 @@ describe.skipIf(!REDIS_URL)('Job graph execution on a real Redis server', () => 
     });
 
     it.each(['cancelled', 'failed'] as const)('drops the webhook secret of a %s graph and lets its keys expire after the ended-job retention', async (end) => {
-      const dispatch = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true } as never);
+      const dispatch = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
       const scheduler = isolatedScheduler(redis);
       const graphId = uniqueId(`forget-${end}`);
       const keys = scheduler.graphKeys(graphId);

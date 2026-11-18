@@ -180,10 +180,16 @@ export function resolveNodeResourceClass(node: any): ResourceClass {
     case 'import.upload':
     case 'import.url':
     case 'import.s3':
+    case 'import.gcs':
+    case 'import.azure-blob':
     case 'import.sftp':
+    case 'import.webdav':
     case 'export.url':
     case 'export.s3':
+    case 'export.gcs':
+    case 'export.azure-blob':
     case 'export.sftp':
+    case 'export.webdav':
     case 'export.internal':
       return 'light';
     case 'ocr':

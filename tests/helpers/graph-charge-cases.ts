@@ -358,7 +358,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
   }, GRAPH_TIMEOUT_MS + 10_000);
 
   it('settles the reservation and sends the webhook once when removing the intermediates fails', async () => {
-    const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue(undefined as never);
+    const dispatched = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
     vi.spyOn(storageProvider, 'deleteByPrefix').mockRejectedValue(new Error('the object store refused the delete'));
     const queued = await queueGraph(importAndConvert(), 1, { meta: WEBHOOK });
     await queued.ended('completed');
@@ -367,7 +367,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
   }, GRAPH_TIMEOUT_MS + 10_000);
 
   it('sends graph.completed once, with every node, when the last node to end fails under continue', async () => {
-    const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue(undefined as never);
+    const dispatched = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
     const queued = await queueGraph(
       {
         failurePolicy: 'continue',

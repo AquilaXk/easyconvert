@@ -467,7 +467,7 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
 
     it('commits quota reservation and dispatches webhook on job completion', async () => {
       const commitSpy = vi.spyOn(redisKeyStore, 'commitQuota').mockResolvedValue(true as any);
-      const webhookSpy = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue(true as any);
+      const webhookSpy = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as any);
 
       const testQueue = new Queue('lifecycle-test-queue');
       const testWorker = new Worker(
@@ -520,7 +520,7 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
 
     it('rolls back quota reservation and dispatches failure webhook on unrecoverable job failure', async () => {
       const rollbackSpy = vi.spyOn(redisKeyStore, 'rollbackQuota').mockResolvedValue(true as any);
-      const webhookSpy = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue(true as any);
+      const webhookSpy = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as any);
 
       const testQueue = new Queue('lifecycle-fail-queue');
       const testWorker = new Worker(

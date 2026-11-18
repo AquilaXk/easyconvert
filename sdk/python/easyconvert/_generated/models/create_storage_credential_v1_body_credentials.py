@@ -18,7 +18,12 @@ T = TypeVar("T", bound="CreateStorageCredentialV1BodyCredentials")
 class CreateStorageCredentialV1BodyCredentials:
     """Provider-specific credentials; `type` must equal `providerType`. `s3` takes `bucket`, `accessKeyId`,
     `secretAccessKey`, and optional `region`, `sessionToken`, `endpoint` (HTTPS, public host), and `forcePathStyle`
-    (defaults to true with a custom `endpoint`); requests are signed with AWS Signature Version 4.
+    (defaults to true with a custom `endpoint`); requests are signed with AWS Signature Version 4. `gcs` takes `bucket`
+    and either service-account JSON (`serviceAccountKeyJson`) or `projectId`, `clientEmail`, `privateKey`, with optional
+    `endpoint` (`storage.googleapis.com` for OAuth credentials). `azure-blob` takes `storageAccount`, `containerName`,
+    and `accountKey`, `sasToken`, or `connectionString`, with optional `customEndpoint`. `sftp` takes `host`,
+    `username`, `privateKey` (optional `port`, `passphrase`, `hostKey`, `basePath`). `webdav` takes public HTTPS `url`
+    and optional `username`, `password`, `basePath`.
 
         Attributes:
             type_ (CreateStorageCredentialV1BodyCredentialsType):

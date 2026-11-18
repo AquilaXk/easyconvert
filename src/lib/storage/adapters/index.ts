@@ -35,7 +35,7 @@ function validateHttpEndpointSyntax(rawUrl: string, provider: string, invalidMes
   return parsed;
 }
 
-function validateExternalEndpointUrl(rawUrl: string, provider: string): void {
+export function validateExternalEndpointUrl(rawUrl: string, provider: string): void {
   const parsed = validateHttpEndpointSyntax(rawUrl, provider);
   if (isDevAllowlistedEndpoint(parsed)) return;
   assertTlsEndpoint(parsed, provider);
@@ -48,58 +48,80 @@ function isSimpleContainerIdentifier(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && !value.includes('..') && !value.includes('/') && !value.includes('\\');
 }
 
+function validateGcsCredentials(credentials: Extract<CustomerStorageCredentials, { type: 'gcs' }>): void {
+  if (!isSimpleContainerIdentifier(credentials.bucket) || !GCS_BUCKET_PATTERN.test(credentials.bucket)) {
+    throw new StorageAdapterError(`Invalid GCS bucket name: "${credentials.bucket}"`, 'gcs');
+  }
+  if (Boolean(credentials.clientEmail) !== Boolean(credentials.privateKey)) {
+    throw new StorageAdapterError('GCS service account requires both clientEmail and privateKey', 'gcs');
+  }
+  if (credentials.serviceAccountKeyJson) {
+    try {
+      const parsed = JSON.parse(credentials.serviceAccountKeyJson) as { client_email?: unknown; private_key?: unknown };
+      if (!parsed || typeof parsed !== 'object' || typeof parsed.client_email !== 'string' || typeof parsed.private_key !== 'string') {
+        throw new StorageAdapterError('Invalid GCS serviceAccountKeyJson: missing client_email or private_key', 'gcs');
+      }
+    } catch (err) {
+      if (err instanceof StorageAdapterError) throw err;
+      throw new StorageAdapterError('Invalid GCS serviceAccountKeyJson format', 'gcs');
+    }
+  }
+  if (credentials.endpoint) {
+    validateExternalEndpointUrl(credentials.endpoint, 'gcs');
+    const hasOAuth = Boolean(credentials.serviceAccountKeyJson || (credentials.clientEmail && credentials.privateKey));
+    if (hasOAuth && !isTrustedGcsOAuthEndpoint(new URL(credentials.endpoint))) {
+      throw new StorageAdapterError('GCS service-account credentials may only be used with storage.googleapis.com', 'gcs');
+    }
+  }
+}
+
+function validateAzureBlobCredentials(credentials: Extract<CustomerStorageCredentials, { type: 'azure-blob' }>): void {
+  if (
+    typeof credentials.storageAccount !== 'string' ||
+    !AZURE_STORAGE_ACCOUNT_PATTERN.test(credentials.storageAccount) ||
+    !isSimpleContainerIdentifier(credentials.containerName)
+  ) {
+    throw new StorageAdapterError('Invalid Azure Blob storageAccount or containerName', 'azure-blob');
+  }
+  if (credentials.customEndpoint) {
+    validateExternalEndpointUrl(credentials.customEndpoint, 'azure-blob');
+  }
+}
+
+function validateWebDavCredentials(credentials: Extract<CustomerStorageCredentials, { type: 'webdav' }>): void {
+  if (!credentials.url) {
+    throw new StorageAdapterError('WebDAV url is required', 'webdav');
+  }
+  validateHttpEndpointSyntax(credentials.url, 'webdav');
+  if (credentials.basePath && (credentials.basePath.includes('..') || credentials.basePath.includes('\\') || credentials.basePath.includes('\0'))) {
+    throw new StorageAdapterError('Invalid WebDAV basePath: path traversal or invalid characters rejected', 'webdav');
+  }
+}
+
 export function validateCredentials(credentials: CustomerStorageCredentials): void {
   if (!credentials || typeof credentials !== 'object') {
     throw new StorageAdapterError('Invalid storage credentials payload', 'unknown');
   }
   switch (credentials.type) {
-    case 's3': {
+    case 's3':
       if (credentials.endpoint) {
         validateHttpEndpointSyntax(credentials.endpoint, 's3', 'S3 endpoint does not form a valid URL');
       }
       break;
-    }
-    case 'gcs': {
-      if (!isSimpleContainerIdentifier(credentials.bucket) || !GCS_BUCKET_PATTERN.test(credentials.bucket)) {
-        throw new StorageAdapterError(`Invalid GCS bucket name: "${credentials.bucket}"`, 'gcs');
-      }
-      if (credentials.endpoint) {
-        validateExternalEndpointUrl(credentials.endpoint, 'gcs');
-        if (
-          (credentials.serviceAccountKeyJson || (credentials.clientEmail && credentials.privateKey)) &&
-          !isTrustedGcsOAuthEndpoint(new URL(credentials.endpoint))
-        ) {
-          throw new StorageAdapterError('GCS service-account credentials may only be used with storage.googleapis.com', 'gcs');
-        }
-      }
+    case 'gcs':
+      validateGcsCredentials(credentials);
       break;
-    }
-    case 'azure-blob': {
-      if (
-        typeof credentials.storageAccount !== 'string' ||
-        !AZURE_STORAGE_ACCOUNT_PATTERN.test(credentials.storageAccount) ||
-        !isSimpleContainerIdentifier(credentials.containerName)
-      ) {
-        throw new StorageAdapterError('Invalid Azure Blob storageAccount or containerName', 'azure-blob');
-      }
-      if (credentials.customEndpoint) {
-        validateExternalEndpointUrl(credentials.customEndpoint, 'azure-blob');
-      }
+    case 'azure-blob':
+      validateAzureBlobCredentials(credentials);
       break;
-    }
-    case 'webdav': {
-      if (!credentials.url) {
-        throw new StorageAdapterError('WebDAV url is required', 'webdav');
-      }
-      validateHttpEndpointSyntax(credentials.url, 'webdav');
+    case 'webdav':
+      validateWebDavCredentials(credentials);
       break;
-    }
-    case 'sftp': {
+    case 'sftp':
       if (!credentials.host || (!isSftpDevAllowlisted(credentials.host, credentials.port) && isPrivateOrRestrictedHost(credentials.host))) {
         throw new StorageSsrfError(credentials.host || '', 'sftp');
       }
       break;
-    }
     default:
       break;
   }

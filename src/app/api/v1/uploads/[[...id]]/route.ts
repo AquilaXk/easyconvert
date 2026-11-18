@@ -28,13 +28,16 @@ import { readObjectHeader } from '@/lib/storage/object-header';
 import { assertNotSpoofedObject } from '@/lib/security/file-guard';
 import { recordCompletedUpload } from '@/lib/api/completed-upload';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { withRateLimitHeaders } from '@/lib/api/rate-limit';
 import { fileSizeLimitProblem, partBodyProblem } from '@/lib/api/file-size-limit';
-import { LARGEST_PLAN_FILE_BYTES } from '@/lib/plan-limits';
+import { planOfCaller } from '@/lib/plan-limits';
+import { createV1PreflightResponse } from '@/lib/api/v1-cors';
 import type { User } from '@/lib/auth/types';
 import type { UploadReservation } from '@/lib/api-keys/anonymous-upload-budget';
 import { storageErrorResponse, uploadSessionNotFoundResponse } from '@/lib/api/storage-error-response';
 import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
-import { closeSessionBudget, reserveSessionBudget, undoOpening } from '@/lib/api/upload-session-budget';
+import { PRESIGN_MAX_EXPIRES_SECONDS, PRESIGN_MIN_EXPIRES_SECONDS, SigV4SigningError, assertValidObjectKey } from '@/lib/storage/s3-sigv4';
+import { closeSessionBudget, reserveSessionBudget, resumeActiveSessionBudget, undoOpening } from '@/lib/api/upload-session-budget';
 import { forgetUploadParts, receivePart, type PartStore } from '@/lib/storage/part-admission';
 import { declaredPartBytes, partFailureResponse, uploadErrorResponse, type UploadErrorContext } from '@/lib/api/part-response';
 import { POST as directPostHandler } from '../direct/route';
@@ -138,7 +141,7 @@ async function handlePartUpload(
   req: NextRequest,
   searchParams: URLSearchParams,
   instanceUri: string,
-  userId: string
+  user: User
 ): Promise<Response> {
   const uploadId = searchParams.get('uploadId');
   const partNumberStr = searchParams.get('partNumber');
@@ -171,10 +174,13 @@ async function handlePartUpload(
       instanceUri
     );
   }
-  const session = await findOwnLocalSession(uploadId, userId);
+  const session = await findOwnLocalSession(uploadId, user.id);
   if (!session) {
     return uploadSessionNotFoundResponse(instanceUri);
   }
+
+  const budgetRefusal = await resumeActiveSessionBudget(uploadId, instanceUri, planOfCaller(user));
+  if (budgetRefusal) return budgetRefusal;
 
   // Parts sent at once are held together to the declared size, as on the other part routes (entry 137). Only the write
   // of the part answers as a part does; the lookups above answer as every other action of this route.
@@ -473,6 +479,90 @@ async function handleAbortUpload(
   return NextResponse.json({ success: true, aborted });
 }
 
+interface PresignPartBody {
+  uploadId?: unknown;
+  key?: unknown;
+  partNumber?: unknown;
+  expiresInSeconds?: unknown;
+}
+
+function presignPartBodyProblem(body: PresignPartBody): string | undefined {
+  if (typeof body.uploadId !== 'string' || !body.uploadId) {
+    return 'Missing required "uploadId" in presign payload.';
+  }
+  if (
+    typeof body.partNumber !== 'number' ||
+    !Number.isInteger(body.partNumber) ||
+    body.partNumber < 1 ||
+    body.partNumber > MULTIPART_MAX_PARTS
+  ) {
+    return `Invalid "partNumber". Must be an integer between 1 and ${MULTIPART_MAX_PARTS}.`;
+  }
+  if (
+    body.expiresInSeconds !== undefined &&
+    (typeof body.expiresInSeconds !== 'number' ||
+      !Number.isInteger(body.expiresInSeconds) ||
+      body.expiresInSeconds < PRESIGN_MIN_EXPIRES_SECONDS ||
+      body.expiresInSeconds > PRESIGN_MAX_EXPIRES_SECONDS)
+  ) {
+    return `"expiresInSeconds" must be an integer between ${PRESIGN_MIN_EXPIRES_SECONDS} and ${PRESIGN_MAX_EXPIRES_SECONDS}.`;
+  }
+  if (body.key !== undefined) {
+    if (typeof body.key !== 'string' || body.key.length === 0) {
+      return 'Invalid "key" in presign payload.';
+    }
+    try {
+      assertValidObjectKey(body.key);
+    } catch (err: unknown) {
+      if (err instanceof SigV4SigningError) return 'The "key" in the presign payload is not a valid object key.';
+      throw err;
+    }
+  }
+  return undefined;
+}
+
+async function handlePresignUploadPart(
+  req: NextRequest,
+  instanceUri: string,
+  userId: string
+): Promise<Response> {
+  const body = (await req.json().catch(() => ({}))) as PresignPartBody;
+  const inputProblem = presignPartBodyProblem(body);
+  if (inputProblem) return createProblemDetailsResponse(400, inputProblem, instanceUri);
+
+  const uploadId = body.uploadId as string;
+  const partNumber = body.partNumber as number;
+  const ttl = Math.min((body.expiresInSeconds as number | undefined) ?? PART_URL_TTL_SECONDS, PART_URL_TTL_SECONDS);
+
+  if (storageProvider.kind === 'remote') {
+    if (!storageProvider.getUploadSession || !storageProvider.generatePresignedUploadPartUrl) {
+      return createProblemDetailsResponse(400, 'Storage provider does not support presigned part URLs.', instanceUri);
+    }
+    const session = await storageProvider.getUploadSession(uploadId);
+    if (!session || session.ownerUserId !== userId) {
+      return uploadSessionNotFoundResponse(instanceUri);
+    }
+    if (body.key !== undefined && body.key !== session.key) {
+      return createProblemDetailsResponse(400, 'Key does not belong to this multipart upload session.', instanceUri);
+    }
+    const presigned = await storageProvider.generatePresignedUploadPartUrl(session.key, uploadId, partNumber, ttl);
+    return NextResponse.json({ success: true, ...presigned });
+  }
+
+  if (!(objectStorage instanceof LocalFsStorage)) {
+    return createProblemDetailsResponse(400, 'Storage provider does not support presigned part URLs.', instanceUri);
+  }
+  const session = await findOwnLocalSession(uploadId, userId);
+  if (!session) {
+    return uploadSessionNotFoundResponse(instanceUri);
+  }
+  if (body.key !== undefined && body.key !== session.key) {
+    return createProblemDetailsResponse(400, 'Key does not belong to this multipart upload session.', instanceUri);
+  }
+  const presigned = await objectStorage.presignPart(session.key, session.uploadId, partNumber, ttl);
+  return NextResponse.json({ success: true, ...presigned });
+}
+
 interface UploadAction {
   run: (req: NextRequest, searchParams: URLSearchParams, instanceUri: string, user: User) => Promise<Response>;
   /** The action works on an upload session the caller holds, so a missing file of the session means the session is gone. */
@@ -480,8 +570,9 @@ interface UploadAction {
 }
 
 const UPLOAD_ACTIONS: ReadonlyMap<string, UploadAction> = new Map([
-  ['part', { run: (req, searchParams, instanceUri, user) => handlePartUpload(req, searchParams, instanceUri, user.id), sessionBound: true }],
+  ['part', { run: (req, searchParams, instanceUri, user) => handlePartUpload(req, searchParams, instanceUri, user), sessionBound: true }],
   ['initiate', { run: (req, _searchParams, instanceUri, user) => handleInitiateUpload(req, instanceUri, user), sessionBound: false }],
+  ['presign', { run: (req, _searchParams, instanceUri, user) => handlePresignUploadPart(req, instanceUri, user.id), sessionBound: true }],
   ['complete', { run: (req, _searchParams, instanceUri, user) => handleCompleteUpload(req, instanceUri, user.id), sessionBound: true }],
   ['abort', { run: (req, _searchParams, instanceUri, user) => handleAbortUpload(req, instanceUri, user.id), sessionBound: true }],
 ]);
@@ -498,18 +589,7 @@ function uploadActionErrorResponse(err: unknown, instanceUri: string, context: U
 }
 
 export function OPTIONS() {
-  const headers = createTusHeaders({
-    'Tus-Version': TUS_RESUMABLE_VERSION,
-    'Tus-Extension': 'creation,creation-with-upload,termination,expiration,checksum',
-    'Tus-Max-Size': String(LARGEST_PLAN_FILE_BYTES),
-    'Tus-Checksum-Algorithm': 'sha256',
-    'Access-Control-Allow-Methods': 'POST, GET, HEAD, PATCH, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers':
-      'Upload-Offset, Upload-Length, Upload-Metadata, Upload-Checksum, Tus-Resumable, Content-Type, Authorization, X-API-Key',
-    'Access-Control-Expose-Headers':
-      'Upload-Offset, Upload-Length, Upload-Metadata, Upload-Expires, Tus-Resumable, Tus-Version, Tus-Extension, Tus-Max-Size, Location, X-Storage-Key, EasyConvert-Storage-Key',
-  });
-  return new NextResponse(null, { status: 204, headers });
+  return createV1PreflightResponse('/api/v1/uploads');
 }
 
 /**
@@ -571,15 +651,30 @@ export const POST = admittingNewFiles(async function POST(
   // 1. Guard check: Authenticate API key or user session with 'convert:write' scope
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write' });
   if (!auth.authorized || !auth.user) {
-    return createProblemDetailsResponse(
-      auth.status ?? 401,
-      auth.error ?? 'Unauthorized',
-      instanceUri,
-      undefined,
-      auth.problemType,
-      authErrorHeaders(auth)
+    return withRateLimitHeaders(
+      createProblemDetailsResponse(
+        auth.status ?? 401,
+        auth.error ?? 'Unauthorized',
+        instanceUri,
+        undefined,
+        auth.problemType,
+        authErrorHeaders(auth)
+      ),
+      auth.rateLimit
     );
   }
+
+  return withRateLimitHeaders(await postUploadAuthorized(req, action, searchParams, instanceUri, auth.user), auth.rateLimit);
+}, isNewTusUpload);
+
+async function postUploadAuthorized(
+  req: NextRequest,
+  action: string | null,
+  searchParams: URLSearchParams,
+  instanceUri: string,
+  user: User
+): Promise<Response> {
+  const auth = { user };
 
   // Handle direct multipart upload actions if 'action' query param is provided
   if (action) {
@@ -674,7 +769,7 @@ export const POST = admittingNewFiles(async function POST(
     }
 
     return new NextResponse(null, { status: 201, headers });
-  } catch (err: any) {
+  } catch (err: unknown) {
     await takeBack();
     if (err instanceof TusInvalidMetadataError) {
       return createProblemDetailsResponse(400, err.message, instanceUri, undefined, undefined, {
@@ -683,16 +778,17 @@ export const POST = admittingNewFiles(async function POST(
     }
     const storageProblem = storageErrorResponse(err, instanceUri, { 'Tus-Resumable': TUS_RESUMABLE_VERSION });
     if (storageProblem) return storageProblem;
+    const message = err instanceof Error && err.message ? err.message : 'Failed to initialize TUS upload session';
     return createProblemDetailsResponse(
       500,
-      err?.message || 'Failed to initialize TUS upload session',
+      message,
       instanceUri,
       undefined,
       undefined,
       { 'Tus-Resumable': TUS_RESUMABLE_VERSION }
     );
   }
-}, isNewTusUpload);
+}
 
 export async function HEAD(
   req: NextRequest,
@@ -714,15 +810,24 @@ export async function HEAD(
   // Guard check: Require authenticated access
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:read' });
   if (!auth.authorized || !auth.user) {
-    return createProblemDetailsResponse(
-      auth.status ?? 401,
-      auth.error ?? 'Unauthorized',
-      instanceUri,
-      undefined,
-      auth.problemType,
-      { 'Tus-Resumable': TUS_RESUMABLE_VERSION, ...authErrorHeaders(auth) }
+    return withRateLimitHeaders(
+      createProblemDetailsResponse(
+        auth.status ?? 401,
+        auth.error ?? 'Unauthorized',
+        instanceUri,
+        undefined,
+        auth.problemType,
+        { 'Tus-Resumable': TUS_RESUMABLE_VERSION, ...authErrorHeaders(auth) }
+      ),
+      auth.rateLimit
     );
   }
+
+  return withRateLimitHeaders(await headUploadAuthorized(sessionId, auth.user.id), auth.rateLimit);
+}
+
+async function headUploadAuthorized(sessionId: string, userId: string): Promise<NextResponse> {
+  const auth = { user: { id: userId } };
 
   const session = await tusEngine.getSession(sessionId);
   if (!session) {
@@ -773,15 +878,29 @@ export async function PATCH(
   // Guard check: Authenticate API key or user session with 'convert:write' scope
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write' });
   if (!auth.authorized || !auth.user) {
-    return createProblemDetailsResponse(
-      auth.status ?? 401,
-      auth.error ?? 'Unauthorized',
-      instanceUri,
-      undefined,
-      auth.problemType,
-      { 'Tus-Resumable': TUS_RESUMABLE_VERSION, ...authErrorHeaders(auth) }
+    return withRateLimitHeaders(
+      createProblemDetailsResponse(
+        auth.status ?? 401,
+        auth.error ?? 'Unauthorized',
+        instanceUri,
+        undefined,
+        auth.problemType,
+        { 'Tus-Resumable': TUS_RESUMABLE_VERSION, ...authErrorHeaders(auth) }
+      ),
+      auth.rateLimit
     );
   }
+
+  return withRateLimitHeaders(await patchUploadAuthorized(req, sessionId, instanceUri, auth.user), auth.rateLimit);
+}
+
+async function patchUploadAuthorized(
+  req: NextRequest,
+  sessionId: string,
+  instanceUri: string,
+  user: User
+): Promise<Response> {
+  const auth = { user };
 
   const session = await tusEngine.getSession(sessionId);
   if (!session) {
@@ -823,6 +942,11 @@ export async function PATCH(
     });
   }
 
+  const budgetRefusal = await resumeActiveSessionBudget(sessionId, instanceUri, planOfCaller(auth.user), {
+    'Tus-Resumable': TUS_RESUMABLE_VERSION,
+  });
+  if (budgetRefusal) return budgetRefusal;
+
   try {
     const result = await tusEngine.appendChunk(sessionId, clientOffset, req.body, checksumHeader);
 
@@ -838,7 +962,7 @@ export async function PATCH(
     }
 
     return new NextResponse(null, { status: 204, headers });
-  } catch (err: any) {
+  } catch (err: unknown) {
     if (err instanceof TusOffsetMismatchError) {
       const headers = createTusHeaders({ 'Upload-Offset': String(err.expectedOffset) });
       return new NextResponse('Offset Mismatch', { status: 409, headers });
@@ -866,7 +990,8 @@ export async function PATCH(
     }
     const storageProblem = storageErrorResponse(err, instanceUri, { 'Tus-Resumable': TUS_RESUMABLE_VERSION });
     if (storageProblem) return storageProblem;
-    return createProblemDetailsResponse(400, err?.message || 'Error processing TUS chunk upload', instanceUri, undefined, undefined, {
+    const message = err instanceof Error && err.message ? err.message : 'Error processing TUS chunk upload';
+    return createProblemDetailsResponse(400, message, instanceUri, undefined, undefined, {
       'Tus-Resumable': TUS_RESUMABLE_VERSION,
     });
   }
@@ -907,15 +1032,24 @@ export async function DELETE(
   // Guard check: Authenticate API key or user session with 'convert:write' scope
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write' });
   if (!auth.authorized || !auth.user) {
-    return createProblemDetailsResponse(
-      auth.status ?? 401,
-      auth.error ?? 'Unauthorized',
-      instanceUri,
-      undefined,
-      auth.problemType,
-      { 'Tus-Resumable': TUS_RESUMABLE_VERSION, ...authErrorHeaders(auth) }
+    return withRateLimitHeaders(
+      createProblemDetailsResponse(
+        auth.status ?? 401,
+        auth.error ?? 'Unauthorized',
+        instanceUri,
+        undefined,
+        auth.problemType,
+        { 'Tus-Resumable': TUS_RESUMABLE_VERSION, ...authErrorHeaders(auth) }
+      ),
+      auth.rateLimit
     );
   }
+
+  return withRateLimitHeaders(await deleteUploadAuthorized(sessionId, auth.user.id), auth.rateLimit);
+}
+
+async function deleteUploadAuthorized(sessionId: string, userId: string): Promise<NextResponse> {
+  const auth = { user: { id: userId } };
 
   const session = await tusEngine.getSession(sessionId);
   if (!session) {

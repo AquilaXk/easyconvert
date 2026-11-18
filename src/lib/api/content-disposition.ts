@@ -64,3 +64,14 @@ export function attachmentContentDisposition(filename: string): string {
   const safeName = removeUnsafeCharacters(filename);
   return `attachment; filename="${toAsciiFallback(safeName)}"; filename*=UTF-8''${encodeExtValue(safeName)}`;
 }
+
+/**
+ * Security headers for untrusted binary download responses: disables inline script/resource loading
+ * and cross-origin framing (`imgproxy/imgproxy`, MIT).
+ */
+export const DOWNLOAD_SECURITY_HEADERS: Readonly<Record<string, string>> = {
+  'Content-Security-Policy': "default-src 'none'; sandbox",
+  'X-Frame-Options': 'DENY',
+  'Cross-Origin-Resource-Policy': 'same-origin',
+  'X-Content-Type-Options': 'nosniff',
+};

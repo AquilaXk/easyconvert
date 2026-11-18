@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { recordCompletedUpload } from '@/lib/api/completed-upload';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { withRateLimitHeaders } from '@/lib/api/rate-limit';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { closeSessionBudget } from '@/lib/api/upload-session-budget';
 import { storageProvider } from '@/lib/storage';
@@ -37,15 +38,24 @@ export async function POST(req: NextRequest) {
   // 1. Guard check: Authenticate and require 'convert:write' scope
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write' });
   if (!auth.authorized || !auth.user) {
-    return createProblemDetailsResponse(
-      auth.status ?? 401,
-      auth.error ?? 'Unauthorized',
-      instanceUri,
-      undefined,
-      auth.problemType,
-      authErrorHeaders(auth)
+    return withRateLimitHeaders(
+      createProblemDetailsResponse(
+        auth.status ?? 401,
+        auth.error ?? 'Unauthorized',
+        instanceUri,
+        undefined,
+        auth.problemType,
+        authErrorHeaders(auth)
+      ),
+      auth.rateLimit
     );
   }
+
+  return withRateLimitHeaders(await postDirectCompleteAuthorized(req, instanceUri, auth.user.id), auth.rateLimit);
+}
+
+async function postDirectCompleteAuthorized(req: NextRequest, instanceUri: string, userId: string) {
+  const auth = { user: { id: userId } };
 
   // 2. Parse payload
   const body: DirectUploadCompleteBody = await req.json().catch(() => ({}));
@@ -111,10 +121,11 @@ export async function POST(req: NextRequest) {
   let completedObject: Awaited<ReturnType<typeof storageProvider.completeMultipartUpload>>;
   try {
     completedObject = await storageProvider.completeMultipartUpload(uploadId, parts);
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const message = err instanceof Error && err.message ? err.message : 'Failed to complete multipart assembly.';
     return (
       storageErrorResponse(err, instanceUri) ??
-      createProblemDetailsResponse(400, err?.message || 'Failed to complete multipart assembly.', instanceUri, 'Bad Request')
+      createProblemDetailsResponse(400, message, instanceUri, 'Bad Request')
     );
   }
   forgetUploadParts(uploadId);

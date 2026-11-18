@@ -3,7 +3,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { denyUnlessOwner, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
-import { attachmentContentDisposition } from '@/lib/api/content-disposition';
+import { DOWNLOAD_SECURITY_HEADERS, attachmentContentDisposition } from '@/lib/api/content-disposition';
 import { MAX_EXTRACTED_ENTRIES } from '@/lib/tools/tool-names';
 import { resultAvailability } from '@/lib/storage/retention-service';
 import { streamZipReadable, type StreamingZipEntry } from '@/lib/archive/streaming-zip';
@@ -141,7 +141,7 @@ export async function POST(req: NextRequest) {
       'Content-Type': 'application/zip',
       'Content-Disposition': attachmentContentDisposition(archiveName),
       'Cache-Control': PRIVATE_NO_STORE,
-      'X-Content-Type-Options': 'nosniff',
+      ...DOWNLOAD_SECURITY_HEADERS,
       'X-Accel-Buffering': 'no',
     },
   });

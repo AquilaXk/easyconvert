@@ -13,10 +13,8 @@ T = TypeVar("T", bound="NamedTaskCredentials")
 @_attrs_define
 class NamedTaskCredentials:
     """The credentials sent with the task, in place of `credential_ref`: sealed when the job is accepted, opened only by
-    the worker that runs the task, never returned or logged. The same fields as the `credentials` of a saved credential
-    without `type`: an S3 task takes `bucket`, `accessKeyId`, `secretAccessKey` and optionally `sessionToken`, `region`,
-    `endpoint` (https, public addresses only) and `forcePathStyle`; an SFTP task takes `host`, `username`, `privateKey`
-    and optionally `port`, `passphrase`, `hostKey` and `basePath`.
+    the worker that runs the task, never returned or logged. Matches the credential payload without `type` for S3, GCS,
+    Azure Blob, SFTP, or WebDAV.
 
     """
 

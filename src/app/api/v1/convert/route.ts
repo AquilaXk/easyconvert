@@ -4,7 +4,7 @@ import { validateApiAccess, authErrorHeaders, creditsUsedUp, reserveConversionUn
 import { baseCredits } from '@/lib/billing/credits';
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
-import { attachmentContentDisposition } from '@/lib/api/content-disposition';
+import { DOWNLOAD_SECURITY_HEADERS, attachmentContentDisposition } from '@/lib/api/content-disposition';
 import { loggingOutcomes, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
 import { fileSentAsText, formText, isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
 import type { User } from '@/lib/auth/types';
@@ -538,7 +538,7 @@ function answerOfConversion(req: NextRequest, a: ConversionAnswer): NextResponse
       status: 200,
       headers: {
         'Content-Type': conversionResult.mimeType,
-        'X-Content-Type-Options': 'nosniff',
+        ...DOWNLOAD_SECURITY_HEADERS,
         'Content-Disposition': attachmentContentDisposition(a.outFileName),
         'X-Conversion-Time-Ms': a.durationMs.toString(),
         'X-File-Id': a.fileId,

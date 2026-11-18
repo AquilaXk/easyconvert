@@ -103,7 +103,7 @@ describe('a valid named task graph', () => {
   it('runs as one job, reports each task by name with the download URL of its export, and charges one unit for each conversion', async () => {
     startWorker();
     const who = await caller();
-    const dispatch = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+    const dispatch = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
     const tasks = {
       up: { operation: 'import/upload', storage_key: await storedCsv() },
       'to-json': { operation: 'convert', input: 'up', output_format: 'json', options: { pages: '1' } },
@@ -192,7 +192,7 @@ describe('a named task that fails', () => {
   it('fails the job, reports the failed task with its code and the tasks that read it by name, and charges nothing', async () => {
     startWorker();
     const who = await caller();
-    const dispatch = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+    const dispatch = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
     const tasks = {
       up: { operation: 'import/upload', storage_key: await storedCsv() },
       'to-yaml': { operation: 'convert', input: 'up', output_format: 'yaml' },

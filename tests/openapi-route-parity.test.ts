@@ -183,7 +183,7 @@ describe('OpenAPI route parity', () => {
         if (entry.isDirectory()) walk(full);
         else if (entry.name.endsWith('.ts')) {
           const text = fs.readFileSync(full, 'utf-8');
-          for (const m of text.matchAll(/\.dispatch\(\s*[\w.]+,\s*'([a-z_]+\.[a-z_]+)'/g)) dispatched.add(m[1]);
+          for (const m of text.matchAll(/(?:\.dispatch|\.enqueueDelivery)\(\s*[\w.]+,\s*'([a-z_]+\.[a-z_]+)'/g)) dispatched.add(m[1]);
         }
       }
     };

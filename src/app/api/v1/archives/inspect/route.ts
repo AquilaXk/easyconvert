@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
-import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
+import { buildRateLimitHeaders, withRateLimitHeaders } from '@/lib/api/rate-limit';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { readJsonObject } from '@/lib/api/json-body';
 import { readMultipartForm } from '@/lib/api/multipart-body';
@@ -186,12 +186,16 @@ export const POST = withinSingleRequest(async function POST(req: NextRequest) {
     );
   }
 
+  return withRateLimitHeaders(await postInspectAuthorized(req, instanceUri, auth.user), auth.rateLimit);
+});
+
+async function postInspectAuthorized(req: NextRequest, instanceUri: string, user: NonNullable<Awaited<ReturnType<typeof validateApiAccess>>['user']>) {
   // At most as many inspections in flight as conversions: the listing runs a 7-Zip process and holds the archive in memory.
-  const slot = await acquireSyncSlot(auth.user.id, auth.user.tier);
+  const slot = await acquireSyncSlot(user.id, user.tier);
   if (!slot.granted) return concurrencyLimitResponse(slot.limit, instanceUri);
 
   try {
-    const parsed = await parseInspectInput(req, auth.user.id, instanceUri);
+    const parsed = await parseInspectInput(req, user.id, instanceUri);
     if (parsed.problem) return parsed.problem;
 
     const { archiveBuffer, filename, password } = parsed;
@@ -199,10 +203,10 @@ export const POST = withinSingleRequest(async function POST(req: NextRequest) {
       return createProblemDetailsResponse(400, 'Archive buffer is empty.', instanceUri, 'Bad Request');
     }
 
-    const tooLarge = fileSizeLimitProblem(auth.user, archiveBuffer.length, instanceUri);
+    const tooLarge = fileSizeLimitProblem(user, archiveBuffer.length, instanceUri);
     if (tooLarge) return tooLarge;
 
-    const deadlineMs = syncDeadlineMs(jobDeadlineMs({ tier: auth.user.tier, family: 'bytes', inputBytes: archiveBuffer.length }));
+    const deadlineMs = syncDeadlineMs(jobDeadlineMs({ tier: user.tier, family: 'bytes', inputBytes: archiveBuffer.length }));
     const inspection = await runUnderDeadline(req, deadlineMs, (limits) =>
       inspectArchive(archiveBuffer, { filename, password, signal: limits.signal })
     );
@@ -215,4 +219,4 @@ export const POST = withinSingleRequest(async function POST(req: NextRequest) {
   } finally {
     slot.release();
   }
-});
+}

@@ -395,18 +395,10 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       let dispatchedEvent: string | null = null;
       let dispatchedData: any = null;
 
-      vi.spyOn(webhookDispatcher, 'dispatch').mockImplementation(async (_url, event, data) => {
+      vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockImplementation(async (_url, event, data) => {
         dispatchedEvent = event;
         dispatchedData = data;
-        return {
-          id: 'wh_mock',
-          url: _url,
-          event: event as any,
-          success: true,
-          totalAttempts: 1,
-          durationMs: 10,
-          attempts: [],
-        };
+        return { id: 'job_mock' } as never;
       });
 
       const keyResult = await redisKeyStore.generateApiKey(testUser.id, 'Expiring Soon Key', {
@@ -433,17 +425,9 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       const expiringSoon = Date.now() + threeDaysMs;
       let dispatchCount = 0;
 
-      vi.spyOn(webhookDispatcher, 'dispatch').mockImplementation(async (_url, event) => {
+      vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockImplementation(async (_url, event) => {
         if (event === 'key.expiring_soon') dispatchCount++;
-        return {
-          id: 'wh_mock',
-          url: _url,
-          event: event as any,
-          success: true,
-          totalAttempts: 1,
-          durationMs: 5,
-          attempts: [],
-        };
+        return { id: 'job_mock' } as never;
       });
 
       const keyResult = await redisKeyStore.generateApiKey(testUser.id, 'Throttled Key', {

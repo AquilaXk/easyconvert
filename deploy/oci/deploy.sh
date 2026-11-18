@@ -45,8 +45,9 @@ MIN_FREE_GB="${MIN_FREE_GB:-15}"
 SCRATCH_WARN_PERCENT="${SCRATCH_WARN_PERCENT:-85}"
 HEALTH_ATTEMPTS="${HEALTH_ATTEMPTS:-30}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 ALLOWLIST="${ENV_ALLOWLIST:-$SCRIPT_DIR/env-allowlist.txt}"
+NGINX_SITE_FILE="${NGINX_SITE_FILE:-/etc/nginx/sites-available/easyconvert}"
 KEEP_RELEASES=2
 # What a stopped worker leaves, removed from inside the worker image: files in its /tmp, and the job directories and outputs in the
 # staging folder of the storage directory. No job outlives two hours there: the longest deadline the settings accept is one hour,
@@ -161,6 +162,15 @@ scratch_dir() {
 avail_gib() { df --output=avail -B1G "$1" | tail -n 1 | tr -d ' '; }
 used_percent() { df --output=pcent "$1" | tail -n 1 | tr -d ' %'; }
 
+# Non-privileged advisory check comparing the host nginx site config against the repository copy.
+check_nginx_drift() {
+  local repo_conf="$SCRIPT_DIR/nginx-easyconvert.conf"
+  if [ -r "$NGINX_SITE_FILE" ] && [ -r "$repo_conf" ] && ! cmp -s "$NGINX_SITE_FILE" "$repo_conf"; then
+    log "WARNING: $NGINX_SITE_FILE differs from $repo_conf; review nginx site config drift on host"
+  fi
+  return 0
+}
+
 # The scratch directory must be its own mounted file system: an unmounted directory would fill the shared data volume with no cap.
 guard() {
   local env_file="${1:-$HOME_DIR/current/.env}" scratch free used
@@ -173,6 +183,7 @@ guard() {
     log "WARNING: scratch is ${used}% full"
     command -v logger > /dev/null && logger -t easyconvert "scratch is ${used}% full"
   fi
+  check_nginx_drift
   log "guard ok: data volume ${free} GiB free, scratch ${used}% used"
 }
 

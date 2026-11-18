@@ -6,6 +6,7 @@ import { graphProgress } from '@/lib/queue/graph/graph-progress';
 import { namedJobFields } from '@/lib/jobs/named-task-report';
 import { nodeJobCancelRefusal } from '@/lib/queue/graph/node-jobs';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { withRateLimitHeaders } from '@/lib/api/rate-limit';
 import { withQueueErrors } from '@/lib/api/queue-error-response';
 import { redactForOutput, redactText } from '@/lib/security/redact';
 import { engineTraceFields } from '@/lib/api/engine-trace';
@@ -51,15 +52,23 @@ async function readJob(req: NextRequest, context: RouteContext) {
 
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:read' });
   if (!auth.authorized || !auth.user) {
-    return createProblemDetailsResponse(
-      auth.status ?? 401,
-      auth.error ?? 'Unauthorized',
-      instanceUri,
-      undefined,
-      auth.problemType,
-      authErrorHeaders(auth)
+    return withRateLimitHeaders(
+      createProblemDetailsResponse(
+        auth.status ?? 401,
+        auth.error ?? 'Unauthorized',
+        instanceUri,
+        undefined,
+        auth.problemType,
+        authErrorHeaders(auth)
+      ),
+      auth.rateLimit
     );
   }
+
+  return withRateLimitHeaders(await readJobAuthorized(jobId, auth.user.id, instanceUri), auth.rateLimit);
+}
+
+async function readJobAuthorized(jobId: string, userId: string, instanceUri: string) {
 
   if (!jobId) {
     return createProblemDetailsResponse(
@@ -83,7 +92,7 @@ async function readJob(req: NextRequest, context: RouteContext) {
 
   // Enforce tenant boundary: user can only inspect their own jobs
   const ownerId = job ? job.data?.userId : graphState?.ownerUserId;
-  if (!ownerId || ownerId !== auth.user.id) {
+  if (!ownerId || ownerId !== userId) {
     return createProblemDetailsResponse(
       403,
       'Access denied to this conversion job.',
@@ -162,15 +171,23 @@ async function cancelJobRequest(req: NextRequest, context: RouteContext) {
   // Require write access to cancel conversion job
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write' });
   if (!auth.authorized || !auth.user) {
-    return createProblemDetailsResponse(
-      auth.status ?? 401,
-      auth.error ?? 'Unauthorized',
-      instanceUri,
-      undefined,
-      auth.problemType,
-      authErrorHeaders(auth)
+    return withRateLimitHeaders(
+      createProblemDetailsResponse(
+        auth.status ?? 401,
+        auth.error ?? 'Unauthorized',
+        instanceUri,
+        undefined,
+        auth.problemType,
+        authErrorHeaders(auth)
+      ),
+      auth.rateLimit
     );
   }
+
+  return withRateLimitHeaders(await cancelJobAuthorized(jobId, auth.user.id, instanceUri), auth.rateLimit);
+}
+
+async function cancelJobAuthorized(jobId: string, userId: string, instanceUri: string) {
 
   if (!jobId) {
     return createProblemDetailsResponse(
@@ -183,11 +200,11 @@ async function cancelJobRequest(req: NextRequest, context: RouteContext) {
 
   const job = await conversionQueue.getJob(jobId);
   if (!job) {
-    return cancelGraphJob(jobId, auth.user.id, instanceUri);
+    return cancelGraphJob(jobId, userId, instanceUri);
   }
 
   // Enforce tenant boundary: user can only cancel their own jobs
-  if (!job.data?.userId || job.data.userId !== auth.user.id) {
+  if (!job.data?.userId || job.data.userId !== userId) {
     return createProblemDetailsResponse(
       403,
       'Access denied to cancel this conversion job.',

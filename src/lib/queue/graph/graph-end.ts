@@ -1,5 +1,5 @@
 import { redisKeyStore } from '../../api-keys/redis-key-store';
-import { webhookDispatcher, type WebhookDispatchResult } from '../../api-keys/webhook-dispatcher';
+import { webhookDispatcher } from '../../api-keys/webhook-dispatcher';
 import { storageProvider } from '../../storage';
 import { recordGraphOutputsInHistory } from './graph-history';
 import { releaseInputHolds } from './input-cleanup';
@@ -77,12 +77,11 @@ async function orLogged<T>(graphId: string, failure: string, step: () => Promise
   }
 }
 
-/** Waits for one delivery of a graph's webhook, and logs one the endpoint did not accept or that could not be sent. */
-async function logUndelivered(state: GraphExecutionState, event: string, delivery: Promise<WebhookDispatchResult>): Promise<void> {
-  const failed = `[GraphScheduler] The ${event} webhook of graph ${state.graphId} (reservation ${state.reservationId ?? 'none'}) was not delivered`;
+/** Enqueues one delivery of a graph's webhook and logs if the queue could not accept it. */
+async function logUndelivered(state: GraphExecutionState, event: string, delivery: Promise<unknown>): Promise<void> {
+  const failed = `[GraphScheduler] The ${event} webhook of graph ${state.graphId} (reservation ${state.reservationId ?? 'none'}) could not be enqueued`;
   try {
-    const result = await delivery;
-    if (!result.success) console.error(`${failed}: the endpoint did not accept it after ${result.totalAttempts} attempt(s).`);
+    await delivery;
   } catch (err) {
     console.error(`${failed}:`, err);
   }
@@ -95,10 +94,10 @@ async function notifyWebhook(state: GraphExecutionState, outcome: GraphOutcome):
   const owner = { ownerUserId: state.ownerUserId, ownerKeyId: state.webhookKeyId };
   if (outcome.status === 'completed') {
     const payload = { jobId: graphId, status: 'completed', graphId, nodes, ...(state.namedTasks ? namedJobFields(state) : {}) };
-    await logUndelivered(state, 'graph.completed', webhookDispatcher.dispatch(webhookUrl, 'graph.completed', payload, webhookSecret, owner));
+    await logUndelivered(state, 'graph.completed', webhookDispatcher.enqueueDelivery(webhookUrl, 'graph.completed', payload, webhookSecret, owner));
   } else if (outcome.status === 'failed') {
     const payload = { jobId: graphId, status: 'failed', error: outcome.error, graphId, nodes, ...(state.namedTasks ? namedJobFields(state) : {}) };
-    await logUndelivered(state, 'graph.failed', webhookDispatcher.dispatch(webhookUrl, 'graph.failed', payload, webhookSecret, owner));
+    await logUndelivered(state, 'graph.failed', webhookDispatcher.enqueueDelivery(webhookUrl, 'graph.failed', payload, webhookSecret, owner));
   }
 }
 

@@ -17,9 +17,15 @@ const SLASH_OPERATIONS = {
   'archive/create': 'archive.create',
   'archive/extract': 'archive.extract',
   'import/s3': 'import.s3',
+  'import/gcs': 'import.gcs',
+  'import/azure-blob': 'import.azure-blob',
   'import/sftp': 'import.sftp',
+  'import/webdav': 'import.webdav',
   'export/s3': 'export.s3',
+  'export/gcs': 'export.gcs',
+  'export/azure-blob': 'export.azure-blob',
   'export/sftp': 'export.sftp',
+  'export/webdav': 'export.webdav',
   'metadata/write': 'metadata.write',
   'capture/website': 'capture.website',
 } as const satisfies Record<string, GraphOperation>;
@@ -29,14 +35,20 @@ const SLASH_ONLY: ReadonlySet<string> = new Set<GraphOperation>([
   'import.url',
   'import.upload',
   'import.s3',
+  'import.gcs',
+  'import.azure-blob',
   'import.sftp',
+  'import.webdav',
   'archive.create',
   'archive.extract',
   'metadata.write',
   'capture.website',
   'export.url',
   'export.s3',
+  'export.gcs',
+  'export.azure-blob',
   'export.sftp',
+  'export.webdav',
   'export.internal',
 ]);
 
@@ -87,7 +99,18 @@ export function isNamedTaskMap(tasks: unknown): tasks is NamedTaskMap {
 }
 
 /** The operations that read from or write to the customer's own store. */
-const STORAGE_OPERATIONS: ReadonlySet<string> = new Set(['import/s3', 'import/sftp', 'export/s3', 'export/sftp']);
+const STORAGE_OPERATIONS: ReadonlySet<string> = new Set([
+  'import/s3',
+  'import/gcs',
+  'import/azure-blob',
+  'import/sftp',
+  'import/webdav',
+  'export/s3',
+  'export/gcs',
+  'export/azure-blob',
+  'export/sftp',
+  'export/webdav',
+]);
 const TARGET_OPERATIONS: ReadonlySet<string> = new Set(['convert', 'thumbnail', 'merge', 'archive/create', 'capture/website']);
 const INPUT_FIELDS = ['operation', 'input'] as const;
 const URL_FIELDS = ['url', 'headers'] as const;
@@ -107,12 +130,18 @@ function allowedFields(operation: string): ReadonlySet<string> {
     case 'archive/extract':
       return new Set([...INPUT_FIELDS, 'entries', 'options']);
     case 'import/s3':
+    case 'import/gcs':
+    case 'import/azure-blob':
       return new Set(['operation', ...STORAGE_FIELDS, 'key', 'prefix', 'max_objects']);
     case 'import/sftp':
+    case 'import/webdav':
       return new Set(['operation', ...STORAGE_FIELDS, 'path', 'directory', 'max_objects']);
     case 'export/s3':
+    case 'export/gcs':
+    case 'export/azure-blob':
       return new Set([...INPUT_FIELDS, ...STORAGE_FIELDS, 'prefix']);
     case 'export/sftp':
+    case 'export/webdav':
       return new Set([...INPUT_FIELDS, ...STORAGE_FIELDS, 'directory']);
     default:
       return new Set([...INPUT_FIELDS, 'options', ...(TARGET_OPERATIONS.has(operation) ? ['output_format'] : [])]);

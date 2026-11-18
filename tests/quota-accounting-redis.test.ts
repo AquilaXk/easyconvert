@@ -717,7 +717,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
     }
 
     it('settles the reservation, sends graph.completed once and removes the files when draining the outbox fails after the completion was recorded', async () => {
-      const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+      const dispatched = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
       const removed = vi.spyOn(storageProvider, 'deleteByPrefix').mockResolvedValue(undefined as never);
       const connection = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
       try {
@@ -741,7 +741,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
     });
 
     it('cancels the other node jobs of a failed graph with the state read again when its first read fails', async () => {
-      vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+      vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
       const connection = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
       const control = { failNextStateRead: false };
       const flaky = new Proxy(connection, {
@@ -779,7 +779,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
     });
 
     it('reports as cancelled only the node jobs whose cancel succeeded when a node fails its graph', async () => {
-      vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+      vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
       const connection = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
       const cancelNode = vi.fn(async (_graphId: string, nodeId: string) => {
         if (nodeId === 'left') throw new Error('the queue did not answer');
@@ -824,7 +824,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
     });
 
     it('fails the completion of a node that does not end its graph when draining the outbox fails, so the node is tried again', async () => {
-      const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+      const dispatched = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
       const connection = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
       try {
         const { scheduler, control } = schedulerWithFlakyListRead(connection);

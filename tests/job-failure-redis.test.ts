@@ -185,7 +185,7 @@ describe.skipIf(!REDIS_URL)('typed job failures on a real Redis server', () => {
   it('sends the masked reason in the job.failed webhook and in the dead letter of a job without a signing secret', async () => {
     const queue = connect<ConversionJobData, ConversionJobResult>('webhook-failure');
     const owner = `webhook-owner-${crypto.randomBytes(6).toString('hex')}`;
-    const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({} as never);
+    const dispatched = vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
     const worker = new Worker(queue, async () => {
       throw new Error(`spawn ${MISSING_PROGRAM} ENOENT`);
     }, { concurrency: 1 });

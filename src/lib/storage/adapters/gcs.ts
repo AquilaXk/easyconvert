@@ -8,18 +8,26 @@ import {
   StorageAuthenticationError,
   StorageAdapterError,
   StorageInvalidKeyError,
+  StorageListingLimitError,
+  StorageServiceError,
 } from './adapter-interface';
 import { assertValidObjectKey } from '../s3-sigv4';
+import { remotePathProblem } from '../customer-storage-paths';
+import { ADAPTER_LISTING_CAP_BYTES } from './http-limits';
 import {
   adapterDispatcher,
   assertAdapterUrlSafe,
   guardedRequest,
   isTrustedGcsOAuthEndpoint,
   parseCleanBaseEndpointUrl,
+  readBoundedBody,
   readErrorText,
   readJsonBody,
   releaseDispatcher,
 } from './http-guard';
+
+const MAX_GCS_LIST_PAGES = 20;
+const MAX_GCS_PAGE_RESULTS = 1000;
 
 /** The object name of a remote path: dot segments are refused, as the other adapters and the S3 client do. */
 function toObjectName(remotePath: string): string {
@@ -269,6 +277,9 @@ export class GcsStorageAdapter implements IStorageAdapter {
       if (res.statusCode === 404) {
         return null;
       }
+      if (res.statusCode === 401 || res.statusCode === 403) {
+        throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
+      }
       if (res.statusCode < 200 || res.statusCode >= 300) {
         return null;
       }
@@ -283,6 +294,70 @@ export class GcsStorageAdapter implements IStorageAdapter {
     } finally {
       await releaseDispatcher(dispatcher);
     }
+  }
+
+  async listObjects(prefix: string, maxFiles: number): Promise<Array<{ path: string; size: number }>> {
+    const prefixProblem = remotePathProblem(prefix, { allowEmpty: true });
+    if (prefixProblem) {
+      throw new StorageInvalidKeyError(`prefix ${prefixProblem}`, this.providerName);
+    }
+    const cleanPrefix = prefix ? toObjectName(prefix) : '';
+    const files: Array<{ path: string; size: number }> = [];
+    let pageToken: string | undefined;
+
+    for (let page = 0; page < MAX_GCS_LIST_PAGES; page++) {
+      const query = new URLSearchParams({
+        maxResults: String(Math.min(MAX_GCS_PAGE_RESULTS, Math.max(1, maxFiles) + 1)),
+      });
+      if (cleanPrefix) query.set('prefix', cleanPrefix);
+      if (pageToken) query.set('pageToken', pageToken);
+
+      const url = `${this.endpoint}/storage/v1/b/${encodeURIComponent(this.bucket)}/o?${query.toString()}`;
+      await this.assertSsrfSafe(url);
+      const headers = await this.getAuthHeaders();
+      const dispatcher = adapterDispatcher(url);
+      try {
+        const res = await guardedRequest(url, { method: 'GET', headers, dispatcher });
+        if (res.statusCode === 404) throw new StorageNotFoundError(cleanPrefix || this.bucket, this.providerName);
+        if (res.statusCode === 401 || res.statusCode === 403) {
+          throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
+        }
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          const errText = await readErrorText(res.body, this.providerName);
+          throw new StorageServiceError(`[GcsAdapter] List failed (${res.statusCode}): ${errText}`, this.providerName, {
+            statusCode: res.statusCode,
+            retryable: res.statusCode >= 500 || res.statusCode === 429,
+          });
+        }
+
+        const { text, truncated } = await readBoundedBody(res.body, this.providerName, ADAPTER_LISTING_CAP_BYTES);
+        if (truncated) {
+          throw new StorageServiceError(`The ${this.providerName} listing answer is longer than ${ADAPTER_LISTING_CAP_BYTES} bytes`, this.providerName, {
+            retryable: false,
+          });
+        }
+        let body: { items?: Array<{ name?: unknown; size?: unknown }>; nextPageToken?: unknown };
+        try {
+          body = JSON.parse(text) as typeof body;
+        } catch (err) {
+          throw new StorageServiceError(`The ${this.providerName} listing answer is not valid JSON`, this.providerName, { retryable: false }, err);
+        }
+        for (const item of body.items ?? []) {
+          if (typeof item?.name !== 'string' || !item.name || item.name.endsWith('/')) continue;
+          const size = Number.parseInt(String(item.size ?? 0), 10);
+          files.push({ path: item.name, size: Number.isFinite(size) && size >= 0 ? size : 0 });
+          if (files.length > maxFiles) {
+            throw new StorageListingLimitError(maxFiles, this.providerName);
+          }
+        }
+        if (typeof body.nextPageToken !== 'string' || !body.nextPageToken) return files;
+        pageToken = body.nextPageToken;
+      } finally {
+        await releaseDispatcher(dispatcher);
+      }
+    }
+
+    throw new StorageServiceError(`The listing did not finish within ${MAX_GCS_LIST_PAGES} pages`, this.providerName, { retryable: false });
   }
 
   async delete(remotePath: string): Promise<boolean> {

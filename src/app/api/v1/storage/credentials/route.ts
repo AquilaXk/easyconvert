@@ -9,6 +9,7 @@ import {
   validateStorageCredentials,
 } from '@/lib/storage';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { withRateLimitHeaders } from '@/lib/api/rate-limit';
 import { refuseUnavailableStorageProvider } from '@/lib/api/byos-provider-guard';
 
 export const dynamic = 'force-dynamic';
@@ -20,15 +21,23 @@ export async function POST(req: NextRequest) {
 
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write' });
   if (!auth.authorized || !auth.user) {
-    return createProblemDetailsResponse(
-      auth.status ?? 401,
-      auth.error ?? 'Unauthorized',
-      instanceUri,
-      undefined,
-      auth.problemType,
-      authErrorHeaders(auth)
+    return withRateLimitHeaders(
+      createProblemDetailsResponse(
+        auth.status ?? 401,
+        auth.error ?? 'Unauthorized',
+        instanceUri,
+        undefined,
+        auth.problemType,
+        authErrorHeaders(auth)
+      ),
+      auth.rateLimit
     );
   }
+
+  return withRateLimitHeaders(await postCredentialsAuthorized(req, instanceUri, auth.user.id), auth.rateLimit);
+}
+
+async function postCredentialsAuthorized(req: NextRequest, instanceUri: string, userId: string): Promise<NextResponse> {
 
   let body: {
     providerType: StorageProviderType;
@@ -92,7 +101,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const credentialRef = await credentialsVault.store(auth.user.id, credentials, {
+    const credentialRef = await credentialsVault.store(userId, credentials, {
       name,
       ttlSeconds,
     });
@@ -121,27 +130,33 @@ export async function GET(req: NextRequest) {
 
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:read' });
   if (!auth.authorized || !auth.user) {
-    return createProblemDetailsResponse(
-      auth.status ?? 401,
-      auth.error ?? 'Unauthorized',
-      instanceUri,
-      undefined,
-      auth.problemType,
-      authErrorHeaders(auth)
+    return withRateLimitHeaders(
+      createProblemDetailsResponse(
+        auth.status ?? 401,
+        auth.error ?? 'Unauthorized',
+        instanceUri,
+        undefined,
+        auth.problemType,
+        authErrorHeaders(auth)
+      ),
+      auth.rateLimit
     );
   }
 
   try {
     const list = await credentialsVault.list(auth.user.id);
-    return NextResponse.json({
-      success: true,
-      credentials: list,
-    });
+    return withRateLimitHeaders(
+      NextResponse.json({
+        success: true,
+        credentials: list,
+      }),
+      auth.rateLimit
+    );
   } catch (err: unknown) {
     if (err instanceof CredentialsVaultPersistenceError) {
-      return createProblemDetailsResponse(503, err.message, instanceUri);
+      return withRateLimitHeaders(createProblemDetailsResponse(503, err.message, instanceUri), auth.rateLimit);
     }
     const message = err instanceof Error ? err.message : 'Failed to retrieve credentials';
-    return createProblemDetailsResponse(500, message, instanceUri);
+    return withRateLimitHeaders(createProblemDetailsResponse(500, message, instanceUri), auth.rateLimit);
   }
 }

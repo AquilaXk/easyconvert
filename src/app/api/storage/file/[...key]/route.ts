@@ -4,7 +4,7 @@ import { Readable } from 'node:stream';
 import { denyUnlessOwner, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { isAnonymousUserId } from '@/lib/auth/anonymous-identity';
-import { attachmentContentDisposition } from '@/lib/api/content-disposition';
+import { DOWNLOAD_SECURITY_HEADERS, attachmentContentDisposition } from '@/lib/api/content-disposition';
 import { parseByteRange, satisfiedContentRange, unsatisfiedContentRange } from '@/lib/api/http-range';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { deliveryTrackedStream } from '@/lib/api/delivery-stream';
@@ -128,7 +128,7 @@ export async function GET(
   const fileHeaders: Record<string, string> = {
     'Accept-Ranges': 'bytes',
     'Cache-Control': PRIVATE_NO_STORE,
-    'X-Content-Type-Options': 'nosniff',
+    ...DOWNLOAD_SECURITY_HEADERS,
     'ETag': stored.etag,
   };
   const contentHeaders: Record<string, string> = {

@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { withRateLimitHeaders } from '@/lib/api/rate-limit';
 import { fileSizeLimitProblem } from '@/lib/api/file-size-limit';
+import type { User } from '@/lib/auth/types';
 import { UPLOAD_PART_MAX_BYTES } from '@/lib/plan-limits';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { reserveSessionBudget, undoOpening } from '@/lib/api/upload-session-budget';
@@ -43,15 +45,24 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   // 1. Guard check: Authenticate and require 'convert:write' scope
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write' });
   if (!auth.authorized || !auth.user) {
-    return createProblemDetailsResponse(
-      auth.status ?? 401,
-      auth.error ?? 'Unauthorized',
-      instanceUri,
-      undefined,
-      auth.problemType,
-      authErrorHeaders(auth)
+    return withRateLimitHeaders(
+      createProblemDetailsResponse(
+        auth.status ?? 401,
+        auth.error ?? 'Unauthorized',
+        instanceUri,
+        undefined,
+        auth.problemType,
+        authErrorHeaders(auth)
+      ),
+      auth.rateLimit
     );
   }
+
+  return withRateLimitHeaders(await postDirectUploadAuthorized(req, instanceUri, auth.user), auth.rateLimit);
+});
+
+async function postDirectUploadAuthorized(req: NextRequest, instanceUri: string, user: User) {
+  const auth = { user };
 
   // 2. Parse request body
   const body: DirectUploadInitiateBody = await req.json().catch(() => ({}));
@@ -165,4 +176,4 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     },
     { status: 200 }
   );
-});
+}

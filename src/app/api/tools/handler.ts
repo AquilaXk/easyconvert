@@ -8,7 +8,7 @@ import { fileSizeLimitProblem, withinSingleRequest } from '@/lib/api/file-size-l
 import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
-import { attachmentContentDisposition } from '@/lib/api/content-disposition';
+import { DOWNLOAD_SECURITY_HEADERS, attachmentContentDisposition } from '@/lib/api/content-disposition';
 import { loggingOutcomes, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
 import { formText, isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
 import { refusalCodeOf } from '@/lib/refusal-codes';
@@ -63,7 +63,7 @@ async function answerOf(output: WebToolOutput, caller: User): Promise<NextRespon
     status: 200,
     headers: {
       'Content-Type': output.mimeType,
-      'X-Content-Type-Options': 'nosniff',
+      ...DOWNLOAD_SECURITY_HEADERS,
       'Content-Disposition': attachmentContentDisposition(output.filename),
       'Content-Length': output.buffer.length.toString(),
     },

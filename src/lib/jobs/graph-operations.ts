@@ -8,7 +8,10 @@ export const GRAPH_OPERATIONS = [
   'import.upload',
   'import.url',
   'import.s3',
+  'import.gcs',
+  'import.azure-blob',
   'import.sftp',
+  'import.webdav',
   'convert',
   'ocr',
   'optimize',
@@ -31,7 +34,10 @@ export const GRAPH_OPERATIONS = [
   'archive.extract',
   'export.url',
   'export.s3',
+  'export.gcs',
+  'export.azure-blob',
   'export.sftp',
+  'export.webdav',
   'export.internal',
 ] as const;
 
@@ -52,15 +58,43 @@ export const LEGACY_GRAPH_OPERATION_ALIASES: Readonly<Record<string, GraphOperat
   'media.thumbnail': 'thumbnail',
 };
 
-export const IMPORT_OPERATIONS: ReadonlySet<GraphOperation> = new Set<GraphOperation>(['import.upload', 'import.url', 'import.s3', 'import.sftp']);
+export const IMPORT_OPERATIONS: ReadonlySet<GraphOperation> = new Set<GraphOperation>([
+  'import.upload',
+  'import.url',
+  'import.s3',
+  'import.gcs',
+  'import.azure-blob',
+  'import.sftp',
+  'import.webdav',
+]);
 /** Operations that make files from nothing the graph holds: an import brings a file in, a website capture draws a page. They take no input. */
 export const SOURCE_OPERATIONS: ReadonlySet<GraphOperation> = new Set<GraphOperation>([...IMPORT_OPERATIONS, 'capture.website']);
-export const EXPORT_OPERATIONS: ReadonlySet<GraphOperation> = new Set<GraphOperation>(['export.url', 'export.s3', 'export.sftp', 'export.internal']);
+export const EXPORT_OPERATIONS: ReadonlySet<GraphOperation> = new Set<GraphOperation>([
+  'export.url',
+  'export.s3',
+  'export.gcs',
+  'export.azure-blob',
+  'export.sftp',
+  'export.webdav',
+  'export.internal',
+]);
 
 /** Imports that read from the customer's own store, named by a saved credential or by credentials sealed with the node. */
-export const STORAGE_IMPORT_OPERATIONS: ReadonlySet<string> = new Set(['import.s3', 'import.sftp']);
+export const STORAGE_IMPORT_OPERATIONS: ReadonlySet<string> = new Set([
+  'import.s3',
+  'import.gcs',
+  'import.azure-blob',
+  'import.sftp',
+  'import.webdav',
+]);
 /** Exports that write to the customer's own store. */
-export const STORAGE_EXPORT_OPERATIONS: ReadonlySet<string> = new Set(['export.s3', 'export.sftp']);
+export const STORAGE_EXPORT_OPERATIONS: ReadonlySet<string> = new Set([
+  'export.s3',
+  'export.gcs',
+  'export.azure-blob',
+  'export.sftp',
+  'export.webdav',
+]);
 
 export function isGraphOperation(value: string): value is GraphOperation {
   return GRAPH_OPERATION_SET.has(value);
@@ -79,7 +113,10 @@ const CHARGE_RULES: Readonly<Record<GraphOperation, ChargeRule>> = {
   'import.upload': 'free',
   'import.url': 'free',
   'import.s3': 'free',
+  'import.gcs': 'free',
+  'import.azure-blob': 'free',
   'import.sftp': 'free',
+  'import.webdav': 'free',
   convert: 'per-output',
   ocr: 'per-output',
   optimize: 'per-gained-output',
@@ -102,7 +139,10 @@ const CHARGE_RULES: Readonly<Record<GraphOperation, ChargeRule>> = {
   'archive.extract': 'once',
   'export.url': 'free',
   'export.s3': 'free',
+  'export.gcs': 'free',
+  'export.azure-blob': 'free',
   'export.sftp': 'free',
+  'export.webdav': 'free',
   'export.internal': 'free',
 };
 

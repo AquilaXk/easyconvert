@@ -6,15 +6,53 @@ import {
   StorageAdapterMetadata,
   StorageNotFoundError,
   StorageAuthenticationError,
+  StorageInvalidKeyError,
+  StorageListingLimitError,
+  StorageServiceError,
 } from './adapter-interface';
+import { remotePathProblem } from '../customer-storage-paths';
+import { ADAPTER_LISTING_CAP_BYTES } from './http-limits';
+import { parseWebDavPropfindXml } from './listing-xml';
 import {
   adapterDispatcher,
   assertAdapterUrlSafe,
   guardedRequest,
   parseCleanBaseEndpointUrl,
+  readBoundedBody,
   readErrorText,
   releaseDispatcher,
 } from './http-guard';
+
+const WEBDAV_PROPFIND_BODY = '<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:prop><D:resourcetype/><D:getcontentlength/></D:prop></D:propfind>';
+
+function trimTrailingSlash(pathname: string): string {
+  return pathname.endsWith('/') && pathname.length > 1 ? pathname.slice(0, -1) : pathname;
+}
+
+function extractWebDavChildName(href: string, targetUrl: URL, basePathNorm: string): string | null {
+  let entryUrl: URL;
+  try {
+    entryUrl = new URL(href, targetUrl);
+  } catch {
+    return null;
+  }
+  const entryPathNorm = trimTrailingSlash(entryUrl.pathname);
+  if (entryPathNorm === basePathNorm) return null;
+  const prefix = basePathNorm === '/' ? '/' : `${basePathNorm}/`;
+  if (!entryPathNorm.startsWith(prefix)) return null;
+  const rawRelative = entryPathNorm.slice(prefix.length);
+  if (!rawRelative || rawRelative.includes('/')) return null;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(rawRelative);
+  } catch {
+    return null;
+  }
+  if (!decoded || decoded.startsWith('.') || decoded === '..' || decoded.includes('/') || decoded.includes('\\') || decoded.includes('\0')) {
+    return null;
+  }
+  return decoded;
+}
 
 function stripTrailingSlashes(s: string): string {
   let end = s.length;
@@ -195,6 +233,9 @@ export class WebDavStorageAdapter implements IStorageAdapter {
       });
 
       if (res.statusCode === 404) return null;
+      if (res.statusCode === 401 || res.statusCode === 403) {
+        throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
+      }
       if (res.statusCode < 200 || res.statusCode >= 300) return null;
 
       const lenStr = res.headers['content-length'] as string | undefined;
@@ -209,6 +250,63 @@ export class WebDavStorageAdapter implements IStorageAdapter {
         contentType,
         lastModified: lastModified ? new Date(lastModified) : undefined,
       };
+    } finally {
+      await releaseDispatcher(dispatcher);
+    }
+  }
+
+  async listDirectory(directory: string, maxFiles: number): Promise<Array<{ name: string; size: number }>> {
+    const dirProblem = remotePathProblem(directory, { allowEmpty: true });
+    if (dirProblem) {
+      throw new StorageInvalidKeyError(`directory ${dirProblem}`, this.providerName);
+    }
+    const cleanDir = stripLeadingSlashes(directory);
+    const url = cleanDir
+      ? `${this.baseUrl}/${encodeSafePathSegments(cleanDir, this.providerName)}/`
+      : `${this.baseUrl}/`;
+    await this.assertSsrfSafe(url);
+
+    const targetUrl = new URL(url);
+    const basePathNorm = trimTrailingSlash(targetUrl.pathname);
+    const dispatcher = adapterDispatcher(url);
+    try {
+      const res = await guardedRequest(url, {
+        method: 'PROPFIND',
+        headers: this.getHeaders({ Depth: '1', 'Content-Type': 'application/xml; charset=utf-8' }),
+        body: WEBDAV_PROPFIND_BODY,
+        dispatcher,
+      });
+
+      if (res.statusCode === 404) throw new StorageNotFoundError(cleanDir || '/', this.providerName);
+      if (res.statusCode === 401 || res.statusCode === 403) {
+        throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
+      }
+      if (res.statusCode !== 207 && (res.statusCode < 200 || res.statusCode >= 300)) {
+        const errText = await readErrorText(res.body, this.providerName);
+        throw new StorageServiceError(`[WebDavAdapter] PROPFIND failed (${res.statusCode}): ${errText}`, this.providerName, {
+          statusCode: res.statusCode,
+          retryable: res.statusCode >= 500 || res.statusCode === 429,
+        });
+      }
+
+      const { text, truncated } = await readBoundedBody(res.body, this.providerName, ADAPTER_LISTING_CAP_BYTES);
+      if (truncated) {
+        throw new StorageServiceError(`The ${this.providerName} listing answer is longer than ${ADAPTER_LISTING_CAP_BYTES} bytes`, this.providerName, {
+          retryable: false,
+        });
+      }
+
+      const files: Array<{ name: string; size: number }> = [];
+      for (const entry of parseWebDavPropfindXml(text)) {
+        if (entry.isCollection || entry.href.endsWith('/')) continue;
+        const name = extractWebDavChildName(entry.href, targetUrl, basePathNorm);
+        if (!name) continue;
+        files.push({ name, size: entry.size });
+        if (files.length > maxFiles) {
+          throw new StorageListingLimitError(maxFiles, this.providerName);
+        }
+      }
+      return files;
     } finally {
       await releaseDispatcher(dispatcher);
     }

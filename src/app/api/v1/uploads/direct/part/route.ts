@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { partBodyProblem } from '@/lib/api/file-size-limit';
+import { resumeActiveSessionBudget } from '@/lib/api/upload-session-budget';
+import { planOfCaller } from '@/lib/plan-limits';
 import { MULTIPART_MAX_PART_BYTES, storageProvider } from '@/lib/storage';
 import { receivePart } from '@/lib/storage/part-admission';
 import { declaredPartBytes, partFailureResponse } from '@/lib/api/part-response';
@@ -194,6 +196,9 @@ export async function PUT(req: NextRequest) {
       'Bad Request'
     );
   }
+
+  const budgetRefusal = await resumeActiveSessionBudget(uploadId, instanceUri, planOfCaller({ id: session.ownerUserId }));
+  if (budgetRefusal) return budgetRefusal;
 
   try {
     // The part may hold what the declared total leaves after the other parts, stored and on the way, and at most a part.

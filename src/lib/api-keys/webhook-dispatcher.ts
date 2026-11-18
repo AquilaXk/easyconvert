@@ -1,3 +1,10 @@
+/**
+ * Durable webhook dispatcher and retry scheduling based on Standard Webhooks / Svix worker
+ * design (`svix/svix-webhooks`, MIT license, commit `d5564688a631515ceb92be2a3e7efcfa9ad95e50`,
+ * `server/svix-server/src/worker.rs#L175-L247` and `#L496-L654`): signs `{id}.{timestamp}.{body}`,
+ * clamps and honors `Retry-After`, enforces bounded history, stops on 410, and dead-letters
+ * non-retryable 4xx or exhausted deliveries.
+ */
 import crypto from 'node:crypto';
 import { redactForOutput, redactText } from '../security/redact';
 import { fetch as undiciFetch, Agent } from 'undici';
@@ -64,6 +71,7 @@ export interface WebhookDispatchOptions {
   previousSecret?: string;
   previousExpiresAt?: number;
   durable?: boolean;
+  retrySchedule?: readonly number[];
 }
 
 export interface WebhookDeliveryAttempt {
@@ -157,11 +165,13 @@ export function classifyWebhookStatus(statusCode?: number, error?: string): Webh
   return 'retry';
 }
 
+export type RetryAfterHeaders = { get(name: string): string | null } | Record<string, string | string[] | undefined>;
+
 function extractRetryAfterHeader(
-  headers: Headers | Record<string, string | string[] | undefined>
+  headers: RetryAfterHeaders
 ): string | null {
-  if (typeof (headers as Headers).get === 'function') {
-    return (headers as Headers).get('retry-after');
+  if (typeof (headers as { get?: unknown }).get === 'function') {
+    return (headers as { get(name: string): string | null }).get('retry-after');
   }
   const rec = headers as Record<string, string | string[] | undefined>;
   const raw = rec['retry-after'] ?? rec['Retry-After'];
@@ -169,16 +179,25 @@ function extractRetryAfterHeader(
   return typeof raw === 'string' ? raw : null;
 }
 
+const MAX_RETRY_AFTER_HEADER_LENGTH = 128;
+const MAX_RETRY_DELAY_MS = 86_400_000;
+const MIN_RETRY_DELAY_MS = 1000;
+const MAX_WEBHOOK_ATTEMPT_HISTORY = 20;
+const MAX_WEBHOOK_RETRIES = 20;
+
 function parseRetryAfterDelayMs(headerValue: string): number | null {
   const trimmed = headerValue.trim();
-  const seconds = Number.parseInt(trimmed, 10);
-  if (!Number.isNaN(seconds) && String(seconds) === trimmed) {
-    return Math.min(86_400_000, Math.max(1000, seconds * 1000));
+  if (!trimmed || trimmed.length > MAX_RETRY_AFTER_HEADER_LENGTH) return null;
+  if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return Math.min(MAX_RETRY_DELAY_MS, Math.max(MIN_RETRY_DELAY_MS, Math.ceil(seconds * 1000)));
+    }
   }
   const dateParsed = Date.parse(trimmed);
   if (!Number.isNaN(dateParsed)) {
     const diff = dateParsed - Date.now();
-    return Math.min(86_400_000, Math.max(1000, diff));
+    return Math.min(MAX_RETRY_DELAY_MS, Math.max(MIN_RETRY_DELAY_MS, diff));
   }
   return null;
 }
@@ -188,7 +207,7 @@ function parseRetryAfterDelayMs(headerValue: string): number | null {
  */
 export function computeRetryDelay(
   attemptNumber: number,
-  responseHeaders?: Headers | Record<string, string | string[] | undefined> | null,
+  responseHeaders?: RetryAfterHeaders | null,
   overrideSchedule?: readonly number[]
 ): number {
   if (responseHeaders) {
@@ -231,6 +250,7 @@ export class WebhookDispatcher {
   private readonly maxHistorySize = 100;
   private readonly inMemoryDlq = new Map<string, WebhookDlqEntry>();
   private readonly dlq = new WebhookDlqStore(this.inMemoryDlq, () => redisKeyStore.getRedisClient(), WEBHOOK_DLQ_RETENTION_MS);
+  private readonly retryAfterByResult = new WeakMap<WebhookDispatchResult, string>();
   private readonly ssrfAgent: Agent;
   private readonly customFetch?: typeof undiciFetch;
 
@@ -426,7 +446,7 @@ export class WebhookDispatcher {
     bodyString: string,
     timeoutMs: number,
     attempt: number
-  ): Promise<{ attemptEntry: WebhookDeliveryAttempt; statusAction: WebhookStatusAction; statusCode?: number }> {
+  ): Promise<{ attemptEntry: WebhookDeliveryAttempt; statusAction: WebhookStatusAction; statusCode?: number; retryAfterHeader?: string }> {
     const attemptStart = Date.now();
     const controller = new AbortController();
     let timer: NodeJS.Timeout | null = setTimeout(() => controller.abort(), timeoutMs);
@@ -450,6 +470,9 @@ export class WebhookDispatcher {
         signal: controller.signal,
       });
 
+      const rawRetryAfter = extractRetryAfterHeader(response.headers);
+      const retryAfterHeader =
+        rawRetryAfter && rawRetryAfter.length <= MAX_RETRY_AFTER_HEADER_LENGTH ? rawRetryAfter : undefined;
       await response.body?.cancel?.().catch(() => undefined);
       const attemptDuration = Date.now() - attemptStart;
       const redirectError =
@@ -467,6 +490,7 @@ export class WebhookDispatcher {
         },
         statusAction: classifyWebhookStatus(response.status),
         statusCode: response.status,
+        retryAfterHeader,
       };
     } catch (err: unknown) {
       const attemptDuration = Date.now() - attemptStart;
@@ -625,33 +649,7 @@ export class WebhookDispatcher {
 
     // An HMAC with an empty key is forgeable by anyone: never send an unsigned event.
     if (!primarySecret) {
-      const result: WebhookDispatchResult = {
-        id: deliveryId,
-        url: targetUrl,
-        event,
-        success: false,
-        totalAttempts: 0,
-        durationMs: Date.now() - startTime,
-        attempts: [],
-      };
-      this.recordHistory(result);
-      if (!options.skipDlq) {
-        await this.saveToDlq({
-          id: `dlq_${deliveryId}`,
-          originalDeliveryId: deliveryId,
-          targetUrl,
-          event,
-          payload: data as Record<string, unknown>,
-          secret: '',
-          failedAt: Date.now(),
-          errorMessage: MISSING_WEBHOOK_SECRET_REASON,
-          retryCount: 0,
-          status: 'failed',
-          ownerUserId: options.ownerUserId,
-          ownerKeyId: options.ownerKeyId,
-        }).catch(() => {});
-      }
-      return result;
+      return this.recordMissingSecretFailure(deliveryId, targetUrl, event, data, options, startTime);
     }
 
     // Payloads are built from job state and error text: nothing secret leaves in a delivery, a
@@ -665,24 +663,14 @@ export class WebhookDispatcher {
 
     const bodyString = JSON.stringify(payload);
     const legacySignature = this.generateSignature(bodyString, primarySecret, timestamp);
-    const primaryStandardSig = WebhookDispatcher.signStandardPayload(
+    const webhookSignatureHeader = this.buildSignatureHeader(
       deliveryId,
       timestamp,
       bodyString,
-      primarySecret
+      primarySecret,
+      previousSecret,
+      previousExpiresAt
     );
-    let webhookSignatureHeader = primaryStandardSig;
-
-    const nowMs = Date.now();
-    if (previousSecret && (previousExpiresAt === undefined || previousExpiresAt > nowMs)) {
-      const prevStandardSig = WebhookDispatcher.signStandardPayload(
-        deliveryId,
-        timestamp,
-        bodyString,
-        previousSecret
-      );
-      webhookSignatureHeader = `${primaryStandardSig} ${prevStandardSig}`;
-    }
 
     const requestHeaders: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -700,15 +688,17 @@ export class WebhookDispatcher {
     const attempts: WebhookDeliveryAttempt[] = [];
     let success = false;
     let finalStatusCode: number | undefined;
+    let lastRetryAfter: string | undefined;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      const { attemptEntry, statusAction, statusCode } = await this.executeFetchAttempt(
+      const { attemptEntry, statusAction, statusCode, retryAfterHeader } = await this.executeFetchAttempt(
         targetUrl,
         requestHeaders,
         bodyString,
         timeoutMs,
         attempt
       );
+      lastRetryAfter = retryAfterHeader;
       attempts.push(attemptEntry);
       if (statusCode !== undefined) {
         finalStatusCode = statusCode;
@@ -742,6 +732,9 @@ export class WebhookDispatcher {
     };
 
     this.recordHistory(result);
+    if (!success && lastRetryAfter) {
+      this.retryAfterByResult.set(result, lastRetryAfter);
+    }
 
     // Preserve failed webhooks in Dead Letter Queue (DLQ) unless permanently deactivated (410 Gone)
     if (!success && !options.skipDlq && finalStatusCode !== 410) {
@@ -765,6 +758,59 @@ export class WebhookDispatcher {
     }
 
     return result;
+  }
+
+  private async recordMissingSecretFailure<T>(
+    deliveryId: string,
+    targetUrl: string,
+    event: WebhookEvent,
+    data: T,
+    options: WebhookDispatchOptions,
+    startTime: number
+  ): Promise<WebhookDispatchResult> {
+    const result: WebhookDispatchResult = {
+      id: deliveryId,
+      url: targetUrl,
+      event,
+      success: false,
+      totalAttempts: 0,
+      durationMs: Date.now() - startTime,
+      attempts: [],
+    };
+    this.recordHistory(result);
+    if (!options.skipDlq) {
+      await this.saveToDlq({
+        id: `dlq_${deliveryId}`,
+        originalDeliveryId: deliveryId,
+        targetUrl,
+        event,
+        payload: data as Record<string, unknown>,
+        secret: '',
+        failedAt: Date.now(),
+        errorMessage: MISSING_WEBHOOK_SECRET_REASON,
+        retryCount: 0,
+        status: 'failed',
+        ownerUserId: options.ownerUserId,
+        ownerKeyId: options.ownerKeyId,
+      }).catch(() => {});
+    }
+    return result;
+  }
+
+  private buildSignatureHeader(
+    deliveryId: string,
+    timestamp: number,
+    bodyString: string,
+    primarySecret: string,
+    previousSecret?: string,
+    previousExpiresAt?: number
+  ): string {
+    const primaryStandardSig = WebhookDispatcher.signStandardPayload(deliveryId, timestamp, bodyString, primarySecret);
+    if (!previousSecret || (previousExpiresAt !== undefined && previousExpiresAt <= Date.now())) {
+      return primaryStandardSig;
+    }
+    const prevStandardSig = WebhookDispatcher.signStandardPayload(deliveryId, timestamp, bodyString, previousSecret);
+    return `${primaryStandardSig} ${prevStandardSig}`;
   }
 
   public async saveToDlq(unmasked: WebhookDlqEntry): Promise<void> {
@@ -899,7 +945,7 @@ export class WebhookDispatcher {
       deliveryId,
       targetUrl,
       event,
-      data,
+      data: redactForOutput(data),
       secret: sealWebhookSecret(secret, deliveryId),
       options,
       attemptNumber: 1,
@@ -929,8 +975,15 @@ export class WebhookDispatcher {
       deliveryId: job.data.deliveryId,
       skipDlq: true,
     });
+    const retryAfterHeader = this.retryAfterByResult.get(attemptResult);
 
-    job.data.attempts.push(...attemptResult.attempts);
+    if (attemptResult.attempts.length > 0) {
+      job.data.attempts.push(...attemptResult.attempts);
+      if (job.data.attempts.length > MAX_WEBHOOK_ATTEMPT_HISTORY) {
+        job.data.attempts.splice(0, job.data.attempts.length - MAX_WEBHOOK_ATTEMPT_HISTORY);
+      }
+    }
+    const attemptsMade = job.data.attemptNumber;
     job.data.attemptNumber += 1;
 
     if (attemptResult.success) {
@@ -946,12 +999,13 @@ export class WebhookDispatcher {
       attemptResult.finalStatusCode,
       attemptResult.attempts.at(-1)?.error
     );
-    const maxRetries = options.maxRetries || 6;
+    const maxRetries = Math.min(Math.max(1, options.maxRetries ?? 6), MAX_WEBHOOK_RETRIES);
+    const missingSecretAbort = attemptResult.attempts.length === 0;
 
-    if (action === 'dlq_immediate' || job.data.attempts.length >= maxRetries) {
+    if (missingSecretAbort || action === 'dlq_immediate' || attemptsMade >= maxRetries) {
       // The account may have been erased while the attempt ran, after the check above.
       if (!options.skipDlq && !(await this.isOwnerErased(options))) {
-        const lastError = job.data.attempts.at(-1)?.error;
+        const lastError = missingSecretAbort ? MISSING_WEBHOOK_SECRET_REASON : job.data.attempts.at(-1)?.error;
         const dlqEntry: WebhookDlqEntry = {
           id: `dlq_${job.data.deliveryId}`,
           originalDeliveryId: job.data.deliveryId,
@@ -961,13 +1015,13 @@ export class WebhookDispatcher {
             id: job.data.deliveryId,
             event,
             timestamp: Math.floor(Date.now() / 1000),
-            data,
+            data: redactForOutput(data),
           },
           secret,
           failedAt: Date.now(),
           finalStatusCode: attemptResult.finalStatusCode,
           errorMessage: lastError,
-          retryCount: job.data.attempts.length,
+          retryCount: missingSecretAbort ? 0 : attemptsMade,
           status: 'failed',
           ownerUserId: options.ownerUserId,
           ownerKeyId: options.ownerKeyId,
@@ -976,7 +1030,7 @@ export class WebhookDispatcher {
       }
       return {
         ...attemptResult,
-        totalAttempts: job.data.attempts.length,
+        totalAttempts: missingSecretAbort ? 0 : attemptsMade,
         attempts: job.data.attempts,
       };
     }
@@ -984,16 +1038,17 @@ export class WebhookDispatcher {
     if (await this.isOwnerErased(options)) {
       return {
         ...attemptResult,
-        totalAttempts: job.data.attempts.length,
+        totalAttempts: attemptsMade,
         attempts: job.data.attempts,
       };
     }
 
-    const delayMs = computeRetryDelay(job.data.attempts.length);
+    const retryHeaders = retryAfterHeader ? { 'retry-after': retryAfterHeader } : undefined;
+    const delayMs = computeRetryDelay(attemptsMade, retryHeaders, options.retrySchedule);
     await this.getQueue().add('webhook:delivery', job.data, { ...WEBHOOK_JOB_OPTIONS, delay: delayMs });
     return {
       ...attemptResult,
-      totalAttempts: job.data.attempts.length,
+      totalAttempts: attemptsMade,
       attempts: job.data.attempts,
     };
   }

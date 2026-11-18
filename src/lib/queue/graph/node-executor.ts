@@ -17,6 +17,7 @@ import { refusalCodeList } from '../../refusal-codes';
 import { graphNodeJobId, nodeOutputKey, sanitizeNodeOutputFilename } from './node-jobs';
 import { openUrlNodeSecrets } from './sealed-nodes';
 import { exportToCustomerStorage, importFromCustomerStorage } from './node-storage-io';
+import { STORAGE_EXPORT_OPERATIONS, STORAGE_IMPORT_OPERATIONS } from '../../jobs/graph-operations';
 import { mapWithConcurrency } from '../../conversions/ocr-page-batch';
 import { MAX_STITCH_BUFFER_SIZE, MultiVolumeBufferOverflowError } from '../../conversions/archive-split';
 import {
@@ -623,12 +624,6 @@ export async function processGraphNodeJob(
         break;
       }
 
-      case 'import.s3':
-      case 'import.sftp': {
-        outputKeys = await importFromCustomerStorage(job, effectiveStorage, node, graphNodeJobId(graphId, nodeId));
-        break;
-      }
-
       case 'convert': {
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
@@ -929,12 +924,6 @@ export async function processGraphNodeJob(
         break;
       }
 
-      case 'export.s3':
-      case 'export.sftp': {
-        outputKeys = await exportToCustomerStorage(job, effectiveStorage, node, inputArtifacts, graphNodeJobId(graphId, nodeId));
-        break;
-      }
-
       case 'export.internal': {
         outputKeys = await promoteResults(effectiveStorage, { graphId, nodeId, inputArtifacts, signal: attemptSignal });
         await job.log(`Promoted ${outputKeys.length} result(s) for download`);
@@ -942,6 +931,14 @@ export async function processGraphNodeJob(
       }
 
       default: {
+        if (STORAGE_IMPORT_OPERATIONS.has(node.op)) {
+          outputKeys = await importFromCustomerStorage(job, effectiveStorage, node as Parameters<typeof importFromCustomerStorage>[2], graphNodeJobId(graphId, nodeId));
+          break;
+        }
+        if (STORAGE_EXPORT_OPERATIONS.has(node.op)) {
+          outputKeys = await exportToCustomerStorage(job, effectiveStorage, node as Parameters<typeof exportToCustomerStorage>[2], inputArtifacts, graphNodeJobId(graphId, nodeId));
+          break;
+        }
         const runner = NODE_RUNNERS[(node as { op: string }).op];
         if (runner === undefined) throw new Error(`Unsupported graph node operation: ${(node as { op: string }).op}`);
         outputKeys.push(...(await runner(nodeContext, node, job)));

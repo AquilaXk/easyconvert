@@ -36,3 +36,13 @@ export function buildRateLimitHeaders(quota: QuotaUsage): Record<string, string>
 
   return headers;
 }
+
+/** Applies IETF `RateLimit-*` and `X-RateLimit-*` headers onto an outgoing Response without overwriting an existing Retry-After. */
+export function withRateLimitHeaders<T extends Response>(response: T, quota: QuotaUsage | undefined): T {
+  if (!quota) return response;
+  for (const [key, value] of Object.entries(buildRateLimitHeaders(quota))) {
+    if (key === 'Retry-After' && response.headers.has('Retry-After')) continue;
+    response.headers.set(key, value);
+  }
+  return response;
+}

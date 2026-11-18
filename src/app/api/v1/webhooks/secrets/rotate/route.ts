@@ -9,6 +9,7 @@ import {
   WebhookTargetRequiredError,
 } from '@/lib/api-keys/webhook-secret-store';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { withRateLimitHeaders } from '@/lib/api/rate-limit';
 import { AuthStoreUnavailableError } from '@/lib/auth/store-unavailable';
 import {
   validateOrProblem,
@@ -33,15 +34,27 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // 1. Authenticate caller (requires 'convert:write' scope or a session). Which secrets it may rotate is decided in step 3b.
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write' });
   if (!auth.authorized || !auth.user) {
-    return createProblemDetailsResponse(
-      auth.status ?? 401,
-      auth.error ?? 'Unauthorized',
-      instanceUri,
-      undefined,
-      auth.problemType,
-      authErrorHeaders(auth)
+    return withRateLimitHeaders(
+      createProblemDetailsResponse(
+        auth.status ?? 401,
+        auth.error ?? 'Unauthorized',
+        instanceUri,
+        undefined,
+        auth.problemType,
+        authErrorHeaders(auth)
+      ),
+      auth.rateLimit
     );
   }
+
+  return withRateLimitHeaders(await rotateSecretAuthorized(req, instanceUri, auth as ApiAuthResult & { user: NonNullable<ApiAuthResult['user']> }), auth.rateLimit);
+}
+
+async function rotateSecretAuthorized(
+  req: NextRequest,
+  instanceUri: string,
+  auth: ApiAuthResult & { user: NonNullable<ApiAuthResult['user']> }
+): Promise<NextResponse> {
 
   // 2. Parse request payload
   let rawBody: unknown;

@@ -305,7 +305,7 @@ describe('Phase 3: Auth & Developer API Enterprise Hardening', () => {
   });
 
   describe('OpenAPI 3.1 Specification Serving & Route Parity', () => {
-    it('serves OpenAPI 3.1 specification at /api/v1/openapi.json matching /api/openapi.json', async () => {
+    it('serves public OpenAPI 3.1 specification at /api/v1/openapi.json without x-internal routes', async () => {
       const resV1 = await getOpenApiV1Handler();
       expect(resV1.status).toBe(200);
       const specV1 = await resV1.json();
@@ -318,7 +318,31 @@ describe('Phase 3: Auth & Developer API Enterprise Hardening', () => {
       expect(specV1.info.title).toContain('EasyConvert');
       expect(specV1.paths['/api/v1/convert']).toBeDefined();
       expect(specV1.paths['/api/v1/jobs']).toBeDefined();
-      expect(specV1).toEqual(specRoot);
+
+      expect(specRoot.paths['/api/queue/stats']).toBeDefined();
+      expect(specRoot.paths['/api/health/conversion']).toBeDefined();
+      expect(specV1.paths['/api/queue/stats']).toBeUndefined();
+      expect(specV1.paths['/api/health/conversion']).toBeUndefined();
+      expect(specV1.paths['/api/og']).toBeUndefined();
+
+      const httpMethods = new Set(['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace']);
+      const expectedPublicPaths: Record<string, Record<string, unknown>> = {};
+      for (const [route, pathItem] of Object.entries(specRoot.paths as Record<string, Record<string, unknown>>)) {
+        const filtered: Record<string, unknown> = {};
+        let opCount = 0;
+        for (const [key, val] of Object.entries(pathItem)) {
+          if (httpMethods.has(key.toLowerCase())) {
+            if ((val as { 'x-internal'?: boolean })?.['x-internal'] !== true) {
+              filtered[key] = val;
+              opCount++;
+            }
+          } else {
+            filtered[key] = val;
+          }
+        }
+        if (opCount > 0) expectedPublicPaths[route] = filtered;
+      }
+      expect(specV1).toEqual({ ...specRoot, paths: expectedPublicPaths });
     });
   });
 });

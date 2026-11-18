@@ -52,7 +52,7 @@ export function itRecoversAGraphStart(controls: GraphRecoveryControls): void {
 
   /** A graph whose state was stored while its first node job was refused, so its start threw; its reservation holds a unit. */
   async function storedButNotQueued() {
-    vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+    vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
     const { scheduler, refuseNodeJobs } = controls.scheduler();
     const unit = await redisKeyStore.reserveQuota(controls.owner(), 1);
     expect(unit.allowed).toBe(true);
@@ -95,7 +95,7 @@ export function itRecoversAGraphStart(controls: GraphRecoveryControls): void {
   } as const;
 
   it(LOST_CANCEL_REPLY_CASE[controls.lostCancelReply], async () => {
-    vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+    vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
     const { scheduler, refuseNodeJobs, cancelledNodeJobs, loseTheNextCancelReply } = controls.scheduler();
     const graphId = `graph_recovery_${crypto.randomBytes(6).toString('hex')}`;
     const input = `uploads/${graphId}/a.csv`;
