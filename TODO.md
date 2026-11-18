@@ -4,7 +4,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Launch gates and dated tasks
 - On or after 2026-11-19 (7 days after the `v0.10.7` tag of 2026-11-12, the first release that writes `__Host-easyconvert_session`; confirm the production deploy date): drop `easyconvert_session` from `SESSION_COOKIE_NAMES` (`src/lib/auth/session-cookie.ts`) and its row from both privacy texts, with a new legal version (`tests/legal-values.test.ts` names every name in `SESSION_COOKIE_NAMES` and fails until the rows match).
-- Install the Redis backup timer on the host (`deploy/oci/easyconvert-redis-backup.timer`) on or after 2026-12-08 (30-day notice of the new privacy text).
+- Install the Redis backup timer on the host (`deploy/oci/easyconvert-redis-backup.timer`) on or after 2026-12-08 (30-day notice of the new privacy text), and optionally enable `REDIS_BACKUP_OFFHOST_ENABLED=true` once the privacy storage location notice covers the off-host S3/OCI bucket (entry 326).
 - Before Paddle billing goes on (entries 262 and 285): run one sandbox purchase of a package and one of a subscription end to end (account, the thirteen `PADDLE_` variables with the nine price ids, notification destination to `/api/billing/webhook` for subscription, transaction and adjustment events, CSP if one is added for `cdn.paddle.com` and checkout frames), then a refund of the package; check the webhook edge bucket (entry 277), whether an adjustment can arrive before its payment, whether the clock log stays silent, what the first hourly `[billing] reconcile` run reports against the sandbox lists, what `transaction.completed` carries in `details.totals.total` and `custom_data`, where `currentPeriodEnd` sits after a renewal and `subscriptions.update` of a switch (entry 285), and that `[billing] portal session failed` logs no authorization header or key.
 - Turn billing on (the thirteen `PADDLE_` variables) on or after 2026-12-13, when the terms published on 2026-11-13 take effect; until then the pricing page shows the package and the subscription as coming soon.
 
@@ -20,12 +20,11 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Install `epubcheck` in the Linux VM so `ORACLE_STRICT_MODE=1 npm run bench:quality -- --parity --family document` does not stop at `rich-structure.docx->html` with `MissingToolError`.
 
 ## Speed
-- Investigate `pdf-ops` speed parity on `pdf-gov-000142.pdf` on the Linux arm64 VM (protect 0.80 to 0.82, delete 0.905 to 0.91, extract/reorder/rotate 0.91 to 0.93 after entry 292 brought split to 0.95 to 0.96; zero-copy `pdf-text-worker` transfer landed in entry 315): find why `native/qpdf-runner` declines 105 of 105 jobs on Ubuntu 24.04 there, and decide whether `--compression-level=1` (-0.6 ms of 7.3 ms for +0.3% bytes) is wanted.
+- Investigate `pdf-ops` speed parity on `pdf-gov-000142.pdf` on the Linux arm64 VM (protect 0.80 to 0.82, delete 0.905 to 0.91, extract/reorder/rotate 0.91 to 0.93 after entry 292 brought split to 0.95 to 0.96; zero-copy `pdf-text-worker` transfer landed in entry 315, and the Ubuntu 24.04 arm64 `native/qpdf-runner` 105/105 decline was resolved in entry 322): decide whether `--compression-level=1` (-0.6 ms of 7.3 ms for +0.3% bytes) is wanted.
 - Cut camera-RAW-to-GIF time further (`3fr` 1.88 s, `mos` 1.23 s, `arw` 337 ms after entries 279, 313 and 315): split the palette histogram/median-cut/k-means step across pool threads, decide whether multi-segment parallel LZW (~200 ms saved on `3fr`, <0.01% byte change) is acceptable, and profile `dcraw_emu` on `3fr` (0.9 s).
 
 ## Operations and security
-- Watch `open-bytes` refusals from abandoned uploads whose declared bytes stay reserved until the 24 h session expires (only `/api/storage/multipart` renews the idle hour per part, entry 296).
-- Watch `auth_mail_budget level=warn` (350 mails/day; verification stops at 400, resets at 480, entry 288) and move auth mail to a dedicated provider before sign-ups reach the cap (`src/lib/auth/mail-budget.ts`).
+- Watch `auth_mail_budget level=warn` (350 mails/day; verification stops at 400, resets at 480, entry 288) and move auth mail to a dedicated provider before sign-ups reach the cap, raising `AUTH_MAIL_DAILY_WARN`, `AUTH_MAIL_DAILY_VERIFY_CAP` and `AUTH_MAIL_DAILY_HARD_CAP` via `.env` (entry 326).
 
 ## Tests, CI and code health
 - Re-pin `book-pg2701.epub` to an archived capture taken after its 2026-11-08 rebuild with a `gutenberg.org` mirror, and re-measure the `book-pg84.epub` quality rows against its rebuilt bytes (entry 224).
@@ -34,7 +33,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 ## Approved backlog (QA 2026-11-12: every Later and Waiting item is approved)
 - Engine choice, second step (entry 267): install a second engine version when a pair needs it, expose `default` and `latest` flags in `GET /api/formats`, show per-node engine and version in the graph view, and probe engine versions at worker startup.
 - Turn website capture on (`CAPTURE_WEBSITE_ENABLED`, entry 270) once Chromium runs inside a relay-only network namespace with user-namespace/file confinement and is verified against Debian 13 Qt 6.8, then link its slugs in `TOOL_ROUTES`.
-- Presets, watched sources, and native GCS, Azure Blob and WebDAV execution nodes (`src/lib/api/byos-provider-guard.ts`).
+- Presets and watched sources.
 - Additional UI locales beyond `en` and `ko`, and dedicated PDF sign and content-redaction engines.
 - Evaluation-size sample sets: 30+ video, 30+ RAW from 10 makers, 40+ audio, 60+ PDF stress files.
 - Learned OCR layout tier: pick a permissively licensed layout model and record its model and data provenance.
