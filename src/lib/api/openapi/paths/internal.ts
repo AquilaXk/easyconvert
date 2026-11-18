@@ -1121,6 +1121,43 @@ export const internalPaths = {
       },
     },
   },
+  '/api/og': {
+    get: {
+      ...INTERNAL,
+      summary: 'Get Localized Social Preview Card',
+      description:
+        'Renders a 1200x630 PNG OpenGraph and Twitter preview card for a canonical public page path in a supported locale (`en` or `ko`).',
+      operationId: 'getSocialPreviewCard',
+      security: PUBLIC_ACCESS,
+      parameters: [
+        {
+          name: 'locale',
+          in: 'query',
+          required: false,
+          description: 'Card locale (`en` or `ko`; defaults to `en`).',
+          schema: { type: 'string', enum: ['en', 'ko'], default: 'en' },
+        },
+        {
+          name: 'path',
+          in: 'query',
+          required: false,
+          description: 'Canonical root-relative public page path (for example `/`, `/jpg-to-webp`, `/merge-pdf`, `/pricing`).',
+          schema: { type: 'string', default: '/', maxLength: 256 },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Rendered 1200x630 PNG social preview card.',
+          content: {
+            'image/png': { schema: { type: 'string', format: 'binary' } },
+          },
+        },
+        '400': createProblemResponse('Unsupported locale or malformed `path` query parameter.'),
+        '404': createProblemResponse('No public page exists at the requested `path`.'),
+        '429': createTooManyRequestsResponse(),
+      },
+    },
+  },
   '/api/openapi.json': {
     get: {
       ...INTERNAL,
