@@ -99,10 +99,10 @@ function findMarkedPids(marker = SIBLING_MARKER, program = process.execPath): nu
   return found;
 }
 
-async function waitForMarkedPid(): Promise<number> {
+async function waitForMarkedPid(marker: string): Promise<number> {
   const deadline = Date.now() + SIBLING_START_WAIT_MS;
   while (Date.now() < deadline) {
-    const [pid] = findMarkedPids();
+    const pid = findMarkedPids(marker).find((candidate) => isAlive(candidate));
     if (pid !== undefined) return pid;
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
   }
@@ -204,21 +204,30 @@ describe.skipIf(skipUnless('unprivileged user, network and PID namespaces (unsha
     describe.skipIf(skipUnless('pid-init (the PID namespace of every run)', getUnshareCapability().pidInitPath !== ''))('a sibling run of the same worker', () => {
       let siblingEnd: AbortController | undefined;
       let sibling: Promise<unknown> | undefined;
+      let activeMarker = SIBLING_MARKER;
+      let siblingSeq = 0;
 
       afterEach(async () => {
+        const endingMarker = activeMarker;
         siblingEnd?.abort();
         await sibling;
+        const deadline = Date.now() + SIBLING_START_WAIT_MS;
+        while (findMarkedPids(endingMarker).length > 0 && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+        }
         siblingEnd = undefined;
         sibling = undefined;
       });
 
       async function startSibling(): Promise<number> {
+        const marker = `${SIBLING_MARKER}-${process.pid}-${++siblingSeq}`;
+        activeMarker = marker;
         siblingEnd = new AbortController();
-        sibling = executeSandboxedBinary(process.execPath, ['-e', `setTimeout(() => {}, ${SIBLING_LIFETIME_MS})`, SIBLING_MARKER], {
+        sibling = executeSandboxedBinary(process.execPath, ['-e', `setTimeout(() => {}, ${SIBLING_LIFETIME_MS})`, marker], {
           timeoutMs: SIBLING_LIFETIME_MS + CHILD_TIMEOUT_MS,
           signal: siblingEnd.signal,
         }).catch(() => undefined);
-        return waitForMarkedPid();
+        return waitForMarkedPid(marker);
       }
 
       it(
@@ -288,7 +297,7 @@ describe.skipIf(skipUnless('unprivileged user, network and PID namespaces (unsha
         'reads the memory of the program, not of the processes it was started through',
         async () => {
           const programPid = await startSibling();
-          const [wrapper] = findMarkedPids(SIBLING_MARKER, getUnshareCapability().pidInitPath);
+          const [wrapper] = findMarkedPids(activeMarker, getUnshareCapability().pidInitPath);
           expect(wrapper, 'the pid-init process of the sibling').toBeDefined();
           expect(memoryWatchPid(wrapper, 1)).not.toBe(programPid);
           expect(memoryWatchPid(wrapper, 2)).toBe(programPid);
