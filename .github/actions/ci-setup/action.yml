@@ -71,6 +71,8 @@ runs:
       with:
         path: ${{ runner.temp }}/release-downloads
         key: release-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/ci-setup/install-tools.sh', 'scripts/install-vtracer.sh', 'scripts/install-oxipng.sh', 'scripts/install-pandoc.sh', 'scripts/install-vmaf.sh', 'scripts/install-onnx-ocr-models.sh') }}
+        # Every file inside release-downloads is verified against its pinned SHA-256 on every use, so an older cache seeds a new key.
+        restore-keys: release-downloads-${{ runner.os }}-${{ runner.arch }}-
 
     # The DWG reader is built from the release archive pinned in scripts/install-libredwg.sh, so its hash is the key.
     - name: Prepare the DWG reader directory
