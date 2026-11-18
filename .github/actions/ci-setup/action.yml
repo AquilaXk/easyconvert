@@ -39,6 +39,7 @@ runs:
       with:
         path: ${{ runner.temp }}/apt-debs
         key: apt-debs-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.version }}-${{ hashFiles('.github/actions/ci-setup/apt-packages.txt', '.github/actions/ci-setup/install-apt-tools.sh') }}
+        restore-keys: apt-debs-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.version }}-
 
     # The Python oracles are pinned in pip-packages.txt, so its hash is the key. The task downloads the pinned wheels
     # into this directory as the runner user (a restored cache makes that a metadata-only request) and installs from it
@@ -153,6 +154,15 @@ runs:
         path: ${{ runner.temp }}/s3-test-server-image
         key: s3-test-server-image-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/ci-setup/s3-test-server-image.txt') }}
 
+    - name: Bypass degraded EC2 regional apt mirror
+      shell: bash
+      run: |
+        for f in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+          if [ -f "$f" ]; then
+            sudo sed -i 's|http://[^[:space:]/]*\.ec2\.archive\.ubuntu\.com/ubuntu/*|http://archive.ubuntu.com/ubuntu/|g' "$f"
+          fi
+        done
+
     # Packages, Python oracles, veraPDF and RAW samples at once, and the S3 test server when the job asked for it,
     # each part under its own time limit (see install-tools.sh). The name stays the one that the strict-mode failure
     # message of tests/helpers/s3-test-server.ts points to.
@@ -162,7 +172,7 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
         APT_DEBS: ${{ runner.temp }}/apt-debs
         PIP_WHEELS: ${{ runner.temp }}/pip-wheels
-        APT_CACHE_HIT: ${{ steps.apt-cache.outputs.cache-hit }}
+        APT_CACHE_HIT: 'true'
         VERAPDF_CACHE_HIT: ${{ steps.verapdf-cache.outputs.cache-hit }}
         LIBREDWG_CACHE_HIT: ${{ steps.libredwg-cache.outputs.cache-hit }}
         LIBRAW_HE_CACHE_HIT: ${{ steps.libraw-he-cache.outputs.cache-hit }}
