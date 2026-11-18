@@ -294,6 +294,118 @@ describe('P0-1: Durable Webhook Retry Queue (svix pattern)', () => {
       resetWorkerLifecycleState();
     }
   });
+
+  it('does not boot webhook worker in distributed enqueueDelivery, seals previousSecret, purges concurrent account erasure artifacts, and boots worker via conversion Worker lifecycle', async () => {
+    vi.spyOn(dns.promises, 'lookup').mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
+    const { dispatcher, seen, responses } = makeLocalDispatcher();
+    const owner = await userStore.createUser({ email: `whdist_${Date.now()}@test.local`, name: 'WHD', tier: 'paid' });
+
+    const addSpy = vi.fn(async (_name: string, payload: unknown) => ({ id: 'job_dist_1', data: payload } as never));
+    vi.spyOn(dispatcher, 'getQueue').mockReturnValue({ isDistributed: true, add: addSpy, remove: vi.fn(async () => true) } as never);
+    const workerSpy = vi.spyOn(dispatcher, 'getWorker');
+
+    await dispatcher.enqueueDelivery(
+      'https://hooks.example.com/dist',
+      'job.completed',
+      { jobId: 'job_dist' },
+      'whsec_cur',
+      { ownerUserId: owner.id, previousSecret: 'whsec_prev', previousExpiresAt: Date.now() + 60_000 }
+    );
+    expect(workerSpy).not.toHaveBeenCalled();
+    expect(addSpy).toHaveBeenCalledTimes(1);
+    const queuedData = addSpy.mock.calls[0][1] as {
+      deliveryId: string;
+      secret: string;
+      sealedPreviousSecret?: string;
+      options?: Record<string, unknown>;
+    };
+    expect(queuedData.options?.previousSecret).toBeUndefined();
+    expect(typeof queuedData.sealedPreviousSecret).toBe('string');
+    expect(queuedData.sealedPreviousSecret).not.toContain('whsec_prev');
+    await expect(
+      (dispatcher as unknown as { processQueuedJob: (job: { data: unknown }) => Promise<unknown> }).processQueuedJob({ data: queuedData })
+    ).resolves.toMatchObject({ success: true });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].headers['Webhook-Signature']).toContain(' ');
+    expect(
+      WebhookDispatcher.verifyStandardSignature(
+        seen[0].headers['Webhook-Id'],
+        Number(seen[0].headers['Webhook-Timestamp']),
+        seen[0].body,
+        seen[0].headers['Webhook-Signature'],
+        'whsec_prev'
+      )
+    ).toBe(true);
+
+    // Concurrent account erasure after delayed retry enqueue removes the delayed job immediately.
+    vi.restoreAllMocks();
+    vi.spyOn(dns.promises, 'lookup').mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
+    const { Queue, Worker } = await import('../src/lib/queue/bullmq-engine');
+    const { attachJobLifecycleListeners, startConversionWorker, stopConversionWorker } = await import('../src/lib/queue/conversion-queue');
+    const { webhookDispatcher } = await import('../src/lib/api-keys/webhook-dispatcher');
+
+    const erasedRetryDispatcher = new WebhookDispatcher(undefined, (async () => new Response('err', { status: 503 })) as never);
+    dispatchers.push(erasedRetryDispatcher);
+    const retryQueue = erasedRetryDispatcher.getQueue();
+    const removeSpy = vi.spyOn(retryQueue, 'remove');
+    const erasedCheck = vi.spyOn(erasedRetryDispatcher as unknown as { isOwnerErased: () => Promise<boolean> }, 'isOwnerErased');
+    erasedCheck.mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const { sealWebhookSecret } = await import('../src/lib/security/sealed-webhook-secret');
+    await (erasedRetryDispatcher as unknown as { processQueuedJob: (job: unknown) => Promise<unknown> }).processQueuedJob({
+      data: {
+        deliveryId: 'wh_erase_retry_1',
+        targetUrl: 'https://hooks.example.com/erase-retry',
+        event: 'job.completed',
+        data: { ok: true },
+        secret: sealWebhookSecret('whsec_erase', 'wh_erase_retry_1'),
+        options: { ownerUserId: owner.id, maxRetries: 3, retrySchedule: [10_000] },
+        attemptNumber: 1,
+        attempts: [],
+        createdAt: Date.now(),
+      },
+    });
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+
+    // Concurrent account erasure after saveToDlq deletes the DLQ entry immediately.
+    responses.push({ status: 400 });
+    const { dispatcher: dlqEraseDispatcher } = makeLocalDispatcher();
+    const dlqCheck = vi.spyOn(dlqEraseDispatcher as unknown as { isOwnerErased: () => Promise<boolean> }, 'isOwnerErased');
+    dlqCheck.mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    await (dlqEraseDispatcher as unknown as { processQueuedJob: (job: unknown) => Promise<unknown> }).processQueuedJob({
+      data: {
+        deliveryId: 'wh_erase_dlq_1',
+        targetUrl: 'https://hooks.example.com/erase-dlq',
+        event: 'job.failed',
+        data: { ok: false },
+        secret: sealWebhookSecret('whsec_erase', 'wh_erase_dlq_1'),
+        options: { ownerUserId: owner.id, maxRetries: 1 },
+        attemptNumber: 1,
+        attempts: [],
+        createdAt: Date.now(),
+      },
+    });
+    expect(await dlqEraseDispatcher.getDlqEntries(owner.id)).toEqual([]);
+
+    // attachJobLifecycleListeners boots webhook worker only for real Worker instances; stopConversionWorker closes it.
+    const getWhWorkerSpy = vi.spyOn(webhookDispatcher, 'getWorker');
+    const closeWhWorkerSpy = vi.spyOn(webhookDispatcher, 'close').mockResolvedValue(undefined);
+    const fakeEmitter = new (await import('node:events')).EventEmitter();
+    attachJobLifecycleListeners(fakeEmitter as never);
+    expect(getWhWorkerSpy).not.toHaveBeenCalled();
+
+    const tempQueue = new Queue(`hook-boot-${Date.now()}`);
+    const realWorker = new Worker(tempQueue, async () => ({} as never), { concurrency: 1 });
+    attachJobLifecycleListeners(realWorker as never);
+    expect(getWhWorkerSpy).toHaveBeenCalledTimes(1);
+    await realWorker.close();
+    await tempQueue.close();
+
+    getWhWorkerSpy.mockClear();
+    startConversionWorker({ concurrency: 1 });
+    expect(getWhWorkerSpy).toHaveBeenCalledTimes(1);
+    await stopConversionWorker();
+    expect(closeWhWorkerSpy).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('P0-2: BYOS Native GCS, Azure Blob & WebDAV E2E DAG Execution + Security Bounds', () => {
@@ -477,7 +589,7 @@ describe('P0-2: BYOS Native GCS, Azure Blob & WebDAV E2E DAG Execution + Securit
     const davGraph = sealGraph(davGraphId, {
       failurePolicy: 'fail_fast',
       nodes: {
-        imp: { op: 'import.webdav', directory: 'input', credentials: { url: `${davServer.origin}/dav`, username: 'u', password: 'p' } },
+        imp: { op: 'import.webdav', directory: 'input/', credentials: { url: `${davServer.origin}/dav`, username: 'u', password: 'p' } },
         conv: { op: 'convert', input: 'imp', targetFormat: 'json' },
         exp: { op: 'export.webdav', input: 'conv', directory: 'output', credentials: { url: `${davServer.origin}/dav`, username: 'u', password: 'p' } },
       },
@@ -665,6 +777,21 @@ describe('P0-3: CORS (Hono pattern), RateLimit Headers, Upload presign & open-by
     const presignBody = await presignRes.json();
     expect(presignBody.success).toBe(true);
     expect(presignBody.url).toContain('partNumber=120');
+
+    for (const badBody of ['null', '[1, 2]']) {
+      const badPresign = await postV1Uploads(
+        new NextRequest('http://localhost:3000/api/v1/uploads?action=presign', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${secretKey}`, 'Content-Type': 'application/json' },
+          body: badBody,
+        }),
+        { params: Promise.resolve({}) }
+      );
+      expect(badPresign.status).toBe(400);
+      const errText = JSON.stringify(await badPresign.json());
+      expect(errText).not.toContain('Cannot read properties');
+      expect(errText).not.toContain('TypeError');
+    }
 
     const budgetModule = await import('../src/lib/api-keys/anonymous-upload-budget');
     const resumeSpy = vi.spyOn(budgetModule, 'resumeUploadReservation');

@@ -486,7 +486,11 @@ interface PresignPartBody {
   expiresInSeconds?: unknown;
 }
 
-function presignPartBodyProblem(body: PresignPartBody): string | undefined {
+function presignPartBodyProblem(rawBody: unknown): string | undefined {
+  if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
+    return 'Presign request body must be a JSON object.';
+  }
+  const body = rawBody as PresignPartBody;
   if (typeof body.uploadId !== 'string' || !body.uploadId) {
     return 'Missing required "uploadId" in presign payload.';
   }
@@ -526,9 +530,10 @@ async function handlePresignUploadPart(
   instanceUri: string,
   userId: string
 ): Promise<Response> {
-  const body = (await req.json().catch(() => ({}))) as PresignPartBody;
-  const inputProblem = presignPartBodyProblem(body);
+  const rawBody: unknown = await req.json().catch(() => ({}));
+  const inputProblem = presignPartBodyProblem(rawBody);
   if (inputProblem) return createProblemDetailsResponse(400, inputProblem, instanceUri);
+  const body = rawBody as PresignPartBody;
 
   const uploadId = body.uploadId as string;
   const partNumber = body.partNumber as number;

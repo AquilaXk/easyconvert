@@ -73,6 +73,9 @@ async function reportGraphNodeEnded(job: Job<ConversionJobData, ConversionJobRes
 export function attachJobLifecycleListeners(
   worker: Worker<ConversionJobData, ConversionJobResult>
 ): void {
+  if (worker instanceof Worker) {
+    webhookDispatcher.getWorker();
+  }
   // The worker emits `completed` and `failed` once per job, at its end, so each counts one job (src/lib/metrics, docs/slo.md).
   worker.on('completed', (job: Job<ConversionJobData, ConversionJobResult>) => recordJobCompleted(job));
   worker.on('failed', (job: Job<ConversionJobData, ConversionJobResult>, err: unknown) => recordJobFailed(job, err));
@@ -644,6 +647,7 @@ export async function stopConversionWorker(): Promise<void> {
     await workerInstance.close();
     workerInstance = null;
   }
+  await webhookDispatcher.close();
 }
 
 export function getConversionWorker(): Worker<ConversionJobData, ConversionJobResult> {

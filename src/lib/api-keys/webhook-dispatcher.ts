@@ -102,7 +102,7 @@ const WEBHOOK_FAILED_JOB_KEEP_SECONDS = 24 * 3600;
 const WEBHOOK_JOB_OPTIONS = {
   removeOnComplete: { age: WEBHOOK_COMPLETED_JOB_KEEP_SECONDS },
   removeOnFail: { age: WEBHOOK_FAILED_JOB_KEEP_SECONDS },
-  removeDataOnFinish: ['secret'],
+  removeDataOnFinish: ['secret', 'sealedPreviousSecret'],
 } as const;
 
 export interface WebhookJobData<T = Record<string, unknown>> {
@@ -112,6 +112,8 @@ export interface WebhookJobData<T = Record<string, unknown>> {
   data: T;
   /** The signing secret sealed for `deliveryId` (a retry is a new job with the same delivery id), or empty. */
   secret: string;
+  /** Previous signing secret sealed for `deliveryId` during key rotation grace windows. */
+  sealedPreviousSecret?: string;
   options?: WebhookDispatchOptions;
   attemptNumber: number;
   attempts: WebhookDeliveryAttempt[];
@@ -939,15 +941,19 @@ export class WebhookDispatcher {
   ): Promise<Job<WebhookJobData, WebhookDispatchResult>> {
     const deliveryId = options.deliveryId || `wh_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
     const queue = this.getQueue();
-    this.getWorker();
+    if (!queue.isDistributed) {
+      this.getWorker();
+    }
 
+    const { previousSecret, ...safeOptions } = options;
     const jobData: WebhookJobData<T> = {
       deliveryId,
       targetUrl,
       event,
       data: redactForOutput(data),
       secret: sealWebhookSecret(secret, deliveryId),
-      options,
+      ...(previousSecret ? { sealedPreviousSecret: sealWebhookSecret(previousSecret, deliveryId) } : {}),
+      options: safeOptions,
       attemptNumber: 1,
       attempts: [],
       createdAt: Date.now(),
@@ -969,8 +975,12 @@ export class WebhookDispatcher {
       return { id: job.data.deliveryId, url: targetUrl, event, success: false, skipped: true, totalAttempts: 0, durationMs: 0, attempts: [] };
     }
     const secret = openWebhookSecret(job.data.secret, job.data.deliveryId);
+    const previousSecret = job.data.sealedPreviousSecret
+      ? openWebhookSecret(job.data.sealedPreviousSecret, job.data.deliveryId)
+      : options.previousSecret;
     const attemptResult = await this.dispatch(targetUrl, event, data, secret, {
       ...options,
+      ...(previousSecret !== undefined ? { previousSecret } : {}),
       maxRetries: 1,
       deliveryId: job.data.deliveryId,
       skipDlq: true,
@@ -1027,6 +1037,9 @@ export class WebhookDispatcher {
           ownerKeyId: options.ownerKeyId,
         };
         await this.saveToDlq(dlqEntry).catch(() => {});
+        if (await this.isOwnerErased(options)) {
+          await this.dlq.remove([{ id: dlqEntry.id, ownerUserId: dlqEntry.ownerUserId }]).catch(() => {});
+        }
       }
       return {
         ...attemptResult,
@@ -1045,7 +1058,11 @@ export class WebhookDispatcher {
 
     const retryHeaders = retryAfterHeader ? { 'retry-after': retryAfterHeader } : undefined;
     const delayMs = computeRetryDelay(attemptsMade, retryHeaders, options.retrySchedule);
-    await this.getQueue().add('webhook:delivery', job.data, { ...WEBHOOK_JOB_OPTIONS, delay: delayMs });
+    const retryQueue = this.getQueue();
+    const retryJob = await retryQueue.add('webhook:delivery', job.data, { ...WEBHOOK_JOB_OPTIONS, delay: delayMs });
+    if (await this.isOwnerErased(options)) {
+      await retryQueue.remove(retryJob.id).catch(() => {});
+    }
     return {
       ...attemptResult,
       totalAttempts: attemptsMade,

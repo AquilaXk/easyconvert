@@ -260,7 +260,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
     if (dirProblem) {
       throw new StorageInvalidKeyError(`directory ${dirProblem}`, this.providerName);
     }
-    const cleanDir = stripLeadingSlashes(directory);
+    const cleanDir = stripSlashes(directory);
     const url = cleanDir
       ? `${this.baseUrl}/${encodeSafePathSegments(cleanDir, this.providerName)}/`
       : `${this.baseUrl}/`;
