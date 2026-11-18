@@ -136,18 +136,20 @@ export function parseOffhostConfig(env = process.env) {
   };
 }
 
-function buildAad(rdbBasename, plaintextSha256, plaintextLength) {
+function buildAad(rdbBasename, plaintextLength) {
   if (!BACKUP_RDB_NAME.test(rdbBasename)) {
     throw new OffhostBackupError(`Invalid Redis backup basename: ${rdbBasename}`);
   }
-  if (!SHA256_HEX.test(plaintextSha256)) {
-    throw new OffhostBackupError('Invalid plaintext SHA-256 digest');
-  }
-  return Buffer.from(`ECRDB01:${rdbBasename}:${plaintextSha256}:${plaintextLength}`, 'utf8');
+  return Buffer.from(`ECRDB01:${rdbBasename}:${plaintextLength}`, 'utf8');
 }
 
 function deriveAesKey(encryptionKey, salt) {
-  return Buffer.from(crypto.hkdfSync('sha256', Buffer.from(encryptionKey, 'utf8'), salt, HKDF_INFO, 32));
+  const ikm = Buffer.from(encryptionKey, 'utf8');
+  try {
+    return Buffer.from(crypto.hkdfSync('sha256', ikm, salt, HKDF_INFO, 32));
+  } finally {
+    ikm.fill(0);
+  }
 }
 
 export function sha256Hex(buffer) {
@@ -156,8 +158,9 @@ export function sha256Hex(buffer) {
 
 /**
  * Encrypts a verified Redis RDB buffer into an `ECRDB01` AES-256-GCM envelope:
- * `[8B magic][32B HKDF salt][12B IV][32B plaintext SHA-256][ciphertext][16B GCM auth tag]`,
- * with `ECRDB01:<rdbBasename>:<plaintextSha256>:<plaintextBytes>` bound as AAD.
+ * `[8B magic][32B HKDF salt][12B IV][AES-GCM(32B plaintext SHA-256 || plaintext)][16B GCM auth tag]`,
+ * with `ECRDB01:<rdbBasename>:<plaintextBytes>` bound as AAD so neither the plaintext digest leaks in headers nor can an
+ * older object be renamed to bypass the 7-day deletion window.
  */
 export function sealRdbEnvelope(plaintext, rdbBasename, encryptionKey, expectedSha256) {
   validateEncryptionKey(encryptionKey);
@@ -168,23 +171,29 @@ export function sealRdbEnvelope(plaintext, rdbBasename, encryptionKey, expectedS
     throw new OffhostBackupError('Plaintext RDB buffer does not begin with REDIS magic');
   }
   const actualSha256 = sha256Hex(plaintext);
-  if (expectedSha256 !== undefined && actualSha256 !== expectedSha256.toLowerCase()) {
-    throw new OffhostBackupError('Plaintext RDB SHA-256 does not match expected digest');
+  if (expectedSha256 !== undefined) {
+    const normalizedExpected = expectedSha256.toLowerCase();
+    if (!SHA256_HEX.test(normalizedExpected) || actualSha256 !== normalizedExpected) {
+      throw new OffhostBackupError('Plaintext RDB SHA-256 does not match expected digest');
+    }
   }
   const digestBytes = Buffer.from(actualSha256, 'hex');
   const salt = crypto.randomBytes(SALT_BYTES);
   const iv = crypto.randomBytes(IV_BYTES);
   const key = deriveAesKey(encryptionKey, salt);
-  const aad = buildAad(rdbBasename, actualSha256, plaintext.length);
-  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv, { authTagLength: TAG_BYTES });
-  cipher.setAAD(aad);
-  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  key.fill(0);
-  return {
-    envelope: Buffer.concat([ENVELOPE_MAGIC, salt, iv, digestBytes, encrypted, tag]),
-    plaintextSha256: actualSha256,
-  };
+  try {
+    const aad = buildAad(rdbBasename, plaintext.length);
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv, { authTagLength: TAG_BYTES });
+    cipher.setAAD(aad);
+    const encrypted = Buffer.concat([cipher.update(digestBytes), cipher.update(plaintext), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return {
+      envelope: Buffer.concat([ENVELOPE_MAGIC, salt, iv, encrypted, tag]),
+      plaintextSha256: actualSha256,
+    };
+  } finally {
+    key.fill(0);
+  }
 }
 
 export function openRdbEnvelope(envelope, rdbBasename, encryptionKey, expectedSha256) {
@@ -198,23 +207,25 @@ export function openRdbEnvelope(envelope, rdbBasename, encryptionKey, expectedSh
   }
   const salt = envelope.subarray(ENVELOPE_MAGIC.length, ENVELOPE_MAGIC.length + SALT_BYTES);
   const iv = envelope.subarray(ENVELOPE_MAGIC.length + SALT_BYTES, HEADER_BYTES);
-  const embeddedSha256 = envelope.subarray(HEADER_BYTES, HEADER_BYTES + 32).toString('hex');
-  if (expectedSha256 !== undefined && embeddedSha256 !== expectedSha256.toLowerCase()) {
-    throw new OffhostBackupError('Encrypted RDB envelope SHA-256 does not match expected digest');
-  }
-  const ciphertext = envelope.subarray(HEADER_BYTES + 32, envelope.length - TAG_BYTES);
+  const ciphertext = envelope.subarray(HEADER_BYTES, envelope.length - TAG_BYTES);
+  const plaintextLength = ciphertext.length - 32;
   const tag = envelope.subarray(envelope.length - TAG_BYTES);
   const key = deriveAesKey(encryptionKey, salt);
-  let plaintext;
+  let inner;
   try {
     const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv, { authTagLength: TAG_BYTES });
-    decipher.setAAD(buildAad(rdbBasename, embeddedSha256, ciphertext.length));
+    decipher.setAAD(buildAad(rdbBasename, plaintextLength));
     decipher.setAuthTag(tag);
-    plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    inner = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   } catch {
     throw new OffhostBackupError('Encrypted RDB authentication failed (wrong key, tampered bytes, or renamed object)');
   } finally {
     key.fill(0);
+  }
+  const embeddedSha256 = inner.subarray(0, 32).toString('hex');
+  const plaintext = inner.subarray(32);
+  if (expectedSha256 !== undefined && embeddedSha256 !== expectedSha256.toLowerCase()) {
+    throw new OffhostBackupError('Encrypted RDB envelope SHA-256 does not match expected digest');
   }
   if (!plaintext.subarray(0, RDB_MAGIC.length).equals(RDB_MAGIC)) {
     throw new OffhostBackupError('Decrypted RDB payload does not start with REDIS magic');
@@ -462,11 +473,13 @@ export async function listRemoteBackups(config) {
         lastModifiedMs: item.lastModifiedMs,
       });
     }
-    if (!parsed.isTruncated || !parsed.nextContinuationToken) break;
+    if (!parsed.isTruncated || !parsed.nextContinuationToken) {
+      results.sort((a, b) => a.rdbName.localeCompare(b.rdbName));
+      return results;
+    }
     token = parsed.nextContinuationToken;
   }
-  results.sort((a, b) => a.rdbName.localeCompare(b.rdbName));
-  return results;
+  throw new OffhostBackupError(`ListObjectsV2 pagination exceeded ${MAX_LIST_PAGES} pages; refusing incomplete retention listing`);
 }
 
 export async function pushEncryptedBackup(config, localRdbPath, expectedSha256) {

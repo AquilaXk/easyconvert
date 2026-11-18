@@ -76,9 +76,41 @@ offhost() { # offhost <subcommand> [args...]
   fi
   [ -f "$HOME_DIR/current/.env" ] || die "node is not on PATH and $HOME_DIR/current/.env is missing"
   web_img="$(docker inspect --format '{{.Config.Image}}' easyconvert-web 2> /dev/null || true)"
-  [ -n "$web_img" ] || die "node is not on PATH and easyconvert-web image could not be inspected"
-  docker run --rm -i --user "$(id -u):$(id -g)" --read-only --cap-drop ALL --security-opt no-new-privileges:true \
-    --env-file "$HOME_DIR/current/.env" -v "$BACKUP_DIR:$BACKUP_DIR:ro" "$web_img" node - "$@" 9>&- < "$script"
+  if [ -z "$web_img" ] && [ -f "$HOME_DIR/current/images.env" ]; then
+    web_img="$(grep -E '^EASYCONVERT_WEB_IMAGE=' "$HOME_DIR/current/images.env" | tail -n 1 | cut -d= -f2- || true)"
+  fi
+  [ -n "$web_img" ] || die "node is not on PATH and easyconvert-web image could not be resolved"
+  (
+    local line key val
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        REDIS_BACKUP_*=*)
+          key="${line%%=*}"
+          case "$key" in
+            REDIS_BACKUP_[A-Z0-9_]*)
+              val="${line#*=}"
+              val="${val%$'\r'}"
+              if [ -z "${!key:-}" ]; then export "$key=$val"; fi
+              ;;
+          esac
+          ;;
+      esac
+    done < "$HOME_DIR/current/.env"
+    exec docker run --rm --user "$(id -u):$(id -g)" --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+      -e REDIS_BACKUP_OFFHOST_ENABLED \
+      -e REDIS_BACKUP_ENCRYPTION_KEY \
+      -e REDIS_BACKUP_S3_ENDPOINT \
+      -e REDIS_BACKUP_S3_REGION \
+      -e REDIS_BACKUP_S3_BUCKET \
+      -e REDIS_BACKUP_S3_PREFIX \
+      -e REDIS_BACKUP_S3_ACCESS_KEY_ID \
+      -e REDIS_BACKUP_S3_SECRET_ACCESS_KEY \
+      -e REDIS_BACKUP_ALLOW_INSECURE_HTTP \
+      -e REDIS_BACKUP_ALLOW_LOOPBACK \
+      -v "$script:/opt/redis-backup-offhost.mjs:ro" \
+      -v "$BACKUP_DIR:$BACKUP_DIR:ro" \
+      "$web_img" node /opt/redis-backup-offhost.mjs "$@" 9>&-
+  )
 }
 
 # The compose invocation of deploy.sh: the project, the env file and the compose file of the running release.

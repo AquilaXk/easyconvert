@@ -166,6 +166,8 @@ describe('Infrastructure advance preparation & CI conformance guards', () => {
       expect(plaintextSha256).toBe(digest);
       expect(envelope.subarray(0, ENVELOPE_MAGIC.length).equals(ENVELOPE_MAGIC)).toBe(true);
       expect(envelope.includes(Buffer.from('REDIS0012', 'ascii'))).toBe(false);
+      // Plaintext SHA-256 is encrypted inside GCM, never exposed in the envelope header
+      expect(envelope.includes(Buffer.from(digest, 'hex'))).toBe(false);
 
       const opened = openRdbEnvelope(envelope, rdbName, TEST_KEK, digest);
       expect(opened.plaintext.equals(SAMPLE_RDB)).toBe(true);
@@ -405,6 +407,70 @@ esac`
         expect(pulled.plaintextSha256).toBe(sha256(SAMPLE_RDB));
         expect(fs.readFileSync(restoredPath).equals(SAMPLE_RDB)).toBe(true);
         expect(fs.statSync(restoredPath).mode & 0o777).toBe(0o600);
+
+        // 5) Host without `node` on PATH falls back to `docker run` + `images.env`, runs prune-age & prune-count, and leaks no JWT_SECRET or argv secret
+        const noNodeBin = path.join(sandbox, 'no-node-bin');
+        fs.mkdirSync(noNodeBin, { recursive: true });
+        for (const cmd of ['awk', 'basename', 'bash', 'cat', 'chmod', 'cut', 'date', 'df', 'dirname', 'find', 'grep', 'head', 'id', 'mkdir', 'mv', 'pwd', 'rm', 'sed', 'sh', 'shasum', 'sha256sum', 'sleep', 'tail', 'tr', 'wc']) {
+          const found = spawnSync('which', [cmd], { encoding: 'utf-8' }).stdout.trim();
+          if (found) fs.symlinkSync(found, path.join(noNodeBin, cmd));
+        }
+        fs.symlinkSync(path.join(bin, 'flock'), path.join(noNodeBin, 'flock'));
+        const dockerArgsLog = path.join(sandbox, 'docker-fallback-args.txt');
+        const dockerEnvLog = path.join(sandbox, 'docker-fallback-env.txt');
+        fs.writeFileSync(path.join(home, 'current', 'images.env'), 'EASYCONVERT_WEB_IMAGE=ghcr.io/example/easyconvert-web@sha256:deadbeef\n');
+        fs.appendFileSync(path.join(home, 'current', '.env'), 'JWT_SECRET=do-not-pass-to-backup-container\n');
+        const expiredFallback = `redis-${stampOf(10 * 86_400_000)}.rdb`;
+        objects.set(`ec-backups/${expiredFallback}.enc`, {
+          body: sealRdbEnvelope(SAMPLE_RDB, expiredFallback, TEST_KEK).envelope,
+          lastModified: new Date(Date.now() - 10 * 86_400_000).toISOString(),
+        });
+        fs.writeFileSync(
+          path.join(noNodeBin, 'docker'),
+          `#!/usr/bin/env bash
+if [ "$1" = "inspect" ]; then exit 1; fi
+if [ "$1" = "run" ]; then
+  printf '%s\\n' "$*" >> "${dockerArgsLog}"
+  printf 'JWT=%s\\n' "\${JWT_SECRET:-}" >> "${dockerEnvLog}"
+  mounted=""
+  args=("$@")
+  for i in "\${!args[@]}"; do
+    case "\${args[$i]}" in
+      *:/opt/redis-backup-offhost.mjs:ro) mounted="\${args[$i]%%:/opt/redis-backup-offhost.mjs:ro}" ;;
+      /opt/redis-backup-offhost.mjs) sub_at=$i ;;
+    esac
+  done
+  exec "${process.execPath}" "$mounted" "\${args[@]:$((sub_at + 1))}"
+fi
+exit 1
+`,
+          { mode: 0o755 }
+        );
+        const fallbackPrune = await new Promise<{ status: number | null; stderr: string }>((resolve, reject) => {
+          const child = spawn('bash', [BACKUP_SCRIPT, 'prune'], {
+            env: {
+              PATH: noNodeBin,
+              EASYCONVERT_HOME: home,
+              BACKUP_DIR: backups,
+              BACKUP_MIN_FREE_MB: '0',
+              BACKUP_POLL_SECONDS: '1',
+              BACKUP_KEEP: '2',
+            } as unknown as NodeJS.ProcessEnv,
+          });
+          let stderr = '';
+          child.stderr.on('data', (d: Buffer) => {
+            stderr += d.toString('utf8');
+          });
+          child.on('error', reject);
+          child.on('close', (code) => resolve({ status: code, stderr }));
+        });
+        expect(fallbackPrune.status, fallbackPrune.stderr).toBe(0);
+        expect(objects.has(`ec-backups/${expiredFallback}.enc`)).toBe(false);
+        const loggedArgs = fs.readFileSync(dockerArgsLog, 'utf-8');
+        expect(loggedArgs).toContain('ghcr.io/example/easyconvert-web@sha256:deadbeef');
+        expect(loggedArgs).not.toContain(TEST_KEK);
+        expect(loggedArgs).not.toContain('SECRET_TEST_KEY');
+        expect(fs.readFileSync(dockerEnvLog, 'utf-8').trim()).toBe('JWT=\nJWT=');
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }

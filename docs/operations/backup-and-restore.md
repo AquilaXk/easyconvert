@@ -54,7 +54,7 @@ The newest `.rdb` must be less than 7 hours old. No alert watches this yet (aler
 
 When `REDIS_BACKUP_OFFHOST_ENABLED=true` is added to the `EASYCONVERT_ENV` secret (only on or after `2026-12-08` and after updating the privacy policy storage location notice), `deploy/oci/redis-backup.sh` invokes `deploy/oci/redis-backup-offhost.mjs` (copied to `$HOME_DIR/current/deploy/oci/redis-backup-offhost.mjs` on every deploy):
 
-- Each `.rdb` is sealed locally before upload in an `ECRDB01` `AES-256-GCM` envelope (`HKDF-SHA256` with a random 32-byte salt, 12-byte nonce, and `AAD` binding `redis-<UTC time>.rdb`, plaintext SHA-256, and byte size) under `REDIS_BACKUP_ENCRYPTION_KEY` (at least 32 UTF-8 bytes) and uploaded via SigV4 HTTPS to `<REDIS_BACKUP_S3_PREFIX>/redis-<UTC time>.rdb.enc`.
+- Each `.rdb` is sealed locally before upload in an `ECRDB01` `AES-256-GCM` envelope (`HKDF-SHA256` with a random 32-byte salt, 12-byte nonce, encrypted 32-byte plaintext SHA-256 prefix, and `AAD` binding `redis-<UTC time>.rdb` and byte size) under `REDIS_BACKUP_ENCRYPTION_KEY` (at least 32 UTF-8 bytes) and uploaded via SigV4 HTTPS to `<REDIS_BACKUP_S3_PREFIX>/redis-<UTC time>.rdb.enc`.
 - On every run (even if `snapshot` fails), `offhost prune-age` deletes remote objects older than `BACKUP_MAX_AGE_DAYS` (7 days) first, and `offhost prune-count` caps kept objects at `BACKUP_KEEP` (28), preserving the 9 days 6 hours upper bound of policy entry 186.
 - None of the `REDIS_BACKUP_*` variables are passed into the `web` or `worker` container environments; only the host backup runner reads `$HOME_DIR/current/.env`.
 - To pull and verify an off-host backup into `$BK` before step 1 of [Restore](#restore):
