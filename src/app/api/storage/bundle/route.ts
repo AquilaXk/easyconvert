@@ -34,7 +34,8 @@ interface BundleRequestBody {
 function deduplicateFileNames(items: readonly BundleFileRequest[]): string[] {
   const used = new Set<string>();
   return items.map((item, index) => {
-    const rawLeaf = path.basename(item.name || '').trim() || `file_${index + 1}`;
+    const candidateName = typeof item.name === 'string' && item.name ? item.name : path.basename(item.key);
+    const rawLeaf = path.basename(candidateName).trim() || `file_${index + 1}`;
     const sanitized = sanitizeNodeOutputFilename(rawLeaf, `file_${index + 1}`);
     const { name: stem, ext } = path.parse(sanitized);
     let candidate = sanitized;

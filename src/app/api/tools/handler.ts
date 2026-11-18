@@ -17,7 +17,7 @@ import { codedRefusal, createProblemDetailsResponse } from '@/lib/api/problem-de
 import type { User } from '@/lib/auth/types';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
-import { saveRetainedResult } from '@/lib/storage/retention-service';
+import { eraseOwnedFile, saveRetainedResult } from '@/lib/storage/retention-service';
 import { sanitizeNodeOutputFilename } from '@/lib/queue/graph/node-jobs';
 import { dispatchSyncWebTool } from '@/lib/queue/wait-for-job';
 import {
@@ -55,7 +55,7 @@ async function answerOf(output: WebToolOutput, caller: User): Promise<NextRespon
       return NextResponse.json({ success: true, entries });
     } catch (err: unknown) {
       if (savedKeys.length > 0) {
-        await Promise.allSettled(savedKeys.map((k) => s3Storage.deleteObject(k)));
+        await Promise.allSettled(savedKeys.map((k) => eraseOwnedFile(s3Storage, k)));
       }
       throw err;
     }

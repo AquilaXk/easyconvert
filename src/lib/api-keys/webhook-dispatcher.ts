@@ -927,8 +927,10 @@ export class WebhookDispatcher {
   }
 
   public async replayDlq(id: string, ownerUserId: string): Promise<WebhookDispatchResult | null> {
+    const initialEntry = await this.getDlqEntry(id, ownerUserId);
+    if (!initialEntry) return null;
     if (this.replayingDlqIds.has(id)) {
-      return skippedReplayResult(id);
+      return skippedReplayResult(initialEntry.originalDeliveryId || initialEntry.id, initialEntry.targetUrl, initialEntry.event as WebhookEvent);
     }
     this.replayingDlqIds.add(id);
 
@@ -1059,11 +1061,15 @@ export class WebhookDispatcher {
     this.circuitBreakers.set(endpointKey, state);
   }
 
-  private async readCircuitState(endpointKey: string): Promise<EndpointCircuitState | null> {
+  private async readCircuitState(endpointKey: string, now: number = Date.now()): Promise<EndpointCircuitState | null> {
     const local = this.circuitBreakers.get(endpointKey);
     if (local) {
-      this.touchCircuitMemory(endpointKey, local);
-      return local;
+      if (now - local.windowStartedAt > CIRCUIT_FAILURE_WINDOW_MS && local.openUntil <= now) {
+        this.circuitBreakers.delete(endpointKey);
+      } else {
+        this.touchCircuitMemory(endpointKey, local);
+        return local;
+      }
     }
     const redis = redisKeyStore.getRedisClient();
     if (!redis || typeof redis.get !== 'function') return null;
@@ -1079,7 +1085,7 @@ export class WebhookDispatcher {
   }
 
   private async getCircuitOpenRemainingMs(endpointKey: string, now: number = Date.now()): Promise<number> {
-    const state = await this.readCircuitState(endpointKey);
+    const state = await this.readCircuitState(endpointKey, now);
     if (!state || state.openUntil <= now) return 0;
     return state.openUntil - now;
   }
@@ -1093,7 +1099,7 @@ export class WebhookDispatcher {
   }
 
   private async recordCircuitFailure(endpointKey: string, now: number = Date.now()): Promise<void> {
-    const prev = await this.readCircuitState(endpointKey);
+    const prev = await this.readCircuitState(endpointKey, now);
     const inWindow = prev && now - prev.windowStartedAt <= CIRCUIT_FAILURE_WINDOW_MS;
     const isHalfOpenReTrip = Boolean(prev && prev.tripCount > 0 && prev.openUntil <= now);
     const consecutiveFailures = inWindow ? prev!.consecutiveFailures + 1 : 1;
