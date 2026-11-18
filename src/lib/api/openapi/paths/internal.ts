@@ -1154,7 +1154,7 @@ export const internalPaths = {
         },
         '400': createProblemResponse('Unsupported locale or malformed `path` query parameter.'),
         '404': createProblemResponse('No public page exists at the requested `path`.'),
-        '429': createTooManyRequestsResponse(),
+        '429': createProblemResponse('Edge burst rate limit exceeded; retry after `Retry-After` seconds.'),
       },
     },
   },
