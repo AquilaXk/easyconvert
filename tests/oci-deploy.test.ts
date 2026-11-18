@@ -106,7 +106,11 @@ describe('docker-compose.prod.yml network exposure', () => {
     expect(command.indexOf('exit 1;')).toBeLessThan(command.indexOf('> /tmp/redis.conf'));
     expect(String(redis.tmpfs)).toContain('/tmp:size=16m,noexec,nosuid,nodev,uid=999,gid=1000,mode=0700');
     expect(redis.healthcheck!.test.join(' ')).toContain('REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping');
-    expect(command).toContain('--maxmemory 256mb');
+    expect(command).toContain('case "$$REDIS_MAXMEMORY" in');
+    expect(command).toContain('--maxmemory "$$REDIS_MAXMEMORY"');
+    expect(redis.environment?.REDIS_MAXMEMORY).toBe('${EASYCONVERT_REDIS_MAXMEMORY:-256mb}');
+    expect(redis.mem_limit).toBe('${EASYCONVERT_REDIS_MEMORY:-512m}');
+    expect(redis.memswap_limit).toBe('${EASYCONVERT_REDIS_MEMORY:-512m}');
     expect(command).toContain('--maxmemory-policy noeviction');
     expect(command).toContain('--appendonly yes');
     expect(command).toContain('--auto-aof-rewrite-min-size 16mb');
@@ -753,9 +757,23 @@ describe('env allowlist', () => {
     for (const name of RETENTION_SETTINGS) expect(allowlist, name).toContain(name);
   });
 
-  it('lists nothing that the compose file does not read', () => {
-    const known = new Set([...referenced, ...passedThrough, 'EASYCONVERT_BUDGET_CPUS', 'EASYCONVERT_BUDGET_MEMORY_GB', 'COMPOSE_PROFILES']);
+  it('lists nothing that the compose file or the host backup runner does not read, and keeps backup keys out of containers', () => {
+    const hostBackupVars = [
+      'REDIS_BACKUP_ENCRYPTION_KEY',
+      'REDIS_BACKUP_OFFHOST_ENABLED',
+      'REDIS_BACKUP_S3_ACCESS_KEY_ID',
+      'REDIS_BACKUP_S3_BUCKET',
+      'REDIS_BACKUP_S3_ENDPOINT',
+      'REDIS_BACKUP_S3_PREFIX',
+      'REDIS_BACKUP_S3_REGION',
+      'REDIS_BACKUP_S3_SECRET_ACCESS_KEY',
+    ];
+    const known = new Set([...referenced, ...passedThrough, 'EASYCONVERT_BUDGET_CPUS', 'EASYCONVERT_BUDGET_MEMORY_GB', 'COMPOSE_PROFILES', ...hostBackupVars]);
     expect(allowlist.filter((name) => !known.has(name))).toEqual([]);
+    for (const service of APP_SERVICES) {
+      const environment = compose.services[service].environment ?? {};
+      for (const name of hostBackupVars) expect(name in environment, `${service} ${name}`).toBe(false);
+    }
   });
 });
 
@@ -819,6 +837,8 @@ describe('deploy.sh budget', () => {
     expect(Number(derived.EASYCONVERT_WORKER_CPUS)).toBe(Number(defaultOf(compose.services.worker.cpus)));
     expect(Number(derived.EASYCONVERT_WEB_CPUS)).toBe(Number(defaultOf(compose.services.web.cpus)));
     expect(Number(derived.EASYCONVERT_REDIS_CPUS)).toBe(Number(defaultOf(compose.services.redis.cpus)));
+    expect(mebibytes(derived.EASYCONVERT_REDIS_MEMORY)).toBe(mebibytes(compose.services.redis.mem_limit));
+    expect(derived.EASYCONVERT_REDIS_MAXMEMORY).toBe(defaultOf(compose.services.redis.environment?.REDIS_MAXMEMORY ?? undefined));
     expect(mebibytes(derived.EASYCONVERT_WORKER_MEMORY)).toBe(mebibytes(compose.services.worker.mem_limit));
     expect(mebibytes(derived.EASYCONVERT_WEB_MEMORY)).toBe(mebibytes(compose.services.web.mem_limit));
     expect(derived.EASYCONVERT_WORKER_CONCURRENCY).toBe(defaultOf(compose.services.worker.environment?.WORKER_CONCURRENCY ?? undefined));
@@ -830,7 +850,7 @@ describe('deploy.sh budget', () => {
       expect(result.status, `${cpus} cpus ${gib} GiB`).toBe(0);
       const derived = values(result.stdout);
       const totalCpus = ['REDIS', 'WEB', 'WORKER'].reduce((sum, key) => sum + Number(derived[`EASYCONVERT_${key}_CPUS`]), 0);
-      const totalMib = mebibytes(derived.EASYCONVERT_WEB_MEMORY) + mebibytes(derived.EASYCONVERT_WORKER_MEMORY) + 512;
+      const totalMib = mebibytes(derived.EASYCONVERT_WEB_MEMORY) + mebibytes(derived.EASYCONVERT_WORKER_MEMORY) + mebibytes(derived.EASYCONVERT_REDIS_MEMORY);
       expect(totalCpus, `${cpus} cpus`).toBeLessThanOrEqual(cpus + 0.05);
       expect(totalMib, `${gib} GiB`).toBeLessThanOrEqual(gib * 1024);
       const jobs = Number(derived.EASYCONVERT_WORKER_CONCURRENCY);

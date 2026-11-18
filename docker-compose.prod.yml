@@ -162,14 +162,15 @@ services:
     oom_score_adj: 500
     cpus: ${EASYCONVERT_REDIS_CPUS:-0.2}
     cpu_shares: 512
-    mem_limit: 512m
-    memswap_limit: 512m
+    mem_limit: ${EASYCONVERT_REDIS_MEMORY:-512m}
+    memswap_limit: ${EASYCONVERT_REDIS_MEMORY:-512m}
     logging: *logging
     networks:
       - backend
     # Persistence is on because users, API keys, quota counters and the queue live here and a restart must not log everyone out or
     # forget keys. The append-only file is rewritten at 16 MB and the data is capped by maxmemory, so the footprint stays near
-    # 2 x 256 MB at worst and a few MB in practice. noeviction: a full Redis refuses writes instead of dropping queued jobs.
+    # 2 x 256 MB at launch (or 2 x EASYCONVERT_REDIS_MAXMEMORY on larger hosts) and a few MB in practice. noeviction: a full Redis
+    # refuses writes instead of dropping queued jobs.
     # The password goes to a config file in the container's own tmpfs (/tmp, mode 0700 for the redis uid; the file is 0600 by the umask)
     # and not to `--requirepass`, which would show in `ps`, `docker top` and `docker inspect`. printf is a shell builtin and sed reads
     # the password from a pipe, so no argv holds it. The healthcheck and the backup script read it from the environment instead.
@@ -179,14 +180,16 @@ services:
       - >-
         umask 077;
         test -n "$$REDIS_PASSWORD" || { echo "REDIS_PASSWORD is empty: refusing to start Redis without a password" >&2; exit 1; };
+        case "$$REDIS_MAXMEMORY" in '' | *[!0-9kmgtKMGTbB]*) echo "REDIS_MAXMEMORY is invalid" >&2; exit 1 ;; esac;
         { printf 'requirepass "'; printf '%s' "$$REDIS_PASSWORD" | sed 's/[\\"]/\\&/g'; printf '"\n'; } > /tmp/redis.conf;
-        exec redis-server /tmp/redis.conf --maxmemory 256mb --maxmemory-policy noeviction
+        exec redis-server /tmp/redis.conf --maxmemory "$$REDIS_MAXMEMORY" --maxmemory-policy noeviction
         --appendonly yes --appendfsync everysec --auto-aof-rewrite-percentage 100 --auto-aof-rewrite-min-size 16mb
         --save "" --protected-mode yes
     environment:
       # Required for the web and worker URL below when this Redis is used; empty here only because a stack that sets REDIS_URL to
       # another Redis does not start this service, and the command refuses an empty password.
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_MAXMEMORY: ${EASYCONVERT_REDIS_MAXMEMORY:-256mb}
     volumes:
       - redis-data:/data
     tmpfs:
@@ -226,6 +229,9 @@ services:
       SMTP_USER:
       SMTP_PASSWORD:
       MAIL_FROM:
+      AUTH_MAIL_DAILY_WARN:
+      AUTH_MAIL_DAILY_VERIFY_CAP:
+      AUTH_MAIL_DAILY_HARD_CAP:
       # Paid plans: all seven empty means they are not on sale (the pricing page says "coming soon"); a part of them stops the start.
       PADDLE_API_KEY:
       PADDLE_WEBHOOK_SECRET:

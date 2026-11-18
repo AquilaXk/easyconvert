@@ -146,9 +146,18 @@ budget() { # budget <cpus> <memory GiB>, empty for the launch default
     if (c !~ /^[0-9]+(\.[0-9]+)?$/ || m !~ /^[0-9]+(\.[0-9]+)?$/ || c < 1.5 || m < 6) { print "budget needs at least 1.5 cpus and 6 GiB" > "/dev/stderr"; exit 1 }
     redis_cpu = 0.2; web_cpu = int(c * 0.34 * 10 + 0.5) / 10; if (web_cpu < 0.5) web_cpu = 0.5
     worker_cpu = int((c - redis_cpu - web_cpu) * 10 + 0.5) / 10
-    total_mib = int(m * 1024); redis_mib = 512; web_mib = int(m * 1024 * 0.275); worker_mib = total_mib - redis_mib - web_mib
+    total_mib = int(m * 1024)
+    redis_mib = 512
+    if (m > 20) {
+      scaled_redis = int((total_mib * 0.025) / 128) * 128
+      if (scaled_redis > 4096) scaled_redis = 4096
+      if (scaled_redis > 512) redis_mib = scaled_redis
+    }
+    redis_maxmem_mb = int(redis_mib / 2)
+    web_mib = int(m * 1024 * 0.275); worker_mib = total_mib - redis_mib - web_mib
     jobs = int(worker_mib / 1024 / 3.4); cap = int(worker_cpu * 2 + 0.999); if (cap < jobs) jobs = cap; if (jobs < 1) jobs = 1
-    printf "EASYCONVERT_REDIS_CPUS=%.1f\nEASYCONVERT_WEB_CPUS=%.1f\nEASYCONVERT_WEB_MEMORY=%dm\n", redis_cpu, web_cpu, web_mib
+    printf "EASYCONVERT_REDIS_CPUS=%.1f\nEASYCONVERT_REDIS_MEMORY=%dm\nEASYCONVERT_REDIS_MAXMEMORY=%dmb\n", redis_cpu, redis_mib, redis_maxmem_mb
+    printf "EASYCONVERT_WEB_CPUS=%.1f\nEASYCONVERT_WEB_MEMORY=%dm\n", web_cpu, web_mib
     printf "EASYCONVERT_WORKER_CPUS=%.1f\nEASYCONVERT_WORKER_MEMORY=%dm\nEASYCONVERT_WORKER_CONCURRENCY=%d\n", worker_cpu, worker_mib, jobs
   }'
 }
@@ -503,7 +512,8 @@ deploy() {
   mkdir -p "$release/docker" "$release/deploy/oci"
   cp "$source_dir/docker-compose.prod.yml" "$release/"
   cp "$source_dir/docker/seccomp-worker.json" "$release/docker/"
-  cp "$source_dir/deploy/oci/prometheus.yml" "$source_dir/deploy/oci/prometheus-alerts.yml" "$source_dir/deploy/oci/alertmanager.yml" "$release/deploy/oci/"
+  cp "$source_dir/deploy/oci/prometheus.yml" "$source_dir/deploy/oci/prometheus-alerts.yml" "$source_dir/deploy/oci/alertmanager.yml" \
+    "$source_dir/deploy/oci/redis-backup-offhost.mjs" "$release/deploy/oci/"
   printf 'EASYCONVERT_WORKER_IMAGE=%s\nEASYCONVERT_WEB_IMAGE=%s\n' "$worker" "$web" > "$release/images.env"
 
   (

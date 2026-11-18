@@ -20,6 +20,7 @@
 set -euo pipefail
 
 HOME_DIR="${EASYCONVERT_HOME:-/opt/easyconvert}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKUP_DIR="${BACKUP_DIR:-/var/lib/easysubway-data/easyconvert/redis-backups}"
 BACKUP_KEEP="${BACKUP_KEEP:-28}"
 BACKUP_MAX_AGE_DAYS="${BACKUP_MAX_AGE_DAYS:-7}"
@@ -42,6 +43,42 @@ is_count() { case "$1" in '' | *[!0-9]*) return 1 ;; *) return 0 ;; esac; }
 
 sha256_of() { # sha256_of <file>: the hex digest
   if command -v sha256sum > /dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+offhost_enabled() {
+  local val="${REDIS_BACKUP_OFFHOST_ENABLED:-}"
+  if [ -z "$val" ] && [ -f "$HOME_DIR/current/.env" ]; then
+    val="$(grep -E '^REDIS_BACKUP_OFFHOST_ENABLED=' "$HOME_DIR/current/.env" | tail -n 1 | cut -d= -f2- || true)"
+  fi
+  case "$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]' | tr -d ' \r\t')" in
+    true | 1) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+offhost_script_path() {
+  if [ -f "$SCRIPT_DIR/redis-backup-offhost.mjs" ]; then
+    printf '%s' "$SCRIPT_DIR/redis-backup-offhost.mjs"
+  elif [ -f "$HOME_DIR/current/deploy/oci/redis-backup-offhost.mjs" ]; then
+    printf '%s' "$HOME_DIR/current/deploy/oci/redis-backup-offhost.mjs"
+  else
+    die "off-host backup is enabled, but redis-backup-offhost.mjs is missing"
+  fi
+}
+
+offhost() { # offhost <subcommand> [args...]
+  local script env_args=() web_img
+  script="$(offhost_script_path)"
+  if [ -f "$HOME_DIR/current/.env" ]; then env_args=(--env-file "$HOME_DIR/current/.env"); fi
+  if command -v node > /dev/null 2>&1; then
+    node "$script" "${env_args[@]}" "$@" 9>&-
+    return
+  fi
+  [ -f "$HOME_DIR/current/.env" ] || die "node is not on PATH and $HOME_DIR/current/.env is missing"
+  web_img="$(docker inspect --format '{{.Config.Image}}' easyconvert-web 2> /dev/null || true)"
+  [ -n "$web_img" ] || die "node is not on PATH and easyconvert-web image could not be inspected"
+  docker run --rm -i --user "$(id -u):$(id -g)" --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+    --env-file "$HOME_DIR/current/.env" -v "$BACKUP_DIR:$BACKUP_DIR:ro" "$web_img" node - "$@" 9>&- < "$script"
 }
 
 # The compose invocation of deploy.sh: the project, the env file and the compose file of the running release.
@@ -154,6 +191,7 @@ snapshot() {
   mv -- "$PART_FILE" "$final"
   PART_FILE=""
   log "backup ok: $final, $size bytes, sha256 $copy_sum"
+  if offhost_enabled; then offhost push "$final" "$copy_sum"; fi
   printf '%s\n' "$final"
 }
 
@@ -178,8 +216,10 @@ main() {
 
   # The age comes first and does not depend on the backup succeeding: a backup that cannot be taken must still not keep old copies.
   prune_by_age
+  if offhost_enabled; then offhost prune-age "$BACKUP_MAX_AGE_DAYS"; fi
   if [ "$action" = backup ]; then snapshot; fi
   prune_by_count
+  if offhost_enabled; then offhost prune-count "$BACKUP_KEEP"; fi
 }
 
 main "$@"

@@ -76,6 +76,7 @@ const STREAM_SIZE_OFFSET = 120;
 /** The longest name a directory entry holds: 32 UTF-16 code units with the terminator ([MS-CFB] 2.6.1). */
 const MAX_NAME_BYTES = 64;
 const TERMINATOR_BYTES = 2;
+const UNALLOCATED_OBJECT = 0;
 const STREAM_OBJECT = 2;
 const ROOT_STORAGE = 5;
 const NO_ENTRY = 0xffffffff;
@@ -302,6 +303,9 @@ function rootNames(entries: readonly DirectoryEntry[]): {
     }
     if (reached.has(id)) return undefined;
     reached.add(id);
+    // [MS-CFB] 2.6.1 / LibreOffice sot/source/sdstor/stgdir.cxx StgDirStrm::SetupEntry: unallocated slots (STG_EMPTY == 0)
+    // zero-fill their sibling/child links instead of setting NOSTREAM (0xFFFFFFFF), so never traverse out of an empty slot.
+    if (entries[id].type === UNALLOCATED_OBJECT) continue;
     const upper = upperCaseAscii(entries[id].name);
     names.add(upper);
     if (entries[id].type === STREAM_OBJECT) {

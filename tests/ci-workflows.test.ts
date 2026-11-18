@@ -368,9 +368,9 @@ describe('the runner image of every workflow job', () => {
       return Object.entries(workflow.jobs).map(([id, job]) => ({ where: `${file} ${id}`, job }));
     });
 
-  it('reads every job of every workflow file: 27 on a runner and 2 that call a reusable workflow', () => {
-    expect(jobs).toHaveLength(29);
-    expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(27);
+  it('reads every job of every workflow file: 28 on a runner and 2 that call a reusable workflow', () => {
+    expect(jobs).toHaveLength(30);
+    expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(28);
     expect(jobs.filter(({ job }) => job.uses !== undefined)).toHaveLength(2);
   });
 

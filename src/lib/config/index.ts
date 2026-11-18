@@ -38,6 +38,11 @@ const DISK_THRESHOLD_ORDER = [
   ['RESULT_DISK_LOW_PERCENT', 'RESULT_DISK_HIGH_PERCENT'],
   ['RESULT_DISK_HIGH_PERCENT', 'RESULT_DISK_REFUSE_PERCENT'],
 ] as const;
+/** Daily authentication mail caps that must be non-decreasing (src/lib/auth/mail-budget.ts). */
+const MAIL_BUDGET_ORDER = [
+  ['AUTH_MAIL_DAILY_WARN', 'AUTH_MAIL_DAILY_VERIFY_CAP'],
+  ['AUTH_MAIL_DAILY_VERIFY_CAP', 'AUTH_MAIL_DAILY_HARD_CAP'],
+] as const;
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -99,6 +104,32 @@ function shadowedNames(env: Env): ReadonlySet<string> {
 
 function appliesTo(roles: readonly ProcessRole[], role: ProcessRole | undefined): boolean {
   return role === undefined || roles.includes(role);
+}
+
+function orderedThresholdFailures(values: ReadonlyMap<string, ParsedValue>): ConfigFailure[] {
+  const failures: ConfigFailure[] = [];
+  for (const tier of JOB_DEADLINE_TIERS) {
+    const base = values.get(`JOB_DEADLINE_BASE_MS_${tier}`);
+    const max = values.get(`JOB_DEADLINE_MAX_MS_${tier}`);
+    if (typeof base === 'number' && typeof max === 'number' && base > max) {
+      failures.push({ variable: `JOB_DEADLINE_BASE_MS_${tier}`, rule: `must not exceed JOB_DEADLINE_MAX_MS_${tier}` });
+    }
+  }
+  for (const [lower, upper] of DISK_THRESHOLD_ORDER) {
+    const below = values.get(lower);
+    const above = values.get(upper);
+    if (typeof below === 'number' && typeof above === 'number' && below >= above) {
+      failures.push({ variable: lower, rule: `must be below ${upper}` });
+    }
+  }
+  for (const [lower, upper] of MAIL_BUDGET_ORDER) {
+    const below = values.get(lower);
+    const above = values.get(upper);
+    if (typeof below === 'number' && typeof above === 'number' && below > above) {
+      failures.push({ variable: lower, rule: `must not exceed ${upper}` });
+    }
+  }
+  return failures;
 }
 
 /**
@@ -257,22 +288,7 @@ export function parseConfig(env: Env, options: LoadConfigOptions = {}): Config {
     }
   }
 
-  for (const tier of JOB_DEADLINE_TIERS) {
-    const base = values.get(`JOB_DEADLINE_BASE_MS_${tier}`);
-    const max = values.get(`JOB_DEADLINE_MAX_MS_${tier}`);
-    if (typeof base === 'number' && typeof max === 'number' && base > max) {
-      failures.push({ variable: `JOB_DEADLINE_BASE_MS_${tier}`, rule: `must not exceed JOB_DEADLINE_MAX_MS_${tier}` });
-    }
-  }
-
-  for (const [lower, upper] of DISK_THRESHOLD_ORDER) {
-    const below = values.get(lower);
-    const above = values.get(upper);
-    if (typeof below === 'number' && typeof above === 'number' && below >= above) {
-      failures.push({ variable: lower, rule: `must be below ${upper}` });
-    }
-  }
-
+  failures.push(...orderedThresholdFailures(values));
   failures.push(...strictSandboxFailures(values));
   failures.push(...billingFailures(isSet, values));
   failures.push(...redisAndExecutionModeFailures(isSet, values, production, options.role));

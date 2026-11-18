@@ -280,7 +280,6 @@ async function runHeadlessOffice(
 ): Promise<WorkerConversionResult | null> {
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
-  assertLegacyCompoundFileReadable(input, src);
   const filterSpec = resolveLibreOfficeFilter(tgt, src, options);
   const sofficeBin = resolveBinary(BINARY_PATHS.soffice, process.env.SOFFICE_PATH);
   if (!sofficeBin) {
@@ -291,6 +290,7 @@ async function runHeadlessOffice(
     return null;
   }
 
+  assertLegacyCompoundFileReadable(input, src);
   // Every run of the office suite, whichever route asks for it, opens the package without its macros.
   input = await officeInputWithoutMacros(input);
   await assertOfficeEmbeddedImagesWithinLimit(input).catch((err: unknown) => { throw asUnreadableDocument(err, src); });

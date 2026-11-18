@@ -1,6 +1,7 @@
 import { BlockList, isIP } from 'node:net';
 import path from 'node:path';
 import { BILLING_ENTRIES } from './schema-billing';
+import { AUTH_MAIL_BUDGET_ENTRIES } from './schema-mail-budget';
 import { REDIS_SCALE_ENTRIES } from './schema-redis-scale';
 import { ANONYMOUS_DAILY_CREDITS, DELIVERED_FILE_RETENTION_MINUTES, PLAN_CONCURRENCY, PLAN_PROCESSING_MINUTES } from '../plan-limits';
 
@@ -784,6 +785,7 @@ const SCHEMA_ENTRIES = [
     secret: false,
     roles: WEB,
   },
+  ...AUTH_MAIL_BUDGET_ENTRIES,
 
   // ---- secrets ----------------------------------------------------------------------------------------
   {

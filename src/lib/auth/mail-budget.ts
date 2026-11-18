@@ -18,9 +18,47 @@ export type MailBudgetKind = 'verify' | 'reset';
 export const MAIL_DAILY_WARN = 350;
 export const MAIL_DAILY_VERIFY_CAP = 400;
 export const MAIL_DAILY_HARD_CAP = 480;
+export const MAIL_DAILY_MAX_CONFIGURABLE = 10_000_000;
 
-const CAPS: Readonly<Record<MailBudgetKind, number>> = { verify: MAIL_DAILY_VERIFY_CAP, reset: MAIL_DAILY_HARD_CAP };
+export interface MailBudgetLimits {
+  readonly warn: number;
+  readonly verifyCap: number;
+  readonly hardCap: number;
+}
+
+const POSITIVE_DIGITS = /^\d+$/;
 const COUNTER_TTL_SECONDS = 2 * 24 * 60 * 60;
+
+function parseBudgetInt(raw: string | undefined, fallback: number, name: string): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const trimmed = raw.trim();
+  if (!POSITIVE_DIGITS.test(trimmed)) {
+    throw new RangeError(`${name} must be a whole number from 1 to ${MAIL_DAILY_MAX_CONFIGURABLE}`);
+  }
+  const value = Number(trimmed);
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAIL_DAILY_MAX_CONFIGURABLE) {
+    throw new RangeError(`${name} must be a whole number from 1 to ${MAIL_DAILY_MAX_CONFIGURABLE}`);
+  }
+  return value;
+}
+
+/**
+ * Resolves daily authentication mail caps from `AUTH_MAIL_DAILY_WARN`, `AUTH_MAIL_DAILY_VERIFY_CAP`, and
+ * `AUTH_MAIL_DAILY_HARD_CAP`, defaulting to the consumer mailbox defaults (`350 / 400 / 480`) and allowing instant
+ * scale-up via `.env` when switching to a dedicated transactional SMTP provider.
+ */
+export function resolveMailBudgetLimits(env: Readonly<Record<string, string | undefined>> = process.env): MailBudgetLimits {
+  const warn = parseBudgetInt(env.AUTH_MAIL_DAILY_WARN, MAIL_DAILY_WARN, 'AUTH_MAIL_DAILY_WARN');
+  const verifyCap = parseBudgetInt(env.AUTH_MAIL_DAILY_VERIFY_CAP, MAIL_DAILY_VERIFY_CAP, 'AUTH_MAIL_DAILY_VERIFY_CAP');
+  const hardCap = parseBudgetInt(env.AUTH_MAIL_DAILY_HARD_CAP, MAIL_DAILY_HARD_CAP, 'AUTH_MAIL_DAILY_HARD_CAP');
+  if (warn > verifyCap) {
+    throw new RangeError('AUTH_MAIL_DAILY_WARN must not exceed AUTH_MAIL_DAILY_VERIFY_CAP');
+  }
+  if (verifyCap > hardCap) {
+    throw new RangeError('AUTH_MAIL_DAILY_VERIFY_CAP must not exceed AUTH_MAIL_DAILY_HARD_CAP');
+  }
+  return { warn, verifyCap, hardCap };
+}
 
 // KEYS[1]: the day's counter; ARGV[1]: seconds to live, ARGV[2]: the cap of the mail's kind. Counts one mail unless the day is at
 // the cap already (then -1, and the count stays), and keeps the counter for two days.
@@ -72,15 +110,19 @@ export async function mailSentToday(): Promise<number> {
 
 /** Whether today's count is below the cap of the kind: a route that must tell the visitor reads this before it makes a mail. */
 export async function mailBudgetLeft(kind: MailBudgetKind): Promise<boolean> {
-  return (await mailSentToday()) < CAPS[kind];
+  const limits = resolveMailBudgetLimits();
+  const cap = kind === 'verify' ? limits.verifyCap : limits.hardCap;
+  return (await mailSentToday()) < cap;
 }
 
 /** Counts one mail and says whether it may be sent; false when the day is at the cap of its kind. Logs the warning and each cap once. */
 export async function reserveMailSend(kind: MailBudgetKind): Promise<boolean> {
-  const sent = await increment(dayKey(), CAPS[kind]);
+  const limits = resolveMailBudgetLimits();
+  const cap = kind === 'verify' ? limits.verifyCap : limits.hardCap;
+  const sent = await increment(dayKey(), cap);
   if (sent === -1) return false;
-  if (sent === MAIL_DAILY_WARN) console.warn(`auth_mail_budget level=warn sent=${sent} cap=${MAIL_DAILY_VERIFY_CAP}`);
-  if (sent === CAPS[kind]) console.error(`auth_mail_budget level=cap kind=${kind} sent=${sent} cap=${CAPS[kind]}`);
+  if (sent === limits.warn) console.warn(`auth_mail_budget level=warn sent=${sent} cap=${limits.verifyCap}`);
+  if (sent === cap) console.error(`auth_mail_budget level=cap kind=${kind} sent=${sent} cap=${cap}`);
   return true;
 }
 

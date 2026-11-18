@@ -8,7 +8,7 @@ Redis holds the accounts, API keys and their hashed secrets, the daily quota cou
 - **Files.** None. User files live on the scratch file system and are deleted minutes after delivery ([README](README.md#object-storage)). There is no object storage and no backup of files.
 - **What a backup holds.** Every account (email address, plan), the hashes of the API keys, encrypted webhook secrets, quota counters, and the job records. The privacy policy says the operator makes no backup of files and results, and describes the record backups. A job sent through the API with the file inline (`inputBufferBase64`, at most 32 MiB) carries that file in its record until the job ends, so a backup taken at that moment holds it for as long as the backup lives (7 days). This is the residual that [entry 186](../policy-decisions.md#186-redis-is-backed-up-every-6-hours-to-the-hosts-data-volume-for-7-days-an-account-is-erased-within-2-days-and-the-status-of-the-service-is-the-uptime-workflows-public-run-history) records; the privacy policy states it (section 3, backup row) from version 2026-11-08.
 - **What a backup needs to be useful.** The env secret `EASYCONVERT_ENV` (kept in the GitHub environment `easyconvert-production`). The key hashes are peppered with `KEY_HASH_PEPPER` and the webhook secrets sealed with `WEBHOOK_SECRET_KEK`: a restore under other values leaves every API key and webhook unusable.
-- **What a backup does not protect against.** Loss of the data disk or of the instance: the copies are on the same volume (`/var/lib/easysubway-data`, which also holds Docker's root and the scratch file system). There is no cloud storage and no paid service. It does protect against a damaged append-only file, a bad deploy or Redis upgrade, a mistaken command and a removed volume. Do not copy a backup off the host: a copy outside the 7-day rule below is a copy the deletion promise does not reach.
+- **What a backup does not protect against.** By default, loss of the data disk or of the instance: the local copies live on the same volume (`/var/lib/easysubway-data`, which also holds Docker's root and the scratch file system). It protects against a damaged append-only file, a bad deploy or Redis upgrade, a mistaken command and a removed volume. Do not copy an unencrypted backup off the host or outside the 7-day pruning rule: a copy outside the 7-day rule below is a copy the deletion promise does not reach. An opt-in encrypted off-host S3/OCI replica (`REDIS_BACKUP_OFFHOST_ENABLED=true`, `deploy/oci/redis-backup-offhost.mjs`) is prepared in code and **off by default**; enable it only on or after `2026-12-08` once the privacy policy storage location notice covers the off-host bucket, and rely on `redis-backup.sh` to enforce the identical 7-day (`BACKUP_MAX_AGE_DAYS`) and 28-copy (`BACKUP_KEEP`) pruning on the remote bucket.
 
 ## Schedule and retention
 
@@ -49,6 +49,19 @@ ls -l --time-style=long-iso /var/lib/easysubway-data/easyconvert/redis-backups/ 
 ```
 
 The newest `.rdb` must be less than 7 hours old. No alert watches this yet (alerts are phase 2 of #899); a failed run shows in `systemctl --failed`. If runs fail for 7 days, the age rule has removed every backup: fix the cause the same day.
+
+### Opt-in encrypted off-host replication (off by default)
+
+When `REDIS_BACKUP_OFFHOST_ENABLED=true` is added to the `EASYCONVERT_ENV` secret (only on or after `2026-12-08` and after updating the privacy policy storage location notice), `deploy/oci/redis-backup.sh` invokes `deploy/oci/redis-backup-offhost.mjs` (copied to `$HOME_DIR/current/deploy/oci/redis-backup-offhost.mjs` on every deploy):
+
+- Each `.rdb` is sealed locally before upload in an `ECRDB01` `AES-256-GCM` envelope (`HKDF-SHA256` with a random 32-byte salt, 12-byte nonce, and `AAD` binding `redis-<UTC time>.rdb`, plaintext SHA-256, and byte size) under `REDIS_BACKUP_ENCRYPTION_KEY` (at least 32 UTF-8 bytes) and uploaded via SigV4 HTTPS to `<REDIS_BACKUP_S3_PREFIX>/redis-<UTC time>.rdb.enc`.
+- On every run (even if `snapshot` fails), `offhost prune-age` deletes remote objects older than `BACKUP_MAX_AGE_DAYS` (7 days) first, and `offhost prune-count` caps kept objects at `BACKUP_KEEP` (28), preserving the 9 days 6 hours upper bound of policy entry 186.
+- None of the `REDIS_BACKUP_*` variables are passed into the `web` or `worker` container environments; only the host backup runner reads `$HOME_DIR/current/.env`.
+- To pull and verify an off-host backup into `$BK` before step 1 of [Restore](#restore):
+  ```
+  node /opt/easyconvert/current/deploy/oci/redis-backup-offhost.mjs --env-file /opt/easyconvert/current/.env list | tail -n 5
+  node /opt/easyconvert/current/deploy/oci/redis-backup-offhost.mjs --env-file /opt/easyconvert/current/.env pull redis-<UTC time>.rdb "$BK/redis-<UTC time>.rdb"
+  ```
 
 ## Account deletion and backups
 
