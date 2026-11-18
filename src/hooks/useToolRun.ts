@@ -14,7 +14,7 @@ export interface ToolFileItem {
 export type ToolPhase = 'idle' | 'running' | 'done' | 'failed';
 
 const PDF_NAME = /\.pdf$/i;
-const ARCHIVE_NAME = /\.(zip|7z|rar|tar|tar\.gz|tgz)$/i;
+const ARCHIVE_NAME = /\.(?:zip|7z|rar|tar|tar\.gz|tgz|tar\.bz2|tbz2|tbz|tar\.xz|txz|tar\.zst|tzst|bz2|xz|zst|gz)$/i;
 /** The tools that take one file: a new file replaces the one before. */
 const SINGLE_FILE_TOOLS: ReadonlySet<WebTool> = new Set<WebTool>([
   'archive-extract',

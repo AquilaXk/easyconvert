@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useTranslations } from 'next-intl';
 import { X, Loader2, AlertCircle } from 'lucide-react';
 import { useModalDialog } from '@/hooks/useModalDialog';
@@ -12,6 +12,14 @@ export interface UrlImportModalProps {
   isOpen?: boolean;
   onClose: () => void;
   onAddFile?: (file: File) => void;
+}
+
+export function decodeHeaderFilename(rawFilename: string): string {
+  try {
+    return decodeURIComponent(rawFilename);
+  } catch {
+    return rawFilename;
+  }
 }
 
 export default function UrlImportModal({
@@ -26,8 +34,24 @@ export default function UrlImportModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
-  useModalDialog(dialogRef, isOpen, onClose);
+  const cancelInFlight = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+  };
+
+  const handleClose = () => {
+    cancelInFlight();
+    onClose();
+  };
+
+  useEffect(() => {
+    if (!isOpen) cancelInFlight();
+    return () => cancelInFlight();
+  }, [isOpen]);
+
+  useModalDialog(dialogRef, isOpen, handleClose);
 
   if (!isOpen) return null;
 
@@ -46,33 +70,46 @@ export default function UrlImportModal({
       return;
     }
 
+    cancelInFlight();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
       const response = await fetch('/api/fetch-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: targetUrl }),
+        signal: controller.signal,
       });
+
+      if (controller.signal.aborted) return;
 
       if (!response.ok) {
         const payload: unknown = await response.json().catch(() => ({}));
+        if (controller.signal.aborted) return;
         setError(urlImportErrorWording(payload, response.status));
         return;
       }
 
       const rawFilename = response.headers.get('X-Filename');
       const filename = rawFilename
-        ? decodeURIComponent(rawFilename)
+        ? decodeHeaderFilename(rawFilename)
         : targetUrl.split('/').pop()?.split('?')[0] || 'remote_file.bin';
 
       const blob = await response.blob();
+      if (controller.signal.aborted) return;
       const file = new File([blob], filename, { type: blob.type || 'application/octet-stream' });
 
       onAddFile?.(file);
       onClose();
     } catch {
+      if (controller.signal.aborted) return;
       setError(t('networkError'));
     } finally {
-      setLoading(false);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        setLoading(false);
+      }
     }
   };
 
@@ -93,7 +130,7 @@ export default function UrlImportModal({
         </div>
         <button
           type="button"
-          onClick={onClose}
+          onClick={handleClose}
           aria-label={t('close')}
           className="min-w-[44px] min-h-[44px] -mr-2 inline-flex items-center justify-center rounded-xs text-ink-2 hover:text-ink hover:bg-sunken transition-colors cursor-pointer"
         >
@@ -135,7 +172,7 @@ export default function UrlImportModal({
         <div className="flex items-center justify-end gap-2.5 pt-1">
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             className="min-h-[44px] px-4 text-sm font-medium text-ink-2 hover:text-ink hover:bg-sunken rounded-xs transition-colors cursor-pointer"
           >
             {t('cancel')}

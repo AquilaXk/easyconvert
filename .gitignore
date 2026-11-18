@@ -43,23 +43,15 @@ dist/
 /.cache/
 .easyconvert/
 
-# Local agent docs
+# Local workspace docs and scratch plans
 AGENTS.md
-GEMINI.md
 .agents/
-.codex/
-
-# Agent configuration, instructions and planning docs stay local
-CLAUDE.md
-CLAUDE.local.md
-.claude/
 implementation_plan.md
 walkthrough.md
 docs/EXECUTION_PLAN*.md
 
-# Git worktrees (manual and Claude Code managed)
+# Git worktrees
 .worktrees/
-.claude/worktrees/
 
 # The base commit a speed run measures the change against (bench/ab-host.ts)
 ab-base/

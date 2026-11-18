@@ -70,8 +70,10 @@ async function recognizeImage(
   file: File,
   arrayBuffer: ArrayBuffer,
   options: ConversionOptions,
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number) => void,
+  signal?: AbortSignal
 ): Promise<OcrResult> {
+  signal?.throwIfAborted();
   const language = resolveTesseractLanguage(options.ocrLanguage);
   let data: { text?: string; blocks?: unknown[] | null };
   try {
@@ -80,6 +82,10 @@ async function recognizeImage(
     const startFailed = new Promise<never>((_, reject) => {
       failStart = reject;
     });
+    const onAbort = () => {
+      failStart(signal?.reason instanceof Error ? signal.reason : new DOMException('Edge OCR aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
     const started = Tesseract.createWorker(language, 1, {
       workerPath: EDGE_OCR_WORKER_PATH,
       corePath: EDGE_OCR_CORE_PATH,
@@ -104,6 +110,7 @@ async function recognizeImage(
     try {
       worker = await Promise.race([started, startFailed]);
     } catch (err: unknown) {
+      signal?.removeEventListener('abort', onAbort);
       void started.then(
         (late) => late.terminate().catch(() => undefined),
         () => undefined
@@ -114,9 +121,11 @@ async function recognizeImage(
       const input = typeof Buffer !== 'undefined' ? Buffer.from(arrayBuffer) : file;
       ({ data } = await Promise.race([worker.recognize(input, {}, { blocks: true }), startFailed]));
     } finally {
+      signal?.removeEventListener('abort', onAbort);
       await worker.terminate().catch(() => undefined);
     }
   } catch (err: unknown) {
+    if (signal?.aborted) throw err;
     if (err instanceof EdgeOcrError) throw err;
     throw new EdgeOcrError(`Edge OCR engine failed: ${describeError(err)}`, { cause: err });
   }
@@ -159,8 +168,10 @@ async function recognizeImage(
 export async function runClientEdgeOcr(
   file: File,
   options: ConversionOptions = {},
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number) => void,
+  signal?: AbortSignal
 ): Promise<EdgeOcrResult> {
+  signal?.throwIfAborted();
   if (!isClientEdgeOcrSupported()) {
     throw new EdgeOcrError('Client-side Edge OCR is not supported in this environment.');
   }
@@ -177,6 +188,7 @@ export async function runClientEdgeOcr(
 
   onProgress?.(10);
   const arrayBuffer = await file.arrayBuffer();
+  signal?.throwIfAborted();
   const fileBytes = new Uint8Array(arrayBuffer);
   const fileName = file.name.replace(/\.[^/.]+$/, '');
 
@@ -187,7 +199,8 @@ export async function runClientEdgeOcr(
   }
 
   onProgress?.(35);
-  const ocrResult = await recognizeImage(file, arrayBuffer, options, onProgress);
+  const ocrResult = await recognizeImage(file, arrayBuffer, options, onProgress, signal);
+  signal?.throwIfAborted();
   onProgress?.(80);
 
   const doc = await PDFDocument.create();
@@ -229,7 +242,8 @@ export async function runClientEdgeOcr(
  */
 export async function tryProcessClientEdgeOcr(
   item: ConversionQueueItem,
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number) => void,
+  signal?: AbortSignal
 ): Promise<{ resultUrl: string; resultSize: number } | null> {
   if (item.options.clientEdgeMode === false || !item.options.ocrEnabled || typeof window === 'undefined') {
     return null;
@@ -238,7 +252,8 @@ export async function tryProcessClientEdgeOcr(
     return null;
   }
 
-  const edgeResult = await runClientEdgeOcr(item.file, item.options, onProgress);
+  const edgeResult = await runClientEdgeOcr(item.file, item.options, onProgress, signal);
+  signal?.throwIfAborted();
   return {
     resultUrl: URL.createObjectURL(edgeResult.blob),
     resultSize: edgeResult.blob.size,

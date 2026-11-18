@@ -13,7 +13,7 @@ export function GET(): NextResponse {
     ['Expires', EXPIRES_ISO],
     ['Preferred-Languages', routing.locales.join(', ')],
     ['Canonical', `${origin}/.well-known/security.txt`],
-    ['Policy', `${origin}/security`],
+    ['Policy', 'https://github.com/AquilaXk/easyconvert/security/policy'],
   ];
   const body = `${fields.map(([key, value]) => `${key}: ${value}`).join('\n')}\n`;
 

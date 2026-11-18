@@ -56,7 +56,8 @@ export interface WebCodecsConversionRequest {
   jobId: string;
   sourceFormat: string;
   targetFormat: string;
-  fileBuffer: ArrayBuffer;
+  fileBuffer?: ArrayBuffer;
+  file?: Blob;
   options?: {
     width?: number;
     height?: number;
@@ -1007,7 +1008,12 @@ export async function processWebCodecsConversion(
   request: WebCodecsConversionRequest,
   onProgress?: (progress: number) => void
 ): Promise<{ buffer: ArrayBuffer; mimeType: string }> {
-  const { sourceFormat, targetFormat, fileBuffer, options = {} } = request;
+  const { sourceFormat, targetFormat, options = {} } = request;
+  const fileBuffer = request.fileBuffer ?? (request.file ? await request.file.arrayBuffer() : undefined);
+  if (!fileBuffer) {
+    throw new EdgeUnsupportedError('WebCodecs worker received neither fileBuffer nor file handle.');
+  }
+  const resolvedRequest: WebCodecsConversionRequest & { fileBuffer: ArrayBuffer } = { ...request, fileBuffer };
   const config = resolveWebCodecsConfig(targetFormat, options.codec);
   const flowController = new WatermarkFlowController(ENCODER_QUEUE_HIGH_WATERMARK, ENCODER_QUEUE_LOW_WATERMARK);
 
@@ -1026,20 +1032,20 @@ export async function processWebCodecsConversion(
   onProgress?.(PROGRESS_INPUT_READ);
 
   if (config.isVideo) {
-    return convertVideoTrack(request, config, demuxedTrack, flowController, onProgress);
+    return convertVideoTrack(resolvedRequest, config, demuxedTrack, flowController, onProgress);
   }
-  return convertAudioTrack(request, config, demuxedTrack, flowController, onProgress);
+  return convertAudioTrack(resolvedRequest, config, demuxedTrack, flowController, onProgress);
 }
 
 // Attach worker listener if running inside dedicated Worker environment
 if (typeof self !== 'undefined' && typeof (self as any).postMessage === 'function' && typeof window === 'undefined') {
   self.onmessage = async (e: MessageEvent) => {
-    const { type, jobId, fileBuffer, sourceFormat, targetFormat, options } = e.data || {};
+    const { type, jobId, fileBuffer, file, sourceFormat, targetFormat, options } = e.data || {};
 
     if (type === 'START_CONVERSION') {
       try {
         const result = await processWebCodecsConversion(
-          { jobId, fileBuffer, sourceFormat, targetFormat, options },
+          { jobId, fileBuffer, file, sourceFormat, targetFormat, options },
           (progress) => {
             (self as any).postMessage({ type: 'PROGRESS', jobId, progress });
           }

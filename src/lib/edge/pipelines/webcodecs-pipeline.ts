@@ -44,6 +44,12 @@ function toPipelineResult(buffer: ArrayBuffer, mimeType: string): WebCodecsPipel
   return { blob, url: URL.createObjectURL(blob), size: blob.size, mimeType };
 }
 
+function abortErrorOf(signal: AbortSignal): Error {
+  const reason = signal.reason;
+  if (reason instanceof Error) return reason;
+  return new DOMException(typeof reason === 'string' && reason ? reason : 'WebCodecs conversion aborted', 'AbortError');
+}
+
 /**
  * Executes a hardware-accelerated media conversion using WebCodecs worker.
  */
@@ -52,13 +58,14 @@ export async function convertWithWebCodecs(
   sourceFormat: string,
   targetFormat: string,
   options: ConversionOptions = {},
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal
 ): Promise<WebCodecsPipelineResult> {
+  if (signal?.aborted) throw abortErrorOf(signal);
   const jobId =
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
       ? `webcodecs-${crypto.randomUUID()}`
       : `webcodecs-${Date.now()}`;
-  const arrayBuffer = await file.arrayBuffer();
   const workerOptions = toWorkerOptions(options);
 
   onProgress?.(5);
@@ -69,6 +76,25 @@ export async function convertWithWebCodecs(
       let worker: Worker | null = null;
       let isSettled = false;
 
+      const onAbort = () => {
+        if (isSettled) return;
+        isSettled = true;
+        cleanup();
+        reject(signal ? abortErrorOf(signal) : new DOMException('WebCodecs conversion aborted', 'AbortError'));
+      };
+
+      const cleanup = () => {
+        if (signal) signal.removeEventListener('abort', onAbort);
+        if (worker) {
+          worker.terminate();
+          worker = null;
+        }
+      };
+
+      if (signal) {
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+
       try {
         // Instantiate Web Worker using Next.js / Webpack worker standard URL
         worker = new Worker(
@@ -76,22 +102,26 @@ export async function convertWithWebCodecs(
           { type: 'module' }
         );
       } catch {
+        if (signal) signal.removeEventListener('abort', onAbort);
         // If worker instantiation fails (e.g., test environment), fallback to in-process execution
-        processWebCodecsConversion(
-          { jobId, sourceFormat, targetFormat, fileBuffer: arrayBuffer, options: workerOptions },
-          onProgress
-        )
-          .then((res) => resolve(toPipelineResult(res.buffer, res.mimeType)))
+        file
+          .arrayBuffer()
+          .then((arrayBuffer) =>
+            processWebCodecsConversion(
+              { jobId, sourceFormat, targetFormat, fileBuffer: arrayBuffer, options: workerOptions },
+              onProgress
+            )
+          )
+          .then((res) => {
+            if (signal?.aborted) {
+              reject(abortErrorOf(signal));
+              return;
+            }
+            resolve(toPipelineResult(res.buffer, res.mimeType));
+          })
           .catch(reject);
         return;
       }
-
-      const cleanup = () => {
-        if (worker) {
-          worker.terminate();
-          worker = null;
-        }
-      };
 
       worker.onmessage = (e: MessageEvent) => {
         const data = e.data;
@@ -124,26 +154,25 @@ export async function convertWithWebCodecs(
         reject(new Error(err.message || 'WebCodecs worker runtime error'));
       };
 
-      // Transfer sliced copy to worker to preserve arrayBuffer on main thread for cascade fallback
-      const transferBuffer = arrayBuffer.slice(0);
-      worker.postMessage(
-        {
-          type: 'START_CONVERSION',
-          jobId,
-          sourceFormat,
-          targetFormat,
-          fileBuffer: transferBuffer,
-          options: workerOptions,
-        },
-        [transferBuffer]
-      );
+      // Pass File/Blob handle directly via structured clone so the UI thread allocates zero extra ArrayBuffer copies
+      worker.postMessage({
+        type: 'START_CONVERSION',
+        jobId,
+        sourceFormat,
+        targetFormat,
+        file,
+        options: workerOptions,
+      });
     });
   }
 
   // Node.js or Test environment fallback
+  const arrayBuffer = await file.arrayBuffer();
+  if (signal?.aborted) throw abortErrorOf(signal);
   const result = await processWebCodecsConversion(
-    { jobId, sourceFormat, targetFormat, fileBuffer: arrayBuffer.slice(0), options: workerOptions },
+    { jobId, sourceFormat, targetFormat, fileBuffer: arrayBuffer, options: workerOptions },
     onProgress
   );
+  if (signal?.aborted) throw abortErrorOf(signal);
   return toPipelineResult(result.buffer, result.mimeType);
 }

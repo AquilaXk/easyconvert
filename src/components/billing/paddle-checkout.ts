@@ -13,15 +13,20 @@ const completedListeners = new Set<() => void>();
 function load(status: PublicBillingConfig): Promise<Paddle | undefined> {
   const key = `${status.environment}:${status.clientToken}`;
   if (loading?.key === key) return loading.paddle;
-  const paddle = import('@paddle/paddle-js').then(({ initializePaddle }) =>
-    initializePaddle({
-      environment: status.environment,
-      token: status.clientToken,
-      eventCallback: (event) => {
-        if (event.name === 'checkout.completed') for (const listener of completedListeners) listener();
-      },
-    })
-  );
+  const paddle = import('@paddle/paddle-js')
+    .then(({ initializePaddle }) =>
+      initializePaddle({
+        environment: status.environment,
+        token: status.clientToken,
+        eventCallback: (event) => {
+          if (event.name === 'checkout.completed') for (const listener of completedListeners) listener();
+        },
+      })
+    )
+    .catch((error: unknown) => {
+      if (loading?.paddle === paddle) loading = undefined;
+      throw error;
+    });
   loading = { key, paddle };
   return paddle;
 }

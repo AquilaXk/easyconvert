@@ -234,7 +234,7 @@ export async function startCaptureGate(options: CaptureGateOptions = {}): Promis
     }
     vet(url.hostname, port).then(
       (target) => {
-        if (closed) return;
+        if (closed || response.destroyed || request.socket.destroyed) return;
         passed.push(target);
         const headers: http.OutgoingHttpHeaders = {};
         for (const [name, value] of Object.entries(request.headers)) {
@@ -252,6 +252,13 @@ export async function startCaptureGate(options: CaptureGateOptions = {}): Promis
             return socket;
           },
         });
+        const abortUpstreamIfPremature = () => {
+          if (!response.writableEnded && !upstream.destroyed) {
+            upstream.destroy();
+          }
+        };
+        response.once('close', abortUpstreamIfPremature);
+        request.socket.once('close', abortUpstreamIfPremature);
         upstream.setTimeout(CONNECT_TIMEOUT_MS, () => upstream.destroy());
         upstream.on('response', (answer) => {
           const answerHeaders: http.OutgoingHttpHeaders = {};
@@ -259,6 +266,9 @@ export async function startCaptureGate(options: CaptureGateOptions = {}): Promis
             if (!HOP_BY_HOP.has(name)) answerHeaders[name] = value;
           }
           response.writeHead(answer.statusCode ?? BAD_GATEWAY, answerHeaders);
+          answer.on('error', () => {
+            if (!response.destroyed) response.destroy();
+          });
           answer.pipe(response);
         });
         upstream.on('error', (error) => {

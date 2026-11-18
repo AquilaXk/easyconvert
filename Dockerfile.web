@@ -69,12 +69,17 @@ ENV EASYCONVERT_STORAGE_DIR=/tmp/easyconvert-storage
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
-COPY --from=webbuilder --chown=node:node /app/.next ./.next
-COPY --from=webbuilder --chown=node:node /app/public ./public
-COPY --chown=node:node next.config.mjs ./next.config.mjs
+RUN groupadd -g 10001 -r easyconvert \
+    && useradd -u 10001 -r -g easyconvert -m -d /home/easyconvert -s /sbin/nologin easyconvert \
+    && mkdir -p /tmp/easyconvert-storage /shared/storage \
+    && npm ci --omit=dev --ignore-scripts \
+    && npm cache clean --force \
+    && chown -R easyconvert:easyconvert /app /tmp/easyconvert-storage /shared/storage
+COPY --from=webbuilder --chown=easyconvert:easyconvert /app/.next ./.next
+COPY --from=webbuilder --chown=easyconvert:easyconvert /app/public ./public
+COPY --chown=easyconvert:easyconvert next.config.mjs ./next.config.mjs
 
-USER node
+USER easyconvert:easyconvert
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

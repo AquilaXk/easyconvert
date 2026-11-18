@@ -374,25 +374,39 @@ function checkMutationCsrf(request: NextRequest, pathname: string): NextResponse
   return null;
 }
 
-function withV1Cors(pathname: string, outcome: NextResponse | Promise<NextResponse>): NextResponse | Promise<NextResponse> {
-  if (!isV1ApiPath(pathname)) return outcome;
-  if (outcome instanceof Promise) {
-    return outcome.then((response) => applyV1CorsHeaders(response));
+const API_HSTS_VALUE = 'max-age=63072000; includeSubDomains';
+
+function finalizeApiHeaders(pathname: string, response: NextResponse): NextResponse {
+  if (!response.headers.has('Strict-Transport-Security')) {
+    response.headers.set('Strict-Transport-Security', API_HSTS_VALUE);
   }
-  return applyV1CorsHeaders(outcome);
+  if (!response.headers.has('X-Content-Type-Options')) {
+    response.headers.set('X-Content-Type-Options', 'nosniff');
+  }
+  return isV1ApiPath(pathname) ? applyV1CorsHeaders(response) : response;
+}
+
+function withV1Cors(pathname: string, outcome: NextResponse | Promise<NextResponse>): NextResponse | Promise<NextResponse> {
+  if (outcome instanceof Promise) {
+    return outcome.then((response) => finalizeApiHeaders(pathname, response));
+  }
+  return finalizeApiHeaders(pathname, outcome);
 }
 
 export function middleware(request: NextRequest): NextResponse | Promise<NextResponse> {
   const pathname = request.nextUrl.pathname;
 
   if (isLocalePrefixedApiPath(pathname)) {
-    return problemResponse(HTTP_NOT_FOUND, PROBLEM_NOT_FOUND, 'Not Found', 'API routes take no language prefix.', pathname);
+    return finalizeApiHeaders(
+      pathname,
+      problemResponse(HTTP_NOT_FOUND, PROBLEM_NOT_FOUND, 'Not Found', 'API routes take no language prefix.', pathname)
+    );
   }
   if (!isApiPath(pathname)) {
     return pathname === '/' ? rootLocaleAnswer(request) : pageLocaleAnswer(request);
   }
   if (isV1ApiPath(pathname) && request.method.toUpperCase() === 'OPTIONS') {
-    return createV1PreflightResponse(pathname);
+    return finalizeApiHeaders(pathname, createV1PreflightResponse(pathname));
   }
 
   return withV1Cors(pathname, handleApiMiddleware(request, pathname));

@@ -72,6 +72,10 @@ export function useHeroUpload(
     },
     onDragLeave: (event: React.DragEvent) => {
       event.preventDefault();
+      const next = event.relatedTarget as Node | null;
+      if (next && typeof event.currentTarget?.contains === 'function' && event.currentTarget.contains(next)) {
+        return;
+      }
       setIsDragOver(false);
     },
     onDrop: (event: React.DragEvent) => {

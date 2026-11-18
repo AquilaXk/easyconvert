@@ -4,6 +4,7 @@ import { resolveConversionTier, resolveTierAfterEdgeFailure, ConversionTier } fr
 import { isInAppWebView } from './edge/mobile-browser-guard';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported, encodeBmpFromImageData } from './edge/pure/pure-canvas';
+import { assertCanvasInputSupported, HEX_BACKGROUND_PATTERN } from './edge/pure/canvas-header-guard';
 import { warnBrowserFailure } from './browser-failure';
 import { conversionFailureOf, type ConversionFailure } from './conversion-failure';
 import { convertWithWebCodecs } from './edge/pipelines/webcodecs-pipeline';
@@ -13,7 +14,7 @@ import { EdgeUnsupportedError } from './edge/workers/worker-errors';
 import { requestedAudioChannels } from './edge/pipelines/webcodecs-options';
 import { executeWasmTask } from './edge/pipelines/wasm-simd-pipeline';
 import { deriveQuantizerLevels } from './edge/quantizer-levels';
-import { streamConvertWithOpfs } from './edge/pipelines/opfs-streaming-pipeline';
+import { releaseEdgeResultResources, streamConvertWithOpfs } from './edge/pipelines/opfs-streaming-pipeline';
 import { executeServerlessCloudFallback } from './edge/pipelines/fallback-pipeline';
 import { executeResumableCloudConversion, type ResumableStage } from './edge/pipelines/resumable-cloud-pipeline';
 import { needsUploadInParts } from './plan-limits';
@@ -83,8 +84,10 @@ function describeEdgeError(err: unknown): string {
 
 export async function tryProcessClientEdge(
   item: ConversionQueueItem,
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal
 ): Promise<ClientEdgeResult | null> {
+  signal?.throwIfAborted();
   if (item.options.clientEdgeMode === false || typeof window === 'undefined' || (item.options.clientEdgeMode !== true && isInAppWebView())) {
     return null;
   }
@@ -96,9 +99,10 @@ export async function tryProcessClientEdge(
   // 1. Level 0: Pure Isomorphic Fast-Paths (0 MB Wasm)
   if (resolution.tier === 'L0') {
     try {
-      const l0Res = await processL0Conversion(item, src, tgt, onProgress);
+      const l0Res = await processL0Conversion(item, src, tgt, onProgress, signal);
       if (l0Res) return l0Res;
     } catch (err: unknown) {
+      if (signal?.aborted) throw err;
       // The pure engine cannot convert this file (a layout it cannot mix, a mesh it cannot write): the router
       // names the server tier, which converts the original file. No edge result stands in for it.
       if (resolveTierAfterEdgeFailure('L0', err)) {
@@ -116,7 +120,8 @@ export async function tryProcessClientEdge(
         src,
         tgt,
         item.options,
-        onProgress
+        onProgress,
+        signal
       );
       return {
         resultUrl: webcodecsRes.url,
@@ -125,6 +130,7 @@ export async function tryProcessClientEdge(
         tierName: 'Edge L1 (Hardware VPU)',
       };
     } catch (err: unknown) {
+      if (signal?.aborted) throw err;
       // The worker has no demuxer, decoder or encoder for this file: the router names the server tier, which
       // converts the original file. No edge result stands in for it.
       if (resolveTierAfterEdgeFailure('L1', err)) {
@@ -132,7 +138,7 @@ export async function tryProcessClientEdge(
       }
       // Adaptive cascade fallback: if WebCodecs hardware encoder fails,
       // cascade gracefully to L2 (Wasm) or L4 (Cloud Fallback)
-      const l2Res = await processL2Conversion(item, src, tgt, onProgress);
+      const l2Res = await processL2Conversion(item, src, tgt, onProgress, signal);
       if (l2Res) return l2Res;
       return null;
     }
@@ -142,17 +148,21 @@ export async function tryProcessClientEdge(
   if (resolution.tier === 'L1A') {
     let escalationReason = L1A_NO_RESULT_REASON;
     try {
-      const l1aRes = await processL1AWebGpuConversion(item, src, tgt, onProgress);
+      const l1aRes = await processL1AWebGpuConversion(item, src, tgt, onProgress, signal);
       if (l1aRes) {
         return l1aRes;
       }
     } catch (err: unknown) {
+      if (signal?.aborted) throw err;
+      if (resolveTierAfterEdgeFailure('L2', err)) {
+        throw new ClientEdgeEscalationError('L1A', describeEdgeError(err));
+      }
       // Graceful cascade to L2 Wasm, keeping the reason
       escalationReason = describeEdgeError(err);
     }
     let l2Res: ClientEdgeResult | null;
     try {
-      l2Res = await processL2Conversion(item, src, tgt, onProgress);
+      l2Res = await processL2Conversion(item, src, tgt, onProgress, signal);
     } catch (err: unknown) {
       if (!(err instanceof ClientEdgeEscalationError)) {
         throw err;
@@ -174,7 +184,7 @@ export async function tryProcessClientEdge(
 
   // 4. Level 2: Client-side Edge OCR or SIMD Wasm Execution, in the browser with no upload
   if (resolution.tier === 'L2') {
-    return await processL2Conversion(item, src, tgt, onProgress);
+    return await processL2Conversion(item, src, tgt, onProgress, signal);
   }
 
   // 4. Level 3: OPFS Large File VFS Streaming Pipeline (100MB+ ~ 2GB)
@@ -185,7 +195,8 @@ export async function tryProcessClientEdge(
         src,
         tgt,
         item.options,
-        onProgress
+        onProgress,
+        signal
       );
       return {
         resultUrl: opfsRes.url,
@@ -194,6 +205,7 @@ export async function tryProcessClientEdge(
         tierName: 'Edge L3 (OPFS Stream)',
       };
     } catch (err: unknown) {
+      if (signal?.aborted) throw err;
       // Escalate to the L4 cloud pipeline, keeping the reason
       throw new ClientEdgeEscalationError('L3', describeEdgeError(err));
     }
@@ -235,18 +247,29 @@ interface FilterCanvasContext {
  * cannot encode it); PNG, JPEG and WebP by the canvas, then checked against their file signature, so a browser that
  * answers a WebP request with a PNG, or with nothing, sends the file to the server instead of delivering a substitute.
  */
-async function encodeEdgeImage(
-  canvas: Parameters<typeof canvasToBlob>[0],
-  ctx: FilterCanvasContext,
-  width: number,
-  height: number,
-  tgt: string,
-  quality: number
-): Promise<Blob> {
+interface EncodeEdgeImageInput {
+  canvas: Parameters<typeof canvasToBlob>[0];
+  ctx: FilterCanvasContext;
+  width: number;
+  height: number;
+  tgt: string;
+  quality: number;
+  background?: string;
+}
+
+async function encodeEdgeImage({
+  canvas,
+  ctx,
+  width,
+  height,
+  tgt,
+  quality,
+  background,
+}: EncodeEdgeImageInput): Promise<Blob> {
   if (EDGE_OPAQUE_TARGETS.has(tgt)) {
-    // Paint white behind the picture: a format without alpha would otherwise turn transparency black.
+    // Paint requested hex background or white behind the picture: a format without alpha would otherwise turn transparency black.
     ctx.globalCompositeOperation = 'destination-over';
-    ctx.fillStyle = WHITE;
+    ctx.fillStyle = background && HEX_BACKGROUND_PATTERN.test(background) ? background : WHITE;
     ctx.fillRect(0, 0, width, height);
   }
   let blob: Blob;
@@ -267,8 +290,10 @@ async function processL0Conversion(
   item: ConversionQueueItem,
   src: string,
   tgt: string,
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal
 ): Promise<ClientEdgeResult | null> {
+  signal?.throwIfAborted();
   onProgress?.(25);
 
   // Structured data never resolves to L0: the router sends it to the server data engine.
@@ -276,12 +301,14 @@ async function processL0Conversion(
   // Pure Audio conversion (WAV, PCM, MP3). The source layout and rate stay unless the request names others.
   if (isPureAudioConvertible(src, tgt)) {
     const arrayBuf = await item.file.arrayBuffer();
+    signal?.throwIfAborted();
     onProgress?.(50);
     const res = convertPureAudio(new Uint8Array(arrayBuf), src, tgt, {
       sampleRate: item.options.audioSampleRate,
       channels: requestedAudioChannels(item.options.audioChannels),
       bitrate: item.options.audioBitrate,
     });
+    signal?.throwIfAborted();
     onProgress?.(95);
     const blob = new Blob([res.data as any], { type: res.mimeType });
     const resultUrl = URL.createObjectURL(blob);
@@ -304,6 +331,7 @@ async function processL0Conversion(
       background: item.options.background,
       stripMetadata: item.options.stripMetadata,
     });
+    signal?.throwIfAborted();
     onProgress?.(95);
     const blob = res.blob || new Blob([res.data as any], { type: res.mimeType });
     const resultUrl = URL.createObjectURL(blob);
@@ -358,7 +386,8 @@ async function processL1AWebGpuConversion(
   item: ConversionQueueItem,
   src: string,
   tgt: string,
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal
 ): Promise<ClientEdgeResult | null> {
   if (!EDGE_FILTER_IMAGE_SOURCES.has(src) || !isWebGpuComputeSupported()) {
     return null;
@@ -378,6 +407,8 @@ async function processL1AWebGpuConversion(
   }
   assertNoResizeRequested(item);
   assertEdgeImageTargetEncodable(tgt);
+  await assertCanvasInputSupported(item.file, src, item.options.stripMetadata === true);
+  signal?.throwIfAborted();
 
   onProgress?.(10);
   const bitmap = await createImageBitmap(item.file);
@@ -420,6 +451,7 @@ async function processL1AWebGpuConversion(
     data: pixelBytes,
     task,
   });
+  signal?.throwIfAborted();
 
   if (!computeRes) {
     return null;
@@ -430,7 +462,16 @@ async function processL1AWebGpuConversion(
   const newImgData = new ImageData(processedClamped as any, width, height);
   ctx.putImageData(newImgData, 0, 0);
 
-  const resultBlob = await encodeEdgeImage(canvas, ctx, width, height, tgt, (item.options.quality || EDGE_FILTER_DEFAULT_QUALITY) / PERCENT);
+  const resultBlob = await encodeEdgeImage({
+    canvas,
+    ctx,
+    width,
+    height,
+    tgt,
+    quality: (item.options.quality || EDGE_FILTER_DEFAULT_QUALITY) / PERCENT,
+    background: item.options.background,
+  });
+  signal?.throwIfAborted();
 
   onProgress?.(100);
   const resultUrl = URL.createObjectURL(resultBlob);
@@ -449,13 +490,15 @@ async function processL2Conversion(
   item: ConversionQueueItem,
   src: string,
   tgt: string,
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal
 ): Promise<ClientEdgeResult | null> {
   if (item.options.ocrEnabled || src === 'pdf') {
     let edgeOcrRes: Awaited<ReturnType<typeof tryProcessClientEdgeOcr>>;
     try {
-      edgeOcrRes = await tryProcessClientEdgeOcr(item, onProgress);
+      edgeOcrRes = await tryProcessClientEdgeOcr(item, onProgress, signal);
     } catch (err: unknown) {
+      if (signal?.aborted) throw err;
       // Edge OCR could not produce a searchable PDF: escalate to L4 and keep the reason
       throw new ClientEdgeEscalationError('L2', describeEdgeError(err));
     }
@@ -475,6 +518,8 @@ async function processL2Conversion(
         if (typeof createImageBitmap !== 'undefined' && (typeof OffscreenCanvas !== 'undefined' || typeof document !== 'undefined')) {
           assertNoResizeRequested(item);
           assertEdgeImageTargetEncodable(tgt);
+          await assertCanvasInputSupported(item.file, src, item.options.stripMetadata === true);
+          signal?.throwIfAborted();
           const bitmap = await createImageBitmap(item.file);
           const width = bitmap.width;
           const height = bitmap.height;
@@ -541,13 +586,22 @@ async function processL2Conversion(
           }
 
           if (task) {
-            const taskRes = await executeWasmTask(task, pixelBuffer, wasmOpts, onProgress);
+            const taskRes = await executeWasmTask(task, pixelBuffer, wasmOpts, onProgress, signal);
             const processedClamped = new Uint8ClampedArray(taskRes.buffer);
             const newImgData = new ImageData(processedClamped, width, height);
             ctx.putImageData(newImgData, 0, 0);
           }
 
-          const resultBlob = await encodeEdgeImage(canvas, ctx, width, height, tgt, (item.options.quality || EDGE_FILTER_DEFAULT_QUALITY) / PERCENT);
+          const resultBlob = await encodeEdgeImage({
+            canvas,
+            ctx,
+            width,
+            height,
+            tgt,
+            quality: (item.options.quality || EDGE_FILTER_DEFAULT_QUALITY) / PERCENT,
+            background: item.options.background,
+          });
+          signal?.throwIfAborted();
 
           const resultUrl = URL.createObjectURL(resultBlob);
           return {
@@ -558,6 +612,7 @@ async function processL2Conversion(
           };
         }
       } catch (err: unknown) {
+        if (signal?.aborted) throw err;
         // The browser cannot produce this file (no encoder, a substituted or empty result): the server converts it.
         if (resolveTierAfterEdgeFailure('L2', err)) {
           throw new ClientEdgeEscalationError('L2', describeEdgeError(err));
@@ -588,10 +643,18 @@ export async function executeItemConversion(
   callbacks: ConvertItemCallbacks,
   signal?: AbortSignal
 ): Promise<void> {
+  if (signal?.aborted) return;
   // 1. Check for client-side Edge processing (L0 pure, L2 OCR, etc.)
   let escalation: EdgeTierFallback | undefined;
   try {
-    const edgeRes = await tryProcessClientEdge(item, callbacks.onProgress);
+    const edgeRes = await tryProcessClientEdge(item, callbacks.onProgress, signal);
+    if (signal?.aborted) {
+      if (edgeRes?.resultUrl) {
+        void releaseEdgeResultResources(edgeRes.resultUrl);
+        if (edgeRes.resultUrl.startsWith('blob:')) URL.revokeObjectURL(edgeRes.resultUrl);
+      }
+      return;
+    }
     if (edgeRes) {
       const fallback =
         edgeRes.fallbackFrom && edgeRes.escalationReason
@@ -601,6 +664,7 @@ export async function executeItemConversion(
       return;
     }
   } catch (err: any) {
+    if (signal?.aborted) return;
     if (err instanceof ClientEdgeEscalationError) {
       escalation = { fallbackFrom: err.fallbackFrom, escalationReason: err.message };
     } else {

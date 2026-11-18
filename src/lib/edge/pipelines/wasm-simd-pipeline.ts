@@ -189,6 +189,7 @@ export function detectWasmExecutionMode(): WasmExecutionInfo {
  */
 export class WasmWorkerManager {
   private static activeWorker: Worker | null = null;
+  private static inFlightJobs: number = 0;
   private static processedBytes: number = 0;
   private static taskCount: number = 0;
   private static readonly RECYCLE_BYTE_THRESHOLD = 256 * 1024 * 1024; // 256 MB
@@ -211,6 +212,7 @@ export class WasmWorkerManager {
       this.activeWorker.terminate();
       this.activeWorker = null;
     }
+    this.inFlightJobs = 0;
     this.processedBytes = 0;
     this.taskCount = 0;
     this.inProcessEngine = new WasmEngine();
@@ -223,17 +225,22 @@ export class WasmWorkerManager {
     task: 'rgba-grayscale' | 'rgba-invert' | 'rgba-brightness' | 'rgba-quantize' | 'custom-module',
     buffer: ArrayBuffer,
     options?: WasmPipelineOptions,
-    onProgress?: (progress: number) => void
+    onProgress?: (progress: number) => void,
+    signal?: AbortSignal
   ): Promise<WasmPipelineResult> {
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new DOMException('Wasm task aborted', 'AbortError');
+    }
     const jobId =
       typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
         ? `wasm-${crypto.randomUUID()}`
         : `wasm-${Date.now()}`;
 
-    // Check recycling thresholds
+    // Check recycling thresholds only when no sibling job shares the worker
     if (
-      this.processedBytes >= this.RECYCLE_BYTE_THRESHOLD ||
-      this.taskCount >= this.RECYCLE_TASK_THRESHOLD
+      this.inFlightJobs === 0 &&
+      (this.processedBytes >= this.RECYCLE_BYTE_THRESHOLD ||
+        this.taskCount >= this.RECYCLE_TASK_THRESHOLD)
     ) {
       this.recycleWorker();
     }
@@ -242,6 +249,7 @@ export class WasmWorkerManager {
 
     // Browser environment with Worker support
     if (typeof window !== 'undefined' && typeof Worker !== 'undefined') {
+      this.inFlightJobs += 1;
       try {
         if (!this.activeWorker) {
           this.activeWorker = new Worker(
@@ -250,14 +258,25 @@ export class WasmWorkerManager {
           );
         }
 
-        const result = await this.sendToWorker(this.activeWorker, jobId, task, buffer, options, onProgress);
+        const result = await this.sendToWorker({
+          worker: this.activeWorker,
+          jobId,
+          task,
+          buffer,
+          options,
+          onProgress,
+          signal,
+        });
         this.processedBytes += result.bytesProcessed;
         this.taskCount += 1;
         return result;
       } catch (workerErr) {
-        // Enforce fail-closed: recycle faulted worker and propagate error instead of operating on detached buffer
-        this.recycleWorker();
+        if (this.inFlightJobs <= 1) {
+          this.recycleWorker();
+        }
         throw workerErr;
+      } finally {
+        this.inFlightJobs = Math.max(0, this.inFlightJobs - 1);
       }
     }
 
@@ -283,19 +302,36 @@ export class WasmWorkerManager {
     };
   }
 
-  private static sendToWorker(
-    worker: Worker,
-    jobId: string,
-    task: string,
-    buffer: ArrayBuffer,
-    options?: WasmPipelineOptions,
-    onProgress?: (p: number) => void
-  ): Promise<WasmPipelineResult> {
+  private static sendToWorker({
+    worker,
+    jobId,
+    task,
+    buffer,
+    options,
+    onProgress,
+    signal,
+  }: {
+    worker: Worker;
+    jobId: string;
+    task: string;
+    buffer: ArrayBuffer;
+    options?: WasmPipelineOptions;
+    onProgress?: (p: number) => void;
+    signal?: AbortSignal;
+  }): Promise<WasmPipelineResult> {
     return new Promise((resolve, reject) => {
       let isSettled = false;
       let timer: any = null;
 
+      const onAbort = () => {
+        if (isSettled) return;
+        isSettled = true;
+        cleanup();
+        reject(signal?.reason instanceof Error ? signal.reason : new DOMException('Wasm task aborted', 'AbortError'));
+      };
+
       const cleanup = () => {
+        if (signal) signal.removeEventListener('abort', onAbort);
         if (timer) {
           clearTimeout(timer);
           timer = null;
@@ -303,6 +339,10 @@ export class WasmWorkerManager {
         worker.removeEventListener('message', messageHandler);
         worker.removeEventListener('error', errorHandler);
       };
+
+      if (signal) {
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
 
       const messageHandler = (e: MessageEvent) => {
         const data = e.data;
@@ -368,7 +408,8 @@ export async function executeWasmTask(
   task: 'rgba-grayscale' | 'rgba-invert' | 'rgba-brightness' | 'rgba-quantize' | 'custom-module',
   buffer: ArrayBuffer,
   options?: WasmPipelineOptions,
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal
 ): Promise<WasmPipelineResult> {
-  return WasmWorkerManager.execute(task, buffer, options, onProgress);
+  return WasmWorkerManager.execute(task, buffer, options, onProgress, signal);
 }

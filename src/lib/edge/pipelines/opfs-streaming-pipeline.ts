@@ -43,8 +43,30 @@ function resultUrlOf(blob: Blob): string {
 
 // Active OPFS conversion sessions, deleted from the browser's storage when the page unloads
 const activePipelineSessions = new Set<string>();
+const edgeResultCleanups = new Map<string, () => Promise<boolean>>();
 if (typeof window !== 'undefined' || typeof self !== 'undefined') {
   registerSessionCleanupOnPageExit(activePipelineSessions);
+}
+
+/** Binds an OPFS session teardown callback to its `blob:` result URL so queue removal frees browser disk immediately. */
+export function registerEdgeResultCleanup(url: string, destroy: () => Promise<boolean>): void {
+  if (!url) return;
+  edgeResultCleanups.set(url, destroy);
+}
+
+/** Releases any OPFS session backing `url` when a completed queue item is removed, replaced, or unmounted. */
+export async function releaseEdgeResultResources(url?: string): Promise<void> {
+  if (!url) return;
+  const destroy = edgeResultCleanups.get(url);
+  if (!destroy) return;
+  edgeResultCleanups.delete(url);
+  await destroy().catch(() => false);
+}
+
+function abortReasonOf(signal: AbortSignal): Error {
+  const reason = signal.reason;
+  if (reason instanceof Error) return reason;
+  return new DOMException(typeof reason === 'string' && reason ? reason : 'OPFS streaming conversion aborted', 'AbortError');
 }
 
 /**
@@ -56,8 +78,10 @@ export async function streamConvertWithOpfs(
   sourceFormat: string,
   targetFormat: string,
   options: ConversionOptions = {},
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal
 ): Promise<OpfsPipelineResult> {
+  if (signal?.aborted) throw abortReasonOf(signal);
   const sessionId = createSessionId();
   const totalSize = file.size;
   activePipelineSessions.add(sessionId);
@@ -78,12 +102,34 @@ export async function streamConvertWithOpfs(
       let worker: Worker | null = null;
       let isSettled = false;
 
+      const onAbort = () => {
+        if (isSettled) return;
+        isSettled = true;
+        cleanup();
+        activePipelineSessions.delete(sessionId);
+        destroySessionImmediately(sessionId).catch(() => {});
+        reject(signal ? abortReasonOf(signal) : new DOMException('OPFS streaming conversion aborted', 'AbortError'));
+      };
+
+      const cleanup = () => {
+        if (signal) signal.removeEventListener('abort', onAbort);
+        if (worker) {
+          worker.terminate();
+          worker = null;
+        }
+      };
+
+      if (signal) {
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+
       try {
         worker = new Worker(
           new URL('../workers/opfs-vfs.worker.ts', import.meta.url),
           { type: 'module' }
         );
       } catch {
+        if (signal) signal.removeEventListener('abort', onAbort);
         // Fallback to in-process execution on worker instantiation fault
         processOpfsStreaming(
           {
@@ -97,14 +143,22 @@ export async function streamConvertWithOpfs(
           (progress) => onProgress?.(progress)
         )
           .then((res) => {
+            if (signal?.aborted) {
+              activePipelineSessions.delete(sessionId);
+              destroySessionImmediately(sessionId).catch(() => {});
+              reject(abortReasonOf(signal));
+              return;
+            }
             const blob = outputBlobOf(res);
             const url = resultUrlOf(blob);
+            const destroy = createDestroyHandler(sessionId);
+            registerEdgeResultCleanup(url, destroy);
             resolve({
               blob,
               url,
               size: blob.size,
               sessionId,
-              destroy: createDestroyHandler(sessionId),
+              destroy,
             });
           })
           .catch((err) => {
@@ -114,13 +168,6 @@ export async function streamConvertWithOpfs(
           });
         return;
       }
-
-      const cleanup = () => {
-        if (worker) {
-          worker.terminate();
-          worker = null;
-        }
-      };
 
       worker.onmessage = (e: MessageEvent) => {
         const data = e.data;
@@ -134,12 +181,15 @@ export async function streamConvertWithOpfs(
           cleanup();
           try {
             const blob = outputBlobOf(data);
+            const url = resultUrlOf(blob);
+            const destroy = createDestroyHandler(sessionId);
+            registerEdgeResultCleanup(url, destroy);
             resolve({
               blob,
-              url: resultUrlOf(blob),
+              url,
               size: blob.size,
               sessionId,
-              destroy: createDestroyHandler(sessionId),
+              destroy,
             });
           } catch (err) {
             activePipelineSessions.delete(sessionId);
@@ -192,16 +242,21 @@ export async function streamConvertWithOpfs(
       file,
       (progress) => onProgress?.(progress)
     );
+    if (signal?.aborted) {
+      throw abortReasonOf(signal);
+    }
 
     const blob = outputBlobOf(result);
     const url = resultUrlOf(blob);
+    const destroy = createDestroyHandler(sessionId);
+    registerEdgeResultCleanup(url, destroy);
 
     return {
       blob,
       url,
       size: blob.size,
       sessionId,
-      destroy: createDestroyHandler(sessionId),
+      destroy,
     };
   } catch (err) {
     activePipelineSessions.delete(sessionId);

@@ -5,6 +5,7 @@ import { streamZipReadable } from '@/lib/archive/streaming-zip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
 import { executeItemConversion } from '@/lib/client-converter';
+import { releaseEdgeResultResources } from '@/lib/edge/pipelines/opfs-streaming-pipeline';
 import {
   persistCompletedServerQueue,
   restoreCompletedServerQueue,
@@ -228,6 +229,7 @@ function clearTimersAndBlobs(
   }
   timers.clear();
   for (const url of urls) {
+    void releaseEdgeResultResources(url);
     URL.revokeObjectURL(url);
   }
   urls.clear();
@@ -565,6 +567,7 @@ export function useClientQueue(options?: UseClientQueueOptions) {
   const revokeBlobUrl = (url?: string) => {
     if (!url) return;
     if (url.startsWith('blob:')) {
+      void releaseEdgeResultResources(url);
       URL.revokeObjectURL(url);
       blobUrlsRef.current.delete(url);
       return;

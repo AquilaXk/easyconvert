@@ -146,7 +146,10 @@ const pdfExtensionOf = (name: string): string | undefined => (extensionOfName(na
 
 function expectedExtension(tool: WebTool, name: string): { extension?: string; kind: string } {
   if (tool === 'archive-extract') {
-    return { extension: archiveExtensionOf(name), kind: 'an archive (ZIP, 7Z, RAR, TAR or TAR.GZ)' };
+    return {
+      extension: archiveExtensionOf(name),
+      kind: 'an archive (ZIP, 7Z, RAR, TAR, TAR.GZ/TGZ, TAR.BZ2/TBZ2/TBZ, TAR.XZ/TXZ, TAR.ZST/TZST, BZ2, XZ, ZST or GZ)',
+    };
   }
   return { extension: pdfExtensionOf(name), kind: 'a PDF' };
 }

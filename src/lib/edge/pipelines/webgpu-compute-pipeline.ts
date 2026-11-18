@@ -323,78 +323,84 @@ export async function executeWebGpuCompute(
 
     const shaderModule = device.createShaderModule({ code: shaderCode });
 
-    // 1. Uniform Buffer
-    const uniformBuffer = device.createBuffer({
-      size: uniformData.byteLength,
-      usage: 0x0040 | 0x0008, // GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
-    });
-    device.queue.writeBuffer(uniformBuffer, 0, uniformData);
+    let uniformBuffer: { destroy(): void } | null = null;
+    let inputBuffer: { destroy(): void } | null = null;
+    let outputBuffer: { destroy(): void } | null = null;
+    let readbackBuffer: { destroy(): void; mapAsync(mode: number): Promise<void>; getMappedRange(offset: number, size: number): ArrayBuffer; unmap(): void } | null = null;
 
-    // 2. Storage Input Buffer
-    const inputBuffer = device.createBuffer({
-      size: bufferByteSize,
-      usage: 0x0080 | 0x0008, // GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
-    });
-    device.queue.writeBuffer(inputBuffer, 0, data.buffer, data.byteOffset, bufferByteSize);
+    try {
+      // 1. Uniform Buffer
+      uniformBuffer = device.createBuffer({
+        size: uniformData.byteLength,
+        usage: 0x0040 | 0x0008, // GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+      });
+      device.queue.writeBuffer(uniformBuffer, 0, uniformData);
 
-    // 3. Storage Output Buffer
-    const outputBuffer = device.createBuffer({
-      size: bufferByteSize,
-      usage: 0x0080 | 0x0004, // GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
-    });
+      // 2. Storage Input Buffer
+      inputBuffer = device.createBuffer({
+        size: bufferByteSize,
+        usage: 0x0080 | 0x0008, // GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+      });
+      device.queue.writeBuffer(inputBuffer, 0, data.buffer, data.byteOffset, bufferByteSize);
 
-    // 4. Staging Readback Buffer
-    const readbackBuffer = device.createBuffer({
-      size: bufferByteSize,
-      usage: 0x0001 | 0x0008, // GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
-    });
+      // 3. Storage Output Buffer
+      outputBuffer = device.createBuffer({
+        size: bufferByteSize,
+        usage: 0x0080 | 0x0004, // GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+      });
 
-    const computePipeline = device.createComputePipeline({
-      layout: 'auto',
-      compute: {
-        module: shaderModule,
-        entryPoint: 'main',
-      },
-    });
+      // 4. Staging Readback Buffer
+      readbackBuffer = device.createBuffer({
+        size: bufferByteSize,
+        usage: 0x0001 | 0x0008, // GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
+      });
 
-    const bindGroup = device.createBindGroup({
-      layout: computePipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: uniformBuffer } },
-        { binding: 1, resource: { buffer: inputBuffer } },
-        { binding: 2, resource: { buffer: outputBuffer } },
-      ],
-    });
+      const computePipeline = device.createComputePipeline({
+        layout: 'auto',
+        compute: {
+          module: shaderModule,
+          entryPoint: 'main',
+        },
+      });
 
-    const commandEncoder = device.createCommandEncoder();
-    const passEncoder = commandEncoder.beginComputePass();
-    passEncoder.setPipeline(computePipeline);
-    passEncoder.setBindGroup(0, bindGroup);
+      const bindGroup = device.createBindGroup({
+        layout: computePipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: uniformBuffer } },
+          { binding: 1, resource: { buffer: inputBuffer } },
+          { binding: 2, resource: { buffer: outputBuffer } },
+        ],
+      });
 
-    const workgroupsX = Math.ceil(width / 16);
-    const workgroupsY = Math.ceil(height / 16);
-    passEncoder.dispatchWorkgroups(workgroupsX, workgroupsY);
-    passEncoder.end();
+      const commandEncoder = device.createCommandEncoder();
+      const passEncoder = commandEncoder.beginComputePass();
+      passEncoder.setPipeline(computePipeline);
+      passEncoder.setBindGroup(0, bindGroup);
 
-    commandEncoder.copyBufferToBuffer(outputBuffer, 0, readbackBuffer, 0, bufferByteSize);
-    device.queue.submit([commandEncoder.finish()]);
+      const workgroupsX = Math.ceil(width / 16);
+      const workgroupsY = Math.ceil(height / 16);
+      passEncoder.dispatchWorkgroups(workgroupsX, workgroupsY);
+      passEncoder.end();
 
-    await readbackBuffer.mapAsync(1); // GPUMapMode.READ
-    const copyArrayBuffer = readbackBuffer.getMappedRange(0, bufferByteSize);
-    const resultArray = new Uint8Array(copyArrayBuffer.slice(0));
-    readbackBuffer.unmap();
+      commandEncoder.copyBufferToBuffer(outputBuffer, 0, readbackBuffer, 0, bufferByteSize);
+      device.queue.submit([commandEncoder.finish()]);
 
-    // Release GPU buffers
-    uniformBuffer.destroy();
-    inputBuffer.destroy();
-    outputBuffer.destroy();
-    readbackBuffer.destroy();
+      await readbackBuffer.mapAsync(1); // GPUMapMode.READ
+      const copyArrayBuffer = readbackBuffer.getMappedRange(0, bufferByteSize);
+      const resultArray = new Uint8Array(copyArrayBuffer.slice(0));
+      readbackBuffer.unmap();
 
-    return {
-      width,
-      height,
-      data: resultArray,
-    };
+      return {
+        width,
+        height,
+        data: resultArray,
+      };
+    } finally {
+      uniformBuffer?.destroy();
+      inputBuffer?.destroy();
+      outputBuffer?.destroy();
+      readbackBuffer?.destroy();
+    }
   } catch {
     return null;
   }

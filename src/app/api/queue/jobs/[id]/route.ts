@@ -14,6 +14,7 @@ import { nodeJobCancelRefusal } from '@/lib/queue/graph/node-jobs';
 export const dynamic = 'force-dynamic';
 
 const JOB_PATH = '/api/queue/jobs';
+const SSE_KEEPALIVE_INTERVAL_MS = 25_000;
 
 // Next.js 15 passes route params as a promise.
 interface JobRouteContext {
@@ -54,6 +55,7 @@ async function readJob(
   if (streamParam || acceptsStream) {
     const encoder = new TextEncoder();
 
+    let cleanupRef: (() => void) | null = null;
     const stream = new ReadableStream({
       start(controller) {
         // Send initial state snapshot
@@ -71,28 +73,54 @@ async function readJob(
           return;
         }
 
-        const unsubscribe = subscribeToJobTelemetry(conversionQueue, jobId, (event) => {
-          try {
-            const dataStr = JSON.stringify(event.event === 'completed' ? withoutEngineTrace(event.data, 'result') : event.data);
-            controller.enqueue(encoder.encode(`event: ${event.event}\ndata: ${dataStr}\n\n`));
+        let closed = false;
+        let keepaliveTimer: NodeJS.Timeout | null = null;
+        let unsubscribe: (() => void) | null = null;
 
-            if (TERMINAL_TELEMETRY_EVENTS.has(event.event)) {
-              unsubscribe();
-              controller.close();
-            }
-          } catch {
-            unsubscribe();
+        const closeStream = () => {
+          if (closed) return;
+          closed = true;
+          if (keepaliveTimer) {
+            clearInterval(keepaliveTimer);
+            keepaliveTimer = null;
           }
-        });
-
-        req.signal.addEventListener('abort', () => {
-          unsubscribe();
+          unsubscribe?.();
+          unsubscribe = null;
           try {
             controller.close();
           } catch {
             // Already closed
           }
+        };
+        cleanupRef = closeStream;
+
+        keepaliveTimer = setInterval(() => {
+          if (closed) return;
+          try {
+            controller.enqueue(encoder.encode(': keepalive\n\n'));
+          } catch {
+            closeStream();
+          }
+        }, SSE_KEEPALIVE_INTERVAL_MS);
+
+        unsubscribe = subscribeToJobTelemetry(conversionQueue, jobId, (event) => {
+          if (closed) return;
+          try {
+            const dataStr = JSON.stringify(event.event === 'completed' ? withoutEngineTrace(event.data, 'result') : event.data);
+            controller.enqueue(encoder.encode(`event: ${event.event}\ndata: ${dataStr}\n\n`));
+
+            if (TERMINAL_TELEMETRY_EVENTS.has(event.event)) {
+              closeStream();
+            }
+          } catch {
+            closeStream();
+          }
         });
+
+        req.signal.addEventListener('abort', closeStream, { once: true });
+      },
+      cancel() {
+        cleanupRef?.();
       },
     });
 
