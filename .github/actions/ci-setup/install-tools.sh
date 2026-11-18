@@ -62,7 +62,7 @@ set +a
 # twice the slowest. The job timeout is 15 minutes, so the step, at most 360 s and then 300 s, never leaves a job less
 # than four.
 declare -A task_limit_seconds=(
-  [apt]=300
+  [apt]=420
   [djvulibre]=300
   [pip]=180
   [verapdf]=240

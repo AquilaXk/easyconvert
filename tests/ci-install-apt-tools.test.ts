@@ -79,6 +79,8 @@ function runScript(options: { hit: boolean; cached?: string[]; list?: string; dp
   };
 }
 
+const APT_FLAGS = '-o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o DPkg::Lock::Timeout=60';
+
 describe('install-apt-tools.sh', () => {
   it.skipIf(skipUnless('bash', available))('installs the cached files and never touches the network on a cache hit', () => {
     const outcome = runScript({ hit: true, cached: ['a_1.deb', 'b_2.deb'] });
@@ -92,8 +94,8 @@ describe('install-apt-tools.sh', () => {
     expect(outcome.commands).toEqual([
       `rm -rf ${outcome.debs}`,
       `mkdir -p ${outcome.debs}`,
-      'apt-get update',
-      `apt-get install -y --no-install-recommends -o Dir::Cache::archives=${outcome.debs} ffmpeg 7zip libreoffice-calc`,
+      `apt-get update ${APT_FLAGS}`,
+      `apt-get install -y --no-install-recommends ${APT_FLAGS} -o Dir::Cache::archives=${outcome.debs} ffmpeg 7zip libreoffice-calc`,
       `rm -rf ${outcome.debs}/partial ${outcome.debs}/lock`,
       expect.stringMatching(/^chown -R \d+:\d+ /),
     ]);
@@ -109,7 +111,7 @@ describe('install-apt-tools.sh', () => {
   it.skipIf(skipUnless('bash', available))('downloads when the cache was reported as a hit but holds no package files', () => {
     const outcome = runScript({ hit: true, cached: [] });
     expect(outcome.status).toBe(0);
-    expect(outcome.commands).toContain('apt-get update');
+    expect(outcome.commands).toContain(`apt-get update ${APT_FLAGS}`);
     expect(outcome.commands.some((command) => command.startsWith('dpkg'))).toBe(false);
   });
 
@@ -118,7 +120,7 @@ describe('install-apt-tools.sh', () => {
     expect(outcome.status).toBe(0);
     expect(outcome.stdout).toContain('::warning::the cached packages could not be installed');
     expect(outcome.commands[0]).toMatch(/^dpkg -i /);
-    expect(outcome.commands).toContain('apt-get update');
+    expect(outcome.commands).toContain(`apt-get update ${APT_FLAGS}`);
     expect(readdirSync(outcome.debs)).toEqual(['fetched.deb']);
   });
 

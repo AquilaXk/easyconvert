@@ -20,11 +20,13 @@ if [ "${#packages[@]}" -eq 0 ]; then
   exit 1
 fi
 
+APT_OPTS=(-o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o DPkg::Lock::Timeout=60)
+
 install_from_network() {
   sudo rm -rf "$debs"
   sudo mkdir -p "$debs"
-  sudo apt-get update
-  sudo apt-get install -y --no-install-recommends -o Dir::Cache::archives="$debs" "${packages[@]}"
+  sudo apt-get update "${APT_OPTS[@]}"
+  sudo apt-get install -y --no-install-recommends "${APT_OPTS[@]}" -o Dir::Cache::archives="$debs" "${packages[@]}"
   # `partial` and `lock` belong to apt and are not readable by the runner user that saves the cache.
   sudo rm -rf "$debs/partial" "$debs/lock"
   sudo chown -R "$(id -u):$(id -g)" "$debs"
