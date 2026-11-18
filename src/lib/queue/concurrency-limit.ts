@@ -5,7 +5,7 @@ import type { UserTier } from '../auth/types';
 import { createProblemDetailsResponse } from '../api/problem-details';
 import { DEFAULT_FREE_CONCURRENCY, PLAN_CONCURRENCY, isUserTier } from '../plan-limits';
 import { conversionQueue } from './conversion-queue';
-import { readIntegerSetting } from './job-deadline';
+import { currentJobDeadlineSettings, readIntegerSetting } from './job-deadline';
 import { redisKeyStore } from '../api-keys/redis-key-store';
 
 /**
@@ -29,7 +29,13 @@ export const CONCURRENCY_RETRY_AFTER_SECONDS = 5;
 const FREE_TIER = 'free';
 const IN_FLIGHT_STATES = ['waiting', 'active', 'delayed'] as const;
 const HTTP_TOO_MANY_REQUESTS = 429;
-export const SYNC_SLOT_LEASE_MS = 120_000;
+
+/** Leases sync concurrency slots longer than `syncMaxMs` so long synchronous conversions never lapse prematurely. */
+export function getSyncSlotLeaseMs(): number {
+  return Math.max(120_000, currentJobDeadlineSettings().syncMaxMs + 15_000);
+}
+
+export const SYNC_SLOT_LEASE_MS = getSyncSlotLeaseMs();
 
 export const ACQUIRE_SYNC_SLOT_LUA = `
 local key = KEYS[1]
@@ -109,7 +115,7 @@ export async function acquireSyncSlot(userId: string, tier: string | undefined):
   if (redis) {
     const queued = await queuedJobs(userId, limit);
     const now = Date.now();
-    const expiresAt = now + SYNC_SLOT_LEASE_MS;
+    const expiresAt = now + getSyncSlotLeaseMs();
     const slotId = `${now}_${crypto.randomUUID()}`;
     const key = syncSlotKey(userId);
 

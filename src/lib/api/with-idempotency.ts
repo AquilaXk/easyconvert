@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { currentJobDeadlineSettings } from '@/lib/queue/job-deadline';
 import {
   IdempotencyStore,
   getIdempotencyStore,
@@ -26,11 +27,20 @@ export const IDEMPOTENCY_RESPONSE_NOT_KEPT_PROBLEM_TYPE = 'https://api.easyconve
  */
 export const IDEMPOTENCY_MAX_STORED_BODY_BYTES = 256 * 1024;
 
-/** How long the lock of a key lasts, which is also the longest a request that crashed holds its key. */
+/** How long the lock of a `respondOnce` key lasts, matching its 60s crash-recovery contract. */
 const LOCK_TTL_MS = 60_000;
+const HEARTBEAT_INTERVAL_MS = 20_000;
 /** Times a store is asked to record an answer before the lock is kept or released; the record is the same each time, so a repeat of the call is safe. */
 const RECORD_ATTEMPTS = 3;
 const RECORD_RETRY_DELAY_MS = 50;
+
+function defaultSyncLockTtlMs(): number {
+  return Math.max(150_000, currentJobDeadlineSettings().syncMaxMs + 30_000);
+}
+
+function maxLockExtensionMs(): number {
+  return Math.max(180_000, currentJobDeadlineSettings().syncMaxMs + 60_000);
+}
 
 function setOwnField(target: Record<string, unknown>, key: string, value: unknown): void {
   Object.defineProperty(target, key, {
@@ -140,12 +150,11 @@ export async function extractFingerprintData(req: NextRequest | Request): Promis
   bodyWithoutFile: unknown;
   fileSha256: string;
 }> {
-  const contentType = req.headers.get('content-type') || '';
-
-  if (contentType.includes('multipart/form-data')) {
+  if (isMultipartBody(req)) {
     try {
-      const formData = await req.formData();
-      return await extractFormDataFingerprint(formData);
+      const m = await readMultipartForm(req);
+      if (m.malformed) return { bodyWithoutFile: {}, fileSha256: '' };
+      return await extractFormDataFingerprint(m.form);
     } catch {
       return { bodyWithoutFile: {}, fileSha256: '' };
     }
@@ -248,7 +257,8 @@ export async function storeCompletedResponse(
   store: IdempotencyStore,
   scopedKey: string,
   fingerprint: string,
-  res: NextResponse | Response
+  res: NextResponse | Response,
+  lockToken?: string
 ): Promise<void> {
   const clonedRes = res.clone();
   const contentType = clonedRes.headers.get('content-type') || '';
@@ -281,7 +291,8 @@ export async function storeCompletedResponse(
       headers: headersRecord,
       ...kept,
     },
-    86400000
+    86400000,
+    lockToken
   );
 }
 
@@ -312,6 +323,8 @@ export interface AcquireIdempotencyOptions {
   parsedBody?: unknown;
   /** Pre-parsed multipart FormData (or `null` when malformed) so callers do not clone and parse multipart bodies twice. */
   multipartForm?: FormData | null;
+  /** Optional initial lock lease duration; defaults to at least `syncMaxMs + 30_000`. */
+  lockTtlMs?: number;
 }
 
 async function resolveFingerprintInput(
@@ -325,9 +338,9 @@ async function resolveFingerprintInput(
   if (parsedBody !== undefined) {
     return { bodyWithoutFile: parsedBody, fileSha256: '' };
   }
-  if (isMultipartBody(req as NextRequest)) {
+  if (isMultipartBody(req)) {
     try {
-      const m = await readMultipartForm(req as NextRequest);
+      const m = await readMultipartForm(req);
       if (m.malformed) return { bodyWithoutFile: {}, fileSha256: '' };
       return await extractFormDataFingerprint(m.form);
     } catch {
@@ -343,7 +356,7 @@ export async function acquireIdempotency(
   userId: string,
   rawKey: string,
   instanceUri: string,
-  { store, parsedBody, multipartForm }: AcquireIdempotencyOptions = {}
+  { store, parsedBody, multipartForm, lockTtlMs }: AcquireIdempotencyOptions = {}
 ): Promise<AcquireIdempotencyResult> {
   if (!isValidIdempotencyKey(rawKey)) {
     return {
@@ -361,11 +374,34 @@ export async function acquireIdempotency(
   const scopedKey = buildScopedKey(userId, instanceUri, rawKey);
   const activeStore = store || getIdempotencyStore();
 
+  const effectiveLockTtlMs = lockTtlMs ?? defaultSyncLockTtlMs();
+  const maxHorizonMs = maxLockExtensionMs();
   const lockToken = crypto.randomUUID();
-  const acquireResult = await activeStore.acquire(scopedKey, fingerprint, LOCK_TTL_MS, lockToken);
+  const acquireResult = await activeStore.acquire(scopedKey, fingerprint, effectiveLockTtlMs, lockToken);
   const earlyResponse = handleAcquireOutcome(acquireResult, instanceUri);
   if (earlyResponse) {
     return { response: earlyResponse };
+  }
+
+  const acquiredAt = Date.now();
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  const stopHeartbeat = () => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  };
+  if (typeof activeStore.extendLock === 'function') {
+    heartbeatTimer = setInterval(() => {
+      if (Date.now() - acquiredAt >= maxHorizonMs) {
+        stopHeartbeat();
+        return;
+      }
+      void activeStore.extendLock?.(scopedKey, lockToken, effectiveLockTtlMs).then((extended) => {
+        if (!extended) stopHeartbeat();
+      }).catch(() => undefined);
+    }, HEARTBEAT_INTERVAL_MS);
+    heartbeatTimer.unref?.();
   }
 
   return {
@@ -374,16 +410,19 @@ export async function acquireIdempotency(
       fingerprint,
       store: activeStore,
       complete: async (res: NextResponse | Response) => {
+        stopHeartbeat();
         if (res.status >= 500) {
           await activeStore.releaseLock(scopedKey, lockToken);
         } else {
-          await storeCompletedResponse(activeStore, scopedKey, fingerprint, res);
+          await storeCompletedResponse(activeStore, scopedKey, fingerprint, res, lockToken);
         }
       },
       abort: async () => {
+        stopHeartbeat();
         await activeStore.releaseLock(scopedKey, lockToken);
       },
       keepLock: async () => {
+        stopHeartbeat();
         await activeStore.keepLock(scopedKey, lockToken);
       },
     },
@@ -426,7 +465,10 @@ export async function respondOnce(
 ): Promise<Response> {
   const rawKey = req.headers.get('idempotency-key');
   if (rawKey === null) return handler();
-  const { response, context } = await acquireIdempotency(req, scopeUserId, rawKey, instanceUri, { parsedBody });
+  const { response, context } = await acquireIdempotency(req, scopeUserId, rawKey, instanceUri, {
+    parsedBody,
+    lockTtlMs: LOCK_TTL_MS,
+  });
   if (!context) return response as Response;
   let res: Response;
   try {

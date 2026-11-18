@@ -56,6 +56,15 @@ local function isGraphNodeJob(jobKey, id, skipGraphNodes)
   return data ~= false and string.find(data, '"graphId":"', 1, true) ~= nil
 end
 
+local function isTransientSyncJob(jobKey)
+  local flag = redis.call('HGET', jobKey, 'isTransientSync')
+  if flag ~= false then
+    return flag == '1'
+  end
+  local data = redis.call('HGET', jobKey, 'data')
+  return data ~= false and string.find(data, '"transientSyncWait":true', 1, true) ~= nil
+end
+
 local function readJobRecord(jobKey, summaryOnly)
   if not summaryOnly then
     return redis.call('HGETALL', jobKey)
@@ -145,7 +154,7 @@ for i = 3, count + 2 do
   if not state and redis.call('EXISTS', key) == 0 then
     removeStaleId(KEYS[1], id)
   elseif not filtered or wanted[state or 'waiting'] then
-    if not isGraphNodeJob(key, id, skipGraphNodes) then
+    if not isGraphNodeJob(key, id, skipGraphNodes) and not isTransientSyncJob(key) then
       jobs[#jobs + 1] = readJobRecord(key, summaryOnly)
     end
   end
@@ -261,7 +270,7 @@ if useByState then
       removeStaleId(stateKeys[bestIdx], id)
     else
       stateCursors[bestIdx] = stateCursors[bestIdx] + 1
-      if not seen[id] and wanted[state or 'waiting'] and not isGraphNodeJob(key, id, skipGraphNodes) then
+      if not seen[id] and wanted[state or 'waiting'] and not isGraphNodeJob(key, id, skipGraphNodes) and not isTransientSyncJob(key) then
         seen[id] = true
         jobs[#jobs + 1] = readJobRecord(key, summaryOnly)
       end
@@ -293,7 +302,7 @@ while #jobs < targetCount do
       removeStaleId(KEYS[1], id)
     else
       userCursor = userCursor + 1
-      if wanted[state or 'waiting'] and not isGraphNodeJob(key, id, skipGraphNodes) then
+      if wanted[state or 'waiting'] and not isGraphNodeJob(key, id, skipGraphNodes) and not isTransientSyncJob(key) then
         jobs[#jobs + 1] = readJobRecord(key, summaryOnly)
         if #jobs >= targetCount then break end
       end
@@ -359,7 +368,7 @@ local function countFromKey(zkey, verifyState)
       else
         cursor = cursor + 1
         local effective = state or 'waiting'
-        if (not verifyState or wanted[effective]) and not seen[id] and not isGraphNodeJob(key, id, skipGraphNodes) then
+        if (not verifyState or wanted[effective]) and not seen[id] and not isGraphNodeJob(key, id, skipGraphNodes) and not isTransientSyncJob(key) then
           seen[id] = true
           matched = matched + 1
           if matched >= cap then return end

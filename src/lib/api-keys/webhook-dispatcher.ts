@@ -247,12 +247,66 @@ function leadingSecret(callerSecret: string, record: { primary: string; previous
 
 const NATIVE_GLOBAL_FETCH = globalThis.fetch;
 
+const CIRCUIT_FAILURE_THRESHOLD = 5;
+const CIRCUIT_FAILURE_WINDOW_MS = 5 * 60_000;
+const CIRCUIT_BASE_COOLDOWN_MS = 60_000;
+const CIRCUIT_MAX_COOLDOWN_MS = 15 * 60_000;
+const CIRCUIT_MAX_ENDPOINTS = 5_000;
+const DLQ_REPLAY_LOCK_TTL_MS = 15_000;
+const DLQ_REPLAY_UNLOCK_LUA = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+`;
+
+interface EndpointCircuitState {
+  consecutiveFailures: number;
+  windowStartedAt: number;
+  openUntil: number;
+  tripCount: number;
+}
+
+function normalizeCircuitEndpoint(targetUrl: string): string {
+  try {
+    const parsed = new URL(targetUrl);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return targetUrl.split('?')[0];
+  }
+}
+
+function circuitRedisKey(endpointKey: string): string {
+  const hash = crypto.createHash('sha256').update(endpointKey).digest('hex').slice(0, 24);
+  return `${redisKeyStore.getPrefix()}wh:cb:${hash}`;
+}
+
+function skippedReplayResult(
+  id: string,
+  url: string = '',
+  event: WebhookEvent = 'conversion.completed'
+): WebhookDispatchResult {
+  return {
+    id,
+    url,
+    event,
+    success: false,
+    skipped: true,
+    totalAttempts: 0,
+    finalStatusCode: 409,
+    durationMs: 0,
+    attempts: [],
+  };
+}
+
 export class WebhookDispatcher {
   private readonly deliveryHistory: WebhookDispatchResult[] = [];
   private readonly maxHistorySize = 100;
   private readonly inMemoryDlq = new Map<string, WebhookDlqEntry>();
   private readonly dlq = new WebhookDlqStore(this.inMemoryDlq, () => redisKeyStore.getRedisClient(), WEBHOOK_DLQ_RETENTION_MS);
   private readonly retryAfterByResult = new WeakMap<WebhookDispatchResult, string>();
+  private readonly circuitBreakers = new Map<string, EndpointCircuitState>();
+  private readonly replayingDlqIds = new Set<string>();
   private readonly ssrfAgent: Agent;
   private readonly customFetch?: typeof undiciFetch;
 
@@ -873,46 +927,75 @@ export class WebhookDispatcher {
   }
 
   public async replayDlq(id: string, ownerUserId: string): Promise<WebhookDispatchResult | null> {
-    const entry = await this.getDlqEntry(id, ownerUserId);
-    if (!entry) return null;
-
-    const isWrappedEnvelope =
-      entry.payload &&
-      typeof entry.payload === 'object' &&
-      'id' in entry.payload &&
-      'event' in entry.payload &&
-      'timestamp' in entry.payload &&
-      'data' in entry.payload;
-
-    const payloadData = isWrappedEnvelope
-      ? (entry.payload as Record<string, unknown>).data
-      : entry.payload;
-    const result = await this.dispatch(
-      entry.targetUrl,
-      entry.event as WebhookEvent,
-      payloadData,
-      decryptSecret(entry.secret) ?? '',
-      {
-        maxRetries: 3,
-        skipDlq: true,
-        deliveryId: entry.originalDeliveryId || entry.id,
-        ownerUserId: entry.ownerUserId,
-        ownerKeyId: entry.ownerKeyId,
-      }
-    );
-
-    entry.retryCount += result.totalAttempts;
-    entry.finalStatusCode = result.finalStatusCode;
-    entry.errorMessage = result.attempts.at(-1)?.error;
-    if (result.success) {
-      entry.status = 'replayed';
-      entry.replayedAt = Date.now();
-    } else {
-      entry.status = 'failed';
+    if (this.replayingDlqIds.has(id)) {
+      return skippedReplayResult(id);
     }
-    await this.saveToDlq(entry);
+    this.replayingDlqIds.add(id);
 
-    return result;
+    const redis = redisKeyStore.getRedisClient();
+    const lockKey = `${redisKeyStore.getPrefix()}dlq:replay:lock:${id}`;
+    const lockToken = crypto.randomUUID();
+    let redisLockAcquired = false;
+
+    try {
+      if (redis && typeof redis.set === 'function') {
+        const lockRes = await redis.set(lockKey, lockToken, 'PX', DLQ_REPLAY_LOCK_TTL_MS, 'NX').catch(() => null);
+        if (lockRes !== 'OK') {
+          return skippedReplayResult(id);
+        }
+        redisLockAcquired = true;
+      }
+
+      const entry = await this.getDlqEntry(id, ownerUserId);
+      if (!entry) return null;
+      if (entry.status === 'replayed') {
+        return skippedReplayResult(entry.originalDeliveryId || entry.id, entry.targetUrl, entry.event as WebhookEvent);
+      }
+
+      const isWrappedEnvelope =
+        entry.payload &&
+        typeof entry.payload === 'object' &&
+        'id' in entry.payload &&
+        'event' in entry.payload &&
+        'timestamp' in entry.payload &&
+        'data' in entry.payload;
+
+      const payloadData = isWrappedEnvelope
+        ? (entry.payload as Record<string, unknown>).data
+        : entry.payload;
+      const result = await this.dispatch(
+        entry.targetUrl,
+        entry.event as WebhookEvent,
+        payloadData,
+        decryptSecret(entry.secret) ?? '',
+        {
+          maxRetries: 1,
+          timeoutMs: 5000,
+          skipDlq: true,
+          deliveryId: entry.originalDeliveryId || entry.id,
+          ownerUserId: entry.ownerUserId,
+          ownerKeyId: entry.ownerKeyId,
+        }
+      );
+
+      entry.retryCount += result.totalAttempts;
+      entry.finalStatusCode = result.finalStatusCode;
+      entry.errorMessage = result.attempts.at(-1)?.error;
+      if (result.success) {
+        entry.status = 'replayed';
+        entry.replayedAt = Date.now();
+      } else {
+        entry.status = 'failed';
+      }
+      await this.saveToDlq(entry);
+
+      return result;
+    } finally {
+      this.replayingDlqIds.delete(id);
+      if (redisLockAcquired && redis && typeof redis.eval === 'function') {
+        await redis.eval(DLQ_REPLAY_UNLOCK_LUA, 1, lockKey, lockToken).catch(() => undefined);
+      }
+    }
   }
 
   private queueEngine: IQueueEngine<WebhookJobData, WebhookDispatchResult> | null = null;
@@ -967,6 +1050,122 @@ export class WebhookDispatcher {
     return ownerUserId !== undefined && (await redisUserStore.findById(ownerUserId)) === null;
   }
 
+  private touchCircuitMemory(endpointKey: string, state: EndpointCircuitState): void {
+    this.circuitBreakers.delete(endpointKey);
+    if (this.circuitBreakers.size >= CIRCUIT_MAX_ENDPOINTS) {
+      const oldestKey = this.circuitBreakers.keys().next().value;
+      if (oldestKey !== undefined) this.circuitBreakers.delete(oldestKey);
+    }
+    this.circuitBreakers.set(endpointKey, state);
+  }
+
+  private async readCircuitState(endpointKey: string): Promise<EndpointCircuitState | null> {
+    const local = this.circuitBreakers.get(endpointKey);
+    if (local) {
+      this.touchCircuitMemory(endpointKey, local);
+      return local;
+    }
+    const redis = redisKeyStore.getRedisClient();
+    if (!redis || typeof redis.get !== 'function') return null;
+    try {
+      const raw = await redis.get(circuitRedisKey(endpointKey));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as EndpointCircuitState;
+      this.touchCircuitMemory(endpointKey, parsed);
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  private async getCircuitOpenRemainingMs(endpointKey: string, now: number = Date.now()): Promise<number> {
+    const state = await this.readCircuitState(endpointKey);
+    if (!state || state.openUntil <= now) return 0;
+    return state.openUntil - now;
+  }
+
+  private async recordCircuitSuccess(endpointKey: string): Promise<void> {
+    this.circuitBreakers.delete(endpointKey);
+    const redis = redisKeyStore.getRedisClient();
+    if (redis && typeof redis.del === 'function') {
+      await redis.del(circuitRedisKey(endpointKey)).catch(() => undefined);
+    }
+  }
+
+  private async recordCircuitFailure(endpointKey: string, now: number = Date.now()): Promise<void> {
+    const prev = await this.readCircuitState(endpointKey);
+    const inWindow = prev && now - prev.windowStartedAt <= CIRCUIT_FAILURE_WINDOW_MS;
+    const isHalfOpenReTrip = Boolean(prev && prev.tripCount > 0 && prev.openUntil <= now);
+    const consecutiveFailures = inWindow ? prev!.consecutiveFailures + 1 : 1;
+    let tripCount = isHalfOpenReTrip || inWindow ? prev!.tripCount : 0;
+    let openUntil = inWindow ? prev!.openUntil : 0;
+    if ((isHalfOpenReTrip || consecutiveFailures >= CIRCUIT_FAILURE_THRESHOLD) && openUntil <= now) {
+      tripCount += 1;
+      const cooldown = Math.min(CIRCUIT_MAX_COOLDOWN_MS, CIRCUIT_BASE_COOLDOWN_MS * (2 ** Math.min(tripCount - 1, 4)));
+      openUntil = now + cooldown;
+    }
+    const next: EndpointCircuitState = {
+      consecutiveFailures,
+      windowStartedAt: inWindow ? prev.windowStartedAt : now,
+      openUntil,
+      tripCount,
+    };
+    this.touchCircuitMemory(endpointKey, next);
+    const redis = redisKeyStore.getRedisClient();
+    if (redis && typeof redis.set === 'function') {
+      const ttlMs = Math.max(CIRCUIT_FAILURE_WINDOW_MS, CIRCUIT_MAX_COOLDOWN_MS);
+      await redis.set(circuitRedisKey(endpointKey), JSON.stringify(next), 'PX', ttlMs).catch(() => undefined);
+    }
+  }
+
+  private async deadLetterJob(
+    job: Job<WebhookJobData, WebhookDispatchResult>,
+    secret: string,
+    attemptResult: WebhookDispatchResult,
+    missingSecretAbort: boolean,
+    attemptsMade: number
+  ): Promise<void> {
+    const { targetUrl, event, data, options = {} } = job.data;
+    if (options.skipDlq || (await this.isOwnerErased(options))) return;
+    const lastError = missingSecretAbort ? MISSING_WEBHOOK_SECRET_REASON : (job.data.attempts.at(-1)?.error ?? 'Circuit breaker open');
+    const dlqEntry: WebhookDlqEntry = {
+      id: `dlq_${job.data.deliveryId}`,
+      originalDeliveryId: job.data.deliveryId,
+      targetUrl,
+      event,
+      payload: {
+        id: job.data.deliveryId,
+        event,
+        timestamp: Math.floor(Date.now() / 1000),
+        data: redactForOutput(data),
+      },
+      secret,
+      failedAt: Date.now(),
+      finalStatusCode: attemptResult.finalStatusCode,
+      errorMessage: lastError,
+      retryCount: missingSecretAbort ? 0 : attemptsMade,
+      status: 'failed',
+      ownerUserId: options.ownerUserId,
+      ownerKeyId: options.ownerKeyId,
+    };
+    await this.saveToDlq(dlqEntry).catch(() => {});
+    if (await this.isOwnerErased(options)) {
+      await this.dlq.remove([{ id: dlqEntry.id, ownerUserId: dlqEntry.ownerUserId }]).catch(() => {});
+    }
+  }
+
+  private async enqueueNextRetry(
+    job: Job<WebhookJobData, WebhookDispatchResult>,
+    attemptsMade: number,
+    delayMs: number
+  ): Promise<void> {
+    const retryQueue = this.getQueue();
+    const retryJob = await retryQueue.add('webhook:delivery', job.data, { ...WEBHOOK_JOB_OPTIONS, delay: delayMs });
+    if (await this.isOwnerErased(job.data.options ?? {})) {
+      await retryQueue.remove(retryJob.id).catch(() => {});
+    }
+  }
+
   private async processQueuedJob(
     job: Job<WebhookJobData, WebhookDispatchResult>
   ): Promise<WebhookDispatchResult> {
@@ -975,6 +1174,36 @@ export class WebhookDispatcher {
       return { id: job.data.deliveryId, url: targetUrl, event, success: false, skipped: true, totalAttempts: 0, durationMs: 0, attempts: [] };
     }
     const secret = openWebhookSecret(job.data.secret, job.data.deliveryId);
+    const circuitKey = normalizeCircuitEndpoint(targetUrl);
+    const maxRetries = Math.min(Math.max(1, options.maxRetries ?? 6), MAX_WEBHOOK_RETRIES);
+    const circuitRemainingMs = await this.getCircuitOpenRemainingMs(circuitKey);
+
+    if (circuitRemainingMs > 0) {
+      const skippedResult: WebhookDispatchResult = {
+        id: job.data.deliveryId,
+        url: targetUrl,
+        event,
+        success: false,
+        skipped: true,
+        totalAttempts: 0,
+        finalStatusCode: 503,
+        durationMs: 0,
+        attempts: [],
+      };
+      const attemptsMade = job.data.attemptNumber;
+      job.data.attemptNumber += 1;
+      if (attemptsMade >= maxRetries) {
+        await this.deadLetterJob(job, secret, skippedResult, false, attemptsMade);
+        return { ...skippedResult, totalAttempts: attemptsMade, attempts: job.data.attempts };
+      }
+      if (await this.isOwnerErased(options)) {
+        return { ...skippedResult, totalAttempts: attemptsMade, attempts: job.data.attempts };
+      }
+      const delayMs = Math.max(computeRetryDelay(attemptsMade, undefined, options.retrySchedule), circuitRemainingMs);
+      await this.enqueueNextRetry(job, attemptsMade, delayMs);
+      return { ...skippedResult, totalAttempts: attemptsMade, attempts: job.data.attempts };
+    }
+
     const previousSecret = job.data.sealedPreviousSecret
       ? openWebhookSecret(job.data.sealedPreviousSecret, job.data.deliveryId)
       : options.previousSecret;
@@ -997,6 +1226,7 @@ export class WebhookDispatcher {
     job.data.attemptNumber += 1;
 
     if (attemptResult.success) {
+      await this.recordCircuitSuccess(circuitKey);
       return attemptResult;
     }
 
@@ -1009,38 +1239,13 @@ export class WebhookDispatcher {
       attemptResult.finalStatusCode,
       attemptResult.attempts.at(-1)?.error
     );
-    const maxRetries = Math.min(Math.max(1, options.maxRetries ?? 6), MAX_WEBHOOK_RETRIES);
+    if (action === 'retry') {
+      await this.recordCircuitFailure(circuitKey);
+    }
     const missingSecretAbort = attemptResult.attempts.length === 0;
 
     if (missingSecretAbort || action === 'dlq_immediate' || attemptsMade >= maxRetries) {
-      // The account may have been erased while the attempt ran, after the check above.
-      if (!options.skipDlq && !(await this.isOwnerErased(options))) {
-        const lastError = missingSecretAbort ? MISSING_WEBHOOK_SECRET_REASON : job.data.attempts.at(-1)?.error;
-        const dlqEntry: WebhookDlqEntry = {
-          id: `dlq_${job.data.deliveryId}`,
-          originalDeliveryId: job.data.deliveryId,
-          targetUrl,
-          event,
-          payload: {
-            id: job.data.deliveryId,
-            event,
-            timestamp: Math.floor(Date.now() / 1000),
-            data: redactForOutput(data),
-          },
-          secret,
-          failedAt: Date.now(),
-          finalStatusCode: attemptResult.finalStatusCode,
-          errorMessage: lastError,
-          retryCount: missingSecretAbort ? 0 : attemptsMade,
-          status: 'failed',
-          ownerUserId: options.ownerUserId,
-          ownerKeyId: options.ownerKeyId,
-        };
-        await this.saveToDlq(dlqEntry).catch(() => {});
-        if (await this.isOwnerErased(options)) {
-          await this.dlq.remove([{ id: dlqEntry.id, ownerUserId: dlqEntry.ownerUserId }]).catch(() => {});
-        }
-      }
+      await this.deadLetterJob(job, secret, attemptResult, missingSecretAbort, attemptsMade);
       return {
         ...attemptResult,
         totalAttempts: missingSecretAbort ? 0 : attemptsMade,
@@ -1058,11 +1263,7 @@ export class WebhookDispatcher {
 
     const retryHeaders = retryAfterHeader ? { 'retry-after': retryAfterHeader } : undefined;
     const delayMs = computeRetryDelay(attemptsMade, retryHeaders, options.retrySchedule);
-    const retryQueue = this.getQueue();
-    const retryJob = await retryQueue.add('webhook:delivery', job.data, { ...WEBHOOK_JOB_OPTIONS, delay: delayMs });
-    if (await this.isOwnerErased(options)) {
-      await retryQueue.remove(retryJob.id).catch(() => {});
-    }
+    await this.enqueueNextRetry(job, attemptsMade, delayMs);
     return {
       ...attemptResult,
       totalAttempts: attemptsMade,

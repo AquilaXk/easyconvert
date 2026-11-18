@@ -203,7 +203,9 @@ async function fetchFollowingRedirects(
       return { refusal: refusal(400, 'unsupported_scheme', 'Only HTTP and HTTPS URLs are permitted.') };
     }
     if (nextUrl.origin !== currentUrl.origin) {
-      delete currentHeaders['authorization'];
+      for (const k of Object.keys(currentHeaders)) {
+        delete currentHeaders[k];
+      }
     }
     currentUrl = nextUrl;
   }

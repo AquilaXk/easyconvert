@@ -13,6 +13,7 @@ import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import { graphInputKeys, withGraphInputsHeld } from '@/lib/queue/graph/input-cleanup';
 import { conversionQueue, getQueueForResourceClass } from '@/lib/queue/conversion-queue';
+import { sanitizeNodeOutputFilename } from '@/lib/queue/graph/node-jobs';
 import { baseCredits } from '@/lib/billing/credits';
 import { handOffConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { stripEngineControls } from '@/lib/conversions/job-time';
@@ -499,13 +500,13 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
           );
         }
 
-        originalFilename = file.name;
+        originalFilename = sanitizeInboundFilename(file.name, 'upload');
         fileSize = file.size;
 
         const arrayBuffer = await file.arrayBuffer();
         uploadedBuffer = Buffer.from(arrayBuffer);
         fileMeta = {
-          name: file.name,
+          name: originalFilename,
           type: file.type || 'application/octet-stream',
           size: file.size,
         };
@@ -527,7 +528,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       }
 
       const validBody = (body && typeof body === 'object' ? body : {}) as Record<string, any>;
-      originalFilename = (validBody.filename || validBody.originalFilename || '').trim();
+      originalFilename = sanitizeInboundFilename(validBody.filename || validBody.originalFilename || '');
       targetFormat = (validBody.targetFormat || '').trim();
       sourceFormatParam = (validBody.sourceFormat || '').trim() || undefined;
       options = validBody.options && typeof validBody.options === 'object' ? validBody.options : {};
@@ -576,7 +577,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       if ('refusal' in resolved) return await fail(resolved.refusal.status, resolved.refusal.message, resolved.refusal.title);
       storageKey = resolved.session.key;
       if (!originalFilename) {
-        originalFilename = resolved.session.filename;
+        originalFilename = sanitizeInboundFilename(resolved.session.filename, 'upload');
       }
       if (!fileSize) {
         fileSize = resolved.session.uploadLength;
@@ -668,7 +669,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
 
     if (!originalFilename && storageKey && !isInlineInputKey(storageKey)) {
-      originalFilename = storageKey.split('/').pop() || 'file';
+      originalFilename = sanitizeInboundFilename(storageKey.split('/').pop()) || 'file';
     }
 
     const hasImportUrl = graph && (graphHasCapture(graph) || hasRemoteImport(normalizeGraphNodes(graph)));
@@ -898,6 +899,11 @@ function graphHasCapture(graph: JobGraph): boolean {
  * The source format and file name of a graph that has no file of its own: those of the object its first remote import names, or, for
  * a graph that captures a page, the HTML of the page.
  */
+function sanitizeInboundFilename(raw: unknown, fallback = ''): string {
+  const trimmed = typeof raw === 'string' ? raw.trim() : '';
+  return trimmed ? sanitizeNodeOutputFilename(trimmed, fallback || 'upload') : fallback;
+}
+
 function graphSourceWithoutFile(graph: JobGraph, originalFilename: string): { sourceDef: FormatDefinition | undefined; originalFilename: string } {
   const remote = remoteImportPath(normalizeGraphNodes(graph));
   if (remote) {

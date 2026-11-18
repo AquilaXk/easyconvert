@@ -119,15 +119,16 @@ async function parseConvertFormData(formData: FormData, instanceUri: string, hea
 
   const sourceFormatParam = formData.get('sourceFormat');
   const explicitSource = typeof sourceFormatParam === 'string' && sourceFormatParam.trim() ? sourceFormatParam.trim() : undefined;
+  const safeFilename = sanitizeNodeOutputFilename((file as File).name, 'upload');
   let sourceDef = explicitSource ? getFormatByExtension(explicitSource) : undefined;
-  sourceDef ??= detectFormatFromFilename((file as File).name);
+  sourceDef ??= detectFormatFromFilename(safeFilename);
   if (!explicitSource && sourceDef?.id === 'xml') {
     const prefix = new Uint8Array(await file.slice(0, ALTO_SNIFF_BYTES).arrayBuffer());
     sourceDef = promoteAltoXmlSource(sourceDef, undefined, targetFormat, prefix);
   }
 
   if (!sourceDef) {
-    return badRequest(`Could not identify source format for file "${(file as File).name}".`);
+    return badRequest(`Could not identify source format for file "${safeFilename}".`);
   }
   facts.source = sourceDef.id;
 
@@ -245,7 +246,7 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
     // An engine the pair does not list, or a version that is not installed, is refused before anything is reserved.
     await resolveEngineChoice(sourceDef.id, targetDef.id, options, { checkLocalInstall: !isQueueOnlyWebMode() });
 
-    trace.keepPrivate(file.name, options);
+    trace.keepPrivate(sanitizeNodeOutputFilename(file.name, 'upload'), options);
 
     const webhookUrlParam = formText(formData, 'webhookUrl')?.trim() || undefined;
     const webhookSecretParam = formText(formData, 'webhookSecret')?.trim() || undefined;
@@ -336,11 +337,12 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
 /** Hands a large or `respond-async` conversion to the queue: its job owns the unit once queued, and commits it or gives it back. */
 async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise<NextResponse | Response> {
   const { file, sourceDef, targetDef, options, user, rateLimitHeaders, instanceUri, reply, trace } = c;
+  const safeFilename = sanitizeNodeOutputFilename(file.name, 'upload');
   // Asynchronous zero-heap streaming handoff: pipe stream directly to storage multipart upload
   let uploadedStorageKey: string;
   try {
     const streamResult = await pipeStreamToStorageMultipart(file.stream(), {
-      filename: file.name,
+      filename: safeFilename,
       mimeType: file.type || 'application/octet-stream',
       expectedTotalSize: file.size,
       sourceExtension: sourceDef.extension,
@@ -380,7 +382,7 @@ async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise
     conversionQueue,
     {
       jobId: '',
-      originalFilename: file.name,
+      originalFilename: safeFilename,
       sourceFormat: sourceDef.id,
       targetFormat: targetDef.id,
       fileSize: file.size,
@@ -408,7 +410,7 @@ async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise
       message: 'Conversion job accepted for asynchronous processing.',
       sourceFormat: sourceDef.id,
       targetFormat: targetDef.id,
-      originalFilename: file.name,
+      originalFilename: safeFilename,
       fileSize: file.size,
       createdAt: job.timestamp,
     },
@@ -429,6 +431,7 @@ async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise
  */
 async function convertReserved(c: ReservedConversion, unit: ReservedUnit): Promise<NextResponse | Response> {
   const { req, user, file, sourceDef, targetDef, options, rateLimitHeaders, instanceUri, startTime, reply, trace } = c;
+  const safeFilename = sanitizeNodeOutputFilename(file.name, 'upload');
 
   const preferHeader = req.headers.get('prefer') || '';
   const isPreferAsync = preferHeader.toLowerCase().includes('respond-async');
@@ -438,7 +441,7 @@ async function convertReserved(c: ReservedConversion, unit: ReservedUnit): Promi
 
   // Fail-closed verification against spoofed file extensions using initial-byte MIME magic sniffing
   try {
-    assertNotSpoofedFile(inputBuffer, sourceDef.extension, file.name);
+    assertNotSpoofedFile(inputBuffer, sourceDef.extension, safeFilename);
   } catch (err: unknown) {
     trace.cause = err;
     return reply(createProblemDetailsResponse(
@@ -467,7 +470,7 @@ async function convertReserved(c: ReservedConversion, unit: ReservedUnit): Promi
       sourceFormat: sourceDef.id,
       targetFormat: targetDef.id,
       options: bindJobLimits(options, limits),
-      originalFilename: file.name,
+      originalFilename: safeFilename,
       userId: user.id,
       tier: user.tier,
     })
@@ -479,7 +482,7 @@ async function convertReserved(c: ReservedConversion, unit: ReservedUnit): Promi
 
   // Store the result before the quota unit is committed: a storage outage fails the request and
   // rolls the reservation back, so the user is not charged for a result they cannot download.
-  const baseName = file.name.replace(/\.[^/.]+$/, '');
+  const baseName = safeFilename.replace(/\.[^/.]+$/, '');
   // Multi-page results (one image per page) come back as a ZIP whatever the requested target is.
   const outExtension = conversionResult.mimeType === ZIP_MIME_TYPE ? 'zip' : targetDef.extension || targetDef.id;
   // The name is the caller's: one path leaf, so that it cannot place the stored result outside its own key prefix.

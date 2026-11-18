@@ -7,7 +7,7 @@ export type ConversionResponse = Schemas['ConversionResponse'];
 export type JobDetails = Schemas['JobDetails'];
 export type ProblemDetails = Schemas['ProblemDetails'];
 
-const DEFAULT_BASE_URL = 'https://easyconvert.app';
+export const DEFAULT_BASE_URL = 'https://convert.aquilaxk.site';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 5 * 60_000;
@@ -31,6 +31,13 @@ export interface UploadParams {
   options?: ConversionOptions;
   webhookUrl?: string;
   webhookSecret?: string;
+  idempotencyKey?: string;
+}
+
+export interface VerifyWebhookOptions {
+  toleranceSeconds?: number;
+  deliveryId?: string;
+  webhookId?: string;
 }
 
 /** The 202 of a conversion that was queued (a file over the synchronous limit): poll the job for the result. */
@@ -100,9 +107,12 @@ export class EasyConvertClient {
    * set (also with `raw`); a finished `raw` conversion answers the bytes of the result.
    */
   async convert(params: UploadParams & { respondAsync?: boolean; raw?: boolean }): Promise<ConversionResponse | ConversionAccepted | ArrayBuffer> {
-    const { filename, respondAsync, raw, ...fields } = params;
+    const { filename, respondAsync, raw, idempotencyKey, ...fields } = params;
+    const header: Record<string, string> = {};
+    if (respondAsync) header.Prefer = 'respond-async';
+    if (idempotencyKey) header['Idempotency-Key'] = idempotencyKey;
     const { data, error, response } = await this.api.POST('/api/v1/convert', {
-      params: { header: respondAsync ? { Prefer: 'respond-async' } : {}, query: raw ? { raw } : {} },
+      params: { header, query: raw ? { raw } : {} },
       // The generated type calls a binary part a string; bodySerializer turns the Blob into the part.
       body: { ...fields, file: fields.file as unknown as string, options: undefined },
       bodySerializer: () => multipartBody(fields, filename),
@@ -119,8 +129,9 @@ export class EasyConvertClient {
 
   /** Queues a conversion job for a file and returns its id; follow it with `waitForJob`. */
   async createJob(params: UploadParams): Promise<{ jobId: string; statusUrl: string }> {
-    const { filename, ...fields } = params;
+    const { filename, idempotencyKey, ...fields } = params;
     const { data, error, response } = await this.api.POST('/api/v1/jobs', {
+      ...(idempotencyKey ? { params: { header: { 'Idempotency-Key': idempotencyKey } } } : {}),
       body: { ...fields, file: fields.file as unknown as string, options: undefined },
       bodySerializer: () => multipartBody(fields, filename),
     });
@@ -153,6 +164,20 @@ export class EasyConvertClient {
    * base URL: a link to another origin (a result held in storage of its own) is fetched without it.
    */
   async download(downloadUrl: string): Promise<ArrayBuffer> {
+    const response = await this.fetchDownloadResponse(downloadUrl);
+    return response.arrayBuffer();
+  }
+
+  /** Streams the bytes of a finished conversion from the `downloadUrl` without full memory buffering. */
+  async downloadStream(downloadUrl: string): Promise<ReadableStream<Uint8Array>> {
+    const response = await this.fetchDownloadResponse(downloadUrl);
+    if (!response.body) {
+      throw new Error('Download response did not include a readable body stream.');
+    }
+    return response.body;
+  }
+
+  private async fetchDownloadResponse(downloadUrl: string): Promise<Response> {
     const url = new URL(downloadUrl, this.baseUrl);
     const response = await this.fetchImpl(url, {
       headers: url.origin === this.baseOrigin ? { Authorization: this.authorization } : {},
@@ -162,7 +187,7 @@ export class EasyConvertClient {
       const problem = (await response.json().catch(() => undefined)) as ProblemDetails | undefined;
       throw new EasyConvertApiError(response.status, problem);
     }
-    return response.arrayBuffer();
+    return response;
   }
 
   /** Queues a graph processing job and returns its id and status url. */
@@ -170,6 +195,7 @@ export class EasyConvertClient {
     graph: Record<string, unknown> | string;
     webhookUrl?: string;
     webhookSecret?: string;
+    idempotencyKey?: string;
   }): Promise<{ jobId: string; statusUrl: string }> {
     const graphObj = typeof params.graph === 'string' ? JSON.parse(params.graph) : params.graph;
     const body = {
@@ -177,12 +203,16 @@ export class EasyConvertClient {
       webhookUrl: params.webhookUrl,
       webhookSecret: params.webhookSecret,
     };
+    const headers: Record<string, string> = {
+      Authorization: this.authorization,
+      'Content-Type': 'application/json',
+    };
+    if (params.idempotencyKey) {
+      headers['Idempotency-Key'] = params.idempotencyKey;
+    }
     const response = await this.fetchImpl(new URL('/api/v1/jobs', this.baseUrl), {
       method: 'POST',
-      headers: {
-        Authorization: this.authorization,
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(this.timeoutMs),
     });
@@ -202,7 +232,7 @@ export class EasyConvertClient {
     const totalSize = file.size;
     const metadataParts: string[] = [];
     const filename = options.filename ?? (file instanceof File ? file.name : 'upload.bin');
-    const toB64 = (s: string) => (typeof btoa !== 'undefined' ? btoa(s) : Buffer.from(s).toString('base64'));
+    const toB64 = encodeUtf8Base64;
     metadataParts.push(`filename ${toB64(filename)}`);
     if (options.mimeType || file.type) {
       metadataParts.push(`filetype ${toB64(options.mimeType || file.type)}`);
@@ -224,7 +254,7 @@ export class EasyConvertClient {
     }
     const location = initRes.headers.get('Location') || '';
     const uploadId = location.split('/').pop() || '';
-    let storageKey = initRes.headers.get('Storage-Key') || undefined;
+    let storageKey = extractTusStorageKey(initRes.headers);
 
     const chunkSize = options.chunkSize ?? 5 * 1024 * 1024;
     let offset = 0;
@@ -249,8 +279,9 @@ export class EasyConvertClient {
       }
       const newOffset = patchRes.headers.get('Upload-Offset');
       offset = newOffset ? parseInt(newOffset, 10) : end;
-      if (patchRes.headers.get('Storage-Key')) {
-        storageKey = patchRes.headers.get('Storage-Key') || undefined;
+      const patchStorageKey = extractTusStorageKey(patchRes.headers);
+      if (patchStorageKey) {
+        storageKey = patchStorageKey;
       }
     }
     return { uploadId, storageKey, location };
@@ -259,9 +290,10 @@ export class EasyConvertClient {
   /** Direct multipart upload via presigned / direct upload URLs. */
   async uploadMultipart(
     file: Blob,
-    options: { filename?: string; partSize?: number } = {},
+    options: { filename?: string; mimeType?: string; partSize?: number } = {},
   ): Promise<{ storageKey: string; uploadId: string }> {
     const filename = options.filename ?? (file instanceof File ? file.name : 'upload.bin');
+    const mimeType = options.mimeType ?? (file.type || undefined);
     const initRes = await this.fetchImpl(new URL('/api/v1/uploads/direct', this.baseUrl), {
       method: 'POST',
       headers: {
@@ -270,6 +302,7 @@ export class EasyConvertClient {
       },
       body: JSON.stringify({
         filename,
+        ...(mimeType ? { mimeType } : {}),
         totalSize: file.size,
         partSize: options.partSize,
       }),
@@ -281,17 +314,24 @@ export class EasyConvertClient {
     }
     const initData = (await initRes.json()) as {
       uploadId: string;
-      storageKey: string;
+      key?: string;
+      storageKey?: string;
       partSize: number;
-      partUrls: Array<{ partNumber: number; url: string }>;
+      parts?: Array<{ partNumber: number; uploadUrl?: string; url?: string }>;
+      partUrls?: Array<{ partNumber: number; url?: string; uploadUrl?: string }>;
     };
 
+    const partList = initData.parts ?? initData.partUrls ?? [];
     const parts: Array<{ partNumber: number; etag: string }> = [];
-    for (const partInfo of initData.partUrls) {
+    for (const partInfo of partList) {
+      const targetUrl = partInfo.uploadUrl ?? partInfo.url;
+      if (!targetUrl) {
+        throw new Error(`Missing upload URL for multipart part ${partInfo.partNumber}`);
+      }
       const start = (partInfo.partNumber - 1) * initData.partSize;
       const end = Math.min(start + initData.partSize, file.size);
       const chunk = file.slice(start, end);
-      const putRes = await this.fetchImpl(new URL(partInfo.url, this.baseUrl), {
+      const putRes = await this.fetchImpl(new URL(targetUrl, this.baseUrl), {
         method: 'PUT',
         headers: {
           'Content-Length': String(chunk.size),
@@ -322,8 +362,11 @@ export class EasyConvertClient {
       const problem = (await completeRes.json().catch(() => undefined)) as ProblemDetails | undefined;
       throw new EasyConvertApiError(completeRes.status, problem);
     }
-    const completeData = (await completeRes.json()) as { storageKey?: string };
-    return { storageKey: completeData.storageKey ?? initData.storageKey, uploadId: initData.uploadId };
+    const completeData = (await completeRes.json()) as { storageKey?: string; key?: string };
+    return {
+      storageKey: completeData.storageKey ?? completeData.key ?? initData.key ?? initData.storageKey ?? '',
+      uploadId: initData.uploadId,
+    };
   }
 
   /** Inspects archive structure and encryption without unpacking. */
@@ -335,14 +378,14 @@ export class EasyConvertClient {
       const formData = new FormData();
       formData.append('file', params.file, params.filename ?? (params.file instanceof File ? params.file.name : 'archive.zip'));
       if (params.password) formData.append('password', params.password);
-      res = await this.fetchImpl(new URL('/api/v1/archive/inspect', this.baseUrl), {
+      res = await this.fetchImpl(new URL('/api/v1/archives/inspect', this.baseUrl), {
         method: 'POST',
         headers: { Authorization: this.authorization },
         body: formData,
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } else if (params.storageKey) {
-      res = await this.fetchImpl(new URL('/api/v1/archive/inspect', this.baseUrl), {
+      res = await this.fetchImpl(new URL('/api/v1/archives/inspect', this.baseUrl), {
         method: 'POST',
         headers: {
           Authorization: this.authorization,
@@ -367,7 +410,7 @@ export class EasyConvertClient {
 
   /** Registers encrypted storage credentials. */
   async createCredential(params: {
-    providerType: 's3' | 'sftp';
+    providerType: 's3' | 'r2' | 'gcs' | 'azure-blob' | 'webdav' | 'sftp';
     credentials: Record<string, unknown>;
     name?: string;
     ttlSeconds?: number;
@@ -415,47 +458,104 @@ export class EasyConvertClient {
     }
   }
 
-  /** Verifies incoming HMAC-SHA256 webhook signature. */
+  /**
+   * Verifies incoming HMAC-SHA256 webhook signature.
+   * Supports Standard Webhooks (`v1,<base64>` space-separated signatures with `{deliveryId}.{timestamp}.{payload}`)
+   * and legacy (`sha256=<hex>` or `<hex>` over `{timestamp}.{payload}`).
+   */
   static async verifyWebhookSignature(
     payload: string,
     signature: string,
     timestamp: number,
     secret: string,
-    toleranceSeconds = 300,
+    toleranceOrOptions: number | VerifyWebhookOptions = 300,
+    maybeDeliveryId?: string,
   ): Promise<boolean> {
+    const opts = typeof toleranceOrOptions === 'object' ? toleranceOrOptions : undefined;
+    const toleranceSeconds = opts?.toleranceSeconds ?? (typeof toleranceOrOptions === 'number' ? toleranceOrOptions : 300);
+    const deliveryId = opts?.deliveryId ?? opts?.webhookId ?? maybeDeliveryId;
+
     const now = Math.floor(Date.now() / 1000);
     if (Math.abs(now - timestamp) > toleranceSeconds) {
       return false;
     }
-    const cleanSig = signature.replace(/^sha256=/, '').trim();
-    const message = `${timestamp}.${payload}`;
-    let expectedHex = '';
-    if (typeof globalThis.crypto?.subtle !== 'undefined') {
-      const enc = new TextEncoder();
-      const key = await globalThis.crypto.subtle.importKey(
-        'raw',
-        enc.encode(secret),
-        { name: 'HMAC', hash: 'SHA-256' },
-        false,
-        ['sign'],
-      );
-      const sigBuffer = await globalThis.crypto.subtle.sign('HMAC', key, enc.encode(message));
-      expectedHex = Array.from(new Uint8Array(sigBuffer))
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('');
-    } else {
-      try {
-        const cryptoMod = await import('node:crypto');
-        expectedHex = cryptoMod.createHmac('sha256', secret).update(message).digest('hex');
-      } catch {
-        return false;
+
+    const trimmedSig = signature.trim();
+    const tokens = trimmedSig.split(/\s+/).filter(Boolean);
+    const isStandardMode = deliveryId !== undefined || tokens.some((tok) => tok.startsWith('v1,'));
+
+    if (isStandardMode) {
+      if (!deliveryId) return false;
+      const digest = await computeHmacSha256(secret, `${deliveryId}.${timestamp}.${payload}`);
+      if (!digest) return false;
+      const expectedToken = `v1,${bytesToBase64(digest)}`;
+      let matched = false;
+      for (const token of tokens) {
+        if (constantTimeEqual(token, expectedToken)) {
+          matched = true;
+        }
       }
+      return matched;
     }
-    if (cleanSig.length !== expectedHex.length) return false;
-    let mismatch = 0;
-    for (let i = 0; i < cleanSig.length; i++) {
-      mismatch |= cleanSig.charCodeAt(i) ^ expectedHex.charCodeAt(i);
-    }
-    return mismatch === 0;
+
+    const cleanSig = trimmedSig.replace(/^sha256=/, '').trim();
+    const digest = await computeHmacSha256(secret, `${timestamp}.${payload}`);
+    if (!digest) return false;
+    const expectedHex = Array.from(digest)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    return constantTimeEqual(cleanSig, expectedHex);
   }
+}
+
+function extractTusStorageKey(headers: Headers): string | undefined {
+  return headers.get('EasyConvert-Storage-Key') || headers.get('X-Storage-Key') || headers.get('Storage-Key') || undefined;
+}
+
+function encodeUtf8Base64(input: string): string {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(input, 'utf-8').toString('base64');
+  }
+  return bytesToBase64(new TextEncoder().encode(input));
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes).toString('base64');
+  }
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
+async function computeHmacSha256(secret: string, message: string): Promise<Uint8Array | null> {
+  if (typeof globalThis.crypto?.subtle !== 'undefined') {
+    const enc = new TextEncoder();
+    const key = await globalThis.crypto.subtle.importKey(
+      'raw',
+      enc.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign'],
+    );
+    const sigBuffer = await globalThis.crypto.subtle.sign('HMAC', key, enc.encode(message));
+    return new Uint8Array(sigBuffer);
+  }
+  try {
+    const cryptoMod = await import('node:crypto');
+    return new Uint8Array(cryptoMod.createHmac('sha256', secret).update(message).digest());
+  } catch {
+    return null;
+  }
+}
+
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return mismatch === 0;
 }

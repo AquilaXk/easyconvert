@@ -158,6 +158,8 @@ export interface TusSessionStore {
   hydrateStagedFile?(id: string, binPath: string, expectedOffset: number): Promise<number>;
   /** Deletes intermediate cross-replica staged bytes once finalized or terminated. */
   deleteStagedBytes?(id: string): Promise<void>;
+  /** Aborts and removes expired incomplete remote multipart upload records tracked in shared storage. */
+  sweepExpiredRemote?(now: number): Promise<number>;
   /** The ids of the sessions `ownerUserId` has open, for the erasure of an account. */
   idsOfOwner?(ownerUserId: string): Promise<string[]>;
   reset?(): Promise<void>;
@@ -248,6 +250,12 @@ export class RedisTusSessionStore implements TusSessionStore {
   private stageLengthKey(id: string): string {
     return `tus:stage:{${id}}:len`;
   }
+
+  private remoteRecordKey(id: string): string {
+    return `tus:remote:${id}`;
+  }
+
+  private readonly remoteExpiryKey = 'tus:remote_expiry';
 
   async withSessionLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
     if (
@@ -362,7 +370,18 @@ export class RedisTusSessionStore implements TusSessionStore {
     }
     const stagedLen = Number((await this.redis.get(this.stageLengthKey(id))) || '0');
     if (stagedLen < expectedOffset) {
-      return fs.promises.stat(binPath).then((st) => st.size, () => 0);
+      const localSize = await fs.promises.stat(binPath).then((st) => st.size, () => -1);
+      if (localSize === expectedOffset) {
+        return localSize;
+      }
+      if (expectedOffset > MAX_REDIS_STAGED_UPLOAD_BYTES) {
+        throw new StorageServiceError(
+          `Cannot resume TUS upload "${id}" at offset ${expectedOffset}: staged bytes exceed ${MAX_REDIS_STAGED_UPLOAD_BYTES} bytes and are missing on local disk; configure shared EASYCONVERT_STORAGE_DIR or STORAGE_DRIVER=s3|oci for multi-replica uploads.`,
+          'tus',
+          { retryable: true }
+        );
+      }
+      return localSize > 0 ? localSize : 0;
     }
     await fs.promises.mkdir(path.dirname(binPath), { recursive: true });
     const tempPath = `${binPath}.${crypto.randomBytes(6).toString('hex')}.hydrate`;
@@ -414,6 +433,27 @@ export class RedisTusSessionStore implements TusSessionStore {
     const ttl = Math.max(1, Math.floor((session.expiresAt - Date.now()) / 1000));
     const effectiveTtl = ttl || ttlSeconds;
     await this.redis.set(key, JSON.stringify(session), 'EX', effectiveTtl);
+    if (session.remoteUploadId) {
+      const remoteKey = this.remoteRecordKey(session.id);
+      if (session.completed) {
+        await this.redis.del(remoteKey).catch(() => undefined);
+        if (typeof (this.redis as { zrem?: unknown }).zrem === 'function') {
+          await this.redis.zrem(this.remoteExpiryKey, session.id).catch(() => undefined);
+        }
+      } else {
+        await this.redis
+          .set(
+            remoteKey,
+            JSON.stringify({ remoteUploadId: session.remoteUploadId, key: session.key, expiresAt: session.expiresAt }),
+            'EX',
+            effectiveTtl + 7200
+          )
+          .catch(() => undefined);
+        if (typeof (this.redis as { zadd?: unknown }).zadd === 'function') {
+          await this.redis.zadd(this.remoteExpiryKey, session.expiresAt, session.id).catch(() => undefined);
+        }
+      }
+    }
     if (session.ownerUserId && typeof (this.redis as { sadd?: unknown }).sadd === 'function') {
       const ownerKey = this.ownerIndexKey(session.ownerUserId);
       await this.redis.sadd(ownerKey, session.id);
@@ -458,6 +498,10 @@ export class RedisTusSessionStore implements TusSessionStore {
       // ignore malformed record
     }
     const res = await this.redis.del(key);
+    await this.redis.del(this.remoteRecordKey(id)).catch(() => undefined);
+    if (typeof (this.redis as { zrem?: unknown }).zrem === 'function') {
+      await this.redis.zrem(this.remoteExpiryKey, id).catch(() => undefined);
+    }
     await this.deleteStagedBytes(id);
     if (ownerUserId && typeof (this.redis as { srem?: unknown }).srem === 'function') {
       await this.redis.srem(this.ownerIndexKey(ownerUserId), id).catch(() => undefined);
@@ -514,8 +558,33 @@ export class RedisTusSessionStore implements TusSessionStore {
     return [...new Set([...indexedIds, ...ids])];
   }
 
+  async sweepExpiredRemote(now: number): Promise<number> {
+    if (typeof (this.redis as { zrangebyscore?: unknown }).zrangebyscore !== 'function') {
+      return 0;
+    }
+    let swept = 0;
+    const expiredIds = await this.redis.zrangebyscore(this.remoteExpiryKey, '-inf', now, 'LIMIT', 0, 200);
+    for (const id of expiredIds.slice(0, 200)) {
+      const remoteKey = this.remoteRecordKey(id);
+      const raw = await this.redis.get(remoteKey).catch(() => null);
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw) as { remoteUploadId?: string; expiresAt?: number };
+          if (parsed.remoteUploadId && (parsed.expiresAt === undefined || parsed.expiresAt <= now)) {
+            await Promise.resolve(storageProvider.abortMultipartUpload(parsed.remoteUploadId)).catch(() => undefined);
+          }
+        } catch {
+          // Ignore malformed remote expiry record
+        }
+      }
+      await this.deleteSession(id).catch(() => false);
+      swept += 1;
+    }
+    return swept;
+  }
+
   async reset(): Promise<void> {
-    await clearKeysMatching(this.redis, [`${this.prefix}*`, 'tus:owner:*', 'tus:lock:*', 'tus:stage:*']);
+    await clearKeysMatching(this.redis, [`${this.prefix}*`, 'tus:owner:*', 'tus:lock:*', 'tus:stage:*', 'tus:remote:*', this.remoteExpiryKey]);
   }
 }
 
@@ -809,14 +878,17 @@ export class TusEngine {
   }
 
   private async performSweepExpired(now: number): Promise<number> {
+    let removed = 0;
+    if (this.sessionStore.sweepExpiredRemote) {
+      removed += await this.sessionStore.sweepExpiredRemote(now).catch(() => 0);
+    }
     let names: string[];
     try {
       names = fs.readdirSync(this.tusDir);
     } catch {
-      return 0;
+      return removed;
     }
     const files = new Set(names);
-    let removed = 0;
     for (const name of names) {
       const match = TUS_FILE_PATTERN.exec(name);
       if (!match || !isTusId(match[1])) continue;
@@ -1107,6 +1179,8 @@ export class TusEngine {
       session.remoteFlushedBytes = session.uploadLength;
       await storageProvider.completeMultipartUpload(session.remoteUploadId!, parts);
       await recordTusUpload(session.key);
+      await this.sessionStore.saveSession(session);
+      await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
       await fs.promises.rm(binPath, { force: true });
       this.localTailMarkers.delete(id);
       await this.sessionStore.deleteStagedBytes?.(id);
@@ -1176,6 +1250,8 @@ export class TusEngine {
       assertNotSpoofedFilePath(binPath, declaredFormat, session.filename);
       await finalizeTusSession(session, binPath);
       await recordTusUpload(session.key);
+      await this.sessionStore.saveSession(session);
+      await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
       await fs.promises.rm(binPath, { force: true });
       this.localTailMarkers.delete(id);
       await this.sessionStore.deleteStagedBytes?.(id);
@@ -1250,8 +1326,10 @@ export class TusEngine {
         await this.sessionStore.syncStagedBytes(id, binPath, clientOffset, newOffset, remainingTtl);
       }
 
-      await this.sessionStore.saveSession(session);
-      await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+      if (!isComplete) {
+        await this.sessionStore.saveSession(session);
+        await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+      }
       return { newOffset, isComplete, session };
     });
   }

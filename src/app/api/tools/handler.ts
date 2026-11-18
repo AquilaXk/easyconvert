@@ -16,6 +16,7 @@ import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import { codedRefusal, createProblemDetailsResponse } from '@/lib/api/problem-details';
 import type { User } from '@/lib/auth/types';
 import { storageProvider as s3Storage } from '@/lib/storage';
+import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { saveRetainedResult } from '@/lib/storage/retention-service';
 import { sanitizeNodeOutputFilename } from '@/lib/queue/graph/node-jobs';
 import { dispatchSyncWebTool } from '@/lib/queue/wait-for-job';
@@ -34,12 +35,14 @@ const MULTIPART_REQUIRED = 'The request body must be multipart/form-data.';
 
 async function answerOf(output: WebToolOutput, caller: User): Promise<NextResponse> {
   if (output.kind === 'entries') {
-    const entries = await Promise.all(
-      output.entries.map(async (entry, index) => {
-        const safeName = sanitizeNodeOutputFilename(entry.name, `file_${index + 1}`);
-        const storageKey = `conversions/${caller.id}/${crypto.randomUUID()}_${safeName}`;
-        try {
+    const savedKeys: string[] = [];
+    try {
+      const entries = await Promise.all(
+        output.entries.map(async (entry, index) => {
+          const safeName = sanitizeNodeOutputFilename(entry.name, `file_${index + 1}`);
+          const storageKey = `conversions/${caller.id}/${crypto.randomUUID()}_${safeName}`;
           await saveRetainedResult(s3Storage, storageKey, entry.buffer, entry.mimeType, safeName);
+          savedKeys.push(storageKey);
           return {
             name: entry.name,
             size: entry.size,
@@ -47,17 +50,15 @@ async function answerOf(output: WebToolOutput, caller: User): Promise<NextRespon
             key: storageKey,
             url: `/api/storage/file/${encodeURIComponent(storageKey)}`,
           };
-        } catch {
-          return {
-            name: entry.name,
-            size: entry.size,
-            mimeType: entry.mimeType,
-            data: entry.buffer.toString('base64'),
-          };
-        }
-      })
-    );
-    return NextResponse.json({ success: true, entries });
+        })
+      );
+      return NextResponse.json({ success: true, entries });
+    } catch (err: unknown) {
+      if (savedKeys.length > 0) {
+        await Promise.allSettled(savedKeys.map((k) => s3Storage.deleteObject(k)));
+      }
+      throw err;
+    }
   }
   return new NextResponse(new Uint8Array(output.buffer), {
     status: 200,
@@ -70,11 +71,24 @@ async function answerOf(output: WebToolOutput, caller: User): Promise<NextRespon
   });
 }
 
+function isInsufficientStorageError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const code = (error as { code?: unknown }).code;
+  if (code === 'ENOSPC' || code === 'EDQUOT') return true;
+  const cause = (error as { cause?: unknown }).cause;
+  return cause !== undefined && cause !== error && isInsufficientStorageError(cause);
+}
+
 /** The answer for an error a tool run threw: its own refusal, else what the convert routes answer for the same error. */
 function toolErrorResponse(error: unknown, instanceUri: string): NextResponse {
   if (error instanceof WebToolRefusal) return codedRefusal(error.status, error.code, error.message);
   const deadlineProblem = deadlineErrorResponse(error, instanceUri);
   if (deadlineProblem) return deadlineProblem;
+  const storageProblem = storageErrorResponse(error, instanceUri);
+  if (storageProblem) return storageProblem;
+  if (isInsufficientStorageError(error)) {
+    return createProblemDetailsResponse(507, 'Insufficient storage space to persist output files.', instanceUri, 'Insufficient Storage');
+  }
   const limitStatus = payloadLimitStatus(error);
   if (limitStatus !== null) {
     return createProblemDetailsResponse(limitStatus, error instanceof Error ? error.message : String(error), instanceUri, undefined, undefined, undefined, undefined, { code: refusalCodeOf(error) });

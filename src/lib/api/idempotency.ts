@@ -50,7 +50,17 @@ export interface IdempotencyStore {
    * whether the run is still going or its lock was kept, is told to ask again in a second.
    */
   acquire(scopedKey: string, fingerprint: string, lockTtlMs: number, lockToken: string): Promise<AcquireResult>;
-  complete(scopedKey: string, fingerprint: string, response: StoredResponse, ttlMs?: number): Promise<boolean>;
+  complete(
+    scopedKey: string,
+    fingerprint: string,
+    response: StoredResponse,
+    ttlMs?: number,
+    lockToken?: string
+  ): Promise<boolean>;
+  /**
+   * Extends the in-flight lock lease while holding the matching `lockToken`.
+   */
+  extendLock?(scopedKey: string, lockToken: string, ttlMs: number): Promise<boolean>;
   /**
    * Removes the lock of `scopedKey` only while it is still the lock taken with `lockToken`, in one step: a run whose
    * lock ended and was taken again by a later run cannot remove the later run's lock, and a recorded answer is never removed.
@@ -209,12 +219,32 @@ export const COMPLETE_IDEMPOTENCY_LUA_SCRIPT = `
 local current = redis.call('GET', KEYS[1])
 if current then
   local ok, parsed = pcall(cjson.decode, current)
-  if ok and parsed and parsed.fingerprint and parsed.fingerprint ~= ARGV[1] then
-    return { "MISMATCH" }
+  if ok and parsed then
+    if parsed.fingerprint and parsed.fingerprint ~= ARGV[1] then
+      return { "MISMATCH" }
+    end
+    local token = ARGV[4]
+    if token and token ~= '' then
+      if parsed.status == "completed" then
+        return { "MISMATCH" }
+      elseif parsed.status == "in_flight" and parsed.lockToken and parsed.lockToken ~= token then
+        return { "LOCK_LOST" }
+      end
+    end
   end
 end
 redis.call('SET', KEYS[1], ARGV[2], 'PX', tonumber(ARGV[3]))
 return { "OK" }
+`;
+
+export const EXTEND_LOCK_LUA_SCRIPT = `
+local current = redis.call('GET', KEYS[1])
+if not current then return 0 end
+local ok, parsed = pcall(cjson.decode, current)
+if ok and parsed and parsed.status == "in_flight" and parsed.lockToken == ARGV[1] then
+  return redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[2]))
+end
+return 0
 `;
 
 /** The compare-and-delete of the Redis lock pattern, on the token the record carries: only an in-flight record of this run goes. */
@@ -293,12 +323,27 @@ export class InMemoryIdempotencyStore implements IdempotencyStore {
     scopedKey: string,
     fingerprint: string,
     response: StoredResponse,
-    ttlMs: number = 86400000
+    ttlMs: number = 86400000,
+    lockToken?: string
   ): Promise<boolean> {
     const now = this.clock();
     const existing = this.records.get(scopedKey);
-    if (existing && existing.expiresAt > now && existing.record.fingerprint !== fingerprint) {
-      return Promise.resolve(false);
+    if (existing && existing.expiresAt > now) {
+      if (existing.record.fingerprint !== fingerprint) {
+        return Promise.resolve(false);
+      }
+      if (lockToken) {
+        if (existing.record.status === 'completed') {
+          return Promise.resolve(false);
+        }
+        if (
+          existing.record.status === 'in_flight' &&
+          existing.record.lockToken &&
+          existing.record.lockToken !== lockToken
+        ) {
+          return Promise.resolve(false);
+        }
+      }
     }
 
     this.records.set(scopedKey, {
@@ -317,6 +362,13 @@ export class InMemoryIdempotencyStore implements IdempotencyStore {
     const existing = this.records.get(scopedKey);
     const live = existing && existing.expiresAt > this.clock() && existing.record.status === 'in_flight' && existing.record.lockToken === lockToken;
     return live ? existing : undefined;
+  }
+
+  public extendLock(scopedKey: string, lockToken: string, ttlMs: number): Promise<boolean> {
+    const lock = this.lockOf(scopedKey, lockToken);
+    if (!lock) return Promise.resolve(false);
+    lock.expiresAt = this.clock() + ttlMs;
+    return Promise.resolve(true);
   }
 
   public releaseLock(scopedKey: string, lockToken: string): Promise<boolean> {
@@ -412,7 +464,8 @@ export class RedisIdempotencyStore implements IdempotencyStore {
     scopedKey: string,
     fingerprint: string,
     response: StoredResponse,
-    ttlMs: number = 86400000
+    ttlMs: number = 86400000,
+    lockToken?: string
   ): Promise<boolean> {
     const now = this.clock();
     const record: IdempotencyRecord = {
@@ -428,10 +481,15 @@ export class RedisIdempotencyStore implements IdempotencyStore {
       scopedKey,
       fingerprint,
       serializedRecord,
-      ttlMs.toString()
+      ttlMs.toString(),
+      lockToken ?? ''
     )) as [string];
 
     return res[0] === 'OK';
+  }
+
+  public async extendLock(scopedKey: string, lockToken: string, ttlMs: number): Promise<boolean> {
+    return (await this.redis.eval(EXTEND_LOCK_LUA_SCRIPT, 1, scopedKey, lockToken, ttlMs.toString())) === 1;
   }
 
   public async releaseLock(scopedKey: string, lockToken: string): Promise<boolean> {

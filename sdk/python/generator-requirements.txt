@@ -210,7 +210,6 @@ mdurl==0.1.2 \
 openapi-python-client==0.30.0 \
     --hash=sha256:c0524369c78e4bea2f36dcde8594609e667eb4fab16e8f70d7dc85f2e8c6d767 \
     --hash=sha256:c9383be7b19d65ba20537d8a1325a162ba737e835034f9e52416fb43bc64e561
-    # via -r /private/tmp/claude-501/-Volumes-MACSSD-Projects-GitProjects-easyconvert/1fa77d07-eaa0-4e62-8894-935548c0b949/scratchpad/sdk/gen.in
 pydantic==2.14.3 \
     --hash=sha256:1054f237f4d4733e5a30e1e2333bd33a2004ab9ab1510bd053a9a31bb48e232d \
     --hash=sha256:3f7b347782ab7e4cf4c798496ae3a82787d9f21ec12676a9c564355eeef8daa8

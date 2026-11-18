@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { UserTier } from '../auth/types';
 import { redisUserStore, type RedisUserStore } from '../auth/redis-user-store';
 import { failClosed } from '../auth/store-unavailable';
+import { isClusterRedis, scanClusterSafe } from '../redis/cluster-ops';
 import { entitlementOf, isEntitlingStatus } from './entitlement';
 import type { SubscriptionChange, SubscriptionRecord } from './types';
 
@@ -153,16 +154,15 @@ export class SubscriptionStore {
     if (!client) return [...this.byUser.values()];
     try {
       const keys = new Set<string>();
-      let cursor = '0';
-      do {
-        const [next, batch] = await client.scan(cursor, 'MATCH', this.key('billing', 'sub', '*'), 'COUNT', SCAN_BATCH);
-        cursor = next;
+      for await (const batch of scanClusterSafe(client, this.key('billing', 'sub', '*'), SCAN_BATCH)) {
         for (const key of batch) keys.add(key);
-      } while (cursor !== '0');
+      }
       const names = [...keys];
       const records: SubscriptionRecord[] = [];
+      const cluster = isClusterRedis(client);
       for (let start = 0; start < names.length; start += SCAN_BATCH) {
-        const raws = await client.mget(...names.slice(start, start + SCAN_BATCH));
+        const chunk = names.slice(start, start + SCAN_BATCH);
+        const raws = cluster ? await Promise.all(chunk.map((k) => client.get(k))) : await client.mget(...chunk);
         for (const raw of raws) if (raw) records.push(JSON.parse(raw) as SubscriptionRecord);
       }
       return records;

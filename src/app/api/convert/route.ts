@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { dispatchSyncRouteConversion } from '@/lib/queue/wait-for-job';
+import { sanitizeNodeOutputFilename } from '@/lib/queue/graph/node-jobs';
 import { conversionDeadlineMs, syncDeadlineMs } from '@/lib/queue/job-deadline';
 import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
 import { bindJobLimits } from '@/lib/conversions/job-time';
@@ -97,14 +98,15 @@ async function resolveWebConvertPair(
   explicitSource: string | undefined,
   targetFormat: string
 ): Promise<{ refusal: NextResponse; sourceId?: string } | { detectedDef: FormatDefinition; targetId: string }> {
-  let detectedDef = sourceFormatOf(file.name, explicitSource);
+  const safeName = sanitizeNodeOutputFilename(file.name, 'upload');
+  let detectedDef = sourceFormatOf(safeName, explicitSource);
   if (!explicitSource && detectedDef?.id === 'xml') {
     const prefix = new Uint8Array(await file.slice(0, ALTO_SNIFF_BYTES).arrayBuffer());
     detectedDef = promoteAltoXmlSource(detectedDef, undefined, targetFormat, prefix);
   }
   if (!detectedDef) {
     return {
-      refusal: refusal(400, 'unknown_format', `Could not determine file format from filename "${file.name}". Ensure it has a valid extension.`),
+      refusal: refusal(400, 'unknown_format', `Could not determine file format from filename "${safeName}". Ensure it has a valid extension.`),
     };
   }
   const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
@@ -231,7 +233,8 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
       }
     }
 
-    trace.keepPrivate(file.name, options);
+    const inboundFilename = sanitizeNodeOutputFilename(file.name, 'upload');
+    trace.keepPrivate(inboundFilename, options);
 
     if (!options.pages && options.page) {
       options.pages = String(options.page);
@@ -250,7 +253,7 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
 
     // Validate file integrity against spoofed extensions fail-closed
     try {
-      assertNotSpoofedFile(inputBuffer, detectedDef.id, file.name);
+      assertNotSpoofedFile(inputBuffer, detectedDef.id, inboundFilename);
     } catch (err: unknown) {
       trace.cause = err;
       return refusal(spoofCheckStatus(err), refusalCodeOf(err) ?? 'spoofed_file', (err instanceof Error && err.message) || 'File spoofing detected.');
@@ -274,7 +277,7 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
           sourceFormat: detectedDef.id,
           targetFormat: targetId,
           options: bindJobLimits(options, limits),
-          originalFilename: file.name,
+          originalFilename: inboundFilename,
           userId: caller.id,
           tier: caller.tier,
         })

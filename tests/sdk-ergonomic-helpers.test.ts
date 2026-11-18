@@ -123,9 +123,9 @@ describe('SDK Ergonomic Helpers', () => {
           new Response(
             JSON.stringify({
               uploadId,
-              storageKey: `uploads/${uploadId}/big.bin`,
+              key: `uploads/${uploadId}/big.bin`,
               partSize: 5,
-              partUrls: [{ partNumber: 1, url: 'https://storage.test/part1' }],
+              parts: [{ partNumber: 1, uploadUrl: 'https://storage.test/part1', expiresAt: 9999999999 }],
             }),
             { status: 200, headers: { 'Content-Type': 'application/json' } }
           )
@@ -134,7 +134,7 @@ describe('SDK Ergonomic Helpers', () => {
           new Response(null, { status: 200, headers: { ETag: '"etag-1"' } })
         )
         .mockResolvedValueOnce(
-          new Response(JSON.stringify({ storageKey: `uploads/${uploadId}/big.bin` }), {
+          new Response(JSON.stringify({ key: `uploads/${uploadId}/big.bin` }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -165,7 +165,7 @@ describe('SDK Ergonomic Helpers', () => {
       const result = await client.inspectArchive({ file });
       expect(result.format).toBe('zip');
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.objectContaining({ href: 'https://api.easyconvert.test/api/v1/archive/inspect' }),
+        expect.objectContaining({ href: 'https://api.easyconvert.test/api/v1/archives/inspect' }),
         expect.objectContaining({ method: 'POST' })
       );
     });
@@ -182,7 +182,7 @@ describe('SDK Ergonomic Helpers', () => {
       const result = await client.inspectArchive({ storageKey: 'uploads/123/file.zip' });
       expect(result.format).toBe('zip');
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.objectContaining({ href: 'https://api.easyconvert.test/api/v1/archive/inspect' }),
+        expect.objectContaining({ href: 'https://api.easyconvert.test/api/v1/archives/inspect' }),
         expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining({ 'Content-Type': 'application/json' }),

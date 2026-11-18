@@ -10,6 +10,7 @@ import type {
 import { ConversionFailedError, QueueUnavailableError } from '../types';
 import { sanitizeNodeOutputFilename } from './graph/node-jobs';
 import { cancelJobAcrossQueues, conversionQueue, getQueueForJob } from './conversion-queue';
+import { subscribeToJobTelemetry, type JobTelemetryEvent } from './job-telemetry';
 import { enqueueConversionJob } from './enqueue';
 import { hasLiveQueueWorker, isQueueOnlyWebMode } from './worker-presence';
 import type { StoredToolJobResult } from '../tools/tool-job-store';
@@ -28,22 +29,24 @@ const POLL_INTERVAL_MS = 120;
 
 async function waitForQueuedJobResult(
   jobId: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  targetQueue: ReturnType<typeof getQueueForJob> = conversionQueue
 ): Promise<ConversionJobResult> {
   signal?.throwIfAborted();
 
   return new Promise<ConversionJobResult>((resolve, reject) => {
     let settled = false;
     let pollTimer: NodeJS.Timeout | null = null;
+    const unsubscribers: Array<() => void> = [];
 
     const cleanup = (): void => {
       if (pollTimer) {
         clearInterval(pollTimer);
         pollTimer = null;
       }
-      conversionQueue.off('completed', onCompleted);
-      conversionQueue.off('failed', onFailed);
-      conversionQueue.off('cancelled', onCancelled);
+      while (unsubscribers.length > 0) {
+        unsubscribers.pop()?.();
+      }
       if (signal) signal.removeEventListener('abort', onAbort);
     };
 
@@ -61,20 +64,17 @@ async function waitForQueuedJobResult(
       reject(err);
     };
 
-    const onCompleted = (job: { id: string }, result: ConversionJobResult): void => {
-      if (job.id === jobId && result) finishResolve(result);
-    };
-
-    const onFailed = (job: { id: string; failedReason?: string }, err: unknown): void => {
-      if (job.id !== jobId) return;
-      const message =
-        err instanceof Error ? err.message : (job.failedReason || String(err || 'Queued conversion failed.'));
-      finishReject(new ConversionFailedError(message));
-    };
-
-    const onCancelled = (job: { id: string; failedReason?: string }): void => {
-      if (job.id !== jobId) return;
-      finishReject(signal?.aborted ? signal.reason : new ConversionFailedError(job.failedReason || 'Job cancelled.'));
+    const onTelemetryEvent = (ev: JobTelemetryEvent): void => {
+      const payload = (ev.data ?? {}) as { result?: ConversionJobResult; error?: unknown };
+      if (ev.event === 'completed' && payload.result) {
+        finishResolve(payload.result);
+      } else if (ev.event === 'failed') {
+        const message = typeof payload.error === 'string' && payload.error ? payload.error : 'Queued conversion failed.';
+        finishReject(new ConversionFailedError(message));
+      } else if (ev.event === 'cancelled') {
+        const message = typeof payload.error === 'string' && payload.error ? payload.error : 'Job cancelled.';
+        finishReject(signal?.aborted ? signal.reason : new ConversionFailedError(message));
+      }
     };
 
     const onAbort = (): void => {
@@ -82,9 +82,10 @@ async function waitForQueuedJobResult(
       finishReject(signal?.reason ?? new Error('The operation was aborted.'));
     };
 
-    conversionQueue.on('completed', onCompleted);
-    conversionQueue.on('failed', onFailed);
-    conversionQueue.on('cancelled', onCancelled);
+    unsubscribers.push(subscribeToJobTelemetry(targetQueue, jobId, onTelemetryEvent));
+    if (targetQueue !== conversionQueue) {
+      unsubscribers.push(subscribeToJobTelemetry(conversionQueue, jobId, onTelemetryEvent));
+    }
     if (signal) {
       signal.addEventListener('abort', onAbort, { once: true });
     }
@@ -173,7 +174,7 @@ export async function dispatchSyncRouteConversion(
       { jobId },
       { tier: params.tier, inputBytes: params.inputBuffer.length, notAfter: deadlineAt }
     );
-    const jobResult = await waitForQueuedJobResult(jobId, signal);
+    const jobResult = await waitForQueuedJobResult(jobId, signal, targetQueue);
     resultKeyToErase = jobResult.resultKey;
     const stored = await storageProvider.getObject(jobResult.resultKey);
     if (!stored) {

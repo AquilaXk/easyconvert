@@ -5,7 +5,7 @@ import { outcomeOfStatus } from './labels';
 
 /** What the recorders read of a queue job. */
 interface EndedJob {
-  data?: { sourceFormat?: unknown };
+  data?: { sourceFormat?: unknown; transientSyncWait?: unknown };
   processedOn?: number;
   finishedOn?: number;
 }
@@ -23,11 +23,13 @@ function lastAttemptMs(job: EndedJob): number | undefined {
 
 /** Counts a job that ended with a result. */
 export function recordJobCompleted(job: EndedJob): void {
+  if (job.data?.transientSyncWait === true) return;
   observeJob(familyOfFormat(job.data?.sourceFormat), 'ok', lastAttemptMs(job));
 }
 
 /** Counts a job whose last attempt failed: by the status its failure answers on the synchronous API (a deadline is 504). */
 export function recordJobFailed(job: EndedJob, err: unknown): void {
+  if (job.data?.transientSyncWait === true) return;
   const status = classifyJobFailure(err).status ?? HTTP_INTERNAL_SERVER_ERROR;
   observeJob(familyOfFormat(job.data?.sourceFormat), outcomeOfStatus(status), lastAttemptMs(job));
 }

@@ -439,7 +439,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
     job.timestamp = timestamp;
     this.jobs.set(id, job);
 
-    const userId = (data as any)?.userId;
+    const userId = !(data as { transientSyncWait?: unknown })?.transientSyncWait ? (data as any)?.userId : undefined;
     if (userId && typeof userId === 'string') {
       const userList = this.userJobs.get(userId) || [];
       userList.push(id);
@@ -522,7 +522,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
         staleIds.push(ids[i]);
         continue;
       }
-      if ((!validStates || validStates.has(job.state)) && !(options.excludeGraphNodes && isGraphNode(job))) {
+      if ((!validStates || validStates.has(job.state)) && !(options.excludeGraphNodes && isGraphNode(job)) && !(job.data as { transientSyncWait?: unknown } | undefined)?.transientSyncWait) {
         matching.push(job);
       }
     }
@@ -553,7 +553,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
     for (let i = ids.length - 1; i >= 0; i--) {
       const job = this.jobs.get(ids[i]);
       if (!job) continue;
-      if ((!validStates || validStates.has(job.state)) && !(options.excludeGraphNodes && isGraphNode(job))) {
+      if ((!validStates || validStates.has(job.state)) && !(options.excludeGraphNodes && isGraphNode(job)) && !(job.data as { transientSyncWait?: unknown } | undefined)?.transientSyncWait) {
         count += 1;
         if (count >= cap) return count;
       }
@@ -1526,7 +1526,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       await this.assertRedisConnected();
       const redis = this.redisClient;
       const id = opts.jobId || generateJobId();
-      const userId = (data as any)?.userId ? String((data as any).userId) : '';
+      const userId = !(data as { transientSyncWait?: unknown })?.transientSyncWait && (data as any)?.userId ? String((data as any).userId) : '';
       const userJobsKey = userId ? this.getUserJobsKey(userId) : '';
       const now = getMonotonicPriorityTimestamp();
       const isDelayed = Boolean(opts.delay && opts.delay > 0);
@@ -1690,7 +1690,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           // The index names the user's jobs; a job that says it is another user's (a damaged index) is never listed.
           excludeGraphNodes: options.excludeGraphNodes,
           summaryOnly: options.summaryOnly,
-          exclude: (job) => String((job.data as { userId?: unknown } | undefined)?.userId) !== userId || (options.excludeGraphNodes === true && isGraphNode(job)),
+          exclude: (job) => String((job.data as { userId?: unknown } | undefined)?.userId) !== userId || (options.excludeGraphNodes === true && isGraphNode(job)) || Boolean((job.data as { transientSyncWait?: unknown } | undefined)?.transientSyncWait),
         });
       } catch (err) {
         throw this.toQueueUnavailable(err);
