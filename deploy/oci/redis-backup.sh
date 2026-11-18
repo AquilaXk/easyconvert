@@ -86,13 +86,11 @@ offhost() { # offhost <subcommand> [args...]
       case "$line" in
         REDIS_BACKUP_*=*)
           key="${line%%=*}"
-          case "$key" in
-            REDIS_BACKUP_[A-Z0-9_]*)
-              val="${line#*=}"
-              val="${val%$'\r'}"
-              if [ -z "${!key:-}" ]; then export "$key=$val"; fi
-              ;;
-          esac
+          if [[ "$key" =~ ^REDIS_BACKUP_[A-Z0-9_]+$ ]]; then
+            val="${line#*=}"
+            val="${val%$'\r'}"
+            if [ -z "${!key:-}" ]; then export "$key=$val"; fi
+          fi
           ;;
       esac
     done < "$HOME_DIR/current/.env"

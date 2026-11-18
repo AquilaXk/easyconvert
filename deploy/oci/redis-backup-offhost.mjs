@@ -4,9 +4,9 @@
  *
  * Design & reference implementations:
  * - Envelope AEAD format (`ECRDB01`): NIST SP 800-38D AES-256-GCM with 32-byte random HKDF-SHA256 salt, 12-byte
- *   random nonce, and 16-byte authentication tag (modeled after Google Tink `AesGcmHkdfStreaming` / `FiloSottile/age`),
- *   binding `ECRDB01:<rdbBasename>:<plaintextSha256>:<plaintextBytes>` as Additional Authenticated Data (AAD) so an
- *   untrusted bucket cannot rename an older backup to bypass the 7-day deletion window (policy #186).
+ *   random nonce, encrypted 32-byte plaintext SHA-256 prefix, and 16-byte authentication tag (modeled after Google Tink
+ *   `AesGcmHkdfStreaming` / `FiloSottile/age`), binding `ECRDB01:<rdbBasename>:<plaintextBytes>` as Additional
+ *   Authenticated Data (AAD) so an untrusted bucket cannot rename an older backup to bypass the 7-day deletion window (policy #186).
  * - S3 REST API & AWS Signature Version 4: RFC 3986 single-pass URI encoding, signed `x-amz-content-sha256` payload
  *   digest, `ListObjectsV2` pagination with `4 MiB` / `10,000`-entry XML bounds, and DNS-pinned SSRF protection.
  *
@@ -473,9 +473,12 @@ export async function listRemoteBackups(config) {
         lastModifiedMs: item.lastModifiedMs,
       });
     }
-    if (!parsed.isTruncated || !parsed.nextContinuationToken) {
+    if (!parsed.isTruncated) {
       results.sort((a, b) => a.rdbName.localeCompare(b.rdbName));
       return results;
+    }
+    if (!parsed.nextContinuationToken) {
+      throw new OffhostBackupError('ListObjectsV2 reported IsTruncated=true without NextContinuationToken');
     }
     token = parsed.nextContinuationToken;
   }
