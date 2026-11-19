@@ -234,7 +234,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3946
+    "maxValue": 3906
   },
   {
     "file": "src/lib/conversions/archive.ts",
