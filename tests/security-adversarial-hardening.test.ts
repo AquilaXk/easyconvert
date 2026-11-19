@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import './helpers/webhook-fetch-bridge';
 
 vi.mock('undici', async (importOriginal) => ({
   ...(await importOriginal<typeof import('undici')>()),
@@ -562,21 +563,16 @@ describe('Batch 2 security adversarial hardening (RED -> GREEN)', () => {
       expect(problem.code).toBe('address_blocked');
 
       const dispatcher = new WebhookDispatcher();
-      const origFetch = globalThis.fetch;
-      vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(ssrfErr));
-      try {
-        const result = await (dispatcher as any).executeFetchAttempt(
-          'https://93.184.216.34/hook',
-          { 'content-type': 'application/json' },
-          '{}',
-          2000,
-          1
-        );
-        expect(result.statusAction).toBe('dlq_immediate');
-        expect(result.statusCode).toBe(403);
-      } finally {
-        vi.stubGlobal('fetch', origFetch);
-      }
+      vi.mocked(undiciMod.fetch).mockRejectedValueOnce(ssrfErr as any);
+      const result = await (dispatcher as any).executeFetchAttempt(
+        'https://93.184.216.34/hook',
+        { 'content-type': 'application/json' },
+        '{}',
+        2000,
+        1
+      );
+      expect(result.statusAction).toBe('dlq_immediate');
+      expect(result.statusCode).toBe(403);
     });
 
     it('RedisWebhookSecretStore.setPrimarySecret preserves createdAt, previousEncrypted, and previousExpiresAt atomically via Lua', async () => {

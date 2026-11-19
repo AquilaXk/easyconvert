@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import './helpers/webhook-fetch-bridge';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as jobsPost } from '../src/app/api/v1/jobs/route';

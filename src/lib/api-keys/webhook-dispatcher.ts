@@ -245,8 +245,6 @@ function leadingSecret(callerSecret: string, record: { primary: string; previous
   return !callerSecret || callerSecret === record.primary || callerSecret === record.previous ? record.primary : callerSecret;
 }
 
-const NATIVE_GLOBAL_FETCH = globalThis.fetch;
-
 const CIRCUIT_FAILURE_THRESHOLD = 5;
 const CIRCUIT_FAILURE_WINDOW_MS = 5 * 60_000;
 const CIRCUIT_BASE_COOLDOWN_MS = 60_000;
@@ -308,11 +306,19 @@ export class WebhookDispatcher {
   private readonly circuitBreakers = new Map<string, EndpointCircuitState>();
   private readonly replayingDlqIds = new Set<string>();
   private readonly ssrfAgent: Agent;
-  private readonly customFetch?: typeof undiciFetch;
+  private customFetch?: typeof undiciFetch;
 
   constructor(customAgent?: Agent, customFetch?: typeof undiciFetch) {
     this.ssrfAgent = customAgent || createSsrfSafeAgent();
     this.customFetch = customFetch;
+  }
+
+  /**
+   * Delivers through `fetchImpl` in place of undici's fetch (a test double; nothing in the product calls this). Deliveries never use
+   * `globalThis.fetch`, which the framework replaces: only an injected fetch takes the place of the pinned dispatcher's.
+   */
+  public useFetch(fetchImpl: typeof undiciFetch | undefined): void {
+    this.customFetch = fetchImpl;
   }
 
   public async close(): Promise<void> {
@@ -508,21 +514,15 @@ export class WebhookDispatcher {
     let timer: NodeJS.Timeout | null = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const currentGlobalFetch = globalThis.fetch;
-      const useReplacedGlobalFetch =
-        !this.customFetch &&
-        typeof currentGlobalFetch === 'function' &&
-        currentGlobalFetch !== NATIVE_GLOBAL_FETCH;
-      const fetchFn = (
-        this.customFetch ??
-        (useReplacedGlobalFetch ? currentGlobalFetch : undiciFetch)
-      ) as unknown as typeof undiciFetch;
+      // Always undici's own fetch through the pinned dispatcher: `globalThis.fetch` is replaced by the framework (and by test doubles),
+      // and a delivery through a replaced one would skip the address check of `createSsrfSafeAgent`. A test injects its own fetch.
+      const fetchFn = (this.customFetch ?? undiciFetch) as unknown as typeof undiciFetch;
       const response = await fetchFn(targetUrl, {
         method: 'POST',
         headers,
         body: bodyString,
         redirect: 'manual',
-        ...(useReplacedGlobalFetch ? {} : { dispatcher: this.ssrfAgent }),
+        dispatcher: this.ssrfAgent,
         signal: controller.signal,
       });
 

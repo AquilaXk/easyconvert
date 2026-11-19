@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import './helpers/webhook-fetch-bridge';
 import dns from 'node:dns';
 import { NextRequest } from 'next/server';
 import { vi } from 'vitest';

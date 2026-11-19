@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import './helpers/webhook-fetch-bridge';
 import fs from 'node:fs';
 import path from 'node:path';
 import { validateApiAccess, extractClientIp } from '../src/lib/api-keys/guard';

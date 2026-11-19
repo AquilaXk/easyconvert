@@ -384,6 +384,7 @@ Security
 333. [Listing a bzip2 archive holds the decoded stream to the compression ratio of every other archive reader](#333-listing-a-bzip2-archive-holds-the-decoded-stream-to-the-compression-ratio-of-every-other-archive-reader)
 334. [Storage keys of an anonymous caller's tool results and staged inputs name no address](#334-storage-keys-of-an-anonymous-callers-tool-results-and-staged-inputs-name-no-address)
 335. [Passwords are hashed with 210,000 PBKDF2-SHA512 iterations, and a hash of the earlier 100,000 is upgraded when its owner signs in](#335-passwords-are-hashed-with-210000-pbkdf2-sha512-iterations-and-a-hash-of-the-earlier-100000-is-upgraded-when-its-owner-signs-in)
+336. [A webhook delivery always uses undici's fetch through the pinned dispatcher, never a replaced globalThis.fetch](#336-a-webhook-delivery-always-uses-undicis-fetch-through-the-pinned-dispatcher-never-a-replaced-globalthisfetch)
 
 ---
 
@@ -10227,3 +10228,12 @@ Security
   - The 100,000-iteration hashes stay valid for as long as their owners do not sign in; the same hash of an inactive account is checked at its old cost (with the missing iterations run as a pad) and never upgraded.
   - A user record that is created by hand with a hash made by `hashPassword` must carry `passwordIterations` too, or its hash is checked at 100,000 and does not match; every writer of the product does, and the test fixtures that made records with `hashPassword` were changed to pass the number.
 - **Verified by**: `tests/password-hash-iterations.test.ts` (7 cases against the memory store, and the compare-and-set against a private `redis-server` with `REDIS_URL` set: 15 of 15 with `tests/redis-first-command-redis.test.ts`), `tests/pbkdf2-upgrade.test.ts`, and the auth suites that make accounts with a password.
+
+## 336. A webhook delivery always uses undici's fetch through the pinned dispatcher, never a replaced globalThis.fetch
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: security review of `656eb523`, note 6c: a delivery could use `globalThis.fetch` without the pinned dispatcher)
+- **Decision**: **A webhook delivery always goes through undici's `fetch` and the dispatcher that checks the address it connects to** (`createSsrfSafeAgent`, `executeFetchAttempt`, `src/lib/api-keys/webhook-dispatcher.ts`); `globalThis.fetch` is never used. A test that needs to see or fake the delivery injects a fetch explicitly: the constructor's second argument, or `webhookDispatcher.useFetch(...)` for the shared instance (`tests/helpers/webhook-fetch-bridge.ts`, imported by the test files that stub `fetch`). The injected fetch is still called with the pinned dispatcher.
+- **Why**: The dispatcher compared `globalThis.fetch` with the function it found when the module loaded, and when they differed (a framework that wraps `fetch`, as Next.js does in the server runtime, or a test double) it delivered through the replaced one and left the `dispatcher` option out. That fetch connects with the default agent, so the check of the resolved address at connection time (the guard against a name that resolves to a private address after the pre-flight check, DNS rebinding) did not apply to the delivery. The pre-flight `validateUrlForSsrf` of the target at submission was not affected.
+- **Trade-offs**: A test that stubs `globalThis.fetch` for the shared dispatcher must import the bridge helper (13 test files did, and one test of the SSRF classification mocks undici's `fetch` instead).
+- **Verified by**: `tests/webhook-dispatcher-pinned-fetch.test.ts` (the first case fails on the previous commit: the replaced `globalThis.fetch` was called) and the 13 webhook and secret suites that stub `fetch`.

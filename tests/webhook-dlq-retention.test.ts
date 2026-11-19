@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import './helpers/webhook-fetch-bridge';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { WEBHOOK_DLQ_RETENTION_MS, webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import type { WebhookDlqEntry } from '../src/lib/api-keys/types';

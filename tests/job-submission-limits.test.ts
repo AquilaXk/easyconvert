@@ -1,4 +1,5 @@
 import dns from 'node:dns';
+import './helpers/webhook-fetch-bridge';
 import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as createJob } from '../src/app/api/v1/jobs/route';

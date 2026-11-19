@@ -1339,6 +1339,7 @@
   "tests/web-tools-extract-limits.test.ts": 5.8,
   "tests/web-tools-route.test.ts": 7.8,
   "tests/web-tools-slot.test.ts": 0.1,
+  "tests/webhook-dispatcher-pinned-fetch.test.ts": 1,
   "tests/webhook-dlq-index-redis.test.ts": 0,
   "tests/webhook-dlq-ownership.test.ts": 0.2,
   "tests/webhook-dlq-page-fill-redis.test.ts": 0,

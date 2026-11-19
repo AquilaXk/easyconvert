@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import './helpers/webhook-fetch-bridge';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';

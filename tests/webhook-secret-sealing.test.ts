@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import './helpers/webhook-fetch-bridge';
 import Redis from 'ioredis';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';

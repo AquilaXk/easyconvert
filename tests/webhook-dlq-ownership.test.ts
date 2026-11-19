@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import './helpers/webhook-fetch-bridge';
 import { EventEmitter } from 'node:events';
 import { NextRequest } from 'next/server';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';

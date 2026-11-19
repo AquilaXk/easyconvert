@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import './helpers/webhook-fetch-bridge';
 import crypto from 'node:crypto';
 import { NextRequest } from 'next/server';
 import {
