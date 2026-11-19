@@ -65,6 +65,7 @@ function gnuTar(): string {
   return tool;
 }
 
+/** Only the keys the reader acts on are retained, so the global budget is tested with `linkpath` and `path`. */
 describe('TAR reader: cumulative extension-header budget', () => {
   const bigRecord = (key: string) => paxRecordBytes(key, 'v'.repeat(OVERSIZED_RECORD_VALUE));
 
@@ -103,8 +104,8 @@ describe('TAR reader: cumulative extension-header budget', () => {
 
   it('rejects global pax headers whose retained records exceed the budget', () => {
     const tar = Buffer.concat([
-      craftPaxHeader('g', bigRecord('k1')),
-      craftPaxHeader('g', bigRecord('k2')),
+      craftPaxHeader('g', bigRecord('linkpath')),
+      craftPaxHeader('g', bigRecord('path')),
       craftEntry('f', 'X'),
       END_OF_ARCHIVE,
     ]);
@@ -114,9 +115,9 @@ describe('TAR reader: cumulative extension-header budget', () => {
 
   it('lets a repeated global key replace its earlier value without growing the budget', () => {
     const tar = Buffer.concat([
-      craftPaxHeader('g', bigRecord('k1')),
-      craftPaxHeader('g', bigRecord('k1')),
-      craftPaxHeader('g', bigRecord('k1')),
+      craftPaxHeader('g', bigRecord('linkpath')),
+      craftPaxHeader('g', bigRecord('linkpath')),
+      craftPaxHeader('g', bigRecord('linkpath')),
       craftEntry('f', 'X'),
       END_OF_ARCHIVE,
     ]);

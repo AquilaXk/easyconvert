@@ -8,6 +8,7 @@ import { POST as archiveCreateRoute } from '../src/app/api/tools/archive-create/
 import { POST as archiveExtractRoute } from '../src/app/api/tools/archive-extract/route';
 import { POST as splitRoute } from '../src/app/api/tools/split/route';
 import { POST as rotateRoute } from '../src/app/api/tools/rotate/route';
+import { POST as deletePagesRoute } from '../src/app/api/tools/delete-pages/route';
 import { POST as convertRoute } from '../src/app/api/convert/route';
 import { storageProvider } from '../src/lib/storage';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
@@ -30,6 +31,7 @@ const ROUTES: Record<string, (request: NextRequest) => Promise<Response>> = {
   'archive-extract': archiveExtractRoute,
   split: splitRoute,
   rotate: rotateRoute,
+  'delete-pages': deletePagesRoute,
 };
 const MIB = 1024 * 1024;
 const FREE_CONCURRENCY = 5;
@@ -282,6 +284,28 @@ describe('split', () => {
   it('takes one file only', async () => {
     const res = await run(visitor(), 'split', [{ name: 'a.pdf', content: await pdfWith(1) }, { name: 'b.pdf', content: await pdfWith(1) }]);
     expect((await res.json()).code).toBe('too_many_files');
+  });
+});
+
+describe('delete-pages', () => {
+  it('removes the pages named and charges one conversion', async () => {
+    const client = visitor();
+    const before = await client.remaining();
+    const res = await run(client, 'delete-pages', [{ name: 'book.pdf', content: await pdfWith(3) }], { pages: '2' });
+    expect(res.status).toBe(200);
+    expect((await PDFDocument.load(Buffer.from(await res.arrayBuffer()))).getPageCount()).toBe(2);
+    expect(await client.remaining()).toBe(before - 1);
+  });
+
+  it('answers 422 with its code, not 500, when the pages named are every page, and gives the conversion back', async () => {
+    const client = visitor();
+    const before = await client.remaining();
+    const res = await run(client, 'delete-pages', [{ name: 'book.pdf', content: await pdfWith(3) }], { pages: '1-3' });
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.code).toBe('pdf_postprocess_failed');
+    expect(body.detail).toBe('Deleting the pages failed: the specification names every page, and a PDF needs at least one.');
+    expect(await client.remaining()).toBe(before);
   });
 });
 

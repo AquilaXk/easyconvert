@@ -2640,7 +2640,7 @@ export interface operations {
                          * @description The cause of the refusal, stable across releases.
                          * @enum {string}
                          */
-                        code?: "archive_entry_collision" | "conversion_failed" | "empty_file" | "encrypted_input" | "engine_not_offered" | "engine_version_unavailable" | "input_over_limit" | "invalid_password" | "malformed_input" | "capture_failed" | "capture_target_blocked" | "capture_unavailable" | "metadata_field_invalid" | "metadata_write_unsupported" | "missing_volume" | "option_not_supported" | "password_required" | "timeout" | "unsupported_input" | "unsupported_method";
+                        code?: "archive_entry_collision" | "conversion_failed" | "empty_file" | "encrypted_input" | "engine_not_offered" | "engine_version_unavailable" | "input_over_limit" | "invalid_password" | "malformed_input" | "capture_failed" | "capture_target_blocked" | "capture_unavailable" | "metadata_field_invalid" | "metadata_write_unsupported" | "missing_volume" | "option_not_supported" | "password_required" | "pdf_postprocess_failed" | "timeout" | "unsupported_input" | "unsupported_method";
                         /** @description `engine_not_offered` only: the ids of the engines that convert the pair, the default first. */
                         engines?: string[];
                         /** @description `engine_version_unavailable` only: the engine whose version was named. */
@@ -2653,7 +2653,7 @@ export interface operations {
                          * @description The cause of the refusal, stable across releases.
                          * @enum {string}
                          */
-                        code?: "archive_entry_collision" | "conversion_failed" | "empty_file" | "encrypted_input" | "engine_not_offered" | "engine_version_unavailable" | "input_over_limit" | "invalid_password" | "malformed_input" | "capture_failed" | "capture_target_blocked" | "capture_unavailable" | "metadata_field_invalid" | "metadata_write_unsupported" | "missing_volume" | "option_not_supported" | "password_required" | "timeout" | "unsupported_input" | "unsupported_method";
+                        code?: "archive_entry_collision" | "conversion_failed" | "empty_file" | "encrypted_input" | "engine_not_offered" | "engine_version_unavailable" | "input_over_limit" | "invalid_password" | "malformed_input" | "capture_failed" | "capture_target_blocked" | "capture_unavailable" | "metadata_field_invalid" | "metadata_write_unsupported" | "missing_volume" | "option_not_supported" | "password_required" | "pdf_postprocess_failed" | "timeout" | "unsupported_input" | "unsupported_method";
                         /** @description `engine_not_offered` only: the ids of the engines that convert the pair, the default first. */
                         engines?: string[];
                         /** @description `engine_version_unavailable` only: the engine whose version was named. */

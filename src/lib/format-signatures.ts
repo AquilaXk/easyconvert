@@ -10,6 +10,7 @@
 
 import { compoundFileVerdict, isNonOfficeCompoundFile } from './compound-file-kind';
 import { isSubtitleHead, type SubtitleFormat } from './subtitle-structure';
+import { isUtf16LeText } from './utf16-text-signature';
 
 /**
  * How many leading bytes of a file the spoof check reads (and the storage layer hands it): enough for every rule here. A
@@ -180,6 +181,14 @@ const ID3_REVISION_INVALID = 0xff;
 const ADTS_SYNC_BYTE = 0xff;
 const ADTS_SYNC_MASK = 0xf6;
 const ADTS_SYNC_VALUE = 0xf0;
+
+/**
+ * The sync word of an MPEG audio frame: eleven set bits, then layer bits that are not 00. FF FE, a Layer I frame with a CRC, is also the byte
+ * order mark of UTF-16LE text, and text that reads as such (`isUtf16LeText`) is the likelier file.
+ */
+export function isMpegAudioSync(buf: Uint8Array): boolean {
+  return buf.length >= 2 && buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0 && (buf[1] & 0x06) !== 0x00 && !isUtf16LeText(buf);
+}
 
 /** Where the payload after an ID3v2 tag starts, or undefined when the buffer does not open with a well-formed ID3v2 header. */
 function id3v2PayloadOffset(buf: Uint8Array): number | undefined {

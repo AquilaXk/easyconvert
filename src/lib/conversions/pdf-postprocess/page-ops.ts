@@ -277,7 +277,8 @@ function intervalsOf(group: PdfRotation): RotationInterval[] {
  * One `--rotate` per run of pages that turn by the same angle. qpdf keeps one rotation per range written, so groups
  * that name the same range (or overlap) would replace each other; the angles are therefore summed page by page, over
  * the stretches between the starts and ends of all groups, and each stretch is written once. Pages that add up to a
- * whole turn are left out.
+ * whole turn are left out. Tokens of one `pages` value that overlap (`1-3,2`) add their angles too: `qpdf --rotate` turns a page once for
+ * every token that names it (`QPDFJob::handleRotations` over the list `QUtil::parse_numrange` returns, qpdf 4eba958), and so does this.
  */
 function rotationArgsOf(groups: readonly PdfRotation[]): string[] {
   // A sweep over the starts and ends of the groups: the angle in force changes only where a group starts or ends.

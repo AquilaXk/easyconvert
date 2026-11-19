@@ -293,3 +293,30 @@ export function readTextFileCharacters(filePath: string, chunkBytes: number): st
   }
   return distinctCharactersOfLegacyFile(filePath, chunkBytes);
 }
+
+/**
+ * Whether the file is legacy text, one that `decodeTextInput` reads in a detected encoding: it has no byte order mark and is not valid
+ * UTF-8. A file that breaks the UTF-16 or UTF-8 mark it declares is not legacy text. Read in chunks of `chunkBytes`, whatever the size.
+ */
+export function isLegacyTextFile(filePath: string, chunkBytes: number): boolean {
+  try {
+    distinctCharactersOfUnicodeFile(filePath, chunkBytes);
+    return false;
+  } catch (error) {
+    if (!(error instanceof InvalidUnicodeTextError)) throw error;
+    return !fileHasByteOrderMark(filePath);
+  }
+}
+
+/** `isLegacyTextFile` for a text held in memory. */
+export function isLegacyText(buffer: Uint8Array): boolean {
+  const decode = createTextInputDecoder(buffer);
+  try {
+    decode(buffer);
+    decode();
+    return false;
+  } catch (error) {
+    if (!(error instanceof InvalidUnicodeTextError)) throw error;
+    return !hasByteOrderMark(buffer);
+  }
+}

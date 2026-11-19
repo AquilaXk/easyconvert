@@ -654,7 +654,7 @@ export async function convertDocument(
     if (tgt === 'pdf') await loadFontCoverageIndex();
     textContent = extractTextFromDoc(inputBuffer, tgt === 'pdf' ? canDrawInPdf : undefined);
   } else if (TEX_SOURCE_FORMATS.has(src)) {
-    textContent = extractTextFromTex(inputBuffer.toString('utf-8'));
+    textContent = extractTextFromTex(sourceBytesAsText(inputBuffer, src));
   } else if (HTML_SOURCE_FORMATS.has(src)) {
     // HTML declares its own encoding (or none): the standard's sniffing reads it, and no byte refuses the document.
     textContent = decodeHtmlInput(inputBuffer);

@@ -1447,7 +1447,12 @@ export class WatermarkFontError extends ConversionFailedError {
   }
 }
 
-export class PdfPostprocessError extends Error {
+/**
+ * A PDF step (PDF/A, page operations, watermark, protection, compression) that the document made fail. A verdict on the document, as the
+ * errors of its parent are: 422, its own refusal code, and no retry in the queue.
+ */
+export class PdfPostprocessError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'pdf_postprocess_failed';
   readonly status = 422;
   constructor(message: string) {
     super(message);

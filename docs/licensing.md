@@ -213,6 +213,12 @@ Certain format conversions require specialized external command-line utilities. 
   - `taskforcesh/bullmq`, commit `b460173561b15e8340011cee439fd19680acacca`, MIT License, Copyright (c) 2018 BullForce Labs AB and contributors (audited in section 2.30), referenced for the atomic sorted-set lease pattern (`ZREMRANGEBYSCORE` + `ZCARD` + `ZADD` + `PEXPIRE`) in `src/lib/queue/concurrency-limit.ts`.
 - **Compliance**: verbatim MIT text (`Copyright 2020 David Junger`) is embedded in `src/lib/archive/streaming-zip.ts`, the IJG statement ("This software is based in part on the work of the Independent JPEG Group") and copyright attributions appear in `src/lib/conversions/color-quantizer.ts`, `src/lib/conversions/kd-tree.ts`, `NOTICE` and this document, and `mozilla/pdf.js` is Apache-2.0 (matching this repository's licence).
 
+### 2.33 UTF-16 text check of libmagic (BSD-2-Clause)
+- **Role**: the check that a file behind the mark FF FE is UTF-16 text and not an MPEG audio frame, so that text saved as UTF-16 is not refused as a spoofed MP3 (`looksUcs16LittleEndian`, `src/lib/utf16-text-signature.ts`; entry 333 of `docs/policy-decisions.md`).
+- **Source**: `file/file`, `looks_ucs16` and the `text_chars` table in `src/encoding.c` at commit `bbffb78dc8d764a707aa20f5c7a3b74c40c2b27c` (2026-11-14; the file's SHA-256 is `f52149f951fdf839e349e65d258c3cd4f8ad9f9e8d3ba814d94edc7cf2a5cad6`), about 1,700 stars on the GitHub mirror, BSD 2-Clause License, Copyright (c) Ian F. Darwin 1986-1995, maintained 1995-present by Christos Zoulas and others.
+- **What differs from the original**: the function is translated for the little-endian mark only, with the table as a set of control codes, and the surrogate pairing is written as a state flag; the checks and their order are the original's. A buffer cut inside a code unit is left out as in the original. The project's own addition (U+0000 refused, where libmagic leaves it to the caller) is in a separate commit and a separate function.
+- **Compliance**: the licence text is in the header of `src/lib/utf16-text-signature.ts` and `NOTICE` names the file, its origin and the copyright holders; the licence text of the project (Apache-2.0) covers the rest of the repository.
+
 ---
 
 ## 3. LGPL Relinking & On-Premises Container Images

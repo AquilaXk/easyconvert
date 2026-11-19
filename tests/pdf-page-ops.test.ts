@@ -184,6 +184,22 @@ describe.skipIf(toolsMissing)('PDF page operations', () => {
       expect(await turned([{ rotation: 90, pages: '1,3,5' }, { rotation: 180, pages: '3-5' }])).toEqual([90, 0, 270, 180, 270]);
     });
 
+    it('turns a page once for every token of one pages value that names it, as qpdf --rotate does', async () => {
+      const pdf = await source();
+      const byQpdf = (spec: string): number[] =>
+        withTempDir((dir) => {
+          fs.writeFileSync(path.join(dir, 'in.pdf'), pdf);
+          execFileSync(requireOracleTool('qpdf'), [`--rotate=+90:${spec}`, path.join(dir, 'in.pdf'), path.join(dir, 'out.pdf')]);
+          return pageRotations(fs.readFileSync(path.join(dir, 'out.pdf')));
+        });
+      expect(byQpdf('1-3,2')).toEqual([90, 180, 90, 0, 0]);
+      // The pages value of the request, and the same range in qpdf's own syntax (an open end is `z`).
+      for (const [pages, qpdfRange] of [['1-3,2', '1-3,2'], ['2,2', '2,2'], ['1-3,2-4', '1-3,2-4'], ['2-,4', '2-z,4'], ['-3,1-', '1-3,1-z']]) {
+        expect(pageRotations(await rotatePdfPages(pdf, { rotation: 90, pages })), pages).toEqual(byQpdf(qpdfRange));
+      }
+      expect(pageRotations(await rotatePdfPages(pdf, { rotation: 90, pages: '1-3,2' }))).toEqual([90, 180, 90, 0, 0]);
+    });
+
     it.each([0, 45, 360, -90, 91, '90deg', null])('refuses the rotation %j', async (rotation) => {
       expect(await refusal(rotatePdfPages(await source(), { rotation: rotation as never }))).toMatchObject({ name: 'UnsupportedOptionError' });
     });

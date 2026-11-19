@@ -47,6 +47,7 @@ import {
   unpackedBytesCap,
 } from './archive-extraction-safety';
 import { gunzipWithLimits } from './archive-gunzip';
+import { parsePaxDecimal, parsePaxInteger, parsePaxRecords, tarReadError } from './archive-tar-pax';
 import { compressBzip2Async, decompressBzip2 } from './bzip2';
 import { withExtractionNotes } from './archive-alternate-streams';
 import { isWrapperSource, unpackWrapperSource } from './archive-wrapper-sources';
@@ -647,15 +648,6 @@ const TAR_DEFAULT_DIRECTORY_MODE = 0o755;
 const TAR_PERMISSION_MASK = 0o7777;
 const TAR_ZERO_DIGIT = '0';
 const TAR_MS_PER_SECOND = 1000;
-const TAR_MAX_PAX_NUMBER_DIGITS = 18;
-const TAR_PAX_MAX_LENGTH_DIGITS = 15;
-const TAR_PAX_NEWLINE = 0x0a;
-const TAR_PAX_EQUALS = 0x3d;
-/** A record is "<digits> <key>=<value>\n": at least a space, a one-byte key, '=' and a newline follow the digits. */
-const TAR_PAX_MIN_RECORD_TAIL = 4;
-const TAR_PAX_LENGTH_PATTERN = new RegExp(`^\\d{1,${TAR_PAX_MAX_LENGTH_DIGITS}}$`);
-const TAR_PAX_INTEGER_PATTERN = new RegExp(`^\\d{1,${TAR_MAX_PAX_NUMBER_DIGITS}}$`);
-const TAR_PAX_DECIMAL_PATTERN = /^-?\d{1,18}(\.\d{1,18})?$/;
 /** Longest entry path or link target accepted (twice Linux PATH_MAX); bounds per-entry symlink checks. */
 const TAR_MAX_PATH_LENGTH = 8192;
 /** Deterministic default modification time (Unix epoch) used when the input carries no metadata. */
@@ -742,9 +734,6 @@ function tarWriteError(message: string): ConversionFailedError {
   return new ConversionFailedError(`Cannot write TAR archive: ${message}`);
 }
 
-function tarReadError(message: string): ConversionFailedError {
-  return new ConversionFailedError(`Invalid TAR archive: ${message}`);
-}
 
 function putTarOctal(header: Buffer, offset: number, width: number, value: number | bigint): void {
   const digits = value.toString(TAR_OCTAL_RADIX).padStart(width - 1, TAR_ZERO_DIGIT);
@@ -1108,57 +1097,8 @@ function verifyTarChecksum(buf: Buffer, words: Uint32Array | null, base: number,
   }
 }
 
-const PAX_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
-const ASCII_MAX_BYTE = 0x7f;
-
-/** Decodes `data[start, end)` as strict UTF-8; pure-ASCII text skips the decoder and the slice copy. */
-function decodePaxText(data: Buffer, start: number, end: number): string {
-  for (let i = start; i < end; i++) {
-    if (data[i] > ASCII_MAX_BYTE) return PAX_UTF8_DECODER.decode(data.subarray(start, end));
-  }
-  return data.toString('latin1', start, end);
-}
-
-/** Parses pax records `<len> <key>=<value>\n`; throws on any malformed length or encoding. */
-function parsePaxRecords(data: Buffer): Map<string, string> {
-  const records = new Map<string, string>();
-  let pos = 0;
-  while (pos < data.length) {
-    const space = data.indexOf(TAR_CHECKSUM_SPACE, pos);
-    const lengthText = space === -1 ? '' : data.toString('ascii', pos, space);
-    if (!TAR_PAX_LENGTH_PATTERN.test(lengthText)) throw tarReadError('malformed pax record length');
-    const length = Number(lengthText);
-    const end = pos + length;
-    if (
-      end > data.length ||
-      length < lengthText.length + TAR_PAX_MIN_RECORD_TAIL ||
-      data[end - 1] !== TAR_PAX_NEWLINE
-    ) {
-      throw tarReadError('pax record length does not match its content');
-    }
-    const bodyStart = space + 1;
-    const bodyEnd = end - 1;
-    const equals = data.indexOf(TAR_PAX_EQUALS, bodyStart);
-    if (equals <= bodyStart || equals >= bodyEnd) throw tarReadError('pax record has no key');
-    try {
-      records.set(decodePaxText(data, bodyStart, equals), decodePaxText(data, equals + 1, bodyEnd));
-    } catch {
-      throw tarReadError('pax record is not valid UTF-8');
-    }
-    pos = end;
-  }
-  return records;
-}
-
-function parsePaxInteger(value: string, key: string): number {
-  if (!TAR_PAX_INTEGER_PATTERN.test(value)) throw tarReadError(`invalid pax ${key} record`);
-  return Number(value);
-}
-
-function parsePaxDecimal(value: string, key: string): number {
-  if (!TAR_PAX_DECIMAL_PATTERN.test(value)) throw tarReadError(`invalid pax ${key} record`);
-  return Number(value);
-}
+/** The last path element (a trailing slash left out) starts with `._` and goes on. */
+const MAC_METADATA_NAME = /(?:^|\/)\._[^/]+\/?$/;
 
 /** Paths of symlink entries seen so far, indexed by length so ancestor checks stay cheap. */
 class TarSymlinkIndex {
@@ -1318,6 +1258,8 @@ class TarReader {
   private pendingExtensionBytes = 0;
   private longName: string | null = null;
   private longLink: string | null = null;
+  /** The entry before this one was a `._` AppleDouble entry that was dropped. */
+  private afterMacMetadata = false;
   private readonly contentByName = new Map<string, Buffer>();
   private readonly symlinks = new TarSymlinkIndex();
   private offset = 0;
@@ -1476,7 +1418,6 @@ class TarReader {
 
   private applyPaxRecords(data: Buffer, isGlobal: boolean): void {
     for (const [key, value] of parsePaxRecords(data)) {
-      if (key.startsWith('GNU.sparse.')) throw tarReadError('sparse files are not supported');
       if (isGlobal) this.setGlobalPax(key, value);
       else this.localPax.set(key, value);
     }
@@ -1513,12 +1454,27 @@ class TarReader {
     return readTarString(this.tarBuffer, this.headerStart + TAR_OFFSET_LINKNAME, TAR_LENGTH_LINKNAME);
   }
 
-  private entryBodySize(type: TarEntryType, headerSize: number, paxSize: string | undefined): number {
-    // Only regular files own a body; directories, links and special files ignore the size field.
+  /** Only regular files own a body; directories, links and special files ignore the size field. */
+  private declaredBodySize(type: TarEntryType, headerSize: number, paxSize: string | undefined): number {
     if (type !== 'file') return EMPTY_TAR_BODY_SIZE;
-    const bodySize = paxSize === undefined ? headerSize : parsePaxInteger(paxSize, 'size');
-    this.checkBomb(bodySize);
+    return paxSize === undefined ? headerSize : parsePaxInteger(paxSize, 'size');
+  }
+
+  private entryBodySize(type: TarEntryType, headerSize: number, paxSize: string | undefined): number {
+    const bodySize = this.declaredBodySize(type, headerSize, paxSize);
+    if (type === 'file') this.checkBomb(bodySize);
     return bodySize;
+  }
+
+  /**
+   * Whether the entry is the AppleDouble file of the entry after it: its last path element starts with `._` and has a character after it
+   * (`is_mac_metadata_entry` of libarchive's tar reader). Like libarchive, it is the metadata of the next entry and is dropped, unless the entry
+   * before it was one too, and then it is an entry of its own.
+   */
+  private isMacMetadataEntry(rawName: string): boolean {
+    const wasMetadata = this.afterMacMetadata;
+    this.afterMacMetadata = !wasMetadata && MAC_METADATA_NAME.test(rawName);
+    return this.afterMacMetadata;
   }
 
   /** Registers a link entry; returns the shared content for a hardlink, null for a symlink. */
@@ -1545,6 +1501,10 @@ class TarReader {
     const type = resolveTarEntryType(typeflag, rawName);
     if (type === null) throw tarReadError(`unsupported typeflag ${JSON.stringify(typeflag)}`);
 
+    if (this.isMacMetadataEntry(rawName)) {
+      this.takeBody(this.declaredBodySize(type, headerSize, context.paxSize));
+      return;
+    }
     const bodySize = this.entryBodySize(type, headerSize, context.paxSize);
     if (this.entries.length >= this.limits.MAX_FILES) {
       throw tarBombError(`file count exceeds limit of ${this.limits.MAX_FILES}`);

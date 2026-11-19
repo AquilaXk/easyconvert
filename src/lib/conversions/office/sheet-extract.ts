@@ -1,6 +1,7 @@
 import { ConversionOptions, UnsupportedTargetError } from '../../types';
 import { ZIP_LOCAL_HEADER_SIGNATURE, openOpcPackage, startsWithBytes } from '../package-access';
 import { isCfbfContainer } from '../cfbf-reader';
+import { decodeDelimitedText } from '../delimited-text-decoder';
 import { delimitedSheetRows, parseJsonTableRows } from '../sheet-text-tables';
 import { parseAllXlsxWorksheets } from './xlsx-parse';
 import { readCfbfWorkbookSheet } from './xls-parse';
@@ -35,8 +36,8 @@ export async function extractRowsForOffice(
     if (isCfbfContainer(inputBuffer)) return readCfbfWorkbookSheet(inputBuffer).toRows();
   }
   if (src === 'pdf') throw new UnsupportedTargetError('A PDF is read for a workbook by its tables and pages (readPdfSheets), never as rows of delimited text.');
-  const text = inputBuffer.toString('utf-8');
-  return src === 'json' ? parseJsonTableRows(text) : delimitedSheetRows(text, src, options);
+  if (src === 'json') return parseJsonTableRows(inputBuffer.toString('utf-8'));
+  return delimitedSheetRows(decodeDelimitedText(inputBuffer, options.encoding), src, options);
 }
 
 /**

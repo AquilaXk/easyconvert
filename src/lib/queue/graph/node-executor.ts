@@ -46,6 +46,7 @@ import {
 } from '../../conversions/archive-extraction-safety';
 import { isWrapperSource, unpackWrapperSource } from '../../conversions/archive-wrapper-sources';
 import { decompressZstdNative } from '../../conversions/zstd-native';
+import { decodeTextInput } from '../../conversions/text-input';
 import { openPasswordOption } from '../option-secrets';
 import { OPTIMIZERS, getOptimizer, type OptimizerRegistry } from '../../conversions/optimizers';
 import {
@@ -842,7 +843,7 @@ export async function processGraphNodeJob(
           await effectiveStorage.saveObject(outKey, mergedBuf, registryMimeType('pdf'), outFilename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         } else {
-          const mergedBuf = Buffer.from(inputs.map((stored) => stored.buffer.toString('utf-8')).join('\n\n'), 'utf-8');
+          const mergedBuf = Buffer.from(inputs.map((stored) => decodeTextInput(stored.buffer)).join('\n\n'), 'utf-8');
           const outFilename = `merged.${targetFmt}`;
           const outKey = nodeOutputKey('intermediate', graphId, nodeId, 0, outFilename);
           await effectiveStorage.saveObject(outKey, mergedBuf, registryMimeType(targetFmt), outFilename, INTERMEDIATE_TTL_MS);

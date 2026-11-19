@@ -122,6 +122,7 @@ export const CONVERSION_REFUSAL_CODES = [
   'capture_unavailable',
   'capture_target_blocked',
   'capture_failed',
+  'pdf_postprocess_failed',
   'engine_unavailable',
   'conversion_failed',
 ] as const;

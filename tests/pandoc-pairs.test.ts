@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import iconv from 'iconv-lite';
 import MarkdownIt from 'markdown-it';
 import { parse } from 'parse5';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -213,6 +214,13 @@ ${behavior}
     const text = '# 제목\n\n안녕하세요 *세계*.\n';
     const utf16 = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
     const result = await convertWithPandoc(request('md', 'tex', utf16), fakePandoc(WRITES_TEXT), NOT_SPOOFED);
+    expect(Buffer.from(runs()[0].sourceBytes, 'hex').toString('utf-8')).toBe(text);
+    fs.rmSync(result.filePath as string, { force: true });
+  });
+
+  it.each(['md', 'txt'])('hands pandoc the UTF-8 text of a CP949 .%s, which pandoc would refuse or read as mojibake as it is', async (src) => {
+    const text = '# 제목\n\n대한민국은 민주공화국이다. 대한민국의 주권은 국민에게 있고, 모든 권력은 국민으로부터 나온다.\n';
+    const result = await convertWithPandoc(request(src, 'tex', iconv.encode(text, 'cp949')), fakePandoc(WRITES_TEXT), NOT_SPOOFED);
     expect(Buffer.from(runs()[0].sourceBytes, 'hex').toString('utf-8')).toBe(text);
     fs.rmSync(result.filePath as string, { force: true });
   });

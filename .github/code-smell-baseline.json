@@ -234,7 +234,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3946
+    "maxValue": 3906
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -1758,7 +1758,7 @@
     "rule": "complexity",
     "function": "sniffMimeTypeFromMagicBytes",
     "count": 1,
-    "maxValue": 54
+    "maxValue": 51
   },
   {
     "file": "src/lib/registry.ts",

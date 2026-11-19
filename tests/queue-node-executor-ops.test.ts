@@ -1,4 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
+import iconv from 'iconv-lite';
 import sharp from 'sharp';
 import { PDFDocument } from 'pdf-lib';
 import type { Job } from '@/lib/queue/bullmq-engine';
@@ -91,6 +92,15 @@ describe('queue node executor operations', () => {
         return [width, height];
       });
       expect(sizes).toEqual([FIRST_PAGE_SIZE, SECOND_PAGE_SIZE]);
+    });
+
+    it('merges text inputs in any encoding into one UTF-8 text without byte order marks', async () => {
+      const korean = '대한민국은 민주공화국이다. 대한민국의 주권은 국민에게 있다.\n';
+      const cp949 = seed('ko.txt', iconv.encode(korean, 'cp949'), 'text/plain');
+      const bom = seed('bom.txt', Buffer.from('\uFEFFsecond 둘째\n', 'utf-8'), 'text/plain');
+      const utf16 = seed('wide.txt', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('third 셋째\n', 'utf16le')]), 'text/plain');
+      const result = await processGraphNodeJob(nodeJob({ op: 'merge', targetFormat: 'txt' }, [cp949, bom, utf16]), undefined, s3Storage);
+      expect(storedOutput(result.resultKey).toString('utf-8')).toBe(`${korean}\n\nsecond 둘째\n\n\nthird 셋째\n`);
     });
 
     it('rejects a missing input artifact', async () => {

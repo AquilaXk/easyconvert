@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { CompoundFileStructureError, ConversionFailedError, CorruptStreamError, CpuTaskTimeoutError, EncryptedOfficeDocumentError, EngineUnavailableError, PayloadLimitError, SheetLimitError } from '../lib/types';
 import { LegacyOfficeFormatError } from '../lib/conversions/office/legacy-office-errors';
 import { CFBF_MAX_FILE_BYTES } from '../lib/compound-file-kind';
@@ -8,7 +9,7 @@ import { DOCX_MAX_ANCHORED_SHAPES } from '../lib/conversions/document-model/docx
 import { JOB_DEADLINE_AT, OFFICE_STAGE, remainingJobMs, type JobDeadlined } from '../lib/conversions/job-time';
 import { hasWordFloatingShapes, stripWordFloatingShapes } from '../lib/conversions/office/doc-reader';
 import { PPTX_LEGACY_PPT_BRIDGE } from '../lib/conversions/office/pdf-pptx';
-import { readRawInputBuffer } from './worker-output';
+import { readRawInputBuffer, withSandboxDir } from './worker-output';
 import { repairPptPersistIdSeed } from '../lib/conversions/office/ppt-reader';
 import { OfficePackageUnreadableError, isEncryptedLegacyOffice, legacyOfficeInput } from './office-input-checks';
 import {
@@ -28,6 +29,7 @@ import { isEmptyMetafile, metafileLeadingBytes, readMetafilePage, type MetafileF
 import { CFBF_MAGIC, PRE_OLE2_WORD_SIGNATURES, isBiffStream } from '../lib/format-signatures';
 import { startsWithBytes } from '../lib/conversions/package-access';
 import { assertTextSourceHead } from '../lib/conversions/office/text-source';
+import { decodeTextInput, isLegacyText, isLegacyTextFile } from '../lib/conversions/text-input';
 import { pdfFirstPageHasInk } from './pdf-ink';
 import { selectsPages } from './poppler-ppm';
 import { SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedTimeoutError, rethrowSandboxUnavailable } from './sandbox';
@@ -476,6 +478,10 @@ export const TEXT_IMPORT_FILTER = 'Text (encoded):utf8';
 export const TEXT_DIRECT_MIN_BYTES = 0;
 /** Bytes of a text file read to refuse a binary one before the office suite opens it. */
 const TEXT_HEAD_BYTES = 64 * 1024;
+/** Bytes of a text file read at a time to tell UTF-8 from legacy text. */
+const TEXT_SCAN_CHUNK_BYTES = 1024 * 1024;
+const LEGACY_TEXT_DIR_PREFIX = 'easyconvert-text-utf8-';
+const LEGACY_TEXT_FILE = 'source.txt';
 
 /**
  * The format the in-process converter writes first for a target that only the office suite writes, or undefined when the pair has
@@ -582,6 +588,28 @@ function isLongPlainText(input: Buffer | WorkerVfsPayload, src: string, tgt: str
   return src === PLAIN_TEXT_SOURCE && TEXT_DIRECT_TARGETS.has(tgt) && inputSize(input) >= TEXT_DIRECT_MIN_BYTES;
 }
 
+/** Whether the text file is in a legacy encoding: the suite reads it as UTF-8 (`TEXT_IMPORT_FILTER`), so it is decoded first. */
+function isLegacyTextInput(input: Buffer | WorkerVfsPayload): boolean {
+  if (Buffer.isBuffer(input)) return isLegacyText(input);
+  if (input.inputBuffer) return isLegacyText(input.inputBuffer);
+  return input.inputPath !== undefined && isLegacyTextFile(input.inputPath, TEXT_SCAN_CHUNK_BYTES);
+}
+
+/**
+ * The text file as the suite reads it: a text in a legacy encoding is decoded once, as the converter decodes it (`decodeTextInput`, with its
+ * warning), and handed on as UTF-8, in memory or as a file of the job directory; any other text is handed on as it is.
+ */
+async function withUtf8TextSource<T>(input: Buffer | WorkerVfsPayload, run: (source: Buffer | WorkerVfsPayload) => Promise<T>): Promise<T> {
+  if (!isLegacyTextInput(input)) return run(input);
+  const utf8 = Buffer.from(decodeTextInput(readRawInputBuffer(input)), 'utf-8');
+  if (Buffer.isBuffer(input) || input.inputBuffer) return run(Buffer.isBuffer(input) ? utf8 : { ...input, inputBuffer: utf8 });
+  return withSandboxDir(LEGACY_TEXT_DIR_PREFIX, async (dir) => {
+    const inputPath = path.join(dir, LEGACY_TEXT_FILE);
+    fs.writeFileSync(inputPath, utf8);
+    return run({ ...input, inputPath });
+  });
+}
+
 /**
  * A long plain text file written as `.doc` or `.rtf` by the office suite alone: the suite reads the text file with its text filter
  * (`TEXT_IMPORT_FILTER`) and exports it, where the DOCX route would have the converter write the whole text as a package first. The
@@ -593,7 +621,9 @@ async function convertTextFileDirectly(deps: OfficeSuiteRouteDeps, request: Offi
   assertTextSourceHead(leadingBytes(input, TEXT_HEAD_BYTES), src);
   let written: WorkerConversionResult | null;
   try {
-    written = await deps.writeWithOfficeSuite(input, src, tgt, { ...options, officeImportFilter: TEXT_IMPORT_FILTER, throwOnUnavailable: true }, originalFilename);
+    written = await withUtf8TextSource(input, (source) =>
+      deps.writeWithOfficeSuite(source, src, tgt, { ...options, officeImportFilter: TEXT_IMPORT_FILTER, throwOnUnavailable: true }, originalFilename)
+    );
   } catch (err) {
     rethrowSandboxUnavailable(err);
     throw err;
