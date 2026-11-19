@@ -38,3 +38,4 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Learned OCR layout tier: pick a permissively licensed layout model and record its model and data provenance.
 - Rare samples: DWG before R13, WP Greek accented letters, Word Wingdings check boxes.
 - `sk`/`sk1` input through UniConvertor 2 as a separate sandboxed GPL program (behaviour only, no code copied).
+- `pages` for PDF to TXT, DOCX, HTML and XLSX: the reference offers it for each of the four pairs and the converter ignores it; select the pages inside the readers, since a qpdf pre-selection would apply the edit-rights check of entry 4 (`confirmEditRights`) to a conversion that only reads the PDF.
