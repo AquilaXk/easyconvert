@@ -1,9 +1,9 @@
 /**
- * A pool of job-server child processes. Each child takes one job at a time; a job past its deadline kills its child
- * (verdict hang) and a child that dies during a job is a crash. Either way a fresh child replaces it, so one bad file
+ * A pool of job-server child processes. Each child takes one job at a time; a job with no answer by its window (its deadline and the
+ * answer grace) kills its child (verdict hang) and a child that dies during a job is a crash. Either way a fresh child replaces it, so one bad file
  * never poisons the jobs after it.
  */
-import { fork, type ChildProcess } from 'node:child_process';
+import { execFileSync, fork, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import type { JobReply, JobRequest } from './child';
 import { OCR_MAX_INFLIGHT_PAGES, OCR_PAGE_CONCURRENCY_ENV } from '../../src/lib/conversions/ocr-page-batch';
@@ -16,7 +16,10 @@ const CHILD_START_TIMEOUT_MS = 120_000;
 
 export interface PoolOptions {
   workers: number;
+  /** The deadline the converter holds a job to (the job server gives it to the conversion as its job deadline). */
   deadlineMs: number;
+  /** Time past the deadline that a job may take to answer; `ANSWER_GRACE_MS` when not set. */
+  answerGraceMs?: number;
   /** V8 heap cap of each child, in MiB. */
   heapMb: number;
   env: NodeJS.ProcessEnv;
@@ -29,11 +32,25 @@ export const TOLERATED_HUNG_JOBS = 10;
 const NIGHTLY_SHARD_TIMEOUT_MS = 60 * 60_000;
 
 /**
- * Longest a single job may run whatever its size. The pool runs `NIGHTLY_WORKERS` jobs at a time, so
- * `TOLERATED_HUNG_JOBS` hung jobs hold it for TOLERATED_HUNG_JOBS x cap / NIGHTLY_WORKERS, and that is kept to half of
- * the shard timeout (30 min -> 9 min per job): a shard that is cancelled loses its report, and with it the hangs.
+ * Time a job may take to answer after the deadline the converter holds it to. The job server aborts the conversion 2 s before that deadline
+ * (child.ts), and the conversion then kills the office suite, removes its directories and writes the typed refusal, so a job that runs to its
+ * deadline answers close to it, and a parent that waits for the deadline alone reports that answer as a hang. Only an answer past this
+ * grace is a hang: the converter broke the deadline it was given. Gotenberg waits at most 5 s for a killed process to be reaped (`reapTimeout`,
+ * `pkg/modules/libreoffice/api/libreoffice.go`), and 10 s is twice that.
  */
-export const MAX_JOB_DEADLINE_MS = (NIGHTLY_SHARD_TIMEOUT_MS / 2 * NIGHTLY_WORKERS) / TOLERATED_HUNG_JOBS;
+export const ANSWER_GRACE_MS = 10_000;
+
+/** How long the pool waits for the answer of a job held to `deadlineMs`. */
+export function answerWindowMs(deadlineMs: number, graceMs: number = ANSWER_GRACE_MS): number {
+  return deadlineMs + graceMs;
+}
+
+/**
+ * Longest deadline a single job may have whatever its size. The pool runs `NIGHTLY_WORKERS` jobs at a time, so `TOLERATED_HUNG_JOBS` hung
+ * jobs hold it for TOLERATED_HUNG_JOBS x window / NIGHTLY_WORKERS, and that is kept to half of the shard timeout (30 min -> 9 min per job,
+ * of which the answer grace is the last 10 s): a shard that is cancelled loses its report, and with it the hangs.
+ */
+export const MAX_JOB_DEADLINE_MS = (NIGHTLY_SHARD_TIMEOUT_MS / 2 * NIGHTLY_WORKERS) / TOLERATED_HUNG_JOBS - ANSWER_GRACE_MS;
 
 /**
  * The deadline of a job on a file that is read by OCR, of `pages` pages (0 for any other file): the base deadline plus
@@ -72,13 +89,49 @@ export interface JobOutcome {
   status?: number | null;
 }
 
-/** Kills the child and everything it started (it leads its own process group), so no converter outlives its job. */
+/**
+ * The processes below `root` in a `ps -A -o pid=,ppid=` table, at any depth. The office suite runs in a process group of its own, which the
+ * group of the job server does not reach, and a process whose parent has died is no longer below it: they are listed before the server is killed.
+ */
+export function descendantPids(root: number, table: string): number[] {
+  const children = new Map<number, number[]>();
+  for (const line of table.split('\n')) {
+    const [pid, parent] = line.trim().split(/\s+/).map(Number);
+    if (!Number.isInteger(pid) || !Number.isInteger(parent)) continue;
+    children.set(parent, [...(children.get(parent) ?? []), pid]);
+  }
+  const found: number[] = [];
+  for (let queue = [root]; queue.length > 0; ) {
+    const next = (children.get(queue.shift()!) ?? []).filter((pid) => !found.includes(pid));
+    found.push(...next);
+    queue.push(...next);
+  }
+  return found;
+}
+
+function processesBelow(root: number): number[] {
+  try {
+    return descendantPids(root, execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8', timeout: 10_000 }));
+  } catch {
+    return [];
+  }
+}
+
+/** Kills the child and everything it started, in its own group or another, so no converter outlives its job. */
 function killTree(child: ChildProcess): void {
   if (child.pid === undefined) return;
+  const below = processesBelow(child.pid);
   try {
     process.kill(-child.pid, 'SIGKILL');
   } catch {
     child.kill('SIGKILL');
+  }
+  for (const pid of below) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // Already gone.
+    }
   }
 }
 
@@ -174,9 +227,10 @@ export class JobPool {
       const onExit = (code: number | null, signal: string | null): void => {
         finish({ verdict: 'crash', ms: performance.now() - started, detail: `job server died (code ${code}, signal ${signal})` }, true);
       };
+      const windowMs = answerWindowMs(deadlineMs, this.options.answerGraceMs);
       const timer = setTimeout(() => {
-        finish({ verdict: 'hang', ms: performance.now() - started, detail: `no answer within ${deadlineMs} ms` }, true);
-      }, deadlineMs);
+        finish({ verdict: 'hang', ms: performance.now() - started, detail: `no answer within ${windowMs} ms` }, true);
+      }, windowMs);
       slot.child.on('message', onMessage);
       slot.child.once('exit', onExit);
       slot.child.send({ ...request, deadlineMs, id });

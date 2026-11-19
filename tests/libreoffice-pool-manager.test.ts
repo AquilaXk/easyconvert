@@ -15,6 +15,7 @@ import {
   libreOfficePool,
 } from '../src/worker/engines';
 import { UnsupportedOptionError } from '../src/lib/types';
+import { SandboxedTimeoutError } from '../src/lib/security/process-sandbox';
 import { JOB_DEADLINE_AT } from '../src/lib/conversions/job-time';
 import type { WorkerEngineOptions } from '../src/worker/worker-types';
 
@@ -228,6 +229,38 @@ describe('Pre-warmed LibreOffice worker pool', () => {
       expect(freshWorker.jobCount).toBe(0);
 
       await pool.releaseWorker(freshWorker);
+    });
+
+    it('answers a run that the suite did not finish without waiting for the slot that replaces its worker', async () => {
+      // The replacement of a worker that failed a job pre-warms the suite (`soffice --help`, up to 15 s). A job that ran to its deadline has
+      // no time left for that: JODConverter completes the job's future at its timeout and restarts the worker afterwards, and Gotenberg
+      // waits for the killed process alone (5 s at the most) and restarts it in its supervisor.
+      let warmUps = 0;
+      let openWarmUp!: () => void;
+      const warmUpGate = new Promise<void>((resolve) => (openWarmUp = resolve));
+      const executor = vi.fn(async (_bin: string, args: string[]) => {
+        if (args.includes('--help')) {
+          warmUps++;
+          if (warmUps > 1) await warmUpGate;
+          return { stdout: Buffer.from(''), stderr: Buffer.from(''), exitCode: 0, durationMs: 1, sandboxed: true, sandboxType: 'host' as const };
+        }
+        throw new SandboxedTimeoutError(180_000);
+      });
+      const pool = new LibreOfficePoolManager({ maxWorkers: 1, sofficePath: '/usr/bin/soffice', enabled: true, executor });
+      activePools.push(pool);
+
+      const outcome = pool.convert(Buffer.from('slow'), 'docx', 'doc', {}, 'slow.docx').then(
+        () => 'converted' as const,
+        (err: unknown) => err
+      );
+      const answered = await Promise.race([outcome, new Promise<'late'>((resolve) => setTimeout(() => resolve('late'), 1_500))]);
+      openWarmUp();
+      expect(answered).toBeInstanceOf(SandboxedTimeoutError);
+      await outcome;
+      // The slot is made again all the same: the next job finds a worker.
+      const next = await pool.acquireWorker();
+      expect(next.jobCount).toBe(0);
+      await pool.releaseWorker(next);
     });
 
     it('bounds concurrent cold spawns by maxWorkers using spawningWorkers accounting', async () => {
