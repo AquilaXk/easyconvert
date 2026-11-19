@@ -19,7 +19,7 @@
     "api"
   ],
   "author": "EasyConvert Engineering",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "dependencies": {
     "openapi-fetch": "0.17.0"
   }
