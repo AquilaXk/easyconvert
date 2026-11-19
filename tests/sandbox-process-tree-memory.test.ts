@@ -1,7 +1,9 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 import { executeSandboxedBinary, getProcessRssMb, SandboxedMemoryLimitError } from '../src/lib/security/process-sandbox';
-import { MAX_TREE_PIDS, descendantPids, getProcessTreeRssMb } from '../src/lib/security/process-tree';
+import { MAX_TREE_PIDS, descendantPids, getProcessTreeMemoryMb, getProcessTreeRssMb, parseSmapsRollup } from '../src/lib/security/process-tree';
+import { skipUnless } from './helpers/strict-skip';
 import { runWithoutFileConfinement } from './helpers/unconfined-files';
 
 /**
@@ -103,4 +105,96 @@ describe('the sum of the memory of a process tree', () => {
     expect(reported).toBe(Number.POSITIVE_INFINITY);
     expect(getProcessTreeRssMb(pid, getProcessRssMb) as number).toBeLessThan(Number.POSITIVE_INFINITY);
   }, 30_000);
+});
+
+/** The memory of a tree is its proportional set size, which counts a page that several processes map once (docs/policy-decisions.md, entry 329). */
+const SMAPS_ROLLUP = `55d0c5a00000-7ffd5b3f9000 ---p 00000000 00:00 0                          [rollup]
+Rss:              440616 kB
+Pss:              120331 kB
+Pss_Dirty:         98211 kB
+Pss_Anon:          60102 kB
+Pss_File:          14223 kB
+Pss_Shmem:         46006 kB
+Shared_Clean:      10012 kB
+Shared_Dirty:     301000 kB
+Private_Clean:      9000 kB
+Private_Dirty:    120604 kB
+Private_Hugetlb:    2048 kB
+Referenced:       440000 kB
+Swap:                512 kB
+SwapPss:             100 kB
+Locked:                0 kB
+`;
+const SHARED_MB = 400;
+const SHARED_CHILDREN = 3;
+/** A parent and its forked children map one anonymous shared region, each touching every page: every process has the region resident, and the pages exist once. */
+const SHARED_REGION_TREE = `
+import mmap, os, time
+size = ${SHARED_MB} * 1024 * 1024
+region = mmap.mmap(-1, size, flags=mmap.MAP_SHARED | mmap.MAP_ANONYMOUS)
+for offset in range(0, size, 4096):
+    region[offset] = 1
+for _ in range(${SHARED_CHILDREN}):
+    if os.fork() == 0:
+        total = 0
+        for offset in range(0, size, 4096):
+            total += region[offset]
+        time.sleep(4)
+        os._exit(0)
+time.sleep(4)
+`;
+const LINUX_PSS_READABLE = process.platform === 'linux' && fs.existsSync('/proc/self/smaps_rollup');
+const PYTHON3 = spawnSync('python3', ['-c', 'import mmap'], { stdio: 'ignore' }).status === 0;
+
+describe('the proportional memory of a process tree', () => {
+  it('reads the unique, proportional and swapped bytes of a smaps_rollup the way psutil does', () => {
+    expect(parseSmapsRollup(SMAPS_ROLLUP)).toEqual({ uss: (9000 + 120604 + 2048) * 1024, pss: 120331 * 1024, swap: 512 * 1024 });
+    expect(parseSmapsRollup('')).toEqual({ uss: 0, pss: 0, swap: 0 });
+  });
+
+  it.skipIf(skipUnless('Linux with /proc/<pid>/smaps_rollup and python3 (the stand-in tree shares an anonymous mapping)', LINUX_PSS_READABLE && PYTHON3))(
+    'reports far less for a tree that shares one region than the sum of its resident sizes',
+    async () => {
+      const parent = spawn('python3', ['-c', SHARED_REGION_TREE], { stdio: 'ignore', detached: true });
+      started.push(parent);
+      const pid = parent.pid as number;
+      const processes = SHARED_CHILDREN + 1;
+      const deadline = Date.now() + 15_000;
+      let resident = 0;
+      while (Date.now() < deadline && resident < SHARED_MB * processes * 0.9) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        resident = getProcessTreeRssMb(pid, getProcessRssMb) ?? 0;
+      }
+      const proportional = getProcessTreeMemoryMb(pid, getProcessRssMb) as number;
+      expect(resident).toBeGreaterThanOrEqual(SHARED_MB * processes * 0.9);
+      expect(proportional).toBeGreaterThanOrEqual(SHARED_MB);
+      expect(proportional).toBeLessThan(SHARED_MB * 1.5);
+    },
+    30_000
+  );
+
+  it.skipIf(skipUnless('Linux with /proc/<pid>/smaps_rollup and python3 (the stand-in tree shares an anonymous mapping)', LINUX_PSS_READABLE && PYTHON3))(
+    'does not stop a run whose processes share the memory that their resident sizes count once each',
+    async () => {
+      const result = await executeSandboxedBinary('python3', ['-c', SHARED_REGION_TREE], {
+        memoryLimitMb: 2 * SHARED_MB,
+        rlimits: { asBytes: WIDE_ADDRESS_SPACE_BYTES },
+        timeoutMs: 20_000,
+      }).catch((error: unknown) => error);
+      // The four processes have the region resident: their sizes add up to 4 x 400 MB, past the 800 MB limit; the pages exist once.
+      expect(result).not.toBeInstanceOf(SandboxedMemoryLimitError);
+      expect(result).toHaveProperty('stdout');
+    },
+    40_000
+  );
+
+  it('counts the resident size of a process whose proportional size cannot be read', () => {
+    const own = process.pid;
+    const resident = getProcessRssMb(own) as number;
+    expect(getProcessTreeMemoryMb(own, getProcessRssMb, MAX_TREE_PIDS, () => null) as number).toBeGreaterThanOrEqual(resident);
+  });
+
+  it('answers null for a process that does not exist', () => {
+    expect(getProcessTreeMemoryMb(2 ** 22 - 3, getProcessRssMb)).toBeNull();
+  });
 });

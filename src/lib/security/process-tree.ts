@@ -42,6 +42,11 @@ import fs from 'node:fs';
  * cycle in a process table read while pids are reused ends the walk. psutil builds a map of parent to children from the whole process table;
  * on Linux the children of a process are read where the kernel lists them (`/proc/<pid>/task/<tid>/children`, which `memoryWatchPid` reads
  * too), so a run is not paid for the other processes of the host. Elsewhere (a development host) one `ps` call gives the map.
+ *
+ * `parseSmapsRollup` is a TypeScript translation of `Process._parse_smaps_rollup` of `psutil/_pslinux.py` (same tag and commit), and
+ * `sumProportionalMb` is its use as in `Process.memory_full_info` (unique and proportional set size from `/proc/<pid>/smaps_rollup`). Where
+ * psutil falls back to the much slower `/proc/<pid>/smaps` when the rollup is unreadable, this reads the resident size of the process instead
+ * (`proportionalMb ?? residentMb`), which is never below the proportional size.
  */
 
 const PS_TIMEOUT_MS = 1000;
@@ -52,6 +57,8 @@ const PS_TIMEOUT_MS = 1000;
  */
 export const MAX_TREE_PIDS = 4096;
 const KIB_PER_MIB = 1024;
+const BYTES_PER_KIB = 1024;
+const BYTES_PER_MIB = KIB_PER_MIB * BYTES_PER_KIB;
 
 /** The pid and its descendants: the pids reached from `rootPid` through `childrenOf`, the root first; null when more than `maxPids` are reached. */
 export function descendantPids(rootPid: number, childrenOf: (pid: number) => readonly number[], maxPids = MAX_TREE_PIDS): number[] | null {
@@ -129,4 +136,68 @@ export function getProcessTreeRssMb(pid: number, residentMb: (pid: number) => nu
   if (process.platform !== 'linux') return psTreeMb(pid, maxPids);
   const tree = descendantPids(pid, linuxChildren, maxPids);
   return tree === null ? Number.POSITIVE_INFINITY : sumResidentMb(tree, residentMb);
+}
+
+/** The bytes of a process that no other process maps, the bytes counted in proportion to the processes that map them, and the bytes swapped out. */
+export interface SmapsRollup {
+  uss: number;
+  pss: number;
+  swap: number;
+}
+
+/**
+ * The sizes in `/proc/<pid>/smaps_rollup`, translated from `Process._parse_smaps_rollup` of psutil (`psutil/_pslinux.py`, tag v7.2.2): the
+ * `Private_*` lines (Private_Clean, Private_Dirty, Private_Hugetlb) add up to the unique set size, `Pss:` is the proportional set size and
+ * `Swap:` the swapped size, each in kB in the file and in bytes here.
+ */
+export function parseSmapsRollup(text: string): SmapsRollup {
+  let uss = 0;
+  let pss = 0;
+  let swap = 0;
+  for (const line of text.split('\n')) {
+    if (line.startsWith('Private_')) {
+      // Private_Clean, Private_Dirty, Private_Hugetlb
+      uss += Number(line.split(/\s+/)[1]) * BYTES_PER_KIB;
+    } else if (line.startsWith('Pss:')) {
+      pss = Number(line.split(/\s+/)[1]) * BYTES_PER_KIB;
+    } else if (line.startsWith('Swap:')) {
+      swap = Number(line.split(/\s+/)[1]) * BYTES_PER_KIB;
+    }
+  }
+  return { uss, pss, swap };
+}
+
+/** The proportional set size of a process in MB; null when its `smaps_rollup` cannot be read (the process ended, or the kernel has no such file). */
+export function readProcessPssMb(pid: number): number | null {
+  try {
+    const { pss } = parseSmapsRollup(fs.readFileSync(`/proc/${pid}/smaps_rollup`, 'utf-8'));
+    return Number.isFinite(pss) ? pss / BYTES_PER_MIB : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The sum of the proportional sizes of the pids, in MB, a pid whose size cannot be read counting its resident size; null when the root's resident size cannot be read. */
+function sumProportionalMb(pids: readonly number[], residentMb: (pid: number) => number | null, proportionalMb: (pid: number) => number | null): number | null {
+  if (residentMb(pids[0]) === null) return null;
+  let total = 0;
+  for (const pid of pids) total += proportionalMb(pid) ?? residentMb(pid) ?? 0;
+  return total;
+}
+
+/**
+ * The memory of a process and everything it started, in MB, as the limit of a sandboxed run counts it: on Linux the proportional set size of
+ * each process (a page that several processes map, a shared library or a region the processes of a tree share, counts once in all, where the
+ * sum of resident sizes counts it once per process). Elsewhere, and for a pid whose proportional size cannot be read, the resident size. A tree
+ * of more than `maxPids` processes answers infinity, and a process that does not exist null, as `getProcessTreeRssMb` does.
+ */
+export function getProcessTreeMemoryMb(
+  pid: number,
+  residentMb: (pid: number) => number | null,
+  maxPids = MAX_TREE_PIDS,
+  proportionalMb: (pid: number) => number | null = readProcessPssMb
+): number | null {
+  if (process.platform !== 'linux') return psTreeMb(pid, maxPids);
+  const tree = descendantPids(pid, linuxChildren, maxPids);
+  return tree === null ? Number.POSITIVE_INFINITY : sumProportionalMb(tree, residentMb, proportionalMb);
 }
