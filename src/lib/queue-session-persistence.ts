@@ -43,11 +43,28 @@ function isValidEntry(entry: unknown, now: number): entry is PersistedResultEntr
   );
 }
 
+/** When each stored item was first saved, by id, so re-saving the queue keeps the completion time of an item that is still there. */
+function storedSavedAtById(key: string): Map<string, number> {
+  const savedAt = new Map<string, number>();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(sessionStorage.getItem(key) ?? '[]');
+  } catch {
+    return savedAt;
+  }
+  if (!Array.isArray(parsed)) return savedAt;
+  for (const entry of parsed) {
+    if (entry && typeof entry.id === 'string' && typeof entry.savedAt === 'number') savedAt.set(entry.id, entry.savedAt);
+  }
+  return savedAt;
+}
+
 /** Saves completed server-hosted queue items in `sessionStorage` without any conversion options or passwords. */
 export function persistCompletedServerQueue(items: readonly ConversionQueueItem[], scope: string, now = Date.now()): void {
   if (typeof window === 'undefined' || typeof sessionStorage === 'undefined') return;
   try {
     const key = storageKeyOf(scope);
+    const previous = storedSavedAtById(key);
     const saved: PersistedResultEntry[] = items
       .filter(isPersistableItem)
       .slice(-MAX_SAVED_ITEMS)
@@ -60,7 +77,7 @@ export function persistCompletedServerQueue(items: readonly ConversionQueueItem[
         resultUrl: item.resultUrl,
         resultSize: item.resultSize,
         unchanged: item.unchanged,
-        savedAt: now,
+        savedAt: previous.get(item.id) ?? now,
       }));
     if (saved.length === 0) {
       sessionStorage.removeItem(key);

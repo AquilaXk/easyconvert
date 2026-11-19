@@ -167,6 +167,13 @@ function triggerZipAnchorDownload(zipUrl: string, archiveName: string): string {
   return zipUrl;
 }
 
+/** Thrown when a result can no longer be fetched (expired or deleted): no ZIP is built, and `ids` name the rows to mark failed. */
+class UnavailableResultsError extends Error {
+  constructor(readonly ids: ReadonlySet<string>) {
+    super('unavailable results');
+  }
+}
+
 async function downloadCompletedBundle(items: ConversionQueueItem[], prefix: string): Promise<string> {
   const readyItems = items.filter((item): item is ConversionQueueItem & { resultUrl: string } => Boolean(item.resultUrl));
   const archiveName = `${prefix}_${Date.now()}.zip`;
@@ -190,12 +197,15 @@ async function downloadCompletedBundle(items: ConversionQueueItem[], prefix: str
     }
   }
 
-  const resolvedEntries = await Promise.all(
+  const fetched = await Promise.all(
     readyItems.map(async (item) => {
       const res = await fetch(item.resultUrl);
-      return { item, blob: await res.blob() };
+      return { item, res };
     })
   );
+  const unavailable = fetched.filter(({ res }) => !res.ok);
+  if (unavailable.length > 0) throw new UnavailableResultsError(new Set(unavailable.map(({ item }) => item.id)));
+  const resolvedEntries = await Promise.all(fetched.map(async ({ item, res }) => ({ item, blob: await res.blob() })));
   const used = new Set<string>();
   async function* generateEntries() {
     for (const { item, blob } of resolvedEntries) {
@@ -389,7 +399,13 @@ export function createQueueMutators(ctx: QueueMutationContext) {
   };
 }
 
-function createDownloadAllZipHandler(ctx: QueueMutationContext) {
+function failUnavailableResults(ids: ReadonlySet<string>, ctx: QueueMutationContext): void {
+  ctx.updateQueue((prev) =>
+    prev.map((i) => (ids.has(i.id) ? { ...i, status: 'error', error: undefined, progress: 0, resultUrl: undefined } : i))
+  );
+}
+
+export function createDownloadAllZipHandler(ctx: QueueMutationContext) {
   return async () => {
     const done = ctx.queueRef.current.filter((i) => i.status === 'completed' && i.resultUrl);
     if (done.length === 0) return;
@@ -410,6 +426,7 @@ function createDownloadAllZipHandler(ctx: QueueMutationContext) {
       warnBrowserFailure('Bundling the converted files into a ZIP failed', error);
       if (ctx.mountedRef.current) {
         ctx.setZipError(true);
+        if (error instanceof UnavailableResultsError) failUnavailableResults(error.ids, ctx);
       }
     }
   };
