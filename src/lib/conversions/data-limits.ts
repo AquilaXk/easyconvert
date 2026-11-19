@@ -29,15 +29,15 @@ export interface DataSourceLimits {
 
 export const DATA_SOURCE_LIMITS = {
   /** Delimited text: a cell is a field separator, a record a line end. */
-  delimited: { maxBytes: 32 * MIB, maxItems: 4 * MIB, itemChars: ',;\t|\n\r', unit: 'cells and records' },
+  delimited: { maxBytes: 32 * MIB, maxItems: 8 * MIB, itemChars: ',;\t|\n\r', unit: 'cells and records' },
   /** JSON: an object or array opens with a bracket, and the values of one are told apart by commas. */
-  json: { maxBytes: 32 * MIB, maxItems: 2 * MIB, itemChars: '{[,', unit: 'objects, arrays and separators' },
+  json: { maxBytes: 32 * MIB, maxItems: 4 * MIB, itemChars: '{[,', unit: 'objects, arrays and separators' },
   /** JSON Lines: the line ends count as the records of the text. */
-  ndjson: { maxBytes: 32 * MIB, maxItems: 2 * MIB, itemChars: '{[,\n', unit: 'objects, arrays, separators and lines' },
+  ndjson: { maxBytes: 32 * MIB, maxItems: 4 * MIB, itemChars: '{[,\n', unit: 'objects, arrays, separators and lines' },
   /** YAML: a block node is a line, a flow node follows a comma or a bracket. */
   yaml: { maxBytes: 8 * MIB, maxItems: MIB / 2, itemChars: '\n,{[', unit: 'lines and flow items' },
   /** XML: a tag opens each element, comment and declaration. */
-  xml: { maxBytes: 32 * MIB, maxItems: 2 * MIB, itemChars: '<', unit: 'tags' },
+  xml: { maxBytes: 32 * MIB, maxItems: 4 * MIB, itemChars: '<', unit: 'tags' },
   /** TOML: a configuration language, which a reader holds in memory as it is (no count of values beyond the size). */
   toml: { maxBytes: 8 * MIB, maxItems: Infinity, itemChars: '', unit: 'values' },
 } as const satisfies Record<string, DataSourceLimits>;

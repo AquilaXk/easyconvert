@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { convertFile } from '../src/lib/conversions';
 import { PayloadLimitError } from '../src/lib/types';
+import { DATA_SOURCE_LIMITS } from '../src/lib/conversions/data-limits';
 import { shutdownCpuPool } from '../src/lib/workers/cpu-pool';
 
 /**
@@ -30,11 +31,11 @@ describe('structured-data input limits', () => {
     ['YAML over its item count', Buffer.from('- 1\n'.repeat(524_289)), 'yaml', 'json'],
     ['TOML over its size', Buffer.from(`a = "${'x'.repeat(8 * MIB)}"\n`), 'toml', 'json'],
     ['JSON over its size', Buffer.from(`["${'x'.repeat(32 * MIB)}"]`), 'json', 'yaml'],
-    ['JSON over its structural count', Buffer.from(`[${'{},'.repeat(1_100_000)}{}]`), 'json', 'csv'],
-    ['NDJSON over its structural count', Buffer.from('{}\n'.repeat(1_100_000)), 'ndjson', 'json'],
-    ['XML over its element count', Buffer.from(`<r>${'<a/>'.repeat(2_097_153)}</r>`), 'xml', 'json'],
-    ['CSV of commas over its item count', Buffer.alloc(8 * MIB, ','), 'csv', 'json'],
-    ['CSV over its record count', Buffer.from('a\n'.repeat(4_194_305)), 'csv', 'json'],
+    ['JSON over its structural count', Buffer.from(`[${'{},'.repeat(DATA_SOURCE_LIMITS.json.maxItems / 2 + 1)}{}]`), 'json', 'csv'],
+    ['NDJSON over its structural count', Buffer.from('{}\n'.repeat(DATA_SOURCE_LIMITS.ndjson.maxItems / 2 + 1)), 'ndjson', 'json'],
+    ['XML over its element count', Buffer.from(`<r>${'<a/>'.repeat(DATA_SOURCE_LIMITS.xml.maxItems + 1)}</r>`), 'xml', 'json'],
+    ['CSV of commas over its item count', Buffer.alloc(DATA_SOURCE_LIMITS.delimited.maxItems + 1, ','), 'csv', 'json'],
+    ['CSV over its record count', Buffer.from('a\n'.repeat(DATA_SOURCE_LIMITS.delimited.maxItems + 1)), 'csv', 'json'],
     ['CSV over its size', Buffer.from(`a\n${'x'.repeat(32 * MIB)}`), 'csv', 'json'],
   ] as const)('refuses %s as an input over the limit', async (_name, input, src, tgt) => {
     const error = await refusal(input, src, tgt);
