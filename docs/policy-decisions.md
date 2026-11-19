@@ -383,6 +383,7 @@ Security
 332. [A job request's JSON body is held to the inline file as base64 and its fields, and a body with more than 4,096 objects and arrays is refused before it is parsed](#332-a-job-requests-json-body-is-held-to-the-inline-file-as-base64-and-its-fields-and-a-body-with-more-than-4096-objects-and-arrays-is-refused-before-it-is-parsed)
 333. [Listing a bzip2 archive holds the decoded stream to the compression ratio of every other archive reader](#333-listing-a-bzip2-archive-holds-the-decoded-stream-to-the-compression-ratio-of-every-other-archive-reader)
 334. [Storage keys of an anonymous caller's tool results and staged inputs name no address](#334-storage-keys-of-an-anonymous-callers-tool-results-and-staged-inputs-name-no-address)
+335. [Passwords are hashed with 210,000 PBKDF2-SHA512 iterations, and a hash of the earlier 100,000 is upgraded when its owner signs in](#335-passwords-are-hashed-with-210000-pbkdf2-sha512-iterations-and-a-hash-of-the-earlier-100000-is-upgraded-when-its-owner-signs-in)
 
 ---
 
@@ -10209,3 +10210,20 @@ Security
   - **A result is not put in `uploads/`**, as `multipartUploadKey` would do, because that namespace has the retention of an unclaimed upload (kept for the jobs that read it), not the delivery rule of a result.
 - **Trade-offs**: A result of an anonymous caller that exists under the old key at the time of the change is still served (the key is classified by its prefix and the owner is anonymous) until the retention sweep removes it. `src/app/api/v1/convert/route.ts` and `recordUserFile` write `conversions/<id>/` too, and an anonymous caller does not reach either (`/api/v1/convert` answers 401 without an account).
 - **Verified by**: `tests/anonymous-keys-no-address.test.ts`: six cases that fail with the old key shape (the address is in the key of a synchronous tool result, an asynchronous tool result, a queued tool output, and the staged inputs of a synchronous conversion and tool run).
+
+## 335. Passwords are hashed with 210,000 PBKDF2-SHA512 iterations, and a hash of the earlier 100,000 is upgraded when its owner signs in
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: security review of `656eb523`, note 6b: PBKDF2-HMAC-SHA512 at 100,000 iterations where OWASP recommends 210,000)
+- **Decision**:
+  1. **A new password hash uses 210,000 PBKDF2-HMAC-SHA512 iterations** (`PBKDF2_ITERATIONS`, `src/lib/auth/crypto.ts`), at registration, a password change and a password reset. The account record notes the iterations of its hash (`passwordIterations`); a record without the note holds a hash of an earlier release, made with 100,000 (`LEGACY_PBKDF2_ITERATIONS`, `iterationsOf`). The note is not part of the user the API shows (`sanitizeUser`).
+  2. **A successful sign-in with a hash of fewer iterations replaces it** by a current one (`upgradePasswordHash`, `src/app/api/auth/login/route.ts`). The store replaces it only while the stored hash is the one that was checked (`replacePasswordHash`, `REPLACE_PASSWORD_HASH_LUA_SCRIPT`, `src/lib/auth/redis-user-store.ts`), so a password changed between the check and the write stays. A failure to replace does not fail the sign-in; the next one tries again. The sessions of the account are not touched, since the password is the same.
+  3. **A check of a hash of fewer iterations runs the missing ones as well** (`verifyPassword`, `extraIterations`), so that a wrong password for an account of the old cost takes as long as one for an unknown address or a current account, and the time of a sign-in does not tell them apart (the dummy hash of an unknown address is checked at the current iterations).
+- **Why**:
+  - **210,000 is the figure of the OWASP Password Storage Cheat Sheet for PBKDF2-HMAC-SHA512**; the 600,000 of the same sheet is for HMAC-SHA256, and the 100,000 of the earlier releases is below both.
+  - **The rules are those of Django** (BSD-3-Clause, about 91,800 stars; `django/contrib/auth/hashers.py` at `e78991410b78391bc07a4b5010b273dfec814ff6`): the iterations are stored with the hash, a hash whose iterations differ from the current ones is replaced when its password is checked (`must_update`, the `setter` of `check_password`), and the check runs the iterations it lacks (`harden_runtime`). They are translated in `src/lib/auth/pbkdf2-upgrade.ts` (own commit, `docs/licensing.md` 2.33, `NOTICE`). Django's `setter` writes unconditionally; the compare-and-set is added here because a sign-in and a password change can overlap.
+- **Trade-offs**:
+  - A sign-in costs 44 ms of key derivation where it cost 21 ms (Node 24, Mac, `crypto.pbkdf2Sync`, five runs each; the derivation runs on the thread pool of the runtime, not on the event loop). A sign-in to an account of the old cost costs 21 + 23 ms and the first success adds 44 ms for the new hash.
+  - The 100,000-iteration hashes stay valid for as long as their owners do not sign in; the same hash of an inactive account is checked at its old cost (with the missing iterations run as a pad) and never upgraded.
+  - A user record that is created by hand with a hash made by `hashPassword` must carry `passwordIterations` too, or its hash is checked at 100,000 and does not match; every writer of the product does, and the test fixtures that made records with `hashPassword` were changed to pass the number.
+- **Verified by**: `tests/password-hash-iterations.test.ts` (7 cases against the memory store, and the compare-and-set against a private `redis-server` with `REDIS_URL` set: 15 of 15 with `tests/redis-first-command-redis.test.ts`), `tests/pbkdf2-upgrade.test.ts`, and the auth suites that make accounts with a password.

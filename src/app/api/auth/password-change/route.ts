@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authStoreUnavailableRefusal, codedRefusal, serverFault } from '@/lib/api/problem-details';
 import { readJsonObject } from '@/lib/api/json-body';
 import { isPasswordAccount } from '@/lib/auth/account-mail';
-import { hashPassword, verifyPassword } from '@/lib/auth/crypto';
+import { hashPassword, iterationsOf, verifyPassword } from '@/lib/auth/crypto';
 import {
   authRateLimitRefusal,
   checkLoginRateLimit,
@@ -72,14 +72,14 @@ export async function POST(req: NextRequest) {
       return refusal(401, 'invalid_credentials', 'Current password is incorrect.');
     }
 
-    const validCurrent = await verifyPassword(currentPassword, record.passwordHash, record.salt);
+    const validCurrent = await verifyPassword(currentPassword, record.passwordHash, record.salt, iterationsOf(record));
     if (!validCurrent) {
       await recordFailedLogin(clientIp, record.email);
       return refusal(401, 'invalid_credentials', 'Current password is incorrect.');
     }
 
-    const { hash, salt } = await hashPassword(newPassword);
-    if (!(await redisUserStore.updateUser(record.id, { passwordHash: hash, salt }))) {
+    const { hash, salt, iterations } = await hashPassword(newPassword);
+    if (!(await redisUserStore.updateUser(record.id, { passwordHash: hash, salt, passwordIterations: iterations }))) {
       return codedRefusal(404, undefined, 'Account not found.');
     }
     await revokeAllUserSessions(record.id);

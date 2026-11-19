@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyPassword } from '@/lib/auth/crypto';
+import { hashPassword, iterationsOf, passwordNeedsUpgrade, verifyPassword } from '@/lib/auth/crypto';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 import { authStoreUnavailableRefusal, codedRefusal, serverFault } from '@/lib/api/problem-details';
@@ -22,6 +22,20 @@ const refusal = codedRefusal<AuthErrorCode>;
 const DUMMY_HASH = '0'.repeat(128);
 const DUMMY_SALT = '0'.repeat(32);
 const MAX_PASSWORD_LENGTH = 1024;
+
+/**
+ * Replaces the hash a sign-in just checked by one with the current iterations (the `setter` of Django's `check_password`). The store
+ * does it only while the stored hash is still the one that was checked, so a password changed in between stays. A sign-in does
+ * not fail for it: the next one tries again.
+ */
+async function upgradePasswordHash(userId: string, checkedHash: string, password: string): Promise<void> {
+  try {
+    const { hash, salt, iterations } = await hashPassword(password);
+    await redisUserStore.replacePasswordHash(userId, checkedHash, { passwordHash: hash, salt, passwordIterations: iterations });
+  } catch (err: unknown) {
+    console.error('[auth/login] The password hash was not upgraded; the next sign-in tries again:', err);
+  }
+}
 
 export async function POST(req: NextRequest) {
   const body = await readJsonObject(req);
@@ -62,7 +76,8 @@ export async function POST(req: NextRequest) {
     const hashToVerify = userRecord?.passwordHash || DUMMY_HASH;
     const saltToVerify = userRecord?.salt || DUMMY_SALT;
 
-    const isValid = await verifyPassword(password, hashToVerify, saltToVerify);
+    // A hash with no iterations noted is one of an earlier release; an unknown address and the dummy hash cost the current ones.
+    const isValid = await verifyPassword(password, hashToVerify, saltToVerify, userRecord?.passwordHash ? iterationsOf(userRecord) : undefined);
     if (!userRecord?.passwordHash || !userRecord?.salt || !isValid) {
       await recordFailedLogin(clientIp, email);
       return refusal(401, 'invalid_credentials', 'Invalid email address or password.');
@@ -74,6 +89,7 @@ export async function POST(req: NextRequest) {
 
     // Reset attempt counters on successful login
     await resetLoginAttempts(email);
+    if (passwordNeedsUpgrade(iterationsOf(userRecord))) await upgradePasswordHash(userRecord.id, userRecord.passwordHash, password);
 
     const user = redisUserStore.sanitizeUser(userRecord);
     const token = createSessionToken(user);

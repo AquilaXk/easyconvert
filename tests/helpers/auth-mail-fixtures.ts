@@ -49,13 +49,14 @@ export function jsonPost(path: string, body: unknown, options: { ip?: string; co
 export const GOOD_PASSWORD = 'correct horse battery staple';
 
 export async function passwordAccount(label: string, extra: { emailVerified?: boolean } = {}) {
-  const { hash, salt } = await hashPassword(GOOD_PASSWORD);
+  const { hash, salt, iterations } = await hashPassword(GOOD_PASSWORD);
   return redisUserStore.createUser({
     email: `${label}@fixture.test`,
     name: label,
     provider: 'email',
     passwordHash: hash,
     salt,
+    passwordIterations: iterations,
     acceptedTermsVersion: TERMS_VERSION,
     ...extra,
   });

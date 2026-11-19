@@ -93,6 +93,7 @@ describe('Commercial operation hardening suite', () => {
         provider: 'email',
         passwordHash: initial.hash,
         salt: initial.salt,
+        passwordIterations: initial.iterations,
         emailVerified: true,
       });
       const oldToken = createSessionToken(redisUserStore.sanitizeUser(user));
@@ -132,6 +133,7 @@ describe('Commercial operation hardening suite', () => {
         provider: 'email',
         passwordHash: pw.hash,
         salt: pw.salt,
+        passwordIterations: pw.iterations,
         emailVerified: true,
       });
       await redisKeyStore.generateApiKey(user.id, 'Key to erase', { scopes: ['convert:read'] });

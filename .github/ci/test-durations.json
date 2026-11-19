@@ -839,6 +839,7 @@
   "tests/parquet-reader-hardening.test.ts": 1.9,
   "tests/parquet-thrift.test.ts": 0,
   "tests/parser-bit-hardening.test.ts": 0.5,
+  "tests/password-hash-iterations.test.ts": 3,
   "tests/password-reset-ui.test.ts": 0.3,
   "tests/password-reset.test.ts": 12.3,
   "tests/pbkdf2-upgrade.test.ts": 0,
