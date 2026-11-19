@@ -379,12 +379,12 @@ Security
 328. [Production legacy session cookie retirement, loopback diagnostic isolation, operator suspension and job-cancellation CLIs, mail-budget alerting, PDF-to-PPT bridge bounds, and real-engine endurance soak](#328-production-legacy-session-cookie-retirement-loopback-diagnostic-isolation-operator-suspension-and-job-cancellation-clis-mail-budget-alerting-pdf-to-ppt-bridge-bounds-and-real-engine-endurance-soak)
 329. [The regression corpus answers a job 10 s after the deadline the converter holds it to, a hung job takes the office suite down with it, and a failed office run is answered before its slot is replaced](#329-the-regression-corpus-answers-a-job-10-s-after-the-deadline-the-converter-holds-it-to-a-hung-job-takes-the-office-suite-down-with-it-and-a-failed-office-run-is-answered-before-its-slot-is-replaced)
 330. [LibreOffice memory limit of 3.25 GiB counted as proportional set size, and a memory refusal answered as an input over the limit](#330-libreoffice-memory-limit-of-325-gib-counted-as-proportional-set-size-and-a-memory-refusal-answered-as-an-input-over-the-limit)
-331. [The production web service runs queue-only, and the structured-data converters refuse inputs past a size and a count of values and convert on a pool thread](#331-the-production-web-service-runs-queue-only-and-the-structured-data-converters-refuse-inputs-past-a-size-and-a-count-of-values-and-convert-on-a-pool-thread)
-332. [A job request's JSON body is held to the inline file as base64 and its fields, and a body with more than 65,536 objects and arrays is refused before it is parsed](#332-a-job-requests-json-body-is-held-to-the-inline-file-as-base64-and-its-fields-and-a-body-with-more-than-65536-objects-and-arrays-is-refused-before-it-is-parsed)
-333. [Listing a bzip2 archive holds the decoded stream to the compression ratio of every other archive reader](#333-listing-a-bzip2-archive-holds-the-decoded-stream-to-the-compression-ratio-of-every-other-archive-reader)
-334. [Storage keys of an anonymous caller's tool results and staged inputs name no address](#334-storage-keys-of-an-anonymous-callers-tool-results-and-staged-inputs-name-no-address)
-335. [Passwords are hashed with 210,000 PBKDF2-SHA512 iterations, and a hash of the earlier 100,000 is upgraded when its owner signs in](#335-passwords-are-hashed-with-210000-pbkdf2-sha512-iterations-and-a-hash-of-the-earlier-100000-is-upgraded-when-its-owner-signs-in)
-336. [A webhook delivery always uses undici's fetch through the pinned dispatcher, never a replaced globalThis.fetch](#336-a-webhook-delivery-always-uses-undicis-fetch-through-the-pinned-dispatcher-never-a-replaced-globalthisfetch)
+337. [The production web service runs queue-only, and the structured-data converters refuse inputs past a size and a count of values and convert on a pool thread](#337-the-production-web-service-runs-queue-only-and-the-structured-data-converters-refuse-inputs-past-a-size-and-a-count-of-values-and-convert-on-a-pool-thread)
+338. [A job request's JSON body is held to the inline file as base64 and its fields, and a body with more than 65,536 objects and arrays is refused before it is parsed](#338-a-job-requests-json-body-is-held-to-the-inline-file-as-base64-and-its-fields-and-a-body-with-more-than-65536-objects-and-arrays-is-refused-before-it-is-parsed)
+339. [Listing a bzip2 archive holds the decoded stream to the compression ratio of every other archive reader](#339-listing-a-bzip2-archive-holds-the-decoded-stream-to-the-compression-ratio-of-every-other-archive-reader)
+340. [Storage keys of an anonymous caller's tool results and staged inputs name no address](#340-storage-keys-of-an-anonymous-callers-tool-results-and-staged-inputs-name-no-address)
+341. [Passwords are hashed with 210,000 PBKDF2-SHA512 iterations, and a hash of the earlier 100,000 is upgraded when its owner signs in](#341-passwords-are-hashed-with-210000-pbkdf2-sha512-iterations-and-a-hash-of-the-earlier-100000-is-upgraded-when-its-owner-signs-in)
+342. [A webhook delivery always uses undici's fetch through the pinned dispatcher, never a replaced globalThis.fetch](#342-a-webhook-delivery-always-uses-undicis-fetch-through-the-pinned-dispatcher-never-a-replaced-globalthisfetch)
 
 ---
 
@@ -10126,7 +10126,7 @@ Security
   - The resident sum is the upper bound answered between ticks, so a tree that is over the limit by resident size and under it by proportional size costs one `smaps_rollup` read per process per tick (about 4 ms per GB resident).
 - **Verified by**: the 11 jobs of the production failures on the VM with the limit at 3,072 MB, before the lead's raise to 3,328 (the same VM, the pool, the watch of this entry): nine convert in 6.4 to 23.1 s with a peak proportional sum of 883 to 3,008 MB (`govdocs1-002608.pdf` to ppt, the largest, 3,008 MB; `govdocs1-002980.pdf` to ppt, 6.4 s, 1,039 MB), and `gd-739713.pdf` and `cc-0000888.pdf` to ppt are refused with 413 after 84.0 s and 19.6 s at 3,072 and 3,083 MB; `tests/sandbox-process-tree-memory.test.ts`, `tests/office-suite-route.test.ts`, `tests/libreoffice-pool-manager.test.ts`, `tests/adversarial-engine-sandbox-guards.test.ts`, `tests/refusal-code-inventory.test.ts` `npx tsc --noEmit`, `npm run sdk:check`, `npm run guard:policy-decisions`, `npm run guard:code-smells`, `npm run guard:anti-cheat`, and `npm run lint`.
 
-## 331. The production web service runs queue-only, and the structured-data converters refuse inputs past a size and a count of values and convert on a pool thread
+## 337. The production web service runs queue-only, and the structured-data converters refuse inputs past a size and a count of values and convert on a pool thread
 
 - **Date**: 2026-11-20
 - **Status**: Accepted (QA request: security review of `656eb523`, finding 1: an anonymous 4 MiB CSV to JSON held the event loop of the web process for 2.7 s, and a 32 MiB YAML reportedly ended the process)
@@ -10171,7 +10171,7 @@ Security
   | JSON Lines of 1,048,000 `{}` lines (at the limit) | not measured | 0.58 s, 51 ticks, 0.67 GB |
 - **Verified by**: `tests/data-input-limits.test.ts` (10 refusals that fail on `656eb523`, the position of a parse error and the warnings across the thread, and the loop held under the 100 ms budget while a 10 MiB table converts), `tests/oci-deploy.test.ts` (the web service is queue-only and no worker is).
 
-## 332. A job request's JSON body is held to the inline file as base64 and its fields, and a body with more than 65,536 objects and arrays is refused before it is parsed
+## 338. A job request's JSON body is held to the inline file as base64 and its fields, and a body with more than 65,536 objects and arrays is refused before it is parsed
 
 - **Date**: 2026-11-20
 - **Status**: Accepted (QA request: security review of `656eb523`, finding 2: anonymous routes parsed JSON bodies of up to 65 MiB with `req.json()`)
@@ -10187,7 +10187,7 @@ Security
   - The routes that take a body of a few fields (login, keys, uploads' control calls) stay at 1 MiB, and the structure count is not applied to them: their parsers read at most 1 MiB, which is 350,000 objects at the most.
 - **Verified by**: `tests/json-body-bounds.test.ts` (6 of its 7 cases fail on `656eb523`) and `tests/request-body-limit.test.ts`.
 
-## 333. Listing a bzip2 archive holds the decoded stream to the compression ratio of every other archive reader
+## 339. Listing a bzip2 archive holds the decoded stream to the compression ratio of every other archive reader
 
 - **Date**: 2026-11-20
 - **Status**: Accepted (QA request: security review of `656eb523`, finding 3: `/api/v1/archives/inspect` decoded bzip2 in the web process with no ratio check)
@@ -10195,10 +10195,10 @@ Security
 - **Why**:
   - **gzip, 7-Zip, RAR and Zstandard already had the ratio; bzip2 had only the size cap.** A bz2 of 370 bytes that holds 480 MiB of zeros decoded whole in the web process: 0.53 s with no turn of the event loop and 1.15 GB resident (`node --import tsx`, Mac), and listed as an archive with no entries. With the cap the decode stops at 32 MiB: 13 ms and a process peak of 190 MB (the baseline of the runner), with the typed refusal.
   - **The 7-Zip listing was not used for bzip2**, because a `.tar.bz2` lists as the one file `x.tar` there; the members of the tar need the decoded stream. The cap is the rule the gzip listing already follows (`gunzipStreamingWithLimits`, `exceedsArchiveRatio`), so one ratio and one floor hold for every archive format.
-- **Trade-offs**: A stream of up to 5 MiB can still decode to its 500 MiB cap in the web process (100 to 1 is the ratio of gzip and of every other reader). Moving the decode to a pool thread, as entry 331 does for data, is the next step if the 500 MiB cap is to hold off the event loop as well; the tar listing of the decoded stream is synchronous too.
+- **Trade-offs**: A stream of up to 5 MiB can still decode to its 500 MiB cap in the web process (100 to 1 is the ratio of gzip and of every other reader). Moving the decode to a pool thread, as entry 337 does for data, is the next step if the 500 MiB cap is to hold off the event loop as well; the tar listing of the decoded stream is synchronous too.
 - **Verified by**: `tests/archive-inspect-bzip2-bomb.test.ts` (the 370-byte stream and a stream over the ratio fail on `656eb523`; an ordinary `.tar.bz2` lists as before), `tests/archive-inspect-bounded-run.test.ts`, `tests/archive-inspect-malformed-input.test.ts`.
 
-## 334. Storage keys of an anonymous caller's tool results and staged inputs name no address
+## 340. Storage keys of an anonymous caller's tool results and staged inputs name no address
 
 - **Date**: 2026-11-20
 - **Status**: Accepted (QA request: security review of `656eb523`, finding 4: the keys and URLs of an anonymous caller's tool results carried its address; entry 137 says a key never does)
@@ -10212,7 +10212,7 @@ Security
 - **Trade-offs**: A result of an anonymous caller that exists under the old key at the time of the change is still served (the key is classified by its prefix and the owner is anonymous) until the retention sweep removes it. `src/app/api/v1/convert/route.ts` and `recordUserFile` write `conversions/<id>/` too, and an anonymous caller does not reach either (`/api/v1/convert` answers 401 without an account).
 - **Verified by**: `tests/anonymous-keys-no-address.test.ts`: six cases that fail with the old key shape (the address is in the key of a synchronous tool result, an asynchronous tool result, a queued tool output, and the staged inputs of a synchronous conversion and tool run).
 
-## 335. Passwords are hashed with 210,000 PBKDF2-SHA512 iterations, and a hash of the earlier 100,000 is upgraded when its owner signs in
+## 341. Passwords are hashed with 210,000 PBKDF2-SHA512 iterations, and a hash of the earlier 100,000 is upgraded when its owner signs in
 
 - **Date**: 2026-11-20
 - **Status**: Accepted (QA request: security review of `656eb523`, note 6b: PBKDF2-HMAC-SHA512 at 100,000 iterations where OWASP recommends 210,000)
@@ -10229,7 +10229,7 @@ Security
   - A user record that is created by hand with a hash made by `hashPassword` must carry `passwordIterations` too, or its hash is checked at 100,000 and does not match; every writer of the product does, and the test fixtures that made records with `hashPassword` were changed to pass the number.
 - **Verified by**: `tests/password-hash-iterations.test.ts` (7 cases against the memory store, and the compare-and-set against a private `redis-server` with `REDIS_URL` set: 15 of 15 with `tests/redis-first-command-redis.test.ts`), `tests/pbkdf2-upgrade.test.ts`, and the auth suites that make accounts with a password.
 
-## 336. A webhook delivery always uses undici's fetch through the pinned dispatcher, never a replaced globalThis.fetch
+## 342. A webhook delivery always uses undici's fetch through the pinned dispatcher, never a replaced globalThis.fetch
 
 - **Date**: 2026-11-20
 - **Status**: Accepted (QA request: security review of `656eb523`, note 6c: a delivery could use `globalThis.fetch` without the pinned dispatcher)

@@ -32,7 +32,7 @@
 
 /**
  * When a stored PBKDF2 hash is upgraded to the current number of iterations, and what keeps the time of a sign-in the same until it is
- * (docs/policy-decisions.md, entry 335).
+ * (docs/policy-decisions.md, entry 341).
  *
  * Both functions are TypeScript translations of methods of `PBKDF2PasswordHasher` in `django/contrib/auth/hashers.py` of
  * django/django (the file at commit e78991410b78391bc07a4b5010b273dfec814ff6), BSD-3-Clause, Copyright (c) Django Software
