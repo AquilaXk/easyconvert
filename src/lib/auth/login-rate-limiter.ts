@@ -72,9 +72,11 @@ export const LOGIN_GLOBAL_MAX_FAILED_ATTEMPTS = 300;
 export const LOGIN_GLOBAL_WINDOW_SECONDS = 300; // 5 minutes
 const GLOBAL_ATTEMPTS_KEY = 'global';
 
-export const REGISTER_MAX_ATTEMPTS_PER_IP = 10;
-export const REGISTER_WINDOW_SECONDS = 300;
+/** Sign-up attempts one client may make in an hour (docs/policy-decisions.md, entry 343): each one that is new can use a mail of the day's verification budget. */
+export const REGISTER_MAX_ATTEMPTS_PER_IP = 5;
+export const REGISTER_WINDOW_SECONDS = 60 * 60;
 export const REGISTER_GLOBAL_MAX_ATTEMPTS = 300;
+export const REGISTER_GLOBAL_WINDOW_SECONDS = 300;
 const REGISTER_GLOBAL_ATTEMPTS_KEY = 'register:global';
 
 export interface LoginRateLimitCheckResult {
@@ -118,6 +120,14 @@ function usesGlobalCounter(ip: string | null): boolean {
 }
 
 /**
+ * The counter of failed sign-ins of one address, named by the hash of the address: a key built from the address itself would let an
+ * address of any length make a key of that length. The address is lower-cased and trimmed first, as the account store reads it.
+ */
+export function loginEmailAttemptsKey(email: string): string {
+  return `${redisUserStore.getKeyPrefix()}login_attempts:email:${sha256(email.toLowerCase().trim())}`;
+}
+
+/**
  * Checks whether login is permitted for the given IP address and email.
  */
 export async function checkLoginRateLimit(
@@ -133,7 +143,7 @@ export async function checkLoginRateLimit(
 
   if (redis) {
     try {
-      const emailKey = `${prefix}login_attempts:email:${normEmail}`;
+      const emailKey = loginEmailAttemptsKey(normEmail);
       const ipKey = `${prefix}login_attempts:ip:${normIp}`;
 
       if (normEmail) {
@@ -171,7 +181,7 @@ export async function checkLoginRateLimit(
   const now = Date.now();
 
   if (normEmail) {
-    const entry = inMemoryAttempts.get(`email:${normEmail}`);
+    const entry = inMemoryAttempts.get(`email:${sha256(normEmail)}`);
     if (entry && entry.count >= LOGIN_MAX_FAILED_ATTEMPTS_PER_EMAIL && now < entry.expiresAt) {
       const retryAfter = Math.max(1, Math.ceil((entry.expiresAt - now) / 1000));
       return { allowed: false, retryAfterSeconds: retryAfter, reason: 'email' };
@@ -222,7 +232,7 @@ export async function recordFailedLogin(ip: string | null, email: string): Promi
     try {
       const counters: Array<{ key: string; windowSeconds: number }> = [];
       if (normEmail) {
-        counters.push({ key: `${prefix}login_attempts:email:${normEmail}`, windowSeconds: LOGIN_WINDOW_SECONDS });
+        counters.push({ key: loginEmailAttemptsKey(normEmail), windowSeconds: LOGIN_WINDOW_SECONDS });
       }
       if (normIp) {
         counters.push({ key: `${prefix}login_attempts:ip:${normIp}`, windowSeconds: LOGIN_WINDOW_SECONDS });
@@ -256,7 +266,7 @@ export async function recordFailedLogin(ip: string | null, email: string): Promi
   const expiresAt = now + LOGIN_WINDOW_SECONDS * 1000;
 
   if (normEmail) {
-    const key = `email:${normEmail}`;
+    const key = `email:${sha256(normEmail)}`;
     const existing = inMemoryAttempts.get(key);
     inMemoryAttempts.set(key, {
       count: (existing?.count || 0) + 1,
@@ -293,14 +303,14 @@ export async function resetLoginAttempts(email: string): Promise<void> {
   const redis = redisUserStore.getRedisClient();
   if (redis) {
     try {
-      await redis.del(`${redisUserStore.getKeyPrefix()}login_attempts:email:${normEmail}`);
+      await redis.del(loginEmailAttemptsKey(normEmail));
       return;
     } catch (err) {
       return failClosed('LoginRateLimiter', 'resetLoginAttempts', err);
     }
   }
 
-  inMemoryAttempts.delete(`email:${normEmail}`);
+  inMemoryAttempts.delete(`email:${sha256(normEmail)}`);
 }
 
 async function consumeRedisFixedWindow(
@@ -365,7 +375,7 @@ export async function consumeRegistrationRateLimit(
         const blocked = await consumeRedisFixedWindow(
           redis,
           globalKey,
-          REGISTER_WINDOW_SECONDS,
+          REGISTER_GLOBAL_WINDOW_SECONDS,
           REGISTER_GLOBAL_MAX_ATTEMPTS,
           'global'
         );
@@ -401,7 +411,7 @@ export async function consumeRegistrationRateLimit(
     const entry: AttemptEntry =
       existing && now < existing.expiresAt
         ? { count: existing.count + 1, expiresAt: existing.expiresAt }
-        : { count: 1, expiresAt };
+        : { count: 1, expiresAt: now + REGISTER_GLOBAL_WINDOW_SECONDS * 1000 };
     inMemoryAttempts.set(REGISTER_GLOBAL_ATTEMPTS_KEY, entry);
     if (entry.count > REGISTER_GLOBAL_MAX_ATTEMPTS) {
       const retryAfter = Math.max(1, Math.ceil((entry.expiresAt - now) / 1000));

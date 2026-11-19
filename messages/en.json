@@ -1827,6 +1827,7 @@
       "client_address_unknown": "Your connection could not be identified. Try again from another network.",
       "client_ip_unconfigured": "Sign-in is unavailable while the server is being configured. Try again later.",
       "invalid_email": "Enter a valid email address.",
+      "invalid_name": "The name can be at most 100 characters long.",
       "password_length": "The password must be 8 to 1024 characters long.",
       "terms_not_accepted": "Accept the terms of service to create an account.",
       "terms_outdated": "The terms of service changed after this page was opened. Reload the page, then accept them again.",

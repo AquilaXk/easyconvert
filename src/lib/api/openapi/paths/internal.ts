@@ -143,7 +143,6 @@ const sessionUserResponse = (description: string) => ({
   ...createJsonResponse(description, {
     success: { type: 'boolean' },
     user: { type: 'object' },
-    token: { type: 'string' },
   }),
   headers: sessionCookieHeader,
 });
@@ -667,11 +666,11 @@ export const internalPaths = {
       ...INTERNAL,
       summary: 'Register Account',
       description:
-        'Makes an account with an unverified address and mails the link that confirms it (`confirmEmailVerification`); until then the account counts as an anonymous visitor for conversions. The answer is the same 202 after the same wait for a new address and for one that has an account (nothing is sent to it), and starts no session: sign in afterwards. An address on a disposable domain is refused. Limits: 10 requests per client in 5 minutes, 2 mails a minute per address and client, 3 per address in 10 minutes, 5 per address a day.',
+        'Makes an account with an unverified address and mails the link that confirms it (`confirmEmailVerification`); until then the account counts as an anonymous visitor for conversions. The answer is the same 202 after the same wait for a new address and for one that has an account (nothing is sent to it), and starts no session: sign in afterwards. An address on a disposable domain is refused. Limits: 5 requests per client in an hour, 2 mails a minute per address and client, 3 per address in 10 minutes, 5 per address a day.',
       operationId: 'register',
       security: PUBLIC_ACCESS,
       requestBody: credentialsBody({
-        name: { type: 'string' },
+        name: { type: 'string', maxLength: 100 },
         locale: localeProperty,
         acceptedTermsVersion: {
           type: 'string',
@@ -681,8 +680,8 @@ export const internalPaths = {
       responses: {
         '202': opaqueAccepted('Accepted.'),
         '400': createCodedErrorResponse(
-          'Invalid JSON, email or password length; an address on a disposable domain (`disposable_email`); terms of service not accepted (`terms_not_accepted`), accepted in an earlier version (`terms_outdated`), or a client address the forwarding headers do not name (`client_address_unknown`).',
-          ['invalid_json', 'invalid_email', 'disposable_email', 'password_length', 'terms_not_accepted', 'terms_outdated', 'client_address_unknown']
+          'Invalid JSON, email or password length, a name over 100 characters (`invalid_name`); an address on a disposable domain (`disposable_email`); terms of service not accepted (`terms_not_accepted`), accepted in an earlier version (`terms_outdated`), or a client address the forwarding headers do not name (`client_address_unknown`).',
+          ['invalid_json', 'invalid_email', 'invalid_name', 'disposable_email', 'password_length', 'terms_not_accepted', 'terms_outdated', 'client_address_unknown']
         ),
         '429': {
           ...createProblemResponse('Too many registration attempts (problem type `rate-limited`, `code` "login_locked", the wait in `retryAfterSeconds`), or too many mails for the address (`code` "mail_rate_limited"); see `Retry-After`.'),

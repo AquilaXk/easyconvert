@@ -96,6 +96,7 @@
   "tests/audio-resampler-throughput.test.ts": 3.1,
   "tests/auth-and-api-keys.test.ts": 3.4,
   "tests/auth-google-state.test.ts": 0,
+  "tests/auth-input-bounds.test.ts": 4,
   "tests/auth-mail.test.ts": 0.5,
   "tests/auth-store-fail-closed.test.ts": 0.1,
   "tests/auth-token-store-redis.test.ts": 0,

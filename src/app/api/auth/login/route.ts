@@ -12,6 +12,7 @@ import {
   resetLoginAttempts,
   resolveAuthClientIp,
 } from '@/lib/auth/login-rate-limiter';
+import { MAX_EMAIL_LENGTH } from '@/lib/auth/mailbox';
 import type { AuthErrorCode } from '@/lib/refusal-codes';
 
 export const dynamic = 'force-dynamic';
@@ -56,6 +57,12 @@ export async function POST(req: NextRequest) {
       return refusal(400, 'missing_fields', 'Email and password are required strings.');
     }
 
+    // An address over the length of any mailbox is no account: the answer is the one of a wrong password, and nothing reads or writes
+    // the store for it, so no key is made from it and no key derivation is spent on it.
+    if (email.length > MAX_EMAIL_LENGTH) {
+      return refusal(401, 'invalid_credentials', 'Invalid email address or password.');
+    }
+
     // 1. Enforce brute-force rate limit per IP and email identifier
     const rateLimit = await checkLoginRateLimit(clientIp, email);
     if (!rateLimit.allowed) {
@@ -98,7 +105,6 @@ export async function POST(req: NextRequest) {
     const response = NextResponse.json({
       success: true,
       user,
-      token,
     });
 
     response.headers.set('Set-Cookie', cookieHeader);

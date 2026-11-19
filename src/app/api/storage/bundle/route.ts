@@ -4,7 +4,9 @@ import { Readable } from 'node:stream';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { resolveObjectOwnership } from '@/lib/api-keys/owner-access';
 import { authErrorHeaders, validateApiAccess, type ApiAuthResult } from '@/lib/api-keys/guard';
-import { isAnonymousUserId } from '@/lib/auth/anonymous-identity';
+import { anonymousUserId, isAnonymousUserId } from '@/lib/auth/anonymous-identity';
+import { extractClientIp } from '@/lib/api-keys/ip-utils';
+import { ClientIpError, UNATTRIBUTED_CLIENT_KEY, rateLimitKey } from '@/lib/security/client-ip';
 import { DOWNLOAD_SECURITY_HEADERS, attachmentContentDisposition } from '@/lib/api/content-disposition';
 import { deliveryTrackedStream } from '@/lib/api/delivery-stream';
 import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
@@ -109,6 +111,20 @@ async function verifySingleBundleKey(
   return { ok: true, size: stat.size };
 }
 
+/**
+ * The identity whose conversion slots a request without an account holds: the address bucket the guard counts a visitor under
+ * (`anonymousUserId`). A client address that cannot be read shares the identity of every unattributed visitor, which holds the
+ * same slots the guard's shared identity does.
+ */
+function anonymousSlotOwner(req: NextRequest): string {
+  try {
+    return anonymousUserId(rateLimitKey(extractClientIp(req)));
+  } catch (error) {
+    if (!(error instanceof ClientIpError)) throw error;
+    return anonymousUserId(UNATTRIBUTED_CLIENT_KEY);
+  }
+}
+
 export async function POST(req: NextRequest) {
   let body: BundleRequestBody;
   try {
@@ -152,13 +168,14 @@ export async function POST(req: NextRequest) {
     releaseSlotRaw?.();
   };
 
-  if (callerAuth.user) {
-    const slot = await acquireSyncSlot(callerAuth.user.id, callerAuth.user.tier);
-    if (!slot.granted) {
-      return concurrencyLimitResponse(slot.limit, req.nextUrl?.pathname || '/api/storage/bundle');
-    }
-    releaseSlotRaw = slot.release;
+  // A caller without an account holds a slot too, under its address bucket: a bundle streams up to 2 GiB for as long as the client reads.
+  const slot = callerAuth.user
+    ? await acquireSyncSlot(callerAuth.user.id, callerAuth.user.tier)
+    : await acquireSyncSlot(anonymousSlotOwner(req), 'free');
+  if (!slot.granted) {
+    return concurrencyLimitResponse(slot.limit, req.nextUrl?.pathname || '/api/storage/bundle');
   }
+  releaseSlotRaw = slot.release;
 
   try {
     const uniqueKeys = [...new Set(body.files.map((item) => item.key))];

@@ -403,7 +403,10 @@ describe('Auth & API Key Infrastructure', () => {
       expect(loginData.success).toBe(true);
 
       // 5. Test /api/auth/me
-      const token = loginData.token;
+      // The session token is in the cookie only; the body carries no copy of it.
+      expect(loginData.token).toBeUndefined();
+      const token = /^[^=]+=([^;]+)/.exec(loginRes.headers.get('set-cookie') ?? '')?.[1];
+      expect(token).toBeDefined();
       const meReq = new NextRequest('http://localhost:3000/api/auth/me', {
         headers: {
           Cookie: `easyconvert_session=${token}`,

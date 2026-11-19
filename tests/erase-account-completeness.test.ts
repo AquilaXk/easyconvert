@@ -251,7 +251,7 @@ describe('a record the erasure could not delete fails the run', () => {
       if (keys.some((key) => key.includes('login_attempts'))) throw new Error('connection lost');
       return realDel(...keys);
     }) as never);
-    await expect(eraseAccount((await planAccountErasure(user.id))!, { drainMs: 0 })).rejects.toThrow('connection lost');
+    await expect(eraseAccount((await planAccountErasure(user.id))!, { drainMs: 0 })).rejects.toThrow('temporarily unavailable');
     expect(await redisUserStore.findById(user.id)).not.toBeNull();
   });
 });

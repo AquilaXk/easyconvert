@@ -4,6 +4,7 @@ import { createConfiguredRedisClient, hasConfiguredRedis } from '../redis/client
 import { readyGatedRedis } from '../redis/when-ready';
 import type { User, UserRecord, UserRecordUpdates, UserTier } from './types';
 import { failClosed } from './store-unavailable';
+import { MAX_AVATAR_URL_LENGTH, MAX_DISPLAY_NAME_LENGTH } from '../api/field-limits';
 
 export interface RedisUserStoreOptions {
   redisHost?: string;
@@ -254,6 +255,16 @@ export class RedisUserStore {
     return email.toLowerCase().trim();
   }
 
+  /** Refuses a name or an avatar address past its limit (`field-limits.ts`): the record is stored whole, and Redis does not evict. */
+  private assertTextLengths(fields: { name?: unknown; avatarUrl?: unknown }): void {
+    if (typeof fields.name === 'string' && fields.name.trim().length > MAX_DISPLAY_NAME_LENGTH) {
+      throw new Error(`Invalid name: name must be at most ${MAX_DISPLAY_NAME_LENGTH} characters`);
+    }
+    if (typeof fields.avatarUrl === 'string' && fields.avatarUrl.length > MAX_AVATAR_URL_LENGTH) {
+      throw new Error(`Invalid avatarUrl: avatarUrl must be at most ${MAX_AVATAR_URL_LENGTH} characters`);
+    }
+  }
+
   public sanitizeUser(record: UserRecord): User {
     const { passwordHash, salt, passwordIterations, ...safeUser } = record;
     return safeUser;
@@ -317,6 +328,7 @@ export class RedisUserStore {
     if (!data.name || typeof data.name !== 'string' || data.name.trim().length === 0) {
       throw new Error('Invalid name: name must be a non-empty string');
     }
+    this.assertTextLengths(data);
 
     const now = Date.now();
     const userRecord: UserRecord = {
@@ -373,6 +385,7 @@ export class RedisUserStore {
     updates: UserRecordUpdates
   ): Promise<UserRecord | null> {
     if (!id || typeof id !== 'string') return null;
+    this.assertTextLengths(updates);
 
     if (this.redisClient) {
       try {

@@ -149,8 +149,6 @@ async function removeWebhookDeliveries(userId: string): Promise<void> {
 }
 
 async function forgetFailedLogins(email: string): Promise<void> {
-  const redis = redisUserStore.getRedisClient();
-  if (redis) await redis.del(`${redisUserStore.getKeyPrefix()}login_attempts:email:${email.toLowerCase().trim()}`);
   await resetLoginAttempts(email);
 }
 

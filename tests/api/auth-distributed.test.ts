@@ -135,7 +135,8 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
       expect(loginRes.status).toBe(200);
       const loginJson = await loginRes.json();
       expect(loginJson.success).toBe(true);
-      expect(loginJson.token).toBeDefined();
+      expect(loginJson.token).toBeUndefined();
+      expect(loginRes.headers.get('set-cookie')).toContain('HttpOnly');
     });
   });
 
