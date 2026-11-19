@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import iconv from 'iconv-lite';
 import { afterEach, describe, expect, it } from 'vitest';
 import { CFBF_MAGIC, startsWithBytes } from '../src/lib/format-signatures';
 import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
@@ -125,6 +126,33 @@ describe('the route of a plain text file written as Word 97-2003 or RTF', () => 
     await convertBridgedTarget(deps, request({ input: payload }), neverDirectly);
     expect(converted).toEqual([]);
     expect(suiteCalls[0].input).toBe(payload);
+  });
+
+  const KOREAN_LINES = '대한민국은 민주공화국이다. 대한민국의 주권은 국민에게 있고, 모든 권력은 국민으로부터 나온다.\n'.repeat(8);
+
+  it.each([WORD_TARGET, RTF_TARGET])('writes the DOCX of a CP949 text first for %s, since the text filter reads UTF-8', async (target) => {
+    const { deps, suiteCalls, converted } = standIns();
+    await convertBridgedTarget(deps, request({ input: iconv.encode(KOREAN_LINES, 'cp949'), tgt: target }), neverDirectly);
+    expect(converted).toEqual([{ src: 'txt', target: DOCX_FORMAT }]);
+    expect(suiteCalls[0]).toMatchObject({ src: DOCX_FORMAT, target });
+    expect(suiteCalls[0].options.officeImportFilter).toBeUndefined();
+  });
+
+  it('writes the DOCX of a CP949 text on disk first, and hands UTF-8, UTF-16 and BOM text on disk to the suite as they are', async () => {
+    const dir = scratch();
+    const files: Array<[string, Buffer, boolean]> = [
+      ['cp949.txt', iconv.encode(KOREAN_LINES, 'cp949'), true],
+      ['utf8.txt', Buffer.from(KOREAN_LINES), false],
+      ['bom.txt', Buffer.from('\uFEFF' + KOREAN_LINES), false],
+      ['utf16.txt', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(KOREAN_LINES, 'utf16le')]), false],
+    ];
+    for (const [name, bytes, legacy] of files) {
+      const inputPath = path.join(dir, name);
+      fs.writeFileSync(inputPath, bytes);
+      const { deps, converted } = standIns();
+      await convertBridgedTarget(deps, request({ input: { inputPath, outputPath: path.join(dir, `${name}.doc`) } }), neverDirectly);
+      expect(converted, name).toEqual(legacy ? [{ src: 'txt', target: DOCX_FORMAT }] : []);
+    }
   });
 
   it.each(['md', 'rst', 'html', 'htm'])('leaves a long %s source on the DOCX route', async (src) => {

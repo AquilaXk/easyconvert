@@ -9,18 +9,21 @@ const UTF16_ENCODINGS: ReadonlySet<string> = new Set(['utf-16le', 'utf-16be']);
 
 /**
  * The text of a source that has no reader of its own and is not read as HTML: an Outlook message is read, a text source that declares
- * UTF-16 is decoded as such, and any other binary container is refused. Whatever starts with the two bytes of a UTF-16 mark but is
+ * UTF-16 is decoded as such, any other binary container is refused, and the rest is decoded as text to PDF is (`decodeTextInput`, policy
+ * entry 72: UTF-8, else the detected legacy encoding with a warning). Whatever starts with the two bytes of a UTF-16 mark but is
  * not a text source stays binary.
  */
 export function sourceBytesAsText(input: Buffer, format: string): string {
   if (format === 'msg') return outlookMessageText(readOutlookMessage(input));
-  if (BOM_DECLARED_TEXT_SOURCES.has(format) && UTF16_ENCODINGS.has(detectTextInputEncoding(input))) {
+  const declaresUtf16 = UTF16_ENCODINGS.has(detectTextInputEncoding(input));
+  if (declaresUtf16 && BOM_DECLARED_TEXT_SOURCES.has(format)) {
     const text = decodeTextInput(input);
     assertNoNullCharacter(text, format);
     return text;
   }
   assertReadableAsText(input, format);
-  return input.toString('utf-8');
+  // A mark of UTF-16 on a source that cannot declare it is no declaration: the bytes stay UTF-8 text and decode as before.
+  return declaresUtf16 ? input.toString('utf-8') : decodeTextInput(input);
 }
 
 /** Text in UTF-16 has no U+0000; a binary file behind a FE FF mark decodes into them, as it has null bytes as UTF-8. */

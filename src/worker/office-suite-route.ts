@@ -28,6 +28,7 @@ import { isEmptyMetafile, metafileLeadingBytes, readMetafilePage, type MetafileF
 import { CFBF_MAGIC, PRE_OLE2_WORD_SIGNATURES, isBiffStream } from '../lib/format-signatures';
 import { startsWithBytes } from '../lib/conversions/package-access';
 import { assertTextSourceHead } from '../lib/conversions/office/text-source';
+import { isLegacyText, isLegacyTextFile } from '../lib/conversions/text-input';
 import { pdfFirstPageHasInk } from './pdf-ink';
 import { selectsPages } from './poppler-ppm';
 import { SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedTimeoutError, rethrowSandboxUnavailable } from './sandbox';
@@ -476,6 +477,8 @@ export const TEXT_IMPORT_FILTER = 'Text (encoded):utf8';
 export const TEXT_DIRECT_MIN_BYTES = 0;
 /** Bytes of a text file read to refuse a binary one before the office suite opens it. */
 const TEXT_HEAD_BYTES = 64 * 1024;
+/** Bytes of a text file read at a time to tell UTF-8 from legacy text. */
+const TEXT_SCAN_CHUNK_BYTES = 1024 * 1024;
 
 /**
  * The format the in-process converter writes first for a target that only the office suite writes, or undefined when the pair has
@@ -579,7 +582,14 @@ export async function convertBridgedTarget(
 
 /** Whether the pair is a plain text file of `TEXT_DIRECT_MIN_BYTES` or more written as Word 97-2003 or RTF. */
 function isLongPlainText(input: Buffer | WorkerVfsPayload, src: string, tgt: string): boolean {
-  return src === PLAIN_TEXT_SOURCE && TEXT_DIRECT_TARGETS.has(tgt) && inputSize(input) >= TEXT_DIRECT_MIN_BYTES;
+  return src === PLAIN_TEXT_SOURCE && TEXT_DIRECT_TARGETS.has(tgt) && inputSize(input) >= TEXT_DIRECT_MIN_BYTES && !isLegacyTextInput(input);
+}
+
+/** Whether the text file is in a legacy encoding: the suite reads it as UTF-8 (`TEXT_IMPORT_FILTER`), so the converter, which detects the encoding, reads it first. */
+function isLegacyTextInput(input: Buffer | WorkerVfsPayload): boolean {
+  if (Buffer.isBuffer(input)) return isLegacyText(input);
+  if (input.inputBuffer) return isLegacyText(input.inputBuffer);
+  return input.inputPath !== undefined && isLegacyTextFile(input.inputPath, TEXT_SCAN_CHUNK_BYTES);
 }
 
 /**

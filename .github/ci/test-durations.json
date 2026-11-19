@@ -1279,6 +1279,7 @@
   "tests/text-input-legacy-encodings.test.ts": 10.2,
   "tests/text-office-direct.test.ts": 48.4,
   "tests/text-pdf-render.test.ts": 1.2,
+  "tests/text-source-legacy-encodings.test.ts": 0.3,
   "tests/text-source-utf16.test.ts": 0,
   "tests/theme-toggle-sync.test.ts": 0.1,
   "tests/third-party-notices.test.ts": 0.8,
