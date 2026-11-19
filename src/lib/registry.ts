@@ -1,6 +1,6 @@
 import { FormatCategory, FormatDefinition, ConversionFailedError, FileExtensionSpoofError } from './types';
 import { SUBTITLE_DEFINITIONS } from './registry-subtitles';
-import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, GZIP_EXTENSIONS, ID3_MAGIC, id3v2Payload, isGzipFamilyCompatible, isPostScriptCompatible, lacksOwnSignature, ownSignatureVerdict, refusedWithoutSignature, sniffAacContainer, sniffFixedSignature, sniffZipPackage, startsWithBytes } from './format-signatures';
+import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, GZIP_EXTENSIONS, ID3_MAGIC, id3v2Payload, isGzipFamilyCompatible, isMpegAudioSync, isPostScriptCompatible, lacksOwnSignature, ownSignatureVerdict, refusedWithoutSignature, sniffAacContainer, sniffFixedSignature, sniffZipPackage, startsWithBytes } from './format-signatures';
 
 export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(Object.create(null) as Record<string, FormatDefinition>, {
   // 1. AUDIO (24 formats)
@@ -3052,7 +3052,7 @@ export function sniffMimeTypeFromMagicBytes(buffer: Buffer | Uint8Array): string
   if (startsWithBytes(buf, ID3_MAGIC)) {
     return 'audio/mpeg';
   }
-  if (buf.length >= 2 && buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0 && (buf[1] & 0x06) !== 0x00) {
+  if (isMpegAudioSync(buf)) {
     return 'audio/mpeg';
   }
 

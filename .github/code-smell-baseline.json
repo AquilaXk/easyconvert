@@ -1758,7 +1758,7 @@
     "rule": "complexity",
     "function": "sniffMimeTypeFromMagicBytes",
     "count": 1,
-    "maxValue": 54
+    "maxValue": 51
   },
   {
     "file": "src/lib/registry.ts",

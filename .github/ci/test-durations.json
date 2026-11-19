@@ -1317,6 +1317,7 @@
   "tests/user-job-list-redis.test.ts": 0,
   "tests/user-job-list.test.ts": 0,
   "tests/utf16-text-signature.test.ts": 0.1,
+  "tests/utf16le-text-spoof-check.test.ts": 0.4,
   "tests/v1-convert-quota-header-failure.test.ts": 0,
   "tests/vector-output-pixel-cap.test.ts": 0.2,
   "tests/vector-pairs.test.ts": 83.8,

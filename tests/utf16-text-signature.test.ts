@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { looksUcs16LittleEndian } from '../src/lib/utf16-text-signature';
+import { isUtf16LeText, looksUcs16LittleEndian } from '../src/lib/utf16-text-signature';
 
 /**
  * `looks_ucs16` of libmagic (file/file `src/encoding.c` at commit bbffb78dc8d764a707aa20f5c7a3b74c40c2b27c), for the little-endian mark. The
@@ -53,5 +53,14 @@ describe('looksUcs16LittleEndian', () => {
 
   it('takes a pair of surrogates', () => {
     expect(looksUcs16LittleEndian(units(0xd83c, 0xdf89))).toBe(true);
+  });
+});
+
+describe('isUtf16LeText', () => {
+  it('is looksUcs16LittleEndian without U+0000', () => {
+    expect(isUtf16LeText(units(0x41, 0x42))).toBe(true);
+    expect(isUtf16LeText(units(0x41, 0x00, 0x42))).toBe(false);
+    expect(isUtf16LeText(units(0x01))).toBe(false);
+    expect(isUtf16LeText(Buffer.from(BOM))).toBe(true);
   });
 });

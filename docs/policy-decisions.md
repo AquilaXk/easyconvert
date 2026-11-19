@@ -381,6 +381,7 @@ Security
 330. [LibreOffice memory limit of 3.25 GiB counted as proportional set size, and a memory refusal answered as an input over the limit](#330-libreoffice-memory-limit-of-325-gib-counted-as-proportional-set-size-and-a-memory-refusal-answered-as-an-input-over-the-limit)
 331. [Text sources of every target are decoded as text to PDF is, and legacy text is not handed to the office suite as UTF-8](#331-text-sources-of-every-target-are-decoded-as-text-to-pdf-is-and-legacy-text-is-not-handed-to-the-office-suite-as-utf-8)
 332. [The tar reader decodes only the pax values it uses, and drops the AppleDouble entries of macOS](#332-the-tar-reader-decodes-only-the-pax-values-it-uses-and-drops-the-appledouble-entries-of-macos)
+333. [UTF-16LE text with a byte order mark is not taken for MPEG audio by the spoof check](#333-utf-16le-text-with-a-byte-order-mark-is-not-taken-for-mpeg-audio-by-the-spoof-check)
 
 ---
 
@@ -10151,3 +10152,17 @@ Security
   - A real file named `._notes` is dropped from a tar as libarchive drops it, and its content is lost. Zip, 7z and rar archives are not touched: their `__MACOSX/._name` entries are listed and extracted as they were.
   - The attributes are not kept in a converted tar: the writer never wrote them.
 - **Verified by**: `tests/archive-tar-macos-metadata.test.ts` (the fixtures through `listTarEntries`, `readTarEntries`, `extractTarArchive` and `convertFile` to zip and tar; hand-made pax records with binary values; the `._` rules), which failed before this change with the reported error, and `tests/archive-tar-posix-hardening.test.ts`, where the global-record budget now uses the keys that are kept.
+
+## 333. UTF-16LE text with a byte order mark is not taken for MPEG audio by the spoof check
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: a review found `.txt`, `.csv`, `.tsv` and `.md` files saved as UTF-16 little-endian refused as a spoofed `audio/mpeg`)
+- **Decision**:
+  1. **A file that starts with FF FE and reads as UTF-16 little-endian text is not MPEG audio (`isUtf16LeText`, `src/lib/utf16-text-signature.ts`, used by `sniffMimeTypeFromMagicBytes`)**. FF FE is the byte order mark of UTF-16LE, which Notepad and Excel write as "Unicode", and the sync word of an MPEG Layer I frame with a CRC. The file counts as text when the whole buffer (the first 64 KiB of a larger file) passes `looks_ucs16` of libmagic (no U+FFFE, U+FFFF or noncharacter U+FDD0 to U+FDEF, no surrogate without its partner, no code unit below 128 that libmagic's `text_chars` table does not allow in text) and holds no U+0000. A buffer cut inside a code unit or between the halves of a surrogate pair is still text.
+  2. **The spoof check is otherwise unchanged**: an MP3 renamed `.txt`, `.csv`, `.tsv` or `.md` is refused as `audio/mpeg` (an MP3 starts with an ID3 tag or a Layer III sync word, FF FB, FF FA, FF F3 or FF F2, and its first frames hold control bytes), a file with the mark and binary data behind it is refused, and UTF-16 text named `.mp3` is refused. UTF-16LE text is now accepted under every name that has no signature of its own, as UTF-16BE text (FE FF) always was; names of the formats that need their own signature (images, audio, archives, packages) stay strict.
+- **Practical basis**: libmagic `src/encoding.c` at commit bbffb78dc8d764a707aa20f5c7a3b74c40c2b27c (BSD-2-Clause, the file's repository has about 1,700 stars): `file_encoding` tries UTF-8, UTF-32 and then `looks_ucs16`, which reads the mark and then judges every code unit; it is translated in `src/lib/utf16-text-signature.ts` (`docs/licensing.md` 2.33). U+0000 is refused here because the text readers refuse it behind a UTF-16 mark (`assertNoNullCharacter`) and the frames of a silent MPEG file are made of it.
+- **Why**: the readers take UTF-16 text with a mark (entries 19 and 72), so the check in front of them must not refuse what they read. The mark alone does not tell text from an MPEG frame; the code units after it do.
+- **Trade-offs**:
+  - A real MPEG Layer I file with a CRC whose first 64 KiB hold no control byte, no noncharacter and no null unit would read as text and be accepted under a text name. Layer I is almost never written, and its frames of audio data carry such codes within a few hundred bytes.
+  - A text file in UTF-16LE with a stray control character (U+0001) is refused as before.
+- **Verified by**: `tests/utf16le-text-spoof-check.test.ts` (the sniffed type, the check under `.txt`, `.csv`, `.tsv`, `.md`, `.log` and `.rst`, a real MP3 and Layer I frames under text names, and `txt` to PDF and DOCX, `md` to HTML, `csv` and `tsv` to JSON after the check), which failed with the spoof refusal before this change, and `tests/utf16-text-signature.test.ts`.

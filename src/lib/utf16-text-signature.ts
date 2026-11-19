@@ -78,3 +78,20 @@ export function looksUcs16LittleEndian(bytes: Uint8Array): boolean {
   }
   return true;
 }
+
+/** Whether a code unit after the mark is U+0000. */
+function hasNullUnit(bytes: Uint8Array): boolean {
+  for (let offset = UNIT_BYTES; offset + 1 < bytes.length; offset += UNIT_BYTES) {
+    if (bytes[offset] === 0 && bytes[offset + 1] === 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether the file is UTF-16 text in little-endian order behind its mark (FF FE), which the spoof check must not take for MPEG audio, whose
+ * Layer I frame with a CRC starts with the same two bytes. `looksUcs16LittleEndian` with one addition of this project: U+0000 is no text
+ * here (`assertNoNullCharacter` of `text-source.ts` refuses it), and the silent frames of an MPEG file are made of it.
+ */
+export function isUtf16LeText(bytes: Uint8Array): boolean {
+  return looksUcs16LittleEndian(bytes) && !hasNullUnit(bytes);
+}
