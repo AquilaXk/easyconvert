@@ -336,7 +336,7 @@ async function readFormJobRequest(req: NextRequest, instanceUri: string, ownerUs
 
 /** The parsed JSON object of a request (null when the body is not valid JSON or not an object), or the 413 of a body that is too large. */
 async function readJsonObject(req: NextRequest, instanceUri: string): Promise<{ body: ReturnType<typeof JSON.parse> | null } | { refusal: Response }> {
-  const read = await readBoundedJsonText(req, INLINE_JSON_BODY_MAX_BYTES, instanceUri);
+  const read = await readBoundedJsonText(req, INLINE_JSON_BODY_MAX_BYTES, instanceUri, INLINE_JOB_PAYLOAD_MAX_BYTES);
   if ('refusal' in read) return read;
   try {
     const parsed = JSON.parse(read.text);

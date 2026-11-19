@@ -43,8 +43,10 @@ async function sessionHeaders(): Promise<Record<string, string>> {
   return { Cookie: `easyconvert_session=${createSessionToken(await createUser())}` };
 }
 
-function declaring(path: string, bytes: number): NextRequest {
-  return new NextRequest(`${BASE_URL}${path}`, { method: 'POST', headers: { 'content-length': String(bytes) } });
+function declaring(path: string, bytes: number, contentType?: string): NextRequest {
+  const headers: Record<string, string> = { 'content-length': String(bytes) };
+  if (contentType) headers['content-type'] = contentType;
+  return new NextRequest(`${BASE_URL}${path}`, { method: 'POST', headers });
 }
 
 describe('a route that takes a body whole refuses one past a single request before it reads it', () => {
@@ -71,8 +73,9 @@ describe('a route that takes a body whole refuses one past a single request befo
     for (const step of flow) expect(body.detail).toContain(step);
   });
 
-  it.each(ROUTES)('%s does not refuse a body of exactly the single request limit on its size', async (path, post, _flow) => {
-    const res = await post(declaring(path, SINGLE_REQUEST_BODY_MAX_BYTES));
+  // A file comes as multipart form data; a JSON body is held to its own, smaller limit (json-body-bounds.ts).
+  it.each(ROUTES)('%s does not refuse a multipart body of exactly the single request limit on its size', async (path, post, _flow) => {
+    const res = await post(declaring(path, SINGLE_REQUEST_BODY_MAX_BYTES, 'multipart/form-data; boundary=x'));
 
     expect(res.status).not.toBe(PAYLOAD_TOO_LARGE);
   });

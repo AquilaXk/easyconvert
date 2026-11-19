@@ -30,14 +30,24 @@ export function hasMoreOpenersThan(text: string, limit: number): boolean {
  * The text of a JSON request body, or the 413 that refuses it: a declared length over `maxBytes`, a text longer than that (a body
  * without a length is also counted by the middleware as it arrives), or more objects and arrays than `JSON_BODY_MAX_OPENERS`.
  */
-export async function readBoundedJsonText(req: Request, maxBytes: number, instanceUri: string): Promise<{ text: string } | { refusal: NextResponse }> {
+export async function readBoundedJsonText(
+  req: Request,
+  maxBytes: number,
+  instanceUri: string,
+  inlineFileBytes?: number
+): Promise<{ text: string } | { refusal: NextResponse }> {
+  // A route that carries a file in its JSON names that file's limit, which is what a caller can act on.
+  const fileHint =
+    inlineFileBytes === undefined
+      ? ''
+      : ` A JSON request carries a file of at most ${inlineFileBytes / (1024 * 1024)} MiB as base64; send a larger file as multipart form data or upload it first.`;
   const declared = parseContentLength(req.headers.get('content-length'));
   if (declared.kind === 'bytes' && declared.bytes > maxBytes) {
-    return { refusal: createProblemDetailsResponse(413, `This request carries ${declared.bytes} bytes, over the ${maxBytes} this route takes as JSON.`, instanceUri) };
+    return { refusal: createProblemDetailsResponse(413, `This request carries ${declared.bytes} bytes, over the ${maxBytes} this route takes as JSON.${fileHint}`, instanceUri) };
   }
   const text = await req.text();
   if (text.length > maxBytes) {
-    return { refusal: createProblemDetailsResponse(413, `This request carries more than the ${maxBytes} bytes this route takes as JSON.`, instanceUri) };
+    return { refusal: createProblemDetailsResponse(413, `This request carries more than the ${maxBytes} bytes this route takes as JSON.${fileHint}`, instanceUri) };
   }
   if (hasMoreOpenersThan(text, JSON_BODY_MAX_OPENERS)) {
     return {
@@ -55,9 +65,10 @@ export async function readBoundedJsonText(req: Request, maxBytes: number, instan
 export async function readBoundedJson(
   req: Request,
   maxBytes: number,
-  instanceUri: string
+  instanceUri: string,
+  inlineFileBytes?: number
 ): Promise<{ text: string; value: unknown } | { refusal: NextResponse }> {
-  const read = await readBoundedJsonText(req, maxBytes, instanceUri);
+  const read = await readBoundedJsonText(req, maxBytes, instanceUri, inlineFileBytes);
   if ('refusal' in read) return read;
   try {
     return { text: read.text, value: JSON.parse(read.text) };

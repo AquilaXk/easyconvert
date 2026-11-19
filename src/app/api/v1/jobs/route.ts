@@ -514,7 +514,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       }
     } else {
       // JSON body
-      const read = await readBoundedJson(req, INLINE_JSON_BODY_MAX_BYTES, instanceUri);
+      const read = await readBoundedJson(req, INLINE_JSON_BODY_MAX_BYTES, instanceUri, INLINE_JOB_PAYLOAD_MAX_BYTES);
       if ('refusal' in read) return reply(read.refusal);
       const { text: bodyText, value: body } = read;
 
