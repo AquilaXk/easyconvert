@@ -63,7 +63,7 @@ const NO_PAGE: Record<string, readonly string[]> = {
   'a pair with a name that is not registered': ['foo-to-bar', 'pdf-to-foo', 'foo-to-pdf', 'png-to-xyz', '-to-pdf', 'pdf-to-', '-to-'],
   'a pair with any on either side': ['pdf-to-any', 'any-to-pdf', 'any-to-any'],
   'a pair with a category word on either side': [
-    'video-to-mp4', 'mp4-to-video', 'video-to-video', 'image-to-pdf', 'pdf-to-image', 'image-to-photo', 'video-to-gif', 'video-to-mp3', 'word-to-pdf', 'pdf-to-word',
+    'video-to-mp4', 'mp4-to-video', 'video-to-video', 'image-to-pdf', 'pdf-to-image', 'image-to-photo', 'video-to-gif', 'video-to-mp3',
     'presentation-to-pdf',
   ],
   'registered formats whose conversion the registry does not offer': ['mp3-to-pdf', 'docx-to-mp3', 'jpg-to-jpeg', 'docx-to-docx', 'htm-to-html', 'txt-to-txt'],

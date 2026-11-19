@@ -391,6 +391,7 @@ Security
 340. [Storage keys of an anonymous caller's tool results and staged inputs name no address](#340-storage-keys-of-an-anonymous-callers-tool-results-and-staged-inputs-name-no-address)
 341. [Passwords are hashed with 210,000 PBKDF2-SHA512 iterations, and a hash of the earlier 100,000 is upgraded when its owner signs in](#341-passwords-are-hashed-with-210000-pbkdf2-sha512-iterations-and-a-hash-of-the-earlier-100000-is-upgraded-when-its-owner-signs-in)
 342. [A webhook delivery always uses undici's fetch through the pinned dispatcher, never a replaced globalThis.fetch](#342-a-webhook-delivery-always-uses-undicis-fetch-through-the-pinned-dispatcher-never-a-replaced-globalthisfetch)
+343. [A pair slug that names a format by another name redirects with 308 to the page of its canonical name, and every other unknown slug stays 404](#343-a-pair-slug-that-names-a-format-by-another-name-redirects-with-308-to-the-page-of-its-canonical-name-and-every-other-unknown-slug-stays-404)
 
 ---
 
@@ -10318,3 +10319,12 @@ Security
 - **Why**: The dispatcher compared `globalThis.fetch` with the function it found when the module loaded, and when they differed (a framework that wraps `fetch`, as Next.js does in the server runtime, or a test double) it delivered through the replaced one and left the `dispatcher` option out. That fetch connects with the default agent, so the check of the resolved address at connection time (the guard against a name that resolves to a private address after the pre-flight check, DNS rebinding) did not apply to the delivery. The pre-flight `validateUrlForSsrf` of the target at submission was not affected.
 - **Trade-offs**: A test that stubs `globalThis.fetch` for the shared dispatcher must import the bridge helper (13 test files did, and one test of the SSRF classification mocks undici's `fetch` instead).
 - **Verified by**: `tests/webhook-dispatcher-pinned-fetch.test.ts` (the first case fails on the previous commit: the replaced `globalThis.fetch` was called) and the 13 webhook and secret suites that stub `fetch`.
+
+## 343. A pair slug that names a format by another name redirects with 308 to the page of its canonical name, and every other unknown slug stays 404
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: launch audit, common slugs `/pdf-to-word`, `/word-to-pdf` and `/heic-to-jpeg` answered 404)
+- **Decision**: **A pair slug whose side is another name of a registry format answers 308 to the pair under the canonical name** (`aliasRedirectSlug` in `src/lib/slug-parser.ts`, called by the slug page for a slug that is no page): the aliases of `FORMAT_NAME_ALIASES` (`jpeg` and `jfif` for `jpg`, `tif` for `tiff`, and the others there) and `word` for `docx`. The redirect keeps the locale of the request. A redirect happens only when the canonical slug is itself a page, so the target never redirects again; a name that stands for no page, a pair of a format with its own other name (`jpg-to-jpeg`) and a category word in a pair stay 404.
+- **Why**: Visitors and links type the product name (`word`) or the other extension (`jpeg`), and a 404 on the most common conversions loses that traffic; a 308 keeps a single indexed URL per conversion, as the sitemap lists canonical paths only.
+- **Trade-offs**: `word` is the only name that is not a registry id or an alias of one; other product names (`excel`, `powerpoint`) are not added until a page needs them. The converter pages of an alias that is a registry format (`jpeg-to-png`) keep answering 200, as before.
+- **Verified by**: `tests/slug-alias-redirect.test.ts` (the redirect and its status per locale, the 404 cases, and a sweep that no redirect target redirects again) and `tests/unknown-path-404.test.ts`.

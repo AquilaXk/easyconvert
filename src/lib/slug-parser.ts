@@ -1,5 +1,5 @@
 import { FORMAT_REGISTRY } from './registry';
-import { isSameFormat } from './format-aliases';
+import { canonicalFormat, isSameFormat } from './format-aliases';
 import { CATEGORY_WORDS, isCategoryWord } from './category-words';
 import {
   INFO_PAGE_MAP,
@@ -42,6 +42,13 @@ function parseFormatConverterSlug(cleanSlug: string): SlugPage | null {
   return Object.hasOwn(FORMAT_REGISTRY, word) ? formatPage(word, { kind: 'format', id: word, display: word.toUpperCase() }) : null;
 }
 
+/** Names people type for a format the registry knows under another id. */
+const COMMON_NAME_ALIASES: Readonly<Record<string, string>> = { word: 'docx' };
+
+function aliasedFormat(id: string): string {
+  return canonicalFormat(Object.hasOwn(COMMON_NAME_ALIASES, id) ? COMMON_NAME_ALIASES[id] : id);
+}
+
 const lowercaseAscii = (slug: string): string => slug.replace(/[A-Z]+/g, (letters) => letters.toLowerCase());
 
 function parseCleanSlug(cleanSlug: string): SlugPage | null {
@@ -65,4 +72,18 @@ function parseCleanSlug(cleanSlug: string): SlugPage | null {
 export function parseConverterSlug(slug: string): ParsedSlug | null {
   const page = parseCleanSlug(lowercaseAscii(slug));
   return page && { ...page, canonicalPath: canonicalPathOf(page.copy) };
+}
+
+/**
+ * The slug of the page a pair slug stands for when one of its sides is another name of a format (`pdf-to-word` for
+ * `pdf-to-docx`, `heic-to-jpeg` for `heic-to-jpg`), or null. The answer parses to a page whose canonical path is that
+ * very slug, so following it never redirects again, and a slug that names no page keeps answering 404.
+ */
+export function aliasRedirectSlug(slug: string): string | null {
+  const lowered = lowercaseAscii(slug);
+  const [source, target, ...rest] = lowered.split(PAIR_SEPARATOR);
+  if (target === undefined || rest.length > 0) return null;
+  const redirected = `${aliasedFormat(source)}${PAIR_SEPARATOR}${aliasedFormat(target)}`;
+  if (redirected === lowered) return null;
+  return parseConverterSlug(redirected)?.canonicalPath === `/${redirected}` ? redirected : null;
 }
