@@ -1,7 +1,8 @@
 # EasyConvert OCI Web Server (Next.js), linux/arm64 (OCI Ampere A1) and linux/amd64
 #
-# The web process converts in process (the synchronous /api/convert route) and so needs every engine the worker has. This image is
-# therefore the worker image plus the Next.js build: it adds one layer (.next, public and next.config.mjs) to the worker image it is
+# The web process converts in process when WEB_EXECUTION_MODE is unset (hybrid), and so this image carries every engine the worker has; the
+# production stack runs it queue-only (docker-compose.prod.yml), where the engines serve only the deploy smoke and the archive listing. This
+# image is therefore the worker image plus the Next.js build: it adds one layer (.next, public and next.config.mjs) to the worker image it is
 # built on, shares every other layer with it on disk and in the registry, and starts the server instead of the worker. Build the worker
 # image first (Dockerfile.worker) and pass its digest as WORKER_IMAGE:
 #

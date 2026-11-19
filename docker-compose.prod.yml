@@ -217,6 +217,10 @@ services:
     stop_grace_period: 60s
     environment:
       <<: *app-environment
+      # Every conversion and tool request waits for a worker (the 503 "no live worker" answers when none is up) and none runs on the event
+      # loop of this process: the engines are not bounded by the plan limits of the request that starts them, and one request would
+      # hold the loop of every visitor's page. Needs Redis, which this stack always has (src/lib/config/index.ts).
+      WEB_EXECUTION_MODE: queue-only
       JWT_SECRET: ${JWT_SECRET:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
       JWT_SECRET_PREVIOUS:
       KEY_HASH_PEPPER: ${KEY_HASH_PEPPER:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}

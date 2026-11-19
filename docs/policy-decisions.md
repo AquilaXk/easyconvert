@@ -379,6 +379,7 @@ Security
 328. [Production legacy session cookie retirement, loopback diagnostic isolation, operator suspension and job-cancellation CLIs, mail-budget alerting, PDF-to-PPT bridge bounds, and real-engine endurance soak](#328-production-legacy-session-cookie-retirement-loopback-diagnostic-isolation-operator-suspension-and-job-cancellation-clis-mail-budget-alerting-pdf-to-ppt-bridge-bounds-and-real-engine-endurance-soak)
 329. [The regression corpus answers a job 10 s after the deadline the converter holds it to, a hung job takes the office suite down with it, and a failed office run is answered before its slot is replaced](#329-the-regression-corpus-answers-a-job-10-s-after-the-deadline-the-converter-holds-it-to-a-hung-job-takes-the-office-suite-down-with-it-and-a-failed-office-run-is-answered-before-its-slot-is-replaced)
 330. [LibreOffice memory limit of 3.25 GiB counted as proportional set size, and a memory refusal answered as an input over the limit](#330-libreoffice-memory-limit-of-325-gib-counted-as-proportional-set-size-and-a-memory-refusal-answered-as-an-input-over-the-limit)
+331. [The production web service runs queue-only, and the structured-data converters refuse inputs past a size and a count of values and convert on a pool thread](#331-the-production-web-service-runs-queue-only-and-the-structured-data-converters-refuse-inputs-past-a-size-and-a-count-of-values-and-convert-on-a-pool-thread)
 
 ---
 
@@ -10119,3 +10120,48 @@ Security
   - A slot is sized for 1,536 MB and may hold 3,328 MB, so a host whose slots all hold large documents at once has less memory than slots times the limit (the container limit stays the final bound). `pdfa.ts` still runs LibreOffice with 1,536 MB; its failure is the typed PDF/A error.
   - The resident sum is the upper bound answered between ticks, so a tree that is over the limit by resident size and under it by proportional size costs one `smaps_rollup` read per process per tick (about 4 ms per GB resident).
 - **Verified by**: the 11 jobs of the production failures on the VM with the limit at 3,072 MB, before the lead's raise to 3,328 (the same VM, the pool, the watch of this entry): nine convert in 6.4 to 23.1 s with a peak proportional sum of 883 to 3,008 MB (`govdocs1-002608.pdf` to ppt, the largest, 3,008 MB; `govdocs1-002980.pdf` to ppt, 6.4 s, 1,039 MB), and `gd-739713.pdf` and `cc-0000888.pdf` to ppt are refused with 413 after 84.0 s and 19.6 s at 3,072 and 3,083 MB; `tests/sandbox-process-tree-memory.test.ts`, `tests/office-suite-route.test.ts`, `tests/libreoffice-pool-manager.test.ts`, `tests/adversarial-engine-sandbox-guards.test.ts`, `tests/refusal-code-inventory.test.ts` `npx tsc --noEmit`, `npm run sdk:check`, `npm run guard:policy-decisions`, `npm run guard:code-smells`, `npm run guard:anti-cheat`, and `npm run lint`.
+
+## 331. The production web service runs queue-only, and the structured-data converters refuse inputs past a size and a count of values and convert on a pool thread
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: security review of `656eb523`, finding 1: an anonymous 4 MiB CSV to JSON held the event loop of the web process for 2.7 s, and a 32 MiB YAML reportedly ended the process)
+- **Decision**:
+  1. **The web service of `docker-compose.prod.yml` sets `WEB_EXECUTION_MODE=queue-only`.** Every synchronous conversion (`/api/convert`, `/api/v1/convert`, the batch route) and every tool request is handed to a worker through Redis and waited for, and answers 503 when no worker is live (`dispatchSyncRouteConversion`, `dispatchSyncWebTool`, `src/lib/queue/wait-for-job.ts`). With the variable unset the web ran every file under the size of a synchronous request in its own process (hybrid). The configuration check already requires Redis for queue-only, which the stack always has.
+  2. **Each structured-data source has an input size and a count of value-starting characters, and a text past either is refused as an input over the limit (413, `input_over_limit`) before it is parsed** (`src/lib/conversions/data-limits.ts`):
+
+     | Source | Input size | Count that is limited |
+     |---|---|---|
+     | CSV, TSV, TAB | 32 MiB | 4,194,304 field separators and line ends |
+     | JSON | 32 MiB | 2,097,152 of `{`, `[` and `,` |
+     | NDJSON, JSONL | 32 MiB | 2,097,152 of `{`, `[`, `,` and line ends |
+     | YAML | 8 MiB | 524,288 line ends, commas and flow brackets (aliases stay at 100, as before) |
+     | XML | 32 MiB | 2,097,152 `<` |
+     | TOML | 8 MiB | none |
+
+     The direct table routes (`data-fast-paths.ts`: CSV to Parquet, JSON Lines to CSV, Parquet to CSV and JSON) keep their own byte-level bounds and are not limited by these numbers.
+  3. **A source of 128 KiB or more converts on a thread of the CPU pool** (`convertOnDataThread`, `src/lib/conversions/data-task.ts`; `runDataTask`, `src/lib/conversions/data-task-thread.ts`). The thread has the pool's heap limit of 1 GiB, so a text that is inside the limits and still too large fails the thread with the 413 of the pool and not the worker. The input is copied once into shared memory, the output comes back by transfer, the warnings of the conversion and the class and position of a refusal cross as data.
+- **Why**:
+  - **The parsers have no bound of their own that follows the memory they ask for.** Measured on the reviewer's inputs on the Mac (Node 24, `node --import tsx`, one conversion, before the change): YAML of `- 1` lines of 8 MiB ran 6.1 s and 2.1 GB, of 32 MiB it ended the process in a heap out-of-memory error at 4.6 GB; a CSV of 8 MiB of commas ran 4.1 s, of 16 MiB it failed with `RangeError: Set maximum size exceeded` after 8.8 s; JSON of 16 MiB of `{},` ran 2.4 s and 2.9 GB. The event loop had no turn in any of them (a 10 ms timer ticked 0 times).
+  - **The numbers are what a thread of 1 GiB holds.** Measured per value: about 500 bytes of heap for each YAML node, 400 to 520 for each JSON object, 80 to 150 for each CSV cell or record. A table of honest data of that size is inside them: 500,000 CSV rows of six columns (28 MiB) and 200,000 JSON records (20 MiB) convert in a 1 GiB heap. The worst text inside each limit ran in 0.6 to 2.8 s on a thread with a process peak of 0.7 to 1.6 GB and no gap of the event loop over 20 ms (table under Measured).
+  - **A count of characters and not of values**, because it is one pass at the speed of a memory scan that stops at the limit, and it never under-counts a text that is all structure. A long prose text over-counts its commas, which only matters beyond 2 million of them.
+  - **The size of YAML follows the only size cap a starred YAML reader has**: SnakeYAML's `LoaderOptions.codePointLimit` is 3 MB by default (Apache-2.0, snakeyaml/snakeyaml, read 2026-11-20 from `LoaderOptions.java`, together with `maxAliasesForCollections` 50 and `nestingDepthLimit` 50). The reader of this product (`yaml` 2.9.1) has `maxAliasCount` 100 and no size cap, and papaparse 5.7.0 has none either; no code was copied from either project. 8 MiB is what a thread holds at the YAML node cost, above SnakeYAML's default because a configuration file of that size is a data file here.
+- **Trade-offs**:
+  - A JSON text of more than 2 million structural characters (about 30 MiB of records) and a CSV of more than 4 million cells are refused where a worker with a 4 GB heap converted them. They are what a thread cannot hold; the direct routes still convert CSV and JSON Lines to Parquet, and JSON Lines and Parquet to CSV, at any size they could.
+  - A pool thread starts in 0.16 s and the data code adds 0.05 to 0.07 s to the bundle of every thread (5.1 MB against 0.5 MB, `dist/cpu-worker.js`), measured with the bundle of this change and the bundle of `656eb523`. A separate thread entry for the data tasks would remove it from the other encoders.
+  - The office sheet readers (CSV and JSON to `xlsx`, `ods` and `xls` through `officeSheetWorkbook`) are not limited by this entry and still run on the calling thread.
+  - The deploy smoke (`/api/health/conversion`) and the archive listing still run in the web process in queue-only mode; the smoke is one fixed pixel.
+- **Measured** (the bench of this change, `convertData` on the Mac, one run each, input in memory; `ticks` are 10 ms timer ticks during the conversion, `peak` is the maximum resident set of the process):
+
+  | Input | Before | After |
+  |---|---|---|
+  | YAML `- 1` lines, 32 MiB | process ended (heap out of memory), 0 ticks, 4.6 GB | 413 in 0.47 s, 42 ticks, 0.53 GB |
+  | CSV of commas, 8 MiB | 4.1 s, 0 ticks, 1.3 GB | 413 in 0.50 s, 44 ticks, 0.51 GB |
+  | CSV of commas, 16 MiB | `RangeError` after 8.8 s, 0 ticks, 2.1 GB | 413 in 0.51 s, 45 ticks, 0.54 GB |
+  | JSON `{},`, 16 MiB | 2.4 s, 0 ticks, 2.9 GB | 413 in 0.51 s, 44 ticks, 0.54 GB |
+  | JSON of 1,048,000 `{},` (inside the limit) to CSV | not measured | 0.93 s, 83 ticks, 1.03 GB |
+  | YAML of 524,288 `- 1` lines (at the limit) | not measured | 2.0 s, 177 ticks, 1.02 GB |
+  | CSV of 4,194,304 one-field records (at the limit) | not measured | 1.8 s, 156 ticks, 1.56 GB |
+  | CSV of 4,194,000 commas (at the limit) | not measured | 2.8 s, 250 ticks, 0.89 GB |
+  | XML of 2,097,000 `<a/>` (at the limit) | not measured | 1.1 s, 101 ticks, 1.21 GB |
+  | JSON Lines of 1,048,000 `{}` lines (at the limit) | not measured | 0.58 s, 51 ticks, 0.67 GB |
+- **Verified by**: `tests/data-input-limits.test.ts` (10 refusals that fail on `656eb523`, the position of a parse error and the warnings across the thread, and the loop held under the 100 ms budget while a 10 MiB table converts), `tests/oci-deploy.test.ts` (the web service is queue-only and no worker is).

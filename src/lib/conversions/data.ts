@@ -48,6 +48,8 @@ import {
 } from './data-json';
 import { parseXmlDocument, serializeDataToXml, xmlRecords, xmlStringValue, xmlToJsonMlDocument } from './data-xml';
 import { assertToml10Syntax } from './data-toml';
+import { assertDataInputBytes, assertDataItemCount } from './data-limits';
+import { convertOnDataThread } from './data-task';
 import { assertConversionOptionsObject } from './options-guard';
 import { delimitedToParquet, jsonLinesToDelimited, parquetToDelimited, parquetToJson } from './data-fast-paths';
 import { DELIMITED_RECORD_SEPARATOR, FORMULA_TRIGGER, UTF8_BOM_CHAR, writesBomByDefault } from './delimited-rules';
@@ -401,7 +403,9 @@ function assertDataOptions(options: unknown): asserts options is ConversionOptio
  * evened out and reported in the warnings of the conversion.
  */
 function parseDelimitedTable(inputBuffer: Buffer, src: string, options: ConversionOptions): DelimitedTable {
+  assertDataInputBytes('delimited', inputBuffer.length, src.toUpperCase());
   const text = decodeDelimitedText(inputBuffer, options.encoding);
+  assertDataItemCount('delimited', text, src.toUpperCase());
   const delimiter = resolveDelimiter(text, src, options.delimiter);
   const { fields, records, ragged } = parseDelimitedRecords(text, delimiter, src);
   for (const line of raggedRowWarnings(ragged, src)) reportConversionWarning(line);
@@ -607,6 +611,14 @@ function decodeUtf8Text(bytes: Uint8Array, format: string): string {
   }
 }
 
+/** The strict UTF-8 text of a JSON, NDJSON or TOML input of at most the size and the count of values its source is read with. */
+function decodeCheckedText(bytes: Uint8Array, kind: 'json' | 'ndjson' | 'toml', format: string): string {
+  assertDataInputBytes(kind, bytes.length, format);
+  const text = decodeUtf8Text(bytes, format);
+  assertDataItemCount(kind, text, format);
+  return text;
+}
+
 /** XML 1.0 Appendix F: a BOM, then the UTF-16 form of "<?", then the declared encoding, then UTF-8. */
 function decodeXmlText(bytes: Uint8Array): string {
   const bom = sniffBom(bytes);
@@ -791,27 +803,32 @@ function readStructuredSource(inputBuffer: Buffer, src: string, tgt: string, opt
     return { value: table.records, records: () => table.records, fields: table.fields, text: () => table.text };
   }
   if (src === 'json') {
-    const value = parseJsonLossless(decodeUtf8Text(inputBuffer, 'JSON'));
+    const value = parseJsonLossless(decodeCheckedText(inputBuffer, 'json', 'JSON'));
     return { value, records: () => asRecords(value), text: () => stringifyJsonLossless(value, JSON_INDENT) };
   }
   if (src === 'ndjson' || src === 'jsonl') {
-    const records = parseNdjsonText(decodeUtf8Text(inputBuffer, src.toUpperCase()), src);
+    const records = parseNdjsonText(decodeCheckedText(inputBuffer, 'ndjson', src.toUpperCase()), src);
     return { value: records, records: () => records, text: () => stringifyJsonLossless(records, JSON_INDENT) };
   }
   if (src === 'yaml' || src === 'yml') {
     // YAML 1.2 (5.2) allows UTF-16 and detects it from a BOM or the NUL pattern of its first characters.
+    assertDataInputBytes('yaml', inputBuffer.length, 'YAML');
     const encoding = sniffBom(inputBuffer) ?? sniffUtf16ByNulPattern(inputBuffer) ?? 'utf-8';
     const text = decodeStrict(inputBuffer, encoding);
+    assertDataItemCount('yaml', text, 'YAML');
     const value = parseYamlText(text);
     return { value, records: () => asRecords(value), text: () => text };
   }
   if (src === 'toml') {
-    const text = decodeUtf8Text(inputBuffer, 'TOML');
+    const text = decodeCheckedText(inputBuffer, 'toml', 'TOML');
     const value = parseTomlText(text);
     return { value, records: () => [value], text: () => text };
   }
   if (src === 'xml') {
-    const root = parseXmlDocument(decodeXmlText(inputBuffer));
+    assertDataInputBytes('xml', inputBuffer.length, 'XML');
+    const xmlText = decodeXmlText(inputBuffer);
+    assertDataItemCount('xml', xmlText, 'XML');
+    const root = parseXmlDocument(xmlText);
     return { value: xmlToJsonMlDocument(root), records: () => xmlRecords(root), text: () => xmlStringValue(root) };
   }
   if (src === 'parquet') {
@@ -989,7 +1006,24 @@ async function guardParquetSource<T>(convert: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Converts a structured-data source (CSV, TSV, JSON, NDJSON, YAML, TOML, XML, Parquet): a text of `DATA_POOL_MIN_BYTES` or more is
+ * converted on a CPU pool thread (data-task.ts), a shorter one here.
+ */
 export async function convertData(
+  inputBuffer: Buffer,
+  sourceFormat: string,
+  targetFormat: string,
+  options: ConversionOptions = {},
+  originalFilename: string
+): Promise<ConversionResult> {
+  assertDataOptions(options);
+  const onThread = await convertOnDataThread('convert', inputBuffer, sourceFormat, targetFormat, options, originalFilename);
+  return onThread ?? convertDataInline(inputBuffer, sourceFormat, targetFormat, options, originalFilename);
+}
+
+/** `convertData` on the calling thread; the pool thread runs this. */
+export async function convertDataInline(
   inputBuffer: Buffer,
   sourceFormat: string,
   targetFormat: string,
@@ -1053,6 +1087,13 @@ export const STRUCTURED_SHEET_SOURCES: ReadonlySet<string> = new Set(['parquet',
  * family's 2,500-row table took.
  */
 export async function writeTransientWorkbook(inputBuffer: Buffer, src: string, options: ConversionOptions): Promise<Buffer> {
+  if (STRUCTURED_SHEET_SOURCES.has(src)) assertDataOptions(options);
+  const onThread = STRUCTURED_SHEET_SOURCES.has(src) ? await convertOnDataThread('workbook', inputBuffer, src, 'xls', options, '') : null;
+  return onThread ?? writeTransientWorkbookInline(inputBuffer, src, options);
+}
+
+/** `writeTransientWorkbook` on the calling thread; the pool thread runs this. */
+export async function writeTransientWorkbookInline(inputBuffer: Buffer, src: string, options: ConversionOptions): Promise<Buffer> {
   if (!STRUCTURED_SHEET_SOURCES.has(src)) return officeSheetWorkbook(inputBuffer, src, options, 'STORE');
   assertDataOptions(options);
   const write = async (): Promise<Buffer> => {

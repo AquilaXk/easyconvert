@@ -272,6 +272,13 @@ describe('docker-compose.prod.yml scale-out shape', () => {
     expect(compose.services.web.depends_on && Object.keys(compose.services.web.depends_on)).toEqual(['redis']);
   });
 
+  it('runs the web service queue-only, so that no request converts a file on the event loop of the web process', () => {
+    expect(compose.services.web.environment?.WEB_EXECUTION_MODE).toBe('queue-only');
+    for (const name of ['worker', 'worker-light', 'worker-cpu', 'worker-memory', 'worker-gpu']) {
+      expect(compose.services[name].environment?.WEB_EXECUTION_MODE, name).toBeUndefined();
+    }
+  });
+
   it('gives every worker its own heartbeat file so that replicas do not share one', () => {
     for (const name of ['worker', 'worker-light', 'worker-cpu', 'worker-memory', 'worker-gpu']) {
       expect(compose.services[name].environment?.WORKER_HEARTBEAT_FILE, name).toBe('/home/easyconvert/worker-heartbeat.json');

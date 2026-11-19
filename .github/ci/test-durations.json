@@ -274,6 +274,7 @@
   "tests/data-columnar-memory.test.ts": 24.3,
   "tests/data-csv-encoding.test.ts": 1.4,
   "tests/data-csv-header-keys.test.ts": 0.3,
+  "tests/data-input-limits.test.ts": 4,
   "tests/data-json-yaml-lossless.test.ts": 1.2,
   "tests/data-records-sheet-bounds.test.ts": 0.7,
   "tests/data-sources-to-sheets.test.ts": 24,
