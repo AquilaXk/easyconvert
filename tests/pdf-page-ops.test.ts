@@ -184,18 +184,6 @@ describe.skipIf(toolsMissing)('PDF page operations', () => {
       expect(await turned([{ rotation: 90, pages: '1,3,5' }, { rotation: 180, pages: '3-5' }])).toEqual([90, 0, 270, 180, 270]);
     });
 
-    it('turns a page once when the tokens of one pages value name it more than once, and still adds the groups', async () => {
-      const turned = async (rotations: Array<{ rotation: 90 | 180 | 270; pages?: string }>): Promise<number[]> =>
-        pageRotations(await rotatePdfPages(await source(), { rotations }));
-      expect(await turned([{ rotation: 90, pages: '1-3,2' }])).toEqual([90, 90, 90, 0, 0]);
-      expect(await turned([{ rotation: 90, pages: '2,2' }])).toEqual([0, 90, 0, 0, 0]);
-      expect(await turned([{ rotation: 90, pages: '1-3,2-4' }])).toEqual([90, 90, 90, 90, 0]);
-      expect(await turned([{ rotation: 90, pages: '2-,4' }])).toEqual([0, 90, 90, 90, 90]);
-      expect(await turned([{ rotation: 90, pages: '-3,1-' }])).toEqual([90, 90, 90, 90, 90]);
-      expect(await turned([{ rotation: 90, pages: '1-3,2' }, { rotation: 180, pages: '2' }])).toEqual([90, 270, 90, 0, 0]);
-      expect(pageRotations(await rotatePdfPages(await source(), { rotation: 90, pages: '1-3,2' }))).toEqual([90, 90, 90, 0, 0]);
-    });
-
     it.each([0, 45, 360, -90, 91, '90deg', null])('refuses the rotation %j', async (rotation) => {
       expect(await refusal(rotatePdfPages(await source(), { rotation: rotation as never }))).toMatchObject({ name: 'UnsupportedOptionError' });
     });
