@@ -4,6 +4,7 @@ import path from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import iconv from 'iconv-lite';
 import { afterEach, describe, expect, it } from 'vitest';
+import { withConversionWarnings } from '../src/lib/conversions/conversion-warnings';
 import { CFBF_MAGIC, startsWithBytes } from '../src/lib/format-signatures';
 import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
 import { executeWorkerConversion } from '../src/worker/engines';
@@ -130,15 +131,24 @@ describe('the route of a plain text file written as Word 97-2003 or RTF', () => 
 
   const KOREAN_LINES = '대한민국은 민주공화국이다. 대한민국의 주권은 국민에게 있고, 모든 권력은 국민으로부터 나온다.\n'.repeat(8);
 
-  it.each([WORD_TARGET, RTF_TARGET])('writes the DOCX of a CP949 text first for %s, since the text filter reads UTF-8', async (target) => {
+  it.each([WORD_TARGET, RTF_TARGET])('decodes a CP949 text once and hands the suite the UTF-8 text with the same filter for %s, and writes no DOCX', async (target) => {
     const { deps, suiteCalls, converted } = standIns();
     await convertBridgedTarget(deps, request({ input: iconv.encode(KOREAN_LINES, 'cp949'), tgt: target }), neverDirectly);
-    expect(converted).toEqual([{ src: 'txt', target: DOCX_FORMAT }]);
-    expect(suiteCalls[0]).toMatchObject({ src: DOCX_FORMAT, target });
-    expect(suiteCalls[0].options.officeImportFilter).toBeUndefined();
+    expect(converted).toEqual([]);
+    expect(suiteCalls).toHaveLength(1);
+    expect(Buffer.isBuffer(suiteCalls[0].input) && suiteCalls[0].input.toString('utf-8')).toBe(KOREAN_LINES);
+    expect(suiteCalls[0]).toMatchObject({ src: 'txt', target, options: { officeImportFilter: TEXT_IMPORT_FILTER, throwOnUnavailable: true } });
   });
 
-  it('writes the DOCX of a CP949 text on disk first, and hands UTF-8, UTF-16 and BOM text on disk to the suite as they are', async () => {
+  it('reports how a CP949 text was read in the warnings of the conversion', async () => {
+    const { deps } = standIns();
+    const result = await withConversionWarnings(async () => ({
+      ...(await convertBridgedTarget(deps, request({ input: iconv.encode(KOREAN_LINES, 'cp949') }), neverDirectly)),
+    }));
+    expect(result.metadata?.warnings).toEqual(['Text input is not valid UTF-8; it was read as euc-kr.']);
+  });
+
+  it('hands a CP949 text on disk to the suite as a UTF-8 file of the job directory, removed after the run, and the other encodings as they are', async () => {
     const dir = scratch();
     const files: Array<[string, Buffer, boolean]> = [
       ['cp949.txt', iconv.encode(KOREAN_LINES, 'cp949'), true],
@@ -149,9 +159,26 @@ describe('the route of a plain text file written as Word 97-2003 or RTF', () => 
     for (const [name, bytes, legacy] of files) {
       const inputPath = path.join(dir, name);
       fs.writeFileSync(inputPath, bytes);
+      const outputPath = path.join(dir, `${name}.doc`);
+      const seen: Array<{ inputPath?: string; bytes: Buffer }> = [];
       const { deps, converted } = standIns();
-      await convertBridgedTarget(deps, request({ input: { inputPath, outputPath: path.join(dir, `${name}.doc`) } }), neverDirectly);
-      expect(converted, name).toEqual(legacy ? [{ src: 'txt', target: DOCX_FORMAT }] : []);
+      const suite = deps.writeWithOfficeSuite;
+      deps.writeWithOfficeSuite = async (source, ...rest) => {
+        const path = (source as WorkerVfsPayload).inputPath;
+        seen.push({ inputPath: path, bytes: fs.readFileSync(path as string) });
+        expect((source as WorkerVfsPayload).outputPath).toBe(outputPath);
+        return suite(source, ...rest);
+      };
+      await convertBridgedTarget(deps, request({ input: { inputPath, outputPath } }), neverDirectly);
+      expect(converted, name).toEqual([]);
+      expect(seen, name).toHaveLength(1);
+      if (legacy) {
+        expect(seen[0].inputPath).not.toBe(inputPath);
+        expect(seen[0].bytes.toString('utf-8')).toBe(KOREAN_LINES);
+        expect(fs.existsSync(seen[0].inputPath as string)).toBe(false);
+      } else {
+        expect(seen[0].inputPath).toBe(inputPath);
+      }
     }
   });
 
