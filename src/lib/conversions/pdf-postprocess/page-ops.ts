@@ -15,6 +15,7 @@ import { createZipArchive } from '../archive';
 import { assertPdfHeader } from '../pdf-text-document';
 import { openPdfForEditing, type PdfAccess, type PdfEditOperation } from '../pdf-access';
 import { readSandboxOutput } from '../../security/sandbox-output';
+import { mergeIntervals } from '../page-intervals';
 import { sanitizeLeafStem, validatePageRangeSyntax } from '../page-range';
 import { withMendedPageTree } from './mend-page-tree';
 import { QPDF_COMPACT_OUTPUT_ARGS, runQpdf, runQpdfToBuffer, withQpdfInputFile, withQpdfWorkspace, type QpdfWorkspace } from './qpdf-run';
@@ -266,11 +267,15 @@ interface RotationInterval {
   degrees: number;
 }
 
-/** The page intervals of a group (every page when it names none); an open range ends at Infinity. */
+/**
+ * The page intervals of a group (every page when it names none); an open range ends at Infinity. The pages of one value are a set:
+ * its tokens are merged, so `1-3,2` turns page 2 once (qpdf itself turns a page once for each token that names it).
+ */
 function intervalsOf(group: PdfRotation): RotationInterval[] {
   const degrees = normalizedRotation(group.rotation);
   if (group.pages === undefined) return [{ start: 1, end: Number.POSITIVE_INFINITY, degrees }];
-  return tokensOf(assertPageSpec(group.pages, 'rotate.pages')).map((token) => ({ ...pageTokenOf(token), degrees }));
+  const tokens = tokensOf(assertPageSpec(group.pages, 'rotate.pages')).map(pageTokenOf);
+  return mergeIntervals(tokens).map((interval) => ({ ...interval, degrees }));
 }
 
 /**

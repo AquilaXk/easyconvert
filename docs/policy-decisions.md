@@ -384,6 +384,7 @@ Security
 333. [UTF-16LE text with a byte order mark is not taken for MPEG audio by the spoof check](#333-utf-16le-text-with-a-byte-order-mark-is-not-taken-for-mpeg-audio-by-the-spoof-check)
 334. [Delimited text written as a spreadsheet is decoded as the data engine decodes it](#334-delimited-text-written-as-a-spreadsheet-is-decoded-as-the-data-engine-decodes-it)
 335. [A failed PDF step is a typed 422 refusal that the queue does not retry](#335-a-failed-pdf-step-is-a-typed-422-refusal-that-the-queue-does-not-retry)
+336. [The tokens of one rotation page range are a set, and the groups of a rotation still add](#336-the-tokens-of-one-rotation-page-range-are-a-set-and-the-groups-of-a-rotation-still-add)
 
 ---
 
@@ -10189,3 +10190,13 @@ Security
 - **Why**: a page range that names every page or a PDF that qpdf cannot open is a verdict on the document, which the other 422 refusals of the API already are, so no other worker or attempt changes it. One code for the class keeps the answer of every PDF step the same; its message says what failed.
 - **Trade-offs**: a PDF step that fails for a reason of the server (a qpdf crash that leaves no message of the document) is also 422 and not retried, as it already was on the convert routes; only the queue and the tools API change. The code does not say which step failed: the detail does.
 - **Verified by**: `tests/web-tools-route.test.ts` (`delete-pages` of 1-3 on 3 pages: 500 before, 422 with the code and the conversion given back after), `tests/queue-non-retryable-failures.test.ts` (3 runs before, 1 after, for both classes), `tests/pdf-postprocess-refusal.test.ts`, the new rows of `tests/refusal-code-inventory.test.ts`, and the contract test of the OpenAPI codes.
+
+## 336. The tokens of one rotation page range are a set, and the groups of a rotation still add
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: a review found `pages: '1-3,2'` turning page 2 by 180 degrees for a rotation of 90)
+- **Decision**: **The tokens of one `pages` value of a rotation are a set of pages: they are merged (`mergeIntervals`, `src/lib/conversions/page-intervals.ts`) before the angles are added, so `1-3,2` turns pages 1 to 3 once.** A page that two different groups of `rotations` name still turns by both, and a sum of 360 degrees leaves the page as it was, as before (`rotationArgsOf`, `src/lib/conversions/pdf-postprocess/page-ops.ts`).
+- **Practical basis**: qpdf 12.4.2 (`libqpdf/QPDFJob.cc` `handleRotations` and `libqpdf/QUtil.cc` `parse_numrange` at commit 4eba95899886e851cc41d76886483b347612f2a8, Apache-2.0; run here as `qpdf --rotate=+90:1-3,2`, which turns the five pages by 90, 180, 90, 0, 0) expands the range into a list with duplicates and turns a page once for every token that names it, and once for every `--rotate` that names it. Rotation by several groups follows qpdf (the angles add); the duplicates inside one range do not, because a page specification names pages (the same value deletes, extracts and splits pages as a set in this API) and a caller who writes `1-3,2` asks for the pages 1 to 3, not for page 2 twice. This is the one place where the rotation departs from the raw qpdf range.
+- **Why**: one value of `pages` is read the same way by every PDF operation; a rotation of 180 degrees from a rotation of 90 is a result nobody asked for.
+- **Trade-offs**: a caller who relied on `1-3,2` to turn page 2 twice writes it as two groups (`{ rotation: 90, pages: '1-3' }` and `{ rotation: 90, pages: '2' }`), which still add.
+- **Verified by**: `tests/pdf-page-ops.test.ts` (`1-3,2`, `2,2`, `1-3,2-4`, open ranges, and the groups that still add), which failed before this change on `1-3,2` (page 2 at 180 degrees).
