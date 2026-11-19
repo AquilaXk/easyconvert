@@ -177,9 +177,8 @@ export function readProcessPssMb(pid: number): number | null {
   }
 }
 
-/** The sum of the proportional sizes of the pids, in MB, a pid whose size cannot be read counting its resident size; null when the root's resident size cannot be read. */
-function sumProportionalMb(pids: readonly number[], residentMb: (pid: number) => number | null, proportionalMb: (pid: number) => number | null): number | null {
-  if (residentMb(pids[0]) === null) return null;
+/** The sum of the proportional sizes of the pids, in MB, a pid whose size cannot be read counting its resident size. */
+function sumProportionalMb(pids: readonly number[], residentMb: (pid: number) => number | null, proportionalMb: (pid: number) => number | null): number {
   let total = 0;
   for (const pid of pids) total += proportionalMb(pid) ?? residentMb(pid) ?? 0;
   return total;
@@ -190,14 +189,22 @@ function sumProportionalMb(pids: readonly number[], residentMb: (pid: number) =>
  * each process (a page that several processes map, a shared library or a region the processes of a tree share, counts once in all, where the
  * sum of resident sizes counts it once per process). Elsewhere, and for a pid whose proportional size cannot be read, the resident size. A tree
  * of more than `maxPids` processes answers infinity, and a process that does not exist null, as `getProcessTreeRssMb` does.
+ *
+ * The proportional size is never above the resident size, and reading it makes the kernel walk the pages of the process (3.7 ms per GB
+ * resident, measured on aarch64 Linux 6.8), which the watch would pay every 50 ms. So the resident sum is read first and answered when it is
+ * within `limitMb`: the tree is within the limit by either count. Only a tree whose resident sum is over the limit has its proportional sizes
+ * read, and the answer is then the proportional sum.
  */
 export function getProcessTreeMemoryMb(
   pid: number,
   residentMb: (pid: number) => number | null,
+  limitMb: number,
   maxPids = MAX_TREE_PIDS,
   proportionalMb: (pid: number) => number | null = readProcessPssMb
 ): number | null {
   if (process.platform !== 'linux') return psTreeMb(pid, maxPids);
   const tree = descendantPids(pid, linuxChildren, maxPids);
-  return tree === null ? Number.POSITIVE_INFINITY : sumProportionalMb(tree, residentMb, proportionalMb);
+  if (tree === null) return Number.POSITIVE_INFINITY;
+  const resident = sumResidentMb(tree, residentMb);
+  return resident === null || resident <= limitMb ? resident : sumProportionalMb(tree, residentMb, proportionalMb);
 }

@@ -165,7 +165,7 @@ describe('the proportional memory of a process tree', () => {
         await new Promise((resolve) => setTimeout(resolve, 100));
         resident = getProcessTreeRssMb(pid, getProcessRssMb) ?? 0;
       }
-      const proportional = getProcessTreeMemoryMb(pid, getProcessRssMb) as number;
+      const proportional = getProcessTreeMemoryMb(pid, getProcessRssMb, SHARED_MB) as number;
       expect(resident).toBeGreaterThanOrEqual(SHARED_MB * processes * 0.9);
       expect(proportional).toBeGreaterThanOrEqual(SHARED_MB);
       expect(proportional).toBeLessThan(SHARED_MB * 1.5);
@@ -191,10 +191,28 @@ describe('the proportional memory of a process tree', () => {
   it('counts the resident size of a process whose proportional size cannot be read', () => {
     const own = process.pid;
     const resident = getProcessRssMb(own) as number;
-    expect(getProcessTreeMemoryMb(own, getProcessRssMb, MAX_TREE_PIDS, () => null) as number).toBeGreaterThanOrEqual(resident);
+    expect(getProcessTreeMemoryMb(own, getProcessRssMb, 0, MAX_TREE_PIDS, () => null) as number).toBeGreaterThanOrEqual(resident);
   });
 
+  it.skipIf(skipUnless('Linux (the proportional sizes are read from /proc)', process.platform === 'linux'))(
+    'reads the proportional sizes of a tree only when its resident sum is over the limit',
+    () => {
+      let reads = 0;
+      const proportional = (): number => {
+        reads++;
+        return 7;
+      };
+      const resident = (): number => 100;
+      const within = getProcessTreeMemoryMb(process.pid, resident, 100 * 4096, MAX_TREE_PIDS, proportional) as number;
+      expect(reads).toBe(0);
+      expect(within % 100).toBe(0);
+      const over = getProcessTreeMemoryMb(process.pid, resident, 0, MAX_TREE_PIDS, proportional) as number;
+      expect(reads).toBeGreaterThan(0);
+      expect(over).toBe(reads * 7);
+    }
+  );
+
   it('answers null for a process that does not exist', () => {
-    expect(getProcessTreeMemoryMb(2 ** 22 - 3, getProcessRssMb)).toBeNull();
+    expect(getProcessTreeMemoryMb(2 ** 22 - 3, getProcessRssMb, 1024)).toBeNull();
   });
 });

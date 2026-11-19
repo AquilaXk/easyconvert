@@ -1308,7 +1308,7 @@ export async function executeSandboxedBinary(
     if (effectiveMemoryLimitMb && effectiveMemoryLimitMb > 0) {
       memoryInterval = setInterval(() => {
         if (!proc.pid || isSettled) return;
-        const memoryMb = getProcessTreeMemoryMb(memoryWatchPid(proc.pid, resolvedCmd.levelsAboveProgram), getProcessRssMb);
+        const memoryMb = getProcessTreeMemoryMb(memoryWatchPid(proc.pid, resolvedCmd.levelsAboveProgram), getProcessRssMb, effectiveMemoryLimitMb);
         if (memoryMb !== null && memoryMb > effectiveMemoryLimitMb) stopWith(new SandboxedMemoryLimitError(effectiveMemoryLimitMb));
       }, 50);
     }
