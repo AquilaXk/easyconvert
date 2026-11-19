@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { parseOperatorCliArgs } from '../src/lib/auth/operator-cli-args';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import type { UserRecord } from '../src/lib/auth/types';
 
@@ -40,12 +41,18 @@ export async function applyTestCredits(grant: TestCreditGrant, now: number = Dat
   return redisKeyStore.packageBalance(grant.userId);
 }
 
-async function main(argv: readonly string[]): Promise<number> {
-  const valueOf = (flag: string): string | undefined => (argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : undefined);
-  const idOrEmail = valueOf('--user');
-  const credits = Number(valueOf('--credits'));
-  if (!idOrEmail || !valueOf('--credits')) {
-    console.error(`Usage: grant-test-credits --user <account id or email> --credits <1-${MAX_TEST_CREDITS}> [--apply]`);
+export async function main(argv: readonly string[]): Promise<number> {
+  const usage = `Usage: grant-test-credits --user <account id or email> --credits <1-${MAX_TEST_CREDITS}> [--apply]`;
+  const parsed = parseOperatorCliArgs(argv, { valueFlags: ['--user', '--credits'], booleanFlags: ['--apply'] });
+  if (!parsed.ok) {
+    console.error(`${parsed.error}\n${usage}`);
+    return 2;
+  }
+  const idOrEmail = parsed.values.get('--user');
+  const rawCredits = parsed.values.get('--credits');
+  const credits = Number(rawCredits);
+  if (!idOrEmail || !rawCredits) {
+    console.error(usage);
     return 2;
   }
   const grant = await planTestCredits(idOrEmail, credits);
@@ -54,7 +61,7 @@ async function main(argv: readonly string[]): Promise<number> {
     return 1;
   }
   console.log(`${grant.email} (${grant.userId}): package balance ${grant.balance} -> ${grant.balance + grant.credits}`);
-  if (!argv.includes('--apply')) {
+  if (!parsed.flags.has('--apply')) {
     console.log('Dry run: nothing was written. Run again with --apply to write.');
     return 0;
   }

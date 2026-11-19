@@ -476,7 +476,54 @@ describe('GET /api/health live probes', () => {
       const key = await adminKey(loaded, ['*']);
       const res = await loaded.GET(healthRequest(key));
       expect(res.status).toBe(HTTP_UNAVAILABLE);
-      expect((await res.json()).components.storage).toMatchObject({ status: 'failed' });
+      const body = await res.json();
+      expect(body.components.storage).toMatchObject({ status: 'failed' });
     }, 15_000);
+  });
+
+  describe('production forwarding isolation', () => {
+    it('keeps anonymous {status} probes working while refusing detailed admin-key queries over forwarded requests in production', async () => {
+      vi.stubEnv('KEY_HASH_PEPPER', 'health-probe-pepper-32-chars-min!');
+      vi.stubEnv('TRUSTED_PROXIES', 'none');
+      const loaded = await loadHealth();
+      const key = await adminKey(loaded, ['*']);
+
+      vi.stubEnv('NODE_ENV', 'production');
+
+      const forwardedAnon = new NextRequest(`${BASE_URL}/api/health`, {
+        method: 'GET',
+        headers: { 'x-forwarded-for': '203.0.113.9' },
+      });
+      const anonRes = await loaded.GET(forwardedAnon);
+      expect(anonRes.status).toBe(HTTP_OK);
+      expect(await anonRes.json()).toEqual({ status: 'healthy' });
+
+      for (const extraHeaders of [
+        { 'x-forwarded-for': '203.0.113.9' },
+        { 'cf-connecting-ip': '203.0.113.9' },
+        { forwarded: 'for=203.0.113.9' },
+        { 'true-client-ip': '203.0.113.9' },
+        { 'x-client-ip': '203.0.113.9' },
+        { 'x-real-ip': '127.0.0.1, 203.0.113.9' },
+      ] as Array<Record<string, string>>) {
+        const forwardedDetail = new NextRequest(`${BASE_URL}/api/health`, {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${key}`, ...extraHeaders },
+        });
+        const detailRes = await loaded.GET(forwardedDetail);
+        expect(detailRes.status).toBe(HTTP_FORBIDDEN);
+        expect(detailRes.headers.get('cache-control')).toBe('no-store');
+        const detailBody = await detailRes.json();
+        expect(detailBody.components).toBeUndefined();
+      }
+
+      const loopbackDetail = new NextRequest(`${BASE_URL}/api/health`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${key}`, 'x-real-ip': '[::1]' },
+      });
+      const loopbackRes = await loaded.GET(loopbackDetail);
+      expect(loopbackRes.status).toBe(HTTP_OK);
+      expect((await loopbackRes.json()).components.storage).toMatchObject({ status: 'ok' });
+    });
   });
 });

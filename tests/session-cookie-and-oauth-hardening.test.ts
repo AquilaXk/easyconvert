@@ -13,13 +13,22 @@ import {
   getSessionFromRequest,
   isSessionRevoked,
 } from '../src/lib/auth/session';
-import { HOST_SESSION_COOKIE_NAME, LEGACY_SESSION_COOKIE_NAME, sessionTokenFromCookieHeader } from '../src/lib/auth/session-cookie';
+import {
+  HOST_SESSION_COOKIE_NAME,
+  LEGACY_SESSION_COOKIE_NAME,
+  SESSION_COOKIE_NAMES,
+  hasSessionCookie,
+  readableSessionCookieNames,
+  sessionTokenFromCookieHeader,
+  sessionTokenFromCookieStore,
+  sessionTokensFromCookieHeader,
+} from '../src/lib/auth/session-cookie';
 import { verifyJwt } from '../src/lib/auth/jwt';
 import type { SessionPayload } from '../src/lib/auth/types';
 
 /**
  * Hardening of the session cookie, the origin check of the edge middleware and the Google sign-in: the `__Host-` cookie name
- * with the plain name still read for a release, an `http:` origin never accepted in production, an OAuth state that two
+ * enforced exclusively in production, an `http:` origin never accepted in production, an OAuth state that two
  * callbacks cannot both consume, and an ID token that must carry the nonce of the sign-in.
  */
 
@@ -85,6 +94,41 @@ describe('the name of the session cookie', () => {
     const res = await middleware(new NextRequest('http://localhost:3000/api/keys', { method: 'POST', headers: { cookie: `${HOST_SESSION_COOKIE_NAME}=valid.session.token` } }));
 
     expect(res.status).toBe(HTTP_FORBIDDEN);
+  });
+
+  it('rejects the plain legacy session cookie in production across header, store, CSRF detection, and auth session lookup', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('JWT_SECRET', 'prod-session-cookie-test-secret-with-32-chars');
+
+    const user = await redisUserStore.createUser({ email: uniqueEmail(), name: 'Prod legacy user' });
+    const token = createSessionToken(redisUserStore.sanitizeUser(user));
+
+    expect(SESSION_COOKIE_NAMES).toEqual([HOST_SESSION_COOKIE_NAME]);
+    expect(readableSessionCookieNames()).toEqual([HOST_SESSION_COOKIE_NAME]);
+    expect(readableSessionCookieNames(false)).toEqual([HOST_SESSION_COOKIE_NAME, LEGACY_SESSION_COOKIE_NAME]);
+
+    expect(sessionTokenFromCookieHeader(`${LEGACY_SESSION_COOKIE_NAME}=${token}`)).toBeNull();
+    expect(sessionTokensFromCookieHeader(`${LEGACY_SESSION_COOKIE_NAME}=${token}; ${HOST_SESSION_COOKIE_NAME}=hosttok`)).toEqual(['hosttok']);
+    expect(
+      sessionTokenFromCookieStore({
+        get: (name) => (name === LEGACY_SESSION_COOKIE_NAME ? { value: token } : undefined),
+      }),
+    ).toBeNull();
+    expect(
+      hasSessionCookie({
+        has: (name) => name === LEGACY_SESSION_COOKIE_NAME,
+      }),
+    ).toBe(false);
+
+    const legacyReq = new Request('https://convert.example.test/api/auth/me', {
+      headers: { cookie: `${LEGACY_SESSION_COOKIE_NAME}=${token}` },
+    });
+    expect(await getSessionFromRequest(legacyReq)).toBeNull();
+
+    const hostReq = new Request('https://convert.example.test/api/auth/me', {
+      headers: { cookie: `${HOST_SESSION_COOKIE_NAME}=${token}` },
+    });
+    expect((await getSessionFromRequest(hostReq))?.id).toBe(user.id);
   });
 });
 

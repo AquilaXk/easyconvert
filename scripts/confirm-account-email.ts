@@ -1,3 +1,4 @@
+import { parseOperatorCliArgs } from '../src/lib/auth/operator-cli-args';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import type { UserRecord } from '../src/lib/auth/types';
 
@@ -68,19 +69,25 @@ export async function countUnverifiedPasswordAccounts(): Promise<number> {
   return count;
 }
 
-async function main(argv: readonly string[]): Promise<number> {
-  if (argv.includes('--dry-run') && argv.includes('--apply')) {
+export async function main(argv: readonly string[]): Promise<number> {
+  const usage = 'Usage: confirm-account-email --user <account id or email> [--apply] | --dry-run';
+  const parsed = parseOperatorCliArgs(argv, { valueFlags: ['--user'], booleanFlags: ['--apply', '--dry-run'] });
+  if (!parsed.ok) {
+    console.error(`${parsed.error}\n${usage}`);
+    return 2;
+  }
+  if (parsed.flags.has('--dry-run') && parsed.flags.has('--apply')) {
     console.error('Cannot combine --dry-run and --apply.');
     return 2;
   }
-  if (argv.includes('--dry-run') && !argv.includes('--user')) {
+  const idOrEmail = parsed.values.get('--user');
+  if (parsed.flags.has('--dry-run') && !idOrEmail) {
     const count = await countUnverifiedPasswordAccounts();
     console.log(JSON.stringify({ unverifiedPasswordAccounts: count }));
     return 0;
   }
-  const idOrEmail = argv.includes('--user') ? argv[argv.indexOf('--user') + 1] : undefined;
   if (!idOrEmail) {
-    console.error('Usage: confirm-account-email --user <account id or email> [--apply] | --dry-run');
+    console.error(usage);
     return 2;
   }
   const change = await planEmailConfirmation(idOrEmail);
@@ -89,7 +96,7 @@ async function main(argv: readonly string[]): Promise<number> {
     return 1;
   }
   console.log(`${change.email} (${change.userId}): address unconfirmed -> confirmed`);
-  if (!argv.includes('--apply')) {
+  if (!parsed.flags.has('--apply')) {
     console.log('Dry run: nothing was written. Run again with --apply to write.');
     return 0;
   }

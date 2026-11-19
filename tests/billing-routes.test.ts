@@ -601,4 +601,44 @@ describe('the webhook route and package payments', () => {
     await webhook(refund());
     expect({ applied: await events('applied'), duplicate: await events('duplicate') }).toEqual({ applied: 2, duplicate: 1 });
   });
+
+  it('redacts secrets and strips attached error objects when checkout subscription change or portal creation fails', async () => {
+    const user = await account();
+    const cookie = await cookieOf(user);
+    await webhook(
+      eventBody({
+        status: 'active',
+        customData: await checkoutOf(user, 1000, 'subscription'),
+        items: [{ priceId: 'pri_subscription_1000_fixture' }],
+      })
+    );
+
+    const leakedToken = 'pdl_live_secret_do_not_log_123456';
+    const leakedApiKey = 'ec_live_secret_do_not_log_abcdef';
+    const attachedHeaderSecret = 'Bearer attached_header_secret_987654';
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    subscriptionUpdate.mockRejectedValueOnce(
+      Object.assign(new Error(`upstream 401 Authorization: Bearer ${leakedToken} apiKey=${leakedApiKey}`), {
+        requestConfig: { headers: { Authorization: attachedHeaderSecret } },
+      })
+    );
+    const checkoutRes = await startCheckout(post('/api/billing/checkout', cookie, { kind: 'subscription', credits: 2500 }));
+    expect(checkoutRes.status).toBe(502);
+
+    portalCreate.mockRejectedValueOnce(
+      Object.assign(new Error(`portal failed token=${leakedToken}`), {
+        requestConfig: { headers: { Authorization: attachedHeaderSecret } },
+      })
+    );
+    const portalRes = await openPortal(post('/api/billing/portal', cookie, {}));
+    expect(portalRes.status).toBe(502);
+
+    expect(errorSpy.mock.calls.length).toBe(2);
+    const serializedLogs = errorSpy.mock.calls.flat().map((arg) => (typeof arg === 'string' ? arg : JSON.stringify(arg))).join('\n');
+    expect(serializedLogs).not.toContain(leakedToken);
+    expect(serializedLogs).not.toContain(leakedApiKey);
+    expect(serializedLogs).not.toContain(attachedHeaderSecret);
+    expect(serializedLogs).toContain('***');
+  });
 });

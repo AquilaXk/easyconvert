@@ -2,7 +2,12 @@ import { DEFAULT_JWT_AUDIENCE, DEFAULT_JWT_ISSUER, signJwt, verifyJwt } from './
 import { redisKeyStore } from '../api-keys/redis-key-store';
 import { redisUserStore } from './redis-user-store';
 import type { SessionPayload, User } from './types';
-import { LEGACY_SESSION_COOKIE_NAME, SESSION_COOKIE_NAMES, sessionCookieName, sessionTokenFromCookieHeader } from './session-cookie';
+import {
+  HOST_SESSION_COOKIE_NAME,
+  LEGACY_SESSION_COOKIE_NAME,
+  sessionCookieName,
+  sessionTokenFromCookieHeader,
+} from './session-cookie';
 
 /** The plain name of the session cookie (development, tests and sessions issued before the `__Host-` prefix); `sessionCookieName()` is the one written. */
 export const SESSION_COOKIE_NAME = LEGACY_SESSION_COOKIE_NAME;
@@ -91,7 +96,9 @@ export function clearSessionCookie(): string {
  * `__Host-` prefix has the plain name), so a sign-out leaves no session behind.
  */
 export function clearSessionCookies(): string[] {
-  return SESSION_COOKIE_NAMES.filter((name) => name === sessionCookieName() || name === LEGACY_SESSION_COOKIE_NAME).map(expiredCookie);
+  return [HOST_SESSION_COOKIE_NAME, LEGACY_SESSION_COOKIE_NAME]
+    .filter((name) => name === sessionCookieName() || name === LEGACY_SESSION_COOKIE_NAME)
+    .map(expiredCookie);
 }
 
 /**
@@ -142,7 +149,7 @@ export async function getSessionFromToken(token: string): Promise<User | null> {
   }
 
   const userRecord = await redisUserStore.findById(payload.sub);
-  if (!userRecord) {
+  if (!userRecord || typeof userRecord.suspendedAt === 'number') {
     return null;
   }
 

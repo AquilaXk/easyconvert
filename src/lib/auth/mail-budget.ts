@@ -1,3 +1,4 @@
+import { observeAuthMailBudgetEvent } from '../metrics/instruments';
 import { redisUserStore } from './redis-user-store';
 
 /**
@@ -121,8 +122,14 @@ export async function reserveMailSend(kind: MailBudgetKind): Promise<boolean> {
   const cap = kind === 'verify' ? limits.verifyCap : limits.hardCap;
   const sent = await increment(dayKey(), cap);
   if (sent === -1) return false;
-  if (sent === limits.warn) console.warn(`auth_mail_budget level=warn sent=${sent} cap=${limits.verifyCap}`);
-  if (sent === cap) console.error(`auth_mail_budget level=cap kind=${kind} sent=${sent} cap=${cap}`);
+  if (sent === limits.warn) {
+    console.warn(`auth_mail_budget level=warn sent=${sent} cap=${limits.verifyCap}`);
+    observeAuthMailBudgetEvent('warn');
+  }
+  if (sent === cap) {
+    console.error(`auth_mail_budget level=cap kind=${kind} sent=${sent} cap=${cap}`);
+    observeAuthMailBudgetEvent(kind === 'verify' ? 'verify_cap' : 'hard_cap');
+  }
   return true;
 }
 

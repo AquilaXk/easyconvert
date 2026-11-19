@@ -1,4 +1,5 @@
 import { isEntitlingStatus } from '../src/lib/billing/entitlement';
+import { parseOperatorCliArgs } from '../src/lib/auth/operator-cli-args';
 import {
   deleteKeysInBatches,
   eraseAccount,
@@ -45,11 +46,16 @@ function describe(plan: AccountErasurePlan): string {
   ].join('\n');
 }
 
-async function main(argv: readonly string[]): Promise<number> {
-  const userAt = argv.indexOf('--user');
-  const idOrEmail = userAt >= 0 ? argv[userAt + 1] : undefined;
+export async function main(argv: readonly string[]): Promise<number> {
+  const usage = 'Usage: erase-account --user <account id or email> [--apply]';
+  const parsed = parseOperatorCliArgs(argv, { valueFlags: ['--user'], booleanFlags: ['--apply'] });
+  if (!parsed.ok) {
+    console.error(`${parsed.error}\n${usage}`);
+    return 2;
+  }
+  const idOrEmail = parsed.values.get('--user');
   if (!idOrEmail) {
-    console.error('Usage: erase-account --user <account id or email> [--apply]');
+    console.error(usage);
     return 2;
   }
   const plan = await planAccountErasure(idOrEmail);
@@ -58,7 +64,7 @@ async function main(argv: readonly string[]): Promise<number> {
     return 1;
   }
   console.log(describe(plan));
-  if (!argv.includes('--apply')) {
+  if (!parsed.flags.has('--apply')) {
     console.log('Dry run: nothing was deleted. Run again with --apply to delete.');
     return 0;
   }

@@ -67,6 +67,10 @@ export async function POST(req: NextRequest) {
       return refusal(401, 'invalid_credentials', 'Invalid email address or password.');
     }
 
+    if (typeof userRecord.suspendedAt === 'number') {
+      return codedRefusal(403, undefined, 'Forbidden: account is suspended.');
+    }
+
     // Reset attempt counters on successful login
     await resetLoginAttempts(email);
 

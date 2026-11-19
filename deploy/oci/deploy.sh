@@ -35,6 +35,8 @@ WORKER_REPO="${WORKER_REPO:-ghcr.io/aquilaxk/easyconvert-worker}"
 WEB_REPO="${WEB_REPO:-ghcr.io/aquilaxk/easyconvert-web}"
 HEALTH_PATH='/api/health'
 SMOKE_PROBE_PATH='/api/health/conversion'
+QUEUE_STATS_PATH='/api/queue/stats'
+METRICS_PATH='/metrics'
 CONVERT_PATH='/api/convert'
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8090$HEALTH_PATH}"
 SMOKE_URL="${SMOKE_URL:-http://127.0.0.1:8090$SMOKE_PROBE_PATH}"
@@ -395,25 +397,39 @@ canonical_host_matches() { # canonical_host_matches <origin the release runs wit
 # every path with 404 would otherwise pass. The origin certificate is trusted by the CDN only, so its chain is not checked; the
 # request goes to the loopback address and only the status is read.
 public_probe_refused() { # public_probe_refused <origin the release runs with>
-  local host site control
+  local host site control path label
   host="$(host_of "$1")"
   site="the public site (https://$host through the nginx of this host)"
   SMOKE_DIR="$(mktemp -d)"
   http_status "$SMOKE_DIR" --insecure --max-time 15 -o /dev/null --resolve "$host:443:127.0.0.1" "https://$host$HEALTH_PATH"
   control="$HTTP_STATUS"
-  [ "$control" != 200 ] || http_status "$SMOKE_DIR" --insecure --max-time 15 -o /dev/null --resolve "$host:443:127.0.0.1" "https://$host$SMOKE_PROBE_PATH"
+  if [ "$control" != 200 ]; then
+    rm -rf -- "$SMOKE_DIR"
+    SMOKE_DIR=""
+    log "$site answered $HEALTH_PATH with HTTP status $control, not 200, so its answer for the smoke probe proves nothing: check the nginx site, the certificate and the origin of the release"
+    return 1
+  fi
+  for path in "$SMOKE_PROBE_PATH" "$QUEUE_STATS_PATH" "$METRICS_PATH"; do
+    http_status "$SMOKE_DIR" --insecure --max-time 15 -o /dev/null --resolve "$host:443:127.0.0.1" "https://$host$path"
+    if [ "$HTTP_STATUS" != 404 ]; then
+      rm -rf -- "$SMOKE_DIR"
+      SMOKE_DIR=""
+      if [ "$path" = "$SMOKE_PROBE_PATH" ]; then
+        label='the smoke probe'
+      else
+        label="$path"
+      fi
+      if [ "$HTTP_STATUS" = 200 ]; then
+        log "$site forwarded $label (HTTP status 200): install deploy/oci/nginx-easyconvert.conf again (docs/deploy-oci.md, first-time setup, step 8)"
+      else
+        log "$site answered $label with HTTP status $HTTP_STATUS, not the 404 of the block: read the nginx site (docs/deploy-oci.md, first-time setup, step 8)"
+      fi
+      return 1
+    fi
+  done
   rm -rf -- "$SMOKE_DIR"
   SMOKE_DIR=""
-  if [ "$control" != 200 ]; then
-    log "$site answered $HEALTH_PATH with HTTP status $control, not 200, so its answer for the smoke probe proves nothing: check the nginx site, the certificate and the origin of the release"
-  elif [ "$HTTP_STATUS" = 404 ]; then
-    return 0
-  elif [ "$HTTP_STATUS" = 200 ]; then
-    log "$site forwarded the smoke probe (HTTP status 200): install deploy/oci/nginx-easyconvert.conf again (docs/deploy-oci.md, first-time setup, step 8)"
-  else
-    log "$site answered the smoke probe with HTTP status $HTTP_STATUS, not the 404 of the block: read the nginx site (docs/deploy-oci.md, first-time setup, step 8)"
-  fi
-  return 1
+  return 0
 }
 
 # Docker names the profile a container was created with; a container created without ours (the compose file edited, the profile

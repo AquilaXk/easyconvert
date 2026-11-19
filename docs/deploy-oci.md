@@ -43,12 +43,11 @@ Do these once per host, in this order. No step needs a secret value written in t
    ```
    Membership of the `docker` group is root-equivalent on this host, so who can send a job to this user's runner matters. The runner takes only jobs that ask for its one label, `easyconvert-production` (step 3). In this repository only the deploy job asks for it, and that job runs only when started by hand on `main`, in the environment of step 4, after QA approves it. Any workflow file can name the label, though, including one on another branch or in a pull request from a fork. The fork setting of step 4 holds every workflow run of an outside contributor's pull request until it is approved, so read the workflow files of such a pull request before approving its run.
 
-   **Residual trust and runner least privilege (#761, `easyconvert-deploy.sudoers`).** Until the runner is narrowed, whoever can push a workflow file to this repository, and whoever approves the run of a fork's pull request, can run code as root-equivalent on the shared host. Today that is the owner alone. To narrow the runner user and eliminate the residual trust of the `docker` group (#761), install `deploy/oci/easyconvert-deploy.sudoers` into `/etc/sudoers.d/easyconvert-deploy`:
+   **Residual trust and runner least privilege (#761, `easyconvert-deploy.sudoers`).** Until the runner, cron (`guard`, `reconcile`, `sweep`), and `redis-backup.sh` invocations are migrated to explicit `sudo` wrappers, `easyconvert-deploy` keeps `docker` group membership for host compatibility (`deploy/oci/deploy.sh` runs `docker compose` without `sudo`). Whoever can push a workflow file to this repository, and whoever approves the run of a fork's pull request, can therefore exercise host-equivalent `docker` access; today that is the owner alone. `deploy/oci/easyconvert-deploy.sudoers` is the prepared least-privilege template restricting `sudo /opt/easyconvert/bin/deploy.sh deploy *`, `rollback`, and `reconcile` (`NOPASSWD`); install it and update workflow, cron, and backup commands to invoke `sudo` before removing `docker` group membership:
    ```bash
    sudo install -m 0440 deploy/oci/easyconvert-deploy.sudoers /etc/sudoers.d/easyconvert-deploy
    sudo gpasswd -d easyconvert-deploy docker
    ```
-   This restricts `easyconvert-deploy` to running only `/opt/easyconvert/bin/deploy.sh deploy *`, `rollback`, and `reconcile` as root with `NOPASSWD`.
 2. **Scratch file system** (done). Uploads, results and every temporary file live on one file system of a fixed size, so a full scratch gives "no space left" to EasyConvert and never to the host. It is a file on the existing data volume, reserved up front:
    ```
    base=/var/lib/easysubway-data/easyconvert
@@ -212,7 +211,7 @@ What the command does not touch expires on its own. The edge server log keeps th
 
 Only for the operator's own test account (QA 2026-11-12, entry 268): the smoke checks after a deploy run with its API key, so they are not stopped by the free daily limit. Run it only with QA's approval.
 
-1. See the change. Nothing is written: `docker compose -p easyconvert exec worker node dist/set-account-tier.js --user <account email or id> --tier enterprise`.
+1. See the change. Nothing is written: `docker compose -p easyconvert exec worker node dist/set-account-tier.js --user <account email or id> --tier paid`.
 2. Run the same command with `--apply`. It prints the time and the change for the host's log. An account whose plan comes from a live subscription is refused.
 3. `--tier free` takes the plan back. Erasing the account removes it with everything else.
 
@@ -229,6 +228,20 @@ Only for the operator's own test account (QA 2026-11-14): a plan set by hand car
 
 1. See the change. Nothing is written: `docker compose -p easyconvert exec worker node dist/grant-test-credits.js --user <account email or id> --credits 1000`.
 2. Run the same command with `--apply`. It adds the credits as a package with a paid amount of 0 under an operator transaction id, and prints the time and the new balance for the host's log. At most 10,000 credits a run.
+
+### Suspending or unsuspending an account
+
+Suspending an account revokes existing JWT sessions (`sessionVersion` increment) and blocks API key access (HTTP 403), browser session reads, and password/OAuth sign-in immediately. Run it only with QA's approval.
+
+1. See the change without writing: `docker compose -p easyconvert exec worker node dist/set-account-suspension.js --user <account email or id> --suspend --reason "<text>"`.
+2. Apply it: add `--apply`. Reasons strip control characters and truncate at 200 characters; `--unsuspend --apply` restores access.
+
+### Cancelling a stuck job or a user's queued work
+
+Cancels queued/active jobs or DAG graphs through the application cancel path (refunding reserved quota and emitting the worker cancel signal).
+
+1. Cancel one job or graph: `docker compose -p easyconvert exec worker node dist/cancel-job.js --job <job or graph id> [--apply]`.
+2. Cancel waiting/active jobs and running graphs of one user (at most 200 per run): `docker compose -p easyconvert exec worker node dist/cancel-job.js --user <account email or id> [--apply]`.
 
 ## Releases
 

@@ -36,13 +36,14 @@ describe('deploy/oci/prometheus-alerts.yml and runbook links', () => {
   const group = doc.groups.find((entry) => entry.name === 'easyconvert');
   const rulesByName = new Map((group?.rules ?? []).map((rule) => [rule.alert, rule]));
 
-  it('defines the easyconvert rule group with the four paging alerts', () => {
+  it('defines the easyconvert rule group with the five paging alerts', () => {
     expect(group).toBeDefined();
     expect(group?.rules.map((rule) => rule.alert)).toEqual([
       'EasyConvertErrorBudgetBurn',
       'EasyConvertQueueAgeHigh',
       'EasyConvertWorkerRestarts',
       'EasyConvertBillingUnmatched',
+      'EasyConvertAuthMailBudgetReached',
     ]);
     for (const rule of group?.rules ?? []) {
       expect(rule.labels).toEqual({ severity: 'page' });
@@ -125,6 +126,16 @@ describe('deploy/oci/prometheus-alerts.yml and runbook links', () => {
     );
   });
 
+  it('pages when the daily authentication mail budget reaches verify_cap or hard_cap', () => {
+    const rule = rulesByName.get('EasyConvertAuthMailBudgetReached');
+    expect(rule).toBeDefined();
+    expect(rule?.for).toBe('0m');
+    expect(rule?.annotations.runbook).toBe('docs/operations/alerts.md#alert-auth-mail-budget');
+    expect(normalizePromql(rule?.expr ?? '')).toBe(
+      'sum by (level) (increase(easyconvert_auth_mail_budget_events_total{level=~"verify_cap|hard_cap"}[1h])) > 0'
+    );
+  });
+
   it('references only easyconvert_* metrics that are registered on the process metrics registry', async () => {
     const registered = new Set((await instruments().registry.getMetricsAsJSON()).map((metric) => metric.name));
     const referenced = new Set<string>();
@@ -134,6 +145,7 @@ describe('deploy/oci/prometheus-alerts.yml and runbook links', () => {
       }
     }
     expect([...referenced].sort()).toEqual([
+      'easyconvert_auth_mail_budget_events_total',
       'easyconvert_billing_events_total',
       'easyconvert_http_requests_total',
       'easyconvert_jobs_total',

@@ -291,6 +291,16 @@ async function verifyKeyAccess(
     };
   }
 
+  if (typeof verification.user.suspendedAt === 'number') {
+    return {
+      authorized: false,
+      user: verification.user,
+      apiKey: verification.key,
+      error: 'Forbidden: account is suspended.',
+      status: 403,
+    };
+  }
+
   // Enforce Key Expiration
   if (verification.key.expiresAt && Date.now() > verification.key.expiresAt) {
     return {

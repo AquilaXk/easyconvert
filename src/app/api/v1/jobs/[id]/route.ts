@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
+import { cancelSingleGraphJob, cancelSingleQueueJob } from '@/lib/queue/cancel-work';
 import { graphScheduler, type GraphExecutionState } from '@/lib/queue/graph';
 import { graphProgress } from '@/lib/queue/graph/graph-progress';
 import { namedJobFields } from '@/lib/jobs/named-task-report';
@@ -227,11 +228,8 @@ async function cancelJobAuthorized(jobId: string, userId: string, instanceUri: s
     );
   }
 
-  // Also cancel graph if this was a graph execution
-  await graphScheduler.cancelGraph(jobId, 'Cancelled by user').catch(() => {});
-
-  // The queue's cancellation listener refunds the reserved quota unit exactly once.
-  const cancelled = await conversionQueue.cancelJob(jobId, 'Cancelled by user');
+  // The queue's cancellation listener refunds the reserved quota unit and publishes the cancel event exactly once.
+  const cancelled = await cancelSingleQueueJob(jobId, 'Cancelled by user');
   if (!cancelled) {
     return createProblemDetailsResponse(
       409,
@@ -260,8 +258,8 @@ async function cancelGraphJob(jobId: string, userId: string, instanceUri: string
   if (state.ownerUserId !== userId) {
     return createProblemDetailsResponse(403, 'Access denied to cancel this conversion job.', instanceUri, 'Forbidden');
   }
-  // cancelGraph cancels every node job and refunds the graph's quota reservation.
-  if (state.status !== 'running' || !(await graphScheduler.cancelGraph(jobId, 'Cancelled by user'))) {
+  // cancelSingleGraphJob cancels every node job and refunds the graph's quota reservation.
+  if (state.status !== 'running' || !(await cancelSingleGraphJob(jobId, 'Cancelled by user'))) {
     return createProblemDetailsResponse(
       409,
       `Unable to cancel job in state "${state.status}".`,

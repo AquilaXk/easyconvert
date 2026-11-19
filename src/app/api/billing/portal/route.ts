@@ -4,6 +4,7 @@ import { codedRefusal } from '@/lib/api/problem-details';
 import { readSessionOrRefusal } from '@/lib/auth/session-refusal';
 import { getBillingProvider } from '@/lib/billing';
 import { subscriptionStore } from '@/lib/billing/subscription-store';
+import { redactSecrets } from '@/lib/security/redact';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,7 +27,7 @@ export async function POST(req: NextRequest) {
     try {
       return NextResponse.json({ success: true, ...(await billing.provider.createPortalLink(subscription)) });
     } catch (error) {
-      console.error('[billing] portal session failed:', error);
+      console.error('[billing] portal session failed:', redactSecrets(error instanceof Error ? error.message : String(error)));
       return providerFailed();
     }
   });

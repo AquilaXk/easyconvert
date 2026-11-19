@@ -1,5 +1,6 @@
 import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from '@prometheus-io/client';
 import {
+  AUTH_MAIL_BUDGET_LEVELS,
   BILLING_RESULTS,
   BILLING_SOURCES,
   FAMILIES,
@@ -9,6 +10,7 @@ import {
   REQUEST_ROUTES,
   SPAWN_FAILURE_REASONS,
   onList,
+  type AuthMailBudgetLevel,
   type BillingResult,
   type BillingSource,
   type Family,
@@ -42,6 +44,7 @@ export interface Instruments {
   readonly queueSampleFailures: Counter;
   readonly sandboxSpawnFailures: Counter<'reason'>;
   readonly billingEvents: Counter<'source' | 'result'>;
+  readonly authMailBudgetEvents: Counter<'level'>;
 }
 
 function createInstruments(): Instruments {
@@ -106,6 +109,12 @@ function createInstruments(): Instruments {
       labelNames: ['source', 'result'] as const,
       registers: [registry],
     }),
+    authMailBudgetEvents: new Counter({
+      name: 'easyconvert_auth_mail_budget_events_total',
+      help: 'Daily authentication mail budget threshold events, by level (warn, verify_cap, hard_cap).',
+      labelNames: ['level'] as const,
+      registers: [registry],
+    }),
   };
 }
 
@@ -150,6 +159,13 @@ export function observeBillingEvent(source: BillingSource, result: BillingResult
   // Called after a subscription was written: a counter that throws must not turn an applied event into a 500 the provider retries.
   try {
     instruments().billingEvents.inc({ source: onList(BILLING_SOURCES, source, 'webhook'), result: onList(BILLING_RESULTS, result, 'ignored') });
+  } catch {}
+}
+
+/** Counts one authentication mail daily budget threshold crossing. */
+export function observeAuthMailBudgetEvent(level: AuthMailBudgetLevel): void {
+  try {
+    instruments().authMailBudgetEvents.inc({ level: onList(AUTH_MAIL_BUDGET_LEVELS, level, 'warn') });
   } catch {}
 }
 

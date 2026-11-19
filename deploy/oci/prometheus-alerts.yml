@@ -77,3 +77,14 @@ groups:
           summary: "EasyConvert subscription with no account: {{ $labels.result }} from {{ $labels.source }}"
           description: "A subscription change or a subscription of the payment provider belongs to no account of this server (unattributed: no valid account binding and no known subscription; unknown_user: the account is gone), so a payment is taken for a plan nobody holds."
           runbook: docs/operations/alerts.md#alert-billing-unmatched
+
+      - alert: EasyConvertAuthMailBudgetReached
+        expr: |
+          sum by (level) (increase(easyconvert_auth_mail_budget_events_total{level=~"verify_cap|hard_cap"}[1h])) > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "EasyConvert daily authentication mail budget {{ $labels.level }} reached"
+          description: "Daily authentication email volume crossed the {{ $labels.level }} threshold, so verification or password-reset emails are being shed until UTC midnight."
+          runbook: docs/operations/alerts.md#alert-auth-mail-budget

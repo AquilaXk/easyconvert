@@ -1024,6 +1024,8 @@ case "$*" in
   *--resolve*)
     case "$*" in
       *api/health/conversion*) printf '%s' "\${STUB_PUBLIC_STATUS:-404}" ;;
+      *api/queue/stats*) printf '%s' "\${STUB_PUBLIC_QUEUE_STATS_STATUS:-404}" ;;
+      */metrics*) printf '%s' "\${STUB_PUBLIC_METRICS_STATUS:-404}" ;;
       *) printf '%s' "\${STUB_PUBLIC_HEALTH_STATUS:-200}" ;;
     esac
     exit 0 ;;
@@ -1372,13 +1374,31 @@ exit 0`
     expect(result.stderr.split('\n').filter((line) => line === 'y' || line.startsWith('y\u001b'))).toEqual([]);
   });
 
-  it('asks the public site, through the nginx of this host, for the readiness path and then for the smoke probe, and moves the links only on the 200 and the 404', () => {
+  it('asks the public site, through the nginx of this host, for the readiness path and then for every internal blocked probe, and moves the links only on 200 and 404s', () => {
     expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
     const publicChecks = calls().filter((call) => call.startsWith('curl') && call.includes('--resolve'));
-    expect(publicChecks).toHaveLength(2);
+    expect(publicChecks).toHaveLength(4);
     for (const check of publicChecks) expect(check).toContain('--resolve convert.example.test:443:127.0.0.1 ');
     expect(publicChecks[0]).toMatch(/ https:\/\/convert\.example\.test\/api\/health$/);
     expect(publicChecks[1]).toMatch(/ https:\/\/convert\.example\.test\/api\/health\/conversion$/);
+    expect(publicChecks[2]).toMatch(/ https:\/\/convert\.example\.test\/api\/queue\/stats$/);
+    expect(publicChecks[3]).toMatch(/ https:\/\/convert\.example\.test\/metrics$/);
+  });
+
+  it.each([
+    ['forwards /api/queue/stats', { STUB_PUBLIC_QUEUE_STATS_STATUS: '200' }, 'forwarded /api/queue/stats (HTTP status 200): install'],
+    ['answers /api/queue/stats with 403', { STUB_PUBLIC_QUEUE_STATS_STATUS: '403' }, 'answered /api/queue/stats with HTTP status 403, not the 404 of the block'],
+    ['forwards /metrics', { STUB_PUBLIC_METRICS_STATUS: '200' }, 'forwarded /metrics (HTTP status 200): install'],
+    ['answers /metrics with 502', { STUB_PUBLIC_METRICS_STATUS: '502' }, 'answered /metrics with HTTP status 502, not the 404 of the block'],
+  ])('rolls back a release when the public site %s', (_, envOverrides, message) => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const good = currentRelease();
+    const result = run(['deploy', ref('b')], { env: hostEnv(envOverrides) });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(message);
+    expect(result.stderr).toContain('rolling back');
+    expect(currentRelease()).toBe(good);
+    expect(releases()).toEqual([good]);
   });
 
   it.each([

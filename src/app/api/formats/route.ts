@@ -8,6 +8,7 @@ import { describeEngines, enginesForPair, installedEngineVersion, isEngineInstal
 export const dynamic = 'force-dynamic';
 
 const HTTP_BAD_REQUEST = 400;
+const FORMATS_CACHE_HEADERS = { 'Cache-Control': 'public, max-age=60, s-maxage=300, stale-while-revalidate=600' };
 
 /** The engines of one pair, each with its installed version and whether its program is installed here. */
 async function pairEntry(source: string, target: string) {
@@ -33,7 +34,9 @@ export async function GET(req: NextRequest) {
   const engineParam = params.get('engine');
   const capture = { website: { enabled: websiteCaptureEnabled(), formats: CAPTURE_OUTPUT_FORMATS } };
   const body = { success: true, count: formats.length, categories: CATEGORIES, formats, engines, capture };
-  if (sourceParam === null && targetParam === null && engineParam === null) return NextResponse.json(body);
+  if (sourceParam === null && targetParam === null && engineParam === null) {
+    return NextResponse.json(body, { headers: FORMATS_CACHE_HEADERS });
+  }
 
   const instance = req.nextUrl.pathname;
   const source = sourceParam === null ? undefined : getFormatByExtension(sourceParam);
@@ -52,5 +55,5 @@ export async function GET(req: NextRequest) {
       if (engineParam === null || entry.engines.some((e) => e.id === engineParam)) pairs.push(entry);
     }
   }
-  return NextResponse.json({ ...body, pairs });
+  return NextResponse.json({ ...body, pairs }, { headers: FORMATS_CACHE_HEADERS });
 }

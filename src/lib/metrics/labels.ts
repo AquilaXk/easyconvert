@@ -54,6 +54,10 @@ export type BillingSource = (typeof BILLING_SOURCES)[number];
 export const BILLING_RESULTS = ['applied', 'duplicate', 'stale', 'other_subscription', 'unknown_user', 'unattributed', 'ignored', 'missing'] as const;
 export type BillingResult = (typeof BILLING_RESULTS)[number];
 
+/** Threshold crossed by the daily authentication email budget (`src/lib/auth/mail-budget.ts`). */
+export const AUTH_MAIL_BUDGET_LEVELS = ['warn', 'verify_cap', 'hard_cap'] as const;
+export type AuthMailBudgetLevel = (typeof AUTH_MAIL_BUDGET_LEVELS)[number];
+
 const HTTP_BAD_REQUEST = 400;
 const HTTP_SERVER_ERROR = 500;
 const HTTP_GATEWAY_TIMEOUT = 504;

@@ -122,7 +122,7 @@ export class SubscriptionStore {
     if (existing && existing.providerSubscriptionId !== record.providerSubscriptionId && !holdsPlan) return 'other_subscription';
     this.byUser.set(record.userId, record);
     this.bySubscription.set(record.providerSubscriptionId, record.userId);
-    await this.users.updateUser(record.userId, { tier, tierUntil: until });
+    await this.users.updateUser(record.userId, { tier, tierUntil: until ?? null });
     return 'applied';
   }
 

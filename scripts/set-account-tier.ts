@@ -1,3 +1,4 @@
+import { parseOperatorCliArgs } from '../src/lib/auth/operator-cli-args';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import type { UserRecord, UserTier } from '../src/lib/auth/types';
 import { isEntitlingStatus } from '../src/lib/billing/entitlement';
@@ -35,16 +36,21 @@ export async function planTierChange(idOrEmail: string, tier: UserTier): Promise
 
 /** Writes the plan with no end date, so a paid plan set by hand does not lapse to free. */
 export async function applyTierChange(change: TierChange): Promise<void> {
-  const updated = await redisUserStore.updateUser(change.userId, { tier: change.to, tierUntil: undefined });
+  const updated = await redisUserStore.updateUser(change.userId, { tier: change.to, tierUntil: null });
   if (!updated || updated.tier !== change.to) throw new Error(`The plan of ${change.email} was not written.`);
 }
 
-async function main(argv: readonly string[]): Promise<number> {
-  const valueOf = (flag: string): string | undefined => (argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : undefined);
-  const idOrEmail = valueOf('--user');
-  const tier = valueOf('--tier') as UserTier | undefined;
+export async function main(argv: readonly string[]): Promise<number> {
+  const usage = `Usage: set-account-tier --user <account id or email> --tier <${SETTABLE_TIERS.join('|')}> [--apply]`;
+  const parsed = parseOperatorCliArgs(argv, { valueFlags: ['--user', '--tier'], booleanFlags: ['--apply'] });
+  if (!parsed.ok) {
+    console.error(`${parsed.error}\n${usage}`);
+    return 2;
+  }
+  const idOrEmail = parsed.values.get('--user');
+  const tier = parsed.values.get('--tier') as UserTier | undefined;
   if (!idOrEmail || !tier || !SETTABLE_TIERS.includes(tier)) {
-    console.error(`Usage: set-account-tier --user <account id or email> --tier <${SETTABLE_TIERS.join('|')}> [--apply]`);
+    console.error(usage);
     return 2;
   }
   const change = await planTierChange(idOrEmail, tier);
@@ -53,7 +59,7 @@ async function main(argv: readonly string[]): Promise<number> {
     return 1;
   }
   console.log(`${change.email} (${change.userId}): ${change.from} -> ${change.to}`);
-  if (!argv.includes('--apply')) {
+  if (!parsed.flags.has('--apply')) {
     console.log('Dry run: nothing was written. Run again with --apply to write.');
     return 0;
   }

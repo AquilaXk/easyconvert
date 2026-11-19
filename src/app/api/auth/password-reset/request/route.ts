@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const record = await redisUserStore.findByEmail(email);
-    if (record && isPasswordAccount(record)) {
+    if (record && isPasswordAccount(record) && typeof record.suspendedAt !== 'number') {
       await queueAccountMail('reset', record, mailLocale(body.locale));
     }
   } catch {

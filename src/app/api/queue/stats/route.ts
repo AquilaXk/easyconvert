@@ -2,23 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { storageProvider } from '@/lib/storage';
 import { withQueueErrors } from '@/lib/api/queue-error-response';
+import { hasExternalProxyForwardingHeaders } from '@/lib/security/loopback-only-guard';
 
 export const dynamic = 'force-dynamic';
 
 const STATS_PATH = '/api/queue/stats';
-
-function isLoopbackIp(raw: string): boolean {
-  const normalized = raw.trim().replace(/^\[|\]$/g, '').toLowerCase();
-  return normalized === '127.0.0.1' || normalized === '::1' || normalized === '::ffff:127.0.0.1';
-}
-
-function hasExternalProxyForwardingHeaders(headers: Headers): boolean {
-  if (headers.has('x-forwarded-for') || headers.has('cf-connecting-ip')) {
-    return true;
-  }
-  const realIp = headers.get('x-real-ip');
-  return realIp !== null && !isLoopbackIp(realIp);
-}
 
 export async function GET(): Promise<NextResponse>;
 export async function GET(req: NextRequest | Request): Promise<NextResponse>;

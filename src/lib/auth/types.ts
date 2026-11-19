@@ -17,12 +17,26 @@ export interface User {
   emailVerified?: boolean;
   /** The version of the terms accepted at sign-up (`TERMS_VERSION`); absent on accounts made before it was recorded. */
   acceptedTermsVersion?: string;
+  /** Epoch milliseconds when an operator suspended this account; absent when active. */
+  suspendedAt?: number;
+  /** Sanitized operator reason explaining why the account was suspended. */
+  suspendedReason?: string;
 }
 
 export interface UserRecord extends User {
   passwordHash?: string;
   salt?: string;
 }
+
+/**
+ * Partial user updates passed to `UserStore.updateUser`. Passing `null` for an optional field removes it
+ * in both Redis Lua (`cjson.null` -> `nil`) and the in-memory store.
+ */
+export type UserRecordUpdates = {
+  [K in keyof Omit<UserRecord, 'id' | 'email' | 'createdAt'>]?:
+    | Omit<UserRecord, 'id' | 'email' | 'createdAt'>[K]
+    | null;
+};
 
 export interface SessionPayload {
   sub: string;

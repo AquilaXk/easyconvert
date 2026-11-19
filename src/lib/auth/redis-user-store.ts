@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { createConfiguredRedisClient, hasConfiguredRedis } from '../redis/client-factory';
 import { readyGatedRedis } from '../redis/when-ready';
-import type { User, UserRecord, UserTier } from './types';
+import type { User, UserRecord, UserRecordUpdates, UserTier } from './types';
 import { failClosed } from './store-unavailable';
 
 export interface RedisUserStoreOptions {
@@ -47,7 +47,11 @@ end
 local user = cjson.decode(raw)
 local updates = cjson.decode(ARGV[1])
 for k, v in pairs(updates) do
-  user[k] = v
+  if v == cjson.null then
+    user[k] = nil
+  else
+    user[k] = v
+  end
 end
 local liveVersion = tonumber(redis.call('GET', KEYS[2]))
 if liveVersion and (tonumber(user["sessionVersion"]) or 1) < liveVersion then
@@ -98,10 +102,33 @@ end
 return nextVersion
 `;
 
+/** Strips JSON `null` optional fields into `undefined` (absent properties) after deserialization. */
+function normalizeOptionalFields(record: UserRecord): UserRecord {
+  if (
+    record.tierUntil !== null &&
+    record.suspendedAt !== null &&
+    record.suspendedReason !== null &&
+    record.avatarUrl !== null &&
+    record.acceptedTermsVersion !== null
+  ) {
+    return record;
+  }
+  const clean = { ...record } as UserRecord & Record<string, unknown>;
+  for (const [key, value] of Object.entries(clean)) {
+    if (value === null) {
+      delete clean[key];
+    }
+  }
+  return clean;
+}
+
 /** The record as a request sees it: a paid tier whose end has passed reads as free, so the end needs no sweep. */
 function withCurrentTier(record: UserRecord): UserRecord {
-  if (record.tierUntil === undefined || record.tier === 'free' || record.tierUntil > Date.now()) return record;
-  return { ...record, tier: 'free' };
+  const normalized = normalizeOptionalFields(record);
+  if (normalized.tierUntil === undefined || normalized.tier === 'free' || normalized.tierUntil > Date.now()) {
+    return normalized;
+  }
+  return { ...normalized, tier: 'free' };
 }
 
 /**
@@ -238,7 +265,8 @@ export class RedisUserStore {
     }
 
     const id = this.distributedEmails.get(normalized);
-    return id ? this.distributedUsers.get(id) || null : null;
+    const record = id ? this.distributedUsers.get(id) : undefined;
+    return record ? withCurrentTier(record) : null;
   }
 
   public async createUser(data: {
@@ -309,7 +337,7 @@ export class RedisUserStore {
 
   public async updateUser(
     id: string,
-    updates: Partial<Omit<UserRecord, 'id' | 'email' | 'createdAt'>>
+    updates: UserRecordUpdates
   ): Promise<UserRecord | null> {
     if (!id || typeof id !== 'string') return null;
 
@@ -326,7 +354,7 @@ export class RedisUserStore {
           String(Date.now())
         );
         if (!updatedRaw) return null;
-        return JSON.parse(updatedRaw as string);
+        return withCurrentTier(JSON.parse(updatedRaw as string) as UserRecord);
       } catch (err) {
         return failClosed('RedisUserStore', 'updateUser', err);
       }
@@ -335,16 +363,23 @@ export class RedisUserStore {
     const existing = this.distributedUsers.get(id);
     if (!existing) return null;
     const liveVersion = this.userSessionVersions.get(id);
-    const updated: UserRecord = {
+    const nextRecord: Record<string, unknown> = {
       ...existing,
-      ...updates,
       updatedAt: Date.now(),
     };
+    for (const [key, value] of Object.entries(updates)) {
+      if (value === null) {
+        delete nextRecord[key];
+      } else if (value !== undefined) {
+        nextRecord[key] = value;
+      }
+    }
+    const updated = nextRecord as unknown as UserRecord;
     if (liveVersion !== undefined && (updated.sessionVersion ?? 1) < liveVersion) {
       updated.sessionVersion = liveVersion;
     }
     this.distributedUsers.set(id, updated);
-    return updated;
+    return withCurrentTier(updated);
   }
 
   public async updateTier(id: string, tier: UserTier): Promise<UserRecord | null> {

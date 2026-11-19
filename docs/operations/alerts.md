@@ -1,6 +1,6 @@
 # Alert runbook
 
-One entry for each alert rule in [`deploy/oci/prometheus-alerts.yml`](../../deploy/oci/prometheus-alerts.yml) that [slo.md](../slo.md) names: the burn of the error budget ([`EasyConvertErrorBudgetBurn`](#alert-error-budget-burn)), the age of the queue ([`EasyConvertQueueAgeHigh`](#alert-queue-age)), the restarts of the worker ([`EasyConvertWorkerRestarts`](#alert-worker-restarts)), and a subscription that no account holds ([`EasyConvertBillingUnmatched`](#alert-billing-unmatched)). Each rule in `deploy/oci/prometheus-alerts.yml` links to the anchor of its entry below, and the entries are also what to follow when you see the same symptom by hand. The thresholds (how fast a burn, how many seconds of age, how many restarts) are set with the rules in `deploy/oci/prometheus-alerts.yml`, not here; every entry starts from "the alert fired" or "you saw this".
+One entry for each alert rule in [`deploy/oci/prometheus-alerts.yml`](../../deploy/oci/prometheus-alerts.yml) that [slo.md](../slo.md) names: the burn of the error budget ([`EasyConvertErrorBudgetBurn`](#alert-error-budget-burn)), the age of the queue ([`EasyConvertQueueAgeHigh`](#alert-queue-age)), the restarts of the worker ([`EasyConvertWorkerRestarts`](#alert-worker-restarts)), a subscription that no account holds ([`EasyConvertBillingUnmatched`](#alert-billing-unmatched)), and the daily authentication mail budget ([`EasyConvertAuthMailBudgetReached`](#alert-auth-mail-budget)). Each rule in `deploy/oci/prometheus-alerts.yml` links to the anchor of its entry below, and the entries are also what to follow when you see the same symptom by hand. The thresholds (how fast a burn, how many seconds of age, how many restarts) are set with the rules in `deploy/oci/prometheus-alerts.yml`, not here; every entry starts from "the alert fired" or "you saw this".
 
 Commands use the shell function `C` of the [README](README.md#your-shell-on-the-host). Each entry ends with how to know it is over. For the incident levels and who is told, see [incidents.md](incidents.md).
 
@@ -110,3 +110,18 @@ Do not delete jobs from Redis by hand: the steps the worker takes when a job end
 Never edit the subscription keys in Redis by hand: the record, its index and the account's plan are written by one script.
 
 **Over when.** The subscription is canceled at Paddle or its account holds the plan, and `increase(easyconvert_billing_events_total{result=~"unattributed|unknown_user"}[1h])` is 0 (a reconcile run is every hour; the alert resolves at the next one).
+
+<a id="alert-auth-mail-budget"></a>
+## Alert: daily authentication mail budget reached
+
+**Anchor for the alert:** `docs/operations/alerts.md#alert-auth-mail-budget`.
+
+**Means.** `easyconvert_auth_mail_budget_events_total` recorded `level="verify_cap"` (450/day default, stopping verification mails while reserving capacity for password resets) or `level="hard_cap"` (500/day default, stopping all authentication emails until UTC midnight). Level: SEV2 when verification emails are shed (`verify_cap`); SEV1 when password-reset emails also stop (`hard_cap`).
+
+**Check.**
+
+1. Logs: `C logs --no-color --since 6h web | grep 'auth_mail_budget'` shows the exact timestamp and threshold (`level=warn`, `level=cap kind=verify` or `kind=reset`).
+2. Edge logs: inspect `/var/log/nginx/easyconvert-edge.log` and Redis counters (`mail_budget:*`) for abusive `/api/auth/register`, `/api/auth/email-verification/resend`, or `/api/auth/password-reset/request` traffic from one source.
+3. Account abuse check: if an offending test or abusive account is causing repeated sign-ups/resets, inspect and suspend it via `C exec -T worker node dist/set-account-suspension.js --user <id or email> --suspend --reason "auth mail flood" [--apply]`.
+
+**Over when.** Abuse traffic has stopped and the UTC day rolls over (mail budget resets at 00:00 UTC) so verification and password-reset flows succeed again.

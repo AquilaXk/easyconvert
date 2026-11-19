@@ -820,13 +820,13 @@ export const internalPaths = {
       description:
         'Readiness probe built from live checks: Redis PING (only when Redis is configured) and storage reachability decide the status; a failure of either makes the service unhealthy (503). ' +
         'The native tools soffice, ffmpeg, ffprobe, pdftoppm, pdftotext, tesseract, 7z and dcraw_emu are probed as advisory components: a missing tool fails only the conversions that need it. Results are cached for a few seconds. ' +
-        'Anonymous callers receive only `status`. A request with an API key holding the admin wildcard (*) scope also receives the per-component view; the view names components and coarse reasons, never paths, hosts or credentials.',
+        'Anonymous callers receive only `status`. A loopback request in production (or a non-production request) with an API key holding the admin wildcard (*) scope also receives the per-component view; the view names components and coarse reasons, never paths, hosts or credentials. Requests carrying external proxy forwarding headers in production are refused the detailed view (403).',
       operationId: 'getHealth',
       security: ANONYMOUS_OR_SCOPE('*'),
       responses: {
         '200': healthResponse('Redis (when configured) and storage are available.'),
         '401': createProblemResponse('The API key is invalid.'),
-        '403': createProblemResponse('The API key lacks the admin wildcard (*) scope.'),
+        '403': createProblemResponse('The API key lacks the admin wildcard (*) scope or the detailed view was requested through external proxy forwarding headers in production.'),
         '503': healthResponse('Redis or storage is unavailable.'),
       },
     },
@@ -852,11 +852,12 @@ export const internalPaths = {
       description:
         'The check the deploy runs after a release starts: a one-pixel PPM of the route\'s own, converted to PNG through the conversion dispatcher, so the native engines run in their sandbox. ' +
         'It reads nothing of the request and charges no daily allowance. Callers at once share one conversion, and its outcome is reused for 5 seconds. ' +
-        'The host proxy does not forward it; only the loopback port of the web service answers it.',
+        'The host proxy does not forward it and production requests carrying external forwarding headers are refused (404); only the loopback port of the web service answers it.',
       operationId: 'getSmokeConversion',
       security: PUBLIC_ACCESS,
       responses: {
         '200': binaryResponse('The one-pixel PNG.', 'image/png'),
+        '404': createErrorResponse('Refused when accessed via external proxy forwarding headers in production.'),
         '499': createProblemResponse('The client closed the connection first (problem type `https://api.easyconvert.io/problems/client-closed-request`). The shared conversion goes on for the other callers. No client is left to read this answer.'),
         '500': createErrorResponse('The conversion failed on the server (fixed `error`, no `code`).'),
         '504': createProblemResponse('The conversion did not finish within 30 seconds. It is stopped, and callers get this answer until it has ended.'),

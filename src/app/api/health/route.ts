@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authErrorHeaders, extractApiKeySecret, validateApiAccess } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { getHealthReport } from '@/lib/health/probes';
+import { hasExternalProxyForwardingHeaders } from '@/lib/security/loopback-only-guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,6 +21,17 @@ const NO_STORE = { 'Cache-Control': 'no-store' };
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const instanceUri = req.nextUrl?.pathname || '/api/health';
   const wantsDetail = extractApiKeySecret(req) !== null;
+
+  if (wantsDetail && process.env.NODE_ENV === 'production' && hasExternalProxyForwardingHeaders(req.headers)) {
+    return createProblemDetailsResponse(
+      HTTP_FORBIDDEN,
+      'Forbidden: the detailed health view is restricted to loopback callers in production.',
+      instanceUri,
+      undefined,
+      undefined,
+      NO_STORE
+    );
+  }
 
   if (wantsDetail) {
     let auth: Awaited<ReturnType<typeof validateApiAccess>>;

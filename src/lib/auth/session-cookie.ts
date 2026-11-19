@@ -12,8 +12,17 @@
 export const LEGACY_SESSION_COOKIE_NAME = 'easyconvert_session';
 export const HOST_SESSION_COOKIE_NAME = '__Host-easyconvert_session';
 
-/** The names a request's session cookie may carry, in the order they are read. */
-export const SESSION_COOKIE_NAMES: readonly string[] = [HOST_SESSION_COOKIE_NAME, LEGACY_SESSION_COOKIE_NAME];
+/**
+ * The names a production request's session cookie may carry (in read priority).
+ * Non-production HTTP environments also read {@link LEGACY_SESSION_COOKIE_NAME} via
+ * {@link readableSessionCookieNames}.
+ */
+export const SESSION_COOKIE_NAMES: readonly string[] = [HOST_SESSION_COOKIE_NAME];
+
+/** Cookie names accepted when reading an incoming session cookie. */
+export function readableSessionCookieNames(production = process.env.NODE_ENV === 'production'): readonly string[] {
+  return production ? SESSION_COOKIE_NAMES : [HOST_SESSION_COOKIE_NAME, LEGACY_SESSION_COOKIE_NAME];
+}
 
 /** The name the server writes the session cookie under. */
 export function sessionCookieName(production: boolean = process.env.NODE_ENV === 'production'): string {
@@ -25,11 +34,7 @@ export function sessionTokenFromCookieHeader(header: string | null | undefined):
   return sessionTokensFromCookieHeader(header)[0] ?? null;
 }
 
-/**
- * The session tokens of a `Cookie` header under every name of SESSION_COOKIE_NAMES that it carries, the one that is read first
- * first. A sign-out revokes all of them: while the plain name is still read, a request that carries both would otherwise
- * keep the session of the one that was not revoked.
- */
+/** The session tokens of a `Cookie` header under every readable name it carries, highest priority first. */
 export function sessionTokensFromCookieHeader(header: string | null | undefined): string[] {
   if (!header) return [];
   const cookies = new Map<string, string>();
@@ -40,19 +45,21 @@ export function sessionTokensFromCookieHeader(header: string | null | undefined)
     const name = text.slice(0, equals);
     if (!cookies.has(name)) cookies.set(name, text.slice(equals + 1));
   }
-  return SESSION_COOKIE_NAMES.map((name) => cookies.get(name)).filter((value): value is string => Boolean(value));
+  return readableSessionCookieNames()
+    .map((name) => cookies.get(name))
+    .filter((value): value is string => Boolean(value));
 }
 
-/** The session token of a cookie store (`cookies()` of next/headers, `request.cookies`), under the first name it carries. */
+/** The session token of a cookie store (`cookies()` of next/headers, `request.cookies`), under the first readable name it carries. */
 export function sessionTokenFromCookieStore(store: { get(name: string): { value: string } | undefined }): string | null {
-  for (const name of SESSION_COOKIE_NAMES) {
+  for (const name of readableSessionCookieNames()) {
     const value = store.get(name)?.value;
     if (value) return value;
   }
   return null;
 }
 
-/** Whether a request carries any session cookie (the edge CSRF check applies to ambient credentials). */
+/** Whether a request carries any readable session cookie (the edge CSRF check applies to ambient credentials). */
 export function hasSessionCookie(store: { has(name: string): boolean }): boolean {
-  return SESSION_COOKIE_NAMES.some((name) => store.has(name)) || store.has('session');
+  return readableSessionCookieNames().some((name) => store.has(name)) || store.has('session');
 }

@@ -8,6 +8,7 @@ import { getBillingProvider } from '@/lib/billing';
 import { isPackageSize, isSubscriptionSize, type Product } from '@/lib/billing/credits';
 import { entitlementOf } from '@/lib/billing/entitlement';
 import { subscriptionStore } from '@/lib/billing/subscription-store';
+import { redactSecrets } from '@/lib/security/redact';
 
 export const dynamic = 'force-dynamic';
 
@@ -48,7 +49,7 @@ export async function POST(req: NextRequest) {
         try {
           await billing.provider.changeSubscription(existing, product.credits);
         } catch (error) {
-          console.error('[billing] subscription change failed:', error);
+          console.error('[billing] subscription change failed:', redactSecrets(error instanceof Error ? error.message : String(error)));
           return providerFailed();
         }
         return NextResponse.json({ success: true, changed: true });

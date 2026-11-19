@@ -96,6 +96,41 @@ function cleanExpiredEdgeBuckets(now: number): void {
 const BILLING_WEBHOOK_PATH = '/api/billing/webhook';
 const BILLING_WEBHOOK_BUCKET_KEY = 'route:billing-webhook';
 const BILLING_SIGNATURE_HEADER = 'paddle-signature';
+const BILLING_SIGNATURE_MAX_LENGTH = 512;
+const BILLING_TIMESTAMP_REGEX = /^\d{1,20}$/;
+const BILLING_SHA256_HEX_REGEX = /^[0-9a-f]{64}$/;
+
+/**
+ * Pure structural guard matching `parseSignatureHeader` in `src/lib/billing/webhook-signature.ts`:
+ * requires a bounded header length, an integer `ts`, and at least one 64-char lowercase hex `h1` signature
+ * so trivial forged headers cannot consume the shared webhook bucket.
+ */
+function hasValidBillingSignatureFormat(header: string | null): boolean {
+  if (!header || header.length > BILLING_SIGNATURE_MAX_LENGTH) return false;
+  let timestamp = '';
+  let hashCount = 0;
+  for (const part of header.split(';')) {
+    const at = part.indexOf('=');
+    if (at < 0) continue;
+    const key = part.slice(0, at);
+    const value = part.slice(at + 1);
+    if (key === 'ts') {
+      timestamp = value;
+    } else if (key === 'h1' && value) {
+      if (!BILLING_SHA256_HEX_REGEX.test(value)) return false;
+      hashCount += 1;
+    }
+  }
+  return BILLING_TIMESTAMP_REGEX.test(timestamp) && hashCount > 0;
+}
+
+function isCookieOnlyMutationRoute(pathname: string): boolean {
+  return (
+    pathname === '/api/auth' ||
+    pathname.startsWith('/api/auth/') ||
+    ((pathname === '/api/billing' || pathname.startsWith('/api/billing/')) && pathname !== BILLING_WEBHOOK_PATH)
+  );
+}
 
 function checkEdgeIpRateLimit(bucketKey: string, limits: EdgeBucketLimits): { allowed: boolean; retryAfterSec: number } {
   const now = Date.now();
@@ -331,9 +366,11 @@ function extractRequestOriginHeader(request: NextRequest, fallbackToRawReferer: 
 function checkMutationCsrf(request: NextRequest, pathname: string): NextResponse | null {
   const hasAmbientSession = hasSessionCookie(request.cookies);
   const authHeader = request.headers.get('authorization');
+  const acceptsApiKey = !isCookieOnlyMutationRoute(pathname);
   const hasApiKey =
-    Boolean(request.headers.get('x-api-key')) ||
-    Boolean(authHeader?.startsWith('Bearer ec_live_'));
+    acceptsApiKey &&
+    (Boolean(request.headers.get('x-api-key')) ||
+      Boolean(authHeader?.startsWith('Bearer ec_live_')));
 
   // If request relies on ambient browser credentials (cookies) without an explicit API key:
   if (hasAmbientSession && !hasApiKey) {
@@ -466,8 +503,12 @@ function handleApiMiddleware(request: NextRequest, pathname: string): NextRespon
   const clientIp = rateLimitKey(clientIpKey(resolved));
 
   // 1. Edge-level IP Rate Limiter
+  const isSignedBillingWebhook =
+    request.method.toUpperCase() === 'POST' &&
+    pathname === BILLING_WEBHOOK_PATH &&
+    hasValidBillingSignatureFormat(request.headers.get(BILLING_SIGNATURE_HEADER));
   const edgeRate =
-    pathname === BILLING_WEBHOOK_PATH && request.headers.has(BILLING_SIGNATURE_HEADER)
+    isSignedBillingWebhook
       ? checkEdgeIpRateLimit(BILLING_WEBHOOK_BUCKET_KEY, SHARED_LIMITS)
       : checkEdgeIpRateLimit(clientIp, clientIp === UNATTRIBUTED_CLIENT_KEY ? SHARED_LIMITS : PER_CLIENT_LIMITS);
   if (!edgeRate.allowed) {

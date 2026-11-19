@@ -72,6 +72,14 @@ export async function GET(req: NextRequest) {
     const googleProfile = await exchangeGoogleCode(code, redirectUri, oauthSession.codeVerifier, oauthSession.nonce);
     let userRecord = await redisUserStore.findByEmail(googleProfile.email);
 
+    if (userRecord && typeof userRecord.suspendedAt === 'number') {
+      const refusedRedirect = redirectTo(origin, locale, '/auth', '?error=account_suspended');
+      const isProd = process.env.NODE_ENV === 'production';
+      const clearStateCookie = `${OAUTH_STATE_COOKIE_NAME}=; Path=/api/auth/google; Max-Age=0; HttpOnly; SameSite=Lax; ${isProd ? 'Secure;' : ''}`;
+      refusedRedirect.headers.append('Set-Cookie', clearStateCookie);
+      return refusedRedirect;
+    }
+
     if (!userRecord) {
       const termsRefused = termsRefusal(oauthSession.acceptedTermsVersion);
       if (termsRefused) return redirectToSignUpForTerms(origin, locale, termsRefused);

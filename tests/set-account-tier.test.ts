@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SETTABLE_TIERS, applyTierChange, planTierChange } from '../scripts/set-account-tier';
 import { quotaAllowanceOf } from '../src/lib/api-keys/quota-window';
-import { redisUserStore } from '../src/lib/auth/redis-user-store';
+import { RedisUserStore, UPDATE_USER_LUA_SCRIPT, redisUserStore } from '../src/lib/auth/redis-user-store';
 import { subscriptionStore } from '../src/lib/billing/subscription-store';
 import { TERMS_VERSION } from '../src/lib/legal/documents';
 
@@ -52,6 +52,81 @@ describe('set-account-tier, the operator tool that sets the plan of an account b
     const stored = await redisUserStore.findById(user.id);
     expect(stored?.tier).toBe('paid');
     expect(stored?.tierUntil).toBeUndefined();
+    expect(Object.hasOwn(stored ?? {}, 'tierUntil')).toBe(false);
+  });
+
+  it('deletes expired tierUntil on Redis and in-memory stores when promoting back to paid', async () => {
+    const expiredAt = Date.now() - 60_000;
+    const rawUsers = new Map<string, string>();
+    const fakeRedis = {
+      get: async (key: string) => rawUsers.get(key) ?? null,
+      eval: async (script: string, numKeys: number, ...args: string[]) => {
+        if (script !== UPDATE_USER_LUA_SCRIPT) return null;
+        expect(numKeys).toBe(2);
+        const [uKey, vKey] = args;
+        const raw = rawUsers.get(uKey);
+        if (!raw) return null;
+        const user = JSON.parse(raw) as Record<string, unknown>;
+        const updates = JSON.parse(args[2]) as Record<string, unknown>;
+        for (const [k, v] of Object.entries(updates)) {
+          if (v === null) {
+            delete user[k];
+          } else {
+            user[k] = v;
+          }
+        }
+        const liveVer = rawUsers.get(vKey);
+        if (liveVer && Number(user.sessionVersion ?? 1) < Number(liveVer)) {
+          user.sessionVersion = Number(liveVer);
+        }
+        user.updatedAt = Number(args[3]);
+        const encoded = JSON.stringify(user);
+        rawUsers.set(uKey, encoded);
+        return encoded;
+      },
+    };
+    const store = new RedisUserStore({ redisClient: fakeRedis as never, keyPrefix: 'test:{user}:' });
+    const seed = {
+      id: 'usr_expired_tier',
+      email: 'expired@tier.test',
+      name: 'Expired',
+      tier: 'paid',
+      tierUntil: expiredAt,
+      provider: 'email',
+      createdAt: 1000,
+      updatedAt: 1000,
+    };
+    rawUsers.set(`test:{user}:${seed.id}`, JSON.stringify(seed));
+    rawUsers.set(`test:{user}:emailIndex:${seed.email}`, seed.id);
+
+    // Lua script itself must clear null keys so Redis does not persist cjson.null.
+    expect(UPDATE_USER_LUA_SCRIPT).toContain('cjson.null');
+
+    const before = await store.findById(seed.id);
+    expect(before?.tier).toBe('free');
+
+    await store.updateUser(seed.id, { tier: 'paid', tierUntil: null });
+    const afterUpdate = await store.findById(seed.id);
+    expect(afterUpdate?.tier).toBe('paid');
+    expect(afterUpdate?.tierUntil).toBeUndefined();
+    expect(JSON.parse(rawUsers.get(`test:{user}:${seed.id}`)!).tierUntil).toBeUndefined();
+
+    // Also verify set-account-tier sends tierUntil: null through redisUserStore when promoting a user with expired tierUntil
+    const origGet = redisUserStore.getRedisClient();
+    redisUserStore.setRedisClient(fakeRedis as never);
+    try {
+      rawUsers.set(`easyconvert:{user}:${seed.id}`, JSON.stringify(seed));
+      rawUsers.set(`easyconvert:{user}:emailIndex:${seed.email}`, seed.id);
+      const change = await planTierChange(seed.id, 'paid');
+      if ('refusal' in change) throw new Error(change.refusal);
+      await applyTierChange(change);
+      const saved = await redisUserStore.findById(seed.id);
+      expect(saved?.tier).toBe('paid');
+      expect(saved?.tierUntil).toBeUndefined();
+      expect(Object.hasOwn(saved ?? {}, 'tierUntil')).toBe(false);
+    } finally {
+      redisUserStore.setRedisClient(origGet);
+    }
   });
 
   it('refuses an unknown account and an account whose plan comes from a live subscription', async () => {
