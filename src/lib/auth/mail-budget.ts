@@ -7,7 +7,9 @@ import { redisUserStore } from './redis-user-store';
  *
  * The day's mails are not all alike. A verification mail (a sign-up, a resend) can be asked for by anyone, so a flood of them
  * must not use up what a password reset needs: verification mails stop at `MAIL_DAILY_VERIFY_CAP` and the rest of the day, up
- * to `MAIL_DAILY_HARD_CAP`, is kept for reset mails. A refused mail is not counted, so a flood cannot eat the reserved share.
+ * to `MAIL_DAILY_HARD_CAP`, is kept for reset mails of verified accounts (a reset mail to an unverified address is asked for as `verify`,
+ * `queueAccountMail`: whoever makes accounts of addresses of their own could otherwise use up the reserve with resets). A refused mail is
+ * not counted, so a flood cannot eat the reserved share.
  * At `MAIL_DAILY_WARN` one line tells the operator the day is filling, and each cap logs one line when it is reached. The
  * routes that make a verification mail ask `mailBudgetLeft` first and answer that sending is unavailable for now, so the
  * visitor is told and not left waiting for a mail the account would drop. The hard cap sits under the account's limit so that

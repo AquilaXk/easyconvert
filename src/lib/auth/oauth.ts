@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { GoogleUserInfo } from './types';
 import { redisUserStore } from './redis-user-store';
 import { failClosed } from './store-unavailable';
+import { MAX_AVATAR_URL_LENGTH, MAX_DISPLAY_NAME_LENGTH } from '../api/field-limits';
 import { routing, type AppLocale } from '@/i18n/routing';
 
 export const OAUTH_STATE_COOKIE_NAME = 'easyconvert_oauth_state';
@@ -397,8 +398,9 @@ export async function exchangeGoogleCode(
   return {
     id: userData.sub,
     email: userData.email,
-    name: userData.name || userData.email.split('@')[0],
-    picture: userData.picture,
+    name: String(userData.name || userData.email.split('@')[0]).slice(0, MAX_DISPLAY_NAME_LENGTH),
+    // A picture address too long to store is left out: the account has no avatar, as one without a picture has none.
+    picture: typeof userData.picture === 'string' && userData.picture.length <= MAX_AVATAR_URL_LENGTH ? userData.picture : undefined,
     emailVerified: true,
   };
 }

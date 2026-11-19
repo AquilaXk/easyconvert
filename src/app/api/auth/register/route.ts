@@ -10,6 +10,7 @@ import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { authStoreUnavailableRefusal, codedRefusal, serverFault } from '@/lib/api/problem-details';
 import { AuthStoreUnavailableError } from '@/lib/auth/store-unavailable';
 import { readJsonObject } from '@/lib/api/json-body';
+import { MAX_DISPLAY_NAME_LENGTH } from '@/lib/api/field-limits';
 import {
   authRateLimitRefusal,
   consumeRegistrationRateLimit,
@@ -64,6 +65,10 @@ export async function POST(req: NextRequest) {
     // The domain, not the account, decides this, so it tells nothing about accounts.
     if (isDisposableEmail(email)) {
       return refusal(400, 'disposable_email', 'Disposable email addresses cannot be used to sign up.');
+    }
+
+    if (name.length > MAX_DISPLAY_NAME_LENGTH) {
+      return refusal(400, 'invalid_name', `The name must be at most ${MAX_DISPLAY_NAME_LENGTH} characters long.`);
     }
 
     if (!password || password.length < 8 || password.length > 1024) {

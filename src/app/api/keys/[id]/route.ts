@@ -5,6 +5,7 @@ import { ALL_API_KEY_SCOPES, ApiKeyScope, ApiKeyUpdateOptions } from '@/lib/api-
 import { toPublicApiKey } from '@/lib/api-keys/public-views';
 import { getWebhookSecretStore } from '@/lib/api-keys/webhook-secret-store';
 import { InvalidWebhookConfigError, validateWebhookUrl } from '@/lib/security/ssrf';
+import { MAX_KEY_NAME_LENGTH, MAX_WEBHOOK_SECRET_LENGTH, allowedIpsListError } from '@/lib/api/field-limits';
 
 export const dynamic = 'force-dynamic';
 
@@ -53,6 +54,9 @@ function parseWebhookUpdates(
       return 'webhookSecret must be a string.';
     }
     updates.webhookSecret = body.webhookSecret.trim();
+    if (updates.webhookSecret.length > MAX_WEBHOOK_SECRET_LENGTH) {
+      return `webhookSecret must be at most ${MAX_WEBHOOK_SECRET_LENGTH} characters long.`;
+    }
   }
 
   return null;
@@ -66,11 +70,8 @@ function parseAccessUpdates(
     if (!Array.isArray(body.allowedIps)) {
       return 'allowedIps must be an array of strings.';
     }
-    for (const ip of body.allowedIps) {
-      if (typeof ip !== 'string' || !ip.trim()) {
-        return 'Every item in allowedIps must be a non-empty string.';
-      }
-    }
+    const listError = allowedIpsListError(body.allowedIps);
+    if (listError) return listError;
     updates.allowedIps = body.allowedIps.map((ip) => ip.trim());
   }
 
@@ -104,6 +105,9 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
       return refusal(400, 'invalid_key_settings', 'name must be a non-empty string.');
     }
     updates.name = body.name.trim();
+    if (updates.name.length > MAX_KEY_NAME_LENGTH) {
+      return refusal(400, 'invalid_key_settings', `name must be at most ${MAX_KEY_NAME_LENGTH} characters long.`);
+    }
   }
 
   const accessError = parseAccessUpdates(body, updates);

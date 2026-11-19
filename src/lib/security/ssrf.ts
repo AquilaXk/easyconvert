@@ -2,6 +2,7 @@ import dns, { type LookupAddress } from 'node:dns';
 import net from 'node:net';
 import { Agent } from 'undici';
 import { isPublicAddress } from '../conversions/public-address';
+import { MAX_WEBHOOK_SECRET_LENGTH, MAX_WEBHOOK_URL_LENGTH } from '../api/field-limits';
 
 export const MAX_REDIRECTS = 5;
 
@@ -152,6 +153,9 @@ export function isPrivateOrRestrictedHost(hostname: string): boolean {
 }
 
 export function validateWebhookUrl(urlString: string): { valid: boolean; error?: string } {
+  if (urlString.length > MAX_WEBHOOK_URL_LENGTH) {
+    return { valid: false, error: `webhookUrl must be at most ${MAX_WEBHOOK_URL_LENGTH} characters long.` };
+  }
   let parsed: URL;
   try {
     parsed = new URL(urlString);
@@ -199,6 +203,9 @@ export function resolveEffectiveWebhook(
 ): { webhookUrl?: string; webhookSecret?: string; webhookKeyId?: string; error?: string } {
   const webhookUrl = paramUrl || keyUrl;
   const webhookSecret = paramSecret || keySecret;
+  if (webhookSecret && webhookSecret.length > MAX_WEBHOOK_SECRET_LENGTH) {
+    return { error: `webhookSecret must be at most ${MAX_WEBHOOK_SECRET_LENGTH} characters long.` };
+  }
   if (webhookUrl) {
     const urlCheck = validateWebhookUrl(webhookUrl);
     if (!urlCheck.valid) {

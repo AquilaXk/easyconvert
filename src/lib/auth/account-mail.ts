@@ -3,7 +3,7 @@ import { dispatchAuthMail } from './auth-mail';
 import { renderAuthMail, type AuthMailKind } from './auth-mail-templates';
 import { issueAuthToken } from './auth-email-token-store';
 import { consumeVerifyMailDailyCap } from './login-rate-limiter';
-import { mailBudgetLeft } from './mail-budget';
+import { mailBudgetLeft, type MailBudgetKind } from './mail-budget';
 import { mailLink } from './mail-config';
 import { isPlainMailbox } from './mailbox';
 import { isEmailVerified, isPasswordAccount } from './email-verified';
@@ -20,16 +20,27 @@ const TOKEN_PURPOSE = { reset: 'reset', verify: 'verify' } as const;
 export { isEmailVerified, isPasswordAccount };
 
 /**
+ * The share of the day's mail budget a mail draws on (src/lib/auth/mail-budget.ts). A reset mail to an address nobody has verified draws
+ * on the verification share, not on the reserve: anyone can make accounts of addresses they own, so the reserve above the verification
+ * cap stays for the accounts whose address is verified, which a flood of sign-ups cannot make.
+ */
+function budgetKindOf(kind: AuthMailKind, record: UserRecord): MailBudgetKind {
+  return kind === 'reset' && !isEmailVerified(record) ? 'verify' : kind;
+}
+
+/**
  * Makes a token for the account and sends its mail without waiting for the server of the mailbox. A failure of the token
  * store throws; a failure of the send is logged by its category and does not. A mail the day's budget has no room for is not
  * made (logged as `budget`), and checking that comes first so that such a mail does not count against the daily cap of its
- * address; a verification mail past that cap is not made either (logged as `address_cap`). The routes that ask for these
+ * address; a verification mail past that cap is not made either (logged as `address_cap`). A reset mail to an unverified address
+ * counts against the verification share (`budgetKindOf`). The routes that ask for these
  * answer alike whether the mail was sent or not.
  */
 export async function queueAccountMail(kind: AuthMailKind, record: UserRecord, locale: AppLocale): Promise<void> {
   // An address stored before registration checked its form gets no token and no mail.
   if (!isPlainMailbox(record.email)) return;
-  if (!(await mailBudgetLeft(kind))) {
+  const budgetKind = budgetKindOf(kind, record);
+  if (!(await mailBudgetLeft(budgetKind))) {
     console.warn('auth_mail_failure category=budget');
     return;
   }
@@ -38,5 +49,5 @@ export async function queueAccountMail(kind: AuthMailKind, record: UserRecord, l
     return;
   }
   const token = await issueAuthToken(TOKEN_PURPOSE[kind], { userId: record.id, email: record.email });
-  dispatchAuthMail(record.email, renderAuthMail(kind, locale, mailLink(locale, MAIL_PAGE[kind], token)), kind);
+  dispatchAuthMail(record.email, renderAuthMail(kind, locale, mailLink(locale, MAIL_PAGE[kind], token)), budgetKind);
 }

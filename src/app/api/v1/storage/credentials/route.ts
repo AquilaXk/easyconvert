@@ -9,12 +9,22 @@ import {
   validateStorageCredentials,
 } from '@/lib/storage';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { MAX_STORAGE_CREDENTIAL_JSON_BYTES, MAX_STORAGE_CREDENTIAL_NAME_LENGTH } from '@/lib/api/field-limits';
 import { withRateLimitHeaders } from '@/lib/api/rate-limit';
 import { refuseUnavailableStorageProvider } from '@/lib/api/byos-provider-guard';
 
 export const dynamic = 'force-dynamic';
 
 const BYOS_INVALID_ENDPOINT_TYPE = 'https://api.easyconvert.io/problems/byos-invalid-endpoint';
+
+/**
+ * The 500 for an error this route did not classify, in the problem+json shape of the other `/api/v1` routes. The text of the error can name a
+ * host or a path, so the answer is a fixed sentence and the error goes to the server log (as `serverFault` does for the routes of the web application).
+ */
+function unclassifiedFailure(error: unknown, sentence: string, instanceUri: string): NextResponse {
+  console.error('[v1/storage/credentials]', error);
+  return createProblemDetailsResponse(500, sentence, instanceUri, 'Internal Server Error');
+}
 
 export async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/storage/credentials';
@@ -72,6 +82,22 @@ async function postCredentialsAuthorized(req: NextRequest, instanceUri: string, 
     );
   }
 
+  if (name !== undefined && (typeof name !== 'string' || name.length > MAX_STORAGE_CREDENTIAL_NAME_LENGTH)) {
+    return createProblemDetailsResponse(
+      400,
+      `Invalid "name": must be a string of at most ${MAX_STORAGE_CREDENTIAL_NAME_LENGTH} characters.`,
+      instanceUri
+    );
+  }
+
+  if (Buffer.byteLength(JSON.stringify(credentials)) > MAX_STORAGE_CREDENTIAL_JSON_BYTES) {
+    return createProblemDetailsResponse(
+      400,
+      `Invalid "credentials": at most ${MAX_STORAGE_CREDENTIAL_JSON_BYTES} bytes as JSON.`,
+      instanceUri
+    );
+  }
+
   const unavailable = refuseUnavailableStorageProvider(providerType, instanceUri);
   if (unavailable) {
     return unavailable;
@@ -120,8 +146,7 @@ async function postCredentialsAuthorized(req: NextRequest, instanceUri: string, 
     if (err instanceof CredentialsVaultPersistenceError) {
       return createProblemDetailsResponse(503, err.message, instanceUri);
     }
-    const message = err instanceof Error ? err.message : 'Failed to register credentials';
-    return createProblemDetailsResponse(500, message, instanceUri);
+    return unclassifiedFailure(err, 'Failed to register credentials.', instanceUri);
   }
 }
 
@@ -156,7 +181,6 @@ export async function GET(req: NextRequest) {
     if (err instanceof CredentialsVaultPersistenceError) {
       return withRateLimitHeaders(createProblemDetailsResponse(503, err.message, instanceUri), auth.rateLimit);
     }
-    const message = err instanceof Error ? err.message : 'Failed to retrieve credentials';
-    return withRateLimitHeaders(createProblemDetailsResponse(500, message, instanceUri), auth.rateLimit);
+    return withRateLimitHeaders(unclassifiedFailure(err, 'Failed to retrieve credentials.', instanceUri), auth.rateLimit);
   }
 }

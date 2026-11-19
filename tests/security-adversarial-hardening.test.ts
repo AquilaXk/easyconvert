@@ -21,7 +21,7 @@ import {
 import { createSessionToken, getSessionFromToken, SESSION_COOKIE_NAME } from '@/lib/auth/session';
 import { middleware } from '@/middleware';
 import { POST as loginPost } from '@/app/api/auth/login/route';
-import { hashPassword, verifyPassword } from '@/lib/auth/crypto';
+import { hashPassword, sha256, verifyPassword } from '@/lib/auth/crypto';
 import { recordFailedLogin, checkLoginRateLimit } from '@/lib/auth/login-rate-limiter';
 import { SftpStorageAdapter } from '@/lib/storage/adapters/sftp';
 import { StorageSizeLimitError } from '@/lib/storage/adapters/adapter-interface';
@@ -280,7 +280,7 @@ describe('Batch 2 security adversarial hardening (RED -> GREEN)', () => {
 
       await recordFailedLogin('10.0.0.55', 'victim@example.com');
       expect(evalCalls.length).toBeGreaterThanOrEqual(2);
-      const emailKey = 'auth:login_attempts:email:victim@example.com';
+      const emailKey = `auth:login_attempts:email:${sha256('victim@example.com')}`;
       ttls.set(emailKey, 42);
       await recordFailedLogin('10.0.0.55', 'victim@example.com');
       expect(ttls.get(emailKey)).toBe(42);

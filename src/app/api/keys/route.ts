@@ -7,6 +7,7 @@ import { ALL_API_KEY_SCOPES, ApiKeyScope, MAX_ACTIVE_API_KEYS } from '@/lib/api-
 import { toPublicApiKey } from '@/lib/api-keys/public-views';
 import { TERMS_VERSION, termsRefusal, termsRefusalText } from '@/lib/legal/documents';
 import { resolveEffectiveWebhook } from '@/lib/security/ssrf';
+import { MAX_KEY_NAME_LENGTH, allowedIpsListError } from '@/lib/api/field-limits';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,17 +42,17 @@ interface ParsedKeyPayload {
 
 function parseKeyCreationPayload(body: Record<string, unknown> | null | undefined): ParsedKeyPayload {
   const keyName = (typeof body?.name === 'string' && body.name.trim()) || 'Production API Key';
+  if (keyName.length > MAX_KEY_NAME_LENGTH) {
+    return { keyName, error: `name must be at most ${MAX_KEY_NAME_LENGTH} characters long.` };
+  }
 
   let allowedIps: string[] | undefined;
   if (body?.allowedIps !== undefined) {
     if (!Array.isArray(body.allowedIps)) {
       return { keyName, error: 'allowedIps must be an array of IP addresses or CIDR blocks.' };
     }
-    for (const ip of body.allowedIps) {
-      if (typeof ip !== 'string' || !ip.trim()) {
-        return { keyName, error: 'Every item in allowedIps must be a non-empty string.' };
-      }
-    }
+    const allowedIpsError = allowedIpsListError(body.allowedIps);
+    if (allowedIpsError) return { keyName, error: allowedIpsError };
     allowedIps = body.allowedIps.map((ip) => ip.trim());
   }
 
