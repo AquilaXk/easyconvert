@@ -377,6 +377,7 @@ Security
 326. [Configurable transactional SMTP mail budget, budget-scaled Redis memory limits, opt-in AAD-bound off-host Redis backup replication with 7-day pruning, and CFBF empty-slot handling](#326-configurable-transactional-smtp-mail-budget-budget-scaled-redis-memory-limits-opt-in-aad-bound-off-host-redis-backup-replication-with-7-day-pruning-and-cfbf-empty-slot-handling)
 327. [Full-codebase adversarial hardening: Zip Slip and worker stem confinement, SVG CSS allowlist, JBIG2 hex-escape and Flate chain inspection, SDK contract parity, idempotency leases, webhook circuit breakers, scale-out TUS/bundle/SLO invariants, and Edge L0-L3 resource cleanup](#327-full-codebase-adversarial-hardening-zip-slip-and-worker-stem-confinement-svg-css-allowlist-jbig2-hex-escape-and-flate-chain-inspection-sdk-contract-parity-idempotency-leases-webhook-circuit-breakers-scale-out-tusbundleslo-invariants-and-edge-l0-l3-resource-cleanup)
 328. [Production legacy session cookie retirement, loopback diagnostic isolation, operator suspension and job-cancellation CLIs, mail-budget alerting, PDF-to-PPT bridge bounds, and real-engine endurance soak](#328-production-legacy-session-cookie-retirement-loopback-diagnostic-isolation-operator-suspension-and-job-cancellation-clis-mail-budget-alerting-pdf-to-ppt-bridge-bounds-and-real-engine-endurance-soak)
+330. [LibreOffice memory limit of 3 GiB counted as proportional set size, and a memory refusal answered as an input over the limit](#330-libreoffice-memory-limit-of-3-gib-counted-as-proportional-set-size-and-a-memory-refusal-answered-as-an-input-over-the-limit)
 
 ---
 
@@ -10037,3 +10038,39 @@ Security
 - **Trade-offs**:
   - `pdf -> ppt` bridge exports merge multi-line paragraphs into paragraph text boxes and omit decorative vector paths past `200`/slide (`2,000` total), while `pdf -> pptx` retains per-line placement and full vector output.
 - **Verified by**: `tests/security-ops-hardening.test.ts`, `tests/ppt-bridge-hang-and-real-soak.test.ts`, `tests/session-cookie-and-oauth-hardening.test.ts`, `tests/legal-values.test.ts`, `tests/health-live-probes.test.ts`, `tests/oci-deploy.test.ts`, `tests/operations-alerts.test.ts`, `tests/set-account-tier.test.ts`, `tests/corpus-origins.test.ts`, `npx tsc --noEmit`, `npm run sdk:check`, `npm run guard:policy-decisions`, `npm run guard:code-smells`, `npm run guard:anti-cheat`, `npm run lint`, and `npm run build`.
+
+## 330. LibreOffice memory limit of 3 GiB counted as proportional set size, and a memory refusal answered as an input over the limit
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: nine office jobs of the nightly run 44508308474 and two of the regression corpus run 44517542000 failed with `SandboxedMemoryLimitError: Process memory exceeded limit of 1536MB`)
+- **Decision**:
+  1. **The memory watch of a sandboxed run counts the proportional set size of the process tree (`getProcessTreeMemoryMb`, `parseSmapsRollup`, `src/lib/security/process-tree.ts`, `src/lib/security/process-sandbox.ts`)**:
+     - On Linux the watch sums `Pss` of `/proc/<pid>/smaps_rollup` over the tree (a translation of `Process._parse_smaps_rollup` and `Process.memory_full_info` of psutil, BSD-3-Clause, tag v7.2.2; `NOTICE`, `docs/licensing.md` 2.29), so a page that several processes map counts once. A pid whose rollup cannot be read counts its resident size; off Linux the resident sum of one `ps` call stays.
+     - The resident sum is read first and answered when it is within the limit, because the proportional size never exceeds it and `smaps_rollup` costs the kernel 3.7 ms per GB resident (measured, aarch64 Linux 6.8), which a 50 ms watch would pay on every tick. Only a tree over the limit by resident size has its proportional sizes read. The 4,096-pid cap of entry 309 stays.
+  2. **`LIBREOFFICE_MEMORY_LIMIT_MB` is 3,072 (was 1,536; `src/worker/libreoffice-pool.ts`)**. `LIBREOFFICE_SLOT_MEMORY_BYTES` stays 1,536 MB, the memory of a typical run, so `defaultLibreOfficeMaxWorkers` does not change.
+  3. **A run stopped for memory is refused as an input over the limit (`withMemoryRefusal`, `src/worker/office-suite-route.ts`, applied outermost in `convertWithHeadlessOffice`)**: `PayloadLimitError`, HTTP 413, refusal code `input_over_limit`, with the limit and the pair in the message. It sits outside the recoveries of `withLegacyOfficeRecovery`, which treat a memory stop as a run without a verdict and retry the file. The corpus classed the bare `SandboxedMemoryLimitError` as a crash (no typed status, so a 500); it is a `refused` job now.
+- **Why**:
+  - **LibreOffice needs the memory; double counting is a small part.** Measured on the Lima VM (Ubuntu 24.04, LibreOffice 24.2.7, aarch64, 6 GB) with the limit lifted, in the product's invocation (`dispatchConversion` over the pool), sampling the process tree every 20 ms: one `soffice.bin` holds nearly all of the memory, and its resident, proportional and unique sizes differ by under 4 % (`oosplash` and the two `pid-init` processes add under 6 MB). Peak of the tree, MB:
+
+    | file, target | resident sum | proportional sum | unique sum |
+    | --- | --- | --- | --- |
+    | `govdocs1-003052.pdf` ppt | 896 | 879 | 873 |
+    | `govdocs1-002980.pdf` ppt | 1,052 | 996 | 955 |
+    | `govdocs1-000159.pdf` ppt | 1,460 | 1,404 | 1,363 |
+    | `govdocs1-006811.xls` xlsx | 1,607 | 1,559 | 1,523 |
+    | `govdocs1-002680.doc` docx | 1,626 | 1,612 | 1,606 |
+    | `govdocs1-001644.pdf` ppt | 1,698 | 1,673 | 1,667 |
+    | `govdocs1-002680.doc` png | 2,677 | 2,662 | 2,656 |
+    | `govdocs1-002608.pdf` doc | 2,912 | 2,848 | 2,798 |
+    | `govdocs1-002608.pdf` ppt | 3,021 | 2,966 | 2,925 |
+    | `gd-739713.pdf` ppt | 4,598+ | 4,594+ | 4,587+ (ended by the kernel, exit 137) |
+    | `cc-0000888.pdf` ppt | 4,365+ | 4,366+ | 4,365+ (ended by the kernel, exit 137) |
+
+    Six of the nine files that complete hold more than 1,536 MB by any count, so the limit was too low for the engine. The one double count seen is a transient: in a run of `govdocs1-003052.pdf` (a PDF source, whose import starts a helper) one tick read a forked child of `soffice.bin` between `fork` and `exec` with 760 MB resident and 253 MB proportional next to its parent (resident sum 1,618 MB, proportional about 690 MB); sampling every 2 ms in three further runs did not catch another. A resident sum counts such a child in full, so a run with a true peak near the limit can be stopped by it.
+  - 3,072 MB holds the nine files that complete (the largest, `govdocs1-002608.pdf` to ppt, peaks at 2,966 to 3,008 MB in two runs: 2 % headroom), refuses the two that do not, and keeps four runs (the 4 jobs of the 14 GB worker of `docker-compose.prod.yml`) at 12 GB. Gotenberg (MIT, 13.6k stars, `pkg/gotenberg/memory.go`, `pkg/modules/libreoffice/api/libreoffice.go`, commit `da5d11a1bc50a46afe29e23fed471fa6ed3cf05e`) also bounds LibreOffice by the memory of the process tree, counted as anonymous resident memory (`RssAnon`), over `--libreoffice-max-memory` (no default) and answers 422; JODConverter and unoserver set no bound. The reference counts private memory too; the proportional count of this entry is the psutil one.
+  - The proportional count is still the right count where a tree shares memory (a browser with renderer processes, a forked interpreter): a stand-in tree of four processes sharing a 400 MB region sums to 1,600 MB resident and 400 MB proportional and is not stopped at 800 MB (`tests/sandbox-process-tree-memory.test.ts`).
+- **Trade-offs**:
+  - The measurements are of LibreOffice 24.2 and the fonts of the VM; the worker image (Debian 13, LibreOffice 25.2, its fonts) was not measured, and three files (`govdocs1-003052.pdf`, `govdocs1-002980.pdf`, `govdocs1-000159.pdf` to ppt) that fail in production at 1,536 MB hold 879 to 1,404 MB on the VM, so the image holds more for the same file. The largest file of the nine has 2 % headroom and may be refused in the image; 3,328 MB would give 8 % and put four runs at 13 GB of the 14 GB container.
+  - A slot is sized for 1,536 MB and may hold 3,072 MB, so a host whose slots all hold large documents at once has less memory than slots times the limit (the container limit stays the final bound). `pdfa.ts` still runs LibreOffice with 1,536 MB; its failure is the typed PDF/A error.
+  - The resident sum is the upper bound answered between ticks, so a tree that is over the limit by resident size and under it by proportional size costs one `smaps_rollup` read per process per tick (about 4 ms per GB resident).
+- **Verified by**: the 11 jobs of the production failures on the VM with the limit at 3,072 MB (the same VM, the pool, the watch of this entry): nine convert in 6.4 to 23.1 s with a peak proportional sum of 883 to 3,008 MB (`govdocs1-002608.pdf` to ppt, the largest, 3,008 MB; `govdocs1-002980.pdf` to ppt, 6.4 s, 1,039 MB), and `gd-739713.pdf` and `cc-0000888.pdf` to ppt are refused with 413 after 84.0 s and 19.6 s at 3,072 and 3,083 MB; `tests/sandbox-process-tree-memory.test.ts`, `tests/office-suite-route.test.ts`, `tests/libreoffice-pool-manager.test.ts`, `tests/adversarial-engine-sandbox-guards.test.ts`, `tests/refusal-code-inventory.test.ts` `npx tsc --noEmit`, `npm run sdk:check`, `npm run guard:policy-decisions`, `npm run guard:code-smells`, `npm run guard:anti-cheat`, and `npm run lint`.

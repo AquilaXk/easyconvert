@@ -11,14 +11,15 @@ import {
   officeSuiteReadsInput,
   officeSuiteWritesTarget,
   retryRefusedLegacyDocument,
+  withMemoryRefusal,
   withMetafileFrame,
   withMetafileInk,
   type OfficeSuiteRequest,
   type OfficeSuiteRouteDeps,
 } from '../src/worker/office-suite-route';
 import { emf, wmf } from './helpers/metafile-headers';
-import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
-import { CompoundFileStructureError, ConversionFailedError, CorruptStreamError, DataParseError, EngineUnavailableError, PayloadLimitError, SandboxUnavailableError, SheetLimitError } from '../src/lib/types';
+import { SandboxedMemoryLimitError, SandboxedProcessError, SandboxedTimeoutError } from '../src/lib/security/process-sandbox';
+import { CompoundFileStructureError, ConversionFailedError, CorruptStreamError, DataParseError, EngineUnavailableError, PayloadLimitError, typedFailureOf, SandboxUnavailableError, SheetLimitError } from '../src/lib/types';
 import { CFBF_MAX_FILE_BYTES } from '../src/lib/compound-file-kind';
 import { writeXlsx } from '../src/lib/conversions/xlsx-writer';
 import { resolveLibreOfficeFilter } from '../src/worker/libreoffice-pool';
@@ -933,3 +934,34 @@ describe('the extent of an OOXML workbook the office suite exports as .xls', () 
 async function realWorkbookBytes(rowCount: number, width: number): Promise<Buffer> {
   return writeXlsx(Array.from({ length: rowCount }, () => Array.from({ length: width }, () => 'x')), 'verbatim');
 }
+
+describe('a run of the office suite that needs more memory than it may hold', () => {
+  const limit = 3072;
+  const run = (failure: unknown) => withMemoryRefusal(async () => { throw failure; });
+
+  it('is refused as an input over the limit (413), with the limit and the pair in the message', async () => {
+    const failure = await run(new SandboxedMemoryLimitError(limit))(Buffer.from('x'), 'pdf', 'ppt').catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PayloadLimitError);
+    expect(typedFailureOf(failure)).toEqual({ status: 413, code: 'input_over_limit' });
+    expect((failure as Error).message).toContain(`${limit} MB`);
+    expect((failure as Error).message).toContain('the .pdf to .ppt step');
+  });
+
+  it('is refused the same when the kernel ended the run with a signal at the limit', async () => {
+    const failure = await run(new SandboxedMemoryLimitError(limit, 'SIGKILL'))(Buffer.from('x'), 'xls', 'xlsx').catch((error: unknown) => error);
+    expect(typedFailureOf(failure)).toEqual({ status: 413, code: 'input_over_limit' });
+  });
+
+  it.each([
+    ['a timeout', new SandboxedTimeoutError(45_000)],
+    ['a failed run', new SandboxedProcessError('soffice failed', 1, 'unable to load')],
+    ['an untyped error', new Error('boom')],
+  ])('leaves %s as it is', async (_name, failure) => {
+    expect(await run(failure)(Buffer.from('x'), 'doc', 'docx').catch((error: unknown) => error)).toBe(failure);
+  });
+
+  it('hands a converted file on', async () => {
+    const converted = result({ filePath: '/out/x.ppt' });
+    expect(await withMemoryRefusal(async () => converted)(Buffer.from('x'), 'pdf', 'ppt')).toBe(converted);
+  });
+});

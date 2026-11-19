@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { CompoundFileStructureError, ConversionFailedError, CorruptStreamError, CpuTaskTimeoutError, EncryptedOfficeDocumentError, EngineUnavailableError, SheetLimitError } from '../lib/types';
+import { CompoundFileStructureError, ConversionFailedError, CorruptStreamError, CpuTaskTimeoutError, EncryptedOfficeDocumentError, EngineUnavailableError, PayloadLimitError, SheetLimitError } from '../lib/types';
 import { LegacyOfficeFormatError } from '../lib/conversions/office/legacy-office-errors';
 import { CFBF_MAX_FILE_BYTES } from '../lib/compound-file-kind';
 import { assertWorkbookFitsXls } from '../lib/conversions/office/xls-limits';
@@ -192,6 +192,23 @@ export function withLegacyOfficeRecovery(run: OfficeSuiteRun): OfficeSuiteRun {
       } catch (retryErr) {
         throw answerFor(retryErr);
       }
+    }
+  };
+}
+
+/**
+ * `run`, with the memory limit of a run of the office suite answered as a refusal of the input: a document that needs more memory than
+ * a run may hold (a PDF page of large images, a workbook of millions of cells) is the same verdict as an input over any other limit, the 413
+ * the routes answer for `PayloadLimitError`, and not a failure of the server's own code. It goes outside the recoveries of `run`, which
+ * treat a run that was stopped for memory as one without a verdict and try the document once more another way.
+ */
+export function withMemoryRefusal(run: OfficeSuiteRun): OfficeSuiteRun {
+  return async (input, sourceFormat, targetFormat, options, originalFilename) => {
+    try {
+      return await run(input, sourceFormat, targetFormat, options, originalFilename);
+    } catch (err) {
+      if (!(err instanceof SandboxedMemoryLimitError)) throw err;
+      throw new PayloadLimitError(`The document needs more than the ${err.limitMb} MB of memory that the office suite may use (the .${sourceFormat} to .${targetFormat} step). Convert a smaller or simpler document.`);
     }
   };
 }

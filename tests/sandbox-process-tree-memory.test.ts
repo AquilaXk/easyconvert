@@ -107,7 +107,7 @@ describe('the sum of the memory of a process tree', () => {
   }, 30_000);
 });
 
-/** The memory of a tree is its proportional set size, which counts a page that several processes map once (docs/policy-decisions.md, entry 329). */
+/** The memory of a tree is its proportional set size, which counts a page that several processes map once (docs/policy-decisions.md, entry 330). */
 const SMAPS_ROLLUP = `55d0c5a00000-7ffd5b3f9000 ---p 00000000 00:00 0                          [rollup]
 Rss:              440616 kB
 Pss:              120331 kB

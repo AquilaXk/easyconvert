@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import JSZip from 'jszip';
 import path from 'node:path';
 import {
+  LIBREOFFICE_MEMORY_LIMIT_MB,
+  LIBREOFFICE_SLOT_MEMORY_BYTES,
   LibreOfficePoolManager,
   LibreOfficePoolTimeoutError,
   WorkerLifecycleState,
@@ -575,6 +577,13 @@ describe('Pre-warmed LibreOffice worker pool', () => {
       expect(defaultLibreOfficeMaxWorkers(4, 14 * 1024 ** 3)).toBe(4);
       expect(defaultLibreOfficeMaxWorkers(16, 32 * 1024 ** 3)).toBe(12);
       expect(defaultLibreOfficeMaxWorkers(32, 6 * 1024 ** 3)).toBe(4);
+    });
+
+    it('holds a run to a memory limit above the slot size, and the 4 jobs of the production worker container to its memory', () => {
+      const workerContainerBytes = 14 * 1024 ** 3;
+      const workerJobs = 4;
+      expect(LIBREOFFICE_MEMORY_LIMIT_MB * 1024 * 1024).toBeGreaterThan(LIBREOFFICE_SLOT_MEMORY_BYTES);
+      expect(workerJobs * LIBREOFFICE_MEMORY_LIMIT_MB * 1024 * 1024).toBeLessThan(workerContainerBytes);
     });
 
     it('reclaims idle extra worker slots above minWorkers after idleShutdownTimeoutMs', async () => {

@@ -14,7 +14,7 @@ import { convertFile, convertImage } from '../lib/conversions';
 import { wantsPngOptimiser, withOptimisedPng } from '../lib/conversions/png-optimise';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertDrawingPackage, assertLegacyCompoundFileReadable, assertOfficeEmbeddedImagesWithinLimit, officeInputWithoutMacros } from './office-input-checks';
-import { BIFF8_TARGET, asUnreadableDocument, convertBridgedTarget, convertMarkupPageImages, convertThroughInterchange, convertXlsTarget, interchangeNeeded, retryRefusedLegacyDocument, withEmbeddedWorkbookRetry, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageChainLimits, withWordAnchoredLayoutRetry, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { BIFF8_TARGET, asUnreadableDocument, convertBridgedTarget, convertMarkupPageImages, convertThroughInterchange, convertXlsTarget, interchangeNeeded, retryRefusedLegacyDocument, withEmbeddedWorkbookRetry, withLegacyOfficeRecovery, withMemoryRefusal, withMetafileFrame, withMetafileInk, withOfficePageChainLimits, withWordAnchoredLayoutRetry, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { writeEpsPages } from './postscript-page-limit';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { isMediaRoutePair } from '../lib/conversions/route-formats';
@@ -360,7 +360,7 @@ async function runHeadlessOffice(
     return null;
   }
 }
-export const convertWithHeadlessOffice = withMetafileInk(withMetafileFrame(withLegacyOfficeRecovery(withEmbeddedWorkbookRetry(withWordAnchoredLayoutRetry(runHeadlessOffice)))), () => resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH), discardPersistedOutput);
+export const convertWithHeadlessOffice = withMemoryRefusal(withMetafileInk(withMetafileFrame(withLegacyOfficeRecovery(withEmbeddedWorkbookRetry(withWordAnchoredLayoutRetry(runHeadlessOffice)))), () => resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH), discardPersistedOutput));
 
 /**
  * Transcodes media using native FFmpeg with strict argument boundaries.
