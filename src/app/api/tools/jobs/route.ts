@@ -3,6 +3,8 @@ import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import { fileSizeLimitProblem } from '@/lib/api/file-size-limit';
+import { readBoundedJsonText } from '@/lib/api/json-body-bounds';
+import { SMALL_REQUEST_BODY_MAX_BYTES } from '@/lib/api/request-body-limit';
 import { isMultipartBody, readMultipartForm, formText } from '@/lib/api/multipart-body';
 import { codedRefusal, createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { STORAGE_OBJECT_NOT_FOUND, mayUseStorageKeyAsJobInput } from '@/lib/api-keys/owner-access';
@@ -124,8 +126,10 @@ async function parseJsonJobInputs(
   instanceUri: string
 ): Promise<ParsedToolJobInputs | NextResponse> {
   let payload: Record<string, unknown>;
+  const read = await readBoundedJsonText(req, SMALL_REQUEST_BODY_MAX_BYTES, instanceUri);
+  if ('refusal' in read) return read.refusal;
   try {
-    const parsed = (await req.json()) as unknown;
+    const parsed = JSON.parse(read.text) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return codedRefusal(400, 'invalid_json', 'Expected a JSON object.');
     }

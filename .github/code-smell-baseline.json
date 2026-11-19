@@ -23,7 +23,7 @@
     "rule": "max-lines-per-function",
     "function": "POST",
     "count": 1,
-    "maxValue": 375
+    "maxValue": 370
   },
   {
     "file": "src/lib/api-keys/webhook-dispatcher.ts",

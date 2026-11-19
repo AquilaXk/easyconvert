@@ -1,5 +1,5 @@
 import { formatBytes } from '../format-bytes';
-import { SINGLE_REQUEST_BODY_MAX_BYTES, SINGLE_REQUEST_FILE_MAX_BYTES, UPLOAD_PART_MAX_BYTES } from '../plan-limits';
+import { INLINE_JOB_PAYLOAD_MAX_BYTES, INLINE_JSON_BODY_MAX_BYTES, SINGLE_REQUEST_BODY_MAX_BYTES, SINGLE_REQUEST_FILE_MAX_BYTES, UPLOAD_PART_MAX_BYTES } from '../plan-limits';
 
 /**
  * How large a request body each API route takes (docs/policy-decisions.md, entry 137), read from the `Content-Length`
@@ -55,7 +55,7 @@ function isFileRoute({ pathname, searchParams }: RequestTarget): boolean {
 type BodyKind =
   /** A JSON or form of a few fields: 1 MiB, counted as it arrives when it has no length. */
   | 'small'
-  /** A JSON that may carry a file inline (a job's `inputBufferBase64`): one request, counted as it arrives when it has no length. */
+  /** A JSON that may carry a file inline (a job's `inputBufferBase64`): that file as base64 and its fields, counted as it arrives when it has no length. */
   | 'inline'
   /** A file in one request (or a tus chunk): one request, and a length declared. */
   | 'single'
@@ -67,6 +67,8 @@ const DIRECT_UPLOADS_ROUTE = '/api/v1/uploads/direct';
 const DIRECT_PART_ROUTE = '/api/v1/uploads/direct/part';
 /** Routes whose body is a multipart form when it carries a file and JSON otherwise. */
 const FORM_OR_JSON_ROUTES: readonly string[] = ['/api/queue/jobs', '/api/tools/jobs', '/api/v1/jobs'];
+/** The one of them whose JSON names files stored before and carries none inline. */
+const STORED_FILES_JSON_ROUTE = '/api/tools/jobs';
 
 function isUnder(pathname: string, route: string): boolean {
   return pathname === route || pathname.startsWith(`${route}/`);
@@ -80,8 +82,8 @@ function isMultipartForm(headers: HeaderSource): boolean {
  * What the body of a request to `target` is. The upload routes carry more than files: the control calls of an upload
  * (`?action=initiate|complete|abort`, `direct`, `direct/complete`) are small JSON, a part is held to the largest part, and
  * only a tus creation or chunk is a file of one request. The job routes take a file in a multipart form, which must declare
- * its length, or inline in a JSON body (up to INLINE_JOB_PAYLOAD_MAX_BYTES of file, base64 encoded), which may come without
- * one. Any other route that takes files is `single`, and every route else is `small`.
+ * its length, or inline in a JSON body (up to INLINE_JOB_PAYLOAD_MAX_BYTES of file, base64 encoded, and INLINE_JSON_BODY_MAX_BYTES
+ * with its fields), which may come without one; the JSON of the tools job route names stored files and is small. Any other route that takes files is `single`, and every route else is `small`.
  */
 function bodyKindOf(target: RequestTarget, headers: HeaderSource): BodyKind {
   const { pathname, searchParams } = target;
@@ -92,7 +94,10 @@ function bodyKindOf(target: RequestTarget, headers: HeaderSource): BodyKind {
     if (!action) return 'single';
     return action === 'part' ? 'part' : 'small';
   }
-  if (FORM_OR_JSON_ROUTES.some((route) => isUnder(pathname, route))) return isMultipartForm(headers) ? 'single' : 'inline';
+  if (FORM_OR_JSON_ROUTES.some((route) => isUnder(pathname, route))) {
+    if (isMultipartForm(headers)) return 'single';
+    return isUnder(pathname, STORED_FILES_JSON_ROUTE) ? 'small' : 'inline';
+  }
   return isFileRoute(target) ? 'single' : 'small';
 }
 
@@ -124,6 +129,17 @@ function singleRequestOverflowDetail(declaredBytes: number | undefined, pathname
   const carries = declaredBytes === undefined ? 'more than' : `${exactBytes(declaredBytes)}, over`;
   return (
     `This request carries ${carries} the ${formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES)} one request may carry. ` +
+    `Send a larger file in parts of at most ${formatBytes(UPLOAD_PART_MAX_BYTES)}: open an upload with ${flow.upload}, send the parts, ` +
+    `then start the conversion with ${flow.job} on the stored file.`
+  );
+}
+
+/** What a job route says to a JSON body over the inline file as base64 and its fields: the way to send a larger file, in parts. */
+function inlineJsonOverflowDetail(declaredBytes: number | undefined, pathname: string): string {
+  const flow = partsFlowOf(pathname);
+  const carries = declaredBytes === undefined ? 'more than' : `${exactBytes(declaredBytes)}, over`;
+  return (
+    `This JSON request carries ${carries} the ${formatBytes(INLINE_JSON_BODY_MAX_BYTES)} of a job that holds its file inline (at most ${formatBytes(INLINE_JOB_PAYLOAD_MAX_BYTES)}, base64 encoded). ` +
     `Send a larger file in parts of at most ${formatBytes(UPLOAD_PART_MAX_BYTES)}: open an upload with ${flow.upload}, send the parts, ` +
     `then start the conversion with ${flow.job} on the stored file.`
   );
@@ -171,11 +187,12 @@ export function requestBodyVerdict(target: RequestTarget, headers: HeaderSource)
   if (headers.get('content-length') === null) {
     if (kind === 'small') return { countUpTo: SMALL_REQUEST_BODY_MAX_BYTES, status: 413, detail: COUNTED_OVERFLOW_DETAIL };
     if (kind === 'inline') {
-      return { countUpTo: SINGLE_REQUEST_BODY_MAX_BYTES, status: 413, detail: singleRequestOverflowDetail(undefined, target.pathname) };
+      return { countUpTo: INLINE_JSON_BODY_MAX_BYTES, status: 413, detail: inlineJsonOverflowDetail(undefined, target.pathname) };
     }
     return { countUpTo: 0, status: 411, detail: LENGTH_REQUIRED_DETAIL };
   }
-  if (kind === 'single' || kind === 'inline') return singleRequestVerdict(target.pathname, headers);
+  if (kind === 'inline') return inlineJsonVerdict(target.pathname, headers);
+  if (kind === 'single') return singleRequestVerdict(target.pathname, headers);
   if (kind === 'part') return partBodyVerdict(headers);
   return verdictFor(headers, SMALL_REQUEST_BODY_MAX_BYTES, smallRequestOverflowDetail);
 }
@@ -183,6 +200,11 @@ export function requestBodyVerdict(target: RequestTarget, headers: HeaderSource)
 /** The refusal of a request to `pathname`, a route that takes a file whole, by its declared length, or null when it may be read. */
 export function singleRequestVerdict(pathname: string, headers: HeaderSource): BodyLengthVerdict {
   return verdictFor(headers, SINGLE_REQUEST_BODY_MAX_BYTES, (declared) => singleRequestOverflowDetail(declared, pathname));
+}
+
+/** The refusal of a JSON request to a job route by its declared length, or null when it may be read. */
+export function inlineJsonVerdict(pathname: string, headers: HeaderSource): BodyLengthVerdict {
+  return verdictFor(headers, INLINE_JSON_BODY_MAX_BYTES, (declared) => inlineJsonOverflowDetail(declared, pathname));
 }
 
 /** The refusal of a part by its declared length, or null when it may be read. */

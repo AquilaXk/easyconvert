@@ -102,6 +102,15 @@ export const UPLOAD_PART_MAX_BYTES = 64 * MIB;
 /** The largest file a job takes in its own request (multipart form or base64): it is copied into the job record. */
 export const INLINE_JOB_PAYLOAD_MAX_BYTES = 32 * MIB;
 
+/** The fields around the inline file of a job request's JSON body: options, names, a task graph (at most 32 nodes). */
+export const INLINE_JSON_ENVELOPE_MAX_BYTES = 64 * 1024;
+
+/**
+ * The largest JSON body of a job request: the inline file as base64 (4 characters for each 3 bytes) and its fields. A body of 65 MiB
+ * is parsed into objects whole, so the JSON of a job is held to what the file it carries needs and no more.
+ */
+export const INLINE_JSON_BODY_MAX_BYTES = Math.ceil(INLINE_JOB_PAYLOAD_MAX_BYTES / 3) * 4 + INLINE_JSON_ENVELOPE_MAX_BYTES;
+
 /** Whether a file of `sizeBytes` is too large for one request and must go to the server in parts. */
 export function needsUploadInParts(sizeBytes: number): boolean {
   return sizeBytes > SINGLE_REQUEST_FILE_MAX_BYTES;

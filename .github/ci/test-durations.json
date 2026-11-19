@@ -614,6 +614,7 @@
   "tests/job-secret-seal.test.ts": 0,
   "tests/job-secret-startup.test.ts": 0.4,
   "tests/job-submission-limits.test.ts": 0.7,
+  "tests/json-body-bounds.test.ts": 3,
   "tests/legacy-office-encrypted-answer.test.ts": 31.9,
   "tests/legacy-route-validation.test.ts": 0.3,
   "tests/legacy-task-adapter-fail-closed.test.ts": 0.4,
