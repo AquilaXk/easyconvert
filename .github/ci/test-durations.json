@@ -39,6 +39,7 @@
   "tests/archive-inprocess-repack.test.ts": 3.8,
   "tests/archive-inprocess-unpack.test.ts": 5.2,
   "tests/archive-inspect-bounded-run.test.ts": 0.1,
+  "tests/archive-inspect-bzip2-bomb.test.ts": 2,
   "tests/archive-inspect-malformed-input.test.ts": 0,
   "tests/archive-inspection-lzip-lzop.test.ts": 6.2,
   "tests/archive-inspection-unsafe-report.test.ts": 3.7,

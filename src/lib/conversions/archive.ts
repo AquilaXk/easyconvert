@@ -44,7 +44,7 @@ import {
   sanitizeLeafFilename,
   summarizeInspectionSafety,
   exceedsArchiveRatio,
-  unpackedBytesCap,
+  unpackedBytesCap, unpackedBytesCapError,
 } from './archive-extraction-safety';
 import { gunzipWithLimits } from './archive-gunzip';
 import { compressBzip2Async, decompressBzip2 } from './bzip2';
@@ -3503,10 +3503,10 @@ async function inspectArchiveEntries(
 
   if (archiveBuffer.length >= 3 && archiveBuffer[0] === 0x42 && archiveBuffer[1] === 0x5a && archiveBuffer[2] === 0x68) {
     try {
-      const decompressed = decompressBzip2(archiveBuffer, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
+      const decompressed = decompressBzip2(archiveBuffer, unpackedBytesCap(archiveBuffer.length, ARCHIVE_SECURITY_LIMITS));
       return inspectTarBuffer(decompressed, 'tar.bz2');
-    } catch {
-      throw new ConversionFailedError('Failed to decompress bzip2 archive.');
+    } catch (err) {
+      throw err instanceof DecompressionLimitError ? unpackedBytesCapError(archiveBuffer.length, ARCHIVE_SECURITY_LIMITS) : new ConversionFailedError('Failed to decompress bzip2 archive.');
     }
   }
 

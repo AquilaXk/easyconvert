@@ -381,6 +381,7 @@ Security
 330. [LibreOffice memory limit of 3.25 GiB counted as proportional set size, and a memory refusal answered as an input over the limit](#330-libreoffice-memory-limit-of-325-gib-counted-as-proportional-set-size-and-a-memory-refusal-answered-as-an-input-over-the-limit)
 331. [The production web service runs queue-only, and the structured-data converters refuse inputs past a size and a count of values and convert on a pool thread](#331-the-production-web-service-runs-queue-only-and-the-structured-data-converters-refuse-inputs-past-a-size-and-a-count-of-values-and-convert-on-a-pool-thread)
 332. [A job request's JSON body is held to the inline file as base64 and its fields, and a body with more than 4,096 objects and arrays is refused before it is parsed](#332-a-job-requests-json-body-is-held-to-the-inline-file-as-base64-and-its-fields-and-a-body-with-more-than-4096-objects-and-arrays-is-refused-before-it-is-parsed)
+333. [Listing a bzip2 archive holds the decoded stream to the compression ratio of every other archive reader](#333-listing-a-bzip2-archive-holds-the-decoded-stream-to-the-compression-ratio-of-every-other-archive-reader)
 
 ---
 
@@ -10182,3 +10183,14 @@ Security
   - A client that sent a JSON job with a base64 file of 32 MiB (44,739,244 characters) and fields of up to 64 KiB is unchanged. A body with a longer envelope (tens of thousands of options) is refused; none of the product's clients sends one.
   - The routes that take a body of a few fields (login, keys, uploads' control calls) stay at 1 MiB, and the structure count is not applied to them: their parsers read at most 1 MiB, which is 350,000 objects at the most.
 - **Verified by**: `tests/json-body-bounds.test.ts` (6 of its 7 cases fail on `656eb523`) and `tests/request-body-limit.test.ts`.
+
+## 333. Listing a bzip2 archive holds the decoded stream to the compression ratio of every other archive reader
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: security review of `656eb523`, finding 3: `/api/v1/archives/inspect` decoded bzip2 in the web process with no ratio check)
+- **Decision**: **Listing a `.tar.bz2` decodes the stream up to `unpackedBytesCap(archive size)` and no further** (`inspectArchiveEntries`, `src/lib/conversions/archive.ts`): the 32 MiB floor every archive path shares (`ARCHIVE_RATIO_FLOOR_BYTES`), or 100 times the size of the archive when that is more, and never more than the 500 MiB cap. A stream that outgrows it is refused with the `UnsafeArchiveError` of reason `compression-ratio` that `unpackedBytesCapError` builds for the readers of the other formats, where it answered the generic failure of an unreadable stream or, for a stream under 500 MiB, listed it.
+- **Why**:
+  - **gzip, 7-Zip, RAR and Zstandard already had the ratio; bzip2 had only the size cap.** A bz2 of 370 bytes that holds 480 MiB of zeros decoded whole in the web process: 0.53 s with no turn of the event loop and 1.15 GB resident (`node --import tsx`, Mac), and listed as an archive with no entries. With the cap the decode stops at 32 MiB: 13 ms and a process peak of 190 MB (the baseline of the runner), with the typed refusal.
+  - **The 7-Zip listing was not used for bzip2**, because a `.tar.bz2` lists as the one file `x.tar` there; the members of the tar need the decoded stream. The cap is the rule the gzip listing already follows (`gunzipStreamingWithLimits`, `exceedsArchiveRatio`), so one ratio and one floor hold for every archive format.
+- **Trade-offs**: A stream of up to 5 MiB can still decode to its 500 MiB cap in the web process (100 to 1 is the ratio of gzip and of every other reader). Moving the decode to a pool thread, as entry 331 does for data, is the next step if the 500 MiB cap is to hold off the event loop as well; the tar listing of the decoded stream is synchronous too.
+- **Verified by**: `tests/archive-inspect-bzip2-bomb.test.ts` (the 370-byte stream and a stream over the ratio fail on `656eb523`; an ordinary `.tar.bz2` lists as before), `tests/archive-inspect-bounded-run.test.ts`, `tests/archive-inspect-malformed-input.test.ts`.
