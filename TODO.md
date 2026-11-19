@@ -3,7 +3,6 @@
 One maintainer, one list. Add a line when work is found, delete it when it lands.
 
 ## Launch gates and dated tasks
-- On or after 2026-11-19 (7 days after the `v0.10.7` tag of 2026-11-12, the first release that writes `__Host-easyconvert_session`; confirm the production deploy date): drop `easyconvert_session` from `SESSION_COOKIE_NAMES` (`src/lib/auth/session-cookie.ts`) and its row from both privacy texts, with a new legal version (`tests/legal-values.test.ts` names every name in `SESSION_COOKIE_NAMES` and fails until the rows match).
 - Install the Redis backup timer on the host (`deploy/oci/easyconvert-redis-backup.timer`) on or after 2026-12-08 (30-day notice of the new privacy text), and optionally enable `REDIS_BACKUP_OFFHOST_ENABLED=true` once the privacy storage location notice covers the off-host S3/OCI bucket (entry 326).
 - Before Paddle billing goes on (entries 262 and 285): run one sandbox purchase of a package and one of a subscription end to end (account, the thirteen `PADDLE_` variables with the nine price ids, notification destination to `/api/billing/webhook` for subscription, transaction and adjustment events, CSP if one is added for `cdn.paddle.com` and checkout frames), then a refund of the package; check the webhook edge bucket (entry 277), whether an adjustment can arrive before its payment, whether the clock log stays silent, what the first hourly `[billing] reconcile` run reports against the sandbox lists, what `transaction.completed` carries in `details.totals.total` and `custom_data`, where `currentPeriodEnd` sits after a renewal and `subscriptions.update` of a switch (entry 285), and that `[billing] portal session failed` logs no authorization header or key.
 - Turn billing on (the thirteen `PADDLE_` variables) on or after 2026-12-13, when the terms published on 2026-11-13 take effect; until then the pricing page shows the package and the subscription as coming soon.
@@ -27,7 +26,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Watch `auth_mail_budget level=warn` (350 mails/day; verification stops at 400, resets at 480, entry 288) and move auth mail to a dedicated provider before sign-ups reach the cap, raising `AUTH_MAIL_DAILY_WARN`, `AUTH_MAIL_DAILY_VERIFY_CAP` and `AUTH_MAIL_DAILY_HARD_CAP` via `.env` (entry 326).
 
 ## Tests, CI and code health
-- Re-pin `book-pg2701.epub` to an archived capture taken after its 2026-11-08 rebuild with a `gutenberg.org` mirror, and re-measure the `book-pg84.epub` quality rows against its rebuilt bytes (entry 224).
+- Re-measure the `book-pg84.epub` quality rows against its rebuilt bytes (entry 224; `book-pg2701.epub` re-pinned in entry 328).
 - Report real LCOV coverage to SonarCloud from the CI shards, then drop `sonar.coverage.exclusions` in `.sonarcloud.properties` and switch to a CI scanner step.
 
 ## Approved backlog (QA 2026-11-12: every Later and Waiting item is approved)
