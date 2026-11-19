@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { ConversionFailedError, type ConversionOptions } from '../../types';
+import { ConversionFailedError, PayloadLimitError, type ConversionOptions } from '../../types';
 import { escapeXmlText } from '../document-model/xml-text';
 import { layoutPdfPages, type PageBlock } from '../pdf-layout';
 import type { DetectedTable, LayoutLine, Paragraph, StyledRun, TableCell } from '../pdf-layout/types';
@@ -42,6 +42,27 @@ const DEFAULT_BORDER: TableBorder = { width: 6_350, color: '000000' };
 /** The text box of an OCR page: its margin and the size of its text (points). */
 const OCR_MARGIN_PT = 36;
 const OCR_TEXT_SIZE_PT = 12;
+
+/**
+ * Internal option symbol enabling PowerPoint 97-2003 (`.ppt`) bridge safeguards:
+ * - Consolidates multi-line paragraphs into single `<p:sp>` text boxes (`[MS-PPT]` §2.4 / `[MS-ODRAW]`, LibreOffice `sd/source/filter/eppt/eppt.cxx` · `epptso.cxx`).
+ * - Caps decorative vector shapes and rules per slide and per presentation so dense vector PDFs do not stall the `.ppt` filter.
+ * - Fails closed with `413 PayloadLimitError` when slide or shape totals exceed legacy container bounds.
+ */
+export const PPTX_LEGACY_PPT_BRIDGE = Symbol('PPTX_LEGACY_PPT_BRIDGE');
+/** Maximum slides written when bridging to `.ppt` (`[MS-PPT]` §2.4). */
+export const PPT_BRIDGE_MAX_SLIDES = 1_000;
+/** Maximum decorative vector shapes and rules per slide in `.ppt` bridge mode (aligned with Policy 325 `WORD_97_MAX_ANCHORED_SHAPES = 200`). */
+export const PPT_BRIDGE_MAX_VECTOR_SHAPES_PER_SLIDE = 200;
+/** Cumulative decorative vector shapes and rules across all slides in `.ppt` bridge mode. */
+export const PPT_BRIDGE_MAX_VECTOR_SHAPES_TOTAL = 2_000;
+/** Maximum total Escher/DrawingML objects across a `.ppt`-bridged presentation. */
+export const PPT_BRIDGE_MAX_SHAPES_TOTAL = 20_000;
+
+export interface WritePackageOptions {
+  /** Enables PowerPoint 97-2003 (`.ppt`) bridge paragraph consolidation and Escher object bounds. */
+  legacyPptBridge?: boolean;
+}
 
 type Family = keyof typeof ASCENT_EM;
 
@@ -163,6 +184,10 @@ class SlideXml {
     return this.nextId++;
   }
 
+  shapeCount(): number {
+    return this.shapes.length;
+  }
+
   picture(image: PdfContentImage): void {
     const relation = this.mediaRelation(image);
     if (relation === null) return;
@@ -211,6 +236,37 @@ class SlideXml {
         `<p:spPr><a:xfrm><a:off x="${left}" y="${this.y(top)}"/><a:ext cx="${Math.round(width)}" cy="${this.length(height)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>` +
         `<p:txBody><a:bodyPr wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" rtlCol="${line.rtl ? 1 : 0}" anchor="t"${line.vertical ? ' vert="eaVert"' : ''}><a:noAutofit/></a:bodyPr><a:lstStyle/>` +
         `${paragraphXml(line.runs, size, face, line.rtl)}</p:txBody></p:sp>`
+    );
+  }
+
+  /**
+   * Consolidates a horizontal multi-line paragraph into one `<p:sp>` text box for `.ppt` bridging, reducing Escher
+   * `SpContainer` + `ClientTextbox` allocation without altering pure `pdf -> pptx` output.
+   */
+  paragraph(paragraph: Paragraph, fonts: ReadonlyMap<string, PdfContentFont>): void {
+    const lines = paragraph.lines;
+    if (lines.length === 0) return;
+    if (lines.length === 1 || lines.some((line) => line.vertical)) {
+      for (const line of lines) this.line(line, fonts);
+      return;
+    }
+    if (paragraph.text.trim() === '' || paragraph.runs.every((run) => run.text === '')) return;
+    const first = lines[0];
+    const last = lines[lines.length - 1];
+    const face = faceOf(fonts.get(paragraph.fontKey), paragraph.monospace);
+    const size = paragraph.size * this.placement.scale;
+    const boxWidth = Math.max(paragraph.box.x1 - paragraph.box.x0, 1);
+    const width = this.length(boxWidth) * 1.04;
+    const top = first.baseline - ASCENT_EM[face.family] * first.size;
+    const bottom = Math.max(paragraph.box.y1, last.baseline + (LINE_HEIGHT_EM - ASCENT_EM[face.family]) * last.size);
+    const height = Math.max(bottom - top, paragraph.size * LINE_HEIGHT_EM);
+    const left = paragraph.rtl ? this.x(paragraph.box.x1) - Math.round(width) : this.x(paragraph.box.x0);
+    const id = this.id();
+    this.shapes.push(
+      `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Text ${id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>` +
+        `<p:spPr><a:xfrm><a:off x="${left}" y="${this.y(top)}"/><a:ext cx="${Math.round(width)}" cy="${this.length(height)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>` +
+        `<p:txBody><a:bodyPr wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" rtlCol="${paragraph.rtl ? 1 : 0}" anchor="t"><a:noAutofit/></a:bodyPr><a:lstStyle/>` +
+        `${paragraphXml(paragraph.runs, size, face, paragraph.rtl)}</p:txBody></p:sp>`
     );
   }
 
@@ -467,14 +523,58 @@ export async function writeTitledSlidePackage(slides: readonly TitledSlide[], ti
 
 const MEDIA_TYPES = { jpeg: { extension: 'jpeg', mime: 'image/jpeg' }, png: { extension: 'png', mime: 'image/png' } } as const;
 
+function emitParagraphBlock(
+  slideXml: SlideXml,
+  paragraph: Paragraph,
+  fonts: ReadonlyMap<string, PdfContentFont>,
+  legacyBridge: boolean
+): void {
+  if (legacyBridge) {
+    slideXml.paragraph(paragraph, fonts);
+    return;
+  }
+  for (const line of paragraph.lines) slideXml.line(line, fonts);
+}
+
+function emitUnboxedTable(
+  slideXml: SlideXml,
+  table: DetectedTable,
+  fonts: ReadonlyMap<string, PdfContentFont>,
+  legacyBridge: boolean
+): void {
+  if (!legacyBridge) {
+    for (const line of linesOfTable(table)) slideXml.line(line, fonts);
+    return;
+  }
+  for (const row of table.rows) {
+    for (const cell of row) {
+      if (cell.continuation) continue;
+      for (const paragraph of cell.paragraphs) slideXml.paragraph(paragraph, fonts);
+    }
+  }
+}
+
 /** Writes the presentation of the pages. */
-export async function writePackage(pages: readonly SlidePage[], fonts: ReadonlyMap<string, PdfContentFont>, title: string): Promise<Buffer> {
+export async function writePackage(
+  pages: readonly SlidePage[],
+  fonts: ReadonlyMap<string, PdfContentFont>,
+  title: string,
+  packageOptions: WritePackageOptions = {}
+): Promise<Buffer> {
   if (pages.length === 0) throw new ConversionFailedError('The PDF has no pages to put on slides.');
+  const legacyBridge = packageOptions.legacyPptBridge === true;
+  if (legacyBridge && pages.length > PPT_BRIDGE_MAX_SLIDES) {
+    throw new PayloadLimitError(
+      `Presentation has ${pages.length} slides, exceeding the ${PPT_BRIDGE_MAX_SLIDES}-slide limit for PowerPoint 97-2003 export.`
+    );
+  }
   const slide = slideSizeOf(pages[0]);
   const zip = new JSZip();
   // A picture the pages place more than once is one file of the package.
   const mediaOf = new Map<Uint8Array, { name: string; mime: string }>();
   const mediaNames: string[] = [];
+  let emittedVectors = 0;
+  let totalShapes = 0;
 
   pages.forEach((page, index) => {
     const number = index + 1;
@@ -503,17 +603,35 @@ export async function writePackage(pages: readonly SlidePage[], fonts: ReadonlyM
       const tables = page.blocks.flatMap((block) => (block.kind === 'table' && isUniformlyRuled(block.table, page.rules) ? [block.table] : []));
       const tableSet = new Set(tables);
       const rules = page.rules.filter((rule) => rule.inShape !== true && !tables.some((table) => ruleInside(rule, table.box)));
+      const vectorCount = page.shapes.length + rules.length;
+      const emitVectors =
+        !legacyBridge ||
+        (vectorCount <= PPT_BRIDGE_MAX_VECTOR_SHAPES_PER_SLIDE &&
+          emittedVectors + vectorCount <= PPT_BRIDGE_MAX_VECTOR_SHAPES_TOTAL);
+      if (emitVectors && legacyBridge) emittedVectors += vectorCount;
       // Pictures, shapes and rules go in the order the page paints them, so a band drawn over a picture stays over it.
       const painted: { z: number; draw: () => void }[] = [
         ...page.images.map((image) => ({ z: image.z ?? -1, draw: () => slideXml.picture(image) })),
-        ...page.shapes.map((shape) => ({ z: shape.z, draw: () => slideXml.shape(shape) })),
-        ...rules.map((rule) => ({ z: rule.z ?? -1, draw: () => (rule.thickness <= MAX_RULE_THICKNESS_PT ? slideXml.rule(rule) : slideXml.shape(barOf(rule))) })),
+        ...(emitVectors
+          ? [
+              ...page.shapes.map((shape) => ({ z: shape.z, draw: () => slideXml.shape(shape) })),
+              ...rules.map((rule) => ({ z: rule.z ?? -1, draw: () => (rule.thickness <= MAX_RULE_THICKNESS_PT ? slideXml.rule(rule) : slideXml.shape(barOf(rule))) })),
+            ]
+          : []),
       ];
       for (const { draw } of painted.sort((a, b) => a.z - b.z)) draw();
       for (const block of page.blocks) {
         if (block.kind === 'table' && tableSet.has(block.table)) slideXml.table(block.table, fonts, borderOf(block.table, page.rules));
-        else if (block.kind === 'table') for (const line of linesOfTable(block.table)) slideXml.line(line, fonts);
-        else if (block.kind === 'paragraph') for (const line of block.paragraph.lines) slideXml.line(line, fonts);
+        else if (block.kind === 'table') emitUnboxedTable(slideXml, block.table, fonts, legacyBridge);
+        else if (block.kind === 'paragraph') emitParagraphBlock(slideXml, block.paragraph, fonts, legacyBridge);
+      }
+    }
+    if (legacyBridge) {
+      totalShapes += slideXml.shapeCount();
+      if (totalShapes > PPT_BRIDGE_MAX_SHAPES_TOTAL) {
+        throw new PayloadLimitError(
+          `Presentation exceeds the ${PPT_BRIDGE_MAX_SHAPES_TOTAL}-shape limit for PowerPoint 97-2003 export.`
+        );
       }
     }
     zip.file(`ppt/slides/slide${number}.xml`, slideXml.toXml());
@@ -531,13 +649,24 @@ export async function writePackage(pages: readonly SlidePage[], fonts: ReadonlyM
  * a page is refused as it is for a Word document (`PdfLayoutLimitError`).
  */
 export async function pdfToPptx(source: Buffer, options: ConversionOptions, title: string): Promise<Buffer> {
+  const legacyPptBridge = (options as Record<symbol, unknown>)[PPTX_LEGACY_PPT_BRIDGE] === true;
   const content = await readPdfContentForOffice(source, options, { images: true, colour: true });
   const fonts = new Map<string, PdfContentFont>();
   const noteFonts = (list: readonly PdfContentFont[]): void => list.forEach((font) => fonts.set(font.name, font));
   if (content.kind === 'layout') {
+    if (legacyPptBridge && content.extracted.pages.length > PPT_BRIDGE_MAX_SLIDES) {
+      throw new PayloadLimitError(
+        `Presentation has ${content.extracted.pages.length} slides, exceeding the ${PPT_BRIDGE_MAX_SLIDES}-slide limit for PowerPoint 97-2003 export.`
+      );
+    }
     noteFonts(content.extracted.fonts);
     const layouts = layoutPdfPages(content.extracted.pages, content.extracted.fonts);
-    return writePackage(layouts.map(({ page, blocks }) => ({ width: page.width, height: page.height, images: page.images, rules: page.rules, shapes: page.shapes ?? [], blocks })), fonts, title);
+    return writePackage(
+      layouts.map(({ page, blocks }) => ({ width: page.width, height: page.height, images: page.images, rules: page.rules, shapes: page.shapes ?? [], blocks })),
+      fonts,
+      title,
+      legacyPptBridge ? { legacyPptBridge: true } : undefined
+    );
   }
   // Pages read by OCR (and the pages of a scan's document that kept their text layer) have text and no geometry.
   const known = new Map((content.extracted?.pages ?? []).map((page) => [page.pageNumber, page]));
@@ -545,5 +674,5 @@ export async function pdfToPptx(source: Buffer, options: ConversionOptions, titl
     const page = known.get(pageNumber);
     return { width: page?.width ?? LETTER_WIDTH_PT, height: page?.height ?? LETTER_HEIGHT_PT, images: [], rules: [], shapes: [], blocks: [], plainText: text };
   });
-  return writePackage(pages, fonts, title);
+  return writePackage(pages, fonts, title, legacyPptBridge ? { legacyPptBridge: true } : undefined);
 }

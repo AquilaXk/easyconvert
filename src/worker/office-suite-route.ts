@@ -1,12 +1,13 @@
 import fs from 'node:fs';
-import { CompoundFileStructureError, ConversionFailedError, CorruptStreamError, EncryptedOfficeDocumentError, EngineUnavailableError, SheetLimitError } from '../lib/types';
+import { CompoundFileStructureError, ConversionFailedError, CorruptStreamError, CpuTaskTimeoutError, EncryptedOfficeDocumentError, EngineUnavailableError, SheetLimitError } from '../lib/types';
 import { LegacyOfficeFormatError } from '../lib/conversions/office/legacy-office-errors';
 import { CFBF_MAX_FILE_BYTES } from '../lib/compound-file-kind';
 import { assertWorkbookFitsXls } from '../lib/conversions/office/xls-limits';
 import { writeTransientWorkbook } from '../lib/conversions/data';
 import { DOCX_MAX_ANCHORED_SHAPES } from '../lib/conversions/document-model/docx';
-import { remainingJobMs } from '../lib/conversions/job-time';
+import { JOB_DEADLINE_AT, OFFICE_STAGE, remainingJobMs, type JobDeadlined } from '../lib/conversions/job-time';
 import { hasWordFloatingShapes, stripWordFloatingShapes } from '../lib/conversions/office/doc-reader';
+import { PPTX_LEGACY_PPT_BRIDGE } from '../lib/conversions/office/pdf-pptx';
 import { readRawInputBuffer } from './worker-output';
 import { repairPptPersistIdSeed } from '../lib/conversions/office/ppt-reader';
 import { OfficePackageUnreadableError, isEncryptedLegacyOffice, legacyOfficeInput } from './office-input-checks';
@@ -482,6 +483,24 @@ export function bridgeFormat(src: string, tgt: string): string | undefined {
  */
 const WORD_97_MAX_ANCHORED_SHAPES = 200;
 
+function effectiveBridgeDeadline(options: WorkerEngineOptions, startedAt: number): { deadlineAt?: number; budgetMs?: number } {
+  const explicitDeadline = (options as JobDeadlined)[JOB_DEADLINE_AT];
+  const hasDeadline = typeof explicitDeadline === 'number' && Number.isFinite(explicitDeadline);
+  const timeoutMs = typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs) ? options.timeoutMs : undefined;
+  const deadlineFromTimeout = timeoutMs !== undefined ? startedAt + timeoutMs : undefined;
+  if (hasDeadline && deadlineFromTimeout !== undefined) {
+    const deadlineAt = Math.min(explicitDeadline, deadlineFromTimeout);
+    return { deadlineAt, budgetMs: Math.max(1, Math.min(timeoutMs!, deadlineAt - startedAt)) };
+  }
+  if (hasDeadline) {
+    return { deadlineAt: explicitDeadline, budgetMs: Math.max(1, explicitDeadline - startedAt) };
+  }
+  if (deadlineFromTimeout !== undefined) {
+    return { deadlineAt: deadlineFromTimeout, budgetMs: Math.max(1, timeoutMs!) };
+  }
+  return {};
+}
+
 export async function convertBridgedTarget(
   deps: OfficeSuiteRouteDeps,
   request: OfficeSuiteRequest,
@@ -491,20 +510,45 @@ export async function convertBridgedTarget(
   const bridge = bridgeFormat(src, tgt);
   if (bridge === undefined) return convertDirectly();
   if (isLongPlainText(input, src, tgt)) return convertTextFileDirectly(deps, request);
+
+  const startedAt = Date.now();
+  const { deadlineAt, budgetMs } = effectiveBridgeDeadline(options, startedAt);
+  options.signal?.throwIfAborted();
+  if (deadlineAt !== undefined && deadlineAt - startedAt <= 0) {
+    throw new CpuTaskTimeoutError(`.${src} to .${tgt} conversion`, budgetMs ?? 1);
+  }
+
   const requestedOutput = Buffer.isBuffer(input) ? undefined : input.outputPath;
   const source: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? input : { ...input, outputPath: undefined };
   const bridgeOptions: WorkerEngineOptions = {
     ...options,
+    ...(deadlineAt !== undefined ? { [JOB_DEADLINE_AT]: deadlineAt } : {}),
     libreOfficeFilter: undefined,
     inProcessFallback: undefined,
     ...(tgt === WORD_97_TARGET ? { [DOCX_MAX_ANCHORED_SHAPES]: WORD_97_MAX_ANCHORED_SHAPES } : {}),
+    ...(tgt === POWERPOINT_97_TARGET ? { [PPTX_LEGACY_PPT_BRIDGE]: true } : {}),
   };
-  const docx = await deps.convert(source, src, bridge, bridgeOptions, originalFilename);
+  const staged = await deps.convert(source, src, bridge, bridgeOptions, originalFilename);
   try {
-    const next: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? docx.buffer : { inputBuffer: docx.buffer, outputPath: requestedOutput };
+    options.signal?.throwIfAborted();
+    const remaining = deadlineAt === undefined ? undefined : remainingJobMs({ [JOB_DEADLINE_AT]: deadlineAt });
+    if (remaining !== undefined && remaining <= 0) {
+      throw new CpuTaskTimeoutError(`.${src} to .${tgt} conversion`, budgetMs ?? Math.max(1, Date.now() - startedAt));
+    }
+    const clampedTimeout =
+      remaining !== undefined && (options.timeoutMs !== undefined || remaining < OFFICE_STAGE.maxMs)
+        ? Math.max(1, options.timeoutMs !== undefined ? Math.min(options.timeoutMs, remaining) : remaining)
+        : options.timeoutMs;
+    const suiteOptions: WorkerEngineOptions = {
+      ...options,
+      ...(deadlineAt !== undefined ? { [JOB_DEADLINE_AT]: deadlineAt } : {}),
+      ...(clampedTimeout !== undefined ? { timeoutMs: clampedTimeout } : {}),
+      throwOnUnavailable: true,
+    };
+    const next: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? staged.buffer : { inputBuffer: staged.buffer, outputPath: requestedOutput };
     let written: WorkerConversionResult | null;
     try {
-      written = await deps.writeWithOfficeSuite(next, bridge, tgt, { ...options, throwOnUnavailable: true }, originalFilename);
+      written = await deps.writeWithOfficeSuite(next, bridge, tgt, suiteOptions, originalFilename);
     } catch (err) {
       rethrowSandboxUnavailable(err);
       throw err;
@@ -512,7 +556,7 @@ export async function convertBridgedTarget(
     if (!written) throw new EngineUnavailableError('soffice', `LibreOffice produced no .${tgt} file for the .${src} source`);
     return written;
   } finally {
-    deps.discardOutput(docx.filePath, input, options);
+    deps.discardOutput(staged.filePath, input, options);
   }
 }
 

@@ -482,11 +482,12 @@ the same number for rows that are mostly a spawn (`mixed.tar->zst` 0.33 against 
 such a row only the form of a changed entry is checked (a history point needs the commit of its run), and the history rule
 applies to what the change did to the row.
 
-**Known gaps and the staged rollout.** Most speed rows are below the reference today, so the gate is staged:
+**Known gaps and the staged rollout.** Every quality and speed row currently meets the reference (`bench/parity-gaps.json`
+holds `gaps: []` and `acceptedSlowdowns: []`). When a future regression or newly introduced row cannot immediately match the
+reference, `bench/parity-gaps.json` provides a staged tracking ratchet:
 
 - *Quality is immediate.* Every quality row of a touched family must be at or above the reference, unless an entry in
-  `bench/parity-gaps.json` tracks it (next bullet group). An unlisted row below the reference fails (the image quality rows
-  are tracked by #640 and still fail).
+  `bench/parity-gaps.json` tracks it (next bullet group). An unlisted row below the reference fails.
 - *A quality row that is listed is "tracked" at a recorded value.* The entry has `ratio: null`, the issue, the `recorded`
   value of the row and the `reference` value then. The row's own direction and allowance judge it: not worse than `recorded`
   by more than the allowance passes (`TRACK`); worse fails (`tracked-worse-than-recorded`); better but still below the
@@ -502,8 +503,7 @@ applies to what the change did to the row.
   slower than its own history predicts or falls 35 percent under the median of its history (next section). A tracked row that now passes the normal rule is reported as
   "now at parity: remove it from bench/parity-gaps.json". A row already at parity is not tracked and has to keep its
   interval lower bound at or above 0.90 in the same job, unchanged.
-- *Every entry names its issue* (`issue` is required and the loader refuses `null`): image quality #640, image speed
-  #641, audio #642, video #643, OCR #644, 7z/xz decompress and 7z compress #487, zstd compress #497 (and the near-parity zstd decode row, `compression/mixed.zst->tar/throughput`, until it has an issue of its own; its note says so). Speed entries carry
+- *Every tracked entry names its issue* (`issue` is required and the loader refuses `null`). Speed entries carry
   the latest CI-measured `ratio` for display and a `history` of the ratios of the latest runs; remove the entry when
   the row reaches parity.
 

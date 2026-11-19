@@ -44,4 +44,18 @@ describe('the origins of the pinned corpus files', () => {
       }
     }
   });
+
+  it('gives every Project Gutenberg sample a fallback mirror ending with its Gutenberg URL', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'bench/corpus/remote-manifest.json'), 'utf8')) as {
+      samples: Array<{ id: string; set: string; origin: { kind: string; url?: string; mirrors?: string[] } }>;
+    };
+    const gutenberg = manifest.samples.filter((sample) => sample.set === 'gutenberg');
+    expect(gutenberg.length).toBeGreaterThan(0);
+    for (const sample of gutenberg) {
+      expect(sample.origin.kind, sample.id).toBe('file');
+      expect(sample.origin.mirrors?.length ?? 0, sample.id).toBeGreaterThanOrEqual(1);
+      const original = (sample.origin.url ?? '').replace(/^https:\/\/web\.archive\.org\/web\/\d{14}id_\//, '');
+      expect(sample.origin.mirrors?.at(-1), sample.id).toBe(original);
+    }
+  });
 });
