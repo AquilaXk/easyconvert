@@ -927,8 +927,21 @@ export class LibreOfficePoolManager {
       try {
         await fs.promises.rm(jobSubdir, { recursive: true, force: true });
       } catch {}
-      await this.releaseWorker(worker, hasError);
+      await this.releaseAfterRun(worker, hasError);
     }
+  }
+
+  /**
+   * Gives the slot of a finished run back. A slot whose run failed is replaced after the run has answered: the replacement pre-warms the
+   * suite (up to 15 s), and a run that ended at the job deadline has no time left to wait for that. JODConverter completes the
+   * future of a job at its execution timeout and restarts the worker afterwards (`OfficeWorkerRunner`, `restartRequired`); Gotenberg waits only
+   * for the killed process to be reaped (`reapTimeout`, 5 s) and leaves the restart to its supervisor.
+   */
+  private releaseAfterRun(worker: LibreOfficeWorker, hasError: boolean): Promise<void> {
+    const released = this.releaseWorker(worker, hasError);
+    if (!hasError) return released;
+    released.catch((err: unknown) => console.warn('[LibreOfficePoolManager] Warning: failed to replace a worker after a failed run:', err));
+    return Promise.resolve();
   }
 
   /**

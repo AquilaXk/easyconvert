@@ -611,9 +611,10 @@ npm run bench:realworld -- merge --out realworld-results realworld-shard-*.json 
   address of every source are in `bench/realworld/PROVENANCE.md`. `--sources a,b` runs only the files of the named
   sources, for example the format samples of a change.
 - **Jobs:** each file goes through `--per-file` of its format's advertised targets, rotating so that the corpus covers
-  every pair. Jobs run in child processes with a deadline and a heap cap; a job past its deadline kills its process group.
+  every pair. Jobs run in child processes with a deadline and a heap cap. The deadline is the one the converter holds the job to; a job
+  that has not answered 10 s after it (`ANSWER_GRACE_MS`) kills its process group and every process below it.
 - **Verdicts:** `ok`; `refused` (a typed error the API answers with 4xx or 503); `crash` (anything the API would answer
-  with 500, or a dead job server); `hang` (deadline passed); `bad-output` (empty, wrong magic bytes, or refused by
+  with 500, or a dead job server); `hang` (no answer 10 s after the deadline the converter holds the job to, so a conversion that ran to that deadline and refused it is `refused`); `bad-output` (empty, wrong magic bytes, or refused by
   `pdfinfo` or ImageMagick `identify`).
 - **Gate:** any crash, hang or bad output fails, and so does a pair whose refusal rate grew more than 2 points over
   `bench/realworld/baseline.json` (pairs with at least 20 jobs).

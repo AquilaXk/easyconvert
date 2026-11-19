@@ -18,7 +18,7 @@ import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { evaluate, knownRefusal, mergeShards, pairStats, readKnownFailures, readKnownRefusals, renderMarkdown, REPORT_SCHEMA, type JobRecord, type ShardReport } from '../bench/realworld/report';
 import { ocrPageCount } from '../bench/realworld/ocr-path';
 import { outputProblem, PAGE_TARGETS } from '../bench/realworld/output-check';
-import { childOcrPageBudgetMs, childOcrPageConcurrency, JobPool, MAX_JOB_DEADLINE_MS, NIGHTLY_WORKERS, scaledDeadlineMs, TOLERATED_HUNG_JOBS } from '../bench/realworld/pool';
+import { ANSWER_GRACE_MS, answerWindowMs, childOcrPageBudgetMs, childOcrPageConcurrency, descendantPids, JobPool, MAX_JOB_DEADLINE_MS, NIGHTLY_WORKERS, scaledDeadlineMs, TOLERATED_HUNG_JOBS } from '../bench/realworld/pool';
 import { OCR_PAGE_BUDGET_MS } from '../src/lib/conversions/ocr-work-budget';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { getAvailableTargetFormats } from '../src/lib/registry';
@@ -458,7 +458,7 @@ describe('isolated job pool', () => {
     } finally {
       pool.stop();
     }
-    const hanging = await JobPool.start({ workers: 1, deadlineMs: HANG_DEADLINE_MS, heapMb: HEAP_MB, env });
+    const hanging = await JobPool.start({ workers: 1, deadlineMs: HANG_DEADLINE_MS, answerGraceMs: 0, heapMb: HEAP_MB, env });
     const stopReleasing = releaseReaders(blocked, PNG_1X1);
     try {
       const [first, second] = await hanging.runAll([
@@ -473,6 +473,44 @@ describe('isolated job pool', () => {
       hanging.stop();
     }
   }, POOL_TEST_TIMEOUT_MS);
+});
+
+describe('the answer window of a job', () => {
+  it('is the deadline the product holds the job to plus the time the product needs to answer after it stops the job', () => {
+    expect(answerWindowMs(180_000)).toBe(180_000 + ANSWER_GRACE_MS);
+    expect(answerWindowMs(180_000, 0)).toBe(180_000);
+    // The job server aborts the job 2 s before its deadline and then kills the office suite and answers: the grace is longer than that.
+    expect(ANSWER_GRACE_MS).toBeGreaterThan(2_000);
+  });
+
+  it('does not report a job as hung before the window, though its own deadline has passed', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-window-'));
+    const blocked = pipeInput(dir, 'blocked.png');
+    const env = { ...process.env, REALWORLD_PDFINFO: '', REALWORLD_IDENTIFY: '' };
+    const graceMs = 1_500;
+    const pool = await JobPool.start({ workers: 1, deadlineMs: HANG_DEADLINE_MS, answerGraceMs: graceMs, heapMb: HEAP_MB, env });
+    const stopReleasing = releaseReaders(blocked, PNG_1X1);
+    try {
+      const [hung] = await pool.runAll([{ path: blocked, name: 'blocked.png', format: 'png', target: 'bmp' }]);
+      expect(hung.verdict).toBe('hang');
+      expect(hung.ms).toBeGreaterThanOrEqual(graceMs);
+      expect(hung.detail).toBe(`no answer within ${HANG_DEADLINE_MS + graceMs} ms`);
+    } finally {
+      stopReleasing();
+      pool.stop();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, POOL_TEST_TIMEOUT_MS);
+});
+
+describe('what a hung job leaves behind', () => {
+  const TABLE = ['    1     0', '  100     1', '  200   100', '  201   200', '  300     1', '  400   201', ' 5000  4999'].join('\n');
+
+  it('lists every process below a job server, whatever the depth, and no other', () => {
+    expect(descendantPids(100, TABLE).sort((a, b) => a - b)).toEqual([200, 201, 400]);
+    expect(descendantPids(300, TABLE)).toEqual([]);
+    expect(descendantPids(777, TABLE)).toEqual([]);
+  });
 });
 
 describe('job deadline by size', () => {
@@ -499,9 +537,9 @@ describe('job deadline by size', () => {
     const realworld = workflow.slice(workflow.indexOf('\n  realworld:'), workflow.indexOf('\n  realworld-gate:'));
     const minutes = Number(/timeout-minutes:\s*(\d+)/.exec(realworld)?.[1]);
     expect(minutes, 'timeout-minutes of the realworld job').toBeGreaterThan(0);
-    const holdMs = (TOLERATED_HUNG_JOBS * MAX_JOB_DEADLINE_MS) / NIGHTLY_WORKERS;
+    const holdMs = (TOLERATED_HUNG_JOBS * answerWindowMs(MAX_JOB_DEADLINE_MS)) / NIGHTLY_WORKERS;
     expect(holdMs).toBeLessThanOrEqual((minutes * 60_000) / 2);
-    expect(MAX_JOB_DEADLINE_MS).toBe(540_000);
+    expect(answerWindowMs(MAX_JOB_DEADLINE_MS)).toBe(540_000);
   });
 
   it('gives each job server its share of the runner cores for per-page OCR concurrency, and at least one page', () => {
@@ -552,7 +590,7 @@ describe('job deadline by size', () => {
     const blocked = pipeInput(dir, 'blocked.png');
     const held = pipeInput(dir, 'held.png');
     const env = { ...process.env, REALWORLD_PDFINFO: '', REALWORLD_IDENTIFY: '' };
-    const pool = await JobPool.start({ workers: 1, deadlineMs: HANG_DEADLINE_MS, heapMb: HEAP_MB, env });
+    const pool = await JobPool.start({ workers: 1, deadlineMs: HANG_DEADLINE_MS, answerGraceMs: 0, heapMb: HEAP_MB, env });
     // The file of the second job is written HELD_BACK_MS after the job server opens it: 100 times the pool deadline.
     const written = fs.promises
       .open(held, 'w')
