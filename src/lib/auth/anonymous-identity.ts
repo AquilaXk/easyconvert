@@ -30,6 +30,9 @@ export function isUnattributedAnonymous(userId: string): boolean {
 /** The owner written on an upload session an anonymous caller opens: anonymous, and naming no address. */
 export const ANONYMOUS_UPLOAD_OWNER = anonymousUserId('upload');
 
+/** The owner segment of the key of every retained result of an anonymous caller (`resultKey`): anonymous, and naming no address. */
+export const ANONYMOUS_RESULT_OWNER = anonymousUserId('result');
+
 /** The owner to write on an upload session `callerUserId` opens. */
 export function uploadOwnerOf(callerUserId: string): string {
   return isAnonymousUserId(callerUserId) ? ANONYMOUS_UPLOAD_OWNER : callerUserId;

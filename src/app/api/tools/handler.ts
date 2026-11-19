@@ -20,6 +20,7 @@ import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { eraseOwnedFile, saveRetainedResult } from '@/lib/storage/retention-service';
 import { sanitizeNodeOutputFilename } from '@/lib/queue/graph/node-jobs';
 import { dispatchSyncWebTool } from '@/lib/queue/wait-for-job';
+import { resultKey } from '@/lib/storage/key-namespace';
 import {
   assertToolInput,
   assertToolUploadMetadata,
@@ -40,7 +41,7 @@ async function answerOf(output: WebToolOutput, caller: User): Promise<NextRespon
       const entries = await Promise.all(
         output.entries.map(async (entry, index) => {
           const safeName = sanitizeNodeOutputFilename(entry.name, `file_${index + 1}`);
-          const storageKey = `conversions/${caller.id}/${crypto.randomUUID()}_${safeName}`;
+          const storageKey = resultKey(caller.id, `${crypto.randomUUID()}_${safeName}`);
           await saveRetainedResult(s3Storage, storageKey, entry.buffer, entry.mimeType, safeName);
           savedKeys.push(storageKey);
           return {

@@ -10,7 +10,7 @@ import { codedRefusal, createProblemDetailsResponse } from '@/lib/api/problem-de
 import { STORAGE_OBJECT_NOT_FOUND, mayUseStorageKeyAsJobInput } from '@/lib/api-keys/owner-access';
 import type { User } from '@/lib/auth/types';
 import { storageProvider as s3Storage } from '@/lib/storage';
-import { isUploadKey } from '@/lib/storage/key-namespace';
+import { isUploadKey, resultKey, stagedInputKey } from '@/lib/storage/key-namespace';
 import { sanitizeNodeOutputFilename } from '@/lib/queue/graph/node-jobs';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { handOffConversionJob } from '@/lib/queue/enqueue';
@@ -54,7 +54,7 @@ interface ParsedToolJobInputs {
 async function storeToolOutput(output: WebToolOutput, caller: User): Promise<StoredToolJobResult> {
   if (output.kind === 'file') {
     const safeName = sanitizeNodeOutputFilename(output.filename, 'output.bin');
-    const storageKey = `conversions/${caller.id}/${crypto.randomUUID()}_${safeName}`;
+    const storageKey = resultKey(caller.id, `${crypto.randomUUID()}_${safeName}`);
     await saveRetainedResult(s3Storage, storageKey, output.buffer, output.mimeType, safeName);
     return {
       kind: 'file',
@@ -69,7 +69,7 @@ async function storeToolOutput(output: WebToolOutput, caller: User): Promise<Sto
   const entries = await Promise.all(
     output.entries.map(async (entry, index) => {
       const safeName = sanitizeNodeOutputFilename(entry.name, `file_${index + 1}`);
-      const storageKey = `conversions/${caller.id}/${crypto.randomUUID()}_${safeName}`;
+      const storageKey = resultKey(caller.id, `${crypto.randomUUID()}_${safeName}`);
       await saveRetainedResult(s3Storage, storageKey, entry.buffer, entry.mimeType, safeName);
       return {
         name: entry.name,
@@ -259,7 +259,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
           : await Promise.all(
               (parsed.inlineFiles ?? []).map(async (file, index) => {
                 const safeName = sanitizeNodeOutputFilename(file.name, `input_${index + 1}.bin`);
-                const key = `uploads/${caller.id}/tool_${jobId}_${index}_${safeName}`;
+                const key = stagedInputKey(caller.id, `tool_${jobId}_${index}_${safeName}`);
                 await s3Storage.saveObject(key, file.buffer, 'application/octet-stream', safeName);
                 stagedInlineKeys.push(key);
                 return { key, name: file.name };

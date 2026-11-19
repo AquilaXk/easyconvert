@@ -382,6 +382,7 @@ Security
 331. [The production web service runs queue-only, and the structured-data converters refuse inputs past a size and a count of values and convert on a pool thread](#331-the-production-web-service-runs-queue-only-and-the-structured-data-converters-refuse-inputs-past-a-size-and-a-count-of-values-and-convert-on-a-pool-thread)
 332. [A job request's JSON body is held to the inline file as base64 and its fields, and a body with more than 4,096 objects and arrays is refused before it is parsed](#332-a-job-requests-json-body-is-held-to-the-inline-file-as-base64-and-its-fields-and-a-body-with-more-than-4096-objects-and-arrays-is-refused-before-it-is-parsed)
 333. [Listing a bzip2 archive holds the decoded stream to the compression ratio of every other archive reader](#333-listing-a-bzip2-archive-holds-the-decoded-stream-to-the-compression-ratio-of-every-other-archive-reader)
+334. [Storage keys of an anonymous caller's tool results and staged inputs name no address](#334-storage-keys-of-an-anonymous-callers-tool-results-and-staged-inputs-name-no-address)
 
 ---
 
@@ -10194,3 +10195,17 @@ Security
   - **The 7-Zip listing was not used for bzip2**, because a `.tar.bz2` lists as the one file `x.tar` there; the members of the tar need the decoded stream. The cap is the rule the gzip listing already follows (`gunzipStreamingWithLimits`, `exceedsArchiveRatio`), so one ratio and one floor hold for every archive format.
 - **Trade-offs**: A stream of up to 5 MiB can still decode to its 500 MiB cap in the web process (100 to 1 is the ratio of gzip and of every other reader). Moving the decode to a pool thread, as entry 331 does for data, is the next step if the 500 MiB cap is to hold off the event loop as well; the tar listing of the decoded stream is synchronous too.
 - **Verified by**: `tests/archive-inspect-bzip2-bomb.test.ts` (the 370-byte stream and a stream over the ratio fail on `656eb523`; an ordinary `.tar.bz2` lists as before), `tests/archive-inspect-bounded-run.test.ts`, `tests/archive-inspect-malformed-input.test.ts`.
+
+## 334. Storage keys of an anonymous caller's tool results and staged inputs name no address
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: security review of `656eb523`, finding 4: the keys and URLs of an anonymous caller's tool results carried its address; entry 137 says a key never does)
+- **Decision**:
+  1. **The retained result of an anonymous caller is stored under `conversions/anon:result/`** (`resultKey`, `ANONYMOUS_RESULT_OWNER`, `src/lib/storage/key-namespace.ts`, `src/lib/auth/anonymous-identity.ts`), not under `conversions/anon:<address bucket>/`. This covers the synchronous tool routes (`src/app/api/tools/handler.ts`), the tool job routes (`src/app/api/tools/jobs/route.ts`) and the worker's tool output (`src/lib/tools/queued-tool-runner.ts`). An account's result keeps `conversions/<account id>/`.
+  2. **The input a web route stages for a worker is in the ownerless `uploads/` namespace for an anonymous caller** (`stagedInputKey`): `uploads/sync_...`, `uploads/synctool_...`, `uploads/tool_...` (`src/lib/queue/wait-for-job.ts`, `src/app/api/tools/jobs/route.ts`), the namespace in which `multipartUploadKey` already puts every upload of an anonymous caller. An account's staged input keeps `uploads/<account id>/`.
+- **Why**:
+  - **The key is shown to the visitor, logged, and put in a download URL, and the address can change between two requests of one visitor.** The owner segment `anon:<address bucket>` of a result key was the address bucket the quota counts (`anon:203.0.113.7`).
+  - **Access does not change.** An owner that is anonymous (any `anon:` id) is a capability: the download route and the job-input check let anyone holding the random key read it (`denyUnlessOwner`, `mayUseStorageKeyAsJobInput`, entry 137), and the key stays in the `user-conversion` namespace, so the retention rule of a result (delivery grace, expiry, capacity) applies as before. A staged input in `uploads/` was already readable by its key under the same rule. The ownership of a tool job (its record, status and cancel) is the caller id of the record and is unchanged.
+  - **A result is not put in `uploads/`**, as `multipartUploadKey` would do, because that namespace has the retention of an unclaimed upload (kept for the jobs that read it), not the delivery rule of a result.
+- **Trade-offs**: A result of an anonymous caller that exists under the old key at the time of the change is still served (the key is classified by its prefix and the owner is anonymous) until the retention sweep removes it. `src/app/api/v1/convert/route.ts` and `recordUserFile` write `conversions/<id>/` too, and an anonymous caller does not reach either (`/api/v1/convert` answers 401 without an account).
+- **Verified by**: `tests/anonymous-keys-no-address.test.ts`: six cases that fail with the old key shape (the address is in the key of a synchronous tool result, an asynchronous tool result, a queued tool output, and the staged inputs of a synchronous conversion and tool run).

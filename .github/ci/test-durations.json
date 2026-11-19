@@ -10,6 +10,7 @@
   "tests/adversarial-p0-hardening.test.ts": 3.7,
   "tests/adversarial-queue-storage-queries.test.ts": 0.1,
   "tests/algorithmic-advancements.test.ts": 0.2,
+  "tests/anonymous-keys-no-address.test.ts": 3,
   "tests/anonymous-upload-budget.test.ts": 1.3,
   "tests/anonymous-upload-capability.test.ts": 0.5,
   "tests/api-auth-upload-and-idempotency-hardening.test.ts": 0.3,

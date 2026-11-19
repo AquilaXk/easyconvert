@@ -5,7 +5,7 @@ import { isFinalFailure } from '../queue/job-failure';
 import { sanitizeNodeOutputFilename } from '../queue/graph/node-jobs';
 import { openPasswordOption } from '../queue/option-secrets';
 import type { IStorageBackend } from '../storage/oci-storage';
-import { isUploadKey } from '../storage/key-namespace';
+import { isUploadKey, resultKey } from '../storage/key-namespace';
 import { saveRetainedResult } from '../storage/retention-service';
 import { scopeStorageObjects } from '../storage/scoped-storage';
 import type { ConversionJobData, ConversionJobResult } from '../types';
@@ -20,7 +20,7 @@ export async function storeQueuedToolOutput(
 ): Promise<StoredToolJobResult> {
   if (output.kind === 'file') {
     const safeName = sanitizeNodeOutputFilename(output.filename, 'output.bin');
-    const storageKey = `conversions/${ownerUserId}/${crypto.randomUUID()}_${safeName}`;
+    const storageKey = resultKey(ownerUserId, `${crypto.randomUUID()}_${safeName}`);
     await saveRetainedResult(storage, storageKey, output.buffer, output.mimeType, safeName);
     return {
       kind: 'file',
@@ -35,7 +35,7 @@ export async function storeQueuedToolOutput(
   const entries = await Promise.all(
     output.entries.map(async (entry, index) => {
       const safeName = sanitizeNodeOutputFilename(entry.name, `file_${index + 1}`);
-      const storageKey = `conversions/${ownerUserId}/${crypto.randomUUID()}_${safeName}`;
+      const storageKey = resultKey(ownerUserId, `${crypto.randomUUID()}_${safeName}`);
       await saveRetainedResult(storage, storageKey, entry.buffer, entry.mimeType, safeName);
       return {
         name: entry.name,
