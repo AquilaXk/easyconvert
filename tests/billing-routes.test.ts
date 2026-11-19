@@ -605,13 +605,9 @@ describe('the webhook route and package payments', () => {
   it('redacts secrets and strips attached error objects when checkout subscription change or portal creation fails', async () => {
     const user = await account();
     const cookie = await cookieOf(user);
-    await webhook(
-      eventBody({
-        status: 'active',
-        customData: await checkoutOf(user, 1000, 'subscription'),
-        items: [{ priceId: 'pri_subscription_1000_fixture' }],
-      })
-    );
+    const subCheckout = await json(await startCheckout(post('/api/billing/checkout', cookie, { kind: 'subscription', credits: 1000 })));
+    const customData = (subCheckout.checkout as { customData: Record<string, string> }).customData;
+    await webhook(eventBody({ status: 'active', customData }));
 
     const leakedToken = 'pdl_live_secret_do_not_log_123456';
     const leakedApiKey = 'ec_live_secret_do_not_log_abcdef';

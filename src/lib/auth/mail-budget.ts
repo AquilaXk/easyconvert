@@ -126,9 +126,13 @@ export async function reserveMailSend(kind: MailBudgetKind): Promise<boolean> {
     console.warn(`auth_mail_budget level=warn sent=${sent} cap=${limits.verifyCap}`);
     observeAuthMailBudgetEvent('warn');
   }
-  if (sent === cap) {
-    console.error(`auth_mail_budget level=cap kind=${kind} sent=${sent} cap=${cap}`);
-    observeAuthMailBudgetEvent(kind === 'verify' ? 'verify_cap' : 'hard_cap');
+  if (sent === limits.verifyCap && limits.verifyCap !== limits.hardCap) {
+    console.error(`auth_mail_budget level=cap kind=verify sent=${sent} cap=${limits.verifyCap}`);
+    observeAuthMailBudgetEvent('verify_cap');
+  } else if (sent === limits.hardCap) {
+    const capKind: MailBudgetKind = limits.verifyCap === limits.hardCap ? kind : 'reset';
+    console.error(`auth_mail_budget level=cap kind=${capKind} sent=${sent} cap=${limits.hardCap}`);
+    observeAuthMailBudgetEvent(capKind === 'verify' ? 'verify_cap' : 'hard_cap');
   }
   return true;
 }

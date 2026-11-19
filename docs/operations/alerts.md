@@ -116,12 +116,12 @@ Never edit the subscription keys in Redis by hand: the record, its index and the
 
 **Anchor for the alert:** `docs/operations/alerts.md#alert-auth-mail-budget`.
 
-**Means.** `easyconvert_auth_mail_budget_events_total` recorded `level="verify_cap"` (450/day default, stopping verification mails while reserving capacity for password resets) or `level="hard_cap"` (500/day default, stopping all authentication emails until UTC midnight). Level: SEV2 when verification emails are shed (`verify_cap`); SEV1 when password-reset emails also stop (`hard_cap`).
+**Means.** `easyconvert_auth_mail_budget_events_total` recorded `level="verify_cap"` (`MAIL_DAILY_VERIFY_CAP = 400`/day default, after warning at `MAIL_DAILY_WARN = 350`/day, stopping verification mails while reserving capacity for password resets) or `level="hard_cap"` (`MAIL_DAILY_HARD_CAP = 480`/day default, stopping all authentication emails until UTC midnight). Level: SEV2 when verification emails are shed (`verify_cap`); SEV1 when password-reset emails also stop (`hard_cap`).
 
 **Check.**
 
 1. Logs: `C logs --no-color --since 6h web | grep 'auth_mail_budget'` shows the exact timestamp and threshold (`level=warn`, `level=cap kind=verify` or `kind=reset`).
-2. Edge logs: inspect `/var/log/nginx/easyconvert-edge.log` and Redis counters (`mail_budget:*`) for abusive `/api/auth/register`, `/api/auth/email-verification/resend`, or `/api/auth/password-reset/request` traffic from one source.
+2. Edge logs: inspect `/var/log/nginx/easyconvert-edge.log` and Redis counters (`easyconvert:{user}:mail_sent:<YYYY-MM-DD>`) for abusive `/api/auth/register`, `/api/auth/email-verification/resend`, or `/api/auth/password-reset/request` traffic from one source.
 3. Account abuse check: if an offending test or abusive account is causing repeated sign-ups/resets, inspect and suspend it via `C exec -T worker node dist/set-account-suspension.js --user <id or email> --suspend --reason "auth mail flood" [--apply]`.
 
 **Over when.** Abuse traffic has stopped and the UTC day rolls over (mail budget resets at 00:00 UTC) so verification and password-reset flows succeed again.

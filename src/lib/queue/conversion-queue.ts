@@ -243,6 +243,20 @@ export function attachInputCleanupOnCompletion(
   });
 }
 
+const pendingCancellationTasks = new Set<Promise<void>>();
+
+/**
+ * Waits for every in-flight `attachJobCancellationListeners` handler (input release,
+ * graph notification, upload cleanup, quota rollback) triggered by `cancelled` events
+ * to settle before short-lived processes such as operator CLI commands exit.
+ */
+export async function flushPendingCancellationListeners(): Promise<void> {
+  while (pendingCancellationTasks.size > 0) {
+    const batch = Array.from(pendingCancellationTasks);
+    await Promise.allSettled(batch);
+  }
+}
+
 /**
  * Owns the quota refund and the release of the input for cancelled jobs. The engine emits `cancelled` once per cancelled
  * job, in the process whose cancelJob won the transition, so every cancel path refunds exactly once. Attach it to one
@@ -251,30 +265,35 @@ export function attachInputCleanupOnCompletion(
 export function attachJobCancellationListeners(
   queue: IQueueEngine<ConversionJobData, ConversionJobResult>
 ): void {
-  queue.on('cancelled', async (job: Job<ConversionJobData, ConversionJobResult>) => {
-    // A cancelled job never runs again, so it no longer needs its input, and a graph node it ran ended without a result.
-    if (job.data?.storageKey) {
-      await releaseResultHold(job.data.storageKey, job.id);
-    }
-    await reportGraphNodeEnded(job, job.failedReason || 'The job was cancelled.');
-    if (job.data?.toolJob) {
-      const { cleanupQueuedToolUploads } = await import('../tools/queued-tool-runner');
-      await cleanupQueuedToolUploads(
-        storageProvider,
-        job.data.toolJob.cleanupUploadKeys ?? job.data.toolJob.storedRefs.map((ref) => ref.key)
-      ).catch(() => undefined);
-    }
-    if (!job.data?.reservationId) {
-      return;
-    }
-    try {
-      await redisKeyStore.rollbackQuota(job.data.reservationId);
-    } catch (err) {
-      console.error(
-        `[ConversionQueue] Failed to rollback quota for cancelled job ${job.id} (reservation ${job.data.reservationId}):`,
-        err
-      );
-    }
+  queue.on('cancelled', (job: Job<ConversionJobData, ConversionJobResult>) => {
+    const task = (async () => {
+      // A cancelled job never runs again, so it no longer needs its input, and a graph node it ran ended without a result.
+      if (job.data?.storageKey) {
+        await releaseResultHold(job.data.storageKey, job.id);
+      }
+      await reportGraphNodeEnded(job, job.failedReason || 'The job was cancelled.');
+      if (job.data?.toolJob) {
+        const { cleanupQueuedToolUploads } = await import('../tools/queued-tool-runner');
+        await cleanupQueuedToolUploads(
+          storageProvider,
+          job.data.toolJob.cleanupUploadKeys ?? job.data.toolJob.storedRefs.map((ref) => ref.key)
+        ).catch(() => undefined);
+      }
+      if (!job.data?.reservationId) {
+        return;
+      }
+      try {
+        await redisKeyStore.rollbackQuota(job.data.reservationId);
+      } catch (err) {
+        console.error(
+          `[ConversionQueue] Failed to rollback quota for cancelled job ${job.id} (reservation ${job.data.reservationId}):`,
+          err
+        );
+      }
+    })().finally(() => {
+      pendingCancellationTasks.delete(task);
+    });
+    pendingCancellationTasks.add(task);
   });
 }
 

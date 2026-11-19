@@ -134,7 +134,12 @@ describe('Infrastructure advance preparation & CI conformance guards', () => {
       const runBudget = (cpus: string, memGb: string): Record<string, string> => {
         const res = spawnSync('bash', [DEPLOY_SCRIPT, 'budget'], {
           encoding: 'utf-8',
-          env: { PATH: process.env.PATH ?? '', EASYCONVERT_BUDGET_CPUS: cpus, EASYCONVERT_BUDGET_MEMORY_GB: memGb },
+          env: {
+            NODE_ENV: process.env.NODE_ENV ?? 'test',
+            PATH: process.env.PATH ?? '',
+            EASYCONVERT_BUDGET_CPUS: cpus,
+            EASYCONVERT_BUDGET_MEMORY_GB: memGb,
+          },
         });
         expect(res.status).toBe(0);
         return Object.fromEntries(res.stdout.trim().split('\n').map((line) => line.split('=') as [string, string]));
@@ -186,7 +191,8 @@ describe('Infrastructure advance preparation & CI conformance guards', () => {
     });
 
     it('enforces HTTPS, >=32-byte keys, SSRF private-IP blocks, and DTD-free ListObjectsV2 XML bounds', () => {
-      const validBase = {
+      const validBase: NodeJS.ProcessEnv = {
+        NODE_ENV: 'test',
         REDIS_BACKUP_OFFHOST_ENABLED: 'true',
         REDIS_BACKUP_ENCRYPTION_KEY: TEST_KEK,
         REDIS_BACKUP_S3_ENDPOINT: 'https://s3.us-east-1.amazonaws.com',
@@ -393,6 +399,7 @@ esac`
         const restoredPath = path.join(sandbox, 'restored', createdLocal);
         fs.mkdirSync(path.dirname(restoredPath), { recursive: true });
         const cfg = parseOffhostConfig({
+          NODE_ENV: 'test',
           REDIS_BACKUP_OFFHOST_ENABLED: 'true',
           REDIS_BACKUP_ENCRYPTION_KEY: TEST_KEK,
           REDIS_BACKUP_S3_ENDPOINT: `http://127.0.0.1:${port}`,

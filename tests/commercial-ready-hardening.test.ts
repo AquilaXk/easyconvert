@@ -140,12 +140,12 @@ describe('Commercial operation hardening suite', () => {
         eventAt: Date.now(),
         userId: user.id,
         subscription: {
+          provider: 'paddle',
           providerCustomerId: 'ctm_test_1',
           providerSubscriptionId: 'sub_test_1',
-          size: 1000,
+          credits: 1000,
           status: 'active',
           currentPeriodEnd: Date.now() + 86_400_000,
-          cancelAt: null,
         },
       });
       const token = createSessionToken(redisUserStore.sanitizeUser(user));
@@ -170,10 +170,8 @@ describe('Commercial operation hardening suite', () => {
           webhookSecret: 'pdl_ntfset_1234567890',
           clientToken: 'test_1234567890',
           environment: 'sandbox',
-          prices: {
-            package: { 500: 'pri_1', 1000: 'pri_2', 2500: 'pri_3', 5000: 'pri_4', 10000: 'pri_5' },
-            subscription: { 1000: 'pri_6', 2500: 'pri_7', 5000: 'pri_8', 10000: 'pri_9' },
-          },
+          packagePriceIds: { 500: 'pri_1', 1000: 'pri_2', 2500: 'pri_3', 5000: 'pri_4', 10000: 'pri_5' },
+          subscriptionPriceIds: { 1000: 'pri_6', 2500: 'pri_7', 5000: 'pri_8', 10000: 'pri_9' },
         },
         { subscriptions: { cancel: paddleCancel } } as never
       );

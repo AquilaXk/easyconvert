@@ -52,6 +52,15 @@ function createInstruments(): Instruments {
   // process_start_time_seconds, process_cpu_*, process_resident_memory_bytes and the Node.js runtime metrics: a restart is a change of
   // the start time.
   collectDefaultMetrics({ register: registry });
+  const authMailBudgetEvents = new Counter({
+    name: 'easyconvert_auth_mail_budget_events_total',
+    help: 'Daily authentication mail budget threshold events, by level (warn, verify_cap, hard_cap).',
+    labelNames: ['level'] as const,
+    registers: [registry],
+  });
+  for (const level of AUTH_MAIL_BUDGET_LEVELS) {
+    authMailBudgetEvents.inc({ level }, 0);
+  }
   return {
     registry,
     requests: new Counter({
@@ -109,12 +118,7 @@ function createInstruments(): Instruments {
       labelNames: ['source', 'result'] as const,
       registers: [registry],
     }),
-    authMailBudgetEvents: new Counter({
-      name: 'easyconvert_auth_mail_budget_events_total',
-      help: 'Daily authentication mail budget threshold events, by level (warn, verify_cap, hard_cap).',
-      labelNames: ['level'] as const,
-      registers: [registry],
-    }),
+    authMailBudgetEvents,
   };
 }
 

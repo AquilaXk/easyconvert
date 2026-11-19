@@ -56,11 +56,12 @@ function mount(element: React.ReactElement, locale: TestLocale = 'en'): void {
   act(() => {
     root = createRoot(container);
     root.render(
-      createElement(
-        NextIntlClientProvider,
-        { locale, messages: testMessages(locale), timeZone: 'UTC' },
-        element
-      )
+      createElement(NextIntlClientProvider, {
+        locale,
+        messages: testMessages(locale),
+        timeZone: 'UTC',
+        children: element,
+      })
     );
   });
 }

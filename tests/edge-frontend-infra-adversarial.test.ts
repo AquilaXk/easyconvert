@@ -75,7 +75,7 @@ describe('Adversarial Edge, Frontend, Proxy & Container Hardening', () => {
     });
 
     const gifBytes = buildTwoFrameGif();
-    const file = new File([gifBytes], 'anim.gif', { type: 'image/gif' });
+    const file = new File([Uint8Array.from(gifBytes)], 'anim.gif', { type: 'image/gif' });
     const item: ConversionQueueItem = {
       id: 'item-gif',
       file,

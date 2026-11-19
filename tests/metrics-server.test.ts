@@ -43,6 +43,21 @@ describe('GET /metrics', () => {
     expect(text).toContain('easyconvert_job_duration_seconds_count{family="image",outcome="failed"} 1');
   });
 
+  it('pre-initializes auth mail budget counter series at 0 on fresh startup before any threshold is crossed', async () => {
+    await server?.stop();
+    const holder = globalThis as Record<symbol, unknown>;
+    delete holder[Symbol.for('easyconvert.metrics.instruments')];
+    server = await startMetricsServer({ port: 0, host: LOOPBACK });
+
+    const res = await get('/metrics');
+    const text = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(text).toContain('easyconvert_auth_mail_budget_events_total{level="warn"} 0');
+    expect(text).toContain('easyconvert_auth_mail_budget_events_total{level="verify_cap"} 0');
+    expect(text).toContain('easyconvert_auth_mail_budget_events_total{level="hard_cap"} 0');
+  });
+
   it('includes the start time of the process, from which a restart is derived', async () => {
     const text = await (await get('/metrics')).text();
 

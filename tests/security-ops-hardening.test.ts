@@ -25,6 +25,7 @@ import { createSessionToken, getSessionFromRequest } from '../src/lib/auth/sessi
 import { HOST_SESSION_COOKIE_NAME } from '../src/lib/auth/session-cookie';
 import { observeAuthMailBudgetEvent } from '../src/lib/metrics/instruments';
 import { conversionQueue } from '../src/lib/queue/conversion-queue';
+import { cancelSingleQueueJob } from '../src/lib/queue/cancel-work';
 import { graphScheduler } from '../src/lib/queue/graph';
 import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 import type { JobGraph } from '../src/lib/queue/graph/types';
@@ -136,7 +137,7 @@ describe('Track 1: loopback isolation, middleware hardening, config, and formats
       ];
 
       for (const sig of invalidSignatures) {
-        const res = middleware(
+        const res = await middleware(
           new NextRequest('https://convert.example.test/api/billing/webhook', {
             method: 'POST',
             headers: { 'x-forwarded-for': '198.51.100.77', 'paddle-signature': sig },
@@ -148,7 +149,7 @@ describe('Track 1: loopback isolation, middleware hardening, config, and formats
       // Flood from attacker IP exhausts attacker IP bucket (60 tokens), never touching BILLING_WEBHOOK_BUCKET_KEY
       let limitedCount = 0;
       for (let i = 0; i < 80; i += 1) {
-        const res = middleware(
+        const res = await middleware(
           new NextRequest('https://convert.example.test/api/billing/webhook', {
             method: 'POST',
             headers: { 'x-forwarded-for': '198.51.100.77', 'paddle-signature': 'x' },
@@ -159,7 +160,7 @@ describe('Track 1: loopback isolation, middleware hardening, config, and formats
       expect(limitedCount).toBe(25);
 
       // Even from that same rate-limited attacker IP, a properly formatted webhook POST routes to BILLING_WEBHOOK_BUCKET_KEY and is not 429
-      const validRes = middleware(
+      const validRes = await middleware(
         new NextRequest('https://convert.example.test/api/billing/webhook', {
           method: 'POST',
           headers: {
@@ -180,14 +181,14 @@ describe('Track 1: loopback isolation, middleware hardening, config, and formats
     const { middleware } = await import('../src/middleware');
 
     const targets = ['/api/auth/logout', '/api/billing/checkout', '/api/billing/portal'];
-    const spoofedHeadersList = [
+    const spoofedHeadersList: Array<Record<string, string>> = [
       { 'x-api-key': 'ec_live_forged_key_0001' },
       { authorization: 'Bearer ec_live_forged_key_0001' },
     ];
 
     for (const pathname of targets) {
       for (const spoofed of spoofedHeadersList) {
-        const missingOrigin = middleware(
+        const missingOrigin = await middleware(
           new NextRequest(`https://convert.example.test${pathname}`, {
             method: 'POST',
             headers: {
@@ -199,7 +200,7 @@ describe('Track 1: loopback isolation, middleware hardening, config, and formats
         );
         expect(missingOrigin.status, `${pathname} missing origin`).toBe(403);
 
-        const crossOrigin = middleware(
+        const crossOrigin = await middleware(
           new NextRequest(`https://convert.example.test${pathname}`, {
             method: 'POST',
             headers: {
@@ -212,7 +213,7 @@ describe('Track 1: loopback isolation, middleware hardening, config, and formats
         );
         expect(crossOrigin.status, `${pathname} cross origin`).toBe(403);
 
-        const sameOrigin = middleware(
+        const sameOrigin = await middleware(
           new NextRequest(`https://convert.example.test${pathname}`, {
             method: 'POST',
             headers: {
@@ -456,24 +457,29 @@ describe('Track 2: operator CLI arg parsing, account suspension, job cancellatio
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
     const reserved = await redisKeyStore.reserveQuota(user.id, 1);
+    const queuedJobId = `job_${crypto.randomUUID()}`;
     const queuedJob = await conversionQueue.add('convert', {
+      jobId: queuedJobId,
       userId: user.id,
       sourceFormat: 'png',
       targetFormat: 'jpg',
       originalFilename: 'a.png',
+      fileSize: 64,
+      options: {},
       storageKey: `inputs/${user.id}/a.png`,
       reservationId: reserved.reservationId,
-      createdAt: Date.now(),
     });
 
     // Completed job is left untouched and refused on direct --job target
     const doneJob = await conversionQueue.add('convert', {
+      jobId: `job_${crypto.randomUUID()}`,
       userId: user.id,
       sourceFormat: 'png',
       targetFormat: 'jpg',
       originalFilename: 'done.png',
+      fileSize: 64,
+      options: {},
       storageKey: `inputs/${user.id}/done.png`,
-      createdAt: Date.now(),
     });
     doneJob.state = 'completed';
 
@@ -501,12 +507,14 @@ describe('Track 2: operator CLI arg parsing, account suspension, job cancellatio
     const extraJobs: string[] = [];
     for (let i = 0; i < MAX_USER_CANCEL_JOBS + 5; i += 1) {
       const j = await conversionQueue.add('convert', {
+        jobId: `job_batch_${i}_${crypto.randomUUID()}`,
         userId: user.id,
         sourceFormat: 'png',
         targetFormat: 'jpg',
         originalFilename: `batch_${i}.png`,
+        fileSize: 64,
+        options: {},
         storageKey: `inputs/${user.id}/batch_${i}.png`,
-        createdAt: Date.now() + i,
       });
       extraJobs.push(j.id);
     }
@@ -565,5 +573,85 @@ describe('Track 2: operator CLI arg parsing, account suspension, job cancellatio
       .map((s) => s.labels.level);
     expect(mailLevels).not.toContain('bogus_user_supplied');
     expect(await reading('easyconvert_auth_mail_budget_events_total', { level: 'warn' })).toBe(2);
+  });
+
+  it('awaits async cancellation listeners (e.g. delayed quota rollback) before cancelSingleQueueJob or cancel-job returns', async () => {
+    const user = await createTestAccount({ tier: 'paid' });
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    let rollbackCompleted = 0;
+    const origRollback = redisKeyStore.rollbackQuota.bind(redisKeyStore);
+    vi.spyOn(redisKeyStore, 'rollbackQuota').mockImplementation(async (reservationId: string) => {
+      await new Promise((resolve) => setTimeout(resolve, 35));
+      const res = await origRollback(reservationId);
+      rollbackCompleted += 1;
+      return res;
+    });
+
+    const r1 = await redisKeyStore.reserveQuota(user.id, 1);
+    const j1 = await conversionQueue.add('convert', {
+      jobId: `job_${crypto.randomUUID()}`,
+      userId: user.id,
+      sourceFormat: 'png',
+      targetFormat: 'jpg',
+      originalFilename: 'delay1.png',
+      fileSize: 64,
+      options: {},
+      storageKey: `inputs/${user.id}/delay1.png`,
+      reservationId: r1.reservationId,
+    });
+    expect(await cancelSingleQueueJob(j1.id, 'test cancelSingleQueueJob delay')).toBe(true);
+    expect(rollbackCompleted).toBe(1);
+
+    const r2 = await redisKeyStore.reserveQuota(user.id, 1);
+    const j2 = await conversionQueue.add('convert', {
+      jobId: `job_${crypto.randomUUID()}`,
+      userId: user.id,
+      sourceFormat: 'png',
+      targetFormat: 'jpg',
+      originalFilename: 'delay2.png',
+      fileSize: 64,
+      options: {},
+      storageKey: `inputs/${user.id}/delay2.png`,
+      reservationId: r2.reservationId,
+    });
+    expect(await cancelJobMain(['--job', j2.id, '--apply'])).toBe(0);
+    expect(rollbackCompleted).toBe(2);
+
+    await conversionQueue.remove(j1.id);
+    await conversionQueue.remove(j2.id);
+  });
+
+  it('records verify_cap even when a reset mail lands on verifyCap, and avoids double counting when verifyCap === hardCap', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    // 1. Default limits (350 / 400 / 480): 399 verify + 1 reset hits verifyCap=400 cleanly
+    for (let i = 0; i < MAIL_DAILY_VERIFY_CAP - 1; i += 1) {
+      await reserveMailSend('verify');
+    }
+    expect(await reserveMailSend('reset')).toBe(true);
+    expect(await reading('easyconvert_auth_mail_budget_events_total', { level: 'verify_cap' })).toBe(1);
+    expect(await reading('easyconvert_auth_mail_budget_events_total', { level: 'hard_cap' })).toBe(0);
+
+    // 2. Equal verifyCap and hardCap records exactly once without duplicating events
+    resetMailBudgetMemory();
+    resetMetrics();
+    vi.stubEnv('AUTH_MAIL_DAILY_WARN', '3');
+    vi.stubEnv('AUTH_MAIL_DAILY_VERIFY_CAP', '5');
+    vi.stubEnv('AUTH_MAIL_DAILY_HARD_CAP', '5');
+    // Advance clock to a new UTC day so in-memory key is distinct from previous dayKey
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.UTC(2030, 0, 2, 12, 0, 0));
+      for (let i = 0; i < 5; i += 1) {
+        await reserveMailSend('verify');
+      }
+      expect(await reading('easyconvert_auth_mail_budget_events_total', { level: 'warn' })).toBe(1);
+      expect(await reading('easyconvert_auth_mail_budget_events_total', { level: 'verify_cap' })).toBe(1);
+      expect(await reading('easyconvert_auth_mail_budget_events_total', { level: 'hard_cap' })).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
