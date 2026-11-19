@@ -228,7 +228,8 @@ function zipFailure(message: string): ConversionFailedError {
   return new ConversionFailedError(`ZIP writer: ${message}`);
 }
 
-const WINDOWS_DRIVE_PREFIX = /^[A-Za-z]:/;
+/** A Windows drive: a letter and a colon that end the first component (`C:\x`, `C:/x`, `C:`); `a:b.txt` is an ordinary name. */
+const WINDOWS_DRIVE_PREFIX = /^[A-Za-z]:(?:[\\/]|$)/;
 
 /** Reject Zip Slip / path traversal / absolute / backslash / NUL entry names per libarchive `_archive_write_disk_open`. */
 function assertSafeZipEntryName(name: string): void {

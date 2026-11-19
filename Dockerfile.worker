@@ -370,7 +370,6 @@ FROM ${NODE_IMAGE} AS runner
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_ENV=production
-ENV STRICT_SANDBOX=true
 
 # 1. Install Tini Init, util-linux (prlimit), libcap2-bin (capsh, used by scripts/verify-worker-container.sh), Native Conversion Engines (7-Zip and FFmpeg come from the pinned stages, FFmpeg with the runtime libraries of the codecs it was built against; libdeflate-tools is the deflate encoder for ZIP and gzip payloads past 4 MiB; lbzip2 is the bzip2 encoder for tarballs of up to two blocks; xz-utils is the .xz encoder and decoder, which the node base image installs only to unpack Node and then purges), and CJK Font Packages
 # The Open CASCADE libraries (STEP and IGES, see the cadconvert stage) are packaged with occt-misc, whose 55 MB of sample models and images
@@ -787,7 +786,8 @@ RUN mkdir -p /licenses/pdfjs-dist-wasm && cp /app/node_modules/pdfjs-dist/wasm/L
 RUN { dpkg-query -W -f='${binary:Package} ${Version}\n' | sort; printf 'nodejs %s\n' "$(node --version)"; cat /usr/share/doc/ffmpeg/tool-version.txt; cat /usr/share/doc/djvulibre/tool-version.txt; } > /licenses/tool-versions.txt
 RUN chmod -R a+rX /licenses
 
-# 5. Drop to unprivileged non-root user (UID:GID 10001:10001)
+# 5. Drop to unprivileged non-root user (UID:GID 10001:10001) and enforce strict namespace sandboxing by default
+ENV STRICT_SANDBOX=true
 USER easyconvert:easyconvert
 
 # Healthcheck to verify Redis connectivity and worker heartbeat vitality

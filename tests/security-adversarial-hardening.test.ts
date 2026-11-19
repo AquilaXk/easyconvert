@@ -421,7 +421,7 @@ describe('Batch 2 security adversarial hardening (RED -> GREEN)', () => {
 
   // S-6: SVG sanitizer bypass vectors
   describe('S-6: SVG sanitizer entity, CSS escape, unquoted @import, root-relative href', () => {
-    it('blocks encoded entities, CSS hex escapes in style, unquoted @import, and root-relative href without breaking CSS relative url(/...) or #fragment', () => {
+    it('blocks encoded entities, CSS hex escapes in style, unquoted @import, root-relative href, and CSS url(/...) while preserving #fragment', () => {
       // Single-pass XML/HTML entity decoding: no recursive unescape, safe String.fromCodePoint
       expect(decodeHtmlEntities('&#38;#x6a;avascript:alert(1)')).toBe('&#x6a;avascript:alert(1)');
       expect(decodeHtmlEntities('&#x1f600;&#x110000;&#xD800;&#0;')).toBe('😀\uFFFD\uFFFD\uFFFD');
@@ -450,9 +450,11 @@ describe('Batch 2 security adversarial hardening (RED -> GREEN)', () => {
         '<svg xmlns="http://www.w3.org/2000/svg"><use href="#"/><use href="#local-icon"/></svg>',
       );
 
-      // Preserves local CSS root-relative url(/...) already covered by tests
-      const safeCssUrl = `<svg xmlns="http://www.w3.org/2000/svg"><style>.box { mask: url(/assets/mask.png); }</style></svg>`;
-      expect(sanitizeSvgString(safeCssUrl)).toBe(safeCssUrl);
+      // Neutralizes CSS root-relative url(/...) under the strict allowlist (Policy #327) while preserving local #fragment
+      const rootCssUrl = `<svg xmlns="http://www.w3.org/2000/svg"><style>.box { mask: url(/assets/mask.png); fill: url(#local-grad); }</style></svg>`;
+      expect(sanitizeSvgString(rootCssUrl)).toBe(
+        `<svg xmlns="http://www.w3.org/2000/svg"><style>.box { mask: none; fill: url(#local-grad); }</style></svg>`,
+      );
     });
   });
 

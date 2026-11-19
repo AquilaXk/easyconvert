@@ -137,4 +137,71 @@ describe.skipIf(python === undefined)('the Python client over a stub server', ()
     expect(foreignRequests).toHaveLength(1);
     expect(foreignRequests[0]).not.toHaveProperty('authorization');
   }, 60_000);
+
+  it('streams TUS and multipart uploads in chunks, inspects archives, streams downloads, and verifies Standard Webhooks', async () => {
+    const helperScript = `
+import base64, hashlib, hmac, io, json, sys, time
+sys.path.insert(0, sys.argv[1])
+import httpx2
+from easyconvert.client import DEFAULT_BASE_URL, EasyConvertClient
+
+assert DEFAULT_BASE_URL == "https://convert.aquilaxk.site"
+
+class BoundedStream(io.RawIOBase):
+    def __init__(self, data: bytes):
+        self._data = data
+        self._pos = 0
+        self.reads = []
+    def readable(self): return True
+    def seekable(self): return True
+    def seek(self, off, whence=io.SEEK_SET):
+        if whence == io.SEEK_END: self._pos = len(self._data) + off
+        elif whence == io.SEEK_CUR: self._pos += off
+        else: self._pos = off
+        return self._pos
+    def tell(self): return self._pos
+    def read(self, size=-1):
+        assert size is not None and size > 0
+        self.reads.append(size)
+        out = self._data[self._pos:self._pos + size]
+        self._pos += len(out)
+        return out
+
+def handler(req: httpx2.Request) -> httpx2.Response:
+    if req.method == "POST" and req.url.path == "/api/v1/uploads":
+        return httpx2.Response(201, headers={"Location": "/api/v1/uploads/tus_1", "Tus-Resumable": "1.0.0"})
+    if req.method == "PATCH" and req.url.path == "/api/v1/uploads/tus_1":
+        off = int(req.headers["upload-offset"]) + len(req.content)
+        hdrs = {"Tus-Resumable": "1.0.0", "Upload-Offset": str(off)}
+        if off == 9: hdrs["EasyConvert-Storage-Key"] = "uploads/tus_1/doc.pdf"
+        return httpx2.Response(204, headers=hdrs)
+    if req.method == "POST" and req.url.path == "/api/v1/archives/inspect":
+        return httpx2.Response(200, json={"format": "zip", "entries": []})
+    if req.method == "GET" and req.url.path == "/dl":
+        return httpx2.Response(200, content=b"stream-bytes")
+    return httpx2.Response(404)
+
+client = EasyConvertClient(api_key="ec_live_test", base_url="https://convert.aquilaxk.site")
+client.generated.set_httpx_client(httpx2.Client(base_url="https://convert.aquilaxk.site", transport=httpx2.MockTransport(handler)))
+s = BoundedStream(b"123456789")
+tus = client.upload_tus(s, filename="한글.pdf", chunk_size=4)
+arc = client.inspect_archive(storage_key="uploads/tus_1/doc.pdf")
+dl = b"".join(client.download_stream("/dl", chunk_size=4))
+secret = "wh_sec_1"
+payload = '{"ok":true}'
+ts = int(time.time())
+msg_id = "msg_1"
+sig = "v1," + base64.b64encode(hmac.new(secret.encode(), f"{msg_id}.{ts}.{payload}".encode(), hashlib.sha256).digest()).decode()
+ok = EasyConvertClient.verify_webhook_signature(payload, f"v1,bad {sig}", ts, secret, delivery_id=msg_id)
+print(json.dumps({"tus": tus["storageKey"], "reads": s.reads, "arc": arc["format"], "dl": dl.decode(), "ok": ok}))
+`;
+    const { stdout } = await promisify(execFile)(python!, ['-I', '-B', '-c', helperScript, SDK_PYTHON_DIR]);
+    expect(JSON.parse(stdout)).toEqual({
+      tus: 'uploads/tus_1/doc.pdf',
+      reads: [4, 4, 1],
+      arc: 'zip',
+      dl: 'stream-bytes',
+      ok: true,
+    });
+  }, 60_000);
 });
