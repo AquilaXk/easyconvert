@@ -5,11 +5,12 @@ import { parseContentLength } from './request-body-limit';
 /**
  * The JSON body of a job request, read as text and checked before it is parsed. A JSON text is parsed whole into objects, and a body
  * of 40 MiB of `{},` is millions of them, so the bodies of the job routes are held to a number of objects and arrays that no job needs
- * (a task graph has at most 32 nodes of a few options each), counted with `indexOf` at the speed of a memory scan.
+ * (a task graph has at most 32 nodes of a few options each), counted with `indexOf` at the speed of a memory scan. The characters
+ * inside a string count too, since finding the strings would be a parse; a free-text option full of braces stays under the limit.
  */
 
-/** Most `{` and `[` characters (together) a job request's JSON text may hold. */
-export const JSON_BODY_MAX_OPENERS = 4096;
+/** Most `{` and `[` characters (together) a job request's JSON text may hold: 65,536 objects parse in tens of milliseconds and tens of megabytes. */
+export const JSON_BODY_MAX_OPENERS = 65_536;
 
 const OPEN_BRACE = '{';
 const OPEN_BRACKET = '[';

@@ -11,14 +11,14 @@ import { POST as v1JobsRoute } from '../src/app/api/v1/jobs/route';
 /**
  * A job request may carry its file inline as base64 (at most 32 MiB of file), so its JSON body is that file as base64 and a few
  * fields: 43,690,667 + 65,536 bytes, not the 65 MiB of a file in one request. A JSON body is also read whole into objects, so a body
- * with more than 4,096 objects and arrays is refused (413) before it is parsed: 65 MiB of `{},` is millions of objects.
+ * with more than 65,536 objects and arrays is refused (413) before it is parsed: 65 MiB of `{},` is millions of objects.
  */
 const MIB = 1024 * 1024;
 const INLINE_BASE64_BYTES = Math.ceil((32 * MIB) / 3) * 4;
 const ENVELOPE_BYTES = 64 * 1024;
 const JSON_TYPE = { 'content-type': 'application/json' };
 const BASE_URL = 'http://localhost:3000';
-const MANY_OBJECTS = `[${'{},'.repeat(5000)}{}]`;
+const MANY_OBJECTS = `[${'{},'.repeat(70_000)}{}]`;
 
 let apiKey = '';
 
@@ -54,15 +54,15 @@ describe('the JSON body of a job request', () => {
     ['/api/queue/jobs', queueJobsRoute, `{"filename":"a.csv","targetFormat":"json","options":{"rows":${MANY_OBJECTS}}}`],
     ['/api/v1/jobs', v1JobsRoute, `{"filename":"a.csv","targetFormat":"json","options":{"rows":${MANY_OBJECTS}}}`],
     ['/api/tools/jobs', toolJobsRoute, `{"tool":"merge","files":${MANY_OBJECTS}}`],
-  ] as const)('refuses a body of %s with more than 4,096 objects and arrays as 413, before it is parsed', async (route, handler, body) => {
+  ] as const)('refuses a body of %s with more than 65,536 objects and arrays as 413, before it is parsed', async (route, handler, body) => {
     const res = await handler(post(route, body));
     expect(res.status).toBe(413);
     expect(res.headers.get('content-type')).toContain('application/problem+json');
     expect(await res.json()).toMatchObject({ status: 413, instance: route });
   });
 
-  it('still reads a body of a few hundred objects', async () => {
-    const options = `{"rows":[${'{},'.repeat(300)}{}]}`;
+  it('still reads a body of thirty thousand objects', async () => {
+    const options = `{"rows":[${'{},'.repeat(30_000)}{}]}`;
     const res = await queueJobsRoute(post('/api/queue/jobs', `{"filename":"a.csv","targetFormat":"json","options":${options}}`));
     expect(res.status).not.toBe(413);
   });
