@@ -72,7 +72,7 @@ export const LIBREOFFICE_SLOT_MEMORY_BYTES = 1536 * 1024 * 1024;
  * `docker-compose.prod.yml`) stay at 12 GB. A run over it is refused as an input over the limit (`withMemoryRefusal`). Gotenberg bounds
  * LibreOffice the same way with `--libreoffice-max-memory` and answers 422; JODConverter and unoserver set no bound.
  */
-export const LIBREOFFICE_MEMORY_LIMIT_MB = 3072;
+export const LIBREOFFICE_MEMORY_LIMIT_MB = 3328;
 /** Wide virtual address space cap so LibreOffice UNO/JVM arenas do not abort while the RSS monitor enforces `LIBREOFFICE_MEMORY_LIMIT_MB`. */
 export const LIBREOFFICE_ADDRESS_SPACE_BYTES = 16 * 1024 * 1024 * 1024;
 export const LIBREOFFICE_MAX_FILE_SIZE = ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;

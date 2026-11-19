@@ -550,7 +550,7 @@ describe('P1-2: JBIG2 #XX escape & Flate chain & name cap, sandbox limits, anima
       expect(seen.length).toBeGreaterThanOrEqual(2);
       for (const item of seen) {
         expect(item.memoryLimitMb).toBeGreaterThanOrEqual(1536);
-        expect(item.memoryLimitMb).toBeLessThanOrEqual(3072);
+        expect(item.memoryLimitMb).toBeLessThanOrEqual(3328);
         expect(item.maxFileSize).toBe(ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
         expect(item.asBytes).toBeGreaterThan(item.memoryLimitMb! * 1024 * 1024);
       }
