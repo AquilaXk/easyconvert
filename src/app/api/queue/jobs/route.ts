@@ -31,7 +31,8 @@ import { graphJobState, graphProcessedOn, listVisibleWork } from '@/lib/queue/us
 import { graphProgress } from '@/lib/queue/graph/graph-progress';
 import { respondOnce } from '@/lib/api/with-idempotency';
 import type { User } from '@/lib/auth/types';
-import { INLINE_JOB_PAYLOAD_MAX_BYTES } from '@/lib/plan-limits';
+import { INLINE_JOB_PAYLOAD_MAX_BYTES, INLINE_JSON_BODY_MAX_BYTES } from '@/lib/plan-limits';
+import { readBoundedJsonText } from '@/lib/api/json-body-bounds';
 import { formatBytes } from '@/lib/format-bytes';
 import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 
@@ -333,19 +334,23 @@ async function readFormJobRequest(req: NextRequest, instanceUri: string, ownerUs
   return { request };
 }
 
-/** The parsed JSON object of a request, or null when the body is not valid JSON or not an object. */
-async function readJsonObject(req: NextRequest) {
+/** The parsed JSON object of a request (null when the body is not valid JSON or not an object), or the 413 of a body that is too large. */
+async function readJsonObject(req: NextRequest, instanceUri: string): Promise<{ body: ReturnType<typeof JSON.parse> | null } | { refusal: Response }> {
+  const read = await readBoundedJsonText(req, INLINE_JSON_BODY_MAX_BYTES, instanceUri);
+  if ('refusal' in read) return read;
   try {
-    const parsed = await req.json();
-    return parsed && typeof parsed === 'object' ? parsed : null;
+    const parsed = JSON.parse(read.text);
+    return { body: parsed && typeof parsed === 'object' ? parsed : null };
   } catch {
-    return null;
+    return { body: null };
   }
 }
 
 /** A job request from a JSON body: inline bytes are held to the inline limit. */
 async function readJsonJobRequest(req: NextRequest, instanceUri: string): Promise<ParsedJobRequest> {
-  const body = await readJsonObject(req);
+  const read = await readJsonObject(req, instanceUri);
+  if ('refusal' in read) return read;
+  const { body } = read;
   if (!body) {
     return { refusal: NextResponse.json({ success: false, error: 'Invalid JSON body provided in request.' }, { status: 400 }) };
   }

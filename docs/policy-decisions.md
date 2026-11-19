@@ -385,6 +385,12 @@ Security
 334. [Delimited text written as a spreadsheet is decoded as the data engine decodes it](#334-delimited-text-written-as-a-spreadsheet-is-decoded-as-the-data-engine-decodes-it)
 335. [A failed PDF step is a typed 422 refusal that the queue does not retry](#335-a-failed-pdf-step-is-a-typed-422-refusal-that-the-queue-does-not-retry)
 336. [Overlapping tokens of one rotation page range add their angles, as qpdf rotates them](#336-overlapping-tokens-of-one-rotation-page-range-add-their-angles-as-qpdf-rotates-them)
+337. [The production web service runs queue-only, and the structured-data converters refuse inputs past a size and a count of values and convert on a pool thread](#337-the-production-web-service-runs-queue-only-and-the-structured-data-converters-refuse-inputs-past-a-size-and-a-count-of-values-and-convert-on-a-pool-thread)
+338. [A job request's JSON body is held to the inline file as base64 and its fields, and a body with more than 65,536 objects and arrays is refused before it is parsed](#338-a-job-requests-json-body-is-held-to-the-inline-file-as-base64-and-its-fields-and-a-body-with-more-than-65536-objects-and-arrays-is-refused-before-it-is-parsed)
+339. [Listing a bzip2 archive holds the decoded stream to the compression ratio of every other archive reader](#339-listing-a-bzip2-archive-holds-the-decoded-stream-to-the-compression-ratio-of-every-other-archive-reader)
+340. [Storage keys of an anonymous caller's tool results and staged inputs name no address](#340-storage-keys-of-an-anonymous-callers-tool-results-and-staged-inputs-name-no-address)
+341. [Passwords are hashed with 210,000 PBKDF2-SHA512 iterations, and a hash of the earlier 100,000 is upgraded when its owner signs in](#341-passwords-are-hashed-with-210000-pbkdf2-sha512-iterations-and-a-hash-of-the-earlier-100000-is-upgraded-when-its-owner-signs-in)
+342. [A webhook delivery always uses undici's fetch through the pinned dispatcher, never a replaced globalThis.fetch](#342-a-webhook-delivery-always-uses-undicis-fetch-through-the-pinned-dispatcher-never-a-replaced-globalthisfetch)
 
 ---
 
@@ -10200,3 +10206,115 @@ Security
 - **Why**: the reference engine of PDF operations is qpdf, and one value of `pages` gives the same result here and there.
 - **Trade-offs**: a caller who writes `1-3,2` and means the set of pages 1 to 3 gets page 2 turned twice.
 - **Verified by**: `tests/pdf-page-ops.test.ts` runs `qpdf --rotate` on the same ranges and compares the page rotations with the output of `rotatePdfPages` (`1-3,2`, `2,2`, `1-3,2-4`, open ranges).
+## 337. The production web service runs queue-only, and the structured-data converters refuse inputs past a size and a count of values and convert on a pool thread
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: security review of `656eb523`, finding 1: an anonymous 4 MiB CSV to JSON held the event loop of the web process for 2.7 s, and a 32 MiB YAML reportedly ended the process)
+- **Decision**:
+  1. **The web service of `docker-compose.prod.yml` sets `WEB_EXECUTION_MODE=queue-only`.** Every synchronous conversion (`/api/convert`, `/api/v1/convert`, the batch route) and every tool request is handed to a worker through Redis and waited for, and answers 503 when no worker is live (`dispatchSyncRouteConversion`, `dispatchSyncWebTool`, `src/lib/queue/wait-for-job.ts`). With the variable unset the web ran every file under the size of a synchronous request in its own process (hybrid). The configuration check already requires Redis for queue-only, which the stack always has.
+  2. **Each structured-data source has an input size and a count of value-starting characters, and a text past either is refused as an input over the limit (413, `input_over_limit`) before it is parsed** (`src/lib/conversions/data-limits.ts`):
+
+     | Source | Input size | Count that is limited |
+     |---|---|---|
+     | CSV, TSV, TAB | 32 MiB | 8,388,608 field separators and line ends |
+     | JSON | 32 MiB | 4,194,304 of `{`, `[` and `,` |
+     | NDJSON, JSONL | 32 MiB | 4,194,304 of `{`, `[`, `,` and line ends |
+     | YAML | 8 MiB | 524,288 line ends, commas and flow brackets (aliases stay at 100, as before) |
+     | XML | 32 MiB | 4,194,304 `<` |
+     | TOML | 8 MiB | none |
+
+     The direct table routes (`data-fast-paths.ts`: CSV to Parquet, JSON Lines to CSV, Parquet to CSV and JSON) keep their own byte-level bounds and are not limited by these numbers.
+  3. **A source of 128 KiB or more converts on a thread of the CPU pool** (`convertOnDataThread`, `src/lib/conversions/data-task.ts`; `runDataTask`, `src/lib/conversions/data-task-thread.ts`). The thread has the pool's heap limit of 1 GiB, so a text that is inside the limits and still too large fails the thread with the 413 of the pool and not the worker. The input is copied once into shared memory, the output comes back by transfer, the warnings of the conversion and the class and position of a refusal cross as data.
+- **Why**:
+  - **The parsers have no bound of their own that follows the memory they ask for.** Measured on the reviewer's inputs on the Mac (Node 24, `node --import tsx`, one conversion, before the change): YAML of `- 1` lines of 8 MiB ran 6.1 s and 2.1 GB, of 32 MiB it ended the process in a heap out-of-memory error at 4.6 GB; a CSV of 8 MiB of commas ran 4.1 s, of 16 MiB it failed with `RangeError: Set maximum size exceeded` after 8.8 s; JSON of 16 MiB of `{},` ran 2.4 s and 2.9 GB. The event loop had no turn in any of them (a 10 ms timer ticked 0 times).
+  - **The numbers are what a thread of 1 GiB holds.** Measured per value: about 500 bytes of heap for each YAML node, 400 to 520 for each JSON object, 80 to 150 for each CSV cell or record. A table of honest data of that size is inside them: 500,000 CSV rows of six columns (28 MiB) and 200,000 JSON records (20 MiB) convert in a 1 GiB heap. The worst text inside each limit ran in 0.6 to 2.8 s on a thread with a process peak of 0.7 to 1.6 GB and no gap of the event loop over 20 ms (table under Measured).
+  - **A count of characters and not of values**, because it is one pass at the speed of a memory scan that stops at the limit, and it never under-counts a text that is all structure. A long prose text over-counts its commas, which only matters beyond 2 million of them.
+  - **The size of YAML follows the only size cap a starred YAML reader has**: SnakeYAML's `LoaderOptions.codePointLimit` is 3 MB by default (Apache-2.0, snakeyaml/snakeyaml, read 2026-11-20 from `LoaderOptions.java`, together with `maxAliasesForCollections` 50 and `nestingDepthLimit` 50). The reader of this product (`yaml` 2.9.1) has `maxAliasCount` 100 and no size cap, and papaparse 5.7.0 has none either; no code was copied from either project. 8 MiB is what a thread holds at the YAML node cost, above SnakeYAML's default because a configuration file of that size is a data file here.
+- **Trade-offs**:
+  - A JSON text of more than 2 million structural characters (about 30 MiB of records) and a CSV of more than 4 million cells are refused where a worker with a 4 GB heap converted them. They are what a thread cannot hold; the direct routes still convert CSV and JSON Lines to Parquet, and JSON Lines and Parquet to CSV, at any size they could.
+  - A pool thread starts in 0.16 s and the data code adds 0.05 to 0.07 s to the bundle of every thread (5.1 MB against 0.5 MB, `dist/cpu-worker.js`), measured with the bundle of this change and the bundle of `656eb523`. A separate thread entry for the data tasks would remove it from the other encoders.
+  - The office sheet readers (CSV and JSON to `xlsx`, `ods` and `xls` through `officeSheetWorkbook`) are not limited by this entry and still run on the calling thread.
+  - The deploy smoke (`/api/health/conversion`) and the archive listing still run in the web process in queue-only mode; the smoke is one fixed pixel.
+- **Measured** (the bench of this change, `convertData` on the Mac, one run each, input in memory; `ticks` are 10 ms timer ticks during the conversion, `peak` is the maximum resident set of the process):
+
+  | Input | Before | After |
+  |---|---|---|
+  | YAML `- 1` lines, 32 MiB | process ended (heap out of memory), 0 ticks, 4.6 GB | 413 in 0.47 s, 42 ticks, 0.53 GB |
+  | CSV of commas, 8 MiB | 4.1 s, 0 ticks, 1.3 GB | 413 in 0.50 s, 44 ticks, 0.51 GB |
+  | CSV of commas, 16 MiB | `RangeError` after 8.8 s, 0 ticks, 2.1 GB | 413 in 0.51 s, 45 ticks, 0.54 GB |
+  | JSON `{},`, 16 MiB | 2.4 s, 0 ticks, 2.9 GB | 413 in 0.51 s, 44 ticks, 0.54 GB |
+  | JSON of 1,048,000 `{},` (inside the limit) to CSV | not measured | 0.93 s, 83 ticks, 1.03 GB |
+  | YAML of 524,288 `- 1` lines (at the limit) | not measured | 2.0 s, 177 ticks, 1.02 GB |
+  | CSV of 4,194,304 one-field records (at the limit) | not measured | 1.8 s, 156 ticks, 1.56 GB |
+  | CSV of 4,194,000 commas (at the limit) | not measured | 2.8 s, 250 ticks, 0.89 GB |
+  | XML of 2,097,000 `<a/>` (at the limit) | not measured | 1.1 s, 101 ticks, 1.21 GB |
+  | JSON Lines of 1,048,000 `{}` lines (at the limit) | not measured | 0.58 s, 51 ticks, 0.67 GB |
+- **Verified by**: `tests/data-input-limits.test.ts` (10 refusals that fail on `656eb523`, the position of a parse error and the warnings across the thread, and the loop held under the 100 ms budget while a 10 MiB table converts), `tests/oci-deploy.test.ts` (the web service is queue-only and no worker is).
+- **Lead change on merge (2026-11-20)**: the counts were doubled from the measured 4,194,304 (CSV) and 2,097,152 (JSON, NDJSON, XML) after review: a 20 MB numeric CSV of 20 columns (5.5 million cells) and a 20 MB record-style XML (2.1 million tags) were refused, and a conversion that outgrows the 1 GiB heap of its pool thread already ends as a 413 (`PayloadLimitError`), so the count only has to stop the inputs that would run long or past JavaScript's own collection limits (a `Set` holds at most 16.7 million entries, so CSV stays at half of it). The measurements above are of the first limits.
+
+## 338. A job request's JSON body is held to the inline file as base64 and its fields, and a body with more than 65,536 objects and arrays is refused before it is parsed
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: security review of `656eb523`, finding 2: anonymous routes parsed JSON bodies of up to 65 MiB with `req.json()`)
+- **Decision**:
+  1. **The JSON body of `/api/queue/jobs` and `/api/v1/jobs` is at most the inline file as base64 and its fields: 44,804,780 bytes** (`INLINE_JSON_BODY_MAX_BYTES`, `src/lib/plan-limits.ts`): `ceil(32 MiB / 3) * 4` bytes of base64 for the 32 MiB of `INLINE_JOB_PAYLOAD_MAX_BYTES` and 64 KiB for the fields around it (`INLINE_JSON_ENVELOPE_MAX_BYTES`; a task graph has at most 32 nodes). The middleware refuses a declared length over it, and counts a body without a length up to it, with the 413 and the way to send a larger file in parts. It was 65 MiB, the size of a file in one request, which a JSON body never needs.
+  2. **The JSON of `/api/tools/jobs` is a small body (1 MiB).** It names files that are already stored (`files[].key`) and carries none, so it has no use for more.
+  3. **A JSON body with more than 65,536 `{` and `[` characters together is refused with the 413 problem before it is parsed** (`readBoundedJsonText`, `JSON_BODY_MAX_OPENERS`, `src/lib/api/json-body-bounds.ts`), in the three routes that read the body whole (`/api/queue/jobs`, `/api/v1/jobs`, `/api/tools/jobs`). The count is two `indexOf` loops that stop at the limit; the routes read the text, check its length and its count, and parse it themselves.
+- **Why**:
+  - **A parse of a body of objects costs memory in proportion to the objects, not the bytes.** 40 MiB of `{},` is 13 million objects. A job request holds a file as base64 text (one string) and a few dozen objects of options; a graph is at most 32 nodes of a few options each, so 65,536 is far above any request of the product, and 65,536 objects parse in tens of milliseconds and tens of megabytes. The count includes the braces inside strings, since telling them apart would be a parse, and a free-text option of 220 KiB full of braces (`tests/secret-redaction-linear.test.ts`) is under it.
+  - **No parser library has this check; it is a guard before `JSON.parse`.** `JSON.parse` of V8 and `Request.json()` have no limit on the count of values, and the limit on a body in `bodyParser` of the Express family (`limit`, default 100 kB) is a byte limit like the one here; no code was copied.
+- **Trade-offs**:
+  - A client that sent a JSON job with a base64 file of 32 MiB (44,739,244 characters) and fields of up to 64 KiB is unchanged. A body with a longer envelope (tens of thousands of options) is refused; none of the product's clients sends one.
+  - The routes that take a body of a few fields (login, keys, uploads' control calls) stay at 1 MiB, and the structure count is not applied to them: their parsers read at most 1 MiB, which is 350,000 objects at the most.
+- **Verified by**: `tests/json-body-bounds.test.ts` (6 of its 7 cases fail on `656eb523`) and `tests/request-body-limit.test.ts`.
+
+## 339. Listing a bzip2 archive holds the decoded stream to the compression ratio of every other archive reader
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: security review of `656eb523`, finding 3: `/api/v1/archives/inspect` decoded bzip2 in the web process with no ratio check)
+- **Decision**: **Listing a `.tar.bz2` decodes the stream up to `unpackedBytesCap(archive size)` and no further** (`inspectArchiveEntries`, `src/lib/conversions/archive.ts`): the 32 MiB floor every archive path shares (`ARCHIVE_RATIO_FLOOR_BYTES`), or 100 times the size of the archive when that is more, and never more than the 500 MiB cap. A stream that outgrows it is refused with the `UnsafeArchiveError` of reason `compression-ratio` that `unpackedBytesCapError` builds for the readers of the other formats, where it answered the generic failure of an unreadable stream or, for a stream under 500 MiB, listed it.
+- **Why**:
+  - **gzip, 7-Zip, RAR and Zstandard already had the ratio; bzip2 had only the size cap.** A bz2 of 370 bytes that holds 480 MiB of zeros decoded whole in the web process: 0.53 s with no turn of the event loop and 1.15 GB resident (`node --import tsx`, Mac), and listed as an archive with no entries. With the cap the decode stops at 32 MiB: 13 ms and a process peak of 190 MB (the baseline of the runner), with the typed refusal.
+  - **The 7-Zip listing was not used for bzip2**, because a `.tar.bz2` lists as the one file `x.tar` there; the members of the tar need the decoded stream. The cap is the rule the gzip listing already follows (`gunzipStreamingWithLimits`, `exceedsArchiveRatio`), so one ratio and one floor hold for every archive format.
+- **Trade-offs**: A stream of up to 5 MiB can still decode to its 500 MiB cap in the web process (100 to 1 is the ratio of gzip and of every other reader). Moving the decode to a pool thread, as entry 337 does for data, is the next step if the 500 MiB cap is to hold off the event loop as well; the tar listing of the decoded stream is synchronous too.
+- **Verified by**: `tests/archive-inspect-bzip2-bomb.test.ts` (the 370-byte stream and a stream over the ratio fail on `656eb523`; an ordinary `.tar.bz2` lists as before), `tests/archive-inspect-bounded-run.test.ts`, `tests/archive-inspect-malformed-input.test.ts`.
+
+## 340. Storage keys of an anonymous caller's tool results and staged inputs name no address
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: security review of `656eb523`, finding 4: the keys and URLs of an anonymous caller's tool results carried its address; entry 137 says a key never does)
+- **Decision**:
+  1. **The retained result of an anonymous caller is stored under `conversions/anon:result/`** (`resultKey`, `ANONYMOUS_RESULT_OWNER`, `src/lib/storage/key-namespace.ts`, `src/lib/auth/anonymous-identity.ts`), not under `conversions/anon:<address bucket>/`. This covers the synchronous tool routes (`src/app/api/tools/handler.ts`), the tool job routes (`src/app/api/tools/jobs/route.ts`) and the worker's tool output (`src/lib/tools/queued-tool-runner.ts`). An account's result keeps `conversions/<account id>/`.
+  2. **The input a web route stages for a worker is in the ownerless `uploads/` namespace for an anonymous caller** (`stagedInputKey`): `uploads/sync_...`, `uploads/synctool_...`, `uploads/tool_...` (`src/lib/queue/wait-for-job.ts`, `src/app/api/tools/jobs/route.ts`), the namespace in which `multipartUploadKey` already puts every upload of an anonymous caller. An account's staged input keeps `uploads/<account id>/`.
+- **Why**:
+  - **The key is shown to the visitor, logged, and put in a download URL, and the address can change between two requests of one visitor.** The owner segment `anon:<address bucket>` of a result key was the address bucket the quota counts (`anon:203.0.113.7`).
+  - **Access does not change.** An owner that is anonymous (any `anon:` id) is a capability: the download route and the job-input check let anyone holding the random key read it (`denyUnlessOwner`, `mayUseStorageKeyAsJobInput`, entry 137), and the key stays in the `user-conversion` namespace, so the retention rule of a result (delivery grace, expiry, capacity) applies as before. A staged input in `uploads/` was already readable by its key under the same rule. The ownership of a tool job (its record, status and cancel) is the caller id of the record and is unchanged.
+  - **A result is not put in `uploads/`**, as `multipartUploadKey` would do, because that namespace has the retention of an unclaimed upload (kept for the jobs that read it), not the delivery rule of a result.
+- **Trade-offs**: A result of an anonymous caller that exists under the old key at the time of the change is still served (the key is classified by its prefix and the owner is anonymous) until the retention sweep removes it. `src/app/api/v1/convert/route.ts` and `recordUserFile` write `conversions/<id>/` too, and an anonymous caller does not reach either (`/api/v1/convert` answers 401 without an account).
+- **Verified by**: `tests/anonymous-keys-no-address.test.ts`: six cases that fail with the old key shape (the address is in the key of a synchronous tool result, an asynchronous tool result, a queued tool output, and the staged inputs of a synchronous conversion and tool run).
+
+## 341. Passwords are hashed with 210,000 PBKDF2-SHA512 iterations, and a hash of the earlier 100,000 is upgraded when its owner signs in
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: security review of `656eb523`, note 6b: PBKDF2-HMAC-SHA512 at 100,000 iterations where OWASP recommends 210,000)
+- **Decision**:
+  1. **A new password hash uses 210,000 PBKDF2-HMAC-SHA512 iterations** (`PBKDF2_ITERATIONS`, `src/lib/auth/crypto.ts`), at registration, a password change and a password reset. The account record notes the iterations of its hash (`passwordIterations`); a record without the note holds a hash of an earlier release, made with 100,000 (`LEGACY_PBKDF2_ITERATIONS`, `iterationsOf`). The note is not part of the user the API shows (`sanitizeUser`).
+  2. **A successful sign-in with a hash of fewer iterations replaces it** by a current one (`upgradePasswordHash`, `src/app/api/auth/login/route.ts`). The store replaces it only while the stored hash is the one that was checked (`replacePasswordHash`, `REPLACE_PASSWORD_HASH_LUA_SCRIPT`, `src/lib/auth/redis-user-store.ts`), so a password changed between the check and the write stays. A failure to replace does not fail the sign-in; the next one tries again. The sessions of the account are not touched, since the password is the same.
+  3. **A check of a hash of fewer iterations runs the missing ones as well** (`verifyPassword`, `extraIterations`), so that a wrong password for an account of the old cost takes as long as one for an unknown address or a current account, and the time of a sign-in does not tell them apart (the dummy hash of an unknown address is checked at the current iterations).
+- **Why**:
+  - **210,000 is the figure of the OWASP Password Storage Cheat Sheet for PBKDF2-HMAC-SHA512**; the 600,000 of the same sheet is for HMAC-SHA256, and the 100,000 of the earlier releases is below both.
+  - **The rules are those of Django** (BSD-3-Clause, about 91,800 stars; `django/contrib/auth/hashers.py` at `e78991410b78391bc07a4b5010b273dfec814ff6`): the iterations are stored with the hash, a hash whose iterations differ from the current ones is replaced when its password is checked (`must_update`, the `setter` of `check_password`), and the check runs the iterations it lacks (`harden_runtime`). They are translated in `src/lib/auth/pbkdf2-upgrade.ts` (own commit, `docs/licensing.md` 2.33, `NOTICE`). Django's `setter` writes unconditionally; the compare-and-set is added here because a sign-in and a password change can overlap.
+- **Trade-offs**:
+  - A sign-in costs 44 ms of key derivation where it cost 21 ms (Node 24, Mac, `crypto.pbkdf2Sync`, five runs each; the derivation runs on the thread pool of the runtime, not on the event loop). A sign-in to an account of the old cost costs 21 + 23 ms and the first success adds 44 ms for the new hash.
+  - The 100,000-iteration hashes stay valid for as long as their owners do not sign in; the same hash of an inactive account is checked at its old cost (with the missing iterations run as a pad) and never upgraded.
+  - A user record that is created by hand with a hash made by `hashPassword` must carry `passwordIterations` too, or its hash is checked at 100,000 and does not match; every writer of the product does, and the test fixtures that made records with `hashPassword` were changed to pass the number.
+- **Verified by**: `tests/password-hash-iterations.test.ts` (7 cases against the memory store, and the compare-and-set against a private `redis-server` with `REDIS_URL` set: 15 of 15 with `tests/redis-first-command-redis.test.ts`), `tests/pbkdf2-upgrade.test.ts`, and the auth suites that make accounts with a password.
+
+## 342. A webhook delivery always uses undici's fetch through the pinned dispatcher, never a replaced globalThis.fetch
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: security review of `656eb523`, note 6c: a delivery could use `globalThis.fetch` without the pinned dispatcher)
+- **Decision**: **A webhook delivery always goes through undici's `fetch` and the dispatcher that checks the address it connects to** (`createSsrfSafeAgent`, `executeFetchAttempt`, `src/lib/api-keys/webhook-dispatcher.ts`); `globalThis.fetch` is never used. A test that needs to see or fake the delivery injects a fetch explicitly: the constructor's second argument, or `webhookDispatcher.useFetch(...)` for the shared instance (`tests/helpers/webhook-fetch-bridge.ts`, imported by the test files that stub `fetch`). The injected fetch is still called with the pinned dispatcher.
+- **Why**: The dispatcher compared `globalThis.fetch` with the function it found when the module loaded, and when they differed (a framework that wraps `fetch`, as Next.js does in the server runtime, or a test double) it delivered through the replaced one and left the `dispatcher` option out. That fetch connects with the default agent, so the check of the resolved address at connection time (the guard against a name that resolves to a private address after the pre-flight check, DNS rebinding) did not apply to the delivery. The pre-flight `validateUrlForSsrf` of the target at submission was not affected.
+- **Trade-offs**: A test that stubs `globalThis.fetch` for the shared dispatcher must import the bridge helper (13 test files did, and one test of the SSRF classification mocks undici's `fetch` instead).
+- **Verified by**: `tests/webhook-dispatcher-pinned-fetch.test.ts` (the first case fails on the previous commit: the replaced `globalThis.fetch` was called) and the 13 webhook and secret suites that stub `fetch`.

@@ -61,13 +61,13 @@ export async function POST(req: NextRequest) {
       return refusal(400, 'invalid_token', 'This link is not valid or has expired.');
     }
 
-    const { hash, salt } = await hashPassword(password);
+    const { hash, salt, iterations } = await hashPassword(password);
     const changesHands = !isEmailVerified(record);
     // The password goes first, so the registrant can no longer sign in while the account is cleaned; the address is confirmed
     // last. The token is spent by now, so a step that fails (the store down) must leave the account unverified: the owner asks for
     // another reset, which takes this same path and cleans again. Confirming first would send that retry down the verified path,
     // and the registrant's keys would stay.
-    if (!(await redisUserStore.updateUser(record.id, { passwordHash: hash, salt }))) {
+    if (!(await redisUserStore.updateUser(record.id, { passwordHash: hash, salt, passwordIterations: iterations }))) {
       return refusal(400, 'invalid_token', 'This link is not valid or has expired.');
     }
     await revokeAllUserSessions(record.id);

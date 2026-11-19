@@ -13,6 +13,7 @@ import { cancelJobAcrossQueues, conversionQueue, getQueueForJob } from './conver
 import { subscribeToJobTelemetry, type JobTelemetryEvent } from './job-telemetry';
 import { enqueueConversionJob } from './enqueue';
 import { hasLiveQueueWorker, isQueueOnlyWebMode } from './worker-presence';
+import { stagedInputKey } from '../storage/key-namespace';
 import type { StoredToolJobResult } from '../tools/tool-job-store';
 import { runWebTool, type WebTool, type WebToolFile, type WebToolOptions, type WebToolOutput } from '../tools/web-tools';
 
@@ -148,7 +149,7 @@ export async function dispatchSyncRouteConversion(
 
   const jobId = `sync_${crypto.randomUUID()}`;
   const safeName = sanitizeNodeOutputFilename(params.originalFilename, `input.${params.sourceFormat}`);
-  const tempInputKey = `uploads/${params.userId}/sync_${jobId}_${safeName}`;
+  const tempInputKey = stagedInputKey(params.userId, `sync_${jobId}_${safeName}`);
   await storageProvider.saveObject(tempInputKey, params.inputBuffer, 'application/octet-stream', safeName);
 
   const { signal, deadlineAt, ...serializableOptions } = params.options;
@@ -241,7 +242,7 @@ export async function dispatchSyncWebTool(params: {
     for (let i = 0; i < params.files.length; i++) {
       const file = params.files[i];
       const safeName = sanitizeNodeOutputFilename(file.name, `input_${i + 1}.bin`);
-      const key = `uploads/${params.userId}/synctool_${jobId}_${i}_${safeName}`;
+      const key = stagedInputKey(params.userId, `synctool_${jobId}_${i}_${safeName}`);
       await storageProvider.saveObject(key, file.buffer, 'application/octet-stream', safeName);
       storedRefs.push({ key, name: file.name });
       cleanupKeys.push(key);

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { SMALL_REQUEST_BODY_MAX_BYTES, partBodyVerdict, requestBodyVerdict } from '../src/lib/api/request-body-limit';
-import { SINGLE_REQUEST_BODY_MAX_BYTES, UPLOAD_PART_MAX_BYTES } from '../src/lib/plan-limits';
+import { INLINE_JSON_BODY_MAX_BYTES, SINGLE_REQUEST_BODY_MAX_BYTES, UPLOAD_PART_MAX_BYTES } from '../src/lib/plan-limits';
 import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
 import { POST as convertPost } from '../src/app/api/convert/route';
 import { POST as batchPost } from '../src/app/api/convert/batch/route';
@@ -185,19 +185,20 @@ describe('the body each upload and job call takes, by what the call is', () => {
     expect(requestBodyVerdict(target, NO_LENGTH)).toMatchObject({ countUpTo: SMALL_REQUEST_BODY_MAX_BYTES, status: 413 });
   });
 
-  it.each(['/api/v1/jobs', '/api/queue/jobs'])('takes a JSON call to %s without a length, up to one request, and its multipart form as a file', (route) => {
-    // A job may carry its file inline (base64, up to INLINE_JOB_PAYLOAD_MAX_BYTES), so its JSON is not held to 1 MiB.
-    expect(verdict(route, String(SINGLE_REQUEST_BODY_MAX_BYTES), 'application/json')).toBeNull();
-    expect(verdict(route, String(SINGLE_REQUEST_BODY_MAX_BYTES + 1), 'application/json')?.status).toBe(413);
+  it.each(['/api/v1/jobs', '/api/queue/jobs'])('takes a JSON call to %s without a length, up to its inline file as base64 and its fields, and its multipart form as a file', (route) => {
+    // A job may carry its file inline (base64, up to INLINE_JOB_PAYLOAD_MAX_BYTES), so its JSON is not held to 1 MiB, nor is it a file of one request.
+    expect(verdict(route, String(INLINE_JSON_BODY_MAX_BYTES), 'application/json')).toBeNull();
+    expect(verdict(route, String(INLINE_JSON_BODY_MAX_BYTES + 1), 'application/json')?.status).toBe(413);
+    expect(verdict(route, String(SINGLE_REQUEST_BODY_MAX_BYTES), 'application/json')?.status).toBe(413);
     expect(verdict(route, String(SINGLE_REQUEST_BODY_MAX_BYTES), MULTIPART)).toBeNull();
     expect(verdict(route, String(SINGLE_REQUEST_BODY_MAX_BYTES + 1), MULTIPART)?.status).toBe(413);
     const json = new Headers({ 'content-type': 'application/json' });
     const form = new Headers({ 'content-type': 'Multipart/Form-Data; boundary=x' });
     const target = new URL(`http://localhost:3000${route}`);
     const counted = requestBodyVerdict(target, json);
-    expect(counted).toMatchObject({ countUpTo: SINGLE_REQUEST_BODY_MAX_BYTES, status: 413 });
-    expect((counted as { detail: string }).detail).toContain('This request carries more than the 64 MiB one request may carry.');
-    expect(requestBodyVerdict(target, NO_LENGTH)).toMatchObject({ countUpTo: SINGLE_REQUEST_BODY_MAX_BYTES, status: 413 });
+    expect(counted).toMatchObject({ countUpTo: INLINE_JSON_BODY_MAX_BYTES, status: 413 });
+    expect((counted as { detail: string }).detail).toContain('This JSON request carries more than the 42.7 MiB of a job that holds its file inline');
+    expect(requestBodyVerdict(target, NO_LENGTH)).toMatchObject({ countUpTo: INLINE_JSON_BODY_MAX_BYTES, status: 413 });
     expect(requestBodyVerdict(target, form)).toEqual(LENGTH_REQUIRED);
   });
 

@@ -26,6 +26,8 @@ export interface User {
 export interface UserRecord extends User {
   passwordHash?: string;
   salt?: string;
+  /** The PBKDF2 iterations `passwordHash` was made with; absent on a hash that an earlier release stored (100,000). */
+  passwordIterations?: number;
 }
 
 /**

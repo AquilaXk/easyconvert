@@ -261,7 +261,7 @@ The shape keeps the launch on one host and does not block growth. The web and th
    - **Redis.** Run Redis on its own host and set `REDIS_URL` in the secret (read in `src/lib/queue/bullmq-engine.ts`, `src/lib/health/probes.ts`, `src/lib/api-keys/redis-key-store.ts`). The compose file then leaves its own Redis off.
    - **Workers.** Add hosts that run `docker-compose.prod.yml` with the same `REDIS_URL` and storage driver and start only `worker`. They join the same queues, and the stalled-job sweep (`STALLED_SWEEP_INTERVAL_MS` in `bullmq-engine.ts`) re-queues the jobs of a host that disappears.
    - **Web.** Put more than one origin behind the CDN. Every web host needs the same `JWT_SECRET`, `KEY_HASH_PEPPER` and the shared Redis. Client addresses stay correct as long as each host's nginx overwrites `X-Forwarded-For` as the site file does (`docs/client-ip-trust.md`).
-3. **Cross-instance concurrency.** Free-caller synchronous concurrency (`src/lib/queue/concurrency-limit.ts`, policy entry 315) is enforced atomically across all Web replicas via a shared Redis sorted-set lease (`sync_slots`), and multi-origin Web deployments can set `WEB_EXECUTION_MODE=queue-only` so Web nodes act as pure control-plane dispatchers.
+3. **Cross-instance concurrency.** Free-caller synchronous concurrency (`src/lib/queue/concurrency-limit.ts`, policy entry 315) is enforced atomically across all Web replicas via a shared Redis sorted-set lease (`sync_slots`), and the production stack sets `WEB_EXECUTION_MODE=queue-only` on the web service (policy entry 337), so web nodes are pure control-plane dispatchers and no request converts a file on their event loop.
 
 ## Cost
 

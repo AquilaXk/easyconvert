@@ -31,8 +31,8 @@ beforeEach(() => {
 const SQUATTERS_TERMS = '2020-01-01';
 
 async function passwordAccountAt(emailVerified: boolean) {
-  const { hash, salt } = await hashPassword(SQUATTER_PASSWORD);
-  return redisUserStore.createUser({ email: ADDRESS, name: 'Squatter', provider: 'email', passwordHash: hash, salt, emailVerified, acceptedTermsVersion: SQUATTERS_TERMS });
+  const { hash, salt, iterations } = await hashPassword(SQUATTER_PASSWORD);
+  return redisUserStore.createUser({ email: ADDRESS, name: 'Squatter', provider: 'email', passwordHash: hash, salt, passwordIterations: iterations, emailVerified, acceptedTermsVersion: SQUATTERS_TERMS });
 }
 
 /** A Google sign-in that carries the acceptance of the terms in force, as the register tab of the page sends it, unless `acceptedTermsVersion` says otherwise. */

@@ -388,6 +388,7 @@ describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
         emailVerified: true,
         passwordHash: passwordData.hash,
         salt: passwordData.salt,
+        passwordIterations: passwordData.iterations,
       });
       expect(existingUser.provider).toBe('email');
 
@@ -483,6 +484,7 @@ describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
         name: 'Reset Attempt User',
         passwordHash: passwordData.hash,
         salt: passwordData.salt,
+        passwordIterations: passwordData.iterations,
       });
 
       const ip = '203.0.113.88';

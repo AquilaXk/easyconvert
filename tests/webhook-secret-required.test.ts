@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import './helpers/webhook-fetch-bridge';
 import http from 'node:http';
 import { NextRequest } from 'next/server';
 import { POST as createKeyRoute } from '../src/app/api/keys/route';

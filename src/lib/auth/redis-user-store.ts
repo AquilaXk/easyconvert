@@ -63,6 +63,37 @@ redis.call('SET', KEYS[1], updatedRaw)
 return updatedRaw
 `;
 
+/**
+ * Replaces the password hash of an account only while it is still the one that was checked (a sign-in that upgrades a hash to the
+ * current iterations must not undo a password changed in between).
+ */
+export const REPLACE_PASSWORD_HASH_LUA_SCRIPT = `
+-- KEYS[1]: user record key
+-- KEYS[2]: session version counter key
+-- ARGV[1]: the hash that was checked
+-- ARGV[2]: serialized new fields (passwordHash, salt, passwordIterations)
+-- ARGV[3]: current timestamp
+local raw = redis.call('GET', KEYS[1])
+if not raw then
+  return 0
+end
+local user = cjson.decode(raw)
+if user["passwordHash"] ~= ARGV[1] then
+  return 0
+end
+local fields = cjson.decode(ARGV[2])
+for k, v in pairs(fields) do
+  user[k] = v
+end
+local liveVersion = tonumber(redis.call('GET', KEYS[2]))
+if liveVersion and (tonumber(user["sessionVersion"]) or 1) < liveVersion then
+  user["sessionVersion"] = liveVersion
+end
+user["updatedAt"] = tonumber(ARGV[3])
+redis.call('SET', KEYS[1], cjson.encode(user))
+return 1
+`;
+
 export const RECORD_CONVERSION_LUA_SCRIPT = `
 -- KEYS[1]: user record key
 -- ARGV[1]: current timestamp
@@ -224,7 +255,7 @@ export class RedisUserStore {
   }
 
   public sanitizeUser(record: UserRecord): User {
-    const { passwordHash, salt, ...safeUser } = record;
+    const { passwordHash, salt, passwordIterations, ...safeUser } = record;
     return safeUser;
   }
 
@@ -277,6 +308,7 @@ export class RedisUserStore {
     provider?: 'email' | 'google';
     passwordHash?: string;
     salt?: string;
+    passwordIterations?: number;
     acceptedTermsVersion?: string;
     /** True when the provider vouches for the address (Google sign-in); an email sign-up proves it by the mailed link. */
     emailVerified?: boolean;
@@ -296,6 +328,7 @@ export class RedisUserStore {
       provider: data.provider || 'email',
       passwordHash: data.passwordHash,
       salt: data.salt,
+      ...(data.passwordIterations === undefined ? {} : { passwordIterations: data.passwordIterations }),
       acceptedTermsVersion: data.acceptedTermsVersion,
       ...(data.emailVerified === undefined ? {} : { emailVerified: data.emailVerified }),
       createdAt: now,
@@ -380,6 +413,36 @@ export class RedisUserStore {
     }
     this.distributedUsers.set(id, updated);
     return withCurrentTier(updated);
+  }
+
+  /**
+   * Replaces the password hash of an account with `next` when its stored hash is still `checkedHash`; false when the account is gone or
+   * its password changed since the hash was checked. The sessions of the account are not touched: the password is the same.
+   */
+  public async replacePasswordHash(
+    id: string,
+    checkedHash: string,
+    next: Required<Pick<UserRecord, 'passwordHash' | 'salt' | 'passwordIterations'>>
+  ): Promise<boolean> {
+    if (!id || typeof id !== 'string') return false;
+    if (this.redisClient) {
+      try {
+        const replaced = await this.redisClient.eval(
+          REPLACE_PASSWORD_HASH_LUA_SCRIPT,
+          2,
+          `${this.keyPrefix}${id}`,
+          `${this.keyPrefix}session_version:${id}`,
+          checkedHash,
+          JSON.stringify(next),
+          String(Date.now())
+        );
+        return Number(replaced) === 1;
+      } catch (err) {
+        return failClosed('RedisUserStore', 'replacePasswordHash', err);
+      }
+    }
+    if (this.distributedUsers.get(id)?.passwordHash !== checkedHash) return false;
+    return (await this.updateUser(id, next)) !== null;
   }
 
   public async updateTier(id: string, tier: UserTier): Promise<UserRecord | null> {

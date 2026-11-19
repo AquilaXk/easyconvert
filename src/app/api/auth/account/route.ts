@@ -3,7 +3,7 @@ import { billingUnavailable, providerFailed } from '@/lib/api/billing-refusal';
 import { readJsonObject } from '@/lib/api/json-body';
 import { authStoreUnavailableRefusal, codedRefusal, serverFault } from '@/lib/api/problem-details';
 import { isPasswordAccount } from '@/lib/auth/account-mail';
-import { verifyPassword } from '@/lib/auth/crypto';
+import { iterationsOf, verifyPassword } from '@/lib/auth/crypto';
 import { eraseAccount, planAccountErasure } from '@/lib/auth/erase-account';
 import {
   authRateLimitRefusal,
@@ -49,7 +49,7 @@ async function verifyAccountErasureAuth(
       await recordFailedLogin(clientIp, record.email);
       return refusal(401, 'invalid_credentials', 'Invalid password.');
     }
-    const valid = await verifyPassword(password, record.passwordHash, record.salt);
+    const valid = await verifyPassword(password, record.passwordHash, record.salt, iterationsOf(record));
     if (!valid) {
       await recordFailedLogin(clientIp, record.email);
       return refusal(401, 'invalid_credentials', 'Invalid password.');

@@ -63,6 +63,7 @@ async function createTestAccount(options: {
     emailVerified: options.emailVerified ?? true,
     passwordHash: pwd?.hash,
     salt: pwd?.salt,
+    passwordIterations: pwd?.iterations,
   });
   createdUserIds.push(record.id);
   return record;

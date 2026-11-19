@@ -55,7 +55,8 @@ import { SealingKeyConfigError, SecretSealError } from '@/lib/security/job-secre
 import { checkSubmissionLimits } from '@/lib/jobs/submission-limits';
 import { validatePageRangeSyntax } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
-import { INLINE_JOB_PAYLOAD_MAX_BYTES, fileTooLargeMessage, maxFileBytes, planOfCaller, type Plan, type PlanCaller } from '@/lib/plan-limits';
+import { readBoundedJson } from '@/lib/api/json-body-bounds';
+import { INLINE_JOB_PAYLOAD_MAX_BYTES, INLINE_JSON_BODY_MAX_BYTES, fileTooLargeMessage, maxFileBytes, planOfCaller, type Plan, type PlanCaller } from '@/lib/plan-limits';
 import { withinSingleRequest } from '@/lib/api/file-size-limit';
 import { graphJobState, graphProcessedOn, listVisibleWork } from '@/lib/queue/user-jobs';
 import { graphProgress } from '@/lib/queue/graph/graph-progress';
@@ -513,14 +514,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       }
     } else {
       // JSON body
-      let body: unknown;
-      let bodyText = '';
-      try {
-        bodyText = await req.text();
-        body = JSON.parse(bodyText);
-      } catch {
-        return reply(createProblemDetailsResponse(400, 'Invalid JSON body provided in request.', instanceUri));
-      }
+      const read = await readBoundedJson(req, INLINE_JSON_BODY_MAX_BYTES, instanceUri);
+      if ('refusal' in read) return reply(read.refusal);
+      const { text: bodyText, value: body } = read;
 
       const bodyValidation = validateOrProblem(JobCreateRequestSchema, body, instanceUri);
       if (!bodyValidation.ok) {

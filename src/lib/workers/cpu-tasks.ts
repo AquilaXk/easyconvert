@@ -192,6 +192,12 @@ export const CPU_TASK_HANDLERS: Record<string, CpuTaskHandler> = {
     return { result: { ...outcome, pdf: pdf.result }, transfer: pdf.transfer };
   },
 
+  // Loaded when the first data task arrives: the data converters pull in the office writers, which no other task of the pool needs.
+  dataConversion: (raw): Promise<HandlerResult> => {
+    const { runDataTask } = require('../conversions/data-task-thread') as typeof import('../conversions/data-task-thread');
+    return runDataTask(raw);
+  },
+
   pngBand: (raw): HandlerResult => {
     const band = encodePngBand(raw as PngBandPayload);
     const deflate = transferableBytes(band.deflate);

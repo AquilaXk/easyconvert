@@ -105,7 +105,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (!(await redisUserStore.findByEmail(email))) {
-      const { hash, salt } = await hashPassword(password);
+      const { hash, salt, iterations } = await hashPassword(password);
       const userRecord = await redisUserStore
         .createUser({
           email,
@@ -114,6 +114,7 @@ export async function POST(req: NextRequest) {
           provider: 'email',
           passwordHash: hash,
           salt,
+          passwordIterations: iterations,
           emailVerified: false,
           acceptedTermsVersion: TERMS_VERSION,
         })
