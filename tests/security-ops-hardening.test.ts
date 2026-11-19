@@ -29,7 +29,7 @@ import { cancelSingleQueueJob } from '../src/lib/queue/cancel-work';
 import { graphScheduler } from '../src/lib/queue/graph';
 import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 import type { JobGraph } from '../src/lib/queue/graph/types';
-import { hasExternalProxyForwardingHeaders, isLoopbackIp } from '../src/lib/security/loopback-only-guard';
+import { hasExternalProxyForwardingHeaders, isLocalOrBridgePeerIp, isLoopbackIp } from '../src/lib/security/loopback-only-guard';
 import { main as cancelJobMain, MAX_USER_CANCEL_JOBS } from '../scripts/cancel-job';
 import { main as confirmEmailMain } from '../scripts/confirm-account-email';
 import { main as eraseAccountMain } from '../scripts/erase-account';
@@ -80,18 +80,36 @@ describe('Track 1: loopback isolation, middleware hardening, config, and formats
     vi.resetModules();
   });
 
-  it('detects loopback IPs and rejects any external forwarding header or mixed x-real-ip list', () => {
+  it('detects loopback and Docker bridge socket peers while rejecting external proxy headers, HTTPS proxy proto, or multi-hop chains', () => {
     expect(isLoopbackIp('127.0.0.1')).toBe(true);
     expect(isLoopbackIp('[::1]')).toBe(true);
     expect(isLoopbackIp('::ffff:127.0.0.1')).toBe(true);
     expect(isLoopbackIp('203.0.113.5')).toBe(false);
 
+    expect(isLocalOrBridgePeerIp('::ffff:172.18.0.1')).toBe(true);
+    expect(isLocalOrBridgePeerIp('172.17.0.1')).toBe(true);
+    expect(isLocalOrBridgePeerIp('172.32.0.1')).toBe(false);
+    expect(isLocalOrBridgePeerIp('203.0.113.5')).toBe(false);
+
     expect(hasExternalProxyForwardingHeaders(new Headers())).toBe(false);
     expect(hasExternalProxyForwardingHeaders(new Headers({ 'x-real-ip': '127.0.0.1, [::1]' }))).toBe(false);
+    // Next.js base-server.js synthesizes single socket peer x-forwarded-for + x-forwarded-proto: http on 127.0.0.1:8090:3000
+    expect(
+      hasExternalProxyForwardingHeaders(
+        new Headers({ 'x-forwarded-for': '::ffff:172.18.0.1', 'x-forwarded-proto': 'http' })
+      )
+    ).toBe(false);
+    expect(
+      hasExternalProxyForwardingHeaders(
+        new Headers({ 'x-forwarded-for': '127.0.0.1', 'x-real-ip': '127.0.0.1', 'x-forwarded-proto': 'https' })
+      )
+    ).toBe(true);
+    expect(hasExternalProxyForwardingHeaders(new Headers({ 'x-forwarded-for': '127.0.0.1, ::ffff:172.18.0.1' }))).toBe(true);
+    expect(hasExternalProxyForwardingHeaders(new Headers({ 'x-forwarded-for': '203.0.113.5' }))).toBe(true);
     expect(hasExternalProxyForwardingHeaders(new Headers({ 'x-real-ip': '127.0.0.1, 203.0.113.5' }))).toBe(true);
     expect(hasExternalProxyForwardingHeaders(new Headers({ 'x-real-ip': '' }))).toBe(true);
 
-    for (const headerName of ['x-forwarded-for', 'cf-connecting-ip', 'forwarded', 'true-client-ip', 'x-client-ip']) {
+    for (const headerName of ['cf-connecting-ip', 'forwarded', 'true-client-ip', 'x-client-ip']) {
       expect(hasExternalProxyForwardingHeaders(new Headers({ [headerName]: '127.0.0.1' })), headerName).toBe(true);
     }
   });
