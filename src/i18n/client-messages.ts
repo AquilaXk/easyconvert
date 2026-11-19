@@ -13,10 +13,10 @@ const WORKBENCH = ['hero', 'queue', 'options', 'formatSelector', 'formatCategori
  * The message namespaces each page's client components read, so a page carries only its own copy; a server component
  * reads every message on the server and needs none handed down. They follow the imports of each page's view:
  * tests/i18n-client-messages.test.ts fails when a client component reads a namespace its row lacks or its row names one
- * no client component of the page reads. The layout renders no translated client component, so its provider carries none.
+ * no client component of the page reads. The layout carries only the copy of the error boundary it hosts, which renders no header or footer.
  */
 export const PAGE_NAMESPACES = {
-  layout: [],
+  layout: ['errorPage'],
   home: [...CHROME, ...WORKBENCH, 'features', 'home'],
   converter: [
     ...CHROME, ...WORKBENCH, 'converterPage', 'slugPages', 'tools', 'formatDetail', 'formatSpecs', 'formatDescriptions', 'infoPages',

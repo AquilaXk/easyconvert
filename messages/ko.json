@@ -631,6 +631,13 @@
       "connection": "연결이 끊겼습니다. 다시 시도하세요."
     }
   },
+  "errorPage": {
+    "code": "오류",
+    "title": "문제가 발생했습니다",
+    "description": "페이지를 표시하는 중 예기치 못한 오류가 발생했습니다.",
+    "retry": "다시 시도",
+    "home": "홈으로"
+  },
   "features": {
     "directoryHeading": "지원 파일 형식",
     "directoryIntro": "{categories}개 분류, {formats}개 형식, 변환 조합 {pairs}개를 지원합니다.",

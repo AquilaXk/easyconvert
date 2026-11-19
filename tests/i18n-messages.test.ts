@@ -7,6 +7,7 @@ import { FOOTER_COLUMNS, PRIMARY_LINKS, TOOL_ROUTES, type SiteLink } from '../sr
 import { formatMessageKey } from '../src/i18n/message-keys';
 import { routing } from '../src/i18n/routing';
 import { completeMessages } from '../src/i18n/messages';
+import { GLOBAL_ERROR_COPY } from '../src/lib/global-error-copy';
 import en from '../messages/en.json';
 
 /**
@@ -154,5 +155,13 @@ describe('the Korean copy keeps one register and one set of terms', () => {
     expect(pairs.filter(([, text]) => pairWithoutArrow.test(text)).map(([key]) => key)).toEqual([]);
     expect(korean.get('slugPages.pair.title')).toBe('{src} → {tgt} 변환기');
     expect(korean.get('hero.title.pair')).toBe('{src} → {tgt} 변환기');
+  });
+
+  it('keeps the copy of the root error boundary, which has no provider, equal to the errorPage messages', () => {
+    for (const locale of routing.locales) {
+      const messages = MESSAGES.get(locale)!;
+      const copy = Object.fromEntries(Object.keys(GLOBAL_ERROR_COPY[locale]).map((key) => [key, messages.get(`errorPage.${key}`)]));
+      expect(GLOBAL_ERROR_COPY[locale]).toEqual(copy);
+    }
   });
 });

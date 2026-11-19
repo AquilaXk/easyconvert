@@ -631,6 +631,13 @@
       "connection": "The connection dropped. Try again."
     }
   },
+  "errorPage": {
+    "code": "Error",
+    "title": "Something went wrong",
+    "description": "An unexpected error occurred while showing this page.",
+    "retry": "Try again",
+    "home": "Back to home"
+  },
   "features": {
     "directoryHeading": "Supported formats",
     "directoryIntro": "{categories} categories, {formats} formats, {pairs} conversions.",
