@@ -51,6 +51,7 @@ const CONVERT_CODES = {
     'malformed_input', 'empty_file', 'archive_entry_collision', 'missing_volume', 'option_not_supported', 'timeout',
     'input_over_limit', 'conversion_failed', 'engine_not_offered', 'engine_version_unavailable',
     'metadata_write_unsupported', 'metadata_field_invalid', 'capture_target_blocked', 'capture_failed', 'capture_unavailable',
+    'pdf_postprocess_failed',
   ],
   503: ['engine_unavailable'],
 } as const satisfies Record<number, readonly ConversionRefusalCode[]>;

@@ -383,6 +383,7 @@ Security
 332. [The tar reader decodes only the pax values it uses, and drops the AppleDouble entries of macOS](#332-the-tar-reader-decodes-only-the-pax-values-it-uses-and-drops-the-appledouble-entries-of-macos)
 333. [UTF-16LE text with a byte order mark is not taken for MPEG audio by the spoof check](#333-utf-16le-text-with-a-byte-order-mark-is-not-taken-for-mpeg-audio-by-the-spoof-check)
 334. [Delimited text written as a spreadsheet is decoded as the data engine decodes it](#334-delimited-text-written-as-a-spreadsheet-is-decoded-as-the-data-engine-decodes-it)
+335. [A failed PDF step is a typed 422 refusal that the queue does not retry](#335-a-failed-pdf-step-is-a-typed-422-refusal-that-the-queue-does-not-retry)
 
 ---
 
@@ -10176,3 +10177,15 @@ Security
 - **Why**: one file has to read the same way for every target (entry 331 for plain text). Reusing the function moves no behaviour of the data engine: a file that is UTF-8 reads as before.
 - **Trade-offs**: a CSV whose encoding cannot be told (fewer than four non-ASCII characters in a legacy encoding, or no candidate that fits) now fails with the typed error and the hint to pass `encoding`, where it was written with U+FFFD cells. JSON sources are read as UTF-8 as before.
 - **Verified by**: `tests/csv-sheet-source-encodings.test.ts` (seven fixtures of `tests/fixtures/data-text`, transcoded by GNU iconv from UTF-8 tables, to XLSX and ODS: the cells equal those of the UTF-8 original), which failed on 15 of its 18 cases before this change.
+
+## 335. A failed PDF step is a typed 422 refusal that the queue does not retry
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: a review found `delete-pages` with `{"pages":"1-3"}` on a 3-page PDF, and `protect`, `watermark` and `split` of a PDF that qpdf cannot open, answered with 500 by the tools API and run three times by the queue)
+- **Decision**:
+  1. **`PdfPostprocessError` is a `ConversionFailedError` with the refusal code `pdf_postprocess_failed` and the status 422 (`src/lib/types.ts`); `PdfAValidationError` inherits both.** It was an `Error` with a status and no code: `typedFailureOf` found no code, so the tools API answered 500 with a generic detail, and `classifyJobFailure` (which sees only `ConversionFailedError`) kept it retryable, so the queue ran the job three times (`attempts: 3`). It now answers 422 with the message and the code, and the queue records it as `failedStatus` 422 after one run.
+  2. **The code is in the closed list of `CONVERSION_REFUSAL_CODES`, in the 422 tables of the OpenAPI document (`V1_CONVERT_CODES` and the internal route table), in the generated SDKs, and has a sentence in `messages/en.json` and `messages/ko.json`**: `The PDF step could not be applied to this file. Check the settings and the file, for example that the pages you name are not every page of it.`
+  3. **The convert routes carry the code in the problem they already sent** (`createPdfPostprocessResponse`): the type `pdf-postprocess-failed` or `pdfa-validation-failed`, the status 422 and the message are unchanged, and `code` is added (and `profile` and `failedRules` for PDF/A).
+- **Why**: a page range that names every page or a PDF that qpdf cannot open is a verdict on the document, which the other 422 refusals of the API already are, so no other worker or attempt changes it. One code for the class keeps the answer of every PDF step the same; its message says what failed.
+- **Trade-offs**: a PDF step that fails for a reason of the server (a qpdf crash that leaves no message of the document) is also 422 and not retried, as it already was on the convert routes; only the queue and the tools API change. The code does not say which step failed: the detail does.
+- **Verified by**: `tests/web-tools-route.test.ts` (`delete-pages` of 1-3 on 3 pages: 500 before, 422 with the code and the conversion given back after), `tests/queue-non-retryable-failures.test.ts` (3 runs before, 1 after, for both classes), `tests/pdf-postprocess-refusal.test.ts`, the new rows of `tests/refusal-code-inventory.test.ts`, and the contract test of the OpenAPI codes.

@@ -67,6 +67,7 @@ describe.each([0, 1, 2])('PDF/A post-processing failures on convert route %#', (
       expect(JSON.parse(body)).toMatchObject({
         status: HTTP_UNPROCESSABLE,
         type: POSTPROCESS_PROBLEM_TYPE,
+        code: 'pdf_postprocess_failed',
         detail: 'The PDF/A validator could not process the document.',
       });
       expect(body).not.toContain('/tmp');

@@ -12,6 +12,8 @@ import {
   OcrEngineUnavailableError,
   OcrLanguageDataMissingError,
   OcrLanguageUnknownError,
+  PdfAValidationError,
+  PdfPostprocessError,
   RawEngineRequiredError,
   UnsupportedOptionError,
 } from '../src/lib/types';
@@ -23,6 +25,7 @@ import { userStore } from '../src/lib/auth/user-store';
 
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_BAD_REQUEST = 400;
+const HTTP_UNPROCESSABLE_ENTITY = 422;
 const HTTP_SERVICE_UNAVAILABLE = 503;
 const RETRY_DELAY_MS = 20;
 const ATTEMPTS = 3;
@@ -82,6 +85,17 @@ describe('jobs that fail on their input are not retried', () => {
     expect(calls).toBe(1);
     expect(job.attemptsMade).toBe(1);
     expect(job.failedStatus).toBe(HTTP_BAD_REQUEST);
+    expect(job.failedCode).toBe(name);
+  });
+
+  it.each([
+    ['PdfPostprocessError', new PdfPostprocessError('Deleting the pages failed: the specification names every page, and a PDF needs at least one.')],
+    ['PdfAValidationError', new PdfAValidationError('pdfa-1b', ['6.2.11.4.1-1'])],
+  ])('does not retry %s, a verdict on the document that no other worker changes, and records its 422', async (name, error) => {
+    const { calls, job } = await runFailingJob(`nonretry-${name}`, error);
+    expect(calls).toBe(1);
+    expect(job.attemptsMade).toBe(1);
+    expect(job.failedStatus).toBe(HTTP_UNPROCESSABLE_ENTITY);
     expect(job.failedCode).toBe(name);
   });
 

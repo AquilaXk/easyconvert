@@ -189,7 +189,7 @@ export function createPdfPostprocessResponse(
       PDFA_VALIDATION_PROBLEM_TYPE,
       extraHeaders,
       undefined,
-      { profile: error.profile, failedRules: [...error.failedRules] }
+      { code: error.refusalCode, profile: error.profile, failedRules: [...error.failedRules] }
     );
   }
   return createProblemDetailsResponse(
@@ -198,7 +198,9 @@ export function createPdfPostprocessResponse(
     instance,
     'PDF Post-processing Failed',
     PDF_POSTPROCESS_PROBLEM_TYPE,
-    extraHeaders
+    extraHeaders,
+    undefined,
+    { code: error.refusalCode }
   );
 }
 

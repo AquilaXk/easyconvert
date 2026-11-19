@@ -169,6 +169,9 @@ const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
   DjvuDrawTimeoutError: 'timeout',
   JobTimeoutError: 'timeout',
 
+  PdfAValidationError: 'pdf_postprocess_failed',
+  PdfPostprocessError: 'pdf_postprocess_failed',
+
   UnsafeArchiveError: 'unsafe_archive',
 
   ArchiveInputUnprocessableError: 'unsupported_input',

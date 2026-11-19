@@ -1786,6 +1786,7 @@
       "capture_unavailable": "Website capture is not turned on for this server.",
       "capture_target_blocked": "This address cannot be captured. Only public web pages on the usual web ports can be captured, not addresses inside a network.",
       "capture_failed": "The page could not be loaded or drawn. Check the address, or try again later.",
+      "pdf_postprocess_failed": "The PDF step could not be applied to this file. Check the settings and the file, for example that the pages you name are not every page of it.",
       "engine_unavailable": "The program this conversion needs is not available right now. Try again later.",
       "conversion_failed": "Conversion failed. Try another format, or select Convert to try again."
     },

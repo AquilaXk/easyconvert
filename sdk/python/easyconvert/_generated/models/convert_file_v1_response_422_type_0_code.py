@@ -20,6 +20,7 @@ class ConvertFileV1Response422Type0Code(StrEnum):
     MISSING_VOLUME = "missing_volume"
     OPTION_NOT_SUPPORTED = "option_not_supported"
     PASSWORD_REQUIRED = "password_required"
+    PDF_POSTPROCESS_FAILED = "pdf_postprocess_failed"
     TIMEOUT = "timeout"
     UNSUPPORTED_INPUT = "unsupported_input"
     UNSUPPORTED_METHOD = "unsupported_method"
