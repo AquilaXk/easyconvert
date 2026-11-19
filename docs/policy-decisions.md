@@ -382,6 +382,7 @@ Security
 331. [Text sources of every target are decoded as text to PDF is, and legacy text is not handed to the office suite as UTF-8](#331-text-sources-of-every-target-are-decoded-as-text-to-pdf-is-and-legacy-text-is-not-handed-to-the-office-suite-as-utf-8)
 332. [The tar reader decodes only the pax values it uses, and drops the AppleDouble entries of macOS](#332-the-tar-reader-decodes-only-the-pax-values-it-uses-and-drops-the-appledouble-entries-of-macos)
 333. [UTF-16LE text with a byte order mark is not taken for MPEG audio by the spoof check](#333-utf-16le-text-with-a-byte-order-mark-is-not-taken-for-mpeg-audio-by-the-spoof-check)
+334. [Delimited text written as a spreadsheet is decoded as the data engine decodes it](#334-delimited-text-written-as-a-spreadsheet-is-decoded-as-the-data-engine-decodes-it)
 
 ---
 
@@ -10166,3 +10167,12 @@ Security
   - A real MPEG Layer I file with a CRC whose first 64 KiB hold no control byte, no noncharacter and no null unit would read as text and be accepted under a text name. Layer I is almost never written, and its frames of audio data carry such codes within a few hundred bytes.
   - A text file in UTF-16LE with a stray control character (U+0001) is refused as before.
 - **Verified by**: `tests/utf16le-text-spoof-check.test.ts` (the sniffed type, the check under `.txt`, `.csv`, `.tsv`, `.md`, `.log` and `.rst`, a real MP3 and Layer I frames under text names, and `txt` to PDF and DOCX, `md` to HTML, `csv` and `tsv` to JSON after the check), which failed with the spoof refusal before this change, and `tests/utf16-text-signature.test.ts`.
+
+## 334. Delimited text written as a spreadsheet is decoded as the data engine decodes it
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (found while checking that UTF-16LE `.csv` and `.tsv` files convert end to end after entry 333: CSV and TSV to XLSX gave cells of U+0000 and U+FFFD)
+- **Decision**: **CSV and TSV written as a spreadsheet by the office engine (XLSX, ODS and the other sheet writers that call `extractRowsForOffice`) are decoded with the rule of the data engine (`decodeDelimitedText`, now in `src/lib/conversions/delimited-text-decoder.ts`, moved out of `data.ts` with the helpers it shares with the XML reader)**: a byte order mark, then the `encoding` option, then the NUL pattern of BOM-less UTF-16, then strict UTF-8, then the scored legacy candidates of entry 72 (Windows-1252 last), with the same typed `DataEncodingError` when the encoding cannot be told. The sheet writers read the source as UTF-8 before, so UTF-16 and legacy delimited text came out as junk cells with no warning, where CSV to JSON, to Parquet and to the other table targets read the same file correctly.
+- **Why**: one file has to read the same way for every target (entry 331 for plain text). Reusing the function moves no behaviour of the data engine: a file that is UTF-8 reads as before.
+- **Trade-offs**: a CSV whose encoding cannot be told (fewer than four non-ASCII characters in a legacy encoding, or no candidate that fits) now fails with the typed error and the hint to pass `encoding`, where it was written with U+FFFD cells. JSON sources are read as UTF-8 as before.
+- **Verified by**: `tests/csv-sheet-source-encodings.test.ts` (seven fixtures of `tests/fixtures/data-text`, transcoded by GNU iconv from UTF-8 tables, to XLSX and ODS: the cells equal those of the UTF-8 original), which failed on 15 of its 18 cases before this change.
