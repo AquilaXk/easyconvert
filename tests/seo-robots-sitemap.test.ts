@@ -15,7 +15,7 @@ describe('Open Beta crawlability: robots.txt and localized sitemap.xml', () => {
     const rules = Array.isArray(config.rules) ? config.rules : [config.rules];
     expect(rules).toHaveLength(1);
     expect(rules[0].userAgent).toBe('*');
-    expect(rules[0].allow).toBe('/');
+    expect(rules[0].allow).toEqual(['/', '/api/og']);
     expect(rules[0].disallow).toEqual(
       expect.arrayContaining(['/api/', '/dashboard/', '/account/', '/auth/', '/ko/dashboard/', '/ko/account/', '/ko/auth/'])
     );
@@ -38,6 +38,10 @@ describe('Open Beta crawlability: robots.txt and localized sitemap.xml', () => {
     expect(urls.has('https://convert.aquilaxk.site/ko/pricing')).toBe(true);
     expect(urls.has('https://convert.aquilaxk.site/api-docs')).toBe(true);
     expect(urls.has('https://convert.aquilaxk.site/terms')).toBe(true);
+    for (const topic of ['quickstart', 'convert', 'jobs', 'uploads', 'downloads', 'formats', 'ocr-languages', 'archives', 'usage']) {
+      expect(urls.has(`https://convert.aquilaxk.site/api-docs/${topic}`), topic).toBe(true);
+      expect(urls.has(`https://convert.aquilaxk.site/ko/api-docs/${topic}`), topic).toBe(true);
+    }
     expect(urls.has('https://convert.aquilaxk.site/privacy')).toBe(true);
 
     // Non-canonical alias slugs (e.g. same-format pairjpeg-to-jpg -> jpeg-converter) and private/disabled routes never appear.

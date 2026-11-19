@@ -1,4 +1,5 @@
 import type { MetadataRoute } from 'next';
+import { API_DOC_SUBPAGES, apiDocsHref } from '@/components/api-docs/topics';
 import { siteMetadataBase } from '@/i18n/metadata';
 import { getPathname } from '@/i18n/navigation';
 import { CATEGORY_WORDS } from '@/lib/category-words';
@@ -15,6 +16,7 @@ const DEFAULT_PUBLIC_ORIGIN = 'https://convert.aquilaxk.site';
 const PUBLIC_STATIC_PATHS = [
   '/',
   '/api-docs',
+  ...API_DOC_SUBPAGES.map((topic) => apiDocsHref(topic.slug)),
   '/pricing',
   '/privacy',
   '/terms',
