@@ -635,6 +635,7 @@
   "tests/link-import-meter.test.ts": 0,
   "tests/local-multipart-boundary.test.ts": 1.8,
   "tests/local-multipart-owner-erasure.test.ts": 0,
+  "tests/login-empty-hash-timing.test.ts": 1,
   "tests/login-global-failed-limit.test.ts": 0.2,
   "tests/login-success-keeps-ip-counter.test.ts": 0,
   "tests/lzma-decoder-fast-path.test.ts": 1.1,

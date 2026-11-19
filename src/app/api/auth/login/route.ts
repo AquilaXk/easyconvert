@@ -58,8 +58,9 @@ export async function POST(req: NextRequest) {
     }
 
     const userRecord = await redisUserStore.findByEmail(email);
-    const hashToVerify = userRecord?.passwordHash ?? DUMMY_HASH;
-    const saltToVerify = userRecord?.salt ?? DUMMY_SALT;
+    // `||`: an emptied hash or salt (a Google sign-in took the account over) must cost the key derivation too, or its answer is faster.
+    const hashToVerify = userRecord?.passwordHash || DUMMY_HASH;
+    const saltToVerify = userRecord?.salt || DUMMY_SALT;
 
     const isValid = await verifyPassword(password, hashToVerify, saltToVerify);
     if (!userRecord?.passwordHash || !userRecord?.salt || !isValid) {
