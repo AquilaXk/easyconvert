@@ -1187,7 +1187,7 @@
   "tests/sandbox-output-sites.test.ts": 0,
   "tests/sandbox-output.test.ts": 0,
   "tests/sandbox-pid-init-probe.test.ts": 0,
-  "tests/sandbox-process-tree-memory.test.ts": 0.6,
+  "tests/sandbox-process-tree-memory.test.ts": 6,
   "tests/sandbox-signal-exit.test.ts": 0.9,
   "tests/sandbox-stdout-frame.test.ts": 0,
   "tests/sandbox-stdout-spool.test.ts": 0.4,

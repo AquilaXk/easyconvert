@@ -61,8 +61,18 @@ export const LIBREOFFICE_READINESS_FAILURE_TTL_MS = 60_000;
  * idle shutdown supervision for extra slots above `minWorkers`.
  */
 export const LIBREOFFICE_POOL_MAX_WORKERS_CEILING = 12;
+/** What a slot is sized for: the memory of a typical run, which decides how many slots a host fits (`defaultLibreOfficeMaxWorkers`). */
 export const LIBREOFFICE_SLOT_MEMORY_BYTES = 1536 * 1024 * 1024;
-export const LIBREOFFICE_MEMORY_LIMIT_MB = 1536;
+/**
+ * What one run of LibreOffice may hold, counted as the proportional set size of its process tree (entry 330 of `docs/policy-decisions.md`).
+ * LibreOffice itself needs it: on the real-world corpus one `soffice.bin` holds nearly all of it (its resident, proportional and unique
+ * sizes differ by under 4 %). Nine of the eleven office jobs that failed at 1,536 MB complete with 879 to 3,008 MB (`govdocs1-003052.pdf`
+ * to PPT, `govdocs1-002608.pdf` to PPT), and `gd-739713.pdf` and `cc-0000888.pdf` to PPT grow past 4.4 GB until the kernel ends the run.
+ * 3 GiB holds the nine (the largest with 2 % headroom) and four runs at it (the 4 jobs of the 14 GB worker container of
+ * `docker-compose.prod.yml`) stay at 12 GB. A run over it is refused as an input over the limit (`withMemoryRefusal`). Gotenberg bounds
+ * LibreOffice the same way with `--libreoffice-max-memory` and answers 422; JODConverter and unoserver set no bound.
+ */
+export const LIBREOFFICE_MEMORY_LIMIT_MB = 3072;
 /** Wide virtual address space cap so LibreOffice UNO/JVM arenas do not abort while the RSS monitor enforces `LIBREOFFICE_MEMORY_LIMIT_MB`. */
 export const LIBREOFFICE_ADDRESS_SPACE_BYTES = 16 * 1024 * 1024 * 1024;
 export const LIBREOFFICE_MAX_FILE_SIZE = ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
