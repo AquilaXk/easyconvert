@@ -192,6 +192,13 @@ export interface ConversionOptions {
    */
   ocrDetectOrientation?: boolean;
   /**
+   * Level a skewed page in the searchable PDF (`ocrmypdf --deskew`): the page content, scan and text layer, is turned by
+   * the measured skew (up to 20 degrees, from 0.25) without resampling, the page grows when a word would leave it, and
+   * a text extractor that regroups words by position reads the lines in order. Off by default: the page is then written
+   * as scanned. A page with annotations, or whose lines do not agree on one skew, is left as it is.
+   */
+  ocrDeskew?: boolean;
+  /**
    * Also return the OCR engine's own hOCR or ALTO of each recognized PDF page in the result metadata
    * (`metadata.ocrEngineMarkup`). For verification and debugging; it needs the tesseract command line.
    */

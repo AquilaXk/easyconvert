@@ -46,6 +46,9 @@ const SPACE_CHARACTER = ' ';
 const COORDINATE_DECIMALS = 4;
 const MATRIX_DECIMALS = 6;
 const DEGREES_TO_RADIANS = Math.PI / 180;
+/** A tilt under this sine (about 0.06 degrees) is level; beyond a cosine of the double angle of this, the box says little. */
+const MIN_TILT_SINE = 0.001;
+const MIN_TILT_COS_DOUBLE = 0.1;
 
 /**
  * Raised when a result has text but no line or word boxes to place it with. Nothing is invented: an
@@ -141,7 +144,7 @@ interface WordFrame {
  * word's own box gives the row: it is as tall as the box and its baseline is the font's ascent
  * below the top.
  */
-function frameOf(word: OcrWord, block: OcrLineBlock, d: Vector, n: Vector): WordFrame {
+function frameOf(word: OcrWord, block: OcrLineBlock, d: Vector, n: Vector, exactBoxes: boolean): WordFrame {
   const points = corners(word);
   const reference = block.baseline ? { x: block.baseline.x0, y: block.baseline.y0 } : points[0];
   let uMin = Infinity;
@@ -155,6 +158,19 @@ function frameOf(word: OcrWord, block: OcrLineBlock, d: Vector, n: Vector): Word
     uMax = Math.max(uMax, u);
     vMin = Math.min(vMin, v);
     vMax = Math.max(vMax, v);
+  }
+  if (exactBoxes) {
+    // The box of a word of a tilted line is the bounding box of its tilted rectangle: wider than the word along the
+    // baseline by the line's height times sin(2 * tilt). Solving the bounding box for the rectangle gives the word.
+    const sides = tiltedRectangleSides(word.bbox.width, word.bbox.height, d);
+    if (sides) {
+      const uCentre = (uMin + uMax) / 2;
+      const vCentre = (vMin + vMax) / 2;
+      uMin = uCentre - sides.along / 2;
+      uMax = uCentre + sides.along / 2;
+      vMin = vCentre - sides.across / 2;
+      vMax = vCentre + sides.across / 2;
+    }
   }
   const boxHeight = vMax - vMin;
   if (block.baseline) {
@@ -174,6 +190,21 @@ function frameOf(word: OcrWord, block: OcrLineBlock, d: Vector, n: Vector): Word
   };
 }
 
+/**
+ * The sides of a rectangle tilted by the angle of `d`, given the width and height of its bounding box: along the
+ * direction of the tilt and across it. Null for a level line (the box is the rectangle) and for a tilt of 45 degrees or
+ * more (the box does not determine the rectangle).
+ */
+function tiltedRectangleSides(boxWidth: number, boxHeight: number, d: Vector): { along: number; across: number } | null {
+  const cos = Math.abs(d.x);
+  const sin = Math.abs(d.y);
+  const difference = cos * cos - sin * sin;
+  if (sin < MIN_TILT_SINE || difference < MIN_TILT_COS_DOUBLE) return null;
+  const along = (boxWidth * cos - boxHeight * sin) / difference;
+  const across = (boxHeight * cos - boxWidth * sin) / difference;
+  return along > 0 && across > 0 ? { along, across } : null;
+}
+
 function assertWithinLimits(words: number, characters: number): void {
   if (words > OCR_MAX_WORDS_PER_PAGE) {
     throw new OcrTextLayerLimitError(`The page has more than ${OCR_MAX_WORDS_PER_PAGE} words; no text layer is written.`);
@@ -189,10 +220,18 @@ function assertWithinLimits(words: number, characters: number): void {
  * The words of a result placed on a page, in reading order, in PDF user space. `scaleX` and `scaleY`
  * are points per pixel of the scan (72 / dpi, or the page's points over the rendered pixels), and
  * `pageHeight` is the user-space y of the pixel grid's top edge (the page's height for a page whose box starts at the
- * origin) and `originX` the user-space x of its left edge. Throws OcrGeometryUnavailableError when the result has
+ * origin) and `originX` the user-space x of its left edge. With `exactBoxes` a word of a tilted line is as wide as the
+ * word, not as its bounding box (see frameOf). Throws OcrGeometryUnavailableError when the result has
  * text but a line without word boxes, or no lines at all.
  */
-export function placeWords(result: OcrResult, scaleX: number, scaleY: number, pageHeight: number, originX = 0): PlacedWord[] {
+export function placeWords(
+  result: OcrResult,
+  scaleX: number,
+  scaleY: number,
+  pageHeight: number,
+  originX = 0,
+  exactBoxes = false
+): PlacedWord[] {
   const lines = result.lineBlocks ?? [];
   if (lines.length === 0) {
     if (result.text.trim() === '') return [];
@@ -215,7 +254,7 @@ export function placeWords(result: OcrResult, scaleX: number, scaleY: number, pa
       const text = word.text.trim();
       characters += text.length + 1;
       assertWithinLimits(placed.length + 1, characters);
-      const frame = frameOf(word, block, d, n);
+      const frame = frameOf(word, block, d, n, exactBoxes);
       const fontSize = frame.across * scaleY;
       const advance = (advanceUnits(text) / GLYPH_UNITS_PER_EM) * fontSize;
       placed.push({

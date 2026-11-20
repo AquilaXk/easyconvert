@@ -1,10 +1,13 @@
 import { type OcrResult, injectInvisibleTextLayer, injectRenderedPageTextLayer } from './ocr-pdf-combiner';
+import { levelPageToText } from './ocr-output-deskew';
 import { stripPageInvisibleOcrText } from './ocr-strip-invisible-text';
 import { normaliseLeafPageCatalog } from './pdf-page-geometry';
 import { loadPdfLibDocument } from './pdf-lib-load';
 
 export interface SandwichPdfOptions {
   ocrMode?: string;
+  /** Level each page whose text layer is skewed (`ocrDeskew`); see ocr-output-deskew.ts. */
+  ocrDeskew?: boolean;
 }
 
 /**
@@ -42,7 +45,8 @@ export async function createLosslessSandwichPdfFromPdf(
       }
     }
     if (ocrResult.pageRender) {
-      injectRenderedPageTextLayer(page, ocrResult, ocrResult.pageRender);
+      const placed = injectRenderedPageTextLayer(page, ocrResult, ocrResult.pageRender, options.ocrDeskew === true);
+      if (options.ocrDeskew === true) levelPageToText(page, placed);
       continue;
     }
     const { width: pageWidth, height: pageHeight } = page.getSize();
@@ -53,7 +57,8 @@ export async function createLosslessSandwichPdfFromPdf(
     const scaleX = pageWidth / imgWidth;
     const scaleY = pageHeight / imgHeight;
 
-    injectInvisibleTextLayer(page, ocrResult, scaleX, scaleY);
+    const placed = injectInvisibleTextLayer(page, ocrResult, scaleX, scaleY, undefined, options.ocrDeskew === true);
+    if (options.ocrDeskew === true) levelPageToText(page, placed);
   }
 
   const pdfBytes = await doc.save();

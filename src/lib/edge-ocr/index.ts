@@ -186,6 +186,11 @@ export async function runClientEdgeOcr(
     throw new EdgeOcrError('Edge OCR cannot detect page orientation; the request needs server-side OCR');
   }
 
+  // Levelling the page is done where the page is written; the browser tier writes it as scanned.
+  if (options.ocrDeskew === true) {
+    throw new EdgeOcrError('Edge OCR cannot level a skewed page; the request needs server-side OCR');
+  }
+
   onProgress?.(10);
   const arrayBuffer = await file.arrayBuffer();
   signal?.throwIfAborted();

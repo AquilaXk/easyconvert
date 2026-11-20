@@ -30,7 +30,8 @@ import type { OcrOrientation } from './ocr-osd';
 import { resolveImageDpi, type ImageDpi } from './ocr-dpi';
 import { mapOcrResultToSource, rowTolerantHeight } from './ocr-geometry';
 import { unrotatedPageGeometry, unrotatedPageScale, type RenderedPdfPage } from './pdf-page-geometry';
-import { placeWords, writeTextLayer } from './ocr-text-layer';
+import { type PlacedWord, placeWords, writeTextLayer } from './ocr-text-layer';
+import { levelPageToText } from './ocr-output-deskew';
 import { embedImagePlan, type PdfImagePlan } from './pdf-image-xobject';
 
 /** The first allocated CID; CID 0 is reserved for .notdef. */
@@ -1546,8 +1547,9 @@ export function injectInvisibleTextLayer(
   ocrResult: OcrResult,
   scaleX: number = 1.0,
   scaleY: number = 1.0,
-  placement?: TextLayerPlacement
-): void {
+  placement?: TextLayerPlacement,
+  exactBoxes = false
+): PlacedWord[] {
   const safeScaleX = Number.isFinite(scaleX) && scaleX > 0 ? scaleX : 1.0;
   const safeScaleY = Number.isFinite(scaleY) && scaleY > 0 ? scaleY : 1.0;
   const { height: mediaHeight, width: pageWidth } = page.getSize();
@@ -1561,11 +1563,12 @@ export function injectInvisibleTextLayer(
   const lineBlocks = turned
     ? rawBlocks
     : sortLineBlocksTopological(rawBlocks, ocrResult.imageWidth ?? pageWidth / safeScaleX, ocrResult.imageHeight ?? pageTop / safeScaleY);
-  const words = placeWords({ ...ocrResult, lineBlocks }, safeScaleX, safeScaleY, pageTop, placement?.originX ?? 0);
-  if (words.length === 0) return;
+  const words = placeWords({ ...ocrResult, lineBlocks }, safeScaleX, safeScaleY, pageTop, placement?.originX ?? 0, exactBoxes);
+  if (words.length === 0) return words;
   const font = ensureUnicodeFont(page.doc);
   registerFontOnPage(page, font);
   writeTextLayer(page, words, font);
+  return words;
 }
 
 /** Where the result's pixel grid sits on the page: its top-left corner in user space. */
@@ -1583,10 +1586,15 @@ export interface TextLayerPlacement {
  * page (CropBox, turned by /Rotate), so they are first returned to the unrotated page, whose pixel grid starts at
  * the CropBox's top-left corner and is 72 / dpi points per pixel.
  */
-export function injectRenderedPageTextLayer(page: PDFPage, ocrResult: OcrResult, render: RenderedPdfPage): void {
+export function injectRenderedPageTextLayer(
+  page: PDFPage,
+  ocrResult: OcrResult,
+  render: RenderedPdfPage,
+  exactBoxes = false
+): PlacedWord[] {
   const unrotated = mapOcrResultToSource(ocrResult, unrotatedPageGeometry(render));
   const { scaleX, scaleY, originX, top } = unrotatedPageScale(render);
-  injectInvisibleTextLayer(page, unrotated, scaleX, scaleY, { originX, top, keepOrder: true });
+  return injectInvisibleTextLayer(page, unrotated, scaleX, scaleY, { originX, top, keepOrder: true }, exactBoxes);
 }
 
 /** PDF user space unit: 1/72 inch. */
@@ -1647,12 +1655,15 @@ export async function createLosslessSandwichPdfFromImage(
   );
 
   // The result's boxes are in the pixels of the scan it was made from.
-  injectInvisibleTextLayer(
+  const placed = injectInvisibleTextLayer(
     page,
     ocrResult,
     pageWidth / (ocrResult.imageWidth || imgWidth),
-    pageHeight / (ocrResult.imageHeight || imgHeight)
+    pageHeight / (ocrResult.imageHeight || imgHeight),
+    undefined,
+    options.ocrDeskew === true
   );
+  if (options.ocrDeskew === true) levelPageToText(page, placed);
 
   const pdfBytes = await doc.save();
   return Buffer.from(pdfBytes);

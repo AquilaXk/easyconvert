@@ -1036,7 +1036,7 @@ export async function performSmartMultiPagePdfOcr(
 
   const finalPdfBuffer =
     pageOcrResults.size > 0
-      ? await createLosslessSandwichPdfFromPdf(pdfBuffer, pageOcrResults, { ocrMode })
+      ? await createLosslessSandwichPdfFromPdf(pdfBuffer, pageOcrResults, { ocrMode, ocrDeskew: options.ocrDeskew })
       : pdfBuffer;
 
   const combinedOcrResult = assembleCombinedOcrResult(pageOcrResults, pageAnalyses);
