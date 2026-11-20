@@ -108,7 +108,7 @@ const TARGET_CONVERTERS: ReadonlyMap<string, FormatConverter> = new Map<string, 
     const maxAnchoredShapes = (options as Record<symbol, unknown>)[DOCX_MAX_ANCHORED_SHAPES];
     const docxBuffer = src === 'pdf'
       ? await documentToDocx(
-          await readPdfForOffice(input, options, { images: true, colour: true }),
+          await readPdfForOffice(input, options, { images: true, colour: true, pages: true }),
           typeof maxAnchoredShapes === 'number' ? { maxAnchoredShapes } : undefined
         )
       : await generateDocxFromSource(input, src, options, baseName);

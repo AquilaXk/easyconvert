@@ -365,6 +365,7 @@ function buildLattice(
       box: { x0: left, y0: top, x1: right, y1: bottom },
       pageNumber,
       kind: 'lattice',
+      rowEdges: grid.ys,
     },
     remaining,
   };
@@ -565,12 +566,14 @@ function buildStreamTable(run: Row[], fonts: FontList, budget: LayoutBudget, pag
   if (rowsOut[0].every((cell) => cell.paragraphs.length === 0 || isBoldCell(cell.paragraphs))) {
     for (const cell of rowsOut[0]) cell.header = cell.paragraphs.length > 0;
   }
+  const box = { x0: left, y0: Math.min(...run.map((row) => row.top)), x1: right, y1: Math.max(...run.map((row) => row.bottom)) };
   return {
     rows: rowsOut,
     columnWidths: edges.slice(1).map((edge, index) => edge - edges[index]),
-    box: { x0: left, y0: Math.min(...run.map((row) => row.top)), x1: right, y1: Math.max(...run.map((row) => row.bottom)) },
+    box,
     pageNumber,
     kind: 'stream',
+    rowEdges: [...tabular.map((row) => row.top), box.y1],
   };
 }
 
