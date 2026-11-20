@@ -9,6 +9,7 @@ import { probeFile, withMediaFile } from './helpers/ffmpeg-measure';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipWithoutTools } from './helpers/strict-skip';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
+import { ConversionFailedError } from '../src/lib/types';
 
 /**
  * A file converted to its own format is written again into its own container. These containers failed before: their
@@ -110,7 +111,8 @@ describe.skipIf(skip)('a same-format conversion writes the container again', () 
   it('a request that asks for another sound is not a rewrap and keeps its earlier answer', async () => {
     const source = mobile();
     const failure = await convertFile(source, '3gpp', '3gpp', { audioVolume: 50 }, 'sample.3gpp').catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(Error);
+    expect(failure).toBeInstanceOf(ConversionFailedError);
+    expect((failure as Error).message).toBe('Native FFmpeg transcoding failed for 3gpp -> 3gpp: the target container has no FFmpeg muxer.');
   }, TIMEOUT_MS);
 });
 
@@ -144,6 +146,6 @@ describe('which streams a rewrap copies', () => {
 
 describe('the DSS pair is withdrawn', () => {
   it('lists no target for a DSS recording that FFmpeg has no muxer to write', () => {
-    expect(FORMAT_REGISTRY.dss.targetFormats).not.toContain('dss');
+    expect(FORMAT_REGISTRY.dss.targetFormats).toEqual(['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma']);
   });
 });
