@@ -314,6 +314,11 @@ const WildCard = {
         return false;
     },
 
+    /** The pattern as a whole-text, case-insensitive match, as COUNTIF and the lookups use it. */
+    toExactRegex: lookupText => {
+        return RegExp('^(?:' + WildCard.toRegex(lookupText).source + ')$', 'i');
+    },
+
     toRegex: (lookupText, flags) => {
         return RegExp(lookupText.replace(/[.+^${}()|[\]\\]/g, '\\$&') // escape the special char for js regex
             .replace(/([^~]??)[?]/g, '$1.') // ? => .
@@ -340,6 +345,10 @@ const Criteria = {
 
             const res = criteria.match(/(<>|>=|<=|>|<|=)(.*)/);
             // is comparison
+            if (res && res[2] === '') {
+                // "<>" is every cell that is not empty, "=" every empty cell
+                return {op: res[1], value: null};
+            }
             if (res) {
                 // [">10", ">", "10", index: 0, input: ">10", groups: undefined]
                 let op = res[1], value;
@@ -357,7 +366,7 @@ const Criteria = {
                         // string, can be wildcard
                         value = res[2];
                         if (WildCard.isWildCard(value)) {
-                            return {op: 'wc', value: WildCard.toRegex(value), match: op === '='}
+                            return {op: 'wc', value: WildCard.toExactRegex(value), match: op === '='}
                         }
                     }
                 } else {
@@ -367,7 +376,7 @@ const Criteria = {
                 return {op, value};
 
             } else if (WildCard.isWildCard(criteria)) {
-                return {op: 'wc', value: WildCard.toRegex(criteria), match: true}
+                return {op: 'wc', value: WildCard.toExactRegex(criteria), match: true}
             } else {
                 return {op: '=', value: criteria}
             }

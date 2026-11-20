@@ -32,6 +32,7 @@ const StatisticalFunctions = {
                 cnt++;
             }
         });
+        if (cnt === 0) throw FormulaError.DIV0;
         return sum / cnt;
     },
 
@@ -47,6 +48,7 @@ const StatisticalFunctions = {
                 cnt++;
             }
         });
+        if (cnt === 0) throw FormulaError.DIV0;
         return sum / cnt;
     },
 

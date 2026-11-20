@@ -1,4 +1,4 @@
-# fast-formula-parser (vendored, unmodified)
+# fast-formula-parser (vendored)
 
 - Repository: https://github.com/LesterLyu/fast-formula-parser
 - Commit: ed38a50f759c1ed918444e94e8b5876e6d1e873b (master on 2026-11-20; 15 commits after the 1.0.19 release, among them the fixes for VLOOKUP and HLOOKUP on a one-row or one-column table and the UPPER function)
@@ -6,7 +6,7 @@
 - Files copied: `index.js`, `LICENSE`, `formulas/`, `grammar/` (without `grammar/diagram.js`, a documentation tool that reads the file system) and `ssf/`, byte for byte from the repository at that commit. Tests, examples, logos, the webpack config and the build output were left out.
 - Part under another licence: `ssf/ssf.js` is the SheetJS number format code (ssf 0.10.3, Apache-2.0, Copyright 2013-present SheetJS LLC), carried inside the repository.
 - Runtime dependencies, from npm: chevrotain (Apache-2.0), jstat (MIT), bessel (Apache-2.0), bahttext (MIT).
-- No file here is edited. The adapter that bounds ranges, narrows the function set and fills the functions this version does not implement is `../../spreadsheet-formula.ts`.
+- Local changes are listed under "Local changes" below; they were made in the commit after the copy. `index.d.ts` is a type declaration written for EasyConvert. The adapter that bounds ranges, narrows the function set and fills the functions this version does not implement is `../../spreadsheet-formula.ts`.
 
 SHA-256 of each file as copied:
 
@@ -37,3 +37,21 @@ be8bdd3c528d4394097945c06868db25ec2687e5f4f3306e3a2d4644d1d01581  grammar/depend
 8df18aabde6a402b375655122f6ed4146e92043356cab671cfbdd2f6987f0c32  LICENSE
 cc7bceb97cff8f1a96a3bb6e429cad914ab68303ad26e039b501c4c7d6b6da22  ssf/ssf.js
 ```
+
+## Local changes
+
+The copy above is the upstream code byte for byte. These edits came after it, each found by comparing the adapter's results with LibreOffice (`tests/spreadsheet-formula-oracle.test.ts`). SHA-256 after the edits:
+
+- `formulas/operators.js` be89819bd95b7a1116006231c03481d1730ed07b568bc94fa1647159f5174060
+- `formulas/helpers.js` 1597611cad43c8cf590c6ec9abae312bb1cb7d5721c513d8f4159c768741f0d0
+- `formulas/functions/statistical.js` 9a509eaf5029656eca40781b5441f876d2e54fa1264da18a0257cc3af189de8d
+- `formulas/functions/text.js` b2036d4ad9445b23d7fd04351dbfb937ad89ab783f94e60f9364af7dda14ce2c
+- `formulas/functions/reference.js` 6edc3f2e0f4452981b7606823904975549abb557a8aa4542f806e8221730cfde
+- `formulas/functions/math.js` 3ac07a0b129dd752845c66cf7b491280772d7258740535ce31e72dc280be8213
+
+- `formulas/operators.js`, `compareOp`: text compares without regard to case, as Excel does (`"A"="a"` was FALSE); an empty cell is `""` next to text (`Z99=""` was FALSE).
+- `formulas/helpers.js`, `Criteria.parse` and `WildCard.toExactRegex`: a wildcard criterion matches the whole text and ignores case (`"*e"` matched every text with an `e` in it); `"<>"` and `"="` alone mean not empty and empty (they compared with 0).
+- `formulas/functions/reference.js`, `VLOOKUP` and `HLOOKUP`: an exact lookup ignores the case of text and a wildcard matches the whole text.
+- `formulas/functions/text.js`, `SEARCH`: a search without wildcards ignores case (`SEARCH("L","hello")` was `#VALUE!`).
+- `formulas/functions/statistical.js`, `AVERAGE`: no number gives `#DIV/0!`, not `#VALUE!`.
+- `formulas/functions/math.js`, `SUMPRODUCT`: the products go into a copy; the original wrote into the arrays it was given, which are the cells a later formula reads (after `SUMPRODUCT(A1:A5,B1:B5)`, `GEOMEAN(A1:A5)` read other numbers).

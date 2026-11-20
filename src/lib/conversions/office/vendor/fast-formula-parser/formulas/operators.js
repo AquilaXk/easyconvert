@@ -57,8 +57,9 @@ const type2Number = {'boolean': 3, 'string': 2, 'number': 1};
 
 const Infix = {
     compareOp: (value1, infix, value2, isArray1, isArray2) => {
-        if (value1 == null) value1 = 0;
-        if (value2 == null) value2 = 0;
+        // an empty cell is "" next to text and 0 elsewhere
+        if (value1 == null) value1 = typeof value2 === 'string' ? '' : 0;
+        if (value2 == null) value2 = typeof value1 === 'string' ? '' : 0;
         // for array: {1,2,3}, get the first element to compare
         if (isArray1) {
             value1 = value1[0][0];
@@ -70,6 +71,11 @@ const Infix = {
         const type1 = typeof value1, type2 = typeof value2;
 
         if (type1 === type2) {
+            // text compares without regard to case
+            if (type1 === 'string') {
+                value1 = value1.toLowerCase();
+                value2 = value2.toLowerCase();
+            }
             // same type comparison
             switch (infix) {
                 case '=':

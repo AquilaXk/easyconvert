@@ -1,5 +1,8 @@
 const FormulaError = require('../error');
 const {FormulaHelpers, Types, WildCard, Address} = require('../helpers');
+
+/** Exact lookups ignore the case of text. */
+const sameLookupKey = (a, b) => typeof a === 'string' && typeof b === 'string' ? a.toLowerCase() === b.toLowerCase() : a === b;
 const Collection = require('../../grammar/type/collection');
 const H = FormulaHelpers;
 
@@ -142,11 +145,11 @@ const ReferenceFunctions = {
             let index = -1;
             if (WildCard.isWildCard(lookupValue)) {
                 index = tableArray[0].findIndex(item => {
-                    return WildCard.toRegex(lookupValue, 'i').test(item);
+                    return WildCard.toExactRegex(lookupValue).test(item);
                 });
             } else {
                 index = tableArray[0].findIndex(item => {
-                    return item === lookupValue;
+                    return sameLookupKey(item, lookupValue);
                 });
             }
             // the exact match is not found
@@ -358,11 +361,11 @@ const ReferenceFunctions = {
             let index = -1;
             if (WildCard.isWildCard(lookupValue)) {
                 index = tableArray.findIndex(currRow => {
-                    return WildCard.toRegex(lookupValue, 'i').test(currRow[0]);
+                    return WildCard.toExactRegex(lookupValue).test(currRow[0]);
                 });
             } else {
                 index = tableArray.findIndex(currRow => {
-                    return currRow[0] === lookupValue;
+                    return sameLookupKey(currRow[0], lookupValue);
                 });
             }
             // the exact match is not found

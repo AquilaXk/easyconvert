@@ -642,23 +642,21 @@ const MathFunctions = {
 
     SUMPRODUCT: (array1, ...arrays) => {
         array1 = H.accept(array1, Types.ARRAY, undefined, false, true);
+        // the arrays are the cells the caller reads again, so the products go into a copy
+        const products = array1.map(row => row.map(value => typeof value === "number" ? value : 0));
         arrays.forEach(array => {
             array = H.accept(array, Types.ARRAY, undefined, false, true);
             if (array1[0].length !== array[0].length || array1.length !== array.length)
                 throw FormulaError.VALUE;
-            for (let i = 0; i < array1.length; i++) {
-                for (let j = 0; j < array1[0].length; j++) {
-                    if (typeof array1[i][j] !== "number")
-                        array1[i][j] = 0;
-                    if (typeof array[i][j] !== "number")
-                        array[i][j] = 0;
-                    array1[i][j] *= array[i][j];
+            for (let i = 0; i < products.length; i++) {
+                for (let j = 0; j < products[0].length; j++) {
+                    products[i][j] *= typeof array[i][j] === "number" ? array[i][j] : 0;
                 }
             }
         });
         let result = 0;
 
-        array1.forEach(row => {
+        products.forEach(row => {
             row.forEach(value => {
                 result += value;
             })
