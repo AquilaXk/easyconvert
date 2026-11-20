@@ -821,83 +821,83 @@ Licence text: not embedded (optional platform package that is not installed on e
 
 ---
 
-### @next/env@15.5.28
+### @next/env@15.5.29
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/@next/env/-/env-15.5.28.tgz
+- **Source**: https://registry.npmjs.org/@next/env/-/env-15.5.29.tgz
 - **Repository**: https://github.com/vercel/next.js
 
 Licence text: the package ships no LICENSE, COPYING or NOTICE file.
 
 ---
 
-### @next/swc-darwin-arm64@15.5.28
+### @next/swc-darwin-arm64@15.5.29
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/@next/swc-darwin-arm64/-/swc-darwin-arm64-15.5.28.tgz
+- **Source**: https://registry.npmjs.org/@next/swc-darwin-arm64/-/swc-darwin-arm64-15.5.29.tgz
 
 Licence text: not embedded (optional platform package that is not installed on every host); the full text ships in the package.
 
 ---
 
-### @next/swc-darwin-x64@15.5.28
+### @next/swc-darwin-x64@15.5.29
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/@next/swc-darwin-x64/-/swc-darwin-x64-15.5.28.tgz
+- **Source**: https://registry.npmjs.org/@next/swc-darwin-x64/-/swc-darwin-x64-15.5.29.tgz
 
 Licence text: not embedded (optional platform package that is not installed on every host); the full text ships in the package.
 
 ---
 
-### @next/swc-linux-arm64-gnu@15.5.28
+### @next/swc-linux-arm64-gnu@15.5.29
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/@next/swc-linux-arm64-gnu/-/swc-linux-arm64-gnu-15.5.28.tgz
+- **Source**: https://registry.npmjs.org/@next/swc-linux-arm64-gnu/-/swc-linux-arm64-gnu-15.5.29.tgz
 
 Licence text: not embedded (optional platform package that is not installed on every host); the full text ships in the package.
 
 ---
 
-### @next/swc-linux-arm64-musl@15.5.28
+### @next/swc-linux-arm64-musl@15.5.29
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/@next/swc-linux-arm64-musl/-/swc-linux-arm64-musl-15.5.28.tgz
+- **Source**: https://registry.npmjs.org/@next/swc-linux-arm64-musl/-/swc-linux-arm64-musl-15.5.29.tgz
 
 Licence text: not embedded (optional platform package that is not installed on every host); the full text ships in the package.
 
 ---
 
-### @next/swc-linux-x64-gnu@15.5.28
+### @next/swc-linux-x64-gnu@15.5.29
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/@next/swc-linux-x64-gnu/-/swc-linux-x64-gnu-15.5.28.tgz
+- **Source**: https://registry.npmjs.org/@next/swc-linux-x64-gnu/-/swc-linux-x64-gnu-15.5.29.tgz
 
 Licence text: not embedded (optional platform package that is not installed on every host); the full text ships in the package.
 
 ---
 
-### @next/swc-linux-x64-musl@15.5.28
+### @next/swc-linux-x64-musl@15.5.29
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/@next/swc-linux-x64-musl/-/swc-linux-x64-musl-15.5.28.tgz
+- **Source**: https://registry.npmjs.org/@next/swc-linux-x64-musl/-/swc-linux-x64-musl-15.5.29.tgz
 
 Licence text: not embedded (optional platform package that is not installed on every host); the full text ships in the package.
 
 ---
 
-### @next/swc-win32-arm64-msvc@15.5.28
+### @next/swc-win32-arm64-msvc@15.5.29
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/@next/swc-win32-arm64-msvc/-/swc-win32-arm64-msvc-15.5.28.tgz
+- **Source**: https://registry.npmjs.org/@next/swc-win32-arm64-msvc/-/swc-win32-arm64-msvc-15.5.29.tgz
 
 Licence text: not embedded (optional platform package that is not installed on every host); the full text ships in the package.
 
 ---
 
-### @next/swc-win32-x64-msvc@15.5.28
+### @next/swc-win32-x64-msvc@15.5.29
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/@next/swc-win32-x64-msvc/-/swc-win32-x64-msvc-15.5.28.tgz
+- **Source**: https://registry.npmjs.org/@next/swc-win32-x64-msvc/-/swc-win32-x64-msvc-15.5.29.tgz
 
 Licence text: not embedded (optional platform package that is not installed on every host); the full text ships in the package.
 
@@ -7629,10 +7629,10 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ---
 
-### next@15.5.28
+### next@15.5.29
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/next/-/next-15.5.28.tgz
+- **Source**: https://registry.npmjs.org/next/-/next-15.5.29.tgz
 - **Repository**: vercel/next.js
 
 #### license.md
