@@ -32,7 +32,7 @@ describe('an HWP 3.x file in the in-process reader', () => {
 });
 
 describe.skipIf(sofficeMissing)('an HWP 3.x file converted through the office suite', () => {
-  it.each(['txt', 'docx', 'html', 'md', 'hwpx'] as const)('is written as .%s with the words of the document', async (target, ctx) => {
+  it.for(['txt', 'docx', 'html', 'md', 'hwpx'] as const)('is written as .%s with the words of the document', { timeout: CONVERSION_TIMEOUT_MS }, async (target, ctx) => {
     const { bytes } = await requireRealworldSample(ctx, SAMPLE);
     const result = await dispatchConversion(bytes, 'hwp', target, {}, SAMPLE);
     expect(result.size).toBeGreaterThan(0);
@@ -41,7 +41,7 @@ describe.skipIf(sofficeMissing)('an HWP 3.x file converted through the office su
       expect(text).toContain('테스트');
       expect(text).toContain('test');
     }
-  }, CONVERSION_TIMEOUT_MS);
+  });
 
   it('is written as a PDF that holds the words of the document', async (ctx) => {
     const { bytes } = await requireRealworldSample(ctx, SAMPLE);
