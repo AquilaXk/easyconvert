@@ -229,6 +229,15 @@ Only for the operator's own test account (QA 2026-11-14): a plan set by hand car
 1. See the change. Nothing is written: `docker compose -p easyconvert exec worker node dist/grant-test-credits.js --user <account email or id> --credits 1000`.
 2. Run the same command with `--apply`. It adds the credits as a package with a paid amount of 0 under an operator transaction id, and prints the time and the new balance for the host's log. At most 10,000 credits a run.
 
+### Giving event credits
+
+Promotional credits of a campaign (entry 374 of `docs/policy-decisions.md`): free, spent after the day's credits and before purchased credits, never a refund, and they do not change the plan limits of the account. Run it only with QA's approval. A bulk run prints counts only, never an address.
+
+1. Pick a campaign id (lowercase letters, digits, dots, underscores, hyphens) and see the change. Nothing is written: `docker compose -p easyconvert exec worker node dist/grant-event-credits.js --campaign <id> --credits 30 --all-confirmed [--expires 2026-12-31] [--budget 30000]`. A date alone ends at the end of that day in UTC. The account selector is `--user <account email or id>`, `--users-file <path>` (one id or email on each line, `#` for a comment) or `--all-confirmed`.
+2. Run the same command with `--apply`. It prints the counts and one line for the host's log. A second run grants nobody twice. Accounts with an unconfirmed address, a checkout hold, a suspension or a purge in progress are skipped and counted.
+3. Report on a campaign: `... node dist/grant-event-credits.js --report --campaign <id>` prints accounts, granted, used, remaining, expired and voided credits.
+4. Void on abuse: `... --void --campaign <id> --user <account email or id> [--apply]` takes the credits left of one account out; without an account it closes the whole campaign and voids every grant. Credits already spent stay spent, and a voided account is not granted again.
+
 ### Suspending or unsuspending an account
 
 Suspending an account revokes existing JWT sessions (`sessionVersion` increment) and blocks API key access (HTTP 403), browser session reads, and password/OAuth sign-in immediately. Run it only with QA's approval.
