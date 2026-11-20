@@ -307,9 +307,7 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
       const availableTargets = getAvailableTargetFormats('svg');
       const targetIds = availableTargets.map((t) => t.id);
 
-      expect(targetIds).toContain('emf');
-      expect(targetIds).toContain('wmf');
-      expect(targetIds).not.toContain('cgm');
+      expect(targetIds.filter((id) => ['emf', 'wmf', 'cgm'].includes(id)).sort()).toEqual(['emf', 'wmf']);
     });
 
     it('routes svg to emf conversion with authentic mimeType and filename', async () => {
