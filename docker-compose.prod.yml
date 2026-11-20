@@ -107,9 +107,8 @@ x-app-environment: &app-environment
   # here, the application's schema holds them (dry run on). The worker runs it; the web processes ignore both.
   UNVERIFIED_ACCOUNT_PURGE_ENABLED:
   UNVERIFIED_ACCOUNT_PURGE_DRY_RUN:
-  # The anonymous daily allowance the servers enforce: the repository variable the web image's pages were built with, written to
-  # the env file by deploy/oci/deploy.sh, which refuses a web image built with another value. Empty means the default of
-  # src/lib/plan-limits.ts.
+  # The anonymous daily allowance the servers enforce and their pages state: the repository variable, written to the env file by
+  # deploy/oci/deploy.sh. Empty means the default of src/lib/plan-limits.ts.
   ANONYMOUS_DAILY_LIMIT: ${ANONYMOUS_DAILY_LIMIT:-}
   APP_URL: ${APP_URL:?set the public origin, for example https://convert.aquilaxk.site}
   # The origin that sign-in redirects and the same-origin check use (src/lib/auth/oauth.ts, src/middleware.ts); without it they

@@ -11,8 +11,8 @@ import HomePage from '../src/app/[locale]/page';
 import ConverterPage from '../src/app/[locale]/[slug]/page';
 
 /**
- * The page modules read the anonymous allowance when they render, which for the prerendered home page
- * is `next build`; the image passes ANONYMOUS_DAILY_LIMIT to the build for that reason (Dockerfile.web).
+ * The page modules read the anonymous allowance when they render. Every page renders per request (entry 370), so the server's
+ * ANONYMOUS_DAILY_LIMIT is the number a page states and the image carries no copy of it.
  */
 
 const english = <T extends Record<string, string> = Record<string, never>>(params = {} as T): Promise<{ locale: string } & T> =>

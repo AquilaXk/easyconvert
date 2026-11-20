@@ -60,7 +60,6 @@ ENV_KEY_PATTERN='^[A-Z_][A-Z0-9_]*$'
 APPARMOR_PROFILE='easyconvert'
 APPARMOR_INSTALLED="${APPARMOR_INSTALLED:-/etc/apparmor.d/easyconvert}"
 BASE_IMAGE_LABEL='org.opencontainers.image.base.name'
-ALLOWANCE_LABEL='easyconvert.anonymous-daily-limit'
 SMOKE_PROBE_LABEL='easyconvert.smoke-probe'
 # The options the convert-route check sends: not JSON, so that /api/convert refuses the request with `invalid_options` after its
 # parser, guard, reservation and concurrency slot, and before it converts (see smoke_convert_route).
@@ -229,16 +228,6 @@ check_pair() { # check_pair <web repo@digest> <worker repo@digest>
   local web="$1" worker="$2" base
   base="$(docker image inspect --format "{{ index .Config.Labels \"$BASE_IMAGE_LABEL\" }}" "$web" 2> /dev/null || true)"
   [ "$base" = "$worker" ] || die "the web image $web was built on $([ -n "$base" ] && quoted "$base" || printf 'no recorded image'), not on $worker"
-}
-
-# The prerendered pages state the anonymous daily allowance the web image was built with (a build argument from the repository
-# variable ANONYMOUS_DAILY_LIMIT), and the servers enforce the one the deploy step passes from the same variable. A web image built
-# with another value would state a number the servers do not enforce, so the release is refused before anything starts.
-check_allowance() { # check_allowance <web repo@digest> <allowance the release runs with>
-  local built
-  built="$(docker image inspect --format "{{ index .Config.Labels \"$ALLOWANCE_LABEL\" }}" "$1" 2> /dev/null)" \
-    || die "the anonymous allowance the web image $1 was built with could not be read"
-  [ "$built" = "$2" ] || die "the web image $1 was built with ANONYMOUS_DAILY_LIMIT $(quoted "$built"), but the release runs with $(quoted "$2"): rebuild it, or set the repository variable back"
 }
 
 # The profile file installed on the host is the file of this checkout. This compares the installed file only: the policy that the
@@ -518,7 +507,6 @@ deploy() {
   worker="$(pin "$WORKER_REPO" "$ref")"
   web="$(pin "$WEB_REPO" "$ref")"
   check_pair "$web" "$worker"
-  check_allowance "$web" "${ANONYMOUS_DAILY_LIMIT:-}"
   smoke_kind "$web" > /dev/null || die "the smoke of the web image $web is not one this deploy.sh runs: refused before anything starts"
   previous="$(readlink -f "$HOME_DIR/current" 2> /dev/null || true)"
   [ -d "$previous" ] || previous=""

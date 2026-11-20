@@ -10,13 +10,17 @@
 # The AppArmor profile is left out: it is loaded on the production host only. The secrets are random values made for this run, the
 # storage is local, and there is no Redis, so the check proves that the server starts and serves a page, not that it converts.
 # Once the home page answers 200, scripts/check-built-statuses.mjs asks the same server for pages that exist and paths that do not,
-# and requires 404 with noindex for each of the latter (entry 145).
+# and requires 404 with noindex for each of the latter (entry 145). It then runs scripts/check-served-alternates.mjs, which reads the home
+# page, a converter, the API docs, the legal text and pricing in both languages and requires one canonical URL and hreflang alternates,
+# x-default included, as absolute URLs on the origin the container was given (BOOT_ORIGIN): the pages render per request (entry 370), so
+# the build no longer holds them.
 # Docker picks a free port on the loopback address, so the check never collides with another server on the runner.
 set -euo pipefail
 
 IMAGE="${1:?usage: boot-web-image.sh <image>}"
 NAME="easyconvert-boot-check-$$"
 ATTEMPTS="${BOOT_CHECK_ATTEMPTS:-60}"
+BOOT_ORIGIN='https://boot-check.example.test'
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SECCOMP="$ROOT/docker/seccomp-worker.json"
 
@@ -43,6 +47,7 @@ docker run --detach --name "$NAME" \
   --publish 127.0.0.1::3000 \
   --env NODE_ENV=production \
   --env APP_URL=http://127.0.0.1:3000 \
+  --env "APP_ORIGIN=$BOOT_ORIGIN" \
   --env STORAGE_DRIVER=local \
   --env EASYCONVERT_STORAGE_DIR=/shared/storage \
   --env STRICT_SANDBOX=true \
@@ -66,6 +71,11 @@ for ((attempt = 1; attempt <= ATTEMPTS; attempt++)); do
     echo "boot check: the home page answered 200 after $attempt attempt(s)"
     if ! node "$ROOT/scripts/check-built-statuses.mjs" "http://127.0.0.1:$PORT"; then
       echo "boot check: the server answered a path wrongly; its last output follows" >&2
+      docker logs --tail 40 "$NAME" >&2
+      exit 1
+    fi
+    if ! APP_ORIGIN="$BOOT_ORIGIN" node "$ROOT/scripts/check-served-alternates.mjs" "http://127.0.0.1:$PORT"; then
+      echo "boot check: a page did not name absolute canonical and hreflang URLs on $BOOT_ORIGIN; the last output of the server follows" >&2
       docker logs --tail 40 "$NAME" >&2
       exit 1
     fi

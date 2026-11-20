@@ -114,14 +114,11 @@ jobs:
           push: false
           provenance: false
           # The public origin is the host of deploy/oci/nginx-easyconvert.conf (tests/oci-deploy.test.ts holds the two together): the
-          # prerendered pages name it in their canonical and hreflang links. It is no secret, and the push build has no access to
-          # the environment secret that holds APP_URL for the running server.
-          # ANONYMOUS_DAILY_LIMIT is the repository variable of that name, empty while it is unset (the build then uses the default
-          # of src/lib/plan-limits.ts). Set it with the value the server runs with, so the prerendered pages name the same allowance.
+          # build writes it into robots.txt and sitemap.xml. It is no secret, and the push build has no access to the environment
+          # secret that holds APP_URL for the running server.
           build-args: |
             WORKER_IMAGE=${{ env.WORKER_REPO }}@${{ steps.worker.outputs.digest }}
             APP_ORIGIN=https://convert.aquilaxk.site
-            ANONYMOUS_DAILY_LIMIT=${{ vars.ANONYMOUS_DAILY_LIMIT }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
           tags: |
@@ -324,8 +321,8 @@ jobs:
           printf '%s\n' "$EASYCONVERT_ENV" | bash deploy/oci/deploy.sh filter-env > "$RUNNER_TEMP/easyconvert.env"
           echo "ENV_FILE=$RUNNER_TEMP/easyconvert.env" >> "$GITHUB_ENV"
 
-      # ANONYMOUS_DAILY_LIMIT is the repository variable the web image was built with, the one source of the allowance: deploy.sh
-      # passes it to the servers and refuses a web image built with another value.
+      # ANONYMOUS_DAILY_LIMIT is the repository variable that holds the allowance: deploy.sh passes it to the servers, whose pages
+      # and 429 answers both read it at request time.
       - name: Deploy, check health, roll back on failure
         if: inputs.action == 'deploy'
         env:
