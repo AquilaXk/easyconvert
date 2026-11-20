@@ -1,6 +1,6 @@
 /**
  * Speed of the formula engine: per-formula evaluation and a 50,000-formula DAG pass, median of 5 warm runs.
- *   npx tsx bench/formula-speed.mts [old|new]
+ *   npx tsx scripts/formula-speed.mts [old|new]
  * `old` needs a copy of the previous engine at src/lib/conversions/office/spreadsheet-formula-old.ts.
  */
 const which = process.argv[2] === 'old' ? 'old' : 'new';
