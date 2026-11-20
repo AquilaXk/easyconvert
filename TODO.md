@@ -30,7 +30,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Turn on `UNVERIFIED_ACCOUNT_PURGE_ENABLED` on or after 2026-12-20 (30 days after the privacy text naming it was published), first with `UNVERIFIED_ACCOUNT_PURGE_DRY_RUN=true` (the default) for one pass, check the counts in the worker log, then set it to `false` (entry 364).
 - Cap how many storage credentials one account keeps (launch audit of 2026-11-20; entry 343 bounds each record).
 - Add browser error reporting for crashes in the converter UI.
-- Move the alternates check of `Dockerfile.web` (`scripts/check-built-alternates.mjs`) and the `ANONYMOUS_DAILY_LIMIT` build argument and label to the running server in `scripts/boot-web-image.sh`: no page is prerendered since entry 369, so the image build fails at the check; then confirm the Paddle checkout script under the nonce policy in the first sandbox purchase.
+- Move the alternates check of `Dockerfile.web` (`scripts/check-built-alternates.mjs`) and the `ANONYMOUS_DAILY_LIMIT` build argument and label to the running server in `scripts/boot-web-image.sh`: no page is prerendered since entry 370, so the image build fails at the check; then confirm the Paddle checkout script under the nonce policy in the first sandbox purchase.
 - Pick a free package name before publishing the SDKs (PyPI `easyconvert` belongs to another project; npm `@easyconvert/sdk` is unpublished) and add install lines to their READMEs.
 - Watch `auth_mail_budget level=warn` (350 mails/day; verification stops at 400, resets at 480, entry 288) and move auth mail to a dedicated provider before sign-ups reach the cap, raising `AUTH_MAIL_DAILY_WARN`, `AUTH_MAIL_DAILY_VERIFY_CAP` and `AUTH_MAIL_DAILY_HARD_CAP` via `.env` (entry 326).
 

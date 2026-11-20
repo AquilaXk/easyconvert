@@ -1,5 +1,5 @@
 /**
- * The Content-Security-Policy of a page answer, with a nonce made for that one request (docs/policy-decisions.md, entry 369).
+ * The Content-Security-Policy of a page answer, with a nonce made for that one request (docs/policy-decisions.md, entry 370).
  *
  * The shape follows the Next.js guide "Content Security Policy" and its example `with-strict-csp` (vercel/next.js, MIT,
  * examples/with-strict-csp at 9d3069adc7bf): the middleware makes the nonce, puts the policy on the request, where Next.js

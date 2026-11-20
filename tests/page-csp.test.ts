@@ -6,7 +6,7 @@ import { middleware } from '../src/middleware';
 
 /**
  * The page policy carries a nonce made for the request instead of 'unsafe-inline' for scripts (docs/policy-decisions.md,
- * entry 369). The middleware puts it on the response and on the request, where Next.js reads it while it renders; the layout
+ * entry 370). The middleware puts it on the response and on the request, where Next.js reads it while it renders; the layout
  * reads it from `x-nonce` for its two inline scripts.
  */
 
