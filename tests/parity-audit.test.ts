@@ -48,6 +48,8 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'webp->aac', 'webp->aiff', 'webp->flac', 'webp->m4a', 'webp->mp3', 'webp->wav', 'webp->wma',
   // A Pages document has no spreadsheet export in the office suite; the engine wrote the file's bytes as CSV rows (policy 113).
   'pages->xls',
+  // Entry 345: FFmpeg reads Digital Speech Standard recordings but has no encoder or muxer for them, so the pair cannot be written.
+  'dss->dss',
 ]);
 
 describe('Universal Format Matrix & Parity Verification', () => {

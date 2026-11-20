@@ -393,6 +393,7 @@ Security
 342. [A webhook delivery always uses undici's fetch through the pinned dispatcher, never a replaced globalThis.fetch](#342-a-webhook-delivery-always-uses-undicis-fetch-through-the-pinned-dispatcher-never-a-replaced-globalthisfetch)
 343. [Text a caller sends is stored only up to a limit, a sign-in builds no key from an address, a reset mail to an unverified address draws on the verification share, sign-ups are 5 an hour per client, and a visitor holds a slot for a bundle](#343-text-a-caller-sends-is-stored-only-up-to-a-limit-a-sign-in-builds-no-key-from-an-address-a-reset-mail-to-an-unverified-address-draws-on-the-verification-share-sign-ups-are-5-an-hour-per-client-and-a-visitor-holds-a-slot-for-a-bundle)
 344. [A pair slug that names a format by another name redirects with 308 to the page of its canonical name, and every other unknown slug stays 404](#344-a-pair-slug-that-names-a-format-by-another-name-redirects-with-308-to-the-page-of-its-canonical-name-and-every-other-unknown-slug-stays-404)
+345. [A video or audio file converted to its own format is written again with the muxer of its container, and the DSS pair is withdrawn](#345-a-video-or-audio-file-converted-to-its-own-format-is-written-again-with-the-muxer-of-its-container-and-the-dss-pair-is-withdrawn)
 
 ---
 
@@ -10361,3 +10362,20 @@ Security
 - **Why**: Visitors and links type the product name (`word`) or the other extension (`jpeg`), and a 404 on the most common conversions loses that traffic; a 308 keeps a single indexed URL per conversion, as the sitemap lists canonical paths only.
 - **Trade-offs**: `word` is the only name that is not a registry id or an alias of one; other product names (`excel`, `powerpoint`) are not added until a page needs them. The converter pages of an alias that is a registry format (`jpeg-to-png`) keep answering 200, as before.
 - **Verified by**: `tests/slug-alias-redirect.test.ts` (the redirect and its status per locale, the 404 cases, and a sweep that no redirect target redirects again) and `tests/unknown-path-404.test.ts`.
+
+## 345. A video or audio file converted to its own format is written again with the muxer of its container, and the DSS pair is withdrawn
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: production sweep of 3G2, 3GPP, DVR, MOD, MPEG, MPG, OGV, RMVB, AMR and DSS to the same format)
+- **Decision**: **A same-format pair of 3g2, 3gpp, dvr, mod, mpeg, mpg, ogv, rmvb or amr writes the file again into its own container** (`media-ffmpeg-rewrap.ts`). The muxer is named with `-f` (`3gp` for 3gpp, `asf` for dvr, `mpeg` for mod, mpeg and mpg, `rm` for rmvb), the first picture and the first sound are mapped, and each stream is copied when the muxer carries its codec. A stream it cannot carry is written with the codec it does: AAC for QCELP and EVRC in 3g2 and 3gpp, MP2 for sound in a program stream, Vorbis for sound in ogv, RealVideo 2.0 and AC-3 for the Cook, RealVideo 3 and RealVideo 4 streams of rmvb. A request that asks for another picture or sound (audio, video, size, rate, aspect, subtitle or packaging options) is not a rewrap and takes the earlier path; trim and duration still apply. **The `dss` to `dss` pair is withdrawn**: FFmpeg has a DSS decoder and no encoder or muxer.
+- **Why**: The pairs failed with the build banner of FFmpeg in the 400: an extension that is no muxer name (`.3gpp`, `.dvr`, `.mod`, `.rmvb`) leaves FFmpeg without an output format, the transcode asked for AAC that the program stream and Ogg muxers refuse, and the 3GPP2 muxer has no tag for QCELP. The reference lists each of these pairs with `video_codec` limited to `copy` and AAC as the default sound, so a copy of the picture is its behaviour; copying the sound too keeps what the muxer already held. The reference lists `dss` to `dss` too, but no FFmpeg build can write it.
+- **Trade-offs**:
+  - **A RealMedia file of RealVideo 3 or 4 and Cook sound is converted, not copied**: the RealMedia muxer carries RealVideo 1.0 and 2.0 and a few sound codecs only (a Cook copy fails with `sub_packet_size is invalid`), so the picture is encoded again as RealVideo 2.0.
+  - **Only the first picture and the first sound are kept**, as the default stream choice of the reference's engine does; further tracks, subtitles and data streams are left out.
+  - **Options that change the streams are not applied to these pairs** and fall to the earlier path, which refuses them for the muxers above as before.
+  - **AMR is a copy of the narrowband stream**: the build has no AMR encoder, so the other pairs to `amr` keep answering 503.
+- **Alternatives rejected**:
+  - **Keeping the transcode and fixing the codec per muxer**: the same-format case needs no quality loss, and the reference copies.
+  - **Offering `dss` to `dss` through a WAV rename**: the file would not be a DSS recording.
+- **Verified by**: `tests/media-same-format-rewrap.test.ts` (3gpp and mod built with FFmpeg; real 3g2, dvr, mpeg, mpg, ogv, amr and rmvb files; the container and codec of each output read by ffprobe and the first seconds decoded; the codec choice per muxer; the DSS target) and `tests/parity-audit.test.ts` (`dss->dss` withdrawn).
+- **Revisit when**: FFmpeg gains a DSS or RealMedia muxer that carries more codecs, or a reference run shows a different codec for one of these containers.

@@ -690,6 +690,7 @@
   "tests/media-package-graph-node.test.ts": 3.8,
   "tests/media-qsv-device-gating.test.ts": 2.1,
   "tests/media-reference-inputs.test.ts": 5,
+  "tests/media-same-format-rewrap.test.ts": 4,
   "tests/media-short-audio.test.ts": 2.6,
   "tests/media-spec-conformance-and-hwaccel.test.ts": 0,
   "tests/media-stream-mapping.test.ts": 16.8,

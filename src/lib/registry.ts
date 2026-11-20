@@ -2454,7 +2454,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'audio/x-dss',
     category: 'audio',
     description: 'Proprietary voice recording format developed for voice dictation.',
-    targetFormats: ['aac', 'aiff', 'dss', 'flac', 'm4a', 'mp3', 'wav', 'wma'],
+    targetFormats: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma'],
     optionsSchema: {audioBitrate:true,audioChannels:true,audioSampleRate:true},
   },
   m4b: {

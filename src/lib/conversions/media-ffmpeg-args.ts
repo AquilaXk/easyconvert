@@ -39,6 +39,7 @@ import {
   firstVideoStream,
   layoutColorTransfer,
   probeStreamLayout,
+  probeInputStreams,
   probeAudioChannels,
   probeAudioSampleRate,
   probeAudioStreamCount,
@@ -50,6 +51,7 @@ import { escapeFfmpegFilterPath } from './media-filter-escape';
 import { pictureOf, softwareEncoderThreads } from './media-encoder-threads';
 import { type Vp9Deadline, vp9DeadlineOfInput, vp9SpeedArgs } from './media-vp9-effort';
 import type { LayoutStream } from './mp4-layout';
+import { rewrapContainerFor, rewrapStreamArgs } from './media-ffmpeg-rewrap';
 import { addWavPacketSize, readWavInputFacts } from './media-wav-input';
 import { type MediaInput, mediaInputArgs, openMediaInput } from './media-process';
 import { SDR_COLOUR_ARGS, type VideoToneMapPlan, assertZscaleAvailable, planVideoToneMap, probeVideoMaxLightLevel } from './media-hdr';
@@ -496,7 +498,23 @@ export async function buildFfmpegArguments(
   const ctx: BuildContext = { input, tgt, options, ffmpegBin, loudnessStage, passStage, globalArgs: ['-y'], inputArgs: [], outputArgs: [] };
   if (options.thumbnail) return thumbnailArguments(ctx, outputPath, overrideTimestamp);
   if (options.subtitles?.mode === 'extract') return subtitleExtractionArguments(ctx, outputPath);
+  const rewrap = rewrapContainerFor(input.format, tgt, options);
+  if (rewrap) return await rewrapArguments(ctx, outputPath, rewrap);
   return await transcodeArguments(ctx, outputPath);
+}
+
+/** A same-format file written again into its own container with its streams copied (see media-ffmpeg-rewrap.ts). */
+async function rewrapArguments(ctx: BuildContext, outputPath: string, container: NonNullable<ReturnType<typeof rewrapContainerFor>>): Promise<string[]> {
+  const { input, options, ffmpegBin, globalArgs, inputArgs, outputArgs } = ctx;
+  addTrimInputArgs(ctx);
+  inputArgs.push(...mediaInputArgs(input));
+  const outputDuration = await resolveOutputDuration(options, input, ffmpegBin);
+  if (outputDuration !== undefined) {
+    outputArgs.push('-t', String(outputDuration));
+  }
+  const streams = await probeInputStreams(input, resolveFfprobeBinary(ffmpegBin), options.signal);
+  outputArgs.push(...rewrapStreamArgs(container, streams), '-f', container.muxer);
+  return [...globalArgs, ...inputArgs, ...outputArgs, outputPath];
 }
 
 /** A single frame image. */
