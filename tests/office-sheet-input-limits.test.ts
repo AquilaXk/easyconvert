@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, it } from 'vitest';
+import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
 import { writeTransientWorkbook } from '../src/lib/conversions/data';
 import { DATA_SOURCE_LIMITS } from '../src/lib/conversions/data-limits';
@@ -37,6 +38,24 @@ const toXls = (input: Buffer, src: string): Promise<unknown> => writeTransientWo
 
 const delimitedCells = (cells: number): Buffer => Buffer.from('a,'.repeat(cells));
 const nested = (depth: number): Buffer => Buffer.from(`${'['.repeat(depth)}${']'.repeat(depth)}`);
+
+/**
+ * The parts of a workbook package with the times of writing taken out: a package records when it was written (the ZIP entry times,
+ * the ODF meta and the OOXML core properties), so two packages written a second apart differ there and only there.
+ */
+async function partsWithoutWriteTimes(pkg: Buffer): Promise<Record<string, string>> {
+  const zip = await JSZip.loadAsync(pkg);
+  const parts: Record<string, string> = {};
+  for (const name of Object.keys(zip.files).sort()) {
+    const entry = zip.files[name];
+    if (entry.dir) continue;
+    const text = (await entry.async('nodebuffer')).toString('base64');
+    parts[name] = /(?:^meta\.xml|docProps\/core\.xml)$/.test(name)
+      ? (await entry.async('string')).replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?/g, '<time>')
+      : text;
+  }
+  return parts;
+}
 
 describe('office sheet readers: input limits', () => {
   afterAll(() => shutdownCpuPool());
@@ -113,7 +132,8 @@ describe('office sheet readers: input limits', () => {
           ? await officeSheetWorkbook(input, 'csv', {})
           : await generateOdsFromData(await extractRowsForOffice(input, 'csv', {}), 'input');
       expect(onThread.filename).toBe(`input.${tgt}`);
-      expect(onThread.buffer.equals(inline)).toBe(true);
+      // The same parts, part for part; only the times the two packages were written at may differ.
+      expect(await partsWithoutWriteTimes(onThread.buffer)).toEqual(await partsWithoutWriteTimes(inline));
     });
   });
 });
