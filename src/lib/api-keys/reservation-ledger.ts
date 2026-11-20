@@ -6,7 +6,6 @@ import {
   GRANT_PACKAGE_LUA_SCRIPT,
   GRANT_PROMO_LUA_SCRIPT,
   PACKAGE_STANDING_LUA_SCRIPT,
-  RELEASE_PROMO_BUDGET_LUA_SCRIPT,
   RENEW_QUOTA_LUA_SCRIPT,
   RESERVE_PROMO_BUDGET_LUA_SCRIPT,
   RESERVE_QUOTA_LUA_SCRIPT,
@@ -460,11 +459,9 @@ export class RedisReservationLedger implements ReservationLedger {
       actor: request.actor,
       ...(request.expiresAt === undefined ? {} : { expires_at: request.expiresAt }),
     };
+    // A grant that is already there was written by a call that counted the account first or at the same moment, so the count stays as it is.
     const written = Number(await this.redis.eval(GRANT_PROMO_LUA_SCRIPT, 1, this.promoKeys(owner)[0], request.campaignId, JSON.stringify(stored)));
-    if (written === 1) return 'granted';
-    // The account held the grant already. Had this call counted it, the count is given back: the first call did.
-    if (Number(reserved[0]) === 1) await this.redis.eval(RELEASE_PROMO_BUDGET_LUA_SCRIPT, 2, campaignKey, ownersKey, owner, request.amount);
-    return 'duplicate';
+    return written === 1 ? 'granted' : 'duplicate';
   }
 
   async voidPromo(owner: string, campaignId: string, at: number): Promise<PromoVoidOutcome> {
@@ -892,9 +889,8 @@ export class MemoryReservationLedger implements ReservationLedger {
 
   async grantPromo(owner: string, request: PromoGrantRequest, budget?: number): Promise<PromoGrantOutcome> {
     const campaign = this.campaigns.get(request.campaignId) ?? { granted: 0, count: 0, owners: new Set<string>() };
-    const counted = campaign.owners.has(owner);
-    if (!counted) {
-      if (campaign.voidedAt !== undefined) return 'campaign-voided';
+    if (campaign.voidedAt !== undefined) return 'campaign-voided';
+    if (!campaign.owners.has(owner)) {
       if (budget !== undefined) campaign.budget = budget;
       if (campaign.budget !== undefined && campaign.granted + request.amount > campaign.budget) return 'budget-exhausted';
       campaign.granted += request.amount;
@@ -904,14 +900,7 @@ export class MemoryReservationLedger implements ReservationLedger {
       this.campaigns.set(request.campaignId, campaign);
     }
     const grants = this.promoByOwner.get(owner) ?? new Map<string, PromoGrant>();
-    if (grants.has(request.campaignId)) {
-      if (!counted) {
-        campaign.granted -= request.amount;
-        campaign.count -= 1;
-        campaign.owners.delete(owner);
-      }
-      return 'duplicate';
-    }
+    if (grants.has(request.campaignId)) return 'duplicate';
     grants.set(request.campaignId, {
       grantId: promoGrantIdOf(request.campaignId, owner),
       campaignId: request.campaignId,

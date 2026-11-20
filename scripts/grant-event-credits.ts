@@ -20,7 +20,7 @@ export const MAX_USERS_FILE_LINES = 200_000;
 const USAGE = [
   'Usage:',
   '  grant-event-credits --campaign <id> --credits <1-' + PROMO_LIMITS.maxCredits + '> (--user <account id or email> | --users-file <path> | --all-confirmed)',
-  '      [--expires <YYYY-MM-DD (end of that day, UTC) or an ISO time>] [--budget <total credits of the campaign>] [--priority <0-255>] [--reason <text>] [--apply]',
+  '      [--expires <YYYY-MM-DD (end of that day in Korea, UTC+9) or an ISO time with a zone>] [--budget <total credits of the campaign>] [--priority <0-255>] [--reason <text>] [--apply]',
   '  grant-event-credits --void --campaign <id> [--user <account id or email> | --users-file <path>] [--apply]   (without an account: the whole campaign)',
   '  grant-event-credits --report --campaign <id>',
 ].join('\n');
@@ -42,11 +42,11 @@ export async function ineligibility(user: UserRecord): Promise<string | undefine
   return undefined;
 }
 
-/** The time an `--expires` value names: a date alone ends at the end of that day in UTC. */
+/** The time an `--expires` value names: a date alone ends at the end of that day in Korea (Asia/Seoul, UTC+9, QA 2026-11-21); an ISO time with a zone is taken as written. */
 export function parseExpiry(value: string): number | undefined {
   const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
   if (!dateOnly && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(value)) return undefined;
-  const parsed = Date.parse(dateOnly ? `${value}T23:59:59.999Z` : value);
+  const parsed = Date.parse(dateOnly ? `${value}T23:59:59.999+09:00` : value);
   return Number.isNaN(parsed) ? undefined : parsed;
 }
 
@@ -283,7 +283,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   const expiresArg = values.get('--expires');
   const expiresAt = expiresArg === undefined ? undefined : parseExpiry(expiresArg);
   if (expiresArg !== undefined && expiresAt === undefined) {
-    console.error('--expires needs a date (YYYY-MM-DD) or an ISO time with a zone, for example 2026-12-31 or 2026-12-31T14:59:59Z.');
+    console.error('--expires needs a date (YYYY-MM-DD, the end of that day in Korea) or an ISO time with a zone, for example 2026-12-31 or 2026-12-31T14:59:59Z.');
     return 2;
   }
   const budgetArg = values.get('--budget');

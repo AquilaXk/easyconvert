@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { addGrantToSummary, main, parseExpiry, summarizeCampaign, type CampaignSummary } from '../scripts/grant-event-credits';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { accountTaggedKeys } from '../src/lib/auth/erase-account-keys';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { TERMS_VERSION } from '../src/lib/legal/documents';
 
@@ -113,8 +114,9 @@ describe('grant-event-credits, the operator tool that gives event credits', () =
     expect(await redisKeyStore.promoCampaign(id)).toMatchObject({ budget: 25, granted: 20, count: 2 });
   });
 
-  it('reads a date as the end of that day in UTC and refuses a time in the past, a bad date and a bad amount', async () => {
-    expect(parseExpiry('2031-12-31')).toBe(Date.parse('2031-12-31T23:59:59.999Z'));
+  it('reads a date as the end of that day in Korea and refuses a time in the past, a bad date and a bad amount', async () => {
+    expect(parseExpiry('2031-12-31')).toBe(Date.parse('2031-12-31T14:59:59.999Z'));
+    expect(parseExpiry('2031-12-31')).toBe(Date.parse('2031-12-31T23:59:59.999+09:00'));
     expect(parseExpiry('2031-12-31T14:59:59+09:00')).toBe(Date.parse('2031-12-31T05:59:59Z'));
     expect(parseExpiry('2031-12-31T14:59:59')).toBeUndefined();
     expect(parseExpiry('31/12/2031')).toBeUndefined();
@@ -135,9 +137,9 @@ describe('grant-event-credits, the operator tool that gives event credits', () =
     const id = campaign();
     const user = await account();
     expect(await run('--campaign', id, '--credits', '5', '--user', user.id, '--expires', '2031-12-31', '--apply')).toBe(0);
-    expect(output.join('\n')).toContain('expires 2031-12-31T23:59:59.999Z');
+    expect(output.join('\n')).toContain('expires 2031-12-31T14:59:59.999Z');
     const usage = await redisKeyStore.getQuotaUsage(user.id);
-    expect(usage).toMatchObject({ promoCredits: 5, promoExpiresAt: Date.parse('2031-12-31T23:59:59.999Z') });
+    expect(usage).toMatchObject({ promoCredits: 5, promoExpiresAt: Date.parse('2031-12-31T23:59:59.999+09:00') });
   });
 
   it('voids one account, then the whole campaign, and keeps what was spent; the campaign then takes no new account', async () => {
@@ -203,6 +205,19 @@ describe('grant-event-credits, the operator tool that gives event credits', () =
     expect(output.join('\n')).toContain('skipped, email not confirmed: 1');
     expect(output.join('\n')).not.toContain('@event.test');
     for (const user of [a, b]) expect((await redisKeyStore.getQuotaUsage(user.id)).promoCredits).toBe(3);
+  });
+
+  // skip-ok: mode selection. The keys of an account exist only in Redis; the memory ledger has none to find.
+  it.skipIf(!process.env.REDIS_URL)('lists the grant keys of an account among the keys its erasure deletes, held units included', async () => {
+    const user = await account();
+    await run('--campaign', campaign(), '--credits', '30', '--user', user.id, '--apply');
+    // Spend the day and then some of the grant, so that a reservation in flight holds grant units.
+    const day = await redisKeyStore.reserveQuota(user.id, 12);
+    expect(day.allowed).toBe(true);
+    const prefix = redisKeyStore.getPrefix();
+    const keys = await accountTaggedKeys(user.id);
+    for (const suffix of ['', ':qlist', ':qholds']) expect(keys.includes(`${prefix}promo:{${user.id}}${suffix}`), `promo:{id}${suffix}`).toBe(true);
+    await redisKeyStore.rollbackQuota(day.reservationId as string);
   });
 
   it('prints a usage text for a bad option and exits 2', async () => {

@@ -51,8 +51,8 @@ describe('the credit ledger on Redis Cluster', () => {
     await ledger.voidPromo(OWNER, 'spring', 2);
 
     const scripts = calls.filter((call) => call.command === 'eval');
-    // The grant is the budget of its campaign, the grant of the account and, when the account held it already (the answer here), the release of the count: three slots apart, one slot each. The void is one script.
-    expect(scripts).toHaveLength(12);
+    // The grant is two scripts, the budget of its campaign and the grant of the account, each of one slot and the two of different slots; the void is one script.
+    expect(scripts).toHaveLength(11);
     for (const call of scripts) expect(slotsOf(call).size, call.keys.join(' ')).toBe(1);
   });
 

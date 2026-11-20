@@ -299,7 +299,8 @@ export function itKeepsPromoCredits(controls: PromoCaseControls): void {
     expect(await store().promoCampaign('closing')).toMatchObject({ granted: 10, count: 1 });
     expect((await store().promoCampaign('closing'))?.voidedAt).toBeTypeOf('number');
     expect(await giveTo(`promo_${crypto.randomBytes(6).toString('hex')}`, 'closing', 10)).toBe('campaign-voided');
-    expect(await give('closing', 10)).toBe('duplicate');
+    // A voided campaign grants nobody, also an account it counts: the campaign is checked before the account.
+    expect(await give('closing', 10)).toBe('campaign-voided');
     expect(await usage()).toMatchObject({ promoCredits: 10 });
   });
 

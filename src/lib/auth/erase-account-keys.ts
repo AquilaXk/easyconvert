@@ -173,6 +173,9 @@ export async function accountTaggedKeys(userId: string, context: TaggedKeyContex
   for (const suffix of ['', ':plist', ':pholds', ':debt', ':hold', ':log', ':txns', ':adj']) {
     candidates.add(`${prefix}credits:{${userId}}${suffix}`);
   }
+  for (const suffix of ['', ':qlist', ':qholds']) {
+    candidates.add(`${prefix}promo:{${userId}}${suffix}`);
+  }
 
   await addUploadBudgetCandidates(candidates, maybeClient, prefix, userId, context);
 

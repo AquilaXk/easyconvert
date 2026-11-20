@@ -610,17 +610,18 @@ return {1, taken}
 /**
  * Counts one account's grant against the budget of its campaign, once for each account, before the grant is written to the account
  * (the two keys are of two slots, so the grant is a second step; an account the campaign already counts goes on to the second step
- * without being counted again, which repairs a first step that was not followed by the second).
+ * without being counted again, which repairs a first step that was not followed by the second, and a second step that finds the grant
+ * written leaves the count alone: another call, running at the same moment, counted the account and wrote it).
  */
 export const RESERVE_PROMO_BUDGET_LUA_SCRIPT = `
 -- KEYS[1]: the campaign (a hash: budget, granted, count, created_at, voided_at)  KEYS[2]: the accounts the campaign counts (a set)
 -- ARGV[1]: account  ARGV[2]: credits  ARGV[3]: budget in credits or ''  ARGV[4]: now in ms
--- Returns {1 counted | 0 already counted | -1 the campaign was voided | -2 over the budget, credits of the budget left}
-if redis.call('SISMEMBER', KEYS[2], ARGV[1]) == 1 then
-  return {0, 0}
-end
+-- Returns {1 counted | 0 already counted | -1 the campaign was voided (checked first, so a voided campaign grants nobody) | -2 over the budget, credits of the budget left}
 if redis.call('HEXISTS', KEYS[1], 'voided_at') == 1 then
   return {-1, 0}
+end
+if redis.call('SISMEMBER', KEYS[2], ARGV[1]) == 1 then
+  return {0, 0}
 end
 if ARGV[3] ~= '' then
   redis.call('HSET', KEYS[1], 'budget', ARGV[3])
@@ -636,17 +637,6 @@ redis.call('HINCRBY', KEYS[1], 'count', 1)
 redis.call('HSETNX', KEYS[1], 'created_at', ARGV[4])
 redis.call('SADD', KEYS[2], ARGV[1])
 return {1, 0}
-`;
-
-/** Takes one account's grant out of its campaign's count again, for a second step that found the account already holding the grant. */
-export const RELEASE_PROMO_BUDGET_LUA_SCRIPT = `
--- KEYS[1]: the campaign  KEYS[2]: the accounts the campaign counts
--- ARGV[1]: account  ARGV[2]: credits
-if redis.call('SREM', KEYS[2], ARGV[1]) == 1 then
-  redis.call('HINCRBY', KEYS[1], 'granted', -tonumber(ARGV[2]))
-  redis.call('HINCRBY', KEYS[1], 'count', -1)
-end
-return 1
 `;
 
 export const RECORD_VERIFIED_KEY_LUA_SCRIPT = `
