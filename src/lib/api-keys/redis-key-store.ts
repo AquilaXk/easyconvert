@@ -290,6 +290,11 @@ export class RedisKeyStore extends KeyStore {
     return this.ledger().packageDebt(userId);
   }
 
+  /** How many package payments were ever credited to `userId`, spent or not; the erasure of the account deletes the index a refund finds the account by. */
+  public async packageTransactionCount(userId: string): Promise<number> {
+    return this.ledger().packageTransactionCount(userId);
+  }
+
   /** Places an account-level checkout hold (e.g. after an approved payment chargeback). */
   public async setBillingHold(userId: string, reason: string): Promise<void> {
     return this.ledger().setBillingHold(userId, reason);

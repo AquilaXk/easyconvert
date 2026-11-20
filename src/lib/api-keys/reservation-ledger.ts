@@ -130,6 +130,8 @@ export interface ReservationLedger {
   packageBalance(owner: string): Promise<number>;
   /** The package credit debt of `owner` carried forward from spent refunded or charged-back package credits. */
   packageDebt(owner: string): Promise<number>;
+  /** How many package payments were ever credited to `owner`, spent or not: the history a later refund or chargeback names. */
+  packageTransactionCount(owner: string): Promise<number>;
   /** The package balance of `owner` and the package credits held by reservations in flight, net of what refunds claim from them. */
   packageStanding(owner: string): Promise<{ balance: number; held: number }>;
   /** Places an account-level checkout hold (e.g. after an approved payment chargeback). */
@@ -313,6 +315,10 @@ export class RedisReservationLedger implements ReservationLedger {
 
   async packageDebt(owner: string): Promise<number> {
     return Number((await this.redis.get(this.debtKey(owner))) ?? 0);
+  }
+
+  async packageTransactionCount(owner: string): Promise<number> {
+    return this.redis.hlen(this.transactionsKey(owner));
   }
 
   async packageStanding(owner: string): Promise<{ balance: number; held: number }> {
@@ -625,6 +631,10 @@ export class MemoryReservationLedger implements ReservationLedger {
 
   async packageDebt(owner: string): Promise<number> {
     return this.packages.get(owner)?.debt ?? 0;
+  }
+
+  async packageTransactionCount(owner: string): Promise<number> {
+    return this.packages.get(owner)?.payments.size ?? 0;
   }
 
   async packageStanding(owner: string): Promise<{ balance: number; held: number }> {

@@ -39,6 +39,14 @@ export async function revokeStandingAccess(userId: string, createdBefore?: numbe
   for (const credentialRef of credentialRefs) await credentialsVault.delete(credentialRef, userId);
 }
 
+/** The account is being erased by the purge of unverified accounts (or is gone): it cannot be handed over, and nothing of it was changed. */
+export class AccountBeingErasedError extends Error {
+  constructor() {
+    super('The account is being erased and cannot be handed over.');
+    this.name = 'AccountBeingErasedError';
+  }
+}
+
 /**
  * Hands an account whose address was never verified to the person who just proved the address with Google, which vouches for it
  * (docs/policy-decisions.md, entry 297): the registrant's password goes first, so they cannot sign in while the account is
@@ -48,10 +56,13 @@ export async function revokeStandingAccess(userId: string, createdBefore?: numbe
  * does (`/api/auth/password-reset/confirm`). `linked` is what the sign-in adds to the record.
  */
 export async function handOverUnverifiedAccount(userId: string, linked: Pick<UserRecord, 'acceptedTermsVersion'> & Partial<Pick<UserRecord, 'avatarUrl'>>): Promise<UserRecord> {
-  if (!(await redisUserStore.updateUser(userId, { passwordHash: '', salt: '' }))) throw new Error('The account to hand over does not exist.');
+  // An account the purge has claimed refuses its confirmation, so it is refused here before anything of it is cleaned.
+  const current = await redisUserStore.findById(userId);
+  if (!current || current.purgingAt !== undefined) throw new AccountBeingErasedError();
+  if (!(await redisUserStore.updateUser(userId, { passwordHash: '', salt: '' }))) throw new AccountBeingErasedError();
   await revokeAllUserSessions(userId);
   await revokeStandingAccess(userId);
   const handedOver = await redisUserStore.updateUser(userId, { ...linked, provider: 'google', emailVerified: true });
-  if (!handedOver) throw new Error('The account to hand over does not exist.');
+  if (!handedOver) throw new AccountBeingErasedError();
   return handedOver;
 }

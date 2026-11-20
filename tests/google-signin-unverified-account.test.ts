@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { NextRequest } from 'next/server';
 import { GET as googleCallback } from '../src/app/api/auth/google/callback/route';
@@ -10,6 +11,7 @@ import { OAUTH_STATE_COOKIE_NAME, createOAuthSession } from '../src/lib/auth/oau
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { createSessionToken, getSessionFromRequest } from '../src/lib/auth/session';
 import { TERMS_VERSION } from '../src/lib/legal/documents';
+import { AccountBeingErasedError, handOverUnverifiedAccount } from '../src/lib/auth/standing-access';
 import { credentialsVault } from '../src/lib/storage/credentials-vault';
 
 /**
@@ -145,6 +147,35 @@ describe('a Google sign-in for the address of an account that was never verified
     } finally {
       redisKeyStore.deleteApiKey = original;
     }
+  });
+});
+
+describe('a Google sign-in for an unverified account that the purge has claimed', () => {
+  it('is refused before anything of the account is cleaned, and the account is not handed over', async () => {
+    const squatter = await passwordAccountAt(false);
+    const { key } = await squattersSetup(squatter.id);
+    expect(await redisUserStore.claimUnverifiedForPurge(squatter.id, Date.now() + 1000)).toBe(true);
+
+    const response = await signInWithGoogle();
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get('location')).toContain('error=oauth_exchange_failed');
+    expect(response.headers.getSetCookie().some((entry) => entry.startsWith('easyconvert_session='))).toBe(false);
+    expect(await redisUserStore.findById(squatter.id)).toMatchObject({ provider: 'email', passwordHash: squatter.passwordHash });
+    expect((await redisUserStore.findById(squatter.id))?.emailVerified).not.toBe(true);
+    expect((await redisKeyStore.verifyApiKey(key.secretKey)).valid).toBe(true);
+  });
+
+  it('names the reason with a typed error from the hand-over itself', async () => {
+    const squatter = await passwordAccountAt(false);
+    await redisUserStore.claimUnverifiedForPurge(squatter.id, Date.now() + 1000);
+    const claimed = await handOverUnverifiedAccount(squatter.id, { acceptedTermsVersion: TERMS_VERSION }).catch((error: unknown) => error);
+    const gone = await handOverUnverifiedAccount(crypto.randomUUID(), { acceptedTermsVersion: TERMS_VERSION }).catch((error: unknown) => error);
+
+    expect(claimed).toBeInstanceOf(AccountBeingErasedError);
+    expect((claimed as Error).name).toBe('AccountBeingErasedError');
+    expect(gone).toBeInstanceOf(AccountBeingErasedError);
+    expect(await redisUserStore.findById(squatter.id)).toMatchObject({ provider: 'email', passwordHash: squatter.passwordHash });
   });
 });
 

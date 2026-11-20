@@ -103,6 +103,10 @@ x-app-environment: &app-environment
   RESULT_DISK_HIGH_PERCENT:
   RESULT_DISK_LOW_PERCENT:
   RESULT_DISK_REFUSE_PERCENT:
+  # The daily deletion of accounts whose address stayed unverified for 30 days (policy entry 364). Off unless ENABLED is true; no default
+  # here, the application's schema holds them (dry run on). The worker runs it; the web processes ignore both.
+  UNVERIFIED_ACCOUNT_PURGE_ENABLED:
+  UNVERIFIED_ACCOUNT_PURGE_DRY_RUN:
   # The anonymous daily allowance the servers enforce: the repository variable the web image's pages were built with, written to
   # the env file by deploy/oci/deploy.sh, which refuses a web image built with another value. Empty means the default of
   # src/lib/plan-limits.ts.
