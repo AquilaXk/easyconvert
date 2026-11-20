@@ -17,9 +17,9 @@ export default function NotFoundPageView() {
       <Header />
 
       <main id="main-content" className="flex-1 flex flex-col items-center justify-center px-4 sm:px-6 py-16 text-center">
-        <p className="text-sm font-semibold text-danger">{t('code')}</p>
-        <h1 className="mt-3 max-w-3xl text-3xl sm:text-5xl text-ink break-words">{t('title', { route })}</h1>
-        <p className="mt-4 max-w-xl text-sm sm:text-base text-ink-2">{t('description')}</p>
+        <p className="text-sm font-semibold text-ink-3">{t('code')}</p>
+        <h1 className="mt-3 max-w-2xl text-2xl sm:text-3xl text-ink break-keep break-words">{t('title', { route })}</h1>
+        <p className="mt-4 max-w-xl text-sm leading-6 text-ink-2 break-keep">{t('description')}</p>
       </main>
 
       <Footer />
