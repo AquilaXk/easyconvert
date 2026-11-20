@@ -47,9 +47,12 @@ describe('the credit ledger on Redis Cluster', () => {
     await ledger.grantPackage(OWNER, { transactionId: 'txn_g', credits: 500, paid: '1000', at: 1 });
     await ledger.revokePackage(OWNER, { transactionId: 'txn', adjustmentId: 'adj', amount: '1', full: true });
     await ledger.packageStanding(OWNER);
+    await ledger.grantPromo(OWNER, { campaignId: 'spring', amount: 5, priority: 0, reason: 'test', actor: 'test', at: 1 }, 100);
+    await ledger.voidPromo(OWNER, 'spring', 2);
 
     const scripts = calls.filter((call) => call.command === 'eval');
-    expect(scripts).toHaveLength(8);
+    // The grant is the budget of its campaign, the grant of the account and, when the account held it already (the answer here), the release of the count: three slots apart, one slot each. The void is one script.
+    expect(scripts).toHaveLength(12);
     for (const call of scripts) expect(slotsOf(call).size, call.keys.join(' ')).toBe(1);
   });
 
@@ -58,6 +61,8 @@ describe('the credit ledger on Redis Cluster', () => {
     await new RedisReservationLedger(recordingRedis(calls), 'prefix:').forgetPackages(OWNER);
 
     const deletes = calls.filter((call) => call.command === 'del');
+    const dropped = calls.filter((call) => call.command === 'srem');
+    expect(dropped.map((call) => call.keys[0]).sort()).toEqual(['prefix:promo:campaign:{txn_one}:owners', 'prefix:promo:campaign:{txn_two}:owners']);
     expect(deletes.flatMap((call) => call.keys).sort()).toEqual(
       [
         'prefix:credits:txnowner:txn_one',
@@ -70,6 +75,9 @@ describe('the credit ledger on Redis Cluster', () => {
         `prefix:credits:{${OWNER}}:pholds`,
         `prefix:credits:{${OWNER}}:plist`,
         `prefix:credits:{${OWNER}}:txns`,
+        `prefix:promo:{${OWNER}}`,
+        `prefix:promo:{${OWNER}}:qholds`,
+        `prefix:promo:{${OWNER}}:qlist`,
       ].sort()
     );
     for (const call of deletes) expect(slotsOf(call).size, call.keys.join(' ')).toBe(1);

@@ -9,7 +9,7 @@ describe('Standard IETF RateLimit headers', () => {
       dailyLimit: 500,
       usedToday: 120,
       remaining: 380,
-      resetAt: Date.now() + 3600 * 1000, packageCredits: 0, // 1 hour left
+      resetAt: Date.now() + 3600 * 1000, packageCredits: 0, promoCredits: 0, // 1 hour left
     };
 
     const headers = buildRateLimitHeaders(quota);

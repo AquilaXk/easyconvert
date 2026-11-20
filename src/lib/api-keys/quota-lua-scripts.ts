@@ -4,10 +4,11 @@
  */
 
 /**
- * The credits of an owner, which these scripts reserve, charge and give back (docs/policy-decisions.md, entries 15 and 285). An
- * account spends from two sources, in this order: the allowance of its window (the free plan's UTC day, or a subscription's billing
- * period), then its package balance, which has no window and never expires. A reservation holds units of each: `held` has the units
- * of the window, `pholds` those of the package.
+ * The credits of an owner, which these scripts reserve, charge and give back (docs/policy-decisions.md, entries 15, 285 and 374). An
+ * account spends from three sources, in this order: the allowance of its window (the free plan's UTC day, or a subscription's billing
+ * period), then its promotional grants (event credits), then its package balance, which has no window and never expires. A
+ * reservation holds units of each: `held` has the units of the window, `qholds` those of the promotional grants (a JSON list of
+ * grant and units, in the order they were drawn), `pholds` those of the package.
  *
  * The leases of an owner (reservation-ledger.ts), whose keys every script names once, in the order of `ReservationKeys`. Of the
  * window: `usage` is its count, `leases` a sorted set of the live reservations scored by the time their lease ends, `held` a hash of
@@ -15,7 +16,12 @@
  * script is given: `pool` the package balance, `plist` a sorted set of the reservations that hold package units scored by the time
  * their lease ends, `pholds` a hash of those units, `debt` the package credits that a refund found held by a reservation and that are
  * taken back when those units return (see the revoke script). Then `extensions`, a hash of what each extension of one reservation
- * holds, and `log`, the list of recent charges; a script on the window alone is given the first eight. Every script first gives back the units of
+ * holds, and `log`, the list of recent charges; a script on the window alone is given the first eleven (the window's four, the
+ * owner's package keys and the owner's promotional keys: `promo`, a hash of campaign id to the JSON of the grant, `qlist`, a sorted
+ * set of the reservations that hold promotional units scored by the time their lease ends, and `qholds`, a hash of those units).
+ * Promotional grants are spent in burn-down order (priority, the earlier expiry with none last, the earlier creation, the id: the
+ * order of `compareGrantsByBurnDownOrder` in promo-grants.ts), skip a grant that ended or was voided, and are not part of the
+ * package scripts below, so a refund never reaches them. Every script first gives back the units of
  * each lease that ended (`reclaim`): the window's from the window it was given, the package's from the owner's own list, so the
  * package units of a holder that died come back at the first script that touches the owner's balance, also when the window of its
  * reservation is not the window of that script (midnight, a new subscription period). No script acts on a lease that ended. `now` is the clock of
@@ -57,11 +63,116 @@ local function reclaimPackage()
 end
 `;
 
+/**
+ * The promotional grants of an owner (promo-grants.ts), for every script that spends them: it needs the locals `promo`, `qlist`,
+ * `qholds` and `now`. A hold is a list of {campaign id, units} in the order the units were drawn; units that return go to the
+ * grants drawn last first, and to no grant that was voided.
+ */
+const PROMO_FUNCTIONS = `
+local function bytesBefore(a, b)
+  for i = 1, math.min(#a, #b) do
+    local x, y = string.byte(a, i), string.byte(b, i)
+    if x ~= y then return x < y end
+  end
+  return #a < #b
+end
+local function burnsBefore(i, j)
+  if i.priority ~= j.priority then return i.priority < j.priority end
+  local iExp, jExp = i.expires_at, j.expires_at
+  if iExp == nil and jExp ~= nil then return false end
+  if iExp ~= nil and jExp == nil then return true end
+  if iExp ~= nil and jExp ~= nil then
+    local a, b = math.floor(iExp / 1000), math.floor(jExp / 1000)
+    if a ~= b then return a < b end
+  end
+  if i.granted_at ~= j.granted_at then return i.granted_at < j.granted_at end
+  return bytesBefore(i.grant_id, j.grant_id)
+end
+-- The grants that can be spent now (not voided, not ended, credits left), in burn-down order when asked, and the credits in them.
+local function spendableGrants(sorted)
+  local list, total = {}, 0
+  if redis.call('HLEN', promo) == 0 then return list, total end
+  for _, raw in ipairs(redis.call('HVALS', promo)) do
+    local grant = cjson.decode(raw)
+    if grant.voided_at == nil and grant.remaining > 0 and (grant.expires_at == nil or grant.expires_at > now) then
+      list[#list + 1] = grant
+      total = total + grant.remaining
+    end
+  end
+  if sorted then table.sort(list, burnsBefore) end
+  return list, total
+end
+local function drawPromo(units)
+  local draws = {}
+  for _, grant in ipairs(spendableGrants(true)) do
+    if units <= 0 then break end
+    local take = math.min(units, grant.remaining)
+    grant.remaining = grant.remaining - take
+    units = units - take
+    redis.call('HSET', promo, grant.campaign_id, cjson.encode(grant))
+    draws[#draws + 1] = {grant.campaign_id, take}
+  end
+  return draws
+end
+local function returnPromo(draws)
+  for _, draw in ipairs(draws) do
+    local raw = redis.call('HGET', promo, draw[1])
+    if raw then
+      local grant = cjson.decode(raw)
+      if grant.voided_at == nil then
+        grant.remaining = grant.remaining + draw[2]
+        redis.call('HSET', promo, draw[1], cjson.encode(grant))
+      end
+    end
+  end
+end
+local function promoHold(id)
+  local raw = redis.call('HGET', qholds, id)
+  if not raw then return {} end
+  return cjson.decode(raw)
+end
+local function promoUnits(hold)
+  local total = 0
+  for _, entry in ipairs(hold) do total = total + entry[2] end
+  return total
+end
+local function mergeDraws(hold, draws)
+  for _, draw in ipairs(draws) do
+    local merged = false
+    for _, entry in ipairs(hold) do
+      if entry[1] == draw[1] then entry[2] = entry[2] + draw[2]; merged = true; break end
+    end
+    if not merged then hold[#hold + 1] = draw end
+  end
+end
+-- Takes \`units\` out of a hold, from the grants drawn last, and answers what was taken.
+local function takeBack(hold, units)
+  local back = {}
+  for i = #hold, 1, -1 do
+    if units <= 0 then break end
+    local give = math.min(units, hold[i][2])
+    hold[i][2] = hold[i][2] - give
+    units = units - give
+    back[#back + 1] = {hold[i][1], give}
+  end
+  return back
+end
+local function reclaimPromo()
+  for _, id in ipairs(redis.call('ZRANGEBYSCORE', qlist, '-inf', now)) do
+    local raw = redis.call('HGET', qholds, id)
+    if raw then returnPromo(cjson.decode(raw)) end
+    redis.call('HDEL', qholds, id)
+    redis.call('ZREM', qlist, id)
+  end
+end
+`;
+
 const LEASE_FUNCTIONS = `
-local usage, leases, held, limits, pool, plist, pholds, debt, extensions, log = KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5], KEYS[6], KEYS[7], KEYS[8], KEYS[9], KEYS[10]
+local usage, leases, held, limits, pool, plist, pholds, debt, promo, qlist, qholds, extensions, log = KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5], KEYS[6], KEYS[7], KEYS[8], KEYS[9], KEYS[10], KEYS[11], KEYS[12], KEYS[13]
 local time = redis.call('TIME')
 local now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
 ${PACKAGE_FUNCTIONS}
+${PROMO_FUNCTIONS}
 local function reclaim()
   for _, id in ipairs(redis.call('ZRANGEBYSCORE', leases, '-inf', now)) do
     local units = tonumber(redis.call('HGET', held, id) or '0')
@@ -73,6 +184,7 @@ local function reclaim()
     end
   end
   reclaimPackage()
+  reclaimPromo()
 end
 local function keep(key, untilMs)
   if redis.call('PTTL', key) < untilMs - now then
@@ -91,8 +203,8 @@ reclaim()
 `;
 
 /**
- * Reserves units, leased for ARGV[4] milliseconds: from the window's headroom under the limit first, the rest from the package
- * balance. Nothing is taken when the two together do not cover them. The limit is kept with the reservation (`limits`),
+ * Reserves units, leased for ARGV[4] milliseconds: from the window's headroom under the limit first, then from the
+ * promotional grants (in burn-down order) and then from the package balance. Nothing is taken when the three together do not cover them. The limit is kept with the reservation (`limits`),
  * since a charge on top at the end of it is held to the limit of the window it was made in. Answers {1 | 0, units left in both}.
  */
 export const RESERVE_QUOTA_LUA_SCRIPT = `
@@ -100,13 +212,19 @@ export const RESERVE_QUOTA_LUA_SCRIPT = `
 ${LEASE_FUNCTIONS}
 local units = tonumber(ARGV[1])
 local free, balance = room(tonumber(ARGV[2]))
+local _, promoLeft = spendableGrants(false)
 local fromWindow = math.min(units, free)
-local fromPackage = units - fromWindow
+local fromPromo = math.min(units - fromWindow, promoLeft)
+local fromPackage = units - fromWindow - fromPromo
 if fromPackage > balance then
-  return {0, free + balance}
+  return {0, free + promoLeft + balance}
 end
 local leaseEnd = now + tonumber(ARGV[4])
 if fromWindow > 0 then redis.call('INCRBY', usage, fromWindow) end
+if fromPromo > 0 then
+  redis.call('HSET', qholds, ARGV[3], cjson.encode(drawPromo(fromPromo)))
+  redis.call('ZADD', qlist, leaseEnd, ARGV[3])
+end
 if fromPackage > 0 then redis.call('DECRBY', pool, fromPackage) end
 redis.call('ZADD', leases, leaseEnd, ARGV[3])
 redis.call('HSET', held, ARGV[3], fromWindow)
@@ -116,7 +234,7 @@ if fromPackage > 0 then
   redis.call('ZADD', plist, leaseEnd, ARGV[3])
 end
 keepDay(math.max(leaseEnd, now + tonumber(ARGV[5])))
-return {1, free + balance - units}
+return {1, free + promoLeft + balance - units}
 `;
 
 /**
@@ -136,6 +254,9 @@ if newEnd > tonumber(leaseEnd) then
   if redis.call('ZSCORE', plist, ARGV[1]) then
     redis.call('ZADD', plist, newEnd, ARGV[1])
   end
+  if redis.call('ZSCORE', qlist, ARGV[1]) then
+    redis.call('ZADD', qlist, newEnd, ARGV[1])
+  end
   keepDay(newEnd)
   if redis.call('EXISTS', extensions) == 1 then
     keep(extensions, newEnd)
@@ -147,9 +268,9 @@ return 1
 /**
  * Ends a live reservation once, charging ARGV[2] units in place of those it held, or keeping them with ARGV[2] = 'held': a
  * commit keeps them, a rollback charges 0, and a settle charges what was used. ARGV[3] units more are charged on top (the minute
- * surcharge of a conversion that ran long): from the window's headroom under the limit the reservation was made under first, then from the package
- * balance, and what neither covers is not charged and is reported, since the work is done and the credits are not there. A refund
- * of units goes to the package first, the source that was drawn last. ARGV[5] is a JSON object of what the charge was for, or '':
+ * surcharge of a conversion that ran long): from the window's headroom under the limit the reservation was made under first, then from the
+ * promotional grants, then from the package balance, and what none covers is not charged and is reported, since the work is done and the credits
+ * are not there. A refund of units goes to the package first, then to the grants drawn last, the sources that were drawn last. ARGV[5] is a JSON object of what the charge was for, or '':
  * it joins the list of recent charges with the credits charged in all and the time. A count that is gone is not made again. The
  * extensions of the reservation end with it.
  */
@@ -162,63 +283,82 @@ if not fromWindow then
   return {0, 0, 0}
 end
 local fromPackage = tonumber(redis.call('HGET', pholds, ARGV[1]) or '0')
+local hold = promoHold(ARGV[1])
+local fromPromo = promoUnits(hold)
 local limit = tonumber(redis.call('HGET', limits, ARGV[1]) or '0')
 fromWindow = tonumber(fromWindow)
 redis.call('HDEL', held, ARGV[1])
 redis.call('HDEL', limits, ARGV[1])
 redis.call('HDEL', pholds, ARGV[1])
+redis.call('HDEL', qholds, ARGV[1])
 redis.call('ZREM', leases, ARGV[1])
 redis.call('ZREM', plist, ARGV[1])
+redis.call('ZREM', qlist, ARGV[1])
 redis.call('DEL', extensions)
-local held_total = fromWindow + fromPackage
+local held_total = fromWindow + fromPromo + fromPackage
 local target = held_total
 if ARGV[2] ~= 'held' then
   target = tonumber(ARGV[2])
 end
 target = target + tonumber(ARGV[3])
-local newWindow, newPackage, short = fromWindow, fromPackage, 0
+local newWindow, newPromo, newPackage, short = fromWindow, fromPromo, fromPackage, 0
 if target <= held_total then
   newWindow = math.min(fromWindow, target)
-  newPackage = target - newWindow
+  newPromo = math.min(fromPromo, target - newWindow)
+  newPackage = target - newWindow - newPromo
 else
   local more = target - held_total
   local free, balance = room(limit)
+  local _, promoLeft = spendableGrants(false)
   local addWindow = math.min(more, free)
-  local addPackage = math.min(more - addWindow, balance)
+  local addPromo = math.min(more - addWindow, promoLeft)
+  local addPackage = math.min(more - addWindow - addPromo, balance)
   newWindow = fromWindow + addWindow
+  newPromo = fromPromo + addPromo
   newPackage = fromPackage + addPackage
-  short = more - addWindow - addPackage
+  short = more - addWindow - addPromo - addPackage
 end
 local dWindow = newWindow - fromWindow
 local dPackage = newPackage - fromPackage
 if dWindow ~= 0 and redis.call('EXISTS', usage) == 1 then
   redis.call('INCRBY', usage, dWindow)
 end
+if newPromo < fromPromo then
+  returnPromo(takeBack(hold, fromPromo - newPromo))
+elseif newPromo > fromPromo then
+  drawPromo(newPromo - fromPromo)
+end
 if dPackage < 0 then
   returnToPool(-dPackage)
 elseif dPackage > 0 and redis.call('EXISTS', pool) == 1 then
   redis.call('DECRBY', pool, dPackage)
 end
-if ARGV[4] ~= '' and newWindow + newPackage > 0 then
+if ARGV[4] ~= '' and newWindow + newPromo + newPackage > 0 then
   local entry = cjson.decode(ARGV[4])
   entry.at = now
-  entry.credits = newWindow + newPackage
+  entry.credits = newWindow + newPromo + newPackage
   entry.fromPackage = newPackage
+  if newPromo > 0 then entry.fromPromo = newPromo end
   if short > 0 then entry.uncharged = short end
   redis.call('LPUSH', log, cjson.encode(entry))
   redis.call('LTRIM', log, 0, 49)
 end
-return {1, newWindow + newPackage - held_total, short}
+return {1, newWindow + newPromo + newPackage - held_total, short}
 `;
 
 /**
- * The window's count, the package balance and the package credits held by reservations in flight that no refund claims, once the
- * leases that ended gave their units back.
+ * The window's count, the package balance, the package credits held by reservations in flight that no refund claims, the credits
+ * of the promotional grants that can be spent now and the earliest end among them (0 when none ends), once the leases that ended gave their units back.
  */
 export const USED_QUOTA_LUA_SCRIPT = `
 ${LEASE_FUNCTIONS}
 local owed = tonumber(redis.call('GET', debt) or '0')
-return {tonumber(redis.call('GET', usage) or '0'), tonumber(redis.call('GET', pool) or '0'), math.max(0, heldPackage() - owed)}
+local grants, promoTotal = spendableGrants(false)
+local nextExpiry = 0
+for _, grant in ipairs(grants) do
+  if grant.expires_at ~= nil and (nextExpiry == 0 or grant.expires_at < nextExpiry) then nextExpiry = grant.expires_at end
+end
+return {tonumber(redis.call('GET', usage) or '0'), tonumber(redis.call('GET', pool) or '0'), math.max(0, heldPackage() - owed), promoTotal, nextExpiry}
 `;
 
 /** The package balance and the package credits held in flight that no refund claims, once the leases that ended gave their units back. */
@@ -310,8 +450,8 @@ end
 `;
 
 /**
- * Adds to a live reservation the units of one extension, from the window's headroom under the limit first and then from the
- * package balance, once: ARGV[3] is what the extension holds in all, so a second call with the same extension adds only the
+ * Adds to a live reservation the units of one extension, from the window's headroom under the limit first, then from the promotional
+ * grants and then from the package balance, once: ARGV[3] is what the extension holds in all, so a second call with the same extension adds only the
  * difference and a retried step never adds twice. The extension is counted in the reservation, so a settle or a rollback ends it
  * with the reservation; `extensions` lives as long as its lease, which a renewal moves with it.
  */
@@ -325,18 +465,26 @@ if not leaseEnd or redis.call('EXISTS', usage) == 0 then
   return {-1, 0}
 end
 local free, balance = room(tonumber(ARGV[4]))
+local _, promoLeft = spendableGrants(false)
 local added = tonumber(ARGV[3]) - tonumber(redis.call('HGET', extensions, ARGV[2]) or '0')
 if added <= 0 then
-  return {1, free + balance}
+  return {1, free + promoLeft + balance}
 end
-if added > free + balance then
-  return {0, free + balance}
+if added > free + promoLeft + balance then
+  return {0, free + promoLeft + balance}
 end
 local fromWindow = math.min(added, free)
-local fromPackage = added - fromWindow
+local fromPromo = math.min(added - fromWindow, promoLeft)
+local fromPackage = added - fromWindow - fromPromo
 if fromWindow > 0 then
   redis.call('INCRBY', usage, fromWindow)
   redis.call('HINCRBY', held, ARGV[1], fromWindow)
+end
+if fromPromo > 0 then
+  local hold = promoHold(ARGV[1])
+  mergeDraws(hold, drawPromo(fromPromo))
+  redis.call('HSET', qholds, ARGV[1], cjson.encode(hold))
+  redis.call('ZADD', qlist, tonumber(leaseEnd), ARGV[1])
 end
 if fromPackage > 0 then
   redis.call('DECRBY', pool, fromPackage)
@@ -345,7 +493,7 @@ if fromPackage > 0 then
 end
 redis.call('HSET', extensions, ARGV[2], ARGV[3])
 keep(extensions, tonumber(leaseEnd))
-return {1, free + balance - added}
+return {1, free + promoLeft + balance - added}
 `;
 
 /**
@@ -422,6 +570,83 @@ payment.revoked = payment.revoked + want
 redis.call('HSET', KEYS[2], ARGV[1], cjson.encode(payment))
 redis.call('HSET', KEYS[3], ARGV[2], want)
 return {1, take, short - deferred, deferred}
+`;
+
+/**
+ * Writes the promotional grant of one campaign to the account, once: the hash of grants is keyed by campaign id, so a second call
+ * for the same campaign finds the grant, also after it was voided, and adds nothing (policy-decisions.md, entry 374).
+ */
+export const GRANT_PROMO_LUA_SCRIPT = `
+-- KEYS[1]: the account's promotional grants (a hash of campaign id to the grant as JSON)
+-- ARGV[1]: campaign id  ARGV[2]: the grant as JSON
+-- Returns 1 written | 0 the account already has a grant of the campaign
+return redis.call('HSETNX', KEYS[1], ARGV[1], ARGV[2])
+`;
+
+/**
+ * Takes the credits of one promotional grant out of the account, once. Credits spent stay spent and the credits that reservations in
+ * flight hold are not taken back; when such a reservation ends, the units that would return to a voided grant are dropped.
+ */
+export const VOID_PROMO_LUA_SCRIPT = `
+-- KEYS[1]: the account's promotional grants
+-- ARGV[1]: campaign id  ARGV[2]: now in ms
+-- Returns {1 voided | 0 already voided | -1 no grant, credits taken out}
+local raw = redis.call('HGET', KEYS[1], ARGV[1])
+if not raw then
+  return {-1, 0}
+end
+local grant = cjson.decode(raw)
+if grant.voided_at ~= nil then
+  return {0, 0}
+end
+local taken = grant.remaining
+grant.voided_at = tonumber(ARGV[2])
+grant.voided_remaining = taken
+grant.remaining = 0
+redis.call('HSET', KEYS[1], ARGV[1], cjson.encode(grant))
+return {1, taken}
+`;
+
+/**
+ * Counts one account's grant against the budget of its campaign, once for each account, before the grant is written to the account
+ * (the two keys are of two slots, so the grant is a second step; an account the campaign already counts goes on to the second step
+ * without being counted again, which repairs a first step that was not followed by the second).
+ */
+export const RESERVE_PROMO_BUDGET_LUA_SCRIPT = `
+-- KEYS[1]: the campaign (a hash: budget, granted, count, created_at, voided_at)  KEYS[2]: the accounts the campaign counts (a set)
+-- ARGV[1]: account  ARGV[2]: credits  ARGV[3]: budget in credits or ''  ARGV[4]: now in ms
+-- Returns {1 counted | 0 already counted | -1 the campaign was voided | -2 over the budget, credits of the budget left}
+if redis.call('SISMEMBER', KEYS[2], ARGV[1]) == 1 then
+  return {0, 0}
+end
+if redis.call('HEXISTS', KEYS[1], 'voided_at') == 1 then
+  return {-1, 0}
+end
+if ARGV[3] ~= '' then
+  redis.call('HSET', KEYS[1], 'budget', ARGV[3])
+end
+local credits = tonumber(ARGV[2])
+local granted = tonumber(redis.call('HGET', KEYS[1], 'granted') or '0')
+local budget = tonumber(redis.call('HGET', KEYS[1], 'budget') or '')
+if budget ~= nil and granted + credits > budget then
+  return {-2, math.max(0, budget - granted)}
+end
+redis.call('HINCRBY', KEYS[1], 'granted', credits)
+redis.call('HINCRBY', KEYS[1], 'count', 1)
+redis.call('HSETNX', KEYS[1], 'created_at', ARGV[4])
+redis.call('SADD', KEYS[2], ARGV[1])
+return {1, 0}
+`;
+
+/** Takes one account's grant out of its campaign's count again, for a second step that found the account already holding the grant. */
+export const RELEASE_PROMO_BUDGET_LUA_SCRIPT = `
+-- KEYS[1]: the campaign  KEYS[2]: the accounts the campaign counts
+-- ARGV[1]: account  ARGV[2]: credits
+if redis.call('SREM', KEYS[2], ARGV[1]) == 1 then
+  redis.call('HINCRBY', KEYS[1], 'granted', -tonumber(ARGV[2]))
+  redis.call('HINCRBY', KEYS[1], 'count', -1)
+end
+return 1
 `;
 
 export const RECORD_VERIFIED_KEY_LUA_SCRIPT = `

@@ -53,10 +53,13 @@ import {
   type PackageGrantOutcome,
   type PackageRefundRequest,
   type PackageRevokeOutcome,
+  type PromoCampaign,
+  type PromoGrantRequest,
   type QuotaExtension,
   type ReservationLedger,
   type Settlement,
 } from './reservation-ledger';
+import type { PromoGrant, PromoGrantOutcome, PromoVoidOutcome } from './promo-grants';
 
 export { isIpInCidr, isIpAllowed, RECORD_VERIFIED_KEY_LUA_SCRIPT };
 export type { QuotaExtension };
@@ -226,17 +229,20 @@ export class RedisKeyStore extends KeyStore {
     this.ensureInitialized();
     try {
       const { window, limit, subscribed } = await quotaAllowanceOf(userId);
-      const { used, packageCredits, packageHeld } = await this.ledger().used(userId, window.key);
+      const { used, packageCredits, packageHeld, promoCredits, promoNextExpiry } = await this.ledger().used(userId, window.key);
       const free = Math.max(0, limit - used);
       return {
-        // A payer whose credits are all held by work in flight is still a payer; `remaining` and `packageCredits` count what can be spent now.
+        // A payer whose credits are all held by work in flight is still a payer; `remaining`, `promoCredits` and `packageCredits` count what can be spent now.
+        // Promotional credits are left out of the tier: a free grant never opens the limits of a paid plan (entry 374).
         tier: subscribed || packageCredits + packageHeld > 0 ? 'paid' : 'free',
         period: window.period,
         dailyLimit: limit,
         usedToday: used,
-        remaining: free + packageCredits,
+        remaining: free + promoCredits + packageCredits,
         resetAt: window.endsAt,
         packageCredits,
+        promoCredits,
+        ...(promoNextExpiry === undefined ? {} : { promoExpiresAt: promoNextExpiry }),
       };
     } catch (err) {
       // The account store's own refusal keeps its type (a 503 in the route); any other failure is the quota service's.
@@ -331,6 +337,36 @@ export class RedisKeyStore extends KeyStore {
   public async revokePackage(userId: string, refund: PackageRefundRequest): Promise<PackageRevokeOutcome> {
     this.clearStandingCache(userId);
     return this.ledger().revokePackage(userId, refund);
+  }
+
+  /** Gives `userId` the promotional grant of a campaign, once for each campaign and account (entry 374). The tier of the account does not change, so the standing cache is left alone. */
+  public async grantPromoCredits(userId: string, request: PromoGrantRequest, budget?: number): Promise<PromoGrantOutcome> {
+    return this.ledger().grantPromo(userId, request, budget);
+  }
+
+  /** Takes the credits left of a campaign's grant out of the account; what was spent stays spent. */
+  public async voidPromoCredits(userId: string, campaignId: string, at: number = Date.now()): Promise<PromoVoidOutcome> {
+    return this.ledger().voidPromo(userId, campaignId, at);
+  }
+
+  /** Marks the campaign voided, so that it takes no more grants. */
+  public async voidPromoCampaign(campaignId: string, at: number = Date.now()): Promise<void> {
+    return this.ledger().voidPromoCampaign(campaignId, at);
+  }
+
+  /** Every promotional grant of an account, voided and ended ones too. */
+  public async promoGrants(userId: string): Promise<PromoGrant[]> {
+    return this.ledger().promoGrants(userId);
+  }
+
+  /** The count of a campaign, or null when it never granted. */
+  public async promoCampaign(campaignId: string): Promise<PromoCampaign | null> {
+    return this.ledger().promoCampaign(campaignId);
+  }
+
+  /** A page of the accounts a campaign counts, from `cursor` ('0' to start); `next` is '0' at the end. */
+  public async promoCampaignOwners(campaignId: string, cursor: string = '0'): Promise<{ owners: string[]; next: string }> {
+    return this.ledger().promoCampaignOwners(campaignId, cursor);
   }
 
   /** The newest charges of an account, newest first. */
@@ -429,8 +465,8 @@ export class RedisKeyStore extends KeyStore {
       const { window, limit } = await quotaAllowanceOf(userId);
       const day = window.key;
       if (units === 0) {
-        const { used, packageCredits } = await this.ledger().used(userId, day);
-        const remaining = Math.max(0, limit - used) + packageCredits;
+        const { used, packageCredits, promoCredits } = await this.ledger().used(userId, day);
+        const remaining = Math.max(0, limit - used) + promoCredits + packageCredits;
         return { allowed: remaining > 0, remaining };
       }
       const reservationId = reservationIdOf(userId, day);

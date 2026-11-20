@@ -336,7 +336,7 @@ describe('a refused dashboard request', () => {
 describe('the credits on the dashboard', () => {
   const freeUser = { id: 'u-free', email: 'free@example.com', name: 'Free', tier: 'free' } as User;
   const paidUser = { ...freeUser, id: 'u-paid', tier: 'paid' } as User;
-  const overLimit = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CREDITS, usedToday: FREE_DAILY_CREDITS + 5, remaining: 0, resetAt: 0, packageCredits: 0 };
+  const overLimit = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CREDITS, usedToday: FREE_DAILY_CREDITS + 5, remaining: 0, resetAt: 0, packageCredits: 0, promoCredits: 0};
   const panelOf = (user: User, quota: QuotaUsage | null, charges: ChargeEntry[] = []) => visibleText(renderDom(createElement(AccountQuotaPanel, { user, quota, apiKeys: [], charges })));
 
   const usageCount = (user: User, quota: QuotaUsage | null) =>
@@ -348,7 +348,7 @@ describe('the credits on the dashboard', () => {
   });
 
   it('counts the subscription period: its own label, the date of the next reset, the package balance and the monthly note on the usage strip', () => {
-    const period = { tier: 'paid' as const, period: 'month' as const, dailyLimit: 1000, usedToday: 120, remaining: 880 + 250, resetAt: Date.UTC(2026, 11, 2, 8), packageCredits: 250 };
+    const period = { tier: 'paid' as const, period: 'month' as const, dailyLimit: 1000, usedToday: 120, remaining: 880 + 250, resetAt: Date.UTC(2026, 11, 2, 8), packageCredits: 250, promoCredits: 0};
     expect(usageCount(paidUser, period)).toBe('120 / 1,000');
     const panel = panelOf(paidUser, period);
     expect(panel).toContain('Subscription credits this period');
@@ -364,7 +364,7 @@ describe('the credits on the dashboard', () => {
   });
 
   it('states a free account with no package as having none', () => {
-    const day = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CREDITS, usedToday: 3, remaining: FREE_DAILY_CREDITS - 3, resetAt: Date.UTC(2026, 11, 2), packageCredits: 0 };
+    const day = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CREDITS, usedToday: 3, remaining: FREE_DAILY_CREDITS - 3, resetAt: Date.UTC(2026, 11, 2), packageCredits: 0, promoCredits: 0};
     const panel = panelOf(freeUser, day);
     expect(panel).toContain('Credits today');
     expect(panel).toContain(`${FREE_DAILY_CREDITS - 3} credits left today`);
@@ -392,7 +392,7 @@ describe('the credits on the dashboard', () => {
   });
 
   it('does not show the credits of an account whose address is not confirmed, and says when they are shown', () => {
-    const day = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CREDITS, usedToday: 0, remaining: FREE_DAILY_CREDITS, resetAt: Date.UTC(2026, 11, 2), packageCredits: 0 };
+    const day = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CREDITS, usedToday: 0, remaining: FREE_DAILY_CREDITS, resetAt: Date.UTC(2026, 11, 2), packageCredits: 0, promoCredits: 0};
     const panel = visibleText(renderDom(createElement(AccountQuotaPanel, { user: freeUser, quota: day, apiKeys: [], charges: [], quotaUnavailable: true })));
     expect(panel).toContain('Shown once your email address is confirmed.');
     expect(panel).not.toContain('credits left today');

@@ -127,7 +127,7 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
 
   /** The 429 of a job that needs `requiredUnits` conversions when `remaining` of a free account's day are left. */
   async function conversionsShort(requiredUnits: number, remaining: number) {
-    const usage = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CREDITS, usedToday: FREE_DAILY_CREDITS - remaining, remaining, resetAt: Date.now() , packageCredits: 0};
+    const usage = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CREDITS, usedToday: FREE_DAILY_CREDITS - remaining, remaining, resetAt: Date.now() , packageCredits: 0, promoCredits: 0};
     const refusal = { reason: 'used-up' as const, error: 'Daily credit quota exceeded.', usage, requiredUnits };
     return bodyOf(conversionRefusalResponse(refusal, '/api/v1/jobs'));
   }

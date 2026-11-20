@@ -163,14 +163,14 @@ describe('Per-key burst rate limit and Retry-After (#242)', () => {
       const now = FIXED_NOW.getTime();
       const base = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_LIMIT };
 
-      const exhausted = buildRateLimitHeaders({ ...base, usedToday: FREE_DAILY_LIMIT, remaining: 0, resetAt: now + 90_500 , packageCredits: 0});
+      const exhausted = buildRateLimitHeaders({ ...base, usedToday: FREE_DAILY_LIMIT, remaining: 0, resetAt: now + 90_500 , packageCredits: 0, promoCredits: 0});
       expect(exhausted['Retry-After']).toBe('91');
       expect(exhausted['RateLimit-Reset']).toBe('91');
 
-      const resetInPast = buildRateLimitHeaders({ ...base, usedToday: FREE_DAILY_LIMIT, remaining: 0, resetAt: now - 5_000 , packageCredits: 0});
+      const resetInPast = buildRateLimitHeaders({ ...base, usedToday: FREE_DAILY_LIMIT, remaining: 0, resetAt: now - 5_000 , packageCredits: 0, promoCredits: 0});
       expect(resetInPast['Retry-After']).toBe('1');
 
-      const available = buildRateLimitHeaders({ ...base, usedToday: FREE_DAILY_LIMIT - 3, remaining: 3, resetAt: now + 90_500, packageCredits: 0 });
+      const available = buildRateLimitHeaders({ ...base, usedToday: FREE_DAILY_LIMIT - 3, remaining: 3, resetAt: now + 90_500, packageCredits: 0, promoCredits: 0});
       expect(Object.keys(available)).not.toContain('Retry-After');
       expect(available['RateLimit-Remaining']).toBe('3');
     });

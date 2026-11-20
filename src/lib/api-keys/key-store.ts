@@ -605,7 +605,7 @@ export class KeyStore {
 
     const { window, limit, subscribed } = await quotaAllowanceOf(userId);
     const used = this.dailyUsage.get(`${userId}:${window.key}`) || 0;
-    return { tier: subscribed ? 'paid' : 'free', period: window.period, dailyLimit: limit, usedToday: used, remaining: Math.max(0, limit - used), resetAt: window.endsAt, packageCredits: 0 };
+    return { tier: subscribed ? 'paid' : 'free', period: window.period, dailyLimit: limit, usedToday: used, remaining: Math.max(0, limit - used), resetAt: window.endsAt, packageCredits: 0, promoCredits: 0 };
   }
 
   public async recordUsage(userId: string, units: number = 1): Promise<{ allowed: boolean; remaining: number }> {

@@ -242,6 +242,12 @@ Certain format conversions require specialized external command-line utilities. 
 - **What was taken as a decision, not as code**: a daily job that tests the age of an unconfirmed account; an account that holds something of value is spared. The 30 days are the owner's choice. The SCAN-based pass, the atomic claim with the `purgingAt` mark and the leader-locked timer are written here.
 - **Compliance**: the permissive licences ask for their notice when code is copied; none is, so nothing is added to `NOTICE`. The repository is Apache-2.0 and takes nothing from the two copyleft projects.
 
+### 2.38 Burn-down order of credit grants of OpenMeter (Apache-2.0)
+- **Role**: `src/lib/api-keys/promo-grants.ts` (`compareGrantsByBurnDownOrder`) decides which promotional grant of an account is spent first (entry 374 of `docs/policy-decisions.md`). The Lua script that spends the grants in Redis (`quota-lua-scripts.ts`, `PROMO_FUNCTIONS`) and the memory ledger follow the same order, and `tests/helpers/promo-credit-cases.ts` checks the script against the function.
+- **Source**: `openmeterio/openmeter`, file `openmeter/credit/engine/grant.go` at commit `8eb6a5bc172229394a2aaaaba34ba42dcddbbe1f` (Apache License 2.0; the repository states no copyright line), lines 181-208, `compareGrantsByBurnDownOrder`. The SHA-256 of the whole file at that commit is `354674bef8481f41a199288c4837c815b81aae6e17bded3f46e1ddca450c523f`. The function is translated to TypeScript line by line: the Go types become `BurnDownGrant`, `cmp.Compare` and `strings.Compare` become two small helpers, and the expiry is compared in whole seconds (`Unix()`), as the original does. The rest of the file, the Lua script, the ledger and the operator tool are written for this repository.
+- **Read for behaviour only, no code taken**: the documented behaviour of the credit grants of Stripe (category `promotional`, optional expiry, applied before paid credits), of Lago (AGPL-3.0, granted and purchased wallet credits), and the grant tables of Polar (Apache-2.0), Saleor (BSD-3-Clause) and LiteLLM (MIT); entry 374 lists what each one gave.
+- **Compliance**: the repository is Apache-2.0 too, so the licence text of `LICENSE` travels with the file; `NOTICE` names the file, its origin and its commit. The OpenMeter repository has no `NOTICE` file. Nothing of the AGPL-3.0 project is in the tree.
+
 ---
 
 ## 3. LGPL Relinking & On-Premises Container Images

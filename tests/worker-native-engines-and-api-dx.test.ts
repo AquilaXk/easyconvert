@@ -159,7 +159,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       dailyLimit: 500,
         usedToday: 50,
         remaining: 450,
-        resetAt: now + 3600 * 1000, packageCredits: 0,
+        resetAt: now + 3600 * 1000, packageCredits: 0, promoCredits: 0,
       });
 
       expect(headers['RateLimit-Limit']).toBe('500');

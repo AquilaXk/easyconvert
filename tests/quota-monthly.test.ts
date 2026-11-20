@@ -150,7 +150,7 @@ describe('the allowance of an account', () => {
 
       vi.setSystemTime(at('2026-11-25T23:00:00Z'));
       const usage = await store.getQuotaUsage(owner);
-      expect(usage).toEqual({ tier: 'paid', period: 'month', dailyLimit: 1000, usedToday: 3, remaining: 997, resetAt: periodEnd, packageCredits: 0 });
+      expect(usage).toEqual({ tier: 'paid', period: 'month', dailyLimit: 1000, usedToday: 3, remaining: 997, resetAt: periodEnd, packageCredits: 0, promoCredits: 0 });
 
       vi.setSystemTime(periodEnd + 1000);
       // The renewal's event has not been applied yet: the roll-forward gives the new period a fresh count, and the old credits do not roll over.
@@ -307,10 +307,10 @@ describe('the allowance of an account', () => {
 describe('the rate limit headers of a period', () => {
   it('state the nominal month as the window, the exact time left as the reset, and count the package credits in the limit and what is left', () => {
     const resetAt = Date.now() + 90 * 60 * 1000;
-    const headers = buildRateLimitHeaders({ tier: 'paid', period: 'month', dailyLimit: 3000, usedToday: 100, remaining: 2900 + 250, resetAt, packageCredits: 250 });
+    const headers = buildRateLimitHeaders({ tier: 'paid', period: 'month', dailyLimit: 3000, usedToday: 100, remaining: 2900 + 250, resetAt, packageCredits: 250, promoCredits: 0 });
     expect(headers['RateLimit-Policy']).toBe('3250;w=2592000;comment="paid monthly credits"');
     expect(headers['RateLimit-Remaining']).toBe('3150');
     expect(headers['RateLimit-Reset']).toBe('5400');
-    expect(buildRateLimitHeaders({ tier: 'free', period: 'day', dailyLimit: 10, usedToday: 1, remaining: 9, resetAt, packageCredits: 0 })['RateLimit-Policy']).toBe('10;w=86400;comment="free daily credits"');
+    expect(buildRateLimitHeaders({ tier: 'free', period: 'day', dailyLimit: 10, usedToday: 1, remaining: 9, resetAt, packageCredits: 0, promoCredits: 0 })['RateLimit-Policy']).toBe('10;w=86400;comment="free daily credits"');
   });
 });

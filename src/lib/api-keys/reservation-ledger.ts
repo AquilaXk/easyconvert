@@ -4,21 +4,27 @@ import { JOB_DEADLINE_CEILING_MS } from '../config/schema';
 import {
   EXTEND_QUOTA_LUA_SCRIPT,
   GRANT_PACKAGE_LUA_SCRIPT,
+  GRANT_PROMO_LUA_SCRIPT,
   PACKAGE_STANDING_LUA_SCRIPT,
+  RELEASE_PROMO_BUDGET_LUA_SCRIPT,
   RENEW_QUOTA_LUA_SCRIPT,
+  RESERVE_PROMO_BUDGET_LUA_SCRIPT,
   RESERVE_QUOTA_LUA_SCRIPT,
   REVOKE_PACKAGE_LUA_SCRIPT,
   SETTLE_TO_QUOTA_LUA_SCRIPT,
   USED_QUOTA_LUA_SCRIPT,
+  VOID_PROMO_LUA_SCRIPT,
 } from './quota-lua-scripts';
+import { balanceOf, compareGrantsByBurnDownOrder, promoGrantIdOf, spendableInBurnOrder, type PromoGrant, type PromoGrantOutcome, type PromoVoidOutcome } from './promo-grants';
 import type { ChargeEntry, ChargeNote } from './types';
 
 /**
  * Where the credits of an owner are reserved, charged and given back (docs/policy-decisions.md, entries 15 and 285): in Redis
  * beside the other quota counters, or in this process when the quota store has no Redis. Both keep one count per owner and
  * window (the UTC day of the free plan, the billing period of a subscription), which holds what is charged and what is reserved,
- * and one package balance per owner, which has no window. A reservation draws on the window first and on the balance for the rest;
- * a refund goes back to the balance first.
+ * and one package balance per owner, which has no window, and the promotional grants of the owner (entry 374), which are spent in
+ * burn-down order between the two. A reservation draws on the window first, then on the grants, and on the balance for the rest;
+ * a refund goes back to the balance first, then to the grants drawn last.
  *
  * A reservation is a lease, as a lock service leases a lock to the process that holds it: it counts until it is committed,
  * settled or given back, or until its lease ends, which gives its units back. A request holds a short lease and renews it
@@ -70,6 +76,32 @@ export interface LedgerCounts {
   used: number;
   packageCredits: number;
   packageHeld: number;
+  /** The credits of the promotional grants that can be spent now, and the earliest end among them. They make no one a payer. */
+  promoCredits: number;
+  promoNextExpiry?: number;
+}
+
+/** A grant of promotional credits to write: one for each campaign and account. */
+export interface PromoGrantRequest {
+  campaignId: string;
+  amount: number;
+  priority: number;
+  expiresAt?: number;
+  reason: string;
+  actor: string;
+  at: number;
+}
+
+/** What the ledger holds of one campaign. */
+export interface PromoCampaign {
+  /** The credits the campaign may give in all; absent for no cap. */
+  budget?: number;
+  /** The credits and the accounts counted against it so far. */
+  granted: number;
+  count: number;
+  createdAt?: number;
+  /** Set when the whole campaign was voided; it takes no more grants. */
+  voidedAt?: number;
 }
 
 /** What a package payment did to the balance: credited once, or already credited. */
@@ -140,8 +172,20 @@ export interface ReservationLedger {
   clearBillingHold(owner: string): Promise<void>;
   /** Whether `owner` currently has an active checkout hold. */
   hasBillingHold(owner: string): Promise<boolean>;
-  /** Deletes the package balance, payments, adjustments, charges, hold and payment index entries of `owner`; the erasure of an account calls it. */
+  /** Deletes the package balance, payments, adjustments, charges, hold, promotional grants and payment index entries of `owner`; the erasure of an account calls it. */
   forgetPackages(owner: string): Promise<void>;
+  /** Gives `owner` the promotional grant of a campaign, once for each campaign and account, and counts it against the campaign's `budget` (set or raised when given). */
+  grantPromo(owner: string, request: PromoGrantRequest, budget?: number): Promise<PromoGrantOutcome>;
+  /** Takes what is left of the grant of `campaignId` out of `owner`'s balance; what was spent stays spent, and the grant stays so that the campaign cannot grant it again. */
+  voidPromo(owner: string, campaignId: string, at: number): Promise<PromoVoidOutcome>;
+  /** Marks the campaign voided, so that it takes no more grants. */
+  voidPromoCampaign(campaignId: string, at: number): Promise<void>;
+  /** Every promotional grant of `owner`, voided and ended ones too. */
+  promoGrants(owner: string): Promise<PromoGrant[]>;
+  /** The count of a campaign, or null when it never granted. */
+  promoCampaign(campaignId: string): Promise<PromoCampaign | null>;
+  /** A page of the accounts a campaign counts, from `cursor` ('0' to start); `next` is '0' at the end. */
+  promoCampaignOwners(campaignId: string, cursor: string): Promise<{ owners: string[]; next: string }>;
 }
 
 /** The id of a reservation: `res_<encoded userId>_<YYYY-MM-DD>_<ms>_<random>`, which names its owner and its day. */
@@ -160,7 +204,41 @@ export function parseReservationId(reservationId: string): { userId: string; day
 const EXTENSION_STATUS: Readonly<Record<string, QuotaExtension['status']>> = { '1': 'extended', '0': 'does-not-fit', '-1': 'no-reservation' };
 
 /** The keys every step on one reservation is given: those of its window, the package balance, its extensions and the list of charges. */
-type ReservationKeys = [usage: string, leases: string, held: string, limits: string, pool: string, packageLeases: string, packageHolds: string, packageDebt: string, extensions: string, log: string];
+type ReservationKeys = [usage: string, leases: string, held: string, limits: string, pool: string, packageLeases: string, packageHolds: string, packageDebt: string, promo: string, promoLeases: string, promoHolds: string, extensions: string, log: string];
+
+/** The grant record as the scripts keep it (JSON with the field names of Lua), and the name each field has here. */
+interface StoredGrant {
+  grant_id: string;
+  campaign_id: string;
+  amount: number;
+  remaining: number;
+  granted_at: number;
+  expires_at?: number;
+  voided_at?: number;
+  voided_remaining?: number;
+  priority: number;
+  reason: string;
+  actor: string;
+}
+
+function grantFromStored(stored: StoredGrant): PromoGrant {
+  return {
+    grantId: stored.grant_id,
+    campaignId: stored.campaign_id,
+    amount: stored.amount,
+    remaining: stored.remaining,
+    grantedAt: stored.granted_at,
+    priority: stored.priority,
+    reason: stored.reason,
+    actor: stored.actor,
+    ...(stored.expires_at === undefined ? {} : { expiresAt: stored.expires_at }),
+    ...(stored.voided_at === undefined ? {} : { voidedAt: stored.voided_at }),
+    ...(stored.voided_remaining === undefined ? {} : { voidedRemaining: stored.voided_remaining }),
+  };
+}
+
+/** The status the budget script answered for a grant, by its number. */
+const PROMO_BUDGET_REFUSAL: Readonly<Record<string, PromoGrantOutcome>> = { '-1': 'campaign-voided', '-2': 'budget-exhausted' };
 
 /** How many recent charges an owner keeps; the settle script trims its list to this. */
 export const RECENT_CHARGES = 50;
@@ -175,9 +253,9 @@ export class RedisReservationLedger implements ReservationLedger {
   /**
    * The keys of `owner`'s `window`: its count, its leases, the units they hold from it and the limit each was made under; then the
    * owner's own: the package balance, the leases that hold package units (which a script reclaims whichever window it is given), the
-   * units they hold and the debt of refunds that found them held.
+   * units they hold and the debt of refunds that found them held; then the promotional grants, their leases and held units.
    */
-  private windowKeys(owner: string, window: string): [string, string, string, string, string, string, string, string] {
+  private windowKeys(owner: string, window: string): [string, string, string, string, string, string, string, string, string, string, string] {
     return [
       `${this.prefix}usage:{${owner}}:${window}`,
       `${this.prefix}leases:{${owner}}:${window}`,
@@ -185,7 +263,18 @@ export class RedisReservationLedger implements ReservationLedger {
       `${this.prefix}limits:{${owner}}:${window}`,
       this.poolKey(owner),
       ...this.packageLeaseKeys(owner),
+      ...this.promoKeys(owner),
     ];
+  }
+
+  /** The owner's promotional grants (a hash by campaign id), the leases that hold their units and the units they hold. */
+  private promoKeys(owner: string): [string, string, string] {
+    return [`${this.prefix}promo:{${owner}}`, `${this.prefix}promo:{${owner}}:qlist`, `${this.prefix}promo:{${owner}}:qholds`];
+  }
+
+  /** A campaign's count (a hash) and the accounts it counts (a set); both carry the campaign's tag, apart from the accounts' keys. */
+  private campaignKeys(campaignId: string): [string, string] {
+    return [`${this.prefix}promo:campaign:{${campaignId}}`, `${this.prefix}promo:campaign:{${campaignId}}:owners`];
   }
 
   /** The owner's package leases, the units they hold and the debt of refunds that found them held. */
@@ -241,7 +330,7 @@ export class RedisReservationLedger implements ReservationLedger {
 
   async reserve(request: Parameters<ReservationLedger['reserve']>[0]) {
     const args = [request.units, request.limit, request.reservationId, request.leaseMs, request.dayLeftMs];
-    const [allowed, remaining] = (await this.redis.eval(RESERVE_QUOTA_LUA_SCRIPT, 8, ...this.windowKeys(request.owner, request.day), ...args)) as [number, number];
+    const [allowed, remaining] = (await this.redis.eval(RESERVE_QUOTA_LUA_SCRIPT, 11, ...this.windowKeys(request.owner, request.day), ...args)) as [number, number];
     return { allowed: Number(allowed) === 1, remaining: Number(remaining) };
   }
 
@@ -270,8 +359,8 @@ export class RedisReservationLedger implements ReservationLedger {
   }
 
   async used(owner: string, day: string): Promise<LedgerCounts> {
-    const [used, packageCredits, packageHeld] = (await this.redis.eval(USED_QUOTA_LUA_SCRIPT, 8, ...this.windowKeys(owner, day))) as [number, number, number];
-    return { used: Number(used), packageCredits: Number(packageCredits), packageHeld: Number(packageHeld) };
+    const [used, packageCredits, packageHeld, promoCredits, promoNextExpiry] = (await this.redis.eval(USED_QUOTA_LUA_SCRIPT, 11, ...this.windowKeys(owner, day))) as [number, number, number, number, number];
+    return { used: Number(used), packageCredits: Number(packageCredits), packageHeld: Number(packageHeld), promoCredits: Number(promoCredits), ...(Number(promoNextExpiry) > 0 ? { promoNextExpiry: Number(promoNextExpiry) } : {}) };
   }
 
   async grantPackage(owner: string, grant: PackageGrant): Promise<PackageGrantOutcome> {
@@ -350,6 +439,64 @@ export class RedisReservationLedger implements ReservationLedger {
       ...this.packageLeaseKeys(owner)
     );
     for (const id of transactionIds) await this.redis.del(`${this.prefix}credits:txnowner:${id}`);
+    // The campaigns drop the account too, so that nothing of it stays in their sets; their counts of credits granted stay, since the budget was spent.
+    for (const campaignId of await this.redis.hkeys(this.promoKeys(owner)[0])) await this.redis.srem(this.campaignKeys(campaignId)[1], owner);
+    await this.redis.del(...this.promoKeys(owner));
+  }
+
+  async grantPromo(owner: string, request: PromoGrantRequest, budget?: number): Promise<PromoGrantOutcome> {
+    const [campaignKey, ownersKey] = this.campaignKeys(request.campaignId);
+    const reserved = (await this.redis.eval(RESERVE_PROMO_BUDGET_LUA_SCRIPT, 2, campaignKey, ownersKey, owner, request.amount, budget ?? '', request.at)) as [number, number];
+    const refusal = PROMO_BUDGET_REFUSAL[String(reserved[0])];
+    if (refusal) return refusal;
+    const stored: StoredGrant = {
+      grant_id: promoGrantIdOf(request.campaignId, owner),
+      campaign_id: request.campaignId,
+      amount: request.amount,
+      remaining: request.amount,
+      granted_at: request.at,
+      priority: request.priority,
+      reason: request.reason,
+      actor: request.actor,
+      ...(request.expiresAt === undefined ? {} : { expires_at: request.expiresAt }),
+    };
+    const written = Number(await this.redis.eval(GRANT_PROMO_LUA_SCRIPT, 1, this.promoKeys(owner)[0], request.campaignId, JSON.stringify(stored)));
+    if (written === 1) return 'granted';
+    // The account held the grant already. Had this call counted it, the count is given back: the first call did.
+    if (Number(reserved[0]) === 1) await this.redis.eval(RELEASE_PROMO_BUDGET_LUA_SCRIPT, 2, campaignKey, ownersKey, owner, request.amount);
+    return 'duplicate';
+  }
+
+  async voidPromo(owner: string, campaignId: string, at: number): Promise<PromoVoidOutcome> {
+    const [status, voided] = (await this.redis.eval(VOID_PROMO_LUA_SCRIPT, 1, this.promoKeys(owner)[0], campaignId, at)) as [number, number];
+    if (Number(status) === 1) return { status: 'voided', voided: Number(voided) };
+    return { status: Number(status) === 0 ? 'already-voided' : 'unknown-grant' };
+  }
+
+  async voidPromoCampaign(campaignId: string, at: number): Promise<void> {
+    await this.redis.hsetnx(this.campaignKeys(campaignId)[0], 'voided_at', String(at));
+  }
+
+  async promoGrants(owner: string): Promise<PromoGrant[]> {
+    const raws = await this.redis.hvals(this.promoKeys(owner)[0]);
+    return raws.map((raw) => grantFromStored(JSON.parse(raw) as StoredGrant)).sort(compareGrantsByBurnDownOrder);
+  }
+
+  async promoCampaign(campaignId: string): Promise<PromoCampaign | null> {
+    const fields = await this.redis.hgetall(this.campaignKeys(campaignId)[0]);
+    if (Object.keys(fields).length === 0) return null;
+    return {
+      granted: Number(fields.granted ?? 0),
+      count: Number(fields.count ?? 0),
+      ...(fields.budget === undefined ? {} : { budget: Number(fields.budget) }),
+      ...(fields.created_at === undefined ? {} : { createdAt: Number(fields.created_at) }),
+      ...(fields.voided_at === undefined ? {} : { voidedAt: Number(fields.voided_at) }),
+    };
+  }
+
+  async promoCampaignOwners(campaignId: string, cursor: string): Promise<{ owners: string[]; next: string }> {
+    const [next, owners] = await this.redis.sscan(this.campaignKeys(campaignId)[1], cursor, 'COUNT', 500);
+    return { owners, next };
   }
 }
 
@@ -359,6 +506,8 @@ interface HeldReservation {
   units: number;
   /** The units it holds from the owner's package balance. */
   packed: number;
+  /** The units it holds from the owner's promotional grants, by campaign, in the order they were drawn. */
+  promo: Array<{ campaignId: string; units: number }>;
   owner: string;
   /** The `<owner>:<day>` count it is counted in, and the limit of that window when the reservation was made. */
   dateKey: string;
@@ -389,6 +538,9 @@ export class MemoryReservationLedger implements ReservationLedger {
   private readonly reservations = new Map<string, HeldReservation>();
   private readonly packages = new Map<string, MemoryPackages>();
   private readonly transactionOwners = new Map<string, string>();
+  /** The promotional grants of each owner, by campaign id, as the `promo:{owner}` hash keeps them in Redis. */
+  private readonly promoByOwner = new Map<string, Map<string, PromoGrant>>();
+  private readonly campaigns = new Map<string, PromoCampaign & { owners: Set<string> }>();
 
   constructor(
     private readonly counts: Map<string, number>,
@@ -400,6 +552,8 @@ export class MemoryReservationLedger implements ReservationLedger {
     this.reservations.clear();
     this.packages.clear();
     this.transactionOwners.clear();
+    this.promoByOwner.clear();
+    this.campaigns.clear();
   }
 
   /** Forgets every reservation, package balance, payment and charge of `owner`. */
@@ -411,6 +565,8 @@ export class MemoryReservationLedger implements ReservationLedger {
     for (const [transactionId, holder] of this.transactionOwners) {
       if (holder === owner) this.transactionOwners.delete(transactionId);
     }
+    for (const campaignId of this.promoByOwner.get(owner)?.keys() ?? []) this.campaigns.get(campaignId)?.owners.delete(owner);
+    this.promoByOwner.delete(owner);
   }
 
   /** Gives back the units of every lease that ended by `now`; answers how many it gave back. */
@@ -421,6 +577,7 @@ export class MemoryReservationLedger implements ReservationLedger {
       this.charge(reservation.dateKey, -reservation.units);
       this.reservations.delete(id);
       this.returnPackage(reservation.owner, reservation.packed);
+      this.returnPromo(reservation.owner, reservation.promo);
       reclaimed++;
     }
     if (reclaimed > 0) this.persist();
@@ -450,6 +607,38 @@ export class MemoryReservationLedger implements ReservationLedger {
     held.balance += units - paid;
   }
 
+  /** The grants of `owner` that can be spent now, in burn-down order. */
+  private spendable(owner: string, now: number = Date.now()): PromoGrant[] {
+    return spendableInBurnOrder(this.promoByOwner.get(owner)?.values() ?? [], now);
+  }
+
+  /** Spends `units` of the grants of `owner` in burn-down order and answers what each gave; the caller has checked that they fit. */
+  private drawPromo(owner: string, units: number): Array<{ campaignId: string; units: number }> {
+    const draws: Array<{ campaignId: string; units: number }> = [];
+    let left = units;
+    for (const grant of this.spendable(owner)) {
+      if (left <= 0) break;
+      const take = Math.min(left, grant.remaining);
+      grant.remaining -= take;
+      left -= take;
+      draws.push({ campaignId: grant.campaignId, units: take });
+    }
+    return draws;
+  }
+
+  /** Gives units back to the grants they were drawn from, except those voided or gone. */
+  private returnPromo(owner: string, draws: ReadonlyArray<{ campaignId: string; units: number }>): void {
+    for (const draw of draws) {
+      const grant = this.promoByOwner.get(owner)?.get(draw.campaignId);
+      if (grant && grant.voidedAt === undefined) grant.remaining += draw.units;
+    }
+  }
+
+  /** The credits of the grants of `owner` that can be spent now. */
+  private promoLeft(owner: string): number {
+    return balanceOf(this.promoByOwner.get(owner)?.values() ?? [], Date.now()).credits;
+  }
+
   /** The package credits that live reservations of `owner` hold. */
   private heldPackage(owner: string): number {
     let total = 0;
@@ -468,9 +657,9 @@ export class MemoryReservationLedger implements ReservationLedger {
     return this.packages.get(owner)?.balance ?? 0;
   }
 
-  /** The window's headroom under `limit` and the package balance: what an owner can still spend from each. */
-  private room(dateKey: string, owner: string, limit: number): { free: number; balance: number } {
-    return { free: Math.max(0, limit - (this.counts.get(dateKey) ?? 0)), balance: this.balanceOf(owner) };
+  /** The window's headroom under `limit`, the credits of the promotional grants and the package balance: what an owner can still spend from each. */
+  private room(dateKey: string, owner: string, limit: number): { free: number; promo: number; balance: number } {
+    return { free: Math.max(0, limit - (this.counts.get(dateKey) ?? 0)), promo: this.promoLeft(owner), balance: this.balanceOf(owner) };
   }
 
   /** The live reservation `reservationId`, after the leases that ended gave their units back. */
@@ -484,33 +673,62 @@ export class MemoryReservationLedger implements ReservationLedger {
     const reservation = this.live(reservationId);
     if (!reservation) return { success: false, difference: 0, uncharged: 0 };
     this.reservations.delete(reservationId);
-    const heldTotal = reservation.units + reservation.packed;
+    const heldPromo = reservation.promo.reduce((total, draw) => total + draw.units, 0);
+    const heldTotal = reservation.units + heldPromo + reservation.packed;
     const target = (units === 'held' ? heldTotal : units) + (charge.extra ?? 0);
     let window = reservation.units;
+    let promo = heldPromo;
     let packed = reservation.packed;
     let uncharged = 0;
     if (target <= heldTotal) {
       window = Math.min(reservation.units, target);
-      packed = target - window;
+      promo = Math.min(heldPromo, target - window);
+      packed = target - window - promo;
     } else {
       const more = target - heldTotal;
-      const { free, balance } = this.room(reservation.dateKey, reservation.owner, reservation.limit);
+      const { free, promo: promoLeft, balance } = this.room(reservation.dateKey, reservation.owner, reservation.limit);
       const addWindow = Math.min(more, free);
-      const addPackage = Math.min(more - addWindow, balance);
+      const addPromo = Math.min(more - addWindow, promoLeft);
+      const addPackage = Math.min(more - addWindow - addPromo, balance);
       window += addWindow;
+      promo += addPromo;
       packed += addPackage;
-      uncharged = more - addWindow - addPackage;
+      uncharged = more - addWindow - addPromo - addPackage;
     }
     this.charge(reservation.dateKey, window - reservation.units);
+    if (promo < heldPromo) this.returnPromo(reservation.owner, this.takeBack(reservation.promo, heldPromo - promo));
+    else if (promo > heldPromo) this.drawPromo(reservation.owner, promo - heldPromo);
     if (packed < reservation.packed) this.returnPackage(reservation.owner, reservation.packed - packed);
     else this.chargePackage(reservation.owner, packed - reservation.packed);
-    if (charge.note && window + packed > 0) {
+    if (charge.note && window + promo + packed > 0) {
       const held = this.packages.get(reservation.owner) ?? this.newPackages(reservation.owner);
-      held.charges.unshift({ ...charge.note, at: Date.now(), credits: window + packed, fromPackage: packed, ...(uncharged > 0 ? { uncharged } : {}) });
+      held.charges.unshift({ ...charge.note, at: Date.now(), credits: window + promo + packed, fromPackage: packed, ...(promo > 0 ? { fromPromo: promo } : {}), ...(uncharged > 0 ? { uncharged } : {}) });
       held.charges.length = Math.min(held.charges.length, RECENT_CHARGES);
     }
     this.persist();
-    return { success: true, difference: window + packed - heldTotal, uncharged };
+    return { success: true, difference: window + promo + packed - heldTotal, uncharged };
+  }
+
+  /** Takes `units` out of `hold`, from the grants drawn last, and answers what was taken. */
+  private takeBack(hold: Array<{ campaignId: string; units: number }>, units: number): Array<{ campaignId: string; units: number }> {
+    const back: Array<{ campaignId: string; units: number }> = [];
+    let left = units;
+    for (let i = hold.length - 1; i >= 0 && left > 0; i--) {
+      const give = Math.min(left, hold[i]!.units);
+      hold[i]!.units -= give;
+      left -= give;
+      back.push({ campaignId: hold[i]!.campaignId, units: give });
+    }
+    return back;
+  }
+
+  /** Adds `draws` to `hold`, joining those of a grant the hold has. */
+  private mergeDraws(hold: Array<{ campaignId: string; units: number }>, draws: ReadonlyArray<{ campaignId: string; units: number }>): void {
+    for (const draw of draws) {
+      const same = hold.find((entry) => entry.campaignId === draw.campaignId);
+      if (same) same.units += draw.units;
+      else hold.push({ ...draw });
+    }
   }
 
   private newPackages(owner: string): MemoryPackages {
@@ -522,14 +740,17 @@ export class MemoryReservationLedger implements ReservationLedger {
   async reserve(request: Parameters<ReservationLedger['reserve']>[0]) {
     this.reclaim();
     const dateKey = `${request.owner}:${request.day}`;
-    const { free, balance } = this.room(dateKey, request.owner, request.limit);
+    const { free, promo, balance } = this.room(dateKey, request.owner, request.limit);
     const fromWindow = Math.min(request.units, free);
-    const fromPackage = request.units - fromWindow;
-    if (fromPackage > balance) return { allowed: false, remaining: free + balance };
+    const fromPromo = Math.min(request.units - fromWindow, promo);
+    const fromPackage = request.units - fromWindow - fromPromo;
+    if (fromPackage > balance) return { allowed: false, remaining: free + promo + balance };
     if (fromWindow > 0) this.counts.set(dateKey, (this.counts.get(dateKey) ?? 0) + fromWindow);
+    const promoHeld = fromPromo > 0 ? this.drawPromo(request.owner, fromPromo) : [];
     this.chargePackage(request.owner, fromPackage);
     this.reservations.set(request.reservationId, {
       units: fromWindow,
+      promo: promoHeld,
       packed: fromPackage,
       owner: request.owner,
       dateKey,
@@ -538,7 +759,7 @@ export class MemoryReservationLedger implements ReservationLedger {
       extensions: {},
     });
     this.persist();
-    return { allowed: true, remaining: free + balance - request.units };
+    return { allowed: true, remaining: free + promo + balance - request.units };
   }
 
   async commit(reservationId: string, charge?: ChargeOptions): Promise<Settlement> {
@@ -557,15 +778,17 @@ export class MemoryReservationLedger implements ReservationLedger {
     const reservation = this.live(reservationId);
     // As the script in Redis: a reservation whose window's count is gone is not extended, and no count is made.
     if (!reservation || !this.counts.has(reservation.dateKey)) return { status: 'no-reservation' };
-    const { free, balance } = this.room(reservation.dateKey, reservation.owner, limit);
+    const { free, promo, balance } = this.room(reservation.dateKey, reservation.owner, limit);
     const added = units - (reservation.extensions[extensionId] ?? 0);
     if (added <= 0) return { status: 'extended' };
-    if (added > free + balance) return { status: 'does-not-fit', remaining: free + balance };
+    if (added > free + promo + balance) return { status: 'does-not-fit', remaining: free + promo + balance };
     const fromWindow = Math.min(added, free);
+    const fromPromo = Math.min(added - fromWindow, promo);
     this.counts.set(reservation.dateKey, (this.counts.get(reservation.dateKey) ?? 0) + fromWindow);
-    this.chargePackage(reservation.owner, added - fromWindow);
+    if (fromPromo > 0) this.mergeDraws(reservation.promo, this.drawPromo(reservation.owner, fromPromo));
+    this.chargePackage(reservation.owner, added - fromWindow - fromPromo);
     reservation.units += fromWindow;
-    reservation.packed += added - fromWindow;
+    reservation.packed += added - fromWindow - fromPromo;
     reservation.extensions[extensionId] = units;
     this.persist();
     return { status: 'extended' };
@@ -580,7 +803,14 @@ export class MemoryReservationLedger implements ReservationLedger {
 
   async used(owner: string, day: string): Promise<LedgerCounts> {
     this.reclaim();
-    return { used: this.counts.get(`${owner}:${day}`) ?? 0, packageCredits: this.balanceOf(owner), packageHeld: this.unclaimedHeld(owner) };
+    const promo = balanceOf(this.promoByOwner.get(owner)?.values() ?? [], Date.now());
+    return {
+      used: this.counts.get(`${owner}:${day}`) ?? 0,
+      packageCredits: this.balanceOf(owner),
+      packageHeld: this.unclaimedHeld(owner),
+      promoCredits: promo.credits,
+      ...(promo.nextExpiry === undefined ? {} : { promoNextExpiry: promo.nextExpiry }),
+    };
   }
 
   async grantPackage(owner: string, grant: PackageGrant): Promise<PackageGrantOutcome> {
@@ -658,5 +888,74 @@ export class MemoryReservationLedger implements ReservationLedger {
 
   async forgetPackages(owner: string): Promise<void> {
     this.forgetOwner(owner);
+  }
+
+  async grantPromo(owner: string, request: PromoGrantRequest, budget?: number): Promise<PromoGrantOutcome> {
+    const campaign = this.campaigns.get(request.campaignId) ?? { granted: 0, count: 0, owners: new Set<string>() };
+    const counted = campaign.owners.has(owner);
+    if (!counted) {
+      if (campaign.voidedAt !== undefined) return 'campaign-voided';
+      if (budget !== undefined) campaign.budget = budget;
+      if (campaign.budget !== undefined && campaign.granted + request.amount > campaign.budget) return 'budget-exhausted';
+      campaign.granted += request.amount;
+      campaign.count += 1;
+      campaign.createdAt ??= request.at;
+      campaign.owners.add(owner);
+      this.campaigns.set(request.campaignId, campaign);
+    }
+    const grants = this.promoByOwner.get(owner) ?? new Map<string, PromoGrant>();
+    if (grants.has(request.campaignId)) {
+      if (!counted) {
+        campaign.granted -= request.amount;
+        campaign.count -= 1;
+        campaign.owners.delete(owner);
+      }
+      return 'duplicate';
+    }
+    grants.set(request.campaignId, {
+      grantId: promoGrantIdOf(request.campaignId, owner),
+      campaignId: request.campaignId,
+      amount: request.amount,
+      remaining: request.amount,
+      grantedAt: request.at,
+      priority: request.priority,
+      reason: request.reason,
+      actor: request.actor,
+      ...(request.expiresAt === undefined ? {} : { expiresAt: request.expiresAt }),
+    });
+    this.promoByOwner.set(owner, grants);
+    return 'granted';
+  }
+
+  async voidPromo(owner: string, campaignId: string, at: number): Promise<PromoVoidOutcome> {
+    const grant = this.promoByOwner.get(owner)?.get(campaignId);
+    if (!grant) return { status: 'unknown-grant' };
+    if (grant.voidedAt !== undefined) return { status: 'already-voided' };
+    const voided = grant.remaining;
+    grant.voidedAt = at;
+    grant.voidedRemaining = voided;
+    grant.remaining = 0;
+    return { status: 'voided', voided };
+  }
+
+  async voidPromoCampaign(campaignId: string, at: number): Promise<void> {
+    const campaign = this.campaigns.get(campaignId) ?? { granted: 0, count: 0, owners: new Set<string>() };
+    campaign.voidedAt ??= at;
+    this.campaigns.set(campaignId, campaign);
+  }
+
+  async promoGrants(owner: string): Promise<PromoGrant[]> {
+    return [...(this.promoByOwner.get(owner)?.values() ?? [])].map((grant) => ({ ...grant })).sort(compareGrantsByBurnDownOrder);
+  }
+
+  async promoCampaign(campaignId: string): Promise<PromoCampaign | null> {
+    const campaign = this.campaigns.get(campaignId);
+    if (!campaign) return null;
+    const { owners: _owners, ...record } = campaign;
+    return record;
+  }
+
+  async promoCampaignOwners(campaignId: string): Promise<{ owners: string[]; next: string }> {
+    return { owners: [...(this.campaigns.get(campaignId)?.owners ?? [])], next: '0' };
   }
 }

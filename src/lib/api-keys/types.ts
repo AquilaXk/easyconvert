@@ -79,7 +79,9 @@ export interface QuotaReservation {
  * The credits of an account (docs/policy-decisions.md, entry 285). `dailyLimit` and `usedToday` keep the names clients already read and count
  * the credits of the window: the UTC day for anonymous callers and the free plan, the billing period of a subscription (`period`).
  * `packageCredits` is the package balance, which has no window. `remaining` is what the account can spend now: what is left of the
- * window plus the package balance.
+ * window, the promotional credits and the package balance. `promoCredits` are the credits of event grants that can be spent now (entry 374):
+ * they are spent after the window and before the package balance, may end (`promoExpiresAt`, the earliest end among them), and do not make the
+ * account a payer.
  */
 export interface QuotaUsage {
   tier: UserTier;
@@ -89,6 +91,8 @@ export interface QuotaUsage {
   remaining: number;
   resetAt: number;
   packageCredits: number;
+  promoCredits: number;
+  promoExpiresAt?: number;
 }
 
 /** What a charge was for: the conversion's formats, its class cost and the credits added for processing time. */
@@ -111,6 +115,8 @@ export interface ChargeEntry extends ChargeNote {
   /** Credits charged in all, and how many of them came from the package balance. */
   credits: number;
   fromPackage: number;
+  /** How many of them came from promotional credits; absent when none did. */
+  fromPromo?: number;
   /** Credits owed that the account no longer had (the work was done before the surcharge was known). */
   uncharged?: number;
 }
