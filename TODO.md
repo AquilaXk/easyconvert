@@ -27,7 +27,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Operations and security
 - Bound and thread the office sheet readers too (CSV, JSON and XML to xlsx, ods and xls run on the calling thread without the counts of entry 337), and decode a hostile bzip2 for an archive listing off the web event loop (entry 339 caps it at 500 MiB like gz).
-- Purge accounts whose address stays unverified for 30 days, and cap how many storage credentials one account keeps (launch audit of 2026-11-20; entry 343 bounds each record).
+- Cap how many storage credentials one account keeps (launch audit of 2026-11-20; entry 343 bounds each record).
 - Move the problem `type` URIs off `https://api.easyconvert.io/problems/` (a domain we do not hold) to a page of our own site that lists every refusal code.
 - Replace `script-src 'unsafe-inline'` in the page CSP with per-request nonces, and add browser error reporting for crashes in the converter UI.
 - Pick a free package name before publishing the SDKs (PyPI `easyconvert` belongs to another project; npm `@easyconvert/sdk` is unpublished) and add install lines to their READMEs.

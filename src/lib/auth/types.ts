@@ -34,6 +34,8 @@ export interface UserRecord extends User {
    * account holds that is older than this was made before anyone proved the address (`revokeStandingAccess`).
    */
   verifiedAt?: number;
+  /** When the purge of unverified accounts claimed the account (`claimUnverifiedForPurge`); from then on its address can no longer be confirmed. */
+  purgingAt?: number;
 }
 
 /**

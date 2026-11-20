@@ -1335,6 +1335,7 @@
   "tests/unconfirmed-account-rest-routes.test.ts": 0.9,
   "tests/universal-engine-coverage.test.ts": 7.4,
   "tests/unknown-path-404.test.ts": 0.6,
+  "tests/unverified-account-purge.test.ts": 3.0,
   "tests/upload-completion-receipt.test.ts": 0.5,
   "tests/upload-completion-registers.test.ts": 0.1,
   "tests/upload-direct-and-tus.test.ts": 0.9,
