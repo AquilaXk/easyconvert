@@ -2,12 +2,14 @@
  * Run by tests/xxh64-wasm.test.ts in a Node process that preloads no-webassembly-preload.cjs, so that `WebAssembly` does not exist:
  * the zstd content checksum must still be computed (by the script implementation). Prints one JSON line.
  */
-const { computeZstdChecksum, compressZstd, decompressZstd } = require('../../src/lib/conversions/zstd');
+const zlib = require('node:zlib');
+const { computeZstdChecksum, decompressZstdWithDictionary } = require('../../src/lib/conversions/zstd');
+const { parseZstdDictionary } = require('../../src/lib/conversions/zstd-decoder');
 const { xxh64Wasm, xxh64WasmSupported } = require('../../src/lib/conversions/wasm/xxh64');
 
 const data = Buffer.alloc(5000);
 for (let i = 0; i < data.length; i++) data[i] = (i * 31 + (i >> 3)) & 0xff;
-const restored = decompressZstd(compressZstd(data, { level: 3 }));
+const restored = decompressZstdWithDictionary(zlib.zstdCompressSync(data), parseZstdDictionary(Buffer.alloc(0)));
 console.log(
   JSON.stringify({
     webassembly: typeof WebAssembly,
