@@ -502,6 +502,7 @@
   "tests/i18n-viewer-time-zone.test.ts": 0,
   "tests/icc-reader.test.ts": 0.9,
   "tests/icc-srgb.test.ts": 0.1,
+  "tests/icns-legacy.test.ts": 1.5,
   "tests/idempotency-concurrency.test.ts": 1.4,
   "tests/idempotency-large-answers.test.ts": 0,
   "tests/idempotency-lock-token.test.ts": 0.2,

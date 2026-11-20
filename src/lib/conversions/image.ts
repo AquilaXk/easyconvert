@@ -29,6 +29,7 @@ import {
   resolveKernel,
 } from './image-resample';
 import { decodeIco, decodeIcns } from './ico';
+import { icnsPictureBytes } from './icns-picture';
 import { setAvifColour } from './avif-colour';
 import { AVIF_ENCODER_IMAGE_LIBRARY } from './avif-cli';
 import { CICP_MATRIX_IDENTITY, CICP_PRIMARIES_BT2020, CICP_TRANSFER_PQ, type Cicp, writePngCicp } from './cicp';
@@ -1663,8 +1664,7 @@ async function convertImage(
     } else if (isIconContainer(activeBuffer, src)) {
       pipeline = await pipelineFromIcon(decodeIco(activeBuffer, requestedResizeOf(options) ?? undefined));
     } else if (src === 'icns' || activeBuffer.subarray(0, 4).toString('ascii') === 'icns') {
-      const payload = decodeIcns(activeBuffer);
-      pipeline = await openInputImage(payload);
+      pipeline = await openInputImage(await icnsPictureBytes(activeBuffer, options.signal));
     } else if (
       src === 'exr' ||
       (activeBuffer.length >= 4 &&

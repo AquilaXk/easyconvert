@@ -400,6 +400,7 @@ Security
 349. [Lossy audio is written at the reference converter's default rates, and a mono Opus track at the encoder's mono rate](#349-lossy-audio-is-written-at-the-reference-converters-default-rates-and-a-mono-opus-track-at-the-encoders-mono-rate)
 350. [An image host that cannot be reached is asked once per document, and a connection that is not accepted within two seconds is given up](#350-an-image-host-that-cannot-be-reached-is-asked-once-per-document-and-a-connection-that-is-not-accepted-within-two-seconds-is-given-up)
 351. [A web, print or max compression keeps the lossless rewrite when it is smaller than the Ghostscript one](#351-a-web-print-or-max-compression-keeps-the-lossless-rewrite-when-it-is-smaller-than-the-ghostscript-one)
+352. [An ICNS file is read as its largest PNG, JPEG or JPEG 2000 element, else as its largest old-style RLE or ARGB picture](#352-an-icns-file-is-read-as-its-largest-png-jpeg-or-jpeg-2000-element-else-as-its-largest-old-style-rle-or-argb-picture)
 
 ---
 
@@ -10499,3 +10500,22 @@ Security
   - **A cheaper lossless rewrite (no `--recompress-flate`):** 0.0 s but 114,945 bytes (0.954) for the 4-page file, 1.7 % worse than the rewrite the other converter writes; the idea to use if the 10 s ever cuts a real document.
 - **Verified by**: `tests/pdf-compress.test.ts` (the web result of `two-column`, `hyphenated` and `latin` is no larger than the archive one, passes `qpdf --check` and has the same page texts; the settling test; the graph node on an already compressed file), `tests/pdf-compress-qpdf-limits.test.ts` (every qpdf run, the lossless one included, under the signal and the deadline of the job; a lossless rewrite that cannot be sandboxed ends the compression, one that fails leaves the Ghostscript result), run on the Linux VM and the Mac.
 - **Revisit when**: the worker image changes Ghostscript (the margin between pdfwrite and qpdf on text moves with its font handling), a profile promises to keep Ghostscript's fonts, or the 10 s limit cuts a candidate on a real document.
+
+## 352. An ICNS file is read as its largest PNG, JPEG or JPEG 2000 element, else as its largest old-style RLE or ARGB picture
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: fix the refusals a production sweep of the live service found; the reference converter lists `icns` to `png` with `icnsutils` 1.5, which reads these elements)
+- **Decision**: **An ICNS file is read as its largest PNG, JPEG or JPEG 2000 element and, when it has none, as its largest old-style picture** (`src/lib/conversions/ico.ts`, `icns-legacy.ts`, `icns-picture.ts`). A JPEG 2000 element (`ic07` to `ic14`, `icp5`, `icp6` hold it in files from Icon Composer and Apache Tika's test set) is decoded by OpenJPEG, the decoder of the JPEG 2000 sources. The old-style pictures are the 24-bit run-length colour elements `is32`, `il32`, `ih32` and `it32` (the last has four zero bytes before its channels) with the uncompressed 8-bit masks `s8mk`, `l8mk`, `h8mk` and `t8mk` as alpha (opaque without a mask), and the `ARGB` elements `ic04` and `ic05`, four run-length channels in the order alpha, red, green, blue after the tag. A PNG, JPEG or JPEG 2000 element still wins over every old-style one. An element that does not add up (a channel that ends early, bytes after the last channel, a mask of another size, a 128x128 element without its zero header, an `ARGB` element without its tag) is refused with `IcnsDecodeError`; no pixel is guessed.
+- **Why**:
+  - **The sweep refused a real file** (`testICNS_basic.icns`, Apache Tika's test set): its only element is a 512x512 JPEG 2000 picture, and the message said it held no PNG or JPEG image. Icon files from before OS X 10.7 hold only the old-style elements, so every one of them was refused the same way.
+  - **The decoders are the ones the format has in other readers.** The run-length scheme, the zero header of `it32` and the mask layout are those of Pillow's `IcnsImagePlugin.py` (copied with its MIT-CMU licence in the header of `icns-legacy.ts`; `NOTICE`, `docs/licensing.md`); Pillow does not read `ARGB`, so that layout was derived from the files macOS stores and checked against macOS's own decoder.
+- **Measured**: the eight elements of four macOS icon files (`is32`, `il32`, `ih32` and `it32` with their masks, `ic04`, `ic05`; Xcode, a messenger app, system icons) decode to the same pixels as `sips` (0 pixels differ in each); the JPEG 2000 file of the sweep decodes to 512x512, 0 pixels apart from `sips`.
+- **Trade-offs**:
+  - **One picture per file.** The largest element is converted, as before; the smaller sizes are not offered as extra outputs.
+  - **A JPEG 2000 element needs OpenJPEG on the host**, like the `jp2` source; where it is missing the conversion is the same engine-unavailable answer the `jp2` source gives.
+  - **`icp4` to `icp6` in their old 24-bit form are not read** (they are PNG or JPEG 2000 in every file seen); such a file is refused as having no picture element.
+- **Alternatives rejected**:
+  - **Reading only the PNG elements and refusing the rest with a better message:** the reference converts them.
+  - **Writing the reader from the libicns source:** it is LGPL; the clean-room rule keeps it as a behaviour reference only.
+- **Verified by**: `tests/icns-legacy.test.ts` (hand-written run-length, uncompressed and `ARGB` elements decode to known pixels; the zero header; every refusal above; a JP2 element encoded by OpenJPEG decodes to the pixels written; the real Tika file converts to 512x512), `tests/bmp-ico-decode.test.ts` (the existing ICNS cases).
+- **Revisit when**: a file carries `icp4` to `icp6` in the 24-bit form, or a caller needs every size of the family as separate files.

@@ -1,5 +1,6 @@
 import { ConversionFailedError } from '../types';
 import { BmpDecodeError, decodeDib, type DecodedBmp } from './bmp';
+import { LegacyIcnsError, decodeLegacyIcns, type LegacyIcnsPicture } from './icns-legacy';
 import type { PixelBudget } from './image-input-limits';
 
 /**
@@ -16,7 +17,7 @@ export class IcoDecodeError extends ConversionFailedError {
   }
 }
 
-/** A malformed or truncated ICNS file, or one with no PNG or JPEG image in it (HTTP 400). */
+/** A malformed or truncated ICNS file, or one with no picture element this converter reads (HTTP 400). */
 export class IcnsDecodeError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
@@ -121,15 +122,29 @@ export function decodeIco(buf: Buffer, request?: IconSizeRequest, budget?: Pixel
   }
 }
 
-function isDecodableIcnsPayload(chunk: Buffer): boolean {
-  return chunk.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE) || chunk.subarray(0, JPEG_SIGNATURE.length).equals(JPEG_SIGNATURE);
+/** A JPEG 2000 file opens with the signature box (T.800 Annex I.5.1); Apple stores it in the elements from 128x128 up. */
+const JPEG_2000_SIGNATURE = Buffer.from([0x00, 0x00, 0x00, 0x0c, 0x6a, 0x50, 0x20, 0x20, 0x0d, 0x0a, 0x87, 0x0a]);
+
+/** The picture an ICNS file is read as: encoded bytes for the image library or the JPEG 2000 decoder, or decoded pixels. */
+export type IcnsPicture =
+  | { kind: 'encoded'; data: Buffer; jpeg2000: boolean }
+  | { kind: 'raster'; width: number; height: number; rgba: Buffer };
+
+function isEncodedIcnsPayload(chunk: Buffer): boolean {
+  return (
+    chunk.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE) ||
+    chunk.subarray(0, JPEG_SIGNATURE.length).equals(JPEG_SIGNATURE) ||
+    chunk.subarray(0, JPEG_2000_SIGNATURE.length).equals(JPEG_2000_SIGNATURE)
+  );
 }
 
 /**
- * Returns the PNG or JPEG payload of the largest chunk of an ICNS file. Every chunk length is checked against
- * the file length the header declares; a file with no such chunk is refused rather than guessed at.
+ * Returns the picture of an ICNS file: the PNG, JPEG or JPEG 2000 payload of its largest chunk or, when there is none, the
+ * largest old-style picture (RLE colour elements with their masks, and the ARGB elements). Every chunk length is checked
+ * against the file length the header declares; a file with no picture, or an element that does not add up, is refused
+ * rather than guessed at.
  */
-export function decodeIcns(buf: Buffer): Buffer {
+export function decodeIcns(buf: Buffer): IcnsPicture {
   if (buf.length < ICNS_HEADER_BYTES || buf.toString('ascii', 0, 4) !== ICNS_SIGNATURE) {
     throw new IcnsDecodeError('Invalid ICNS file: missing the icns header.');
   }
@@ -138,6 +153,7 @@ export function decodeIcns(buf: Buffer): Buffer {
     throw new IcnsDecodeError(`Invalid ICNS file: the header declares ${total} bytes but the file has ${buf.length}.`);
   }
   let best: Buffer | null = null;
+  const elements: Array<{ type: string; data: Buffer }> = [];
   let offset = ICNS_HEADER_BYTES;
   while (offset + ICNS_HEADER_BYTES <= total) {
     const size = buf.readUInt32BE(offset + 4);
@@ -145,9 +161,21 @@ export function decodeIcns(buf: Buffer): Buffer {
       throw new IcnsDecodeError(`Invalid ICNS file: the chunk at offset ${offset} declares ${size} bytes, past the end of the file.`);
     }
     const payload = buf.subarray(offset + ICNS_HEADER_BYTES, offset + size);
-    if (isDecodableIcnsPayload(payload) && (best === null || payload.length > best.length)) best = payload;
+    if (isEncodedIcnsPayload(payload)) {
+      if (best === null || payload.length > best.length) best = payload;
+    } else {
+      elements.push({ type: buf.toString('latin1', offset, offset + 4), data: payload });
+    }
     offset += size;
   }
-  if (best === null) throw new IcnsDecodeError('Invalid ICNS file: it holds no PNG or JPEG image to decode.');
-  return best;
+  if (best !== null) return { kind: 'encoded', data: best, jpeg2000: best.subarray(0, JPEG_2000_SIGNATURE.length).equals(JPEG_2000_SIGNATURE) };
+  let legacy: LegacyIcnsPicture | null;
+  try {
+    legacy = decodeLegacyIcns(elements);
+  } catch (err) {
+    if (err instanceof LegacyIcnsError) throw new IcnsDecodeError(`Invalid ICNS file: ${err.message}.`);
+    throw err;
+  }
+  if (legacy === null) throw new IcnsDecodeError('Invalid ICNS file: it holds no picture element this converter reads (PNG, JPEG, JPEG 2000, RLE colour or ARGB).');
+  return { kind: 'raster', ...legacy };
 }

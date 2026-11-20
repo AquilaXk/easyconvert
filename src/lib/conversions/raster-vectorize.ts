@@ -22,7 +22,8 @@ import {
 } from '../../worker/sandbox';
 import { isSvg, MAX_GENERATED_SVG_CHARS, sanitizeGeneratedSvg } from '../security/svg-sanitizer';
 import { decodeBmp } from './bmp';
-import { decodeIcns, decodeIco } from './ico';
+import { decodeIco } from './ico';
+import { icnsPictureBytes } from './icns-picture';
 import { pipelineFromBitmap } from './bitmap-pipeline';
 import { decodeExternalImage } from './image-external-source';
 import { withSortedTiffTags } from './image-tiff-directories';
@@ -143,7 +144,7 @@ async function openPicture(input: Buffer, sourceFormat: string, signal?: AbortSi
     return pipelineFromBitmap(icon.bitmap);
   }
   if (sourceFormat === ICNS_SOURCE) {
-    const payload = decodeIcns(input);
+    const payload = await icnsPictureBytes(input, signal);
     await assertEncodedImageWithinLimit(payload, VECTORIZE_PIXEL_BUDGET);
     return openLimitedSharp(payload);
   }
