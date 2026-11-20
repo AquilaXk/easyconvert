@@ -2,10 +2,11 @@ import type { Sharp } from 'sharp';
 import { ConversionOptions, UnsupportedOptionError } from '../types';
 import { encodeBmp8 } from './bmp';
 import { applyOklabQuantizationAndDitherAsync, quantizeImageAsync, type DitherKind } from './color-quantizer';
-import { encodeGif } from './gif-writer';
+import { encodeGif, GIF_MAX_COLORS } from './gif-writer';
+import { encodeColourLimitedAnimation, encodeExactColourGif, libraryWritesColours } from './image-gif-colours';
 import { quantizedBmp8 } from './bmp-palette-quantizer';
 import { quantizesInScript, type ContentClass } from './image-content';
-import { HDR_FLOAT_PIXEL_BUDGET, QUANTIZER_PIXEL_BUDGET, assertPixelBudget, type PixelBudget } from './image-input-limits';
+import { GIF_PHOTO_PIXEL_BUDGET, HDR_FLOAT_PIXEL_BUDGET, QUANTIZER_PIXEL_BUDGET, assertPixelBudget, type PixelBudget } from './image-input-limits';
 import { rgbaRaster, withinQuantizerBudget, writtenSizeOf } from './image-rgba-raster';
 
 /**
@@ -79,6 +80,13 @@ export async function encodeGifOutput(pipeline: Sharp, options: ConversionOption
     const { data, info } = await rgbaRaster(pipeline);
     const indexed = await quantizeImageAsync(data, info.width, info.height, colours, { dither: 'none', transparency: 'threshold', runTolerance: GIF_PHOTO_RUN_TOLERANCE, signal: options.signal });
     return encodeGif({ width: info.width, height: info.height, ...indexed });
+  }
+  // The image library's writer takes the colour count as a bit depth: an animation below 256 colours, or a still picture of a count that is
+  // not 2, 4, 16 or 256, is first reduced to the count here (image-gif-colours.ts).
+  if (keepsAnimation && colours < GIF_MAX_COLORS) return encodeColourLimitedAnimation(pipeline, options, colours);
+  if (!keepsAnimation && !libraryWritesColours(colours)) {
+    await assertPixelBudgetBeforeDecode(pipeline, options, GIF_PHOTO_PIXEL_BUDGET);
+    return encodeExactColourGif(pipeline, options, colours);
   }
   return pipeline.gif({ colours, dither: options.dither !== false ? 1.0 : 0.0 }).toBuffer();
 }

@@ -1,5 +1,7 @@
 import sharp from 'sharp';
 import { ConversionFailedError } from '../types';
+import { encodeGif as encodeGifFrame } from './gif-writer';
+import { libraryWritesColours, quantizeGifPicture } from './image-gif-colours';
 
 /**
  * Animated GIF and WebP assembly from decoded frames.
@@ -181,6 +183,17 @@ function assertFrameSize(frame: RawFrame, source: FrameSource, index: number): v
   }
 }
 
+/** One frame as a single-frame GIF with at most `options.colours` colours: the image library writes the counts that are its bit depths, a quantizer reduces the frame to any other. */
+async function encodeGifFrameWithColours(frame: RawFrame, options: AnimationEncodeOptions): Promise<Buffer> {
+  if (libraryWritesColours(options.colours)) {
+    return sharp(frame.data, { raw: { width: frame.width, height: frame.height, channels: RGBA_CHANNELS } })
+      .gif({ colours: options.colours, dither: options.dither })
+      .toBuffer();
+  }
+  // The caller may read the frame again, and the quantizer overwrites the pixels it is given.
+  return encodeGifFrame(await quantizeGifPicture(Buffer.from(frame.data), frame.width, frame.height, { colours: options.colours, dither: options.dither > 0 }));
+}
+
 async function encodeGif(source: FrameSource, options: AnimationEncodeOptions): Promise<Buffer> {
   const parsed: ParsedGifFrame[] = [];
   let anyTransparency = false;
@@ -188,10 +201,7 @@ async function encodeGif(source: FrameSource, options: AnimationEncodeOptions): 
     const frame = await source.frame(index);
     assertFrameSize(frame, source, index);
     anyTransparency = anyTransparency || hasTransparentPixel(frame.data);
-    const single = await sharp(frame.data, { raw: { width: frame.width, height: frame.height, channels: RGBA_CHANNELS } })
-      .gif({ colours: options.colours, dither: options.dither })
-      .toBuffer();
-    parsed.push(parseSingleFrameGif(single));
+    parsed.push(parseSingleFrameGif(await encodeGifFrameWithColours(frame, options)));
   }
   const header = Buffer.alloc(GIF_HEADER_BYTES + GIF_LSD_BYTES);
   header.write(GIF_SIGNATURE, 0, 'latin1');

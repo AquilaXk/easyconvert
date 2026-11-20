@@ -545,6 +545,7 @@
   "tests/image-format-signatures.test.ts": 8.4,
   "tests/image-frame-metadata-api.test.ts": 2.7,
   "tests/image-frame-selection.test.ts": 27.9,
+  "tests/image-gif-colour-count.test.ts": 4.3,
   "tests/image-gif-photo-budget.test.ts": 12,
   "tests/image-gif-photo-route.test.ts": 5.4,
   "tests/image-graphic-avif-parity.test.ts": 19.7,
