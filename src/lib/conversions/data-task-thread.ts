@@ -3,6 +3,7 @@ import { transferableBytes } from '../workers/cpu-tasks';
 import { withConversionWarnings } from './conversion-warnings';
 import { convertDataInline, writeTransientWorkbookInline } from './data';
 import { failureOf, type DataTaskOutcome, type DataTaskPayload } from './data-task';
+import { writeSheetInline, type SheetTarget } from './office/sheet-write';
 
 /**
  * The thread side of `convertOnDataThread` (data-task.ts), loaded by the pool thread when its first data task arrives: it runs the
@@ -15,7 +16,10 @@ export async function runDataTask(raw: unknown): Promise<HandlerResult> {
   try {
     const converted = await withConversionWarnings(async () => {
       if (payload.task === 'workbook') {
-        const workbook = await writeTransientWorkbookInline(input, payload.sourceFormat, payload.options);
+        const { sourceFormat, targetFormat, options } = payload;
+        const workbook = targetFormat === 'xls'
+          ? await writeTransientWorkbookInline(input, sourceFormat, options)
+          : await writeSheetInline(input, sourceFormat, targetFormat as SheetTarget, options, payload.originalFilename);
         return { buffer: workbook, mimeType: 'application/octet-stream', filename: '', metadata: undefined as { warnings?: string[] } | undefined };
       }
       const result = await convertDataInline(input, payload.sourceFormat, payload.targetFormat, payload.options, payload.originalFilename);

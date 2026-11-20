@@ -13,7 +13,7 @@ import Papa from 'papaparse';
 import { documentToOdt } from '../document-model/odt';
 import { readEpubModel } from '../source-model';
 import { convertDocxSource } from './convert-docx';
-import { convertXlsxSource, officeSheetWorkbook } from './xlsx-convert';
+import { convertXlsxSource } from './xlsx-convert';
 import { convertPotxSource, convertPptxSource } from './pptx-convert';
 import { convertOdpSource } from './odp-convert';
 import { convertOdsSource, convertOdtSource, convertOpenDocumentGraphicSource } from './odf-convert';
@@ -24,7 +24,8 @@ import { convertEtSource, convertGenericDocumentSource, convertGenericEbookSourc
 import { extractTextContentForOffice } from './text-extraction';
 import { generateDocxFromExtractedText, generateDocxFromText, generateEpubFromText, generateFb2FromText, generateHwpFromText, generatePptxFromText, modelFromExtractedText } from './office-from-text';
 import { extractRowsForOffice } from './sheet-extract';
-import { generateOdpFromSlides, generateOdsFromData, generateOdtFromText } from './odf-writers';
+import { writeSheet } from './sheet-write';
+import { generateOdpFromSlides, generateOdtFromText } from './odf-writers';
 import { generatePdfFromDocx } from './docx-pdf';
 import { escapeMarkupAttribute } from '../../text/escape';
 import { escapeRtf } from './rtf-escape';
@@ -124,13 +125,12 @@ const TARGET_CONVERTERS: ReadonlyMap<string, FormatConverter> = new Map<string, 
   }],
   // Target is XLSX (from CSV, TSV, JSON)
   ['xlsx', async (input, src, _tgt, options, baseName) => {
-    const xlsxBuffer = await officeSheetWorkbook(input, src, options);
+    const xlsxBuffer = await writeSheet(input, src, 'xlsx', options, baseName);
     return officeResult(xlsxBuffer, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', baseName, 'xlsx');
   }],
   // Target is ODS (OpenDocument Spreadsheet)
   ['ods', async (input, src, _tgt, options, baseName) => {
-    const rows = await extractRowsForOffice(input, src, options);
-    return officeResult(await generateOdsFromData(rows, baseName), 'application/vnd.oasis.opendocument.spreadsheet', baseName, 'ods');
+    return officeResult(await writeSheet(input, src, 'ods', options, baseName), 'application/vnd.oasis.opendocument.spreadsheet', baseName, 'ods');
   }],
   // Target is XLS: only the office suite writes a BIFF8 workbook, from the XLSX workbook this engine writes (the worker's route)
   ['xls', async (_input, src, tgt) => {

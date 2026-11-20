@@ -1,4 +1,5 @@
 import { DataEncodingError, UnsupportedOptionError } from '../types';
+import { assertDataInputBytes, assertDataItemCount } from './data-limits';
 import { LEGACY_TABLES, MIN_LEGACY_EVIDENCE_CHARS, decodeWithTable } from './legacy-tables';
 
 /** Decoding of delimited text (CSV / TSV / TAB) and of the other data sources that name their own encoding, shared by the data engine and the sheet writers of the office engine. */
@@ -290,4 +291,15 @@ export function decodeDelimitedText(bytes: Uint8Array, requestedEncoding?: strin
     // Not UTF-8: fall through to the legacy candidates.
   }
   return detectLegacyText(bytes);
+}
+
+/**
+ * `decodeDelimitedText` of a source held to the size and the count of cells and records of `DATA_SOURCE_LIMITS.delimited`: the size is
+ * checked before the bytes are decoded and the count before the text is parsed, so a hostile text is refused (413) before any cell exists.
+ */
+export function decodeCheckedDelimitedText(bytes: Uint8Array, requestedEncoding: string | undefined, label: string): string {
+  assertDataInputBytes('delimited', bytes.length, label);
+  const text = decodeDelimitedText(bytes, requestedEncoding);
+  assertDataItemCount('delimited', text, label);
+  return text;
 }
