@@ -471,7 +471,7 @@
   "tests/html-external-images-load.test.ts": 8.1,
   "tests/html-external-images.test.ts": 1.6,
   "tests/html-image-fetch.test.ts": 1,
-  "tests/html-image-session.test.ts": 4.6,
+  "tests/html-image-session.test.ts": 5.2,
   "tests/html-image-without-source.test.ts": 1.9,
   "tests/html-implied-structure.test.ts": 6.5,
   "tests/html-model-warnings.test.ts": 0.2,

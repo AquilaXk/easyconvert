@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -248,6 +249,75 @@ describe('the caps of a session', () => {
     await refusal(session.fetch(at('/hang.png')));
     expect(Date.now() - started).toBeLessThan(8000);
     expect((await refusal(session.fetch(at('/a.png')))).message).toMatch(/too long/);
+  });
+});
+
+/** A loopback port nothing listens on, so a connection to it is refused at once. */
+async function closedPort(): Promise<number> {
+  const probe = net.createServer();
+  await new Promise<void>((resolve) => probe.listen(0, LOOPBACK, resolve));
+  const { port } = probe.address() as net.AddressInfo;
+  await new Promise((resolve) => probe.close(resolve));
+  return port;
+}
+
+describe('a host that cannot be reached', () => {
+  const DEAD_HOST = 'dead.test';
+  const deadAt = (port: number, pathAndQuery: string): string => `http://${DEAD_HOST}:${port}${pathAndQuery}`;
+
+  beforeEach(() => {
+    restore?.();
+    restore = overrideImageFetchRules({ hosts: { [HOST]: [LOOPBACK], [DEAD_HOST]: [LOOPBACK], 'dead2.test': [LOOPBACK] }, permitAddresses: [LOOPBACK], anyPort: true });
+  });
+
+  it('is asked once: the other images of the host are given up without a request', async () => {
+    const port = await closedPort();
+    const session = new ImageFetchSession();
+    try {
+      const first = await refusal(session.fetch(deadAt(port, '/a.png')));
+      expect(first.unreachableHost).toBe(`${DEAD_HOST}:${port}`);
+      // The host comes up on the same port: the session still does not ask it, so nothing reaches this server.
+      const connections: net.Socket[] = [];
+      const revived = net.createServer((socket) => connections.push(socket));
+      await new Promise<void>((resolve) => revived.listen(port, LOOPBACK, resolve));
+      try {
+        const second = await refusal(session.fetch(deadAt(port, '/b.png')));
+        expect(second.message).toBe(first.message);
+        expect(second.unreachableHost).toBe(`${DEAD_HOST}:${port}`);
+        expect(connections).toHaveLength(0);
+      } finally {
+        connections.forEach((socket) => socket.destroy());
+        await new Promise((resolve) => revived.close(resolve));
+      }
+      // A host that answers is still fetched.
+      expect((await session.fetch(at('/a.png'))).mime).toBe('image/png');
+    } finally {
+      session.close();
+    }
+  });
+
+  it('does not stop the fetches from a host that answered with an error status', async () => {
+    const session = new ImageFetchSession();
+    try {
+      expect((await refusal(session.fetch(at('/missing.png')))).unreachableHost).toBeUndefined();
+      expect((await session.fetch(at('/a.png'))).mime).toBe('image/png');
+    } finally {
+      session.close();
+    }
+  });
+
+  it('ends the attempts on new hosts once the most hosts of a session were found unreachable', async () => {
+    const port = await closedPort();
+    const session = new ImageFetchSession({ maxUnreachableHosts: 1 });
+    try {
+      await refusal(session.fetch(deadAt(port, '/a.png')));
+      const error = await refusal(session.fetch(`http://dead2.test:${port}/a.png`));
+      expect(error.message).toBe('the limit of 1 unreachable hosts per document was reached');
+      expect(error.unreachableHost).toBeUndefined();
+      expect(server.requests).toHaveLength(0);
+    } finally {
+      session.close();
+    }
   });
 });
 

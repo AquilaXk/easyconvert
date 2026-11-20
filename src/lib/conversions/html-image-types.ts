@@ -12,6 +12,10 @@ export interface ImageFetchLimits {
   maxImages: number;
   /** Longest one fetch, redirects included, in milliseconds. */
   perFetchMs: number;
+  /** Longest a connection to a host may take to be accepted, in milliseconds; a host that does not answer in time is not tried again. */
+  connectMs: number;
+  /** Most hosts of a session that may be found unreachable before a host not yet tried is given up without a connection. */
+  maxUnreachableHosts: number;
   /** Longest all fetches of a session together, in milliseconds. */
   totalMs: number;
   /** Most redirects followed for one image. */
@@ -25,16 +29,32 @@ export const IMAGE_FETCH_LIMITS: Readonly<ImageFetchLimits> = {
   maxTotalBytes: 50 * MEBIBYTE,
   maxImages: 100,
   perFetchMs: 10_000,
+  connectMs: 2_000,
+  maxUnreachableHosts: 3,
   totalMs: 30_000,
   maxRedirects: 3,
 };
 
 /** A fetch that was refused or failed; the message is the reason a warning or a 400 reports. */
 export class ImageFetchRefusal extends Error {
-  constructor(message: string) {
+  /**
+   * @param unreachableHost `host:port` when the refusal is that the host could not be reached (it did not accept the connection in
+   *   time, refused it, has no route or no address): the session does not try that host again.
+   */
+  constructor(
+    message: string,
+    readonly unreachableHost?: string
+  ) {
     super(message);
     this.name = 'ImageFetchRefusal';
   }
+}
+
+/** `host:port` of an http or https URL (the scheme's default port when it names none), the key under which an unreachable host is remembered. */
+export function hostKey(url: URL): string {
+  const host = url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname;
+  const defaultPort = url.protocol === 'https:' ? 443 : 80;
+  return `${host.toLowerCase()}:${url.port === '' ? defaultPort : url.port}`;
 }
 
 export type FetchedImageType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
@@ -77,6 +97,7 @@ export interface ImageFetchRequest {
   maxBytes: number;
   tooLargeReason: string;
   timeoutMs: number;
+  connectTimeoutMs: number;
   maxRedirects: number;
   testRules?: ImageFetchTestRules;
 }
@@ -86,7 +107,7 @@ export interface ImageFetchRequest {
  * is a sequence of frames, each a 4-byte big-endian length and that many bytes of JSON; a successful reply is that
  * frame followed by `length` bytes of image.
  */
-export type ImageFetchReply = { ok: true; mime: FetchedImageType; length: number } | { ok: false; reason: string };
+export type ImageFetchReply = { ok: true; mime: FetchedImageType; length: number } | { ok: false; reason: string; unreachableHost?: string };
 
 /** Longest JSON frame either side accepts. */
 export const MAX_FRAME_BYTES = 64 * 1024;

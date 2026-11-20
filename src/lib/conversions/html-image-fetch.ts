@@ -10,6 +10,7 @@ import { olderThanSource } from '../workers/compiled-worker';
 import {
   FRAME_PREFIX_BYTES,
   IMAGE_FETCH_LIMITS,
+  hostKey,
   ImageFetchRefusal,
   jsonFrame,
   MAX_FRAME_BYTES,
@@ -243,7 +244,10 @@ class FetcherChild {
 }
 
 function imageOf(reply: ChildReply): FetchedImage {
-  if (!reply.header.ok) throw new ImageFetchRefusal(typeof reply.header.reason === 'string' ? reply.header.reason : 'the image could not be loaded');
+  if (!reply.header.ok) {
+    const { reason, unreachableHost } = reply.header;
+    throw new ImageFetchRefusal(typeof reason === 'string' ? reason : 'the image could not be loaded', typeof unreachableHost === 'string' ? unreachableHost : undefined);
+  }
   // The child is not trusted with the verdict: the signature is checked again here.
   const mime = sniffImageType(reply.bytes);
   if (reply.bytes.length === 0 || mime === null || mime !== reply.header.mime) {
@@ -270,6 +274,8 @@ export class ImageFetchSession {
   private crashRestarts = 0;
   private broken = false;
   private started = 0;
+  /** `host:port` of the hosts a fetch found unreachable, with the reason; none of them is asked again. */
+  private readonly unreachable = new Map<string, string>();
   private readonly onAbort = (): void => this.stopChild();
 
   constructor(
@@ -331,12 +337,38 @@ export class ImageFetchSession {
     if (this.attempts >= this.limits.maxImages) {
       throw new ImageFetchRefusal(`the limit of ${this.limits.maxImages} images per document was reached`);
     }
+    this.throwIfHostGivenUp(reference);
     this.attempts++;
     const remaining = this.deadline - Date.now();
     if (remaining <= 0) throw timedOut();
-    const image = await this.ask(reference, Math.min(this.limits.perFetchMs, remaining));
+    let image: FetchedImage;
+    try {
+      image = await this.ask(reference, Math.min(this.limits.perFetchMs, remaining));
+    } catch (error) {
+      if (error instanceof ImageFetchRefusal && error.unreachableHost !== undefined) this.unreachable.set(error.unreachableHost, error.message);
+      throw error;
+    }
     this.totalBytes += image.bytes.length;
     return image;
+  }
+
+  /**
+   * A host that could not be reached is not tried again, and once `maxUnreachableHosts` of them have been found, no host not yet tried is:
+   * a page whose pictures sit on a dead server would otherwise wait out one connection per picture (or per host).
+   */
+  private throwIfHostGivenUp(reference: string): void {
+    if (this.unreachable.size === 0) return;
+    let key: string;
+    try {
+      key = hostKey(new URL(reference));
+    } catch {
+      return;
+    }
+    const reason = this.unreachable.get(key);
+    if (reason !== undefined) throw new ImageFetchRefusal(reason, key);
+    if (this.unreachable.size >= this.limits.maxUnreachableHosts) {
+      throw new ImageFetchRefusal(`the limit of ${this.limits.maxUnreachableHosts} unreachable hosts per document was reached`);
+    }
   }
 
   private ensureChild(): FetcherChild {
@@ -356,6 +388,7 @@ export class ImageFetchSession {
           ? `the images together would pass the total size of ${this.limits.maxTotalBytes} bytes`
           : `the image is larger than ${this.limits.maxImageBytes} bytes`,
       timeoutMs,
+      connectTimeoutMs: this.limits.connectMs,
       maxRedirects: this.limits.maxRedirects,
       ...(testRules ? { testRules } : {}),
     };

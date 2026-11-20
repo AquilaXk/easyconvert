@@ -398,6 +398,7 @@ Security
 347. [A format id that names files of another format is held to that format's signature, and every refusal of the spoof check carries a code](#347-a-format-id-that-names-files-of-another-format-is-held-to-that-formats-signature-and-every-refusal-of-the-spoof-check-carries-a-code)
 348. [A PDF protected with a 128-bit key is encrypted with AES-128, never RC4](#348-a-pdf-protected-with-a-128-bit-key-is-encrypted-with-aes-128-never-rc4)
 349. [Lossy audio is written at the reference converter's default rates, and a mono Opus track at the encoder's mono rate](#349-lossy-audio-is-written-at-the-reference-converters-default-rates-and-a-mono-opus-track-at-the-encoders-mono-rate)
+350. [An image host that cannot be reached is asked once per document, and a connection that is not accepted within two seconds is given up](#350-an-image-host-that-cannot-be-reached-is-asked-once-per-document-and-a-connection-that-is-not-accepted-within-two-seconds-is-given-up)
 
 ---
 
@@ -10454,3 +10455,25 @@ Security
   - **128 kbit/s for mono Opus too, as the reference does:** it reproduces the growth of a small clip.
 - **Verified by**: `tests/media-audio-default-rates.test.ts` (the arguments of MP3, AAC, M4A, M4B, WMA and AC-3 with and without a requested bitrate; a 16 kHz mono tone converted to MP3 under half of the old constant rate; Opus and WebM audio from mono and stereo WAV, from a mono and a stereo MP4 and from a mono track beside a stereo one; a requested bitrate or channel count over the default; an input that cannot be probed), `tests/mp4-layout.test.ts` (the channels against `ffprobe`), `tests/media-opus-channel-layout.test.ts` and `tests/media-video-transcode-overhead.test.ts` (no prober process for a plain MP4 to WebM), `tests/media-audio-targets.test.ts` (AC-3 and Opus defaults; run on the Linux VM, which has libvorbis).
 - **Revisit when**: the reference lists a default for Ogg, Opus or AC-3 output; QA wants the stereo MP3 smaller than the reference's; QA wants the Opus rate to follow the channel count in more steps (5.1 at 192 kbit/s, for example).
+
+## 350. An image host that cannot be reached is asked once per document, and a connection that is not accepted within two seconds is given up
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: comparison with three self-hosted converters; an HTML page of the real-world corpus whose pictures sit on one dead address took 30.7 s to convert where another converter took 0.9 s)
+- **Decision**:
+  - **A connection to an image host is given up when it is not accepted within 2 s** (`connectMs` in `IMAGE_FETCH_LIMITS`, `src/lib/conversions/html-image-types.ts`; a timer on the socket in `html-image-fetch-core.ts`). The 10 s limit of one fetch and the 30 s limit of a document are unchanged and still bound the rest.
+  - **A host that could not be reached is not asked again in the same document.** Unreachable means that the connection was not accepted in time, was refused, or had no route (`ECONNREFUSED`, `ETIMEDOUT`, `EHOSTUNREACH`, `ENETUNREACH`), or that the name did not resolve. The fetch session (`ImageFetchSession`) remembers `host:port` and answers the next picture of that host with the same reason, with no request to the fetcher child.
+  - **Once 3 hosts of a document were found unreachable (`maxUnreachableHosts`), a host not yet tried is given up without a connection**, with the reason "the limit of 3 unreachable hosts per document was reached". Pictures already fetched stay in the document.
+  - **Every picture that is given up is left out and listed as before** (a warning with the address and the reason; a 400 when `requireResources` is set). The address checks, the pinned lookup, the check of the connected peer, and the port, redirect and size limits are untouched.
+- **Why**: The page (`govdocs1-000014.html`, 38 KB, about 15 `img` tags) names 3 distinct picture addresses, all on 206.241.31.141, which drops connection attempts. Each one waited out the 10 s of a fetch, so the page took 30 s (the limit of the document) to reach LibreOffice, for pictures that could never load. A second picture from an address that did not answer says nothing new. A connection to a public server is accepted in well under a second; 2 s covers one lost SYN (the retry comes after 1 s).
+- **Measured**: 30.29 s to 2.31 s on the Mac (Node 24), 30.09 s to 2.13 s on the Linux VM (4 cores); the PDF is the same size before and after (21,048 bytes on the VM). What remains is the 2 s of the first connection attempt.
+- **Trade-offs**:
+  - **A host that is slow to accept (more than 2 s) loses its pictures.** The page converts without them, with the warning.
+  - **A refused port counts as unreachable for that host and port.** A second picture on the same port would be refused too.
+  - **A page with pictures on 4 or more dead hosts gives up the later ones untried**, and a live fourth host loses its pictures if three dead ones come first. That bounds the waiting to 3 connection attempts (6 s).
+- **Alternatives rejected**:
+  - **Fetching the pictures of a document in parallel:** the size, count and time limits are shared and the order decides which picture is left out (see `loadExternalImages`); waiting for a dead host is not a throughput problem.
+  - **A shorter limit than 10 s for the fetch:** a slow image server that is up still sends its picture within 10 s; only the connection to a dead one is wasted time.
+  - **Remembering dead hosts across jobs:** a host that was down a minute ago may be up now, and the worker serves unrelated users.
+- **Verified by**: `tests/html-image-fetch.test.ts` (a connection that never completes is refused after the connect time, names the host and sends no request; a refused port and an unresolvable name name the host, a 503 answer does not), `tests/html-image-session.test.ts` (the second picture of a host that came up again is still given up, with no connection made, a live host is still fetched, a 404 does not close its host, the limit of unreachable hosts), `tests/html-external-images-load.test.ts`.
+- **Revisit when**: a real page loses pictures to the 2 s (raise `connectMs`), the fetcher gains an outbound proxy with timing of its own, or the time limit of a document changes.

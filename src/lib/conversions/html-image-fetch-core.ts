@@ -2,7 +2,7 @@ import dns from 'node:dns';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
-import { ImageFetchRefusal, SUPPORTED_TYPES_TEXT, sniffImageType, type FetchedImage } from './html-image-types';
+import { hostKey, ImageFetchRefusal, SUPPORTED_TYPES_TEXT, sniffImageType, type FetchedImage } from './html-image-types';
 import { isPublicAddress } from './public-address';
 
 /**
@@ -65,6 +65,8 @@ export function overrideImageFetchEnvironment(overrides: Partial<ImageFetchEnvir
   };
 }
 
+/** Socket errors that say the host cannot be reached at all, so another request to it would wait or fail the same way. */
+const UNREACHABLE_CODES: ReadonlySet<string> = new Set(['ETIMEDOUT', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH']);
 const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
 /** Host name suffixes that only exist inside a network. */
 const INTERNAL_SUFFIXES = ['localhost', 'local', 'localdomain', 'internal', 'intranet', 'lan', 'home.arpa'];
@@ -86,6 +88,13 @@ function bareHostname(url: URL): string {
 function portOf(url: URL): number {
   if (url.port !== '') return Number(url.port);
   return url.protocol === 'https:' ? 443 : 80;
+}
+
+/** Whether a socket error (or any of the errors of an address-family race) is one of UNREACHABLE_CODES. */
+function isUnreachable(error: Error): boolean {
+  const { code, errors } = error as { code?: unknown; errors?: unknown };
+  if (typeof code === 'string' && UNREACHABLE_CODES.has(code)) return true;
+  return Array.isArray(errors) && errors.some((inner) => inner instanceof Error && isUnreachable(inner));
 }
 
 function timedOut(): ImageFetchRefusal {
@@ -131,9 +140,9 @@ async function checkedAddresses(url: URL, signal: AbortSignal): Promise<string[]
     answers = await raceAbort(environment.resolve(host, signal), signal);
   } catch (error) {
     if (error instanceof ImageFetchRefusal) throw error;
-    throw new ImageFetchRefusal('the host could not be resolved');
+    throw new ImageFetchRefusal('the host could not be resolved', hostKey(url));
   }
-  if (answers.length === 0) throw new ImageFetchRefusal('the host could not be resolved');
+  if (answers.length === 0) throw new ImageFetchRefusal('the host could not be resolved', hostKey(url));
   if (!answers.every((address) => environment.permitAddress(address))) throw new ImageFetchRefusal(NOT_PUBLIC);
   return answers;
 }
@@ -156,7 +165,7 @@ interface Response {
   stream: http.IncomingMessage;
 }
 
-function request(url: URL, addresses: readonly string[], signal: AbortSignal): Promise<Response> {
+function request(url: URL, addresses: readonly string[], signal: AbortSignal, connectTimeoutMs: number): Promise<Response> {
   return new Promise<Response>((resolve, reject) => {
     const secure = url.protocol === 'https:';
     const host = bareHostname(url);
@@ -184,13 +193,25 @@ function request(url: URL, addresses: readonly string[], signal: AbortSignal): P
       const check = (): void => {
         if (!environment.permitAddress(socket.remoteAddress ?? '')) req.destroy(new ImageFetchRefusal(NOT_PUBLIC));
       };
-      if (socket.connecting) socket.once('connect', check);
-      else check();
+      if (!socket.connecting) {
+        check();
+        return;
+      }
+      // A host that drops the connection attempts would otherwise hold the fetch until the time of the whole fetch is spent.
+      const connectTimer = setTimeout(
+        () => req.destroy(new ImageFetchRefusal('the server did not accept the connection in time', hostKey(url))),
+        connectTimeoutMs
+      );
+      socket.once('close', () => clearTimeout(connectTimer));
+      socket.once('connect', () => {
+        clearTimeout(connectTimer);
+        check();
+      });
     });
     req.on('error', (error) => {
       if (error instanceof ImageFetchRefusal) reject(error);
       else if (signal.aborted) reject(timedOut());
-      else reject(new ImageFetchRefusal('the server could not be reached'));
+      else reject(new ImageFetchRefusal('the server could not be reached', isUnreachable(error) ? hostKey(url) : undefined));
     });
     req.end();
   });
@@ -260,6 +281,8 @@ export interface FetchOptions {
   tooLargeReason: string;
   /** Longest the whole fetch may take, redirects included. */
   timeoutMs: number;
+  /** Longest a connection may take to be accepted, per request. */
+  connectTimeoutMs: number;
   maxRedirects: number;
 }
 
@@ -269,7 +292,7 @@ export async function fetchImage(reference: string, options: FetchOptions): Prom
   const signal = AbortSignal.timeout(options.timeoutMs);
   for (let redirects = 0; ; redirects++) {
     const addresses = await checkedAddresses(url, signal);
-    const response = await request(url, addresses, signal);
+    const response = await request(url, addresses, signal, options.connectTimeoutMs);
     if (REDIRECT_STATUSES.has(response.status)) {
       response.stream.destroy();
       if (redirects >= options.maxRedirects) throw new ImageFetchRefusal(`the image redirects more than ${options.maxRedirects} times`);

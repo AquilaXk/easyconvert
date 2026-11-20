@@ -55,6 +55,7 @@ function fetchOne(reference: string, limits: Partial<ImageFetchLimits> = {}): Re
     maxBytes: effective.maxImageBytes,
     tooLargeReason: `the image is larger than ${effective.maxImageBytes} bytes`,
     timeoutMs: effective.perFetchMs,
+    connectTimeoutMs: effective.connectMs,
     maxRedirects: effective.maxRedirects,
   });
 }
@@ -465,7 +466,23 @@ describe('what the response may be', () => {
     const closed = await startImageServer();
     const port = closed.port;
     await closed.close();
-    expect((await refusal(fetchOne(url(PUBLIC_HOST, '/a.png', port)))).message).toMatch(/could not be reached/);
+    const error = await refusal(fetchOne(url(PUBLIC_HOST, '/a.png', port)));
+    expect(error.message).toMatch(/could not be reached/);
+    expect(error.unreachableHost).toBe(`${PUBLIC_HOST}:${port}`);
+  });
+
+  it('does not name a server that answered with an error status as unreachable', async () => {
+    server.route('/s', (_request, response) => {
+      response.writeHead(503);
+      response.end();
+    });
+    expect((await refusal(fetchOne(url(PUBLIC_HOST, '/s')))).unreachableHost).toBeUndefined();
+  });
+
+  it('names a host that does not resolve as unreachable', async () => {
+    const error = await refusal(fetchOne(url('nowhere.test', '/a.png')));
+    expect(error.message).toBe('the host could not be resolved');
+    expect(error.unreachableHost).toBe(`nowhere.test:${server.port}`);
   });
 });
 
@@ -476,6 +493,19 @@ describe('time limits', () => {
     const error = await refusal(fetchOne(url(PUBLIC_HOST, '/hang'), { perFetchMs: 300, totalMs: 5000 }));
     expect(error.message).toMatch(/too long/);
     expect(Date.now() - started).toBeLessThan(2500);
+  });
+
+  it('gives up on a host that does not accept the connection within the connect time, before the fetch time', async () => {
+    // A host that drops the connection attempts leaves the socket connecting for good; here the attempt is never made.
+    connectSpy.mockImplementation(function (this: net.Socket) {
+      Object.defineProperty(this, 'connecting', { value: true, configurable: true });
+      return this;
+    });
+    // The fetch limit is 10 s: the refusal being the connect one, and not the "took too long" of the fetch, shows the connect timer fired first.
+    const error = await refusal(fetchOne(url(PUBLIC_HOST, '/a.png'), { connectMs: 200, perFetchMs: 10_000, totalMs: 30_000 }));
+    expect(error.message).toBe('the server did not accept the connection in time');
+    expect(error.unreachableHost).toBe(`${PUBLIC_HOST}:${server.port}`);
+    expect(server.requests).toHaveLength(0);
   });
 
   it('refuses a body that trickles in too slowly', async () => {
@@ -495,6 +525,8 @@ describe('time limits', () => {
       maxTotalBytes: 50 * 1024 * 1024,
       maxImages: 100,
       perFetchMs: 10_000,
+      connectMs: 2_000,
+      maxUnreachableHosts: 3,
       totalMs: 30_000,
       maxRedirects: 3,
     });

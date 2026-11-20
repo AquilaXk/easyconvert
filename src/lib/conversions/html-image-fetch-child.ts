@@ -46,11 +46,19 @@ async function answer(request: ImageFetchRequest): Promise<void> {
       maxBytes: request.maxBytes,
       tooLargeReason: request.tooLargeReason,
       timeoutMs: request.timeoutMs,
+      connectTimeoutMs: request.connectTimeoutMs,
       maxRedirects: request.maxRedirects,
     });
     await write(Buffer.concat([jsonFrame({ ok: true, mime: image.mime, length: image.bytes.length }), image.bytes]));
   } catch (error) {
-    await write(jsonFrame({ ok: false, reason: error instanceof ImageFetchRefusal ? error.message : FALLBACK_REASON }));
+    const refusal = error instanceof ImageFetchRefusal ? error : undefined;
+    await write(
+      jsonFrame({
+        ok: false,
+        reason: refusal ? refusal.message : FALLBACK_REASON,
+        ...(refusal?.unreachableHost === undefined ? {} : { unreachableHost: refusal.unreachableHost }),
+      })
+    );
   }
 }
 
