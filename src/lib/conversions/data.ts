@@ -50,12 +50,13 @@ import { parseXmlDocument, serializeDataToXml, xmlRecords, xmlStringValue, xmlTo
 import { assertToml10Syntax } from './data-toml';
 import { assertDataInputBytes, assertDataItemCount } from './data-limits';
 import { convertOnDataThread } from './data-task';
+import { SHEET_TEXT_SOURCES } from './office/sheet-write';
 import { assertConversionOptionsObject } from './options-guard';
 import { delimitedToParquet, jsonLinesToDelimited, parquetToDelimited, parquetToJson } from './data-fast-paths';
 import { DELIMITED_RECORD_SEPARATOR, FORMULA_TRIGGER, UTF8_BOM_CHAR, writesBomByDefault } from './delimited-rules';
 import { DELIMITER_CANDIDATES, detectDelimiter, nominalDelimiter, parseDelimitedRecords, raggedRowWarnings } from './delimited-detect';
 import { reportConversionWarning } from './conversion-warnings';
-import { canonicalEncoding, decodeDelimitedText, decodeStrict, sniffBom, sniffUtf16ByNulPattern } from './delimited-text-decoder';
+import { canonicalEncoding, decodeCheckedDelimitedText, decodeStrict, sniffBom, sniffUtf16ByNulPattern } from './delimited-text-decoder';
 import { escapeMarkupAttribute } from '../text/escape';
 
 export { encodeParquet, decodeParquet };
@@ -110,9 +111,7 @@ function assertDataOptions(options: unknown): asserts options is ConversionOptio
  * evened out and reported in the warnings of the conversion.
  */
 function parseDelimitedTable(inputBuffer: Buffer, src: string, options: ConversionOptions): DelimitedTable {
-  assertDataInputBytes('delimited', inputBuffer.length, src.toUpperCase());
-  const text = decodeDelimitedText(inputBuffer, options.encoding);
-  assertDataItemCount('delimited', text, src.toUpperCase());
+  const text = decodeCheckedDelimitedText(inputBuffer, options.encoding, src.toUpperCase());
   const delimiter = resolveDelimiter(text, src, options.delimiter);
   const { fields, records, ragged } = parseDelimitedRecords(text, delimiter, src);
   for (const line of raggedRowWarnings(ragged, src)) reportConversionWarning(line);
@@ -795,7 +794,7 @@ export const STRUCTURED_SHEET_SOURCES: ReadonlySet<string> = new Set(['parquet',
  */
 export async function writeTransientWorkbook(inputBuffer: Buffer, src: string, options: ConversionOptions): Promise<Buffer> {
   if (STRUCTURED_SHEET_SOURCES.has(src)) assertDataOptions(options);
-  const onThread = STRUCTURED_SHEET_SOURCES.has(src) ? await convertOnDataThread('workbook', inputBuffer, src, 'xls', options, '') : null;
+  const onThread = STRUCTURED_SHEET_SOURCES.has(src) || SHEET_TEXT_SOURCES.has(src) ? await convertOnDataThread('workbook', inputBuffer, src, 'xls', options, '') : null;
   return onThread ?? writeTransientWorkbookInline(inputBuffer, src, options);
 }
 

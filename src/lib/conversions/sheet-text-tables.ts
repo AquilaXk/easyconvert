@@ -1,5 +1,6 @@
 import { DataParseError, type ConversionOptions } from '../types';
 import { dataObjectKeys, fieldsInFirstSeenOrder, isDataObject, parseJsonLossless } from './data-json';
+import { assertDataInputBytes, assertDataItemCount } from './data-limits';
 import { parseDelimitedRows } from './delimited-detect';
 import { sheetCellOfValue, type SheetCell } from './xlsx-writer';
 
@@ -24,6 +25,14 @@ export function parseJsonTableCells(text: string): SheetCell[][] {
   }
   if (parsed.some((item) => typeof item === 'object' && item !== null)) throw new DataParseError(JSON_TABLE_SHAPE_MESSAGE);
   return [['Value'], ...parsed.map((item) => [sheetCellOfValue(item)])];
+}
+
+/** The text of a JSON source of at most the size and the count of objects, arrays and separators the data converters read (`DATA_SOURCE_LIMITS.json`). */
+export function decodeSheetJson(bytes: Buffer): string {
+  assertDataInputBytes('json', bytes.length, 'JSON');
+  const text = bytes.toString('utf-8');
+  assertDataItemCount('json', text, 'JSON');
+  return text;
 }
 
 /** The text of a cell as a text target writes it. */

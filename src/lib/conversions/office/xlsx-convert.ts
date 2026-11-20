@@ -5,7 +5,7 @@ import JSZip from 'jszip';
 import { unconvertibleOfficeTarget } from '../native-engine-pairs';
 import { type WorkbookCompression, writeXlsx, writeXlsxWorkbook } from '../xlsx-writer';
 import { readPdfSheets } from '../pdf-sheets';
-import { parseJsonTableCells } from '../sheet-text-tables';
+import { decodeSheetJson, parseJsonTableCells } from '../sheet-text-tables';
 import { type OfficeWorksheet } from './types';
 import { renderPdfChart } from './pdf-chart';
 import { parseAllXlsxWorksheets } from './xlsx-parse';
@@ -325,6 +325,6 @@ export async function convertXlsxSource(
 /** The XLSX workbook of a source read as a table: JSON keeps its value types; delimited text, a Kingsoft workbook and the tables of a PDF (`readPdfSheets`) store a number or ISO date as one. */
 export async function officeSheetWorkbook(inputBuffer: Buffer, src: string, options: ConversionOptions, compression?: WorkbookCompression): Promise<Buffer> {
   if (src === 'pdf') return writeXlsxWorkbook(await readPdfSheets(inputBuffer, options), 'detect', compression);
-  if (src === 'json') return writeXlsx(parseJsonTableCells(inputBuffer.toString('utf-8')), 'verbatim', compression);
+  if (src === 'json') return writeXlsx(parseJsonTableCells(decodeSheetJson(inputBuffer)), 'verbatim', compression);
   return writeXlsx(await extractRowsForOffice(inputBuffer, src, options), 'detect', compression);
 }

@@ -1,4 +1,4 @@
-import { encodeBzip2Block, type BitStream } from '../conversions/bzip2';
+import { decompressBzip2, encodeBzip2Block, type BitStream, type Bzip2DecodePayload } from '../conversions/bzip2';
 import { encodeFlacStream, type FlacTaskPayload } from '../conversions/flac-encoder';
 import { compressLzma, compressLzma2, type LzmaCompressOptions } from '../conversions/lzma-encoder';
 import { encodeWoff2Container, type Woff2InputTable } from '../conversions/font-woff2';
@@ -180,6 +180,13 @@ export const CPU_TASK_HANDLERS: Record<string, CpuTaskHandler> = {
     const band = encodePngBand(raw as PngBandPayload);
     const deflate = transferableBytes(band.deflate);
     return { result: { ...band, deflate: deflate.result }, transfer: deflate.transfer };
+  },
+
+  bzip2Decode: (raw): HandlerResult => {
+    const payload = raw as Bzip2DecodePayload;
+    const decoded = decompressBzip2(Buffer.from(payload.data.buffer, payload.data.byteOffset, payload.data.byteLength), payload.maxOutputBytes);
+    // The output buffer grows by doubling, so the view is shorter than its buffer: hand over the buffer and keep the view, with no copy.
+    return { result: decoded, transfer: [decoded.buffer as ArrayBuffer] };
   },
 
   bzip2Block: (raw): HandlerResult => {
