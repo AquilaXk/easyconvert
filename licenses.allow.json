@@ -21,6 +21,10 @@
       "license": "CC-BY-4.0",
       "reason": "Browser support data under CC-BY-4.0: attribution only, no copyleft"
     },
+    "jstat@1.9.6": {
+      "license": "MIT",
+      "reason": "The lockfile entry has no licence field; the package ships an MIT LICENSE file (checked by hand at 1.9.6)"
+    },
     "pako@1.0.11": {
       "license": "(MIT AND Zlib)",
       "reason": "Both parts are permissive: MIT plus the zlib licence for the ported deflate and inflate code"
