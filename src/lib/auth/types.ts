@@ -28,6 +28,12 @@ export interface UserRecord extends User {
   salt?: string;
   /** The PBKDF2 iterations `passwordHash` was made with; absent on a hash that an earlier release stored (100,000). */
   passwordIterations?: number;
+  /**
+   * When the address of an email account was first confirmed, in milliseconds since the epoch. Absent on an account that was never
+   * confirmed, on one confirmed before this was recorded (`emailVerified` alone says so), and on a Google account. Whatever the
+   * account holds that is older than this was made before anyone proved the address (`revokeStandingAccess`).
+   */
+  verifiedAt?: number;
 }
 
 /**

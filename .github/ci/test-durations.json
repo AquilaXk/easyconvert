@@ -1356,6 +1356,7 @@
   "tests/vector-sources-real-samples.test.ts": 282.5,
   "tests/vectorize-options-ui.test.ts": 3.2,
   "tests/verdict-memo.test.ts": 0,
+  "tests/verified-at-reset-revocation.test.ts": 12.0,
   "tests/verify-email-page-ui.test.ts": 0.3,
   "tests/viewer-plan-session-read.test.ts": 0.2,
   "tests/vrt-engine-reference.test.ts": 0.4,

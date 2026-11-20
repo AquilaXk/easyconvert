@@ -5,6 +5,15 @@ export function isEmailVerified(record: Pick<UserRecord, 'provider' | 'emailVeri
   return record.provider === 'google' || record.emailVerified === true;
 }
 
+/**
+ * The fields that confirm the address of `record` now. The first confirmation also writes `verifiedAt`, which later confirmations
+ * and the accounts confirmed before it was recorded leave as it is: a time that moved forward would make the owner's own keys look
+ * older than the confirmation (`revokeStandingAccess`).
+ */
+export function confirmationFields(record: Pick<UserRecord, 'provider' | 'emailVerified'>, now: number = Date.now()): Pick<UserRecord, 'emailVerified' | 'verifiedAt'> {
+  return isEmailVerified(record) ? { emailVerified: true } : { emailVerified: true, verifiedAt: now };
+}
+
 /** An account that signs in with an email and a password and has not been linked to Google. */
 export function isPasswordAccount(record: Pick<UserRecord, 'provider' | 'passwordHash' | 'salt'>): boolean {
   return record.provider === 'email' && Boolean(record.passwordHash) && Boolean(record.salt);

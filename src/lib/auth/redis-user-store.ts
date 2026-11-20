@@ -266,7 +266,7 @@ export class RedisUserStore {
   }
 
   public sanitizeUser(record: UserRecord): User {
-    const { passwordHash, salt, passwordIterations, ...safeUser } = record;
+    const { passwordHash, salt, passwordIterations, verifiedAt, ...safeUser } = record;
     return safeUser;
   }
 

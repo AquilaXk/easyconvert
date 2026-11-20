@@ -3,6 +3,7 @@ import { authStoreUnavailableRefusal, codedRefusal, serverFault } from '@/lib/ap
 import { AuthStoreUnavailableError } from '@/lib/auth/store-unavailable';
 import { readJsonObject } from '@/lib/api/json-body';
 import { isEmailVerified, isPasswordAccount } from '@/lib/auth/account-mail';
+import { confirmationFields } from '@/lib/auth/email-verified';
 import { consumeAuthToken, isAuthTokenShape } from '@/lib/auth/auth-email-token-store';
 import { hashPassword } from '@/lib/auth/crypto';
 import {
@@ -28,7 +29,8 @@ const refusal = codedRefusal<AuthErrorCode>;
  * mailbox of the address, so using its link also confirms the address: an account that someone registered with an address that
  * was not theirs goes to the real owner, with the registrant's password and sessions gone, and with the API keys, webhooks and
  * saved storage credentials they made gone too (`revokeStandingAccess`): a key made before the address was confirmed is the
- * registrant's, not the owner's.
+ * registrant's, not the owner's. An address the owner already confirmed by the link of a verification mail keeps what was made since
+ * it was confirmed (`verifiedAt`) and loses what is older (docs/policy-decisions.md, entry 362).
  */
 export async function POST(req: NextRequest) {
   if (!isAuthMailEnabled()) return refusal(404, 'mail_unavailable', 'Password reset is not available.');
@@ -66,16 +68,18 @@ export async function POST(req: NextRequest) {
     // The password goes first, so the registrant can no longer sign in while the account is cleaned; the address is confirmed
     // last. The token is spent by now, so a step that fails (the store down) must leave the account unverified: the owner asks for
     // another reset, which takes this same path and cleans again. Confirming first would send that retry down the verified path,
-    // and the registrant's keys would stay.
+    // and the registrant's keys would stay. An account confirmed by its link keeps `verifiedAt`, so its retry cleans what is older again.
     if (!(await redisUserStore.updateUser(record.id, { passwordHash: hash, salt, passwordIterations: iterations }))) {
       return refusal(400, 'invalid_token', 'This link is not valid or has expired.');
     }
     await revokeAllUserSessions(record.id);
     if (changesHands) {
       await revokeStandingAccess(record.id);
-      if (!(await redisUserStore.updateUser(record.id, { emailVerified: true }))) {
+      if (!(await redisUserStore.updateUser(record.id, confirmationFields(record)))) {
         return refusal(400, 'invalid_token', 'This link is not valid or has expired.');
       }
+    } else if (record.verifiedAt !== undefined) {
+      await revokeStandingAccess(record.id, record.verifiedAt);
     }
     await resetLoginAttempts(record.email);
 

@@ -16,18 +16,27 @@ const SWEEP_ROUNDS = 3;
  * hands: the real owner of an address took it back by a password reset, and whatever was made with the registrant's password
  * must not reach the owner's account or send anything on to the registrant. The keys are listed again after each round
  * because a key with the `*` scope can make a key until it is deleted.
+ *
+ * `createdBefore` limits it to what was made before that time, in milliseconds since the epoch: the time the address was first
+ * confirmed (`verifiedAt`), so that an owner who confirmed the address by its link and reset the password later takes back an
+ * account without the keys that were made before anyone proved the address, and keeps the keys made since.
  */
-export async function revokeStandingAccess(userId: string): Promise<void> {
+export async function revokeStandingAccess(userId: string, createdBefore?: number): Promise<void> {
+  const isStanding = (madeAt: number): boolean => createdBefore === undefined || madeAt < createdBefore;
   for (let round = 0; round < SWEEP_ROUNDS; round++) {
-    const keys = await redisKeyStore.listApiKeys(userId, { decryptSecrets: false });
+    const keys = (await redisKeyStore.listApiKeys(userId, { decryptSecrets: false })).filter((key) => isStanding(key.createdAt));
     if (keys.length === 0) break;
     for (const key of keys) {
       await redisKeyStore.deleteApiKey(userId, key.id);
       await getWebhookSecretStore().deleteSecretRecord(userId, key.id);
     }
   }
-  await webhookDispatcher.clearDlq(userId, { strict: true });
-  for (const credentialRef of await credentialsVault.listByUser(userId)) await credentialsVault.delete(credentialRef, userId);
+  await webhookDispatcher.clearDlq(userId, { strict: true, failedBefore: createdBefore });
+  const credentialRefs =
+    createdBefore === undefined
+      ? await credentialsVault.listByUser(userId)
+      : (await credentialsVault.list(userId)).filter((credential) => isStanding(credential.createdAt)).map((credential) => credential.id);
+  for (const credentialRef of credentialRefs) await credentialsVault.delete(credentialRef, userId);
 }
 
 /**

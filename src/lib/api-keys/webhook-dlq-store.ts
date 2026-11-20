@@ -217,27 +217,35 @@ export class WebhookDlqStore {
     return removed;
   }
 
-  /** Removes every entry `ownerUserId` owns (expired ones too), in batches, and the entries recorded without an owner. A Redis that fails falls back to the process entries, unless `strict`. */
-  async clear(ownerUserId: string, options: { strict?: boolean } = {}): Promise<void> {
+  /**
+   * Removes every entry `ownerUserId` owns (expired ones too), in batches, and the entries recorded without an owner. With `failedBefore`
+   * only the entries of the owner whose delivery failed before that time go. A Redis that fails falls back to the process entries, unless `strict`.
+   */
+  async clear(ownerUserId: string, options: { strict?: boolean; failedBefore?: number } = {}): Promise<void> {
     const redis = this.client();
     if (redis) {
       try {
         await whenReady(redis);
         await this.reconcileIfDrifted(redis);
-        await this.clearIndexed(redis, ownerUserId);
+        await this.clearIndexed(redis, ownerUserId, options.failedBefore);
         await this.purgeAllOwnerless(redis);
       } catch (error) {
         // With `strict` (the erasure of an account) a failure is the caller's: entries that were not removed must not be reported removed.
         if (options.strict) throw error;
       }
     }
-    for (const [id, entry] of this.memory) if (!entry.ownerUserId || entry.ownerUserId === ownerUserId) this.memory.delete(id);
+    for (const [id, entry] of this.memory) {
+      if (!entry.ownerUserId || (entry.ownerUserId === ownerUserId && (options.failedBefore === undefined || entry.failedAt < options.failedBefore))) this.memory.delete(id);
+    }
   }
 
-  private async clearIndexed(redis: Redis, ownerUserId: string): Promise<void> {
+  private async clearIndexed(redis: Redis, ownerUserId: string, failedBefore?: number): Promise<void> {
     const key = ownerIndex(ownerUserId);
     for (;;) {
-      const ids = await redis.zrange(key, '0', String(BATCH - 1));
+      const ids =
+        failedBefore === undefined
+          ? await redis.zrange(key, '0', String(BATCH - 1))
+          : await redis.zrangebyscore(key, '-inf', `(${failedBefore}`, 'LIMIT', 0, BATCH);
       if (ids.length === 0) return;
       const raws = await redis.hmget(HASH, ...ids);
       // Only an entry that names this owner (or one nobody can read) leaves the hash; the ids all leave the index, which ends the loop.

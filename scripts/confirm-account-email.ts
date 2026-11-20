@@ -27,7 +27,7 @@ export async function planEmailConfirmation(idOrEmail: string): Promise<EmailCon
 }
 
 export async function applyEmailConfirmation(change: EmailConfirmation): Promise<void> {
-  const updated = await redisUserStore.updateUser(change.userId, { emailVerified: true });
+  const updated = await redisUserStore.updateUser(change.userId, { emailVerified: true, verifiedAt: Date.now() });
   if (updated?.emailVerified !== true) throw new Error(`The address of ${change.email} was not confirmed.`);
 }
 
