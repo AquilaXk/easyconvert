@@ -597,7 +597,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       expect(unit).toMatchObject({ allowed: true, remaining: 997 });
       expect(unit.reservationId).toContain(`_b${periodEnd}_`);
       expect(await redisKeyStore.commitQuota(unit.reservationId as string)).toBe(true);
-      expect(await redisKeyStore.getQuotaUsage(user.id)).toEqual({ tier: 'paid', period: 'month', dailyLimit: 1000, usedToday: 3, remaining: 997, resetAt: periodEnd, packageCredits: 0 });
+      expect(await redisKeyStore.getQuotaUsage(user.id)).toEqual({ tier: 'paid', period: 'month', dailyLimit: 1000, usedToday: 3, remaining: 997, resetAt: periodEnd, packageCredits: 0, promoCredits: 0 });
 
       const usageKeys = await admin.keys(`*usage:{${user.id}}:*`);
       expect(usageKeys).toHaveLength(1);

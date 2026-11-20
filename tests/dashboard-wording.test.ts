@@ -375,11 +375,11 @@ describe('the credits on the dashboard', () => {
   it('shows event credits as a separate line with the earliest expiry, and nothing when the account has none', () => {
     const base = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CREDITS, usedToday: 0, remaining: FREE_DAILY_CREDITS + 30, resetAt: Date.UTC(2026, 11, 2), packageCredits: 0, promoCredits: 0 };
     const none = panelOf(freeUser, base);
-    expect(none).not.toContain('Event credits');
+    expect(none.split('Event credits')).toHaveLength(1);
 
     const ending = panelOf(freeUser, { ...base, promoCredits: 30, promoExpiresAt: Date.UTC(2026, 11, 31, 12) });
-    expect(ending).toContain('Event credits');
-    expect(ending).toContain('30');
+    expect(ending.split('Event credits')).toHaveLength(2);
+    expect(ending.split('Event credits')[1]?.trimStart().startsWith('30')).toBe(true);
     expect(ending).toContain('Spent before package credits. Earliest expiry: Dec 31, 2026.');
     expect(ending).toContain('No package credits');
     expect(panelOf(freeUser, { ...base, promoCredits: 30 })).toContain('Spent before package credits. No expiry.');
