@@ -217,8 +217,19 @@ describe.skipIf(calibreMissing)('the books of the real-world corpus and the fixt
       const { bytes } = await requireRealworldSample(ctx, 'mspack-encints-32bit-both.chm');
       const failure = await dispatchConversion(bytes, 'chm', 'epub', {}, 'book.chm').catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(ConversionFailedError);
-      expect((failure as Error).message).toMatch(/^calibre could not convert the \.chm file to \.epub: /);
+      expect((failure as Error).message).toBe('The .chm file names no start page: its default topic and contents file are missing, so it cannot be read as a book.');
       expect((failure as Error).message).not.toMatch(/\/tmp\/|easyconvert-calibre/);
+    }, CONVERSION_TIMEOUT_MS);
+
+    it('names a CHM that holds no pages and no start page in words, not as the AttributeError of calibre\'s reader', async () => {
+      // A three-file archive (a text file, a nested one, binary data) packed as a CHM: the sweep of 2026-11-20 answered it with
+      // "AttributeError: 'NoneType' object has no attribute 'lstrip'".
+      const archive = fs.readFileSync(path.join(__dirname, 'fixtures', 'archive-sources', 'probe.chm'));
+      for (const target of ['epub', 'txt'] as const) {
+        const failure = await dispatchConversion(archive, 'chm', target, {}, 'probe.chm').catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(ConversionFailedError);
+        expect((failure as Error).message).toBe('The .chm file names no start page: its default topic and contents file are missing, so it cannot be read as a book.');
+      }
     }, CONVERSION_TIMEOUT_MS);
 
     it.each([

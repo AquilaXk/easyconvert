@@ -92,6 +92,12 @@ const DIRECTORY_MAX_ENTRIES = ARCHIVE_SECURITY_LIMITS.MAX_FILES;
 const directoryLimitBytes = (bookBytes: number): number => Math.min(DIRECTORY_CEILING_BYTES, DIRECTORY_FLOOR_BYTES + DIRECTORY_EXPANSION_FACTOR * bookBytes);
 const MAX_OEB_BYTES = MAX_DOCUMENT_INFLATE_BYTES;
 const DRM_PATTERN = /\bDRMError\b|protected by DRM/i;
+/**
+ * calibre's CHM reader opens a book from the default topic or the contents file its `#SYSTEM` data names (`calibre/ebooks/chm/reader.py`,
+ * `CHMReader.__init__`) and stops with this error when the file names neither or the file it names is not in the archive: a help file
+ * without pages, or one whose start page was cut out.
+ */
+const CHM_NO_START_PAGE_PATTERN = /chm[\\/]reader\.py[\s\S]*AttributeError: 'NoneType' object has no attribute 'lstrip'/;
 const PDB_ENCODING_WINDOWS_1252 = 'cp1252';
 const PDB_ENCODING_UTF8 = 'utf-8';
 
@@ -215,6 +221,9 @@ function toCalibreError(err: unknown, run: CalibreRun): unknown {
   if (err instanceof SandboxedProcessError) {
     if (DRM_PATTERN.test(err.stderr)) return new EncryptedOfficeDocumentError(`The .${src} book is protected by DRM and cannot be converted.`);
     recordEngineOutput('calibre', `${src}-to-${tgt}`, err.stderr);
+    if (src === 'chm' && CHM_NO_START_PAGE_PATTERN.test(err.stderr)) {
+      return new ConversionFailedError(`The .chm file names no start page: its default topic and contents file are missing, so it cannot be read as a book.`);
+    }
     return new ConversionFailedError(`calibre could not convert the .${src} file to .${tgt}: ${endOfRun(err)}.`);
   }
   return err;
