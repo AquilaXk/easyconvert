@@ -4,10 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { afterAll, describe, expect, it } from 'vitest';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, PDFName } from 'pdf-lib';
 import { convertFile } from '../src/lib/conversions/index';
 import { shutdownOcrWorkerPool } from '../src/lib/conversions/ocr';
-import { measureTextSkewRadians, type PlacedWord } from '../src/lib/conversions/ocr-output-deskew';
+import { levelPageToText, measureTextSkewRadians, type PlacedWord } from '../src/lib/conversions/ocr-output-deskew';
 import { getOracleToolPath, OracleToolMissingError } from './helpers/differential-oracle';
 import { characterErrorRatePercent } from './helpers/ocr-cer';
 import { fixtureImage, groundTruth, requireTessdata } from './helpers/ocr-fixtures';
@@ -104,6 +104,70 @@ describe('output deskew', () => {
     it('leaves a level page and a skew beyond the limit alone', () => {
       expect(measureTextSkewRadians(Array.from({ length: 12 }, (_, i) => word(0.1, 40 + i * 30)))).toBeNull();
       expect(measureTextSkewRadians(Array.from({ length: 12 }, (_, i) => word(25, 40 + i * 30)))).toBeNull();
+    });
+  });
+
+  describe('turning a page', () => {
+    /** Ten words of a line on a baseline from (x, y) at `degrees` counterclockwise, 40 pt wide, 10 pt high. */
+    function line(x: number, y: number, degrees: number): PlacedWord[] {
+      const angle = degrees * DEGREES_TO_RADIANS;
+      return Array.from({ length: 10 }, (_, i) => ({
+        text: 'abcdefgh', spaceAfter: true, x: x + i * 45 * Math.cos(angle), y: y + i * 45 * Math.sin(angle), angle, fontSize: 10, horizontalScaling: 100,
+      }));
+    }
+
+    async function blankPage(width: number, height: number) {
+      const doc = await PDFDocument.create();
+      const page = doc.addPage([width, height]);
+      page.drawRectangle({ x: 0, y: 0, width: 10, height: 10 });
+      return { doc, page };
+    }
+
+    it('wraps the content in one turn by minus the skew and leaves a box that already holds the words', async () => {
+      const { page } = await blankPage(600, 300);
+      const words = line(60, 120, 4);
+      const before = page.node.Contents() as unknown as { size(): number };
+      const streamsBefore = before.size?.() ?? 1;
+      const turned = levelPageToText(page, words);
+      expect(turned! / DEGREES_TO_RADIANS).toBeCloseTo(-4, 6);
+      expect((page.node.Contents() as unknown as { size(): number }).size()).toBe(streamsBefore + 2);
+      expect(page.getMediaBox()).toEqual({ x: 0, y: 0, width: 600, height: 300 });
+    });
+
+    it('grows the box to hold a word that the turn carries past its edge', async () => {
+      const { page } = await blankPage(600, 300);
+      // A line near the top edge, tilted 8 degrees: the turn about the centre (300, 150) levels it at about y = 301, with
+      // its tops at about 309, above the page.
+      const words = line(10, 262, 8);
+      levelPageToText(page, words);
+      const box = page.getMediaBox();
+      const turn = -8 * DEGREES_TO_RADIANS;
+      const rotated = (px: number, py: number) => ({
+        x: 300 + (px - 300) * Math.cos(turn) - (py - 150) * Math.sin(turn),
+        y: 150 + (px - 300) * Math.sin(turn) + (py - 150) * Math.cos(turn),
+      });
+      for (const word of words) {
+        const start = rotated(word.x, word.y);
+        const top = rotated(word.x - Math.sin(word.angle) * 7.7, word.y + Math.cos(word.angle) * 7.7);
+        for (const point of [start, top]) {
+          expect(point.x).toBeGreaterThanOrEqual(box.x - 1e-6);
+          expect(point.y).toBeGreaterThanOrEqual(box.y - 1e-6);
+          expect(point.x).toBeLessThanOrEqual(box.x + box.width + 1e-6);
+          expect(point.y).toBeLessThanOrEqual(box.y + box.height + 1e-6);
+        }
+      }
+      expect(box.height).toBeGreaterThan(300);
+    });
+
+    it('leaves a page with annotations and a page without a trusted skew as they are', async () => {
+      const { doc, page } = await blankPage(600, 300);
+      expect(levelPageToText(page, line(60, 120, 0.1))).toBeNull();
+      expect(page.getMediaBox()).toEqual({ x: 0, y: 0, width: 600, height: 300 });
+      const annotated = doc.addPage([600, 300]);
+      annotated.drawRectangle({ x: 0, y: 0, width: 10, height: 10 });
+      const link = doc.context.obj({ Type: 'Annot', Subtype: 'Link', Rect: [10, 10, 50, 30] });
+      annotated.node.set(PDFName.of('Annots'), doc.context.obj([doc.context.register(link)]));
+      expect(levelPageToText(annotated, line(60, 120, 4))).toBeNull();
     });
   });
 
