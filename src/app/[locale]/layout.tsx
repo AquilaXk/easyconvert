@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import localFont from 'next/font/local';
+import { headers } from 'next/headers';
 import { notFound } from 'next/navigation';
 import { hasLocale, NextIntlClientProvider } from 'next-intl';
 import { getMessages, getTranslations, setRequestLocale } from 'next-intl/server';
@@ -7,6 +8,7 @@ import { clientMessages } from '@/i18n/client-messages';
 import { routing } from '@/i18n/routing';
 import { siteMetadataBase } from '@/i18n/metadata';
 import { INPUT_MODALITY_SCRIPT } from '@/lib/input-modality';
+import { PAGE_NONCE_HEADER } from '@/lib/security/page-csp';
 import '../globals.css';
 
 // One OFL sans for Latin and Hangul, cut from Pretendard Variable into two files by scripts/subset-web-font.py and vendored
@@ -58,13 +60,18 @@ export default async function LocaleLayout({ children, params }: Readonly<Locale
   const { locale } = await params;
   if (!hasLocale(routing.locales, locale)) notFound();
   setRequestLocale(locale);
-  const [t, messages] = await Promise.all([getTranslations('layout'), getMessages()]);
+  const [t, messages, requestHeaders] = await Promise.all([getTranslations('layout'), getMessages(), headers()]);
+  // The nonce of the request (src/middleware.ts). Reading a request header also renders every page per request, which a nonce needs.
+  // A browser hides the value of a nonce attribute once the script has run, so the scripts below say so to React's hydration check.
+  const nonce = requestHeaders.get(PAGE_NONCE_HEADER) ?? undefined;
 
   return (
     <html lang={locale} className={`${latinFont.variable} ${hangulFont.variable}`} suppressHydrationWarning>
       <head>
         <meta name="color-scheme" content="light dark" />
         <script
+          nonce={nonce}
+          suppressHydrationWarning
           dangerouslySetInnerHTML={{
             __html: `
               try {
@@ -78,7 +85,7 @@ export default async function LocaleLayout({ children, params }: Readonly<Locale
           }}
         />
         {/* Input modality for the focus ring, see src/lib/input-modality.ts. */}
-        <script dangerouslySetInnerHTML={{ __html: INPUT_MODALITY_SCRIPT }} />
+        <script nonce={nonce} suppressHydrationWarning dangerouslySetInnerHTML={{ __html: INPUT_MODALITY_SCRIPT }} />
       </head>
       <body className="min-h-screen flex flex-col antialiased font-sans">
         <NextIntlClientProvider messages={clientMessages(messages, 'layout')}>

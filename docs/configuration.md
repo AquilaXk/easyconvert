@@ -346,7 +346,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS`: Most characters the cells of a legacy XLS sheet may expand to for an HTML, ODS, XLSX or PDF conversion, shared strings counted once per cell that uses them; a sheet over it is refused with HTTP 413 (protects against one long shared string used by many cells).
 - `EASYCONVERT_XLSX_MAX_CELL_TEXT_CHARS`: Most characters the cells of an XLSX workbook may expand to, shared strings counted once per cell that uses them; a workbook over it is refused with HTTP 413 (protects against one long shared string used by many cells).
 - `EASYCONVERT_MAX_DOCUMENT_MEDIA_BYTES`: Most bytes of embedded media (pictures, video) one deck or document may decode to, each part counted once however many pictures use it; a document over it is refused with HTTP 413 (keeps the memory of a deck with large or repeated media within a job share).
-- `ANONYMOUS_DAILY_LIMIT`: Conversions per day for an anonymous caller. In the OCI deployment it is the repository variable of the same name, which the web image build and the deploy both read (the deploy refuses an image built with another value).
+- `ANONYMOUS_DAILY_LIMIT`: Conversions per day for an anonymous caller. In the OCI deployment it is the repository variable of the same name, which the deploy writes into the env file of the release; the pages and the 429 answers read it at request time.
 - `ANONYMOUS_BURST_CAPACITY`: Token bucket size (largest burst of requests) of one anonymous caller.
 - `ANONYMOUS_BURST_REFILL_RATE`: Requests per second that refill the token bucket of one anonymous caller.
 - `ANONYMOUS_UNATTRIBUTED_BURST_CAPACITY`: Token bucket size shared by every anonymous caller whose address cannot be trusted.

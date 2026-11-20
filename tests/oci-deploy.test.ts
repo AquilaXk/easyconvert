@@ -341,25 +341,21 @@ describe('Dockerfile.web', () => {
     expect(finalStage).toMatch(/^LABEL org\.opencontainers\.image\.base\.name="\$\{WORKER_IMAGE\}"$/m);
   });
 
-  it('builds the pages with the public origin and the daily allowance, and checks their absolute alternates before the image is made', () => {
+  it('builds with the public origin that robots.txt and sitemap.xml name, and leaves the pages to the boot check', () => {
     const builder = web.slice(web.search(/^FROM \$\{NODE_IMAGE\} AS webbuilder$/m), web.search(/^FROM \$\{WORKER_IMAGE\} AS web$/m));
-    const build = builder.search(/^RUN \.\/node_modules\/\.bin\/next build/m);
+    const build = builder.search(/^RUN \.\/node_modules\/\.bin\/next build$/m);
     expect(build).toBeGreaterThan(0);
     expect(builder.search(/^ARG APP_ORIGIN$/m)).toBeGreaterThan(0);
     expect(builder.search(/^ARG APP_ORIGIN$/m)).toBeLessThan(build);
     const originRequired = builder.search(/^RUN test -n "\$APP_ORIGIN" \|\| /m);
     expect(originRequired).toBeGreaterThan(builder.search(/^ARG APP_ORIGIN$/m));
     expect(originRequired).toBeLessThan(build);
-    expect(builder.slice(build)).toMatch(/node scripts\/check-built-alternates\.mjs \.next\/server\/app/);
-    const allowance = builder.search(/^ARG ANONYMOUS_DAILY_LIMIT=$/m);
-    expect(allowance).toBeGreaterThan(0);
-    expect(allowance).toBeLessThan(build);
+    // No page is prerendered (entry 370): there is nothing under .next/server/app for a build step to check.
+    expect([...web.matchAll(/check-(?:built|served)-alternates/g)].map((match) => match[0])).toEqual([]);
   });
 
-  it('records the anonymous allowance its pages were built with, where the deploy reads it back', () => {
-    const finalStage = web.slice(web.search(/^FROM \$\{WORKER_IMAGE\} AS web$/m));
-    expect(finalStage).toMatch(/^ARG ANONYMOUS_DAILY_LIMIT=$/m);
-    expect(finalStage).toMatch(/^LABEL easyconvert\.anonymous-daily-limit="\$\{ANONYMOUS_DAILY_LIMIT\}"$/m);
+  it('carries no build argument or label of the anonymous allowance: the pages read it from the server at request time', () => {
+    expect([...web.matchAll(/ANONYMOUS_DAILY_LIMIT|anonymous-daily-limit/g)].map((match) => match[0])).toEqual([]);
   });
 
   it('declares the smoke probe its server answers, the one the deploy knows, where the deploy reads it back', () => {
@@ -470,7 +466,7 @@ describe('deploy workflow', () => {
     expect(buildSteps[1].with?.['build-args']).toContain('@${{ steps.worker.outputs.digest }}');
     const serverName = /server_name (\S+);/.exec(read('deploy/oci/nginx-easyconvert.conf'))?.[1];
     expect(buildSteps[1].with?.['build-args']).toMatch(new RegExp(`^APP_ORIGIN=https://${serverName?.replaceAll('.', '\\.')}$`, 'm'));
-    expect(buildSteps[1].with?.['build-args']).toMatch(/^ANONYMOUS_DAILY_LIMIT=\$\{\{ vars\.ANONYMOUS_DAILY_LIMIT \}\}$/m);
+    expect(buildSteps[1].with?.['build-args']).not.toContain('ANONYMOUS_DAILY_LIMIT');
     expect(build.permissions).toEqual({ contents: 'read', packages: 'write' });
   });
 
@@ -739,7 +735,7 @@ describe('env allowlist', () => {
     expect(unlisted).toEqual([]);
   });
 
-  it('passes the anonymous allowance to every application service from the deploy step, the one source the build reads too', () => {
+  it('passes the anonymous allowance to every application service from the deploy step, the one source of it', () => {
     for (const service of APP_SERVICES) expect(compose.services[service].environment?.ANONYMOUS_DAILY_LIMIT, service).toBe('${ANONYMOUS_DAILY_LIMIT:-}');
     const deployStep = (parse(read('.github/workflows/deploy-oci.yml')) as { jobs: Record<string, { steps: Array<{ name?: string; env?: Record<string, string> }> }> }).jobs.deploy.steps.find(
       (step) => step.name?.startsWith('Deploy, check health')
@@ -978,7 +974,6 @@ case "$1" in
       inspect)
         ref="\${@: -1}"
         case "$*" in
-          *anonymous-daily-limit*) [ -n "\${STUB_WEB_INSPECT_FAIL:-}" ] && exit 1; echo "\${STUB_WEB_ALLOWANCE:-}" ;;
           *smoke-probe*)
             [ -n "\${STUB_PROBE_INSPECT_FAIL:-}" ] && exit 1
             tag="$(cat "$STUB_PULLED/\${ref##*sha256:}")"
@@ -1373,7 +1368,6 @@ exit 0`
   it.each([
     ['a smoke probe label', { STUB_PROBE_LABEL: 'x\ny\u001b[31m' }, "names the smoke probe $'x\\ny\\E[31m'"],
     ['the recorded base image', { STUB_WEB_BASE: 'x\ny' }, "was built on $'x\\ny'"],
-    ['the recorded allowance', { STUB_WEB_ALLOWANCE: 'x\ny' }, "was built with ANONYMOUS_DAILY_LIMIT $'x\\ny'"],
   ])('writes %s to the job log shell-quoted, so that it cannot add a line to it', (_, knob, logged) => {
     const result = run(['deploy', ref('a')], { env: hostEnv(knob) });
     expect(result.status).toBe(1);
@@ -1653,32 +1647,17 @@ exit 0`
     expect(pairing[0]).toMatch(/ ghcr\.io\/aquilaxk\/easyconvert-web@sha256:[0-9a-f]{64}$/);
   });
 
-  it('refuses a web image built with another anonymous allowance than the deploy step passes, before anything starts', () => {
-    const result = run(['deploy', ref('a')], { env: hostEnv({ ANONYMOUS_DAILY_LIMIT: '25', STUB_WEB_ALLOWANCE: '30' }) });
-
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain('was built with ANONYMOUS_DAILY_LIMIT 30, but the release runs with 25');
-    expect(calls().some((call) => call.includes(' up '))).toBe(false);
-  });
-
-  it('refuses a web image whose recorded allowance cannot be read, also when the deploy step passes none', () => {
-    const result = run(['deploy', ref('a')], { env: hostEnv({ STUB_WEB_INSPECT_FAIL: '1' }) });
-
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain('could not be read');
-    expect(calls().some((call) => call.includes(' up '))).toBe(false);
-  });
-
   it.each(['25\nREDIS_URL=redis://elsewhere', '2 5', '-1'])('refuses the allowance %j, which is not a count, before it writes the env file', (allowance) => {
-    const result = run(['deploy', ref('a')], { env: hostEnv({ ANONYMOUS_DAILY_LIMIT: allowance, STUB_WEB_ALLOWANCE: allowance }) });
+    const result = run(['deploy', ref('a')], { env: hostEnv({ ANONYMOUS_DAILY_LIMIT: allowance }) });
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('ANONYMOUS_DAILY_LIMIT must be digits only');
     expect(releases()).toEqual([]);
   });
 
-  it('runs the release with the anonymous allowance of the deploy step, the one the web image was built with', () => {
-    expect(run(['deploy', ref('a')], { env: hostEnv({ ANONYMOUS_DAILY_LIMIT: '30', STUB_WEB_ALLOWANCE: '30' }) }).status).toBe(0);
+  it('runs the release with the anonymous allowance of the deploy step, and reads no allowance back from the web image', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv({ ANONYMOUS_DAILY_LIMIT: '30' }) }).status).toBe(0);
+    expect(calls().filter((call) => call.includes('anonymous-daily-limit'))).toEqual([]);
 
     const releaseEnv = readFileSync(path.join(home, 'current', '.env'), 'utf-8');
     expect(releaseEnv.split('\n').filter((line) => line.startsWith('ANONYMOUS_DAILY_LIMIT='))).toEqual(['ANONYMOUS_DAILY_LIMIT=30']);
@@ -1967,7 +1946,14 @@ esac`
     );
     stub('curl', 'echo "curl $*" >> "$STUB_LOG"; printf \'%s\' "${STUB_STATUS:-200}"');
     stub('sleep', 'exit 0');
-    stub('node', 'echo "node $*" >> "$STUB_LOG"; exit "${STUB_PAGES_EXIT:-0}"');
+    stub(
+      'node',
+      `echo "node $*" >> "$STUB_LOG"
+case "$1" in
+  *check-served-alternates*) echo "APP_ORIGIN=\${APP_ORIGIN:-} for the alternates" >> "$STUB_LOG"; exit "\${STUB_ALTERNATES_EXIT:-0}" ;;
+  *) exit "\${STUB_PAGES_EXIT:-0}" ;;
+esac`
+    );
   });
 
   afterAll(() => {
@@ -2002,7 +1988,33 @@ esac`
     expect(removed()).toBe(true);
   });
 
-  it('does not run the page check when the home page does not answer 200', () => {
+  it('gives the container a public origin and then requires the pages it serves to name canonical and hreflang URLs on it', () => {
+    const origin = 'https://boot-check.example.test';
+    const passed = boot();
+    expect(passed.status, passed.stderr).toBe(0);
+    expect(calls().find((call) => call.startsWith('docker run'))).toContain(`--env APP_ORIGIN=${origin} `);
+    const nodeCalls = calls().filter((call) => call.startsWith('node'));
+    expect(nodeCalls).toEqual([
+      `node ${path.join(ROOT, 'scripts', 'check-built-statuses.mjs')} http://127.0.0.1:${HOST_PORT}`,
+      `node ${path.join(ROOT, 'scripts', 'check-served-alternates.mjs')} http://127.0.0.1:${HOST_PORT}`,
+    ]);
+    expect(calls()).toContain('APP_ORIGIN=' + origin + ' for the alternates');
+  });
+
+  it('fails, with the log of the container and removing it, when a page does not name absolute canonical and hreflang URLs', () => {
+    const failed = boot({ STUB_ALTERNATES_EXIT: '1' });
+
+    expect(failed.status).not.toBe(0);
+    expect(failed.stderr).toContain('did not name absolute canonical and hreflang URLs on https://boot-check.example.test');
+    expect(failed.stderr).toContain('the log of the container');
+    expect(removed()).toBe(true);
+  });
+
+  it('does not ask for the alternates when the statuses check failed, and runs no page check when the home page does not answer 200', () => {
+    boot({ STUB_PAGES_EXIT: '1' });
+    expect(calls().filter((call) => call.startsWith('node'))).toHaveLength(1);
+
+    writeFileSync(log, '');
     boot({ STUB_STATUS: '500' });
     expect(calls().some((call) => call.startsWith('node'))).toBe(false);
   });

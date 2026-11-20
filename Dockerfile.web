@@ -7,7 +7,7 @@
 # image first (Dockerfile.worker) and pass its digest as WORKER_IMAGE:
 #
 #   docker build -f Dockerfile.web --build-arg WORKER_IMAGE=ghcr.io/<owner>/easyconvert-worker@sha256:<digest> \
-#     --build-arg APP_ORIGIN=https://<public host> [--build-arg ANONYMOUS_DAILY_LIMIT=<the server's value>] .
+#     --build-arg APP_ORIGIN=https://<public host> .
 #
 # Next.js standalone output is not used: next.config.mjs turns output file tracing off, and the worker image already carries the
 # production node_modules (with the libvips build the worker pins), which `next start` reads.
@@ -38,22 +38,17 @@ COPY public/ ./public/
 COPY src/ ./src/
 # The legal pages are built from these Markdown files (src/lib/legal/texts.ts).
 COPY docs/legal/ ./docs/legal/
-COPY scripts/check-built-alternates.mjs ./scripts/
 
-# The public origin (https://<host>) the prerendered pages name in their canonical and hreflang links. Search engines read hreflang
-# only as absolute URLs, so the build fails without it, and the check after the build fails an image whose pages name another one.
+# The public origin (https://<host>) the build writes into the files it prerenders, robots.txt and sitemap.xml: search engines read
+# their URLs as absolute ones, so the build fails without it. The pages themselves render per request (policy entry 370) and take
+# the origin from the server's environment, which scripts/boot-web-image.sh checks them against.
 ARG APP_ORIGIN
 ENV APP_ORIGIN=${APP_ORIGIN}
 RUN test -n "$APP_ORIGIN" || { echo 'APP_ORIGIN must be set: pass --build-arg APP_ORIGIN=https://<public host>' >&2; exit 1; }
 
-# The anonymous daily allowance the prerendered pages (the home page and the unit converter) state. Empty means the default of
-# src/lib/plan-limits.ts. Pass the ANONYMOUS_DAILY_LIMIT the server runs with, so those pages name the number its 429 names.
-ARG ANONYMOUS_DAILY_LIMIT=
-ENV ANONYMOUS_DAILY_LIMIT=${ANONYMOUS_DAILY_LIMIT}
-
 # `next build` has no runtime environment: the production requirements of the configuration are enforced at start-up, not here
 # (NEXT_PHASE=phase-production-build).
-RUN ./node_modules/.bin/next build && node scripts/check-built-alternates.mjs .next/server/app
+RUN ./node_modules/.bin/next build
 
 # ==============================================================================
 # Optional Target: Stateless control-plane Web runtime (`--target webslim`)
@@ -97,9 +92,6 @@ FROM ${WORKER_IMAGE} AS web
 # it pins, so that a web and a worker image of two different builds are never started together.
 ARG WORKER_IMAGE
 LABEL org.opencontainers.image.base.name="${WORKER_IMAGE}"
-# The anonymous daily allowance the pages were built with, which deploy/oci/deploy.sh compares with the one the servers run with.
-ARG ANONYMOUS_DAILY_LIMIT=
-LABEL easyconvert.anonymous-daily-limit="${ANONYMOUS_DAILY_LIMIT}"
 # The smoke probe the server answers (src/app/api/health/conversion), which deploy/oci/deploy.sh reads from each release it starts.
 # An image without it gets the smoke through /api/convert that it was built for.
 LABEL easyconvert.smoke-probe="/api/health/conversion"

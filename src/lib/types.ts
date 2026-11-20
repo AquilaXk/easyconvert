@@ -191,7 +191,7 @@ export interface ConversionOptions {
    * when the data is missing; `false` never looks.
    */
   ocrDetectOrientation?: boolean;
-  /** Level skewed pages of a searchable PDF (`ocrmypdf --deskew`, policy entry 370); off by default, the page is then as scanned. */
+  /** Level skewed pages of a searchable PDF (`ocrmypdf --deskew`, policy entry 371); off by default, the page is then as scanned. */
   ocrDeskew?: boolean;
   /**
    * Also return the OCR engine's own hOCR or ALTO of each recognized PDF page in the result metadata

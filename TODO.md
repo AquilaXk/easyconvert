@@ -22,9 +22,9 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - PDF to DOCX: wire the pdf2docx layout translation kept on branch `feat/pdf-docx-pdf2docx` (MIT, matched the Python on 34 files) once the writer can set a paragraph beside a table or the reader gives per-glyph advances (entry 362); remaining gaps are wrap drift on justified text (000353, 000572) and extra pages (000018, 000572, 000618, 001135).
 - Fix the remaining live-sweep refusals of 2026-11-20: SVG `<text>` to EMF/WMF/CGM, CB7/CBT to PDF, SHW to PDF, CHM to EPUB (calibre `lstrip` on None), HTML with a CSS backslash escape to PDF, ICNS without PNG/JPEG members, HWP 3.0, TOML with an empty key to XML, PSB headers, RAR method 0x33 in the extract tool, and RM/WTV same-format output quality.
 
-- Run `npm run sdk:generate` for `ocrDeskew` (entry 370; the generated TypeScript and Python clients still lack the option, so `npm run sdk:check` fails until then).
-- Add an `ocrDeskew` checkbox to the OCR block of the document options panel (`DocumentAndArchiveOptions.tsx`, one label per locale; entry 370) after QA approves the before/after screen.
-- Write the words of a tilted line as wide as the words without `ocrDeskew` too (`placeWords` `exactBoxes`, entry 370): the box of such a word is wider by the line height times sin(2 x tilt), so the highlight is a few points too wide at 3 degrees and more at 10.
+- Run `npm run sdk:generate` for `ocrDeskew` (entry 371; the generated TypeScript and Python clients still lack the option, so `npm run sdk:check` fails until then).
+- Add an `ocrDeskew` checkbox to the OCR block of the document options panel (`DocumentAndArchiveOptions.tsx`, one label per locale; entry 371) after QA approves the before/after screen.
+- Write the words of a tilted line as wide as the words without `ocrDeskew` too (`placeWords` `exactBoxes`, entry 371): the box of such a word is wider by the line height times sin(2 x tilt), so the highlight is a few points too wide at 3 degrees and more at 10.
 
 ## Speed
 - Investigate `pdf-ops` speed parity on `pdf-gov-000142.pdf` on the Linux arm64 VM (protect 0.80 to 0.82, delete 0.905 to 0.91, extract/reorder/rotate 0.91 to 0.93 after entry 292 brought split to 0.95 to 0.96; zero-copy `pdf-text-worker` transfer landed in entry 315, and the Ubuntu 24.04 arm64 `native/qpdf-runner` 105/105 decline was resolved in entry 322): decide whether `--compression-level=1` (-0.6 ms of 7.3 ms for +0.3% bytes) is wanted.
@@ -33,7 +33,8 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 ## Operations and security
 - Turn on `UNVERIFIED_ACCOUNT_PURGE_ENABLED` on or after 2026-12-20 (30 days after the privacy text naming it was published), first with `UNVERIFIED_ACCOUNT_PURGE_DRY_RUN=true` (the default) for one pass, check the counts in the worker log, then set it to `false` (entry 364).
 - Cap how many storage credentials one account keeps (launch audit of 2026-11-20; entry 343 bounds each record).
-- Replace `script-src 'unsafe-inline'` in the page CSP with per-request nonces, and add browser error reporting for crashes in the converter UI.
+- Add browser error reporting for crashes in the converter UI.
+- Confirm the Paddle checkout script under the nonce policy (entry 370) in the first sandbox purchase.
 - Pick a free package name before publishing the SDKs (PyPI `easyconvert` belongs to another project; npm `@easyconvert/sdk` is unpublished) and add install lines to their READMEs.
 - Watch `auth_mail_budget level=warn` (350 mails/day; verification stops at 400, resets at 480, entry 288) and move auth mail to a dedicated provider before sign-ups reach the cap, raising `AUTH_MAIL_DAILY_WARN`, `AUTH_MAIL_DAILY_VERIFY_CAP` and `AUTH_MAIL_DAILY_HARD_CAP` via `.env` (entry 326).
 
