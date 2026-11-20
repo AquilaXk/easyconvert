@@ -66,6 +66,8 @@ const MEMORY_LIMIT_MB = 4096;
  * renderers. A run that draws pages gets 2 TiB of virtual address space and keeps the 4096 MB resident limit of the process-tree watch.
  */
 const PAGE_DRAWING_ADDRESS_SPACE_BYTES = 2048 * 1024 * 1024 * 1024;
+/** How often a run that draws pages is started when Chromium crashes in it: the crash is rare and independent between runs, so 3 attempts leave 1 in a million at a rate of 1 in 100. */
+const PAGE_DRAWING_ATTEMPTS = 3;
 const MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
 const DEFAULT_MAX_BUFFER_BYTES = 100 * 1024 * 1024;
 /** Calibre prints its progress log on the standard output and writes the book to a file. */
@@ -237,14 +239,42 @@ function toCalibreError(err: unknown, run: CalibreRun): unknown {
   return err;
 }
 
+/** The time the route has left for a run; a route that has used all of its time starts no run. */
+function remainingMsOf(run: CalibreRun): number {
+  const remainingMs = run.deadlineAt - Date.now();
+  if (remainingMs <= 0) throw new CpuTaskTimeoutError(`.${run.request.src} to .${run.request.tgt} conversion`, run.limitMs);
+  return remainingMs;
+}
+
+/** Whether Chromium inside a page-drawing run died of a fault; the resident-size watch and the kernel's kill carry no SIGSEGV. */
+function isBrowserCrash(err: unknown): boolean {
+  return err instanceof SandboxedMemoryLimitError && err.signal === 'SIGSEGV';
+}
+
+/**
+ * Starts the program, and starts it again when Chromium of a page-drawing run crashed. The browser process of Qt WebEngine runs inside
+ * `ebook-convert`; with or without an address-space limit, about 1 run in 100 on 12 parallel runs dies on a null pointer in
+ * libQt6WebEngineCore while the first page loads (docs/policy-decisions.md, entry 375), and the next run of the same book converts. Only the
+ * crash is repeated, `PAGE_DRAWING_ATTEMPTS` times at most and inside the one deadline; every limit applies to every attempt.
+ */
+async function launchCalibre(run: CalibreRun, args: readonly string[], limits: Omit<LaunchedExecutionOptions, 'timeoutMs'>): Promise<void> {
+  const attempts = CALIBRE_TARGETS[run.request.tgt]?.drawsPages ? PAGE_DRAWING_ATTEMPTS : 1;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await launchSandboxedBinary(run.program, [...args], { ...limits, timeoutMs: remainingMsOf(run) });
+      return;
+    } catch (err) {
+      if (attempt >= attempts || !isBrowserCrash(err)) throw err;
+      recordEngineOutput('calibre', `${run.request.src}-to-${run.request.tgt}`, `Chromium of calibre crashed (attempt ${attempt} of ${attempts}); the run is started again.`);
+    }
+  }
+}
+
 /** One calibre run, held to the time the route has left; a route that has used all of its time starts no run. */
 async function runCalibre(run: CalibreRun, args: readonly string[]): Promise<void> {
   const { request } = run;
-  const remainingMs = run.deadlineAt - Date.now();
-  if (remainingMs <= 0) throw new CpuTaskTimeoutError(`.${request.src} to .${request.tgt} conversion`, run.limitMs);
   const growth = new AbortController();
-  const limits: LaunchedExecutionOptions = {
-    timeoutMs: remainingMs,
+  const limits: Omit<LaunchedExecutionOptions, 'timeoutMs'> = {
     maxBuffer: request.options.maxBufferBytes || DEFAULT_MAX_BUFFER_BYTES,
     maxFileSize: MAX_OUTPUT_BYTES,
     memoryLimitMb: MEMORY_LIMIT_MB,
@@ -263,7 +293,7 @@ async function runCalibre(run: CalibreRun, args: readonly string[]): Promise<voi
   };
   const stopWatching = watchDirectoryGrowth(run.dir, { maxBytes: run.directoryBytes, maxEntries: DIRECTORY_MAX_ENTRIES }, () => growth.abort());
   try {
-    await launchSandboxedBinary(run.program, [...args], limits);
+    await launchCalibre(run, args, limits);
   } catch (err) {
     if (growth.signal.aborted && !request.options.signal?.aborted) {
       throw new PayloadLimitError(`calibre wrote more than ${run.directoryBytes} bytes or ${DIRECTORY_MAX_ENTRIES} files while it converted the .${request.src} file.`);

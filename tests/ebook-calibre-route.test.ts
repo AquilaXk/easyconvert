@@ -431,6 +431,52 @@ describe('the calibre route against a stand-in program', () => {
     expect(recorded).toBe('calibre was ended by SIGKILL under the memory limit of 4096 MB.');
   });
 
+  describe('Chromium crashing in a run that draws pages', () => {
+    const CRASH = `process.kill(process.pid, 'SIGSEGV'); setInterval(() => {}, 1000);`;
+    /** Crashes in the first `crashes` runs, then writes the PDF; the runs are counted in a file because every run is a new process. */
+    const crashesThenWrites = (crashes: number): string => `
+      const counter = ${JSON.stringify(path.join(workDir, 'starts'))};
+      const started = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf-8')) : 0;
+      fs.writeFileSync(counter, String(started + 1));
+      if (started < ${crashes}) { ${CRASH} } else { ${validOutput()} }
+    `;
+
+    it('starts the run again after a SIGSEGV and delivers the PDF of the run that lived', async () => {
+      const log = captureEngineOutput();
+      const result = await convertWithCalibre(deps(), request('tcr', 'pdf', Buffer.from('tcr book bytes')), fakeProgram(crashesThenWrites(2)));
+      const recorded = log.outputs();
+      log.restore();
+      expect(runsOf()).toHaveLength(3);
+      expect(recorded).toEqual([
+        'Chromium of calibre crashed (attempt 1 of 3); the run is started again.',
+        'Chromium of calibre crashed (attempt 2 of 3); the run is started again.',
+      ]);
+      expect(result.engineUsed).toBe('native-calibre');
+      fs.rmSync(result.filePath as string, { force: true });
+    });
+
+    it('stops after three starts when every run crashes, and answers with the memory-limit error that names the signal in the log', async () => {
+      const log = captureEngineOutput();
+      const error = await convertWithCalibre(deps(), request('tcr', 'pdf', Buffer.from('tcr book bytes')), fakeProgram(CRASH)).catch((caught: unknown) => caught);
+      const recorded = log.outputs();
+      log.restore();
+      expect(runsOf()).toHaveLength(3);
+      expect(error).toBeInstanceOf(ConversionFailedError);
+      expect((error as Error).message).toBe('calibre exceeded its output or memory limit on the .tcr file.');
+      expect(recorded.at(-1)).toBe('calibre was ended by SIGSEGV under the memory limit of 4096 MB.');
+    });
+
+    it.each([
+      ['a run that does not draw pages', 'txt', CRASH],
+      ['an ordinary failure of a run that draws pages', 'pdf', `process.stderr.write('ValueError: bad record\\n'); process.exit(1);`],
+      ['the kernel killing a run that draws pages', 'pdf', `process.kill(process.pid, 'SIGKILL'); setInterval(() => {}, 1000);`],
+    ])('does not start %s again', async (_what, target, behavior) => {
+      const error = await convertWithCalibre(deps(), request('tcr', target, Buffer.from('tcr book bytes')), fakeProgram(behavior)).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(ConversionFailedError);
+      expect(runsOf()).toHaveLength(1);
+    });
+  });
+
   it.each([
     ['mobi', 'writes a file that is not a Palm database', `fs.writeFileSync(output, 'plain text');`],
     ['lrf', 'writes a file without the LRF magic', `fs.writeFileSync(output, 'plain text, not a BBeB book');`],
