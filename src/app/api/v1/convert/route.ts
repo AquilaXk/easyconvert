@@ -26,7 +26,7 @@ import { droppedStreamsFields, droppedStreamsHeaders } from '@/lib/api/dropped-s
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
 import { ALTO_SNIFF_BYTES, promoteAltoXmlSource } from '@/lib/conversions/ocr-alto-sniff';
-import { assertNotSpoofedFile, spoofCheckStatus } from '@/lib/security/file-guard';
+import { assertNotSpoofedFile } from '@/lib/security/file-guard';
 import { resolveEffectiveWebhook } from '@/lib/security/ssrf';
 import { storageProvider } from '@/lib/storage';
 import { saveRetainedResult } from '@/lib/storage/retention-service';
@@ -42,7 +42,7 @@ import { recordCompletedUpload } from '@/lib/api/completed-upload';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext, releaseKey, replyUnderKey } from '@/lib/api/with-idempotency';
 import { wantsRawResponse } from '@/lib/api/idempotency';
-import { typedFailureProblem } from '@/lib/api/typed-failure-response';
+import { spoofRefusalProblem, typedFailureProblem } from '@/lib/api/typed-failure-response';
 import { resolveEngineChoice } from '@/worker/engine-registry';
 import {
   ArchiveEntryCollisionError,
@@ -444,14 +444,10 @@ async function convertReserved(c: ReservedConversion, unit: ReservedUnit): Promi
     assertNotSpoofedFile(inputBuffer, sourceDef.extension, safeFilename);
   } catch (err: unknown) {
     trace.cause = err;
-    return reply(createProblemDetailsResponse(
-      spoofCheckStatus(err),
-      (err instanceof Error && err.message) || 'File spoofing detected.',
-      instanceUri,
-      undefined,
-      undefined,
-      rateLimitHeaders
-    ));
+    return reply(
+      spoofRefusalProblem(err, instanceUri, rateLimitHeaders) ??
+        createProblemDetailsResponse(400, (err instanceof Error && err.message) || 'File spoofing detected.', instanceUri, undefined, undefined, rateLimitHeaders, undefined, { code: 'spoofed_file' })
+    );
   }
 
   // Convert through the shared dispatcher (native engines first, in-process where valid)

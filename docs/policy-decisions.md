@@ -395,6 +395,7 @@ Security
 344. [A pair slug that names a format by another name redirects with 308 to the page of its canonical name, and every other unknown slug stays 404](#344-a-pair-slug-that-names-a-format-by-another-name-redirects-with-308-to-the-page-of-its-canonical-name-and-every-other-unknown-slug-stays-404)
 345. [A video or audio file converted to its own format is written again with the muxer of its container, and the DSS pair is withdrawn](#345-a-video-or-audio-file-converted-to-its-own-format-is-written-again-with-the-muxer-of-its-container-and-the-dss-pair-is-withdrawn)
 346. [What a failed program printed goes to the server log, and the error a caller reads names the step and the exit status](#346-what-a-failed-program-printed-goes-to-the-server-log-and-the-error-a-caller-reads-names-the-step-and-the-exit-status)
+347. [A format id that names files of another format is held to that format's signature, and every refusal of the spoof check carries a code](#347-a-format-id-that-names-files-of-another-format-is-held-to-that-formats-signature-and-every-refusal-of-the-spoof-check-carries-a-code)
 
 ---
 
@@ -10395,3 +10396,16 @@ Security
   - **Keeping the last line of each program**: the sweep showed the last line is where tracebacks and file paths are.
 - **Verified by**: `tests/engine-output-withheld.test.ts` (the FFmpeg banner of a Debian build never reaches the reason, each reason, the log line, a real damaged MP4), and the stand-in programs of `tests/cad-occt-wrapper.test.ts`, `tests/font-type1-wrapper.test.ts`, `tests/pandoc-pairs.test.ts`, `tests/djvu-render-stubbed-launcher.test.ts`, `tests/raw-native-decoder-warning.test.ts`, `tests/raw-nikon-he-decode.test.ts` and `tests/postscript-real-file-refusals.test.ts`, which assert the sentence and that the printed line was logged.
 - **Revisit when**: a program's diagnostic is worth showing to callers (then list it in the program's own typed error, as the archive errors do), or the server log moves to a service that keeps lines for less time than an operator needs.
+
+## 347. A format id that names files of another format is held to that format's signature, and every refusal of the spoof check carries a code
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: production sweep, a real PDF sent as `pdfa`, a real PPTX as `presentation` and an animated WebP as `webpvideo` were refused as spoofed, and eight spoof refusals had no `code`)
+- **Decision**: **The spoof check applies the signature rules of the format an id stands for** (`SIGNATURE_FORMAT_OF_ID` in `src/lib/registry.ts`): `pdfa` is a PDF, `presentation` a PPTX, `webpvideo` a WebP, `alac` an M4A, `tar.7z` a 7z archive and `keynotes` a Keynote package (`key`). The message still names the id the caller declared. **Every refusal of the spoof check carries a `code`**: `spoofed_file` for a file that is not what its name says (400), and the code of the encrypted package for the 422 of a password-protected Office file; `/api/v1/convert`, `/api/v1/jobs`, `/api/queue/jobs`, the upload routes (tus creation, tus chunk, remote complete) and the batch and web routes answer it through `spoofCheckRefusal` and `spoofRefusalProblem`. No new code was needed: `spoofed_file` has its English and Korean wording, its OpenAPI listing and its place in the refusal inventory.
+- **Why**: The signature rules were written for extensions, so a registry id that is not an extension of its format (`pdfa`) found no rule and every file was refused, although the PDF/A file is a PDF. The same file passed on a route that sends the extension (`webpvideo` sends `webp`) and failed on the worker, which sends the id, so the answer depended on the route. A refusal without a code cannot be told from another 400 by a client.
+- **Trade-offs**:
+  - **`avif` named on a JPEG and `tz` named on a gzip stay refused**: they are other formats under the name, not aliases. A `.tz` that holds gzip data (7-Zip reads `.tz` as tar and compress) is refused as before.
+  - **A Keynote bundle is accepted as any ZIP**, the rule of `key`; the Keynote package is not looked into.
+  - **`oeb` is not mapped**: an Open eBook package is XML, and an EPUB named `.oeb` is a different file.
+- **Verified by**: `tests/spoof-alias-formats.test.ts` (a real PDF, PPTX, WebP header, M4A header, 7z and ZIP accepted under the six ids and under the id, a file of another kind named with each id refused, a JPEG named `.avif` and a gzip named `.tz` refused, and the `code` of `/api/v1/convert`, `/api/v1/jobs` and `/api/queue/jobs`).
+- **Revisit when**: a registry id turns out to stand for a format with other signature rules, or a client needs the 422 and 400 refusals told apart by more than the code.

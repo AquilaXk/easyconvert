@@ -719,7 +719,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       if (!fileSize && verification.primarySize !== undefined) fileSize = verification.primarySize;
     } catch (err: any) {
       const refusal = spoofCheckRefusal(err);
-      if (refusal) return await fail(refusal.status, err.message, refusal.title);
+      if (refusal) return await fail(refusal.status, err.message, refusal.title, undefined, undefined, { code: refusal.code });
       const storageProblem = describeStorageError(err);
       if (storageProblem) {
         return await fail(storageProblem.status, storageProblem.detail, storageProblem.title, undefined, storageProblem.headers);

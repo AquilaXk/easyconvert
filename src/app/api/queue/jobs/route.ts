@@ -103,15 +103,15 @@ async function startJob(req: NextRequest, user: User, instanceUri: string): Prom
   return withReservedUnit(unit.reservationId, (reserved) => queueJob(req, user, reserved, instanceUri));
 }
 
-function failJson(status: number, error: string): Response {
-  return NextResponse.json({ success: false, error }, { status });
+function failJson(status: number, error: string, code?: string): Response {
+  return NextResponse.json({ success: false, ...(code ? { code } : {}), error }, { status });
 }
 
 /** The refusal for a spoofed input, or a rethrow of any other error. */
 function spoofRefusalOrThrow(err: unknown): Response {
   const refusal = spoofCheckRefusal(err);
   if (!refusal) throw err;
-  return failJson(refusal.status, err instanceof Error ? err.message : String(err));
+  return failJson(refusal.status, err instanceof Error ? err.message : String(err), refusal.code);
 }
 
 /** Refuses a missing remote object or one whose bytes do not match the format; null when it passes. */

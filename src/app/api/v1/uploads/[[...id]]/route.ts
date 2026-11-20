@@ -25,9 +25,10 @@ import {
 import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError, resolveDeclaredFormat } from '@/lib/storage/declared-format';
 import type { UploadSessionInfo } from '@/lib/storage/oci-storage';
 import { readObjectHeader } from '@/lib/storage/object-header';
-import { assertNotSpoofedObject } from '@/lib/security/file-guard';
+import { assertNotSpoofedObject, spoofCheckRefusal } from '@/lib/security/file-guard';
 import { recordCompletedUpload } from '@/lib/api/completed-upload';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { spoofRefusalProblem } from '@/lib/api/typed-failure-response';
 import { withRateLimitHeaders } from '@/lib/api/rate-limit';
 import { fileSizeLimitProblem, partBodyProblem } from '@/lib/api/file-size-limit';
 import { planOfCaller } from '@/lib/plan-limits';
@@ -348,7 +349,17 @@ async function refuseSpoofedRemoteUpload(
   } catch (error: unknown) {
     await storageProvider.deleteObject(key);
     if (error instanceof UnknownDeclaredFormatError) throw error;
-    return createProblemDetailsResponse(422, error instanceof Error ? error.message : 'File content magic bytes mismatch.', instanceUri);
+    const spoofed = spoofCheckRefusal(error);
+    return createProblemDetailsResponse(
+      422,
+      error instanceof Error ? error.message : 'File content magic bytes mismatch.',
+      instanceUri,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      spoofed ? { code: spoofed.code } : undefined
+    );
   }
 }
 
@@ -624,6 +635,8 @@ function creationChunkErrorResponse(err: unknown, instanceUri: string): Response
   if (err instanceof UnknownDeclaredFormatError) {
     return createProblemDetailsResponse(400, err.message, instanceUri, 'Unknown Format', UNKNOWN_FORMAT_PROBLEM_TYPE, tusHeaders);
   }
+  const spoofProblem = spoofRefusalProblem(err, instanceUri, tusHeaders);
+  if (spoofProblem) return spoofProblem;
   const storageProblem = storageErrorResponse(err, instanceUri, tusHeaders);
   if (storageProblem) return storageProblem;
   const message = err instanceof Error && err.message ? err.message : 'Error processing creation-with-upload chunk';
@@ -993,6 +1006,8 @@ async function patchUploadAuthorized(
         'Tus-Resumable': TUS_RESUMABLE_VERSION,
       });
     }
+    const spoofProblem = spoofRefusalProblem(err, instanceUri, { 'Tus-Resumable': TUS_RESUMABLE_VERSION });
+    if (spoofProblem) return spoofProblem;
     const storageProblem = storageErrorResponse(err, instanceUri, { 'Tus-Resumable': TUS_RESUMABLE_VERSION });
     if (storageProblem) return storageProblem;
     const message = err instanceof Error && err.message ? err.message : 'Error processing TUS chunk upload';

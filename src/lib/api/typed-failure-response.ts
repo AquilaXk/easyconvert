@@ -1,5 +1,6 @@
 import type { NextResponse } from 'next/server';
 import { HTTP_SERVICE_UNAVAILABLE } from '../refusal-codes';
+import { spoofCheckRefusal } from '../security/file-guard';
 import { EngineMissingError, typedFailureOf } from '../types';
 import { createEngineUnavailableResponse, createProblemDetailsResponse } from './problem-details';
 
@@ -10,6 +11,25 @@ const INTERNAL_ERROR_DETAIL = 'Internal conversion error';
 function problemExtensionsOf(error: unknown): Record<string, unknown> {
   const extensions = (error as { problemExtensions?: unknown } | null)?.problemExtensions;
   return typeof extensions === 'object' && extensions !== null ? (extensions as Record<string, unknown>) : {};
+}
+
+/**
+ * The problem+json answer of an upload the spoof check turned away (a 400 `spoofed_file`, or the 422 of an encrypted package with its own
+ * code), or undefined for any other error. Every route that holds a file to the format of its name answers a refusal through this.
+ */
+export function spoofRefusalProblem(error: unknown, instanceUri: string, headers?: Record<string, string>): NextResponse | undefined {
+  const refusal = spoofCheckRefusal(error);
+  if (!refusal) return undefined;
+  return createProblemDetailsResponse(
+    refusal.status,
+    error instanceof Error ? error.message : String(error),
+    instanceUri,
+    refusal.title,
+    undefined,
+    headers,
+    undefined,
+    { code: refusal.code }
+  );
 }
 
 /**
