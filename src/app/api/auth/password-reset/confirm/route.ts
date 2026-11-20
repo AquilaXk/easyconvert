@@ -30,7 +30,7 @@ const refusal = codedRefusal<AuthErrorCode>;
  * was not theirs goes to the real owner, with the registrant's password and sessions gone, and with the API keys, webhooks and
  * saved storage credentials they made gone too (`revokeStandingAccess`): a key made before the address was confirmed is the
  * registrant's, not the owner's. An address the owner already confirmed by the link of a verification mail keeps what was made since
- * it was confirmed (`verifiedAt`) and loses what is older (docs/policy-decisions.md, entry 362).
+ * it was confirmed (`verifiedAt`) and loses what is older (docs/policy-decisions.md, entry 363).
  */
 export async function POST(req: NextRequest) {
   if (!isAuthMailEnabled()) return refusal(404, 'mail_unavailable', 'Password reset is not available.');

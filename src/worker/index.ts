@@ -396,7 +396,7 @@ if (process.env.NODE_ENV !== 'test') {
   startWorkerSandboxSweep();
   // The hourly comparison of subscriptions with the payment provider's list; a worker without the seven billing variables does nothing (policy entry 277).
   startBillingReconcile();
-  // The daily deletion of accounts whose address stayed unverified for 30 days, with what they own (policy entry 363).
+  // The daily deletion of accounts whose address stayed unverified for 30 days, with what they own (policy entry 364).
   startUnverifiedAccountPurge();
   // The metrics listener stays up while the worker drains, so a drain can be watched; it is closed with the process.
   startMetricsFromConfig('worker', () => sampleQueues(metricsQueueSources())).catch((error: unknown) => {

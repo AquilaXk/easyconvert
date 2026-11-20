@@ -7,7 +7,7 @@ import { redisUserStore } from './redis-user-store';
 import type { UserRecord } from './types';
 
 /**
- * Deletes the accounts whose address stayed unverified for 30 days, with everything they own (docs/policy-decisions.md, entry 363).
+ * Deletes the accounts whose address stayed unverified for 30 days, with everything they own (docs/policy-decisions.md, entry 364).
  * Each worker starts a timer and a Redis leader lock lets one of them run a pass; a pass scans the user records a page at a time,
  * claims each old unverified account in one atomic step (`claimUnverifiedForPurge`, which an address confirmed a moment ago
  * fails) and erases it through the same path as the erasure of an account (`eraseAccount`). The log carries counts, never addresses.

@@ -25,7 +25,7 @@ import { jsonPost, passwordAccount, stubMailConfig, tokenOfMail } from './helper
 /**
  * A squatter registers the address of someone else, makes keys with the password they know, and the owner confirms the address with
  * the link of the verification mail. Confirming alone changes nothing the squatter holds, so the owner's reset of the password later
- * deletes what was made before the confirmation (`verifiedAt`) and keeps what was made since. docs/policy-decisions.md, entry 362.
+ * deletes what was made before the confirmation (`verifiedAt`) and keeps what was made since. docs/policy-decisions.md, entry 363.
  */
 
 const NEW_PASSWORD = 'Owner chose this 1!';
