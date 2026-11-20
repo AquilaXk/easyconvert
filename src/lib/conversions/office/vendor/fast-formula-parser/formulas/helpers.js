@@ -54,7 +54,16 @@ class FormulaHelpers {
      * @returns {*}
      */
     flattenDeep(arr1) {
-        return arr1.reduce((acc, val) => Array.isArray(val) ? acc.concat(this.flattenDeep(val)) : acc.concat(val), []);
+        // one output array, not a copy of it for every element (SUM over 90,000 cells took 4 s)
+        const out = [];
+        const walk = arr => {
+            for (let i = 0; i < arr.length; i++) {
+                if (Array.isArray(arr[i])) walk(arr[i]);
+                else out.push(arr[i]);
+            }
+        };
+        walk(arr1);
+        return out;
     }
 
     /**

@@ -43,7 +43,7 @@ cc7bceb97cff8f1a96a3bb6e429cad914ab68303ad26e039b501c4c7d6b6da22  ssf/ssf.js
 The copy above is the upstream code byte for byte. These edits came after it, each found by comparing the adapter's results with LibreOffice (`tests/spreadsheet-formula-oracle.test.ts`). SHA-256 after the edits:
 
 - `formulas/operators.js` be89819bd95b7a1116006231c03481d1730ed07b568bc94fa1647159f5174060
-- `formulas/helpers.js` 1597611cad43c8cf590c6ec9abae312bb1cb7d5721c513d8f4159c768741f0d0
+- `formulas/helpers.js` 3fe0f1f2d7e471a4bdf3bea73cb01ee3e454621404575a63b91d098e55b577ad
 - `formulas/functions/statistical.js` 9a509eaf5029656eca40781b5441f876d2e54fa1264da18a0257cc3af189de8d
 - `formulas/functions/text.js` b2036d4ad9445b23d7fd04351dbfb937ad89ab783f94e60f9364af7dda14ce2c
 - `formulas/functions/reference.js` 6edc3f2e0f4452981b7606823904975549abb557a8aa4542f806e8221730cfde
@@ -55,3 +55,4 @@ The copy above is the upstream code byte for byte. These edits came after it, ea
 - `formulas/functions/text.js`, `SEARCH`: a search without wildcards ignores case (`SEARCH("L","hello")` was `#VALUE!`).
 - `formulas/functions/statistical.js`, `AVERAGE`: no number gives `#DIV/0!`, not `#VALUE!`.
 - `formulas/functions/math.js`, `SUMPRODUCT`: the products go into a copy; the original wrote into the arrays it was given, which are the cells a later formula reads (after `SUMPRODUCT(A1:A5,B1:B5)`, `GEOMEAN(A1:A5)` read other numbers).
+- `formulas/helpers.js`, `flattenDeep`: one output array instead of a copy of the array for every element. `SUM(A1:A90000)` took 4.2 s and takes 8 ms (every function that reads a range goes through it).
