@@ -1,3 +1,4 @@
+import { recordEngineOutput } from '../lib/engine-output';
 import path from 'node:path';
 import { ARCHIVE_SECURITY_LIMITS } from '../lib/conversions/archive';
 import type { ArchiveExtractionLimits } from '../lib/conversions/archive-extraction-safety';
@@ -45,7 +46,6 @@ const MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
 const PAGE_COUNT_DEFAULT_TIMEOUT_MS = 45_000;
 const PAGE_COUNT_MAX_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_BUFFER_BYTES = 100 * 1024 * 1024;
-const MAX_STDERR_CHARS = 300;
 /** The program writes its result to a file in the job directory and prints nothing the worker has to copy. */
 const NO_PIPED_OUTPUT_BYTES = 0;
 const XPS_PACKAGE_LIMITS: ArchiveExtractionLimits = {
@@ -105,17 +105,17 @@ function runTimeoutMs(options: WorkerEngineOptions): number {
 }
 
 /** The typed error for a run that failed: its limits, or what the program printed about the file. */
-function toRendererError(err: unknown, src: string, tempDir: string): unknown {
+function toRendererError(err: unknown, src: string): unknown {
   if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
     return new ConversionFailedError(`GhostXPS exceeded its output or memory limit on the .${src} file.`);
   }
-  if (err instanceof SandboxedProcessError) return rejected(src, err.stderr, tempDir);
+  if (err instanceof SandboxedProcessError) return rejected(src, err.stderr);
   return err;
 }
 
-function rejected(src: string, stderr: string, tempDir: string): ConversionFailedError {
-  const detail = stderr.trim().replaceAll(tempDir, '<tmp>').slice(0, MAX_STDERR_CHARS);
-  return new ConversionFailedError(`GhostXPS could not draw the .${src} file${detail ? `: ${detail}` : ''}`);
+function rejected(src: string, stderr: string): ConversionFailedError {
+  recordEngineOutput('GhostXPS', 'draw', stderr);
+  return new ConversionFailedError(`GhostXPS could not draw the .${src} file.`);
 }
 
 /** What the PDF may be: the most bytes it may have and the number of pages the documents list. */
@@ -144,9 +144,9 @@ async function writePdf(job: XpsJob, entries: readonly PackageEntry[], tempDir: 
     const run = await launchSandboxedBinary(job.interpreter, [...RENDERER_FLAGS, `-sOutputFile=${pdfPath}`, packagePath], limits);
     stderr = run.stderr.toString('utf-8');
   } catch (err) {
-    throw toRendererError(err, job.src, tempDir);
+    throw toRendererError(err, job.src);
   }
-  if (RENDERER_FAILURE_PATTERN.test(stderr)) throw rejected(job.src, stderr, tempDir);
+  if (RENDERER_FAILURE_PATTERN.test(stderr)) throw rejected(job.src, stderr);
   const size = sandboxOutputSize(pdfPath) ?? 0;
   if (size === 0) throw new ConversionFailedError(`GhostXPS drew no page from the .${job.src} file.`);
   if (size > expected.maxBytes) throw drawnPdfTooLargeError('GhostXPS', job.src, size, expected.maxBytes);

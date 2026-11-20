@@ -1,3 +1,4 @@
+import { recordEngineOutput } from '../engine-output';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -85,9 +86,12 @@ export function resolveFfprobeBinary(ffmpegBin?: string | null): FfprobePath {
   return found;
 }
 
-/** The error for an input ffprobe could not open: the codec the build lacks when that is why, otherwise ffprobe's own report. */
+/** The error for an input ffprobe could not open: the codec the build lacks when that is why, otherwise a fixed sentence (ffprobe's report goes to the server log). */
 async function probeFailure(ffprobe: FfprobePath, input: MediaInput, detail: string): Promise<ConversionFailedError> {
-  return (await explainProbeFailure(ffprobe, input)) ?? new ConversionFailedError(`ffprobe could not inspect the input media: ${detail}`);
+  const explained = await explainProbeFailure(ffprobe, input);
+  if (explained) return explained;
+  recordEngineOutput('ffprobe', 'inspect', detail);
+  return new ConversionFailedError('ffprobe could not inspect the input media: it is damaged or is not in the declared format.');
 }
 
 async function probeScalar(ffprobe: FfprobePath, input: MediaInput, args: string[], signal?: AbortSignal): Promise<string> {

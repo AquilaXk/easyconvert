@@ -276,11 +276,7 @@ describe('Launch-blocking spoof and parser bounds (#761)', () => {
   describe('qpdf sandbox memory limit', () => {
     it('defines QPDF_MEMORY_LIMIT_MB = 512 and maps SandboxedMemoryLimitError to PdfPostprocessError', () => {
       expect(QPDF_MEMORY_LIMIT_MB).toBe(512);
-      const mapped = toQpdfError(
-        new SandboxedMemoryLimitError(512),
-        { dir: '/tmp/qpdf', inputPath: '/tmp/qpdf/input.pdf' },
-        'Linearizing the PDF'
-      );
+      const mapped = toQpdfError(new SandboxedMemoryLimitError(512), 'Linearizing the PDF');
       expect(mapped).toBeInstanceOf(PdfPostprocessError);
       expect((mapped as Error).message).toBe('Linearizing the PDF failed: the document exceeds the 512 MB memory limit.');
     });

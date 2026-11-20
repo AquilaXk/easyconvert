@@ -1,3 +1,4 @@
+import { recordEngineOutput } from '../../engine-output';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -60,7 +61,6 @@ const GHOSTSCRIPT_DEFAULT_TIMEOUT_MS = 300_000;
 const GHOSTSCRIPT_MEMORY_LIMIT_MB = 2048;
 const GHOSTSCRIPT_MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
 const GHOSTSCRIPT_MAX_DIAGNOSTIC_BYTES = 1024 * 1024;
-const MAX_DIAGNOSTIC_CHARS = 300;
 const PDF_EOF_MARKER = '%%EOF';
 const EOF_SEARCH_BYTES = 1024;
 
@@ -109,7 +109,7 @@ function resolveProfile(options: PdfOptimizeOptions | undefined): PdfOptimizePro
   return profile;
 }
 
-function toGhostscriptError(error: unknown, dir: string): unknown {
+function toGhostscriptError(error: unknown): unknown {
   if (error instanceof SandboxedBufferLimitError) {
     return new PdfPostprocessError('Compression failed: the result exceeds the allowed size.');
   }
@@ -117,9 +117,8 @@ function toGhostscriptError(error: unknown, dir: string): unknown {
     return new PdfPostprocessError('Compression failed: it took longer than the time allowed.');
   }
   if (!(error instanceof SandboxedProcessError)) return error;
-  const detail = `${error.stderr}${error.stdout}`.replaceAll(dir, '<tmp>').trim().split('\n')[0]?.slice(0, MAX_DIAGNOSTIC_CHARS) ?? '';
-  const reason = detail ? ` (${detail})` : '';
-  return new PdfPostprocessError(`Compression failed: Ghostscript could not process the document${reason}.`);
+  recordEngineOutput('ghostscript', 'compress', `${error.stderr}${error.stdout}`);
+  return new PdfPostprocessError('Compression failed: Ghostscript could not process the document.');
 }
 
 async function rewriteWithGhostscript(pdf: Buffer, preset: string, clock: CompressClock, signal: AbortSignal | undefined): Promise<Buffer> {
@@ -145,7 +144,7 @@ async function rewriteWithGhostscript(pdf: Buffer, preset: string, clock: Compre
         expectedOutputBytes: 0,
       });
     } catch (error) {
-      throw toGhostscriptError(error, workspace.dir);
+      throw toGhostscriptError(error);
     }
     const output = readSandboxOutput(outputPath);
     const tail = output.subarray(Math.max(0, output.length - EOF_SEARCH_BYTES)).toString('latin1');

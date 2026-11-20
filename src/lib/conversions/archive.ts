@@ -1,3 +1,4 @@
+import { recordEngineOutput } from '../engine-output';
 import { stageTimeoutMs } from './job-time';
 import { execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -106,6 +107,7 @@ import {
 } from './archive-split';
 import {
   SandboxedBufferLimitError,
+  SandboxedProcessError,
   executeSandboxedBinary,
   resolveSandboxedCommand,
   rethrowSandboxUnavailable, execFileSyncConfined,
@@ -3170,7 +3172,8 @@ async function inspectArchiveVia7zCli(buffer: Buffer, format: '7z' | 'rar', p7z:
       if (isArchivePasswordFailure(archiveFailureStderr(err))) {
         throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
       }
-      throw new ConversionFailedError(`Failed to inspect ${format} archive: ${err.message}`);
+      recordEngineOutput('7-Zip', 'inspect', err instanceof SandboxedProcessError ? err.stderr : String(err?.message ?? err));
+      throw new ConversionFailedError(`Failed to inspect ${format} archive.`);
     }
 
     // Inspection writes nothing and reports unsafe entries rather than refusing them. Only the resource caps,

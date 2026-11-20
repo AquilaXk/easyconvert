@@ -67,13 +67,13 @@
   },
   {
     "file": "govdocs1-002500.ps",
-    "detail": "^ConversionFailedError: The PostScript interpreter rejected the \\.ps file: Error: /invalidaccess in --put--",
+    "detail": "^ConversionFailedError: The PostScript interpreter rejected the \\.ps file\\.$",
     "reason": "The WordPerfect 6.1 font programs fill the Encoding array of a Type 3 font with integers (`0 1 255{Encoding exch 0 put}for`, where Widths was meant) and add glyphs after definefont. Ghostscript replaces such an Encoding with a rebuilt copy whose attributes are `r_type_attrs(pencoding) & a_readonly`, which has no write bit even when the original had one (zbfont.c, build_gs_font, with a_readonly defined in iref.h; unchanged from 10.02.1 to the development branch), so the next `Encoding 1 /1 put`, in the font that page 10 of 27 loads, stops with invalidaccess, with and without -dSAFER (the mechanism is read from that source; that the line is the cause is measured). With that one line filling Widths the file converts to its 27 pages (tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-006458.ps",
-    "detail": "^ConversionFailedError: The PostScript interpreter rejected the \\.ps file: Error: /limitcheck in --setcolorspace--",
+    "detail": "^ConversionFailedError: The PostScript interpreter rejected the \\.ps file\\.$",
     "reason": "The QuickDraw GX driver declares CIE colour spaces with ranges of 0 to 65535 (`/RangeABC [0 65535 0 65535 0 65535]`, `/RangeLMN`). Ghostscript accepts a CIE parameter of at most 10000 (zcolor.c, MAX_CIE_RANGE and get_cie_param_array, unchanged from 10.02.1 to the development branch), so the first colour space of page 1 stops with limitcheck, with and without -dSAFER. With the two ranges set to 9999 the file converts to its 24 pages (tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
@@ -216,7 +216,7 @@
     "file": "office-document-59378.docx",
     "source": "docx",
     "target": "lrf",
-    "detail": "^ConversionFailedError: calibre could not convert the \\.docx file to \\.lrf: .*LrfError: page id invalid in toc: office-document-59378$",
+    "detail": "^ConversionFailedError: calibre could not convert the \\.docx file to \\.lrf: it exited with status \\d+\\.$",
     "reason": "The file holds no text (the body is six empty paragraphs; headers, footers, footnotes and endnotes hold no w:t element), so the EPUB the converter hands to calibre has no content page, and calibre's LRF writer stops with \"page id invalid in toc\" for the table-of-contents entry that names the file. `ebook-convert` 7.6.0 refuses that EPUB the same way when run on it alone (the MOBI and the OEB of the same file convert). The pair to PPTX, refused with \"There is no text to put on slides\" (tests/docx-to-slides-text.test.ts), is no longer one of the file's planned pairs.",
     "issue": 783
   },
@@ -229,7 +229,7 @@
   {
     "file": "mspack-encints-32bit-both.chm",
     "source": "chm",
-    "detail": "^ConversionFailedError: calibre could not convert the \\.chm file to \\.[a-z0-9]+: AttributeError: 'NoneType' object has no attribute 'lstrip'$",
+    "detail": "^ConversionFailedError: calibre could not convert the \\.chm file to \\.[a-z0-9]+: it exited with status \\d+\\.$",
     "reason": "The 4,292 bytes are a test file of the libmspack suite for 32-bit encoded integers in the directory: it names no start page and no contents file (`home` and `topics` of the CHM reader are `None`), and calibre's CHM reader stops on the missing name (`base.lstrip` of `None`, calibre 7.6.0 and 8.5.0 alike) before it reads a page. The route answers with the typed 400 error (tests/ebook-calibre-sources.test.ts).",
     "issue": 783
   }

@@ -1,3 +1,4 @@
+import { recordEngineOutput } from '../lib/engine-output';
 import { RawDecodeError } from '../lib/types';
 
 /**
@@ -13,8 +14,6 @@ import { RawDecodeError } from '../lib/types';
  *   later decodes to a full-size image with no other line: whether the image is whole is for the engine's own checks to decide.
  */
 
-/** Longest part of the decoder's stderr an error message quotes. */
-const MAX_DETAIL_CHARS = 300;
 const DATA_CORRUPTED_INFIX = ': data corrupted at ';
 const OFFSET_PATTERN = /^\d{1,15}$/;
 
@@ -24,11 +23,6 @@ function dataCorruptedOffset(stderr: string, inputPath: string): number | null {
   if (!stderr.startsWith(prefix)) return null;
   const digits = stderr.slice(prefix.length);
   return OFFSET_PATTERN.test(digits) ? Number(digits) : null;
-}
-
-/** The decoder's stderr as an error message quotes it: the working directory shown as `<tmp>`, then cut to length. */
-export function decoderStderrDetail(stderr: string, tempDir: string): string {
-  return stderr.replaceAll(tempDir, '<tmp>').slice(0, MAX_DETAIL_CHARS);
 }
 
 /** The warning of a developed file whose decoder reported corrupted data at `offset`. */
@@ -41,7 +35,6 @@ export interface DecoderReport {
   /** The decoder's stderr, trimmed. */
   stderr: string;
   inputPath: string;
-  tempDir: string;
 }
 
 /**
@@ -52,6 +45,9 @@ export interface DecoderReport {
 export function decoderWarningOffset(report: DecoderReport): number | null {
   if (report.stderr === '') return null;
   const offset = report.src === 'dng' ? dataCorruptedOffset(report.stderr, report.inputPath) : null;
-  if (offset === null) throw new RawDecodeError(`Native RAW decoder reported a problem with the .${report.src} file: ${decoderStderrDetail(report.stderr, report.tempDir)}`);
+  if (offset === null) {
+    recordEngineOutput('dcraw_emu', 'decode', report.stderr);
+    throw new RawDecodeError(`Native RAW decoder reported a problem with the .${report.src} file.`);
+  }
   return offset;
 }

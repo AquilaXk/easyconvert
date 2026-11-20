@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { endOfRun, recordEngineOutput } from '../engine-output';
 import {
   CpuTaskTimeoutError,
   EngineUnavailableError,
@@ -63,13 +64,10 @@ const PROGRAM_MAX_DIAGNOSTIC_BYTES = 1024 * 1024;
 const DEFAULT_OUTPUT_STEM = 'output';
 const UNSAFE_NAME_CHARS = /[^A-Za-z0-9._-]/g;
 const MESH_HEADER_BYTES = 8;
-const MAX_DETAIL_CHARS = 200;
 const SHELL_NOT_EXECUTABLE = 126;
 const ZIP_MIME = 'application/zip';
 const OUTPUT_TOO_LARGE = 'The model is larger than the CAD converter may write.';
 const SHELL_NOT_FOUND = 127;
-const UNPRINTABLE = /[^\x20-\x7e]/g;
-const ERROR_LINE = /^cad-convert: error: (.*)$/m;
 /** The error line of a program that ran out of memory: `memory` is its code. */
 const MEMORY_ERROR_LINE = /^cad-convert: error: memory:/m;
 
@@ -123,14 +121,7 @@ function programBinary(): string {
   return binary;
 }
 
-/** The error line the program printed, with the scratch directory and every unprintable character removed. */
-function diagnostic(stderr: string, sandboxDir: string): string {
-  const line = ERROR_LINE.exec(stderr.replaceAll(sandboxDir, '<tmp>'))?.[1];
-  if (line === undefined) return '';
-  return ` (${line.replace(UNPRINTABLE, '?').slice(0, MAX_DETAIL_CHARS)})`;
-}
-
-function toProgramError(error: unknown, sandboxDir: string, timeoutMs: number): unknown {
+function toProgramError(error: unknown, timeoutMs: number): unknown {
   rethrowSandboxUnavailable(error);
   if (error instanceof SandboxedTimeoutError) return new CpuTaskTimeoutError('CAD converter', timeoutMs);
   // The sandbox reports a signal SIGSEGV or SIGKILL of a memory-limited process as a memory error: running out of the limit
@@ -147,8 +138,8 @@ function toProgramError(error: unknown, sandboxDir: string, timeoutMs: number): 
     if (MEMORY_ERROR_LINE.test(error.stderr)) {
       return new UnprocessableCadInputError(`The CAD converter ran out of memory: the model needs more than the ${PROGRAM_MEMORY_LIMIT_MB} MB it may use.`);
     }
-    const how = error.signal ? `was stopped by ${error.signal}` : `exited with status ${error.exitCode}`;
-    return new UnprocessableCadInputError(`The CAD converter could not convert this model: it ${how}${diagnostic(error.stderr, sandboxDir)}.`);
+    recordEngineOutput(PROGRAM_NAME, 'convert', error.stderr);
+    return new UnprocessableCadInputError(`The CAD converter could not convert this model: ${endOfRun(error)}.`);
   }
   return error;
 }
@@ -204,7 +195,7 @@ async function runKernel(job: KernelJob): Promise<{ model: Buffer; materials: Bu
         signal: job.options.signal,
       });
     } catch (error) {
-      throw toProgramError(error, sandboxDir, timeoutMs);
+      throw toProgramError(error, timeoutMs);
     }
     const model = readSandboxOutputIfPresent(outputPath, (size) => {
       if (size === 0) throw new UnprocessableCadInputError('The CAD converter wrote an empty file.');

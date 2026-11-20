@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { endOfRun, recordEngineOutput } from '../engine-output';
 import {
   CadGeometryError,
   CpuTaskTimeoutError,
@@ -226,12 +227,10 @@ const READER_MEMORY_LIMIT_MB = 2048;
 const READER_MAX_OUTPUT_BYTES = 256 * 1024 * 1024;
 /** Its messages go to the error stream, one line per fault in a damaged file. */
 const READER_MAX_DIAGNOSTIC_BYTES = 4 * 1024 * 1024;
-const MAX_DETAIL_CHARS = 160;
 const INPUT_NAME = 'input.dwg';
 const OUTPUT_NAME = 'output.dxf';
 const SHELL_NOT_EXECUTABLE = 126;
 const SHELL_NOT_FOUND = 127;
-const UNPRINTABLE = /[^\x20-\x7e]/g;
 
 export type DwgReaderOptions = Pick<ConversionOptions, 'signal' | 'timeoutMs'> & JobDeadlined;
 
@@ -243,18 +242,7 @@ function readerBinary(): string {
   return binary;
 }
 
-/** The first error line the reader printed, with the scratch directory and every unprintable character removed. */
-function diagnostic(stderr: string, sandboxDir: string): string {
-  const first = stderr
-    .replaceAll(sandboxDir, '<tmp>')
-    .split('\n')
-    .map((line) => line.trim())
-    .find((line) => /^error/i.test(line));
-  if (first === undefined) return '';
-  return ` (${first.replace(UNPRINTABLE, '?').slice(0, MAX_DETAIL_CHARS)})`;
-}
-
-function toReaderError(error: unknown, sandboxDir: string, timeoutMs: number): unknown {
+function toReaderError(error: unknown, timeoutMs: number): unknown {
   rethrowSandboxUnavailable(error);
   if (error instanceof SandboxedTimeoutError) return new CpuTaskTimeoutError('DWG reader', timeoutMs);
   // The sandbox reports a signal SIGSEGV or SIGKILL of a memory-limited process as a memory error: running out of the limit and
@@ -265,8 +253,8 @@ function toReaderError(error: unknown, sandboxDir: string, timeoutMs: number): u
     if (error.exitCode === SHELL_NOT_FOUND || error.exitCode === SHELL_NOT_EXECUTABLE) {
       return new EngineUnavailableError(READER_NAME, 'dwg2dxf (LibreDWG) could not be started');
     }
-    const how = error.signal ? `was stopped by ${error.signal}` : `exited with status ${error.exitCode}`;
-    return new UnprocessableCadInputError(`The DWG reader could not read this drawing: it ${how}${diagnostic(error.stderr, sandboxDir)}.`);
+    recordEngineOutput(READER_NAME, 'read', error.stderr);
+    return new UnprocessableCadInputError(`The DWG reader could not read this drawing: ${endOfRun(error)}.`);
   }
   return error;
 }
@@ -298,7 +286,7 @@ export async function convertDwgToDxf(input: Buffer, options: DwgReaderOptions =
         signal: options.signal,
       });
     } catch (error) {
-      throw toReaderError(error, sandboxDir, timeoutMs);
+      throw toReaderError(error, timeoutMs);
     }
     const dxf = readSandboxOutputIfPresent(outputPath, (size) => {
       if (size >= READER_MAX_OUTPUT_BYTES) throw new UnprocessableCadInputError('The drawing is larger than the DWG reader may write.');

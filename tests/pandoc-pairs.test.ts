@@ -241,11 +241,11 @@ ${behavior}
     expect(runs()).toEqual([]);
   });
 
-  it('answers a failed run with a typed error that names the last line pandoc printed and not the job directory', async () => {
+  it('answers a failed run with a typed error that names the exit status and not what pandoc printed', async () => {
     const program = fakePandoc(`process.stderr.write('pandoc: Cannot decode byte at ' + source + '\\n'); process.exit(64);`);
     const failure = await convertWithPandoc(request('md', 'tex'), program, NOT_SPOOFED).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(ConversionFailedError);
-    expect((failure as Error).message).toMatch(/^pandoc could not convert the \.md file to \.tex: pandoc: Cannot decode byte at <tmp>\/source\.txt$/);
+    expect((failure as Error).message).toBe('pandoc could not convert the .md file to .tex: it exited with status 64.');
   });
 
   it('refuses a run that wrote no file, and a file with a null byte', async () => {

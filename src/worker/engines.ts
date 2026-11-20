@@ -90,7 +90,8 @@ import {
   RAW_DECODE_MAX_OUTPUT_BYTES, assertCompleteDecodedImage, assertDecodedRawWhole, assertRawSensorPixels, assertWithinPixelCap,
   developedRawPicture, readDecodedTiffLayout,
 } from './raw-decoded-tiff';
-import { dataCorruptedWarning, decoderStderrDetail, decoderWarningOffset } from './raw-decoder-report';
+import { dataCorruptedWarning, decoderWarningOffset } from './raw-decoder-report';
+import { recordEngineOutput } from '../lib/engine-output';
 import {
   RAW_DECODE_DEFAULT_TIMEOUT_MS, RAW_DECODE_FLAGS, RAW_DECODE_MAX_TIMEOUT_MS, RAW_DECODE_MEMORY_LIMIT_MB, RAW_DECODE_UNRECOGNIZED_PATTERN, rawDecoderFor, decodeWithSnapshotFallback,
 } from './raw-decode-settings';
@@ -1681,9 +1682,9 @@ export async function convertWithNativeRaw(
         throw new RawDecodeError(`Native RAW decoder exceeded its output limit or memory limit on the .${src} file`);
       }
       if (err instanceof SandboxedProcessError) {
-        const detail = decoderStderrDetail(err.stderr.trim(), tempDir);
+        recordEngineOutput('dcraw_emu', 'decode', err.stderr);
         throw new RawDecodeError(
-          `Native RAW decoder rejected the .${src} file${detail ? `: ${detail}` : ''}`,
+          `Native RAW decoder rejected the .${src} file`,
           RAW_DECODE_UNRECOGNIZED_PATTERN.test(err.stderr)
         );
       }
@@ -1694,7 +1695,7 @@ export async function convertWithNativeRaw(
     }
 
     // LibRaw reports damaged input on stderr and may still exit 0 with a partly filled image.
-    const corruptedAt = decoderWarningOffset({ src, stderr: decoderStderr, inputPath, tempDir });
+    const corruptedAt = decoderWarningOffset({ src, stderr: decoderStderr, inputPath });
     const layout = readDecodedTiffLayout(decodedPath);
     assertWithinPixelCap(layout);
     assertCompleteDecodedImage(decodedPath, layout);

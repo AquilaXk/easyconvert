@@ -1,3 +1,4 @@
+import { recordEngineOutput } from '../lib/engine-output';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
 import { safeOutputStem } from '../lib/conversions/page-range';
 import { launchSandboxedBinary } from '../lib/security/sandbox-launcher';
@@ -20,7 +21,6 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_TIMEOUT_MS = 300_000;
 const MEMORY_LIMIT_MB = 2048;
 const MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
-const MAX_STDERR_CHARS = 300;
 /** What a PDF holds beyond the drawing it was written from: the subsets of the fonts a text drawing embeds. */
 const FONT_ALLOWANCE_BYTES = 64 * 1024;
 
@@ -57,8 +57,8 @@ export async function renderSvgAsPdf(job: SvgPdfJob): Promise<WorkerConversionRe
       throw new ConversionFailedError('The SVG renderer exceeded its output or memory limit on the drawing.');
     }
     if (err instanceof SandboxedProcessError) {
-      const detail = err.stderr.trim().slice(0, MAX_STDERR_CHARS);
-      throw new ConversionFailedError(`The SVG renderer rejected the drawing${detail ? `: ${detail}` : ''}`);
+      recordEngineOutput('svg-renderer', 'render', err.stderr);
+      throw new ConversionFailedError('The SVG renderer rejected the drawing.');
     }
     throw err;
   }

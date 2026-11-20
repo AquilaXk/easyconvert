@@ -30,6 +30,7 @@ import { capLadderToSource, packagingBudgetSeconds } from './media-packaging';
 import { describeAudioProcessing, measureLoudnessStage } from './media-audio-run';
 import { describeDroppedStreams } from './media-dropped-streams';
 import { outputSizeError } from './media-empty-output';
+import { ffmpegFailureReason } from './media-failure-reason';
 import { DEFAULT_MEDIA_TIER_MAX_MS, computeMediaTimeoutMs } from './media-job-limit';
 import { runFfmpegTranscode } from './media-ffmpeg-run';
 import { type MediaInput, mediaReadDirs, openMediaInput, runFfmpeg, runFfmpegSync } from './media-process';
@@ -330,7 +331,7 @@ export async function convertMedia(
         throw err;
       }
       throw new ConversionFailedError(
-        `Native FFmpeg transcoding failed for ${src} -> ${tgt}: ${err instanceof Error ? err.message : String(err)}`
+        `Native FFmpeg transcoding failed for ${src} -> ${tgt}: ${ffmpegFailureReason(err)}`
       );
     }
   }

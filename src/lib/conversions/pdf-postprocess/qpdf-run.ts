@@ -1,3 +1,4 @@
+import { recordEngineOutput } from '../../engine-output';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -31,7 +32,6 @@ const QPDF_OUTPUT_SIZE_FACTOR = 4;
 const QPDF_MIN_OUTPUT_BYTES = 16 * 1024 * 1024;
 /** Stderr and a part of stdout that is not the document share the buffer; this much is kept for diagnostics. */
 const QPDF_STDERR_SLACK_BYTES = 1024 * 1024;
-const MAX_DIAGNOSTIC_CHARS = 300;
 /** qpdf's message for a page number past the end: `... number 9 out of range`. */
 const OUT_OF_RANGE_PATTERN = /number (\d+) out of range/;
 
@@ -100,7 +100,7 @@ export async function withQpdfInputFile<T>(pdf: Buffer, operation: (workspace: Q
 }
 
 /** Maps a qpdf failure to the typed error of this layer; the message never carries a path of the sandbox. */
-export function toQpdfError(error: unknown, workspace: Pick<QpdfWorkspace, 'dir' | 'inputPath'>, action: string): unknown {
+export function toQpdfError(error: unknown, action: string): unknown {
   if (error instanceof SandboxedBufferLimitError) {
     return new PdfPostprocessError(`${action} failed: the result exceeds the allowed size.`);
   }
@@ -116,12 +116,9 @@ export function toQpdfError(error: unknown, workspace: Pick<QpdfWorkspace, 'dir'
   if (outOfRange) {
     return new InvalidPageRangeError(`Page ${outOfRange[1]} is out of range: the document has fewer pages.`);
   }
-  // The first line is the diagnostic, except when it is a warning that came before a refusal of a loop in the page tree.
-  const detail = reportsPageTreeLoop(error.stderr)
-    ? PAGE_TREE_LOOP_MESSAGE
-    : (error.stderr.replaceAll(workspace.inputPath, '<input>').replaceAll(workspace.dir, '<tmp>').trim().split('\n')[0]?.slice(0, MAX_DIAGNOSTIC_CHARS) ?? '');
-  const reason = detail ? ` (${detail})` : '';
-  return new PdfPostprocessError(`${action} failed: qpdf could not process the document${reason}.`);
+  if (reportsPageTreeLoop(error.stderr)) return new PdfPostprocessError(`${action} failed: qpdf could not process the document (${PAGE_TREE_LOOP_MESSAGE}).`);
+  recordEngineOutput('qpdf', action, error.stderr);
+  return new PdfPostprocessError(`${action} failed: qpdf could not process the document.`);
 }
 
 /** What stops a qpdf run: the signal of the job (cancel, takeover, deadline) and the time limit of the run. */
@@ -158,7 +155,7 @@ export async function runQpdf(workspace: QpdfWorkspace, invocation: QpdfInvocati
       expectedOutputBytes: invocation.expectedOutputBytes ?? 0,
     });
   } catch (error) {
-    throw toQpdfError(error, workspace, invocation.action);
+    throw toQpdfError(error, invocation.action);
   }
 }
 

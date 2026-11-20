@@ -201,7 +201,7 @@ describe('what the decoder prints decides whether its image is developed', () =>
     const stub = decoderStub('nef', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), '"$input: data corrupted at 3"');
     const error = await withBinaryAt('DCRAW_EMU_PATH', stub, () => dispatchConversion(DNG_BYTES, 'nef', 'png', {}, 'stub.nef').catch((caught: unknown) => caught));
     expect(error).toBeInstanceOf(RawDecodeError);
-    expect((error as RawDecodeError).message).toMatch(/reported a problem with the \.nef file: .*data corrupted at 3/);
+    expect((error as RawDecodeError).message).toBe('Native RAW decoder reported a problem with the .nef file.');
   });
 
   it('refuses the line over an image whose last 9 rows each repeat the row two above, and accepts 8, or 9 when the decoder printed nothing', async () => {
@@ -220,13 +220,16 @@ describe('what the decoder prints decides whether its image is developed', () =>
   });
 
   it.each([
-    ['a DNG that printed a line it is refused for', 'dng', '"something went wrong"', /reported a problem with the \.dng file: something went wrong/],
-    ['a NEF that printed the data-corrupted line', 'nef', '"$input: data corrupted at 3"', /reported a problem with the \.nef file: .*data corrupted at 3/],
-  ])('reports what the decoder printed, not the unreadable image it wrote, for %s', async (_name, format, line, message) => {
+    ['a DNG that printed a line it is refused for', 'dng', '"something went wrong"', /something went wrong/],
+    ['a NEF that printed the data-corrupted line', 'nef', '"$input: data corrupted at 3"', /data corrupted at 3/],
+  ])('reports the decoder, not the unreadable image it wrote, for %s, and logs what it printed', async (_name, format, line, logged) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const stub = decoderStub(`unreadable-${format}`, Buffer.from('not a TIFF image'), line);
     const error = await withBinaryAt('DCRAW_EMU_PATH', stub, () => dispatchConversion(DNG_BYTES, format, 'png', {}, `stub.${format}`).catch((caught: unknown) => caught));
     expect(error).toBeInstanceOf(RawDecodeError);
-    expect((error as RawDecodeError).message).toMatch(message);
+    expect((error as RawDecodeError).message).toMatch(new RegExp(`^Native RAW decoder reported a problem with the \\.${format} file\\.$`));
+    expect(warn.mock.calls.some(([entry]) => logged.test(String(entry)))).toBe(true);
+    warn.mockRestore();
   });
 
   it('still refuses a cut file whose image ends in repeated rows, warning or not', async () => {

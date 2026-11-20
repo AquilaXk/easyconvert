@@ -151,13 +151,16 @@ describe('which dcraw_emu develops a NEF', () => {
     expect(result).not.toBe('he');
   });
 
-  it("refuses a High Efficiency NEF with the distribution build's own words where the pinned build is not installed", async () => {
+  it("refuses a High Efficiency NEF where the pinned build is not installed, and logs the distribution build's own words", async () => {
     const { refusing } = await setup();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const error = await withMissingBinary('DCRAW_EMU_HE_PATH', () =>
       withBinaryAt('DCRAW_EMU_PATH', refusing, () => dispatchConversion(buildNef({ tag: 0x51, value: HE_COMPRESSION }), 'nef', 'png', {}, 'z-f.nef').catch((caught: unknown) => caught))
     );
     expect(error).toBeInstanceOf(RawDecodeError);
-    expect((error as RawDecodeError).message).toMatch(/Native RAW decoder reported a problem with the \.nef file: .*data corrupted at 4275203/);
+    expect((error as RawDecodeError).message).toBe('Native RAW decoder reported a problem with the .nef file.');
+    expect(warn.mock.calls.some(([entry]) => /data corrupted at 4275203/.test(String(entry)))).toBe(true);
+    warn.mockRestore();
   });
 });
 

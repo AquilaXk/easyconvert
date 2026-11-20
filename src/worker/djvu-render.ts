@@ -1,3 +1,4 @@
+import { recordEngineOutput } from '../lib/engine-output';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -138,7 +139,6 @@ const DRAW_ENVIRONMENT: Readonly<Record<string, string>> = { MALLOC_ARENA_MAX: '
 const REPORT_EXPECTED_OUTPUT_BYTES = 64 * 1024;
 const REPORT_MAX_FILE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MAX_BUFFER_BYTES = 100 * 1024 * 1024;
-const MAX_STDERR_CHARS = 300;
 /** The program writes its result to a file in the job directory and prints nothing the worker has to copy. */
 const NO_PIPED_OUTPUT_BYTES = 0;
 /** The signals of a program that failed by itself; a SIGKILL or SIGTERM comes from outside it. */
@@ -214,22 +214,17 @@ function runTimeoutMs(options: WorkerEngineOptions): number {
   return Math.min(stageTimeoutMs(options, DEFAULT_TIMEOUT_MS), MAX_TIMEOUT_MS);
 }
 
-/** The start of what a program printed about the file, with the job directory hidden. */
-function stderrDetail(stderr: string, tempDir: string): string {
-  return stderr.trim().replaceAll(tempDir, '<tmp>').slice(0, MAX_STDERR_CHARS);
+function rejected(program: string, src: string, stderr: string): ConversionFailedError {
+  recordEngineOutput(program, 'djvu', stderr);
+  return new ConversionFailedError(`${program} could not ${program === RENDER_PROGRAM ? 'draw' : 'read'} the .${src} file.`);
 }
 
-function rejected(program: string, src: string, stderr: string, tempDir: string): ConversionFailedError {
-  const detail = stderrDetail(stderr, tempDir);
-  return new ConversionFailedError(`${program} could not ${program === RENDER_PROGRAM ? 'draw' : 'read'} the .${src} file${detail ? `: ${detail}` : ''}`);
-}
-
-/** The typed error for a run that failed: its limits, or what the program printed about the file. */
-function toRendererError(err: unknown, program: string, src: string, tempDir: string): unknown {
+/** The typed error for a run that failed: its limits, or the refusal of the file. */
+function toRendererError(err: unknown, program: string, src: string): unknown {
   if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
     return new ConversionFailedError(`${program} exceeded its output or memory limit on the .${src} file.`);
   }
-  if (err instanceof SandboxedProcessError) return rejected(program, src, err.stderr, tempDir);
+  if (err instanceof SandboxedProcessError) return rejected(program, src, err.stderr);
   return err;
 }
 
@@ -362,7 +357,7 @@ async function readPageCount(run: DjvuRun): Promise<number> {
   try {
     return parseDjvusedPageCount(await runReport(run, DJVUSED_PAGE_COUNT_SCRIPT, PAGE_COUNT_RUN_TIMEOUT_MS));
   } catch (err) {
-    throw toRendererError(err, REPORT_PROGRAM, run.job.src, run.tempDir);
+    throw toRendererError(err, REPORT_PROGRAM, run.job.src);
   }
 }
 
@@ -373,15 +368,15 @@ async function readPageCount(run: DjvuRun): Promise<number> {
  * graph arrives. A timeout, a kill, a run ended with no status and no signal (a lost launcher helper), a program that did not start
  * (status 126 or 127 under the wrapper, which does not pass `spawnErrorCode` on) and an output over its limit are not the document's.
  */
-function failedSizeRun(err: unknown, tempDir: string): DjvuIncludeStructureError | undefined {
+function failedSizeRun(err: unknown): DjvuIncludeStructureError | undefined {
   if (err instanceof SandboxedMemoryLimitError) {
     return err.signal !== undefined && CRASH_SIGNALS.has(err.signal) ? crashedWhileOpening(err.signal, err.limitMb) : undefined;
   }
   if (!(err instanceof SandboxedProcessError) || err.spawnErrorCode !== undefined) return undefined;
   if (err.signal !== null) return CRASH_SIGNALS.has(err.signal) ? crashedWhileOpening(err.signal) : undefined;
   if (err.exitCode === null || err.exitCode === 0 || NOT_STARTED_STATUSES.has(err.exitCode)) return undefined;
-  const detail = stderrDetail(err.stderr, tempDir);
-  return new DjvuIncludeStructureError(`djvused could not open the pages of the DjVu document (exit status ${err.exitCode})${detail ? `: ${detail}` : ''}.`);
+  recordEngineOutput(REPORT_PROGRAM, 'pages', err.stderr);
+  return new DjvuIncludeStructureError(`djvused could not open the pages of the DjVu document (exit status ${err.exitCode}).`);
 }
 
 function crashedWhileOpening(signal: NodeJS.Signals, memoryLimitMb?: number): DjvuIncludeStructureError {
@@ -398,7 +393,7 @@ async function readPageSizes(run: DjvuRun, pageCount: number): Promise<DjvuPageS
   try {
     return parseDjvusedSizes(await runReport(run, DJVUSED_SIZE_SCRIPT, SIZE_RUN_TIMEOUT_MS), pageCount);
   } catch (err) {
-    throw failedSizeRun(err, run.tempDir) ?? toRendererError(err, REPORT_PROGRAM, run.job.src, run.tempDir);
+    throw failedSizeRun(err) ?? toRendererError(err, REPORT_PROGRAM, run.job.src);
   }
 }
 
@@ -460,7 +455,7 @@ async function drawWithinBudget(run: DjvuRun, plan: DrawPlan, budgetMs: number, 
     });
   } catch (err) {
     if (err instanceof SandboxedTimeoutError) throw new DjvuDrawTimeoutError(job.src, budgetMs);
-    throw toRendererError(err, RENDER_PROGRAM, job.src, tempDir);
+    throw toRendererError(err, RENDER_PROGRAM, job.src);
   }
 }
 

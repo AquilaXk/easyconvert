@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { endOfRun, recordEngineOutput } from '../engine-output';
 import { CpuTaskTimeoutError, EngineUnavailableError, UnprocessableFontInputError, type ConversionOptions } from '../types';
 import {
   SandboxedBufferLimitError,
@@ -37,10 +38,8 @@ const PROGRAM_DEFAULT_TIMEOUT_MS = 60_000;
 const PROGRAM_MEMORY_LIMIT_MB = 1024;
 const PROGRAM_MAX_OUTPUT_BYTES = 128 * 1024 * 1024;
 const PROGRAM_MAX_DIAGNOSTIC_BYTES = 1024 * 1024;
-const MAX_DETAIL_CHARS = 200;
 const SHELL_NOT_EXECUTABLE = 126;
 const SHELL_NOT_FOUND = 127;
-const UNPRINTABLE = /[^\x20-\x7e]/g;
 const OUTPUT_TOO_LARGE = 'The font is larger than FontForge may write.';
 const OTTO = 'OTTO';
 const SFNT_HEADER_BYTES = 12;
@@ -70,14 +69,7 @@ function programBinary(): string {
   return binary;
 }
 
-/** The last line FontForge printed, with the scratch directory and every unprintable character removed. */
-function diagnostic(stderr: string, sandboxDir: string): string {
-  const lines = stderr.replaceAll(sandboxDir, '<tmp>').split('\n').map((line) => line.trim()).filter((line) => line !== '');
-  const last = lines.at(-1);
-  return last === undefined ? '' : ` (${last.replace(UNPRINTABLE, '?').slice(0, MAX_DETAIL_CHARS)})`;
-}
-
-function toProgramError(error: unknown, sandboxDir: string, timeoutMs: number): unknown {
+function toProgramError(error: unknown, timeoutMs: number): unknown {
   rethrowSandboxUnavailable(error);
   if (error instanceof SandboxedTimeoutError) return new CpuTaskTimeoutError('FontForge', timeoutMs);
   // The sandbox reports a signal SIGSEGV or SIGKILL of a memory-limited process as a memory error: running out of the limit
@@ -91,8 +83,8 @@ function toProgramError(error: unknown, sandboxDir: string, timeoutMs: number): 
     if (error.exitCode === SHELL_NOT_FOUND || error.exitCode === SHELL_NOT_EXECUTABLE) {
       return new EngineUnavailableError(PROGRAM_NAME, 'FontForge could not be started');
     }
-    const how = error.signal ? `was stopped by ${error.signal}` : `exited with status ${error.exitCode}`;
-    return new UnprocessableFontInputError(`FontForge could not convert this font: it ${how}${diagnostic(error.stderr, sandboxDir)}.`);
+    recordEngineOutput(PROGRAM_NAME, 'convert', error.stderr);
+    return new UnprocessableFontInputError(`FontForge could not convert this font: ${endOfRun(error)}.`);
   }
   return error;
 }
@@ -154,7 +146,7 @@ export async function type1ToOpenType(font: Type1Font, options: FontForgeOptions
         signal: options.signal,
       });
     } catch (error) {
-      throw toProgramError(error, sandboxDir, timeoutMs);
+      throw toProgramError(error, timeoutMs);
     }
     const converted = readSandboxOutputIfPresent(outputPath, (size) => {
       if (size === 0) throw new UnprocessableFontInputError('FontForge wrote an empty file.');

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { convertFont } from '../src/lib/conversions/font';
 import { CpuTaskTimeoutError, EngineMissingError, EngineUnavailableError, UnprocessableFontInputError } from '../src/lib/types';
 import { buildOtf, cs } from './helpers/cff-font-builder';
@@ -80,17 +80,18 @@ describe('a missing or failing FontForge never passes for a conversion', () => {
     });
   });
 
-  it('answers 422 with the program message, without the path of its scratch directory, when it cannot read the font', async () => {
+  it('answers 422 with the exit status and not what the program printed when it cannot read the font', async () => {
     const program = standIn('echo "Open: Failed to open: $4" >&2; exit 1');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     await withProgram(program, async () => {
       const failure = await failureOf(() => convertPfa());
       expect(failure).toBeInstanceOf(UnprocessableFontInputError);
       expect(failure).not.toBeInstanceOf(EngineMissingError);
       expect((failure as UnprocessableFontInputError).status).toBe(422);
-      expect(failure.message).toContain('exited with status 1');
-      expect(failure.message).toContain('Open: Failed to open: <tmp>/input.pfb');
-      expect(failure.message).not.toContain(os.tmpdir());
+      expect(failure.message).toBe('FontForge could not convert this font: it exited with status 1.');
+      expect(String(warn.mock.calls[0][0])).toContain('Open: Failed to open:');
     });
+    warn.mockRestore();
   });
 
   it('answers 422 when the program exits 0 without writing a font', async () => {

@@ -1,3 +1,4 @@
+import { recordEngineOutput } from '../lib/engine-output';
 import fs from 'node:fs';
 import path from 'node:path';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
@@ -26,7 +27,6 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 600_000;
 const MEMORY_LIMIT_MB = 2048;
 const MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
-const MAX_STDERR_CHARS = 300;
 const DEFAULT_MAX_BUFFER_BYTES = 100 * 1024 * 1024;
 /** The interpreter runs in its safe mode: the file cannot read or write other files or start programs. */
 const INTERPRETER_FLAGS: readonly string[] = ['-dSAFER'];
@@ -67,13 +67,13 @@ function isMemoryExhaustion(err: unknown): boolean {
 }
 
 /** The typed error for a run that failed: its limits, or what the interpreter printed about the file. */
-function toInterpreterError(err: unknown, src: string, tempDir: string): unknown {
+function toInterpreterError(err: unknown, src: string): unknown {
   if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
     return new ConversionFailedError(`The PostScript interpreter exceeded its output or memory limit on the .${src} file.`);
   }
   if (err instanceof SandboxedProcessError) {
-    const detail = err.stderr.trim().replaceAll(tempDir, '<tmp>').slice(0, MAX_STDERR_CHARS);
-    return new ConversionFailedError(`The PostScript interpreter rejected the .${src} file${detail ? `: ${detail}` : ''}`);
+    recordEngineOutput('ghostscript', 'interpret', err.stderr);
+    return new ConversionFailedError(`The PostScript interpreter rejected the .${src} file.`);
   }
   return err;
 }
@@ -118,7 +118,7 @@ async function writePdf(job: PostScriptJob, ghostscript: string | null, run: Run
       await executeSandboxedBinary(job.interpreter, [...flags, inputPath, pdfPath], { ...run.limits, cwd: run.tempDir, workDir: run.tempDir, readDirs: [inputPath] });
     }
   } catch (err) {
-    throw toInterpreterError(err, job.src, run.tempDir);
+    throw toInterpreterError(err, job.src);
   }
   if (!sandboxOutputSize(pdfPath)) {
     throw new ConversionFailedError(`The PostScript interpreter drew no page from the .${job.src} file.`);
@@ -151,7 +151,7 @@ async function renderEpsToPng(job: PostScriptJob, ghostscript: string, limits: L
     } catch (err) {
       // A page above the raw-size limit is the PDF route's to draw.
       if (err instanceof SandboxedBufferLimitError) return null;
-      throw toInterpreterError(err, EPS_SOURCE, tempDir);
+      throw toInterpreterError(err, EPS_SOURCE);
     }
     // A host without file-size limits lets the page grow past it: the size is checked before the page is read.
     const pageBytes = sandboxOutputSize(pagePath);

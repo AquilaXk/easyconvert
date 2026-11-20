@@ -452,10 +452,10 @@ describe('how a size run ended', () => {
     expect(drawCall()).toBeUndefined();
   });
 
-  it('refuses a document on which the program exited with a status other than zero, naming what it printed', async () => {
+  it('refuses a document on which the program exited with a status other than zero, naming the status and not what it printed', async () => {
     given({ sizes: [PAGES[2]], sizeError: new SandboxedProcessError('*** Unexpected End Of File.', 10, '*** Unexpected End Of File.') });
     const error = await refusalOf(convert('pdf', { timeoutMs: LONG_JOB_MS }));
-    expect(error).toMatchObject({ name: 'DjvuIncludeStructureError', status: 422, message: expect.stringContaining('djvused could not open the pages of the DjVu document (exit status 10): *** Unexpected End Of File.') });
+    expect(error).toMatchObject({ name: 'DjvuIncludeStructureError', status: 422, message: 'djvused could not open the pages of the DjVu document (exit status 10).' });
     expect(drawCall()).toBeUndefined();
   });
 

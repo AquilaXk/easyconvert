@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { convertCadWithOcct, convertMeshToIgesWithOcct, type IndexedMesh } from '../src/lib/conversions/cad-occt';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import JSZip from 'jszip';
@@ -80,16 +80,18 @@ describe('a missing or failing converter never passes for a conversion', () => {
     });
   });
 
-  it('answers 422 with the program message, without the path of its scratch directory, when the file is unreadable', async () => {
+  it('answers 422 with the exit status and not what the program printed when the file is unreadable', async () => {
     const program = standIn('echo "cad-convert: error: unreadable: cannot read $7" >&2; exit 3');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     await withProgram(program, async () => {
       const failure = await failureOf(() => convertCadWithOcct(STEP_BYTES, 'step', 'stl'));
       expect(failure).toBeInstanceOf(UnprocessableCadInputError);
       expect(failure).not.toBeInstanceOf(EngineMissingError);
       expect((failure as UnprocessableCadInputError).status).toBe(422);
-      expect(failure.message).toContain('exited with status 3 (unreadable: cannot read <tmp>/input.step)');
-      expect(failure.message).not.toContain(os.tmpdir());
+      expect(failure.message).toBe('The CAD converter could not convert this model: it exited with status 3.');
+      expect(String(warn.mock.calls[0][0])).toContain('cad-convert: error: unreadable: cannot read');
     });
+    warn.mockRestore();
   });
 
   it('answers 422 when the program exits 0 without writing a file', async () => {

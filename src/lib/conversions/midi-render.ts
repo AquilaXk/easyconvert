@@ -16,6 +16,7 @@ import {
   executeSandboxedBinary,
   rethrowSandboxUnavailable,
 } from '../../worker/sandbox';
+import { endOfRun, recordEngineOutput } from '../engine-output';
 import { readSandboxOutputIfPresent } from '../security/sandbox-output';
 import { stageTimeoutMs, type JobDeadlined } from './job-time';
 import { resolveBinaryPath } from './pdf-postprocess/utils';
@@ -53,9 +54,6 @@ const RENDER_MAX_BYTES = 256 * 1024 * 1024;
 const RENDER_MAX_DIAGNOSTIC_BYTES = 1024 * 1024;
 const SHELL_NOT_EXECUTABLE = 126;
 const SHELL_NOT_FOUND = 127;
-const MAX_DETAIL_CHARS = 200;
-const UNPRINTABLE = /[^\x20-\x7e]/g;
-const ERROR_LINE = /^fluidsynth: error: (.*)$/m;
 
 const SMF_MAGIC = 'MThd';
 const RIFF_MAGIC = 'RIFF';
@@ -105,13 +103,7 @@ function standardMidiFile(input: Buffer): Buffer {
   return input.subarray(start);
 }
 
-/** The error line the program printed, with the scratch directory and every unprintable character removed. */
-function diagnostic(stderr: string, sandboxDir: string): string {
-  const line = ERROR_LINE.exec(stderr.replaceAll(sandboxDir, '<tmp>'))?.[1];
-  return line === undefined ? '' : ` (${line.replace(UNPRINTABLE, '?').slice(0, MAX_DETAIL_CHARS)})`;
-}
-
-function toRenderError(error: unknown, sandboxDir: string, timeoutMs: number): unknown {
+function toRenderError(error: unknown, timeoutMs: number): unknown {
   rethrowSandboxUnavailable(error);
   if (error instanceof SandboxedTimeoutError) return new CpuTaskTimeoutError('MIDI renderer', timeoutMs);
   if (error instanceof SandboxedMemoryLimitError) return new UnprocessableMediaInputError('The MIDI renderer ran out of memory or crashed on this file.');
@@ -122,8 +114,8 @@ function toRenderError(error: unknown, sandboxDir: string, timeoutMs: number): u
     if (error.exitCode === SHELL_NOT_FOUND || error.exitCode === SHELL_NOT_EXECUTABLE) {
       return new EngineUnavailableError(PROGRAM_NAME, 'fluidsynth could not be started');
     }
-    const how = error.signal ? `was stopped by ${error.signal}` : `exited with status ${error.exitCode}`;
-    return new UnprocessableMediaInputError(`The MIDI renderer could not render this file: it ${how}${diagnostic(error.stderr, sandboxDir)}.`);
+    recordEngineOutput(PROGRAM_NAME, 'render', error.stderr);
+    return new UnprocessableMediaInputError(`The MIDI renderer could not render this file: ${endOfRun(error)}.`);
   }
   return error;
 }
@@ -185,7 +177,7 @@ export async function renderMidiToWav(input: Buffer, options: MidiRenderOptions 
         signal: options.signal,
       });
     } catch (error) {
-      throw toRenderError(error, sandboxDir, timeoutMs);
+      throw toRenderError(error, timeoutMs);
     }
     // The program exits with status 0 after refusing a file it cannot open, so the output is what proves a render.
     const wav = readSandboxOutputIfPresent(outputPath);

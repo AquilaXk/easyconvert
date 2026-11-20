@@ -382,6 +382,7 @@
   "tests/engine-choice-dispatch.test.ts": 6.9,
   "tests/engine-fallback-classification.test.ts": 0.4,
   "tests/engine-missing-errors.test.ts": 0.1,
+  "tests/engine-output-withheld.test.ts": 2,
   "tests/engine-registry.test.ts": 0.6,
   "tests/engine-used-surface.test.ts": 0.3,
   "tests/enterprise-auth-dlq-dx.test.ts": 0.5,

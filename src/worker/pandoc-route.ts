@@ -4,6 +4,7 @@ import { pandocEngineUnavailable, pandocReader, pandocWriter } from '../lib/conv
 import { stageTimeoutMs } from '../lib/conversions/job-time';
 import { safeOutputStem } from '../lib/conversions/page-range';
 import { sourceBytesAsText } from '../lib/conversions/office/text-source';
+import { endOfRun, recordEngineOutput } from '../lib/engine-output';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
 import { OUTPUT_READ_FLAGS, sandboxOutputSize } from '../lib/security/sandbox-output';
 import { ConversionFailedError, CpuTaskTimeoutError, InvalidConversionOutputError, PayloadLimitError } from '../lib/types';
@@ -32,7 +33,6 @@ const MAX_TIMEOUT_MS = 600_000;
 const MEMORY_LIMIT_MB = 2048;
 const MAX_OUTPUT_BYTES = 256 * 1024 * 1024;
 const MAX_STDERR_BYTES = 1024 * 1024;
-const MAX_STDERR_CHARS = 300;
 /** Pandoc prints nothing on standard output when it writes to a file. */
 const EXPECTED_PIPED_OUTPUT_BYTES = 4 * 1024;
 /** Largest source handed to pandoc: its Markdown parser is not linear on every input, and a longer text has a longer time to run than the limit allows. */
@@ -61,20 +61,17 @@ function pandocEnvironment(dir: string): Record<string, string> {
   return { HOME: home, TMPDIR: temp, XDG_DATA_HOME: home, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: temp, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' };
 }
 
-/** The last line pandoc printed about a failure, without the job directory. */
-function failureDetail(stderr: string, dir: string): string {
-  const last = stderr.replaceAll(dir, '<tmp>').trim().split('\n').at(-1)?.trim() ?? '';
-  return last === '' ? '' : `: ${last.slice(0, MAX_STDERR_CHARS)}`;
-}
-
 /** The typed error of a run that failed: its limits, or what pandoc printed about the source. */
-function toPandocError(err: unknown, request: PandocRequest, dir: string, limitMs: number): unknown {
+function toPandocError(err: unknown, request: PandocRequest, limitMs: number): unknown {
   const { src, tgt } = request;
   if (err instanceof SandboxedTimeoutError) return new CpuTaskTimeoutError(`.${src} to .${tgt} conversion`, limitMs);
   if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
     return new ConversionFailedError(`pandoc exceeded its output or memory limit on the .${src} file.`);
   }
-  if (err instanceof SandboxedProcessError) return new ConversionFailedError(`pandoc could not convert the .${src} file to .${tgt}${failureDetail(err.stderr, dir)}`);
+  if (err instanceof SandboxedProcessError) {
+    recordEngineOutput('pandoc', `${src}-to-${tgt}`, err.stderr);
+    return new ConversionFailedError(`pandoc could not convert the .${src} file to .${tgt}: ${endOfRun(err)}.`);
+  }
   return err;
 }
 
@@ -131,7 +128,7 @@ export async function convertWithPandoc(request: PandocRequest, program: string 
       await launchSandboxedBinary(program, ['--sandbox', '--from', pandocReader(src), '--to', pandocWriter(tgt), '--output', outputPath, sourcePath], limits);
     } catch (err) {
       rethrowSandboxUnavailable(err);
-      throw toPandocError(err, request, dir, limitMs);
+      throw toPandocError(err, request, limitMs);
     }
     assertTextOutput(outputPath, src, tgt);
     const persistedPath = await handOffOutput(outputPath, tgt, options, Buffer.isBuffer(input) ? undefined : input);

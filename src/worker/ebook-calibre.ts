@@ -10,6 +10,7 @@ import { safeOutputStem } from '../lib/conversions/page-range';
 import { watchDirectoryGrowth } from './directory-growth-watch';
 import { fitsWindows1252 } from '../lib/conversions/office/windows-1252';
 import { writeZipFile, type ZipEntryInput } from '../lib/conversions/zip-writer';
+import { endOfRun, recordEngineOutput } from '../lib/engine-output';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
 import { OUTPUT_READ_FLAGS, sandboxOutputSize } from '../lib/security/sandbox-output';
 import {
@@ -67,7 +68,6 @@ const MEMORY_LIMIT_MB = 4096;
 const PAGE_DRAWING_ADDRESS_SPACE_BYTES = 2048 * 1024 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
 const DEFAULT_MAX_BUFFER_BYTES = 100 * 1024 * 1024;
-const MAX_STDERR_CHARS = 300;
 /** Calibre prints its progress log on the standard output and writes the book to a file. */
 const EXPECTED_PIPED_OUTPUT_BYTES = 64 * 1024;
 const TEMP_PREFIX = 'easyconvert-calibre-';
@@ -205,12 +205,6 @@ function calibreEnvironment(dir: string, drawsPages: boolean): Record<string, st
   };
 }
 
-/** The last line calibre printed about a failure, without the job directory. */
-function failureDetail(stderr: string, dir: string): string {
-  const last = stderr.replaceAll(dir, '<tmp>').trim().split('\n').at(-1)?.trim() ?? '';
-  return last === '' ? '' : `: ${last.slice(0, MAX_STDERR_CHARS)}`;
-}
-
 /** The typed error of a run that failed: its limits, a protected book, or what calibre printed about the file. */
 function toCalibreError(err: unknown, run: CalibreRun): unknown {
   const { src, tgt } = run.request;
@@ -220,7 +214,8 @@ function toCalibreError(err: unknown, run: CalibreRun): unknown {
   }
   if (err instanceof SandboxedProcessError) {
     if (DRM_PATTERN.test(err.stderr)) return new EncryptedOfficeDocumentError(`The .${src} book is protected by DRM and cannot be converted.`);
-    return new ConversionFailedError(`calibre could not convert the .${src} file to .${tgt}${failureDetail(err.stderr, run.dir)}`);
+    recordEngineOutput('calibre', `${src}-to-${tgt}`, err.stderr);
+    return new ConversionFailedError(`calibre could not convert the .${src} file to .${tgt}: ${endOfRun(err)}.`);
   }
   return err;
 }

@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { knownRefusal, readKnownRefusals } from '../bench/realworld/report';
 import { defaultResolver, EZDXF_PSEUDO_TOOL } from '../bench/tools';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
@@ -354,9 +354,19 @@ describe('PostScript files that draw their text with bitmap fonts', () => {
   });
 });
 
-/** The first Ghostscript `Error:` line the real-world files print: what the converter quotes in its refusal. */
-const INTERPRETER_REFUSAL = (name: string, operator: string): RegExp =>
-  new RegExp(`^ConversionFailedError: The PostScript interpreter rejected the \\.ps file: Error: /${name} in --${operator}--`);
+/** The refusal the caller reads; the first Ghostscript `Error:` line the real-world files print goes to the server log, not to the answer. */
+const INTERPRETER_REFUSAL = 'ConversionFailedError: The PostScript interpreter rejected the .ps file.';
+
+/** Runs `convert` with the server log captured, and says whether the interpreter's `Error: /name in --operator--` line was logged. */
+async function refusalWithLog(convert: () => Promise<unknown>, name: string, operator: string): Promise<{ refusal: string; logged: boolean }> {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  try {
+    const refusal = await convert().then(() => 'converted', (error: unknown) => describeRefusal(error));
+    return { refusal, logged: warn.mock.calls.some(([line]) => String(line).includes(`Error: /${name} in --${operator}--`)) };
+  } finally {
+    warn.mockRestore();
+  }
+}
 
 function pageCount(pdf: Buffer): number {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-refusal-pdf-'));
@@ -411,8 +421,9 @@ describe('PostScript files that Ghostscript stops on', () => {
       async (ctx) => {
         const { bytes } = await requireRealworldSample(ctx, id);
         for (const target of ['pdf', 'dxf']) {
-          const refusal = await dispatchConversion(bytes, 'ps', target, {}, id).catch((error: unknown) => describeRefusal(error));
-          expect(refusal, target).toMatch(INTERPRETER_REFUSAL('invalidaccess', 'put'));
+          const { refusal, logged } = await refusalWithLog(() => dispatchConversion(bytes, 'ps', target, {}, id), 'invalidaccess', 'put');
+          expect(refusal, target).toBe(INTERPRETER_REFUSAL);
+          expect(logged, target).toBe(true);
         }
       },
       SAMPLE_TIMEOUT_MS
@@ -441,8 +452,9 @@ describe('PostScript files that Ghostscript stops on', () => {
       async (ctx) => {
         const { bytes } = await requireRealworldSample(ctx, id);
         for (const target of ['pdf', 'dxf']) {
-          const refusal = await dispatchConversion(bytes, 'ps', target, {}, id).catch((error: unknown) => describeRefusal(error));
-          expect(refusal, target).toMatch(INTERPRETER_REFUSAL('limitcheck', 'setcolorspace'));
+          const { refusal, logged } = await refusalWithLog(() => dispatchConversion(bytes, 'ps', target, {}, id), 'limitcheck', 'setcolorspace');
+          expect(refusal, target).toBe(INTERPRETER_REFUSAL);
+          expect(logged, target).toBe(true);
         }
       },
       SAMPLE_TIMEOUT_MS
@@ -464,8 +476,8 @@ describe('PostScript files that Ghostscript stops on', () => {
 describe('the nightly gate lists these refusals as explained', () => {
   const explained = readKnownRefusals();
   const refusals: Record<string, string[]> = {
-    'govdocs1-002500.ps': ['ConversionFailedError: The PostScript interpreter rejected the .ps file: Error: /invalidaccess in --put--\nOperand stack:'],
-    'govdocs1-006458.ps': ['ConversionFailedError: The PostScript interpreter rejected the .ps file: Error: /limitcheck in --setcolorspace--\nOperand stack:'],
+    'govdocs1-002500.ps': [INTERPRETER_REFUSAL],
+    'govdocs1-006458.ps': [INTERPRETER_REFUSAL],
   };
 
   it.each(Object.entries(refusals))('%s', (file, details) => {
