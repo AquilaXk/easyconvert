@@ -1212,6 +1212,8 @@
       "landscape": "Landscape",
       "ocrAutomatic": "OCR runs automatically for searchable XML output.",
       "ocrEnable": "Enable OCR text recognition",
+      "ocrDeskew": "Straighten skewed pages",
+      "ocrDeskewHelp": "Rotates tilted scans level before saving, so the text reads in the right order.",
       "ocrLanguage": "OCR Language",
       "ocrLanguages": {
         "eng": "English",

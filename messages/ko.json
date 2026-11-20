@@ -1212,6 +1212,8 @@
       "landscape": "가로",
       "ocrAutomatic": "검색 가능한 XML로 변환할 때는 OCR이 자동으로 실행됩니다.",
       "ocrEnable": "OCR 문자 인식 사용",
+      "ocrDeskew": "기울어진 페이지 바로 세우기",
+      "ocrDeskewHelp": "기울어진 스캔을 수평으로 돌려 저장합니다. 텍스트 추출 순서가 바르게 됩니다.",
       "ocrLanguage": "OCR 언어",
       "ocrLanguages": {
         "eng": "영어",

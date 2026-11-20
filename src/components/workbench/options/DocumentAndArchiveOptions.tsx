@@ -83,6 +83,26 @@ function OcrOptionsFields({
           ))}
         </select>
       </div>
+      {(ocrAlwaysEnabled || ocrActive) && (
+        <div>
+          <div className="flex items-center gap-3 min-h-[44px]">
+            <input
+              id="opt-doc-ocr-deskew"
+              type="checkbox"
+              checked={options.ocrDeskew === true}
+              aria-describedby="opt-doc-ocr-deskew-help"
+              onChange={(e) => onChange({ ...options, ocrDeskew: e.target.checked ? true : undefined })}
+              className="size-4 accent-accent cursor-pointer"
+            />
+            <label htmlFor="opt-doc-ocr-deskew" className="text-sm font-normal text-ink cursor-pointer select-none">
+              {t('ocrDeskew')}
+            </label>
+          </div>
+          <p id="opt-doc-ocr-deskew-help" className="text-xs font-normal leading-relaxed text-ink-3">
+            {t('ocrDeskewHelp')}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
