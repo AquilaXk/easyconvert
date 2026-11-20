@@ -70,6 +70,7 @@ interface Fact {
   index: number;
   type: string;
   codecName: string;
+  channels?: number;
   language?: string;
   colorTransfer?: string;
   width?: number;
@@ -90,6 +91,7 @@ function referenceFacts(file: string): { streams: Fact[]; chapters: number; dura
       const tags = (raw.tags ?? {}) as Record<string, string>;
       const fact: Fact = { index: raw.index as number, type: raw.codec_type as string, codecName: raw.codec_name as string };
       if (tags.language !== undefined) fact.language = tags.language;
+      if (raw.codec_type === 'audio') fact.channels = raw.channels as number;
       if (raw.codec_type === 'video' && typeof raw.color_transfer === 'string') fact.colorTransfer = raw.color_transfer;
       if (raw.codec_type === 'video') {
         fact.width = raw.width as number;
@@ -106,6 +108,7 @@ function layoutFacts(file: string): Fact[] | null {
   return layout.streams.map((stream) => {
     const fact: Fact = { index: stream.index, type: stream.type, codecName: stream.codecName };
     if (stream.language !== undefined) fact.language = stream.language;
+    if (stream.type === 'audio') fact.channels = stream.channels;
     if (stream.type === 'video' && stream.colorTransfer !== undefined) fact.colorTransfer = stream.colorTransfer;
     if (stream.type === 'video') {
       fact.width = stream.width;
@@ -128,6 +131,8 @@ describe('inputs the header reader answers exactly', () => {
       build: () =>
         make('two-audio.mp4', [...VIDEO_IN, ...AUDIO_IN, ...AUDIO_IN, ...H264, '-map', '0:v', '-map', '1:a', '-map', '2:a', '-c:a:0', 'aac', '-c:a:1', 'libmp3lame', '-shortest']),
     },
+    { name: 'H.264 with stereo AAC', build: () => make('stereo.mp4', [...VIDEO_IN, ...AUDIO_IN, ...H264, '-c:a', 'aac', '-ac', '2', '-shortest']) },
+    { name: 'H.264 with 5.1 AC-3', build: () => make('surround.mp4', [...VIDEO_IN, ...AUDIO_IN, ...H264, '-c:a', 'ac3', '-ac', '6', '-shortest']) },
     { name: 'H.264 with AC-3', build: () => make('ac3.mp4', [...VIDEO_IN, ...AUDIO_IN, ...H264, '-c:a', 'ac3', '-shortest']) },
     { name: 'H.264 with Opus', build: () => make('opus.mp4', [...VIDEO_IN, ...AUDIO_IN, ...H264, '-c:a', 'libopus', '-strict', '-2', '-shortest']) },
     {

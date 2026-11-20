@@ -14,8 +14,9 @@ export interface AudioTargetSpec {
   /** `-b:a` value for lossy encoders (`192k` or plain bits per second); absent for PCM and lossless. */
   readonly defaultBitrate?: string;
   /**
-   * `-q:a` value for encoders whose fixed default bitrate fails on low sample rates or mono input
-   * (libvorbis rejects 192 kbit/s for 32 kHz mono); used instead of a bitrate when none is requested.
+   * `-q:a` value used instead of a bitrate when none is requested: for libvorbis, whose fixed default bitrate
+   * fails on low sample rates or mono input (192 kbit/s for 32 kHz mono), and for libmp3lame, whose VBR scale
+   * follows the signal instead of writing a fixed rate that a low-rate mono source cannot use.
    */
   readonly defaultQuality?: string;
   /** `audio.codec` values a caller may select for this target; any other value is rejected. */
@@ -54,7 +55,13 @@ export interface AudioTargetSpec {
 }
 
 const LOSSY_DEFAULT_BITRATE = '192k';
-const OPUS_DEFAULT_BITRATE = '128k';
+/** The reference converter's default for AAC (ADTS and M4A) and WMA output (policy 349). */
+const REFERENCE_DEFAULT_BITRATE = '128k';
+/** LAME VBR scale 0 (V0), the reference converter's default for MP3 output (policy 349). */
+const MP3_DEFAULT_QUALITY = '0';
+export const OPUS_DEFAULT_BITRATE = '128k';
+/** libopus's own default for one channel; a mono track is not given the 128 kbit/s of two or more channels. */
+export const OPUS_MONO_DEFAULT_BITRATE = '64k';
 /** AMR-NB top mode (MR122), the highest-quality rate of the 8 kHz narrowband codec. */
 const AMR_NB_DEFAULT_BITRATE = '12200';
 const AMR_NB_SAMPLE_RATE_HZ = 8000;
@@ -84,15 +91,15 @@ const VORBIS_OGG: AudioTargetSpec = {
 const AAC_IPOD: AudioTargetSpec = {
   encoder: 'aac',
   muxer: 'ipod',
-  defaultBitrate: LOSSY_DEFAULT_BITRATE,
+  defaultBitrate: REFERENCE_DEFAULT_BITRATE,
   userCodecs: ['aac'],
 };
 
 const PCM_BE_AIFF: AudioTargetSpec = { encoder: 'pcm_s16be', muxer: 'aiff', userCodecs: [] };
 
 export const AUDIO_TARGET_SPECS: Readonly<Record<string, AudioTargetSpec>> = {
-  mp3: { encoder: 'libmp3lame', muxer: 'mp3', defaultBitrate: LOSSY_DEFAULT_BITRATE, userCodecs: ['mp3'] },
-  aac: { encoder: 'aac', muxer: 'adts', defaultBitrate: LOSSY_DEFAULT_BITRATE, userCodecs: ['aac'] },
+  mp3: { encoder: 'libmp3lame', muxer: 'mp3', defaultQuality: MP3_DEFAULT_QUALITY, userCodecs: ['mp3'] },
+  aac: { encoder: 'aac', muxer: 'adts', defaultBitrate: REFERENCE_DEFAULT_BITRATE, userCodecs: ['aac'] },
   m4a: AAC_IPOD,
   m4b: AAC_IPOD,
   ogg: VORBIS_OGG,
@@ -137,7 +144,7 @@ export const AUDIO_TARGET_SPECS: Readonly<Record<string, AudioTargetSpec>> = {
   wma: {
     encoder: 'wmav2',
     muxer: 'asf',
-    defaultBitrate: LOSSY_DEFAULT_BITRATE,
+    defaultBitrate: REFERENCE_DEFAULT_BITRATE,
     userCodecs: [],
     maxSampleRate: WMA_MAX_SAMPLE_RATE_HZ,
     maxChannels: WMA_MAX_CHANNELS,

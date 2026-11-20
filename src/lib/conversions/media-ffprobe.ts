@@ -192,6 +192,8 @@ export interface InputStream {
   /** Rate averaged over the stream (frames / duration), when it differs from the base rate. */
   averageFrameRate?: { num: number; den: number };
   bitRateK?: number;
+  /** Channels of an audio stream, when the prober or the container's sound description states them. */
+  channels?: number;
   /** Track title from the stream's tags, when it has one. */
   title?: string;
   /** Language tag (usually ISO 639-2, such as `eng`), when the stream has one. */
@@ -216,6 +218,7 @@ interface RawStream {
   avg_frame_rate?: unknown;
   bit_rate?: unknown;
   sample_rate?: unknown;
+  channels?: unknown;
   disposition?: { attached_pic?: unknown };
   tags?: { title?: unknown; language?: unknown };
   color_transfer?: unknown;
@@ -279,6 +282,7 @@ function toInputStream(raw: RawStream): InputStream {
     frameRate: parseFrameRate(raw.r_frame_rate),
     averageFrameRate: parseFrameRate(raw.avg_frame_rate),
     bitRateK: Number.isFinite(bitRate) && bitRate > 0 ? Math.round(bitRate / BITS_PER_KILOBIT) : undefined,
+    channels: type === 'audio' ? positiveInt(raw.channels) : undefined,
     title: typeof raw.tags?.title === 'string' && raw.tags.title !== '' ? raw.tags.title : undefined,
     language: typeof raw.tags?.language === 'string' && raw.tags.language !== '' ? raw.tags.language : undefined,
     colorTransfer: typeof raw.color_transfer === 'string' && raw.color_transfer !== '' ? raw.color_transfer : undefined,

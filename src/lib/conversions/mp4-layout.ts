@@ -12,7 +12,7 @@ import type { InputStream } from './media-ffprobe';
 /** The stream facts a mapping plan reads. */
 export type LayoutStream = Pick<
   InputStream,
-  'index' | 'type' | 'codecName' | 'attachedPicture' | 'title' | 'language' | 'colorTransfer' | 'width' | 'height' | 'cropped' | 'frameCount' | 'frameRate' | 'averageFrameRate' | 'undecodable'
+  'index' | 'type' | 'codecName' | 'channels' | 'attachedPicture' | 'title' | 'language' | 'colorTransfer' | 'width' | 'height' | 'cropped' | 'frameCount' | 'frameRate' | 'averageFrameRate' | 'undecodable'
 >;
 
 export interface Mp4Layout {
@@ -269,6 +269,9 @@ const VIDEO_ENTRY_BYTES = 78;
 const VIDEO_ENTRY_SIZE_OFFSET = 24;
 const AUDIO_ENTRY_BYTES: Readonly<Record<number, number>> = { 0: 28, 1: 44, 2: 64 };
 const AUDIO_VERSION_OFFSET = 8;
+/** The channel count of a sound description (the `channelcount` field after the version, revision and vendor). */
+const AUDIO_CHANNELS_OFFSET = 16;
+const QUICKTIME_SOUND_V2 = 2;
 const AVCC_SPS_OFFSET = 6;
 const AVCC_SPS_COUNT_MASK = 0x1f;
 const ES_DESCRIPTOR = 0x03;
@@ -343,6 +346,7 @@ function findEsds(buf: Buffer, entry: Box[]): Box {
 interface EntryFacts {
   type: 'video' | 'audio';
   codecName: string;
+  channels?: number;
   colorTransfer?: string;
   width?: number;
   height?: number;
@@ -387,9 +391,11 @@ function audioEntry(buf: Buffer, fourcc: string, entryBody: number, entryEnd: nu
   if (!Object.hasOwn(AUDIO_ENTRY_BYTES, version)) unsupported();
   need(entryBody, AUDIO_ENTRY_BYTES[version], entryEnd);
   const children = boxesIn(buf, entryBody + AUDIO_ENTRY_BYTES[version], entryEnd);
-  if (fourcc === 'mp4a') return { type: 'audio', codecName: mpeg4AudioCodec(buf, findEsds(buf, children)) };
-  if (fourcc === 'ac-3') return { type: 'audio', codecName: 'ac3' };
-  if (fourcc === 'Opus') return { type: 'audio', codecName: 'opus' };
+  // A version 2 sound description keeps a constant in that field and the count elsewhere, which this reader does not state.
+  const channels = version === QUICKTIME_SOUND_V2 ? undefined : buf.readUInt16BE(entryBody + AUDIO_CHANNELS_OFFSET);
+  if (fourcc === 'mp4a') return { type: 'audio', codecName: mpeg4AudioCodec(buf, findEsds(buf, children)), channels };
+  if (fourcc === 'ac-3') return { type: 'audio', codecName: 'ac3', channels };
+  if (fourcc === 'Opus') return { type: 'audio', codecName: 'opus', channels };
   return unsupported();
 }
 
@@ -482,6 +488,7 @@ function readTrack(buf: Buffer, trak: Box, index: number): LayoutStream {
     type: facts.type,
     codecName: facts.codecName,
     attachedPicture: false,
+    ...(facts.channels === undefined ? {} : { channels: facts.channels }),
     ...(language === undefined ? {} : { language }),
     ...(facts.colorTransfer === undefined ? {} : { colorTransfer: facts.colorTransfer }),
     ...(facts.width === undefined ? {} : { width: facts.width, height: facts.height }),

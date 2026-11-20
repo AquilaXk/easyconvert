@@ -23,7 +23,7 @@ import {
   type AspectPlan,
   type TwoPassStage,
 } from './media-ffmpeg-container-args';
-import { assertChannelLimits, planAudioChannels } from './media-audio-channels';
+import { assertChannelLimits, opusDefaultBitrate, planAudioChannels } from './media-audio-channels';
 import {
   assertEncoderAvailable,
   AudioTargetSpec,
@@ -1333,7 +1333,7 @@ async function addAudioArguments(ctx: BuildContext, stage: AudioStageInput): Pro
   if (audioSpec) {
     outputArgs.push('-f', audioSpec.muxer);
   }
-  addAudioBitrateArgs(ctx, stage, resolvedAudioCodec);
+  await addAudioBitrateArgs(ctx, stage, resolvedAudioCodec);
 
   // Audio filters and ITU-R BS.775 downmix
   const audioFilters: string[] = [];
@@ -1364,7 +1364,7 @@ async function addAudioArguments(ctx: BuildContext, stage: AudioStageInput): Pro
   return undefined;
 }
 
-function addAudioBitrateArgs(ctx: BuildContext, stage: AudioStageInput, resolvedAudioCodec: string): void {
+async function addAudioBitrateArgs(ctx: BuildContext, stage: AudioStageInput, resolvedAudioCodec: string): Promise<void> {
   const { tgt, options, outputArgs } = ctx;
   const { audioSpec } = stage;
   if (typeof options.audio?.bitrateK === 'number') {
@@ -1376,7 +1376,7 @@ function addAudioBitrateArgs(ctx: BuildContext, stage: AudioStageInput, resolved
     outputArgs.push('-b:a', options.audioBitrate.toLowerCase().endsWith('k') ? options.audioBitrate : `${options.audioBitrate}k`);
   } else if (audioSpec && stage.specEncoderInUse) {
     if (audioSpec.defaultBitrate !== undefined) {
-      outputArgs.push('-b:a', audioSpec.defaultBitrate);
+      outputArgs.push('-b:a', resolvedAudioCodec === 'libopus' ? await opusDefaultBitrate(ctx, stage.mapping.inputLayout?.streams) : audioSpec.defaultBitrate);
     } else if (audioSpec.defaultQuality !== undefined) {
       outputArgs.push('-q:a', audioSpec.defaultQuality);
     }
@@ -1385,7 +1385,7 @@ function addAudioBitrateArgs(ctx: BuildContext, stage: AudioStageInput, resolved
     outputArgs.push('-q:a', VORBIS_DEFAULT_QUALITY);
   } else if (resolvedAudioCodec !== 'flac' && resolvedAudioCodec !== 'pcm_s16le') {
     if (tgt === 'webm' || resolvedAudioCodec === 'libopus') {
-      outputArgs.push('-b:a', '128k');
+      outputArgs.push('-b:a', await opusDefaultBitrate(ctx, stage.mapping.inputLayout?.streams));
     } else {
       outputArgs.push('-b:a', '192k');
     }

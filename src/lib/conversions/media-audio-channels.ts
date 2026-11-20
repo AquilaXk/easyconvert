@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import { ConversionOptions, InvalidMediaOptionError } from '../types';
-import type { AudioTargetSpec } from './media-audio-targets';
+import { OPUS_DEFAULT_BITRATE, OPUS_MONO_DEFAULT_BITRATE, type AudioTargetSpec } from './media-audio-targets';
 import { probeAudioChannels, resolveFfprobeBinary } from './media-ffprobe';
 import type { MediaInput } from './media-process';
+import type { LayoutStream } from './mp4-layout';
 
 /**
  * The channel layout of an audio encode: which channel counts a target's encoder codes, the ITU-R BS.775 downmix a caller can ask
@@ -49,6 +50,27 @@ async function channelsToWrite(options: ConversionOptions, input: MediaInput, ff
   if (requested !== undefined || !fs.existsSync(input.path)) return requested;
   const track = typeof options.audio?.track === 'number' ? options.audio.track : 0;
   return probeAudioChannels(input, resolveFfprobeBinary(ffmpegBin), track, options.signal);
+}
+
+/**
+ * The Opus bitrate written when the caller names none: 128 kbit/s, or 64 kbit/s (the encoder's own rate for one channel) when
+ * every audio track that is written is mono, which does not use the larger rate (a 70 kbit/s mono AAC track grew to 128 kbit/s of
+ * Opus; policy 349). A conversion that has read the streams of its input (`layoutStreams`) decides from them, and keeps 128 kbit/s
+ * when one of them states no count, so a mono track beside a surround track is not starved; one that has not (an audio-only
+ * conversion) asks for the channels of the selected track.
+ */
+export async function opusDefaultBitrate(
+  { options, input, ffmpegBin }: { options: ConversionOptions; input: MediaInput; ffmpegBin?: string | null },
+  layoutStreams?: readonly Pick<LayoutStream, 'type' | 'channels'>[]
+): Promise<string> {
+  const requested = requestedChannelCount(options);
+  if (requested !== undefined) return requested === 1 ? OPUS_MONO_DEFAULT_BITRATE : OPUS_DEFAULT_BITRATE;
+  if (layoutStreams !== undefined) {
+    const audio = layoutStreams.filter((stream) => stream.type === 'audio');
+    const allMono = audio.length > 0 && audio.every((stream) => stream.channels === 1);
+    return allMono ? OPUS_MONO_DEFAULT_BITRATE : OPUS_DEFAULT_BITRATE;
+  }
+  return (await channelsToWrite(options, input, ffmpegBin)) === 1 ? OPUS_MONO_DEFAULT_BITRATE : OPUS_DEFAULT_BITRATE;
 }
 
 async function assertMaxChannels(

@@ -656,6 +656,7 @@
   "tests/markdown-heading-ids.test.ts": 0.2,
   "tests/markdown-html-security.test.ts": 0.8,
   "tests/markdown-pdf-heading-links.test.ts": 0.6,
+  "tests/media-audio-default-rates.test.ts": 0.5,
   "tests/media-audio-encode-overhead.test.ts": 7,
   "tests/media-audio-subtitles-thumbnails.test.ts": 2.9,
   "tests/media-audio-targets.test.ts": 25.3,
