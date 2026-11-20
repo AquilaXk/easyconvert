@@ -1384,7 +1384,7 @@ const SCHEMA_ENTRIES = [
   ),
   intLimit(
     'ANONYMOUS_DAILY_LIMIT',
-    'Conversions per day for an anonymous caller. In the OCI deployment it is the repository variable of the same name, which the web image build and the deploy both read (the deploy refuses an image built with another value).',
+    'Conversions per day for an anonymous caller. In the OCI deployment it is the repository variable of the same name, which the deploy writes into the env file of the release; the pages and the 429 answers read it at request time.',
     INT32_MAX,
     ANONYMOUS_DAILY_CREDITS
   ),
