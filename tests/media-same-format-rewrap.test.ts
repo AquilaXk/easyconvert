@@ -14,7 +14,7 @@ import { ConversionFailedError } from '../src/lib/types';
 /**
  * A file converted to its own format is written again into its own container. These containers failed before: their
  * extension is no FFmpeg muxer name (`.3gpp`, `.dvr`, `.mod`, `.rmvb`), or the AAC audio the transcode picked is refused by
- * the muxer (MPEG program stream, Ogg, RealMedia). The oracle is ffprobe on the output: the container it names, the codecs
+ * the muxer (MPEG program stream, Ogg, RealMedia) or cannot be decoded from the file (RealMedia `.rm`, Windows recorded TV). The oracle is ffprobe on the output: the container it names, the codecs
  * of its streams and the length of the sound or picture against the input.
  */
 
@@ -100,6 +100,7 @@ describe.skipIf(skip)('a same-format conversion writes the container again', () 
     ['ogv', 'fate-bear.ogv', 'ogg', ['theora', 'vorbis']],
     ['amr', 'fate-12.2k.amr', 'amr', ['amr_nb']],
     ['rmvb', 'fate-spygames-2mb.rmvb', 'rm', ['rv20', 'ac3']],
+    ['wtv', 'fate-law-and-order-partial.wtv', 'wtv', ['mpeg2video', 'mp2']],
   ] as const)('%s: a real sample keeps its container and the codecs the muxer carries', { timeout: TIMEOUT_MS }, async ([format, sample, container, codecs], ctx) => {
     const real = await requireRealworldSample(ctx, sample);
     const output = await rewrap(real.bytes, format);
@@ -107,6 +108,20 @@ describe.skipIf(skip)('a same-format conversion writes the container again', () 
     expectRewritten(factsOf(output, format), container, codecs);
     expect(withMediaFile(output, format, (file) => decodeStatus(file))).toBe(0);
   });
+
+  it('rm: the sound keeps its length (the transcode wrote AAC sound of no length) and the picture its frames', async (ctx) => {
+    const real = await requireRealworldSample(ctx, 'fate-sipr_5k0.rm');
+    const output = await rewrap(real.bytes, 'rm');
+    const facts = factsOf(output, 'rm');
+    expectRewritten(facts, 'rm', ['rv10', 'ac3']);
+    expectSameLength(factsOf(real.bytes, 'rm'), facts);
+    // Every stream of the output decodes to its full length: RealVideo 1.0 packets carry their own times (77 frames over 19 s), and AC-3 is not cut short.
+    expect(withMediaFile(output, 'rm', (file) => decodeStatus(file))).toBe(0);
+    expect(withMediaFile(output, 'rm', (file) => {
+      const probed = probeFile(ffprobe(), file);
+      return probed.streams.map((stream) => Math.round(Number((stream as { duration?: string }).duration ?? 0)));
+    })).toEqual([19, 20]);
+  }, TIMEOUT_MS);
 
   it('a request that asks for another sound is not a rewrap and keeps its earlier answer', async () => {
     const source = mobile();
@@ -126,10 +141,12 @@ describe('which streams a rewrap copies', () => {
     expect(rewrapStreamArgs(container!, [stream('video', 'mpeg4'), stream('audio', 'qcelp')])).toEqual(['-map', '0:v:0?', '-map', '0:a:0?', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k']);
   });
 
-  it('writes RealMedia pictures and sound the RealMedia muxer carries', () => {
+  it('writes RealMedia pictures and sound again with the codecs the muxer writes', () => {
     const container = rewrapContainerFor('rmvb', 'rmvb', {})!;
     expect(rewrapStreamArgs(container, [stream('video', 'rv40'), stream('audio', 'cook')])).toEqual(['-map', '0:v:0?', '-map', '0:a:0?', '-c:v', 'rv20', '-c:a', 'ac3', '-b:a', '192k']);
-    expect(rewrapStreamArgs(container, [stream('video', 'rv10'), stream('audio', 'sipr')])).toEqual(['-map', '0:v:0?', '-map', '0:a:0?', '-c:v', 'copy', '-c:a', 'copy']);
+    // The muxer copies no RealMedia stream usably: RealVideo 1.0 and SIPR are written again too.
+    expect(rewrapStreamArgs(container, [stream('video', 'rv10'), stream('audio', 'sipr')])).toEqual(['-map', '0:v:0?', '-map', '0:a:0?', '-c:v', 'rv20', '-c:a', 'ac3', '-b:a', '192k']);
+    expect(rewrapStreamArgs(rewrapContainerFor('rm', 'rm', {})!, [stream('video', 'rv10'), stream('audio', 'sipr')])).toEqual(['-map', '0:v:0?', '-map', '0:a:0?', '-c:v', 'rv10', '-c:a', 'ac3', '-b:a', '192k']);
   });
 
   it('maps no picture for an audio-only container', () => {

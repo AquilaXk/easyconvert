@@ -408,6 +408,7 @@ Security
 357. [The text of an SVG written as EMF or WMF is drawn as outlines by librsvg first, and SVG to CGM is withdrawn](#357-the-text-of-an-svg-written-as-emf-or-wmf-is-drawn-as-outlines-by-librsvg-first-and-svg-to-cgm-is-withdrawn)
 358. [Corel Presentations offers packing only, and CB7 and CBT comic archives are bound into a PDF like a CBZ](#358-corel-presentations-offers-packing-only-and-cb7-and-cbt-comic-archives-are-bound-into-a-pdf-like-a-cbz)
 359. [A compressed RAR is extracted by 7-Zip when unrar is not installed, and UNRAR_PATH is authoritative](#359-a-compressed-rar-is-extracted-by-7-zip-when-unrar-is-not-installed-and-unrar_path-is-authoritative)
+360. [RealMedia files are always written again, and rm and wtv join the same-format table](#360-realmedia-files-are-always-written-again-and-rm-and-wtv-join-the-same-format-table)
 
 ---
 
@@ -10645,10 +10646,29 @@ Security
   - **No second decoder.** The licence of the RAR decoders allows decompression only; the product keeps using the decoder of a separate program and never writes one.
 - **Measured** (Linux VM, 7-Zip 26.01 pinned upstream build as `P7ZIP_PATH`, `UNRAR_PATH` empty): `tika-test-documents.rar` (RAR 4.x, 9 files, 115,328 bytes unpacked) and `rarfile-rar5-crc.rar` (RAR 5.0) extract to the names, sizes and CRC-32 they list. The Debian `7z` and Homebrew `7zz` have no RAR decoders and answer "Unsupported Method", so the tests need the pinned build.
 - **Trade-offs**:
-  - **One more process for a compressed RAR on a host without `unrar`** (about 40 ms for the nine files), where it used to be a refusal.
+  - **One more process for a compressed RAR on a host without `unrar`** (the first test file of the nine documents took 479 ms with the process start and the checks), where it used to be a refusal.
   - **A bad `UNRAR_PATH` no longer falls back to a standard location.** An operator who set it wrongly now gets 7-Zip, which the image has.
 - **Alternatives rejected**:
   - **Adding `unrar` (non-free) to the image:** a second RAR decoder with a licence of its own, for what 7-Zip already reads.
   - **Reading RAR in process:** the decoders of RAR are not specified for reimplementation (the licence forbids recreating the compression).
 - **Verified by**: `tests/archive-rar-seven-zip.test.ts` (red without the change: 3 of 4 fail with the old refusal; RAR 4.x and 5.0 files, an entry selection and a damaged archive), run on the VM with the pinned 7-Zip; `tests/rar-extraction-count-limit.test.ts` and the other archive tests (the `unrar` path is unchanged).
 - **Revisit when**: the image changes its 7-Zip (the RAR decoders must stay), or `unrar` joins the image.
+
+## 360. RealMedia files are always written again, and rm and wtv join the same-format table
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: fix the refusals a production sweep of the live service found; the reference converter lists `rm` to `rm` and `wtv` to `wtv` with FFmpeg, whose RealMedia muxer defaults to RealVideo 1.0 and AC-3 and whose WTV muxer to MPEG-2 video and AC-3)
+- **Decision**: **The same-format table of entry 345 gets `rm` and `wtv`, and RealMedia streams are always written again.** A `wtv` file is written with the `wtv` muxer, its first picture and first sound copied. An `rm` file is written with the `rm` muxer with the sound as AC-3 at 192 kbit/s and the picture as RealVideo 1.0 (the muxer's default). `rmvb` no longer copies a RealVideo 1.0 or 2.0 picture or a SIPR, RealAudio 1.4 or 2.8 sound (the sets of codecs the table called carried are empty): they are written as RealVideo 2.0 and AC-3, as Cook and RealVideo 3 and 4 already were (`media-ffmpeg-rewrap.ts`).
+- **Why**:
+  - **The sweep's two files failed the validator.** `fate-sipr_5k0.rm` came out 4.3 % shorter (19.25 s against 20.11 s) with an audio stream of no length: with no row of the table, the transcode wrote the sound as AAC, which RealMedia cannot hold. `fate-law-and-order-partial.wtv` came out with AAC sound that decoded with "decode_band_types: Input buffer exhausted before END element found".
+  - **Copying into RealMedia does not work.** Copying the RealVideo 1.0 picture and the SIPR sound of the same `.rm` file into the RealMedia muxer wrote a picture whose 77 packets run from 0 to 0.076 s (the input has them at 0, 249, 499 ms ...) and a sound of 672 packets that `sipr` refuses (`packet size (17) too small`), with `-copyts`, `-fflags +genpts` and a copy of either stream alone giving the same. A transcode with the muxer's defaults gives a picture of 19.25 s, an AC-3 sound of 20.16 s and no decode message, so that is what is written. The `rmvb` test of entry 345 had copied only streams the muxer was said to carry; its unit test pinned the copy of `rv10` and `sipr`, the case that fails.
+  - **WTV needs no re-encode.** Copying the MPEG-2 video and the MP2 sound of the recording into the `wtv` muxer decodes with the messages of the cut source only; the AAC the transcode picked is what failed.
+- **Measured** (FFmpeg 8 on the Mac): `fate-sipr_5k0.rm` (48,632 bytes) before: RealVideo 1.0 and AAC, container 19.25 s; after: RealVideo 1.0 (19.25 s) and AC-3 (20.16 s), container 20.16 s against 20.11 s in the source, `ffmpeg -f null` exit 0. `fate-law-and-order-partial.wtv` before: MPEG-2 and AAC; after: MPEG-2 and MP2, no AAC message.
+- **Trade-offs**:
+  - **A RealMedia file is always re-encoded** (a few seconds of CPU for a film), where `rmvb` of RealVideo 2.0 and SIPR was copied; the copy was the broken output.
+  - **The WTV subtitle and the second sound of a recording are not written**, as the table writes one picture and one sound for every container.
+- **Alternatives rejected**:
+  - **Fixing the timestamps of the copy (`-copyts`, `genpts`, `-vsync`, `-bsf`):** none changed the 77 packets at 1 ms; the muxer and the bitstream of RealVideo 1.0 are FFmpeg's.
+  - **Keeping the transcode and choosing AC-3 for every video container the muxer defaults to it:** the table is the place that already names the muxer of a container and the codec it does not carry.
+- **Verified by**: `tests/media-same-format-rewrap.test.ts` (the `rm` sample keeps both lengths and decodes to the end, the `wtv` sample keeps its container and codecs, the unit test of which streams a RealMedia rewrap writes), run on the Mac with FFmpeg 8.
+- **Revisit when**: FFmpeg's RealMedia muxer writes usable timestamps and interleaved SIPR for a copy, or a real WTV file with AAC or H.264 sound is found (then the codecs the muxer carries are named).
