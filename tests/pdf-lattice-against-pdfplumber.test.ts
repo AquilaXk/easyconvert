@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { readPdfDocument } from '../src/lib/conversions/pdf-text-document';
 import { layoutPdfPages } from '../src/lib/conversions/pdf-layout/index';
-import { TableFinder, type T_obj } from '../src/lib/conversions/pdfplumber-table';
+import { TableFinder, type T_obj } from './helpers/pdfplumber-table';
 import type { PdfContentRule } from '../src/lib/conversions/pdf-text-types';
 import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
- * The ruled tables the layout pass finds, against the table finder of pdfplumber (translated in src/lib/conversions/pdfplumber-table.ts,
+ * The ruled tables the layout pass finds, against the table finder of pdfplumber (translated in tests/helpers/pdfplumber-table.ts,
  * which tests/pdfplumber-table.test.ts holds equal to pdfplumber 0.11.10) fed the same rules. The pages are real pages of the real-world
  * corpus on which the two find tables of one size: the layout pass's rows and columns are pdfplumber's. (Where they differ, the layout pass
  * merges cells that no line separates and pdfplumber does not, and pdfplumber reads a table of ruled rows and unruled columns as one column.)

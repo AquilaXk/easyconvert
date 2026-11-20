@@ -19,10 +19,10 @@ import {
   type T_bbox,
   type T_obj,
   type T_table_settings,
-} from '../src/lib/conversions/pdfplumber-table';
+} from './helpers/pdfplumber-table';
 
 /*
- * The table finder of pdfplumber (src/lib/conversions/pdfplumber-table.ts) against pdfplumber itself. Each case of
+ * The table finder of pdfplumber (tests/helpers/pdfplumber-table.ts) against pdfplumber itself. Each case of
  * tests/fixtures/pdfplumber-table/cases.json.gz is a page of a real PDF of the real-world corpus (the government files govdocs1-*) as
  * pdfplumber 0.11.10 reads it: the page's edges (`page.edges`), its words when the settings use the text strategy, and what
  * `TableFinder` of that version answered for the settings (the merged edges, the number of crossings, the cells, the tables, and the
