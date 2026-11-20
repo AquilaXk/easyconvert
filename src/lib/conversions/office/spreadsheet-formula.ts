@@ -98,7 +98,9 @@ export type CellResolver = (cellRef: string) => any;
 
 /** Excel's own limit for the text of one formula; a longer one is not a formula a workbook can hold. */
 const MAX_FORMULA_LENGTH = 8192;
-const ERROR_CODES: ReadonlySet<string> = new Set(['#DIV/0!', '#N/A', '#NAME?', '#NULL!', '#NUM!', '#REF!', '#VALUE!']);
+const ERROR_CODES: ReadonlySet<string> = new Set([
+  '#DIV/0!', '#N/A', '#NAME?', '#NULL!', '#NUM!', '#REF!', '#VALUE!', '#CYCLE!',
+]);
 const STRING_LITERAL_RE = /"(?:[^"]|"")*"/g;
 /** `A:A`, `$A:$C`, `2:3`: a whole column or row, which reaches the last cell of the grid. */
 const WHOLE_AXIS_REFERENCE_RE =
@@ -150,8 +152,20 @@ export class SpreadsheetFormulaEvaluator {
     }
   }
 
-  /** `position` is the cell that holds the formula, for `ROW()` and `COLUMN()` without an argument. */
+  /**
+   * The text form of a formula result: a formula whose outermost call returns a date gives `yyyy-mm-dd`, as `DATE` always
+   * has. `position` is the cell that holds the formula, for `ROW()` and `COLUMN()` without an argument.
+   */
   public evaluate(formula: string, position: { row: number; col: number } = { row: 1, col: 1 }): any {
+    const result = this.evaluateValue(formula, position);
+    return typeof result === 'number' ? formatDateResult(formula, result) ?? result : result;
+  }
+
+  /** The value of a formula as the sheet holds it: a date is its serial number. */
+  public evaluateValue(
+    formula: string,
+    position: { row: number; col: number } = { row: 1, col: 1 },
+  ): string | number | boolean {
     const text = formula.startsWith('=') ? formula.slice(1) : formula;
     if (text.length === 0 || text.length > MAX_FORMULA_LENGTH) return '#VALUE!';
     if (text.includes(':') && WHOLE_AXIS_REFERENCE_RE.test(text.replace(STRING_LITERAL_RE, '""'))) return '#REF!';
@@ -232,12 +246,29 @@ const FIRST_UNAMBIGUOUS_SERIAL = 61;
 const MS_PER_DAY = 86_400_000;
 const SERIAL_EPOCH_MS = Date.UTC(1899, 11, 30);
 
+/** True when the call that opens the formula closes at its last character (`DATE(1,2,3)` yes, `DATE(1,2,3)+1` no). */
+function isOneCall(formula: string): boolean {
+  const open = formula.indexOf('(');
+  let depth = 0;
+  let inString = false;
+  for (let i = open; i < formula.length; i++) {
+    const ch = formula[i];
+    if (ch === '"') inString = !inString;
+    else if (!inString && ch === '(') depth++;
+    else if (!inString && ch === ')' && --depth === 0) return formula.slice(i + 1).trim() === '';
+  }
+  return false;
+}
+
+function formatDateResult(formula: string, serial: number): string | undefined {
+  if (serial < FIRST_UNAMBIGUOUS_SERIAL || !DATE_RESULT_FUNCTION_RE.test(formula) || !isOneCall(formula)) return undefined;
+  return new Date(SERIAL_EPOCH_MS + Math.floor(serial) * MS_PER_DAY).toISOString().slice(0, 10);
+}
+
 function formulaResultText(formula: string, result: unknown): string {
   if (result === null || result === undefined) return '';
   if (typeof result === 'boolean') return result ? 'TRUE' : 'FALSE';
-  if (typeof result === 'number' && result >= FIRST_UNAMBIGUOUS_SERIAL && DATE_RESULT_FUNCTION_RE.test(formula)) {
-    return new Date(SERIAL_EPOCH_MS + Math.floor(result) * MS_PER_DAY).toISOString().slice(0, 10);
-  }
+  if (typeof result === 'number') return formatDateResult(formula, result) ?? String(result);
   return String(result);
 }
 
@@ -474,7 +505,7 @@ export class SpreadsheetDagEngine {
       if (performance.now() > deadline) {
         throw new PayloadLimitError(`Spreadsheet formulas took longer than ${timeBudgetMs} ms to evaluate.`);
       }
-      const result = evaluator.evaluate(fc.formula, parseCellCoord(node) ?? undefined);
+      const result = evaluator.evaluateValue(fc.formula, parseCellCoord(node) ?? undefined);
       this.cellMap[node] = result;
       evaluator.invalidateCell(node);
       SpreadsheetDagEngine.writeRowCell(rows, fc, formulaResultText(fc.formula, result));

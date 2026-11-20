@@ -130,6 +130,25 @@ describe('what a failing or hostile formula becomes', () => {
   });
 });
 
+describe('what the engine returns for dates and stored errors', () => {
+  it('gives a date at the top of a formula as text from evaluate and as a serial from evaluateValue', () => {
+    const evaluator = new SpreadsheetFormulaEvaluator(() => 0);
+    expect(evaluator.evaluate('=DATE(2026, 9, 27)')).toBe('2026-09-27');
+    expect(evaluator.evaluateValue('=DATE(2026, 9, 27)')).toBe(46292);
+    expect(evaluator.evaluate('=DATE(2026, 9, 27)+1')).toBe(46293);
+  });
+
+  it('passes a stored #CYCLE! or #DIV/0! through operators and functions unchanged', () => {
+    const stored: Record<string, string> = { A1: '#CYCLE!', B1: '#DIV/0!' };
+    const evaluator = new SpreadsheetFormulaEvaluator((ref) => stored[ref] ?? 10);
+    expect(evaluator.evaluate('=A1*2')).toBe('#CYCLE!');
+    expect(evaluator.evaluate('=-A1')).toBe('#CYCLE!');
+    expect(evaluator.evaluate('=A1&"x"')).toBe('#CYCLE!');
+    expect(evaluator.evaluate('=SUM(B1,1)')).toBe('#DIV/0!');
+    expect(evaluator.evaluate('=IFERROR(A1+1,0)')).toBe(0);
+  });
+});
+
 describe('no code is built from text', () => {
   const roots = [
     'src/lib/conversions/office/vendor/fast-formula-parser',

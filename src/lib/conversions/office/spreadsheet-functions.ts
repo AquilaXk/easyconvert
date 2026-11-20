@@ -206,6 +206,32 @@ function withCeilings(
   };
 }
 
+/**
+ * The vendored aggregates skip an error found in a cell or range they read (`SUM(B1,1)` with `#DIV/0!` in B1 gave 1); Excel
+ * answers the error. These names get the first error among their arguments before they run.
+ */
+const ERROR_PROPAGATING_FUNCTIONS: readonly string[] = ['SUM', 'PRODUCT', 'SUMSQ', 'AVERAGE', 'AVERAGEA'];
+
+function firstError(value: unknown): Error | undefined {
+  if (value instanceof Error) return value;
+  if (!Array.isArray(value)) return undefined;
+  for (const item of value) {
+    const found = firstError(item);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function withErrorPropagation(fn: (...a: never[]) => unknown): (...a: never[]) => unknown {
+  return (...received) => {
+    for (const arg of received) {
+      const found = firstError((arg as ReceivedArg | null | undefined)?.value);
+      if (found) return found;
+    }
+    return fn(...received);
+  };
+}
+
 /** `REPT` that does not build a text past the cell limit (`REPT("a",1E11)` would fill the memory). */
 function withBoundedRepeat(fn: (...a: never[]) => unknown): (...a: never[]) => unknown {
   return (...received) => {
@@ -244,6 +270,9 @@ export function spreadsheetFunctionTable(): { functions: FunctionTable; takesCon
     const ceilings = ARGUMENT_CEILINGS[name];
     const all = ALL_ARGUMENT_CEILINGS.find(([pattern]) => pattern.test(name))?.[1];
     if (ceilings || all !== undefined) functions[name] = withCeilings(functions[name]!, ceilings ?? {}, all);
+  }
+  for (const name of ERROR_PROPAGATING_FUNCTIONS) {
+    if (functions[name]) functions[name] = withErrorPropagation(functions[name]!);
   }
   if (functions.REPT) functions.REPT = withBoundedRepeat(functions.REPT);
   functions.XLOOKUP = xlookup as FunctionTable[string];
