@@ -579,9 +579,8 @@ function writeJsonMlElement(element: JsonMlElement, out: string[]): void {
   out.push('</', name, '>');
 }
 
-/** An XML element name for an arbitrary JSON key: invalid characters become "_", a bad start gets a "_" prefix. */
+/** An XML element name for an arbitrary JSON key: invalid characters become "_", a bad start gets a "_" prefix (so an empty key is "_"). */
 function elementNameForKey(key: string): string {
-  if (key === '') throw new DataRepresentationError('An empty JSON key cannot become an XML element name.');
   const name = key.replace(NON_NCNAME_CHAR, '_');
   return NCNAME_START_PATTERN.test(name) ? name : `_${name}`;
 }

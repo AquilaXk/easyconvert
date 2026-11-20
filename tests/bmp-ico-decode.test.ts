@@ -406,10 +406,11 @@ describe('ICO and ICNS validation', () => {
       { type: 'icp4', data: small },
       { type: 'ic12', data: large },
     ]);
-    expect(Buffer.compare(decodeIcns(file), large)).toBe(0);
+    const picture = decodeIcns(file);
+    expect(picture.kind === 'encoded' && Buffer.compare(picture.data, large)).toBe(0);
   });
 
-  it('never guesses: no PNG or JPEG chunk, a chunk past the end, or a short file is an IcnsDecodeError', () => {
+  it('never guesses: no readable picture, a chunk past the end, or a short file is an IcnsDecodeError', () => {
     expect(() => decodeIcns(icns([{ type: 'is32', data: Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]) }]))).toThrow(IcnsDecodeError);
     const lying = icns([{ type: 'ic08', data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2]) }]);
     lying.writeUInt32BE(5000, 12);

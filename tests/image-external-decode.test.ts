@@ -106,6 +106,25 @@ describe.skipIf(needsMagick)('legacy raster formats with known pixels', () => {
     expect(await sixteenBitSamples(await toPng(sixteen, 'psd'), 'rgb16')).toEqual(Array.from(deep));
   });
 
+  it('decodes a Photoshop Large Document (PSB, version 2 of the PSD header) with raw channels', async () => {
+    // Version 2 widens the length of the layer and mask section to 8 bytes (and the RLE row counts to 4, unused here with raw channels).
+    const header = Buffer.alloc(26);
+    header.write('8BPS', 0, 'latin1');
+    header.writeUInt16BE(2, 4);
+    header.writeUInt16BE(3, 12);
+    header.writeUInt32BE(2, 14);
+    header.writeUInt32BE(2, 18);
+    header.writeUInt16BE(8, 22);
+    header.writeUInt16BE(3, 24);
+    const sections = Buffer.alloc(4 + 4 + 8);
+    const raw = Buffer.alloc(2);
+    const planes = [0, 1, 2].map((channel) => Buffer.from(FOUR_COLOURS.map((p) => [p.r, p.g, p.b][channel])));
+    const psb = Buffer.concat([header, sections, raw, ...planes]);
+    const decoded = await decodeRgba(await toPng(psb, 'psb'));
+    expect([decoded.width, decoded.height]).toEqual([2, 2]);
+    expect(decoded.data).toEqual(rgbaBytes(FOUR_COLOURS));
+  });
+
   it('decodes an uncompressed A8R8G8B8 DDS surface', async () => {
     const pixels = [RED, GREEN, BLUE, TRANSLUCENT_BLUE];
     const decoded = await decodeRgba(await toPng(buildDdsArgb(2, 2, pixels), 'dds'));

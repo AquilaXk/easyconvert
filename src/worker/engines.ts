@@ -14,7 +14,7 @@ import { convertFile, convertImage } from '../lib/conversions';
 import { wantsPngOptimiser, withOptimisedPng } from '../lib/conversions/png-optimise';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertDrawingPackage, assertLegacyCompoundFileReadable, assertOfficeEmbeddedImagesWithinLimit, officeInputWithoutMacros } from './office-input-checks';
-import { BIFF8_TARGET, asUnreadableDocument, convertBridgedTarget, convertMarkupPageImages, convertThroughInterchange, convertXlsTarget, interchangeNeeded, retryRefusedLegacyDocument, withEmbeddedWorkbookRetry, withLegacyOfficeRecovery, withMemoryRefusal, withMetafileFrame, withMetafileInk, withOfficePageChainLimits, withWordAnchoredLayoutRetry, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { BIFF8_TARGET, asUnreadableDocument, convertBridgedTarget, convertMarkupPageImages, convertThroughInterchange, convertXlsTarget, interchangeFor, retryRefusedLegacyDocument, withEmbeddedWorkbookRetry, withLegacyOfficeRecovery, withMemoryRefusal, withMetafileFrame, withMetafileInk, withOfficePageChainLimits, withWordAnchoredLayoutRetry, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { writeEpsPages } from './postscript-page-limit';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { isMediaRoutePair } from '../lib/conversions/route-formats';
@@ -1955,7 +1955,7 @@ async function convertWithOfficeSuiteRoutes(
     return convertWithCalibre(OFFICE_SUITE_DEPS, request, resolveBinary(BINARY_PATHS.ebookConvert, process.env.EBOOK_CONVERT_PATH));
   }
   if (isPandocPair(request.src, request.tgt)) return convertWithPandoc(request, resolveBinary(BINARY_PATHS.pandoc, process.env.PANDOC_PATH), assertNotSpoofedFileVfs);
-  const interchange = interchangeNeeded(request.src, request.tgt, isPdfChainTarget(request.tgt) || ARCHIVE_TARGET_FORMATS.has(request.tgt));
+  const interchange = interchangeFor(request, isPdfChainTarget(request.tgt) || ARCHIVE_TARGET_FORMATS.has(request.tgt));
   // An interchange file and an .xls are written by the office suite or the table writers, which have not checked the declared source.
   if (interchange !== undefined || request.tgt === BIFF8_TARGET) assertNotSpoofedFileVfs(input, request.src, originalFilename);
   if (interchange !== undefined) return convertThroughInterchange(OFFICE_SUITE_DEPS, request, interchange);

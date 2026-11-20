@@ -7,7 +7,7 @@ import { readFb2Model } from '../fb2-model';
 import { readMobiModel } from '../mobi-model';
 import { readMobiText } from './mobi-reader';
 import PDFDocument from 'pdfkit';
-import { bindComicPagesToPdf, comicPagesToEpub, readCbcPages, readComicPages } from '../comic-book';
+import { bindComicPagesToPdf, comicPagesToEpub, readCbcPages, readComicPages, type ComicSource } from '../comic-book';
 import { readEpubText } from './text-extraction';
 import { writeEbookTargetFromText } from './convert-generic';
 import { convertModelTarget } from './convert-docx';
@@ -262,12 +262,12 @@ export async function viaPdf(pdf: Buffer, tgt: string, options: ConversionOption
 }
 
 /** The targets of a comic archive: its pages bound as a PDF or as an image book, and the lettering of the pages read as text. */
-export const COMIC_SOURCES: ReadonlySet<string> = new Set(['cbz', 'cbr']);
+export const COMIC_SOURCES: ReadonlySet<string> = new Set<ComicSource>(['cbz', 'cbr', 'cb7', 'cbt']);
 
 const COMIC_TARGETS: ReadonlySet<string> = new Set(['pdf', 'epub', 'txt', 'rtf']);
 
 /**
- * Comic Book Zip (CBZ) and Comic Book RAR (CBR) sources: an archive of page images in natural name order. The PDF binds the
+ * Comic Book Zip (CBZ), RAR (CBR), 7z (CB7) and TAR (CBT) sources: an archive of page images in natural name order. The PDF binds the
  * pages, one image per page, and the EPUB (which the Palm, Kindle, Sony and Open eBook writers read) is an image book with the
  * first page as its cover. A comic has no text layer, so the text and RTF targets read the lettering of the bound pages with
  * OCR and answer with a typed error when none is recognised, never with an empty file. A page that cannot be decoded, or an
@@ -282,7 +282,7 @@ export async function convertComicSource(
 ): Promise<ConversionResult> {
   if (!COMIC_TARGETS.has(tgt)) throw new UnsupportedTargetError(`Unsupported conversion from ${src.toUpperCase()} to ${tgt}`);
   const format = src.toUpperCase();
-  const pages = await readComicPages(inputBuffer, src === 'cbr' ? 'cbr' : 'cbz');
+  const pages = await readComicPages(inputBuffer, src as ComicSource);
   if (tgt === 'epub') return comicPagesToEpub(pages, format, baseName, options);
   const pdf = await bindComicPagesToPdf(pages, format, baseName);
   return viaPdf(pdf.buffer, tgt, options, baseName);

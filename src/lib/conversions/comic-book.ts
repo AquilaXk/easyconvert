@@ -2,7 +2,7 @@ import JSZip from 'jszip';
 import PDFDocument from 'pdfkit';
 import sharp from 'sharp';
 import { ConversionFailedError, type ConversionResult, type ConversionOptions } from '../types';
-import { extract7zArchive, extractRarArchive } from './archive';
+import { extract7zArchive, extractRarArchive, extractTarArchive } from './archive';
 import { InflateBudget } from './bounded-inflate';
 import { blankDocument, imagePixelSize } from './document-model/build';
 import { documentToEpub } from './document-model/epub';
@@ -164,17 +164,30 @@ async function cbcVolumePages(name: string, bytes: Buffer, budget: InflateBudget
   return unpackedComicPages(name, members, 'CBC');
 }
 
-/** The pages of a comic archive that is one book: a CBZ (a ZIP read lazily) or a CBR (a RAR unpacked by the archive reader). */
-export async function readComicPages(input: Buffer, src: 'cbz' | 'cbr'): Promise<ComicPage[]> {
+/** The comic archives that are one book, by the archive they are written as. */
+export type ComicSource = 'cbz' | 'cbr' | 'cb7' | 'cbt';
+
+const ARCHIVE_READERS: Readonly<Record<Exclude<ComicSource, 'cbz'>, { label: string; extract: (input: Buffer) => { filename: string; buffer: Buffer }[] }>> = {
+  cbr: { label: 'CBR', extract: (input) => extractRarArchive(input) },
+  cb7: { label: 'CB7', extract: (input) => extract7zArchive(input) },
+  cbt: { label: 'CBT', extract: (input) => extractTarArchive(input) },
+};
+
+/**
+ * The pages of a comic archive that is one book: a CBZ (a ZIP read lazily), or a CBR, CB7 or CBT unpacked by the archive reader of its
+ * RAR, 7z or TAR archive.
+ */
+export async function readComicPages(input: Buffer, src: ComicSource): Promise<ComicPage[]> {
   if (src === 'cbz') return zipComicPages(await openPackage(input, 'CBZ', 'ZIP archive'), '', new InflateBudget());
+  const { label, extract } = ARCHIVE_READERS[src];
   let members: { filename: string; buffer: Buffer }[];
   try {
-    members = extractRarArchive(input);
+    members = extract(input);
   } catch (err) {
     if (err instanceof ConversionFailedError) throw err;
-    throw new ConversionFailedError(`The CBR archive cannot be unpacked: ${err instanceof Error ? err.message : String(err)}`);
+    throw new ConversionFailedError(`The ${label} archive cannot be unpacked: ${err instanceof Error ? err.message : String(err)}`);
   }
-  return unpackedComicPages('', members, 'CBR');
+  return unpackedComicPages('', members, label);
 }
 
 /**

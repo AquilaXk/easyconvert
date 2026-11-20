@@ -21,6 +21,7 @@ import { convertCadWithOcct, convertMeshToIgesWithOcct, isOcctSource } from './c
 import { encodeStl as pureEncodeStl, encodeObj as pureEncodeObj } from '../edge/pure/pure-cad';
 import { MAX_SVG_INPUT_CHARS } from './svg-geometry';
 import { normalizeSvgBufferForRendering } from './svg-render-normalize';
+import { hasSvgText, outlineSvgText } from './svg-text-outlines';
 import { dxfDrawingToSvg, dxfSvgDeclaredSize, parseDxfDrawing, renderDxfDrawingToPdf } from './cad-dxf';
 import { decodeDxfBytes } from './cad-dxf-text';
 import { convertDwgToDxf } from './cad-dwg';
@@ -419,8 +420,10 @@ async function convertSvgSource(
     dxfToDwg(svgToDxf(inputBuffer.toString('utf-8')));
   }
 
-  // Vector targets are written from the SVG geometry and never rasterize it.
-  const vectorOutput = svgToVectorTarget(inputBuffer, tgt, baseName);
+  // Vector targets are written from the SVG geometry and never rasterize it. EMF and WMF carry no text, so the text of the drawing is outlines first.
+  const needsOutlines = (tgt === 'emf' || tgt === 'wmf') && hasSvgText(inputBuffer.toString('utf-8'));
+  const geometry = needsOutlines ? await outlineSvgText(normalizeSvgBufferForRendering(inputBuffer), options.signal) : inputBuffer;
+  const vectorOutput = svgToVectorTarget(geometry, tgt, baseName);
   if (vectorOutput) return vectorOutput;
 
   // The encoded rasters (icon, Photoshop, drawing package) are written by the shared image writer from the PNG this drawing renders to.

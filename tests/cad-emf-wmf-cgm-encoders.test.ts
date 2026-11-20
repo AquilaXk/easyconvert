@@ -303,14 +303,11 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
   });
 
   describe('Integration & Registry Routing', () => {
-    it('exposes emf, wmf, and cgm as available targets for SVG in FORMAT_REGISTRY', () => {
+    it('exposes emf and wmf as available targets for SVG in FORMAT_REGISTRY, and not cgm, which the reference offers only from DWF, DWG and DXF', () => {
       const availableTargets = getAvailableTargetFormats('svg');
       const targetIds = availableTargets.map((t) => t.id);
 
-      expect(targetIds.length).toBeGreaterThanOrEqual(3);
-      expect(targetIds).toContain('emf');
-      expect(targetIds).toContain('wmf');
-      expect(targetIds).toContain('cgm');
+      expect(targetIds.filter((id) => ['emf', 'wmf', 'cgm'].includes(id)).sort()).toEqual(['emf', 'wmf']);
     });
 
     it('routes svg to emf conversion with authentic mimeType and filename', async () => {

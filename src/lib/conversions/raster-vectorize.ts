@@ -22,7 +22,8 @@ import {
 } from '../../worker/sandbox';
 import { isSvg, MAX_GENERATED_SVG_CHARS, sanitizeGeneratedSvg } from '../security/svg-sanitizer';
 import { decodeBmp } from './bmp';
-import { decodeIcns, decodeIco } from './ico';
+import { decodeIco } from './ico';
+import { icnsPictureBytes } from './icns-picture';
 import { pipelineFromBitmap } from './bitmap-pipeline';
 import { decodeExternalImage } from './image-external-source';
 import { withSortedTiffTags } from './image-tiff-directories';
@@ -93,7 +94,7 @@ const BMP_SOURCE = 'bmp';
 const ICON_DIRECTORY_SOURCES: ReadonlySet<string> = new Set(['ico', 'cur']);
 const ICNS_SOURCE = 'icns';
 const TIFF_SOURCES: ReadonlySet<string> = new Set(['tif', 'tiff']);
-const PSD_SOURCE = 'psd';
+const PSD_SOURCES: ReadonlySet<string> = new Set(['psd', 'psb']);
 const PSD_SIGNATURE = '8BPS';
 const PSD_HEADER_MIN_BYTES = 22;
 
@@ -143,11 +144,11 @@ async function openPicture(input: Buffer, sourceFormat: string, signal?: AbortSi
     return pipelineFromBitmap(icon.bitmap);
   }
   if (sourceFormat === ICNS_SOURCE) {
-    const payload = decodeIcns(input);
+    const payload = await icnsPictureBytes(input, signal);
     await assertEncodedImageWithinLimit(payload, VECTORIZE_PIXEL_BUDGET);
     return openLimitedSharp(payload);
   }
-  if (sourceFormat === PSD_SOURCE) {
+  if (PSD_SOURCES.has(sourceFormat)) {
     assertPsdHeaderWithinBudget(input);
   }
   const readable = TIFF_SOURCES.has(sourceFormat) ? withSortedTiffTags(input) : input;

@@ -25,6 +25,8 @@ export interface ExternalDecoded {
 
 const MAGICK_BY_FORMAT: ReadonlyMap<string, MagickSource> = new Map<string, MagickSource>([
   ['psd', { coder: 'psd', label: 'PSD', result: { kind: 'first' } }],
+  // Photoshop Large Document: the PSD coder reads version 2 of the header too, and the policy of the decoders names only PSD.
+  ['psb', { coder: 'psd', label: 'PSB', result: { kind: 'first' } }],
   ['tga', { coder: 'tga', label: 'TGA', result: { kind: 'first' } }],
   ['pcx', { coder: 'pcx', label: 'PCX', result: { kind: 'first' } }],
   ['dds', { coder: 'dds', label: 'DDS', result: { kind: 'first' } }],

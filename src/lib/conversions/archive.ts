@@ -57,6 +57,7 @@ import { InflateBudget, inflateRawSalvage } from './bounded-inflate';
 import { resolveArchiveCompressionLevel } from './archive-compression-level';
 import { singleStreamPayload } from './archive-single-stream';
 import { RAR4_FILE_FLAG_UNICODE, decodeRar4FileName, readRar4BlockHeader } from './archive-rar4-name';
+import { extractRarWithSevenZipOr } from './archive-rar-seven-zip';
 import { canonicalEntryPath, encryptedStagedName, safeCanonicalArchivePath, validateEntryPath } from './archive-entry-path';
 import { gzipInBlocks } from './deflate-blocks';
 import { createZipBuffer, deflaterRunningAhead, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
@@ -1631,9 +1632,10 @@ let resolvedUnrarPath: string | null = null;
 export function getUnrarBinaryPath(): string | null {
   if (resolvedUnrarPath !== null) return resolvedUnrarPath || null;
   const envPath = process.env.UNRAR_PATH;
-  if (envPath && fs.existsSync(envPath)) {
-    resolvedUnrarPath = envPath;
-    return envPath;
+  if (envPath !== undefined) {
+    // A value is authoritative, as P7ZIP_PATH is: a path that is no file means "no unrar", and the compressed RAR is read by 7-Zip.
+    resolvedUnrarPath = envPath !== '' && fs.existsSync(envPath) ? envPath : '';
+    return resolvedUnrarPath || null;
   }
   const fixedLocations = [
     '/usr/bin/unrar',
@@ -1796,7 +1798,7 @@ export function extractRarArchive(
 
   // Pure TypeScript parser for stored RAR archives with fail-closed validation
   if (isRar5) {
-    throw new ConversionFailedError('Unsupported RAR format: RAR5 compressed archives require unrar decompressor');
+    return extractRarWithSevenZipOr(new ConversionFailedError('Unsupported RAR format: RAR5 compressed archives require unrar decompressor'), get7zBinaryPath(), rarBuffer, options, limits);
   }
 
   const files: { filename: string; buffer: Buffer }[] = [];
@@ -1830,9 +1832,7 @@ export function extractRarArchive(
       // Enforce fail-closed verification: Method 0x30 is STORE (uncompressed)
       // Methods 0x31..0x35 are compressed and MUST NOT be sliced as raw corrupt data!
       if (method !== 0x30) {
-        throw new ConversionFailedError(
-          `Unsupported RAR compression method (0x${method.toString(16)}): unrar binary is required for compressed RAR archives`
-        );
+        return extractRarWithSevenZipOr(new ConversionFailedError(`Unsupported RAR compression method (0x${method.toString(16)}): unrar binary is required for compressed RAR archives`), get7zBinaryPath(), rarBuffer, options, limits);
       }
 
       if (nameStart + nameSize <= rarBuffer.length) {

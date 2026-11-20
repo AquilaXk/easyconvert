@@ -179,6 +179,7 @@ const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
   UnprocessableCadInputError: 'unsupported_input',
   UnprocessableMediaInputError: 'unsupported_input',
   UnsupportedDwgVersionError: 'unsupported_input',
+  UnsupportedHwpVersionError: 'unsupported_input',
   UnsupportedMediaCodecError: 'unsupported_input',
 
   UnsupportedArchiveMethodError: 'unsupported_method',

@@ -1421,7 +1421,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/x-corelpresentations',
     category: 'presentation',
     description: 'Corel Presentations slideshow presentation format.',
-    targetFormats: ['pptx', 'pdf', 'zip'],
+    targetFormats: ['zip'],
   },
   presentation: {
     id: 'presentation',
@@ -1531,7 +1531,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/svg+xml',
     category: 'vector',
     description: 'Scalable Vector Graphics - XML-based resolution-independent 2D vector format.',
-    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'dxf', 'zip', 'eot', 'otf', 'ttf', 'woff', 'woff2', 'avif', 'bmp', 'eps', 'gif', 'ps', 'tiff', 'svg', 'emf', 'wmf', 'cgm', 'ico', 'odd', 'psd'],
+    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'dxf', 'zip', 'eot', 'otf', 'ttf', 'woff', 'woff2', 'avif', 'bmp', 'eps', 'gif', 'ps', 'tiff', 'svg', 'emf', 'wmf', 'ico', 'odd', 'psd'],
     optionsSchema: {},
   },
   ico: {

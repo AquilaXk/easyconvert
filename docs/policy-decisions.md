@@ -401,6 +401,14 @@ Security
 350. [An image host that cannot be reached is asked once per document, and a connection that is not accepted within two seconds is given up](#350-an-image-host-that-cannot-be-reached-is-asked-once-per-document-and-a-connection-that-is-not-accepted-within-two-seconds-is-given-up)
 351. [A web, print or max compression keeps the lossless rewrite when it is smaller than the Ghostscript one](#351-a-web-print-or-max-compression-keeps-the-lossless-rewrite-when-it-is-smaller-than-the-ghostscript-one)
 352. [A PDF written to DOCX keeps its pages: a section on a new page for each, paragraphs set with the page's spacing and indents, and only what cannot flow set at its place](#352-a-pdf-written-to-docx-keeps-its-pages-a-section-on-a-new-page-for-each-paragraphs-set-with-the-pages-spacing-and-indents-and-only-what-cannot-flow-set-at-its-place)
+353. [An ICNS file is read as its largest PNG, JPEG or JPEG 2000 element, else as its largest old-style RLE or ARGB picture](#353-an-icns-file-is-read-as-its-largest-png-jpeg-or-jpeg-2000-element-else-as-its-largest-old-style-rle-or-argb-picture)
+354. [CSS escapes of an HTML page are decoded as CSS Syntax says before the scan, and the decoded text goes to LibreOffice](#354-css-escapes-of-an-html-page-are-decoded-as-css-syntax-says-before-the-scan-and-the-decoded-text-goes-to-libreoffice)
+355. [An empty key of a JSON, YAML or TOML document becomes the XML element <_>](#355-an-empty-key-of-a-json-yaml-or-toml-document-becomes-the-xml-element-_)
+356. [An HWP 3.x file is imported by LibreOffice, and the in-process reader refuses it as unsupported](#356-an-hwp-3x-file-is-imported-by-libreoffice-and-the-in-process-reader-refuses-it-as-unsupported)
+357. [The text of an SVG written as EMF or WMF is drawn as outlines by librsvg first, and SVG to CGM is withdrawn](#357-the-text-of-an-svg-written-as-emf-or-wmf-is-drawn-as-outlines-by-librsvg-first-and-svg-to-cgm-is-withdrawn)
+358. [Corel Presentations offers packing only, and CB7 and CBT comic archives are bound into a PDF like a CBZ](#358-corel-presentations-offers-packing-only-and-cb7-and-cbt-comic-archives-are-bound-into-a-pdf-like-a-cbz)
+359. [A compressed RAR is extracted by 7-Zip when unrar is not installed, and UNRAR_PATH is authoritative](#359-a-compressed-rar-is-extracted-by-7-zip-when-unrar-is-not-installed-and-unrar_path-is-authoritative)
+360. [RealMedia files are always written again, and rm and wtv join the same-format table](#360-realmedia-files-are-always-written-again-and-rm-and-wtv-join-the-same-format-table)
 
 ---
 
@@ -10518,3 +10526,149 @@ Security
   - **Scaling the text of a paragraph to the widths of the PDF's face from the standard font metrics**: tried; the files set in Times-like faces came out 2 to 6 percent wide by the measure and lost similarity (0.862 to 0.796), and the file set in a narrower face wrapped the same.
 - **Verified by**: `tests/pdf-to-docx-pages.test.ts` (five real government PDFs of the real-world corpus: the sections of the DOCX read from `word/document.xml` against `pdfinfo` for the page count and size; LibreOffice 24.2's PDF of the DOCX has the same number of pages and its first line of each page within 8 points (median) of `pdftotext -bbox` on the PDF; the words of `pdftotext` are in the DOCX with at least 0.97 recall; every part is well-formed (xmllint); the letterhead of the chronology is an anchored picture; the page-count tests fail on all five files when `pages` is turned off), `tests/pdf-page-flow.test.ts` (the gap, line height, indents, alignment, frames, column breaks and cells that `PageFlow` gives to lines written by hand; `pageSections`; equal and unequal columns; the XML the writer gives each of them), `tests/pdf-to-docx-structure.test.ts` (unchanged: headings, lists, tables, columns, reading order), and the `document/pdf-structure->docx` rows of the parity bench on Ubuntu 24.04 (heading F1 1, list F1 1, TEDS 0.981, column accuracy 1, paragraph count error 0.018, reading order tau 0.998). Measured with the page-similarity method of the comparison (72 dpi, gray, first four pages, SSIM of LibreOffice's render against the PDF) on 34 PDFs of 6 to 12 pages of the corpus before and after: mean similarity 0.522 to 0.653, as many pages as the PDF 8 to 18 files, word recall 0.9847 to 0.9857; `govdocs1-000010.pdf` (four pages, the comparison's smaller case) 0.519 to 0.656 with four pages. The time of a conversion of a small file is unchanged (warm 30 to 40 ms before and after on Ubuntu, base and head measured in turn).
 - **Revisit when**: the worker image has the PDF's common faces (so the widths match and fewer pages overflow), the reference changes the default of `prioritize_visual_appearance`, or a table row model that carries the height the office suite will set (cell padding of the source) replaces the row shortening.
+## 353. An ICNS file is read as its largest PNG, JPEG or JPEG 2000 element, else as its largest old-style RLE or ARGB picture
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: fix the refusals a production sweep of the live service found; the reference converter lists `icns` to `png` with `icnsutils` 1.5, which reads these elements)
+- **Decision**: **An ICNS file is read as its largest PNG, JPEG or JPEG 2000 element and, when it has none, as its largest old-style picture** (`src/lib/conversions/ico.ts`, `icns-legacy.ts`, `icns-picture.ts`). A JPEG 2000 element (`ic07` to `ic14`, `icp5`, `icp6` hold it in files from Icon Composer and Apache Tika's test set) is decoded by OpenJPEG, the decoder of the JPEG 2000 sources. The old-style pictures are the 24-bit run-length colour elements `is32`, `il32`, `ih32` and `it32` (the last has four zero bytes before its channels) with the uncompressed 8-bit masks `s8mk`, `l8mk`, `h8mk` and `t8mk` as alpha (opaque without a mask), and the `ARGB` elements `ic04` and `ic05`, four run-length channels in the order alpha, red, green, blue after the tag. A PNG, JPEG or JPEG 2000 element still wins over every old-style one. An element that does not add up (a channel that ends early, bytes after the last channel, a mask of another size, a 128x128 element without its zero header, an `ARGB` element without its tag) is refused with `IcnsDecodeError`; no pixel is guessed.
+- **Why**:
+  - **The sweep refused a real file** (`testICNS_basic.icns`, Apache Tika's test set): its only element is a 512x512 JPEG 2000 picture, and the message said it held no PNG or JPEG image. Icon files from before OS X 10.7 hold only the old-style elements, so every one of them was refused the same way.
+  - **The decoders are the ones the format has in other readers.** The run-length scheme, the zero header of `it32` and the mask layout are those of Pillow's `IcnsImagePlugin.py` (copied with its MIT-CMU licence in the header of `icns-legacy.ts`; `NOTICE`, `docs/licensing.md`); Pillow does not read `ARGB`, so that layout was derived from the files macOS stores and checked against macOS's own decoder.
+- **Measured**: the eight elements of four macOS icon files (`is32`, `il32`, `ih32` and `it32` with their masks, `ic04`, `ic05`; Xcode, a messenger app, system icons) decode to the same pixels as `sips` (0 pixels differ in each); the JPEG 2000 file of the sweep decodes to 512x512, 0 pixels apart from `sips`.
+- **Trade-offs**:
+  - **One picture per file.** The largest element is converted, as before; the smaller sizes are not offered as extra outputs.
+  - **A JPEG 2000 element needs OpenJPEG on the host**, like the `jp2` source; where it is missing the conversion is the same engine-unavailable answer the `jp2` source gives.
+  - **`icp4` to `icp6` in their old 24-bit form are not read** (they are PNG or JPEG 2000 in every file seen); such a file is refused as having no picture element.
+- **Alternatives rejected**:
+  - **Reading only the PNG elements and refusing the rest with a better message:** the reference converts them.
+  - **Writing the reader from the libicns source:** it is LGPL; the clean-room rule keeps it as a behaviour reference only.
+- **Verified by**: `tests/icns-legacy.test.ts` (hand-written run-length, uncompressed and `ARGB` elements decode to known pixels; the zero header; every refusal above; a JP2 element encoded by OpenJPEG decodes to the pixels written; the real Tika file converts to 512x512), `tests/bmp-ico-decode.test.ts` (the existing ICNS cases).
+- **Revisit when**: a file carries `icp4` to `icp6` in the 24-bit form, or a caller needs every size of the family as separate files.
+
+## 354. CSS escapes of an HTML page are decoded as CSS Syntax says before the scan, and the decoded text goes to LibreOffice
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: fix the refusals a production sweep of the live service found; the reference converter prints HTML with Chromium, which reads CSS escapes by CSS Syntax Level 3)
+- **Decision**: **The CSS of an HTML page bound for LibreOffice has its escapes decoded before the scan, and the text that goes on holds the decoded characters** (`decodeEscapes` in `src/lib/conversions/css-references.ts`). An escape is read as CSS Syntax Level 3, section 4.3.7 says: a backslash and up to six hex digits with one whitespace after them, zero, a surrogate and a value past U+10FFFF are U+FFFD, and a backslash before any other character stands for that character. Inside a quoted string the character is written as it is, except the quote that closes the string, a backslash, `<` and `&` (the last two are refused in a style sheet when written plainly). Outside a quoted string only the characters of a name (`A-Z a-z 0-9 _ -`) are written, since any other would change how the text is cut into tokens. An escape that stands for anything else, and a backslash with nothing after it, are refused with the character named (`HTML CSS has an escape for U+3A, which cannot be written without the escape outside a quoted string`). Inside a comment a backslash is still no escape.
+- **Why**:
+  - **A real page was refused.** Word's HTML output writes the Windows font names of East Asian text as escapes in a string (`font-family:"\FF2D\FF33 \660E\671D"`), and `opf-lorem-ipsum.htm` of the corpus holds sixteen of them. The refusal ("CSS readers disagree on escapes") turned away a whole page for a font name.
+  - **The scan reads what a reader that follows the standard reads.** `\75 rl(file:///etc/hosts)` decodes to `url(file:///etc/hosts)`, which the scan finds and leaves out with a warning, so an escape cannot hide a reference; and `@\69 mport` is found as the import it is. The text handed to LibreOffice has no escape left in it for a reader that does not follow the standard.
+- **Measured**: `opf-lorem-ipsum.htm` (28,124 bytes) converts to a 25,155 byte PDF on the Mac whose text starts "Variatio Ipsius"; before, a 400.
+- **Trade-offs**:
+  - **A selector written with an escape for a symbol (`.sm\:flex`) is still refused**, as is an escaped dot in an unquoted `url()`. Writing such an escape as a plain character changes what the selector means, and leaving it escaped hands LibreOffice the text this entry set out to keep from it. Chromium reads them; the in-process route does not read them either. A page that uses them can be converted after the CSS is cleaned, as before.
+  - **An escaped newline is an escaped space.** Line breaks are turned into spaces before the scan, so `"a\<newline>b"` reads as `"a b"` where the standard says `"ab"`.
+- **Alternatives rejected**:
+  - **Keeping the escapes in the output and checking them:** the text LibreOffice reads would differ from the text scanned, which is what the refusal was written to rule out.
+  - **Replacing an escaped symbol with a placeholder character:** the selector would match a different class, and a refusal is the honest answer to a page we cannot read.
+- **Verified by**: `tests/html-native-staging.test.ts` (hex escapes ending in a space, six digits, the Word font name, U+FFFD cases, an escape in a function name, a backslash in a comment; the refusals above; an escaped `url(` and `@import` found and left out), `tests/pdf-unicode-text-writers.test.ts` (an escaped `url(file:///etc/hosts)` in a style attribute reaches LibreOffice without the reference).
+- **Revisit when**: a real page needs an escaped symbol in a selector, or LibreOffice's HTML import is found to read escapes by the standard (then the decoded form need not be written out).
+
+## 355. An empty key of a JSON, YAML or TOML document becomes the XML element <_>
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: fix the refusals a production sweep of the live service found; the reference converter lists none of the data formats, so the product rule for a name that is not a valid element name applies)
+- **Decision**: **A JSON, YAML or TOML key that is empty becomes the element `<_>`** (`elementNameForKey` in `src/lib/conversions/data-xml.ts`). It is the name the rule already gave every other key that cannot start a name: characters a name cannot hold become `_` and a name that cannot start with its first character gets a `_` in front (`1st` is `_1st`, `a b` is `a_b`), and an empty key has nothing left but that `_`. A document with the keys `""` and `_` in one object is still refused, with the message every pair of keys that become one element gets (`JSON keys "" and "_" would both become the XML element <_>.`).
+- **Why**:
+  - **A real file was refused.** The `pyproject.toml` of `rarfile` (`[tool.setuptools.package-dir]` with `"" = "src"`, the usual way to say that the packages live under `src`) answered 400 with "An empty JSON key cannot become an XML element name", although the same file converts to JSON and YAML. The empty key is legal in the three source formats and common in this one file.
+  - **No new rule.** The mapping from keys to names already changes a key whenever XML cannot spell it, and refuses only when the result would merge two keys; the empty key was the one case that had its own refusal.
+- **Measured**: the 3,433 byte `pyproject.toml` converts to a 3,607 byte XML file that `xmllint` reads, with `<package-dir><_>src</_></package-dir>`.
+- **Trade-offs**:
+  - **The key is not recoverable from the element**, as for `a b`. Writing XML back to JSON gives the key `_`.
+- **Alternatives rejected**:
+  - **An attribute or a `name` field for every key that is not a name:** a different document shape for the keys that already convert, for one rare case.
+  - **Leaving the refusal:** the file is valid input and the rest of the document is fine.
+- **Verified by**: `tests/data-xml-faithful.test.ts` (an empty key inside a list becomes `<_>`; the keys `""` and `_` together are refused with the collision message).
+- **Revisit when**: a caller needs the XML to give back the key (an attribute carrying the original key for every renamed element is the way that keeps it).
+
+## 356. An HWP 3.x file is imported by LibreOffice, and the in-process reader refuses it as unsupported
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: fix the refusals a production sweep of the live service found; the reference converter lists `hwp` to `pdf` with its office suite, and the suite imports the old generation of the format)
+- **Decision**: **An HWP file that starts with `HWP Document File V3` (Hangul Word Processor 97 and earlier, no compound file) is imported by LibreOffice and converted from what it writes** (`interchangeFor` in `src/worker/office-suite-route.ts`, which `convertWithOfficeSuiteRoutes` asks for the interchange format of a request). LibreOffice writes `docx`, `doc`, `odt`, `rtf`, `pdf` and `txt` itself, plain text for `xps` and `hwpx` (the in-process converter writes those from text only), and a DOCX for every other target (`html`, `md`, `jpg`, `png`), which the converter of DOCX writes as it does for any DOCX. HWP 5.0 files are read in process as before. Where the in-process reader meets an HWP 3.x file anyway (the route is bypassed), it refuses it with `UnsupportedHwpVersionError` (`src/lib/conversions/hwp-version.ts`; code `unsupported_input`, HTTP 422): "HWP 3.0 files are not supported: this reader opens HWP 5.0 documents only."
+- **Why**:
+  - **The sweep refused a real file** (`testHWP_3.0.hwp` of Apache Tika's test set) as "not an OLE2 compound file". The pair is offered by the reference, whose engine is the office suite, and LibreOffice (24.2 on the VM, 26.x on the Mac) prints the file as the two lines it holds, `테스트` and `test`.
+  - **One hook for every target.** Writing the 12 targets one by one from the old format would mean a second reader; the suite already reads it, so only the way to each target differs.
+- **Measured**: the 9,287 byte file converts to every target of `hwp` that is not the format itself on the Mac (PDF 9,733 bytes, DOCX 7,164, HTML 621, JPG, PNG, ODT, RTF, DOC, TXT, MD, HWPX, XPS), with the words of the document in the text targets.
+- **Trade-offs**:
+  - **A conversion needs LibreOffice**, as every format it alone reads does (no in-process fallback); without it the answer is the unavailable-engine error of those formats.
+  - **The text of the old format is what LibreOffice's filter reads**: tables and pictures follow its coverage, which is that of the reference.
+- **Alternatives rejected**:
+  - **Only the honest refusal:** the reference converts these files.
+  - **A reader of HWP 3.x written here:** the format is documented only in a Korean specification of 1997, and the suite's filter is already the reference.
+- **Verified by**: `tests/hwp3.test.ts` (the typed refusal of the in-process reader, 422; the real Tika file converts to text, DOCX, HTML, Markdown and HWPX with its two words, and to a PDF whose text holds them), `tests/refusal-code-inventory.test.ts` (the new class and its code).
+- **Revisit when**: the worker image's LibreOffice drops its HWP 3.x import filter, or a real file of the old format shows tables or pictures the filter loses.
+
+## 357. The text of an SVG written as EMF or WMF is drawn as outlines by librsvg first, and SVG to CGM is withdrawn
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: fix the refusals a production sweep of the live service found; the reference converter lists `svg` to `emf` and `svg` to `wmf` with Inkscape, which writes the text of a drawing into the metafile, and lists no SVG to CGM)
+- **Decision**: **The text of an SVG written as EMF or WMF is drawn as outlines first, by the program that draws the same SVG as PDF**: a drawing with a `<text>` element is run through `rsvg-convert --format svg` (librsvg, sandboxed, no network, no file; `src/lib/conversions/svg-text-outlines.ts`), whose cairo surface writes every glyph as a path of the font that drew it, and the metafile writers read that drawing as they read any other. A drawing without text never goes through the program and is written exactly as before. A worker without `rsvg-convert` answers a drawing with text with the unavailable-engine error (HTTP 503); the writers' own refusals (a paint server, a stroke under a skew, a picture) still apply to what comes back. **SVG to CGM is withdrawn** from the registry: the reference offers CGM only from DWF, DWG and DXF, and the CGM writer has no outlines of its own to fall back on.
+- **Why**:
+  - **The sweep refused a plain label** (`label.svg`, three lines of text) for EMF, WMF and CGM with "SVG element <text> is not supported by metafile encoders". The metafile writers hold geometry only (entry 187 lists what they refuse), and a text record needs the width of every character in a font the viewer has, which the writers have no reader for.
+  - **The words land where the PDF and PNG put them.** The program that writes the PDF of a drawing lays the text out with the installed fonts, so the metafile shows the same lines at the same places; LibreOffice drawing the WMF and the EMF of `label.svg` shows three bands of ink, one for each line.
+  - **CGM stays withdrawn rather than built.** The reference does not list the pair, so the rule of this repository is to withdraw it instead of building an encoder; DXF to CGM, DWG to CGM and DWF to CGM are untouched (entry 187).
+- **Measured**: `label.svg` (494 bytes) written as EMF is 6,064 bytes and as WMF 5,738 bytes on the Mac; a drawing of one rectangle stays at the size it had.
+- **Trade-offs**:
+  - **The text of the metafile cannot be edited**: it is outlines, as in a PDF with its fonts turned to curves; the reference keeps it as text records. A viewer without the font shows the same shapes, which the reference's records would not.
+  - **A drawing with text takes one more process** (about 20 ms) before the geometry is read.
+- **Alternatives rejected**:
+  - **Text records in the EMF and WMF writers:** a font choice, a width table and the alignment rules of two record sets, for a pair of formats the quality benchmark does not rank; the outlines are what a viewer shows either way.
+  - **Reading the glyphs from the font files in process:** it repeats the layout (fallback, kerning, bidirectional runs) that the renderer already does for the PDF.
+- **Verified by**: `tests/svg-text-metafile.test.ts` (the detector; the EMF and WMF of `label.svg` are far larger than the drawing without its text; LibreOffice draws both with three bands of ink; a drawing without text is written as before), `tests/svg-metafile-geometry.test.ts` (the writers still refuse a `<text>` they are handed).
+- **Revisit when**: the benchmark ranks EMF or WMF written from SVG (then text records are measured against the outlines), or a worker image drops `rsvg-convert`.
+
+## 358. Corel Presentations offers packing only, and CB7 and CBT comic archives are bound into a PDF like a CBZ
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: fix the refusals a production sweep of the live service found; the reference converter lists no Corel Presentations source, and no comic archive of 7z or TAR)
+- **Decision**: **Corel Presentations (`shw`) offers packing as a ZIP only: the PDF and PPTX pairs are withdrawn from the registry**, and **a `cb7` or `cbt` comic archive is bound into a PDF as a CBZ is** (`readComicPages` in `src/lib/conversions/comic-book.ts`: the 7z reader and the TAR reader of the archive code unpack the pages; the pages are the images in natural name order, and an archive with none is refused with "The CB7 archive holds no page images."). The registry offers PDF and ZIP for both, as before.
+- **Why**:
+  - **No engine writes a PDF or a PPTX from a `.shw` file.** The sweep refused `office-testcorel.shw` for PDF as a "binary container" (its bytes are not text). LibreOffice 24.2 does not load it, and 26.8 opens it as a Writer document of the wrong type and prints a 998 KB PDF that is not the show. The reference lists no `shw` source at all, so there is nothing to follow, and an honest registry offers what can be written: the file as it is, in a ZIP (the pair that worked).
+  - **The comic archives were the same pair as CBZ under another container.** The archive code already unpacks 7z and TAR, and a CB7 volume of a collection is already read as a book; the PDF pair was advertised and refused as a "binary container" by the plain-text reader, because the table of comic sources named only CBZ and CBR. The reference lists neither format; the pair is kept because it needs no new reader, only the two names in the table (QA request, item 2 of the sweep list).
+- **Measured**: `comic.cb7` and `comic.cbt` of two JPEGs convert to 2-page PDFs of 2,725 bytes with the pages in the order of their names; `office-testcorel.shw` (76,800 bytes) still packs to a 10,375 byte ZIP.
+- **Trade-offs**:
+  - **`shw` to `pdf` and `shw` to `pptx` are gone for callers that had them** (they answered 400 for every real file, so none worked).
+  - **A comic archive of 7z or TAR that holds several books is bound as one**, like a CBZ.
+- **Alternatives rejected**:
+  - **Sending the file to LibreOffice:** it does not read the format (above).
+  - **A Corel Presentations reader:** the format has no public specification that a converter of this size could follow, and the reference does not offer it.
+  - **Withdrawing `cb7` and `cbt` to PDF with the reference's list:** the pair is one name in a table.
+- **Verified by**: `tests/comic-cb7-cbt.test.ts` (a CB7 and a CBT of three JPEGs named out of order give a PDF whose pages `pdfimages` lists in natural order; an archive without a page image is refused), `tests/office-suite-typed-failures.test.ts` (the `shw` registry entry offers only `zip`, and the real file still packs as it is), `tests/readme-registry-drift.test.ts` (the counts of the README follow the registry).
+- **Revisit when**: a reader of Corel Presentations files (LibreOffice or another) reads a real `.shw` show.
+
+## 359. A compressed RAR is extracted by 7-Zip when unrar is not installed, and UNRAR_PATH is authoritative
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: fix the refusals a production sweep of the live service found; the worker image has the upstream 7-Zip with its RAR decoders and no `unrar`)
+- **Decision**: **`extractRarArchive` (the `archive-extract` tool, the job graph and the comic readers) hands a RAR it cannot read in process to 7-Zip when `unrar` is not installed**: a RAR 5.0 archive, and a RAR 4.x archive with any compression method but store (`extractRarWithSevenZipOr` in `src/lib/conversions/archive-rar-seven-zip.ts`, called from `extractRarArchive`). It is the same contained extraction every 7-Zip run in the product uses: the listing is vetted before anything is written, sizes and the compression ratio are capped, the tree is verified after the run, a password goes on standard input, and an entry glob selects the files. `unrar` still comes first when it is installed, and a stored RAR 4.x archive is still read in process. Without `unrar` and without 7-Zip the refusal is the old one. **`UNRAR_PATH` is authoritative**, as `P7ZIP_PATH` is: a value that is not an executable file (the empty string included) means there is no `unrar`, where it used to fall through to the standard locations.
+- **Why**:
+  - **The tool refused what the conversion reads.** The sweep got "Unsupported RAR compression method (0x33): unrar binary is required" from `archive-extract` for `tika-test-documents.rar`, while `rar` to `zip` and `rar` to `7z` of the same file passed through the native 7-Zip route (the image's pinned 7-Zip checks for its `Rar5` format at build time, `Dockerfile.worker`, and `docs/licensing.md` section 4 covers decompression only).
+  - **No second decoder.** The licence of the RAR decoders allows decompression only; the product keeps using the decoder of a separate program and never writes one.
+- **Measured** (Linux VM, 7-Zip 26.01 pinned upstream build as `P7ZIP_PATH`, `UNRAR_PATH` empty): `tika-test-documents.rar` (RAR 4.x, 9 files, 115,328 bytes unpacked) and `rarfile-rar5-crc.rar` (RAR 5.0) extract to the names, sizes and CRC-32 they list. The Debian `7z` and Homebrew `7zz` have no RAR decoders and answer "Unsupported Method", so the tests need the pinned build.
+- **Trade-offs**:
+  - **One more process for a compressed RAR on a host without `unrar`** (the first test file of the nine documents took 479 ms with the process start and the checks), where it used to be a refusal.
+  - **A bad `UNRAR_PATH` no longer falls back to a standard location.** An operator who set it wrongly now gets 7-Zip, which the image has.
+- **Alternatives rejected**:
+  - **Adding `unrar` (non-free) to the image:** a second RAR decoder with a licence of its own, for what 7-Zip already reads.
+  - **Reading RAR in process:** the decoders of RAR are not specified for reimplementation (the licence forbids recreating the compression).
+- **Verified by**: `tests/archive-rar-seven-zip.test.ts` (red without the change: 3 of 4 fail with the old refusal; RAR 4.x and 5.0 files, an entry selection and a damaged archive), run on the VM with the pinned 7-Zip; `tests/rar-extraction-count-limit.test.ts` and the other archive tests (the `unrar` path is unchanged).
+- **Revisit when**: the image changes its 7-Zip (the RAR decoders must stay), or `unrar` joins the image.
+
+## 360. RealMedia files are always written again, and rm and wtv join the same-format table
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: fix the refusals a production sweep of the live service found; the reference converter lists `rm` to `rm` and `wtv` to `wtv` with FFmpeg, whose RealMedia muxer defaults to RealVideo 1.0 and AC-3)
+- **Decision**: **The same-format table of entry 345 gets `rm` and `wtv`, and RealMedia streams are always written again.** A `wtv` file is written with the `wtv` muxer, its first picture and first sound copied. An `rm` file is written with the `rm` muxer with the sound as AC-3 at 192 kbit/s and the picture as RealVideo 1.0 (the muxer's default). `rmvb` no longer copies a RealVideo 1.0 or 2.0 picture or a SIPR, RealAudio 1.4 or 2.8 sound (the sets of codecs the table called carried are empty): they are written as RealVideo 2.0 and AC-3, as Cook and RealVideo 3 and 4 already were (`media-ffmpeg-rewrap.ts`).
+- **Why**:
+  - **The sweep's two files failed the validator.** `fate-sipr_5k0.rm` came out 4.3 % shorter (19.25 s against 20.11 s) with an audio stream of no length: with no row of the table, the transcode wrote the sound as AAC, which RealMedia cannot hold. `fate-law-and-order-partial.wtv` came out with AAC sound that decoded with "decode_band_types: Input buffer exhausted before END element found".
+  - **Copying into RealMedia does not work.** Copying the RealVideo 1.0 picture and the SIPR sound of the same `.rm` file into the RealMedia muxer wrote a picture whose 77 packets run from 0 to 0.076 s (the input has them at 0, 249, 499 ms ...) and a sound of 672 packets that `sipr` refuses (`packet size (17) too small`), with `-copyts`, `-fflags +genpts` and a copy of either stream alone giving the same (the options `-fps_mode`, `-muxdelay` and bitstream filters were not tried). A transcode with the muxer's defaults gives a picture of 19.25 s, an AC-3 sound of 20.16 s and no decode message, so that is what is written. The `rmvb` test of entry 345 had copied only streams the muxer was said to carry; its unit test pinned the copy of `rv10` and `sipr`, the case that fails.
+  - **WTV needs no re-encode.** Copying the MPEG-2 video and the MP2 sound of the recording into the `wtv` muxer decodes with the messages of the cut source only; the AAC the transcode picked is what failed.
+- **Measured** (FFmpeg 8 on the Mac): `fate-sipr_5k0.rm` (48,632 bytes) before: RealVideo 1.0 and AAC, container 19.25 s; after: RealVideo 1.0 (19.25 s) and AC-3 (20.16 s), container 20.16 s against 20.11 s in the source, `ffmpeg -f null` exit 0. `fate-law-and-order-partial.wtv` before: MPEG-2 and AAC; after: MPEG-2 and MP2, no AAC message.
+- **Trade-offs**:
+  - **A RealMedia file is always re-encoded**, where `rmvb` of RealVideo 2.0 and SIPR was copied; the copy was the broken output, and the encode costs the time of an encode.
+  - **The WTV subtitle and the second sound of a recording are not written**, as the table writes one picture and one sound for every container.
+- **Alternatives rejected**:
+  - **Fixing the timestamps of the copy (`-copyts`, `genpts`):** neither changed the 77 packets at 1 ms; the muxer and the bitstream of RealVideo 1.0 are FFmpeg's.
+  - **Keeping the transcode and choosing AC-3 for every video container the muxer defaults to it:** the table is the place that already names the muxer of a container and the codec it does not carry.
+- **Verified by**: `tests/media-same-format-rewrap.test.ts` (the `rm` sample keeps both lengths and decodes to the end, the `wtv` sample keeps its container and codecs, the unit test of which streams a RealMedia rewrap writes), run on the Mac with FFmpeg 8.
+- **Revisit when**: FFmpeg's RealMedia muxer writes usable timestamps and interleaved SIPR for a copy, or a real WTV file with AAC or H.264 sound is found (then the codecs the muxer carries are named).

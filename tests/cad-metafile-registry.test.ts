@@ -79,7 +79,8 @@ describe('Metafile registry advertises only working conversion pairs', () => {
     // A Visio drawing reaches EMF and WMF through the SVG that Poppler draws from the office suite's PDF; the other pairs are
     // written from SVG by the in-process encoders. Pairs that the office suite's sources cannot give (their pages hold pictures
     // or clip regions the encoders cannot write) are withdrawn; tests/vector-sources-real-samples.test.ts converts real files.
-    expect(sorted).toEqual(['svg->cgm', 'svg->emf', 'svg->wmf', 'svgz->emf', 'svgz->wmf', 'vsd->emf', 'vsd->wmf']);
+    // SVG to CGM is withdrawn (entry 357): the reference offers CGM only from DWF, DWG and DXF.
+    expect(sorted).toEqual(['svg->emf', 'svg->wmf', 'svgz->emf', 'svgz->wmf', 'vsd->emf', 'vsd->wmf']);
   });
 
   const metafilePairs = Object.entries(FORMAT_REGISTRY).flatMap(([sourceId, def]) =>

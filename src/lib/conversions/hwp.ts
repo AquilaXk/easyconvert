@@ -2,6 +2,7 @@ import zlib from 'node:zlib';
 import JSZip from 'jszip';
 import sharp from 'sharp';
 import { ConversionFailedError, ConversionOptions, ConversionResult, CorruptStreamError, EncryptedOfficeDocumentError } from '../types';
+import { assertNotHwp3 } from './hwp-version';
 import { InflateBudget, inflateBounded } from './bounded-inflate';
 import { encodeBmp } from './image';
 import { buildOpenXpsPackage } from './openxps';
@@ -204,6 +205,7 @@ function readHwpEquation(payload: Buffer): HwpEquation {
  * document throws a typed error; no text is invented.
  */
 export function parseHwpDocument(inputBuffer: Buffer): HwpDocument {
+  assertNotHwp3(inputBuffer);
   if (!isCfbfContainer(inputBuffer)) {
     throw corruptHwp('the file is not an OLE2 compound file.');
   }

@@ -37,6 +37,14 @@ const MPEG_PROGRAM_STREAM = {
   audioFallback: ['-c:a', 'mp2', '-b:a', '192k'],
 } as const;
 
+/** The RealMedia muxer carries no codec by copy (see the entries below): every stream is written again. */
+const REALMEDIA_REENCODED = {
+  muxer: 'rm',
+  carriedVideo: new Set<string>(),
+  carriedAudio: new Set<string>(),
+  audioFallback: ['-c:a', 'ac3', '-b:a', '192k'],
+} as const;
+
 const REWRAP_CONTAINERS: ReadonlyMap<string, RewrapContainer> = new Map<string, RewrapContainer>([
   ['3g2', { muxer: '3g2', ...MOBILE_CONTAINER }],
   ['3gpp', { muxer: '3gp', ...MOBILE_CONTAINER }],
@@ -47,18 +55,16 @@ const REWRAP_CONTAINERS: ReadonlyMap<string, RewrapContainer> = new Map<string, 
   ['mpeg', MPEG_PROGRAM_STREAM],
   ['mpg', MPEG_PROGRAM_STREAM],
   ['ogv', { muxer: 'ogv', carriedAudio: new Set(['vorbis', 'opus', 'flac', 'speex']), audioFallback: ['-c:a', 'libvorbis', '-q:a', '4'] }],
-  // The RealMedia muxer writes both extensions, but carries only RealVideo 1.0 and 2.0 and a few sound codecs
-  // (rmenc.c); Cook and RealVideo 3 and 4, which RealMedia files hold, are written as RealVideo 2.0 and AC-3.
-  [
-    'rmvb',
-    {
-      muxer: 'rm',
-      carriedVideo: new Set(['rv10', 'rv20']),
-      carriedAudio: new Set(['ac3', 'sipr', 'ra_144', 'ra_288']),
-      videoFallback: ['-c:v', 'rv20'],
-      audioFallback: ['-c:a', 'ac3', '-b:a', '192k'],
-    },
-  ],
+  // The RealMedia muxer writes both extensions. It copies no stream of a RealMedia file in a form the file can be read from again: RealVideo 1.0 and
+  // 2.0 packets come out with timestamps one millisecond apart (a 19 s picture of 77 frames ends at 0.077 s) and SIPR frames are written without
+  // the interleaving of their superpackets, which `sipr` then refuses ("packet size (17) too small"). So the sound is always written as AC-3, the
+  // muxer's own default, and the picture as the muxer's default (RealVideo 1.0) for `rm` and as RealVideo 2.0 for `rmvb`, which is what a transcode
+  // of the same file gives, with the sound's length kept (an AAC track in RealMedia has no length at all).
+  ['rm', { ...REALMEDIA_REENCODED, videoFallback: ['-c:v', 'rv10'] }],
+  ['rmvb', { ...REALMEDIA_REENCODED, videoFallback: ['-c:v', 'rv20'] }],
+  // A Windows Media Center recording: the picture and the sound are copied (the muxer takes the MPEG-2 video and MP2, AC-3 or E-AC-3 sound those
+  // recordings hold); a transcode wrote AAC sound that the file cannot be decoded from.
+  ['wtv', { muxer: 'wtv' }],
   // The AMR encoder is not in every build; the narrowband stream itself is copied.
   ['amr', { muxer: 'amr', audioOnly: true }],
 ]);
