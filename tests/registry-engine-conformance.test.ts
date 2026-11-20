@@ -16,12 +16,13 @@ import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { probeNativeEngines } from '../src/worker/engines';
 import { convertOffice } from '../src/lib/conversions/office';
 import { convertDocument } from '../src/lib/conversions/document';
-import { compressXz, create7zArchive } from '../src/lib/conversions/archive';
+import { compressXz, create7zArchive, createTarArchive } from '../src/lib/conversions/archive';
 import { ConversionFailedError, EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
 import { OracleToolMissingError, getOracleToolPath } from './helpers/differential-oracle';
 import { withMissingBinary } from './helpers/native-tools';
 import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 import { buildStoredRar4 } from './helpers/rar4-stored';
+import { buildRawPsb } from './helpers/image-format-builders';
 import { simpleRocketBook } from './helpers/rocketbook-builder';
 import { compressLzw } from './helpers/unix-compress';
 import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
@@ -430,6 +431,8 @@ function buildProbeMobi(): Buffer {
 /** The single-file Open eBook package the reader takes: the text sits in `<text>`, since no writer of the product makes a source of this format any more. */
 const OEB_PROBE_PACKAGE = '<?xml version="1.0"?><package><text><![CDATA[Probe heading\n\nFirst probe paragraph.]]></text></package>';
 
+const COMIC_PROBE_PAGES = [{ filename: 'page-001.png', buffer: LETTERED_PAGE }, { filename: 'page-002.png', buffer: PNG_SEED }];
+
 /** Small hand-built inputs for source families with no fixture and no derivation seed. */
 const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   // An Outlook message is a compound file of MAPI property streams (MS-OXMSG): a property header and a Unicode subject are enough.
@@ -455,6 +458,11 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   cbz: buildCbz,
   // A comic RAR archive and a Mobipocket book under its Palm name: the same pages and the same book as the CBZ and MOBI probes.
   cbr: () => buildStoredRar4([{ name: 'page-001.png', data: LETTERED_PAGE }, { name: 'page-002.png', data: PNG_SEED }]),
+  // The other comic archives: the pages of the CBR probe packed as 7z and as TAR.
+  cb7: () => create7zArchive(COMIC_PROBE_PAGES).buffer,
+  cbt: () => createTarArchive(COMIC_PROBE_PAGES).buffer,
+  // A Photoshop Large Document is read by the PSD coder of ImageMagick, which refuses a PNG under its name.
+  psb: () => buildRawPsb(2, 2, [{ r: 255, g: 0, b: 0 }, { r: 0, g: 255, b: 0 }, { r: 0, g: 0, b: 255 }, { r: 255, g: 255, b: 0 }]),
   prc: buildProbeMobi,
   // E-book sources are read by their container layout, so each probe is a hand-built container with real content:
   // a MOBI (the probe of AZW and AZW3 too) whose text record holds HTML, an OEB package that carries its text, a Print Replica book around a pdf-lib PDF, a collection of one comic

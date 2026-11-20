@@ -345,12 +345,21 @@ describe('the pairs left out of entry 187 stay out of the registry', () => {
     expect(targets.filter((target) => FORMAT_REGISTRY[source].targetFormats.includes(target))).toEqual([]);
   });
 
-  it.each(['wmf', 'cgm'])('a DXF drawing with text cannot be written as .%s: the SVG it is drawn as holds <text>, which the metafile writers refuse', async (target) => {
+  it('the SVG a DXF drawing is drawn as holds <text>, which the CGM writer refuses', async () => {
     const svg = (await convertVectorCad(plateBytes('plate-basic'), 'dxf', 'svg', {}, 'plate-basic.dxf')).buffer;
     expect(svg.toString('utf-8')).toContain('<text');
-    const refusal = convertVectorCad(svg, 'svg', target, {}, 'plate-basic.svg');
+    const refusal = convertVectorCad(svg, 'svg', 'cgm', {}, 'plate-basic.svg');
     await expect(refusal).rejects.toBeInstanceOf(UnsupportedOptionError);
     await expect(refusal).rejects.toThrow(/SVG element <text> is not supported by metafile encoders/);
+  });
+
+  // Entry 357: the text of an SVG is drawn as outlines for EMF and WMF, so the WMF of that SVG is written. DXF to WMF stays out of the registry (LEFT_OUT above),
+  // as the drawings also hold round line caps, which the WMF writer refuses.
+  it('the same SVG is written as .wmf, with its text as outlines', async () => {
+    const svg = (await convertVectorCad(plateBytes('plate-basic'), 'dxf', 'svg', {}, 'plate-basic.dxf')).buffer;
+    const result = await convertVectorCad(svg, 'svg', 'wmf', {}, 'plate-basic.svg');
+    // The placeable header key of a Windows metafile.
+    expect(result.buffer.readUInt32LE(0)).toBe(0x9ac6cdd7);
   });
 
   it('the pairs the entry offers are in the registry', () => {
