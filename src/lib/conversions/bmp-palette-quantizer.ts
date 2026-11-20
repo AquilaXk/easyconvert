@@ -8,7 +8,7 @@ import { QUANTIZR_DITHER_LEVEL, quantizePixels, quantizrFits } from './png-palet
  * The palette of a dithered 8-bit BMP, chosen by `quantizr-pixels` (png-palette-quantizer.ts: the program, its sandbox, its pixel bound and the
  * dithering level of entry 253). The picture is decoded by the worker, so the program only sees pixels. The answer is null when the program is not
  * installed, the picture is past its bound or the run fails, and the caller writes the picture with the Oklab quantizer as before. A BMP without
- * dithering is not given to the program: its palette is no better than the Oklab quantizer's there (entry 365).
+ * dithering is not given to the program: its palette is no better than the Oklab quantizer's there (entry 366).
  */
 
 const RGBA_CHANNELS = 4;

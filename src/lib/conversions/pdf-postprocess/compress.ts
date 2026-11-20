@@ -170,24 +170,31 @@ const PDFWRITE_CLEAR_GAIN = 0.05;
 const LOSSLESS_CANDIDATE_TIMEOUT_MS = 10_000;
 
 /**
- * The Ghostscript rewrite of `pdf`, or the lossless rewrite when that is smaller. pdfwrite re-encodes every font and stream, and a
- * text document that a PDF writer already subset and deflated (a Distiller file) comes out of it no smaller, or larger, than qpdf's
- * repack of the same bytes. The lossless rewrite is asked for when the document is small or pdfwrite gained little, so the images
- * of a large document that pdfwrite shrank pay nothing; a lossless rewrite that fails or runs out of its time is not an error.
+ * The Ghostscript rewrite of `pdf`, or the lossless rewrite when that is smaller and passes `qpdf --check`. pdfwrite re-encodes every
+ * font and stream, and a text document that a PDF writer already subset and deflated (a Distiller file) comes out of it no smaller, or
+ * larger, than qpdf's repack of the same bytes. A small document runs both rewrites at once, so it waits for the slower of the two and
+ * not their sum; a large one asks for the lossless rewrite only when pdfwrite gained little, so the images it shrank pay nothing. The
+ * lossless rewrite keeps the damage of a damaged input where pdfwrite rebuilds the document, so it is kept only when it checks clean.
+ * A lossless rewrite that fails or runs out of its time is not an error.
  */
 async function rewriteSmaller(pdf: Buffer, preset: string, clock: CompressClock, signal: AbortSignal | undefined): Promise<Buffer> {
+  const losslessTimeoutMs = Math.min(limitsOf(clock).timeoutMs, LOSSLESS_CANDIDATE_TIMEOUT_MS);
+  const candidate = (): Promise<Buffer | undefined> =>
+    rewriteLossless(pdf, signal, losslessTimeoutMs).catch((error: unknown) => {
+      signal?.throwIfAborted();
+      // A host that cannot confine its programs refuses the request; a failed or slow candidate is only a candidate that did not come.
+      rethrowSandboxUnavailable(error);
+      return undefined;
+    });
+  const small = pdf.length <= LOSSLESS_COMPARE_MAX_BYTES;
+  const early = small ? candidate() : undefined;
+  // A pdfwrite failure must not leave the started candidate as an unhandled rejection.
+  early?.catch(() => undefined);
   const pdfwrite = await rewriteWithGhostscript(pdf, preset, clock, signal);
-  if (pdf.length > LOSSLESS_COMPARE_MAX_BYTES && pdfwrite.length <= pdf.length * (1 - PDFWRITE_CLEAR_GAIN)) return pdfwrite;
-  let lossless: Buffer;
-  try {
-    lossless = await rewriteLossless(pdf, signal, Math.min(limitsOf(clock).timeoutMs, LOSSLESS_CANDIDATE_TIMEOUT_MS));
-  } catch (error) {
-    signal?.throwIfAborted();
-    // A host that cannot confine its programs refuses the request; a failed or slow candidate is only a candidate that did not come.
-    rethrowSandboxUnavailable(error);
-    return pdfwrite;
-  }
-  return lossless.length < pdfwrite.length ? lossless : pdfwrite;
+  if (!small && pdfwrite.length <= pdf.length * (1 - PDFWRITE_CLEAR_GAIN)) return pdfwrite;
+  const lossless = await (early ?? candidate());
+  if (lossless === undefined || lossless.length >= pdfwrite.length) return pdfwrite;
+  return (await isCleanPdf(lossless, limitsOf(clock))) ? lossless : pdfwrite;
 }
 
 /** The rewrite the profile asks for, of `pdf`; `signal` stops it. */

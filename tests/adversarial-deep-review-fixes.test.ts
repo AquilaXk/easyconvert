@@ -235,7 +235,7 @@ describe('Adversarial Deep Review Hardening & Optimizations', () => {
     });
 
     it('evaluates sparse formula dependencies inside bounded rectangular ranges accurately', () => {
-      const engine = new SpreadsheetDagEngine({ B2: '7' });
+      const engine = new SpreadsheetDagEngine({ B2: 7 });
       const { evaluated, cycles } = engine.evaluateWithDag([
         { ref: 'D1', formula: 'SUM(A1:C20)', rowIdx: 0, colIdx: 3 },
         { ref: 'C12', formula: 'A5*2', rowIdx: 11, colIdx: 2 },

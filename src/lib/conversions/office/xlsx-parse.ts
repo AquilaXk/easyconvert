@@ -275,6 +275,20 @@ function resolveCellTextValue(cell: ActiveCellState, ctx: WorkbookStyleContext):
   return cell.hasDirectT ? cell.directTText : '';
 }
 
+/**
+ * The value a formula sees when it reads the cell: the number (a date is its serial number), the boolean or the text the file
+ * holds, not the text a number format makes of it (`12%`, `2020-01-01`), which no function can add or compare.
+ */
+function resolveCellModelValue(cell: ActiveCellState, text: string): string | number | boolean {
+  if (!cell.hasV) return text;
+  if (cell.type === 'b') return cell.vText === '1';
+  if (cell.type === '' || cell.type === 'n') {
+    const num = Number(cell.vText);
+    if (cell.vText.trim() !== '' && Number.isFinite(num)) return num;
+  }
+  return text;
+}
+
 function buildStructuredCell(cellValue: string, style: ParsedCellStyle | undefined): OfficeWorksheetCell {
   const isNum = !Number.isNaN(Number(cellValue)) && cellValue.trim() !== '';
   const align = style?.align || (isNum ? 'right' : 'left');
@@ -555,7 +569,7 @@ function parseWorksheetXml(
   const mergedRanges: OfficeCellRange[] = [];
   const rawLinks: RawSheetLink[] = [];
   const wantedIds = new Set<string>();
-  const cellMap: Record<string, string | number> = {};
+  const cellMap: Record<string, string | number | boolean> = {};
   const formulaCells: Array<{ ref: string; formula: string; rowIdx: number; colIdx: number }> = [];
   const allowance = XLSX_MAX_RANGES_PER_WORKBOOK - budgets.rangesHeld;
 
@@ -612,7 +626,7 @@ function parseWorksheetXml(
         `The XLSX cells expand to more than ${budgets.maxCellTextChars} characters (${XLSX_MAX_CELL_TEXT_CHARS_ENV}).`
       );
     }
-    if (cell.ref) cellMap[cell.ref] = cellValue;
+    if (cell.ref) cellMap[cell.ref] = resolveCellModelValue(cell, cellValue);
     if (cell.hasF && (!cellValue || cellValue.trim() === '')) {
       formulaCells.push({ ref: cell.ref, formula: cell.fText, rowIdx: currentRowIdx, colIdx: cell.colIdx });
     }

@@ -8,6 +8,7 @@ import { countPagesOfReadablePdf } from '../src/worker/engines';
 import { bundleOf, chunk, chunksOfId, form, includeChunk, maskedPageOf, maskOverChain, pageForm, type BundleFile } from './helpers/djvu-builder';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { DISTRIBUTION_DDJVU, djvuRunsCanStart, patchedDdjvu } from './helpers/djvulibre-build';
+import { captureEngineOutput } from './helpers/engine-output-log';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 
@@ -171,8 +172,11 @@ describe.skipIf(toolsMissing || notLinux || notPatched || runsCannotStart)('a ch
 describe.skipIf(toolsMissing || notPatched || runsCannotStart)('the JB2 mask of a real page over shared files that each include the next two and none its dictionary', () => {
   it.for(MASK_CHAIN_LEVELS)('is refused by the patched ddjvu at once over %i files', { timeout: TEST_TIMEOUT_MS }, async (levels, ctx) => {
     const page = maskedPageOf((await requireRealworldSample(ctx, DOGV)).path, DOGV_FIRST_PAGE, DOGV_DICTIONARY);
-    const { elapsedMs, outcome } = await outcomeOf(maskOverChain(page, levels, false), 'mask.djvu');
-    expect(outcome).toMatch(/^ConversionFailedError: ddjvu could not draw the \.djvu file: .*shape dictionary/);
+    const log = captureEngineOutput();
+    const { elapsedMs, outcome } = await outcomeOf(maskOverChain(page, levels, false), 'mask.djvu').finally(() => log.restore());
+    // What ddjvu printed stays in the server log (entry 346); the answer names the program and the file only.
+    expect(outcome).toMatch(/^ConversionFailedError: ddjvu could not draw the \.djvu file\./);
+    expect(log.outputs().join('\n')).toMatch(/shape dictionary/);
     expect(elapsedMs).toBeLessThan(MASK_REFUSED_WITHIN_MS);
   });
 
@@ -192,8 +196,10 @@ describe.skipIf(toolsMissing || notPatched || runsCannotStart)(`a mask without i
     const filler = Array.from({ length: WAKE_CHAIN_CHUNKS }, () => chunk('NOPE', Buffer.alloc(2)));
     const unmasked = await outcomeOf(maskOverChain({ ...page, mask: chunk('NOPE', Buffer.alloc(2)) }, WAKE_CHAIN_LEVELS, false, filler), 'unmasked.djvu');
     expect(unmasked.outcome).toBe('drawn');
-    const { elapsedMs, outcome } = await outcomeOf(maskOverChain(page, WAKE_CHAIN_LEVELS, false, filler), 'wake.djvu');
-    expect(outcome).toMatch(/^ConversionFailedError: ddjvu could not draw the \.djvu file: .*shape dictionary/);
+    const log = captureEngineOutput();
+    const { elapsedMs, outcome } = await outcomeOf(maskOverChain(page, WAKE_CHAIN_LEVELS, false, filler), 'wake.djvu').finally(() => log.restore());
+    expect(outcome).toMatch(/^ConversionFailedError: ddjvu could not draw the \.djvu file\./);
+    expect(log.outputs().join('\n')).toMatch(/shape dictionary/);
     expect(elapsedMs).toBeLessThan(WAKE_CHAIN_SEARCH_FACTOR * unmasked.elapsedMs);
   }, TEST_TIMEOUT_MS);
 });

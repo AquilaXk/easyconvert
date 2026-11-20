@@ -83,7 +83,7 @@ export async function encodeGifOutput(pipeline: Sharp, options: ConversionOption
   return pipeline.gif({ colours, dither: options.dither !== false ? 1.0 : 0.0 }).toBuffer();
 }
 
-/** The 8-bit BMP of the pipeline: a dithered one has its palette chosen by quantizr-pixels (entry 365), any other the Oklab quantizer's, which also writes it where the program does not answer. */
+/** The 8-bit BMP of the pipeline: a dithered one has its palette chosen by quantizr-pixels (entry 366), any other the Oklab quantizer's, which also writes it where the program does not answer. */
 export async function encodeBmp8Output(pipeline: Sharp, options: ConversionOptions): Promise<Buffer> {
   await assertPixelBudgetBeforeDecode(pipeline, options, QUANTIZER_PIXEL_BUDGET);
   const colours = Math.min(256, Math.max(2, options.colors || 256));

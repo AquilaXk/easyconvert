@@ -1,9 +1,17 @@
-import { ConversionFailedError, PayloadLimitError } from '../../types';
+import { PayloadLimitError } from '../../types';
+import { MAX_TEXT_RESULT_LENGTH, spreadsheetFunctionTable } from './spreadsheet-functions';
+import FormulaParser from './vendor/fast-formula-parser';
+import type { FormulaCellRef, FormulaRangeRef } from './vendor/fast-formula-parser';
 
 /** Maximum cells expanded in a single formula range (`A1:Z1000` = 26,000; full sheet `A1:XFD1048576` = 17.18B is refused). */
 export const MAX_FORMULA_RANGE_CELLS = 100_000;
 /** Maximum unique range cells expanded across one workbook/sheet formula evaluation pass. */
 export const MAX_TOTAL_FORMULA_RANGE_CELLS = 250_000;
+/**
+ * Time one DAG pass may take. A formula costs microseconds, but a function with a huge argument (a chi-square test with two
+ * billion degrees of freedom) can take a second, and 50,000 of them would take most of a day; the pass stops there.
+ */
+export const MAX_FORMULA_EVAL_MS = 20_000;
 /** Maximum formula cells evaluated in a single DAG pass. */
 export const MAX_FORMULA_CELLS = 50_000;
 /** ECMA-376 SpreadsheetML maximum row and column indices (`XFD1048576`). */
@@ -82,199 +90,20 @@ function parseCellCoord(cleanRef: string): { col: number; row: number } | null {
   if (col < 1 || col > MAX_EXCEL_COL || row < 1 || row > MAX_EXCEL_ROW) return null;
   return { col, row };
 }
-
-const STICKY_NUM_RE = /(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/y;
-const STICKY_RANGE_RE = /(\$?[A-Za-z]{1,3})(\$?)([0-9]{1,7}):(\$?[A-Za-z]{1,3})(\$?)([0-9]{1,7})/y;
-const STICKY_OVERSIZE_RANGE_RE = /\$?[A-Za-z]+\$?[0-9]+:\$?[A-Za-z]+\$?[0-9]+/y;
-const STICKY_CELL_RE = /(\$?[A-Za-z]{1,3})(\$?)([0-9]{1,7})/y;
-const STICKY_IDENT_RE = /[A-Za-z_][A-Za-z0-9_.]*/y;
-
-export type CellResolver = (cellRef: string) => any;
-
-type FormulaTokenType =
-  | 'NUMBER'
-  | 'STRING'
-  | 'BOOLEAN'
-  | 'RANGE'
-  | 'CELL_REF'
-  | 'FUNCTION'
-  | 'OP'
-  | 'OP_COMP'
-  | 'LPAREN'
-  | 'RPAREN'
-  | 'COMMA';
-
-interface FormulaToken {
-  type: FormulaTokenType;
-  val: any;
-}
-
-/**
- * Pure TypeScript Spreadsheet Formula Evaluator
- * Supports basic arithmetic (+, -, *, /, ^, %, &), comparisons (=, <>, <, <=, >, >=),
- * cell references/ranges (A1, $B$2, A1:B10), and common functions (SUM, AVERAGE, COUNT, MIN, MAX, IF).
- */
-/**
- * The table argument of VLOOKUP and INDEX as rows: a two-dimensional range keeps its rows, an array of arrays is
- * the rows, any other array is one column (VLOOKUP) or one row (INDEX), and a single value is a one-cell table.
- */
-interface ExactLookupIndex {
-  byLower: Map<string, number>;
-  byFiniteNum: Map<number, number>;
-}
-
-const RANGE_FLAT_CACHE = new WeakMap<object, unknown[]>();
-const GRID_WIDTH_CACHE = new WeakMap<object, number>();
-const GRID_FIRST_COL_INDEX_CACHE = new WeakMap<object, ExactLookupIndex>();
-const ARRAY_EXACT_INDEX_CACHE = new WeakMap<object, ExactLookupIndex>();
-
 function canonicalRangeKey(bounds: { minC: number; minR: number; maxC: number; maxR: number }): string {
   return `${bounds.minC}:${bounds.minR}:${bounds.maxC}:${bounds.maxR}`;
 }
 
-function arrayMin(nums: readonly number[]): number {
-  let min = nums[0]!;
-  for (let i = 1; i < nums.length; i++) {
-    if (nums[i]! < min) min = nums[i]!;
-  }
-  return min;
-}
+export type CellResolver = (cellRef: string) => any;
 
-function arrayMax(nums: readonly number[]): number {
-  let max = nums[0]!;
-  for (let i = 1; i < nums.length; i++) {
-    if (nums[i]! > max) max = nums[i]!;
-  }
-  return max;
-}
-
-function maxGridWidth(grid: ReadonlyArray<ReadonlyArray<unknown>>): number {
-  const cached = GRID_WIDTH_CACHE.get(grid);
-  if (cached !== undefined) return cached;
-  let max = 0;
-  for (let i = 0; i < grid.length; i++) {
-    const len = grid[i]!.length;
-    if (len > max) max = len;
-  }
-  return max;
-}
-
-function getCachedFlatRange(r2d: ReadonlyArray<ReadonlyArray<unknown>>): unknown[] {
-  let flat = RANGE_FLAT_CACHE.get(r2d);
-  if (flat) return flat;
-  const rows = r2d.length;
-  const cols = rows > 0 ? r2d[0]!.length : 0;
-  flat = new Array<unknown>(rows * cols);
-  let k = 0;
-  for (let r = 0; r < rows; r++) {
-    const row = r2d[r]!;
-    for (let c = 0; c < row.length; c++) {
-      flat[k++] = row[c];
-    }
-  }
-  RANGE_FLAT_CACHE.set(r2d, flat);
-  return flat;
-}
-
-function indexColumnEntry(index: ExactLookupIndex, cellVal: unknown, rowIdx: number): void {
-  if (cellVal === undefined || cellVal === null) return;
-  const lower = String(cellVal).toLowerCase();
-  if (!index.byLower.has(lower)) {
-    index.byLower.set(lower, rowIdx);
-  }
-  const trimmed = lower.trim();
-  if (trimmed === '') return;
-  const num = Number(trimmed);
-  if (Number.isFinite(num)) {
-    const norm = num === 0 ? 0 : num;
-    if (!index.byFiniteNum.has(norm)) {
-      index.byFiniteNum.set(norm, rowIdx);
-    }
-  }
-}
-
-function buildGridFirstColIndex(grid: ReadonlyArray<ReadonlyArray<unknown>>): ExactLookupIndex {
-  const index: ExactLookupIndex = { byLower: new Map(), byFiniteNum: new Map() };
-  for (let r = 0; r < grid.length; r++) {
-    indexColumnEntry(index, grid[r]?.[0], r);
-  }
-  return index;
-}
-
-function buildArrayExactIndex(arr: ReadonlyArray<unknown>): ExactLookupIndex {
-  const index: ExactLookupIndex = { byLower: new Map(), byFiniteNum: new Map() };
-  for (let i = 0; i < arr.length; i++) {
-    indexColumnEntry(index, arr[i], i);
-  }
-  return index;
-}
-
-function lookupExactIndexCandidate(index: ExactLookupIndex, lookupVal: unknown): number | 'fallback' {
-  const lower = String(lookupVal).toLowerCase();
-  const trimmed = lower.trim();
-  if (trimmed === 'infinity' || trimmed === '+infinity' || trimmed === '-infinity') {
-    return 'fallback';
-  }
-  const strHit = index.byLower.get(lower);
-  let numHit: number | undefined;
-  if (trimmed !== '') {
-    const num = Number(trimmed);
-    if (Number.isFinite(num)) {
-      numHit = index.byFiniteNum.get(num === 0 ? 0 : num);
-    }
-  }
-  if (strHit !== undefined && numHit !== undefined) return Math.min(strHit, numHit);
-  if (strHit !== undefined) return strHit;
-  return numHit ?? -1;
-}
-
-function findExactGridRow(
-  grid: ReadonlyArray<ReadonlyArray<unknown>>,
-  lookupVal: unknown,
-  isCellMatch: (cellVal: unknown, targetVal: unknown) => boolean,
-): number {
-  if (grid.length >= 4) {
-    let index = GRID_FIRST_COL_INDEX_CACHE.get(grid);
-    if (!index) {
-      index = buildGridFirstColIndex(grid);
-      GRID_FIRST_COL_INDEX_CACHE.set(grid, index);
-    }
-    const hit = lookupExactIndexCandidate(index, lookupVal);
-    if (hit !== 'fallback') return hit;
-  }
-  for (let r = 0; r < grid.length; r++) {
-    if (isCellMatch(grid[r]?.[0], lookupVal)) return r;
-  }
-  return -1;
-}
-
-function findExactArrayIndex(
-  arr: ReadonlyArray<unknown>,
-  lookupVal: unknown,
-  isCellMatch: (cellVal: unknown, targetVal: unknown) => boolean,
-): number {
-  if (arr.length >= 4) {
-    let index = ARRAY_EXACT_INDEX_CACHE.get(arr);
-    if (!index) {
-      index = buildArrayExactIndex(arr);
-      ARRAY_EXACT_INDEX_CACHE.set(arr, index);
-    }
-    const hit = lookupExactIndexCandidate(index, lookupVal);
-    if (hit !== 'fallback') return hit;
-  }
-  for (let i = 0; i < arr.length; i++) {
-    if (isCellMatch(arr[i], lookupVal)) return i;
-  }
-  return -1;
-}
-
-function lookupGridOf(tableArg: unknown, singleArrayAs: 'column' | 'row'): unknown[][] {
-  const range = (tableArg as { _range2D?: unknown[][] } | null | undefined)?._range2D;
-  if (range) return range;
-  if (Array.isArray(tableArg) && Array.isArray(tableArg[0])) return tableArg;
-  if (Array.isArray(tableArg)) return singleArrayAs === 'column' ? tableArg.map((x) => [x]) : [tableArg];
-  return [[tableArg]];
-}
+/** Excel's own limit for the text of one formula; a longer one is not a formula a workbook can hold. */
+const MAX_FORMULA_LENGTH = 8192;
+const ERROR_CODES: ReadonlySet<string> = new Set(['#DIV/0!', '#N/A', '#NAME?', '#NULL!', '#NUM!', '#REF!', '#VALUE!']);
+const STRING_LITERAL_RE = /"(?:[^"]|"")*"/g;
+/** `A:A`, `$A:$C`, `2:3`: a whole column or row, which reaches the last cell of the grid. */
+const WHOLE_AXIS_REFERENCE_RE =
+  /(?:^|[^A-Za-z0-9_.!$'])(?:\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}(?![A-Za-z0-9_(])|\$?[0-9]{1,7}:\$?[0-9]{1,7}(?![A-Za-z0-9_.(]))/;
+const { FormulaError } = FormulaParser;
 
 interface CachedRangeEntry {
   minC: number;
@@ -284,12 +113,23 @@ interface CachedRangeEntry {
   rows: unknown[][];
 }
 
+/**
+ * Evaluates one formula over the cells `cellLookup` returns. The grammar, the operators and the functions are those of the
+ * vendored fast-formula-parser (functions it lacks come from formulajs, see `spreadsheet-functions.ts`); this class holds
+ * what EasyConvert adds around them: the range limits, the grid bounds, the function allowlist, and the mapping of every
+ * library failure to an Excel error. A formula that cannot be evaluated gives an error code (`#NAME?` for a function that is
+ * not offered, `#REF!` for a reference outside this sheet), and only a `PayloadLimitError` is thrown.
+ */
 export class SpreadsheetFormulaEvaluator {
   private evaluatedRangeCells = 0;
   private seenRangeKeys = new Set<string>();
   private range2DCache = new Map<string, CachedRangeEntry>();
+  private readonly parser: FormulaParser;
 
-  constructor(private cellLookup: CellResolver) {}
+  constructor(private cellLookup: CellResolver) {
+    this.parser = new FormulaParser({ onCell: (ref) => this.readCell(ref), onRange: (ref) => this.readRange(ref) });
+    this.parser.functions = spreadsheetFunctionTable().functions;
+  }
 
   public invalidateCell(ref: string): void {
     if (this.range2DCache.size === 0) return;
@@ -310,199 +150,55 @@ export class SpreadsheetFormulaEvaluator {
     }
   }
 
-  public evaluate(formula: string): any {
-    if (formula.startsWith('=')) formula = formula.slice(1);
-    const tokens = this.tokenize(formula);
-    let pos = 0;
-
-    const peek = (): FormulaToken | undefined => tokens[pos];
-    const consume = (expectedType?: FormulaTokenType): FormulaToken => {
-      const t = tokens[pos];
-      if (!t) throw new Error('Unexpected end of formula');
-      if (expectedType && t.type !== expectedType) throw new Error(`Expected ${expectedType} but got ${t.type}`);
-      pos++;
-      return t;
-    };
-
-    const isErrorCode = (v: any): boolean => typeof v === 'string' && v.startsWith('#');
-
-    const parseComparison = (): any => {
-      let left = parseConcat();
-      while (peek() && peek()!.type === 'OP_COMP') {
-        const op = consume().val;
-        const right = parseConcat();
-        if (isErrorCode(left)) return left;
-        if (isErrorCode(right)) return right;
-        if (op === '=') left = left == right;
-        else if (op === '<>') left = left != right;
-        else if (op === '<') left = left < right;
-        else if (op === '<=') left = left <= right;
-        else if (op === '>') left = left > right;
-        else if (op === '>=') left = left >= right;
-      }
-      return left;
-    };
-
-    const parseConcat = (): any => {
-      let left = parseAdditive();
-      while (peek() && peek()!.type === 'OP' && peek()!.val === '&') {
-        consume();
-        const right = parseAdditive();
-        if (isErrorCode(left)) return left;
-        if (isErrorCode(right)) return right;
-        left = String(left ?? '') + String(right ?? '');
-      }
-      return left;
-    };
-
-    const parseAdditive = (): any => {
-      let left = parseMultiplicative();
-      while (peek() && peek()!.type === 'OP' && (peek()!.val === '+' || peek()!.val === '-')) {
-        const op = consume().val;
-        const right = parseMultiplicative();
-        if (isErrorCode(left)) return left;
-        if (isErrorCode(right)) return right;
-        left = op === '+' ? Number(left) + Number(right) : Number(left) - Number(right);
-      }
-      return left;
-    };
-
-    const parseMultiplicative = (): any => {
-      let left = parsePower();
-      while (peek() && peek()!.type === 'OP' && (peek()!.val === '*' || peek()!.val === '/')) {
-        const op = consume().val;
-        const right = parsePower();
-        if (isErrorCode(left)) return left;
-        if (isErrorCode(right)) return right;
-        if (op === '/') {
-          if (Number(right) === 0) return '#DIV/0!';
-          left = Number(left) / Number(right);
-        } else {
-          left = Number(left) * Number(right);
-        }
-      }
-      return left;
-    };
-
-    const parsePower = (): any => {
-      let left = parseUnary();
-      while (peek() && peek()!.type === 'OP' && peek()!.val === '^') {
-        consume();
-        const right = parseUnary();
-        if (isErrorCode(left)) return left;
-        if (isErrorCode(right)) return right;
-        left = Math.pow(Number(left), Number(right));
-      }
-      return left;
-    };
-
-    const parseUnary = (): any => {
-      if (peek() && peek()!.type === 'OP' && (peek()!.val === '+' || peek()!.val === '-')) {
-        const op = consume().val;
-        const operand = parseUnary();
-        if (isErrorCode(operand)) return operand;
-        return op === '-' ? -Number(operand) : Number(operand);
-      }
-      let val = parsePrimary();
-      if (peek() && peek()!.type === 'OP' && peek()!.val === '%') {
-        consume();
-        if (isErrorCode(val)) return val;
-        val = Number(val) / 100;
-      }
-      return val;
-    };
-
-    const parsePrimary = (): any => {
-      const t = peek();
-      if (!t) throw new Error('Unexpected end of expression');
-      if (t.type === 'NUMBER' || t.type === 'STRING' || t.type === 'BOOLEAN') {
-        consume();
-        return t.val;
-      }
-      if (t.type === 'LPAREN') {
-        consume();
-        const val = parseComparison();
-        consume('RPAREN');
-        return val;
-      }
-      if (t.type === 'FUNCTION') {
-        return parseFunctionCall();
-      }
-      if (t.type === 'RANGE') {
-        consume();
-        const r2d = this.resolveRange2D(t.val);
-        const flat = getCachedFlatRange(r2d);
-        (flat as any)._range2D = r2d;
-        (flat as any)._isRange = true;
-        return flat;
-      }
-      if (t.type === 'CELL_REF') {
-        consume();
-        return this.cellLookup(t.val);
-      }
-      throw new Error(`Unexpected token: ${t.type} (${t.val})`);
-    };
-
-    const parseFunctionCall = (): any => {
-      const fnName = String(consume('FUNCTION').val).toUpperCase();
-      consume('LPAREN');
-
-      if (fnName === 'IFERROR') {
-        let val: any;
-        let isErr = false;
-        try {
-          val = parseComparison();
-          if (typeof val === 'string' && val.startsWith('#')) {
-            isErr = true;
-          }
-        } catch (err) {
-          if (err instanceof PayloadLimitError) throw err;
-          isErr = true;
-        }
-        consume('COMMA');
-        const fallback = parseComparison();
-        consume('RPAREN');
-        return isErr ? fallback : val;
-      }
-
-      const args: any[] = [];
-      if (!peek() || peek()!.type !== 'RPAREN') {
-        while (true) {
-          args.push(parseComparison());
-          if (peek() && peek()!.type === 'COMMA') {
-            consume();
-          } else {
-            break;
-          }
-        }
-      }
-      consume('RPAREN');
-      return this.executeFunction(fnName, args);
-    };
-
-    return parseComparison();
+  /** `position` is the cell that holds the formula, for `ROW()` and `COLUMN()` without an argument. */
+  public evaluate(formula: string, position: { row: number; col: number } = { row: 1, col: 1 }): any {
+    const text = formula.startsWith('=') ? formula.slice(1) : formula;
+    if (text.length === 0 || text.length > MAX_FORMULA_LENGTH) return '#VALUE!';
+    if (text.includes(':') && WHOLE_AXIS_REFERENCE_RE.test(text.replace(STRING_LITERAL_RE, '""'))) return '#REF!';
+    try {
+      return SpreadsheetFormulaEvaluator.toCellValue(this.parser.parse(text, { row: position.row, col: position.col, sheet: '' }));
+    } catch (err) {
+      const cause = err instanceof FormulaError && err.details !== undefined ? err.details : err;
+      if (cause instanceof PayloadLimitError) throw cause;
+      return cause instanceof FormulaError && cause.error !== '#ERROR!' ? cause.error : '#VALUE!';
+    }
   }
 
-  public resolveRange2D(rangeStr: string): any[][] {
-    const [start, end] = rangeStr.split(':');
-    const match1 = start?.match(/^(\$?)([A-Za-z]{1,3})(\$?)([0-9]{1,7})$/);
-    const match2 = end?.match(/^(\$?)([A-Za-z]{1,3})(\$?)([0-9]{1,7})$/);
-    if (!match1 || !match2) {
-      throw new PayloadLimitError(`Spreadsheet formula range ${rangeStr} is outside valid cell bounds.`);
-    }
+  private static toCellValue(result: unknown): string | number | boolean {
+    if (result instanceof FormulaError) return result.error;
+    if (result === null || result === undefined) return 0;
+    if (typeof result === 'string') return result.length > MAX_TEXT_RESULT_LENGTH ? '#VALUE!' : result;
+    if (typeof result === 'number' || typeof result === 'boolean') return result;
+    if (Array.isArray(result)) return SpreadsheetFormulaEvaluator.toCellValue((result as unknown[][])[0]?.[0]);
+    return '#VALUE!';
+  }
 
+  /** An empty cell is `null`; a stored error code is the error, so `ISERROR` and `IFERROR` see it. */
+  private static toFormulaValue(value: unknown): unknown {
+    if (value === undefined || value === null || value === '') return null;
+    if (typeof value === 'string') return ERROR_CODES.has(value) ? new FormulaError(value) : value;
+    return typeof value === 'number' || typeof value === 'boolean' ? value : String(value);
+  }
+
+  private readCell(ref: FormulaCellRef): unknown {
+    if (ref.sheet || ref.col < 1 || ref.col > MAX_EXCEL_COL || ref.row < 1 || ref.row > MAX_EXCEL_ROW) {
+      return FormulaError.REF;
+    }
+    return SpreadsheetFormulaEvaluator.toFormulaValue(this.cellLookup(`${colNumToLetters(ref.col)}${ref.row}`));
+  }
+
+  private readRange(ref: FormulaRangeRef): unknown[][] {
+    if (ref.sheet) throw FormulaError.REF;
     const bounds = parseValidatedRangeBounds(
-      match1[2].toUpperCase(),
-      match1[4],
-      match2[2].toUpperCase(),
-      match2[4],
+      colNumToLetters(Math.max(ref.from.col, 1)),
+      String(ref.from.row),
+      colNumToLetters(Math.max(ref.to.col, 1)),
+      String(ref.to.row),
     );
     const { minC, maxC, minR, maxR, cellCount } = bounds;
     const rangeKey = canonicalRangeKey(bounds);
     const cached = this.range2DCache.get(rangeKey);
-    if (cached) {
-      return cached.rows;
-    }
+    if (cached) return cached.rows;
     if (!this.seenRangeKeys.has(rangeKey)) {
       if (this.evaluatedRangeCells + cellCount > MAX_TOTAL_FORMULA_RANGE_CELLS) {
         throw new PayloadLimitError(
@@ -516,369 +212,33 @@ export class SpreadsheetFormulaEvaluator {
     const width = maxC - minC + 1;
     const colNames = new Array<string>(width);
     for (let i = 0; i < width; i++) colNames[i] = colNumToLetters(minC + i);
-
-    const rows = new Array<any[]>(maxR - minR + 1);
+    const rows = new Array<unknown[]>(maxR - minR + 1);
     for (let r = minR; r <= maxR; r++) {
-      const row = new Array<any>(width);
+      const row = new Array<unknown>(width);
       for (let i = 0; i < width; i++) {
-        row[i] = this.cellLookup(`${colNames[i]}${r}`);
+        row[i] = SpreadsheetFormulaEvaluator.toFormulaValue(this.cellLookup(`${colNames[i]}${r}`));
       }
       rows[r - minR] = row;
     }
-    GRID_WIDTH_CACHE.set(rows, width);
     this.range2DCache.set(rangeKey, { minC, maxC, minR, maxR, rows });
     return rows;
   }
+}
 
-  private resolveRange(rangeStr: string): any[] {
-    return getCachedFlatRange(this.resolveRange2D(rangeStr));
+/** A formula whose outermost call returns a date shows as `yyyy-mm-dd`, as `DATE` always has in the text of a sheet. */
+const DATE_RESULT_FUNCTION_RE = /^=?\s*(?:_xlfn\.)?(?:DATE|TODAY|EDATE|EOMONTH|WORKDAY(?:\.INTL)?)\s*\(/i;
+/** Serial 61 is 1900-03-01, the first day on which the 1900 and 1899-12-30 epochs agree. */
+const FIRST_UNAMBIGUOUS_SERIAL = 61;
+const MS_PER_DAY = 86_400_000;
+const SERIAL_EPOCH_MS = Date.UTC(1899, 11, 30);
+
+function formulaResultText(formula: string, result: unknown): string {
+  if (result === null || result === undefined) return '';
+  if (typeof result === 'boolean') return result ? 'TRUE' : 'FALSE';
+  if (typeof result === 'number' && result >= FIRST_UNAMBIGUOUS_SERIAL && DATE_RESULT_FUNCTION_RE.test(formula)) {
+    return new Date(SERIAL_EPOCH_MS + Math.floor(result) * MS_PER_DAY).toISOString().slice(0, 10);
   }
-
-  private executeFunction(name: string, args: any[]): any {
-    const flattenNumbers = (arr: any[]): number[] | string => {
-      const out: number[] = [];
-      let err: string | null = null;
-      const walk = (item: any) => {
-        if (err) return;
-        if (typeof item === 'string' && item.startsWith('#')) {
-          err = item;
-          return;
-        }
-        if (Array.isArray(item)) {
-          item.forEach(walk);
-        } else if (item !== null && item !== undefined && item !== '' && !Number.isNaN(Number(item))) {
-          out.push(Number(item));
-        }
-      };
-      walk(arr);
-      return err || out;
-    };
-
-    const isCellMatch = (cellVal: any, lookupVal: any): boolean => {
-      if (cellVal === undefined || cellVal === null) return false;
-      if (cellVal === lookupVal) return true;
-      if (String(cellVal).toLowerCase() === String(lookupVal).toLowerCase()) return true;
-      const sCell = String(cellVal).trim();
-      const sLookup = String(lookupVal).trim();
-      if (sCell !== '' && sLookup !== '') {
-        const numCell = Number(sCell);
-        const numLookup = Number(sLookup);
-        if (!Number.isNaN(numCell) && !Number.isNaN(numLookup)) {
-          return numCell === numLookup;
-        }
-      }
-      return false;
-    };
-
-    switch (name) {
-      case 'SUM': {
-        const nums = flattenNumbers(args);
-        if (typeof nums === 'string') return nums;
-        return nums.reduce((a, b) => a + b, 0);
-      }
-      case 'AVERAGE': {
-        const nums = flattenNumbers(args);
-        if (typeof nums === 'string') return nums;
-        return nums.length === 0 ? 0 : nums.reduce((a, b) => a + b, 0) / nums.length;
-      }
-      case 'COUNT': {
-        const nums = flattenNumbers(args);
-        if (typeof nums === 'string') return nums;
-        return nums.length;
-      }
-      case 'MIN': {
-        const nums = flattenNumbers(args);
-        if (typeof nums === 'string') return nums;
-        return nums.length === 0 ? 0 : arrayMin(nums);
-      }
-      case 'MAX': {
-        const nums = flattenNumbers(args);
-        if (typeof nums === 'string') return nums;
-        return nums.length === 0 ? 0 : arrayMax(nums);
-      }
-      case 'IF': {
-        const cond = Boolean(args[0]);
-        if (cond) return args[1];
-        return args.length > 2 ? args[2] : false;
-      }
-      case 'ROUND': {
-        const val = Number(args[0]);
-        const digits = args.length > 1 ? Number(args[1]) : 0;
-        if (Number.isNaN(val) || Number.isNaN(digits)) return '#VALUE!';
-        const factor = Math.pow(10, digits);
-        return Math.round(val * factor) / factor;
-      }
-      case 'IFERROR': {
-        const v = args[0];
-        if (typeof v === 'string' && v.startsWith('#')) return args[1];
-        return v;
-      }
-      case 'CONCAT': {
-        const parts: string[] = [];
-        const walk = (item: any) => {
-          if (Array.isArray(item)) item.forEach(walk);
-          else if (item !== null && item !== undefined) parts.push(String(item));
-        };
-        args.forEach(walk);
-        return parts.join('');
-      }
-      case 'LEFT': {
-        const str = String(args[0] ?? '');
-        const n = args.length > 1 ? Number(args[1]) : 1;
-        return str.slice(0, Math.max(0, n));
-      }
-      case 'RIGHT': {
-        const str = String(args[0] ?? '');
-        const n = args.length > 1 ? Number(args[1]) : 1;
-        return str.slice(Math.max(0, str.length - n));
-      }
-      case 'MID': {
-        const str = String(args[0] ?? '');
-        const start = Number(args[1]);
-        const n = Number(args[2]);
-        if (Number.isNaN(start) || Number.isNaN(n) || start < 1) return '#VALUE!';
-        return str.substring(start - 1, start - 1 + n);
-      }
-      case 'DATE': {
-        const y = Number(args[0]);
-        const m = Number(args[1]);
-        const d = Number(args[2]);
-        if (Number.isNaN(y) || Number.isNaN(m) || Number.isNaN(d)) return '#VALUE!';
-        const dt = new Date(Date.UTC(y, m - 1, d));
-        return dt.toISOString().slice(0, 10);
-      }
-      case 'VLOOKUP': {
-        const lookupVal = args[0];
-        const tableArg = args[1];
-        const colIdx = Number(args[2]);
-        const rangeLookup = args.length > 3 ? Boolean(args[3]) : true;
-
-        const grid: any[][] = lookupGridOf(tableArg, 'column');
-
-        if (grid.length === 0 || colIdx < 1) return '#REF!';
-        const maxCols = maxGridWidth(grid);
-        if (colIdx > maxCols) return '#REF!';
-
-        if (!rangeLookup) {
-          const matchedRow = findExactGridRow(grid, lookupVal, isCellMatch);
-          if (matchedRow >= 0 && matchedRow < grid.length) {
-            return colIdx - 1 < grid[matchedRow].length ? grid[matchedRow][colIdx - 1] : '';
-          }
-          return '#N/A';
-        } else {
-          // Approximate match
-          let bestRow = -1;
-          for (let r = 0; r < grid.length; r++) {
-            const cellVal = grid[r][0];
-            if (cellVal === undefined || cellVal === '') continue;
-            const numCell = Number(cellVal);
-            const numLookup = Number(lookupVal);
-            if (!Number.isNaN(numCell) && !Number.isNaN(numLookup)) {
-              if (numCell <= numLookup) bestRow = r;
-            } else {
-              if (String(cellVal).localeCompare(String(lookupVal)) <= 0) bestRow = r;
-            }
-          }
-          if (bestRow === -1) return '#N/A';
-          return colIdx - 1 < grid[bestRow].length ? grid[bestRow][colIdx - 1] : '';
-        }
-      }
-      case 'HLOOKUP': {
-        const lookupVal = args[0];
-        const tableArg = args[1];
-        const rowIdx = Number(args[2]);
-        const rangeLookup = args.length > 3 ? Boolean(args[3]) : true;
-
-        const grid: any[][] =
-          (tableArg as any)?._range2D ||
-          (Array.isArray(tableArg) && Array.isArray(tableArg[0]) ? tableArg : [tableArg]);
-
-        if (grid.length === 0 || rowIdx < 1 || rowIdx > grid.length) return '#REF!';
-        const firstRow = grid[0];
-
-        if (!rangeLookup) {
-          for (let c = 0; c < firstRow.length; c++) {
-            const cellVal = firstRow[c];
-            if (isCellMatch(cellVal, lookupVal)) {
-              return c < grid[rowIdx - 1].length ? grid[rowIdx - 1][c] : '';
-            }
-          }
-          return '#N/A';
-        } else {
-          let bestCol = -1;
-          for (let c = 0; c < firstRow.length; c++) {
-            const cellVal = firstRow[c];
-            if (cellVal === undefined || cellVal === '') continue;
-            const numCell = Number(cellVal);
-            const numLookup = Number(lookupVal);
-            if (!Number.isNaN(numCell) && !Number.isNaN(numLookup)) {
-              if (numCell <= numLookup) bestCol = c;
-            } else {
-              if (String(cellVal).localeCompare(String(lookupVal)) <= 0) bestCol = c;
-            }
-          }
-          if (bestCol === -1) return '#N/A';
-          return bestCol < grid[rowIdx - 1].length ? grid[rowIdx - 1][bestCol] : '';
-        }
-      }
-      case 'INDEX': {
-        const tableArg = args[0];
-        const rowNum = Number(args[1]);
-        const colNum = args.length > 2 ? Number(args[2]) : 1;
-
-        const grid: any[][] = lookupGridOf(tableArg, 'row');
-
-        if (rowNum < 1 || rowNum > grid.length) return '#REF!';
-        const targetRow = grid[rowNum - 1];
-        if (colNum < 1 || colNum > targetRow.length) return '#REF!';
-        return targetRow[colNum - 1];
-      }
-      case 'MATCH': {
-        const lookupVal = args[0];
-        const arr = Array.isArray(args[1]) ? args[1] : [args[1]];
-        const matchType = args.length > 2 ? Number(args[2]) : 1;
-
-        if (matchType === 0) {
-          const matchedIdx = findExactArrayIndex(arr, lookupVal, isCellMatch);
-          if (matchedIdx >= 0 && matchedIdx < arr.length) {
-            return matchedIdx + 1;
-          }
-          return '#N/A';
-        } else if (matchType === 1) {
-          let bestIdx = -1;
-          for (let i = 0; i < arr.length; i++) {
-            const numA = Number(arr[i]);
-            const numL = Number(lookupVal);
-            if (!Number.isNaN(numA) && !Number.isNaN(numL)) {
-              if (numA <= numL) bestIdx = i;
-            } else if (String(arr[i]).localeCompare(String(lookupVal)) <= 0) {
-              bestIdx = i;
-            }
-          }
-          return bestIdx === -1 ? '#N/A' : bestIdx + 1;
-        } else if (matchType === -1) {
-          let bestIdx = -1;
-          for (let i = 0; i < arr.length; i++) {
-            const numA = Number(arr[i]);
-            const numL = Number(lookupVal);
-            if (!Number.isNaN(numA) && !Number.isNaN(numL)) {
-              if (numA >= numL) bestIdx = i;
-            } else if (String(arr[i]).localeCompare(String(lookupVal)) >= 0) {
-              bestIdx = i;
-            }
-          }
-          return bestIdx === -1 ? '#N/A' : bestIdx + 1;
-        }
-        return '#N/A';
-      }
-      default:
-        throw new ConversionFailedError(`Unsupported spreadsheet function: ${name}`);
-    }
-  }
-
-  private static readStringToken(expr: string, start: number): { val: string; next: number } {
-    let str = '';
-    let i = start + 1;
-    while (i < expr.length) {
-      if (expr[i] !== '"') {
-        str += expr[i++];
-        continue;
-      }
-      if (i + 1 < expr.length && expr[i + 1] === '"') {
-        str += '"';
-        i += 2;
-        continue;
-      }
-      i++;
-      break;
-    }
-    return { val: str, next: i };
-  }
-
-  private static readComparisonToken(expr: string, start: number): { val: string; next: number } {
-    const ch = expr[start]!;
-    const nextCh = expr[start + 1];
-    if ((ch === '<' && (nextCh === '>' || nextCh === '=')) || (ch === '>' && nextCh === '=')) {
-      return { val: ch + nextCh, next: start + 2 };
-    }
-    return { val: ch, next: start + 1 };
-  }
-
-  private static readWordOrRefToken(expr: string, i: number): { token: FormulaToken; next: number } | null {
-    STICKY_RANGE_RE.lastIndex = i;
-    const rangeMatch = STICKY_RANGE_RE.exec(expr);
-    if (rangeMatch) {
-      const afterRange = expr[i + rangeMatch[0].length];
-      if (!afterRange || !/[A-Za-z0-9_]/.test(afterRange)) {
-        return { token: { type: 'RANGE', val: rangeMatch[0] }, next: i + rangeMatch[0].length };
-      }
-    }
-    STICKY_OVERSIZE_RANGE_RE.lastIndex = i;
-    if (STICKY_OVERSIZE_RANGE_RE.exec(expr)) {
-      throw new PayloadLimitError(`Spreadsheet formula range at offset ${i} exceeds ECMA-376 grid bounds.`);
-    }
-    STICKY_CELL_RE.lastIndex = i;
-    const cellMatch = STICKY_CELL_RE.exec(expr);
-    if (cellMatch) {
-      const nextChar = expr[i + cellMatch[0].length];
-      if (nextChar !== '(' && (!nextChar || !/[A-Za-z0-9_.]/.test(nextChar))) {
-        return { token: { type: 'CELL_REF', val: cellMatch[0] }, next: i + cellMatch[0].length };
-      }
-    }
-    STICKY_IDENT_RE.lastIndex = i;
-    const fnMatch = STICKY_IDENT_RE.exec(expr);
-    if (!fnMatch) return null;
-    const str = fnMatch[0];
-    const next = i + str.length;
-    if (expr[next] === '(') return { token: { type: 'FUNCTION', val: str }, next };
-    const upper = str.toUpperCase();
-    if (upper === 'TRUE' || upper === 'FALSE') return { token: { type: 'BOOLEAN', val: upper === 'TRUE' }, next };
-    return { token: { type: 'CELL_REF', val: str }, next };
-  }
-
-  private tokenize(expr: string): FormulaToken[] {
-    const tokens: FormulaToken[] = [];
-    let i = 0;
-    while (i < expr.length) {
-      const ch = expr[i]!;
-      if (ch <= ' ') { i++; continue; }
-      if (ch === '(') { tokens.push({ type: 'LPAREN', val: '(' }); i++; continue; }
-      if (ch === ')') { tokens.push({ type: 'RPAREN', val: ')' }); i++; continue; }
-      if (ch === ',') { tokens.push({ type: 'COMMA', val: ',' }); i++; continue; }
-      if (ch === '"') {
-        const parsed = SpreadsheetFormulaEvaluator.readStringToken(expr, i);
-        tokens.push({ type: 'STRING', val: parsed.val });
-        i = parsed.next;
-        continue;
-      }
-      if (ch === '<' || ch === '>' || ch === '=') {
-        const parsed = SpreadsheetFormulaEvaluator.readComparisonToken(expr, i);
-        tokens.push({ type: 'OP_COMP', val: parsed.val });
-        i = parsed.next;
-        continue;
-      }
-      if ('+-*/^%&'.includes(ch)) {
-        tokens.push({ type: 'OP', val: ch });
-        i++;
-        continue;
-      }
-      STICKY_NUM_RE.lastIndex = i;
-      const numMatch = STICKY_NUM_RE.exec(expr);
-      if (numMatch) {
-        tokens.push({ type: 'NUMBER', val: Number.parseFloat(numMatch[0]) });
-        i += numMatch[0].length;
-        continue;
-      }
-      const wordToken = SpreadsheetFormulaEvaluator.readWordOrRefToken(expr, i);
-      if (wordToken) {
-        tokens.push(wordToken.token);
-        i = wordToken.next;
-        continue;
-      }
-      throw new Error(`Unexpected character: "${ch}" at index ${i}`);
-    }
-    return tokens;
-  }
+  return String(result);
 }
 
 export interface FormulaCellInfo {
@@ -1070,7 +430,8 @@ export class SpreadsheetDagEngine {
    */
   public evaluateWithDag(
     formulaCells: FormulaCellInfo[],
-    rows?: string[][]
+    rows?: string[][],
+    timeBudgetMs: number = MAX_FORMULA_EVAL_MS,
   ): { evaluated: Record<string, any>; cycles: string[] } {
     const { formulaMap, inDegree, reverseDeps } = SpreadsheetDagEngine.buildFormulaDag(formulaCells);
 
@@ -1106,20 +467,17 @@ export class SpreadsheetDagEngine {
       return val === undefined || val === null ? '' : val;
     });
 
+    const deadline = performance.now() + timeBudgetMs;
     for (const node of topoOrder) {
       const fc = formulaMap.get(node);
       if (!fc) continue;
-      try {
-        const result = evaluator.evaluate(fc.formula);
-        this.cellMap[node] = result;
-        evaluator.invalidateCell(node);
-        SpreadsheetDagEngine.writeRowCell(rows, fc, result !== null && result !== undefined ? String(result) : '');
-      } catch (err) {
-        if (err instanceof PayloadLimitError) throw err;
-        this.cellMap[node] = '#REF!';
-        evaluator.invalidateCell(node);
-        SpreadsheetDagEngine.writeRowCell(rows, fc, '#REF!');
+      if (performance.now() > deadline) {
+        throw new PayloadLimitError(`Spreadsheet formulas took longer than ${timeBudgetMs} ms to evaluate.`);
       }
+      const result = evaluator.evaluate(fc.formula, parseCellCoord(node) ?? undefined);
+      this.cellMap[node] = result;
+      evaluator.invalidateCell(node);
+      SpreadsheetDagEngine.writeRowCell(rows, fc, formulaResultText(fc.formula, result));
     }
 
     return { evaluated: this.cellMap, cycles: cyclicCells };

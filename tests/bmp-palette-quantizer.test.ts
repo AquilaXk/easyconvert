@@ -17,7 +17,7 @@ import { runWithoutFileConfinement } from './helpers/unconfined-files';
 runWithoutFileConfinement();
 
 /**
- * The palette of an 8-bit BMP, chosen by quantizr-pixels (entry 365 of docs/policy-decisions.md). The files are judged by what ffmpeg decodes from them
+ * The palette of an 8-bit BMP, chosen by quantizr-pixels (entry 366 of docs/policy-decisions.md). The files are judged by what ffmpeg decodes from them
  * and by PSNR, SSIM (ffmpeg's filters, on yuv420p as the parity benchmark takes it) and CIEDE2000 (`tests/helpers/ciede2000.ts`), none of which shares
  * code with the writer or the quantisers; the Oklab quantiser (`quantizer: 'oklab'`, the palette of the BMP before the program) is the other side of
  * the comparison.

@@ -1,0 +1,1241 @@
+{
+  "generator": "tests/fixtures/formula-oracle/generate.mts",
+  "libreoffice": "LibreOffice 26.8.0.3 bce0998afefdbc355585ca324285661a2170ba77",
+  "values": {
+    "H1": {
+      "id": "op-precedence",
+      "t": "n",
+      "v": 19
+    },
+    "H2": {
+      "id": "op-unary-minus-power",
+      "t": "n",
+      "v": 4
+    },
+    "H3": {
+      "id": "op-percent",
+      "t": "n",
+      "v": 1.5
+    },
+    "H4": {
+      "id": "op-div-zero",
+      "t": "e",
+      "v": "#DIV/0!"
+    },
+    "H5": {
+      "id": "op-concat-number",
+      "t": "s",
+      "v": "a11"
+    },
+    "H6": {
+      "id": "op-text-number-add",
+      "t": "n",
+      "v": 5
+    },
+    "H7": {
+      "id": "op-text-number-bad",
+      "t": "e",
+      "v": "#VALUE!"
+    },
+    "H8": {
+      "id": "op-bool-add",
+      "t": "n",
+      "v": 2
+    },
+    "H9": {
+      "id": "op-empty-cell-add",
+      "t": "n",
+      "v": 1
+    },
+    "H10": {
+      "id": "op-compare-text-number",
+      "t": "b",
+      "v": true
+    },
+    "H11": {
+      "id": "op-compare-case",
+      "t": "b",
+      "v": true
+    },
+    "H12": {
+      "id": "op-compare-numbers",
+      "t": "b",
+      "v": true
+    },
+    "H13": {
+      "id": "op-ne",
+      "t": "b",
+      "v": false
+    },
+    "H14": {
+      "id": "math-sum-range",
+      "t": "n",
+      "v": 55
+    },
+    "H15": {
+      "id": "math-sum-mixed",
+      "t": "n",
+      "v": 11.5
+    },
+    "H16": {
+      "id": "math-sum-text-literal",
+      "t": "e",
+      "v": "#VALUE!"
+    },
+    "H17": {
+      "id": "math-sum-bool-literal",
+      "t": "n",
+      "v": 2
+    },
+    "H18": {
+      "id": "math-sum-empty",
+      "t": "n",
+      "v": 0
+    },
+    "H19": {
+      "id": "math-sum-error-arg",
+      "t": "e",
+      "v": "#DIV/0!"
+    },
+    "H20": {
+      "id": "math-product",
+      "t": "n",
+      "v": 120
+    },
+    "H21": {
+      "id": "math-sumproduct",
+      "t": "n",
+      "v": 137.5
+    },
+    "H22": {
+      "id": "math-sumsq",
+      "t": "n",
+      "v": 14
+    },
+    "H23": {
+      "id": "math-abs",
+      "t": "n",
+      "v": 4.5
+    },
+    "H24": {
+      "id": "math-round",
+      "t": "n",
+      "v": 2.68
+    },
+    "H25": {
+      "id": "math-round-neg",
+      "t": "n",
+      "v": -2
+    },
+    "H26": {
+      "id": "math-round-digits-neg",
+      "t": "n",
+      "v": 1200
+    },
+    "H27": {
+      "id": "math-roundup",
+      "t": "n",
+      "v": 3.142
+    },
+    "H28": {
+      "id": "math-rounddown",
+      "t": "n",
+      "v": -3
+    },
+    "H29": {
+      "id": "math-int",
+      "t": "n",
+      "v": -8
+    },
+    "H30": {
+      "id": "math-trunc",
+      "t": "n",
+      "v": 7.8
+    },
+    "H31": {
+      "id": "math-mod",
+      "t": "n",
+      "v": 2
+    },
+    "H32": {
+      "id": "math-mod-zero",
+      "t": "e",
+      "v": "#DIV/0!"
+    },
+    "H33": {
+      "id": "math-power",
+      "t": "n",
+      "v": 1024
+    },
+    "H34": {
+      "id": "math-sqrt",
+      "t": "n",
+      "v": 12
+    },
+    "H35": {
+      "id": "math-sqrt-neg",
+      "t": "e",
+      "v": "#VALUE!"
+    },
+    "H36": {
+      "id": "math-exp",
+      "t": "n",
+      "v": 2.71828182845905
+    },
+    "H37": {
+      "id": "math-ln",
+      "t": "n",
+      "v": 2.30258509299405
+    },
+    "H38": {
+      "id": "math-log",
+      "t": "n",
+      "v": 3
+    },
+    "H39": {
+      "id": "math-log10",
+      "t": "n",
+      "v": 3
+    },
+    "H40": {
+      "id": "math-ceiling",
+      "t": "n",
+      "v": 2.5
+    },
+    "H41": {
+      "id": "math-floor",
+      "t": "n",
+      "v": 2.5
+    },
+    "H42": {
+      "id": "math-sign",
+      "t": "n",
+      "v": -1
+    },
+    "H43": {
+      "id": "math-pi",
+      "t": "n",
+      "v": 3.14159265358979
+    },
+    "H44": {
+      "id": "math-fact",
+      "t": "n",
+      "v": 720
+    },
+    "H45": {
+      "id": "math-gcd",
+      "t": "n",
+      "v": 6
+    },
+    "H46": {
+      "id": "math-lcm",
+      "t": "n",
+      "v": 12
+    },
+    "H47": {
+      "id": "math-mround",
+      "t": "n",
+      "v": 9
+    },
+    "H48": {
+      "id": "math-quotient",
+      "t": "n",
+      "v": 3
+    },
+    "H49": {
+      "id": "math-even",
+      "t": "n",
+      "v": 4
+    },
+    "H50": {
+      "id": "math-odd",
+      "t": "n",
+      "v": 3
+    },
+    "H51": {
+      "id": "math-combin",
+      "t": "n",
+      "v": 10
+    },
+    "H52": {
+      "id": "math-sin",
+      "t": "n",
+      "v": 0.479425538604203
+    },
+    "H53": {
+      "id": "math-cos",
+      "t": "n",
+      "v": 0.877582561890373
+    },
+    "H54": {
+      "id": "math-atan2",
+      "t": "n",
+      "v": 1.10714871779409
+    },
+    "H55": {
+      "id": "math-degrees",
+      "t": "n",
+      "v": 180
+    },
+    "H56": {
+      "id": "stat-average",
+      "t": "n",
+      "v": 13.75
+    },
+    "H57": {
+      "id": "stat-average-mixed",
+      "t": "n",
+      "v": 3.83333333333333
+    },
+    "H58": {
+      "id": "stat-average-empty",
+      "t": "e",
+      "v": "#DIV/0!"
+    },
+    "H59": {
+      "id": "stat-count",
+      "t": "n",
+      "v": 3
+    },
+    "H60": {
+      "id": "stat-sum-bool-range",
+      "t": "n",
+      "v": 3
+    },
+    "H61": {
+      "id": "stat-count-bool-range",
+      "t": "n",
+      "v": 2
+    },
+    "H62": {
+      "id": "stat-counta",
+      "t": "n",
+      "v": 36
+    },
+    "H63": {
+      "id": "stat-countblank",
+      "t": "n",
+      "v": 2
+    },
+    "H64": {
+      "id": "stat-max",
+      "t": "n",
+      "v": 10
+    },
+    "H65": {
+      "id": "stat-max-mixed",
+      "t": "n",
+      "v": 10
+    },
+    "H66": {
+      "id": "stat-max-empty",
+      "t": "n",
+      "v": 0
+    },
+    "H67": {
+      "id": "stat-max-text-literal",
+      "t": "e",
+      "v": "#VALUE!"
+    },
+    "H68": {
+      "id": "stat-min",
+      "t": "n",
+      "v": 2.5
+    },
+    "H69": {
+      "id": "stat-min-mixed",
+      "t": "n",
+      "v": -3
+    },
+    "H70": {
+      "id": "stat-min-empty",
+      "t": "n",
+      "v": 0
+    },
+    "H71": {
+      "id": "stat-median",
+      "t": "n",
+      "v": 5.5
+    },
+    "H72": {
+      "id": "stat-median-even-mixed",
+      "t": "n",
+      "v": 4.5
+    },
+    "H73": {
+      "id": "stat-mode",
+      "t": "n",
+      "v": 2
+    },
+    "H74": {
+      "id": "stat-stdev",
+      "t": "n",
+      "v": 3.02765035409749
+    },
+    "H75": {
+      "id": "stat-stdev-s",
+      "t": "n",
+      "v": 7.56912588524373
+    },
+    "H76": {
+      "id": "stat-stdev-p",
+      "t": "n",
+      "v": 2.87228132326901
+    },
+    "H77": {
+      "id": "stat-var",
+      "t": "n",
+      "v": 9.16666666666667
+    },
+    "H78": {
+      "id": "stat-var-p",
+      "t": "n",
+      "v": 8.25
+    },
+    "H79": {
+      "id": "stat-large",
+      "t": "n",
+      "v": 9
+    },
+    "H80": {
+      "id": "stat-small",
+      "t": "n",
+      "v": 7.5
+    },
+    "H81": {
+      "id": "stat-rank",
+      "t": "n",
+      "v": 6
+    },
+    "H82": {
+      "id": "stat-rank-asc",
+      "t": "n",
+      "v": 5
+    },
+    "H83": {
+      "id": "stat-percentile",
+      "t": "n",
+      "v": 9.1
+    },
+    "H84": {
+      "id": "stat-quartile",
+      "t": "n",
+      "v": 3.25
+    },
+    "H85": {
+      "id": "stat-correl",
+      "t": "n",
+      "v": 1
+    },
+    "H86": {
+      "id": "stat-slope",
+      "t": "n",
+      "v": 2.5
+    },
+    "H87": {
+      "id": "stat-intercept",
+      "t": "n",
+      "v": 0
+    },
+    "H88": {
+      "id": "stat-geomean",
+      "t": "n",
+      "v": 2.60517108469735
+    },
+    "H89": {
+      "id": "stat-maxifs",
+      "t": "n",
+      "v": 10
+    },
+    "H90": {
+      "id": "stat-minifs",
+      "t": "n",
+      "v": 10
+    },
+    "H91": {
+      "id": "crit-countif-gt",
+      "t": "n",
+      "v": 5
+    },
+    "H92": {
+      "id": "crit-countif-ge",
+      "t": "n",
+      "v": 6
+    },
+    "H93": {
+      "id": "crit-countif-ne",
+      "t": "n",
+      "v": 9
+    },
+    "H94": {
+      "id": "crit-countif-eq-number",
+      "t": "n",
+      "v": 1
+    },
+    "H95": {
+      "id": "crit-countif-eq-text-number",
+      "t": "n",
+      "v": 1
+    },
+    "H96": {
+      "id": "crit-countif-text",
+      "t": "n",
+      "v": 2
+    },
+    "H97": {
+      "id": "crit-countif-case",
+      "t": "n",
+      "v": 1
+    },
+    "H98": {
+      "id": "crit-countif-wild-star",
+      "t": "n",
+      "v": 3
+    },
+    "H99": {
+      "id": "crit-countif-wild-q",
+      "t": "n",
+      "v": 1
+    },
+    "H100": {
+      "id": "crit-countif-blank",
+      "t": "n",
+      "v": 2
+    },
+    "H101": {
+      "id": "crit-countif-nonblank",
+      "t": "n",
+      "v": 6
+    },
+    "H102": {
+      "id": "crit-countif-bool",
+      "t": "n",
+      "v": 1
+    },
+    "H103": {
+      "id": "crit-countif-cell",
+      "t": "n",
+      "v": 1
+    },
+    "H104": {
+      "id": "crit-countifs",
+      "t": "n",
+      "v": 5
+    },
+    "H105": {
+      "id": "crit-sumif",
+      "t": "n",
+      "v": 122.5
+    },
+    "H106": {
+      "id": "crit-sumif-same-range",
+      "t": "n",
+      "v": 19
+    },
+    "H107": {
+      "id": "crit-sumif-text",
+      "t": "n",
+      "v": 5
+    },
+    "H108": {
+      "id": "crit-sumifs",
+      "t": "n",
+      "v": 75
+    },
+    "H109": {
+      "id": "crit-sumifs-text",
+      "t": "n",
+      "v": 5
+    },
+    "H110": {
+      "id": "crit-averageif",
+      "t": "n",
+      "v": 8
+    },
+    "H111": {
+      "id": "crit-averageif-nomatch",
+      "t": "e",
+      "v": "#DIV/0!"
+    },
+    "H112": {
+      "id": "crit-averageifs",
+      "t": "n",
+      "v": 10
+    },
+    "H113": {
+      "id": "logic-if",
+      "t": "s",
+      "v": "yes"
+    },
+    "H114": {
+      "id": "logic-if-no-else",
+      "t": "b",
+      "v": false
+    },
+    "H115": {
+      "id": "logic-if-text-cond",
+      "t": "e",
+      "v": "#VALUE!"
+    },
+    "H116": {
+      "id": "logic-if-number-cond",
+      "t": "s",
+      "v": "b"
+    },
+    "H117": {
+      "id": "logic-if-nested",
+      "t": "s",
+      "v": "mid"
+    },
+    "H118": {
+      "id": "logic-ifs",
+      "t": "s",
+      "v": "small"
+    },
+    "H119": {
+      "id": "logic-switch",
+      "t": "s",
+      "v": "two"
+    },
+    "H120": {
+      "id": "logic-choose",
+      "t": "s",
+      "v": "b"
+    },
+    "H121": {
+      "id": "logic-and",
+      "t": "b",
+      "v": true
+    },
+    "H122": {
+      "id": "logic-and-range",
+      "t": "b",
+      "v": true
+    },
+    "H123": {
+      "id": "logic-and-text",
+      "t": "e",
+      "v": "#VALUE!"
+    },
+    "H124": {
+      "id": "logic-or",
+      "t": "b",
+      "v": false
+    },
+    "H125": {
+      "id": "logic-not",
+      "t": "b",
+      "v": true
+    },
+    "H126": {
+      "id": "logic-xor",
+      "t": "b",
+      "v": true
+    },
+    "H127": {
+      "id": "logic-iferror-div",
+      "t": "s",
+      "v": "err"
+    },
+    "H128": {
+      "id": "logic-iferror-ok",
+      "t": "n",
+      "v": 1
+    },
+    "H129": {
+      "id": "logic-iferror-na",
+      "t": "s",
+      "v": "none"
+    },
+    "H130": {
+      "id": "logic-ifna",
+      "t": "s",
+      "v": "na"
+    },
+    "H131": {
+      "id": "logic-true",
+      "t": "b",
+      "v": true
+    },
+    "H132": {
+      "id": "info-isblank",
+      "t": "b",
+      "v": true
+    },
+    "H133": {
+      "id": "info-isblank-empty-string",
+      "t": "b",
+      "v": false
+    },
+    "H134": {
+      "id": "info-isnumber",
+      "t": "b",
+      "v": false
+    },
+    "H135": {
+      "id": "info-istext",
+      "t": "b",
+      "v": true
+    },
+    "H136": {
+      "id": "info-iserror",
+      "t": "b",
+      "v": true
+    },
+    "H137": {
+      "id": "info-isna",
+      "t": "b",
+      "v": true
+    },
+    "H138": {
+      "id": "info-islogical",
+      "t": "b",
+      "v": true
+    },
+    "H139": {
+      "id": "info-iseven",
+      "t": "b",
+      "v": true
+    },
+    "H140": {
+      "id": "info-isodd",
+      "t": "b",
+      "v": false
+    },
+    "H141": {
+      "id": "info-n",
+      "t": "n",
+      "v": 1
+    },
+    "H142": {
+      "id": "info-na",
+      "t": "e",
+      "v": "#N/A"
+    },
+    "H143": {
+      "id": "text-len",
+      "t": "n",
+      "v": 11
+    },
+    "H144": {
+      "id": "text-len-number",
+      "t": "n",
+      "v": 5
+    },
+    "H145": {
+      "id": "text-upper",
+      "t": "s",
+      "v": "CHERRY"
+    },
+    "H146": {
+      "id": "text-lower",
+      "t": "s",
+      "v": "banana"
+    },
+    "H147": {
+      "id": "text-proper",
+      "t": "s",
+      "v": "Hello World"
+    },
+    "H148": {
+      "id": "text-trim",
+      "t": "s",
+      "v": "Date"
+    },
+    "H149": {
+      "id": "text-left",
+      "t": "s",
+      "v": "hello"
+    },
+    "H150": {
+      "id": "text-left-default",
+      "t": "s",
+      "v": "a"
+    },
+    "H151": {
+      "id": "text-right",
+      "t": "s",
+      "v": "world"
+    },
+    "H152": {
+      "id": "text-mid",
+      "t": "s",
+      "v": "wor"
+    },
+    "H153": {
+      "id": "text-mid-past-end",
+      "t": "s",
+      "v": ""
+    },
+    "H154": {
+      "id": "text-concat",
+      "t": "s",
+      "v": "appleBanana"
+    },
+    "H155": {
+      "id": "text-concat-range",
+      "t": "s",
+      "v": "123"
+    },
+    "H156": {
+      "id": "text-concatenate",
+      "t": "s",
+      "v": "apple-Banana"
+    },
+    "H157": {
+      "id": "text-textjoin",
+      "t": "s",
+      "v": "apple,Banana,cherry"
+    },
+    "H158": {
+      "id": "text-textjoin-empty",
+      "t": "s",
+      "v": "10-20-x-abc---3-4.5-"
+    },
+    "H159": {
+      "id": "text-find",
+      "t": "n",
+      "v": 3
+    },
+    "H160": {
+      "id": "text-find-case",
+      "t": "e",
+      "v": "#VALUE!"
+    },
+    "H161": {
+      "id": "text-find-missing",
+      "t": "e",
+      "v": "#VALUE!"
+    },
+    "H162": {
+      "id": "text-search",
+      "t": "n",
+      "v": 3
+    },
+    "H163": {
+      "id": "text-search-wild",
+      "t": "n",
+      "v": 1
+    },
+    "H164": {
+      "id": "text-substitute",
+      "t": "s",
+      "v": "heLLo worLd"
+    },
+    "H165": {
+      "id": "text-substitute-nth",
+      "t": "s",
+      "v": "helLo world"
+    },
+    "H166": {
+      "id": "text-replace",
+      "t": "s",
+      "v": "bye world"
+    },
+    "H167": {
+      "id": "text-rept",
+      "t": "s",
+      "v": "ababab"
+    },
+    "H168": {
+      "id": "text-text-number",
+      "t": "s",
+      "v": "1234.50"
+    },
+    "H169": {
+      "id": "text-text-thousands",
+      "t": "s",
+      "v": "1,234,567.9"
+    },
+    "H170": {
+      "id": "text-text-percent",
+      "t": "s",
+      "v": "26%"
+    },
+    "H171": {
+      "id": "text-text-date",
+      "t": "s",
+      "v": "2020-01-01"
+    },
+    "H172": {
+      "id": "text-value",
+      "t": "n",
+      "v": 12.5
+    },
+    "H173": {
+      "id": "text-value-bad",
+      "t": "e",
+      "v": "#VALUE!"
+    },
+    "H174": {
+      "id": "text-exact",
+      "t": "b",
+      "v": false
+    },
+    "H175": {
+      "id": "text-char",
+      "t": "s",
+      "v": "A"
+    },
+    "H176": {
+      "id": "text-code",
+      "t": "n",
+      "v": 65
+    },
+    "H177": {
+      "id": "text-clean-trim-len",
+      "t": "n",
+      "v": 4
+    },
+    "H178": {
+      "id": "text-numbervalue",
+      "t": "n",
+      "v": 1234.5
+    },
+    "H179": {
+      "id": "lookup-vlookup-exact",
+      "t": "s",
+      "v": "c"
+    },
+    "H180": {
+      "id": "lookup-vlookup-exact-missing",
+      "t": "e",
+      "v": "#N/A"
+    },
+    "H181": {
+      "id": "lookup-vlookup-approx",
+      "t": "s",
+      "v": "c"
+    },
+    "H182": {
+      "id": "lookup-vlookup-approx-below",
+      "t": "e",
+      "v": "#N/A"
+    },
+    "H183": {
+      "id": "lookup-vlookup-default",
+      "t": "s",
+      "v": "e"
+    },
+    "H184": {
+      "id": "lookup-vlookup-col-out",
+      "t": "e",
+      "v": "#VALUE!"
+    },
+    "H185": {
+      "id": "lookup-vlookup-text",
+      "t": "n",
+      "v": 10
+    },
+    "H186": {
+      "id": "lookup-vlookup-text-case",
+      "t": "s",
+      "v": "Banana"
+    },
+    "H187": {
+      "id": "lookup-vlookup-text-number",
+      "t": "s",
+      "v": "20"
+    },
+    "H188": {
+      "id": "lookup-hlookup",
+      "t": "n",
+      "v": 5
+    },
+    "H189": {
+      "id": "lookup-index",
+      "t": "n",
+      "v": 7.5
+    },
+    "H190": {
+      "id": "lookup-index-col",
+      "t": "n",
+      "v": 4
+    },
+    "H191": {
+      "id": "lookup-index-out",
+      "t": "e",
+      "v": "#REF!"
+    },
+    "H192": {
+      "id": "lookup-match-exact",
+      "t": "n",
+      "v": 7
+    },
+    "H193": {
+      "id": "lookup-match-missing",
+      "t": "e",
+      "v": "#N/A"
+    },
+    "H194": {
+      "id": "lookup-match-asc",
+      "t": "n",
+      "v": 3
+    },
+    "H195": {
+      "id": "lookup-match-text",
+      "t": "n",
+      "v": 3
+    },
+    "H196": {
+      "id": "lookup-match-text-case",
+      "t": "n",
+      "v": 3
+    },
+    "H197": {
+      "id": "lookup-match-wild",
+      "t": "n",
+      "v": 3
+    },
+    "H198": {
+      "id": "lookup-lookup",
+      "t": "s",
+      "v": "c"
+    },
+    "H199": {
+      "id": "lookup-xlookup",
+      "t": "s",
+      "v": "c"
+    },
+    "H200": {
+      "id": "lookup-xlookup-missing",
+      "t": "e",
+      "v": "#N/A"
+    },
+    "H201": {
+      "id": "lookup-xlookup-default",
+      "t": "s",
+      "v": "none"
+    },
+    "H202": {
+      "id": "lookup-xlookup-next-smaller",
+      "t": "s",
+      "v": "c"
+    },
+    "H203": {
+      "id": "lookup-xlookup-next-larger",
+      "t": "s",
+      "v": "d"
+    },
+    "H204": {
+      "id": "lookup-xlookup-wild",
+      "t": "n",
+      "v": 3
+    },
+    "H205": {
+      "id": "lookup-xlookup-last",
+      "t": "n",
+      "v": 4
+    },
+    "H206": {
+      "id": "lookup-xmatch",
+      "t": "n",
+      "v": 3
+    },
+    "H207": {
+      "id": "lookup-row",
+      "t": "n",
+      "v": 7
+    },
+    "H208": {
+      "id": "lookup-column",
+      "t": "n",
+      "v": 3
+    },
+    "H209": {
+      "id": "lookup-rows",
+      "t": "n",
+      "v": 10
+    },
+    "H210": {
+      "id": "lookup-columns",
+      "t": "n",
+      "v": 4
+    },
+    "H211": {
+      "id": "date-date",
+      "t": "n",
+      "v": 43968
+    },
+    "H212": {
+      "id": "date-date-overflow",
+      "t": "n",
+      "v": 44262
+    },
+    "H213": {
+      "id": "date-year",
+      "t": "n",
+      "v": 2020
+    },
+    "H214": {
+      "id": "date-month",
+      "t": "n",
+      "v": 3
+    },
+    "H215": {
+      "id": "date-day",
+      "t": "n",
+      "v": 3
+    },
+    "H216": {
+      "id": "date-year-of-date",
+      "t": "n",
+      "v": 2021
+    },
+    "H217": {
+      "id": "date-weekday",
+      "t": "n",
+      "v": 4
+    },
+    "H218": {
+      "id": "date-weekday-mode2",
+      "t": "n",
+      "v": 3
+    },
+    "H219": {
+      "id": "date-diff",
+      "t": "n",
+      "v": 62
+    },
+    "H220": {
+      "id": "date-days",
+      "t": "n",
+      "v": 62
+    },
+    "H221": {
+      "id": "date-edate",
+      "t": "n",
+      "v": 43862
+    },
+    "H222": {
+      "id": "date-eomonth",
+      "t": "n",
+      "v": 43890
+    },
+    "H223": {
+      "id": "date-datevalue",
+      "t": "n",
+      "v": 43905
+    },
+    "H224": {
+      "id": "date-time",
+      "t": "n",
+      "v": 0.270833333333333
+    },
+    "H225": {
+      "id": "date-hour",
+      "t": "n",
+      "v": 18
+    },
+    "H226": {
+      "id": "date-networkdays",
+      "t": "n",
+      "v": 23
+    },
+    "H227": {
+      "id": "date-datedif",
+      "t": "n",
+      "v": 124
+    },
+    "H228": {
+      "id": "date-yearfrac",
+      "t": "n",
+      "v": 0.33879781420765
+    },
+    "H229": {
+      "id": "date-weeknum",
+      "t": "n",
+      "v": 10
+    },
+    "H230": {
+      "id": "fin-pmt",
+      "t": "n",
+      "v": -188.712336440109
+    },
+    "H231": {
+      "id": "fin-fv",
+      "t": "n",
+      "v": 1233.55623728997
+    },
+    "H232": {
+      "id": "fin-pv",
+      "t": "n",
+      "v": 11055.2718038486
+    },
+    "H233": {
+      "id": "fin-npv",
+      "t": "n",
+      "v": 481.592787377911
+    },
+    "H234": {
+      "id": "fin-irr",
+      "t": "n",
+      "v": 0.153221378771815
+    },
+    "H235": {
+      "id": "fin-nper",
+      "t": "n",
+      "v": 10.5886444594232
+    },
+    "H236": {
+      "id": "fin-rate",
+      "t": "n",
+      "v": 0.00618341316125397
+    },
+    "H237": {
+      "id": "fin-ipmt",
+      "t": "n",
+      "v": -41.6666666666667
+    },
+    "H238": {
+      "id": "fin-ppmt",
+      "t": "n",
+      "v": -147.045669773443
+    },
+    "H239": {
+      "id": "fin-sln",
+      "t": "n",
+      "v": 1800
+    },
+    "H240": {
+      "id": "fin-db",
+      "t": "n",
+      "v": 3690
+    },
+    "H241": {
+      "id": "err-na-propagates",
+      "t": "e",
+      "v": "#N/A"
+    },
+    "H242": {
+      "id": "err-error-in-range-sum",
+      "t": "e",
+      "v": "#N/A"
+    },
+    "H243": {
+      "id": "err-nested-iferror",
+      "t": "s",
+      "v": "inner"
+    },
+    "H244": {
+      "id": "err-unknown-function",
+      "t": "e",
+      "v": "#NAME?"
+    },
+    "H245": {
+      "id": "err-ref-text-arithmetic",
+      "t": "e",
+      "v": "#VALUE!"
+    },
+    "H246": {
+      "id": "err-empty-compare",
+      "t": "b",
+      "v": true
+    },
+    "H247": {
+      "id": "err-empty-text-compare",
+      "t": "b",
+      "v": true
+    }
+  }
+}
