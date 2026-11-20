@@ -1,4 +1,5 @@
 import type { PdfContentItem, PdfContentRule } from '../pdf-text-types';
+import { splitAtLines } from './cell-runs';
 import { mergeSegments } from './columns';
 import { LayoutBudget, PDF_LAYOUT_MAX_GRID_LINES, PDF_LAYOUT_MAX_TABLE_CELLS } from './limits';
 import { paragraphsOfFlow } from './paragraphs';
@@ -308,6 +309,16 @@ export function detectLatticeTables(
   return { tables, remaining };
 }
 
+/** The x of the lines of row `r` that the run crosses: the vertical grid lines inside it that are drawn along the row. */
+function linesThrough(grid: Grid, item: PdfContentItem, r: number, budget: LayoutBudget): number[] {
+  const first = upperIndex(grid.xs, item.x);
+  const lines: number[] = [];
+  for (let c = first; c < grid.xs.length && grid.xs[c] < item.x + item.width; c++) {
+    if (coversIntervals(grid.verticalSpans[c], grid.ys[r], grid.ys[r + 1], budget)) lines.push(grid.xs[c]);
+  }
+  return lines;
+}
+
 function buildLattice(
   grid: Grid,
   items: PdfContentItem[],
@@ -338,9 +349,11 @@ function buildLattice(
       remaining.push(item);
       continue;
     }
-    const c = Math.min(cols - 1, Math.max(0, upperIndex(grid.xs, x) - 1));
     const r = Math.min(rows - 1, Math.max(0, upperIndex(grid.ys, y) - 1));
-    members[owner[r][c]].push(item);
+    for (const piece of splitAtLines(item, linesThrough(grid, item, r, budget))) {
+      const c = Math.min(cols - 1, Math.max(0, upperIndex(grid.xs, piece.x + piece.width / 2) - 1));
+      members[owner[r][c]].push(piece);
+    }
     inside++;
   }
   if (inside === 0) return null;
