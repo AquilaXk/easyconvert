@@ -114,6 +114,7 @@ describe('classifying changed paths', () => {
     ['the package reader the document formats share', 'src/lib/conversions/package-access.ts', ['document'], []],
     ['the PDF text layout analysis', 'src/lib/conversions/pdf-layout/columns.ts', ['document'], []],
     ['the PDF text reader', 'src/lib/conversions/pdf-text-document.ts', ['document'], []],
+    ['the table finder the PDF layout uses', 'src/lib/conversions/pdfplumber-table.ts', ['document'], []],
     ['the complex-script shaper', 'src/lib/conversions/text-shaping/shape.ts', ['document'], []],
     ['the PDF font coverage', 'src/lib/conversions/pdf-fonts.ts', ['document'], []],
     ['a CAD file', 'src/lib/conversions/cad-nurbs.ts', ['cad'], []],

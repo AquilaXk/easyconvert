@@ -981,6 +981,7 @@
   "tests/pdfa-verapdf-gate.test.ts": 51.5,
   "tests/pdfjs-node-compat.test.ts": 0,
   "tests/pdfminer-paint-path.test.ts": 0,
+  "tests/pdfplumber-table.test.ts": 0,
   "tests/perf-queue-codecs-lookup.test.ts": 0.6,
   "tests/phase-0-security-hardening.test.ts": 0.8,
   "tests/phase-1-archive-and-media-fidelity.test.ts": 1.7,
