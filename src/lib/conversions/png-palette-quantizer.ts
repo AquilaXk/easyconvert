@@ -76,6 +76,16 @@ export interface QuantizeRequest {
   signal?: AbortSignal;
 }
 
+/**
+ * Whether the program is installed and the picture the pipeline writes (after the resize, judged from its header before any decode) holds no more
+ * pixels than it is given: its own bound, or the input limit when that is lower.
+ */
+export async function quantizrFits(pipeline: Sharp, options: ConversionOptions, maxPixels = QUANTIZR_MAX_PIXELS): Promise<boolean> {
+  if (findQuantizr() === null) return false;
+  const size = await writtenSizeOf(pipeline, options);
+  return size !== null && size.width * size.height <= Math.min(maxPixels, maxInputPixels());
+}
+
 /** The program's answer for the pixels, or null when it is not installed, fails, or answers something that does not fit the picture. */
 export async function quantizePixels(rgba: Buffer, width: number, height: number, request: QuantizeRequest): Promise<IndexedPicture | null> {
   const program = findQuantizr();
@@ -177,10 +187,7 @@ export interface PalettePngRequest {
  * past the pixel limit, or a run that did not give a palette. The pipeline is not consumed.
  */
 export async function quantizedPalettePng(pipeline: Sharp, request: PalettePngRequest): Promise<Buffer | null> {
-  if (findQuantizr() === null) return null;
-  const size = await writtenSizeOf(pipeline, request.options);
-  const limit = Math.min(request.maxPixels ?? QUANTIZR_MAX_PIXELS, maxInputPixels());
-  if (size === null || size.width * size.height > limit) return null;
+  if (!(await quantizrFits(pipeline, request.options, request.maxPixels))) return null;
   // The template is read while the raster is decoded and the program runs (1.5 to 2 ms on the Linux VM); a failed read is raised where it is awaited.
   const template = pipeline.clone().extract({ left: 0, top: 0, width: 1, height: 1 }).png({ palette: true, compressionLevel: 0 }).toBuffer();
   template.catch(() => undefined);

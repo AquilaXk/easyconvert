@@ -3,7 +3,8 @@ import { ConversionOptions, UnsupportedOptionError } from '../types';
 import { encodeBmp8 } from './bmp';
 import { applyOklabQuantizationAndDitherAsync, quantizeImageAsync, type DitherKind } from './color-quantizer';
 import { encodeGif } from './gif-writer';
-import type { ContentClass } from './image-content';
+import { quantizedBmp8 } from './bmp-palette-quantizer';
+import { quantizesInScript, type ContentClass } from './image-content';
 import { HDR_FLOAT_PIXEL_BUDGET, QUANTIZER_PIXEL_BUDGET, assertPixelBudget, type PixelBudget } from './image-input-limits';
 import { rgbaRaster, withinQuantizerBudget, writtenSizeOf } from './image-rgba-raster';
 
@@ -82,12 +83,14 @@ export async function encodeGifOutput(pipeline: Sharp, options: ConversionOption
   return pipeline.gif({ colours, dither: options.dither !== false ? 1.0 : 0.0 }).toBuffer();
 }
 
-/** The 8-bit BMP of the pipeline, its palette chosen by the Oklab quantizer. */
+/** The 8-bit BMP of the pipeline: a dithered one has its palette chosen by quantizr-pixels (entry 365), any other the Oklab quantizer's, which also writes it where the program does not answer. */
 export async function encodeBmp8Output(pipeline: Sharp, options: ConversionOptions): Promise<Buffer> {
   await assertPixelBudgetBeforeDecode(pipeline, options, QUANTIZER_PIXEL_BUDGET);
+  const colours = Math.min(256, Math.max(2, options.colors || 256));
+  const quantizrBmp = quantizesInScript(options) || options.dither === false ? null : await quantizedBmp8(pipeline, { colours, options });
+  if (quantizrBmp !== null) return quantizrBmp;
   const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
-  const colours = Math.min(256, Math.max(2, options.colors || 256));
   const res = await oklabPaletteRaster(data, info.width, info.height, colours, options);
   return encodeBmp8(res.indexed, res.palette, info.width, info.height);
 }

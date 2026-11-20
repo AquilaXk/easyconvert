@@ -157,6 +157,7 @@
   "tests/binary-response-nosniff.test.ts": 0.2,
   "tests/bmp-decode-bounds.test.ts": 0,
   "tests/bmp-ico-decode.test.ts": 0.6,
+  "tests/bmp-palette-quantizer.test.ts": 8,
   "tests/browser-failure-reasons.test.ts": 0.2,
   "tests/built-alternates.test.ts": 0.2,
   "tests/built-statuses.test.ts": 5.1,
