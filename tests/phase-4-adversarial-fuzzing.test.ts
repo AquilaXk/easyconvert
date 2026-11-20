@@ -13,11 +13,7 @@ import {
   ParquetFormatError,
 } from '../src/lib/conversions/parquet';
 import { decodeAudioBuffer } from '../src/lib/conversions/media-decoder';
-import {
-  decompressZstd,
-  compressZstd,
-  parseZstdFrameHeader,
-} from '../src/lib/conversions/zstd';
+import { parseZstdFrameHeader } from '../src/lib/conversions/zstd';
 import {
   inspectVariableFont,
   instantiateVariableFont,
@@ -30,6 +26,7 @@ import { synthesizeVariableFontCorpus } from './helpers/corpus-synthesizer';
 import { ConversionFailedError, CorruptStreamError, DataParseError } from '../src/lib/types';
 import { buildRleBombFrame } from './helpers/zstd-frames';
 import { expectNoHang, settle } from './helpers/timing';
+import { compressZstd, decompressZstd } from './zstd-sync';
 
 // ============================================================================
 // Adversarial Mutator Primitives

@@ -1,41 +1,34 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import { ConversionFailedError, CpuPoolOverloadedError, CpuTaskAbortedError, DecompressionLimitError, EngineUnavailableError } from '../types';
+import { ConversionFailedError, DecompressionLimitError } from '../types';
 import {
   ZstdOutputBuffer,
   createFrameDecodeState,
   decodeCompressedBlock,
   type ZstdParsedDictionary,
 } from './zstd-decoder';
-import { ZstdBlockEncoder, getZstdLevelParams } from './zstd-encoder';
-import { getCpuPool, shareBytes, yieldToEventLoop } from '../workers/cpu-pool';
-import { ZSTD_POOL_MIN_LEVEL, encodeZstdJob, planZstdJobs, zstdFrameWindow, type ZstdJob } from './zstd-jobs';
 import { XXH64_WASM_MIN_BYTES, xxh64Wasm } from './wasm/xxh64';
 import { exceedsArchiveRatio } from './archive-extraction-safety';
 import {
   ZSTD_BLOCK_SIZE_MAX,
   ZSTD_DECODER_WINDOW_SIZE_MAX,
-  ZSTD_LEVEL_DEFAULT,
-  ZSTD_LEVEL_MAX,
-  ZSTD_LEVEL_MIN,
   ZSTD_WINDOW_LOG_MIN,
 } from './zstd-tables';
 
-export { ZSTD_POOL_MIN_LEVEL, planZstdJobs, type ZstdJob };
-
 /**
- * Pure TypeScript RFC 8878 Zstandard (zstd) Compression and Decompression Engine
+ * Pure TypeScript RFC 8878 Zstandard frame decoder for the built-in dictionary frames (zstd-dict.ts).
+ * Plain .zst and .tar.zst data goes through libzstd in node:zlib (zstd-native.ts).
  *
  * Implements:
  * - Magic byte detection (0xFD2FB528) and skippable frames (0x184D2A50..0x184D2A5F)
  * - Frame header parsing (single segment, window descriptor, dictionary ID, FCS) with a window-size cap
  * - Raw, RLE, and Compressed block decoding (Huffman literals, FSE sequences, repeat offsets)
- * - Compression levels 1-19: LZ77 hash-chain match finding, lazy matching, Huffman/FSE entropy coding
+ * - Dictionary content as match history, entropy tables and repeat offsets from full dictionaries
  * - Multi-frame streaming decoding
  * - XXH64 32-bit Content Checksum calculation & verification
  * - Archive bomb protection: 100:1 ratio and 500MB cumulative limit
  *
- * Block-level coding lives in zstd-encoder.ts / zstd-decoder.ts; this module owns framing.
+ * Block-level decoding lives in zstd-decoder.ts; this module owns framing.
  */
 
 export const ZSTD_MAGIC_NUMBER = 0xfd2fb528;
@@ -368,8 +361,6 @@ const FHD_RESERVED_BIT = 3;
 const FHD_CHECKSUM_BIT = 2;
 const FHD_DICT_ID_MASK = 0x03;
 const FCS_TWO_BYTE_BIAS = 256;
-const FCS_TWO_BYTE_MAX = 65536 + FCS_TWO_BYTE_BIAS;
-const FCS_FOUR_BYTE_LIMIT = 2 ** 32;
 const WINDOW_DESCRIPTOR_EXPONENT_SHIFT = 3;
 const WINDOW_DESCRIPTOR_MANTISSA_MASK = 0x07;
 const WINDOW_MANTISSA_STEPS = 8;
@@ -381,8 +372,6 @@ const SKIPPABLE_FRAME_MAGIC_MIN = 0x184d2a50;
 const SKIPPABLE_FRAME_MAGIC_MAX = 0x184d2a5f;
 const SKIPPABLE_HEADER_BYTES = 8;
 const CONTENT_CHECKSUM_BYTES = 4;
-/** Largest input the encoder accepts: match positions are stored as signed 32-bit integers. */
-export const ZSTD_ENCODER_INPUT_MAX = 2 ** 30;
 
 function bombSizeError(limit: number = ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE): DecompressionLimitError {
   return new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${limit} bytes`);
@@ -476,42 +465,23 @@ export function parseZstdFrameHeader(buf: Buffer, offset: number): ZstdFrameHead
   };
 }
 
-export interface ZstdDecompressOptions {
-  /**
-   * The caller knows the exact output size it will accept (for example a container's declared page
-   * size). Output past this many bytes is rejected and the generic ratio guard is not applied, since
-   * the caller's bound already limits the expansion.
-   */
-  maxOutputBytes?: number;
-}
-
 /**
- * Decompresses an arbitrary RFC 8878 Zstandard stream with bomb safeguards.
- * Every failure surfaces as a ConversionFailedError; there is no fallback decoder.
- */
-export function decompressZstd(inputBuffer: Buffer, options: ZstdDecompressOptions = {}): Buffer {
-  return decodeZstdFrames(inputBuffer, null, options.maxOutputBytes);
-}
-
-/**
- * Same decoder and guards as `decompressZstd`, with the dictionary content as match history and
+ * Decodes an RFC 8878 Zstandard stream with the dictionary content as match history and
  * (for full RFC 8878 section 5 dictionaries) its entropy tables and repeat offsets as the
- * starting state of every frame.
+ * starting state of every frame. Every failure surfaces as a ConversionFailedError.
  */
 export function decompressZstdWithDictionary(inputBuffer: Buffer, dictionary: ZstdParsedDictionary): Buffer {
   return decodeZstdFrames(inputBuffer, dictionary);
 }
 
-function decodeZstdFrames(inputBuffer: Buffer, dictionary: ZstdParsedDictionary | null, callerBound?: number): Buffer {
-  // A caller that knows the exact size it accepts bounds the output itself, so the ratio guard is not applied.
-  const sizeLimit = callerBound ?? ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
-  const ratioGuarded = callerBound === undefined;
+function decodeZstdFrames(inputBuffer: Buffer, dictionary: ZstdParsedDictionary): Buffer {
+  const sizeLimit = ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
   if (!inputBuffer || inputBuffer.length < 4) {
     throw new ConversionFailedError('Decompress error: input buffer too small for Zstandard stream.');
   }
 
   const src = inputBuffer;
-  const dictionaryLength = dictionary === null ? 0 : dictionary.content.length;
+  const dictionaryLength = dictionary.content.length;
   const out = new ZstdOutputBuffer(sizeLimit + ZSTD_BLOCK_SIZE_MAX + dictionaryLength);
   let offset = 0;
 
@@ -546,13 +516,7 @@ function decodeZstdFrames(inputBuffer: Buffer, dictionary: ZstdParsedDictionary 
         `Zstandard frame window size ${frameHeader.windowSize} exceeds the decoder limit of ${ZSTD_DECODER_WINDOW_SIZE_MAX} bytes.`
       );
     }
-    if (dictionary === null && frameHeader.dictionaryId !== 0) {
-      throw new ConversionFailedError(
-        `Zstandard frame requires dictionary ${frameHeader.dictionaryId}; use the dictionary decoder.`
-      );
-    }
     if (
-      dictionary !== null &&
       frameHeader.dictionaryId !== 0 &&
       dictionary.id !== null &&
       frameHeader.dictionaryId !== dictionary.id
@@ -565,7 +529,7 @@ function decodeZstdFrames(inputBuffer: Buffer, dictionary: ZstdParsedDictionary 
     if (declaredSize !== null) {
       // Reject a declared size that the guards would reject anyway before reserving memory for it.
       if (out.length + declaredSize > sizeLimit) throw bombSizeError(sizeLimit);
-      if (ratioGuarded && exceedsZstdRatioGuard(out.length + declaredSize, src.length)) {
+      if (exceedsZstdRatioGuard(out.length + declaredSize, src.length)) {
         throw bombRatioError(out.length + declaredSize, src.length);
       }
       out.projectedTotal = out.length + declaredSize + dictionaryLength;
@@ -574,11 +538,9 @@ function decodeZstdFrames(inputBuffer: Buffer, dictionary: ZstdParsedDictionary 
 
     // The dictionary content sits right before the frame's output so offsets reach it directly;
     // it is squeezed out again once the frame is verified.
-    if (dictionary !== null) {
-      out.ensure(dictionaryLength);
-      out.data.set(dictionary.content, out.length);
-      out.length += dictionaryLength;
-    }
+    out.ensure(dictionaryLength);
+    out.data.set(dictionary.content, out.length);
+    out.length += dictionaryLength;
     const frameStart = out.length;
     const state = createFrameDecodeState(frameHeader.windowSize, declaredSize, dictionary);
 
@@ -634,7 +596,7 @@ function decodeZstdFrames(inputBuffer: Buffer, dictionary: ZstdParsedDictionary 
       if (produced > sizeLimit) {
         throw bombSizeError(sizeLimit);
       }
-      if (ratioGuarded && exceedsZstdRatioGuard(produced, src.length)) {
+      if (exceedsZstdRatioGuard(produced, src.length)) {
         throw bombRatioError(produced, src.length);
       }
       out.projectedTotal = Math.ceil((produced * src.length) / offset) + dictionaryLength;
@@ -661,10 +623,8 @@ function decodeZstdFrames(inputBuffer: Buffer, dictionary: ZstdParsedDictionary 
       }
     }
 
-    if (dictionaryLength > 0) {
-      out.data.copyWithin(frameStart - dictionaryLength, frameStart, out.length);
-      out.length -= dictionaryLength;
-    }
+    out.data.copyWithin(frameStart - dictionaryLength, frameStart, out.length);
+    out.length -= dictionaryLength;
   }
 
   return out.toBuffer();
@@ -703,224 +663,4 @@ export function encodeZstdSingleSegmentHeader(
 
   const fhd = (fcsFlag << 6) | (1 << 5) | (1 << 2) | dictIdFlag;
   return { fhd, fcsBuf, dictIdBuf };
-}
-
-export interface ZstdCompressOptions {
-  /** Compression level 1-19 (default 3). */
-  level?: number;
-  /** Append the XXH64 content checksum (default true). */
-  checksum?: boolean;
-  /**
-   * Encode the whole input as one job (default false). An input of more than two blocks at a level below
-   * ZSTD_POOL_MIN_LEVEL is otherwise cut into jobs (zstd-jobs.ts) whose matches reach back one block before the cut, so
-   * matches across the whole window are only found as one job.
-   */
-  singleJob?: boolean;
-}
-
-/** Spare output capacity above 1/8 of the result triggers a right-sizing copy. */
-const OUTPUT_SPARE_DENOMINATOR = 8;
-
-/**
- * Encodes a frame header. A null windowLog selects single-segment form (window = content size);
- * otherwise a window descriptor for 2^windowLog is emitted. The content size is always present.
- */
-export function encodeZstdFrameHeader(
-  inputLen: number,
-  windowLog: number | null,
-  checksum: boolean
-): Buffer {
-  let fcsFlag: number;
-  let fcsBytes: number;
-  if (windowLog === null && inputLen < FCS_TWO_BYTE_BIAS) {
-    fcsFlag = 0;
-    fcsBytes = 1;
-  } else if (inputLen < FCS_TWO_BYTE_MAX) {
-    fcsFlag = 1;
-    fcsBytes = 2;
-  } else if (inputLen < FCS_FOUR_BYTE_LIMIT) {
-    fcsFlag = 2;
-    fcsBytes = 4;
-  } else {
-    fcsFlag = 3;
-    fcsBytes = 8;
-  }
-  const descriptorBytes = windowLog === null ? 0 : 1;
-  const header = Buffer.alloc(1 + descriptorBytes + fcsBytes);
-  let pos = 0;
-  header[pos++] =
-    (fcsFlag << FHD_FCS_SHIFT) |
-    ((windowLog === null ? 1 : 0) << FHD_SINGLE_SEGMENT_BIT) |
-    ((checksum ? 1 : 0) << FHD_CHECKSUM_BIT);
-  if (windowLog !== null) {
-    header[pos++] = (windowLog - ZSTD_WINDOW_LOG_MIN) << WINDOW_DESCRIPTOR_EXPONENT_SHIFT;
-  }
-  if (fcsFlag === 0) header[pos] = inputLen;
-  else if (fcsFlag === 1) header.writeUInt16LE(inputLen - FCS_TWO_BYTE_BIAS, pos);
-  else if (fcsFlag === 2) header.writeUInt32LE(inputLen, pos);
-  else header.writeBigUInt64LE(BigInt(inputLen), pos);
-  return header;
-}
-
-function resolveZstdLevel(options: ZstdCompressOptions): number {
-  const level = options.level ?? ZSTD_LEVEL_DEFAULT;
-  if (!Number.isInteger(level) || level < ZSTD_LEVEL_MIN || level > ZSTD_LEVEL_MAX) {
-    throw new ConversionFailedError(
-      `Unsupported zstd compression level ${String(level)}: expected an integer from ${ZSTD_LEVEL_MIN} to ${ZSTD_LEVEL_MAX}.`
-    );
-  }
-  return level;
-}
-
-/**
- * Compresses data into an RFC 8878 compliant Zstandard frame at the requested level (1-19).
- * Blocks are Raw, RLE or Compressed (Huffman literals + FSE sequences), whichever is smallest.
- */
-export function compressZstd(inputBuffer: Buffer, options: ZstdCompressOptions = {}): Buffer {
-  const frame = prepareFrame(inputBuffer, options);
-  if (frame.jobs === null) return finishSingleJobFrame(inputBuffer, frame);
-  const parts = frame.jobs.map((_, index) => encodeZstdJob(inputBuffer, frame.level, frame.jobs!, index));
-  return joinJobFrame(inputBuffer, frame, parts);
-}
-
-interface PreparedFrame {
-  level: number;
-  checksum: boolean;
-  windowSize: number;
-  /** Magic number and frame header. */
-  prefix: Buffer;
-  /** The jobs of a split frame; null for a frame of one job. */
-  jobs: ZstdJob[] | null;
-}
-
-/** Validates the request and builds what every job of the frame shares: the frame header and the job layout. */
-function prepareFrame(inputBuffer: Buffer, options: ZstdCompressOptions): PreparedFrame {
-  const level = resolveZstdLevel(options);
-  const checksum = options.checksum ?? true;
-  const inputLen = inputBuffer.length;
-  if (inputLen > ZSTD_ENCODER_INPUT_MAX) {
-    throw new ConversionFailedError(
-      `Zstandard input of ${inputLen} bytes exceeds the encoder limit of ${ZSTD_ENCODER_INPUT_MAX} bytes.`
-    );
-  }
-  const { windowLog, singleSegment, windowSize } = zstdFrameWindow(inputLen, level);
-  const header = encodeZstdFrameHeader(inputLen, singleSegment ? null : windowLog, checksum);
-  return {
-    level,
-    checksum,
-    windowSize,
-    prefix: Buffer.concat([ZSTD_MAGIC_LE, header]),
-    jobs: options.singleJob ? null : planZstdJobs(inputLen, level),
-  };
-}
-
-function finishSingleJobFrame(inputBuffer: Buffer, frame: PreparedFrame): Buffer {
-  const trailerBytes = frame.checksum ? CONTENT_CHECKSUM_BYTES : 0;
-  const params = getZstdLevelParams(frame.level);
-  const encoder = new ZstdBlockEncoder(inputBuffer, params, frame.windowSize);
-  const encoded = encoder.encodeAll(frame.prefix, trailerBytes);
-  encoder.release();
-  let end = encoded.length;
-  if (frame.checksum) {
-    new DataView(encoded.data.buffer, encoded.data.byteOffset, encoded.data.byteLength).setUint32(
-      end,
-      computeZstdChecksum(inputBuffer),
-      true
-    );
-    end += CONTENT_CHECKSUM_BYTES;
-  }
-  // Hand back a view when the spare capacity is small (incompressible input); otherwise right-size
-  // with one copy of the (much smaller) compressed bytes so a large scratch buffer is not retained.
-  const spare = encoded.data.length - end;
-  if (spare * OUTPUT_SPARE_DENOMINATOR > end) return Buffer.from(encoded.data.subarray(0, end));
-  return Buffer.from(encoded.data.buffer, encoded.data.byteOffset, end);
-}
-
-/** The frame header, the blocks of every job in order and the content checksum, in one buffer of exactly their size. */
-function joinJobFrame(inputBuffer: Buffer, frame: PreparedFrame, parts: readonly Uint8Array[], checksum?: number): Buffer {
-  const trailerBytes = frame.checksum ? CONTENT_CHECKSUM_BYTES : 0;
-  let total = frame.prefix.length + trailerBytes;
-  for (const part of parts) total += part.length;
-  const out = Buffer.allocUnsafe(total);
-  let at = frame.prefix.copy(out, 0);
-  for (const part of parts) {
-    out.set(part, at);
-    at += part.length;
-  }
-  if (frame.checksum) out.writeUInt32LE(checksum ?? computeZstdChecksum(inputBuffer), at);
-  return out;
-}
-
-/**
- * Smallest input worth a pool thread at the levels of the optimal parser (it runs at about 1 MB/s). The faster levels
- * split an input of more than two blocks into jobs instead (zstd-jobs.ts).
- */
-export const ZSTD_POOL_MIN_BYTES = 32 * 1024;
-
-/**
- * `compressZstd` for callers that must keep the event loop free. The frame is the same bytes: a level of the optimal
- * parser runs on one pool thread; a faster level with more than one job spreads the jobs over the pool threads and the
- * calling thread, which also takes its share between turns of the event loop; short inputs run inline.
- */
-export async function compressZstdAsync(
-  inputBuffer: Buffer,
-  options: ZstdCompressOptions & { signal?: AbortSignal } = {}
-): Promise<Buffer> {
-  const { signal, ...encoderOptions } = options;
-  const frame = prepareFrame(inputBuffer, encoderOptions);
-  if (frame.jobs !== null) return compressJobsAsync(inputBuffer, frame, frame.jobs, signal);
-  if (frame.level < ZSTD_POOL_MIN_LEVEL || inputBuffer.length < ZSTD_POOL_MIN_BYTES) return finishSingleJobFrame(inputBuffer, frame);
-  const data = await shareBytes(inputBuffer);
-  const reply = await getCpuPool().submit<Uint8Array>('zstd', { data, options: encoderOptions }, { signal });
-  return Buffer.from(reply.buffer, reply.byteOffset, reply.byteLength);
-}
-
-/** The longest job the calling thread runs itself: about 30 ms at level 9, where the event loop may be held for 100. */
-export const ZSTD_CALLER_JOB_BYTES_MAX = 512 * 1024;
-
-/**
- * Pool threads and the calling thread take the next job of the frame as they finish one; the parts join in job order.
- * The frame is the same bytes wherever a job runs, so a pool that cannot take a job (no thread entry on this deployment,
- * a full queue) only means the calling thread runs it: this level never needed the pool before jobs existed.
- */
-async function compressJobsAsync(inputBuffer: Buffer, frame: PreparedFrame, jobs: readonly ZstdJob[], signal: AbortSignal | undefined): Promise<Buffer> {
-  const parts = new Array<Uint8Array>(jobs.length);
-  const pool = getCpuPool();
-  const data = await shareBytes(inputBuffer);
-  let next = 0;
-  // A pool with no thread yet would make this request wait for threads to start, longer than its jobs take: it starts them
-  // for the next request and the jobs run here, as long as they are short enough for the calling thread.
-  const cold = pool.stats.threads === 0;
-  if (cold) pool.warm();
-  let poolRefused = cold && jobs.every((job) => job.to - job.from <= ZSTD_CALLER_JOB_BYTES_MAX);
-  const takeJob = (): number => (next < jobs.length ? next++ : -1);
-  const runHere = async (index: number): Promise<void> => {
-    if (signal?.aborted) throw new CpuTaskAbortedError('zstdJob');
-    parts[index] = encodeZstdJob(data, frame.level, jobs, index);
-    if (next < jobs.length) await yieldToEventLoop();
-  };
-  const poolWorker = async (): Promise<void> => {
-    for (let index = takeJob(); index >= 0; index = takeJob()) {
-      if (poolRefused) {
-        await runHere(index);
-        continue;
-      }
-      try {
-        parts[index] = await pool.submit<Uint8Array>('zstdJob', { data, level: frame.level, index }, { signal });
-      } catch (error) {
-        if (!(error instanceof EngineUnavailableError || error instanceof CpuPoolOverloadedError)) throw error;
-        poolRefused = true;
-        await runHere(index);
-      }
-    }
-  };
-  // The calling thread takes only jobs short enough to keep the event loop free (EVENT_LOOP_BLOCK_BUDGET_MS); the longer
-  // jobs of a long input are left to the pool threads, which run them here only when the pool cannot.
-  const callerWorker = async (): Promise<void> => {
-    while (next < jobs.length && (poolRefused || jobs[next].to - jobs[next].from <= ZSTD_CALLER_JOB_BYTES_MAX)) await runHere(takeJob());
-  };
-  const poolWorkers = Array.from({ length: Math.min(pool.threadLimit, jobs.length - 1) }, poolWorker);
-  const checksum = frame.checksum ? computeZstdChecksum(inputBuffer) : undefined;
-  await Promise.all([...poolWorkers, callerWorker()]);
-  return joinJobFrame(inputBuffer, frame, parts, checksum);
 }

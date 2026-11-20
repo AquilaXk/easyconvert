@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import sharp from 'sharp';
 import { encodeParquet, decodeParquet } from '../src/lib/conversions/parquet';
-import { compressZstd, decompressZstd } from '../src/lib/conversions/zstd';
 import {
   inspectVariableFont,
   instantiateVariableFont,
@@ -16,6 +15,7 @@ import {
   synthesizeAudioBitstreamCorpus,
 } from './helpers/corpus-synthesizer';
 import { decodeAudioBuffer } from '../src/lib/conversions/media-decoder';
+import { compressZstd, decompressZstd } from './zstd-sync';
 
 /**
  * Returns list of open file descriptors on Unix/macOS or empty list if unavailable.

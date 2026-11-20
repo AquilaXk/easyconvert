@@ -36,8 +36,8 @@ import {
   decodeDeltaLengthByteArray,
 } from '../src/lib/conversions/parquet-encodings';
 import { decodeRleHybrid, ByteSink, encodeRleHybrid } from '../src/lib/conversions/parquet-rle';
-import { decompressZstd } from '../src/lib/conversions/zstd';
 import { ConversionFailedError } from '../src/lib/types';
+import { decompressZstd } from './zstd-sync';
 
 /**
  * Conformance of the Parquet writer (issue 526). Independent oracles:

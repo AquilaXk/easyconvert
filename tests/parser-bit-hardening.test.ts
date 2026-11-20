@@ -31,7 +31,6 @@ import { ARCHIVE_SECURITY_LIMITS, inspectArchive, repairZipArchive } from '../sr
 import { decodeLzma } from '../src/lib/conversions/lzma-decoder';
 import { unpackXzStream } from '../src/lib/conversions/xz-format';
 import { ZstdOutputBuffer } from '../src/lib/conversions/zstd-decoder';
-import { decompressZstd } from '../src/lib/conversions/zstd';
 import { readHwpSections } from '../src/lib/conversions/hwp-reader';
 import { parseHwpRecords } from '../src/lib/conversions/hwp-records';
 import { cell, charShape, controlUnits, ctrl, pack, para, table } from './helpers/hwp-craft';
@@ -58,6 +57,7 @@ import { buildMobi, palmDocCompress } from './helpers/mobi-builder';
 import { buildPptBinary } from './helpers/ppt-binary-builder';
 import { walkWebm } from './helpers/ebml-walker';
 import { expectNoHang } from './helpers/timing';
+import { decompressZstd } from './zstd-sync';
 
 class MsbBitWriter {
   private readonly bytes: number[] = [];

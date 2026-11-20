@@ -234,7 +234,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3905
+    "maxValue": 3903
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -1157,20 +1157,6 @@
     "maxValue": 38
   },
   {
-    "file": "src/lib/conversions/zstd-encoder.ts",
-    "rule": "complexity",
-    "function": "writeSequenceBitstream",
-    "count": 1,
-    "maxValue": 42
-  },
-  {
-    "file": "src/lib/conversions/zstd-encoder.ts",
-    "rule": "max-params",
-    "function": "writeSequenceBitstream",
-    "count": 1,
-    "maxValue": 7
-  },
-  {
     "file": "src/lib/conversions/zstd-huffman.ts",
     "rule": "max-params",
     "function": "decodeFourStreamsLockstep",
@@ -1201,20 +1187,6 @@
   {
     "file": "src/lib/conversions/zstd-huffman.ts",
     "rule": "max-params",
-    "function": "encodeHuffmanLiterals",
-    "count": 1,
-    "maxValue": 7
-  },
-  {
-    "file": "src/lib/conversions/zstd-huffman.ts",
-    "rule": "max-params",
-    "function": "encodeHuffmanStream",
-    "count": 1,
-    "maxValue": 7
-  },
-  {
-    "file": "src/lib/conversions/zstd-huffman.ts",
-    "rule": "max-params",
     "function": "finishHuffmanStream",
     "count": 1,
     "maxValue": 10
@@ -1224,7 +1196,7 @@
     "rule": "complexity",
     "function": "decodeZstdFrames",
     "count": 1,
-    "maxValue": 45
+    "maxValue": 36
   },
   {
     "file": "src/lib/edge-ocr/index.ts",

@@ -18,7 +18,7 @@ import {
   ZSTD_DICT_MAGIC,
   ZSTD_OFFICE_DICT_MAGIC,
 } from '../src/lib/conversions/zstd-dict';
-import { decompressZstd, getZstdBinaryPath, ZSTD_SECURITY_LIMITS } from '../src/lib/conversions/zstd';
+import { getZstdBinaryPath, ZSTD_SECURITY_LIMITS } from '../src/lib/conversions/zstd';
 import { ConversionFailedError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import {
@@ -35,6 +35,7 @@ import {
   type TestBlock,
 } from './helpers/zstd-frames';
 import { SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, expectNoHangOnInput } from './helpers/timing';
+import { decompressZstd } from './zstd-sync';
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
 const ENGINE_TEST_TIMEOUT_MS = 60_000;

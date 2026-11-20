@@ -75,7 +75,7 @@ import {
   type SevenZipListing,
   type SevenZipReadLimits,
 } from './sevenzip-reader';
-import { compressZstd, decompressZstd, parseZstdFrameHeader, ZSTD_MAGIC_LE } from './zstd';
+import { parseZstdFrameHeader, ZSTD_MAGIC_LE } from './zstd';
 import { compressZstdNative, decompressZstdNative } from './zstd-native';
 import {
   compressLzma,
@@ -151,8 +151,6 @@ import { matchArchiveGlob } from './archive-glob';
 export {
   matchArchiveGlob,
   canonicalEntryPath,
-  compressZstd,
-  decompressZstd,
   compressLzma,
   compressLzma2,
   type LzmaCompressOptions,

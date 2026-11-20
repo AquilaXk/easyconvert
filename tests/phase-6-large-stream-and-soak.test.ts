@@ -17,7 +17,7 @@ import {
 import { oracleTest } from './helpers/oracle-test';
 import { synthesizeEnterprisePdf } from './helpers/golden-corpus-suite';
 import { createTarArchive } from '../src/lib/conversions/archive';
-import { compressZstd } from '../src/lib/conversions/zstd';
+import { compressZstd } from './zstd-sync';
 
 /** The 2 GB pipeline (generation, chunking, SHA-256) must reach this fraction of plain SHA-256 speed (measured about 0.8). */
 const PIPELINE_MIN_FRACTION_OF_HASH_RATE = 0.25;

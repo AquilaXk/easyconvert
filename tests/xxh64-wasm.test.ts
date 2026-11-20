@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { assembleXxh64, xxh64Wasm, xxh64WasmSupported, XXH64_WASM_MIN_BYTES } from '../src/lib/conversions/wasm/xxh64';
-import { compressZstd, computeZstdChecksum, decompressZstd, FastStreamingXxHash64, xxh64 } from '../src/lib/conversions/zstd';
+import { computeZstdChecksum, FastStreamingXxHash64, xxh64 } from '../src/lib/conversions/zstd';
 import { SeededRandom, zipfText } from './helpers/archive-corpus';
 import { oracleTest } from './helpers/oracle-test';
 import { skipUnless } from './helpers/strict-skip';
+import { compressZstd, decompressZstd } from './zstd-sync';
 
 const TEST_TIMEOUT_MS = 180_000;
 const MEGABYTE = 1024 * 1024;

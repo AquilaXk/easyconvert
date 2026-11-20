@@ -1,12 +1,10 @@
 import zlib from 'node:zlib';
 import { CompressionCodec, ParquetCodecUnavailableError, ParquetFormatError } from './parquet-format';
 import { compressSnappy, decompressSnappy, decompressSnappySlice } from './parquet-snappy';
-import { decompressZstd } from './zstd';
 
 /**
  * Page compression for Parquet column chunks (the codec applies to each page body).
- * ZSTD compression needs a runtime that ships zstd in node:zlib (Node 22.15+/23.8+); older
- * runtimes can still read ZSTD pages through the in-repo decoder but cannot write them.
+ * ZSTD pages need a runtime that ships zstd in node:zlib (Node 22.15+/23.8+) for both reading and writing.
  *
  * Raw and Hadoop-framed LZ4 block decompression match `lz4/lz4` (`lib/lz4.c`,
  * commit `6b589e8053bd9c524138d78adec78fcaefa35cab`,
@@ -272,38 +270,19 @@ export function decompressLz4(data: Buffer, expectedBytes: number): Buffer {
   return decodeLz4HadoopSlice(data, 0, data.length, expectedBytes) ?? decompressLz4RawSlice(data, 0, data.length, expectedBytes);
 }
 
-/**
- * Pure TypeScript zstd decoding, used where node:zlib has no zstd (Node 20). The page's declared size
- * is the output bound (the generic archive ratio guard does not apply), and the result must match it.
- */
-export function decodeZstdFallback(data: Buffer, expectedBytes: number): Buffer {
-  let out: Buffer;
-  try {
-    out = decompressZstd(data, { maxOutputBytes: expectedBytes });
-  } catch (zstdError) {
-    throw new ParquetFormatError(
-      `Corrupted Parquet page: ZSTD data is not valid (${zstdError instanceof Error ? zstdError.message : 'decode failed'})`
-    );
-  }
-  if (out.length !== expectedBytes) {
-    throw new ParquetFormatError(`Corrupted Parquet page: ZSTD page decoded to ${out.length} bytes, header declares ${expectedBytes}`);
-  }
-  return out;
-}
-
 function zstdDecode(data: Buffer, expectedBytes: number): Buffer {
   const native = nativeZstd();
-  if (native) {
-    try {
-      // node:zlib rejects a limit of 0; a frame of an empty page still has to decode, and the exact-size check follows.
-      return native.zstdDecompressSync(data, { maxOutputLength: Math.max(expectedBytes, 1) });
-    } catch (zstdError) {
-      const code = (zstdError as { code?: string }).code;
-      const reason = code === 'ERR_BUFFER_TOO_LARGE' ? 'exceeds its declared size' : 'is not valid';
-      throw new ParquetFormatError(`Corrupted Parquet page: ZSTD data ${reason}`);
-    }
+  if (!native) {
+    throw new ParquetCodecUnavailableError('ZSTD pages require a Node.js runtime with zstd support in node:zlib (22.15 or newer).');
   }
-  return decodeZstdFallback(data, expectedBytes);
+  try {
+    // node:zlib rejects a limit of 0; a frame of an empty page still has to decode, and the exact-size check follows.
+    return native.zstdDecompressSync(data, { maxOutputLength: Math.max(expectedBytes, 1) });
+  } catch (zstdError) {
+    const code = (zstdError as { code?: string }).code;
+    const reason = code === 'ERR_BUFFER_TOO_LARGE' ? 'exceeds its declared size' : 'is not valid';
+    throw new ParquetFormatError(`Corrupted Parquet page: ZSTD data ${reason}`);
+  }
 }
 
 /**

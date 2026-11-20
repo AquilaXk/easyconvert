@@ -22,7 +22,6 @@ import { decodeLinearBt709 } from '../src/lib/conversions/sdr-linear';
 import { KdTree3 } from '../src/lib/conversions/kd-tree';
 import { encodeCcittG4 } from '../src/lib/conversions/ccitt-g4';
 import { decompressBzip2 } from '../src/lib/conversions/bzip2';
-import { decompressZstd } from '../src/lib/conversions/zstd';
 import { parseAllXlsxWorksheets } from '../src/lib/conversions/office/xlsx-parse';
 import { generatePdfFromDocx } from '../src/lib/conversions/office/docx-pdf';
 import { XML_TREE_MAX_DEPTH, parseXmlTree } from '../src/lib/conversions/xml-tree';
@@ -35,6 +34,7 @@ import { PREDICTOR_TIFF, undoPredictor } from '../src/lib/conversions/pdf-filter
 import { InflateBudget } from '../src/lib/conversions/bounded-inflate';
 import { encodeEmf, encodeWmf } from '../src/lib/conversions/vector-metafile';
 import { SAUVOLA_INK, SAUVOLA_MAX_PIXELS, SAUVOLA_PAPER, oddWindow, sauvolaBinarize } from '../src/lib/conversions/ocr-sauvola';
+import { decompressZstd } from './zstd-sync';
 
 /** Independent Python `bz2.compress` fixture for `(b"Bzip2-24bit-word-refill-kernel-check! " * 40) + bytes(range(256))`. */
 const PYTHON_BZ2_FIXTURE_HEX =

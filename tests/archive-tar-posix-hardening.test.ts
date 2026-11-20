@@ -7,16 +7,7 @@ import { NextRequest } from 'next/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { POST as convertRoute } from '../src/app/api/convert/route';
 import { POST as v1ConvertRoute } from '../src/app/api/v1/convert/route';
-import {
-  ARCHIVE_SECURITY_LIMITS,
-  compressZstd,
-  convertArchive,
-  createTarArchive,
-  extractTarArchive,
-  inspectArchive,
-  readTarEntries,
-  resolveArchiveEntryCollisions,
-} from '../src/lib/conversions/archive';
+import { ARCHIVE_SECURITY_LIMITS, convertArchive, createTarArchive, extractTarArchive, inspectArchive, readTarEntries, resolveArchiveEntryCollisions } from '../src/lib/conversions/archive';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { ArchiveEntryCollisionError, ConversionFailedError } from '../src/lib/types';
@@ -33,6 +24,7 @@ import {
   paxRecordBytes,
 } from './helpers/tar-craft';
 import { SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, settle, expectNoHangOnInput } from './helpers/timing';
+import { compressZstd } from './zstd-sync';
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
 const ENGINE_TEST_TIMEOUT_MS = 60_000;

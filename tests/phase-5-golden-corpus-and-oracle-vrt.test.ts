@@ -54,7 +54,7 @@ import { convertOffice } from '../src/lib/conversions/office';
 import { ConversionFailedError, DataParseError, UnprocessableCadInputError } from '../src/lib/types';
 import { PdfStructureError } from '../src/lib/conversions/pdf-document';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
-import { decompressZstd, createTarArchive } from '../src/lib/conversions/archive';
+import { createTarArchive } from '../src/lib/conversions/archive';
 import {
   synthesizeVariableFontCorpus,
   synthesizeParquetColumnarCorpus,
@@ -64,6 +64,7 @@ import {
 import { parseHwpDocument, buildHwpCompoundFile } from '../src/lib/conversions/hwp';
 import { inspectVariableFont, encodeWoff2 } from '../src/lib/conversions/font';
 import { decodeParquet } from '../src/lib/conversions/parquet';
+import { decompressZstd } from './zstd-sync';
 
 const TOOL_TIMEOUT_MS = 60_000;
 

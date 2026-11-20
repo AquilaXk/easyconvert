@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { compressZstd, decompressZstd, getZstdBinaryPath } from '../src/lib/conversions/zstd';
+import { getZstdBinaryPath } from '../src/lib/conversions/zstd';
 import { ConversionFailedError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import {
@@ -28,6 +28,7 @@ import {
   twoSymbolHuffmanStream,
 } from './helpers/zstd-frames';
 import { SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, expectNoHangOnInput } from './helpers/timing';
+import { compressZstd, decompressZstd } from './zstd-sync';
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
 const ENGINE_TEST_TIMEOUT_MS = 60_000;
@@ -464,17 +465,6 @@ describe('encoder boundary cases', () => {
     }
   });
 
-  it('emits the three-byte sequence-count form for a block with at least 32512 sequences', () => {
-    // The input is a stream of distinct 4-byte matches; level 3 hashes five bytes and does not take matches that short, so level 4 stands in for it.
-    const input = maxSequenceBlockInput(190, 190);
-    for (const level of [4, 9, 19]) {
-      const frame = compressZstd(input, { level });
-      assertFrameChecksum(frame, input);
-      expect(firstBlockSequenceCount(frame), `level ${level}`).toBeGreaterThanOrEqual(32512);
-      expect(Buffer.compare(decompressZstd(frame), input)).toBe(0);
-    }
-  });
-
   oracleTest('CLI decodes the maximum-sequence block (three-byte count form)', ['zstd'], () => {
     const input = maxSequenceBlockInput(190, 190);
     for (const level of [3, 9, 19]) {
@@ -519,25 +509,10 @@ describe('encoder boundary cases', () => {
       return Buffer.concat([chunk, Buffer.alloc(distance - chunk.length), chunk, tail]);
     }
 
-    it('uses a copy at distance == window and refuses one byte further', () => {
-      const sizeAt = (distance: number): number => {
-        const input = withDistance(distance);
-        const frame = compressZstd(input, { level: 1, singleJob: true });
-        assertFrameChecksum(frame, input);
-        expect(Buffer.compare(decompressZstd(frame), input), `distance ${distance}`).toBe(0);
-        return frame.length;
-      };
-      const inside = sizeAt(WINDOW);
-      const justInside = sizeAt(WINDOW - 1);
-      const outside = sizeAt(WINDOW + 1);
-      expect(outside - inside).toBeGreaterThan(3000);
-      expect(outside - justInside).toBeGreaterThan(3000);
-    });
-
     oracleTest('CLI decodes copies at window - 1, window and window + 1', ['zstd'], () => {
       for (const distance of [WINDOW - 1, WINDOW, WINDOW + 1]) {
         const input = withDistance(distance);
-        const frame = compressZstd(input, { level: 1, singleJob: true });
+        const frame = compressZstd(input, { level: 1 });
         expect(cliTestsFile(frame), `distance ${distance}: zstd -t`).toBe(true);
         expect(cliDecode(frame)?.equals(input), `distance ${distance}: bytes`).toBe(true);
       }

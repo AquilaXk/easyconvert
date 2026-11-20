@@ -4,7 +4,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { compressLzma2Async, compressLzmaAsync, compressLzma2, compressLzma } from '../src/lib/conversions/lzma-encoder';
-import { compressZstd, compressZstdAsync, ZSTD_POOL_MIN_LEVEL } from '../src/lib/conversions/zstd';
 import { create7zArchive, create7zArchiveAsync, extract7zArchive, packXz, packXzAsync } from '../src/lib/conversions/archive';
 import { encodeFlacStream, encodeFlacStreamAsync } from '../src/lib/conversions/flac-encoder';
 import { shutdownCpuPool } from '../src/lib/workers/cpu-pool';
@@ -14,7 +13,7 @@ import { sourceText, zipfText } from './helpers/archive-corpus';
 
 /**
  * The pool variants of the pure encoders must hand back the bytes of the synchronous ones: the thread runs the same
- * code, so any difference is a transport bug. Outputs are also read by the reference tools (xz, zstd, 7z).
+ * code, so any difference is a transport bug. Outputs are also read by the reference tools (xz, 7z).
  */
 const TEXT_BYTES = 300 * 1024;
 const NATIVE_7Z_BYTES = 2 * 1024 * 1024;
@@ -78,26 +77,6 @@ describe('pool variants of the pure compressors equal the synchronous encoders',
     const restored = execFileSync(getOracleToolPath('xz')!, ['-dc'], { input: viaPool, maxBuffer: 1 << 28 });
     expect(restored.equals(input)).toBe(true);
   }, TEST_TIMEOUT_MS);
-
-  it('compressZstdAsync equals compressZstd at a level that runs on the pool and at one that runs inline', async () => {
-    const input = sourceText(TEXT_BYTES, 15);
-    expect(ZSTD_POOL_MIN_LEVEL).toBe(10);
-    for (const level of [3, ZSTD_POOL_MIN_LEVEL, 19]) {
-      const viaPool = await compressZstdAsync(input, { level });
-      expect(viaPool.equals(compressZstd(input, { level }))).toBe(true);
-    }
-  }, TEST_TIMEOUT_MS);
-
-  oracleTest('a level-19 frame built on a pool thread decodes with `zstd -dc`', ['zstd'], async () => {
-    const input = sourceText(TEXT_BYTES, 16);
-    const frame = await compressZstdAsync(input, { level: 19 });
-    const restored = execFileSync(getOracleToolPath('zstd')!, ['-dc'], { input: frame, maxBuffer: 1 << 28 });
-    expect(restored.equals(input)).toBe(true);
-  }, TEST_TIMEOUT_MS);
-
-  it('an invalid zstd level is rejected with the same typed error on the pool path', async () => {
-    await expect(compressZstdAsync(sourceText(TEXT_BYTES, 17), { level: 23 })).rejects.toThrow(/Unsupported zstd compression level 23/);
-  });
 });
 
 describe('create7zArchiveAsync', () => {

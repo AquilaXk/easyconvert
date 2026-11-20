@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { compressZstd, decompressZstd } from '../src/lib/conversions/zstd';
 import { SeededRandom, proseText, runBytes, sourceText } from './helpers/archive-corpus';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
+import { compressZstd, decompressZstd } from './zstd-sync';
 
 /**
  * Edges of the decoder's bulk paths against frames the `zstd` command line wrote: the Huffman literals of one and of

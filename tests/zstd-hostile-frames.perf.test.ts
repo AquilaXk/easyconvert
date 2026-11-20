@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { decompressZstd } from '../src/lib/conversions/zstd';
 import { ConversionFailedError } from '../src/lib/types';
 import { buildRawFrame, makeRng } from './helpers/zstd-frames';
 import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { decompressZstd } from './zstd-sync';
 
 /**
  * Timing-ratio checks moved out of zstd-hostile-frames.test.ts.

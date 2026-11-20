@@ -4,13 +4,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createTarArchive } from '../src/lib/conversions/archive';
-import { compressZstd } from '../src/lib/conversions/zstd';
 import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { ConversionFailedError } from '../src/lib/types';
 import { executeWorkerConversion } from '../src/worker/engines';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { buildRleBombFrame } from './helpers/zstd-frames';
+import { compressZstd } from './zstd-sync';
 
 const PAYLOAD = Buffer.from('routing regression payload for the in-process zstd engine\n'.repeat(40));
 const FLOOR_BLOCKS_PLUS_ONE = 257;

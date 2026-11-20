@@ -1,8 +1,6 @@
 import { encodeBzip2Block, type BitStream } from '../conversions/bzip2';
 import { encodeFlacStream, type FlacTaskPayload } from '../conversions/flac-encoder';
 import { compressLzma, compressLzma2, type LzmaCompressOptions } from '../conversions/lzma-encoder';
-import { compressZstd, type ZstdCompressOptions } from '../conversions/zstd';
-import { encodeZstdJob, planZstdJobs } from '../conversions/zstd-jobs';
 import { encodeWoff2Container, type Woff2InputTable } from '../conversions/font-woff2';
 import { encodePngBand, type PngBandPayload } from '../conversions/png-photo-bands';
 import { assemblePng16, filterPng16Scanlines, PNG16_DEFAULT_LEVEL } from '../conversions/png16';
@@ -80,14 +78,6 @@ export interface CompressPayload<O> {
   options: O;
 }
 
-/** One job of a Zstandard frame; the thread plans the same jobs from the length and the level. */
-export interface ZstdJobPayload {
-  /** The whole input, in memory shared with the calling thread. */
-  data: Uint8Array;
-  level: number;
-  index: number;
-}
-
 /** What an LZMA task hands back; the caller wraps the byte arrays as Buffers. */
 export interface LzmaTaskResult {
   buffer: Uint8Array;
@@ -159,18 +149,6 @@ export const CPU_TASK_HANDLERS: Record<string, CpuTaskHandler> = {
   lzma2: (raw): HandlerResult => {
     const payload = raw as CompressPayload<LzmaCompressOptions>;
     return lzmaTaskResult(compressLzma2(payload.data, payload.options));
-  },
-
-  zstd: (raw): HandlerResult => {
-    const payload = raw as CompressPayload<ZstdCompressOptions>;
-    return transferableBytes(compressZstd(Buffer.from(payload.data.buffer, payload.data.byteOffset, payload.data.byteLength), payload.options));
-  },
-
-  zstdJob: (raw): HandlerResult => {
-    const payload = raw as ZstdJobPayload;
-    const jobs = planZstdJobs(payload.data.length, payload.level);
-    if (jobs === null) throw new Error(`Zstandard input of ${payload.data.length} bytes at level ${payload.level} is not split into jobs.`);
-    return transferableBytes(encodeZstdJob(payload.data, payload.level, jobs, payload.index));
   },
 
   woff2: (raw): HandlerResult => {

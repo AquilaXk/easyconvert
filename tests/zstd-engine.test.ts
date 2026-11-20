@@ -4,11 +4,12 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { compressZstd, decompressZstd, getZstdBinaryPath, ZSTD_MAGIC_LE } from '../src/lib/conversions/zstd';
+import { getZstdBinaryPath, ZSTD_MAGIC_LE } from '../src/lib/conversions/zstd';
 import { convertArchive, extractTarArchive } from '../src/lib/conversions/archive';
 import { ConversionFailedError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { buildFrame, buildRleBombFrame, rawBlock, referenceXxh64 } from './helpers/zstd-frames';
+import { compressZstd, decompressZstd } from './zstd-sync';
 
 // ---------------------------------------------------------------------------
 // Deterministic corpora (generated here so the suite never depends on repo files)
@@ -311,13 +312,6 @@ describe('compressZstd', () => {
     expect(parsed.singleSegment).toBe(false);
     expect(parsed.windowSize).toBe(2 ** 19);
     expect(Buffer.compare(decompressZstd(frame), input)).toBe(0);
-  });
-
-  it('rejects unsupported levels with a typed error', () => {
-    const input = Buffer.from('level validation');
-    for (const level of [0, 20, -1, 3.5, Number.NaN]) {
-      expect(() => compressZstd(input, { level })).toThrow(ConversionFailedError);
-    }
   });
 
   describe('fuzz corpus round-trips through the repo decoder', () => {

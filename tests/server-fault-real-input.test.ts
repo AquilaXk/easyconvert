@@ -10,8 +10,6 @@ import { convertMedia } from '../src/lib/conversions/media';
 import { LoudnessReportMissingError } from '../src/lib/conversions/media-audio-quality';
 import { performOcr } from '../src/lib/conversions/ocr';
 import { preprocessOcrImage } from '../src/lib/conversions/ocr-preprocess';
-import { compressZstdAsync, decompressZstd, ZSTD_POOL_MIN_LEVEL } from '../src/lib/conversions/zstd';
-import { ZSTD_BLOCK_SIZE_MAX } from '../src/lib/conversions/zstd-tables';
 import { FORMAT_REGISTRY, getFormatByExtension } from '../src/lib/registry';
 import { getCpuPool, shutdownCpuPool } from '../src/lib/workers/cpu-pool';
 import { OcrPreprocessError, OcrPreprocessFaultError, SERVER_FAULT_STATUS, typedFailureOf } from '../src/lib/types';
@@ -272,30 +270,4 @@ describe('the artifact names of a conversion', () => {
 
     expect(unknown).toEqual([]);
   });
-});
-
-describe('the zstd jobs of a large input', () => {
-  const CASES: ReadonlyArray<readonly [string, number]> = [
-    ['two blocks', 2 * ZSTD_BLOCK_SIZE_MAX],
-    ['two blocks and a byte', 2 * ZSTD_BLOCK_SIZE_MAX + 1],
-    ['three blocks', 3 * ZSTD_BLOCK_SIZE_MAX],
-    ['many blocks', 40 * ZSTD_BLOCK_SIZE_MAX + 17],
-  ];
-
-  it.each(CASES)('splits %s as the pool thread plans it again', async (_name, bytes) => {
-    for (const level of [1, ZSTD_POOL_MIN_LEVEL - 1, ZSTD_POOL_MIN_LEVEL]) {
-      const input = Buffer.alloc(bytes, 'ab');
-
-      const frame = await compressZstdAsync(input, { level });
-
-      expect(decompressZstd(frame).equals(input), `level ${level}`).toBe(true);
-    }
-  }, TEST_TIMEOUT_MS);
-
-  it('is a fault of the server when a thread is asked for a job of an input that is not split', async () => {
-    const error = await rejection(() => getCpuPool().submit('zstdJob', { data: new Uint8Array(100), level: 1, index: 0 }));
-
-    expect(error).not.toBeNull();
-    expect(typedFailureOf(error)).toEqual({ status: SERVER_FAULT_STATUS, code: 'conversion_failed' });
-  }, TEST_TIMEOUT_MS);
 });

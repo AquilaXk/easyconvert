@@ -13,7 +13,6 @@ import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { SeededRandom, sourceText, zipfText } from './helpers/archive-corpus';
 import { encodeFlacStream, encodeFlacStreamAsync } from '../src/lib/conversions/flac-encoder';
-import { compressZstd, compressZstdAsync } from '../src/lib/conversions/zstd';
 import { create7zArchiveAsync, extract7zArchive, packXz, packXzAsync, unpackXz } from '../src/lib/conversions/archive';
 
 /**
@@ -160,20 +159,6 @@ describe('event loop stays free during CPU-bound encodes', () => {
     const data = zipfText(BYTES_PER_MB, 42);
     const { heldMs } = await withLoopMonitor(async () => packXz(data, { compressionLevel: 6 }));
     expect(heldMs).toBeGreaterThan(BUDGET_MS);
-  }, TEST_TIMEOUT_MS);
-
-  it('a level-19 zstd encode of 1 MB keeps the loop delay under the budget and equals the synchronous frame', async () => {
-    const data = sourceText(BYTES_PER_MB, 43);
-    const { value, heldMs } = await withLoopMonitor(() => compressZstdAsync(data, { level: 19 }));
-    expect(heldMs).toBeLessThan(BUDGET_MS);
-    expect(value.equals(compressZstd(data, { level: 19 }))).toBe(true);
-  }, TEST_TIMEOUT_MS);
-
-  it.each([3, 9])('a level-%i zstd encode of 8 MB in jobs keeps the loop delay under the budget and equals the synchronous frame', async (level) => {
-    const data = zipfText(8 * BYTES_PER_MB, 44 + level);
-    const { value, heldMs } = await withLoopMonitor(() => compressZstdAsync(data, { level }));
-    expect(heldMs).toBeLessThan(BUDGET_MS);
-    expect(value.equals(compressZstd(data, { level }))).toBe(true);
   }, TEST_TIMEOUT_MS);
 
   it('a pure 7z archive of three 1 MB files keeps the loop delay under the budget and extracts to the inputs', async () => {

@@ -254,20 +254,6 @@
   {
     "rule": "G7-ABSOLUTE-TIME-BOUND",
     "file": "tests/event-loop-budget.test.ts",
-    "symbol": "a level-19 zstd encode of 1 MB keeps the loop delay under the budget and equals the synchronous frame",
-    "reason": "event-loop CPU time between two ticks against the product budget of 100 ms (EVENT_LOOP_BLOCK_BUDGET_MS), which is the claim and cannot be widened; measured 0.3 ms against 105 ms on a fast core (329.2x)",
-    "owningWP": "CI-TIMING"
-  },
-  {
-    "rule": "G7-ABSOLUTE-TIME-BOUND",
-    "file": "tests/event-loop-budget.test.ts",
-    "symbol": "a level-%i zstd encode of 8 MB in jobs keeps the loop delay under the budget and equals the synchronous frame",
-    "reason": "event-loop CPU time between two ticks against the product budget of 100 ms (EVENT_LOOP_BLOCK_BUDGET_MS), which is the claim and cannot be widened; measured 3.7 ms against 105 ms on a fast core (28.3x)",
-    "owningWP": "CI-TIMING"
-  },
-  {
-    "rule": "G7-ABSOLUTE-TIME-BOUND",
-    "file": "tests/event-loop-budget.test.ts",
     "symbol": "a pure 7z archive of three 1 MB files keeps the loop delay under the budget and extracts to the inputs",
     "reason": "event-loop CPU time between two ticks against the product budget of 100 ms (EVENT_LOOP_BLOCK_BUDGET_MS), which is the claim and cannot be widened; measured 0.8 ms against 105 ms on a fast core (123.8x)",
     "owningWP": "CI-TIMING"
