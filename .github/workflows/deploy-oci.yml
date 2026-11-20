@@ -341,9 +341,9 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/easyconvert.env"
 
-  # The edge cache keeps a prerendered page for as long as its `s-maxage` (a year, Next's value for a page with no revalidation), and a
-  # page kept past a deploy names script chunks the new server no longer has. After a deploy or a rollback the whole zone's cache is
-  # purged. It is purged after a deploy that failed and rolled back too, since the new release served pages while it was checked; a
+  # Pages are rendered per request and sent `no-store` (entry 370), so the edge keeps only static files (`/_next/static`, icons,
+  # robots.txt, sitemap.xml); a purge drops the ones a new release no longer serves. After a deploy or a rollback the whole zone's
+  # cache is purged. It is purged after a deploy that failed and rolled back too, since the new release served pages while it was checked; a
   # deploy that was cancelled or skipped served none. The job runs on a hosted runner, so the token never reaches the production host;
   # it can purge the cache of one zone and do nothing else (docs/policy-decisions.md, entry 278).
   purge-edge-cache:
