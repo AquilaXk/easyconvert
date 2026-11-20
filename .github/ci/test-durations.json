@@ -57,6 +57,7 @@
   "tests/archive-package-sources.test.ts": 10.1,
   "tests/archive-password-delivery.test.ts": 38,
   "tests/archive-password-routes.test.ts": 0.8,
+  "tests/archive-rar-seven-zip.test.ts": 1.5,
   "tests/archive-ratio-floor.test.ts": 12,
   "tests/archive-refusal-answers.test.ts": 0,
   "tests/archive-refusal-reasons.test.ts": 0.1,

@@ -1631,9 +1631,10 @@ let resolvedUnrarPath: string | null = null;
 export function getUnrarBinaryPath(): string | null {
   if (resolvedUnrarPath !== null) return resolvedUnrarPath || null;
   const envPath = process.env.UNRAR_PATH;
-  if (envPath && fs.existsSync(envPath)) {
-    resolvedUnrarPath = envPath;
-    return envPath;
+  if (envPath !== undefined) {
+    // A value is authoritative, as P7ZIP_PATH is: a path that is no file means "no unrar", and the compressed RAR is read by 7-Zip.
+    resolvedUnrarPath = envPath !== '' && fs.existsSync(envPath) ? envPath : '';
+    return resolvedUnrarPath || null;
   }
   const fixedLocations = [
     '/usr/bin/unrar',
@@ -1667,6 +1668,47 @@ export function getUnrarBinaryPath(): string | null {
 function assertArchiveFileCount(count: number, maxFiles: number): void {
   if (count >= maxFiles) {
     throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${maxFiles}`);
+  }
+}
+
+/**
+ * A RAR archive extracted by 7-Zip, for an archive the in-process reader cannot serve (a compressed RAR 4.x, any RAR 5.0) on a host without
+ * `unrar`: the worker image has 7-Zip, which reads both generations. The same checks as every 7-Zip extraction apply (listing vetted, sizes and
+ * ratio capped, the tree verified after the run). Returns null when no 7-Zip is installed, so the caller keeps its own refusal.
+ */
+function extractRarWithSevenZip(
+  rarBuffer: Buffer,
+  options: { password?: string; entries?: string[] },
+  limits: ArchiveExtractionLimits
+): { filename: string; buffer: Buffer }[] | null {
+  const p7z = get7zBinaryPath();
+  if (!p7z) return null;
+  const workDir = path.join(os.tmpdir(), `easyconvert_rar7z_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`);
+  fs.mkdirSync(workDir, { recursive: true });
+  try {
+    const archivePath = path.join(workDir, 'archive.rar');
+    fs.writeFileSync(archivePath, rarBuffer);
+    const extractDir = path.join(workDir, 'out');
+    fs.mkdirSync(extractDir, { recursive: true });
+    const tree = extractArchiveContainedSync({
+      p7zBin: p7z,
+      archivePath,
+      extractDir,
+      cwd: workDir,
+      timeoutMs: UNRAR_EXTRACT_TIMEOUT_MS,
+      maxBuffer: limits.MAX_UNCOMPRESSED_SIZE,
+      limits,
+      label: 'RAR archive',
+      password: options.password,
+    });
+    const extracted: { filename: string; buffer: Buffer }[] = [];
+    for (const file of tree.files) {
+      const filename = canonicalEntryPath(file.relPath);
+      if (filename && matchArchiveGlob(filename, options.entries)) extracted.push({ filename, buffer: readSandboxOutput(file.absPath) });
+    }
+    return extracted;
+  } finally {
+    cleanupDirectoryTree(workDir);
   }
 }
 
@@ -1796,6 +1838,8 @@ export function extractRarArchive(
 
   // Pure TypeScript parser for stored RAR archives with fail-closed validation
   if (isRar5) {
+    const viaSevenZip = extractRarWithSevenZip(rarBuffer, options, limits);
+    if (viaSevenZip !== null) return viaSevenZip;
     throw new ConversionFailedError('Unsupported RAR format: RAR5 compressed archives require unrar decompressor');
   }
 
@@ -1830,6 +1874,8 @@ export function extractRarArchive(
       // Enforce fail-closed verification: Method 0x30 is STORE (uncompressed)
       // Methods 0x31..0x35 are compressed and MUST NOT be sliced as raw corrupt data!
       if (method !== 0x30) {
+        const viaSevenZip = extractRarWithSevenZip(rarBuffer, options, limits);
+        if (viaSevenZip !== null) return viaSevenZip;
         throw new ConversionFailedError(
           `Unsupported RAR compression method (0x${method.toString(16)}): unrar binary is required for compressed RAR archives`
         );

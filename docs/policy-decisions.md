@@ -407,6 +407,7 @@ Security
 356. [An HWP 3.x file is imported by LibreOffice, and the in-process reader refuses it as unsupported](#356-an-hwp-3x-file-is-imported-by-libreoffice-and-the-in-process-reader-refuses-it-as-unsupported)
 357. [The text of an SVG written as EMF or WMF is drawn as outlines by librsvg first, and SVG to CGM is withdrawn](#357-the-text-of-an-svg-written-as-emf-or-wmf-is-drawn-as-outlines-by-librsvg-first-and-svg-to-cgm-is-withdrawn)
 358. [Corel Presentations offers packing only, and CB7 and CBT comic archives are bound into a PDF like a CBZ](#358-corel-presentations-offers-packing-only-and-cb7-and-cbt-comic-archives-are-bound-into-a-pdf-like-a-cbz)
+359. [A compressed RAR is extracted by 7-Zip when unrar is not installed, and UNRAR_PATH is authoritative](#359-a-compressed-rar-is-extracted-by-7-zip-when-unrar-is-not-installed-and-unrar_path-is-authoritative)
 
 ---
 
@@ -10633,3 +10634,21 @@ Security
   - **Withdrawing `cb7` and `cbt` to PDF with the reference's list:** the pair is one name in a table.
 - **Verified by**: `tests/comic-cb7-cbt.test.ts` (a CB7 and a CBT of three JPEGs named out of order give a PDF whose pages `pdfimages` lists in natural order; an archive without a page image is refused), `tests/office-suite-typed-failures.test.ts` (the `shw` registry entry offers only `zip`, and the real file still packs as it is), `tests/readme-registry-drift.test.ts` (the counts of the README follow the registry).
 - **Revisit when**: a reader of Corel Presentations files (LibreOffice or another) reads a real `.shw` show.
+
+## 359. A compressed RAR is extracted by 7-Zip when unrar is not installed, and UNRAR_PATH is authoritative
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: fix the refusals a production sweep of the live service found; the worker image has the upstream 7-Zip with its RAR decoders and no `unrar`)
+- **Decision**: **`extractRarArchive` (the `archive-extract` tool, the job graph and the comic readers) hands a RAR it cannot read in process to 7-Zip when `unrar` is not installed**: a RAR 5.0 archive, and a RAR 4.x archive with any compression method but store (`extractRarWithSevenZip` in `src/lib/conversions/archive.ts`). It is the same contained extraction every 7-Zip run in the product uses: the listing is vetted before anything is written, sizes and the compression ratio are capped, the tree is verified after the run, a password goes on standard input, and an entry glob selects the files. `unrar` still comes first when it is installed, and a stored RAR 4.x archive is still read in process. Without `unrar` and without 7-Zip the refusal is the old one. **`UNRAR_PATH` is authoritative**, as `P7ZIP_PATH` is: a value that is not an executable file (the empty string included) means there is no `unrar`, where it used to fall through to the standard locations.
+- **Why**:
+  - **The tool refused what the conversion reads.** The sweep got "Unsupported RAR compression method (0x33): unrar binary is required" from `archive-extract` for `tika-test-documents.rar`, while `rar` to `zip` and `rar` to `7z` of the same file passed through the native 7-Zip route (the image's pinned 7-Zip checks for its `Rar5` format at build time, `Dockerfile.worker`, and `docs/licensing.md` section 4 covers decompression only).
+  - **No second decoder.** The licence of the RAR decoders allows decompression only; the product keeps using the decoder of a separate program and never writes one.
+- **Measured** (Linux VM, 7-Zip 26.01 pinned upstream build as `P7ZIP_PATH`, `UNRAR_PATH` empty): `tika-test-documents.rar` (RAR 4.x, 9 files, 115,328 bytes unpacked) and `rarfile-rar5-crc.rar` (RAR 5.0) extract to the names, sizes and CRC-32 they list. The Debian `7z` and Homebrew `7zz` have no RAR decoders and answer "Unsupported Method", so the tests need the pinned build.
+- **Trade-offs**:
+  - **One more process for a compressed RAR on a host without `unrar`** (about 40 ms for the nine files), where it used to be a refusal.
+  - **A bad `UNRAR_PATH` no longer falls back to a standard location.** An operator who set it wrongly now gets 7-Zip, which the image has.
+- **Alternatives rejected**:
+  - **Adding `unrar` (non-free) to the image:** a second RAR decoder with a licence of its own, for what 7-Zip already reads.
+  - **Reading RAR in process:** the decoders of RAR are not specified for reimplementation (the licence forbids recreating the compression).
+- **Verified by**: `tests/archive-rar-seven-zip.test.ts` (red without the change: 3 of 4 fail with the old refusal; RAR 4.x and 5.0 files, an entry selection and a damaged archive), run on the VM with the pinned 7-Zip; `tests/rar-extraction-count-limit.test.ts` and the other archive tests (the `unrar` path is unchanged).
+- **Revisit when**: the image changes its 7-Zip (the RAR decoders must stay), or `unrar` joins the image.
