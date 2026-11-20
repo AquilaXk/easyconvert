@@ -4,6 +4,7 @@ import { reportConversionWarning } from './conversion-warnings';
 import type { DocumentModel } from './document-model/model';
 import { documentToText } from './document-model/text';
 import type { OcrResult } from './ocr-pdf-combiner';
+import type { PageSelectionOptions } from './page-range';
 import { layoutPdf, type PdfPageText } from './pdf-layout';
 import type { DetectedTable } from './pdf-layout/types';
 import { runPdfTextJob } from './pdf-text-geometry';
@@ -56,6 +57,11 @@ export interface ReadPdfOptions extends ExtractPdfOptions {
   densityThreshold?: number;
   /** Also read word geometry (see PdfGeometryPages). */
   geometry?: PdfGeometryPages;
+  /**
+   * Read only the pages a request selects (`page` and `pages`): the text, the analysis and the geometry then hold those pages, and a
+   * selection the document cannot satisfy is refused with InvalidPageRangeError.
+   */
+  select?: PageSelectionOptions;
   /** Stops the read when the caller's job is cancelled. */
   signal?: AbortSignal;
 }
@@ -167,12 +173,13 @@ export function documentFromJob(job: PdfTextJobResult, options: ExtractPdfOption
  * @throws EncryptedOfficeDocumentError (422) when the document needs a password.
  * @throws PayloadLimitError (413) when it has more than PDF_TEXT_MAX_PAGES pages.
  * @throws PdfTextGeometryError (400) when it is damaged, a page exceeds a limit or the deadline passes.
+ * @throws InvalidPageRangeError (400) when `select` names a page the document does not have.
  * @throws PdfTextUnmappedError (400) when no page of the document reads for want of a Unicode mapping (unless `onUnmapped` is `omit`).
  * @throws EngineUnavailableError (503) when the extraction thread cannot run.
  */
 export async function readPdfDocument(pdf: Buffer, options: ReadPdfOptions = {}): Promise<ReadPdfResult> {
   assertPdfHeader(pdf);
-  const job = await runPdfTextJob(pdf, { densityThreshold: options.densityThreshold, geometry: options.geometry ?? 'none', content: true, images: options.images, colour: options.colour }, options.signal);
+  const job = await runPdfTextJob(pdf, { densityThreshold: options.densityThreshold, geometry: options.geometry ?? 'none', content: true, images: options.images, colour: options.colour, select: options.select }, options.signal);
   return documentFromJob(job, options);
 }
 

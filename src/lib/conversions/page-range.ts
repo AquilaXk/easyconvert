@@ -291,3 +291,20 @@ export function resolvePageSelection(
   const intervals = resolvePageIntervals(page, spec, pageCount, outOfRange);
   return intervals === undefined ? undefined : pagesOfIntervals(intervals);
 }
+
+/** The `page` and `pages` options of a request: the pages a reader selects out of a document whose page count it learns when it opens it. */
+export interface PageSelectionOptions {
+  page?: number | string | null;
+  pages?: string | null;
+}
+
+/** The refusal of a single page that the document does not have, worded as every page-selecting chain words it. */
+export function pageOutOfBounds(page: number | string, pageCount: number): InvalidPageRangeError {
+  return new InvalidPageRangeError(`Page number ${page} is out of bounds (1-${pageCount})`);
+}
+
+/** The selection a request makes, or undefined when it has none (`null`, empty and blank values count as absent, as in `resolvePageIntervals`). */
+export function pageSelectionOf(options: PageSelectionOptions): PageSelectionOptions | undefined {
+  const named = (value: unknown): boolean => value !== null && value !== undefined && String(value).trim() !== '';
+  return named(options.page) || named(options.pages) ? { page: options.page, pages: options.pages } : undefined;
+}

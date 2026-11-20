@@ -6,10 +6,10 @@ import { appendAnnotationText } from './pdf-annotation-text';
 import { FontTable, readPageContent } from './pdf-text-content';
 import { ImageExtractor, awaitOperatorListDependencies } from './pdf-text-images';
 import { pdfjsReadableBytes } from './pdf-reader-input';
+import { pageLimitMessage, pagedJob, requirePages, type PagedJob } from './pdf-text-job-pages';
 import { cappedDecoderOptions } from './pdf-wasm-memory';
 import { pdfjsDataUrl } from './pdfjs-data';
 import {
-  PDF_TEXT_MAX_PAGES,
   PDF_TEXT_MAX_ITEMS_PER_DOCUMENT,
   PDF_TEXT_MAX_CHARS_PER_DOCUMENT,
   PDF_TEXT_MAX_IMAGE_PIXELS,
@@ -1326,16 +1326,9 @@ function densityAnalysis(page: PdfJsPage, pageNumber: number, pageText: string, 
   };
 }
 
-function requirePages(explicit: Set<number> | null, pageCount: number): void {
-  for (const pageNumber of explicit ?? []) {
-    if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > pageCount) {
-      throw new PdfTextGeometryError(`PDF page ${pageNumber} does not exist; the document has ${pageCount} pages.`);
-    }
-  }
-}
-
 /** Whether a page is read at all: for the density analysis, because it was asked for, or because geometry is wanted for every page. */
-function needsPage(job: PdfTextJob, explicit: Set<number> | null, pageNumber: number): boolean {
+function needsPage(job: PagedJob, explicit: Set<number> | null, pageNumber: number): boolean {
+  if (job.only?.has(pageNumber) === false) return false;
   return (
     job.densityThreshold !== undefined ||
     explicit?.has(pageNumber) === true ||
@@ -1379,7 +1372,7 @@ function textOfItems(items: unknown[]): string {
 async function readPages(
   pdfjs: PdfJs,
   doc: PdfJsDocument,
-  job: PdfTextJob,
+  job: PagedJob,
   explicit: Set<number> | null,
   result: PdfTextJobResult,
   fonts: FontTable,
@@ -1455,12 +1448,12 @@ export async function analyzePdfPagesInProcess(pdfBuffer: Buffer | Uint8Array, j
       verbosity: 0,
     });
     const doc = await task.promise;
+    const paged = pagedJob(job, doc.numPages);
     const readsEveryPage = job.densityThreshold !== undefined || job.geometry === 'text-pages';
-    if ((contentWanted || readsEveryPage) && doc.numPages > PDF_TEXT_MAX_PAGES) {
-      throw pdfTextFailure('limit', `PDF has ${doc.numPages} pages; at most ${PDF_TEXT_MAX_PAGES} can be read.`);
-    }
+    const limit = contentWanted || readsEveryPage ? pageLimitMessage(paged, doc.numPages) : null;
+    if (limit !== null) throw pdfTextFailure('limit', limit);
     requirePages(explicit, doc.numPages);
-    await readPages(pdfjs, doc, job, explicit, result, fonts, job.images === true ? new ImageExtractor(new Uint8Array(pdfBuffer)) : null);
+    await readPages(pdfjs, doc, paged, explicit, result, fonts, job.images === true ? new ImageExtractor(new Uint8Array(pdfBuffer)) : null);
     result.fonts = fonts.fonts;
     return result;
   } catch (err) {

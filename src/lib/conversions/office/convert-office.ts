@@ -7,6 +7,7 @@ import { buildOpenXpsPackage } from '../openxps';
 import { convertHwp } from '../hwp';
 import { extractPrintReplicaPdf } from './print-replica';
 import { DOCX_MAX_ANCHORED_SHAPES, documentToDocx } from '../document-model/docx';
+import { pageSelectionOf } from '../page-range';
 import { pdfToEpub, readPdfForOffice } from '../pdf-office';
 import { unconvertibleOfficeTarget } from '../native-engine-pairs';
 import Papa from 'papaparse';
@@ -109,7 +110,7 @@ const TARGET_CONVERTERS: ReadonlyMap<string, FormatConverter> = new Map<string, 
     const maxAnchoredShapes = (options as Record<symbol, unknown>)[DOCX_MAX_ANCHORED_SHAPES];
     const docxBuffer = src === 'pdf'
       ? await documentToDocx(
-          await readPdfForOffice(input, options, { images: true, colour: true, pages: true }),
+          await readPdfForOffice(input, options, { images: true, colour: true, pages: true, select: pageSelectionOf(options) }),
           typeof maxAnchoredShapes === 'number' ? { maxAnchoredShapes } : undefined
         )
       : await generateDocxFromSource(input, src, options, baseName);

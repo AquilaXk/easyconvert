@@ -4,6 +4,7 @@ import { openOpcPackage } from '../package-access';
 import JSZip from 'jszip';
 import { unconvertibleOfficeTarget } from '../native-engine-pairs';
 import { type WorkbookCompression, writeXlsx, writeXlsxWorkbook } from '../xlsx-writer';
+import type { PageSelectionOptions } from '../page-range';
 import { readPdfSheets } from '../pdf-sheets';
 import { decodeSheetJson, parseJsonTableCells } from '../sheet-text-tables';
 import { type OfficeWorksheet } from './types';
@@ -322,9 +323,9 @@ export async function convertXlsxSource(
   throw unconvertibleOfficeTarget('xlsx', tgt);
 }
 
-/** The XLSX workbook of a source read as a table: JSON keeps its value types; delimited text, a Kingsoft workbook and the tables of a PDF (`readPdfSheets`) store a number or ISO date as one. */
-export async function officeSheetWorkbook(inputBuffer: Buffer, src: string, options: ConversionOptions, compression?: WorkbookCompression): Promise<Buffer> {
-  if (src === 'pdf') return writeXlsxWorkbook(await readPdfSheets(inputBuffer, options), 'detect', compression);
+/** The XLSX workbook of a source read as a table (`select`: the pages of a PDF to read): JSON keeps its value types; delimited text, a Kingsoft workbook and the tables of a PDF (`readPdfSheets`) store a number or ISO date as one. */
+export async function officeSheetWorkbook(inputBuffer: Buffer, src: string, options: ConversionOptions, compression?: WorkbookCompression, select?: PageSelectionOptions): Promise<Buffer> {
+  if (src === 'pdf') return writeXlsxWorkbook(await readPdfSheets(inputBuffer, options, select), 'detect', compression);
   if (src === 'json') return writeXlsx(parseJsonTableCells(decodeSheetJson(inputBuffer)), 'verbatim', compression);
   return writeXlsx(await extractRowsForOffice(inputBuffer, src, options), 'detect', compression);
 }

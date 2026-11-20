@@ -224,9 +224,9 @@ export const ConversionOptionsSchema = {
       type: 'integer',
       minimum: 1,
       description:
-        'Single target page or frame index (1-indexed): the PDF page to rasterize, or the frame of a multi-frame image (animated GIF/WebP, multi-page TIFF or HEIF) to convert to a single-image output.',
+        'Single target page or frame index (1-indexed): the PDF page to rasterize or to convert to TXT, HTML, DOCX or XLSX, or the frame of a multi-frame image (animated GIF/WebP, multi-page TIFF or HEIF) to convert to a single-image output.',
     },
-    pages: pageSpecSchema('Page range expression for multi-page documents (e.g. "1-3,5", "2-", "-4").'),
+    pages: pageSpecSchema('Page range expression for multi-page documents (e.g. "1-3,5", "2-", "-4"). A PDF converted to page images, SVG, TXT, HTML, DOCX or XLSX converts only these pages, and a page the document does not have is refused with `invalid_pages`. For PDF to TXT, DOCX, HTML and XLSX the other pages are not read, and the output keeps the numbers of the pages it holds.'),
     multiPageOutput: {
       type: 'string',
       enum: ['zip', 'first'],

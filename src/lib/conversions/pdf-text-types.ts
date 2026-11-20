@@ -1,6 +1,7 @@
-import { ConversionFailedError, CorruptStreamError, DecompressionLimitError, EncryptedOfficeDocumentError, PayloadLimitError, type PdfPageAnalysis } from '../types';
+import { ConversionFailedError, CorruptStreamError, DecompressionLimitError, EncryptedOfficeDocumentError, InvalidPageRangeError, PayloadLimitError, type PdfPageAnalysis } from '../types';
 import { PdfStructureError } from './pdf-document';
 import type { OcrResult } from './ocr-pdf-combiner';
+import type { PageSelectionOptions } from './page-range';
 
 /** Items a page may have before it is refused as hostile; real pages have a few thousand at most. */
 export const PDF_TEXT_MAX_ITEMS_PER_PAGE = 100_000;
@@ -97,7 +98,7 @@ export function visibleGlyphsOf(items: readonly PdfContentItem[]): number {
 }
 
 /** Why a worker-thread job failed, so the host can rebuild the typed error across the thread boundary. */
-export type PdfTextFailureKind = 'encrypted' | 'limit' | 'decompression' | 'structure' | 'corrupt-stream' | 'invalid';
+export type PdfTextFailureKind = 'encrypted' | 'limit' | 'decompression' | 'structure' | 'corrupt-stream' | 'invalid-pages' | 'invalid';
 
 export function pdfTextFailure(kind: PdfTextFailureKind | undefined, message: string): ConversionFailedError {
   switch (kind) {
@@ -111,6 +112,8 @@ export function pdfTextFailure(kind: PdfTextFailureKind | undefined, message: st
       return new PdfStructureError(message);
     case 'corrupt-stream':
       return new CorruptStreamError(message);
+    case 'invalid-pages':
+      return new InvalidPageRangeError(message);
     default:
       return new PdfTextGeometryError(message);
   }
@@ -123,6 +126,7 @@ export function pdfTextFailureKindOf(error: unknown): PdfTextFailureKind {
   if (error instanceof PayloadLimitError) return 'limit';
   if (error instanceof PdfStructureError) return 'structure';
   if (error instanceof CorruptStreamError) return 'corrupt-stream';
+  if (error instanceof InvalidPageRangeError) return 'invalid-pages';
   return 'invalid';
 }
 
@@ -135,6 +139,12 @@ export interface PdfTextJob {
   /** When set, every page is analyzed for text-layer density and the analyses are returned. */
   densityThreshold?: number;
   geometry: PdfGeometryPages;
+  /**
+   * The pages a request selects (`page` and `pages`, see page-range.ts). The thread reads only those pages, for every other part of the
+   * job too (the density analysis, the geometry of `text-pages`, the content), and refuses a selection the document cannot satisfy with
+   * InvalidPageRangeError once it knows its page count.
+   */
+  select?: PageSelectionOptions;
   /** When set, the positioned text, rules and images of every page (or the listed pages) are returned. */
   content?: boolean | readonly number[];
   /** With `content`: also return the pixels of the images (the PDF's own JPEG data, or a PNG of the decoded pixels). */

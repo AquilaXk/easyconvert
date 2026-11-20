@@ -8,6 +8,7 @@
 import { ConversionFailedError, type ConversionOptions } from '../types';
 import { reportConversionWarning } from './conversion-warnings';
 import type { DetectedTable, TableCell } from './pdf-layout/types';
+import type { PageSelectionOptions } from './page-range';
 import { readPdfContentForOffice, type PdfOfficeContent } from './pdf-office';
 import type { ExtractedPdfDocument } from './pdf-text-document';
 import { pagesPhrase } from './pdf-text-types';
@@ -101,10 +102,10 @@ function sheetInputOf(content: PdfOfficeContent): PdfSheetInput {
 
 /**
  * The sheets of a PDF's workbook; a document without a text layer is read as `pdf` to a document is (`readPdfContentForOffice`).
- * For the failures see `readPdfContentForOffice` and `layoutPdf`; `writeXlsxWorkbook` refuses a workbook of too many sheets.
+ * `select` reads only the pages a request selects. For the failures see `readPdfContentForOffice` and `layoutPdf`; `writeXlsxWorkbook` refuses a workbook of too many sheets.
  */
-export async function readPdfSheets(source: Buffer, options: ConversionOptions): Promise<WorkbookSheet[]> {
-  const { sheets, leftOut, bareCounterPages } = sheetsOfPdf(sheetInputOf(await readPdfContentForOffice(source, options)));
+export async function readPdfSheets(source: Buffer, options: ConversionOptions, select?: PageSelectionOptions): Promise<WorkbookSheet[]> {
+  const { sheets, leftOut, bareCounterPages } = sheetsOfPdf(sheetInputOf(await readPdfContentForOffice(source, options, { select })));
   if (sheets.length === 0) throw new ConversionFailedError('PDF has no text to write as sheets.');
   if (leftOut.length > 0) reportConversionWarning(`Left out the text outside the tables of ${pagesPhrase(leftOut)}: a workbook of a PDF that has tables holds the tables.`);
   if (bareCounterPages.length > 0) {

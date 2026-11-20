@@ -78,6 +78,7 @@ import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } fr
 import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, findOfficeOutput, getMimeType, handOffOutput, inProcessOutputPath, internalFallbackResult, preserveOutput, resolveInputContext, resolveOfficeInputContext, withPageNumbers, withSandboxDir, writeOutputSegments, readRawInputBuffer } from './worker-output';
 import { DIRECT_RENDER_BATCH_PAGES, POPPLER_MAX_FILE_SIZE, POPPLER_MEMORY_LIMIT_MB, assertPdfBmpOutputWithinLimit, assertRasterOutputWithinLimit, ppmBatchPages, renderPngBatch, renderScratchPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, withPageRenderLanes, type PageBatch } from './poppler-ppm';
+import { buildPdftotextArgs, popplerTextPages } from './poppler-text';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { InputPixelLimitError } from '../lib/conversions/image-input-limits';
 import { checkOpenedPdfRasterPageBudget } from '../lib/conversions/pdf-access';
@@ -988,17 +989,6 @@ function buildPdftoppmArgs(
   return args;
 }
 
-/**
- * pdftotext flags for a text export. The default is poppler's reading-order mode, which follows
- * the page's own text flow and reads columns one after another. `layout: true` keeps physical
- * layout (`-layout`) so table rows stay on one line. Any other `layout` value is a client error.
- */
-function buildPdftotextArgs(options: WorkerEngineOptions): string[] {
-  if (options.layout === undefined || options.layout === false) return [];
-  if (options.layout === true) return ['-layout'];
-  throw new UnsupportedOptionError('The layout option must be a boolean.');
-}
-
 async function convertPdfToTextWithPoppler(
   input: Buffer | WorkerVfsPayload,
   options: WorkerEngineOptions,
@@ -1025,10 +1015,11 @@ async function convertPdfToTextWithPoppler(
       await withDecryptedPdf(
         { inputPath, tempDir, password: options.password, timeoutMs: timeout, signal: options.signal },
         async (readablePath) => {
+          const pages = await popplerTextPages(options, () => countPagesOfReadablePdf(readablePath, tempDir, timeout, options.signal));
           try {
             const diskLimit = officeInputBytes(readablePath) * 2 + POPPLER_MAX_FILE_SIZE + 64 * 1024 * 1024;
             await runWithDirectoryGrowthWatch({ root: tempDir, limits: { maxBytes: diskLimit, maxEntries: ARCHIVE_SECURITY_LIMITS.MAX_FILES }, label: 'pdftotext', callerSignal: options.signal }, (watchSignal) =>
-              executeSandboxedBinary(pdftotextBin, [...pdftotextArgs, readablePath, tempOutputPath], {
+              executeSandboxedBinary(pdftotextBin, [...pdftotextArgs, ...pages.args, readablePath, tempOutputPath], {
                 cwd: tempDir, workDir: tempDir, readDirs: [readablePath],
                 timeoutMs: timeout,
                 maxBuffer,
@@ -1041,6 +1032,7 @@ async function convertPdfToTextWithPoppler(
           } catch (err) {
             throw toPopplerPasswordError(err) ?? toPopplerOutputLimitError(err) ?? toPopplerDamageSignal(err, options.inProcessFallback) ?? err;
           }
+          if (sandboxOutputSize(tempOutputPath) !== null) pages.keepSelected(tempOutputPath);
         }
       );
 
@@ -1060,7 +1052,7 @@ async function convertPdfToTextWithPoppler(
       );
     });
   } catch (err) {
-    if (options.throwOnUnavailable) {
+    if (options.throwOnUnavailable || err instanceof InvalidPageRangeError) {
       throw err;
     }
     // A missing sandbox is not a missing tool: it is never reported as "nothing converted".

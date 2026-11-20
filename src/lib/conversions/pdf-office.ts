@@ -1,10 +1,11 @@
-import { ConversionFailedError, type ConversionOptions } from '../types';
+import { ConversionFailedError, type ConversionOptions, type PdfPageAnalysis } from '../types';
 import { documentToEpub } from './document-model/epub';
 import type { DocumentModel } from './document-model/model';
 import { plainTextModel } from './document-model/plain';
 import { remainingJobMs } from './job-time';
 import { evaluatePageOcrDecisions, recognizeRenderedPdfPages } from './ocr';
 import type { OcrResult } from './ocr-pdf-combiner';
+import type { PageSelectionOptions } from './page-range';
 import { openPdfForReading } from './pdf-access';
 import { readPdfDocument, type ExtractedPdfDocument } from './pdf-text-document';
 import { PdfTextGeometryError } from './pdf-text-types';
@@ -27,6 +28,15 @@ function readPagesOf(results: Map<number, OcrResult>): Map<number, string> {
 }
 
 /**
+ * The pages OCR recognizes: those that need it, or every page when none is known to (undefined). A request that selects pages never
+ * reaches the pages it did not select: they are not in `analyses`, which holds the selected pages only.
+ */
+function pagesToRecognize(pagesNeedingOcr: readonly number[], analyses: readonly PdfPageAnalysis[], selected: boolean): Set<number> | undefined {
+  if (pagesNeedingOcr.length > 0) return new Set(pagesNeedingOcr);
+  return selected ? new Set(analyses.map((analysis) => analysis.pageNumber)) : undefined;
+}
+
+/**
  * What a PDF holds for a writer: the structure of its text layer, or the text of its pages when OCR read some. A document read by OCR
  * keeps the structure of the pages that have a text layer (`extracted`, null when pdfjs could not read it) and says which pages OCR read.
  */
@@ -40,12 +50,15 @@ export interface PdfOfficeReading {
   colour?: boolean;
   /** The writer keeps the pages: their spacing, their indents and a page start for each (`ExtractPdfOptions.pages`). */
   pages?: boolean;
+  /** Read only the pages a request selects (`page` and `pages`); the writers of the targets that offer the selection ask for it. */
+  select?: PageSelectionOptions;
 }
 
 /**
  * @param reading what the writer places: `images` carries the pictures of the pages, `colour` the colours of text, rules and shapes.
  * @throws PdfTextUnmappedError when no page of the document reads for want of a Unicode mapping and OCR is off.
  * @throws PdfPasswordRequiredError when the document needs an open password that the request lacks or got wrong.
+ * @throws InvalidPageRangeError when `reading.select` names a page the document does not have, or when pdf.js cannot read the document and so cannot say which pages the selection names.
  * @throws ConversionFailedError when the document has no text and OCR finds none.
  * @throws OcrEngineUnavailableError when a page needs OCR and no engine can render it.
  */
@@ -55,10 +68,11 @@ export async function readPdfContentForOffice(source: Buffer, options: Conversio
   const densityThreshold = options.ocrDensityThreshold || DEFAULT_DENSITY_THRESHOLD;
   let read: Awaited<ReturnType<typeof readPdfDocument>> | null = null;
   try {
-    read = await readPdfDocument(inputBuffer, { densityThreshold, onUnmapped: options.ocrEnabled ? 'omit' : 'throw', images: reading.images, colour: reading.colour, pages: reading.pages, signal: options.signal });
+    read = await readPdfDocument(inputBuffer, { densityThreshold, onUnmapped: options.ocrEnabled ? 'omit' : 'throw', images: reading.images, colour: reading.colour, pages: reading.pages, select: reading.select, signal: options.signal });
   } catch (err) {
-    // A document pdfjs cannot read is recognized as displayed when OCR was asked for; otherwise it is refused.
-    if (!(options.ocrEnabled && err instanceof PdfTextGeometryError)) throw err;
+    // A document pdfjs cannot read is recognized as displayed when OCR was asked for; otherwise it is refused. Its page count is
+    // unknown then, so a selection is refused with it: recognizing every page would answer a request that names some.
+    if (!(options.ocrEnabled && err instanceof PdfTextGeometryError && reading.select === undefined)) throw err;
   }
   const extracted = read?.extracted ?? null;
   const hasText = (extracted?.text.trim() ?? '') !== '';
@@ -67,7 +81,7 @@ export async function readPdfContentForOffice(source: Buffer, options: Conversio
   const needsOcr = !hasText || (options.ocrEnabled === true && (pagesNeedingOcr.length > 0 || analyses.length === 0));
   if (!needsOcr && extracted) return { kind: 'layout', extracted };
 
-  const recognized = await recognizeRenderedPdfPages(inputBuffer, pagesNeedingOcr.length > 0 ? new Set(pagesNeedingOcr) : undefined, {
+  const recognized = await recognizeRenderedPdfPages(inputBuffer, pagesToRecognize(pagesNeedingOcr, analyses, reading.select !== undefined), {
     dpi: options.dpi,
     language: options.ocrLanguage,
     detectOrientation: options.ocrDetectOrientation,

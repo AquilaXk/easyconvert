@@ -124,6 +124,9 @@ function computeMediaCaps(
   return { showVideo, showVideoCodec, showImage, showAudio };
 }
 
+/** The document targets whose readers take the `pages` of a PDF, as the page-image targets do. */
+const PDF_PAGE_SELECTING_TARGETS: ReadonlySet<string> = new Set(['txt', 'html', 'docx', 'xlsx']);
+
 function canSelectSourcePages(
   src: string,
   tgt: string,
@@ -131,7 +134,7 @@ function canSelectSourcePages(
 ): boolean {
   // The tracer reads the first page of a TIFF.
   if (TIFF_SOURCES.has(src)) return !isVectorizePair(src, tgt);
-  return src === 'pdf' && (targetCategory === 'image' || tgt === 'svg');
+  return src === 'pdf' && (targetCategory === 'image' || tgt === 'svg' || PDF_PAGE_SELECTING_TARGETS.has(tgt));
 }
 
 function canConfigurePdfOrientation(

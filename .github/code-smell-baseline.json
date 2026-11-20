@@ -379,7 +379,7 @@
     "rule": "complexity",
     "function": "convertDocument",
     "count": 1,
-    "maxValue": 126
+    "maxValue": 124
   },
   {
     "file": "src/lib/conversions/document.ts",
@@ -1745,7 +1745,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2332
+    "maxValue": 2324
   },
   {
     "file": "src/worker/engines.ts",

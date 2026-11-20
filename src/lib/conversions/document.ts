@@ -33,6 +33,7 @@ import {
 } from './ocr';
 import { OcrPageDecision, PdfPageAnalysis } from '../types';
 import { extractPdfTextLayerPages } from './pdf-text-geometry';
+import { pageSelectionOf, type PageSelectionOptions } from './page-range';
 import { PdfTextGeometryError } from './pdf-text-types';
 import { openPdfForRebuilding, openPdfForReading, type PdfAccess } from './pdf-access';
 import { assertPdfHeader, extractPdfDocument, readPdfDocument, type ExtractedPdfDocument, type ReadPdfResult } from './pdf-text-document';
@@ -117,6 +118,21 @@ function structuredPdfResult(target: string, model: DocumentModel | null, baseNa
 /** The text of a PDF (its text layer, in reading order); see `extractPdfDocument` for the failures. */
 export async function extractTextFromPdf(pdfBuffer: Buffer): Promise<string> {
   return (await extractPdfDocument(pdfBuffer)).text;
+}
+
+/** The targets whose reader selects the pages a request names (`page`, `pages`); the others read every page. */
+const PAGE_SELECTING_TARGETS: ReadonlySet<string> = new Set(['txt', 'html']);
+
+function pageSelectionFor(tgt: string, options: ConversionOptions): PageSelectionOptions | undefined {
+  return PAGE_SELECTING_TARGETS.has(tgt) ? pageSelectionOf(options) : undefined;
+}
+
+/**
+ * A document pdfjs cannot read is recognized as displayed when OCR was asked for; otherwise it is refused. A selection is refused with it:
+ * the page count is unknown then, and recognizing every page would answer a request that names some.
+ */
+function assertRecognizable(err: unknown, tgt: string, options: ConversionOptions): void {
+  if (!(options.ocrEnabled && err instanceof PdfTextGeometryError && pageSelectionFor(tgt, options) === undefined)) throw err;
 }
 
 function editAccessOf(options: ConversionOptions): PdfAccess {
@@ -359,11 +375,10 @@ export async function convertDocument(
         densityThreshold,
         geometry: geometryWanted ? 'text-pages' : 'none',
         onUnmapped: options.ocrEnabled ? 'omit' : 'throw',
-        images: tgt === 'html' || tgt === 'md', signal: options.signal,
+        images: tgt === 'html' || tgt === 'md', select: pageSelectionFor(tgt, options), signal: options.signal,
       });
     } catch (err) {
-      // A document pdfjs cannot read is recognized as displayed when OCR was asked for; otherwise it is refused.
-      if (!(options.ocrEnabled && err instanceof PdfTextGeometryError)) throw err;
+      assertRecognizable(err, tgt, options);
     }
     const structuredPdf: ExtractedPdfDocument | null = read?.extracted ?? null;
     let extractedText = structuredPdf?.text ?? '';

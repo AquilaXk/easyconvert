@@ -1,5 +1,6 @@
 import type { ConversionOptions } from '../../types';
 import { convertOnDataThread } from '../data-task';
+import { pageSelectionOf } from '../page-range';
 import { generateOdsFromData } from './odf-writers';
 import { extractRowsForOffice } from './sheet-extract';
 import { officeSheetWorkbook } from './xlsx-convert';
@@ -17,7 +18,7 @@ export type SheetTarget = 'xlsx' | 'ods';
 /** The workbook of a source on the calling thread; the pool thread runs this for `xlsx` and `ods`. */
 export async function writeSheetInline(input: Buffer, src: string, tgt: SheetTarget, options: ConversionOptions, baseName: string): Promise<Buffer> {
   if (tgt === 'ods') return generateOdsFromData(await extractRowsForOffice(input, src, options), baseName);
-  return officeSheetWorkbook(input, src, options);
+  return officeSheetWorkbook(input, src, options, undefined, pageSelectionOf(options));
 }
 
 /** The workbook of a source, written on a pool thread when the source is a text sheet of 128 KiB or more. */
