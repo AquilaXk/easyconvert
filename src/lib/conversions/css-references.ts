@@ -50,13 +50,13 @@ const MARKUP_OPEN = '<';
 const IMPORT_REFERENCE = '@import';
 const EMPTY_URL_REFERENCE = 'url()';
 
-const HEX_ESCAPE_MAX_DIGITS = 6;
-const HEX_RADIX = 16;
 const MAX_CODE_POINT = 0x10ffff;
 const REPLACEMENT_CHARACTER = 0xfffd;
 const SURROGATE_FIRST = 0xd800;
 const SURROGATE_LAST = 0xdfff;
-const SUPPLEMENTARY_PLANE = 0x10000;
+const HEX_RADIX = 16;
+/** The longest run of hex digits an escape holds after its first one (1 to 6 in all). */
+const HEX_DIGITS_AFTER_FIRST = 5;
 const HEX_DIGIT = /^[0-9A-Fa-f]$/;
 /** What an identifier is made of; an escape outside a quoted string may only stand for one of these. */
 const PLAIN_NAME_CHARACTER = /^[A-Za-z0-9_-]$/;
@@ -67,25 +67,51 @@ function isHexDigit(ch: string | undefined): boolean {
   return ch !== undefined && HEX_DIGIT.test(ch);
 }
 
-/**
- * CSS Syntax Level 3, 4.3.7 "consume an escaped code point": the character an escape at `at` (the backslash) stands for and the
- * index after it. Up to six hex digits and one whitespace after them, zero, a surrogate and anything past U+10FFFF are U+FFFD; any
- * other character stands for itself. Null for a backslash that ends the text.
+/*
+ * `consumeEscaped` and `decodeEscaped` follow csstree/csstree (`lib/tokenizer/utils.js` at commit f8980154f79110833bf56c391cd45fe5f9205752, SHA-256
+ * 2c0087a12707b22eae4bc44dd338a8682838663872b2240387c5979ae76d44bb), which implement CSS Syntax Level 3, section 4.3.7. MIT licence:
+ *
+ * Copyright (C) 2016-2026 by Roman Dvornov
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
  */
+
+/**
+ * CSS Syntax 4.3.7 "consume an escaped code point": the index after the escape whose backslash is at `at` (up to six hex digits, and one
+ * whitespace after them). The next character is known to exist.
+ */
+function consumeEscaped(css: string, at: number): number {
+  let offset = at + 2;
+  if (isHexDigit(css[offset - 1])) {
+    for (const maxOffset = Math.min(css.length, offset + HEX_DIGITS_AFTER_FIRST); offset < maxOffset && isHexDigit(css[offset]); offset++);
+    if (isWhitespace(css[offset])) offset++;
+  }
+  return offset;
+}
+
+/** The character an escape stands for, given the text after its backslash: zero, a surrogate and anything past U+10FFFF are U+FFFD. */
+function decodeEscaped(escaped: string): string {
+  if (!isHexDigit(escaped[0])) return escaped;
+  let code = Number.parseInt(escaped, HEX_RADIX);
+  if (code === 0 || (code >= SURROGATE_FIRST && code <= SURROGATE_LAST) || code > MAX_CODE_POINT) code = REPLACEMENT_CHARACTER;
+  return String.fromCodePoint(code);
+}
+
+/** The character an escape at `at` (the backslash) stands for and the index after it; null for a backslash that ends the text. */
 function readEscape(css: string, at: number): { character: string; end: number } | null {
-  let i = at + 1;
-  if (i >= css.length) return null;
-  if (!isHexDigit(css[i])) {
-    const codePoint = css.codePointAt(i) as number;
-    return { character: String.fromCodePoint(codePoint), end: i + (codePoint >= SUPPLEMENTARY_PLANE ? 2 : 1) };
-  }
-  let value = 0;
-  for (let digits = 0; digits < HEX_ESCAPE_MAX_DIGITS && isHexDigit(css[i]); digits++, i++) {
-    value = value * HEX_RADIX + Number.parseInt(css[i], HEX_RADIX);
-  }
-  if (isWhitespace(css[i])) i++;
-  const invalid = value === 0 || (value >= SURROGATE_FIRST && value <= SURROGATE_LAST) || value > MAX_CODE_POINT;
-  return { character: String.fromCodePoint(invalid ? REPLACEMENT_CHARACTER : value), end: i };
+  if (at + 1 >= css.length) return null;
+  // A character past the Basic Multilingual Plane is two UTF-16 units and stands for itself.
+  const end = isHexDigit(css[at + 1]) ? consumeEscaped(css, at) : at + 1 + String.fromCodePoint(css.codePointAt(at + 1) as number).length;
+  return { character: decodeEscaped(css.slice(at + 1, end)), end };
 }
 
 /**

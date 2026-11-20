@@ -3,7 +3,7 @@
  * 8-bit masks (`s8mk`, `l8mk`, `h8mk`, `t8mk`), and the `ARGB` elements (`ic04`, `ic05`).
  *
  * The run-length scheme and the extra header of the 128x128 element are adapted from python-pillow/Pillow
- * (`src/PIL/IcnsImagePlugin.py`, `read_32`, `read_32t` and `read_mk`, at tag 12.0.0, commit
+ * (`src/PIL/IcnsImagePlugin.py`, SHA-256 76bfe9ebc936102a0e36bc370eac372128a0dfdb97a37f586379d37ec854347c, `read_32`, `read_32t` and `read_mk`, at tag 12.0.0, commit
  * 693df7b42c666f88c719f9973be0ad71607328e0), MIT-CMU:
  *
  * The Python Imaging Library (PIL) is
