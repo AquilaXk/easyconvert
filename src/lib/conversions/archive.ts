@@ -57,6 +57,7 @@ import { InflateBudget, inflateRawSalvage } from './bounded-inflate';
 import { resolveArchiveCompressionLevel } from './archive-compression-level';
 import { singleStreamPayload } from './archive-single-stream';
 import { RAR4_FILE_FLAG_UNICODE, decodeRar4FileName, readRar4BlockHeader } from './archive-rar4-name';
+import { extractRarWithSevenZipOr } from './archive-rar-seven-zip';
 import { canonicalEntryPath, encryptedStagedName, safeCanonicalArchivePath, validateEntryPath } from './archive-entry-path';
 import { gzipInBlocks } from './deflate-blocks';
 import { createZipBuffer, deflaterRunningAhead, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
@@ -1671,47 +1672,6 @@ function assertArchiveFileCount(count: number, maxFiles: number): void {
   }
 }
 
-/**
- * A RAR archive extracted by 7-Zip, for an archive the in-process reader cannot serve (a compressed RAR 4.x, any RAR 5.0) on a host without
- * `unrar`: the worker image has 7-Zip, which reads both generations. The same checks as every 7-Zip extraction apply (listing vetted, sizes and
- * ratio capped, the tree verified after the run). Returns null when no 7-Zip is installed, so the caller keeps its own refusal.
- */
-function extractRarWithSevenZip(
-  rarBuffer: Buffer,
-  options: { password?: string; entries?: string[] },
-  limits: ArchiveExtractionLimits
-): { filename: string; buffer: Buffer }[] | null {
-  const p7z = get7zBinaryPath();
-  if (!p7z) return null;
-  const workDir = path.join(os.tmpdir(), `easyconvert_rar7z_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`);
-  fs.mkdirSync(workDir, { recursive: true });
-  try {
-    const archivePath = path.join(workDir, 'archive.rar');
-    fs.writeFileSync(archivePath, rarBuffer);
-    const extractDir = path.join(workDir, 'out');
-    fs.mkdirSync(extractDir, { recursive: true });
-    const tree = extractArchiveContainedSync({
-      p7zBin: p7z,
-      archivePath,
-      extractDir,
-      cwd: workDir,
-      timeoutMs: UNRAR_EXTRACT_TIMEOUT_MS,
-      maxBuffer: limits.MAX_UNCOMPRESSED_SIZE,
-      limits,
-      label: 'RAR archive',
-      password: options.password,
-    });
-    const extracted: { filename: string; buffer: Buffer }[] = [];
-    for (const file of tree.files) {
-      const filename = canonicalEntryPath(file.relPath);
-      if (filename && matchArchiveGlob(filename, options.entries)) extracted.push({ filename, buffer: readSandboxOutput(file.absPath) });
-    }
-    return extracted;
-  } finally {
-    cleanupDirectoryTree(workDir);
-  }
-}
-
 export function extractRarArchive(
   rarBuffer: Buffer,
   options: { password?: string; entries?: string[]; limits?: ArchiveExtractionLimits } = {}
@@ -1838,9 +1798,7 @@ export function extractRarArchive(
 
   // Pure TypeScript parser for stored RAR archives with fail-closed validation
   if (isRar5) {
-    const viaSevenZip = extractRarWithSevenZip(rarBuffer, options, limits);
-    if (viaSevenZip !== null) return viaSevenZip;
-    throw new ConversionFailedError('Unsupported RAR format: RAR5 compressed archives require unrar decompressor');
+    return extractRarWithSevenZipOr(new ConversionFailedError('Unsupported RAR format: RAR5 compressed archives require unrar decompressor'), get7zBinaryPath(), rarBuffer, options, limits);
   }
 
   const files: { filename: string; buffer: Buffer }[] = [];
@@ -1874,11 +1832,7 @@ export function extractRarArchive(
       // Enforce fail-closed verification: Method 0x30 is STORE (uncompressed)
       // Methods 0x31..0x35 are compressed and MUST NOT be sliced as raw corrupt data!
       if (method !== 0x30) {
-        const viaSevenZip = extractRarWithSevenZip(rarBuffer, options, limits);
-        if (viaSevenZip !== null) return viaSevenZip;
-        throw new ConversionFailedError(
-          `Unsupported RAR compression method (0x${method.toString(16)}): unrar binary is required for compressed RAR archives`
-        );
+        return extractRarWithSevenZipOr(new ConversionFailedError(`Unsupported RAR compression method (0x${method.toString(16)}): unrar binary is required for compressed RAR archives`), get7zBinaryPath(), rarBuffer, options, limits);
       }
 
       if (nameStart + nameSize <= rarBuffer.length) {

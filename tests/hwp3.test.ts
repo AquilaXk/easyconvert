@@ -1,7 +1,8 @@
+import JSZip from 'jszip';
 import { describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { parseHwpDocument } from '../src/lib/conversions/hwp';
-import { UnsupportedHwpVersionError } from '../src/lib/types';
+import { UnsupportedHwpVersionError } from '../src/lib/conversions/hwp-version';
 import { extractTextWithExternalPdftotext } from './helpers/differential-oracle';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipWithoutTools } from './helpers/strict-skip';
@@ -31,23 +32,43 @@ describe('an HWP 3.x file in the in-process reader', () => {
   });
 });
 
+const WORDS = ['테스트', 'test'];
+
+/** The words (letters and digits, in order) of a text. */
+function wordsOf(text: string): string[] {
+  return text.match(/[\p{L}\p{N}]+/gu) ?? [];
+}
+
+/** The text of every `<tag>` element of an XML part of a package, in order. */
+async function elementTexts(archive: Buffer, part: string, tag: string): Promise<string[]> {
+  const xml = await (await JSZip.loadAsync(archive)).file(part)!.async('string');
+  return [...xml.matchAll(new RegExp(`<${tag}[^>]*>([^<]*)</${tag}>`, 'g'))].map((match) => match[1]);
+}
+
 describe.skipIf(sofficeMissing)('an HWP 3.x file converted through the office suite', () => {
-  it.for(['txt', 'docx', 'html', 'md', 'hwpx'] as const)('is written as .%s with the words of the document', { timeout: CONVERSION_TIMEOUT_MS }, async (target, ctx) => {
+  it.for(['txt', 'md'] as const)('is written as .%s with the words of the document, in order', { timeout: CONVERSION_TIMEOUT_MS }, async (target, ctx) => {
     const { bytes } = await requireRealworldSample(ctx, SAMPLE);
     const result = await dispatchConversion(bytes, 'hwp', target, {}, SAMPLE);
-    expect(result.size).toBeGreaterThan(0);
-    if (target === 'txt' || target === 'md' || target === 'html') {
-      const text = result.buffer.toString('utf-8');
-      expect(text).toContain('테스트');
-      expect(text).toContain('test');
-    }
+    expect(wordsOf(result.buffer.toString('utf-8'))).toEqual(WORDS);
   });
 
-  it('is written as a PDF that holds the words of the document', async (ctx) => {
+  it('is written as HTML with one paragraph for each line', { timeout: CONVERSION_TIMEOUT_MS }, async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, SAMPLE);
+    const html = (await dispatchConversion(bytes, 'hwp', 'html', {}, SAMPLE)).buffer.toString('utf-8');
+    expect([...html.matchAll(/<p[^>]*>(?:<a[^>]*><\/a>)?([^<]*)<\/p>/g)].map((match) => match[1])).toEqual(WORDS);
+  });
+
+  it('is written as DOCX and HWPX with the words as text runs', { timeout: CONVERSION_TIMEOUT_MS }, async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, SAMPLE);
+    const docx = (await dispatchConversion(bytes, 'hwp', 'docx', {}, SAMPLE)).buffer;
+    expect(await elementTexts(docx, 'word/document.xml', 'w:t')).toEqual(WORDS);
+    const hwpx = (await dispatchConversion(bytes, 'hwp', 'hwpx', {}, SAMPLE)).buffer;
+    expect(await elementTexts(hwpx, 'Contents/section0.xml', 'hp:t')).toEqual(WORDS);
+  });
+
+  it('is written as a PDF whose text is the words of the document', { timeout: CONVERSION_TIMEOUT_MS }, async (ctx) => {
     const { bytes } = await requireRealworldSample(ctx, SAMPLE);
     const result = await dispatchConversion(bytes, 'hwp', 'pdf', {}, SAMPLE);
-    const text = await extractTextWithExternalPdftotext(result.buffer);
-    expect(text).toContain('테스트');
-    expect(text).toContain('test');
-  }, CONVERSION_TIMEOUT_MS);
+    expect(wordsOf((await extractTextWithExternalPdftotext(result.buffer)) ?? '')).toEqual(WORDS);
+  });
 });

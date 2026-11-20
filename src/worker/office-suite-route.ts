@@ -25,6 +25,8 @@ import {
   officeSuiteWritesText,
 } from '../lib/conversions/office/office-suite-sources';
 import { OOXML_VARIANT_FAMILY } from '../lib/conversions/ooxml-variants';
+import { HWP3_SIGNATURE } from '../lib/conversions/hwp-version';
+import { ARCHIVE_TARGET_FORMATS } from './native-route-formats';
 import { metafileFrameDocument } from '../lib/conversions/office/metafile-frame-document';
 import { isEmptyMetafile, metafileLeadingBytes, readMetafilePage, type MetafileFormat } from '../lib/conversions/office/metafile-page-frame';
 import { CFBF_MAGIC, PRE_OLE2_WORD_SIGNATURES, isBiffStream } from '../lib/format-signatures';
@@ -767,24 +769,27 @@ const HWP3_DIRECT_TARGETS: ReadonlySet<string> = new Set(['docx', 'doc', 'odt', 
 const HWP3_INTERCHANGE = 'docx';
 const HWP3_TEXT_INTERCHANGE = 'txt';
 
-/** The first bytes of an HWP 3.x file (Hangul Word Processor 97 and earlier), which is no compound file. */
-const HWP3_SIGNATURE = 'HWP Document File V3';
-
 /**
  * Whether the input is an HWP 3.x document. The in-process reader reads the compound files of HWP 5.0 only; the office suite has an import
  * filter for the older format, so such a file is written as a DOCX by the suite and converted from that (`convertThroughInterchange`).
  */
-export function isHwp3Input(src: string, input: Buffer | WorkerVfsPayload): boolean {
+function isHwp3Input(src: string, input: Buffer | WorkerVfsPayload): boolean {
   return src === 'hwp' && leadingBytes(input, HWP3_SIGNATURE.length).toString('latin1') === HWP3_SIGNATURE;
 }
 
 /**
  * The format the office suite writes from an HWP 3.x file for `tgt`: the target itself when the suite writes it, the plain text the in-process
- * converter writes XPS and the Hangul formats from, else the DOCX it reads.
+ * converter writes XPS and the Hangul formats from, else the DOCX it reads. Undefined for a target that packs the file as it is.
  */
-export function hwp3Interchange(tgt: string): string {
+function hwp3Interchange(tgt: string): string | undefined {
+  if (ARCHIVE_TARGET_FORMATS.has(tgt)) return undefined;
   if (HWP3_DIRECT_TARGETS.has(tgt)) return tgt;
   return TEXT_ONLY_TARGETS.has(tgt) ? HWP3_TEXT_INTERCHANGE : HWP3_INTERCHANGE;
+}
+
+/** `interchangeNeeded` of a request, which sends an HWP 3.x file through the office suite for every target that is not a packing of the file. */
+export function interchangeFor(request: OfficeSuiteRequest, madeWithoutInterchange: boolean): string | undefined {
+  return isHwp3Input(request.src, request.input) ? hwp3Interchange(request.tgt) : interchangeNeeded(request.src, request.tgt, madeWithoutInterchange);
 }
 
 /** Whether the office suite reads this input: every source of its table, but not a clear-text CGM, which the in-process parser reads. */

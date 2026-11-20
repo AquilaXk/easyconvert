@@ -748,20 +748,6 @@ export class UnprocessableFontInputError extends ConversionFailedError {
   }
 }
 
-/**
- * An HWP document of the 3.x generation (Hangul Word Processor 97 and earlier), which is no compound file: the in-process reader reads HWP 5.0 only and
- * the office suite is the one that imports the older format. The file is understood but cannot be read here, so the routes answer HTTP 422 (through
- * `status`); another worker with the suite would read it, so this is not an `EngineMissingError`.
- */
-export class UnsupportedHwpVersionError extends ConversionFailedError {
-  readonly refusalCode: ConversionRefusalCode = 'unsupported_input';
-  readonly status = 422;
-  constructor(message: string) {
-    super(message);
-    this.name = 'UnsupportedHwpVersionError';
-  }
-}
-
 /** A DWG whose release code (`AC1009`, `AC1033`, ...) names a release the DWG reader does not decode reliably, or one that is newer than the reader knows. */
 export class UnsupportedDwgVersionError extends UnprocessableCadInputError {
   /** The six-character release code at the start of the file. */
