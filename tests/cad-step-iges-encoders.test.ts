@@ -489,7 +489,7 @@ describe('WP-46b: CAD STEP (ISO 10303-21 AP214) encoder and mesh to IGES through
         (error: unknown) => error as Error
       );
       expect((failure as UnprocessableCadInputError).status).toBe(422);
-      expect(failure?.message).toBe('The CAD converter could not convert this model: it exited with status 4 (no-shapes: the mesh holds no triangle that is a face).');
+      expect(failure?.message).toBe('The CAD converter could not convert this model: it exited with status 4 (no-shapes).');
     });
 
     it('fails closed with CadGeometryUnavailableError on a mesh with no triangle', async () => {

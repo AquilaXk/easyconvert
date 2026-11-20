@@ -353,9 +353,8 @@ const EMPTY_STEP = Buffer.from(
 );
 
 const refusedWith = (reason: string): string => `The CAD converter could not convert this model: it exited with status ${reason}.`;
-const NOT_STEP = refusedWith('3 (unreadable: the file is not a STEP file Open CASCADE can read)');
-const NOT_IGES = refusedWith('3 (unreadable: the file is not an IGES file Open CASCADE can read)');
-const NO_SHAPES = refusedWith('4 (no-shapes: the STEP file holds no shape that could be transferred)');
+const UNREADABLE = refusedWith('3 (unreadable)');
+const NO_SHAPES = refusedWith('4 (no-shapes)');
 
 describe.skipIf(!haveTools)('files the kernel cannot use', () => {
   async function refusal(input: Buffer, source: string, target: string): Promise<Error> {
@@ -375,19 +374,19 @@ describe.skipIf(!haveTools)('files the kernel cannot use', () => {
   }
 
   it('refuses text that is no STEP file with a 422 that names the reason', async () => {
-    expectUnprocessable(await refusal(Buffer.from('this is not a model\n'), 'step', 'stl'), NOT_STEP);
+    expectUnprocessable(await refusal(Buffer.from('this is not a model\n'), 'step', 'stl'), UNREADABLE);
   });
 
   it('refuses a STEP file under the name of IGES, and an IGES file under the name of STEP', async (ctx) => {
     const { bytes: step } = await requireRealworldSample(ctx, 'occt-screw.step');
     const { bytes: iges } = await requireRealworldSample(ctx, 'occt-hammer.iges');
-    expectUnprocessable(await refusal(step, 'iges', 'stl'), NOT_IGES);
-    expectUnprocessable(await refusal(iges, 'step', 'stl'), NOT_STEP);
+    expectUnprocessable(await refusal(step, 'iges', 'stl'), UNREADABLE);
+    expectUnprocessable(await refusal(iges, 'step', 'stl'), UNREADABLE);
   });
 
   it('refuses a STEP file cut off in its data with a 422', async (ctx) => {
     const { bytes } = await requireRealworldSample(ctx, 'occt-screw.step');
-    expectUnprocessable(await refusal(bytes.subarray(0, bytes.length / 2), 'step', 'obj'), NOT_STEP);
+    expectUnprocessable(await refusal(bytes.subarray(0, bytes.length / 2), 'step', 'obj'), UNREADABLE);
   });
 
   it('refuses an IGES file cut off in its data before the kernel reads it, where the kernel would convert part of the model or fault', async (ctx) => {
@@ -419,7 +418,7 @@ describe.skipIf(!haveTools)('files the kernel cannot use', () => {
         "#80=VERTEX_POINT('W', #20);\n#30=PLANE('P', #10);\nENDSEC;\nEND-ISO-10303-21;"
     );
     expectUnprocessable(await refusal(cyclic, 'step', 'stl'), NO_SHAPES);
-    expectUnprocessable(await refusal(Buffer.from('ISO-10303-21; HEADER; #10=CARTESIAN_POINT((('), 'step', 'stl'), NOT_STEP);
+    expectUnprocessable(await refusal(Buffer.from('ISO-10303-21; HEADER; #10=CARTESIAN_POINT((('), 'step', 'stl'), UNREADABLE);
   });
 
   it('refuses a STEP file that holds no shape instead of writing an empty model', async () => {

@@ -243,6 +243,6 @@ S      1G      2D      6P      3                                        T      1
 `;
     const failure = await convertFile(Buffer.from(iges, 'utf-8'), 'iges', 'obj', {}, 'triangle.iges').catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(UnprocessableCadInputError);
-    expect((failure as Error).message).toMatch(/^The CAD converter could not convert this model: it exited with status 4 \(no-(shapes|surfaces): /);
+    expect((failure as Error).message).toMatch(/^The CAD converter could not convert this model: it exited with status 4 \(no-(shapes|surfaces)\)\.$/);
   });
 });

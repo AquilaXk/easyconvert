@@ -70,6 +70,19 @@ const OUTPUT_TOO_LARGE = 'The model is larger than the CAD converter may write.'
 const SHELL_NOT_FOUND = 127;
 /** The error line of a program that ran out of memory: `memory` is its code. */
 const MEMORY_ERROR_LINE = /^cad-convert: error: memory:/m;
+/**
+ * The codes of the `cad-convert: error: <code>: <message>` line that are a fixed vocabulary of the program (native/cad-convert): the
+ * kind of refusal. The answer names the code and never the message, which can quote a number or what the kernel said; `failed` is
+ * the kernel's own text and is not in the list.
+ */
+const OWN_ERROR_CODES: ReadonlySet<string> = new Set(['unreadable', 'no-shapes', 'no-surfaces', 'too-large', 'unit', 'material', 'transfer', 'write']);
+const ERROR_CODE = /^cad-convert: error: ([a-z-]+):/m;
+
+/** ` (unreadable)`: the code the program gave its refusal, or nothing when it gave none of its own. */
+function refusalCode(stderr: string): string {
+  const code = ERROR_CODE.exec(stderr)?.[1];
+  return code !== undefined && OWN_ERROR_CODES.has(code) ? ` (${code})` : '';
+}
 
 /** Length units the program writes in, by the `outputUnit` option; millimetres when the request names none. */
 const OUTPUT_UNITS: ReadonlySet<string> = new Set(['mm', 'cm', 'm', 'in']);
@@ -139,7 +152,7 @@ function toProgramError(error: unknown, timeoutMs: number): unknown {
       return new UnprocessableCadInputError(`The CAD converter ran out of memory: the model needs more than the ${PROGRAM_MEMORY_LIMIT_MB} MB it may use.`);
     }
     recordEngineOutput(PROGRAM_NAME, 'convert', error.stderr);
-    return new UnprocessableCadInputError(`The CAD converter could not convert this model: ${endOfRun(error)}.`);
+    return new UnprocessableCadInputError(`The CAD converter could not convert this model: ${endOfRun(error)}${refusalCode(error.stderr)}.`);
   }
   return error;
 }

@@ -201,7 +201,7 @@ END-ISO-10303-21;`;
       const buffer = Buffer.from(pointOnlyStep, 'utf-8');
       const failure = await convertFile(buffer, 'step', 'stl', {}, 'points_only.step').catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(UnprocessableCadInputError);
-      expect((failure as Error).message).toBe('The CAD converter could not convert this model: it exited with status 4 (no-shapes: the STEP file holds no shape that could be transferred).');
+      expect((failure as Error).message).toBe('The CAD converter could not convert this model: it exited with status 4 (no-shapes).');
     });
 
     // A STEP file whose geometry is only two curves used to be answered with a ribbon surface the file does not hold; the kernel

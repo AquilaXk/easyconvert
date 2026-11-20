@@ -13,6 +13,7 @@ import { requireOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { withMissingBinary } from './helpers/native-tools';
 import { withPs2pdfShim, withPs2pdfSparseOutput, withRejectingPs2pdf } from './helpers/ps2pdf-shim';
+import { captureEngineOutput } from './helpers/engine-output-log';
 import { skipWithoutTools } from './helpers/strict-skip';
 import { runWithoutFileConfinement } from './helpers/unconfined-files';
 
@@ -114,9 +115,14 @@ describe('PostScript route through the interpreter and Poppler', () => {
 
   oracleTest('a file the interpreter rejects is a typed 400 error', ['pdftocairo'], async () => {
     await withRejectingPs2pdf('Error: /syntaxerror in --nostringval--', async () => {
+      const log = captureEngineOutput();
       const run = dispatchConversion(Buffer.from('%!PS\n(', 'latin1'), 'ps', 'pdf', {}, 'broken.ps');
       await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
-      await expect(run).rejects.toThrow(/syntaxerror/);
+      await expect(run).rejects.toThrow('The PostScript interpreter rejected the .ps file.');
+      const printed = log.outputs().join('\n');
+      log.restore();
+      // The interpreter's error line is in the server log and not in the answer.
+      expect(printed).toContain('Error: /syntaxerror in --nostringval--');
     });
   }, NATIVE_TIMEOUT_MS);
 });

@@ -7,6 +7,7 @@ import { PDFDocument } from 'pdf-lib';
 import sharp from 'sharp';
 import { knownRefusal, readKnownRefusals } from '../bench/realworld/report';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import { captureEngineOutput } from './helpers/engine-output-log';
 import { EngineUnavailableError } from '../src/lib/types';
 import { countPagesOfReadablePdf } from '../src/worker/engines';
 import { convertDjvu, type DjvuJob } from '../src/worker/djvu-render';
@@ -596,12 +597,13 @@ describe.skipIf(!canDraw)('documents built byte by byte, against the pages djvus
     { timeout: CONVERSION_TIMEOUT_MS },
     async (levels, ctx) => {
       const page = maskedPageOf((await requireRealworldSample(ctx, DOGV)).path, DOGV_FIRST_PAGE, DOGV_DICTIONARY);
+      const log = captureEngineOutput();
       const { elapsedMs, outcome } = await chainOutcome(maskOverChain(page, levels, false));
-      const expectedRefusal =
-        levels === MASK_CHAIN_LEVELS[0]
-          ? /^ConversionFailedError: ddjvu could not draw the \.djvu file: .*shape dictionary/
-          : /^ConversionFailedError: ddjvu could not draw the \.djvu file: .*(?:shape dictionary|Cannot decode page 1\.)/;
-      expect(outcome).toMatch(expectedRefusal);
+      const printed = log.outputs().join('\n');
+      log.restore();
+      // The caller reads the sentence; what ddjvu said about the cause is in the server log.
+      expect(outcome).toBe('ConversionFailedError: ddjvu could not draw the .djvu file.');
+      expect(printed).toMatch(levels === MASK_CHAIN_LEVELS[0] ? /shape dictionary/ : /shape dictionary|Cannot decode page 1\./);
       expectWithinHangGuard(`the mask over ${levels} files`, elapsedMs, { guardMs: CHAIN_HANG_GUARD_MS, expectedLocalMs: PATCHED_CHAIN_EXPECTED_LOCAL_MS });
     }
   );
@@ -691,17 +693,23 @@ describe.skipIf(runsCannotStart)('the programs and their limits', () => {
 
   it('starts the program on a directory that holds the one file and nothing else, with the arguments of the reference service', async () => {
     const program = standIn('echo "args: $* $(basename "$in") $(basename "$out")" >&2\nls -A "$dir" | tr "\\n" " " >&2\nexit 10');
+    const log = captureEngineOutput();
     const error = await refusalOf(convertWith(program, 'pdf'));
-    expect(error.message).toContain('args: -format=pdf');
-    expect(error.message).toContain('document.djvu rendered.pdf');
-    expect(error.message.split('\n').at(-1)).toBe('document.djvu');
+    const [printed] = log.outputs();
+    log.restore();
+    expect(error.message).toBe('ddjvu could not draw the .djvu file.');
+    expect(printed).toContain('args: -format=pdf');
+    expect(printed).toContain('document.djvu rendered.pdf');
+    expect(printed.split('\n').at(-1)).toBe('document.djvu');
   });
 
-  it('names what the program printed when it fails, with the job directory hidden', async () => {
+  it('keeps what the program printed when it fails out of the error, and in the server log', async () => {
+    const log = captureEngineOutput();
     const error = await refusalOf(convertWith(standIn('echo "ddjvu: Cannot decode page 2. $dir" >&2\nexit 10'), 'pdf'));
-    expect(error).toMatchObject({ name: 'ConversionFailedError' });
-    expect(error.message).toContain('Cannot decode page 2.');
-    expect(error.message).toContain('<tmp>');
+    const printed = log.outputs().join('\n');
+    log.restore();
+    expect(error).toMatchObject({ name: 'ConversionFailedError', message: 'ddjvu could not draw the .djvu file.' });
+    expect(printed).toContain('Cannot decode page 2.');
   });
 
   it('refuses a PDF with fewer pages than the document lists, which is what a program that skipped a page writes', async () => {
@@ -721,8 +729,12 @@ describe.skipIf(runsCannotStart)('the programs and their limits', () => {
   }, 20_000);
 
   it('gives ddjvu four glibc heaps', async () => {
+    const log = captureEngineOutput();
     const error = await refusalOf(convertWith(standIn('echo "arena=$MALLOC_ARENA_MAX" >&2; exit 10'), 'pdf'));
-    expect(error).toMatchObject({ name: 'ConversionFailedError', message: 'ddjvu could not draw the .djvu file: arena=4' });
+    const printed = log.outputs().join('\n');
+    log.restore();
+    expect(error).toMatchObject({ name: 'ConversionFailedError', message: 'ddjvu could not draw the .djvu file.' });
+    expect(printed).toContain('arena=4');
   });
 
   it('refuses a PDF too large for the page tools before it is read for an image target', async () => {
@@ -769,11 +781,17 @@ describe.skipIf(runsCannotStart)('the programs and their limits', () => {
       ['crashes', 'kill -SEGV $$', 'crashed (SIGSEGV) under its 2048 MB memory limit'],
       ['aborts', 'kill -ABRT $$', 'crashed (SIGABRT)'],
       ['crashes on a bus error', 'kill -BUS $$', 'crashed (SIGBUS)'],
-      ['fails', 'echo "*** Unexpected End Of File." >&2; exit 10', '(exit status 10): *** Unexpected End Of File.'],
+      ['fails', 'echo "*** Unexpected End Of File." >&2; exit 10', '(exit status 10).'],
     ])('refuses a document whose pages djvused %s on when it opens them, with the typed include error', async (_name, size, how) => {
       const program = standIn('exit 0', { reporter: `case "$script" in n) ${DIRECTORY(1)};; size) ${size};; esac` });
+      const log = captureEngineOutput();
       const error = await refusalOf(convertWith(program, 'pdf'));
+      const printed = log.outputs().join('\n');
+      log.restore();
       expect(error).toMatchObject({ name: 'DjvuIncludeStructureError', status: 422, message: expect.stringContaining(how) });
+      // What djvused printed is in the log and not in the error.
+      expect(error.message).not.toContain('Unexpected End Of File');
+      if (how.startsWith('(exit status')) expect(printed).toContain('*** Unexpected End Of File.');
       expect(fs.existsSync(program.started)).toBe(false);
     });
 

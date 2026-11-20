@@ -756,7 +756,7 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       const failure = await convertVectorCad(corrupt.cadNonManifoldStep, 'step', 'stl').catch((err: unknown) => err);
       expect(failure).toBeInstanceOf(UnprocessableCadInputError);
       expect((failure as Error).message).toBe(
-        'The CAD converter could not convert this model: it exited with status 4 (no-shapes: the STEP file holds no shape that could be transferred).'
+        'The CAD converter could not convert this model: it exited with status 4 (no-shapes).'
       );
     });
 

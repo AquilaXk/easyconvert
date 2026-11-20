@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { captureEngineOutput } from './helpers/engine-output-log';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -406,14 +407,17 @@ describe('the calibre route against a stand-in program', () => {
     expect(error).toMatchObject({ status: 422, message: 'The .mobi book is protected by DRM and cannot be converted.' });
   });
 
-  it('answers a failed run with a typed error that names the last line calibre printed and not the job directory', async () => {
+  it('answers a failed run with a typed error that names the exit status, and keeps what calibre printed in the server log', async () => {
     const program = fakeProgram(`process.stderr.write('Traceback (most recent call last):\\n  File "x"\\nValueError: bad record at ' + input + '\\n'); process.exit(1);`);
+    const log = captureEngineOutput();
     const error = await convertWithCalibre(deps(), request('mobi', 'azw3', Buffer.from('book')), program).catch((caught: unknown) => caught);
+    const printed = log.outputs().join('\n');
+    log.restore();
     expect(error).toBeInstanceOf(ConversionFailedError);
     expect(error).not.toBeInstanceOf(EngineMissingError);
-    const message = (error as Error).message;
-    expect(message).toContain('ValueError: bad record at <tmp>');
-    expect(message).not.toContain(os.tmpdir());
+    expect((error as Error).message).toBe('calibre could not convert the .mobi file to .azw3: it exited with status 1.');
+    expect(printed).toContain('ValueError: bad record at');
+    expect(printed).toContain('Traceback (most recent call last)');
   });
 
   it.each([

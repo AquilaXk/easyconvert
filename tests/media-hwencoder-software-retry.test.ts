@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { oracleTest } from './helpers/oracle-test';
 import { getOracleToolPath } from './helpers/differential-oracle';
+import { captureEngineOutput } from './helpers/engine-output-log';
 import { runWithoutFileConfinement } from './helpers/unconfined-files';
 
 // The stand-in programs of this suite write their records outside the job directory, which the file confinement refuses (policy 248).
@@ -23,6 +24,8 @@ const CLIP_HEIGHT = 48;
 const TEST_TIMEOUT_MS = 120_000;
 const HW_ERROR = 'Cannot load libcuda.so.1';
 const SW_ERROR = 'software encoder exploded';
+/** What the caller reads for either: the output of the stand-in program is in the server log, not in the error. */
+const FAILURE = 'Native FFmpeg transcoding failed for mp4 -> mkv: FFmpeg exited with status 1.';
 
 let workDir: string;
 let sourceMp4: Buffer;
@@ -130,16 +133,27 @@ describe('hardware encoder runtime failure', () => {
   oracleTest('fails closed with the original hardware error when the software retry also fails', ['ffmpeg', 'ffprobe'], async () => {
     const { bin, log } = makeFfmpeg('retry-fails', true);
     const { convertMedia } = await loadConverter(bin);
-    await expect(convertMedia(sourceMp4, 'mp4', 'mkv', {}, 'clip')).rejects.toThrow(HW_ERROR);
+    const printed = captureEngineOutput();
+    await expect(convertMedia(sourceMp4, 'mp4', 'mkv', {}, 'clip')).rejects.toThrow(FAILURE);
+    const logged = printed.outputs().join('\n');
+    printed.restore();
+    // The error that is reported is the hardware encoder's, not the retry's: the log holds that one's output.
+    expect(logged).toContain(HW_ERROR);
+    expect(logged).not.toContain(SW_ERROR);
     expect(attempts(log)).toEqual(['h264_nvenc', 'libx264']);
   }, TEST_TIMEOUT_MS);
 
   oracleTest('does not retry when no hardware encoder was selected', ['ffmpeg', 'ffprobe'], async () => {
     const { bin, log } = makeFfmpeg('no-retry', true);
     const { convertMedia } = await loadConverter(bin);
+    const printed = captureEngineOutput();
     await expect(
       convertMedia(sourceMp4, 'mp4', 'mkv', { disableHwaccel: true }, 'clip')
-    ).rejects.toThrow(SW_ERROR);
+    ).rejects.toThrow(FAILURE);
+    const logged = printed.outputs().join('\n');
+    printed.restore();
+    expect(logged).toContain(SW_ERROR);
+    expect(logged).not.toContain(HW_ERROR);
     expect(attempts(log)).toEqual(['libx264']);
   }, TEST_TIMEOUT_MS);
 });

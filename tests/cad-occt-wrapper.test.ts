@@ -88,7 +88,7 @@ describe('a missing or failing converter never passes for a conversion', () => {
       expect(failure).toBeInstanceOf(UnprocessableCadInputError);
       expect(failure).not.toBeInstanceOf(EngineMissingError);
       expect((failure as UnprocessableCadInputError).status).toBe(422);
-      expect(failure.message).toBe('The CAD converter could not convert this model: it exited with status 3.');
+      expect(failure.message).toBe('The CAD converter could not convert this model: it exited with status 3 (unreadable).');
       expect(String(warn.mock.calls[0][0])).toContain('cad-convert: error: unreadable: cannot read');
     });
     warn.mockRestore();
