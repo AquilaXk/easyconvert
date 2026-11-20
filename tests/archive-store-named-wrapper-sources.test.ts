@@ -37,7 +37,7 @@ async function convertStored(bytes: Buffer, src: string, storedName: string, upl
   fs.writeFileSync(inputPath, bytes);
   const result = await convertWithNative7z({ inputPath }, src, 'zip', {}, uploadName);
   if (!result) throw new Error('the native engine did not take the conversion');
-  const entries = await extractZipArchive(Buffer.isBuffer(result.buffer) ? result.buffer : fs.readFileSync(result.outputPath!));
+  const entries = await extractZipArchive(result.filePath ? fs.readFileSync(result.filePath) : result.buffer);
   return new Map(entries.map((entry) => [entry.filename, entry.buffer.toString('utf-8')]));
 }
 
