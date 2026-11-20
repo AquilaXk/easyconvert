@@ -81,7 +81,7 @@ npm run dev            # 웹 앱: http://localhost:3000
 
 ## API
 
-API 문서는 `/api-docs`에서 볼 수 있고, [`/api-docs/quickstart`](https://convert.aquilaxk.site/api-docs/quickstart)부터 읽으면 돼요(주제별 페이지: `quickstart`, `convert`, `jobs`, `uploads`, `downloads`, `formats`, `ocr-languages`, `archives`, `usage`). OpenAPI 3.1 문서는 `GET /api/v1/openapi.json`(별칭 `GET /api/openapi.json`)이에요. TypeScript와 Python 클라이언트는 [sdk/](sdk)에 있어요.
+API 문서는 `/api-docs`에서 볼 수 있고, [`/api-docs/quickstart`](https://convert.aquilaxk.site/api-docs/quickstart)부터 읽으면 돼요(주제별 페이지: `quickstart`, `convert`, `jobs`, `uploads`, `downloads`, `formats`, `ocr-languages`, `archives`, `usage`, `errors`). OpenAPI 3.1 문서는 `GET /api/v1/openapi.json`(별칭 `GET /api/openapi.json`)이에요. TypeScript와 Python 클라이언트는 [sdk/](sdk)에 있어요.
 
 파일을 동기 방식으로 변환하는 예시예요.
 

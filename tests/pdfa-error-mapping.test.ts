@@ -23,7 +23,7 @@ import { PdfPostprocessError } from '../src/lib/types';
 
 const SAMPLE_DOCX = fs.readFileSync(path.resolve(__dirname, 'fixtures', 'sample.docx'));
 const CONVERT_TIMEOUT_MS = 180_000;
-const POSTPROCESS_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/pdf-postprocess-failed';
+const POSTPROCESS_PROBLEM_TYPE = 'https://convert.aquilaxk.site/api-docs/errors#pdf-postprocess-failed';
 const NOT_A_PDF = Buffer.from('this is not a pdf document');
 /** Exits non-zero after printing the JSON report veraPDF prints for a file it cannot open. */
 const VALIDATOR_FAILED_EXIT = 7;

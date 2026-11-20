@@ -30,7 +30,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Bound and thread the office sheet readers too (CSV, JSON and XML to xlsx, ods and xls run on the calling thread without the counts of entry 337), and decode a hostile bzip2 for an archive listing off the web event loop (entry 339 caps it at 500 MiB like gz).
 - Turn on `UNVERIFIED_ACCOUNT_PURGE_ENABLED` on or after 2026-12-20 (30 days after the privacy text naming it was published), first with `UNVERIFIED_ACCOUNT_PURGE_DRY_RUN=true` (the default) for one pass, check the counts in the worker log, then set it to `false` (entry 364).
 - Cap how many storage credentials one account keeps (launch audit of 2026-11-20; entry 343 bounds each record).
-- Move the problem `type` URIs off `https://api.easyconvert.io/problems/` (a domain we do not hold) to a page of our own site that lists every refusal code.
 - Replace `script-src 'unsafe-inline'` in the page CSP with per-request nonces, and add browser error reporting for crashes in the converter UI.
 - Pick a free package name before publishing the SDKs (PyPI `easyconvert` belongs to another project; npm `@easyconvert/sdk` is unpublished) and add install lines to their READMEs.
 - Watch `auth_mail_budget level=warn` (350 mails/day; verification stops at 400, resets at 480, entry 288) and move auth mail to a dedicated provider before sign-ups reach the cap, raising `AUTH_MAIL_DAILY_WARN`, `AUTH_MAIL_DAILY_VERIFY_CAP` and `AUTH_MAIL_DAILY_HARD_CAP` via `.env` (entry 326).

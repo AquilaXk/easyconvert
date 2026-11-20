@@ -17,7 +17,7 @@ import type { JobGraph } from '../src/lib/queue/graph/types';
 import en from '../messages/en.json';
 import ko from '../messages/ko.json';
 
-const PROBLEM = 'https://api.easyconvert.io/problems/';
+const PROBLEM = 'https://convert.aquilaxk.site/api-docs/errors#';
 
 /** The tasks of the example in the contract: an import by URL, a conversion that reads it, and an export that reads the conversion. */
 const EXAMPLE: NamedTaskMap = {

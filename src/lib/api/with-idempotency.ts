@@ -15,10 +15,11 @@ import {
   AcquireResult,
   StoredResponse,
 } from './idempotency';
+import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 
-export const IDEMPOTENCY_KEY_REUSED_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/idempotency-key-reused';
-export const IDEMPOTENCY_KEY_IN_FLIGHT_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/idempotency-key-in-flight';
-export const IDEMPOTENCY_RESPONSE_NOT_KEPT_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/idempotency-response-not-kept';
+export const IDEMPOTENCY_KEY_REUSED_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}idempotency-key-reused`;
+export const IDEMPOTENCY_KEY_IN_FLIGHT_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}idempotency-key-in-flight`;
+export const IDEMPOTENCY_RESPONSE_NOT_KEPT_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}idempotency-response-not-kept`;
 
 /**
  * The most body bytes of an answer that the store keeps. Every record sits in memory for 24 hours (Redis runs with a memory limit and

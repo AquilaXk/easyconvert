@@ -45,7 +45,7 @@ describe('the web tool routes in the OpenAPI document', () => {
 
   it('names the offline quota store among the answers, as /api/convert does', async () => {
     const offline = await Promise.all(WEB_TOOLS.map(async (tool) => JSON.stringify((await operations())[tool].responses['503'])));
-    expect(offline.filter((answer) => answer.includes('problems/service-unavailable') && answer.includes('Retry-After'))).toHaveLength(WEB_TOOLS.length);
+    expect(offline.filter((answer) => answer.includes('errors#service-unavailable') && answer.includes('Retry-After'))).toHaveLength(WEB_TOOLS.length);
   });
 
   it('names the files, the options and the answer of each tool', async () => {

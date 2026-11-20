@@ -23,7 +23,7 @@ const EXPECTED_DEFAULT_LIMIT = 100_000_000;
 /** 16383 x 16383: the largest WebP canvas, and sharp's own default limit. */
 const EXPECTED_CEILING = 16383 * 16383;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
-const PAYLOAD_TOO_LARGE_PROBLEM = 'https://api.easyconvert.io/problems/payload-too-large';
+const PAYLOAD_TOO_LARGE_PROBLEM = 'https://convert.aquilaxk.site/api-docs/errors#payload-too-large';
 
 /** Side of a declared canvas of 225 megapixels: over the limit, yet under sharp's own default of 268 MP. */
 const SIDE_UNDER_NATIVE_DEFAULT = 15_000;

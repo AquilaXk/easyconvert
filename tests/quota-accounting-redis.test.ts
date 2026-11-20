@@ -63,8 +63,8 @@ const JOB_RUNS_FOR_MS = 5000;
 /** The suite unsets ANONYMOUS_DAILY_LIMIT, so it counts against the default allowance. */
 const DAY_ALLOWANCE = ANONYMOUS_DAILY_CREDITS;
 const FREE_CONCURRENCY = 5;
-const UPLOAD_BUDGET_PROBLEM = 'https://api.easyconvert.io/problems/upload-budget-exceeded';
-const CONCURRENCY_PROBLEM = 'https://api.easyconvert.io/problems/concurrency-limit';
+const UPLOAD_BUDGET_PROBLEM = 'https://convert.aquilaxk.site/api-docs/errors#upload-budget-exceeded';
+const CONCURRENCY_PROBLEM = 'https://convert.aquilaxk.site/api-docs/errors#concurrency-limit';
 /** A little past the 15 minutes a reservation used to live. */
 const PAST_OLD_RESERVATION_LIFETIME_MS = 901_000;
 const EARLY_IN_A_UTC_DAY = new Date('2026-11-02T00:00:05.000Z');

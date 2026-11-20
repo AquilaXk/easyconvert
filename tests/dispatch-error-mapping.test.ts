@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
 
-const ENGINE_UNAVAILABLE_TYPE = 'https://api.easyconvert.io/problems/engine-unavailable';
+const ENGINE_UNAVAILABLE_TYPE = 'https://convert.aquilaxk.site/api-docs/errors#engine-unavailable';
 const HTTP_SERVICE_UNAVAILABLE = 503;
 const HTTP_BAD_REQUEST = 400;
 const CONVERT_TIMEOUT_MS = 120_000;

@@ -388,7 +388,7 @@ describe('a file over a single request is converted through parts and a job', ()
   });
 
   it('shows at once that uploads without an account are off on this server', async () => {
-    installFetch(() => json({ type: 'https://api.easyconvert.io/problems/client-ip-trust-unconfigured', detail: 'Uploads without an account are off.' }, 503));
+    installFetch(() => json({ type: 'https://convert.aquilaxk.site/api-docs/errors#client-ip-trust-unconfigured', detail: 'Uploads without an account are off.' }, 503));
     const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
 
     await expect(executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT)).rejects.toThrow('are off');
@@ -396,13 +396,13 @@ describe('a file over a single request is converted through parts and a job', ()
   });
 
   it('shows a refusal that lasts until tomorrow at once instead of sending again', async () => {
-    installFetch(() => json({ type: 'https://api.easyconvert.io/problems/upload-budget-exceeded', detail: 'Without an account, uploads may total 2 GiB a day.' }, 429));
+    installFetch(() => json({ type: 'https://convert.aquilaxk.site/api-docs/errors#upload-budget-exceeded', detail: 'Without an account, uploads may total 2 GiB a day.' }, 429));
     const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
 
     const conversion = executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT);
     await expect(conversion).rejects.toThrow('2 GiB a day');
     await expect(conversion).rejects.toMatchObject({
-      failure: { code: 'server', problem: { type: 'https://api.easyconvert.io/problems/upload-budget-exceeded', status: 429 } },
+      failure: { code: 'server', problem: { type: 'https://convert.aquilaxk.site/api-docs/errors#upload-budget-exceeded', status: 429 } },
     });
     expect(calls).toHaveLength(1);
   });

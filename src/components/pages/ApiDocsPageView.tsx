@@ -3,7 +3,8 @@ import { useTranslations } from 'next-intl';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import { docOperation } from '@/components/api-docs/api-reference';
-import { guideToc, INTRODUCTION_SECTIONS, QUICKSTART_SECTIONS } from '@/components/api-docs/guide-sections';
+import { ERRORS_SECTIONS, guideToc, INTRODUCTION_SECTIONS, QUICKSTART_SECTIONS } from '@/components/api-docs/guide-sections';
+import ErrorsReference from '@/components/api-docs/ErrorsReference';
 import IntroductionGuide from '@/components/api-docs/IntroductionGuide';
 import OperationSection from '@/components/api-docs/OperationSection';
 import QuickstartGuide from '@/components/api-docs/QuickstartGuide';
@@ -26,6 +27,9 @@ export default function ApiDocsPageView({ topic }: Readonly<{ topic: ApiDocTopic
   } else if (topic === 'quickstart') {
     body = <QuickstartGuide origin={origin} />;
     toc = guideToc(QUICKSTART_SECTIONS, (id) => t(`quickstart.headings.${id}` as 'quickstart.headings.create-a-key'));
+  } else if (topic === 'errors') {
+    body = <ErrorsReference />;
+    toc = guideToc(ERRORS_SECTIONS, (id) => t(`errors.headings.${id}` as 'errors.headings.problem-types'));
   } else {
     body = operations.map((operation) => <OperationSection key={operation.anchor} operation={operation} origin={origin} />);
     toc = operations.map((operation) => ({ id: operation.anchor, label: t(`operations.${operation.anchor}.title`) }));

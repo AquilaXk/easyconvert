@@ -50,7 +50,7 @@ describe('storage error mapper', () => {
       expect(body).toMatchObject({
         status: HTTP_UNAVAILABLE,
         title: 'Service Unavailable',
-        type: 'https://api.easyconvert.io/problems/service-unavailable',
+        type: 'https://convert.aquilaxk.site/api-docs/errors#service-unavailable',
         instance: INSTANCE,
         success: false,
       });

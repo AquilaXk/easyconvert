@@ -246,7 +246,7 @@ describe('edge middleware client-IP attribution (rate-limit bypass regression)',
   });
 
   describe('production must declare its trust mode', () => {
-    const PROBLEM_TYPE = 'https://api.easyconvert.io/problems/client-ip-trust-unconfigured';
+    const PROBLEM_TYPE = 'https://convert.aquilaxk.site/api-docs/errors#client-ip-trust-unconfigured';
 
     it('answers 503 problem+json with Retry-After for /api/* when nothing is declared', async () => {
       vi.stubEnv('NODE_ENV', 'production');

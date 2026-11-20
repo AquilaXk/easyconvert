@@ -21,6 +21,7 @@ import {
   ConversionFailedError,
   RequestAbortedError,
 } from '@/lib/types';
+import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 
 export const dynamic = 'force-dynamic';
 
@@ -137,7 +138,7 @@ function inspectErrorResponse(err: unknown, instanceUri: string): NextResponse {
       err.message,
       instanceUri,
       'Archive Header Encrypted',
-      'https://api.easyconvert.io/problems/archive-encrypted-header'
+      `${PROBLEM_TYPE_BASE}archive-encrypted-header`
     );
   }
   if (err instanceof MissingVolumeError) {
@@ -146,7 +147,7 @@ function inspectErrorResponse(err: unknown, instanceUri: string): NextResponse {
       err.message,
       instanceUri,
       'Missing Archive Volume',
-      'https://api.easyconvert.io/problems/missing-archive-volume'
+      `${PROBLEM_TYPE_BASE}missing-archive-volume`
     );
   }
   const limitStatus = payloadLimitStatus(err);
@@ -159,7 +160,7 @@ function inspectErrorResponse(err: unknown, instanceUri: string): NextResponse {
       err.message,
       instanceUri,
       'Invalid Archive',
-      'https://api.easyconvert.io/problems/invalid-archive'
+      `${PROBLEM_TYPE_BASE}invalid-archive`
     );
   }
   console.error('[archives/inspect] Unexpected failure:', err);

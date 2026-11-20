@@ -7,10 +7,11 @@ import {
   requireScope,
   PLAN_FILE_LIMIT_DESCRIPTION,
 } from '../shared';
+import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 
 /** The 429 of a session that would pass the open-upload budget of the caller's plan (docs/policy-decisions.md, entry 296). */
 const OPEN_UPLOADS_DESCRIPTION =
-  'The caller holds the most uploads it may have open at once, or the open uploads would declare more bytes than its plan allows (problem type `https://api.easyconvert.io/problems/upload-budget-exceeded`, with `refusal` `open-uploads` or `open-bytes`, the number as `limit` or `limitBytes`, and `plan`). Complete or abort an upload, then try again.';
+  'The caller holds the most uploads it may have open at once, or the open uploads would declare more bytes than its plan allows (problem type `' + PROBLEM_TYPE_BASE + 'upload-budget-exceeded`, with `refusal` `open-uploads` or `open-bytes`, the number as `limit` or `limitBytes`, and `plan`). Complete or abort an upload, then try again.';
 
 const TUS_VERSION = '1.0.0';
 const TUS_CHUNK_MEDIA_TYPE = 'application/offset+octet-stream';

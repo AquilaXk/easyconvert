@@ -60,6 +60,11 @@
         "nav": "Usage",
         "title": "Usage",
         "lead": "Read how many conversions are left today."
+      },
+      "errors": {
+        "nav": "Errors",
+        "title": "Errors",
+        "lead": "Look up a problem type or a refusal code of the API."
       }
     },
     "intro": {
@@ -174,6 +179,34 @@
         "keyScoped": "An API key with the <code>{scopes}</code> scope, in the <code>x-api-key</code> or <code>Authorization</code> header.",
         "optionalKey": "An API key, or none for a file whose URL is all its access.",
         "optionalKeyScoped": "An API key with the <code>{scopes}</code> scope for a file of an account. A file made without an account needs none: its URL is all its access."
+      }
+    },
+    "errors": {
+      "intro": "The <code>type</code> of a problem details body is a link to this page, and the part after <code>#</code> names the problem. Match on that name, which stays the same across releases. Some answers add a <code>code</code> that names the cause more closely; the codes follow the problem types.",
+      "problemTypesLead": "Each problem type is answered with one status.",
+      "codesLead": "A code can be answered with more than one status, because different routes raise it. The meaning is the sentence the web interface shows for it.",
+      "typeColumn": "Problem type",
+      "codeColumn": "Code",
+      "headings": {
+        "problem-types": "Problem types",
+        "refusal-codes": "Refusal codes",
+        "codes-conversion": "Conversion",
+        "codes-urlImport": "Link import",
+        "codes-auth": "Sign-in and accounts",
+        "codes-dashboard": "Dashboard",
+        "codes-billing": "Billing"
+      },
+      "areas": {
+        "conversion": "Codes of a refused or failed conversion: the answer of a convert request, or the failure recorded on a job.",
+        "urlImport": "Codes of importing a file from a link.",
+        "auth": "Codes of signing up, signing in and confirming an address.",
+        "dashboard": "Codes of the dashboard: files, API keys and failed webhooks.",
+        "billing": "Codes of buying credits and managing a subscription."
+      },
+      "meanings": {
+        "login_locked": "Too many failed sign-in attempts. The <code>Retry-After</code> header gives the seconds to wait.",
+        "mail_rate_limited": "Too many requests. The <code>Retry-After</code> header gives the seconds to wait.",
+        "file_too_large": "A file imported from a link may be at most {limit}. Send a larger file through an upload."
       }
     },
     "operations": {

@@ -9,12 +9,12 @@ import {
   openUploadsMax,
   type UploadRefusal,
 } from '../api-keys/anonymous-upload-budget';
-import { HTTP_SERVICE_UNAVAILABLE, HTTP_TOO_MANY_REQUESTS } from '../refusal-codes';
+import { HTTP_SERVICE_UNAVAILABLE, HTTP_TOO_MANY_REQUESTS, PROBLEM_TYPE_BASE } from '../refusal-codes';
 import type { Plan } from '../plan-limits';
 
 /** The problem type of a request the byte budget of its caller refuses (docs/policy-decisions.md, entries 15 and 137). */
-export const UPLOAD_BUDGET_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/upload-budget-exceeded';
-const TRUST_UNCONFIGURED_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/client-ip-trust-unconfigured';
+export const UPLOAD_BUDGET_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}upload-budget-exceeded`;
+const TRUST_UNCONFIGURED_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}client-ip-trust-unconfigured`;
 
 const UNATTRIBUTED_DETAIL =
   'Uploads and link imports without an account are off until this server can tell visitors apart: set TRUSTED_PROXIES to the proxies in front of it. Sign in meanwhile.';

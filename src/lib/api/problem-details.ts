@@ -45,47 +45,47 @@ export interface ProblemDetails {
 
 const DEFAULT_PROBLEM_TYPES: Record<number, { type: string; title: string }> = {
   400: {
-    type: 'https://api.easyconvert.io/problems/bad-request',
+    type: `${PROBLEM_TYPE_BASE}bad-request`,
     title: 'Bad Request',
   },
   401: {
-    type: 'https://api.easyconvert.io/problems/unauthorized',
+    type: `${PROBLEM_TYPE_BASE}unauthorized`,
     title: 'Unauthorized',
   },
   403: {
-    type: 'https://api.easyconvert.io/problems/forbidden',
+    type: `${PROBLEM_TYPE_BASE}forbidden`,
     title: 'Forbidden',
   },
   404: {
-    type: 'https://api.easyconvert.io/problems/not-found',
+    type: `${PROBLEM_TYPE_BASE}not-found`,
     title: 'Not Found',
   },
   405: {
-    type: 'https://api.easyconvert.io/problems/method-not-allowed',
+    type: `${PROBLEM_TYPE_BASE}method-not-allowed`,
     title: 'Method Not Allowed',
   },
   413: {
-    type: 'https://api.easyconvert.io/problems/payload-too-large',
+    type: `${PROBLEM_TYPE_BASE}payload-too-large`,
     title: 'Payload Too Large',
   },
   415: {
-    type: 'https://api.easyconvert.io/problems/unsupported-media-type',
+    type: `${PROBLEM_TYPE_BASE}unsupported-media-type`,
     title: 'Unsupported Media Type',
   },
   422: {
-    type: 'https://api.easyconvert.io/problems/unprocessable-entity',
+    type: `${PROBLEM_TYPE_BASE}unprocessable-entity`,
     title: 'Unprocessable Entity',
   },
   429: {
-    type: 'https://api.easyconvert.io/problems/quota-exceeded',
+    type: `${PROBLEM_TYPE_BASE}quota-exceeded`,
     title: 'Too Many Requests',
   },
   500: {
-    type: 'https://api.easyconvert.io/problems/internal-server-error',
+    type: `${PROBLEM_TYPE_BASE}internal-server-error`,
     title: 'Internal Server Error',
   },
   503: {
-    type: 'https://api.easyconvert.io/problems/service-unavailable',
+    type: `${PROBLEM_TYPE_BASE}service-unavailable`,
     title: 'Service Unavailable',
   },
 };

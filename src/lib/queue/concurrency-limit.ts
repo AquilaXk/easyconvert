@@ -7,6 +7,7 @@ import { DEFAULT_FREE_CONCURRENCY, PLAN_CONCURRENCY, isUserTier } from '../plan-
 import { conversionQueue } from './conversion-queue';
 import { currentJobDeadlineSettings, readIntegerSetting } from './job-deadline';
 import { redisKeyStore } from '../api-keys/redis-key-store';
+import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 
 /**
  * How many conversions a caller may have in flight (queued plus running): five for an anonymous or free caller
@@ -22,7 +23,7 @@ export const CONCURRENCY_LIMIT_ENV = {
   paid: 'CONVERSION_CONCURRENCY_PAID',
 } as const satisfies Record<UserTier, string>;
 export { DEFAULT_FREE_CONCURRENCY };
-export const CONCURRENCY_LIMIT_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/concurrency-limit';
+export const CONCURRENCY_LIMIT_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}concurrency-limit`;
 /** Seconds a refused caller is told to wait before trying again. */
 export const CONCURRENCY_RETRY_AFTER_SECONDS = 5;
 

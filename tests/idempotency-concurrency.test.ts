@@ -182,7 +182,7 @@ describe.each([
     expect(secondRes.status).toBe(422);
     expect(secondRes.headers.get('content-type')).toContain('application/problem+json');
     const problem = await secondRes.json();
-    expect(problem.type).toBe('https://api.easyconvert.io/problems/idempotency-key-reused');
+    expect(problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#idempotency-key-reused');
     expect(problem.status).toBe(422);
   });
 
@@ -402,7 +402,7 @@ describe.each([
     const res2 = await jobsPostHandler(req2);
     expect(res2.status).toBe(422);
     const problem = await res2.json();
-    expect(problem.type).toBe('https://api.easyconvert.io/problems/idempotency-key-reused');
+    expect(problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#idempotency-key-reused');
   });
 
   it('rejects reused key with different file name despite identical byte content with 422 Unprocessable Entity', async () => {
@@ -440,7 +440,7 @@ describe.each([
     const res2 = await jobsPostHandler(req2);
     expect(res2.status).toBe(422);
     const problem = await res2.json();
-    expect(problem.type).toBe('https://api.easyconvert.io/problems/idempotency-key-reused');
+    expect(problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#idempotency-key-reused');
   });
 
   it('stores and replays schema validation 422 errors and invalid JSON 400 errors without dangling locks', async () => {

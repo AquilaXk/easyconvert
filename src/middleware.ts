@@ -15,6 +15,7 @@ import {
 import { requestBodyVerdict, type CountedBody } from '@/lib/api/request-body-limit';
 import { applyV1CorsHeaders, createV1PreflightResponse, isV1ApiPath } from '@/lib/api/v1-cors';
 import { hasSessionCookie } from '@/lib/auth/session-cookie';
+import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 
 /**
  * Next.js Edge-compatible Centralized Middleware
@@ -35,12 +36,12 @@ const HTTP_NOT_FOUND = 404;
 const HTTP_LENGTH_REQUIRED = 411;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_SERVICE_UNAVAILABLE = 503;
-const PROBLEM_BAD_REQUEST = 'https://api.easyconvert.io/problems/bad-request';
-const PROBLEM_NOT_FOUND = 'https://api.easyconvert.io/problems/not-found';
-const PROBLEM_PAYLOAD_TOO_LARGE = 'https://api.easyconvert.io/problems/payload-too-large';
-const PROBLEM_LENGTH_REQUIRED = 'https://api.easyconvert.io/problems/length-required';
-const PROBLEM_SERVICE_UNAVAILABLE = 'https://api.easyconvert.io/problems/service-unavailable';
-const PROBLEM_TRUST_UNCONFIGURED = 'https://api.easyconvert.io/problems/client-ip-trust-unconfigured';
+const PROBLEM_BAD_REQUEST = `${PROBLEM_TYPE_BASE}bad-request`;
+const PROBLEM_NOT_FOUND = `${PROBLEM_TYPE_BASE}not-found`;
+const PROBLEM_PAYLOAD_TOO_LARGE = `${PROBLEM_TYPE_BASE}payload-too-large`;
+const PROBLEM_LENGTH_REQUIRED = `${PROBLEM_TYPE_BASE}length-required`;
+const PROBLEM_SERVICE_UNAVAILABLE = `${PROBLEM_TYPE_BASE}service-unavailable`;
+const PROBLEM_TRUST_UNCONFIGURED = `${PROBLEM_TYPE_BASE}client-ip-trust-unconfigured`;
 
 // Readiness (/api/health) and liveness (/api/health/live) probes: stay reachable in degraded (unattributed or undeclared) trust modes.
 const HEALTH_PATHS = new Set(['/api/health', '/api/health/live']);
@@ -344,7 +345,7 @@ function isLocalePrefixedApiPath(pathname: string): boolean {
 function csrfForbiddenResponse(pathname: string, detail: string): NextResponse {
   return problemResponse(
     403,
-    'https://api.easyconvert.io/problems/forbidden',
+    `${PROBLEM_TYPE_BASE}forbidden`,
     'Forbidden',
     detail,
     pathname
@@ -514,7 +515,7 @@ function handleApiMiddleware(request: NextRequest, pathname: string): NextRespon
   if (!edgeRate.allowed) {
     return new NextResponse(
       JSON.stringify({
-        type: 'https://api.easyconvert.io/problems/rate-limited',
+        type: `${PROBLEM_TYPE_BASE}rate-limited`,
         title: 'Too Many Requests',
         status: 429,
         detail: 'Edge rate limit exceeded. Please slow down your requests.',

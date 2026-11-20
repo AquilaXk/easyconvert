@@ -1,3 +1,5 @@
+import { PUBLIC_DEFAULT_ORIGIN } from './public-origin';
+
 /**
  * The stable `code` that a route of the web application puts next to the English `error` of a refusal, one per cause. API
  * callers read the English text; the interface words the code in the page's language (src/components/i18n/error-wording.ts).
@@ -147,12 +149,25 @@ export function refusalCodeList(error: unknown): string[] {
   return code ? [code] : [];
 }
 
-/** The start of every problem `type` URI the API answers with (RFC 9457); the name after it is as stable as a code. */
-export const PROBLEM_TYPE_BASE = 'https://api.easyconvert.io/problems/';
+/** The documentation page that describes every problem type and refusal code, one anchor each (src/app/[locale]/api-docs). */
+export const PROBLEM_TYPES_PAGE_PATH = '/api-docs/errors';
 
-/** The name of the problem a `type` URI states (`storage-full` for `.../problems/storage-full`); undefined for a type of another origin. */
+/**
+ * The start of every problem `type` URI the API answers with (RFC 9457): the anchor of the problem on the errors page of the
+ * API documentation, so the URI leads to its description. The origin is the fixed public one, not the configured one, since
+ * the URI names the problem and must read the same in every build, in the browser and in the committed OpenAPI document.
+ */
+export const PROBLEM_TYPE_BASE = `${PUBLIC_DEFAULT_ORIGIN}${PROBLEM_TYPES_PAGE_PATH}#`;
+
+/** The base the `type` URIs had before they moved to the documentation page; answers kept or replayed from then still carry it. */
+const LEGACY_PROBLEM_TYPE_BASE = 'https://api.easyconvert.io/problems/';
+
+/** The name of the problem a `type` URI states (`storage-full` for `...#storage-full`); undefined for a type of another origin. */
 export function problemNameOfType(type: string): string | undefined {
-  return type.startsWith(PROBLEM_TYPE_BASE) ? type.slice(PROBLEM_TYPE_BASE.length) : undefined;
+  for (const base of [PROBLEM_TYPE_BASE, LEGACY_PROBLEM_TYPE_BASE]) {
+    if (type.startsWith(base)) return type.slice(base.length);
+  }
+  return undefined;
 }
 
 export const HTTP_TOO_MANY_REQUESTS = 429;

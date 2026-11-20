@@ -105,7 +105,7 @@ describe('optimize fails closed for formats without an optimiser', () => {
 
     expect(res.status).toBe(422);
     expect(res.headers.get('content-type')).toContain('application/problem+json');
-    expect(json.type).toBe('https://api.easyconvert.io/problems/unprocessable-entity');
+    expect(json.type).toBe('https://convert.aquilaxk.site/api-docs/errors#unprocessable-entity');
     expect(json.status).toBe(422);
     expect(json.detail).toContain(`optimize is not available for ${format}`);
     expect(json.detail).toContain('Supported formats: pdf.');

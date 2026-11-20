@@ -2,6 +2,7 @@ import { useTranslations } from 'next-intl';
 import {
   Archive,
   ChevronDown,
+  CircleAlert,
   Download,
   FileType,
   Gauge,
@@ -29,6 +30,7 @@ const TOPIC_ICONS: Readonly<Record<ApiDocTopicSlug, LucideIcon>> = {
   'ocr-languages': Languages,
   archives: Archive,
   usage: Gauge,
+  errors: CircleAlert,
 };
 
 function TopicList({ current, tall }: Readonly<{ current: ApiDocTopicSlug; tall: boolean }>) {

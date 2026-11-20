@@ -81,7 +81,7 @@ See also [docs/client-ip-trust.md](docs/client-ip-trust.md).
 
 ## API
 
-The written reference is served at `/api-docs`, starting at [`/api-docs/quickstart`](https://convert.aquilaxk.site/api-docs/quickstart) (topic pages `quickstart`, `convert`, `jobs`, `uploads`, `downloads`, `formats`, `ocr-languages`, `archives`, `usage`). The OpenAPI 3.1 document is at `GET /api/v1/openapi.json` (alias `GET /api/openapi.json`). TypeScript and Python clients are in [sdk/](sdk).
+The written reference is served at `/api-docs`, starting at [`/api-docs/quickstart`](https://convert.aquilaxk.site/api-docs/quickstart) (topic pages `quickstart`, `convert`, `jobs`, `uploads`, `downloads`, `formats`, `ocr-languages`, `archives`, `usage`, `errors`). The OpenAPI 3.1 document is at `GET /api/v1/openapi.json` (alias `GET /api/openapi.json`). TypeScript and Python clients are in [sdk/](sdk).
 
 Convert a file synchronously:
 

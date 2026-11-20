@@ -325,7 +325,7 @@ describe('a refused dashboard request', () => {
   });
 
   it('words a refusal whose problem type this build does not know as "check what you entered", never with its detail', async () => {
-    const typed = { type: 'https://api.easyconvert.io/problems/retired-problem', status: 400, detail: 'Index entry 7 is dangling.' };
+    const typed = { type: 'https://convert.aquilaxk.site/api-docs/errors#retired-problem', status: 400, detail: 'Index entry 7 is dangling.' };
     const files = answerWith(0, '');
     const dashboard = await mountDashboard('ko', (url, method) => (method === 'GET' ? files(url, method) : new Response(JSON.stringify(typed), { status: 400 })));
     await dashboard.controller.handleDeleteFile('f-1');

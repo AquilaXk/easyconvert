@@ -112,7 +112,7 @@ describe('the failures the client decides read in the page language', () => {
   it('words them in Korean, with no English sentence', async () => {
     vi.stubGlobal('window', {});
     const failures: ConversionFailure[] = [await failureOf(hwpItem({ clientEdgeMode: true }))];
-    answer({ type: 'https://api.easyconvert.io/problems/service-unavailable', title: 'Service Unavailable', status: 503, detail: 'The conversion engine is busy right now.', error: 'The conversion engine is busy right now.' }, 503);
+    answer({ type: 'https://convert.aquilaxk.site/api-docs/errors#service-unavailable', title: 'Service Unavailable', status: 503, detail: 'The conversion engine is busy right now.', error: 'The conversion engine is busy right now.' }, 503);
     failures.push(await failureOf(hwpItem()));
     answer({}, 500);
     failures.push(await failureOf(hwpItem()));

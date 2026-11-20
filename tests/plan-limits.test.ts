@@ -111,7 +111,7 @@ describe('fileSizeLimitProblem', () => {
     expect(body).toMatchObject({
       status: 413,
       title: 'Payload Too Large',
-      type: 'https://api.easyconvert.io/problems/payload-too-large',
+      type: 'https://convert.aquilaxk.site/api-docs/errors#payload-too-large',
       instance: '/api/convert',
       success: false,
     });

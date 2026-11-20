@@ -53,17 +53,17 @@ const HTTP_TOO_MANY_REQUESTS = 429;
 const HTTP_GATEWAY_TIMEOUT = 504;
 const HTTP_CLIENT_CLOSED_REQUEST = 499;
 const FREE_CONCURRENCY = 5;
-const QUOTA_EXCEEDED_PROBLEM = 'https://api.easyconvert.io/problems/quota-exceeded';
-const UPLOAD_BUDGET_PROBLEM = 'https://api.easyconvert.io/problems/upload-budget-exceeded';
-const CONCURRENCY_PROBLEM = 'https://api.easyconvert.io/problems/concurrency-limit';
-const GRAPH_WITHOUT_CONVERSION_PROBLEM = 'https://api.easyconvert.io/problems/graph-without-conversion';
+const QUOTA_EXCEEDED_PROBLEM = 'https://convert.aquilaxk.site/api-docs/errors#quota-exceeded';
+const UPLOAD_BUDGET_PROBLEM = 'https://convert.aquilaxk.site/api-docs/errors#upload-budget-exceeded';
+const CONCURRENCY_PROBLEM = 'https://convert.aquilaxk.site/api-docs/errors#concurrency-limit';
+const GRAPH_WITHOUT_CONVERSION_PROBLEM = 'https://convert.aquilaxk.site/api-docs/errors#graph-without-conversion';
 const CSV = 'name,score\nAlice,100\nBob,95\n';
 /** The test configuration lifts the limit for every suite; this one counts against the real allowance. */
 const DAY_ALLOWANCE = ANONYMOUS_DAILY_CREDITS;
 const NOT_A_PNG = 'this is plain text, not a PNG picture';
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
-const TRUST_UNCONFIGURED_PROBLEM = 'https://api.easyconvert.io/problems/client-ip-trust-unconfigured';
+const TRUST_UNCONFIGURED_PROBLEM = 'https://convert.aquilaxk.site/api-docs/errors#client-ip-trust-unconfigured';
 
 let nextClient = 1;
 

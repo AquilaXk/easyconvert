@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { renderOgCardPng } from '@/lib/og/render-card';
 import { isValidOgLocale, resolveOgCardSpec, validateOgPathname } from '@/lib/og/resolve-card';
+import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 
 export const runtime = 'nodejs';
 
@@ -31,8 +32,8 @@ function errorResponse(status: 400 | 404, detail: string): NextResponse {
     {
       type:
         status === 400
-          ? 'https://api.easyconvert.io/problems/bad-request'
-          : 'https://api.easyconvert.io/problems/not-found',
+          ? `${PROBLEM_TYPE_BASE}bad-request`
+          : `${PROBLEM_TYPE_BASE}not-found`,
       title: status === 400 ? 'Bad Request' : 'Not Found',
       status,
       detail,

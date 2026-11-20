@@ -124,7 +124,7 @@ describe('API Contract SSOT & Schema Drift Safeguards', () => {
     expect(rejected.ok).toBe(false);
     if (rejected.ok) throw new Error('schema accepted a planned option');
     expect(rejected.problem.status).toBe(422);
-    expect(rejected.problem.type).toBe('https://api.easyconvert.io/problems/option-not-supported');
+    expect(rejected.problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#option-not-supported');
     expect(rejected.problem.invalidParams?.map((p) => p.name)).toEqual(['later']);
   });
 

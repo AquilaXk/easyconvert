@@ -28,7 +28,7 @@ const CONVERT_TIMEOUT_MS = 180_000;
 const HTTP_SERVICE_UNAVAILABLE = 503;
 const HTTP_UNPROCESSABLE = 422;
 const HTTP_OK = 200;
-const ENGINE_UNAVAILABLE_TYPE = 'https://api.easyconvert.io/problems/engine-unavailable';
+const ENGINE_UNAVAILABLE_TYPE = 'https://convert.aquilaxk.site/api-docs/errors#engine-unavailable';
 const VERAPDF_TIMEOUT_MS = 120_000;
 /** veraPDF flavour that validates each requested level. */
 const FLAVOUR: Record<PdfAConformance, string> = { 'pdfa-1b': '1b', 'pdfa-2b': '2b', 'pdfa-3b': '3b' };
@@ -316,7 +316,7 @@ describe('POST /api/v1/convert with a PDF/A request', () => {
 
       expect(res.status).toBe(HTTP_UNPROCESSABLE);
       const problem = await res.json();
-      expect(problem.type).toBe('https://api.easyconvert.io/problems/pdfa-validation-failed');
+      expect(problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#pdfa-validation-failed');
       expect(problem.profile).toBe('pdfa-2b');
       expect([...problem.failedRules].sort()).toEqual([...expected.failedRules].sort());
     },

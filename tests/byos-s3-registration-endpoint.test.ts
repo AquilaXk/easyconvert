@@ -12,7 +12,7 @@ import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
  * type, and the vault contents (nothing stored).
  */
 
-const INVALID_ENDPOINT_TYPE = 'https://api.easyconvert.io/problems/byos-invalid-endpoint';
+const INVALID_ENDPOINT_TYPE = 'https://convert.aquilaxk.site/api-docs/errors#byos-invalid-endpoint';
 
 describe('s3 credential registration validates the endpoint', () => {
   let userId: string;

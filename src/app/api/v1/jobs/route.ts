@@ -265,7 +265,7 @@ function namedTaskProblem(instanceUri: string, errors: Parameters<typeof namedTa
 function invalidGraphProblem(instanceUri: string, prefix: string | undefined, errors: Parameters<typeof namedTaskRefusal>[0], detail?: string): NextResponse {
   if (prefix === undefined && detail === undefined) return namedTaskProblem(instanceUri, errors);
   const text = detail ?? `${prefix}: ${errors.map((e) => e.message).join(' ')}`;
-  return createProblemDetailsResponse(422, text, instanceUri, 'Unprocessable Entity', 'https://api.easyconvert.io/problems/unprocessable-entity', undefined, errors.map((e) => ({ name: e.path, reason: e.message })));
+  return createProblemDetailsResponse(422, text, instanceUri, 'Unprocessable Entity', `${PROBLEM_TYPE_BASE}unprocessable-entity`, undefined, errors.map((e) => ({ name: e.path, reason: e.message })));
 }
 
 /**
@@ -300,7 +300,7 @@ function parseMultipartTasks(raw: string, instanceUri: string): TasksField {
   if (!Array.isArray(parsed)) {
     const reason = 'must be an array or an object of named tasks';
     return {
-      response: createProblemDetailsResponse(422, `Request validation failed: tasks ${reason}`, instanceUri, 'Unprocessable Entity', 'https://api.easyconvert.io/problems/unprocessable-entity', undefined, [{ name: 'tasks', reason }]),
+      response: createProblemDetailsResponse(422, `Request validation failed: tasks ${reason}`, instanceUri, 'Unprocessable Entity', `${PROBLEM_TYPE_BASE}unprocessable-entity`, undefined, [{ name: 'tasks', reason }]),
     };
   }
   for (const task of parsed) {

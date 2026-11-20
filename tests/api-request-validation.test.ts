@@ -51,7 +51,7 @@ describe('API Request Schema Validation & Quota Conservation', () => {
 
     const problem = await res.json();
     expect(problem.status).toBe(422);
-    expect(problem.type).toBe('https://api.easyconvert.io/problems/unprocessable-entity');
+    expect(problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#unprocessable-entity');
     expect(problem.title).toBe('Unprocessable Entity');
     expect(problem.instance).toBe('/api/v1/jobs');
     expect(problem.success).toBe(false);
@@ -89,7 +89,7 @@ describe('API Request Schema Validation & Quota Conservation', () => {
 
     const problem = await res.json();
     expect(problem.status).toBe(422);
-    expect(problem.type).toBe('https://api.easyconvert.io/problems/unprocessable-entity');
+    expect(problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#unprocessable-entity');
     expect(problem.title).toBe('Unprocessable Entity');
     expect(problem.instance).toBe('/api/v1/jobs');
     expect(problem.invalidParams).toEqual(
@@ -132,7 +132,7 @@ describe('API Request Schema Validation & Quota Conservation', () => {
 
     const problem = await res.json();
     expect(problem.status).toBe(422);
-    expect(problem.type).toBe('https://api.easyconvert.io/problems/unprocessable-entity');
+    expect(problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#unprocessable-entity');
     expect(problem.invalidParams).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -176,7 +176,7 @@ describe('API Request Schema Validation & Quota Conservation', () => {
 
       const problem = await res.json();
       expect(problem.status).toBe(422);
-      expect(problem.type).toBe('https://api.easyconvert.io/problems/unprocessable-entity');
+      expect(problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#unprocessable-entity');
       expect(problem.invalidParams).toEqual(
         expect.arrayContaining([expect.objectContaining({ name: expect.stringContaining(testCase.name) })])
       );
@@ -209,7 +209,7 @@ describe('API Request Schema Validation & Quota Conservation', () => {
 
     const problem = await res.json();
     expect(problem.status).toBe(422);
-    expect(problem.type).toBe('https://api.easyconvert.io/problems/unprocessable-entity');
+    expect(problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#unprocessable-entity');
     expect(problem.invalidParams).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -244,7 +244,7 @@ describe('API Request Schema Validation & Quota Conservation', () => {
 
     const problem = await res.json();
     expect(problem.status).toBe(422);
-    expect(problem.type).toBe('https://api.easyconvert.io/problems/unprocessable-entity');
+    expect(problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#unprocessable-entity');
     expect(problem.invalidParams).toEqual(
       expect.arrayContaining([expect.objectContaining({ name: expect.stringContaining('aspectRatio') })])
     );
@@ -276,7 +276,7 @@ describe('API Request Schema Validation & Quota Conservation', () => {
 
     const problem = await res.json();
     expect(problem.status).toBe(422);
-    expect(problem.type).toBe('https://api.easyconvert.io/problems/unprocessable-entity');
+    expect(problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#unprocessable-entity');
     expect(problem.invalidParams).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -312,7 +312,7 @@ describe('API Request Schema Validation & Quota Conservation', () => {
 
     const problem = await res.json();
     expect(problem.status).toBe(422);
-    expect(problem.type).toBe('https://api.easyconvert.io/problems/unprocessable-entity');
+    expect(problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#unprocessable-entity');
     expect(problem.invalidParams).toEqual(
       expect.arrayContaining([expect.objectContaining({ name: expect.stringContaining('aspectRatio') })])
     );
@@ -351,7 +351,7 @@ describe('API Request Schema Validation & Quota Conservation', () => {
 
     const problem = await res.json();
     expect(problem.status).toBe(422);
-    expect(problem.type).toBe('https://api.easyconvert.io/problems/unprocessable-entity');
+    expect(problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#unprocessable-entity');
     expect(problem.invalidParams).toEqual(
       expect.arrayContaining([expect.objectContaining({ name: expect.stringContaining('aspectRatio') })])
     );

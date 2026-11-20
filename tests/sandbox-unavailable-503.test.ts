@@ -40,7 +40,7 @@ import { EngineUnavailableError, SandboxUnavailableError } from '../src/lib/type
 import { skipUnless } from './helpers/strict-skip';
 
 const HTTP_SERVICE_UNAVAILABLE = 503;
-const ENGINE_UNAVAILABLE_TYPE = 'https://api.easyconvert.io/problems/engine-unavailable';
+const ENGINE_UNAVAILABLE_TYPE = 'https://convert.aquilaxk.site/api-docs/errors#engine-unavailable';
 const CONVERT_TIMEOUT_MS = 120_000;
 const SAMPLE_PDF = readFileSync(path.resolve(__dirname, 'fixtures', 'sample.pdf'));
 const SAMPLE_DOCX = readFileSync(path.resolve(__dirname, 'fixtures', 'sample.docx'));

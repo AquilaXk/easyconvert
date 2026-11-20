@@ -29,7 +29,7 @@ describe.each(ERRORS)('%s', (_name, error, problem) => {
   it('is answered by the convert routes with the code next to its problem type', async () => {
     const response = createPdfPostprocessResponse(error, '/api/v1/convert');
     expect(response.status).toBe(422);
-    expect(await response.json()).toMatchObject({ code: 'pdf_postprocess_failed', type: `https://api.easyconvert.io/problems/${problem}`, detail: error.message });
+    expect(await response.json()).toMatchObject({ code: 'pdf_postprocess_failed', type: `https://convert.aquilaxk.site/api-docs/errors#${problem}`, detail: error.message });
   });
 });
 

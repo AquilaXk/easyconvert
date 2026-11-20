@@ -557,7 +557,7 @@ describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
         expect(Number(retryAfter)).toBeGreaterThan(0);
         const body = await lockedRes.json();
         expect(body.status).toBe(429);
-        expect(body.type).toBe('https://api.easyconvert.io/problems/rate-limited');
+        expect(body.type).toBe('https://convert.aquilaxk.site/api-docs/errors#rate-limited');
       } finally {
         delete process.env.TRUSTED_PROXIES;
       }

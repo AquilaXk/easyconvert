@@ -4,8 +4,8 @@ import { InMemoryIdempotencyStore, setIdempotencyStore } from '../src/lib/api/id
 import { respondOnce } from '../src/lib/api/with-idempotency';
 
 const ROUTE = '/api/storage/multipart';
-const IN_FLIGHT_TYPE = 'https://api.easyconvert.io/problems/idempotency-key-in-flight';
-const REUSED_TYPE = 'https://api.easyconvert.io/problems/idempotency-key-reused';
+const IN_FLIGHT_TYPE = 'https://convert.aquilaxk.site/api-docs/errors#idempotency-key-in-flight';
+const REUSED_TYPE = 'https://convert.aquilaxk.site/api-docs/errors#idempotency-key-reused';
 
 let store: InMemoryIdempotencyStore;
 

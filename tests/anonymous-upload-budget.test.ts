@@ -170,7 +170,7 @@ describe('a visitor opens at most two uploads at once and declares at most 2 GiB
     const third = await initiate(visitor, MIB);
     expect(third.status).toBe(429);
     const refusal = await third.json();
-    expect(refusal.type).toBe('https://api.easyconvert.io/problems/upload-budget-exceeded');
+    expect(refusal.type).toBe('https://convert.aquilaxk.site/api-docs/errors#upload-budget-exceeded');
     expect(refusal.detail).toBe('Up to 2 uploads may be open at once without an account. Finish or cancel one, then try again.');
 
     const { uploadId } = await first.json();
@@ -218,7 +218,7 @@ describe('a visitor opens at most two uploads at once and declares at most 2 GiB
 
     expect(res.status).toBe(503);
     const body = await res.json();
-    expect(body.type).toBe('https://api.easyconvert.io/problems/client-ip-trust-unconfigured');
+    expect(body.type).toBe('https://convert.aquilaxk.site/api-docs/errors#client-ip-trust-unconfigured');
     expect(body.detail).toContain('TRUSTED_PROXIES');
     expect((await initiate(await account(), MIB)).status).toBe(200);
   });
@@ -244,7 +244,7 @@ describe('a visitor opens at most two uploads at once and declares at most 2 GiB
 
     const refused = await multipartPost(part(idle.uploadId, csv(MIB), visitor));
     expect(refused.status).toBe(429);
-    expect((await refused.json()).type).toBe('https://api.easyconvert.io/problems/upload-budget-exceeded');
+    expect((await refused.json()).type).toBe('https://convert.aquilaxk.site/api-docs/errors#upload-budget-exceeded');
 
     await multipartPost(multipart('abort', { uploadId: third.uploadId }, visitor));
     expect((await multipartPost(part(idle.uploadId, csv(MIB), visitor))).status).toBe(200);
@@ -406,7 +406,7 @@ describe('an upload opens only when a job could start for the caller', () => {
 
     expect(res.status).toBe(429);
     const body = await res.json();
-    expect(body.type).toBe('https://api.easyconvert.io/problems/quota-exceeded');
+    expect(body.type).toBe('https://convert.aquilaxk.site/api-docs/errors#quota-exceeded');
     expect(body.detail).toBe('The daily limit of 10 conversions is used up. It resets at midnight UTC.');
   });
 
@@ -419,7 +419,7 @@ describe('an upload opens only when a job could start for the caller', () => {
     const res = await initiate(visitor, MIB);
 
     expect(res.status).toBe(429);
-    expect((await res.json()).type).toBe('https://api.easyconvert.io/problems/concurrency-limit');
+    expect((await res.json()).type).toBe('https://convert.aquilaxk.site/api-docs/errors#concurrency-limit');
   });
 });
 
@@ -498,7 +498,7 @@ describe('an Idempotency-Key makes opening an upload and starting a job safe to 
     const other = await initiate(visitor, 2 * MIB);
 
     expect(other.status).toBe(422);
-    expect((await other.json()).type).toBe('https://api.easyconvert.io/problems/idempotency-key-reused');
+    expect((await other.json()).type).toBe('https://convert.aquilaxk.site/api-docs/errors#idempotency-key-reused');
   });
 
   it('answers a body that is not a JSON object like one without the fields, and keeps no key for it', async () => {
@@ -591,7 +591,7 @@ describe('an Idempotency-Key makes opening an upload and starting a job safe to 
 
     expect(first.status).toBe(200);
     expect(repeat.status).toBe(409);
-    expect((await repeat.json()).type).toBe('https://api.easyconvert.io/problems/idempotency-key-in-flight');
+    expect((await repeat.json()).type).toBe('https://convert.aquilaxk.site/api-docs/errors#idempotency-key-in-flight');
   });
 
   it('keeps the lock of a job start the idempotency store could not record, so a repeat queues no second job and reserves no second unit', async () => {

@@ -23,7 +23,7 @@ import {
 
 const SAMPLE_DOCX = fs.readFileSync(path.resolve(__dirname, 'fixtures', 'sample.docx'));
 const CONVERT_TIMEOUT_MS = 180_000;
-const PDFA_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/pdfa-validation-failed';
+const PDFA_PROBLEM_TYPE = 'https://convert.aquilaxk.site/api-docs/errors#pdfa-validation-failed';
 /** veraPDF exits with 1 when a file is not compliant. */
 const NON_COMPLIANT_EXIT = 1;
 

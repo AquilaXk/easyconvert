@@ -360,7 +360,7 @@ describe('WP-45: Archive Creation, Selective Extraction, Inspection, and Multi-V
       expect(res.status).toBe(422);
 
       const body = await res.json();
-      expect(body.type).toBe('https://api.easyconvert.io/problems/archive-encrypted-header');
+      expect(body.type).toBe('https://convert.aquilaxk.site/api-docs/errors#archive-encrypted-header');
       expect(body.title).toBe('Archive Header Encrypted');
     });
 

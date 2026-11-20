@@ -258,7 +258,7 @@ describe('Security, Developer API & Distributed Quota Hardening (Issue #178)', (
       expect(res.headers.get('content-type')).toContain('application/problem+json');
 
       const problem = await res.json();
-      expect(problem.type).toBe('https://api.easyconvert.io/problems/bad-request');
+      expect(problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#bad-request');
       expect(problem.title).toBe('Bad Request');
       expect(problem.status).toBe(400);
       expect(problem.detail).toContain('targetFormat');
@@ -278,7 +278,7 @@ describe('Security, Developer API & Distributed Quota Hardening (Issue #178)', (
       expect(res.headers.get('content-type')).toContain('application/problem+json');
 
       const problem = await res.json();
-      expect(problem.type).toBe('https://api.easyconvert.io/problems/not-found');
+      expect(problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#not-found');
       expect(problem.title).toBe('Not Found');
       expect(problem.status).toBe(404);
       expect(problem.detail).toContain('not found');

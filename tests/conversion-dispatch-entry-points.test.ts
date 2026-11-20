@@ -27,7 +27,7 @@ import { extractTextWithExternalPdftotext } from './helpers/differential-oracle'
  * without recalculation.
  */
 
-const ENGINE_UNAVAILABLE_TYPE = 'https://api.easyconvert.io/problems/engine-unavailable';
+const ENGINE_UNAVAILABLE_TYPE = 'https://convert.aquilaxk.site/api-docs/errors#engine-unavailable';
 const HTTP_SERVICE_UNAVAILABLE = 503;
 const ARTIFACT_TTL_MS = 60 * 60 * 1000;
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -276,7 +276,7 @@ describe('pairs only a native engine converts', () => {
 });
 
 describe('entry points answer typed input errors from the dispatcher with 400', () => {
-  const BAD_REQUEST_TYPE = 'https://api.easyconvert.io/problems/bad-request';
+  const BAD_REQUEST_TYPE = 'https://convert.aquilaxk.site/api-docs/errors#bad-request';
   const HTTP_BAD_REQUEST = 400;
   /** DOS/PE executable header: the magic bytes of a Windows binary, not a ZIP-based DOCX. */
   const PE_HEADER = Buffer.from([0x4d, 0x5a, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00]);

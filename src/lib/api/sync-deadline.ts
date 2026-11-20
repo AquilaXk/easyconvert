@@ -2,6 +2,7 @@ import type { NextResponse } from 'next/server';
 import { JobDeadlineError } from '../queue/job-deadline';
 import { JobTimeoutError, RequestAbortedError } from '../types';
 import { createProblemDetailsResponse } from './problem-details';
+import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 
 /**
  * The deadline of a synchronous conversion route. The conversion runs under the same wall-clock limit as a queued
@@ -23,9 +24,9 @@ export interface DeadlineLimits {
 export const ASYNC_JOBS_ENDPOINT = '/api/v1/jobs';
 
 /** Problem type of a conversion that ran past its deadline. */
-export const JOB_TIMEOUT_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/job-timeout';
+export const JOB_TIMEOUT_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}job-timeout`;
 /** Problem type of a request whose client went away before the conversion finished. */
-export const CLIENT_CLOSED_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/client-closed-request';
+export const CLIENT_CLOSED_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}client-closed-request`;
 
 /** HTTP status for a client that closed the connection (the de facto 499; no answer reaches that client). */
 export const HTTP_CLIENT_CLOSED_REQUEST = 499;
