@@ -887,6 +887,7 @@
   "tests/pdf-ink.test.ts": 0.5,
   "tests/pdf-internal-links.test.ts": 20.8,
   "tests/pdf-jbig2-bomb.test.ts": 3.4,
+  "tests/pdf-lattice-against-pdfplumber.test.ts": 2,
   "tests/pdf-layout-bullet-rows.test.ts": 10.6,
   "tests/pdf-layout-cell-runs.test.ts": 0,
   "tests/pdf-layout-continuations.test.ts": 1.2,
