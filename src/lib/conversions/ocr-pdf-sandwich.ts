@@ -45,7 +45,7 @@ export async function createLosslessSandwichPdfFromPdf(
       }
     }
     if (ocrResult.pageRender) {
-      const placed = injectRenderedPageTextLayer(page, ocrResult, ocrResult.pageRender, options.ocrDeskew === true);
+      const placed = injectRenderedPageTextLayer(page, ocrResult, ocrResult.pageRender);
       if (options.ocrDeskew === true) levelPageToText(page, placed);
       continue;
     }
@@ -57,7 +57,7 @@ export async function createLosslessSandwichPdfFromPdf(
     const scaleX = pageWidth / imgWidth;
     const scaleY = pageHeight / imgHeight;
 
-    const placed = injectInvisibleTextLayer(page, ocrResult, scaleX, scaleY, undefined, options.ocrDeskew === true);
+    const placed = injectInvisibleTextLayer(page, ocrResult, scaleX, scaleY);
     if (options.ocrDeskew === true) levelPageToText(page, placed);
   }
 
