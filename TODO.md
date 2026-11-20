@@ -22,7 +22,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - PDF to DOCX: wire the pdf2docx layout translation kept on branch `feat/pdf-docx-pdf2docx` (MIT, matched the Python on 34 files) once the writer can set a paragraph beside a table or the reader gives per-glyph advances (entry 362); remaining gaps are wrap drift on justified text (000353, 000572) and extra pages (000018, 000572, 000618, 001135).
 - Fix the remaining live-sweep refusals of 2026-11-20: SVG `<text>` to EMF/WMF/CGM, CB7/CBT to PDF, SHW to PDF, CHM to EPUB (calibre `lstrip` on None), HTML with a CSS backslash escape to PDF, ICNS without PNG/JPEG members, HWP 3.0, TOML with an empty key to XML, PSB headers, RAR method 0x33 in the extract tool, and RM/WTV same-format output quality.
 
-- Run `npm run sdk:generate` for `ocrDeskew` (entry 371; the generated TypeScript and Python clients still lack the option, so `npm run sdk:check` fails until then).
 - Add an `ocrDeskew` checkbox to the OCR block of the document options panel (`DocumentAndArchiveOptions.tsx`, one label per locale; entry 371) after QA approves the before/after screen.
 - Write the words of a tilted line as wide as the words without `ocrDeskew` too (`placeWords` `exactBoxes`, entry 371): the box of such a word is wider by the line height times sin(2 x tilt), so the highlight is a few points too wide at 3 degrees and more at 10.
 

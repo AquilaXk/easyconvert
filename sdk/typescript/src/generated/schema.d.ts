@@ -788,6 +788,8 @@ export interface components {
             ocrMode?: components["schemas"]["OcrMode"];
             /** @description Detect the page orientation and script of scans that read badly, and read them again turned upright. Omit it to detect when the OCR orientation data is installed; true requires it and fails with 503 when it is missing; false never detects. */
             ocrDetectOrientation?: boolean;
+            /** @description Level skewed pages of a searchable PDF (like `ocrmypdf --deskew`): the page content is turned by the measured skew, up to 20 degrees, without resampling the scan, so that text extractors that regroup words by position read the lines in order. The page grows when a recognised word would leave it, and the corners the turn carries past the page are cut off. Omit it or send false to keep the page as scanned. */
+            ocrDeskew?: boolean;
             ocrEngineMarkup?: components["schemas"]["OcrEngineMarkup"];
             /** @description Minimum characters per page required to consider a digital text layer present. */
             ocrDensityThreshold?: number;

@@ -143,6 +143,10 @@ class ConversionOptions:
         ocr_detect_orientation (bool | Unset): Detect the page orientation and script of scans that read badly, and read
             them again turned upright. Omit it to detect when the OCR orientation data is installed; true requires it and
             fails with 503 when it is missing; false never detects.
+        ocr_deskew (bool | Unset): Level skewed pages of a searchable PDF (like `ocrmypdf --deskew`): the page content
+            is turned by the measured skew, up to 20 degrees, without resampling the scan, so that text extractors that
+            regroup words by position read the lines in order. The page grows when a recognised word would leave it, and the
+            corners the turn carries past the page are cut off. Omit it or send false to keep the page as scanned.
         ocr_engine_markup (OcrEngineMarkup | Unset): Debug and verification only: also return the OCR engine's own hOCR
             or ALTO of each recognized PDF page in the result metadata, next to the product export. Needs the tesseract
             command line (503 when missing).
@@ -295,6 +299,7 @@ class ConversionOptions:
     ocr_language: str | Unset = UNSET
     ocr_mode: OcrMode | Unset = UNSET
     ocr_detect_orientation: bool | Unset = UNSET
+    ocr_deskew: bool | Unset = UNSET
     ocr_engine_markup: OcrEngineMarkup | Unset = UNSET
     ocr_density_threshold: float | Unset = UNSET
     client_edge_mode: bool | Unset = UNSET
@@ -495,6 +500,8 @@ class ConversionOptions:
             ocr_mode = self.ocr_mode.value
 
         ocr_detect_orientation = self.ocr_detect_orientation
+
+        ocr_deskew = self.ocr_deskew
 
         ocr_engine_markup: str | Unset = UNSET
         if not isinstance(self.ocr_engine_markup, Unset):
@@ -785,6 +792,8 @@ class ConversionOptions:
             field_dict["ocrMode"] = ocr_mode
         if ocr_detect_orientation is not UNSET:
             field_dict["ocrDetectOrientation"] = ocr_detect_orientation
+        if ocr_deskew is not UNSET:
+            field_dict["ocrDeskew"] = ocr_deskew
         if ocr_engine_markup is not UNSET:
             field_dict["ocrEngineMarkup"] = ocr_engine_markup
         if ocr_density_threshold is not UNSET:
@@ -1125,6 +1134,8 @@ class ConversionOptions:
             ocr_mode = OcrMode(_ocr_mode)
 
         ocr_detect_orientation = d.pop("ocrDetectOrientation", UNSET)
+
+        ocr_deskew = d.pop("ocrDeskew", UNSET)
 
         _ocr_engine_markup = d.pop("ocrEngineMarkup", UNSET)
         ocr_engine_markup: OcrEngineMarkup | Unset
@@ -1471,6 +1482,7 @@ class ConversionOptions:
             ocr_language=ocr_language,
             ocr_mode=ocr_mode,
             ocr_detect_orientation=ocr_detect_orientation,
+            ocr_deskew=ocr_deskew,
             ocr_engine_markup=ocr_engine_markup,
             ocr_density_threshold=ocr_density_threshold,
             client_edge_mode=client_edge_mode,
