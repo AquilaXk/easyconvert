@@ -1,6 +1,8 @@
+import { RESERVE_CREDENTIAL_SLOT_SCRIPT } from '../../src/lib/storage/credentials-vault';
+
 /**
  * The part of ioredis the credentials vault uses, over maps: strings (SET with PX and NX, SETEX, GET, MGET, DEL, EXISTS, SCAN one key at
- * a time, KEYS), sets (SADD, SREM, SMEMBERS, SISMEMBER) and pipelines. `state.down` makes every command fail, as a Redis that does not answer.
+ * a time, KEYS), sets (SADD, SREM, SMEMBERS, SISMEMBER), EVAL of the vault's own reservation script (run in one step, as Redis runs a script) and pipelines. `state.down` makes every command fail, as a Redis that does not answer.
  */
 export function fakeVaultRedis() {
   const data = new Map<string, string>();
@@ -42,6 +44,18 @@ export function fakeVaultRedis() {
         const removed = members.filter((member) => set?.delete(member)).length;
         if (set?.size === 0) sets.delete(key);
         return removed;
+      }),
+    eval: (script: string, _numKeys: number, ...rest: (string | number)[]) =>
+      guard(() => {
+        if (script !== RESERVE_CREDENTIAL_SLOT_SCRIPT) throw new Error('the fake runs only the credential reservation script');
+        const [indexKey, credentialKey, ...args] = rest.length === 6 ? rest : [rest[0], undefined, ...rest.slice(1)];
+        const [id, limit, ttl, value] = args as [string, number, number, string];
+        const set = sets.get(indexKey as string) ?? new Set<string>();
+        if (set.size >= Number(limit)) return 0;
+        sets.set(indexKey as string, set.add(id));
+        if (credentialKey !== undefined) data.set(credentialKey as string, value);
+        void ttl;
+        return 1;
       }),
     smembers: (key: string) => guard(() => [...(sets.get(key) ?? [])]),
     sismember: (key: string, member: string) => guard(() => (sets.get(key)?.has(member) ? 1 : 0)),

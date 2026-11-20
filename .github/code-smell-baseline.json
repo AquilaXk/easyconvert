@@ -769,7 +769,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 1659
+    "maxValue": 1658
   },
   {
     "file": "src/lib/conversions/ocr-sauvola.ts",

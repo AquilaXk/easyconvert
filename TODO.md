@@ -22,15 +22,12 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - PDF to DOCX: wire the pdf2docx layout translation kept on branch `feat/pdf-docx-pdf2docx` (MIT, matched the Python on 34 files) once the writer can set a paragraph beside a table or the reader gives per-glyph advances (entry 362); remaining gaps are wrap drift on justified text (000353, 000572) and extra pages (000018, 000572, 000618, 001135).
 - Fix the remaining live-sweep refusals of 2026-11-20: SVG `<text>` to EMF/WMF/CGM, CB7/CBT to PDF, SHW to PDF, CHM to EPUB (calibre `lstrip` on None), HTML with a CSS backslash escape to PDF, ICNS without PNG/JPEG members, HWP 3.0, TOML with an empty key to XML, PSB headers, RAR method 0x33 in the extract tool, and RM/WTV same-format output quality.
 
-- Write the words of a tilted line as wide as the words without `ocrDeskew` too (`placeWords` `exactBoxes`, entry 371): the box of such a word is wider by the line height times sin(2 x tilt), so the highlight is a few points too wide at 3 degrees and more at 10.
-
 ## Speed
 - Investigate `pdf-ops` speed parity on `pdf-gov-000142.pdf` on the Linux arm64 VM (protect 0.80 to 0.82, delete 0.905 to 0.91, extract/reorder/rotate 0.91 to 0.93 after entry 292 brought split to 0.95 to 0.96; zero-copy `pdf-text-worker` transfer landed in entry 315, and the Ubuntu 24.04 arm64 `native/qpdf-runner` 105/105 decline was resolved in entry 322): decide whether `--compression-level=1` (-0.6 ms of 7.3 ms for +0.3% bytes) is wanted.
 - Cut camera-RAW-to-GIF time further (`3fr` 1.88 s, `mos` 1.23 s, `arw` 337 ms after entries 279, 313 and 315): split the palette histogram/median-cut/k-means step across pool threads, decide whether multi-segment parallel LZW (~200 ms saved on `3fr`, <0.01% byte change) is acceptable, and profile `dcraw_emu` on `3fr` (0.9 s).
 
 ## Operations and security
 - Turn on `UNVERIFIED_ACCOUNT_PURGE_ENABLED` on or after 2026-12-20 (30 days after the privacy text naming it was published), first with `UNVERIFIED_ACCOUNT_PURGE_DRY_RUN=true` (the default) for one pass, check the counts in the worker log, then set it to `false` (entry 364).
-- Cap how many storage credentials one account keeps (launch audit of 2026-11-20; entry 343 bounds each record).
 - Add browser error reporting for crashes in the converter UI.
 - Confirm the Paddle checkout script under the nonce policy (entry 370) in the first sandbox purchase.
 - Pick a free package name before publishing the SDKs (PyPI `easyconvert` belongs to another project; npm `@easyconvert/sdk` is unpublished) and add install lines to their READMEs.
@@ -49,7 +46,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Learned OCR layout tier: pick a permissively licensed layout model and record its model and data provenance.
 - Rare samples: DWG before R13, WP Greek accented letters, Word Wingdings check boxes.
 - `sk`/`sk1` input through UniConvertor 2 as a separate sandboxed GPL program (behaviour only, no code copied).
-- `pages` for PDF to XLS, PPTX, RTF and DOC: the reference offers it for them and the converter ignores it (entry 372 wired TXT, DOCX, HTML and XLSX; the readers already take `select`, the writers of these four targets need to ask for it and the options panel to show the field).
+- `pages` for PDF to XLS, PPTX, RTF and DOC: the reference offers it for them and the converter ignores it (entry 373 wired TXT, DOCX, HTML and XLSX; the readers already take `select`, the writers of these four targets need to ask for it and the options panel to show the field).
 - Animated GIF of 256 colours still takes the image library's local palettes (up to 281 colours composed on a photographic pan): entry 368 writes every count below 256 from a raster that `quantizr-pixels` reduced, with the library's frame differencing, so the same route at 255 colours (+0.1 to +1.2 dB on pans and +14 dB on a screen scroll at 256 in entry 366) needs only a decision on the one colour that an opaque differenced frame gives up.
 - 8-bit ICO (`oklabPaletteRaster`) still takes its palette from the Oklab quantiser; measure it against `quantizr-pixels` the way entry 366 did for GIF and BMP.
 - GIF of a photograph: `quantizr-pixels` ties the Oklab route on SSIM and CIEDE2000 at 256 colours and takes 1.3 to 2 times the time above 1.3 MP because it runs on one thread: thread the program's remap and port the run tolerance to it, then measure again (entry 366).

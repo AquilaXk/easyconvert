@@ -1547,8 +1547,7 @@ export function injectInvisibleTextLayer(
   ocrResult: OcrResult,
   scaleX: number = 1.0,
   scaleY: number = 1.0,
-  placement?: TextLayerPlacement,
-  exactBoxes = false
+  placement?: TextLayerPlacement
 ): PlacedWord[] {
   const safeScaleX = Number.isFinite(scaleX) && scaleX > 0 ? scaleX : 1.0;
   const safeScaleY = Number.isFinite(scaleY) && scaleY > 0 ? scaleY : 1.0;
@@ -1563,7 +1562,7 @@ export function injectInvisibleTextLayer(
   const lineBlocks = turned
     ? rawBlocks
     : sortLineBlocksTopological(rawBlocks, ocrResult.imageWidth ?? pageWidth / safeScaleX, ocrResult.imageHeight ?? pageTop / safeScaleY);
-  const words = placeWords({ ...ocrResult, lineBlocks }, safeScaleX, safeScaleY, pageTop, placement?.originX ?? 0, exactBoxes);
+  const words = placeWords({ ...ocrResult, lineBlocks }, safeScaleX, safeScaleY, pageTop, placement?.originX ?? 0);
   if (words.length === 0) return words;
   const font = ensureUnicodeFont(page.doc);
   registerFontOnPage(page, font);
@@ -1586,10 +1585,10 @@ export interface TextLayerPlacement {
  * page (CropBox, turned by /Rotate), so they are first returned to the unrotated page, whose pixel grid starts at
  * the CropBox's top-left corner and is 72 / dpi points per pixel.
  */
-export function injectRenderedPageTextLayer(page: PDFPage, ocrResult: OcrResult, render: RenderedPdfPage, exactBoxes = false): PlacedWord[] {
+export function injectRenderedPageTextLayer(page: PDFPage, ocrResult: OcrResult, render: RenderedPdfPage): PlacedWord[] {
   const unrotated = mapOcrResultToSource(ocrResult, unrotatedPageGeometry(render));
   const { scaleX, scaleY, originX, top } = unrotatedPageScale(render);
-  return injectInvisibleTextLayer(page, unrotated, scaleX, scaleY, { originX, top, keepOrder: true }, exactBoxes);
+  return injectInvisibleTextLayer(page, unrotated, scaleX, scaleY, { originX, top, keepOrder: true });
 }
 
 /** PDF user space unit: 1/72 inch. */
@@ -1651,7 +1650,7 @@ export async function createLosslessSandwichPdfFromImage(
 
   // The result's boxes are in the pixels of the scan it was made from.
   const [scaleX, scaleY] = [pageWidth / (ocrResult.imageWidth || imgWidth), pageHeight / (ocrResult.imageHeight || imgHeight)];
-  const placed = injectInvisibleTextLayer(page, ocrResult, scaleX, scaleY, undefined, options.ocrDeskew === true);
+  const placed = injectInvisibleTextLayer(page, ocrResult, scaleX, scaleY);
   if (options.ocrDeskew === true) levelPageToText(page, placed);
 
   const pdfBytes = await doc.save();

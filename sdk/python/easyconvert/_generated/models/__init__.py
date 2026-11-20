@@ -125,6 +125,12 @@ from .create_storage_credential_v1_body_provider_type import (
 from .create_storage_credential_v1_response_201 import (
     CreateStorageCredentialV1Response201,
 )
+from .create_storage_credential_v1_response_409 import (
+    CreateStorageCredentialV1Response409,
+)
+from .create_storage_credential_v1_response_409_code import (
+    CreateStorageCredentialV1Response409Code,
+)
 from .demosaic_method import DemosaicMethod
 from .dither_of_audio import DitherOfAudio
 from .downmix_of_audio import DownmixOfAudio
@@ -418,6 +424,8 @@ __all__ = (
     "CreateStorageCredentialV1BodyCredentialsType",
     "CreateStorageCredentialV1BodyProviderType",
     "CreateStorageCredentialV1Response201",
+    "CreateStorageCredentialV1Response409",
+    "CreateStorageCredentialV1Response409Code",
     "DemosaicMethod",
     "DitherOfAudio",
     "DownmixOfAudio",

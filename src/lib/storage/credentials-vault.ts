@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import type Redis from 'ioredis';
+import { MAX_STORAGE_CREDENTIALS_PER_ACCOUNT } from '../api/field-limits';
 import { createConfiguredRedisClient, hasConfiguredRedis } from '../redis/client-factory';
 import { isClusterRedis, scanClusterSafe } from '../redis/cluster-ops';
 import { pipelineReplies } from '../redis/pipeline-replies';
@@ -102,6 +103,22 @@ interface StoredCredentialEnvelope {
   expiresAt?: number;
 }
 
+/**
+ * Adds a credential to the index of its user unless the index already names the limit's worth of ids, and writes the credential in the
+ * same step when its key is given, so requests sent at once never pass the limit. A cluster keeps the credential key on another slot
+ * than the index, so there the key is left out and written by the caller afterwards.
+ * KEYS: the index of the user, then (not in a cluster) the credential key. ARGV: the id, the limit, the lifetime in seconds (0 for
+ * none), the stored value. Returns 1 when the id was added, 0 when the account is at the limit.
+ */
+export const RESERVE_CREDENTIAL_SLOT_SCRIPT = `
+if redis.call('SCARD', KEYS[1]) >= tonumber(ARGV[2]) then return 0 end
+redis.call('SADD', KEYS[1], ARGV[1])
+if KEYS[2] then
+  if tonumber(ARGV[3]) > 0 then redis.call('SETEX', KEYS[2], ARGV[3], ARGV[4]) else redis.call('SET', KEYS[2], ARGV[4]) end
+end
+return 1
+`;
+
 const VAULT_PREFIX = 'vault:cred:';
 /**
  * The ids of one user's credentials, a set per user (`vault:user:{<userId>}`, the tag the account's other keys carry, so
@@ -159,6 +176,18 @@ export class CredentialsVaultPersistenceError extends Error {
     if (options?.cause !== undefined) {
       this.cause = options.cause;
     }
+  }
+}
+
+/** The account holds as many saved credentials as it may (`MAX_STORAGE_CREDENTIALS_PER_ACCOUNT`), so nothing was saved. */
+export class CredentialsVaultLimitError extends Error {
+  readonly code = 'CREDENTIALS_VAULT_LIMIT';
+
+  constructor() {
+    super(
+      `An account holds at most ${MAX_STORAGE_CREDENTIALS_PER_ACCOUNT} saved storage credentials. Delete one you no longer use, then save the new one.`
+    );
+    this.name = 'CredentialsVaultLimitError';
   }
 }
 
@@ -339,29 +368,55 @@ export class CredentialsVault {
       // A configured Redis is the only store: if the write fails, the save fails.
       try {
         await whenReady(this.redisClient);
-        const serialized = JSON.stringify(envelope);
-        // The index first: an id without a credential is dropped by the next listing, a credential without an id would never be listed.
-        if (isClusterRedis(this.redisClient)) {
-          await this.redisClient.sadd(userIndexKey(userId), id);
-          if (options?.ttlSeconds) await this.redisClient.setex(`${VAULT_PREFIX}${id}`, options.ttlSeconds, serialized);
-          else await this.redisClient.set(`${VAULT_PREFIX}${id}`, serialized);
-        } else {
-          const pipeline = this.redisClient.pipeline().sadd(userIndexKey(userId), id);
-          if (options?.ttlSeconds) pipeline.setex(`${VAULT_PREFIX}${id}`, options.ttlSeconds, serialized);
-          else pipeline.set(`${VAULT_PREFIX}${id}`, serialized);
-          await pipelineReplies(pipeline);
-        }
+        await this.saveWithinLimit(this.redisClient, userId, id, JSON.stringify(envelope), options?.ttlSeconds);
         await this.dropExpiredFromIndex(this.redisClient, userId);
       } catch (err) {
+        if (err instanceof CredentialsVaultLimitError) throw err;
         console.error('[CredentialsVault] Redis save failed:', err);
         throw new CredentialsVaultPersistenceError({ cause: err });
       }
     } else {
-      // No Redis configured (local development and tests): single-process memory.
+      // No Redis configured (local development and tests): single-process memory, checked and written with no wait between.
+      if (this.heldInMemory(userId, now) >= MAX_STORAGE_CREDENTIALS_PER_ACCOUNT) throw new CredentialsVaultLimitError();
       this.inMemoryStore.set(id, envelope);
     }
 
     return id;
+  }
+
+  private heldInMemory(userId: string, now: number): number {
+    let held = 0;
+    for (const envelope of this.inMemoryStore.values()) {
+      if (envelope.userId === userId && !(envelope.expiresAt && now > envelope.expiresAt)) held++;
+    }
+    return held;
+  }
+
+  /**
+   * Writes the credential and its place in the index of its user, or throws a `CredentialsVaultLimitError` when the user holds the
+   * limit's worth. The index first: an id without a credential is dropped by the next listing, a credential without an id would never
+   * be listed. When the index is full, the ids whose credential has expired leave it and the reservation is tried once more.
+   */
+  private async saveWithinLimit(redis: Redis, userId: string, id: string, serialized: string, ttlSeconds?: number): Promise<void> {
+    const cluster = isClusterRedis(redis);
+    const index = userIndexKey(userId);
+    const credentialKey = `${VAULT_PREFIX}${id}`;
+    const keys = cluster ? [index] : [index, credentialKey];
+    const reserve = async (): Promise<boolean> =>
+      Number(await redis.eval(RESERVE_CREDENTIAL_SLOT_SCRIPT, keys.length, ...keys, id, MAX_STORAGE_CREDENTIALS_PER_ACCOUNT, ttlSeconds ?? 0, serialized)) === 1;
+
+    if (!(await reserve())) {
+      await this.dropExpiredFromIndex(redis, userId);
+      if (!(await reserve())) throw new CredentialsVaultLimitError();
+    }
+    if (!cluster) return;
+    try {
+      if (ttlSeconds) await redis.setex(credentialKey, ttlSeconds, serialized);
+      else await redis.set(credentialKey, serialized);
+    } catch (err) {
+      await redis.srem(index, id).catch(() => undefined);
+      throw err;
+    }
   }
 
   /** The stored envelope, or null when none exists; an unreachable or unreadable store is a typed error. */

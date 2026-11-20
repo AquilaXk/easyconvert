@@ -420,7 +420,8 @@ Security
 369. [The office sheet readers hold CSV, TSV and JSON to the limits of entry 337 and write on a pool thread, and a bzip2 listing decodes off the event loop](#369-the-office-sheet-readers-hold-csv-tsv-and-json-to-the-limits-of-entry-337-and-write-on-a-pool-thread-and-a-bzip2-listing-decodes-off-the-event-loop)
 370. [The page Content-Security-Policy carries a nonce made for each request instead of `'unsafe-inline'` for scripts, and every page renders per request](#370-the-page-content-security-policy-carries-a-nonce-made-for-each-request-instead-of-unsafe-inline-for-scripts-and-every-page-renders-per-request)
 371. [A scan that is skewed can be levelled in the searchable PDF with `ocrDeskew`, off by default, by turning the page content and leaving the scan unresampled](#371-a-scan-that-is-skewed-can-be-levelled-in-the-searchable-pdf-with-ocrdeskew-off-by-default-by-turning-the-page-content-and-leaving-the-scan-unresampled)
-372. [PDF to TXT, DOCX, HTML and XLSX convert the pages `pages` selects, read inside the readers, with the syntax and refusals of the page-image targets](#372-pdf-to-txt-docx-html-and-xlsx-convert-the-pages-pages-selects-read-inside-the-readers-with-the-syntax-and-refusals-of-the-page-image-targets)
+372. [An account holds at most 20 saved storage credentials, and the check and the write are one Lua script](#372-an-account-holds-at-most-20-saved-storage-credentials-and-the-check-and-the-write-are-one-lua-script)
+373. [PDF to TXT, DOCX, HTML and XLSX convert the pages `pages` selects, read inside the readers, with the syntax and refusals of the page-image targets](#373-pdf-to-txt-docx-html-and-xlsx-convert-the-pages-pages-selects-read-inside-the-readers-with-the-syntax-and-refusals-of-the-page-image-targets)
 
 ---
 
@@ -10942,12 +10943,12 @@ Security
 ## 371. A scan that is skewed can be levelled in the searchable PDF with `ocrDeskew`, off by default, by turning the page content and leaving the scan unresampled
 
 - **Date**: 2026-11-21
-- **Status**: Implemented (QA request: the reading order of OCR text on skewed scans; the option and its default follow `ocrmypdf --deskew`).
+- **Status**: Implemented (QA request: the reading order of OCR text on skewed scans; the option and its default follow `ocrmypdf --deskew`). Item 4 was extended on 2026-11-21 (QA request) from the option to every searchable PDF.
 - **Decision**:
   1. **`ocrDeskew: true` levels each page of a searchable PDF whose text layer is skewed.** The content of the page, the scan and the text layer together, is wrapped in one transformation matrix that turns it by minus the measured skew about the centre of the page box (`levelPageToText`, `ocr-output-deskew.ts`). Nothing is resampled and the bytes of the scan are not touched: the image stream stays as it was, and a viewer draws it turned. It works for an image converted to a searchable PDF and for a scanned PDF (`ocrMode` `force` or a page without text), through `createLosslessSandwichPdfFromImage` and `createLosslessSandwichPdfFromPdf`.
   2. **The skew is the one of the text layer as placed**, not a second estimate: the median of the baseline angles of the words in the page's user space, weighted by the length of each word, taken modulo a quarter turn (so a page with `/Rotate` or fed sideways reads as its residual). It is trusted when there are at least 6 words, at least 80 % of the text lies within 1.5 degrees of the median (a curved page does not), and the median is from 0.25 to 20 degrees. Otherwise the page is written as it would be without the option.
   3. **The page box grows when a recognised word would leave it.** The box is the union of the page box and the levelled extent of every word; the corners of the scan that the turn carries past the page are cut off, and the corners it leaves empty are the white of the page (as `ocrmypdf --deskew`, which turns about the centre, fills with white and keeps the size). `/CropBox` follows the new box; `/TrimBox`, `/BleedBox` and `/ArtBox` are removed. A page with annotations is left as it is, because they do not turn with the content.
-  4. **With the option, a word of a tilted line is as wide as the word.** The engine's box of such a word is the bounding box of its tilted rectangle, wider along the baseline by the line's height times sin(2 x tilt) (3.4 pt on a 10 pt line at 10 degrees). The levelled words overlapped by that much, so `pdftotext` ran them together (`thequarterlyreport`, CER 2.3 to 2.6 % at 10 degrees). `placeWords` solves the bounding box for the rectangle when `exactBoxes` is set. Without the option the text layer is written as before.
+  4. **A word of a tilted line is as wide as the word, with the option and without it.** The engine's box of such a word is the bounding box of its tilted rectangle, wider along the baseline by the line's height times sin(2 x tilt) (3.4 pt on a 10 pt line at 10 degrees). The levelled words overlapped by that much, so `pdftotext` ran them together (`thequarterlyreport`, CER 2.3 to 2.6 % at 10 degrees). `placeWords` solves the bounding box for the rectangle. It first did so only with the option (`exactBoxes`); the flag is gone and every searchable PDF, the browser OCR tier included, is written this way. A line tilted by less than 0.25 degrees is level (the baseline of a level page is measured to about a tenth of a degree, and the box then overstates the word by under a third of a pixel on a 40 pixel row), so a page with no tilt is written byte for byte as before.
   5. **The option is `ocrDeskew` in the request options, the OpenAPI schema and the generated clients; the browser OCR tier refuses it** (`EdgeOcrError`, as for `ocrDetectOrientation: true`) because it writes the page as scanned. Left out or `false`, the output is as before.
 - **Why**:
   - **The order was never wrong in the file.** The text of every page is in reading order in the content stream (`pdftotext -raw` gives character ratio 1.0 at every angle from -10 to 10 degrees, Hangul recall 1.0). `pdftotext` without `-raw` regroups words by position, and a line that slopes 3 degrees over 440 pt has its right end 23 pt above its left end, more than the line pitch, so lines interleave (character ratio 0.4612 for the Korean skew page, 0.3567 for the English). Poppler fails the same way on any tilted text layer: a hand-built PDF with one text run per line or one per word, on a true baseline, scored 0.67 to 0.76 at 1 degree and 0.17 at 10 degrees. The only way to read such a page in order with that extractor is to make the text level.
@@ -10968,19 +10969,70 @@ Security
   - The "off" columns equal the base commit's output (the same numbers as before the change), and the Korean "on" word recall of 0.9692 is the one of a straight page read by `-raw`, a property of the engine on that page (the clean page reads 0.9538 in the same view).
   - Clean pages: median wall time of 5 alternating runs of the clean Korean and English page, base, head with the option off, head with it on: 1,096, 1,106 and 1,088 ms (Korean), 775, 772 and 774 ms (English). The level page is not changed by the option (same page structure and same extracted text).
   - `ORACLE_STRICT_MODE=1 npm run bench:quality -- --parity --family ocr`: PASS, `ocr/scan.png->pdf` cer 0 % (reference 0.157 %), word_f1 1, throughput 1.50 of the reference.
+- **Measured on the default path, 2026-11-21** (Linux arm64 VM, Node 24, Tesseract; the clean 300 dpi pages `ko_a`, `en_a`, `en_b`, `en_c` turned by the angle on a white sheet, converted to a searchable PDF with the default options; base is the commit before the change, head is the change; means over the pages of a language, Korean is one page):
+  | turn | `-raw` CER %, ko | `-raw` CER %, en | word length error, pt, ko | word length error, pt, en | selection IoU, ko | selection IoU, en |
+  |---|---|---|---|---|---|---|
+  | 0 | 0.457 / 0.457 | 0 / 0 | 0 / 0 | 0 / 0 | 1 / 1 | 1 / 1 |
+  | +1 | 0 / 0 | 0 / 0 | 0.505 / 0.020 | 0.362 / 0.089 | 0.970 / 0.975 | 0.977 / 0.982 |
+  | -1 | 0 / 0 | 0 / 0 | 0.634 / 0.180 | 0.365 / 0.089 | 0.952 / 0.958 | 0.980 / 0.987 |
+  | +3 | 0 / 0 | 0 / 0 | 1.551 / 0.125 | 0.782 / -0.044 | 0.932 / 0.960 | 0.936 / 0.959 |
+  | -3 | 0.913 / 0.913 | 0 / 0 | 1.760 / 0.200 | 0.882 / 0.057 | 0.598 / 0.620 | 0.933 / 0.963 |
+  | +5 | 0 / 0 | 1.044 / 0 | 2.504 / 0.108 | 1.371 / 0.006 | 0.904 / 0.957 | 0.924 / 0.975 |
+  | -5 | 0 / 0 | 1.435 / 0 | 2.477 / 0.119 | 1.391 / -0.003 | 0.903 / 0.956 | 0.902 / 0.953 |
+  | +10 | 0 / 0 | 14.872 / 0 | 4.684 / -0.006 | 2.687 / -0.006 | 0.859 / 0.964 | 0.876 / 0.987 |
+  | -10 | 0 / 0 | 14.976 / 0 | 4.663 / 0.005 | 2.751 / 0.028 | 0.857 / 0.958 | 0.857 / 0.963 |
+  (each cell is base / head.) The word length error is the length along the baseline of a word of the text layer minus the length of the same word on the level page (the word's true length), read from the content stream; the selection IoU is the overlap of the word's rectangle with the level page's word rectangle turned by the angle. `-raw` word recall at 10 degrees went from 0.438 and 0.469 to 0.969 (Korean) and from 0.0 to 1.0 (English). The `-raw` CER and recall of no page and angle got worse (40 pages and angles, 4 pages x 9 angles and the committed `skew3` page of each); the selection IoU and the word length error got better or stayed equal in every one.
+  - **`pdftotext` without `-raw`** regroups words by position and reads any tilted text layer out of order (CER 33 to 93 % from -1 to -10 degrees whatever the word widths), so its numbers are the noise of an unreadable result: the word recall rose or stayed equal in 38 of the 40 cases (it fell for `en_c` at -5 degrees by 0.02 and for the Korean `skew3` page by 0.016), and the CER fell in 10, stayed equal in 26 and rose in 4 (English `en_b` at -10 and 10 and `en_c` at 10 by 0.3 to 1.2 points, Korean `ko_a` at 5 degrees by 2.7 points). Making that output readable is what `ocrDeskew` is for.
+  - **A page with no tilt is byte for byte the same**: the four level pages converted with the clock fixed give identical files before and after (sha256 of `en_a` `bdcdfc12dff575aa...`, the others equal as well); with the clock running only the creation and modification dates differ. Before the 0.25 degree threshold, lines that the engine measured at 0.1 degrees on a level page changed by 0.06 % of their width.
 - **Trade-offs**:
   - The scan is shown turned: the page no longer looks as it was scanned, its corners are cut off past the page box, and a page that has annotations is not levelled. That is why it is an option and not the default, as in the reference.
   - A page of fewer than 6 words, of lines that disagree, or of a skew over 20 degrees is written as scanned even with the option.
-  - The width correction of item 4 applies only with the option. A tilted line written without it keeps words that are wider than the words by the line height times sin(2 x tilt); search and selection are unaffected in order, and the highlight is a few points too wide (listed in `TODO.md`).
+  - The width correction of item 4 trusts that the engine's word box is the bounding box of the tilted rectangle (the Tesseract and the ONNX word boxes are). A box from another source that is already the word's own length would be written too short by the same amount; none exists today.
 - **Alternatives rejected**:
   - **Levelling the text layer alone** (words on a level baseline over a tilted scan): the highlight of a word would sit up to half a line pitch away at the end of a line (11 pt at 3 degrees, 40 pt at 10 degrees).
   - **Resampling the scan upright, as the reference does**: the same page as the matrix gives, at the cost of a decode, an interpolation and a new image stream, and not possible for a page whose content is not one image.
   - **Making it the default**: it changes how every skewed scan looks and cuts its corners; the reference keeps the page as scanned unless asked.
   - **A different order of the words in the stream**: it is already right.
 - **Verified by**: `tests/ocr-output-deskew.test.ts` (30 cases; red before the change, the option was unknown): the skew of a text layer measured from placed words (signed, a quarter turn read as its residual, lines that disagree, too few words, a level page, a skew over the limit); the searchable PDF of the English and Korean pages turned by -10, -5, -3, -1, 1, 3, 5 and 10 degrees, as an image and (3 degrees) as a scanned PDF, and of the committed 3 degree skew pages, read back with `pdftotext` (a text extractor that shares no code with this project) and scored against the text that was drawn (CER at most 2 % English and 3 % Korean); the same page structure and extracted text with the option false as without it, and for a level page with it on; every word of a 10 degree page inside the page box, and the box of a hand-built page growing to hold a line that the turn carries past its top edge (red without the growth), a page with annotations left alone.
+- **Also verified by** `tests/ocr-text-layer-exact-boxes.test.ts` (red before the change: `placeWords` with no option on lines tilted by -10 to 10 degrees writes each word as long as the word; a level line and a 0.1 degree line keep their boxes; 0.3 degrees is corrected).
 - **Revisit when**: QA wants the option in the web options panel (the checkbox needs a message in each locale and QA's approval of the screen), a viewer that reads the matrix wrongly turns up, or a page with annotations should be levelled too (the annotation rectangles would have to be turned with the content).
 
-## 372. PDF to TXT, DOCX, HTML and XLSX convert the pages `pages` selects, read inside the readers, with the syntax and refusals of the page-image targets
+## 372. An account holds at most 20 saved storage credentials, and the check and the write are one Lua script
+
+- **Date**: 2026-11-21
+- **Status**: Implemented (QA request: the last open item of the launch audit of 2026-11-20; entry 343 bounds the size of each credential, not their number).
+- **Decision**:
+  1. **An account keeps at most 20 saved storage credentials** (`MAX_STORAGE_CREDENTIALS_PER_ACCOUNT`, `src/lib/api/field-limits.ts`), the number of its active API keys (entry 296). `POST /api/v1/storage/credentials` answers 409 with the problem type `byos-credential-limit` and the code `storage_credential_limit_reached` (worded in both locales, in the OpenAPI document and the generated clients, in `src/lib/error-inventory.ts` and so on the errors page), and nothing is written. A credential that has expired or was deleted does not count, so one deleted makes room for one.
+  2. **With Redis the check and the write are one script** (`RESERVE_CREDENTIAL_SLOT_SCRIPT`): it adds the id to the index of the user (`vault:user:{<userId>}`) unless the index holds 20 ids, and in the same step writes the credential key with its lifetime. Saves sent at once, from any number of instances, therefore stop at 20. When the index is full, the ids whose credential key has expired leave it and the script is tried once more, so an expired credential never keeps a slot. Without Redis (development and tests) the count and the insert run with no wait between them.
+  3. **On a Redis Cluster the script holds the index key only**, since the credential key lives on another slot: the id is reserved by the script, then the credential is written, and a failed write takes the id out of the index again.
+- **Why**:
+  - **The count was open.** A key, a webhook secret and a name are bounded in size by entry 343, but a client could save credentials without end, each a 16 KiB record that the store does not evict and that the listing, the erasure and the daily index pass read in full.
+  - **A count read before the write and again after, as the API key limit does, can overshoot and has to delete.** For records that hold a secret, writing one and deleting it again is worse than not writing it, so the reservation is atomic.
+  - **The number follows the API key limit** because no comparable project bounds it (table below), and 20 is well over what one person connects (a bucket per project and environment).
+- **Candidates** (what comparable projects bound for the credentials a user keeps; none bounds saved storage connections per user):
+  | Project | What is bounded | Bound |
+  |---|---|---|
+  | rclone | remotes in the config file | none |
+  | MinIO | service accounts (access key pairs) per user | none documented |
+  | Supabase Storage | S3 access keys per project | none documented |
+  | Strapi and Directus | storage provider settings | one provider per instance, no per-user connections |
+  | Appwrite | buckets per project | 1 (free), 10 (Start), unlimited (Pro) |
+  | AWS IAM | access keys per user | 2 |
+  | IONOS S3 | access keys per account | 5 |
+  | NetApp StorageGRID | S3 access keys per user | 100 |
+  | This service, API keys | active keys per account | 20 (entry 296) |
+  The bounds that exist are for the access keys of one identity (2 to 100); none is for saved connections to other people's stores, so the existing number of the service is used. The rclone, MinIO, Strapi and AWS rows are from their documented behaviour as the author knows it; the Supabase, Appwrite, IONOS and StorageGRID rows were read in their documentation search results.
+- **Trade-offs**:
+  - **A Cluster deployment has one narrow window**: between the reservation and the write of another request, the clean-up of expired ids of a request that finds the index full can take a reserved id out of the index. The credential is then written, not listed and not counted until the daily index pass finds it. The single-node script has no such window.
+  - **A credential saved before the index existed is not counted until the daily index pass has run** (the same condition as its listing).
+  - **An account at 20 that wants more deletes one first.** A raise is one constant.
+- **Alternatives rejected**:
+  - **Count, write, count again and delete** (the API key way): it can write a secret that is then deleted and lets the count pass the limit for a moment.
+  - **A per-plan limit**: no plan has a different need for saved connections, and a number per plan is a new thing to explain.
+- **Verified by**: `tests/storage-credential-limit.test.ts` (in memory, over a fake store and over a fake cluster store: the 21st save refused with a typed error and nothing written, counts per account, a delete and an expiry make room, 35 saves at once leave 20, a failed write takes its id back out of the index, the route's 409 with its code and type and 201 again after a delete) and `tests/credentials-vault-limit-redis.test.ts` (a private `redis-server`: the 21st refused with no key written, 60 saves from 4 connections at once leave exactly 20, the lifetime set with the index entry, expired keys leave the index, per-account counting; run by `npm run test:redis`).
+- **Revisit when**: a plan needs more saved connections, or the service moves to a Redis Cluster (then the window above is closed by keeping the credential key under the tag of the index).
+
+## 373. PDF to TXT, DOCX, HTML and XLSX convert the pages `pages` selects, read inside the readers, with the syntax and refusals of the page-image targets
 
 - **Date**: 2026-11-21
 - **Status**: Implemented (QA request: the reference offers `pages` for these four pairs and the converter ignored it).

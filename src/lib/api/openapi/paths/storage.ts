@@ -1,4 +1,5 @@
 import {
+  createCodedProblemResponse,
   createJsonResponse,
   createPathParameter,
   createProblemResponse,
@@ -8,6 +9,7 @@ import {
 import type { StorageProviderType } from '@/lib/storage/credentials-vault';
 import { UNAVAILABLE_STORAGE_PROVIDERS } from '@/lib/storage/adapters';
 import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
+import { MAX_STORAGE_CREDENTIALS_PER_ACCOUNT } from '@/lib/api/field-limits';
 
 /** Every credential provider type; the Record type makes the compiler flag a missing one. */
 const ALL_STORAGE_PROVIDER_TYPES: Record<StorageProviderType, true> = {
@@ -25,6 +27,7 @@ const STORAGE_PROVIDER_TYPES = Object.keys(ALL_STORAGE_PROVIDER_TYPES).filter(
 );
 
 const BYOS_INVALID_ENDPOINT_TYPE = `${PROBLEM_TYPE_BASE}byos-invalid-endpoint`;
+const BYOS_CREDENTIAL_LIMIT_TYPE = `${PROBLEM_TYPE_BASE}byos-credential-limit`;
 const HTTP_BAD_REQUEST = 400;
 
 const invalidEndpointExample = {
@@ -151,6 +154,10 @@ export const storagePaths = {
         }),
         '400': registerBadRequestResponse,
         '401': createProblemResponse('Authentication required.'),
+        '409': createCodedProblemResponse(
+          `The account already holds ${MAX_STORAGE_CREDENTIALS_PER_ACCOUNT} saved credentials, the most it may (problem type \`${BYOS_CREDENTIAL_LIMIT_TYPE}\`, \`code\` "storage_credential_limit_reached"); delete one and save the credentials again. A credential that has expired does not count.`,
+          ['storage_credential_limit_reached']
+        ),
         '500': createProblemResponse('Credentials could not be stored.'),
       },
     },
