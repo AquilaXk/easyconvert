@@ -4,6 +4,7 @@ import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { cancelSingleGraphJob, cancelSingleQueueJob } from '@/lib/queue/cancel-work';
 import { graphScheduler, type GraphExecutionState } from '@/lib/queue/graph';
 import { graphProgress } from '@/lib/queue/graph/graph-progress';
+import { graphJobResult } from '@/lib/queue/graph/graph-result';
 import { namedJobFields } from '@/lib/jobs/named-task-report';
 import { nodeJobCancelRefusal } from '@/lib/queue/graph/node-jobs';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
@@ -126,7 +127,7 @@ async function readJobAuthorized(jobId: string, userId: string, instanceUri: str
       finishedOn: state.finishedAt,
       failedReason: maskedText(state.failedReason),
       // A job submitted as named tasks reports each task by its name where a pipeline job echoes its submitted stages.
-      ...(state.namedTasks ? namedJobFields(state) : { tasks: redactForOutput(state.tasks) }),
+      ...(state.namedTasks ? namedJobFields(state) : { tasks: redactForOutput(state.tasks), result: await graphJobResult(state) }),
       graph: redactForOutput(state.graph),
       nodes: nodesResponse,
     });

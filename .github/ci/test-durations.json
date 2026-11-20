@@ -628,6 +628,7 @@
   "tests/legacy-task-adapter-fail-closed.test.ts": 0.4,
   "tests/legacy-task-merge-inputs.test.ts": 0.3,
   "tests/legacy-task-output-format.test.ts": 0.6,
+  "tests/legacy-tasks-job-result.test.ts": 3,
   "tests/legal-acceptance-ui.test.ts": 0.6,
   "tests/legal-acceptance.test.ts": 1.5,
   "tests/legal-pages.test.ts": 0.5,

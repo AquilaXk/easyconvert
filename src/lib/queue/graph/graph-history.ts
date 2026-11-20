@@ -98,7 +98,7 @@ async function recordOutput(state: GraphExecutionState, ownerUserId: string, nod
 }
 
 /** The final outputs of `state`: the stored files of its completed `export.internal` nodes that lie under `results/<graphId>/`. */
-function finalOutputs(state: GraphExecutionState): { nodeId: string; index: number; storageKey: string }[] {
+export function finalOutputs(state: GraphExecutionState): { nodeId: string; index: number; storageKey: string }[] {
   const outputs: { nodeId: string; index: number; storageKey: string }[] = [];
   for (const [nodeId, node] of Object.entries(state.graph.nodes)) {
     const nodeState = state.nodes[nodeId];
