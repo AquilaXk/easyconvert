@@ -10,6 +10,7 @@ import type {
   Block,
   DocumentImage,
   DocumentModel,
+  ImageBlock,
   ImageFormat,
   Inline,
   ListBlock,
@@ -17,6 +18,7 @@ import type {
   NoteDefinition,
   PageShape,
   ParagraphBlock,
+  ParagraphFormat,
   Section,
   TableBlock,
   TableCellBlock,
@@ -82,6 +84,8 @@ const LINE_OR_TAB = /[\n\t]/;
 const LINE_OR_TAB_ALL = /[\n\t]/g;
 const HEADER_RELATIONSHIP_ID = 'rIdHeader1';
 const FOOTER_RELATIONSHIP_ID = 'rIdFooter1';
+const BLANK_HEADER_RELATIONSHIP_ID = 'rIdHeader2';
+const BLANK_FOOTER_RELATIONSHIP_ID = 'rIdFooter2';
 
 export interface DocxWriteOptions {
   /** Document title for the core properties; a title the document states takes precedence. */
@@ -93,6 +97,9 @@ export interface DocxWriteOptions {
 }
 
 const twips = (points: number): number => Math.round(points * TWIPS_PER_POINT);
+/** Distance of a running header from the top edge and of a running footer from the bottom edge, when the document does not say (one half inch). */
+const DEFAULT_FURNITURE_DISTANCE_PT = 36;
+const DEFAULT_CELL_PADDING_TWIPS = 80;
 const attr = (value: string | number): string => escapeXmlText(String(value));
 
 // ---------------------------------------------------------------------------------------------
@@ -186,21 +193,48 @@ interface ParagraphProperties {
   spacerPt?: number;
   rtl?: boolean;
   align?: ParagraphBlock['align'];
+  /** The spacing, indents and alignment the PDF page set the paragraph with. */
+  format?: ParagraphFormat;
+  /** The spacer paragraph is held to its height even when that is none (a document that keeps the spacing of its pages). */
+  fixedSpacer?: boolean;
   sectPr?: string;
 }
 
 const JUSTIFICATION: Record<ParagraphBlock['align'], string> = { left: 'left', center: 'center', right: 'right', justify: 'both' };
 
+/** A paragraph that holds no height, for a break that has to stand in a paragraph of its own (one point, as the document's pages are set). */
+const FILLER_LINE_TWIPS = 20;
+const FILLER_SPACING = `<w:spacing w:before="0" w:after="0" w:line="${FILLER_LINE_TWIPS}" w:lineRule="exact"/>`;
+
+/** `w:framePr` for a paragraph set at a place on the page; text flows through it, so the frame takes no room from the text around. */
+function framePropertiesXml(frame: NonNullable<ParagraphFormat['frame']>): string {
+  return `<w:framePr w:w="${twips(frame.widthPt)}" w:hSpace="0" w:vSpace="0" w:wrap="through" w:vAnchor="page" w:hAnchor="page" w:x="${twips(frame.xPt)}" w:y="${twips(frame.yPt)}"/>`;
+}
+
+/** The spacing and indents of a paragraph set as its PDF page set it: an exact line height and the page's gap above, no gap below. */
+function formatXml(format: ParagraphFormat): string {
+  const spacing = `<w:spacing w:before="${twips(format.beforePt)}" w:after="0" w:line="${twips(format.lineHeightPt)}" w:lineRule="exact"/>`;
+  const first = Math.round(twips(format.firstLinePt));
+  let firstLine = '';
+  if (first < 0) firstLine = ` w:hanging="${-first}"`;
+  else if (first > 0) firstLine = ` w:firstLine="${first}"`;
+  return `${spacing}<w:ind w:left="${twips(format.leftPt)}" w:right="${twips(format.rightPt)}"${firstLine}/>`;
+}
+
 /** `w:pPr` with its children in the order the schema fixes. */
 function paragraphProperties(props: ParagraphProperties): string {
   let xml = '';
   if (props.style) xml += `<w:pStyle w:val="${attr(props.style)}"/>`;
+  if (props.format && props.style?.startsWith('Heading')) xml += '<w:keepNext w:val="0"/>';
+  if (props.format?.frame) xml += framePropertiesXml(props.format.frame);
   if (props.numbering) xml += `<w:numPr><w:ilvl w:val="${props.numbering.level}"/><w:numId w:val="${props.numbering.id}"/></w:numPr>`;
   if (props.border) xml += props.border;
   if (props.shading) xml += `<w:shd w:val="clear" w:color="auto" w:fill="${props.shading}"/>`;
   if (props.rtl) xml += '<w:bidi/>';
-  if (props.spacerPt) xml += `<w:spacing w:before="0" w:after="0" w:line="${twips(props.spacerPt)}" w:lineRule="exact"/>`;
-  if (props.align && props.align !== 'left') xml += `<w:jc w:val="${JUSTIFICATION[props.align]}"/>`;
+  if (props.spacerPt !== undefined && (props.spacerPt > 0 || props.fixedSpacer)) xml += `<w:spacing w:before="0" w:after="0" w:line="${props.fixedSpacer ? Math.max(FILLER_LINE_TWIPS, twips(props.spacerPt)) : twips(props.spacerPt)}" w:lineRule="exact"/>`;
+  else if (props.format) xml += formatXml(props.format);
+  const align = props.format?.align ?? props.align;
+  if (align && align !== 'left') xml += `<w:jc w:val="${JUSTIFICATION[align]}"/>`;
   if (props.sectPr) xml += props.sectPr;
   return xml === '' ? '' : `<w:pPr>${xml}</w:pPr>`;
 }
@@ -252,7 +286,8 @@ class PartWriter {
     return `<w:r>${props.length > 0 ? `<w:rPr>${props.join('')}</w:rPr>` : ''}${textElements(run.text)}</w:r>`;
   }
 
-  private drawing(image: NonNullable<Inline['image']>, drawingId: number): string {
+  /** A picture in a run, or with `position` a picture set at that place on the page (points from its top left corner) that takes no room from the text. */
+  private drawing(image: NonNullable<Inline['image']>, drawingId: number, position?: NonNullable<ImageBlock['position']>): string {
     const media = this.state.media.get(image.imageId);
     if (!media) return '';
     const relationshipId = this.relate(`${REL_BASE}/image`, media.path, false);
@@ -260,15 +295,20 @@ class PartWriter {
     const heightEmu = image.widthPt && image.heightPt ? Math.round(image.heightPt * EMU_PER_POINT) : media.heightEmu;
     const alt = attr(image.alt);
     const name = `Picture ${drawingId}`;
+    const placement = position
+      ? '<wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="0" behindDoc="1" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>' +
+        `<wp:positionH relativeFrom="page"><wp:posOffset>${Math.round(position.x * EMU_PER_POINT)}</wp:posOffset></wp:positionH>` +
+        `<wp:positionV relativeFrom="page"><wp:posOffset>${Math.round(position.y * EMU_PER_POINT)}</wp:posOffset></wp:positionV>` +
+        `<wp:extent cx="${widthEmu}" cy="${heightEmu}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/>`
+      : `<wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${widthEmu}" cy="${heightEmu}"/>`;
     return (
-      '<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">' +
-      `<wp:extent cx="${widthEmu}" cy="${heightEmu}"/><wp:docPr id="${drawingId}" name="${name}" descr="${alt}"/>` +
+      `<w:r><w:drawing>${placement}<wp:docPr id="${drawingId}" name="${name}" descr="${alt}"/>` +
       '<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>' +
       `<a:graphic><a:graphicData uri="${NS_PIC}">` +
       `<pic:pic><pic:nvPicPr><pic:cNvPr id="${drawingId}" name="${name}" descr="${alt}"/><pic:cNvPicPr/></pic:nvPicPr>` +
       `<pic:blipFill><a:blip r:embed="${relationshipId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>` +
       `<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${widthEmu}" cy="${heightEmu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>` +
-      '</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>'
+      `</pic:pic></a:graphicData></a:graphic></wp:${position ? 'anchor' : 'inline'}></w:drawing></w:r>`
     );
   }
 
@@ -314,9 +354,16 @@ class PartWriter {
     return xml;
   }
 
+  /** An empty paragraph that holds a section break or separates tables: no taller than a point in a document that keeps the spacing of its pages. */
+  fillerParagraph(sectPr?: string): string {
+    return this.model.pageFlow ? `<w:p><w:pPr>${FILLER_SPACING}${sectPr ?? ''}</w:pPr></w:p>` : `<w:p>${paragraphProperties({ sectPr })}</w:p>`;
+  }
+
   private paragraph(runs: readonly Inline[], props: ParagraphProperties, size?: number, shapes?: readonly PageShape[]): string {
     const hanging = this.emitAnchoredShapes && shapes ? shapes.map((shape) => wordShapeAnchor(shape, this.state.drawingId())).join('') : '';
-    return `<w:p>${paragraphProperties(props)}${hanging}${this.runsXml(runs, size, props.style === 'Code')}</w:p>`;
+    // A column of the page starts with a break in a paragraph of its own, as it would not take the space above the paragraph that follows it.
+    const columnBreak = props.format?.columnBreakBefore ? `<w:p><w:pPr>${FILLER_SPACING}</w:pPr><w:r><w:br w:type="column"/></w:r></w:p>` : '';
+    return `${columnBreak}<w:p>${paragraphProperties(props)}${hanging}${this.runsXml(runs, size, props.style === 'Code')}</w:p>`;
   }
 
   // -------------------------------------------------------------------------------------------
@@ -361,11 +408,16 @@ class PartWriter {
           })
           .join('');
         const header = rowIndex === 0 && row.some((cell) => cell.header);
-        return `<w:tr>${header ? '<w:trPr><w:tblHeader/></w:trPr>' : ''}${cells}</w:tr>`;
+        const height = table.rowHeights?.[rowIndex];
+        const rowProperties = (height ? `<w:trHeight w:val="${twips(height)}" w:hRule="atLeast"/>` : '') + (header ? '<w:tblHeader/>' : '');
+        return `<w:tr>${rowProperties ? `<w:trPr>${rowProperties}</w:trPr>` : ''}${cells}</w:tr>`;
       })
       .join('');
     const borders = table.bordered ? `<w:tblBorders>${tableBorders(table.border)}</w:tblBorders>` : '';
-    const props = `<w:tblPr><w:tblW w:w="${widths.reduce((sum, value) => sum + value, 0)}" w:type="dxa"/>${borders}<w:tblLayout w:type="fixed"/><w:tblCellMar><w:left w:w="80" w:type="dxa"/><w:right w:w="80" w:type="dxa"/></w:tblCellMar></w:tblPr>`;
+    // A table that keeps its page has no padding in its cells: the paragraphs are indented to where the page had their text.
+    const padding = this.model.pageFlow ? 0 : DEFAULT_CELL_PADDING_TWIPS;
+    const indent = table.indentPt ? `<w:tblInd w:w="${twips(table.indentPt)}" w:type="dxa"/>` : '';
+    const props = `<w:tblPr><w:tblW w:w="${widths.reduce((sum, value) => sum + value, 0)}" w:type="dxa"/>${indent}${borders}<w:tblLayout w:type="fixed"/><w:tblCellMar><w:left w:w="${padding}" w:type="dxa"/><w:right w:w="${padding}" w:type="dxa"/></w:tblCellMar></w:tblPr>`;
     return `<w:tbl>${props}<w:tblGrid>${grid}</w:tblGrid>${rows}</w:tbl>`;
   }
 
@@ -380,31 +432,33 @@ class PartWriter {
       case 'heading':
         return [
           {
-            carriesSection: true,
-            render: (sectPr?: string) => this.paragraph(block.runs, { style: `Heading${Math.min(block.level, HEADING_LEVELS)}`, rtl: block.rtl, shading: block.shading, sectPr }, undefined, block.shapes),
+            carriesSection: !block.format?.frame,
+            render: (sectPr?: string) => this.paragraph(block.runs, { style: `Heading${Math.min(block.level, HEADING_LEVELS)}`, rtl: block.rtl, shading: block.shading, format: block.format, sectPr }, undefined, block.shapes),
           },
         ];
       case 'paragraph':
         return [
           {
-            carriesSection: true,
-            render: (sectPr?: string) => this.paragraph(block.runs, { style: quoteStyle, rtl: block.rtl, align: block.align, shading: block.shading, spacerPt: block.spacerPt, sectPr }, block.size, block.shapes),
+            carriesSection: !block.format?.frame,
+            render: (sectPr?: string) => this.paragraph(block.runs, { style: quoteStyle, rtl: block.rtl, align: block.align, shading: block.shading, spacerPt: block.spacerPt, fixedSpacer: this.model.pageFlow === true, format: block.format, sectPr }, block.size, block.shapes),
           },
         ];
       case 'list':
         return block.items.map((item) => ({
-          carriesSection: true,
+          carriesSection: !item.format?.frame,
           render: (sectPr?: string) =>
-            this.paragraph(item.runs, { style: 'ListParagraph', numbering: { level: Math.min(item.level, LIST_LEVELS - 1), id: block.id }, rtl: item.rtl, sectPr }),
+            this.paragraph(item.runs, { style: 'ListParagraph', numbering: { level: Math.min(item.level, LIST_LEVELS - 1), id: block.id }, rtl: item.rtl, format: item.format, sectPr }),
         }));
       case 'table': {
         const chunks = chunkTableRows(block.rows, MAX_DOCX_TABLE_ROWS);
         const pieces: Piece[] = [];
+        // The gap the page had above the table is a paragraph of that height, as a table has no space above it of its own.
+        if (block.beforePt) pieces.push({ carriesSection: false, render: () => `<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="${twips(block.beforePt ?? 0)}" w:lineRule="exact"/></w:pPr></w:p>` });
         chunks.forEach((rows, chunkIndex) => {
           pieces.push({ carriesSection: false, render: () => this.tableXml(rows === block.rows ? block : { ...block, rows }) });
           // Two tables never touch, and a container never ends with a table: Word needs a paragraph between and after.
           if (chunkIndex < chunks.length - 1 || nextIsTable || last) {
-            pieces.push({ carriesSection: true, render: (sectPr?: string) => `<w:p>${paragraphProperties({ sectPr })}</w:p>` });
+            pieces.push({ carriesSection: true, render: (sectPr?: string) => this.fillerParagraph(sectPr) });
           }
         });
         return pieces;
@@ -415,7 +469,11 @@ class PartWriter {
         return [
           {
             carriesSection: false,
-            render: () => `<w:p>${this.drawing({ imageId: block.imageId, widthPt: block.widthPt, heightPt: block.heightPt, alt: block.alt ?? '' }, this.state.drawingId())}</w:p>`,
+            render: () => {
+              const picture = this.drawing({ imageId: block.imageId, widthPt: block.widthPt, heightPt: block.heightPt, alt: block.alt ?? '' }, this.state.drawingId(), block.position);
+              // A picture set at its place on the page is held by a paragraph with no height, so the text flows as if it were not there.
+              return block.position ? `<w:p><w:pPr>${FILLER_SPACING}</w:pPr>${picture}</w:p>` : `<w:p>${picture}</w:p>`;
+            },
           },
         ];
       }
@@ -650,7 +708,7 @@ function stylesXml(model: DocumentModel, language: string | undefined): string {
   return (
     `${XML_HEADER}<w:styles xmlns:w="${NS_W}"><w:docDefaults><w:rPrDefault><w:rPr>` +
     `<w:rFonts w:ascii="${font}" w:hAnsi="${font}" w:eastAsia="${eastFont}" w:cs="${font}"/><w:sz w:val="${size}"/><w:szCs w:val="${size}"/>${lang}` +
-    '</w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="120" w:line="259" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>' +
+    `</w:rPr></w:rPrDefault><w:pPrDefault><w:pPr>${model.pageFlow ? '<w:spacing w:after="0" w:line="240" w:lineRule="auto"/>' : '<w:spacing w:after="120" w:line="259" w:lineRule="auto"/>'}</w:pPr></w:pPrDefault></w:docDefaults>` +
     '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>' +
     '<w:style w:type="character" w:default="1" w:styleId="DefaultParagraphFont"><w:name w:val="Default Paragraph Font"/><w:uiPriority w:val="1"/><w:semiHidden/></w:style>' +
     headings +
@@ -664,11 +722,19 @@ function stylesXml(model: DocumentModel, language: string | undefined): string {
   );
 }
 
-/** References to the running header and footer parts; they come first in a section's properties. */
-function furnitureReferences(model: DocumentModel): string {
+/**
+ * References to the running header and footer parts; they come first in a section's properties. A section whose page shows no
+ * header (or footer) is a title page of its own: its first-page references are the empty part for what it omits and the document's
+ * part for the other.
+ */
+function furnitureReferences(model: DocumentModel, section?: Section): string {
+  const omits = section?.omitsHeader === true || section?.omitsFooter === true;
   const header = model.pageHeader && model.pageHeader.length > 0 ? `<w:headerReference w:type="default" r:id="${HEADER_RELATIONSHIP_ID}"/>` : '';
   const footer = model.pageFooter && model.pageFooter.length > 0 ? `<w:footerReference w:type="default" r:id="${FOOTER_RELATIONSHIP_ID}"/>` : '';
-  return header + footer;
+  if (!omits) return header + footer;
+  const firstHeader = header ? `<w:headerReference w:type="first" r:id="${section?.omitsHeader ? BLANK_HEADER_RELATIONSHIP_ID : HEADER_RELATIONSHIP_ID}"/>` : '';
+  const firstFooter = footer ? `<w:footerReference w:type="first" r:id="${section?.omitsFooter ? BLANK_FOOTER_RELATIONSHIP_ID : FOOTER_RELATIONSHIP_ID}"/>` : '';
+  return header + firstHeader + footer + firstFooter;
 }
 
 function sectionProperties(model: DocumentModel, section: Section, first: boolean): string {
@@ -679,10 +745,32 @@ function sectionProperties(model: DocumentModel, section: Section, first: boolea
   const columns = section.columns > 1 ? `<w:cols w:num="${section.columns}" w:space="${DEFAULT_COLUMN_GAP_TWIPS}"/>` : '<w:cols w:space="720"/>';
   const type = first ? '' : `<w:type w:val="${section.breakType ?? 'continuous'}"/>`;
   return (
-    `<w:sectPr>${furnitureReferences(model)}${type}<w:pgSz w:w="${width}" w:h="${height}"${orient}/>` +
-    `<w:pgMar w:top="${twips(margins.top)}" w:right="${twips(margins.right)}" w:bottom="${twips(margins.bottom)}" w:left="${twips(margins.left)}" w:header="720" w:footer="720" w:gutter="0"/>` +
-    `${columns}</w:sectPr>`
+    `<w:sectPr>${furnitureReferences(model, section)}${type}<w:pgSz w:w="${width}" w:h="${height}"${orient}/>` +
+    `<w:pgMar w:top="${twips(section.marginTopPt ?? margins.top)}" w:right="${twips(margins.right)}" w:bottom="${twips(margins.bottom)}" w:left="${twips(margins.left)}" w:header="${twips(model.headerDistancePt ?? DEFAULT_FURNITURE_DISTANCE_PT)}" w:footer="${twips(model.footerDistancePt ?? DEFAULT_FURNITURE_DISTANCE_PT)}" w:gutter="0"/>` +
+    `${columns}${section.omitsHeader || section.omitsFooter ? '<w:titlePg/>' : ''}</w:sectPr>`
   );
+}
+
+/** Whether a section shows no running header or footer although the document has them: its first page points at an empty part. */
+function omitsFurniture(model: DocumentModel): boolean {
+  return model.sections.some((section) => section.omitsHeader === true || section.omitsFooter === true);
+}
+
+function blankFurnitureRelationships(blank: boolean): Relationship[] {
+  if (!blank) return [];
+  return [
+    { id: BLANK_HEADER_RELATIONSHIP_ID, type: `${REL_BASE}/header`, target: 'header2.xml', external: false },
+    { id: BLANK_FOOTER_RELATIONSHIP_ID, type: `${REL_BASE}/footer`, target: 'footer2.xml', external: false },
+  ];
+}
+
+/** The empty header and footer parts that the first pages of the sections that omit them point at. */
+function blankFurnitureParts(blank: boolean, part: PartWriter): [string, string][] {
+  if (!blank) return [];
+  return [
+    ['word/header2.xml', furniturePartXml('hdr', [[]], part)],
+    ['word/footer2.xml', furniturePartXml('ftr', [[]], part)],
+  ];
 }
 
 /** A header (`w:hdr`) or footer (`w:ftr`) part holding one paragraph per running line. */
@@ -723,7 +811,7 @@ function notesXml(kind: 'footnote' | 'endnote', notes: readonly NoteDefinition[]
   return `${xml}</w:${plural}>`;
 }
 
-function contentTypesXml(parts: { numbering: boolean; header: boolean; footer: boolean; settings: boolean; footnotes: boolean; endnotes: boolean; core: boolean; mediaTypes: Map<string, string> }): string {
+function contentTypesXml(parts: { numbering: boolean; header: boolean; footer: boolean; blankFurniture: boolean; settings: boolean; footnotes: boolean; endnotes: boolean; core: boolean; mediaTypes: Map<string, string> }): string {
   const defaults = [
     '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
     '<Default Extension="xml" ContentType="application/xml"/>',
@@ -737,6 +825,7 @@ function contentTypesXml(parts: { numbering: boolean; header: boolean; footer: b
     ...(parts.settings ? [`<Override PartName="/word/settings.xml" ContentType="${wordml}.settings+xml"/>`] : []),
     ...(parts.header ? [`<Override PartName="/word/header1.xml" ContentType="${wordml}.header+xml"/>`] : []),
     ...(parts.footer ? [`<Override PartName="/word/footer1.xml" ContentType="${wordml}.footer+xml"/>`] : []),
+    ...(parts.blankFurniture ? [`<Override PartName="/word/header2.xml" ContentType="${wordml}.header+xml"/>`, `<Override PartName="/word/footer2.xml" ContentType="${wordml}.footer+xml"/>`] : []),
     ...(parts.footnotes ? [`<Override PartName="/word/footnotes.xml" ContentType="${wordml}.footnotes+xml"/>`] : []),
     ...(parts.endnotes ? [`<Override PartName="/word/endnotes.xml" ContentType="${wordml}.endnotes+xml"/>`] : []),
     ...(parts.core ? ['<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'] : []),
@@ -832,10 +921,10 @@ export async function documentToDocx(model: DocumentModel, options: DocxWriteOpt
       } else if (piece.carriesSection) {
         bodyParts.push(piece.render(sectionProperties(model, section, sectionIndex === 0)));
       } else {
-        bodyParts.push(piece.render(), `<w:p><w:pPr>${sectionProperties(model, section, sectionIndex === 0)}</w:pPr></w:p>`);
+        bodyParts.push(piece.render(), documentPart.fillerParagraph(sectionProperties(model, section, sectionIndex === 0)));
       }
     });
-    if (pieces.length === 0 && !last) bodyParts.push(`<w:p><w:pPr>${sectionProperties(model, section, sectionIndex === 0)}</w:pPr></w:p>`);
+    if (pieces.length === 0 && !last) bodyParts.push(documentPart.fillerParagraph(sectionProperties(model, section, sectionIndex === 0)));
   });
   // A body ends with a paragraph or a section break; an empty document still needs one paragraph.
   if (bodyParts.length === 0) bodyParts.push('<w:p/>');
@@ -857,6 +946,7 @@ export async function documentToDocx(model: DocumentModel, options: DocxWriteOpt
   const furniturePart = new PartWriter(model, state, availableTwips);
   const header = hasHeader && model.pageHeader ? furniturePartXml('hdr', model.pageHeader, furniturePart) : '';
   const footer = hasFooter && model.pageFooter ? furniturePartXml('ftr', model.pageFooter, furniturePart) : '';
+  const blankFurniture = omitsFurniture(model);
   const hasSettings = hasFootnotes || hasEndnotes;
   const hasCore = Boolean(title || model.author || language);
 
@@ -866,7 +956,7 @@ export async function documentToDocx(model: DocumentModel, options: DocxWriteOpt
   };
   const mediaTypes = new Map<string, string>();
   for (const media of state.media.values()) mediaTypes.set(media.path.slice(media.path.lastIndexOf('.') + 1), IMAGE_MIME[media.format]);
-  add('[Content_Types].xml', contentTypesXml({ numbering: lists.length > 0, header: hasHeader, footer: hasFooter, settings: hasSettings, footnotes: hasFootnotes, endnotes: hasEndnotes, core: hasCore, mediaTypes }));
+  add('[Content_Types].xml', contentTypesXml({ numbering: lists.length > 0, header: hasHeader, footer: hasFooter, blankFurniture, settings: hasSettings, footnotes: hasFootnotes, endnotes: hasEndnotes, core: hasCore, mediaTypes }));
   add(
     '_rels/.rels',
     relationshipsXml([
@@ -893,6 +983,7 @@ export async function documentToDocx(model: DocumentModel, options: DocxWriteOpt
     ...(hasEndnotes ? [{ id: 'rIdEndnotes', type: `${REL_BASE}/endnotes`, target: 'endnotes.xml', external: false }] : []),
     ...(hasHeader ? [{ id: HEADER_RELATIONSHIP_ID, type: `${REL_BASE}/header`, target: 'header1.xml', external: false }] : []),
     ...(hasFooter ? [{ id: FOOTER_RELATIONSHIP_ID, type: `${REL_BASE}/footer`, target: 'footer1.xml', external: false }] : []),
+    ...blankFurnitureRelationships(blankFurniture),
     ...documentPart.relationships,
   ];
   add('word/_rels/document.xml.rels', relationshipsXml(documentRelationships));
@@ -910,6 +1001,7 @@ export async function documentToDocx(model: DocumentModel, options: DocxWriteOpt
   }
   if (hasHeader) add('word/header1.xml', header);
   if (hasFooter) add('word/footer1.xml', footer);
+  blankFurnitureParts(blankFurniture, furniturePart).forEach(([name, xml]) => add(name, xml));
   if (hasFootnotes) {
     add('word/footnotes.xml', footnotes);
     if (footnotePart.relationships.length > 0) add('word/_rels/footnotes.xml.rels', relationshipsXml(footnotePart.relationships));

@@ -8,6 +8,7 @@ import type {
   HeadingBlock,
   ListBlock,
   ParagraphBlock,
+  ParagraphFormat,
   Section,
   TableBlock,
   TableCellBlock,
@@ -17,7 +18,8 @@ import { buildRows } from './lines';
 import { LayoutBudget } from './limits';
 import { pageCounterBlocks, type CounterForm, type FurnitureLine } from './page-counters';
 import { builderOf, continuesInNextFlow, type ParagraphBuilder, paragraphsOfFlow } from './paragraphs';
-import { hangShapes, type BlockOrigin } from './figures';
+import { hangShapes, type BlockOrigin, type BodyBlocks } from './figures';
+import { absorbFigureSpacers, irregularColumnPages, PageFlow, pageSections } from './page-flow';
 import { hexOf, PageInk, readableRuns } from './ink';
 import { assembleLists, bodySizeOf, headingLevels, inlineRuns } from './structure';
 import { detectLatticeTables, detectStreamTables, tableSegment } from './tables';
@@ -48,7 +50,7 @@ interface BlockMeta {
 export type PageBlock =
   | ({ kind: 'paragraph'; paragraph: Paragraph; full: boolean } & BlockMeta)
   | ({ kind: 'table'; table: DetectedTable } & BlockMeta)
-  | ({ kind: 'image'; image: PdfContentImage; imageId: number } & BlockMeta);
+  | ({ kind: 'image'; image: PdfContentImage; imageId: number; pageNumber: number } & BlockMeta);
 
 export interface PageLayout {
   page: PdfPageContent;
@@ -159,7 +161,7 @@ function placeImages(layout: PageLayout, images: (DocumentImage | undefined)[]):
   layout.page.images.forEach((image, index) => {
     const decoded = images[index];
     if (!decoded) return;
-    const entry: PageBlock = { kind: 'image', image, imageId: decoded.id, columns: 1, band: -1 };
+    const entry: PageBlock = { kind: 'image', image, imageId: decoded.id, pageNumber: layout.page.pageNumber, columns: 1, band: -1 };
     const spans = (block: PageBlock): boolean => {
       const box = blockBox(block);
       const overlap = Math.min(box.x1, image.x + image.width) - Math.max(box.x0, image.x);
@@ -208,15 +210,16 @@ class TableRun {
 
 /**
  * Tables that continue on a following page become one, and with `'all'` so do paragraphs that continue into the next flow (column or page).
+ * With `'page'` nothing is joined across a page, and paragraphs that continue into the next column of their page are.
  * A run of tables or of paragraphs that continue into one another is gathered once and made a table or a paragraph when the run ends:
  * building the merged block at every step copies the rows or the lines before it, which a document of pages that are each one open
  * paragraph, or one table, turns into work quadratic in the page count. The block that starts a run stays at the end of `joined` as it
  * was built until the run ends. A caller that keeps only the tables asks for `'tables'` and merges no paragraph. Exported for its tests.
  */
-export function joinContinuations(blocks: PageBlock[], join: 'all' | 'tables' = 'all'): PageBlock[] {
+export function joinContinuations(blocks: PageBlock[], join: 'all' | 'tables' | 'page' = 'all'): PageBlock[] {
   const flowRight = new Map<number, number>();
   for (const block of blocks) {
-    if (join === 'all' && block.kind === 'paragraph') {
+    if (join !== 'tables' && block.kind === 'paragraph') {
       flowRight.set(block.paragraph.flow, Math.max(flowRight.get(block.paragraph.flow) ?? 0, block.paragraph.box.x1));
     }
   }
@@ -232,13 +235,13 @@ export function joinContinuations(blocks: PageBlock[], join: 'all' | 'tables' = 
   };
   for (const block of blocks) {
     const last = joined[joined.length - 1];
-    if (block.kind === 'table' && last?.kind === 'table' && continuesTable(last.table, block.table)) {
+    if (join !== 'page' && block.kind === 'table' && last?.kind === 'table' && continuesTable(last.table, block.table)) {
       tableRun ??= new TableRun(last.table);
       tableRun.add(block.table);
       continue;
     }
     // A full paragraph (vertical, angled, or one that fills its flow) never continues, and its stored box is not the one its lines give.
-    if (join === 'all' && block.kind === 'paragraph' && last?.kind === 'paragraph' && !last.paragraph.full && last.paragraph.flow !== block.paragraph.flow) {
+    if (join !== 'tables' && block.kind === 'paragraph' && last?.kind === 'paragraph' && !last.paragraph.full && last.paragraph.flow !== block.paragraph.flow && (join === 'all' || last.paragraph.pageNumber === block.paragraph.pageNumber)) {
       const open = paragraphRun ?? builderOf(last.paragraph);
       const end = open.end();
       if (continuesInNextFlow(end, block.paragraph, flowRight.get(last.paragraph.flow) ?? end.x1)) {
@@ -284,21 +287,52 @@ function cellTextBox(cell: TableCell): Paragraph['box'] | null {
   return { x0: Math.min(...boxes.map((b) => b.x0)), y0: Math.min(...boxes.map((b) => b.y0)), x1: Math.max(...boxes.map((b) => b.x1)), y1: Math.max(...boxes.map((b) => b.y1)) };
 }
 
-function tableBlockOf(table: DetectedTable, bodySize: number, ink?: PageInk): TableBlock {
-  const rows: TableCellBlock[][] = table.rows.map((row) =>
-    row.map((cell) => {
+/** `block` set as its page set it, when the flow of a page is kept. */
+function formatted<T extends { format?: ParagraphFormat }>(block: T, format: ParagraphFormat | undefined): T {
+  if (format) block.format = format;
+  return block;
+}
+
+/** The page's x of each column edge of a table: its left edge, then the right edge of every column. */
+function columnEdgesOf(table: DetectedTable): number[] {
+  const edges = [table.box.x0];
+  for (const width of table.columnWidths) edges.push(edges[edges.length - 1] + width);
+  return edges;
+}
+
+/** Points a row grows by when its text sets taller than the page's row. */
+interface RowGrowth {
+  total: number;
+}
+
+function tableBlockOf(table: DetectedTable, bodySize: number, ink?: PageInk, flow?: PageFlow, growth?: RowGrowth): TableBlock {
+  const columnEdges = columnEdgesOf(table);
+  const rows: TableCellBlock[][] = table.rows.map((row, rowIndex) => {
+    let column = 0;
+    let needed = 0;
+    const cells = row.map((cell) => {
       const box = ink?.active ? cellTextBox(cell) : null;
       const fill = box ? ink?.fillBehind(table.pageNumber, box) : undefined;
+      const inCell = flow?.cell({ y0: table.rowEdges?.[rowIndex], y1: table.rowEdges?.[rowIndex + 1], x0: columnEdges[column], x1: columnEdges[column + cell.colSpan] });
+      column += cell.colSpan;
+      const paragraphs = cell.paragraphs.map((paragraph) =>
+        formatted(paragraphBlockOf(paragraph, bodySize, cell.header, ink, ink?.active ? fill !== undefined : undefined), inCell?.paragraph(paragraph, 1))
+      );
+      const rowTop = table.rowEdges?.[rowIndex];
+      if (inCell?.end !== undefined && rowTop !== undefined && cell.rowSpan <= 1) needed = Math.max(needed, inCell.end - rowTop);
       return {
-        paragraphs: cell.paragraphs.map((paragraph) => paragraphBlockOf(paragraph, bodySize, cell.header, ink, ink?.active ? fill !== undefined : undefined)),
+        paragraphs,
         colSpan: cell.colSpan,
         rowSpan: cell.rowSpan,
         continuation: cell.continuation,
         header: cell.header,
         ...(fill === undefined ? {} : { shading: hexOf(fill) }),
       };
-    })
-  );
+    });
+    const height = (table.rowEdges?.[rowIndex + 1] ?? 0) - (table.rowEdges?.[rowIndex] ?? 0);
+    if (growth) growth.total += Math.max(0, needed - height);
+    return cells;
+  });
   const rules = table.kind === 'lattice' ? ink?.borderOf(table) : null;
   return {
     type: 'table',
@@ -370,10 +404,62 @@ function marginsOf(layouts: PageLayout[]): DocumentMargins {
   };
 }
 
-/**
- * Lays out the pages of a document.
- * @throws PdfLayoutLimitError when a page needs more than PDF_LAYOUT_MAX_STEPS_PER_PAGE steps.
- */
+/** The page a block stands on. */
+function pageOfBlock(block: PageBlock): number {
+  if (block.kind === 'paragraph') return block.paragraph.pageNumber;
+  if (block.kind === 'table') return block.table.pageNumber;
+  return block.pageNumber;
+}
+
+/** What a document that keeps its pages needs of the tops of its pages (see `pageTopsOf`). */
+interface PageTops {
+  /** The top margin of each page that has a body: where its body starts. */
+  margins: Map<number, number>;
+  /** Where the body of each page starts once its running header is above it: the margin, or the foot of the header when that is lower. */
+  starts: Map<number, number>;
+}
+
+/** The body of a page starts at its top margin, or below its running header when that is lower; a page may start higher than the others. */
+function pageTopsOf(body: PageBlock[], header: Paragraph[], headerPages: ReadonlySet<number>): PageTops {
+  const margins = new Map<number, number>();
+  for (const block of body) {
+    const page = pageOfBlock(block);
+    margins.set(page, Math.min(margins.get(page) ?? Infinity, Math.max(0, blockBox(block).y0)));
+  }
+  const headerFoot = header.length > 0 ? Math.max(...header.map((paragraph) => paragraph.box.y1)) : 0;
+  const starts = new Map([...margins].map(([page, top]) => [page, headerPages.has(page) ? Math.max(top, headerFoot) : top]));
+  return { margins, starts };
+}
+
+/** What a document that keeps its pages sets up before its page blocks become blocks of the model. */
+interface PageKeeping {
+  flow: PageFlow;
+  /** The pages whose columns are no equal columns: their paragraphs are frames at their places on the page. */
+  framed: ReadonlySet<number>;
+  tops: PageTops;
+  margins: DocumentMargins;
+}
+
+function pageKeepingOf(blocks: PageBlock[], furniture: PageFurniture, measured: DocumentMargins, pageWidth: number): PageKeeping {
+  const tops = pageTopsOf(blocks, furniture.header, furniture.headerPages);
+  const margins = pageMarginsOf(measured, tops);
+  const columned = blocks.map((block) => ({ pageNumber: pageOfBlock(block), columns: block.columns, boxes: block.kind === 'paragraph' ? block.paragraph.lines.map((line) => line.box) : [blockBox(block)] }));
+  return { flow: new PageFlow({ margins, pageWidth, pageTops: tops.starts }), framed: irregularColumnPages(columned), tops, margins };
+}
+
+/** The margins of a document that keeps its pages: the page's own at the top, and none at the bottom, so a page whose lines come out a hair taller does not start another page. */
+function pageMarginsOf(margins: DocumentMargins, tops: PageTops): DocumentMargins {
+  return { ...margins, top: tops.margins.size > 0 ? Math.min(...tops.margins.values()) : margins.top, bottom: 0 };
+}
+
+/** Where the running header and footer of the first page that has them stand against the page's edges, for the document that keeps its pages. */
+function furnitureDistances(furniture: PageFurniture, pageHeight: number): Pick<DocumentModel, 'headerDistancePt' | 'footerDistancePt'> {
+  return {
+    ...(furniture.header.length > 0 ? { headerDistancePt: Math.max(0, Math.min(...furniture.header.map((paragraph) => paragraph.box.y0))) } : {}),
+    ...(furniture.footer.length > 0 ? { footerDistancePt: Math.max(0, pageHeight - Math.max(...furniture.footer.map((paragraph) => paragraph.box.y1))) } : {}),
+  };
+}
+
 /** Share of the page height at the top and at the bottom where running headers and footers sit. */
 const PAGE_FURNITURE_BAND = 0.08;
 /** Pages a running header or footer must recur on in a document of several pages. */
@@ -418,6 +504,9 @@ interface PageFurniture {
   counters: ReadonlyMap<PageBlock, CounterForm>;
   /** The counters that are a bare number in the header band: a bare number at the foot of a page is its page number, one at its head can be text. */
   headerBareCounters: ReadonlySet<PageBlock>;
+  /** The pages that have a running header line, and the pages that have a footer line, among the lines taken out. */
+  headerPages: ReadonlySet<number>;
+  footerPages: ReadonlySet<number>;
 }
 
 /**
@@ -433,7 +522,7 @@ function splitPageFurniture(blocks: PageBlock[], pages: PdfPageContent[]): PageF
     const band = furnitureBand(block, pageHeights);
     if (band) candidates.set(block, band);
   }
-  if (candidates.size === 0) return { body: blocks, header: [], footer: [], counters: new Map(), headerBareCounters: new Set() };
+  if (candidates.size === 0) return { body: blocks, header: [], footer: [], counters: new Map(), headerBareCounters: new Set(), headerPages: new Set(), footerPages: new Set() };
   const accepted = new Set<PageBlock>();
   if (pages.length >= PAGE_FURNITURE_MIN_PAGES) {
     const pagesByKey = new Map<string, Set<number>>();
@@ -463,14 +552,23 @@ function splitPageFurniture(blocks: PageBlock[], pages: PdfPageContent[]): PageF
   // that prints the page's own number in a band is its counter whether or not it is furniture.
   const counters = pageCountersOf(pages.length === 1 ? candidates.keys() : accepted, candidates);
   const headerBareCounters = new Set([...counters].filter(([block, form]) => form === 'bare' && candidates.get(block) === 'header').map(([block]) => block));
-  if (accepted.size === 0) return { body: blocks, header: [], footer: [], counters, headerBareCounters };
+  if (accepted.size === 0) return { body: blocks, header: [], footer: [], counters, headerBareCounters, headerPages: new Set(), footerPages: new Set() };
   const firstPageOf = (band: FurnitureBand): Paragraph[] => {
     const lines = [...accepted].filter((block) => candidates.get(block) === band).map((block) => (block as ParagraphEntry).paragraph);
     if (lines.length === 0) return [];
     const firstPage = Math.min(...lines.map((paragraph) => paragraph.pageNumber));
     return lines.filter((paragraph) => paragraph.pageNumber === firstPage).sort((a, b) => a.box.y0 - b.box.y0);
   };
-  return { body: blocks.filter((block) => !accepted.has(block)), header: firstPageOf('header'), footer: firstPageOf('footer'), counters, headerBareCounters };
+  const pagesOf = (band: FurnitureBand): Set<number> => new Set([...accepted].filter((block) => candidates.get(block) === band).map((block) => (block as ParagraphEntry).paragraph.pageNumber));
+  return {
+    body: blocks.filter((block) => !accepted.has(block)),
+    header: firstPageOf('header'),
+    footer: firstPageOf('footer'),
+    counters,
+    headerBareCounters,
+    headerPages: pagesOf('header'),
+    footerPages: pagesOf('footer'),
+  };
 }
 
 /** The lines of text one page holds in reading order, vertical and angled text included. */
@@ -480,6 +578,14 @@ export interface PdfPageText {
   lines: string[];
   /** Whether a page counter left out of `lines` is a bare number in the header band, the form that can be text (section numbers that run 1, 2, 3 on pages 1, 2, 3). */
   hasHeaderBareCounter: boolean;
+}
+
+export interface LayoutOptions {
+  /**
+   * Keep the pages: the paragraphs carry the spacing, indents and alignment of their page, every page starts on a new page, and no
+   * paragraph or table is joined across a page (`ParagraphFormat`). The text of the document is the same.
+   */
+  pages?: boolean;
 }
 
 /** What one layout pass over the pages gives: the document, and the tables and lines of text that a spreadsheet takes from it. */
@@ -492,6 +598,111 @@ export interface LaidOutPdf {
   tables: DetectedTable[];
   /** The lines of text of each page, for the text sheets of a workbook. */
   pageText: PdfPageText[];
+}
+
+/** What `bodyOf` needs to turn the page blocks into blocks of the model. */
+interface BodyContext {
+  bodySize: number;
+  levels: Map<Paragraph, number>;
+  ink: PageInk;
+  /** Set when the document keeps the spacing, indents and page starts of its pages. */
+  flow?: PageFlow;
+  /** The pages whose columns are no equal columns: their paragraphs are frames at their places on the page. */
+  framed?: ReadonlySet<number>;
+}
+
+/** Paragraphs of the page block `at` and the ones after it that stand on its page, up to the next table or picture. */
+function runEndOf(blocks: PageBlock[], at: number, samePage: boolean): number {
+  let end = at;
+  const page = (block: PageBlock): number | undefined => (block.kind === 'paragraph' ? block.paragraph.pageNumber : undefined);
+  while (end < blocks.length && blocks[end].kind === 'paragraph' && (!samePage || page(blocks[end]) === page(blocks[at]))) end++;
+  return end;
+}
+
+/** The blocks of the model for the page blocks, in order, with the columns, origin and page of each. */
+function bodyOf(blocks: PageBlock[], context: BodyContext): BodyBlocks {
+  const { bodySize, levels, ink, flow, framed } = context;
+  const body: BodyBlocks = { model: [], columnsOf: [], origins: [], pageOf: [] };
+  // A framed page has its paragraphs where the page had them, so its flow is one column.
+  const columnsAt = (page: number, columns: number): number => (framed?.has(page) ? 1 : columns);
+  const formatOf = (paragraph: Paragraph, columns: number, marker = false): ParagraphFormat | undefined =>
+    framed?.has(paragraph.pageNumber) && columns > 1 ? flow?.frameFormat(paragraph) : flow?.paragraph(paragraph, columns, marker);
+  const push = (block: Block, columns: number, page: number, origin: BlockOrigin | null = null): void => {
+    body.model.push(block);
+    body.columnsOf.push(columns);
+    body.origins.push(origin);
+    body.pageOf.push(page);
+  };
+  let listId = 0;
+  let at = 0;
+  while (at < blocks.length) {
+    const block = blocks[at];
+    if (block.kind === 'table') {
+      const { table } = block;
+      if (ink.boxesInColours(table)) {
+        // Rules in several colours box labels (a diagram), they are no grid: the text of the cells is paragraphs and the rules are shapes.
+        for (const paragraph of table.rows.flatMap((row) => row.flatMap((cell) => cell.paragraphs))) {
+          push(formatted(paragraphBlockOf(paragraph, bodySize, false, ink), formatOf(paragraph, block.columns)), columnsAt(paragraph.pageNumber, block.columns), paragraph.pageNumber, { pageNumber: paragraph.pageNumber, box: paragraph.box });
+        }
+      } else {
+        const growth: RowGrowth = { total: 0 };
+        const tableBlock = tableBlockOf(table, bodySize, ink, flow, growth);
+        push({ ...tableBlock, ...flow?.table(table, growth.total) }, block.columns, table.pageNumber, { pageNumber: table.pageNumber, box: table.box });
+      }
+      at++;
+      continue;
+    }
+    if (block.kind === 'image') {
+      const position = flow ? { x: block.image.x, y: block.image.y } : undefined;
+      push({ type: 'image', imageId: block.imageId, widthPt: block.image.width, heightPt: block.image.height, ...(position ? { position } : {}) }, block.columns, block.pageNumber);
+      at++;
+      continue;
+    }
+    // Lists are assembled over the run of consecutive paragraphs starting here.
+    const runEnd = runEndOf(blocks, at, flow !== undefined);
+    const run = blocks.slice(at, runEnd).map((entry) => entry as Extract<PageBlock, { kind: 'paragraph' }>);
+    const runParagraphs = run.map((entry) => entry.paragraph);
+    const listRuns = assembleLists(runParagraphs, (paragraph) => !levels.has(paragraph), () => ++listId);
+    let cursor = 0;
+    const emitParagraph = (index: number): void => {
+      const entry = run[index];
+      const { paragraph } = entry;
+      const origin = { pageNumber: paragraph.pageNumber, box: paragraph.box };
+      const level = levels.get(paragraph);
+      if (level !== undefined) {
+        const headingInk = inkOfParagraph(paragraph, plainWeight(inlineRuns(paragraph.runs), paragraph.lines.every((line) => line.bold)), ink);
+        const heading: HeadingBlock = { type: 'heading', level, ...headingInk, rtl: paragraph.rtl };
+        push(formatted(heading, formatOf(paragraph, entry.columns)), columnsAt(paragraph.pageNumber, entry.columns), paragraph.pageNumber, origin);
+      } else {
+        push(formatted(paragraphBlockOf(paragraph, bodySize, false, ink), formatOf(paragraph, entry.columns)), columnsAt(paragraph.pageNumber, entry.columns), paragraph.pageNumber, origin);
+      }
+    };
+    for (const listRun of listRuns) {
+      for (; cursor < listRun.from; cursor++) emitParagraph(cursor);
+      const list: ListBlock = listRun.list;
+      // A list item has no fill of its own, so the light text of one is left in the default colour.
+      if (ink.active) for (const item of list.items) item.runs = readableRuns(item.runs, false);
+      const columns = run[listRun.from].columns;
+      list.items.forEach((item, index) => formatted(item, formatOf(runParagraphs[listRun.from + index], columns, true)));
+      push(list, columnsAt(runParagraphs[listRun.from].pageNumber, columns), runParagraphs[listRun.from].pageNumber, originOfRun(runParagraphs.slice(listRun.from, listRun.to)));
+      cursor = listRun.to;
+    }
+    for (; cursor < run.length; cursor++) emitParagraph(cursor);
+    at = runEnd;
+  }
+  return body;
+}
+
+/** The sections of a document whose pages run on: a new one wherever the columns change. */
+function sectionsOf(body: BodyBlocks): Section[] {
+  const sections: Section[] = [];
+  body.model.forEach((block, index) => {
+    const columns = body.columnsOf[index];
+    const last = sections[sections.length - 1];
+    if (last && last.columns === columns) last.blocks.push(block);
+    else sections.push({ columns, blocks: [block] });
+  });
+  return sections;
 }
 
 function pageTextOf(layout: PageLayout, counters: ReadonlyMap<PageBlock, CounterForm>, headerBareCounters: ReadonlySet<PageBlock>): PdfPageText {
@@ -513,7 +724,7 @@ function pageTextOf(layout: PageLayout, counters: ReadonlyMap<PageBlock, Counter
  * Lays out the pages once: the document model, and the tables and lines of text of the pages for a spreadsheet.
  * @throws PdfLayoutLimitError when a page needs more than PDF_LAYOUT_MAX_STEPS_PER_PAGE steps.
  */
-export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[]): LaidOutPdf {
+export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[], options: LayoutOptions = {}): LaidOutPdf {
   const flows = new Counter();
   const imageIds = new Counter();
   const ink = new PageInk(pages);
@@ -535,7 +746,7 @@ export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[]): Lai
     });
     placeImages(layout, decoded);
   });
-  const furniture = splitPageFurniture(joinContinuations(layouts.flatMap((layout) => layout.blocks)), pages);
+  const furniture = splitPageFurniture(joinContinuations(layouts.flatMap((layout) => layout.blocks), options.pages ? 'page' : 'all'), pages);
   const blocks = furniture.body;
   const tables = joinContinuations(blocks, 'tables').flatMap((block) => (block.kind === 'table' ? [block.table] : []));
 
@@ -546,84 +757,24 @@ export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[]): Lai
     bodySize
   );
 
-  const model: Block[] = [];
-  const columnsOf: number[] = [];
-  const origins: (BlockOrigin | null)[] = [];
-  const push = (block: Block, columns: number, origin: BlockOrigin | null = null): void => {
-    model.push(block);
-    columnsOf.push(columns);
-    origins.push(origin);
-  };
-  let listId = 0;
-  let at = 0;
-  while (at < blocks.length) {
-    const block = blocks[at];
-    if (block.kind === 'table') {
-      if (ink.boxesInColours(block.table)) {
-        // Rules in several colours box labels (a diagram), they are no grid: the text of the cells is paragraphs and the rules are shapes.
-        for (const paragraph of block.table.rows.flatMap((row) => row.flatMap((cell) => cell.paragraphs))) {
-          push(paragraphBlockOf(paragraph, bodySize, false, ink), block.columns, { pageNumber: paragraph.pageNumber, box: paragraph.box });
-        }
-      } else {
-        push(tableBlockOf(block.table, bodySize, ink), block.columns, { pageNumber: block.table.pageNumber, box: block.table.box });
-      }
-      at++;
-      continue;
-    }
-    if (block.kind === 'image') {
-      push({ type: 'image', imageId: block.imageId, widthPt: block.image.width, heightPt: block.image.height }, block.columns);
-      at++;
-      continue;
-    }
-    // Lists are assembled over the run of consecutive paragraphs starting here.
-    let runEnd = at;
-    while (runEnd < blocks.length && blocks[runEnd].kind === 'paragraph') runEnd++;
-    const run = blocks.slice(at, runEnd).map((entry) => (entry as Extract<PageBlock, { kind: 'paragraph' }>));
-    const runParagraphs = run.map((entry) => entry.paragraph);
-    const listRuns = assembleLists(runParagraphs, (paragraph) => !levels.has(paragraph), () => ++listId);
-    let cursor = 0;
-    const emitParagraph = (index: number): void => {
-      const entry = run[index];
-      const level = levels.get(entry.paragraph);
-      if (level !== undefined) {
-        const headingInk = inkOfParagraph(entry.paragraph, plainWeight(inlineRuns(entry.paragraph.runs), entry.paragraph.lines.every((line) => line.bold)), ink);
-        const heading: HeadingBlock = { type: 'heading', level, ...headingInk, rtl: entry.paragraph.rtl };
-        push(heading, entry.columns, { pageNumber: entry.paragraph.pageNumber, box: entry.paragraph.box });
-      } else {
-        push(paragraphBlockOf(entry.paragraph, bodySize, false, ink), entry.columns, { pageNumber: entry.paragraph.pageNumber, box: entry.paragraph.box });
-      }
-    };
-    for (const listRun of listRuns) {
-      for (; cursor < listRun.from; cursor++) emitParagraph(cursor);
-      const list: ListBlock = listRun.list;
-      // A list item has no fill of its own, so the light text of one is left in the default colour.
-      if (ink.active) for (const item of list.items) item.runs = readableRuns(item.runs, false);
-      push(list, run[listRun.from].columns, originOfRun(runParagraphs.slice(listRun.from, listRun.to)));
-      cursor = listRun.to;
-    }
-    for (; cursor < run.length; cursor++) emitParagraph(cursor);
-    at = runEnd;
-  }
-
-  if (ink.active) hangShapes(model, columnsOf, origins, pages, ink, gridBoxesOf(layouts, ink));
-  const sections: Section[] = [];
-  model.forEach((block, index) => {
-    const columns = columnsOf[index];
-    const last = sections[sections.length - 1];
-    if (last && last.columns === columns) last.blocks.push(block);
-    else sections.push({ columns, blocks: [block] });
-  });
+  const keeping = options.pages ? pageKeepingOf(blocks, furniture, marginsOf(layouts), pages[0]?.width ?? 0) : undefined;
+  const margins = keeping?.margins ?? marginsOf(layouts);
+  const body = bodyOf(blocks, { bodySize, levels, ink, flow: keeping?.flow, framed: keeping?.framed });
+  if (ink.active) hangShapes(body, pages, ink, gridBoxesOf(layouts, ink));
+  if (keeping) absorbFigureSpacers(body.model);
+  const sections = keeping ? pageSections(body.model, body.columnsOf, body.pageOf, pages.map((page) => page.pageNumber), furniture, keeping.tops.margins) : sectionsOf(body);
   const first = pages[0];
   const documentModel: DocumentModel = {
     sections,
     images: documentImages,
     pageWidthPt: first?.width ?? 0,
     pageHeightPt: first?.height ?? 0,
-    margins: marginsOf(layouts),
+    margins,
     bodySize,
     bodyFont: dominantFont(paragraphs, fonts),
     headingSizes: headingSizesOf(levels),
     pageCount: pages.length,
+    ...(options.pages ? { pageFlow: true as const, ...furnitureDistances(furniture, first?.height ?? 0) } : {}),
     ...(furniture.header.length > 0 ? { pageHeader: furniture.header.map((paragraph) => readableRuns(inlineRuns(paragraph.runs), false)) } : {}),
     ...(furniture.footer.length > 0 ? { pageFooter: furniture.footer.map((paragraph) => readableRuns(inlineRuns(paragraph.runs), false)) } : {}),
   };

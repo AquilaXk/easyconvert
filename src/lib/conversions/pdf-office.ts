@@ -38,6 +38,8 @@ export type PdfOfficeContent =
 export interface PdfOfficeReading {
   images?: boolean;
   colour?: boolean;
+  /** The writer keeps the pages: their spacing, their indents and a page start for each (`ExtractPdfOptions.pages`). */
+  pages?: boolean;
 }
 
 /**
@@ -53,7 +55,7 @@ export async function readPdfContentForOffice(source: Buffer, options: Conversio
   const densityThreshold = options.ocrDensityThreshold || DEFAULT_DENSITY_THRESHOLD;
   let read: Awaited<ReturnType<typeof readPdfDocument>> | null = null;
   try {
-    read = await readPdfDocument(inputBuffer, { densityThreshold, onUnmapped: options.ocrEnabled ? 'omit' : 'throw', images: reading.images, colour: reading.colour, signal: options.signal });
+    read = await readPdfDocument(inputBuffer, { densityThreshold, onUnmapped: options.ocrEnabled ? 'omit' : 'throw', images: reading.images, colour: reading.colour, pages: reading.pages, signal: options.signal });
   } catch (err) {
     // A document pdfjs cannot read is recognized as displayed when OCR was asked for; otherwise it is refused.
     if (!(options.ocrEnabled && err instanceof PdfTextGeometryError)) throw err;

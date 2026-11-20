@@ -27,6 +27,14 @@ export interface BlockOrigin {
   box: Box;
 }
 
+/** The blocks of the model with, in step, the columns of each block's flow, where it stood (null when it came from no one place) and its page. */
+export interface BodyBlocks {
+  model: Block[];
+  columnsOf: number[];
+  origins: (BlockOrigin | null)[];
+  pageOf: number[];
+}
+
 /** A rule as a shape: a stroked line, or a filled bar when it is thicker than a line. */
 function ruleShape(rule: PdfContentRule): PdfContentShape {
   const z = rule.z ?? -1;
@@ -136,11 +144,12 @@ function figureIndex(group: Group, pageNumber: number, origins: readonly (BlockO
 }
 
 /**
- * Hangs the uncarried shapes of the pages on the blocks of `model`, adding a paragraph for each figure. `model`, `columnsOf` and
- * `origins` run in step, and stay in step. `grids` are the boxes of the tables each page draws (their rules are the tables' own).
+ * Hangs the uncarried shapes of the pages on the blocks of `body`, adding a paragraph for each figure. Its arrays run in step, and
+ * stay in step. `grids` are the boxes of the tables each page draws (their rules are the tables' own).
  */
-export function hangShapes(model: Block[], columnsOf: number[], origins: (BlockOrigin | null)[], pages: readonly PdfPageContent[], ink: PageInk, grids: ReadonlyMap<number, readonly Box[]>): void {
-  const insertions: { index: number; order: number; block: ParagraphBlock; columns: number }[] = [];
+export function hangShapes(body: BodyBlocks, pages: readonly PdfPageContent[], ink: PageInk, grids: ReadonlyMap<number, readonly Box[]>): void {
+  const { model, columnsOf, origins, pageOf } = body;
+  const insertions: { index: number; order: number; block: ParagraphBlock; columns: number; page: number }[] = [];
   for (const page of pages) {
     for (const group of groupsOf(decorationsOf(page, ink, grids.get(page.pageNumber) ?? []))) {
       const host = hostOf(group, page.pageNumber, model, origins);
@@ -162,13 +171,14 @@ export function hangShapes(model: Block[], columnsOf: number[], origins: (BlockO
       }
       const index = figureIndex(group, page.pageNumber, origins);
       const block: ParagraphBlock = { type: 'paragraph', runs: [], rtl: false, align: 'left', shapes: group.shapes.map(({ shape, hull }) => pageShapeOf(shape, hull, group.box.y0)), spacerPt: height };
-      insertions.push({ index, order: insertions.length, block, columns: columnsOf[Math.min(index, columnsOf.length - 1)] ?? 1 });
+      insertions.push({ index, order: insertions.length, block, columns: columnsOf[Math.min(index, columnsOf.length - 1)] ?? 1, page: page.pageNumber });
     }
   }
   // Inserted from the back, so that an index still names the block it was found for, and the groups of one index in reverse, so that they end up in page order.
-  for (const { index, block, columns } of insertions.sort((a, b) => b.index - a.index || b.order - a.order)) {
+  for (const { index, block, columns, page } of insertions.sort((a, b) => b.index - a.index || b.order - a.order)) {
     model.splice(index, 0, block);
     columnsOf.splice(index, 0, columns);
     origins.splice(index, 0, null);
+    pageOf.splice(index, 0, page);
   }
 }
