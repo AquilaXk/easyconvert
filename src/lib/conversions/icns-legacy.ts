@@ -29,7 +29,8 @@
  * PERFORMANCE OF THIS SOFTWARE.
  *
  * Pillow does not read the `ARGB` elements; they are four channels (alpha, red, green, blue) coded with the same
- * scheme after a four-byte `ARGB` tag, checked against the pictures macOS stores in its own icon files.
+ * scheme after a four-byte `ARGB` tag, checked against the pictures macOS stores in its own icon files and in agreement with mdsteele/rust-icns
+ * (`src/element.rs`, `decode_rle_argb_to_rgba` at commit daaa8b28536398e4e823cdb4765a4e27d8111c64, MIT), whose code is read for the layout and not copied.
  */
 
 /** A decoded old-style picture: straight RGBA, row by row. */
