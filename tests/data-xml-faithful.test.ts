@@ -344,10 +344,13 @@ describe('JSON to XML', () => {
     );
   });
 
-  it('rejects an empty JSON key, which has no XML element name', async () => {
-    const err = await rejection(jsonToXml({ list: [{ '': true }] }));
+  it('names the element of an empty JSON key "_", as a key that starts with a character a name cannot start with is prefixed', async () => {
+    const output = await jsonToXml({ list: [{ '': true }] });
+    expect(output.toString('utf-8')).toBe('<?xml version="1.0" encoding="UTF-8"?>\n<root><list><_>true</_></list></root>');
+    // The key "_" is the same name, so the two are rejected like any two keys that become one element.
+    const err = await rejection(jsonToXml({ '': 1, _: 2 }));
     expect(err).toBeInstanceOf(DataRepresentationError);
-    expect(err.message).toBe('An empty JSON key cannot become an XML element name.');
+    expect(err.message).toBe('JSON keys "" and "_" would both become the XML element <_>.');
   });
 
   oracleTest('writes a JsonML-shaped array without the envelope through the generic mapping', ['xmllint'], async () => {

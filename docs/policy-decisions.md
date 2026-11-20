@@ -403,6 +403,7 @@ Security
 352. [A PDF written to DOCX keeps its pages: a section on a new page for each, paragraphs set with the page's spacing and indents, and only what cannot flow set at its place](#352-a-pdf-written-to-docx-keeps-its-pages-a-section-on-a-new-page-for-each-paragraphs-set-with-the-pages-spacing-and-indents-and-only-what-cannot-flow-set-at-its-place)
 353. [An ICNS file is read as its largest PNG, JPEG or JPEG 2000 element, else as its largest old-style RLE or ARGB picture](#353-an-icns-file-is-read-as-its-largest-png-jpeg-or-jpeg-2000-element-else-as-its-largest-old-style-rle-or-argb-picture)
 354. [CSS escapes of an HTML page are decoded as CSS Syntax says before the scan, and the decoded text goes to LibreOffice](#354-css-escapes-of-an-html-page-are-decoded-as-css-syntax-says-before-the-scan-and-the-decoded-text-goes-to-libreoffice)
+355. [An empty key of a JSON, YAML or TOML document becomes the XML element <_>](#355-an-empty-key-of-a-json-yaml-or-toml-document-becomes-the-xml-element-_)
 
 ---
 
@@ -10556,3 +10557,20 @@ Security
   - **Replacing an escaped symbol with a placeholder character:** the selector would match a different class, and a refusal is the honest answer to a page we cannot read.
 - **Verified by**: `tests/html-native-staging.test.ts` (hex escapes ending in a space, six digits, the Word font name, U+FFFD cases, an escape in a function name, a backslash in a comment; the refusals above; an escaped `url(` and `@import` found and left out), `tests/pdf-unicode-text-writers.test.ts` (an escaped `url(file:///etc/hosts)` in a style attribute reaches LibreOffice without the reference).
 - **Revisit when**: a real page needs an escaped symbol in a selector, or LibreOffice's HTML import is found to read escapes by the standard (then the decoded form need not be written out).
+
+## 355. An empty key of a JSON, YAML or TOML document becomes the XML element <_>
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: fix the refusals a production sweep of the live service found; the reference converter lists none of the data formats, so the product rule for a name that is not a valid element name applies)
+- **Decision**: **A JSON, YAML or TOML key that is empty becomes the element `<_>`** (`elementNameForKey` in `src/lib/conversions/data-xml.ts`). It is the name the rule already gave every other key that cannot start a name: characters a name cannot hold become `_` and a name that cannot start with its first character gets a `_` in front (`1st` is `_1st`, `a b` is `a_b`), and an empty key has nothing left but that `_`. A document with the keys `""` and `_` in one object is still refused, with the message every pair of keys that become one element gets (`JSON keys "" and "_" would both become the XML element <_>.`).
+- **Why**:
+  - **A real file was refused.** The `pyproject.toml` of `rarfile` (`[tool.setuptools.package-dir]` with `"" = "src"`, the usual way to say that the packages live under `src`) answered 400 with "An empty JSON key cannot become an XML element name", although the same file converts to JSON and YAML. The empty key is legal in the three source formats and common in this one file.
+  - **No new rule.** The mapping from keys to names already changes a key whenever XML cannot spell it, and refuses only when the result would merge two keys; the empty key was the one case that had its own refusal.
+- **Measured**: the 3,433 byte `pyproject.toml` converts to a 3,607 byte XML file that `xmllint` reads, with `<package-dir><_>src</_></package-dir>`.
+- **Trade-offs**:
+  - **The key is not recoverable from the element**, as for `a b`. Writing XML back to JSON gives the key `_`.
+- **Alternatives rejected**:
+  - **An attribute or a `name` field for every key that is not a name:** a different document shape for the keys that already convert, for one rare case.
+  - **Leaving the refusal:** the file is valid input and the rest of the document is fine.
+- **Verified by**: `tests/data-xml-faithful.test.ts` (an empty key inside a list becomes `<_>`; the keys `""` and `_` together are refused with the collision message).
+- **Revisit when**: a caller needs the XML to give back the key (an attribute carrying the original key for every renamed element is the way that keeps it).
