@@ -27,9 +27,9 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Cut camera-RAW-to-GIF time further (`3fr` 1.88 s, `mos` 1.23 s, `arw` 337 ms after entries 279, 313 and 315): split the palette histogram/median-cut/k-means step across pool threads, decide whether multi-segment parallel LZW (~200 ms saved on `3fr`, <0.01% byte change) is acceptable, and profile `dcraw_emu` on `3fr` (0.9 s).
 
 ## Operations and security
-- Revoke at a password reset the API keys, webhooks and sessions made before the account's address was first verified (a squatter's keys survive when the owner confirms the mail and then resets): record `verifiedAt` and pass the older standing access to `revokeStandingAccess` (security review of 2026-11-20, finding 6a; confirm alone protects nothing, since the squatter knows the password).
 - Bound and thread the office sheet readers too (CSV, JSON and XML to xlsx, ods and xls run on the calling thread without the counts of entry 337), and decode a hostile bzip2 for an archive listing off the web event loop (entry 339 caps it at 500 MiB like gz).
-- Purge accounts whose address stays unverified for 30 days, and cap how many storage credentials one account keeps (launch audit of 2026-11-20; entry 343 bounds each record).
+- Turn on `UNVERIFIED_ACCOUNT_PURGE_ENABLED` on or after 2026-12-20 (30 days after the privacy text naming it was published), first with `UNVERIFIED_ACCOUNT_PURGE_DRY_RUN=true` (the default) for one pass, check the counts in the worker log, then set it to `false` (entry 364).
+- Cap how many storage credentials one account keeps (launch audit of 2026-11-20; entry 343 bounds each record).
 - Move the problem `type` URIs off `https://api.easyconvert.io/problems/` (a domain we do not hold) to a page of our own site that lists every refusal code.
 - Replace `script-src 'unsafe-inline'` in the page CSP with per-request nonces, and add browser error reporting for crashes in the converter UI.
 - Pick a free package name before publishing the SDKs (PyPI `easyconvert` belongs to another project; npm `@easyconvert/sdk` is unpublished) and add install lines to their READMEs.

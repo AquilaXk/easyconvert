@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 188 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 190 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -98,6 +98,8 @@ Generate a secret with `openssl rand -hex 32`.
 | `AUTH_MAIL_DAILY_WARN` | integer, 1 to 10000000 | `350` | no | web |
 | `AUTH_MAIL_DAILY_VERIFY_CAP` | integer, 1 to 10000000 | `400` | no | web |
 | `AUTH_MAIL_DAILY_HARD_CAP` | integer, 1 to 10000000 | `480` | no | web |
+| `UNVERIFIED_ACCOUNT_PURGE_ENABLED` | `true` or `false` | `false` | no | worker |
+| `UNVERIFIED_ACCOUNT_PURGE_DRY_RUN` | `true` or `false` | `true` | no | worker |
 
 - `JWT_SECRET`: Signs session tokens. At least 32 bytes of UTF-8 text in production; also a legacy decryption fallback key of the credential vault and of API key secret encryption.
 - `JWT_SECRET_PREVIOUS`: The previous JWT_SECRET during a key rotation, so session tokens signed under it still verify while new tokens are signed with JWT_SECRET. Used exactly as set, like JWT_SECRET, without trimming.
@@ -111,6 +113,8 @@ Generate a secret with `openssl rand -hex 32`.
 - `AUTH_MAIL_DAILY_WARN`: Daily count of authentication mails (UTC) at which the server logs a warning. Must not exceed AUTH_MAIL_DAILY_VERIFY_CAP.
 - `AUTH_MAIL_DAILY_VERIFY_CAP`: Daily limit (UTC) on email verification mails (sign-ups and resends), leaving the headroom up to AUTH_MAIL_DAILY_HARD_CAP reserved for password resets. Raise together with AUTH_MAIL_DAILY_HARD_CAP when using a dedicated transactional SMTP service.
 - `AUTH_MAIL_DAILY_HARD_CAP`: Total daily limit (UTC) across verification and password reset mails. Must be at least AUTH_MAIL_DAILY_VERIFY_CAP.
+- `UNVERIFIED_ACCOUNT_PURGE_ENABLED`: Set to `true` to start the daily pass that deletes an account whose email address stayed unverified for 30 days, with its API keys, webhooks, credentials, files and usage (an account that holds a purchase is kept; docs/policy-decisions.md, entry 364). Off by default and then no timer runs: an account made while mail was off, or before it was on, could never confirm its address. Turn it on only where verification mail is on. A pass starts in dry-run mode (see `UNVERIFIED_ACCOUNT_PURGE_DRY_RUN`).
+- `UNVERIFIED_ACCOUNT_PURGE_DRY_RUN`: While `UNVERIFIED_ACCOUNT_PURGE_ENABLED` is `true`, a pass only logs how many accounts it would delete and claims and deletes nothing, until this is set to `false`. On by default, so switching the purge on first shows the counts of one pass.
 
 ### Paid plans
 

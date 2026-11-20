@@ -17,13 +17,21 @@ if tonumber(ARGV[2]) > 0 then return redis.call('PEXPIRE', KEYS[1], ARGV[2]) end
 return redis.call('DEL', KEYS[1])
 `;
 
+const RENEW_LOCK_LUA = `
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+`;
+
+/** Extends the lease of the lock the task holds by its own lease time; false when the lock was lost (it expired and another process took it). */
+export type RenewLease = () => Promise<boolean>;
+
 const localSweepLocks = new Map<string, { token: string; until: number }>();
 
 export async function withRedisLeaderLock(
   lockName: string,
   leaseTtlMs: number,
   holdAfterSuccessMs: number,
-  task: () => Promise<unknown>
+  task: (renew: RenewLease) => Promise<unknown>
 ): Promise<boolean> {
   const token = crypto.randomUUID();
   const now = Date.now();
@@ -40,8 +48,14 @@ export async function withRedisLeaderLock(
     if (existing && existing.until > now) return false;
     localSweepLocks.set(lockName, { token, until: now + leaseTtlMs });
     let succeeded = false;
+    const renewLocal: RenewLease = async () => {
+      const current = localSweepLocks.get(lockName);
+      if (current?.token !== token) return false;
+      current.until = Date.now() + leaseTtlMs;
+      return true;
+    };
     try {
-      await task();
+      await task(renewLocal);
       succeeded = true;
       return true;
     } finally {
@@ -63,8 +77,11 @@ export async function withRedisLeaderLock(
   }
 
   let succeeded = false;
+  const leaseMs = Math.max(1000, Math.floor(leaseTtlMs));
+  const renewRedis: RenewLease = async () =>
+    Number(await redis.eval(RENEW_LOCK_LUA, 1, key, token, String(leaseMs))) === 1;
   try {
-    await task();
+    await task(renewRedis);
     succeeded = true;
     return true;
   } finally {

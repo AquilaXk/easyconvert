@@ -19,6 +19,7 @@ import { legacyJobTimeoutMs } from '../lib/queue/enqueue';
 import type { ConversionJobData, ConversionJobResult, ResourceClass } from '../lib/types';
 import { storageProvider as ociStorage } from '../lib/storage';
 import { startBillingReconcile, stopBillingReconcile } from '../lib/billing/reconcile';
+import { startUnverifiedAccountPurge, stopUnverifiedAccountPurge } from '../lib/auth/purge-unverified-accounts';
 import { startRetentionSweep } from '../lib/storage/retention-service';
 import { processNodeJob, nativeEngine } from '../lib/queue/node-processor';
 import { registerLiveWorkerHeartbeat, unregisterLiveWorkerHeartbeat } from '../lib/queue/worker-presence';
@@ -378,6 +379,7 @@ export async function drainWorker(
   await shutdownEngines();
   stopWorkerSandboxSweep();
   stopBillingReconcile();
+  stopUnverifiedAccountPurge();
 
   stopHeartbeat();
   console.log(`[EasyConvert OCI Worker] Worker daemon drain completed cleanly.`);
@@ -394,6 +396,8 @@ if (process.env.NODE_ENV !== 'test') {
   startWorkerSandboxSweep();
   // The hourly comparison of subscriptions with the payment provider's list; a worker without the seven billing variables does nothing (policy entry 277).
   startBillingReconcile();
+  // The daily deletion of accounts whose address stayed unverified for 30 days, with what they own (policy entry 364).
+  startUnverifiedAccountPurge();
   // The metrics listener stays up while the worker drains, so a drain can be watched; it is closed with the process.
   startMetricsFromConfig('worker', () => sampleQueues(metricsQueueSources())).catch((error: unknown) => {
     console.error(`[metrics] worker metrics not started: ${error instanceof Error ? error.message : String(error)}`);

@@ -920,9 +920,10 @@ export class WebhookDispatcher {
   }
 
   /**
-   * Removes every DLQ entry owned by `ownerUserId`; other owners' entries are untouched.
+   * Removes every DLQ entry owned by `ownerUserId`, or with `failedBefore` those whose delivery failed before that time;
+   * other owners' entries are untouched.
    */
-  public clearDlq(ownerUserId: string, options?: { strict?: boolean }): Promise<void> {
+  public clearDlq(ownerUserId: string, options?: { strict?: boolean; failedBefore?: number }): Promise<void> {
     return this.dlq.clear(ownerUserId, options);
   }
 

@@ -99,6 +99,21 @@ describe.skipIf(!REDIS_URL)('the per-owner index of webhook dead letters in Redi
     expect(names.length).toBeLessThanOrEqual(7);
   });
 
+  it('clears only the entries of the owner that failed before a time, in batches, when asked to', async () => {
+    const now = Date.now();
+    for (let n = 0; n < 5; n += 1) await save(`${alice}-old-${n}`, alice, now - 10_000 - n);
+    await save(`${alice}-edge`, alice, now);
+    await save(`${alice}-new`, alice, now + 1_000);
+    await save(`${bob}-old`, bob, now - 10_000);
+
+    await store.clear(alice, { strict: true, failedBefore: now });
+
+    expect((await idsOf(alice, { includeExpired: true })).sort()).toEqual([`${alice}-edge`, `${alice}-new`]);
+    expect(await idsOf(bob)).toEqual([`${bob}-old`]);
+    expect(await admin.zrange(ownerKey(alice), '0', '-1')).toHaveLength(2);
+    expect(await admin.hexists(HASH, `${alice}-old-0`)).toBe(0);
+  });
+
   it('does not list or delete an entry another owner holds when an index names it', async () => {
     await save(`${alice}-0`, alice);
     await save(`${bob}-0`, bob);

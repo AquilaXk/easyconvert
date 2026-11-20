@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { createConfiguredRedisClient, hasConfiguredRedis } from '../redis/client-factory';
 import { readyGatedRedis } from '../redis/when-ready';
+import { scanClusterSafe } from '../redis/cluster-ops';
+import { isEmailVerified } from './email-verified';
 import type { User, UserRecord, UserRecordUpdates, UserTier } from './types';
 import { failClosed } from './store-unavailable';
 import { MAX_AVATAR_URL_LENGTH, MAX_DISPLAY_NAME_LENGTH } from '../api/field-limits';
@@ -47,6 +49,10 @@ if not raw then
 end
 local user = cjson.decode(raw)
 local updates = cjson.decode(ARGV[1])
+-- An account the purge of unverified accounts has claimed can no longer be confirmed (CLAIM_UNVERIFIED_FOR_PURGE_LUA_SCRIPT).
+if user["purgingAt"] and updates["emailVerified"] == true then
+  return nil
+end
 for k, v in pairs(updates) do
   if v == cjson.null then
     user[k] = nil
@@ -92,6 +98,33 @@ if liveVersion and (tonumber(user["sessionVersion"]) or 1) < liveVersion then
 end
 user["updatedAt"] = tonumber(ARGV[3])
 redis.call('SET', KEYS[1], cjson.encode(user))
+return 1
+`;
+
+/**
+ * Claims an account for the purge of unverified accounts only while it is still unverified and was made at or before the cutoff: the
+ * check and the mark are one step, so an address confirmed a moment earlier is never claimed, and once the mark is set the account's
+ * confirmation is refused (UPDATE_USER_LUA_SCRIPT). A claimed account answers 1 again, so a purge that stopped halfway can go on.
+ */
+export const CLAIM_UNVERIFIED_FOR_PURGE_LUA_SCRIPT = `
+-- KEYS[1]: user record key
+-- ARGV[1]: cutoff, the newest creation time (ms) that may be claimed
+-- ARGV[2]: current timestamp (ms)
+local raw = redis.call('GET', KEYS[1])
+if not raw then
+  return 0
+end
+local user = cjson.decode(raw)
+if user["provider"] == "google" or user["emailVerified"] == true then
+  return 0
+end
+if (tonumber(user["createdAt"]) or 0) > tonumber(ARGV[1]) then
+  return 0
+end
+if not user["purgingAt"] then
+  user["purgingAt"] = tonumber(ARGV[2])
+  redis.call('SET', KEYS[1], cjson.encode(user))
+end
 return 1
 `;
 
@@ -152,6 +185,17 @@ function normalizeOptionalFields(record: UserRecord): UserRecord {
     }
   }
   return clean;
+}
+
+/** The record a stored value holds, or null for a missing value or one that is not a record (a damaged value is left to the operator, not to the purge). */
+function parseUserRecord(raw: string | null): UserRecord | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === 'object' && parsed !== null && typeof (parsed as UserRecord).id === 'string' ? (parsed as UserRecord) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The record as a request sees it: a paid tier whose end has passed reads as free, so the end needs no sweep. */
@@ -266,7 +310,7 @@ export class RedisUserStore {
   }
 
   public sanitizeUser(record: UserRecord): User {
-    const { passwordHash, salt, passwordIterations, ...safeUser } = record;
+    const { passwordHash, salt, passwordIterations, verifiedAt, purgingAt, ...safeUser } = record;
     return safeUser;
   }
 
@@ -408,6 +452,7 @@ export class RedisUserStore {
 
     const existing = this.distributedUsers.get(id);
     if (!existing) return null;
+    if (existing.purgingAt !== undefined && updates.emailVerified === true) return null;
     const liveVersion = this.userSessionVersions.get(id);
     const nextRecord: Record<string, unknown> = {
       ...existing,
@@ -456,6 +501,63 @@ export class RedisUserStore {
     }
     if (this.distributedUsers.get(id)?.passwordHash !== checkedHash) return false;
     return (await this.updateUser(id, next)) !== null;
+  }
+
+  /**
+   * Claims the account `id` for the purge of unverified accounts: true when it exists, its address is unverified and it was made at or
+   * before `createdBefore`, in one step (a Lua script on Redis), so an address confirmed a moment ago is never claimed. From the claim
+   * on, `updateUser` refuses to confirm it, so what the purge erases next cannot belong to an account that became verified.
+   */
+  public async claimUnverifiedForPurge(id: string, createdBefore: number): Promise<boolean> {
+    if (!id || typeof id !== 'string') return false;
+    if (this.redisClient) {
+      try {
+        const claimed = await this.redisClient.eval(
+          CLAIM_UNVERIFIED_FOR_PURGE_LUA_SCRIPT,
+          1,
+          `${this.keyPrefix}${id}`,
+          String(createdBefore),
+          String(Date.now())
+        );
+        return Number(claimed) === 1;
+      } catch (err) {
+        return failClosed('RedisUserStore', 'claimUnverifiedForPurge', err);
+      }
+    }
+    const existing = this.distributedUsers.get(id);
+    if (!existing || isEmailVerified(existing) || existing.createdAt > createdBefore) return false;
+    this.distributedUsers.set(id, { ...existing, purgingAt: existing.purgingAt ?? Date.now() });
+    return true;
+  }
+
+  /**
+   * The ids of the accounts whose address is unverified and that were made at or before `createdBefore`, a page at a time as the
+   * keyspace is scanned: a record key is the key prefix and a UUID, so the pattern leaves out the email index, the session counters
+   * and the revoked tokens, and each page reads its records with one MGET (all of them share the hash tag of the prefix). A claim
+   * (`claimUnverifiedForPurge`) still decides: an address confirmed after its page was read is not claimed.
+   */
+  public async *scanUnverifiedBefore(createdBefore: number, pageSize = 1000): AsyncGenerator<string[]> {
+    const isUnverifiedAndOld = (record: UserRecord | null | undefined): record is UserRecord =>
+      Boolean(record) && !isEmailVerified(record as UserRecord) && (record as UserRecord).createdAt <= createdBefore;
+    if (!this.redisClient) {
+      const ids = [...this.distributedUsers.values()].filter(isUnverifiedAndOld).map((record) => record.id);
+      if (ids.length > 0) yield ids;
+      return;
+    }
+    const client = this.redisClient;
+    const glob = this.keyPrefix.replace(/[\\*?[\]]/g, '\\$&');
+    try {
+      for await (const keys of scanClusterSafe(client, `${glob}????????-????-????-????-????????????`, pageSize)) {
+        const ids: string[] = [];
+        for (const raw of await client.mget(...keys)) {
+          const record = parseUserRecord(raw);
+          if (isUnverifiedAndOld(record)) ids.push(record.id);
+        }
+        if (ids.length > 0) yield ids;
+      }
+    } catch (err) {
+      return failClosed('RedisUserStore', 'scanUnverifiedBefore', err);
+    }
   }
 
   public async updateTier(id: string, tier: UserTier): Promise<UserRecord | null> {
