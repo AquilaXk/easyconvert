@@ -236,6 +236,13 @@ Suspending an account revokes existing JWT sessions (`sessionVersion` increment)
 1. See the change without writing: `docker compose -p easyconvert exec worker node dist/set-account-suspension.js --user <account email or id> --suspend --reason "<text>"`.
 2. Apply it: add `--apply`. Reasons strip control characters and truncate at 200 characters; `--unsuspend --apply` restores access.
 
+### Counting accounts
+
+Prints counts only, never an address, id or name: all accounts, by sign-in method (email, google, other), address confirmed and not confirmed (a Google account counts as confirmed, an email account without the field as not confirmed), made in the last 7 and 30 days, by plan as stored, being purged (`purgingAt` set) and suspended. It reads the user records a page of 1,000 at a time with one MGET per page and writes nothing, so it can run at any time.
+
+1. Lines of text: `docker compose -p easyconvert exec worker node dist/count-accounts.js`.
+2. One JSON object for a script: add `--json`.
+
 ### Cancelling a stuck job or a user's queued work
 
 Cancels queued/active jobs or DAG graphs through the application cancel path (refunding reserved quota and emitting the worker cancel signal).

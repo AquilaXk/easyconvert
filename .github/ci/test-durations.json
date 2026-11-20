@@ -239,6 +239,7 @@
   "tests/config-schema.test.ts": 0.3,
   "tests/config-startup.test.ts": 3,
   "tests/confirm-account-email.test.ts": 0,
+  "tests/count-accounts.test.ts": 1.0,
   "tests/container-ci-job.test.ts": 0.6,
   "tests/content-disposition-header.test.ts": 0,
   "tests/conversion-concurrency.test.ts": 2.5,

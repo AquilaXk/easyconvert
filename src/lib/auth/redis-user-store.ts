@@ -531,32 +531,36 @@ export class RedisUserStore {
   }
 
   /**
-   * The ids of the accounts whose address is unverified and that were made at or before `createdBefore`, a page at a time as the
-   * keyspace is scanned: a record key is the key prefix and a UUID, so the pattern leaves out the email index, the session counters
-   * and the revoked tokens, and each page reads its records with one MGET (all of them share the hash tag of the prefix). A claim
-   * (`claimUnverifiedForPurge`) still decides: an address confirmed after its page was read is not claimed.
+   * The user records a page at a time as the keyspace is scanned: a record key is the key prefix and a UUID, so the pattern leaves
+   * out the email index, the session counters and the revoked tokens, and each page reads its records with one MGET (all of them
+   * share the hash tag of the prefix). Read-only; a record that does not parse is left out.
    */
-  public async *scanUnverifiedBefore(createdBefore: number, pageSize = 1000): AsyncGenerator<string[]> {
-    const isUnverifiedAndOld = (record: UserRecord | null | undefined): record is UserRecord =>
-      Boolean(record) && !isEmailVerified(record as UserRecord) && (record as UserRecord).createdAt <= createdBefore;
+  public async *scanRecords(pageSize = 1000): AsyncGenerator<UserRecord[]> {
     if (!this.redisClient) {
-      const ids = [...this.distributedUsers.values()].filter(isUnverifiedAndOld).map((record) => record.id);
-      if (ids.length > 0) yield ids;
+      const records = [...this.distributedUsers.values()];
+      if (records.length > 0) yield records;
       return;
     }
     const client = this.redisClient;
     const glob = this.keyPrefix.replace(/[\\*?[\]]/g, '\\$&');
     try {
       for await (const keys of scanClusterSafe(client, `${glob}????????-????-????-????-????????????`, pageSize)) {
-        const ids: string[] = [];
-        for (const raw of await client.mget(...keys)) {
-          const record = parseUserRecord(raw);
-          if (isUnverifiedAndOld(record)) ids.push(record.id);
-        }
-        if (ids.length > 0) yield ids;
+        const records = (await client.mget(...keys)).map(parseUserRecord).filter((record): record is UserRecord => Boolean(record));
+        if (records.length > 0) yield records;
       }
     } catch (err) {
-      return failClosed('RedisUserStore', 'scanUnverifiedBefore', err);
+      return failClosed('RedisUserStore', 'scanRecords', err);
+    }
+  }
+
+  /**
+   * The ids of the accounts whose address is unverified and that were made at or before `createdBefore`, a page at a time
+   * (`scanRecords`). A claim (`claimUnverifiedForPurge`) still decides: an address confirmed after its page was read is not claimed.
+   */
+  public async *scanUnverifiedBefore(createdBefore: number, pageSize = 1000): AsyncGenerator<string[]> {
+    for await (const records of this.scanRecords(pageSize)) {
+      const ids = records.filter((record) => !isEmailVerified(record) && record.createdAt <= createdBefore).map((record) => record.id);
+      if (ids.length > 0) yield ids;
     }
   }
 
