@@ -409,6 +409,8 @@ describe('P0 perf / hang / soak / mirror regression guards', () => {
           '--snapshot-interval-ms',
           '100',
           '--quiet',
+          // The flush is what this checks; the conversion engines would make the first snapshot wait on their start-up.
+          '--stream-only',
           '--output',
           outputPath,
         ],
