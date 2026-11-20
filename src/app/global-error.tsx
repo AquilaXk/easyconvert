@@ -2,27 +2,28 @@
 
 import { usePathname } from 'next/navigation';
 import { GLOBAL_ERROR_COPY } from '@/lib/global-error-copy';
+import './globals.css';
 
 const HOME_HREF = { en: '/', ko: '/ko' } as const;
 
-const ACTION_STYLE = { padding: '0.375rem 1rem', borderRadius: 2, fontSize: 14, fontWeight: 500, textDecoration: 'none', cursor: 'pointer' } as const;
+const ACTION_CLASS = 'inline-flex items-center justify-center h-8 [@media(pointer:coarse)]:h-11 px-4 rounded-xs text-sm font-medium transition-colors';
 
-/** The error boundary of the root layout itself, which replaces it: no provider or stylesheet is there, so the page carries its own markup, styles and copy, in the language of the path. */
+/** The error boundary of the root layout itself, which replaces it: no provider is there, so the page carries its own markup and copy, in the language of the path, with the site's stylesheet and tokens. */
 export default function GlobalError({ reset }: Readonly<{ reset: () => void }>) {
   const locale = usePathname()?.split('/')[1] === 'ko' ? 'ko' : 'en';
   const copy = GLOBAL_ERROR_COPY[locale];
 
   return (
     <html lang={locale}>
-      <body style={{ margin: 0, fontFamily: 'system-ui, sans-serif', colorScheme: 'light dark' }}>
-        <main style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '4rem 1rem', textAlign: 'center' }}>
-          <h1 style={{ margin: 0, fontSize: 'clamp(24px, 4vw, 30px)', fontWeight: 700, wordBreak: 'keep-all', overflowWrap: 'break-word' }}>{copy.title}</h1>
-          <p style={{ margin: '1rem 0 2rem', maxWidth: 560, fontSize: 14, lineHeight: '24px', opacity: 0.75, wordBreak: 'keep-all' }}>{copy.description}</p>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, justifyContent: 'center' }}>
-            <button type="button" onClick={reset} style={{ ...ACTION_STYLE, border: 'none', background: '#2563eb', color: '#fff' }}>
+      <body>
+        <main className="min-h-screen flex flex-col items-center justify-center px-4 sm:px-6 py-16 text-center">
+          <h1 className="max-w-2xl text-2xl sm:text-3xl text-ink break-keep break-words">{copy.title}</h1>
+          <p className="mt-4 max-w-xl text-sm leading-6 text-ink-2 break-keep">{copy.description}</p>
+          <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+            <button type="button" onClick={reset} className={`${ACTION_CLASS} bg-accent text-on-accent hover:bg-accent-hover cursor-pointer`}>
               {copy.retry}
             </button>
-            <a href={HOME_HREF[locale]} style={{ ...ACTION_STYLE, color: 'inherit', border: 'none' }}>
+            <a href={HOME_HREF[locale]} className={`${ACTION_CLASS} text-ink-2 hover:text-ink hover:bg-sunken/50`}>
               {copy.home}
             </a>
           </div>
