@@ -396,6 +396,7 @@ Security
 345. [A video or audio file converted to its own format is written again with the muxer of its container, and the DSS pair is withdrawn](#345-a-video-or-audio-file-converted-to-its-own-format-is-written-again-with-the-muxer-of-its-container-and-the-dss-pair-is-withdrawn)
 346. [What a failed program printed goes to the server log, and the error a caller reads names the step and the exit status](#346-what-a-failed-program-printed-goes-to-the-server-log-and-the-error-a-caller-reads-names-the-step-and-the-exit-status)
 347. [A format id that names files of another format is held to that format's signature, and every refusal of the spoof check carries a code](#347-a-format-id-that-names-files-of-another-format-is-held-to-that-formats-signature-and-every-refusal-of-the-spoof-check-carries-a-code)
+348. [A PDF protected with a 128-bit key is encrypted with AES-128, never RC4](#348-a-pdf-protected-with-a-128-bit-key-is-encrypted-with-aes-128-never-rc4)
 
 ---
 
@@ -10409,3 +10410,18 @@ Security
   - **`oeb` is not mapped**: an Open eBook package is XML, and an EPUB named `.oeb` is a different file.
 - **Verified by**: `tests/spoof-alias-formats.test.ts` (a real PDF, PPTX, WebP header, M4A header, 7z and ZIP accepted under the six ids and under the id, a file of another kind named with each id refused, a JPEG named `.avif` and a gzip named `.tz` refused, and the `code` of `/api/v1/convert`, `/api/v1/jobs` and `/api/queue/jobs`).
 - **Revisit when**: a registry id turns out to stand for a format with other signature rules, or a client needs the 422 and 400 refusals told apart by more than the code.
+
+## 348. A PDF protected with a 128-bit key is encrypted with AES-128, never RC4
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: production sweep, `keyLength: 128` answered 400 "qpdf could not encrypt the document")
+- **Decision**: **`keyLength: 128` writes AES-128 (encryption revision 4, version 4)**: `protectPdf` passes `--use-aes=y` to `qpdf --encrypt` for a 128-bit key. `256` (the default) stays AES-256 (revision 6). RC4 is never written and the service does not pass `--allow-weak-crypto`.
+- **Why**: qpdf writes a 128-bit key with RC4 unless it is told to use AES, and qpdf 12 refuses RC4 without `--allow-weak-crypto`, so every request with `keyLength: 128` failed. The reference's PDF operation offers no key length at all (its options are `encryption`, `set_password`, `set_owner_password` and the four `allow_*` permissions on qpdf), so a caller who names 128 asks for the older, smaller key; AES-128 is that key without the broken cipher. Readers open AES-128 files since Acrobat 7.
+- **Trade-offs**:
+  - **An AES-128 file does not open in a reader older than Acrobat 7 (2005)**; RC4-128 would, but RC4 is not offered by any current tool for new files.
+  - **128 and 256 differ in strength only for an attacker with a large budget**: AES-128 has no practical attack, so the choice is about compatibility, not safety.
+- **Alternatives rejected**:
+  - **Passing `--allow-weak-crypto` for 128**: writes RC4, which the qpdf maintainers removed from the default for a reason.
+  - **Refusing 128 and accepting 256 only**: the option is documented in the OpenAPI contract and the SDKs; refusing would break callers that send it.
+- **Verified by**: `tests/pdf-protect-key-length.test.ts` (qpdf's JSON report shows revision 4 and version 4 for 128 and revision 6 and version 5 for 256 and for none, the file opens with the user password in `pdftotext`, `pdfinfo` and `qpdf --check`, and the permissions hold; the test fails with the 400 when `--use-aes=y` is taken out).
+- **Revisit when**: qpdf adds a mode for a 128-bit key other than RC4 and AES, or the reference gains a key-length option.

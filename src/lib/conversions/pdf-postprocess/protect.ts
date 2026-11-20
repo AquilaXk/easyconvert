@@ -79,7 +79,7 @@ export function validatePdfProtectOptions(options: unknown = {}): PdfProtectOpti
 }
 
 /**
- * Protect a PDF document using AES-256 encryption and fine-grained permission controls
+ * Protect a PDF document using AES (256-bit, or 128-bit when asked for) encryption and fine-grained permission controls
  * via qpdf CLI. Passwords are passed in an argument file on standard input (`@-`), which keeps them out of the
  * process argument list and off the disk.
  *
@@ -124,6 +124,8 @@ export async function protectPdf(
       userPassword,
       ownerPassword,
       String(keyLength),
+      // qpdf writes a 128-bit key with RC4 unless it is told to use AES, and refuses RC4 without --allow-weak-crypto.
+      ...(keyLength === 128 ? ['--use-aes=y'] : []),
       `--print=${printPerm}`,
       `--modify=${modifyPerm}`,
       `--extract=${extractPerm}`,

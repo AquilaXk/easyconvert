@@ -915,6 +915,7 @@
   "tests/pdf-picture-memory.test.ts": 11.4,
   "tests/pdf-picture-repeats.test.ts": 4.9,
   "tests/pdf-postprocess-refusal.test.ts": 0.1,
+  "tests/pdf-protect-key-length.test.ts": 2,
   "tests/pdf-raster-page-budget.test.ts": 2.2,
   "tests/pdf-raster-pages-parallel.test.ts": 1.8,
   "tests/pdf-roman-list.test.ts": 0.6,
