@@ -32,6 +32,9 @@ import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } fr
  * answered when the suite is missing or fails) are checked without an installed office suite.
  */
 
+/** A table of 128 KiB or more is read and written on a pool thread, whose first start loads the module graph of the thread: about 0.5 s on an idle host, seconds on a loaded runner. */
+const POOL_THREAD_TEST_TIMEOUT_MS = 60_000;
+
 function result(overrides: Partial<WorkerConversionResult> = {}): WorkerConversionResult {
   const buffer = Buffer.from('converted bytes');
   return { buffer, mimeType: 'application/octet-stream', filename: 'out.bin', size: buffer.length, engineUsed: 'native-soffice-pool', executionTimeMs: 1, ...overrides };
@@ -766,14 +769,14 @@ describe('an .xls written from a table the in-process engine reads', () => {
     expect((failure as SheetLimitError).status).toBe(413);
     expect((failure as Error).message).toMatch(message);
     expect(calls.written).toEqual([]);
-  });
+  }, POOL_THREAD_TEST_TIMEOUT_MS);
 
   it('hands a table that reaches row 65,536 and column 256 to the office suite', async () => {
     const table = Buffer.from(`${Array.from({ length: 256 }, () => 'x').join(',')}\n${'x\n'.repeat(65_535)}`);
     const { deps, calls } = standIns({ write: async () => exported() });
     await convertXlsTarget(deps, csvRequest({ input: table }), unused);
     expect(calls.written).toHaveLength(1);
-  });
+  }, POOL_THREAD_TEST_TIMEOUT_MS);
 });
 
 describe('the conversion of a request that targets .xls', () => {

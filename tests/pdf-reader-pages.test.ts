@@ -26,6 +26,8 @@ import { hasTesseractLanguage } from './helpers/tessdata';
  */
 
 const SKIP = skipWithoutTools('pdftotext', 'pdfinfo', 'qpdf');
+/** A PDF written to XLS starts the office suite, which takes seconds on a loaded runner; the default 5 s is for the in-process cases. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
 
 /** One word per page of the six-page document: the page that holds a word is the page that has its index. */
 const WORDS = ['APRICOT', 'BANANA', 'CHERRY', 'DAMSON', 'ELDERBERRY', 'FIGWORT'] as const;
@@ -201,7 +203,7 @@ describe.skipIf(SKIP)('pages of a PDF converted to text, HTML, DOCX and XLSX', (
     expect(wordsIn(md.buffer.toString('utf-8'))).toEqual([...WORDS]);
     const xls = await dispatchConversion(pdf, 'pdf', 'xls', { pages: '2' }, 'doc.pdf');
     expect(xls.buffer.length).toBeGreaterThan(0);
-  });
+  }, ENGINE_TEST_TIMEOUT_MS);
 
   describe('a PDF with a password and owner restrictions', () => {
     const locked = async (): Promise<Buffer> =>
