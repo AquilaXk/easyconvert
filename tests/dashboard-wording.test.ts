@@ -372,6 +372,23 @@ describe('the credits on the dashboard', () => {
     expect(panel).toContain('No conversions have been charged yet.');
   });
 
+  it('shows event credits as a separate line with the earliest expiry, and nothing when the account has none', () => {
+    const base = { tier: 'free' as const, period: 'day' as const, dailyLimit: FREE_DAILY_CREDITS, usedToday: 0, remaining: FREE_DAILY_CREDITS + 30, resetAt: Date.UTC(2026, 11, 2), packageCredits: 0, promoCredits: 0 };
+    const none = panelOf(freeUser, base);
+    expect(none).not.toContain('Event credits');
+
+    const ending = panelOf(freeUser, { ...base, promoCredits: 30, promoExpiresAt: Date.UTC(2026, 11, 31, 12) });
+    expect(ending).toContain('Event credits');
+    expect(ending).toContain('30');
+    expect(ending).toContain('Spent before package credits. Earliest expiry: Dec 31, 2026.');
+    expect(ending).toContain('No package credits');
+    expect(panelOf(freeUser, { ...base, promoCredits: 30 })).toContain('Spent before package credits. No expiry.');
+
+    const korean = visibleText(renderDom(createElement(AccountQuotaPanel, { user: freeUser, quota: { ...base, promoCredits: 30, promoExpiresAt: Date.UTC(2026, 11, 31, 12) }, apiKeys: [], charges: [] }), 'ko'));
+    expect(korean).toContain('이벤트 크레딧');
+    expect(korean).toContain('충전 크레딧보다 먼저 사용합니다. 가장 빠른 만료일은');
+  });
+
   it('lists the recent charges: the pair of formats, the credits, the minutes beyond the first and what came from the package', () => {
     const charges: ChargeEntry[] = [
       { at: Date.UTC(2026, 10, 13, 9, 5), from: 'docx', to: 'pdf', base: 2, surcharge: 2, credits: 4, fromPackage: 3 },

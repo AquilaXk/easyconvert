@@ -139,7 +139,7 @@ export const keyPaths = {
   '/api/keys/usage': {
     get: {
       summary: 'Get Credits',
-      description: 'Retrieves the credits counted in the current window (a day for anonymous callers and the free plan, the billing period of a subscription), the credits the window gives, the package credits, and the account\'s newest charges (`charges`: one entry for each charged conversion with its formats, its credits and the credits from the package).',
+      description: 'Retrieves the credits counted in the current window (a day for anonymous callers and the free plan, the billing period of a subscription), the credits the window gives, the promotional credits, the package credits, and the account\'s newest charges (`charges`: one entry for each charged conversion with its formats, its credits, the credits from the promotional credits and the credits from the package).',
       operationId: 'getQuotaUsage',
       security: requireScope(),
       responses: {
@@ -165,6 +165,7 @@ export const keyPaths = {
                         base: { type: 'integer', description: 'Credits of the class of the conversion.' },
                         surcharge: { type: 'integer', description: 'Credits added for the started minutes of processing beyond the first.' },
                         credits: { type: 'integer', description: 'Credits charged in all.' },
+                        fromPromo: { type: 'integer', description: 'How many of them came from the promotional credits. Absent when none did.' },
                         fromPackage: { type: 'integer', description: 'How many of them came from the package credits.' },
                         uncharged: { type: 'integer', description: 'Credits owed that the account no longer had when the conversion ended.' },
                       },

@@ -27,6 +27,7 @@ class GetQuotaUsageResponse200ChargesItem:
         base (int | Unset): Credits of the class of the conversion.
         surcharge (int | Unset): Credits added for the started minutes of processing beyond the first.
         credits_ (int | Unset): Credits charged in all.
+        from_promo (int | Unset): How many of them came from the promotional credits. Absent when none did.
         from_package (int | Unset): How many of them came from the package credits.
         uncharged (int | Unset): Credits owed that the account no longer had when the conversion ended.
     """
@@ -38,6 +39,7 @@ class GetQuotaUsageResponse200ChargesItem:
     base: int | Unset = UNSET
     surcharge: int | Unset = UNSET
     credits_: int | Unset = UNSET
+    from_promo: int | Unset = UNSET
     from_package: int | Unset = UNSET
     uncharged: int | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -58,6 +60,8 @@ class GetQuotaUsageResponse200ChargesItem:
         surcharge = self.surcharge
 
         credits_ = self.credits_
+
+        from_promo = self.from_promo
 
         from_package = self.from_package
 
@@ -80,6 +84,8 @@ class GetQuotaUsageResponse200ChargesItem:
             field_dict["surcharge"] = surcharge
         if credits_ is not UNSET:
             field_dict["credits"] = credits_
+        if from_promo is not UNSET:
+            field_dict["fromPromo"] = from_promo
         if from_package is not UNSET:
             field_dict["fromPackage"] = from_package
         if uncharged is not UNSET:
@@ -109,6 +115,8 @@ class GetQuotaUsageResponse200ChargesItem:
 
         credits_ = d.pop("credits", UNSET)
 
+        from_promo = d.pop("fromPromo", UNSET)
+
         from_package = d.pop("fromPackage", UNSET)
 
         uncharged = d.pop("uncharged", UNSET)
@@ -121,6 +129,7 @@ class GetQuotaUsageResponse200ChargesItem:
             base=base,
             surcharge=surcharge,
             credits_=credits_,
+            from_promo=from_promo,
             from_package=from_package,
             uncharged=uncharged,
         )

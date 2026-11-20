@@ -406,7 +406,7 @@ export interface paths {
         };
         /**
          * Get Credits
-         * @description Retrieves the credits counted in the current window (a day for anonymous callers and the free plan, the billing period of a subscription), the credits the window gives, the package credits, and the account's newest charges (`charges`: one entry for each charged conversion with its formats, its credits and the credits from the package).
+         * @description Retrieves the credits counted in the current window (a day for anonymous callers and the free plan, the billing period of a subscription), the credits the window gives, the promotional credits, the package credits, and the account's newest charges (`charges`: one entry for each charged conversion with its formats, its credits, the credits from the promotional credits and the credits from the package).
          */
         get: operations["getQuotaUsage"];
         put?: never;
@@ -1764,15 +1764,22 @@ export interface components {
              */
             usedToday?: number;
             /**
-             * @description Credits the account can spend now: what is left of the window plus the package credits.
+             * @description Credits the account can spend now: what is left of the window plus the promotional credits and the package credits.
              * @example 1208
              */
             remaining?: number;
             /**
-             * @description Credits of packages the account holds. They never expire while the account exists and are spent after the credits of the window.
+             * @description Credits of packages the account holds. They never expire while the account exists and are spent after the credits of the window and the promotional credits.
              * @example 250
              */
             packageCredits?: number;
+            /**
+             * @description Promotional (event) credits the account can spend now. They are spent after the credits of the window and before the package credits, may end at a time (`promoExpiresAt`), and do not change the plan of the account or its limits.
+             * @example 30
+             */
+            promoCredits?: number;
+            /** @description Unix timestamp in milliseconds of the earliest end among the promotional credits that can be spent now. Absent when none of them ends. */
+            promoExpiresAt?: number;
             /** @description Unix timestamp in milliseconds when the count of the window starts again: midnight UTC for a day, the next renewal of the subscription for a period. Package credits do not reset. */
             resetAt?: number;
         };
@@ -4465,6 +4472,8 @@ export interface operations {
                             surcharge?: number;
                             /** @description Credits charged in all. */
                             credits?: number;
+                            /** @description How many of them came from the promotional credits. Absent when none did. */
+                            fromPromo?: number;
                             /** @description How many of them came from the package credits. */
                             fromPackage?: number;
                             /** @description Credits owed that the account no longer had when the conversion ended. */

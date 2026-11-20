@@ -52,9 +52,10 @@ def sync_detailed(
     """Get Credits
 
      Retrieves the credits counted in the current window (a day for anonymous callers and the free plan,
-    the billing period of a subscription), the credits the window gives, the package credits, and the
-    account's newest charges (`charges`: one entry for each charged conversion with its formats, its
-    credits and the credits from the package).
+    the billing period of a subscription), the credits the window gives, the promotional credits, the
+    package credits, and the account's newest charges (`charges`: one entry for each charged conversion
+    with its formats, its credits, the credits from the promotional credits and the credits from the
+    package).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -80,9 +81,10 @@ def sync(
     """Get Credits
 
      Retrieves the credits counted in the current window (a day for anonymous callers and the free plan,
-    the billing period of a subscription), the credits the window gives, the package credits, and the
-    account's newest charges (`charges`: one entry for each charged conversion with its formats, its
-    credits and the credits from the package).
+    the billing period of a subscription), the credits the window gives, the promotional credits, the
+    package credits, and the account's newest charges (`charges`: one entry for each charged conversion
+    with its formats, its credits, the credits from the promotional credits and the credits from the
+    package).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -104,9 +106,10 @@ async def asyncio_detailed(
     """Get Credits
 
      Retrieves the credits counted in the current window (a day for anonymous callers and the free plan,
-    the billing period of a subscription), the credits the window gives, the package credits, and the
-    account's newest charges (`charges`: one entry for each charged conversion with its formats, its
-    credits and the credits from the package).
+    the billing period of a subscription), the credits the window gives, the promotional credits, the
+    package credits, and the account's newest charges (`charges`: one entry for each charged conversion
+    with its formats, its credits, the credits from the promotional credits and the credits from the
+    package).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -130,9 +133,10 @@ async def asyncio(
     """Get Credits
 
      Retrieves the credits counted in the current window (a day for anonymous callers and the free plan,
-    the billing period of a subscription), the credits the window gives, the package credits, and the
-    account's newest charges (`charges`: one entry for each charged conversion with its formats, its
-    credits and the credits from the package).
+    the billing period of a subscription), the credits the window gives, the promotional credits, the
+    package credits, and the account's newest charges (`charges`: one entry for each charged conversion
+    with its formats, its credits, the credits from the promotional credits and the credits from the
+    package).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

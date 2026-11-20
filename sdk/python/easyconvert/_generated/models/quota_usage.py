@@ -24,10 +24,15 @@ class QuotaUsage:
         daily_limit (int | Unset): Credits the window gives, whichever the period is: 10 for the free plan, the credits
             of a subscription for its period. The name is kept from before credits. Example: 1000.
         used_today (int | Unset): Credits counted in the current window, whichever the period is. Example: 42.
-        remaining (int | Unset): Credits the account can spend now: what is left of the window plus the package credits.
-            Example: 1208.
+        remaining (int | Unset): Credits the account can spend now: what is left of the window plus the promotional
+            credits and the package credits. Example: 1208.
         package_credits (int | Unset): Credits of packages the account holds. They never expire while the account exists
-            and are spent after the credits of the window. Example: 250.
+            and are spent after the credits of the window and the promotional credits. Example: 250.
+        promo_credits (int | Unset): Promotional (event) credits the account can spend now. They are spent after the
+            credits of the window and before the package credits, may end at a time (`promoExpiresAt`), and do not change
+            the plan of the account or its limits. Example: 30.
+        promo_expires_at (float | Unset): Unix timestamp in milliseconds of the earliest end among the promotional
+            credits that can be spent now. Absent when none of them ends.
         reset_at (float | Unset): Unix timestamp in milliseconds when the count of the window starts again: midnight UTC
             for a day, the next renewal of the subscription for a period. Package credits do not reset.
     """
@@ -38,6 +43,8 @@ class QuotaUsage:
     used_today: int | Unset = UNSET
     remaining: int | Unset = UNSET
     package_credits: int | Unset = UNSET
+    promo_credits: int | Unset = UNSET
+    promo_expires_at: float | Unset = UNSET
     reset_at: float | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -58,6 +65,10 @@ class QuotaUsage:
 
         package_credits = self.package_credits
 
+        promo_credits = self.promo_credits
+
+        promo_expires_at = self.promo_expires_at
+
         reset_at = self.reset_at
 
         field_dict: dict[str, Any] = {}
@@ -75,6 +86,10 @@ class QuotaUsage:
             field_dict["remaining"] = remaining
         if package_credits is not UNSET:
             field_dict["packageCredits"] = package_credits
+        if promo_credits is not UNSET:
+            field_dict["promoCredits"] = promo_credits
+        if promo_expires_at is not UNSET:
+            field_dict["promoExpiresAt"] = promo_expires_at
         if reset_at is not UNSET:
             field_dict["resetAt"] = reset_at
 
@@ -105,6 +120,10 @@ class QuotaUsage:
 
         package_credits = d.pop("packageCredits", UNSET)
 
+        promo_credits = d.pop("promoCredits", UNSET)
+
+        promo_expires_at = d.pop("promoExpiresAt", UNSET)
+
         reset_at = d.pop("resetAt", UNSET)
 
         quota_usage = cls(
@@ -114,6 +133,8 @@ class QuotaUsage:
             used_today=used_today,
             remaining=remaining,
             package_credits=package_credits,
+            promo_credits=promo_credits,
+            promo_expires_at=promo_expires_at,
             reset_at=reset_at,
         )
 

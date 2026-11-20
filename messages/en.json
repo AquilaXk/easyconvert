@@ -575,6 +575,9 @@
       "reference": "View the OpenAPI reference",
       "package": "Package credits",
       "packageNote": "{count, plural, =0 {No package credits} one {# credit that does not expire} other {# credits that do not expire}}",
+      "promo": "Event credits",
+      "promoNote": "Spent before package credits. Earliest expiry: {date}.",
+      "promoNoteOpen": "Spent before package credits. No expiry.",
       "charges": {
         "heading": "Recent charges",
         "empty": "No conversions have been charged yet.",

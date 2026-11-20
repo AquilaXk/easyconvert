@@ -1,6 +1,6 @@
 import React from 'react';
 import { useFormatter, useTranslations } from 'next-intl';
-import { Check, Clock, Code2, Coins, Key, Shield } from 'lucide-react';
+import { Check, Clock, Code2, Coins, Gift, Key, Shield } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useTierLabel } from '../i18n/format';
 import type { User } from '@/lib/auth/types';
@@ -29,6 +29,7 @@ export function AccountQuotaPanel({ user, quota, apiKeys, charges, quotaUnavaila
   const usedToday = displayedUsage(quota?.usedToday ?? 0, dailyLimit);
   const remaining = Math.max(0, dailyLimit - usedToday);
   const packageCredits = quota?.packageCredits ?? 0;
+  const promoCredits = quota?.promoCredits ?? 0;
   const monthly = quota?.period === 'month';
 
   return (
@@ -84,6 +85,22 @@ export function AccountQuotaPanel({ user, quota, apiKeys, charges, quotaUnavaila
             <p className="mt-1 text-xs text-ink-2">
               {t('packageNote', { count: packageCredits })}
             </p>
+            {promoCredits > 0 && (
+              <div className="mt-3 pt-3 border-t border-rule">
+                <div className="text-xs font-medium text-ink-3">
+                  {t('promo')}
+                </div>
+                <div className="mt-1 flex items-center gap-2 text-lg font-semibold tabular-nums text-ink">
+                  <Gift className="w-4 h-4 text-accent-ink" />
+                  <span>{format.number(promoCredits)}</span>
+                </div>
+                <p className="mt-1 text-xs text-ink-2">
+                  {quota?.promoExpiresAt
+                    ? t('promoNote', { date: format.dateTime(new Date(quota.promoExpiresAt), { year: 'numeric', month: 'short', day: 'numeric' }) })
+                    : t('promoNoteOpen')}
+                </p>
+              </div>
+            )}
           </div>
 
           <div className="p-4 rounded-md border border-rule">
