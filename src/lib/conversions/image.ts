@@ -41,19 +41,15 @@ import { readStillCicp } from './still-cicp';
 import { pipelineFromBitmap, pipelineFromIcon } from './bitmap-pipeline';
 import { buildOpenXpsPackage, withPngDensity96 } from './openxps';
 import { decodeLosslessJpegStrip, readIfdNumberArray, readIfdRationalArray } from './image-lossless-jpeg';
-import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, type PixelBudget, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, asInputPixelLimitError, openInputImage, openLimitedSharp, resizedDimensions, rethrowInputPixelLimit } from './image-input-limits';
+import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, asInputPixelLimitError, openInputImage, openLimitedSharp, resizedDimensions, rethrowInputPixelLimit } from './image-input-limits';
 import {
   applyOklabQuantizationAndDither,
-  applyOklabQuantizationAndDitherAsync,
-  quantizeImageAsync,
   quantizePaletteOklab,
   riemersmaDither,
   deltaEOk,
   rgbToOklab,
   oklabToRgb,
-  type DitherKind,
 } from './color-quantizer';
-import { encodeGif } from './gif-writer';
 import { performOcr, generateSearchablePdf, exportHocr, exportAlto, STRUCTURED_OCR_TARGETS } from './ocr';
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
 import { normalizeSvgBufferForRendering } from './svg-render-normalize';
@@ -67,7 +63,7 @@ import { hasSrgbPrimaries, isSrgbProfile, srgb16LutsFromProfile } from './icc-sr
 import { EIGHT_BIT_ONLY_TARGETS, reducesAtEncode, roundedToEightBits, SHARP_SIXTEEN_BIT_DEPTH } from './image-depth';
 import { applyDevelopmentCurve } from './image-development-curve';
 import { pinBaseImageThreads, withPipelineThreads } from './image-threads';
-import { rgbaRaster, withinQuantizerBudget, writtenSizeOf } from './image-rgba-raster';
+import { assertAnimatableOptions, assertPixelBudgetBeforeDecode, encodeBmp8Output, encodeGifOutput, oklabPaletteRaster } from './image-palette-output';
 import { writePalettePng } from './png-palette-quantizer';
 import { encodeAvif, PQ_AVIF_CICP } from './image-avif-pipeline';
 import { FIRST_QUARTER_TURN_ORIENTATION } from './image-orientation';
@@ -1348,35 +1344,6 @@ function outputExtensionOf(fmt: string): string {
   return fmt === 'ultrahdr' ? 'jpg' : fmt;
 }
 
-/** The custom quantizers work on a single frame; applying them to a stacked animation would merge its frames. */
-function assertAnimatableOptions(options: ConversionOptions): void {
-  if (options.quantizer === 'oklab' || options.ditherMethod === 'riemersma' || options.ditherMethod === 'blue-noise') {
-    throw new UnsupportedOptionError(
-      'The oklab quantizer, riemersma and blue-noise dithering work on one frame and cannot be applied to an animated GIF; remove them or select a single frame with the "page" option'
-    );
-  }
-}
-
-/** The dither the request names for the Oklab palette quantizer; error diffusion in linear light by default. */
-function ditherKindOf(options: ConversionOptions): DitherKind {
-  if (options.dither === false) return 'none';
-  if (options.ditherMethod === 'blue-noise') return 'blue-noise';
-  if (options.ditherMethod === 'riemersma') return 'riemersma';
-  return 'floyd-steinberg';
-}
-
-/**
- * Palette and indices of an RGBA raster by the Oklab quantizer, with the raster rebuilt from them (each pixel
- * keeps its own alpha). The raster is refused from its size, before the per-pixel work, when it is over the
- * quantizer budget.
- */
-async function oklabPaletteRaster(data: Buffer, width: number, height: number, colours: number, options: ConversionOptions) {
-  assertPixelBudget(width, height, QUANTIZER_PIXEL_BUDGET);
-  const kind = ditherKindOf(options);
-  const result = await applyOklabQuantizationAndDitherAsync({ data, width, height }, colours, kind !== 'none', kind === 'none' ? 'floyd-steinberg' : kind, options.signal);
-  return { palette: result.palette, indexed: result.indexed, rgba: Buffer.from(result.rgba.buffer, result.rgba.byteOffset, result.rgba.byteLength) };
-}
-
 /** The EPS, EXR and Ultra HDR encoders read three bytes per pixel; any other layout would shear the picture. */
 function assertRgbSamples(info: OutputInfo, target: string): void {
   if (info.channels !== RGB_CHANNEL_COUNT) {
@@ -1384,15 +1351,6 @@ function assertRgbSamples(info: OutputInfo, target: string): void {
       `Cannot encode .${target}: expected 3 colour channels per pixel but the decoded image has ${info.channels}`
     );
   }
-}
-
-async function assertPixelBudgetBeforeDecode(
-  pipeline: Sharp,
-  options: ConversionOptions,
-  budget: PixelBudget = HDR_FLOAT_PIXEL_BUDGET
-): Promise<void> {
-  const target = await writtenSizeOf(pipeline, options);
-  if (target !== null) assertPixelBudget(target.width, target.height, budget);
 }
 
 /** True for an ICO or CUR file: named by its extension or recognised by the icon directory header (type 1 or 2). */
@@ -1431,14 +1389,6 @@ function deepColourspaceOf(meta: Metadata | undefined, options: ConversionOption
  * opaque alpha plane itself, so a WebP is the PNG handed straight to the encoder.
  */
 const CONTENT_CLASSIFIED_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'avif']);
-
-/**
- * How much farther than its nearest palette colour a photograph's pixel may be from the colour of the pixel before it for the
- * GIF to keep that colour (see `QuantizeOptions.runTolerance`). 0.25 takes the camera samples of the benchmark below the standard
- * converter's size (a 960 x 540 file 7 percent smaller than without it) for 0.0006 of SSIM and 0.2 dB, far inside the 0.007 and 2 dB
- * they lead that converter by.
- */
-const GIF_PHOTO_RUN_TOLERANCE = 0.25;
 
 /** Deflate level of a 16-bit PNG: adaptive filtering makes level 6 as small as level 8 and faster. */
 const DEEP_PNG_COMPRESSION_LEVEL = 6;
@@ -2074,47 +2024,14 @@ async function convertImage(
       }
 
       case 'gif': {
-        const colours = Math.min(256, Math.max(2, options.colors || 256));
-        if (
-          options.quantizer === 'oklab' ||
-          options.ditherMethod === 'riemersma' ||
-          options.ditherMethod === 'blue-noise'
-        ) {
-          if (frameSelection?.keepsAnimation) {
-            assertAnimatableOptions(options);
-          }
-          await assertPixelBudgetBeforeDecode(pipeline, options, QUANTIZER_PIXEL_BUDGET);
-          const { data, info } = await rgbaRaster(pipeline);
-          // The quantizer's palette goes into the GIF as it is: the image library is not asked to quantize again.
-          const indexed = await quantizeImageAsync(data, info.width, info.height, colours, { dither: ditherKindOf(options), transparency: 'threshold', signal: options.signal });
-          outputBuffer = encodeGif({ width: info.width, height: info.height, ...indexed });
-        } else if (
-          content === 'photo' &&
-          !frameSelection?.keepsAnimation &&
-          options.dither === undefined &&
-          (await withinQuantizerBudget(pipeline, options))
-        ) {
-          // A photograph that asks for no dithering in particular: the Oklab quantizer's palette, each pixel mapped to its
-          // nearest colour. Error diffusion is noise to LZW (25 percent more bytes on the camera samples of the benchmark) and
-          // does not raise SSIM or PSNR there; the image library's palette quantizer spends the same bytes on both.
-          const { data, info } = await rgbaRaster(pipeline);
-          const indexed = await quantizeImageAsync(data, info.width, info.height, colours, { dither: 'none', transparency: 'threshold', runTolerance: GIF_PHOTO_RUN_TOLERANCE, signal: options.signal });
-          outputBuffer = encodeGif({ width: info.width, height: info.height, ...indexed });
-        } else {
-          outputBuffer = await pipeline.gif({ colours, dither: options.dither !== false ? 1.0 : 0.0 }).toBuffer();
-        }
+        outputBuffer = await encodeGifOutput(pipeline, options, content, frameSelection?.keepsAnimation === true);
         mimeType = 'image/gif';
         break;
       }
 
       case 'bmp': {
         if (options.colorDepth === 8 || options.palette) {
-          await assertPixelBudgetBeforeDecode(pipeline, options, QUANTIZER_PIXEL_BUDGET);
-          const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-          assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
-          const colours = Math.min(256, Math.max(2, options.colors || 256));
-          const res = await oklabPaletteRaster(data, info.width, info.height, colours, options);
-          outputBuffer = encodeBmp8(res.indexed, res.palette, info.width, info.height);
+          outputBuffer = await encodeBmp8Output(pipeline, options);
         } else {
           const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
           outputBuffer = encodeBmp(data, info.width, info.height, info.channels);

@@ -543,7 +543,7 @@
     "rule": "complexity",
     "function": "convertImage",
     "count": 1,
-    "maxValue": 205
+    "maxValue": 194
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -578,7 +578,7 @@
     "rule": "max-lines-per-function",
     "function": "convertImage",
     "count": 1,
-    "maxValue": 620
+    "maxValue": 591
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -592,7 +592,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2361
+    "maxValue": 2278
   },
   {
     "file": "src/lib/conversions/image.ts",
