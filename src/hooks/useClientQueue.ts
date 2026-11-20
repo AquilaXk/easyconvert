@@ -168,7 +168,7 @@ function triggerZipAnchorDownload(zipUrl: string, archiveName: string): string {
 }
 
 /** Thrown when a result can no longer be fetched (expired or deleted): no ZIP is built, and `ids` name the rows to mark failed. */
-class UnavailableResultsError extends Error {
+class ExpiredResultsError extends Error {
   constructor(readonly ids: ReadonlySet<string>) {
     super('unavailable results');
   }
@@ -204,7 +204,7 @@ async function downloadCompletedBundle(items: ConversionQueueItem[], prefix: str
     })
   );
   const unavailable = fetched.filter(({ res }) => !res.ok);
-  if (unavailable.length > 0) throw new UnavailableResultsError(new Set(unavailable.map(({ item }) => item.id)));
+  if (unavailable.length > 0) throw new ExpiredResultsError(new Set(unavailable.map(({ item }) => item.id)));
   const resolvedEntries = await Promise.all(fetched.map(async ({ item, res }) => ({ item, blob: await res.blob() })));
   const used = new Set<string>();
   async function* generateEntries() {
@@ -426,7 +426,7 @@ export function createDownloadAllZipHandler(ctx: QueueMutationContext) {
       warnBrowserFailure('Bundling the converted files into a ZIP failed', error);
       if (ctx.mountedRef.current) {
         ctx.setZipError(true);
-        if (error instanceof UnavailableResultsError) failUnavailableResults(error.ids, ctx);
+        if (error instanceof ExpiredResultsError) failUnavailableResults(error.ids, ctx);
       }
     }
   };
