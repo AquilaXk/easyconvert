@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
-import { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD, PHASE_PRODUCTION_SERVER } from 'next/constants.js';
+import { PHASE_PRODUCTION_BUILD, PHASE_PRODUCTION_SERVER } from 'next/constants.js';
 import JSZip from 'jszip';
 import loadNextConfig from '../next.config.mjs';
 
@@ -275,7 +275,7 @@ describe('Open Beta API boundary error classification (400 / 502 / 504 instead o
 
   describe('page response security headers in next.config.mjs', () => {
     it.each([PHASE_PRODUCTION_BUILD, PHASE_PRODUCTION_SERVER])(
-      'configures CSP, X-Frame-Options, Referrer-Policy and X-Content-Type-Options on page routes in phase %s without duplicating nosniff on /api/* or /_assets/*',
+      'configures X-Frame-Options, Referrer-Policy and X-Content-Type-Options on page routes in phase %s without duplicating nosniff on /api/* or /_assets/*, and leaves the policy to the middleware',
       async (phase) => {
         const cfg = await loadNextConfig(phase);
         const rules = await cfg.headers?.();
@@ -288,34 +288,9 @@ describe('Open Beta API boundary error classification (400 / 502 / 504 instead o
         expect(headerMap.get('X-Content-Type-Options')).toBe('nosniff');
         expect(headerMap.get('X-Frame-Options')).toBe('SAMEORIGIN');
         expect(headerMap.get('Referrer-Policy')).toBe('strict-origin-when-cross-origin');
-
-        const csp = headerMap.get('Content-Security-Policy') ?? '';
-        expect(csp).toContain("default-src 'self'");
-        expect(csp).toContain("frame-ancestors 'self'");
-        expect(csp).toContain("object-src 'none'");
-        expect(csp).toContain('https://cdn.paddle.com');
-        expect(csp).toContain('https://*.paddle.com');
-        expect(csp).not.toContain("'unsafe-eval'");
+        // A static policy would carry 'unsafe-inline' for scripts: the page policy has a nonce per request (tests/page-csp.test.ts).
+        expect(headerMap.has('Content-Security-Policy')).toBe(false);
       }
     );
-
-    it('permits unsafe-eval and HMR websocket connections only in PHASE_DEVELOPMENT_SERVER', async () => {
-      const cfg = await loadNextConfig(PHASE_DEVELOPMENT_SERVER);
-      const rules = await cfg.headers?.();
-      const [rule] = rules!;
-      const headerMap = new Map(rule.headers.map((h: { key: string; value: string }) => [h.key, h.value]));
-      const csp = headerMap.get('Content-Security-Policy') ?? '';
-      const directives = new Map(
-        csp.split('; ').map((entry) => {
-          const spaceIdx = entry.indexOf(' ');
-          return [entry.slice(0, spaceIdx), entry.slice(spaceIdx + 1)];
-        })
-      );
-      expect(directives.get('script-src')).toBe(
-        "'self' 'unsafe-inline' 'wasm-unsafe-eval' 'unsafe-eval' blob: https://cdn.paddle.com https://*.paddle.com"
-      );
-      expect(directives.get('connect-src')).toBe("'self' ws: wss: blob: https://*.paddle.com");
-      expect(directives.get('object-src')).toBe("'none'");
-    });
   });
 });

@@ -16,6 +16,7 @@ import { requestBodyVerdict, type CountedBody } from '@/lib/api/request-body-lim
 import { applyV1CorsHeaders, createV1PreflightResponse, isV1ApiPath } from '@/lib/api/v1-cors';
 import { hasSessionCookie } from '@/lib/auth/session-cookie';
 import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
+import { PAGE_NONCE_HEADER, buildPageCsp, generatePageNonce } from '@/lib/security/page-csp';
 
 /**
  * Next.js Edge-compatible Centralized Middleware
@@ -27,6 +28,8 @@ import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
  * 4. Locale routing of pages: English at the unprefixed paths, every other locale under its prefix. A visitor's language
  *    (cookie, then Accept-Language) is negotiated on the root only, so a shared link opens in the language it names, and
  *    only the language selector writes the locale cookie, so no page answer carries a Set-Cookie.
+ * 5. Content-Security-Policy of pages: a nonce made for each request goes on the policy (response) and on the request, where
+ *    Next.js reads it while it renders (src/lib/security/page-csp.ts). It forces every page to render per request.
  */
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -331,6 +334,21 @@ function rootLocaleAnswer(request: NextRequest): NextResponse {
   return response;
 }
 
+/**
+ * Runs the page's answer on a copy of the request that carries the nonce and the policy (a request header of the same name
+ * replaces any the client sent), and puts the policy on whatever the answer is, a redirect included.
+ */
+function answerPageWithCsp(request: NextRequest, answer: (request: NextRequest) => NextResponse): NextResponse {
+  const nonce = generatePageNonce();
+  const csp = buildPageCsp(nonce, process.env.NODE_ENV === 'development');
+  const headers = new Headers(request.headers);
+  headers.set(PAGE_NONCE_HEADER, nonce);
+  headers.set('Content-Security-Policy', csp);
+  const response = answer(new NextRequest(request, { headers }));
+  response.headers.set('Content-Security-Policy', csp);
+  return response;
+}
+
 const OCR_ASSET_PATH_PREFIX = /^\/_assets\/ocr\/[^/]+(?:\/[^/]+)+$/;
 
 function isApiPath(pathname: string): boolean {
@@ -441,7 +459,7 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
     );
   }
   if (!isApiPath(pathname)) {
-    return pathname === '/' ? rootLocaleAnswer(request) : pageLocaleAnswer(request);
+    return answerPageWithCsp(request, pathname === '/' ? rootLocaleAnswer : pageLocaleAnswer);
   }
   if (isV1ApiPath(pathname) && request.method.toUpperCase() === 'OPTIONS') {
     return finalizeApiHeaders(pathname, createV1PreflightResponse(pathname));
