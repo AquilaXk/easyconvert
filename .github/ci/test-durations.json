@@ -68,6 +68,7 @@
   "tests/archive-single-stream-targets.test.ts": 4.1,
   "tests/archive-single-stream-typed-errors.test.ts": 25.6,
   "tests/archive-source-listing-keys.test.ts": 1.5,
+  "tests/archive-store-named-wrapper-sources.test.ts": 3,
   "tests/archive-stream-launcher.test.ts": 0.7,
   "tests/archive-stream-memory-bound.test.ts": 6.4,
   "tests/archive-stream-tar-in-place.test.ts": 0.5,

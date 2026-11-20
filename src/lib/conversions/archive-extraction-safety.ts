@@ -232,22 +232,12 @@ const ENTRY_FILTER_FORBIDDEN_CHARACTERS = /[\0\r\n]/;
 /** C0 and C1 controls and the line and paragraph separators, which would break or forge a line of a log or a listing. */
 const CONTROL_CHARACTER_SOURCE = '[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]';
 const ENTRY_NAME_FORBIDDEN_CHARACTERS = new RegExp(CONTROL_CHARACTER_SOURCE);
-/** Single-stream wrapper extensions and the suffix 7-Zip's output name gets ("tgz" unpacks to "<name>.tar"). */
+/** Extensions whose payload 7-Zip names with a suffix ("tgz" unpacks to "<name>.tar"); every other extension is only dropped. */
 const WRAPPER_EXTENSION_SUFFIXES = new Map<string, string>([
-  ['gz', ''],
-  ['bz2', ''],
-  ['xz', ''],
-  ['lzma', ''],
-  ['zst', ''],
-  ['z', ''],
   ['tgz', '.tar'],
   ['tbz2', '.tar'],
   ['tbz', '.tar'],
   ['txz', '.tar'],
-  // A package whose payload 7-Zip decompresses lists that stream without a name; a package whose payload it opens as a
-  // cpio or tar lists the files, so the single nameless block is the only case this name is used for.
-  ['rpm', ''],
-  ['deb', ''],
 ]);
 
 /** Output bound for a listing that may hold at most `limits.MAX_FILES` entries. */
@@ -1035,13 +1025,17 @@ function includeArgs(request: ContainedExtractionRequest): string[] {
   return (request.includePatterns ?? []).map((pattern) => `-i!${pattern}`);
 }
 
-/** The name 7-Zip gives the payload of a single-stream wrapper (`input.bz2` unpacks to `input`), if the file is one. */
-function wrapperPayloadName(archivePath: string): string | undefined {
+/**
+ * The name 7-Zip gives the payload of a single-stream wrapper, from the name of the file on disk: the last extension is
+ * dropped (`input.bz2` unpacks to `input`, `abc.bin` to `abc`), `.tar` is added for the tarball extensions (`tgz`), and a
+ * file with no extension gets a `~` (`noext` unpacks to `noext~`). A file the job store names (`<digest>.bin`) takes the
+ * same rule, so the name does not depend on the extension of the upload.
+ */
+function wrapperPayloadName(archivePath: string): string {
   const base = path.basename(archivePath);
   const dot = base.lastIndexOf('.');
-  if (dot <= 0) return undefined;
-  const suffix = WRAPPER_EXTENSION_SUFFIXES.get(base.slice(dot + 1).toLowerCase());
-  return suffix === undefined ? undefined : `${base.slice(0, dot)}${suffix}`;
+  if (dot <= 0) return `${base}~`;
+  return `${base.slice(0, dot)}${WRAPPER_EXTENSION_SUFFIXES.get(base.slice(dot + 1).toLowerCase()) ?? ''}`;
 }
 
 function typeArgs(request: ContainedExtractionRequest): string[] {
