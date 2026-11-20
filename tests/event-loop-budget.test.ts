@@ -8,6 +8,7 @@ import { convertFont, decodeSfnt, encodeWoff2 } from '../src/lib/conversions/fon
 import { encode16BitPng, encode16BitPngAsync } from '../src/lib/conversions/png16';
 import { EVENT_LOOP_BLOCK_BUDGET_MS } from '../src/lib/workers/cpu-pool';
 import { shutdownCpuPool } from '../src/lib/workers/cpu-pool';
+import { LOOP_SAMPLE_INTERVAL_MS, withLoopMonitor } from './helpers/loop-monitor';
 import { buildGlyfFont, type GlyfGlyphSpec } from './helpers/glyf-font-builder';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
@@ -24,47 +25,11 @@ import { create7zArchiveAsync, extract7zArchive, packXz, packXzAsync, unpackXz }
  * while the work the thread itself does between two turns is the same on a busy host. A control case measures the
  * synchronous encoder, to show that the monitor sees a blocked loop.
  */
-const SAMPLE_INTERVAL_MS = 5;
-const US_PER_MS = 1000;
 const TEST_TIMEOUT_MS = 600_000;
 const BYTES_PER_MB = 1024 * 1024;
 
-interface LoopStats {
-  /** The most CPU time the loop thread used between two consecutive timer ticks. */
-  heldMs: number;
-}
-
-function threadCpuMs(): number {
-  const { user, system } = (process as unknown as { threadCpuUsage: () => NodeJS.CpuUsage }).threadCpuUsage();
-  return (user + system) / US_PER_MS;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function withLoopMonitor<T>(work: () => Promise<T>): Promise<{ value: T } & LoopStats> {
-  let previous = threadCpuMs();
-  let heldMs = 0;
-  const timer = setInterval(() => {
-    const now = threadCpuMs();
-    heldMs = Math.max(heldMs, now - previous);
-    previous = now;
-  }, SAMPLE_INTERVAL_MS);
-  try {
-    // The first tick only sets the baseline for the stretch that follows it.
-    await sleep(SAMPLE_INTERVAL_MS * 3);
-    const value = await work();
-    // Let a final timer tick land so that the last stretch of work is accounted for.
-    await sleep(SAMPLE_INTERVAL_MS * 2);
-    return { value, heldMs };
-  } finally {
-    clearInterval(timer);
-  }
-}
-
 /** A tick can also include the CPU of the loop turns around a block, so the bound allows one sampling interval of them. */
-const BUDGET_MS = EVENT_LOOP_BLOCK_BUDGET_MS + SAMPLE_INTERVAL_MS;
+const BUDGET_MS = EVENT_LOOP_BLOCK_BUDGET_MS + LOOP_SAMPLE_INTERVAL_MS;
 
 
 const scratchDirs: string[] = [];

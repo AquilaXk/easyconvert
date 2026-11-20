@@ -30,7 +30,7 @@
  */
 
 import { CorruptStreamError, DecompressionLimitError } from '../types';
-import { copyYielding, CPU_POOL_MIN_BYTES, getCpuPool, yieldToEventLoop } from '../workers/cpu-pool';
+import { copyYielding, CPU_POOL_MIN_BYTES, getCpuPool, runCpuTask, shareBytes, yieldToEventLoop } from '../workers/cpu-pool';
 import { burrowsWheelerTransform, BwtWorkspace } from './bzip2-bwt';
 import { computeBzBlockCrc } from './bzip2-crc';
 
@@ -1094,4 +1094,40 @@ export function decompressBzip2(input: Buffer, maxOutputBytes = BZIP2_DEFAULT_MA
     }
   }
   return sink.result();
+}
+
+/**
+ * What `decompressBzip2Async` decodes on the calling thread before it hands a stream to a pool thread. A block of a repeating pattern
+ * costs 6 to 9 ms of inverse BWT for each 900,000 bytes of output whatever its size in the stream (measured: 35 blocks of 69 bytes,
+ * 31.5 MB, 119 ms), so 4 MiB of output is at most about 40 ms, under `EVENT_LOOP_BLOCK_BUDGET_MS`. A listing of an ordinary archive
+ * ends inside it and pays no thread start; a stream that wants more is decoded again on a thread, where it cannot hold the loop.
+ */
+export const BZIP2_INLINE_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+
+/** What the pool thread needs to decode: the stream in shared memory and the cap on the output. */
+export interface Bzip2DecodePayload {
+  data: Uint8Array;
+  maxOutputBytes: number;
+}
+
+/**
+ * `decompressBzip2` without holding the event loop for more than `BZIP2_INLINE_MAX_OUTPUT_BYTES` of output: a stream that decodes to
+ * more is decoded on a CPU pool thread under the same output cap (a `DecompressionLimitError` past it) and the same checks, and the
+ * output comes back by transfer, not by copy. A cancelled `signal` terminates the thread. A thread that runs out of its 1 GiB heap
+ * fails with a `PayloadLimitError`.
+ */
+export async function decompressBzip2Async(
+  input: Buffer,
+  maxOutputBytes = BZIP2_DEFAULT_MAX_OUTPUT_BYTES,
+  options: { signal?: AbortSignal } = {}
+): Promise<Buffer> {
+  const inlineCap = Math.min(maxOutputBytes, BZIP2_INLINE_MAX_OUTPUT_BYTES);
+  try {
+    return decompressBzip2(input, inlineCap);
+  } catch (error) {
+    if (inlineCap === maxOutputBytes || !(error instanceof DecompressionLimitError)) throw error;
+  }
+  const payload: Bzip2DecodePayload = { data: await shareBytes(input), maxOutputBytes };
+  const decoded = await runCpuTask<Uint8Array>('bzip2Decode', payload, { signal: options.signal });
+  return Buffer.from(decoded.buffer, decoded.byteOffset, decoded.byteLength);
 }

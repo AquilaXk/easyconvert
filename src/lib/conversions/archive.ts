@@ -49,9 +49,9 @@ import {
 } from './archive-extraction-safety';
 import { gunzipWithLimits } from './archive-gunzip';
 import { parsePaxDecimal, parsePaxInteger, parsePaxRecords, tarReadError } from './archive-tar-pax';
-import { compressBzip2Async, decompressBzip2 } from './bzip2';
+import { compressBzip2Async, decompressBzip2Async } from './bzip2';
 import { withExtractionNotes } from './archive-alternate-streams';
-import { isWrapperSource, unpackWrapperSource } from './archive-wrapper-sources';
+import { bzip2ListingFailure, isWrapperSource, unpackWrapperSource } from './archive-wrapper-sources';
 import { inspectLzSource, isRarArchive, isSevenZipArchive, isZipArchive, sniffLzSource, type InspectionBody } from './archive-inspection-sources';
 import { InflateBudget, inflateRawSalvage } from './bounded-inflate';
 import { resolveArchiveCompressionLevel } from './archive-compression-level';
@@ -3460,10 +3460,10 @@ async function inspectArchiveEntries(
 
   if (archiveBuffer.length >= 3 && archiveBuffer[0] === 0x42 && archiveBuffer[1] === 0x5a && archiveBuffer[2] === 0x68) {
     try {
-      const decompressed = decompressBzip2(archiveBuffer, unpackedBytesCap(archiveBuffer.length, ARCHIVE_SECURITY_LIMITS));
+      const decompressed = await decompressBzip2Async(archiveBuffer, unpackedBytesCap(archiveBuffer.length, ARCHIVE_SECURITY_LIMITS), { signal: options.signal });
       return inspectTarBuffer(decompressed, 'tar.bz2');
     } catch (err) {
-      throw err instanceof DecompressionLimitError ? unpackedBytesCapError(archiveBuffer.length, ARCHIVE_SECURITY_LIMITS) : new ConversionFailedError('Failed to decompress bzip2 archive.');
+      throw bzip2ListingFailure(err, archiveBuffer.length, ARCHIVE_SECURITY_LIMITS);
     }
   }
 
