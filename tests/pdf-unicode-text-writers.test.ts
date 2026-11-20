@@ -1071,17 +1071,11 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
     }
   });
 
-  it('still refuses any backslash in CSS outside a comment, before LibreOffice could read an escaped url()', async () => {
-    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'soffice-css-marker-')), 'invoked');
-    // CSS readers disagree on escapes such as \75 (u).
+  it('reads a CSS escape as the character it stands for, so an escaped url() is found and left out before LibreOffice is handed it', async () => {
+    // \75 is "u": a reader that decodes escapes reads url(file:///etc/hosts), so the scan reads it too.
     const html = '<p style="background:\\75 rl(file:///etc/hosts)">escaped</p>';
-    const { error } = await settle(
-      withEnvValue('SOFFICE_PATH', failingSoffice(`touch '${marker}'; exit 3`), () =>
-        executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'css.html')
-      )
-    );
-    expect({ name: (error as Error)?.name, invoked: fs.existsSync(marker) }).toEqual({ name: 'ConversionFailedError', invoked: false });
-    expect((error as Error).message).toContain('backslash escape is not supported');
+    const handed = await withCapturingSoffice(() => executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'css.html'));
+    expect({ reference: /file:|etc\/hosts|url|\\/.exec(handed)?.[0] ?? null, paragraph: /<p>escaped<\/p>/.test(handed) }).toEqual({ reference: null, paragraph: true });
   });
 
   oracleTest('still sends HTML whose CSS uses only embedded image data to LibreOffice', ['pdftotext'], async () => {

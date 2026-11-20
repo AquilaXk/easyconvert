@@ -6,10 +6,12 @@ import { ConversionFailedError } from '../types';
  * `image-set()`, `-webkit-image-set()` and `cross-fade()` at any depth, and `@import`.
  *
  * Readers disagree on CSS escapes, control characters and line breaks, so control characters are
- * removed first, line breaks become spaces, and any backslash outside a comment (inside one it is
- * no escape, and the comment is replaced by a space), unterminated string or non-ASCII
- * character outside a quoted string (some readers skip default-ignorable and separator characters,
- * so `u<U+200B>rl(` still reads as url( to them) is refused;
+ * removed first, line breaks become spaces, every escape outside a comment is decoded as CSS Syntax
+ * Level 3 section 4.3.7 says and the text goes on with the decoded characters (an escape that decodes
+ * to a character which cannot stand plainly where it is, and a backslash with nothing to escape, are
+ * refused; inside a comment a backslash is no escape, and the comment is replaced by a space), and an
+ * unterminated string or non-ASCII character outside a quoted string (some readers skip default-ignorable
+ * and separator characters, so `u<U+200B>rl(` still reads as url( to them) is refused;
  * comments and `<!--`/`-->` markers become spaces in the returned text, so what LibreOffice reads
  * is what was scanned. Follows the CSS Syntax tokenizer
  * for the parts that matter in one forward pass, so the work is linear in the input.
@@ -48,6 +50,79 @@ const MARKUP_OPEN = '<';
 const IMPORT_REFERENCE = '@import';
 const EMPTY_URL_REFERENCE = 'url()';
 
+const HEX_ESCAPE_MAX_DIGITS = 6;
+const HEX_RADIX = 16;
+const MAX_CODE_POINT = 0x10ffff;
+const REPLACEMENT_CHARACTER = 0xfffd;
+const SURROGATE_FIRST = 0xd800;
+const SURROGATE_LAST = 0xdfff;
+const SUPPLEMENTARY_PLANE = 0x10000;
+const HEX_DIGIT = /^[0-9A-Fa-f]$/;
+/** What an identifier is made of; an escape outside a quoted string may only stand for one of these. */
+const PLAIN_NAME_CHARACTER = /^[A-Za-z0-9_-]$/;
+/** Characters an escape may not produce inside a string: they would end it or open markup or a character reference. */
+const UNWRITABLE_IN_STRING: ReadonlySet<string> = new Set([BACKSLASH, MARKUP_OPEN, '&']);
+
+function isHexDigit(ch: string | undefined): boolean {
+  return ch !== undefined && HEX_DIGIT.test(ch);
+}
+
+/**
+ * CSS Syntax Level 3, 4.3.7 "consume an escaped code point": the character an escape at `at` (the backslash) stands for and the
+ * index after it. Up to six hex digits and one whitespace after them, zero, a surrogate and anything past U+10FFFF are U+FFFD; any
+ * other character stands for itself. Null for a backslash that ends the text.
+ */
+function readEscape(css: string, at: number): { character: string; end: number } | null {
+  let i = at + 1;
+  if (i >= css.length) return null;
+  if (!isHexDigit(css[i])) {
+    const codePoint = css.codePointAt(i) as number;
+    return { character: String.fromCodePoint(codePoint), end: i + (codePoint >= SUPPLEMENTARY_PLANE ? 2 : 1) };
+  }
+  let value = 0;
+  for (let digits = 0; digits < HEX_ESCAPE_MAX_DIGITS && isHexDigit(css[i]); digits++, i++) {
+    value = value * HEX_RADIX + Number.parseInt(css[i], HEX_RADIX);
+  }
+  if (isWhitespace(css[i])) i++;
+  const invalid = value === 0 || (value >= SURROGATE_FIRST && value <= SURROGATE_LAST) || value > MAX_CODE_POINT;
+  return { character: String.fromCodePoint(invalid ? REPLACEMENT_CHARACTER : value), end: i };
+}
+
+/**
+ * Writes the CSS with every escape outside a comment replaced by the character it stands for, so the scan below reads what a reader
+ * that follows CSS Syntax reads and the text handed on has no escape left for a reader that does not. Inside a quoted string any
+ * printable character is written as it is except the quote, a backslash, "<" and "&"; outside one only the characters of a name are,
+ * because any other would change how the text is cut into tokens. A comment is left as it is (the scan below replaces it with a space).
+ */
+function decodeEscapes(css: string): string {
+  if (!css.includes(BACKSLASH)) return css;
+  const parts: string[] = [];
+  let copiedTo = 0;
+  let quote: string | null = null;
+  let i = 0;
+  while (i < css.length) {
+    const ch = css[i];
+    if (ch === BACKSLASH) {
+      const escape = readEscape(css, i);
+      if (escape === null) break;
+      if (quote !== null ? escape.character === quote || UNWRITABLE_IN_STRING.has(escape.character) : !PLAIN_NAME_CHARACTER.test(escape.character)) {
+        refuseEscapedCharacter(escape.character, quote !== null);
+      }
+      parts.push(css.slice(copiedTo, i), escape.character);
+      copiedTo = escape.end;
+      i = escape.end;
+    } else if (quote === null && css.startsWith(COMMENT_OPEN, i)) {
+      const close = css.indexOf(COMMENT_CLOSE, i + COMMENT_OPEN.length);
+      i = close < 0 ? css.length : close + COMMENT_CLOSE.length;
+    } else {
+      if (ch === quote) quote = null;
+      else if (quote === null && (ch === '"' || ch === "'")) quote = ch;
+      i++;
+    }
+  }
+  return parts.join('') + css.slice(copiedTo);
+}
+
 export interface CssScan {
   /** The CSS without control characters, with comments and CDO/CDC markers as spaces: the text checked. */
   readonly css: string;
@@ -85,7 +160,14 @@ function lowerAscii(text: string): string {
 }
 
 function refuseEscape(): never {
-  throw new ConversionFailedError('HTML CSS with a backslash escape is not supported; CSS readers disagree on escapes');
+  throw new ConversionFailedError('HTML CSS has a backslash with nothing to escape');
+}
+
+function refuseEscapedCharacter(character: string, inString: boolean): never {
+  const code = (character.codePointAt(0) as number).toString(16).toUpperCase();
+  throw new ConversionFailedError(
+    `HTML CSS has an escape for U+${code}, which cannot be written without the escape ${inString ? 'inside a quoted string' : 'outside a quoted string'}`
+  );
 }
 
 function refuseMarkup(): never {
@@ -223,12 +305,12 @@ class CssScanner {
 }
 
 /**
- * Scans CSS for the resources it would load. Throws ConversionFailedError for a backslash outside a comment, a
- * stray "<" or a malformed url(); returns the checked text and the first URL `isAllowedUrl`
+ * Scans CSS for the resources it would load. Throws ConversionFailedError for an escape that cannot be written plainly, a
+ * backslash with nothing to escape, a stray "<" or a malformed url(); returns the checked text and the first URL `isAllowedUrl`
  * rejects (an `@import` is always reported, whatever it names).
  */
 export function scanCss(source: string, isAllowedUrl: (url: string) => boolean): CssScan {
-  const css = source.replace(CONTROL_CHARACTERS, '').replace(LINE_BREAKS, ' ');
+  const css = decodeEscapes(source.replace(CONTROL_CHARACTERS, '').replace(LINE_BREAKS, ' '));
   const scanner = new CssScanner(css);
   /** Closing characters of the open groups and functions, and whether each is a URL function. */
   const groups: Array<{ closer: string; url: boolean }> = [];

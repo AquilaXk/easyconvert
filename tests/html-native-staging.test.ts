@@ -274,7 +274,7 @@ describe('HTML bound for LibreOffice is rebuilt from the parsed tree', () => {
 
 describe('CSS checks before LibreOffice', () => {
   const refused: Array<[string, string]> = [
-    ['any backslash', '<p style="font-family:\\66 oo">escape</p>'],
+    ['an escape for a character that only an escape can write outside a string', '<p style="font-family:foo\\3a bar">escape</p>'],
     ['an SVG data: background', '<p style="background:url(data:image/svg+xml;base64,PHN2Zy8+)">svg</p>'],
     ['an import of embedded CSS', '<style>@import url("data:text/css;base64,cCB7IGNvbG9yOiByZWQgfQ==");</style><p>import</p>'],
     ['a character reference inside a style sheet', '<style>p { background: &#117;rl(file:///etc/hosts) }</style><p>reference</p>'],
@@ -299,22 +299,53 @@ describe('CSS checks before LibreOffice', () => {
     expect(staged.html).not.toContain('\\');
   });
 
-  const backslashOutsideComments: Array<[string, string]> = [
-    ['in a quoted string', '<style>/* c */ p { content: "a\\"b" }</style><p>t</p>'],
-    ['in an unquoted url()', '<style>p { background: url(img\\.png) }</style><p>t</p>'],
-    ['starting a token after a comment', '<style>/* \\ */ p { font-family: \\66 oo }</style><p>t</p>'],
-    ['at the end after a comment', '<style>p { color: red } /* c */ \\</style><p>t</p>'],
-    ['in a style attribute next to a comment', '<p style="/* c */ font-family:\\66 oo">t</p>'],
+  const unreadableEscapes: Array<[string, string, string]> = [
+    ['an escaped quote in a quoted string', '<style>/* c */ p { content: "a\\"b" }</style><p>t</p>', 'U+22'],
+    ['an escaped "<" in a quoted string', '<style>p { content: "\\3c img" }</style><p>t</p>', 'U+3C'],
+    ['an escaped dot in an unquoted url()', '<style>p { background: url(img\\.png) }</style><p>t</p>', 'U+2E'],
+    ['at the end after a comment', '<style>p { color: red } /* c */ \\</style><p>t</p>', 'nothing to escape'],
+    ['at the end of a string', '<style>p { content: "a\\</style><p>t</p>', 'nothing to escape'],
   ];
-  for (const [name, html] of backslashOutsideComments) {
+  for (const [name, html, reason] of unreadableEscapes) {
     it(`still refuses a backslash ${name}`, async () => {
       const { error } = await settle(stageHtmlForNativeEngine(html));
-      expect({ name: errorOutcome(error).name, escape: /backslash escape/.test(errorOutcome(error).message) }).toEqual({
+      expect({ name: errorOutcome(error).name, reason: errorOutcome(error).message.includes(reason) }).toEqual({
         name: 'ConversionFailedError',
-        escape: true,
+        reason: true,
       });
     });
   }
+
+  // CSS Syntax Level 3, 4.3.7: the staged text has the characters the escapes stand for, so LibreOffice reads no escape at all.
+  const decoded: Array<[string, string, string]> = [
+    ['a hex escape that ends in a space', '<style>p { font-family: \\66 oo }</style><p>t</p>', 'p { font-family: foo }'],
+    ['a hex escape in a style attribute next to a comment', '<p style="/* c */ font-family:\\66 oo">t</p>', 'font-family:foo'],
+    ['six hex digits that end at the seventh character', '<style>p { font-family: \\000066oo }</style><p>t</p>', 'p { font-family: foo }'],
+    ['the escapes of a Word font name in a string', '<style>@font-face { font-family: "\\FF2D\\FF33 \\660E\\671D" }</style><p>t</p>', '"\uFF2D\uFF33\u660E\u671D"'],
+    ['an escape of a character that stands for itself in a string', '<style>p { content: "a\\.b" }</style><p>t</p>', 'content: "a.b"'],
+    ['an escape in the name of a function', '<style>p { color: r\\67 b(1,2,3) }</style><p>t</p>', 'color: rgb(1,2,3)'],
+    ['zero, a surrogate and a value past U+10FFFF, which are U+FFFD', '<style>p { content: "\\0 \\D800 \\110000 " }</style><p>t</p>', 'content: "\uFFFD\uFFFD\uFFFD"'],
+    ['a backslash in a comment, which is no escape', '<style>/* \\ */ p { color: red }</style><p>t</p>', 'p { color: red }'],
+  ];
+  for (const [name, html, expected] of decoded) {
+    it(`reads ${name}`, async () => {
+      const staged = await stageHtmlForNativeEngine(html);
+      expect(staged.html).toContain(expected);
+      expect(staged.html).not.toContain('\\');
+    });
+  }
+
+  it('finds the url() an escape spells and leaves its reference out', async () => {
+    const staged = await stageHtmlForNativeEngine('<p style="background:\\75 rl(file:///etc/hosts)">escaped</p>');
+    expect(staged.html).not.toMatch(/etc\/hosts|url|\\/);
+    expect(staged.warnings.join(' ')).toContain('file:///etc/hosts');
+  });
+
+  it('finds the @import an escape spells', async () => {
+    const staged = await stageHtmlForNativeEngine('<style>@\\69 mport "http://192.0.2.2:18765/a.css";</style><p>t</p>');
+    expect(staged.html).not.toMatch(/192\.0\.2\.2|import|\\/);
+    expect(staged.warnings.join(' ')).toContain('Left out references');
+  });
 
   // CSS that names a file or an address is not refused: it is left out and reported, so LibreOffice never reads it.
   const leftOut: Array<[string, string, string]> = [

@@ -401,6 +401,7 @@ Security
 350. [An image host that cannot be reached is asked once per document, and a connection that is not accepted within two seconds is given up](#350-an-image-host-that-cannot-be-reached-is-asked-once-per-document-and-a-connection-that-is-not-accepted-within-two-seconds-is-given-up)
 351. [A web, print or max compression keeps the lossless rewrite when it is smaller than the Ghostscript one](#351-a-web-print-or-max-compression-keeps-the-lossless-rewrite-when-it-is-smaller-than-the-ghostscript-one)
 352. [An ICNS file is read as its largest PNG, JPEG or JPEG 2000 element, else as its largest old-style RLE or ARGB picture](#352-an-icns-file-is-read-as-its-largest-png-jpeg-or-jpeg-2000-element-else-as-its-largest-old-style-rle-or-argb-picture)
+353. [CSS escapes of an HTML page are decoded as CSS Syntax says before the scan, and the decoded text goes to LibreOffice](#353-css-escapes-of-an-html-page-are-decoded-as-css-syntax-says-before-the-scan-and-the-decoded-text-goes-to-libreoffice)
 
 ---
 
@@ -10519,3 +10520,21 @@ Security
   - **Writing the reader from the libicns source:** it is LGPL; the clean-room rule keeps it as a behaviour reference only.
 - **Verified by**: `tests/icns-legacy.test.ts` (hand-written run-length, uncompressed and `ARGB` elements decode to known pixels; the zero header; every refusal above; a JP2 element encoded by OpenJPEG decodes to the pixels written; the real Tika file converts to 512x512), `tests/bmp-ico-decode.test.ts` (the existing ICNS cases).
 - **Revisit when**: a file carries `icp4` to `icp6` in the 24-bit form, or a caller needs every size of the family as separate files.
+
+## 353. CSS escapes of an HTML page are decoded as CSS Syntax says before the scan, and the decoded text goes to LibreOffice
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: fix the refusals a production sweep of the live service found; the reference converter prints HTML with Chromium, which reads CSS escapes by CSS Syntax Level 3)
+- **Decision**: **The CSS of an HTML page bound for LibreOffice has its escapes decoded before the scan, and the text that goes on holds the decoded characters** (`decodeEscapes` in `src/lib/conversions/css-references.ts`). An escape is read as CSS Syntax Level 3, section 4.3.7 says: a backslash and up to six hex digits with one whitespace after them, zero, a surrogate and a value past U+10FFFF are U+FFFD, and a backslash before any other character stands for that character. Inside a quoted string the character is written as it is, except the quote that closes the string, a backslash, `<` and `&` (the last two are refused in a style sheet when written plainly). Outside a quoted string only the characters of a name (`A-Z a-z 0-9 _ -`) are written, since any other would change how the text is cut into tokens. An escape that stands for anything else, and a backslash with nothing after it, are refused with the character named (`HTML CSS has an escape for U+3A, which cannot be written without the escape outside a quoted string`). Inside a comment a backslash is still no escape.
+- **Why**:
+  - **A real page was refused.** Word's HTML output writes the Windows font names of East Asian text as escapes in a string (`font-family:"\FF2D\FF33 \660E\671D"`), and `opf-lorem-ipsum.htm` of the corpus holds sixteen of them. The refusal ("CSS readers disagree on escapes") turned away a whole page for a font name.
+  - **The scan reads what a reader that follows the standard reads.** `\75 rl(file:///etc/hosts)` decodes to `url(file:///etc/hosts)`, which the scan finds and leaves out with a warning, so an escape cannot hide a reference; and `@\69 mport` is found as the import it is. The text handed to LibreOffice has no escape left in it for a reader that does not follow the standard.
+- **Measured**: `opf-lorem-ipsum.htm` (28,124 bytes) converts to a 25,155 byte PDF on the Mac whose text starts "Variatio Ipsius"; before, a 400.
+- **Trade-offs**:
+  - **A selector written with an escape for a symbol (`.sm\:flex`) is still refused**, as is an escaped dot in an unquoted `url()`. Writing such an escape as a plain character changes what the selector means, and leaving it escaped hands LibreOffice the text this entry set out to keep from it. Chromium reads them; the in-process route does not read them either. A page that uses them can be converted after the CSS is cleaned, as before.
+  - **An escaped newline is an escaped space.** Line breaks are turned into spaces before the scan, so `"a\<newline>b"` reads as `"a b"` where the standard says `"ab"`.
+- **Alternatives rejected**:
+  - **Keeping the escapes in the output and checking them:** the text LibreOffice reads would differ from the text scanned, which is what the refusal was written to rule out.
+  - **Replacing an escaped symbol with a placeholder character:** the selector would match a different class, and a refusal is the honest answer to a page we cannot read.
+- **Verified by**: `tests/html-native-staging.test.ts` (hex escapes ending in a space, six digits, the Word font name, U+FFFD cases, an escape in a function name, a backslash in a comment; the refusals above; an escaped `url(` and `@import` found and left out), `tests/pdf-unicode-text-writers.test.ts` (an escaped `url(file:///etc/hosts)` in a style attribute reaches LibreOffice without the reference).
+- **Revisit when**: a real page needs an escaped symbol in a selector, or LibreOffice's HTML import is found to read escapes by the standard (then the decoded form need not be written out).
