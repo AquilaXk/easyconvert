@@ -191,6 +191,21 @@ describe.skipIf(toolsMissing)('PDF compression', () => {
     expect(pageTexts(current)).toEqual(PAGE_TEXTS);
   });
 
+  it.each(['two-column.pdf', 'hyphenated.pdf', 'latin.pdf'])(
+    'web keeps the lossless rewrite when pdfwrite re-encodes the fonts of %s into a larger file',
+    async (name) => {
+      // Text documents whose fonts and streams a PDF writer already subset and deflated: pdfwrite rewrites them no smaller than qpdf repacks them.
+      const text = fs.readFileSync(path.join(__dirname, 'fixtures', 'pdf-text', name));
+      const lossless = await compressPdf(text, { profile: 'archive' });
+      const web = await compressPdf(text, { profile: 'web' });
+      expect(lossless.optimized).toBe(true);
+      expect(web.optimized).toBe(true);
+      expect(web.buffer.length).toBeLessThanOrEqual(lossless.buffer.length);
+      expect(qpdfCheckPasses(web.buffer)).toBe(true);
+      expect(pageTexts(web.buffer)).toEqual(pageTexts(text));
+    }
+  );
+
   it('does not enlarge a small text document that pdf-lib already packed', async () => {
     const text = await plainPdf(['Only text here']);
     const textResult = await compressPdf(text, { profile: 'web' });
@@ -283,7 +298,8 @@ describe.skipIf(toolsMissing)('the optimize graph node on a PDF', () => {
   });
 
   it('keeps the input and reports optimized: false when the profile gains nothing', async () => {
-    const compact = (await compressPdf(photoPdf(), { profile: 'max' })).buffer;
+    // The second pass lets the lossless rewrite repack what pdfwrite wrote; a third pass then finds nothing left.
+    const compact = (await compressPdf((await compressPdf(photoPdf(), { profile: 'max' })).buffer, { profile: 'max' })).buffer;
     const { buffer, optimizations, logs } = await runOptimize({ optimize: { profile: 'max' } }, compact);
     expect(buffer.equals(compact)).toBe(true);
     expect(optimizations).toEqual([{ key: expect.any(String), optimized: false, inputBytes: compact.length, outputBytes: expect.any(Number) }]);

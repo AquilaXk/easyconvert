@@ -95,8 +95,9 @@ describe('the qpdf steps of the PDF compression', () => {
     const controller = new AbortController();
     await compressWith({ signal: controller.signal, remainingMs: DEADLINE_MS });
     const runs = [...launched, ...executed, ...ghostscript];
-    // Ghostscript's rewrite, the page listing, the check and the lossless rewrite after it.
+    // Ghostscript's rewrite, the page listing, the lossless rewrite it is compared with, and the check.
     expect(runs.length).toBe(4);
+    expect(launched.map((run) => run.args.includes('--compress-streams=y'))).toContain(true);
     expect(executed.map((run) => run.args)).toEqual([expect.arrayContaining(['--check'])]);
     for (const { args, options } of runs) {
       // The limit handed to the step, not a measured time: it may not reach past the deadline of the job.
@@ -133,8 +134,42 @@ describe('the qpdf steps of the PDF compression', () => {
       throw new SandboxUnavailableError('no namespace for the check');
     });
     await expect(compressWith({ remainingMs: DEADLINE_MS })).rejects.toBeInstanceOf(SandboxUnavailableError);
-    // The lossless rewrite a damaged input gets is not started on a host that cannot confine its programs.
-    expect(launched.filter((run) => run.args.includes('--compress-streams=y'))).toEqual([]);
+    // The lossless rewrite is the one Ghostscript's result was compared with, made before the check; the refusal starts no other.
+    expect(launched.filter((run) => run.args.includes('--compress-streams=y'))).toHaveLength(1);
+  });
+
+  it('does not take a lossless rewrite that cannot be sandboxed for a candidate that failed: the host cannot confine its programs', async () => {
+    const runner = await import('../src/lib/conversions/pdf-postprocess/qpdf-runner');
+    const launch = vi.mocked(runner.launchQpdf);
+    const original = launch.getMockImplementation()!;
+    launch.mockImplementation(async (binary, args, options) => {
+      if (!args.includes('--compress-streams=y')) return original(binary, args, options);
+      throw new SandboxUnavailableError('no namespace for the rewrite');
+    });
+    try {
+      await expect(compressWith({ remainingMs: DEADLINE_MS })).rejects.toThrow('no namespace for the rewrite');
+      // The check of the input is never reached once the rewrite has refused.
+      expect(executed).toHaveLength(0);
+    } finally {
+      launch.mockImplementation(original);
+    }
+  });
+
+  it('keeps the Ghostscript result when the lossless rewrite it is compared with fails', async () => {
+    const runner = await import('../src/lib/conversions/pdf-postprocess/qpdf-runner');
+    const launch = vi.mocked(runner.launchQpdf);
+    const original = launch.getMockImplementation()!;
+    launch.mockImplementation(async (binary, args, options) => {
+      if (!args.includes('--compress-streams=y')) return original(binary, args, options);
+      throw new PdfPostprocessError('qpdf could not rewrite the document');
+    });
+    try {
+      // The stand-in Ghostscript writes the input again, so the document comes back unchanged; the failed candidate is not an error.
+      const result = await compressWith({ remainingMs: DEADLINE_MS });
+      expect(result.optimized).toBe(false);
+    } finally {
+      launch.mockImplementation(original);
+    }
   });
 
   it('does not take a check that ended because the job was cancelled for a damaged input', async () => {

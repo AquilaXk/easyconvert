@@ -861,7 +861,7 @@
   "tests/pdf-colour-office.test.ts": 2.7,
   "tests/pdf-complex-script-shaping.test.ts": 10.2,
   "tests/pdf-compress-qpdf-limits.test.ts": 0.2,
-  "tests/pdf-compress.test.ts": 3,
+  "tests/pdf-compress.test.ts": 3.5,
   "tests/pdf-content-colour.test.ts": 0.4,
   "tests/pdf-content-shapes-classes.test.ts": 0,
   "tests/pdf-damaged-with-password.test.ts": 1,

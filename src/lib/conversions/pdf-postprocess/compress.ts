@@ -26,7 +26,8 @@ import { QPDF_MEMORY_LIMIT_MB, QPDF_RUN_TIMEOUT_MS, runQpdfToBuffer, withQpdfInp
  *  - `web`, `print` and `max` rewrite the document with Ghostscript's pdfwrite: images above the profile's
  *    resolution are downsampled and recompressed as JPEG, duplicate images are stored once, fonts are subset and
  *    streams are deflated into object streams (PDF 1.6). The resolutions are the pdfwrite presets `/ebook` (150 dpi),
- *    `/printer` (300 dpi) and `/screen` (72 dpi).
+ *    `/printer` (300 dpi) and `/screen` (72 dpi). The lossless rewrite of the next profile is asked for too
+ *    when the document is small or pdfwrite gained little, and the smaller of the two is kept (see rewriteSmaller).
  *  - `archive` is lossless and needs no Ghostscript: qpdf re-deflates every stream at the highest level and packs the
  *    objects into object streams. No pixel and no glyph changes.
  *
@@ -161,6 +162,34 @@ async function rewriteLossless(pdf: Buffer, signal: AbortSignal | undefined, tim
   );
 }
 
+/** Documents up to this size are always compared with their lossless rewrite (a few tens of milliseconds); larger ones only when pdfwrite gains little. */
+const LOSSLESS_COMPARE_MAX_BYTES = 1024 * 1024;
+/** A pdfwrite result this much smaller than its input (a fraction of it) is kept without asking for the lossless rewrite, whose recompression of every stream costs about a second a megabyte. */
+const PDFWRITE_CLEAR_GAIN = 0.05;
+/** The lossless rewrite is a candidate and not a requirement: it is given this long, and the pdfwrite result stands when it takes longer. */
+const LOSSLESS_CANDIDATE_TIMEOUT_MS = 10_000;
+
+/**
+ * The Ghostscript rewrite of `pdf`, or the lossless rewrite when that is smaller. pdfwrite re-encodes every font and stream, and a
+ * text document that a PDF writer already subset and deflated (a Distiller file) comes out of it no smaller, or larger, than qpdf's
+ * repack of the same bytes. The lossless rewrite is asked for when the document is small or pdfwrite gained little, so the images
+ * of a large document that pdfwrite shrank pay nothing; a lossless rewrite that fails or runs out of its time is not an error.
+ */
+async function rewriteSmaller(pdf: Buffer, preset: string, clock: CompressClock, signal: AbortSignal | undefined): Promise<Buffer> {
+  const pdfwrite = await rewriteWithGhostscript(pdf, preset, clock, signal);
+  if (pdf.length > LOSSLESS_COMPARE_MAX_BYTES && pdfwrite.length <= pdf.length * (1 - PDFWRITE_CLEAR_GAIN)) return pdfwrite;
+  let lossless: Buffer;
+  try {
+    lossless = await rewriteLossless(pdf, signal, Math.min(limitsOf(clock).timeoutMs, LOSSLESS_CANDIDATE_TIMEOUT_MS));
+  } catch (error) {
+    signal?.throwIfAborted();
+    // A host that cannot confine its programs refuses the request; a failed or slow candidate is only a candidate that did not come.
+    rethrowSandboxUnavailable(error);
+    return pdfwrite;
+  }
+  return lossless.length < pdfwrite.length ? lossless : pdfwrite;
+}
+
 /** The rewrite the profile asks for, of `pdf`; `signal` stops it. */
 type Rewrite = (pdf: Buffer, signal: AbortSignal | undefined) => Promise<Buffer>;
 
@@ -239,18 +268,16 @@ export async function compressPdf(
   const rewrite: Rewrite =
     preset === undefined
       ? (input, signal) => rewriteLossless(input, signal, limitsOf(clock).timeoutMs)
-      : (input, signal) => rewriteWithGhostscript(input, preset, clock, signal);
+      : (input, signal) => rewriteSmaller(input, preset, clock, signal);
   const { plain, rewritten } = await rewriteMendingPageTree(await openPdfForEditing(pdf, 'compress', access), rewrite, clock);
   if (rewritten.length < pdf.length) {
     return { buffer: rewritten, optimized: true };
   }
   // When the profile gained nothing, return the input (with its page tree mended, if it needed that) if it is already a clean PDF; if the input has
-  // damaged cross-references or streams that qpdf --check flags, fall back to the lossless qpdf rewrite so the
-  // returned PDF is valid (and smaller when object streams pack a text-only document better than pdfwrite).
+  // damaged cross-references or streams that qpdf --check flags, return the rewrite so the returned PDF is valid (and smaller when object streams
+  // pack a text-only document better than pdfwrite: a Ghostscript profile has already compared its result with the lossless rewrite).
   if (await isCleanPdf(plain, limitsOf(clock))) {
     return { buffer: plain, optimized: false };
   }
-  const repaired = preset === undefined ? rewritten : await rewriteLossless(plain, clock.signal, limitsOf(clock).timeoutMs);
-  const best = repaired.length <= rewritten.length ? repaired : rewritten;
-  return { buffer: best, optimized: best.length < pdf.length };
+  return { buffer: rewritten, optimized: false };
 }
