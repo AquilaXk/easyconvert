@@ -12,10 +12,14 @@ import { requireRealworldSample } from './helpers/realworld-sample';
 /**
  * Ruled tables of real PDFs written to DOCX. The file is a real government document of the real-world corpus (bench/realworld/manifest.json):
  * a ten-page schedule of landscape pages, each a ruled grid of 41 rows and 12 columns with a blank row between the rows of data. The
- * words of the PDF are read by Poppler (`pdftotext -bbox`); nothing of the writer is used to judge the cells.
+ * DOCX is laid out by LibreOffice and read back by Poppler (`pdfinfo`, `pdftotext -bbox`); nothing of the writer is used to judge it.
  */
 
 const SCHEDULE = 'govdocs1-001135.pdf';
+const SOFFICE_TIMEOUT_MS = 180_000;
+const TEST_TIMEOUT_MS = 300_000;
+/** Points a row of data may stand from where the PDF has it: LibreOffice and Poppler round the rows of a page differently. */
+const MAX_ROW_OFFSET = 4;
 
 interface Word {
   text: string;
@@ -33,10 +37,22 @@ function withFiles<T>(files: Record<string, Buffer>, run: (dir: string) => T): T
   }
 }
 
+function pageCount(file: string): number {
+  return Number(/^Pages:\s+(\d+)/m.exec(execFileSync(requireOracleTool('pdfinfo'), [file], { encoding: 'utf8' }))?.[1]);
+}
+
 /** The words of one page with the top left of their boxes, as Poppler reads them. */
 function wordsOfPage(file: string, page: number): Word[] {
   const boxes = execFileSync(requireOracleTool('pdftotext'), ['-bbox', '-f', String(page), '-l', String(page), file, '-'], { encoding: 'utf8' });
   return [...boxes.matchAll(/<word xMin="([\d.]+)" yMin="([\d.]+)"[^>]*>([^<]*)<\/word>/g)].map((match) => ({ x: Number(match[1]), y: Number(match[2]), text: match[3] }));
+}
+
+function renderedBy(dir: string): string {
+  execFileSync(requireOracleTool('soffice'), ['--headless', `-env:UserInstallation=file://${path.join(dir, 'profile')}`, '--convert-to', 'pdf', '--outdir', path.join(dir, 'render'), path.join(dir, 'out.docx')], {
+    timeout: SOFFICE_TIMEOUT_MS,
+    stdio: 'ignore',
+  });
+  return path.join(dir, 'render', 'out.pdf');
 }
 
 const converted = new Map<string, Promise<{ source: Buffer; docx: Buffer }>>();
@@ -49,6 +65,34 @@ function convertedSample(ctx: { skip: () => never }, id: string): Promise<{ sour
   }
   return result;
 }
+
+describe('the rows of a ruled table keep the height the page gave them', () => {
+  oracleTest(
+    `${SCHEDULE}: the empty cells of the blank rows hold no height, so the rows of data stand where the PDF has them`,
+    ['pdfinfo', 'pdftotext', 'soffice'],
+    async (ctx) => {
+      const { source, docx } = await convertedSample(ctx, SCHEDULE);
+      const xml = (await (await JSZip.loadAsync(docx)).file('word/document.xml')?.async('string')) ?? '';
+      // Structure: a paragraph of an empty cell at the default size is taller than the 11.5 point rows.
+      expect(xml).not.toContain('</w:tcPr><w:p/></w:tc>');
+      withFiles({ 'in.pdf': source, 'out.docx': docx }, (dir) => {
+        const rendered = renderedBy(dir);
+        const first = wordsOfPage(path.join(dir, 'in.pdf'), 1);
+        const got = wordsOfPage(rendered, 1);
+        // The names that end the first page of the PDF are on the first page of the DOCX, and the rows above them are where the PDF puts them.
+        for (const name of ['Penobscot', 'Houlton', 'Maliseet', 'Aroostook']) expect(got.map((word) => word.text)).toContain(name);
+        for (const name of ['Alabama', 'Mowa', 'Schaghticoke', 'Seminole,']) {
+          const wanted = first.find((word) => word.text === name);
+          const found = got.find((word) => word.text === name);
+          expect(found, name).toBeDefined();
+          expect(Math.abs((found as Word).y - (wanted as Word).y)).toBeLessThanOrEqual(MAX_ROW_OFFSET);
+        }
+        expect(pageCount(rendered)).toBeLessThanOrEqual(pageCount(path.join(dir, 'in.pdf')) + 1);
+      });
+    },
+    TEST_TIMEOUT_MS
+  );
+});
 
 /** The text of each cell of each row of the first table of the page XML. */
 function firstTableCells(xml: string): string[][] {
@@ -79,4 +123,13 @@ describe('the text of a ruled table goes to the cell the PDF has it in', () => {
       expect(named[1]).toBe('Maine');
     }
   );
+});
+
+describe('a table written without a page of its own', () => {
+  it('keeps the paragraph of an empty cell as it was', async () => {
+    const { buffer } = await convertFile(Buffer.from('<table><tr><td>a</td><td></td></tr></table>'), 'html', 'docx', {}, 'plain.html');
+    const xml = (await (await JSZip.loadAsync(buffer)).file('word/document.xml')?.async('string')) ?? '';
+    const cells = [...xml.matchAll(/<w:tc><w:tcPr>.*?<\/w:tcPr>(.*?)<\/w:tc>/gs)].map((match) => match[1]);
+    expect(cells[1]).toBe('<w:p/>');
+  });
 });

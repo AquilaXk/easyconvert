@@ -385,8 +385,9 @@ class PartWriter {
       content = this.blocksXml(blocks);
       this.availableTwips = outer;
     }
-    // A cell must hold at least one paragraph and end with one.
-    if (!content.endsWith('</w:p>')) content += '<w:p/>';
+    // A cell must hold at least one paragraph and end with one. A table that keeps its page sets the row heights of the page, so the
+    // paragraph of an empty cell holds no height: at the default size it would make the row taller than the page's.
+    if (!content.endsWith('</w:p>')) content += this.model.pageFlow ? `<w:p><w:pPr>${FILLER_SPACING}</w:pPr></w:p>` : '<w:p/>';
     return `<w:tc><w:tcPr>${props}</w:tcPr>${content}</w:tc>`;
   }
 
