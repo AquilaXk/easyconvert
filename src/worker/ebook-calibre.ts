@@ -211,11 +211,19 @@ function calibreEnvironment(dir: string, drawsPages: boolean): Record<string, st
   };
 }
 
+/** What stopped a run that the sandbox ended at a limit: the output or file size bound that was passed, or the memory limit and the signal that ended the run (none for the resident-size watch). */
+function limitStop(err: SandboxedBufferLimitError | SandboxedMemoryLimitError): string {
+  if (err instanceof SandboxedBufferLimitError) return `calibre passed the ${err.kind} limit of ${err.limitBytes} bytes.`;
+  return err.signal ? `calibre was ended by ${err.signal} under the memory limit of ${err.limitMb} MB.` : `calibre passed the resident memory limit of ${err.limitMb} MB.`;
+}
+
 /** The typed error of a run that failed: its limits, a protected book, or what calibre printed about the file. */
 function toCalibreError(err: unknown, run: CalibreRun): unknown {
   const { src, tgt } = run.request;
   if (err instanceof SandboxedTimeoutError) return new CpuTaskTimeoutError(`.${src} to .${tgt} conversion`, run.limitMs);
   if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
+    // The answer names the limits together; the log tells which one stopped the run (a crash or the kernel's kill under the address space limit reads as a memory limit).
+    recordEngineOutput('calibre', `${src}-to-${tgt}`, limitStop(err));
     return new ConversionFailedError(`calibre exceeded its output or memory limit on the .${src} file.`);
   }
   if (err instanceof SandboxedProcessError) {

@@ -420,6 +420,17 @@ describe('the calibre route against a stand-in program', () => {
     expect(printed).toContain('Traceback (most recent call last)');
   });
 
+  it('keeps the signal that ended a run under its memory limit in the server log, and answers the limits together', async () => {
+    const program = fakeProgram(`process.kill(process.pid, 'SIGKILL');`);
+    const log = captureEngineOutput();
+    const error = await convertWithCalibre(deps(), request('mobi', 'azw3', Buffer.from('book')), program).catch((caught: unknown) => caught);
+    const recorded = log.outputs().join('\n');
+    log.restore();
+    expect(error).toBeInstanceOf(ConversionFailedError);
+    expect((error as Error).message).toBe('calibre exceeded its output or memory limit on the .mobi file.');
+    expect(recorded).toBe('calibre was ended by SIGKILL under the memory limit of 4096 MB.');
+  });
+
   it.each([
     ['mobi', 'writes a file that is not a Palm database', `fs.writeFileSync(output, 'plain text');`],
     ['lrf', 'writes a file without the LRF magic', `fs.writeFileSync(output, 'plain text, not a BBeB book');`],
