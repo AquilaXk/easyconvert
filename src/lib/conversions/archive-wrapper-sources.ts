@@ -1,4 +1,4 @@
-import { DecompressionLimitError } from '../types';
+import { ConversionFailedError, CpuPoolOverloadedError, CpuTaskAbortedError, CpuTaskTimeoutError, DecompressionLimitError, PayloadLimitError } from '../types';
 import {
   unpackedBytesCap,
   unpackedBytesCapError,
@@ -69,4 +69,14 @@ function lzPayload(src: string, archive: Buffer, limits: ArchiveExtractionLimits
 /** Decompresses a bzip2, lzip or lzop source; failures are typed (bomb, corrupt stream). */
 export function unpackWrapperSource(src: string, archive: Buffer, limits: ArchiveExtractionLimits): UnpackedWrapper {
   return BZIP2_SOURCES.has(src) ? bzip2Payload(src, archive, limits) : lzPayload(src, archive, limits);
+}
+
+/**
+ * The error a bzip2 listing answers for a failure of the decode or of the listing of its tar: the typed refusal of the ratio cap, the
+ * failures of the pool thread as they are (cancelled, timed out, queue full, out of memory), and a plain failure for anything else.
+ */
+export function bzip2ListingFailure(err: unknown, archiveBytes: number, limits: ArchiveExtractionLimits): Error {
+  if (err instanceof DecompressionLimitError) return unpackedBytesCapError(archiveBytes, limits);
+  if (err instanceof CpuTaskAbortedError || err instanceof CpuTaskTimeoutError || err instanceof CpuPoolOverloadedError || err instanceof PayloadLimitError) return err;
+  return new ConversionFailedError('Failed to decompress bzip2 archive.');
 }
