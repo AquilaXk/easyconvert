@@ -30,7 +30,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Operations and security
 - Turn on `UNVERIFIED_ACCOUNT_PURGE_ENABLED` on or after 2026-12-20 (30 days after the privacy text naming it was published), first with `UNVERIFIED_ACCOUNT_PURGE_DRY_RUN=true` (the default) for one pass, check the counts in the worker log, then set it to `false` (entry 364).
-- Cap how many storage credentials one account keeps (launch audit of 2026-11-20; entry 343 bounds each record).
 - Add browser error reporting for crashes in the converter UI.
 - Confirm the Paddle checkout script under the nonce policy (entry 370) in the first sandbox purchase.
 - Pick a free package name before publishing the SDKs (PyPI `easyconvert` belongs to another project; npm `@easyconvert/sdk` is unpublished) and add install lines to their READMEs.

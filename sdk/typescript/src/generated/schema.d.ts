@@ -4065,6 +4065,40 @@ export interface operations {
                     "application/json": components["schemas"]["ProblemDetails"];
                 };
             };
+            /** @description The account already holds 20 saved credentials, the most it may (problem type `https://convert.aquilaxk.site/api-docs/errors#byos-credential-limit`, `code` "storage_credential_limit_reached"); delete one and save the credentials again. A credential that has expired does not count. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"] & {
+                        /**
+                         * @description The cause of the refusal, stable across releases.
+                         * @enum {string}
+                         */
+                        code?: "storage_credential_limit_reached";
+                        /** @description `engine_not_offered` only: the ids of the engines that convert the pair, the default first. */
+                        engines?: string[];
+                        /** @description `engine_version_unavailable` only: the engine whose version was named. */
+                        engine?: string;
+                        /** @description `engine_version_unavailable` only: the version of `engine` that is installed (absent when its program prints none). */
+                        installedVersion?: string;
+                    };
+                    "application/json": components["schemas"]["ProblemDetails"] & {
+                        /**
+                         * @description The cause of the refusal, stable across releases.
+                         * @enum {string}
+                         */
+                        code?: "storage_credential_limit_reached";
+                        /** @description `engine_not_offered` only: the ids of the engines that convert the pair, the default first. */
+                        engines?: string[];
+                        /** @description `engine_version_unavailable` only: the engine whose version was named. */
+                        engine?: string;
+                        /** @description `engine_version_unavailable` only: the version of `engine` that is installed (absent when its program prints none). */
+                        installedVersion?: string;
+                    };
+                };
+            };
             /** @description Credentials could not be stored. */
             500: {
                 headers: {

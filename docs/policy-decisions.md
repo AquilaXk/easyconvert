@@ -420,6 +420,7 @@ Security
 369. [The office sheet readers hold CSV, TSV and JSON to the limits of entry 337 and write on a pool thread, and a bzip2 listing decodes off the event loop](#369-the-office-sheet-readers-hold-csv-tsv-and-json-to-the-limits-of-entry-337-and-write-on-a-pool-thread-and-a-bzip2-listing-decodes-off-the-event-loop)
 370. [The page Content-Security-Policy carries a nonce made for each request instead of `'unsafe-inline'` for scripts, and every page renders per request](#370-the-page-content-security-policy-carries-a-nonce-made-for-each-request-instead-of-unsafe-inline-for-scripts-and-every-page-renders-per-request)
 371. [A scan that is skewed can be levelled in the searchable PDF with `ocrDeskew`, off by default, by turning the page content and leaving the scan unresampled](#371-a-scan-that-is-skewed-can-be-levelled-in-the-searchable-pdf-with-ocrdeskew-off-by-default-by-turning-the-page-content-and-leaving-the-scan-unresampled)
+372. [An account holds at most 20 saved storage credentials, and the check and the write are one Lua script](#372-an-account-holds-at-most-20-saved-storage-credentials-and-the-check-and-the-write-are-one-lua-script)
 
 ---
 
@@ -10978,3 +10979,38 @@ Security
   - **A different order of the words in the stream**: it is already right.
 - **Verified by**: `tests/ocr-output-deskew.test.ts` (30 cases; red before the change, the option was unknown): the skew of a text layer measured from placed words (signed, a quarter turn read as its residual, lines that disagree, too few words, a level page, a skew over the limit); the searchable PDF of the English and Korean pages turned by -10, -5, -3, -1, 1, 3, 5 and 10 degrees, as an image and (3 degrees) as a scanned PDF, and of the committed 3 degree skew pages, read back with `pdftotext` (a text extractor that shares no code with this project) and scored against the text that was drawn (CER at most 2 % English and 3 % Korean); the same page structure and extracted text with the option false as without it, and for a level page with it on; every word of a 10 degree page inside the page box, and the box of a hand-built page growing to hold a line that the turn carries past its top edge (red without the growth), a page with annotations left alone.
 - **Revisit when**: QA wants the option in the web options panel (the checkbox needs a message in each locale and QA's approval of the screen), a viewer that reads the matrix wrongly turns up, or a page with annotations should be levelled too (the annotation rectangles would have to be turned with the content).
+
+## 372. An account holds at most 20 saved storage credentials, and the check and the write are one Lua script
+
+- **Date**: 2026-11-21
+- **Status**: Implemented (QA request: the last open item of the launch audit of 2026-11-20; entry 343 bounds the size of each credential, not their number).
+- **Decision**:
+  1. **An account keeps at most 20 saved storage credentials** (`MAX_STORAGE_CREDENTIALS_PER_ACCOUNT`, `src/lib/api/field-limits.ts`), the number of its active API keys (entry 296). `POST /api/v1/storage/credentials` answers 409 with the problem type `byos-credential-limit` and the code `storage_credential_limit_reached` (worded in both locales, in the OpenAPI document and the generated clients, in `src/lib/error-inventory.ts` and so on the errors page), and nothing is written. A credential that has expired or was deleted does not count, so one deleted makes room for one.
+  2. **With Redis the check and the write are one script** (`RESERVE_CREDENTIAL_SLOT_SCRIPT`): it adds the id to the index of the user (`vault:user:{<userId>}`) unless the index holds 20 ids, and in the same step writes the credential key with its lifetime. Saves sent at once, from any number of instances, therefore stop at 20. When the index is full, the ids whose credential key has expired leave it and the script is tried once more, so an expired credential never keeps a slot. Without Redis (development and tests) the count and the insert run with no wait between them.
+  3. **On a Redis Cluster the script holds the index key only**, since the credential key lives on another slot: the id is reserved by the script, then the credential is written, and a failed write takes the id out of the index again.
+- **Why**:
+  - **The count was open.** A key, a webhook secret and a name are bounded in size by entry 343, but a client could save credentials without end, each a 16 KiB record that the store does not evict and that the listing, the erasure and the daily index pass read in full.
+  - **A count read before the write and again after, as the API key limit does, can overshoot and has to delete.** For records that hold a secret, writing one and deleting it again is worse than not writing it, so the reservation is atomic.
+  - **The number follows the API key limit** because no comparable project bounds it (table below), and 20 is well over what one person connects (a bucket per project and environment).
+- **Candidates** (what comparable projects bound for the credentials a user keeps; none bounds saved storage connections per user):
+  | Project | What is bounded | Bound |
+  |---|---|---|
+  | rclone | remotes in the config file | none |
+  | MinIO | service accounts (access key pairs) per user | none documented |
+  | Supabase Storage | S3 access keys per project | none documented |
+  | Strapi and Directus | storage provider settings | one provider per instance, no per-user connections |
+  | Appwrite | buckets per project | 1 (free), 10 (Start), unlimited (Pro) |
+  | AWS IAM | access keys per user | 2 |
+  | IONOS S3 | access keys per account | 5 |
+  | NetApp StorageGRID | S3 access keys per user | 100 |
+  | This service, API keys | active keys per account | 20 (entry 296) |
+  The bounds that exist are for the access keys of one identity (2 to 100); none is for saved connections to other people's stores, so the existing number of the service is used. The rclone, MinIO, Strapi and AWS rows are from their documented behaviour as the author knows it; the Supabase, Appwrite, IONOS and StorageGRID rows were read in their documentation search results.
+- **Trade-offs**:
+  - **A Cluster deployment has one narrow window**: between the reservation and the write of another request, the clean-up of expired ids of a request that finds the index full can take a reserved id out of the index. The credential is then written, not listed and not counted until the daily index pass finds it. The single-node script has no such window.
+  - **A credential saved before the index existed is not counted until the daily index pass has run** (the same condition as its listing).
+  - **An account at 20 that wants more deletes one first.** A raise is one constant.
+- **Alternatives rejected**:
+  - **Count, write, count again and delete** (the API key way): it can write a secret that is then deleted and lets the count pass the limit for a moment.
+  - **A per-plan limit**: no plan has a different need for saved connections, and a number per plan is a new thing to explain.
+- **Verified by**: `tests/storage-credential-limit.test.ts` (in memory, over a fake store and over a fake cluster store: the 21st save refused with a typed error and nothing written, counts per account, a delete and an expiry make room, 35 saves at once leave 20, a failed write takes its id back out of the index, the route's 409 with its code and type and 201 again after a delete) and `tests/credentials-vault-limit-redis.test.ts` (a private `redis-server`: the 21st refused with no key written, 60 saves from 4 connections at once leave exactly 20, the lifetime set with the index entry, expired keys leave the index, per-account counting; run by `npm run test:redis`).
+- **Revisit when**: a plan needs more saved connections, or the service moves to a Redis Cluster (then the window above is closed by keeping the credential key under the tag of the index).

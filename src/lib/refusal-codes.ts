@@ -113,6 +113,7 @@ export const CONVERSION_REFUSAL_CODES = [
   'quota_exceeded',
   'timeout',
   'storage_credential_not_found',
+  'storage_credential_limit_reached',
   'storage_access_denied',
   'storage_endpoint_blocked',
   'storage_object_not_found',

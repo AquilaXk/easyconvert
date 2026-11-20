@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import {
   credentialsVault,
+  CredentialsVaultLimitError,
   CredentialsVaultPersistenceError,
   CustomerStorageCredentials,
   StorageProviderType,
@@ -17,6 +18,8 @@ import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 export const dynamic = 'force-dynamic';
 
 const BYOS_INVALID_ENDPOINT_TYPE = `${PROBLEM_TYPE_BASE}byos-invalid-endpoint`;
+const BYOS_CREDENTIAL_LIMIT_TYPE = `${PROBLEM_TYPE_BASE}byos-credential-limit`;
+const HTTP_CONFLICT = 409;
 
 /**
  * The 500 for an error this route did not classify, in the problem+json shape of the other `/api/v1` routes. The text of the error can name a
@@ -144,6 +147,18 @@ async function postCredentialsAuthorized(req: NextRequest, instanceUri: string, 
       { status: 201 }
     );
   } catch (err: unknown) {
+    if (err instanceof CredentialsVaultLimitError) {
+      return createProblemDetailsResponse(
+        HTTP_CONFLICT,
+        err.message,
+        instanceUri,
+        'Storage Credential Limit Reached',
+        BYOS_CREDENTIAL_LIMIT_TYPE,
+        undefined,
+        undefined,
+        { code: 'storage_credential_limit_reached' }
+      );
+    }
     if (err instanceof CredentialsVaultPersistenceError) {
       return createProblemDetailsResponse(503, err.message, instanceUri);
     }

@@ -10,6 +10,9 @@ from ...models.create_storage_credential_v1_body import CreateStorageCredentialV
 from ...models.create_storage_credential_v1_response_201 import (
     CreateStorageCredentialV1Response201,
 )
+from ...models.create_storage_credential_v1_response_409 import (
+    CreateStorageCredentialV1Response409,
+)
 from ...models.problem_details import ProblemDetails
 from ...types import Response
 
@@ -35,7 +38,12 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx2.Response
-) -> CreateStorageCredentialV1Response201 | ProblemDetails | None:
+) -> (
+    CreateStorageCredentialV1Response201
+    | CreateStorageCredentialV1Response409
+    | ProblemDetails
+    | None
+):
     if response.status_code == 201:
         response_201 = CreateStorageCredentialV1Response201.from_dict(response.json())
 
@@ -51,6 +59,11 @@ def _parse_response(
 
         return response_401
 
+    if response.status_code == 409:
+        response_409 = CreateStorageCredentialV1Response409.from_dict(response.json())
+
+        return response_409
+
     if response.status_code == 500:
         response_500 = ProblemDetails.from_dict(response.json())
 
@@ -64,7 +77,11 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx2.Response
-) -> Response[CreateStorageCredentialV1Response201 | ProblemDetails]:
+) -> Response[
+    CreateStorageCredentialV1Response201
+    | CreateStorageCredentialV1Response409
+    | ProblemDetails
+]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -77,7 +94,11 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: CreateStorageCredentialV1Body,
-) -> Response[CreateStorageCredentialV1Response201 | ProblemDetails]:
+) -> Response[
+    CreateStorageCredentialV1Response201
+    | CreateStorageCredentialV1Response409
+    | ProblemDetails
+]:
     """Register Storage Credentials
 
      Stores customer storage credentials encrypted at rest and returns a `credentialRef` for import and
@@ -91,7 +112,7 @@ def sync_detailed(
         httpx2.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[CreateStorageCredentialV1Response201 | ProblemDetails]
+        Response[CreateStorageCredentialV1Response201 | CreateStorageCredentialV1Response409 | ProblemDetails]
     """
 
     kwargs = _get_kwargs(
@@ -109,7 +130,12 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: CreateStorageCredentialV1Body,
-) -> CreateStorageCredentialV1Response201 | ProblemDetails | None:
+) -> (
+    CreateStorageCredentialV1Response201
+    | CreateStorageCredentialV1Response409
+    | ProblemDetails
+    | None
+):
     """Register Storage Credentials
 
      Stores customer storage credentials encrypted at rest and returns a `credentialRef` for import and
@@ -123,7 +149,7 @@ def sync(
         httpx2.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        CreateStorageCredentialV1Response201 | ProblemDetails
+        CreateStorageCredentialV1Response201 | CreateStorageCredentialV1Response409 | ProblemDetails
     """
 
     return sync_detailed(
@@ -136,7 +162,11 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: CreateStorageCredentialV1Body,
-) -> Response[CreateStorageCredentialV1Response201 | ProblemDetails]:
+) -> Response[
+    CreateStorageCredentialV1Response201
+    | CreateStorageCredentialV1Response409
+    | ProblemDetails
+]:
     """Register Storage Credentials
 
      Stores customer storage credentials encrypted at rest and returns a `credentialRef` for import and
@@ -150,7 +180,7 @@ async def asyncio_detailed(
         httpx2.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[CreateStorageCredentialV1Response201 | ProblemDetails]
+        Response[CreateStorageCredentialV1Response201 | CreateStorageCredentialV1Response409 | ProblemDetails]
     """
 
     kwargs = _get_kwargs(
@@ -166,7 +196,12 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: CreateStorageCredentialV1Body,
-) -> CreateStorageCredentialV1Response201 | ProblemDetails | None:
+) -> (
+    CreateStorageCredentialV1Response201
+    | CreateStorageCredentialV1Response409
+    | ProblemDetails
+    | None
+):
     """Register Storage Credentials
 
      Stores customer storage credentials encrypted at rest and returns a `credentialRef` for import and
@@ -180,7 +215,7 @@ async def asyncio(
         httpx2.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        CreateStorageCredentialV1Response201 | ProblemDetails
+        CreateStorageCredentialV1Response201 | CreateStorageCredentialV1Response409 | ProblemDetails
     """
 
     return (
