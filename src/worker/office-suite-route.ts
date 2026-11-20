@@ -15,6 +15,7 @@ import { OfficePackageUnreadableError, isEncryptedLegacyOffice, legacyOfficeInpu
 import {
   CGM_ENCODING_PROBE_BYTES,
   OFFICE_SUITE_SOURCE_FORMATS,
+  TEXT_ONLY_TARGETS,
   isOfficeSuiteOnlySource,
   legacyReaderRetryInterchange,
   officeSuiteApplication,
@@ -759,6 +760,31 @@ function leadingBytes(input: Buffer | WorkerVfsPayload, count = LONGEST_SIGNATUR
   } finally {
     fs.closeSync(descriptor);
   }
+}
+
+/** The targets the office suite writes from an HWP 3.x file in the one pass that opens it; every other target is written from its DOCX. */
+const HWP3_DIRECT_TARGETS: ReadonlySet<string> = new Set(['docx', 'doc', 'odt', 'rtf', 'pdf', 'txt']);
+const HWP3_INTERCHANGE = 'docx';
+const HWP3_TEXT_INTERCHANGE = 'txt';
+
+/** The first bytes of an HWP 3.x file (Hangul Word Processor 97 and earlier), which is no compound file. */
+const HWP3_SIGNATURE = 'HWP Document File V3';
+
+/**
+ * Whether the input is an HWP 3.x document. The in-process reader reads the compound files of HWP 5.0 only; the office suite has an import
+ * filter for the older format, so such a file is written as a DOCX by the suite and converted from that (`convertThroughInterchange`).
+ */
+export function isHwp3Input(src: string, input: Buffer | WorkerVfsPayload): boolean {
+  return src === 'hwp' && leadingBytes(input, HWP3_SIGNATURE.length).toString('latin1') === HWP3_SIGNATURE;
+}
+
+/**
+ * The format the office suite writes from an HWP 3.x file for `tgt`: the target itself when the suite writes it, the plain text the in-process
+ * converter writes XPS and the Hangul formats from, else the DOCX it reads.
+ */
+export function hwp3Interchange(tgt: string): string {
+  if (HWP3_DIRECT_TARGETS.has(tgt)) return tgt;
+  return TEXT_ONLY_TARGETS.has(tgt) ? HWP3_TEXT_INTERCHANGE : HWP3_INTERCHANGE;
 }
 
 /** Whether the office suite reads this input: every source of its table, but not a clear-text CGM, which the in-process parser reads. */

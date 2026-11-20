@@ -491,6 +491,7 @@
   "tests/hwp-render-pagination.test.ts": 15.2,
   "tests/hwp-section-decompression-limits.test.ts": 1.1,
   "tests/hwp.test.ts": 1.1,
+  "tests/hwp3.test.ts": 8.0,
   "tests/i18n-api-errors.test.ts": 0.9,
   "tests/i18n-client-messages.test.ts": 4.7,
   "tests/i18n-hardcoded-strings.test.ts": 0.4,

@@ -404,6 +404,7 @@ Security
 353. [An ICNS file is read as its largest PNG, JPEG or JPEG 2000 element, else as its largest old-style RLE or ARGB picture](#353-an-icns-file-is-read-as-its-largest-png-jpeg-or-jpeg-2000-element-else-as-its-largest-old-style-rle-or-argb-picture)
 354. [CSS escapes of an HTML page are decoded as CSS Syntax says before the scan, and the decoded text goes to LibreOffice](#354-css-escapes-of-an-html-page-are-decoded-as-css-syntax-says-before-the-scan-and-the-decoded-text-goes-to-libreoffice)
 355. [An empty key of a JSON, YAML or TOML document becomes the XML element <_>](#355-an-empty-key-of-a-json-yaml-or-toml-document-becomes-the-xml-element-_)
+356. [An HWP 3.x file is imported by LibreOffice, and the in-process reader refuses it as unsupported](#356-an-hwp-3x-file-is-imported-by-libreoffice-and-the-in-process-reader-refuses-it-as-unsupported)
 
 ---
 
@@ -10574,3 +10575,21 @@ Security
   - **Leaving the refusal:** the file is valid input and the rest of the document is fine.
 - **Verified by**: `tests/data-xml-faithful.test.ts` (an empty key inside a list becomes `<_>`; the keys `""` and `_` together are refused with the collision message).
 - **Revisit when**: a caller needs the XML to give back the key (an attribute carrying the original key for every renamed element is the way that keeps it).
+
+## 356. An HWP 3.x file is imported by LibreOffice, and the in-process reader refuses it as unsupported
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: fix the refusals a production sweep of the live service found; the reference converter lists `hwp` to `pdf` with its office suite, and the suite imports the old generation of the format)
+- **Decision**: **An HWP file that starts with `HWP Document File V3` (Hangul Word Processor 97 and earlier, no compound file) is imported by LibreOffice and converted from what it writes** (`isHwp3Input` and `hwp3Interchange` in `src/worker/office-suite-route.ts`, the check in `convertWithOfficeSuiteRoutes`). LibreOffice writes `docx`, `doc`, `odt`, `rtf`, `pdf` and `txt` itself, plain text for `xps` and `hwpx` (the in-process converter writes those from text only), and a DOCX for every other target (`html`, `md`, `jpg`, `png`), which the converter of DOCX writes as it does for any DOCX. HWP 5.0 files are read in process as before. Where the in-process reader meets an HWP 3.x file anyway (the route is bypassed), it refuses it with `UnsupportedHwpVersionError` (code `unsupported_input`, HTTP 422): "HWP 3.0 files are not supported: this reader opens HWP 5.0 documents only."
+- **Why**:
+  - **The sweep refused a real file** (`testHWP_3.0.hwp` of Apache Tika's test set) as "not an OLE2 compound file". The pair is offered by the reference, whose engine is the office suite, and LibreOffice (24.2 on the VM, 26.x on the Mac) prints the file as the two lines it holds, `테스트` and `test`.
+  - **One hook for every target.** Writing the 12 targets one by one from the old format would mean a second reader; the suite already reads it, so only the way to each target differs.
+- **Measured**: the 9,287 byte file converts to every target of `hwp` that is not the format itself on the Mac (PDF 9,733 bytes, DOCX 7,164, HTML 621, JPG, PNG, ODT, RTF, DOC, TXT, MD, HWPX, XPS), with the words of the document in the text targets.
+- **Trade-offs**:
+  - **A conversion needs LibreOffice**, as every format it alone reads does (no in-process fallback); without it the answer is the unavailable-engine error of those formats.
+  - **The text of the old format is what LibreOffice's filter reads**: tables and pictures follow its coverage, which is that of the reference.
+- **Alternatives rejected**:
+  - **Only the honest refusal:** the reference converts these files.
+  - **A reader of HWP 3.x written here:** the format is documented only in a Korean specification of 1997, and the suite's filter is already the reference.
+- **Verified by**: `tests/hwp3.test.ts` (the typed refusal of the in-process reader, 422; the real Tika file converts to text, DOCX, HTML, Markdown and HWPX with its two words, and to a PDF whose text holds them), `tests/refusal-code-inventory.test.ts` (the new class and its code).
+- **Revisit when**: the worker image's LibreOffice drops its HWP 3.x import filter, or a real file of the old format shows tables or pictures the filter loses.

@@ -1,7 +1,7 @@
 import zlib from 'node:zlib';
 import JSZip from 'jszip';
 import sharp from 'sharp';
-import { ConversionFailedError, ConversionOptions, ConversionResult, CorruptStreamError, EncryptedOfficeDocumentError } from '../types';
+import { ConversionFailedError, ConversionOptions, ConversionResult, CorruptStreamError, EncryptedOfficeDocumentError, UnsupportedHwpVersionError } from '../types';
 import { InflateBudget, inflateBounded } from './bounded-inflate';
 import { encodeBmp } from './image';
 import { buildOpenXpsPackage } from './openxps';
@@ -197,6 +197,9 @@ function readHwpEquation(payload: Buffer): HwpEquation {
   return { script, mathml: hwpEquationToMathML(script), latex: hwpEquationToLaTeX(script) };
 }
 
+/** The first bytes of an HWP 3.x file, which is no compound file. */
+const HWP3_SIGNATURE = 'HWP Document File V3';
+
 /**
  * Parses a full HWP 5.0 document: the FileHeader, the BodyText sections, and in them the paragraph texts and the
  * tables (HWP 5.0 file format: records nest by level; a table is a CTRL_HEADER "tbl " followed by HWPTAG_TABLE and,
@@ -204,6 +207,9 @@ function readHwpEquation(payload: Buffer): HwpEquation {
  * document throws a typed error; no text is invented.
  */
 export function parseHwpDocument(inputBuffer: Buffer): HwpDocument {
+  if (inputBuffer.toString('latin1', 0, HWP3_SIGNATURE.length) === HWP3_SIGNATURE) {
+    throw new UnsupportedHwpVersionError('HWP 3.0 files are not supported: this reader opens HWP 5.0 documents only.');
+  }
   if (!isCfbfContainer(inputBuffer)) {
     throw corruptHwp('the file is not an OLE2 compound file.');
   }
