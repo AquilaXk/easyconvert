@@ -90,7 +90,7 @@ export function AccountQuotaPanel({ user, quota, apiKeys, charges, quotaUnavaila
                 <div className="text-xs font-medium text-ink-3">
                   {t('promo')}
                 </div>
-                <div className="mt-1 flex items-center gap-2 text-lg font-semibold tabular-nums text-ink">
+                <div className="mt-1 flex items-center gap-2 text-base font-semibold tabular-nums text-ink">
                   <Gift className="w-4 h-4 text-accent-ink" />
                   <span>{format.number(promoCredits)}</span>
                 </div>
