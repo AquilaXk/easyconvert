@@ -856,7 +856,7 @@
     "file": "src/lib/conversions/office/spreadsheet-formula.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "<module>",
-    "count": 2
+    "count": 1
   },
   {
     "file": "src/lib/conversions/office/spreadsheet-formula.ts",
@@ -879,111 +879,14 @@
   {
     "file": "src/lib/conversions/office/spreadsheet-formula.ts",
     "rule": "@typescript-eslint/no-explicit-any",
-    "function": "executeFunction",
-    "count": 6
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "flattenNumbers",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
     "function": "getCellValue",
     "count": 1
   },
   {
     "file": "src/lib/conversions/office/spreadsheet-formula.ts",
     "rule": "@typescript-eslint/no-explicit-any",
-    "function": "isCellMatch",
-    "count": 2
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "isErrorCode",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parseAdditive",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parseComparison",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parseConcat",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parseFunctionCall",
-    "count": 3
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parseMultiplicative",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parsePower",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parsePrimary",
-    "count": 3
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parseUnary",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "resolveRange",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "resolveRange2D",
-    "count": 3
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
     "function": "setCell",
     "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "walk",
-    "count": 2
-  },
-  {
-    "file": "src/lib/conversions/office/spreadsheet-formula.ts",
-    "rule": "complexity",
-    "function": "executeFunction",
-    "count": 1,
-    "maxValue": 105
   },
   {
     "file": "src/lib/conversions/office/xls-parse.ts",

@@ -45,22 +45,29 @@ interface ReceivedArg {
 
 const TYPE_RANK = { number: 0, string: 1, boolean: 2 } as const;
 
+/** The empty value of the type of `other`: `""` next to text, `false` next to a boolean, 0 otherwise. */
+function blankLike(other: unknown): unknown {
+  if (typeof other === 'string') return '';
+  return typeof other === 'boolean' ? false : 0;
+}
+
+function orderOf(x: string | number, y: string | number): number {
+  if (x < y) return -1;
+  return x > y ? 1 : 0;
+}
+
 /** Sort order of two cell values: -1, 0 or 1. An empty cell takes the zero of the type next to it. */
 function compareValues(left: unknown, right: unknown): number {
-  let a = left;
-  let b = right;
-  if (a === null || a === undefined) a = typeof b === 'string' ? '' : typeof b === 'boolean' ? false : 0;
-  if (b === null || b === undefined) b = typeof a === 'string' ? '' : typeof a === 'boolean' ? false : 0;
+  const a = left === null || left === undefined ? blankLike(right) : left;
+  const b = right === null || right === undefined ? blankLike(a) : right;
   const rankA = TYPE_RANK[typeof a as keyof typeof TYPE_RANK];
   const rankB = TYPE_RANK[typeof b as keyof typeof TYPE_RANK];
   if (rankA === undefined || rankB === undefined) return rankA === undefined ? 1 : -1;
   if (rankA !== rankB) return rankA < rankB ? -1 : 1;
   if (typeof a === 'string') {
-    const x = a.toUpperCase();
-    const y = (b as string).toUpperCase();
-    return x < y ? -1 : x > y ? 1 : 0;
+    return orderOf(a.toUpperCase(), (b as string).toUpperCase());
   }
-  if (typeof a === 'boolean') return a === b ? 0 : a ? 1 : -1;
+  if (typeof a === 'boolean') return orderOf(Number(a), Number(b));
   const diff = (b as number) - (a as number);
   if (Math.abs(diff) < Number.EPSILON) return 0;
   return (a as number) < (b as number) ? -1 : 1;
