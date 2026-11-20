@@ -1435,7 +1435,7 @@ function applyOutlinesToCanonicalTables(
 ): { glyf: Buffer; loca: Buffer; hmtx: Buffer; post: Buffer } {
   const { glyphs } = outlines;
   const glyf = new GlyfTableBuilder(SVG_FONT_MAX_TOTAL_POINTS);
-  const metrics = new HorizontalMetricsBuilder(glyphs.length);
+  const metrics = new HorizontalMetricsBuilder();
   for (const glyph of glyphs) metrics.add(glyph.advWidth, glyf.add(glyph.contours));
   const built = glyf.finish();
   built.maxp.writeUInt16BE(MAXP_ZONES_WITHOUT_TWILIGHT, MAXP_MAX_ZONES_OFFSET);
@@ -3069,31 +3069,46 @@ function cffGlyphToTrueTypeContours(glyph: CffGlyph, matrix: CffMatrix | null, t
  * and the font-wide extents come from the converted points.
  */
 class HorizontalMetricsBuilder {
-  private readonly hmtx: Buffer;
-  private count = 0;
+  private readonly advances: number[] = [];
+  private readonly bearings: number[] = [];
   private maxAdvance = 0;
   private box: GlyphBounds | null = null;
   private minLsb = INT16_MAX;
   private minRsb = INT16_MAX;
   private xMaxExtent = INT16_MIN;
 
-  constructor(numGlyphs: number) {
-    this.hmtx = Buffer.alloc(numGlyphs * HMTX_LONG_METRIC_BYTES);
-  }
-
-  get table(): Buffer {
-    return this.hmtx;
-  }
-
+  /**
+   * The number of long metrics hhea declares: the advance of the last glyph is repeated by every glyph after the long metrics, so
+   * the run of glyphs at the end that share it is written as left side bearings only. This is the form every font tool writes, and
+   * the only one fontTools reads back from a WOFF2 file (it compiles a reconstructed hmtx in this form and then finds its hhea
+   * declaring more metrics than the table holds).
+   */
   get numberOfMetrics(): number {
-    return this.count;
+    const last = this.advances.length - 1;
+    let count = this.advances.length;
+    while (count > 1 && this.advances[count - 2] === this.advances[last]) count--;
+    return count;
+  }
+
+  /** hmtx: a long metric (advance, left side bearing) for each of the first `numberOfMetrics` glyphs and a left side bearing for each glyph after. */
+  get table(): Buffer {
+    const longMetrics = this.numberOfMetrics;
+    const out = Buffer.alloc(longMetrics * HMTX_LONG_METRIC_BYTES + (this.advances.length - longMetrics) * HMTX_BEARING_ONLY_BYTES);
+    let at = 0;
+    for (let glyph = 0; glyph < this.advances.length; glyph++) {
+      if (glyph < longMetrics) {
+        out.writeUInt16BE(this.advances[glyph], at);
+        at += HMTX_LSB_OFFSET;
+      }
+      out.writeInt16BE(this.bearings[glyph], at);
+      at += HMTX_BEARING_ONLY_BYTES;
+    }
+    return out;
   }
 
   add(advance: number, bounds: GlyphBounds | null): void {
-    const offset = this.count * HMTX_LONG_METRIC_BYTES;
-    this.count++;
-    this.hmtx.writeUInt16BE(advance, offset);
-    this.hmtx.writeInt16BE(bounds === null ? 0 : bounds.xMin, offset + HMTX_LSB_OFFSET);
+    this.advances.push(advance);
+    this.bearings.push(bounds === null ? 0 : bounds.xMin);
     this.maxAdvance = Math.max(this.maxAdvance, advance);
     if (bounds === null) return;
     this.box = this.box === null ? { ...bounds } : unionBounds(this.box, bounds);
@@ -3119,7 +3134,7 @@ class HorizontalMetricsBuilder {
     hhea.writeInt16BE(this.box === null ? 0 : this.minLsb, HHEA_MIN_LSB_OFFSET);
     hhea.writeInt16BE(rsb, HHEA_MIN_RSB_OFFSET);
     hhea.writeInt16BE(this.box === null ? 0 : this.xMaxExtent, HHEA_X_MAX_EXTENT_OFFSET);
-    hhea.writeUInt16BE(this.count, HHEA_NUMBER_OF_HMETRICS_OFFSET);
+    hhea.writeUInt16BE(this.numberOfMetrics, HHEA_NUMBER_OF_HMETRICS_OFFSET);
   }
 }
 
@@ -3178,7 +3193,7 @@ function convertCffFontToTrueType(font: ParsedFont): ParsedFont {
     CFF_ABSOLUTE_MAX_OUTPUT_POINTS
   );
   const glyf = new GlyfTableBuilder(pointBudget);
-  const metrics = new HorizontalMetricsBuilder(cff.numGlyphs);
+  const metrics = new HorizontalMetricsBuilder();
   for (let g = 0; g < cff.numGlyphs; g++) {
     const glyph = cff.glyph(g);
     const contours = cffGlyphToTrueTypeContours(glyph, fontMatrixToUnits(glyph.matrix, unitsPerEm), tolerance);

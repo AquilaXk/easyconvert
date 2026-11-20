@@ -409,6 +409,7 @@
   "tests/font-mac-containers.test.ts": 0.1,
   "tests/font-svg-document.test.ts": 0.4,
   "tests/font-svg-glyph-outlines.test.ts": 7.9,
+  "tests/font-svg-hmtx-metrics.test.ts": 1,
   "tests/font-svg-path-data.test.ts": 0.1,
   "tests/font-table-directory-order.test.ts": 0.6,
   "tests/font-type1-conversion.test.ts": 2.7,
