@@ -410,7 +410,7 @@ class PartWriter {
           .join('');
         const header = rowIndex === 0 && row.some((cell) => cell.header);
         const height = table.rowHeights?.[rowIndex];
-        const rowProperties = (height ? `<w:trHeight w:val="${twips(height)}" w:hRule="atLeast"/>` : '') + (header ? '<w:tblHeader/>' : '');
+        const rowProperties = (height ? `<w:trHeight w:val="${twips(height)}" w:hRule="${this.model.pageFlow ? 'exact' : 'atLeast'}"/>` : '') + (header ? '<w:tblHeader/>' : '');
         return `<w:tr>${rowProperties ? `<w:trPr>${rowProperties}</w:trPr>` : ''}${cells}</w:tr>`;
       })
       .join('');

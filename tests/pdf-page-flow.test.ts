@@ -252,7 +252,7 @@ describe('the DOCX the pages are written as', () => {
     expect(xml).not.toContain('<wp:inline');
   });
 
-  it('gives a table no cell padding, its indent and the least height of each row, and a section break a paragraph of one point', async () => {
+  it('gives a table no cell padding, its indent and the exact height of each row, and a section break a paragraph of one point', async () => {
     const cell = { paragraphs: [formatted('cell', { leftPt: 4 })], colSpan: 1, rowSpan: 1, continuation: false, header: false };
     const table: Block = { type: 'table', rows: [[cell], [cell]], columnWidths: [200], bordered: true, indentPt: -3, beforePt: 12, rowHeights: [20, 30] };
     const { xml } = await documentXml([table], (model) => {
@@ -260,13 +260,22 @@ describe('the DOCX the pages are written as', () => {
     });
     expect(xml).toContain('<w:tblInd w:w="-60" w:type="dxa"/>');
     expect(xml).toContain('<w:tblCellMar><w:left w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar>');
-    expect(xml).toContain('<w:trHeight w:val="400" w:hRule="atLeast"/>');
-    expect(xml).toContain('<w:trHeight w:val="600" w:hRule="atLeast"/>');
+    expect(xml).toContain('<w:trHeight w:val="400" w:hRule="exact"/>');
+    expect(xml).toContain('<w:trHeight w:val="600" w:hRule="exact"/>');
     // The 12 points above the table are a paragraph of that height; the section break after the table stands in a one-point paragraph.
     expect(xml).toContain('<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="exact"/></w:pPr></w:p><w:tbl>');
     expect(xml).toMatch(/<\/w:tbl><w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="20" w:lineRule="exact"\/><w:sectPr>/);
     expect(xml).toContain('<w:type w:val="nextPage"/>');
     expect(xml).toContain('w:top="800"');
+  });
+
+  it('sets the rows of a document that does not keep its pages at least as high as the page drew them', async () => {
+    const cell = { paragraphs: [formatted('cell', { leftPt: 4 })], colSpan: 1, rowSpan: 1, continuation: false, header: false };
+    const table: Block = { type: 'table', rows: [[cell]], columnWidths: [200], bordered: true, rowHeights: [20] };
+    const { xml } = await documentXml([table], (model) => {
+      model.pageFlow = undefined;
+    });
+    expect([...xml.matchAll(/<w:trHeight[^>]*\/>/g)].map((row) => row[0])).toEqual(['<w:trHeight w:val="400" w:hRule="atLeast"/>']);
   });
 
   it('points the first page of a section that omits the running header at an empty part, and keeps the footer', async () => {
