@@ -422,11 +422,10 @@ describe('the guard that keeps binary bytes from being read as text', () => {
 describe('Corel Presentations (.shw), which no office suite filter reads', () => {
   const SHOW = 'office-testcorel.shw';
 
-  it.for(['pdf', 'pptx'])('refuses the real file for %s with a typed error that names the format, not with its bytes read as text', async (target, ctx) => {
-    const { bytes } = await requireRealworldSample(ctx, SHOW);
-    const failure = await dispatchConversion(bytes, 'shw', target, {}, SHOW).catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(ConversionFailedError);
-    expect((failure as Error).message).toMatch(/binary\/compressed container for format '\.shw'/);
+  // The reference converter lists no Corel Presentations source, and the office suite prints the file as the bytes of a wrong document type, so
+  // the PDF and PPTX pairs are not offered (the sweep of 2026-11-20 found them refused as a "binary container").
+  it('offers packing only, not the pairs no engine can write', () => {
+    expect(FORMAT_REGISTRY.shw.targetFormats).toEqual(['zip']);
   });
 
   it('packs the real file as it is for zip', async (ctx) => {

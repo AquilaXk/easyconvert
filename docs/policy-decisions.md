@@ -405,6 +405,8 @@ Security
 354. [CSS escapes of an HTML page are decoded as CSS Syntax says before the scan, and the decoded text goes to LibreOffice](#354-css-escapes-of-an-html-page-are-decoded-as-css-syntax-says-before-the-scan-and-the-decoded-text-goes-to-libreoffice)
 355. [An empty key of a JSON, YAML or TOML document becomes the XML element <_>](#355-an-empty-key-of-a-json-yaml-or-toml-document-becomes-the-xml-element-_)
 356. [An HWP 3.x file is imported by LibreOffice, and the in-process reader refuses it as unsupported](#356-an-hwp-3x-file-is-imported-by-libreoffice-and-the-in-process-reader-refuses-it-as-unsupported)
+357. [The text of an SVG written as EMF or WMF is drawn as outlines by librsvg first, and SVG to CGM is withdrawn](#357-the-text-of-an-svg-written-as-emf-or-wmf-is-drawn-as-outlines-by-librsvg-first-and-svg-to-cgm-is-withdrawn)
+358. [Corel Presentations offers packing only, and CB7 and CBT comic archives are bound into a PDF like a CBZ](#358-corel-presentations-offers-packing-only-and-cb7-and-cbt-comic-archives-are-bound-into-a-pdf-like-a-cbz)
 
 ---
 
@@ -10593,3 +10595,41 @@ Security
   - **A reader of HWP 3.x written here:** the format is documented only in a Korean specification of 1997, and the suite's filter is already the reference.
 - **Verified by**: `tests/hwp3.test.ts` (the typed refusal of the in-process reader, 422; the real Tika file converts to text, DOCX, HTML, Markdown and HWPX with its two words, and to a PDF whose text holds them), `tests/refusal-code-inventory.test.ts` (the new class and its code).
 - **Revisit when**: the worker image's LibreOffice drops its HWP 3.x import filter, or a real file of the old format shows tables or pictures the filter loses.
+
+## 357. The text of an SVG written as EMF or WMF is drawn as outlines by librsvg first, and SVG to CGM is withdrawn
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: fix the refusals a production sweep of the live service found; the reference converter lists `svg` to `emf` and `svg` to `wmf` with Inkscape, which writes the text of a drawing into the metafile, and lists no SVG to CGM)
+- **Decision**: **The text of an SVG written as EMF or WMF is drawn as outlines first, by the program that draws the same SVG as PDF**: a drawing with a `<text>` element is run through `rsvg-convert --format svg` (librsvg, sandboxed, no network, no file; `src/lib/conversions/svg-text-outlines.ts`), whose cairo surface writes every glyph as a path of the font that drew it, and the metafile writers read that drawing as they read any other. A drawing without text never goes through the program and is written exactly as before. A worker without `rsvg-convert` answers a drawing with text with the unavailable-engine error (HTTP 503); the writers' own refusals (a paint server, a stroke under a skew, a picture) still apply to what comes back. **SVG to CGM is withdrawn** from the registry: the reference offers CGM only from DWF, DWG and DXF, and the CGM writer has no outlines of its own to fall back on.
+- **Why**:
+  - **The sweep refused a plain label** (`label.svg`, three lines of text) for EMF, WMF and CGM with "SVG element <text> is not supported by metafile encoders". The metafile writers hold geometry only (entry 187 lists what they refuse), and a text record needs the width of every character in a font the viewer has, which the writers have no reader for.
+  - **The words land where the PDF and PNG put them.** The program that writes the PDF of a drawing lays the text out with the installed fonts, so the metafile shows the same lines at the same places; LibreOffice drawing the WMF and the EMF of `label.svg` shows three bands of ink, one for each line.
+  - **CGM stays withdrawn rather than built.** The reference does not list the pair, so the rule of this repository is to withdraw it instead of building an encoder; DXF to CGM, DWG to CGM and DWF to CGM are untouched (entry 187).
+- **Measured**: `label.svg` (494 bytes) written as EMF is 6,064 bytes and as WMF 5,738 bytes on the Mac; a drawing of one rectangle stays at the size it had.
+- **Trade-offs**:
+  - **The text of the metafile cannot be edited**: it is outlines, as in a PDF with its fonts turned to curves; the reference keeps it as text records. A viewer without the font shows the same shapes, which the reference's records would not.
+  - **A drawing with text takes one more process** (about 20 ms) before the geometry is read.
+- **Alternatives rejected**:
+  - **Text records in the EMF and WMF writers:** a font choice, a width table and the alignment rules of two record sets, for a pair of formats the quality benchmark does not rank; the outlines are what a viewer shows either way.
+  - **Reading the glyphs from the font files in process:** it repeats the layout (fallback, kerning, bidirectional runs) that the renderer already does for the PDF.
+- **Verified by**: `tests/svg-text-metafile.test.ts` (the detector; the EMF and WMF of `label.svg` are far larger than the drawing without its text; LibreOffice draws both with three bands of ink; a drawing without text is written as before), `tests/svg-metafile-geometry.test.ts` (the writers still refuse a `<text>` they are handed).
+- **Revisit when**: the benchmark ranks EMF or WMF written from SVG (then text records are measured against the outlines), or a worker image drops `rsvg-convert`.
+
+## 358. Corel Presentations offers packing only, and CB7 and CBT comic archives are bound into a PDF like a CBZ
+
+- **Date**: 2026-11-20
+- **Status**: Accepted (QA request: fix the refusals a production sweep of the live service found; the reference converter lists no Corel Presentations source, and no comic archive of 7z or TAR)
+- **Decision**: **Corel Presentations (`shw`) offers packing as a ZIP only: the PDF and PPTX pairs are withdrawn from the registry**, and **a `cb7` or `cbt` comic archive is bound into a PDF as a CBZ is** (`readComicPages` in `src/lib/conversions/comic-book.ts`: the 7z reader and the TAR reader of the archive code unpack the pages; the pages are the images in natural name order, and an archive with none is refused with "The CB7 archive holds no page images."). The registry offers PDF and ZIP for both, as before.
+- **Why**:
+  - **No engine writes a PDF or a PPTX from a `.shw` file.** The sweep refused `office-testcorel.shw` for PDF as a "binary container" (its bytes are not text). LibreOffice 24.2 does not load it, and 26.8 opens it as a Writer document of the wrong type and prints a 998 KB PDF that is not the show. The reference lists no `shw` source at all, so there is nothing to follow, and an honest registry offers what can be written: the file as it is, in a ZIP (the pair that worked).
+  - **The comic archives were the same pair as CBZ under another container.** The archive code already unpacks 7z and TAR, and a CB7 volume of a collection is already read as a book; the PDF pair was advertised and refused as a "binary container" by the plain-text reader, because the table of comic sources named only CBZ and CBR. The reference lists neither format; the pair is kept because it needs no new reader, only the two names in the table (QA request, item 2 of the sweep list).
+- **Measured**: `comic.cb7` and `comic.cbt` of two JPEGs convert to 2-page PDFs of 2,725 bytes with the pages in the order of their names; `office-testcorel.shw` (76,800 bytes) still packs to a 10,375 byte ZIP.
+- **Trade-offs**:
+  - **`shw` to `pdf` and `shw` to `pptx` are gone for callers that had them** (they answered 400 for every real file, so none worked).
+  - **A comic archive of 7z or TAR that holds several books is bound as one**, like a CBZ.
+- **Alternatives rejected**:
+  - **Sending the file to LibreOffice:** it does not read the format (above).
+  - **A Corel Presentations reader:** the format has no public specification that a converter of this size could follow, and the reference does not offer it.
+  - **Withdrawing `cb7` and `cbt` to PDF with the reference's list:** the pair is one name in a table.
+- **Verified by**: `tests/comic-cb7-cbt.test.ts` (a CB7 and a CBT of three JPEGs named out of order give a PDF whose pages `pdfimages` lists in natural order; an archive without a page image is refused), `tests/office-suite-typed-failures.test.ts` (the `shw` registry entry offers only `zip`, and the real file still packs as it is), `tests/readme-registry-drift.test.ts` (the counts of the README follow the registry).
+- **Revisit when**: a reader of Corel Presentations files (LibreOffice or another) reads a real `.shw` show.
