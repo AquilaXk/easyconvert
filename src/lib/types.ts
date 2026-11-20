@@ -191,12 +191,7 @@ export interface ConversionOptions {
    * when the data is missing; `false` never looks.
    */
   ocrDetectOrientation?: boolean;
-  /**
-   * Level a skewed page in the searchable PDF (`ocrmypdf --deskew`): the page content, scan and text layer, is turned by
-   * the measured skew (up to 20 degrees, from 0.25) without resampling, the page grows when a word would leave it, and
-   * a text extractor that regroups words by position reads the lines in order. Off by default: the page is then written
-   * as scanned. A page with annotations, or whose lines do not agree on one skew, is left as it is.
-   */
+  /** Level skewed pages of a searchable PDF (`ocrmypdf --deskew`, policy entry 370); off by default, the page is then as scanned. */
   ocrDeskew?: boolean;
   /**
    * Also return the OCR engine's own hOCR or ALTO of each recognized PDF page in the result metadata

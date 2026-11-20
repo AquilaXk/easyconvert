@@ -767,6 +767,7 @@
   "tests/ocr-onnx-route.test.ts": 1.4,
   "tests/ocr-onnx.test.ts": 0.1,
   "tests/ocr-orientation.test.ts": 81.8,
+  "tests/ocr-output-deskew.test.ts": 16,
   "tests/ocr-page-image-guard.test.ts": 1.2,
   "tests/ocr-page-render.test.ts": 3.2,
   "tests/ocr-page-segmentation.test.ts": 8.3,

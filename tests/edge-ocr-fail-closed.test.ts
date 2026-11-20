@@ -157,6 +157,13 @@ describe('runClientEdgeOcr', () => {
     expect(createWorker).not.toHaveBeenCalled();
   });
 
+  it('rejects a request for a levelled page, which the browser tier writes as scanned', async () => {
+    const file = new File([await scanPng()], 'scan.png', { type: 'image/png' });
+
+    await expect(runClientEdgeOcr(file, { ocrEnabled: true, ocrDeskew: true })).rejects.toThrow(/level/i);
+    expect(createWorker).not.toHaveBeenCalled();
+  });
+
   it('rejects PDF input, which needs page rasterization the edge tier does not have', async () => {
     const doc = await PDFDocument.create();
     doc.addPage([300, 500]);
