@@ -60,6 +60,8 @@ export interface DetectedTable {
   box: Box;
   pageNumber: number;
   kind: 'lattice' | 'stream';
+  /** The page's y of the top of each row and of the bottom of the last: a ruled table's grid lines, a stream table's row tops. */
+  rowEdges?: number[];
 }
 
 /** Everything on one baseline (several lines when the page has columns), left to right. */

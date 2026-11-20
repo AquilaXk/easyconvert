@@ -86,7 +86,7 @@ function generateBlocks(random: () => number): PageBlock[] {
       previousTable = table;
       blocks.push({ kind: 'table', table, ...meta });
     } else {
-      blocks.push({ kind: 'image', image: { x: 0, y: 0, width: pick([10, 20]), height: 10, pixelWidth: 1, pixelHeight: 1 }, imageId: i, ...meta });
+      blocks.push({ kind: 'image', image: { x: 0, y: 0, width: pick([10, 20]), height: 10, pixelWidth: 1, pixelHeight: 1 }, imageId: i, pageNumber: page, ...meta });
     }
   }
   return blocks;

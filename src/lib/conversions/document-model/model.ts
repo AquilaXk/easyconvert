@@ -98,6 +98,29 @@ export interface PageShape {
   pageRelative?: true;
 }
 
+/**
+ * How a PDF page sets a paragraph, for a writer that keeps the page's spacing (a document read with `pages`). Lengths are in points;
+ * the paragraph's lines have an exact height, and `beforePt` is the gap above the first line's box from the box of what stands above it.
+ */
+export interface ParagraphFormat {
+  beforePt: number;
+  lineHeightPt: number;
+  /** Indent of the paragraph from the left margin. */
+  leftPt: number;
+  /** Indent of the first line against `leftPt`; negative hangs it. */
+  firstLinePt: number;
+  /** Indent from the right margin, which makes the lines wrap where the page's did. */
+  rightPt: number;
+  align?: 'left' | 'center' | 'right' | 'justify';
+  /**
+   * The paragraph stood beside text that the flow has already passed (the pieces of a brace, a line set in a margin): it is set as a
+   * frame at this place on the page, and takes no height from the flow. `xPt` and `yPt` are from the page's top left corner.
+   */
+  frame?: { xPt: number; yPt: number; widthPt: number };
+  /** The paragraph is the first of a column of its page, so a writer starts a new column before it. */
+  columnBreakBefore?: true;
+}
+
 export interface ParagraphBlock {
   type: 'paragraph';
   runs: Inline[];
@@ -111,6 +134,7 @@ export interface ParagraphBlock {
   shapes?: PageShape[];
   /** Height in points the paragraph holds open for the shapes that hang on it, when it has no text. */
   spacerPt?: number;
+  format?: ParagraphFormat;
 }
 
 export interface HeadingBlock {
@@ -125,6 +149,7 @@ export interface HeadingBlock {
   shading?: string;
   /** Shapes of the page that hang on this heading (see `PageShape`). */
   shapes?: PageShape[];
+  format?: ParagraphFormat;
 }
 
 export interface ListLevelFormat {
@@ -145,6 +170,7 @@ export interface ListItem {
   value: number;
   /** The marker as the source renders it ("1.1.", "III)", "•") when that differs from the one `levels` gives. */
   marker?: string;
+  format?: ParagraphFormat;
 }
 
 export interface ListBlock {
@@ -180,6 +206,12 @@ export interface TableBlock {
   bordered: boolean;
   /** Colour of the lines of a ruled table as six hex digits and their width in points, when the source states them (black, half a point otherwise). */
   border?: { color: string; widthPt: number };
+  /** Gap in points above the table from what stands above it (a document read with `pages`). */
+  beforePt?: number;
+  /** Indent of the table's left edge from the left margin, in points (a document read with `pages`). */
+  indentPt?: number;
+  /** The least height of each row in points, as the page drew them (a document read with `pages`). */
+  rowHeights?: number[];
 }
 
 export interface ImageBlock {
@@ -189,6 +221,8 @@ export interface ImageBlock {
   widthPt: number;
   heightPt: number;
   alt?: string;
+  /** Where the page set the picture, in points from its top left corner (a document read with `pages`): it is set there and takes no room from the text. */
+  position?: { x: number; y: number };
 }
 
 /** Preformatted text, lines separated by "\n". */
@@ -221,6 +255,11 @@ export interface Section {
   blocks: Block[];
   /** How this section starts; absent means continuous, which is how the PDF layout analysis splits a page. */
   breakType?: SectionBreakType;
+  /** The page of this section shows no running header or footer although the document has them (a first page without a letterhead). */
+  omitsHeader?: true;
+  omitsFooter?: true;
+  /** Top margin of the page this section starts, in points, where it differs from the document's (a page that starts higher than the others). */
+  marginTopPt?: number;
 }
 
 export type ImageFormat = 'jpeg' | 'png' | 'gif' | 'bmp' | 'tiff' | 'svg';
@@ -262,10 +301,15 @@ export interface DocumentModel {
   /** Mean size in points of the headings of each level, index 0 for level 1; absent levels are not used. */
   headingSizes: (number | undefined)[];
   pageCount: number;
+  /** The blocks keep the spacing, indents and page starts of the PDF pages they were read from (`ParagraphFormat`), so a writer sets no spacing of its own. */
+  pageFlow?: true;
   /** The source states its page size and margins (a DOCX does, Markdown does not), so a writer that draws pages uses them. */
   pageStated?: boolean;
   /** Running header lines repeated at the top of the pages (as on the first page that has them). */
   pageHeader?: Inline[][];
+  /** Distance in points from the top edge of the page to the running header, and from the bottom edge to the running footer (default one half inch), when the source places them. */
+  headerDistancePt?: number;
+  footerDistancePt?: number;
   /** Running footer lines repeated at the bottom of the pages (as on the first page that has them). */
   pageFooter?: Inline[][];
   footnotes?: NoteDefinition[];

@@ -30,6 +30,8 @@ export interface ExtractPdfOptions {
   images?: boolean;
   /** Read the colours of the text, rules and shapes too (needed by a writer that draws them). */
   colour?: boolean;
+  /** Keep the pages: the structure carries each page's spacing and indents and starts a section on every page (see `LayoutOptions`). */
+  pages?: boolean;
 }
 
 export interface ExtractedPdfDocument {
@@ -147,7 +149,7 @@ export function documentFromJob(job: PdfTextJobResult, options: ExtractPdfOption
   if (unmappedPages.length > 0 && !someTextReads && !omit) throw new PdfTextUnmappedError(unmappedPages);
   const trimmed = job.content.filter((page) => reduced.has(page.pageNumber) && (reduced.get(page.pageNumber) as PdfPageContent).items.length < page.items.length);
   reportLeftOut(job.content, pages, unreadable, trimmed.map((page) => page.pageNumber), !omit);
-  const { model, tables, pageText } = layoutPdf(pages, job.fonts);
+  const { model, tables, pageText } = layoutPdf(pages, job.fonts, { pages: options.pages });
   // A page is read for its geometry and analysis when its text is, and not when OCR is to recognize it: one left out, or one that
   // kept its text without the runs of a Type 3 font, whose characters the geometry and the analysis (read from every run) would carry.
   const recognized = new Set([...unreadable, ...trimmed.map((page) => page.pageNumber)]);
