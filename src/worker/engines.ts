@@ -90,8 +90,7 @@ import {
   RAW_DECODE_MAX_OUTPUT_BYTES, assertCompleteDecodedImage, assertDecodedRawWhole, assertRawSensorPixels, assertWithinPixelCap,
   developedRawPicture, readDecodedTiffLayout,
 } from './raw-decoded-tiff';
-import { dataCorruptedWarning, decoderWarningOffset } from './raw-decoder-report';
-import { recordEngineOutput } from '../lib/engine-output';
+import { dataCorruptedWarning, decoderWarningOffset, recordDecoderOutput } from './raw-decoder-report';
 import {
   RAW_DECODE_DEFAULT_TIMEOUT_MS, RAW_DECODE_FLAGS, RAW_DECODE_MAX_TIMEOUT_MS, RAW_DECODE_MEMORY_LIMIT_MB, RAW_DECODE_UNRECOGNIZED_PATTERN, rawDecoderFor, decodeWithSnapshotFallback,
 } from './raw-decode-settings';
@@ -1682,7 +1681,7 @@ export async function convertWithNativeRaw(
         throw new RawDecodeError(`Native RAW decoder exceeded its output limit or memory limit on the .${src} file`);
       }
       if (err instanceof SandboxedProcessError) {
-        recordEngineOutput('dcraw_emu', 'decode', err.stderr);
+        recordDecoderOutput(err.stderr);
         throw new RawDecodeError(
           `Native RAW decoder rejected the .${src} file`,
           RAW_DECODE_UNRECOGNIZED_PATTERN.test(err.stderr)

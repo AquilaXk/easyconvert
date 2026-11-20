@@ -13,6 +13,7 @@ import { extractSfntFromMacBinary, extractSfntFromResourceFork, looksLikeSfnt } 
 import { isType1Format, type1FileToOpenType } from './font-fontforge';
 import { parseCff, type CffContour, type CffGlyph, type CffMatrix } from './font-cff';
 import { readGlyfOutlines } from './font-glyf';
+import { HMTX_BEARING_ONLY_BYTES, HMTX_LONG_METRIC_BYTES, compactHmtx, shortestLongMetrics } from './font-hmtx';
 import { WOFF2_KNOWN_TAGS, countWoff2Fonts, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, encodeWoff2Container, encodeWoff2ContainerAsync, type Woff2DecodedFont } from './font-woff2';
 import { isXmlCharacter, parseSvgFontDocument, type SvgFont } from './font-svg';
 import { parseSvgPathData, SvgPathDataError, type SvgSubpath } from './font-svg-path';
@@ -2873,10 +2874,6 @@ const HHEA_MIN_LSB_OFFSET = 12;
 const HHEA_MIN_RSB_OFFSET = 14;
 const HHEA_X_MAX_EXTENT_OFFSET = 16;
 const HHEA_NUMBER_OF_HMETRICS_OFFSET = 34;
-/** hmtx: each long metric is an advance width (u16) and a left side bearing (i16); later glyphs have a bearing only. */
-const HMTX_LONG_METRIC_BYTES = 4;
-const HMTX_BEARING_ONLY_BYTES = 2;
-const HMTX_LSB_OFFSET = 2;
 const MIN_UNITS_PER_EM = 16;
 const MAX_UNITS_PER_EM = 16384;
 const DEFAULT_UNITS_PER_EM = 1000;
@@ -3077,33 +3074,12 @@ class HorizontalMetricsBuilder {
   private minRsb = INT16_MAX;
   private xMaxExtent = INT16_MIN;
 
-  /**
-   * The number of long metrics hhea declares: the advance of the last glyph is repeated by every glyph after the long metrics, so
-   * the run of glyphs at the end that share it is written as left side bearings only. This is the form every font tool writes, and
-   * the only one fontTools reads back from a WOFF2 file (it compiles a reconstructed hmtx in this form and then finds its hhea
-   * declaring more metrics than the table holds).
-   */
   get numberOfMetrics(): number {
-    const last = this.advances.length - 1;
-    let count = this.advances.length;
-    while (count > 1 && this.advances[count - 2] === this.advances[last]) count--;
-    return count;
+    return shortestLongMetrics(this.advances);
   }
 
-  /** hmtx: a long metric (advance, left side bearing) for each of the first `numberOfMetrics` glyphs and a left side bearing for each glyph after. */
   get table(): Buffer {
-    const longMetrics = this.numberOfMetrics;
-    const out = Buffer.alloc(longMetrics * HMTX_LONG_METRIC_BYTES + (this.advances.length - longMetrics) * HMTX_BEARING_ONLY_BYTES);
-    let at = 0;
-    for (let glyph = 0; glyph < this.advances.length; glyph++) {
-      if (glyph < longMetrics) {
-        out.writeUInt16BE(this.advances[glyph], at);
-        at += HMTX_LSB_OFFSET;
-      }
-      out.writeInt16BE(this.bearings[glyph], at);
-      at += HMTX_BEARING_ONLY_BYTES;
-    }
-    return out;
+    return compactHmtx(this.advances, this.bearings);
   }
 
   add(advance: number, bounds: GlyphBounds | null): void {

@@ -829,3 +829,23 @@ export function ownSignatureVerdict(ext: string, buf: Uint8Array, sniffed?: stri
     (startsWithBytes(buf, CFBF_MAGIC) && isNonOfficeCompoundFile(buf));
   return isForeignOwnSignature ? false : undefined;
 }
+
+/**
+ * Format ids that are files of another format under a name of their own: a PDF/A file is a PDF, a generic presentation an Office Open
+ * XML presentation, an animated WebP a WebP, an ALAC file an MP4 audio file, a 7-Zip tarball a 7-Zip archive, a Keynote bundle a Keynote
+ * package. The spoof check applies the signature rules of the format the id stands for.
+ */
+const SIGNATURE_FORMAT_OF_ID: Readonly<Record<string, string>> = {
+  pdfa: 'pdf',
+  presentation: 'pptx',
+  webpvideo: 'webp',
+  alac: 'm4a',
+  'tar.7z': '7z',
+  keynotes: 'key',
+};
+
+/** The format whose signature rules hold a file declared as `declaredExtensionOrFormatId`: the name without its dot and in lower case, or the format an alias id stands for. */
+export function signatureFormatOf(declaredExtensionOrFormatId: string): string {
+  const declared = declaredExtensionOrFormatId.toLowerCase().replace(/^\./, '').trim();
+  return Object.hasOwn(SIGNATURE_FORMAT_OF_ID, declared) ? SIGNATURE_FORMAT_OF_ID[declared] : declared;
+}

@@ -107,7 +107,6 @@ import {
 } from './archive-split';
 import {
   SandboxedBufferLimitError,
-  SandboxedProcessError,
   executeSandboxedBinary,
   resolveSandboxedCommand,
   rethrowSandboxUnavailable, execFileSyncConfined,
@@ -3163,16 +3162,13 @@ async function inspectArchiveVia7zCli(buffer: Buffer, format: '7z' | 'rar', p7z:
     } catch (err: any) {
       if (signal?.aborted) throw err;
       if (err instanceof SandboxedBufferLimitError || err?.code === 'ENOBUFS') {
-        throw new UnsafeArchiveError(
-          'entry-count',
-          `Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`
-        );
+        throw new UnsafeArchiveError('entry-count', `Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
       }
       // Only 7-Zip's own stderr lines decide: stdout carries the prompt and entry names on every listing.
       if (isArchivePasswordFailure(archiveFailureStderr(err))) {
         throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
       }
-      recordEngineOutput('7-Zip', 'inspect', err instanceof SandboxedProcessError ? err.stderr : String(err?.message ?? err));
+      recordEngineOutput('7-Zip', 'inspect', archiveFailureStderr(err) || String(err?.message ?? err));
       throw new ConversionFailedError(`Failed to inspect ${format} archive.`);
     }
 

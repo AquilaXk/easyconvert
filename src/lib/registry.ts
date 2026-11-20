@@ -1,6 +1,6 @@
 import { FormatCategory, FormatDefinition, ConversionFailedError, FileExtensionSpoofError } from './types';
 import { SUBTITLE_DEFINITIONS } from './registry-subtitles';
-import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, GZIP_EXTENSIONS, ID3_MAGIC, id3v2Payload, isGzipFamilyCompatible, isMpegAudioSync, isPostScriptCompatible, lacksOwnSignature, ownSignatureVerdict, refusedWithoutSignature, sniffAacContainer, sniffFixedSignature, sniffZipPackage, startsWithBytes } from './format-signatures';
+import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, GZIP_EXTENSIONS, ID3_MAGIC, id3v2Payload, isGzipFamilyCompatible, isMpegAudioSync, isPostScriptCompatible, lacksOwnSignature, ownSignatureVerdict, refusedWithoutSignature, sniffAacContainer, sniffFixedSignature, sniffZipPackage, startsWithBytes, signatureFormatOf } from './format-signatures';
 
 export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(Object.create(null) as Record<string, FormatDefinition>, {
   // 1. AUDIO (24 formats)
@@ -3150,20 +3150,6 @@ const ZIP_PACKAGE_MIME_OF_EXTENSION: Readonly<Record<string, string>> = {
 };
 
 /**
- * Format ids that are files of another format under a name of their own: a PDF/A file is a PDF, a generic presentation an Office Open
- * XML presentation, an animated WebP a WebP, an ALAC file an MP4 audio file, a 7-Zip tarball a 7-Zip archive, a Keynote bundle a Keynote
- * package. The spoof check applies the signature rules of the format the id stands for.
- */
-const SIGNATURE_FORMAT_OF_ID: Readonly<Record<string, string>> = {
-  pdfa: 'pdf',
-  presentation: 'pptx',
-  webpvideo: 'webp',
-  alac: 'm4a',
-  'tar.7z': '7z',
-  keynotes: 'key',
-};
-
-/**
  * Verifies whether the buffer's initial magic bytes are compatible with the declared format.
  * Rejects spoofed files (e.g. PDF masquerading as PNG, or PNG masquerading as DOCX) fail-closed.
  */
@@ -3172,8 +3158,7 @@ export function isFormatCompatibleWithMagicBytes(
   declaredExtensionOrFormatId: string
 ): boolean {
   if (!buffer || buffer.length === 0) return true;
-  const declared = declaredExtensionOrFormatId.toLowerCase().replace(/^\./, '').trim();
-  const cleanExt = Object.hasOwn(SIGNATURE_FORMAT_OF_ID, declared) ? SIGNATURE_FORMAT_OF_ID[declared] : declared;
+  const cleanExt = signatureFormatOf(declaredExtensionOrFormatId);
   const sniffed = sniffMimeTypeFromMagicBytes(buffer);
 
   // Reject executable binaries immediately (Security Gate)

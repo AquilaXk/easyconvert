@@ -30,6 +30,11 @@ export function dataCorruptedWarning(offset: number): string {
   return `The RAW decoder reported corrupted data at byte ${offset} of the file; some samples of the picture may be wrong.`;
 }
 
+/** Records what the decoder printed when it refused a file; the error that reaches the caller does not carry it. */
+export function recordDecoderOutput(stderr: string): void {
+  recordEngineOutput('dcraw_emu', 'decode', stderr);
+}
+
 export interface DecoderReport {
   src: string;
   /** The decoder's stderr, trimmed. */
@@ -46,7 +51,7 @@ export function decoderWarningOffset(report: DecoderReport): number | null {
   if (report.stderr === '') return null;
   const offset = report.src === 'dng' ? dataCorruptedOffset(report.stderr, report.inputPath) : null;
   if (offset === null) {
-    recordEngineOutput('dcraw_emu', 'decode', report.stderr);
+    recordDecoderOutput(report.stderr);
     throw new RawDecodeError(`Native RAW decoder reported a problem with the .${report.src} file.`);
   }
   return offset;

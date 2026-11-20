@@ -1,5 +1,7 @@
 import type { ConversionOptions } from '../types';
-import type { InputStream } from './media-ffprobe';
+import { resolveOutputDuration } from './media-ffmpeg-container-args';
+import { probeInputStreams, resolveFfprobeBinary, type InputStream } from './media-ffprobe';
+import { mediaInputArgs, type MediaInput } from './media-process';
 
 /**
  * Same-format pairs of containers FFmpeg has no ready encoder settings for: the file is written again into its own
@@ -86,4 +88,32 @@ export function rewrapStreamArgs(container: RewrapContainer, streams: readonly I
   const video = streams.find((stream) => stream.type === 'video' && !stream.attachedPicture);
   const videoArgs = codecArgs(video, container.carriedVideo, container.videoFallback, ['-c:v', 'copy']);
   return ['-map', '0:v:0?', '-map', '0:a:0?', ...videoArgs, ...audioArgs];
+}
+
+/** What a rewrap reads of the argument build: the request and the three argument lists it fills. */
+interface RewrapContext {
+  input: MediaInput;
+  tgt: string;
+  options: ConversionOptions;
+  ffmpegBin?: string | null;
+  globalArgs: string[];
+  inputArgs: string[];
+  outputArgs: string[];
+}
+
+/**
+ * The arguments that write a same-format file again into its own container (see above), or undefined when the pair is not such a
+ * rewrap. `addTrimInputArgs` adds the trim of the request to the input arguments.
+ */
+export async function rewrapArguments(ctx: RewrapContext, outputPath: string, addTrimInputArgs: (ctx: RewrapContext) => void): Promise<string[] | undefined> {
+  const { input, tgt, options, ffmpegBin, globalArgs, inputArgs, outputArgs } = ctx;
+  const container = rewrapContainerFor(input.format, tgt, options);
+  if (container === undefined) return undefined;
+  addTrimInputArgs(ctx);
+  inputArgs.push(...mediaInputArgs(input));
+  const outputDuration = await resolveOutputDuration(options, input, ffmpegBin);
+  if (outputDuration !== undefined) outputArgs.push('-t', String(outputDuration));
+  const streams = await probeInputStreams(input, resolveFfprobeBinary(ffmpegBin), options.signal);
+  outputArgs.push(...rewrapStreamArgs(container, streams), '-f', container.muxer);
+  return [...globalArgs, ...inputArgs, ...outputArgs, outputPath];
 }
