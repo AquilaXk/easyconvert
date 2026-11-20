@@ -6,7 +6,7 @@ import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { MAX_INPUT_PIXELS_ENV } from '../src/lib/conversions/image-input-limit-config';
 import { findMagick, findMagickPolicyDirectory, MAGICK_PATH_ENV, MAGICK_POLICY_DIR_ENV } from '../src/lib/conversions/image-magick-cli';
 import { encodePsd } from '../src/lib/conversions/psd-writer';
-import { buildDdsArgb, buildDdsDxt1, buildPcx, buildPnm, buildRleTga, buildTga, dxt1Palette, type RgbaPixel } from './helpers/image-format-builders';
+import { buildRawPsb, buildDdsArgb, buildDdsDxt1, buildPcx, buildPnm, buildRleTga, buildTga, dxt1Palette, type RgbaPixel } from './helpers/image-format-builders';
 import { decodeRgba, maxSampleDifference, rgbaBytes, sixteenBitSamples } from './helpers/image-pixels';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipUnless } from './helpers/strict-skip';
@@ -107,19 +107,7 @@ describe.skipIf(needsMagick)('legacy raster formats with known pixels', () => {
   });
 
   it('decodes a Photoshop Large Document (PSB, version 2 of the PSD header) with raw channels', async () => {
-    // Version 2 widens the length of the layer and mask section to 8 bytes (and the RLE row counts to 4, unused here with raw channels).
-    const header = Buffer.alloc(26);
-    header.write('8BPS', 0, 'latin1');
-    header.writeUInt16BE(2, 4);
-    header.writeUInt16BE(3, 12);
-    header.writeUInt32BE(2, 14);
-    header.writeUInt32BE(2, 18);
-    header.writeUInt16BE(8, 22);
-    header.writeUInt16BE(3, 24);
-    const sections = Buffer.alloc(4 + 4 + 8);
-    const raw = Buffer.alloc(2);
-    const planes = [0, 1, 2].map((channel) => Buffer.from(FOUR_COLOURS.map((p) => [p.r, p.g, p.b][channel])));
-    const psb = Buffer.concat([header, sections, raw, ...planes]);
+    const psb = buildRawPsb(2, 2, FOUR_COLOURS);
     const decoded = await decodeRgba(await toPng(psb, 'psb'));
     expect([decoded.width, decoded.height]).toEqual([2, 2]);
     expect(decoded.data).toEqual(rgbaBytes(FOUR_COLOURS));

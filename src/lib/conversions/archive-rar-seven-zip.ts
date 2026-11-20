@@ -6,7 +6,7 @@ import { cleanupDirectoryTree, extractArchiveContainedSync, type ArchiveExtracti
 import { canonicalEntryPath } from './archive-entry-path';
 import { matchArchiveGlob } from './archive-glob';
 import { readSandboxOutput } from '../security/sandbox-output';
-import type { ConversionFailedError } from '../types';
+import { ConversionFailedError, UnsupportedArchiveMethodError } from '../types';
 
 /** Longest one 7-Zip extraction of a RAR archive may run. */
 const RAR_EXTRACT_TIMEOUT_MS = 30_000;
@@ -14,7 +14,9 @@ const RAR_EXTRACT_TIMEOUT_MS = 30_000;
 /**
  * A RAR archive extracted by 7-Zip, for an archive the in-process reader cannot serve (a compressed RAR 4.x, any RAR 5.0) on a host without
  * `unrar`: the worker image has 7-Zip, which reads both generations. The same checks as every 7-Zip extraction apply (listing vetted, sizes and
- * ratio capped, the tree verified after the run). Without a 7-Zip (`p7zBin` null) the caller's own refusal is thrown.
+ * ratio capped, the tree verified after the run). Without a 7-Zip (`p7zBin` null), or with one that has no RAR decoder (the distributions'
+ * packages leave it out: it fails on the data of the archive, with the answer "Unsupported Method" or with no typed answer at all), the
+ * caller's own refusal is thrown, which names the program that is missing.
  */
 export function extractRarWithSevenZipOr(
   refusal: ConversionFailedError,
@@ -31,17 +33,24 @@ export function extractRarWithSevenZipOr(
     fs.writeFileSync(archivePath, rarBuffer);
     const extractDir = path.join(workDir, 'out');
     fs.mkdirSync(extractDir, { recursive: true });
-    const tree = extractArchiveContainedSync({
-      p7zBin,
-      archivePath,
-      extractDir,
-      cwd: workDir,
-      timeoutMs: RAR_EXTRACT_TIMEOUT_MS,
-      maxBuffer: limits.MAX_UNCOMPRESSED_SIZE,
-      limits,
-      label: 'RAR archive',
-      password: options.password,
-    });
+    let tree: ReturnType<typeof extractArchiveContainedSync>;
+    try {
+      tree = extractArchiveContainedSync({
+        p7zBin,
+        archivePath,
+        extractDir,
+        cwd: workDir,
+        timeoutMs: RAR_EXTRACT_TIMEOUT_MS,
+        maxBuffer: limits.MAX_UNCOMPRESSED_SIZE,
+        limits,
+        label: 'RAR archive',
+        password: options.password,
+      });
+    } catch (err) {
+      // A typed answer about the archive (password, limits, damage) stands; the lack of a decoder is the caller's refusal.
+      if (err instanceof ConversionFailedError && !(err instanceof UnsupportedArchiveMethodError)) throw err;
+      throw refusal;
+    }
     const extracted: { filename: string; buffer: Buffer }[] = [];
     for (const file of tree.files) {
       const filename = canonicalEntryPath(file.relPath);

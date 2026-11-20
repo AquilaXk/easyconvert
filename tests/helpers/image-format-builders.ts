@@ -192,3 +192,22 @@ export function dxt1Palette(color0: number, color1: number): RgbaPixel[] {
     rgba(c0.map((v, i) => mix(v, c1[i], 1, 2))),
   ];
 }
+
+/**
+ * A Photoshop Large Document (PSB, version 2 of the PSD header) of raw RGB channels: the header, empty colour mode and image resource
+ * sections, a layer and mask section whose length is 8 bytes wide in this version, then the planes (red, green, blue) uncompressed.
+ */
+export function buildRawPsb(width: number, height: number, pixels: ReadonlyArray<{ r: number; g: number; b: number }>): Buffer {
+  const header = Buffer.alloc(26);
+  header.write('8BPS', 0, 'latin1');
+  header.writeUInt16BE(2, 4);
+  header.writeUInt16BE(3, 12);
+  header.writeUInt32BE(height, 14);
+  header.writeUInt32BE(width, 18);
+  header.writeUInt16BE(8, 22);
+  header.writeUInt16BE(3, 24);
+  const sections = Buffer.alloc(4 + 4 + 8);
+  const rawCompression = Buffer.alloc(2);
+  const planes = (['r', 'g', 'b'] as const).map((channel) => Buffer.from(pixels.map((pixel) => pixel[channel])));
+  return Buffer.concat([header, sections, rawCompression, ...planes]);
+}
