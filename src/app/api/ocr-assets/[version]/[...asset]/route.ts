@@ -5,6 +5,7 @@ import {
   OCR_ASSET_CSP,
   loadVerifiedOcrAsset,
 } from '@/lib/edge-ocr/assets';
+import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -12,8 +13,8 @@ export const dynamic = 'force-dynamic';
 const HTTP_NOT_MODIFIED = 304;
 const HTTP_NOT_FOUND = 404;
 const HTTP_INTERNAL_SERVER_ERROR = 500;
-const PROBLEM_NOT_FOUND = 'https://api.easyconvert.io/problems/not-found';
-const PROBLEM_OCR_ASSET_INTEGRITY = 'https://api.easyconvert.io/problems/ocr-asset-integrity-failed';
+const PROBLEM_NOT_FOUND = `${PROBLEM_TYPE_BASE}not-found`;
+const PROBLEM_OCR_ASSET_INTEGRITY = `${PROBLEM_TYPE_BASE}ocr-asset-integrity-failed`;
 
 function matchesIfNoneMatch(ifNoneMatch: string | null, etag: string): boolean {
   if (!ifNoneMatch) return false;

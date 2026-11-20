@@ -7,6 +7,7 @@ import {
 } from '../shared';
 import type { StorageProviderType } from '@/lib/storage/credentials-vault';
 import { UNAVAILABLE_STORAGE_PROVIDERS } from '@/lib/storage/adapters';
+import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 
 /** Every credential provider type; the Record type makes the compiler flag a missing one. */
 const ALL_STORAGE_PROVIDER_TYPES: Record<StorageProviderType, true> = {
@@ -23,7 +24,7 @@ const STORAGE_PROVIDER_TYPES = Object.keys(ALL_STORAGE_PROVIDER_TYPES).filter(
   (type) => !UNAVAILABLE_STORAGE_PROVIDERS.has(type)
 );
 
-const BYOS_INVALID_ENDPOINT_TYPE = 'https://api.easyconvert.io/problems/byos-invalid-endpoint';
+const BYOS_INVALID_ENDPOINT_TYPE = `${PROBLEM_TYPE_BASE}byos-invalid-endpoint`;
 const HTTP_BAD_REQUEST = 400;
 
 const invalidEndpointExample = {

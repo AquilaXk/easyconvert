@@ -2,10 +2,11 @@ import type { NextRequest, NextResponse } from 'next/server';
 import { storageProvider } from '../storage';
 import { STORAGE_FULL_RETRY_AFTER_SECONDS, admitsNewFiles } from '../storage/retention-service';
 import { createProblemDetailsResponse } from './problem-details';
+import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 
 const HTTP_SERVICE_UNAVAILABLE = 503;
 export const STORAGE_FULL_DETAIL = 'The server is out of disk space for new files. Retry the request shortly.';
-export const STORAGE_FULL_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/storage-full';
+export const STORAGE_FULL_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}storage-full`;
 /** The problem `instance` of a request built without a URL, as some callers in tests do. */
 const FALLBACK_INSTANCE = '/api';
 

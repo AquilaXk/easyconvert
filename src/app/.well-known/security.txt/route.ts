@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { PUBLIC_DEFAULT_ORIGIN, siteMetadataBase } from '@/i18n/metadata';
+import { siteMetadataBase } from '@/i18n/metadata';
+import { PUBLIC_DEFAULT_ORIGIN } from '@/lib/public-origin';
 import { routing } from '@/i18n/routing';
 
 const SECURITY_CONTACT = 'mailto:support@aquilaxk.site';

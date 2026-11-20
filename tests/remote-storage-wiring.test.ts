@@ -166,7 +166,7 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
       const put = await fetch(init.parts[0].uploadUrl, { method: 'PUT', body: PDF });
       const res = await complete(cookie, { uploadId: init.uploadId, parts: [{ partNumber: 1, etag: put.headers.get('etag') }] });
       expect(res.status).toBe(400);
-      expect((await res.json()).type).toBe('https://api.easyconvert.io/problems/unknown-format');
+      expect((await res.json()).type).toBe('https://convert.aquilaxk.site/api-docs/errors#unknown-format');
       expect(server.objects.has(init.key)).toBe(false);
     });
 

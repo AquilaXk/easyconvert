@@ -270,8 +270,8 @@ describe('every coded error class answers the code the table names', () => {
 });
 
 describe('every problem type the server sends has a sentence', () => {
-  const PROBLEM_REFERENCE = /problems\/|\$\{PROBLEM_TYPE_BASE\}/g;
-  const PROBLEM_NAME = /(?:problems\/|\$\{PROBLEM_TYPE_BASE\})([a-z][a-z0-9-]*)/g;
+  const PROBLEM_REFERENCE = /\$\{PROBLEM_TYPE_BASE\}|PROBLEM_TYPE_BASE \+ '/g;
+  const PROBLEM_NAME = /(?:\$\{PROBLEM_TYPE_BASE\}|PROBLEM_TYPE_BASE \+ ')([a-z][a-z0-9-]*)/g;
   const lines = sources.flatMap(({ text }) => text.split('\n'));
   const sent = [...new Set(lines.flatMap((line) => [...line.matchAll(PROBLEM_NAME)].map((match) => match[1])))].sort();
 
@@ -279,9 +279,9 @@ describe('every problem type the server sends has a sentence', () => {
     expect(sent).toEqual(expect.arrayContaining(['payload-too-large', 'engine-unavailable', 'missing-archive-volume']));
   });
 
-  it('reads a literal name after every problem reference in src but the base itself', () => {
+  it('reads a literal name after every problem reference in src', () => {
     const unnamed = lines.filter((line) => (line.match(PROBLEM_REFERENCE)?.length ?? 0) !== (line.match(PROBLEM_NAME)?.length ?? 0));
-    expect(unnamed).toEqual(["export const PROBLEM_TYPE_BASE = 'https://api.easyconvert.io/problems/';"]);
+    expect(unnamed).toEqual([]);
   });
 
   it.each(sent)('%s', (name) => {

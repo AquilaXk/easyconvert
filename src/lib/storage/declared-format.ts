@@ -1,9 +1,10 @@
 import path from 'node:path';
 import { FORMAT_REGISTRY, getFormatByExtension } from '../registry';
 import type { FormatDefinition } from '../types';
+import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 
 /** Problem type returned with HTTP 400 when an upload does not name a format the platform knows. */
-export const UNKNOWN_FORMAT_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/unknown-format';
+export const UNKNOWN_FORMAT_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}unknown-format`;
 
 const GENERIC_MIME_TYPE = 'application/octet-stream';
 

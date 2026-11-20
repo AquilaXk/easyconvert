@@ -910,7 +910,7 @@ export const JOB_TIMEOUT_STATUS = 504;
  * with this error as its reason, sandboxed child processes are killed and the worker slot is freed. It is a typed
  * `ConversionFailedError`, so the queue does not retry it (another attempt would run into the same deadline) and
  * the job records `failedCode` "JobTimeoutError" and `failedStatus` 504; the synchronous routes answer 504 with the
- * problem type `https://api.easyconvert.io/problems/job-timeout`.
+ * problem type `job-timeout`.
  */
 export class JobTimeoutError extends ConversionFailedError {
   readonly refusalCode: ConversionRefusalCode = 'timeout';

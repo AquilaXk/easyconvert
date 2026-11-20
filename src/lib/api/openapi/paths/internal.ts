@@ -34,6 +34,7 @@ import { formatBytes } from '@/lib/format-bytes';
 import { MAX_EXTRACTED_BYTES, MAX_EXTRACTED_ENTRIES, MAX_TOOL_FILES, MAX_TOOL_OPTIONS_CHARS, MAX_TOOL_OUTPUT_BYTES, WEB_TOOLS, type WebTool } from '@/lib/tools/tool-names';
 import { INLINE_JOB_PAYLOAD_MAX_BYTES, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
 import type { ConversionRefusalCode, UrlImportErrorCode } from '@/lib/refusal-codes';
+import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 
 /**
  * The codes `POST /api/convert` answers with, by status: the request's own, and the `refusalCode` of the error a conversion
@@ -333,7 +334,7 @@ const toolPath = (tool: WebTool) => {
         '429': createTooManyRequestsResponse(''),
         '499': createProblemResponse(CLIENT_CLOSED_DESCRIPTION),
         '500': createErrorResponse('A fault of the server.'),
-        '503': createProblemResponse('The quota store is offline (problem type `https://api.easyconvert.io/problems/service-unavailable`, no `code`, `Retry-After` 5). The run is not charged.'),
+        '503': createProblemResponse('The quota store is offline (problem type `' + PROBLEM_TYPE_BASE + 'service-unavailable`, no `code`, `Retry-After` 5). The run is not charged.'),
         '504': createProblemResponse(JOB_TIMEOUT_DESCRIPTION),
       },
     },
@@ -802,13 +803,13 @@ export const internalPaths = {
         '403': createCodedErrorResponse('URL resolves to a private address.', ['address_blocked']),
         '413': createCodedErrorResponse('Remote file exceeds the 100 MB limit of an import from a link. A file of up to the plan limit is added from the device.', ['file_too_large']),
         '429': linkImportBudgetResponse(
-          'The daily byte budget of the caller refuses the import (problem type `https://api.easyconvert.io/problems/upload-budget-exceeded`, with `limitBytes`, and `plan` for an account). `refusal` "daily-bytes": the budget was used up before the import started, or the bytes it read took the day past the budget, which stops it; both last until midnight UTC. `refusal` "larger-than-left": the file declares a length larger than the `leftBytes` the day has left, and is refused before it is read. The bytes an import reads count toward the budget however it ends. A file past the import limit is the 413. Or the caller has no conversion left today (problem type `https://api.easyconvert.io/problems/quota-exceeded`).' +
+          'The daily byte budget of the caller refuses the import (problem type `' + PROBLEM_TYPE_BASE + 'upload-budget-exceeded`, with `limitBytes`, and `plan` for an account). `refusal` "daily-bytes": the budget was used up before the import started, or the bytes it read took the day past the budget, which stops it; both last until midnight UTC. `refusal` "larger-than-left": the file declares a length larger than the `leftBytes` the day has left, and is refused before it is read. The bytes an import reads count toward the budget however it ends. A file past the import limit is the 413. Or the caller has no conversion left today (problem type `' + PROBLEM_TYPE_BASE + 'quota-exceeded`).' +
             CONCURRENCY_LIMIT_NOTE
         ),
-        '499': createProblemResponse('The client closed the connection before the import finished (problem type `https://api.easyconvert.io/problems/client-closed-request`). The bytes received until the import stopped count toward the daily byte budget.'),
+        '499': createProblemResponse('The client closed the connection before the import finished (problem type `' + PROBLEM_TYPE_BASE + 'client-closed-request`). The bytes received until the import stopped count toward the daily byte budget.'),
         '502': createCodedErrorResponse('Redirect failure, remote 5xx (its status in `remoteStatus`), or empty body.', URL_IMPORT_CODES[502]),
         '500': createCodedErrorResponse('The file could not be fetched for a reason the server did not classify (fixed `error`).', ['fetch_failed']),
-        '503': createProblemResponse('An anonymous caller while the server cannot tell visitors apart (problem type `https://api.easyconvert.io/problems/client-ip-trust-unconfigured`).'),
+        '503': createProblemResponse('An anonymous caller while the server cannot tell visitors apart (problem type `' + PROBLEM_TYPE_BASE + 'client-ip-trust-unconfigured`).'),
         '504': createCodedErrorResponse('The remote did not send the whole file within the synchronous deadline.', ['fetch_timeout']),
       },
     },
@@ -858,7 +859,7 @@ export const internalPaths = {
       responses: {
         '200': binaryResponse('The one-pixel PNG.', 'image/png'),
         '404': createErrorResponse('Refused when accessed via external proxy forwarding headers in production.'),
-        '499': createProblemResponse('The client closed the connection first (problem type `https://api.easyconvert.io/problems/client-closed-request`). The shared conversion goes on for the other callers. No client is left to read this answer.'),
+        '499': createProblemResponse('The client closed the connection first (problem type `' + PROBLEM_TYPE_BASE + 'client-closed-request`). The shared conversion goes on for the other callers. No client is left to read this answer.'),
         '500': createErrorResponse('The conversion failed on the server (fixed `error`, no `code`).'),
         '504': createProblemResponse('The conversion did not finish within 30 seconds. It is stopped, and callers get this answer until it has ended.'),
       },
@@ -1117,8 +1118,8 @@ export const internalPaths = {
           },
         },
         '304': { description: 'Asset matches the caller\'s `If-None-Match` tag.' },
-        '404': createProblemResponse('Unknown version, asset path, or uninstalled OCR language data (problem type `https://api.easyconvert.io/problems/not-found`).'),
-        '500': createProblemResponse('The pinned asset is missing on disk or failed manifest or header integrity verification (problem type `https://api.easyconvert.io/problems/ocr-asset-integrity-failed`).'),
+        '404': createProblemResponse('Unknown version, asset path, or uninstalled OCR language data (problem type `' + PROBLEM_TYPE_BASE + 'not-found`).'),
+        '500': createProblemResponse('The pinned asset is missing on disk or failed manifest or header integrity verification (problem type `' + PROBLEM_TYPE_BASE + 'ocr-asset-integrity-failed`).'),
       },
     },
   },

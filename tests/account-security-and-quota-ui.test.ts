@@ -236,7 +236,7 @@ describe('QuotaExhaustedActions on QueueItemRow', () => {
   const quotaFailure = {
     code: 'server' as const,
     problem: {
-      type: 'https://api.easyconvert.io/problems/quota-exceeded',
+      type: 'https://convert.aquilaxk.site/api-docs/errors#quota-exceeded',
       status: 429,
       dailyLimit: 10,
     },

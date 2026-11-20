@@ -16,7 +16,7 @@ describe('BYOS provider availability guard', () => {
     expect(res?.status).toBe(400);
     expect(res?.headers.get('content-type')).toContain('application/problem+json');
     expect(await res?.json()).toMatchObject({
-      type: 'https://api.easyconvert.io/problems/byos-provider-unavailable',
+      type: 'https://convert.aquilaxk.site/api-docs/errors#byos-provider-unavailable',
       title: 'Storage Provider Unavailable',
       status: 400,
       instance: INSTANCE,

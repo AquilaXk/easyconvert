@@ -91,7 +91,7 @@ const KEPT: string[] = [
   'PDF/A-1b validation failed (PDF/A)',
   'AAC/H.264 + MP3/ID3',
   '(see /doc/readme) for details',
-  'https://api.easyconvert.io/problems/quota-exceeded and http://host/tmp/a/b',
+  'https://convert.aquilaxk.site/api-docs/errors#quota-exceeded and http://host/tmp/a/b',
   's3://bucket/tmp/key.pdf',
   'redis://redis-prod.internal:6379/0 refused',
   'in ~/work/a.pdf, ./out/a.png and ../x/y.png',

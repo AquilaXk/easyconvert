@@ -72,6 +72,7 @@ export const API_DOC_TOPICS = [
     group: 'reference',
     operations: [{ anchor: 'show-the-daily-allowance', method: 'get', path: '/api/keys/usage' }],
   },
+  { slug: 'errors', group: 'reference', operations: [] },
 ] as const satisfies readonly ApiDocTopicEntry[];
 
 export type ApiDocTopic = (typeof API_DOC_TOPICS)[number];

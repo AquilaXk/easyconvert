@@ -14,8 +14,8 @@ import type { ConversionJobData } from '../src/lib/types';
 
 const BASE_URL = 'http://localhost:3000';
 // Independently authored expectations (RFC 9457 problem type URIs used by this API).
-const RATE_LIMITED_TYPE = 'https://api.easyconvert.io/problems/rate-limited';
-const QUOTA_EXCEEDED_TYPE = 'https://api.easyconvert.io/problems/quota-exceeded';
+const RATE_LIMITED_TYPE = 'https://convert.aquilaxk.site/api-docs/errors#rate-limited';
+const QUOTA_EXCEEDED_TYPE = 'https://convert.aquilaxk.site/api-docs/errors#quota-exceeded';
 
 async function createUser(label: string, tier: 'free' | 'paid' = 'paid'): Promise<User> {
   const email = `${label}_${Date.now()}_${Math.random().toString(36).slice(2)}@followup.test`;

@@ -7,7 +7,7 @@ import { formatBytes } from '@/lib/format-bytes';
 import { isBillingConfigured } from '@/lib/billing/config';
 import { PLAN_MAX_FILE_BYTES, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
 import { PDFA_VALIDATION_PROBLEM_TYPE, PDF_POSTPROCESS_PROBLEM_TYPE, RATE_LIMITED_PROBLEM_TYPE } from '@/lib/api/problem-details';
-import { QUOTA_EXCEEDED_PROBLEM_TYPE, type ConversionRefusalCode } from '@/lib/refusal-codes';
+import { QUOTA_EXCEEDED_PROBLEM_TYPE, type ConversionRefusalCode, PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 import {
   DEFAULT_MAX_INPUT_PIXELS,
   MAX_INPUT_PIXELS_CEILING,
@@ -156,7 +156,7 @@ export const createTooManyRequestsResponse = (extra: string) => ({
   description:
     `Too Many Requests, by problem type. \`${RATE_LIMITED_PROBLEM_TYPE}\`: the burst limit of the API key, of the client address or of the edge is spent; wait \`Retry-After\` seconds. ` +
     `\`${QUOTA_EXCEEDED_PROBLEM_TYPE}\`: the credits are used up or too few are left for the request: 1 credit for most conversions, 2 for Office or iWork documents to PDF, 4 for PDF to Office documents, per conversion (\`dailyLimit\`, \`remaining\`, \`requiredUnits\` in the body, the quota headers, and \`Retry-After\` until the reset when none is left). ` +
-    `\`https://api.easyconvert.io/problems/concurrency-limit\`: the account already has the most conversions in flight its limits allow, which is 5 for anonymous and free callers and 25 for an account with package credits or a subscription (\`limit\` in the body, \`Retry-After\` 5); the request takes no quota.${extra}`,
+    `\`${PROBLEM_TYPE_BASE}concurrency-limit\`: the account already has the most conversions in flight its limits allow, which is 5 for anonymous and free callers and 25 for an account with package credits or a subscription (\`limit\` in the body, \`Retry-After\` 5); the request takes no quota.${extra}`,
   headers: RATE_LIMIT_RESPONSE_HEADERS,
   content: {
     'application/problem+json': { schema: TOO_MANY_REQUESTS_SCHEMA },
@@ -352,12 +352,12 @@ export const CONVERT_FORM_PROPERTIES = {
 
 /** The 504 of a synchronous conversion that ran past its wall-clock deadline (JOB_DEADLINE_* and SYNC_DEADLINE_MAX_MS settings). */
 export const JOB_TIMEOUT_DESCRIPTION =
-  'The conversion did not finish within its wall-clock limit (problem type `https://api.easyconvert.io/problems/job-timeout`, with the limit in `timeoutMs` and the asynchronous endpoint in `asyncEndpoint`). A synchronous request is held to 120 s by default, below the limit of the account tier; use `POST /api/v1/jobs` for conversions that need longer. The conversion was stopped, its processes were killed and the quota unit is refunded (only successful conversions are charged); the request still counts toward the rate limit. A queued job that hits its limit fails with `failedCode` "JobTimeoutError" and `failedStatus` 504, is refunded the same way and is not retried.';
+  'The conversion did not finish within its wall-clock limit (problem type `' + PROBLEM_TYPE_BASE + 'job-timeout`, with the limit in `timeoutMs` and the asynchronous endpoint in `asyncEndpoint`). A synchronous request is held to 120 s by default, below the limit of the account tier; use `POST /api/v1/jobs` for conversions that need longer. The conversion was stopped, its processes were killed and the quota unit is refunded (only successful conversions are charged); the request still counts toward the rate limit. A queued job that hits its limit fails with `failedCode` "JobTimeoutError" and `failedStatus` 504, is refunded the same way and is not retried.';
 
 /** The 499 of a synchronous conversion whose client closed the connection. */
 export const CLIENT_CLOSED_DESCRIPTION =
-  'The client closed the connection before the conversion finished (problem type `https://api.easyconvert.io/problems/client-closed-request`). The conversion was aborted and the quota reservation is rolled back; the request still counts toward the rate limit. No client is left to read this answer.';
+  'The client closed the connection before the conversion finished (problem type `' + PROBLEM_TYPE_BASE + 'client-closed-request`). The conversion was aborted and the quota reservation is rolled back; the request still counts toward the rate limit. No client is left to read this answer.';
 
 /** Appended to the 429 of a conversion endpoint: the other reason for a 429 besides the rate limit and the quota. */
 export const CONCURRENCY_LIMIT_NOTE =
-  ' Or: the account already has the most conversions in flight (queued and running) its limits allow, which is 5 for anonymous and free callers and 25 for an account with package credits or a subscription (problem type `https://api.easyconvert.io/problems/concurrency-limit`, with `Retry-After`); the request takes no quota.';
+  ' Or: the account already has the most conversions in flight (queued and running) its limits allow, which is 5 for anonymous and free callers and 25 for an account with package credits or a subscription (problem type `' + PROBLEM_TYPE_BASE + 'concurrency-limit`, with `Retry-After`); the request takes no quota.';

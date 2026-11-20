@@ -65,7 +65,7 @@ describe('Unknown upload format is a typed 400 (#483)', () => {
     );
     expect(completeRes.status).toBe(400);
     const problem = await completeRes.json();
-    expect(problem.type).toBe('https://api.easyconvert.io/problems/unknown-format');
+    expect(problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#unknown-format');
     expect(problem.detail).toContain('no-extension-here');
   });
 
@@ -102,7 +102,7 @@ describe('Unknown upload format is a typed 400 (#483)', () => {
     );
     expect(patchRes.status).toBe(400);
     const problem = await patchRes.json();
-    expect(problem.type).toBe('https://api.easyconvert.io/problems/unknown-format');
+    expect(problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#unknown-format');
     expect(patchRes.headers.get('EasyConvert-Storage-Key')).toBeNull();
   });
 });

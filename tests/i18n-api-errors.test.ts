@@ -35,7 +35,7 @@ const ENGLISH_PHRASE = /[A-Za-z]{2,}[\s,.]+[A-Za-z]{2,}/;
 const HANGUL = /[가-힣]/;
 /** The name of the protocol, which no sentence of the interface carries. */
 const HTTP_STATUS = /HTTP/;
-const PROBLEM = 'https://api.easyconvert.io/problems/';
+const PROBLEM = 'https://convert.aquilaxk.site/api-docs/errors#';
 
 /** What a wording hook gives, read under the page's message provider. */
 function worded<A extends unknown[]>(useWording: () => (...args: A) => string, locale: TestLocale, ...args: A): string {

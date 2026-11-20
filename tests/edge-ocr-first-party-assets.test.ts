@@ -243,7 +243,7 @@ describe('first-party Edge OCR assets and worker configuration', () => {
       expect(res.headers.get('content-type')).toBe('application/problem+json');
       const problem = (await res.json()) as { type: string; status: number; detail: string };
       expect(problem.status).toBe(500);
-      expect(problem.type).toBe('https://api.easyconvert.io/problems/ocr-asset-integrity-failed');
+      expect(problem.type).toBe('https://convert.aquilaxk.site/api-docs/errors#ocr-asset-integrity-failed');
       expect(problem.detail).toMatch(/SHA-256 manifest verification/);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });

@@ -19,6 +19,14 @@ export const QUICKSTART_SECTIONS = [
   { id: 'download-the-result' },
 ] as const satisfies readonly GuideSection[];
 
+export const ERRORS_SECTIONS = [
+  { id: 'problem-types' },
+  {
+    id: 'refusal-codes',
+    children: ['codes-conversion', 'codes-urlImport', 'codes-auth', 'codes-dashboard', 'codes-billing'],
+  },
+] as const satisfies readonly GuideSection[];
+
 export function guideToc(sections: readonly GuideSection[], heading: (id: string) => string): TocItem[] {
   return sections.map((section) => ({
     id: section.id,

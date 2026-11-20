@@ -14,7 +14,7 @@ import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
  * translatable operations and a separately authored list of operations it refuses.
  */
 
-const SCHEMA_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/unprocessable-entity';
+const SCHEMA_PROBLEM_TYPE = 'https://convert.aquilaxk.site/api-docs/errors#unprocessable-entity';
 
 /** Operations that `linearTasksToJobGraph` rejects with UNSUPPORTED_OPERATION or BYOS_OPERATION_UNSUPPORTED. */
 const UNTRANSLATABLE_OPERATIONS = [

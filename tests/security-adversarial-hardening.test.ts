@@ -192,7 +192,7 @@ describe('Batch 2 security adversarial hardening (RED -> GREEN)', () => {
       const res1 = await middleware(crossSiteReq);
       expect(res1.status).toBe(403);
       const body1 = await res1.json();
-      expect(body1.type).toBe('https://api.easyconvert.io/problems/forbidden');
+      expect(body1.type).toBe('https://convert.aquilaxk.site/api-docs/errors#forbidden');
       expect(body1.detail.toLowerCase()).toContain('cross-site');
 
       // Disallowed Origin without cookie

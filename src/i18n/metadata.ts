@@ -1,8 +1,8 @@
 import type { Metadata } from 'next';
+import { PUBLIC_DEFAULT_ORIGIN } from '@/lib/public-origin';
 import { getPathname } from './navigation';
 import { routing, type AppLocale } from './routing';
 
-export const PUBLIC_DEFAULT_ORIGIN = 'https://convert.aquilaxk.site';
 const OG_ROUTE_PATH = '/api/og';
 const OG_IMAGE_WIDTH = 1200;
 const OG_IMAGE_HEIGHT = 630;

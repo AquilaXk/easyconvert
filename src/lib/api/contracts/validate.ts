@@ -19,6 +19,7 @@ import {
   OcrLanguagesResponseSchema,
 } from './schemas';
 import { SERVER_ONLY_KEYWORD, SERVER_ONLY_REASON } from './server-only-options';
+import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 
 /** Reason named in `invalidParams` for a key that a property copy would turn into an object's prototype. */
 export const PROTOTYPE_KEY_REASON = 'prototype_key';
@@ -162,7 +163,7 @@ export function validateOrProblem<T = unknown>(
   if (!validator) {
     const detail = 'Internal validation schema configuration error.';
     const problem: ProblemDetails = {
-      type: 'https://api.easyconvert.io/problems/internal-server-error',
+      type: `${PROBLEM_TYPE_BASE}internal-server-error`,
       title: 'Internal Server Error',
       status: 500,
       detail,
@@ -231,8 +232,8 @@ function validationProblem(
 ): { ok: false; problem: ProblemDetails; response: NextResponse } {
   const status = 422;
   const type = isPlannedOption
-    ? 'https://api.easyconvert.io/problems/option-not-supported'
-    : 'https://api.easyconvert.io/problems/unprocessable-entity';
+    ? `${PROBLEM_TYPE_BASE}option-not-supported`
+    : `${PROBLEM_TYPE_BASE}unprocessable-entity`;
   const title = isPlannedOption ? 'Option Not Supported' : 'Unprocessable Entity';
 
   const detail = isPlannedOption

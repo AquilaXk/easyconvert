@@ -26,7 +26,7 @@ const DEADLINE_MS = 300;
 const RESPONSE_BOUND_MS = 3_000;
 const HTTP_GATEWAY_TIMEOUT = 504;
 const HTTP_CLIENT_CLOSED = 499;
-const JOB_TIMEOUT_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/job-timeout';
+const JOB_TIMEOUT_PROBLEM_TYPE = 'https://convert.aquilaxk.site/api-docs/errors#job-timeout';
 const CSV_INPUT = 'name,score\nAlice,100\nBob,95\n';
 /** Engine control options a client sends: none of them may reach the engine. */
 const CLIENT_CONTROLS = JSON.stringify({ timeoutMs: 999_999_999, signal: {}, deadlineAt: 1 });

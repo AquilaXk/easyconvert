@@ -1,8 +1,9 @@
 import type { NextResponse } from 'next/server';
 import { UNAVAILABLE_STORAGE_PROVIDERS } from '@/lib/storage/adapters';
 import { createProblemDetailsResponse } from './problem-details';
+import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 
-const BYOS_PROVIDER_UNAVAILABLE_TYPE = 'https://api.easyconvert.io/problems/byos-provider-unavailable';
+const BYOS_PROVIDER_UNAVAILABLE_TYPE = `${PROBLEM_TYPE_BASE}byos-provider-unavailable`;
 const HTTP_BAD_REQUEST = 400;
 
 /**

@@ -180,7 +180,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
         'Unsupported conversion pair: XYZ to ABC.',
         '/api/v1/convert',
         'Bad Request',
-        'https://api.easyconvert.io/problems/unsupported-conversion',
+        'https://convert.aquilaxk.site/api-docs/errors#unsupported-conversion',
         { 'X-Custom-Header': 'val' }
       );
 
@@ -189,7 +189,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       expect(response.headers.get('x-custom-header')).toBe('val');
 
       const body = await response.json();
-      expect(body.type).toBe('https://api.easyconvert.io/problems/unsupported-conversion');
+      expect(body.type).toBe('https://convert.aquilaxk.site/api-docs/errors#unsupported-conversion');
       expect(body.title).toBe('Bad Request');
       expect(body.status).toBe(400);
       expect(body.detail).toBe('Unsupported conversion pair: XYZ to ABC.');
@@ -210,7 +210,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       expect(res.headers.get('content-type')).toContain('application/problem+json');
 
       const body = await res.json();
-      expect(body.type).toBe('https://api.easyconvert.io/problems/unauthorized');
+      expect(body.type).toBe('https://convert.aquilaxk.site/api-docs/errors#unauthorized');
       expect(body.title).toBe('Unauthorized');
       expect(body.status).toBe(401);
       expect(body.instance).toBe('/api/v1/convert');
@@ -374,7 +374,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       expect(requiredHeader(res.headers, 'RateLimit-Limit')).toBe(String(FREE_DAILY_LIMIT));
 
       const body = await res.json();
-      expect(body.type).toBe('https://api.easyconvert.io/problems/bad-request');
+      expect(body.type).toBe('https://convert.aquilaxk.site/api-docs/errors#bad-request');
       expect(body.status).toBe(400);
       expect(body.detail).toContain('Could not identify source format');
       expect(body.success).toBe(false);
@@ -406,7 +406,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       expect(res.headers.get('RateLimit-Remaining')).toBe('0');
 
       const body = await res.json();
-      expect(body.type).toBe('https://api.easyconvert.io/problems/quota-exceeded');
+      expect(body.type).toBe('https://convert.aquilaxk.site/api-docs/errors#quota-exceeded');
       expect(body.status).toBe(429);
       expect(body.detail).toContain('Daily credit quota exceeded');
       expect(body.success).toBe(false);

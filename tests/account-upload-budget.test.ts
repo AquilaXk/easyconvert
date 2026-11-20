@@ -17,7 +17,7 @@ const PAID_OPEN_UPLOADS = 25;
 const FREE_OPEN_BYTES = 2 * 1024 ** 3;
 const GIB = 1024 ** 3;
 const BASE_URL = 'http://localhost:3000';
-const BUDGET_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/upload-budget-exceeded';
+const BUDGET_PROBLEM_TYPE = 'https://convert.aquilaxk.site/api-docs/errors#upload-budget-exceeded';
 
 interface Account {
   id: string;

@@ -9,6 +9,7 @@ import { ConversionOptions } from '../../types';
 import { ConversionFailureError, jobFailure, serverRefusal } from '../../conversion-failure';
 import { PART_IN_FLIGHT_PROBLEM_TYPE, PART_IN_FLIGHT_STATUS } from '../../part-in-flight';
 import { UPLOAD_PART_MAX_BYTES } from '../../plan-limits';
+import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 
 const MULTIPART_URL = '/api/storage/multipart';
 const JOBS_URL = '/api/queue/jobs';
@@ -71,9 +72,9 @@ const IN_FLIGHT_STATUS = 409;
  * of a visitor, which last until the next day, and uploads without an account turned off by the server's setup.
  */
 const FINAL_REFUSAL_TYPES: ReadonlySet<string> = new Set([
-  'https://api.easyconvert.io/problems/quota-exceeded',
-  'https://api.easyconvert.io/problems/upload-budget-exceeded',
-  'https://api.easyconvert.io/problems/client-ip-trust-unconfigured',
+  `${PROBLEM_TYPE_BASE}quota-exceeded`,
+  `${PROBLEM_TYPE_BASE}upload-budget-exceeded`,
+  `${PROBLEM_TYPE_BASE}client-ip-trust-unconfigured`,
 ]);
 const MS_PER_SECOND = 1000;
 

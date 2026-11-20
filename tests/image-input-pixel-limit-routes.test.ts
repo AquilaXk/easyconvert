@@ -8,7 +8,7 @@ import { bombPng } from './helpers/image-bombs';
 import { cbzWithImages } from './helpers/embedded-image-docs';
 
 const HTTP_PAYLOAD_TOO_LARGE = 413;
-const PAYLOAD_TOO_LARGE_PROBLEM = 'https://api.easyconvert.io/problems/payload-too-large';
+const PAYLOAD_TOO_LARGE_PROBLEM = 'https://convert.aquilaxk.site/api-docs/errors#payload-too-large';
 const EXPECTED_DEFAULT_LIMIT = 100_000_000;
 const OVER_LIMIT_SIDE = 15_000;
 const SMALL_SIDE = 16;

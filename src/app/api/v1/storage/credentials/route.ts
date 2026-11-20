@@ -12,10 +12,11 @@ import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { MAX_STORAGE_CREDENTIAL_JSON_BYTES, MAX_STORAGE_CREDENTIAL_NAME_LENGTH } from '@/lib/api/field-limits';
 import { withRateLimitHeaders } from '@/lib/api/rate-limit';
 import { refuseUnavailableStorageProvider } from '@/lib/api/byos-provider-guard';
+import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 
 export const dynamic = 'force-dynamic';
 
-const BYOS_INVALID_ENDPOINT_TYPE = 'https://api.easyconvert.io/problems/byos-invalid-endpoint';
+const BYOS_INVALID_ENDPOINT_TYPE = `${PROBLEM_TYPE_BASE}byos-invalid-endpoint`;
 
 /**
  * The 500 for an error this route did not classify, in the problem+json shape of the other `/api/v1` routes. The text of the error can name a

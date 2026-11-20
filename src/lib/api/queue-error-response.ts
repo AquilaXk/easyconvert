@@ -2,6 +2,7 @@ import type { NextResponse } from 'next/server';
 import { GraphStateCorruptError, QueueUnavailableError } from '../types';
 import { AuthStoreUnavailableError } from '../auth/store-unavailable';
 import { createProblemDetailsResponse } from './problem-details';
+import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 
 /**
  * The one place a job queue failure becomes an API answer. A queue whose Redis is down is a 503 with
@@ -18,7 +19,7 @@ export const QUEUE_UNAVAILABLE_DETAIL = 'The job queue is temporarily unavailabl
 const GRAPH_STATE_CORRUPT_DETAIL = 'The stored state of this job is corrupt and the job cannot be read.';
 
 /** Problem type for a stored graph record that failed validation. */
-export const GRAPH_STATE_CORRUPT_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/job-state-corrupt';
+export const GRAPH_STATE_CORRUPT_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}job-state-corrupt`;
 
 /** The `Retry-After` header of an unavailable queue. */
 export function queueRetryAfterHeaders(): Record<string, string> {

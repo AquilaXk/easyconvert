@@ -24,7 +24,7 @@ import { DataParseError, type ConversionJobData, type ConversionJobResult } from
 
 const CSV = 'name,score\nAlice,100\nBob,95\n';
 const WAIT = { timeout: 20_000, interval: 50 };
-const PROBLEM = 'https://api.easyconvert.io/problems/';
+const PROBLEM = 'https://convert.aquilaxk.site/api-docs/errors#';
 const WEBHOOK_URL = 'https://93.184.215.14/hook';
 const WEBHOOK_SECRET = 'whsec_named_tasks_test';
 

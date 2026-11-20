@@ -121,7 +121,7 @@ describe('parts of one upload sent at once are held together to the size it decl
     expect(results.map((res) => res.status).sort()).toEqual([OK, SERVICE_UNAVAILABLE]);
     const repeat = results.find((res) => res.status === SERVICE_UNAVAILABLE)!;
     expect(repeat.headers.get('retry-after')).toBe('5');
-    expect((await repeat.json()).type).toBe('https://api.easyconvert.io/problems/part-in-flight');
+    expect((await repeat.json()).type).toBe('https://convert.aquilaxk.site/api-docs/errors#part-in-flight');
     expect(await storedBytes(uploadId)).toBe(PART_BYTES);
   });
 

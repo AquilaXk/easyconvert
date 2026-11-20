@@ -60,6 +60,11 @@
         "nav": "사용량",
         "title": "사용량",
         "lead": "이번 기간에 쓴 크레딧과 남은 크레딧을 확인합니다."
+      },
+      "errors": {
+        "nav": "오류",
+        "title": "오류",
+        "lead": "API가 돌려주는 문제 유형과 거절 코드를 찾아봅니다."
       }
     },
     "intro": {
@@ -174,6 +179,34 @@
         "keyScoped": "<code>{scopes}</code> 권한 범위가 있는 API 키를 <code>x-api-key</code>나 <code>Authorization</code> 헤더에 담습니다.",
         "optionalKey": "API 키를 담습니다. URL만으로 받을 수 있는 파일은 키가 없어도 됩니다.",
         "optionalKeyScoped": "계정의 파일은 <code>{scopes}</code> 권한 범위가 있는 API 키가 필요합니다. 계정 없이 만든 파일은 URL만으로 받을 수 있어 키가 필요 없습니다."
+      }
+    },
+    "errors": {
+      "intro": "문제 상세 본문의 <code>type</code>은 이 페이지의 해당 항목으로 연결되는 링크이고, <code>#</code> 뒤가 문제 이름입니다. 이름은 버전이 바뀌어도 그대로이므로 이 이름으로 구분하세요. 일부 응답에는 원인을 더 구체적으로 알려 주는 <code>code</code>가 함께 옵니다. 코드는 문제 유형 다음에 나옵니다.",
+      "problemTypesLead": "문제 유형마다 상태 코드는 하나입니다.",
+      "codesLead": "코드는 여러 경로에서 발생하므로 상태 코드가 둘 이상일 수 있습니다. 뜻은 웹 화면에 보이는 문장입니다.",
+      "typeColumn": "문제 유형",
+      "codeColumn": "코드",
+      "headings": {
+        "problem-types": "문제 유형",
+        "refusal-codes": "거절 코드",
+        "codes-conversion": "변환",
+        "codes-urlImport": "링크 가져오기",
+        "codes-auth": "로그인과 계정",
+        "codes-dashboard": "대시보드",
+        "codes-billing": "결제"
+      },
+      "areas": {
+        "conversion": "거절되거나 실패한 변환의 코드입니다. 변환 요청의 응답이나 작업에 기록된 실패에 들어 있습니다.",
+        "urlImport": "링크에서 파일을 가져올 때의 코드입니다.",
+        "auth": "가입, 로그인, 주소 확인 때의 코드입니다.",
+        "dashboard": "파일, API 키, 실패한 웹훅을 다루는 대시보드의 코드입니다.",
+        "billing": "크레딧 구매와 구독 관리 때의 코드입니다."
+      },
+      "meanings": {
+        "login_locked": "로그인에 여러 번 실패해 잠시 막혔습니다. 기다려야 하는 초는 <code>Retry-After</code> 헤더에 있습니다.",
+        "mail_rate_limited": "요청이 너무 많습니다. 기다려야 하는 초는 <code>Retry-After</code> 헤더에 있습니다.",
+        "file_too_large": "링크로 가져오는 파일은 최대 {limit}까지입니다. 더 큰 파일은 업로드로 보내세요."
       }
     },
     "operations": {

@@ -38,7 +38,7 @@ describe('Open Beta crawlability: robots.txt and localized sitemap.xml', () => {
     expect(urls.has('https://convert.aquilaxk.site/ko/pricing')).toBe(true);
     expect(urls.has('https://convert.aquilaxk.site/api-docs')).toBe(true);
     expect(urls.has('https://convert.aquilaxk.site/terms')).toBe(true);
-    for (const topic of ['quickstart', 'convert', 'jobs', 'uploads', 'downloads', 'formats', 'ocr-languages', 'archives', 'usage']) {
+    for (const topic of ['quickstart', 'convert', 'jobs', 'uploads', 'downloads', 'formats', 'ocr-languages', 'archives', 'usage', 'errors']) {
       expect(urls.has(`https://convert.aquilaxk.site/api-docs/${topic}`), topic).toBe(true);
       expect(urls.has(`https://convert.aquilaxk.site/ko/api-docs/${topic}`), topic).toBe(true);
     }
