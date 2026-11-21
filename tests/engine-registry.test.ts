@@ -136,7 +136,7 @@ describe('the version of an engine', () => {
 
   // The first line each program prints, as the versions of the worker image and of a developer machine print it.
   it.each<[string, EngineId, string, string]>([
-    ['SOFFICE_PATH', 'libreoffice', 'echo "LibreOffice 25.2.3.2 520(Build:2)"', '25.2.3.2'],
+    ['SOFFICE_PATH', 'libreoffice', 'echo "LibreOffice 26.8.2.2 680(Build:2)"', '26.8.2.2'],
     ['FFMPEG_PATH', 'ffmpeg', 'echo "ffmpeg version 7.1.1-1 Copyright (c) 2000-2025 the FFmpeg developers"', '7.1.1'],
     ['FFMPEG_PATH', 'ffmpeg', 'echo "ffmpeg version n8.0 Copyright (c) 2000-2025 the FFmpeg developers"', '8.0'],
     ['PDFTOPPM_PATH', 'poppler', 'echo "pdftoppm version 25.03.0" >&2; echo "Copyright 2005-2025 The Poppler Developers" >&2', '25.03.0'],

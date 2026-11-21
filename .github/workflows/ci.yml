@@ -600,7 +600,7 @@ jobs:
           redis_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' easyconvert-redis)"
           echo "Redis container address: $redis_ip"
           docker compose -f docker-compose.yml -f "$override" run --rm --no-deps -T \
-            -e VERIFY_REDIS_HOST="$redis_ip" -e VERIFY_REDIS_PORT="$REDIS_PORT" \
+            -e VERIFY_REDIS_HOST="$redis_ip" -e VERIFY_REDIS_PORT="$REDIS_PORT" -e VERIFY_LIBREOFFICE=1 \
             -v "$PWD/scripts/verify-worker-container.sh:/verify.sh:ro" \
             --entrypoint /bin/bash worker /verify.sh | tee "$RUNNER_TEMP/verify-worker-container.log"
 

@@ -161,6 +161,7 @@ describe('container job in .github/workflows/ci.yml', () => {
     expect(verifyStep?.run).toContain('docker compose');
     expect(verifyStep?.run).toContain('run --rm --no-deps');
     expect(verifyStep?.run).toContain('VERIFY_REDIS_HOST');
+    expect(verifyStep?.run).toContain('VERIFY_LIBREOFFICE=1');
     expect(verifyStep?.run).toContain('tee ');
     expect((verifyStep as WorkflowStep & { shell?: string }).shell).toBe('bash');
     const redisStep = container.steps.find((step) => step.run?.includes('up -d redis'));
@@ -296,7 +297,7 @@ describe('Dockerfile.worker', () => {
   it('installs the LibreOffice Draw application, which imports Visio and CorelDRAW drawings', () => {
     const dockerfile = readFileSync(path.join(ROOT, 'Dockerfile.worker'), 'utf-8');
     const runner = dockerfile.slice(dockerfile.indexOf('AS runner'));
-    expect(runner).toMatch(/^\s+libreoffice-draw-nogui \\$/m);
+    expect(runner).toMatch(/^\s+libreoffice-draw-nogui=\$\{LIBREOFFICE_VERSION\} \\$/m);
   });
 });
 

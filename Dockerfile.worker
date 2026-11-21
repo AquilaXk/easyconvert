@@ -371,6 +371,16 @@ FROM ${NODE_IMAGE} AS runner
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_ENV=production
 
+# The office suite is LibreOffice 26.8 from trixie-backports, as the converters of the same kind install it (Debian 13 itself ships 25.2).
+# The packages named below are installed at this exact version, which is the same on amd64 and arm64, and the pin below (priority 990 for
+# the packages of the source `libreoffice` from that suite only) keeps every other package on the release. Its two outside dependencies,
+# the Orcus spreadsheet libraries, exist only in the backports suite and are pinned too. A suite holds one version of a package: when
+# trixie-backports moves on, the build stops on this line and the three values are bumped together, after
+# `tests/worker-libreoffice-packaging.test.ts` and the office parity rows have been read on the new build
+# (docs/policy-decisions.md, "LibreOffice 26.8 from trixie-backports").
+ARG LIBREOFFICE_VERSION=4:26.8.2.2-2~bpo13+1
+ARG LIBORCUS_VERSION=0.21.0-4~bpo13+1
+
 # 1. Install Tini Init, util-linux (prlimit), libcap2-bin (capsh, used by scripts/verify-worker-container.sh), Native Conversion Engines (7-Zip and FFmpeg come from the pinned stages, FFmpeg with the runtime libraries of the codecs it was built against; libdeflate-tools is the deflate encoder for ZIP and gzip payloads past 4 MiB; lbzip2 is the bzip2 encoder for tarballs of up to two blocks; xz-utils is the .xz encoder and decoder, which the node base image installs only to unpack Node and then purges), and CJK Font Packages
 # The Open CASCADE libraries (STEP and IGES, see the cadconvert stage) are packaged with occt-misc, whose 55 MB of sample models and images
 # and 5 MB of resource files the program never reads (it converts all four targets of the 11 real samples with the directory removed, and
@@ -383,6 +393,8 @@ ENV NODE_ENV=production
 # image-format and SVG decoders that the books' pictures need and that the package only recommends.
 RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true \
     && echo 'path-exclude=/usr/share/opencascade/*' > /etc/dpkg/dpkg.cfg.d/opencascade-unused-files \
+    && printf 'Types: deb\nURIs: http://deb.debian.org/debian\nSuites: trixie-backports\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.pgp\n' > /etc/apt/sources.list.d/debian-backports.sources \
+    && printf 'Package: src:libreoffice\nPin: release n=trixie-backports\nPin-Priority: 990\n' > /etc/apt/preferences.d/libreoffice-backports \
     && apt-get update \
     && EXTRA_PKGS="" \
     && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
@@ -420,11 +432,14 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         fonts-noto-core \
         fonts-noto-ui-core \
         fonts-noto-color-emoji \
-        libreoffice-calc-nogui \
-        libreoffice-draw-nogui \
-        libreoffice-impress-nogui \
-        libreoffice-core-nogui \
-        libreoffice-writer-nogui \
+        libreoffice-calc-nogui=${LIBREOFFICE_VERSION} \
+        libreoffice-draw-nogui=${LIBREOFFICE_VERSION} \
+        libreoffice-impress-nogui=${LIBREOFFICE_VERSION} \
+        libreoffice-core-nogui=${LIBREOFFICE_VERSION} \
+        libreoffice-writer-nogui=${LIBREOFFICE_VERSION} \
+        libreoffice-common=${LIBREOFFICE_VERSION} \
+        liborcus-0.21-0=${LIBORCUS_VERSION} \
+        liborcus-parser-0.21-0=${LIBORCUS_VERSION} \
         libraw-bin \
         imagemagick-7.q16 \
         libheif-plugin-libde265 \

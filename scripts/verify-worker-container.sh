@@ -30,7 +30,7 @@
 #   VERIFY_REDIS_HOST        host of the Redis the worker uses (default 127.0.0.1)
 #   VERIFY_REDIS_PORT        its port (default 6379)
 #   VERIFY_APP_DIR           read-only application directory (default /app)
-#   VERIFY_LIBREOFFICE=1     also convert a text file to PDF with LibreOffice inside the sandbox
+#   VERIFY_LIBREOFFICE=1     also convert a text file to PDF with LibreOffice inside the sandbox, and name its version in the line that says so
 set -u
 
 REDIS_HOST="${VERIFY_REDIS_HOST:-127.0.0.1}"
@@ -372,7 +372,7 @@ if [ "${VERIFY_LIBREOFFICE:-0}" = "1" ]; then
       "-env:UserInstallation=file://$work_dir/lo-profile" --convert-to pdf --outdir "$work_dir" "$work_dir/document.txt" \
       >"$work_dir/soffice.out" 2>&1 \
     && head -c 5 "$work_dir/document.pdf" | grep -q '%PDF-'; then
-    pass "LibreOffice converted a text file to PDF inside the sandbox"
+    pass "LibreOffice $(soffice --version 2>/dev/null | head -n 1) converted a text file to PDF inside the sandbox"
   else
     fail "LibreOffice did not convert inside the sandbox: $(head -c 300 "$work_dir/soffice.out" 2>/dev/null)"
   fi
