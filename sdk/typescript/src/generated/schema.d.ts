@@ -763,9 +763,9 @@ export interface components {
                 /** @description Output optimisation level (0 to 2, default 2): 0 raw absolute paths, 1 quantize and cleanup, 2 <g fill> grouping, H/V/S shorthands and SVGO path/colour compaction. */
                 optimize?: number;
             };
-            /** @description Single target page or frame index (1-indexed): the PDF page to rasterize or to convert to TXT, HTML, DOCX or XLSX, or the frame of a multi-frame image (animated GIF/WebP, multi-page TIFF or HEIF) to convert to a single-image output. */
+            /** @description Single target page or frame index (1-indexed): the PDF page to rasterize or to convert to TXT, HTML, DOCX, XLSX, XLS, PPTX, PPT, RTF or DOC, or the frame of a multi-frame image (animated GIF/WebP, multi-page TIFF or HEIF) to convert to a single-image output. */
             page?: number;
-            /** @description Page range expression for multi-page documents (e.g. "1-3,5", "2-", "-4"). A PDF converted to page images, SVG, TXT, HTML, DOCX or XLSX converts only these pages, and a page the document does not have is refused with `invalid_pages`. For PDF to TXT, DOCX, HTML and XLSX the other pages are not read, and the output keeps the numbers of the pages it holds. */
+            /** @description Page range expression for multi-page documents (e.g. "1-3,5", "2-", "-4"). A PDF converted to page images, SVG, TXT, HTML, DOCX, XLSX, XLS, PPTX, PPT, RTF or DOC converts only these pages, and a page the document does not have is refused with `invalid_pages`. For PDF to these document targets the other pages are not read, and the output keeps the numbers of the pages it holds (XLS and XLSX name a sheet for each page, PPTX and PPT write a slide for each). */
             pages?: string;
             multiPageOutput?: components["schemas"]["MultiPageOutput"];
             /** @description Expected total page count. */

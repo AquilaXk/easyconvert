@@ -46,6 +46,5 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Learned OCR layout tier: pick a permissively licensed layout model and record its model and data provenance.
 - Rare samples: DWG before R13, WP Greek accented letters, Word Wingdings check boxes.
 - `sk`/`sk1` input through UniConvertor 2 as a separate sandboxed GPL program (behaviour only, no code copied).
-- `pages` for PDF to XLS, PPTX, RTF and DOC: the reference offers it for them and the converter ignores it (entry 373 wired TXT, DOCX, HTML and XLSX; the readers already take `select`, the writers of these four targets need to ask for it and the options panel to show the field).
 - GIF of a photograph: `quantizr-pixels` ties the Oklab route on SSIM and CIEDE2000 at 256 colours and takes 1.3 to 2 times the time above 1.3 MP because it runs on one thread: thread the program's remap and port the run tolerance to it, then measure again (entry 366).
 - Run the first event credit campaign on or after 2026-12-13 (terms version naming event credits takes effect).

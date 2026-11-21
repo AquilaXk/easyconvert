@@ -210,8 +210,8 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(computeVisibleSections('docx', 'pdf').canConfigureLayout).toBe(false);
     expect(computeVisibleSections('md', 'pdf').canConfigureLayout).toBe(true);
     expect(computeVisibleSections('png', 'pdf').canConfigureLayout).toBe(true);
-    for (const target of ['txt', 'html', 'docx', 'xlsx', 'png', 'svg']) expect(computeVisibleSections('pdf', target).canSelectPages).toBe(true);
-    for (const target of ['md', 'rtf', 'epub', 'pptx', 'xls', 'hocr']) expect(computeVisibleSections('pdf', target).canSelectPages).toBe(false);
+    for (const target of ['txt', 'html', 'docx', 'xlsx', 'xls', 'pptx', 'ppt', 'rtf', 'doc', 'png', 'svg']) expect(computeVisibleSections('pdf', target).canSelectPages).toBe(true);
+    for (const target of ['md', 'epub', 'hocr']) expect(computeVisibleSections('pdf', target).canSelectPages).toBe(false);
     expect(computeVisibleSections('docx', 'txt').canSelectPages).toBe(false);
     expect(resolvePasswordMode('rar', 'zip')).toBe('archive-reencrypt');
     expect(resolvePasswordMode('pdf', 'zip')).toBe('archive-encrypt');
