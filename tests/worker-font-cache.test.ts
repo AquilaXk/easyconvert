@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
  * of each font directory to the nanosecond; the layers of an image keep whole seconds, so a cache built before the image was exported is
  * refused by every process that is not root, and each of them writes a new cache into its own home: 26 files and 0.12 s for every office
  * conversion, whose home is a new directory each time. The image is not built by the test run, so these checks read what the build is told:
- * the directories are set to whole seconds and the caches written in the same step that installs the fonts, and no later step adds a font.
+ * the directories are set to whole seconds and the caches written in the last step that runs as root, so no later step can leave one stale.
  */
 
 const ROOT = path.resolve(__dirname, '..');
@@ -15,34 +15,29 @@ const DOCKERFILE = fs.readFileSync(path.join(ROOT, 'Dockerfile.worker'), 'utf-8'
 const RUNNER = DOCKERFILE.slice(DOCKERFILE.indexOf(' AS runner'));
 const VERIFY = fs.readFileSync(path.join(ROOT, 'scripts', 'verify-worker-container.sh'), 'utf-8');
 
-/** The `RUN` instruction (continuation lines joined) that installs the font packages. */
-function fontInstallStep(): string {
-  const start = RUNNER.indexOf('fonts-noto-cjk');
-  expect(start).toBeGreaterThan(0);
-  const begin = RUNNER.lastIndexOf('\nRUN ', start);
+/** The last `RUN` instruction of the runner stage, continuation lines joined. */
+function lastRunStep(): string {
+  const start = RUNNER.lastIndexOf('\nRUN ');
   const end = RUNNER.indexOf('\n\n', start);
-  return RUNNER.slice(begin, end);
+  return RUNNER.slice(start, end === -1 ? undefined : end);
 }
 
 describe('the font cache of the worker image', () => {
-  it('is written after the font directories are set to whole seconds, in the step that installs the fonts', () => {
-    const step = fontInstallStep();
-    const install = step.indexOf('apt-get install');
+  it('is written by the last step that runs as root, after the directories are set to whole seconds', () => {
+    const step = lastRunStep();
     const whole = step.indexOf('touch -d "@');
     const cache = step.indexOf('fc-cache -f -s');
-    expect(install).toBeGreaterThan(0);
-    expect(whole).toBeGreaterThan(install);
+    expect(whole).toBeGreaterThan(0);
     expect(cache).toBeGreaterThan(whole);
     expect(step).toMatch(/find \/usr\/share\/fonts \/usr\/local\/share\/fonts -type d/);
+    expect(RUNNER.indexOf('USER easyconvert:easyconvert')).toBeGreaterThan(RUNNER.lastIndexOf('\nRUN '));
   });
 
-  it('is not made stale by a later step that adds a font', () => {
-    const step = fontInstallStep();
-    const after = RUNNER.slice(RUNNER.indexOf(step) + step.length)
-      .split('\n')
-      .filter((line) => !line.trimStart().startsWith('#'))
-      .join('\n');
-    expect(after).not.toMatch(/\/usr\/share\/fonts|\/usr\/local\/share\/fonts|fonts-[a-z]|fc-cache/);
+  it('is written once, after the last step that installs a package', () => {
+    const writes = RUNNER.split('\n').filter((line) => /^\s*&& fc-cache /.test(line));
+    expect(writes).toEqual(['    && fc-cache -f -s']);
+    expect(RUNNER.indexOf('&& fc-cache -f -s')).toBeGreaterThan(RUNNER.lastIndexOf('apt-get install'));
+    expect(RUNNER.indexOf('&& fc-cache -f -s')).toBeGreaterThan(RUNNER.indexOf('fonts-noto-cjk'));
   });
 
   it('is checked in the running container as the image user: no cache file is written into an empty home', () => {

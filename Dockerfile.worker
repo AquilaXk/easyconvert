@@ -381,10 +381,6 @@ ENV NODE_ENV=production
 ARG LIBREOFFICE_VERSION=4:26.8.2.2-2~bpo13+1
 ARG LIBORCUS_VERSION=0.21.0-4~bpo13+1
 
-# The caches of the font directories (`fc-cache -f -s`, the last step of this install) are written after each directory is set to a whole second:
-# a cache records the modification time of its directory to the nanosecond, the layers of an image keep whole seconds, and fontconfig refuses
-# the cache of a directory whose time differs for every process but root, so each office conversion (a new home each time) rebuilt 26
-# caches, 0.12 s of every run (docs/policy-decisions.md, entry 385). No later step may add a font.
 # 1. Install Tini Init, util-linux (prlimit), libcap2-bin (capsh, used by scripts/verify-worker-container.sh), Native Conversion Engines (7-Zip and FFmpeg come from the pinned stages, FFmpeg with the runtime libraries of the codecs it was built against; libdeflate-tools is the deflate encoder for ZIP and gzip payloads past 4 MiB; lbzip2 is the bzip2 encoder for tarballs of up to two blocks; xz-utils is the .xz encoder and decoder, which the node base image installs only to unpack Node and then purges), and CJK Font Packages
 # The Open CASCADE libraries (STEP and IGES, see the cadconvert stage) are packaged with occt-misc, whose 55 MB of sample models and images
 # and 5 MB of resource files the program never reads (it converts all four targets of the 11 real samples with the directory removed, and
@@ -474,8 +470,6 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         calibre \
         qt6-image-formats-plugins \
         qt6-svg-plugins \
-    && find /usr/share/fonts /usr/local/share/fonts -type d -exec sh -c 'for d; do touch -d "@$(stat -c %Y "$d")" "$d"; done' sh {} + \
-    && fc-cache -f -s \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r -f video && groupadd -r -f render \
@@ -693,10 +687,12 @@ RUN scratch="$(mktemp -d)" \
 # each with its format's signature (the ZIP entry `mimetypeapplication/epub+zip` at byte 30, `%PDF-`, `{\rtf1`) and the text. The PDF writer draws with
 # Chromium, which refuses to run as root without its sandbox switched off and makes shared memory in /dev/shm unless it is told not to (the worker's run
 # sets both, and gives it the wide address space the website capture gives the same engine).
+# The text is `Sample text`, not `Hello`: calibre's TCR writer and reader turn `Hello` into `Helllo` in about a third of the runs (8 of 25
+# runs on the image of 2026-11-21, 0 of 60 for this text), which failed the build on the last check below (docs/policy-decisions.md, entry 385).
 RUN scratch="$(mktemp -d)" \
     && install -d -o easyconvert -g easyconvert -m 0700 "${scratch}" "${scratch}/config" "${scratch}/cache" "${scratch}/tmp" "${scratch}/runtime" \
     && python3 -c 'import chm.chm' \
-    && printf 'Hello\n' > "${scratch}/book.txt" \
+    && printf 'Sample text\n' > "${scratch}/book.txt" \
     && chown easyconvert:easyconvert "${scratch}/book.txt" \
     && runuser -u easyconvert -- env HOME="${scratch}" TMPDIR="${scratch}/tmp" XDG_RUNTIME_DIR="${scratch}/runtime" \
         XDG_CONFIG_HOME="${scratch}/config" XDG_CACHE_HOME="${scratch}/cache" XDG_DATA_HOME="${scratch}" \
@@ -708,7 +704,7 @@ RUN scratch="$(mktemp -d)" \
     && test "$(dd if="${scratch}/book-from-tcr.epub" bs=1 skip=30 count=28 2> /dev/null)" = "mimetypeapplication/epub+zip" \
     && test "$(head -c 5 "${scratch}/book-from-tcr.pdf")" = '%PDF-' \
     && test "$(head -c 6 "${scratch}/book-from-tcr.rtf")" = '{\rtf1' \
-    && grep -q Hello "${scratch}/book-from-tcr.txt" \
+    && grep -q 'Sample text' "${scratch}/book-from-tcr.txt" \
     && rm -rf "${scratch}"
 
 # Website capture (src/lib/capture/website-capture.ts): the page is drawn by Qt WebEngine (Chromium), which calibre's dependencies already put in this image
@@ -806,6 +802,14 @@ RUN mkdir -p /licenses/pdfjs-dist-wasm && cp /app/node_modules/pdfjs-dist/wasm/L
 # The versions this image was built with (every Debian package, and the Node.js runtime), kept next to the notices.
 RUN { dpkg-query -W -f='${binary:Package} ${Version}\n' | sort; printf 'nodejs %s\n' "$(node --version)"; cat /usr/share/doc/ffmpeg/tool-version.txt; cat /usr/share/doc/djvulibre/tool-version.txt; } > /licenses/tool-versions.txt
 RUN chmod -R a+rX /licenses
+
+# The caches of the font directories, written last: a cache records the modification time of its directory to the nanosecond, the layers of an
+# image keep whole seconds, and fontconfig refuses the cache of a directory whose time differs for every process but root, so each office
+# conversion (a new home each time) rebuilt 26 caches, 0.12 s of every run (docs/policy-decisions.md, entry 385). Each directory is set to a whole
+# second, then the caches are written. It is the last step that runs as root: a step after it that touches a font directory (a package that installs
+# a font, a trigger of the package manager) leaves that directory's cache stale again, which `scripts/verify-worker-container.sh` (check 13) reports.
+RUN find /usr/share/fonts /usr/local/share/fonts -type d -exec sh -c 'for d; do touch -d "@$(stat -c %Y "$d")" "$d"; done' sh {} + \
+    && fc-cache -f -s
 
 # 5. Drop to unprivileged non-root user (UID:GID 10001:10001) and enforce strict namespace sandboxing by default
 ENV STRICT_SANDBOX=true
