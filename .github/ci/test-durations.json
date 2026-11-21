@@ -809,7 +809,7 @@
   "tests/office-advertised-pairs-typed-errors.test.ts": 9.3,
   "tests/office-chart-text.test.ts": 6.1,
   "tests/office-comment-annotations.test.ts": 9.9,
-  "tests/office-compound-file-precheck.test.ts": 2,
+  "tests/office-compound-file-precheck.test.ts": 4,
   "tests/office-conversions.test.ts": 1.7,
   "tests/office-file-input.test.ts": 5.1,
   "tests/office-html-text-linear.test.ts": 0,

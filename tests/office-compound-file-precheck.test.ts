@@ -23,6 +23,8 @@ import { requireRealworldSample } from './helpers/realworld-sample';
 const SECTOR_BYTES = 512;
 const HEADER_BYTES = 512;
 const FIRST_DIRECTORY_SECTOR_OFFSET = 48;
+const ENTRY_TYPE_OFFSET = 66;
+const STREAM_ENTRY = 2;
 const WORKBOOK_BYTES = 8192;
 const CUT_FILE = 'gd-597001.xls';
 const CUT_FILE_SHA256 = 'd07ee07f640cc75401cd81fbfa91d97f8dfe59623a8837f76766552c8643c52f';
@@ -64,6 +66,21 @@ describe('assertLegacyCompoundFileReadable and a directory the file does not hol
       const cut = file.subarray(0, sectorStart(directorySector) + held);
       expect(outcome(cut, 'ppt'), `${held} bytes of the sector`).toBe('passed');
     }
+  });
+
+  it('refuses a first directory sector, cut short, whose first entry is not the root storage (the entry Apache POI `PropertyTable.getRoot` refuses)', () => {
+    const entryBytes = 128;
+    for (const held of [SECTOR_BYTES - 1, 3 * entryBytes + 10, entryBytes]) {
+      const cut = Buffer.from(file.subarray(0, sectorStart(directorySector) + held));
+      cut[sectorStart(directorySector) + ENTRY_TYPE_OFFSET] = STREAM_ENTRY;
+      expect(() => assertLegacyCompoundFileReadable(cut, 'xls'), `${held} bytes of the sector`).toThrow(/malformed OLE2 directory/);
+    }
+  });
+
+  it('leaves a cut first directory sector that holds less than one entry, whose type byte may be missing', () => {
+    const cut = Buffer.from(file.subarray(0, sectorStart(directorySector) + 100));
+    cut[sectorStart(directorySector) + ENTRY_TYPE_OFFSET] = STREAM_ENTRY;
+    expect(outcome(cut, 'xls')).toBe('passed');
   });
 
   it('refuses a file of the header alone and a header that points the directory past the end', () => {
@@ -173,6 +190,33 @@ describe('gd-200188.xls (regression corpus): one byte short of its last sector, 
   });
 });
 
+describe('gd-122861.xls (regression corpus): the directory is a cut-short last sector that holds the tail of a stream, not a root entry', () => {
+  const FILE = 'gd-122861.xls';
+  const SHA256 = 'b914dcf7ecf24d63e7cca4738734b23863f6db4928af6628e531e772055b38ba';
+
+  it('is the file the manifest pins and is refused as a malformed directory for every target that reads it', { timeout: 120_000 }, async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, FILE);
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe(SHA256);
+    expect(bytes.length).toBe(1_198_582);
+    expect(bytes.readUInt32LE(FIRST_DIRECTORY_SECTOR_OFFSET)).toBe(2339);
+    for (const target of ['pdf', 'ods', 'jpg']) {
+      const refusal = await dispatchConversion(bytes, 'xls', target, {}, FILE).catch((error: unknown) => error);
+      expect(refusal, target).toBeInstanceOf(CompoundFileStructureError);
+      expect((refusal as Error).message, target).toMatch(/malformed OLE2 directory/);
+    }
+  });
+});
+
+describe('the cut-short workbooks that convert (regression corpus) keep passing', () => {
+  for (const file of ['gd-200188.xls', 'gd-363890.xls', 'gd-594069.xls', 'gd-615234.xls']) {
+    it(`${file} passes the check`, async (ctx) => {
+      const { bytes } = await requireRealworldSample(ctx, file);
+      expect((bytes.length - HEADER_BYTES) % SECTOR_BYTES, 'the last sector is cut short').not.toBe(0);
+      expect(outcome(bytes, 'xls')).toBe('passed');
+    });
+  }
+});
+
 describe('the regression gate rows of the two cut-off workbooks', () => {
   const rows = readKnownRefusals(REGRESSION_KNOWN_REFUSALS_PATH);
   const refused = (file: string, detail: string): JobRecord => ({ file, source: 'xls', target: 'ods', verdict: 'refused', ms: 1, detail });
@@ -182,5 +226,11 @@ describe('the regression gate rows of the two cut-off workbooks', () => {
     for (const file of ['gd-085904.xls', 'gd-597001.xls']) expect(knownRefusal(refused(file, message), rows), file).not.toBeNull();
     expect(knownRefusal(refused('gd-000001.xls', message), rows), 'another file').toBeNull();
     expect(knownRefusal(refused('gd-597001.xls', 'ConversionFailedError: The XLS file is encrypted.'), rows), 'another message').toBeNull();
+  });
+
+  it('explain the malformed directory message of gd-122861.xls for that file only', () => {
+    const malformed = 'CompoundFileStructureError: Corrupt CFBF container: the .xls file has a malformed OLE2 directory or allocation table.';
+    expect(knownRefusal(refused('gd-122861.xls', malformed), rows)).not.toBeNull();
+    expect(knownRefusal(refused('gd-000001.xls', malformed), rows), 'another file').toBeNull();
   });
 });
