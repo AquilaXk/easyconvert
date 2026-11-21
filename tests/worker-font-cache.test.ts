@@ -30,6 +30,8 @@ describe('the font cache of the worker image', () => {
     expect(whole).toBeGreaterThan(0);
     expect(cache).toBeGreaterThan(whole);
     expect(step).toMatch(/find -L \/usr\/share\/fonts \/usr\/local\/share\/fonts -type d/);
+    // The time a directory is set to is its own: `stat` without -L reads the time of a link, which sets the directory it links to to another second.
+    expect(step).toContain('stat -L -c %Y');
     expect(RUNNER.indexOf('USER easyconvert:easyconvert')).toBeGreaterThan(RUNNER.lastIndexOf('\nRUN '));
   });
 
