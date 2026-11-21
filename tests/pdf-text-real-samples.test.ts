@@ -168,13 +168,16 @@ describe.skipIf(toolsMissing)('fonts without a Unicode map (real files)', () => 
     expect(result.metadata?.warnings).toEqual(['Left out 1 glyph that no font encoding maps to Unicode (page 59).']);
   }, CONVERSION_TIMEOUT_MS);
 
-  it('govdocs1-000839.pdf: leaves out the MathematicalPi glyphs whose names number a catalogue, which pdftotext prints as CJK ideographs', async (ctx) => {
+  it('govdocs1-000839.pdf: reads the MathematicalPi glyphs by the names of the catalogue, where pdftotext prints CJK ideographs, and leaves out those the table lacks', async (ctx) => {
     const { bytes } = await requireRealworldSample(ctx, 'govdocs1-000839.pdf');
     const result = await textOf(bytes);
     const text = result.buffer.toString('utf8');
     expect(pdftotext(bytes)).toContain('共');
     expect(text).not.toMatch(/[共兲兾⫹⫽⫺]/u);
-    expect(result.metadata?.warnings).toEqual(['Left out 928 glyphs that no font encoding maps to Unicode (pages 1, 2, 3, 4, 5, 6, 7, 8).']);
+    // The parentheses around FDTD, the Greek mu of "10.8 um" and the minus sign of a unit are the glyphs the page shows.
+    expect(text).toContain('time-domain (FDTD) program');
+    expect(text).toContain('0.55 and 10.8 \u03bcm');
+    expect(result.metadata?.warnings).toEqual(['Left out 20 glyphs that no font encoding maps to Unicode (pages 4, 6).']);
   }, CONVERSION_TIMEOUT_MS);
 });
 
