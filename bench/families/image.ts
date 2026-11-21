@@ -10,6 +10,7 @@ import { decodeImageToPng, fileSize, flattenOnGrey, measureSsimulacra2, pictureA
 import { OutputIntegrityError } from '../errors';
 import { hasValidChunkChecksums, withMetadataOf } from '../png-metadata';
 import { runImageJxlPng } from './image-jxl';
+import { HIGH_CASE_SUFFIX, HIGH_CLASS_METRICS, HIGH_QUALITY_POINTS, highQualityRows, type HighQualityPoint } from './image-jpeg-high';
 import { numberRecord, type RefSpec } from '../ref-cache';
 import type { BenchRow } from '../report';
 import { capPsnr, measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, ssimDb, throughputRow, speedRowId, undeterminedBdRows } from '../rows';
@@ -33,14 +34,16 @@ interface ImageCase {
   alpha: boolean;
   /** Content class of a public sample; the generated corpus has none. */
   contentClass: string | null;
+  /** A photograph: its JPEG is also measured over the high quality range (bench/families/image-jpeg-high.ts). */
+  photograph: boolean;
   remote: RemoteSample | null;
 }
 
 const CORE_CASES: readonly ImageCase[] = [
-  { file: 'photo-a.jpg', format: 'jpg', bitDepth: 8, alpha: false, contentClass: null, remote: null },
-  { file: 'photo-b.png', format: 'png', bitDepth: 8, alpha: false, contentClass: null, remote: null },
-  { file: 'screenshot.png', format: 'png', bitDepth: 16, alpha: false, contentClass: null, remote: null },
-  { file: 'lineart.png', format: 'png', bitDepth: 16, alpha: false, contentClass: null, remote: null },
+  { file: 'photo-a.jpg', format: 'jpg', bitDepth: 8, alpha: false, contentClass: null, photograph: true, remote: null },
+  { file: 'photo-b.png', format: 'png', bitDepth: 8, alpha: false, contentClass: null, photograph: true, remote: null },
+  { file: 'screenshot.png', format: 'png', bitDepth: 16, alpha: false, contentClass: null, photograph: false, remote: null },
+  { file: 'lineart.png', format: 'png', bitDepth: 16, alpha: false, contentClass: null, photograph: false, remote: null },
 ];
 
 function publicCases(): ImageCase[] {
@@ -50,6 +53,7 @@ function publicCases(): ImageCase[] {
     bitDepth: sample.meta.bitDepth === 16 ? 16 : 8,
     alpha: sample.meta.transparent === true,
     contentClass: sample.class,
+    photograph: sample.class === PHOTOGRAPH_CLASS,
     remote: sample,
   }));
 }
@@ -58,6 +62,8 @@ export function sourceFormatOf(id: string): ImageCase['format'] {
   if (/\.jpe?g$/.test(id)) return 'jpg';
   return id.endsWith('.jxl') ? 'jxl' : 'png';
 }
+/** The content class of the public pictures that are photographs. */
+const PHOTOGRAPH_CLASS = 'photo';
 const TARGETS = ['webp', 'avif', 'jpg'] as const;
 type Target = (typeof TARGETS)[number];
 
@@ -125,9 +131,12 @@ function failedConversionRow(caseName: string, tool: string): BenchRow {
 export const runImage: FamilyRunner = async (ctx) => {
   const rows: BenchRow[] = [];
   const classes = new ClassRows();
+  /** The high quality range of the photographs (88 to 96) pools into its own class rows. */
+  const highClasses = new ClassRows();
   const cases = [...CORE_CASES, ...publicCases()];
   for (const sample of cases) {
     if (sample.contentClass !== null) for (const target of TARGETS) if (!(sample.alpha && target === 'jpg')) classes.expect(sample.contentClass, `->${target}`, [SPEC.bdRatePsnr.metric, SPEC.bdRateSsim.metric]);
+    if (sample.contentClass !== null && sample.photograph) highClasses.expect(sample.contentClass, HIGH_CASE_SUFFIX, HIGH_CLASS_METRICS);
   }
   const ssimulacraPlan = ctx.plan(['ssimulacra2'], 'image ssimulacra2 score', { optional: true });
   if (!ssimulacraPlan.ok && ctx.quality) {
@@ -262,6 +271,30 @@ export const runImage: FamilyRunner = async (ctx) => {
             );
             rows.push(measuredRow('image', caseName, SPEC.ssimulacra2, score(oursFile), referenceScore.score, tool));
           }
+
+          if (target === 'jpg' && sample.photograph && ctx.inScope('image', `${sample.file}${HIGH_CASE_SUFFIX}`)) {
+            const scoreOf = (file: string): number | null => (ssimulacraPlan.ok ? measureSsimulacra2(ssimulacraPlan.paths.ssimulacra2, sourcePng, comparable(`${file}.png`)) : null);
+            const highOurs = new Map<number, HighQualityPoint>();
+            const highReference = new Map<number, HighQualityPoint>();
+            for (const quality of HIGH_QUALITY_POINTS) {
+              const oursFile = ctx.scratch(`ours-high-q${quality}.${target}`);
+              highOurs.set(quality, { ...measure(await oursEncode(quality), oursFile), ssimulacra2: scoreOf(oursFile) });
+              const refFile = ctx.scratch(`ref-high-q${quality}.${target}`);
+              const encoded = await ctx.refCache.value('image', referenceSpec('encode-measure', quality), parseEncoded, () => {
+                referenceEncode(target, plan.paths[refTool], referenceInput, quality, refFile, sample.bitDepth, grey);
+                return measure(null, refFile);
+              });
+              const referenceScore = ssimulacraPlan.ok
+                ? await ctx.refCache.value('image', { ...referenceSpec('ssimulacra2', quality), tools: [...referenceSpec('ssimulacra2', quality).tools, 'ssimulacra2'] }, parseScore, () => {
+                    referenceEncode(target, plan.paths[refTool], referenceInput, quality, refFile, sample.bitDepth, grey);
+                    measure(null, refFile);
+                    return { score: scoreOf(refFile) as number };
+                  })
+                : null;
+              highReference.set(quality, { ...encoded, ssimulacra2: referenceScore === null ? null : referenceScore.score });
+            }
+            rows.push(...highQualityRows({ caseName: `${sample.file}${HIGH_CASE_SUFFIX}`, referenceTool: tool, ours: highOurs, reference: highReference, classRows: highClasses, contentClass: sample.contentClass }));
+          }
         } catch (error) {
           if (!(error instanceof OursConversionError)) throw error;
           ctx.log(`image ${caseName}: the product could not convert the sample: ${error.message.slice(0, 300)}`);
@@ -301,6 +334,7 @@ export const runImage: FamilyRunner = async (ctx) => {
     }
   }
   rows.push(...classes.rows('image', (suffix) => REFERENCE_NAME[suffix.slice(2) as Target]).filter((row) => ctx.inScope('image', row.case)));
+  rows.push(...highClasses.rows('image', () => REFERENCE_NAME.jpg).filter((row) => ctx.inScope('image', row.case)));
   if (ctx.quality) rows.push(...(await runImageJxlPng(ctx)));
   return rows;
 };
