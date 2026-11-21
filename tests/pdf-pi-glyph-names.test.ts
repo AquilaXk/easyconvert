@@ -43,6 +43,10 @@ describe('the catalogue name of a glyph in a pi font', () => {
     expect(piGlyphNameToText('H11002', 'MathematicalPi-One')).toBe('−');
   });
 
+  it('writes the relation the table calls a double nested less-than as much less than', () => {
+    expect(piGlyphNameToText('H11270', 'MathematicalPi-Six')).toBe('\u226a');
+  });
+
   it('keeps a base character with its combining mark and the letters that are not Greek', () => {
     expect(piGlyphNameToText('H11325', 'MathematicalPi-Six')).toBe('≦̸');
     expect(piGlyphNameToText('H11928', 'MathematicalPi-Six')).toBe('ℍ');

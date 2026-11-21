@@ -11,7 +11,9 @@ import { ADOBE_PI_GLYPH_LIST_LINES } from './pdf-adobe-pi-glyph-list';
  *    U+1D6FF and the capitals before them), which the glyphs of these fonts are drawn as but which no reader of a text wants:
  *    each is written as the Greek letter of its compatibility decomposition (U+1D6CD becomes U+03BC, "1 `H9262`m" is "1 μm");
  *  - `H11002` is the figure dash U+2012 in the table, and the glyph is the minus sign of a formula ("0.04 m s `H11002` 1" is
- *    "m s−1"), so it is U+2212.
+ *    "m s−1"), so it is U+2212;
+ *  - `H11270` is U+2AA1 (double nested less-than) in the table, and the glyph is the relation "much less than" ("when
+ *    η `H11270` 1", govdocs1-002707.pdf), whose character is U+226A.
  *
  * A name whose value is a combining mark alone (`H33527`, the double overline) is left out: the glyph is an accent drawn over
  * another one, and a mark that follows the wrong letter in the text is worse than a glyph counted as missing.
@@ -28,6 +30,9 @@ const MATHEMATICAL_GREEK_LAST = 0x1d7cb;
 const MINUS_SIGN = '−';
 const FIGURE_DASH = '‒';
 const MINUS_NAME = 'H11002';
+const MUCH_LESS_NAME = 'H11270';
+const MUCH_LESS_THAN = '\u226a';
+const DOUBLE_NESTED_LESS_THAN = '\u2aa1';
 
 const COMBINING_MARK = /^\p{M}/u;
 
@@ -37,6 +42,7 @@ let texts: Map<string, string> | undefined;
 function adaptedText(name: string, codePoints: number[]): string {
   const text = String.fromCodePoint(...codePoints);
   if (name === MINUS_NAME && text === FIGURE_DASH) return MINUS_SIGN;
+  if (name === MUCH_LESS_NAME && text === DOUBLE_NESTED_LESS_THAN) return MUCH_LESS_THAN;
   const only = codePoints.length === 1 ? codePoints[0] : 0;
   return only >= BOLD_GREEK_FIRST && only <= MATHEMATICAL_GREEK_LAST ? text.normalize('NFKC') : text;
 }
