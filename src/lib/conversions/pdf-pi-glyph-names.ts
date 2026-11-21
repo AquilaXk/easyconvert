@@ -13,6 +13,9 @@ import { ADOBE_PI_GLYPH_LIST_LINES } from './pdf-adobe-pi-glyph-list';
  *  - `H11002` is the figure dash U+2012 in the table, and the glyph is the minus sign of a formula ("0.04 m s `H11002` 1" is
  *    "m s−1"), so it is U+2212.
  *
+ * A name whose value is a combining mark alone (`H33527`, the double overline) is left out: the glyph is an accent drawn over
+ * another one, and a mark that follows the wrong letter in the text is worse than a glyph counted as missing.
+ *
  * A name is read only in a font of these families. The catalogue numbers are Adobe's own, and a font of another maker may use
  * a name of this shape for any glyph.
  */
@@ -25,6 +28,8 @@ const MATHEMATICAL_GREEK_LAST = 0x1d7cb;
 const MINUS_SIGN = '−';
 const FIGURE_DASH = '‒';
 const MINUS_NAME = 'H11002';
+
+const COMBINING_MARK = /^\p{M}/u;
 
 let texts: Map<string, string> | undefined;
 
@@ -41,7 +46,8 @@ function table(): Map<string, string> {
     texts = new Map();
     for (const line of ADOBE_PI_GLYPH_LIST_LINES) {
       const [name, values] = line.split(';');
-      texts.set(name, adaptedText(name, values.split(' ').map((hex) => Number.parseInt(hex, 16))));
+      const text = adaptedText(name, values.split(' ').map((hex) => Number.parseInt(hex, 16)));
+      if (!COMBINING_MARK.test(text)) texts.set(name, text);
     }
   }
   return texts;

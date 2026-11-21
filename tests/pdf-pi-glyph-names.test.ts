@@ -48,6 +48,10 @@ describe('the catalogue name of a glyph in a pi font', () => {
     expect(piGlyphNameToText('H11928', 'MathematicalPi-Six')).toBe('ℍ');
   });
 
+  it('leaves out a glyph that is a combining mark alone, which would attach to the wrong letter', () => {
+    expect(piGlyphNameToText('H33527', 'MathematicalPi-Five')).toBeNull();
+  });
+
   it('reads a subset of the family and nothing in another font', () => {
     expect(piGlyphNameToText('H11001', 'ABCDEF+MathematicalPi-One')).toBe('+');
     expect(piGlyphNameToText('H11001', 'Times-Roman')).toBeNull();
