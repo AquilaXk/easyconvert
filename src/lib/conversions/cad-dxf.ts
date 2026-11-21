@@ -1332,6 +1332,32 @@ export function dxfDrawingToSvg(drawing: DxfDrawing, title: string): string {
 }
 
 /** The drawing as one vector PDF page the size of its extents and a margin: no title, no frame, real text. */
+/** A coordinate of the page at the hundredth of a point (0.0035 mm), the resolution the PDF writes a path at. */
+const roundToHundredth = (value: number): number => Math.round(value * 100) / 100;
+
+/**
+ * The `l` operators of a polyline after its first point, written as one piece of the page's content. A spline or a hatch has tens of thousands
+ * of points, far denser than the 576-point page shows (200,000 within 0.003 point of each other in one DWG sample); each `lineTo` of the PDF
+ * library costs 0.6 microseconds and a number of bytes, so a point that falls on the one before at the hundredth of a point is left out, and the
+ * last point is always written, so the path ends where the drawing does.
+ */
+function polylineOperators(points: readonly Point[], map: (p: Point) => Point): string {
+  const first = map(points[0]);
+  let lastX = roundToHundredth(first[0]);
+  let lastY = roundToHundredth(first[1]);
+  let content = '';
+  for (let i = 1; i < points.length; i++) {
+    const pt = map(points[i]);
+    const x = roundToHundredth(pt[0]);
+    const y = roundToHundredth(pt[1]);
+    if (x === lastX && y === lastY && i < points.length - 1) continue;
+    content += `${x} ${y} l\n`;
+    lastX = x;
+    lastY = y;
+  }
+  return content;
+}
+
 export async function renderDxfDrawingToPdf(drawing: DxfDrawing): Promise<Buffer> {
   const { extents } = drawing;
   const { width, height, longest } = extentSizes(extents);
@@ -1363,12 +1389,9 @@ export async function renderDxfDrawingToPdf(drawing: DxfDrawing): Promise<Buffer
           doc.path(arcPath(stroke, map, scale, exact)).stroke();
           break;
         case 'poly': {
-          const firstPt = map(stroke.points[0]);
-          doc.moveTo(firstPt[0], firstPt[1]);
-          for (let i = 1; i < stroke.points.length; i++) {
-            const pt = map(stroke.points[i]);
-            doc.lineTo(pt[0], pt[1]);
-          }
+          const first = map(stroke.points[0]);
+          doc.moveTo(roundToHundredth(first[0]), roundToHundredth(first[1]));
+          doc.addContent(polylineOperators(stroke.points, map));
           if (stroke.closed) doc.closePath();
           doc.stroke();
           break;

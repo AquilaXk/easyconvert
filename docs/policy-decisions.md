@@ -436,6 +436,7 @@ Security
 385. [The font caches of the worker image are written for the user the worker runs as](#385-the-font-caches-of-the-worker-image-are-written-for-the-user-the-worker-runs-as)
 386. [The office rows of the benchmark run nightly inside the worker image, against a baseline and gap file of their own](#386-the-office-rows-of-the-benchmark-run-nightly-inside-the-worker-image-against-a-baseline-and-gap-file-of-their-own)
 387. [The profile of a pool slot is copied from its template with `cpSync`](#387-the-profile-of-a-pool-slot-is-copied-from-its-template-with-cpsync)
+388. [The PDF of a DXF drawing leaves out the points of a polyline that fall on the one before at the hundredth of a point](#388-the-pdf-of-a-dxf-drawing-leaves-out-the-points-of-a-polyline-that-fall-on-the-one-before-at-the-hundredth-of-a-point)
 
 ---
 
@@ -11538,3 +11539,26 @@ Security
   - **A snapshot of the template in memory:** 0.2 ms less than `cpSync`, and a second copy of the profile that must follow the template's replacement (`discardProfileTemplate`).
 - **Verified by**: `tests/libreoffice-pool-profile-copy.test.ts` (the tree restored with its link, the leftover gone, the fixed settings written, `fs.promises.cp` not called; red on the call it replaces), `tests/libreoffice-pool-profile-reset.test.ts` and `tests/libreoffice-pool-manager.test.ts` (the reset semantics, unchanged), and the measurements above.
 - **Revisit when**: the template grows past about 1,000 files (the event loop would wait for the copy), or the suite's profile becomes unnecessary for a conversion.
+
+## 388. The PDF of a DXF drawing leaves out the points of a polyline that fall on the one before at the hundredth of a point
+
+- **Date**: 2026-11-22
+- **Status**: Implemented (QA request 2026-11-22: look at the DWG to PDF rows, which read 0.78 and 0.81 of the reference on LibreOffice 26.8, if the profile shows a cheap cause). It changes the bytes of the PDF of a drawing with dense polylines, not its picture. Nothing is deployed.
+- **Decision**: **`renderDxfDrawingToPdf` (`src/lib/conversions/cad-dxf.ts`) writes the path of a polyline as one piece of content, with coordinates at the hundredth of a point, and leaves out a point that has the same rounded position as the point written before it. The first point (`moveTo`) and the last point are always written.** A closed polyline is closed as before. Lines, arcs, circles and text are written as before.
+- **Why**:
+  - **A spline or a hatch reaches the writer as a polyline of tens of thousands of points.** `dwg-example-2004.dwg` holds 16 polylines of 201,568 points in all on a page 576 points long, which puts neighbours within 0.003 point of each other. The PDF library took a `lineTo` and a six-decimal number for each: 150 ms of the 230 ms the conversion took (a CPU profile of the process that converted the sample 14 times: `lineTo` 1.6 s, the writer's own loop 1.3 s, the garbage collector 2.5 s, deflate 1.1 s), and a PDF of 723,749 bytes.
+  - **The reference is a suite that starts twice as fast** (entry 383): its time for the same file is 135 ms (the reader, 22 ms alone, and the suite), and ours had no fixed cost to shave.
+  - **The picture does not change.** The PDF of the sample before and after, drawn with `pdftoppm`: 72 dpi, 0 of 272,400 pixels differ; 300 dpi, 1 of 4,717,440 differs by 1 level of 255. A hundredth of a point is 0.0035 mm, a hundredth of the width of the stroke (0.75 point). 462 `cad` quality rows measured on the worker image before and after: 6 values of ours move, by at most 0.0002 (ink precision 0.9868 to 0.98676, 0.99854 to 0.99865, an extent error 0.00044 to 0.00001), in both directions.
+- **Measured** (the worker image of `sha-9714aed8`, arm64 Linux testbed, rootless Podman, uid 10001; the host loaded by other work, load 17 to 42, which the interleaving shares between the three sides):
+  - **The writer alone** for the sample's drawing (12 runs): 150.0 ms and 723,749 bytes before, 15.7 ms and 10,786 bytes after.
+  - **The conversion** `dwg-example-2004.dwg` to PDF, 30 interleaved rounds of base, head and the reference (the reader, then `soffice --convert-to pdf` on its DXF; the order rotating through the six permutations): reference 135.3 ms, base 175.8 ms, head 49.5 ms; speed ratio 0.783 [0.746, 0.810] before and 2.745 [2.682, 2.891] after (the 95 % sign-test interval of `bench/speed-parity.ts`).
+  - **The `cad` family of `bench:quality --parity`** in the image (quality and speed, 488 rows): 0 failing rows; `dwg-example-2004.dwg` to PDF 2.49 and `dwg-example-2013.dwg` to PDF 3.06, which read 0.78 and 0.81 before. The 19 rows that fail the baseline gate against `bench/baseline.json` are those of entry 386 (the reference's DXF reader moved); no row of ours is among them.
+- **Trade-offs**:
+  - **A polyline's points are written at the hundredth of a point,** where the library wrote six decimals. The page is 576 points, and a hundredth of a point is a hundredth of the stroke's width.
+  - **A point that returns to the position before it is left out** (a zero-length segment). With round caps it drew a dot at the end of a segment that is drawn anyway; the first and last points stay, so a polyline of one position is still a dot.
+  - **`doc.addContent`** writes the operators into the page's stream in order with the calls around it (the type definition of the library lists it); the first point and the closing of the path still go through `moveTo` and `closePath`.
+- **Alternatives rejected**:
+  - **Leaving the drawing as the library takes it and compressing less:** deflate was 1.1 s of the profile and the `lineTo` calls with their number formatting 1.6 s; fewer points reduce both.
+  - **A tolerance larger than the hundredth** (the simplification of Ramer and Douglas and Peucker at a tenth of a point): fewer points still, but a change of the shape of a curve, which the hundredth is not.
+- **Verified by**: `tests/cad-dxf-pdf-dense-polyline.test.ts` (50,000 points inside a hundredth of a point write fewer than 1,000 `l` operators, the start and the end are written at the page's scale, a polyline whose points all differ is written point for point; red on the library's `lineTo`), `tests/cad-dxf-drawing.test.ts`, `tests/cad-dwg-routes.test.ts` and the other CAD suites (the PDF's page and fonts unchanged), and the measurements above.
+- **Revisit when**: the page size of the PDF changes (`PDF_LONG_SIDE_PT`), or a viewer shows a seam at a point left out.
