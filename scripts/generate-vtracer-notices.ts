@@ -100,9 +100,9 @@ const CRATES_IO_SOURCE = 'registry+https://github.com/rust-lang/crates.io-index'
 
 /** The limits of scripts/third-party-notices.mjs, which gathers the npm notices the same way. */
 export const MAX_LICENSE_FILE_BYTES = 1024 * 1024;
-const MAX_LICENSE_FILES_PER_PACKAGE = 16;
+export const MAX_LICENSE_FILES_PER_PACKAGE = 16;
 /** A licence file at the root of the crate, or a text of a REUSE `LICENSES` directory. */
-const LICENSE_FILE_PATTERN = /^((licen[cs]e|copying|notice|unlicen[cs]e)([-._][^/]*)?|LICENSES\/[^/]+)$/i;
+export const LICENSE_FILE_PATTERN = /^((licen[cs]e|copying|notice|unlicen[cs]e)([-._][^/]*)?|LICENSES\/[^/]+)$/i;
 /** Characters that make a member name a pattern to tar; a name without them selects exactly that member. */
 const TAR_PATTERN_CHARACTERS = /[*?[\]\\]/;
 /** The crates whose crates.io archive ships no licence text; any other crate without one stops the generator. */
@@ -258,9 +258,9 @@ export async function downloadChecked(url: string, digest: string, maxBytes: num
 }
 
 /** The compression of an archive, as the letter tar takes: gzip for a crates.io archive, xz for a rust-src component. */
-type Compression = 'z' | 'J';
+export type Compression = 'z' | 'J';
 
-function readMember(archive: Buffer, member: string, maxBytes: number, compression: Compression): string {
+export function readMember(archive: Buffer, member: string, maxBytes: number, compression: Compression): string {
   if (TAR_PATTERN_CHARACTERS.test(member)) throw new Error(`${member} is not a name tar reads literally`);
   return execFileSync('tar', [`-x${compression}O`, '-f', '-', '--', member], { input: archive, maxBuffer: maxBytes }).toString('utf8');
 }
@@ -269,7 +269,7 @@ const listing = (archive: Buffer, flags: string, selected: readonly string[]): s
   execFileSync('tar', [flags, '-f', '-', '--', ...selected], { input: archive, maxBuffer: MAX_TAR_LISTING_BYTES }).toString('utf8').split('\n').filter(Boolean);
 
 /** Each member of the archive under the selected names and whether it is a regular file (the type letter that starts its `tar -tv` line). */
-function listMembers(archive: Buffer, compression: Compression, selected: readonly string[]): Map<string, boolean> {
+export function listMembers(archive: Buffer, compression: Compression, selected: readonly string[]): Map<string, boolean> {
   if (selected.some((name) => TAR_PATTERN_CHARACTERS.test(name))) throw new Error(`${selected.join(', ')} is not a name tar reads literally`);
   const names = listing(archive, `-t${compression}`, selected);
   const modes = listing(archive, `-tv${compression}`, selected);
@@ -278,7 +278,7 @@ function listMembers(archive: Buffer, compression: Compression, selected: readon
 }
 
 /** Where the licence texts of a crate are in the archive that holds it. */
-interface ArchiveLayout {
+export interface ArchiveLayout {
   readonly compression: Compression;
   /** The directory of the crate's own files, with its trailing slash. */
   readonly prefix: string;

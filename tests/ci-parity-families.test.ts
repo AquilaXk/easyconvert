@@ -181,6 +181,8 @@ describe('classifying changed paths', () => {
     ['the oxipng install script', 'scripts/install-oxipng.sh', ['image']],
     ['the pandoc install script', 'scripts/install-pandoc.sh', ['document']],
     ['the oxipng notices', 'scripts/oxipng-notices/THIRD-PARTY-NOTICES', ['image']],
+    ['the pandoc notices', 'scripts/pandoc-notices/THIRD-PARTY-NOTICES', ['document']],
+    ['the pandoc package list', 'scripts/pandoc-notices/packages.lock', ['document']],
     ['the quantizr pixel quantiser', 'scripts/quantizr-pixels/src/main.rs', ['image']],
     ['the quantizr pixel quantiser lock file', 'scripts/quantizr-pixels/Cargo.lock', ['image']],
     ['the quantizr install script', 'scripts/install-quantizr-pixels.sh', ['image']],
@@ -192,7 +194,7 @@ describe('classifying changed paths', () => {
 
   it('classifies every file under native/ and every install script, patch directory and pinned-source directory of scripts/', () => {
     const tracked = spawnSync('git', ['ls-files', 'native', 'scripts'], { cwd: ROOT, encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
-    const inScope = tracked.filter((file) => /^native\/|^scripts\/(install-[^/]*\.sh$|[^/]*-patches\/|vtracer-pixels\/|vtracer-notices\/|quantizr-pixels\/|avifenc\/|lib\/djvulibre-gates\.sh$)/.test(file));
+    const inScope = tracked.filter((file) => /^native\/|^scripts\/(install-[^/]*\.sh$|[^/]*-patches\/|vtracer-pixels\/|vtracer-notices\/|pandoc-notices\/|quantizr-pixels\/|avifenc\/|lib\/djvulibre-gates\.sh$)/.test(file));
     expect(inScope.length).toBeGreaterThan(15);
     expect(classifyPaths(inScope, MAP).unclassified).toEqual([]);
     for (const file of inScope) expect(MAP.scope.test(file), file).toBe(true);

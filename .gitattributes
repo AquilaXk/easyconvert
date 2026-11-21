@@ -1,2 +1,3 @@
 scripts/vtracer-notices/** -text
 scripts/oxipng-notices/** -text
+scripts/pandoc-notices/** -text
