@@ -6,12 +6,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { CorpusFile } from '../manifest';
 import type { UnavailableFile } from '../judge';
-import { type GateResult, type JobRecord, mergeShards, readKnownFailures, readShard, REPORT_SCHEMA, type ShardReport } from '../report';
+import { type GateResult, type JobRecord, mergeShards, readKnownFailures, readKnownRefusals, readShard, REPORT_SCHEMA, type ShardReport } from '../report';
 import { evaluateRegression, type RegressionGate } from './differential';
 import type { RunMode } from './schedule';
 import { renderRegressionMarkdown } from './summary';
 
 export const REGRESSION_KNOWN_FAILURES_PATH = path.join(__dirname, 'known-failures.json');
+export const REGRESSION_KNOWN_REFUSALS_PATH = path.join(__dirname, 'known-refusals.json');
 export const FAILED_BEFORE_PATH = path.join(__dirname, 'failed-before.json');
 const MILLISECONDS_PER_SECOND = 1000;
 
@@ -60,12 +61,13 @@ export function mergeRegression(
   reports: readonly RegressionShardReport[],
   previous: RegressionResults | null,
   files: ReadonlyMap<string, CorpusFile>,
-  knownFailures = readKnownFailures(REGRESSION_KNOWN_FAILURES_PATH)
+  knownFailures = readKnownFailures(REGRESSION_KNOWN_FAILURES_PATH),
+  knownRefusals = readKnownRefusals(REGRESSION_KNOWN_REFUSALS_PATH)
 ): MergedRun {
   const jobs = mergeShards(reports);
   const { mode, date } = reports[0];
   const unavailable = reports.flatMap((report) => report.unavailable);
-  const gate = evaluateRegression(jobs, previous?.jobs ?? null, knownFailures, unavailable);
+  const gate = evaluateRegression(jobs, previous?.jobs ?? null, knownFailures, unavailable, knownRefusals);
   const results: RegressionResults = { schema: REPORT_SCHEMA, commit: reports[0].commit, mode, date, gate, unavailable, jobs };
   const ordered = [...reports].sort((a, b) => a.shard - b.shard);
   const markdown = renderRegressionMarkdown(jobs, gate, { files, previousCommit: previous?.commit ?? null, shardSeconds: ordered.map((report) => report.elapsedMs / MILLISECONDS_PER_SECOND) });

@@ -1,8 +1,11 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { readKnownRefusals } from '../bench/realworld/report';
+import { REGRESSION_KNOWN_REFUSALS_PATH } from '../bench/realworld/regression/merge';
+import { readRegressionManifest } from '../bench/realworld/regression/manifest';
+import { knownRefusal, readKnownRefusals, type JobRecord } from '../bench/realworld/report';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
-import { CompoundFileStructureError } from '../src/lib/types';
+import { CompoundFileStructureError, ConversionFailedError } from '../src/lib/types';
+import { oracleTest } from './helpers/oracle-test';
 import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
@@ -19,6 +22,10 @@ import { requireRealworldSample } from './helpers/realworld-sample';
  *
  * xlrd 2.0.2 refuses the original bytes; LibreOffice falls back to importing them as text and writes the
  * binary as CSV. A refusal is the right answer, and the nightly run lists it as an explained one.
+ *
+ * `gd-608556.xls` of the regression corpus is a fourth, cut off in the middle of its `Workbook` stream (entry 380): it converted to
+ * PDF in the baseline of 2026-11-01 only because the suite imported its container bytes as text (1,447 pages of binary), and it is
+ * refused since the suite is told the import filter of the generation (entry 207).
  */
 
 const TEXT_MODE_DAMAGED = ['govdocs1-007750.xls', 'govdocs1-007751.xls'] as const;
@@ -108,5 +115,51 @@ describe('the real workbooks whose compound file is destroyed', () => {
       expect(entry, `${file} has a known refusal`).toBeDefined();
       expect(new RegExp(entry!.detail).test(CHAIN_PAST_THE_FILE_DETAIL)).toBe(true);
     }
+  });
+});
+
+/** Regression corpus: a workbook cut off inside its `Workbook` stream, whose header still lists every FAT sector. */
+const CUT_STREAM = 'gd-608556.xls';
+const CUT_STREAM_SHA256 = 'f143318188bf8c686e88a6826561c243f0f35f21455658f6c9670bd40e46b553';
+const HEADER_FAT_SECTOR_COUNT_OFFSET = 0x2c;
+const HEADER_MINI_FAT_START_OFFSET = 0x3c;
+const FAT_ENTRIES_PER_SECTOR = SECTOR_BYTES / 4;
+const READ_FAILURE_DETAIL = 'ConversionFailedError: LibreOffice could not read the .xls file: it is damaged or not a valid XLS document.';
+
+describe(`${CUT_STREAM} (regression corpus)`, () => {
+  it('is the file the manifest pins, and holds fewer sectors than its header lists FAT entries for', async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, CUT_STREAM);
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe(CUT_STREAM_SHA256);
+    const fatSectors = bytes.readUInt32LE(HEADER_FAT_SECTOR_COUNT_OFFSET);
+    const heldSectors = (bytes.length - HEADER_BYTES) / SECTOR_BYTES;
+    expect(fatSectors).toBe(29);
+    expect(heldSectors).toBe(3391);
+    // 29 FAT sectors describe 3,712 sectors, and the mini FAT starts at sector 3,656: past the 3,391 the file holds.
+    expect(fatSectors * FAT_ENTRIES_PER_SECTOR).toBeGreaterThan(heldSectors);
+    expect(bytes.readUInt32LE(HEADER_MINI_FAT_START_OFFSET)).toBeGreaterThan(heldSectors);
+  });
+
+  it('is refused for csv as a compound file whose chain runs past the file, where the suite is not asked', async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, CUT_STREAM);
+    await expectDestroyedStructure(dispatchConversion(bytes, 'xls', 'csv', {}, CUT_STREAM));
+  });
+
+  oracleTest('is refused for pdf as a document the suite cannot read, and not printed as the container bytes', ['soffice'], async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, CUT_STREAM);
+    const refusal = await dispatchConversion(bytes, 'xls', 'pdf', {}, CUT_STREAM).catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(ConversionFailedError);
+    // The worker's suite writes nothing and exits (the first message); a suite that reports the load failure on stderr gets the second.
+    expect((refusal as Error).message).toMatch(/^LibreOffice could not read the \.xls file: it is damaged(, encrypted)? or not a valid XLS document\.$/);
+  }, 120_000);
+
+  it('is an explained refusal of the regression corpus gate, in both the message of the csv route and the one of the suite', () => {
+    const regressionIds = new Set(readRegressionManifest().files.map((file) => file.id));
+    const listed = readKnownRefusals(REGRESSION_KNOWN_REFUSALS_PATH);
+    expect(listed.filter((entry) => !regressionIds.has(entry.file)), 'entries of files the manifest does not hold').toEqual([]);
+    const refused = (detail: string): JobRecord => ({ file: CUT_STREAM, source: 'xls', target: 'pdf', verdict: 'refused', ms: 1, detail });
+    expect(knownRefusal(refused(READ_FAILURE_DETAIL), listed)).not.toBeNull();
+    expect(knownRefusal(refused(CHAIN_PAST_THE_FILE_DETAIL), listed)).not.toBeNull();
+    expect(knownRefusal(refused('ConversionFailedError: The XLS file is encrypted.'), listed), 'another message').toBeNull();
+    expect(knownRefusal({ ...refused(READ_FAILURE_DETAIL), file: 'gd-000000.xls' }, listed), 'another file').toBeNull();
   });
 });

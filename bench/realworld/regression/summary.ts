@@ -22,6 +22,12 @@ function regressionRows(gate: RegressionGate): string[] {
   return ['', '## Converted before, not now', '', '| File | Pair | Verdict | Detail |', '|---|---|---|---|', ...rows, ...more];
 }
 
+function explainedRefusalRows(gate: RegressionGate): string[] {
+  if (gate.explainedRefusals.length === 0) return [];
+  const rows = gate.explainedRefusals.map(({ regression, reason }) => `| ${regression.file} | ${regression.source}->${regression.target} | ${cell(reason)} |`);
+  return ['', '## Converted before, refused now, and explained', '', 'The earlier result was the output of a damaged file; a known refusal says why the file is refused.', '', '| File | Pair | Reason |', '|---|---|---|', ...rows];
+}
+
 function unavailableRows(gate: RegressionGate): string[] {
   if (gate.unavailable.length === 0) return [];
   const rows = gate.unavailable.map((entry) => `| ${entry.file} | ${cell(entry.reason)} |`);
@@ -31,7 +37,7 @@ function unavailableRows(gate: RegressionGate): string[] {
 function comparisonLines(gate: RegressionGate, previousCommit: string | null): string[] {
   if (gate.differential === null || previousCommit === null) return ['', 'No earlier result set: this run judges crashes, hangs, bad outputs and refusals only.'];
   const { compared, notComparable, repaired } = gate.differential;
-  return ['', `Compared with the run of ${previousCommit.slice(0, 7)}: ${compared} jobs compared, ${gate.regressions.length + gate.knownRegressions.length} converted before and do not now, ${repaired} repaired, ${notComparable} without a counterpart.`];
+  return ['', `Compared with the run of ${previousCommit.slice(0, 7)}: ${compared} jobs compared, ${gate.regressions.length + gate.knownRegressions.length + gate.explainedRefusals.length} converted before and do not now, ${repaired} repaired, ${notComparable} without a counterpart.`];
 }
 
 function producerRows(jobs: readonly JobRecord[], files: ReadonlyMap<string, CorpusFile>): string[] {
@@ -63,5 +69,5 @@ function shardRows(seconds: readonly number[]): string[] {
 export function renderRegressionMarkdown(jobs: readonly JobRecord[], gate: RegressionGate, context: SummaryContext): string {
   const body = renderMarkdown(jobs, gate, 'Regression corpus run').trimEnd().split('\n');
   const [title, blank, status, ...rest] = body;
-  return `${[title, blank, status, ...comparisonLines(gate, context.previousCommit), ...rest, ...regressionRows(gate), ...unavailableRows(gate), ...producerRows(jobs, context.files), ...shardRows(context.shardSeconds)].join('\n')}\n`;
+  return `${[title, blank, status, ...comparisonLines(gate, context.previousCommit), ...rest, ...regressionRows(gate), ...explainedRefusalRows(gate), ...unavailableRows(gate), ...producerRows(jobs, context.files), ...shardRows(context.shardSeconds)].join('\n')}\n`;
 }

@@ -1,0 +1,9 @@
+[
+  {
+    "file": "gd-608556.xls",
+    "source": "xls",
+    "detail": "^(CompoundFileStructureError: Corrupt CFBF container: the sector chain starting at sector \\d+ reaches sector \\d+, which the file does not hold\\.|ConversionFailedError: LibreOffice could not read the \\.xls file: it is damaged(, encrypted)? or not a valid XLS document\\.)$",
+    "reason": "The file is cut off: its header lists 29 FAT sectors (3,712 sectors) and the file holds 3,391, so the Workbook stream chain reaches sector 3,659 and the mini FAT starts at sector 3,656, neither in the file. xlrd refuses it and the suite cannot load it with the Excel 97 filter; with no filter the suite's type detection imports the container bytes as text, which was the 'ok' of the baseline (a 1,447-page PDF of binary), and the generation filter of entry 207 ends that. Padding the missing sectors makes the suite print 49 pages, but no established reader repairs a cut file (entry 71).",
+    "issue": 783
+  }
+]

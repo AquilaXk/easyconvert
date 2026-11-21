@@ -4,7 +4,7 @@
  * full run, kept as an artifact; a job counts only when both sides ran the same file to the same target.
  */
 import type { UnavailableFile } from '../judge';
-import { evaluate, type GateResult, type JobRecord, knownIssue, type KnownFailure } from '../report';
+import { evaluate, type GateResult, type JobRecord, knownIssue, type KnownFailure, knownRefusal, type KnownRefusal } from '../report';
 import type { Verdict } from '../verdict';
 
 export interface Regression {
@@ -50,6 +50,8 @@ export interface RegressionGate extends GateResult {
   /** Regressions no known failure explains. */
   regressions: Regression[];
   knownRegressions: { regression: Regression; issue: number }[];
+  /** Regressions that are typed refusals a known refusal explains: the earlier `ok` was the output of a damaged file, not a conversion. */
+  explainedRefusals: { regression: Regression; reason: string }[];
   /** Null when there was no earlier result set to compare with. */
   differential: Differential | null;
   /** Corpus files that could not be fetched, or whose bytes differ from the manifest: the corpus is wrong, not the converter. */
@@ -61,18 +63,28 @@ function asJob(regression: Regression): JobRecord {
 }
 
 /**
- * The gate of a run: any crash, hang or bad output, and any regression, unless a known failure with an issue explains it; and any
- * corpus file that could not be fetched.
+ * The gate of a run: any crash, hang or bad output, and any regression, unless a known failure with an issue explains it or, for a
+ * refusal, a known refusal does (file, pair and message); and any corpus file that could not be fetched.
  */
-export function evaluateRegression(jobs: readonly JobRecord[], previous: readonly JobRecord[] | null, knownFailures: readonly KnownFailure[], unavailable: readonly UnavailableFile[] = []): RegressionGate {
-  const base = evaluate(jobs, null, knownFailures);
+export function evaluateRegression(
+  jobs: readonly JobRecord[],
+  previous: readonly JobRecord[] | null,
+  knownFailures: readonly KnownFailure[],
+  unavailable: readonly UnavailableFile[] = [],
+  knownRefusals: readonly KnownRefusal[] = []
+): RegressionGate {
+  const base = evaluate(jobs, null, knownFailures, knownRefusals);
   const result = previous === null ? null : differential(previous, jobs);
   const regressions: Regression[] = [];
   const knownRegressions: RegressionGate['knownRegressions'] = [];
+  const explainedRefusals: RegressionGate['explainedRefusals'] = [];
   for (const regression of result?.regressions ?? []) {
-    const issue = knownIssue(asJob(regression), knownFailures);
-    if (issue === null) regressions.push(regression);
-    else knownRegressions.push({ regression, issue });
+    const job = asJob(regression);
+    const issue = knownIssue(job, knownFailures);
+    const refusal = knownRefusal(job, knownRefusals);
+    if (issue !== null) knownRegressions.push({ regression, issue });
+    else if (refusal !== null) explainedRefusals.push({ regression, reason: refusal.reason });
+    else regressions.push(regression);
   }
-  return { ...base, pass: base.pass && regressions.length === 0 && unavailable.length === 0, regressions, knownRegressions, differential: result, unavailable: [...unavailable] };
+  return { ...base, pass: base.pass && regressions.length === 0 && unavailable.length === 0, regressions, knownRegressions, explainedRefusals, differential: result, unavailable: [...unavailable] };
 }
