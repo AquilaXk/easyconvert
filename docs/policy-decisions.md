@@ -426,7 +426,7 @@ Security
 375. [A PDF written by calibre is started again, at most twice, when Chromium crashes in it, and the address-space limit of that run stays](#375-a-pdf-written-by-calibre-is-started-again-at-most-twice-when-chromium-crashes-in-it-and-the-address-space-limit-of-that-run-stays)
 376. [A dithered 8-bit ICO of 64 x 64 pixels or more takes its palette from quantizr-pixels, and an animated GIF of 256 colours stays with the image library's local palettes, as ImageMagick writes it](#376-a-dithered-8-bit-ico-of-64-x-64-pixels-or-more-takes-its-palette-from-quantizr-pixels-and-an-animated-gif-of-256-colours-stays-with-the-image-librarys-local-palettes-as-imagemagick-writes-it)
 377. [A run of LibreOffice may hold the input and two files of the size limit in its job directory, because the suite writes its output through a temporary stream](#377-a-run-of-libreoffice-may-hold-the-input-and-two-files-of-the-size-limit-in-its-job-directory-because-the-suite-writes-its-output-through-a-temporary-stream)
-378. [PDF text: the catalogue names of Adobe's pi fonts, the glyph numbers of CG Times and the one-character names of a Type 3 text font are read as text](#378-pdf-text-the-catalogue-names-of-adobes-pi-fonts-the-glyph-numbers-of-cg-times-and-the-one-character-names-of-a-type-3-text-font-are-read-as-text)
+379. [PDF text: the catalogue names of Adobe's pi fonts, the glyph numbers of CG Times and the one-character names of a Type 3 text font are read as text](#379-pdf-text-the-catalogue-names-of-adobes-pi-fonts-the-glyph-numbers-of-cg-times-and-the-one-character-names-of-a-type-3-text-font-are-read-as-text)
 
 ---
 
@@ -11214,7 +11214,7 @@ Security
 - **Verified by**: `tests/libreoffice-disk-budget.test.ts` (the formula holds the input and two files of the limit and the 363 MB peak; a pooled run whose stream and output are 300 MiB each is not refused, and one of 600 MiB each is, both red-green against the old budget; `gd-374166.doc` to RTF through `dispatchConversion`, which fetches the file by digest from the regression corpus) and the existing runaway case of `tests/adversarial-engine-sandbox-guards.test.ts` (four files of 400 MiB, refused).
 - **Revisit when**: the suite writes a third file of the size of the output (a filter that keeps a second stream), the file-size limit of a run changes, or a corpus file needs more than 80 % of the budget.
 
-## 378. PDF text: the catalogue names of Adobe's pi fonts, the glyph numbers of CG Times and the one-character names of a Type 3 text font are read as text
+## 379. PDF text: the catalogue names of Adobe's pi fonts, the glyph numbers of CG Times and the one-character names of a Type 3 text font are read as text
 
 - **Date**: 2026-11-21
 - **Status**: Implemented (QA request: reduce the glyphs the PDF text reader leaves out, `TODO.md`, entries 259, 315 and 104). It extends entries 98, 104, 227 and 259; nothing is deployed.
