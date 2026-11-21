@@ -254,6 +254,16 @@ function withCompoundByteSource(input: Buffer | WorkerVfsPayload, check: (head: 
  * destroyed before handing it to LibreOffice, which otherwise falls back to loading the corrupted binary as text/HTML
  * and can hang or emit raw container bytes (`gd-948342.doc`). Non-compound files (Word 5 Mac, RTF/HTML under `.doc`)
  * pass through untouched.
+ *
+ * A file whose first directory sector lies past its end (`gd-597001.xls`: 598,016 bytes, header FAT at sector 32,965 and directory at
+ * sector 33,225, a cut-off copy of a file of about 17 MB) is refused for the same reason. The source here is the whole file, so a root
+ * that cannot be read is a directory the file does not hold. Apache POI refuses it: `POIFSFileSystem.readCoreContents` reads every FAT
+ * sector, extension sector and then the property table through `getBlockAt`, which throws "Block N not found" for a sector the data
+ * source does not hold (`poifs/filesystem/POIFSFileSystem.java` lines 391-480, `poifs/nio/ByteArrayBackedDataSource.java` line 48,
+ * apache/poi trunk c94ee8ad, 2026-11-21). xlrd refuses it too (`compdoc.py` lines 143-201, python-excel/xlrd d8302dc: "MSAT extension:
+ * accessing sector N but only M in file"). The office suite's storage cannot open it: `StgIo::SetupStreams` sets
+ * `SVSTREAM_FILEFORMAT_ERROR` when `StgDirStrm` yields no root entry (`sot/source/sdstor/stgio.cxx` lines 81-117,
+ * LibreOffice/core 6ca1666c), the type detection then finds no Office storage, and the file is imported as text.
  */
 export function assertLegacyCompoundFileReadable(input: Buffer | WorkerVfsPayload, src: string): void {
   const reading = officeReadingFormat(src);
@@ -263,6 +273,11 @@ export function assertLegacyCompoundFileReadable(input: Buffer | WorkerVfsPayloa
     const root = readCompoundFileRootFrom(readRange);
     if (root.status === 'malformed') {
       throw new CompoundFileStructureError(`Corrupt CFBF container: the .${src} file has a malformed OLE2 directory or allocation table.`);
+    }
+    if (root.status === 'unreadable' && root.directorySector !== undefined) {
+      throw new CompoundFileStructureError(
+        `Corrupt CFBF container: the sector chain starting at sector ${root.directorySector} reaches sector ${root.directorySector}, which the file does not hold.`
+      );
     }
   });
 }

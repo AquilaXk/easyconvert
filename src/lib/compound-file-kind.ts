@@ -152,13 +152,17 @@ export type CompoundFileRoot =
       /** False when the bytes end before the directory does, so names may be missing. */
       complete: boolean;
     }
-  /** The directory lies past the bytes given: no first directory sector in them, or no whole sector of it. */
-  | { status: 'unreadable' }
+  /**
+   * The directory lies past the bytes given: no first directory sector in them, or no whole sector of it. `directorySector` is set when
+   * the bytes hold no byte at all of the first directory sector: a reader that was given the whole file reports it as a sector the
+   * file does not hold. A first sector that the file cuts short is not set: the parser that reads the file in full takes the bytes
+   * that are there (olefile `nb_sect`, the last sector possibly cut short), as `gd-200188.xls` of 25,087 bytes needs.
+   */
+  | { status: 'unreadable'; directorySector?: number }
   /** The bytes cannot be a compound file's directory: a header no reader accepts, a first entry that is not the root, or a chain or tree that returns to itself. */
   | { status: 'malformed' };
 
 const MALFORMED: CompoundFileRoot = { status: 'malformed' };
-const UNREADABLE: CompoundFileRoot = { status: 'unreadable' };
 
 interface DirectoryEntry {
   name: string;
@@ -260,7 +264,7 @@ function* readDirectoryChain(
   firstSector: number,
   sectorBytes: number,
   fat: { nextSector: (sector: number) => Walk<number | undefined> }
-): Walk<{ entries: DirectoryEntry[]; classId: string | undefined; chainEnded: boolean }> {
+): Walk<{ entries: DirectoryEntry[]; classId: string | undefined; chainEnded: boolean; firstSectorAbsent: boolean }> {
   const entries: DirectoryEntry[] = [];
   const read = new Set<number>();
   let classId: string | undefined;
@@ -269,7 +273,7 @@ function* readDirectoryChain(
     if (read.has(sector)) throw new MalformedDirectory();
     read.add(sector);
     const bytes = yield { offset: (sector + 1) * sectorBytes, length: sectorBytes };
-    if (bytes.length < sectorBytes) return { entries, classId, chainEnded: false };
+    if (bytes.length < sectorBytes) return { entries, classId, chainEnded: false, firstSectorAbsent: sector === firstSector && bytes.length === 0 };
     const view = new DataView(bytes.buffer, bytes.byteOffset, sectorBytes);
     if (sector === firstSector) classId = guidText(bytes.subarray(CLASS_ID_OFFSET, CLASS_ID_OFFSET + CLASS_ID_BYTES));
     for (let at = 0; at < sectorBytes; at += CFBF_DIRECTORY_ENTRY_BYTES) {
@@ -277,10 +281,10 @@ function* readDirectoryChain(
       entries.push(decodeEntry(bytes, view, at));
     }
     const next = yield* fat.nextSector(sector);
-    if (next === undefined) return { entries, classId, chainEnded: false };
+    if (next === undefined) return { entries, classId, chainEnded: false, firstSectorAbsent: false };
     sector = next;
   }
-  return { entries, classId, chainEnded: true };
+  return { entries, classId, chainEnded: true, firstSectorAbsent: false };
 }
 
 /** The upper case names of the entries under the root, following the child link and the sibling links of the red-black tree; undefined when the tree reaches an entry twice. */
@@ -331,7 +335,7 @@ function* readRoot(): Walk<CompoundFileRoot> {
 
   const sectorBytes = 1 << sectorShift;
   const chain = yield* readDirectoryChain(firstDirectorySector, sectorBytes, fatTable(header, sectorBytes));
-  if (chain.entries.length === 0) return UNREADABLE;
+  if (chain.entries.length === 0) return chain.firstSectorAbsent ? { status: 'unreadable', directorySector: firstDirectorySector } : { status: 'unreadable' };
   if (chain.entries[0].type !== ROOT_STORAGE) return MALFORMED;
 
   const tree = rootNames(chain.entries);
