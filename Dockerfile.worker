@@ -806,9 +806,10 @@ RUN chmod -R a+rX /licenses
 # The caches of the font directories, written last: a cache records the modification time of its directory to the nanosecond, the layers of an
 # image keep whole seconds, and fontconfig refuses the cache of a directory whose time differs for every process but root, so each office
 # conversion (a new home each time) rebuilt 26 caches, 0.12 s of every run (docs/policy-decisions.md, entry 385). Each directory is set to a whole
-# second, then the caches are written. It is the last step that runs as root: a step after it that touches a font directory (a package that installs
+# second, then the caches are written. `find -L` follows the directory links (the CMap folders under `/usr/share/fonts/cmap` link into
+# `/usr/share/poppler/cMap`), whose targets' times the caches record; without it five caches stayed stale. It is the last step that runs as root: a step after it that touches a font directory (a package that installs
 # a font, a trigger of the package manager) leaves that directory's cache stale again, which `scripts/verify-worker-container.sh` (check 13) reports.
-RUN find /usr/share/fonts /usr/local/share/fonts -type d -exec sh -c 'for d; do touch -d "@$(stat -c %Y "$d")" "$d"; done' sh {} + \
+RUN find -L /usr/share/fonts /usr/local/share/fonts -type d -exec sh -c 'for d; do touch -d "@$(stat -c %Y "$d")" "$d"; done' sh {} + \
     && fc-cache -f -s
 
 # 5. Drop to unprivileged non-root user (UID:GID 10001:10001) and enforce strict namespace sandboxing by default

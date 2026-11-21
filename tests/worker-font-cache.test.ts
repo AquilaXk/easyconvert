@@ -29,7 +29,7 @@ describe('the font cache of the worker image', () => {
     const cache = step.indexOf('fc-cache -f -s');
     expect(whole).toBeGreaterThan(0);
     expect(cache).toBeGreaterThan(whole);
-    expect(step).toMatch(/find \/usr\/share\/fonts \/usr\/local\/share\/fonts -type d/);
+    expect(step).toMatch(/find -L \/usr\/share\/fonts \/usr\/local\/share\/fonts -type d/);
     expect(RUNNER.indexOf('USER easyconvert:easyconvert')).toBeGreaterThan(RUNNER.lastIndexOf('\nRUN '));
   });
 
